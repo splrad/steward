@@ -1,0 +1,16 @@
+name: SPLRAD Steward
+description: Run a versioned SPLRAD Steward operation.
+author: SPLRAD
+inputs:
+  operation:
+    description: Steward operation to execute.
+    required: true
+outputs:
+  steward-version:
+    description: Version of the bundled Steward Action.
+runs:
+  using: node24
+  main: dist/index.js
+branding:
+  icon: shield
+  color: blue

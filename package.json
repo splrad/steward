@@ -1,0 +1,31 @@
+{
+  "name": "@splrad/steward",
+  "version": "0.0.0-development",
+  "private": true,
+  "description": "Shared event-driven repository automation for SPLRAD projects.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": "24.14.1"
+  },
+  "packageManager": "npm@11.11.0",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "verify": "npm run test && npm run typecheck && npm run verify:dist && npm run verify:workflows",
+    "verify:dist": "node scripts/verify-dist.mjs",
+    "verify:workflows": "node scripts/verify-workflows.mjs"
+  },
+  "dependencies": {
+    "@actions/core": "3.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1",
+    "@vercel/ncc": "0.44.1",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  }
+}
