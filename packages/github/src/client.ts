@@ -329,10 +329,18 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
     reviewers?: string[];
     teamReviewers?: string[];
   }): Promise<void> {
+    const reviewers = input.reviewers?.filter(Boolean) ?? [];
+    const teamReviewers = input.teamReviewers?.filter(Boolean) ?? [];
+    if (!reviewers.length && !teamReviewers.length) {
+      throw new Error('At least one user or team reviewer is required');
+    }
     await this.transport.request({
       method: 'POST',
       path: `${repositoryPath(input.owner, input.repository)}/pulls/${segment(input.number)}/requested_reviewers`,
-      body: { reviewers: input.reviewers ?? [], team_reviewers: input.teamReviewers ?? [] },
+      body: {
+        ...(reviewers.length ? { reviewers } : {}),
+        ...(teamReviewers.length ? { team_reviewers: teamReviewers } : {}),
+      },
     });
   }
 

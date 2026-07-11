@@ -83,6 +83,15 @@ describe('GitHub REST transport', () => {
     expect(String(error)).toContain('Not Found');
     expect(String(error)).not.toContain('never-print-this');
   });
+
+  it('accepts successful GitHub mutations with an empty response body', async () => {
+    const transport = createGitHubRestTransport({
+      token: 'token',
+      fetch: vi.fn(async () => new Response(null, { status: 201 })) as unknown as typeof fetch,
+    });
+    await expect(transport.request({ method: 'POST', path: '/repos/splrad/steward/actions/jobs/1/rerun' }))
+      .resolves.toBeUndefined();
+  });
 });
 
 describe('GitHub repository adapter', () => {
@@ -212,6 +221,8 @@ describe('GitHub repository adapter', () => {
     await client.createIssueComment('splrad', 'steward', 6, 'body');
     await client.updateIssueComment('splrad', 'steward', 2, 'updated');
     await client.deleteIssueComment('splrad', 'steward', 2);
+    await expect(client.requestReviewers({ owner: 'splrad', repository: 'steward', number: 6 }))
+      .rejects.toThrow('At least one user or team reviewer');
     await client.requestReviewers({ owner: 'splrad', repository: 'steward', number: 6, teamReviewers: ['maintainers'] });
     await client.createPullRequestReview({
       owner: 'splrad', repository: 'steward', number: 6, commitId: 'a'.repeat(40), event: 'APPROVE', body: 'approved',
@@ -234,5 +245,6 @@ describe('GitHub repository adapter', () => {
       path: '/repos/splrad/steward/actions/workflows/pr-governance.yml/dispatches',
       body: { ref: 'main', inputs: { pr_number: '6' } },
     });
+    expect(requests[5]?.body).toEqual({ team_reviewers: ['maintainers'] });
   });
 });
