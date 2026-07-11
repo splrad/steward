@@ -164,7 +164,7 @@ export function mainAuthorizationFailureModel(input: {
 
 const copilotNoBlockingConclusionPattern = /(?:^|\r?\n)\s*(?:\x23{1,6}\s*)?结论\s*(?::|：)?\s*(?:\r?\n\s*)*未发现需要阻断合并的问题。/;
 const copilotNoCommentsPattern = /Copilot reviewed \d+ out of \d+ changed files in this pull request and generated no (?:new )?comments\./i;
-const copilotGeneratedCommentsPattern = /Copilot reviewed \d+ out of \d+ changed files in this pull request and generated (\d+) (?:new )?comments\./i;
+const copilotGeneratedCommentsPattern = /Copilot reviewed \d+ out of \d+ changed files in this pull request and generated (\d+) (?:new )?comments?\./i;
 const copilotBlockingSeverityPattern = /^\s*(severity\s*[:：]\s*blocking|严重程度\s*[:：]\s*阻断)(?:\s|$)/i;
 const copilotSuggestionSeverityPattern = /^\s*(severity\s*[:：]\s*suggestion|严重程度\s*[:：]\s*建议)(?:\s|$)/i;
 const copilotTitlePattern = /^\s*(?:\x23{1,6}\s*)?(?:标题|title)\s*[:：]\s*(.+?)\s*$/i;
