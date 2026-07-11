@@ -6,6 +6,7 @@ import {
   decodeBlockingState,
   encodeBlockingState,
   evaluateCopilotGate,
+  evaluateClassification,
   evaluateMainAuthorization,
   evaluateMatrix,
   fingerprintForPull,
@@ -19,6 +20,7 @@ import {
   planMatrixRepairs,
   planProxyCompletions,
   stewardCheckExternalId,
+  upsertClassificationMetadata,
   type GovernanceFailureModel,
   type BlockingFailure,
   type MatrixCheckRun,
@@ -26,12 +28,14 @@ import {
   type MatrixWorkflowRun,
 } from '../../packages/core/src/index.js';
 import {
+  GitHubApiError,
   type GitHubCheckRun,
   type GitHubCommit,
   type GitHubPullRequestFile,
   type GitHubPullRequestReview,
   type GitHubRepositoryClient,
 } from '../../packages/github/src/index.js';
+import type { PublicLabelConfiguration } from '../../packages/manifest/src/index.js';
 import type { StewardActionInputs, StewardOperation } from './contracts.js';
 import { parseMatrixMode, parseMatrixScope } from './contracts.js';
 import { enabledMatrixConfiguration } from './catalog.js';
@@ -53,6 +57,106 @@ interface PullFacts {
 }
 
 const autoApprovalMarker = '<!-- workflow:auto-approval -->';
+
+async function ensureRepositoryLabel(
+  context: StewardOperationContext,
+  label: PublicLabelConfiguration,
+): Promise<void> {
+  try {
+    await context.client.getRepositoryLabel(context.owner, context.repository, label.name);
+    return;
+  } catch (error) {
+    if (!(error instanceof GitHubApiError) || error.status !== 404) throw error;
+  }
+
+  try {
+    await context.client.createRepositoryLabel(context.owner, context.repository, label);
+  } catch (error) {
+    if (!(error instanceof GitHubApiError) || error.status !== 422) throw error;
+    await context.client.getRepositoryLabel(context.owner, context.repository, label.name);
+  }
+}
+
+async function classificationOperation(context: StewardOperationContext): Promise<StewardOperationResult> {
+  if (!context.manifest.manifest.features.classification) {
+    return {
+      operation: 'classification',
+      state: 'ignored',
+      summary: 'Classification feature is disabled',
+    };
+  }
+  const classification = context.manifest.manifest.classification;
+  if (!classification) throw new Error('Classification feature requires default-branch Manifest configuration');
+
+  const [commits, files, checks] = await Promise.all([
+    context.client.listPullRequestCommits(context.owner, context.repository, context.pull.number),
+    context.client.listPullRequestFiles(context.owner, context.repository, context.pull.number),
+    context.client.listCommitCheckRuns(context.owner, context.repository, context.pull.head.sha),
+  ]);
+  if (typeof context.pull.title !== 'string' || !context.pull.title.trim()) {
+    throw new Error('GitHub returned a pull request without a valid title');
+  }
+  if (commits.some((commit) => !/^[a-f0-9]{40}$/i.test(String(commit.sha ?? '')))) {
+    throw new Error('GitHub returned a pull request commit without a valid SHA');
+  }
+  const filenames = files.map((file) => String(file.filename ?? '').trim());
+  if (filenames.some((filename) => !filename)) {
+    throw new Error('GitHub returned a pull request file without a valid filename');
+  }
+  const currentLabels = (context.pull.labels ?? []).map((label) => String(label.name ?? '').trim());
+  if (currentLabels.some((label) => !label)) {
+    throw new Error('GitHub returned a pull request label without a valid name');
+  }
+  const fingerprint = fingerprintForPull({ pull: context.pull, commits, files, botLogins: botLogins(context) });
+  const evaluation = evaluateClassification({
+    title: context.pull.title,
+    baseRef: context.pull.base.ref,
+    ...(context.pull.body === undefined ? {} : { body: context.pull.body }),
+    ...(context.pull.head.ref === undefined ? {} : { headRef: context.pull.head.ref }),
+    ...(context.pull.user == null ? {} : { author: context.pull.user }),
+    files: filenames,
+    currentLabels,
+  }, classification);
+
+  for (const label of evaluation.mutationPlan.ensureLabels) await ensureRepositoryLabel(context, label);
+  if (evaluation.mutationPlan.addLabels.length) {
+    await context.client.addIssueLabels(
+      context.owner,
+      context.repository,
+      context.pull.number,
+      evaluation.mutationPlan.addLabels,
+    );
+  }
+  const labelsToRemove = [...new Map([
+    ...evaluation.mutationPlan.removePublicLabels,
+    ...evaluation.mutationPlan.removeInternalLabels,
+  ].map((label) => [label.toLowerCase(), label])).values()];
+  for (const label of labelsToRemove) {
+    await context.client.removeIssueLabel(context.owner, context.repository, context.pull.number, label);
+  }
+
+  const body = upsertClassificationMetadata(context.pull.body, evaluation.presentation);
+  if (body !== (context.pull.body ?? '')) {
+    await context.client.updatePullRequestBody(context.owner, context.repository, context.pull.number, body);
+  }
+  await writeCheck({
+    context,
+    checks,
+    checkId: 'pr-classification',
+    name: 'PR Classification Gate',
+    inputDigest: fingerprint.value,
+    status: 'completed',
+    conclusion: 'success',
+    title: 'PR 分类已更新',
+    summary: '标题、正文、提交、贡献者和文件输入均与当前分类结果一致。',
+  });
+  return {
+    operation: 'classification',
+    state: 'passed',
+    summary: 'PR classification converged',
+    details: { evaluation, fingerprint: fingerprint.value },
+  };
+}
 
 function mutationClient(context: StewardOperationContext): GitHubRepositoryClient {
   if (!context.mutationClient) throw new Error('This Steward operation requires a separate mutation token');
@@ -615,6 +719,7 @@ export async function executeOperation(
   context: StewardOperationContext,
   inputs: StewardActionInputs,
 ): Promise<StewardOperationResult> {
+  if (operation === 'classification') return await classificationOperation(context);
   if (operation === 'governance-preflight') {
     return {
       operation,
