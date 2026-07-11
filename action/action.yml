@@ -6,10 +6,10 @@ inputs:
     description: Steward operation to execute.
     required: true
   github-token:
-    description: Platform token used to validate repository context and read the default-branch Manifest.
+    description: Platform token used to validate repository context and read the default-branch Manifest. Required for every operation except version.
     required: false
   mutation-token:
-    description: Separate human token used only by operations that request or submit a review.
+    description: Separate human token required only by governance-request-copilot and governance-auto-approve.
     required: false
   event-path:
     description: Path to the trusted GitHub event payload. Defaults to GITHUB_EVENT_PATH.
