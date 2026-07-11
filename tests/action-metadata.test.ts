@@ -12,7 +12,7 @@ describe('Action metadata', () => {
     };
 
     expect(metadata.runs).toEqual({ using: 'node24', main: 'dist/index.js' });
-    expect(Object.keys(metadata.inputs ?? {})).toEqual([
+    expect(Object.keys(metadata.inputs ?? {}).sort()).toEqual([
       'operation',
       'github-token',
       'mutation-token',
@@ -22,13 +22,13 @@ describe('Action metadata', () => {
       'request-result',
       'matrix-mode',
       'matrix-scope',
-    ]);
-    expect(Object.keys(metadata.outputs ?? {})).toEqual([
+    ].sort());
+    expect(Object.keys(metadata.outputs ?? {}).sort()).toEqual([
       'steward-version',
       'state',
       'operation-result',
       'governance-enabled',
       'copilot-review-enabled',
-    ]);
+    ].sort());
   });
 });
