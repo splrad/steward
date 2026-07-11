@@ -111,6 +111,12 @@ describe('Matrix Check identities', () => {
       pull,
       trust: { ...trust, allowLegacy: false },
     })).toBe(false);
+    expect(isTrustedMatrixCheck({
+      run: { ...run, name: 'Main Authorization Gate', external_id: '' },
+      target: target('main-authorization'),
+      pull,
+      trust,
+    })).toBe(false);
   });
 
   it('requires matching workflow evidence for GitHub Actions checks', () => {
@@ -335,6 +341,10 @@ describe('review dispatch trust', () => {
     expect(validateReviewDispatch(dispatch)).toEqual({
       state: 'passed', signal: 'review-state', reason: 'trusted-review-signal',
     });
+    expect(validateReviewDispatch({
+      ...dispatch,
+      payload: { ...dispatch.payload, repositoryFullName: 'AXIOMOTH/cadfontautoreplace' },
+    })).toMatchObject({ state: 'passed', reason: 'trusted-review-signal' });
   });
 
   it('fails closed on repository identity and ignores stale or unsupported events', () => {

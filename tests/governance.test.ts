@@ -115,6 +115,8 @@ describe('Copilot governance protocol', () => {
     expect(copilotCommentSeverity(protocol.copilot.suggestion)).toBe('suggestion');
     expect(copilotCommentSeverity('前言\n严重程度：阻断')).toBe('');
     expect(copilotCommentTitle(protocol.copilot.blocking)).toBe('必须修复');
+    expect(copilotCommentTitle('')).toBe('');
+    expect(copilotCommentTitle('', 'Copilot comment')).toBe('Copilot comment');
     expect(sanitizeCopilotCommentTitle('A'.repeat(80))).toHaveLength(60);
   });
 

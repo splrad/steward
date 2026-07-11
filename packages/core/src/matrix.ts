@@ -171,10 +171,10 @@ function legacyDirectExternalId(
   target: MatrixTargetConfiguration,
   pull: MatrixPull,
   inputDigest: string,
-): string {
+): string | null {
   if (target.id === 'pr-classification') return `classification:pr:${pull.number}:fingerprint:${inputDigest}`;
   if (target.id === 'copilot-review-gate') return `pr-${pull.number}-${pull.head.sha}`;
-  return '';
+  return null;
 }
 
 function workflowRunPath(run: MatrixWorkflowRun | undefined): string {
@@ -226,8 +226,9 @@ export function isTrustedMatrixCheck(input: {
     });
     if (run.external_id === expected) return true;
     if (trust.allowLegacy === false) return false;
+    const legacyDirectId = legacyDirectExternalId(target, pull, trust.inputDigest);
     return run.external_id === legacyProxyExternalId(target, pull, trust.inputDigest)
-      || run.external_id === legacyDirectExternalId(target, pull, trust.inputDigest);
+      || (legacyDirectId !== null && run.external_id === legacyDirectId);
   }
   if (String(run.app?.slug ?? '') !== 'github-actions' || target.customCheck) return false;
   if (trust.allowLegacy === false) return false;
@@ -462,7 +463,7 @@ export function validateReviewDispatch(input: {
   if (input.repository.id !== input.payload.repositoryId) {
     return { state: 'failed', signal: 'none', reason: 'repository-id-mismatch' };
   }
-  if (input.repository.fullName !== input.payload.repositoryFullName) {
+  if (input.repository.fullName.toLowerCase() !== input.payload.repositoryFullName.toLowerCase()) {
     return { state: 'failed', signal: 'none', reason: 'repository-name-mismatch' };
   }
   if (input.pull.number !== input.payload.prNumber) return { state: 'ignored', signal: 'none', reason: 'pr-mismatch' };

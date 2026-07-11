@@ -231,7 +231,7 @@ export function sanitizeCopilotCommentTitle(value: unknown, maxLength = 60): str
   return characters.length <= maxLength ? normalized : `${characters.slice(0, maxLength - 1).join('')}…`;
 }
 
-export function copilotCommentTitle(body: unknown): string {
+export function copilotCommentTitle(body: unknown, fallbackTitle: unknown = ''): string {
   const lines = String(body ?? '').split(/\r?\n/);
   const explicit = lines[1]?.match(copilotTitlePattern)?.[1] ?? '';
   const explicitTitle = sanitizeCopilotCommentTitle(explicit);
@@ -245,14 +245,14 @@ export function copilotCommentTitle(body: unknown): string {
     const fallback = sanitizeCopilotCommentTitle(candidate.split(/[。！？；;]/, 1)[0]);
     if (fallback) return fallback;
   }
-  return 'Copilot 评论';
+  return sanitizeCopilotCommentTitle(fallbackTitle);
 }
 
 export function copilotThreadFindings(threads: readonly {
   isResolved?: unknown;
   isOutdated?: unknown;
   comments?: readonly CopilotThreadComment[] | { nodes?: readonly CopilotThreadComment[] };
-}[]): CopilotFindings {
+}[], options: { fallbackTitle?: unknown } = {}): CopilotFindings {
   const findings: CopilotFindings = { blocking: [], suggestions: [], unclassified: [] };
   for (const thread of threads) {
     if (thread.isResolved || thread.isOutdated) continue;
@@ -261,7 +261,7 @@ export function copilotThreadFindings(threads: readonly {
       : (thread.comments as { nodes?: readonly CopilotThreadComment[] } | undefined)?.nodes ?? [];
     for (const comment of comments.filter(isCopilotComment)) {
       const body = String(comment.body ?? '');
-      const finding = { title: copilotCommentTitle(body), url: String(comment.url ?? '') };
+      const finding = { title: copilotCommentTitle(body, options.fallbackTitle), url: String(comment.url ?? '') };
       const severity = copilotCommentSeverity(body);
       if (severity === 'blocking') findings.blocking.push(finding);
       else if (severity === 'suggestion') findings.suggestions.push(finding);
