@@ -2,7 +2,16 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { fingerprintForPull, stewardCheckExternalId } from '../packages/core/src/index.js';
 import type { ClassificationConfiguration, LoadedManifest, StewardManifest } from '../packages/manifest/src/index.js';
-import { GitHubApiError, type GitHubPullRequest, type GitHubRepositoryClient } from '../packages/github/src/index.js';
+import {
+  GitHubApiError,
+  type CheckRunCreate,
+  type CheckRunUpdate,
+  type GitHubCheckRun,
+  type GitHubPullRequest,
+  type GitHubRepositoryClient,
+  type GitHubWorkflowJob,
+  type GitHubWorkflowRun,
+} from '../packages/github/src/index.js';
 import {
   operationDefinitions,
   parseMatrixMode,
@@ -615,5 +624,126 @@ describe('Action operation contract', () => {
     expect(fixture.client.createCheckRun).toHaveBeenCalledWith('splrad', 'steward', expect.objectContaining({
       name: 'PR Validation Matrix Gate', status: 'completed', conclusion: 'success',
     }));
+  });
+
+  it('converges across repeated same-head Matrix events without duplicate repair dispatches', async () => {
+    const fixture = context();
+    fixture.context.manifest = manifest({ classification: true });
+    const checkRuns: GitHubCheckRun[] = [];
+    const workflowRuns: GitHubWorkflowRun[] = [];
+    const workflowJobs = new Map<number, GitHubWorkflowJob[]>();
+    let nextCheckRunId = 100;
+
+    fixture.client.listCommitCheckRuns!.mockImplementation(async () => checkRuns);
+    fixture.client.listWorkflowRuns!.mockImplementation(async () => workflowRuns);
+    fixture.client.listWorkflowJobs!.mockImplementation(async (_owner, _repository, runId: number) => (
+      workflowJobs.get(runId) ?? []
+    ));
+    fixture.client.createCheckRun!.mockImplementation(async (
+      _owner,
+      _repository,
+      input: CheckRunCreate,
+    ) => {
+      const run: GitHubCheckRun = {
+        id: nextCheckRunId++,
+        name: input.name,
+        status: input.status,
+        conclusion: input.conclusion ?? null,
+        app: { slug: 'splrad-steward' },
+        ...(input.externalId === undefined ? {} : { external_id: input.externalId }),
+      };
+      checkRuns.push(run);
+      return run;
+    });
+    fixture.client.updateCheckRun!.mockImplementation(async (
+      _owner,
+      _repository,
+      checkRunId: number,
+      input: CheckRunUpdate,
+    ) => {
+      const run = checkRuns.find((candidate) => candidate.id === checkRunId);
+      if (!run) throw new Error(`Unknown in-memory Check Run ${checkRunId}`);
+      Object.assign(run, {
+        name: input.name,
+        status: input.status,
+        ...(input.externalId === undefined ? {} : { external_id: input.externalId }),
+        ...(input.conclusion === undefined ? {} : { conclusion: input.conclusion }),
+      });
+      return run;
+    });
+
+    const first = await executeOperation('matrix', fixture.context, { operation: 'matrix' });
+    expect(first.state).toBe('pending');
+    expect(fixture.client.dispatchWorkflow).toHaveBeenCalledTimes(2);
+
+    const repeated = await executeOperation('matrix', fixture.context, { operation: 'matrix' });
+    expect(repeated.state).toBe('pending');
+    expect(fixture.client.dispatchWorkflow).toHaveBeenCalledTimes(2);
+
+    const classificationRun: GitHubWorkflowRun = {
+      id: 80,
+      path: '.github/workflows/pr-classification.yml',
+      event: 'workflow_dispatch',
+      display_title: `PR Validation Target \x237 / ${fixture.context.pull.head.sha}`,
+      pull_requests: [],
+    };
+    workflowRuns.push(classificationRun);
+    workflowJobs.set(80, [{
+      id: 801,
+      name: 'Classify Pull Request',
+      status: 'completed',
+      conclusion: 'success',
+    }]);
+    fixture.context.eventName = 'workflow_run';
+    fixture.context.event = {
+      repository: { id: 1296724484, full_name: 'splrad/steward' },
+      workflow_run: classificationRun,
+    };
+
+    const partiallyRecovered = await executeOperation('matrix', fixture.context, { operation: 'matrix' });
+    expect(partiallyRecovered.state).toBe('pending');
+    expect(checkRuns.find((run) => run.name === 'PR Classification Gate')).toMatchObject({
+      status: 'completed', conclusion: 'success',
+    });
+    expect(fixture.client.dispatchWorkflow).toHaveBeenCalledTimes(2);
+
+    const governanceRun: GitHubWorkflowRun = {
+      id: 81,
+      path: '.github/workflows/pr-governance.yml',
+      event: 'workflow_dispatch',
+      display_title: `PR Validation Target \x237 / ${fixture.context.pull.head.sha}`,
+      pull_requests: [],
+    };
+    workflowRuns.push(governanceRun);
+    workflowJobs.set(81, [
+      { id: 811, name: 'Main Authorization Gate', status: 'completed', conclusion: 'success' },
+      { id: 812, name: 'Update Copilot Review Check', status: 'completed', conclusion: 'success' },
+    ]);
+    fixture.context.event = {
+      repository: { id: 1296724484, full_name: 'splrad/steward' },
+      workflow_run: governanceRun,
+    };
+
+    const fullyRecovered = await executeOperation('matrix', fixture.context, { operation: 'matrix' });
+    expect(fullyRecovered.state).toBe('passed');
+    expect(fixture.client.dispatchWorkflow).toHaveBeenCalledTimes(2);
+    expect(checkRuns.find((run) => run.name === 'PR Validation Matrix Gate')).toMatchObject({
+      status: 'completed', conclusion: 'success',
+    });
+
+    const previousHead = fixture.context.pull.head.sha;
+    fixture.context.pull.head.sha = 'e'.repeat(40);
+    fixture.context.eventName = 'pull_request_target';
+    fixture.context.event = {
+      repository: { id: 1296724484, full_name: 'splrad/steward' },
+      pull_request: { number: 7 },
+    };
+
+    const newHead = await executeOperation('matrix', fixture.context, { operation: 'matrix' });
+    expect(newHead.state).toBe('pending');
+    expect(fixture.client.dispatchWorkflow).toHaveBeenCalledTimes(4);
+    expect(checkRuns.filter((run) => run.name === 'PR Validation Matrix Gate')).toHaveLength(2);
+    expect(checkRuns.filter((run) => run.external_id?.includes(`head:${previousHead}`))).toHaveLength(4);
+    expect(checkRuns.filter((run) => run.external_id?.includes(`head:${fixture.context.pull.head.sha}`))).toHaveLength(4);
   });
 });
