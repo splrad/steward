@@ -19,6 +19,12 @@ export class ManifestValidationError extends Error {
 
 function schemaIssue(error: ErrorObject): string {
   const location = error.instancePath || '/';
+  if (error.keyword === 'additionalProperties') {
+    return `${location} contains unknown property "${String(error.params.additionalProperty)}"`;
+  }
+  if (error.keyword === 'required') {
+    return `${location} is missing required property "${String(error.params.missingProperty)}"`;
+  }
   return `${location} ${error.message ?? 'is invalid'}`;
 }
 

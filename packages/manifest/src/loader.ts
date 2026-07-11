@@ -1,4 +1,4 @@
-import { canonicalManifestJson, manifestDigest, normalizeManifest } from './normalize.js';
+import { manifestDigest, normalizeManifest } from './normalize.js';
 import { parseManifest } from './schema.js';
 import { MANIFEST_PATH, type StewardManifest } from './types.js';
 
@@ -61,7 +61,7 @@ export async function loadDefaultBranchManifest(
   const manifest = normalizeManifest(parseManifest(parseJson(decodeBase64(file.content))));
   return {
     manifest,
-    canonicalJson: canonicalManifestJson(manifest),
+    canonicalJson: JSON.stringify(manifest),
     configDigest: manifestDigest(manifest),
     source: {
       path: MANIFEST_PATH,

@@ -57,7 +57,7 @@ describe('Manifest schema', () => {
 
   it('rejects unsupported versions and unknown secret-like fields', () => {
     expect(() => parseManifest({ ...manifest(), schemaVersion: 2 })).toThrow(ManifestValidationError);
-    expect(() => parseManifest({ ...manifest(), webhookSecret: 'not-allowed' })).toThrow(/additional properties/);
+    expect(() => parseManifest({ ...manifest(), webhookSecret: 'not-allowed' })).toThrow('unknown property "webhookSecret"');
   });
 
   it('requires a complete Steward SHA in the optional schema URL', () => {
