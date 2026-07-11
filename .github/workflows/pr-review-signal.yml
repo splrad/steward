@@ -1,0 +1,62 @@
+name: PR Review Signal
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: Pull request number carried by the trusted caller event.
+        required: true
+        type: number
+      head_sha:
+        description: Pull request head SHA carried by the trusted caller event.
+        required: true
+        type: string
+      source_event:
+        description: GitHub review event name carried by the trusted caller.
+        required: true
+        type: string
+      source_action:
+        description: GitHub review event action carried by the trusted caller.
+        required: true
+        type: string
+
+concurrency:
+  group: steward-review-signal-${{ github.repository_id }}-${{ inputs.pr_number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  signal:
+    name: Record Review State Change
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Validate and record review signal
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          SOURCE_EVENT: ${{ inputs.source_event }}
+          SOURCE_ACTION: ${{ inputs.source_action }}
+        run: |
+          case "$SOURCE_EVENT:$SOURCE_ACTION" in
+            pull_request:review_requested|pull_request:review_request_removed) ;;
+            pull_request_review:submitted|pull_request_review:edited|pull_request_review:dismissed) ;;
+            pull_request_review_comment:created|pull_request_review_comment:edited|pull_request_review_comment:deleted) ;;
+            pull_request_review_thread:resolved|pull_request_review_thread:unresolved) ;;
+            *)
+              printf 'Rejected review signal: %q\n' "$SOURCE_EVENT:$SOURCE_ACTION" >&2
+              echo "::error::Unsupported review signal"
+              exit 1
+              ;;
+          esac
+          if ! [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Review signal PR number must be a positive integer"
+            exit 1
+          fi
+          if ! [[ "$HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::Review signal head SHA must contain 40 hexadecimal characters"
+            exit 1
+          fi
+          echo "Review state changed for PR #$PR_NUMBER at ${HEAD_SHA,,}." >> "$GITHUB_STEP_SUMMARY"

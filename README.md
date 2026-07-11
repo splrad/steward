@@ -10,7 +10,7 @@ The project is being extracted from a production-tested, event-driven workflow. 
 
 ## Status
 
-The repository contains a reproducible development foundation, the default-branch Manifest trust boundary, shared policy contracts, an explicit GitHub transport/repository adapter, and bundled Governance/Matrix Action operations. Thin reusable workflows still need to map job-specific tokens and permissions to those operations before the sandbox or any production repository consumes them.
+The repository contains a reproducible development foundation, the default-branch Manifest trust boundary, shared policy contracts, an explicit GitHub transport/repository adapter, bundled Governance/Matrix Action operations, and the first called workflows for Governance, Review Signal, and Matrix. Consumer callers and sandbox validation remain required before any production repository consumes them.
 
 ## Repository layout
 
@@ -20,6 +20,7 @@ The repository contains a reproducible development foundation, the default-branc
 - `templates/`: thin workflows, manifest examples, and release-adapter templates.
 - `tests/`: contracts, fixtures, and static policy checks.
 - `docs/migration/`: source-to-Steward compatibility and migration records.
+- `docs/reusable-workflows.md`: caller/called workflow trust, identity, permission, and run-name contracts.
 
 ## Development
 
