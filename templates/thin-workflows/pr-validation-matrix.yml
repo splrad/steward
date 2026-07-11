@@ -1,0 +1,64 @@
+name: PR Validation Matrix
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited, labeled, unlabeled]
+  workflow_run:
+    workflows: ["PR Classification", "DCO Sign-off Advisory", "PR Governance", "PR Review Signal"]
+    types: [completed]
+  check_run:
+    types: [completed, rerequested]
+  repository_dispatch:
+    types: [pr-review-state-changed, pr-review-thread-resolved]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to inspect.
+        required: true
+        type: number
+      head_sha:
+        description: Expected current pull request head SHA.
+        required: true
+        type: string
+      scope:
+        description: Matrix target scope.
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - full
+          - gate-only
+      mode:
+        description: Matrix behavior.
+        required: false
+        default: enforce
+        type: choice
+        options:
+          - observe
+          - repair
+          - enforce
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    if: >-
+      github.event_name != 'check_run' ||
+      (
+        github.event.check_run.pull_requests[0].number &&
+        (
+          github.event.action == 'rerequested' ||
+          !contains(fromJSON('["PR Validation Matrix Gate", "Evaluate PR Validation Matrix"]'), github.event.check_run.name)
+        )
+      )
+    uses: splrad/steward/.github/workflows/pr-validation-matrix.yml@95569fa21765c3da030e5fefb628124cc2fd177b
+    with:
+      app_client_id: ${{ vars.WORKFLOW_AUTOMATION_APP_CLIENT_ID }}
+      pr_number: ${{ fromJSON(github.event.inputs.pr_number || '0') }}
+      head_sha: ${{ github.event.inputs.head_sha || '' }}
+      scope: ${{ github.event.inputs.scope || 'auto' }}
+      mode: ${{ github.event.inputs.mode || 'enforce' }}
+    secrets:
+      app_private_key: ${{ secrets.WORKFLOW_AUTOMATION_APP_PRIVATE_KEY }}

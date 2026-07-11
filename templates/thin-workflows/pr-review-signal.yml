@@ -1,0 +1,19 @@
+name: PR Review Signal
+
+run-name: "PR Review Signal #${{ github.event.pull_request.number }} / ${{ github.event.pull_request.head.sha }} / ${{ github.event_name }} / ${{ github.event.action }}"
+
+on:
+  pull_request:
+    types: [review_requested, review_request_removed]
+
+permissions:
+  contents: read
+
+jobs:
+  signal:
+    uses: splrad/steward/.github/workflows/pr-review-signal.yml@95569fa21765c3da030e5fefb628124cc2fd177b
+    with:
+      pr_number: ${{ github.event.pull_request.number }}
+      head_sha: ${{ github.event.pull_request.head.sha }}
+      source_event: ${{ github.event_name }}
+      source_action: ${{ github.event.action }}
