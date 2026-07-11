@@ -10,7 +10,7 @@ The project is being extracted from a production-tested, event-driven workflow. 
 
 ## Status
 
-The repository contains a reproducible development foundation, the default-branch Manifest trust boundary, shared identity, fingerprint, hidden-state, pagination, and manifest-driven classification contracts. Remaining governance behavior is moving in dependency order before the sandbox or any production repository consumes it.
+The repository contains a reproducible development foundation, the default-branch Manifest trust boundary, shared identity, fingerprint, hidden-state, pagination, classification, Governance, and validation-Matrix contracts. GitHub API mutation adapters and thin reusable workflows remain to be connected before the sandbox or any production repository consumes them.
 
 ## Repository layout
 
