@@ -46,7 +46,51 @@ export interface ReleaseCategoryConfiguration {
   fallback: boolean;
 }
 
+export interface ConventionalTypeKindConfiguration {
+  type: string;
+  kind: string;
+}
+
+export interface DocsOnlyPathRuleConfiguration {
+  prefixes?: string[];
+  files?: string[];
+  suffixes?: string[];
+  excludePrefixes?: string[];
+}
+
+export interface PublicLabelRuleConfiguration {
+  label: string;
+  whenAny: {
+    kinds?: string[];
+    areas?: string[];
+    conventionalTypes?: string[];
+    bot?: true;
+  };
+}
+
+export interface KindPublicLabelFallbackConfiguration {
+  kind: string;
+  label: string;
+}
+
+export interface ClassificationDecisionConfiguration {
+  kinds: {
+    byConventionalType: ConventionalTypeKindConfiguration[];
+    docsOnly: {
+      kind: string;
+      pathRules: DocsOnlyPathRuleConfiguration[];
+    };
+    fallback: string;
+  };
+  publicLabels: {
+    rules: PublicLabelRuleConfiguration[];
+    fallbackByKind: KindPublicLabelFallbackConfiguration[];
+    fallback: string;
+  };
+}
+
 export interface ClassificationConfiguration {
+  decisions: ClassificationDecisionConfiguration;
   areas: AreaConfiguration[];
   runtimeRelease: {
     includePrefixes: string[];

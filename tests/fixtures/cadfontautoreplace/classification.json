@@ -1,4 +1,130 @@
 {
+  "decisions": {
+    "kinds": {
+      "byConventionalType": [
+        {
+          "type": "feat",
+          "kind": "kind:feature"
+        },
+        {
+          "type": "fix",
+          "kind": "kind:fix"
+        },
+        {
+          "type": "perf",
+          "kind": "kind:performance"
+        },
+        {
+          "type": "refactor",
+          "kind": "kind:refactor"
+        },
+        {
+          "type": "docs",
+          "kind": "kind:docs"
+        },
+        {
+          "type": "test",
+          "kind": "kind:chore"
+        },
+        {
+          "type": "build",
+          "kind": "kind:chore"
+        },
+        {
+          "type": "ci",
+          "kind": "kind:chore"
+        },
+        {
+          "type": "chore",
+          "kind": "kind:chore"
+        },
+        {
+          "type": "style",
+          "kind": "kind:chore"
+        },
+        {
+          "type": "revert",
+          "kind": "kind:chore"
+        }
+      ],
+      "docsOnly": {
+        "kind": "kind:docs",
+        "pathRules": [
+          {
+            "prefixes": [
+              "docs/"
+            ]
+          },
+          {
+            "files": [
+              "README.md"
+            ]
+          },
+          {
+            "suffixes": [
+              ".md"
+            ],
+            "excludePrefixes": [
+              ".github/"
+            ]
+          }
+        ]
+      },
+      "fallback": "kind:chore"
+    },
+    "publicLabels": {
+      "rules": [
+        {
+          "label": "documentation",
+          "whenAny": {
+            "kinds": [
+              "kind:docs"
+            ],
+            "areas": [
+              "area:docs"
+            ]
+          }
+        },
+        {
+          "label": "workflow",
+          "whenAny": {
+            "areas": [
+              "area:workflow",
+              "area:automation"
+            ],
+            "conventionalTypes": [
+              "ci"
+            ]
+          }
+        },
+        {
+          "label": "chore",
+          "whenAny": {
+            "conventionalTypes": [
+              "chore",
+              "build"
+            ],
+            "bot": true
+          }
+        }
+      ],
+      "fallbackByKind": [
+        {
+          "kind": "kind:feature",
+          "label": "feature"
+        },
+        {
+          "kind": "kind:fix",
+          "label": "bug"
+        },
+        {
+          "kind": "kind:performance",
+          "label": "performance"
+        }
+      ],
+      "fallback": "chore"
+    }
+  },
   "areas": [
     {
       "name": "area:runtime",
