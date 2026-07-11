@@ -15,4 +15,4 @@ Callers must pass the configured Steward GitHub App slug through `botLogins`. A 
 
 Core state does not choose localized fallback titles, mention separators, or empty-state text. Presentation adapters supply those values from the trusted Manifest language.
 
-The Matrix keeps its target catalogue and Check protocol in Steward-owned configuration. Project Manifests may select platform-defined modes, but cannot redefine trusted workflow paths, Check names, App identity, or repair behavior.
+The Matrix keeps its target catalogue and Check protocol in Steward-owned configuration. Project Manifests may select platform-defined modes, but cannot redefine trusted workflow paths, Check names, App identity, or repair behavior. Canonical workflow paths may declare explicit legacy read aliases during a migration window; writers and repair plans always use the canonical path.

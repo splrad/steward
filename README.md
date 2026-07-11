@@ -10,7 +10,7 @@ The project is being extracted from a production-tested, event-driven workflow. 
 
 ## Status
 
-The repository contains a reproducible development foundation, the default-branch Manifest trust boundary, shared policy contracts, and an explicit GitHub transport/repository adapter. Action operations still need to connect core plans to those one-call mutation primitives, followed by thin reusable workflows, before the sandbox or any production repository consumes them.
+The repository contains a reproducible development foundation, the default-branch Manifest trust boundary, shared policy contracts, an explicit GitHub transport/repository adapter, and bundled Governance/Matrix Action operations. Thin reusable workflows still need to map job-specific tokens and permissions to those operations before the sandbox or any production repository consumes them.
 
 ## Repository layout
 

@@ -5,9 +5,36 @@ inputs:
   operation:
     description: Steward operation to execute.
     required: true
+  github-token:
+    description: Explicit token for the selected operation. Required except for version.
+    required: false
+  event-path:
+    description: Path to the trusted GitHub event payload. Defaults to GITHUB_EVENT_PATH.
+    required: false
+  pr-number:
+    description: Pull request number for a manual dispatch when the event has no native PR association.
+    required: false
+  head-sha:
+    description: Expected current PR head SHA for a manual dispatch or relay signal.
+    required: false
+  request-result:
+    description: Result of the Copilot review request job for governance-copilot.
+    required: false
+  matrix-mode:
+    description: Matrix behavior: observe, repair, or enforce.
+    required: false
+    default: enforce
+  matrix-scope:
+    description: Matrix target scope: auto, full, or gate-only.
+    required: false
+    default: auto
 outputs:
   steward-version:
     description: Version of the bundled Steward Action.
+  state:
+    description: passed, pending, failed, or ignored operation state.
+  operation-result:
+    description: JSON result for step summaries and workflow orchestration.
 runs:
   using: node24
   main: dist/index.js

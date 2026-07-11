@@ -100,6 +100,20 @@ describe('architecture boundary', () => {
     expect(violations).toEqual([]);
   });
 
+  it('allows the Action to depend on policy and GitHub adapters only', async () => {
+    const violations: string[] = [];
+    for (const file of await sourceFiles(path.resolve('action/src'))) {
+      const source = await readFile(file, 'utf8');
+      for (const specifier of importSpecifiers(source)) {
+        const targetPackage = importedPackage(file, specifier);
+        if (targetPackage && !['core', 'github', 'manifest'].includes(targetPackage)) {
+          violations.push(`${path.relative('.', file)}: action must not import ${targetPackage}`);
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
   it('recognizes every supported module-loading form without reading comments', () => {
     expect(importSpecifiers([
       "import type { A } from '../manifest/src/types.js';",

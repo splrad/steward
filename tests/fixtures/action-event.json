@@ -1,0 +1,14 @@
+{
+  "action": "opened",
+  "repository": {
+    "id": 1296724484,
+    "full_name": "splrad/steward",
+    "default_branch": "main"
+  },
+  "pull_request": {
+    "number": 7,
+    "head": {
+      "sha": "cccccccccccccccccccccccccccccccccccccccc"
+    }
+  }
+}

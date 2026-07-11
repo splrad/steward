@@ -5,6 +5,7 @@ vi.mock('@actions/core', () => ({
   info: vi.fn(),
   setFailed: vi.fn(),
   setOutput: vi.fn(),
+  setSecret: vi.fn(),
 }));
 
 const { run, STEWARD_VERSION } = await import('../action/src/main.js');
@@ -12,11 +13,11 @@ const { run, STEWARD_VERSION } = await import('../action/src/main.js');
 describe('Steward Action bootstrap', () => {
   it('reports its bundled version', async () => {
     const core = await import('@actions/core');
-    run('version');
+    await run({ operation: 'version' });
     expect(core.setOutput).toHaveBeenCalledWith('steward-version', STEWARD_VERSION);
   });
 
-  it('rejects operations that are not implemented', () => {
-    expect(() => run('governance')).toThrow('Unsupported Steward operation: governance');
+  it('rejects operations that are not implemented', async () => {
+    await expect(run({ operation: 'governance' })).rejects.toThrow('Unsupported Steward operation: governance');
   });
 });
