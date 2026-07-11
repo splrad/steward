@@ -281,6 +281,48 @@ describe('GitHub repository adapter', () => {
     expect(requests[1]?.body).not.toHaveProperty('output');
   });
 
+  it('maps Classification label and PR metadata calls without embedding policy', async () => {
+    const { transport, requests } = mockTransport((request) => (
+      request.path.endsWith('/labels/bug') || request.path.endsWith('/labels')
+        ? { name: 'bug', color: 'd73a4a', description: 'Bug fix' }
+        : undefined
+    ));
+    const client = new GitHubRepositoryClient(transport);
+
+    await expect(client.getRepositoryLabel('splrad', 'steward', ' bug ')).resolves.toMatchObject({ name: 'bug' });
+    await client.createRepositoryLabel('splrad', 'steward', {
+      name: ' bug ', color: '#D73A4A', description: 'Bug fix',
+    });
+    await client.addIssueLabels('splrad', 'steward', 6, [' bug ', 'docs', 'bug', '']);
+    await client.removeIssueLabel('splrad', 'steward', 6, ' area:core ');
+    await client.updatePullRequestBody('splrad', 'steward', 6, 'body with hidden metadata');
+
+    expect(requests).toEqual([
+      { path: '/repos/splrad/steward/labels/bug' },
+      {
+        method: 'POST', path: '/repos/splrad/steward/labels',
+        body: { name: 'bug', color: 'D73A4A', description: 'Bug fix' },
+      },
+      {
+        method: 'POST', path: '/repos/splrad/steward/issues/6/labels',
+        body: { labels: ['bug', 'docs'] },
+      },
+      { method: 'DELETE', path: '/repos/splrad/steward/issues/6/labels/area%3Acore' },
+      {
+        method: 'PATCH', path: '/repos/splrad/steward/pulls/6',
+        body: { body: 'body with hidden metadata' },
+      },
+    ]);
+
+    const requestCount = requests.length;
+    await expect(client.getRepositoryLabel('splrad', 'steward', ' ')).rejects.toThrow('label name');
+    await expect(client.createRepositoryLabel('splrad', 'steward', { name: 'bug', color: 'red' }))
+      .rejects.toThrow('hexadecimal color');
+    await expect(client.addIssueLabels('splrad', 'steward', 6, [' '])).rejects.toThrow('one issue label');
+    await expect(client.removeIssueLabel('splrad', 'steward', 6, '')).rejects.toThrow('label name');
+    expect(requests).toHaveLength(requestCount);
+  });
+
   it('maps one explicit adapter call to one GitHub mutation', async () => {
     const { transport, requests } = mockTransport((request) => (
       request.path.includes('/check-runs') ? { id: 1, name: 'Gate', status: 'in_progress' } : undefined
