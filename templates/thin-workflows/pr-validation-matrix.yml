@@ -53,7 +53,7 @@ jobs:
           !contains(fromJSON('["PR Validation Matrix Gate", "Evaluate PR Validation Matrix"]'), github.event.check_run.name)
         )
       )
-    uses: splrad/steward/.github/workflows/pr-validation-matrix.yml@95569fa21765c3da030e5fefb628124cc2fd177b
+    uses: splrad/steward/.github/workflows/pr-validation-matrix.yml@fb27bb94acfd1c09df2da45a986ea018ef26d8ef
     with:
       app_client_id: ${{ vars.WORKFLOW_AUTOMATION_APP_CLIENT_ID }}
       pr_number: ${{ fromJSON(github.event.inputs.pr_number || '0') }}
