@@ -1,0 +1,25 @@
+{
+  "blockingComment": {
+    "marker": "<!-- workflow:pr-blocking-failures -->",
+    "legacyMarkers": [
+      "<!-- workflow:main-authorization-gate -->",
+      "<!-- workflow:copilot-review-gate -->"
+    ],
+    "sourceOrder": [
+      "main-authorization",
+      "copilot-review:blocking-comments",
+      "copilot-review:comment-protocol",
+      "copilot-review:request-failed",
+      "copilot-review:passing-conclusion",
+      "copilot-review"
+    ]
+  },
+  "copilot": {
+    "reviewer": "copilot-pull-request-reviewer[bot]",
+    "blocking": "严重程度：阻断\n标题：必须修复",
+    "suggestion": "Severity: suggestion\nTitle: Optional improvement",
+    "fixedConclusion": "## 结论\n\n未发现需要阻断合并的问题。",
+    "noNewComments": "Copilot reviewed 6 out of 6 changed files in this pull request and generated no new comments.",
+    "resolvedComments": "Copilot reviewed 6 out of 6 changed files in this pull request and generated 3 comments."
+  }
+}
