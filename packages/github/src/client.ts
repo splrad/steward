@@ -12,11 +12,18 @@ export interface GitHubPullRequest {
   state: string;
   title?: string;
   body?: string | null;
-  user?: { login?: string } | null;
+  user?: { login?: string; type?: string } | null;
+  labels?: { name?: string }[];
   base: { ref: string; sha?: string; repo?: { default_branch?: string } | null };
   head: { sha: string; ref?: string };
   requested_reviewers?: { login?: string }[];
   requested_teams?: { slug?: string }[];
+}
+
+export interface GitHubRepositoryLabel {
+  name: string;
+  color: string;
+  description?: string | null;
 }
 
 export interface GitHubCommit {
@@ -223,6 +230,14 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
     });
   }
 
+  async getRepositoryLabel(owner: string, repository: string, name: string): Promise<GitHubRepositoryLabel> {
+    const label = name.trim();
+    if (!label) throw new Error('Repository label name is required');
+    return await this.transport.request<GitHubRepositoryLabel>({
+      path: `${repositoryPath(owner, repository)}/labels/${segment(label)}`,
+    });
+  }
+
   async listPullRequestCommits(owner: string, repository: string, number: number): Promise<GitHubCommit[]> {
     return await fetchPullRequestPages((page, perPage) => this.transport.request<GitHubCommit[]>({
       path: `${repositoryPath(owner, repository)}/pulls/${segment(number)}/commits`,
@@ -361,6 +376,50 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
     await this.transport.request<void>({
       method: 'DELETE',
       path: `${repositoryPath(owner, repository)}/issues/comments/${segment(commentId)}`,
+    });
+  }
+
+  async createRepositoryLabel(
+    owner: string,
+    repository: string,
+    input: { name: string; color: string; description?: string },
+  ): Promise<GitHubRepositoryLabel> {
+    const name = input.name.trim();
+    const color = input.color.trim().replace(/^#/, '');
+    if (!name || !/^[0-9a-f]{6}$/i.test(color)) {
+      throw new Error('Repository label requires a name and a six-character hexadecimal color');
+    }
+    return await this.transport.request<GitHubRepositoryLabel>({
+      method: 'POST',
+      path: `${repositoryPath(owner, repository)}/labels`,
+      body: { name, color, ...(input.description === undefined ? {} : { description: input.description }) },
+    });
+  }
+
+  async addIssueLabels(owner: string, repository: string, number: number, labels: readonly string[]): Promise<void> {
+    const names = uniqueNonEmptyNames(labels);
+    if (!names.length) throw new Error('At least one issue label is required');
+    await this.transport.request({
+      method: 'POST',
+      path: `${repositoryPath(owner, repository)}/issues/${segment(number)}/labels`,
+      body: { labels: names },
+    });
+  }
+
+  async removeIssueLabel(owner: string, repository: string, number: number, label: string): Promise<void> {
+    const name = label.trim();
+    if (!name) throw new Error('Issue label name is required');
+    await this.transport.request<void>({
+      method: 'DELETE',
+      path: `${repositoryPath(owner, repository)}/issues/${segment(number)}/labels/${segment(name)}`,
+    });
+  }
+
+  async updatePullRequestBody(owner: string, repository: string, number: number, body: string): Promise<void> {
+    await this.transport.request({
+      method: 'PATCH',
+      path: `${repositoryPath(owner, repository)}/pulls/${segment(number)}`,
+      body: { body },
     });
   }
 
