@@ -167,6 +167,9 @@ export async function createOperationContext(input: {
   if (!token) throw new Error('Steward operation requires an explicit GitHub token');
   const eventPath = input.inputs.eventPath?.trim() || input.environment.GITHUB_EVENT_PATH?.trim() || '';
   const event = await readEvent(eventPath);
+  const eventName = input.environment.GITHUB_EVENT_NAME?.trim() || '';
+  const trustedRun = eventName === 'workflow_run' ? trustedWorkflowRunContext(event.workflow_run) : null;
+  if (eventName === 'workflow_run' && !trustedRun) throw new Error('Workflow run is not a trusted PR signal');
   const fullName = String(event.repository?.full_name ?? '').trim();
   const [owner, repository, extra] = fullName.split('/');
   if (!owner || !repository || extra) throw new Error('GitHub event payload has an invalid repository full name');
@@ -188,19 +191,14 @@ export async function createOperationContext(input: {
   }
   if (!metadata.defaultBranch) throw new Error('GitHub repository has no default branch');
   const manifest = await loadDefaultBranchManifest(client, owner, repository);
-  const resolvedPullNumber = resolvePullNumber(event, input.inputs.prNumber);
+  const resolvedPullNumber = trustedRun?.prNumber ?? resolvePullNumber(event, input.inputs.prNumber);
   const pull = await client.getPullRequest(owner, repository, resolvedPullNumber);
   if (pull.number !== resolvedPullNumber) throw new Error('GitHub returned a different pull request number');
   if (pull.state !== 'open') throw new Error('Steward operation only accepts an open pull request');
   if (pull.base.ref !== metadata.defaultBranch) throw new Error('Pull request does not target the current default branch');
   if (!/^[a-f0-9]{40}$/i.test(pull.head.sha)) throw new Error('GitHub returned an invalid pull request head SHA');
-  let expectedHead = resolveExpectedHead(event, input.inputs.headSha);
-  if ((input.environment.GITHUB_EVENT_NAME?.trim() || '') === 'workflow_run') {
-    const trustedRun = trustedWorkflowRunContext(event.workflow_run);
-    if (!trustedRun || trustedRun.prNumber !== pull.number) throw new Error('Workflow run is not a trusted PR signal');
-    expectedHead = trustedRun.headSha;
-  }
-  if ((input.environment.GITHUB_EVENT_NAME?.trim() || '') === 'repository_dispatch') {
+  const expectedHead = trustedRun?.headSha ?? resolveExpectedHead(event, input.inputs.headSha);
+  if (eventName === 'repository_dispatch') {
     validateRepositoryDispatch(event, metadata.id);
   }
   if (expectedHead && !/^[a-f0-9]{40}$/.test(expectedHead)) throw new Error('Trusted event has an invalid expected head SHA');
@@ -214,7 +212,7 @@ export async function createOperationContext(input: {
     repository,
     repositoryId: metadata.id,
     defaultBranch: metadata.defaultBranch,
-    eventName: input.environment.GITHUB_EVENT_NAME?.trim() || '',
+    eventName,
     event,
     pull,
     manifest,
