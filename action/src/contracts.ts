@@ -2,6 +2,7 @@ import type { MatrixMode, MatrixScope } from '../../packages/core/src/index.js';
 
 export const stewardOperations = [
   'version',
+  'governance-preflight',
   'governance-request-copilot',
   'governance-auto-approve',
   'governance-main',
@@ -14,6 +15,7 @@ export type StewardOperation = typeof stewardOperations[number];
 export interface StewardActionInputs {
   operation: string;
   token?: string;
+  mutationToken?: string;
   eventPath?: string;
   prNumber?: string;
   headSha?: string;
@@ -24,17 +26,19 @@ export interface StewardActionInputs {
 
 export interface StewardOperationDefinition {
   token: 'none' | 'github';
+  mutationToken: boolean;
   event: boolean;
   actionsWrite: boolean;
 }
 
 export const operationDefinitions: Readonly<Record<StewardOperation, StewardOperationDefinition>> = {
-  version: { token: 'none', event: false, actionsWrite: false },
-  'governance-request-copilot': { token: 'github', event: true, actionsWrite: false },
-  'governance-auto-approve': { token: 'github', event: true, actionsWrite: false },
-  'governance-main': { token: 'github', event: true, actionsWrite: false },
-  'governance-copilot': { token: 'github', event: true, actionsWrite: false },
-  matrix: { token: 'github', event: true, actionsWrite: true },
+  version: { token: 'none', mutationToken: false, event: false, actionsWrite: false },
+  'governance-preflight': { token: 'github', mutationToken: false, event: true, actionsWrite: false },
+  'governance-request-copilot': { token: 'github', mutationToken: true, event: true, actionsWrite: false },
+  'governance-auto-approve': { token: 'github', mutationToken: true, event: true, actionsWrite: false },
+  'governance-main': { token: 'github', mutationToken: false, event: true, actionsWrite: false },
+  'governance-copilot': { token: 'github', mutationToken: false, event: true, actionsWrite: false },
+  matrix: { token: 'github', mutationToken: false, event: true, actionsWrite: true },
 };
 
 export function parseOperation(value: string): StewardOperation {

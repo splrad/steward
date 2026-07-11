@@ -51,6 +51,7 @@ function manifest(features: Partial<StewardManifest['features']> = {}): LoadedMa
 function context(overrides: Record<string, unknown> = {}): {
   context: StewardOperationContext;
   client: Record<string, ReturnType<typeof vi.fn>>;
+  mutationClient: Record<string, ReturnType<typeof vi.fn>>;
 } {
   const pull: GitHubPullRequest = {
     number: 7,
@@ -85,8 +86,14 @@ function context(overrides: Record<string, unknown> = {}): {
     dispatchWorkflow: vi.fn(async () => undefined),
     rerunWorkflowJob: vi.fn(async () => undefined),
   };
+  const mutationClient = {
+    getAuthenticatedUser: vi.fn(async () => ({ login: 'reviewer' })),
+    requestReviewers: vi.fn(async () => undefined),
+    createPullRequestReview: vi.fn(async () => undefined),
+  };
   return {
     client,
+    mutationClient,
     context: {
       owner: 'splrad',
       repository: 'steward',
@@ -97,6 +104,7 @@ function context(overrides: Record<string, unknown> = {}): {
       pull,
       manifest: manifest(),
       client: client as unknown as GitHubRepositoryClient,
+      mutationClient: mutationClient as unknown as GitHubRepositoryClient,
       ...overrides,
     },
   };
@@ -107,7 +115,10 @@ describe('Action operation contract', () => {
     expect(Object.entries(operationDefinitions).filter(([, definition]) => definition.actionsWrite).map(([name]) => name))
       .toEqual(['matrix']);
     expect(parseOperation('governance-main')).toBe('governance-main');
+    expect(parseOperation('governance-preflight')).toBe('governance-preflight');
     expect(() => parseOperation('release')).toThrow('Unsupported Steward operation');
+    expect(Object.entries(operationDefinitions).filter(([, definition]) => definition.mutationToken).map(([name]) => name))
+      .toEqual(['governance-request-copilot', 'governance-auto-approve']);
     expect(stewardMatrixConfiguration.targets.find((target) => target.id === 'dco-signoff')).toMatchObject({
       workflowFile: 'dco-advisory.yml', legacyWorkflowFiles: ['dco-check.yml'],
     });
@@ -172,8 +183,10 @@ describe('Action operation contract', () => {
   it('requires an explicit token and validates repository, default branch, and head from live metadata', async () => {
     const eventPath = 'tests/fixtures/action-event.json';
     const encodedManifest = Buffer.from(JSON.stringify(manifest().manifest)).toString('base64');
-    const fetcher = vi.fn(async (request: string | URL | Request) => {
+    const authorizationByPath = new Map<string, string>();
+    const fetcher = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
       const path = new URL(String(request)).pathname;
+      authorizationByPath.set(path, new Headers(init?.headers).get('authorization') ?? '');
       if (path === '/repos/splrad/steward') {
         return new Response(JSON.stringify({ id: 1296724484, full_name: 'splrad/steward', default_branch: 'main' }));
       }
@@ -188,6 +201,7 @@ describe('Action operation contract', () => {
           head: { sha: 'c'.repeat(40) },
         }));
       }
+      if (path === '/user') return new Response(JSON.stringify({ login: 'reviewer' }));
       return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 });
     }) as unknown as typeof fetch;
 
@@ -199,11 +213,14 @@ describe('Action operation contract', () => {
     expect(fetcher).not.toHaveBeenCalled();
 
     const resolved = await createOperationContext({
-      inputs: { operation: 'governance-main', token: 'token', eventPath },
+      inputs: { operation: 'governance-main', token: 'platform-token', mutationToken: 'human-token', eventPath },
       environment: { GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: 'pull_request_target' },
       fetch: fetcher,
     });
     expect(resolved).toMatchObject({ owner: 'splrad', repository: 'steward', repositoryId: 1296724484 });
+    await resolved.mutationClient?.getAuthenticatedUser();
+    expect(authorizationByPath.get('/repos/splrad/steward')).toBe('Bearer platform-token');
+    expect(authorizationByPath.get('/user')).toBe('Bearer human-token');
 
     await expect(createOperationContext({
       inputs: { operation: 'governance-main', token: 'token', eventPath, headSha: 'd'.repeat(40) },
@@ -214,12 +231,40 @@ describe('Action operation contract', () => {
 
   it('exposes runtime inputs without consumer policy fields', async () => {
     const metadata = await readFile('action/action.yml', 'utf8');
-    for (const input of ['github-token:', 'event-path:', 'pr-number:', 'head-sha:', 'matrix-mode:', 'matrix-scope:']) {
+    for (const input of ['github-token:', 'mutation-token:', 'event-path:', 'pr-number:', 'head-sha:', 'matrix-mode:', 'matrix-scope:']) {
       expect(metadata).toContain(input);
     }
+    for (const output of ['governance-enabled:', 'copilot-review-enabled:']) expect(metadata).toContain(output);
     for (const forbidden of ['trusted-developers:', 'labels:', 'workflow-file:', 'check-name:']) {
       expect(metadata).not.toContain(forbidden);
     }
+  });
+
+  it('loads feature switches without mutation and confines human review writes to the mutation client', async () => {
+    const fixture = context();
+    const preflight = await executeOperation('governance-preflight', fixture.context, { operation: 'governance-preflight' });
+    expect(preflight).toMatchObject({
+      state: 'passed', details: { governance: true, copilotReview: true },
+    });
+    expect(fixture.client.requestReviewers).not.toHaveBeenCalled();
+    expect(fixture.mutationClient.requestReviewers).not.toHaveBeenCalled();
+
+    await executeOperation('governance-request-copilot', fixture.context, { operation: 'governance-request-copilot' });
+    expect(fixture.mutationClient.requestReviewers).toHaveBeenCalledOnce();
+    expect(fixture.client.requestReviewers).not.toHaveBeenCalled();
+
+    fixture.client.listPullRequestReviews!.mockResolvedValue([]);
+    await executeOperation('governance-auto-approve', fixture.context, { operation: 'governance-auto-approve' });
+    expect(fixture.mutationClient.getAuthenticatedUser).toHaveBeenCalledOnce();
+    expect(fixture.mutationClient.createPullRequestReview).toHaveBeenCalledOnce();
+    expect(fixture.client.createPullRequestReview).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a human review operation has no mutation client', async () => {
+    const fixture = context({ mutationClient: undefined });
+    await expect(executeOperation(
+      'governance-request-copilot', fixture.context, { operation: 'governance-request-copilot' },
+    )).rejects.toThrow('separate mutation token');
   });
 
   it('connects main governance facts to core decisions and Check mutation', async () => {

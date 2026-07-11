@@ -6,7 +6,10 @@ inputs:
     description: Steward operation to execute.
     required: true
   github-token:
-    description: Explicit token for the selected operation. Required except for version.
+    description: Platform token used to validate repository context and read the default-branch Manifest. Required for every operation except version.
+    required: false
+  mutation-token:
+    description: Separate human token required only by governance-request-copilot and governance-auto-approve.
     required: false
   event-path:
     description: Path to the trusted GitHub event payload. Defaults to GITHUB_EVENT_PATH.
@@ -35,6 +38,10 @@ outputs:
     description: passed, pending, failed, or ignored operation state.
   operation-result:
     description: JSON result for step summaries and workflow orchestration.
+  governance-enabled:
+    description: Whether default-branch Manifest governance is enabled.
+  copilot-review-enabled:
+    description: Whether default-branch Manifest Copilot review is enabled.
 runs:
   using: node24
   main: dist/index.js

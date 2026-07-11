@@ -20,4 +20,9 @@ describe('Steward Action bootstrap', () => {
   it('rejects operations that are not implemented', async () => {
     await expect(run({ operation: 'governance' })).rejects.toThrow('Unsupported Steward operation: governance');
   });
+
+  it('requires a separate mutation token before a human review operation loads context', async () => {
+    await expect(run({ operation: 'governance-request-copilot', token: 'platform-token' }))
+      .rejects.toThrow('requires an explicit mutation token');
+  });
 });
