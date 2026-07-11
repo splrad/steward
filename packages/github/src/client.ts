@@ -10,12 +10,40 @@ export interface GitHubRepositoryMetadata extends RepositoryMetadata {
 export interface GitHubPullRequest {
   number: number;
   state: string;
+  title?: string;
   body?: string | null;
   user?: { login?: string } | null;
-  base: { ref: string; repo?: { default_branch?: string } | null };
+  base: { ref: string; sha?: string; repo?: { default_branch?: string } | null };
   head: { sha: string; ref?: string };
   requested_reviewers?: { login?: string }[];
   requested_teams?: { slug?: string }[];
+}
+
+export interface GitHubCommit {
+  sha?: string;
+  author?: { login?: string; type?: string } | null;
+  committer?: { login?: string; type?: string } | null;
+  commit?: {
+    author?: { name?: string; email?: string } | null;
+    committer?: { name?: string; email?: string } | null;
+  };
+}
+
+export interface GitHubPullRequestReview {
+  id?: number;
+  state?: string;
+  body?: string | null;
+  commit_id?: string | null;
+  submitted_at?: string | null;
+  user?: { login?: string } | null;
+}
+
+export interface GitHubPullRequestFile {
+  filename?: string;
+  status?: string;
+  sha?: string;
+  additions?: number;
+  deletions?: number;
 }
 
 export interface GitHubCheckRun {
@@ -157,6 +185,13 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
     private readonly graphqlTransport: GitHubTransport = transport,
   ) {}
 
+  async getAuthenticatedUser(): Promise<{ login: string }> {
+    const payload = await this.transport.request<{ login?: string }>({ path: '/user' });
+    const login = String(payload.login ?? '').trim();
+    if (!login) throw new Error('GitHub returned an invalid authenticated user');
+    return { login };
+  }
+
   async getRepository(owner: string, repository: string): Promise<GitHubRepositoryMetadata> {
     const payload = await this.transport.request<{
       id?: number;
@@ -188,22 +223,22 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
     });
   }
 
-  async listPullRequestCommits(owner: string, repository: string, number: number): Promise<unknown[]> {
-    return await fetchPullRequestPages((page, perPage) => this.transport.request<unknown[]>({
+  async listPullRequestCommits(owner: string, repository: string, number: number): Promise<GitHubCommit[]> {
+    return await fetchPullRequestPages((page, perPage) => this.transport.request<GitHubCommit[]>({
       path: `${repositoryPath(owner, repository)}/pulls/${segment(number)}/commits`,
       query: { page, per_page: perPage },
     }));
   }
 
-  async listPullRequestReviews(owner: string, repository: string, number: number): Promise<unknown[]> {
-    return await fetchPullRequestPages((page, perPage) => this.transport.request<unknown[]>({
+  async listPullRequestReviews(owner: string, repository: string, number: number): Promise<GitHubPullRequestReview[]> {
+    return await fetchPullRequestPages((page, perPage) => this.transport.request<GitHubPullRequestReview[]>({
       path: `${repositoryPath(owner, repository)}/pulls/${segment(number)}/reviews`,
       query: { page, per_page: perPage },
     }));
   }
 
-  async listPullRequestFiles(owner: string, repository: string, number: number): Promise<unknown[]> {
-    return await fetchPullRequestPages((page, perPage) => this.transport.request<unknown[]>({
+  async listPullRequestFiles(owner: string, repository: string, number: number): Promise<GitHubPullRequestFile[]> {
+    return await fetchPullRequestPages((page, perPage) => this.transport.request<GitHubPullRequestFile[]>({
       path: `${repositoryPath(owner, repository)}/pulls/${segment(number)}/files`,
       query: { page, per_page: perPage },
     }));

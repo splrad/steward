@@ -151,6 +151,31 @@ describe('Matrix Check identities', () => {
       trust: { appSlug, repositoryId: 42, configDigest, inputDigest, workflowRuns: [{ ...workflowRun, path: '.github/workflows/untrusted.yml' }] },
     })).toBe(false);
   });
+
+  it('accepts an explicitly versioned legacy workflow path without changing the canonical writer path', () => {
+    const matrixTarget = {
+      ...target('dco-signoff'),
+      workflowFile: 'dco-advisory.yml',
+      legacyWorkflowFiles: ['dco-check.yml'],
+    };
+    const run = check('DCO Sign-off Advisory', 'completed', 'success', {
+      app: { slug: 'github-actions' },
+      details_url: 'https://github.com/splrad/steward/actions/runs/77/job/88',
+    });
+    const evidence = {
+      id: 77,
+      name: `PR Validation Target #${pull.number} / ${pull.head.sha}`,
+      path: '.github/workflows/dco-check.yml@refs/heads/main',
+      event: 'workflow_dispatch',
+      pull_requests: [],
+    };
+    expect(isTrustedMatrixCheck({
+      run,
+      target: matrixTarget,
+      pull,
+      trust: { appSlug, repositoryId: 42, configDigest, inputDigest, workflowRuns: [evidence] },
+    })).toBe(true);
+  });
 });
 
 describe('Matrix state and repair planning', () => {

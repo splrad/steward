@@ -8,6 +8,7 @@ export interface MatrixTargetConfiguration {
   checkNames: string[];
   workflowName: string;
   workflowFile: string;
+  legacyWorkflowFiles?: string[];
   jobName: string;
   group: 'full' | 'gate';
   acceptableConclusions: string[];
@@ -185,7 +186,9 @@ function workflowRunPath(run: MatrixWorkflowRun | undefined): string {
 
 function workflowRunMatchesTarget(run: MatrixWorkflowRun | undefined, target: MatrixTargetConfiguration): boolean {
   const trustedEvents = target.trustedEvents ?? ['pull_request_target', 'workflow_dispatch'];
-  return workflowRunPath(run) === `.github/workflows/${target.workflowFile.toLowerCase()}`
+  const trustedPaths = [target.workflowFile, ...(target.legacyWorkflowFiles ?? [])]
+    .map((file) => `.github/workflows/${file.toLowerCase()}`);
+  return trustedPaths.includes(workflowRunPath(run))
     && trustedEvents.includes(String(run?.event ?? ''));
 }
 
