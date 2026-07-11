@@ -112,6 +112,10 @@ function contentPath(path: string): string {
   return parts.map(segment).join('/');
 }
 
+function uniqueNonEmptyNames(values: readonly string[] | undefined): string[] {
+  return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
+}
+
 function checkMutationBody(input: CheckRunUpdate): Record<string, unknown> {
   return {
     name: input.name,
@@ -332,8 +336,8 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
     reviewers?: string[];
     teamReviewers?: string[];
   }): Promise<void> {
-    const reviewers = input.reviewers?.filter(Boolean) ?? [];
-    const teamReviewers = input.teamReviewers?.filter(Boolean) ?? [];
+    const reviewers = uniqueNonEmptyNames(input.reviewers);
+    const teamReviewers = uniqueNonEmptyNames(input.teamReviewers);
     if (!reviewers.length && !teamReviewers.length) {
       throw new Error('At least one user or team reviewer is required');
     }

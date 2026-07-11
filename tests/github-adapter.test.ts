@@ -307,9 +307,14 @@ describe('GitHub repository adapter', () => {
     await client.createIssueComment('splrad', 'steward', 6, 'body');
     await client.updateIssueComment('splrad', 'steward', 2, 'updated');
     await client.deleteIssueComment('splrad', 'steward', 2);
-    await expect(client.requestReviewers({ owner: 'splrad', repository: 'steward', number: 6 }))
+    await expect(client.requestReviewers({
+      owner: 'splrad', repository: 'steward', number: 6, reviewers: ['   '], teamReviewers: [''],
+    }))
       .rejects.toThrow('At least one user or team reviewer');
-    await client.requestReviewers({ owner: 'splrad', repository: 'steward', number: 6, teamReviewers: ['maintainers'] });
+    await client.requestReviewers({
+      owner: 'splrad', repository: 'steward', number: 6,
+      teamReviewers: [' maintainers ', 'maintainers'],
+    });
     await client.createPullRequestReview({
       owner: 'splrad', repository: 'steward', number: 6, commitId: 'a'.repeat(40), event: 'APPROVE', body: 'approved',
     });
