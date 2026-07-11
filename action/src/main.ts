@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { parseOperation, type StewardActionInputs } from './contracts.js';
+import { operationDefinitions, parseOperation, type StewardActionInputs } from './contracts.js';
 import { createOperationContext, type StewardRuntimeEnvironment } from './context.js';
 import { executeOperation } from './operations.js';
 
@@ -17,11 +17,17 @@ export async function run(
     return;
   }
   if (inputs.token) core.setSecret(inputs.token);
+  if (inputs.mutationToken) core.setSecret(inputs.mutationToken);
+  if (operationDefinitions[operation].mutationToken && !inputs.mutationToken?.trim()) {
+    throw new Error(`${operation} requires an explicit mutation token`);
+  }
   const context = await createOperationContext({
     inputs,
     environment,
     ...(fetch ? { fetch } : {}),
   });
+  core.setOutput('governance-enabled', String(context.manifest.manifest.features.governance));
+  core.setOutput('copilot-review-enabled', String(context.manifest.manifest.features.copilotReview));
   const result = await executeOperation(operation, context, inputs);
   core.setOutput('state', result.state);
   core.setOutput('operation-result', JSON.stringify(result));

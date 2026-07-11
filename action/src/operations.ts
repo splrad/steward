@@ -54,6 +54,11 @@ interface PullFacts {
 
 const autoApprovalMarker = '<!-- workflow:auto-approval -->';
 
+function mutationClient(context: StewardOperationContext): GitHubRepositoryClient {
+  if (!context.mutationClient) throw new Error('This Steward operation requires a separate mutation token');
+  return context.mutationClient;
+}
+
 function botLogins(context: StewardOperationContext): string[] {
   return [context.manifest.manifest.automation.githubApp.slug, 'copilot-pull-request-reviewer[bot]'];
 }
@@ -276,7 +281,7 @@ async function requestCopilot(context: StewardOperationContext): Promise<Steward
   if (!context.manifest.manifest.features.copilotReview) {
     return { operation: 'governance-request-copilot', state: 'ignored', summary: 'Copilot review is disabled' };
   }
-  await context.client.requestReviewers({
+  await mutationClient(context).requestReviewers({
     owner: context.owner,
     repository: context.repository,
     number: context.pull.number,
@@ -289,7 +294,8 @@ async function autoApprove(context: StewardOperationContext): Promise<StewardOpe
   if (!context.manifest.manifest.features.governance) {
     return { operation: 'governance-auto-approve', state: 'ignored', summary: 'Governance is disabled' };
   }
-  const [facts, trusted, actor] = await Promise.all([pullFacts(context), maintainers(context), context.client.getAuthenticatedUser()]);
+  const mutations = mutationClient(context);
+  const [facts, trusted, actor] = await Promise.all([pullFacts(context), maintainers(context), mutations.getAuthenticatedUser()]);
   const trustedSet = new Set(trusted.map((login) => login.toLowerCase()));
   const author = normalizeGitHubLogin(context.pull.user?.login).toLowerCase();
   const actorLogin = normalizeGitHubLogin(actor.login);
@@ -301,7 +307,7 @@ async function autoApprove(context: StewardOperationContext): Promise<StewardOpe
     || unidentifiedCommits(facts.commits, botLogins(context)).length || alreadyApproved) {
     return { operation: 'governance-auto-approve', state: 'ignored', summary: 'Automatic approval is not applicable' };
   }
-  await context.client.createPullRequestReview({
+  await mutations.createPullRequestReview({
     owner: context.owner,
     repository: context.repository,
     number: context.pull.number,
@@ -609,6 +615,17 @@ export async function executeOperation(
   context: StewardOperationContext,
   inputs: StewardActionInputs,
 ): Promise<StewardOperationResult> {
+  if (operation === 'governance-preflight') {
+    return {
+      operation,
+      state: 'passed',
+      summary: 'Governance feature configuration loaded',
+      details: {
+        governance: context.manifest.manifest.features.governance,
+        copilotReview: context.manifest.manifest.features.copilotReview,
+      },
+    };
+  }
   if (operation === 'governance-request-copilot') return await requestCopilot(context);
   if (operation === 'governance-auto-approve') return await autoApprove(context);
   if (operation === 'governance-main') return await mainGovernance(context);

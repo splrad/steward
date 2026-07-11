@@ -54,6 +54,7 @@ export interface StewardOperationContext {
   pull: GitHubPullRequest;
   manifest: LoadedManifest;
   client: GitHubRepositoryClient;
+  mutationClient?: GitHubRepositoryClient;
   detailsUrl?: string;
 }
 
@@ -174,10 +175,13 @@ export async function createOperationContext(input: {
 
   const restApiUrl = input.environment.GITHUB_API_URL?.trim() || 'https://api.github.com/';
   const transportOptions = input.fetch ? { fetch: input.fetch } : {};
-  const client = new GitHubRepositoryClient(
-    createGitHubRestTransport({ token, baseUrl: restApiUrl, ...transportOptions }),
-    createGitHubRestTransport({ token, baseUrl: graphqlApiBase(restApiUrl), ...transportOptions }),
+  const createClient = (clientToken: string) => new GitHubRepositoryClient(
+    createGitHubRestTransport({ token: clientToken, baseUrl: restApiUrl, ...transportOptions }),
+    createGitHubRestTransport({ token: clientToken, baseUrl: graphqlApiBase(restApiUrl), ...transportOptions }),
   );
+  const client = createClient(token);
+  const mutationToken = input.inputs.mutationToken?.trim() ?? '';
+  const mutationClient = mutationToken ? createClient(mutationToken) : undefined;
   const metadata = await client.getRepository(owner, repository);
   if (metadata.id !== eventRepositoryId || metadata.fullName.toLowerCase() !== fullName.toLowerCase()) {
     throw new Error('GitHub event repository does not match current repository metadata');
@@ -215,6 +219,7 @@ export async function createOperationContext(input: {
     pull,
     manifest,
     client,
+    ...(mutationClient ? { mutationClient } : {}),
     ...(runId ? { detailsUrl: `${serverUrl}/${fullName}/actions/runs/${runId}` } : {}),
   };
 }

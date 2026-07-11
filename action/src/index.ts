@@ -5,6 +5,7 @@ try {
   await run({
     operation: core.getInput('operation', { required: true }),
     token: core.getInput('github-token'),
+    mutationToken: core.getInput('mutation-token'),
     eventPath: core.getInput('event-path'),
     prNumber: core.getInput('pr-number'),
     headSha: core.getInput('head-sha'),
