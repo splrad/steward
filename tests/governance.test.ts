@@ -148,6 +148,7 @@ describe('Copilot governance protocol', () => {
     { name: 'suggestion only', reviews: [{}], findings: { suggestions: [finding('suggest')] }, state: 'passed', conclusion: 'success', failure: '' },
     { name: 'fixed conclusion', reviews: [{ body: protocol.copilot.fixedConclusion }], findings: {}, state: 'passed', conclusion: 'success', failure: '' },
     { name: 'official no comments', reviews: [{ body: protocol.copilot.noNewComments }], findings: {}, state: 'passed', conclusion: 'success', failure: '' },
+    { name: 'official pull request overview', reviews: [{ body: '## Pull request overview\n\nSummarizes the current changes.' }], findings: {}, state: 'passed', conclusion: 'success', failure: '' },
     { name: 'resolved comments', reviews: [{ body: protocol.copilot.resolvedComments }], findings: {}, state: 'passed', conclusion: 'success', failure: '' },
     { name: 'resolved singular comment', reviews: [{ body: 'Copilot reviewed 1 out of 1 changed files in this pull request and generated 1 comment.' }], findings: {}, state: 'passed', conclusion: 'success', failure: '' },
     { name: 'unknown conclusion', reviews: [{ body: 'Review complete.' }], findings: {}, state: 'failed', conclusion: 'failure', failure: 'passing-conclusion' },
