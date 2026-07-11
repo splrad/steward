@@ -24,11 +24,11 @@ inputs:
     description: Result of the Copilot review request job for governance-copilot.
     required: false
   matrix-mode:
-    description: Matrix behavior: observe, repair, or enforce.
+    description: "Matrix behavior: observe, repair, or enforce."
     required: false
     default: enforce
   matrix-scope:
-    description: Matrix target scope: auto, full, or gate-only.
+    description: "Matrix target scope: auto, full, or gate-only."
     required: false
     default: auto
 outputs:
