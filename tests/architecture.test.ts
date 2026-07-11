@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 const packageRoot = path.resolve('packages');
 const allowedDependencies: Record<string, ReadonlySet<string>> = {
-  manifest: new Set(),
+  manifest: new Set<string>(),
   core: new Set(['manifest']),
   github: new Set(['core', 'manifest']),
   relay: new Set(['core', 'github', 'manifest']),
@@ -38,9 +38,9 @@ function importedPackage(file: string, specifier: string): string | null {
 
 function importSpecifiers(source: string): string[] {
   const scanner = createScanner(true, LanguageVariant.Standard, source);
-  const tokens: { kind: SyntaxKind; text: string; value: string }[] = [];
+  const tokens: { kind: SyntaxKind; value: string }[] = [];
   for (let kind = scanner.scan(); kind !== SyntaxKind.EndOfFile; kind = scanner.scan()) {
-    tokens.push({ kind, text: scanner.getTokenText(), value: scanner.getTokenValue() });
+    tokens.push({ kind, value: scanner.getTokenValue() });
   }
   const specifiers: string[] = [];
   function addString(index: number): boolean {
