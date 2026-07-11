@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   signal:
-    uses: splrad/steward/.github/workflows/pr-review-signal.yml@fb27bb94acfd1c09df2da45a986ea018ef26d8ef
+    uses: splrad/steward/.github/workflows/pr-review-signal.yml@b26ed3c59d0fee6afbdd4544eec8b67517e47f3c
     with:
       pr_number: ${{ github.event.pull_request.number }}
       head_sha: ${{ github.event.pull_request.head.sha }}
