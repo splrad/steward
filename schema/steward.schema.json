@@ -220,10 +220,110 @@
         "fallback": { "type": "boolean" }
       }
     },
+    "conventionalTypeKind": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "kind"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$"
+        },
+        "kind": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "docsOnlyPathRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "prefixes": { "$ref": "#/$defs/pathArray" },
+        "files": { "$ref": "#/$defs/pathArray" },
+        "suffixes": { "$ref": "#/$defs/stringArray" },
+        "excludePrefixes": { "$ref": "#/$defs/pathArray" }
+      }
+    },
+    "publicLabelRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "whenAny"],
+      "properties": {
+        "label": { "$ref": "#/$defs/nonEmptyString" },
+        "whenAny": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "kinds": { "$ref": "#/$defs/stringArray" },
+            "areas": { "$ref": "#/$defs/stringArray" },
+            "conventionalTypes": { "$ref": "#/$defs/stringArray" },
+            "bot": { "const": true }
+          }
+        }
+      }
+    },
+    "kindPublicLabelFallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "label"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/nonEmptyString" },
+        "label": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "classificationDecisions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kinds", "publicLabels"],
+      "properties": {
+        "kinds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["byConventionalType", "docsOnly", "fallback"],
+          "properties": {
+            "byConventionalType": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/conventionalTypeKind" }
+            },
+            "docsOnly": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "pathRules"],
+              "properties": {
+                "kind": { "$ref": "#/$defs/nonEmptyString" },
+                "pathRules": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "$ref": "#/$defs/docsOnlyPathRule" }
+                }
+              }
+            },
+            "fallback": { "$ref": "#/$defs/nonEmptyString" }
+          }
+        },
+        "publicLabels": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rules", "fallbackByKind", "fallback"],
+          "properties": {
+            "rules": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/publicLabelRule" }
+            },
+            "fallbackByKind": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/kindPublicLabelFallback" }
+            },
+            "fallback": { "$ref": "#/$defs/nonEmptyString" }
+          }
+        }
+      }
+    },
     "classification": {
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "decisions",
         "areas",
         "runtimeRelease",
         "installOrPackage",
@@ -231,6 +331,7 @@
         "releaseCategories"
       ],
       "properties": {
+        "decisions": { "$ref": "#/$defs/classificationDecisions" },
         "areas": {
           "type": "array",
           "items": { "$ref": "#/$defs/area" }

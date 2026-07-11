@@ -113,6 +113,78 @@ describe('Manifest schema', () => {
       classification: invalid,
     }))).toThrow(/exactly one fallback category/);
   });
+
+  it('rejects incomplete and duplicate classification decision mappings', () => {
+    const missingDecisions = structuredClone(cadFontClassification) as unknown as Record<string, unknown>;
+    delete missingDecisions.decisions;
+    expect(() => parseManifest(manifest({
+      features: features({ classification: true }),
+      classification: missingDecisions as unknown as ClassificationConfiguration,
+    }))).toThrow('missing required property "decisions"');
+
+    const duplicateType = structuredClone(cadFontClassification);
+    duplicateType.decisions.kinds.byConventionalType.push({ type: 'FEAT', kind: 'kind:other' });
+    expect(() => parseManifest(manifest({
+      features: features({ classification: true }),
+      classification: duplicateType,
+    }))).toThrow(/duplicate types: FEAT/);
+  });
+
+  it('rejects dangling decision references and unusable conditions', () => {
+    const dangling = structuredClone(cadFontClassification);
+    dangling.decisions.publicLabels.rules[0] = {
+      label: 'missing-label',
+      whenAny: {
+        kinds: ['kind:missing'],
+        areas: ['area:missing'],
+        conventionalTypes: ['missing-type'],
+      },
+    };
+    dangling.decisions.publicLabels.fallbackByKind[0] = {
+      kind: 'kind:missing',
+      label: 'missing-label',
+    };
+    dangling.decisions.publicLabels.fallback = 'missing-label';
+    expect(() => parseManifest(manifest({
+      features: features({ classification: true }),
+      classification: dangling,
+    }))).toThrow(/unknown public label/);
+
+    const emptyCondition = structuredClone(cadFontClassification);
+    emptyCondition.decisions.publicLabels.rules[0] = {
+      label: 'documentation',
+      whenAny: { kinds: [] },
+    };
+    expect(() => parseManifest(manifest({
+      features: features({ classification: true }),
+      classification: emptyCondition,
+    }))).toThrow(/non-empty condition/);
+  });
+
+  it('rejects empty docs-only rules', () => {
+    const invalid = structuredClone(cadFontClassification);
+    invalid.decisions.kinds.docsOnly.pathRules[0] = { prefixes: [] };
+    expect(() => parseManifest(manifest({
+      features: features({ classification: true }),
+      classification: invalid,
+    }))).toThrow(/non-empty include condition/);
+  });
+
+  it('rejects duplicate release mappings and invalid regular expressions', () => {
+    const duplicateRelease = structuredClone(cadFontClassification);
+    duplicateRelease.releaseCategories.push(structuredClone(duplicateRelease.releaseCategories[0]!));
+    expect(() => parseManifest(manifest({
+      features: features({ classification: true }),
+      classification: duplicateRelease,
+    }))).toThrow(/duplicate release labels/);
+
+    const invalidPattern = structuredClone(cadFontClassification);
+    invalidPattern.releaseCategories[0]!.textPatterns.push('[');
+    expect(() => parseManifest(manifest({
+      features: features({ classification: true }),
+      classification: invalidPattern,
+    }))).toThrow(/invalid text pattern/);
+  });
 });
 
 describe('Manifest normalization', () => {

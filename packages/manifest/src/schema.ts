@@ -43,13 +43,76 @@ function classificationIssues(classification: ClassificationConfiguration): stri
   const issues: string[] = [];
   const duplicateAreas = duplicateValues(classification.areas.map((area) => area.name));
   const duplicateLabels = duplicateValues(classification.labels.public.map((label) => label.name));
+  const duplicateTypes = duplicateValues(
+    classification.decisions.kinds.byConventionalType.map((mapping) => mapping.type),
+  );
+  const duplicatePublicRules = duplicateValues(
+    classification.decisions.publicLabels.rules.map((rule) => rule.label),
+  );
+  const duplicateKindFallbacks = duplicateValues(
+    classification.decisions.publicLabels.fallbackByKind.map((mapping) => mapping.kind),
+  );
+  const duplicateReleaseCategories = duplicateValues(
+    classification.releaseCategories.map((category) => category.releaseLabel),
+  );
   const releaseLabels = new Set(classification.labels.release.map((label) => label.toLowerCase()));
   const publicLabels = new Set(classification.labels.public.map((label) => label.name.toLowerCase()));
+  const areaNames = new Set(classification.areas.map((area) => area.name.toLowerCase()));
+  const conventionalTypes = new Set(
+    classification.decisions.kinds.byConventionalType.map((mapping) => mapping.type.toLowerCase()),
+  );
+  const kinds = new Set([
+    ...classification.decisions.kinds.byConventionalType.map((mapping) => mapping.kind.toLowerCase()),
+    classification.decisions.kinds.docsOnly.kind.toLowerCase(),
+    classification.decisions.kinds.fallback.toLowerCase(),
+  ]);
   const fallbackCategories = classification.releaseCategories.filter((category) => category.fallback);
 
   if (duplicateAreas.length) issues.push(`/classification/areas contains duplicate names: ${duplicateAreas.join(', ')}`);
   if (duplicateLabels.length) issues.push(`/classification/labels/public contains duplicate names: ${duplicateLabels.join(', ')}`);
+  if (duplicateTypes.length) issues.push(`/classification/decisions/kinds/byConventionalType contains duplicate types: ${duplicateTypes.join(', ')}`);
+  if (duplicatePublicRules.length) issues.push(`/classification/decisions/publicLabels/rules contains duplicate labels: ${duplicatePublicRules.join(', ')}`);
+  if (duplicateKindFallbacks.length) issues.push(`/classification/decisions/publicLabels/fallbackByKind contains duplicate kinds: ${duplicateKindFallbacks.join(', ')}`);
+  if (duplicateReleaseCategories.length) issues.push(`/classification/releaseCategories contains duplicate release labels: ${duplicateReleaseCategories.join(', ')}`);
   if (fallbackCategories.length !== 1) issues.push('/classification/releaseCategories must contain exactly one fallback category');
+
+  for (const [index, rule] of classification.decisions.kinds.docsOnly.pathRules.entries()) {
+    if (![rule.prefixes, rule.files, rule.suffixes].some((values) => values?.length)) {
+      issues.push(`/classification/decisions/kinds/docsOnly/pathRules/${index} must contain a non-empty include condition`);
+    }
+  }
+
+  for (const [index, rule] of classification.decisions.publicLabels.rules.entries()) {
+    const path = `/classification/decisions/publicLabels/rules/${index}`;
+    const conditions = rule.whenAny;
+    if (![conditions.kinds, conditions.areas, conditions.conventionalTypes].some((values) => values?.length)
+      && conditions.bot !== true) {
+      issues.push(`${path}/whenAny must contain a non-empty condition`);
+    }
+    if (!publicLabels.has(rule.label.toLowerCase())) {
+      issues.push(`${path} references unknown public label: ${rule.label}`);
+    }
+    for (const kind of conditions.kinds ?? []) {
+      if (!kinds.has(kind.toLowerCase())) issues.push(`${path}/whenAny/kinds references unknown kind: ${kind}`);
+    }
+    for (const area of conditions.areas ?? []) {
+      if (!areaNames.has(area.toLowerCase())) issues.push(`${path}/whenAny/areas references unknown area: ${area}`);
+    }
+    for (const type of conditions.conventionalTypes ?? []) {
+      if (!conventionalTypes.has(type.toLowerCase())) {
+        issues.push(`${path}/whenAny/conventionalTypes references unknown type: ${type}`);
+      }
+    }
+  }
+
+  for (const [index, fallback] of classification.decisions.publicLabels.fallbackByKind.entries()) {
+    const path = `/classification/decisions/publicLabels/fallbackByKind/${index}`;
+    if (!kinds.has(fallback.kind.toLowerCase())) issues.push(`${path} references unknown kind: ${fallback.kind}`);
+    if (!publicLabels.has(fallback.label.toLowerCase())) issues.push(`${path} references unknown public label: ${fallback.label}`);
+  }
+  if (!publicLabels.has(classification.decisions.publicLabels.fallback.toLowerCase())) {
+    issues.push(`/classification/decisions/publicLabels/fallback references unknown public label: ${classification.decisions.publicLabels.fallback}`);
+  }
 
   for (const label of classification.labels.release) {
     if (!publicLabels.has(label.toLowerCase())) {
@@ -59,6 +122,13 @@ function classificationIssues(classification: ClassificationConfiguration): stri
   for (const category of classification.releaseCategories) {
     if (!releaseLabels.has(category.releaseLabel.toLowerCase())) {
       issues.push(`/classification/releaseCategories references unknown release label: ${category.releaseLabel}`);
+    }
+    for (const pattern of category.textPatterns) {
+      try {
+        new RegExp(pattern, 'i');
+      } catch {
+        issues.push(`/classification/releaseCategories contains invalid text pattern: ${pattern}`);
+      }
     }
   }
   return issues;

@@ -6,6 +6,7 @@ The first extracted contracts cover:
 
 - GitHub login normalization, configurable automation filtering, and hidden contributor metadata;
 - stable pull-request input fingerprints that ignore Steward-owned classification output;
+- manifest-driven area, kind, public-label, and release-label decisions with pure mutation planning;
 - legacy-compatible aggregate blocking-comment state and same-head source replacement.
 
 Callers must pass the configured Steward GitHub App slug through `botLogins`. A syntactically valid login cannot be identified as a project-specific bot without repository configuration.
