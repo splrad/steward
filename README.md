@@ -10,7 +10,7 @@ The project is being extracted from a production-tested, event-driven workflow. 
 
 ## Status
 
-The repository currently contains the reproducible development foundation and compatibility map. Shared governance behavior will be moved in contract-tested stages before the sandbox or any production repository consumes it.
+The repository contains a reproducible development foundation, the default-branch Manifest trust boundary, and the first shared identity, fingerprint, hidden-state, and pagination contracts. Remaining governance behavior is moving in dependency order before the sandbox or any production repository consumes it.
 
 ## Repository layout
 
