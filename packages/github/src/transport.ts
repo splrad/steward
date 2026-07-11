@@ -58,7 +58,9 @@ function requestUrl(base: URL, request: GitHubRequest): URL {
     } catch {
       throw new Error('GitHub API request path contains invalid percent encoding');
     }
-    if (decodedSegment === '.' || decodedSegment === '..' || decodedSegment.includes('\\')) {
+    const decodedParts = decodedSegment.split('/');
+    if (decodedSegment.includes('\\')
+      || decodedParts.some((part) => !part || part === '.' || part === '..')) {
       throw new Error('GitHub API request path contains an unsafe path segment');
     }
   }

@@ -80,6 +80,8 @@ describe('GitHub REST transport', () => {
     for (const path of [
       '/repos/../admin',
       '/repos/%2e%2e/admin',
+      '/repos/%2e%2e%2fadmin',
+      '/repos/admin%2f..%2fsecret',
       '/repos//admin',
       '/repos\\admin',
       '/repos/%5cadmin',
@@ -95,6 +97,14 @@ describe('GitHub REST transport', () => {
       .resolves.toEqual({});
     expect(fetcher).toHaveBeenCalledWith(
       new URL('https://github.example/api/v3/repos/splrad/steward?per_page=100'),
+      expect.any(Object),
+    );
+
+    await expect(transport.request({
+      path: '/repos/splrad/steward/commits/feature%2Fsafe/check-runs',
+    })).resolves.toEqual({});
+    expect(fetcher).toHaveBeenLastCalledWith(
+      new URL('https://github.example/api/v3/repos/splrad/steward/commits/feature%2Fsafe/check-runs'),
       expect.any(Object),
     );
   });
