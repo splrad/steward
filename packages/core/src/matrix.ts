@@ -153,7 +153,7 @@ export function parseStewardCheckExternalId(value: unknown): MatrixIdentityInput
     repositoryId: Number(match[1]),
     prNumber: Number(match[2]),
     headSha: String(match[3]).toLowerCase(),
-    checkId: String(match[4]),
+    checkId: String(match[4]).toLowerCase(),
     configDigest: String(match[5]).toLowerCase(),
     inputDigest: String(match[6]).toLowerCase(),
   };

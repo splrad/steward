@@ -64,6 +64,10 @@ describe('Matrix Check identities', () => {
       inputDigest,
     };
     expect(parseStewardCheckExternalId(stewardCheckExternalId(identity))).toEqual(identity);
+    expect(parseStewardCheckExternalId(stewardCheckExternalId(identity).replace(
+      'check:main-authorization',
+      'check:MAIN-AUTHORIZATION',
+    ))?.checkId).toBe('main-authorization');
     expect(parseStewardCheckExternalId('matrix-proxy:legacy')).toBeNull();
   });
 
