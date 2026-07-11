@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 const actionSha = 'dd0faabda91ca5dcd8d8d6dd3894bfe2665ab8b0';
 const appTokenSha = 'bcd2ba49218906704ab6c1aa796996da409d3eb1';
+const repositoryRoot = new URL('../', import.meta.url);
 const workflowPaths = [
   '.github/workflows/pr-governance.yml',
   '.github/workflows/pr-review-signal.yml',
@@ -10,7 +11,10 @@ const workflowPaths = [
 ] as const;
 
 async function workflows(): Promise<Record<(typeof workflowPaths)[number], string>> {
-  return Object.fromEntries(await Promise.all(workflowPaths.map(async (path) => [path, await readFile(path, 'utf8')]))) as Record<
+  return Object.fromEntries(await Promise.all(workflowPaths.map(async (path) => [
+    path,
+    await readFile(new URL(path, repositoryRoot), 'utf8'),
+  ]))) as Record<
     (typeof workflowPaths)[number], string
   >;
 }
@@ -59,7 +63,7 @@ describe('First reusable workflow contracts', () => {
   });
 
   it('records the caller-owned path and run-name trust boundary', async () => {
-    const contract = await readFile('docs/reusable-workflows.md', 'utf8');
+    const contract = await readFile(new URL('docs/reusable-workflows.md', repositoryRoot), 'utf8');
     expect(contract).toContain('.github/workflows/pr-governance.yml');
     expect(contract).toContain('PR Validation Target #<PR> / <40-character-head-SHA> / <scope>');
     expect(contract).toContain('.github/workflows/pr-review-signal.yml');
