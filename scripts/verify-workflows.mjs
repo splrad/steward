@@ -1,7 +1,7 @@
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 
-const roots = ['.github/workflows', 'scripts', 'packages'];
+const roots = ['.github/workflows', 'templates', 'scripts', 'packages'];
 const forbidden = [
   [/^\s*schedule\s*:/m, 'scheduled workflow trigger'],
   [/\bStart-Sleep\b/i, 'Start-Sleep'],
@@ -33,7 +33,8 @@ for (const file of files) {
     if (pattern.test(source)) errors.push(`${file}: forbidden ${label}`);
   }
 
-  if (file.startsWith(path.normalize('.github/workflows'))) {
+  if (file.startsWith(path.normalize('.github/workflows'))
+    || file.startsWith(path.normalize('templates/thin-workflows'))) {
     for (const match of source.matchAll(/^\s*uses:\s*([^\s#]+).*$/gm)) {
       const reference = match[1];
       if (reference?.startsWith('./')) continue;

@@ -51,7 +51,7 @@ jobs:
           curl --fail --location --remote-name "https://github.com/rhysd/actionlint/releases/download/v${version}/${checksums}"
           grep " ${archive}$" "${checksums}" | sha256sum --check --strict
           tar --extract --gzip --file "${archive}" actionlint
-          ./actionlint
+          ./actionlint .github/workflows/*.yml templates/thin-workflows/*.yml
 
       - name: Check whitespace
         run: git diff --check
