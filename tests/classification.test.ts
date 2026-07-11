@@ -143,7 +143,7 @@ describe('classification evaluator', () => {
     const evaluation = evaluateClassification({
       title: 'feat: add option',
       files: ['src/Options.cs'],
-      currentLabels: ['documentation', 'area:docs', 'external-label'],
+      currentLabels: ['Documentation', 'Area:Docs', 'external-label'],
     }, classification);
 
     expect(evaluation.presentation).toEqual({
@@ -153,9 +153,17 @@ describe('classification evaluator', () => {
       releaseLabels: ['feature'],
     });
     expect(evaluation.mutationPlan.addLabels).toEqual(['feature']);
-    expect(evaluation.mutationPlan.removePublicLabels).toEqual(['documentation']);
-    expect(evaluation.mutationPlan.removeInternalLabels).toEqual(['area:docs']);
+    expect(evaluation.mutationPlan.removePublicLabels).toEqual(['Documentation']);
+    expect(evaluation.mutationPlan.removeInternalLabels).toEqual(['Area:Docs']);
     expect(evaluation.mutationPlan.ensureLabels.map((label) => label.name)).toEqual(['feature']);
+
+    const existingWithDifferentCase = evaluateClassification({
+      title: 'feat: add option',
+      files: ['src/Options.cs'],
+      currentLabels: ['FEATURE'],
+    }, classification);
+    expect(existingWithDifferentCase.mutationPlan.addLabels).toEqual([]);
+    expect(existingWithDifferentCase.mutationPlan.removePublicLabels).toEqual([]);
   });
 
   it('uses consumer-provided kinds and labels without shared hard-coding', () => {

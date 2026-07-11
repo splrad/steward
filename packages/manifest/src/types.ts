@@ -64,7 +64,7 @@ export interface PublicLabelRuleConfiguration {
     kinds?: string[];
     areas?: string[];
     conventionalTypes?: string[];
-    bot?: boolean;
+    bot?: true;
   };
 }
 

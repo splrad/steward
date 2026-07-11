@@ -209,9 +209,11 @@ export function evaluateClassification(
   const publicLabels = inferPublicLabels(type, areas, kind, releaseLabels, facts, classification);
   const decision = { areas, kind, publicLabels, releaseLabels };
   const currentLabels = facts.currentLabels ?? [];
-  const desiredLabels = new Set(publicLabels);
-  const managedLabels = new Set(classification.labels.public.map((label) => label.name));
-  const addLabels = publicLabels.filter((label) => !currentLabels.includes(label));
+  const currentLabelKeys = new Set(currentLabels.map((label) => label.toLowerCase()));
+  const desiredLabelKeys = new Set(publicLabels.map((label) => label.toLowerCase()));
+  const managedLabelKeys = new Set(classification.labels.public.map((label) => label.name.toLowerCase()));
+  const internalPrefixes = classification.labels.internalPrefixes.map((prefix) => prefix.toLowerCase());
+  const addLabels = publicLabels.filter((label) => !currentLabelKeys.has(label.toLowerCase()));
 
   return {
     decision,
@@ -224,9 +226,11 @@ export function evaluateClassification(
     mutationPlan: {
       ensureLabels: classification.labels.public.filter((label) => addLabels.includes(label.name)),
       addLabels,
-      removePublicLabels: currentLabels.filter((label) => managedLabels.has(label) && !desiredLabels.has(label)),
+      removePublicLabels: currentLabels.filter((label) => (
+        managedLabelKeys.has(label.toLowerCase()) && !desiredLabelKeys.has(label.toLowerCase())
+      )),
       removeInternalLabels: currentLabels.filter((label) => (
-        classification.labels.internalPrefixes.some((prefix) => label.startsWith(prefix))
+        internalPrefixes.some((prefix) => label.toLowerCase().startsWith(prefix))
       )),
     },
   };
