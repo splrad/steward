@@ -1,9 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
-const actionSha = 'dd0faabda91ca5dcd8d8d6dd3894bfe2665ab8b0';
-const classificationActionSha = '1c0f9dc834c7f8a9f49990fb3449e091d8e5ed2f';
-const matrixActionSha = '7c3cc81252a9c484b1a47867b0451d5fcb78ae42';
+const actionSha = '6d7076f372a2c56ba73fd836751f9e647d1f5b33';
 const appTokenSha = 'bcd2ba49218906704ab6c1aa796996da409d3eb1';
 const repositoryRoot = new URL('../', import.meta.url);
 const workflowPaths = [
@@ -36,10 +34,10 @@ describe('First reusable workflow contracts', () => {
     }
     expect(files['.github/workflows/pr-governance.yml']).toContain(`splrad/steward/action@${actionSha}`);
     expect(files['.github/workflows/pr-validation-matrix.yml']).toContain(
-      `splrad/steward/action@${matrixActionSha}`,
+      `splrad/steward/action@${actionSha}`,
     );
     expect(files['.github/workflows/pr-classification.yml']).toContain(
-      `splrad/steward/action@${classificationActionSha}`,
+      `splrad/steward/action@${actionSha}`,
     );
     expect(`${files['.github/workflows/pr-governance.yml']}\n${files['.github/workflows/pr-validation-matrix.yml']}`)
       .toContain(`actions/create-github-app-token@${appTokenSha}`);

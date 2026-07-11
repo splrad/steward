@@ -81,7 +81,7 @@ jobs:
 
       - name: Evaluate and converge PR validation matrix
         id: steward
-        uses: splrad/steward/action@7c3cc81252a9c484b1a47867b0451d5fcb78ae42
+        uses: splrad/steward/action@6d7076f372a2c56ba73fd836751f9e647d1f5b33
         with:
           operation: matrix
           github-token: ${{ steps.platform_token.outputs.token }}
