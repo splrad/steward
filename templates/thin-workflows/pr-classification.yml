@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   classify:
-    uses: splrad/steward/.github/workflows/pr-classification.yml@95569fa21765c3da030e5fefb628124cc2fd177b
+    uses: splrad/steward/.github/workflows/pr-classification.yml@fb27bb94acfd1c09df2da45a986ea018ef26d8ef
     with:
       app_client_id: ${{ vars.WORKFLOW_AUTOMATION_APP_CLIENT_ID }}
       pr_number: ${{ github.event.pull_request.number || fromJSON(github.event.inputs.pr_number || '0') }}
