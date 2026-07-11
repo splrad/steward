@@ -202,7 +202,6 @@ describe('Matrix state and repair planning', () => {
       workflowRuns: [],
       mode: 'enforce',
       pull,
-      inputDigest,
     });
     expect(plans).toHaveLength(1);
     expect(plans[0]).toMatchObject({
@@ -226,7 +225,6 @@ describe('Matrix state and repair planning', () => {
       workflowRuns: [],
       mode: 'enforce',
       pull,
-      inputDigest,
       eventSignal: 'review-state',
     })).toHaveLength(1);
     expect(planMatrixRepairs({
@@ -234,7 +232,6 @@ describe('Matrix state and repair planning', () => {
       workflowRuns: [],
       mode: 'enforce',
       pull,
-      inputDigest,
       eventSignal: 'copilot-review',
     })).toEqual([]);
   });
@@ -253,14 +250,12 @@ describe('Matrix state and repair planning', () => {
       workflowRuns: [workflowRun],
       mode: 'enforce',
       pull,
-      inputDigest,
     })).toEqual([{ target: 'pr-classification', action: 'rerun-job', jobId: 88, reason: 'recoverable' }]);
     expect(planMatrixRepairs({
       targets: [result('pr-classification', 'recoverable')],
       workflowRuns: [],
       mode: 'enforce',
       pull,
-      inputDigest,
     })).toEqual([{ target: 'pr-classification', action: 'manual', reason: 'workflow-job-not-found' }]);
   });
 

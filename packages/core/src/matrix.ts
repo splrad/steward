@@ -346,7 +346,6 @@ export function planMatrixRepairs(input: {
   workflowRuns: readonly MatrixWorkflowRun[];
   mode: MatrixMode;
   pull: MatrixPull;
-  inputDigest: string;
   eventSignal?: 'none' | 'copilot-review' | 'review-state' | 'manual';
 }): MatrixRepairPlan[] {
   if (!['repair', 'enforce'].includes(input.mode)) return [];
