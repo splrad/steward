@@ -30,6 +30,7 @@ describe('GitHub identities', () => {
 
   it('filters built-in and configured automation identities', () => {
     expect(isBotLogin('dependabot[bot]')).toBe(true);
+    expect(isBotLogin('SPLRAD-Steward[bot]')).toBe(true);
     expect(isBotLogin('github-actions')).toBe(true);
     expect(isBotLogin('splrad-steward', ['splrad-steward'])).toBe(true);
     expect(uniqueHumanLogins(

@@ -29,9 +29,9 @@ export function normalizeGitHubLogin(value: unknown): string {
 
 export function isBotLogin(value: unknown, botLogins: readonly unknown[] = []): boolean {
   const raw = loginKey(value);
+  if (!raw || raw === 'unknown' || raw.endsWith('[bot]')) return true;
   const login = normalizeGitHubLogin(value).toLowerCase();
-  if (!login || login === 'unknown') return true;
-  if (raw.endsWith('[bot]') || login === 'github-actions' || login === 'dependabot') return true;
+  if (!login || login === 'github-actions' || login === 'dependabot') return true;
   return botLogins.some((candidate) => loginKey(candidate) === raw);
 }
 
