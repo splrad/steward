@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
-const stewardSha = 'fb27bb94acfd1c09df2da45a986ea018ef26d8ef';
+const stewardSha = 'b26ed3c59d0fee6afbdd4544eec8b67517e47f3c';
 const repositoryRoot = new URL('../', import.meta.url);
 const templatePaths = [
   'templates/thin-workflows/pr-classification.yml',
