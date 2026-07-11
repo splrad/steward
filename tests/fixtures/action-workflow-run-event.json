@@ -1,0 +1,18 @@
+{
+  "repository": {
+    "id": 1296724484,
+    "full_name": "splrad/steward",
+    "default_branch": "main"
+  },
+  "workflow_run": {
+    "id": 80,
+    "name": "PR Classification",
+    "display_title": "PR Validation Target #7 / cccccccccccccccccccccccccccccccccccccccc / classification",
+    "path": ".github/workflows/pr-classification.yml@refs/heads/main",
+    "event": "workflow_dispatch",
+    "status": "completed",
+    "conclusion": "success",
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "pull_requests": []
+  }
+}

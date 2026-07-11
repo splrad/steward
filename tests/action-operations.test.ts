@@ -238,6 +238,19 @@ describe('Action operation contract', () => {
       environment: { GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: 'workflow_dispatch' },
       fetch: fetcher,
     })).resolves.toMatchObject({ repositoryId: 1296724484 });
+
+    await expect(createOperationContext({
+      inputs: {
+        operation: 'matrix',
+        token: 'token',
+        eventPath: 'tests/fixtures/action-workflow-run-event.json',
+      },
+      environment: { GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: 'workflow_run' },
+      fetch: fetcher,
+    })).resolves.toMatchObject({
+      pull: { number: 7, head: { sha: 'c'.repeat(40) } },
+      eventName: 'workflow_run',
+    });
   });
 
   it('exposes runtime inputs without consumer policy fields', async () => {
