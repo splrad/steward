@@ -170,7 +170,7 @@ function githubHeaders(token: string): HeadersInit {
     authorization: `Bearer ${token}`,
     'content-type': 'application/json',
     'user-agent': 'splrad-steward-relay',
-    'x-github-api-version': '2026-03-10',
+    'x-github-api-version': '2022-11-28',
   };
 }
 

@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 const source = await readFile(new URL('../packages/relay/src/index.ts', import.meta.url), 'utf8');
+const githubTransport = await readFile(new URL('../packages/github/src/transport.ts', import.meta.url), 'utf8');
 const wrangler = await readFile(new URL('../packages/relay/wrangler.toml', import.meta.url), 'utf8');
 const deployWorkflow = await readFile(new URL('../.github/workflows/deploy-relay.yml', import.meta.url), 'utf8');
 
@@ -41,5 +42,12 @@ describe('relay static contract', () => {
     expect(source).not.toMatch(/\bconsole\s*\./);
     expect(source).not.toContain('GITHUB_WEBHOOK_SECRET=');
     expect(source).not.toContain('GITHUB_APP_PRIVATE_KEY=');
+  });
+
+  it('uses the same supported REST API version as the GitHub adapter', () => {
+    const relayVersion = source.match(/'x-github-api-version': '([^']+)'/)?.[1];
+    const adapterVersion = githubTransport.match(/'x-github-api-version': '([^']+)'/)?.[1];
+    expect(relayVersion).toBeTruthy();
+    expect(relayVersion).toBe(adapterVersion);
   });
 });
