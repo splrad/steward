@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
-const actionSha = '6d7076f372a2c56ba73fd836751f9e647d1f5b33';
+const actionSha = 'f8f1969fd6fae3f3b440e33b4a61bda1c056221a';
 const appTokenSha = 'bcd2ba49218906704ab6c1aa796996da409d3eb1';
 const repositoryRoot = new URL('../', import.meta.url);
 const workflowPaths = [
