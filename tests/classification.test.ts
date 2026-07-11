@@ -157,4 +157,24 @@ describe('classification evaluator', () => {
     expect(evaluation.mutationPlan.removeInternalLabels).toEqual(['area:docs']);
     expect(evaluation.mutationPlan.ensureLabels.map((label) => label.name)).toEqual(['feature']);
   });
+
+  it('uses consumer-provided kinds and labels without shared hard-coding', () => {
+    const custom = structuredClone(classification);
+    custom.decisions.kinds.byConventionalType.find((mapping) => mapping.type === 'feat')!.kind = 'change:new';
+    custom.decisions.publicLabels.fallbackByKind.find((mapping) => mapping.kind === 'kind:feature')!.kind = 'change:new';
+    custom.decisions.publicLabels.fallbackByKind.find((mapping) => mapping.kind === 'change:new')!.label = 'enhancement';
+    custom.labels.public.find((label) => label.name === 'feature')!.name = 'enhancement';
+    custom.labels.release[2] = 'enhancement';
+    custom.releaseCategories.find((category) => category.releaseLabel === 'feature')!.releaseLabel = 'enhancement';
+
+    expect(evaluateClassification({
+      title: 'feat: add reusable policy',
+      files: ['src/Policy.cs'],
+    }, custom).decision).toEqual({
+      areas: ['area:runtime'],
+      kind: 'change:new',
+      publicLabels: ['enhancement'],
+      releaseLabels: ['enhancement'],
+    });
+  });
 });
