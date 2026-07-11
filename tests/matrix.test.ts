@@ -168,6 +168,24 @@ describe('Matrix state and repair planning', () => {
     expect(matrixConclusion(matrix)).toMatchObject({ status: 'in_progress', presentation: 'matrix.waiting' });
   });
 
+  it('does not prefer an active proxy for a different target', () => {
+    const sharedTarget = { ...target('main-authorization'), checkNames: ['Shared Gate'] };
+    const matrix = evaluateMatrix({
+      config: { gateName: 'Matrix', targets: [sharedTarget] },
+      scope: 'full',
+      pull,
+      checkRuns: [
+        check('Shared Gate', 'completed', 'success', { started_at: '2026-07-11T00:00:00Z' }),
+        check('Shared Gate', 'in_progress', '', {
+          started_at: '2026-07-11T00:01:00Z',
+          external_id: legacyProxyExternalId(target('copilot-review-gate'), pull, inputDigest),
+        }),
+      ],
+    });
+    expect(matrix.state).toBe('passed');
+    expect(matrix.targets[0]?.checkRun?.status).toBe('completed');
+  });
+
   it('groups missing Governance targets into one dispatch and creates one-shot proxy identities', () => {
     const plans = planMatrixRepairs({
       targets: [result('main-authorization', 'missing'), result('copilot-review-gate', 'missing')],
@@ -285,6 +303,12 @@ describe('Matrix state and repair planning', () => {
       pull,
       trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: true },
     })).toEqual([]);
+    expect(planProxyCompletions({
+      workflowRun,
+      targets: [{ ...result('main-authorization', 'pending', proxy), acceptableConclusions: [] }],
+      pull,
+      trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
+    })[0]?.conclusion).toBe('success');
   });
 });
 

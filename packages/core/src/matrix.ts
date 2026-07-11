@@ -253,6 +253,16 @@ function targetApplies(target: MatrixTargetConfiguration, scope: MatrixScope, pu
   return target.group === 'full' || target.group === 'gate';
 }
 
+function proxyMatchesTarget(target: MatrixTargetResult | MatrixTargetConfiguration, run: MatrixCheckRun, pull: MatrixPull): boolean {
+  const externalId = String(run.external_id ?? '');
+  const identity = parseStewardCheckExternalId(externalId);
+  return identity
+    ? identity.checkId === target.id
+      && identity.prNumber === pull.number
+      && identity.headSha === pull.head.sha.toLowerCase()
+    : externalId.startsWith(`matrix-proxy:${target.id}:pr:${pull.number}:head:${pull.head.sha}:fingerprint:`);
+}
+
 export function evaluateMatrix(input: {
   config: MatrixConfiguration;
   checkRuns: readonly MatrixCheckRun[];
@@ -262,13 +272,15 @@ export function evaluateMatrix(input: {
   trust?: MatrixTrustContext;
 }): MatrixEvaluation {
   const targets = input.config.targets.filter((target) => targetApplies(target, input.scope, input.pull)).map((target) => {
-    const matches = input.checkRuns.filter((run) => (
-      target.checkNames.includes(String(run.name ?? ''))
-      && (!input.trust || isTrustedMatrixCheck({ run, target, pull: input.pull, trust: input.trust }))
-    ));
+    const matches = input.checkRuns.filter((run) => {
+      if (!target.checkNames.includes(String(run.name ?? ''))) return false;
+      const externalId = String(run.external_id ?? '');
+      if ((parseStewardCheckExternalId(externalId) || externalId.startsWith('matrix-proxy:'))
+        && !proxyMatchesTarget(target, run, input.pull)) return false;
+      return !input.trust || isTrustedMatrixCheck({ run, target, pull: input.pull, trust: input.trust });
+    });
     const active = matches.filter((run) => (
-      (parseStewardCheckExternalId(run.external_id)?.checkId === target.id
-        || String(run.external_id ?? '').startsWith('matrix-proxy:'))
+      proxyMatchesTarget(target, run, input.pull)
       && ['queued', 'in_progress'].includes(String(run.status ?? ''))
     ));
     const checkRun = latestCheck(active.length ? active : matches) ?? null;
@@ -308,15 +320,9 @@ export function matrixConclusion(matrix: MatrixEvaluation): {
 }
 
 function activeProxy(target: MatrixTargetResult, pull: MatrixPull): boolean {
-  const externalId = String(target.checkRun?.external_id ?? '');
-  const identity = parseStewardCheckExternalId(externalId);
-  const matchesTarget = identity
-    ? identity.checkId === target.id
-      && identity.prNumber === pull.number
-      && identity.headSha === pull.head.sha.toLowerCase()
-    : externalId.startsWith(`matrix-proxy:${target.id}:pr:${pull.number}:head:${pull.head.sha}:fingerprint:`);
   return ['queued', 'in_progress'].includes(String(target.checkRun?.status ?? ''))
-    && matchesTarget;
+    && Boolean(target.checkRun)
+    && proxyMatchesTarget(target, target.checkRun!, pull);
 }
 
 function latestWorkflowJob(
@@ -422,7 +428,8 @@ export function planProxyCompletions(input: {
       target: target.id,
       action: 'complete-proxy-check',
       checkRunId: Number(target.checkRun?.id),
-      conclusion: target.acceptableConclusions.includes(job.conclusion) ? 'success' : 'failure',
+      conclusion: (target.acceptableConclusions.length ? target.acceptableConclusions : ['success'])
+        .includes(job.conclusion) ? 'success' : 'failure',
       sourceJobId: job.id,
       sourceUrl: String(job.html_url ?? job.details_url ?? input.workflowRun.html_url ?? ''),
     });
