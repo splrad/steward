@@ -137,24 +137,4 @@ describe('architecture boundary', () => {
     }
     expect(violations).toEqual([]);
   });
-
-  it('publishes the normative architecture and reference checklist', async () => {
-    const overview = await readFile('docs/architecture/README.md', 'utf8');
-    const references = await readFile('docs/architecture/reference-baseline.md', 'utf8');
-    for (const heading of [
-      '## System boundary',
-      '## Architecture planes',
-      '## Dependency direction',
-      '## Trusted data flow',
-      '## Version and compatibility model',
-      '## Extension model',
-      '## Failure and presentation semantics',
-      '## Permissions and credentials',
-      '## Deployment topology',
-      '## Definition of done for a shared module',
-    ]) expect(overview).toContain(heading);
-    for (const reference of ['.NET Arcade', 'Kubernetes Prow', 'GitHub reusable automation']) {
-      expect(references).toContain(`## ${reference}`);
-    }
-  });
 });

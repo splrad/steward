@@ -12,8 +12,6 @@ The project is being extracted from a production-tested, event-driven workflow. 
 
 The repository contains a reproducible development foundation, the default-branch Manifest trust boundary, and the first shared identity, fingerprint, hidden-state, and pagination contracts. Remaining governance behavior is moving in dependency order before the sandbox or any production repository consumes it.
 
-The normative system design and module acceptance criteria are documented in [Steward architecture](docs/architecture/README.md). The [reference architecture baseline](docs/architecture/reference-baseline.md) records which Arcade, Prow, GitHub, Microsoft, and Azure SDK patterns Steward adopts or rejects.
-
 ## Repository layout
 
 - `action/`: bundled JavaScript Action published directly from a pinned commit.
@@ -21,7 +19,6 @@ The normative system design and module acceptance criteria are documented in [St
 - `schema/`: versioned project manifest schema.
 - `templates/`: thin workflows, manifest examples, and release-adapter templates.
 - `tests/`: contracts, fixtures, and static policy checks.
-- `docs/architecture/`: normative boundaries, trust model, versioning, and reference checklist.
 - `docs/migration/`: source-to-Steward compatibility and migration records.
 
 ## Development
