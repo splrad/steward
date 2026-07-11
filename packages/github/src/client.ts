@@ -119,7 +119,7 @@ function checkMutationBody(input: CheckRunUpdate): Record<string, unknown> {
     ...(input.externalId === undefined ? {} : { external_id: input.externalId }),
     ...(input.conclusion === undefined ? {} : { conclusion: input.conclusion }),
     ...(input.detailsUrl === undefined ? {} : { details_url: input.detailsUrl }),
-    ...(!input.title && !input.summary ? {} : {
+    ...(input.title === undefined && input.summary === undefined ? {} : {
       output: { title: input.title ?? input.name, summary: input.summary ?? '' },
     }),
   };
@@ -148,7 +148,10 @@ query($owner: String!, $repository: String!, $number: Int!, $cursor: String) {
 }`;
 
 export class GitHubRepositoryClient implements ManifestRepositoryClient {
-  constructor(private readonly transport: GitHubTransport) {}
+  constructor(
+    private readonly transport: GitHubTransport,
+    private readonly graphqlTransport: GitHubTransport = transport,
+  ) {}
 
   async getRepository(owner: string, repository: string): Promise<GitHubRepositoryMetadata> {
     const payload = await this.transport.request<{
@@ -256,7 +259,7 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
           nodes?: GitHubReviewThread[];
         } | null } | null } | null };
         errors?: { message?: string }[];
-      } = await this.transport.request({
+      } = await this.graphqlTransport.request({
         method: 'POST',
         path: '/graphql',
         body: { query: reviewThreadsQuery, variables: { owner, repository, number, cursor } },

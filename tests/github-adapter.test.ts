@@ -235,6 +235,52 @@ describe('GitHub repository adapter', () => {
     await expect(truncated.listReviewThreads('splrad', 'steward', 6)).rejects.toThrow('100-comment limit');
   });
 
+  it('uses a separately confined GraphQL transport for GitHub Enterprise Server', async () => {
+    const restFetcher = vi.fn(async () => new Response('{}')) as unknown as typeof fetch;
+    const graphqlFetcher = vi.fn(async () => new Response(JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [],
+            },
+          },
+        },
+      },
+    }))) as unknown as typeof fetch;
+    const client = new GitHubRepositoryClient(
+      createGitHubRestTransport({
+        token: 'token', baseUrl: 'https://github.example/api/v3/', fetch: restFetcher,
+      }),
+      createGitHubRestTransport({
+        token: 'token', baseUrl: 'https://github.example/api/', fetch: graphqlFetcher,
+      }),
+    );
+
+    await expect(client.listReviewThreads('splrad', 'steward', 7)).resolves.toEqual([]);
+    expect(restFetcher).not.toHaveBeenCalled();
+    expect(graphqlFetcher).toHaveBeenCalledWith(
+      new URL('https://github.example/api/graphql'),
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('distinguishes omitted Check output from explicitly empty fields', async () => {
+    const { transport, requests } = mockTransport(() => ({ id: 1, name: 'Gate', status: 'in_progress' }));
+    const client = new GitHubRepositoryClient(transport);
+
+    await client.updateCheckRun('splrad', 'steward', 1, {
+      name: 'Gate', status: 'in_progress', title: '', summary: '',
+    });
+    await client.updateCheckRun('splrad', 'steward', 1, {
+      name: 'Gate', status: 'in_progress',
+    });
+
+    expect(requests[0]?.body).toMatchObject({ output: { title: '', summary: '' } });
+    expect(requests[1]?.body).not.toHaveProperty('output');
+  });
+
   it('maps one explicit adapter call to one GitHub mutation', async () => {
     const { transport, requests } = mockTransport((request) => (
       request.path.includes('/check-runs') ? { id: 1, name: 'Gate', status: 'in_progress' } : undefined
