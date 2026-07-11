@@ -69,6 +69,36 @@ describe('GitHub REST transport', () => {
     await expect(transport.request({ path: '//example.test/steal' })).rejects.toThrow('root-relative');
   });
 
+  it('rejects ambiguous raw paths before URL or proxy normalization', async () => {
+    const fetcher = vi.fn(async () => new Response('{}')) as unknown as typeof fetch;
+    const transport = createGitHubRestTransport({
+      token: 'token',
+      baseUrl: 'https://github.example/api/v3/',
+      fetch: fetcher,
+    });
+
+    for (const path of [
+      '/repos/../admin',
+      '/repos/%2e%2e/admin',
+      '/repos//admin',
+      '/repos\\admin',
+      '/repos/%5cadmin',
+      '/repos/%',
+      '/repos?per_page=100',
+      '/repos#fragment',
+    ]) {
+      await expect(transport.request({ path })).rejects.toThrow('GitHub API request path');
+    }
+    expect(fetcher).not.toHaveBeenCalled();
+
+    await expect(transport.request({ path: '/repos/splrad/steward', query: { per_page: 100 } }))
+      .resolves.toEqual({});
+    expect(fetcher).toHaveBeenCalledWith(
+      new URL('https://github.example/api/v3/repos/splrad/steward?per_page=100'),
+      expect.any(Object),
+    );
+  });
+
   it('returns bounded error metadata without exposing the token', async () => {
     const transport = createGitHubRestTransport({
       token: 'never-print-this',

@@ -45,6 +45,23 @@ function requestUrl(base: URL, request: GitHubRequest): URL {
   if (!request.path.startsWith('/') || request.path.startsWith('//')) {
     throw new Error('GitHub API request path must be a root-relative path');
   }
+  if (request.path.includes('?') || request.path.includes('#')) {
+    throw new Error('GitHub API request path must not contain a query or fragment');
+  }
+  for (const rawSegment of request.path.slice(1).split('/')) {
+    if (!rawSegment || rawSegment.includes('\\')) {
+      throw new Error('GitHub API request path contains an unsafe path segment');
+    }
+    let decodedSegment: string;
+    try {
+      decodedSegment = decodeURIComponent(rawSegment);
+    } catch {
+      throw new Error('GitHub API request path contains invalid percent encoding');
+    }
+    if (decodedSegment === '.' || decodedSegment === '..' || decodedSegment.includes('\\')) {
+      throw new Error('GitHub API request path contains an unsafe path segment');
+    }
+  }
   const url = new URL(request.path.slice(1), base);
   if (url.origin !== base.origin || !url.pathname.startsWith(base.pathname)) {
     throw new Error('GitHub API request path escaped the configured API base URL');
