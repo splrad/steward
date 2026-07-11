@@ -2,9 +2,11 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 const actionSha = 'dd0faabda91ca5dcd8d8d6dd3894bfe2665ab8b0';
+const classificationActionSha = '1c0f9dc834c7f8a9f49990fb3449e091d8e5ed2f';
 const appTokenSha = 'bcd2ba49218906704ab6c1aa796996da409d3eb1';
 const repositoryRoot = new URL('../', import.meta.url);
 const workflowPaths = [
+  '.github/workflows/pr-classification.yml',
   '.github/workflows/pr-governance.yml',
   '.github/workflows/pr-review-signal.yml',
   '.github/workflows/pr-validation-matrix.yml',
@@ -33,6 +35,9 @@ describe('First reusable workflow contracts', () => {
     }
     expect(files['.github/workflows/pr-governance.yml']).toContain(`splrad/steward/action@${actionSha}`);
     expect(files['.github/workflows/pr-validation-matrix.yml']).toContain(`splrad/steward/action@${actionSha}`);
+    expect(files['.github/workflows/pr-classification.yml']).toContain(
+      `splrad/steward/action@${classificationActionSha}`,
+    );
     expect(`${files['.github/workflows/pr-governance.yml']}\n${files['.github/workflows/pr-validation-matrix.yml']}`)
       .toContain(`actions/create-github-app-token@${appTokenSha}`);
   });
@@ -65,6 +70,8 @@ describe('First reusable workflow contracts', () => {
 
   it('records the caller-owned path and run-name trust boundary', async () => {
     const contract = await readFile(new URL('docs/reusable-workflows.md', repositoryRoot), 'utf8');
+    expect(contract).toContain('.github/workflows/pr-classification.yml');
+    expect(contract).toContain('PR Validation Target #<PR> / <40-character-head-SHA> / classification');
     expect(contract).toContain('.github/workflows/pr-governance.yml');
     expect(contract).toContain('PR Validation Target #<PR> / <40-character-head-SHA> / <scope>');
     expect(contract).toContain('.github/workflows/pr-review-signal.yml');
@@ -84,6 +91,20 @@ describe('First reusable workflow contracts', () => {
     expect(matrix).toContain('name: Evaluate PR Validation Matrix');
     expect(matrix).toContain('permission-checks: write');
     expect(matrix).toContain('cancel-in-progress: true');
+  });
+
+  it('gives Classification only its fixed App-token mutations and no caller policy surface', async () => {
+    const classification = (await workflows())['.github/workflows/pr-classification.yml'];
+    expect(classification).toContain('name: Classify Pull Request');
+    expect(classification).toContain('operation: classification');
+    expect(classification).toContain('permission-checks: write');
+    expect(classification).toContain('permission-contents: read');
+    expect(classification).toContain('permission-issues: write');
+    expect(classification).toContain('permission-pull-requests: write');
+    expect(classification).toContain('cancel-in-progress: true');
+    expect(classification).not.toContain('mutation-token:');
+    expect(classification).not.toContain('actions/checkout');
+    expect(classification.match(/^\s*uses:/gm)).toHaveLength(2);
   });
 
   it('does not expose project policy through called workflow inputs', async () => {

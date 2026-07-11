@@ -1,0 +1,64 @@
+name: PR Classification
+
+on:
+  workflow_call:
+    inputs:
+      app_client_id:
+        description: GitHub App client ID used to mint the Classification platform token.
+        required: true
+        type: string
+      pr_number:
+        description: Pull request number to classify.
+        required: true
+        type: number
+      head_sha:
+        description: Expected current pull request head SHA.
+        required: true
+        type: string
+    secrets:
+      app_private_key:
+        description: Private key for the installed Steward GitHub App.
+        required: true
+    outputs:
+      state:
+        description: Classification operation state.
+        value: ${{ jobs.classify.outputs.state }}
+      operation_result:
+        description: Serialized Classification operation result.
+        value: ${{ jobs.classify.outputs.operation_result }}
+
+concurrency:
+  group: steward-classification-${{ github.repository_id }}-${{ inputs.pr_number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  classify:
+    name: Classify Pull Request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      state: ${{ steps.steward.outputs.state }}
+      operation_result: ${{ steps.steward.outputs['operation-result'] }}
+    steps:
+      - name: Create Classification platform token
+        id: platform_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ inputs.app_client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          permission-checks: write
+          permission-contents: read
+          permission-issues: write
+          permission-pull-requests: write
+
+      - name: Classify and converge pull request
+        id: steward
+        uses: splrad/steward/action@1c0f9dc834c7f8a9f49990fb3449e091d8e5ed2f
+        with:
+          operation: classification
+          github-token: ${{ steps.platform_token.outputs.token }}
+          pr-number: ${{ inputs.pr_number }}
+          head-sha: ${{ inputs.head_sha }}
