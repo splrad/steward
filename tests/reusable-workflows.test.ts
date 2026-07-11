@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 const actionSha = 'dd0faabda91ca5dcd8d8d6dd3894bfe2665ab8b0';
 const classificationActionSha = '1c0f9dc834c7f8a9f49990fb3449e091d8e5ed2f';
+const matrixActionSha = '7c3cc81252a9c484b1a47867b0451d5fcb78ae42';
 const appTokenSha = 'bcd2ba49218906704ab6c1aa796996da409d3eb1';
 const repositoryRoot = new URL('../', import.meta.url);
 const workflowPaths = [
@@ -34,7 +35,9 @@ describe('First reusable workflow contracts', () => {
       expect(source, path).not.toMatch(/^\s*environment:/m);
     }
     expect(files['.github/workflows/pr-governance.yml']).toContain(`splrad/steward/action@${actionSha}`);
-    expect(files['.github/workflows/pr-validation-matrix.yml']).toContain(`splrad/steward/action@${actionSha}`);
+    expect(files['.github/workflows/pr-validation-matrix.yml']).toContain(
+      `splrad/steward/action@${matrixActionSha}`,
+    );
     expect(files['.github/workflows/pr-classification.yml']).toContain(
       `splrad/steward/action@${classificationActionSha}`,
     );
@@ -71,9 +74,9 @@ describe('First reusable workflow contracts', () => {
   it('records the caller-owned path and run-name trust boundary', async () => {
     const contract = await readFile(new URL('docs/reusable-workflows.md', repositoryRoot), 'utf8');
     expect(contract).toContain('.github/workflows/pr-classification.yml');
-    expect(contract).toContain('PR Validation Target #<PR> / <40-character-head-SHA> / classification');
+    expect(contract).toContain('PR Validation Target #<PR> / <40-character-head-SHA>');
     expect(contract).toContain('.github/workflows/pr-governance.yml');
-    expect(contract).toContain('PR Validation Target #<PR> / <40-character-head-SHA> / <scope>');
+    expect(contract).not.toContain('PR Validation Target #<PR> / <40-character-head-SHA> / <scope>');
     expect(contract).toContain('.github/workflows/pr-review-signal.yml');
     expect(contract).toContain('PR Review Signal #<PR> / <40-character-head-SHA> / <source-event> / <source-action>');
     expect(contract).toContain('does not replace the caller\'s trigger, file identity, or `run-name`');
@@ -88,9 +91,29 @@ describe('First reusable workflow contracts', () => {
       expect(source, path).not.toMatch(/^\s+actions:\s*write$/m);
     }
     const matrix = files['.github/workflows/pr-validation-matrix.yml'];
+    const concurrency = matrix.match(/concurrency:\r?\n\s+group: >-[\s\S]*?\r?\n\s+cancel-in-progress: true/)?.[0];
     expect(matrix).toContain('name: Evaluate PR Validation Matrix');
     expect(matrix).toContain('permission-checks: write');
     expect(matrix).toContain('cancel-in-progress: true');
+    expect(concurrency).toBeDefined();
+    expect(concurrency).toContain('github.event.pull_request.number');
+    expect(concurrency).toContain("startsWith(github.event.workflow_run.display_title, 'PR Validation Target #')");
+    expect(concurrency).toContain("startsWith(github.event.workflow_run.display_title, 'PR Review Signal #')");
+    expect(concurrency).toContain('&& github.event.workflow_run.display_title');
+    expect(concurrency).toContain("startsWith(github.event.workflow_run.name, 'PR Validation Target #')");
+    expect(concurrency).toContain('&& github.event.workflow_run.name');
+    expect(concurrency).toContain('|| github.event.workflow_run.pull_requests[0].number');
+    expect(concurrency).toContain('|| inputs.pr_number');
+    expect(concurrency).toContain('|| github.run_id');
+    expect(matrix).not.toContain('group: steward-matrix-${{ github.repository_id }}-${{ inputs.pr_number }}');
+    expect(concurrency!.indexOf('github.event.pull_request.number')).toBeLessThan(concurrency!.indexOf('inputs.pr_number'));
+    expect(concurrency!.indexOf('github.event.workflow_run.display_title'))
+      .toBeLessThan(concurrency!.indexOf('github.event.workflow_run.pull_requests[0].number'));
+    expect(concurrency!.indexOf('github.event.workflow_run.name'))
+      .toBeLessThan(concurrency!.indexOf('github.event.workflow_run.pull_requests[0].number'));
+    expect(concurrency!.indexOf('github.event.workflow_run.display_title')).toBeLessThan(concurrency!.indexOf('inputs.pr_number'));
+    expect(matrix).toMatch(/pr_number:\r?\n\s+description:[^\r\n]+\r?\n\s+required: false\r?\n\s+default: 0/);
+    expect(matrix).toMatch(/head_sha:\r?\n\s+description:[^\r\n]+\r?\n\s+required: false\r?\n\s+default: ''/);
   });
 
   it('gives Classification only its fixed App-token mutations and no caller policy surface', async () => {

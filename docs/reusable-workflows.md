@@ -7,13 +7,15 @@ Consumer callers must therefore:
 - pin the Steward reusable workflow to a complete commit SHA;
 - grant only `contents: read` to the calling job and pass named secrets explicitly rather than using `secrets: inherit`;
 - derive `pr_number`, `head_sha`, event name, and event action only from the native event payload or a previously validated relay payload;
-- keep the Classification caller at `.github/workflows/pr-classification.yml` with `run-name: "PR Validation Target #<PR> / <40-character-head-SHA> / classification"`;
-- keep the Governance caller at `.github/workflows/pr-governance.yml` with `run-name: "PR Validation Target #<PR> / <40-character-head-SHA> / <scope>"`;
+- keep the Classification caller at `.github/workflows/pr-classification.yml` with `run-name: "PR Validation Target #<PR> / <40-character-head-SHA>"`;
+- keep the Governance caller at `.github/workflows/pr-governance.yml` with the same `run-name: "PR Validation Target #<PR> / <40-character-head-SHA>"`; `governance_scope` remains an explicit reusable-workflow input, not part of the trusted identity;
 - keep the Review Signal caller at `.github/workflows/pr-review-signal.yml` with `run-name: "PR Review Signal #<PR> / <40-character-head-SHA> / <source-event> / <source-action>"`;
 - keep Matrix as the only caller of `.github/workflows/pr-validation-matrix.yml` that receives the App private key used to request `Actions: write` on an installation token.
 
 The Governance called workflow reads the default-branch Manifest before human-token jobs. Disabled features skip the corresponding Copilot request or automatic approval, but their platform Gate operation still runs once to remove stale Check/comment state. Missing optional human secrets fail explicitly only when the relevant feature and scope require them.
 
 The Classification called workflow mints one repository installation token with `Contents: read` plus `Checks`, `Issues`, and `Pull requests: write`. It does not checkout caller code, receive a human token, or receive label/path/Check policy as input. A disabled Classification feature returns `ignored` without creating a custom Check or trusting editable PR metadata to remove labels.
+
+The Matrix caller may leave `pr_number` and `head_sha` at their defaults for native PR, check, repository-dispatch, and workflow-run events. For `workflow_run`, Steward derives both values only from a fixed trusted target path/event and its validated run-name; it does not trust `workflow_run.head_sha`, and it does not require GitHub's `pull_requests` association to be populated. Matrix concurrency gives native event identity precedence over caller inputs and gives a fixed workflow run-name precedence over an optional workflow-run PR association. `display_title` is used only with the `PR Validation Target #` or `PR Review Signal #` identity prefix; if it is absent, `workflow_run.name` is used only with the target prefix. Plain or unrelated names never become cross-PR group keys. Classification and Governance share the same PR/head run-name so their target completions serialize together; legacy suffixed run-names remain readable during migration. Manual dispatch callers must still provide the PR number and should provide the expected head SHA.
 
 These caller requirements are security contracts, not project policy. Check names, workflow target catalog, maintainer identity, labels, paths, and account choices remain in Steward or the default-branch Manifest and are not caller inputs.
