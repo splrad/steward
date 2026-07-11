@@ -1,4 +1,4 @@
-import { manifestDigest, normalizeManifest } from './normalize.js';
+import { digestCanonicalManifestJson, normalizeManifest } from './normalize.js';
 import { parseManifest } from './schema.js';
 import { MANIFEST_PATH, type StewardManifest } from './types.js';
 
@@ -59,10 +59,11 @@ export async function loadDefaultBranchManifest(
     throw new Error('GitHub returned an invalid Steward manifest file response');
   }
   const manifest = normalizeManifest(parseManifest(parseJson(decodeBase64(file.content))));
+  const canonicalJson = JSON.stringify(manifest);
   return {
     manifest,
-    canonicalJson: JSON.stringify(manifest),
-    configDigest: manifestDigest(manifest),
+    canonicalJson,
+    configDigest: digestCanonicalManifestJson(canonicalJson),
     source: {
       path: MANIFEST_PATH,
       ref: metadata.defaultBranch,

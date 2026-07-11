@@ -36,6 +36,10 @@ export function canonicalManifestJson(manifest: StewardManifest): string {
   return JSON.stringify(normalizeManifest(manifest));
 }
 
+export function digestCanonicalManifestJson(canonicalJson: string): string {
+  return createHash('sha256').update(canonicalJson, 'utf8').digest('hex');
+}
+
 export function manifestDigest(manifest: StewardManifest): string {
-  return createHash('sha256').update(canonicalManifestJson(manifest), 'utf8').digest('hex');
+  return digestCanonicalManifestJson(canonicalManifestJson(manifest));
 }
