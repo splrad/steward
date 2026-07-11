@@ -1,0 +1,210 @@
+name: PR Governance
+
+on:
+  workflow_call:
+    inputs:
+      app_client_id:
+        description: GitHub App client ID used to mint repository-scoped platform tokens.
+        required: true
+        type: string
+      pr_number:
+        description: Pull request number to validate.
+        required: true
+        type: number
+      head_sha:
+        description: Expected current pull request head SHA.
+        required: true
+        type: string
+      governance_scope:
+        description: all, main-authorization, or copilot-review.
+        required: false
+        default: all
+        type: string
+    secrets:
+      app_private_key:
+        description: Private key for the installed Steward GitHub App.
+        required: true
+      copilot_review_request_token:
+        description: Copilot-entitled user token; required only when Copilot review is enabled.
+        required: false
+      core_auto_approval_token:
+        description: Core maintainer token; required only when Governance is enabled.
+        required: false
+    outputs:
+      main_state:
+        description: Main Authorization operation state when that feature and scope run.
+        value: ${{ jobs.main_authorization.outputs.state }}
+      copilot_state:
+        description: Copilot review operation state when that feature and scope run.
+        value: ${{ jobs.copilot_review.outputs.state }}
+
+concurrency:
+  group: steward-governance-${{ github.repository_id }}-${{ inputs.pr_number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate_contract:
+    name: Validate Governance Contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Validate requested scope
+        env:
+          GOVERNANCE_SCOPE: ${{ inputs.governance_scope }}
+        run: |
+          case "$GOVERNANCE_SCOPE" in
+            all|main-authorization|copilot-review) ;;
+            *) echo "::error::Unsupported Governance scope: $GOVERNANCE_SCOPE"; exit 1 ;;
+          esac
+
+  preflight:
+    name: Load Governance Features
+    needs: validate_contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      governance_enabled: ${{ steps.steward.outputs['governance-enabled'] }}
+      copilot_review_enabled: ${{ steps.steward.outputs['copilot-review-enabled'] }}
+    steps:
+      - name: Create read-only platform token
+        id: platform_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ inputs.app_client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          permission-contents: read
+          permission-pull-requests: read
+
+      - name: Load trusted Manifest feature switches
+        id: steward
+        uses: splrad/steward/action@dd0faabda91ca5dcd8d8d6dd3894bfe2665ab8b0
+        with:
+          operation: governance-preflight
+          github-token: ${{ steps.platform_token.outputs.token }}
+          pr-number: ${{ inputs.pr_number }}
+          head-sha: ${{ inputs.head_sha }}
+
+  request_copilot:
+    name: Request Copilot Review
+    needs: preflight
+    if: >-
+      needs.preflight.outputs.copilot_review_enabled == 'true' &&
+      inputs.governance_scope != 'main-authorization'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Create read-only platform token
+        id: platform_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ inputs.app_client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          permission-contents: read
+          permission-pull-requests: read
+
+      - name: Request official Copilot reviewer
+        uses: splrad/steward/action@dd0faabda91ca5dcd8d8d6dd3894bfe2665ab8b0
+        with:
+          operation: governance-request-copilot
+          github-token: ${{ steps.platform_token.outputs.token }}
+          mutation-token: ${{ secrets.copilot_review_request_token }}
+          pr-number: ${{ inputs.pr_number }}
+          head-sha: ${{ inputs.head_sha }}
+
+  auto_approve:
+    name: Auto Approve
+    needs: preflight
+    if: >-
+      needs.preflight.outputs.governance_enabled == 'true' &&
+      inputs.governance_scope != 'copilot-review'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Create read-only platform token
+        id: platform_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ inputs.app_client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          permission-contents: read
+          permission-members: read
+          permission-pull-requests: read
+
+      - name: Submit eligible core approval
+        uses: splrad/steward/action@dd0faabda91ca5dcd8d8d6dd3894bfe2665ab8b0
+        with:
+          operation: governance-auto-approve
+          github-token: ${{ steps.platform_token.outputs.token }}
+          mutation-token: ${{ secrets.core_auto_approval_token }}
+          pr-number: ${{ inputs.pr_number }}
+          head-sha: ${{ inputs.head_sha }}
+
+  main_authorization:
+    name: Main Authorization Gate
+    needs: [preflight, auto_approve]
+    if: >-
+      always() &&
+      needs.preflight.result == 'success' &&
+      inputs.governance_scope != 'copilot-review'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      state: ${{ steps.steward.outputs.state }}
+    steps:
+      - name: Create Governance platform token
+        id: platform_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ inputs.app_client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          permission-checks: write
+          permission-contents: read
+          permission-issues: write
+          permission-members: read
+          permission-pull-requests: write
+
+      - name: Evaluate Main Authorization
+        id: steward
+        uses: splrad/steward/action@dd0faabda91ca5dcd8d8d6dd3894bfe2665ab8b0
+        with:
+          operation: governance-main
+          github-token: ${{ steps.platform_token.outputs.token }}
+          pr-number: ${{ inputs.pr_number }}
+          head-sha: ${{ inputs.head_sha }}
+
+  copilot_review:
+    name: Update Copilot Review Check
+    needs: [preflight, request_copilot, main_authorization]
+    if: >-
+      always() &&
+      needs.preflight.result == 'success' &&
+      inputs.governance_scope != 'main-authorization'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      state: ${{ steps.steward.outputs.state }}
+    steps:
+      - name: Create Governance platform token
+        id: platform_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ inputs.app_client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          permission-checks: write
+          permission-contents: read
+          permission-issues: write
+          permission-members: read
+          permission-pull-requests: write
+
+      - name: Evaluate Copilot review state
+        id: steward
+        uses: splrad/steward/action@dd0faabda91ca5dcd8d8d6dd3894bfe2665ab8b0
+        with:
+          operation: governance-copilot
+          github-token: ${{ steps.platform_token.outputs.token }}
+          pr-number: ${{ inputs.pr_number }}
+          head-sha: ${{ inputs.head_sha }}
+          request-result: ${{ needs.request_copilot.result }}

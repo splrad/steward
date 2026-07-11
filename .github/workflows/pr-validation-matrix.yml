@@ -1,0 +1,76 @@
+name: PR Validation Matrix
+
+on:
+  workflow_call:
+    inputs:
+      app_client_id:
+        description: GitHub App client ID used to mint the Matrix platform token.
+        required: true
+        type: string
+      pr_number:
+        description: Pull request number to validate.
+        required: true
+        type: number
+      head_sha:
+        description: Expected current pull request head SHA.
+        required: true
+        type: string
+      scope:
+        description: auto, full, or gate-only.
+        required: false
+        default: auto
+        type: string
+      mode:
+        description: observe, repair, or enforce.
+        required: false
+        default: enforce
+        type: string
+    secrets:
+      app_private_key:
+        description: Private key for the installed Steward GitHub App.
+        required: true
+    outputs:
+      state:
+        description: Matrix operation state.
+        value: ${{ jobs.matrix.outputs.state }}
+      operation_result:
+        description: Serialized Matrix operation result.
+        value: ${{ jobs.matrix.outputs.operation_result }}
+
+concurrency:
+  group: steward-matrix-${{ github.repository_id }}-${{ inputs.pr_number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    name: Evaluate PR Validation Matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      state: ${{ steps.steward.outputs.state }}
+      operation_result: ${{ steps.steward.outputs['operation-result'] }}
+    steps:
+      - name: Create Matrix platform token
+        id: platform_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ inputs.app_client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          permission-actions: write
+          permission-checks: write
+          permission-contents: read
+          permission-pull-requests: read
+
+      - name: Evaluate and converge PR validation matrix
+        id: steward
+        uses: splrad/steward/action@dd0faabda91ca5dcd8d8d6dd3894bfe2665ab8b0
+        with:
+          operation: matrix
+          github-token: ${{ steps.platform_token.outputs.token }}
+          pr-number: ${{ inputs.pr_number }}
+          head-sha: ${{ inputs.head_sha }}
+          matrix-mode: ${{ inputs.mode }}
+          matrix-scope: ${{ inputs.scope }}
