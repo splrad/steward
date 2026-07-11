@@ -6,11 +6,13 @@ const headSha = 'a'.repeat(40);
 
 class MemoryCoordinatorNamespace {
   values = new Map<string, { state: 'claimed' | 'dispatched'; updatedAt: number }>();
+  failures = new Set<string>();
 
   getByName(name: string) {
     return {
       fetch: async (input: RequestInfo | URL) => {
         const action = new URL(String(input)).pathname;
+        if (this.failures.has(action)) throw new Error(`Coordinator ${action} unavailable`);
         if (action === '/claim') {
           const existing = this.values.get(name);
           if (existing?.state === 'dispatched') return new Response('Duplicate delivery');
@@ -346,6 +348,41 @@ describe('webhook relay', () => {
     expect(coordinator.values.has('42:delivery-1')).toBe(false);
   });
 
+  it('returns a controlled retry response when the delivery claim is unavailable', async () => {
+    const coordinator = new MemoryCoordinatorNamespace();
+    coordinator.failures.add('/claim');
+    const githubFetch = githubApi();
+    const result = await handleRequest(
+      await requestFor('pull_request_review_thread', JSON.stringify(payload())),
+      environment(coordinator),
+      {
+        fetch: githubFetch as typeof fetch,
+        installationToken: vi.fn().mockResolvedValue('installation-token'),
+      },
+    );
+
+    expect(result.status).toBe(503);
+    expect(await result.text()).toBe('Delivery coordinator unavailable');
+    expect(githubFetch).not.toHaveBeenCalled();
+  });
+
+  it('preserves the original failure when releasing a claim is unavailable', async () => {
+    const coordinator = new MemoryCoordinatorNamespace();
+    coordinator.failures.add('/release');
+    const result = await handleRequest(
+      await requestFor('pull_request_review_thread', JSON.stringify(payload())),
+      environment(coordinator),
+      {
+        fetch: vi.fn(),
+        installationToken: vi.fn().mockRejectedValue(new Error('not installed')),
+      },
+    );
+
+    expect(result.status).toBe(502);
+    expect(await result.text()).toBe('GitHub installation token creation failed');
+    expect(coordinator.values.get('42:delivery-1')?.state).toBe('claimed');
+  });
+
   it('serializes concurrent retries before dispatch', async () => {
     const coordinator = new MemoryCoordinatorNamespace();
     const body = JSON.stringify(payload());
@@ -388,6 +425,34 @@ describe('webhook relay', () => {
     });
     expect(result.status).toBe(502);
     expect(coordinator.values.has('42:delivery-1')).toBe(false);
+  });
+
+  it('acknowledges a successful dispatch when completion state cannot be persisted', async () => {
+    const coordinator = new MemoryCoordinatorNamespace();
+    coordinator.failures.add('/complete');
+    const githubFetch = githubApi();
+    const dependencies = {
+      fetch: githubFetch as typeof fetch,
+      installationToken: vi.fn().mockResolvedValue('installation-token'),
+    };
+    const body = JSON.stringify(payload());
+
+    const dispatched = await handleRequest(
+      await requestFor('pull_request_review_thread', body),
+      environment(coordinator),
+      dependencies,
+    );
+    const immediateRetry = await handleRequest(
+      await requestFor('pull_request_review_thread', body),
+      environment(coordinator),
+      dependencies,
+    );
+
+    expect(dispatched.status).toBe(202);
+    expect(await dispatched.text()).toBe('Dispatched; completion state unavailable');
+    expect(immediateRetry.status).toBe(503);
+    expect(dispatchCall(githubFetch as ReturnType<typeof githubApi>)).toBeDefined();
+    expect(githubFetch).toHaveBeenCalledTimes(2);
   });
 
   it('releases the claim when the dispatch outcome is unknown', async () => {

@@ -213,7 +213,12 @@ async function loadRelayPolicy(
 
 async function claimDelivery(env: Env, repositoryId: number, deliveryId: string) {
   const coordinator = env.DELIVERY_COORDINATOR.getByName(`${repositoryId}:${deliveryId}`);
-  const claim = await coordinator.fetch('https://delivery.internal/claim', { method: 'POST' });
+  let claim: Response;
+  try {
+    claim = await coordinator.fetch('https://delivery.internal/claim', { method: 'POST' });
+  } catch {
+    return { coordinator, result: response(503, 'Delivery coordinator unavailable') };
+  }
   if (claim.status === 200) return { coordinator, result: response(200, 'Duplicate delivery') };
   if (claim.status === 409) return { coordinator, result: response(503, 'Delivery is already processing') };
   if (!claim.ok) return { coordinator, result: response(503, `Delivery claim failed (${claim.status})`) };
@@ -221,12 +226,20 @@ async function claimDelivery(env: Env, repositoryId: number, deliveryId: string)
 }
 
 async function releaseDelivery(coordinator: DurableObjectStub): Promise<void> {
-  await coordinator.fetch('https://delivery.internal/release', { method: 'POST' });
+  try {
+    await coordinator.fetch('https://delivery.internal/release', { method: 'POST' });
+  } catch {
+    // The claim lease expires automatically; preserve the original failure response.
+  }
 }
 
-async function completeDelivery(coordinator: DurableObjectStub): Promise<Response | null> {
-  const completed = await coordinator.fetch('https://delivery.internal/complete', { method: 'POST' });
-  return completed.ok ? null : response(503, `Delivery completion failed (${completed.status})`);
+async function completeDelivery(coordinator: DurableObjectStub): Promise<boolean> {
+  try {
+    const completed = await coordinator.fetch('https://delivery.internal/complete', { method: 'POST' });
+    return completed.ok;
+  } catch {
+    return false;
+  }
 }
 
 export async function handleRequest(
@@ -328,8 +341,8 @@ export async function handleRequest(
     return response(502, `GitHub dispatch failed (${dispatchResponse.status})`);
   }
 
-  const completionFailure = await completeDelivery(coordinator);
-  return completionFailure || response(202, 'Dispatched');
+  const completed = await completeDelivery(coordinator);
+  return response(202, completed ? 'Dispatched' : 'Dispatched; completion state unavailable');
 }
 
 export default {
