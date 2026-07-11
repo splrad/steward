@@ -16,5 +16,6 @@
     "target": "ES2024",
     "types": ["node", "vitest/globals"]
   },
-  "include": ["action/src/**/*.ts", "packages/**/*.ts", "tests/**/*.ts"]
+  "include": ["action/src/**/*.ts", "packages/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["packages/relay/**/*.ts"]
 }

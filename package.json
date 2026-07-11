@@ -10,22 +10,27 @@
   "packageManager": "npm@11.11.0",
   "scripts": {
     "build": "node scripts/build.mjs",
+    "deploy:relay": "wrangler deploy --config packages/relay/wrangler.toml",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
+    "test:relay": "vitest run packages/relay/test",
+    "typecheck": "tsc --noEmit && tsc -p packages/relay/tsconfig.json",
     "verify": "npm run test && npm run typecheck && npm run verify:dist && npm run verify:workflows",
     "verify:dist": "node scripts/verify-dist.mjs",
     "verify:workflows": "node scripts/verify-workflows.mjs"
   },
   "dependencies": {
-    "@actions/core": "3.0.1"
+    "@actions/core": "3.0.1",
+    "@octokit/auth-app": "8.2.0"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "5.20260710.1",
     "@types/node": "26.1.1",
     "@vercel/ncc": "0.44.1",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
     "typescript": "7.0.2",
     "vitest": "4.1.10",
+    "wrangler": "4.110.0",
     "yaml": "2.9.0"
   }
 }
