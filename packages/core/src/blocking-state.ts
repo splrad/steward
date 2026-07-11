@@ -65,7 +65,7 @@ export function normalizeBlockingFailure(
   return {
     source: String(failure.source ?? ''),
     title: String(failure.title ?? ''),
-    handlers: uniqueHumanLogins(failure.handlers ?? [], { botLogins }),
+    handlers: uniqueHumanLogins(Array.isArray(failure.handlers) ? failure.handlers : [], { botLogins }),
     details: Array.isArray(failure.details)
       ? failure.details.map((detail) => String(detail ?? '').trim()).filter(Boolean)
       : [],

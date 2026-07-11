@@ -8,6 +8,7 @@ import {
   formatMentions,
   isBotLogin,
   nextBlockingFailuresState,
+  normalizeBlockingFailure,
   normalizeGitHubLogin,
   orderedBlockingFailures,
   realContributorLoginsFromBody,
@@ -168,12 +169,21 @@ describe('blocking comment state', () => {
   it('tolerates malformed legacy failure entries without trusting their shape', () => {
     const malformed = {
       head: 'head-a',
-      failures: [null, 'invalid'] as unknown as { source?: unknown }[],
+      failures: [
+        null,
+        'invalid',
+        { source: 'main-authorization', handlers: 'Axiomoth' },
+      ] as unknown as { source?: unknown }[],
     };
-    expect(() => nextBlockingFailuresState(malformed, 'head-a', {
+    const next = nextBlockingFailuresState(malformed, 'head-a', {
       sourcePrefix: 'copilot-review',
       failures: [],
-    })).not.toThrow();
+    });
+    expect(next.failures).toHaveLength(3);
+    expect(normalizeBlockingFailure({
+      source: 'main-authorization',
+      handlers: 'Axiomoth' as unknown as string[],
+    }).handlers).toEqual([]);
   });
 });
 
