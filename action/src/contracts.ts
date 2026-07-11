@@ -2,6 +2,7 @@ import type { MatrixMode, MatrixScope } from '../../packages/core/src/index.js';
 
 export const stewardOperations = [
   'version',
+  'classification',
   'governance-preflight',
   'governance-request-copilot',
   'governance-auto-approve',
@@ -33,6 +34,7 @@ export interface StewardOperationDefinition {
 
 export const operationDefinitions: Readonly<Record<StewardOperation, StewardOperationDefinition>> = {
   version: { token: 'none', mutationToken: false, event: false, actionsWrite: false },
+  classification: { token: 'github', mutationToken: false, event: true, actionsWrite: false },
   'governance-preflight': { token: 'github', mutationToken: false, event: true, actionsWrite: false },
   'governance-request-copilot': { token: 'github', mutationToken: true, event: true, actionsWrite: false },
   'governance-auto-approve': { token: 'github', mutationToken: true, event: true, actionsWrite: false },

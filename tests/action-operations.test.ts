@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { fingerprintForPull, stewardCheckExternalId } from '../packages/core/src/index.js';
-import type { LoadedManifest, StewardManifest } from '../packages/manifest/src/index.js';
-import type { GitHubPullRequest, GitHubRepositoryClient } from '../packages/github/src/index.js';
+import type { ClassificationConfiguration, LoadedManifest, StewardManifest } from '../packages/manifest/src/index.js';
+import { GitHubApiError, type GitHubPullRequest, type GitHubRepositoryClient } from '../packages/github/src/index.js';
 import {
   operationDefinitions,
   parseMatrixMode,
@@ -48,6 +48,11 @@ function manifest(features: Partial<StewardManifest['features']> = {}): LoadedMa
   };
 }
 
+const classification = JSON.parse(await readFile(
+  new URL('./fixtures/cadfontautoreplace/classification.json', import.meta.url),
+  'utf8',
+)) as ClassificationConfiguration;
+
 function context(overrides: Record<string, unknown> = {}): {
   context: StewardOperationContext;
   client: Record<string, ReturnType<typeof vi.fn>>;
@@ -76,6 +81,11 @@ function context(overrides: Record<string, unknown> = {}): {
     listReviewThreads: vi.fn(async () => []),
     listWorkflowRuns: vi.fn(async () => []),
     listWorkflowJobs: vi.fn(async () => []),
+    getRepositoryLabel: vi.fn(async () => ({ name: 'feature', color: '000000' })),
+    createRepositoryLabel: vi.fn(async () => ({ name: 'feature', color: '000000' })),
+    addIssueLabels: vi.fn(async () => undefined),
+    removeIssueLabel: vi.fn(async () => undefined),
+    updatePullRequestBody: vi.fn(async () => undefined),
     requestReviewers: vi.fn(async () => undefined),
     createPullRequestReview: vi.fn(async () => undefined),
     createCheckRun: vi.fn(async (_owner, _repository, input) => ({ id: 1, ...input })),
@@ -116,6 +126,7 @@ describe('Action operation contract', () => {
       .toEqual(['matrix']);
     expect(parseOperation('governance-main')).toBe('governance-main');
     expect(parseOperation('governance-preflight')).toBe('governance-preflight');
+    expect(parseOperation('classification')).toBe('classification');
     expect(() => parseOperation('release')).toThrow('Unsupported Steward operation');
     expect(Object.entries(operationDefinitions).filter(([, definition]) => definition.mutationToken).map(([name]) => name))
       .toEqual(['governance-request-copilot', 'governance-auto-approve']);
@@ -258,6 +269,173 @@ describe('Action operation contract', () => {
     expect(fixture.mutationClient.getAuthenticatedUser).toHaveBeenCalledOnce();
     expect(fixture.mutationClient.createPullRequestReview).toHaveBeenCalledOnce();
     expect(fixture.client.createPullRequestReview).not.toHaveBeenCalled();
+  });
+
+  it('converges Classification through Manifest policy, GitHub primitives, metadata, and the App Check', async () => {
+    const fixture = context();
+    fixture.context.manifest = {
+      ...manifest({ classification: true }),
+      manifest: { ...manifest({ classification: true }).manifest, classification },
+    };
+    fixture.context.pull.labels = [{ name: 'documentation' }, { name: 'area:docs' }, { name: 'external' }];
+    fixture.client.listPullRequestFiles!.mockResolvedValue([{ filename: 'src/Options.cs' }]);
+
+    const result = await executeOperation('classification', fixture.context, { operation: 'classification' });
+
+    expect(result).toMatchObject({
+      state: 'passed',
+      details: { evaluation: { decision: { kind: 'kind:feature', publicLabels: ['feature'] } } },
+    });
+    expect(fixture.client.getRepositoryLabel).toHaveBeenCalledWith('splrad', 'steward', 'feature');
+    expect(fixture.client.removeIssueLabel).toHaveBeenCalledWith('splrad', 'steward', 7, 'documentation');
+    expect(fixture.client.removeIssueLabel).toHaveBeenCalledWith('splrad', 'steward', 7, 'area:docs');
+    expect(fixture.client.removeIssueLabel).not.toHaveBeenCalledWith('splrad', 'steward', 7, 'external');
+    expect(fixture.client.addIssueLabels).toHaveBeenCalledWith('splrad', 'steward', 7, ['feature']);
+    expect(fixture.client.updatePullRequestBody).toHaveBeenCalledWith(
+      'splrad', 'steward', 7, expect.stringContaining('visible-labels=feature'),
+    );
+    expect(fixture.client.createCheckRun).toHaveBeenCalledWith('splrad', 'steward', expect.objectContaining({
+      name: 'PR Classification Gate', status: 'completed', conclusion: 'success', headSha: 'c'.repeat(40),
+    }));
+  });
+
+  it('does not trust stale PR metadata to remove labels when Classification is disabled', async () => {
+    const fixture = context();
+    fixture.context.pull.body = '<!-- workflow:pr-classification:start\nvisible-labels=security\nworkflow:pr-classification:end -->';
+    const result = await executeOperation('classification', fixture.context, { operation: 'classification' });
+    expect(result).toMatchObject({ state: 'ignored' });
+    expect(fixture.client.listPullRequestFiles).not.toHaveBeenCalled();
+    expect(fixture.client.removeIssueLabel).not.toHaveBeenCalled();
+    expect(fixture.client.updatePullRequestBody).not.toHaveBeenCalled();
+    expect(fixture.client.createCheckRun).not.toHaveBeenCalled();
+  });
+
+  it('creates a missing managed label and tolerates only a confirmed concurrent creation race', async () => {
+    const fixture = context();
+    fixture.context.manifest = {
+      ...manifest({ classification: true }),
+      manifest: { ...manifest({ classification: true }).manifest, classification },
+    };
+    fixture.client.listPullRequestFiles!.mockResolvedValue([{ filename: 'src/Options.cs' }]);
+    fixture.client.getRepositoryLabel!
+      .mockRejectedValueOnce(new GitHubApiError({ status: 404, method: 'GET', path: '/labels/feature', message: 'missing' }))
+      .mockResolvedValueOnce({ name: 'feature', color: '000000' });
+    fixture.client.createRepositoryLabel!.mockRejectedValueOnce(new GitHubApiError({
+      status: 422, method: 'POST', path: '/labels', message: 'already exists',
+    }));
+
+    await executeOperation('classification', fixture.context, { operation: 'classification' });
+
+    expect(fixture.client.createRepositoryLabel).toHaveBeenCalledOnce();
+    expect(fixture.client.getRepositoryLabel).toHaveBeenCalledTimes(2);
+    expect(fixture.client.createCheckRun).toHaveBeenCalledOnce();
+  });
+
+  it('is a same-head no-op for converged labels and metadata while refreshing the matching App Check', async () => {
+    const fixture = context();
+    fixture.context.manifest = {
+      ...manifest({ classification: true }),
+      manifest: { ...manifest({ classification: true }).manifest, classification },
+    };
+    fixture.context.pull.labels = [{ name: 'FEATURE' }];
+    fixture.context.pull.body = [
+      '<!-- workflow:pr-classification:start',
+      'areas=area:runtime',
+      'kind=kind:feature',
+      'visible-labels=feature',
+      'release-labels=feature',
+      'workflow:pr-classification:end -->',
+    ].join('\n');
+    const files = [{ filename: 'src/Options.cs' }];
+    fixture.client.listPullRequestFiles!.mockResolvedValue(files);
+    const inputDigest = fingerprintForPull({
+      pull: fixture.context.pull,
+      commits: [{ sha: 'd'.repeat(40), author: { login: 'core' } }],
+      files,
+      botLogins: ['splrad-steward', 'copilot-pull-request-reviewer[bot]'],
+    }).value;
+    const externalId = stewardCheckExternalId({
+      repositoryId: 1296724484,
+      prNumber: 7,
+      headSha: 'c'.repeat(40),
+      checkId: 'pr-classification',
+      configDigest: 'a'.repeat(64),
+      inputDigest,
+    });
+    fixture.client.listCommitCheckRuns!.mockResolvedValue([{
+      id: 44,
+      name: 'PR Classification Gate',
+      status: 'completed',
+      conclusion: 'success',
+      external_id: externalId,
+      app: { slug: 'splrad-steward' },
+    }]);
+
+    await executeOperation('classification', fixture.context, { operation: 'classification' });
+
+    expect(fixture.client.getRepositoryLabel).not.toHaveBeenCalled();
+    expect(fixture.client.removeIssueLabel).not.toHaveBeenCalled();
+    expect(fixture.client.addIssueLabels).not.toHaveBeenCalled();
+    expect(fixture.client.updatePullRequestBody).not.toHaveBeenCalled();
+    expect(fixture.client.createCheckRun).not.toHaveBeenCalled();
+    expect(fixture.client.updateCheckRun).toHaveBeenCalledWith('splrad', 'steward', 44, expect.objectContaining({
+      externalId, status: 'completed', conclusion: 'success',
+    }));
+  });
+
+  it('never writes a passing Classification Check after a label mutation failure', async () => {
+    const fixture = context();
+    fixture.context.manifest = {
+      ...manifest({ classification: true }),
+      manifest: { ...manifest({ classification: true }).manifest, classification },
+    };
+    fixture.context.pull.labels = [{ name: 'documentation' }];
+    fixture.client.listPullRequestFiles!.mockResolvedValue([{ filename: 'src/Options.cs' }]);
+    fixture.client.removeIssueLabel!.mockRejectedValueOnce(new GitHubApiError({
+      status: 500, method: 'DELETE', path: '/labels/documentation', message: 'failed',
+    }));
+
+    await expect(executeOperation('classification', fixture.context, { operation: 'classification' }))
+      .rejects.toThrow('failed (500)');
+    expect(fixture.client.addIssueLabels).toHaveBeenCalledOnce();
+    expect(fixture.client.addIssueLabels!.mock.invocationCallOrder[0])
+      .toBeLessThan(fixture.client.removeIssueLabel!.mock.invocationCallOrder[0]!);
+    expect(fixture.client.updatePullRequestBody).not.toHaveBeenCalled();
+    expect(fixture.client.createCheckRun).not.toHaveBeenCalled();
+    expect(fixture.client.updateCheckRun).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: 'commit SHA',
+      arrange: (fixture: ReturnType<typeof context>) => fixture.client.listPullRequestCommits!.mockResolvedValue([{ sha: '' }]),
+      message: 'valid SHA',
+    },
+    {
+      name: 'file name',
+      arrange: (fixture: ReturnType<typeof context>) => fixture.client.listPullRequestFiles!.mockResolvedValue([{ filename: '' }]),
+      message: 'valid filename',
+    },
+    {
+      name: 'label name',
+      arrange: (fixture: ReturnType<typeof context>) => { fixture.context.pull.labels = [{}]; },
+      message: 'valid name',
+    },
+  ])('fails closed before Classification mutations when GitHub omits a valid $name', async ({ arrange, message }) => {
+    const fixture = context();
+    fixture.context.manifest = {
+      ...manifest({ classification: true }),
+      manifest: { ...manifest({ classification: true }).manifest, classification },
+    };
+    arrange(fixture);
+
+    await expect(executeOperation('classification', fixture.context, { operation: 'classification' }))
+      .rejects.toThrow(message);
+    expect(fixture.client.getRepositoryLabel).not.toHaveBeenCalled();
+    expect(fixture.client.addIssueLabels).not.toHaveBeenCalled();
+    expect(fixture.client.removeIssueLabel).not.toHaveBeenCalled();
+    expect(fixture.client.updatePullRequestBody).not.toHaveBeenCalled();
+    expect(fixture.client.createCheckRun).not.toHaveBeenCalled();
   });
 
   it('fails closed when a human review operation has no mutation client', async () => {

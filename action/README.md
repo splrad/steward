@@ -5,6 +5,7 @@ The bundled Node 24 Action is the only execution boundary between reusable workf
 Supported operations:
 
 - `version`: report the bundled development/release version without GitHub access;
+- `classification`: evaluate the current PR from the default-branch Manifest, converge managed labels and hidden metadata, and update the versioned App Check;
 - `governance-preflight`: validate the trusted PR context and expose the default-branch Governance/Copilot feature switches without mutation;
 - `governance-request-copilot`: request the official Copilot reviewer with a caller-supplied entitled user token;
 - `governance-auto-approve`: submit the marked core-maintainer approval when all identified contributors satisfy the default-branch Manifest;
@@ -15,5 +16,7 @@ Supported operations:
 `matrix` is the only operation whose workflow may grant `Actions: write`. The Action does not read token fallbacks from process environment. `github-token` validates repository identity, default branch, pull request state, head SHA, and Manifest before any operation; `mutation-token` is required only for `governance-request-copilot` and `governance-auto-approve`, and is confined to the user-attributed review mutation client. Workflow inputs carry only stable runtime facts (`pr-number`, `head-sha`, result/mode/scope); labels, paths, maintainers, Check names, workflow files, and other policy cannot be injected through Action inputs.
 
 Reusable workflows must serialize `governance-main` and `governance-copilot` for the same PR head because both converge source families in one aggregate comment. Matrix remains independently serialized by its workflow concurrency key.
+
+When Classification is disabled, the operation returns `ignored` without trusting editable PR-body metadata to remove labels. Enabled runs canonicalize duplicate legacy metadata markers, preserve contributor-authored body text, and retry a repository-label creation race only after confirming the competing label now exists.
 
 GitHub Enterprise Server callers use the platform-provided REST URL and the Action derives the distinct `/api/graphql` base while retaining independent transport confinement.
