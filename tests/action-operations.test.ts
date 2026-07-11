@@ -7,8 +7,11 @@ import {
   type CheckRunCreate,
   type CheckRunUpdate,
   type GitHubCheckRun,
+  type GitHubIssueComment,
   type GitHubPullRequest,
+  type GitHubPullRequestReview,
   type GitHubRepositoryClient,
+  type GitHubReviewThread,
   type GitHubWorkflowJob,
   type GitHubWorkflowRun,
 } from '../packages/github/src/index.js';
@@ -535,6 +538,89 @@ describe('Action operation contract', () => {
       .rejects.toThrow('invalid hidden state');
     expect(fixture.client.deleteIssueComment).not.toHaveBeenCalled();
     expect(fixture.client.createCheckRun).not.toHaveBeenCalled();
+  });
+
+  it('converges aggregate Governance failures through review and Resolve events', async () => {
+    const fixture = context();
+    const comments: GitHubIssueComment[] = [];
+    const reviews: GitHubPullRequestReview[] = [{
+      id: 20,
+      state: 'COMMENTED',
+      body: 'Copilot reviewed 1 out of 1 changed files in this pull request and generated 1 comment.',
+      commit_id: fixture.context.pull.head.sha,
+      user: { login: 'copilot-pull-request-reviewer[bot]' },
+    }];
+    const threads: GitHubReviewThread[] = [{
+      id: 'thread-1',
+      isResolved: false,
+      isOutdated: false,
+      comments: {
+        nodes: [{
+          id: 'comment-1',
+          body: 'Severity: blocking\nTitle: Fix the unsafe state transition',
+          url: 'https://github.example/thread/1',
+          author: { login: 'copilot-pull-request-reviewer[bot]' },
+        }],
+      },
+    }];
+    let nextCommentId = 30;
+
+    fixture.client.listPullRequestReviews!.mockImplementation(async () => reviews);
+    fixture.client.listReviewThreads!.mockImplementation(async () => threads);
+    fixture.client.listIssueComments!.mockImplementation(async () => comments);
+    fixture.client.createIssueComment!.mockImplementation(async (_owner, _repository, _number, body: string) => {
+      const comment = { id: nextCommentId++, body, user: { login: 'splrad-steward[bot]' } };
+      comments.push(comment);
+      return comment;
+    });
+    fixture.client.updateIssueComment!.mockImplementation(async (_owner, _repository, commentId: number, body: string) => {
+      const comment = comments.find((candidate) => candidate.id === commentId);
+      if (!comment) throw new Error(`Unknown in-memory issue comment ${commentId}`);
+      comment.body = body;
+      return comment;
+    });
+    fixture.client.deleteIssueComment!.mockImplementation(async (_owner, _repository, commentId: number) => {
+      const index = comments.findIndex((candidate) => candidate.id === commentId);
+      if (index < 0) throw new Error(`Unknown in-memory issue comment ${commentId}`);
+      comments.splice(index, 1);
+    });
+
+    const mainBlocked = await executeOperation('governance-main', fixture.context, { operation: 'governance-main' });
+    expect(mainBlocked.state).toBe('failed');
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain('核心开发者审批');
+
+    const copilotBlocked = await executeOperation(
+      'governance-copilot', fixture.context, { operation: 'governance-copilot' },
+    );
+    expect(copilotBlocked).toMatchObject({ state: 'failed', summary: 'blocking-comments' });
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain('核心开发者审批');
+    expect(comments[0]?.body).toContain('Copilot 阻断评论');
+
+    reviews.push({
+      id: 21,
+      state: 'APPROVED',
+      body: 'approved',
+      commit_id: fixture.context.pull.head.sha,
+      user: { login: 'reviewer' },
+    });
+    const mainRecovered = await executeOperation('governance-main', fixture.context, { operation: 'governance-main' });
+    expect(mainRecovered.state).toBe('passed');
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).not.toContain('核心开发者审批');
+    expect(comments[0]?.body).toContain('Copilot 阻断评论');
+
+    threads[0]!.isResolved = true;
+    fixture.context.eventName = 'repository_dispatch';
+    const copilotRecovered = await executeOperation(
+      'governance-copilot', fixture.context, { operation: 'governance-copilot' },
+    );
+    expect(copilotRecovered).toMatchObject({ state: 'passed', summary: 'no-current-comments-with-known-conclusion' });
+    expect(comments).toEqual([]);
+    expect(fixture.client.createIssueComment).toHaveBeenCalledOnce();
+    expect(fixture.client.updateIssueComment).toHaveBeenCalledTimes(2);
+    expect(fixture.client.deleteIssueComment).toHaveBeenCalledOnce();
   });
 
   it('maps Matrix repair plans to dispatches while other operations cannot write Actions', async () => {
