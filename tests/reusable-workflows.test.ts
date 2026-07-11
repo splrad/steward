@@ -20,7 +20,7 @@ async function workflows(): Promise<Record<(typeof workflowPaths)[number], strin
 }
 
 describe('First reusable workflow contracts', () => {
-  it('exposes called workflows only and pins every external action to a complete SHA', async () => {
+  it('exposes called workflows only and pins every uses reference to a complete SHA', async () => {
     const files = await workflows();
     for (const [path, source] of Object.entries(files)) {
       expect(source, path).toMatch(/^on:\r?\n  workflow_call:/m);
@@ -57,6 +57,7 @@ describe('First reusable workflow contracts', () => {
     expect(signal).toContain('pull_request:review_requested|pull_request:review_request_removed');
     expect(signal).toContain('pull_request_review_thread:resolved|pull_request_review_thread:unresolved');
     expect(signal).toContain('Review signal PR number must be a positive integer');
+    expect(signal).toContain("printf 'Rejected review signal: %q\\n'");
     expect(signal).toContain('name: Record Review State Change');
     expect(signal).not.toMatch(/^\s*uses:/m);
     expect(signal).not.toContain('secrets:');
