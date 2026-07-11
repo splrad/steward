@@ -114,6 +114,9 @@ describe('GitHub repository adapter', () => {
 
     const invalid = new GitHubRepositoryClient(mockTransport(() => ({ default_branch: 'main' })).transport);
     await expect(invalid.getRepository('splrad', 'steward')).rejects.toThrow('invalid repository metadata');
+    for (const path of ['', '/.github/steward.json', '.github//steward.json', '.github/../steward.json', '.github\\steward.json']) {
+      await expect(client.getFile('splrad', 'steward', path, 'main')).rejects.toThrow('repository content path');
+    }
   });
 
   it('uses bounded pagination for PR, Check, workflow, job, and comment reads', async () => {
@@ -134,7 +137,9 @@ describe('GitHub repository adapter', () => {
     expect(await client.listIssueComments('splrad', 'steward', 6)).toHaveLength(101);
     expect(await client.listCommitCheckRuns('splrad', 'steward', 'a'.repeat(40))).toHaveLength(101);
     expect(await client.listWorkflowRuns('splrad', 'steward')).toHaveLength(101);
-    expect(await client.listWorkflowJobs('splrad', 'steward', 123)).toHaveLength(101);
+    const jobs = await client.listWorkflowJobs('splrad', 'steward', 123);
+    expect(jobs).toHaveLength(101);
+    expect(jobs[0]).toMatchObject({ id: 1 });
     expect(requests).toHaveLength(16);
     expect(requests.every((request) => request.query?.per_page === 100)).toBe(true);
   });

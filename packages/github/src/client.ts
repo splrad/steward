@@ -45,6 +45,17 @@ export interface GitHubWorkflowRun {
   pull_requests?: { number?: number }[];
 }
 
+export interface GitHubWorkflowJob {
+  id: number;
+  run_id?: number;
+  name: string;
+  status: string;
+  conclusion?: string | null;
+  html_url?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
 export interface GitHubIssueComment {
   id: number;
   body?: string;
@@ -93,7 +104,12 @@ function repositoryPath(owner: string, repository: string): string {
 }
 
 function contentPath(path: string): string {
-  return path.split('/').map(segment).join('/');
+  const parts = path.split('/');
+  if (!path || path.startsWith('/') || path.endsWith('/') || path.includes('\\')
+    || parts.some((part) => !part || part === '.' || part === '..')) {
+    throw new Error('GitHub repository content path must be a relative path without empty, dot, or backslash segments');
+  }
+  return parts.map(segment).join('/');
 }
 
 function checkMutationBody(input: CheckRunUpdate): Record<string, unknown> {
@@ -220,9 +236,9 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
     });
   }
 
-  async listWorkflowJobs(owner: string, repository: string, runId: number): Promise<GitHubCheckRun[]> {
+  async listWorkflowJobs(owner: string, repository: string, runId: number): Promise<GitHubWorkflowJob[]> {
     return await fetchPullRequestPages(async (page, perPage) => {
-      const payload = await this.transport.request<{ jobs?: GitHubCheckRun[] }>({
+      const payload = await this.transport.request<{ jobs?: GitHubWorkflowJob[] }>({
         path: `${repositoryPath(owner, repository)}/actions/runs/${segment(runId)}/jobs`,
         query: { page, per_page: perPage },
       });
