@@ -124,6 +124,8 @@ export interface MatrixProxyCompletionPlan {
   sourceUrl: string;
 }
 
+const pendingCheckStatuses = new Set(['queued', 'in_progress', 'waiting', 'requested', 'pending']);
+
 function compareTimestamp(left: MatrixCheckRun, right: MatrixCheckRun): number {
   return String(left.started_at ?? left.created_at ?? '').localeCompare(String(right.started_at ?? right.created_at ?? ''));
 }
@@ -241,7 +243,7 @@ export function matrixCheckState(
   target: Pick<MatrixTargetConfiguration, 'acceptableConclusions'>,
 ): MatrixEvidenceState {
   if (!run) return 'missing';
-  if (['queued', 'in_progress', 'waiting', 'requested', 'pending'].includes(String(run.status ?? ''))) return 'pending';
+  if (pendingCheckStatuses.has(String(run.status ?? ''))) return 'pending';
   const conclusion = String(run.conclusion ?? '');
   if ((target.acceptableConclusions.length ? target.acceptableConclusions : ['success']).includes(conclusion)) return 'passed';
   if (['cancelled', 'timed_out', 'skipped', 'action_required', 'stale'].includes(conclusion)) return 'recoverable';
@@ -282,7 +284,7 @@ export function evaluateMatrix(input: {
     });
     const active = matches.filter((run) => (
       proxyMatchesTarget(target, run, input.pull)
-      && ['queued', 'in_progress'].includes(String(run.status ?? ''))
+      && pendingCheckStatuses.has(String(run.status ?? ''))
     ));
     const checkRun = latestCheck(active.length ? active : matches) ?? null;
     const override = input.targetOverrides?.[target.id];
@@ -321,7 +323,7 @@ export function matrixConclusion(matrix: MatrixEvaluation): {
 }
 
 function activeProxy(target: MatrixTargetResult, pull: MatrixPull): boolean {
-  return ['queued', 'in_progress'].includes(String(target.checkRun?.status ?? ''))
+  return pendingCheckStatuses.has(String(target.checkRun?.status ?? ''))
     && Boolean(target.checkRun)
     && proxyMatchesTarget(target, target.checkRun!, pull);
 }
@@ -363,7 +365,7 @@ export function planMatrixRepairs(input: {
       && eventSignal === 'review-state';
     if (!['missing', 'recoverable'].includes(target.state)
       && !refreshPendingCopilot && !refreshFailedCopilot && !refreshReviewState) continue;
-    if (target.checkRun && ['queued', 'in_progress'].includes(String(target.checkRun.status ?? ''))
+    if (target.checkRun && pendingCheckStatuses.has(String(target.checkRun.status ?? ''))
       && !refreshPendingCopilot && !refreshReviewState) continue;
     if (target.state === 'missing' || refreshPendingCopilot || refreshFailedCopilot || refreshReviewState) {
       let plan = dispatches.get(target.workflowFile);

@@ -157,6 +157,7 @@ describe('Matrix state and repair planning', () => {
   it('maps check states and keeps advisory targets out of blocking', () => {
     expect(matrixCheckState(null, target('pr-classification'))).toBe('missing');
     expect(matrixCheckState(check('x', 'in_progress'), target('pr-classification'))).toBe('pending');
+    expect(matrixCheckState(check('x', 'waiting'), target('pr-classification'))).toBe('pending');
     expect(matrixCheckState(check('x', 'completed', 'success'), target('pr-classification'))).toBe('passed');
     expect(matrixCheckState(check('x', 'completed', 'cancelled'), target('pr-classification'))).toBe('recoverable');
     expect(matrixCheckState(check('x', 'completed', 'failure'), target('pr-classification'))).toBe('failed');
@@ -196,6 +197,24 @@ describe('Matrix state and repair planning', () => {
     expect(matrix.targets[0]?.checkRun?.status).toBe('completed');
   });
 
+  it('prefers a waiting proxy for the current target over a completed run', () => {
+    const matrixTarget = { ...target('main-authorization'), checkNames: ['Shared Gate'] };
+    const matrix = evaluateMatrix({
+      config: { gateName: 'Matrix', targets: [matrixTarget] },
+      scope: 'full',
+      pull,
+      checkRuns: [
+        check('Shared Gate', 'completed', 'success', { started_at: '2026-07-11T00:01:00Z' }),
+        check('Shared Gate', 'waiting', '', {
+          started_at: '2026-07-11T00:00:00Z',
+          external_id: legacyProxyExternalId(matrixTarget, pull, inputDigest),
+        }),
+      ],
+    });
+    expect(matrix.state).toBe('pending');
+    expect(matrix.targets[0]?.checkRun?.status).toBe('waiting');
+  });
+
   it('groups missing Governance targets into one dispatch and creates one-shot proxy identities', () => {
     const plans = planMatrixRepairs({
       targets: [result('main-authorization', 'missing'), result('copilot-review-gate', 'missing')],
@@ -217,7 +236,7 @@ describe('Matrix state and repair planning', () => {
   });
 
   it('refreshes Governance once for trusted review signals and suppresses active proxies', () => {
-    const active = check('Copilot Code Review Gate', 'in_progress', '', {
+    const active = check('Copilot Code Review Gate', 'waiting', '', {
       external_id: legacyProxyExternalId(target('copilot-review-gate'), pull, inputDigest),
     });
     expect(planMatrixRepairs({
@@ -260,7 +279,7 @@ describe('Matrix state and repair planning', () => {
   });
 
   it('completes only active proxies bound to the completed workflow and current pull', () => {
-    const proxy = check('Main Authorization Gate', 'in_progress', '', {
+    const proxy = check('Main Authorization Gate', 'waiting', '', {
       id: 901,
       app: { slug: appSlug },
       external_id: stewardCheckExternalId({
