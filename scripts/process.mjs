@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 
-export function execa(command, args, options = {}) {
+export function runProcess(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: 'inherit', ...options });
     child.once('error', reject);

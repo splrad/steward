@@ -8,4 +8,4 @@ Include the affected commit, the trust boundary involved, and a minimal reproduc
 
 ## Supported versions
 
-SPLRAD Steward is consumed by complete commit SHA. Until the first stable release, only the current default branch is supported. Security fixes will identify the first safe commit and any required manifest or workflow migration.
+Consumers pin SPLRAD Steward to a complete commit SHA. Until the first stable release, only the current default branch is supported. Security fixes will identify the first safe commit and any required manifest or workflow migration.

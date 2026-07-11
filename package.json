@@ -1,6 +1,5 @@
 {
   "name": "@splrad/steward",
-  "version": "0.0.0-development",
   "private": true,
   "description": "Shared event-driven repository automation for SPLRAD projects.",
   "license": "Apache-2.0",
