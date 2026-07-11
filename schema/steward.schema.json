@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SPLRAD Steward manifest",
+  "description": "Versioned repository configuration consumed from the default branch.",
+  "type": "object",
+  "required": ["schemaVersion"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri"
+    },
+    "schemaVersion": {
+      "const": 1
+    }
+  },
+  "additionalProperties": true
+}
