@@ -50,8 +50,10 @@ function transportFor(overrides: Partial<Record<string, unknown>> = {}): { trans
     if (request.path.endsWith('/actions/variables')) return { variables: [{ name: 'WORKFLOW_AUTOMATION_APP_CLIENT_ID', value: 'Iv23liuSr0qd4WLJdZhH' }] };
     if (request.path === '/orgs/splrad/installations') return { installations: [{
       id: 9, app_id: 42, app_slug: 'splrad-steward', client_id: 'Iv23liuSr0qd4WLJdZhH', repository_selection: 'selected', suspended_at: null,
+      html_url: 'https://github.com/organizations/splrad/settings/installations/9',
       permissions: { checks: 'write', contents: 'write', pull_requests: 'write', issues: 'write', members: 'read', actions: 'write' },
     }] };
+    if (request.path === '/user/installations/9/repositories') return { repositories: [{ id: 7, full_name: 'splrad/example' }] };
     if (request.path.endsWith('/pulls')) return [{ number: 3, state: 'open', base: { ref: 'main' }, head: { sha } }];
     if (request.path.endsWith(`/commits/${sha}/check-runs`)) return { check_runs: [{
       id: 11, name: 'PR Validation Matrix Gate', status: 'completed', conclusion: 'success', app: { id: 42, slug: 'splrad-steward' },

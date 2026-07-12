@@ -49,9 +49,15 @@ afterEach(async () => {
 describe('init --dry-run', () => {
   it('accepts only the explicit local dry-run surface', () => {
     expect(parseArguments(['init', '--dry-run', '--spec', 'steward-init.json', '--target', 'consumer', '--json']))
-      .toEqual({ command: 'init', dryRun: true, spec: 'steward-init.json', target: 'consumer', json: true });
-    expect(() => parseArguments(['init', '--spec', 'steward-init.json'])).toThrow('requires --dry-run');
+      .toEqual({ command: 'init', mode: 'dry-run', dryRun: true, spec: 'steward-init.json', target: 'consumer', json: true });
+    expect(parseArguments(['init', '--preflight', '--repo', 'splrad/example', '--spec', 'steward-init.json', '--json']))
+      .toEqual({ command: 'init', mode: 'preflight', preflight: true, repository: 'splrad/example', spec: 'steward-init.json', json: true });
+    expect(() => parseArguments(['init', '--spec', 'steward-init.json'])).toThrow('exactly one');
     expect(() => parseArguments(['init', '--dry-run'])).toThrow('requires --spec');
+    expect(() => parseArguments(['init', '--dry-run', '--preflight', '--spec', 'steward-init.json']))
+      .toThrow('exactly one');
+    expect(() => parseArguments(['init', '--preflight', '--repo', 'splrad/example', '--spec', 'steward-init.json', '--target', '.']))
+      .toThrow('only valid with init --dry-run');
   });
 
   it('generates a deterministic complete plan from one non-secret spec', async () => {

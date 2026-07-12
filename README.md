@@ -20,9 +20,12 @@ Build the reproducible CLI bundle before running it locally:
 npm run build:cli
 node packages/cli/dist/index.js doctor --repo OWNER/REPOSITORY
 node packages/cli/dist/index.js init --dry-run --spec steward-init.json --target PATH
+node packages/cli/dist/index.js init --preflight --repo OWNER/REPOSITORY --spec steward-init.json
 ```
 
-`doctor` is read-only and requires `GH_TOKEN` or `GITHUB_TOKEN`. `init --dry-run` is a pure local planner: its strict JSON spec contains one complete Steward commit SHA, a full Manifest, and an optional Node release-adapter declaration. It reads the target only to classify each generated file as `create`, `unchanged`, or `conflict`; it never writes files, calls GitHub, accepts Secret values, or changes a default branch. A conflict makes the command fail closed. Release generation emits an intentionally failing adapter skeleton that must be implemented before applying the plan. The legacy `prAutomation` and DCO advisory surfaces are not generated yet and are rejected when enabled.
+`doctor` is read-only and requires `GH_TOKEN` or `GITHUB_TOKEN`. `init --dry-run` remains a pure local planner: its strict JSON spec contains one complete Steward commit SHA, a full Manifest, and an optional Node release-adapter declaration. It reads the target only to classify each generated file as `create`, `unchanged`, or `conflict`; it never writes files, calls GitHub, accepts Secret values, or changes a default branch. A conflict makes the command fail closed. Release generation emits an intentionally failing adapter skeleton that must be implemented before applying the plan. The legacy `prAutomation` and DCO advisory surfaces are not generated yet and are rejected when enabled.
+
+`init --preflight` is a separate read-only network check using the same non-secret spec. It verifies the target account installation, required App permissions, and—when the installation is limited to selected repositories—the target repository membership. A missing installation stops with the App's new-install URL; a repository missing from an existing installation stops with that installation's GitHub configuration URL. An unverifiable selected scope is reported as unknown and never treated as installed. Organization discovery requires an organization administrator token with `read:org`. GitHub's selected-repository and personal-installation endpoints require a compatible GitHub App user access token or personal access token; a normal GitHub CLI OAuth token is rejected even when it has `read:user`. The preflight issues GET requests only and does not configure the App or repository.
 
 ## Repository layout
 
