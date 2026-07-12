@@ -46,7 +46,7 @@ function manifest(sha = currentSha): StewardManifest {
     release: {
       triggerPaths: ['src/**'],
       runner: 'ubuntu-latest',
-      adapterCommand: ['node', '.github/steward/release-adapter.mjs'],
+      adapterCommand: ['node', './.github/steward/release-adapter.mjs'],
     },
   });
 }
@@ -216,6 +216,8 @@ describe('upgrade command', () => {
     expect(plan.files.map((file) => file.path)).not.toContain('.github/steward/release-adapter.mjs');
     expect(plan.files.find((file) => file.path === '.github/steward.json')?.content)
       .toContain(`/splrad/steward/${targetSha}/schema/steward.schema.json`);
+    expect(plan.files.find((file) => file.path === '.github/steward.json')?.content)
+      .toContain('"./.github/steward/release-adapter.mjs"');
     expect(plan.files.filter((file) => file.path.endsWith('.yml') && file.path.includes('/workflows/'))
       .every((file) => file.content.includes(`@${targetSha}`))).toBe(true);
     expect(state.mutations()).toEqual([]);

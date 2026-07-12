@@ -146,8 +146,14 @@ function safeGitHubUrl(value: string | undefined): string | undefined {
 
 function safeRepositoryPath(value: string): boolean {
   const parts = value.split('/');
-  return Boolean(value) && !value.startsWith('/') && !value.endsWith('/') && !value.includes('\\')
+  return Boolean(value) && !value.startsWith('/') && !value.endsWith('/') && !value.includes('\\') && !value.includes(':')
     && parts.every((part) => Boolean(part) && part !== '.' && part !== '..');
+}
+
+function repositoryPathArgument(value: string): string | undefined {
+  if (value.startsWith('-') || value.includes('://')) return undefined;
+  const candidate = value.startsWith('./') ? value.slice(2) : value;
+  return candidate.includes('/') && safeRepositoryPath(candidate) ? candidate : undefined;
 }
 
 async function optionalGet<T>(transport: GitHubTransport, request: GitHubRequest): Promise<T | null> {
@@ -353,9 +359,9 @@ export async function prepareUpgrade(input: {
 
   let preservedAdapter: UpgradePlan['preservedAdapter'];
   if (currentManifest.features.release && currentManifest.release) {
-    const adapterPath = currentManifest.release.adapterCommand.find((argument) => (
-      argument.startsWith('.github/steward/') && safeRepositoryPath(argument)
-    ));
+    const adapterPath = currentManifest.release.adapterCommand
+      .map(repositoryPathArgument)
+      .find((argument) => argument !== undefined);
     if (adapterPath) {
       const adapter = await repositoryFile(input.transport, path, adapterPath, baseSha);
       if (adapter === null) throw new Error(`Release adapter ${adapterPath} does not exist on the default branch`);
