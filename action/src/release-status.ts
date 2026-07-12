@@ -61,11 +61,17 @@ export async function readReleaseStatusWithClient(
   client: GitHubRepositoryClient,
   context: ReleaseAdapterContext,
   plan: ReleasePlan,
+  expectedReleaseId?: number,
 ): Promise<{ decision: ReleasePublicationDecision; release?: GitHubRelease }> {
   const [owner, repository] = context.repository.fullName.split('/') as [string, string];
-  const [tagRef, releases] = await Promise.all([
+  if (expectedReleaseId !== undefined && (!Number.isSafeInteger(expectedReleaseId) || expectedReleaseId < 1)) {
+    throw new Error('Expected Release ID must be a positive integer');
+  }
+  const [tagRef, releaseResult] = await Promise.all([
     missingAsUndefined(client.getTagRef(owner, repository, plan.tagName)),
-    client.listReleases(owner, repository),
+    expectedReleaseId === undefined
+      ? client.listReleases(owner, repository)
+      : client.getRelease(owner, repository, expectedReleaseId),
   ]);
   if (tagRef && (tagRef.ref !== `refs/tags/${plan.tagName}`
     || !['commit', 'tag'].includes(String(tagRef.object?.type ?? ''))
@@ -73,9 +79,15 @@ export async function readReleaseStatusWithClient(
     throw new Error('GitHub returned invalid tag reference metadata');
   }
   const commit = tagRef ? await client.getCommit(owner, repository, plan.tagName) : undefined;
-  const matchingReleases = releases.filter((release) => release.tag_name === plan.tagName);
-  if (matchingReleases.length > 1) throw new Error('GitHub returned multiple Releases for the planned tag');
-  const release = matchingReleases[0];
+  let release: GitHubRelease | undefined;
+  if (Array.isArray(releaseResult)) {
+    const matchingReleases = releaseResult.filter((candidate) => candidate.tag_name === plan.tagName);
+    if (matchingReleases.length > 1) throw new Error('GitHub returned multiple Releases for the planned tag');
+    [release] = matchingReleases;
+  } else {
+    release = releaseResult;
+    if (release.id !== expectedReleaseId) throw new Error('GitHub returned a different Release ID');
+  }
   const commitSha = commit ? String(commit.sha ?? '').trim().toLowerCase() : undefined;
   if (commit && !/^[a-f0-9]{40}$/.test(commitSha ?? '')) {
     throw new Error('GitHub returned an invalid tag commit SHA');
