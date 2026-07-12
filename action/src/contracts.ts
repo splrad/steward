@@ -10,6 +10,7 @@ export const stewardOperations = [
   'governance-copilot',
   'matrix',
   'release-adapter',
+  'release-preflight',
 ] as const;
 
 export type StewardOperation = typeof stewardOperations[number];
@@ -46,6 +47,7 @@ export const operationDefinitions: Readonly<Record<StewardOperation, StewardOper
   'governance-copilot': { token: 'github', mutationToken: false, event: true, actionsWrite: false },
   matrix: { token: 'github', mutationToken: false, event: true, actionsWrite: true },
   'release-adapter': { token: 'none', mutationToken: false, event: false, actionsWrite: false },
+  'release-preflight': { token: 'github', mutationToken: false, event: true, actionsWrite: false },
 };
 
 export function parseOperation(value: string): StewardOperation {

@@ -35,6 +35,11 @@ describe('Action metadata', () => {
       'release-plan',
       'release-assets',
       'release-output-directory',
+      'release-needed',
+      'release-trigger',
+      'release-context',
+      'release-runner',
+      'release-adapter-command',
     ].sort());
   });
 });

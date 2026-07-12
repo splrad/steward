@@ -10,7 +10,12 @@ import type { StewardActionInputs } from './contracts.js';
 export interface GitHubEventPayload {
   action?: string;
   repository?: { id?: number; full_name?: string; default_branch?: string };
-  pull_request?: { number?: number; head?: { sha?: string } };
+  pull_request?: {
+    number?: number;
+    merged?: boolean;
+    merge_commit_sha?: string | null;
+    head?: { sha?: string };
+  };
   workflow_run?: {
     id?: number;
     name?: string;

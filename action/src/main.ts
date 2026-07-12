@@ -3,6 +3,7 @@ import { operationDefinitions, parseOperation, type StewardActionInputs } from '
 import { createOperationContext, type StewardRuntimeEnvironment } from './context.js';
 import { executeOperation } from './operations.js';
 import { executeReleaseAdapter } from './release-adapter.js';
+import { createReleasePreflight } from './release-preflight.js';
 
 export const STEWARD_VERSION = '0.0.0-development';
 
@@ -45,6 +46,18 @@ export async function run(
   if (inputs.mutationToken) core.setSecret(inputs.mutationToken);
   if (operationDefinitions[operation].mutationToken && !inputs.mutationToken?.trim()) {
     throw new Error(`${operation} requires an explicit mutation token`);
+  }
+  if (operation === 'release-preflight') {
+    const result = await createReleasePreflight({ inputs, environment, ...(fetch ? { fetch } : {}) });
+    core.setOutput('state', result.state);
+    core.setOutput('release-needed', String(result.state === 'passed'));
+    core.setOutput('release-trigger', JSON.stringify(result.decision));
+    if (result.context) core.setOutput('release-context', JSON.stringify(result.context));
+    if (result.runner) core.setOutput('release-runner', result.runner);
+    if (result.adapterCommand) core.setOutput('release-adapter-command', JSON.stringify(result.adapterCommand));
+    core.setOutput('operation-result', JSON.stringify({ operation, ...result }));
+    core.info(`release-preflight: ${result.summary}`);
+    return;
   }
   const context = await createOperationContext({
     inputs,
