@@ -3,7 +3,11 @@ import type {
   DocsOnlyPathRuleConfiguration,
   PublicLabelConfiguration,
 } from '../../manifest/src/index.js';
-import { classificationInputBody, normalizeRepositoryPath } from './fingerprint.js';
+import {
+  classificationInputBody,
+  normalizeRepositoryPath,
+  repositoryPathPatternMatches,
+} from './fingerprint.js';
 
 export interface PullRequestClassificationFacts {
   title: string;
@@ -76,28 +80,8 @@ function escapeRegex(text: string): string {
   return text.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
 }
 
-function globToRegExp(pattern: string): RegExp {
-  const value = normalizeRepositoryPath(pattern);
-  let regex = '^';
-  for (let index = 0; index < value.length; index += 1) {
-    const character = value[index];
-    if (character === '*') {
-      if (value[index + 1] === '*') {
-        regex += '.*';
-        index += 1;
-      } else {
-        regex += '[^/]*';
-      }
-    } else {
-      regex += escapeRegex(character ?? '');
-    }
-  }
-  return new RegExp(`${regex}$`);
-}
-
 function matchesAnyPattern(file: string, patterns: string[]): boolean {
-  const normalized = normalizeRepositoryPath(file);
-  return patterns.some((pattern) => globToRegExp(pattern).test(normalized));
+  return patterns.some((pattern) => repositoryPathPatternMatches(file, pattern));
 }
 
 function conventionalType(title: string, classification: ClassificationConfiguration): string {

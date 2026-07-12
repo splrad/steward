@@ -1,0 +1,12 @@
+{
+  "contractVersion": 1,
+  "assets": [
+    {
+      "path": "packages/steward-sandbox-v1.2.3.zip",
+      "name": "steward-sandbox-v1.2.3.zip",
+      "mediaType": "application/zip",
+      "size": 42,
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  ]
+}
