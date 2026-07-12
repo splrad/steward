@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import { operationDefinitions, parseOperation, type StewardActionInputs } from './contracts.js';
 import { createOperationContext, type StewardRuntimeEnvironment } from './context.js';
 import { executeOperation } from './operations.js';
+import { executeReleaseAdapter } from './release-adapter.js';
 
 export const STEWARD_VERSION = '0.0.0-development';
 
@@ -14,6 +15,30 @@ export async function run(
   core.setOutput('steward-version', STEWARD_VERSION);
   if (operation === 'version') {
     core.info(`SPLRAD Steward ${STEWARD_VERSION}`);
+    return;
+  }
+  if (operation === 'release-adapter') {
+    const workspace = inputs.releaseWorkspace?.trim() || environment.GITHUB_WORKSPACE?.trim() || '';
+    const temporaryDirectory = environment.RUNNER_TEMP?.trim() || '';
+    if (!workspace) throw new Error('release-adapter requires release-workspace or GITHUB_WORKSPACE');
+    if (!temporaryDirectory) throw new Error('release-adapter requires RUNNER_TEMP');
+    const result = await executeReleaseAdapter({
+      adapterCommand: inputs.releaseAdapterCommand ?? '',
+      context: inputs.releaseContext ?? '',
+      workspace,
+      temporaryDirectory,
+    });
+    core.setOutput('state', 'passed');
+    core.setOutput('release-plan', JSON.stringify(result.plan));
+    core.setOutput('release-assets', JSON.stringify(result.assets));
+    core.setOutput('release-output-directory', result.outputDirectory);
+    core.setOutput('operation-result', JSON.stringify({
+      operation,
+      state: 'passed',
+      summary: `${result.assets.assets.length} release assets validated`,
+      details: result,
+    }));
+    core.info(`release-adapter: ${result.assets.assets.length} release assets validated`);
     return;
   }
   if (inputs.token) core.setSecret(inputs.token);

@@ -31,6 +31,15 @@ inputs:
     description: "Matrix target scope: auto, full, or gate-only."
     required: false
     default: auto
+  release-adapter-command:
+    description: Trusted default-branch Manifest adapterCommand encoded as a JSON string array. Used only by release-adapter.
+    required: false
+  release-context:
+    description: Steward-generated Release adapter context JSON. Used only by release-adapter.
+    required: false
+  release-workspace:
+    description: Checked-out consumer repository root. Defaults to GITHUB_WORKSPACE. Used only by release-adapter.
+    required: false
 outputs:
   steward-version:
     description: Version of the bundled Steward Action.
@@ -42,6 +51,12 @@ outputs:
     description: Whether default-branch Manifest governance is enabled.
   copilot-review-enabled:
     description: Whether default-branch Manifest Copilot review is enabled.
+  release-plan:
+    description: Validated Release plan JSON produced by release-adapter.
+  release-assets:
+    description: Validated Release assets manifest JSON produced by release-adapter.
+  release-output-directory:
+    description: Absolute directory containing validated Release assets.
 runs:
   using: node24
   main: dist/index.js

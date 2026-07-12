@@ -25,4 +25,13 @@ describe('Steward Action bootstrap', () => {
     await expect(run({ operation: 'governance-request-copilot', token: 'platform-token' }))
       .rejects.toThrow('requires an explicit mutation token');
   });
+
+  it('requires an isolated runner temporary directory for Release adapter execution', async () => {
+    await expect(run({
+      operation: 'release-adapter',
+      releaseWorkspace: process.cwd(),
+      releaseAdapterCommand: '[]',
+      releaseContext: '{}',
+    }, {})).rejects.toThrow('requires RUNNER_TEMP');
+  });
 });
