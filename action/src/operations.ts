@@ -165,35 +165,41 @@ async function classificationOperation(context: StewardOperationContext): Promis
   };
 }
 
-function safeDcoText(value: unknown): string {
-  const sanitized = String(value ?? '')
+function boundedDcoText(value: unknown): string {
+  const normalized = String(value ?? '')
     .replace(/\r?\n/g, ' ')
     .replace(/\s+/g, ' ')
-    .replace(/@/g, '@\u200b')
+    .trim();
+  return normalized.length <= 240 ? normalized : `${normalized.slice(0, 239)}…`;
+}
+
+function safeDcoMarkdown(value: unknown, shieldMentions: boolean): string {
+  const escaped = boundedDcoText(value)
+    .replace(/&/g, '&amp;')
     .replace(/`/g, "'")
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .trim();
-  return sanitized.length <= 240 ? sanitized : `${sanitized.slice(0, 239)}…`;
+    .replace(/@/g, shieldMentions ? '@\u200b' : '@');
+  return boundedDcoText(escaped);
 }
 
 function dcoIssueReason(issue: DcoIssue): string {
   if (issue.reason === 'missing') {
-    return `缺少 Signed-off-by；建议添加 \`Signed-off-by: ${safeDcoText(issue.authorName) || 'Name'} <${safeDcoText(issue.authorEmail) || 'email@example.com'}>\``;
+    return `缺少 Signed-off-by；建议添加 \`Signed-off-by: ${safeDcoMarkdown(issue.authorName, false) || 'Name'} <${safeDcoMarkdown(issue.authorEmail, false) || 'email@example.com'}>\``;
   }
   if (issue.reason === 'invalid-format') return 'Signed-off-by 格式无效；应使用 `Signed-off-by: Name <email>`';
-  const signed = issue.signedEmails.map(safeDcoText).join(', ') || 'none';
+  const signed = issue.signedEmails.map((value) => safeDcoMarkdown(value, false)).join(', ') || 'none';
   const truncated = issue.signedEmailsTruncated ? `（另有 ${issue.signedEmailsTruncated} 个未展开）` : '';
-  return `Signed-off-by 邮箱与 commit author email 不一致；author email 为 \`${safeDcoText(issue.authorEmail) || 'unknown'}\`，当前签名邮箱为 \`${signed}\`${truncated}`;
+  return `Signed-off-by 邮箱与 commit author email 不一致；author email 为 \`${safeDcoMarkdown(issue.authorEmail, false) || 'unknown'}\`，当前签名邮箱为 \`${signed}\`${truncated}`;
 }
 
 function presentDcoIssue(issue: DcoIssue): DcoIssue {
   return {
     ...issue,
-    subject: safeDcoText(issue.subject),
-    authorName: safeDcoText(issue.authorName),
-    authorEmail: safeDcoText(issue.authorEmail),
-    signedEmails: issue.signedEmails.map(safeDcoText),
+    subject: safeDcoMarkdown(issue.subject, true),
+    authorName: safeDcoMarkdown(issue.authorName, true),
+    authorEmail: boundedDcoText(issue.authorEmail),
+    signedEmails: issue.signedEmails.map(boundedDcoText),
   };
 }
 
@@ -202,7 +208,7 @@ function dcoSummary(evaluation: DcoEvaluation): string {
     `DCO Sign-off Advisory：${evaluation.total} commits，${evaluation.passed} passed，${evaluation.skipped} skipped bots，${evaluation.issues.length} advisory issues。`,
   ];
   for (const issue of evaluation.issues.slice(0, maxDcoIssues)) {
-    lines.push(`- \`${issue.sha.slice(0, 7)}\` ${safeDcoText(issue.subject) || '(empty commit message)'}: ${dcoIssueReason(issue)}`);
+    lines.push(`- \`${issue.sha.slice(0, 7)}\` ${safeDcoMarkdown(issue.subject, true) || '(empty commit message)'}: ${dcoIssueReason(issue)}`);
   }
   if (evaluation.issues.length > maxDcoIssues) {
     lines.push(`- 另有 ${evaluation.issues.length - maxDcoIssues} 项未展开；请查看 operation-result。`);

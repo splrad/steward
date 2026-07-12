@@ -547,7 +547,7 @@ describe('Action operation contract', () => {
         author: { login: 'external', type: 'User' },
         commit: {
           author: { name: 'External', email: 'external@example.com' },
-          message: `fix: ping @maintainer with \`markdown\` <tag> ${'x'.repeat(300)}`,
+          message: `fix: ping @maintainer with \`markdown\` <tag> &lt;entity&gt; ${'x'.repeat(300)}`,
         },
       },
       {
@@ -589,9 +589,13 @@ describe('Action operation contract', () => {
     expect(result.summary).not.toContain('`markdown`');
     expect(result.summary).toContain("'markdown'");
     expect(result.summary).toContain('&lt;tag&gt;');
-    const details = result.details as { evaluation: { issues: Array<{ subject: string }> } };
+    expect(result.summary).toContain('&amp;lt;entity&amp;gt;');
+    expect(result.summary).toContain('external@example.com');
+    expect(result.summary).not.toContain('external@\u200bexample.com');
+    const details = result.details as { evaluation: { issues: Array<{ subject: string; authorEmail: string }> } };
     expect(details.evaluation.issues[0]?.subject).toContain('@\u200bmaintainer');
     expect(details.evaluation.issues[0]?.subject.length).toBeLessThanOrEqual(240);
+    expect(details.evaluation.issues[0]?.authorEmail).toBe('external@example.com');
     expect(fixture.client.deleteIssueComment).toHaveBeenCalledOnce();
     expect(fixture.client.deleteIssueComment).toHaveBeenCalledWith('splrad', 'steward', 10);
     expect(fixture.client.createIssueComment).not.toHaveBeenCalled();
