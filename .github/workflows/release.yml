@@ -55,7 +55,7 @@ jobs:
       - name: Validate merged Release candidate
         id: steward
         continue-on-error: true
-        uses: splrad/steward/action@86a638f4bb7d7574be15d9ad0d85d1362d12dd4f
+        uses: splrad/steward/action@6e33424e7fb18100145845b49e8ccf2c90d504e0
         with:
           operation: release-preflight
           github-token: ${{ steps.platform_token.outputs.token }}
@@ -63,7 +63,7 @@ jobs:
 
       - name: Finalize Release preflight failure
         if: ${{ steps.steward.outcome == 'failure' }}
-        uses: splrad/steward/action@86a638f4bb7d7574be15d9ad0d85d1362d12dd4f
+        uses: splrad/steward/action@6e33424e7fb18100145845b49e8ccf2c90d504e0
         with:
           operation: release-finalize
           github-token: ${{ steps.platform_token.outputs.token }}
@@ -77,8 +77,8 @@ jobs:
     runs-on: ${{ needs.preflight.outputs.release_runner }}
     timeout-minutes: 60
     outputs:
-      state: ${{ steps.publish.outputs.state || steps.status.outputs.state }}
-      release_url: ${{ steps.publish.outputs['release-url'] }}
+      state: ${{ steps.publish.outputs.state || steps.reconcile.outputs.state || steps.status.outputs.state }}
+      release_url: ${{ steps.publish.outputs['release-url'] || steps.reconcile.outputs['release-url'] }}
     steps:
       - name: Create Release publication token
         id: platform_token
@@ -99,7 +99,7 @@ jobs:
 
       - name: Plan Release
         id: plan
-        uses: splrad/steward/action@86a638f4bb7d7574be15d9ad0d85d1362d12dd4f
+        uses: splrad/steward/action@6e33424e7fb18100145845b49e8ccf2c90d504e0
         with:
           operation: release-adapter
           release-adapter-phase: plan
@@ -108,9 +108,19 @@ jobs:
 
       - name: Check existing publication state
         id: status
-        uses: splrad/steward/action@86a638f4bb7d7574be15d9ad0d85d1362d12dd4f
+        uses: splrad/steward/action@6e33424e7fb18100145845b49e8ccf2c90d504e0
         with:
           operation: release-status
+          github-token: ${{ steps.platform_token.outputs.token }}
+          release-context: ${{ needs.preflight.outputs.release_context }}
+          release-plan: ${{ steps.plan.outputs['release-plan'] }}
+
+      - name: Reconcile existing publication
+        id: reconcile
+        if: ${{ steps.status.outputs['release-build-needed'] != 'true' }}
+        uses: splrad/steward/action@6e33424e7fb18100145845b49e8ccf2c90d504e0
+        with:
+          operation: release-reconcile
           github-token: ${{ steps.platform_token.outputs.token }}
           release-context: ${{ needs.preflight.outputs.release_context }}
           release-plan: ${{ steps.plan.outputs['release-plan'] }}
@@ -118,7 +128,7 @@ jobs:
       - name: Build Release assets
         id: build
         if: ${{ steps.status.outputs['release-build-needed'] == 'true' }}
-        uses: splrad/steward/action@86a638f4bb7d7574be15d9ad0d85d1362d12dd4f
+        uses: splrad/steward/action@6e33424e7fb18100145845b49e8ccf2c90d504e0
         with:
           operation: release-adapter
           release-adapter-phase: build
@@ -128,7 +138,7 @@ jobs:
       - name: Publish Release
         id: publish
         if: ${{ steps.status.outputs['release-build-needed'] == 'true' }}
-        uses: splrad/steward/action@86a638f4bb7d7574be15d9ad0d85d1362d12dd4f
+        uses: splrad/steward/action@6e33424e7fb18100145845b49e8ccf2c90d504e0
         with:
           operation: release-publish
           github-token: ${{ steps.platform_token.outputs.token }}
@@ -143,9 +153,10 @@ jobs:
             steps.checkout.outcome == 'failure' ||
             steps.plan.outcome == 'failure' ||
             steps.status.outcome == 'failure' ||
+            steps.reconcile.outcome == 'failure' ||
             steps.build.outcome == 'failure'
           ) }}
-        uses: splrad/steward/action@86a638f4bb7d7574be15d9ad0d85d1362d12dd4f
+        uses: splrad/steward/action@6e33424e7fb18100145845b49e8ccf2c90d504e0
         with:
           operation: release-finalize
           github-token: ${{ steps.platform_token.outputs.token }}
