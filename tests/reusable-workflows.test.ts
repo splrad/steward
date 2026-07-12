@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 const actionSha = 'cd874ad2819bb1a24b4af17b6a5108b56fb728b9';
 const appTokenSha = 'bcd2ba49218906704ab6c1aa796996da409d3eb1';
-const releaseActionSha = '7ecd713690942cd1104deb219e8e4cd2e3f9cff8';
+const releaseActionSha = '86a638f4bb7d7574be15d9ad0d85d1362d12dd4f';
 const repositoryRoot = new URL('../', import.meta.url);
 const workflowPaths = [
   '.github/workflows/pr-classification.yml',
