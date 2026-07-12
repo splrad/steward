@@ -140,6 +140,7 @@ describe('Action operation contract', () => {
     expect(parseOperation('governance-main')).toBe('governance-main');
     expect(parseOperation('governance-preflight')).toBe('governance-preflight');
     expect(parseOperation('classification')).toBe('classification');
+    expect(parseOperation('dco-advisory')).toBe('dco-advisory');
     expect(parseOperation('release-preflight')).toBe('release-preflight');
     expect(parseOperation('release-status')).toBe('release-status');
     expect(parseOperation('release-reconcile')).toBe('release-reconcile');
@@ -535,6 +536,119 @@ describe('Action operation contract', () => {
     expect(fixture.client.removeIssueLabel).not.toHaveBeenCalled();
     expect(fixture.client.updatePullRequestBody).not.toHaveBeenCalled();
     expect(fixture.client.createCheckRun).not.toHaveBeenCalled();
+  });
+
+  it('reports DCO issues as advisory, skips bots, and removes only App-owned legacy comments', async () => {
+    const fixture = context();
+    fixture.context.manifest = manifest({ dcoAdvisory: true });
+    fixture.client.listPullRequestCommits!.mockResolvedValue([
+      {
+        sha: 'd'.repeat(40),
+        author: { login: 'external', type: 'User' },
+        commit: {
+          author: { name: 'External', email: 'external@example.com' },
+          message: `fix: ping @maintainer with \`markdown\` <tag> &lt;entity&gt; ${'x'.repeat(300)}`,
+        },
+      },
+      {
+        sha: 'e'.repeat(40),
+        author: { login: 'dependabot[bot]', type: 'Bot' },
+        commit: {
+          author: { name: 'dependabot[bot]', email: 'dependabot[bot]@users.noreply.github.com' },
+          message: 'chore: bump dependency',
+        },
+      },
+      {
+        sha: 'f'.repeat(40),
+        author: { login: 'core', type: 'User' },
+        commit: {
+          author: { name: 'Core', email: 'core@example.com' },
+          message: 'feat: signed\n\nSigned-off-by: Core <core@example.com>',
+        },
+      },
+    ]);
+    fixture.client.listIssueComments!.mockResolvedValue([
+      { id: 10, user: { login: 'splrad-steward[bot]' }, body: '<!-- workflow:dco-signoff-advisory -->' },
+      { id: 11, user: { login: 'splrad-steward[bot]' }, body: 'unrelated' },
+      { id: 12, user: { login: 'external' }, body: '<!-- workflow:dco-signoff-advisory -->' },
+    ]);
+
+    const result = await executeOperation('dco-advisory', fixture.context, { operation: 'dco-advisory' });
+
+    expect(result).toMatchObject({
+      operation: 'dco-advisory',
+      state: 'passed',
+      details: {
+        evaluation: { total: 3, passed: 1, skipped: 1, issues: [{ reason: 'missing' }] },
+        issuesTruncated: 0,
+        legacyCommentsDeleted: 1,
+      },
+    });
+    expect(result.summary).not.toContain('@maintainer');
+    expect(result.summary).toContain('@\u200bmaintainer');
+    expect(result.summary).not.toContain('`markdown`');
+    expect(result.summary).toContain("'markdown'");
+    expect(result.summary).toContain('&lt;tag&gt;');
+    expect(result.summary).toContain('&amp;lt;entity&amp;gt;');
+    expect(result.summary).toContain('external@example.com');
+    expect(result.summary).not.toContain('external@\u200bexample.com');
+    const details = result.details as { evaluation: { issues: Array<{ subject: string; authorEmail: string }> } };
+    expect(details.evaluation.issues[0]?.subject).toContain('@\u200bmaintainer');
+    expect(details.evaluation.issues[0]?.subject.length).toBeLessThanOrEqual(240);
+    expect(details.evaluation.issues[0]?.authorEmail).toBe('external@example.com');
+    expect(fixture.client.deleteIssueComment).toHaveBeenCalledOnce();
+    expect(fixture.client.deleteIssueComment).toHaveBeenCalledWith('splrad', 'steward', 10);
+    expect(fixture.client.createIssueComment).not.toHaveBeenCalled();
+    expect(fixture.client.createCheckRun).not.toHaveBeenCalled();
+  });
+
+  it('does not read commits or comments when DCO Advisory is disabled', async () => {
+    const fixture = context();
+    const result = await executeOperation('dco-advisory', fixture.context, { operation: 'dco-advisory' });
+    expect(result).toMatchObject({ state: 'ignored' });
+    expect(fixture.client.listPullRequestCommits).not.toHaveBeenCalled();
+    expect(fixture.client.listIssueComments).not.toHaveBeenCalled();
+  });
+
+  it('bounds DCO workflow output while preserving complete advisory counts', async () => {
+    const fixture = context();
+    fixture.context.manifest = manifest({ dcoAdvisory: true });
+    fixture.client.listPullRequestCommits!.mockResolvedValue(Array.from({ length: 22 }, (_, index) => ({
+      sha: index.toString(16).padStart(40, '0'),
+      author: { login: `external-${index}`, type: 'User' },
+      commit: {
+        author: { name: `External ${index}`, email: `external-${index}@example.com` },
+        message: `fix: unsigned ${index}`,
+      },
+    })));
+    const result = await executeOperation('dco-advisory', fixture.context, { operation: 'dco-advisory' });
+    expect(result).toMatchObject({
+      state: 'passed',
+      details: {
+        evaluation: { total: 22, issues: expect.arrayContaining([expect.objectContaining({ reason: 'missing' })]) },
+        issuesTruncated: 2,
+      },
+    });
+    const details = result.details as { evaluation: { issues: unknown[] } };
+    expect(details.evaluation.issues).toHaveLength(20);
+    expect(result.summary).toContain('另有 2 项未展开');
+  });
+
+  it('fails on malformed GitHub commit evidence instead of reporting a false advisory result', async () => {
+    const fixture = context();
+    fixture.context.manifest = manifest({ dcoAdvisory: true });
+    fixture.client.listPullRequestCommits!.mockResolvedValue([{ sha: 'short', commit: { message: 'fix: malformed' } }]);
+    await expect(executeOperation('dco-advisory', fixture.context, { operation: 'dco-advisory' }))
+      .rejects.toThrow('without a valid SHA or message');
+    expect(fixture.client.deleteIssueComment).not.toHaveBeenCalled();
+  });
+
+  it('does not mistake an empty commit response for a clean DCO advisory', async () => {
+    const fixture = context();
+    fixture.context.manifest = manifest({ dcoAdvisory: true });
+    fixture.client.listPullRequestCommits!.mockResolvedValue([]);
+    await expect(executeOperation('dco-advisory', fixture.context, { operation: 'dco-advisory' }))
+      .rejects.toThrow('no commits for an open pull request');
   });
 
   it('creates a missing managed label and tolerates only a confirmed concurrent creation race', async () => {
