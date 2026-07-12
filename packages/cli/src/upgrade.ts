@@ -300,7 +300,6 @@ export async function prepareUpgrade(input: {
   const currentManifest = normalizeManifest(parseManifest(rawManifest));
   const unsupportedFeatures = [
     ...(currentManifest.features.prAutomation ? ['prAutomation'] : []),
-    ...(currentManifest.features.dcoAdvisory ? ['dcoAdvisory'] : []),
   ];
   if (unsupportedFeatures.length) {
     throw new Error(

@@ -8,6 +8,7 @@ Consumer callers must therefore:
 - grant only `contents: read` to the calling job and pass named secrets explicitly rather than using `secrets: inherit`;
 - derive `pr_number`, `head_sha`, event name, and event action only from the native event payload or a previously validated relay payload;
 - keep the Classification caller at `.github/workflows/pr-classification.yml` with `run-name: "PR Validation Target #<PR> / <40-character-head-SHA>"`;
+- keep the DCO caller at `.github/workflows/dco-advisory.yml` with the same target run-name; its result is advisory and must not be added to required checks;
 - keep the Governance caller at `.github/workflows/pr-governance.yml` with the same `run-name: "PR Validation Target #<PR> / <40-character-head-SHA>"`; `governance_scope` remains an explicit reusable-workflow input, not part of the trusted identity;
 - keep the Review Signal caller at `.github/workflows/pr-review-signal.yml` with `run-name: "PR Review Signal #<PR> / <40-character-head-SHA> / <source-event> / <source-action>"`;
 - keep Matrix as the only caller of `.github/workflows/pr-validation-matrix.yml` that receives the App private key used to request `Actions: write` on an installation token.
@@ -16,6 +17,8 @@ Consumer callers must therefore:
 The Governance called workflow reads the default-branch Manifest before human-token jobs. Disabled features skip the corresponding Copilot request or automatic approval, but their platform Gate operation still runs once to remove stale Check/comment state. Missing optional human secrets fail explicitly only when the relevant feature and scope require them.
 
 The Classification called workflow mints one repository installation token with `Contents: read` plus `Checks`, `Issues`, and `Pull requests: write`. It does not checkout caller code, receive a human token, or receive label/path/Check policy as input. A disabled Classification feature returns `ignored` without creating a custom Check or trusting editable PR metadata to remove labels.
+
+The DCO called workflow mints one repository installation token with `Contents` and `Pull requests: read` plus `Issues: write` only for App-owned legacy marker cleanup. It never checks out caller code, never fails because a human commit lacks a matching `Signed-off-by` trailer, and remains a non-required Matrix target. Malformed or absent GitHub commit evidence still fails the job so an operational fault is observable without becoming merge authority.
 
 The Release called workflow validates the merged PR on `ubuntu-latest`, then routes the build job to the runner selected by the trusted default-branch Manifest. It checks out the verified merge SHA, runs adapter `plan`, checks existing publication state, and only then runs `build` and the Steward-owned draft/upload/publish transaction. Preflight uses `continue-on-error` solely so `release-finalize` can write a failed Check; the finalizer deliberately fails the step afterward. A step-level `always()` finalizer covers checkout/plan/status/build failures, while `release-publish` owns its own transaction failure Check and rollback. Release concurrency never cancels an in-progress publication.
 

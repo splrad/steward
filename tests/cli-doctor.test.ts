@@ -113,7 +113,7 @@ describe('doctor CLI contract', () => {
     expect(report.findings.filter((item) => item.level === 'fail').every((item) => item.remedy)).toBe(true);
   });
 
-  it('fails explicitly when enabled PR surfaces are not implemented by this Steward version', async () => {
+  it('distinguishes unsupported PR Automation from a supported but missing DCO caller', async () => {
     const configured = manifest();
     configured.features.prAutomation = true;
     configured.features.dcoAdvisory = true;
@@ -136,9 +136,9 @@ describe('doctor CLI contract', () => {
     });
     const report = await runDoctor(setup.transport, { owner: 'splrad', repository: 'example', pullRequest: 3 });
     expect(report.ok).toBe(false);
-    expect(report.findings.filter((item) => item.level === 'fail').map((item) => item.code)).toEqual(
-      expect.arrayContaining(['feature.pr-automation', 'feature.dco-advisory']),
-    );
+    const failureCodes = report.findings.filter((item) => item.level === 'fail').map((item) => item.code);
+    expect(failureCodes).toContain('feature.pr-automation');
+    expect(failureCodes).not.toContain('feature.dco-advisory');
     expect(setup.requests.map((request) => request.path)).toEqual(expect.arrayContaining([
       '/repos/splrad/example/contents/.github/workflows/pr-automation.yml',
       '/repos/splrad/example/contents/.github/workflows/dco-advisory.yml',
@@ -146,7 +146,7 @@ describe('doctor CLI contract', () => {
     expect(report.findings.find((item) => item.code === 'workflow.pr-automation.yml')?.remedy)
       .toContain('包含 PR Automation 运行面和 thin caller template');
     expect(report.findings.find((item) => item.code === 'workflow.dco-advisory.yml')?.remedy)
-      .toContain('包含 DCO Advisory 运行面和 thin caller template');
+      .toBe('从相同 Steward SHA 生成该 caller。');
   });
 
   it('lets an explicit default-branch exclusion override a ruleset include', async () => {

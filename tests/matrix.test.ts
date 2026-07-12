@@ -260,6 +260,27 @@ describe('Matrix state and repair planning', () => {
     expect(legacyProxyExternalId(target('main-authorization'), pull, inputDigest)).toContain(`head:${pull.head.sha}`);
   });
 
+  it('repairs a missing advisory target without making it a Matrix blocker', () => {
+    const advisory = result('dco-signoff', 'missing');
+    expect(advisory.required).toBe(false);
+    expect(planMatrixRepairs({
+      targets: [advisory],
+      workflowRuns: [],
+      mode: 'enforce',
+      pull,
+    })).toEqual([expect.objectContaining({
+      action: 'dispatch-workflow',
+      workflowFile: 'dco-check.yml',
+      targets: [expect.objectContaining({ id: 'dco-signoff' })],
+    })]);
+    expect(planMatrixRepairs({
+      targets: [advisory],
+      workflowRuns: [],
+      mode: 'observe',
+      pull,
+    })).toEqual([]);
+  });
+
   it('refreshes Governance once for trusted review signals and suppresses active proxies', () => {
     const active = check('Copilot Code Review Gate', 'waiting', '', {
       external_id: legacyProxyExternalId(target('copilot-review-gate'), pull, inputDigest),

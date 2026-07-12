@@ -162,6 +162,31 @@ describe('init --dry-run', () => {
     expect(second.files.every((file) => file.status === 'unchanged')).toBe(true);
   });
 
+  it('generates DCO Advisory and Matrix together for a DCO-only repository', async () => {
+    const directory = await target();
+    const configured = manifest();
+    configured.features = {
+      prAutomation: false, classification: false, dcoAdvisory: true, governance: false,
+      copilotReview: false, release: false, webhookRelay: false,
+    };
+    delete configured.classification;
+    delete configured.release;
+    const plan = await createInitPlan({
+      spec: parseInitSpec({ stewardSha, manifest: configured }),
+      targetDirectory: directory,
+      templateDirectory,
+    });
+    expect(plan.ok).toBe(true);
+    expect(plan.files.map((file) => file.path)).toEqual([
+      '.github/dependabot.yml',
+      '.github/steward.json',
+      '.github/workflows/dco-advisory.yml',
+      '.github/workflows/pr-validation-matrix.yml',
+    ]);
+    expect(plan.files.find((file) => file.path === '.github/workflows/dco-advisory.yml')?.content)
+      .toContain(`splrad/steward/.github/workflows/dco-advisory.yml@${stewardSha}`);
+  });
+
   it('reports different existing files as conflicts without modifying the target', async () => {
     const directory = await target();
     const manifestPath = path.join(directory, '.github/steward.json');
