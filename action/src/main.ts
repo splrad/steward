@@ -6,6 +6,7 @@ import { executeReleaseBuild, executeReleasePlan, parseReleaseAdapterPhase } fro
 import { createReleasePreflight } from './release-preflight.js';
 import { readReleaseStatus } from './release-status.js';
 import { publishRelease } from './release-publish.js';
+import { finalizeReleaseFailure } from './release-finalize.js';
 
 export const STEWARD_VERSION = '0.0.0-development';
 
@@ -86,6 +87,10 @@ export async function run(
     if (result.releaseUrl) core.setOutput('release-url', result.releaseUrl);
     core.setOutput('operation-result', JSON.stringify({ operation, ...result }));
     core.info(`release-publish: ${result.summary}`);
+    return;
+  }
+  if (operation === 'release-finalize') {
+    await finalizeReleaseFailure({ inputs, environment, ...(fetch ? { fetch } : {}) });
     return;
   }
   const context = await createOperationContext({

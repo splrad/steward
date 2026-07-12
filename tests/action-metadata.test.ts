@@ -29,6 +29,7 @@ describe('Action metadata', () => {
       'release-plan',
       'release-assets',
       'release-output-directory',
+      'release-failure-summary',
     ].sort());
     expect(Object.keys(metadata.outputs ?? {}).sort()).toEqual([
       'steward-version',

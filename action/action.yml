@@ -52,6 +52,9 @@ inputs:
   release-output-directory:
     description: Isolated directory containing validated Release assets.
     required: false
+  release-failure-summary:
+    description: Fixed workflow-stage failure summary used by release-finalize.
+    required: false
 outputs:
   steward-version:
     description: Version of the bundled Steward Action.
