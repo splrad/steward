@@ -1,6 +1,7 @@
 # CLI
 
-Cross-platform `init`, `activate`, `doctor`, and `upgrade` commands.
+The planned cross-platform command surface is `init`, `activate`, `doctor`, and
+`upgrade`; only `doctor` is implemented today.
 
 The first implemented command is the read-only diagnostic path:
 

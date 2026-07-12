@@ -13,7 +13,7 @@
   "packageManager": "npm@11.11.0",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "build:cli": "node -e \"import('./scripts/bundle-cli.mjs').then(({bundleCli})=>bundleCli('packages/cli/dist'))\"",
+    "build:cli": "node scripts/build-cli.mjs",
     "deploy:relay": "wrangler deploy --config packages/relay/wrangler.toml",
     "test": "vitest run",
     "test:relay": "vitest run packages/relay/test",

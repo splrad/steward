@@ -74,7 +74,6 @@ interface RulesetPayload {
 }
 
 const matrixGateName = 'PR Validation Matrix Gate';
-const shaPattern = /^[a-f0-9]{40}$/i;
 
 function segment(value: string | number): string {
   return encodeURIComponent(String(value));
