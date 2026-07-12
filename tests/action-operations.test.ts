@@ -296,6 +296,56 @@ describe('Action operation contract', () => {
     expect(fixture.client.createPullRequestReview).not.toHaveBeenCalled();
   });
 
+  it('does not request Copilot again while the reviewer is pending or after the current head was reviewed', async () => {
+    const pending = context();
+    pending.context.pull.requested_reviewers = [{ login: 'copilot-pull-request-reviewer[bot]' }];
+    await expect(executeOperation(
+      'governance-request-copilot', pending.context, { operation: 'governance-request-copilot' },
+    )).resolves.toMatchObject({ state: 'ignored', summary: 'Copilot review is already requested' });
+    expect(pending.client.listPullRequestReviews).not.toHaveBeenCalled();
+    expect(pending.mutationClient.requestReviewers).not.toHaveBeenCalled();
+
+    const reviewed = context();
+    reviewed.client.listPullRequestReviews!.mockResolvedValue([{
+      state: 'COMMENTED',
+      commit_id: reviewed.context.pull.head.sha,
+      user: { login: 'copilot-pull-request-reviewer[bot]' },
+      submitted_at: '2026-07-12T03:07:44Z',
+    }]);
+    await expect(executeOperation(
+      'governance-request-copilot', reviewed.context, { operation: 'governance-request-copilot' },
+    )).resolves.toMatchObject({ state: 'ignored', summary: 'Copilot already reviewed the current head' });
+    expect(reviewed.mutationClient.requestReviewers).not.toHaveBeenCalled();
+  });
+
+  it('requests Copilot again when the only prior review belongs to an older head', async () => {
+    const fixture = context();
+    fixture.client.listPullRequestReviews!.mockResolvedValue([{
+      state: 'COMMENTED',
+      commit_id: 'd'.repeat(40),
+      user: { login: 'copilot-pull-request-reviewer[bot]' },
+      submitted_at: '2026-07-12T02:15:27Z',
+    }]);
+
+    await expect(executeOperation(
+      'governance-request-copilot', fixture.context, { operation: 'governance-request-copilot' },
+    )).resolves.toMatchObject({ state: 'passed', summary: 'Copilot review requested' });
+    expect(fixture.mutationClient.requestReviewers).toHaveBeenCalledOnce();
+  });
+
+  it('requests Copilot again when the current-head review was dismissed', async () => {
+    const fixture = context();
+    fixture.client.listPullRequestReviews!.mockResolvedValue([{
+      state: 'DISMISSED',
+      commit_id: fixture.context.pull.head.sha,
+      user: { login: 'copilot-pull-request-reviewer[bot]' },
+      submitted_at: '2026-07-12T03:07:44Z',
+    }]);
+
+    await executeOperation('governance-request-copilot', fixture.context, { operation: 'governance-request-copilot' });
+    expect(fixture.mutationClient.requestReviewers).toHaveBeenCalledOnce();
+  });
+
   it('converges Classification through Manifest policy, GitHub primitives, metadata, and the App Check', async () => {
     const fixture = context();
     fixture.context.manifest = {

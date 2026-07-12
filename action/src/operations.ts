@@ -385,6 +385,20 @@ async function requestCopilot(context: StewardOperationContext): Promise<Steward
   if (!context.manifest.manifest.features.copilotReview) {
     return { operation: 'governance-request-copilot', state: 'ignored', summary: 'Copilot review is disabled' };
   }
+  const reviewer = 'copilot-pull-request-reviewer';
+  const alreadyRequested = (context.pull.requested_reviewers ?? []).some((candidate) => (
+    normalizeAppLogin(candidate.login) === reviewer
+  ));
+  if (alreadyRequested) {
+    return { operation: 'governance-request-copilot', state: 'ignored', summary: 'Copilot review is already requested' };
+  }
+  const reviews = await context.client.listPullRequestReviews(context.owner, context.repository, context.pull.number);
+  const alreadyReviewed = currentReviews(context, reviews).some((review) => (
+    normalizeAppLogin(review.user?.login) === reviewer && review.state !== 'DISMISSED'
+  ));
+  if (alreadyReviewed) {
+    return { operation: 'governance-request-copilot', state: 'ignored', summary: 'Copilot already reviewed the current head' };
+  }
   await mutationClient(context).requestReviewers({
     owner: context.owner,
     repository: context.repository,
