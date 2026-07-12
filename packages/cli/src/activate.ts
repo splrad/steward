@@ -226,18 +226,20 @@ function validateRuleset(ruleset: RulesetPayload): void {
 }
 
 function writableBypassActors(actors: JsonObject[]): JsonObject[] {
-  return actors.map((actor) => {
+  return actors.map((actor): JsonObject => {
     const actorType = typeof actor.actor_type === 'string' ? actor.actor_type : '';
     const bypassMode = typeof actor.bypass_mode === 'string' ? actor.bypass_mode : '';
     const actorId = actor.actor_id;
+    const idlessActor = actorType === 'OrganizationAdmin' || actorType === 'DeployKey';
     if (!['Integration', 'OrganizationAdmin', 'RepositoryRole', 'Team', 'DeployKey', 'User'].includes(actorType)
       || !['always', 'pull_request', 'exempt'].includes(bypassMode)
-      || (actorType !== 'OrganizationAdmin' && actorType !== 'DeployKey'
-        && (!Number.isSafeInteger(actorId) || Number(actorId) < 1))
-      || (actorType === 'DeployKey' && actorId !== null)) {
+      || (!idlessActor && (!Number.isSafeInteger(actorId) || Number(actorId) < 1))
+      || (idlessActor && actorId !== null && actorId !== undefined)) {
       throw new Error('GitHub ruleset contains an invalid bypass actor');
     }
-    return { actor_id: actorType === 'OrganizationAdmin' ? null : actorId!, actor_type: actorType, bypass_mode: bypassMode };
+    return idlessActor
+      ? { actor_type: actorType, bypass_mode: bypassMode }
+      : { actor_id: actorId!, actor_type: actorType, bypass_mode: bypassMode };
   });
 }
 

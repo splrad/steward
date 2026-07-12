@@ -285,6 +285,31 @@ describe('activate command', () => {
     expect((prepared as { status: 'ready'; plan: ActivateRulesetPlan }).plan.action).toBe('update');
   });
 
+  it('preserves ID-less bypass actors and rejects silent identity normalization', async () => {
+    const valid = new ActivateState();
+    valid.rulesets[0]!.bypass_actors = [
+      { actor_id: null, actor_type: 'OrganizationAdmin', bypass_mode: 'always' },
+      { actor_type: 'DeployKey', bypass_mode: 'exempt' },
+    ];
+    const prepared = await prepareActivate(valid.transport, {
+      owner: 'splrad', repository: 'example', pullRequest: 3,
+    });
+    expect(prepared.status).toBe('ready');
+    expect((prepared as { status: 'ready'; plan: ActivateRulesetPlan }).plan.requestBody.bypass_actors).toEqual([
+      { actor_type: 'OrganizationAdmin', bypass_mode: 'always' },
+      { actor_type: 'DeployKey', bypass_mode: 'exempt' },
+    ]);
+
+    for (const actorType of ['OrganizationAdmin', 'DeployKey']) {
+      const invalid = new ActivateState();
+      invalid.rulesets[0]!.bypass_actors = [{ actor_id: 12, actor_type: actorType, bypass_mode: 'always' }];
+      await expect(prepareActivate(invalid.transport, {
+        owner: 'splrad', repository: 'example', pullRequest: 3,
+      })).rejects.toThrow('invalid bypass actor');
+      expect(invalid.mutations()).toEqual([]);
+    }
+  });
+
   it('creates a dedicated minimal ruleset instead of guessing which unrelated ruleset owns Steward', async () => {
     const state = new ActivateState();
     state.rulesets = [{
