@@ -50,12 +50,14 @@ closed for unsupported source or target schema versions.
 
 DCO Advisory is a managed non-required surface: init and upgrade generate its
 thin caller together with Matrix, and doctor verifies its immutable pin.
+PR Automation is also fully managed: its caller routes only live non-default
+human branch pushes, while the shared runtime reads bounded GitHub API compare
+evidence and never checks out or executes consumer-branch code. It requires the
+same App private key and client-ID Variable as the other App-backed surfaces;
+Copilot CLI credentials are not part of the current deterministic contract.
 Governance or Copilot Review also derives a managed post-close Cleanup caller;
 it is not a separate project policy switch. Cleanup removes only Steward
 App-owned temporary comments and writes a durable notice only for merged PRs.
-Until the shared PR Automation runtime is present, doctor reports that feature as a
-failure and upgrade refuses to leave it unmanaged. This prevents a partial
-lifecycle plan from being presented as a safe repository upgrade.
 
 Exit code `0` is success, `1` is a failed check, action-required stop, or user
 cancellation, and `2` is usage, authentication, unverifiable evidence, or a

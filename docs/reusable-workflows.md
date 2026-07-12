@@ -7,6 +7,7 @@ Consumer callers must therefore:
 - pin the Steward reusable workflow to a complete commit SHA;
 - grant only `contents: read` to the calling job and pass named secrets explicitly rather than using `secrets: inherit`;
 - derive `pr_number`, `head_sha`, event name, and event action only from the native event payload or a previously validated relay payload;
+- keep Automation at `.github/workflows/pr-automation.yml`; it routes only non-deleted, non-default human branch pushes and passes the native ref name and `after` SHA;
 - keep the Classification caller at `.github/workflows/pr-classification.yml` with `run-name: "PR Validation Target #<PR> / <40-character-head-SHA>"`;
 - keep the DCO caller at `.github/workflows/dco-advisory.yml` with the same target run-name; its result is advisory and must not be added to required checks;
 - keep the Governance caller at `.github/workflows/pr-governance.yml` with the same `run-name: "PR Validation Target #<PR> / <40-character-head-SHA>"`; `governance_scope` remains an explicit reusable-workflow input, not part of the trusted identity;
@@ -16,6 +17,8 @@ Consumer callers must therefore:
 - keep Release at `.github/workflows/release.yml`; the caller provides only App identity/secret and an optional manual-recovery PR number, while runner, trigger paths, adapter command, merge SHA, tag, assets, notes, and Check policy remain Steward/default-branch Manifest outputs.
 
 The Governance called workflow reads the default-branch Manifest before human-token jobs. Disabled features skip the corresponding Copilot request or automatic approval, but their platform Gate operation still runs once to remove stale Check/comment state. Missing optional human secrets fail explicitly only when the relevant feature and scope require them.
+
+The Automation called workflow mints one repository installation token with `Contents` and organization `Members: read` plus `Pull requests` and `Issues: write`. It validates the caller push against live repository/default-branch metadata, the source branch ref, bounded compare commits/files, and at most one matching open PR before mutation. It never checks out or executes consumer-branch code, never trusts editable PR-body identity metadata, and uses a deterministic Chinese summary rather than requiring Copilot CLI. Oversized or inconsistent compare evidence fails visibly instead of producing a partial PR description.
 
 The Classification called workflow mints one repository installation token with `Contents: read` plus `Checks`, `Issues`, and `Pull requests: write`. It does not checkout caller code, receive a human token, or receive label/path/Check policy as input. A disabled Classification feature returns `ignored` without creating a custom Check or trusting editable PR metadata to remove labels.
 

@@ -24,7 +24,7 @@ function manifest(): StewardManifest {
       language: 'zh-CN',
     },
     features: {
-      prAutomation: false, classification: true, dcoAdvisory: false, governance: true,
+      prAutomation: true, classification: true, dcoAdvisory: false, governance: true,
       copilotReview: true, release: true, webhookRelay: true,
     },
     classification,
@@ -72,7 +72,7 @@ describe('init --dry-run', () => {
 
     expect(first).toEqual(second);
     expect(first.ok).toBe(true);
-    expect(first.counts).toEqual({ create: 9, unchanged: 0, conflict: 0 });
+    expect(first.counts).toEqual({ create: 10, unchanged: 0, conflict: 0 });
     expect(first.files.map(({ path: filePath, status, digest }) => ({ path: filePath, status, digest })))
       .toMatchInlineSnapshot(`
         [
@@ -82,13 +82,18 @@ describe('init --dry-run', () => {
             "status": "create",
           },
           {
-            "digest": "515d6d00ad5ee77bc983e97a1082fa7a0f4a371fc11c6a3e2cd3da44c599b425",
+            "digest": "576205d6ca7302318c14828f781897438ae8726b1fc19d191b5433d3f2ce0099",
             "path": ".github/steward.json",
             "status": "create",
           },
           {
             "digest": "d51f49e00c07d3c4cf800f1d02bddd749c90d5727046c21a174ad9de8ef07799",
             "path": ".github/steward/release.mjs",
+            "status": "create",
+          },
+          {
+            "digest": "deafd737c5e5f35053ab782fbba80b357c79f185c0ffee209fc2ab64cd6bc413",
+            "path": ".github/workflows/pr-automation.yml",
             "status": "create",
           },
           {
@@ -127,6 +132,7 @@ describe('init --dry-run', () => {
       '.github/dependabot.yml',
       '.github/steward.json',
       '.github/steward/release.mjs',
+      '.github/workflows/pr-automation.yml',
       '.github/workflows/pr-classification.yml',
       '.github/workflows/pr-cleanup.yml',
       '.github/workflows/pr-governance.yml',
@@ -191,6 +197,30 @@ describe('init --dry-run', () => {
     ]);
     expect(plan.files.find((file) => file.path === '.github/workflows/dco-advisory.yml')?.content)
       .toContain(`splrad/steward/.github/workflows/dco-advisory.yml@${stewardSha}`);
+  });
+
+  it('generates Automation without adding it to the validation Matrix', async () => {
+    const directory = await target();
+    const configured = manifest();
+    configured.features = {
+      prAutomation: true, classification: false, dcoAdvisory: false, governance: false,
+      copilotReview: false, release: false, webhookRelay: false,
+    };
+    delete configured.classification;
+    delete configured.release;
+    const plan = await createInitPlan({
+      spec: parseInitSpec({ stewardSha, manifest: configured }),
+      targetDirectory: directory,
+      templateDirectory,
+    });
+    expect(plan.ok).toBe(true);
+    expect(plan.files.map((file) => file.path)).toEqual([
+      '.github/dependabot.yml',
+      '.github/steward.json',
+      '.github/workflows/pr-automation.yml',
+    ]);
+    expect(plan.files.find((file) => file.path === '.github/workflows/pr-automation.yml')?.content)
+      .toContain(`splrad/steward/.github/workflows/pr-automation.yml@${stewardSha}`);
   });
 
   it('reports different existing files as conflicts without modifying the target', async () => {

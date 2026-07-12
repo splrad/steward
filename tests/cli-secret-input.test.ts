@@ -86,6 +86,9 @@ const tokenRequirement: SecretRequirement = {
 describe('Secret input and memory lifecycle', () => {
   it('derives the exact Secret contract from enabled features', () => {
     expect(requiredSecretRequirements(manifest())).toEqual([]);
+    expect(requiredSecretRequirements(manifest({ prAutomation: true }))).toEqual([
+      { name: 'WORKFLOW_AUTOMATION_APP_PRIVATE_KEY', mode: 'multiline', maxBytes: 65_536 },
+    ]);
     expect(requiredSecretRequirements(manifest({ classification: true }))).toEqual([
       { name: 'WORKFLOW_AUTOMATION_APP_PRIVATE_KEY', mode: 'multiline', maxBytes: 65_536 },
     ]);

@@ -51,7 +51,7 @@ export class SecretInputEofError extends Error {
 
 export function requiredSecretRequirements(manifest: StewardManifest): SecretRequirement[] {
   const requirements: SecretRequirement[] = [];
-  if (manifest.features.classification || manifest.features.dcoAdvisory
+  if (manifest.features.prAutomation || manifest.features.classification || manifest.features.dcoAdvisory
     || manifest.features.governance || manifest.features.copilotReview || manifest.features.release) {
     requirements.push({ name: 'WORKFLOW_AUTOMATION_APP_PRIVATE_KEY', mode: 'multiline', maxBytes: 65_536 });
   }

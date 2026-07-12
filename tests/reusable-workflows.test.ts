@@ -2,12 +2,14 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 const actionSha = 'cd874ad2819bb1a24b4af17b6a5108b56fb728b9';
+const automationActionSha = '3a8a41035db1df7795a7546d9708a42d15617104';
 const dcoActionSha = 'add0e1652474138b5ab4e9b740f1534095f32785';
 const cleanupActionSha = 'c0eb1530e2fb3062749c879671514370bae49f37';
 const appTokenSha = 'bcd2ba49218906704ab6c1aa796996da409d3eb1';
 const releaseActionSha = '6e33424e7fb18100145845b49e8ccf2c90d504e0';
 const repositoryRoot = new URL('../', import.meta.url);
 const workflowPaths = [
+  '.github/workflows/pr-automation.yml',
   '.github/workflows/pr-classification.yml',
   '.github/workflows/dco-advisory.yml',
   '.github/workflows/pr-cleanup.yml',
@@ -39,6 +41,9 @@ describe('First reusable workflow contracts', () => {
       expect(source, path).not.toMatch(/^\s*environment:/m);
     }
     expect(files['.github/workflows/pr-governance.yml']).toContain(`splrad/steward/action@${actionSha}`);
+    expect(files['.github/workflows/pr-automation.yml']).toContain(
+      `splrad/steward/action@${automationActionSha}`,
+    );
     expect(files['.github/workflows/pr-validation-matrix.yml']).toContain(
       `splrad/steward/action@${actionSha}`,
     );
@@ -84,6 +89,7 @@ describe('First reusable workflow contracts', () => {
 
   it('records the caller-owned path and run-name trust boundary', async () => {
     const contract = await readFile(new URL('docs/reusable-workflows.md', repositoryRoot), 'utf8');
+    expect(contract).toContain('.github/workflows/pr-automation.yml');
     expect(contract).toContain('.github/workflows/pr-classification.yml');
     expect(contract).toContain('PR Validation Target #<PR> / <40-character-head-SHA>');
     expect(contract).toContain('.github/workflows/dco-advisory.yml');
@@ -141,6 +147,21 @@ describe('First reusable workflow contracts', () => {
     expect(classification).not.toContain('mutation-token:');
     expect(classification).not.toContain('actions/checkout');
     expect(classification.match(/^\s*uses:/gm)).toHaveLength(2);
+  });
+
+  it('limits Automation to trusted API evidence and PR/comment mutations without checkout', async () => {
+    const automation = (await workflows())['.github/workflows/pr-automation.yml'];
+    expect(automation).toContain('name: Create or Update Pull Request');
+    expect(automation).toContain('operation: automation');
+    expect(automation).toContain('permission-contents: read');
+    expect(automation).toContain('permission-pull-requests: write');
+    expect(automation).toContain('permission-issues: write');
+    expect(automation).toContain('permission-members: read');
+    expect(automation).not.toContain('permission-checks: write');
+    expect(automation).not.toContain('permission-actions: write');
+    expect(automation).not.toContain('actions/checkout');
+    expect(automation).not.toContain('copilot');
+    expect(automation.match(/^\s*uses:/gm)).toHaveLength(2);
   });
 
   it('keeps DCO advisory non-blocking and limits its token to evidence plus legacy cleanup', async () => {

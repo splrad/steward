@@ -70,9 +70,6 @@ export function parseInitSpec(value: unknown): InitSpec {
   }
   rawManifest.$schema = expectedSchema;
   const manifest = normalizeManifest(parseManifest(rawManifest));
-  if (manifest.features.prAutomation) {
-    throw new Error('init does not yet generate the legacy prAutomation surface');
-  }
 
   let releaseAdapter: InitSpec['releaseAdapter'];
   if (input.releaseAdapter !== undefined) {
@@ -100,6 +97,9 @@ export function parseInitSpec(value: unknown): InitSpec {
 
 export function workflowTemplates(manifest: StewardManifest): Array<{ template: string; destination: string }> {
   const workflows: Array<{ template: string; destination: string }> = [];
+  if (manifest.features.prAutomation) {
+    workflows.push({ template: 'thin-workflows/pr-automation.yml', destination: '.github/workflows/pr-automation.yml' });
+  }
   if (manifest.features.classification) {
     workflows.push({ template: 'thin-workflows/pr-classification.yml', destination: '.github/workflows/pr-classification.yml' });
   }
