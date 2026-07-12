@@ -1,8 +1,7 @@
 # CLI
 
 The cross-platform command surface is `init`, `activate`, `doctor`, and
-`upgrade`. `doctor`, all three explicit `init` stages, and two-phase `activate`
-are implemented; `upgrade` remains a later lifecycle unit.
+`upgrade`. All four lifecycle surfaces are implemented.
 
 ```text
 steward doctor --repo OWNER/REPOSITORY [--pr NUMBER] [--json]
@@ -10,6 +9,7 @@ steward init --dry-run --spec FILE [--target DIRECTORY] [--json]
 steward init --preflight --repo OWNER/REPOSITORY --spec FILE [--json]
 steward init --apply --repo OWNER/REPOSITORY --spec FILE
 steward activate --repo OWNER/REPOSITORY --pr NUMBER
+steward upgrade --repo OWNER/REPOSITORY --to STEWARD_SHA
 ```
 
 `doctor` and preflight are read-only. Dry-run is a deterministic local generator
@@ -35,8 +35,21 @@ one ruleset create or update. With no Steward-owned ruleset, it creates a
 dedicated `SPLRAD Steward` ruleset instead of guessing which project policy to
 edit. Ambiguous or inherited Steward rules fail closed.
 
+Upgrade is interactive and accepts only a complete target commit SHA in the
+canonical `splrad/steward` repository. It verifies the target is not older or
+diverged from any current pin, reads target templates at that immutable commit,
+and replaces a managed caller or Dependabot file only when its current content
+is provably the prior Steward-generated template. The Manifest schema URL and
+supported schemaVersion are migrated while project configuration is retained.
+The release adapter is read into the confirmation fingerprint when it has a
+repository path and is never included in the write set. After confirmation the
+entire plan is re-read before creating one `steward/upgrade` commit and PR; the
+default branch, credentials, App, rulesets, and unrelated files are untouched.
+The current CLI supports the explicit v1-to-v1 migration surface and fails
+closed for unsupported source or target schema versions.
+
 Exit code `0` is success, `1` is a failed check, action-required stop, or user
 cancellation, and `2` is usage, authentication, unverifiable evidence, or a
-runtime failure. A partially completed apply reports durable resource names and
-is safe to rerun only when the existing branch and PR still match the exact
-confirmed initialization state.
+runtime failure. A partially completed init apply or upgrade reports durable
+resource names and is safe to rerun only when the existing branch and PR still
+match the exact confirmed plan.
