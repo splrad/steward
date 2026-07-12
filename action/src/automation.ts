@@ -32,11 +32,12 @@ function normalizeAppLogin(value: unknown): string {
 }
 
 function decodeTemplate(file: { type?: string; encoding?: string; content?: string }): string {
-  if (file.type !== 'file' || file.encoding !== 'base64' || !file.content) {
+  if (file.type !== 'file' || file.encoding !== 'base64' || file.content === undefined) {
     throw new Error('GitHub returned an invalid pull request template response');
   }
   const compact = file.content.replaceAll(/\s/g, '');
-  if (!compact || compact.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(compact)) {
+  if (!compact) return '';
+  if (compact.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(compact)) {
     throw new Error('GitHub returned invalid base64 pull request template content');
   }
   return Buffer.from(compact, 'base64').toString('utf8');
