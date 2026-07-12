@@ -12,6 +12,9 @@ try {
     requestResult: core.getInput('request-result'),
     matrixMode: core.getInput('matrix-mode'),
     matrixScope: core.getInput('matrix-scope'),
+    releaseAdapterCommand: core.getInput('release-adapter-command'),
+    releaseContext: core.getInput('release-context'),
+    releaseWorkspace: core.getInput('release-workspace'),
   });
 } catch (error) {
   core.setFailed(error instanceof Error ? error.message : String(error));

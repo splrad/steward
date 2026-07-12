@@ -22,6 +22,9 @@ describe('Action metadata', () => {
       'request-result',
       'matrix-mode',
       'matrix-scope',
+      'release-adapter-command',
+      'release-context',
+      'release-workspace',
     ].sort());
     expect(Object.keys(metadata.outputs ?? {}).sort()).toEqual([
       'steward-version',
@@ -29,6 +32,9 @@ describe('Action metadata', () => {
       'operation-result',
       'governance-enabled',
       'copilot-review-enabled',
+      'release-plan',
+      'release-assets',
+      'release-output-directory',
     ].sort());
   });
 });

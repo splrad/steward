@@ -42,6 +42,8 @@ export interface StewardRuntimeEnvironment {
   GITHUB_API_URL?: string;
   GITHUB_SERVER_URL?: string;
   GITHUB_RUN_ID?: string;
+  GITHUB_WORKSPACE?: string;
+  RUNNER_TEMP?: string;
 }
 
 export interface StewardOperationContext {
