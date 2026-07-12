@@ -122,12 +122,23 @@ describe('PR Automation policy', () => {
       existingBody: [
         '<!-- workflow:source-actor:forged-core -->',
         '<!-- workflow:source-contributors:forged-core,external-dev -->',
+        '<!-- workflow:auto-context:source=forged>core;target=main -->',
       ].join('\n'),
     }));
     if (result.state !== 'planned') throw new Error('expected a plan');
     expect(result.contributors).toEqual(['external-dev', 'helper']);
     expect(result.body).not.toContain('workflow:source-actor:forged-core');
     expect(result.body).not.toContain('workflow:source-contributors:forged-core');
+    expect(result.body).not.toContain('forged>core');
+  });
+
+  it('keeps co-author display names informational without triggering mentions', () => {
+    const commits = [...facts().commits];
+    commits[0] = { ...commits[0], authorName: 'Team @maintainers' };
+    const result = evaluatePullRequestAutomation(facts({ commits }));
+    if (result.state !== 'planned') throw new Error('expected a plan');
+    expect(result.body).toContain('Co-authored-by: Team @\u200bmaintainers <dev@example.test>');
+    expect(result.body).not.toContain('Co-authored-by: Team @maintainers');
   });
 
   it('ignores default-branch, bot, and no-ahead pushes without a mutation plan', () => {

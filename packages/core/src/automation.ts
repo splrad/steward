@@ -116,7 +116,11 @@ function statusLabel(status: string): string {
 
 function sanitizedTrailer(commit: AutomationCommitInput, botLogins: readonly unknown[]): string {
   if (commit.authorLogin && isBotLogin(commit.authorLogin, botLogins)) return '';
-  const name = boundedLine(commit.authorName, 120).replace(/[<>]/g, ' ').replace(/\s+/g, ' ').trim();
+  const name = boundedLine(commit.authorName, 120)
+    .replace(/[<>]/g, ' ')
+    .replace(/@/g, '@\u200b')
+    .replace(/\s+/g, ' ')
+    .trim();
   const email = String(commit.authorEmail ?? '').trim();
   if (!name || /\[bot\]/i.test(name) || !/^[^<>\s@]+@[^<>\s@]+$/.test(email)
     || /\[bot\]@users\.noreply\.github\.com$/i.test(email)) return '';
@@ -128,7 +132,10 @@ function stripManagedCoAuthors(body: string): string {
 }
 
 function stripEditableIdentityMetadata(body: string): string {
-  return body.replace(/<!--\s*workflow:(?:source-actor|source-contributors|auto-context):[^>]*-->/gi, '');
+  return body.replace(
+    /<!--\s*workflow:(?:source-actor|source-contributors|auto-context):[\s\S]*?-->/gi,
+    '',
+  );
 }
 
 function appendManagedCoAuthors(body: string, commits: readonly AutomationCommitInput[], botLogins: readonly unknown[]): string {
