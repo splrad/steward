@@ -192,7 +192,10 @@ function permissionSatisfies(actual: string | undefined, required: 'read' | 'wri
 
 function rulesetTargetsDefaultBranch(ruleset: RulesetPayload, defaultBranch: string): boolean {
   const include = ruleset.conditions?.ref_name?.include ?? [];
-  return include.includes('~DEFAULT_BRANCH') || include.includes(`refs/heads/${defaultBranch}`);
+  const exclude = ruleset.conditions?.ref_name?.exclude ?? [];
+  const ref = `refs/heads/${defaultBranch}`;
+  const excluded = exclude.includes('~DEFAULT_BRANCH') || exclude.includes(ref);
+  return !excluded && (include.includes('~DEFAULT_BRANCH') || include.includes(ref));
 }
 
 function report(repository: string, findings: DoctorFinding[]): DoctorReport {
@@ -305,6 +308,7 @@ export async function runDoctor(transport: GitHubTransport, options: DoctorOptio
       const missing = Object.entries(installationPermissions(loaded.manifest))
         .filter(([name, required]) => !permissionSatisfies(installation.permissions?.[name], required))
         .map(([name, required]) => `${name}:${required}`);
+      if (!Number.isSafeInteger(appId) || appId < 1) missing.unshift('app_id');
       findings.push(missing.length
         ? finding('app.installation', 'fail', `GitHub App installation 缺少权限：${missing.join(', ')}。`, '在 App 设置中补齐权限并由组织接受变更。')
         : finding('app.installation', 'pass', `组织 installation ${installation.id} 存在且权限满足启用功能。`));
@@ -330,6 +334,8 @@ export async function runDoctor(transport: GitHubTransport, options: DoctorOptio
     }, (payload) => payload.check_runs ?? []) ?? [];
     const namedGate = checks.find((check) => check.name === matrixGateName);
     const correctApp = String(namedGate?.app?.slug ?? '').toLowerCase() === loaded.manifest.automation.githubApp.slug;
+    const checkAppId = Number(namedGate?.app?.id ?? 0);
+    if (!appId && correctApp && Number.isSafeInteger(checkAppId) && checkAppId > 0) appId = checkAppId;
     const identity = parseStewardCheckExternalId(namedGate?.external_id);
     const trusted = Boolean(namedGate && correctApp && identity
       && identity.repositoryId === repositoryId
@@ -372,11 +378,16 @@ export async function runDoctor(transport: GitHubTransport, options: DoctorOptio
           .flatMap((rule) => rule.parameters?.required_status_checks ?? [])
         : []
     )).filter((check) => check.context === matrixGateName);
-    const trusted = required.some((check) => Number(check.integration_id ?? 0) > 0 && (!appId || check.integration_id === appId));
-    findings.push(trusted
-      ? finding('ruleset.matrix', 'pass', `${matrixGateName} 在默认分支 active ruleset 中按 App 来源要求。`)
-      : finding('ruleset.matrix', 'fail', `${matrixGateName} 未在默认分支 active ruleset 中绑定正确 App 来源。`,
-        '使用 activate 合并 required check；保留所有非 Steward 规则。'));
+    if (!appId) {
+      findings.push(finding('ruleset.matrix', 'warning', `${matrixGateName} 的 required check 可读取，但没有可信 App ID 可验证 integration_id。`,
+        '使用可读取组织 installation 的管理员 token，或指定带当前-head App Check 的开放 PR。'));
+    } else {
+      const trusted = required.some((check) => check.integration_id === appId);
+      findings.push(trusted
+        ? finding('ruleset.matrix', 'pass', `${matrixGateName} 在默认分支 active ruleset 中按 App 来源要求。`)
+        : finding('ruleset.matrix', 'fail', `${matrixGateName} 未在默认分支 active ruleset 中绑定正确 App 来源。`,
+          '使用 activate 合并 required check；保留所有非 Steward 规则。'));
+    }
   }
 
   if (loaded.manifest.features.webhookRelay) {
@@ -396,8 +407,9 @@ export async function runDoctor(transport: GitHubTransport, options: DoctorOptio
     if (!candidate) {
       findings.push(finding('release.adapter', 'warning', 'Release adapter argv 未包含可远程核对的仓库相对路径。', '在目标 runner 上执行 contract 验证。'));
     } else {
+      const repositoryAdapterPath = candidate.replaceAll('\\', '/');
       const adapter = await optionalRequest<{ type?: string }>(transport, {
-        path: `${path}/contents/${candidate.split('/').map(segment).join('/')}`, query: { ref: defaultBranch },
+        path: `${path}/contents/${repositoryAdapterPath.split('/').map(segment).join('/')}`, query: { ref: defaultBranch },
       });
       findings.push(adapter?.type === 'file'
         ? finding('release.adapter', 'pass', `Release adapter ${candidate} 存在；执行 contract 由 Release workflow 在可信 runner 上验证。`)

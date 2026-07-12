@@ -50,7 +50,7 @@ function transportFor(overrides: Partial<Record<string, unknown>> = {}): { trans
     }] };
     if (request.path.endsWith('/pulls')) return [{ number: 3, state: 'open', base: { ref: 'main' }, head: { sha } }];
     if (request.path.endsWith(`/commits/${sha}/check-runs`)) return { check_runs: [{
-      id: 11, name: 'PR Validation Matrix Gate', status: 'completed', conclusion: 'success', app: { slug: 'splrad-steward' },
+      id: 11, name: 'PR Validation Matrix Gate', status: 'completed', conclusion: 'success', app: { id: 42, slug: 'splrad-steward' },
       external_id: stewardCheckExternalId({ repositoryId: 7, prNumber: 3, headSha: sha, checkId: 'validation-matrix', configDigest: manifestDigest(manifest()), inputDigest: 'c'.repeat(64) }),
     }] };
     if (request.path.endsWith('/rulesets')) return [{ id: 5 }];
@@ -105,5 +105,47 @@ describe('doctor CLI contract', () => {
     expect(report.findings.filter((item) => item.level === 'fail').map((item) => item.code))
       .toEqual(expect.arrayContaining(['actions.secrets', 'workflow.governance-pins', 'checks.current-head', 'ruleset.matrix']));
     expect(report.findings.filter((item) => item.level === 'fail').every((item) => item.remedy)).toBe(true);
+  });
+
+  it('lets an explicit default-branch exclusion override a ruleset include', async () => {
+    const setup = transportFor({
+      '/repos/splrad/example/rulesets/5': {
+        id: 5, target: 'branch', enforcement: 'active',
+        conditions: { ref_name: { include: ['~DEFAULT_BRANCH'], exclude: ['refs/heads/main'] } },
+        rules: [{ type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'PR Validation Matrix Gate', integration_id: 42 }] } }],
+      },
+    });
+    const report = await runDoctor(setup.transport, { owner: 'splrad', repository: 'example' });
+    expect(report.findings.find((item) => item.code === 'ruleset.matrix')?.level).toBe('fail');
+  });
+
+  it('never accepts an arbitrary ruleset integration when App ID evidence is absent', async () => {
+    const setup = transportFor({
+      '/orgs/splrad/installations': { installations: [{
+        id: 9, app_slug: 'splrad-steward', client_id: 'Iv23liuSr0qd4WLJdZhH', suspended_at: null,
+        permissions: { checks: 'write', contents: 'write', pull_requests: 'write', issues: 'write', members: 'read', actions: 'write' },
+      }] },
+      '/repos/splrad/example/pulls': [],
+    });
+    const report = await runDoctor(setup.transport, { owner: 'splrad', repository: 'example' });
+    expect(report.findings.find((item) => item.code === 'app.installation')?.level).toBe('fail');
+    expect(report.findings.find((item) => item.code === 'ruleset.matrix')?.level).toBe('warning');
+  });
+
+  it('normalizes a Windows-style adapter argument before reading repository contents', async () => {
+    const configured = manifest();
+    configured.release = {
+      ...configured.release!,
+      adapterCommand: ['pwsh', '.github\\steward\\release.ps1'],
+    };
+    const setup = transportFor({
+      '/repos/splrad/example/contents/.github/steward.json': {
+        type: 'file', encoding: 'base64', content: Buffer.from(JSON.stringify(configured)).toString('base64'), sha: 'blob',
+      },
+      '/repos/splrad/example/contents/.github/steward/release.ps1': { type: 'file' },
+    });
+    const report = await runDoctor(setup.transport, { owner: 'splrad', repository: 'example' });
+    expect(report.findings.find((item) => item.code === 'release.adapter')?.level).toBe('pass');
+    expect(setup.requests.map((request) => request.path)).toContain('/repos/splrad/example/contents/.github/steward/release.ps1');
   });
 });
