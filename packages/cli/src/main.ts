@@ -24,6 +24,12 @@ import {
   withSecrets,
   type SecretPrompt,
 } from './secret-input.js';
+import {
+  executeUpgrade,
+  prepareUpgrade,
+  type UpgradePlan,
+  type UpgradeReport,
+} from './upgrade.js';
 
 interface DoctorArguments {
   command: 'doctor';
@@ -64,7 +70,13 @@ interface ActivateArguments {
   pullRequest: number;
 }
 
-type Arguments = DoctorArguments | InitDryRunArguments | InitPreflightArguments | InitApplyArguments | ActivateArguments;
+interface UpgradeArguments {
+  command: 'upgrade';
+  repository: string;
+  targetSha: string;
+}
+
+type Arguments = DoctorArguments | InitDryRunArguments | InitPreflightArguments | InitApplyArguments | ActivateArguments | UpgradeArguments;
 
 function usage(): string {
   return [
@@ -74,6 +86,7 @@ function usage(): string {
     '  steward init --preflight --repo OWNER/REPOSITORY --spec FILE [--json]',
     '  steward init --apply --repo OWNER/REPOSITORY --spec FILE',
     '  steward activate --repo OWNER/REPOSITORY --pr NUMBER',
+    '  steward upgrade --repo OWNER/REPOSITORY --to SHA',
   ].join('\n');
 }
 
@@ -141,6 +154,21 @@ export function parseArguments(argv: readonly string[]): Arguments {
     }
     if (!pullRequest) throw new Error(`activate requires --pr NUMBER\n${usage()}`);
     return { command: 'activate', repository, pullRequest };
+  }
+  if (argv[0] === 'upgrade') {
+    let repository = '';
+    let targetSha = '';
+    for (let index = 1; index < argv.length; index += 1) {
+      const argument = argv[index];
+      if (argument === '--repo') repository = optionValue(argv, index++, '--repo');
+      else if (argument === '--to') targetSha = optionValue(argv, index++, '--to').toLowerCase();
+      else throw new Error(`Unknown argument: ${argument ?? ''}\n${usage()}`);
+    }
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
+      throw new Error(`--repo must be OWNER/REPOSITORY\n${usage()}`);
+    }
+    if (!/^[a-f0-9]{40}$/.test(targetSha)) throw new Error(`--to must be a complete 40-character commit SHA\n${usage()}`);
+    return { command: 'upgrade', repository, targetSha };
   }
   if (argv[0] !== 'doctor') throw new Error(usage());
   let repository = '';
@@ -223,6 +251,34 @@ function renderActivatePlan(plan: ActivateRulesetPlan): string {
 
 function renderActivateReport(report: ActivateReport): string {
   return `Steward activate complete: ${report.repository}\nRuleset: ${report.rulesetName} #${report.rulesetId} (${report.action})`;
+}
+
+function renderUpgradePlan(plan: UpgradePlan): string {
+  const lines = [
+    `Steward upgrade plan: ${plan.repository}`,
+    `Default branch: ${plan.defaultBranch}@${plan.baseSha.slice(0, 12)}…`,
+    `Current pins: ${plan.currentPins.map((pin) => pin.slice(0, 12)).join(', ')}`,
+    `Target Steward SHA: ${plan.targetSha}`,
+    `Schema migration: v${plan.sourceSchemaVersion} -> v${plan.targetSchemaVersion}`,
+  ];
+  for (const file of plan.files) lines.push(`[${file.status.toUpperCase()}] ${file.path} ${file.digest.slice(0, 12)}…`);
+  if (plan.preservedAdapter) {
+    lines.push(`Preserved adapter: ${plan.preservedAdapter.path} ${plan.preservedAdapter.digest.slice(0, 12)}…`);
+  }
+  lines.push(`Summary: ${plan.counts.create} create, ${plan.counts.update} update, ${plan.counts.unchanged} unchanged`);
+  lines.push(`Branch: ${plan.branchStatus} ${plan.branchName}`);
+  lines.push(`Pull request: ${plan.pullRequestStatus}${plan.pullRequestNumber ? ` #${plan.pullRequestNumber}` : ''}`);
+  lines.push('No mutations have been sent.');
+  return lines.join('\n');
+}
+
+function renderUpgradeReport(report: UpgradeReport): string {
+  return [
+    `Steward upgrade complete: ${report.repository}`,
+    `Target: ${report.targetSha}`,
+    `Branch: ${report.branchName}@${report.branchSha.slice(0, 12)}… (${report.branchStatus})`,
+    `Pull request: ${report.pullRequestUrl} (${report.pullRequestStatus})`,
+  ].join('\n');
 }
 
 interface CliRuntime {
@@ -327,6 +383,32 @@ export async function main(
       }
       const report = await executeActivate(transport, refreshed.plan);
       process.stdout.write(`${renderActivateReport(report)}\n`);
+      return 0;
+    }
+    if (args.command === 'upgrade') {
+      const transport = runtime.transport ?? createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' });
+      const prepared = await prepareUpgrade({
+        transport, owner, repository, targetSha: args.targetSha,
+      });
+      if (prepared.status === 'current') {
+        process.stdout.write(`Steward upgrade: ${prepared.plan.repository} is already current at ${prepared.plan.targetSha}.\n`);
+        return 0;
+      }
+      process.stdout.write(`${renderUpgradePlan(prepared.plan)}\n`);
+      const confirmed = await (runtime.confirmation ?? new TerminalConfirmationPrompt())
+        .confirm('Create this Steward upgrade pull request? [y/N] ');
+      if (!confirmed) {
+        process.stderr.write('Steward upgrade cancelled; no mutations were sent.\n');
+        return 1;
+      }
+      const refreshed = await prepareUpgrade({
+        transport, owner, repository, targetSha: args.targetSha,
+      });
+      if (refreshed.status !== 'ready' || refreshed.plan.fingerprint !== prepared.plan.fingerprint) {
+        throw new Error('upgrade plan changed after confirmation; no mutations were sent');
+      }
+      const report = await executeUpgrade({ transport, owner, repository, plan: refreshed.plan });
+      process.stdout.write(`${renderUpgradeReport(report)}\n`);
       return 0;
     }
     const report = await runDoctor(createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' }), {

@@ -101,7 +101,7 @@ export function parseInitSpec(value: unknown): InitSpec {
   return { stewardSha, manifest, ...(releaseAdapter ? { releaseAdapter } : {}) };
 }
 
-function workflowTemplates(manifest: StewardManifest): Array<{ template: string; destination: string }> {
+export function workflowTemplates(manifest: StewardManifest): Array<{ template: string; destination: string }> {
   const workflows: Array<{ template: string; destination: string }> = [];
   if (manifest.features.classification) {
     workflows.push({ template: 'thin-workflows/pr-classification.yml', destination: '.github/workflows/pr-classification.yml' });
@@ -121,10 +121,10 @@ function workflowTemplates(manifest: StewardManifest): Array<{ template: string;
   return workflows;
 }
 
-function replaceStewardSha(template: string, stewardSha: string, name: string): string {
+export function replaceStewardSha(template: string, stewardSha: string, name: string): string {
   const marker = '__STEWARD_SHA__';
   const count = template.split(marker).length - 1;
-  if (count !== 1) throw new Error(`init template ${name} must contain exactly one ${marker} marker`);
+  if (count !== 1) throw new Error(`Steward template ${name} must contain exactly one ${marker} marker`);
   return template.replace(marker, stewardSha);
 }
 
