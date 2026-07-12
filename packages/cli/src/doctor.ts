@@ -98,11 +98,7 @@ function requiredWorkflowFiles(manifest: StewardManifest): RequiredWorkflowFile[
     files.push({ path: '.github/workflows/pr-classification.yml', called: 'pr-classification.yml' });
   }
   if (manifest.features.dcoAdvisory) {
-    files.push({
-      path: '.github/workflows/dco-advisory.yml',
-      called: 'dco-advisory.yml',
-      missingRemedy: '先升级到包含 DCO Advisory 运行面和 thin caller template 的 Steward 版本，再生成该 caller。',
-    });
+    files.push({ path: '.github/workflows/dco-advisory.yml', called: 'dco-advisory.yml' });
   }
   if (manifest.features.governance || manifest.features.copilotReview) {
     files.push({ path: '.github/workflows/pr-governance.yml', called: 'pr-governance.yml' });
@@ -211,14 +207,6 @@ export async function runDoctor(transport: GitHubTransport, options: DoctorOptio
       'fail',
       '当前 Steward 版本尚未实现共享 PR Automation 运行面。',
       '在迁移前升级到包含 PR Automation Action、reusable workflow 与 thin caller 的 Steward 版本。',
-    ));
-  }
-  if (loaded.manifest.features.dcoAdvisory) {
-    findings.push(finding(
-      'feature.dco-advisory',
-      'fail',
-      '当前 Steward 版本尚未实现共享 DCO Advisory 运行面。',
-      '在迁移前升级到包含 DCO evaluator、Action、reusable workflow 与 thin caller 的 Steward 版本。',
     ));
   }
 

@@ -1,0 +1,30 @@
+name: DCO Sign-off Advisory
+
+run-name: "PR Validation Target #${{ github.event.pull_request.number || github.event.inputs.pr_number }} / ${{ github.event.pull_request.head.sha || github.event.inputs.head_sha }}"
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to inspect.
+        required: true
+        type: number
+      head_sha:
+        description: Expected current pull request head SHA.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  dco:
+    uses: splrad/steward/.github/workflows/dco-advisory.yml@__STEWARD_SHA__
+    with:
+      app_client_id: ${{ vars.WORKFLOW_AUTOMATION_APP_CLIENT_ID }}
+      pr_number: ${{ github.event.pull_request.number || fromJSON(github.event.inputs.pr_number || '0') }}
+      head_sha: ${{ github.event.pull_request.head.sha || github.event.inputs.head_sha }}
+    secrets:
+      app_private_key: ${{ secrets.WORKFLOW_AUTOMATION_APP_PRIVATE_KEY }}

@@ -73,9 +73,6 @@ export function parseInitSpec(value: unknown): InitSpec {
   if (manifest.features.prAutomation) {
     throw new Error('init does not yet generate the legacy prAutomation surface');
   }
-  if (manifest.features.dcoAdvisory) {
-    throw new Error('init does not yet generate a DCO advisory workflow');
-  }
 
   let releaseAdapter: InitSpec['releaseAdapter'];
   if (input.releaseAdapter !== undefined) {
@@ -106,13 +103,17 @@ export function workflowTemplates(manifest: StewardManifest): Array<{ template: 
   if (manifest.features.classification) {
     workflows.push({ template: 'thin-workflows/pr-classification.yml', destination: '.github/workflows/pr-classification.yml' });
   }
+  if (manifest.features.dcoAdvisory) {
+    workflows.push({ template: 'thin-workflows/dco-advisory.yml', destination: '.github/workflows/dco-advisory.yml' });
+  }
   if (manifest.features.governance || manifest.features.copilotReview) {
     workflows.push({ template: 'thin-workflows/pr-governance.yml', destination: '.github/workflows/pr-governance.yml' });
   }
   if (manifest.features.copilotReview) {
     workflows.push({ template: 'thin-workflows/pr-review-signal.yml', destination: '.github/workflows/pr-review-signal.yml' });
   }
-  if (manifest.features.classification || manifest.features.governance || manifest.features.copilotReview) {
+  if (manifest.features.classification || manifest.features.dcoAdvisory
+    || manifest.features.governance || manifest.features.copilotReview) {
     workflows.push({ template: 'thin-workflows/pr-validation-matrix.yml', destination: '.github/workflows/pr-validation-matrix.yml' });
   }
   if (manifest.features.release) {

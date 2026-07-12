@@ -2,11 +2,13 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 const actionSha = 'cd874ad2819bb1a24b4af17b6a5108b56fb728b9';
+const dcoActionSha = 'add0e1652474138b5ab4e9b740f1534095f32785';
 const appTokenSha = 'bcd2ba49218906704ab6c1aa796996da409d3eb1';
 const releaseActionSha = '6e33424e7fb18100145845b49e8ccf2c90d504e0';
 const repositoryRoot = new URL('../', import.meta.url);
 const workflowPaths = [
   '.github/workflows/pr-classification.yml',
+  '.github/workflows/dco-advisory.yml',
   '.github/workflows/pr-governance.yml',
   '.github/workflows/pr-review-signal.yml',
   '.github/workflows/pr-validation-matrix.yml',
@@ -40,6 +42,9 @@ describe('First reusable workflow contracts', () => {
     );
     expect(files['.github/workflows/pr-classification.yml']).toContain(
       `splrad/steward/action@${actionSha}`,
+    );
+    expect(files['.github/workflows/dco-advisory.yml']).toContain(
+      `splrad/steward/action@${dcoActionSha}`,
     );
     expect(`${files['.github/workflows/pr-governance.yml']}\n${files['.github/workflows/pr-validation-matrix.yml']}`)
       .toContain(`actions/create-github-app-token@${appTokenSha}`);
@@ -76,6 +81,7 @@ describe('First reusable workflow contracts', () => {
     const contract = await readFile(new URL('docs/reusable-workflows.md', repositoryRoot), 'utf8');
     expect(contract).toContain('.github/workflows/pr-classification.yml');
     expect(contract).toContain('PR Validation Target #<PR> / <40-character-head-SHA>');
+    expect(contract).toContain('.github/workflows/dco-advisory.yml');
     expect(contract).toContain('.github/workflows/pr-governance.yml');
     expect(contract).not.toContain('PR Validation Target #<PR> / <40-character-head-SHA> / <scope>');
     expect(contract).toContain('.github/workflows/pr-review-signal.yml');
@@ -129,6 +135,18 @@ describe('First reusable workflow contracts', () => {
     expect(classification).not.toContain('mutation-token:');
     expect(classification).not.toContain('actions/checkout');
     expect(classification.match(/^\s*uses:/gm)).toHaveLength(2);
+  });
+
+  it('keeps DCO advisory non-blocking and limits its token to evidence plus legacy cleanup', async () => {
+    const dco = (await workflows())['.github/workflows/dco-advisory.yml'];
+    expect(dco).toContain('name: DCO Sign-off Advisory');
+    expect(dco).toContain('operation: dco-advisory');
+    expect(dco).toContain('permission-contents: read');
+    expect(dco).toContain('permission-pull-requests: read');
+    expect(dco).toContain('permission-issues: write');
+    expect(dco).not.toContain('permission-checks: write');
+    expect(dco).not.toContain('actions/checkout');
+    expect(dco.match(/^\s*uses:/gm)).toHaveLength(2);
   });
 
   it('does not expose project policy through called workflow inputs', async () => {

@@ -48,10 +48,11 @@ default branch, credentials, App, rulesets, and unrelated files are untouched.
 The current CLI supports the explicit v1-to-v1 migration surface and fails
 closed for unsupported source or target schema versions.
 
-Until the shared PR Automation and DCO Advisory runtime surfaces are present,
-`doctor` reports either enabled feature as a failure and `upgrade` refuses to
-leave it unmanaged. This prevents a partial lifecycle plan from being presented
-as a safe repository upgrade.
+DCO Advisory is a managed non-required surface: init and upgrade generate its
+thin caller together with Matrix, and doctor verifies its immutable pin. Until
+the shared PR Automation runtime is present, doctor reports that feature as a
+failure and upgrade refuses to leave it unmanaged. This prevents a partial
+lifecycle plan from being presented as a safe repository upgrade.
 
 Exit code `0` is success, `1` is a failed check, action-required stop, or user
 cancellation, and `2` is usage, authentication, unverifiable evidence, or a

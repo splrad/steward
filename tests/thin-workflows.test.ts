@@ -5,6 +5,7 @@ const stewardSha = '__STEWARD_SHA__';
 const repositoryRoot = new URL('../', import.meta.url);
 const templatePaths = [
   'templates/thin-workflows/pr-classification.yml',
+  'templates/thin-workflows/dco-advisory.yml',
   'templates/thin-workflows/pr-governance.yml',
   'templates/thin-workflows/pr-review-signal.yml',
   'templates/thin-workflows/pr-validation-matrix.yml',
@@ -44,6 +45,7 @@ describe('thin caller workflow templates', () => {
     const files = await templates();
     const targetRunName = 'PR Validation Target #${{ github.event.pull_request.number || github.event.inputs.pr_number }} / ${{ github.event.pull_request.head.sha || github.event.inputs.head_sha }}';
     expect(files['templates/thin-workflows/pr-classification.yml']).toContain(targetRunName);
+    expect(files['templates/thin-workflows/dco-advisory.yml']).toContain(targetRunName);
     expect(files['templates/thin-workflows/pr-governance.yml']).toContain(targetRunName);
     const signal = files['templates/thin-workflows/pr-review-signal.yml'];
     expect(signal).toContain('PR Review Signal #${{ github.event.pull_request.number }}');
@@ -54,9 +56,10 @@ describe('thin caller workflow templates', () => {
   it('maps only named credentials and keeps Actions write inside the called Matrix workflow', async () => {
     const files = await templates();
     const classification = files['templates/thin-workflows/pr-classification.yml'];
+    const dco = files['templates/thin-workflows/dco-advisory.yml'];
     const governance = files['templates/thin-workflows/pr-governance.yml'];
     const matrix = files['templates/thin-workflows/pr-validation-matrix.yml'];
-    for (const source of [classification, governance, matrix]) {
+    for (const source of [classification, dco, governance, matrix]) {
       expect(source).toContain('app_client_id: ${{ vars.WORKFLOW_AUTOMATION_APP_CLIENT_ID }}');
       expect(source).toContain('app_private_key: ${{ secrets.WORKFLOW_AUTOMATION_APP_PRIVATE_KEY }}');
       expect(source).not.toMatch(/^\s+actions:\s*write$/m);

@@ -358,7 +358,7 @@ export function planMatrixRepairs(input: {
   const dispatches = new Map<string, Extract<MatrixRepairPlan, { action: 'dispatch-workflow' }>>();
   const remaining: MatrixRepairPlan[] = [];
   for (const target of input.targets) {
-    if (!target.required || !target.repairable || activeProxy(target, input.pull)) continue;
+    if (!target.repairable || activeProxy(target, input.pull)) continue;
     const refreshPendingCopilot = target.id === 'copilot-review-gate'
       && target.state === 'pending' && eventSignal === 'copilot-review';
     const refreshFailedCopilot = target.id === 'copilot-review-gate'

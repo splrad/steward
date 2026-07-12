@@ -952,7 +952,10 @@ describe('Action operation contract', () => {
     }]);
     const result = await executeOperation('matrix', fixture.context, { operation: 'matrix' });
     expect(result.state).toBe('pending');
-    expect(fixture.client.dispatchWorkflow).toHaveBeenCalledTimes(2);
+    expect(fixture.client.dispatchWorkflow).toHaveBeenCalledTimes(3);
+    expect(fixture.client.dispatchWorkflow).toHaveBeenCalledWith(expect.objectContaining({
+      workflow: 'dco-advisory.yml', ref: 'main',
+    }));
     expect(fixture.client.dispatchWorkflow).toHaveBeenCalledWith(expect.objectContaining({
       workflow: 'pr-governance.yml', ref: 'main',
     }));
