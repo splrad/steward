@@ -77,6 +77,7 @@ class RepositoryState {
   corruptBranch = false;
   failSecretName: string | undefined;
   failedSecretOnce = false;
+  appearAfterSecretName: string | undefined;
 
   readonly transport: GitHubTransport = {
     request: async <T>(request: GitHubRequest): Promise<T> => {
@@ -117,7 +118,9 @@ class RepositoryState {
     if (path.includes('/contents/')) {
       const file = this.filePath(path);
       const ref = String(request.query?.ref ?? '');
-      const content = ref === 'main' ? this.defaultFiles.get(file) : this.branchFiles.get(file) ?? this.defaultFiles.get(file);
+      const content = ref === 'main' || ref === baseSha
+        ? this.defaultFiles.get(file)
+        : this.branchFiles.get(file) ?? this.defaultFiles.get(file);
       if (content === undefined) return this.notFound(path);
       return { type: 'file', encoding: 'base64', content: Buffer.from(content).toString('base64'), sha: 'blob' };
     }
@@ -154,6 +157,11 @@ class RepositoryState {
       return { ref: 'refs/heads/steward/init', object: { type: 'commit', sha: branchSha } };
     }
     if (path === '/repos/splrad/example/actions/secrets/public-key') return { key_id: 'key-id', key: 'public-key' };
+    if (path.includes('/actions/secrets/') && !request.method) {
+      const name = decodeURIComponent(path.split('/').at(-1)!);
+      if (!this.secrets.has(name)) return this.notFound(path);
+      return { name };
+    }
     if (path.includes('/actions/secrets/') && request.method === 'PUT') {
       const name = decodeURIComponent(path.split('/').at(-1)!);
       if (name === this.failSecretName && !this.failedSecretOnce) {
@@ -161,6 +169,7 @@ class RepositoryState {
         throw new GitHubApiError({ status: 500, method: 'PUT', path, message: 'simulated failure' });
       }
       this.secrets.add(name);
+      if (name === this.appearAfterSecretName) this.secrets.add('COPILOT_REVIEW_REQUEST_TOKEN');
       return undefined;
     }
     if (path === '/repos/splrad/example/actions/variables' && request.method === 'POST') {
@@ -205,6 +214,8 @@ describe('init --apply', () => {
     });
     expect(prepared.plan.counts).toEqual({ create: 6, unchanged: 0, conflict: 0 });
     expect(state.mutations()).toEqual([]);
+    expect(state.requests.filter((request) => request.path.includes('/contents/'))
+      .every((request) => request.query?.ref === baseSha)).toBe(true);
 
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -346,6 +357,28 @@ describe('init --apply', () => {
       }),
     )).rejects.toThrow('Refusing to overwrite Actions Secrets');
     expect(state.mutations().filter((request) => request.method === 'PUT')).toEqual([]);
+    expect(prompt.returned.every((value) => value.every((byte) => byte === 0))).toBe(true);
+  });
+
+  it('rechecks each Secret immediately before PUT when a later name appears during the write loop', async () => {
+    const state = new RepositoryState();
+    state.appearAfterSecretName = 'WORKFLOW_AUTOMATION_APP_PRIVATE_KEY';
+    const prepared = await readyPlan(state);
+    const prompt = new ScriptedPrompt([
+      privateKey(),
+      Buffer.from('github_pat_COPILOT123456789012345678901234567890'),
+      Buffer.from('github_pat_APPROVAL123456789012345678901234567890'),
+    ]);
+    await expect(withSecrets(
+      requiredSecretRequirements(spec().manifest),
+      prompt,
+      (vault) => executeInitApply({
+        transport: state.transport, owner: 'splrad', repository: 'example', plan: prepared.plan, vault,
+        encrypt: async (value) => `sealed-${value.length}`,
+      }),
+    )).rejects.toThrow('Refusing to overwrite Actions Secret created after confirmation: COPILOT_REVIEW_REQUEST_TOKEN');
+    expect(state.mutations().filter((request) => request.path.endsWith('/COPILOT_REVIEW_REQUEST_TOKEN'))).toEqual([]);
+    expect(state.secrets.has('WORKFLOW_AUTOMATION_APP_PRIVATE_KEY')).toBe(true);
     expect(prompt.returned.every((value) => value.every((byte) => byte === 0))).toBe(true);
   });
 

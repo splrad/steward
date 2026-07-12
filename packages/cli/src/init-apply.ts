@@ -239,7 +239,7 @@ export async function prepareInitApply(input: {
 
   const generated = await generateInitFiles({ spec: input.spec, templateDirectory: input.templateDirectory });
   const [files, secrets, variables] = await Promise.all([
-    Promise.all(generated.map((file) => remoteFile(input.transport, path, file, defaultBranch))),
+    Promise.all(generated.map((file) => remoteFile(input.transport, path, file, baseSha))),
     pagedItems<{ secrets?: Array<{ name?: string }> }, { name?: string }>(
       input.transport, { path: `${path}/actions/secrets` }, (payload) => payload.secrets ?? [],
     ),
@@ -404,6 +404,12 @@ export async function executeInitApply(input: {
       if (!keyId || !key) throw new Error('GitHub returned an invalid Actions Secret public key response');
       const encrypt = input.encrypt ?? encryptRepositorySecret;
       for (const name of input.plan.missingSecrets) {
+        phase = `Actions Secret precondition (${name})`;
+        const existing = await optionalGet<{ name?: string }>(input.transport, {
+          path: `${path}/actions/secrets/${segment(name)}`,
+        });
+        if (existing) throw new Error(`Refusing to overwrite Actions Secret created after confirmation: ${name}`);
+        phase = `Actions Secret creation (${name})`;
         await input.vault.use(name, async (value) => {
           const encryptedValue = await encrypt(value, key);
           await input.transport.request({
