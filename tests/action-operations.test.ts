@@ -762,6 +762,101 @@ describe('Action operation contract', () => {
     }));
   });
 
+  it('starts one new Matrix Gate generation when a completed same-head gate becomes pending', async () => {
+    const fixture = context();
+    const inputDigest = fingerprintForPull({
+      pull: fixture.context.pull,
+      commits: [{ sha: 'd'.repeat(40), author: { login: 'core' } }],
+      files: [],
+      botLogins: ['splrad-steward', 'copilot-pull-request-reviewer[bot]'],
+    }).value;
+    const identity = (checkId: string) => stewardCheckExternalId({
+      repositoryId: 1296724484,
+      prNumber: 7,
+      headSha: 'c'.repeat(40),
+      checkId,
+      configDigest: 'a'.repeat(64),
+      inputDigest,
+    });
+    const checkRuns: GitHubCheckRun[] = [
+      {
+        id: 90,
+        name: 'Main Authorization Gate',
+        status: 'in_progress',
+        conclusion: null,
+        external_id: identity('main-authorization'),
+        app: { slug: 'splrad-steward' },
+      },
+      {
+        id: 91,
+        name: 'Copilot Code Review Gate',
+        status: 'completed',
+        conclusion: 'success',
+        external_id: identity('copilot-review-gate'),
+        app: { slug: 'splrad-steward' },
+      },
+      {
+        id: 92,
+        name: 'PR Validation Matrix Gate',
+        status: 'completed',
+        conclusion: 'failure',
+        external_id: identity('validation-matrix'),
+        app: { slug: 'splrad-steward' },
+      },
+    ];
+    let nextCheckRunId = 100;
+    fixture.client.listCommitCheckRuns!.mockImplementation(async () => checkRuns);
+    fixture.client.createCheckRun!.mockImplementation(async (
+      _owner,
+      _repository,
+      input: CheckRunCreate,
+    ) => {
+      const run: GitHubCheckRun = {
+        id: nextCheckRunId++,
+        name: input.name,
+        status: input.status,
+        conclusion: input.conclusion ?? null,
+        app: { slug: 'splrad-steward' },
+        ...(input.externalId === undefined ? {} : { external_id: input.externalId }),
+      };
+      checkRuns.push(run);
+      return run;
+    });
+    fixture.client.updateCheckRun!.mockImplementation(async (
+      _owner,
+      _repository,
+      checkRunId: number,
+      input: CheckRunUpdate,
+    ) => {
+      const run = checkRuns.find((candidate) => candidate.id === checkRunId);
+      if (!run) throw new Error(`Unknown in-memory Check Run ${checkRunId}`);
+      Object.assign(run, {
+        name: input.name,
+        status: input.status,
+        ...(input.externalId === undefined ? {} : { external_id: input.externalId }),
+        ...(input.conclusion === undefined ? {} : { conclusion: input.conclusion }),
+      });
+      return run;
+    });
+
+    const first = await executeOperation('matrix', fixture.context, { operation: 'matrix' });
+    expect(first.state).toBe('pending');
+    expect(checkRuns.filter((run) => run.name === 'PR Validation Matrix Gate')).toHaveLength(2);
+    expect(checkRuns.find((run) => run.id === 92)).toMatchObject({ status: 'completed', conclusion: 'failure' });
+    expect(checkRuns.find((run) => run.id === 100)).toMatchObject({ status: 'in_progress', conclusion: null });
+
+    const repeated = await executeOperation('matrix', fixture.context, { operation: 'matrix' });
+    expect(repeated.state).toBe('pending');
+    expect(checkRuns.filter((run) => run.name === 'PR Validation Matrix Gate')).toHaveLength(2);
+
+    Object.assign(checkRuns.find((run) => run.id === 90)!, { status: 'completed', conclusion: 'success' });
+    const recovered = await executeOperation('matrix', fixture.context, { operation: 'matrix' });
+    expect(recovered.state).toBe('passed');
+    expect(checkRuns.filter((run) => run.name === 'PR Validation Matrix Gate')).toHaveLength(2);
+    expect(checkRuns.find((run) => run.id === 100)).toMatchObject({ status: 'completed', conclusion: 'success' });
+    expect(fixture.client.createCheckRun).toHaveBeenCalledTimes(1);
+  });
+
   it('converges across repeated same-head Matrix events without duplicate repair dispatches', async () => {
     const fixture = context();
     fixture.context.manifest = manifest({ classification: true });
