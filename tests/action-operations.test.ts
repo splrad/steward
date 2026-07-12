@@ -760,6 +760,29 @@ describe('Action operation contract', () => {
     expect(fixture.client.updateIssueComment).not.toHaveBeenCalled();
   });
 
+  it('renders missing merged identities as text without mentioning the placeholder account', async () => {
+    const fixture = context();
+    Object.assign(fixture.context.pull, {
+      state: 'closed',
+      merged: true,
+      merge_commit_sha: 'a'.repeat(40),
+      merged_by: null,
+      title: 'feat: cleanup',
+      body: null,
+      user: null,
+      head: { ref: 'feature/cleanup', sha: 'c'.repeat(40) },
+    });
+
+    await executeOperation('cleanup', fixture.context, { operation: 'cleanup' });
+
+    expect(fixture.client.createIssueComment).toHaveBeenCalledOnce();
+    const notification = String(fixture.client.createIssueComment!.mock.calls[0]?.[3] ?? '');
+    expect(notification).toContain('- 提交人：unknown');
+    expect(notification).toContain('- 合并人：unknown');
+    expect(notification).not.toContain('@unknown');
+    expect(notification).toContain('- 通知对象：@core');
+  });
+
   it('creates a missing managed label and tolerates only a confirmed concurrent creation race', async () => {
     const fixture = context();
     fixture.context.manifest = {
