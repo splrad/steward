@@ -83,7 +83,7 @@ export interface GitHubCheckRun {
   html_url?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
-  app?: { slug?: string } | null;
+  app?: { id?: number; slug?: string } | null;
 }
 
 export interface GitHubWorkflowRun {
