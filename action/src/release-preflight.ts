@@ -44,8 +44,9 @@ export async function createReleasePreflight(input: {
   const eventPath = input.inputs.eventPath?.trim() || input.environment.GITHUB_EVENT_PATH?.trim() || '';
   const event = await readEvent(eventPath);
   const eventName = input.environment.GITHUB_EVENT_NAME?.trim() || '';
-  if (eventName !== 'pull_request' && eventName !== 'workflow_dispatch') {
-    throw new Error('release-preflight accepts only pull_request or workflow_dispatch events');
+  const pullRequestEvent = eventName === 'pull_request' || eventName === 'pull_request_target';
+  if (!pullRequestEvent && eventName !== 'workflow_dispatch') {
+    throw new Error('release-preflight accepts only pull_request, pull_request_target, or workflow_dispatch events');
   }
   const fullName = String(event.repository?.full_name ?? '').trim();
   const [owner, repository, extra] = fullName.split('/');
@@ -82,9 +83,9 @@ export async function createReleasePreflight(input: {
   if (pull.base.ref !== metadata.defaultBranch) throw new Error('Merged pull request does not target the current default branch');
   const mergeSha = commitSha(pull.merge_commit_sha, 'GitHub pull request merge SHA');
 
-  if (eventName === 'pull_request') {
+  if (pullRequestEvent) {
     if (event.action !== 'closed' || event.pull_request?.merged !== true) {
-      throw new Error('release-preflight pull_request event must describe a merged close');
+      throw new Error('release-preflight pull request event must describe a merged close');
     }
     if (positiveInteger(event.pull_request?.number) !== pullNumber) {
       throw new Error('Trusted event pull request number does not match live pull request');

@@ -356,6 +356,7 @@ describe('Action operation contract', () => {
     let liveMergeSha = 'e'.repeat(40);
     let liveMerged = true;
     let liveBaseRef = 'main';
+    let eventName: 'pull_request' | 'pull_request_target' = 'pull_request';
     const fetchMock = vi.fn(async (request: string | URL | Request) => {
       const path = new URL(String(request)).pathname;
       if (path === '/repos/splrad/steward') {
@@ -385,7 +386,7 @@ describe('Action operation contract', () => {
         token: 'platform-token',
         eventPath: 'tests/fixtures/action-release-event.json',
       },
-      environment: { GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: 'pull_request' },
+      environment: { GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: eventName },
       fetch: fetchMock as unknown as typeof fetch,
     });
 
@@ -399,6 +400,14 @@ describe('Action operation contract', () => {
       },
       decision: { state: 'planned', matchedPaths: ['release/version.txt'] },
     });
+
+    eventName = 'pull_request_target';
+    await expect(preflight()).resolves.toMatchObject({
+      state: 'passed',
+      context: { pullRequest: { number: 7, mergeSha: 'e'.repeat(40) } },
+      decision: { state: 'planned', matchedPaths: ['release/version.txt'] },
+    });
+    eventName = 'pull_request';
 
     changedFile = 'docs/readme.md';
     await expect(preflight()).resolves.toMatchObject({

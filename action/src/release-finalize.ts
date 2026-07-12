@@ -26,7 +26,8 @@ export async function finalizeReleaseFailure(input: {
   else {
     const event = await readEvent(input.inputs.eventPath?.trim() || input.environment.GITHUB_EVENT_PATH?.trim() || '');
     const eventName = input.environment.GITHUB_EVENT_NAME?.trim() || '';
-    if (!['pull_request', 'workflow_dispatch'].includes(eventName)) throw new Error('release-finalize rejected an untrusted event');
+    const pullRequestEvent = eventName === 'pull_request' || eventName === 'pull_request_target';
+    if (!pullRequestEvent && eventName !== 'workflow_dispatch') throw new Error('release-finalize rejected an untrusted event');
     const fullName = String(event.repository?.full_name ?? '').trim();
     const [owner, repository, extra] = fullName.split('/');
     if (!owner || !repository || extra || !positive(event.repository?.id)) throw new Error('release-finalize event repository is invalid');
@@ -40,7 +41,7 @@ export async function finalizeReleaseFailure(input: {
       || pull.base.ref !== metadata.defaultBranch || !/^[a-f0-9]{40}$/.test(mergeSha)) {
       throw new Error('release-finalize requires a trusted merged default-branch pull request');
     }
-    if (eventName === 'pull_request' && (event.action !== 'closed' || event.pull_request?.merged !== true
+    if (pullRequestEvent && (event.action !== 'closed' || event.pull_request?.merged !== true
       || positive(event.pull_request?.number) !== number
       || String(event.pull_request?.merge_commit_sha ?? '').toLowerCase() !== mergeSha)) {
       throw new Error('release-finalize merge facts do not match the trusted event');

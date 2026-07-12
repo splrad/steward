@@ -20,7 +20,7 @@ describe('Release workflow failure finalizer', () => {
     await expect(finalizeReleaseFailure({
       inputs: { operation: 'release-finalize', token: 'token',
         eventPath: 'tests/fixtures/action-release-event.json', releaseFailureSummary: 'Release preflight failed.' },
-      environment: { GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: 'pull_request' },
+      environment: { GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: 'pull_request_target' },
       fetch: fetchMock as unknown as typeof fetch,
     })).rejects.toThrow('Release preflight failed.');
     expect(requests.at(-1)).toMatchObject({ path: '/repos/splrad/steward/check-runs', method: 'POST',
