@@ -1,9 +1,22 @@
 import { readFile } from 'node:fs/promises';
-import { createGitHubRestTransport } from '../../github/src/index.js';
+import { createGitHubRestTransport, type GitHubTransport } from '../../github/src/index.js';
 import { runAppInstallationPreflight, type AppInstallationReport } from './app-installation.js';
+import { TerminalConfirmationPrompt, type ConfirmationPrompt } from './confirmation.js';
 import { runDoctor, type DoctorReport } from './doctor.js';
+import {
+  executeInitApply,
+  prepareInitApply,
+  type InitApplyPlan,
+  type InitApplyReport,
+} from './init-apply.js';
 import { createInitPlan, parseInitSpec, type InitPlan } from './init.js';
-import { redactSensitiveText } from './secret-input.js';
+import {
+  redactSensitiveText,
+  requiredSecretRequirements,
+  TerminalSecretPrompt,
+  withSecrets,
+  type SecretPrompt,
+} from './secret-input.js';
 
 interface DoctorArguments {
   command: 'doctor';
@@ -30,7 +43,15 @@ interface InitPreflightArguments {
   json: boolean;
 }
 
-type Arguments = DoctorArguments | InitDryRunArguments | InitPreflightArguments;
+interface InitApplyArguments {
+  command: 'init';
+  mode: 'apply';
+  apply: true;
+  spec: string;
+  repository: string;
+}
+
+type Arguments = DoctorArguments | InitDryRunArguments | InitPreflightArguments | InitApplyArguments;
 
 function usage(): string {
   return [
@@ -38,6 +59,7 @@ function usage(): string {
     '  steward doctor --repo OWNER/REPOSITORY [--pr NUMBER] [--json]',
     '  steward init --dry-run --spec FILE [--target DIRECTORY] [--json]',
     '  steward init --preflight --repo OWNER/REPOSITORY --spec FILE [--json]',
+    '  steward init --apply --repo OWNER/REPOSITORY --spec FILE',
   ].join('\n');
 }
 
@@ -51,6 +73,7 @@ export function parseArguments(argv: readonly string[]): Arguments {
   if (argv[0] === 'init') {
     let dryRun = false;
     let preflight = false;
+    let apply = false;
     let spec = '';
     let target = '.';
     let targetSpecified = false;
@@ -60,6 +83,7 @@ export function parseArguments(argv: readonly string[]): Arguments {
       const argument = argv[index];
       if (argument === '--dry-run') dryRun = true;
       else if (argument === '--preflight') preflight = true;
+      else if (argument === '--apply') apply = true;
       else if (argument === '--json') json = true;
       else if (argument === '--spec') spec = optionValue(argv, index++, '--spec');
       else if (argument === '--target') {
@@ -69,15 +93,21 @@ export function parseArguments(argv: readonly string[]): Arguments {
       else throw new Error(`Unknown argument: ${argument ?? ''}\n${usage()}`);
     }
     if (!spec) throw new Error(`init requires --spec FILE\n${usage()}`);
-    if (dryRun === preflight) throw new Error('init requires exactly one of --dry-run or --preflight');
+    if (Number(dryRun) + Number(preflight) + Number(apply) !== 1) {
+      throw new Error('init requires exactly one of --dry-run, --preflight, or --apply');
+    }
     if (dryRun) {
-      if (repository) throw new Error('--repo is only valid with init --preflight');
+      if (repository) throw new Error('--repo is only valid with init --preflight or init --apply');
       if (!target) throw new Error('--target must not be empty');
       return { command: 'init', mode: 'dry-run', dryRun: true, spec, target, json };
     }
     if (targetSpecified) throw new Error('--target is only valid with init --dry-run');
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
       throw new Error(`--repo must be OWNER/REPOSITORY\n${usage()}`);
+    }
+    if (apply) {
+      if (json) throw new Error('--json is not supported with interactive init --apply');
+      return { command: 'init', mode: 'apply', apply: true, spec, repository };
     }
     return { command: 'init', mode: 'preflight', preflight: true, spec, repository, json };
   }
@@ -116,17 +146,48 @@ function renderInit(plan: InitPlan): string {
   return lines.join('\n');
 }
 
-function renderAppPreflight(report: AppInstallationReport): string {
+function renderAppPreflight(report: AppInstallationReport, command = 'init preflight'): string {
   const level = report.status === 'installed' ? 'PASS' : report.status === 'action-required' ? 'STOP' : 'UNKNOWN';
-  const lines = [`Steward init preflight: ${report.repository}`, `[${level}] ${report.summary}`];
+  const lines = [`Steward ${command}: ${report.repository}`, `[${level}] ${report.summary}`];
   if (report.actionUrl) lines.push(`Action: ${report.actionUrl}`);
   return lines.join('\n');
+}
+
+function renderInitApplyPlan(plan: InitApplyPlan): string {
+  const lines = [
+    `Steward init apply plan: ${plan.repository}`,
+    `Default branch: ${plan.defaultBranch}@${plan.baseSha.slice(0, 12)}…`,
+  ];
+  for (const file of plan.files) lines.push(`[${file.status.toUpperCase()}] ${file.path} ${file.digest.slice(0, 12)}…`);
+  lines.push(`Secrets to create: ${plan.missingSecrets.length ? plan.missingSecrets.join(', ') : 'none'}`);
+  lines.push(`Variable ${plan.variableStatus}: WORKFLOW_AUTOMATION_APP_CLIENT_ID`);
+  lines.push(`Branch ${plan.branchStatus}: ${plan.branchStatus === 'none' ? 'none' : plan.branchName}`);
+  lines.push(`Pull request: ${plan.pullRequestStatus}${plan.pullRequestNumber ? ` #${plan.pullRequestNumber}` : ''}`);
+  lines.push('No mutations have been sent.');
+  return lines.join('\n');
+}
+
+function renderInitApplyReport(report: InitApplyReport): string {
+  const lines = [`Steward init apply complete: ${report.repository}`];
+  if (report.branchName) lines.push(`Branch: ${report.branchName}@${report.branchSha?.slice(0, 12) ?? 'unknown'}… (${report.branchStatus})`);
+  lines.push(`Secrets created: ${report.secretsCreated.length ? report.secretsCreated.join(', ') : 'none'}`);
+  lines.push(`Variable created: ${report.variableCreated ? 'yes' : 'no'}`);
+  if (report.pullRequestUrl) lines.push(`Pull request: ${report.pullRequestUrl} (${report.pullRequestStatus})`);
+  else lines.push('Pull request: none');
+  return lines.join('\n');
+}
+
+interface CliRuntime {
+  templateDirectory: string;
+  confirmation?: ConfirmationPrompt;
+  secretPrompt?: SecretPrompt;
+  transport?: GitHubTransport;
 }
 
 export async function main(
   argv: readonly string[],
   env: NodeJS.ProcessEnv = process.env,
-  runtime: { templateDirectory: string },
+  runtime: CliRuntime,
 ): Promise<number> {
   try {
     const args = parseArguments(argv);
@@ -143,8 +204,37 @@ export async function main(
         return plan.ok ? 0 : 1;
       }
       const token = String(env.GH_TOKEN ?? env.GITHUB_TOKEN ?? '').trim();
-      if (!token) throw new Error('GH_TOKEN or GITHUB_TOKEN is required for init --preflight');
+      if (!token) throw new Error(`GH_TOKEN or GITHUB_TOKEN is required for init --${args.mode}`);
       const [owner, repository] = args.repository.split('/') as [string, string];
+      if (args.mode === 'apply') {
+        const transport = runtime.transport ?? createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' });
+        const prepared = await prepareInitApply({
+          transport, owner, repository, spec, templateDirectory: runtime.templateDirectory,
+        });
+        if (prepared.status === 'blocked') {
+          process.stdout.write(`${renderAppPreflight(prepared.preflight, 'init apply preflight')}\n`);
+          return prepared.preflight.status === 'action-required' ? 1 : 2;
+        }
+        process.stdout.write(`${renderInitApplyPlan(prepared.plan)}\n`);
+        const confirmed = await (runtime.confirmation ?? new TerminalConfirmationPrompt()).confirm();
+        if (!confirmed) {
+          process.stderr.write('Steward init cancelled; no mutations were sent.\n');
+          return 1;
+        }
+        const requirements = requiredSecretRequirements(spec.manifest)
+          .filter((requirement) => prepared.plan.missingSecrets.includes(requirement.name));
+        return await withSecrets(requirements, runtime.secretPrompt ?? new TerminalSecretPrompt(), async (vault) => {
+          const refreshed = await prepareInitApply({
+            transport, owner, repository, spec, templateDirectory: runtime.templateDirectory,
+          });
+          if (refreshed.status !== 'ready' || refreshed.plan.fingerprint !== prepared.plan.fingerprint) {
+            throw new Error('init --apply plan changed after confirmation; no mutations were sent');
+          }
+          const report = await executeInitApply({ transport, owner, repository, plan: refreshed.plan, vault });
+          process.stdout.write(`${renderInitApplyReport(report)}\n`);
+          return 0;
+        });
+      }
       const preflight = await runAppInstallationPreflight(
         createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' }),
         { owner, repository, manifest: spec.manifest },

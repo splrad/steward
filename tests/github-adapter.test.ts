@@ -131,6 +131,10 @@ describe('GitHub REST transport', () => {
     });
     await expect(transport.request({ method: 'POST', path: '/repos/splrad/steward/actions/jobs/1/rerun' }))
       .resolves.toBeUndefined();
+    await expect(transport.request({
+      method: 'PUT', path: '/repos/splrad/steward/actions/secrets/EXAMPLE',
+      body: { encrypted_value: 'ciphertext', key_id: 'key' },
+    })).resolves.toBeUndefined();
   });
 });
 

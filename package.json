@@ -24,7 +24,8 @@
   },
   "dependencies": {
     "@actions/core": "3.0.1",
-    "@octokit/auth-app": "8.2.0"
+    "@octokit/auth-app": "8.2.0",
+    "libsodium-wrappers": "0.8.4"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260710.1",

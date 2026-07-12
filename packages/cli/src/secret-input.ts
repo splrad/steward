@@ -305,10 +305,19 @@ export async function withRequiredSecrets<T>(
   prompt: SecretPrompt,
   consumer: (vault: SecretVault) => T | Promise<T>,
 ): Promise<T> {
+  return withSecrets(requiredSecretRequirements(manifest), prompt, consumer);
+}
+
+export async function withSecrets<T>(
+  requirements: readonly SecretRequirement[],
+  prompt: SecretPrompt,
+  consumer: (vault: SecretVault) => T | Promise<T>,
+): Promise<T> {
   const values = new Map<StewardSecretName, Buffer>();
   let vault: SecretVault | undefined;
   try {
-    for (const requirement of requiredSecretRequirements(manifest)) {
+    for (const requirement of requirements) {
+      if (values.has(requirement.name)) throw new Error(`Duplicate Secret requirement: ${requirement.name}`);
       const value = await prompt.readSecret(requirement);
       try {
         validateSecret(requirement, value);

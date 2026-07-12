@@ -1,17 +1,27 @@
 # CLI
 
-The planned cross-platform command surface is `init`, `activate`, `doctor`, and
-`upgrade`; only `doctor` is implemented today.
-
-The first implemented command is the read-only diagnostic path:
+The cross-platform command surface is `init`, `activate`, `doctor`, and
+`upgrade`. `doctor` and the first three explicit `init` stages are implemented;
+`activate` and `upgrade` remain later lifecycle units.
 
 ```text
 steward doctor --repo OWNER/REPOSITORY [--pr NUMBER] [--json]
+steward init --dry-run --spec FILE [--target DIRECTORY] [--json]
+steward init --preflight --repo OWNER/REPOSITORY --spec FILE [--json]
+steward init --apply --repo OWNER/REPOSITORY --spec FILE
 ```
 
-`doctor` reads the default-branch Manifest, required Secret names and Variables,
-thin workflow full-SHA pins and governance-group consistency, organization App installation permissions, a current-head
-App Matrix Check, active rulesets, recent Relay dispatch evidence, and the
-declared Release adapter file. It never reads Secret values and never sends a
-GitHub mutation. Exit codes are `0` for no failures, `1` for diagnostic
-failures, and `2` for usage, authentication, or runtime errors.
+`doctor` and preflight are read-only. Dry-run is a deterministic local generator
+that never writes its target. Apply requires repository administrator access,
+verifiable GitHub App installation scope, an interactive TTY, and an explicit
+confirmation after rendering the complete non-sensitive plan. It only fills
+missing repository Secrets and the App client-ID Variable, creates one exact
+`steward/init` commit and ref, and opens a PR; it never updates the default
+branch. Secret values are hidden, bounded, sealed-box encrypted before GitHub
+transport, redacted from errors, and best-effort zeroed after their scoped use.
+
+Exit code `0` is success, `1` is a failed check, action-required stop, or user
+cancellation, and `2` is usage, authentication, unverifiable evidence, or a
+runtime failure. A partially completed apply reports durable resource names and
+is safe to rerun only when the existing branch and PR still match the exact
+confirmed initialization state.
