@@ -1,0 +1,25 @@
+name: PR Automation
+
+run-name: "PR Automation ${{ github.ref_name }} / ${{ github.event.after }}"
+
+on:
+  push:
+    branches:
+      - '**'
+
+permissions:
+  contents: read
+
+jobs:
+  automation:
+    if: >-
+      github.event.deleted == false &&
+      github.ref_name != github.event.repository.default_branch &&
+      !endsWith(github.actor, '[bot]')
+    uses: splrad/steward/.github/workflows/pr-automation.yml@__STEWARD_SHA__
+    with:
+      app_client_id: ${{ vars.WORKFLOW_AUTOMATION_APP_CLIENT_ID }}
+      source_branch: ${{ github.ref_name }}
+      head_sha: ${{ github.event.after }}
+    secrets:
+      app_private_key: ${{ secrets.WORKFLOW_AUTOMATION_APP_PRIVATE_KEY }}

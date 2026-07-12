@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 const stewardSha = '__STEWARD_SHA__';
 const repositoryRoot = new URL('../', import.meta.url);
 const templatePaths = [
+  'templates/thin-workflows/pr-automation.yml',
   'templates/thin-workflows/pr-classification.yml',
   'templates/thin-workflows/dco-advisory.yml',
   'templates/thin-workflows/pr-cleanup.yml',
@@ -56,18 +57,32 @@ describe('thin caller workflow templates', () => {
 
   it('maps only named credentials and keeps Actions write inside the called Matrix workflow', async () => {
     const files = await templates();
+    const automation = files['templates/thin-workflows/pr-automation.yml'];
     const classification = files['templates/thin-workflows/pr-classification.yml'];
     const dco = files['templates/thin-workflows/dco-advisory.yml'];
     const cleanup = files['templates/thin-workflows/pr-cleanup.yml'];
     const governance = files['templates/thin-workflows/pr-governance.yml'];
     const matrix = files['templates/thin-workflows/pr-validation-matrix.yml'];
-    for (const source of [classification, dco, cleanup, governance, matrix]) {
+    for (const source of [automation, classification, dco, cleanup, governance, matrix]) {
       expect(source).toContain('app_client_id: ${{ vars.WORKFLOW_AUTOMATION_APP_CLIENT_ID }}');
       expect(source).toContain('app_private_key: ${{ secrets.WORKFLOW_AUTOMATION_APP_PRIVATE_KEY }}');
       expect(source).not.toMatch(/^\s+actions:\s*write$/m);
     }
     expect(governance).toContain('copilot_review_request_token: ${{ secrets.COPILOT_REVIEW_REQUEST_TOKEN }}');
     expect(governance).toContain('core_auto_approval_token: ${{ secrets.CORE_AUTO_APPROVAL_TOKEN }}');
+  });
+
+  it('routes only live non-default human branch pushes into Automation', async () => {
+    const automation = (await templates())['templates/thin-workflows/pr-automation.yml'];
+    expect(automation).toContain('push:');
+    expect(automation).toContain("- '**'");
+    expect(automation).toContain('github.event.deleted == false');
+    expect(automation).toContain('github.ref_name != github.event.repository.default_branch');
+    expect(automation).toContain("!endsWith(github.actor, '[bot]')");
+    expect(automation).toContain('source_branch: ${{ github.ref_name }}');
+    expect(automation).toContain('head_sha: ${{ github.event.after }}');
+    expect(automation).not.toContain("!= 'main'");
+    expect(automation).not.toContain('COPILOT_CLI_TOKEN');
   });
 
   it('routes Cleanup only for closed PRs targeting the live default branch', async () => {

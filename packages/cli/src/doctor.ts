@@ -88,11 +88,7 @@ interface RequiredWorkflowFile {
 function requiredWorkflowFiles(manifest: StewardManifest): RequiredWorkflowFile[] {
   const files: RequiredWorkflowFile[] = [];
   if (manifest.features.prAutomation) {
-    files.push({
-      path: '.github/workflows/pr-automation.yml',
-      called: 'pr-automation.yml',
-      missingRemedy: '先升级到包含 PR Automation 运行面和 thin caller template 的 Steward 版本，再生成该 caller。',
-    });
+    files.push({ path: '.github/workflows/pr-automation.yml', called: 'pr-automation.yml' });
   }
   if (manifest.features.classification) {
     files.push({ path: '.github/workflows/pr-classification.yml', called: 'pr-classification.yml' });
@@ -200,15 +196,6 @@ export async function runDoctor(transport: GitHubTransport, options: DoctorOptio
     findings.push(finding('manifest.valid', 'fail', `无法加载默认分支 Manifest：${error instanceof Error ? error.message : String(error)}`,
       '修复 .github/steward.json 并确保它符合当前 Steward Schema。'));
     return report(fullName, findings);
-  }
-
-  if (loaded.manifest.features.prAutomation) {
-    findings.push(finding(
-      'feature.pr-automation',
-      'fail',
-      '当前 Steward 版本尚未实现共享 PR Automation 运行面。',
-      '在迁移前升级到包含 PR Automation Action、reusable workflow 与 thin caller 的 Steward 版本。',
-    ));
   }
 
   const pin = schemaPin(loaded.manifest);

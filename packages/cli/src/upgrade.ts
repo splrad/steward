@@ -298,14 +298,6 @@ export async function prepareUpgrade(input: {
   if (!currentSchemaMatch) throw new Error('Steward manifest $schema is not pinned to a complete splrad/steward SHA');
   const currentSchemaSha = currentSchemaMatch[1]!.toLowerCase();
   const currentManifest = normalizeManifest(parseManifest(rawManifest));
-  const unsupportedFeatures = [
-    ...(currentManifest.features.prAutomation ? ['prAutomation'] : []),
-  ];
-  if (unsupportedFeatures.length) {
-    throw new Error(
-      `upgrade cannot safely manage unsupported enabled features: ${unsupportedFeatures.join(', ')}`,
-    );
-  }
 
   const targetCommit = await input.transport.request<{ sha?: string }>({
     path: `${sourceRepositoryPath}/commits/${segment(targetSha)}`,

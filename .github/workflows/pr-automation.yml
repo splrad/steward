@@ -1,0 +1,64 @@
+name: PR Automation
+
+on:
+  workflow_call:
+    inputs:
+      app_client_id:
+        description: GitHub App client ID used to mint the Automation token.
+        required: true
+        type: string
+      source_branch:
+        description: Source branch from the trusted push event.
+        required: true
+        type: string
+      head_sha:
+        description: Expected source branch head SHA from the trusted push event.
+        required: true
+        type: string
+    secrets:
+      app_private_key:
+        description: Private key for the installed Steward GitHub App.
+        required: true
+    outputs:
+      state:
+        description: Automation operation state.
+        value: ${{ jobs.automation.outputs.state }}
+      operation_result:
+        description: Serialized Automation operation result.
+        value: ${{ jobs.automation.outputs.operation_result }}
+
+concurrency:
+  group: steward-automation-${{ github.repository_id }}-${{ inputs.source_branch }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  automation:
+    name: Create or Update Pull Request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      state: ${{ steps.steward.outputs.state }}
+      operation_result: ${{ steps.steward.outputs['operation-result'] }}
+    steps:
+      - name: Create Automation token
+        id: platform_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ inputs.app_client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          permission-contents: read
+          permission-issues: write
+          permission-members: read
+          permission-pull-requests: write
+
+      - name: Converge pull request
+        id: steward
+        uses: splrad/steward/action@3a8a41035db1df7795a7546d9708a42d15617104
+        with:
+          operation: automation
+          github-token: ${{ steps.platform_token.outputs.token }}
+          source-branch: ${{ inputs.source_branch }}
+          head-sha: ${{ inputs.head_sha }}

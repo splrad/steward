@@ -354,13 +354,17 @@ describe('upgrade command', () => {
     expect(branch.mutations()).toEqual([]);
   });
 
-  it('refuses to silently skip PR Automation while managing an enabled DCO caller', async () => {
-    const unsupported = await UpgradeState.create();
-    const automation = JSON.parse(unsupported.defaultFiles.get('.github/steward.json')!) as StewardManifest;
+  it('creates managed Automation and DCO callers when their features become enabled', async () => {
+    const automationState = await UpgradeState.create();
+    const automation = JSON.parse(automationState.defaultFiles.get('.github/steward.json')!) as StewardManifest;
     automation.features.prAutomation = true;
-    unsupported.defaultFiles.set('.github/steward.json', `${JSON.stringify(automation, null, 2)}\n`);
-    await expect(readyPlan(unsupported)).rejects.toThrow('unsupported enabled features: prAutomation');
-    expect(unsupported.mutations()).toEqual([]);
+    automationState.defaultFiles.set('.github/steward.json', `${JSON.stringify(automation, null, 2)}\n`);
+    const automationTemplate = await readFile(`${templateDirectory}/thin-workflows/pr-automation.yml`, 'utf8');
+    automationState.sourceFiles.set(`${targetSha}:templates/thin-workflows/pr-automation.yml`, automationTemplate);
+    const automationPlan = await readyPlan(automationState);
+    expect(automationPlan.files.find((file) => file.path === '.github/workflows/pr-automation.yml'))
+      .toMatchObject({ status: 'create' });
+    expect(automationState.mutations()).toEqual([]);
 
     const managed = await UpgradeState.create();
     const configured = JSON.parse(managed.defaultFiles.get('.github/steward.json')!) as StewardManifest;

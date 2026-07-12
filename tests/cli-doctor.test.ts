@@ -113,7 +113,7 @@ describe('doctor CLI contract', () => {
     expect(report.findings.filter((item) => item.level === 'fail').every((item) => item.remedy)).toBe(true);
   });
 
-  it('distinguishes unsupported PR Automation from a supported but missing DCO caller', async () => {
+  it('reports missing Automation and DCO callers through the same managed workflow contract', async () => {
     const configured = manifest();
     configured.features.prAutomation = true;
     configured.features.dcoAdvisory = true;
@@ -137,14 +137,14 @@ describe('doctor CLI contract', () => {
     const report = await runDoctor(setup.transport, { owner: 'splrad', repository: 'example', pullRequest: 3 });
     expect(report.ok).toBe(false);
     const failureCodes = report.findings.filter((item) => item.level === 'fail').map((item) => item.code);
-    expect(failureCodes).toContain('feature.pr-automation');
+    expect(failureCodes).not.toContain('feature.pr-automation');
     expect(failureCodes).not.toContain('feature.dco-advisory');
     expect(setup.requests.map((request) => request.path)).toEqual(expect.arrayContaining([
       '/repos/splrad/example/contents/.github/workflows/pr-automation.yml',
       '/repos/splrad/example/contents/.github/workflows/dco-advisory.yml',
     ]));
     expect(report.findings.find((item) => item.code === 'workflow.pr-automation.yml')?.remedy)
-      .toContain('包含 PR Automation 运行面和 thin caller template');
+      .toBe('从相同 Steward SHA 生成该 caller。');
     expect(report.findings.find((item) => item.code === 'workflow.dco-advisory.yml')?.remedy)
       .toBe('从相同 Steward SHA 生成该 caller。');
   });
