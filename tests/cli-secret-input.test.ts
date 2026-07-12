@@ -169,8 +169,8 @@ describe('Secret input and memory lifecycle', () => {
 
   it('validates values, redacts exact in-memory Secrets, and zeroes them after use', async () => {
     const key = rsaPrivateKey();
-    const copilot = Buffer.from('plain-copilot-secret-1234567890');
-    const approval = Buffer.from('plain-approval-secret-1234567890');
+    const copilot = Buffer.from('overlapping-secret-1234567890');
+    const approval = Buffer.from('overlapping-secret-1234567890-extra');
     const prompt = new ScriptedPrompt([key, copilot, approval]);
     const heldReferences: Buffer[] = [];
 
@@ -186,8 +186,9 @@ describe('Secret input and memory lifecycle', () => {
         await vault.use('COPILOT_REVIEW_REQUEST_TOKEN', (value) => heldReferences.push(value));
         await vault.use('CORE_AUTO_APPROVAL_TOKEN', (value) => heldReferences.push(value));
         const redacted = vault.redact(`copilot=${copilot.toString()} approval=${approval.toString()}`);
-        expect(redacted).not.toContain(copilot.toString());
-        expect(redacted).not.toContain(approval.toString());
+        expect(redacted).toBe(
+          'copilot=[REDACTED:COPILOT_REVIEW_REQUEST_TOKEN] approval=[REDACTED:CORE_AUTO_APPROVAL_TOKEN]',
+        );
         return 'complete';
       },
     );

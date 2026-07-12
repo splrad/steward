@@ -81,8 +81,10 @@ function validateSecret(requirement: SecretRequirement, value: Buffer): void {
   if (value.includes(0)) throw new Error(`${requirement.name} contains a NUL byte`);
   if (requirement.mode === 'single-line') {
     if (value.length < 20) throw new Error(`${requirement.name} is too short`);
-    if ([...value].some((byte) => byte < 0x21 || byte > 0x7e)) {
-      throw new Error(`${requirement.name} must contain printable ASCII without whitespace`);
+    for (const byte of value) {
+      if (byte < 0x21 || byte > 0x7e) {
+        throw new Error(`${requirement.name} must contain printable ASCII without whitespace`);
+      }
     }
     return;
   }
@@ -272,7 +274,8 @@ export class SecretVault {
     if (this.#disposed) return staticRedaction(text);
     let bytes: Buffer<ArrayBufferLike> = Buffer.from(text, 'utf8');
     try {
-      for (const [name, secret] of this.#values) {
+      const valuesByDescendingLength = Array.from(this.#values).sort((left, right) => right[1].length - left[1].length);
+      for (const [name, secret] of valuesByDescendingLength) {
         const replacement = Buffer.from(`[REDACTED:${name}]`, 'utf8');
         const next = replaceBytes(bytes, secret, replacement);
         replacement.fill(0);
