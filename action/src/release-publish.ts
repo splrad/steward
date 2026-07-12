@@ -117,7 +117,7 @@ export async function publishRelease(input: {
     if (release.id !== draft.id || release.tag_name !== plan.tagName || release.draft !== false || !release.html_url) {
       throw new Error('GitHub returned invalid published Release metadata');
     }
-    const verified = await readReleaseStatusWithClient(client, context, plan);
+    const verified = await readReleaseStatusWithClient(client, context, plan, draft.id);
     if (verified.decision.reason !== 'already-published') throw new Error('Published Release did not converge to the expected state');
     await finish({ name: 'Release', status: 'completed', conclusion: 'success', externalId,
       ...(detailsUrl ? { detailsUrl } : {}), title: '发布成功', summary: `${plan.tagName} 已发布 ${assets.assets.length} 个资产。` });
@@ -126,7 +126,7 @@ export async function publishRelease(input: {
     const cleanup: string[] = [];
     if (publishAttempted && !published) {
       try {
-        const reconciled = await readReleaseStatusWithClient(client, context, plan);
+        const reconciled = await readReleaseStatusWithClient(client, context, plan, createdReleaseId);
         if (reconciled.decision.reason === 'already-published') {
           published = true;
           await finish({ name: 'Release', status: 'completed', conclusion: 'success', externalId,

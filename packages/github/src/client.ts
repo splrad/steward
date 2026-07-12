@@ -301,6 +301,12 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
     });
   }
 
+  async getRelease(owner: string, repository: string, releaseId: number): Promise<GitHubRelease> {
+    return await this.transport.request<GitHubRelease>({
+      path: `${repositoryPath(owner, repository)}/releases/${segment(releaseId)}`,
+    });
+  }
+
   async deleteRelease(owner: string, repository: string, releaseId: number): Promise<void> {
     await this.transport.request<void>({
       method: 'DELETE', path: `${repositoryPath(owner, repository)}/releases/${segment(releaseId)}`,

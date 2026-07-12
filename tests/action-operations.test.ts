@@ -142,6 +142,7 @@ describe('Action operation contract', () => {
     expect(parseOperation('classification')).toBe('classification');
     expect(parseOperation('release-preflight')).toBe('release-preflight');
     expect(parseOperation('release-status')).toBe('release-status');
+    expect(parseOperation('release-reconcile')).toBe('release-reconcile');
     expect(parseOperation('release-publish')).toBe('release-publish');
     expect(parseOperation('release-finalize')).toBe('release-finalize');
     expect(() => parseOperation('release')).toThrow('Unsupported Steward operation');

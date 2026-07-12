@@ -23,7 +23,12 @@ const manifest = {
 
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
-async function fixture(uploadFails = false, alreadyPublished = false, publishResponseFails = false) {
+async function fixture(
+  uploadFails = false,
+  alreadyPublished = false,
+  publishResponseFails = false,
+  publishedListLag = false,
+) {
   const root = await mkdtemp(path.join(tmpdir(), 'steward-publish-'));
   roots.push(root);
   const output = path.join(root, 'output');
@@ -62,12 +67,17 @@ async function fixture(uploadFails = false, alreadyPublished = false, publishRes
       ref: 'refs/tags/v1.2.3', object: { type: 'commit', sha: mergeSha },
     }), { status: 201 }); }
     if (url.pathname.endsWith('/releases') && method === 'GET') return new Response(JSON.stringify(
-      draft === undefined ? [] : [{ id: 7, tag_name: 'v1.2.3', draft, html_url: 'https://github.com/release' }],
+      draft === undefined || (publishedListLag && draft === false)
+        ? []
+        : [{ id: 7, tag_name: 'v1.2.3', draft, html_url: 'https://github.com/release' }],
     ));
     if (url.pathname.endsWith('/releases') && method === 'POST') { draft = true; return new Response(JSON.stringify({
       id: 7, tag_name: 'v1.2.3', draft: true,
       upload_url: 'https://uploads.github.com/repos/splrad/steward-sandbox/releases/7/assets{?name,label}',
     }), { status: 201 }); }
+    if (url.pathname.endsWith('/releases/7') && method === 'GET') return draft === undefined
+      ? new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 })
+      : new Response(JSON.stringify({ id: 7, tag_name: 'v1.2.3', draft, html_url: 'https://github.com/release' }));
     if (url.pathname.endsWith('/releases/7') && method === 'PATCH') { draft = false;
       return publishResponseFails ? new Response(JSON.stringify({ message: 'upstream failed' }), { status: 502 })
         : new Response(JSON.stringify({ id: 7, tag_name: 'v1.2.3', draft: false, html_url: 'https://github.com/release' })); }
@@ -80,13 +90,14 @@ async function fixture(uploadFails = false, alreadyPublished = false, publishRes
 
 describe('Release publication transaction', () => {
   it('creates tag and draft, uploads validated assets, publishes, verifies, and completes the Check', async () => {
-    const f = await fixture();
+    const f = await fixture(false, false, false, true);
     await expect(publishRelease({ inputs: { operation: 'release-publish', token: 'token', releaseContext: context,
       releasePlan: plan, releaseAssets: f.assets, releaseOutputDirectory: f.output },
     environment: { GITHUB_API_URL: 'https://api.github.com/', GITHUB_RUN_ID: '42' }, fetch: f.fetchMock as unknown as typeof fetch }))
       .resolves.toEqual({ state: 'passed', summary: 'Release published', releaseUrl: 'https://github.com/release' });
     expect(f.state()).toEqual({ tag: true, draft: false });
     expect(f.requests.some((request) => request.path.endsWith('/assets'))).toBe(true);
+    expect(f.requests).toContainEqual({ method: 'GET', path: '/repos/splrad/steward-sandbox/releases/7' });
   });
 
   it('removes only the transaction-owned draft and tag when asset upload fails, then fails the Check', async () => {

@@ -5,6 +5,7 @@ import { executeOperation } from './operations.js';
 import { executeReleaseBuild, executeReleasePlan, parseReleaseAdapterPhase } from './release-adapter.js';
 import { createReleasePreflight } from './release-preflight.js';
 import { readReleaseStatus } from './release-status.js';
+import { reconcilePublishedRelease } from './release-reconcile.js';
 import { publishRelease } from './release-publish.js';
 import { finalizeReleaseFailure } from './release-finalize.js';
 
@@ -79,6 +80,14 @@ export async function run(
     core.setOutput('release-publication', JSON.stringify(result.decision));
     core.setOutput('operation-result', JSON.stringify({ operation, ...result }));
     core.info(`release-status: ${result.decision.reason}`);
+    return;
+  }
+  if (operation === 'release-reconcile') {
+    const result = await reconcilePublishedRelease({ inputs, environment, ...(fetch ? { fetch } : {}) });
+    core.setOutput('state', result.state);
+    if (result.releaseUrl) core.setOutput('release-url', result.releaseUrl);
+    core.setOutput('operation-result', JSON.stringify({ operation, ...result }));
+    core.info(`release-reconcile: ${result.summary}`);
     return;
   }
   if (operation === 'release-publish') {
