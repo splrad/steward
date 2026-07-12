@@ -10,7 +10,7 @@ The project is being extracted from a production-tested, event-driven workflow. 
 
 ## Status
 
-The repository contains the versioned Manifest contract, shared policy and GitHub integration layers, bundled Actions, reusable workflows for classification, DCO advisory, governance, review signal, validation matrix, and releases, the multi-repository webhook relay, canonical thin callers, and the first repository-lifecycle CLI surfaces. The established workflow chain has been validated in `splrad/steward-sandbox`; the new DCO surface still requires the stage 6.5 migration E2E before production consumer migration.
+The repository contains the versioned Manifest contract, shared policy and GitHub integration layers, bundled Actions, reusable workflows for classification, DCO advisory, governance, review signal, validation matrix, cleanup, and releases, the multi-repository webhook relay, canonical thin callers, and the first repository-lifecycle CLI surfaces. The established workflow chain has been validated in `splrad/steward-sandbox`; the new DCO and Cleanup surfaces still require the stage 6.5 migration E2E before production consumer migration.
 
 ## CLI
 

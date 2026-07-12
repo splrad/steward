@@ -102,6 +102,7 @@ function requiredWorkflowFiles(manifest: StewardManifest): RequiredWorkflowFile[
   }
   if (manifest.features.governance || manifest.features.copilotReview) {
     files.push({ path: '.github/workflows/pr-governance.yml', called: 'pr-governance.yml' });
+    files.push({ path: '.github/workflows/pr-cleanup.yml', called: 'pr-cleanup.yml' });
   }
   if (manifest.features.copilotReview) {
     files.push({ path: '.github/workflows/pr-review-signal.yml', called: 'pr-review-signal.yml' });

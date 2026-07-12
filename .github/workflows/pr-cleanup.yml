@@ -1,0 +1,64 @@
+name: PR Cleanup
+
+on:
+  workflow_call:
+    inputs:
+      app_client_id:
+        description: GitHub App client ID used to mint the Cleanup token.
+        required: true
+        type: string
+      pr_number:
+        description: Closed pull request number to clean up.
+        required: true
+        type: number
+      head_sha:
+        description: Expected closed pull request head SHA.
+        required: true
+        type: string
+    secrets:
+      app_private_key:
+        description: Private key for the installed Steward GitHub App.
+        required: true
+    outputs:
+      state:
+        description: Cleanup operation state.
+        value: ${{ jobs.cleanup.outputs.state }}
+      operation_result:
+        description: Serialized Cleanup operation result.
+        value: ${{ jobs.cleanup.outputs.operation_result }}
+
+concurrency:
+  group: steward-cleanup-${{ github.repository_id }}-${{ inputs.pr_number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    name: Clean Up Closed Pull Request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      state: ${{ steps.steward.outputs.state }}
+      operation_result: ${{ steps.steward.outputs['operation-result'] }}
+    steps:
+      - name: Create Cleanup token
+        id: platform_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ inputs.app_client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          permission-contents: read
+          permission-issues: write
+          permission-members: read
+          permission-pull-requests: read
+
+      - name: Clean up closed pull request state
+        id: steward
+        uses: splrad/steward/action@c0eb1530e2fb3062749c879671514370bae49f37
+        with:
+          operation: cleanup
+          github-token: ${{ steps.platform_token.outputs.token }}
+          pr-number: ${{ inputs.pr_number }}
+          head-sha: ${{ inputs.head_sha }}
