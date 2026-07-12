@@ -1,0 +1,13 @@
+{
+  "ref": "refs/heads/dependabot/npm_and_yarn/example",
+  "after": "dddddddddddddddddddddddddddddddddddddddd",
+  "deleted": false,
+  "repository": {
+    "id": 1296724484,
+    "full_name": "splrad/steward",
+    "default_branch": "main"
+  },
+  "sender": {
+    "login": "dependabot[bot]"
+  }
+}

@@ -9,6 +9,7 @@ try {
     eventPath: core.getInput('event-path'),
     prNumber: core.getInput('pr-number'),
     headSha: core.getInput('head-sha'),
+    sourceBranch: core.getInput('source-branch'),
     requestResult: core.getInput('request-result'),
     matrixMode: core.getInput('matrix-mode'),
     matrixScope: core.getInput('matrix-scope'),

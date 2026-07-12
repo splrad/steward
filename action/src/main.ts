@@ -8,6 +8,7 @@ import { readReleaseStatus } from './release-status.js';
 import { reconcilePublishedRelease } from './release-reconcile.js';
 import { publishRelease } from './release-publish.js';
 import { finalizeReleaseFailure } from './release-finalize.js';
+import { automatePullRequest } from './automation.js';
 
 export const STEWARD_VERSION = '0.0.0-development';
 
@@ -60,6 +61,13 @@ export async function run(
   if (inputs.mutationToken) core.setSecret(inputs.mutationToken);
   if (operationDefinitions[operation].mutationToken && !inputs.mutationToken?.trim()) {
     throw new Error(`${operation} requires an explicit mutation token`);
+  }
+  if (operation === 'automation') {
+    const result = await automatePullRequest({ inputs, environment, ...(fetch ? { fetch } : {}) });
+    core.setOutput('state', result.state);
+    core.setOutput('operation-result', JSON.stringify({ operation, ...result }));
+    core.info(`automation: ${result.summary}`);
+    return;
   }
   if (operation === 'release-preflight') {
     const result = await createReleasePreflight({ inputs, environment, ...(fetch ? { fetch } : {}) });

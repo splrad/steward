@@ -328,6 +328,40 @@ describe('GitHub repository adapter', () => {
     expect(requests).toHaveLength(requestCount);
   });
 
+  it('maps Automation compare, branch, PR discovery, and PR mutations without embedded policy', async () => {
+    const pull = {
+      number: 8, state: 'open', title: 'title', body: 'body',
+      base: { ref: 'main' }, head: { ref: 'feature/one', sha: 'c'.repeat(40) },
+    };
+    const { transport, requests } = mockTransport((request) => {
+      if (request.path.includes('/git/ref/heads/')) return { ref: 'refs/heads/feature/one', object: { sha: 'c'.repeat(40) } };
+      if (request.path.includes('/compare/')) return { status: 'ahead', ahead_by: 1, total_commits: 1, commits: [], files: [] };
+      if (request.method === 'POST' || request.method === 'PATCH') return pull;
+      return [pull];
+    });
+    const client = new GitHubRepositoryClient(transport);
+
+    await client.getBranchRef('splrad', 'steward', 'feature/one');
+    await client.compareCommits('splrad', 'steward', 'main', 'feature/one');
+    await client.listOpenPullRequestsForHead('splrad', 'steward', 'feature/one', 'main');
+    await client.createPullRequest({
+      owner: 'splrad', repository: 'steward', head: 'feature/one', base: 'main', title: 'title', body: 'body',
+    });
+    await client.updatePullRequest('splrad', 'steward', 8, { title: 'new title', body: 'new body' });
+
+    expect(requests).toEqual([
+      { path: '/repos/splrad/steward/git/ref/heads/feature%2Fone' },
+      { path: '/repos/splrad/steward/compare/main...feature%2Fone', query: { page: 1, per_page: 100 } },
+      { path: '/repos/splrad/steward/pulls', query: {
+        state: 'open', head: 'splrad:feature/one', base: 'main', sort: 'updated', direction: 'desc', per_page: 2,
+      } },
+      { method: 'POST', path: '/repos/splrad/steward/pulls', body: {
+        head: 'feature/one', base: 'main', title: 'title', body: 'body',
+      } },
+      { method: 'PATCH', path: '/repos/splrad/steward/pulls/8', body: { title: 'new title', body: 'new body' } },
+    ]);
+  });
+
   it('maps Release tag, commit, and Release-list reads without branch inference', async () => {
     const { transport, requests } = mockTransport((request) => {
       if (request.path.includes('/git/ref/tags/')) {

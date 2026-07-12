@@ -13,7 +13,7 @@ This map defines where the production-tested implementation moves. It is a bound
 | `.github/scripts/pr-validation-fingerprint.js` | `packages/core/src/fingerprint.ts` | Stable validation input normalization and digest. |
 | `.github/scripts/pr-classification-policy.js` | `packages/core/src/classification.ts` | Pure path, type, area, and label policy evaluation driven by manifest data. |
 | `.github/scripts/pr-classification.js` | `packages/github/src/classification.ts` plus Action operation | GitHub reads/writes remain adapters; classification decisions move to core. |
-| `.github/scripts/pr-automation.js` | `packages/core/src/pull-request.ts` and `packages/github/src/pull-request.ts` | Separate title/body/contributor decisions from PR mutation. |
+| `.github/scripts/pr-automation.js` | `packages/core/src/automation.ts`, `packages/github/src/client.ts`, and the `automation` Action operation | Separate title/body/contributor decisions from PR mutation; consume bounded API compare evidence without executing consumer-branch code. |
 | `.github/scripts/dco-check.js` | `packages/core/src/dco.ts` and `packages/github/src/dco.ts` | Advisory evaluation is shared; presentation stays localized by Steward. |
 | `.github/scripts/pr-governance.js` | `packages/core/src/governance/` and `packages/github/src/governance.ts` | Split authorization, Copilot parsing, aggregate-comment state, and API mutation. Keep legacy hidden-state decoding. |
 | `.github/scripts/pr-validation-matrix.js` | `packages/core/src/matrix/` and `packages/github/src/matrix.ts` | Matrix evaluation, trust, repair planning, proxy Checks, and dispatch adapters. Matrix remains the sole aggregator. |
@@ -25,7 +25,7 @@ This map defines where the production-tested implementation moves. It is a bound
 
 | Current workflow | Steward destination | Target-repository remainder |
 |---|---|---|
-| `pr-automation.yml` | reusable `.github/workflows/pr-automation.yml` | Thin native PR event entrypoint and explicit secrets mapping. |
+| `pr-automation.yml` | reusable `.github/workflows/pr-automation.yml` | Thin native push entrypoint and explicit App-secret mapping. |
 | `pr-classification.yml` | reusable `.github/workflows/pr-classification.yml` | Thin PR/workflow-dispatch entrypoint. |
 | `dco-check.yml` | reusable `.github/workflows/dco-advisory.yml` | Thin PR/workflow-dispatch entrypoint. |
 | `pr-governance.yml` | reusable `.github/workflows/pr-governance.yml` | Thin trusted event entrypoint with App and PAT secret mapping. |

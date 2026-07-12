@@ -139,6 +139,7 @@ describe('Action operation contract', () => {
       .toEqual(['matrix']);
     expect(parseOperation('governance-main')).toBe('governance-main');
     expect(parseOperation('governance-preflight')).toBe('governance-preflight');
+    expect(parseOperation('automation')).toBe('automation');
     expect(parseOperation('classification')).toBe('classification');
     expect(parseOperation('cleanup')).toBe('cleanup');
     expect(parseOperation('dco-advisory')).toBe('dco-advisory');
@@ -336,7 +337,7 @@ describe('Action operation contract', () => {
   it('exposes runtime inputs without consumer policy fields', async () => {
     const metadata = await readFile('action/action.yml', 'utf8');
     for (const input of [
-      'github-token:', 'mutation-token:', 'event-path:', 'pr-number:', 'head-sha:', 'matrix-mode:', 'matrix-scope:',
+      'github-token:', 'mutation-token:', 'event-path:', 'pr-number:', 'head-sha:', 'source-branch:', 'matrix-mode:', 'matrix-scope:',
       'release-adapter-phase:', 'release-plan:',
     ]) {
       expect(metadata).toContain(input);
