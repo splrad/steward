@@ -19,6 +19,7 @@ describe('Action metadata', () => {
       'event-path',
       'pr-number',
       'head-sha',
+      'source-branch',
       'request-result',
       'matrix-mode',
       'matrix-scope',

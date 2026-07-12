@@ -9,6 +9,10 @@ import type { StewardActionInputs } from './contracts.js';
 
 export interface GitHubEventPayload {
   action?: string;
+  ref?: string;
+  after?: string;
+  deleted?: boolean;
+  sender?: { login?: string };
   repository?: { id?: number; full_name?: string; default_branch?: string };
   pull_request?: {
     number?: number;

@@ -20,6 +20,9 @@ inputs:
   head-sha:
     description: Expected current PR head SHA for a manual dispatch or relay signal.
     required: false
+  source-branch:
+    description: Expected source branch for the trusted PR Automation push event.
+    required: false
   request-result:
     description: Result of the Copilot review request job for governance-copilot.
     required: false

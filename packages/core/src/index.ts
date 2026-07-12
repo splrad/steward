@@ -1,4 +1,5 @@
 export * from './blocking-state.js';
+export * from './automation.js';
 export * from './classification.js';
 export * from './cleanup.js';
 export * from './dco.js';

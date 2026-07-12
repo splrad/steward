@@ -2,6 +2,7 @@ import type { MatrixMode, MatrixScope } from '../../packages/core/src/index.js';
 
 export const stewardOperations = [
   'version',
+  'automation',
   'classification',
   'cleanup',
   'dco-advisory',
@@ -28,6 +29,7 @@ export interface StewardActionInputs {
   eventPath?: string;
   prNumber?: string;
   headSha?: string;
+  sourceBranch?: string;
   requestResult?: string;
   matrixMode?: string;
   matrixScope?: string;
@@ -50,6 +52,7 @@ export interface StewardOperationDefinition {
 
 export const operationDefinitions: Readonly<Record<StewardOperation, StewardOperationDefinition>> = {
   version: { token: 'none', mutationToken: false, event: false, actionsWrite: false },
+  automation: { token: 'github', mutationToken: false, event: true, actionsWrite: false },
   classification: { token: 'github', mutationToken: false, event: true, actionsWrite: false },
   cleanup: { token: 'github', mutationToken: false, event: true, actionsWrite: false },
   'dco-advisory': { token: 'github', mutationToken: false, event: true, actionsWrite: false },

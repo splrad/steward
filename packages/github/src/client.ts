@@ -57,6 +57,14 @@ export interface GitHubPullRequestFile {
   deletions?: number;
 }
 
+export interface GitHubCompareResult {
+  status?: string;
+  ahead_by?: number;
+  total_commits?: number;
+  commits?: GitHubCommit[];
+  files?: GitHubPullRequestFile[];
+}
+
 export interface GitHubRelease {
   id: number;
   tag_name?: string;
@@ -255,6 +263,52 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
   async getCommit(owner: string, repository: string, ref: string): Promise<GitHubCommit> {
     return await this.transport.request<GitHubCommit>({
       path: `${repositoryPath(owner, repository)}/commits/${segment(ref)}`,
+    });
+  }
+
+  async getBranchRef(owner: string, repository: string, branch: string): Promise<GitHubGitRef> {
+    return await this.transport.request<GitHubGitRef>({
+      path: `${repositoryPath(owner, repository)}/git/ref/heads/${segment(branch)}`,
+    });
+  }
+
+  async compareCommits(owner: string, repository: string, base: string, head: string): Promise<GitHubCompareResult> {
+    return await this.transport.request<GitHubCompareResult>({
+      path: `${repositoryPath(owner, repository)}/compare/${segment(base)}...${segment(head)}`,
+      query: { page: 1, per_page: 100 },
+    });
+  }
+
+  async listOpenPullRequestsForHead(
+    owner: string,
+    repository: string,
+    head: string,
+    base: string,
+  ): Promise<GitHubPullRequest[]> {
+    return await this.transport.request<GitHubPullRequest[]>({
+      path: `${repositoryPath(owner, repository)}/pulls`,
+      query: { state: 'open', head: `${owner}:${head}`, base, sort: 'updated', direction: 'desc', per_page: 2 },
+    });
+  }
+
+  async createPullRequest(input: {
+    owner: string; repository: string; head: string; base: string; title: string; body: string;
+  }): Promise<GitHubPullRequest> {
+    return await this.transport.request<GitHubPullRequest>({
+      method: 'POST', path: `${repositoryPath(input.owner, input.repository)}/pulls`,
+      body: { head: input.head, base: input.base, title: input.title, body: input.body },
+    });
+  }
+
+  async updatePullRequest(
+    owner: string,
+    repository: string,
+    number: number,
+    input: { title: string; body: string },
+  ): Promise<GitHubPullRequest> {
+    return await this.transport.request<GitHubPullRequest>({
+      method: 'PATCH', path: `${repositoryPath(owner, repository)}/pulls/${segment(number)}`,
+      body: input,
     });
   }
 
