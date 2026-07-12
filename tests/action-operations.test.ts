@@ -195,7 +195,25 @@ describe('Action operation contract', () => {
     expect(() => validateRepositoryDispatch({
       client_payload: { ...event.client_payload, delivery_id: '' },
     }, 1296724484)).toThrow('delivery ID');
+    expect(() => validateRepositoryDispatch({
+      client_payload: { ...event.client_payload, delivery_id: '   ' },
+    }, 1296724484)).toThrow('delivery ID');
     expect(() => validateRepositoryDispatch(event, 1)).toThrow('repository ID');
+    expect(() => validateRepositoryDispatch({
+      client_payload: { ...event.client_payload, source_event: 'workflow_run' },
+    }, 1296724484)).toThrow('supported review signal');
+    expect(() => validateRepositoryDispatch({
+      client_payload: { ...event.client_payload, action: 'approved' },
+    }, 1296724484)).toThrow('supported review signal');
+    expect(() => validateRepositoryDispatch({
+      client_payload: {
+        repository_id: 1296724484,
+        pr_number: 7,
+        head_sha: 'c'.repeat(40),
+        action: 'resolved',
+        delivery_id: 'delivery',
+      },
+    }, 1296724484)).not.toThrow();
   });
 
   it('derives the distinct GHES GraphQL base without weakening REST confinement', () => {
@@ -207,11 +225,15 @@ describe('Action operation contract', () => {
     const eventPath = 'tests/fixtures/action-event.json';
     const encodedManifest = Buffer.from(JSON.stringify(manifest().manifest)).toString('base64');
     const authorizationByPath = new Map<string, string>();
-    const fetcher = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
+    let liveRepositoryId = 1296724484;
+    let livePullState = 'open';
+    let liveBaseRef = 'main';
+    let liveHeadSha = 'c'.repeat(40);
+    const fetchMock = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
       const path = new URL(String(request)).pathname;
       authorizationByPath.set(path, new Headers(init?.headers).get('authorization') ?? '');
       if (path === '/repos/splrad/steward') {
-        return new Response(JSON.stringify({ id: 1296724484, full_name: 'splrad/steward', default_branch: 'main' }));
+        return new Response(JSON.stringify({ id: liveRepositoryId, full_name: 'splrad/steward', default_branch: 'main' }));
       }
       if (path === '/repos/splrad/steward/contents/.github/steward.json') {
         return new Response(JSON.stringify({ type: 'file', encoding: 'base64', content: encodedManifest, sha: 'blob' }));
@@ -219,21 +241,22 @@ describe('Action operation contract', () => {
       if (path === '/repos/splrad/steward/pulls/7') {
         return new Response(JSON.stringify({
           number: 7,
-          state: 'open',
-          base: { ref: 'main', sha: 'b'.repeat(40) },
-          head: { sha: 'c'.repeat(40) },
+          state: livePullState,
+          base: { ref: liveBaseRef, sha: 'b'.repeat(40) },
+          head: { sha: liveHeadSha },
         }));
       }
       if (path === '/user') return new Response(JSON.stringify({ login: 'reviewer' }));
       return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 });
-    }) as unknown as typeof fetch;
+    });
+    const fetcher = fetchMock as unknown as typeof fetch;
 
     await expect(createOperationContext({
       inputs: { operation: 'governance-main', eventPath },
       environment: { GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: 'pull_request_target' },
       fetch: fetcher,
     })).rejects.toThrow('explicit GitHub token');
-    expect(fetcher).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
 
     const resolved = await createOperationContext({
       inputs: { operation: 'governance-main', token: 'platform-token', mutationToken: 'human-token', eventPath },
@@ -263,6 +286,43 @@ describe('Action operation contract', () => {
       pull: { number: 7, head: { sha: 'c'.repeat(40) } },
       eventName: 'workflow_run',
     });
+
+    await expect(createOperationContext({
+      inputs: {
+        operation: 'matrix',
+        token: 'token',
+        eventPath: 'tests/fixtures/action-repository-dispatch-event.json',
+      },
+      environment: { GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: 'repository_dispatch' },
+      fetch: fetcher,
+    })).resolves.toMatchObject({
+      pull: { number: 7, head: { sha: 'c'.repeat(40) } },
+      eventName: 'repository_dispatch',
+    });
+
+    const dispatchContext = () => createOperationContext({
+      inputs: {
+        operation: 'matrix' as const,
+        token: 'token',
+        eventPath: 'tests/fixtures/action-repository-dispatch-event.json',
+      },
+      environment: { GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: 'repository_dispatch' },
+      fetch: fetcher,
+    });
+    liveRepositoryId = 1;
+    await expect(dispatchContext()).rejects.toThrow('event repository does not match');
+    liveRepositoryId = 1296724484;
+
+    liveHeadSha = 'd'.repeat(40);
+    await expect(dispatchContext()).rejects.toThrow('head does not match');
+    liveHeadSha = 'c'.repeat(40);
+
+    liveBaseRef = 'develop';
+    await expect(dispatchContext()).rejects.toThrow('does not target the current default branch');
+    liveBaseRef = 'main';
+
+    livePullState = 'closed';
+    await expect(dispatchContext()).rejects.toThrow('only accepts an open pull request');
   });
 
   it('exposes runtime inputs without consumer policy fields', async () => {

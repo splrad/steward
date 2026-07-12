@@ -1,0 +1,17 @@
+{
+  "action": "pr-review-state-changed",
+  "repository": {
+    "id": 1296724484,
+    "full_name": "splrad/steward",
+    "default_branch": "main"
+  },
+  "client_payload": {
+    "repository_id": 1296724484,
+    "pr_number": 7,
+    "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "source_event": "pull_request_review_thread",
+    "action": "resolved",
+    "delivery_id": "delivery-1",
+    "thread_node_id": "PRRT_fixture"
+  }
+}
