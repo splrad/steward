@@ -785,7 +785,7 @@ async function matrixOperation(context: StewardOperationContext, inputs: Steward
 }
 
 export async function executeOperation(
-  operation: Exclude<StewardOperation, 'version' | 'release-adapter' | 'release-preflight'>,
+  operation: Exclude<StewardOperation, 'version' | 'release-adapter' | 'release-preflight' | 'release-status'>,
   context: StewardOperationContext,
   inputs: StewardActionInputs,
 ): Promise<StewardOperationResult> {

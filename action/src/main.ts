@@ -2,8 +2,9 @@ import * as core from '@actions/core';
 import { operationDefinitions, parseOperation, type StewardActionInputs } from './contracts.js';
 import { createOperationContext, type StewardRuntimeEnvironment } from './context.js';
 import { executeOperation } from './operations.js';
-import { executeReleaseAdapter } from './release-adapter.js';
+import { executeReleaseBuild, executeReleasePlan, parseReleaseAdapterPhase } from './release-adapter.js';
 import { createReleasePreflight } from './release-preflight.js';
+import { readReleaseStatus } from './release-status.js';
 
 export const STEWARD_VERSION = '0.0.0-development';
 
@@ -23,23 +24,33 @@ export async function run(
     const temporaryDirectory = environment.RUNNER_TEMP?.trim() || '';
     if (!workspace) throw new Error('release-adapter requires release-workspace or GITHUB_WORKSPACE');
     if (!temporaryDirectory) throw new Error('release-adapter requires RUNNER_TEMP');
-    const result = await executeReleaseAdapter({
+    const executionInputs = {
       adapterCommand: inputs.releaseAdapterCommand ?? '',
       context: inputs.releaseContext ?? '',
       workspace,
       temporaryDirectory,
-    });
+    };
+    const phase = parseReleaseAdapterPhase(inputs.releaseAdapterPhase);
     core.setOutput('state', 'passed');
-    core.setOutput('release-plan', JSON.stringify(result.plan));
-    core.setOutput('release-assets', JSON.stringify(result.assets));
-    core.setOutput('release-output-directory', result.outputDirectory);
-    core.setOutput('operation-result', JSON.stringify({
-      operation,
-      state: 'passed',
-      summary: `${result.assets.assets.length} release assets validated`,
-      details: result,
-    }));
-    core.info(`release-adapter: ${result.assets.assets.length} release assets validated`);
+    if (phase === 'plan') {
+      const plan = await executeReleasePlan(executionInputs);
+      core.setOutput('release-plan', JSON.stringify(plan));
+      core.setOutput('operation-result', JSON.stringify({
+        operation, state: 'passed', summary: 'Release plan validated', details: { plan },
+      }));
+      core.info('release-adapter plan: plan validated');
+    } else {
+      const result = await executeReleaseBuild(executionInputs);
+      core.setOutput('release-assets', JSON.stringify(result.assets));
+      core.setOutput('release-output-directory', result.outputDirectory);
+      core.setOutput('operation-result', JSON.stringify({
+        operation,
+        state: 'passed',
+        summary: `${result.assets.assets.length} release assets validated`,
+        details: result,
+      }));
+      core.info(`release-adapter build: ${result.assets.assets.length} assets validated`);
+    }
     return;
   }
   if (inputs.token) core.setSecret(inputs.token);
@@ -57,6 +68,15 @@ export async function run(
     if (result.adapterCommand) core.setOutput('release-adapter-command', JSON.stringify(result.adapterCommand));
     core.setOutput('operation-result', JSON.stringify({ operation, ...result }));
     core.info(`release-preflight: ${result.summary}`);
+    return;
+  }
+  if (operation === 'release-status') {
+    const result = await readReleaseStatus({ inputs, environment, ...(fetch ? { fetch } : {}) });
+    core.setOutput('state', result.decision.state === 'planned' ? 'passed' : 'ignored');
+    core.setOutput('release-build-needed', String(result.decision.state === 'planned'));
+    core.setOutput('release-publication', JSON.stringify(result.decision));
+    core.setOutput('operation-result', JSON.stringify({ operation, ...result }));
+    core.info(`release-status: ${result.decision.reason}`);
     return;
   }
   const context = await createOperationContext({

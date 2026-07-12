@@ -55,6 +55,11 @@ export interface ReleaseTriggerDecision {
   matchedPaths: string[];
 }
 
+export interface ReleasePublicationDecision {
+  state: 'planned' | 'ignored';
+  reason: 'release-available' | 'already-published';
+}
+
 type JsonObject = Record<string, unknown>;
 
 function fail(path: string, message: string): never {
@@ -150,6 +155,28 @@ export function evaluateReleaseTrigger(input: {
   return matchedPaths.length
     ? { state: 'planned', reason: 'trigger-path-matched', matchedPaths }
     : { state: 'ignored', reason: 'trigger-path-not-matched', matchedPaths: [] };
+}
+
+export function evaluateReleasePublication(input: {
+  mergeSha: string;
+  tagName: string;
+  tagCommitSha?: string;
+  release?: { id: number; tagName: string; draft: boolean };
+}): ReleasePublicationDecision {
+  const mergeSha = text(input.mergeSha, 'mergeSha', 40).toLowerCase();
+  if (!/^[a-f0-9]{40}$/.test(mergeSha)) fail('mergeSha', 'must be a 40-character commit SHA');
+  const expectedTag = tagName(input.tagName, 'tagName');
+  const tagCommitSha = input.tagCommitSha?.toLowerCase();
+  if (tagCommitSha !== undefined && !/^[a-f0-9]{40}$/.test(tagCommitSha)) {
+    fail('tagCommitSha', 'must be a 40-character commit SHA');
+  }
+  if (!tagCommitSha && !input.release) return { state: 'planned', reason: 'release-available' };
+  if (!tagCommitSha || !input.release) fail('$', 'contains an incomplete existing tag/Release pair');
+  if (!Number.isSafeInteger(input.release.id) || input.release.id <= 0) fail('release.id', 'must be a positive integer');
+  if (input.release.tagName !== expectedTag) fail('release.tagName', 'does not match the planned tag');
+  if (input.release.draft) fail('release.draft', 'must be false for an existing published Release');
+  if (tagCommitSha !== mergeSha) fail('tagCommitSha', 'does not target the merged pull request commit');
+  return { state: 'ignored', reason: 'already-published' };
 }
 
 export function parseReleaseAdapterContext(value: unknown): ReleaseAdapterContext {
