@@ -3,12 +3,14 @@ import { describe, expect, it } from 'vitest';
 
 const actionSha = 'cd874ad2819bb1a24b4af17b6a5108b56fb728b9';
 const appTokenSha = 'bcd2ba49218906704ab6c1aa796996da409d3eb1';
+const releaseActionSha = '7ecd713690942cd1104deb219e8e4cd2e3f9cff8';
 const repositoryRoot = new URL('../', import.meta.url);
 const workflowPaths = [
   '.github/workflows/pr-classification.yml',
   '.github/workflows/pr-governance.yml',
   '.github/workflows/pr-review-signal.yml',
   '.github/workflows/pr-validation-matrix.yml',
+  '.github/workflows/release.yml',
 ] as const;
 
 async function workflows(): Promise<Record<(typeof workflowPaths)[number], string>> {
@@ -41,6 +43,7 @@ describe('First reusable workflow contracts', () => {
     );
     expect(`${files['.github/workflows/pr-governance.yml']}\n${files['.github/workflows/pr-validation-matrix.yml']}`)
       .toContain(`actions/create-github-app-token@${appTokenSha}`);
+    expect(files['.github/workflows/release.yml']).toContain(`splrad/steward/action@${releaseActionSha}`);
   });
 
   it('gates optional human credentials from the trusted Manifest preflight', async () => {
@@ -133,5 +136,25 @@ describe('First reusable workflow contracts', () => {
     for (const forbidden of [
       'trusted_developers', 'labels:', 'paths:', 'check_name', 'workflow_file', 'maintainers:', 'account:',
     ]) expect(source).not.toContain(forbidden);
+  });
+
+  it('orchestrates Release from trusted Manifest outputs and finalizes failures before publication', async () => {
+    const release = (await workflows())['.github/workflows/release.yml'];
+    expect(release).toContain('operation: release-preflight');
+    expect(release).toContain('continue-on-error: true');
+    expect(release).toContain("steps.steward.outcome == 'failure'");
+    expect(release).toContain('runs-on: ${{ needs.preflight.outputs.release_runner }}');
+    expect(release).toContain('fromJSON(needs.preflight.outputs.release_context).pullRequest.mergeSha');
+    expect(release).toContain('release-adapter-phase: plan');
+    expect(release).toContain('operation: release-status');
+    expect(release).toContain("steps.status.outputs['release-build-needed'] == 'true'");
+    expect(release).toContain('release-adapter-phase: build');
+    expect(release).toContain('operation: release-publish');
+    expect(release.match(/operation: release-finalize/g)).toHaveLength(2);
+    expect(release).toContain('always() && (');
+    expect(release).toContain("steps.build.outcome == 'failure'");
+    expect(release).toContain('permission-contents: write');
+    expect(release).toContain('permission-checks: write');
+    expect(release).toContain('cancel-in-progress: false');
   });
 });
