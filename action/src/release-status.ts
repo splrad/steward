@@ -3,6 +3,8 @@ import {
   parseReleaseAdapterContext,
   parseReleasePlan,
   type ReleasePublicationDecision,
+  type ReleaseAdapterContext,
+  type ReleasePlan,
 } from '../../packages/core/src/index.js';
 import {
   GitHubApiError,
@@ -52,6 +54,15 @@ export async function readReleaseStatus(input: {
     || metadata.fullName.toLowerCase() !== context.repository.fullName.toLowerCase()) {
     throw new Error('Release context repository does not match current repository metadata');
   }
+  return await readReleaseStatusWithClient(client, context, plan);
+}
+
+export async function readReleaseStatusWithClient(
+  client: GitHubRepositoryClient,
+  context: ReleaseAdapterContext,
+  plan: ReleasePlan,
+): Promise<{ decision: ReleasePublicationDecision; release?: GitHubRelease }> {
+  const [owner, repository] = context.repository.fullName.split('/') as [string, string];
   const [tagRef, releases] = await Promise.all([
     missingAsUndefined(client.getTagRef(owner, repository, plan.tagName)),
     client.listReleases(owner, repository),

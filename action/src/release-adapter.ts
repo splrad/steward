@@ -77,7 +77,7 @@ async function sha256(file: string): Promise<string> {
   return hash.digest('hex');
 }
 
-async function inventory(root: string, relative = ''): Promise<ReleaseOutputFile[]> {
+export async function inventoryReleaseOutput(root: string, relative = ''): Promise<ReleaseOutputFile[]> {
   const entries = await readdir(path.join(root, relative), { withFileTypes: true });
   const result: ReleaseOutputFile[] = [];
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name, 'en'))) {
@@ -89,7 +89,7 @@ async function inventory(root: string, relative = ''): Promise<ReleaseOutputFile
       result.push({ path: portablePath, type: 'symlink', size: stats.size });
     } else if (stats.isDirectory()) {
       result.push({ path: portablePath, type: 'directory', size: stats.size });
-      result.push(...await inventory(root, child));
+      result.push(...await inventoryReleaseOutput(root, child));
     } else if (stats.isFile()) {
       result.push({ path: portablePath, type: 'file', size: stats.size, sha256: await sha256(fullPath) });
     } else {
@@ -152,7 +152,7 @@ export async function executeReleaseBuild(inputs: ReleaseAdapterExecutionInputs)
   }
   const assets = parseReleaseAssetsManifest(
     await readJsonFile(manifestPath, 'release assets manifest'),
-    await inventory(outputDirectory),
+    await inventoryReleaseOutput(outputDirectory),
   );
   return { assets, outputDirectory };
 }

@@ -60,6 +60,12 @@ export interface GitHubRelease {
   tag_name?: string;
   draft?: boolean;
   html_url?: string;
+  upload_url?: string;
+}
+
+export interface GitHubReleaseNotes { name?: string; body?: string }
+export interface GitHubReleaseAsset {
+  id?: number; name?: string; state?: string; size?: number; digest?: string | null;
 }
 
 export interface GitHubGitRef {
@@ -253,6 +259,51 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
   async getTagRef(owner: string, repository: string, tag: string): Promise<GitHubGitRef> {
     return await this.transport.request<GitHubGitRef>({
       path: `${repositoryPath(owner, repository)}/git/ref/tags/${segment(tag)}`,
+    });
+  }
+
+  async createTagRef(owner: string, repository: string, tag: string, sha: string): Promise<GitHubGitRef> {
+    return await this.transport.request<GitHubGitRef>({
+      method: 'POST', path: `${repositoryPath(owner, repository)}/git/refs`,
+      body: { ref: `refs/tags/${tag}`, sha },
+    });
+  }
+
+  async deleteTagRef(owner: string, repository: string, tag: string): Promise<void> {
+    await this.transport.request<void>({
+      method: 'DELETE', path: `${repositoryPath(owner, repository)}/git/refs/tags/${segment(tag)}`,
+    });
+  }
+
+  async generateReleaseNotes(owner: string, repository: string, tag: string, targetCommitish: string): Promise<GitHubReleaseNotes> {
+    return await this.transport.request<GitHubReleaseNotes>({
+      method: 'POST', path: `${repositoryPath(owner, repository)}/releases/generate-notes`,
+      body: { tag_name: tag, target_commitish: targetCommitish },
+    });
+  }
+
+  async createDraftRelease(input: {
+    owner: string; repository: string; tag: string; targetCommitish: string; name: string; body: string;
+  }): Promise<GitHubRelease> {
+    return await this.transport.request<GitHubRelease>({
+      method: 'POST', path: `${repositoryPath(input.owner, input.repository)}/releases`,
+      body: {
+        tag_name: input.tag, target_commitish: input.targetCommitish, name: input.name,
+        body: input.body, draft: true, prerelease: false, generate_release_notes: false,
+      },
+    });
+  }
+
+  async publishRelease(owner: string, repository: string, releaseId: number): Promise<GitHubRelease> {
+    return await this.transport.request<GitHubRelease>({
+      method: 'PATCH', path: `${repositoryPath(owner, repository)}/releases/${segment(releaseId)}`,
+      body: { draft: false },
+    });
+  }
+
+  async deleteRelease(owner: string, repository: string, releaseId: number): Promise<void> {
+    await this.transport.request<void>({
+      method: 'DELETE', path: `${repositoryPath(owner, repository)}/releases/${segment(releaseId)}`,
     });
   }
 

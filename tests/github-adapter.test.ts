@@ -348,6 +348,38 @@ describe('GitHub repository adapter', () => {
     ]);
   });
 
+  it('maps the explicit Release transaction mutations without hidden policy', async () => {
+    const { transport, requests } = mockTransport((request) => {
+      if (request.path.endsWith('/generate-notes')) return { name: 'generated', body: 'notes' };
+      if (request.path.endsWith('/git/refs')) return { ref: 'refs/tags/v1.2.3', object: { type: 'commit', sha: 'a'.repeat(40) } };
+      if (request.method === 'POST' && request.path.endsWith('/releases')) return { id: 7, draft: true };
+      if (request.method === 'PATCH') return { id: 7, draft: false };
+      return undefined;
+    });
+    const client = new GitHubRepositoryClient(transport);
+    await client.generateReleaseNotes('splrad', 'steward', 'v1.2.3', 'a'.repeat(40));
+    await client.createTagRef('splrad', 'steward', 'v1.2.3', 'a'.repeat(40));
+    await client.createDraftRelease({ owner: 'splrad', repository: 'steward', tag: 'v1.2.3',
+      targetCommitish: 'a'.repeat(40), name: 'Release 1.2.3', body: 'notes' });
+    await client.publishRelease('splrad', 'steward', 7);
+    await client.deleteRelease('splrad', 'steward', 7);
+    await client.deleteTagRef('splrad', 'steward', 'v1.2.3');
+
+    expect(requests).toEqual([
+      { method: 'POST', path: '/repos/splrad/steward/releases/generate-notes',
+        body: { tag_name: 'v1.2.3', target_commitish: 'a'.repeat(40) } },
+      { method: 'POST', path: '/repos/splrad/steward/git/refs',
+        body: { ref: 'refs/tags/v1.2.3', sha: 'a'.repeat(40) } },
+      { method: 'POST', path: '/repos/splrad/steward/releases', body: {
+        tag_name: 'v1.2.3', target_commitish: 'a'.repeat(40), name: 'Release 1.2.3', body: 'notes',
+        draft: true, prerelease: false, generate_release_notes: false,
+      } },
+      { method: 'PATCH', path: '/repos/splrad/steward/releases/7', body: { draft: false } },
+      { method: 'DELETE', path: '/repos/splrad/steward/releases/7' },
+      { method: 'DELETE', path: '/repos/splrad/steward/git/refs/tags/v1.2.3' },
+    ]);
+  });
+
   it('maps one explicit adapter call to one GitHub mutation', async () => {
     const { transport, requests } = mockTransport((request) => (
       request.path.includes('/check-runs') ? { id: 1, name: 'Gate', status: 'in_progress' } : undefined
