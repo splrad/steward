@@ -140,6 +140,7 @@ describe('Action operation contract', () => {
     expect(parseOperation('governance-main')).toBe('governance-main');
     expect(parseOperation('governance-preflight')).toBe('governance-preflight');
     expect(parseOperation('classification')).toBe('classification');
+    expect(parseOperation('cleanup')).toBe('cleanup');
     expect(parseOperation('dco-advisory')).toBe('dco-advisory');
     expect(parseOperation('release-preflight')).toBe('release-preflight');
     expect(parseOperation('release-status')).toBe('release-status');
@@ -344,6 +345,51 @@ describe('Action operation contract', () => {
     for (const forbidden of ['trusted-developers:', 'labels:', 'workflow-file:', 'check-name:']) {
       expect(metadata).not.toContain(forbidden);
     }
+  });
+
+  it('accepts Cleanup only for a live closed PR matching the trusted close event', async () => {
+    const encodedManifest = Buffer.from(JSON.stringify(manifest().manifest)).toString('base64');
+    let liveState = 'closed';
+    let liveMerged = true;
+    let liveMergeSha = 'a'.repeat(40);
+    const fetchMock = vi.fn(async (request: string | URL | Request) => {
+      const path = new URL(String(request)).pathname;
+      if (path === '/repos/splrad/steward') {
+        return new Response(JSON.stringify({ id: 1296724484, full_name: 'splrad/steward', default_branch: 'main' }));
+      }
+      if (path === '/repos/splrad/steward/contents/.github/steward.json') {
+        return new Response(JSON.stringify({ type: 'file', encoding: 'base64', content: encodedManifest, sha: 'blob' }));
+      }
+      if (path === '/repos/splrad/steward/pulls/7') {
+        return new Response(JSON.stringify({
+          number: 7,
+          state: liveState,
+          merged: liveMerged,
+          merge_commit_sha: liveMergeSha,
+          base: { ref: 'main', sha: 'b'.repeat(40) },
+          head: { ref: 'feature/cleanup', sha: 'c'.repeat(40) },
+        }));
+      }
+      return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 });
+    });
+    const cleanupContext = (eventName = 'pull_request_target') => createOperationContext({
+      inputs: { operation: 'cleanup', token: 'token', eventPath: 'tests/fixtures/action-cleanup-event.json' },
+      environment: { GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: eventName },
+      fetch: fetchMock as unknown as typeof fetch,
+      pullState: 'closed',
+    });
+    await expect(cleanupContext()).resolves.toMatchObject({ pull: { state: 'closed', merged: true } });
+
+    liveMerged = false;
+    await expect(cleanupContext()).rejects.toThrow('merged state does not match');
+    liveMerged = true;
+    liveMergeSha = 'b'.repeat(40);
+    await expect(cleanupContext()).rejects.toThrow('merge commit does not match');
+    liveMergeSha = 'a'.repeat(40);
+    liveState = 'open';
+    await expect(cleanupContext()).rejects.toThrow('only accepts a closed pull request');
+    liveState = 'closed';
+    await expect(cleanupContext('workflow_dispatch')).rejects.toThrow('require a pull_request_target closed event');
   });
 
   it('builds Release adapter context only from a live merged default-branch PR and trusted close event', async () => {
@@ -649,6 +695,69 @@ describe('Action operation contract', () => {
     fixture.client.listPullRequestCommits!.mockResolvedValue([]);
     await expect(executeOperation('dco-advisory', fixture.context, { operation: 'dco-advisory' }))
       .rejects.toThrow('no commits for an open pull request');
+  });
+
+  it('removes only App-owned temporary state and updates one durable merged notification', async () => {
+    const fixture = context();
+    Object.assign(fixture.context.pull, {
+      state: 'closed',
+      merged: true,
+      merge_commit_sha: 'a'.repeat(40),
+      merged_by: { login: 'reviewer' },
+      title: 'feat: cleanup @maintainer <tag> &lt;entity&gt;',
+      body: '<!-- workflow:source-actor:external-dev -->',
+      user: { login: 'splrad-steward[bot]', type: 'Bot' },
+      head: { ref: 'feature/@cleanup', sha: 'c'.repeat(40) },
+    });
+    fixture.client.listIssueComments!.mockResolvedValue([
+      { id: 10, user: { login: 'splrad-steward[bot]' }, body: '<!-- workflow:pr-blocking-failures -->' },
+      { id: 11, user: { login: 'external' }, body: '<!-- workflow:pr-blocking-failures -->' },
+      { id: 12, user: { login: 'splrad-steward[bot]' }, body: '<!-- workflow:pr-close-status -->\nold' },
+      { id: 13, user: { login: 'splrad-steward[bot]' }, body: '<!-- workflow:pr-close-status -->\nduplicate' },
+    ]);
+
+    const result = await executeOperation('cleanup', fixture.context, { operation: 'cleanup' });
+
+    expect(result).toMatchObject({
+      state: 'passed',
+      details: {
+        merged: true,
+        removedEphemeralComments: 1,
+        removedCloseComments: 1,
+        notificationAction: 'update',
+      },
+    });
+    expect(fixture.client.deleteIssueComment!.mock.calls.map((call) => call[2])).toEqual([10, 13]);
+    expect(fixture.client.updateIssueComment).toHaveBeenCalledOnce();
+    const notification = String(fixture.client.updateIssueComment!.mock.calls[0]?.[3] ?? '');
+    expect(notification).toContain('<!-- workflow:pr-close-status -->');
+    expect(notification).toContain('@external-dev');
+    expect(notification).toContain('@core');
+    expect(notification).toContain('@reviewer');
+    expect(notification).not.toContain('@maintainer');
+    expect(notification).toContain('@\u200bmaintainer');
+    expect(notification).toContain('&lt;tag&gt;');
+    expect(notification).toContain('&amp;lt;entity&amp;gt;');
+    expect(notification).toContain('feature/@\u200bcleanup');
+    expect(fixture.client.createIssueComment).not.toHaveBeenCalled();
+  });
+
+  it('cleans stale App state without publishing a notification for an unmerged close', async () => {
+    const fixture = context();
+    Object.assign(fixture.context.pull, { state: 'closed', merged: false });
+    fixture.client.listIssueComments!.mockResolvedValue([
+      { id: 20, user: { login: 'splrad-steward[bot]' }, body: '<!-- workflow:copilot-review-gate -->' },
+      { id: 21, user: { login: 'splrad-steward[bot]' }, body: '<!-- workflow:pr-close-status -->\nstale' },
+      { id: 22, user: { login: 'external' }, body: '<!-- workflow:pr-close-status -->\nkeep' },
+    ]);
+    const result = await executeOperation('cleanup', fixture.context, { operation: 'cleanup' });
+    expect(result).toMatchObject({
+      state: 'passed',
+      details: { merged: false, removedEphemeralComments: 1, removedCloseComments: 1, notificationAction: 'none' },
+    });
+    expect(fixture.client.deleteIssueComment!.mock.calls.map((call) => call[2])).toEqual([20, 21]);
+    expect(fixture.client.createIssueComment).not.toHaveBeenCalled();
+    expect(fixture.client.updateIssueComment).not.toHaveBeenCalled();
   });
 
   it('creates a missing managed label and tolerates only a confirmed concurrent creation race', async () => {

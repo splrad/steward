@@ -169,6 +169,7 @@ export async function createOperationContext(input: {
   inputs: StewardActionInputs;
   environment: StewardRuntimeEnvironment;
   fetch?: typeof globalThis.fetch;
+  pullState?: 'open' | 'closed';
 }): Promise<StewardOperationContext> {
   const token = input.inputs.token?.trim() ?? '';
   if (!token) throw new Error('Steward operation requires an explicit GitHub token');
@@ -201,9 +202,25 @@ export async function createOperationContext(input: {
   const resolvedPullNumber = trustedRun?.prNumber ?? resolvePullNumber(event, input.inputs.prNumber);
   const pull = await client.getPullRequest(owner, repository, resolvedPullNumber);
   if (pull.number !== resolvedPullNumber) throw new Error('GitHub returned a different pull request number');
-  if (pull.state !== 'open') throw new Error('Steward operation only accepts an open pull request');
+  const pullState = input.pullState ?? 'open';
+  const article = pullState === 'open' ? 'an' : 'a';
+  if (pull.state !== pullState) throw new Error(`Steward operation only accepts ${article} ${pullState} pull request`);
   if (pull.base.ref !== metadata.defaultBranch) throw new Error('Pull request does not target the current default branch');
   if (!/^[a-f0-9]{40}$/i.test(pull.head.sha)) throw new Error('GitHub returned an invalid pull request head SHA');
+  if (pullState === 'closed') {
+    const eventPull = event.pull_request;
+    if (!eventPull || eventName !== 'pull_request_target' || event.action !== 'closed') {
+      throw new Error('Closed pull request operations require a pull_request_target closed event');
+    }
+    if (eventPull.merged !== pull.merged) {
+      throw new Error('Closed pull request event merged state does not match live metadata');
+    }
+    const eventMergeSha = String(eventPull.merge_commit_sha ?? '').toLowerCase();
+    const liveMergeSha = String(pull.merge_commit_sha ?? '').toLowerCase();
+    if (pull.merged && (!/^[a-f0-9]{40}$/.test(eventMergeSha) || eventMergeSha !== liveMergeSha)) {
+      throw new Error('Closed pull request event merge commit does not match live metadata');
+    }
+  }
   const expectedHead = trustedRun?.headSha ?? resolveExpectedHead(event, input.inputs.headSha);
   if (eventName === 'repository_dispatch') {
     validateRepositoryDispatch(event, metadata.id);

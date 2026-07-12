@@ -106,6 +106,7 @@ export async function run(
     inputs,
     environment,
     ...(fetch ? { fetch } : {}),
+    ...(operation === 'cleanup' ? { pullState: 'closed' as const } : {}),
   });
   core.setOutput('governance-enabled', String(context.manifest.manifest.features.governance));
   core.setOutput('copilot-review-enabled', String(context.manifest.manifest.features.copilotReview));
