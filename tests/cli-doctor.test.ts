@@ -113,6 +113,42 @@ describe('doctor CLI contract', () => {
     expect(report.findings.filter((item) => item.level === 'fail').every((item) => item.remedy)).toBe(true);
   });
 
+  it('fails explicitly when enabled PR surfaces are not implemented by this Steward version', async () => {
+    const configured = manifest();
+    configured.features.prAutomation = true;
+    configured.features.dcoAdvisory = true;
+    const setup = transportFor({
+      '/repos/splrad/example/contents/.github/steward.json': {
+        type: 'file', encoding: 'base64', content: Buffer.from(JSON.stringify(configured)).toString('base64'), sha: 'blob',
+      },
+      '/repos/splrad/example/contents/.github/workflows/pr-automation.yml': new GitHubApiError({
+        status: 404,
+        method: 'GET',
+        path: '/repos/splrad/example/contents/.github/workflows/pr-automation.yml',
+        message: 'Not Found',
+      }),
+      '/repos/splrad/example/contents/.github/workflows/dco-advisory.yml': new GitHubApiError({
+        status: 404,
+        method: 'GET',
+        path: '/repos/splrad/example/contents/.github/workflows/dco-advisory.yml',
+        message: 'Not Found',
+      }),
+    });
+    const report = await runDoctor(setup.transport, { owner: 'splrad', repository: 'example', pullRequest: 3 });
+    expect(report.ok).toBe(false);
+    expect(report.findings.filter((item) => item.level === 'fail').map((item) => item.code)).toEqual(
+      expect.arrayContaining(['feature.pr-automation', 'feature.dco-advisory']),
+    );
+    expect(setup.requests.map((request) => request.path)).toEqual(expect.arrayContaining([
+      '/repos/splrad/example/contents/.github/workflows/pr-automation.yml',
+      '/repos/splrad/example/contents/.github/workflows/dco-advisory.yml',
+    ]));
+    expect(report.findings.find((item) => item.code === 'workflow.pr-automation.yml')?.remedy)
+      .toContain('包含 PR Automation 运行面和 thin caller template');
+    expect(report.findings.find((item) => item.code === 'workflow.dco-advisory.yml')?.remedy)
+      .toContain('包含 DCO Advisory 运行面和 thin caller template');
+  });
+
   it('lets an explicit default-branch exclusion override a ruleset include', async () => {
     const setup = transportFor({
       '/repos/splrad/example/rulesets/5': {

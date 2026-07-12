@@ -38,6 +38,9 @@ export async function fetchPullRequestPages<T>(
     if (items.length === 0) break;
     all.push(...items);
     if (items.length < pageSize) break;
+    if (page === maxPages) {
+      throw new Error(`GitHub pagination reached the ${maxPages}-page safety limit before a terminal page`);
+    }
   }
   return all;
 }
@@ -75,6 +78,9 @@ export async function fetchGitHubLinkPages<T>(
     all.push(...response.items);
     const next = nextPageUrl(response.link);
     if (!next) break;
+    if (page === maximum) {
+      throw new Error(`GitHub pagination exceeded the ${maximum}-page safety limit`);
+    }
     const resolved = new URL(next, current);
     if (resolved.origin !== initial.origin) {
       throw new Error('GitHub pagination next link changed origin');

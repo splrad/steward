@@ -188,13 +188,12 @@ describe('blocking comment state', () => {
 });
 
 describe('GitHub pagination', () => {
-  it('reads at most the established 30 pages of 100 items', async () => {
+  it('fails closed when every page through the established limit is full', async () => {
     const requested: number[] = [];
-    const items = await fetchPullRequestPages((page, pageSize) => {
+    await expect(fetchPullRequestPages((page, pageSize) => {
       requested.push(page);
       return Array.from({ length: pageSize }, (_, index) => `${page}:${index}`);
-    });
-    expect(items).toHaveLength(maxPullRequestPages * pullRequestPageSize);
+    })).rejects.toThrow('reached the 30-page safety limit before a terminal page');
     expect(requested).toEqual(Array.from({ length: maxPullRequestPages }, (_, index) => index + 1));
   });
 
@@ -243,5 +242,9 @@ describe('GitHub pagination', () => {
       items: [],
       link: '<https://api.github.test/items>; rel="next"',
     }))).rejects.toThrow('cycle');
+    await expect(fetchGitHubLinkPages('https://api.github.test/items?page=1', (url) => ({
+      items: [url],
+      link: `<https://api.github.test/items?page=${Number(new URL(url).searchParams.get('page')) + 1}>; rel="next"`,
+    }), { maxPages: 2 })).rejects.toThrow('exceeded the 2-page safety limit');
   });
 });
