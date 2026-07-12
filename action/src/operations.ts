@@ -7,6 +7,7 @@ import {
   encodeBlockingState,
   evaluateCopilotGate,
   evaluateClassification,
+  evaluateDcoAdvisory,
   evaluateMainAuthorization,
   evaluateMatrix,
   fingerprintForPull,
@@ -25,6 +26,8 @@ import {
   workflowRunMatchesTarget,
   type GovernanceFailureModel,
   type BlockingFailure,
+  type DcoEvaluation,
+  type DcoIssue,
   type MatrixCheckRun,
   type MatrixRepairPlan,
   type MatrixWorkflowRun,
@@ -59,6 +62,8 @@ interface PullFacts {
 }
 
 const autoApprovalMarker = '<!-- workflow:auto-approval -->';
+const legacyDcoMarker = '<!-- workflow:dco-signoff-advisory -->';
+const maxDcoIssues = 20;
 
 async function ensureRepositoryLabel(
   context: StewardOperationContext,
@@ -157,6 +162,104 @@ async function classificationOperation(context: StewardOperationContext): Promis
     state: 'passed',
     summary: 'PR classification converged',
     details: { evaluation, fingerprint: fingerprint.value },
+  };
+}
+
+function safeDcoText(value: unknown): string {
+  const sanitized = String(value ?? '')
+    .replace(/\r?\n/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/@/g, '@\u200b')
+    .replace(/`/g, "'")
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .trim();
+  return sanitized.length <= 240 ? sanitized : `${sanitized.slice(0, 239)}…`;
+}
+
+function dcoIssueReason(issue: DcoIssue): string {
+  if (issue.reason === 'missing') {
+    return `缺少 Signed-off-by；建议添加 \`Signed-off-by: ${safeDcoText(issue.authorName) || 'Name'} <${safeDcoText(issue.authorEmail) || 'email@example.com'}>\``;
+  }
+  if (issue.reason === 'invalid-format') return 'Signed-off-by 格式无效；应使用 `Signed-off-by: Name <email>`';
+  const signed = issue.signedEmails.map(safeDcoText).join(', ') || 'none';
+  const truncated = issue.signedEmailsTruncated ? `（另有 ${issue.signedEmailsTruncated} 个未展开）` : '';
+  return `Signed-off-by 邮箱与 commit author email 不一致；author email 为 \`${safeDcoText(issue.authorEmail) || 'unknown'}\`，当前签名邮箱为 \`${signed}\`${truncated}`;
+}
+
+function presentDcoIssue(issue: DcoIssue): DcoIssue {
+  return {
+    ...issue,
+    subject: safeDcoText(issue.subject),
+    authorName: safeDcoText(issue.authorName),
+    authorEmail: safeDcoText(issue.authorEmail),
+    signedEmails: issue.signedEmails.map(safeDcoText),
+  };
+}
+
+function dcoSummary(evaluation: DcoEvaluation): string {
+  const lines = [
+    `DCO Sign-off Advisory：${evaluation.total} commits，${evaluation.passed} passed，${evaluation.skipped} skipped bots，${evaluation.issues.length} advisory issues。`,
+  ];
+  for (const issue of evaluation.issues.slice(0, maxDcoIssues)) {
+    lines.push(`- \`${issue.sha.slice(0, 7)}\` ${safeDcoText(issue.subject) || '(empty commit message)'}: ${dcoIssueReason(issue)}`);
+  }
+  if (evaluation.issues.length > maxDcoIssues) {
+    lines.push(`- 另有 ${evaluation.issues.length - maxDcoIssues} 项未展开；请查看 operation-result。`);
+  }
+  return lines.join('\n');
+}
+
+async function dcoAdvisoryOperation(context: StewardOperationContext): Promise<StewardOperationResult> {
+  if (!context.manifest.manifest.features.dcoAdvisory) {
+    return { operation: 'dco-advisory', state: 'ignored', summary: 'DCO Advisory feature is disabled' };
+  }
+  const [commits, comments] = await Promise.all([
+    context.client.listPullRequestCommits(context.owner, context.repository, context.pull.number),
+    context.client.listIssueComments(context.owner, context.repository, context.pull.number),
+  ]);
+  if (!commits.length) throw new Error('GitHub returned no commits for an open pull request');
+  const evaluation = evaluateDcoAdvisory(commits.map((commit) => {
+    const sha = String(commit.sha ?? '').toLowerCase();
+    const message = commit.commit?.message;
+    if (!/^[a-f0-9]{40}$/.test(sha) || typeof message !== 'string') {
+      throw new Error('GitHub returned a pull request commit without a valid SHA or message');
+    }
+    return {
+      sha,
+      message,
+      author: {
+        login: commit.author?.login,
+        type: commit.author?.type,
+        name: commit.commit?.author?.name,
+        email: commit.commit?.author?.email,
+      },
+      committer: {
+        login: commit.committer?.login,
+        type: commit.committer?.type,
+        name: commit.commit?.committer?.name,
+        email: commit.commit?.committer?.email,
+      },
+    };
+  }), { botLogins: botLogins(context) });
+
+  const appSlug = context.manifest.manifest.automation.githubApp.slug.toLowerCase();
+  const legacy = comments.filter((comment) => (
+    normalizeAppLogin(comment.user?.login) === appSlug
+    && String(comment.body ?? '').includes(legacyDcoMarker)
+  ));
+  for (const comment of legacy) {
+    await context.client.deleteIssueComment(context.owner, context.repository, comment.id);
+  }
+  return {
+    operation: 'dco-advisory',
+    state: 'passed',
+    summary: dcoSummary(evaluation),
+    details: {
+      evaluation: { ...evaluation, issues: evaluation.issues.slice(0, maxDcoIssues).map(presentDcoIssue) },
+      issuesTruncated: Math.max(0, evaluation.issues.length - maxDcoIssues),
+      legacyCommentsDeleted: legacy.length,
+    },
   };
 }
 
@@ -790,6 +893,7 @@ export async function executeOperation(
   inputs: StewardActionInputs,
 ): Promise<StewardOperationResult> {
   if (operation === 'classification') return await classificationOperation(context);
+  if (operation === 'dco-advisory') return await dcoAdvisoryOperation(context);
   if (operation === 'governance-preflight') {
     return {
       operation,

@@ -35,6 +35,7 @@ export interface GitHubCommit {
   commit?: {
     author?: { name?: string; email?: string } | null;
     committer?: { name?: string; email?: string } | null;
+    message?: string;
   };
 }
 
