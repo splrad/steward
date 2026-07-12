@@ -10,6 +10,8 @@ export interface GitHubRepositoryMetadata extends RepositoryMetadata {
 export interface GitHubPullRequest {
   number: number;
   state: string;
+  merged?: boolean;
+  merge_commit_sha?: string | null;
   title?: string;
   body?: string | null;
   user?: { login?: string; type?: string } | null;

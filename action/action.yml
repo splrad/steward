@@ -57,6 +57,16 @@ outputs:
     description: Validated Release assets manifest JSON produced by release-adapter.
   release-output-directory:
     description: Absolute directory containing validated Release assets.
+  release-needed:
+    description: Whether the trusted merged pull request matches Release trigger paths.
+  release-trigger:
+    description: Validated Release trigger decision JSON produced by release-preflight.
+  release-context:
+    description: Validated Release adapter context JSON produced by release-preflight.
+  release-runner:
+    description: Trusted default-branch Manifest runner produced by release-preflight.
+  release-adapter-command:
+    description: Trusted default-branch Manifest adapter command JSON produced by release-preflight.
 runs:
   using: node24
   main: dist/index.js

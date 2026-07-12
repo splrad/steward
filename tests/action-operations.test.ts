@@ -33,6 +33,7 @@ import {
 } from '../action/src/context.js';
 import { executeOperation } from '../action/src/operations.js';
 import { enabledMatrixConfiguration, stewardMatrixConfiguration } from '../action/src/catalog.js';
+import { createReleasePreflight } from '../action/src/release-preflight.js';
 
 function manifest(features: Partial<StewardManifest['features']> = {}): LoadedManifest {
   return {
@@ -139,6 +140,7 @@ describe('Action operation contract', () => {
     expect(parseOperation('governance-main')).toBe('governance-main');
     expect(parseOperation('governance-preflight')).toBe('governance-preflight');
     expect(parseOperation('classification')).toBe('classification');
+    expect(parseOperation('release-preflight')).toBe('release-preflight');
     expect(() => parseOperation('release')).toThrow('Unsupported Steward operation');
     expect(Object.entries(operationDefinitions).filter(([, definition]) => definition.mutationToken).map(([name]) => name))
       .toEqual(['governance-request-copilot', 'governance-auto-approve']);
@@ -334,6 +336,80 @@ describe('Action operation contract', () => {
     for (const forbidden of ['trusted-developers:', 'labels:', 'workflow-file:', 'check-name:']) {
       expect(metadata).not.toContain(forbidden);
     }
+  });
+
+  it('builds Release adapter context only from a live merged default-branch PR and trusted close event', async () => {
+    const releaseManifest = manifest({ release: true }).manifest;
+    releaseManifest.release = {
+      triggerPaths: ['release/version.txt'],
+      runner: 'ubuntu-latest',
+      adapterCommand: ['node', '.github/steward/release.mjs'],
+    };
+    const encodedManifest = Buffer.from(JSON.stringify(releaseManifest)).toString('base64');
+    let changedFile = 'release/version.txt';
+    let liveMergeSha = 'e'.repeat(40);
+    let liveMerged = true;
+    let liveBaseRef = 'main';
+    const fetchMock = vi.fn(async (request: string | URL | Request) => {
+      const path = new URL(String(request)).pathname;
+      if (path === '/repos/splrad/steward') {
+        return new Response(JSON.stringify({ id: 1296724484, full_name: 'splrad/steward', default_branch: 'main' }));
+      }
+      if (path === '/repos/splrad/steward/contents/.github/steward.json') {
+        return new Response(JSON.stringify({ type: 'file', encoding: 'base64', content: encodedManifest, sha: 'blob' }));
+      }
+      if (path === '/repos/splrad/steward/pulls/7') {
+        return new Response(JSON.stringify({
+          number: 7,
+          state: 'closed',
+          merged: liveMerged,
+          merge_commit_sha: liveMergeSha,
+          base: { ref: liveBaseRef, sha: 'b'.repeat(40) },
+          head: { sha: 'c'.repeat(40) },
+        }));
+      }
+      if (path === '/repos/splrad/steward/pulls/7/files') {
+        return new Response(JSON.stringify([{ filename: changedFile }]));
+      }
+      return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 });
+    });
+    const preflight = () => createReleasePreflight({
+      inputs: {
+        operation: 'release-preflight',
+        token: 'platform-token',
+        eventPath: 'tests/fixtures/action-release-event.json',
+      },
+      environment: { GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: 'pull_request' },
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(preflight()).resolves.toMatchObject({
+      state: 'passed',
+      runner: 'ubuntu-latest',
+      adapterCommand: ['node', '.github/steward/release.mjs'],
+      context: {
+        repository: { id: 1296724484, fullName: 'splrad/steward' },
+        pullRequest: { number: 7, mergeSha: 'e'.repeat(40) },
+      },
+      decision: { state: 'planned', matchedPaths: ['release/version.txt'] },
+    });
+
+    changedFile = 'docs/readme.md';
+    await expect(preflight()).resolves.toMatchObject({
+      state: 'ignored',
+      decision: { reason: 'trigger-path-not-matched' },
+    });
+
+    liveMergeSha = 'f'.repeat(40);
+    await expect(preflight()).rejects.toThrow('does not match trusted event');
+    liveMergeSha = 'e'.repeat(40);
+
+    liveBaseRef = 'develop';
+    await expect(preflight()).rejects.toThrow('does not target the current default branch');
+    liveBaseRef = 'main';
+
+    liveMerged = false;
+    await expect(preflight()).rejects.toThrow('requires a merged pull request');
   });
 
   it('loads feature switches without mutation and confines human review writes to the mutation client', async () => {
