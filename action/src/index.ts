@@ -17,6 +17,8 @@ try {
     releaseWorkspace: core.getInput('release-workspace'),
     releaseAdapterPhase: core.getInput('release-adapter-phase'),
     releasePlan: core.getInput('release-plan'),
+    releaseAssets: core.getInput('release-assets'),
+    releaseOutputDirectory: core.getInput('release-output-directory'),
   });
 } catch (error) {
   core.setFailed(error instanceof Error ? error.message : String(error));

@@ -46,6 +46,12 @@ inputs:
   release-plan:
     description: Validated Release plan JSON. Used by Steward-owned publication operations.
     required: false
+  release-assets:
+    description: Validated Release assets manifest JSON produced by the build phase.
+    required: false
+  release-output-directory:
+    description: Isolated directory containing validated Release assets.
+    required: false
 outputs:
   steward-version:
     description: Version of the bundled Steward Action.
@@ -77,6 +83,8 @@ outputs:
     description: Whether no existing tag or Release blocks the build phase.
   release-publication:
     description: Validated tag and Release publication decision JSON.
+  release-url:
+    description: Published or already-existing Release URL.
 runs:
   using: node24
   main: dist/index.js
