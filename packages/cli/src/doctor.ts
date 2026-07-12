@@ -79,16 +79,30 @@ function finding(code: string, level: DoctorLevel, summary: string, remedy?: str
   return { code, level, summary, ...(remedy ? { remedy } : {}) };
 }
 
-function requiredWorkflowFiles(manifest: StewardManifest): Array<{ path: string; called: string }> {
-  const files: Array<{ path: string; called: string }> = [];
+interface RequiredWorkflowFile {
+  path: string;
+  called: string;
+  missingRemedy?: string;
+}
+
+function requiredWorkflowFiles(manifest: StewardManifest): RequiredWorkflowFile[] {
+  const files: RequiredWorkflowFile[] = [];
   if (manifest.features.prAutomation) {
-    files.push({ path: '.github/workflows/pr-automation.yml', called: 'pr-automation.yml' });
+    files.push({
+      path: '.github/workflows/pr-automation.yml',
+      called: 'pr-automation.yml',
+      missingRemedy: '先升级到包含 PR Automation 运行面和 thin caller template 的 Steward 版本，再生成该 caller。',
+    });
   }
   if (manifest.features.classification) {
     files.push({ path: '.github/workflows/pr-classification.yml', called: 'pr-classification.yml' });
   }
   if (manifest.features.dcoAdvisory) {
-    files.push({ path: '.github/workflows/dco-advisory.yml', called: 'dco-advisory.yml' });
+    files.push({
+      path: '.github/workflows/dco-advisory.yml',
+      called: 'dco-advisory.yml',
+      missingRemedy: '先升级到包含 DCO Advisory 运行面和 thin caller template 的 Steward 版本，再生成该 caller。',
+    });
   }
   if (manifest.features.governance || manifest.features.copilotReview) {
     files.push({ path: '.github/workflows/pr-governance.yml', called: 'pr-governance.yml' });
@@ -250,7 +264,12 @@ export async function runDoctor(transport: GitHubTransport, options: DoctorOptio
       query: { ref: defaultBranch },
     });
     if (!payload) {
-      findings.push(finding(`workflow.${workflow.called}`, 'fail', `缺少薄 workflow ${workflow.path}。`, '从相同 Steward SHA 生成该 caller。'));
+      findings.push(finding(
+        `workflow.${workflow.called}`,
+        'fail',
+        `缺少薄 workflow ${workflow.path}。`,
+        workflow.missingRemedy ?? '从相同 Steward SHA 生成该 caller。',
+      ));
       continue;
     }
     const callerPin = workflowPin(decodeFile(payload), workflow.called);

@@ -121,6 +121,18 @@ describe('doctor CLI contract', () => {
       '/repos/splrad/example/contents/.github/steward.json': {
         type: 'file', encoding: 'base64', content: Buffer.from(JSON.stringify(configured)).toString('base64'), sha: 'blob',
       },
+      '/repos/splrad/example/contents/.github/workflows/pr-automation.yml': new GitHubApiError({
+        status: 404,
+        method: 'GET',
+        path: '/repos/splrad/example/contents/.github/workflows/pr-automation.yml',
+        message: 'Not Found',
+      }),
+      '/repos/splrad/example/contents/.github/workflows/dco-advisory.yml': new GitHubApiError({
+        status: 404,
+        method: 'GET',
+        path: '/repos/splrad/example/contents/.github/workflows/dco-advisory.yml',
+        message: 'Not Found',
+      }),
     });
     const report = await runDoctor(setup.transport, { owner: 'splrad', repository: 'example', pullRequest: 3 });
     expect(report.ok).toBe(false);
@@ -131,6 +143,10 @@ describe('doctor CLI contract', () => {
       '/repos/splrad/example/contents/.github/workflows/pr-automation.yml',
       '/repos/splrad/example/contents/.github/workflows/dco-advisory.yml',
     ]));
+    expect(report.findings.find((item) => item.code === 'workflow.pr-automation.yml')?.remedy)
+      .toContain('包含 PR Automation 运行面和 thin caller template');
+    expect(report.findings.find((item) => item.code === 'workflow.dco-advisory.yml')?.remedy)
+      .toContain('包含 DCO Advisory 运行面和 thin caller template');
   });
 
   it('lets an explicit default-branch exclusion override a ruleset include', async () => {
