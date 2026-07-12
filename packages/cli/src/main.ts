@@ -3,6 +3,7 @@ import { createGitHubRestTransport } from '../../github/src/index.js';
 import { runAppInstallationPreflight, type AppInstallationReport } from './app-installation.js';
 import { runDoctor, type DoctorReport } from './doctor.js';
 import { createInitPlan, parseInitSpec, type InitPlan } from './init.js';
+import { redactSensitiveText } from './secret-input.js';
 
 interface DoctorArguments {
   command: 'doctor';
@@ -160,7 +161,7 @@ export async function main(
     process.stdout.write(`${args.json ? JSON.stringify(report, null, 2) : render(report)}\n`);
     return report.ok ? 0 : 1;
   } catch (error) {
-    process.stderr.write(`steward: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(`steward: ${redactSensitiveText(error instanceof Error ? error.message : String(error))}\n`);
     return 2;
   }
 }

@@ -13,6 +13,7 @@ import {
   type StewardManifest,
 } from '../../manifest/src/index.js';
 import { inspectAppInstallation } from './app-installation.js';
+import { requiredSecretNames } from './secret-input.js';
 
 export type DoctorLevel = 'pass' | 'warning' | 'fail';
 
@@ -95,16 +96,6 @@ function requiredWorkflowFiles(manifest: StewardManifest): Array<{ path: string;
   }
   if (manifest.features.release) files.push({ path: '.github/workflows/release.yml', called: 'release.yml' });
   return files;
-}
-
-function requiredSecretNames(manifest: StewardManifest): string[] {
-  const names = new Set<string>();
-  if (requiredWorkflowFiles(manifest).some((file) => file.called !== 'pr-review-signal.yml')) {
-    names.add('WORKFLOW_AUTOMATION_APP_PRIVATE_KEY');
-  }
-  if (manifest.features.copilotReview) names.add('COPILOT_REVIEW_REQUEST_TOKEN');
-  if (manifest.features.governance) names.add('CORE_AUTO_APPROVAL_TOKEN');
-  return [...names].sort();
 }
 
 function schemaPin(manifest: StewardManifest): string {
