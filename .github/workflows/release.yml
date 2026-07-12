@@ -55,7 +55,7 @@ jobs:
       - name: Validate merged Release candidate
         id: steward
         continue-on-error: true
-        uses: splrad/steward/action@7ecd713690942cd1104deb219e8e4cd2e3f9cff8
+        uses: splrad/steward/action@86a638f4bb7d7574be15d9ad0d85d1362d12dd4f
         with:
           operation: release-preflight
           github-token: ${{ steps.platform_token.outputs.token }}
@@ -63,7 +63,7 @@ jobs:
 
       - name: Finalize Release preflight failure
         if: ${{ steps.steward.outcome == 'failure' }}
-        uses: splrad/steward/action@7ecd713690942cd1104deb219e8e4cd2e3f9cff8
+        uses: splrad/steward/action@86a638f4bb7d7574be15d9ad0d85d1362d12dd4f
         with:
           operation: release-finalize
           github-token: ${{ steps.platform_token.outputs.token }}
@@ -99,7 +99,7 @@ jobs:
 
       - name: Plan Release
         id: plan
-        uses: splrad/steward/action@7ecd713690942cd1104deb219e8e4cd2e3f9cff8
+        uses: splrad/steward/action@86a638f4bb7d7574be15d9ad0d85d1362d12dd4f
         with:
           operation: release-adapter
           release-adapter-phase: plan
@@ -108,7 +108,7 @@ jobs:
 
       - name: Check existing publication state
         id: status
-        uses: splrad/steward/action@7ecd713690942cd1104deb219e8e4cd2e3f9cff8
+        uses: splrad/steward/action@86a638f4bb7d7574be15d9ad0d85d1362d12dd4f
         with:
           operation: release-status
           github-token: ${{ steps.platform_token.outputs.token }}
@@ -118,7 +118,7 @@ jobs:
       - name: Build Release assets
         id: build
         if: ${{ steps.status.outputs['release-build-needed'] == 'true' }}
-        uses: splrad/steward/action@7ecd713690942cd1104deb219e8e4cd2e3f9cff8
+        uses: splrad/steward/action@86a638f4bb7d7574be15d9ad0d85d1362d12dd4f
         with:
           operation: release-adapter
           release-adapter-phase: build
@@ -128,7 +128,7 @@ jobs:
       - name: Publish Release
         id: publish
         if: ${{ steps.status.outputs['release-build-needed'] == 'true' }}
-        uses: splrad/steward/action@7ecd713690942cd1104deb219e8e4cd2e3f9cff8
+        uses: splrad/steward/action@86a638f4bb7d7574be15d9ad0d85d1362d12dd4f
         with:
           operation: release-publish
           github-token: ${{ steps.platform_token.outputs.token }}
@@ -145,7 +145,7 @@ jobs:
             steps.status.outcome == 'failure' ||
             steps.build.outcome == 'failure'
           ) }}
-        uses: splrad/steward/action@7ecd713690942cd1104deb219e8e4cd2e3f9cff8
+        uses: splrad/steward/action@86a638f4bb7d7574be15d9ad0d85d1362d12dd4f
         with:
           operation: release-finalize
           github-token: ${{ steps.platform_token.outputs.token }}
