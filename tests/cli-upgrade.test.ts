@@ -354,6 +354,17 @@ describe('upgrade command', () => {
     expect(branch.mutations()).toEqual([]);
   });
 
+  it('refuses to silently skip enabled features without managed templates', async () => {
+    for (const feature of ['prAutomation', 'dcoAdvisory'] as const) {
+      const state = await UpgradeState.create();
+      const configured = JSON.parse(state.defaultFiles.get('.github/steward.json')!) as StewardManifest;
+      configured.features[feature] = true;
+      state.defaultFiles.set('.github/steward.json', `${JSON.stringify(configured, null, 2)}\n`);
+      await expect(readyPlan(state)).rejects.toThrow(`unsupported enabled features: ${feature}`);
+      expect(state.mutations()).toEqual([]);
+    }
+  });
+
   it('validates the migrated manifest against the complete target schema', async () => {
     const state = await UpgradeState.create();
     const schema = JSON.parse(schemaContent) as {

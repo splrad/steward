@@ -81,8 +81,14 @@ function finding(code: string, level: DoctorLevel, summary: string, remedy?: str
 
 function requiredWorkflowFiles(manifest: StewardManifest): Array<{ path: string; called: string }> {
   const files: Array<{ path: string; called: string }> = [];
+  if (manifest.features.prAutomation) {
+    files.push({ path: '.github/workflows/pr-automation.yml', called: 'pr-automation.yml' });
+  }
   if (manifest.features.classification) {
     files.push({ path: '.github/workflows/pr-classification.yml', called: 'pr-classification.yml' });
+  }
+  if (manifest.features.dcoAdvisory) {
+    files.push({ path: '.github/workflows/dco-advisory.yml', called: 'dco-advisory.yml' });
   }
   if (manifest.features.governance || manifest.features.copilotReview) {
     files.push({ path: '.github/workflows/pr-governance.yml', called: 'pr-governance.yml' });
@@ -185,6 +191,23 @@ export async function runDoctor(transport: GitHubTransport, options: DoctorOptio
     return report(fullName, findings);
   }
 
+  if (loaded.manifest.features.prAutomation) {
+    findings.push(finding(
+      'feature.pr-automation',
+      'fail',
+      '当前 Steward 版本尚未实现共享 PR Automation 运行面。',
+      '在迁移前升级到包含 PR Automation Action、reusable workflow 与 thin caller 的 Steward 版本。',
+    ));
+  }
+  if (loaded.manifest.features.dcoAdvisory) {
+    findings.push(finding(
+      'feature.dco-advisory',
+      'fail',
+      '当前 Steward 版本尚未实现共享 DCO Advisory 运行面。',
+      '在迁移前升级到包含 DCO evaluator、Action、reusable workflow 与 thin caller 的 Steward 版本。',
+    ));
+  }
+
   const pin = schemaPin(loaded.manifest);
   findings.push(pin
     ? finding('manifest.schema-pin', 'pass', `Schema 固定到完整 Steward SHA ${pin.slice(0, 12)}…。`)
@@ -240,9 +263,9 @@ export async function runDoctor(transport: GitHubTransport, options: DoctorOptio
   if (governancePins.length > 1) {
     const uniquePins = new Set(governancePins);
     findings.push(uniquePins.size === 1
-      ? finding('workflow.governance-pins', 'pass', 'Classification、Governance、Review Signal 与 Matrix caller 使用同一治理版本面。')
-      : finding('workflow.governance-pins', 'fail', 'PR 治理 caller 固定到了不同 Steward SHA。',
-        '将四条相互协作的 PR 治理 caller 一次性升级到同一已验证 SHA；Release 可独立版本化。'));
+      ? finding('workflow.governance-pins', 'pass', '全部已启用 PR caller 使用同一治理版本面。')
+      : finding('workflow.governance-pins', 'fail', '已启用 PR caller 固定到了不同 Steward SHA。',
+        '将相互协作的 PR caller 一次性升级到同一已验证 SHA；Release 可独立版本化。'));
   }
 
   let appId = 0;
