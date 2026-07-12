@@ -25,6 +25,8 @@ describe('Action metadata', () => {
       'release-adapter-command',
       'release-context',
       'release-workspace',
+      'release-adapter-phase',
+      'release-plan',
     ].sort());
     expect(Object.keys(metadata.outputs ?? {}).sort()).toEqual([
       'steward-version',
@@ -40,6 +42,8 @@ describe('Action metadata', () => {
       'release-context',
       'release-runner',
       'release-adapter-command',
+      'release-build-needed',
+      'release-publication',
     ].sort());
   });
 });

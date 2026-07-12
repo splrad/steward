@@ -55,6 +55,18 @@ export interface GitHubPullRequestFile {
   deletions?: number;
 }
 
+export interface GitHubRelease {
+  id: number;
+  tag_name?: string;
+  draft?: boolean;
+  html_url?: string;
+}
+
+export interface GitHubGitRef {
+  ref?: string;
+  object?: { type?: string; sha?: string };
+}
+
 export interface GitHubCheckRun {
   id: number;
   name: string;
@@ -232,6 +244,18 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
     });
   }
 
+  async getCommit(owner: string, repository: string, ref: string): Promise<GitHubCommit> {
+    return await this.transport.request<GitHubCommit>({
+      path: `${repositoryPath(owner, repository)}/commits/${segment(ref)}`,
+    });
+  }
+
+  async getTagRef(owner: string, repository: string, tag: string): Promise<GitHubGitRef> {
+    return await this.transport.request<GitHubGitRef>({
+      path: `${repositoryPath(owner, repository)}/git/ref/tags/${segment(tag)}`,
+    });
+  }
+
   async getRepositoryLabel(owner: string, repository: string, name: string): Promise<GitHubRepositoryLabel> {
     const label = name.trim();
     if (!label) throw new Error('Repository label name is required');
@@ -257,6 +281,13 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
   async listPullRequestFiles(owner: string, repository: string, number: number): Promise<GitHubPullRequestFile[]> {
     return await fetchPullRequestPages((page, perPage) => this.transport.request<GitHubPullRequestFile[]>({
       path: `${repositoryPath(owner, repository)}/pulls/${segment(number)}/files`,
+      query: { page, per_page: perPage },
+    }));
+  }
+
+  async listReleases(owner: string, repository: string): Promise<GitHubRelease[]> {
+    return await fetchPullRequestPages((page, perPage) => this.transport.request<GitHubRelease[]>({
+      path: `${repositoryPath(owner, repository)}/releases`,
       query: { page, per_page: perPage },
     }));
   }

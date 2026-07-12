@@ -141,6 +141,7 @@ describe('Action operation contract', () => {
     expect(parseOperation('governance-preflight')).toBe('governance-preflight');
     expect(parseOperation('classification')).toBe('classification');
     expect(parseOperation('release-preflight')).toBe('release-preflight');
+    expect(parseOperation('release-status')).toBe('release-status');
     expect(() => parseOperation('release')).toThrow('Unsupported Steward operation');
     expect(Object.entries(operationDefinitions).filter(([, definition]) => definition.mutationToken).map(([name]) => name))
       .toEqual(['governance-request-copilot', 'governance-auto-approve']);
@@ -329,7 +330,10 @@ describe('Action operation contract', () => {
 
   it('exposes runtime inputs without consumer policy fields', async () => {
     const metadata = await readFile('action/action.yml', 'utf8');
-    for (const input of ['github-token:', 'mutation-token:', 'event-path:', 'pr-number:', 'head-sha:', 'matrix-mode:', 'matrix-scope:']) {
+    for (const input of [
+      'github-token:', 'mutation-token:', 'event-path:', 'pr-number:', 'head-sha:', 'matrix-mode:', 'matrix-scope:',
+      'release-adapter-phase:', 'release-plan:',
+    ]) {
       expect(metadata).toContain(input);
     }
     for (const output of ['governance-enabled:', 'copilot-review-enabled:']) expect(metadata).toContain(output);

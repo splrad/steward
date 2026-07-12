@@ -3,8 +3,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-  executeReleaseAdapter,
+  executeReleaseBuild,
+  executeReleasePlan,
   parseReleaseAdapterCommand,
+  parseReleaseAdapterPhase,
 } from '../action/src/release-adapter.js';
 
 const temporaryRoots: string[] = [];
@@ -31,15 +33,17 @@ afterEach(async () => {
 });
 
 describe('Release adapter execution', () => {
-  it('runs plan and build without a shell and validates the produced inventory', async () => {
+  it('runs plan and build as separate shell-free phases and validates the produced inventory', async () => {
     const paths = await directories();
-    const result = await executeReleaseAdapter({
+    const inputs = {
       adapterCommand: JSON.stringify([process.execPath, adapter, 'success']),
       context,
       ...paths,
-    });
+    };
+    const plan = await executeReleasePlan(inputs);
+    const result = await executeReleaseBuild(inputs);
 
-    expect(result.plan).toMatchObject({ tagName: 'v1.2.3', displayVersion: '1.2.3' });
+    expect(plan).toMatchObject({ tagName: 'v1.2.3', displayVersion: '1.2.3' });
     expect(result.assets.assets).toEqual([expect.objectContaining({
       path: 'nested/fixture.zip',
       name: 'fixture.zip',
@@ -49,7 +53,7 @@ describe('Release adapter execution', () => {
 
   it('rejects a manifest path that escapes the isolated output directory', async () => {
     const paths = await directories();
-    await expect(executeReleaseAdapter({
+    await expect(executeReleaseBuild({
       adapterCommand: JSON.stringify([process.execPath, adapter, 'unsafe-path']),
       context,
       ...paths,
@@ -61,6 +65,8 @@ describe('Release adapter execution', () => {
       .toThrow('single-line string');
     expect(() => parseReleaseAdapterCommand(JSON.stringify('node script.mjs')))
       .toThrow('JSON string array');
+    expect(parseReleaseAdapterPhase('plan')).toBe('plan');
+    expect(parseReleaseAdapterPhase('build')).toBe('build');
+    expect(() => parseReleaseAdapterPhase('all')).toThrow('plan or build');
   });
 });
-

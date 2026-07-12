@@ -6,7 +6,7 @@ inputs:
     description: Steward operation to execute.
     required: true
   github-token:
-    description: Platform token used to validate repository context and read the default-branch Manifest. Required for every operation except version.
+    description: Platform token used by GitHub-backed operations. Not used by version or the filesystem-only release-adapter.
     required: false
   mutation-token:
     description: Separate human token required only by governance-request-copilot and governance-auto-approve.
@@ -35,10 +35,16 @@ inputs:
     description: Trusted default-branch Manifest adapterCommand encoded as a JSON string array. Used only by release-adapter.
     required: false
   release-context:
-    description: Steward-generated Release adapter context JSON. Used only by release-adapter.
+    description: Steward-generated Release adapter context JSON. Used by Release operations after preflight.
     required: false
   release-workspace:
     description: Checked-out consumer repository root. Defaults to GITHUB_WORKSPACE. Used only by release-adapter.
+    required: false
+  release-adapter-phase:
+    description: "Release adapter phase: plan or build. Required by release-adapter."
+    required: false
+  release-plan:
+    description: Validated Release plan JSON. Used by Steward-owned publication operations.
     required: false
 outputs:
   steward-version:
@@ -67,6 +73,10 @@ outputs:
     description: Trusted default-branch Manifest runner produced by release-preflight.
   release-adapter-command:
     description: Trusted default-branch Manifest adapter command JSON produced by release-preflight.
+  release-build-needed:
+    description: Whether no existing tag or Release blocks the build phase.
+  release-publication:
+    description: Validated tag and Release publication decision JSON.
 runs:
   using: node24
   main: dist/index.js

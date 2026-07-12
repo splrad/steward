@@ -4,6 +4,7 @@ import {
   RELEASE_ADAPTER_CONTRACT_VERSION,
   ReleaseContractError,
   evaluateReleaseTrigger,
+  evaluateReleasePublication,
   parseReleaseAdapterContext,
   parseReleaseAssetsManifest,
   parseReleasePlan,
@@ -71,6 +72,36 @@ describe('Release adapter contract', () => {
     }
     expect(() => parseReleasePlan({ ...(plan as object), releaseTitle: ' ' })).toThrow('non-empty string');
     expect(() => parseReleasePlan({ ...(plan as object), extra: true })).toThrow('unknown properties');
+  });
+
+  it('builds only when no tag/Release pair exists and skips an identical published Release', () => {
+    const mergeSha = 'a'.repeat(40);
+    expect(evaluateReleasePublication({ mergeSha, tagName: 'v1.2.3' }))
+      .toEqual({ state: 'planned', reason: 'release-available' });
+    expect(evaluateReleasePublication({
+      mergeSha,
+      tagName: 'v1.2.3',
+      tagCommitSha: mergeSha,
+      release: { id: 7, tagName: 'v1.2.3', draft: false },
+    })).toEqual({ state: 'ignored', reason: 'already-published' });
+  });
+
+  it('fails closed for incomplete, draft, mismatched, or conflicting publication state', () => {
+    const mergeSha = 'a'.repeat(40);
+    const release = { id: 7, tagName: 'v1.2.3', draft: false };
+    expect(() => evaluateReleasePublication({ mergeSha, tagName: 'v1.2.3', tagCommitSha: mergeSha }))
+      .toThrow('incomplete existing tag/Release pair');
+    expect(() => evaluateReleasePublication({ mergeSha, tagName: 'v1.2.3', release }))
+      .toThrow('incomplete existing tag/Release pair');
+    expect(() => evaluateReleasePublication({
+      mergeSha, tagName: 'v1.2.3', tagCommitSha: mergeSha, release: { ...release, draft: true },
+    })).toThrow('must be false');
+    expect(() => evaluateReleasePublication({
+      mergeSha, tagName: 'v1.2.3', tagCommitSha: 'b'.repeat(40), release,
+    })).toThrow('does not target');
+    expect(() => evaluateReleasePublication({
+      mergeSha, tagName: 'v1.2.3', tagCommitSha: mergeSha, release: { ...release, tagName: 'v2.0.0' },
+    })).toThrow('does not match');
   });
 
   it('accepts existing non-empty files and verifies declared size and checksum', async () => {

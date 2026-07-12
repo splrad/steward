@@ -7,7 +7,6 @@ import {
   parseReleaseAdapterContext,
   parseReleaseAssetsManifest,
   parseReleasePlan,
-  type ReleaseAdapterContext,
   type ReleaseAssetsManifest,
   type ReleaseOutputFile,
   type ReleasePlan,
@@ -20,11 +19,12 @@ export interface ReleaseAdapterExecutionInputs {
   temporaryDirectory: string;
 }
 
-export interface ReleaseAdapterExecutionResult {
-  plan: ReleasePlan;
+export interface ReleaseAdapterBuildResult {
   assets: ReleaseAssetsManifest;
   outputDirectory: string;
 }
+
+export type ReleaseAdapterPhase = 'plan' | 'build';
 
 function parseJson(value: string, name: string): unknown {
   try {
@@ -46,6 +46,12 @@ export function parseReleaseAdapterCommand(value: string): string[] {
     }
     return part;
   });
+}
+
+export function parseReleaseAdapterPhase(value: string | undefined): ReleaseAdapterPhase {
+  const phase = value?.trim();
+  if (phase === 'plan' || phase === 'build') return phase;
+  throw new Error('release-adapter-phase must be plan or build');
 }
 
 async function runCommand(command: readonly string[], args: readonly string[], cwd: string): Promise<void> {
@@ -103,9 +109,9 @@ async function readJsonFile(file: string, name: string): Promise<unknown> {
   }
 }
 
-export async function executeReleaseAdapter(
+async function executionContext(
   inputs: ReleaseAdapterExecutionInputs,
-): Promise<ReleaseAdapterExecutionResult> {
+): Promise<{ command: string[]; workspace: string; executionRoot: string }> {
   const command = parseReleaseAdapterCommand(inputs.adapterCommand);
   const context = parseReleaseAdapterContext(parseJson(inputs.context, 'release-context'));
   const workspace = await realpath(inputs.workspace);
@@ -117,15 +123,26 @@ export async function executeReleaseAdapter(
 
   const executionRoot = await mkdtemp(path.join(temporaryDirectory, 'steward-release-'));
   const contextPath = path.join(executionRoot, 'context.json');
+  await writeFile(contextPath, `${JSON.stringify(context, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+  return { command, workspace, executionRoot };
+}
+
+export async function executeReleasePlan(inputs: ReleaseAdapterExecutionInputs): Promise<ReleasePlan> {
+  const { command, workspace, executionRoot } = await executionContext(inputs);
+  const contextPath = path.join(executionRoot, 'context.json');
   const planPath = path.join(executionRoot, 'plan.json');
+  await runCommand(command, ['plan', '--context', contextPath, '--output', planPath], workspace);
+  const plan = parseReleasePlan(await readJsonFile(planPath, 'release plan'));
+  return plan;
+}
+
+export async function executeReleaseBuild(inputs: ReleaseAdapterExecutionInputs): Promise<ReleaseAdapterBuildResult> {
+  const { command, workspace, executionRoot } = await executionContext(inputs);
+  const contextPath = path.join(executionRoot, 'context.json');
   const manifestPath = path.join(executionRoot, 'assets.json');
   const outputDirectory = path.join(executionRoot, 'output');
   await mkdir(outputDirectory);
   const expectedOutputDirectory = await realpath(outputDirectory);
-  await writeFile(contextPath, `${JSON.stringify(context, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
-
-  await runCommand(command, ['plan', '--context', contextPath, '--output', planPath], workspace);
-  const plan = parseReleasePlan(await readJsonFile(planPath, 'release plan'));
   await runCommand(command, [
     'build', '--context', contextPath, '--output-dir', outputDirectory, '--manifest', manifestPath,
   ], workspace);
@@ -137,5 +154,5 @@ export async function executeReleaseAdapter(
     await readJsonFile(manifestPath, 'release assets manifest'),
     await inventory(outputDirectory),
   );
-  return { plan, assets, outputDirectory };
+  return { assets, outputDirectory };
 }

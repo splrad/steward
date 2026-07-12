@@ -182,6 +182,7 @@ describe('GitHub repository adapter', () => {
     expect(await client.listPullRequestCommits('splrad', 'steward', 6)).toHaveLength(101);
     expect(await client.listPullRequestReviews('splrad', 'steward', 6)).toHaveLength(101);
     expect(await client.listPullRequestFiles('splrad', 'steward', 6)).toHaveLength(101);
+    expect(await client.listReleases('splrad', 'steward')).toHaveLength(101);
     expect(await client.listTeamMembers('splrad', 'maintainers')).toHaveLength(101);
     expect(await client.listIssueComments('splrad', 'steward', 6)).toHaveLength(101);
     expect(await client.listCommitCheckRuns('splrad', 'steward', 'a'.repeat(40))).toHaveLength(101);
@@ -189,7 +190,7 @@ describe('GitHub repository adapter', () => {
     const jobs = await client.listWorkflowJobs('splrad', 'steward', 123);
     expect(jobs).toHaveLength(101);
     expect(jobs[0]).toMatchObject({ id: 1 });
-    expect(requests).toHaveLength(16);
+    expect(requests).toHaveLength(18);
     expect(requests.every((request) => request.query?.per_page === 100)).toBe(true);
   });
 
@@ -321,6 +322,30 @@ describe('GitHub repository adapter', () => {
     await expect(client.addIssueLabels('splrad', 'steward', 6, [' '])).rejects.toThrow('one issue label');
     await expect(client.removeIssueLabel('splrad', 'steward', 6, '')).rejects.toThrow('label name');
     expect(requests).toHaveLength(requestCount);
+  });
+
+  it('maps Release tag, commit, and Release-list reads without branch inference', async () => {
+    const { transport, requests } = mockTransport((request) => {
+      if (request.path.includes('/git/ref/tags/')) {
+        return { ref: 'refs/tags/v1.2.3', object: { type: 'commit', sha: 'a'.repeat(40) } };
+      }
+      if (request.path.endsWith('/releases')) return [{ id: 7, tag_name: 'v1.2.3', draft: false }];
+      return { sha: 'a'.repeat(40) };
+    });
+    const client = new GitHubRepositoryClient(transport);
+
+    await expect(client.getTagRef('splrad', 'steward', 'release/v1.2.3'))
+      .resolves.toMatchObject({ ref: 'refs/tags/v1.2.3' });
+    await expect(client.getCommit('splrad', 'steward', 'release/v1.2.3'))
+      .resolves.toMatchObject({ sha: 'a'.repeat(40) });
+    await expect(client.listReleases('splrad', 'steward')).resolves.toEqual([
+      { id: 7, tag_name: 'v1.2.3', draft: false },
+    ]);
+    expect(requests.map((request) => request.path)).toEqual([
+      '/repos/splrad/steward/git/ref/tags/release%2Fv1.2.3',
+      '/repos/splrad/steward/commits/release%2Fv1.2.3',
+      '/repos/splrad/steward/releases',
+    ]);
   });
 
   it('maps one explicit adapter call to one GitHub mutation', async () => {
