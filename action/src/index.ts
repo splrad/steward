@@ -19,6 +19,7 @@ try {
     releasePlan: core.getInput('release-plan'),
     releaseAssets: core.getInput('release-assets'),
     releaseOutputDirectory: core.getInput('release-output-directory'),
+    releaseFailureSummary: core.getInput('release-failure-summary'),
   });
 } catch (error) {
   core.setFailed(error instanceof Error ? error.message : String(error));

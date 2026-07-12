@@ -13,6 +13,7 @@ export const stewardOperations = [
   'release-preflight',
   'release-status',
   'release-publish',
+  'release-finalize',
 ] as const;
 
 export type StewardOperation = typeof stewardOperations[number];
@@ -34,6 +35,7 @@ export interface StewardActionInputs {
   releasePlan?: string;
   releaseAssets?: string;
   releaseOutputDirectory?: string;
+  releaseFailureSummary?: string;
 }
 
 export interface StewardOperationDefinition {
@@ -56,6 +58,7 @@ export const operationDefinitions: Readonly<Record<StewardOperation, StewardOper
   'release-preflight': { token: 'github', mutationToken: false, event: true, actionsWrite: false },
   'release-status': { token: 'github', mutationToken: false, event: false, actionsWrite: false },
   'release-publish': { token: 'github', mutationToken: false, event: false, actionsWrite: false },
+  'release-finalize': { token: 'github', mutationToken: false, event: true, actionsWrite: false },
 };
 
 export function parseOperation(value: string): StewardOperation {
