@@ -1,8 +1,9 @@
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { bundleAction } from './bundle-action.mjs';
 import { bundleCli } from './bundle-cli.mjs';
+import { runProcess } from './process.mjs';
 
 async function files(root, relative = '') {
   const directory = path.join(root, relative);
@@ -35,6 +36,17 @@ try {
         readFile(path.join(output, file)),
       ]);
       if (!left.equals(right)) throw new Error(`${target.name}/${file} is not reproducible`);
+    }
+    if (target.name === 'packages/cli/dist') {
+      const dryRunTarget = path.join(temporaryRoot, 'cli-init-target');
+      await mkdir(dryRunTarget);
+      await runProcess(process.execPath, [
+        path.join(output, 'index.js'),
+        'init', '--dry-run',
+        '--spec', path.resolve('tests/fixtures/cli/init-minimal.json'),
+        '--target', dryRunTarget,
+      ]);
+      if ((await readdir(dryRunTarget)).length !== 0) throw new Error('bundled CLI init --dry-run modified its target');
     }
   }
 } finally {

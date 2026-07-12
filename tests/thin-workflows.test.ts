@@ -1,13 +1,14 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
-const stewardSha = 'b26ed3c59d0fee6afbdd4544eec8b67517e47f3c';
+const stewardSha = '__STEWARD_SHA__';
 const repositoryRoot = new URL('../', import.meta.url);
 const templatePaths = [
   'templates/thin-workflows/pr-classification.yml',
   'templates/thin-workflows/pr-governance.yml',
   'templates/thin-workflows/pr-review-signal.yml',
   'templates/thin-workflows/pr-validation-matrix.yml',
+  'templates/thin-workflows/release.yml',
 ] as const;
 
 async function templates(): Promise<Record<(typeof templatePaths)[number], string>> {
@@ -29,6 +30,14 @@ describe('thin caller workflow templates', () => {
       expect(uses, path).toHaveLength(1);
       expect(uses[0], path).toMatch(new RegExp(`^splrad/steward/\\.github/workflows/[^@]+@${stewardSha}$`));
     }
+  });
+
+  it('keeps Release fork-safe and secret mapping explicit', async () => {
+    const release = (await templates())['templates/thin-workflows/release.yml'];
+    expect(release).toContain('pull_request_target:');
+    expect(release).toContain('types: [closed]');
+    expect(release).toContain("github.event.pull_request.merged == true");
+    expect(release).toContain('app_private_key: ${{ secrets.WORKFLOW_AUTOMATION_APP_PRIVATE_KEY }}');
   });
 
   it('keeps target run-name identity fixed and review signals credential-free', async () => {

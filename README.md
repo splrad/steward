@@ -10,7 +10,19 @@ The project is being extracted from a production-tested, event-driven workflow. 
 
 ## Status
 
-The repository contains a reproducible development foundation, the default-branch Manifest trust boundary, shared policy contracts, an explicit GitHub transport/repository adapter, bundled Governance/Matrix Action operations, and the first called workflows for Governance, Review Signal, and Matrix. Consumer callers and sandbox validation remain required before any production repository consumes them.
+The repository contains the versioned Manifest contract, shared policy and GitHub integration layers, bundled Actions, reusable workflows for classification, governance, review signal, validation matrix, and releases, the multi-repository webhook relay, canonical thin callers, and the first read-only CLI surfaces. These components have been validated in `splrad/steward-sandbox`; production consumer migration remains a separate controlled stage.
+
+## CLI
+
+Build the reproducible CLI bundle before running it locally:
+
+```console
+npm run build:cli
+node packages/cli/dist/index.js doctor --repo OWNER/REPOSITORY
+node packages/cli/dist/index.js init --dry-run --spec steward-init.json --target PATH
+```
+
+`doctor` is read-only and requires `GH_TOKEN` or `GITHUB_TOKEN`. `init --dry-run` is a pure local planner: its strict JSON spec contains one complete Steward commit SHA, a full Manifest, and an optional Node release-adapter declaration. It reads the target only to classify each generated file as `create`, `unchanged`, or `conflict`; it never writes files, calls GitHub, accepts Secret values, or changes a default branch. A conflict makes the command fail closed. Release generation emits an intentionally failing adapter skeleton that must be implemented before applying the plan. The legacy `prAutomation` and DCO advisory surfaces are not generated yet and are rejected when enabled.
 
 ## Repository layout
 

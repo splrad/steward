@@ -1,0 +1,26 @@
+{
+  "stewardSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "manifest": {
+    "schemaVersion": 1,
+    "automation": {
+      "githubApp": {
+        "clientId": "Iv23liuSr0qd4WLJdZhH",
+        "slug": "splrad-steward"
+      },
+      "maintainers": {
+        "source": "organization-team",
+        "teamSlug": "maintainers"
+      },
+      "language": "zh-CN"
+    },
+    "features": {
+      "prAutomation": false,
+      "classification": false,
+      "dcoAdvisory": false,
+      "governance": false,
+      "copilotReview": false,
+      "release": false,
+      "webhookRelay": false
+    }
+  }
+}
