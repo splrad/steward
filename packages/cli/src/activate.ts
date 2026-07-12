@@ -109,9 +109,9 @@ function repositoryPath(owner: string, repository: string): string {
   return `/repos/${segment(owner)}/${segment(repository)}`;
 }
 
-function decodeFile(payload: { type?: string; encoding?: string; content?: string }): string {
+function decodeFile(payload: { type?: string; encoding?: string; content?: string }, label: string): string {
   if (payload.type !== 'file' || payload.encoding !== 'base64' || !payload.content) {
-    throw new Error('GitHub returned an invalid Steward manifest file response');
+    throw new Error(`GitHub returned an invalid ${label} file response`);
   }
   return Buffer.from(payload.content.replaceAll(/\s/g, ''), 'base64').toString('utf8');
 }
@@ -355,7 +355,7 @@ export async function prepareActivate(
   const manifestFile = await transport.request<{ type?: string; encoding?: string; content?: string }>({
     path: `${path}/contents/.github/steward.json`, query: { ref: baseSha },
   });
-  const manifest = parseManifestFile(decodeFile(manifestFile));
+  const manifest = parseManifestFile(decodeFile(manifestFile, 'Steward manifest'));
   const configDigest = manifestDigest(manifest);
   const matrixEnabled = manifest.features.classification || manifest.features.dcoAdvisory
     || manifest.features.governance || manifest.features.copilotReview;
@@ -363,7 +363,7 @@ export async function prepareActivate(
   const callerFile = await transport.request<{ type?: string; encoding?: string; content?: string }>({
     path: `${path}/contents/.github/workflows/${matrixWorkflow}`, query: { ref: baseSha },
   });
-  const caller = decodeFile(callerFile);
+  const caller = decodeFile(callerFile, 'Matrix workflow');
   const callerUses = [...caller.matchAll(
     /^\s*uses:\s*['"]?splrad\/steward\/\.github\/workflows\/pr-validation-matrix\.yml@([a-f0-9]{40})['"]?(?:\s+#.*)?$/gim,
   )];

@@ -26,7 +26,8 @@ validates the current default-branch Manifest, Matrix caller, administrator
 access, App installation, open PR, and current head. If no versioned Matrix
 Check from that App matches the repository, PR, head, and config digest, it
 dispatches one full Matrix run and exits without reading or writing rulesets.
-Run the same command again after the App Check appears. The second invocation
+This successful phase-1 dispatch exits `0`; run the same command again after
+the App Check appears. The second invocation
 either recognizes an already active exact rule or renders a ruleset plan and
 requires confirmation. It replaces only the exact legacy Main/Copilot checks,
 preserves every other required check and rule, and re-reads the full plan before

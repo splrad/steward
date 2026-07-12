@@ -82,6 +82,7 @@ class ActivateState {
   checkAppId = 42;
   checkAppSlug = 'splrad-steward';
   detailsOmitSource = false;
+  validCallerPayload = true;
   manifestValue = manifest();
   rulesets: Array<Record<string, unknown>> = [{
     id: 5,
@@ -138,6 +139,7 @@ class ActivateState {
       };
     }
     if (path === '/repos/splrad/example/contents/.github/workflows/pr-validation-matrix.yml') {
+      if (!this.validCallerPayload) return { type: 'directory' };
       return {
         type: 'file',
         encoding: 'base64',
@@ -426,6 +428,15 @@ describe('activate command', () => {
     await expect(prepareActivate(state.transport, {
       owner: 'splrad', repository: 'example', pullRequest: 3,
     })).rejects.toThrow('PR Matrix feature');
+    expect(state.mutations()).toEqual([]);
+  });
+
+  it('identifies an invalid Matrix workflow response without calling it a Manifest error', async () => {
+    const state = new ActivateState();
+    state.validCallerPayload = false;
+    await expect(prepareActivate(state.transport, {
+      owner: 'splrad', repository: 'example', pullRequest: 3,
+    })).rejects.toThrow('invalid Matrix workflow file response');
     expect(state.mutations()).toEqual([]);
   });
 
