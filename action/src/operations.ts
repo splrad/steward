@@ -285,14 +285,27 @@ function safeCleanupText(value: unknown): string {
   return escaped.length <= 240 ? escaped : `${escaped.slice(0, 239)}…`;
 }
 
+function cleanupIdentity(value: string): string | null {
+  const login = normalizeGitHubLogin(value);
+  return login && login !== 'unknown' ? login : null;
+}
+
 function renderCleanupNotification(
   notification: CleanupNotification,
   handlers: readonly string[],
   configuredBots: readonly string[],
 ): string {
-  const author = formatMentions([notification.author], { botLogins: configuredBots, emptyText: 'unknown' });
-  const mergedBy = formatMentions([notification.mergedBy], { botLogins: configuredBots, emptyText: 'unknown' });
-  const recipients = formatMentions([...handlers, notification.author], {
+  const notificationAuthor = cleanupIdentity(notification.author);
+  const notificationMerger = cleanupIdentity(notification.mergedBy);
+  const author = formatMentions(notificationAuthor ? [notificationAuthor] : [], {
+    botLogins: configuredBots,
+    emptyText: 'unknown',
+  });
+  const mergedBy = formatMentions(notificationMerger ? [notificationMerger] : [], {
+    botLogins: configuredBots,
+    emptyText: 'unknown',
+  });
+  const recipients = formatMentions(notificationAuthor ? [...handlers, notificationAuthor] : handlers, {
     botLogins: configuredBots,
     emptyText: '核心维护者',
   });
