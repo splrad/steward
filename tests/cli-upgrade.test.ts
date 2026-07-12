@@ -207,7 +207,7 @@ describe('upgrade command', () => {
       targetSchemaVersion: 1,
       branchStatus: 'create',
       pullRequestStatus: 'create',
-      counts: { create: 0, update: 6, unchanged: 1 },
+      counts: { create: 0, update: 7, unchanged: 1 },
       preservedAdapter: {
         path: 'release-adapter.mjs',
       },
@@ -309,7 +309,7 @@ describe('upgrade command', () => {
       targetSha,
     });
     expect(prepared.status).toBe('current');
-    expect(prepared.plan.counts).toEqual({ create: 0, update: 0, unchanged: 7 });
+    expect(prepared.plan.counts).toEqual({ create: 0, update: 0, unchanged: 8 });
     expect(prepared.plan.branchStatus).toBe('none');
     expect(state.mutations()).toEqual([]);
   });

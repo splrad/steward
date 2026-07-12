@@ -72,7 +72,7 @@ describe('init --dry-run', () => {
 
     expect(first).toEqual(second);
     expect(first.ok).toBe(true);
-    expect(first.counts).toEqual({ create: 8, unchanged: 0, conflict: 0 });
+    expect(first.counts).toEqual({ create: 9, unchanged: 0, conflict: 0 });
     expect(first.files.map(({ path: filePath, status, digest }) => ({ path: filePath, status, digest })))
       .toMatchInlineSnapshot(`
         [
@@ -94,6 +94,11 @@ describe('init --dry-run', () => {
           {
             "digest": "76ff6b45113e1d93ae093f32869c7d9a93bdb89835a8f01a7a834c80b02d682e",
             "path": ".github/workflows/pr-classification.yml",
+            "status": "create",
+          },
+          {
+            "digest": "3c0d70ef7220cb56b8ea00fe6e0476182e5535eae185aca36ac3a2712d77a281",
+            "path": ".github/workflows/pr-cleanup.yml",
             "status": "create",
           },
           {
@@ -123,6 +128,7 @@ describe('init --dry-run', () => {
       '.github/steward.json',
       '.github/steward/release.mjs',
       '.github/workflows/pr-classification.yml',
+      '.github/workflows/pr-cleanup.yml',
       '.github/workflows/pr-governance.yml',
       '.github/workflows/pr-review-signal.yml',
       '.github/workflows/pr-validation-matrix.yml',

@@ -6,6 +6,7 @@ const repositoryRoot = new URL('../', import.meta.url);
 const templatePaths = [
   'templates/thin-workflows/pr-classification.yml',
   'templates/thin-workflows/dco-advisory.yml',
+  'templates/thin-workflows/pr-cleanup.yml',
   'templates/thin-workflows/pr-governance.yml',
   'templates/thin-workflows/pr-review-signal.yml',
   'templates/thin-workflows/pr-validation-matrix.yml',
@@ -57,15 +58,25 @@ describe('thin caller workflow templates', () => {
     const files = await templates();
     const classification = files['templates/thin-workflows/pr-classification.yml'];
     const dco = files['templates/thin-workflows/dco-advisory.yml'];
+    const cleanup = files['templates/thin-workflows/pr-cleanup.yml'];
     const governance = files['templates/thin-workflows/pr-governance.yml'];
     const matrix = files['templates/thin-workflows/pr-validation-matrix.yml'];
-    for (const source of [classification, dco, governance, matrix]) {
+    for (const source of [classification, dco, cleanup, governance, matrix]) {
       expect(source).toContain('app_client_id: ${{ vars.WORKFLOW_AUTOMATION_APP_CLIENT_ID }}');
       expect(source).toContain('app_private_key: ${{ secrets.WORKFLOW_AUTOMATION_APP_PRIVATE_KEY }}');
       expect(source).not.toMatch(/^\s+actions:\s*write$/m);
     }
     expect(governance).toContain('copilot_review_request_token: ${{ secrets.COPILOT_REVIEW_REQUEST_TOKEN }}');
     expect(governance).toContain('core_auto_approval_token: ${{ secrets.CORE_AUTO_APPROVAL_TOKEN }}');
+  });
+
+  it('routes Cleanup only for closed PRs targeting the live default branch', async () => {
+    const cleanup = (await templates())['templates/thin-workflows/pr-cleanup.yml'];
+    expect(cleanup).toContain('pull_request_target:');
+    expect(cleanup).toContain('types: [closed]');
+    expect(cleanup).toContain('github.event.pull_request.base.ref == github.event.repository.default_branch');
+    expect(cleanup).toContain('PR Cleanup #${{ github.event.pull_request.number }}');
+    expect(cleanup).not.toContain('branches:');
   });
 
   it('routes Matrix convergence events and ignores its own completed Check', async () => {

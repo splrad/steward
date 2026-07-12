@@ -49,8 +49,11 @@ The current CLI supports the explicit v1-to-v1 migration surface and fails
 closed for unsupported source or target schema versions.
 
 DCO Advisory is a managed non-required surface: init and upgrade generate its
-thin caller together with Matrix, and doctor verifies its immutable pin. Until
-the shared PR Automation runtime is present, doctor reports that feature as a
+thin caller together with Matrix, and doctor verifies its immutable pin.
+Governance or Copilot Review also derives a managed post-close Cleanup caller;
+it is not a separate project policy switch. Cleanup removes only Steward
+App-owned temporary comments and writes a durable notice only for merged PRs.
+Until the shared PR Automation runtime is present, doctor reports that feature as a
 failure and upgrade refuses to leave it unmanaged. This prevents a partial
 lifecycle plan from being presented as a safe repository upgrade.
 

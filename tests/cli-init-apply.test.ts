@@ -212,7 +212,7 @@ describe('init --apply', () => {
         'WORKFLOW_AUTOMATION_APP_PRIVATE_KEY', 'COPILOT_REVIEW_REQUEST_TOKEN', 'CORE_AUTO_APPROVAL_TOKEN',
       ],
     });
-    expect(prepared.plan.counts).toEqual({ create: 6, unchanged: 0, conflict: 0 });
+    expect(prepared.plan.counts).toEqual({ create: 7, unchanged: 0, conflict: 0 });
     expect(state.mutations()).toEqual([]);
     expect(state.requests.filter((request) => request.path.includes('/contents/'))
       .every((request) => request.query?.ref === baseSha)).toBe(true);

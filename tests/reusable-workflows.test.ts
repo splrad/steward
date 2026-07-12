@@ -3,12 +3,14 @@ import { describe, expect, it } from 'vitest';
 
 const actionSha = 'cd874ad2819bb1a24b4af17b6a5108b56fb728b9';
 const dcoActionSha = 'add0e1652474138b5ab4e9b740f1534095f32785';
+const cleanupActionSha = 'c0eb1530e2fb3062749c879671514370bae49f37';
 const appTokenSha = 'bcd2ba49218906704ab6c1aa796996da409d3eb1';
 const releaseActionSha = '6e33424e7fb18100145845b49e8ccf2c90d504e0';
 const repositoryRoot = new URL('../', import.meta.url);
 const workflowPaths = [
   '.github/workflows/pr-classification.yml',
   '.github/workflows/dco-advisory.yml',
+  '.github/workflows/pr-cleanup.yml',
   '.github/workflows/pr-governance.yml',
   '.github/workflows/pr-review-signal.yml',
   '.github/workflows/pr-validation-matrix.yml',
@@ -46,6 +48,9 @@ describe('First reusable workflow contracts', () => {
     expect(files['.github/workflows/dco-advisory.yml']).toContain(
       `splrad/steward/action@${dcoActionSha}`,
     );
+    expect(files['.github/workflows/pr-cleanup.yml']).toContain(
+      `splrad/steward/action@${cleanupActionSha}`,
+    );
     expect(`${files['.github/workflows/pr-governance.yml']}\n${files['.github/workflows/pr-validation-matrix.yml']}`)
       .toContain(`actions/create-github-app-token@${appTokenSha}`);
     expect(files['.github/workflows/release.yml']).toContain(`splrad/steward/action@${releaseActionSha}`);
@@ -82,6 +87,7 @@ describe('First reusable workflow contracts', () => {
     expect(contract).toContain('.github/workflows/pr-classification.yml');
     expect(contract).toContain('PR Validation Target #<PR> / <40-character-head-SHA>');
     expect(contract).toContain('.github/workflows/dco-advisory.yml');
+    expect(contract).toContain('.github/workflows/pr-cleanup.yml');
     expect(contract).toContain('.github/workflows/pr-governance.yml');
     expect(contract).not.toContain('PR Validation Target #<PR> / <40-character-head-SHA> / <scope>');
     expect(contract).toContain('.github/workflows/pr-review-signal.yml');
@@ -147,6 +153,20 @@ describe('First reusable workflow contracts', () => {
     expect(dco).not.toContain('permission-checks: write');
     expect(dco).not.toContain('actions/checkout');
     expect(dco.match(/^\s*uses:/gm)).toHaveLength(2);
+  });
+
+  it('limits Cleanup to closed-PR evidence, maintainer lookup, and App-owned comments', async () => {
+    const cleanup = (await workflows())['.github/workflows/pr-cleanup.yml'];
+    expect(cleanup).toContain('name: Clean Up Closed Pull Request');
+    expect(cleanup).toContain('operation: cleanup');
+    expect(cleanup).toContain('permission-contents: read');
+    expect(cleanup).toContain('permission-pull-requests: read');
+    expect(cleanup).toContain('permission-members: read');
+    expect(cleanup).toContain('permission-issues: write');
+    expect(cleanup).not.toContain('permission-checks: write');
+    expect(cleanup).not.toContain('permission-actions: write');
+    expect(cleanup).not.toContain('actions/checkout');
+    expect(cleanup.match(/^\s*uses:/gm)).toHaveLength(2);
   });
 
   it('does not expose project policy through called workflow inputs', async () => {

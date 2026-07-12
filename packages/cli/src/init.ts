@@ -108,6 +108,7 @@ export function workflowTemplates(manifest: StewardManifest): Array<{ template: 
   }
   if (manifest.features.governance || manifest.features.copilotReview) {
     workflows.push({ template: 'thin-workflows/pr-governance.yml', destination: '.github/workflows/pr-governance.yml' });
+    workflows.push({ template: 'thin-workflows/pr-cleanup.yml', destination: '.github/workflows/pr-cleanup.yml' });
   }
   if (manifest.features.copilotReview) {
     workflows.push({ template: 'thin-workflows/pr-review-signal.yml', destination: '.github/workflows/pr-review-signal.yml' });
