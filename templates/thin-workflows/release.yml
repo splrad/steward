@@ -1,0 +1,26 @@
+name: Release
+
+run-name: "Release #${{ github.event.pull_request.number || github.event.inputs.pr_number }}"
+
+on:
+  pull_request_target:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Merged pull request number to release.
+        required: true
+        type: number
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true }}
+    uses: splrad/steward/.github/workflows/release.yml@__STEWARD_SHA__
+    with:
+      app_client_id: ${{ vars.WORKFLOW_AUTOMATION_APP_CLIENT_ID }}
+      pr_number: ${{ github.event.pull_request.number || fromJSON(github.event.inputs.pr_number || '0') }}
+    secrets:
+      app_private_key: ${{ secrets.WORKFLOW_AUTOMATION_APP_PRIVATE_KEY }}

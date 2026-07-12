@@ -72,7 +72,7 @@ function transportFor(overrides: Partial<Record<string, unknown>> = {}): { trans
 describe('doctor CLI contract', () => {
   it('accepts only the explicit read-only doctor surface', () => {
     expect(parseArguments(['doctor', '--repo', 'splrad/example', '--pr', '3', '--json']))
-      .toEqual({ repository: 'splrad/example', pullRequest: 3, json: true });
+      .toEqual({ command: 'doctor', repository: 'splrad/example', pullRequest: 3, json: true });
     expect(() => parseArguments(['activate', '--repo', 'splrad/example'])).toThrow('Usage');
     expect(() => parseArguments(['doctor', '--repo', 'invalid'])).toThrow('OWNER/REPOSITORY');
     expect(() => parseArguments(['doctor', '--repo', 'splrad/example', '--pr', '0'])).toThrow('positive integer');

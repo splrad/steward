@@ -30,6 +30,10 @@ for (const file of files) {
   if (path.basename(file) === 'verify-workflows.mjs') continue;
   const source = await readFile(file, 'utf8');
   for (const [pattern, label] of forbidden) {
+    if (label === 'scheduled workflow trigger'
+      && !file.startsWith(path.normalize('.github/workflows'))
+      && !file.startsWith(path.normalize('templates/thin-workflows'))
+      && !file.includes(`${path.sep}templates${path.sep}thin-workflows${path.sep}`)) continue;
     if (pattern.test(source)) errors.push(`${file}: forbidden ${label}`);
   }
 
@@ -38,6 +42,7 @@ for (const file of files) {
     for (const match of source.matchAll(/^\s*uses:\s*([^\s#]+).*$/gm)) {
       const reference = match[1];
       if (reference?.startsWith('./')) continue;
+      if (file.startsWith(path.normalize('templates/thin-workflows')) && /@__STEWARD_SHA__$/.test(reference ?? '')) continue;
       if (!/@[0-9a-f]{40}$/i.test(reference ?? '')) {
         errors.push(`${file}: action reference must use a complete commit SHA: ${reference}`);
       }
