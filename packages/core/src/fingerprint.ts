@@ -56,6 +56,29 @@ export function normalizeRepositoryPath(value: unknown): string {
   return text(value).replaceAll('\\', '/').replace(/^\.\//, '').toLowerCase();
 }
 
+function escapeRepositoryPatternText(value: string): string {
+  return value.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+}
+
+export function repositoryPathPatternMatches(file: unknown, pattern: unknown): boolean {
+  const value = normalizeRepositoryPath(pattern);
+  let regex = '^';
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === '*') {
+      if (value[index + 1] === '*') {
+        regex += '.*';
+        index += 1;
+      } else {
+        regex += '[^/]*';
+      }
+    } else {
+      regex += escapeRepositoryPatternText(character ?? '');
+    }
+  }
+  return new RegExp(`${regex}$`).test(normalizeRepositoryPath(file));
+}
+
 export function classificationInputBody(body: unknown): string {
   return text(body)
     .replace(/\n*<!-- workflow:pr-classification:start[\s\S]*?workflow:pr-classification:end -->/gi, '')

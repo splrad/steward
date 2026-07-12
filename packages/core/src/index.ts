@@ -4,3 +4,4 @@ export * from './fingerprint.js';
 export * from './governance.js';
 export * from './identity.js';
 export * from './matrix.js';
+export * from './release.js';

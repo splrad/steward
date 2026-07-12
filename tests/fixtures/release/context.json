@@ -1,0 +1,11 @@
+{
+  "contractVersion": 1,
+  "repository": {
+    "id": 1296725030,
+    "fullName": "splrad/steward-sandbox"
+  },
+  "pullRequest": {
+    "number": 14,
+    "mergeSha": "0123456789012345678901234567890123456789"
+  }
+}

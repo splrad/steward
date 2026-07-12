@@ -10,6 +10,7 @@ The extracted contracts cover:
 - legacy-compatible aggregate blocking-comment state and same-head source replacement;
 - main-authorization and Copilot-review decisions, review-request planning, and presentation keys without consumer-facing copy;
 - validation-Matrix target evaluation, versioned Check identity validation, legacy evidence reads, repair planning, and workflow-to-proxy completion planning.
+- versioned Release adapter context/plan parsing, trigger decisions, and output-asset manifest validation without filesystem or GitHub access.
 
 Callers must pass the configured Steward GitHub App slug through `botLogins`. A syntactically valid login cannot be identified as a project-specific bot without repository configuration.
 
