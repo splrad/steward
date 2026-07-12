@@ -4,12 +4,16 @@
   "description": "Shared event-driven repository automation for SPLRAD projects.",
   "license": "Apache-2.0",
   "type": "module",
+  "bin": {
+    "steward": "packages/cli/dist/index.js"
+  },
   "engines": {
     "node": "24.14.1"
   },
   "packageManager": "npm@11.11.0",
   "scripts": {
     "build": "node scripts/build.mjs",
+    "build:cli": "node -e \"import('./scripts/bundle-cli.mjs').then(({bundleCli})=>bundleCli('packages/cli/dist'))\"",
     "deploy:relay": "wrangler deploy --config packages/relay/wrangler.toml",
     "test": "vitest run",
     "test:relay": "vitest run packages/relay/test",
