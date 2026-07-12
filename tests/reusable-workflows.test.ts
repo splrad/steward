@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 const actionSha = 'cd874ad2819bb1a24b4af17b6a5108b56fb728b9';
 const appTokenSha = 'bcd2ba49218906704ab6c1aa796996da409d3eb1';
-const releaseActionSha = '86a638f4bb7d7574be15d9ad0d85d1362d12dd4f';
+const releaseActionSha = '6e33424e7fb18100145845b49e8ccf2c90d504e0';
 const repositoryRoot = new URL('../', import.meta.url);
 const workflowPaths = [
   '.github/workflows/pr-classification.yml',
@@ -147,12 +147,15 @@ describe('First reusable workflow contracts', () => {
     expect(release).toContain('fromJSON(needs.preflight.outputs.release_context).pullRequest.mergeSha');
     expect(release).toContain('release-adapter-phase: plan');
     expect(release).toContain('operation: release-status');
+    expect(release).toContain('operation: release-reconcile');
+    expect(release).toContain("steps.status.outputs['release-build-needed'] != 'true'");
     expect(release).toContain("steps.status.outputs['release-build-needed'] == 'true'");
     expect(release).toContain('release-adapter-phase: build');
     expect(release).toContain('operation: release-publish');
     expect(release.match(/operation: release-finalize/g)).toHaveLength(2);
     expect(release).toContain('always() && (');
     expect(release).toContain("steps.build.outcome == 'failure'");
+    expect(release).toContain("steps.reconcile.outcome == 'failure'");
     expect(release).toContain('permission-contents: write');
     expect(release).toContain('permission-checks: write');
     expect(release).toContain('cancel-in-progress: false');
