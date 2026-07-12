@@ -245,7 +245,7 @@ describe('Secret input and memory lifecycle', () => {
       'github_pat_FAKE123456789012345678901234567890',
       'ghp_FAKE123456789012345678901234567890',
       'Authorization: Bearer bearer-secret-value',
-      'eyJheader1234567890.eyJpayload1234567890.signature1234567890',
+      'eyJheader1234567890.eyJpayload1234567890.signature1234567890-',
     ].join('\n');
     const redacted = redactSensitiveText(text);
 
