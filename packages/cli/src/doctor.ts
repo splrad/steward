@@ -12,6 +12,7 @@ import {
   type LoadedManifest,
   type StewardManifest,
 } from '../../manifest/src/index.js';
+import { inspectAppInstallation } from './app-installation.js';
 
 export type DoctorLevel = 'pass' | 'warning' | 'fail';
 
@@ -40,16 +41,6 @@ interface RepositoryPayload {
   full_name?: string;
   default_branch?: string | null;
   owner?: { login?: string; type?: string } | null;
-}
-
-interface InstallationPayload {
-  id?: number;
-  app_id?: number;
-  app_slug?: string;
-  client_id?: string;
-  repository_selection?: string;
-  permissions?: Record<string, string>;
-  suspended_at?: string | null;
 }
 
 interface PullPayload {
@@ -167,29 +158,6 @@ async function optionalPagedRequest<TPayload, TItem>(
   throw new Error('GitHub diagnostic read exceeded the 20-page safety limit');
 }
 
-function installationPermissions(manifest: StewardManifest): Record<string, 'read' | 'write'> {
-  const required: Record<string, 'read' | 'write'> = {
-    checks: 'write',
-    contents: manifest.features.release ? 'write' : 'read',
-    pull_requests: 'write',
-  };
-  if (manifest.features.classification || manifest.features.governance || manifest.features.copilotReview) {
-    required.issues = 'write';
-  }
-  if (manifest.features.governance && manifest.automation.maintainers.source === 'organization-team') {
-    required.members = 'read';
-  }
-  if (manifest.features.classification || manifest.features.dcoAdvisory
-    || manifest.features.governance || manifest.features.copilotReview) {
-    required.actions = 'write';
-  }
-  return required;
-}
-
-function permissionSatisfies(actual: string | undefined, required: 'read' | 'write'): boolean {
-  return actual === 'write' || (required === 'read' && actual === 'read');
-}
-
 function rulesetTargetsDefaultBranch(ruleset: RulesetPayload, defaultBranch: string): boolean {
   const include = ruleset.conditions?.ref_name?.include ?? [];
   const exclude = ruleset.conditions?.ref_name?.exclude ?? [];
@@ -287,35 +255,23 @@ export async function runDoctor(transport: GitHubTransport, options: DoctorOptio
   }
 
   let appId = 0;
-  if (String(repository.owner?.type ?? '').toLowerCase() === 'organization') {
-    const installations = await optionalPagedRequest<{ installations?: InstallationPayload[] }, InstallationPayload>(
-      transport,
-      { path: `/orgs/${segment(String(repository.owner?.login ?? options.owner))}/installations` },
-      (payload) => payload.installations ?? [],
-    );
-    const installation = installations?.find((candidate) => (
-      String(candidate.client_id ?? '') === loaded.manifest.automation.githubApp.clientId
-      && String(candidate.app_slug ?? '').toLowerCase() === loaded.manifest.automation.githubApp.slug
-    ));
-    if (!installations) {
-      findings.push(finding('app.installation', 'warning', '当前 token 无法读取组织 GitHub App installations。',
-        '使用具有 read:org 的组织管理员 token 重新运行。'));
-    } else if (!installation || installation.suspended_at) {
-      findings.push(finding('app.installation', 'fail', '组织中未找到 Manifest 指定的有效 GitHub App installation。',
-        `安装或恢复 https://github.com/apps/${loaded.manifest.automation.githubApp.slug}/installations/new。`));
-    } else {
-      appId = Number(installation.app_id ?? 0);
-      const missing = Object.entries(installationPermissions(loaded.manifest))
-        .filter(([name, required]) => !permissionSatisfies(installation.permissions?.[name], required))
-        .map(([name, required]) => `${name}:${required}`);
-      if (!Number.isSafeInteger(appId) || appId < 1) missing.unshift('app_id');
-      findings.push(missing.length
-        ? finding('app.installation', 'fail', `GitHub App installation 缺少权限：${missing.join(', ')}。`, '在 App 设置中补齐权限并由组织接受变更。')
-        : finding('app.installation', 'pass', `组织 installation ${installation.id} 存在且权限满足启用功能。`));
-    }
+  const installation = await inspectAppInstallation(transport, {
+    owner: options.owner,
+    repository: options.repository,
+    repositoryId,
+    ownerLogin: String(repository.owner?.login ?? options.owner),
+    ownerType: String(repository.owner?.type ?? ''),
+    manifest: loaded.manifest,
+  });
+  if (installation.status === 'installed') {
+    appId = installation.appId ?? 0;
+    findings.push(finding('app.installation', 'pass', installation.summary));
+  } else if (installation.status === 'unknown') {
+    findings.push(finding('app.installation', 'warning', installation.summary,
+      '补齐所述 token 权限后重新运行；无法确认时不得继续初始化。'));
   } else {
-    findings.push(finding('app.installation', 'warning', '首版 doctor 无法用普通用户 token 直接列出个人账号 installation。',
-      `核对 https://github.com/apps/${loaded.manifest.automation.githubApp.slug}/installations/new，并使用当前-head App Check 作为仓库范围证据。`));
+    findings.push(finding('app.installation', 'fail', installation.summary,
+      installation.actionUrl ? `打开 ${installation.actionUrl} 完成配置后重新运行。` : '完成 App installation 配置后重新运行。'));
   }
 
   const pulls = await optionalPagedRequest<PullPayload[], PullPayload>(transport, {
