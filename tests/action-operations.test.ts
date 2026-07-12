@@ -882,4 +882,91 @@ describe('Action operation contract', () => {
     expect(checkRuns.filter((run) => run.external_id?.includes(`head:${previousHead}`))).toHaveLength(4);
     expect(checkRuns.filter((run) => run.external_id?.includes(`head:${fixture.context.pull.head.sha}`))).toHaveLength(4);
   });
+
+  it('bounds Matrix job queries while retaining priority evidence', async () => {
+    const eventRun: GitHubWorkflowRun = {
+      id: 1,
+      path: '.github/workflows/pr-governance.yml',
+      event: 'workflow_dispatch',
+      display_title: `PR Validation Target \x237 / ${'c'.repeat(40)} / governance`,
+      created_at: '2026-01-01T00:00:00Z',
+      pull_requests: [],
+    };
+    const fixture = context({
+      eventName: 'workflow_run',
+      event: {
+        repository: { id: 1296724484, full_name: 'splrad/steward' },
+        workflow_run: eventRun,
+      },
+    });
+    fixture.context.manifest = manifest({ classification: true, dcoAdvisory: true });
+
+    const referencedRun: GitHubWorkflowRun = {
+      id: 2,
+      path: '.github/workflows/dco-advisory.yml',
+      event: 'pull_request_target',
+      head_sha: fixture.context.pull.head.sha,
+      created_at: '2026-01-02T00:00:00Z',
+      pull_requests: [{ number: fixture.context.pull.number }],
+    };
+    const targetRuns: GitHubWorkflowRun[] = [
+      {
+        id: 101,
+        path: '.github/workflows/pr-classification.yml',
+        event: 'pull_request_target',
+        head_sha: fixture.context.pull.head.sha,
+        created_at: '2026-02-01T00:00:00Z',
+        pull_requests: [{ number: fixture.context.pull.number }],
+      },
+      {
+        id: 102,
+        path: '.github/workflows/dco-advisory.yml',
+        event: 'pull_request_target',
+        head_sha: fixture.context.pull.head.sha,
+        created_at: '2026-02-02T00:00:00Z',
+        pull_requests: [{ number: fixture.context.pull.number }],
+      },
+      {
+        id: 103,
+        path: '.github/workflows/pr-governance.yml',
+        event: 'pull_request_target',
+        head_sha: fixture.context.pull.head.sha,
+        created_at: '2026-02-03T00:00:00Z',
+        pull_requests: [{ number: fixture.context.pull.number }],
+      },
+    ];
+    const noiseRuns: GitHubWorkflowRun[] = Array.from({ length: 35 }, (_, index) => ({
+      id: 200 + index,
+      path: '.github/workflows/unrelated.yml',
+      event: 'pull_request_target',
+      head_sha: fixture.context.pull.head.sha,
+      created_at: new Date(Date.UTC(2026, 2, 1, index)).toISOString(),
+      pull_requests: [{ number: fixture.context.pull.number }],
+    }));
+    fixture.client.listWorkflowRuns!.mockResolvedValue([
+      eventRun,
+      referencedRun,
+      ...targetRuns,
+      ...noiseRuns,
+    ]);
+    fixture.client.listCommitCheckRuns!.mockResolvedValue([{
+      id: 500,
+      name: 'DCO Sign-off Advisory',
+      status: 'completed',
+      conclusion: 'success',
+      details_url: 'https://github.com/splrad/steward/actions/runs/2/job/20',
+      created_at: '2026-04-01T00:00:00Z',
+      app: { slug: 'github-actions' },
+    }]);
+
+    await expect(executeOperation('matrix', fixture.context, {
+      operation: 'matrix',
+      matrixMode: 'observe',
+    })).resolves.toBeDefined();
+
+    const queriedRunIds = fixture.client.listWorkflowJobs!.mock.calls.map((call) => call[2]);
+    expect(queriedRunIds).toHaveLength(30);
+    expect(new Set(queriedRunIds).size).toBe(30);
+    expect(queriedRunIds).toEqual(expect.arrayContaining([1, 2, 101, 102, 103]));
+  });
 });

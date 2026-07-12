@@ -21,6 +21,8 @@ import {
   planProxyCompletions,
   stewardCheckExternalId,
   upsertClassificationMetadata,
+  workflowRunId,
+  workflowRunMatchesTarget,
   type GovernanceFailureModel,
   type BlockingFailure,
   type MatrixCheckRun,
@@ -557,12 +559,23 @@ function workflowEventSignal(context: StewardOperationContext): 'none' | 'review
   return 'none';
 }
 
-async function matrixWorkflowRuns(context: StewardOperationContext): Promise<MatrixWorkflowRun[]> {
+async function matrixWorkflowRuns(
+  context: StewardOperationContext,
+  checks: readonly GitHubCheckRun[],
+  configuration: ReturnType<typeof enabledMatrixConfiguration>,
+): Promise<MatrixWorkflowRun[]> {
+  const maximumJobQueries = 30;
   const runs = await context.client.listWorkflowRuns(context.owner, context.repository);
   const matchesPull = (run: MatrixWorkflowRun): boolean => {
     const trusted = trustedWorkflowRunContext(run);
     return run.head_sha?.toLowerCase() === context.pull.head.sha.toLowerCase()
       || Boolean(run.pull_requests?.some((pull) => pull.number === context.pull.number))
+      || Boolean(trusted && trusted.prNumber === context.pull.number
+        && trusted.headSha === context.pull.head.sha.toLowerCase());
+  };
+  const matchesCurrentHead = (run: MatrixWorkflowRun): boolean => {
+    const trusted = trustedWorkflowRunContext(run);
+    return run.head_sha?.toLowerCase() === context.pull.head.sha.toLowerCase()
       || Boolean(trusted && trusted.prNumber === context.pull.number
         && trusted.headSha === context.pull.head.sha.toLowerCase());
   };
@@ -574,10 +587,45 @@ async function matrixWorkflowRuns(context: StewardOperationContext): Promise<Mat
       candidates.push(eventRun);
     }
   }
-  if (candidates.length > 30) throw new Error('Matrix workflow evidence exceeded the 30-run evaluation limit');
-  return await Promise.all(candidates.map(async (run) => {
+  const byId = new Map<number, MatrixWorkflowRun>();
+  for (const run of candidates) {
     const runId = Number(run.id ?? 0);
     if (!Number.isSafeInteger(runId) || runId < 1) throw new Error('GitHub returned an invalid workflow run ID');
+    byId.set(runId, run);
+  }
+
+  const selected = new Map<number, MatrixWorkflowRun>();
+  const select = (run: MatrixWorkflowRun | undefined): void => {
+    const runId = Number(run?.id ?? 0);
+    if (!run || selected.size >= maximumJobQueries || selected.has(runId)) return;
+    selected.set(runId, run);
+  };
+  const newestFirst = (left: MatrixWorkflowRun, right: MatrixWorkflowRun): number => (
+    String(right.created_at ?? '').localeCompare(String(left.created_at ?? ''))
+      || Number(right.id ?? 0) - Number(left.id ?? 0)
+  );
+
+  const trustedEventRun = eventRun ? trustedWorkflowRunContext(eventRun) : null;
+  select(trustedEventRun?.prNumber === context.pull.number
+    && trustedEventRun.headSha === context.pull.head.sha.toLowerCase()
+    ? byId.get(Number(eventRun?.id ?? 0))
+    : undefined);
+  for (const check of [...checks].sort((left, right) => (
+    String(right.started_at ?? right.completed_at ?? '').localeCompare(
+      String(left.started_at ?? left.completed_at ?? ''),
+    ) || Number(right.id ?? 0) - Number(left.id ?? 0)
+  ))) {
+    select(byId.get(workflowRunId(check)));
+  }
+  for (const target of configuration.targets) {
+    select([...byId.values()]
+      .filter((run) => matchesCurrentHead(run) && workflowRunMatchesTarget(run, target))
+      .sort(newestFirst)[0]);
+  }
+  for (const run of [...byId.values()].sort(newestFirst)) select(run);
+
+  return await Promise.all([...selected.values()].map(async (run) => {
+    const runId = Number(run.id ?? 0);
     return {
       ...run,
       id: runId,
@@ -636,11 +684,11 @@ async function matrixOperation(context: StewardOperationContext, inputs: Steward
   const signal = workflowEventSignal(context);
   const scope = parseMatrixScope(inputs.matrixScope, context.eventName, signal === 'review-state');
   const configuration = enabledMatrixConfiguration(context.manifest.manifest.features);
-  const [facts, checks, workflowRuns] = await Promise.all([
+  const [facts, checks] = await Promise.all([
     pullFacts(context),
     context.client.listCommitCheckRuns(context.owner, context.repository, context.pull.head.sha),
-    matrixWorkflowRuns(context),
   ]);
+  const workflowRuns = await matrixWorkflowRuns(context, checks, configuration);
   const trust = {
     appSlug: context.manifest.manifest.automation.githubApp.slug,
     repositoryId: context.repositoryId,

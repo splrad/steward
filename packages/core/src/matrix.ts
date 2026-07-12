@@ -184,7 +184,7 @@ function workflowRunPath(run: MatrixWorkflowRun | undefined): string {
   return String(run?.path ?? '').split('@')[0]?.replace(/\\/g, '/').toLowerCase() ?? '';
 }
 
-function workflowRunMatchesTarget(run: MatrixWorkflowRun | undefined, target: MatrixTargetConfiguration): boolean {
+export function workflowRunMatchesTarget(run: MatrixWorkflowRun | undefined, target: MatrixTargetConfiguration): boolean {
   const trustedEvents = target.trustedEvents ?? ['pull_request_target', 'workflow_dispatch'];
   const trustedPaths = [target.workflowFile, ...(target.legacyWorkflowFiles ?? [])]
     .map((file) => `.github/workflows/${file.toLowerCase()}`);
@@ -208,7 +208,7 @@ function legacyWorkflowRunMatchesPull(run: MatrixWorkflowRun | undefined, pull: 
   return prNumber === pull.number && headSha === pull.head.sha.toLowerCase();
 }
 
-function workflowRunId(check: MatrixCheckRun): number {
+export function workflowRunId(check: { details_url?: string | null }): number {
   return Number(String(check.details_url ?? '').match(/\/actions\/runs\/(\d+)(?:\/job\/\d+)?(?:\?.*)?$/)?.[1] ?? 0);
 }
 
