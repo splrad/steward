@@ -71,7 +71,7 @@ The following remain owned by CADFontAutoReplace and enter Steward only through 
 ## Extraction order
 
 1. Port current tests and sanitized fixtures without changing expected behavior.
-2. Extract pure identity, notification-state, fingerprint, classification, DCO advisory, governance, and Matrix decisions.
+2. Extract pure identity, notification-state, fingerprint, classification, DCO advisory, governance, Matrix, and Cleanup decisions.
 3. Add GitHub adapters and the bundled Action behind those contracts.
 4. Convert workflows to reusable callers and generate thin target templates.
 5. Generalize Relay, then validate all paths in `splrad/steward-sandbox` before touching production consumers.

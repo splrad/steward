@@ -12,6 +12,7 @@ export interface GitHubPullRequest {
   state: string;
   merged?: boolean;
   merge_commit_sha?: string | null;
+  merged_by?: { login?: string } | null;
   title?: string;
   body?: string | null;
   user?: { login?: string; type?: string } | null;

@@ -1,5 +1,7 @@
 import {
   blockingFailuresMarker,
+  cleanupEphemeralCommentMarkers,
+  closeStatusMarker,
   copilotFailureModels,
   copilotThreadFindings,
   coreReviewersToRequest,
@@ -7,6 +9,7 @@ import {
   encodeBlockingState,
   evaluateCopilotGate,
   evaluateClassification,
+  evaluatePullRequestCleanup,
   evaluateDcoAdvisory,
   evaluateMainAuthorization,
   evaluateMatrix,
@@ -28,6 +31,7 @@ import {
   type BlockingFailure,
   type DcoEvaluation,
   type DcoIssue,
+  type CleanupNotification,
   type MatrixCheckRun,
   type MatrixRepairPlan,
   type MatrixWorkflowRun,
@@ -265,6 +269,109 @@ async function dcoAdvisoryOperation(context: StewardOperationContext): Promise<S
       evaluation: { ...evaluation, issues: evaluation.issues.slice(0, maxDcoIssues).map(presentDcoIssue) },
       issuesTruncated: Math.max(0, evaluation.issues.length - maxDcoIssues),
       legacyCommentsDeleted: legacy.length,
+    },
+  };
+}
+
+function safeCleanupText(value: unknown): string {
+  const normalized = String(value ?? '').replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
+  const bounded = normalized.length <= 240 ? normalized : `${normalized.slice(0, 239)}…`;
+  const escaped = bounded
+    .replace(/&/g, '&amp;')
+    .replace(/`/g, "'")
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/@/g, '@\u200b');
+  return escaped.length <= 240 ? escaped : `${escaped.slice(0, 239)}…`;
+}
+
+function renderCleanupNotification(
+  notification: CleanupNotification,
+  handlers: readonly string[],
+  configuredBots: readonly string[],
+): string {
+  const author = formatMentions([notification.author], { botLogins: configuredBots, emptyText: 'unknown' });
+  const mergedBy = formatMentions([notification.mergedBy], { botLogins: configuredBots, emptyText: 'unknown' });
+  const recipients = formatMentions([...handlers, notification.author], {
+    botLogins: configuredBots,
+    emptyText: '核心维护者',
+  });
+  return [
+    closeStatusMarker,
+    '## PR 合并成功并关闭',
+    '',
+    `- PR 链接：#${notification.pullNumber}`,
+    `- 标题：${safeCleanupText(notification.title)}`,
+    `- 分支流向：${safeCleanupText(notification.sourceRef)} -> ${safeCleanupText(notification.targetRef)}`,
+    `- 提交人：${author}`,
+    '- 关闭原因：已成功合并',
+    `- 合并人：${mergedBy}`,
+    `- 合并提交：\`${notification.mergeCommitSha}\``,
+    `- 通知对象：${recipients}`,
+    '',
+    '> 本通知由 SPLRAD Steward 自动维护。',
+  ].join('\n');
+}
+
+async function cleanupOperation(context: StewardOperationContext): Promise<StewardOperationResult> {
+  const comments = await context.client.listIssueComments(context.owner, context.repository, context.pull.number);
+  const evaluation = evaluatePullRequestCleanup({
+    number: context.pull.number,
+    merged: context.pull.merged === true,
+    mergeCommitSha: context.pull.merge_commit_sha,
+    title: context.pull.title,
+    body: context.pull.body,
+    authorLogin: context.pull.user?.login,
+    headRef: context.pull.head.ref,
+    baseRef: context.pull.base.ref,
+    mergedBy: context.pull.merged_by?.login,
+  }, { botLogins: botLogins(context) });
+  const appSlug = context.manifest.manifest.automation.githubApp.slug.toLowerCase();
+  const owned = comments.filter((comment) => normalizeAppLogin(comment.user?.login) === appSlug);
+  const ephemeral = owned.filter((comment) => cleanupEphemeralCommentMarkers.some(
+    (marker) => String(comment.body ?? '').includes(marker),
+  ));
+  const ephemeralIds = new Set(ephemeral.map((comment) => comment.id));
+  const closeComments = owned.filter((comment) => (
+    !ephemeralIds.has(comment.id) && String(comment.body ?? '').includes(closeStatusMarker)
+  ));
+  const deleteIds = new Set(ephemeralIds);
+  if (!evaluation.merged) {
+    for (const comment of closeComments) deleteIds.add(comment.id);
+  } else {
+    for (const comment of closeComments.slice(1)) deleteIds.add(comment.id);
+  }
+  const notificationBody = evaluation.notification
+    ? renderCleanupNotification(evaluation.notification, await maintainers(context), botLogins(context))
+    : null;
+  for (const commentId of deleteIds) {
+    await context.client.deleteIssueComment(context.owner, context.repository, commentId);
+  }
+
+  let notificationAction: 'none' | 'create' | 'update' | 'unchanged' = 'none';
+  if (notificationBody) {
+    const existing = closeComments[0];
+    if (!existing) {
+      await context.client.createIssueComment(context.owner, context.repository, context.pull.number, notificationBody);
+      notificationAction = 'create';
+    } else if (existing.body !== notificationBody) {
+      await context.client.updateIssueComment(context.owner, context.repository, existing.id, notificationBody);
+      notificationAction = 'update';
+    } else {
+      notificationAction = 'unchanged';
+    }
+  }
+  return {
+    operation: 'cleanup',
+    state: 'passed',
+    summary: evaluation.merged
+      ? `Merged PR cleanup converged; ${ephemeral.length} temporary comments removed; notification ${notificationAction}`
+      : `Closed PR cleanup converged; ${ephemeral.length} temporary comments removed; no merge notification`,
+    details: {
+      merged: evaluation.merged,
+      removedEphemeralComments: ephemeral.length,
+      removedCloseComments: [...deleteIds].filter((id) => !ephemeralIds.has(id)).length,
+      notificationAction,
     },
   };
 }
@@ -899,6 +1006,7 @@ export async function executeOperation(
   inputs: StewardActionInputs,
 ): Promise<StewardOperationResult> {
   if (operation === 'classification') return await classificationOperation(context);
+  if (operation === 'cleanup') return await cleanupOperation(context);
   if (operation === 'dco-advisory') return await dcoAdvisoryOperation(context);
   if (operation === 'governance-preflight') {
     return {
