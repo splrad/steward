@@ -152,8 +152,10 @@ function safeRepositoryPath(value: string): boolean {
 
 function repositoryPathArgument(value: string): string | undefined {
   if (value.startsWith('-') || value.includes('://')) return undefined;
+  const explicitlyRelative = value.startsWith('./');
   const candidate = value.startsWith('./') ? value.slice(2) : value;
-  return candidate.includes('/') && safeRepositoryPath(candidate) ? candidate : undefined;
+  const pathLike = explicitlyRelative || candidate.includes('/') || /\.(?:cjs|js|mjs|ps1|py|sh|ts)$/i.test(candidate);
+  return pathLike && safeRepositoryPath(candidate) ? candidate : undefined;
 }
 
 async function optionalGet<T>(transport: GitHubTransport, request: GitHubRequest): Promise<T | null> {

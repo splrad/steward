@@ -46,7 +46,7 @@ function manifest(sha = currentSha): StewardManifest {
     release: {
       triggerPaths: ['src/**'],
       runner: 'ubuntu-latest',
-      adapterCommand: ['node', './.github/steward/release-adapter.mjs'],
+      adapterCommand: ['node', './release-adapter.mjs'],
     },
   });
 }
@@ -73,7 +73,7 @@ class UpgradeState {
     const currentManifest = manifest();
     state.defaultFiles.set('.github/steward.json', `${JSON.stringify(currentManifest, null, 2)}\n`);
     state.defaultFiles.set('.github/dependabot.yml', await readFile(`${templateDirectory}/init/dependabot.yml`, 'utf8'));
-    state.defaultFiles.set('.github/steward/release-adapter.mjs', 'export const projectRelease = true;\n');
+    state.defaultFiles.set('release-adapter.mjs', 'export const projectRelease = true;\n');
     for (const workflow of workflowTemplates(currentManifest)) {
       const content = await readFile(`${templateDirectory}/${workflow.template}`, 'utf8');
       state.defaultFiles.set(workflow.destination, replaceStewardSha(content, currentSha, workflow.template));
@@ -209,15 +209,15 @@ describe('upgrade command', () => {
       pullRequestStatus: 'create',
       counts: { create: 0, update: 6, unchanged: 1 },
       preservedAdapter: {
-        path: '.github/steward/release-adapter.mjs',
+        path: 'release-adapter.mjs',
       },
     });
     expect(plan.preservedAdapter?.digest).toMatch(/^[a-f0-9]{64}$/);
-    expect(plan.files.map((file) => file.path)).not.toContain('.github/steward/release-adapter.mjs');
+    expect(plan.files.map((file) => file.path)).not.toContain('release-adapter.mjs');
     expect(plan.files.find((file) => file.path === '.github/steward.json')?.content)
       .toContain(`/splrad/steward/${targetSha}/schema/steward.schema.json`);
     expect(plan.files.find((file) => file.path === '.github/steward.json')?.content)
-      .toContain('"./.github/steward/release-adapter.mjs"');
+      .toContain('"./release-adapter.mjs"');
     expect(plan.files.filter((file) => file.path.endsWith('.yml') && file.path.includes('/workflows/'))
       .every((file) => file.content.includes(`@${targetSha}`))).toBe(true);
     expect(state.mutations()).toEqual([]);
@@ -246,7 +246,7 @@ describe('upgrade command', () => {
         transport: drifted.transport,
         confirmation: {
           confirm: async () => {
-            drifted.defaultFiles.set('.github/steward/release-adapter.mjs', 'external drift\n');
+            drifted.defaultFiles.set('release-adapter.mjs', 'external drift\n');
             return true;
           },
         },
@@ -282,7 +282,7 @@ describe('upgrade command', () => {
       'POST /repos/splrad/example/pulls',
     ]);
     const tree = state.mutations()[0]!.body as { tree: Array<{ path: string }> };
-    expect(tree.tree.map((entry) => entry.path)).not.toContain('.github/steward/release-adapter.mjs');
+    expect(tree.tree.map((entry) => entry.path)).not.toContain('release-adapter.mjs');
 
     state.requests.length = 0;
     const retryPlan = await readyPlan(state);
