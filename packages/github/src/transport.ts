@@ -1,4 +1,4 @@
-export type GitHubHttpMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE';
+export type GitHubHttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 export interface GitHubRequest {
   method?: GitHubHttpMethod;

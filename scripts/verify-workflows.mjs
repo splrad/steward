@@ -28,6 +28,8 @@ const files = (await Promise.all(roots.map(sourceFiles))).flat();
 const errors = [];
 for (const file of files) {
   if (path.basename(file) === 'verify-workflows.mjs') continue;
+  // CLI source is scanned separately; its reproducible bundle contains pinned third-party runtime internals.
+  if (file.startsWith(`${path.normalize('packages/cli/dist')}${path.sep}`)) continue;
   const source = await readFile(file, 'utf8');
   for (const [pattern, label] of forbidden) {
     if (label === 'scheduled workflow trigger'

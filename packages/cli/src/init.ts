@@ -19,6 +19,12 @@ export interface InitPlannedFile {
   existingDigest?: string;
 }
 
+export interface InitGeneratedFile {
+  path: string;
+  digest: string;
+  content: string;
+}
+
 export interface InitPlan {
   targetDirectory: string;
   stewardSha: string;
@@ -65,10 +71,10 @@ export function parseInitSpec(value: unknown): InitSpec {
   rawManifest.$schema = expectedSchema;
   const manifest = normalizeManifest(parseManifest(rawManifest));
   if (manifest.features.prAutomation) {
-    throw new Error('init --dry-run does not yet generate the legacy prAutomation surface');
+    throw new Error('init does not yet generate the legacy prAutomation surface');
   }
   if (manifest.features.dcoAdvisory) {
-    throw new Error('init --dry-run does not yet generate a DCO advisory workflow');
+    throw new Error('init does not yet generate a DCO advisory workflow');
   }
 
   let releaseAdapter: InitSpec['releaseAdapter'];
@@ -141,31 +147,20 @@ export async function createInitPlan(input: {
   templateDirectory: string;
 }): Promise<InitPlan> {
   const targetDirectory = path.resolve(input.targetDirectory);
-  const generated = new Map<string, string>();
-  generated.set('.github/steward.json', `${JSON.stringify(input.spec.manifest, null, 2)}\n`);
-  generated.set('.github/dependabot.yml', await readFile(path.join(input.templateDirectory, 'init/dependabot.yml'), 'utf8'));
-  for (const workflow of workflowTemplates(input.spec.manifest)) {
-    const template = await readFile(path.join(input.templateDirectory, workflow.template), 'utf8');
-    generated.set(workflow.destination, replaceStewardSha(template, input.spec.stewardSha, workflow.template));
-  }
-  if (input.spec.releaseAdapter) {
-    generated.set(input.spec.releaseAdapter.path, await readFile(path.join(input.templateDirectory, 'init/release-adapter.mjs'), 'utf8'));
-  }
+  const generated = await generateInitFiles(input);
 
   const files: InitPlannedFile[] = [];
-  for (const [relativePath, content] of [...generated.entries()].sort(([left], [right]) => left.localeCompare(right))) {
-    const destination = path.resolve(targetDirectory, ...relativePath.split('/'));
+  for (const file of generated) {
+    const destination = path.resolve(targetDirectory, ...file.path.split('/'));
     const destinationRelative = path.relative(targetDirectory, destination);
     if (!destinationRelative || destinationRelative.startsWith('..') || path.isAbsolute(destinationRelative)) {
-      throw new Error(`generated path escaped target directory: ${relativePath}`);
+      throw new Error(`generated path escaped target directory: ${file.path}`);
     }
     const existing = await existingContent(destination);
-    const status: InitFileStatus = existing === null ? 'create' : existing === content ? 'unchanged' : 'conflict';
+    const status: InitFileStatus = existing === null ? 'create' : existing === file.content ? 'unchanged' : 'conflict';
     files.push({
-      path: relativePath,
+      ...file,
       status,
-      digest: digest(content),
-      content,
       ...(status === 'conflict' && existing !== null ? { existingDigest: digest(existing) } : {}),
     });
   }
@@ -178,4 +173,24 @@ export async function createInitPlan(input: {
     counts,
     ok: counts.conflict === 0,
   };
+}
+
+export async function generateInitFiles(input: {
+  spec: InitSpec;
+  templateDirectory: string;
+}): Promise<InitGeneratedFile[]> {
+  const generated = new Map<string, string>();
+  generated.set('.github/steward.json', `${JSON.stringify(input.spec.manifest, null, 2)}\n`);
+  generated.set('.github/dependabot.yml', await readFile(path.join(input.templateDirectory, 'init/dependabot.yml'), 'utf8'));
+  for (const workflow of workflowTemplates(input.spec.manifest)) {
+    const template = await readFile(path.join(input.templateDirectory, workflow.template), 'utf8');
+    generated.set(workflow.destination, replaceStewardSha(template, input.spec.stewardSha, workflow.template));
+  }
+  if (input.spec.releaseAdapter) {
+    generated.set(input.spec.releaseAdapter.path, await readFile(path.join(input.templateDirectory, 'init/release-adapter.mjs'), 'utf8'));
+  }
+
+  return [...generated.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([filePath, content]) => ({ path: filePath, digest: digest(content), content }));
 }
