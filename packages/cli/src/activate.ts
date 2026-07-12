@@ -159,7 +159,8 @@ function planFingerprint(plan: Omit<ActivateRulesetPlan, 'fingerprint'>): string
   return createHash('sha256').update(JSON.stringify(canonicalize(plan as unknown as JsonValue)), 'utf8').digest('hex');
 }
 
-function stringArray(value: JsonValue | undefined, label: string): string[] {
+function stringArray(value: JsonValue | undefined, label: string, optional = false): string[] {
+  if (value === undefined && optional) return [];
   if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
     throw new Error(`GitHub ruleset ${label} is invalid`);
   }
@@ -184,7 +185,7 @@ function targetsDefaultBranch(ruleset: RulesetPayload, defaultBranch: string): b
     throw new Error(`GitHub ruleset ${String(ruleset.id ?? '')} has invalid ref_name conditions`);
   }
   const include = stringArray(conditions.include, 'ref_name.include');
-  const exclude = stringArray(conditions.exclude, 'ref_name.exclude');
+  const exclude = stringArray(conditions.exclude, 'ref_name.exclude', true);
   const ref = `refs/heads/${defaultBranch}`;
   const excluded = exclude.map((pattern) => patternMatches(pattern, ref, defaultBranch));
   if (excluded.includes(true)) return false;
@@ -254,7 +255,7 @@ function writableConditions(conditions: JsonObject): JsonObject {
   return {
     ref_name: {
       include: stringArray(refName.include, 'ref_name.include'),
-      exclude: stringArray(refName.exclude, 'ref_name.exclude'),
+      exclude: stringArray(refName.exclude, 'ref_name.exclude', true),
     },
   };
 }

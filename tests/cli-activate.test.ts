@@ -277,6 +277,20 @@ describe('activate command', () => {
     expect(state.mutations()).toEqual([]);
   });
 
+  it('treats an omitted empty ref exclusion list as empty when matching and preserving a ruleset', async () => {
+    const state = new ActivateState();
+    state.rulesets[0]!.conditions = { ref_name: { include: ['refs/heads/main'] } };
+    const prepared = await prepareActivate(state.transport, {
+      owner: 'splrad', repository: 'example', pullRequest: 3,
+    });
+    expect(prepared.status).toBe('ready');
+    const plan = (prepared as { status: 'ready'; plan: ActivateRulesetPlan }).plan;
+    expect(plan.action).toBe('update');
+    expect(plan.requestBody.conditions).toEqual({
+      ref_name: { include: ['refs/heads/main'], exclude: [] },
+    });
+  });
+
   it('uses ruleset source metadata from the list response when detail omits it', async () => {
     const state = new ActivateState();
     state.detailsOmitSource = true;
