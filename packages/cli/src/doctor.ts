@@ -391,11 +391,14 @@ export async function runDoctor(transport: GitHubTransport, options: DoctorOptio
   }
 
   if (loaded.manifest.features.webhookRelay) {
-    const runs = await transport.request<{ workflow_runs?: GitHubWorkflowRun[] }>({
+    const runs = await optionalRequest<{ workflow_runs?: GitHubWorkflowRun[] }>(transport, {
       path: `${path}/actions/runs`, query: { event: 'repository_dispatch', per_page: 100 },
     });
-    const latest = runs.workflow_runs?.[0];
-    findings.push(latest
+    const latest = runs?.workflow_runs?.[0];
+    findings.push(!runs
+      ? finding('relay.dispatch', 'warning', '当前 token 无法读取最近的 repository_dispatch runs。',
+        '使用具有 Actions read 权限的 token 重新运行。')
+      : latest
       ? finding('relay.dispatch', latest.status === 'completed' && latest.conclusion === 'success' ? 'pass' : 'warning',
         `最近可识别 repository_dispatch run ${latest.id}：${latest.status ?? 'unknown'}/${latest.conclusion ?? 'unknown'}。`,
         latest.conclusion === 'success' ? undefined : '检查 Relay delivery 与对应 Matrix/Governance run。')

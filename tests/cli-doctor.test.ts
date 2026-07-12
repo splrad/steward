@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { stewardCheckExternalId } from '../packages/core/src/index.js';
 import { runDoctor } from '../packages/cli/src/doctor.js';
 import { parseArguments } from '../packages/cli/src/main.js';
-import type { GitHubRequest, GitHubTransport } from '../packages/github/src/index.js';
+import { GitHubApiError, type GitHubRequest, type GitHubTransport } from '../packages/github/src/index.js';
 import { manifestDigest, type ClassificationConfiguration, type StewardManifest } from '../packages/manifest/src/index.js';
 
 const sha = 'a'.repeat(40);
@@ -35,7 +35,11 @@ function transportFor(overrides: Partial<Record<string, unknown>> = {}): { trans
   const body = JSON.stringify(manifest());
   const workflow = (name: string) => Buffer.from(`jobs:\n  call:\n    uses: splrad/steward/.github/workflows/${name}@${sha}\n`).toString('base64');
   const handler = (request: GitHubRequest): unknown => {
-    if (request.path in overrides) return overrides[request.path];
+    if (request.path in overrides) {
+      const override = overrides[request.path];
+      if (override instanceof Error) throw override;
+      return override;
+    }
     if (request.path === '/repos/splrad/example') return { id: 7, full_name: 'splrad/example', default_branch: 'main', owner: { login: 'splrad', type: 'Organization' } };
     if (request.path.endsWith('/contents/.github/steward.json')) return { type: 'file', encoding: 'base64', content: Buffer.from(body).toString('base64'), sha: 'blob' };
     const called = request.path.match(/contents\/\.github\/workflows\/(.+)$/)?.[1];
@@ -147,5 +151,16 @@ describe('doctor CLI contract', () => {
     const report = await runDoctor(setup.transport, { owner: 'splrad', repository: 'example' });
     expect(report.findings.find((item) => item.code === 'release.adapter')?.level).toBe('pass');
     expect(setup.requests.map((request) => request.path)).toContain('/repos/splrad/example/contents/.github/steward/release.ps1');
+  });
+
+  it('reports unavailable Relay run evidence as a warning instead of aborting doctor', async () => {
+    const setup = transportFor({
+      '/repos/splrad/example/actions/runs': new GitHubApiError({
+        status: 403, method: 'GET', path: '/repos/splrad/example/actions/runs', message: 'Resource not accessible',
+      }),
+    });
+    const report = await runDoctor(setup.transport, { owner: 'splrad', repository: 'example' });
+    expect(report.findings.find((item) => item.code === 'relay.dispatch')).toMatchObject({ level: 'warning' });
+    expect(report.findings.map((item) => item.code)).toContain('release.adapter');
   });
 });
