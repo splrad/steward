@@ -237,6 +237,7 @@ async function writeCheck(input: {
   name: string;
   inputDigest: string;
   status: 'queued' | 'in_progress' | 'completed';
+  startNewRunIfCompleted?: boolean;
   conclusion?: 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required';
   title: string;
   summary: string;
@@ -249,11 +250,14 @@ async function writeCheck(input: {
     configDigest: input.context.manifest.configDigest,
     inputDigest: input.inputDigest,
   });
-  const existing = [...input.checks].reverse().find((check) => (
-    check.name === input.name
-    && check.external_id === externalId
-    && String(check.app?.slug ?? '') === input.context.manifest.manifest.automation.githubApp.slug
-  ));
+  const existing = input.checks
+    .filter((check) => (
+      check.name === input.name
+      && check.external_id === externalId
+      && String(check.app?.slug ?? '') === input.context.manifest.manifest.automation.githubApp.slug
+    ))
+    .sort((left, right) => left.id - right.id)
+    .at(-1);
   const update = {
     name: input.name,
     status: input.status,
@@ -263,7 +267,10 @@ async function writeCheck(input: {
     title: input.title,
     summary: input.summary,
   };
-  return existing
+  const startNewRun = input.startNewRunIfCompleted === true
+    && input.status !== 'completed'
+    && existing?.status === 'completed';
+  return existing && !startNewRun
     ? await input.context.client.updateCheckRun(input.context.owner, input.context.repository, existing.id, update)
     : await input.context.client.createCheckRun(input.context.owner, input.context.repository, {
       ...update,
@@ -762,6 +769,7 @@ async function matrixOperation(context: StewardOperationContext, inputs: Steward
       name: configuration.gateName,
       inputDigest: facts.fingerprint.value,
       status: conclusion.status,
+      startNewRunIfCompleted: conclusion.status === 'in_progress',
       ...(conclusion.conclusion ? { conclusion: conclusion.conclusion } : {}),
       title: conclusion.presentation === 'matrix.waiting' ? 'PR 验证矩阵等待中'
         : conclusion.presentation === 'matrix.passed' ? 'PR 验证矩阵已通过' : 'PR 验证矩阵未通过',
