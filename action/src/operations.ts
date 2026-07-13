@@ -938,15 +938,13 @@ async function matrixOperation(context: StewardOperationContext, inputs: Steward
     pull: context.pull,
     trust: { ...trust, workflowRuns, allowLegacy: true },
   });
-  const eventRunId = Number(context.event.workflow_run?.id ?? 0);
-  const eventRun = workflowRuns.find((run) => run.id === eventRunId);
-  const completions = eventRun ? planProxyCompletions({
-    workflowRun: eventRun,
+  const completions = planProxyCompletions({
+    workflowRuns,
     targets: evaluation.targets,
     checkRuns: checks as MatrixCheckRun[],
     pull: context.pull,
     trust: { ...trust, workflowRuns, allowLegacy: true },
-  }) : [];
+  });
   const repairs = planMatrixRepairs({
     targets: evaluation.targets,
     workflowRuns,
