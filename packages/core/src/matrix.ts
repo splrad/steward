@@ -462,9 +462,11 @@ export function planProxyCompletions(input: {
       });
     }
   }
-  return plans.filter((plan, index) => (
-    plan.checkRunId > 0 && plans.findIndex((candidate) => candidate.checkRunId === plan.checkRunId) === index
-  ));
+  const uniquePlans = new Map<number, MatrixProxyCompletionPlan>();
+  for (const plan of plans) {
+    if (plan.checkRunId > 0 && !uniquePlans.has(plan.checkRunId)) uniquePlans.set(plan.checkRunId, plan);
+  }
+  return [...uniquePlans.values()];
 }
 
 const dispatchActions: Readonly<Record<string, readonly string[]>> = {
