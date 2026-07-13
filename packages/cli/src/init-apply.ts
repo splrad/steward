@@ -401,11 +401,11 @@ export async function executeInitApply(input: {
     if (input.plan.branchStatus === 'create') {
       const entries: Array<
         { path: string; mode: '100644'; type: 'blob'; content: string }
-        | { path: string; mode: '100644'; type: 'blob'; sha: null }
+        | { path: string; sha: null }
       > = [];
       for (const file of input.plan.files) {
         if (file.status === 'delete') {
-          entries.push({ path: file.path, mode: '100644', type: 'blob', sha: null });
+          entries.push({ path: file.path, sha: null });
         }
         else if (file.status === 'create' || file.status === 'replace') {
           if (file.content === undefined) throw new Error(`Planned write is missing content: ${file.path}`);
