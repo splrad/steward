@@ -16,6 +16,7 @@ import {
   type MatrixPull,
   type MatrixTargetConfiguration,
   type MatrixTargetResult,
+  type MatrixWorkflowRun,
 } from '../packages/core/src/index.js';
 
 const config = JSON.parse(await readFile(
@@ -346,7 +347,7 @@ describe('Matrix state and repair planning', () => {
       jobs: [{ id: 88, name: 'Main Authorization Gate', status: 'completed', conclusion: 'success', html_url: 'https://example.test/job/88' }],
     };
     expect(planProxyCompletions({
-      workflowRun,
+      workflowRuns: [workflowRun],
       targets: [result('main-authorization', 'pending', proxy)],
       checkRuns: [proxy],
       pull,
@@ -360,14 +361,14 @@ describe('Matrix state and repair planning', () => {
       sourceUrl: 'https://example.test/job/88',
     }]);
     expect(planProxyCompletions({
-      workflowRun: { ...workflowRun, name: `PR Validation Target #122 / ${pull.head.sha}` },
+      workflowRuns: [{ ...workflowRun, name: `PR Validation Target #122 / ${pull.head.sha}` }],
       targets: [result('main-authorization', 'pending', proxy)],
       checkRuns: [proxy],
       pull,
       trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
     })).toEqual([]);
     expect(planProxyCompletions({
-      workflowRun,
+      workflowRuns: [workflowRun],
       targets: [result('main-authorization', 'pending', {
         ...proxy,
         external_id: legacyProxyExternalId(target('copilot-review-gate'), pull, inputDigest),
@@ -377,7 +378,7 @@ describe('Matrix state and repair planning', () => {
       trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: true },
     })).toEqual([]);
     expect(planProxyCompletions({
-      workflowRun,
+      workflowRuns: [workflowRun],
       targets: [{ ...result('main-authorization', 'pending', proxy), acceptableConclusions: [] }],
       checkRuns: [proxy],
       pull,
@@ -404,10 +405,10 @@ describe('Matrix state and repair planning', () => {
       event: 'workflow_dispatch',
     };
     const plans = planProxyCompletions({
-      workflowRun: {
+      workflowRuns: [{
         ...baseWorkflowRun,
         jobs: [{ id: 88, name: 'govern / Main Authorization Gate', status: 'completed', conclusion: 'success' }],
-      },
+      }],
       targets: [result('main-authorization', 'pending', proxies[1])],
       checkRuns: proxies,
       pull,
@@ -421,16 +422,61 @@ describe('Matrix state and repair planning', () => {
       'govern / Main Authorization Gate / injected',
     ]) {
       expect(planProxyCompletions({
-        workflowRun: {
+        workflowRuns: [{
           ...baseWorkflowRun,
           jobs: [{ id: 88, name, status: 'completed', conclusion: 'success' }],
-        },
+        }],
         targets: [result('main-authorization', 'pending', proxies[1])],
         checkRuns: proxies,
         pull,
         trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
       })).toEqual([]);
     }
+  });
+
+  it('uses the newest trusted source run so later Matrix events can finish an interrupted proxy convergence', () => {
+    const proxy = check('Main Authorization Gate', 'waiting', '', {
+      id: 901,
+      app: { slug: appSlug },
+      external_id: stewardCheckExternalId({
+        repositoryId: 42,
+        prNumber: pull.number,
+        headSha: pull.head.sha,
+        checkId: 'main-authorization',
+        configDigest,
+        inputDigest,
+      }),
+    });
+    const sourceRun = (id: number, created_at: string, status: string): MatrixWorkflowRun => ({
+      id,
+      name: `PR Validation Target #${pull.number} / ${pull.head.sha}`,
+      path: '.github/workflows/pr-governance.yml',
+      event: 'workflow_dispatch',
+      created_at,
+      jobs: [{
+        id: id * 10,
+        name: 'govern / Main Authorization Gate',
+        status,
+        ...(status === 'completed' ? { conclusion: 'success' } : {}),
+      }],
+    });
+    const input = {
+      targets: [result('main-authorization', 'pending', proxy)],
+      checkRuns: [proxy],
+      pull,
+      trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
+    };
+    expect(planProxyCompletions({
+      ...input,
+      workflowRuns: [sourceRun(77, '2026-07-11T00:00:00Z', 'completed')],
+    })).toHaveLength(1);
+    expect(planProxyCompletions({
+      ...input,
+      workflowRuns: [
+        sourceRun(77, '2026-07-11T00:00:00Z', 'completed'),
+        sourceRun(78, '2026-07-11T00:01:00Z', 'in_progress'),
+      ],
+    })).toEqual([]);
   });
 });
 
