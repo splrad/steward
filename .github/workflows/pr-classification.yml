@@ -56,7 +56,7 @@ jobs:
 
       - name: Classify and converge pull request
         id: steward
-        uses: splrad/steward/action@cd874ad2819bb1a24b4af17b6a5108b56fb728b9
+        uses: splrad/steward/action@5d92dc96e615cb188a61cd25a1bdfe3d8bce5757
         with:
           operation: classification
           github-token: ${{ steps.platform_token.outputs.token }}

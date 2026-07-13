@@ -55,7 +55,7 @@ jobs:
 
       - name: Evaluate DCO sign-offs
         id: steward
-        uses: splrad/steward/action@add0e1652474138b5ab4e9b740f1534095f32785
+        uses: splrad/steward/action@5d92dc96e615cb188a61cd25a1bdfe3d8bce5757
         with:
           operation: dco-advisory
           github-token: ${{ steps.platform_token.outputs.token }}
