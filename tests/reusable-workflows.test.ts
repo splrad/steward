@@ -1,9 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
-const actionSha = 'cd874ad2819bb1a24b4af17b6a5108b56fb728b9';
+const pullRequestActionSha = '5d92dc96e615cb188a61cd25a1bdfe3d8bce5757';
 const automationActionSha = '3a8a41035db1df7795a7546d9708a42d15617104';
-const dcoActionSha = 'add0e1652474138b5ab4e9b740f1534095f32785';
 const cleanupActionSha = 'c0eb1530e2fb3062749c879671514370bae49f37';
 const appTokenSha = 'bcd2ba49218906704ab6c1aa796996da409d3eb1';
 const releaseActionSha = '6e33424e7fb18100145845b49e8ccf2c90d504e0';
@@ -40,18 +39,19 @@ describe('First reusable workflow contracts', () => {
       expect(source, path).not.toContain('secrets: inherit');
       expect(source, path).not.toMatch(/^\s*environment:/m);
     }
-    expect(files['.github/workflows/pr-governance.yml']).toContain(`splrad/steward/action@${actionSha}`);
+    for (const path of [
+      '.github/workflows/pr-classification.yml',
+      '.github/workflows/dco-advisory.yml',
+      '.github/workflows/pr-governance.yml',
+      '.github/workflows/pr-validation-matrix.yml',
+    ] as const) {
+      const pins = [...files[path].matchAll(/splrad\/steward\/action@([0-9a-f]{40})/g)]
+        .map((match) => match[1]);
+      expect(pins.length, path).toBeGreaterThan(0);
+      expect(new Set(pins), path).toEqual(new Set([pullRequestActionSha]));
+    }
     expect(files['.github/workflows/pr-automation.yml']).toContain(
       `splrad/steward/action@${automationActionSha}`,
-    );
-    expect(files['.github/workflows/pr-validation-matrix.yml']).toContain(
-      `splrad/steward/action@${actionSha}`,
-    );
-    expect(files['.github/workflows/pr-classification.yml']).toContain(
-      `splrad/steward/action@${actionSha}`,
-    );
-    expect(files['.github/workflows/dco-advisory.yml']).toContain(
-      `splrad/steward/action@${dcoActionSha}`,
     );
     expect(files['.github/workflows/pr-cleanup.yml']).toContain(
       `splrad/steward/action@${cleanupActionSha}`,
