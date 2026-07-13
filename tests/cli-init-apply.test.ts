@@ -294,6 +294,58 @@ describe('init --apply', () => {
     }
   });
 
+  it('isolates installation proof from repository inventory and mutation credentials', async () => {
+    const repository = new RepositoryState();
+    const installation = new RepositoryState();
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const specFile = fileURLToPath(new URL('./fixtures/cli/init-minimal.json', import.meta.url));
+      const exitCode = await main(
+        ['init', '--apply', '--repo', 'splrad/example', '--spec', specFile],
+        { GH_TOKEN: 'repository-admin-token', STEWARD_APP_USER_TOKEN: 'app-user-token' },
+        {
+          templateDirectory,
+          transport: repository.transport,
+          installationTransport: installation.transport,
+          confirmation: { async confirm() { return false; } },
+        },
+      );
+      expect(exitCode).toBe(1);
+      expect(installation.requests.map((request) => request.path)).toEqual(['/orgs/splrad/installations']);
+      expect(repository.requests.some((request) => request.path.includes('/installations'))).toBe(false);
+      expect(repository.requests.some((request) => request.path.endsWith('/actions/secrets'))).toBe(true);
+      expect(repository.requests.some((request) => request.path.endsWith('/actions/variables'))).toBe(true);
+      expect(repository.mutations()).toEqual([]);
+      expect(installation.mutations()).toEqual([]);
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+  });
+
+  it('never promotes the App proof token into a repository mutation credential', async () => {
+    const repository = new RepositoryState();
+    const installation = new RepositoryState();
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const specFile = fileURLToPath(new URL('./fixtures/cli/init-minimal.json', import.meta.url));
+      const exitCode = await main(
+        ['init', '--apply', '--repo', 'splrad/example', '--spec', specFile],
+        { STEWARD_APP_USER_TOKEN: 'app-user-token' },
+        { templateDirectory, transport: repository.transport, installationTransport: installation.transport },
+      );
+      expect(exitCode).toBe(2);
+      expect(stderr.mock.calls.flat().join('')).toContain('required for init --apply mutations');
+      expect(repository.requests).toEqual([]);
+      expect(installation.requests).toEqual([]);
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+  });
+
   it('creates one atomic branch commit, encrypted missing settings, and one PR, then reuses all state', async () => {
     const state = new RepositoryState();
     const prepared = await readyPlan(state);
@@ -485,22 +537,28 @@ describe('init --apply', () => {
 
   it('runs the complete interactive command path when the confirmed plan remains unchanged', async () => {
     const state = new RepositoryState();
+    const installation = new RepositoryState();
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
       const specFile = fileURLToPath(new URL('./fixtures/cli/init-minimal.json', import.meta.url));
       const exitCode = await main(
         ['init', '--apply', '--repo', 'splrad/example', '--spec', specFile],
-        { GH_TOKEN: 'fake-api-token' },
+        { GH_TOKEN: 'fake-api-token', STEWARD_APP_USER_TOKEN: 'app-user-token' },
         {
           templateDirectory,
           transport: state.transport,
+          installationTransport: installation.transport,
           confirmation: { async confirm() { return true; } },
         },
       );
       expect(exitCode).toBe(0);
       expect(stdout.mock.calls.flat().join('')).toContain('Steward init apply complete: splrad/example');
       expect(stderr).not.toHaveBeenCalled();
+      expect(installation.requests.map((request) => request.path)).toEqual([
+        '/orgs/splrad/installations', '/orgs/splrad/installations',
+      ]);
+      expect(state.requests.some((request) => request.path.includes('/installations'))).toBe(false);
       expect(state.mutations().map((request) => `${request.method} ${request.path}`)).toEqual([
         'POST /repos/splrad/example/git/trees',
         'POST /repos/splrad/example/git/commits',

@@ -176,7 +176,11 @@ function report(repository: string, findings: DoctorFinding[]): DoctorReport {
   return { repository, findings, counts, ok: counts.fail === 0 };
 }
 
-export async function runDoctor(transport: GitHubTransport, options: DoctorOptions): Promise<DoctorReport> {
+export async function runDoctor(
+  transport: GitHubTransport,
+  options: DoctorOptions,
+  installationTransport: GitHubTransport = transport,
+): Promise<DoctorReport> {
   const path = repositoryPath(options.owner, options.repository);
   const findings: DoctorFinding[] = [];
   const repository = await transport.request<RepositoryPayload>({ path });
@@ -264,7 +268,7 @@ export async function runDoctor(transport: GitHubTransport, options: DoctorOptio
   }
 
   let appId = 0;
-  const installation = await inspectAppInstallation(transport, {
+  const installation = await inspectAppInstallation(installationTransport, {
     owner: options.owner,
     repository: options.repository,
     repositoryId,

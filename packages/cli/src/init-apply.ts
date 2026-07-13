@@ -227,6 +227,7 @@ async function verifyReusableBranch(input: {
 
 export async function prepareInitApply(input: {
   transport: GitHubTransport;
+  installationTransport?: GitHubTransport;
   owner: string;
   repository: string;
   spec: InitSpec;
@@ -246,7 +247,7 @@ export async function prepareInitApply(input: {
   if (repository.archived || repository.disabled) throw new Error('init --apply requires an active repository');
   if (repository.permissions?.admin !== true) throw new Error('init --apply requires repository administrator permission');
 
-  const preflight = await inspectAppInstallation(input.transport, {
+  const preflight = await inspectAppInstallation(input.installationTransport ?? input.transport, {
     owner: input.owner,
     repository: input.repository,
     repositoryId,

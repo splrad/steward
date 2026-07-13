@@ -286,6 +286,18 @@ interface CliRuntime {
   confirmation?: ConfirmationPrompt;
   secretPrompt?: SecretPrompt;
   transport?: GitHubTransport;
+  installationTransport?: GitHubTransport;
+}
+
+function installationProofTransport(
+  env: NodeJS.ProcessEnv,
+  runtime: CliRuntime,
+  fallback: GitHubTransport,
+): GitHubTransport {
+  const token = String(env.STEWARD_APP_USER_TOKEN ?? '').trim();
+  return runtime.installationTransport ?? (token
+    ? createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' })
+    : fallback);
 }
 
 export async function main(
@@ -307,13 +319,14 @@ export async function main(
         process.stdout.write(`${args.json ? JSON.stringify(plan, null, 2) : renderInit(plan)}\n`);
         return plan.ok ? 0 : 1;
       }
-      const token = String(env.GH_TOKEN ?? env.GITHUB_TOKEN ?? '').trim();
-      if (!token) throw new Error(`GH_TOKEN or GITHUB_TOKEN is required for init --${args.mode}`);
       const [owner, repository] = args.repository.split('/') as [string, string];
       if (args.mode === 'apply') {
+        const token = String(env.GH_TOKEN ?? env.GITHUB_TOKEN ?? '').trim();
+        if (!token) throw new Error('GH_TOKEN or GITHUB_TOKEN is required for init --apply mutations');
         const transport = runtime.transport ?? createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' });
+        const installationTransport = installationProofTransport(env, runtime, transport);
         const prepared = await prepareInitApply({
-          transport, owner, repository, spec, templateDirectory: runtime.templateDirectory,
+          transport, installationTransport, owner, repository, spec, templateDirectory: runtime.templateDirectory,
         });
         if (prepared.status === 'blocked') {
           process.stdout.write(`${renderAppPreflight(prepared.preflight, 'init apply preflight')}\n`);
@@ -329,7 +342,7 @@ export async function main(
           .filter((requirement) => prepared.plan.missingSecrets.includes(requirement.name));
         return await withSecrets(requirements, runtime.secretPrompt ?? new TerminalSecretPrompt(), async (vault) => {
           const refreshed = await prepareInitApply({
-            transport, owner, repository, spec, templateDirectory: runtime.templateDirectory,
+            transport, installationTransport, owner, repository, spec, templateDirectory: runtime.templateDirectory,
           });
           if (refreshed.status !== 'ready' || refreshed.plan.fingerprint !== prepared.plan.fingerprint) {
             throw new Error('init --apply plan changed after confirmation; no mutations were sent');
@@ -339,8 +352,13 @@ export async function main(
           return 0;
         });
       }
+      const token = String(env.STEWARD_APP_USER_TOKEN ?? env.GH_TOKEN ?? env.GITHUB_TOKEN ?? '').trim();
+      if (!token) {
+        throw new Error('STEWARD_APP_USER_TOKEN, GH_TOKEN, or GITHUB_TOKEN is required for init --preflight');
+      }
+      const transport = runtime.transport ?? createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' });
       const preflight = await runAppInstallationPreflight(
-        createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' }),
+        installationProofTransport(env, runtime, transport),
         { owner, repository, manifest: spec.manifest },
       );
       process.stdout.write(`${args.json ? JSON.stringify(preflight, null, 2) : renderAppPreflight(preflight)}\n`);
@@ -351,9 +369,10 @@ export async function main(
     const [owner, repository] = args.repository.split('/') as [string, string];
     if (args.command === 'activate') {
       const transport = runtime.transport ?? createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' });
+      const installationTransport = installationProofTransport(env, runtime, transport);
       const prepared = await prepareActivate(transport, {
         owner, repository, pullRequest: args.pullRequest,
-      });
+      }, installationTransport);
       if (prepared.status === 'dispatch-required') {
         await dispatchActivate(transport, prepared.plan);
         process.stdout.write([
@@ -377,7 +396,7 @@ export async function main(
       }
       const refreshed = await prepareActivate(transport, {
         owner, repository, pullRequest: args.pullRequest,
-      });
+      }, installationTransport);
       if (refreshed.status !== 'ready' || refreshed.plan.fingerprint !== prepared.plan.fingerprint) {
         throw new Error('activate plan changed after confirmation; no ruleset mutation was sent');
       }
@@ -411,9 +430,10 @@ export async function main(
       process.stdout.write(`${renderUpgradeReport(report)}\n`);
       return 0;
     }
-    const report = await runDoctor(createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' }), {
+    const transport = runtime.transport ?? createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' });
+    const report = await runDoctor(transport, {
       owner, repository, ...(args.pullRequest === undefined ? {} : { pullRequest: args.pullRequest }),
-    });
+    }, installationProofTransport(env, runtime, transport));
     process.stdout.write(`${args.json ? JSON.stringify(report, null, 2) : render(report)}\n`);
     return report.ok ? 0 : 1;
   } catch (error) {

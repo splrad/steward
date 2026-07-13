@@ -96,6 +96,36 @@ describe('doctor CLI contract', () => {
     expect(setup.requests.every((request) => !request.method || request.method === 'GET')).toBe(true);
   });
 
+  it('isolates selected-installation proof from the repository inventory transport', async () => {
+    const setup = transportFor();
+    const installationRequests: GitHubRequest[] = [];
+    const installationTransport: GitHubTransport = {
+      async request<T>(request: GitHubRequest): Promise<T> {
+        installationRequests.push(structuredClone(request));
+        if (request.path !== '/orgs/splrad/installations') {
+          throw new Error(`Unexpected installation request: ${request.path}`);
+        }
+        return { installations: [{
+          id: 9,
+          app_id: 42,
+          app_slug: 'splrad-steward',
+          client_id: 'Iv23liuSr0qd4WLJdZhH',
+          repository_selection: 'all',
+          suspended_at: null,
+          permissions: { checks: 'write', contents: 'write', pull_requests: 'write', issues: 'write', members: 'read', actions: 'write' },
+        }] } as T;
+      },
+    };
+    const report = await runDoctor(
+      setup.transport,
+      { owner: 'splrad', repository: 'example', pullRequest: 3 },
+      installationTransport,
+    );
+    expect(report.findings.find((item) => item.code === 'app.installation')?.level).toBe('pass');
+    expect(installationRequests.map((request) => request.path)).toEqual(['/orgs/splrad/installations']);
+    expect(setup.requests.some((request) => request.path.includes('/installations'))).toBe(false);
+  });
+
   it('fails on pin, secret, App Check, and ruleset drift with actionable findings', async () => {
     const setup = transportFor({
       '/repos/splrad/example/actions/secrets': { secrets: [] },

@@ -76,6 +76,7 @@ function dedicatedRequiredChecks() {
 
 class ActivateState {
   readonly requests: GitHubRequest[] = [];
+  readonly installationRequests: GitHubRequest[] = [];
   admin = true;
   appInstalled = true;
   trustedCheck = true;
@@ -109,6 +110,26 @@ class ActivateState {
     request: async <T>(request: GitHubRequest): Promise<T> => {
       this.requests.push(structuredClone(request));
       return this.handle(request) as T;
+    },
+  };
+
+  readonly installationTransport: GitHubTransport = {
+    request: async <T>(request: GitHubRequest): Promise<T> => {
+      this.installationRequests.push(structuredClone(request));
+      if (request.path !== '/orgs/splrad/installations') {
+        throw new Error(`Unexpected installation request: ${request.method ?? 'GET'} ${request.path}`);
+      }
+      return { installations: this.appInstalled ? [{
+        id: 9,
+        app_id: 42,
+        app_slug: 'splrad-steward',
+        client_id: 'Iv23liuSr0qd4WLJdZhH',
+        repository_selection: 'all',
+        suspended_at: null,
+        permissions: {
+          checks: 'write', contents: 'read', pull_requests: 'write', issues: 'write', members: 'read', actions: 'write',
+        },
+      }] : [] } as T;
     },
   };
 
@@ -391,6 +412,41 @@ describe('activate command', () => {
     expect(state.mutations()).toHaveLength(1);
     expect(state.mutations()[0]?.method).toBe('PUT');
     expect(state.mutations()[0]?.path).toBe('/repos/splrad/example/rulesets/5');
+  });
+
+  it('isolates App installation proof from repository administration and revalidates both before mutation', async () => {
+    const state = new ActivateState();
+    const exit = await main(
+      ['activate', '--repo', 'splrad/example', '--pr', '3'],
+      { GH_TOKEN: 'repository-admin-token', STEWARD_APP_USER_TOKEN: 'app-user-token' },
+      {
+        templateDirectory: '.',
+        transport: state.transport,
+        installationTransport: state.installationTransport,
+        confirmation: { confirm: async () => true },
+      },
+    );
+    expect(exit).toBe(0);
+    expect(state.installationRequests.map((request) => request.path))
+      .toEqual(['/orgs/splrad/installations', '/orgs/splrad/installations']);
+    expect(state.requests.some((request) => request.path.includes('/installations'))).toBe(false);
+    expect(state.mutations()).toHaveLength(1);
+  });
+
+  it('never promotes an App user token into the activate mutation credential', async () => {
+    const state = new ActivateState();
+    expect(await main(
+      ['activate', '--repo', 'splrad/example', '--pr', '3'],
+      { STEWARD_APP_USER_TOKEN: 'app-user-token' },
+      {
+        templateDirectory: '.',
+        transport: state.transport,
+        installationTransport: state.installationTransport,
+        confirmation: { confirm: async () => true },
+      },
+    )).toBe(2);
+    expect(state.requests).toEqual([]);
+    expect(state.installationRequests).toEqual([]);
   });
 
   it('does not mutate after cancellation or after a post-confirmation plan drift', async () => {
