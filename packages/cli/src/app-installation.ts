@@ -138,27 +138,39 @@ export async function inspectAppInstallation(
   const slug = options.manifest.automation.githubApp.slug;
   const newInstallationUrl = installationUrl(slug);
   const organization = options.ownerType.toLowerCase() === 'organization';
-  const installations = organization
-    ? await pagedRequest<{ installations?: InstallationPayload[] }, InstallationPayload>(
+  let installations: InstallationPayload[] | null;
+  let accountScoped = false;
+  if (organization) {
+    installations = await pagedRequest<{ installations?: InstallationPayload[] }, InstallationPayload>(
       transport,
       { path: `/orgs/${segment(options.ownerLogin)}/installations` },
       (payload) => payload.installations ?? [],
-    )
-    : await pagedRequest<{ installations?: InstallationPayload[] }, InstallationPayload>(
+    );
+    accountScoped = installations !== null;
+    if (!installations) {
+      installations = await pagedRequest<{ installations?: InstallationPayload[] }, InstallationPayload>(
+        transport,
+        { path: '/user/installations' },
+        (payload) => payload.installations ?? [],
+      );
+    }
+  } else {
+    installations = await pagedRequest<{ installations?: InstallationPayload[] }, InstallationPayload>(
       transport,
       { path: '/user/installations' },
       (payload) => payload.installations ?? [],
     );
+  }
   if (!installations) {
     return unknown(options, organization
-      ? '当前 token 无法读取组织 GitHub App installations；需要组织管理员权限和 read:org。'
-      : '当前 token 无法读取用户 GitHub App installations；需要兼容该端点的 GitHub App user token 或 personal access token。');
+      ? '当前 token 既无法读取组织 GitHub App installations，也无法读取当前用户可访问的 installations；selected installation 必须使用 GitHub App user access token。'
+      : '当前 token 无法读取用户 GitHub App installations；该端点只接受 GitHub App user access token。');
   }
 
   const installation = installations.find((candidate) => (
     String(candidate.client_id ?? '') === options.manifest.automation.githubApp.clientId
     && String(candidate.app_slug ?? '').toLowerCase() === slug.toLowerCase()
-    && (organization || String(candidate.account?.login ?? '').toLowerCase() === options.ownerLogin.toLowerCase())
+    && (accountScoped || String(candidate.account?.login ?? '').toLowerCase() === options.ownerLogin.toLowerCase())
   ));
   if (!installation) {
     return {
@@ -220,7 +232,7 @@ export async function inspectAppInstallation(
     (payload) => payload.repositories ?? [],
   );
   if (!repositories) {
-    return unknown(options, '当前 token 无法验证 selected installation 的仓库范围；普通 GitHub CLI OAuth token 不适用，需改用兼容的 GitHub App user token 或 personal access token。');
+    return unknown(options, '当前 token 无法验证 selected installation 的仓库范围；该端点只接受 GitHub App user access token，PAT 和普通 GitHub CLI OAuth token 均不适用。');
   }
   const selected = repositories.some((candidate) => (
     Number(candidate.id ?? 0) === options.repositoryId
