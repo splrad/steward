@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 
-const pullRequestActionSha = '00820057afd9f74600a5184f24f4aa4d96e3db3f';
+const pullRequestActionSha = '75175625dce987b199e7885fe7cfc4558318c0cd';
 const automationActionSha = '3a8a41035db1df7795a7546d9708a42d15617104';
 const cleanupActionSha = 'c0eb1530e2fb3062749c879671514370bae49f37';
 const appTokenSha = 'bcd2ba49218906704ab6c1aa796996da409d3eb1';
