@@ -76,7 +76,10 @@ export class PullRequestStateMismatchError extends Error {
     readonly actualState: string,
   ) {
     const article = expectedState === 'open' ? 'an' : 'a';
-    super(`Steward operation only accepts ${article} ${expectedState} pull request`);
+    super(
+      `Steward operation only accepts ${article} ${expectedState} pull request; `
+      + `pull request #${pullNumber} has state ${JSON.stringify(actualState)}`,
+    );
     this.name = 'PullRequestStateMismatchError';
   }
 }

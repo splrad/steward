@@ -97,6 +97,8 @@ describe('Steward Action bootstrap', () => {
       },
       { GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: 'workflow_dispatch' },
       closedPullRequestFetch as unknown as typeof fetch,
-    )).rejects.toThrow('only accepts an open pull request');
+    )).rejects.toThrow(
+      'only accepts an open pull request; pull request #7 has state "closed"',
+    );
   });
 });
