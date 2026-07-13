@@ -176,12 +176,12 @@ describe('First reusable workflow contracts', () => {
     expect(dco.match(/^\s*uses:/gm)).toHaveLength(2);
   });
 
-  it('limits Cleanup to closed-PR evidence, maintainer lookup, and App-owned comments', async () => {
+  it('gives Cleanup the PR write permission required to create its merged notification', async () => {
     const cleanup = (await workflows())['.github/workflows/pr-cleanup.yml'];
     expect(cleanup).toContain('name: Clean Up Closed Pull Request');
     expect(cleanup).toContain('operation: cleanup');
     expect(cleanup).toContain('permission-contents: read');
-    expect(cleanup).toContain('permission-pull-requests: read');
+    expect(cleanup).toContain('permission-pull-requests: write');
     expect(cleanup).toContain('permission-members: read');
     expect(cleanup).toContain('permission-issues: write');
     expect(cleanup).not.toContain('permission-checks: write');
