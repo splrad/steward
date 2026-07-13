@@ -80,7 +80,7 @@ jobs:
 
       - name: Load trusted Manifest feature switches
         id: steward
-        uses: splrad/steward/action@75175625dce987b199e7885fe7cfc4558318c0cd
+        uses: splrad/steward/action@a77408f925666d273efc3250caec8cabe174eb15
         with:
           operation: governance-preflight
           github-token: ${{ steps.platform_token.outputs.token }}
@@ -106,7 +106,7 @@ jobs:
           permission-pull-requests: read
 
       - name: Request official Copilot reviewer
-        uses: splrad/steward/action@75175625dce987b199e7885fe7cfc4558318c0cd
+        uses: splrad/steward/action@a77408f925666d273efc3250caec8cabe174eb15
         with:
           operation: governance-request-copilot
           github-token: ${{ steps.platform_token.outputs.token }}
@@ -134,7 +134,7 @@ jobs:
           permission-pull-requests: read
 
       - name: Submit eligible core approval
-        uses: splrad/steward/action@75175625dce987b199e7885fe7cfc4558318c0cd
+        uses: splrad/steward/action@a77408f925666d273efc3250caec8cabe174eb15
         with:
           operation: governance-auto-approve
           github-token: ${{ steps.platform_token.outputs.token }}
@@ -168,7 +168,7 @@ jobs:
 
       - name: Evaluate Main Authorization
         id: steward
-        uses: splrad/steward/action@75175625dce987b199e7885fe7cfc4558318c0cd
+        uses: splrad/steward/action@a77408f925666d273efc3250caec8cabe174eb15
         with:
           operation: governance-main
           github-token: ${{ steps.platform_token.outputs.token }}
@@ -201,7 +201,7 @@ jobs:
 
       - name: Evaluate Copilot review state
         id: steward
-        uses: splrad/steward/action@75175625dce987b199e7885fe7cfc4558318c0cd
+        uses: splrad/steward/action@a77408f925666d273efc3250caec8cabe174eb15
         with:
           operation: governance-copilot
           github-token: ${{ steps.platform_token.outputs.token }}
