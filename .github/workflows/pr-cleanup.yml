@@ -52,8 +52,8 @@ jobs:
           permission-contents: read
           permission-issues: write
           permission-members: read
-          # GitHub currently rejects POSTing a PR timeline comment when this is
-          # read-only, even with Issues: write; Cleanup publishes one merged notice.
+          # GitHub currently rejects POST /issues/{pull_number}/comments when this
+          # is read-only, even with Issues: write; Cleanup publishes one merged notice.
           permission-pull-requests: write
 
       - name: Clean up closed pull request state
