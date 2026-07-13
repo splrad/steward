@@ -78,7 +78,7 @@ describe('init --dry-run', () => {
       .toMatchInlineSnapshot(`
         [
           {
-            "digest": "5e54c7e473646e7b15345ac8dc7749922495be1cac57135cdf3cde5e4d20911f",
+            "digest": "2af2a701bd85b0fd7e5d5ed8baad3e4fd4e0e117c6ae9670a21c15bca8cf24c5",
             "path": ".github/dependabot.yml",
             "status": "create",
           },
@@ -149,6 +149,8 @@ describe('init --dry-run', () => {
     }
     expect(first.files.find((file) => file.path === '.github/steward/release.mjs')?.content)
       .toContain('not implemented');
+    expect(first.files.find((file) => file.path === '.github/dependabot.yml')?.content)
+      .toContain('"splrad/steward/.github/workflows/*"');
     expect(await readdir(directory)).toEqual([]);
   });
 

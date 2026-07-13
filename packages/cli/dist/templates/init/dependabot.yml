@@ -4,4 +4,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      steward-workflows:
+        patterns:
+          - "splrad/steward/.github/workflows/*"
     open-pull-requests-limit: 5
