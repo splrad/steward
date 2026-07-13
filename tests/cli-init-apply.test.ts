@@ -7,6 +7,7 @@ import {
   encryptRepositorySecret,
   executeInitApply,
   prepareInitApply,
+  readPaginatedCommitFiles,
 } from '../packages/cli/src/init-apply.js';
 import { parseInitSpec, type InitSpec } from '../packages/cli/src/init.js';
 import { main, parseArguments } from '../packages/cli/src/main.js';
@@ -223,6 +224,31 @@ async function readyPlan(state: RepositoryState): Promise<Awaited<ReturnType<typ
 }
 
 describe('init --apply', () => {
+  it('reads distinct commit-file pages while requiring stable commit metadata', async () => {
+    const requests: GitHubRequest[] = [];
+    const first = Array.from({ length: 100 }, (_, index) => ({ filename: `created-${index}.txt`, status: 'added' }));
+    const second = [{ filename: 'removed-100.txt', status: 'removed' }];
+    const transport: GitHubTransport = {
+      request: async <T>(request: GitHubRequest): Promise<T> => {
+        requests.push(request);
+        const page = Number(request.query?.page ?? 0);
+        return {
+          sha: branchSha,
+          parents: [{ sha: baseSha }],
+          files: page === 1 ? first : page === 2 ? second : [],
+        } as T;
+      },
+    };
+    const commit = await readPaginatedCommitFiles(transport, '/repos/splrad/example', branchSha);
+    expect(commit.files).toHaveLength(101);
+    expect(commit.files?.[0]?.filename).toBe('created-0.txt');
+    expect(commit.files?.[100]?.filename).toBe('removed-100.txt');
+    expect(requests.map((request) => request.query)).toEqual([
+      { page: 1, per_page: 100 },
+      { page: 2, per_page: 100 },
+    ]);
+  });
+
   it('requires one explicit mutation mode and rejects JSON apply output', () => {
     expect(parseArguments(['init', '--apply', '--repo', 'splrad/example', '--spec', 'init.json']))
       .toEqual({ command: 'init', mode: 'apply', apply: true, repository: 'splrad/example', spec: 'init.json' });

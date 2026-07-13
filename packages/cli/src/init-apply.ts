@@ -161,6 +161,34 @@ async function remoteContent(
   return existing ? decodeFile(existing) : null;
 }
 
+export async function readPaginatedCommitFiles(
+  transport: GitHubTransport,
+  path: string,
+  commitSha: string,
+): Promise<RepositoryCommitPayload> {
+  let observedSha = '';
+  let parents: Array<{ sha?: string }> = [];
+  const files: Array<{ filename?: string; status?: string }> = [];
+  // GitHub's default JSON media type paginates commit files and repeats the static commit metadata on every page.
+  for (let page = 1; page <= 20; page += 1) {
+    const commit = await transport.request<RepositoryCommitPayload>({
+      path: `${path}/commits/${segment(commitSha)}`,
+      query: { page, per_page: 100 },
+    });
+    if (page === 1) {
+      observedSha = String(commit.sha ?? '');
+      parents = commit.parents ?? [];
+    } else if (commit.sha !== observedSha || JSON.stringify(commit.parents ?? []) !== JSON.stringify(parents)) {
+      throw new Error(`GitHub returned inconsistent pages for ${initBranch}`);
+    }
+    const batch = commit.files ?? [];
+    files.push(...batch);
+    if (batch.length < 100) return { sha: observedSha, parents, files };
+    if (page === 20) throw new Error(`Existing branch ${initBranch} exceeded the 20-page file safety limit`);
+  }
+  throw new Error(`Existing branch ${initBranch} file pagination ended unexpectedly`);
+}
+
 async function verifyReusableBranch(input: {
   transport: GitHubTransport;
   path: string;
@@ -168,25 +196,10 @@ async function verifyReusableBranch(input: {
   baseSha: string;
   files: InitPlannedFile[];
 }): Promise<void> {
-  let commitSha = '';
-  let parents: Array<{ sha?: string }> = [];
-  const actualFiles: Array<{ filename?: string; status?: string }> = [];
-  for (let page = 1; page <= 20; page += 1) {
-    const commit = await input.transport.request<RepositoryCommitPayload>({
-      path: `${input.path}/commits/${segment(input.branchSha)}`,
-      query: { page, per_page: 100 },
-    });
-    if (page === 1) {
-      commitSha = String(commit.sha ?? '');
-      parents = commit.parents ?? [];
-    } else if (commit.sha !== commitSha || JSON.stringify(commit.parents ?? []) !== JSON.stringify(parents)) {
-      throw new Error(`GitHub returned inconsistent pages for ${initBranch}`);
-    }
-    const batch = commit.files ?? [];
-    actualFiles.push(...batch);
-    if (batch.length < 100) break;
-    if (page === 20) throw new Error(`Existing branch ${initBranch} exceeded the 20-page file safety limit`);
-  }
+  const commit = await readPaginatedCommitFiles(input.transport, input.path, input.branchSha);
+  const commitSha = String(commit.sha ?? '');
+  const parents = commit.parents ?? [];
+  const actualFiles = commit.files ?? [];
   const expectedFiles = input.files
     .filter((file) => file.status === 'create' || file.status === 'replace' || file.status === 'delete')
     .map((file) => ({
