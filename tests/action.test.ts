@@ -47,6 +47,25 @@ const closedPullRequestFetch = vi.fn(async (request: string | URL | Request) => 
   return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 });
 });
 
+const advancedHeadFetch = vi.fn(async (request: string | URL | Request) => {
+  const path = new URL(String(request)).pathname;
+  if (path === '/repos/splrad/steward') {
+    return new Response(JSON.stringify({ id: 1296724484, full_name: 'splrad/steward', default_branch: 'main' }));
+  }
+  if (path === '/repos/splrad/steward/contents/.github/steward.json') {
+    return new Response(JSON.stringify({ type: 'file', encoding: 'base64', content: encodedManifest, sha: 'blob' }));
+  }
+  if (path === '/repos/splrad/steward/pulls/7') {
+    return new Response(JSON.stringify({
+      number: 7,
+      state: 'open',
+      base: { ref: 'main', sha: 'b'.repeat(40) },
+      head: { ref: 'feature/advanced', sha: 'd'.repeat(40) },
+    }));
+  }
+  return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 });
+});
+
 describe('Steward Action bootstrap', () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -100,5 +119,33 @@ describe('Steward Action bootstrap', () => {
     )).rejects.toThrow(
       'only accepts an open pull request; pull request #7 has state "closed"',
     );
+  });
+
+  it('ignores a stale automatic workflow run after the pull request head advances', async () => {
+    const core = await import('@actions/core');
+    await run(
+      {
+        operation: 'matrix',
+        token: 'platform-token',
+        eventPath: 'tests/fixtures/action-workflow-run-event.json',
+      },
+      { GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: 'workflow_run' },
+      advancedHeadFetch as unknown as typeof fetch,
+    );
+    expect(core.setOutput).toHaveBeenCalledWith('state', 'ignored');
+    expect(core.setOutput).toHaveBeenCalledWith('operation-result', expect.stringContaining('pull-request-head-advanced'));
+  });
+
+  it('still rejects a manual dispatch targeting an older pull request head', async () => {
+    await expect(run(
+      {
+        operation: 'classification',
+        token: 'platform-token',
+        eventPath: 'tests/fixtures/action-event.json',
+        headSha: 'c'.repeat(40),
+      },
+      { GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: 'workflow_dispatch' },
+      advancedHeadFetch as unknown as typeof fetch,
+    )).rejects.toThrow('Pull request #7 head');
   });
 });

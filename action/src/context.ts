@@ -84,6 +84,20 @@ export class PullRequestStateMismatchError extends Error {
   }
 }
 
+export class PullRequestHeadMismatchError extends Error {
+  constructor(
+    readonly pullNumber: number,
+    readonly expectedHead: string,
+    readonly actualHead: string,
+  ) {
+    super(
+      `Pull request #${pullNumber} head ${JSON.stringify(actualHead)} `
+      + `does not match trusted head ${JSON.stringify(expectedHead)}`,
+    );
+    this.name = 'PullRequestHeadMismatchError';
+  }
+}
+
 function positiveInteger(value: unknown): number {
   const number = Number(value ?? 0);
   return Number.isSafeInteger(number) && number > 0 ? number : 0;
@@ -247,7 +261,7 @@ export async function createOperationContext(input: {
   }
   if (expectedHead && !/^[a-f0-9]{40}$/.test(expectedHead)) throw new Error('Trusted event has an invalid expected head SHA');
   if (expectedHead && pull.head.sha.toLowerCase() !== expectedHead) {
-    throw new Error('Pull request head does not match the trusted event or manual input');
+    throw new PullRequestHeadMismatchError(pull.number, expectedHead, pull.head.sha.toLowerCase());
   }
   const serverUrl = input.environment.GITHUB_SERVER_URL?.replace(/\/$/, '') || 'https://github.com';
   const runId = input.environment.GITHUB_RUN_ID?.trim();

@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import { operationDefinitions, parseOperation, type StewardActionInputs } from './contracts.js';
 import {
   createOperationContext,
+  PullRequestHeadMismatchError,
   PullRequestStateMismatchError,
   type StewardRuntimeEnvironment,
 } from './context.js';
@@ -37,6 +38,27 @@ function staleClosedPullRequestResult(
     state: 'ignored' as const,
     summary: `Stale ${eventName} event ignored because PR #${error.pullNumber} is closed`,
     details: { pullNumber: error.pullNumber, eventName, reason: 'pull-request-closed' },
+  };
+}
+
+function staleHeadResult(
+  operation: ReturnType<typeof parseOperation>,
+  eventName: string,
+  error: unknown,
+) {
+  if (!(error instanceof PullRequestHeadMismatchError)
+    || !automaticOpenPullRequestEvents.has(eventName)) return null;
+  return {
+    operation,
+    state: 'ignored' as const,
+    summary: `Stale ${eventName} event ignored because PR #${error.pullNumber} advanced to a new head`,
+    details: {
+      pullNumber: error.pullNumber,
+      eventName,
+      reason: 'pull-request-head-advanced',
+      expectedHead: error.expectedHead,
+      actualHead: error.actualHead,
+    },
   };
 }
 
@@ -147,7 +169,9 @@ export async function run(
       ...(operation === 'cleanup' ? { pullState: 'closed' as const } : {}),
     });
   } catch (error) {
-    const result = staleClosedPullRequestResult(operation, environment.GITHUB_EVENT_NAME?.trim() || '', error);
+    const eventName = environment.GITHUB_EVENT_NAME?.trim() || '';
+    const result = staleClosedPullRequestResult(operation, eventName, error)
+      ?? staleHeadResult(operation, eventName, error);
     if (!result) throw error;
     core.setOutput('state', result.state);
     core.setOutput('operation-result', JSON.stringify(result));

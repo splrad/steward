@@ -348,6 +348,7 @@ describe('Matrix state and repair planning', () => {
     expect(planProxyCompletions({
       workflowRun,
       targets: [result('main-authorization', 'pending', proxy)],
+      checkRuns: [proxy],
       pull,
       trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
     })).toEqual([{
@@ -361,6 +362,7 @@ describe('Matrix state and repair planning', () => {
     expect(planProxyCompletions({
       workflowRun: { ...workflowRun, name: `PR Validation Target #122 / ${pull.head.sha}` },
       targets: [result('main-authorization', 'pending', proxy)],
+      checkRuns: [proxy],
       pull,
       trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
     })).toEqual([]);
@@ -370,15 +372,65 @@ describe('Matrix state and repair planning', () => {
         ...proxy,
         external_id: legacyProxyExternalId(target('copilot-review-gate'), pull, inputDigest),
       })],
+      checkRuns: [proxy],
       pull,
       trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: true },
     })).toEqual([]);
     expect(planProxyCompletions({
       workflowRun,
       targets: [{ ...result('main-authorization', 'pending', proxy), acceptableConclusions: [] }],
+      checkRuns: [proxy],
       pull,
       trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
     })[0]?.conclusion).toBe('success');
+  });
+
+  it('matches the exact reusable-workflow job suffix and completes every identical active proxy', () => {
+    const external_id = stewardCheckExternalId({
+      repositoryId: 42,
+      prNumber: pull.number,
+      headSha: pull.head.sha,
+      checkId: 'main-authorization',
+      configDigest,
+      inputDigest,
+    });
+    const proxies = [901, 902].map((id) => check('Main Authorization Gate', 'waiting', '', {
+      id, external_id, app: { slug: appSlug },
+    }));
+    const baseWorkflowRun = {
+      id: 77,
+      name: `PR Validation Target #${pull.number} / ${pull.head.sha}`,
+      path: '.github/workflows/pr-governance.yml',
+      event: 'workflow_dispatch',
+    };
+    const plans = planProxyCompletions({
+      workflowRun: {
+        ...baseWorkflowRun,
+        jobs: [{ id: 88, name: 'govern / Main Authorization Gate', status: 'completed', conclusion: 'success' }],
+      },
+      targets: [result('main-authorization', 'pending', proxies[1])],
+      checkRuns: proxies,
+      pull,
+      trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
+    });
+    expect(plans.map((plan) => plan.checkRunId)).toEqual([901, 902]);
+
+    for (const name of [
+      'malicious Main Authorization Gate',
+      'govern / nested / Main Authorization Gate',
+      'govern / Main Authorization Gate / injected',
+    ]) {
+      expect(planProxyCompletions({
+        workflowRun: {
+          ...baseWorkflowRun,
+          jobs: [{ id: 88, name, status: 'completed', conclusion: 'success' }],
+        },
+        targets: [result('main-authorization', 'pending', proxies[1])],
+        checkRuns: proxies,
+        pull,
+        trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
+      })).toEqual([]);
+    }
   });
 });
 
