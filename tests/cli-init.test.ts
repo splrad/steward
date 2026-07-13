@@ -93,7 +93,7 @@ describe('init --dry-run', () => {
             "status": "create",
           },
           {
-            "digest": "deafd737c5e5f35053ab782fbba80b357c79f185c0ffee209fc2ab64cd6bc413",
+            "digest": "bf55320041046dc30c41a622eea03d88719bb3c5bfe9d6be9d466cffb39e76a6",
             "path": ".github/workflows/pr-automation.yml",
             "status": "create",
           },

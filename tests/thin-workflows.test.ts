@@ -72,10 +72,11 @@ describe('thin caller workflow templates', () => {
     expect(governance).toContain('core_auto_approval_token: ${{ secrets.CORE_AUTO_APPROVAL_TOKEN }}');
   });
 
-  it('routes only live non-default human branch pushes into Automation', async () => {
+  it('does not trigger Automation for the bootstrap branch and routes only live non-default human pushes', async () => {
     const automation = (await templates())['templates/thin-workflows/pr-automation.yml'];
     expect(automation).toContain('push:');
-    expect(automation).toContain("- '**'");
+    expect(automation).toContain('branches-ignore:');
+    expect(automation).toContain("- 'steward/init'");
     expect(automation).toContain('github.event.deleted == false');
     expect(automation).toContain('github.ref_name != github.event.repository.default_branch');
     expect(automation).toContain("!endsWith(github.actor, '[bot]')");
