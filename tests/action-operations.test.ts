@@ -23,6 +23,7 @@ import {
 } from '../action/src/contracts.js';
 import {
   graphqlApiBase,
+  PullRequestHeadMismatchError,
   PullRequestStateMismatchError,
   createOperationContext,
   resolveExpectedHead,
@@ -245,6 +246,17 @@ describe('Action operation contract', () => {
     );
   });
 
+  it('reports pull request head mismatch evidence with the pull request identity', () => {
+    const error = new PullRequestHeadMismatchError(7, 'c'.repeat(40), 'd'.repeat(40));
+    expect(error).toMatchObject({
+      name: 'PullRequestHeadMismatchError',
+      pullNumber: 7,
+      expectedHead: 'c'.repeat(40),
+      actualHead: 'd'.repeat(40),
+    });
+    expect(error.message).toContain('Pull request #7 head');
+  });
+
   it('requires an explicit token and validates repository, default branch, and head from live metadata', async () => {
     const eventPath = 'tests/fixtures/action-event.json';
     const encodedManifest = Buffer.from(JSON.stringify(manifest().manifest)).toString('base64');
@@ -338,7 +350,7 @@ describe('Action operation contract', () => {
     liveRepositoryId = 1296724484;
 
     liveHeadSha = 'd'.repeat(40);
-    await expect(dispatchContext()).rejects.toThrow('head does not match');
+    await expect(dispatchContext()).rejects.toThrow('Pull request #7 head');
     liveHeadSha = 'c'.repeat(40);
 
     liveBaseRef = 'develop';
@@ -1150,7 +1162,7 @@ describe('Action operation contract', () => {
     });
     fixture.client.listWorkflowJobs!.mockResolvedValue([{
       id: 81,
-      name: 'Main Authorization Gate',
+      name: 'govern / Main Authorization Gate',
       status: 'completed',
       conclusion: 'success',
       html_url: 'https://github.example/job/81',
@@ -1158,6 +1170,13 @@ describe('Action operation contract', () => {
     fixture.client.listCommitCheckRuns!.mockResolvedValue([
       {
         id: 90,
+        name: 'Main Authorization Gate',
+        status: 'in_progress',
+        external_id: identity('main-authorization'),
+        app: { slug: 'splrad-steward' },
+      },
+      {
+        id: 89,
         name: 'Main Authorization Gate',
         status: 'in_progress',
         external_id: identity('main-authorization'),
@@ -1176,6 +1195,9 @@ describe('Action operation contract', () => {
     const result = await executeOperation('matrix', fixture.context, { operation: 'matrix' });
     expect(result.state).toBe('passed');
     expect(fixture.client.updateCheckRun).toHaveBeenCalledWith('splrad', 'steward', 90, expect.objectContaining({
+      status: 'completed', conclusion: 'success',
+    }));
+    expect(fixture.client.updateCheckRun).toHaveBeenCalledWith('splrad', 'steward', 89, expect.objectContaining({
       status: 'completed', conclusion: 'success',
     }));
     expect(fixture.client.createCheckRun).toHaveBeenCalledWith('splrad', 'steward', expect.objectContaining({

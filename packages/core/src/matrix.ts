@@ -331,6 +331,18 @@ function activeProxy(target: MatrixTargetResult, pull: MatrixPull): boolean {
     && proxyMatchesTarget(target, target.checkRun!, pull);
 }
 
+function workflowJobMatches(candidateName: unknown, targetName: string): boolean {
+  const candidate = String(candidateName ?? '');
+  if (candidate === targetName) return true;
+  const suffix = ` / ${targetName}`;
+  if (!candidate.endsWith(suffix)) return false;
+  const callerJob = candidate.slice(0, -suffix.length);
+  return callerJob.length > 0
+    && callerJob === callerJob.trim()
+    && !callerJob.includes('/')
+    && !/[\r\n]/.test(callerJob);
+}
+
 function latestWorkflowJob(
   runs: readonly MatrixWorkflowRun[],
   target: MatrixTargetConfiguration,
@@ -340,7 +352,7 @@ function latestWorkflowJob(
     workflowRunMatchesTarget(run, target) && legacyWorkflowRunMatchesPull(run, pull)
   )).sort((left, right) => String(left.created_at ?? '').localeCompare(String(right.created_at ?? ''))).reverse();
   for (const run of matchingRuns) {
-    const job = run.jobs?.find((candidate) => candidate.name === target.jobName);
+    const job = run.jobs?.find((candidate) => workflowJobMatches(candidate.name, target.jobName));
     if (job) return job;
   }
   return null;
@@ -417,6 +429,7 @@ export function planMatrixRepairs(input: {
 export function planProxyCompletions(input: {
   workflowRun: MatrixWorkflowRun;
   targets: readonly MatrixTargetResult[];
+  checkRuns: readonly MatrixCheckRun[];
   pull: MatrixPull;
   trust: MatrixTrustContext;
 }): MatrixProxyCompletionPlan[] {
@@ -427,19 +440,31 @@ export function planProxyCompletions(input: {
       || !isTrustedMatrixCheck({ run: target.checkRun, target, pull: input.pull, trust: input.trust })
       || !workflowRunMatchesTarget(input.workflowRun, target)
       || !legacyWorkflowRunMatchesPull(input.workflowRun, input.pull)) continue;
-    const job = input.workflowRun.jobs?.find((candidate) => candidate.name === target.jobName);
+    const job = input.workflowRun.jobs?.find((candidate) => workflowJobMatches(candidate.name, target.jobName));
     if (!job?.id || job.status !== 'completed' || !job.conclusion) continue;
-    plans.push({
-      target: target.id,
-      action: 'complete-proxy-check',
-      checkRunId: Number(target.checkRun?.id),
-      conclusion: (target.acceptableConclusions.length ? target.acceptableConclusions : ['success'])
-        .includes(job.conclusion) ? 'success' : 'failure',
-      sourceJobId: job.id,
-      sourceUrl: String(job.html_url ?? job.details_url ?? input.workflowRun.html_url ?? ''),
-    });
+    const proxyExternalId = String(target.checkRun.external_id ?? '');
+    const activeIdenticalProxies = input.checkRuns.filter((run) => (
+      target.checkNames.includes(String(run.name ?? ''))
+      && run.external_id === proxyExternalId
+      && pendingCheckStatuses.has(String(run.status ?? ''))
+      && proxyMatchesTarget(target, run, input.pull)
+      && isTrustedMatrixCheck({ run, target, pull: input.pull, trust: input.trust })
+    ));
+    for (const proxy of activeIdenticalProxies) {
+      plans.push({
+        target: target.id,
+        action: 'complete-proxy-check',
+        checkRunId: Number(proxy.id),
+        conclusion: (target.acceptableConclusions.length ? target.acceptableConclusions : ['success'])
+          .includes(job.conclusion) ? 'success' : 'failure',
+        sourceJobId: job.id,
+        sourceUrl: String(job.html_url ?? job.details_url ?? input.workflowRun.html_url ?? ''),
+      });
+    }
   }
-  return plans.filter((plan) => plan.checkRunId > 0);
+  return plans.filter((plan, index) => (
+    plan.checkRunId > 0 && plans.findIndex((candidate) => candidate.checkRunId === plan.checkRunId) === index
+  ));
 }
 
 const dispatchActions: Readonly<Record<string, readonly string[]>> = {

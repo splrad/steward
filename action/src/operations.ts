@@ -943,6 +943,7 @@ async function matrixOperation(context: StewardOperationContext, inputs: Steward
   const completions = eventRun ? planProxyCompletions({
     workflowRun: eventRun,
     targets: evaluation.targets,
+    checkRuns: checks as MatrixCheckRun[],
     pull: context.pull,
     trust: { ...trust, workflowRuns, allowLegacy: true },
   }) : [];
