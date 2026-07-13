@@ -23,6 +23,7 @@ import {
 } from '../action/src/contracts.js';
 import {
   graphqlApiBase,
+  PullRequestStateMismatchError,
   createOperationContext,
   resolveExpectedHead,
   resolvePullNumber,
@@ -230,6 +231,20 @@ describe('Action operation contract', () => {
     expect(graphqlApiBase('https://api.github.com/')).toBe('https://api.github.com/');
   });
 
+  it('reports pull request state mismatch evidence without raw log control characters', () => {
+    const error = new PullRequestStateMismatchError(7, 'open', 'closed\nforged-log-line');
+    expect(error).toMatchObject({
+      name: 'PullRequestStateMismatchError',
+      pullNumber: 7,
+      expectedState: 'open',
+      actualState: 'closed\nforged-log-line',
+    });
+    expect(error.message).toBe(
+      'Steward operation only accepts an open pull request; '
+      + 'pull request #7 has state "closed\\nforged-log-line"',
+    );
+  });
+
   it('requires an explicit token and validates repository, default branch, and head from live metadata', async () => {
     const eventPath = 'tests/fixtures/action-event.json';
     const encodedManifest = Buffer.from(JSON.stringify(manifest().manifest)).toString('base64');
@@ -331,7 +346,9 @@ describe('Action operation contract', () => {
     liveBaseRef = 'main';
 
     livePullState = 'closed';
-    await expect(dispatchContext()).rejects.toThrow('only accepts an open pull request');
+    await expect(dispatchContext()).rejects.toThrow(
+      'only accepts an open pull request; pull request #7 has state "closed"',
+    );
   });
 
   it('exposes runtime inputs without consumer policy fields', async () => {
@@ -388,7 +405,9 @@ describe('Action operation contract', () => {
     await expect(cleanupContext()).rejects.toThrow('merge commit does not match');
     liveMergeSha = 'a'.repeat(40);
     liveState = 'open';
-    await expect(cleanupContext()).rejects.toThrow('only accepts a closed pull request');
+    await expect(cleanupContext()).rejects.toThrow(
+      'only accepts a closed pull request; pull request #7 has state "open"',
+    );
     liveState = 'closed';
     await expect(cleanupContext('workflow_dispatch')).rejects.toThrow('require a pull_request_target closed event');
   });
