@@ -73,6 +73,37 @@ describe('GitHub App init preflight', () => {
     expect(current.requests.every((request) => !request.method || request.method === 'GET')).toBe(true);
   });
 
+  it('falls back to user installations for an App user token and filters the target account', async () => {
+    const organizationPath = '/orgs/splrad/installations';
+    const current = setup({
+      [organizationPath]: new GitHubApiError({ status: 403, method: 'GET', path: organizationPath, message: 'Forbidden' }),
+      '/user/installations': { installations: [
+        { ...installation, id: 1, account: { login: 'another-org', type: 'Organization' } },
+        installation,
+      ] },
+    });
+    const report = await inspectAppInstallation(current.transport, options());
+    expect(report).toMatchObject({ status: 'installed', installationId: 145952003, appId: 4243096 });
+    expect(current.requests.map((request) => request.path)).toEqual([
+      '/orgs/splrad/installations',
+      '/user/installations',
+      '/user/installations/145952003/repositories',
+    ]);
+  });
+
+  it('does not accept another account installation from the App user fallback', async () => {
+    const organizationPath = '/orgs/splrad/installations';
+    const current = setup({
+      [organizationPath]: new GitHubApiError({ status: 403, method: 'GET', path: organizationPath, message: 'Forbidden' }),
+      '/user/installations': { installations: [
+        { ...installation, account: { login: 'another-org', type: 'Organization' } },
+      ] },
+    });
+    expect(await inspectAppInstallation(current.transport, options())).toMatchObject({
+      status: 'action-required', reason: 'account-installation-missing',
+    });
+  });
+
   it('stops at the existing installation configuration URL when the repository is not selected', async () => {
     const current = setup({ '/user/installations/145952003/repositories': { repositories: [] } });
     const report = await inspectAppInstallation(current.transport, options());
@@ -112,8 +143,20 @@ describe('GitHub App init preflight', () => {
     });
     const report = await inspectAppInstallation(current.transport, options());
     expect(report).toMatchObject({ status: 'unknown', reason: 'verification-unavailable' });
-    expect(report.summary).toContain('普通 GitHub CLI OAuth token 不适用');
+    expect(report.summary).toContain('只接受 GitHub App user access token');
     expect(report.actionUrl).toBeUndefined();
+  });
+
+  it('reports the required token type when neither organization nor user installations are readable', async () => {
+    const organizationPath = '/orgs/splrad/installations';
+    const userPath = '/user/installations';
+    const current = setup({
+      [organizationPath]: new GitHubApiError({ status: 403, method: 'GET', path: organizationPath, message: 'Forbidden' }),
+      [userPath]: new GitHubApiError({ status: 403, method: 'GET', path: userPath, message: 'Forbidden' }),
+    });
+    const report = await inspectAppInstallation(current.transport, options());
+    expect(report).toMatchObject({ status: 'unknown', reason: 'verification-unavailable' });
+    expect(report.summary).toContain('selected installation 必须使用 GitHub App user access token');
   });
 
   it('supports all-repository and personal-account installations without false repository probes', async () => {
