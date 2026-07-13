@@ -6,6 +6,8 @@ This map defines where the production-tested implementation moves. It is a bound
 
 The reviewed source snapshot is now encoded as the built-in `cadfontautoreplace-f6331185` adoption profile. The profile contains seven exact-digest same-path replacements and twenty-five exact-digest removals for the legacy governance, Matrix, DCO, single-repository Relay, and Relay deployment surfaces. It deliberately preserves `.github/scripts/generate-release-notes.ps1`, `.github/pr-classification-rules.json`, and `.github/release.yml` as project-owned Release inputs. Selecting the profile does not authorize arbitrary deletion: an absent removal is idempotent, and any present byte sequence other than the reviewed SHA-256 digest is a blocking conflict.
 
+Profile digests are hashes of immutable Git blobs at the recorded source commit, not hashes of a checked-out worktree. Line-ending conversion such as Windows `core.autocrlf` can change worktree bytes without changing the repository blob. Before changing this profile, run `node scripts/verify-adoption-profile-source.mjs templates/adoption/cadfontautoreplace-f6331185.json PATH_TO_CAD_CLONE`; a mismatch is blocking.
+
 ## Shared modules
 
 | Current source | Steward destination | Boundary |
