@@ -1,6 +1,10 @@
 import * as core from '@actions/core';
 import { operationDefinitions, parseOperation, type StewardActionInputs } from './contracts.js';
-import { createOperationContext, type StewardRuntimeEnvironment } from './context.js';
+import {
+  createOperationContext,
+  PullRequestStateMismatchError,
+  type StewardRuntimeEnvironment,
+} from './context.js';
 import { executeOperation } from './operations.js';
 import { executeReleaseBuild, executeReleasePlan, parseReleaseAdapterPhase } from './release-adapter.js';
 import { createReleasePreflight } from './release-preflight.js';
@@ -11,6 +15,30 @@ import { finalizeReleaseFailure } from './release-finalize.js';
 import { automatePullRequest } from './automation.js';
 
 export const STEWARD_VERSION = '0.0.0-development';
+
+const automaticOpenPullRequestEvents = new Set([
+  'pull_request_target',
+  'workflow_run',
+  'check_run',
+  'repository_dispatch',
+]);
+
+function staleClosedPullRequestResult(
+  operation: ReturnType<typeof parseOperation>,
+  eventName: string,
+  error: unknown,
+) {
+  if (!(error instanceof PullRequestStateMismatchError)
+    || error.expectedState !== 'open'
+    || error.actualState !== 'closed'
+    || !automaticOpenPullRequestEvents.has(eventName)) return null;
+  return {
+    operation,
+    state: 'ignored' as const,
+    summary: `Stale ${eventName} event ignored because PR #${error.pullNumber} is closed`,
+    details: { pullNumber: error.pullNumber, eventName, reason: 'pull-request-closed' },
+  };
+}
 
 export async function run(
   inputs: StewardActionInputs,
@@ -110,12 +138,22 @@ export async function run(
     await finalizeReleaseFailure({ inputs, environment, ...(fetch ? { fetch } : {}) });
     return;
   }
-  const context = await createOperationContext({
-    inputs,
-    environment,
-    ...(fetch ? { fetch } : {}),
-    ...(operation === 'cleanup' ? { pullState: 'closed' as const } : {}),
-  });
+  let context: Awaited<ReturnType<typeof createOperationContext>>;
+  try {
+    context = await createOperationContext({
+      inputs,
+      environment,
+      ...(fetch ? { fetch } : {}),
+      ...(operation === 'cleanup' ? { pullState: 'closed' as const } : {}),
+    });
+  } catch (error) {
+    const result = staleClosedPullRequestResult(operation, environment.GITHUB_EVENT_NAME?.trim() || '', error);
+    if (!result) throw error;
+    core.setOutput('state', result.state);
+    core.setOutput('operation-result', JSON.stringify(result));
+    core.info(`${operation}: ${result.summary}`);
+    return;
+  }
   core.setOutput('governance-enabled', String(context.manifest.manifest.features.governance));
   core.setOutput('copilot-review-enabled', String(context.manifest.manifest.features.copilotReview));
   const result = await executeOperation(operation, context, inputs);

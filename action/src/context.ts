@@ -69,6 +69,18 @@ export interface StewardOperationContext {
   detailsUrl?: string;
 }
 
+export class PullRequestStateMismatchError extends Error {
+  constructor(
+    readonly pullNumber: number,
+    readonly expectedState: 'open' | 'closed',
+    readonly actualState: string,
+  ) {
+    const article = expectedState === 'open' ? 'an' : 'a';
+    super(`Steward operation only accepts ${article} ${expectedState} pull request`);
+    this.name = 'PullRequestStateMismatchError';
+  }
+}
+
 function positiveInteger(value: unknown): number {
   const number = Number(value ?? 0);
   return Number.isSafeInteger(number) && number > 0 ? number : 0;
@@ -207,8 +219,9 @@ export async function createOperationContext(input: {
   const pull = await client.getPullRequest(owner, repository, resolvedPullNumber);
   if (pull.number !== resolvedPullNumber) throw new Error('GitHub returned a different pull request number');
   const pullState = input.pullState ?? 'open';
-  const article = pullState === 'open' ? 'an' : 'a';
-  if (pull.state !== pullState) throw new Error(`Steward operation only accepts ${article} ${pullState} pull request`);
+  if (pull.state !== pullState) {
+    throw new PullRequestStateMismatchError(pull.number, pullState, String(pull.state ?? 'unknown'));
+  }
   if (pull.base.ref !== metadata.defaultBranch) throw new Error('Pull request does not target the current default branch');
   if (!/^[a-f0-9]{40}$/i.test(pull.head.sha)) throw new Error('GitHub returned an invalid pull request head SHA');
   if (pullState === 'closed') {
