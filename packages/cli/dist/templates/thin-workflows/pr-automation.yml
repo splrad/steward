@@ -4,8 +4,8 @@ run-name: "PR Automation ${{ github.ref_name }} / ${{ github.event.after }}"
 
 on:
   push:
-    branches:
-      - '**'
+    branches-ignore:
+      - 'steward/init'
 
 permissions:
   contents: read
