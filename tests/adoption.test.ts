@@ -18,6 +18,10 @@ describe('built-in adoption profiles', () => {
     });
     expect(profile.replace.size).toBe(7);
     expect(profile.remove.size).toBe(25);
+    expect(profile.replace.get('.github/dependabot.yml'))
+      .toBe('62c1e11e7169e770c0826180d1445e5f8e6351d944b617a5f23a86cd9cb3e5e8');
+    expect(profile.remove.get('.github/scripts/dco-check.js'))
+      .toBe('f2edc84ffa172ba353d80cbc95a87b727e1f7e07bdae8b864c97659c914a9192');
     expect(profile.remove.has('.github/scripts/generate-release-notes.ps1')).toBe(false);
     expect(profile.remove.has('.github/pr-classification-rules.json')).toBe(false);
     expect(profile.remove.has('.github/release.yml')).toBe(false);
