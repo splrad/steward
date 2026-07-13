@@ -335,6 +335,7 @@ function sameJson(left: JsonValue, right: JsonValue): boolean {
 export async function prepareActivate(
   transport: GitHubTransport,
   options: { owner: string; repository: string; pullRequest: number },
+  installationTransport: GitHubTransport = transport,
 ): Promise<ActivatePreparation> {
   const path = repositoryPath(options.owner, options.repository);
   const repository = await transport.request<RepositoryPayload>({ path });
@@ -379,7 +380,7 @@ export async function prepareActivate(
     throw new Error(`activate requires an open PR targeting the current default branch (${defaultBranch})`);
   }
 
-  const installation = await inspectAppInstallation(transport, {
+  const installation = await inspectAppInstallation(installationTransport, {
     owner: options.owner,
     repository: options.repository,
     repositoryId,
