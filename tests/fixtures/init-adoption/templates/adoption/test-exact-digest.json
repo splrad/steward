@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "test-exact-digest",
+  "source": {
+    "repository": "splrad/legacy",
+    "commit": "1111111111111111111111111111111111111111"
+  },
+  "replace": {
+    ".github/dependabot.yml": "da731cbe87609b1b900479ef16a2b0388d75d652039d659579ef34b60dc76ab2"
+  },
+  "remove": {
+    ".github/workflows/legacy.yml": "9abcaa5e349181b5d71ba81a760a602b3dbf1466938ad7836931e7a52a76ae05"
+  }
+}

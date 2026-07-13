@@ -33,6 +33,7 @@ export async function bundleCli(output) {
     ]);
     await cp('templates/thin-workflows', path.join(output, 'templates/thin-workflows'), { recursive: true });
     await cp('templates/init', path.join(output, 'templates/init'), { recursive: true });
+    await cp('templates/adoption', path.join(output, 'templates/adoption'), { recursive: true });
     await chmod(path.join(output, 'index.js'), 0o755);
   } finally {
     await rm(intermediate, { force: true, recursive: true });

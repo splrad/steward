@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { GitHubApiError, type GitHubRequest, type GitHubTransport } from '../../github/src/index.js';
 import { inspectAppInstallation, type AppInstallationReport } from './app-installation.js';
-import { generateInitFiles, type InitGeneratedFile, type InitPlannedFile, type InitSpec } from './init.js';
+import { planInitFiles, type InitFileStatus, type InitPlannedFile, type InitSpec } from './init.js';
 import {
   requiredSecretRequirements,
   type SecretVault,
@@ -45,7 +45,7 @@ interface PullRequestPayload {
   head?: { ref?: string; sha?: string } | null;
 }
 
-export type InitApplyFileStatus = 'create' | 'unchanged' | 'conflict';
+export type InitApplyFileStatus = InitFileStatus;
 export type InitApplyResourceStatus = 'create' | 'reuse' | 'none';
 
 export interface InitApplyPlan {
@@ -148,21 +148,45 @@ function fingerprint(plan: Omit<InitApplyPlan, 'fingerprint'>): string {
   return createHash('sha256').update(JSON.stringify(plan), 'utf8').digest('hex');
 }
 
-async function remoteFile(
+async function remoteContent(
   transport: GitHubTransport,
   path: string,
-  file: InitGeneratedFile,
+  filePath: string,
   ref: string,
-): Promise<InitPlannedFile> {
+): Promise<string | null> {
   const existing = await optionalGet<{ type?: string; encoding?: string; content?: string }>(transport, {
-    path: `${path}/contents/${contentPath(file.path)}`,
+    path: `${path}/contents/${contentPath(filePath)}`,
     query: { ref },
   });
-  if (!existing) return { ...file, status: 'create' };
-  const content = decodeFile(existing);
-  if (content === file.content) return { ...file, status: 'unchanged' };
-  const existingDigest = createHash('sha256').update(content, 'utf8').digest('hex');
-  return { ...file, status: 'conflict', existingDigest };
+  return existing ? decodeFile(existing) : null;
+}
+
+export async function readPaginatedCommitFiles(
+  transport: GitHubTransport,
+  path: string,
+  commitSha: string,
+): Promise<RepositoryCommitPayload> {
+  let observedSha = '';
+  let parents: Array<{ sha?: string }> = [];
+  const files: Array<{ filename?: string; status?: string }> = [];
+  // GitHub's default JSON media type paginates commit files and repeats the static commit metadata on every page.
+  for (let page = 1; page <= 20; page += 1) {
+    const commit = await transport.request<RepositoryCommitPayload>({
+      path: `${path}/commits/${segment(commitSha)}`,
+      query: { page, per_page: 100 },
+    });
+    if (page === 1) {
+      observedSha = String(commit.sha ?? '');
+      parents = commit.parents ?? [];
+    } else if (commit.sha !== observedSha || JSON.stringify(commit.parents ?? []) !== JSON.stringify(parents)) {
+      throw new Error(`GitHub returned inconsistent pages for ${initBranch}`);
+    }
+    const batch = commit.files ?? [];
+    files.push(...batch);
+    if (batch.length < 100) return { sha: observedSha, parents, files };
+    if (page === 20) throw new Error(`Existing branch ${initBranch} exceeded the 20-page file safety limit`);
+  }
+  throw new Error(`Existing branch ${initBranch} file pagination ended unexpectedly`);
 }
 
 async function verifyReusableBranch(input: {
@@ -170,26 +194,34 @@ async function verifyReusableBranch(input: {
   path: string;
   branchSha: string;
   baseSha: string;
-  generated: InitGeneratedFile[];
   files: InitPlannedFile[];
 }): Promise<void> {
-  const commit = await input.transport.request<RepositoryCommitPayload>({
-    path: `${input.path}/commits/${segment(input.branchSha)}`,
-  });
+  const commit = await readPaginatedCommitFiles(input.transport, input.path, input.branchSha);
+  const commitSha = String(commit.sha ?? '');
   const parents = commit.parents ?? [];
-  const expectedChanges = input.files.filter((file) => file.status === 'create').map((file) => file.path).sort();
   const actualFiles = commit.files ?? [];
-  const actualChanges = actualFiles.map((file) => String(file.filename ?? '')).sort();
-  if (commit.sha !== input.branchSha || parents.length !== 1 || parents[0]?.sha !== input.baseSha
-    || JSON.stringify(actualChanges) !== JSON.stringify(expectedChanges)
-    || actualFiles.some((file) => file.status !== 'added')) {
+  const expectedFiles = input.files
+    .filter((file) => file.status === 'create' || file.status === 'replace' || file.status === 'delete')
+    .map((file) => ({
+      filename: file.path,
+      status: file.status === 'create' ? 'added' : file.status === 'replace' ? 'modified' : 'removed',
+    }))
+    .sort((left, right) => left.filename.localeCompare(right.filename));
+  const actualChanges = actualFiles
+    .map((file) => ({ filename: String(file.filename ?? ''), status: String(file.status ?? '') }))
+    .sort((left, right) => left.filename.localeCompare(right.filename));
+  if (commitSha !== input.branchSha || parents.length !== 1 || parents[0]?.sha !== input.baseSha
+    || JSON.stringify(actualChanges) !== JSON.stringify(expectedFiles)) {
     throw new Error(`Existing branch ${initBranch} is not the exact Steward init commit for the current default-branch head`);
   }
-  const branchFiles = await Promise.all(input.generated.map((file) => remoteFile(
-    input.transport, input.path, file, input.branchSha,
-  )));
-  if (branchFiles.some((file) => file.status !== 'unchanged')) {
-    throw new Error(`Existing branch ${initBranch} does not contain the exact generated Steward files`);
+  const branchFiles = await Promise.all(input.files.map(async (file) => ({
+    file,
+    content: await remoteContent(input.transport, input.path, file.path, input.branchSha),
+  })));
+  if (branchFiles.some(({ file, content }) => (
+    file.operation === 'write' ? content !== file.content : content !== null
+  ))) {
+    throw new Error(`Existing branch ${initBranch} does not contain the exact planned Steward file state`);
   }
 }
 
@@ -237,9 +269,12 @@ export async function prepareInitApply(input: {
   const baseTreeSha = String(baseCommit.tree?.sha ?? '');
   if (!shaPattern.test(baseTreeSha)) throw new Error('GitHub returned an invalid default-branch tree');
 
-  const generated = await generateInitFiles({ spec: input.spec, templateDirectory: input.templateDirectory });
-  const [files, secrets, variables] = await Promise.all([
-    Promise.all(generated.map((file) => remoteFile(input.transport, path, file, baseSha))),
+  const [filePlan, secrets, variables] = await Promise.all([
+    planInitFiles({
+      spec: input.spec,
+      templateDirectory: input.templateDirectory,
+      readExisting: (filePath) => remoteContent(input.transport, path, filePath, baseSha),
+    }),
     pagedItems<{ secrets?: Array<{ name?: string }> }, { name?: string }>(
       input.transport, { path: `${path}/actions/secrets` }, (payload) => payload.secrets ?? [],
     ),
@@ -247,9 +282,8 @@ export async function prepareInitApply(input: {
       input.transport, { path: `${path}/actions/variables` }, (payload) => payload.variables ?? [],
     ),
   ]);
-  const counts = { create: 0, unchanged: 0, conflict: 0 };
-  for (const file of files) counts[file.status] += 1;
-  if (counts.conflict) throw new Error('init --apply found generated-file conflicts on the default branch');
+  const { files, counts } = filePlan;
+  if (counts.conflict) throw new Error('init --apply found generated-file conflicts, including an exact-digest adoption mismatch, on the default branch');
 
   const presentSecrets = new Set(secrets.map((secret) => String(secret.name ?? '')));
   const missingSecrets = requiredSecretRequirements(input.spec.manifest)
@@ -267,7 +301,7 @@ export async function prepareInitApply(input: {
   let pullRequestStatus: InitApplyResourceStatus = 'none';
   let pullRequestNumber: number | undefined;
   let pullRequestUrl: string | undefined;
-  if (counts.create) {
+  if (counts.create + counts.replace + counts.delete) {
     const branchRef = await optionalGet<RefPayload>(input.transport, {
       path: `${path}/git/ref/heads/${segment(initBranch)}`,
     });
@@ -277,7 +311,7 @@ export async function prepareInitApply(input: {
         throw new Error(`Existing branch ${initBranch} has an invalid reference`);
       }
       await verifyReusableBranch({
-        transport: input.transport, path, branchSha, baseSha, generated, files,
+        transport: input.transport, path, branchSha, baseSha, files,
       });
       branchStatus = 'reuse';
       const pullRequests = await input.transport.request<PullRequestPayload[]>({
@@ -365,9 +399,19 @@ export async function executeInitApply(input: {
   const secretsCreated: StewardSecretName[] = [];
   try {
     if (input.plan.branchStatus === 'create') {
-      const entries = input.plan.files.filter((file) => file.status === 'create').map((file) => ({
-        path: file.path, mode: '100644', type: 'blob', content: file.content,
-      }));
+      const entries: Array<
+        { path: string; mode: '100644'; type: 'blob'; content: string }
+        | { path: string; sha: null }
+      > = [];
+      for (const file of input.plan.files) {
+        if (file.status === 'delete') {
+          entries.push({ path: file.path, sha: null });
+        }
+        else if (file.status === 'create' || file.status === 'replace') {
+          if (file.content === undefined) throw new Error(`Planned write is missing content: ${file.path}`);
+          entries.push({ path: file.path, mode: '100644', type: 'blob', content: file.content });
+        }
+      }
       const tree = await input.transport.request<{ sha?: string }>({
         method: 'POST', path: `${path}/git/trees`, body: { base_tree: input.plan.baseTreeSha, tree: entries },
       });
@@ -443,7 +487,7 @@ export async function executeInitApply(input: {
             'Initialize this repository with SPLRAD Steward.',
             '',
             `- Steward SHA: \`${input.plan.stewardSha}\``,
-            `- Generated files: ${input.plan.counts.create}`,
+            `- Managed file changes: ${input.plan.counts.create + input.plan.counts.replace + input.plan.counts.delete}`,
             '- Repository Secrets, when required, were configured separately and are not included in this PR.',
           ].join('\n'),
           draft: false,

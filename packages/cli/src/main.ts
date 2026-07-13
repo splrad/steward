@@ -201,7 +201,7 @@ function render(report: DoctorReport): string {
 function renderInit(plan: InitPlan): string {
   const lines = [`Steward init dry-run: ${plan.targetDirectory}`, `Steward SHA: ${plan.stewardSha}`];
   for (const file of plan.files) lines.push(`[${file.status.toUpperCase()}] ${file.path} ${file.digest.slice(0, 12)}…`);
-  lines.push(`Summary: ${plan.counts.create} create, ${plan.counts.unchanged} unchanged, ${plan.counts.conflict} conflict`);
+  lines.push(`Summary: ${plan.counts.create} create, ${plan.counts.replace} replace, ${plan.counts.delete} delete, ${plan.counts.unchanged} unchanged, ${plan.counts.conflict} conflict`);
   return lines.join('\n');
 }
 

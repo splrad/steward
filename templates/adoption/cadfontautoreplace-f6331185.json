@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "id": "cadfontautoreplace-f6331185",
+  "source": {
+    "repository": "axiomoth/CADFontAutoReplace",
+    "commit": "f6331185c12920cbb6d7b639f84a38b4d04ad71b"
+  },
+  "replace": {
+    ".github/dependabot.yml": "6566c66375f641331e548904f193aaa76c98ca06c28d831744751a31da153a5c",
+    ".github/workflows/pr-automation.yml": "d711593331e30861fd5f88ccc4c30f5e18dc8bbee06062065dc2d20ced3660bc",
+    ".github/workflows/pr-classification.yml": "97ae47f5b6ae9e66fd585814cc41bf046354117433df7e0683b9a39819880dba",
+    ".github/workflows/pr-cleanup.yml": "024619838bb5cb9111ff57ac7c9eb34154a567f5f124b211e6025b0ac1e14cc0",
+    ".github/workflows/pr-governance.yml": "693c8853967ef7933a5f724a2758abced5328efb0f37a2993d4b09ae5e1f86c6",
+    ".github/workflows/pr-review-signal.yml": "7ed6c19f273c9bc24470836f565816f3e5e0b4bf97c705689423f178e58f6734",
+    ".github/workflows/pr-validation-matrix.yml": "3992ac77d3a06760ab52496f8e03c591ada8d1e801b9ccd16320a50f63e3f85f"
+  },
+  "remove": {
+    ".github/pr-validation-matrix.json": "5b32a1f8a6720ffb669fbfdcb1d926157ecc9006a7b066c5c7e84fd701c67f88",
+    ".github/scripts/dco-check.js": "2e4a766d4586ea6ad468a93963adfa4d595d1d9eb22dd5df14e2d205eef777cd",
+    ".github/scripts/pr-api-pagination.js": "ef4b5bb9d2943eb2ecb27c2d25e29cbac14b8a527e3c171e0c545bf527bb79b8",
+    ".github/scripts/pr-automation.js": "1cc94019f6aba03a2f77f33606a907d69efa5a51c790ba8c2c5fd2091eada559",
+    ".github/scripts/pr-classification-policy.js": "0cd9cdbc64a6b552af95cd8370afaad92e36ef817a36f8580315f1967a9bda55",
+    ".github/scripts/pr-classification.js": "22118be2c916ff7b7a59752b1f73194e2cf0510016f3c84f27cf21dae776770c",
+    ".github/scripts/pr-cleanup.js": "5c9f6057517c1e8420a4e2be6ba17882c7d95c12dfdf004e606ef68c6b310e10",
+    ".github/scripts/pr-cleanup.test.js": "266f6b7e53e889bdee2b0d0a52628e645184d9bd34de82f74aa0441ab933f7f5",
+    ".github/scripts/pr-governance.js": "36d6dc4a318bf71a837e5b74afdd1f9a2c9c02abc140444f91c4f3e3a735f9ba",
+    ".github/scripts/pr-governance.test.js": "f07d00d98aa090268716ea7bd39735f9be6ed4c3353d926648045dfa6e697b3b",
+    ".github/scripts/pr-notifications.js": "081b245617dbc1be30566e70d0ae89523b9601431085ba0ef2b1c7a6521f8ec9",
+    ".github/scripts/pr-validation-fingerprint.js": "3f1d441ead4baf38dcdcffce4ecddba1580581e2bb8d790ff690000377b26ec3",
+    ".github/scripts/pr-validation-matrix.js": "d357f0437863dcb6ff7f71071d793c86e67e4753942f0e468ad0cdcbc1a2b51e",
+    ".github/scripts/pr-validation-matrix.test.js": "37907dbd6da9fb9655337ba3d3f5e0d284ae11742a59a516d598d2d5fe6743da",
+    ".github/scripts/workflow-event-policy.test.js": "a28c2103f6119838340de02f70edef8678eaf48af8bf7ef2105629c3356f0be1",
+    ".github/webhook-relay/README.md": "7b94795055ff334d1dccda3e1c7d5d3e64c7dc1ebfb51d21f98f3bbfe52f0a95",
+    ".github/webhook-relay/package-lock.json": "6d5775d49b3ad4fa5f7861503eb9f4163186be18b872a276d049156ad69d3c80",
+    ".github/webhook-relay/package.json": "4c0f7e2acf36af91f1c5a864e8366d0f2cc7284ebcd6d8ba4e15b759449d410c",
+    ".github/webhook-relay/src/index.ts": "87e43efddfaf6556480cb59080992bb87e3b7d5db6c516bc6eec900dae64b160",
+    ".github/webhook-relay/test/index.test.ts": "6e71f864a45b2039252d9c8c0a0f95aa221dea717889349f936850eeb8ceae75",
+    ".github/webhook-relay/tsconfig.json": "e18f159a76b0a895e6a33fdbb50d92baaa4e0c986538934e9314706acc96dac8",
+    ".github/webhook-relay/wrangler.toml": "dbac310cbcab1f71ae32680ebaa976daf056f1b314ec3a187e0901c9f8b68b92",
+    ".github/workflows/dco-check.yml": "0b4f6ef6f6ca86631d59ae274370650a4c2324ff31dba39710eaabb628842d8f",
+    ".github/workflows/deploy-webhook-relay.yml": "d0819d6c459b66738771a9c3b3a858bf07f5c68ac53671d3b4917aaf844a55f7",
+    ".github/workflows/release-build.yml": "39c8c99735c0c792c13501257e03fde494df458624ad48940b3a940b61cf3ffb"
+  }
+}

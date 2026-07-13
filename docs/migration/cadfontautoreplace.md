@@ -4,6 +4,8 @@ Source baseline: `axiomoth/CADFontAutoReplace@f6331185c12920cbb6d7b639f84a38b4d0
 
 This map defines where the production-tested implementation moves. It is a boundary record, not permission to copy project-specific release or classification behavior into the shared protocol.
 
+The reviewed source snapshot is now encoded as the built-in `cadfontautoreplace-f6331185` adoption profile. The profile contains seven exact-digest same-path replacements and twenty-five exact-digest removals for the legacy governance, Matrix, DCO, single-repository Relay, and Relay deployment surfaces. It deliberately preserves `.github/scripts/generate-release-notes.ps1`, `.github/pr-classification-rules.json`, and `.github/release.yml` as project-owned Release inputs. Selecting the profile does not authorize arbitrary deletion: an absent removal is idempotent, and any present byte sequence other than the reviewed SHA-256 digest is a blocking conflict.
+
 ## Shared modules
 
 | Current source | Steward destination | Boundary |
