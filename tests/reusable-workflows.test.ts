@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 
 const pullRequestActionSha = '5d92dc96e615cb188a61cd25a1bdfe3d8bce5757';
 const automationActionSha = '3a8a41035db1df7795a7546d9708a42d15617104';
@@ -27,6 +28,21 @@ async function workflows(): Promise<Record<(typeof workflowPaths)[number], strin
   >;
 }
 
+function stewardActionPins(source: string): string[] {
+  const workflow = parse(source) as {
+    jobs?: Record<string, { uses?: string; steps?: Array<{ uses?: string }> }>;
+  };
+  const uses = Object.values(workflow.jobs ?? {}).flatMap((job) => [
+    job.uses,
+    ...(job.steps ?? []).map((step) => step.uses),
+  ]);
+  return uses.flatMap((value) => {
+    const match = /^splrad\/steward\/action@([0-9a-f]{40})$/.exec(value ?? '');
+    const sha = match?.[1];
+    return sha ? [sha] : [];
+  });
+}
+
 describe('First reusable workflow contracts', () => {
   it('exposes called workflows only and pins every uses reference to a complete SHA', async () => {
     const files = await workflows();
@@ -45,8 +61,7 @@ describe('First reusable workflow contracts', () => {
       '.github/workflows/pr-governance.yml',
       '.github/workflows/pr-validation-matrix.yml',
     ] as const) {
-      const pins = [...files[path].matchAll(/splrad\/steward\/action@([0-9a-f]{40})/g)]
-        .map((match) => match[1]);
+      const pins = stewardActionPins(files[path]);
       expect(pins.length, path).toBeGreaterThan(0);
       expect(new Set(pins), path).toEqual(new Set([pullRequestActionSha]));
     }
