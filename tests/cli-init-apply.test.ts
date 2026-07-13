@@ -425,7 +425,7 @@ describe('init --apply', () => {
       tree: [
         { path: '.github/dependabot.yml', mode: '100644', type: 'blob', content: 'version: 2\n' },
         expect.objectContaining({ path: '.github/steward.json', mode: '100644', type: 'blob' }),
-        { path: '.github/workflows/legacy.yml', sha: null },
+        { path: '.github/workflows/legacy.yml', mode: '100644', type: 'blob', sha: null },
       ],
     });
     expect(state.branchFiles.get('.github/dependabot.yml')).toBe('version: 2\n');
