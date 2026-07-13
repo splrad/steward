@@ -23,6 +23,7 @@ const baseTreeSha = 'b'.repeat(40);
 const treeSha = 'c'.repeat(40);
 const branchSha = 'd'.repeat(40);
 const templateDirectory = fileURLToPath(new URL('../templates/', import.meta.url));
+const adoptionTemplateDirectory = fileURLToPath(new URL('./fixtures/init-adoption/templates/', import.meta.url));
 const classification = JSON.parse(await readFile(
   new URL('./fixtures/cadfontautoreplace/classification.json', import.meta.url),
   'utf8',
@@ -43,6 +44,25 @@ function spec(): InitSpec {
     classification,
   };
   return parseInitSpec({ stewardSha: 'e'.repeat(40), manifest });
+}
+
+function adoptionSpec(): InitSpec {
+  return parseInitSpec({
+    stewardSha: 'e'.repeat(40),
+    manifest: {
+      schemaVersion: 1,
+      automation: {
+        githubApp: { clientId: 'Iv23liuSr0qd4WLJdZhH', slug: 'splrad-steward' },
+        maintainers: { source: 'organization-team', teamSlug: 'maintainers' },
+        language: 'zh-CN',
+      },
+      features: {
+        prAutomation: false, classification: false, dcoAdvisory: false, governance: false,
+        copilotReview: false, release: false, webhookRelay: false,
+      },
+    },
+    adoption: { profile: 'test-exact-digest' },
+  });
 }
 
 class ScriptedPrompt implements SecretPrompt {
@@ -70,6 +90,7 @@ class RepositoryState {
   readonly secrets = new Set<string>();
   readonly variables = new Map<string, string>();
   readonly branchFiles = new Map<string, string>();
+  readonly branchDeleted = new Set<string>();
   admin = true;
   appInstalled = true;
   branchSha: string | undefined;
@@ -120,7 +141,7 @@ class RepositoryState {
       const ref = String(request.query?.ref ?? '');
       const content = ref === 'main' || ref === baseSha
         ? this.defaultFiles.get(file)
-        : this.branchFiles.get(file) ?? this.defaultFiles.get(file);
+        : this.branchDeleted.has(file) ? undefined : this.branchFiles.get(file) ?? this.defaultFiles.get(file);
       if (content === undefined) return this.notFound(path);
       return { type: 'file', encoding: 'base64', content: Buffer.from(content).toString('base64'), sha: 'blob' };
     }
@@ -137,7 +158,12 @@ class RepositoryState {
     if (path === `/repos/splrad/example/commits/${branchSha}`) {
       const files = this.corruptBranch
         ? [{ filename: 'unrelated.txt', status: 'added' }]
-        : [...this.branchFiles.keys()].map((filename) => ({ filename, status: 'added' }));
+        : [
+          ...[...this.branchFiles.keys()].map((filename) => ({
+            filename, status: this.defaultFiles.has(filename) ? 'modified' : 'added',
+          })),
+          ...[...this.branchDeleted].map((filename) => ({ filename, status: 'removed' })),
+        ];
       return { sha: branchSha, parents: [{ sha: baseSha }], files };
     }
     if (path === '/repos/splrad/example/pulls' && !request.method) {
@@ -147,8 +173,11 @@ class RepositoryState {
       }] : [];
     }
     if (path === '/repos/splrad/example/git/trees' && request.method === 'POST') {
-      const body = request.body as { tree?: Array<{ path: string; content: string }> };
-      for (const entry of body.tree ?? []) this.branchFiles.set(entry.path, entry.content);
+      const body = request.body as { tree?: Array<{ path: string; content?: string; sha?: null }> };
+      for (const entry of body.tree ?? []) {
+        if (entry.sha === null) this.branchDeleted.add(entry.path);
+        else if (entry.content !== undefined) this.branchFiles.set(entry.path, entry.content);
+      }
       return { sha: treeSha };
     }
     if (path === '/repos/splrad/example/git/commits' && request.method === 'POST') return { sha: branchSha };
@@ -212,7 +241,7 @@ describe('init --apply', () => {
         'WORKFLOW_AUTOMATION_APP_PRIVATE_KEY', 'COPILOT_REVIEW_REQUEST_TOKEN', 'CORE_AUTO_APPROVAL_TOKEN',
       ],
     });
-    expect(prepared.plan.counts).toEqual({ create: 7, unchanged: 0, conflict: 0 });
+    expect(prepared.plan.counts).toEqual({ create: 7, replace: 0, delete: 0, unchanged: 0, conflict: 0 });
     expect(state.mutations()).toEqual([]);
     expect(state.requests.filter((request) => request.path.includes('/contents/'))
       .every((request) => request.query?.ref === baseSha)).toBe(true);
@@ -288,6 +317,52 @@ describe('init --apply', () => {
       branchStatus: 'reuse', pullRequestStatus: 'reuse', pullRequestNumber: 12,
       missingSecrets: [], variableStatus: 'unchanged',
     });
+    await withSecrets([], new ScriptedPrompt([]), (vault) => executeInitApply({
+      transport: state.transport, owner: 'splrad', repository: 'example', plan: retry.plan, vault,
+    }));
+    expect(state.mutations()).toHaveLength(mutationCount);
+  });
+
+  it('creates and reuses one exact adoption commit with replace and delete entries', async () => {
+    const state = new RepositoryState();
+    state.defaultFiles.set('.github/dependabot.yml', 'legacy dependabot\n');
+    state.defaultFiles.set('.github/workflows/legacy.yml', 'legacy workflow\n');
+    const configured = adoptionSpec();
+    const prepared = await prepareInitApply({
+      transport: state.transport,
+      owner: 'splrad',
+      repository: 'example',
+      spec: configured,
+      templateDirectory: adoptionTemplateDirectory,
+    });
+    if (prepared.status !== 'ready') throw new Error('Expected ready adoption plan');
+    expect(prepared.plan.counts).toEqual({ create: 1, replace: 1, delete: 1, unchanged: 0, conflict: 0 });
+
+    await withSecrets([], new ScriptedPrompt([]), (vault) => executeInitApply({
+      transport: state.transport, owner: 'splrad', repository: 'example', plan: prepared.plan, vault,
+    }));
+    const tree = state.mutations().find((request) => request.path.endsWith('/git/trees'));
+    expect(tree?.body).toEqual({
+      base_tree: baseTreeSha,
+      tree: [
+        { path: '.github/dependabot.yml', mode: '100644', type: 'blob', content: 'version: 2\n' },
+        expect.objectContaining({ path: '.github/steward.json', mode: '100644', type: 'blob' }),
+        { path: '.github/workflows/legacy.yml', mode: '100644', type: 'blob', sha: null },
+      ],
+    });
+    expect(state.branchFiles.get('.github/dependabot.yml')).toBe('version: 2\n');
+    expect(state.branchDeleted.has('.github/workflows/legacy.yml')).toBe(true);
+
+    const mutationCount = state.mutations().length;
+    const retry = await prepareInitApply({
+      transport: state.transport,
+      owner: 'splrad',
+      repository: 'example',
+      spec: configured,
+      templateDirectory: adoptionTemplateDirectory,
+    });
+    if (retry.status !== 'ready') throw new Error('Expected reusable adoption plan');
+    expect(retry.plan).toMatchObject({ branchStatus: 'reuse', pullRequestStatus: 'reuse' });
     await withSecrets([], new ScriptedPrompt([]), (vault) => executeInitApply({
       transport: state.transport, owner: 'splrad', repository: 'example', plan: retry.plan, vault,
     }));

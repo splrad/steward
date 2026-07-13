@@ -9,6 +9,7 @@ import type { ClassificationConfiguration, StewardManifest } from '../packages/m
 
 const stewardSha = 'a'.repeat(40);
 const templateDirectory = fileURLToPath(new URL('../templates/', import.meta.url));
+const adoptionTemplateDirectory = fileURLToPath(new URL('./fixtures/init-adoption/templates/', import.meta.url));
 const temporaryDirectories: string[] = [];
 const classification = JSON.parse(await readFile(
   new URL('./fixtures/cadfontautoreplace/classification.json', import.meta.url),
@@ -72,7 +73,7 @@ describe('init --dry-run', () => {
 
     expect(first).toEqual(second);
     expect(first.ok).toBe(true);
-    expect(first.counts).toEqual({ create: 10, unchanged: 0, conflict: 0 });
+    expect(first.counts).toEqual({ create: 10, replace: 0, delete: 0, unchanged: 0, conflict: 0 });
     expect(first.files.map(({ path: filePath, status, digest }) => ({ path: filePath, status, digest })))
       .toMatchInlineSnapshot(`
         [
@@ -163,6 +164,7 @@ describe('init --dry-run', () => {
     const spec = parseInitSpec({ stewardSha, manifest: minimal });
     const first = await createInitPlan({ spec, targetDirectory: directory, templateDirectory });
     for (const file of first.files) {
+      if (file.content === undefined) throw new Error(`Expected generated content for ${file.path}`);
       const destination = path.join(directory, ...file.path.split('/'));
       await mkdir(path.dirname(destination), { recursive: true });
       await writeFile(destination, file.content, 'utf8');
@@ -170,7 +172,7 @@ describe('init --dry-run', () => {
 
     const second = await createInitPlan({ spec, targetDirectory: directory, templateDirectory });
     expect(second.ok).toBe(true);
-    expect(second.counts).toEqual({ create: 0, unchanged: 2, conflict: 0 });
+    expect(second.counts).toEqual({ create: 0, replace: 0, delete: 0, unchanged: 2, conflict: 0 });
     expect(second.files.every((file) => file.status === 'unchanged')).toBe(true);
   });
 
@@ -248,6 +250,46 @@ describe('init --dry-run', () => {
     expect(await readdir(path.join(directory, '.github'))).toEqual(['steward.json']);
   });
 
+  it('adopts only byte-exact built-in legacy files and keeps deletion idempotent', async () => {
+    const directory = await target();
+    const configured = manifest();
+    configured.features = {
+      prAutomation: false, classification: false, dcoAdvisory: false, governance: false,
+      copilotReview: false, release: false, webhookRelay: false,
+    };
+    delete configured.classification;
+    delete configured.release;
+    const spec = parseInitSpec({
+      stewardSha,
+      manifest: configured,
+      adoption: { profile: 'test-exact-digest' },
+    });
+    const dependabotPath = path.join(directory, '.github/dependabot.yml');
+    const legacyPath = path.join(directory, '.github/workflows/legacy.yml');
+    await mkdir(path.dirname(dependabotPath), { recursive: true });
+    await mkdir(path.dirname(legacyPath), { recursive: true });
+    await writeFile(dependabotPath, 'legacy dependabot\n', 'utf8');
+    await writeFile(legacyPath, 'legacy workflow\n', 'utf8');
+
+    const plan = await createInitPlan({ spec, targetDirectory: directory, templateDirectory: adoptionTemplateDirectory });
+    expect(plan.ok).toBe(true);
+    expect(plan.counts).toEqual({ create: 1, replace: 1, delete: 1, unchanged: 0, conflict: 0 });
+    expect(plan.files.map(({ path: filePath, operation, status }) => ({ path: filePath, operation, status }))).toEqual([
+      { path: '.github/dependabot.yml', operation: 'write', status: 'replace' },
+      { path: '.github/steward.json', operation: 'write', status: 'create' },
+      { path: '.github/workflows/legacy.yml', operation: 'delete', status: 'delete' },
+    ]);
+    expect(await readFile(dependabotPath, 'utf8')).toBe('legacy dependabot\n');
+    expect(await readFile(legacyPath, 'utf8')).toBe('legacy workflow\n');
+
+    await writeFile(dependabotPath, 'legacy dependabot changed\n', 'utf8');
+    await rm(legacyPath);
+    const changed = await createInitPlan({ spec, targetDirectory: directory, templateDirectory: adoptionTemplateDirectory });
+    expect(changed.counts).toEqual({ create: 1, replace: 0, delete: 0, unchanged: 1, conflict: 1 });
+    expect(changed.files.find((file) => file.path === '.github/dependabot.yml')?.status).toBe('conflict');
+    expect(changed.files.find((file) => file.path === '.github/workflows/legacy.yml')?.status).toBe('unchanged');
+  });
+
   it('rejects hidden fields and inconsistent release generation inputs', () => {
     expect(() => parseInitSpec({ stewardSha, manifest: manifest(), secret: 'must-not-exist' }))
       .toThrow('unknown properties: secret');
@@ -260,5 +302,11 @@ describe('init --dry-run', () => {
     expect(() => parseInitSpec({
       stewardSha: 'main', manifest: manifest(), releaseAdapter: { template: 'node', path: '.github/steward/release.mjs' },
     })).toThrow('40-character');
+    expect(() => parseInitSpec({
+      stewardSha,
+      manifest: manifest(),
+      releaseAdapter: { template: 'node', path: '.github/steward/release.mjs' },
+      adoption: { profile: '../arbitrary.json' },
+    })).toThrow('safe built-in profile id');
   });
 });
