@@ -6,9 +6,13 @@ describe('generated consumer Dependabot policy', () => {
   it('groups every Steward reusable workflow dependency without matching unrelated Actions', async () => {
     const source = await readFile(new URL('../templates/init/dependabot.yml', import.meta.url), 'utf8');
     const configured = parse(source) as {
-      updates: Array<{ groups?: Record<string, { patterns?: string[] }> }>;
+      updates: Array<{
+        'package-ecosystem'?: string;
+        groups?: Record<string, { patterns?: string[] }>;
+      }>;
     };
-    const patterns = configured.updates[0]?.groups?.['steward-workflows']?.patterns;
+    const githubActions = configured.updates.find((update) => update['package-ecosystem'] === 'github-actions');
+    const patterns = githubActions?.groups?.['steward-workflows']?.patterns;
     expect(patterns).toEqual(['splrad/steward/.github/workflows/*']);
 
     const directory = new URL('../templates/thin-workflows/', import.meta.url);
@@ -16,8 +20,10 @@ describe('generated consumer Dependabot policy', () => {
     for (const file of await readdir(directory)) {
       if (!file.endsWith('.yml')) continue;
       const workflow = await readFile(new URL(file, directory), 'utf8');
-      dependencies.push(...[...workflow.matchAll(/uses:\s+(splrad\/steward\/\.github\/workflows\/[^@\s]+)@/g)]
-        .map((match) => match[1] ?? ''));
+      const parsed = parse(workflow) as { jobs?: Record<string, { uses?: string }> };
+      dependencies.push(...Object.values(parsed.jobs ?? {})
+        .map((job) => job.uses?.split('@', 1)[0])
+        .filter((dependency): dependency is string => dependency !== undefined));
     }
     expect(dependencies).toHaveLength(8);
     expect(dependencies.every((dependency) => dependency.startsWith('splrad/steward/.github/workflows/'))).toBe(true);
