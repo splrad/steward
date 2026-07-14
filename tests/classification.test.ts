@@ -1,10 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import {
-  evaluateClassification,
-  renderClassificationMetadata,
-  upsertClassificationMetadata,
-} from '../packages/core/src/index.js';
+import { evaluateClassification } from '../packages/core/src/index.js';
 import { parseManifest, type ClassificationConfiguration } from '../packages/manifest/src/index.js';
 
 const classification = JSON.parse(await readFile(
@@ -188,29 +184,5 @@ describe('classification evaluator', () => {
       publicLabels: ['enhancement'],
       releaseLabels: ['enhancement'],
     });
-  });
-
-  it('renders one canonical compatibility metadata block without changing contributor text', () => {
-    const presentation = evaluateClassification({
-      title: 'feat: add option',
-      files: ['src/Options.cs'],
-    }, classification).presentation;
-    expect(renderClassificationMetadata(presentation)).toBe([
-      '<!-- workflow:pr-classification:start',
-      'areas=area:runtime',
-      'kind=kind:feature',
-      'visible-labels=feature',
-      'release-labels=feature',
-      'workflow:pr-classification:end -->',
-    ].join('\n'));
-    expect(upsertClassificationMetadata([
-      'Contributor context',
-      '<!-- workflow:pr-classification:start',
-      'visible-labels=stale',
-      'workflow:pr-classification:end -->',
-      '<!-- workflow:pr-classification:start',
-      'visible-labels=duplicate',
-      'workflow:pr-classification:end -->',
-    ].join('\n'), presentation)).toBe(`Contributor context\n\n${renderClassificationMetadata(presentation)}`);
   });
 });

@@ -157,8 +157,8 @@ describe('First reusable workflow contracts', () => {
     expect(classification).toContain('permission-checks: write');
     expect(classification).toContain('permission-contents: read');
     expect(classification).toContain('permission-issues: write');
-    expect(classification).toContain('permission-pull-requests: write');
-    expect(classification).toContain('cancel-in-progress: true');
+    expect(classification).toContain('permission-pull-requests: read');
+    expect(classification).toContain('cancel-in-progress: false');
     expect(classification).not.toContain('mutation-token:');
     expect(classification).not.toContain('actions/checkout');
     expect(classification.match(/^\s*uses:/gm)).toHaveLength(2);

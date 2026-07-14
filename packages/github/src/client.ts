@@ -94,6 +94,7 @@ export interface GitHubGitRef {
 
 export interface GitHubCheckRun {
   id: number;
+  head_sha?: string;
   name: string;
   status: string;
   conclusion?: string | null;
@@ -103,6 +104,7 @@ export interface GitHubCheckRun {
   started_at?: string | null;
   completed_at?: string | null;
   app?: { id?: number; slug?: string } | null;
+  output?: { title?: string; summary?: string; text?: string | null } | null;
 }
 
 export interface GitHubWorkflowRun {
@@ -138,7 +140,8 @@ export interface GitHubIssueComment {
   id: number;
   body?: string;
   html_url?: string;
-  user?: { login?: string } | null;
+  user?: { id?: number; login?: string; type?: string } | null;
+  performed_via_github_app?: { id?: number; slug?: string } | null;
 }
 
 export interface GitHubReviewThread {
@@ -271,6 +274,21 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
     const login = String(payload.login ?? '').trim();
     if (!login) throw new Error('GitHub returned an invalid authenticated user');
     return { login };
+  }
+
+  async getUser(login: string): Promise<{ id: number; login: string; type: string }> {
+    const expected = login.trim();
+    if (!expected) throw new Error('GitHub user lookup requires a login');
+    const payload = await this.transport.request<{ id?: number; login?: string; type?: string }>({
+      path: `/users/${segment(expected)}`,
+    });
+    const id = Number(payload.id ?? 0);
+    const actual = String(payload.login ?? '').trim();
+    const type = String(payload.type ?? '').trim();
+    if (!Number.isSafeInteger(id) || id <= 0 || !actual || !type) {
+      throw new Error('GitHub returned an invalid user identity');
+    }
+    return { id, login: actual, type };
   }
 
   async getRepository(owner: string, repository: string): Promise<GitHubRepositoryMetadata> {
@@ -511,7 +529,7 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
     return await fetchPullRequestPages(async (page, perPage) => {
       const payload = await this.transport.request<{ check_runs?: GitHubCheckRun[] }>({
         path: `${repositoryPath(owner, repository)}/commits/${segment(ref)}/check-runs`,
-        query: { page, per_page: perPage },
+        query: { filter: 'all', page, per_page: perPage },
       });
       return payload.check_runs ?? [];
     });

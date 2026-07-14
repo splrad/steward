@@ -2,15 +2,15 @@
 
 SPLRAD Steward is shared automation for pull requests, releases, and repository governance across SPLRAD projects.
 
-The project is being extracted from a production-tested, event-driven workflow. Its public interfaces are designed around three constraints:
+The project is being extracted from a production-tested, event-driven workflow. Its target public interfaces are designed around three constraints:
 
-- repositories keep only thin event-entry workflows, one versioned manifest, and optional release adapters;
+- ordinary repositories keep one versioned Manifest; only work that must execute project code adds one optional Executor/adapter;
 - every state change is driven by a real GitHub event, with no scheduled refresh, sleep, or polling;
-- consumers pin Steward workflows and the bundled Action to a complete commit SHA.
+- compatible central runtime upgrades use immutable canary/promotion/rollback without changing consumers, while an optional Executor pins trusted code to a complete commit SHA.
 
 ## Status
 
-The repository contains the versioned Manifest contract, shared policy and GitHub integration layers, bundled Actions, reusable workflows for PR automation, classification, DCO advisory, governance, review signal, validation matrix, cleanup, and releases, the multi-repository webhook relay, canonical thin callers, and the first repository-lifecycle CLI surfaces. The established workflow chain has been validated in `splrad/steward-sandbox`; the new Automation, DCO, and Cleanup surfaces still require the stage 6.5 migration E2E before production consumer migration.
+Stages 0–6.5 established and validated the versioned Manifest, pure policy, GitHub adapters, Actions-first operation chain, Relay, lifecycle CLI, release contracts, and Sandbox/blank-repository/mature-repository migration evidence. Stage 6.6 is now migrating that proven behavior to an App-first central event-driven runtime. `packages/control` begins that migration with one runtime-neutral Classification and DCO Advisory kernel used by the existing Action adapter; the remaining reusable workflows, thin callers, and bundled Action surfaces are transitional execution and regression evidence until their central Control slices are complete. Stage 7 consumer migration has not started.
 
 ## CLI
 
@@ -43,7 +43,7 @@ After confirmation, missing target Secret values are accepted only from a hidden
 ## Repository layout
 
 - `action/`: bundled JavaScript Action published directly from a pinned commit.
-- `packages/`: core policy, manifest, GitHub, relay, and CLI module boundaries.
+- `packages/`: core policy, manifest, runtime-neutral control, GitHub, relay, and CLI module boundaries.
 - `schema/`: versioned project manifest schema.
 - `templates/`: thin workflows, manifest examples, and release-adapter templates.
 - `tests/`: contracts, fixtures, and static policy checks.

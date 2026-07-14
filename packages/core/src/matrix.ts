@@ -128,7 +128,8 @@ export interface MatrixProxyCompletionPlan {
 const pendingCheckStatuses = new Set(['queued', 'in_progress', 'waiting', 'requested', 'pending']);
 
 function compareTimestamp(left: MatrixCheckRun, right: MatrixCheckRun): number {
-  return String(left.started_at ?? left.created_at ?? '').localeCompare(String(right.started_at ?? right.created_at ?? ''));
+  return String(left.started_at ?? left.created_at ?? '').localeCompare(String(right.started_at ?? right.created_at ?? ''))
+    || Number(left.id ?? 0) - Number(right.id ?? 0);
 }
 
 function latestCheck(checks: readonly MatrixCheckRun[]): MatrixCheckRun | undefined {
@@ -223,6 +224,13 @@ export function isTrustedMatrixCheck(input: {
   const { run, target, pull, trust } = input;
   if (!pull.number || !pull.head.sha) return false;
   if (String(run.app?.slug ?? '') === trust.appSlug) {
+    const identity = parseStewardCheckExternalId(run.external_id);
+    if (target.id === 'pr-classification'
+      && identity?.checkId === 'pr-class-lease'
+      && identity.repositoryId === trust.repositoryId
+      && identity.prNumber === pull.number
+      && identity.headSha === pull.head.sha.toLowerCase()
+      && identity.configDigest === '0'.repeat(64)) return true;
     const expected = stewardCheckExternalId({
       repositoryId: trust.repositoryId,
       prNumber: pull.number,
@@ -261,6 +269,18 @@ function targetApplies(target: MatrixTargetConfiguration, scope: MatrixScope, pu
   return target.group === 'full' || target.group === 'gate';
 }
 
+function classificationLeaseMatchesTarget(
+  target: MatrixTargetResult | MatrixTargetConfiguration,
+  run: MatrixCheckRun,
+  pull: MatrixPull,
+): boolean {
+  const identity = parseStewardCheckExternalId(run.external_id);
+  return target.id === 'pr-classification'
+    && identity?.checkId === 'pr-class-lease'
+    && identity.prNumber === pull.number
+    && identity.headSha === pull.head.sha.toLowerCase();
+}
+
 function proxyMatchesTarget(target: MatrixTargetResult | MatrixTargetConfiguration, run: MatrixCheckRun, pull: MatrixPull): boolean {
   const externalId = String(run.external_id ?? '');
   const identity = parseStewardCheckExternalId(externalId);
@@ -284,19 +304,25 @@ export function evaluateMatrix(input: {
       if (!target.checkNames.includes(String(run.name ?? ''))) return false;
       const externalId = String(run.external_id ?? '');
       if ((parseStewardCheckExternalId(externalId) || externalId.startsWith('matrix-proxy:'))
-        && !proxyMatchesTarget(target, run, input.pull)) return false;
+        && !proxyMatchesTarget(target, run, input.pull)
+        && !classificationLeaseMatchesTarget(target, run, input.pull)) return false;
       return !input.trust || isTrustedMatrixCheck({ run, target, pull: input.pull, trust: input.trust });
     });
     const active = matches.filter((run) => (
       proxyMatchesTarget(target, run, input.pull)
       && pendingCheckStatuses.has(String(run.status ?? ''))
     ));
-    const checkRun = latestCheck(active.length ? active : matches) ?? null;
+    const checkRun = (target.id === 'pr-classification'
+      ? [...matches].sort((left, right) => Number(left.id ?? 0) - Number(right.id ?? 0)).at(-1)
+      : latestCheck(active.length ? active : matches)) ?? null;
+    const leaseBarrier = Boolean(checkRun && classificationLeaseMatchesTarget(target, checkRun, input.pull));
     const override = input.targetOverrides?.[target.id];
     return {
       ...target,
       checkRun,
-      state: override?.state ?? matrixCheckState(checkRun, target),
+      state: override?.state ?? (leaseBarrier
+        ? pendingCheckStatuses.has(String(checkRun?.status ?? '')) ? 'pending' : 'failed'
+        : matrixCheckState(checkRun, target)),
       conclusion: override?.conclusion ?? String(checkRun?.conclusion ?? ''),
       status: override?.status ?? String(checkRun?.status ?? ''),
       url: override?.url ?? String(checkRun?.html_url ?? checkRun?.details_url ?? ''),

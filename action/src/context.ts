@@ -6,6 +6,7 @@ import {
   type GitHubPullRequestDetail,
 } from '../../packages/github/src/index.js';
 import type { StewardActionInputs } from './contracts.js';
+import type { PullRequestControlRoute } from '../../packages/control/src/index.js';
 
 export interface GitHubEventPayload {
   action?: string;
@@ -51,6 +52,7 @@ export interface StewardRuntimeEnvironment {
   GITHUB_API_URL?: string;
   GITHUB_SERVER_URL?: string;
   GITHUB_RUN_ID?: string;
+  GITHUB_RUN_ATTEMPT?: string;
   GITHUB_WORKSPACE?: string;
   RUNNER_TEMP?: string;
 }
@@ -67,6 +69,12 @@ export interface StewardOperationContext {
   client: GitHubRepositoryClient;
   mutationClient?: GitHubRepositoryClient;
   detailsUrl?: string;
+}
+
+export interface StewardControlOperationContext {
+  eventName: string;
+  route: PullRequestControlRoute;
+  client: GitHubRepositoryClient;
 }
 
 export class PullRequestStateMismatchError extends Error {
@@ -196,6 +204,56 @@ export async function readEvent(path: string): Promise<GitHubEventPayload> {
     throw new Error('GitHub event payload must be a JSON object');
   }
   return parsed as GitHubEventPayload;
+}
+
+export async function createControlOperationContext(input: {
+  inputs: StewardActionInputs;
+  environment: StewardRuntimeEnvironment;
+  fetch?: typeof globalThis.fetch;
+}): Promise<StewardControlOperationContext> {
+  const token = input.inputs.token?.trim() ?? '';
+  if (!token) throw new Error('Steward operation requires an explicit GitHub token');
+  const eventPath = input.inputs.eventPath?.trim() || input.environment.GITHUB_EVENT_PATH?.trim() || '';
+  const event = await readEvent(eventPath);
+  const eventName = input.environment.GITHUB_EVENT_NAME?.trim() || '';
+  const trustedRun = eventName === 'workflow_run' ? trustedWorkflowRunContext(event.workflow_run) : null;
+  if (eventName === 'workflow_run' && !trustedRun) throw new Error('Workflow run is not a trusted PR signal');
+  const fullName = String(event.repository?.full_name ?? '').trim();
+  const [owner, repository, extra] = fullName.split('/');
+  if (!owner || !repository || extra) throw new Error('GitHub event payload has an invalid repository full name');
+  const repositoryId = positiveInteger(event.repository?.id ?? event.client_payload?.repository_id);
+  if (!repositoryId) throw new Error('GitHub event payload has an invalid repository ID');
+  if (eventName === 'repository_dispatch') validateRepositoryDispatch(event, repositoryId);
+  const pullNumber = trustedRun?.prNumber ?? resolvePullNumber(event, input.inputs.prNumber);
+  const expectedHead = trustedRun?.headSha ?? resolveExpectedHead(event, input.inputs.headSha);
+  if (expectedHead && !/^[a-f0-9]{40}$/.test(expectedHead)) {
+    throw new Error('Trusted event has an invalid expected head SHA');
+  }
+  const runId = input.environment.GITHUB_RUN_ID?.trim() ?? '';
+  const runAttempt = input.environment.GITHUB_RUN_ATTEMPT?.trim() ?? '';
+  if (!/^[1-9][0-9]*$/.test(runId) || !/^[1-9][0-9]*$/.test(runAttempt)) {
+    throw new Error('Control operation requires trusted positive GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT identities');
+  }
+  const restApiUrl = input.environment.GITHUB_API_URL?.trim() || 'https://api.github.com/';
+  const transportOptions = input.fetch ? { fetch: input.fetch } : {};
+  const client = new GitHubRepositoryClient(
+    createGitHubRestTransport({ token, baseUrl: restApiUrl, ...transportOptions }),
+    createGitHubRestTransport({ token, baseUrl: graphqlApiBase(restApiUrl), ...transportOptions }),
+  );
+  const serverUrl = input.environment.GITHUB_SERVER_URL?.replace(/\/$/, '') || 'https://github.com';
+  return {
+    eventName,
+    client,
+    route: {
+      repository: { id: repositoryId, owner, name: repository },
+      pullRequest: {
+        number: pullNumber,
+        ...(expectedHead ? { expectedHeadSha: expectedHead } : {}),
+      },
+      attemptId: `actions-run:${runId}:attempt:${runAttempt}`,
+      detailsUrl: `${serverUrl}/${fullName}/actions/runs/${runId}/attempts/${runAttempt}`,
+    },
+  };
 }
 
 export async function createOperationContext(input: {

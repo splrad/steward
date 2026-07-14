@@ -185,6 +185,23 @@ describe('GitHub REST transport', () => {
 });
 
 describe('GitHub repository adapter', () => {
+  it('resolves a durable App bot identity through the installation-token-compatible user endpoint', async () => {
+    const { transport, requests } = mockTransport(() => ({
+      id: 99,
+      login: 'splrad-steward[bot]',
+      type: 'Bot',
+    }));
+    const client = new GitHubRepositoryClient(transport);
+
+    await expect(client.getUser('splrad-steward[bot]')).resolves.toEqual({
+      id: 99,
+      login: 'splrad-steward[bot]',
+      type: 'Bot',
+    });
+    expect(requests).toEqual([{ path: '/users/splrad-steward%5Bbot%5D' }]);
+    await expect(client.getUser(' ')).rejects.toThrow('requires a login');
+  });
+
   it('implements the trusted default-branch Manifest loader boundary', async () => {
     const manifest = minimalManifest();
     const { transport, requests } = mockTransport((request) => {
@@ -242,6 +259,8 @@ describe('GitHub repository adapter', () => {
     expect(jobs[0]).toMatchObject({ id: 1 });
     expect(requests).toHaveLength(18);
     expect(requests.every((request) => request.query?.per_page === 100)).toBe(true);
+    expect(requests.filter((request) => request.path.endsWith('/check-runs'))
+      .every((request) => request.query?.filter === 'all')).toBe(true);
   });
 
   it('paginates review threads and fails closed on GraphQL errors', async () => {
@@ -515,7 +534,7 @@ describe('GitHub repository adapter', () => {
     expect(requests[1]?.body).not.toHaveProperty('output');
   });
 
-  it('maps Classification label and PR metadata calls without embedding policy', async () => {
+  it('maps generic label and pull-request body calls without embedding policy', async () => {
     const { transport, requests } = mockTransport((request) => (
       request.path.endsWith('/labels/bug') || request.path.endsWith('/labels')
         ? { name: 'bug', color: 'd73a4a', description: 'Bug fix' }
@@ -529,7 +548,7 @@ describe('GitHub repository adapter', () => {
     });
     await client.addIssueLabels('splrad', 'steward', 6, [' bug ', 'docs', 'bug', '']);
     await client.removeIssueLabel('splrad', 'steward', 6, ' area:core ');
-    await client.updatePullRequestBody('splrad', 'steward', 6, 'body with hidden metadata');
+    await client.updatePullRequestBody('splrad', 'steward', 6, 'consumer-owned body update');
 
     expect(requests).toEqual([
       { path: '/repos/splrad/steward/labels/bug' },
@@ -544,7 +563,7 @@ describe('GitHub repository adapter', () => {
       { method: 'DELETE', path: '/repos/splrad/steward/issues/6/labels/area%3Acore' },
       {
         method: 'PATCH', path: '/repos/splrad/steward/pulls/6',
-        body: { body: 'body with hidden metadata' },
+        body: { body: 'consumer-owned body update' },
       },
     ]);
 

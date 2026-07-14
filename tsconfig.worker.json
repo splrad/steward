@@ -8,6 +8,7 @@
     "packages/core/src/**/*.ts",
     "packages/github/src/**/*.ts",
     "packages/manifest/src/**/*.ts",
-    "packages/control/src/**/*.ts"
+    "packages/control/src/**/*.ts",
+    "tests/workerd/control-smoke-worker.ts"
   ]
 }

@@ -8,9 +8,7 @@ import {
   decodeBlockingState,
   encodeBlockingState,
   evaluateCopilotGate,
-  evaluateClassification,
   evaluatePullRequestCleanup,
-  evaluateDcoAdvisory,
   evaluateMainAuthorization,
   evaluateMatrix,
   fingerprintForPull,
@@ -24,36 +22,36 @@ import {
   planMatrixRepairs,
   planProxyCompletions,
   stewardCheckExternalId,
-  upsertClassificationMetadata,
   workflowRunId,
   workflowRunMatchesTarget,
   type GovernanceFailureModel,
   type BlockingFailure,
-  type DcoEvaluation,
-  type DcoIssue,
   type CleanupNotification,
   type MatrixCheckRun,
   type MatrixRepairPlan,
   type MatrixWorkflowRun,
 } from '../../packages/core/src/index.js';
 import {
-  GitHubApiError,
   type GitHubCheckRun,
   type GitHubCommit,
   type GitHubPullRequestFile,
   type GitHubPullRequestReview,
   type GitHubRepositoryClient,
 } from '../../packages/github/src/index.js';
-import type { PublicLabelConfiguration } from '../../packages/manifest/src/index.js';
+import {
+  reconcileClassification,
+  reconcileDcoAdvisory,
+  type ControlOperationState,
+} from '../../packages/control/src/index.js';
 import type { StewardActionInputs, StewardOperation } from './contracts.js';
 import { parseMatrixMode, parseMatrixScope } from './contracts.js';
 import { enabledMatrixConfiguration } from './catalog.js';
-import type { StewardOperationContext } from './context.js';
+import type { StewardControlOperationContext, StewardOperationContext } from './context.js';
 import { trustedWorkflowRunContext } from './context.js';
 
 export interface StewardOperationResult {
   operation: StewardOperation;
-  state: 'passed' | 'pending' | 'failed' | 'ignored';
+  state: ControlOperationState;
   summary: string;
   details?: unknown;
 }
@@ -66,216 +64,22 @@ interface PullFacts {
 }
 
 const autoApprovalMarker = '<!-- workflow:auto-approval -->';
-const legacyDcoMarker = '<!-- workflow:dco-signoff-advisory -->';
-const maxDcoIssues = 20;
+export const stewardRuntimeIdentity = {
+  appId: 4243096,
+  clientId: 'Iv23liuSr0qd4WLJdZhH',
+  appSlug: 'splrad-steward',
+} as const;
 
-async function ensureRepositoryLabel(
-  context: StewardOperationContext,
-  label: PublicLabelConfiguration,
-): Promise<void> {
-  try {
-    await context.client.getRepositoryLabel(context.owner, context.repository, label.name);
-    return;
-  } catch (error) {
-    if (!(error instanceof GitHubApiError) || error.status !== 404) throw error;
-  }
-
-  try {
-    await context.client.createRepositoryLabel(context.owner, context.repository, label);
-  } catch (error) {
-    if (!(error instanceof GitHubApiError) || error.status !== 422) throw error;
-    await context.client.getRepositoryLabel(context.owner, context.repository, label.name);
-  }
-}
-
-async function classificationOperation(context: StewardOperationContext): Promise<StewardOperationResult> {
-  if (!context.manifest.manifest.features.classification) {
-    return {
-      operation: 'classification',
-      state: 'ignored',
-      summary: 'Classification feature is disabled',
-    };
-  }
-  const classification = context.manifest.manifest.classification;
-  if (!classification) throw new Error('Classification feature requires default-branch Manifest configuration');
-
-  const [commits, files, checks] = await Promise.all([
-    context.client.listPullRequestCommits(context.owner, context.repository, context.pull.number),
-    context.client.listPullRequestFiles(context.owner, context.repository, context.pull.number),
-    context.client.listCommitCheckRuns(context.owner, context.repository, context.pull.head.sha),
-  ]);
-  if (typeof context.pull.title !== 'string' || !context.pull.title.trim()) {
-    throw new Error('GitHub returned a pull request without a valid title');
-  }
-  if (commits.some((commit) => !/^[a-f0-9]{40}$/i.test(String(commit.sha ?? '')))) {
-    throw new Error('GitHub returned a pull request commit without a valid SHA');
-  }
-  const filenames = files.map((file) => String(file.filename ?? '').trim());
-  if (filenames.some((filename) => !filename)) {
-    throw new Error('GitHub returned a pull request file without a valid filename');
-  }
-  const currentLabels = (context.pull.labels ?? []).map((label) => String(label.name ?? '').trim());
-  if (currentLabels.some((label) => !label)) {
-    throw new Error('GitHub returned a pull request label without a valid name');
-  }
-  const fingerprint = await fingerprintForPull({
-    pull: context.pull,
-    commits,
-    files,
-    botLogins: botLogins(context),
-  });
-  const evaluation = evaluateClassification({
-    title: context.pull.title,
-    baseRef: context.pull.base.ref,
-    ...(context.pull.body === undefined ? {} : { body: context.pull.body }),
-    ...(context.pull.head.ref === undefined ? {} : { headRef: context.pull.head.ref }),
-    ...(context.pull.user == null ? {} : { author: context.pull.user }),
-    files: filenames,
-    currentLabels,
-  }, classification);
-
-  for (const label of evaluation.mutationPlan.ensureLabels) await ensureRepositoryLabel(context, label);
-  if (evaluation.mutationPlan.addLabels.length) {
-    await context.client.addIssueLabels(
-      context.owner,
-      context.repository,
-      context.pull.number,
-      evaluation.mutationPlan.addLabels,
-    );
-  }
-  const labelsToRemove = [...new Map([
-    ...evaluation.mutationPlan.removePublicLabels,
-    ...evaluation.mutationPlan.removeInternalLabels,
-  ].map((label) => [label.toLowerCase(), label])).values()];
-  for (const label of labelsToRemove) {
-    await context.client.removeIssueLabel(context.owner, context.repository, context.pull.number, label);
-  }
-
-  const body = upsertClassificationMetadata(context.pull.body, evaluation.presentation);
-  if (body !== (context.pull.body ?? '')) {
-    await context.client.updatePullRequestBody(context.owner, context.repository, context.pull.number, body);
-  }
-  await writeCheck({
-    context,
-    checks,
-    checkId: 'pr-classification',
-    name: 'PR Classification Gate',
-    inputDigest: fingerprint.value,
-    status: 'completed',
-    conclusion: 'success',
-    title: 'PR 分类已更新',
-    summary: '标题、正文、提交、贡献者和文件输入均与当前分类结果一致。',
-  });
-  return {
-    operation: 'classification',
-    state: 'passed',
-    summary: 'PR classification converged',
-    details: { evaluation, fingerprint: fingerprint.value },
-  };
-}
-
-function boundedDcoText(value: unknown): string {
-  const normalized = String(value ?? '')
-    .replace(/\r?\n/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return normalized.length <= 240 ? normalized : `${normalized.slice(0, 239)}…`;
-}
-
-function safeDcoMarkdown(value: unknown, shieldMentions: boolean): string {
-  const escaped = boundedDcoText(value)
-    .replace(/&/g, '&amp;')
-    .replace(/`/g, "'")
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/@/g, shieldMentions ? '@\u200b' : '@');
-  return boundedDcoText(escaped);
-}
-
-function dcoIssueReason(issue: DcoIssue): string {
-  if (issue.reason === 'missing') {
-    return `缺少 Signed-off-by；建议添加 \`Signed-off-by: ${safeDcoMarkdown(issue.authorName, false) || 'Name'} <${safeDcoMarkdown(issue.authorEmail, false) || 'email@example.com'}>\``;
-  }
-  if (issue.reason === 'invalid-format') return 'Signed-off-by 格式无效；应使用 `Signed-off-by: Name <email>`';
-  const signed = issue.signedEmails.map((value) => safeDcoMarkdown(value, false)).join(', ') || 'none';
-  const truncated = issue.signedEmailsTruncated ? `（另有 ${issue.signedEmailsTruncated} 个未展开）` : '';
-  return `Signed-off-by 邮箱与 commit author email 不一致；author email 为 \`${safeDcoMarkdown(issue.authorEmail, false) || 'unknown'}\`，当前签名邮箱为 \`${signed}\`${truncated}`;
-}
-
-function presentDcoIssue(issue: DcoIssue): DcoIssue {
-  return {
-    ...issue,
-    subject: safeDcoMarkdown(issue.subject, true),
-    authorName: safeDcoMarkdown(issue.authorName, true),
-    authorEmail: boundedDcoText(issue.authorEmail),
-    signedEmails: issue.signedEmails.map(boundedDcoText),
-  };
-}
-
-function dcoSummary(evaluation: DcoEvaluation): string {
-  const lines = [
-    `DCO Sign-off Advisory：${evaluation.total} commits，${evaluation.passed} passed，${evaluation.skipped} skipped bots，${evaluation.issues.length} advisory issues。`,
-  ];
-  for (const issue of evaluation.issues.slice(0, maxDcoIssues)) {
-    lines.push(`- \`${issue.sha.slice(0, 7)}\` ${safeDcoMarkdown(issue.subject, true) || '(empty commit message)'}: ${dcoIssueReason(issue)}`);
-  }
-  if (evaluation.issues.length > maxDcoIssues) {
-    lines.push(`- 另有 ${evaluation.issues.length - maxDcoIssues} 项未展开；请查看 operation-result。`);
-  }
-  return lines.join('\n');
-}
-
-async function dcoAdvisoryOperation(context: StewardOperationContext): Promise<StewardOperationResult> {
-  if (!context.manifest.manifest.features.dcoAdvisory) {
-    return { operation: 'dco-advisory', state: 'ignored', summary: 'DCO Advisory feature is disabled' };
-  }
-  const [commits, comments] = await Promise.all([
-    context.client.listPullRequestCommits(context.owner, context.repository, context.pull.number),
-    context.client.listIssueComments(context.owner, context.repository, context.pull.number),
-  ]);
-  if (!commits.length) throw new Error('GitHub returned no commits for an open pull request');
-  const evaluation = evaluateDcoAdvisory(commits.map((commit) => {
-    const sha = String(commit.sha ?? '').toLowerCase();
-    const message = commit.commit?.message;
-    if (!/^[a-f0-9]{40}$/.test(sha) || typeof message !== 'string') {
-      throw new Error('GitHub returned a pull request commit without a valid SHA or message');
-    }
-    return {
-      sha,
-      message,
-      author: {
-        login: commit.author?.login,
-        type: commit.author?.type,
-        name: commit.commit?.author?.name,
-        email: commit.commit?.author?.email,
-      },
-      committer: {
-        login: commit.committer?.login,
-        type: commit.committer?.type,
-        name: commit.commit?.committer?.name,
-        email: commit.commit?.committer?.email,
-      },
-    };
-  }), { botLogins: botLogins(context) });
-
-  const appSlug = context.manifest.manifest.automation.githubApp.slug.toLowerCase();
-  const legacy = comments.filter((comment) => (
-    normalizeAppLogin(comment.user?.login) === appSlug
-    && String(comment.body ?? '').includes(legacyDcoMarker)
-  ));
-  for (const comment of legacy) {
-    await context.client.deleteIssueComment(context.owner, context.repository, comment.id);
-  }
-  return {
-    operation: 'dco-advisory',
-    state: 'passed',
-    summary: dcoSummary(evaluation),
-    details: {
-      evaluation: { ...evaluation, issues: evaluation.issues.slice(0, maxDcoIssues).map(presentDcoIssue) },
-      issuesTruncated: Math.max(0, evaluation.issues.length - maxDcoIssues),
-      legacyCommentsDeleted: legacy.length,
-    },
-  };
+export async function executeControlOperation(
+  operation: 'classification' | 'dco-advisory',
+  context: StewardControlOperationContext,
+): Promise<StewardOperationResult> {
+  const reconcile = operation === 'classification' ? reconcileClassification : reconcileDcoAdvisory;
+  return (await reconcile(context.route, {
+    identity: stewardRuntimeIdentity,
+    read: context.client,
+    installation: context.client,
+  })).result;
 }
 
 function safeCleanupText(value: unknown): string {
@@ -1030,13 +834,11 @@ async function matrixOperation(context: StewardOperationContext, inputs: Steward
 }
 
 export async function executeOperation(
-  operation: Exclude<StewardOperation, 'version' | 'automation' | 'release-adapter' | 'release-preflight' | 'release-status' | 'release-publish' | 'release-finalize'>,
+  operation: Exclude<StewardOperation, 'version' | 'automation' | 'classification' | 'dco-advisory' | 'release-adapter' | 'release-preflight' | 'release-status' | 'release-publish' | 'release-finalize'>,
   context: StewardOperationContext,
   inputs: StewardActionInputs,
 ): Promise<StewardOperationResult> {
-  if (operation === 'classification') return await classificationOperation(context);
   if (operation === 'cleanup') return await cleanupOperation(context);
-  if (operation === 'dco-advisory') return await dcoAdvisoryOperation(context);
   if (operation === 'governance-preflight') {
     return {
       operation,

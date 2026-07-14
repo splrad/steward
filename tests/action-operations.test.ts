@@ -1,7 +1,13 @@
 import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { fingerprintForPull, stewardCheckExternalId } from '../packages/core/src/index.js';
-import type { ClassificationConfiguration, LoadedManifest, StewardManifest } from '../packages/manifest/src/index.js';
+import {
+  canonicalManifestJson,
+  type ClassificationConfiguration,
+  type LoadedManifest,
+  type StewardManifest,
+} from '../packages/manifest/src/index.js';
 import {
   GitHubApiError,
   type CheckRunCreate,
@@ -25,40 +31,45 @@ import {
   graphqlApiBase,
   PullRequestHeadMismatchError,
   PullRequestStateMismatchError,
+  createControlOperationContext,
   createOperationContext,
   resolveExpectedHead,
   resolvePullNumber,
   trustedWorkflowRunContext,
   validateRepositoryDispatch,
   type GitHubEventPayload,
+  type StewardControlOperationContext,
   type StewardOperationContext,
 } from '../action/src/context.js';
-import { executeOperation } from '../action/src/operations.js';
+import { executeControlOperation, executeOperation } from '../action/src/operations.js';
 import { enabledMatrixConfiguration, stewardMatrixConfiguration } from '../action/src/catalog.js';
 import { createReleasePreflight } from '../action/src/release-preflight.js';
 
 function manifest(features: Partial<StewardManifest['features']> = {}): LoadedManifest {
-  return {
-    manifest: {
-      schemaVersion: 1,
-      automation: {
-        githubApp: { clientId: 'Iv23liuSr0qd4WLJdZhH', slug: 'splrad-steward' },
-        maintainers: { source: 'users', logins: ['core', 'reviewer'] },
-        language: 'zh-CN',
-      },
-      features: {
-        prAutomation: false,
-        classification: false,
-        dcoAdvisory: false,
-        governance: true,
-        copilotReview: true,
-        release: false,
-        webhookRelay: false,
-        ...features,
-      },
+  const value: StewardManifest = {
+    schemaVersion: 1,
+    automation: {
+      githubApp: { clientId: 'Iv23liuSr0qd4WLJdZhH', slug: 'splrad-steward' },
+      maintainers: { source: 'users', logins: ['core', 'reviewer'] },
+      language: 'zh-CN',
     },
-    canonicalJson: '{}',
-    configDigest: 'a'.repeat(64),
+    features: {
+      prAutomation: false,
+      classification: false,
+      dcoAdvisory: false,
+      governance: true,
+      copilotReview: true,
+      release: false,
+      webhookRelay: false,
+      ...features,
+    },
+    ...(features.classification ? { classification } : {}),
+  };
+  const canonicalJson = canonicalManifestJson(value);
+  return {
+    manifest: value,
+    canonicalJson,
+    configDigest: createHash('sha256').update(canonicalJson).digest('hex'),
     source: { path: '.github/steward.json', ref: 'main', blobSha: 'manifest-sha' },
   };
 }
@@ -72,6 +83,7 @@ function context(overrides: Record<string, unknown> = {}): {
   context: StewardOperationContext;
   client: Record<string, ReturnType<typeof vi.fn>>;
   mutationClient: Record<string, ReturnType<typeof vi.fn>>;
+  checkRuns: GitHubCheckRun[];
 } {
   const pull: GitHubPullRequestDetail = {
     number: 7,
@@ -84,28 +96,75 @@ function context(overrides: Record<string, unknown> = {}): {
     requested_reviewers: [],
     mergeCommitSha: null,
   };
+  let operationContext: StewardOperationContext;
+  const checkRuns: GitHubCheckRun[] = [];
+  const materializeCheck = (id: number, input: CheckRunCreate | CheckRunUpdate): GitHubCheckRun => ({
+    id,
+    head_sha: pull.head.sha,
+    name: input.name,
+    status: input.status,
+    conclusion: input.conclusion ?? null,
+    external_id: input.externalId ?? null,
+    details_url: input.detailsUrl ?? null,
+    app: { id: 4_243_096, slug: 'splrad-steward' },
+    output: {
+      ...(input.title === undefined ? {} : { title: input.title }),
+      ...(input.summary === undefined ? {} : { summary: input.summary }),
+    },
+  });
   const client = {
-    getAuthenticatedUser: vi.fn(async () => ({ login: 'reviewer' })),
+    getAuthenticatedUser: vi.fn(async () => ({ id: 99, login: 'splrad-steward[bot]', type: 'Bot' })),
+    getUser: vi.fn(async () => ({ id: 99, login: 'splrad-steward[bot]', type: 'Bot' })),
+    getRepository: vi.fn(async () => ({ id: 1296724484, fullName: 'splrad/steward', defaultBranch: 'main' })),
+    getFile: vi.fn(async () => ({
+      type: 'file',
+      encoding: 'base64',
+      content: Buffer.from(operationContext.manifest.canonicalJson).toString('base64'),
+      sha: operationContext.manifest.source.blobSha,
+    })),
+    getPullRequest: vi.fn(async () => structuredClone(pull)),
     listTeamMembers: vi.fn(async () => []),
     listPullRequestCommits: vi.fn(async () => [{ sha: 'd'.repeat(40), author: { login: 'core' } }]),
     listPullRequestFiles: vi.fn(async () => []),
     listPullRequestReviews: vi.fn(async () => [{
       state: 'APPROVED', commit_id: pull.head.sha, user: { login: 'reviewer' }, body: 'approved',
     }]),
-    listCommitCheckRuns: vi.fn(async () => []),
+    listCommitCheckRuns: vi.fn(async () => structuredClone(checkRuns)),
     listIssueComments: vi.fn(async () => []),
     listReviewThreads: vi.fn(async () => []),
     listWorkflowRuns: vi.fn(async () => []),
     listWorkflowJobs: vi.fn(async () => []),
     getRepositoryLabel: vi.fn(async () => ({ name: 'feature', color: '000000' })),
     createRepositoryLabel: vi.fn(async () => ({ name: 'feature', color: '000000' })),
-    addIssueLabels: vi.fn(async () => undefined),
-    removeIssueLabel: vi.fn(async () => undefined),
-    updatePullRequestBody: vi.fn(async () => undefined),
+    addIssueLabels: vi.fn(async (_owner, _repository, _number, labels: readonly string[]) => {
+      const current = new Map((pull.labels ?? []).map((label) => [String(label.name ?? '').toLowerCase(), label]));
+      for (const label of labels) current.set(label.toLowerCase(), { name: label });
+      pull.labels = [...current.values()];
+    }),
+    removeIssueLabel: vi.fn(async (_owner, _repository, _number, label: string) => {
+      pull.labels = (pull.labels ?? []).filter((candidate) => (
+        String(candidate.name ?? '').toLowerCase() !== label.toLowerCase()
+      ));
+    }),
+    updatePullRequestBody: vi.fn(async (_owner, _repository, _number, body: string) => { pull.body = body; }),
     requestReviewers: vi.fn(async () => undefined),
     createPullRequestReview: vi.fn(async () => undefined),
-    createCheckRun: vi.fn(async (_owner, _repository, input) => ({ id: 1, ...input })),
-    updateCheckRun: vi.fn(async () => ({ id: 1 })),
+    createCheckRun: vi.fn(async (_owner, _repository, input: CheckRunCreate): Promise<GitHubCheckRun> => {
+      const check = materializeCheck(Math.max(0, ...checkRuns.map((candidate) => candidate.id)) + 1, input);
+      checkRuns.push(check);
+      return check;
+    }),
+    updateCheckRun: vi.fn(async (
+      _owner,
+      _repository,
+      checkRunId: number,
+      input: CheckRunUpdate,
+    ): Promise<GitHubCheckRun> => {
+      const check = materializeCheck(checkRunId, input);
+      const index = checkRuns.findIndex((candidate) => candidate.id === checkRunId);
+      if (index >= 0) checkRuns[index] = check;
+      return check;
+    }),
     createIssueComment: vi.fn(async () => ({ id: 1 })),
     updateIssueComment: vi.fn(async () => ({ id: 1 })),
     deleteIssueComment: vi.fn(async () => undefined),
@@ -122,21 +181,46 @@ function context(overrides: Record<string, unknown> = {}): {
     requestReviewers: vi.fn(async () => undefined),
     createPullRequestReview: vi.fn(async () => undefined),
   };
+  operationContext = {
+    owner: 'splrad',
+    repository: 'steward',
+    repositoryId: 1296724484,
+    defaultBranch: 'main',
+    eventName: 'pull_request_target',
+    event: { repository: { id: 1296724484, full_name: 'splrad/steward' }, pull_request: { number: 7 } },
+    pull,
+    manifest: manifest(),
+    client: client as unknown as GitHubRepositoryClient,
+    mutationClient: mutationClient as unknown as GitHubRepositoryClient,
+    ...overrides,
+  };
   return {
     client,
     mutationClient,
-    context: {
-      owner: 'splrad',
-      repository: 'steward',
-      repositoryId: 1296724484,
-      defaultBranch: 'main',
-      eventName: 'pull_request_target',
-      event: { repository: { id: 1296724484, full_name: 'splrad/steward' }, pull_request: { number: 7 } },
-      pull,
-      manifest: manifest(),
-      client: client as unknown as GitHubRepositoryClient,
-      mutationClient: mutationClient as unknown as GitHubRepositoryClient,
-      ...overrides,
+    context: operationContext,
+    checkRuns,
+  };
+}
+
+function controlContext(
+  fixture: ReturnType<typeof context>,
+  attemptId = 'action-test-attempt',
+): StewardControlOperationContext {
+  return {
+    eventName: fixture.context.eventName,
+    client: fixture.context.client,
+    route: {
+      repository: {
+        id: fixture.context.repositoryId,
+        owner: fixture.context.owner,
+        name: fixture.context.repository,
+      },
+      pullRequest: {
+        number: fixture.context.pull.number,
+        expectedHeadSha: fixture.context.pull.head.sha,
+      },
+      attemptId,
+      ...(fixture.context.detailsUrl ? { detailsUrl: fixture.context.detailsUrl } : {}),
     },
   };
 }
@@ -367,6 +451,70 @@ describe('Action operation contract', () => {
     await expect(dispatchContext()).rejects.toThrow(
       'only accepts an open pull request; pull request #7 has state "closed"',
     );
+  });
+
+  it('builds the Classification/DCO Control route without preloading repository metadata or Manifest', async () => {
+    const fetchMock = vi.fn(async () => new Response('{}')) as unknown as typeof fetch;
+    const resolved = await createControlOperationContext({
+      inputs: {
+        operation: 'classification',
+        token: 'platform-token',
+        eventPath: 'tests/fixtures/action-event.json',
+      },
+      environment: {
+        GITHUB_API_URL: 'https://api.github.com/',
+        GITHUB_EVENT_NAME: 'pull_request_target',
+        GITHUB_RUN_ID: '123456',
+        GITHUB_RUN_ATTEMPT: '2',
+      },
+      fetch: fetchMock,
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(resolved.route).toEqual({
+      repository: { id: 1_296_724_484, owner: 'splrad', name: 'steward' },
+      pullRequest: { number: 7, expectedHeadSha: 'c'.repeat(40) },
+      attemptId: 'actions-run:123456:attempt:2',
+      detailsUrl: 'https://github.com/splrad/steward/actions/runs/123456/attempts/2',
+    });
+  });
+
+  it('binds reruns to distinct trusted Control attempt identities', async () => {
+    const resolveAttempt = async (attempt: string) => (await createControlOperationContext({
+      inputs: {
+        operation: 'classification',
+        token: 'platform-token',
+        eventPath: 'tests/fixtures/action-event.json',
+      },
+      environment: {
+        GITHUB_EVENT_NAME: 'pull_request_target',
+        GITHUB_RUN_ID: '123456',
+        GITHUB_RUN_ATTEMPT: attempt,
+      },
+    })).route.attemptId;
+
+    await expect(resolveAttempt('1')).resolves.toBe('actions-run:123456:attempt:1');
+    await expect(resolveAttempt('2')).resolves.toBe('actions-run:123456:attempt:2');
+  });
+
+  it.each([
+    ['missing run attempt', '123456', undefined],
+    ['zero run ID', '0', '1'],
+    ['non-canonical run attempt', '123456', '01'],
+    ['non-numeric run ID', 'run-123456', '1'],
+  ])('rejects %s as a Control attempt identity', async (_name, runId, runAttempt) => {
+    await expect(createControlOperationContext({
+      inputs: {
+        operation: 'classification',
+        token: 'platform-token',
+        eventPath: 'tests/fixtures/action-event.json',
+      },
+      environment: {
+        GITHUB_EVENT_NAME: 'pull_request_target',
+        GITHUB_RUN_ID: runId,
+        ...(runAttempt ? { GITHUB_RUN_ATTEMPT: runAttempt } : {}),
+      },
+    })).rejects.toThrow('trusted positive GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT');
   });
 
   it('exposes runtime inputs without consumer policy fields', async () => {
@@ -604,7 +752,7 @@ describe('Action operation contract', () => {
     fixture.context.pull.labels = [{ name: 'documentation' }, { name: 'area:docs' }, { name: 'external' }];
     fixture.client.listPullRequestFiles!.mockResolvedValue([{ filename: 'src/Options.cs' }]);
 
-    const result = await executeOperation('classification', fixture.context, { operation: 'classification' });
+    const result = await executeControlOperation('classification', controlContext(fixture));
 
     expect(result).toMatchObject({
       state: 'passed',
@@ -615,18 +763,19 @@ describe('Action operation contract', () => {
     expect(fixture.client.removeIssueLabel).toHaveBeenCalledWith('splrad', 'steward', 7, 'area:docs');
     expect(fixture.client.removeIssueLabel).not.toHaveBeenCalledWith('splrad', 'steward', 7, 'external');
     expect(fixture.client.addIssueLabels).toHaveBeenCalledWith('splrad', 'steward', 7, ['feature']);
-    expect(fixture.client.updatePullRequestBody).toHaveBeenCalledWith(
-      'splrad', 'steward', 7, expect.stringContaining('visible-labels=feature'),
-    );
+    expect(fixture.client.updatePullRequestBody).not.toHaveBeenCalled();
+    expect(fixture.client.updateCheckRun).toHaveBeenCalledWith('splrad', 'steward', 1, expect.objectContaining({
+      name: 'PR Classification Gate', status: 'completed', conclusion: 'success',
+    }));
     expect(fixture.client.createCheckRun).toHaveBeenCalledWith('splrad', 'steward', expect.objectContaining({
-      name: 'PR Classification Gate', status: 'completed', conclusion: 'success', headSha: 'c'.repeat(40),
+      name: 'PR Classification Gate', status: 'in_progress', headSha: 'c'.repeat(40),
     }));
   });
 
   it('does not trust stale PR metadata to remove labels when Classification is disabled', async () => {
     const fixture = context();
     fixture.context.pull.body = '<!-- workflow:pr-classification:start\nvisible-labels=security\nworkflow:pr-classification:end -->';
-    const result = await executeOperation('classification', fixture.context, { operation: 'classification' });
+    const result = await executeControlOperation('classification', controlContext(fixture));
     expect(result).toMatchObject({ state: 'ignored' });
     expect(fixture.client.listPullRequestFiles).not.toHaveBeenCalled();
     expect(fixture.client.removeIssueLabel).not.toHaveBeenCalled();
@@ -664,12 +813,12 @@ describe('Action operation contract', () => {
       },
     ]);
     fixture.client.listIssueComments!.mockResolvedValue([
-      { id: 10, user: { login: 'splrad-steward[bot]' }, body: '<!-- workflow:dco-signoff-advisory -->' },
+      { id: 10, user: { id: 99, login: 'splrad-steward[bot]', type: 'Bot' }, body: '<!-- workflow:dco-signoff-advisory -->' },
       { id: 11, user: { login: 'splrad-steward[bot]' }, body: 'unrelated' },
       { id: 12, user: { login: 'external' }, body: '<!-- workflow:dco-signoff-advisory -->' },
     ]);
 
-    const result = await executeOperation('dco-advisory', fixture.context, { operation: 'dco-advisory' });
+    const result = await executeControlOperation('dco-advisory', controlContext(fixture));
 
     expect(result).toMatchObject({
       operation: 'dco-advisory',
@@ -700,7 +849,7 @@ describe('Action operation contract', () => {
 
   it('does not read commits or comments when DCO Advisory is disabled', async () => {
     const fixture = context();
-    const result = await executeOperation('dco-advisory', fixture.context, { operation: 'dco-advisory' });
+    const result = await executeControlOperation('dco-advisory', controlContext(fixture));
     expect(result).toMatchObject({ state: 'ignored' });
     expect(fixture.client.listPullRequestCommits).not.toHaveBeenCalled();
     expect(fixture.client.listIssueComments).not.toHaveBeenCalled();
@@ -717,7 +866,7 @@ describe('Action operation contract', () => {
         message: `fix: unsigned ${index}`,
       },
     })));
-    const result = await executeOperation('dco-advisory', fixture.context, { operation: 'dco-advisory' });
+    const result = await executeControlOperation('dco-advisory', controlContext(fixture));
     expect(result).toMatchObject({
       state: 'passed',
       details: {
@@ -734,7 +883,7 @@ describe('Action operation contract', () => {
     const fixture = context();
     fixture.context.manifest = manifest({ dcoAdvisory: true });
     fixture.client.listPullRequestCommits!.mockResolvedValue([{ sha: 'short', commit: { message: 'fix: malformed' } }]);
-    await expect(executeOperation('dco-advisory', fixture.context, { operation: 'dco-advisory' }))
+    await expect(executeControlOperation('dco-advisory', controlContext(fixture)))
       .rejects.toThrow('without a valid SHA or message');
     expect(fixture.client.deleteIssueComment).not.toHaveBeenCalled();
   });
@@ -743,7 +892,7 @@ describe('Action operation contract', () => {
     const fixture = context();
     fixture.context.manifest = manifest({ dcoAdvisory: true });
     fixture.client.listPullRequestCommits!.mockResolvedValue([]);
-    await expect(executeOperation('dco-advisory', fixture.context, { operation: 'dco-advisory' }))
+    await expect(executeControlOperation('dco-advisory', controlContext(fixture)))
       .rejects.toThrow('no commits for an open pull request');
   });
 
@@ -847,14 +996,14 @@ describe('Action operation contract', () => {
       status: 422, method: 'POST', path: '/labels', message: 'already exists',
     }));
 
-    await executeOperation('classification', fixture.context, { operation: 'classification' });
+    await executeControlOperation('classification', controlContext(fixture));
 
     expect(fixture.client.createRepositoryLabel).toHaveBeenCalledOnce();
     expect(fixture.client.getRepositoryLabel).toHaveBeenCalledTimes(2);
     expect(fixture.client.createCheckRun).toHaveBeenCalledOnce();
   });
 
-  it('is a same-head no-op for converged labels and metadata while refreshing the matching App Check', async () => {
+  it('creates a fresh Check generation without touching already-converged labels or the contributor body', async () => {
     const fixture = context();
     fixture.context.manifest = {
       ...manifest({ classification: true }),
@@ -882,27 +1031,33 @@ describe('Action operation contract', () => {
       prNumber: 7,
       headSha: 'c'.repeat(40),
       checkId: 'pr-classification',
-      configDigest: 'a'.repeat(64),
+      configDigest: fixture.context.manifest.configDigest,
       inputDigest,
     });
-    fixture.client.listCommitCheckRuns!.mockResolvedValue([{
+    fixture.checkRuns.push({
       id: 44,
+      head_sha: 'c'.repeat(40),
       name: 'PR Classification Gate',
       status: 'completed',
       conclusion: 'success',
       external_id: externalId,
-      app: { slug: 'splrad-steward' },
-    }]);
+      app: { id: 4243096, slug: 'splrad-steward' },
+      output: {
+        title: 'PR 分类已更新',
+        summary: '标题、正文、提交、贡献者和文件输入均与当前分类结果一致。',
+      },
+    });
 
-    await executeOperation('classification', fixture.context, { operation: 'classification' });
+    await executeControlOperation('classification', controlContext(fixture));
 
     expect(fixture.client.getRepositoryLabel).not.toHaveBeenCalled();
     expect(fixture.client.removeIssueLabel).not.toHaveBeenCalled();
     expect(fixture.client.addIssueLabels).not.toHaveBeenCalled();
     expect(fixture.client.updatePullRequestBody).not.toHaveBeenCalled();
-    expect(fixture.client.createCheckRun).not.toHaveBeenCalled();
-    expect(fixture.client.updateCheckRun).toHaveBeenCalledWith('splrad', 'steward', 44, expect.objectContaining({
-      externalId, status: 'completed', conclusion: 'success',
+    expect(fixture.client.createCheckRun).toHaveBeenCalledOnce();
+    expect(fixture.client.updateCheckRun).not.toHaveBeenCalledWith('splrad', 'steward', 44, expect.anything());
+    expect(fixture.client.updateCheckRun).toHaveBeenCalledWith('splrad', 'steward', 45, expect.objectContaining({
+      status: 'completed', conclusion: 'success',
     }));
   });
 
@@ -918,14 +1073,26 @@ describe('Action operation contract', () => {
       status: 500, method: 'DELETE', path: '/labels/documentation', message: 'failed',
     }));
 
-    await expect(executeOperation('classification', fixture.context, { operation: 'classification' }))
+    await expect(executeControlOperation('classification', controlContext(fixture)))
       .rejects.toThrow('failed (500)');
     expect(fixture.client.addIssueLabels).toHaveBeenCalledOnce();
     expect(fixture.client.addIssueLabels!.mock.invocationCallOrder[0])
       .toBeLessThan(fixture.client.removeIssueLabel!.mock.invocationCallOrder[0]!);
     expect(fixture.client.updatePullRequestBody).not.toHaveBeenCalled();
-    expect(fixture.client.createCheckRun).not.toHaveBeenCalled();
-    expect(fixture.client.updateCheckRun).not.toHaveBeenCalled();
+    expect(fixture.client.createCheckRun).toHaveBeenCalledOnce();
+    expect(fixture.client.createCheckRun).toHaveBeenCalledWith('splrad', 'steward', expect.objectContaining({
+      status: 'in_progress',
+    }));
+    expect(fixture.client.createCheckRun).not.toHaveBeenCalledWith('splrad', 'steward', expect.objectContaining({
+      status: 'completed',
+      conclusion: 'success',
+    }));
+    expect(fixture.client.updateCheckRun).not.toHaveBeenCalledWith('splrad', 'steward', expect.any(Number), expect.objectContaining({
+      status: 'completed', conclusion: 'success',
+    }));
+    expect(fixture.client.updateCheckRun).toHaveBeenCalledWith('splrad', 'steward', expect.any(Number), expect.objectContaining({
+      status: 'completed', conclusion: 'failure',
+    }));
   });
 
   it.each([
@@ -952,13 +1119,18 @@ describe('Action operation contract', () => {
     };
     arrange(fixture);
 
-    await expect(executeOperation('classification', fixture.context, { operation: 'classification' }))
+    await expect(executeControlOperation('classification', controlContext(fixture)))
       .rejects.toThrow(message);
     expect(fixture.client.getRepositoryLabel).not.toHaveBeenCalled();
     expect(fixture.client.addIssueLabels).not.toHaveBeenCalled();
     expect(fixture.client.removeIssueLabel).not.toHaveBeenCalled();
     expect(fixture.client.updatePullRequestBody).not.toHaveBeenCalled();
-    expect(fixture.client.createCheckRun).not.toHaveBeenCalled();
+    expect(fixture.client.createCheckRun).toHaveBeenCalledWith('splrad', 'steward', expect.objectContaining({
+      status: 'in_progress',
+    }));
+    expect(fixture.client.updateCheckRun).toHaveBeenCalledWith('splrad', 'steward', expect.any(Number), expect.objectContaining({
+      status: 'completed', conclusion: 'failure',
+    }));
   });
 
   it('fails closed when a human review operation has no mutation client', async () => {
@@ -1186,7 +1358,7 @@ describe('Action operation contract', () => {
       prNumber: 7,
       headSha: 'c'.repeat(40),
       checkId,
-      configDigest: 'a'.repeat(64),
+      configDigest: fixture.context.manifest.configDigest,
       inputDigest,
     });
     fixture.client.listCommitCheckRuns!.mockResolvedValue([
@@ -1251,7 +1423,7 @@ describe('Action operation contract', () => {
       prNumber: 7,
       headSha: 'c'.repeat(40),
       checkId,
-      configDigest: 'a'.repeat(64),
+      configDigest: fixture.context.manifest.configDigest,
       inputDigest,
     });
     fixture.client.listWorkflowJobs!.mockResolvedValue([{
@@ -1312,7 +1484,7 @@ describe('Action operation contract', () => {
       prNumber: 7,
       headSha: 'c'.repeat(40),
       checkId,
-      configDigest: 'a'.repeat(64),
+      configDigest: fixture.context.manifest.configDigest,
       inputDigest,
     });
     const checkRuns: GitHubCheckRun[] = [

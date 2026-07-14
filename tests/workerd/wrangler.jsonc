@@ -1,0 +1,5 @@
+{
+  "name": "steward-control-workerd-smoke",
+  "main": "control-smoke-worker.ts",
+  "compatibility_date": "2026-07-10"
+}
