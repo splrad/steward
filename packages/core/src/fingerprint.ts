@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { sha256HexUtf8 } from '../../manifest/src/digest.js';
 import { realContributorLoginsFromBody, uniqueHumanLogins } from './identity.js';
 
 export interface PullRequestFingerprintInput {
@@ -46,10 +46,10 @@ function count(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
-export function hashJson(value: unknown): string {
+export function hashJson(value: unknown): Promise<string> {
   const json = JSON.stringify(value);
   if (json === undefined) throw new TypeError('Value is not JSON serializable');
-  return createHash('sha256').update(json, 'utf8').digest('hex');
+  return sha256HexUtf8(json);
 }
 
 export function normalizeRepositoryPath(value: unknown): string {
@@ -85,7 +85,7 @@ export function classificationInputBody(body: unknown): string {
     .trimEnd();
 }
 
-export function fingerprintForPull(input: PullRequestFingerprintInput): PullRequestFingerprint {
+export async function fingerprintForPull(input: PullRequestFingerprintInput): Promise<PullRequestFingerprint> {
   const commits = input.commits ?? [];
   const files = input.files ?? [];
   const botLogins = input.botLogins ?? [];
@@ -107,18 +107,23 @@ export function fingerprintForPull(input: PullRequestFingerprintInput): PullRequ
   ], { botLogins })
     .map((login) => login.toLowerCase())
     .sort(compareText);
+  const [bodyDigest, filesDigest] = await Promise.all([
+    hashJson(classificationInputBody(input.pull.body)),
+    hashJson(fileParts),
+  ]);
   const classificationInputs = {
     title: text(input.pull.title),
-    body_digest: hashJson(classificationInputBody(input.pull.body)),
+    body_digest: bodyDigest,
   };
+  const classificationDigest = await hashJson(classificationInputs);
   const source = {
     head_sha: text(input.pull.head?.sha),
     base_ref: text(input.pull.base?.ref),
     base_sha: text(input.pull.base?.sha),
     commits: commitShas,
     contributors,
-    files_digest: hashJson(fileParts),
-    classification_digest: hashJson(classificationInputs),
+    files_digest: filesDigest,
+    classification_digest: classificationDigest,
   };
-  return { ...source, value: hashJson(source) };
+  return { ...source, value: await hashJson(source) };
 }

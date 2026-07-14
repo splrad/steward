@@ -30,6 +30,8 @@ function manifest(): StewardManifest {
   };
 }
 
+const configuredManifestDigest = await manifestDigest(manifest());
+
 function transportFor(overrides: Partial<Record<string, unknown>> = {}): { transport: GitHubTransport; requests: GitHubRequest[] } {
   const requests: GitHubRequest[] = [];
   const body = JSON.stringify(manifest());
@@ -57,7 +59,7 @@ function transportFor(overrides: Partial<Record<string, unknown>> = {}): { trans
     if (request.path.endsWith('/pulls')) return [{ number: 3, state: 'open', base: { ref: 'main' }, head: { sha } }];
     if (request.path.endsWith(`/commits/${sha}/check-runs`)) return { check_runs: [{
       id: 11, name: 'PR Validation Matrix Gate', status: 'completed', conclusion: 'success', app: { id: 42, slug: 'splrad-steward' },
-      external_id: stewardCheckExternalId({ repositoryId: 7, prNumber: 3, headSha: sha, checkId: 'validation-matrix', configDigest: manifestDigest(manifest()), inputDigest: 'c'.repeat(64) }),
+      external_id: stewardCheckExternalId({ repositoryId: 7, prNumber: 3, headSha: sha, checkId: 'validation-matrix', configDigest: configuredManifestDigest, inputDigest: 'c'.repeat(64) }),
     }] };
     if (request.path.endsWith('/rulesets')) return [{ id: 5 }];
     if (request.path.endsWith('/rulesets/5')) return {

@@ -1,6 +1,6 @@
 # Core
 
-Pure governance and validation algorithms. This module must not read process environment or call GitHub directly.
+Pure governance and validation algorithms. This module must not read process environment, import Node runtime APIs, or call GitHub directly.
 
 The extracted contracts cover:
 
@@ -13,6 +13,8 @@ The extracted contracts cover:
 - versioned Release adapter context/plan parsing, trigger decisions, and output-asset manifest validation without filesystem or GitHub access.
 
 Callers must pass the configured Steward GitHub App slug through `botLogins`. A syntactically valid login cannot be identified as a project-specific bot without repository configuration.
+
+SHA-256 fingerprints are asynchronous because they use the shared Web Crypto UTF-8 contract. Existing fingerprint field order and digest vectors remain protocol-stable.
 
 Core state does not choose localized fallback titles, mention separators, or empty-state text. Presentation adapters supply those values from the trusted Manifest language.
 

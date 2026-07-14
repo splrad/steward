@@ -17,7 +17,7 @@
     "deploy:relay": "wrangler deploy --config packages/relay/wrangler.toml",
     "test": "vitest run",
     "test:relay": "vitest run packages/relay/test",
-    "typecheck": "tsc --noEmit && tsc -p packages/relay/tsconfig.json",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.worker.json && tsc -p packages/relay/tsconfig.json",
     "verify": "npm run test && npm run typecheck && npm run verify:dist && npm run verify:workflows",
     "verify:dist": "node scripts/verify-dist.mjs",
     "verify:workflows": "node scripts/verify-workflows.mjs"

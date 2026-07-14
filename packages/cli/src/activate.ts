@@ -360,7 +360,7 @@ export async function prepareActivate(
     path: `${path}/contents/.github/steward.json`, query: { ref: baseSha },
   });
   const manifest = parseManifestFile(decodeFile(manifestFile, 'Steward manifest'));
-  const configDigest = manifestDigest(manifest);
+  const configDigest = await manifestDigest(manifest);
   const matrixEnabled = manifest.features.classification || manifest.features.dcoAdvisory
     || manifest.features.governance || manifest.features.copilotReview;
   if (!matrixEnabled) throw new Error('activate requires at least one PR Matrix feature in the Steward manifest');

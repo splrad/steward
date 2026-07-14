@@ -109,7 +109,7 @@ class ActivateState {
   readonly transport: GitHubTransport = {
     request: async <T>(request: GitHubRequest): Promise<T> => {
       this.requests.push(structuredClone(request));
-      return this.handle(request) as T;
+      return await this.handle(request) as T;
     },
   };
 
@@ -137,7 +137,7 @@ class ActivateState {
     return this.requests.filter((request) => request.method && request.method !== 'GET');
   }
 
-  private handle(request: GitHubRequest): unknown {
+  private async handle(request: GitHubRequest): Promise<unknown> {
     const path = request.path;
     if (path === '/repos/splrad/example') return {
       id: 7,
@@ -204,7 +204,7 @@ class ActivateState {
           prNumber: 3,
           headSha,
           checkId: 'validation-matrix',
-          configDigest: manifestDigest(this.manifestValue),
+          configDigest: await manifestDigest(this.manifestValue),
           inputDigest,
         }),
       }] : [{

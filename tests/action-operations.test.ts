@@ -871,12 +871,12 @@ describe('Action operation contract', () => {
     ].join('\n');
     const files = [{ filename: 'src/Options.cs' }];
     fixture.client.listPullRequestFiles!.mockResolvedValue(files);
-    const inputDigest = fingerprintForPull({
+    const inputDigest = (await fingerprintForPull({
       pull: fixture.context.pull,
       commits: [{ sha: 'd'.repeat(40), author: { login: 'core' } }],
       files,
       botLogins: ['splrad-steward', 'copilot-pull-request-reviewer[bot]'],
-    }).value;
+    })).value;
     const externalId = stewardCheckExternalId({
       repositoryId: 1296724484,
       prNumber: 7,
@@ -1175,12 +1175,12 @@ describe('Action operation contract', () => {
       eventName: 'workflow_dispatch',
       detailsUrl: 'https://github.com/splrad/steward/actions/runs/999',
     });
-    const inputDigest = fingerprintForPull({
+    const inputDigest = (await fingerprintForPull({
       pull: fixture.context.pull,
       commits: [{ sha: 'd'.repeat(40), author: { login: 'core' } }],
       files: [],
       botLogins: ['splrad-steward', 'copilot-pull-request-reviewer[bot]'],
-    }).value;
+    })).value;
     const identity = (checkId: string) => stewardCheckExternalId({
       repositoryId: 1296724484,
       prNumber: 7,
@@ -1240,12 +1240,12 @@ describe('Action operation contract', () => {
         },
       },
     });
-    const inputDigest = fingerprintForPull({
+    const inputDigest = (await fingerprintForPull({
       pull: fixture.context.pull,
       commits: [{ sha: 'd'.repeat(40), author: { login: 'core' } }],
       files: [],
       botLogins: ['splrad-steward', 'copilot-pull-request-reviewer[bot]'],
-    }).value;
+    })).value;
     const identity = (checkId: string) => stewardCheckExternalId({
       repositoryId: 1296724484,
       prNumber: 7,
@@ -1301,12 +1301,12 @@ describe('Action operation contract', () => {
 
   it('starts one new Matrix Gate generation when a completed same-head gate becomes pending', async () => {
     const fixture = context();
-    const inputDigest = fingerprintForPull({
+    const inputDigest = (await fingerprintForPull({
       pull: fixture.context.pull,
       commits: [{ sha: 'd'.repeat(40), author: { login: 'core' } }],
       files: [],
       botLogins: ['splrad-steward', 'copilot-pull-request-reviewer[bot]'],
-    }).value;
+    })).value;
     const identity = (checkId: string) => stewardCheckExternalId({
       repositoryId: 1296724484,
       prNumber: 7,

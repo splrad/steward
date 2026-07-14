@@ -4,10 +4,13 @@ import {
   MANIFEST_PATH,
   ManifestValidationError,
   canonicalManifestJson,
+  decodeBase64Utf8,
+  encodeBase64Utf8,
   loadDefaultBranchManifest,
   manifestDigest,
   normalizeManifest,
   parseManifest,
+  sha256HexUtf8,
   type ManifestRepositoryClient,
   type ClassificationConfiguration,
   type StewardManifest,
@@ -200,7 +203,7 @@ describe('Manifest normalization', () => {
     expect(Object.keys(normalized)).toEqual(['automation', 'features', 'schemaVersion']);
   });
 
-  it('produces the same digest for equivalent key and login ordering', () => {
+  it('produces the same digest for equivalent key and login ordering', async () => {
     const left = manifest({
       automation: {
         ...manifest().automation,
@@ -215,12 +218,43 @@ describe('Manifest normalization', () => {
       },
     });
     expect(canonicalManifestJson(left)).toBe(canonicalManifestJson(right));
-    expect(manifestDigest(left)).toBe(manifestDigest(right));
-    expect(manifestDigest(left)).toMatch(/^[0-9a-f]{64}$/);
+    const [leftDigest, rightDigest] = await Promise.all([manifestDigest(left), manifestDigest(right)]);
+    expect(leftDigest).toBe(rightDigest);
+    expect(leftDigest).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it('keeps the minimal Manifest digest protocol stable', () => {
-    expect(manifestDigest(manifest())).toBe('a11460bf88e95e41420062d58e514737dc884b2ea4d32d1e203021787ad8dbfe');
+  it('keeps the minimal Manifest digest protocol stable', async () => {
+    expect(await manifestDigest(manifest())).toBe('a11460bf88e95e41420062d58e514737dc884b2ea4d32d1e203021787ad8dbfe');
+  });
+});
+
+describe('Portable text encoding and digests', () => {
+  it('uses the standard Web Crypto SHA-256 UTF-8 contract', async () => {
+    expect(await sha256HexUtf8('')).toBe('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+    expect(await sha256HexUtf8('abc')).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+    expect(await sha256HexUtf8('叠境 LayerScape 🧰')).toBe('09c1c87bfbcd7d312ebbd829a4082b11a151874755d5a7fb432a902aa5193307');
+    expect(await sha256HexUtf8('é')).not.toBe(await sha256HexUtf8('e\u0301'));
+  });
+
+  it('round-trips UTF-8 text with standard padded base64', () => {
+    expect(encodeBase64Utf8('叠境 LayerScape 🧰')).toBe('5Y+g5aKDIExheWVyU2NhcGUg8J+nsA==');
+    for (const value of ['', '叠境 LayerScape 🧰', '界'.repeat(20_000)]) {
+      const encoded = encodeBase64Utf8(value);
+      expect(encoded).toMatch(/^[A-Za-z0-9+/]*={0,2}$/);
+      expect(decodeBase64Utf8(encoded)).toBe(value);
+      expect(decodeBase64Utf8(encoded.replace(/.{48}/g, '$&\n'))).toBe(value);
+    }
+  });
+
+  it('rejects invalid base64 padding bits and invalid UTF-8', () => {
+    expect(() => decodeBase64Utf8('Zh==')).toThrow('Invalid base64 text');
+    expect(() => decodeBase64Utf8('Zm9=')).toThrow('Invalid base64 text');
+    expect(() => decodeBase64Utf8('Zg')).toThrow('Invalid base64 text');
+    expect(decodeBase64Utf8('Zg', { allowUnpadded: true })).toBe('f');
+    expect(() => decodeBase64Utf8('8J-nsA==')).toThrow('Invalid base64 text');
+    expect(decodeBase64Utf8('8J-nsA==', { allowUrlSafe: true })).toBe('🧰');
+    expect(() => decodeBase64Utf8('/w==')).toThrow('Invalid UTF-8 text');
+    expect(decodeBase64Utf8('77u/e30=')).toBe('\uFEFF{}');
   });
 });
 
@@ -245,7 +279,7 @@ describe('Default-branch manifest loader', () => {
       `file:splrad/steward-sandbox:${MANIFEST_PATH}@stable`,
     ]);
     expect(loaded.source).toEqual({ path: MANIFEST_PATH, ref: 'stable', blobSha: 'blob-sha' });
-    expect(loaded.configDigest).toBe(manifestDigest(manifest()));
+    expect(loaded.configDigest).toBe(await manifestDigest(manifest()));
   });
 
   it('rejects invalid JSON, invalid base64, and repositories without a default branch', async () => {
@@ -255,7 +289,10 @@ describe('Default-branch manifest loader', () => {
     });
     await expect(loadDefaultBranchManifest(client('', 'e30='), 'splrad', 'empty')).rejects.toThrow('no default branch');
     await expect(loadDefaultBranchManifest(client('main', 'not base64'), 'splrad', 'invalid')).rejects.toThrow('invalid base64');
+    await expect(loadDefaultBranchManifest(client('main', 'Zh=='), 'splrad', 'invalid')).rejects.toThrow('invalid base64 or UTF-8');
+    await expect(loadDefaultBranchManifest(client('main', '/w=='), 'splrad', 'invalid')).rejects.toThrow('invalid base64 or UTF-8');
     await expect(loadDefaultBranchManifest(client('main', Buffer.from('{').toString('base64')), 'splrad', 'invalid')).rejects.toThrow('not valid JSON');
+    await expect(loadDefaultBranchManifest(client('main', '77u/e30='), 'splrad', 'invalid')).rejects.toThrow('not valid JSON');
   });
 
   it('rejects directory and incomplete GitHub content responses', async () => {
