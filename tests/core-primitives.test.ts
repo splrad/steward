@@ -84,24 +84,24 @@ describe('validation fingerprints', () => {
     botLogins: ['splrad-steward'],
   });
 
-  it('preserves the existing classification metadata exclusion contract', () => {
+  it('preserves the existing classification metadata exclusion contract', async () => {
     expect(classificationInputBody(`Contributor context${classificationMetadata}`)).toBe('Contributor context');
-    expect(createFingerprint().value).toBe(createFingerprint({
+    expect((await createFingerprint()).value).toBe((await createFingerprint({
       body: 'Contributor context\n<!-- workflow:pr-classification:start\nlabels: docs\nworkflow:pr-classification:end -->',
-    }).value);
-    expect(createFingerprint().value).not.toBe(createFingerprint({ title: 'docs: correct gate' }).value);
+    })).value);
+    expect((await createFingerprint()).value).not.toBe((await createFingerprint({ title: 'docs: correct gate' })).value);
   });
 
-  it('is stable across collection order and excludes configured bots', () => {
-    const fingerprint = createFingerprint();
+  it('is stable across collection order and excludes configured bots', async () => {
+    const fingerprint = await createFingerprint();
     expect(fingerprint.commits).toEqual(['a', 'b']);
     expect(fingerprint.contributors).toEqual(['axiomoth', 'external-dev']);
     expect(fingerprint.value).toBe('f82feb3d5e9ed5d3d0cd82376479c89c10f2d9e7bbf8c9067c1858f8d2ee71ae');
   });
 
-  it('normalizes identity casing independently of API collection order', () => {
-    const first = createFingerprint();
-    const second = fingerprintForPull({
+  it('normalizes identity casing independently of API collection order', async () => {
+    const first = await createFingerprint();
+    const second = await fingerprintForPull({
       pull: {
         title: 'fix: correct gate',
         body: `Contributor context${classificationMetadata}`,
@@ -123,6 +123,19 @@ describe('validation fingerprints', () => {
 });
 
 describe('blocking comment state', () => {
+  it('round-trips Unicode and reads legacy unpadded base64url state', () => {
+    const state = {
+      head: '头部-🧰',
+      failures: [{ source: 'copilot-review', title: '等待审查', details: ['叠境'] }],
+    };
+    const encoded = encodeBlockingState(state);
+    expect(encoded).toBe('eyJoZWFkIjoi5aS06YOoLfCfp7AiLCJmYWlsdXJlcyI6W3sic291cmNlIjoiY29waWxvdC1yZXZpZXciLCJ0aXRsZSI6IuetieW+heWuoeafpSIsImRldGFpbHMiOlsi5Y+g5aKDIl19XX0=');
+    expect(decodeBlockingState(`<!-- workflow:pr-blocking-failures-state:${encoded} -->`)).toEqual(state);
+    const legacy = encoded.replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+    expect(decodeBlockingState(`<!-- workflow:pr-blocking-failures-state:${legacy} -->`)).toEqual(state);
+    expect(decodeBlockingState('<!-- workflow:pr-blocking-failures-state:_w -->')).toBeNull();
+  });
+
   it('decodes the legacy hidden-state shape without requiring handlers', () => {
     const legacy = {
       head: 'head-legacy',

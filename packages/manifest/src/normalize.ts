@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type { StewardManifest } from './types.js';
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -34,12 +33,4 @@ export function normalizeManifest(manifest: StewardManifest): StewardManifest {
 
 export function canonicalManifestJson(manifest: StewardManifest): string {
   return JSON.stringify(normalizeManifest(manifest));
-}
-
-export function digestCanonicalManifestJson(canonicalJson: string): string {
-  return createHash('sha256').update(canonicalJson, 'utf8').digest('hex');
-}
-
-export function manifestDigest(manifest: StewardManifest): string {
-  return digestCanonicalManifestJson(canonicalManifestJson(manifest));
 }

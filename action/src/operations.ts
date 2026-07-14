@@ -62,7 +62,7 @@ interface PullFacts {
   commits: GitHubCommit[];
   files: GitHubPullRequestFile[];
   reviews: GitHubPullRequestReview[];
-  fingerprint: ReturnType<typeof fingerprintForPull>;
+  fingerprint: Awaited<ReturnType<typeof fingerprintForPull>>;
 }
 
 const autoApprovalMarker = '<!-- workflow:auto-approval -->';
@@ -118,7 +118,12 @@ async function classificationOperation(context: StewardOperationContext): Promis
   if (currentLabels.some((label) => !label)) {
     throw new Error('GitHub returned a pull request label without a valid name');
   }
-  const fingerprint = fingerprintForPull({ pull: context.pull, commits, files, botLogins: botLogins(context) });
+  const fingerprint = await fingerprintForPull({
+    pull: context.pull,
+    commits,
+    files,
+    botLogins: botLogins(context),
+  });
   const evaluation = evaluateClassification({
     title: context.pull.title,
     baseRef: context.pull.base.ref,
@@ -420,7 +425,12 @@ async function pullFacts(context: StewardOperationContext): Promise<PullFacts> {
     commits,
     files,
     reviews,
-    fingerprint: fingerprintForPull({ pull: context.pull, commits, files, botLogins: botLogins(context) }),
+    fingerprint: await fingerprintForPull({
+      pull: context.pull,
+      commits,
+      files,
+      botLogins: botLogins(context),
+    }),
   };
 }
 

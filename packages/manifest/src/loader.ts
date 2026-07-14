@@ -1,4 +1,6 @@
-import { digestCanonicalManifestJson, normalizeManifest } from './normalize.js';
+import { digestCanonicalManifestJson } from './digest.js';
+import { decodeBase64Utf8 } from './encoding.js';
+import { normalizeManifest } from './normalize.js';
 import { parseManifest } from './schema.js';
 import { MANIFEST_PATH, type StewardManifest } from './types.js';
 
@@ -30,11 +32,11 @@ export interface LoadedManifest {
 }
 
 function decodeBase64(content: string): string {
-  const compact = content.replaceAll(/\s/g, '');
-  if (!compact || compact.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(compact)) {
-    throw new Error('GitHub returned invalid base64 manifest content');
+  try {
+    return decodeBase64Utf8(content);
+  } catch {
+    throw new Error('GitHub returned invalid base64 or UTF-8 manifest content');
   }
-  return Buffer.from(compact, 'base64').toString('utf8');
 }
 
 function parseJson(content: string): unknown {
@@ -63,7 +65,7 @@ export async function loadDefaultBranchManifest(
   return {
     manifest,
     canonicalJson,
-    configDigest: digestCanonicalManifestJson(canonicalJson),
+    configDigest: await digestCanonicalManifestJson(canonicalJson),
     source: {
       path: MANIFEST_PATH,
       ref: metadata.defaultBranch,

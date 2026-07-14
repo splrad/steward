@@ -1,3 +1,4 @@
+import { decodeBase64Utf8, encodeBase64Utf8 } from '../../manifest/src/encoding.js';
 import { uniqueHumanLogins } from './identity.js';
 
 export const blockingFailuresMarker = '<!-- workflow:pr-blocking-failures -->';
@@ -40,14 +41,17 @@ const blockingSourceOrder = [
 ] as const;
 
 export function encodeBlockingState(state: BlockingState): string {
-  return Buffer.from(JSON.stringify(state), 'utf8').toString('base64');
+  return encodeBase64Utf8(JSON.stringify(state));
 }
 
 export function decodeBlockingState(body: unknown): BlockingState | null {
   const encoded = String(body ?? '').match(blockingFailuresStatePattern)?.[1];
   if (!encoded) return null;
   try {
-    const parsed = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as unknown;
+    const parsed = JSON.parse(decodeBase64Utf8(encoded, {
+      allowUrlSafe: true,
+      allowUnpadded: true,
+    })) as unknown;
     if (!parsed || typeof parsed !== 'object') return null;
     const candidate = parsed as { head?: unknown; failures?: unknown };
     if (!Array.isArray(candidate.failures)) return null;
