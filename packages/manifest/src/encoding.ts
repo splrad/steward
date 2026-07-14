@@ -1,5 +1,9 @@
 const utf8Encoder = new TextEncoder();
-const utf8Decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+const utf8Decoder = new TextDecoder('utf-8', {
+  fatal: true,
+  // For TextDecoder, true includes a leading BOM code point in the decoded text.
+  ignoreBOM: true,
+});
 const binaryChunkSize = 0x8000;
 
 export interface Base64DecodeOptions {
