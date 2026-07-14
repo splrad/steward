@@ -293,6 +293,16 @@ function ports(fixture: ReturnType<typeof classificationFixture>) {
 }
 
 describe('Classification Control reconcile', () => {
+  it('rejects surrounding whitespace in an expected head before any GitHub read', async () => {
+    const fixture = classificationFixture();
+    const invalidRoute = route(fixture.detail);
+    invalidRoute.pullRequest.expectedHeadSha = ` ${fixture.detail.head.sha} `;
+
+    await expect(reconcileClassification(invalidRoute, ports(fixture)))
+      .rejects.toThrow('invalid expected pull request head SHA');
+    expect(fixture.trace).toEqual([]);
+  });
+
   it('creates a new attempt generation before Manifest/evidence reads without rewriting terminal history', async () => {
     const fixture = classificationFixture();
     fixture.addCheck(oldSuccess());

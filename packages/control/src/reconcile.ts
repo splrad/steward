@@ -94,8 +94,10 @@ function validateRoute(route: PullRequestControlRoute): void {
   if (!Number.isSafeInteger(route.pullRequest.number) || route.pullRequest.number <= 0) {
     throw new Error('Control route requires a positive pull request number');
   }
-  const expectedHead = route.pullRequest.expectedHeadSha?.trim().toLowerCase();
-  if (expectedHead !== undefined && !/^[a-f0-9]{40}$/.test(expectedHead)) {
+  const expectedHeadInput = route.pullRequest.expectedHeadSha;
+  if (expectedHeadInput !== undefined
+    && (expectedHeadInput !== expectedHeadInput.trim()
+      || !/^[a-f0-9]{40}$/.test(expectedHeadInput.toLowerCase()))) {
     throw new Error('Control route contains an invalid expected pull request head SHA');
   }
   if (!route.attemptId.trim() || route.attemptId !== route.attemptId.trim()) {

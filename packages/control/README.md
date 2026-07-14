@@ -23,6 +23,9 @@ Manifest source/config digests, and the App numeric ID/client ID/slug. The route
 snapshot. Reconcile binds the repository's live default branch once, captures a zero-argument Manifest loader for that
 branch, and revalidates live evidence at apply time. The current Action adapter plans and applies in one invocation;
 durable serialization and at-least-once coordination remain the responsibility of the later per-PR coordinator.
+Apply validates the plan-bound repository and default-branch Manifest once immediately before executing the plan,
+then re-reads mutable pull-request, label, Check lease, and comment evidence for each affected intent. This keeps
+Manifest work constant for multi-comment DCO cleanup without pretending that repeated REST reads provide atomicity.
 
 The runtime supplies the trusted GitHub App numeric ID, client ID, and slug independently of the consumer Manifest.
 Reconcile rejects any subject or live Manifest identity mismatch, Classification accepts only Checks from the bound

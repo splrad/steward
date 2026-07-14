@@ -228,12 +228,18 @@ const dcoLegacyComment: GitHubIssueComment = {
   body: '<!-- workflow:dco-signoff-advisory --> old',
 };
 
-function dcoPreconditions(context: PullRequestControlContext, comments: GitHubIssueComment[]) {
+function dcoPreconditions(
+  context: PullRequestControlContext,
+  comments: GitHubIssueComment[],
+  trace?: string[],
+) {
   return {
     async getRepository() {
+      trace?.push('repository:get');
       return { id: 1_296_724_484, fullName: 'splrad/steward', defaultBranch: 'main' };
     },
     async getFile() {
+      trace?.push('manifest:get');
       return {
         type: 'file' as const,
         encoding: 'base64',
@@ -241,9 +247,15 @@ function dcoPreconditions(context: PullRequestControlContext, comments: GitHubIs
         sha: context.manifest.source.blobSha,
       };
     },
-    async getPullRequest() { return structuredClone(context.pull); },
+    async getPullRequest() {
+      trace?.push('pull:get');
+      return structuredClone(context.pull);
+    },
     async listCommitCheckRuns() { return []; },
-    async listIssueComments() { return structuredClone(comments); },
+    async listIssueComments() {
+      trace?.push('comments:list');
+      return structuredClone(comments);
+    },
   };
 }
 
@@ -424,6 +436,77 @@ describe('Control operation plans', () => {
       && mutation.expectedOwnerId === 99
       && mutation.expectedOwnerLogin === 'splrad-steward[bot]'
     ))).toBe(true);
+  });
+
+  it('binds the Manifest once while re-reading mutable state for each DCO deletion', async () => {
+    const context = dcoContext();
+    const comments = [
+      structuredClone(dcoLegacyComment),
+      {
+        ...structuredClone(dcoLegacyComment),
+        id: 12,
+        body: '<!-- workflow:dco-signoff-advisory --> old 12',
+      },
+    ];
+    const decision = await planDcoAdvisory(context, {
+      actor: { id: 99, login: 'splrad-steward[bot]', type: 'Bot' },
+      commits: [dcoCommit],
+      comments,
+    });
+    const trace: string[] = [];
+    const recording = recordingInstallationPort();
+
+    const receipts = await applyControlPlan(decision.plan, context.subject, {
+      preconditions: dcoPreconditions(context, comments, trace),
+      installation: recording.port,
+    });
+
+    expect(receipts).toHaveLength(2);
+    expect(trace.filter((entry) => entry === 'repository:get')).toHaveLength(1);
+    expect(trace.filter((entry) => entry === 'manifest:get')).toHaveLength(1);
+    expect(trace.filter((entry) => entry === 'pull:get')).toHaveLength(3);
+    expect(trace.filter((entry) => entry === 'comments:list')).toHaveLength(3);
+  });
+
+  it('stops multi-comment DCO cleanup when a later comment drifts between intents', async () => {
+    const context = dcoContext();
+    const comments = [
+      structuredClone(dcoLegacyComment),
+      {
+        ...structuredClone(dcoLegacyComment),
+        id: 12,
+        body: '<!-- workflow:dco-signoff-advisory --> old 12',
+      },
+    ];
+    const decision = await planDcoAdvisory(context, {
+      actor: { id: 99, login: 'splrad-steward[bot]', type: 'Bot' },
+      commits: [dcoCommit],
+      comments,
+    });
+    const recording = recordingInstallationPort();
+    const installation: InstallationMutationPort = {
+      ...recording.port,
+      async deleteIssueComment(_owner, _repository, commentId) {
+        recording.calls.push(`delete-comment:${commentId}`);
+        const index = comments.findIndex((comment) => comment.id === commentId);
+        if (index >= 0) comments.splice(index, 1);
+        if (commentId === 10) comments.find((comment) => comment.id === 12)!.body = 'human replacement';
+      },
+    };
+
+    await expect(applyControlPlan(decision.plan, context.subject, {
+      preconditions: dcoPreconditions(context, comments),
+      installation,
+    })).rejects.toMatchObject({
+      outcome: 'unknown',
+      mutationKey: 'issue-comment:dco-legacy:12',
+      completed: [expect.objectContaining({
+        key: 'issue-comment:dco-legacy:10',
+        state: 'applied',
+      })],
+      cause: expect.objectContaining({ name: 'ControlPreconditionError' }),
+    });
+    expect(recording.calls).toEqual(['delete-comment:10']);
   });
 
   it('rejects a self-consistent DCO plan that targets a different App bot', async () => {

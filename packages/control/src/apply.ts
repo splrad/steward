@@ -391,23 +391,22 @@ export async function applyControlPlan(
   await verifyControlPlan(executionPlan);
   assertControlPlanSubject(executionPlan, currentSubject);
   preflightMutationPorts(executionPlan, ports);
-  if (executionPlan.mutations.length) {
-    await assertLiveControlSubject(executionPlan, preconditionPort(ports));
-    await assertResourcePreconditions(executionPlan, preconditionPort(ports));
-  }
+  if (!executionPlan.mutations.length) return [];
+  const preconditions = preconditionPort(ports);
+  await assertLiveControlSubject(executionPlan, preconditions);
+  await assertResourcePreconditions(executionPlan, preconditions);
   const completed: ControlMutationReceipt[] = [];
   for (const [index, mutation] of executionPlan.mutations.entries()) {
     try {
       if (executionPlan.objective === 'classification'
         && index > 0
         && mutation.key !== 'check-run:pr-classification:complete') {
-        await assertActiveClassificationLease(executionPlan, preconditionPort(ports));
+        await assertActiveClassificationLease(executionPlan, preconditions);
       }
       if (mutation.type !== 'repository-label.ensure') {
-        const live = mutation.type === 'check-run.upsert'
-          || mutation.type === 'issue-comment.delete'
-          ? await assertLiveControlSubject(executionPlan, preconditionPort(ports))
-          : await readLivePullSubject(executionPlan, preconditionPort(ports));
+        // Repository/default-branch Manifest identity was bound immediately before this loop. Re-read mutable
+        // PR and resource state per intent; repeating the same Manifest read would amplify API work without CAS.
+        const live = await readLivePullSubject(executionPlan, preconditions);
         if (mutation.type === 'issue-labels.add'
           || mutation.type === 'issue-label.remove') {
           await assertObservedLabels(mutation, live);
@@ -419,7 +418,7 @@ export async function applyControlPlan(
         executionPlan,
         mutation,
         installationPort(ports),
-        preconditionPort(ports),
+        preconditions,
       ));
     } catch (error) {
       throw new ControlApplyError(executionPlan.planId, mutation.key, mutation.desiredDigest, completed, error);
