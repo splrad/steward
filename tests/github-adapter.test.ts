@@ -2,8 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { loadDefaultBranchManifest, type StewardManifest } from '../packages/manifest/src/index.js';
 import {
   GitHubApiError,
+  GITHUB_CLOUD_REST_API_VERSION,
+  GITHUB_ENTERPRISE_REST_API_VERSION,
   GitHubRepositoryClient,
   createGitHubRestTransport,
+  defaultGitHubRestApiVersion,
   type GitHubRequest,
   type GitHubTransport,
 } from '../packages/github/src/index.js';
@@ -36,6 +39,8 @@ function mockTransport(handler: (request: GitHubRequest) => unknown | Promise<un
   return {
     requests,
     transport: {
+      restApiVersion: GITHUB_CLOUD_REST_API_VERSION,
+      restApiBaseUrl: 'https://api.github.com/',
       async request<T>(request: GitHubRequest): Promise<T> {
         requests.push(request);
         return await handler(request) as T;
@@ -57,16 +62,57 @@ describe('GitHub REST transport', () => {
       });
     }) as unknown as typeof fetch;
     const transport = createGitHubRestTransport({ token: 'secret-token', fetch: fetcher });
+    expect(transport.restApiBaseUrl).toBe('https://api.github.com/');
 
     await expect(transport.request({ path: '/repos/splrad/steward', query: { page: 2 } }))
       .resolves.toEqual({ id: 42 });
     expect(capturedUrl).toBe('https://api.github.com/repos/splrad/steward?page=2');
     const headers = new Headers(capturedInit?.headers);
     expect(headers.get('authorization')).toBe('Bearer secret-token');
-    expect(headers.get('x-github-api-version')).toBe('2022-11-28');
+    expect(GITHUB_CLOUD_REST_API_VERSION).toBe('2026-03-10');
+    expect(headers.get('x-github-api-version')).toBe(GITHUB_CLOUD_REST_API_VERSION);
     expect(capturedInit?.redirect).toBe('error');
     await expect(transport.request({ path: 'https://example.test/steal' })).rejects.toThrow('root-relative');
     await expect(transport.request({ path: '//example.test/steal' })).rejects.toThrow('root-relative');
+  });
+
+  it('selects Cloud and GHES REST versions without conflating their capabilities', async () => {
+    expect(defaultGitHubRestApiVersion('https://api.github.com/')).toBe(GITHUB_CLOUD_REST_API_VERSION);
+    expect(defaultGitHubRestApiVersion('https://api.example.ghe.com/')).toBe(GITHUB_CLOUD_REST_API_VERSION);
+    expect(defaultGitHubRestApiVersion('https://github.example/api/v3/')).toBe(GITHUB_ENTERPRISE_REST_API_VERSION);
+    expect(defaultGitHubRestApiVersion('https://example.ghe.com/')).toBe(GITHUB_ENTERPRISE_REST_API_VERSION);
+    expect(defaultGitHubRestApiVersion('https://uploads.example.ghe.com/')).toBe(GITHUB_ENTERPRISE_REST_API_VERSION);
+    expect(defaultGitHubRestApiVersion('https://api.first.second.ghe.com/')).toBe(GITHUB_ENTERPRISE_REST_API_VERSION);
+    expect(defaultGitHubRestApiVersion('https://api.example.ghe.com.evil.test/')).toBe(GITHUB_ENTERPRISE_REST_API_VERSION);
+
+    let headers = new Headers();
+    const fetcher = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      headers = new Headers(init?.headers);
+      return new Response('{}');
+    }) as unknown as typeof fetch;
+    const transport = createGitHubRestTransport({
+      token: 'token', baseUrl: 'https://github.example/api/v3/', fetch: fetcher,
+    });
+    await transport.request({ path: '/repos/splrad/steward' });
+    expect(transport.restApiVersion).toBe(GITHUB_ENTERPRISE_REST_API_VERSION);
+    expect(headers.get('x-github-api-version')).toBe(GITHUB_ENTERPRISE_REST_API_VERSION);
+
+    const upgraded = createGitHubRestTransport({
+      token: 'token', baseUrl: 'https://github.example/api/v3/',
+      apiVersion: GITHUB_CLOUD_REST_API_VERSION, fetch: fetcher,
+    });
+    await upgraded.request({ path: '/repos/splrad/steward' });
+    expect(upgraded.restApiVersion).toBe(GITHUB_CLOUD_REST_API_VERSION);
+    expect(headers.get('x-github-api-version')).toBe(GITHUB_CLOUD_REST_API_VERSION);
+    expect(() => createGitHubRestTransport({
+      token: 'token', baseUrl: 'https://github.example/api/v3/', apiVersion: '2026-99-99', fetch: fetcher,
+    })).toThrow('valid YYYY-MM-DD date');
+    expect(() => createGitHubRestTransport({
+      token: 'token', baseUrl: 'https://api.github.com/proxy/', fetch: fetcher,
+    })).toThrow('official HTTPS origin and root path');
+    expect(() => createGitHubRestTransport({
+      token: 'token', baseUrl: 'https://api.example.ghe.com:444/', fetch: fetcher,
+    })).toThrow('official HTTPS origin and root path');
   });
 
   it('rejects ambiguous raw paths before URL or proxy normalization', async () => {
@@ -238,6 +284,189 @@ describe('GitHub repository adapter', () => {
       },
     })).transport);
     await expect(truncated.listReviewThreads('splrad', 'steward', 6)).rejects.toThrow('100-comment limit');
+  });
+
+  it('keeps REST pull data separate and loads merged state atomically from GraphQL', async () => {
+    const mergeCommitSha = 'a'.repeat(40);
+    const rest = mockTransport(() => ({
+      number: 6,
+      state: 'closed',
+      merged: true,
+      merge_commit_sha: 'b'.repeat(40),
+      base: { ref: 'main' },
+      head: { sha: 'c'.repeat(40) },
+    }));
+    const graphql = mockTransport(() => ({
+      data: { repository: { pullRequest: { state: 'MERGED', merged: true, mergeCommit: { oid: mergeCommitSha } } } },
+    }));
+    const client = new GitHubRepositoryClient(rest.transport, graphql.transport);
+
+    const pull = await client.getPullRequest('splrad', 'steward', 6);
+    expect(pull).toMatchObject({ number: 6, state: 'closed' });
+    expect(pull).not.toHaveProperty('merge_commit_sha');
+    expect(pull).not.toHaveProperty('mergeCommitSha');
+    await expect(client.getPullRequestMergeState('splrad', 'steward', 6)).resolves.toEqual({
+      merged: true,
+      mergeCommitSha,
+    });
+    expect(graphql.requests).toHaveLength(1);
+    expect(graphql.requests[0]).toMatchObject({
+      method: 'POST',
+      path: '/graphql',
+      body: {
+        variables: { owner: 'splrad', repository: 'steward', number: 6 },
+      },
+    });
+    const query = String((graphql.requests[0]?.body as { query?: string }).query);
+    expect(query).toContain('merged');
+    expect(query).toContain('state');
+    expect(query).toContain('mergeCommit { oid }');
+  });
+
+  it('does not query GraphQL during ordinary REST reads and fails closed on invalid merge data', async () => {
+    const openRest = mockTransport(() => ({
+      number: 6,
+      state: 'open',
+      merged: false,
+      base: { ref: 'main' },
+      head: { sha: 'c'.repeat(40) },
+    }));
+    const unusedGraphql = mockTransport(() => {
+      throw new Error('GraphQL must not be called');
+    });
+    await expect(new GitHubRepositoryClient(openRest.transport, unusedGraphql.transport)
+      .getPullRequest('splrad', 'steward', 6)).resolves.toMatchObject({ state: 'open' });
+    expect(unusedGraphql.requests).toHaveLength(0);
+
+    const unmerged = mockTransport(() => ({
+      data: { repository: { pullRequest: { state: 'CLOSED', merged: false, mergeCommit: null } } },
+    }));
+    await expect(new GitHubRepositoryClient(openRest.transport, unmerged.transport)
+      .getPullRequestMergeState('splrad', 'steward', 6)).resolves.toEqual({
+      merged: false, mergeCommitSha: null,
+    });
+
+    const mergedRest = mockTransport(() => ({
+      number: 6,
+      state: 'closed',
+      merged: true,
+      base: { ref: 'main' },
+      head: { sha: 'c'.repeat(40) },
+    }));
+    const graphqlError = mockTransport(() => ({ errors: [{ message: 'denied' }] }));
+    await expect(new GitHubRepositoryClient(mergedRest.transport, graphqlError.transport)
+      .getPullRequestMergeState('splrad', 'steward', 6)).rejects.toThrow('denied');
+
+    const missingCommit = mockTransport(() => ({
+      data: { repository: { pullRequest: { state: 'MERGED', merged: true, mergeCommit: null } } },
+    }));
+    await expect(new GitHubRepositoryClient(mergedRest.transport, missingCommit.transport)
+      .getPullRequestMergeState('splrad', 'steward', 6)).rejects.toThrow('valid merge commit');
+
+    const missingPull = mockTransport(() => ({ data: { repository: { pullRequest: null } } }));
+    await expect(new GitHubRepositoryClient(mergedRest.transport, missingPull.transport)
+      .getPullRequestMergeState('splrad', 'steward', 6)).rejects.toThrow('no pull request merge state');
+
+    const inconsistent = mockTransport(() => ({
+      data: { repository: { pullRequest: { state: 'CLOSED', merged: false, mergeCommit: { oid: 'a'.repeat(40) } } } },
+    }));
+    await expect(new GitHubRepositoryClient(mergedRest.transport, inconsistent.transport)
+      .getPullRequestMergeState('splrad', 'steward', 6)).rejects.toThrow('inconsistent pull request merge state');
+
+    const reopened = mockTransport(() => ({
+      data: { repository: { pullRequest: { state: 'OPEN', merged: false, mergeCommit: null } } },
+    }));
+    await expect(new GitHubRepositoryClient(mergedRest.transport, reopened.transport)
+      .getPullRequestMergeState('splrad', 'steward', 6)).rejects.toThrow('inconsistent pull request state');
+  });
+
+  it('rejects legacy or malformed workflow dispatch responses', async () => {
+    const input = {
+      owner: 'splrad', repository: 'steward', workflow: 'pr-governance.yml', ref: 'main', inputs: { pr_number: '6' },
+    };
+    for (const payload of [
+      undefined,
+      { workflow_run_id: 0, run_url: 'https://api.github.com/run/0', html_url: 'https://github.com/run/0' },
+      { workflow_run_id: '1', run_url: 'https://api.github.com/run/1', html_url: 'https://github.com/run/1' },
+      { workflow_run_id: 1, run_url: 'not-a-url', html_url: 'https://github.com/run/1' },
+      { workflow_run_id: 1, run_url: 'https://api.github.com/run/1' },
+      {
+        workflow_run_id: 1,
+        run_url: 'https://api.github.com/repos/splrad/other/actions/runs/1',
+        html_url: 'https://github.com/splrad/steward/actions/runs/1',
+      },
+      {
+        workflow_run_id: 1,
+        run_url: 'https://evil.example/repos/splrad/steward/actions/runs/1',
+        html_url: 'https://github.com/splrad/steward/actions/runs/1',
+      },
+      {
+        workflow_run_id: 1,
+        run_url: 'https://api.github.com/repos/splrad/steward/actions/runs/1',
+        html_url: 'https://evil.example/splrad/steward/actions/runs/1',
+      },
+    ]) {
+      const client = new GitHubRepositoryClient(mockTransport(() => payload).transport);
+      await expect(client.dispatchWorkflow(input)).rejects.toThrow('invalid workflow dispatch response');
+    }
+  });
+
+  it('binds 2026 workflow dispatch URLs to the configured GHES endpoint', async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({
+      workflow_run_id: 44,
+      run_url: 'https://github.example/api/v3/repos/splrad/steward/actions/runs/44',
+      html_url: 'https://github.example/splrad/steward/actions/runs/44',
+    }))) as unknown as typeof fetch;
+    const transport = createGitHubRestTransport({
+      token: 'token', baseUrl: 'https://github.example/api/v3/',
+      apiVersion: GITHUB_CLOUD_REST_API_VERSION, fetch: fetcher,
+    });
+
+    await expect(new GitHubRepositoryClient(transport).dispatchWorkflow({
+      owner: 'splrad', repository: 'steward', workflow: 'pr-governance.yml', ref: 'main', inputs: {},
+    })).resolves.toEqual({
+      kind: 'identified', workflowRunId: 44,
+      runUrl: 'https://github.example/api/v3/repos/splrad/steward/actions/runs/44',
+      htmlUrl: 'https://github.example/splrad/steward/actions/runs/44',
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('binds GHEC workflow dispatch URLs to the same tenant without retrying', async () => {
+    const responses = [
+      {
+        workflow_run_id: 45,
+        run_url: 'https://api.acme.ghe.com/repos/splrad/steward/actions/runs/45',
+        html_url: 'https://acme.ghe.com/splrad/steward/actions/runs/45',
+      },
+      {
+        workflow_run_id: 46,
+        run_url: 'https://api.other.ghe.com/repos/splrad/steward/actions/runs/46',
+        html_url: 'https://other.ghe.com/splrad/steward/actions/runs/46',
+      },
+    ];
+    const fetcher = vi.fn(async () => new Response(JSON.stringify(responses.shift()))) as unknown as typeof fetch;
+    const client = new GitHubRepositoryClient(createGitHubRestTransport({
+      token: 'token', baseUrl: 'https://api.acme.ghe.com/', fetch: fetcher,
+    }));
+    const input = {
+      owner: 'splrad', repository: 'steward', workflow: 'pr-governance.yml', ref: 'main', inputs: {},
+    };
+
+    await expect(client.dispatchWorkflow(input)).resolves.toMatchObject({
+      kind: 'identified', workflowRunId: 45,
+    });
+    await expect(client.dispatchWorkflow(input)).rejects.toThrow('invalid workflow dispatch response');
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves the accepted legacy dispatch outcome for GHES without retrying a successful 204', async () => {
+    const transport = mockTransport(() => undefined).transport;
+    Object.defineProperty(transport, 'restApiVersion', { value: GITHUB_ENTERPRISE_REST_API_VERSION });
+    const client = new GitHubRepositoryClient(transport);
+    await expect(client.dispatchWorkflow({
+      owner: 'splrad', repository: 'steward', workflow: 'pr-governance.yml', ref: 'main', inputs: { pr_number: '6' },
+    })).resolves.toEqual({ kind: 'accepted' });
   });
 
   it('uses a separately confined GraphQL transport for GitHub Enterprise Server', async () => {
@@ -419,9 +648,17 @@ describe('GitHub repository adapter', () => {
   });
 
   it('maps one explicit adapter call to one GitHub mutation', async () => {
-    const { transport, requests } = mockTransport((request) => (
-      request.path.includes('/check-runs') ? { id: 1, name: 'Gate', status: 'in_progress' } : undefined
-    ));
+    const { transport, requests } = mockTransport((request) => {
+      if (request.path.includes('/check-runs')) return { id: 1, name: 'Gate', status: 'in_progress' };
+      if (request.path.endsWith('/dispatches')) {
+        return {
+          workflow_run_id: 123,
+          run_url: 'https://api.github.com/repos/splrad/steward/actions/runs/123',
+          html_url: 'https://github.com/splrad/steward/actions/runs/123',
+        };
+      }
+      return undefined;
+    });
     const client = new GitHubRepositoryClient(transport);
     const check = {
       name: 'Gate',
@@ -455,7 +692,7 @@ describe('GitHub repository adapter', () => {
     await client.createPullRequestReview({
       owner: 'splrad', repository: 'steward', number: 6, commitId: 'a'.repeat(40), event: 'APPROVE', body: 'approved',
     });
-    await client.dispatchWorkflow({
+    const dispatched = await client.dispatchWorkflow({
       owner: 'splrad', repository: 'steward', workflow: 'pr-governance.yml', ref: 'main', inputs: { pr_number: '6' },
     });
     await client.rerunWorkflowJob('splrad', 'steward', 9);
@@ -473,6 +710,13 @@ describe('GitHub repository adapter', () => {
       path: '/repos/splrad/steward/actions/workflows/pr-governance.yml/dispatches',
       body: { ref: 'main', inputs: { pr_number: '6' } },
     });
+    expect(dispatched).toEqual({
+      kind: 'identified',
+      workflowRunId: 123,
+      runUrl: 'https://api.github.com/repos/splrad/steward/actions/runs/123',
+      htmlUrl: 'https://github.com/splrad/steward/actions/runs/123',
+    });
+    expect(requests[7]?.body).not.toHaveProperty('return_run_details');
     expect(requests[5]?.body).toEqual({ team_reviewers: ['maintainers'] });
   });
 });

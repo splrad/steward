@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { GITHUB_CLOUD_REST_API_VERSION } from '../../github/src/api-version.js';
 import { handleRequest, verifySignature, type Env } from '../src/index.js';
 
 const secret = "It's a Secret to Everybody";
@@ -221,6 +222,10 @@ describe('webhook relay', () => {
     );
     const [input, init] = dispatchCall(githubFetch) ?? [];
     expect(String(input)).toBe('https://api.github.com/repos/splrad/steward-sandbox/dispatches');
+    expect(new Headers(init?.headers).get('x-github-api-version')).toBe(GITHUB_CLOUD_REST_API_VERSION);
+    for (const [, requestInit] of githubFetch.mock.calls) {
+      expect(new Headers(requestInit?.headers).get('x-github-api-version')).toBe(GITHUB_CLOUD_REST_API_VERSION);
+    }
     expect(JSON.parse(String(init?.body))).toEqual({
       event_type: 'pr-review-state-changed',
       client_payload: {

@@ -1,6 +1,7 @@
 import type { ManifestRepositoryClient, RepositoryFile, RepositoryMetadata } from '../../manifest/src/index.js';
+import { workflowDispatchReturnsRunDetails } from './api-version.js';
 import { fetchPullRequestPages, maxPullRequestPages } from './pagination.js';
-import type { GitHubTransport } from './transport.js';
+import { resolveGitHubEndpointConfiguration, type GitHubTransport } from './transport.js';
 
 export interface GitHubRepositoryMetadata extends RepositoryMetadata {
   id: number;
@@ -11,7 +12,6 @@ export interface GitHubPullRequest {
   number: number;
   state: string;
   merged?: boolean;
-  merge_commit_sha?: string | null;
   merged_by?: { login?: string } | null;
   title?: string;
   body?: string | null;
@@ -21,6 +21,15 @@ export interface GitHubPullRequest {
   head: { sha: string; ref?: string };
   requested_reviewers?: { login?: string }[];
   requested_teams?: { slug?: string }[];
+}
+
+export interface GitHubPullRequestDetail extends GitHubPullRequest {
+  mergeCommitSha: string | null;
+}
+
+export interface GitHubPullRequestMergeState {
+  merged: boolean;
+  mergeCommitSha: string | null;
 }
 
 export interface GitHubRepositoryLabel {
@@ -109,6 +118,10 @@ export interface GitHubWorkflowRun {
   html_url?: string;
   pull_requests?: { number?: number }[];
 }
+
+export type GitHubWorkflowDispatchResult =
+  | { kind: 'identified'; workflowRunId: number; runUrl: string; htmlUrl: string }
+  | { kind: 'accepted' };
 
 export interface GitHubWorkflowJob {
   id: number;
@@ -216,6 +229,37 @@ query($owner: String!, $repository: String!, $number: Int!, $cursor: String) {
   }
 }`;
 
+const pullRequestMergeStateQuery = `
+query PullRequestMergeCommit($owner: String!, $repository: String!, $number: Int!) {
+  repository(owner: $owner, name: $repository) {
+    pullRequest(number: $number) {
+      state
+      merged
+      mergeCommit { oid }
+    }
+  }
+}`;
+
+function workflowDispatchUrl(value: unknown, expected: URL): string | null {
+  if (typeof value !== 'string') return null;
+  const raw = value.trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    return url.protocol === 'https:'
+      && url.origin === expected.origin
+      && !url.username
+      && !url.password
+      && !url.search
+      && !url.hash
+      && url.pathname.toLowerCase() === expected.pathname.toLowerCase()
+      ? url.href
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export class GitHubRepositoryClient implements ManifestRepositoryClient {
   constructor(
     private readonly transport: GitHubTransport,
@@ -255,9 +299,53 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
   }
 
   async getPullRequest(owner: string, repository: string, number: number): Promise<GitHubPullRequest> {
-    return await this.transport.request<GitHubPullRequest>({
+    const payload = await this.transport.request<GitHubPullRequest & { merge_commit_sha?: unknown }>({
       path: `${repositoryPath(owner, repository)}/pulls/${segment(number)}`,
     });
+    const { merge_commit_sha: _removedLegacyField, ...pull } = payload;
+    return pull;
+  }
+
+  async getPullRequestMergeState(
+    owner: string,
+    repository: string,
+    number: number,
+  ): Promise<GitHubPullRequestMergeState> {
+    const mergePayload: {
+      data?: { repository?: { pullRequest?: {
+        state?: string;
+        merged?: boolean;
+        mergeCommit?: { oid?: string } | null;
+      } | null } | null };
+      errors?: { message?: string }[];
+    } = await this.graphqlTransport.request({
+      method: 'POST',
+      path: '/graphql',
+      body: { query: pullRequestMergeStateQuery, variables: { owner, repository, number } },
+    });
+    if (mergePayload.errors?.length) {
+      throw new Error(`GitHub GraphQL pull request merge state failed: ${String(mergePayload.errors[0]?.message ?? 'unknown error')}`);
+    }
+    const mergeState = mergePayload.data?.repository?.pullRequest;
+    if (!mergeState || typeof mergeState.merged !== 'boolean') {
+      throw new Error('GitHub GraphQL returned no pull request merge state');
+    }
+    const expectedState = mergeState.merged ? 'MERGED' : 'CLOSED';
+    if (mergeState.state !== expectedState) {
+      throw new Error('GitHub GraphQL returned an inconsistent pull request state');
+    }
+    const rawOid = mergeState.mergeCommit?.oid;
+    const oid = typeof rawOid === 'string' ? rawOid.trim().toLowerCase() : '';
+    if (!mergeState.merged) {
+      if (mergeState.mergeCommit !== null && mergeState.mergeCommit !== undefined) {
+        throw new Error('GitHub GraphQL returned an inconsistent pull request merge state');
+      }
+      return { merged: false, mergeCommitSha: null };
+    }
+    if (!/^[a-f0-9]{40}$/.test(oid)) {
+      throw new Error('GitHub GraphQL returned no valid merge commit');
+    }
+    return { merged: true, mergeCommitSha: oid };
   }
 
   async getCommit(owner: string, repository: string, ref: string): Promise<GitHubCommit> {
@@ -612,12 +700,31 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
     workflow: string;
     ref: string;
     inputs: Readonly<Record<string, string>>;
-  }): Promise<void> {
-    await this.transport.request<void>({
+  }): Promise<GitHubWorkflowDispatchResult> {
+    const returnsRunDetails = workflowDispatchReturnsRunDetails(this.transport.restApiVersion);
+    const endpoints = returnsRunDetails
+      ? resolveGitHubEndpointConfiguration(this.transport.restApiBaseUrl)
+      : null;
+    const payload = await this.transport.request<{
+      workflow_run_id?: number;
+      run_url?: string;
+      html_url?: string;
+    } | undefined>({
       method: 'POST',
       path: `${repositoryPath(input.owner, input.repository)}/actions/workflows/${segment(input.workflow)}/dispatches`,
       body: { ref: input.ref, inputs: input.inputs },
     });
+    if (!returnsRunDetails || !endpoints) return { kind: 'accepted' };
+    const workflowRunId = payload?.workflow_run_id;
+    if (typeof workflowRunId !== 'number' || !Number.isSafeInteger(workflowRunId) || workflowRunId < 1) {
+      throw new Error('GitHub returned an invalid workflow dispatch response');
+    }
+    const runPath = `${repositoryPath(input.owner, input.repository)}/actions/runs/${segment(workflowRunId)}`;
+    const runUrl = workflowDispatchUrl(payload?.run_url, new URL(runPath.slice(1), endpoints.restApiBaseUrl));
+    const htmlPath = `/${segment(input.owner)}/${segment(input.repository)}/actions/runs/${segment(workflowRunId)}`;
+    const htmlUrl = workflowDispatchUrl(payload?.html_url, new URL(htmlPath, `${endpoints.webOrigin}/`));
+    if (!runUrl || !htmlUrl) throw new Error('GitHub returned an invalid workflow dispatch response');
+    return { kind: 'identified', workflowRunId, runUrl, htmlUrl };
   }
 
   async rerunWorkflowJob(owner: string, repository: string, jobId: number): Promise<void> {

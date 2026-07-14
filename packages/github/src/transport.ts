@@ -1,3 +1,5 @@
+import { gitHubEnterpriseCloudTenant, resolveGitHubRestApiVersion } from './api-version.js';
+
 export type GitHubHttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 export interface GitHubRequest {
@@ -8,6 +10,8 @@ export interface GitHubRequest {
 }
 
 export interface GitHubTransport {
+  readonly restApiVersion?: string;
+  readonly restApiBaseUrl?: string;
   request<T>(request: GitHubRequest): Promise<T>;
 }
 
@@ -15,6 +19,7 @@ export interface GitHubRestTransportOptions {
   token: string;
   baseUrl?: string;
   userAgent?: string;
+  apiVersion?: string;
   fetch?: typeof globalThis.fetch;
 }
 
@@ -39,6 +44,44 @@ function apiBaseUrl(value: string | undefined): URL {
   }
   if (!url.pathname.endsWith('/')) url.pathname += '/';
   return url;
+}
+
+export interface GitHubEndpointConfiguration {
+  readonly restApiBaseUrl: string;
+  readonly webOrigin: string;
+  readonly releaseUploadOrigin: string;
+  readonly releaseUploadPathPrefix: '/repos' | '/api/uploads/repos';
+}
+
+export function resolveGitHubEndpointConfiguration(value?: string | URL): GitHubEndpointConfiguration {
+  const base = apiBaseUrl(value === undefined ? undefined : String(value));
+  const cloud = base.hostname.toLowerCase() === 'api.github.com';
+  const ghecTenant = gitHubEnterpriseCloudTenant(base);
+  if ((cloud || ghecTenant) && (base.port || base.pathname !== '/')) {
+    throw new Error('GitHub Cloud API base URL must use the official HTTPS origin and root path');
+  }
+  if (cloud) {
+    return {
+      restApiBaseUrl: base.href,
+      webOrigin: 'https://github.com',
+      releaseUploadOrigin: 'https://uploads.github.com',
+      releaseUploadPathPrefix: '/repos',
+    };
+  }
+  if (ghecTenant) {
+    return {
+      restApiBaseUrl: base.href,
+      webOrigin: `https://${ghecTenant}.ghe.com`,
+      releaseUploadOrigin: `https://uploads.${ghecTenant}.ghe.com`,
+      releaseUploadPathPrefix: '/repos',
+    };
+  }
+  return {
+    restApiBaseUrl: base.href,
+    webOrigin: base.origin,
+    releaseUploadOrigin: base.origin,
+    releaseUploadPathPrefix: '/api/uploads/repos',
+  };
 }
 
 function requestUrl(base: URL, request: GitHubRequest): URL {
@@ -88,11 +131,15 @@ async function responseMessage(response: Response): Promise<string> {
 export function createGitHubRestTransport(options: GitHubRestTransportOptions): GitHubTransport {
   const token = options.token.trim();
   if (!token) throw new Error('GitHub API token is required');
-  const base = apiBaseUrl(options.baseUrl);
+  const endpoints = resolveGitHubEndpointConfiguration(options.baseUrl);
+  const base = new URL(endpoints.restApiBaseUrl);
   const fetcher = options.fetch ?? globalThis.fetch;
   const userAgent = options.userAgent?.trim() || 'splrad-steward';
+  const restApiVersion = resolveGitHubRestApiVersion(base, options.apiVersion);
 
   return {
+    restApiVersion,
+    restApiBaseUrl: endpoints.restApiBaseUrl,
     async request<T>(request: GitHubRequest): Promise<T> {
       const method = request.method ?? 'GET';
       const url = requestUrl(base, request);
@@ -100,7 +147,7 @@ export function createGitHubRestTransport(options: GitHubRestTransportOptions): 
         accept: 'application/vnd.github+json',
         authorization: `Bearer ${token}`,
         'user-agent': userAgent,
-        'x-github-api-version': '2022-11-28',
+        'x-github-api-version': restApiVersion,
       });
       const init: RequestInit = { method, headers, redirect: 'error' };
       if (request.body !== undefined) {

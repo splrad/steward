@@ -1,4 +1,5 @@
 import { createAppAuth } from '@octokit/auth-app';
+import { GITHUB_CLOUD_REST_API_VERSION } from '../../github/src/api-version.js';
 import { parseManifest } from '../../manifest/src/schema.js';
 import { MANIFEST_PATH } from '../../manifest/src/types.js';
 
@@ -170,7 +171,7 @@ function githubHeaders(token: string): HeadersInit {
     authorization: `Bearer ${token}`,
     'content-type': 'application/json',
     'user-agent': 'splrad-steward-relay',
-    'x-github-api-version': '2022-11-28',
+    'x-github-api-version': GITHUB_CLOUD_REST_API_VERSION,
   };
 }
 

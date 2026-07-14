@@ -1,5 +1,6 @@
 import type { GitHubReleaseAsset } from './client.js';
-import { GitHubApiError } from './transport.js';
+import { resolveGitHubRestApiVersion } from './api-version.js';
+import { GitHubApiError, resolveGitHubEndpointConfiguration } from './transport.js';
 
 export async function uploadReleaseAsset(input: {
   token: string;
@@ -11,18 +12,18 @@ export async function uploadReleaseAsset(input: {
   name: string;
   mediaType: string;
   body: Blob;
+  apiVersion?: string;
   fetch?: typeof globalThis.fetch;
 }): Promise<GitHubReleaseAsset> {
   const token = input.token.trim();
   if (!token) throw new Error('GitHub API token is required');
-  const api = new URL(input.apiBaseUrl);
+  const endpoints = resolveGitHubEndpointConfiguration(input.apiBaseUrl);
   const templateSuffix = '{?name,label}';
   if (!input.uploadUrl.endsWith(templateSuffix)) throw new Error('GitHub returned an invalid Release upload URL template');
   const url = new URL(input.uploadUrl.slice(0, -templateSuffix.length));
-  const allowedOrigin = api.origin === 'https://api.github.com' ? 'https://uploads.github.com' : api.origin;
-  const suffix = `/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repository)}/releases/${input.releaseId}/assets`;
-  if (url.protocol !== 'https:' || url.origin !== allowedOrigin || url.username || url.password
-    || url.search || url.hash || !url.pathname.endsWith(suffix)) {
+  const expectedPath = `${endpoints.releaseUploadPathPrefix}/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repository)}/releases/${input.releaseId}/assets`;
+  if (url.protocol !== 'https:' || url.origin !== endpoints.releaseUploadOrigin || url.username || url.password
+    || url.search || url.hash || url.pathname.toLowerCase() !== expectedPath.toLowerCase()) {
     throw new Error('GitHub Release upload URL escaped the trusted repository endpoint');
   }
   url.searchParams.set('name', input.name);
@@ -30,7 +31,8 @@ export async function uploadReleaseAsset(input: {
     method: 'POST', redirect: 'error', body: input.body,
     headers: {
       accept: 'application/vnd.github+json', authorization: `Bearer ${token}`,
-      'content-type': input.mediaType, 'user-agent': 'splrad-steward', 'x-github-api-version': '2022-11-28',
+      'content-type': input.mediaType, 'user-agent': 'splrad-steward',
+      'x-github-api-version': resolveGitHubRestApiVersion(input.apiBaseUrl, input.apiVersion),
     },
   });
   if (!response.ok) {
