@@ -94,7 +94,7 @@ export interface GitHubGitRef {
 
 export interface GitHubCheckRun {
   id: number;
-  head_sha?: string;
+  head_sha: string;
   name: string;
   status: string;
   conclusion?: string | null;

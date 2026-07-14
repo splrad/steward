@@ -1436,6 +1436,7 @@ describe('Action operation contract', () => {
     fixture.client.listCommitCheckRuns!.mockResolvedValue([
       {
         id: 90,
+        head_sha: 'c'.repeat(40),
         name: 'Main Authorization Gate',
         status: 'in_progress',
         external_id: identity('main-authorization'),
@@ -1450,6 +1451,7 @@ describe('Action operation contract', () => {
       },
       {
         id: 91,
+        head_sha: 'c'.repeat(40),
         name: 'Copilot Code Review Gate',
         status: 'completed',
         conclusion: 'success',
@@ -1490,6 +1492,7 @@ describe('Action operation contract', () => {
     const checkRuns: GitHubCheckRun[] = [
       {
         id: 90,
+        head_sha: 'c'.repeat(40),
         name: 'Main Authorization Gate',
         status: 'in_progress',
         conclusion: null,
@@ -1498,6 +1501,7 @@ describe('Action operation contract', () => {
       },
       {
         id: 91,
+        head_sha: 'c'.repeat(40),
         name: 'Copilot Code Review Gate',
         status: 'completed',
         conclusion: 'success',
@@ -1506,6 +1510,7 @@ describe('Action operation contract', () => {
       },
       {
         id: 92,
+        head_sha: 'c'.repeat(40),
         name: 'PR Validation Matrix Gate',
         status: 'completed',
         conclusion: 'failure',
@@ -1522,6 +1527,7 @@ describe('Action operation contract', () => {
     ) => {
       const run: GitHubCheckRun = {
         id: nextCheckRunId++,
+        head_sha: input.headSha,
         name: input.name,
         status: input.status,
         conclusion: input.conclusion ?? null,
@@ -1586,6 +1592,7 @@ describe('Action operation contract', () => {
     ) => {
       const run: GitHubCheckRun = {
         id: nextCheckRunId++,
+        head_sha: input.headSha,
         name: input.name,
         status: input.status,
         conclusion: input.conclusion ?? null,
