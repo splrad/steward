@@ -1,8 +1,10 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
+import { GITHUB_CLOUD_REST_API_VERSION } from '../packages/github/src/index.js';
 
 const source = await readFile(new URL('../packages/relay/src/index.ts', import.meta.url), 'utf8');
 const githubTransport = await readFile(new URL('../packages/github/src/transport.ts', import.meta.url), 'utf8');
+const releaseUpload = await readFile(new URL('../packages/github/src/release-upload.ts', import.meta.url), 'utf8');
 const wrangler = await readFile(new URL('../packages/relay/wrangler.toml', import.meta.url), 'utf8');
 const deployWorkflow = await readFile(new URL('../.github/workflows/deploy-relay.yml', import.meta.url), 'utf8');
 
@@ -25,6 +27,7 @@ describe('relay static contract', () => {
   it('keeps deployment scoped to Relay inputs and explicit Cloudflare secrets', () => {
     for (const path of [
       '.github/workflows/deploy-relay.yml',
+      'packages/github/src/api-version.ts',
       'packages/relay/**',
       'packages/manifest/src/**',
       'schema/steward.schema.json',
@@ -45,9 +48,12 @@ describe('relay static contract', () => {
   });
 
   it('uses the same supported REST API version as the GitHub adapter', () => {
-    const relayVersion = source.match(/'x-github-api-version': '([^']+)'/)?.[1];
-    const adapterVersion = githubTransport.match(/'x-github-api-version': '([^']+)'/)?.[1];
-    expect(relayVersion).toBeTruthy();
-    expect(relayVersion).toBe(adapterVersion);
+    expect(GITHUB_CLOUD_REST_API_VERSION).toBe('2026-03-10');
+    expect(source).toContain("'x-github-api-version': GITHUB_CLOUD_REST_API_VERSION");
+    expect(githubTransport).toContain("'x-github-api-version': restApiVersion");
+    expect(releaseUpload).toContain("'x-github-api-version': resolveGitHubRestApiVersion(input.apiBaseUrl, input.apiVersion)");
+    for (const implementation of [source, githubTransport, releaseUpload]) {
+      expect(implementation).not.toContain("'x-github-api-version': '2022-11-28'");
+    }
   });
 });

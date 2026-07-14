@@ -8,7 +8,7 @@ import {
   type CheckRunUpdate,
   type GitHubCheckRun,
   type GitHubIssueComment,
-  type GitHubPullRequest,
+  type GitHubPullRequestDetail,
   type GitHubPullRequestReview,
   type GitHubRepositoryClient,
   type GitHubReviewThread,
@@ -73,7 +73,7 @@ function context(overrides: Record<string, unknown> = {}): {
   client: Record<string, ReturnType<typeof vi.fn>>;
   mutationClient: Record<string, ReturnType<typeof vi.fn>>;
 } {
-  const pull: GitHubPullRequest = {
+  const pull: GitHubPullRequestDetail = {
     number: 7,
     state: 'open',
     title: 'feat: operation contract',
@@ -82,6 +82,7 @@ function context(overrides: Record<string, unknown> = {}): {
     base: { ref: 'main', sha: 'b'.repeat(40) },
     head: { ref: 'feature/action', sha: 'c'.repeat(40) },
     requested_reviewers: [],
+    mergeCommitSha: null,
   };
   const client = {
     getAuthenticatedUser: vi.fn(async () => ({ login: 'reviewer' })),
@@ -108,7 +109,12 @@ function context(overrides: Record<string, unknown> = {}): {
     createIssueComment: vi.fn(async () => ({ id: 1 })),
     updateIssueComment: vi.fn(async () => ({ id: 1 })),
     deleteIssueComment: vi.fn(async () => undefined),
-    dispatchWorkflow: vi.fn(async () => undefined),
+    dispatchWorkflow: vi.fn(async () => ({
+      kind: 'identified' as const,
+      workflowRunId: 123,
+      runUrl: 'https://api.github.com/repos/splrad/steward/actions/runs/123',
+      htmlUrl: 'https://github.com/splrad/steward/actions/runs/123',
+    })),
     rerunWorkflowJob: vi.fn(async () => undefined),
   };
   const mutationClient = {
@@ -395,10 +401,16 @@ describe('Action operation contract', () => {
           number: 7,
           state: liveState,
           merged: liveMerged,
-          merge_commit_sha: liveMergeSha,
           base: { ref: 'main', sha: 'b'.repeat(40) },
           head: { ref: 'feature/cleanup', sha: 'c'.repeat(40) },
         }));
+      }
+      if (path === '/graphql') {
+        return new Response(JSON.stringify({ data: { repository: { pullRequest: {
+          state: liveMerged ? 'MERGED' : 'CLOSED',
+          merged: liveMerged,
+          mergeCommit: liveMerged ? { oid: liveMergeSha } : null,
+        } } } }));
       }
       return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 });
     });
@@ -450,10 +462,16 @@ describe('Action operation contract', () => {
           number: 7,
           state: 'closed',
           merged: liveMerged,
-          merge_commit_sha: liveMergeSha,
           base: { ref: liveBaseRef, sha: 'b'.repeat(40) },
           head: { sha: 'c'.repeat(40) },
         }));
+      }
+      if (path === '/graphql') {
+        return new Response(JSON.stringify({ data: { repository: { pullRequest: {
+          state: liveMerged ? 'MERGED' : 'CLOSED',
+          merged: liveMerged,
+          mergeCommit: liveMerged ? { oid: liveMergeSha } : null,
+        } } } }));
       }
       if (path === '/repos/splrad/steward/pulls/7/files') {
         return new Response(JSON.stringify([{ filename: changedFile }]));
@@ -734,7 +752,7 @@ describe('Action operation contract', () => {
     Object.assign(fixture.context.pull, {
       state: 'closed',
       merged: true,
-      merge_commit_sha: 'a'.repeat(40),
+      mergeCommitSha: 'a'.repeat(40),
       merged_by: { login: 'reviewer' },
       title: 'feat: cleanup @maintainer <tag> &lt;entity&gt;',
       body: '<!-- workflow:source-actor:external-dev -->',
@@ -797,7 +815,7 @@ describe('Action operation contract', () => {
     Object.assign(fixture.context.pull, {
       state: 'closed',
       merged: true,
-      merge_commit_sha: 'a'.repeat(40),
+      mergeCommitSha: 'a'.repeat(40),
       merged_by: null,
       title: 'feat: cleanup',
       body: null,
@@ -1127,9 +1145,85 @@ describe('Action operation contract', () => {
     expect(fixture.client.createCheckRun).toHaveBeenCalledWith('splrad', 'steward', expect.objectContaining({
       name: 'PR Validation Matrix Gate', status: 'in_progress',
     }));
+    expect(fixture.client.createCheckRun).toHaveBeenCalledWith('splrad', 'steward', expect.objectContaining({
+      name: 'DCO Sign-off Advisory',
+      detailsUrl: 'https://github.com/splrad/steward/actions/runs/123',
+    }));
     expect(fixture.client.createCheckRun).not.toHaveBeenCalledWith('splrad', 'steward', expect.objectContaining({
       name: 'PR Validation Matrix Gate', conclusion: 'failure',
     }));
+  });
+
+  it('omits dispatcher context details from legacy dispatch proxy Checks', async () => {
+    const fixture = context({
+      detailsUrl: 'https://github.com/splrad/steward/actions/runs/999',
+    });
+    fixture.context.manifest = manifest({ classification: true, dcoAdvisory: true });
+    fixture.client.dispatchWorkflow!.mockResolvedValue({ kind: 'accepted' });
+
+    await executeOperation('matrix', fixture.context, { operation: 'matrix' });
+
+    const proxyWrites = fixture.client.createCheckRun!.mock.calls
+      .map((call) => call[2] as CheckRunCreate)
+      .filter((input) => input.title === '等待一次性补跑结果');
+    expect(proxyWrites.length).toBeGreaterThan(0);
+    for (const input of proxyWrites) expect(input).not.toHaveProperty('detailsUrl');
+  });
+
+  it('starts a fresh legacy proxy generation instead of reusing a completed Check with an old run URL', async () => {
+    const fixture = context({
+      eventName: 'workflow_dispatch',
+      detailsUrl: 'https://github.com/splrad/steward/actions/runs/999',
+    });
+    const inputDigest = fingerprintForPull({
+      pull: fixture.context.pull,
+      commits: [{ sha: 'd'.repeat(40), author: { login: 'core' } }],
+      files: [],
+      botLogins: ['splrad-steward', 'copilot-pull-request-reviewer[bot]'],
+    }).value;
+    const identity = (checkId: string) => stewardCheckExternalId({
+      repositoryId: 1296724484,
+      prNumber: 7,
+      headSha: 'c'.repeat(40),
+      checkId,
+      configDigest: 'a'.repeat(64),
+      inputDigest,
+    });
+    fixture.client.listCommitCheckRuns!.mockResolvedValue([
+      {
+        id: 70,
+        name: 'Main Authorization Gate',
+        status: 'completed',
+        conclusion: 'success',
+        external_id: identity('main-authorization'),
+        app: { slug: 'splrad-steward' },
+      },
+      {
+        id: 71,
+        name: 'Copilot Code Review Gate',
+        status: 'completed',
+        conclusion: 'failure',
+        details_url: 'https://github.com/splrad/steward/actions/runs/888',
+        external_id: identity('copilot-review-gate'),
+        app: { slug: 'splrad-steward' },
+      },
+    ]);
+    fixture.client.dispatchWorkflow!.mockResolvedValue({ kind: 'accepted' });
+
+    await executeOperation('matrix', fixture.context, { operation: 'matrix' });
+
+    expect(fixture.client.updateCheckRun).not.toHaveBeenCalledWith(
+      'splrad', 'steward', 71, expect.anything(),
+    );
+    expect(fixture.client.createCheckRun).toHaveBeenCalledWith('splrad', 'steward', expect.objectContaining({
+      name: 'Copilot Code Review Gate',
+      status: 'in_progress',
+      headSha: 'c'.repeat(40),
+    }));
+    const proxy = fixture.client.createCheckRun!.mock.calls
+      .map((call) => call[2] as CheckRunCreate)
+      .find((input) => input.name === 'Copilot Code Review Gate');
+    expect(proxy).not.toHaveProperty('detailsUrl');
   });
 
   it('completes a trusted current-event proxy before converging the Matrix Gate', async () => {

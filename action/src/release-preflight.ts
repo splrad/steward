@@ -79,9 +79,11 @@ export async function createReleasePreflight(input: {
   const pullNumber = resolvePullNumber(event, input.inputs.prNumber);
   const pull = await client.getPullRequest(owner, repository, pullNumber);
   if (pull.number !== pullNumber) throw new Error('GitHub returned a different pull request number');
-  if (pull.state !== 'closed' || pull.merged !== true) throw new Error('release-preflight requires a merged pull request');
+  if (pull.state !== 'closed') throw new Error('release-preflight requires a merged pull request');
   if (pull.base.ref !== metadata.defaultBranch) throw new Error('Merged pull request does not target the current default branch');
-  const mergeSha = commitSha(pull.merge_commit_sha, 'GitHub pull request merge SHA');
+  const mergeState = await client.getPullRequestMergeState(owner, repository, pullNumber);
+  if (!mergeState.merged) throw new Error('release-preflight requires a merged pull request');
+  const mergeSha = commitSha(mergeState.mergeCommitSha, 'GitHub pull request merge SHA');
 
   if (pullRequestEvent) {
     if (event.action !== 'closed' || event.pull_request?.merged !== true) {

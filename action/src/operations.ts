@@ -331,7 +331,7 @@ async function cleanupOperation(context: StewardOperationContext): Promise<Stewa
   const evaluation = evaluatePullRequestCleanup({
     number: context.pull.number,
     merged: context.pull.merged === true,
-    mergeCommitSha: context.pull.merge_commit_sha,
+    mergeCommitSha: context.pull.mergeCommitSha,
     title: context.pull.title,
     body: context.pull.body,
     authorLogin: context.pull.user?.login,
@@ -466,6 +466,7 @@ async function writeCheck(input: {
   name: string;
   inputDigest: string;
   status: 'queued' | 'in_progress' | 'completed';
+  detailsUrl?: string | null;
   startNewRunIfCompleted?: boolean;
   conclusion?: 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required';
   title: string;
@@ -487,12 +488,13 @@ async function writeCheck(input: {
     ))
     .sort((left, right) => left.id - right.id)
     .at(-1);
+  const detailsUrl = input.detailsUrl === null ? '' : input.detailsUrl || input.context.detailsUrl;
   const update = {
     name: input.name,
     status: input.status,
     externalId,
     ...(input.conclusion === undefined ? {} : { conclusion: input.conclusion }),
-    ...(input.context.detailsUrl ? { detailsUrl: input.context.detailsUrl } : {}),
+    ...(detailsUrl ? { detailsUrl } : {}),
     title: input.title,
     summary: input.summary,
   };
@@ -886,7 +888,7 @@ async function applyMatrixRepairs(
 ): Promise<void> {
   for (const plan of plans) {
     if (plan.action === 'dispatch-workflow') {
-      await context.client.dispatchWorkflow({
+      const dispatch = await context.client.dispatchWorkflow({
         owner: context.owner,
         repository: context.repository,
         workflow: plan.workflowFile,
@@ -897,6 +899,9 @@ async function applyMatrixRepairs(
           ...(plan.inputs.governanceScope ? { governance_scope: plan.inputs.governanceScope } : {}),
         },
       });
+      const dispatchDetails = dispatch.kind === 'identified'
+        ? { detailsUrl: dispatch.htmlUrl, runId: dispatch.workflowRunId }
+        : null;
       for (const target of plan.targets) {
         await writeCheck({
           context,
@@ -905,8 +910,10 @@ async function applyMatrixRepairs(
           name: target.checkName,
           inputDigest,
           status: 'in_progress',
+          detailsUrl: dispatchDetails?.detailsUrl ?? null,
+          startNewRunIfCompleted: true,
           title: '等待一次性补跑结果',
-          summary: `验证矩阵已触发 ${target.workflowName}，后续 workflow_run 事件将更新 ${target.jobName} 状态。`,
+          summary: `验证矩阵已触发 ${target.workflowName}${dispatchDetails ? `（run ${dispatchDetails.runId}）` : ''}，后续 workflow_run 事件将更新 ${target.jobName} 状态。`,
         });
       }
     } else if (plan.action === 'rerun-job') {

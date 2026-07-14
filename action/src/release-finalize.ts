@@ -36,9 +36,12 @@ export async function finalizeReleaseFailure(input: {
       || !metadata.defaultBranch) throw new Error('release-finalize repository identity does not match');
     const number = resolvePullNumber(event, input.inputs.prNumber);
     const pull = await client.getPullRequest(owner, repository, number);
-    const mergeSha = String(pull.merge_commit_sha ?? '').toLowerCase();
-    if (pull.number !== number || pull.state !== 'closed' || pull.merged !== true
-      || pull.base.ref !== metadata.defaultBranch || !/^[a-f0-9]{40}$/.test(mergeSha)) {
+    if (pull.number !== number || pull.state !== 'closed' || pull.base.ref !== metadata.defaultBranch) {
+      throw new Error('release-finalize requires a trusted merged default-branch pull request');
+    }
+    const mergeState = await client.getPullRequestMergeState(owner, repository, number);
+    const mergeSha = String(mergeState.mergeCommitSha ?? '').toLowerCase();
+    if (!mergeState.merged || !/^[a-f0-9]{40}$/.test(mergeSha)) {
       throw new Error('release-finalize requires a trusted merged default-branch pull request');
     }
     if (pullRequestEvent && (event.action !== 'closed' || event.pull_request?.merged !== true

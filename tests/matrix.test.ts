@@ -478,6 +478,72 @@ describe('Matrix state and repair planning', () => {
       ],
     })).toEqual([]);
   });
+
+  it('binds an identified proxy to its recorded dispatch run without falling back to another matching run', () => {
+    const proxy = check('Main Authorization Gate', 'waiting', '', {
+      id: 901,
+      app: { slug: appSlug },
+      details_url: `https://github.com/splrad/steward/actions/runs/77`,
+      external_id: stewardCheckExternalId({
+        repositoryId: 42,
+        prNumber: pull.number,
+        headSha: pull.head.sha,
+        checkId: 'main-authorization',
+        configDigest,
+        inputDigest,
+      }),
+    });
+    const sourceRun = (
+      id: number,
+      created_at: string,
+      conclusion: 'success' | 'failure',
+      overrides: Partial<MatrixWorkflowRun> = {},
+    ): MatrixWorkflowRun => ({
+      id,
+      name: 'PR Governance',
+      display_title: `PR Validation Target #${pull.number} / ${pull.head.sha}`,
+      path: '.github/workflows/pr-governance.yml',
+      event: 'workflow_dispatch',
+      created_at,
+      jobs: [{
+        id: id * 10,
+        name: 'govern / Main Authorization Gate',
+        status: 'completed',
+        conclusion,
+      }],
+      ...overrides,
+    });
+    const input = {
+      targets: [result('main-authorization', 'pending', proxy)],
+      checkRuns: [proxy],
+      pull,
+      trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
+    };
+    const recorded = sourceRun(77, '2026-07-11T00:00:00Z', 'success');
+    const newer = sourceRun(78, '2026-07-11T00:01:00Z', 'failure');
+
+    expect(planProxyCompletions({ ...input, workflowRuns: [recorded, newer] })).toEqual([
+      expect.objectContaining({ sourceJobId: 770, conclusion: 'success' }),
+    ]);
+    const newerProxy = { ...proxy, id: 902, details_url: 'https://github.com/splrad/steward/actions/runs/78' };
+    expect(planProxyCompletions({
+      ...input,
+      workflowRuns: [recorded, newer],
+      targets: [result('main-authorization', 'pending', newerProxy)],
+      checkRuns: [proxy, newerProxy],
+    })).toEqual([
+      expect.objectContaining({ checkRunId: 901, sourceJobId: 770, conclusion: 'success' }),
+      expect.objectContaining({ checkRunId: 902, sourceJobId: 780, conclusion: 'failure' }),
+    ]);
+    expect(planProxyCompletions({ ...input, workflowRuns: [newer] })).toEqual([]);
+    expect(planProxyCompletions({
+      ...input,
+      workflowRuns: [
+        sourceRun(77, '2026-07-11T00:00:00Z', 'success', { path: '.github/workflows/untrusted.yml' }),
+        newer,
+      ],
+    })).toEqual([]);
+  });
 });
 
 describe('review dispatch trust', () => {

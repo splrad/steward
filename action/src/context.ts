@@ -3,7 +3,7 @@ import { loadDefaultBranchManifest, type LoadedManifest } from '../../packages/m
 import {
   GitHubRepositoryClient,
   createGitHubRestTransport,
-  type GitHubPullRequest,
+  type GitHubPullRequestDetail,
 } from '../../packages/github/src/index.js';
 import type { StewardActionInputs } from './contracts.js';
 
@@ -62,7 +62,7 @@ export interface StewardOperationContext {
   defaultBranch: string;
   eventName: string;
   event: GitHubEventPayload;
-  pull: GitHubPullRequest;
+  pull: GitHubPullRequestDetail;
   manifest: LoadedManifest;
   client: GitHubRepositoryClient;
   mutationClient?: GitHubRepositoryClient;
@@ -233,24 +233,27 @@ export async function createOperationContext(input: {
   if (!metadata.defaultBranch) throw new Error('GitHub repository has no default branch');
   const manifest = await loadDefaultBranchManifest(client, owner, repository);
   const resolvedPullNumber = trustedRun?.prNumber ?? resolvePullNumber(event, input.inputs.prNumber);
-  const pull = await client.getPullRequest(owner, repository, resolvedPullNumber);
-  if (pull.number !== resolvedPullNumber) throw new Error('GitHub returned a different pull request number');
+  const livePull = await client.getPullRequest(owner, repository, resolvedPullNumber);
+  if (livePull.number !== resolvedPullNumber) throw new Error('GitHub returned a different pull request number');
   const pullState = input.pullState ?? 'open';
-  if (pull.state !== pullState) {
-    throw new PullRequestStateMismatchError(pull.number, pullState, String(pull.state ?? 'unknown'));
+  if (livePull.state !== pullState) {
+    throw new PullRequestStateMismatchError(livePull.number, pullState, String(livePull.state ?? 'unknown'));
   }
-  if (pull.base.ref !== metadata.defaultBranch) throw new Error('Pull request does not target the current default branch');
-  if (!/^[a-f0-9]{40}$/i.test(pull.head.sha)) throw new Error('GitHub returned an invalid pull request head SHA');
+  if (livePull.base.ref !== metadata.defaultBranch) throw new Error('Pull request does not target the current default branch');
+  if (!/^[a-f0-9]{40}$/i.test(livePull.head.sha)) throw new Error('GitHub returned an invalid pull request head SHA');
+  let pull: GitHubPullRequestDetail = { ...livePull, mergeCommitSha: null };
   if (pullState === 'closed') {
     const eventPull = event.pull_request;
     if (!eventPull || eventName !== 'pull_request_target' || event.action !== 'closed') {
       throw new Error('Closed pull request operations require a pull_request_target closed event');
     }
+    const mergeState = await client.getPullRequestMergeState(owner, repository, resolvedPullNumber);
+    pull = { ...pull, merged: mergeState.merged, mergeCommitSha: mergeState.mergeCommitSha };
     if (eventPull.merged !== pull.merged) {
       throw new Error('Closed pull request event merged state does not match live metadata');
     }
     const eventMergeSha = String(eventPull.merge_commit_sha ?? '').toLowerCase();
-    const liveMergeSha = String(pull.merge_commit_sha ?? '').toLowerCase();
+    const liveMergeSha = String(pull.mergeCommitSha ?? '').toLowerCase();
     if (pull.merged && (!/^[a-f0-9]{40}$/.test(eventMergeSha) || eventMergeSha !== liveMergeSha)) {
       throw new Error('Closed pull request event merge commit does not match live metadata');
     }

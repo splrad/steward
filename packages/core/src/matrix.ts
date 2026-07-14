@@ -197,7 +197,7 @@ function workflowRunPullRequestNumber(run: MatrixWorkflowRun | undefined): numbe
 }
 
 function parseRunTitle(run: MatrixWorkflowRun | undefined): { prNumber: number; headSha: string } | null {
-  const match = String(run?.name ?? run?.display_title ?? '').match(/\x23(\d+)\s*\/\s*([a-f0-9]{40})(?:\s*\/|$)/i);
+  const match = String(run?.display_title ?? run?.name ?? '').match(/\x23(\d+)\s*\/\s*([a-f0-9]{40})(?:\s*\/|$)/i);
   return match ? { prNumber: Number(match[1]), headSha: String(match[2]).toLowerCase() } : null;
 }
 
@@ -209,7 +209,9 @@ function legacyWorkflowRunMatchesPull(run: MatrixWorkflowRun | undefined, pull: 
 }
 
 export function workflowRunId(check: { details_url?: string | null }): number {
-  return Number(String(check.details_url ?? '').match(/\/actions\/runs\/(\d+)(?:\/job\/\d+)?(?:\?.*)?$/)?.[1] ?? 0);
+  const runId = Number(String(check.details_url ?? '')
+    .match(/\/actions\/runs\/(\d+)(?:\/job\/\d+)?(?:\?.*)?$/)?.[1] ?? 0);
+  return Number.isSafeInteger(runId) && runId > 0 ? runId : 0;
 }
 
 export function isTrustedMatrixCheck(input: {
@@ -359,6 +361,20 @@ function latestWorkflowJob(
   return run && job ? { run, job } : null;
 }
 
+function workflowJobForProxy(
+  runs: readonly MatrixWorkflowRun[],
+  target: MatrixTargetConfiguration,
+  pull: MatrixPull,
+  proxy: MatrixCheckRun,
+): { run: MatrixWorkflowRun; job: MatrixCheckRun } | null {
+  const recordedRunId = workflowRunId(proxy);
+  if (!recordedRunId) return latestWorkflowJob(runs, target, pull);
+  const run = runs.find((candidate) => Number(candidate.id ?? 0) === recordedRunId);
+  if (!run || !workflowRunMatchesTarget(run, target) || !legacyWorkflowRunMatchesPull(run, pull)) return null;
+  const job = run.jobs?.find((candidate) => workflowJobMatches(candidate.name, target.jobName));
+  return job ? { run, job } : null;
+}
+
 export function planMatrixRepairs(input: {
   targets: readonly MatrixTargetResult[];
   workflowRuns: readonly MatrixWorkflowRun[];
@@ -439,11 +455,6 @@ export function planProxyCompletions(input: {
     if (!activeProxy(target, input.pull)
       || !target.checkRun
       || !isTrustedMatrixCheck({ run: target.checkRun, target, pull: input.pull, trust: input.trust })) continue;
-    const evidence = latestWorkflowJob(input.workflowRuns, target, input.pull);
-    const sourceJobId = evidence?.job.id;
-    const sourceConclusion = evidence?.job.conclusion;
-    if (!sourceJobId || evidence?.job.status !== 'completed' || !sourceConclusion) continue;
-    const job = evidence.job;
     const proxyExternalId = String(target.checkRun.external_id ?? '');
     const activeIdenticalProxies = input.checkRuns.filter((run) => (
       target.checkNames.includes(String(run.name ?? ''))
@@ -453,6 +464,11 @@ export function planProxyCompletions(input: {
       && isTrustedMatrixCheck({ run, target, pull: input.pull, trust: input.trust })
     ));
     for (const proxy of activeIdenticalProxies) {
+      const evidence = workflowJobForProxy(input.workflowRuns, target, input.pull, proxy);
+      const sourceJobId = evidence?.job.id;
+      const sourceConclusion = evidence?.job.conclusion;
+      if (!sourceJobId || evidence?.job.status !== 'completed' || !sourceConclusion) continue;
+      const job = evidence.job;
       plans.push({
         target: target.id,
         action: 'complete-proxy-check',

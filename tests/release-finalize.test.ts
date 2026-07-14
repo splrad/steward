@@ -13,7 +13,10 @@ describe('Release workflow failure finalizer', () => {
         id: 1296724484, full_name: 'splrad/steward', default_branch: 'main',
       }));
       if (path.endsWith('/pulls/7')) return new Response(JSON.stringify({ number: 7, state: 'closed', merged: true,
-        merge_commit_sha: 'e'.repeat(40), base: { ref: 'main' }, head: { sha: 'c'.repeat(40) } }));
+        base: { ref: 'main' }, head: { sha: 'c'.repeat(40) } }));
+      if (path === '/graphql') return new Response(JSON.stringify({ data: { repository: { pullRequest: {
+        state: 'MERGED', merged: true, mergeCommit: { oid: 'e'.repeat(40) },
+      } } } }));
       if (path.endsWith('/check-runs')) return new Response(JSON.stringify({ id: 12 }));
       return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 });
     });
@@ -34,7 +37,10 @@ describe('Release workflow failure finalizer', () => {
         id: 1296724484, full_name: 'splrad/steward', default_branch: 'main',
       }));
       if (path.endsWith('/pulls/7')) return new Response(JSON.stringify({ number: 7, state: 'closed', merged: true,
-        merge_commit_sha: 'f'.repeat(40), base: { ref: 'main' }, head: { sha: 'c'.repeat(40) } }));
+        base: { ref: 'main' }, head: { sha: 'c'.repeat(40) } }));
+      if (path === '/graphql') return new Response(JSON.stringify({ data: { repository: { pullRequest: {
+        state: 'MERGED', merged: true, mergeCommit: { oid: 'f'.repeat(40) },
+      } } } }));
       return new Response(JSON.stringify({ id: 12 }));
     });
     await expect(finalizeReleaseFailure({
@@ -42,6 +48,6 @@ describe('Release workflow failure finalizer', () => {
       environment: { GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: 'pull_request' },
       fetch: fetchMock as unknown as typeof fetch,
     })).rejects.toThrow('merge facts do not match');
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });
