@@ -100,7 +100,10 @@ describe('Steward Action bootstrap', () => {
     const core = await import('@actions/core');
     await run(
       { operation: 'classification', token: 'platform-token', eventPath },
-      { GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: eventName },
+      {
+        GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: eventName,
+        GITHUB_RUN_ID: '42', GITHUB_RUN_ATTEMPT: '1',
+      },
       closedPullRequestFetch as unknown as typeof fetch,
     );
     expect(core.setOutput).toHaveBeenCalledWith('state', 'ignored');
@@ -114,10 +117,13 @@ describe('Steward Action bootstrap', () => {
         token: 'platform-token',
         eventPath: 'tests/fixtures/action-event.json',
       },
-      { GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: 'workflow_dispatch' },
+      {
+        GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: 'workflow_dispatch',
+        GITHUB_RUN_ID: '42', GITHUB_RUN_ATTEMPT: '1',
+      },
       closedPullRequestFetch as unknown as typeof fetch,
     )).rejects.toThrow(
-      'only accepts an open pull request; pull request #7 has state "closed"',
+      'Control requires an open pull request; pull request #7 has state "closed"',
     );
   });
 
@@ -144,7 +150,10 @@ describe('Steward Action bootstrap', () => {
         eventPath: 'tests/fixtures/action-event.json',
         headSha: 'c'.repeat(40),
       },
-      { GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: 'workflow_dispatch' },
+      {
+        GITHUB_API_URL: 'https://api.github.com/', GITHUB_EVENT_NAME: 'workflow_dispatch',
+        GITHUB_RUN_ID: '42', GITHUB_RUN_ATTEMPT: '1',
+      },
       advancedHeadFetch as unknown as typeof fetch,
     )).rejects.toThrow('Pull request #7 head');
   });

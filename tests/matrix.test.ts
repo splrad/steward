@@ -72,6 +72,19 @@ describe('Matrix Check identities', () => {
     expect(parseStewardCheckExternalId('matrix-proxy:legacy')).toBeNull();
   });
 
+  it('keeps production Classification identities within the conservative 255-character adapter budget', () => {
+    const base = {
+      repositoryId: 1_187_527_897,
+      prNumber: 128,
+      headSha: 'a'.repeat(40),
+      configDigest: 'b'.repeat(64),
+      inputDigest: 'c'.repeat(64),
+    };
+    expect(['pr-classification', 'pr-class-lease', 'pr-class-off'].map((checkId) => (
+      stewardCheckExternalId({ ...base, checkId }).length
+    ))).toEqual([253, 250, 248]);
+  });
+
   it('accepts exact App identities, reads legacy identities, and rejects stale configuration', () => {
     const matrixTarget = target('pr-classification');
     const trust = { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: true };
@@ -118,6 +131,95 @@ describe('Matrix Check identities', () => {
       pull,
       trust,
     })).toBe(false);
+  });
+
+  it('treats the newest trusted Classification lease as a fail-closed barrier over older exact success', () => {
+    const matrixTarget = target('pr-classification');
+    const trust = { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false };
+    const exactSuccess = check(matrixTarget.checkNames[0]!, 'completed', 'success', {
+      id: 80,
+      app: { slug: appSlug },
+      external_id: stewardCheckExternalId({
+        repositoryId: 42,
+        prNumber: pull.number,
+        headSha: pull.head.sha,
+        checkId: matrixTarget.id,
+        configDigest,
+        inputDigest,
+      }),
+    });
+    const leaseExternalId = stewardCheckExternalId({
+      repositoryId: 42,
+      prNumber: pull.number,
+      headSha: pull.head.sha,
+      checkId: 'pr-class-lease',
+      configDigest: '0'.repeat(64),
+      inputDigest: 'b'.repeat(64),
+    });
+    const evaluate = (lease: MatrixCheckRun) => evaluateMatrix({
+      config,
+      checkRuns: [exactSuccess, lease],
+      scope: 'full',
+      pull,
+      trust,
+    }).targets.find((candidate) => candidate.id === matrixTarget.id);
+
+    const pending = evaluate(check(matrixTarget.checkNames[0]!, 'in_progress', '', {
+      id: 90,
+      app: { slug: appSlug },
+      external_id: leaseExternalId,
+    }));
+    expect(pending).toMatchObject({ state: 'pending', checkRun: { id: 90 } });
+
+    const failed = evaluate(check(matrixTarget.checkNames[0]!, 'completed', 'failure', {
+      id: 90,
+      app: { slug: appSlug },
+      external_id: leaseExternalId,
+    }));
+    expect(failed).toMatchObject({ state: 'failed', checkRun: { id: 90 } });
+
+    const invalidSuccess = evaluate(check(matrixTarget.checkNames[0]!, 'completed', 'success', {
+      id: 90,
+      app: { slug: appSlug },
+      external_id: leaseExternalId,
+    }));
+    expect(invalidSuccess).toMatchObject({ state: 'failed', checkRun: { id: 90 } });
+
+    const newerExactSuccess = evaluateMatrix({
+      config,
+      checkRuns: [
+        check(matrixTarget.checkNames[0]!, 'in_progress', '', {
+          id: 80,
+          started_at: '2026-07-12T00:00:00Z',
+          app: { slug: appSlug },
+          external_id: leaseExternalId,
+        }),
+        { ...exactSuccess, id: 90, started_at: '2026-07-11T00:00:00Z' },
+      ],
+      scope: 'full',
+      pull,
+      trust,
+    }).targets.find((candidate) => candidate.id === matrixTarget.id);
+    expect(newerExactSuccess).toMatchObject({ state: 'passed', checkRun: { id: 90 } });
+
+    const lease = check(matrixTarget.checkNames[0]!, 'in_progress', '', {
+      id: 90,
+      app: { slug: appSlug },
+      external_id: leaseExternalId,
+    });
+    expect(planProxyCompletions({
+      workflowRuns: [{
+        id: 77,
+        name: `PR Validation Target #${pull.number} / ${pull.head.sha}`,
+        path: '.github/workflows/pr-classification.yml',
+        event: 'workflow_dispatch',
+        jobs: [{ id: 88, name: matrixTarget.jobName, status: 'completed', conclusion: 'success' }],
+      }],
+      targets: [result(matrixTarget.id, 'pending', lease)],
+      checkRuns: [lease],
+      pull,
+      trust,
+    })).toEqual([]);
   });
 
   it('requires matching workflow evidence for GitHub Actions checks', () => {

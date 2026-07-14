@@ -29,7 +29,7 @@ on:
 
 concurrency:
   group: steward-classification-${{ github.repository_id }}-${{ inputs.pr_number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -52,7 +52,7 @@ jobs:
           permission-checks: write
           permission-contents: read
           permission-issues: write
-          permission-pull-requests: write
+          permission-pull-requests: read
 
       - name: Classify and converge pull request
         id: steward

@@ -1,12 +1,15 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
+import * as manifestApi from '../packages/manifest/src/index.js';
 import {
   MANIFEST_PATH,
   ManifestValidationError,
   canonicalManifestJson,
   decodeBase64Utf8,
   encodeBase64Utf8,
+  bindDefaultBranchManifest,
   loadDefaultBranchManifest,
+  loadDefaultBranchManifestContext,
   manifestDigest,
   normalizeManifest,
   parseManifest,
@@ -259,6 +262,10 @@ describe('Portable text encoding and digests', () => {
 });
 
 describe('Default-branch manifest loader', () => {
+  it('does not expose an arbitrary-ref repository loader', () => {
+    expect('loadManifestAtRef' in manifestApi).toBe(false);
+  });
+
   it('reads repository metadata first and only fetches the fixed path from the default branch', async () => {
     const calls: string[] = [];
     const content = Buffer.from(JSON.stringify(manifest())).toString('base64');
@@ -280,6 +287,49 @@ describe('Default-branch manifest loader', () => {
     ]);
     expect(loaded.source).toEqual({ path: MANIFEST_PATH, ref: 'stable', blobSha: 'blob-sha' });
     expect(loaded.configDigest).toBe(await manifestDigest(manifest()));
+  });
+
+  it('returns the exact live repository metadata with the default-branch Manifest from one metadata read', async () => {
+    const content = Buffer.from(JSON.stringify(manifest())).toString('base64');
+    const getRepository = vi.fn(async () => ({
+      id: 1_296_724_484,
+      fullName: 'splrad/steward',
+      defaultBranch: 'main',
+    }));
+    const loaded = await loadDefaultBranchManifestContext({
+      getRepository,
+      async getFile() {
+        return { type: 'file', encoding: 'base64', content, sha: 'blob-sha' };
+      },
+    }, 'splrad', 'steward');
+
+    expect(getRepository).toHaveBeenCalledOnce();
+    expect(loaded.repository).toEqual({
+      id: 1_296_724_484,
+      fullName: 'splrad/steward',
+      defaultBranch: 'main',
+    });
+    expect(loaded.manifest.source.ref).toBe('main');
+  });
+
+  it('defers the file read and captures the validated default branch without exposing a ref parameter', async () => {
+    const metadata = { defaultBranch: 'main' as string | null };
+    const content = Buffer.from(JSON.stringify(manifest())).toString('base64');
+    const getFile = vi.fn(async (_owner: string, _repository: string, _path: string, ref: string) => ({
+      type: 'file', encoding: 'base64', content, sha: `blob-${ref}`,
+    }));
+
+    const binding = await bindDefaultBranchManifest({
+      getRepository: vi.fn(async () => metadata),
+      getFile,
+    }, 'splrad', 'steward');
+
+    expect(getFile).not.toHaveBeenCalled();
+    metadata.defaultBranch = 'attacker-controlled-after-binding';
+    const loaded = await binding.loadManifest();
+    expect(getFile).toHaveBeenCalledWith('splrad', 'steward', MANIFEST_PATH, 'main');
+    expect(loaded.source).toEqual({ path: MANIFEST_PATH, ref: 'main', blobSha: 'blob-main' });
+    expect(binding.loadManifest).toHaveLength(0);
   });
 
   it('rejects invalid JSON, invalid base64, and repositories without a default branch', async () => {

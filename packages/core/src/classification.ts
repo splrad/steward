@@ -4,7 +4,6 @@ import type {
   PublicLabelConfiguration,
 } from '../../manifest/src/index.js';
 import {
-  classificationInputBody,
   normalizeRepositoryPath,
   repositoryPathPatternMatches,
 } from './fingerprint.js';
@@ -43,33 +42,6 @@ export interface ClassificationEvaluation {
     removePublicLabels: string[];
     removeInternalLabels: string[];
   };
-}
-
-const classificationMetadataStart = '<!-- workflow:pr-classification:start';
-const classificationMetadataEnd = 'workflow:pr-classification:end -->';
-
-function metadataValue(items: readonly string[]): string {
-  return items.length ? items.join(',') : 'none';
-}
-
-export function renderClassificationMetadata(presentation: ClassificationEvaluation['presentation']): string {
-  return [
-    classificationMetadataStart,
-    `areas=${metadataValue(presentation.areas)}`,
-    `kind=${presentation.kind || 'none'}`,
-    `visible-labels=${metadataValue(presentation.visibleLabels)}`,
-    `release-labels=${metadataValue(presentation.releaseLabels)}`,
-    classificationMetadataEnd,
-  ].join('\n');
-}
-
-export function upsertClassificationMetadata(
-  body: unknown,
-  presentation: ClassificationEvaluation['presentation'],
-): string {
-  const contributorBody = classificationInputBody(body);
-  const metadata = renderClassificationMetadata(presentation);
-  return `${contributorBody}${contributorBody ? '\n\n' : ''}${metadata}`;
 }
 
 function compareText(left: string, right: string): number {

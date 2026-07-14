@@ -1,12 +1,17 @@
 import * as core from '@actions/core';
 import { operationDefinitions, parseOperation, type StewardActionInputs } from './contracts.js';
 import {
+  createControlOperationContext,
   createOperationContext,
   PullRequestHeadMismatchError,
   PullRequestStateMismatchError,
   type StewardRuntimeEnvironment,
 } from './context.js';
-import { executeOperation } from './operations.js';
+import { executeControlOperation, executeOperation } from './operations.js';
+import {
+  ControlPullRequestHeadMismatchError,
+  ControlPullRequestStateMismatchError,
+} from '../../packages/control/src/index.js';
 import { executeReleaseBuild, executeReleasePlan, parseReleaseAdapterPhase } from './release-adapter.js';
 import { createReleasePreflight } from './release-preflight.js';
 import { readReleaseStatus } from './release-status.js';
@@ -29,7 +34,8 @@ function staleClosedPullRequestResult(
   eventName: string,
   error: unknown,
 ) {
-  if (!(error instanceof PullRequestStateMismatchError)
+  if (!(error instanceof PullRequestStateMismatchError
+      || error instanceof ControlPullRequestStateMismatchError)
     || error.expectedState !== 'open'
     || error.actualState !== 'closed'
     || !automaticOpenPullRequestEvents.has(eventName)) return null;
@@ -46,7 +52,8 @@ function staleHeadResult(
   eventName: string,
   error: unknown,
 ) {
-  if (!(error instanceof PullRequestHeadMismatchError)
+  if (!(error instanceof PullRequestHeadMismatchError
+      || error instanceof ControlPullRequestHeadMismatchError)
     || !automaticOpenPullRequestEvents.has(eventName)) return null;
   return {
     operation,
@@ -159,6 +166,29 @@ export async function run(
   if (operation === 'release-finalize') {
     await finalizeReleaseFailure({ inputs, environment, ...(fetch ? { fetch } : {}) });
     return;
+  }
+  if (operation === 'classification' || operation === 'dco-advisory') {
+    const eventName = environment.GITHUB_EVENT_NAME?.trim() || '';
+    try {
+      const context = await createControlOperationContext({
+        inputs,
+        environment,
+        ...(fetch ? { fetch } : {}),
+      });
+      const result = await executeControlOperation(operation, context);
+      core.setOutput('state', result.state);
+      core.setOutput('operation-result', JSON.stringify(result));
+      core.info(`${operation}: ${result.summary}`);
+      return;
+    } catch (error) {
+      const result = staleClosedPullRequestResult(operation, eventName, error)
+        ?? staleHeadResult(operation, eventName, error);
+      if (!result) throw error;
+      core.setOutput('state', result.state);
+      core.setOutput('operation-result', JSON.stringify(result));
+      core.info(`${operation}: ${result.summary}`);
+      return;
+    }
   }
   let context: Awaited<ReturnType<typeof createOperationContext>>;
   try {
