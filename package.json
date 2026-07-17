@@ -28,14 +28,14 @@
     "libsodium-wrappers": "0.8.4"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20260710.1",
+    "@cloudflare/workers-types": "5.20260717.1",
     "@types/node": "26.1.1",
     "@vercel/ncc": "0.44.1",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
     "typescript": "7.0.2",
     "vitest": "4.1.10",
-    "wrangler": "4.110.0",
+    "wrangler": "4.112.0",
     "yaml": "2.9.0"
   }
 }
