@@ -136,6 +136,26 @@ describe('GitHub App init preflight', () => {
       .toMatchObject({ status: 'action-required', reason: 'permissions-missing', missingPermissions: ['contents:write'] });
   });
 
+  it.each([
+    ['missing', (() => {
+      const value: Record<string, unknown> = { ...installation };
+      delete value.suspended_at;
+      return value;
+    })()],
+    ['undefined', { ...installation, suspended_at: undefined }],
+    ['empty string', { ...installation, suspended_at: '' }],
+    ['number', { ...installation, suspended_at: 0 }],
+    ['boolean', { ...installation, suspended_at: false }],
+    ['object', { ...installation, suspended_at: {} }],
+  ])('treats an unverifiable suspended_at value (%s) as unknown', async (_label, candidate) => {
+    const current = setup({ '/orgs/splrad/installations': { installations: [candidate] } });
+    const report = await inspectAppInstallation(current.transport, options());
+
+    expect(report).toMatchObject({ status: 'unknown', reason: 'verification-unavailable' });
+    expect(report.summary).toContain('安装暂停状态不可验证');
+    expect(current.requests.map((request) => request.path)).toEqual(['/orgs/splrad/installations']);
+  });
+
   it('does not confuse unverifiable selected scope with a missing installation', async () => {
     const path = '/user/installations/145952003/repositories';
     const current = setup({

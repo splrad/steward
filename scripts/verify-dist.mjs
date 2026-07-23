@@ -38,6 +38,18 @@ try {
       if (!left.equals(right)) throw new Error(`${target.name}/${file} is not reproducible`);
     }
     if (target.name === 'packages/cli/dist') {
+      if (generatedFiles.some((file) => file.startsWith('templates/adoption/'))) {
+        throw new Error('bundled CLI must not publish legacy adoption profiles');
+      }
+      const entry = await readFile(path.join(output, 'index.js'), 'utf8');
+      for (const marker of [
+        'steward activate --repo',
+        'Steward activate plan:',
+        'init spec adoption.profile',
+        'cadfontautoreplace-f6331185',
+      ]) {
+        if (entry.includes(marker)) throw new Error(`bundled CLI exposes a legacy surface: ${marker}`);
+      }
       const dryRunTarget = path.join(temporaryRoot, 'cli-init-target');
       await mkdir(dryRunTarget);
       await runProcess(process.execPath, [

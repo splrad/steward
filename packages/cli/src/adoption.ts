@@ -1,6 +1,3 @@
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
-
 export interface AdoptionProfile {
   schemaVersion: 1;
   id: string;
@@ -68,17 +65,4 @@ export function parseAdoptionProfile(value: unknown, requestedId: string): Adopt
   if (overlap.length) throw new Error(`adoption profile paths cannot be both replaced and removed: ${overlap.join(', ')}`);
   if (!replace.size && !remove.size) throw new Error('adoption profile must contain at least one exact-digest operation');
   return { schemaVersion: 1, id, source: { repository, commit }, replace, remove };
-}
-
-export async function loadAdoptionProfile(templateDirectory: string, id: string): Promise<AdoptionProfile> {
-  if (!profileIdPattern.test(id)) throw new Error('init spec adoption.profile must be a safe built-in profile id');
-  const file = path.join(templateDirectory, 'adoption', `${id}.json`);
-  let raw: string;
-  try {
-    raw = await readFile(file, 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`Unknown built-in adoption profile: ${id}`);
-    throw error;
-  }
-  return parseAdoptionProfile(JSON.parse(raw) as unknown, id);
 }

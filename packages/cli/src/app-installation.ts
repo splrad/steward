@@ -189,6 +189,12 @@ export async function inspectAppInstallation(
     return unknown(options, 'GitHub 返回的 App installation 缺少可信 installation_id。');
   }
   const actionUrl = configurationUrl(installation.html_url, newInstallationUrl);
+  const hasSuspendedAt = Object.prototype.hasOwnProperty.call(installation, 'suspended_at');
+  const suspendedAt = installation.suspended_at;
+  if (!hasSuspendedAt || (suspendedAt !== null
+    && (typeof suspendedAt !== 'string' || suspendedAt.length === 0))) {
+    return unknown(options, `GitHub App installation ${installationId} 的 suspended_at 字段缺失或无效，安装暂停状态不可验证。`);
+  }
   if (!Number.isSafeInteger(appId) || appId < 1) {
     return {
       repository: fullName, appSlug: slug, status: 'action-required', reason: 'permissions-missing',
@@ -196,7 +202,7 @@ export async function inspectAppInstallation(
       installationId, missingPermissions: ['app_id'], actionUrl,
     };
   }
-  if (installation.suspended_at) {
+  if (suspendedAt !== null) {
     return {
       repository: fullName, appSlug: slug, status: 'action-required', reason: 'installation-suspended',
       summary: `GitHub App installation ${installationId} 已暂停。`, installationId, appId, actionUrl,

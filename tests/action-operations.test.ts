@@ -1,7 +1,14 @@
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { fingerprintForPull, stewardCheckExternalId } from '../packages/core/src/index.js';
+import {
+  evaluateMatrix,
+  fingerprintForPull,
+  matrixLiveEvidenceDigest,
+  parseStewardCheckExternalId,
+  stewardCheckExternalId,
+  type MatrixCheckRun,
+} from '../packages/core/src/index.js';
 import {
   canonicalManifestJson,
   type ClassificationConfiguration,
@@ -126,6 +133,7 @@ function context(overrides: Record<string, unknown> = {}): {
     listTeamMembers: vi.fn(async () => []),
     listPullRequestCommits: vi.fn(async () => [{ sha: 'd'.repeat(40), author: { login: 'core' } }]),
     listPullRequestFiles: vi.fn(async () => []),
+    listPullRequestsForCommit: vi.fn(async () => [structuredClone(pull)]),
     listPullRequestReviews: vi.fn(async () => [{
       state: 'APPROVED', commit_id: pull.head.sha, user: { login: 'reviewer' }, body: 'approved',
     }]),
@@ -1324,6 +1332,461 @@ describe('Action operation contract', () => {
     expect(fixture.client.createCheckRun).not.toHaveBeenCalledWith('splrad', 'steward', expect.objectContaining({
       name: 'PR Validation Matrix Gate', conclusion: 'failure',
     }));
+    const gateCreateIndex = fixture.client.createCheckRun!.mock.calls.findIndex(
+      (call) => (call[2] as CheckRunCreate).name === 'PR Validation Matrix Gate',
+    );
+    expect(gateCreateIndex).toBeGreaterThanOrEqual(0);
+    expect(fixture.client.createCheckRun!.mock.invocationCallOrder[gateCreateIndex])
+      .toBeLessThan(fixture.client.dispatchWorkflow!.mock.invocationCallOrder[0]!);
+  });
+
+  it('binds the final Matrix Check identity to the reread full child-evidence snapshot', async () => {
+    const fixture = context();
+    const baseFingerprint = await fingerprintForPull({
+      pull: fixture.context.pull,
+      commits: [{ sha: 'd'.repeat(40), author: { login: 'core' } }],
+      files: [],
+      botLogins: ['splrad-steward', 'copilot-pull-request-reviewer[bot]'],
+    });
+
+    await executeOperation('matrix', fixture.context, { operation: 'matrix' });
+
+    const finalGate = fixture.checkRuns.find((run) => run.name === 'PR Validation Matrix Gate');
+    const finalIdentity = parseStewardCheckExternalId(finalGate?.external_id);
+    const configuration = enabledMatrixConfiguration(fixture.context.manifest.manifest.features);
+    const evaluation = evaluateMatrix({
+      config: configuration,
+      checkRuns: fixture.checkRuns as unknown as MatrixCheckRun[],
+      scope: 'full',
+      pull: fixture.context.pull,
+      trust: {
+        appId: 4243096,
+        appSlug: 'splrad-steward',
+        repositoryId: fixture.context.repositoryId,
+        configDigest: fixture.context.manifest.configDigest,
+        inputDigest: baseFingerprint.value,
+        workflowRuns: [],
+        allowLegacy: true,
+      },
+    });
+    const expected = await matrixLiveEvidenceDigest({
+      repositoryId: fixture.context.repositoryId,
+      pull: fixture.context.pull,
+      configDigest: fixture.context.manifest.configDigest,
+      pullFingerprintDigest: baseFingerprint.value,
+      targets: evaluation.targets,
+    });
+    expect(finalIdentity).toMatchObject({
+      checkId: 'validation-matrix',
+      inputDigest: expected.value,
+    });
+    expect(finalIdentity?.inputDigest).not.toBe(baseFingerprint.value);
+  });
+
+  it('fails closed when PR governance inputs change before the final Matrix write', async () => {
+    const fixture = context();
+    fixture.client.getPullRequest!.mockResolvedValue({
+      ...structuredClone(fixture.context.pull),
+      title: 'fix: edited while Matrix was converging',
+    });
+
+    await expect(executeOperation('matrix', fixture.context, { operation: 'matrix' }))
+      .rejects.toThrow('governance inputs changed');
+    expect(fixture.checkRuns.find((run) => run.name === 'PR Validation Matrix Gate'))
+      .toMatchObject({ status: 'in_progress', conclusion: null });
+  });
+
+  it('fails closed when child evidence changes across the final Matrix write barrier', async () => {
+    const fixture = context();
+    let reads = 0;
+    fixture.client.listCommitCheckRuns!.mockImplementation(async () => {
+      reads += 1;
+      const snapshot = structuredClone(fixture.checkRuns);
+      if (reads >= 4) {
+        const main = snapshot.find((run) => run.name === 'Main Authorization Gate');
+        if (main) Object.assign(main, { status: 'completed', conclusion: 'failure' });
+      }
+      return snapshot;
+    });
+
+    await expect(executeOperation('matrix', fixture.context, { operation: 'matrix' }))
+      .rejects.toThrow('live evidence changed across the final write barrier');
+    expect(fixture.checkRuns.find((run) => run.name === 'PR Validation Matrix Gate'))
+      .toMatchObject({ status: 'in_progress', conclusion: null });
+  });
+
+  it('writes a blocking Matrix Gate when a commit head is shared by multiple open pull requests', async () => {
+    const fixture = context();
+    const oldGate: GitHubCheckRun = {
+      id: 80,
+      head_sha: fixture.context.pull.head.sha,
+      name: 'PR Validation Matrix Gate',
+      status: 'completed',
+      conclusion: 'success',
+      external_id: stewardCheckExternalId({
+        repositoryId: fixture.context.repositoryId,
+        prNumber: fixture.context.pull.number,
+        headSha: fixture.context.pull.head.sha,
+        checkId: 'validation-matrix',
+        configDigest: fixture.context.manifest.configDigest,
+        inputDigest: 'f'.repeat(64),
+      }),
+      app: { id: 4243096, slug: 'splrad-steward' },
+    };
+    fixture.checkRuns.push(oldGate);
+    fixture.client.listPullRequestsForCommit!.mockResolvedValue([
+      structuredClone(fixture.context.pull),
+      { ...structuredClone(fixture.context.pull), number: 8 },
+    ]);
+
+    const result = await executeOperation('matrix', fixture.context, { operation: 'matrix' });
+
+    expect(result).toMatchObject({ state: 'failed', summary: 'Matrix head association is not exclusive' });
+    expect(fixture.client.dispatchWorkflow).not.toHaveBeenCalled();
+    expect(fixture.checkRuns.find((run) => run.id === oldGate.id))
+      .toMatchObject({ status: 'completed', conclusion: 'success' });
+    expect(fixture.checkRuns.find((run) => run.id !== oldGate.id
+      && run.name === 'PR Validation Matrix Gate'))
+      .toMatchObject({ status: 'completed', conclusion: 'failure' });
+  });
+
+  it('ignores associated pull requests whose current head has advanced past the queried commit', async () => {
+    const fixture = context();
+    fixture.client.listPullRequestsForCommit!.mockResolvedValue([
+      structuredClone(fixture.context.pull),
+      {
+        ...structuredClone(fixture.context.pull),
+        number: 8,
+        head: { ...fixture.context.pull.head, sha: 'd'.repeat(40) },
+      },
+    ]);
+
+    const result = await executeOperation('matrix', fixture.context, { operation: 'matrix' });
+
+    expect(result.summary).not.toBe('Matrix head association is not exclusive');
+    expect(fixture.checkRuns.find((run) => run.name === 'PR Validation Matrix Gate'))
+      .toMatchObject({ status: 'in_progress' });
+  });
+
+  it('leaves a pending Gate before rejecting malformed commit-associated PR metadata', async () => {
+    const fixture = context();
+    fixture.client.listPullRequestsForCommit!.mockResolvedValue([
+      structuredClone(fixture.context.pull),
+      { number: 8, state: 'open', head: {} },
+    ]);
+
+    await expect(executeOperation('matrix', fixture.context, { operation: 'matrix' }))
+      .rejects.toThrow('Commit-associated open pull request metadata is malformed');
+    expect(fixture.checkRuns.find((run) => run.name === 'PR Validation Matrix Gate'))
+      .toMatchObject({ status: 'in_progress', conclusion: null });
+  });
+
+  it('creates a pending Gate before surfacing a failed preflight Check read', async () => {
+    const fixture = context();
+    fixture.client.listCommitCheckRuns!.mockRejectedValue(new Error('checks unavailable'));
+
+    await expect(executeOperation('matrix', fixture.context, { operation: 'matrix' }))
+      .rejects.toThrow('checks unavailable');
+    expect(fixture.checkRuns.find((run) => run.name === 'PR Validation Matrix Gate'))
+      .toMatchObject({ status: 'in_progress', conclusion: null });
+    expect(fixture.client.listPullRequestCommits).not.toHaveBeenCalled();
+  });
+
+  it('keeps the first Gate pending when later fingerprint reads fail', async () => {
+    const fixture = context();
+    fixture.client.listPullRequestCommits!.mockRejectedValue(new Error('commits unavailable'));
+
+    await expect(executeOperation('matrix', fixture.context, { operation: 'matrix' }))
+      .rejects.toThrow('commits unavailable');
+    expect(fixture.checkRuns.find((run) => run.name === 'PR Validation Matrix Gate'))
+      .toMatchObject({ status: 'in_progress', conclusion: null });
+  });
+
+  it('treats repair as a mutating mode and leaves Matrix pending until a full enforce pass', async () => {
+    const fixture = context();
+
+    const result = await executeOperation('matrix', fixture.context, { operation: 'matrix', matrixMode: 'repair' });
+
+    expect(result).toMatchObject({ state: 'pending', summary: expect.stringContaining('full reconcile required') });
+    expect(fixture.checkRuns.find((run) => run.name === 'PR Validation Matrix Gate'))
+      .toMatchObject({ status: 'in_progress', conclusion: null });
+  });
+
+  it('never reports repair as passed even when every current child Gate is green', async () => {
+    const fixture = context();
+    const inputDigest = (await fingerprintForPull({
+      pull: fixture.context.pull,
+      commits: [{ sha: 'd'.repeat(40), author: { login: 'core' } }],
+      files: [],
+      botLogins: ['splrad-steward', 'copilot-pull-request-reviewer[bot]'],
+    })).value;
+    const child = (id: number, name: string, checkId: string): GitHubCheckRun => ({
+      id,
+      head_sha: fixture.context.pull.head.sha,
+      name,
+      status: 'completed',
+      conclusion: 'success',
+      external_id: stewardCheckExternalId({
+        repositoryId: fixture.context.repositoryId,
+        prNumber: fixture.context.pull.number,
+        headSha: fixture.context.pull.head.sha,
+        checkId,
+        configDigest: fixture.context.manifest.configDigest,
+        inputDigest,
+      }),
+      app: { id: 4243096, slug: 'splrad-steward' },
+    });
+    fixture.checkRuns.push(
+      child(40, 'Main Authorization Gate', 'main-authorization'),
+      child(41, 'Copilot Code Review Gate', 'copilot-review-gate'),
+    );
+
+    const result = await executeOperation('matrix', fixture.context, {
+      operation: 'matrix', matrixMode: 'repair',
+    });
+
+    expect(result).toMatchObject({
+      state: 'pending',
+      summary: expect.stringContaining('full reconcile required'),
+      details: { evaluation: { state: 'pending', passed: false } },
+    });
+    expect(fixture.checkRuns.find((run) => run.name === 'PR Validation Matrix Gate'))
+      .toMatchObject({ status: 'in_progress', conclusion: null });
+  });
+
+  it('keeps Matrix pending instead of falling back past a trusted child with a malformed generation ID', async () => {
+    const fixture = context();
+    const inputDigest = (await fingerprintForPull({
+      pull: fixture.context.pull,
+      commits: [{ sha: 'd'.repeat(40), author: { login: 'core' } }],
+      files: [],
+      botLogins: ['splrad-steward', 'copilot-pull-request-reviewer[bot]'],
+    })).value;
+    const child = (id: number, name: string, checkId: string): GitHubCheckRun => ({
+      id,
+      head_sha: fixture.context.pull.head.sha,
+      name,
+      status: 'completed',
+      conclusion: 'success',
+      external_id: stewardCheckExternalId({
+        repositoryId: fixture.context.repositoryId,
+        prNumber: fixture.context.pull.number,
+        headSha: fixture.context.pull.head.sha,
+        checkId,
+        configDigest: fixture.context.manifest.configDigest,
+        inputDigest,
+      }),
+      app: { id: 4243096, slug: 'splrad-steward' },
+    });
+    fixture.checkRuns.push(
+      child(40, 'Main Authorization Gate', 'main-authorization'),
+      child(0, 'Main Authorization Gate', 'main-authorization'),
+      child(41, 'Copilot Code Review Gate', 'copilot-review-gate'),
+    );
+
+    const result = await executeOperation('matrix', fixture.context, { operation: 'matrix' });
+
+    expect(result).toMatchObject({
+      state: 'pending',
+      details: {
+        evaluation: {
+          state: 'pending',
+          passed: false,
+          targets: expect.arrayContaining([expect.objectContaining({ id: 'main-authorization', state: 'invalid' })]),
+        },
+      },
+    });
+    expect(fixture.client.updateCheckRun).not.toHaveBeenCalledWith(
+      'splrad', 'steward', expect.any(Number), expect.objectContaining({
+        name: 'PR Validation Matrix Gate', status: 'completed', conclusion: 'success',
+      }),
+    );
+  });
+
+  it('rejects a malformed response while starting the pending Matrix generation', async () => {
+    const fixture = context();
+    fixture.client.createCheckRun!.mockImplementation(async (
+      _owner,
+      _repository,
+      input: CheckRunCreate,
+    ) => ({
+      id: 90,
+      head_sha: input.headSha,
+      name: input.name,
+      status: 'completed',
+      conclusion: 'success',
+      external_id: input.externalId ?? null,
+      app: { id: 4243096, slug: 'splrad-steward' },
+    }));
+
+    await expect(executeOperation('matrix', fixture.context, { operation: 'matrix' }))
+      .rejects.toThrow('mutation response did not preserve the requested Check identity and state');
+    expect(fixture.client.listPullRequestCommits).not.toHaveBeenCalled();
+  });
+
+  it('does not report Matrix success when the final mutation response has the wrong generation identity', async () => {
+    const fixture = context();
+    fixture.client.updateCheckRun!.mockImplementation(async (
+      _owner,
+      _repository,
+      checkRunId: number,
+      input: CheckRunUpdate,
+    ) => ({
+      id: checkRunId,
+      head_sha: fixture.context.pull.head.sha,
+      name: input.name,
+      status: input.status,
+      conclusion: input.conclusion ?? null,
+      external_id: stewardCheckExternalId({
+        repositoryId: fixture.context.repositoryId,
+        prNumber: fixture.context.pull.number,
+        headSha: fixture.context.pull.head.sha,
+        checkId: 'validation-matrix',
+        configDigest: fixture.context.manifest.configDigest,
+        inputDigest: '0'.repeat(64),
+      }),
+      app: { id: 4243096, slug: 'splrad-steward' },
+    }));
+
+    await expect(executeOperation('matrix', fixture.context, { operation: 'matrix' }))
+      .rejects.toThrow('mutation response did not preserve the requested Check identity and state');
+    expect(fixture.checkRuns.find((run) => run.name === 'PR Validation Matrix Gate'))
+      .toMatchObject({ status: 'in_progress', conclusion: null });
+  });
+
+  it('refuses the final Matrix write when the started generation is concurrently taken over', async () => {
+    const fixture = context();
+    let checkReads = 0;
+    fixture.client.listCommitCheckRuns!.mockImplementation(async () => {
+      checkReads += 1;
+      const snapshot = structuredClone(fixture.checkRuns);
+      if (checkReads >= 4) {
+        const gate = snapshot.find((run) => run.name === 'PR Validation Matrix Gate');
+        if (gate) {
+          gate.external_id = stewardCheckExternalId({
+            repositoryId: fixture.context.repositoryId,
+            prNumber: fixture.context.pull.number,
+            headSha: fixture.context.pull.head.sha,
+            checkId: 'validation-matrix',
+            configDigest: fixture.context.manifest.configDigest,
+            inputDigest: '9'.repeat(64),
+          });
+        }
+      }
+      return snapshot;
+    });
+
+    await expect(executeOperation('matrix', fixture.context, { operation: 'matrix' }))
+      .rejects.toThrow('started generation changed identity or state');
+    expect(fixture.client.updateCheckRun).not.toHaveBeenCalled();
+    expect(fixture.checkRuns.find((run) => run.name === 'PR Validation Matrix Gate'))
+      .toMatchObject({ status: 'in_progress', conclusion: null });
+  });
+
+  it('invalidates an old Matrix success immediately on gate-only governance signals', async () => {
+    const fixture = context({ eventName: 'repository_dispatch' });
+    const finalGate: GitHubCheckRun = {
+      id: 80,
+      head_sha: fixture.context.pull.head.sha,
+      name: 'PR Validation Matrix Gate',
+      status: 'completed',
+      conclusion: 'success',
+      external_id: stewardCheckExternalId({
+        repositoryId: fixture.context.repositoryId,
+        prNumber: fixture.context.pull.number,
+        headSha: fixture.context.pull.head.sha,
+        checkId: 'validation-matrix',
+        configDigest: fixture.context.manifest.configDigest,
+        inputDigest: 'f'.repeat(64),
+      }),
+      app: { id: 4243096, slug: 'splrad-steward' },
+    };
+    fixture.checkRuns.push(finalGate);
+
+    const result = await executeOperation('matrix', fixture.context, { operation: 'matrix' });
+
+    expect(result.details).toMatchObject({ scope: 'gate-only' });
+    expect(result.state).toBe('pending');
+    expect(fixture.client.updateCheckRun).not.toHaveBeenCalledWith(
+      'splrad', 'steward', finalGate.id, expect.anything(),
+    );
+    const replacement = fixture.client.createCheckRun!.mock.calls
+      .map((call) => call[2] as CheckRunCreate)
+      .filter((input) => input.name === 'PR Validation Matrix Gate');
+    expect(replacement).toHaveLength(1);
+    expect(replacement[0]).toMatchObject({ status: 'in_progress' });
+    expect(fixture.checkRuns.find((run) => run.id === finalGate.id)).toMatchObject({
+      status: 'completed',
+      conclusion: 'success',
+      external_id: finalGate.external_id,
+    });
+    expect(fixture.checkRuns.find((run) => run.id !== finalGate.id
+      && run.name === 'PR Validation Matrix Gate')).toMatchObject({
+      status: 'in_progress',
+      conclusion: null,
+    });
+  });
+
+  it('invalidates an old Matrix success before a full reconciliation writes its replacement', async () => {
+    const fixture = context();
+    const inputDigest = (await fingerprintForPull({
+      pull: fixture.context.pull,
+      commits: [{ sha: 'd'.repeat(40), author: { login: 'core' } }],
+      files: [],
+      botLogins: ['splrad-steward', 'copilot-pull-request-reviewer[bot]'],
+    })).value;
+    const child = (id: number, name: string, checkId: string): GitHubCheckRun => ({
+      id,
+      head_sha: fixture.context.pull.head.sha,
+      name,
+      status: 'completed',
+      conclusion: 'success',
+      external_id: stewardCheckExternalId({
+        repositoryId: fixture.context.repositoryId,
+        prNumber: fixture.context.pull.number,
+        headSha: fixture.context.pull.head.sha,
+        checkId,
+        configDigest: fixture.context.manifest.configDigest,
+        inputDigest,
+      }),
+      app: { id: 4243096, slug: 'splrad-steward' },
+    });
+    const oldGate: GitHubCheckRun = {
+      id: 80,
+      head_sha: fixture.context.pull.head.sha,
+      name: 'PR Validation Matrix Gate',
+      status: 'completed',
+      conclusion: 'success',
+      external_id: stewardCheckExternalId({
+        repositoryId: fixture.context.repositoryId,
+        prNumber: fixture.context.pull.number,
+        headSha: fixture.context.pull.head.sha,
+        checkId: 'validation-matrix',
+        configDigest: fixture.context.manifest.configDigest,
+        inputDigest: 'f'.repeat(64),
+      }),
+      app: { id: 4243096, slug: 'splrad-steward' },
+    };
+    fixture.checkRuns.push(
+      child(78, 'Main Authorization Gate', 'main-authorization'),
+      child(79, 'Copilot Code Review Gate', 'copilot-review-gate'),
+      oldGate,
+    );
+
+    const result = await executeOperation('matrix', fixture.context, { operation: 'matrix' });
+
+    expect(result.state).toBe('passed');
+    expect(fixture.client.updateCheckRun).not.toHaveBeenCalledWith(
+      'splrad', 'steward', oldGate.id, expect.anything(),
+    );
+    const created = fixture.client.createCheckRun!.mock.calls
+      .map((call) => call[2] as CheckRunCreate)
+      .filter((input) => input.name === 'PR Validation Matrix Gate');
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ status: 'in_progress' });
+    const replacement = fixture.checkRuns.find((run) => run.id !== oldGate.id
+      && run.name === 'PR Validation Matrix Gate');
+    expect(replacement).toMatchObject({ status: 'completed', conclusion: 'success' });
   });
 
   it('omits dispatcher context details from legacy dispatch proxy Checks', async () => {
@@ -1361,25 +1824,27 @@ describe('Action operation contract', () => {
       configDigest: fixture.context.manifest.configDigest,
       inputDigest,
     });
-    fixture.client.listCommitCheckRuns!.mockResolvedValue([
+    fixture.checkRuns.push(
       {
         id: 70,
+        head_sha: 'c'.repeat(40),
         name: 'Main Authorization Gate',
         status: 'completed',
         conclusion: 'success',
         external_id: identity('main-authorization'),
-        app: { slug: 'splrad-steward' },
+        app: { id: 4243096, slug: 'splrad-steward' },
       },
       {
         id: 71,
+        head_sha: 'c'.repeat(40),
         name: 'Copilot Code Review Gate',
         status: 'completed',
         conclusion: 'failure',
         details_url: 'https://github.com/splrad/steward/actions/runs/888',
         external_id: identity('copilot-review-gate'),
-        app: { slug: 'splrad-steward' },
+        app: { id: 4243096, slug: 'splrad-steward' },
       },
-    ]);
+    );
     fixture.client.dispatchWorkflow!.mockResolvedValue({ kind: 'accepted' });
 
     await executeOperation('matrix', fixture.context, { operation: 'matrix' });
@@ -1433,21 +1898,22 @@ describe('Action operation contract', () => {
       conclusion: 'success',
       html_url: 'https://github.example/job/81',
     }]);
-    fixture.client.listCommitCheckRuns!.mockResolvedValue([
+    fixture.checkRuns.push(
       {
         id: 90,
         head_sha: 'c'.repeat(40),
         name: 'Main Authorization Gate',
         status: 'in_progress',
         external_id: identity('main-authorization'),
-        app: { slug: 'splrad-steward' },
+        app: { id: 4243096, slug: 'splrad-steward' },
       },
       {
         id: 89,
+        head_sha: 'c'.repeat(40),
         name: 'Main Authorization Gate',
         status: 'in_progress',
         external_id: identity('main-authorization'),
-        app: { slug: 'splrad-steward' },
+        app: { id: 4243096, slug: 'splrad-steward' },
       },
       {
         id: 91,
@@ -1456,9 +1922,25 @@ describe('Action operation contract', () => {
         status: 'completed',
         conclusion: 'success',
         external_id: identity('copilot-review-gate'),
-        app: { slug: 'splrad-steward' },
+        app: { id: 4243096, slug: 'splrad-steward' },
       },
-    ]);
+    );
+    fixture.client.updateCheckRun!.mockImplementation(async (
+      _owner,
+      _repository,
+      checkRunId: number,
+      input: CheckRunUpdate,
+    ) => {
+      const run = fixture.checkRuns.find((candidate) => candidate.id === checkRunId);
+      if (!run) throw new Error(`Unknown in-memory Check Run ${checkRunId}`);
+      Object.assign(run, {
+        name: input.name,
+        status: input.status,
+        ...(input.externalId === undefined ? {} : { external_id: input.externalId }),
+        ...(input.conclusion === undefined ? {} : { conclusion: input.conclusion }),
+      });
+      return run;
+    });
 
     const result = await executeOperation('matrix', fixture.context, { operation: 'matrix' });
     expect(result.state).toBe('passed');
@@ -1469,6 +1951,9 @@ describe('Action operation contract', () => {
       status: 'completed', conclusion: 'success',
     }));
     expect(fixture.client.createCheckRun).toHaveBeenCalledWith('splrad', 'steward', expect.objectContaining({
+      name: 'PR Validation Matrix Gate', status: 'in_progress',
+    }));
+    expect(fixture.client.updateCheckRun).toHaveBeenCalledWith('splrad', 'steward', expect.any(Number), expect.objectContaining({
       name: 'PR Validation Matrix Gate', status: 'completed', conclusion: 'success',
     }));
   });
@@ -1497,7 +1982,7 @@ describe('Action operation contract', () => {
         status: 'in_progress',
         conclusion: null,
         external_id: identity('main-authorization'),
-        app: { slug: 'splrad-steward' },
+        app: { id: 4243096, slug: 'splrad-steward' },
       },
       {
         id: 91,
@@ -1506,7 +1991,7 @@ describe('Action operation contract', () => {
         status: 'completed',
         conclusion: 'success',
         external_id: identity('copilot-review-gate'),
-        app: { slug: 'splrad-steward' },
+        app: { id: 4243096, slug: 'splrad-steward' },
       },
       {
         id: 92,
@@ -1515,7 +2000,23 @@ describe('Action operation contract', () => {
         status: 'completed',
         conclusion: 'failure',
         external_id: identity('validation-matrix'),
-        app: { slug: 'splrad-steward' },
+        app: { id: 4243096, slug: 'splrad-steward' },
+      },
+      {
+        id: 93,
+        head_sha: 'c'.repeat(40),
+        name: 'PR Validation Matrix Gate',
+        status: 'in_progress',
+        conclusion: null,
+        external_id: stewardCheckExternalId({
+          repositoryId: 1296724484,
+          prNumber: 8,
+          headSha: 'c'.repeat(40),
+          checkId: 'validation-matrix',
+          configDigest: fixture.context.manifest.configDigest,
+          inputDigest,
+        }),
+        app: { id: 4243096, slug: 'splrad-steward' },
       },
     ];
     let nextCheckRunId = 100;
@@ -1531,7 +2032,7 @@ describe('Action operation contract', () => {
         name: input.name,
         status: input.status,
         conclusion: input.conclusion ?? null,
-        app: { slug: 'splrad-steward' },
+        app: { id: 4243096, slug: 'splrad-steward' },
         ...(input.externalId === undefined ? {} : { external_id: input.externalId }),
       };
       checkRuns.push(run);
@@ -1556,20 +2057,106 @@ describe('Action operation contract', () => {
 
     const first = await executeOperation('matrix', fixture.context, { operation: 'matrix' });
     expect(first.state).toBe('pending');
-    expect(checkRuns.filter((run) => run.name === 'PR Validation Matrix Gate')).toHaveLength(2);
+    expect(checkRuns.filter((run) => run.name === 'PR Validation Matrix Gate')).toHaveLength(3);
     expect(checkRuns.find((run) => run.id === 92)).toMatchObject({ status: 'completed', conclusion: 'failure' });
+    expect(checkRuns.find((run) => run.id === 93)).toMatchObject({ status: 'in_progress', conclusion: null });
     expect(checkRuns.find((run) => run.id === 100)).toMatchObject({ status: 'in_progress', conclusion: null });
+    expect(fixture.client.updateCheckRun).not.toHaveBeenCalledWith(
+      'splrad', 'steward', 93, expect.anything(),
+    );
 
     const repeated = await executeOperation('matrix', fixture.context, { operation: 'matrix' });
     expect(repeated.state).toBe('pending');
-    expect(checkRuns.filter((run) => run.name === 'PR Validation Matrix Gate')).toHaveLength(2);
+    expect(checkRuns.filter((run) => run.name === 'PR Validation Matrix Gate')).toHaveLength(3);
 
     Object.assign(checkRuns.find((run) => run.id === 90)!, { status: 'completed', conclusion: 'success' });
     const recovered = await executeOperation('matrix', fixture.context, { operation: 'matrix' });
     expect(recovered.state).toBe('passed');
-    expect(checkRuns.filter((run) => run.name === 'PR Validation Matrix Gate')).toHaveLength(2);
+    expect(checkRuns.filter((run) => run.name === 'PR Validation Matrix Gate')).toHaveLength(3);
     expect(checkRuns.find((run) => run.id === 100)).toMatchObject({ status: 'completed', conclusion: 'success' });
     expect(fixture.client.createCheckRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('never patches an older pending Matrix generation behind a newer trusted Gate', async () => {
+    const fixture = context();
+    const identity = (inputDigest: string) => stewardCheckExternalId({
+      repositoryId: fixture.context.repositoryId,
+      prNumber: fixture.context.pull.number,
+      headSha: fixture.context.pull.head.sha,
+      checkId: 'validation-matrix',
+      configDigest: fixture.context.manifest.configDigest,
+      inputDigest,
+    });
+    fixture.checkRuns.push(
+      {
+        id: 90,
+        head_sha: fixture.context.pull.head.sha,
+        name: 'PR Validation Matrix Gate',
+        status: 'in_progress',
+        conclusion: null,
+        external_id: identity('a'.repeat(64)),
+        app: { id: 4243096, slug: 'splrad-steward' },
+      },
+      {
+        id: 91,
+        head_sha: fixture.context.pull.head.sha,
+        name: 'PR Validation Matrix Gate',
+        status: 'completed',
+        conclusion: 'success',
+        external_id: identity('b'.repeat(64)),
+        app: { id: 4243096, slug: 'splrad-steward' },
+      },
+    );
+
+    await expect(executeOperation('matrix', fixture.context, { operation: 'matrix' }))
+      .rejects.toThrow('ambiguous active PR Validation Matrix Gate generations');
+
+    expect(fixture.client.updateCheckRun).not.toHaveBeenCalledWith(
+      'splrad', 'steward', 90, expect.anything(),
+    );
+    expect(fixture.checkRuns.find((run) => run.id > 91 && run.name === 'PR Validation Matrix Gate'))
+      .toMatchObject({ status: 'in_progress', conclusion: null });
+  });
+
+  it('fails closed instead of guessing between multiple active Matrix generations', async () => {
+    const fixture = context();
+    const identity = (inputDigest: string) => stewardCheckExternalId({
+      repositoryId: fixture.context.repositoryId,
+      prNumber: fixture.context.pull.number,
+      headSha: fixture.context.pull.head.sha,
+      checkId: 'validation-matrix',
+      configDigest: fixture.context.manifest.configDigest,
+      inputDigest,
+    });
+    fixture.checkRuns.push(
+      {
+        id: 90,
+        head_sha: fixture.context.pull.head.sha,
+        name: 'PR Validation Matrix Gate',
+        status: 'in_progress',
+        conclusion: null,
+        external_id: identity('a'.repeat(64)),
+        app: { id: 4243096, slug: 'splrad-steward' },
+      },
+      {
+        id: 91,
+        head_sha: fixture.context.pull.head.sha,
+        name: 'PR Validation Matrix Gate',
+        status: 'queued',
+        conclusion: null,
+        external_id: identity('b'.repeat(64)),
+        app: { id: 4243096, slug: 'splrad-steward' },
+      },
+    );
+
+    await expect(executeOperation('matrix', fixture.context, { operation: 'matrix' }))
+      .rejects.toThrow('Refusing to update ambiguous active PR Validation Matrix Gate generations');
+    expect(fixture.client.updateCheckRun).not.toHaveBeenCalledWith(
+      'splrad', 'steward', 90, expect.anything(),
+    );
+    expect(fixture.client.updateCheckRun).not.toHaveBeenCalledWith(
+      'splrad', 'steward', 91, expect.anything(),
+    );
   });
 
   it('converges across repeated same-head Matrix events without duplicate repair dispatches', async () => {
@@ -1596,7 +2183,7 @@ describe('Action operation contract', () => {
         name: input.name,
         status: input.status,
         conclusion: input.conclusion ?? null,
-        app: { slug: 'splrad-steward' },
+        app: { id: 4243096, slug: 'splrad-steward' },
         ...(input.externalId === undefined ? {} : { external_id: input.externalId }),
       };
       checkRuns.push(run);

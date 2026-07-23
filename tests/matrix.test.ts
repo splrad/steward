@@ -4,11 +4,13 @@ import {
   evaluateMatrix,
   isTrustedMatrixCheck,
   legacyProxyExternalId,
+  matrixLiveEvidenceDigest,
   matrixCheckState,
   matrixConclusion,
   parseStewardCheckExternalId,
   planMatrixRepairs,
   planProxyCompletions,
+  projectMatrixLiveEvidence,
   stewardCheckExternalId,
   validateReviewDispatch,
   type MatrixCheckRun,
@@ -27,6 +29,7 @@ const config = JSON.parse(await readFile(
 const pull: MatrixPull = { number: 121, base: { ref: 'main' }, head: { sha: 'a'.repeat(40) } };
 const inputDigest = 'f'.repeat(64);
 const configDigest = 'c'.repeat(64);
+const appId = 4243096;
 const appSlug = 'splrad-steward';
 
 function target(id: string): MatrixTargetConfiguration {
@@ -39,7 +42,15 @@ function check(
   conclusion = '',
   overrides: Partial<MatrixCheckRun> = {},
 ): MatrixCheckRun {
-  return { name, status, conclusion, started_at: '2026-07-11T00:00:00Z', ...overrides };
+  return {
+    id: 1,
+    head_sha: pull.head.sha,
+    name,
+    status,
+    conclusion,
+    started_at: '2026-07-11T00:00:00Z',
+    ...overrides,
+  };
 }
 
 function result(id: string, state: MatrixTargetResult['state'], checkRun: MatrixCheckRun | null = null): MatrixTargetResult {
@@ -85,11 +96,94 @@ describe('Matrix Check identities', () => {
     ))).toEqual([253, 250, 248]);
   });
 
+  it('canonically binds the full Matrix gate to current trusted child evidence and excludes itself', async () => {
+    const child = result('main-authorization', 'passed', check('Main Authorization Gate', 'completed', 'success', {
+      id: 82,
+      head_sha: pull.head.sha,
+      app: { id: appId, slug: appSlug },
+      external_id: stewardCheckExternalId({
+        repositoryId: 42,
+        prNumber: pull.number,
+        headSha: pull.head.sha,
+        checkId: 'main-authorization',
+        configDigest,
+        inputDigest,
+      }),
+    }));
+    const advisory = result('dco-signoff', 'missing');
+    const finalGate: MatrixTargetResult = {
+      ...child,
+      id: 'validation-matrix',
+      checkRun: check('PR Validation Matrix Gate', 'completed', 'success', {
+        id: 99,
+        head_sha: pull.head.sha,
+        app: { id: appId, slug: appSlug },
+        external_id: stewardCheckExternalId({
+          repositoryId: 42,
+          prNumber: pull.number,
+          headSha: pull.head.sha,
+          checkId: 'validation-matrix',
+          configDigest,
+          inputDigest,
+        }),
+      }),
+    };
+    const digestInput = {
+      repositoryId: 42,
+      pull: {
+        ...pull,
+        state: 'open',
+        base: { ref: 'main', sha: 'b'.repeat(40) },
+        head: { ref: 'feature/matrix', sha: pull.head.sha },
+      },
+      configDigest,
+      pullFingerprintDigest: inputDigest,
+    };
+
+    const projection = projectMatrixLiveEvidence({
+      ...digestInput,
+      targets: [finalGate, child, advisory],
+    });
+    expect(projection).toMatchObject({
+      repository_id: 42,
+      scope: 'full',
+      pull_request: {
+        number: pull.number,
+        state: 'open',
+        base: { ref: 'main', sha: 'b'.repeat(40) },
+        head: { ref: 'feature/matrix', sha: pull.head.sha },
+      },
+      pull_fingerprint_digest: inputDigest,
+    });
+    expect(projection.targets.map((candidate) => candidate.id)).toEqual(['dco-signoff', 'main-authorization']);
+    expect(projection.targets[1]).toMatchObject({
+      state: 'passed',
+      required: true,
+      check: {
+        id: 82,
+        name: 'Main Authorization Gate',
+        head_sha: pull.head.sha,
+        app: { id: appId, slug: appSlug },
+        status: 'completed',
+        conclusion: 'success',
+      },
+    });
+
+    const ordered = await matrixLiveEvidenceDigest({ ...digestInput, targets: [advisory, child] });
+    const reversed = await matrixLiveEvidenceDigest({ ...digestInput, targets: [child, advisory, finalGate] });
+    const changed = await matrixLiveEvidenceDigest({
+      ...digestInput,
+      targets: [{ ...child, state: 'pending', status: 'in_progress' }, advisory],
+    });
+    expect(reversed.value).toBe(ordered.value);
+    expect(changed.value).not.toBe(ordered.value);
+  });
+
   it('accepts exact App identities, reads legacy identities, and rejects stale configuration', () => {
     const matrixTarget = target('pr-classification');
-    const trust = { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: true };
+    const trust = { appId, appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: true };
     const run = check('PR Classification Gate', 'completed', 'success', {
-      app: { slug: appSlug },
+      app: { id: appId, slug: appSlug },
       external_id: stewardCheckExternalId({
         repositoryId: 42,
         prNumber: pull.number,
@@ -109,6 +203,18 @@ describe('Matrix Check identities', () => {
         configDigest: 'd'.repeat(64),
         inputDigest,
       }) },
+      target: matrixTarget,
+      pull,
+      trust,
+    })).toBe(false);
+    expect(isTrustedMatrixCheck({
+      run: { ...run, app: { id: appId + 1, slug: appSlug } },
+      target: matrixTarget,
+      pull,
+      trust,
+    })).toBe(false);
+    expect(isTrustedMatrixCheck({
+      run: { ...run, head_sha: 'b'.repeat(40) },
       target: matrixTarget,
       pull,
       trust,
@@ -135,10 +241,10 @@ describe('Matrix Check identities', () => {
 
   it('treats the newest trusted Classification lease as a fail-closed barrier over older exact success', () => {
     const matrixTarget = target('pr-classification');
-    const trust = { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false };
+    const trust = { appId, appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false };
     const exactSuccess = check(matrixTarget.checkNames[0]!, 'completed', 'success', {
       id: 80,
-      app: { slug: appSlug },
+      app: { id: appId, slug: appSlug },
       external_id: stewardCheckExternalId({
         repositoryId: 42,
         prNumber: pull.number,
@@ -166,21 +272,21 @@ describe('Matrix Check identities', () => {
 
     const pending = evaluate(check(matrixTarget.checkNames[0]!, 'in_progress', '', {
       id: 90,
-      app: { slug: appSlug },
+      app: { id: appId, slug: appSlug },
       external_id: leaseExternalId,
     }));
     expect(pending).toMatchObject({ state: 'pending', checkRun: { id: 90 } });
 
     const failed = evaluate(check(matrixTarget.checkNames[0]!, 'completed', 'failure', {
       id: 90,
-      app: { slug: appSlug },
+      app: { id: appId, slug: appSlug },
       external_id: leaseExternalId,
     }));
     expect(failed).toMatchObject({ state: 'failed', checkRun: { id: 90 } });
 
     const invalidSuccess = evaluate(check(matrixTarget.checkNames[0]!, 'completed', 'success', {
       id: 90,
-      app: { slug: appSlug },
+      app: { id: appId, slug: appSlug },
       external_id: leaseExternalId,
     }));
     expect(invalidSuccess).toMatchObject({ state: 'failed', checkRun: { id: 90 } });
@@ -191,7 +297,7 @@ describe('Matrix Check identities', () => {
         check(matrixTarget.checkNames[0]!, 'in_progress', '', {
           id: 80,
           started_at: '2026-07-12T00:00:00Z',
-          app: { slug: appSlug },
+      app: { id: appId, slug: appSlug },
           external_id: leaseExternalId,
         }),
         { ...exactSuccess, id: 90, started_at: '2026-07-11T00:00:00Z' },
@@ -204,7 +310,7 @@ describe('Matrix Check identities', () => {
 
     const lease = check(matrixTarget.checkNames[0]!, 'in_progress', '', {
       id: 90,
-      app: { slug: appSlug },
+      app: { id: appId, slug: appSlug },
       external_id: leaseExternalId,
     });
     expect(planProxyCompletions({
@@ -220,6 +326,80 @@ describe('Matrix Check identities', () => {
       pull,
       trust,
     })).toEqual([]);
+  });
+
+  it('selects the latest trusted generation by numeric Check ID regardless of started_at order', () => {
+    const matrixTarget = target('pr-classification');
+    const trust = { appId, appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false };
+    const trustedCheck = (
+      id: number,
+      started_at: string,
+      conclusion: 'success' | 'failure',
+    ): MatrixCheckRun => check(matrixTarget.checkNames[0]!, 'completed', conclusion, {
+      id,
+      started_at,
+      app: { id: appId, slug: appSlug },
+      external_id: stewardCheckExternalId({
+        repositoryId: 42,
+        prNumber: pull.number,
+        headSha: pull.head.sha,
+        checkId: matrixTarget.id,
+        configDigest,
+        inputDigest,
+      }),
+    });
+    const matrix = evaluateMatrix({
+      config,
+      scope: 'full',
+      pull,
+      trust,
+      checkRuns: [
+        trustedCheck(100, '2026-07-10T00:00:00Z', 'failure'),
+        trustedCheck(99, '2026-07-12T00:00:00Z', 'success'),
+      ],
+    });
+
+    expect(matrix.targets.find((candidate) => candidate.id === matrixTarget.id))
+      .toMatchObject({ state: 'failed', checkRun: { id: 100 } });
+  });
+
+  it('does not fall back to an older success when trusted generation evidence has an invalid or duplicate ID', () => {
+    const matrixTarget = target('pr-classification');
+    const externalId = stewardCheckExternalId({
+      repositoryId: 42,
+      prNumber: pull.number,
+      headSha: pull.head.sha,
+      checkId: matrixTarget.id,
+      configDigest,
+      inputDigest,
+    });
+    const trusted = (id: number | undefined): MatrixCheckRun => {
+      const run = check(matrixTarget.checkNames[0]!, 'completed', 'success', {
+        ...(id === undefined ? {} : { id }),
+        app: { id: appId, slug: appSlug },
+        external_id: externalId,
+      });
+      if (id === undefined) delete run.id;
+      return run;
+    };
+    const evaluate = (checkRuns: MatrixCheckRun[]) => evaluateMatrix({
+      config,
+      scope: 'full',
+      pull,
+      trust: { appId, appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
+      checkRuns,
+    });
+
+    const missingId = evaluate([trusted(80), trusted(undefined)]);
+    expect(missingId).toMatchObject({ state: 'pending', passed: false });
+    const missingIdTarget = missingId.targets.find((candidate) => candidate.id === matrixTarget.id);
+    expect(missingIdTarget).toMatchObject({ state: 'invalid' });
+    expect(missingIdTarget?.checkRun).not.toHaveProperty('id');
+
+    const duplicateId = evaluate([trusted(80), trusted(80)]);
+    expect(duplicateId).toMatchObject({ state: 'pending', passed: false });
+    expect(duplicateId.targets.find((candidate) => candidate.id === matrixTarget.id))
+      .toMatchObject({ state: 'invalid', checkRun: { id: 80 } });
   });
 
   it('requires matching workflow evidence for GitHub Actions checks', () => {
@@ -239,19 +419,19 @@ describe('Matrix Check identities', () => {
       run,
       target: matrixTarget,
       pull,
-      trust: { appSlug, repositoryId: 42, configDigest, inputDigest, workflowRuns: [workflowRun] },
+      trust: { appId, appSlug, repositoryId: 42, configDigest, inputDigest, workflowRuns: [workflowRun] },
     })).toBe(true);
     expect(isTrustedMatrixCheck({
       run,
       target: matrixTarget,
       pull,
-      trust: { appSlug, repositoryId: 42, configDigest, inputDigest, workflowRuns: [workflowRun], allowLegacy: false },
+      trust: { appId, appSlug, repositoryId: 42, configDigest, inputDigest, workflowRuns: [workflowRun], allowLegacy: false },
     })).toBe(false);
     expect(isTrustedMatrixCheck({
       run,
       target: matrixTarget,
       pull,
-      trust: { appSlug, repositoryId: 42, configDigest, inputDigest, workflowRuns: [{ ...workflowRun, path: '.github/workflows/untrusted.yml' }] },
+      trust: { appId, appSlug, repositoryId: 42, configDigest, inputDigest, workflowRuns: [{ ...workflowRun, path: '.github/workflows/untrusted.yml' }] },
     })).toBe(false);
   });
 
@@ -276,7 +456,7 @@ describe('Matrix Check identities', () => {
       run,
       target: matrixTarget,
       pull,
-      trust: { appSlug, repositoryId: 42, configDigest, inputDigest, workflowRuns: [evidence] },
+      trust: { appId, appSlug, repositoryId: 42, configDigest, inputDigest, workflowRuns: [evidence] },
     })).toBe(true);
   });
 });
@@ -289,6 +469,11 @@ describe('Matrix state and repair planning', () => {
     expect(matrixCheckState(check('x', 'completed', 'success'), target('pr-classification'))).toBe('passed');
     expect(matrixCheckState(check('x', 'completed', 'cancelled'), target('pr-classification'))).toBe('recoverable');
     expect(matrixCheckState(check('x', 'completed', 'failure'), target('pr-classification'))).toBe('failed');
+    expect(matrixCheckState(check('x', 'unknown', 'success'), target('pr-classification'))).toBe('invalid');
+    expect(matrixCheckState(check('x', 'in_progress', 'success'), target('pr-classification'))).toBe('invalid');
+    expect(matrixCheckState(check('x', 'completed', ''), target('pr-classification'))).toBe('invalid');
+    expect(matrixCheckState(check('x', 'completed', 'success', { id: 0 }), target('pr-classification')))
+      .toBe('invalid');
 
     const matrix = evaluateMatrix({
       config,
@@ -334,6 +519,7 @@ describe('Matrix state and repair planning', () => {
       checkRuns: [
         check('Shared Gate', 'completed', 'success', { started_at: '2026-07-11T00:01:00Z' }),
         check('Shared Gate', 'waiting', '', {
+          id: 2,
           started_at: '2026-07-11T00:00:00Z',
           external_id: legacyProxyExternalId(matrixTarget, pull, inputDigest),
         }),
@@ -430,7 +616,7 @@ describe('Matrix state and repair planning', () => {
   it('completes only active proxies bound to the completed workflow and current pull', () => {
     const proxy = check('Main Authorization Gate', 'waiting', '', {
       id: 901,
-      app: { slug: appSlug },
+      app: { id: appId, slug: appSlug },
       external_id: stewardCheckExternalId({
         repositoryId: 42,
         prNumber: pull.number,
@@ -453,7 +639,7 @@ describe('Matrix state and repair planning', () => {
       targets: [result('main-authorization', 'pending', proxy)],
       checkRuns: [proxy],
       pull,
-      trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
+      trust: { appId, appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
     })).toEqual([{
       target: 'main-authorization',
       action: 'complete-proxy-check',
@@ -467,7 +653,7 @@ describe('Matrix state and repair planning', () => {
       targets: [result('main-authorization', 'pending', proxy)],
       checkRuns: [proxy],
       pull,
-      trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
+      trust: { appId, appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
     })).toEqual([]);
     expect(planProxyCompletions({
       workflowRuns: [workflowRun],
@@ -477,14 +663,14 @@ describe('Matrix state and repair planning', () => {
       })],
       checkRuns: [proxy],
       pull,
-      trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: true },
+      trust: { appId, appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: true },
     })).toEqual([]);
     expect(planProxyCompletions({
       workflowRuns: [workflowRun],
       targets: [{ ...result('main-authorization', 'pending', proxy), acceptableConclusions: [] }],
       checkRuns: [proxy],
       pull,
-      trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
+      trust: { appId, appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
     })[0]?.conclusion).toBe('success');
   });
 
@@ -498,7 +684,7 @@ describe('Matrix state and repair planning', () => {
       inputDigest,
     });
     const proxies = [901, 902].map((id) => check('Main Authorization Gate', 'waiting', '', {
-      id, external_id, app: { slug: appSlug },
+      id, external_id, app: { id: appId, slug: appSlug },
     }));
     const baseWorkflowRun = {
       id: 77,
@@ -514,7 +700,7 @@ describe('Matrix state and repair planning', () => {
       targets: [result('main-authorization', 'pending', proxies[1])],
       checkRuns: proxies,
       pull,
-      trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
+      trust: { appId, appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
     });
     expect(plans.map((plan) => plan.checkRunId)).toEqual([901, 902]);
 
@@ -531,7 +717,7 @@ describe('Matrix state and repair planning', () => {
         targets: [result('main-authorization', 'pending', proxies[1])],
         checkRuns: proxies,
         pull,
-        trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
+        trust: { appId, appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
       })).toEqual([]);
     }
   });
@@ -539,7 +725,7 @@ describe('Matrix state and repair planning', () => {
   it('uses the newest trusted source run so later Matrix events can finish an interrupted proxy convergence', () => {
     const proxy = check('Main Authorization Gate', 'waiting', '', {
       id: 901,
-      app: { slug: appSlug },
+      app: { id: appId, slug: appSlug },
       external_id: stewardCheckExternalId({
         repositoryId: 42,
         prNumber: pull.number,
@@ -566,7 +752,7 @@ describe('Matrix state and repair planning', () => {
       targets: [result('main-authorization', 'pending', proxy)],
       checkRuns: [proxy],
       pull,
-      trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
+      trust: { appId, appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
     };
     expect(planProxyCompletions({
       ...input,
@@ -584,7 +770,7 @@ describe('Matrix state and repair planning', () => {
   it('binds an identified proxy to its recorded dispatch run without falling back to another matching run', () => {
     const proxy = check('Main Authorization Gate', 'waiting', '', {
       id: 901,
-      app: { slug: appSlug },
+      app: { id: appId, slug: appSlug },
       details_url: `https://github.com/splrad/steward/actions/runs/77`,
       external_id: stewardCheckExternalId({
         repositoryId: 42,
@@ -619,7 +805,7 @@ describe('Matrix state and repair planning', () => {
       targets: [result('main-authorization', 'pending', proxy)],
       checkRuns: [proxy],
       pull,
-      trust: { appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
+      trust: { appId, appSlug, repositoryId: 42, configDigest, inputDigest, allowLegacy: false },
     };
     const recorded = sourceRun(77, '2026-07-11T00:00:00Z', 'success');
     const newer = sourceRun(78, '2026-07-11T00:01:00Z', 'failure');

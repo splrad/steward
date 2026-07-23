@@ -5,6 +5,7 @@ export type GitHubHttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 export interface GitHubRequest {
   method?: GitHubHttpMethod;
   path: string;
+  accept?: string;
   query?: Readonly<Record<string, string | number | boolean | undefined>>;
   body?: unknown;
 }
@@ -27,13 +28,48 @@ export class GitHubApiError extends Error {
   readonly status: number;
   readonly method: GitHubHttpMethod;
   readonly path: string;
+  readonly rateLimited: boolean;
+  readonly retryAfterSeconds?: number;
+  readonly requestId?: string;
 
-  constructor(input: { status: number; method: GitHubHttpMethod; path: string; message: string }) {
+  constructor(input: {
+    status: number;
+    method: GitHubHttpMethod;
+    path: string;
+    message: string;
+    rateLimited?: boolean;
+    retryAfterSeconds?: number;
+    requestId?: string;
+  }) {
     super(`GitHub API ${input.method} ${input.path} failed (${input.status}): ${input.message}`);
     this.name = 'GitHubApiError';
     this.status = input.status;
     this.method = input.method;
     this.path = input.path;
+    this.rateLimited = input.rateLimited ?? false;
+    if (input.retryAfterSeconds !== undefined) this.retryAfterSeconds = input.retryAfterSeconds;
+    if (input.requestId) this.requestId = input.requestId;
+  }
+}
+
+export class GitHubTransportError extends Error {
+  readonly method: GitHubHttpMethod;
+  readonly path: string;
+  readonly reason: 'network' | 'redirect' | 'invalid-response';
+  readonly retryable: boolean;
+
+  constructor(input: {
+    method: GitHubHttpMethod;
+    path: string;
+    reason: 'network' | 'redirect' | 'invalid-response';
+    retryable: boolean;
+  }) {
+    super(`GitHub transport ${input.method} ${input.path} failed: ${input.reason}`);
+    this.name = 'GitHubTransportError';
+    this.method = input.method;
+    this.path = input.path;
+    this.reason = input.reason;
+    this.retryable = input.retryable;
   }
 }
 
@@ -142,31 +178,79 @@ export function createGitHubRestTransport(options: GitHubRestTransportOptions): 
     restApiBaseUrl: endpoints.restApiBaseUrl,
     async request<T>(request: GitHubRequest): Promise<T> {
       const method = request.method ?? 'GET';
-      const url = requestUrl(base, request);
+      let url = requestUrl(base, request);
       const headers = new Headers({
-        accept: 'application/vnd.github+json',
+        accept: request.accept?.trim() || 'application/vnd.github+json',
         authorization: `Bearer ${token}`,
         'user-agent': userAgent,
         'x-github-api-version': restApiVersion,
       });
-      const init: RequestInit = { method, headers, redirect: 'error' };
+      const init: RequestInit = { method, headers, redirect: 'manual' };
       if (request.body !== undefined) {
         headers.set('content-type', 'application/json');
         init.body = JSON.stringify(request.body);
       }
-      const response = await fetcher(url, init);
+      let response: Response | undefined;
+      for (let redirectCount = 0; redirectCount <= 5; redirectCount += 1) {
+        try {
+          response = await fetcher(url, init);
+        } catch {
+          throw new GitHubTransportError({ method, path: request.path, reason: 'network', retryable: true });
+        }
+        if (![301, 302, 303, 307, 308].includes(response.status)) break;
+        if (method !== 'GET' || redirectCount === 5) {
+          throw new GitHubTransportError({ method, path: request.path, reason: 'redirect', retryable: false });
+        }
+        const location = response.headers.get('location');
+        if (!location) {
+          throw new GitHubTransportError({ method, path: request.path, reason: 'redirect', retryable: false });
+        }
+        const redirected = new URL(location, url);
+        if (redirected.origin !== base.origin || !redirected.pathname.startsWith(base.pathname)
+          || redirected.username || redirected.password) {
+          throw new GitHubTransportError({ method, path: request.path, reason: 'redirect', retryable: false });
+        }
+        url = redirected;
+      }
+      if (!response) {
+        throw new GitHubTransportError({ method, path: request.path, reason: 'network', retryable: true });
+      }
       if (!response.ok) {
+        const message = await responseMessage(response);
+        const retryAfterHeader = response.headers.get('retry-after')?.trim();
+        const retryAfter = retryAfterHeader ? Number(retryAfterHeader) : undefined;
+        const rateLimited = response.status === 429 || (response.status === 403 && (
+          response.headers.get('x-ratelimit-remaining') === '0'
+          || response.headers.has('retry-after')
+          || /rate limit/i.test(message)
+        ));
         throw new GitHubApiError({
           status: response.status,
           method,
           path: request.path,
-          message: await responseMessage(response),
+          message,
+          rateLimited,
+          ...(retryAfter !== undefined && Number.isFinite(retryAfter) && retryAfter >= 0
+            ? { retryAfterSeconds: retryAfter }
+            : {}),
+          ...(response.headers.get('x-github-request-id')
+            ? { requestId: response.headers.get('x-github-request-id')! }
+            : {}),
         });
       }
       if (response.status === 204) return undefined as T;
-      const text = await response.text();
+      let text: string;
+      try {
+        text = await response.text();
+      } catch {
+        throw new GitHubTransportError({ method, path: request.path, reason: 'network', retryable: true });
+      }
       if (!text.trim()) return undefined as T;
-      return JSON.parse(text) as T;
+      try {
+        return JSON.parse(text) as T;
+      } catch {
+        throw new GitHubTransportError({ method, path: request.path, reason: 'invalid-response', retryable: false });
+      }
     },
   };
 }
