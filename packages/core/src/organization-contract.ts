@@ -1,3 +1,10 @@
+import {
+  STEWARD_ACTIONS_EXECUTION_POLICIES,
+  STEWARD_ACTIONS_EXECUTION_POLICY_DIGEST,
+  STEWARD_ACTIONS_SOURCE_INVENTORY,
+  STEWARD_ACTIONS_SOURCE_INVENTORY_DIGEST,
+} from './actions-inventory.js';
+
 export const STEWARD_APP_ID = 4243096 as const;
 export const STEWARD_APP_SLUG = 'splrad-steward' as const;
 export const STEWARD_MAINTAINER_TEAM_SLUG = 'maintainers' as const;
@@ -515,20 +522,23 @@ export const STEWARD_APP_OPTIONAL_PERMISSIONS = {
 } as const satisfies Readonly<Record<string, 'write'>>;
 
 // GitHub exposes workflow execution protections only through an owner UI in
-// public preview. This digest binds an owner attestation to the current
-// contract shape without pretending that the still-pending actor/event policy
-// inventory has already been proven.
+// public preview. This digest binds an owner attestation to the exact frozen
+// inventory and semantic policy without pretending that a private UI payload
+// is a stable API contract.
 export const STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT = {
-  schemaVersion: 1,
-  contractVersion: 's66-v1',
+  schemaVersion: 2,
+  contractVersion: 's66-v2',
   scope: 'organization-all-repositories',
   requiredMode: 'active',
-  expectedPolicyCount: null,
-  policyInventoryStatus: 'pending',
+  expectedPolicyCount: STEWARD_ACTIONS_EXECUTION_POLICIES.length,
+  policyInventoryStatus: 'frozen',
+  inventoryVersion: STEWARD_ACTIONS_SOURCE_INVENTORY.inventoryVersion,
+  inventoryDigest: STEWARD_ACTIONS_SOURCE_INVENTORY_DIGEST,
+  policyDigest: STEWARD_ACTIONS_EXECUTION_POLICY_DIGEST,
 } as const;
 
 export const STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT_DIGEST =
-  '2c61b60caaf401c78e6e717165de8f7317f3cc94ef15e4c949fbb164013bb537' as const;
+  '3e7cd94a5a27656692b7d0da4bd52b11231cf83d4fa6cfcd428784d16da19222' as const;
 
 export interface StewardControlRevision {
   readonly stewardCommit: string;

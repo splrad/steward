@@ -155,9 +155,32 @@ export interface GitHubActionsExecutionProtections {
   readonly propertyDigest: string;
   readonly contractVersion: string;
   readonly contractDigest: string;
-  readonly attestorLogin: string;
+  readonly inventoryVersion: string;
+  readonly inventoryDigest: string;
+  readonly policyDigest: string;
   readonly mode: 'evaluate' | 'active';
   readonly policyCount: number;
+  readonly issuedAt: string;
+  readonly observedAt: string;
+  readonly expiresAt: string;
+  readonly nonce: string;
+  readonly attestor: {
+    readonly login: string;
+    readonly id: number;
+  };
+  readonly verification: {
+    readonly method: 'github-ssh-signing-key';
+    readonly signingKeyId: number;
+    readonly signingKeyAlgorithm: 'ssh-ed25519';
+    readonly authenticatedPrincipal: {
+      readonly login: string;
+      readonly id: number;
+    };
+    readonly organizationMembership: {
+      readonly state: 'active';
+      readonly role: 'admin';
+    };
+  };
 }
 
 export interface GitHubOrganizationContractSnapshot {

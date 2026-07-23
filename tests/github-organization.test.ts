@@ -160,7 +160,12 @@ describe('GitHub organization contract reader', () => {
         default_workflow_permissions: 'read', can_approve_pull_request_reviews: false,
       };
       if (request.path === '/orgs/splrad/actions/permissions/selected-actions') return {
-        github_owned_allowed: true, verified_allowed: false, patterns_allowed: ['splrad/*'],
+        github_owned_allowed: true,
+        verified_allowed: false,
+        patterns_allowed: [
+          'splrad/steward/.github/workflows/*@*',
+          'splrad/steward/action@*',
+        ],
       };
       throw new Error(`Unexpected organization request: ${request.path}`);
     });
@@ -176,11 +181,25 @@ describe('GitHub organization contract reader', () => {
         repositoryId: 7,
         repositoryFullName: 'splrad/example',
         propertyDigest: '4d2a9cc3d6fda6383a276918b06ba3481c6c4894ed4e1ea9ad3a0a0eb2f5b56b',
-        contractVersion: 's66-v1',
-        contractDigest: '2c61b60caaf401c78e6e717165de8f7317f3cc94ef15e4c949fbb164013bb537',
-        attestorLogin: 'organization-owner',
+        contractVersion: 's66-v2',
+        contractDigest: '1'.repeat(64),
+        inventoryVersion: 's66-actions-v1',
+        inventoryDigest: '2'.repeat(64),
+        policyDigest: '3'.repeat(64),
         mode: 'evaluate' as const,
         policyCount: 2,
+        issuedAt: observedAt,
+        observedAt,
+        expiresAt: '2026-07-23T00:15:00.000Z',
+        nonce: '019f4f4f-40ad-7471-b40c-9838f254503c',
+        attestor: { login: 'organization-owner', id: 42 },
+        verification: {
+          method: 'github-ssh-signing-key' as const,
+          signingKeyId: 9,
+          signingKeyAlgorithm: 'ssh-ed25519' as const,
+          authenticatedPrincipal: { login: 'organization-owner', id: 42 },
+          organizationMembership: { state: 'active' as const, role: 'admin' as const },
+        },
       },
       evidence: {
         source: 'github-ui-attestation' as const,
