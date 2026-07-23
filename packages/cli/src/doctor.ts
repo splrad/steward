@@ -25,12 +25,12 @@ import {
   STEWARD_ORGANIZATION_PROPERTIES,
   STEWARD_ORGANIZATION_RULESET_CONTRACTS,
   STEWARD_ORGANIZATION_RULESETS,
+  canonicalStewardRuntimeDiagnosticsSnapshotJson,
   stewardOrganizationRulesetApplies,
   stewardOrganizationRuleTypes,
   type StewardOrganizationRulesetContract,
   type MatrixCheckRun,
   type MatrixWorkflowRun,
-  type StewardRuntimeDiagnostics,
 } from '../../core/src/index.js';
 import {
   GitHubApiError,
@@ -57,6 +57,11 @@ import {
   type LoadedManifest,
   type StewardManifest,
 } from '../../manifest/src/index.js';
+import {
+  readRuntimeDiagnostics,
+  type RuntimeDiagnosticsObservation,
+  type RuntimeDiagnosticsProvider,
+} from './runtime-diagnostics.js';
 
 const MAX_DIAGNOSTIC_EVIDENCE_AGE_MS = 15 * 60 * 1000;
 const MAX_DIAGNOSTIC_CLOCK_SKEW_MS = 30 * 1000;
@@ -102,31 +107,6 @@ export interface DoctorOptions {
   pullRequest?: number;
 }
 
-export type RuntimeDiagnosticsResult =
-  | {
-    readonly status: 'known';
-    readonly value: StewardRuntimeDiagnostics;
-    readonly repositoryId: number;
-    readonly owner: string;
-    readonly repository: string;
-    readonly source: string;
-    readonly observedAt: string;
-  }
-  | {
-    readonly status: 'unknown';
-    readonly reason: 'runtime-metadata-unavailable' | 'permission-denied' | 'transport-error' | 'snapshot-changed';
-    readonly source: string;
-    readonly observedAt: string;
-  };
-
-export interface RuntimeDiagnosticsReader {
-  read(input: {
-    readonly repositoryId: number;
-    readonly owner: string;
-    readonly repository: string;
-  }): Promise<RuntimeDiagnosticsResult>;
-}
-
 export interface DoctorDependencies {
   readonly repositoryTransport: GitHubTransport;
   readonly organizationTransport?: GitHubTransport;
@@ -134,7 +114,7 @@ export interface DoctorDependencies {
   readonly appJwtTransport?: GitHubTransport;
   readonly appUserTransport?: GitHubTransport;
   readonly actionsExecutionProtections?: GitHubReadResult<GitHubActionsExecutionProtections>;
-  readonly runtimeDiagnostics?: RuntimeDiagnosticsReader;
+  readonly runtimeDiagnostics?: RuntimeDiagnosticsProvider;
   readonly observedAt?: () => string;
 }
 
@@ -447,15 +427,60 @@ function organizationSnapshotSignature(snapshot: GitHubOrganizationContractSnaps
   };
 }
 
-function runtimeSnapshotSignature(result: RuntimeDiagnosticsResult): string | null {
+function runtimeSnapshotSignature(result: RuntimeDiagnosticsObservation): string | null {
   if (result.status !== 'known') return null;
-  return JSON.stringify(canonicalSnapshotValue({
-    repositoryId: result.repositoryId,
-    owner: result.owner.toLowerCase(),
-    repository: result.repository.toLowerCase(),
-    source: result.source,
-    value: result.value,
-  }));
+  return JSON.stringify([
+    result.source,
+    canonicalStewardRuntimeDiagnosticsSnapshotJson(result.envelope),
+  ]);
+}
+
+function runtimeObservedAt(result: RuntimeDiagnosticsObservation): string {
+  return result.status === 'known' ? result.envelope.observedAt : result.observedAt;
+}
+
+function runtimeObservationsAreChronological(
+  initial: RuntimeDiagnosticsObservation,
+  refreshed: RuntimeDiagnosticsObservation,
+): boolean {
+  return initial.status === 'known'
+    && refreshed.status === 'known'
+    && Date.parse(refreshed.envelope.observedAt) >= Date.parse(initial.envelope.observedAt);
+}
+
+function runtimeIdentityMatches(
+  result: RuntimeDiagnosticsObservation,
+  expected: { readonly repositoryId: number; readonly repositoryFullName: string },
+): boolean {
+  return result.status === 'known'
+    && result.envelope.subject.repositoryId === expected.repositoryId
+    && result.envelope.subject.repositoryFullName.toLowerCase()
+      === expected.repositoryFullName.toLowerCase();
+}
+
+function runtimeObservationForEvaluation(
+  initial: RuntimeDiagnosticsObservation,
+  refreshed: RuntimeDiagnosticsObservation,
+  expected: { readonly repositoryId: number; readonly repositoryFullName: string },
+  evaluatedAt: string,
+  sameSnapshot: boolean,
+): RuntimeDiagnosticsObservation {
+  if (refreshed.status === 'unknown') return refreshed;
+  const snapshotChanged = (): RuntimeDiagnosticsObservation => ({
+    status: 'unknown',
+    reason: 'snapshot-changed',
+    source: refreshed.source,
+    observedAt: refreshed.envelope.observedAt,
+  });
+  if (initial.status === 'unknown' || !sameSnapshot) return snapshotChanged();
+
+  const refreshedTrusted = runtimeIdentityMatches(refreshed, expected)
+    && freshDiagnosticEvidence(refreshed.envelope.observedAt, evaluatedAt);
+  if (!refreshedTrusted) return refreshed;
+
+  const initialTrusted = runtimeIdentityMatches(initial, expected)
+    && freshDiagnosticEvidence(initial.envelope.observedAt, evaluatedAt);
+  return initialTrusted ? refreshed : snapshotChanged();
 }
 
 function sameStrings(actual: readonly string[] | null, expected: readonly string[]): boolean {
@@ -1655,29 +1680,17 @@ async function evaluateActions(
 }
 
 async function runtimeResult(
-  reader: RuntimeDiagnosticsReader | undefined,
-  input: { repositoryId: number; owner: string; repository: string },
+  provider: RuntimeDiagnosticsProvider | undefined,
+  input: { readonly repositoryId: number; readonly repositoryFullName: string },
   observedAt: string,
-): Promise<RuntimeDiagnosticsResult> {
-  if (!reader) {
-    return {
-      status: 'unknown',
-      reason: 'runtime-metadata-unavailable',
-      source: 'runtime-adapter',
-      observedAt,
-    };
-  }
-  try {
-    return await reader.read(input);
-  } catch {
-    return { status: 'unknown', reason: 'transport-error', source: 'runtime-adapter', observedAt };
-  }
+): Promise<RuntimeDiagnosticsObservation> {
+  return await readRuntimeDiagnostics(provider, input, observedAt);
 }
 
 function evaluateRuntime(
-  result: RuntimeDiagnosticsResult,
+  result: RuntimeDiagnosticsObservation,
   properties: Map<string, string> | null,
-  expected: { readonly repositoryId: number; readonly owner: string; readonly repository: string },
+  expected: { readonly repositoryId: number; readonly repositoryFullName: string },
   evaluatedAt: string,
   findings: DoctorFinding[],
 ): void {
@@ -1692,43 +1705,47 @@ function evaluateRuntime(
         observedAt: result.observedAt,
       },
     ));
-    findings.push(finding('runtime.central-components', 'unknown', '中央 runtime 不可读，无法确认 Queue、Control 与 DLQ 当前状态。', {
-      remedy: '接入经认证的 private Control runtime diagnostics，并按目标 repository identity 返回 fresh 状态。',
-      source: result.source,
-      observedAt: result.observedAt,
-    }));
+    findings.push(finding(
+      'runtime.central-components',
+      result.reason === 'permission-denied' ? 'permission-denied' : 'unknown',
+      '中央 runtime 不可读，无法确认 Queue、Control 与 DLQ 当前状态。',
+      {
+        remedy: '接入经认证的 private Control runtime diagnostics，并按目标 repository identity 返回 fresh 状态。',
+        source: result.source,
+        observedAt: result.observedAt,
+      },
+    ));
     return;
   }
-  const bound = result.repositoryId === expected.repositoryId
-    && result.owner.toLowerCase() === expected.owner.toLowerCase()
-    && result.repository.toLowerCase() === expected.repository.toLowerCase();
+  const observedAt = result.envelope.observedAt;
+  const bound = runtimeIdentityMatches(result, expected);
   if (!bound) {
     findings.push(finding('runtime.control-revision', 'unknown', '中央 runtime diagnostics 未绑定到本次目标 repository identity。', {
-      remedy: 'private Control 响应必须回显并签定 repository ID、owner、repository，doctor 只接受精确匹配。',
+      remedy: 'private Control 响应必须回显并签定 repository ID 与 full name，doctor 只接受精确匹配。',
       source: result.source,
-      observedAt: result.observedAt,
+      observedAt,
     }));
     findings.push(finding('runtime.central-components', 'unknown', 'runtime repository identity 不匹配，不能复用其 Queue、Control 或 DLQ 状态。', {
       remedy: '按目标 repository identity 重新读取 fresh runtime diagnostics。',
       source: result.source,
-      observedAt: result.observedAt,
+      observedAt,
     }));
     return;
   }
-  if (!freshDiagnosticEvidence(result.observedAt, evaluatedAt)) {
+  if (!freshDiagnosticEvidence(observedAt, evaluatedAt)) {
     findings.push(finding('runtime.control-revision', 'unknown', '中央 runtime diagnostics 已过期、来自未来或时间戳非法。', {
       remedy: '从 private Control 获取不超过 15 分钟的 fresh runtime diagnostics 后重试。',
       source: result.source,
-      observedAt: result.observedAt,
+      observedAt,
     }));
     findings.push(finding('runtime.central-components', 'unknown', '缺少 fresh runtime 证据，无法确认 Queue、Control 与 DLQ 当前状态。', {
       remedy: '从 private Control 获取 fresh runtime diagnostics；不得沿用历史健康快照。',
       source: result.source,
-      observedAt: result.observedAt,
+      observedAt,
     }));
     return;
   }
-  const revision = result.value.controlRevision;
+  const revision = result.envelope.diagnostics.controlRevision;
   const valid = /^[a-f0-9]{40}$/.test(revision.stewardCommit)
     && Boolean(revision.workerVersionId.trim())
     && Boolean(revision.workerDeploymentId.trim());
@@ -1742,7 +1759,7 @@ function evaluateRuntime(
     ? finding('runtime.control-revision', 'conformant', [
       `${revision.environment} runtime：Steward ${revision.stewardCommit.slice(0, 12)}…，`,
       `Worker version=${revision.workerVersionId}，deployment=${revision.workerDeploymentId}。`,
-    ].join(''), { source: result.source, observedAt: result.observedAt })
+    ].join(''), { source: result.source, observedAt })
     : finding('runtime.control-revision', revisionState, !valid
       ? 'runtime 返回的 controlRevision 不完整或不可信。'
       : !expectedEnvironment
@@ -1750,20 +1767,21 @@ function evaluateRuntime(
         : `steward_ring=${expectedEnvironment}，实际 runtime 环境为 ${revision.environment}。`, {
       remedy: '发布端必须提供完整不可变 revision，并让仓库 ring 精确路由到 canary 或 production。',
       source: result.source,
-      observedAt: result.observedAt,
+      observedAt,
     }));
-  const componentsReady = result.value.queue === 'ready'
-    && result.value.control === 'ready'
-    && result.value.deadLetterQueue === 'clear';
+  const components = result.envelope.diagnostics;
+  const componentsReady = components.queue === 'ready'
+    && components.control === 'ready'
+    && components.deadLetterQueue === 'clear';
   findings.push(componentsReady
-    ? finding('runtime.central-components', 'conformant', `Queue=${result.value.queue}，Control=${result.value.control}，DLQ=${result.value.deadLetterQueue}。`, {
+    ? finding('runtime.central-components', 'conformant', `Queue=${components.queue}，Control=${components.control}，DLQ=${components.deadLetterQueue}。`, {
       source: result.source,
-      observedAt: result.observedAt,
+      observedAt,
     })
-    : finding('runtime.central-components', 'drift', `Queue=${result.value.queue}，Control=${result.value.control}，DLQ=${result.value.deadLetterQueue}。`, {
+    : finding('runtime.central-components', 'drift', `Queue=${components.queue}，Control=${components.control}，DLQ=${components.deadLetterQueue}。`, {
       remedy: '修复中央 Queue/Control/DLQ 后再进入 canary 或 active property transition。',
       source: result.source,
-      observedAt: result.observedAt,
+      observedAt,
     }));
 }
 
@@ -2948,8 +2966,7 @@ export async function runDoctor(
     organizationReader.inspect(organizationInput),
     runtimeResult(dependencies.runtimeDiagnostics, {
       repositoryId,
-      owner: options.owner,
-      repository: options.repository,
+      repositoryFullName: fullName,
     }, observedAt),
   ]);
 
@@ -2983,35 +3000,50 @@ export async function runDoctor(
       remedy: '先恢复 Manifest 读取和验证。',
     }));
   }
-  const refreshedRuntime = await runtimeResult(dependencies.runtimeDiagnostics, {
-    repositoryId,
-    owner: options.owner,
-    repository: options.repository,
-  }, clock());
+  const runtimeTarget = { repositoryId, repositoryFullName: fullName } as const;
+  const terminalObservedAt = clock();
+  const [refreshedRuntime, stableRepository, stableDefaultBranchHead, refreshedSnapshot] =
+    await Promise.all([
+      runtimeResult(dependencies.runtimeDiagnostics, runtimeTarget, terminalObservedAt),
+      diagnosticRequest(transport, { path }, terminalObservedAt, parseRepository),
+      diagnosticRequest(
+        transport,
+        { path: defaultBranchHeadPath },
+        terminalObservedAt,
+        parseCommit,
+      ),
+      organizationReader.inspect(organizationInput),
+    ]);
+  const evaluatedAt = clock();
   const initialRuntimeSignature = runtimeSnapshotSignature(runtime);
   const refreshedRuntimeSignature = runtimeSnapshotSignature(refreshedRuntime);
-  const runtimeStable = initialRuntimeSignature !== null
+  const sameRuntimeSnapshot = initialRuntimeSignature !== null
     && refreshedRuntimeSignature !== null
     && initialRuntimeSignature === refreshedRuntimeSignature;
+  const comparableRuntimeSnapshots = sameRuntimeSnapshot
+    && runtimeObservationsAreChronological(runtime, refreshedRuntime);
+  const runtimeStable = comparableRuntimeSnapshots
+    && runtimeIdentityMatches(runtime, runtimeTarget)
+    && runtimeIdentityMatches(refreshedRuntime, runtimeTarget)
+    && freshDiagnosticEvidence(runtimeObservedAt(runtime), evaluatedAt)
+    && freshDiagnosticEvidence(runtimeObservedAt(refreshedRuntime), evaluatedAt);
   findings.push(runtimeStable
     ? finding('runtime.snapshot-stability', 'conformant', '中央 runtime identity、revision、Queue、Control 与 DLQ 的起止快照一致。', {
       source: refreshedRuntime.source,
-      observedAt: refreshedRuntime.observedAt,
+      observedAt: runtimeObservedAt(refreshedRuntime),
     })
     : finding('runtime.snapshot-stability', 'unknown', '中央 runtime 事实无法完成双读一致性证明，或在诊断期间发生变化。', {
       remedy: '恢复经认证的 runtime diagnostics 并等待 revision/components 稳定后完整重跑 doctor。',
       source: refreshedRuntime.source,
-      observedAt: refreshedRuntime.observedAt,
+      observedAt: runtimeObservedAt(refreshedRuntime),
     }));
-  const runtimeForEvaluation: RuntimeDiagnosticsResult = runtimeStable
-    ? refreshedRuntime
-    : {
-      status: 'unknown',
-      reason: 'snapshot-changed',
-      source: refreshedRuntime.source,
-      observedAt: refreshedRuntime.observedAt,
-    };
-  const stableRepository = await diagnosticRequest(transport, { path }, observedAt, parseRepository);
+  const runtimeForEvaluation = runtimeObservationForEvaluation(
+    runtime,
+    refreshedRuntime,
+    runtimeTarget,
+    evaluatedAt,
+    comparableRuntimeSnapshots,
+  );
   if (stableRepository.status === 'unknown') {
     findings.push(unknownFinding(
       'repository.stability',
@@ -3042,12 +3074,6 @@ export async function runDoctor(
         endpoint: stableRepository.evidence.endpoint,
       }));
   }
-  const stableDefaultBranchHead = await diagnosticRequest(
-    transport,
-    { path: defaultBranchHeadPath },
-    observedAt,
-    parseCommit,
-  );
   if (!defaultBranchHeadSha) {
     findings.push(finding('repository.default-branch-head-stability', 'unknown', '缺少起始默认分支 commit SHA，无法证明诊断窗口内 head 稳定。', {
       remedy: '恢复默认分支 commit 读取后完整重跑 doctor。',
@@ -3077,7 +3103,6 @@ export async function runDoctor(
         endpoint: stableDefaultBranchHead.evidence.endpoint,
       }));
   }
-  const refreshedSnapshot = await organizationReader.inspect(organizationInput);
   const initialOrganizationProof = organizationSnapshotSignature(snapshot);
   const refreshedOrganizationProof = organizationSnapshotSignature(refreshedSnapshot);
   if (!initialOrganizationProof.signature || !refreshedOrganizationProof.signature) {
@@ -3095,12 +3120,11 @@ export async function runDoctor(
         remedy: '等待组织配置推广稳定后重跑 doctor。',
       }));
   }
-  const evaluatedAt = clock();
   await evaluateActions(refreshedSnapshot, loaded?.manifest, properties, {
     organization,
     repositoryId,
     repositoryFullName: fullName,
   }, evaluatedAt, findings);
-  evaluateRuntime(runtimeForEvaluation, properties, { repositoryId, owner: options.owner, repository: options.repository }, evaluatedAt, findings);
+  evaluateRuntime(runtimeForEvaluation, properties, runtimeTarget, evaluatedAt, findings);
   return report(fullName, findings);
 }

@@ -1,5 +1,10 @@
 import classificationFixture from '../fixtures/cadfontautoreplace/classification.json' with { type: 'json' };
 import {
+  buildStewardRuntimeDiagnosticsEnvelope,
+  canonicalStewardRuntimeDiagnosticsJson,
+  canonicalStewardRuntimeDiagnosticsSnapshotJson,
+} from '../../packages/core/src/index.js';
+import {
   canonicalControlJson,
   controlJsonDigest,
   reconcileClassification,
@@ -33,6 +38,24 @@ const runtimeIdentity = {
   appSlug: 'splrad-steward',
 } as const;
 const manifestBlobSha = 'manifest-workerd-fixed-vector';
+const runtimeDiagnostics = buildStewardRuntimeDiagnosticsEnvelope({
+  subject: {
+    repositoryId: repository.id,
+    repositoryFullName: `${repository.owner}/${repository.name}`,
+  },
+  observedAt: '2026-07-23T00:00:00.000Z',
+  diagnostics: {
+    controlRevision: {
+      stewardCommit: 'a'.repeat(40),
+      workerVersionId: 'workerd-version-1',
+      workerDeploymentId: 'workerd-deployment-1',
+      environment: 'candidate',
+    },
+    queue: 'ready',
+    control: 'ready',
+    deadLetterQueue: 'clear',
+  },
+});
 
 const manifest: StewardManifest = {
   schemaVersion: 1,
@@ -232,6 +255,10 @@ async function fixedVectorResponse(): Promise<Response> {
   });
 
   return Response.json({
+    runtimeDiagnostics: {
+      envelope: JSON.parse(canonicalStewardRuntimeDiagnosticsJson(runtimeDiagnostics)),
+      snapshot: JSON.parse(canonicalStewardRuntimeDiagnosticsSnapshotJson(runtimeDiagnostics)),
+    },
     canonicalPlan,
     canonicalPlanDigest: await controlJsonDigest(first.plan),
     manifestDigest: first.plan.subject.manifest.configDigest,

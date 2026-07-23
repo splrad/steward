@@ -539,18 +539,3 @@ export const STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT = {
 
 export const STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT_DIGEST =
   '3e7cd94a5a27656692b7d0da4bd52b11231cf83d4fa6cfcd428784d16da19222' as const;
-
-export interface StewardControlRevision {
-  readonly stewardCommit: string;
-  readonly workerVersionId: string;
-  readonly workerDeploymentId: string;
-  readonly environment: 'candidate' | 'canary' | 'production';
-  readonly deployedAt?: string;
-}
-
-export interface StewardRuntimeDiagnostics {
-  readonly controlRevision: StewardControlRevision;
-  readonly queue: 'ready' | 'degraded';
-  readonly control: 'ready' | 'degraded';
-  readonly deadLetterQueue: 'clear' | 'pending' | 'unavailable';
-}

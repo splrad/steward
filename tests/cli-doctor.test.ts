@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  buildStewardRuntimeDiagnosticsEnvelope,
   enabledStewardMatrixConfiguration,
   evaluateMatrix,
   fingerprintForPull,
@@ -17,8 +18,8 @@ import {
 import {
   runDoctor,
   type DoctorDependencies,
-  type RuntimeDiagnosticsReader,
 } from '../packages/cli/src/doctor.js';
+import type { RuntimeDiagnosticsProvider } from '../packages/cli/src/runtime-diagnostics.js';
 import { main, parseArguments } from '../packages/cli/src/main.js';
 import {
   GitHubApiError,
@@ -331,27 +332,42 @@ function appInstallation(overrides: Record<string, unknown> = {}): Record<string
   };
 }
 
-function knownRuntime(): RuntimeDiagnosticsReader {
+function runtimeEnvelope(options: {
+  repositoryId?: number;
+  repositoryFullName?: string;
+  observedAt?: string;
+  workerDeploymentId?: string;
+  environment?: 'candidate' | 'canary' | 'production';
+  queue?: 'ready' | 'degraded';
+  control?: 'ready' | 'degraded';
+  deadLetterQueue?: 'clear' | 'pending' | 'unavailable';
+} = {}) {
+  return buildStewardRuntimeDiagnosticsEnvelope({
+    subject: {
+      repositoryId: options.repositoryId ?? 7,
+      repositoryFullName: options.repositoryFullName ?? 'splrad/example',
+    },
+    observedAt: options.observedAt ?? observedAt,
+    diagnostics: {
+      controlRevision: {
+        stewardCommit: 'b'.repeat(40),
+        workerVersionId: 'worker-version-1',
+        workerDeploymentId: options.workerDeploymentId ?? 'deployment-1',
+        environment: options.environment ?? 'canary',
+      },
+      queue: options.queue ?? 'ready',
+      control: options.control ?? 'ready',
+      deadLetterQueue: options.deadLetterQueue ?? 'clear',
+    },
+  });
+}
+
+function knownRuntime(): RuntimeDiagnosticsProvider {
   return {
     async read() {
       return {
-        status: 'known' as const,
-        repositoryId: 7,
-        owner: 'splrad',
-        repository: 'example',
-        source: 'private-control-diagnostics',
-        observedAt,
-        value: {
-          controlRevision: {
-            stewardCommit: 'b'.repeat(40),
-            workerVersionId: 'worker-version-1',
-            workerDeploymentId: 'deployment-1',
-            environment: 'canary' as const,
-          },
-          queue: 'ready' as const,
-          control: 'ready' as const,
-          deadLetterQueue: 'clear' as const,
-        },
+        status: 'response' as const,
+        body: runtimeEnvelope(),
       };
     },
   };
@@ -390,7 +406,7 @@ async function setup(options: {
   repositoryOverrides?: Record<string, unknown>;
   organizationOverrides?: Record<string, unknown>;
   appOverrides?: Record<string, unknown>;
-  runtimeDiagnostics?: RuntimeDiagnosticsReader;
+  runtimeDiagnostics?: RuntimeDiagnosticsProvider;
   actionsExecutionProtections?: DoctorDependencies['actionsExecutionProtections'];
   extraCheckRuns?: readonly Record<string, unknown>[];
   checkRunsForRead?: (
@@ -1970,11 +1986,19 @@ describe('doctor CLI contract', () => {
           return propertySchema();
         },
       },
+      runtimeDiagnostics: {
+        async read() {
+          trace.push('runtime');
+          return { status: 'response' as const, body: runtimeEnvelope() };
+        },
+      },
     });
     await runDoctor(current.dependencies, { owner: 'splrad', repository: 'example', pullRequest: 3 });
     expect(trace.lastIndexOf('checks')).toBeLessThan(trace.lastIndexOf('repository'));
     expect(trace.lastIndexOf('checks')).toBeLessThan(trace.lastIndexOf('default-head'));
     expect(trace.lastIndexOf('checks')).toBeLessThan(trace.lastIndexOf('organization'));
+    expect(trace.lastIndexOf('checks')).toBeLessThan(trace.lastIndexOf('runtime'));
+    expect(trace.filter((entry) => entry === 'runtime')).toHaveLength(2);
   });
 
   it('binds Manifest and release adapter reads to the starting SHA when default-branch head moves', async () => {
@@ -2097,8 +2121,6 @@ describe('doctor CLI contract', () => {
           return {
             status: 'unknown' as const,
             reason: 'runtime-metadata-unavailable' as const,
-            source: 'private-control-diagnostics',
-            observedAt,
           };
         },
       },
@@ -2112,23 +2134,88 @@ describe('doctor CLI contract', () => {
       .not.toContain(sha.slice(0, 12));
   });
 
+  it('keeps permission-denied on both runtime findings', async () => {
+    const current = await setup({
+      runtimeDiagnostics: {
+        async read() {
+          return {
+            status: 'unknown' as const,
+            reason: 'permission-denied' as const,
+          };
+        },
+      },
+    });
+    const report = await runDoctor(current.dependencies, { owner: 'splrad', repository: 'example' });
+    expect(report.findings.find((item) => item.code === 'runtime.control-revision'))
+      .toMatchObject({ state: 'permission-denied' });
+    expect(report.findings.find((item) => item.code === 'runtime.central-components'))
+      .toMatchObject({ state: 'permission-denied' });
+  });
+
+  it('accepts the same runtime facts with different fresh observation times', async () => {
+    let reads = 0;
+    const current = await setup({
+      runtimeDiagnostics: {
+        async read() {
+          reads += 1;
+          return {
+            status: 'response' as const,
+            body: runtimeEnvelope({
+              observedAt: reads === 1
+                ? '2026-07-22T23:59:59.000Z'
+                : observedAt,
+            }),
+          };
+        },
+      },
+    });
+    const report = await runDoctor(current.dependencies, { owner: 'splrad', repository: 'example' });
+    expect(reads).toBe(2);
+    expect(report.findings.find((item) => item.code === 'runtime.snapshot-stability'))
+      .toMatchObject({ state: 'conformant', observedAt });
+    expect(report.findings.find((item) => item.code === 'runtime.control-revision'))
+      .toMatchObject({ state: 'conformant' });
+    expect(report.findings.find((item) => item.code === 'runtime.central-components'))
+      .toMatchObject({ state: 'conformant' });
+  });
+
+  it('rejects a fresh terminal observation that predates the initial observation', async () => {
+    let reads = 0;
+    const current = await setup({
+      runtimeDiagnostics: {
+        async read() {
+          reads += 1;
+          return {
+            status: 'response' as const,
+            body: runtimeEnvelope({
+              observedAt: reads === 1
+                ? '2026-07-22T23:59:59.000Z'
+                : '2026-07-22T23:59:58.000Z',
+            }),
+          };
+        },
+      },
+    });
+    const report = await runDoctor(current.dependencies, { owner: 'splrad', repository: 'example' });
+    expect(report.findings.find((item) => item.code === 'runtime.snapshot-stability'))
+      .toMatchObject({ state: 'unknown' });
+    expect(report.findings.find((item) => item.code === 'runtime.control-revision')?.summary)
+      .toContain('snapshot-changed');
+    expect(report.findings.find((item) => item.code === 'runtime.central-components'))
+      .toMatchObject({ state: 'unknown' });
+  });
+
   it('re-reads runtime diagnostics at the terminal barrier and rejects a changed revision', async () => {
     let reads = 0;
     const current = await setup({
       runtimeDiagnostics: {
         async read() {
           reads += 1;
-          const value = await knownRuntime().read({ repositoryId: 7, owner: 'splrad', repository: 'example' });
-          if (value.status !== 'known') throw new Error('fixture must be known');
-          return reads === 1 ? value : {
-            ...value,
-            value: {
-              ...value.value,
-              controlRevision: {
-                ...value.value.controlRevision,
-                workerDeploymentId: 'deployment-2',
-              },
-            },
+          return {
+            status: 'response' as const,
+            body: runtimeEnvelope({
+              workerDeploymentId: reads === 1 ? 'deployment-1' : 'deployment-2',
+            }),
           };
         },
       },
@@ -2144,21 +2231,22 @@ describe('doctor CLI contract', () => {
   });
 
   it.each([
-    { description: 'repository ID differs', repositoryId: 8, repository: 'example' },
-    { description: 'repository name differs', repositoryId: 7, repository: 'other' },
-  ])('rejects known runtime diagnostics when $description', async ({ repositoryId, repository }) => {
+    { description: 'repository ID differs', repositoryId: 8, repositoryFullName: 'splrad/example' },
+    { description: 'repository full name differs', repositoryId: 7, repositoryFullName: 'splrad/other' },
+  ])('rejects known runtime diagnostics when $description', async ({ repositoryId, repositoryFullName }) => {
     const current = await setup({
       runtimeDiagnostics: {
         async read() {
-          const result = await knownRuntime().read({
-            repositoryId: 7, owner: 'splrad', repository: 'example',
-          });
-          if (result.status !== 'known') throw new Error('fixture must be known');
-          return { ...result, repositoryId, repository };
+          return {
+            status: 'response' as const,
+            body: runtimeEnvelope({ repositoryId, repositoryFullName }),
+          };
         },
       },
     });
     const report = await runDoctor(current.dependencies, { owner: 'splrad', repository: 'example' });
+    expect(report.findings.find((item) => item.code === 'runtime.snapshot-stability'))
+      .toMatchObject({ state: 'unknown', observedAt });
     expect(report.findings.find((item) => item.code === 'runtime.control-revision'))
       .toMatchObject({ state: 'unknown', observedAt });
     expect(report.findings.find((item) => item.code === 'runtime.central-components'))
@@ -2170,23 +2258,11 @@ describe('doctor CLI contract', () => {
       runtimeDiagnostics: {
         async read() {
           return {
-            status: 'known' as const,
-            repositoryId: 7,
-            owner: 'splrad',
-            repository: 'example',
-            source: 'private-control-diagnostics',
-            observedAt,
-            value: {
-              controlRevision: {
-                stewardCommit: 'b'.repeat(40),
-                workerVersionId: 'worker-version-1',
-                workerDeploymentId: 'deployment-1',
-                environment: 'production' as const,
-              },
-              queue: 'ready' as const,
-              control: 'ready' as const,
-              deadLetterQueue: 'pending' as const,
-            },
+            status: 'response' as const,
+            body: runtimeEnvelope({
+              environment: 'production',
+              deadLetterQueue: 'pending',
+            }),
           };
         },
       },
@@ -2203,9 +2279,10 @@ describe('doctor CLI contract', () => {
     const current = await setup({
       runtimeDiagnostics: {
         async read() {
-          const value = await knownRuntime().read({ repositoryId: 7, owner: 'splrad', repository: 'example' });
-          if (value.status !== 'known') throw new Error('fixture must be known');
-          return { ...value, observedAt: staleAt };
+          return {
+            status: 'response' as const,
+            body: runtimeEnvelope({ observedAt: staleAt }),
+          };
         },
       },
       actionsExecutionProtections: {
@@ -2224,6 +2301,95 @@ describe('doctor CLI contract', () => {
     expect(report.findings.find((item) => item.code === 'runtime.central-components'))
       .toMatchObject({ state: 'unknown' });
     expect(report.findings.find((item) => item.code === 'actions.execution-protections'))
+      .toMatchObject({ state: 'unknown' });
+  });
+
+  it('rejects the whole runtime result when an initial stale snapshot becomes fresh', async () => {
+    let reads = 0;
+    const current = await setup({
+      runtimeDiagnostics: {
+        async read() {
+          reads += 1;
+          return {
+            status: 'response' as const,
+            body: runtimeEnvelope({
+              observedAt: reads === 1 ? '2026-07-22T23:44:59.999Z' : observedAt,
+            }),
+          };
+        },
+      },
+    });
+    const report = await runDoctor(current.dependencies, { owner: 'splrad', repository: 'example' });
+    expect(report.findings.find((item) => item.code === 'runtime.snapshot-stability'))
+      .toMatchObject({ state: 'unknown' });
+    expect(report.findings.find((item) => item.code === 'runtime.control-revision'))
+      .toMatchObject({ state: 'unknown' });
+    expect(report.findings.find((item) => item.code === 'runtime.central-components'))
+      .toMatchObject({ state: 'unknown' });
+  });
+
+  it('preserves the terminal unknown reason when known runtime becomes unavailable', async () => {
+    let reads = 0;
+    const current = await setup({
+      runtimeDiagnostics: {
+        async read() {
+          reads += 1;
+          return reads === 1
+            ? { status: 'response' as const, body: runtimeEnvelope() }
+            : { status: 'unknown' as const, reason: 'transport-error' as const };
+        },
+      },
+    });
+    const report = await runDoctor(current.dependencies, { owner: 'splrad', repository: 'example' });
+    expect(report.findings.find((item) => item.code === 'runtime.snapshot-stability'))
+      .toMatchObject({ state: 'unknown' });
+    expect(report.findings.find((item) => item.code === 'runtime.control-revision')?.summary)
+      .toContain('transport-error');
+    expect(report.findings.find((item) => item.code === 'runtime.central-components'))
+      .toMatchObject({ state: 'unknown' });
+  });
+
+  it('reports snapshot-changed when unknown runtime becomes known during the run', async () => {
+    let reads = 0;
+    const current = await setup({
+      runtimeDiagnostics: {
+        async read() {
+          reads += 1;
+          return reads === 1
+            ? { status: 'unknown' as const, reason: 'runtime-metadata-unavailable' as const }
+            : { status: 'response' as const, body: runtimeEnvelope() };
+        },
+      },
+    });
+    const report = await runDoctor(current.dependencies, { owner: 'splrad', repository: 'example' });
+    expect(report.findings.find((item) => item.code === 'runtime.snapshot-stability'))
+      .toMatchObject({ state: 'unknown' });
+    expect(report.findings.find((item) => item.code === 'runtime.control-revision')?.summary)
+      .toContain('snapshot-changed');
+    expect(report.findings.find((item) => item.code === 'runtime.central-components'))
+      .toMatchObject({ state: 'unknown' });
+  });
+
+  it('fails closed on malformed runtime responses without throwing', async () => {
+    let reads = 0;
+    const current = await setup({
+      runtimeDiagnostics: {
+        async read() {
+          reads += 1;
+          return {
+            status: 'response' as const,
+            body: { schemaVersion: 1 },
+          };
+        },
+      },
+    });
+    const report = await runDoctor(current.dependencies, { owner: 'splrad', repository: 'example' });
+    expect(reads).toBe(2);
+    expect(report.findings.find((item) => item.code === 'runtime.snapshot-stability'))
+      .toMatchObject({ state: 'unknown' });
+    expect(report.findings.find((item) => item.code === 'runtime.control-revision')?.summary)
+      .toContain('invalid-response');
+    expect(report.findings.find((item) => item.code === 'runtime.central-components'))
       .toMatchObject({ state: 'unknown' });
   });
 
