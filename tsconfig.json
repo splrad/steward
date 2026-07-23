@@ -17,5 +17,10 @@
     "types": ["node", "vitest/globals"]
   },
   "include": ["action/src/**/*.ts", "packages/**/*.ts", "tests/**/*.ts"],
-  "exclude": ["packages/relay/**/*.ts"]
+  "exclude": [
+    "packages/relay/**/*.ts",
+    "packages/coordinator/**/*.ts",
+    "packages/control-runtime/**/*.ts",
+    "packages/ingress/**/*.ts"
+  ]
 }

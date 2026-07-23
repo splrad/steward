@@ -1,16 +1,6 @@
 name: Deploy Steward Relay
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/deploy-relay.yml
-      - packages/github/src/api-version.ts
-      - packages/relay/**
-      - packages/manifest/src/**
-      - schema/steward.schema.json
-      - package.json
-      - package-lock.json
   workflow_dispatch:
 
 concurrency:

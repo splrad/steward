@@ -1,0 +1,20 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "steward-coordinator-workerd-test",
+  "main": "../../packages/coordinator/src/entrypoint.ts",
+  "compatibility_date": "2026-07-23",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "PR_COORDINATOR",
+        "class_name": "PullRequestCoordinator"
+      }
+    ]
+  },
+  "exports": {
+    "PullRequestCoordinator": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  }
+}

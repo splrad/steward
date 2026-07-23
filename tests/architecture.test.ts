@@ -30,6 +30,9 @@ const allowedDependencies: Record<string, ReadonlySet<string>> = {
   core: new Set(['manifest']),
   github: new Set(['core', 'manifest']),
   control: new Set(['core', 'github', 'manifest']),
+  'control-runtime': new Set(['control', 'core', 'github', 'manifest']),
+  coordinator: new Set(['core']),
+  ingress: new Set(['core']),
   relay: new Set(['core', 'github', 'manifest']),
   cli: new Set(['core', 'github', 'manifest']),
 };
@@ -38,6 +41,9 @@ const allowedRuntimeDependencies: Record<string, ReadonlySet<string>> = {
   core: new Set<string>(),
   github: new Set<string>(),
   control: new Set<string>(),
+  'control-runtime': new Set<string>(),
+  coordinator: new Set(['cloudflare:workers']),
+  ingress: new Set<string>(),
   relay: new Set(['@octokit/auth-app']),
   cli: new Set(['ajv', 'ajv-formats', 'libsodium-wrappers']),
 };
@@ -46,6 +52,9 @@ const allowedExternalResources: Record<string, ReadonlySet<string>> = {
   core: new Set<string>(),
   github: new Set<string>(),
   control: new Set<string>(),
+  'control-runtime': new Set<string>(),
+  coordinator: new Set<string>(),
+  ingress: new Set<string>(),
   relay: new Set<string>(),
   cli: new Set<string>(),
 };
@@ -59,6 +68,7 @@ beforeAll(() => {
   architectureApi = new API({ cwd: path.resolve('.') });
   const projectConfigs = [
     path.resolve('tsconfig.json'),
+    path.resolve('tsconfig.runtime.json'),
     path.resolve('packages/relay/tsconfig.json'),
   ];
   architectureSnapshot = architectureApi.updateSnapshot({

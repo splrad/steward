@@ -16,9 +16,12 @@
     "build:cli": "node scripts/build-cli.mjs",
     "deploy:relay": "wrangler deploy --config packages/relay/wrangler.toml",
     "test": "vitest run",
+    "test:workerd": "npm run test:workerd:coordinator && npm run test:workerd:control",
+    "test:workerd:control": "vitest run --config vitest.control-workerd.config.ts",
+    "test:workerd:coordinator": "vitest run --config vitest.workerd.config.ts",
     "test:relay": "vitest run packages/relay/test",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.worker.json && tsc -p packages/relay/tsconfig.json",
-    "verify": "npm run test && npm run typecheck && npm run verify:dist && npm run verify:workflows",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.worker.json && tsc -p tsconfig.runtime.json && tsc -p workerd-tests/tsconfig.json && tsc -p packages/relay/tsconfig.json",
+    "verify": "npm run test && npm run test:workerd && npm run typecheck && npm run verify:dist && npm run verify:workflows",
     "verify:dist": "node scripts/verify-dist.mjs",
     "verify:workflows": "node scripts/verify-workflows.mjs"
   },
@@ -28,14 +31,19 @@
     "libsodium-wrappers": "0.8.4"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20260710.1",
+    "@cloudflare/vitest-pool-workers": "0.18.8",
+    "@cloudflare/workers-types": "5.20260723.1",
     "@types/node": "26.1.1",
     "@vercel/ncc": "0.44.1",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
     "typescript": "7.0.2",
     "vitest": "4.1.10",
-    "wrangler": "4.110.0",
+    "wrangler": "4.114.0",
     "yaml": "2.9.0"
+  },
+  "overrides": {
+    "fast-uri": "3.1.4",
+    "sharp": "0.35.3"
   }
 }

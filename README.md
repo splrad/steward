@@ -10,7 +10,7 @@ The project is being extracted from a production-tested, event-driven workflow. 
 
 ## Status
 
-Stages 0–6.5 established and validated the versioned Manifest, pure policy, GitHub adapters, Actions-first operation chain, Relay, lifecycle CLI, release contracts, and Sandbox/blank-repository/mature-repository migration evidence. Stage 6.6 is now migrating that proven behavior to an App-first central event-driven runtime. `packages/control` begins that migration with one runtime-neutral Classification and DCO Advisory kernel used by the existing Action adapter; the remaining reusable workflows, thin callers, and bundled Action surfaces are transitional execution and regression evidence until their central Control slices are complete. Stage 7 consumer migration has not started.
+Stages 0–6.5 established and validated the versioned Manifest, pure policy, GitHub adapters, Actions-first operation chain, Relay, lifecycle CLI, release contracts, and Sandbox/blank-repository/mature-repository migration evidence. Stage 6.6 is now migrating that proven behavior to an App-first central event-driven runtime. `packages/control` contains the runtime-neutral Classification and DCO Advisory kernel used by the existing Action adapter. The central foundation is split into a bounded HMAC Ingress, an at-least-once Queue plus per-PR SQLite Durable Object Coordinator, and a private versioned Control adapter. Real pull-request operations remain fail-closed, no new Ingress route is live, and the legacy Relay deploy is manual-only until persistent failed-delivery recovery and later Control slices are proven. The remaining reusable workflows, thin callers, and bundled Action surfaces are transitional execution and regression evidence. Stage 7 consumer migration has not started.
 
 ## CLI
 
@@ -42,7 +42,12 @@ The Actions-first `activate` module, adoption parser, and adoption source verifi
 ## Repository layout
 
 - `action/`: bundled JavaScript Action published directly from a pinned commit.
-- `packages/`: core policy, manifest, runtime-neutral control, GitHub, relay, and CLI module boundaries.
+- `packages/core/`, `packages/manifest/`, `packages/github/`, and `packages/control/`: runtime-neutral contracts, policy, transport adapters, and Control kernel.
+- `packages/ingress/`: bounded public-role GitHub webhook verification and durable Queue producer; it has no live route yet.
+- `packages/coordinator/`: private Queue consumer, fresh-wakeup producer, and per-PR SQLite Durable Object host.
+- `packages/control-runtime/`: private versioned Worker adapter; real PR reconciliation is still fail-closed.
+- `packages/relay/`: isolated legacy migration fixture and historical E2E evidence; deployment is manual-only and it is not a central-runtime rollback target.
+- `packages/cli/`: lifecycle planning, bootstrap, upgrade, and read-only Doctor surfaces.
 - `schema/`: versioned project manifest schema.
 - `templates/`: thin workflows, manifest examples, and release-adapter templates.
 - `tests/`: contracts, fixtures, and static policy checks.

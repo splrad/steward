@@ -24,18 +24,10 @@ describe('relay static contract', () => {
     expect(wrangler).toContain('new_sqlite_classes = ["DeliveryCoordinator"]');
   });
 
-  it('keeps deployment scoped to Relay inputs and explicit Cloudflare secrets', () => {
-    for (const path of [
-      '.github/workflows/deploy-relay.yml',
-      'packages/github/src/api-version.ts',
-      'packages/relay/**',
-      'packages/manifest/src/**',
-      'schema/steward.schema.json',
-      'package.json',
-      'package-lock.json',
-    ]) {
-      expect(deployWorkflow).toContain(`- ${path}`);
-    }
+  it('keeps legacy Relay deployment manual and explicitly credentialed', () => {
+    expect(deployWorkflow).toContain('workflow_dispatch:');
+    expect(deployWorkflow).not.toMatch(/^\s+push:/m);
+    expect(deployWorkflow).not.toContain('paths:');
     expect(deployWorkflow).toContain('CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}');
     expect(deployWorkflow).toContain('CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}');
     expect(deployWorkflow).not.toContain('secrets: inherit');

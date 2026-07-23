@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "WebWorker"],
+    "types": ["@cloudflare/workers-types"],
+    "skipLibCheck": true
+  },
+  "include": [
+    "packages/core/src/**/*.ts",
+    "packages/github/src/**/*.ts",
+    "packages/manifest/src/**/*.ts",
+    "packages/control/src/**/*.ts",
+    "packages/ingress/src/**/*.ts",
+    "packages/coordinator/src/**/*.ts",
+    "packages/control-runtime/src/**/*.ts"
+  ],
+  "exclude": []
+}
