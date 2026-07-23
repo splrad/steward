@@ -13,6 +13,11 @@ import {
 } from '../packages/core/src/index.js';
 import { verifyActionsExecutionProtectionAttestation } from '../packages/cli/src/actions-attestation.js';
 import {
+  MAX_ACTIONS_ATTESTATION_BYTES,
+  readActionsAttestationFile,
+  type OpenActionsAttestationFile,
+} from '../packages/cli/src/main.js';
+import {
   GitHubApiError,
   type GitHubRequest,
   type GitHubTransport,
@@ -142,6 +147,65 @@ function transport(
     },
   };
 }
+
+function chunkedFile(
+  contents: Buffer,
+  chunkSize: number,
+): {
+  readonly openFile: OpenActionsAttestationFile;
+  readonly positions: number[];
+  readonly closed: () => boolean;
+} {
+  const positions: number[] = [];
+  let closed = false;
+  return {
+    positions,
+    closed: () => closed,
+    async openFile() {
+      return {
+        async read(buffer, offset, length, position) {
+          positions.push(position);
+          const bytesRead = Math.min(
+            chunkSize,
+            length,
+            Math.max(0, contents.length - position),
+          );
+          if (bytesRead > 0) {
+            contents.copy(buffer, offset, position, position + bytesRead);
+          }
+          return { bytesRead };
+        },
+        async close() {
+          closed = true;
+        },
+      };
+    },
+  };
+}
+
+describe('CLI Actions attestation file reader', () => {
+  it('continues after short reads until the complete JSON reaches EOF', async () => {
+    const current = chunkedFile(Buffer.from('{"schemaVersion":1}', 'utf8'), 3);
+
+    await expect(readActionsAttestationFile('actions.json', current.openFile))
+      .resolves.toEqual({ schemaVersion: 1 });
+    expect(current.positions.length).toBeGreaterThan(2);
+    expect(current.positions.at(-1)).toBe(19);
+    expect(current.closed()).toBe(true);
+  });
+
+  it('rejects the first byte beyond the limit even when every read is short', async () => {
+    const current = chunkedFile(
+      Buffer.alloc(MAX_ACTIONS_ATTESTATION_BYTES + 1, 0x20),
+      4_097,
+    );
+
+    await expect(readActionsAttestationFile('actions.json', current.openFile))
+      .rejects.toThrow(`exceeds ${MAX_ACTIONS_ATTESTATION_BYTES} bytes`);
+    expect(current.positions.length).toBeGreaterThan(2);
+    expect(current.closed()).toBe(true);
+  });
+});
 
 describe('CLI Actions owner attestation verifier', () => {
   it('requires one current GitHub identity to be token principal, active owner, and signer', async () => {

@@ -262,18 +262,46 @@ interface CliRuntime {
   actionsExecutionProtections?: GitHubReadResult<GitHubActionsExecutionProtections>;
 }
 
-const MAX_ACTIONS_ATTESTATION_BYTES = 128 * 1024;
+export const MAX_ACTIONS_ATTESTATION_BYTES = 128 * 1024;
 
-async function readActionsAttestationFile(path: string): Promise<unknown> {
-  const file = await open(path, 'r');
+export interface ActionsAttestationReadHandle {
+  read(
+    buffer: Buffer,
+    offset: number,
+    length: number,
+    position: number,
+  ): Promise<{ readonly bytesRead: number }>;
+  close(): Promise<void>;
+}
+
+export type OpenActionsAttestationFile = (
+  path: string,
+  flags: 'r',
+) => Promise<ActionsAttestationReadHandle>;
+
+export async function readActionsAttestationFile(
+  path: string,
+  openFile: OpenActionsAttestationFile = open,
+): Promise<unknown> {
+  const file = await openFile(path, 'r');
   let body: Buffer;
   try {
     const buffer = Buffer.alloc(MAX_ACTIONS_ATTESTATION_BYTES + 1);
-    const { bytesRead } = await file.read(buffer, 0, buffer.byteLength, 0);
-    if (bytesRead > MAX_ACTIONS_ATTESTATION_BYTES) {
+    let totalBytesRead = 0;
+    while (totalBytesRead < buffer.byteLength) {
+      const { bytesRead } = await file.read(
+        buffer,
+        totalBytesRead,
+        buffer.byteLength - totalBytesRead,
+        totalBytesRead,
+      );
+      if (bytesRead === 0) break;
+      totalBytesRead += bytesRead;
+    }
+    if (totalBytesRead > MAX_ACTIONS_ATTESTATION_BYTES) {
       throw new Error(`--actions-attestation exceeds ${MAX_ACTIONS_ATTESTATION_BYTES} bytes`);
     }
-    body = buffer.subarray(0, bytesRead);
+    body = buffer.subarray(0, totalBytesRead);
   } finally {
     await file.close();
   }
