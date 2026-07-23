@@ -606,7 +606,7 @@ describe('Access-protected runtime diagnostics gateway', () => {
 });
 
 describe('Cloudflare Access JWT verification', () => {
-  it('accepts only an RS256 application token bound to the configured issuer, audience, and service client', async () => {
+  it('caches a validated JWKS while enforcing issuer, audience, and service client on every request', async () => {
     const { publicKey, privateKey } = await generateKeyPair('RS256');
     const jwk = await exportJWK(publicKey);
     const token = await new SignJWT({
@@ -655,7 +655,7 @@ describe('Cloudflare Access JWT verification', () => {
       { ...env, ACCESS_EXPECTED_CLIENT_ID: 'other-client.access' },
       jwksFetch as unknown as typeof fetch,
     )).resolves.toBe('denied');
-    expect(jwksFetch).toHaveBeenCalled();
+    expect(jwksFetch).toHaveBeenCalledOnce();
   });
 
   it('rejects a missing assertion without fetching the JWKS', async () => {
@@ -673,6 +673,52 @@ describe('Cloudflare Access JWT verification', () => {
       jwksFetch as unknown as typeof fetch,
     )).resolves.toBe('denied');
     expect(jwksFetch).not.toHaveBeenCalled();
+  });
+
+  it('keeps caller cancellation bound to a cold JWKS fetch despite the shared cache', async () => {
+    const { privateKey } = await generateKeyPair('RS256');
+    const token = await new SignJWT({
+      type: 'app',
+      sub: '',
+      common_name: 'expected-client.access',
+    })
+      .setProtectedHeader({ alg: 'RS256', kid: 'cancelled-key' })
+      .setIssuer('https://cancel-team.cloudflareaccess.com')
+      .setAudience('z'.repeat(64))
+      .setIssuedAt()
+      .setExpirationTime('5m')
+      .sign(privateKey);
+    const controller = new AbortController();
+    let upstreamSignal: AbortSignal | undefined;
+    const jwksFetch = vi.fn((
+      _input: Parameters<typeof fetch>[0],
+      init?: RequestInit,
+    ) => new Promise<Response>((_resolve, reject) => {
+      upstreamSignal = init?.signal ?? undefined;
+      init?.signal?.addEventListener(
+        'abort',
+        () => reject(new DOMException('aborted', 'AbortError')),
+        { once: true },
+      );
+    }));
+    const pending = verifyCloudflareAccessRequest(
+      request(undefined, { 'cf-access-jwt-assertion': token }),
+      {
+        CONTROL: { fetch: vi.fn() },
+        ACCESS_TEAM_DOMAIN: 'cancel-team.cloudflareaccess.com',
+        ACCESS_POLICY_AUD: 'z'.repeat(64),
+        ACCESS_EXPECTED_CLIENT_ID: 'expected-client.access',
+      },
+      jwksFetch as unknown as typeof fetch,
+      controller.signal,
+    );
+    await vi.waitFor(() => {
+      expect(jwksFetch).toHaveBeenCalledOnce();
+    });
+    controller.abort();
+
+    await expect(pending).resolves.toBe('unavailable');
+    expect(upstreamSignal?.aborted).toBe(true);
   });
 
   it('distinguishes invalid Access configuration and JWKS outage from bad credentials', async () => {

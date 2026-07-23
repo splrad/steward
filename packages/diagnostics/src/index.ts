@@ -2,8 +2,10 @@ import {
   createRemoteJWKSet,
   customFetch,
   importJWK,
+  jwksCache,
   jwtVerify,
   type JWK,
+  type JWKSCacheInput,
 } from 'jose';
 import {
   buildStewardRuntimeDiagnosticsControlProbe,
@@ -33,6 +35,10 @@ const accountIdPattern = /^[0-9a-f]{32}$/;
 const queueIdPattern = /^[0-9a-f]{32}$/;
 const accessTeamDomainPattern =
   /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.cloudflareaccess\.com$/;
+const accessJwksCaches = new WeakMap<
+  typeof fetch,
+  Map<string, JWKSCacheInput>
+>();
 
 export const maximumDiagnosticsRequestBytes = 8 * 1024;
 export const maximumDiagnosticsUpstreamResponseBytes = 256 * 1024;
@@ -285,6 +291,23 @@ function accessConfiguration(env: DiagnosticsEnv): {
   return { teamDomain, audience, clientId };
 }
 
+function accessJwksCache(
+  fetchImplementation: typeof fetch,
+  teamDomain: string,
+): JWKSCacheInput {
+  let byTeamDomain = accessJwksCaches.get(fetchImplementation);
+  if (byTeamDomain === undefined) {
+    byTeamDomain = new Map();
+    accessJwksCaches.set(fetchImplementation, byTeamDomain);
+  }
+  let cache = byTeamDomain.get(teamDomain);
+  if (cache === undefined) {
+    cache = {};
+    byTeamDomain.set(teamDomain, cache);
+  }
+  return cache;
+}
+
 export async function verifyCloudflareAccessRequest(
   request: Request,
   env: DiagnosticsEnv,
@@ -310,6 +333,13 @@ export async function verifyCloudflareAccessRequest(
         timeoutDuration: diagnosticsCloudflareTimeoutMs,
         cooldownDuration: 30_000,
         cacheMaxAge: 10 * 60_000,
+        // Recreate the resolver so its custom fetch keeps this request's
+        // cancellation signal, while the jose-managed JWKS bytes and refresh
+        // timestamp persist safely across requests in the same isolate.
+        [jwksCache]: accessJwksCache(
+          fetchImplementation,
+          config.teamDomain,
+        ),
         [customFetch]: async (url, options) => {
           try {
             const jwksSignal = boundedSignal(
