@@ -818,7 +818,7 @@ describe('GitHub repository adapter', () => {
       name: check.name,
       status: 'completed',
       conclusion: 'success',
-      externalId: check.externalId,
+      externalId: 'final-evidence',
       title: check.title,
       summary: check.summary,
     });
@@ -848,6 +848,10 @@ describe('GitHub repository adapter', () => {
     ]);
     expect(requests[0]?.body).toMatchObject({
       name: 'Gate', head_sha: 'a'.repeat(40), external_id: 'identity', output: { title: 'Waiting' },
+    });
+    expect(requests[1]?.body).toMatchObject({
+      name: 'Gate', status: 'completed', conclusion: 'success', external_id: 'final-evidence',
+      output: { title: 'Waiting', summary: 'Awaiting evidence.' },
     });
     expect(requests[1]?.body).not.toHaveProperty('head_sha');
     expect(requests[7]).toMatchObject({
