@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { open, readFile } from 'node:fs/promises';
 import {
   createGitHubRestTransport,
   type GitHubActionsExecutionProtections,
@@ -6,6 +6,7 @@ import {
   type GitHubTransport,
 } from '../../github/src/index.js';
 import { runAppInstallationPreflight, type AppInstallationReport } from './app-installation.js';
+import { verifyActionsExecutionProtectionAttestation } from './actions-attestation.js';
 import { TerminalConfirmationPrompt, type ConfirmationPrompt } from './confirmation.js';
 import { runDoctor, type DoctorReport, type RuntimeDiagnosticsReader } from './doctor.js';
 import {
@@ -33,6 +34,7 @@ interface DoctorArguments {
   command: 'doctor';
   repository: string;
   pullRequest?: number;
+  actionsAttestation?: string;
   json: boolean;
 }
 
@@ -73,7 +75,7 @@ type Arguments = DoctorArguments | InitDryRunArguments | InitPreflightArguments 
 function usage(): string {
   return [
     'Usage:',
-    '  steward doctor --repo OWNER/REPOSITORY [--pr NUMBER] [--json]',
+    '  steward doctor --repo OWNER/REPOSITORY [--pr NUMBER] [--actions-attestation FILE] [--json]',
     '  steward init --dry-run --spec FILE [--target DIRECTORY] [--json]',
     '  steward init --preflight --repo OWNER/REPOSITORY --spec FILE [--json]',
     '  steward init --apply --repo OWNER/REPOSITORY --spec FILE',
@@ -147,11 +149,15 @@ export function parseArguments(argv: readonly string[]): Arguments {
   if (argv[0] !== 'doctor') throw new Error(usage());
   let repository = '';
   let pullRequest: number | undefined;
+  let actionsAttestation: string | undefined;
   let json = false;
   for (let index = 1; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--json') json = true;
     else if (argument === '--repo') repository = optionValue(argv, index++, '--repo');
+    else if (argument === '--actions-attestation') {
+      actionsAttestation = optionValue(argv, index++, '--actions-attestation');
+    }
     else if (argument === '--pr') {
       const value = Number(optionValue(argv, index++, '--pr'));
       if (!Number.isSafeInteger(value) || value < 1) throw new Error('--pr must be a positive integer');
@@ -159,7 +165,13 @@ export function parseArguments(argv: readonly string[]): Arguments {
     } else throw new Error(`Unknown argument: ${argument ?? ''}\n${usage()}`);
   }
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Error(`--repo must be OWNER/REPOSITORY\n${usage()}`);
-  return { command: 'doctor', repository, ...(pullRequest === undefined ? {} : { pullRequest }), json };
+  return {
+    command: 'doctor',
+    repository,
+    ...(pullRequest === undefined ? {} : { pullRequest }),
+    ...(actionsAttestation === undefined ? {} : { actionsAttestation }),
+    json,
+  };
 }
 
 function render(report: DoctorReport): string {
@@ -248,6 +260,58 @@ interface CliRuntime {
   appJwtTransport?: GitHubTransport;
   runtimeDiagnostics?: RuntimeDiagnosticsReader;
   actionsExecutionProtections?: GitHubReadResult<GitHubActionsExecutionProtections>;
+}
+
+export const MAX_ACTIONS_ATTESTATION_BYTES = 128 * 1024;
+
+export interface ActionsAttestationReadHandle {
+  read(
+    buffer: Buffer,
+    offset: number,
+    length: number,
+    position: number,
+  ): Promise<{ readonly bytesRead: number }>;
+  close(): Promise<void>;
+}
+
+export type OpenActionsAttestationFile = (
+  path: string,
+  flags: 'r',
+) => Promise<ActionsAttestationReadHandle>;
+
+export async function readActionsAttestationFile(
+  path: string,
+  openFile: OpenActionsAttestationFile = open,
+): Promise<unknown> {
+  const file = await openFile(path, 'r');
+  let body: Buffer;
+  try {
+    const buffer = Buffer.alloc(MAX_ACTIONS_ATTESTATION_BYTES + 1);
+    let totalBytesRead = 0;
+    while (totalBytesRead < buffer.byteLength) {
+      const { bytesRead } = await file.read(
+        buffer,
+        totalBytesRead,
+        buffer.byteLength - totalBytesRead,
+        totalBytesRead,
+      );
+      if (bytesRead === 0) break;
+      totalBytesRead += bytesRead;
+    }
+    if (totalBytesRead > MAX_ACTIONS_ATTESTATION_BYTES) {
+      throw new Error(`--actions-attestation exceeds ${MAX_ACTIONS_ATTESTATION_BYTES} bytes`);
+    }
+    body = buffer.subarray(0, totalBytesRead);
+  } finally {
+    await file.close();
+  }
+  try {
+    return JSON.parse(body.toString('utf8')) as unknown;
+  } catch {
+    // The verifier converts malformed owner input to an unknown fact instead
+    // of letting invalid JSON bypass the rest of the read-only Doctor report.
+    return body.toString('utf8');
+  }
 }
 
 function doctorOrganizationTransport(
@@ -380,14 +444,23 @@ export async function main(
     const transport = runtime.transport ?? createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' });
     const organizationTransport = doctorOrganizationTransport(env, runtime, transport);
     const appUserTransport = doctorAppUserTransport(env, runtime);
+    if (args.actionsAttestation && runtime.actionsExecutionProtections) {
+      throw new Error('--actions-attestation cannot be combined with an injected Actions observation');
+    }
+    const actionsExecutionProtections = args.actionsAttestation
+      ? await verifyActionsExecutionProtectionAttestation(
+        await readActionsAttestationFile(args.actionsAttestation),
+        organizationTransport,
+      )
+      : runtime.actionsExecutionProtections;
     const report = await runDoctor({
       repositoryTransport: transport,
       organizationTransport,
       ...(runtime.appJwtTransport ? { appJwtTransport: runtime.appJwtTransport } : {}),
       ...(appUserTransport ? { appUserTransport } : {}),
       ...(runtime.runtimeDiagnostics ? { runtimeDiagnostics: runtime.runtimeDiagnostics } : {}),
-      ...(runtime.actionsExecutionProtections
-        ? { actionsExecutionProtections: runtime.actionsExecutionProtections }
+      ...(actionsExecutionProtections
+        ? { actionsExecutionProtections }
         : {}),
     }, {
       owner, repository, ...(args.pullRequest === undefined ? {} : { pullRequest: args.pullRequest }),

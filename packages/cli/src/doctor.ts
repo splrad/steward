@@ -10,6 +10,9 @@ import {
   parseStewardCheckExternalId,
   STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT,
   STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT_DIGEST,
+  STEWARD_ACTIONS_GENERAL_POLICY,
+  STEWARD_ACTIONS_SOURCE_INVENTORY_DIGEST,
+  STEWARD_ACTIONS_EXECUTION_POLICY_DIGEST,
   STEWARD_APP_ID,
   STEWARD_APP_OPTIONAL_PERMISSIONS,
   STEWARD_APP_PLANNED_EXPLICIT_EVENTS,
@@ -1400,20 +1403,23 @@ function evaluateSelectedActions(
       ...evidenceFields(result.evidence),
     }));
   } else {
-    const unsafeWildcard = result.value.patternsAllowed.some((pattern) => {
-      const normalized = pattern.trim();
-      return normalized === '*' || normalized === '*/*';
-    });
-    const flagDrift = !result.value.githubOwnedAllowed || result.value.verifiedAllowed || unsafeWildcard;
-    findings.push(flagDrift
-      ? finding(code, 'drift', `${subject} 过宽或不完整：githubOwned=${result.value.githubOwnedAllowed}，verified=${result.value.verifiedAllowed}，unsafeWildcard=${unsafeWildcard}。`, {
-        remedy: '允许必要 GitHub-owned，禁止全体 verified creators 与无边界 wildcard。',
+    const actualPatterns = [...result.value.patternsAllowed].sort();
+    const expectedPatterns = [...STEWARD_ACTIONS_GENERAL_POLICY.selectedActions.patternsAllowed].sort();
+    const exactPatterns = actualPatterns.length === expectedPatterns.length
+      && actualPatterns.every((pattern, index) => pattern === expectedPatterns[index]);
+    const exact = result.value.githubOwnedAllowed
+      === STEWARD_ACTIONS_GENERAL_POLICY.selectedActions.githubOwnedAllowed
+      && result.value.verifiedAllowed
+      === STEWARD_ACTIONS_GENERAL_POLICY.selectedActions.verifiedAllowed
+      && exactPatterns;
+    findings.push(!exact
+      ? finding(code, 'drift', `${subject} 偏离冻结合同：githubOwned=${result.value.githubOwnedAllowed}，verified=${result.value.verifiedAllowed}，patterns=${actualPatterns.join(', ') || 'none'}。`, {
+        remedy: `由组织所有者设为 githubOwned=${STEWARD_ACTIONS_GENERAL_POLICY.selectedActions.githubOwnedAllowed}、verified=${STEWARD_ACTIONS_GENERAL_POLICY.selectedActions.verifiedAllowed}、patterns=${expectedPatterns.join(', ')}。`,
         source: result.evidence.source,
         endpoint: result.evidence.endpoint,
         ...evidenceFields(result.evidence),
       })
-      : finding(code, 'unknown', `${subject} 的基础开关安全；但 ${result.value.patternsAllowed.length} 条 pattern 尚未与冻结的 uses inventory 逐项核对。`, {
-        remedy: '在 S66-CONFORMANCE 冻结全部 uses inventory 后做精确集合比较，完成前不得报告 allowlist conformant。',
+      : finding(code, 'conformant', `${subject} 与冻结 inventory 派生的精确 allowlist 一致。`, {
         source: result.evidence.source,
         endpoint: result.evidence.endpoint,
         ...evidenceFields(result.evidence),
@@ -1438,9 +1444,11 @@ async function evaluateActions(
     findings.push(unknownFinding('actions.organization', '组织 Actions General', organization,
       '使用具备 Organization Administration read 的所有者诊断身份重试；不要扩大 Steward App 权限。'));
   } else {
-    const ready = organization.value.enabledRepositories === 'all'
-      && organization.value.allowedActions === 'selected'
-      && organization.value.shaPinningRequired;
+    const ready = organization.value.enabledRepositories
+      === STEWARD_ACTIONS_GENERAL_POLICY.enabledRepositories
+      && organization.value.allowedActions === STEWARD_ACTIONS_GENERAL_POLICY.allowedActions
+      && organization.value.shaPinningRequired
+      === STEWARD_ACTIONS_GENERAL_POLICY.shaPinningRequired;
     findings.push(ready
       ? finding('actions.organization', 'conformant', '组织 Actions 已统一覆盖全部仓库，并启用 selected allowlist 与 full-SHA enforcement。', {
         source: organization.evidence.source,
@@ -1523,13 +1531,6 @@ async function evaluateActions(
       preview,
       '由组织所有者在 GitHub UI 以 Evaluate→Active 方式验证；稳定公开 API 出现前不得声称“0 条”或“已配置”。',
     ));
-  } else if (!freshDiagnosticEvidence(preview.evidence.observedAt, evaluatedAt)) {
-    findings.push(finding('actions.execution-protections', 'unknown', 'Actions workflow execution protections 的 UI attestation 已过期、来自未来或时间戳非法。', {
-      remedy: '由组织所有者提供不超过 15 分钟的 fresh UI attestation；稳定公开 API 出现前不推断状态。',
-      source: preview.evidence.source,
-      endpoint: preview.evidence.endpoint,
-      ...evidenceFields(preview.evidence),
-    }));
   } else {
     const attestation = preview.value;
     const propertyDigest = properties
@@ -1539,17 +1540,67 @@ async function evaluateActions(
       ]))
       : null;
     const wellFormed = attestation.schemaVersion === 1
-      && Boolean(attestation.organization.trim())
+      && typeof attestation.organization === 'string' && Boolean(attestation.organization.trim())
       && Number.isSafeInteger(attestation.repositoryId) && attestation.repositoryId > 0
+      && typeof attestation.repositoryFullName === 'string'
       && /^[^/]+\/[^/]+$/.test(attestation.repositoryFullName)
+      && typeof attestation.propertyDigest === 'string'
       && /^[a-f0-9]{64}$/.test(attestation.propertyDigest)
+      && typeof attestation.contractVersion === 'string'
       && Boolean(attestation.contractVersion.trim())
+      && typeof attestation.contractDigest === 'string'
       && /^[a-f0-9]{64}$/.test(attestation.contractDigest)
-      && Boolean(attestation.attestorLogin.trim())
-      && Number.isSafeInteger(attestation.policyCount) && attestation.policyCount >= 0;
+      && typeof attestation.inventoryVersion === 'string'
+      && Boolean(attestation.inventoryVersion.trim())
+      && typeof attestation.inventoryDigest === 'string'
+      && /^[a-f0-9]{64}$/.test(attestation.inventoryDigest)
+      && typeof attestation.policyDigest === 'string'
+      && /^[a-f0-9]{64}$/.test(attestation.policyDigest)
+      && Number.isSafeInteger(attestation.policyCount) && attestation.policyCount >= 0
+      && typeof attestation.issuedAt === 'string' && Boolean(attestation.issuedAt.trim())
+      && typeof attestation.observedAt === 'string' && Boolean(attestation.observedAt.trim())
+      && typeof attestation.expiresAt === 'string' && Boolean(attestation.expiresAt.trim())
+      && typeof attestation.nonce === 'string' && Boolean(attestation.nonce.trim())
+      && typeof attestation.attestor?.login === 'string'
+      && Boolean(attestation.attestor.login.trim())
+      && Number.isSafeInteger(attestation.attestor?.id) && attestation.attestor.id > 0
+      && attestation.verification?.method === 'github-ssh-signing-key'
+      && Number.isSafeInteger(attestation.verification?.signingKeyId)
+      && attestation.verification.signingKeyId > 0
+      && attestation.verification?.signingKeyAlgorithm === 'ssh-ed25519'
+      && attestation.verification?.organizationMembership?.state === 'active'
+      && attestation.verification?.organizationMembership?.role === 'admin'
+      && typeof attestation.verification?.authenticatedPrincipal?.login === 'string'
+      && attestation.verification.authenticatedPrincipal.login.toLowerCase()
+      === attestation.attestor.login.toLowerCase()
+      && attestation.verification?.authenticatedPrincipal?.id === attestation.attestor.id
+      && preview.evidence.source === 'github-ui-attestation'
+      && preview.evidence.observedAt === attestation.observedAt;
     if (!wellFormed) {
-      findings.push(finding('actions.execution-protections', 'unknown', 'Actions execution protections owner attestation 结构不完整或 malformed。', {
-        remedy: '重新生成 schemaVersion=1 且绑定组织、仓库、四属性 digest 与平台 contract digest 的 fresh owner attestation。',
+      findings.push(finding('actions.execution-protections', 'unknown', 'Actions execution protections owner attestation 未通过可信输入结构或 owner 验证合同。', {
+        remedy: '通过 --actions-attestation 提供 SSHSIG envelope，并用同一 active organization owner 的诊断 token 验证当前 GitHub signing key。',
+        source: preview.evidence.source,
+        endpoint: preview.evidence.endpoint,
+        ...evidenceFields(preview.evidence),
+      }));
+      return;
+    }
+    const issuedAt = Date.parse(attestation.issuedAt);
+    const observedAt = Date.parse(attestation.observedAt);
+    const expiresAt = Date.parse(attestation.expiresAt);
+    const evaluatedAtMs = Date.parse(evaluatedAt);
+    const fresh = Number.isFinite(issuedAt)
+      && Number.isFinite(observedAt)
+      && Number.isFinite(expiresAt)
+      && Number.isFinite(evaluatedAtMs)
+      && observedAt <= issuedAt
+      && issuedAt <= expiresAt
+      && evaluatedAtMs >= issuedAt - MAX_DIAGNOSTIC_CLOCK_SKEW_MS
+      && evaluatedAtMs <= expiresAt
+      && freshDiagnosticEvidence(attestation.observedAt, evaluatedAt);
+    if (!fresh) {
+      findings.push(finding('actions.execution-protections', 'unknown', 'Actions workflow execution protections 的 owner-signed attestation 已过期、来自未来或时间顺序非法。', {
+        remedy: '由组织所有者重新观察 UI 并提供 observedAt≤issuedAt≤expiresAt、观察时间不超过 15 分钟的 fresh SSHSIG envelope。',
         source: preview.evidence.source,
         endpoint: preview.evidence.endpoint,
         ...evidenceFields(preview.evidence),
@@ -1570,25 +1621,31 @@ async function evaluateActions(
       && attestation.repositoryFullName.toLowerCase() === identity.repositoryFullName.toLowerCase()
       && attestation.propertyDigest === propertyDigest
       && attestation.contractVersion === STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT.contractVersion
-      && attestation.contractDigest === STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT_DIGEST;
+      && attestation.contractDigest === STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT_DIGEST
+      && attestation.inventoryVersion === STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT.inventoryVersion
+      && attestation.inventoryDigest === STEWARD_ACTIONS_SOURCE_INVENTORY_DIGEST
+      && attestation.policyDigest === STEWARD_ACTIONS_EXECUTION_POLICY_DIGEST;
     if (!bound) {
-      findings.push(finding('actions.execution-protections', 'unknown', 'Actions execution protections attestation 未绑定本次组织、仓库、当前属性或冻结合同。', {
-        remedy: '拒绝旧仓库、旧属性或旧合同的证明，并由 organization owner 对当前目标重新 attestation。',
+      findings.push(finding('actions.execution-protections', 'drift', '已验证的 Actions execution protections attestation 未绑定本次组织、仓库、当前属性、inventory 或冻结合同。', {
+        remedy: '由 organization owner 按当前目标、properties、inventory 和 policy 重新观察并签名；不要复用旧证明。',
         source: preview.evidence.source,
         endpoint: preview.evidence.endpoint,
         ...evidenceFields(preview.evidence),
       }));
       return;
     }
-    findings.push(attestation.mode !== 'active' || attestation.policyCount <= 0
-      ? finding('actions.execution-protections', 'drift', `Actions execution protections 为 ${attestation.mode}，共 ${attestation.policyCount} 条。`, {
+    const exactModeAndCount = attestation.mode
+      === STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT.requiredMode
+      && attestation.policyCount
+      === STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT.expectedPolicyCount;
+    findings.push(!exactModeAndCount
+      ? finding('actions.execution-protections', 'drift', `已验证的 Actions execution protections 为 ${attestation.mode}/${attestation.policyCount} 条；合同要求 ${STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT.requiredMode}/${STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT.expectedPolicyCount} 条。`, {
         remedy: '完成 Evaluate 证据后由组织所有者切换 Active；preview 策略仍不得成为唯一信任边界。',
         source: preview.evidence.source,
         endpoint: preview.evidence.endpoint,
         ...evidenceFields(preview.evidence),
       })
-      : finding('actions.execution-protections', 'unknown', `fresh owner attestation 已绑定 ${identity.repositoryFullName}、当前 properties 与 ${attestation.contractVersion}，并观察到 Active/${attestation.policyCount} 条；但 actor/event 精确 inventory 尚未冻结。`, {
-        remedy: '完成全部 workflow trigger/uses 与 actor inventory 后冻结精确 policyCount 和策略语义；在此之前不得判为 conformant。',
+      : finding('actions.execution-protections', 'conformant', `active organization owner 的 GitHub SSH signing key 已验证；fresh attestation 精确绑定 ${identity.repositoryFullName}、当前 properties、${attestation.inventoryVersion} 与 Active/${attestation.policyCount} 条策略。`, {
         source: preview.evidence.source,
         endpoint: preview.evidence.endpoint,
         ...evidenceFields(preview.evidence),

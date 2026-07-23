@@ -5,6 +5,10 @@ import {
   hashJson,
   STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT,
   STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT_DIGEST,
+  STEWARD_ACTIONS_EXECUTION_POLICIES,
+  STEWARD_ACTIONS_EXECUTION_POLICY_DIGEST,
+  STEWARD_ACTIONS_SOURCE_INVENTORY,
+  STEWARD_ACTIONS_SOURCE_INVENTORY_DIGEST,
   STEWARD_APP_IMPLICIT_EVENTS,
   STEWARD_APP_REQUIRED_PERMISSIONS,
   STEWARD_APP_REQUIRED_EXPLICIT_EVENTS,
@@ -106,7 +110,14 @@ describe('organization-native policy contracts', () => {
   it('keeps the public-preview owner-attestation contract digest reproducible', async () => {
     expect(await hashJson(STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT))
       .toBe(STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT_DIGEST);
-    expect(STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT.policyInventoryStatus).toBe('pending');
+    expect(STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT).toMatchObject({
+      schemaVersion: 2,
+      policyInventoryStatus: 'frozen',
+      expectedPolicyCount: STEWARD_ACTIONS_EXECUTION_POLICIES.length,
+      inventoryVersion: STEWARD_ACTIONS_SOURCE_INVENTORY.inventoryVersion,
+      inventoryDigest: STEWARD_ACTIONS_SOURCE_INVENTORY_DIGEST,
+      policyDigest: STEWARD_ACTIONS_EXECUTION_POLICY_DIGEST,
+    });
   });
 
   it('does not require global App lifecycle events in the installation subscription array', () => {

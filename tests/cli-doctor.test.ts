@@ -7,6 +7,9 @@ import {
   matrixLiveEvidenceDigest,
   STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT,
   STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT_DIGEST,
+  STEWARD_ACTIONS_EXECUTION_POLICY_DIGEST,
+  STEWARD_ACTIONS_GENERAL_POLICY,
+  STEWARD_ACTIONS_SOURCE_INVENTORY_DIGEST,
   STEWARD_APP_REQUIRED_EXPLICIT_EVENTS,
   STEWARD_APP_REQUIRED_PERMISSIONS,
   stewardCheckExternalId,
@@ -283,9 +286,32 @@ function actionsExecutionAttestation(
     propertyDigest: '4d2a9cc3d6fda6383a276918b06ba3481c6c4894ed4e1ea9ad3a0a0eb2f5b56b',
     contractVersion: STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT.contractVersion,
     contractDigest: STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT_DIGEST,
-    attestorLogin: 'organization-owner',
+    inventoryVersion: STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT.inventoryVersion,
+    inventoryDigest: STEWARD_ACTIONS_SOURCE_INVENTORY_DIGEST,
+    policyDigest: STEWARD_ACTIONS_EXECUTION_POLICY_DIGEST,
     mode: 'active',
-    policyCount: 1,
+    policyCount: STEWARD_ACTIONS_EXECUTION_PROTECTION_CONTRACT.expectedPolicyCount,
+    issuedAt: observedAt,
+    observedAt,
+    expiresAt: '2026-07-23T00:15:00.000Z',
+    nonce: '019f4f4f-40ad-7471-b40c-9838f254503c',
+    attestor: {
+      login: 'organization-owner',
+      id: 42,
+    },
+    verification: {
+      method: 'github-ssh-signing-key',
+      signingKeyId: 9,
+      signingKeyAlgorithm: 'ssh-ed25519',
+      authenticatedPrincipal: {
+        login: 'organization-owner',
+        id: 42,
+      },
+      organizationMembership: {
+        state: 'active',
+        role: 'admin',
+      },
+    },
     ...overrides,
   };
 }
@@ -545,7 +571,9 @@ async function setup(options: {
       default_workflow_permissions: 'read', can_approve_pull_request_reviews: false,
     };
     if (request.path === '/orgs/splrad/actions/permissions/selected-actions') return {
-      github_owned_allowed: true, verified_allowed: false, patterns_allowed: ['splrad/*'],
+      github_owned_allowed: true,
+      verified_allowed: false,
+      patterns_allowed: [...STEWARD_ACTIONS_GENERAL_POLICY.selectedActions.patternsAllowed],
     };
     throw new Error(`Unexpected organization request: ${request.path}`);
   }));
@@ -575,6 +603,18 @@ describe('doctor CLI contract', () => {
   it('accepts only the explicit read-only doctor surface', () => {
     expect(parseArguments(['doctor', '--repo', 'splrad/example', '--pr', '3', '--json']))
       .toEqual({ command: 'doctor', repository: 'splrad/example', pullRequest: 3, json: true });
+    expect(parseArguments([
+      'doctor',
+      '--repo',
+      'splrad/example',
+      '--actions-attestation',
+      'actions.json',
+    ])).toEqual({
+      command: 'doctor',
+      repository: 'splrad/example',
+      actionsAttestation: 'actions.json',
+      json: false,
+    });
     expect(() => parseArguments(['activate', '--repo', 'splrad/example'])).toThrow('Usage');
     expect(() => parseArguments(['doctor', '--repo', 'invalid'])).toThrow('OWNER/REPOSITORY');
     expect(() => parseArguments(['doctor', '--repo', 'splrad/example', '--pr', '0'])).toThrow('positive integer');
@@ -2035,7 +2075,7 @@ describe('doctor CLI contract', () => {
       .toMatchObject({ state: 'unknown' });
   });
 
-  it('binds execution-protection attestations to the current target while inventory remains pending', async () => {
+  it('accepts only fresh, owner-verified execution-protection attestations bound to the frozen inventory', async () => {
     const bound = await setup({
       actionsExecutionProtections: {
         status: 'known',
@@ -2049,9 +2089,9 @@ describe('doctor CLI contract', () => {
     });
     const boundReport = await runDoctor(bound.dependencies, { owner: 'splrad', repository: 'example' });
     expect(boundReport.findings.find((item) => item.code === 'actions.execution-protections'))
-      .toMatchObject({ state: 'unknown' });
+      .toMatchObject({ state: 'conformant' });
     expect(boundReport.findings.find((item) => item.code === 'actions.execution-protections')?.summary)
-      .toContain('actor/event 精确 inventory 尚未冻结');
+      .toContain('GitHub SSH signing key 已验证');
 
     const wrongTarget = await setup({
       actionsExecutionProtections: {
@@ -2066,7 +2106,7 @@ describe('doctor CLI contract', () => {
     });
     const wrongTargetReport = await runDoctor(wrongTarget.dependencies, { owner: 'splrad', repository: 'example' });
     expect(wrongTargetReport.findings.find((item) => item.code === 'actions.execution-protections'))
-      .toMatchObject({ state: 'unknown' });
+      .toMatchObject({ state: 'drift' });
     expect(wrongTargetReport.findings.find((item) => item.code === 'actions.execution-protections')?.summary)
       .toContain('未绑定');
 
