@@ -276,17 +276,10 @@ function classifyCustomProperty(
     return quarantine('malformed-payload', 'definition.property_name');
   }
 
-  let priorName: string | null = null;
-  if (input.action === 'updated' && payload.changes !== undefined) {
-    const propertyNameChange = record(record(payload.changes)?.property_name);
-    if (!propertyNameChange || typeof propertyNameChange.from !== 'string'
-      || propertyNameChange.from.length === 0) {
-      return quarantine('malformed-payload', 'changes.property_name.from');
-    }
-    priorName = propertyNameChange.from;
-  }
-
-  if (!propertyNames.has(currentName) && (priorName === null || !propertyNames.has(priorName))) {
+  // GitHub's documented custom_property.updated payload has no prior-name or
+  // field-delta contract. The definition may therefore already contain a
+  // post-rename name; every valid update must reread the live schema.
+  if (input.action !== 'updated' && !propertyNames.has(currentName)) {
     return ignore('unrelated-property');
   }
   return reconcile(

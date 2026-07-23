@@ -107,31 +107,36 @@ describe('Webhook causality for organization custom properties', () => {
     },
   );
 
-  it('does not lose a governed schema when an update renames it away', () => {
+  it('reconciles an update whose current name is unrelated because no prior-name contract exists', () => {
     const decision = classify(delivery('custom_property', 'updated', {
       installation: installation(),
       definition: { property_name: 'new_unmanaged_name' },
-      changes: { property_name: { from: 'governance_tier' } },
     }));
 
     expectInstallationRefresh(decision, 'organization-property-schema-changed');
   });
 
-  it('ignores an unrelated schema and quarantines an ambiguous rename hint', () => {
+  it('ignores an unrelated schema for non-update actions', () => {
     expect(classify(delivery('custom_property', 'created', {
       installation: installation(),
       definition: { property_name: 'cost_center' },
     }))).toEqual({ disposition: 'ignore', reason: 'unrelated-property' });
+  });
 
-    expect(classify(delivery('custom_property', 'updated', {
+  it.each([
+    ['an unrelated field delta', { description: { from: 'old' } }],
+    ['a rename-shaped hint', { property_name: { from: 'governance_tier' } }],
+    ['an incomplete rename-shaped hint', { property_name: {} }],
+    ['null', null],
+    ['an array', []],
+  ])('ignores undocumented changes extensions (%s) and rereads the live schema', (_label, changes) => {
+    const decision = classify(delivery('custom_property', 'updated', {
       installation: installation(),
       definition: { property_name: 'cost_center' },
-      changes: { property_name: {} },
-    }))).toEqual({
-      disposition: 'quarantine',
-      reason: 'malformed-payload',
-      field: 'changes.property_name.from',
-    });
+      changes,
+    }));
+
+    expectInstallationRefresh(decision, 'organization-property-schema-changed');
   });
 
   it('routes a governed repository property delta by repository ID, not full_name', () => {
