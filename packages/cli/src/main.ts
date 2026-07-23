@@ -23,7 +23,10 @@ import {
   withSecrets,
   type SecretPrompt,
 } from './secret-input.js';
-import type { RuntimeDiagnosticsProvider } from './runtime-diagnostics.js';
+import {
+  createAuthenticatedRuntimeDiagnosticsProvider,
+  type RuntimeDiagnosticsProvider,
+} from './runtime-diagnostics.js';
 import {
   executeUpgrade,
   prepareUpgrade,
@@ -342,31 +345,53 @@ function assertDoctorCredentialSeparation(
   env: NodeJS.ProcessEnv,
   runtime: CliRuntime,
 ): void {
-  const repositoryTokens = [
-    String(env.GH_TOKEN ?? '').trim(),
-    String(env.GITHUB_TOKEN ?? '').trim(),
-  ].filter(Boolean);
-  const organizationToken = runtime.organizationTransport
-    ? ''
-    : String(env.STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN ?? '').trim();
-  const rulesetToken = runtime.organizationRulesetTransport
-    ? ''
-    : String(env.STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN ?? '').trim();
+  const credentialRoles = [
+    {
+      name: 'GH_TOKEN and GITHUB_TOKEN',
+      values: runtime.transport
+        ? []
+        : [
+          String(env.GH_TOKEN ?? '').trim(),
+          String(env.GITHUB_TOKEN ?? '').trim(),
+        ].filter(Boolean),
+    },
+    {
+      name: 'STEWARD_APP_USER_TOKEN',
+      values: runtime.installationTransport
+        ? []
+        : [String(env.STEWARD_APP_USER_TOKEN ?? '').trim()].filter(Boolean),
+    },
+    {
+      name: 'STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN',
+      values: runtime.organizationTransport
+        ? []
+        : [String(env.STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN ?? '').trim()].filter(Boolean),
+    },
+    {
+      name: 'STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN',
+      values: runtime.organizationRulesetTransport
+        ? []
+        : [String(env.STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN ?? '').trim()].filter(Boolean),
+    },
+    {
+      name: 'STEWARD_RUNTIME_DIAGNOSTICS_ACCESS_CLIENT_SECRET',
+      values: runtime.runtimeDiagnostics
+        ? []
+        : [String(env.STEWARD_RUNTIME_DIAGNOSTICS_ACCESS_CLIENT_SECRET ?? '').trim()]
+          .filter(Boolean),
+    },
+  ] as const;
 
-  if (organizationToken && repositoryTokens.includes(organizationToken)) {
-    throw new Error(
-      'STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN must use a credential distinct from GH_TOKEN and GITHUB_TOKEN',
-    );
-  }
-  if (rulesetToken && repositoryTokens.includes(rulesetToken)) {
-    throw new Error(
-      'STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN must use a credential distinct from GH_TOKEN and GITHUB_TOKEN',
-    );
-  }
-  if (organizationToken && rulesetToken && organizationToken === rulesetToken) {
-    throw new Error(
-      'STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN must use a credential distinct from STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN',
-    );
+  for (let left = 0; left < credentialRoles.length; left += 1) {
+    const leftRole = credentialRoles[left]!;
+    for (let right = left + 1; right < credentialRoles.length; right += 1) {
+      const rightRole = credentialRoles[right]!;
+      if (leftRole.values.some((value) => rightRole.values.includes(value))) {
+        throw new Error(
+          `${rightRole.name} must use a credential distinct from ${leftRole.name}`,
+        );
+      }
+    }
   }
 }
 
@@ -457,9 +482,9 @@ export async function main(
       return preflight.status === 'installed' ? 0 : preflight.status === 'action-required' ? 1 : 2;
     }
     const token = String(env.GH_TOKEN ?? env.GITHUB_TOKEN ?? '').trim();
-    if (!token) throw new Error('GH_TOKEN or GITHUB_TOKEN is required');
     const [owner, repository] = args.repository.split('/') as [string, string];
     if (args.command === 'upgrade') {
+      if (!token) throw new Error('GH_TOKEN or GITHUB_TOKEN is required');
       const transport = runtime.transport ?? createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' });
       const prepared = await prepareUpgrade({
         transport, owner, repository, targetSha: args.targetSha,
@@ -485,8 +510,11 @@ export async function main(
       process.stdout.write(`${renderUpgradeReport(report)}\n`);
       return 0;
     }
-    const transport = runtime.transport ?? createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' });
+    if (!token && !runtime.transport) throw new Error('GH_TOKEN or GITHUB_TOKEN is required');
+    const runtimeDiagnostics = runtime.runtimeDiagnostics
+      ?? createAuthenticatedRuntimeDiagnosticsProvider(env);
     assertDoctorCredentialSeparation(env, runtime);
+    const transport = runtime.transport ?? createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' });
     const organizationTransport = doctorOrganizationTransport(env, runtime);
     const organizationRulesetTransport = doctorOrganizationRulesetTransport(env, runtime);
     const appUserTransport = doctorAppUserTransport(env, runtime);
@@ -510,7 +538,7 @@ export async function main(
       ...(organizationRulesetTransport ? { organizationRulesetTransport } : {}),
       ...(runtime.appJwtTransport ? { appJwtTransport: runtime.appJwtTransport } : {}),
       ...(appUserTransport ? { appUserTransport } : {}),
-      ...(runtime.runtimeDiagnostics ? { runtimeDiagnostics: runtime.runtimeDiagnostics } : {}),
+      ...(runtimeDiagnostics ? { runtimeDiagnostics } : {}),
       ...(actionsExecutionProtections
         ? { actionsExecutionProtections }
         : {}),

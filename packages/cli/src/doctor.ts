@@ -1770,19 +1770,29 @@ function evaluateRuntime(
       observedAt,
     }));
   const components = result.envelope.diagnostics;
-  const componentsReady = components.queue === 'ready'
-    && components.control === 'ready'
-    && components.deadLetterQueue === 'clear';
-  findings.push(componentsReady
+  const componentsState: DoctorFindingState = components.queue !== 'ready'
+    || components.control !== 'ready'
+    || components.deadLetterQueue === 'pending'
+    ? 'drift'
+    : components.deadLetterQueue === 'unavailable'
+      ? 'unknown'
+      : 'conformant';
+  findings.push(componentsState === 'conformant'
     ? finding('runtime.central-components', 'conformant', `Queue=${components.queue}，Control=${components.control}，DLQ=${components.deadLetterQueue}。`, {
       source: result.source,
       observedAt,
     })
-    : finding('runtime.central-components', 'drift', `Queue=${components.queue}，Control=${components.control}，DLQ=${components.deadLetterQueue}。`, {
-      remedy: '修复中央 Queue/Control/DLQ 后再进入 canary 或 active property transition。',
-      source: result.source,
-      observedAt,
-    }));
+    : componentsState === 'unknown'
+      ? finding('runtime.central-components', 'unknown', `Queue=${components.queue}，Control=${components.control}，DLQ=${components.deadLetterQueue}；DLQ 当前不可读，无法确认是否存在积压。`, {
+        remedy: '恢复 DLQ runtime diagnostics 可读性后重试；不得把不可读状态判为 clear 或 pending。',
+        source: result.source,
+        observedAt,
+      })
+      : finding('runtime.central-components', 'drift', `Queue=${components.queue}，Control=${components.control}，DLQ=${components.deadLetterQueue}。`, {
+        remedy: '修复中央 Queue/Control/DLQ 后再进入 canary 或 active property transition。',
+        source: result.source,
+        observedAt,
+      }));
 }
 
 function parsePull(payload: unknown): PullPayload {

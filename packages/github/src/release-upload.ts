@@ -28,7 +28,9 @@ export async function uploadReleaseAsset(input: {
   }
   url.searchParams.set('name', input.name);
   const response = await (input.fetch ?? globalThis.fetch)(url, {
-    method: 'POST', redirect: 'error', body: input.body,
+    // Manual redirect handling is supported by both Node and Workers. The
+    // response.ok gate below rejects every 3xx without forwarding asset bytes.
+    method: 'POST', redirect: 'manual', body: input.body,
     headers: {
       accept: 'application/vnd.github+json', authorization: `Bearer ${token}`,
       'content-type': input.mediaType, 'user-agent': 'splrad-steward',

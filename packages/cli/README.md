@@ -30,10 +30,27 @@ organization `Administration: write` even for Ruleset list/detail GET requests,
 that proof uses a separate short-lived
 `STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN`; Doctor sends GET only and rejects
 credential reuse before network access. Selected-installation membership can
-additionally use `STEWARD_APP_USER_TOKEN`. It verifies the default-branch
+additionally use `STEWARD_APP_USER_TOKEN`. The repository, App-user,
+organization-resident, and Ruleset-elevated GitHub identities must be distinct;
+`GH_TOKEN` and `GITHUB_TOKEN` are aliases for the same repository identity and
+may contain the same value.
+
+Authenticated central runtime evidence uses the fixed endpoint
+`https://steward-diagnostics.alearner-5ef.workers.dev/v1/runtime-diagnostics`.
+There is intentionally no endpoint override. Configure the Cloudflare Access
+service-token pair through
+`STEWARD_RUNTIME_DIAGNOSTICS_ACCESS_CLIENT_ID` and
+`STEWARD_RUNTIME_DIAGNOSTICS_ACCESS_CLIENT_SECRET`; both or neither must be
+present. The Access secret must not reuse any Doctor GitHub credential. Each
+read is a no-store HTTPS POST with a fresh nonce, a thirty-second deadline, and a
+64 KiB response limit. Redirects, unexpected media types, invalid UTF-8,
+malformed or nonce-mismatched protocol wrappers, and partial credentials fail
+closed without reporting runtime health.
+
+Doctor verifies the default-branch
 Manifest, organization properties and ruleset definition/applicable/effective
 layers, Team access, App installation permissions/events, organization Actions
-policy, current-head App Check identity, and injectable central runtime
+policy, current-head App Check identity, and authenticated central runtime
 evidence. Missing identities or permissions, stale evidence, unsupported
 response fields, unresolved live Team identity, and unverified owner
 observations remain `unknown` rather than being reported as absent or healthy.

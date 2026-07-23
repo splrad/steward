@@ -12,7 +12,8 @@
     "packages/control/src/**/*.ts",
     "packages/ingress/src/**/*.ts",
     "packages/coordinator/src/**/*.ts",
-    "packages/control-runtime/src/**/*.ts"
+    "packages/control-runtime/src/**/*.ts",
+    "packages/diagnostics/src/**/*.ts"
   ],
   "exclude": []
 }

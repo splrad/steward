@@ -22,6 +22,7 @@ describe('Release asset upload transport', () => {
     expect(new Headers(init?.headers).get('content-type')).toBe('application/zip');
     expect(new Headers(init?.headers).get('x-github-api-version')).toBe(GITHUB_CLOUD_REST_API_VERSION);
     expect(init?.body).toBeInstanceOf(Blob);
+    expect(init?.redirect).toBe('manual');
   });
 
   it('keeps GHES uploads on the compatible REST version by default', async () => {

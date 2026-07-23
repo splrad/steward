@@ -1,0 +1,29 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "steward-diagnostics",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-23",
+  "workers_dev": true,
+  "preview_urls": false,
+  "keep_vars": false,
+  "services": [
+    {
+      "binding": "CONTROL",
+      "service": "steward-control"
+    }
+  ],
+  "vars": {
+    "CLOUDFLARE_ACCOUNT_ID": "5efbba9a3813a37ac45e70cfa9f01cb5",
+    "EVENT_QUEUE_ID": "b957c244a4bf478887da90ad3fe10909",
+    "DEAD_LETTER_QUEUE_ID": "7fb7d65f37774837ae7a22f71f7dde4c"
+  },
+  "secrets": {
+    "required": [
+      "ACCESS_TEAM_DOMAIN",
+      "ACCESS_POLICY_AUD",
+      "ACCESS_EXPECTED_CLIENT_ID",
+      "CLOUDFLARE_WORKERS_READ_TOKEN",
+      "CLOUDFLARE_QUEUES_READ_TOKEN"
+    ]
+  }
+}

@@ -128,8 +128,11 @@ function parseSubject(value: unknown): StewardRuntimeWorkItemSubjectV1 {
   };
 }
 
-function parseControlRevision(value: unknown): StewardRuntimeControlRevisionV1 {
-  const revision = plainRecord(value, 'receipt.controlRevision');
+function parseControlRevision(
+  value: unknown,
+  field: string,
+): StewardRuntimeControlRevisionV1 {
+  const revision = plainRecord(value, field);
   requireExactKeys(
     revision,
     [
@@ -138,32 +141,32 @@ function parseControlRevision(value: unknown): StewardRuntimeControlRevisionV1 {
       'workerVersionTag',
       'workerVersionCreatedAt',
     ],
-    'receipt.controlRevision',
+    field,
   );
   const stewardCommit = requireString(
     revision.stewardCommit,
-    'receipt.controlRevision.stewardCommit',
+    `${field}.stewardCommit`,
   );
   if (!commitPattern.test(stewardCommit)) {
-    invalid('receipt.controlRevision.stewardCommit must be a lowercase 40-character commit SHA');
+    invalid(`${field}.stewardCommit must be a lowercase 40-character commit SHA`);
   }
   const workerVersionId = requireString(
     revision.workerVersionId,
-    'receipt.controlRevision.workerVersionId',
+    `${field}.workerVersionId`,
   );
   if (!workerVersionIdPattern.test(workerVersionId)) {
-    invalid('receipt.controlRevision.workerVersionId must be a lowercase UUID');
+    invalid(`${field}.workerVersionId must be a lowercase UUID`);
   }
   const workerVersionTag = requireString(
     revision.workerVersionTag,
-    'receipt.controlRevision.workerVersionTag',
+    `${field}.workerVersionTag`,
   );
   if (
     !workerVersionTagPattern.test(workerVersionTag)
     || workerVersionTag !== `steward-${stewardCommit}`
   ) {
     invalid(
-      'receipt.controlRevision.workerVersionTag must bind the Steward commit',
+      `${field}.workerVersionTag must bind the Steward commit`,
     );
   }
   return {
@@ -175,9 +178,15 @@ function parseControlRevision(value: unknown): StewardRuntimeControlRevisionV1 {
     // format stricter than the platform contract.
     workerVersionCreatedAt: requireOpaqueAscii(
       revision.workerVersionCreatedAt,
-      'receipt.controlRevision.workerVersionCreatedAt',
+      `${field}.workerVersionCreatedAt`,
     ),
   };
+}
+
+export function parseStewardRuntimeControlRevision(
+  value: unknown,
+): StewardRuntimeControlRevisionV1 {
+  return parseControlRevision(value, 'controlRevision');
 }
 
 export function parseStewardRuntimeControlRequest(
@@ -244,7 +253,7 @@ export function parseStewardRuntimeControlReceipt(
     subject: parseSubject(receipt.subject),
     deliveryId: requireOpaqueAscii(receipt.deliveryId, 'receipt.deliveryId'),
     generation: requirePositiveSafeInteger(receipt.generation, 'receipt.generation'),
-    controlRevision: parseControlRevision(receipt.controlRevision),
+    controlRevision: parseControlRevision(receipt.controlRevision, 'receipt.controlRevision'),
   };
 }
 

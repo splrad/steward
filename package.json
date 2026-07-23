@@ -16,9 +16,10 @@
     "build:cli": "node scripts/build-cli.mjs",
     "deploy:relay": "wrangler deploy --config packages/relay/wrangler.toml",
     "test": "vitest run",
-    "test:workerd": "npm run test:workerd:coordinator && npm run test:workerd:control",
+    "test:workerd": "npm run test:workerd:coordinator && npm run test:workerd:control && npm run test:workerd:diagnostics",
     "test:workerd:control": "vitest run --config vitest.control-workerd.config.ts",
     "test:workerd:coordinator": "vitest run --config vitest.workerd.config.ts",
+    "test:workerd:diagnostics": "vitest run --config vitest.diagnostics-workerd.config.ts",
     "test:relay": "vitest run packages/relay/test",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.worker.json && tsc -p tsconfig.runtime.json && tsc -p workerd-tests/tsconfig.json && tsc -p packages/relay/tsconfig.json",
     "verify": "npm run test && npm run test:workerd && npm run typecheck && npm run verify:dist && npm run verify:workflows",
@@ -28,6 +29,7 @@
   "dependencies": {
     "@actions/core": "3.0.1",
     "@octokit/auth-app": "8.2.0",
+    "jose": "6.2.4",
     "libsodium-wrappers": "0.8.4"
   },
   "devDependencies": {

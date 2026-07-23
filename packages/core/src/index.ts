@@ -12,6 +12,7 @@ export * from './matrix.js';
 export * from './organization-contract.js';
 export * from './release.js';
 export * from './runtime-diagnostics.js';
+export * from './runtime-diagnostics-transport.js';
 export * from './runtime-control.js';
 export * from './runtime-work-item.js';
 export * from './webhook-causality.js';
