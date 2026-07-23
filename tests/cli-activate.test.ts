@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import {
+  dispatchActivate,
   executeActivate,
   prepareActivate,
   type ActivateRulesetPlan,
@@ -241,29 +242,33 @@ class ActivateState {
 }
 
 describe('activate command', () => {
-  it('parses only the explicit interactive command surface', () => {
-    expect(parseArguments(['activate', '--repo', 'splrad/example', '--pr', '3'])).toEqual({
-      command: 'activate', repository: 'splrad/example', pullRequest: 3,
-    });
-    expect(() => parseArguments(['activate', '--repo', 'splrad/example'])).toThrow('--pr');
-    expect(() => parseArguments(['activate', '--repo', 'splrad/example', '--pr', '3', '--json'])).toThrow('Unknown argument');
-  });
-
-  it('dispatches exactly one full Matrix run and does not read or mutate rulesets when the App Check is absent', async () => {
+  it('rejects the legacy public command during parsing before credentials or transport are used', async () => {
+    expect(() => parseArguments(['activate', '--repo', 'splrad/example', '--pr', '3']))
+      .toThrow('Usage:');
     const state = new ActivateState();
-    state.trustedCheck = false;
-    const exit = await main(
+    expect(await main(
       ['activate', '--repo', 'splrad/example', '--pr', '3'],
       { GH_TOKEN: 'token' },
       { templateDirectory: '.', transport: state.transport },
-    );
-    expect(exit).toBe(0);
+    )).toBe(2);
+    expect(state.requests).toEqual([]);
+    expect(state.installationRequests).toEqual([]);
+  });
+
+  it('keeps the historical dispatch planner executable only through its test module', async () => {
+    const state = new ActivateState();
+    state.trustedCheck = false;
+    const prepared = await prepareActivate(state.transport, {
+      owner: 'splrad', repository: 'example', pullRequest: 3,
+    });
+    expect(prepared.status).toBe('dispatch-required');
+    if (prepared.status !== 'dispatch-required') throw new Error('Expected historical dispatch plan');
+    await dispatchActivate(state.transport, prepared.plan);
     expect(state.mutations()).toEqual([{
       method: 'POST',
       path: '/repos/splrad/example/actions/workflows/pr-validation-matrix.yml/dispatches',
       body: { ref: 'main', inputs: { pr_number: '3', head_sha: headSha, scope: 'full', mode: 'enforce' } },
     }]);
-    expect(state.requests.some((request) => request.path.includes('/rulesets'))).toBe(false);
   });
 
   it('preserves every non-Steward check, rule, condition, and bypass actor in the update plan', async () => {
@@ -370,109 +375,6 @@ describe('activate command', () => {
       conditions: { ref_name: { include: ['~DEFAULT_BRANCH'], exclude: [] } },
       rules: [dedicatedRequiredChecks()],
     });
-  });
-
-  it('reuses an already active exact Matrix rule without confirmation or mutation', async () => {
-    const state = new ActivateState();
-    state.rulesets[0] = {
-      ...state.rulesets[0],
-      enforcement: 'active',
-      rules: [otherRule, requiredChecks([
-        { context: 'Project CI', integration_id: 99 },
-        { context: 'PR Validation Matrix Gate', integration_id: 42 },
-      ])],
-    };
-    let confirmations = 0;
-    const exit = await main(
-      ['activate', '--repo', 'splrad/example', '--pr', '3'],
-      { GH_TOKEN: 'token' },
-      {
-        templateDirectory: '.',
-        transport: state.transport,
-        confirmation: { confirm: async () => { confirmations += 1; return true; } },
-      },
-    );
-    expect(exit).toBe(0);
-    expect(confirmations).toBe(0);
-    expect(state.mutations()).toEqual([]);
-  });
-
-  it('requires confirmation, re-reads the exact plan, and then updates one ruleset', async () => {
-    const state = new ActivateState();
-    const exit = await main(
-      ['activate', '--repo', 'splrad/example', '--pr', '3'],
-      { GH_TOKEN: 'token' },
-      {
-        templateDirectory: '.',
-        transport: state.transport,
-        confirmation: { confirm: async () => true },
-      },
-    );
-    expect(exit).toBe(0);
-    expect(state.mutations()).toHaveLength(1);
-    expect(state.mutations()[0]?.method).toBe('PUT');
-    expect(state.mutations()[0]?.path).toBe('/repos/splrad/example/rulesets/5');
-  });
-
-  it('isolates App installation proof from repository administration and revalidates both before mutation', async () => {
-    const state = new ActivateState();
-    const exit = await main(
-      ['activate', '--repo', 'splrad/example', '--pr', '3'],
-      { GH_TOKEN: 'repository-admin-token', STEWARD_APP_USER_TOKEN: 'app-user-token' },
-      {
-        templateDirectory: '.',
-        transport: state.transport,
-        installationTransport: state.installationTransport,
-        confirmation: { confirm: async () => true },
-      },
-    );
-    expect(exit).toBe(0);
-    expect(state.installationRequests.map((request) => request.path))
-      .toEqual(['/orgs/splrad/installations', '/orgs/splrad/installations']);
-    expect(state.requests.some((request) => request.path.includes('/installations'))).toBe(false);
-    expect(state.mutations()).toHaveLength(1);
-  });
-
-  it('never promotes an App user token into the activate mutation credential', async () => {
-    const state = new ActivateState();
-    expect(await main(
-      ['activate', '--repo', 'splrad/example', '--pr', '3'],
-      { STEWARD_APP_USER_TOKEN: 'app-user-token' },
-      {
-        templateDirectory: '.',
-        transport: state.transport,
-        installationTransport: state.installationTransport,
-        confirmation: { confirm: async () => true },
-      },
-    )).toBe(2);
-    expect(state.requests).toEqual([]);
-    expect(state.installationRequests).toEqual([]);
-  });
-
-  it('does not mutate after cancellation or after a post-confirmation plan drift', async () => {
-    const cancelled = new ActivateState();
-    expect(await main(
-      ['activate', '--repo', 'splrad/example', '--pr', '3'],
-      { GH_TOKEN: 'token' },
-      { templateDirectory: '.', transport: cancelled.transport, confirmation: { confirm: async () => false } },
-    )).toBe(1);
-    expect(cancelled.mutations()).toEqual([]);
-
-    const drifted = new ActivateState();
-    expect(await main(
-      ['activate', '--repo', 'splrad/example', '--pr', '3'],
-      { GH_TOKEN: 'token' },
-      {
-        templateDirectory: '.',
-        transport: drifted.transport,
-        confirmation: { confirm: async () => {
-          const parameters = (drifted.rulesets[0]!.rules as Array<Record<string, unknown>>)[2]!.parameters as Record<string, unknown>;
-          parameters.required_status_checks = [{ context: 'Externally Added', integration_id: 77 }];
-          return true;
-        } },
-      },
-    )).toBe(2);
-    expect(drifted.mutations()).toEqual([]);
   });
 
   it('fails closed for ambiguous or inherited Steward-bearing rulesets', async () => {

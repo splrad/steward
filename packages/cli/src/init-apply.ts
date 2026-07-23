@@ -284,7 +284,7 @@ export async function prepareInitApply(input: {
     ),
   ]);
   const { files, counts } = filePlan;
-  if (counts.conflict) throw new Error('init --apply found generated-file conflicts, including an exact-digest adoption mismatch, on the default branch');
+  if (counts.conflict) throw new Error('init --apply found generated-file conflicts on the default branch');
 
   const presentSecrets = new Set(secrets.map((secret) => String(secret.name ?? '')));
   const missingSecrets = requiredSecretRequirements(input.spec.manifest)

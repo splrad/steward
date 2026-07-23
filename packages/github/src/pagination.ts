@@ -11,6 +11,13 @@ export interface LinkPage<T> {
   link?: string | null;
 }
 
+export class GitHubPaginationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GitHubPaginationError';
+  }
+}
+
 function boundedPositiveInteger(value: number, maximum: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`${name} must be a positive integer`);
   if (value > maximum) throw new RangeError(`${name} must not exceed ${maximum}`);
@@ -39,7 +46,7 @@ export async function fetchPullRequestPages<T>(
     all.push(...items);
     if (items.length < pageSize) break;
     if (page === maxPages) {
-      throw new Error(`GitHub pagination reached the ${maxPages}-page safety limit before a terminal page`);
+      throw new GitHubPaginationError(`GitHub pagination reached the ${maxPages}-page safety limit before a terminal page`);
     }
   }
   return all;
@@ -71,7 +78,7 @@ export async function fetchGitHubLinkPages<T>(
   let current: URL | null = initial;
   for (let page = 1; page <= maximum && current; page += 1) {
     const currentUrl = current.href;
-    if (visited.has(currentUrl)) throw new Error('GitHub pagination link cycle detected');
+    if (visited.has(currentUrl)) throw new GitHubPaginationError('GitHub pagination link cycle detected');
     visited.add(currentUrl);
     const response = await fetchPage(currentUrl);
     if (!Array.isArray(response?.items)) throw new TypeError('GitHub page response items must be an array');
@@ -79,11 +86,11 @@ export async function fetchGitHubLinkPages<T>(
     const next = nextPageUrl(response.link);
     if (!next) break;
     if (page === maximum) {
-      throw new Error(`GitHub pagination exceeded the ${maximum}-page safety limit`);
+      throw new GitHubPaginationError(`GitHub pagination exceeded the ${maximum}-page safety limit`);
     }
     const resolved = new URL(next, current);
     if (resolved.origin !== initial.origin) {
-      throw new Error('GitHub pagination next link changed origin');
+      throw new GitHubPaginationError('GitHub pagination next link changed origin');
     }
     current = resolved;
   }

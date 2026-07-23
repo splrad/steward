@@ -1,4 +1,6 @@
-export type MatrixEvidenceState = 'passed' | 'pending' | 'failed' | 'missing' | 'recoverable';
+import { hashJson } from './fingerprint.js';
+
+export type MatrixEvidenceState = 'passed' | 'pending' | 'failed' | 'missing' | 'recoverable' | 'invalid';
 export type MatrixMode = 'observe' | 'repair' | 'enforce';
 export type MatrixScope = 'full' | 'gate-only';
 
@@ -25,9 +27,64 @@ export interface MatrixConfiguration {
   targets: MatrixTargetConfiguration[];
 }
 
+export const STEWARD_MATRIX_CONFIGURATION: MatrixConfiguration = {
+  gateName: 'PR Validation Matrix Gate',
+  targets: [
+    {
+      id: 'pr-classification', name: 'PR Classification Gate', checkNames: ['PR Classification Gate'],
+      workflowName: 'PR Classification', workflowFile: 'pr-classification.yml', jobName: 'Classify Pull Request',
+      group: 'full', acceptableConclusions: ['success'], repairable: true, fingerprintBound: true, customCheck: true,
+    },
+    {
+      id: 'dco-signoff', name: 'DCO Sign-off Advisory', checkNames: ['DCO Sign-off Advisory'],
+      workflowName: 'DCO Sign-off Advisory', workflowFile: 'dco-advisory.yml', legacyWorkflowFiles: ['dco-check.yml'],
+      jobName: 'DCO Sign-off Advisory', group: 'full', acceptableConclusions: ['success'], required: false,
+      repairable: true,
+    },
+    {
+      id: 'main-authorization', name: 'PR Governance / Main Authorization Gate', checkNames: ['Main Authorization Gate'],
+      workflowName: 'PR Governance', workflowFile: 'pr-governance.yml', jobName: 'Main Authorization Gate',
+      group: 'gate', acceptableConclusions: ['success'], repairable: true, fingerprintBound: true, customCheck: true,
+    },
+    {
+      id: 'copilot-review-gate', name: 'Copilot Code Review Gate', checkNames: ['Copilot Code Review Gate'],
+      workflowName: 'PR Governance', workflowFile: 'pr-governance.yml', jobName: 'Update Copilot Review Check',
+      group: 'gate', acceptableConclusions: ['success'], repairable: true, customCheck: true,
+    },
+  ],
+};
+
+export interface StewardMatrixFeatureConfiguration {
+  readonly classification: boolean;
+  readonly dcoAdvisory: boolean;
+  readonly governance: boolean;
+  readonly copilotReview: boolean;
+}
+
+const targetFeatures: Readonly<Record<string, keyof StewardMatrixFeatureConfiguration>> = {
+  'pr-classification': 'classification',
+  'dco-signoff': 'dcoAdvisory',
+  'main-authorization': 'governance',
+  'copilot-review-gate': 'copilotReview',
+};
+
+export function enabledStewardMatrixConfiguration(
+  features: StewardMatrixFeatureConfiguration,
+): MatrixConfiguration {
+  return {
+    gateName: STEWARD_MATRIX_CONFIGURATION.gateName,
+    targets: STEWARD_MATRIX_CONFIGURATION.targets.filter((target) => {
+      const feature = targetFeatures[target.id];
+      if (!feature) throw new Error(`Matrix target ${target.id} has no feature mapping`);
+      return features[feature] === true;
+    }),
+  };
+}
+
 export interface MatrixCheckRun {
   id?: number;
   name?: string;
+  head_sha?: string;
   status?: string;
   conclusion?: string;
   external_id?: string;
@@ -35,7 +92,7 @@ export interface MatrixCheckRun {
   html_url?: string;
   started_at?: string;
   created_at?: string;
-  app?: { slug?: string } | null;
+  app?: { id?: number; slug?: string } | null;
 }
 
 export interface MatrixWorkflowRun {
@@ -54,8 +111,8 @@ export interface MatrixWorkflowRun {
 export interface MatrixPull {
   number: number;
   state?: string;
-  base: { ref: string };
-  head: { sha: string };
+  base: { ref: string; sha?: string };
+  head: { ref?: string; sha: string };
 }
 
 export interface MatrixIdentityInput {
@@ -76,6 +133,38 @@ export interface MatrixTargetResult extends MatrixTargetConfiguration {
   required: boolean;
 }
 
+export interface MatrixLiveEvidenceProjection {
+  repository_id: number;
+  pull_request: {
+    number: number;
+    state: string;
+    base: { ref: string; sha: string };
+    head: { ref: string; sha: string };
+  };
+  config_digest: string;
+  scope: 'full';
+  pull_fingerprint_digest: string;
+  targets: {
+    id: string;
+    state: MatrixEvidenceState;
+    required: boolean;
+    check: {
+      id: number;
+      name: string;
+      head_sha: string;
+      app: { id: number; slug: string };
+      external_id: string;
+      status: string;
+      conclusion: string;
+    } | null;
+  }[];
+}
+
+export interface MatrixLiveEvidence {
+  projection: MatrixLiveEvidenceProjection;
+  value: string;
+}
+
 export interface MatrixEvaluation {
   state: 'passed' | 'pending' | 'failed';
   targets: MatrixTargetResult[];
@@ -85,6 +174,7 @@ export interface MatrixEvaluation {
 }
 
 export interface MatrixTrustContext {
+  appId: number;
   appSlug: string;
   repositoryId: number;
   configDigest: string;
@@ -127,13 +217,27 @@ export interface MatrixProxyCompletionPlan {
 
 const pendingCheckStatuses = new Set(['queued', 'in_progress', 'waiting', 'requested', 'pending']);
 
-function compareTimestamp(left: MatrixCheckRun, right: MatrixCheckRun): number {
-  return String(left.started_at ?? left.created_at ?? '').localeCompare(String(right.started_at ?? right.created_at ?? ''))
-    || Number(left.id ?? 0) - Number(right.id ?? 0);
+function latestCheck(checks: readonly MatrixCheckRun[]): MatrixCheckRun | undefined {
+  return checks
+    .filter((check) => Number.isSafeInteger(check.id) && Number(check.id) > 0)
+    .reduce<MatrixCheckRun | undefined>((latest, candidate) => (
+      !latest || Number(candidate.id) > Number(latest.id) ? candidate : latest
+    ), undefined);
 }
 
-function latestCheck(checks: readonly MatrixCheckRun[]): MatrixCheckRun | undefined {
-  return [...checks].sort(compareTimestamp).at(-1);
+function validCheckRunId(run: MatrixCheckRun): boolean {
+  return Number.isSafeInteger(run.id) && Number(run.id) > 0;
+}
+
+function invalidGenerationCheck(checks: readonly MatrixCheckRun[]): MatrixCheckRun | undefined {
+  const seen = new Set<number>();
+  for (const check of checks) {
+    if (!validCheckRunId(check)) return check;
+    const id = Number(check.id);
+    if (seen.has(id)) return check;
+    seen.add(id);
+  }
+  return undefined;
 }
 
 export function stewardCheckExternalId(input: MatrixIdentityInput): string {
@@ -161,6 +265,73 @@ export function parseStewardCheckExternalId(value: unknown): MatrixIdentityInput
     configDigest: String(match[5]).toLowerCase(),
     inputDigest: String(match[6]).toLowerCase(),
   };
+}
+
+/**
+ * Projects the exact trusted child-Check snapshot used by the full Matrix gate.
+ * Callers must pass target results produced by a full-scope evaluateMatrix call
+ * with a trust context. The final Matrix Check is excluded to avoid a digest cycle.
+ */
+export function projectMatrixLiveEvidence(input: {
+  repositoryId: number;
+  pull: MatrixPull;
+  configDigest: string;
+  pullFingerprintDigest: string;
+  targets: readonly MatrixTargetResult[];
+}): MatrixLiveEvidenceProjection {
+  const targets = input.targets
+    .filter((target) => (
+      target.id !== 'validation-matrix'
+      && parseStewardCheckExternalId(target.checkRun?.external_id)?.checkId !== 'validation-matrix'
+    ))
+    .map((target) => ({
+      id: target.id,
+      state: target.state,
+      required: target.required,
+      check: target.checkRun ? {
+        id: Number(target.checkRun.id ?? 0),
+        name: String(target.checkRun.name ?? ''),
+        head_sha: String(target.checkRun.head_sha ?? '').toLowerCase(),
+        app: {
+          id: Number(target.checkRun.app?.id ?? 0),
+          slug: String(target.checkRun.app?.slug ?? '').toLowerCase(),
+        },
+        external_id: String(target.checkRun.external_id ?? ''),
+        status: String(target.checkRun.status ?? ''),
+        conclusion: String(target.checkRun.conclusion ?? ''),
+      } : null,
+    }))
+    .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+  return {
+    repository_id: input.repositoryId,
+    pull_request: {
+      number: input.pull.number,
+      state: String(input.pull.state ?? '').toLowerCase(),
+      base: {
+        ref: String(input.pull.base.ref ?? ''),
+        sha: String(input.pull.base.sha ?? '').toLowerCase(),
+      },
+      head: {
+        ref: String(input.pull.head.ref ?? ''),
+        sha: String(input.pull.head.sha ?? '').toLowerCase(),
+      },
+    },
+    config_digest: input.configDigest.toLowerCase(),
+    scope: 'full',
+    pull_fingerprint_digest: input.pullFingerprintDigest.toLowerCase(),
+    targets,
+  };
+}
+
+export async function matrixLiveEvidenceDigest(input: {
+  repositoryId: number;
+  pull: MatrixPull;
+  configDigest: string;
+  pullFingerprintDigest: string;
+  targets: readonly MatrixTargetResult[];
+}): Promise<MatrixLiveEvidence> {
+  const projection = projectMatrixLiveEvidence(input);
+  return { projection, value: await hashJson(projection) };
 }
 
 export function legacyProxyExternalId(
@@ -223,7 +394,8 @@ export function isTrustedMatrixCheck(input: {
 }): boolean {
   const { run, target, pull, trust } = input;
   if (!pull.number || !pull.head.sha) return false;
-  if (String(run.app?.slug ?? '') === trust.appSlug) {
+  if (String(run.head_sha ?? '').toLowerCase() !== pull.head.sha.toLowerCase()) return false;
+  if (run.app?.id === trust.appId && String(run.app?.slug ?? '') === trust.appSlug) {
     const identity = parseStewardCheckExternalId(run.external_id);
     if (target.id === 'pr-classification'
       && identity?.checkId === 'pr-class-lease'
@@ -256,10 +428,13 @@ export function matrixCheckState(
   target: Pick<MatrixTargetConfiguration, 'acceptableConclusions'>,
 ): MatrixEvidenceState {
   if (!run) return 'missing';
-  if (pendingCheckStatuses.has(String(run.status ?? ''))) return 'pending';
+  if (!validCheckRunId(run)) return 'invalid';
+  const status = String(run.status ?? '');
   const conclusion = String(run.conclusion ?? '');
+  if (pendingCheckStatuses.has(status)) return conclusion ? 'invalid' : 'pending';
+  if (status !== 'completed' || !conclusion) return 'invalid';
   if ((target.acceptableConclusions.length ? target.acceptableConclusions : ['success']).includes(conclusion)) return 'passed';
-  if (['cancelled', 'timed_out', 'skipped', 'action_required', 'stale'].includes(conclusion)) return 'recoverable';
+  if (['cancelled', 'timed_out', 'skipped', 'action_required', 'stale', 'startup_failure'].includes(conclusion)) return 'recoverable';
   return 'failed';
 }
 
@@ -312,15 +487,16 @@ export function evaluateMatrix(input: {
       proxyMatchesTarget(target, run, input.pull)
       && pendingCheckStatuses.has(String(run.status ?? ''))
     ));
-    const checkRun = (target.id === 'pr-classification'
-      ? [...matches].sort((left, right) => Number(left.id ?? 0) - Number(right.id ?? 0)).at(-1)
+    const invalidCheck = invalidGenerationCheck(matches);
+    const checkRun = invalidCheck ?? (target.id === 'pr-classification'
+      ? latestCheck(matches)
       : latestCheck(active.length ? active : matches)) ?? null;
     const leaseBarrier = Boolean(checkRun && classificationLeaseMatchesTarget(target, checkRun, input.pull));
-    const override = input.targetOverrides?.[target.id];
+    const override = invalidCheck ? undefined : input.targetOverrides?.[target.id];
     return {
       ...target,
       checkRun,
-      state: override?.state ?? (leaseBarrier
+      state: invalidCheck ? 'invalid' : override?.state ?? (leaseBarrier
         ? pendingCheckStatuses.has(String(checkRun?.status ?? '')) ? 'pending' : 'failed'
         : matrixCheckState(checkRun, target)),
       conclusion: override?.conclusion ?? String(checkRun?.conclusion ?? ''),
@@ -330,7 +506,7 @@ export function evaluateMatrix(input: {
     } satisfies MatrixTargetResult;
   });
   const blocking = targets.filter((target) => target.required && ['missing', 'recoverable', 'failed'].includes(target.state));
-  const pending = targets.filter((target) => target.required && target.state === 'pending');
+  const pending = targets.filter((target) => target.required && ['pending', 'invalid'].includes(target.state));
   return {
     state: pending.length ? 'pending' : blocking.length ? 'failed' : 'passed',
     targets,

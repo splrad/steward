@@ -504,6 +504,15 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
     }));
   }
 
+  async listPullRequestsForCommit(owner: string, repository: string, sha: string): Promise<GitHubPullRequest[]> {
+    const commitSha = sha.trim().toLowerCase();
+    if (!/^[a-f0-9]{40}$/.test(commitSha)) throw new Error('Commit SHA must contain 40 hexadecimal characters');
+    return await fetchPullRequestPages((page, perPage) => this.transport.request<GitHubPullRequest[]>({
+      path: `${repositoryPath(owner, repository)}/commits/${commitSha}/pulls`,
+      query: { page, per_page: perPage },
+    }));
+  }
+
   async listReleases(owner: string, repository: string): Promise<GitHubRelease[]> {
     return await fetchPullRequestPages((page, perPage) => this.transport.request<GitHubRelease[]>({
       path: `${repositoryPath(owner, repository)}/releases`,

@@ -1,15 +1,13 @@
 import { readFile } from 'node:fs/promises';
-import { createGitHubRestTransport, type GitHubTransport } from '../../github/src/index.js';
 import {
-  dispatchActivate,
-  executeActivate,
-  prepareActivate,
-  type ActivateReport,
-  type ActivateRulesetPlan,
-} from './activate.js';
+  createGitHubRestTransport,
+  type GitHubActionsExecutionProtections,
+  type GitHubReadResult,
+  type GitHubTransport,
+} from '../../github/src/index.js';
 import { runAppInstallationPreflight, type AppInstallationReport } from './app-installation.js';
 import { TerminalConfirmationPrompt, type ConfirmationPrompt } from './confirmation.js';
-import { runDoctor, type DoctorReport } from './doctor.js';
+import { runDoctor, type DoctorReport, type RuntimeDiagnosticsReader } from './doctor.js';
 import {
   executeInitApply,
   prepareInitApply,
@@ -64,19 +62,13 @@ interface InitApplyArguments {
   repository: string;
 }
 
-interface ActivateArguments {
-  command: 'activate';
-  repository: string;
-  pullRequest: number;
-}
-
 interface UpgradeArguments {
   command: 'upgrade';
   repository: string;
   targetSha: string;
 }
 
-type Arguments = DoctorArguments | InitDryRunArguments | InitPreflightArguments | InitApplyArguments | ActivateArguments | UpgradeArguments;
+type Arguments = DoctorArguments | InitDryRunArguments | InitPreflightArguments | InitApplyArguments | UpgradeArguments;
 
 function usage(): string {
   return [
@@ -85,7 +77,6 @@ function usage(): string {
     '  steward init --dry-run --spec FILE [--target DIRECTORY] [--json]',
     '  steward init --preflight --repo OWNER/REPOSITORY --spec FILE [--json]',
     '  steward init --apply --repo OWNER/REPOSITORY --spec FILE',
-    '  steward activate --repo OWNER/REPOSITORY --pr NUMBER',
     '  steward upgrade --repo OWNER/REPOSITORY --to SHA',
   ].join('\n');
 }
@@ -138,23 +129,6 @@ export function parseArguments(argv: readonly string[]): Arguments {
     }
     return { command: 'init', mode: 'preflight', preflight: true, spec, repository, json };
   }
-  if (argv[0] === 'activate') {
-    let repository = '';
-    let pullRequest = 0;
-    for (let index = 1; index < argv.length; index += 1) {
-      const argument = argv[index];
-      if (argument === '--repo') repository = optionValue(argv, index++, '--repo');
-      else if (argument === '--pr') {
-        pullRequest = Number(optionValue(argv, index++, '--pr'));
-        if (!Number.isSafeInteger(pullRequest) || pullRequest < 1) throw new Error('--pr must be a positive integer');
-      } else throw new Error(`Unknown argument: ${argument ?? ''}\n${usage()}`);
-    }
-    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
-      throw new Error(`--repo must be OWNER/REPOSITORY\n${usage()}`);
-    }
-    if (!pullRequest) throw new Error(`activate requires --pr NUMBER\n${usage()}`);
-    return { command: 'activate', repository, pullRequest };
-  }
   if (argv[0] === 'upgrade') {
     let repository = '';
     let targetSha = '';
@@ -189,7 +163,7 @@ export function parseArguments(argv: readonly string[]): Arguments {
 }
 
 function render(report: DoctorReport): string {
-  const lines = [`Steward doctor: ${report.repository}`];
+  const lines = [`Steward doctor: ${report.repository}`, `Status: ${report.status}`];
   for (const item of report.findings) {
     lines.push(`[${item.level.toUpperCase()}] ${item.code}: ${item.summary}`);
     if (item.remedy) lines.push(`  修复：${item.remedy}`);
@@ -236,23 +210,6 @@ function renderInitApplyReport(report: InitApplyReport): string {
   return lines.join('\n');
 }
 
-function renderActivatePlan(plan: ActivateRulesetPlan): string {
-  return [
-    `Steward activate plan: ${plan.repository}`,
-    `Evidence: PR #${plan.pullRequest} @ ${plan.headSha.slice(0, 12)}…`,
-    `App: ${plan.appSlug} (${plan.appId})`,
-    `Ruleset: ${plan.action} ${plan.rulesetName}${plan.rulesetId ? ` (#${plan.rulesetId})` : ''}`,
-    `Legacy Steward checks to remove: ${plan.removedChecks.length ? plan.removedChecks.join(', ') : 'none'}`,
-    `Non-Steward required checks preserved: ${plan.preservedChecks.length ? plan.preservedChecks.join(', ') : 'none'}`,
-    'All other rules, conditions, and bypass actors are preserved.',
-    'No ruleset mutation has been sent.',
-  ].join('\n');
-}
-
-function renderActivateReport(report: ActivateReport): string {
-  return `Steward activate complete: ${report.repository}\nRuleset: ${report.rulesetName} #${report.rulesetId} (${report.action})`;
-}
-
 function renderUpgradePlan(plan: UpgradePlan): string {
   const lines = [
     `Steward upgrade plan: ${plan.repository}`,
@@ -286,7 +243,23 @@ interface CliRuntime {
   confirmation?: ConfirmationPrompt;
   secretPrompt?: SecretPrompt;
   transport?: GitHubTransport;
+  organizationTransport?: GitHubTransport;
   installationTransport?: GitHubTransport;
+  appJwtTransport?: GitHubTransport;
+  runtimeDiagnostics?: RuntimeDiagnosticsReader;
+  actionsExecutionProtections?: GitHubReadResult<GitHubActionsExecutionProtections>;
+}
+
+function doctorOrganizationTransport(
+  env: NodeJS.ProcessEnv,
+  runtime: CliRuntime,
+  fallback: GitHubTransport,
+): GitHubTransport {
+  if (runtime.organizationTransport) return runtime.organizationTransport;
+  const token = String(env.STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN ?? '').trim();
+  return token
+    ? createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli-org-diagnostics' })
+    : fallback;
 }
 
 function installationProofTransport(
@@ -298,6 +271,17 @@ function installationProofTransport(
   return runtime.installationTransport ?? (token
     ? createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' })
     : fallback);
+}
+
+function doctorAppUserTransport(
+  env: NodeJS.ProcessEnv,
+  runtime: CliRuntime,
+): GitHubTransport | undefined {
+  if (runtime.installationTransport) return runtime.installationTransport;
+  const token = String(env.STEWARD_APP_USER_TOKEN ?? '').trim();
+  return token
+    ? createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' })
+    : undefined;
 }
 
 export async function main(
@@ -367,43 +351,6 @@ export async function main(
     const token = String(env.GH_TOKEN ?? env.GITHUB_TOKEN ?? '').trim();
     if (!token) throw new Error('GH_TOKEN or GITHUB_TOKEN is required');
     const [owner, repository] = args.repository.split('/') as [string, string];
-    if (args.command === 'activate') {
-      const transport = runtime.transport ?? createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' });
-      const installationTransport = installationProofTransport(env, runtime, transport);
-      const prepared = await prepareActivate(transport, {
-        owner, repository, pullRequest: args.pullRequest,
-      }, installationTransport);
-      if (prepared.status === 'dispatch-required') {
-        await dispatchActivate(transport, prepared.plan);
-        process.stdout.write([
-          `Steward activate dispatched full Matrix validation for ${prepared.plan.repository} PR #${prepared.plan.pullRequest}.`,
-          'Wait for the App Matrix Check to appear, then run the same activate command again.',
-          'No ruleset mutation was sent.',
-          '',
-        ].join('\n'));
-        return 0;
-      }
-      if (prepared.status === 'active') {
-        process.stdout.write(`Steward activate: ${prepared.plan.repository} already requires ${prepared.plan.appSlug} PR Validation Matrix Gate.\n`);
-        return 0;
-      }
-      process.stdout.write(`${renderActivatePlan(prepared.plan)}\n`);
-      const confirmed = await (runtime.confirmation ?? new TerminalConfirmationPrompt())
-        .confirm('Apply this Steward ruleset plan? [y/N] ');
-      if (!confirmed) {
-        process.stderr.write('Steward activate cancelled; no ruleset mutation was sent.\n');
-        return 1;
-      }
-      const refreshed = await prepareActivate(transport, {
-        owner, repository, pullRequest: args.pullRequest,
-      }, installationTransport);
-      if (refreshed.status !== 'ready' || refreshed.plan.fingerprint !== prepared.plan.fingerprint) {
-        throw new Error('activate plan changed after confirmation; no ruleset mutation was sent');
-      }
-      const report = await executeActivate(transport, refreshed.plan);
-      process.stdout.write(`${renderActivateReport(report)}\n`);
-      return 0;
-    }
     if (args.command === 'upgrade') {
       const transport = runtime.transport ?? createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' });
       const prepared = await prepareUpgrade({
@@ -431,11 +378,22 @@ export async function main(
       return 0;
     }
     const transport = runtime.transport ?? createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' });
-    const report = await runDoctor(transport, {
+    const organizationTransport = doctorOrganizationTransport(env, runtime, transport);
+    const appUserTransport = doctorAppUserTransport(env, runtime);
+    const report = await runDoctor({
+      repositoryTransport: transport,
+      organizationTransport,
+      ...(runtime.appJwtTransport ? { appJwtTransport: runtime.appJwtTransport } : {}),
+      ...(appUserTransport ? { appUserTransport } : {}),
+      ...(runtime.runtimeDiagnostics ? { runtimeDiagnostics: runtime.runtimeDiagnostics } : {}),
+      ...(runtime.actionsExecutionProtections
+        ? { actionsExecutionProtections: runtime.actionsExecutionProtections }
+        : {}),
+    }, {
       owner, repository, ...(args.pullRequest === undefined ? {} : { pullRequest: args.pullRequest }),
-    }, installationProofTransport(env, runtime, transport));
+    });
     process.stdout.write(`${args.json ? JSON.stringify(report, null, 2) : render(report)}\n`);
-    return report.ok ? 0 : 1;
+    return report.status === 'ready' ? 0 : report.status === 'action-required' ? 1 : 2;
   } catch (error) {
     process.stderr.write(`steward: ${redactSensitiveText(error instanceof Error ? error.message : String(error))}\n`);
     return 2;

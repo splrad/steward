@@ -13,12 +13,15 @@ import {
   evaluateMatrix,
   fingerprintForPull,
   formatMentions,
+  hashJson,
   isBotLogin,
   mainAuthorizationFailureModel,
   matrixConclusion,
+  matrixLiveEvidenceDigest,
   nextBlockingFailuresState,
   normalizeBlockingFailure,
   normalizeGitHubLogin,
+  parseStewardCheckExternalId,
   planMatrixRepairs,
   planProxyCompletions,
   stewardCheckExternalId,
@@ -238,6 +241,39 @@ async function pullFacts(context: StewardOperationContext): Promise<PullFacts> {
   };
 }
 
+async function openPullNumbersForHead(context: StewardOperationContext): Promise<number[]> {
+  const associated = await context.client.listPullRequestsForCommit(
+    context.owner,
+    context.repository,
+    context.pull.head.sha,
+  );
+  const expectedHead = context.pull.head.sha.toLowerCase();
+  const openNumbers: number[] = [];
+  for (const pull of associated) {
+    if (pull.state !== 'open') continue;
+    const number = Number(pull.number);
+    const headSha = String(pull.head?.sha ?? '').toLowerCase();
+    if (!Number.isSafeInteger(number) || number < 1 || !/^[a-f0-9]{40}$/.test(headSha)) {
+      throw new Error('Commit-associated open pull request metadata is malformed');
+    }
+    // GitHub returns every PR associated with the commit, including PRs whose
+    // current head has advanced past it. Only exact current-head equality is a
+    // commit-level required-Check collision.
+    if (headSha === expectedHead) openNumbers.push(number);
+  }
+  return [...new Set(openNumbers)].sort((left, right) => left - right);
+}
+
+async function assertExclusiveOpenPullForHead(context: StewardOperationContext): Promise<void> {
+  const openNumbers = await openPullNumbersForHead(context);
+  if (openNumbers.length !== 1 || openNumbers[0] !== context.pull.number) {
+    throw new Error(
+      `Matrix requires an exclusive open pull request for head ${context.pull.head.sha}; observed ${
+        openNumbers.length ? openNumbers.join(',') : 'none'}`,
+    );
+  }
+}
+
 function currentReviews(context: StewardOperationContext, reviews: readonly GitHubPullRequestReview[]): GitHubPullRequestReview[] {
   const latest = new Map<string, GitHubPullRequestReview>();
   for (const review of reviews) {
@@ -281,7 +317,11 @@ async function writeCheck(input: {
   inputDigest: string;
   status: 'queued' | 'in_progress' | 'completed';
   detailsUrl?: string | null;
+  checkRunId?: number;
+  expectedCurrentExternalId?: string;
+  createOnAmbiguousActive?: boolean;
   startNewRunIfCompleted?: boolean;
+  reuseCanonicalInProgress?: boolean;
   conclusion?: 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required';
   title: string;
   summary: string;
@@ -294,14 +334,42 @@ async function writeCheck(input: {
     configDigest: input.context.manifest.configDigest,
     inputDigest: input.inputDigest,
   });
-  const existing = input.checks
-    .filter((check) => (
-      check.name === input.name
-      && check.external_id === externalId
-      && String(check.app?.slug ?? '') === input.context.manifest.manifest.automation.githubApp.slug
-    ))
-    .sort((left, right) => left.id - right.id)
-    .at(-1);
+  const pendingStatuses = new Set(['queued', 'in_progress', 'waiting', 'requested', 'pending']);
+  const trusted = input.checks.filter((check) => (
+    check.name === input.name
+    && Number(check.app?.id ?? 0) === stewardRuntimeIdentity.appId
+    && String(check.app?.slug ?? '') === input.context.manifest.manifest.automation.githubApp.slug
+    && String(check.head_sha ?? '').toLowerCase() === input.context.pull.head.sha.toLowerCase()
+  ));
+  if (trusted.some((check) => !Number.isSafeInteger(check.id) || check.id < 1)) {
+    throw new Error(`Refusing to update ${input.name} with malformed trusted Check IDs`);
+  }
+  const latestTrusted = [...trusted].sort((left, right) => left.id - right.id).at(-1);
+  const canonicalInProgress = input.reuseCanonicalInProgress === true
+    ? trusted.filter((check) => {
+        if (!pendingStatuses.has(String(check.status ?? ''))
+          || String(check.head_sha ?? '').toLowerCase() !== input.context.pull.head.sha.toLowerCase()) return false;
+        const identity = parseStewardCheckExternalId(check.external_id);
+        return identity?.repositoryId === input.context.repositoryId
+          && identity.prNumber === input.context.pull.number
+          && identity.headSha === input.context.pull.head.sha.toLowerCase()
+          && identity.checkId === input.checkId
+          && identity.configDigest === input.context.manifest.configDigest;
+      })
+    : [];
+  if (canonicalInProgress.length > 1 && input.createOnAmbiguousActive !== true) {
+    throw new Error(`Refusing to update ambiguous active ${input.name} generations`);
+  }
+  const forceNewGeneration = canonicalInProgress.length > 1;
+  const candidates = trusted
+    .filter((check) => check.external_id === externalId || canonicalInProgress.includes(check))
+    .sort((left, right) => left.id - right.id);
+  const candidate = candidates.at(-1);
+  // The transitional adapter uses the highest observed numeric Check Run ID as
+  // a conservative generation hint. GitHub does not document this as a durable
+  // ordering contract; the production writer still requires a persisted DO
+  // generation/lease. Never patch an older observed run behind a higher one.
+  const existing = !forceNewGeneration && candidate?.id === latestTrusted?.id ? candidate : undefined;
   const detailsUrl = input.detailsUrl === null ? '' : input.detailsUrl || input.context.detailsUrl;
   const update = {
     name: input.name,
@@ -312,15 +380,70 @@ async function writeCheck(input: {
     title: input.title,
     summary: input.summary,
   };
-  const startNewRun = input.startNewRunIfCompleted === true
-    && input.status !== 'completed'
-    && existing?.status === 'completed';
-  return existing && !startNewRun
-    ? await input.context.client.updateCheckRun(input.context.owner, input.context.repository, existing.id, update)
-    : await input.context.client.createCheckRun(input.context.owner, input.context.repository, {
-      ...update,
-      headSha: input.context.pull.head.sha,
-    });
+  let written: GitHubCheckRun;
+  let expectedWrittenId: number | undefined;
+  if (input.checkRunId !== undefined) {
+    if (!Number.isSafeInteger(input.checkRunId) || input.checkRunId < 1) {
+      throw new Error(`Refusing to update ${input.name} with an invalid Check Run ID`);
+    }
+    const observed = input.checks.find((check) => check.id === input.checkRunId);
+    if (observed && !trusted.includes(observed)) {
+      throw new Error(`Refusing to update ${input.name} after its started generation changed identity`);
+    }
+    if (latestTrusted && latestTrusted.id > input.checkRunId) {
+      throw new Error(`Refusing to update superseded ${input.name} generation ${input.checkRunId}`);
+    }
+    if (input.expectedCurrentExternalId !== undefined) {
+      if (!observed) {
+        throw new Error(`Refusing to update ${input.name} without observing its started generation`);
+      }
+      if (observed.external_id !== input.expectedCurrentExternalId
+        || !pendingStatuses.has(String(observed.status ?? ''))
+        || observed.conclusion != null) {
+        throw new Error(`Refusing to update ${input.name} after its started generation changed identity or state`);
+      }
+    }
+    expectedWrittenId = input.checkRunId;
+    written = await input.context.client.updateCheckRun(
+      input.context.owner,
+      input.context.repository,
+      input.checkRunId,
+      update,
+    );
+  } else {
+    const startNewRun = input.startNewRunIfCompleted === true
+      && input.status !== 'completed'
+      && existing?.status === 'completed';
+    if (existing && !startNewRun) {
+      expectedWrittenId = existing.id;
+      written = await input.context.client.updateCheckRun(
+        input.context.owner,
+        input.context.repository,
+        existing.id,
+        update,
+      );
+    } else {
+      written = await input.context.client.createCheckRun(input.context.owner, input.context.repository, {
+        ...update,
+        headSha: input.context.pull.head.sha,
+      });
+    }
+  }
+  const responseConclusionMatches = input.conclusion !== undefined
+    ? written.conclusion === input.conclusion
+    : written.conclusion == null;
+  if (!Number.isSafeInteger(written.id) || written.id < 1
+    || (expectedWrittenId !== undefined && written.id !== expectedWrittenId)
+    || written.name !== input.name
+    || String(written.head_sha ?? '').toLowerCase() !== input.context.pull.head.sha.toLowerCase()
+    || Number(written.app?.id ?? 0) !== stewardRuntimeIdentity.appId
+    || String(written.app?.slug ?? '') !== input.context.manifest.manifest.automation.githubApp.slug
+    || written.external_id !== externalId
+    || written.status !== input.status
+    || !responseConclusionMatches) {
+    throw new Error(`${input.name} mutation response did not preserve the requested Check identity and state`);
+  }
+  return written;
 }
 
 function failureTitle(model: GovernanceFailureModel): string {
@@ -736,17 +859,187 @@ async function applyMatrixRepairs(
   }
 }
 
+async function liveMatrixInputs(
+  context: StewardOperationContext,
+  configuration: ReturnType<typeof enabledMatrixConfiguration>,
+  expectedFingerprint: string,
+): Promise<{
+  context: StewardOperationContext;
+  facts: PullFacts;
+  checks: GitHubCheckRun[];
+  workflowRuns: MatrixWorkflowRun[];
+}> {
+  const livePull = await context.client.getPullRequest(
+    context.owner,
+    context.repository,
+    context.pull.number,
+  );
+  const liveContext: StewardOperationContext = {
+    ...context,
+    pull: { ...livePull, mergeCommitSha: null },
+  };
+  const [facts, checks] = await Promise.all([
+    pullFacts(liveContext),
+    context.client.listCommitCheckRuns(context.owner, context.repository, livePull.head.sha),
+    assertExclusiveOpenPullForHead(liveContext),
+  ]);
+  if (livePull.state.toLowerCase() !== 'open'
+    || livePull.number !== context.pull.number
+    || livePull.head.sha.toLowerCase() !== context.pull.head.sha.toLowerCase()
+    || facts.fingerprint.value !== expectedFingerprint) {
+    throw new Error('Pull request governance inputs changed during Matrix convergence; retry from fresh live state');
+  }
+  const workflowRuns = await matrixWorkflowRuns(liveContext, checks, configuration);
+  return { context: liveContext, facts, checks, workflowRuns };
+}
+
+async function fullMatrixSnapshot(
+  context: StewardOperationContext,
+  configuration: ReturnType<typeof enabledMatrixConfiguration>,
+  expectedFingerprint: string,
+): Promise<{
+  inputs: Awaited<ReturnType<typeof liveMatrixInputs>>;
+  evaluation: ReturnType<typeof evaluateMatrix>;
+  evidence: Awaited<ReturnType<typeof matrixLiveEvidenceDigest>>;
+}> {
+  const inputs = await liveMatrixInputs(context, configuration, expectedFingerprint);
+  const evaluation = evaluateMatrix({
+    config: configuration,
+    checkRuns: inputs.checks as MatrixCheckRun[],
+    scope: 'full',
+    pull: inputs.context.pull,
+    trust: {
+      appId: stewardRuntimeIdentity.appId,
+      appSlug: context.manifest.manifest.automation.githubApp.slug,
+      repositoryId: context.repositoryId,
+      configDigest: context.manifest.configDigest,
+      inputDigest: inputs.facts.fingerprint.value,
+      workflowRuns: inputs.workflowRuns,
+      allowLegacy: true,
+    },
+  });
+  const evidence = await matrixLiveEvidenceDigest({
+    repositoryId: context.repositoryId,
+    pull: inputs.context.pull,
+    configDigest: context.manifest.configDigest,
+    pullFingerprintDigest: inputs.facts.fingerprint.value,
+    targets: evaluation.targets,
+  });
+  return { inputs, evaluation, evidence };
+}
+
 async function matrixOperation(context: StewardOperationContext, inputs: StewardActionInputs): Promise<StewardOperationResult> {
   const mode = parseMatrixMode(inputs.matrixMode);
   const signal = workflowEventSignal(context);
   const scope = parseMatrixScope(inputs.matrixScope, context.eventName, signal === 'review-state');
   const configuration = enabledMatrixConfiguration(context.manifest.manifest.features);
-  const [facts, checks] = await Promise.all([
+  let startedGate: GitHubCheckRun | null = null;
+  let startedGateExternalId: string | null = null;
+  if (mode !== 'observe') {
+    let preflightChecks: readonly GitHubCheckRun[] = [];
+    let preflightReadFailure: unknown;
+    try {
+      preflightChecks = await context.client.listCommitCheckRuns(
+        context.owner,
+        context.repository,
+        context.pull.head.sha,
+      );
+    } catch (error) {
+      // A failed read must not allow an older success to remain authoritative.
+      // Attempt a blind new generation first, then surface the original read
+      // failure with the new pending Gate left in place.
+      preflightReadFailure = error;
+    }
+    const invalidationDigest = await hashJson({
+      schema_version: 1,
+      kind: 'matrix-gate-invalidation',
+      repository_id: context.repositoryId,
+      pull_request: context.pull.number,
+      head_sha: context.pull.head.sha.toLowerCase(),
+      config_digest: context.manifest.configDigest,
+      scope,
+      signal,
+    });
+    startedGateExternalId = stewardCheckExternalId({
+      repositoryId: context.repositoryId,
+      prNumber: context.pull.number,
+      headSha: context.pull.head.sha,
+      checkId: 'validation-matrix',
+      configDigest: context.manifest.configDigest,
+      inputDigest: invalidationDigest,
+    });
+    startedGate = await writeCheck({
+      context,
+      checks: preflightChecks,
+      checkId: 'validation-matrix',
+      name: configuration.gateName,
+      inputDigest: invalidationDigest,
+      status: 'in_progress',
+      startNewRunIfCompleted: true,
+      reuseCanonicalInProgress: true,
+      createOnAmbiguousActive: true,
+      title: 'PR 验证矩阵等待完整重算',
+      summary: '治理信号已变化；旧 Matrix 成功结论已失效，必须完成一次 full reconcile。',
+    });
+    if (!Number.isSafeInteger(startedGate.id) || startedGate.id < 1
+      || startedGate.name !== configuration.gateName
+      || startedGate.external_id !== startedGateExternalId
+      || String(startedGate.head_sha ?? '').toLowerCase() !== context.pull.head.sha.toLowerCase()
+      || Number(startedGate.app?.id ?? 0) !== stewardRuntimeIdentity.appId
+      || String(startedGate.app?.slug ?? '') !== context.manifest.manifest.automation.githubApp.slug
+      || startedGate.status !== 'in_progress'
+      || startedGate.conclusion != null) {
+      throw new Error('Started Matrix Gate response did not preserve the requested generation identity');
+    }
+    if (preflightReadFailure !== undefined) throw preflightReadFailure;
+  }
+  const [facts, checks, openPullNumbers] = await Promise.all([
     pullFacts(context),
     context.client.listCommitCheckRuns(context.owner, context.repository, context.pull.head.sha),
+    openPullNumbersForHead(context),
   ]);
+  if (openPullNumbers.length !== 1 || openPullNumbers[0] !== context.pull.number) {
+    if (mode === 'observe') {
+      throw new Error(
+        `Matrix requires an exclusive open pull request for head ${context.pull.head.sha}; observed ${
+          openPullNumbers.length ? openPullNumbers.join(',') : 'none'}`,
+      );
+    }
+    const associationDigest = await hashJson({
+      schema_version: 1,
+      kind: 'matrix-head-association-failure',
+      repository_id: context.repositoryId,
+      pull_request: context.pull.number,
+      head_sha: context.pull.head.sha.toLowerCase(),
+      config_digest: context.manifest.configDigest,
+      pull_fingerprint_digest: facts.fingerprint.value,
+      associated_open_pull_requests: openPullNumbers,
+    });
+    await writeCheck({
+      context,
+      checks,
+      checkRunId: startedGate!.id,
+      expectedCurrentExternalId: startedGateExternalId!,
+      checkId: 'validation-matrix',
+      name: configuration.gateName,
+      inputDigest: associationDigest,
+      status: 'completed',
+      conclusion: 'failure',
+      title: 'PR 验证矩阵已阻断',
+      summary: `当前 head 必须唯一对应一个开放 PR；观察到 ${openPullNumbers.length
+        ? openPullNumbers.map((number) => `#${number}`).join(', ')
+        : '无可验证开放 PR'}。`,
+    });
+    return {
+      operation: 'matrix',
+      state: 'failed',
+      summary: 'Matrix head association is not exclusive',
+      details: { mode, scope, openPullNumbers, repairs: [], completions: [] },
+    };
+  }
   const workflowRuns = await matrixWorkflowRuns(context, checks, configuration);
   const trust = {
+    appId: stewardRuntimeIdentity.appId,
     appSlug: context.manifest.manifest.automation.githubApp.slug,
     repositoryId: context.repositoryId,
     configDigest: context.manifest.configDigest,
@@ -801,7 +1094,7 @@ async function matrixOperation(context: StewardOperationContext, inputs: Steward
       }
     }
   }
-  const converged = mode === 'observe' ? evaluation : evaluateMatrix({
+  let converged = mode === 'observe' ? evaluation : evaluateMatrix({
     config: configuration,
     checkRuns: checks as MatrixCheckRun[],
     scope,
@@ -809,27 +1102,96 @@ async function matrixOperation(context: StewardOperationContext, inputs: Steward
     trust: { ...trust, workflowRuns, allowLegacy: true },
     targetOverrides,
   });
-  if (mode === 'enforce') {
+  if (mode === 'repair' && converged.state === 'passed') {
+    converged = { ...converged, state: 'pending', passed: false };
+  }
+  if (mode === 'enforce' && scope === 'full') {
+    const first = await fullMatrixSnapshot(context, configuration, facts.fingerprint.value);
+    const confirmed = await fullMatrixSnapshot(context, configuration, facts.fingerprint.value);
+    if (first.evidence.value !== confirmed.evidence.value) {
+      throw new Error('Matrix live evidence changed across the final write barrier; retry from fresh live state');
+    }
+    converged = confirmed.evaluation;
     const conclusion = matrixConclusion(converged);
     await writeCheck({
-      context,
-      checks,
+      context: confirmed.inputs.context,
+      checks: confirmed.inputs.checks,
+      checkRunId: startedGate!.id,
+      expectedCurrentExternalId: startedGateExternalId!,
       checkId: 'validation-matrix',
       name: configuration.gateName,
-      inputDigest: facts.fingerprint.value,
+      inputDigest: confirmed.evidence.value,
       status: conclusion.status,
       startNewRunIfCompleted: conclusion.status === 'in_progress',
+      reuseCanonicalInProgress: true,
       ...(conclusion.conclusion ? { conclusion: conclusion.conclusion } : {}),
       title: conclusion.presentation === 'matrix.waiting' ? 'PR 验证矩阵等待中'
         : conclusion.presentation === 'matrix.passed' ? 'PR 验证矩阵已通过' : 'PR 验证矩阵未通过',
       summary: converged.targets.map((target) => `${target.name}: ${target.state}`).join('\n'),
     });
+  } else if (mode === 'enforce' && scope === 'gate-only') {
+    const live = await liveMatrixInputs(context, configuration, facts.fingerprint.value);
+    const gateEvaluation = evaluateMatrix({
+      config: configuration,
+      checkRuns: live.checks as MatrixCheckRun[],
+      scope: 'gate-only',
+      pull: live.context.pull,
+      trust: {
+        ...trust,
+        inputDigest: live.facts.fingerprint.value,
+        workflowRuns: live.workflowRuns,
+        allowLegacy: true,
+      },
+    });
+    const failed = gateEvaluation.blocking.length > 0;
+    const gateEvidence = await hashJson({
+      schema_version: 1,
+      kind: 'matrix-gate-only-evidence',
+      repository_id: context.repositoryId,
+      pull_request: live.context.pull.number,
+      head_sha: live.context.pull.head.sha.toLowerCase(),
+      config_digest: context.manifest.configDigest,
+      pull_fingerprint_digest: live.facts.fingerprint.value,
+      targets: gateEvaluation.targets.map((target) => ({
+        id: target.id,
+        state: target.state,
+        check_id: Number(target.checkRun?.id ?? 0),
+        external_id: String(target.checkRun?.external_id ?? ''),
+        status: String(target.checkRun?.status ?? ''),
+        conclusion: String(target.checkRun?.conclusion ?? ''),
+      })),
+    });
+    await writeCheck({
+      context: live.context,
+      checks: live.checks,
+      checkRunId: startedGate!.id,
+      expectedCurrentExternalId: startedGateExternalId!,
+      checkId: 'validation-matrix',
+      name: configuration.gateName,
+      inputDigest: gateEvidence,
+      status: failed ? 'completed' : 'in_progress',
+      startNewRunIfCompleted: !failed,
+      reuseCanonicalInProgress: true,
+      ...(failed ? { conclusion: 'failure' as const } : {}),
+      title: failed ? 'PR 验证矩阵未通过' : 'PR 验证矩阵等待完整重算',
+      summary: `${gateEvaluation.targets.map((target) => `${target.name}: ${target.state}`).join('\n')}\nfull reconcile required`,
+    });
+    converged = failed
+      ? gateEvaluation
+      : { ...gateEvaluation, state: 'pending', passed: false };
   }
   return {
     operation: 'matrix',
     state: converged.state,
-    summary: `${converged.targets.length} Matrix targets evaluated`,
-    details: { mode, scope, evaluation: converged, repairs, completions },
+    summary: `${converged.targets.length} Matrix targets evaluated${mode === 'repair' ? '; full reconcile required' : ''}`,
+    details: {
+      mode,
+      scope,
+      evaluation: converged,
+      repairs,
+      completions,
+      ...(mode === 'repair' ? { fullReconcileRequired: true } : {}),
+    },
   };
 }
 

@@ -5,6 +5,7 @@ import {
   GITHUB_CLOUD_REST_API_VERSION,
   GITHUB_ENTERPRISE_REST_API_VERSION,
   GitHubRepositoryClient,
+  GitHubTransportError,
   createGitHubRestTransport,
   defaultGitHubRestApiVersion,
   type GitHubRequest,
@@ -69,9 +70,16 @@ describe('GitHub REST transport', () => {
     expect(capturedUrl).toBe('https://api.github.com/repos/splrad/steward?page=2');
     const headers = new Headers(capturedInit?.headers);
     expect(headers.get('authorization')).toBe('Bearer secret-token');
+    expect(headers.get('accept')).toBe('application/vnd.github+json');
     expect(GITHUB_CLOUD_REST_API_VERSION).toBe('2026-03-10');
     expect(headers.get('x-github-api-version')).toBe(GITHUB_CLOUD_REST_API_VERSION);
-    expect(capturedInit?.redirect).toBe('error');
+    expect(capturedInit?.redirect).toBe('manual');
+
+    await transport.request({
+      path: '/orgs/splrad/teams/maintainers/repos/splrad/steward',
+      accept: 'application/vnd.github.v3.repository+json',
+    });
+    expect(new Headers(capturedInit?.headers).get('accept')).toBe('application/vnd.github.v3.repository+json');
     await expect(transport.request({ path: 'https://example.test/steal' })).rejects.toThrow('root-relative');
     await expect(transport.request({ path: '//example.test/steal' })).rejects.toThrow('root-relative');
   });
@@ -170,6 +178,120 @@ describe('GitHub REST transport', () => {
     expect(String(error)).not.toContain('never-print-this');
   });
 
+  it('follows bounded same-origin GET redirects without changing the authentication boundary', async () => {
+    const requestedUrls: string[] = [];
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      requestedUrls.push(String(input));
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer secret-token');
+      if (requestedUrls.length === 1) {
+        return new Response(null, {
+          status: 301,
+          headers: { location: '/repos/splrad/steward' },
+        });
+      }
+      return new Response(JSON.stringify({ id: 42 }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const transport = createGitHubRestTransport({ token: 'secret-token', fetch: fetcher });
+
+    await expect(transport.request({ path: '/repos/splrad/renamed-steward' }))
+      .resolves.toEqual({ id: 42 });
+    expect(requestedUrls).toEqual([
+      'https://api.github.com/repos/splrad/renamed-steward',
+      'https://api.github.com/repos/splrad/steward',
+    ]);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects cross-origin and non-GET redirects before forwarding credentials or request bodies', async () => {
+    const crossOriginFetcher = vi.fn(async () => new Response(null, {
+      status: 301,
+      headers: { location: 'https://example.test/repos/splrad/steward' },
+    })) as unknown as typeof fetch;
+    const crossOrigin = createGitHubRestTransport({ token: 'secret-token', fetch: crossOriginFetcher });
+    const crossOriginError = await crossOrigin.request({ path: '/repos/splrad/steward' })
+      .catch((reason: unknown) => reason);
+    expect(crossOriginError).toBeInstanceOf(GitHubTransportError);
+    expect(crossOriginError).toMatchObject({
+      method: 'GET', path: '/repos/splrad/steward', reason: 'redirect', retryable: false,
+    });
+    expect(crossOriginFetcher).toHaveBeenCalledTimes(1);
+
+    const mutationFetcher = vi.fn(async () => new Response(null, {
+      status: 307,
+      headers: { location: '/repos/splrad/steward/issues' },
+    })) as unknown as typeof fetch;
+    const mutation = createGitHubRestTransport({ token: 'secret-token', fetch: mutationFetcher });
+    const mutationError = await mutation.request({
+      method: 'POST', path: '/repos/splrad/steward/issues', body: { title: 'example' },
+    }).catch((reason: unknown) => reason);
+    expect(mutationError).toBeInstanceOf(GitHubTransportError);
+    expect(mutationError).toMatchObject({
+      method: 'POST', path: '/repos/splrad/steward/issues', reason: 'redirect', retryable: false,
+    });
+    expect(mutationFetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('classifies 403 and 429 rate limits without inventing a missing Retry-After value', async () => {
+    const responses = [
+      new Response(JSON.stringify({ message: 'API rate limit exceeded' }), {
+        status: 403,
+        headers: {
+          'x-ratelimit-remaining': '0',
+          'x-github-request-id': 'RATE-403',
+        },
+      }),
+      new Response(JSON.stringify({ message: 'You have exceeded a secondary rate limit' }), {
+        status: 429,
+        headers: {
+          'retry-after': '12',
+          'x-github-request-id': 'RATE-429',
+        },
+      }),
+    ];
+    const transport = createGitHubRestTransport({
+      token: 'token',
+      fetch: vi.fn(async () => responses.shift()!) as unknown as typeof fetch,
+    });
+
+    const primary = await transport.request({ path: '/rate-limited-primary' })
+      .catch((reason: unknown) => reason);
+    expect(primary).toBeInstanceOf(GitHubApiError);
+    if (!(primary instanceof GitHubApiError)) throw new TypeError('expected a GitHubApiError');
+    expect(primary).toMatchObject({ status: 403, rateLimited: true, requestId: 'RATE-403' });
+    expect(primary.retryAfterSeconds).toBeUndefined();
+
+    const secondary = await transport.request({ path: '/rate-limited-secondary' })
+      .catch((reason: unknown) => reason);
+    expect(secondary).toBeInstanceOf(GitHubApiError);
+    expect(secondary).toMatchObject({
+      status: 429, rateLimited: true, retryAfterSeconds: 12, requestId: 'RATE-429',
+    });
+  });
+
+  it('returns typed transport failures for network errors and invalid successful JSON', async () => {
+    const network = createGitHubRestTransport({
+      token: 'token',
+      fetch: vi.fn(async () => { throw new TypeError('connection reset'); }) as unknown as typeof fetch,
+    });
+    const networkError = await network.request({ path: '/repos/splrad/steward' })
+      .catch((reason: unknown) => reason);
+    expect(networkError).toBeInstanceOf(GitHubTransportError);
+    expect(networkError).toMatchObject({
+      method: 'GET', path: '/repos/splrad/steward', reason: 'network', retryable: true,
+    });
+
+    const invalidJson = createGitHubRestTransport({
+      token: 'token',
+      fetch: vi.fn(async () => new Response('{invalid', { status: 200 })) as unknown as typeof fetch,
+    });
+    const invalidJsonError = await invalidJson.request({ path: '/repos/splrad/steward' })
+      .catch((reason: unknown) => reason);
+    expect(invalidJsonError).toBeInstanceOf(GitHubTransportError);
+    expect(invalidJsonError).toMatchObject({
+      method: 'GET', path: '/repos/splrad/steward', reason: 'invalid-response', retryable: false,
+    });
+  });
+
   it('accepts successful GitHub mutations with an empty response body', async () => {
     const transport = createGitHubRestTransport({
       token: 'token',
@@ -249,6 +371,7 @@ describe('GitHub repository adapter', () => {
     expect(await client.listPullRequestCommits('splrad', 'steward', 6)).toHaveLength(101);
     expect(await client.listPullRequestReviews('splrad', 'steward', 6)).toHaveLength(101);
     expect(await client.listPullRequestFiles('splrad', 'steward', 6)).toHaveLength(101);
+    expect(await client.listPullRequestsForCommit('splrad', 'steward', 'a'.repeat(40))).toHaveLength(101);
     expect(await client.listReleases('splrad', 'steward')).toHaveLength(101);
     expect(await client.listTeamMembers('splrad', 'maintainers')).toHaveLength(101);
     expect(await client.listIssueComments('splrad', 'steward', 6)).toHaveLength(101);
@@ -257,10 +380,12 @@ describe('GitHub repository adapter', () => {
     const jobs = await client.listWorkflowJobs('splrad', 'steward', 123);
     expect(jobs).toHaveLength(101);
     expect(jobs[0]).toMatchObject({ id: 1 });
-    expect(requests).toHaveLength(18);
+    expect(requests).toHaveLength(20);
     expect(requests.every((request) => request.query?.per_page === 100)).toBe(true);
     expect(requests.filter((request) => request.path.endsWith('/check-runs'))
       .every((request) => request.query?.filter === 'all')).toBe(true);
+    await expect(client.listPullRequestsForCommit('splrad', 'steward', 'not-a-sha'))
+      .rejects.toThrow('40 hexadecimal characters');
   });
 
   it('paginates review threads and fails closed on GraphQL errors', async () => {
