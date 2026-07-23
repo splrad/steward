@@ -130,6 +130,7 @@ export interface RuntimeDiagnosticsReader {
 export interface DoctorDependencies {
   readonly repositoryTransport: GitHubTransport;
   readonly organizationTransport?: GitHubTransport;
+  readonly organizationRulesetTransport?: GitHubTransport;
   readonly appJwtTransport?: GitHubTransport;
   readonly appUserTransport?: GitHubTransport;
   readonly actionsExecutionProtections?: GitHubReadResult<GitHubActionsExecutionProtections>;
@@ -727,7 +728,7 @@ function evaluateRules(
       'organization.rulesets',
       '组织 ruleset 定义',
       definitions,
-      '使用可读取 organization ruleset detail 的所有者诊断身份重试；不要扩大 Steward App 权限。',
+      '仅在本次诊断中提供临时 Ruleset elevated owner identity；不要扩大常驻组织诊断身份或 Steward App 权限。',
     ));
   } else {
     const monolithic = definitions.value.filter((item) => (
@@ -2915,7 +2916,12 @@ export async function runDoctor(
   const organization = ownerLogin;
   const organizationReader = new GitHubOrganizationReadClient({
     repositoryTransport: transport,
-    organizationTransport: dependencies.organizationTransport ?? transport,
+    ...(dependencies.organizationTransport
+      ? { organizationTransport: dependencies.organizationTransport }
+      : {}),
+    ...(dependencies.organizationRulesetTransport
+      ? { organizationRulesetTransport: dependencies.organizationRulesetTransport }
+      : {}),
     ...(dependencies.appJwtTransport ? { appJwtTransport: dependencies.appJwtTransport } : {}),
     ...(dependencies.appUserTransport ? { appUserTransport: dependencies.appUserTransport } : {}),
     ...(dependencies.actionsExecutionProtections

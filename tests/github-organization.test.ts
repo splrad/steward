@@ -125,27 +125,6 @@ describe('GitHub organization contract reader', () => {
     });
     const organization = mockTransport((request) => {
       if (request.path.endsWith('/properties/schema')) return propertySchema();
-      if (request.path === '/orgs/splrad/rulesets') return [{
-        id: 11,
-        name: 'Base Safety',
-        source_type: 'Organization',
-        source: 'splrad',
-        enforcement: 'active',
-      }];
-      if (request.path === '/orgs/splrad/rulesets/11') return {
-        id: 11,
-        name: 'Base Safety',
-        target: 'branch',
-        enforcement: 'active',
-        source_type: 'Organization',
-        source: 'splrad',
-        bypass_actors: [],
-        conditions: {
-          ref_name: { include: ['~DEFAULT_BRANCH'], exclude: [] },
-          repository_name: { include: ['~ALL'], exclude: [] },
-        },
-        rules: [{ type: 'deletion' }],
-      };
       if (request.path.endsWith('/teams/maintainers')) return { id: 5, slug: 'maintainers' };
       if (request.path.endsWith('/teams/maintainers/members')) return [{ login: 'axiomoth' }];
       if (request.path === '/repos/splrad/example') return { id: 7, full_name: 'splrad/example' };
@@ -168,6 +147,30 @@ describe('GitHub organization contract reader', () => {
         ],
       };
       throw new Error(`Unexpected organization request: ${request.path}`);
+    });
+    const organizationRulesets = mockTransport((request) => {
+      if (request.path === '/orgs/splrad/rulesets') return [{
+        id: 11,
+        name: 'Base Safety',
+        source_type: 'Organization',
+        source: 'splrad',
+        enforcement: 'active',
+      }];
+      if (request.path === '/orgs/splrad/rulesets/11') return {
+        id: 11,
+        name: 'Base Safety',
+        target: 'branch',
+        enforcement: 'active',
+        source_type: 'Organization',
+        source: 'splrad',
+        bypass_actors: [],
+        conditions: {
+          ref_name: { include: ['~DEFAULT_BRANCH'], exclude: [] },
+          repository_name: { include: ['~ALL'], exclude: [] },
+        },
+        rules: [{ type: 'deletion' }],
+      };
+      throw new Error(`Unexpected organization Ruleset request: ${request.path}`);
     });
     const appJwt = mockTransport((request) => {
       if (request.path === '/repos/splrad/example/installation') return installation();
@@ -210,6 +213,7 @@ describe('GitHub organization contract reader', () => {
     const reader = new GitHubOrganizationReadClient({
       repositoryTransport: repository.transport,
       organizationTransport: organization.transport,
+      organizationRulesetTransport: organizationRulesets.transport,
       appJwtTransport: appJwt.transport,
       actionsExecutionProtections: executionProtections,
       observedAt: () => observedAt,
@@ -255,15 +259,71 @@ describe('GitHub organization contract reader', () => {
     expect(snapshot.actions.executionProtections).toEqual(executionProtections);
     expect(repository.requests.find((request) => request.path.endsWith('/rulesets'))?.query)
       .toMatchObject({ includes_parents: true });
-    expect(organization.requests.some((request) => request.path === '/orgs/splrad/rulesets/11')).toBe(true);
+    expect(organizationRulesets.requests.some((request) => request.path === '/orgs/splrad/rulesets/11'))
+      .toBe(true);
+    expect(organization.requests.some((request) => request.path.startsWith('/orgs/splrad/rulesets')))
+      .toBe(false);
     expect(organization.requests.find((request) => request.path.includes('/teams/maintainers/repos'))?.accept)
       .toBe('application/vnd.github.v3.repository+json');
     expect(repository.requests.some((request) => request.path === '/repos/splrad/example/actions/permissions'))
       .toBe(true);
     expect(organization.requests.some((request) => request.path.startsWith('/repos/splrad/example/actions/')))
       .toBe(false);
-    expect([...repository.requests, ...organization.requests, ...appJwt.requests]
+    expect([...repository.requests, ...organization.requests, ...organizationRulesets.requests, ...appJwt.requests]
       .every((request) => !request.method || request.method === 'GET')).toBe(true);
+  });
+
+  it('keeps resident organization and elevated Ruleset identities fail-closed when either is absent', async () => {
+    const repository = mockTransport((request) => {
+      if (request.path === '/repos/splrad/example/properties/values') return [];
+      throw new Error(`Unexpected repository request: ${request.path}`);
+    });
+    const organization = mockTransport((request) => {
+      if (request.path === '/orgs/splrad/properties/schema') return [];
+      throw new Error(`Unexpected organization request: ${request.path}`);
+    });
+    const residentOnly = new GitHubOrganizationReadClient({
+      repositoryTransport: repository.transport,
+      organizationTransport: organization.transport,
+      observedAt: () => observedAt,
+    });
+
+    expect(await residentOnly.getOrganizationPropertySchema('splrad')).toMatchObject({
+      status: 'known',
+      value: [],
+    });
+    expect(await residentOnly.listOrganizationRulesets('splrad')).toMatchObject({
+      status: 'unknown',
+      reason: 'dependency-unavailable',
+      evidence: { endpoint: '/orgs/splrad/rulesets' },
+    });
+    expect(await residentOnly.getRepositoryPropertyValues('splrad', 'example')).toMatchObject({
+      status: 'known',
+      value: [],
+    });
+    expect(organization.requests.some((request) => request.path.includes('/rulesets'))).toBe(false);
+    expect(repository.requests.some((request) => request.path.startsWith('/orgs/'))).toBe(false);
+
+    const repositoryOnly = new GitHubOrganizationReadClient({
+      repositoryTransport: repository.transport,
+      observedAt: () => observedAt,
+    });
+    expect(await repositoryOnly.getOrganizationPropertySchema('splrad')).toMatchObject({
+      status: 'unknown',
+      reason: 'dependency-unavailable',
+      evidence: { endpoint: '/orgs/splrad/properties/schema' },
+    });
+    expect(await repositoryOnly.listTeamMembers('splrad', 'maintainers')).toMatchObject({
+      status: 'unknown',
+      reason: 'dependency-unavailable',
+      evidence: { endpoint: '/orgs/splrad/teams/maintainers/members' },
+    });
+    expect(await repositoryOnly.getOrganizationActionsSettings('splrad')).toMatchObject({
+      status: 'unknown',
+      reason: 'dependency-unavailable',
+      evidence: { endpoint: '/orgs/splrad/actions/permissions' },
+    });
+    expect(repository.requests.some((request) => request.path.startsWith('/orgs/'))).toBe(false);
   });
 
   it('does not request details for organization rulesets outside the requested contract names', async () => {
@@ -300,6 +360,7 @@ describe('GitHub organization contract reader', () => {
     const reader = new GitHubOrganizationReadClient({
       repositoryTransport: organization.transport,
       organizationTransport: organization.transport,
+      organizationRulesetTransport: organization.transport,
       observedAt: () => observedAt,
     });
 
@@ -338,6 +399,7 @@ describe('GitHub organization contract reader', () => {
     const reader = new GitHubOrganizationReadClient({
       repositoryTransport: organization.transport,
       organizationTransport: organization.transport,
+      organizationRulesetTransport: organization.transport,
       observedAt: () => observedAt,
     });
 
@@ -379,6 +441,7 @@ describe('GitHub organization contract reader', () => {
     const reader = new GitHubOrganizationReadClient({
       repositoryTransport: organization.transport,
       organizationTransport: organization.transport,
+      organizationRulesetTransport: organization.transport,
       observedAt: () => observedAt,
     });
 
@@ -406,6 +469,7 @@ describe('GitHub organization contract reader', () => {
     const reader = new GitHubOrganizationReadClient({
       repositoryTransport: organization.transport,
       organizationTransport: organization.transport,
+      organizationRulesetTransport: organization.transport,
       observedAt: () => observedAt,
     });
 
@@ -438,6 +502,7 @@ describe('GitHub organization contract reader', () => {
     const reader = new GitHubOrganizationReadClient({
       repositoryTransport: organization.transport,
       organizationTransport: organization.transport,
+      organizationRulesetTransport: organization.transport,
       observedAt: () => observedAt,
     });
 
@@ -483,6 +548,7 @@ describe('GitHub organization contract reader', () => {
     const reader = new GitHubOrganizationReadClient({
       repositoryTransport: repository.transport,
       organizationTransport: organization.transport,
+      organizationRulesetTransport: organization.transport,
       appJwtTransport: appJwt.transport,
       observedAt: () => observedAt,
     });
@@ -529,6 +595,7 @@ describe('GitHub organization contract reader', () => {
     const reader = new GitHubOrganizationReadClient({
       repositoryTransport: repository.transport,
       organizationTransport: organization.transport,
+      organizationRulesetTransport: organization.transport,
       appJwtTransport: appJwt.transport,
       appUserTransport: appUser.transport,
       observedAt: () => observedAt,
@@ -578,6 +645,7 @@ describe('GitHub organization contract reader', () => {
     const reader = new GitHubOrganizationReadClient({
       repositoryTransport: repository.transport,
       organizationTransport: organization.transport,
+      organizationRulesetTransport: organization.transport,
       appJwtTransport: appJwt.transport,
       appUserTransport: appUser.transport,
       observedAt: () => observedAt,
@@ -613,6 +681,7 @@ describe('GitHub organization contract reader', () => {
     const reader = new GitHubOrganizationReadClient({
       repositoryTransport: repository.transport,
       organizationTransport: organization.transport,
+      organizationRulesetTransport: organization.transport,
       appJwtTransport: appJwt.transport,
       appUserTransport: appUser.transport,
       observedAt: () => observedAt,
@@ -642,6 +711,7 @@ describe('GitHub organization contract reader', () => {
     const reader = new GitHubOrganizationReadClient({
       repositoryTransport: repository.transport,
       organizationTransport: organization.transport,
+      organizationRulesetTransport: organization.transport,
       appJwtTransport: appJwt.transport,
       observedAt: () => observedAt,
     });
@@ -674,6 +744,7 @@ describe('GitHub organization contract reader', () => {
     const reader = new GitHubOrganizationReadClient({
       repositoryTransport: organization.transport,
       organizationTransport: organization.transport,
+      organizationRulesetTransport: organization.transport,
       observedAt: () => observedAt,
     });
 
@@ -717,6 +788,7 @@ describe('GitHub organization contract reader', () => {
     const reader = new GitHubOrganizationReadClient({
       repositoryTransport: repository.transport,
       organizationTransport: organization.transport,
+      organizationRulesetTransport: organization.transport,
       appJwtTransport: appJwt.transport,
       appUserTransport: appUser.transport,
       observedAt: () => observedAt,
@@ -742,6 +814,7 @@ describe('GitHub organization contract reader', () => {
     const reader = new GitHubOrganizationReadClient({
       repositoryTransport: organization.transport,
       organizationTransport: organization.transport,
+      organizationRulesetTransport: organization.transport,
       observedAt: () => observedAt,
     });
     const result = await reader.getOrganizationPropertySchema('splrad');
@@ -768,6 +841,7 @@ describe('GitHub organization contract reader', () => {
     const reader = new GitHubOrganizationReadClient({
       repositoryTransport: organization.transport,
       organizationTransport: organization.transport,
+      organizationRulesetTransport: organization.transport,
       appJwtTransport: appJwt.transport,
       observedAt: () => observedAt,
     });
