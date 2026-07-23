@@ -109,7 +109,7 @@ const legacy = (
  */
 export const STEWARD_ACTIONS_SOURCE_INVENTORY = {
   schemaVersion: 1,
-  inventoryVersion: 's66-actions-v1',
+  inventoryVersion: 's66-actions-v2',
   workflowRoots: ['.github/workflows', 'templates/thin-workflows'],
   generatedTemplateRoot: 'packages/cli/dist/templates/thin-workflows',
   actionEntrypoint: {
@@ -127,7 +127,7 @@ export const STEWARD_ACTIONS_SOURCE_INVENTORY = {
     'action/action.yml': 'aa360c1d26095ee09f34e65141133c0797ee7daf0294645337ce0765d9a23de1',
     '.github/workflows/ci.yml': 'ba70c32cb39e58e4cf7dbfdd91d693837562cfc329b26fcb872d088097958229',
     '.github/workflows/dco-advisory.yml': 'a78f158cfbc8c2ff7fd8c676153121b0780fb9950983bb8b21acbbe22d5ea954',
-    '.github/workflows/deploy-relay.yml': 'bea6d33a8af04d7598d15b759fb44d8a853d6b9cca0c1db5d0b0ebe0ca530b3a',
+    '.github/workflows/deploy-relay.yml': '508e6285293bdc860e02a1e9162bcf113d53aff92fa4b843a81c8ca77890a397',
     '.github/workflows/pr-automation.yml': 'f7e6834769114bbacae1acceea3f56ad23477aabff76a9e89c2453c7c12df7cf',
     '.github/workflows/pr-classification.yml': 'b431b1f18767cfae88c28e2683a8633ab99046e8d9b1dc3c0a27f7e7dc293e93',
     '.github/workflows/pr-cleanup.yml': 'debdc11245c488d30378090e1da0c5ceba89f79774b7317aa920b9b0f1d6008f',
@@ -166,22 +166,7 @@ export const STEWARD_ACTIONS_SOURCE_INVENTORY = {
       surface: 'platform-direct',
       actorModel: 'event-originating-actor',
       actorGuards: [],
-      triggers: [
-        {
-          event: 'push',
-          branches: ['main'],
-          paths: [
-            '.github/workflows/deploy-relay.yml',
-            'package-lock.json',
-            'package.json',
-            'packages/github/src/api-version.ts',
-            'packages/manifest/src/**',
-            'packages/relay/**',
-            'schema/steward.schema.json',
-          ],
-        },
-        { event: 'workflow_dispatch' },
-      ],
+      triggers: [{ event: 'workflow_dispatch' }],
       uses: [checkout, setupNode],
       credentialVariables: [],
       credentialSecrets: ['CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN'],
@@ -430,6 +415,6 @@ export const STEWARD_ACTIONS_EXECUTION_POLICIES = [
 // JSON digests: reordering a contract set is intentionally a versioned change,
 // while sourceDigests make every underlying YAML byte independently explicit.
 export const STEWARD_ACTIONS_SOURCE_INVENTORY_DIGEST =
-  'a4f2ceeaa50b6c6de6c274d88764fec7a1a0aeff1d1c11ae72779ec0fee06f3b' as const;
+  'd7204f8749dc0eab6a37c501406a7d915f32a63230bcf0e77a61a288cbde3c26' as const;
 export const STEWARD_ACTIONS_EXECUTION_POLICY_DIGEST =
   'c7b0e1a932722b25951c1e4782673d1f04deac930b84a2d7fd44d8dfad1e2ef7' as const;

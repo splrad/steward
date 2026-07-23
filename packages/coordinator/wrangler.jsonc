@@ -1,0 +1,47 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "steward-coordinator",
+  "main": "src/entrypoint.ts",
+  "compatibility_date": "2026-07-23",
+  "workers_dev": false,
+  "preview_urls": false,
+  "keep_vars": false,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "PR_COORDINATOR",
+        "class_name": "PullRequestCoordinator"
+      }
+    ]
+  },
+  "exports": {
+    "PullRequestCoordinator": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "services": [
+    {
+      "binding": "CONTROL",
+      "service": "steward-control"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "EVENT_QUEUE",
+        "queue": "steward-events"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "steward-events",
+        "max_batch_size": 10,
+        "max_batch_timeout": 1,
+        "max_retries": 3,
+        "retry_delay": 5,
+        "dead_letter_queue": "steward-events-dlq"
+      }
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "WebWorker"],
+    "types": [
+      "@cloudflare/vitest-pool-workers/types",
+      "@cloudflare/workers-types",
+      "vitest/globals"
+    ],
+    "skipLibCheck": true
+  },
+  "include": [
+    "./**/*.ts",
+    "../packages/core/src/**/*.ts",
+    "../packages/coordinator/src/**/*.ts",
+    "../packages/control-runtime/src/**/*.ts"
+  ],
+  "exclude": []
+}
