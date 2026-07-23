@@ -1,6 +1,8 @@
 import {
   ActionsAttestationValidationError,
   parseActionsAttestationEnvelope,
+  parseSshEd25519PublicKey,
+  parseSshSignature,
   verifyActionsAttestation,
   type ActionsAttestationEnvelopeV1,
 } from '../../core/src/index.js';
@@ -83,6 +85,14 @@ function signingKeys(value: unknown): readonly GitHubSigningKey[] {
       key: nonEmptyString(item.key, `GitHub SSH signing key[${index}].key`),
     };
   });
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
 }
 
 function attestationEvidence(
@@ -255,19 +265,38 @@ export async function verifyActionsExecutionProtectionAttestation(
     );
   }
 
-  let signingKeyId: number | undefined;
+  const signaturePublicKey = parseSshSignature(envelope.signature).publicKey.blob;
+  let registeredSigningKey: GitHubSigningKey | undefined;
   for (const candidate of keys) {
     if (!candidate.key.startsWith('ssh-ed25519 ')) continue;
     try {
-      if (await verifyActionsAttestation(envelope, candidate.key)) {
-        signingKeyId = candidate.id;
+      if (equalBytes(
+        parseSshEd25519PublicKey(candidate.key).blob,
+        signaturePublicKey,
+      )) {
+        registeredSigningKey = candidate;
         break;
       }
     } catch (error) {
       if (!(error instanceof ActionsAttestationValidationError)) throw error;
     }
   }
-  if (signingKeyId === undefined) {
+  if (registeredSigningKey === undefined) {
+    return unknown(
+      'conflicting-observations',
+      attestationEvidence(transport, envelope, verifiedAt),
+      { retryable: false },
+    );
+  }
+
+  let signatureVerified: boolean;
+  try {
+    signatureVerified = await verifyActionsAttestation(envelope, registeredSigningKey.key);
+  } catch (error) {
+    if (!(error instanceof ActionsAttestationValidationError)) throw error;
+    signatureVerified = false;
+  }
+  if (!signatureVerified) {
     return unknown(
       'conflicting-observations',
       attestationEvidence(transport, envelope, verifiedAt),
@@ -283,7 +312,7 @@ export async function verifyActionsExecutionProtectionAttestation(
       schemaVersion: 1,
       verification: {
         method: 'github-ssh-signing-key',
-        signingKeyId,
+        signingKeyId: registeredSigningKey.id,
         signingKeyAlgorithm: 'ssh-ed25519',
         authenticatedPrincipal: authenticated,
         organizationMembership: {

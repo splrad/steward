@@ -317,6 +317,30 @@ describe('CLI Actions owner attestation verifier', () => {
       .map(({ query }) => query?.page)).toEqual([1, 2]);
   });
 
+  it('selects the SSHSIG embedded key from multiple registered Ed25519 keys', async () => {
+    const current = fixture();
+    const otherA = fixture();
+    const otherB = fixture();
+    const github = transport(current.publicKey, {
+      '/users/organization-owner/ssh_signing_keys': [
+        { id: 10, key: otherA.publicKey },
+        { id: 11, key: otherB.publicKey },
+        { id: 9, key: current.publicKey },
+      ],
+    });
+
+    await expect(verifyActionsExecutionProtectionAttestation(
+      current.envelope,
+      github.value,
+      '2026-07-23T10:00:00.000Z',
+    )).resolves.toMatchObject({
+      status: 'known',
+      value: {
+        verification: { signingKeyId: 9 },
+      },
+    });
+  });
+
   it('fails closed when the signing-key inventory never reaches a terminal page', async () => {
     const current = fixture();
     const github = transport(current.publicKey, {
