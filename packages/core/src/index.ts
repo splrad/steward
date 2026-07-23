@@ -11,4 +11,5 @@ export * from './identity.js';
 export * from './matrix.js';
 export * from './organization-contract.js';
 export * from './release.js';
+export * from './runtime-diagnostics.js';
 export * from './webhook-causality.js';

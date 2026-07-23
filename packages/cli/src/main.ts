@@ -8,7 +8,7 @@ import {
 import { runAppInstallationPreflight, type AppInstallationReport } from './app-installation.js';
 import { verifyActionsExecutionProtectionAttestation } from './actions-attestation.js';
 import { TerminalConfirmationPrompt, type ConfirmationPrompt } from './confirmation.js';
-import { runDoctor, type DoctorReport, type RuntimeDiagnosticsReader } from './doctor.js';
+import { runDoctor, type DoctorReport } from './doctor.js';
 import {
   executeInitApply,
   prepareInitApply,
@@ -23,6 +23,7 @@ import {
   withSecrets,
   type SecretPrompt,
 } from './secret-input.js';
+import type { RuntimeDiagnosticsProvider } from './runtime-diagnostics.js';
 import {
   executeUpgrade,
   prepareUpgrade,
@@ -259,7 +260,7 @@ interface CliRuntime {
   organizationRulesetTransport?: GitHubTransport;
   installationTransport?: GitHubTransport;
   appJwtTransport?: GitHubTransport;
-  runtimeDiagnostics?: RuntimeDiagnosticsReader;
+  runtimeDiagnostics?: RuntimeDiagnosticsProvider;
   actionsExecutionProtections?: GitHubReadResult<GitHubActionsExecutionProtections>;
 }
 

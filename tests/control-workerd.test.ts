@@ -12,6 +12,29 @@ interface WranglerTestApi {
 }
 
 interface WorkerdControlSmokeResult {
+  runtimeDiagnostics: {
+    envelope: {
+      schemaVersion: number;
+      subject: { repositoryId: number; repositoryFullName: string };
+      observedAt: string;
+      diagnostics: {
+        controlRevision: {
+          stewardCommit: string;
+          workerVersionId: string;
+          workerDeploymentId: string;
+          environment: string;
+        };
+        queue: string;
+        control: string;
+        deadLetterQueue: string;
+      };
+    };
+    snapshot: {
+      schemaVersion: number;
+      subject: { repositoryId: number; repositoryFullName: string };
+      diagnostics: WorkerdControlSmokeResult['runtimeDiagnostics']['envelope']['diagnostics'];
+    };
+  };
   canonicalPlan: string;
   canonicalPlanDigest: string;
   manifestDigest: string;
@@ -70,6 +93,45 @@ describe('Control local workerd reconciliation', () => {
     expect(second).toBe(first);
 
     const result = JSON.parse(first) as WorkerdControlSmokeResult;
+    expect(result.runtimeDiagnostics).toEqual({
+      envelope: {
+        schemaVersion: 1,
+        subject: {
+          repositoryId: 1_296_724_484,
+          repositoryFullName: 'splrad/steward',
+        },
+        observedAt: '2026-07-23T00:00:00.000Z',
+        diagnostics: {
+          controlRevision: {
+            stewardCommit: 'a'.repeat(40),
+            workerVersionId: 'workerd-version-1',
+            workerDeploymentId: 'workerd-deployment-1',
+            environment: 'candidate',
+          },
+          queue: 'ready',
+          control: 'ready',
+          deadLetterQueue: 'clear',
+        },
+      },
+      snapshot: {
+        schemaVersion: 1,
+        subject: {
+          repositoryId: 1_296_724_484,
+          repositoryFullName: 'splrad/steward',
+        },
+        diagnostics: {
+          controlRevision: {
+            stewardCommit: 'a'.repeat(40),
+            workerVersionId: 'workerd-version-1',
+            workerDeploymentId: 'workerd-deployment-1',
+            environment: 'candidate',
+          },
+          queue: 'ready',
+          control: 'ready',
+          deadLetterQueue: 'clear',
+        },
+      },
+    });
     expect(result.canonicalPlanDigest).toBe('cbc16ad06692c7480b84c1f6116baccc019137728d7c6d9a60c58d8de0c367c3');
     expect(result.manifestDigest).toBe('92ba61955253b22cef8f5c2ba674fc6884716e5f8257eeb4fbe8f70a738598b2');
     expect(result.first).toMatchObject({
