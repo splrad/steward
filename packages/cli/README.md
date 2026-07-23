@@ -25,15 +25,18 @@ lands, this CLI has no public activation command.
 
 `doctor` and preflight are read-only. Doctor reads repository facts with
 `GH_TOKEN`/`GITHUB_TOKEN` and accepts a separate organization-owner diagnostic
-identity through `STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN`; selected-installation
-membership can additionally use `STEWARD_APP_USER_TOKEN`. It verifies the
-default-branch Manifest, organization properties and ruleset definition/
-applicable/effective layers, Team access, App installation permissions/events,
-organization Actions policy, current-head App Check identity, and injectable
-central runtime evidence. Missing permissions, stale evidence, unsupported
-response fields, unresolved live Team identity, unverified owner observations,
-and the pending Actions actor/event inventory remain `unknown` rather than being
-reported as absent or healthy.
+identity through `STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN`. Because GitHub requires
+organization `Administration: write` even for Ruleset list/detail GET requests,
+that proof uses a separate short-lived
+`STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN`; Doctor sends GET only and rejects
+credential reuse before network access. Selected-installation membership can
+additionally use `STEWARD_APP_USER_TOKEN`. It verifies the default-branch
+Manifest, organization properties and ruleset definition/applicable/effective
+layers, Team access, App installation permissions/events, organization Actions
+policy, current-head App Check identity, and injectable central runtime
+evidence. Missing identities or permissions, stale evidence, unsupported
+response fields, unresolved live Team identity, and unverified owner
+observations remain `unknown` rather than being reported as absent or healthy.
 
 Dry-run is a deterministic local generator
 that never writes its target. Apply requires repository administrator access,

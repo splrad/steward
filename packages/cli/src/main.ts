@@ -256,6 +256,7 @@ interface CliRuntime {
   secretPrompt?: SecretPrompt;
   transport?: GitHubTransport;
   organizationTransport?: GitHubTransport;
+  organizationRulesetTransport?: GitHubTransport;
   installationTransport?: GitHubTransport;
   appJwtTransport?: GitHubTransport;
   runtimeDiagnostics?: RuntimeDiagnosticsReader;
@@ -317,13 +318,55 @@ export async function readActionsAttestationFile(
 function doctorOrganizationTransport(
   env: NodeJS.ProcessEnv,
   runtime: CliRuntime,
-  fallback: GitHubTransport,
-): GitHubTransport {
+): GitHubTransport | undefined {
   if (runtime.organizationTransport) return runtime.organizationTransport;
   const token = String(env.STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN ?? '').trim();
   return token
     ? createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli-org-diagnostics' })
-    : fallback;
+    : undefined;
+}
+
+function doctorOrganizationRulesetTransport(
+  env: NodeJS.ProcessEnv,
+  runtime: CliRuntime,
+): GitHubTransport | undefined {
+  if (runtime.organizationRulesetTransport) return runtime.organizationRulesetTransport;
+  const token = String(env.STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN ?? '').trim();
+  return token
+    ? createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli-org-ruleset-diagnostics' })
+    : undefined;
+}
+
+function assertDoctorCredentialSeparation(
+  env: NodeJS.ProcessEnv,
+  runtime: CliRuntime,
+): void {
+  const repositoryTokens = [
+    String(env.GH_TOKEN ?? '').trim(),
+    String(env.GITHUB_TOKEN ?? '').trim(),
+  ].filter(Boolean);
+  const organizationToken = runtime.organizationTransport
+    ? ''
+    : String(env.STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN ?? '').trim();
+  const rulesetToken = runtime.organizationRulesetTransport
+    ? ''
+    : String(env.STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN ?? '').trim();
+
+  if (organizationToken && repositoryTokens.includes(organizationToken)) {
+    throw new Error(
+      'STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN must use a credential distinct from GH_TOKEN and GITHUB_TOKEN',
+    );
+  }
+  if (rulesetToken && repositoryTokens.includes(rulesetToken)) {
+    throw new Error(
+      'STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN must use a credential distinct from GH_TOKEN and GITHUB_TOKEN',
+    );
+  }
+  if (organizationToken && rulesetToken && organizationToken === rulesetToken) {
+    throw new Error(
+      'STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN must use a credential distinct from STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN',
+    );
+  }
 }
 
 function installationProofTransport(
@@ -442,20 +485,28 @@ export async function main(
       return 0;
     }
     const transport = runtime.transport ?? createGitHubRestTransport({ token, userAgent: 'splrad-steward-cli' });
-    const organizationTransport = doctorOrganizationTransport(env, runtime, transport);
+    assertDoctorCredentialSeparation(env, runtime);
+    const organizationTransport = doctorOrganizationTransport(env, runtime);
+    const organizationRulesetTransport = doctorOrganizationRulesetTransport(env, runtime);
     const appUserTransport = doctorAppUserTransport(env, runtime);
     if (args.actionsAttestation && runtime.actionsExecutionProtections) {
       throw new Error('--actions-attestation cannot be combined with an injected Actions observation');
     }
+    if (args.actionsAttestation && !organizationTransport) {
+      throw new Error(
+        'STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN or an injected organization transport is required for --actions-attestation',
+      );
+    }
     const actionsExecutionProtections = args.actionsAttestation
       ? await verifyActionsExecutionProtectionAttestation(
         await readActionsAttestationFile(args.actionsAttestation),
-        organizationTransport,
+        organizationTransport!,
       )
       : runtime.actionsExecutionProtections;
     const report = await runDoctor({
       repositoryTransport: transport,
-      organizationTransport,
+      ...(organizationTransport ? { organizationTransport } : {}),
+      ...(organizationRulesetTransport ? { organizationRulesetTransport } : {}),
       ...(runtime.appJwtTransport ? { appJwtTransport: runtime.appJwtTransport } : {}),
       ...(appUserTransport ? { appUserTransport } : {}),
       ...(runtime.runtimeDiagnostics ? { runtimeDiagnostics: runtime.runtimeDiagnostics } : {}),

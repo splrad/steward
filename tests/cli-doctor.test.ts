@@ -361,6 +361,7 @@ interface Setup {
   dependencies: DoctorDependencies;
   repositoryRequests: GitHubRequest[];
   organizationRequests: GitHubRequest[];
+  organizationRulesetRequests: GitHubRequest[];
   appRequests: GitHubRequest[];
 }
 
@@ -488,6 +489,7 @@ async function setup(options: {
   const repositoryRulesets = rulesets(state);
   const repositoryRequests: GitHubRequest[] = [];
   const organizationRequests: GitHubRequest[] = [];
+  const organizationRulesetRequests: GitHubRequest[] = [];
   const appRequests: GitHubRequest[] = [];
   let checkRunReads = 0;
   const repositoryOverrides = options.repositoryOverrides ?? {};
@@ -552,9 +554,6 @@ async function setup(options: {
   }));
   const organizationTransport = transport(organizationRequests, (request) => response(organizationOverrides, request, () => {
     if (request.path === '/orgs/splrad/properties/schema') return propertySchema();
-    if (request.path === '/orgs/splrad/rulesets') return repositoryRulesets.map(rulesetSummary);
-    const organizationRulesetId = Number(request.path.match(/^\/orgs\/splrad\/rulesets\/(\d+)$/)?.[1] ?? 0);
-    if (organizationRulesetId) return repositoryRulesets.find((item) => item.id === organizationRulesetId);
     if (request.path === '/orgs/splrad/teams/maintainers') return { id: 5, slug: 'maintainers' };
     if (request.path === '/orgs/splrad/teams/maintainers/members') return [
       { login: 'maintainer-one' }, { login: 'maintainer-two' },
@@ -577,6 +576,15 @@ async function setup(options: {
     };
     throw new Error(`Unexpected organization request: ${request.path}`);
   }));
+  const organizationRulesetTransport = transport(
+    organizationRulesetRequests,
+    (request) => response(organizationOverrides, request, () => {
+      if (request.path === '/orgs/splrad/rulesets') return repositoryRulesets.map(rulesetSummary);
+      const organizationRulesetId = Number(request.path.match(/^\/orgs\/splrad\/rulesets\/(\d+)$/)?.[1] ?? 0);
+      if (organizationRulesetId) return repositoryRulesets.find((item) => item.id === organizationRulesetId);
+      throw new Error(`Unexpected organization Ruleset request: ${request.path}`);
+    }),
+  );
   const appTransport = transport(appRequests, (request) => response(appOverrides, request, () => {
     if (request.path === '/repos/splrad/example/installation') return appInstallation();
     throw new Error(`Unexpected App request: ${request.path}`);
@@ -585,6 +593,7 @@ async function setup(options: {
     dependencies: {
       repositoryTransport,
       organizationTransport,
+      organizationRulesetTransport,
       appJwtTransport: appTransport,
       appUserTransport: appTransport,
       runtimeDiagnostics: options.runtimeDiagnostics ?? knownRuntime(),
@@ -595,6 +604,7 @@ async function setup(options: {
     },
     repositoryRequests,
     organizationRequests,
+    organizationRulesetRequests,
     appRequests,
   };
 }
@@ -1200,15 +1210,157 @@ describe('doctor CLI contract', () => {
           templateDirectory: '.',
           transport: current.dependencies.repositoryTransport,
           organizationTransport: current.dependencies.organizationTransport!,
+          organizationRulesetTransport: current.dependencies.organizationRulesetTransport!,
           appJwtTransport: current.dependencies.appJwtTransport!,
           runtimeDiagnostics: current.dependencies.runtimeDiagnostics!,
         },
       );
       expect(exitCode).toBe(2);
-      expect(current.organizationRequests.some((request) => request.path === '/orgs/splrad/rulesets')).toBe(true);
+      expect(current.organizationRulesetRequests.some(
+        (request) => request.path === '/orgs/splrad/rulesets',
+      )).toBe(true);
+      expect(current.organizationRequests.some((request) => request.path === '/orgs/splrad/rulesets'))
+        .toBe(false);
       expect(current.repositoryRequests.some((request) => request.path === '/orgs/splrad/rulesets')).toBe(false);
       expect(current.repositoryRequests.some((request) => request.path.includes('/contents/.github/steward.json'))).toBe(true);
       expect(current.organizationRequests.some((request) => request.path.includes('/contents/.github/steward.json'))).toBe(false);
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+  });
+
+  it('keeps repo-only and resident-only Doctor reports useful without credential fallback', async () => {
+    const repositoryOnly = await setup();
+    const repositoryOnlyReport = await runDoctor({
+      repositoryTransport: repositoryOnly.dependencies.repositoryTransport,
+      appJwtTransport: repositoryOnly.dependencies.appJwtTransport!,
+      runtimeDiagnostics: repositoryOnly.dependencies.runtimeDiagnostics!,
+      observedAt: repositoryOnly.dependencies.observedAt!,
+    }, { owner: 'splrad', repository: 'example' });
+
+    expect(repositoryOnlyReport.status).toBe('unknown');
+    expect(repositoryOnlyReport.findings.find((item) => item.code === 'organization.properties.schema'))
+      .toMatchObject({ state: 'unknown' });
+    expect(repositoryOnlyReport.findings.find((item) => item.code === 'organization.rulesets'))
+      .toMatchObject({ state: 'unknown' });
+    expect(repositoryOnly.repositoryRequests.some((request) => request.path.startsWith('/orgs/'))).toBe(false);
+    expect(repositoryOnly.organizationRequests).toEqual([]);
+    expect(repositoryOnly.organizationRulesetRequests).toEqual([]);
+
+    const residentOnly = await setup();
+    const residentOnlyReport = await runDoctor({
+      repositoryTransport: residentOnly.dependencies.repositoryTransport,
+      organizationTransport: residentOnly.dependencies.organizationTransport!,
+      appJwtTransport: residentOnly.dependencies.appJwtTransport!,
+      runtimeDiagnostics: residentOnly.dependencies.runtimeDiagnostics!,
+      observedAt: residentOnly.dependencies.observedAt!,
+    }, { owner: 'splrad', repository: 'example' });
+
+    expect(residentOnlyReport.findings.find((item) => item.code === 'organization.properties.schema'))
+      .toMatchObject({ state: 'conformant' });
+    expect(residentOnlyReport.findings.find((item) => item.code === 'organization.rulesets'))
+      .toMatchObject({ state: 'unknown' });
+    expect(residentOnly.organizationRequests.some((request) => request.path.includes('/rulesets'))).toBe(false);
+    expect(residentOnly.repositoryRequests.some((request) => request.path.startsWith('/orgs/'))).toBe(false);
+    expect(residentOnly.organizationRulesetRequests).toEqual([]);
+  });
+
+  it('rejects reused Doctor credentials before sending any network request', async () => {
+    const cases = [
+      {
+        env: { GH_TOKEN: 'shared-token', STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN: 'shared-token' },
+        expected: 'STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN',
+      },
+      {
+        env: { GITHUB_TOKEN: 'shared-token', STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN: 'shared-token' },
+        expected: 'STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN',
+      },
+      {
+        env: { GH_TOKEN: 'shared-token', STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN: 'shared-token' },
+        expected: 'STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN',
+      },
+      {
+        env: { GITHUB_TOKEN: 'shared-token', STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN: 'shared-token' },
+        expected: 'STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN',
+      },
+      {
+        env: {
+          GH_TOKEN: 'repository-token',
+          STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN: 'organization-token',
+          STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN: 'organization-token',
+        },
+        expected: 'STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN',
+      },
+    ] as const;
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      for (const testCase of cases) {
+        const current = await setup();
+        stdout.mockClear();
+        stderr.mockClear();
+        const exitCode = await main(
+          ['doctor', '--repo', 'splrad/example', '--json'],
+          testCase.env,
+          {
+            templateDirectory: '.',
+            transport: current.dependencies.repositoryTransport,
+            appJwtTransport: current.dependencies.appJwtTransport!,
+            runtimeDiagnostics: current.dependencies.runtimeDiagnostics!,
+          },
+        );
+        expect(exitCode).toBe(2);
+        const error = stderr.mock.calls.flat().join('');
+        expect(error).toContain(testCase.expected);
+        expect(error).not.toContain('shared-token');
+        expect(error).not.toContain('repository-token');
+        expect(error).not.toContain('organization-token');
+        expect(current.repositoryRequests).toEqual([]);
+        expect(current.organizationRequests).toEqual([]);
+        expect(current.organizationRulesetRequests).toEqual([]);
+        expect(current.appRequests).toEqual([]);
+      }
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+  });
+
+  it('does not verify an Actions attestation through repository or elevated identities', async () => {
+    const current = await setup();
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const exitCode = await main(
+        [
+          'doctor',
+          '--repo',
+          'splrad/example',
+          '--actions-attestation',
+          'this-file-must-not-be-read.json',
+        ],
+        {
+          GH_TOKEN: 'repository-token',
+          STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN: 'ruleset-token',
+        },
+        {
+          templateDirectory: '.',
+          transport: current.dependencies.repositoryTransport,
+          organizationRulesetTransport: current.dependencies.organizationRulesetTransport!,
+          appJwtTransport: current.dependencies.appJwtTransport!,
+          runtimeDiagnostics: current.dependencies.runtimeDiagnostics!,
+        },
+      );
+
+      expect(exitCode).toBe(2);
+      expect(stderr.mock.calls.flat().join(''))
+        .toContain('STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN');
+      expect(stderr.mock.calls.flat().join('')).not.toContain('ENOENT');
+      expect(current.repositoryRequests).toEqual([]);
+      expect(current.organizationRequests).toEqual([]);
+      expect(current.organizationRulesetRequests).toEqual([]);
+      expect(current.appRequests).toEqual([]);
     } finally {
       stdout.mockRestore();
       stderr.mockRestore();

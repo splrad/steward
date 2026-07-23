@@ -198,6 +198,7 @@ export interface GitHubOrganizationContractSnapshot {
 export interface GitHubOrganizationReadClientOptions {
   readonly repositoryTransport: GitHubTransport;
   readonly organizationTransport?: GitHubTransport;
+  readonly organizationRulesetTransport?: GitHubTransport;
   readonly appJwtTransport?: GitHubTransport;
   readonly appUserTransport?: GitHubTransport;
   readonly actionsExecutionProtections?: GitHubReadResult<GitHubActionsExecutionProtections>;
@@ -307,6 +308,14 @@ function unknown(
   } = {},
 ): GitHubReadResult<never> {
   return { status: 'unknown', reason, evidence: proof, ...options };
+}
+
+function dependencyUnavailable(endpoint: string, observedAt: string): GitHubReadResult<never> {
+  return unknown('dependency-unavailable', {
+    source: 'github-rest',
+    endpoint,
+    observedAt,
+  });
 }
 
 function apiFailure(error: GitHubApiError, proof: GitHubReadEvidence): GitHubReadResult<never> {
@@ -592,7 +601,8 @@ function installationMatches(
 
 export class GitHubOrganizationReadClient {
   private readonly repositoryTransport: GitHubTransport;
-  private readonly organizationTransport: GitHubTransport;
+  private readonly organizationTransport: GitHubTransport | undefined;
+  private readonly organizationRulesetTransport: GitHubTransport | undefined;
   private readonly appJwtTransport: GitHubTransport | undefined;
   private readonly appUserTransport: GitHubTransport | undefined;
   private readonly actionsExecutionProtections: GitHubReadResult<GitHubActionsExecutionProtections> | undefined;
@@ -600,7 +610,8 @@ export class GitHubOrganizationReadClient {
 
   constructor(options: GitHubOrganizationReadClientOptions) {
     this.repositoryTransport = options.repositoryTransport;
-    this.organizationTransport = options.organizationTransport ?? options.repositoryTransport;
+    this.organizationTransport = options.organizationTransport;
+    this.organizationRulesetTransport = options.organizationRulesetTransport;
     this.appJwtTransport = options.appJwtTransport;
     this.appUserTransport = options.appUserTransport;
     this.actionsExecutionProtections = options.actionsExecutionProtections;
@@ -612,6 +623,7 @@ export class GitHubOrganizationReadClient {
     observedAt = this.now(),
   ): Promise<GitHubReadResult<readonly GitHubOrganizationPropertyDefinition[]>> {
     const path = `/orgs/${segment(organization)}/properties/schema`;
+    if (!this.organizationTransport) return dependencyUnavailable(path, observedAt);
     return await readRequest(
       this.organizationTransport,
       { path },
@@ -636,8 +648,9 @@ export class GitHubOrganizationReadClient {
     names?: readonly string[],
   ): Promise<GitHubReadResult<readonly GitHubRulesetDefinition[]>> {
     const path = `/orgs/${segment(organization)}/rulesets`;
+    if (!this.organizationRulesetTransport) return dependencyUnavailable(path, observedAt);
     const summaries = await readArrayPages(
-      this.organizationTransport,
+      this.organizationRulesetTransport,
       { path },
       observedAt,
       (payload) => array(payload, 'organization rulesets'),
@@ -655,7 +668,7 @@ export class GitHubOrganizationReadClient {
     for (const summary of selectedSummaries) {
       const detailPath = `${path}/${segment(summary.id)}`;
       const detail = await readRequest(
-        this.organizationTransport,
+        this.organizationRulesetTransport,
         { path: detailPath },
         observedAt,
         (payload) => parseRuleset(payload, definitions.length),
@@ -705,6 +718,7 @@ export class GitHubOrganizationReadClient {
     observedAt = this.now(),
   ): Promise<GitHubReadResult<GitHubTeamRepositoryAccess>> {
     const teamPath = `/orgs/${segment(organization)}/teams/${segment(teamSlug)}`;
+    if (!this.organizationTransport) return dependencyUnavailable(teamPath, observedAt);
     const team = await readRequest(this.organizationTransport, { path: teamPath }, observedAt,
       (payload) => {
         const item = object(payload, 'team');
@@ -764,6 +778,7 @@ export class GitHubOrganizationReadClient {
     observedAt = this.now(),
   ): Promise<GitHubReadResult<readonly string[]>> {
     const path = `/orgs/${segment(organization)}/teams/${segment(teamSlug)}/members`;
+    if (!this.organizationTransport) return dependencyUnavailable(path, observedAt);
     return await readArrayPages(
       this.organizationTransport,
       { path, query: { role: 'all' } },
@@ -835,11 +850,14 @@ export class GitHubOrganizationReadClient {
     if (direct.status === 'known') return direct;
     if (direct.status === 'unknown' && direct.reason === 'invalid-response') return direct;
 
-    const organizationInstallations = await this.listAccountInstallations(
-      `/orgs/${segment(input.organization)}/installations`,
-      this.organizationTransport,
-      observedAt,
-    );
+    const organizationInstallationsPath = `/orgs/${segment(input.organization)}/installations`;
+    const organizationInstallations = this.organizationTransport
+      ? await this.listAccountInstallations(
+        organizationInstallationsPath,
+        this.organizationTransport,
+        observedAt,
+      )
+      : dependencyUnavailable(organizationInstallationsPath, observedAt);
     let installations: Extract<GitHubReadResult<readonly JsonObject[]>, { status: 'known' }>;
     let authoritativeAbsence: boolean;
     if (organizationInstallations.status === 'known') {
@@ -881,6 +899,7 @@ export class GitHubOrganizationReadClient {
     observedAt = this.now(),
   ): Promise<GitHubReadResult<GitHubActionsSettings>> {
     const path = `/orgs/${segment(organization)}/actions/permissions`;
+    if (!this.organizationTransport) return dependencyUnavailable(path, observedAt);
     return await readRequest(this.organizationTransport, { path }, observedAt,
       (payload) => parseActionsSettings(payload, 'organization'));
   }
@@ -890,6 +909,7 @@ export class GitHubOrganizationReadClient {
     observedAt = this.now(),
   ): Promise<GitHubReadResult<GitHubWorkflowTokenSettings>> {
     const path = `/orgs/${segment(organization)}/actions/permissions/workflow`;
+    if (!this.organizationTransport) return dependencyUnavailable(path, observedAt);
     return await readRequest(this.organizationTransport, { path }, observedAt,
       (payload) => parseWorkflowTokenSettings(payload, 'organization'));
   }
@@ -900,6 +920,7 @@ export class GitHubOrganizationReadClient {
     observedAt = this.now(),
   ): Promise<GitHubReadResult<GitHubSelectedActionsSettings | null>> {
     const path = `/orgs/${segment(organization)}/actions/permissions/selected-actions`;
+    if (!this.organizationTransport) return dependencyUnavailable(path, observedAt);
     if (settings.status !== 'known') return dependencyUnknown(settings, path);
     if (settings.value.allowedActions !== 'selected') {
       return known(null, settings.evidence);
