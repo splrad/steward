@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildStewardRuntimeDiagnosticsEnvelope,
+  buildStewardRuntimeDiagnosticsTransportResponse,
   enabledStewardMatrixConfiguration,
   evaluateMatrix,
   fingerprintForPull,
@@ -14,6 +15,7 @@ import {
   STEWARD_APP_REQUIRED_EXPLICIT_EVENTS,
   STEWARD_APP_REQUIRED_PERMISSIONS,
   stewardCheckExternalId,
+  parseStewardRuntimeDiagnosticsTransportRequest,
 } from '../packages/core/src/index.js';
 import {
   runDoctor,
@@ -1285,8 +1287,8 @@ describe('doctor CLI contract', () => {
   it('rejects reused Doctor credentials before sending any network request', async () => {
     const cases = [
       {
-        env: { GH_TOKEN: 'shared-token', STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN: 'shared-token' },
-        expected: 'STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN',
+        env: { GH_TOKEN: 'shared-token', STEWARD_APP_USER_TOKEN: 'shared-token' },
+        expected: 'STEWARD_APP_USER_TOKEN',
       },
       {
         env: { GITHUB_TOKEN: 'shared-token', STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN: 'shared-token' },
@@ -1297,8 +1299,37 @@ describe('doctor CLI contract', () => {
         expected: 'STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN',
       },
       {
-        env: { GITHUB_TOKEN: 'shared-token', STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN: 'shared-token' },
+        env: {
+          GH_TOKEN: 'shared-token',
+          STEWARD_RUNTIME_DIAGNOSTICS_ACCESS_CLIENT_ID: 'access-id',
+          STEWARD_RUNTIME_DIAGNOSTICS_ACCESS_CLIENT_SECRET: 'shared-token',
+        },
+        expected: 'STEWARD_RUNTIME_DIAGNOSTICS_ACCESS_CLIENT_SECRET',
+      },
+      {
+        env: {
+          GH_TOKEN: 'repository-token',
+          STEWARD_APP_USER_TOKEN: 'shared-token',
+          STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN: 'shared-token',
+        },
+        expected: 'STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN',
+      },
+      {
+        env: {
+          GH_TOKEN: 'repository-token',
+          STEWARD_APP_USER_TOKEN: 'shared-token',
+          STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN: 'shared-token',
+        },
         expected: 'STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN',
+      },
+      {
+        env: {
+          GH_TOKEN: 'repository-token',
+          STEWARD_APP_USER_TOKEN: 'shared-token',
+          STEWARD_RUNTIME_DIAGNOSTICS_ACCESS_CLIENT_ID: 'access-id',
+          STEWARD_RUNTIME_DIAGNOSTICS_ACCESS_CLIENT_SECRET: 'shared-token',
+        },
+        expected: 'STEWARD_RUNTIME_DIAGNOSTICS_ACCESS_CLIENT_SECRET',
       },
       {
         env: {
@@ -1307,6 +1338,24 @@ describe('doctor CLI contract', () => {
           STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN: 'organization-token',
         },
         expected: 'STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN',
+      },
+      {
+        env: {
+          GH_TOKEN: 'repository-token',
+          STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN: 'shared-token',
+          STEWARD_RUNTIME_DIAGNOSTICS_ACCESS_CLIENT_ID: 'access-id',
+          STEWARD_RUNTIME_DIAGNOSTICS_ACCESS_CLIENT_SECRET: 'shared-token',
+        },
+        expected: 'STEWARD_RUNTIME_DIAGNOSTICS_ACCESS_CLIENT_SECRET',
+      },
+      {
+        env: {
+          GH_TOKEN: 'repository-token',
+          STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN: 'shared-token',
+          STEWARD_RUNTIME_DIAGNOSTICS_ACCESS_CLIENT_ID: 'access-id',
+          STEWARD_RUNTIME_DIAGNOSTICS_ACCESS_CLIENT_SECRET: 'shared-token',
+        },
+        expected: 'STEWARD_RUNTIME_DIAGNOSTICS_ACCESS_CLIENT_SECRET',
       },
     ] as const;
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
@@ -1321,9 +1370,7 @@ describe('doctor CLI contract', () => {
           testCase.env,
           {
             templateDirectory: '.',
-            transport: current.dependencies.repositoryTransport,
             appJwtTransport: current.dependencies.appJwtTransport!,
-            runtimeDiagnostics: current.dependencies.runtimeDiagnostics!,
           },
         );
         expect(exitCode).toBe(2);
@@ -1337,6 +1384,157 @@ describe('doctor CLI contract', () => {
         expect(current.organizationRulesetRequests).toEqual([]);
         expect(current.appRequests).toEqual([]);
       }
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+  });
+
+  it('ignores credentials and partial configuration for injected Doctor roles', async () => {
+    const current = await setup();
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const exitCode = await main(
+        ['doctor', '--repo', 'splrad/example', '--pr', '3', '--json'],
+        {
+          GH_TOKEN: 'unused-shared-token',
+          GITHUB_TOKEN: 'unused-shared-token',
+          STEWARD_APP_USER_TOKEN: 'unused-shared-token',
+          STEWARD_ORGANIZATION_DIAGNOSTIC_TOKEN: 'unused-shared-token',
+          STEWARD_ORGANIZATION_RULESET_ELEVATED_TOKEN: 'unused-shared-token',
+          STEWARD_RUNTIME_DIAGNOSTICS_ACCESS_CLIENT_SECRET: 'unused-shared-token',
+        },
+        {
+          templateDirectory: '.',
+          transport: current.dependencies.repositoryTransport,
+          installationTransport: current.dependencies.appUserTransport!,
+          organizationTransport: current.dependencies.organizationTransport!,
+          organizationRulesetTransport: current.dependencies.organizationRulesetTransport!,
+          appJwtTransport: current.dependencies.appJwtTransport!,
+          runtimeDiagnostics: current.dependencies.runtimeDiagnostics!,
+        },
+      );
+
+      expect(exitCode).toBe(2);
+      expect(stderr.mock.calls.flat().join('')).not.toContain('distinct');
+      expect(stderr.mock.calls.flat().join('')).not.toContain('configured together');
+      expect(current.repositoryRequests.length).toBeGreaterThan(0);
+      expect(current.organizationRequests.length).toBeGreaterThan(0);
+      expect(current.organizationRulesetRequests.length).toBeGreaterThan(0);
+      expect(current.appRequests.length).toBeGreaterThan(0);
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+  });
+
+  it('allows GH_TOKEN and GITHUB_TOKEN to name the same repository identity', async () => {
+    const current = await setup();
+    const fetcher = vi.fn(async () => new Response(
+      JSON.stringify({ message: 'unauthorized' }),
+      { status: 401, headers: { 'content-type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetcher);
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const exitCode = await main(
+        ['doctor', '--repo', 'splrad/example', '--json'],
+        {
+          GH_TOKEN: 'repository-alias-token',
+          GITHUB_TOKEN: 'repository-alias-token',
+        },
+        {
+          templateDirectory: '.',
+          installationTransport: current.dependencies.appUserTransport!,
+          organizationTransport: current.dependencies.organizationTransport!,
+          organizationRulesetTransport: current.dependencies.organizationRulesetTransport!,
+          appJwtTransport: current.dependencies.appJwtTransport!,
+          runtimeDiagnostics: current.dependencies.runtimeDiagnostics!,
+        },
+      );
+
+      expect(exitCode).toBe(2);
+      expect(fetcher).toHaveBeenCalled();
+      expect(stderr.mock.calls.flat().join('')).not.toContain('distinct');
+    } finally {
+      vi.unstubAllGlobals();
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+  });
+
+  it('builds the authenticated runtime provider from Access environment variables', async () => {
+    const current = await setup();
+    const runtimeFetcher = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const request = parseStewardRuntimeDiagnosticsTransportRequest(
+        JSON.parse(String(init?.body)) as unknown,
+      );
+      return new Response(JSON.stringify(buildStewardRuntimeDiagnosticsTransportResponse({
+        nonce: request.nonce,
+        envelope: runtimeEnvelope(),
+      })), {
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    });
+    vi.stubGlobal('fetch', runtimeFetcher);
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const exitCode = await main(
+        ['doctor', '--repo', 'splrad/example', '--pr', '3', '--json'],
+        {
+          STEWARD_RUNTIME_DIAGNOSTICS_ACCESS_CLIENT_ID: 'access-id',
+          STEWARD_RUNTIME_DIAGNOSTICS_ACCESS_CLIENT_SECRET: 'access-secret',
+        },
+        {
+          templateDirectory: '.',
+          transport: current.dependencies.repositoryTransport,
+          installationTransport: current.dependencies.appUserTransport!,
+          organizationTransport: current.dependencies.organizationTransport!,
+          organizationRulesetTransport: current.dependencies.organizationRulesetTransport!,
+          appJwtTransport: current.dependencies.appJwtTransport!,
+        },
+      );
+
+      expect(exitCode).toBe(2);
+      expect(runtimeFetcher).toHaveBeenCalledTimes(2);
+      expect(current.repositoryRequests.length).toBeGreaterThan(0);
+      expect(stderr.mock.calls.flat().join('')).not.toContain('steward:');
+    } finally {
+      vi.unstubAllGlobals();
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+  });
+
+  it('rejects partial Access configuration before any Doctor network request', async () => {
+    const current = await setup();
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const exitCode = await main(
+        ['doctor', '--repo', 'splrad/example', '--json'],
+        {
+          STEWARD_RUNTIME_DIAGNOSTICS_ACCESS_CLIENT_ID: 'access-id',
+        },
+        {
+          templateDirectory: '.',
+          transport: current.dependencies.repositoryTransport,
+          installationTransport: current.dependencies.appUserTransport!,
+          organizationTransport: current.dependencies.organizationTransport!,
+          organizationRulesetTransport: current.dependencies.organizationRulesetTransport!,
+          appJwtTransport: current.dependencies.appJwtTransport!,
+        },
+      );
+
+      expect(exitCode).toBe(2);
+      expect(stderr.mock.calls.flat().join('')).toContain('must be configured together');
+      expect(current.repositoryRequests).toEqual([]);
+      expect(current.organizationRequests).toEqual([]);
+      expect(current.organizationRulesetRequests).toEqual([]);
+      expect(current.appRequests).toEqual([]);
     } finally {
       stdout.mockRestore();
       stderr.mockRestore();
@@ -2151,6 +2349,35 @@ describe('doctor CLI contract', () => {
     expect(report.findings.find((item) => item.code === 'runtime.central-components'))
       .toMatchObject({ state: 'permission-denied' });
   });
+
+  it.each([
+    { deadLetterQueue: 'clear', expectedState: 'conformant' },
+    { deadLetterQueue: 'pending', expectedState: 'drift' },
+    { deadLetterQueue: 'unavailable', expectedState: 'unknown' },
+  ] as const)(
+    'maps a $deadLetterQueue DLQ observation to $expectedState without changing a valid runtime revision',
+    async ({ deadLetterQueue, expectedState }) => {
+      const current = await setup({
+        runtimeDiagnostics: {
+          async read() {
+            return {
+              status: 'response' as const,
+              body: runtimeEnvelope({ deadLetterQueue }),
+            };
+          },
+        },
+      });
+
+      const report = await runDoctor(current.dependencies, { owner: 'splrad', repository: 'example' });
+      expect(report.findings.find((item) => item.code === 'runtime.control-revision'))
+        .toMatchObject({ state: 'conformant' });
+      expect(report.findings.find((item) => item.code === 'runtime.central-components'))
+        .toMatchObject({
+          state: expectedState,
+          summary: expect.stringContaining(`DLQ=${deadLetterQueue}`),
+        });
+    },
+  );
 
   it('accepts the same runtime facts with different fresh observation times', async () => {
     let reads = 0;

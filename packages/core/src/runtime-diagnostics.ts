@@ -83,15 +83,15 @@ function requireString(value: unknown, field: string): string {
   return value;
 }
 
-function requireRepositoryFullName(value: unknown): string {
-  const fullName = requireString(value, 'envelope.subject.repositoryFullName');
+function requireRepositoryFullName(value: unknown, field: string): string {
+  const fullName = requireString(value, field);
   const parts = fullName.split('/');
   if (
     parts.length !== 2
     || !githubLoginPattern.test(parts[0] ?? '')
     || !repositoryNamePattern.test(parts[1] ?? '')
   ) {
-    invalid('envelope.subject.repositoryFullName must be a canonical GitHub owner/repository name');
+    invalid(`${field} must be a canonical GitHub owner/repository name`);
   }
   return fullName;
 }
@@ -135,6 +135,30 @@ function requireEnum<const Value extends string>(
   return value as Value;
 }
 
+function parseSubject(
+  value: unknown,
+  field: string,
+): StewardRuntimeDiagnosticsSubjectV1 {
+  if (!isPlainObject(value)) invalid(`${field} must be a plain object`);
+  requireExactKeys(value, ['repositoryId', 'repositoryFullName'], field);
+  return {
+    repositoryId: requirePositiveId(
+      value.repositoryId,
+      `${field}.repositoryId`,
+    ),
+    repositoryFullName: requireRepositoryFullName(
+      value.repositoryFullName,
+      `${field}.repositoryFullName`,
+    ),
+  };
+}
+
+export function parseStewardRuntimeDiagnosticsSubject(
+  value: unknown,
+): StewardRuntimeDiagnosticsSubjectV1 {
+  return parseSubject(value, 'subject');
+}
+
 export function parseStewardRuntimeDiagnosticsEnvelope(
   value: unknown,
 ): StewardRuntimeDiagnosticsEnvelopeV1 {
@@ -143,13 +167,6 @@ export function parseStewardRuntimeDiagnosticsEnvelope(
   if (value.schemaVersion !== STEWARD_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION) {
     invalid('envelope.schemaVersion must be 1');
   }
-
-  if (!isPlainObject(value.subject)) invalid('envelope.subject must be a plain object');
-  requireExactKeys(
-    value.subject,
-    ['repositoryId', 'repositoryFullName'],
-    'envelope.subject',
-  );
 
   if (!isPlainObject(value.diagnostics)) {
     invalid('envelope.diagnostics must be a plain object');
@@ -171,13 +188,7 @@ export function parseStewardRuntimeDiagnosticsEnvelope(
 
   return {
     schemaVersion: STEWARD_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
-    subject: {
-      repositoryId: requirePositiveId(
-        value.subject.repositoryId,
-        'envelope.subject.repositoryId',
-      ),
-      repositoryFullName: requireRepositoryFullName(value.subject.repositoryFullName),
-    },
+    subject: parseSubject(value.subject, 'envelope.subject'),
     observedAt: requireCanonicalUtcTimestamp(value.observedAt),
     diagnostics: {
       controlRevision: {

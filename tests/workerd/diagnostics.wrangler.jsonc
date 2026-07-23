@@ -1,0 +1,8 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "steward-diagnostics-workerd-test",
+  "main": "../../packages/diagnostics/src/index.ts",
+  // Miniflare rejects the Asia/Bangkok local date while UTC is still the
+  // preceding day. This fixture needs no 2026-07-24-specific runtime feature.
+  "compatibility_date": "2026-07-23"
+}

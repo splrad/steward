@@ -23,6 +23,20 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const packageRoot = path.resolve('packages');
 const workerPortablePackages = new Set(['core', 'github', 'manifest', 'control']);
+const workerRuntimePackages = new Set([
+  ...workerPortablePackages,
+  'control-runtime',
+  'coordinator',
+  'diagnostics',
+  'ingress',
+]);
+const workerFetchPackages = new Set([
+  'control-runtime',
+  'coordinator',
+  'diagnostics',
+  'github',
+  'ingress',
+]);
 const nodeBuiltinModules = new Set(builtinModules.map((module) => module.replace(/^node:/, '')));
 const forbiddenWorkerGlobals = new Set(['Buffer', 'NodeJS', 'fetch', 'process']);
 const allowedDependencies: Record<string, ReadonlySet<string>> = {
@@ -32,6 +46,7 @@ const allowedDependencies: Record<string, ReadonlySet<string>> = {
   control: new Set(['core', 'github', 'manifest']),
   'control-runtime': new Set(['control', 'core', 'github', 'manifest']),
   coordinator: new Set(['core']),
+  diagnostics: new Set(['core']),
   ingress: new Set(['core']),
   relay: new Set(['core', 'github', 'manifest']),
   cli: new Set(['core', 'github', 'manifest']),
@@ -41,8 +56,9 @@ const allowedRuntimeDependencies: Record<string, ReadonlySet<string>> = {
   core: new Set<string>(),
   github: new Set<string>(),
   control: new Set<string>(),
-  'control-runtime': new Set<string>(),
+  'control-runtime': new Set(['@octokit/auth-app']),
   coordinator: new Set(['cloudflare:workers']),
+  diagnostics: new Set(['jose']),
   ingress: new Set<string>(),
   relay: new Set(['@octokit/auth-app']),
   cli: new Set(['ajv', 'ajv-formats', 'libsodium-wrappers']),
@@ -54,6 +70,7 @@ const allowedExternalResources: Record<string, ReadonlySet<string>> = {
   control: new Set<string>(),
   'control-runtime': new Set<string>(),
   coordinator: new Set<string>(),
+  diagnostics: new Set<string>(),
   ingress: new Set<string>(),
   relay: new Set<string>(),
   cli: new Set<string>(),
@@ -386,9 +403,11 @@ describe('architecture boundary', () => {
     const violations: string[] = [];
     for (const file of await sourceFiles(packageRoot)) {
       const sourcePackage = packageName(file);
-      if (!sourcePackage || !workerPortablePackages.has(sourcePackage)) continue;
+      if (!sourcePackage || !workerRuntimePackages.has(sourcePackage)) continue;
       const source = sourceFile(file);
-      for (const use of workerRuntimeUses(source, { allowFetch: sourcePackage === 'github' })) {
+      for (const use of workerRuntimeUses(source, {
+        allowFetch: workerFetchPackages.has(sourcePackage),
+      })) {
         violations.push(`${path.relative('.', file)}: ${use}`);
       }
     }
