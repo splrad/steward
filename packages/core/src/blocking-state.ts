@@ -76,9 +76,9 @@ export function normalizeBlockingFailure(
   };
 }
 
-export function orderedBlockingFailures(
-  failures: readonly BlockingFailureInput[],
-): BlockingFailureInput[] {
+export function orderedBlockingFailures<T extends BlockingFailureInput>(
+  failures: readonly T[],
+): T[] {
   return [...failures].sort((left, right) => {
     const leftIndex = blockingSourceOrder.indexOf(failureSource(left) as typeof blockingSourceOrder[number]);
     const rightIndex = blockingSourceOrder.indexOf(failureSource(right) as typeof blockingSourceOrder[number]);

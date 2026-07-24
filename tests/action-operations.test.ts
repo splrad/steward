@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  decodeBlockingState,
   evaluateMatrix,
   fingerprintForPull,
   matrixLiveEvidenceDigest,
@@ -97,7 +98,7 @@ function context(overrides: Record<string, unknown> = {}): {
     state: 'open',
     title: 'feat: operation contract',
     body: '',
-    user: { login: 'core' },
+    user: { login: 'core', type: 'User' },
     base: { ref: 'main', sha: 'b'.repeat(40) },
     head: { ref: 'feature/action', sha: 'c'.repeat(40) },
     requested_reviewers: [],
@@ -135,7 +136,12 @@ function context(overrides: Record<string, unknown> = {}): {
     listPullRequestFiles: vi.fn(async () => []),
     listPullRequestsForCommit: vi.fn(async () => [structuredClone(pull)]),
     listPullRequestReviews: vi.fn(async () => [{
-      state: 'APPROVED', commit_id: pull.head.sha, user: { login: 'reviewer' }, body: 'approved',
+      id: 1,
+      state: 'APPROVED',
+      commit_id: pull.head.sha,
+      submitted_at: '2026-07-11T00:00:00Z',
+      user: { login: 'reviewer' },
+      body: 'approved',
     }]),
     listCommitCheckRuns: vi.fn(async () => structuredClone(checkRuns)),
     listIssueComments: vi.fn(async () => []),
@@ -690,10 +696,12 @@ describe('Action operation contract', () => {
     expect(fixture.client.requestReviewers).not.toHaveBeenCalled();
     expect(fixture.mutationClient.requestReviewers).not.toHaveBeenCalled();
 
+    fixture.context.pull.user = { login: 'dependabot[bot]', type: 'Bot' };
     await executeOperation('governance-request-copilot', fixture.context, { operation: 'governance-request-copilot' });
     expect(fixture.mutationClient.requestReviewers).toHaveBeenCalledOnce();
     expect(fixture.client.requestReviewers).not.toHaveBeenCalled();
 
+    fixture.context.pull.user = { login: 'core', type: 'User' };
     fixture.client.listPullRequestReviews!.mockResolvedValue([]);
     await executeOperation('governance-auto-approve', fixture.context, { operation: 'governance-auto-approve' });
     expect(fixture.mutationClient.getAuthenticatedUser).toHaveBeenCalledOnce();
@@ -711,7 +719,9 @@ describe('Action operation contract', () => {
     expect(pending.mutationClient.requestReviewers).not.toHaveBeenCalled();
 
     const reviewed = context();
+    reviewed.context.pull.user = { login: 'dependabot[bot]', type: 'Bot' };
     reviewed.client.listPullRequestReviews!.mockResolvedValue([{
+      id: 2,
       state: 'COMMENTED',
       commit_id: reviewed.context.pull.head.sha,
       user: { login: 'copilot-pull-request-reviewer[bot]' },
@@ -725,7 +735,9 @@ describe('Action operation contract', () => {
 
   it('requests Copilot again when the only prior review belongs to an older head', async () => {
     const fixture = context();
+    fixture.context.pull.user = { login: 'dependabot[bot]', type: 'Bot' };
     fixture.client.listPullRequestReviews!.mockResolvedValue([{
+      id: 1,
       state: 'COMMENTED',
       commit_id: 'd'.repeat(40),
       user: { login: 'copilot-pull-request-reviewer[bot]' },
@@ -740,7 +752,9 @@ describe('Action operation contract', () => {
 
   it('requests Copilot again when the current-head review was dismissed', async () => {
     const fixture = context();
+    fixture.context.pull.user = { login: 'dependabot[bot]', type: 'Bot' };
     fixture.client.listPullRequestReviews!.mockResolvedValue([{
+      id: 3,
       state: 'DISMISSED',
       commit_id: fixture.context.pull.head.sha,
       user: { login: 'copilot-pull-request-reviewer[bot]' },
@@ -749,6 +763,57 @@ describe('Action operation contract', () => {
 
     await executeOperation('governance-request-copilot', fixture.context, { operation: 'governance-request-copilot' });
     expect(fixture.mutationClient.requestReviewers).toHaveBeenCalledOnce();
+  });
+
+  it('does not repeat a Copilot request when a pending draft follows a dismissed review', async () => {
+    const fixture = context();
+    fixture.context.pull.user = { login: 'dependabot[bot]', type: 'Bot' };
+    fixture.client.listPullRequestReviews!.mockResolvedValue([{
+      id: 3,
+      state: 'DISMISSED',
+      commit_id: fixture.context.pull.head.sha,
+      submitted_at: '2026-07-12T03:07:44Z',
+      user: { login: 'copilot-pull-request-reviewer[bot]' },
+    }, {
+      id: 4,
+      state: 'PENDING',
+      commit_id: fixture.context.pull.head.sha,
+      submitted_at: null,
+      user: { login: 'copilot-pull-request-reviewer[bot]' },
+    }]);
+
+    await expect(executeOperation(
+      'governance-request-copilot',
+      fixture.context,
+      { operation: 'governance-request-copilot' },
+    )).resolves.toMatchObject({
+      state: 'ignored',
+      summary: 'Copilot review is already pending',
+    });
+    expect(fixture.mutationClient.requestReviewers).not.toHaveBeenCalled();
+  });
+
+  it('leaves human-authored Copilot requests to organization policy and fails closed on unknown identity', async () => {
+    const human = context();
+    await expect(executeOperation(
+      'governance-request-copilot', human.context, { operation: 'governance-request-copilot' },
+    )).resolves.toMatchObject({
+      state: 'ignored',
+      summary: 'Copilot review for a human author is organization-managed',
+    });
+    expect(human.client.listPullRequestReviews).not.toHaveBeenCalled();
+    expect(human.mutationClient.requestReviewers).not.toHaveBeenCalled();
+
+    const unknown = context();
+    unknown.context.pull.user = { login: 'core' };
+    await expect(executeOperation(
+      'governance-request-copilot', unknown.context, { operation: 'governance-request-copilot' },
+    )).resolves.toMatchObject({
+      state: 'failed',
+      summary: 'Pull request author identity is not trustworthy enough to request Copilot',
+    });
+    expect(unknown.client.listPullRequestReviews).not.toHaveBeenCalled();
+    expect(unknown.mutationClient.requestReviewers).not.toHaveBeenCalled();
   });
 
   it('converges Classification through Manifest policy, GitHub primitives, metadata, and the App Check', async () => {
@@ -1141,8 +1206,9 @@ describe('Action operation contract', () => {
     }));
   });
 
-  it('fails closed when a human review operation has no mutation client', async () => {
+  it('fails closed when a machine-authored Copilot request has no mutation client', async () => {
     const fixture = context({ mutationClient: undefined });
+    fixture.context.pull.user = { login: 'dependabot[bot]', type: 'Bot' };
     await expect(executeOperation(
       'governance-request-copilot', fixture.context, { operation: 'governance-request-copilot' },
     )).rejects.toThrow('separate mutation token');
@@ -1186,6 +1252,62 @@ describe('Action operation contract', () => {
     expect(result).toMatchObject({ state: 'failed', summary: 'failed_trusted_contributors_missing_approval' });
   });
 
+  it('replaces an old passing Main Check with failure when review evidence is malformed', async () => {
+    const fixture = context();
+    const inputDigest = (await fingerprintForPull({
+      pull: fixture.context.pull,
+      commits: [{ sha: 'd'.repeat(40), author: { login: 'core' } }],
+      files: [],
+      botLogins: ['splrad-steward', 'copilot-pull-request-reviewer[bot]'],
+    })).value;
+    fixture.checkRuns.push({
+      id: 30,
+      head_sha: fixture.context.pull.head.sha,
+      name: 'Main Authorization Gate',
+      status: 'completed',
+      conclusion: 'success',
+      external_id: stewardCheckExternalId({
+        repositoryId: fixture.context.repositoryId,
+        prNumber: fixture.context.pull.number,
+        headSha: fixture.context.pull.head.sha,
+        checkId: 'main-authorization',
+        configDigest: fixture.context.manifest.configDigest,
+        inputDigest,
+      }),
+      app: { id: 4_243_096, slug: 'splrad-steward' },
+    });
+    fixture.client.listPullRequestReviews!.mockResolvedValue([{
+      id: 3,
+      state: 'APPROVED',
+      commit_id: null,
+      submitted_at: '2026-07-24T00:00:00Z',
+      user: { login: 'reviewer' },
+    }]);
+    const result = await executeOperation('governance-main', fixture.context, { operation: 'governance-main' });
+    expect(result).toMatchObject({
+      state: 'failed',
+      summary: 'failed_current_head_review_evidence_malformed',
+      details: { malformedReviewEvidence: true },
+    });
+    expect(fixture.client.updateCheckRun).toHaveBeenCalledWith(
+      'splrad',
+      'steward',
+      30,
+      expect.objectContaining({
+        name: 'Main Authorization Gate',
+        status: 'completed',
+        conclusion: 'failure',
+      }),
+    );
+    expect(fixture.client.createCheckRun).not.toHaveBeenCalled();
+    expect(fixture.client.createIssueComment).toHaveBeenCalledWith(
+      'splrad',
+      'steward',
+      7,
+      expect.stringContaining('审查证据异常'),
+    );
+  });
+
   it('converges only the current source legacy comment into aggregate state', async () => {
     const fixture = context();
     fixture.client.listIssueComments!.mockResolvedValue([
@@ -1218,6 +1340,88 @@ describe('Action operation contract', () => {
     expect(fixture.client.createCheckRun).not.toHaveBeenCalled();
   });
 
+  it('does not accept a dismissed current-head Copilot review as a passing gate', async () => {
+    const fixture = context();
+    fixture.client.listPullRequestReviews!.mockResolvedValue([{
+      id: 20,
+      state: 'DISMISSED',
+      body: 'Copilot reviewed 1 out of 1 changed files in this pull request and generated no comments.',
+      commit_id: fixture.context.pull.head.sha,
+      submitted_at: '2026-07-24T00:00:00Z',
+      user: { login: 'copilot-pull-request-reviewer[bot]' },
+    }]);
+    fixture.client.listReviewThreads!.mockResolvedValue([]);
+
+    const result = await executeOperation(
+      'governance-copilot',
+      fixture.context,
+      { operation: 'governance-copilot' },
+    );
+
+    expect(result).toMatchObject({ state: 'pending', summary: '' });
+    expect(fixture.client.createCheckRun).toHaveBeenCalledWith(
+      'splrad',
+      'steward',
+      expect.objectContaining({
+        name: 'Copilot Code Review Gate',
+        status: 'in_progress',
+      }),
+    );
+  });
+
+  it('treats a pending Copilot draft as in progress rather than passing evidence', async () => {
+    const fixture = context();
+    fixture.client.listPullRequestReviews!.mockResolvedValue([{
+      id: 21,
+      state: 'PENDING',
+      body: 'Copilot reviewed 1 out of 1 changed files in this pull request and generated no comments.',
+      commit_id: fixture.context.pull.head.sha,
+      submitted_at: null,
+      user: { login: 'copilot-pull-request-reviewer[bot]' },
+    }]);
+    fixture.client.listReviewThreads!.mockResolvedValue([{
+      id: 'pending-thread',
+      isResolved: false,
+      isOutdated: false,
+      comments: {
+        nodes: [{
+          id: 'pending-comment',
+          body: 'Severity: suggestion\nTitle: Draft suggestion',
+          author: { login: 'copilot-pull-request-reviewer[bot]' },
+          pullRequestReview: {
+            author: { login: 'copilot-pull-request-reviewer[bot]' },
+            commit: { oid: fixture.context.pull.head.sha },
+            state: 'PENDING',
+          },
+        }],
+      },
+    }]);
+
+    const result = await executeOperation(
+      'governance-copilot',
+      fixture.context,
+      { operation: 'governance-copilot' },
+    );
+
+    expect(result).toMatchObject({ state: 'pending', summary: '' });
+    expect(fixture.client.createCheckRun).toHaveBeenCalledWith(
+      'splrad',
+      'steward',
+      expect.objectContaining({
+        name: 'Copilot Code Review Gate',
+        status: 'in_progress',
+      }),
+    );
+    expect(fixture.client.createCheckRun).not.toHaveBeenCalledWith(
+      'splrad',
+      'steward',
+      expect.objectContaining({
+        name: 'Copilot Code Review Gate',
+        conclusion: 'success',
+      }),
+    );
+  });
+
   it('converges aggregate Governance failures through review and Resolve events', async () => {
     const fixture = context();
     const comments: GitHubIssueComment[] = [];
@@ -1226,6 +1430,7 @@ describe('Action operation contract', () => {
       state: 'COMMENTED',
       body: 'Copilot reviewed 1 out of 1 changed files in this pull request and generated 1 comment.',
       commit_id: fixture.context.pull.head.sha,
+      submitted_at: '2026-07-24T00:00:00Z',
       user: { login: 'copilot-pull-request-reviewer[bot]' },
     }];
     const threads: GitHubReviewThread[] = [{
@@ -1238,6 +1443,11 @@ describe('Action operation contract', () => {
           body: 'Severity: blocking\nTitle: Fix the unsafe state transition',
           url: 'https://github.example/thread/1',
           author: { login: 'copilot-pull-request-reviewer[bot]' },
+          pullRequestReview: {
+            author: { login: 'copilot-pull-request-reviewer[bot]' },
+            commit: { oid: fixture.context.pull.head.sha },
+            state: 'COMMENTED',
+          },
         }],
       },
     }];
@@ -1275,12 +1485,17 @@ describe('Action operation contract', () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain('核心开发者审批');
     expect(comments[0]?.body).toContain('Copilot 阻断评论');
+    expect(decodeBlockingState(comments[0]?.body)?.failures.map((failure) => failure.source)).toEqual([
+      'main-authorization',
+      'copilot-review:blocking-comments',
+    ]);
 
     reviews.push({
       id: 21,
       state: 'APPROVED',
       body: 'approved',
       commit_id: fixture.context.pull.head.sha,
+      submitted_at: '2026-07-24T00:01:00Z',
       user: { login: 'reviewer' },
     });
     const mainRecovered = await executeOperation('governance-main', fixture.context, { operation: 'governance-main' });

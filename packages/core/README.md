@@ -8,7 +8,7 @@ The extracted contracts cover:
 - stable pull-request input fingerprints that ignore Steward-owned classification output;
 - manifest-driven area, kind, public-label, and release-label decisions with pure mutation planning;
 - legacy-compatible aggregate blocking-comment state and same-head source replacement;
-- main-authorization and Copilot-review decisions, review-request planning, and presentation keys without consumer-facing copy;
+- trusted live-author classification, current-head review/thread selection, main-authorization and Copilot-review decisions, review-request planning, and presentation keys without consumer-facing copy;
 - validation-Matrix target evaluation, versioned Check identity validation, legacy evidence reads, repair planning, and workflow-to-proxy completion planning.
 - versioned Release adapter context/plan parsing, trigger decisions, and output-asset manifest validation without filesystem or GitHub access.
 
