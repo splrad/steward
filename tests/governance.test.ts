@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import {
   blockingFailuresMarker,
+  classifyPullRequestAuthor,
   copilotCommentSeverity,
   copilotCommentTitle,
   copilotFailureModels,
@@ -11,7 +12,10 @@ import {
   evaluateMainAuthorization,
   mainAuthorizationFailureModel,
   nextBlockingFailuresState,
+  orderedBlockingFailures,
+  planCopilotReviewRequest,
   sanitizeCopilotCommentTitle,
+  selectCurrentHeadReviews,
 } from '../packages/core/src/index.js';
 
 const protocol = JSON.parse(await readFile(
@@ -110,6 +114,142 @@ describe('main authorization decisions', () => {
 });
 
 describe('Copilot governance protocol', () => {
+  it('classifies authors only from trusted live GitHub identity fields', () => {
+    expect(classifyPullRequestAuthor({ login: 'contributor', type: 'User' }))
+      .toEqual({ kind: 'human', login: 'contributor' });
+    expect(classifyPullRequestAuthor({ login: 'dependabot[bot]', type: 'Bot' }))
+      .toEqual({ kind: 'machine', login: 'dependabot[bot]' });
+    expect(classifyPullRequestAuthor({ login: 'automation', type: 'App' }))
+      .toEqual({ kind: 'machine', login: 'automation' });
+    expect(classifyPullRequestAuthor({ login: 'dependabot[bot]', type: 'User' }).kind)
+      .toBe('unknown');
+    expect(classifyPullRequestAuthor({ login: '', type: 'Bot' }).kind).toBe('unknown');
+    expect(classifyPullRequestAuthor({ login: 'contributor' }).kind).toBe('unknown');
+  });
+
+  it('selects only the latest non-dismissed review for the current head', () => {
+    const head = 'c'.repeat(40);
+    const selected = selectCurrentHeadReviews([
+      {
+        id: 1,
+        state: 'COMMENTED',
+        commit_id: head,
+        submitted_at: '2026-07-24T00:00:00Z',
+        user: { login: protocol.copilot.reviewer },
+        body: protocol.copilot.noNewComments,
+      },
+      {
+        id: 2,
+        state: 'DISMISSED',
+        commit_id: head,
+        submitted_at: '2026-07-24T00:01:00Z',
+        user: { login: protocol.copilot.reviewer },
+        body: protocol.copilot.noNewComments,
+      },
+      {
+        id: 3,
+        state: 'COMMENTED',
+        commit_id: 'd'.repeat(40),
+        submitted_at: '2026-07-24T00:02:00Z',
+        user: { login: protocol.copilot.reviewer },
+        body: protocol.copilot.noNewComments,
+      },
+    ], head);
+    expect(selected).toEqual({ malformed: false, pendingReviews: [], reviews: [] });
+  });
+
+  it('plans explicit Copilot requests only for machine-authored current heads', () => {
+    const headSha = 'c'.repeat(40);
+    const machine = classifyPullRequestAuthor({ login: 'dependabot[bot]', type: 'Bot' });
+    const human = classifyPullRequestAuthor({ login: 'contributor', type: 'User' });
+    const unknown = classifyPullRequestAuthor({ login: 'contributor' });
+    expect(planCopilotReviewRequest({ author: human, headSha })).toMatchObject({
+      state: 'observe-native',
+      reason: 'human-native',
+    });
+    expect(planCopilotReviewRequest({ author: unknown, headSha })).toMatchObject({
+      state: 'action-required',
+      reason: 'author-unknown',
+    });
+    expect(planCopilotReviewRequest({
+      author: unknown,
+      headSha,
+      requestedReviewers: [{ login: protocol.copilot.reviewer }],
+    })).toMatchObject({
+      state: 'action-required',
+      reason: 'author-unknown',
+    });
+    expect(planCopilotReviewRequest({ author: machine, headSha })).toMatchObject({
+      state: 'request',
+      reason: 'machine-request',
+    });
+    expect(planCopilotReviewRequest({
+      author: machine,
+      headSha,
+      requestedReviewers: [{ login: protocol.copilot.reviewer }],
+    })).toMatchObject({
+      state: 'not-needed',
+      reason: 'copilot-pending',
+    });
+    expect(planCopilotReviewRequest({
+      author: machine,
+      headSha,
+      reviews: [{
+        id: 1,
+        state: 'COMMENTED',
+        commit_id: headSha,
+        submitted_at: '2026-07-24T00:00:00Z',
+        user: { login: protocol.copilot.reviewer },
+      }],
+    })).toMatchObject({
+      state: 'not-needed',
+      reason: 'copilot-reviewed-current-head',
+    });
+    expect(planCopilotReviewRequest({
+      author: machine,
+      headSha,
+      reviews: [{
+        id: 3,
+        state: 'DISMISSED',
+        commit_id: headSha,
+        submitted_at: '2026-07-24T00:01:00Z',
+        user: { login: protocol.copilot.reviewer },
+      }, {
+        id: 4,
+        state: 'PENDING',
+        commit_id: headSha,
+        user: { login: protocol.copilot.reviewer },
+      }],
+    })).toMatchObject({
+      state: 'not-needed',
+      reason: 'copilot-pending',
+    });
+    expect(planCopilotReviewRequest({
+      author: machine,
+      headSha,
+      reviews: [{
+        id: 2,
+        state: 'PENDING',
+        commit_id: headSha,
+        user: { login: protocol.copilot.reviewer },
+      }],
+    })).toMatchObject({
+      state: 'not-needed',
+      reason: 'copilot-pending',
+    });
+    expect(planCopilotReviewRequest({
+      author: machine,
+      headSha,
+      reviews: [{
+        state: 'COMMENTED',
+        user: { login: protocol.copilot.reviewer },
+      }],
+    })).toMatchObject({
+      state: 'action-required',
+      reason: 'review-evidence-malformed',
+    });
+  });
+
   it('preserves severity and concise title parsing', () => {
     expect(copilotCommentSeverity(protocol.copilot.blocking)).toBe('blocking');
     expect(copilotCommentSeverity(protocol.copilot.suggestion)).toBe('suggestion');
@@ -138,6 +278,42 @@ describe('Copilot governance protocol', () => {
     ]);
     expect(findings.blocking.map((item) => item.title)).toEqual(['必须修复']);
     expect(findings.unclassified.map((item) => item.title)).toEqual(['missing protocol']);
+  });
+
+  it('binds Copilot review-thread evidence to the current head and review state', () => {
+    const head = 'c'.repeat(40);
+    const comment = (reviewHead: string, state = 'COMMENTED') => ({
+      author: { login: protocol.copilot.reviewer },
+      body: protocol.copilot.blocking,
+      url: `https://example.test/${reviewHead.slice(0, 1)}`,
+      pullRequestReview: {
+        author: { login: protocol.copilot.reviewer },
+        commit: { oid: reviewHead },
+        state,
+      },
+    });
+    const findings = copilotThreadFindings([
+      { comments: [comment(head)] },
+      { comments: [comment('d'.repeat(40))] },
+      { comments: [comment(head, 'DISMISSED')] },
+      { comments: [comment(head, 'PENDING')] },
+      {
+        comments: [{
+          author: { login: protocol.copilot.reviewer },
+          body: protocol.copilot.blocking,
+          url: 'https://example.test/unbound',
+          pullRequestReview: {
+            author: { login: protocol.copilot.reviewer },
+            state: 'COMMENTED',
+          },
+        }],
+      },
+    ], { headSha: head });
+    expect(findings.blocking).toHaveLength(1);
+    expect(findings.unclassified).toEqual([{
+      title: '必须修复',
+      url: 'https://example.test/unbound',
+    }]);
   });
 
   it.each([
@@ -203,5 +379,17 @@ describe('aggregate comment compatibility', () => {
       ],
     });
     expect(state.failures.map((failure) => String(failure.source))).toEqual(protocol.blockingComment.sourceOrder.slice(0, 3));
+  });
+
+  it('renders source families in a stable order regardless of event arrival', () => {
+    expect(orderedBlockingFailures([
+      { source: 'copilot-review:passing-conclusion' },
+      { source: 'main-authorization' },
+      { source: 'copilot-review:blocking-comments' },
+    ]).map((failure) => failure.source)).toEqual([
+      'main-authorization',
+      'copilot-review:blocking-comments',
+      'copilot-review:passing-conclusion',
+    ]);
   });
 });

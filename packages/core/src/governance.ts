@@ -43,6 +43,7 @@ export interface GovernanceFailureModel {
     | 'main.unidentified-authors'
     | 'main.missing-contributors'
     | 'main.approval-required'
+    | 'main.review-evidence'
     | 'copilot.blocking-comments'
     | 'copilot.comment-protocol'
     | 'copilot.request-failed'
@@ -185,7 +186,11 @@ export interface CopilotThreadComment {
   body?: unknown;
   url?: unknown;
   author?: { login?: unknown } | null;
-  pullRequestReview?: { author?: { login?: unknown } | null } | null;
+  pullRequestReview?: {
+    author?: { login?: unknown } | null;
+    commit?: { oid?: unknown } | null;
+    state?: unknown;
+  } | null;
 }
 
 export interface CopilotGateDecision extends CopilotFindings {
@@ -200,6 +205,163 @@ export interface CopilotGateDecision extends CopilotFindings {
 function normalizeReviewAuthor(login: unknown): string {
   const raw = String(login ?? '').trim().replace(/^@+/, '').toLowerCase();
   return normalizeGitHubLogin(raw.replace(/\[bot\]$/, '')).toLowerCase();
+}
+
+export type PullRequestAuthorKind = 'human' | 'machine' | 'unknown';
+
+export interface PullRequestAuthorClassification {
+  kind: PullRequestAuthorKind;
+  login: string;
+}
+
+export function classifyPullRequestAuthor(
+  author: { login?: unknown; type?: unknown } | null | undefined,
+): PullRequestAuthorClassification {
+  const type = String(author?.type ?? '').trim();
+  const rawLogin = String(author?.login ?? '').trim();
+  if (type === 'Bot' || type === 'App') {
+    return normalizeReviewAuthor(rawLogin)
+      ? { kind: 'machine', login: rawLogin }
+      : { kind: 'unknown', login: '' };
+  }
+  const login = normalizeGitHubLogin(rawLogin);
+  if (type === 'User' && login) {
+    return { kind: 'human', login };
+  }
+  return { kind: 'unknown', login };
+}
+
+export interface PullRequestReviewEvidence {
+  id?: unknown;
+  state?: unknown;
+  commit_id?: unknown;
+  submitted_at?: unknown;
+  user?: { login?: unknown } | null;
+}
+
+export interface CurrentHeadReviewSelection<T extends PullRequestReviewEvidence> {
+  malformed: boolean;
+  pendingReviews: T[];
+  reviews: T[];
+}
+
+const reviewStates = new Set([
+  'APPROVED',
+  'CHANGES_REQUESTED',
+  'COMMENTED',
+  'DISMISSED',
+  'PENDING',
+]);
+
+export function selectCurrentHeadReviews<T extends PullRequestReviewEvidence>(
+  reviews: readonly T[],
+  headShaInput: unknown,
+): CurrentHeadReviewSelection<T> {
+  const headSha = String(headShaInput ?? '').trim().toLowerCase();
+  if (!/^[a-f0-9]{40}$/.test(headSha)) {
+    throw new TypeError('Current-head review selection requires a valid head SHA');
+  }
+  const latest = new Map<string, {
+    index: number;
+    review: T;
+    submittedAt: string;
+    id: number;
+  }>();
+  const pending = new Map<string, { index: number; review: T; id: number }>();
+  let malformed = false;
+  for (const [index, review] of reviews.entries()) {
+    const reviewHead = String(review.commit_id ?? '').trim().toLowerCase();
+    if (!/^[a-f0-9]{40}$/.test(reviewHead)) {
+      malformed = true;
+      continue;
+    }
+    if (reviewHead !== headSha) continue;
+    const reviewer = normalizeReviewAuthor(review.user?.login);
+    const state = String(review.state ?? '').trim().toUpperCase();
+    const submittedAt = String(review.submitted_at ?? '').trim();
+    const rawId = review.id;
+    const id = Number(rawId);
+    const submitted = state !== 'PENDING';
+    if (!reviewer || !reviewStates.has(state)
+      || !Number.isSafeInteger(id) || id < 1
+      || (submitted
+        ? !submittedAt || Number.isNaN(Date.parse(submittedAt))
+        : submittedAt !== '')) {
+      malformed = true;
+      continue;
+    }
+    if (!submitted) {
+      const previous = pending.get(reviewer);
+      if (!previous || id > previous.id || (id === previous.id && index > previous.index)) {
+        pending.set(reviewer, { index, review, id });
+      }
+      continue;
+    }
+    const previous = latest.get(reviewer);
+    if (!previous
+      || submittedAt > previous.submittedAt
+      || (submittedAt === previous.submittedAt && id > previous.id)
+      || (submittedAt === previous.submittedAt && id === previous.id && index > previous.index)) {
+      latest.set(reviewer, { index, review, submittedAt, id });
+    }
+  }
+  return {
+    malformed,
+    pendingReviews: [...pending.values()].map(({ review }) => review),
+    reviews: [...latest.values()]
+      .map(({ review }) => review)
+      .filter((review) => String(review.state ?? '').trim().toUpperCase() !== 'DISMISSED'),
+  };
+}
+
+export type CopilotReviewRequestState =
+  | 'request'
+  | 'not-needed'
+  | 'observe-native'
+  | 'action-required';
+
+export interface CopilotReviewRequestPlan {
+  state: CopilotReviewRequestState;
+  reason:
+    | 'author-unknown'
+    | 'copilot-pending'
+    | 'copilot-reviewed-current-head'
+    | 'human-native'
+    | 'machine-request'
+    | 'review-evidence-malformed';
+}
+
+export function planCopilotReviewRequest(input: {
+  author: PullRequestAuthorClassification;
+  headSha: unknown;
+  requestedReviewers?: readonly { login?: unknown }[];
+  reviews?: readonly PullRequestReviewEvidence[];
+}): CopilotReviewRequestPlan {
+  if (input.author.kind === 'unknown') {
+    return { state: 'action-required', reason: 'author-unknown' };
+  }
+  const pending = (input.requestedReviewers ?? []).some((reviewer) => (
+    normalizeReviewAuthor(reviewer.login) === 'copilot-pull-request-reviewer'
+  ));
+  if (pending) return { state: 'not-needed', reason: 'copilot-pending' };
+  if (input.author.kind === 'human') {
+    return { state: 'observe-native', reason: 'human-native' };
+  }
+  const current = selectCurrentHeadReviews(input.reviews ?? [], input.headSha);
+  if (current.malformed) {
+    return { state: 'action-required', reason: 'review-evidence-malformed' };
+  }
+  if (current.pendingReviews.some((review) => (
+    normalizeReviewAuthor(review.user?.login) === 'copilot-pull-request-reviewer'
+  ))) {
+    return { state: 'not-needed', reason: 'copilot-pending' };
+  }
+  if (current.reviews.some((review) => (
+    normalizeReviewAuthor(review.user?.login) === 'copilot-pull-request-reviewer'
+  ))) {
+    return { state: 'not-needed', reason: 'copilot-reviewed-current-head' };
+  }
+  return { state: 'request', reason: 'machine-request' };
 }
 
 function isCopilotComment(comment: {
@@ -253,8 +415,14 @@ export function copilotThreadFindings(threads: readonly {
   isResolved?: unknown;
   isOutdated?: unknown;
   comments?: readonly CopilotThreadComment[] | { nodes?: readonly CopilotThreadComment[] };
-}[], options: { fallbackTitle?: unknown } = {}): CopilotFindings {
+}[], options: { fallbackTitle?: unknown; headSha?: unknown } = {}): CopilotFindings {
   const findings: CopilotFindings = { blocking: [], suggestions: [], unclassified: [] };
+  const expectedHead = options.headSha === undefined
+    ? ''
+    : String(options.headSha ?? '').trim().toLowerCase();
+  if (options.headSha !== undefined && !/^[a-f0-9]{40}$/.test(expectedHead)) {
+    throw new TypeError('Copilot thread selection requires a valid head SHA');
+  }
   for (const thread of threads) {
     if (thread.isResolved || thread.isOutdated) continue;
     const comments = Array.isArray(thread.comments)
@@ -263,6 +431,19 @@ export function copilotThreadFindings(threads: readonly {
     for (const comment of comments.filter(isCopilotComment)) {
       const body = String(comment.body ?? '');
       const finding = { title: copilotCommentTitle(body, options.fallbackTitle), url: String(comment.url ?? '') };
+      if (expectedHead) {
+        const reviewHead = String(comment.pullRequestReview?.commit?.oid ?? '').trim().toLowerCase();
+        const reviewState = String(comment.pullRequestReview?.state ?? '').trim().toUpperCase();
+        if (reviewState === 'DISMISSED' || reviewState === 'PENDING') continue;
+        if (/^[a-f0-9]{40}$/.test(reviewHead) && reviewHead !== expectedHead) continue;
+        if (reviewHead !== expectedHead || !reviewStates.has(reviewState)) {
+          findings.unclassified.push({
+            title: finding.title || 'Copilot review thread is not bound to the current head',
+            url: finding.url,
+          });
+          continue;
+        }
+      }
       const severity = copilotCommentSeverity(body);
       if (severity === 'blocking') findings.blocking.push(finding);
       else if (severity === 'suggestion') findings.suggestions.push(finding);

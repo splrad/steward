@@ -157,7 +157,11 @@ export interface GitHubReviewThread {
       body?: string;
       url?: string;
       author?: { login?: string } | null;
-      pullRequestReview?: { author?: { login?: string } | null } | null;
+      pullRequestReview?: {
+        author?: { login?: string } | null;
+        commit?: { oid?: string } | null;
+        state?: string;
+      } | null;
     }[];
   };
 }
@@ -223,7 +227,11 @@ query($owner: String!, $repository: String!, $number: Int!, $cursor: String) {
             nodes {
               id body url
               author { login }
-              pullRequestReview { author { login } }
+              pullRequestReview {
+                author { login }
+                commit { oid }
+                state
+              }
             }
           }
         }

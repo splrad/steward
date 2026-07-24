@@ -1,5 +1,6 @@
 import {
   blockingFailuresMarker,
+  classifyPullRequestAuthor,
   cleanupEphemeralCommentMarkers,
   closeStatusMarker,
   copilotFailureModels,
@@ -21,9 +22,12 @@ import {
   nextBlockingFailuresState,
   normalizeBlockingFailure,
   normalizeGitHubLogin,
+  orderedBlockingFailures,
   parseStewardCheckExternalId,
   planMatrixRepairs,
+  planCopilotReviewRequest,
   planProxyCompletions,
+  selectCurrentHeadReviews,
   stewardCheckExternalId,
   workflowRunId,
   workflowRunMatchesTarget,
@@ -274,21 +278,6 @@ async function assertExclusiveOpenPullForHead(context: StewardOperationContext):
   }
 }
 
-function currentReviews(context: StewardOperationContext, reviews: readonly GitHubPullRequestReview[]): GitHubPullRequestReview[] {
-  const latest = new Map<string, GitHubPullRequestReview>();
-  for (const review of reviews) {
-    if (review.commit_id?.toLowerCase() !== context.pull.head.sha.toLowerCase()) continue;
-    const login = String(review.user?.login ?? '').trim().toLowerCase();
-    if (!login) continue;
-    const previous = latest.get(login);
-    const timestamp = String(review.submitted_at ?? '').localeCompare(String(previous?.submitted_at ?? ''));
-    if (!previous || timestamp > 0 || (timestamp === 0 && Number(review.id ?? 0) > Number(previous.id ?? 0))) {
-      latest.set(login, review);
-    }
-  }
-  return [...latest.values()];
-}
-
 function isBotCommit(commit: GitHubCommit, configuredBots: readonly string[]): boolean {
   const logins = [commit.author?.login, commit.committer?.login].map((value) => String(value ?? '').toLowerCase());
   const types = [commit.author?.type, commit.committer?.type].map((value) => String(value ?? '').toLowerCase());
@@ -451,6 +440,7 @@ function failureTitle(model: GovernanceFailureModel): string {
     'main.unidentified-authors': '⚠️ 贡献者信息识别异常',
     'main.missing-contributors': '⚠️ 贡献者信息识别异常',
     'main.approval-required': '🔒 核心开发者审批',
+    'main.review-evidence': '⚠️ 审查证据异常',
     'copilot.blocking-comments': '🚫 Copilot 阻断评论',
     'copilot.comment-protocol': '⚠️ Copilot Review 评论格式异常',
     'copilot.request-failed': '⚠️ Copilot Review 请求失败',
@@ -483,13 +473,17 @@ function failureDetails(model: GovernanceFailureModel): string[] {
         : '已向可请求的核心开发者发送 Review Request，请完成审查并提交 **Approve**。',
     ];
   }
+  if (model.presentation === 'main.review-evidence') {
+    return ['GitHub 返回的审查记录缺少可信的提交、审查者或状态信息，请由核心维护者检查 Main Authorization Gate 日志。'];
+  }
   if (model.presentation === 'copilot.request-failed') return ['Copilot 审查请求未成功完成，请由核心维护者检查请求 job。'];
   if (model.presentation === 'copilot.passing-conclusion') return ['门禁未识别到 Copilot 的有效通过结论。'];
   return [...model.items];
 }
 
 function renderBlockingComment(head: string, failures: readonly BlockingFailure[]): string {
-  const sections = failures.map((failure) => {
+  const ordered = orderedBlockingFailures(failures);
+  const sections = ordered.map((failure) => {
     const handlers = formatMentions(failure.handlers);
     const items = failure.details.map((item) => `- ${item}`).join('\n');
     return [
@@ -500,7 +494,7 @@ function renderBlockingComment(head: string, failures: readonly BlockingFailure[
   });
   const state = {
     head,
-    failures,
+    failures: ordered,
   };
   return [
     '\x23\x23 🚧 PR 合并前有待处理事项',
@@ -509,7 +503,7 @@ function renderBlockingComment(head: string, failures: readonly BlockingFailure[
     ...sections.flatMap((section) => [section, '']),
     '> 🤖 本评论由 GitHub Actions 自动维护，全部阻断解除后将自动删除。',
     '',
-    `<!-- workflow:pr-blocking-failures-state:${encodeBlockingState({ ...state, failures: [...failures] })} -->`,
+    `<!-- workflow:pr-blocking-failures-state:${encodeBlockingState(state)} -->`,
   ].join('\n').trim();
 }
 
@@ -562,19 +556,55 @@ async function requestCopilot(context: StewardOperationContext): Promise<Steward
   if (!context.manifest.manifest.features.copilotReview) {
     return { operation: 'governance-request-copilot', state: 'ignored', summary: 'Copilot review is disabled' };
   }
-  const reviewer = 'copilot-pull-request-reviewer';
-  const alreadyRequested = (context.pull.requested_reviewers ?? []).some((candidate) => (
-    normalizeAppLogin(candidate.login) === reviewer
-  ));
-  if (alreadyRequested) {
+  const author = classifyPullRequestAuthor(context.pull.user);
+  const preliminary = planCopilotReviewRequest({
+    author,
+    headSha: context.pull.head.sha,
+    ...(context.pull.requested_reviewers === undefined
+      ? {}
+      : { requestedReviewers: context.pull.requested_reviewers }),
+  });
+  if (preliminary.reason === 'copilot-pending') {
     return { operation: 'governance-request-copilot', state: 'ignored', summary: 'Copilot review is already requested' };
   }
+  if (preliminary.state === 'observe-native') {
+    return {
+      operation: 'governance-request-copilot',
+      state: 'ignored',
+      summary: 'Copilot review for a human author is organization-managed',
+    };
+  }
+  if (preliminary.state === 'action-required') {
+    return {
+      operation: 'governance-request-copilot',
+      state: 'failed',
+      summary: 'Pull request author identity is not trustworthy enough to request Copilot',
+    };
+  }
   const reviews = await context.client.listPullRequestReviews(context.owner, context.repository, context.pull.number);
-  const alreadyReviewed = currentReviews(context, reviews).some((review) => (
-    normalizeAppLogin(review.user?.login) === reviewer && review.state !== 'DISMISSED'
-  ));
-  if (alreadyReviewed) {
+  const plan = planCopilotReviewRequest({
+    author,
+    headSha: context.pull.head.sha,
+    ...(context.pull.requested_reviewers === undefined
+      ? {}
+      : { requestedReviewers: context.pull.requested_reviewers }),
+    reviews,
+  });
+  if (plan.reason === 'copilot-pending') {
+    return { operation: 'governance-request-copilot', state: 'ignored', summary: 'Copilot review is already pending' };
+  }
+  if (plan.reason === 'copilot-reviewed-current-head') {
     return { operation: 'governance-request-copilot', state: 'ignored', summary: 'Copilot already reviewed the current head' };
+  }
+  if (plan.state === 'action-required') {
+    return {
+      operation: 'governance-request-copilot',
+      state: 'failed',
+      summary: 'Current-head review evidence is malformed',
+    };
+  }
+  if (plan.state !== 'request') {
+    throw new Error(`Unsupported Copilot review request plan ${plan.state}`);
   }
   await mutationClient(context).requestReviewers({
     owner: context.owner,
@@ -594,7 +624,15 @@ async function autoApprove(context: StewardOperationContext): Promise<StewardOpe
   const trustedSet = new Set(trusted.map((login) => login.toLowerCase()));
   const author = normalizeGitHubLogin(context.pull.user?.login).toLowerCase();
   const actorLogin = normalizeGitHubLogin(actor.login);
-  const alreadyApproved = currentReviews(context, facts.reviews).some((review) => (
+  const currentReviews = selectCurrentHeadReviews(facts.reviews, context.pull.head.sha);
+  if (currentReviews.malformed) {
+    return {
+      operation: 'governance-auto-approve',
+      state: 'ignored',
+      summary: 'Automatic approval skipped because current-head review evidence is malformed',
+    };
+  }
+  const alreadyApproved = currentReviews.reviews.some((review) => (
     review.state === 'APPROVED' && normalizeGitHubLogin(review.user?.login).toLowerCase() === actorLogin.toLowerCase()
   ));
   if (!actorLogin || actorLogin.toLowerCase() === author || !trustedSet.has(actorLogin.toLowerCase())
@@ -623,7 +661,35 @@ async function mainGovernance(context: StewardOperationContext): Promise<Steward
     maintainers(context),
     context.client.listCommitCheckRuns(context.owner, context.repository, context.pull.head.sha),
   ]);
-  const approved = currentReviews(context, facts.reviews).filter((review) => review.state === 'APPROVED');
+  const currentReviews = selectCurrentHeadReviews(facts.reviews, context.pull.head.sha);
+  if (currentReviews.malformed) {
+    const summary = 'failed_current_head_review_evidence_malformed';
+    await syncBlockingComment(context, 'main-authorization', [{
+      source: 'main-authorization',
+      presentation: 'main.review-evidence',
+      handlers: trusted,
+      items: [],
+      reviewRequestState: 'not-requested',
+    }]);
+    await writeCheck({
+      context,
+      checks,
+      checkId: 'main-authorization',
+      name: 'Main Authorization Gate',
+      inputDigest: facts.fingerprint.value,
+      status: 'completed',
+      conclusion: 'failure',
+      title: '主分支授权门禁无法验证审查证据',
+      summary,
+    });
+    return {
+      operation: 'governance-main',
+      state: 'failed',
+      summary,
+      details: { malformedReviewEvidence: true },
+    };
+  }
+  const approved = currentReviews.reviews.filter((review) => review.state === 'APPROVED');
   const trustedSet = new Set(trusted.map((login) => login.toLowerCase()));
   const approvers = approved.map((review) => review.user?.login).filter((login) => trustedSet.has(normalizeGitHubLogin(login).toLowerCase()));
   const manualApprovers = approved.filter((review) => !String(review.body ?? '').includes(autoApprovalMarker))
@@ -642,7 +708,8 @@ async function mainGovernance(context: StewardOperationContext): Promise<Steward
       trusted,
       author: context.pull.user?.login,
       requested: context.pull.requested_reviewers?.map((reviewer) => reviewer.login) ?? [],
-      reviewed: facts.reviews.map((review) => review.user?.login),
+      reviewed: [...currentReviews.reviews, ...currentReviews.pendingReviews]
+        .map((review) => review.user?.login),
       botLogins: botLogins(context),
     });
     reviewRequest = { ok: true, eligible: plan.eligible };
@@ -691,10 +758,20 @@ async function copilotGovernance(
     maintainers(context),
     context.client.listCommitCheckRuns(context.owner, context.repository, context.pull.head.sha),
   ]);
-  const copilotReviews = currentReviews(context, facts.reviews).filter((review) => (
+  const currentReviews = selectCurrentHeadReviews(facts.reviews, context.pull.head.sha);
+  const copilotReviews = currentReviews.reviews.filter((review) => (
     normalizeAppLogin(review.user?.login) === 'copilot-pull-request-reviewer'
   ));
-  const findings = copilotThreadFindings(threads, { fallbackTitle: 'Copilot review comment' });
+  const findings = copilotThreadFindings(threads, {
+    fallbackTitle: 'Copilot review comment',
+    headSha: context.pull.head.sha,
+  });
+  if (currentReviews.malformed) {
+    findings.unclassified.push({
+      title: 'Current-head review evidence is malformed',
+      url: '',
+    });
+  }
   const requestFailed = ['failure', 'cancelled', 'timed_out'].includes(inputs.requestResult?.trim() ?? '');
   const decision = evaluateCopilotGate({ reviews: copilotReviews, findings, requestFailed });
   const models = copilotFailureModels({
