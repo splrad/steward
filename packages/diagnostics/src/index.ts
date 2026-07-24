@@ -591,13 +591,17 @@ async function readQueueConfiguration(
   ));
   const settings = plainRecord(result?.settings);
   const producers = result?.producers;
+  const deliveryPaused = settings?.delivery_paused;
   if (
     result === null
     || settings === null
     || !Array.isArray(producers)
     || String(result.queue_id ?? '') !== queueId
     || typeof result.queue_name !== 'string'
-    || typeof settings.delivery_paused !== 'boolean'
+    || (
+      deliveryPaused !== undefined
+      && typeof deliveryPaused !== 'boolean'
+    )
   ) {
     throw new DiagnosticsUnavailableError();
   }
@@ -628,7 +632,8 @@ async function readQueueConfiguration(
   return {
     id: queueId,
     name: result.queue_name,
-    paused: settings.delivery_paused,
+    // Cloudflare live responses may omit this optional field when not paused.
+    paused: deliveryPaused === undefined ? false : deliveryPaused,
     deliveryDelay,
     retentionSeconds,
     producers: parsedProducers,
@@ -651,11 +656,31 @@ async function readQueueConsumers(
   return result.map((candidate) => {
     const item = plainRecord(candidate);
     const settings = plainRecord(item?.settings);
+    const liveScriptName = item?.script;
+    const documentedScriptName = item?.script_name;
+    const scriptName = typeof liveScriptName === 'string'
+      ? liveScriptName
+      : typeof documentedScriptName === 'string'
+        ? documentedScriptName
+        : null;
     if (
       item === null
       || settings === null
       || typeof item.type !== 'string'
-      || typeof item.script_name !== 'string'
+      || (
+        liveScriptName !== undefined
+        && typeof liveScriptName !== 'string'
+      )
+      || (
+        documentedScriptName !== undefined
+        && typeof documentedScriptName !== 'string'
+      )
+      || scriptName === null
+      || (
+        typeof liveScriptName === 'string'
+        && typeof documentedScriptName === 'string'
+        && liveScriptName !== documentedScriptName
+      )
       || typeof item.dead_letter_queue !== 'string'
     ) {
       throw new DiagnosticsUnavailableError();
@@ -674,7 +699,7 @@ async function readQueueConsumers(
     }
     return {
       type: item.type,
-      scriptName: item.script_name,
+      scriptName,
       deadLetterQueue: item.dead_letter_queue,
       batchSize,
       maxWaitTimeMs,

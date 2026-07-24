@@ -78,7 +78,15 @@ interface RuntimeOptions {
     readonly versionId: string;
     readonly percentage: number;
   }[];
-  readonly eventPaused?: boolean;
+  readonly eventPaused?: unknown;
+  readonly eventConsumerScriptField?:
+    | 'script'
+    | 'script_name'
+    | 'both'
+    | 'conflicting'
+    | 'missing'
+    | 'invalid_script'
+    | 'invalid_script_name';
   readonly eventDeliveryDelay?: number;
   readonly eventRetentionSeconds?: number;
   readonly eventProducers?: readonly {
@@ -90,6 +98,7 @@ interface RuntimeOptions {
   readonly dlqBacklog?: number;
   readonly dlqBacklogBytes?: number;
   readonly dlqOldestMessageTimestampMs?: number;
+  readonly dlqPaused?: unknown;
   readonly dlqDeliveryDelay?: number;
   readonly dlqRetentionSeconds?: number;
   readonly dlqProducers?: readonly {
@@ -153,9 +162,35 @@ function runtime(options: RuntimeOptions = {}): {
     }
     const isEvent = url.pathname.includes(eventQueueId);
     if (url.pathname.endsWith('/consumers')) {
+      const scriptField = options.eventConsumerScriptField ?? 'script';
+      const scriptReference = scriptField === 'script'
+        ? { script: 'steward-coordinator' }
+        : scriptField === 'script_name'
+          ? { script_name: 'steward-coordinator' }
+          : scriptField === 'both'
+            ? {
+                script: 'steward-coordinator',
+                script_name: 'steward-coordinator',
+              }
+            : scriptField === 'conflicting'
+              ? {
+                  script: 'steward-coordinator',
+                  script_name: 'other-coordinator',
+                }
+              : scriptField === 'invalid_script'
+                ? {
+                    script: 123,
+                    script_name: 'steward-coordinator',
+                  }
+                : scriptField === 'invalid_script_name'
+                  ? {
+                      script: 'steward-coordinator',
+                      script_name: 123,
+                    }
+                  : {};
       return json(isEvent ? [{
         type: 'worker',
-        script_name: 'steward-coordinator',
+        ...scriptReference,
         dead_letter_queue: 'steward-events-dlq',
         settings: {
           batch_size: 10,
@@ -192,7 +227,15 @@ function runtime(options: RuntimeOptions = {}): {
           : { script: producer.scriptName }),
       })),
       settings: {
-        delivery_paused: isEvent ? options.eventPaused ?? false : false,
+        ...(
+          (isEvent ? options.eventPaused : options.dlqPaused) !== undefined
+            ? {
+                delivery_paused: isEvent
+                  ? options.eventPaused
+                  : options.dlqPaused,
+              }
+            : {}
+        ),
         delivery_delay: isEvent
           ? options.eventDeliveryDelay ?? 0
           : options.dlqDeliveryDelay ?? 0,
@@ -313,6 +356,54 @@ describe('Access-protected runtime diagnostics gateway', () => {
     expect(controlHeaders.get('cloudflare-workers-version-overrides')).toBeNull();
     expect(controlHeaders.get('authorization')).toBeNull();
     expect(controlHeaders.get('cf-access-jwt-assertion')).toBeNull();
+  });
+
+  it('accepts documented and matching dual aliases with an explicit unpaused value', async () => {
+    for (const eventConsumerScriptField of [
+      'script_name',
+      'both',
+    ] satisfies readonly RuntimeOptions['eventConsumerScriptField'][]) {
+      const current = runtime({
+        eventPaused: false,
+        eventConsumerScriptField,
+      });
+      const response = await createDiagnosticsHandler(
+        current.dependencies,
+      ).fetch(request(), current.env);
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        envelope: {
+          diagnostics: {
+            queue: 'ready',
+            control: 'ready',
+            deadLetterQueue: 'clear',
+          },
+        },
+      });
+    }
+  });
+
+  it('fails closed on an invalid pause value or conflicting consumer aliases', async () => {
+    for (const options of [
+      { eventPaused: 'false' },
+      { eventPaused: null },
+      { eventPaused: 0 },
+      { eventConsumerScriptField: 'conflicting' },
+      { eventConsumerScriptField: 'missing' },
+      { eventConsumerScriptField: 'invalid_script' },
+      { eventConsumerScriptField: 'invalid_script_name' },
+    ] satisfies readonly RuntimeOptions[]) {
+      const current = runtime(options);
+      const response = await createDiagnosticsHandler(
+        current.dependencies,
+      ).fetch(request(), current.env);
+
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toEqual({
+        error: 'runtime-diagnostics-unavailable',
+      });
+    }
   });
 
   it('rejects missing Access proof before reading request or upstream state', async () => {
@@ -497,6 +588,7 @@ describe('Access-protected runtime diagnostics gateway', () => {
 
   it('requires the DLQ retention, delivery delay, zero-producer, and zero-consumer contract', async () => {
     for (const options of [
+      { dlqPaused: true },
       { dlqRetentionSeconds: 86_399 },
       { dlqDeliveryDelay: 1 },
       {
