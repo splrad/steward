@@ -184,7 +184,6 @@ export function createDiagnosticsOutboundService(
         producers_total_count: 2,
         settings: {
           delivery_delay: 0,
-          delivery_paused: false,
           message_retention_period: 86_400,
         },
       });
@@ -192,7 +191,7 @@ export function createDiagnosticsOutboundService(
     if (url.pathname === `${eventQueuePath}/consumers`) {
       return cloudflareResult([{
         type: 'worker',
-        script_name: 'steward-coordinator',
+        script: 'steward-coordinator',
         dead_letter_queue: 'steward-events-dlq',
         settings: {
           batch_size: 10,
@@ -210,7 +209,6 @@ export function createDiagnosticsOutboundService(
         producers_total_count: 0,
         settings: {
           delivery_delay: 0,
-          delivery_paused: false,
           message_retention_period: 86_400,
         },
       });
