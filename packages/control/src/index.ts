@@ -38,6 +38,7 @@ export {
   canonicalControlJson,
   controlJsonDigest,
   finalizeControlPlan,
+  parseCanonicalControlPlanJson,
   verifyControlPlan,
 } from './plan.js';
 export {

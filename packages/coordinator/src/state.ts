@@ -15,6 +15,7 @@ import {
   type CoordinatorCompleteResult,
   type CoordinatorFailResult,
   type CoordinatorFailureCode,
+  type CoordinatorFenceResult,
   type CoordinatorLeaseKind,
   type CoordinatorRenewResult,
   type PullRequestCoordinatorPhase,
@@ -189,6 +190,31 @@ export class PullRequestCoordinatorStateMachine {
     };
   }
 
+  fence(
+    generation: number,
+    leaseToken: string,
+    now: number,
+  ): CoordinatorFenceResult {
+    const expectedGeneration = assertGeneration(generation);
+    const token = assertLeaseToken(leaseToken);
+    const timestamp = assertTimestamp(now, 'now');
+
+    if (this.#expireLeaseIfNeeded(timestamp)) {
+      return { status: 'stale' };
+    }
+
+    if (!this.#matchesLease(expectedGeneration, token)) {
+      return { status: 'stale' };
+    }
+
+    const lease = requireLease(this.#state);
+    return {
+      expiresAt: lease.expiresAt,
+      generation: lease.generation,
+      status: 'active',
+    };
+  }
+
   complete(
     generation: number,
     leaseToken: string,
@@ -232,6 +258,52 @@ export class PullRequestCoordinatorStateMachine {
     return {
       generation: expectedGeneration,
       status: needsFollowup ? 'followup' : 'completed',
+    };
+  }
+
+  /**
+   * Completes the current covered delivery while deliberately retaining a
+   * level-triggered follow-up. Mutation recovery uses this when an older plan
+   * has been made safe but its remaining work must be freshly planned under a
+   * new generation.
+   */
+  completeForFollowup(
+    generation: number,
+    leaseToken: string,
+    now: number,
+  ): CoordinatorCompleteResult {
+    const expectedGeneration = assertGeneration(generation);
+    const token = assertLeaseToken(leaseToken);
+    const timestamp = assertTimestamp(now, 'now');
+
+    if (this.#expireLeaseIfNeeded(timestamp)) {
+      return { status: 'stale' };
+    }
+
+    if (!this.#matchesLease(expectedGeneration, token)) {
+      return { status: 'stale' };
+    }
+
+    for (const delivery of this.#state.deliveries) {
+      if (
+        delivery.status === 'pending'
+        && delivery.coveredGeneration === expectedGeneration
+      ) {
+        delivery.status = 'completed';
+        delivery.completedAt = timestamp;
+        delivery.coveredGeneration = null;
+      }
+    }
+
+    this.#state.lease = null;
+    this.#state.phase = 'followup';
+    this.#state.dirty = true;
+    this.#state.failureCode = null;
+    this.#pruneCompleted(timestamp);
+
+    return {
+      generation: expectedGeneration,
+      status: 'followup',
     };
   }
 

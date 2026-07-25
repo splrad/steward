@@ -1,6 +1,9 @@
-import { sha256HexUtf8 } from '../../manifest/src/index.js';
 import type { GitHubPullRequest } from '../../github/src/index.js';
-import { parseStewardCheckExternalId } from '../../core/src/index.js';
+import {
+  canonicalControlJson,
+  controlJsonDigest,
+  parseStewardCheckExternalId,
+} from '../../core/src/index.js';
 import {
   controlPlanContractVersion,
   type ControlMutation,
@@ -13,40 +16,25 @@ import {
 } from './contracts.js';
 import { controlPullRequestInput } from './snapshot.js';
 
-type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function canonicalValue(value: unknown, path: string): JsonValue {
-  if (value === null || typeof value === 'boolean' || typeof value === 'string') return value;
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw new TypeError(`${path} must contain only finite JSON numbers`);
-    return value;
-  }
-  if (Array.isArray(value)) return value.map((child, index) => canonicalValue(child, `${path}/${index}`));
-  if (typeof value === 'object') {
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) {
-      throw new TypeError(`${path} must contain only plain JSON objects`);
-    }
-    return Object.fromEntries(Object.entries(value)
-      .sort(([left], [right]) => compareText(left, right))
-      .map(([key, child]) => [key, canonicalValue(child, `${path}/${key}`)]));
-  }
-  throw new TypeError(`${path} is not JSON serializable`);
-}
-
-export function canonicalControlJson(value: unknown): string {
-  return JSON.stringify(canonicalValue(value, '$'));
-}
-
-export function controlJsonDigest(value: unknown): Promise<string> {
-  return sha256HexUtf8(canonicalControlJson(value));
-}
+export { canonicalControlJson, controlJsonDigest };
 
 type UnknownRecord = Record<string, unknown>;
+
+export async function parseCanonicalControlPlanJson(
+  value: string,
+): Promise<ControlPlan> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value) as unknown;
+  } catch {
+    throw new TypeError('Control plan must be valid JSON');
+  }
+  if (canonicalControlJson(parsed) !== value) {
+    throw new TypeError('Control plan must use canonical JSON');
+  }
+  await verifyControlPlan(parsed as ControlPlan);
+  return parsed as ControlPlan;
+}
 
 function strictRecord(
   value: unknown,

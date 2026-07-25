@@ -66,6 +66,16 @@ export type CoordinatorRenewResult =
       status: 'stale';
     };
 
+export type CoordinatorFenceResult =
+  | {
+      status: 'active';
+      expiresAt: number;
+      generation: number;
+    }
+  | {
+      status: 'stale';
+    };
+
 export type CoordinatorCompleteResult =
   | {
       status: 'completed' | 'followup';
