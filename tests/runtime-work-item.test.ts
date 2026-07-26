@@ -1,11 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildStewardRuntimeWorkItem,
+  buildStewardRuntimeWorkItemV2,
   canonicalStewardRuntimeWorkItemJson,
   parseStewardRuntimeWorkItem,
+  parseStewardRuntimeWorkItemV1,
+  parseStewardRuntimeWorkItemV2,
   RuntimeWorkItemValidationError,
+  STEWARD_RUNTIME_PULL_REQUEST_REVIEW_ACTIONS_V2,
+  STEWARD_RUNTIME_PULL_REQUEST_REVIEW_COMMENT_ACTIONS_V2,
+  STEWARD_RUNTIME_PULL_REQUEST_REVIEW_THREAD_ACTIONS_V2,
   stewardRuntimeWorkItemUtf8ByteSize,
   type StewardRuntimeWorkItemV1,
+  type StewardRuntimeWorkItemV2,
 } from '../packages/core/src/runtime-work-item.js';
 import { assertDeliveryId } from '../packages/coordinator/src/contracts.js';
 
@@ -33,6 +40,13 @@ function clone(): Record<string, unknown> {
   return structuredClone(webhookItem()) as unknown as Record<string, unknown>;
 }
 
+function webhookItemV2(): StewardRuntimeWorkItemV2 {
+  return {
+    ...webhookItem(),
+    schemaVersion: 2,
+  };
+}
+
 function expectInvalid(value: unknown): void {
   expect(() => parseStewardRuntimeWorkItem(value))
     .toThrow(RuntimeWorkItemValidationError);
@@ -42,7 +56,24 @@ describe('runtime work-item wire protocol', () => {
   it('parses and builds the exact version 1 envelope', () => {
     const value = webhookItem();
     expect(parseStewardRuntimeWorkItem(value)).toEqual(value);
+    expect(parseStewardRuntimeWorkItemV1(value)).toEqual(value);
+    expect(() => parseStewardRuntimeWorkItemV2(value))
+      .toThrow(RuntimeWorkItemValidationError);
     expect(buildStewardRuntimeWorkItem({
+      operation: value.operation,
+      installationId: value.installationId,
+      subject: value.subject,
+      cause: value.cause,
+    })).toEqual(value);
+  });
+
+  it('writes version 2 while retaining the version 1 reader', () => {
+    const value = webhookItemV2();
+    expect(parseStewardRuntimeWorkItem(value)).toEqual(value);
+    expect(parseStewardRuntimeWorkItemV2(value)).toEqual(value);
+    expect(() => parseStewardRuntimeWorkItemV1(value))
+      .toThrow(RuntimeWorkItemValidationError);
+    expect(buildStewardRuntimeWorkItemV2({
       operation: value.operation,
       installationId: value.installationId,
       subject: value.subject,
@@ -66,6 +97,28 @@ describe('runtime work-item wire protocol', () => {
       receivedAt: '2026-07-23T16:01:00.000Z',
     });
 
+    for (const [event, actions] of [
+      ['pull_request_review', STEWARD_RUNTIME_PULL_REQUEST_REVIEW_ACTIONS_V2],
+      [
+        'pull_request_review_comment',
+        STEWARD_RUNTIME_PULL_REQUEST_REVIEW_COMMENT_ACTIONS_V2,
+      ],
+      [
+        'pull_request_review_thread',
+        STEWARD_RUNTIME_PULL_REQUEST_REVIEW_THREAD_ACTIONS_V2,
+      ],
+    ] as const) {
+      for (const action of actions) {
+        expect(parseStewardRuntimeWorkItem({
+          ...webhookItemV2(),
+          cause: {
+            ...base.cause,
+            event,
+            action,
+          },
+        }).cause).toMatchObject({ event, action });
+      }
+    }
   });
 
   it('binds each operation to its permitted cause provenance', () => {
@@ -95,6 +148,25 @@ describe('runtime work-item wire protocol', () => {
     expect(canonicalStewardRuntimeWorkItemJson(value)).toBe(canonical);
     expect(stewardRuntimeWorkItemUtf8ByteSize(value))
       .toBe(new TextEncoder().encode(canonical).byteLength);
+  });
+
+  it('writes a distinct canonical version 2 envelope', () => {
+    const value: StewardRuntimeWorkItemV2 = {
+      ...webhookItemV2(),
+      cause: {
+        kind: 'github-webhook',
+        deliveryId: webhookItem().cause.deliveryId,
+        event: 'pull_request_review_thread',
+        action: 'resolved',
+        receivedAt: webhookItem().cause.receivedAt,
+      },
+    };
+    const canonical = canonicalStewardRuntimeWorkItemJson(value);
+    expect(canonical).toContain('"schemaVersion":2');
+    expect(canonical).toContain(
+      '"event":"pull_request_review_thread","action":"resolved"',
+    );
+    expect(parseStewardRuntimeWorkItem(JSON.parse(canonical))).toEqual(value);
   });
 
   it('keeps every accepted delivery ID valid at the Coordinator boundary', () => {
@@ -173,7 +245,7 @@ describe('runtime work-item wire protocol', () => {
 
   it.each([
     0,
-    2,
+    3,
     '1',
     null,
   ])('rejects unsupported schema version %s', (schemaVersion) => {
@@ -250,7 +322,6 @@ describe('runtime work-item wire protocol', () => {
     ['event', 'PullRequest'],
     ['event', `a${'b'.repeat(64)}`],
     ['event', 'issues'],
-    ['event', 'pull_request_review'],
     ['action', 'submitted'],
     ['action', 'synchronize '],
     ['action', ''],
@@ -258,6 +329,26 @@ describe('runtime work-item wire protocol', () => {
   ])('rejects invalid %s identifier %j', (field, identifier) => {
     const value = clone();
     (value.cause as Record<string, unknown>)[field] = identifier;
+    expectInvalid(value);
+  });
+
+  it.each([
+    ['pull_request', 'submitted'],
+    ['pull_request_review', 'opened'],
+    ['pull_request_review_comment', 'submitted'],
+    ['pull_request_review_thread', 'created'],
+  ])('rejects mismatched webhook event/action %s:%s', (event, action) => {
+    const value = structuredClone(webhookItemV2()) as unknown as Record<string, unknown>;
+    Object.assign(value.cause as Record<string, unknown>, { event, action });
+    expectInvalid(value);
+  });
+
+  it('keeps version 1 closed to the original pull_request event set', () => {
+    const value = clone();
+    Object.assign(value.cause as Record<string, unknown>, {
+      event: 'pull_request_review',
+      action: 'submitted',
+    });
     expectInvalid(value);
   });
 

@@ -2,7 +2,7 @@ import {
   canonicalStewardRuntimeWorkItemJson,
   parseStewardRuntimeWorkItem,
   type StewardRuntimeWorkItemSubjectV1,
-  type StewardRuntimeWorkItemV1,
+  type StewardRuntimeWorkItem,
 } from './runtime-work-item.js';
 
 export const STEWARD_RUNTIME_CONTROL_SCHEMA_VERSION = 1 as const;
@@ -17,7 +17,7 @@ const repositoryNamePattern = /^[A-Za-z0-9._-]{1,100}$/;
 
 export interface StewardRuntimeControlRequestV1 {
   readonly schemaVersion: typeof STEWARD_RUNTIME_CONTROL_SCHEMA_VERSION;
-  readonly workItem: StewardRuntimeWorkItemV1;
+  readonly workItem: StewardRuntimeWorkItem;
   readonly generation: number;
 }
 
