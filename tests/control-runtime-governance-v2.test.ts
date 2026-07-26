@@ -140,6 +140,9 @@ class FakeGitHub {
   uncertainCommentCreate = false;
   uncertainCommentUpdate = false;
   commentWriteRateLimitSeconds: number | null = null;
+  commentDeleteReturns404 = false;
+  commentDelete404RemovesComment = true;
+  uncertainCommentDelete = false;
   issueCommentReadFailureStatus: number | null = null;
   reviewPostRateLimitSeconds: number | null = null;
   uncertainReviewPost = false;
@@ -456,7 +459,16 @@ class FakeGitHub {
     }
     if (method === 'DELETE' && commentResource) {
       const id = Number(commentResource[1]);
+      if (this.commentDeleteReturns404) {
+        if (this.commentDelete404RemovesComment) {
+          this.comments = this.comments.filter((comment) => comment.id !== id);
+        }
+        return jsonResponse({ message: 'Not Found' }, 404);
+      }
       this.comments = this.comments.filter((comment) => comment.id !== id);
+      if (this.uncertainCommentDelete) {
+        throw new Error('simulated response loss after comment deletion');
+      }
       return new Response(null, { status: 204 });
     }
     if (
@@ -1209,6 +1221,119 @@ describe('Control runtime v2 Governance minimum slice', () => {
     expect((await parseStewardRuntimeControlRecoveryReceiptV2(
       await recovered.json(),
     )).result).toEqual({ state: 'converged', resourceId: 800 });
+    expect(fake.repositoryMutationRecords()).toEqual([]);
+  });
+
+  it('converges a raced delete only after exact absence and recovers response loss read-only', async () => {
+    const fake = new FakeGitHub();
+    fake.omitRequestedReviewers = true;
+    const failed = await prepare(fake);
+    const failedPlan = await parseCanonicalControlPlanJson(
+      Buffer.from(failed.plan.canonicalPlanBase64, 'base64').toString('utf8'),
+    );
+    const create = failedPlan.mutations.find((mutation) => (
+      mutation.type === 'blocking-comment.upsert'
+    ));
+    if (!create || create.type !== 'blocking-comment.upsert') {
+      throw new Error('Expected a blocking comment creation');
+    }
+    const comment = {
+      id: 900,
+      body: create.body,
+      user: { id: 9_001, login: 'splrad-steward[bot]', type: 'Bot' },
+      performed_via_github_app: {
+        id: appId,
+        slug: manifest.automation.githubApp.slug,
+      },
+    };
+    fake.comments = [comment];
+    fake.omitRequestedReviewers = false;
+    const prepared = await prepare(fake);
+    fake.commentDeleteReturns404 = true;
+
+    fake.clearObservations();
+    const converged = await handler(fake).fetch(
+      v2Request(await applyBody(
+        prepared,
+        prepared.controlRevision,
+        'copilot-gate:blocking-comment',
+      )),
+      env,
+    );
+    expect((await parseStewardRuntimeControlMutationReceiptV2(
+      await converged.json(),
+    )).result).toEqual({
+      state: 'converged',
+      resourceId: 900,
+      retryAfterSeconds: null,
+    });
+    expect(fake.records.filter((record) => (
+      record.pathname === '/repos/splrad/steward/issues/comments/900'
+    )).map((record) => record.method)).toEqual(['GET', 'DELETE', 'GET']);
+
+    fake.comments = [comment];
+    fake.commentDelete404RemovesComment = false;
+    fake.clearObservations();
+    const stillPresent = await handler(fake).fetch(
+      v2Request(await applyBody(
+        prepared,
+        prepared.controlRevision,
+        'copilot-gate:blocking-comment',
+      )),
+      env,
+    );
+    expect((await parseStewardRuntimeControlMutationReceiptV2(
+      await stillPresent.json(),
+    )).result).toEqual({
+      state: 'unknown',
+      resourceId: null,
+      retryAfterSeconds: null,
+    });
+    expect(fake.records.filter((record) => (
+      record.pathname === '/repos/splrad/steward/issues/comments/900'
+    )).map((record) => record.method)).toEqual(['GET', 'DELETE', 'GET']);
+
+    fake.comments = [comment];
+    fake.commentDeleteReturns404 = false;
+    fake.commentDelete404RemovesComment = true;
+    fake.uncertainCommentDelete = true;
+    fake.clearObservations();
+    const uncertain = await handler(fake).fetch(
+      v2Request(await applyBody(
+        prepared,
+        prepared.controlRevision,
+        'copilot-gate:blocking-comment',
+      )),
+      env,
+    );
+    expect((await parseStewardRuntimeControlMutationReceiptV2(
+      await uncertain.json(),
+    )).result).toEqual({
+      state: 'unknown',
+      resourceId: null,
+      retryAfterSeconds: null,
+    });
+    expect(fake.records.filter((record) => (
+      record.pathname === '/repos/splrad/steward/issues/comments/900'
+    )).map((record) => record.method)).toEqual(['GET', 'DELETE']);
+
+    fake.uncertainCommentDelete = false;
+    fake.clearObservations();
+    const recovered = await handler(fake).fetch(
+      v2Request(await recoverBody(
+        prepared,
+        'governance-v2-comment-delete-response-loss',
+        prepared.controlRevision,
+        'copilot-gate:blocking-comment',
+      )),
+      env,
+    );
+    expect((await parseStewardRuntimeControlRecoveryReceiptV2(
+      await recovered.json(),
+    )).result).toEqual({ state: 'converged', resourceId: 900 });
+    expect(fake.records.filter((record) => (
+      record.pathname === '/repos/splrad/steward/issues/comments/900'
+    )).map((record) => record.method)).toEqual(['GET']);
     expect(fake.repositoryMutationRecords()).toEqual([]);
   });
 

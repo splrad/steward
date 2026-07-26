@@ -1225,7 +1225,13 @@ async function applyCopilotGateInstallationMutation(
       };
     }
 
-    await client.deleteIssueComment(owner, repository, mutation.commentId);
+    let deleteState: 'applied' | 'converged' = 'applied';
+    try {
+      await client.deleteIssueComment(owner, repository, mutation.commentId);
+    } catch (error) {
+      if (!(error instanceof GitHubApiError) || error.status !== 404) throw error;
+      deleteState = 'converged';
+    }
     let remaining;
     try {
       remaining = await client.getIssueComment(
@@ -1248,7 +1254,7 @@ async function applyCopilotGateInstallationMutation(
       };
     }
     return {
-      state: 'applied',
+      state: deleteState,
       resourceId: mutation.commentId,
       retryAfterSeconds: null,
     };
