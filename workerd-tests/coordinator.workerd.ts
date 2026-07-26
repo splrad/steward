@@ -14,6 +14,7 @@ import {
   buildStewardRuntimeControlRecoveryReceiptV2,
   buildStewardRuntimeControlReceipt,
   canonicalStewardRuntimeControlPreparedReceiptV2Json,
+  canonicalStewardRuntimeControlRecoveryReceiptV2Json,
   canonicalStewardRuntimeControlReceiptJson,
   canonicalStewardRuntimeWorkItemJson,
   parseStewardRuntimeWorkItem,
@@ -295,6 +296,113 @@ async function v2PreparedReceipt(
       canonicalPlanBase64: utf8Base64(bytes),
       mutationCount: mutations.length,
       mutations,
+    },
+    controlRevision: v2Revision,
+  });
+}
+
+async function v2GovernancePreparedReceipt(
+  workItem: StewardRuntimeWorkItemV2,
+  generation: number,
+  withMutation: boolean,
+): Promise<StewardRuntimeControlPreparedReceiptV2> {
+  const context = v2ResolvedContext(
+    workItem.subject.pullRequestNumber,
+    workItem.subject.repositoryId,
+  );
+  const intent = {
+    type: 'copilot-review.request',
+    key: 'copilot-review:request',
+    principal: 'human',
+    observedEvidenceDigest: 'f'.repeat(64),
+  } as const;
+  const desiredDigest = await sha256(
+    new TextEncoder().encode(
+      JSON.stringify(canonicalValue(intent)),
+    ),
+  );
+  const mutation: StewardRuntimeControlMutationBindingV2 = {
+    ordinal: 0,
+    key: intent.key,
+    mutationType: intent.type,
+    principal: intent.principal,
+    recoveryPolicy: 'live-evidence-or-action-required',
+    desiredDigest,
+  };
+  const planWithoutId: Json = {
+    contractVersion: 1,
+    snapshotDigest: '9'.repeat(64),
+    pullRequestDigest: context.pullRequestDigest,
+    objective: 'governance',
+    subject: {
+      repository: {
+        id: context.repositoryId,
+        owner: context.repositoryFullName.split('/')[0]!,
+        name: context.repositoryFullName.split('/')[1]!,
+        defaultBranch: context.defaultBranch,
+      },
+      pullRequest: {
+        number: context.pullRequestNumber,
+        headSha: context.headSha,
+      },
+      manifest: {
+        blobSha: context.manifestBlobSha,
+        configDigest: context.configDigest,
+      },
+      platform: {
+        appId: 4_243_096,
+        clientId: 'Iv23liSteward',
+        appSlug: 'splrad-steward',
+      },
+    },
+    outcome: withMutation
+      ? { state: 'pending', summary: 'Copilot review remains pending.' }
+      : { state: 'ignored', summary: 'No governance mutation is required.' },
+    mutations: withMutation
+      ? [{
+          ...intent,
+          desiredDigest,
+          preconditions: {
+            repositoryId: context.repositoryId,
+            defaultBranch: context.defaultBranch,
+            pullNumber: context.pullRequestNumber,
+            headSha: context.headSha,
+            manifestBlobSha: context.manifestBlobSha,
+            configDigest: context.configDigest,
+            pullRequestDigest: context.pullRequestDigest,
+          },
+        }]
+      : [],
+  };
+  const planId = await sha256(
+    new TextEncoder().encode(
+      JSON.stringify(canonicalValue(planWithoutId)),
+    ),
+  );
+  const plan = {
+    ...(planWithoutId as { [key: string]: Json }),
+    planId,
+  };
+  const bytes = new TextEncoder().encode(
+    JSON.stringify(canonicalValue(plan)),
+  );
+  return await buildStewardRuntimeControlPreparedReceiptV2({
+    binding: {
+      workItem,
+      generation,
+      objective: 'governance',
+    },
+    resolvedContext: context,
+    plan: {
+      contractVersion: 1,
+      planId,
+      planDigest: await sha256(bytes),
+      preparedGeneration: generation,
+      terminalOutcome: withMutation ? 'pending-external' : 'ignored',
+      canonicalPlanByteLength: bytes.byteLength,
+      canonicalPlanBase64: utf8Base64(bytes),
+      mutationCount: withMutation ? 1 : 0,
+      mutations: withMutation ? [mutation] : [],
     },
     controlRevision: v2Revision,
   });
@@ -1408,7 +1516,7 @@ describe('PullRequestCoordinator in workerd', () => {
       ),
     ).resolves.toEqual({
       generation: recovery.generation,
-      status: 'completed',
+      status: 'followup',
     });
     expect(await stub.mutationLedgerSnapshot()).toMatchObject({
       humanMutationFenceCount: 1,
@@ -1507,7 +1615,7 @@ describe('PullRequestCoordinator in workerd', () => {
       ),
     ).resolves.toEqual({
       generation: recovery.generation,
-      status: 'completed',
+      status: 'followup',
     });
     expect(await stub.mutationLedgerSnapshot()).toMatchObject({
       humanMutationFenceCount: 1,
@@ -1909,7 +2017,7 @@ describe('PullRequestCoordinator in workerd', () => {
           recoveryDeliveryId,
         ),
       ),
-    ).resolves.toEqual({ generation: 2, status: 'completed' });
+    ).resolves.toEqual({ generation: 2, status: 'followup' });
 
     const recovered = await runInDurableObject(
       stub,
@@ -1938,7 +2046,7 @@ describe('PullRequestCoordinator in workerd', () => {
       }),
     );
     expect(recovered).toEqual({
-      base: { phase: 'idle', lease_token: null },
+      base: { phase: 'followup', lease_token: null },
       plan: { state: 'pending-external', recovery_generation: null },
       receipt: { result: 'converged', source: 'recovery' },
     });
@@ -2032,7 +2140,7 @@ describe('PullRequestCoordinator in workerd', () => {
       ),
     ).resolves.toEqual({
       generation: recovery.generation,
-      status: 'completed',
+      status: 'followup',
     });
 
     const nextDeliveryId = 'delivery-sidecar-fence-next';
@@ -2248,7 +2356,7 @@ describe('PullRequestCoordinator in workerd', () => {
       ),
     ).resolves.toEqual({
       generation: secondRecovery.generation,
-      status: 'completed',
+      status: 'followup',
     });
 
     const finalDeliveryId = 'delivery-sidecar-multi-final';
@@ -2460,22 +2568,18 @@ describe('PullRequestCoordinator in workerd', () => {
     const controlFetch = vi.fn(
       async (_input: Request | string | URL, init?: RequestInit) => {
         const request = JSON.parse(String(init?.body)) as {
-          generation: number;
-          workItem: StewardRuntimeWorkItem;
+          binding: {
+            generation: number;
+            workItem: StewardRuntimeWorkItemV2;
+          };
         };
         return new Response(
-          canonicalStewardRuntimeControlReceiptJson(
-            buildStewardRuntimeControlReceipt({
-              subject: request.workItem.subject,
-              deliveryId: request.workItem.cause.deliveryId,
-              generation: request.generation,
-              controlRevision: {
-                stewardCommit: 'a'.repeat(40),
-                workerVersionId: 'd61f54f6-b30a-4e42-8184-c9e7e1cb495d',
-                workerVersionTag: `steward-${'a'.repeat(40)}`,
-                workerVersionCreatedAt: '2026-07-23T18:00:00.000Z',
-              },
-            }),
+          await canonicalStewardRuntimeControlPreparedReceiptV2Json(
+            await v2GovernancePreparedReceipt(
+              request.binding.workItem,
+              request.binding.generation,
+              false,
+            ),
           ),
           {
             status: 200,
@@ -2503,8 +2607,256 @@ describe('PullRequestCoordinator in workerd', () => {
     expect(controlFetch).toHaveBeenCalledOnce();
     const forwarded = JSON.parse(
       String(controlFetch.mock.calls[0]?.[1]?.body),
-    ) as { workItem: StewardRuntimeWorkItem };
-    expect(forwarded.workItem).toEqual(valid);
+    ) as { binding: { workItem: StewardRuntimeWorkItem } };
+    expect(forwarded.binding.workItem).toEqual(valid);
+  });
+
+  it('runs a persisted v2 mutation and recovers an uncertain response without replay', async () => {
+    const repositoryId = 1_298_587_323;
+    const pullRequestNumber = 109;
+    const base = workItem(
+      'delivery-v2-runner-workerd',
+      repositoryId,
+      pullRequestNumber,
+    );
+    const item: StewardRuntimeWorkItemV2 = {
+      ...base,
+      schemaVersion: 2,
+      operation: 'pull-request-reconcile',
+      cause: {
+        kind: 'github-webhook',
+        deliveryId: base.cause.deliveryId,
+        event: 'pull_request_review',
+        action: 'submitted',
+        receivedAt: base.cause.receivedAt,
+      },
+    };
+    let unknownPrepared: StewardRuntimeControlPreparedReceiptV2 | undefined;
+    let prepareCalls = 0;
+    let applyCalls = 0;
+    let recoveryCalls = 0;
+    const controlFetch = vi.fn(
+      async (_input: Request | string | URL, init?: RequestInit) => {
+        const request = JSON.parse(String(init?.body)) as {
+          phase: 'prepare' | 'apply-next' | 'recover';
+          binding: {
+            generation: number;
+            workItem: StewardRuntimeWorkItemV2;
+          };
+        };
+        if (request.phase === 'prepare') {
+          prepareCalls += 1;
+          const prepared = await v2GovernancePreparedReceipt(
+            request.binding.workItem,
+            request.binding.generation,
+            prepareCalls === 1,
+          );
+          if (prepareCalls === 1) unknownPrepared = prepared;
+          return new Response(
+            await canonicalStewardRuntimeControlPreparedReceiptV2Json(
+              prepared,
+            ),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            },
+          );
+        }
+        if (request.phase === 'apply-next') {
+          applyCalls += 1;
+          throw new Error('Control response lost after dispatch');
+        }
+        recoveryCalls += 1;
+        if (unknownPrepared === undefined) {
+          throw new Error('Missing persisted prepared receipt');
+        }
+        return new Response(
+          await canonicalStewardRuntimeControlRecoveryReceiptV2Json(
+            await v2RecoveryReceipt(
+              unknownPrepared,
+              request.binding.generation,
+              request.binding.workItem.cause.deliveryId,
+            ),
+          ),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
+      },
+    );
+    const coordinatorEnv: CoordinatorEnv = {
+      PR_COORDINATOR: workerdEnv.PR_COORDINATOR,
+      CONTROL: { fetch: controlFetch },
+      EVENT_QUEUE: {
+        send: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+
+    const firstBatch = createMessageBatch('steward-events', [{
+      id: 'queue-v2-runner-first',
+      timestamp: new Date('2026-07-23T18:00:00.000Z'),
+      attempts: 1,
+      body: canonicalStewardRuntimeWorkItemJson(item),
+    }]);
+    await coordinatorWorker.queue(firstBatch, coordinatorEnv);
+    const firstResult = await getQueueResult(
+      firstBatch,
+      createExecutionContext(),
+    );
+    expect(firstResult.explicitAcks).toEqual([]);
+    expect(firstResult.retryMessages).toEqual([
+      { msgId: 'queue-v2-runner-first' },
+    ]);
+    expect(applyCalls).toBe(1);
+    expect(recoveryCalls).toBe(0);
+    expect(prepareCalls).toBe(1);
+    expect(await coordinator(repositoryId, pullRequestNumber)
+      .mutationLedgerSnapshot()).toMatchObject({
+      unresolvedUnknownCount: 1,
+      latest: { state: 'unknown' },
+    });
+
+    const retryBatch = createMessageBatch('steward-events', [{
+      id: 'queue-v2-runner-retry',
+      timestamp: new Date('2026-07-23T18:00:01.000Z'),
+      attempts: 2,
+      body: canonicalStewardRuntimeWorkItemJson(item),
+    }]);
+    await coordinatorWorker.queue(retryBatch, coordinatorEnv);
+    const retryResult = await getQueueResult(
+      retryBatch,
+      createExecutionContext(),
+    );
+    expect(retryResult.explicitAcks).toEqual(['queue-v2-runner-retry']);
+    expect(retryResult.retryMessages).toEqual([]);
+    expect(applyCalls).toBe(1);
+    expect(recoveryCalls).toBe(1);
+    expect(prepareCalls).toBe(2);
+    expect(await coordinator(repositoryId, pullRequestNumber)
+      .mutationLedgerSnapshot()).toMatchObject({
+      unresolvedUnknownCount: 0,
+      latest: { state: 'ignored' },
+    });
+  });
+
+  it('terminates a same-head human fence as action-required without Queue retry', async () => {
+    const repositoryId = 1_298_587_324;
+    const pullRequestNumber = 110;
+    const stub = coordinator(repositoryId, pullRequestNumber);
+    const seedDeliveryId = 'delivery-v2-runner-human-fence-seed';
+    const seed = await stub.claim(seedDeliveryId, 60_000);
+    expect(seed.status).toBe('claimed');
+    if (seed.status !== 'claimed') {
+      throw new Error('Expected the human fence seed claim.');
+    }
+    const seedPrepared = await v2PreparedReceipt(
+      seed.generation,
+      seedDeliveryId,
+      pullRequestNumber,
+      7,
+      v2HumanMutation(),
+      { repositoryId },
+    );
+    await stub.persistPreparedPlan(
+      seed.generation,
+      seed.leaseToken,
+      60_000,
+      seedPrepared,
+    );
+    await stub.beginNextMutation(
+      seed.generation,
+      seed.leaseToken,
+      60_000,
+    );
+    await stub.recordMutationResult(
+      seed.generation,
+      seed.leaseToken,
+      await v2MutationReceipt(seedPrepared),
+    );
+    await stub.completeMutationPlan(seed.generation, seed.leaseToken);
+
+    const base = workItem(
+      'delivery-v2-runner-human-fenced',
+      repositoryId,
+      pullRequestNumber,
+    );
+    const item: StewardRuntimeWorkItemV2 = {
+      ...base,
+      schemaVersion: 2,
+      operation: 'pull-request-reconcile',
+      cause: {
+        kind: 'github-webhook',
+        deliveryId: base.cause.deliveryId,
+        event: 'pull_request_review',
+        action: 'submitted',
+        receivedAt: base.cause.receivedAt,
+      },
+    };
+    const controlFetch = vi.fn(
+      async (_input: Request | string | URL, init?: RequestInit) => {
+        const request = JSON.parse(String(init?.body)) as {
+          phase: 'prepare';
+          binding: {
+            generation: number;
+            workItem: StewardRuntimeWorkItemV2;
+          };
+        };
+        expect(request.phase).toBe('prepare');
+        return new Response(
+          await canonicalStewardRuntimeControlPreparedReceiptV2Json(
+            await v2GovernancePreparedReceipt(
+              request.binding.workItem,
+              request.binding.generation,
+              true,
+            ),
+          ),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
+      },
+    );
+    const batch = createMessageBatch('steward-events', [{
+      id: 'queue-v2-runner-human-fenced',
+      timestamp: new Date('2026-07-23T18:00:02.000Z'),
+      attempts: 1,
+      body: canonicalStewardRuntimeWorkItemJson(item),
+    }]);
+
+    await coordinatorWorker.queue(batch, {
+      PR_COORDINATOR: workerdEnv.PR_COORDINATOR,
+      CONTROL: { fetch: controlFetch },
+      EVENT_QUEUE: {
+        send: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+
+    const result = await getQueueResult(batch, createExecutionContext());
+    expect(result.explicitAcks).toEqual(['queue-v2-runner-human-fenced']);
+    expect(result.retryMessages).toEqual([]);
+    expect(controlFetch).toHaveBeenCalledOnce();
+    expect(await stub.mutationLedgerSnapshot()).toMatchObject({
+      humanMutationFenceCount: 1,
+      unresolvedUnknownCount: 0,
+      latest: {
+        state: 'action-required',
+      },
+    });
+    await expect(
+      runInDurableObject(stub, (_instance, state) => state.storage.sql
+        .exec<{ state: string; dispatch_count: number }>(
+          `SELECT state, dispatch_count
+           FROM coordinator_mutation_intents
+           ORDER BY generation DESC, ordinal
+           LIMIT 1`,
+        )
+        .one()),
+    ).resolves.toEqual({
+      state: 'action-required',
+      dispatch_count: 0,
+    });
   });
 
   it('coalesces more than the persisted delivery window without false DLQ retries', async () => {

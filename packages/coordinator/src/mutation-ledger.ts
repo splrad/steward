@@ -456,6 +456,30 @@ export class CoordinatorMutationPlanStateMachine {
     };
   }
 
+  recordHumanMutationActionRequired(now: number): void {
+    const timestamp = requireTimestamp(now, 'now');
+    if (this.#state.state !== 'prepared') {
+      throw new Error(
+        'Human mutation action-required evidence requires a prepared plan.',
+      );
+    }
+    const intent = this.#state.intents.find(
+      (candidate) => candidate.state === 'planned',
+    );
+    if (intent === undefined || intent.principal !== 'human') {
+      throw new Error(
+        'Human mutation action-required evidence requires a planned human intent.',
+      );
+    }
+
+    intent.state = 'action-required';
+    this.#cancelPlanned('blocked-by-action-required');
+    this.#state.state = 'action-required';
+    this.#state.recoveryGeneration = null;
+    this.#state.terminalAt = timestamp;
+    this.#state.updatedAt = timestamp;
+  }
+
   recordMutationResult(
     receipt: StewardRuntimeControlMutationReceiptV2,
     now: number,
@@ -902,11 +926,18 @@ function cloneAndValidateStoredPlan(
         intent.state === 'cancelled'
         && !cancelledAfterProvenNonAttempt
       );
-    if (
-      requiresNoDispatchEvidence
-        ? intent.dispatchCount !== 0 || intent.startedAt !== null
-        : intent.dispatchCount !== 1 || intent.startedAt === null
-    ) {
+    const actionRequiredBeforeDispatch =
+      intent.state === 'action-required'
+      && intent.principal === 'human'
+      && intent.dispatchCount === 0
+      && intent.startedAt === null;
+    const dispatchEvidenceIsValid = actionRequiredBeforeDispatch
+      || (
+        requiresNoDispatchEvidence
+          ? intent.dispatchCount === 0 && intent.startedAt === null
+          : intent.dispatchCount === 1 && intent.startedAt !== null
+      );
+    if (!dispatchEvidenceIsValid) {
       throw new TypeError('Stored mutation dispatch evidence is inconsistent.');
     }
     if (
