@@ -25,7 +25,17 @@ export {
   type InstallationMutationPort,
   type PullRequestControlContext,
   type PullRequestControlRoute,
+  type RequestCopilotReviewIntent,
 } from './contracts.js';
+export {
+  copilotReviewEvidence,
+  inspectGovernanceCopilotReviewMutation,
+  inspectGovernanceCopilotReviewRecovery,
+  planGovernanceCopilotReview,
+  type CopilotReviewEvidenceSnapshot,
+  type CopilotReviewMutationInspection,
+  type CopilotReviewRecoveryInspection,
+} from './governance.js';
 export {
   planClassification,
   planDcoAdvisory,
@@ -46,5 +56,6 @@ export {
   ControlPullRequestStateMismatchError,
   reconcileClassification,
   reconcileDcoAdvisory,
+  resolvePullRequestControlContext,
   type ControlPorts,
 } from './reconcile.js';

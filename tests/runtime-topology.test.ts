@@ -203,6 +203,7 @@ describe('central runtime deployment topology', () => {
     });
     expect(control.secrets).toEqual({
       required: [
+        'COPILOT_REVIEW_REQUEST_TOKEN',
         'GITHUB_APP_ID',
         'GITHUB_APP_PRIVATE_KEY',
       ],
