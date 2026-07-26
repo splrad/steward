@@ -144,6 +144,14 @@ async function preparedV2(
     configDigest: 'd'.repeat(64),
     pullRequestDigest: 'e'.repeat(64),
   };
+  const repositoryParts = context.repositoryFullName.split('/');
+  if (
+    repositoryParts.length !== 2
+    || repositoryParts.some((part) => part.length === 0)
+  ) {
+    throw new Error('Test work item repositoryFullName must be OWNER/REPOSITORY.');
+  }
+  const [owner, name] = repositoryParts as [string, string];
   const intent = {
     type: 'copilot-review.request',
     key: 'copilot-review:request',
@@ -169,8 +177,8 @@ async function preparedV2(
     subject: {
       repository: {
         id: context.repositoryId,
-        owner: context.repositoryFullName.split('/')[0],
-        name: context.repositoryFullName.split('/')[1],
+        owner,
+        name,
         defaultBranch: context.defaultBranch,
       },
       pullRequest: {
