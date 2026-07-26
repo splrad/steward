@@ -9,6 +9,7 @@ The extracted contracts cover:
 - manifest-driven area, kind, public-label, and release-label decisions with pure mutation planning;
 - legacy-compatible aggregate blocking-comment state and same-head source replacement;
 - trusted live-author classification, current-head review/thread selection, main-authorization and Copilot-review decisions, review-request planning, and presentation keys without consumer-facing copy;
+- strict private Control runtime contracts: the immutable v1 probe receipt and the additive v2 `prepare -> apply-next -> recover` protocol, including exact current-head/Manifest/plan bindings, derived plan/intent digest verification, bounded canonical plans, principal-specific recovery policy, and Control-version fencing;
 - validation-Matrix target evaluation, versioned Check identity validation, legacy evidence reads, repair planning, and workflow-to-proxy completion planning.
 - versioned Release adapter context/plan parsing, trigger decisions, and output-asset manifest validation without filesystem or GitHub access.
 

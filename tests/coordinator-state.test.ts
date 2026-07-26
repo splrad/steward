@@ -130,6 +130,30 @@ describe('PullRequestCoordinatorStateMachine', () => {
     });
   });
 
+  it('can complete covered work while deliberately requesting a fresh generation', () => {
+    const machine = createMachine();
+    machine.claim('delivery-root', 1_000, 100, tokenOne);
+
+    expect(machine.completeForFollowup(1, tokenOne, 200)).toEqual({
+      generation: 1,
+      status: 'followup',
+    });
+    expect(machine.snapshot()).toMatchObject({
+      completedDeliveryCount: 1,
+      dirty: true,
+      failureCode: null,
+      pendingDeliveryCount: 0,
+      phase: 'followup',
+    });
+
+    expect(machine.claim('delivery-root', 1_000, 300, tokenTwo)).toEqual({
+      expiresAt: 1_300,
+      generation: 2,
+      leaseToken: tokenTwo,
+      status: 'claimed',
+    });
+  });
+
   it('fences a stale worker after an expired lease is reclaimed', () => {
     const machine = createMachine();
     machine.claim('delivery-1', 100, 1_000, tokenOne);

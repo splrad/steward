@@ -4,14 +4,22 @@ import {
   buildStewardRuntimeControlReceipt,
   canonicalStewardRuntimeDiagnosticsControlReceiptJson,
   canonicalStewardRuntimeControlReceiptJson,
+  parseStewardRuntimeControlApplyNextRequestV2,
   parseStewardRuntimeDiagnosticsControlProbe,
+  parseStewardRuntimeControlPrepareRequestV2,
+  parseStewardRuntimeControlRecoverRequestV2,
   parseStewardRuntimeControlRequest,
+  type StewardRuntimeControlApplyNextRequestV2,
+  type StewardRuntimeControlPrepareRequestV2,
+  type StewardRuntimeControlRecoverRequestV2,
   type StewardRuntimeControlRevisionV1,
   type StewardRuntimeDiagnosticsSubjectV1,
 } from '../../core/src/index.js';
+import { parseCanonicalControlPlanJson } from '../../control/src/plan.js';
 import { GITHUB_CLOUD_REST_API_VERSION } from '../../github/src/index.js';
 
-const reconcilePath = '/v1/reconcile';
+const reconcilePathV1 = '/v1/reconcile';
+const reconcilePathV2 = '/v2/reconcile';
 const diagnosticsPath = '/v1/runtime-diagnostics';
 export const maximumControlRequestBytes = 128 * 1024;
 export const maximumGitHubResponseBytes = 128 * 1024;
@@ -65,6 +73,50 @@ function contentTypeIsJson(request: Request): boolean {
   const contentType = request.headers.get('content-type');
   return contentType !== null
     && /^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(contentType);
+}
+
+type StewardRuntimeControlRequestV2 =
+  | StewardRuntimeControlPrepareRequestV2
+  | StewardRuntimeControlApplyNextRequestV2
+  | StewardRuntimeControlRecoverRequestV2;
+
+function decodedCanonicalPlanJsonV2(
+  request:
+    | StewardRuntimeControlApplyNextRequestV2
+    | StewardRuntimeControlRecoverRequestV2,
+): string {
+  const binary = atob(request.plan.canonicalPlanBase64);
+  const bytes = Uint8Array.from(
+    binary,
+    (character) => character.charCodeAt(0),
+  );
+  return new TextDecoder('utf-8', {
+    fatal: true,
+    ignoreBOM: true,
+  }).decode(bytes);
+}
+
+async function parseControlRequestV2(
+  value: unknown,
+): Promise<StewardRuntimeControlRequestV2> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('Control v2 request must be a plain object');
+  }
+  const phase = (value as Record<string, unknown>).phase;
+  if (phase === 'prepare') {
+    return await parseStewardRuntimeControlPrepareRequestV2(value);
+  }
+  if (phase === 'apply-next') {
+    const parsed = await parseStewardRuntimeControlApplyNextRequestV2(value);
+    await parseCanonicalControlPlanJson(decodedCanonicalPlanJsonV2(parsed));
+    return parsed;
+  }
+  if (phase === 'recover') {
+    const parsed = await parseStewardRuntimeControlRecoverRequestV2(value);
+    await parseCanonicalControlPlanJson(decodedCanonicalPlanJsonV2(parsed));
+    return parsed;
+  }
+  throw new TypeError('Unsupported Control v2 phase');
 }
 
 async function readBoundedJson(request: Request): Promise<unknown> {
@@ -435,13 +487,18 @@ export function createControlRuntimeHandler(
     async fetch(request, env) {
       const url = new URL(request.url);
       if (
-        (url.pathname !== reconcilePath && url.pathname !== diagnosticsPath)
+        (
+          url.pathname !== reconcilePathV1
+          && url.pathname !== reconcilePathV2
+          && url.pathname !== diagnosticsPath
+        )
         || url.search !== ''
         || request.method !== 'POST'
       ) {
         return new Response('Not Found', { status: 404 });
       }
-      if (request.headers.get(internalProtocolHeader) !== '1') {
+      const expectedInternalProtocol = url.pathname === reconcilePathV2 ? '2' : '1';
+      if (request.headers.get(internalProtocolHeader) !== expectedInternalProtocol) {
         return jsonResponse(403, { error: 'internal-protocol-required' });
       }
       if (!contentTypeIsJson(request)) {
@@ -456,6 +513,20 @@ export function createControlRuntimeHandler(
           ? 413
           : 400;
         return jsonResponse(status, { error: status === 413 ? 'request-too-large' : 'invalid-json' });
+      }
+
+      if (url.pathname === reconcilePathV2) {
+        try {
+          await parseControlRequestV2(parsed);
+        } catch {
+          return jsonResponse(400, { error: 'invalid-control-request' });
+        }
+
+        // The strict v2 transport and phase separation are available before
+        // semantic governance is allowed to read or mutate GitHub. Returning
+        // an empty plan or a terminal success here would falsely acknowledge
+        // work that the real handler has not performed.
+        return jsonResponse(501, { error: 'control-operation-not-implemented' });
       }
 
       if (url.pathname === diagnosticsPath) {
