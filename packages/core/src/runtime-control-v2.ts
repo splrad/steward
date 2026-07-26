@@ -7,7 +7,7 @@ import {
   canonicalStewardRuntimeWorkItemJson,
   parseStewardRuntimeWorkItem,
   type StewardRuntimeWorkItemSubjectV1,
-  type StewardRuntimeWorkItemV1,
+  type StewardRuntimeWorkItem,
 } from './runtime-work-item.js';
 import { canonicalControlJson, controlJsonDigest } from './control-json.js';
 
@@ -130,7 +130,7 @@ export type StewardRuntimeControlRecoveryPolicyV2 =
   | 'live-evidence-or-action-required';
 
 export interface StewardRuntimeControlBindingV2 {
-  readonly workItem: StewardRuntimeWorkItemV1;
+  readonly workItem: StewardRuntimeWorkItem;
   readonly generation: number;
   readonly objective: StewardRuntimeControlObjectiveV2;
 }

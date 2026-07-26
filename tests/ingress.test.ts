@@ -4,6 +4,9 @@ import {
   MAX_INGRESS_RESPONSE_MS,
   MAX_WEBHOOK_BODY_BYTES,
   SUPPORTED_PULL_REQUEST_ACTIONS,
+  SUPPORTED_PULL_REQUEST_REVIEW_ACTIONS,
+  SUPPORTED_PULL_REQUEST_REVIEW_COMMENT_ACTIONS,
+  SUPPORTED_PULL_REQUEST_REVIEW_THREAD_ACTIONS,
   verifyGitHubWebhookSignature,
   type Env,
   type Queue,
@@ -290,6 +293,41 @@ describe('Ingress payload extraction and durable enqueue', () => {
     expect(eventQueue.send).not.toHaveBeenCalled();
   });
 
+  it.each(['{}', '{'])(
+    'ignores a signed unsupported event without parsing its body %j',
+    async (body) => {
+      const eventQueue = queue();
+      const result = await handleIngressRequest(
+        await webhookRequest(body, { event: 'ping' }),
+        environment(eventQueue.binding),
+        dependencies,
+      );
+
+      expect(result.status).toBe(202);
+      expect(await result.text()).toBe('Ignored event');
+      expect(eventQueue.send).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects a supported event without a canonical action', async () => {
+    const eventQueue = queue();
+    const result = await handleIngressRequest(
+      await webhookRequest(JSON.stringify({
+        installation: { id: 145_952_003 },
+        repository: {
+          id: 1_298_587_318,
+          full_name: 'splrad/steward-sandbox-install-e2e',
+        },
+        pull_request: { number: 6 },
+      }), { event: 'pull_request_review' }),
+      environment(eventQueue.binding),
+      dependencies,
+    );
+
+    expect(result.status).toBe(422);
+    expect(eventQueue.send).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['installation.id', {
       installation: { id: '145952003' },
@@ -317,6 +355,9 @@ describe('Ingress payload extraction and durable enqueue', () => {
   it.each([
     ['issues', 'opened'],
     ['pull_request', 'assigned'],
+    ['pull_request_review', 'opened'],
+    ['pull_request_review_comment', 'submitted'],
+    ['pull_request_review_thread', 'created'],
   ])('ignores unsupported event/action %s:%s after verification', async (event, action) => {
     const eventQueue = queue();
     const result = await handleIngressRequest(
@@ -342,10 +383,67 @@ describe('Ingress payload extraction and durable enqueue', () => {
     },
   );
 
+  it.each([
+    ...[...SUPPORTED_PULL_REQUEST_REVIEW_ACTIONS]
+      .map((action) => ['pull_request_review', action] as const),
+    ...[...SUPPORTED_PULL_REQUEST_REVIEW_COMMENT_ACTIONS]
+      .map((action) => ['pull_request_review_comment', action] as const),
+    ...[...SUPPORTED_PULL_REQUEST_REVIEW_THREAD_ACTIONS]
+      .map((action) => ['pull_request_review_thread', action] as const),
+  ])('accepts the explicit %s action %s and routes its affected PR', async (
+    event,
+    action,
+  ) => {
+    const eventQueue = queue();
+    const result = await handleIngressRequest(
+      await webhookRequest(JSON.stringify(payload(action)), { event }),
+      environment(eventQueue.binding),
+      dependencies,
+    );
+
+    expect(result.status).toBe(202);
+    expect(eventQueue.send).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(eventQueue.send.mock.calls[0]?.[0]))).toMatchObject({
+      schemaVersion: 2,
+      operation: 'pull-request-reconcile',
+      subject: {
+        repositoryId: 1_298_587_318,
+        pullRequestNumber: 6,
+      },
+      cause: { event, action },
+    });
+  });
+
+  it('drops untrusted review payload details from the durable work-item', async () => {
+    const eventQueue = queue();
+    const body = JSON.stringify({
+      ...payload('created'),
+      review: { id: 501, body: 'untrusted review body' },
+      comment: {
+        id: 601,
+        body: 'untrusted comment body',
+        pull_request_review_id: 501,
+      },
+    });
+    const result = await handleIngressRequest(
+      await webhookRequest(body, { event: 'pull_request_review_comment' }),
+      environment(eventQueue.binding),
+      dependencies,
+    );
+
+    expect(result.status).toBe(202);
+    const canonical = String(eventQueue.send.mock.calls[0]?.[0]);
+    expect(canonical).not.toContain('untrusted');
+    expect(canonical).not.toContain('"review"');
+    expect(canonical).not.toContain('"comment"');
+  });
+
   it('returns 503 when the durable Queue write rejects', async () => {
     const eventQueue = queue(new Error('queue unavailable'));
     const result = await handleIngressRequest(
-      await webhookRequest(JSON.stringify(payload())),
+      await webhookRequest(JSON.stringify(payload('resolved')), {
+        event: 'pull_request_review_thread',
+      }),
       environment(eventQueue.binding),
       dependencies,
     );
@@ -413,7 +511,7 @@ describe('Ingress payload extraction and durable enqueue', () => {
     expect(send).toHaveBeenCalledWith(expect.any(String), { contentType: 'text' });
     const canonical = String(send.mock.calls[0]?.[0]);
     expect(JSON.parse(canonical)).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       operation: 'pull-request-reconcile',
       installationId: 145_952_003,
       subject: {

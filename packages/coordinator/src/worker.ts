@@ -5,7 +5,7 @@ import {
   parseStewardRuntimeControlReceipt,
   parseStewardRuntimeWorkItem,
   type StewardRuntimeControlReceiptV1,
-  type StewardRuntimeWorkItemV1,
+  type StewardRuntimeWorkItem,
 } from '../../core/src/index.js';
 import {
   pullRequestCoordinatorName,
@@ -114,7 +114,7 @@ function candidateRepositoryIds(raw: string | undefined): ReadonlySet<number> {
 }
 
 function selectedControlVersion(
-  workItem: StewardRuntimeWorkItemV1,
+  workItem: StewardRuntimeWorkItem,
   env: CoordinatorEnv,
 ): string | undefined {
   const repositoryIds = candidateRepositoryIds(
@@ -166,7 +166,7 @@ async function readBoundedResponseJson(response: Response): Promise<unknown> {
 
 function receiptMatchesRequest(
   receipt: StewardRuntimeControlReceiptV1,
-  workItem: StewardRuntimeWorkItemV1,
+  workItem: StewardRuntimeWorkItem,
   generation: number,
 ): boolean {
   return receipt.deliveryId === workItem.cause.deliveryId
@@ -177,7 +177,7 @@ function receiptMatchesRequest(
 }
 
 async function invokeControl(
-  workItem: StewardRuntimeWorkItemV1,
+  workItem: StewardRuntimeWorkItem,
   generation: number,
   env: CoordinatorEnv,
   attempts: number,
@@ -257,7 +257,7 @@ async function invokeControl(
   return receipt;
 }
 
-function parseQueueWorkItem(body: unknown): StewardRuntimeWorkItemV1 {
+function parseQueueWorkItem(body: unknown): StewardRuntimeWorkItem {
   if (typeof body !== 'string') throw new Error('queue-body-not-text');
   return parseStewardRuntimeWorkItem(JSON.parse(body) as unknown);
 }
@@ -282,7 +282,7 @@ export async function processCoordinatorMessage(
   message: CoordinatorQueueMessage,
   env: CoordinatorEnv,
 ): Promise<void> {
-  let workItem: StewardRuntimeWorkItemV1;
+  let workItem: StewardRuntimeWorkItem;
   try {
     workItem = parseQueueWorkItem(message.body);
   } catch {

@@ -6,6 +6,11 @@ number owns delivery deduplication, monotonic generations, dirty coalescing,
 and fenced leases. The original `coordinator_schema.version=1`, object name,
 base tables, phases, failure codes, and v1 RPCs remain unchanged.
 
+The Queue reader accepts work-item schema versions 1 and 2. Version 1 retains
+its original `pull_request`-only event contract; version 2 adds direct
+pull-request review, review-comment, and review-thread triggers without storing
+event bodies or changing level-triggered reconcile semantics.
+
 An independent `coordinator_mutation_schema.version=1` sidecar stores a bounded
 canonical v2 Control plan, its resolved current-head/Manifest identity,
 prepared Control revision, ordered intents, dispatch evidence, and mutation or

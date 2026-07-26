@@ -3,7 +3,10 @@ import {
   buildStewardRuntimeControlReceipt,
   canonicalStewardRuntimeControlReceiptJson,
   canonicalStewardRuntimeWorkItemJson,
+  type StewardGitHubWebhookEventActionV2,
+  type StewardRuntimeWorkItem,
   type StewardRuntimeWorkItemV1,
+  type StewardRuntimeWorkItemV2,
 } from '../packages/core/src/index.js';
 import {
   coordinatorControlTimeoutMs,
@@ -56,7 +59,7 @@ function message(body: unknown, attempts = 1): CoordinatorQueueMessage & {
 const stableVersion = '3d4755c9-3fb1-49ba-95c7-6797c16a0847';
 
 function receipt(
-  item: StewardRuntimeWorkItemV1,
+  item: StewardRuntimeWorkItem,
   generation: number,
   version = stableVersion,
 ) {
@@ -91,7 +94,7 @@ function environment(
       async fetch(_input, init) {
         const parsed = JSON.parse(String(init?.body)) as {
           generation: number;
-          workItem: StewardRuntimeWorkItemV1;
+          workItem: StewardRuntimeWorkItem;
         };
         return new Response(
           canonicalStewardRuntimeControlReceiptJson(
@@ -338,7 +341,7 @@ describe('Coordinator Queue consumer', () => {
         trace.push('control');
         const parsed = JSON.parse(String(init?.body)) as {
           generation: number;
-          workItem: StewardRuntimeWorkItemV1;
+          workItem: StewardRuntimeWorkItem;
         };
         return new Response(
           canonicalStewardRuntimeControlReceiptJson(
@@ -362,6 +365,55 @@ describe('Coordinator Queue consumer', () => {
     expect(queued.ack).toHaveBeenCalledOnce();
     expect(coordinator.complete).toHaveBeenCalledWith(1, 'opaque-lease-token-1');
   });
+
+  it.each([
+    { event: 'pull_request_review', action: 'submitted' },
+    { event: 'pull_request_review_comment', action: 'edited' },
+    { event: 'pull_request_review_thread', action: 'resolved' },
+  ] satisfies readonly StewardGitHubWebhookEventActionV2[])(
+    'passes a canonical $event:$action trigger through the same per-PR Coordinator',
+    async (cause) => {
+      const base = workItem(`delivery-${cause.event}`);
+      const item: StewardRuntimeWorkItemV2 = {
+        ...base,
+        schemaVersion: 2,
+        operation: 'pull-request-reconcile',
+        cause: {
+          kind: 'github-webhook',
+          deliveryId: base.cause.deliveryId,
+          ...cause,
+          receivedAt: base.cause.receivedAt,
+        },
+      };
+      const coordinator = stub({
+        status: 'claimed',
+        generation: 1,
+        leaseToken: 'opaque-review-event-lease-token',
+        expiresAt: Date.now() + 120_000,
+      });
+      const control = {
+        fetch: vi.fn(environment({}).CONTROL.fetch),
+      };
+      const queued = message(canonicalStewardRuntimeWorkItemJson(item));
+
+      await processCoordinatorMessage(
+        queued,
+        environment({ [item.subject.repositoryId]: coordinator }, control),
+      );
+
+      expect(control.fetch).toHaveBeenCalledOnce();
+      const request = JSON.parse(
+        String(control.fetch.mock.calls[0]?.[1]?.body),
+      ) as { workItem: StewardRuntimeWorkItem };
+      expect(request.workItem).toEqual(item);
+      expect(coordinator.claim).toHaveBeenCalledWith(
+        item.cause.deliveryId,
+        coordinatorLeaseDurationMs,
+      );
+      expect(queued.ack).toHaveBeenCalledOnce();
+      expect(queued.retry).not.toHaveBeenCalled();
+    },
+  );
 
   it('fails the lease and retries only the affected message on Control failure', async () => {
     const first = workItem('delivery-first');
@@ -429,7 +481,7 @@ describe('Coordinator Queue consumer', () => {
       fetch: vi.fn(async (_input: Request | string | URL, init?: RequestInit) => {
         const parsed = JSON.parse(String(init?.body)) as {
           generation: number;
-          workItem: StewardRuntimeWorkItemV1;
+          workItem: StewardRuntimeWorkItem;
         };
         return new Response(
           canonicalStewardRuntimeControlReceiptJson(

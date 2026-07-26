@@ -1,8 +1,15 @@
 import {
-  buildStewardRuntimeWorkItem,
+  buildStewardRuntimeWorkItemV2,
   canonicalStewardRuntimeWorkItemJson,
   STEWARD_RUNTIME_PULL_REQUEST_ACTIONS_V1,
+  STEWARD_RUNTIME_PULL_REQUEST_REVIEW_ACTIONS_V2,
+  STEWARD_RUNTIME_PULL_REQUEST_REVIEW_COMMENT_ACTIONS_V2,
+  STEWARD_RUNTIME_PULL_REQUEST_REVIEW_THREAD_ACTIONS_V2,
+  type StewardGitHubWebhookEventActionV2,
   type StewardRuntimePullRequestActionV1,
+  type StewardRuntimePullRequestReviewActionV2,
+  type StewardRuntimePullRequestReviewCommentActionV2,
+  type StewardRuntimePullRequestReviewThreadActionV2,
 } from '../../core/src/runtime-work-item.js';
 
 export const MAX_WEBHOOK_BODY_BYTES = 1024 * 1024;
@@ -14,6 +21,28 @@ export const MAX_QUEUE_MESSAGE_BYTES = 127_000;
 export const SUPPORTED_PULL_REQUEST_ACTIONS:
 ReadonlySet<StewardRuntimePullRequestActionV1> = new Set([
   ...STEWARD_RUNTIME_PULL_REQUEST_ACTIONS_V1,
+]);
+
+export const SUPPORTED_PULL_REQUEST_REVIEW_ACTIONS:
+ReadonlySet<StewardRuntimePullRequestReviewActionV2> = new Set([
+  ...STEWARD_RUNTIME_PULL_REQUEST_REVIEW_ACTIONS_V2,
+]);
+
+export const SUPPORTED_PULL_REQUEST_REVIEW_COMMENT_ACTIONS:
+ReadonlySet<StewardRuntimePullRequestReviewCommentActionV2> = new Set([
+  ...STEWARD_RUNTIME_PULL_REQUEST_REVIEW_COMMENT_ACTIONS_V2,
+]);
+
+export const SUPPORTED_PULL_REQUEST_REVIEW_THREAD_ACTIONS:
+ReadonlySet<StewardRuntimePullRequestReviewThreadActionV2> = new Set([
+  ...STEWARD_RUNTIME_PULL_REQUEST_REVIEW_THREAD_ACTIONS_V2,
+]);
+
+const supportedGitHubWebhookEvents: ReadonlySet<string> = new Set([
+  'pull_request',
+  'pull_request_review',
+  'pull_request_review_comment',
+  'pull_request_review_thread',
 ]);
 
 export interface Queue<Body> {
@@ -75,6 +104,45 @@ function supportedPullRequestAction(
   value: string,
 ): value is StewardRuntimePullRequestActionV1 {
   return (SUPPORTED_PULL_REQUEST_ACTIONS as ReadonlySet<string>).has(value);
+}
+
+function supportedGitHubWebhookEventAction(
+  event: string,
+  action: string,
+): StewardGitHubWebhookEventActionV2 | null {
+  if (event === 'pull_request' && supportedPullRequestAction(action)) {
+    return { event, action };
+  }
+  if (
+    event === 'pull_request_review'
+    && (SUPPORTED_PULL_REQUEST_REVIEW_ACTIONS as ReadonlySet<string>).has(action)
+  ) {
+    return {
+      event,
+      action: action as StewardRuntimePullRequestReviewActionV2,
+    };
+  }
+  if (
+    event === 'pull_request_review_comment'
+    && (SUPPORTED_PULL_REQUEST_REVIEW_COMMENT_ACTIONS as ReadonlySet<string>)
+      .has(action)
+  ) {
+    return {
+      event,
+      action: action as StewardRuntimePullRequestReviewCommentActionV2,
+    };
+  }
+  if (
+    event === 'pull_request_review_thread'
+    && (SUPPORTED_PULL_REQUEST_REVIEW_THREAD_ACTIONS as ReadonlySet<string>)
+      .has(action)
+  ) {
+    return {
+      event,
+      action: action as StewardRuntimePullRequestReviewThreadActionV2,
+    };
+  }
+  return null;
 }
 
 function contentLengthResponse(request: Request): Response | null {
@@ -190,7 +258,7 @@ export async function verifyGitHubWebhookSignature(
 function extractWorkItem(
   payload: unknown,
   deliveryId: string,
-  action: StewardRuntimePullRequestActionV1,
+  cause: StewardGitHubWebhookEventActionV2,
   receivedAt: string,
 ) {
   const root = record(payload);
@@ -203,7 +271,7 @@ function extractWorkItem(
   const repositoryFullName = repository?.full_name;
   if (
     root === null
-    || root.action !== action
+    || root.action !== cause.action
     || installationId === null
     || repositoryId === null
     || pullRequestNumber === null
@@ -213,7 +281,7 @@ function extractWorkItem(
   }
 
   try {
-    return buildStewardRuntimeWorkItem({
+    return buildStewardRuntimeWorkItemV2({
       operation: 'pull-request-reconcile',
       installationId,
       subject: {
@@ -224,8 +292,7 @@ function extractWorkItem(
       cause: {
         kind: 'github-webhook',
         deliveryId,
-        event: 'pull_request',
-        action,
+        ...cause,
         receivedAt,
       },
     });
@@ -298,7 +365,9 @@ export async function handleIngressRequest(
   if (!signatureValid) {
     return response(401, 'Invalid signature');
   }
-  if (event !== 'pull_request') return response(202, 'Ignored event');
+  if (!supportedGitHubWebhookEvents.has(event)) {
+    return response(202, 'Ignored event');
+  }
 
   let payload: unknown;
   try {
@@ -309,19 +378,20 @@ export async function handleIngressRequest(
 
   const action = record(payload)?.action;
   if (typeof action !== 'string' || !eventActionPattern.test(action)) {
-    return response(422, 'Invalid pull request action');
+    return response(422, 'Invalid webhook action');
   }
-  if (!supportedPullRequestAction(action)) {
-    return response(202, 'Ignored pull request action');
+  const supportedCause = supportedGitHubWebhookEventAction(event, action);
+  if (supportedCause === null) {
+    return response(202, 'Ignored event or action');
   }
 
   const workItem = extractWorkItem(
     payload,
     deliveryId,
-    action,
+    supportedCause,
     dependencies.clock().toISOString(),
   );
-  if (workItem === null) return response(422, 'Invalid pull request payload');
+  if (workItem === null) return response(422, 'Invalid webhook payload');
 
   const canonicalText = canonicalStewardRuntimeWorkItemJson(workItem);
   if (encoder.encode(canonicalText).byteLength >= MAX_QUEUE_MESSAGE_BYTES) {

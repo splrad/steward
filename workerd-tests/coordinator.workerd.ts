@@ -16,7 +16,10 @@ import {
   canonicalStewardRuntimeControlPreparedReceiptV2Json,
   canonicalStewardRuntimeControlReceiptJson,
   canonicalStewardRuntimeWorkItemJson,
+  parseStewardRuntimeWorkItem,
+  type StewardRuntimeWorkItem,
   type StewardRuntimeWorkItemV1,
+  type StewardRuntimeWorkItemV2,
   type StewardRuntimeControlMutationBindingV2,
   type StewardRuntimeControlMutationResultV2,
   type StewardRuntimeControlPreparedReceiptV2,
@@ -330,13 +333,13 @@ async function v2RecoveryReceipt(
     binding: {
       ...prepared.binding,
       generation: recoveryGeneration,
-      workItem: {
+      workItem: parseStewardRuntimeWorkItem({
         ...prepared.binding.workItem,
         cause: {
           ...prepared.binding.workItem.cause,
           deliveryId: recoveryDeliveryId,
         },
-      },
+      }),
     },
     resolvedContext: prepared.resolvedContext,
     planId: prepared.plan.planId,
@@ -2425,7 +2428,19 @@ describe('PullRequestCoordinator in workerd', () => {
   });
 
   it('reports independent per-message acknowledgements and retries', async () => {
-    const valid = workItem('delivery-queue-workerd', 1_298_587_319);
+    const base = workItem('delivery-queue-workerd', 1_298_587_319);
+    const valid: StewardRuntimeWorkItemV2 = {
+      ...base,
+      schemaVersion: 2,
+      operation: 'pull-request-reconcile',
+      cause: {
+        kind: 'github-webhook',
+        deliveryId: base.cause.deliveryId,
+        event: 'pull_request_review_thread',
+        action: 'resolved',
+        receivedAt: base.cause.receivedAt,
+      },
+    };
     const messages = [
       {
         id: 'queue-valid',
@@ -2446,7 +2461,7 @@ describe('PullRequestCoordinator in workerd', () => {
       async (_input: Request | string | URL, init?: RequestInit) => {
         const request = JSON.parse(String(init?.body)) as {
           generation: number;
-          workItem: StewardRuntimeWorkItemV1;
+          workItem: StewardRuntimeWorkItem;
         };
         return new Response(
           canonicalStewardRuntimeControlReceiptJson(
@@ -2486,6 +2501,10 @@ describe('PullRequestCoordinator in workerd', () => {
     expect(result.explicitAcks).toEqual(['queue-valid']);
     expect(result.retryMessages).toEqual([{ msgId: 'queue-malformed' }]);
     expect(controlFetch).toHaveBeenCalledOnce();
+    const forwarded = JSON.parse(
+      String(controlFetch.mock.calls[0]?.[1]?.body),
+    ) as { workItem: StewardRuntimeWorkItem };
+    expect(forwarded.workItem).toEqual(valid);
   });
 
   it('coalesces more than the persisted delivery window without false DLQ retries', async () => {
@@ -2503,7 +2522,7 @@ describe('PullRequestCoordinator in workerd', () => {
         }
         const request = JSON.parse(String(init?.body)) as {
           generation: number;
-          workItem: StewardRuntimeWorkItemV1;
+          workItem: StewardRuntimeWorkItem;
         };
         return new Response(
           canonicalStewardRuntimeControlReceiptJson(
@@ -2614,7 +2633,7 @@ describe('PullRequestCoordinator in workerd', () => {
         }
         const request = JSON.parse(String(init?.body)) as {
           generation: number;
-          workItem: StewardRuntimeWorkItemV1;
+          workItem: StewardRuntimeWorkItem;
         };
         return new Response(
           canonicalStewardRuntimeControlReceiptJson(

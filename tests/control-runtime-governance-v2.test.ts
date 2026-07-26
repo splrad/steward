@@ -9,6 +9,7 @@ import {
   parseStewardRuntimeControlMutationReceiptV2,
   parseStewardRuntimeControlPreparedReceiptV2,
   parseStewardRuntimeControlRecoveryReceiptV2,
+  parseStewardRuntimeWorkItem,
   type StewardRuntimeControlPreparedReceiptV2,
   type StewardRuntimeControlRevisionV1,
 } from '../packages/core/src/index.js';
@@ -354,13 +355,13 @@ async function recoverBody(
     binding: {
       ...prepared.binding,
       generation: prepared.binding.generation + 1,
-      workItem: {
+      workItem: parseStewardRuntimeWorkItem({
         ...prepared.binding.workItem,
         cause: {
           ...prepared.binding.workItem.cause,
           deliveryId,
         },
-      },
+      }),
     },
     expectedControlRevision,
     resolvedContext: prepared.resolvedContext,
