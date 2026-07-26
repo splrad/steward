@@ -106,17 +106,44 @@ class FakeGitHub {
     | 'wrong-app'
     | 'wrong-organization'
     | 'suspended' = 'valid';
-  installationTokenPermissions: Record<string, string> = {
-    contents: 'read',
-    metadata: 'read',
-    pull_requests: 'read',
-  };
+  installationTokenPermissions: Record<string, string> | null = null;
   installationTokenRepositoryId = repositoryId;
   repositoryOwnerId = organizationId;
   liveHeadSha = headSha;
   liveManifestBlobSha = manifestBlobSha;
+  copilotReviewEnabled = true;
   pending = false;
   omitRequestedReviewers = false;
+  reviews: Record<string, unknown>[] = [];
+  threads: Record<string, unknown>[] = [];
+  checks: Record<string, unknown>[] = [];
+  comments: Record<string, unknown>[] = [];
+  commits: Record<string, unknown>[] = [{
+    sha: headSha,
+    author: { login: 'dependabot[bot]', type: 'Bot' },
+  }];
+  files: Record<string, unknown>[] = [{
+    filename: 'package-lock.json',
+    status: 'modified',
+    sha: 'f'.repeat(40),
+    additions: 1,
+    deletions: 1,
+  }];
+  maintainers = [{ login: 'axiomoth' }];
+  nextCheckId = 700;
+  nextCommentId = 800;
+  uncertainCheckCreate = false;
+  uncertainCheckUpdate = false;
+  checkCreateRateLimitSeconds: number | null = null;
+  malformedCheckResponse = false;
+  unexpectedCheckDetailsUrlResponse = false;
+  uncertainCommentCreate = false;
+  uncertainCommentUpdate = false;
+  commentWriteRateLimitSeconds: number | null = null;
+  commentDeleteReturns404 = false;
+  commentDelete404RemovesComment = true;
+  uncertainCommentDelete = false;
+  issueCommentReadFailureStatus: number | null = null;
   reviewPostRateLimitSeconds: number | null = null;
   uncertainReviewPost = false;
   readonly records: FetchRecord[] = [];
@@ -171,10 +198,14 @@ class FakeGitHub {
       method === 'POST'
       && url.pathname === `/app/installations/${installationId}/access_tokens`
     ) {
+      const requested = JSON.parse(body ?? '{}') as {
+        permissions?: Record<string, string>;
+      };
       return jsonResponse({
         token: installationToken,
         repository_selection: 'selected',
-        permissions: this.installationTokenPermissions,
+        permissions:
+          this.installationTokenPermissions ?? requested.permissions ?? {},
         repositories: [{ id: this.installationTokenRepositoryId }],
       }, 201);
     }
@@ -203,7 +234,13 @@ class FakeGitHub {
       return jsonResponse({
         type: 'file',
         encoding: 'base64',
-        content: encodeBase64Utf8(canonicalManifestJson(manifest)),
+        content: encodeBase64Utf8(canonicalManifestJson({
+          ...manifest,
+          features: {
+            ...manifest.features,
+            copilotReview: this.copilotReviewEnabled,
+          },
+        })),
         sha: this.liveManifestBlobSha,
       });
     }
@@ -233,7 +270,206 @@ class FakeGitHub {
       method === 'GET'
       && url.pathname === `/repos/splrad/steward/pulls/${pullRequestNumber}/reviews`
     ) {
-      return jsonResponse([]);
+      return jsonResponse(this.reviews);
+    }
+    if (
+      method === 'POST'
+      && url.pathname === '/graphql'
+    ) {
+      return jsonResponse({
+        data: {
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: this.threads,
+              },
+            },
+          },
+        },
+      });
+    }
+    if (
+      method === 'GET'
+      && url.pathname
+        === `/repos/splrad/steward/commits/${this.liveHeadSha}/check-runs`
+    ) {
+      return jsonResponse({ total_count: this.checks.length, check_runs: this.checks });
+    }
+    if (
+      method === 'GET'
+      && url.pathname
+        === `/repos/splrad/steward/issues/${pullRequestNumber}/comments`
+    ) {
+      return jsonResponse(this.comments);
+    }
+    if (
+      method === 'GET'
+      && url.pathname
+        === `/repos/splrad/steward/pulls/${pullRequestNumber}/commits`
+    ) {
+      return jsonResponse(this.commits);
+    }
+    if (
+      method === 'GET'
+      && url.pathname
+        === `/repos/splrad/steward/pulls/${pullRequestNumber}/files`
+    ) {
+      return jsonResponse(this.files);
+    }
+    if (
+      method === 'GET'
+      && url.pathname === '/orgs/splrad/teams/maintainers/members'
+    ) {
+      return jsonResponse(this.maintainers);
+    }
+    if (
+      method === 'GET'
+      && url.pathname === '/users/splrad-steward%5Bbot%5D'
+    ) {
+      return jsonResponse({
+        id: 9_001,
+        login: 'splrad-steward[bot]',
+        type: 'Bot',
+      });
+    }
+    if (
+      method === 'POST'
+      && url.pathname === '/repos/splrad/steward/check-runs'
+    ) {
+      if (this.checkCreateRateLimitSeconds !== null) {
+        return jsonResponse(
+          { message: 'API rate limit exceeded' },
+          429,
+          { 'retry-after': String(this.checkCreateRateLimitSeconds) },
+        );
+      }
+      const input = JSON.parse(body ?? '{}') as Record<string, unknown>;
+      const check = {
+        id: this.nextCheckId++,
+        head_sha: input.head_sha,
+        name: input.name,
+        status: input.status,
+        conclusion: input.conclusion ?? null,
+        external_id: input.external_id ?? null,
+        details_url: input.details_url ?? null,
+        app: { id: appId, slug: manifest.automation.githubApp.slug },
+        output: input.output,
+      };
+      this.checks = [...this.checks, check];
+      if (this.uncertainCheckCreate) {
+        throw new Error('simulated response loss after Check creation');
+      }
+      return jsonResponse(this.malformedCheckResponse
+        ? { ...check, external_id: 'wrong-external-id' }
+        : this.unexpectedCheckDetailsUrlResponse
+          ? { ...check, details_url: 'https://unexpected.example/check' }
+          : check, 201);
+    }
+    const checkUpdate = new RegExp(
+      '^/repos/splrad/steward/check-runs/(\\d+)$',
+    ).exec(url.pathname);
+    if (method === 'PATCH' && checkUpdate) {
+      const id = Number(checkUpdate[1]);
+      const input = JSON.parse(body ?? '{}') as Record<string, unknown>;
+      const existing = this.checks.find((check) => check.id === id);
+      const check = {
+        ...existing,
+        id,
+        head_sha: existing?.head_sha,
+        name: input.name,
+        status: input.status,
+        conclusion: input.conclusion ?? null,
+        external_id: input.external_id ?? null,
+        details_url: input.details_url ?? null,
+        app: { id: appId, slug: manifest.automation.githubApp.slug },
+        output: input.output,
+      };
+      this.checks = this.checks.map((candidate) => (
+        candidate.id === id ? check : candidate
+      ));
+      if (this.uncertainCheckUpdate) {
+        throw new Error('simulated response loss after Check update');
+      }
+      return jsonResponse(check);
+    }
+    if (
+      method === 'POST'
+      && url.pathname
+        === `/repos/splrad/steward/issues/${pullRequestNumber}/comments`
+    ) {
+      if (this.commentWriteRateLimitSeconds !== null) {
+        return jsonResponse(
+          { message: 'API rate limit exceeded' },
+          429,
+          { 'retry-after': String(this.commentWriteRateLimitSeconds) },
+        );
+      }
+      const input = JSON.parse(body ?? '{}') as { body?: string };
+      const comment = {
+        id: this.nextCommentId++,
+        body: input.body,
+        user: { id: 9_001, login: 'splrad-steward[bot]', type: 'Bot' },
+        performed_via_github_app: {
+          id: appId,
+          slug: manifest.automation.githubApp.slug,
+        },
+      };
+      this.comments = [...this.comments, comment];
+      if (this.uncertainCommentCreate) {
+        throw new Error('simulated response loss after comment creation');
+      }
+      return jsonResponse(comment, 201);
+    }
+    const commentResource = new RegExp(
+      '^/repos/splrad/steward/issues/comments/(\\d+)$',
+    ).exec(url.pathname);
+    if (method === 'GET' && commentResource) {
+      if (this.issueCommentReadFailureStatus !== null) {
+        return jsonResponse(
+          { message: 'simulated exact comment read failure' },
+          this.issueCommentReadFailureStatus,
+        );
+      }
+      const id = Number(commentResource[1]);
+      const comment = this.comments.find((candidate) => candidate.id === id);
+      return comment
+        ? jsonResponse(comment)
+        : jsonResponse({ message: 'Not Found' }, 404);
+    }
+    if (method === 'PATCH' && commentResource) {
+      if (this.commentWriteRateLimitSeconds !== null) {
+        return jsonResponse(
+          { message: 'API rate limit exceeded' },
+          429,
+          { 'retry-after': String(this.commentWriteRateLimitSeconds) },
+        );
+      }
+      const id = Number(commentResource[1]);
+      const input = JSON.parse(body ?? '{}') as { body?: string };
+      const existing = this.comments.find((comment) => comment.id === id);
+      const comment = { ...existing, id, body: input.body };
+      this.comments = this.comments.map((candidate) => (
+        candidate.id === id ? comment : candidate
+      ));
+      if (this.uncertainCommentUpdate) {
+        throw new Error('simulated response loss after comment update');
+      }
+      return jsonResponse(comment);
+    }
+    if (method === 'DELETE' && commentResource) {
+      const id = Number(commentResource[1]);
+      if (this.commentDeleteReturns404) {
+        if (this.commentDelete404RemovesComment) {
+          this.comments = this.comments.filter((comment) => comment.id !== id);
+        }
+        return jsonResponse({ message: 'Not Found' }, 404);
+      }
+      this.comments = this.comments.filter((comment) => comment.id !== id);
+      if (this.uncertainCommentDelete) {
+        throw new Error('simulated response loss after comment deletion');
+      }
+      return new Response(null, { status: 204 });
     }
     if (
       method === 'POST'
@@ -267,6 +503,7 @@ class FakeGitHub {
     return this.records.filter((record) => (
       record.method !== 'GET'
       && !record.pathname.endsWith('/access_tokens')
+      && record.pathname !== '/graphql'
     ));
   }
 }
@@ -334,13 +571,18 @@ async function applyBody(
   prepared: StewardRuntimeControlPreparedReceiptV2,
   expectedControlRevision: StewardRuntimeControlRevisionV1 =
     prepared.controlRevision,
+  mutationKey = 'copilot-review:request',
 ): Promise<string> {
+  const mutation = prepared.plan.mutations.find(
+    (candidate) => candidate.key === mutationKey,
+  );
+  if (!mutation) throw new Error(`Prepared plan has no mutation ${mutationKey}`);
   const input = await buildStewardRuntimeControlApplyNextRequestV2({
     binding: prepared.binding,
     expectedControlRevision,
     resolvedContext: prepared.resolvedContext,
     plan: prepared.plan,
-    mutation: prepared.plan.mutations[0]!,
+    mutation,
   });
   return await canonicalStewardRuntimeControlApplyNextRequestV2Json(input);
 }
@@ -350,7 +592,12 @@ async function recoverBody(
   deliveryId: string,
   expectedControlRevision: StewardRuntimeControlRevisionV1 =
     prepared.controlRevision,
+  mutationKey = 'copilot-review:request',
 ): Promise<string> {
+  const mutation = prepared.plan.mutations.find(
+    (candidate) => candidate.key === mutationKey,
+  );
+  if (!mutation) throw new Error(`Prepared plan has no mutation ${mutationKey}`);
   const input = await buildStewardRuntimeControlRecoverRequestV2({
     binding: {
       ...prepared.binding,
@@ -366,13 +613,39 @@ async function recoverBody(
     expectedControlRevision,
     resolvedContext: prepared.resolvedContext,
     plan: prepared.plan,
-    mutation: prepared.plan.mutations[0]!,
+    mutation,
   });
   return await canonicalStewardRuntimeControlRecoverRequestV2Json(input);
 }
 
 describe('Control runtime v2 Governance minimum slice', () => {
-  it('prepares one and only one human Copilot intent for a machine-authored PR', async () => {
+  it('prepares disabled resource cleanup as a settled plan instead of an invalid ignored mutation plan', async () => {
+    const fake = new FakeGitHub();
+    fake.copilotReviewEnabled = false;
+    fake.comments = [{
+      id: 601,
+      body: '<!-- steward:resource:copilot-gate-blocking-comment:v1 -->',
+      user: { id: 9_001, login: 'splrad-steward[bot]', type: 'Bot' },
+      performed_via_github_app: {
+        id: appId,
+        slug: manifest.automation.githubApp.slug,
+      },
+    }];
+
+    const prepared = await prepare(fake);
+    const plan = await parseCanonicalControlPlanJson(
+      Buffer.from(prepared.plan.canonicalPlanBase64, 'base64').toString('utf8'),
+    );
+
+    expect(prepared.plan.terminalOutcome).toBe('settled');
+    expect(plan.outcome.state).toBe('passed');
+    expect(prepared.plan.mutations.map((mutation) => mutation.key)).toEqual([
+      'copilot-gate:check',
+      'copilot-gate:blocking-comment',
+    ]);
+  });
+
+  it('prepares Gate Check before the final human intent with exact read permissions', async () => {
     const fake = new FakeGitHub();
     const prepared = await prepare(fake);
     const plan = await parseCanonicalControlPlanJson(
@@ -382,24 +655,33 @@ describe('Control runtime v2 Governance minimum slice', () => {
     expect(prepared.plan.mutations).toEqual([
       expect.objectContaining({
         ordinal: 0,
+        key: 'copilot-gate:check',
+        mutationType: 'copilot-gate-check.upsert',
+        principal: 'installation',
+        recoveryPolicy: 'live-evidence',
+      }),
+      expect.objectContaining({
+        ordinal: 1,
         key: 'copilot-review:request',
         mutationType: 'copilot-review.request',
         principal: 'human',
         recoveryPolicy: 'live-evidence-or-action-required',
       }),
     ]);
-    expect(plan.mutations).toHaveLength(1);
-    expect(plan.mutations[0]).toMatchObject({
+    expect(plan.mutations).toHaveLength(2);
+    expect(plan.mutations[1]).toMatchObject({
       type: 'copilot-review.request',
       key: 'copilot-review:request',
       principal: 'human',
+      evidenceProtocol: 'copilot-gate-v1',
       observedEvidenceDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
-    expect(fake.records).toContainEqual({
-      method: 'POST',
-      pathname: `/app/installations/${installationId}/access_tokens`,
-      authorization: 'Bearer test-app-token',
-      body: JSON.stringify({
+    expect(fake.records.filter((record) => (
+      record.method === 'POST'
+      && record.pathname
+        === `/app/installations/${installationId}/access_tokens`
+    )).map((record) => record.body)).toEqual([
+      JSON.stringify({
         repository_ids: [repositoryId],
         permissions: {
           contents: 'read',
@@ -407,7 +689,17 @@ describe('Control runtime v2 Governance minimum slice', () => {
           pull_requests: 'read',
         },
       }),
-    });
+      JSON.stringify({
+        repository_ids: [repositoryId],
+        permissions: {
+          checks: 'read',
+          issues: 'read',
+          members: 'read',
+          metadata: 'read',
+          pull_requests: 'read',
+        },
+      }),
+    ]);
     expect(fake.records).toContainEqual(expect.objectContaining({
       method: 'GET',
       pathname: `/repos/splrad/steward/pulls/${pullRequestNumber}`,
@@ -416,7 +708,7 @@ describe('Control runtime v2 Governance minimum slice', () => {
     expect(fake.copilotReviewToken).not.toHaveBeenCalled();
   });
 
-  it('prepares action-required with no mutation when reviewer evidence is incomplete', async () => {
+  it('invalidates the Gate and writes the aggregate before any request when review evidence is incomplete', async () => {
     const fake = new FakeGitHub();
     fake.omitRequestedReviewers = true;
 
@@ -425,10 +717,16 @@ describe('Control runtime v2 Governance minimum slice', () => {
       Buffer.from(prepared.plan.canonicalPlanBase64, 'base64').toString('utf8'),
     );
 
-    expect(prepared.plan.terminalOutcome).toBe('action-required');
-    expect(prepared.plan.mutations).toEqual([]);
-    expect(plan.outcome.state).toBe('action_required');
-    expect(plan.mutations).toEqual([]);
+    expect(prepared.plan.terminalOutcome).toBe('settled');
+    expect(prepared.plan.mutations.map((mutation) => mutation.key)).toEqual([
+      'copilot-gate:check',
+      'copilot-gate:blocking-comment',
+    ]);
+    expect(plan.outcome.state).toBe('failed');
+    expect(plan.mutations.map((mutation) => mutation.type)).toEqual([
+      'copilot-gate-check.upsert',
+      'blocking-comment.upsert',
+    ]);
     expect(fake.copilotReviewToken).not.toHaveBeenCalled();
   });
 
@@ -513,9 +811,653 @@ describe('Control runtime v2 Governance minimum slice', () => {
     }
   });
 
-  it('applies the exact snapshot with one human-token POST for the fixed reviewer', async () => {
+  it('applies one Gate Check intent with Checks write and validates the exact App response', async () => {
     const fake = new FakeGitHub();
     const prepared = await prepare(fake);
+    fake.clearObservations();
+
+    const response = await handler(fake).fetch(
+      v2Request(await applyBody(
+        prepared,
+        prepared.controlRevision,
+        'copilot-gate:check',
+      )),
+      env,
+    );
+    const receipt = await parseStewardRuntimeControlMutationReceiptV2(
+      await response.json(),
+    );
+
+    expect(receipt.result).toEqual({
+      state: 'applied',
+      resourceId: 700,
+      retryAfterSeconds: null,
+    });
+    expect(fake.repositoryMutationRecords()).toEqual([
+      expect.objectContaining({
+        method: 'POST',
+        pathname: '/repos/splrad/steward/check-runs',
+        authorization: `Bearer ${installationToken}`,
+      }),
+    ]);
+    expect(fake.records.filter((record) => (
+      record.pathname
+        === `/app/installations/${installationId}/access_tokens`
+    )).at(-1)?.body).toBe(JSON.stringify({
+      repository_ids: [repositoryId],
+      permissions: {
+        checks: 'write',
+        members: 'read',
+        metadata: 'read',
+        pull_requests: 'read',
+      },
+    }));
+    expect(fake.records).not.toContainEqual(expect.objectContaining({
+      method: 'GET',
+      pathname: `/repos/splrad/steward/issues/${pullRequestNumber}/comments`,
+    }));
+    expect(fake.copilotReviewToken).not.toHaveBeenCalled();
+  });
+
+  it('keeps an uncertain or non-exact Check response unknown and recovers only one exact desired resource', async () => {
+    for (const mode of [
+      'response-loss',
+      'malformed-response',
+      'unexpected-details-url',
+    ] as const) {
+      const fake = new FakeGitHub();
+      const prepared = await prepare(fake);
+      fake.uncertainCheckCreate = mode === 'response-loss';
+      fake.malformedCheckResponse = mode === 'malformed-response';
+      fake.unexpectedCheckDetailsUrlResponse =
+        mode === 'unexpected-details-url';
+      fake.clearObservations();
+
+      const applied = await handler(fake).fetch(
+        v2Request(await applyBody(
+          prepared,
+          prepared.controlRevision,
+          'copilot-gate:check',
+        )),
+        env,
+      );
+      const mutationReceipt = await parseStewardRuntimeControlMutationReceiptV2(
+        await applied.json(),
+      );
+      expect(mutationReceipt.result.state, mode).toBe('unknown');
+      expect(fake.checks).toHaveLength(1);
+
+      fake.uncertainCheckCreate = false;
+      fake.malformedCheckResponse = false;
+      fake.unexpectedCheckDetailsUrlResponse = false;
+      fake.clearObservations();
+      const recovered = await handler(fake).fetch(
+        v2Request(await recoverBody(
+          prepared,
+          `governance-v2-check-recover-${mode}`,
+          prepared.controlRevision,
+          'copilot-gate:check',
+        )),
+        env,
+      );
+      const recoveryReceipt = await parseStewardRuntimeControlRecoveryReceiptV2(
+        await recovered.json(),
+      );
+      expect(recoveryReceipt.result, mode).toEqual({
+        state: 'converged',
+        resourceId: 700,
+      });
+      expect(fake.repositoryMutationRecords(), mode).toEqual([]);
+
+      fake.checks.push({ ...fake.checks[0], id: 701 });
+      const ambiguous = await handler(fake).fetch(
+        v2Request(await recoverBody(
+          prepared,
+          `governance-v2-check-ambiguous-${mode}`,
+          prepared.controlRevision,
+          'copilot-gate:check',
+        )),
+        env,
+      );
+      const ambiguousReceipt =
+        await parseStewardRuntimeControlRecoveryReceiptV2(
+          await ambiguous.json(),
+        );
+      expect(ambiguousReceipt.result, mode).toEqual({
+        state: 'unknown',
+        resourceId: null,
+      });
+    }
+  });
+
+  it('keeps an absent Check recovery unknown and performs no repository write or human-token read', async () => {
+    const fake = new FakeGitHub();
+    const prepared = await prepare(fake);
+    fake.clearObservations();
+
+    const recovered = await handler(fake).fetch(
+      v2Request(await recoverBody(
+        prepared,
+        'governance-v2-check-recover-absent',
+        prepared.controlRevision,
+        'copilot-gate:check',
+      )),
+      env,
+    );
+    const receipt = await parseStewardRuntimeControlRecoveryReceiptV2(
+      await recovered.json(),
+    );
+
+    expect(receipt.result).toEqual({
+      state: 'unknown',
+      resourceId: null,
+    });
+    expect(fake.repositoryMutationRecords()).toEqual([]);
+    expect(fake.copilotReviewToken).not.toHaveBeenCalled();
+  });
+
+  it('marks a lost Check update response unknown and recovers only the exact prepared ID', async () => {
+    const fake = new FakeGitHub();
+    const initial = await prepare(fake);
+    await handler(fake).fetch(
+      v2Request(await applyBody(
+        initial,
+        initial.controlRevision,
+        'copilot-gate:check',
+      )),
+      env,
+    );
+    fake.pending = true;
+    const prepared = await prepare(fake);
+    const plan = await parseCanonicalControlPlanJson(
+      Buffer.from(prepared.plan.canonicalPlanBase64, 'base64').toString('utf8'),
+    );
+    const mutation = plan.mutations.find((candidate) => (
+      candidate.type === 'copilot-gate-check.upsert'
+    ));
+    expect(mutation).toMatchObject({ mode: 'update', checkRunId: 700 });
+    if (!mutation || mutation.type !== 'copilot-gate-check.upsert') {
+      throw new Error('Expected a Copilot Gate Check update');
+    }
+    fake.uncertainCheckUpdate = true;
+    fake.clearObservations();
+
+    const applied = await handler(fake).fetch(
+      v2Request(await applyBody(
+        prepared,
+        prepared.controlRevision,
+        'copilot-gate:check',
+      )),
+      env,
+    );
+    expect((await parseStewardRuntimeControlMutationReceiptV2(
+      await applied.json(),
+    )).result).toEqual({
+      state: 'unknown',
+      resourceId: null,
+      retryAfterSeconds: null,
+    });
+
+    fake.uncertainCheckUpdate = false;
+    fake.clearObservations();
+    const exactId = await handler(fake).fetch(
+      v2Request(await recoverBody(
+        prepared,
+        'governance-v2-check-update-exact-id',
+        prepared.controlRevision,
+        'copilot-gate:check',
+      )),
+      env,
+    );
+    expect((await parseStewardRuntimeControlRecoveryReceiptV2(
+      await exactId.json(),
+    )).result).toEqual({ state: 'converged', resourceId: 700 });
+
+    fake.checks[0] = { ...fake.checks[0], id: 701 };
+    const wrongId = await handler(fake).fetch(
+      v2Request(await recoverBody(
+        prepared,
+        'governance-v2-check-update-wrong-id',
+        prepared.controlRevision,
+        'copilot-gate:check',
+      )),
+      env,
+    );
+    expect((await parseStewardRuntimeControlRecoveryReceiptV2(
+      await wrongId.json(),
+    )).result).toEqual({ state: 'unknown', resourceId: null });
+    expect(fake.repositoryMutationRecords()).toEqual([]);
+  });
+
+  it('classifies an explicit Check write rate limit as not-attempted without creating a resource', async () => {
+    const fake = new FakeGitHub();
+    const prepared = await prepare(fake);
+    fake.checkCreateRateLimitSeconds = 1_200;
+    fake.clearObservations();
+
+    const response = await handler(fake).fetch(
+      v2Request(await applyBody(
+        prepared,
+        prepared.controlRevision,
+        'copilot-gate:check',
+      )),
+      env,
+    );
+    const receipt = await parseStewardRuntimeControlMutationReceiptV2(
+      await response.json(),
+    );
+
+    expect(receipt.result).toEqual({
+      state: 'not-attempted',
+      resourceId: null,
+      retryAfterSeconds: 900,
+    });
+    expect(fake.checks).toEqual([]);
+  });
+
+  it('writes and read-only recovers the stable aggregate comment with Issues write only', async () => {
+    const fake = new FakeGitHub();
+    fake.omitRequestedReviewers = true;
+    const prepared = await prepare(fake);
+    fake.uncertainCommentCreate = true;
+    fake.clearObservations();
+
+    const applied = await handler(fake).fetch(
+      v2Request(await applyBody(
+        prepared,
+        prepared.controlRevision,
+        'copilot-gate:blocking-comment',
+      )),
+      env,
+    );
+    const mutationReceipt = await parseStewardRuntimeControlMutationReceiptV2(
+      await applied.json(),
+    );
+    expect(mutationReceipt.result.state).toBe('unknown');
+    expect(fake.comments).toHaveLength(1);
+    expect(fake.records.filter((record) => (
+      record.pathname
+        === `/app/installations/${installationId}/access_tokens`
+    )).at(-1)?.body).toBe(JSON.stringify({
+      repository_ids: [repositoryId],
+      permissions: {
+        issues: 'write',
+        members: 'read',
+        metadata: 'read',
+        pull_requests: 'read',
+      },
+    }));
+    expect(fake.records).not.toContainEqual(expect.objectContaining({
+      method: 'GET',
+      pathname: `/repos/splrad/steward/commits/${headSha}/check-runs`,
+    }));
+
+    fake.uncertainCommentCreate = false;
+    fake.clearObservations();
+    const recovered = await handler(fake).fetch(
+      v2Request(await recoverBody(
+        prepared,
+        'governance-v2-comment-recover',
+        prepared.controlRevision,
+        'copilot-gate:blocking-comment',
+      )),
+      env,
+    );
+    const recoveryReceipt = await parseStewardRuntimeControlRecoveryReceiptV2(
+      await recovered.json(),
+    );
+    expect(recoveryReceipt.result).toEqual({
+      state: 'converged',
+      resourceId: 800,
+    });
+    expect(fake.repositoryMutationRecords()).toEqual([]);
+    expect(fake.copilotReviewToken).not.toHaveBeenCalled();
+
+    fake.comments.push({ ...fake.comments[0], id: 801 });
+    const ambiguous = await handler(fake).fetch(
+      v2Request(await recoverBody(
+        prepared,
+        'governance-v2-comment-recover-ambiguous',
+        prepared.controlRevision,
+        'copilot-gate:blocking-comment',
+      )),
+      env,
+    );
+    const ambiguousReceipt = await parseStewardRuntimeControlRecoveryReceiptV2(
+      await ambiguous.json(),
+    );
+    expect(ambiguousReceipt.result).toEqual({
+      state: 'unknown',
+      resourceId: null,
+    });
+  });
+
+  it('bounds a comment update rate limit and recovers a lost update response', async () => {
+    const fake = new FakeGitHub();
+    fake.omitRequestedReviewers = true;
+    const initial = await prepare(fake);
+    const initialPlan = await parseCanonicalControlPlanJson(
+      Buffer.from(
+        initial.plan.canonicalPlanBase64,
+        'base64',
+      ).toString('utf8'),
+    );
+    const create = initialPlan.mutations.find((mutation) => (
+      mutation.type === 'blocking-comment.upsert'
+    ));
+    if (!create || create.type !== 'blocking-comment.upsert') {
+      throw new Error('Expected a blocking comment creation');
+    }
+    fake.comments = [{
+      id: 800,
+      body: `${create.body}\nlocal drift`,
+      user: { id: 9_001, login: 'splrad-steward[bot]', type: 'Bot' },
+      performed_via_github_app: {
+        id: appId,
+        slug: manifest.automation.githubApp.slug,
+      },
+    }];
+    const prepared = await prepare(fake);
+    const plan = await parseCanonicalControlPlanJson(
+      Buffer.from(
+        prepared.plan.canonicalPlanBase64,
+        'base64',
+      ).toString('utf8'),
+    );
+    expect(plan.mutations.find((mutation) => (
+      mutation.type === 'blocking-comment.upsert'
+    ))).toMatchObject({ mode: 'update', commentId: 800 });
+
+    fake.commentWriteRateLimitSeconds = 1_200;
+    fake.clearObservations();
+    const limited = await handler(fake).fetch(
+      v2Request(await applyBody(
+        prepared,
+        prepared.controlRevision,
+        'copilot-gate:blocking-comment',
+      )),
+      env,
+    );
+    expect((await parseStewardRuntimeControlMutationReceiptV2(
+      await limited.json(),
+    )).result).toEqual({
+      state: 'not-attempted',
+      resourceId: null,
+      retryAfterSeconds: 900,
+    });
+    expect(fake.comments[0]?.body).toBe(`${create.body}\nlocal drift`);
+
+    fake.commentWriteRateLimitSeconds = null;
+    fake.uncertainCommentUpdate = true;
+    fake.clearObservations();
+    const uncertain = await handler(fake).fetch(
+      v2Request(await applyBody(
+        prepared,
+        prepared.controlRevision,
+        'copilot-gate:blocking-comment',
+      )),
+      env,
+    );
+    expect((await parseStewardRuntimeControlMutationReceiptV2(
+      await uncertain.json(),
+    )).result).toEqual({
+      state: 'unknown',
+      resourceId: null,
+      retryAfterSeconds: null,
+    });
+    expect(fake.comments[0]?.body).toBe(create.body);
+
+    fake.uncertainCommentUpdate = false;
+    fake.clearObservations();
+    const recovered = await handler(fake).fetch(
+      v2Request(await recoverBody(
+        prepared,
+        'governance-v2-comment-update-recover',
+        prepared.controlRevision,
+        'copilot-gate:blocking-comment',
+      )),
+      env,
+    );
+    expect((await parseStewardRuntimeControlRecoveryReceiptV2(
+      await recovered.json(),
+    )).result).toEqual({ state: 'converged', resourceId: 800 });
+    expect(fake.repositoryMutationRecords()).toEqual([]);
+  });
+
+  it('converges a raced delete only after exact absence and recovers response loss read-only', async () => {
+    const fake = new FakeGitHub();
+    fake.omitRequestedReviewers = true;
+    const failed = await prepare(fake);
+    const failedPlan = await parseCanonicalControlPlanJson(
+      Buffer.from(failed.plan.canonicalPlanBase64, 'base64').toString('utf8'),
+    );
+    const create = failedPlan.mutations.find((mutation) => (
+      mutation.type === 'blocking-comment.upsert'
+    ));
+    if (!create || create.type !== 'blocking-comment.upsert') {
+      throw new Error('Expected a blocking comment creation');
+    }
+    const comment = {
+      id: 900,
+      body: create.body,
+      user: { id: 9_001, login: 'splrad-steward[bot]', type: 'Bot' },
+      performed_via_github_app: {
+        id: appId,
+        slug: manifest.automation.githubApp.slug,
+      },
+    };
+    fake.comments = [comment];
+    fake.omitRequestedReviewers = false;
+    const prepared = await prepare(fake);
+    fake.commentDeleteReturns404 = true;
+
+    fake.clearObservations();
+    const converged = await handler(fake).fetch(
+      v2Request(await applyBody(
+        prepared,
+        prepared.controlRevision,
+        'copilot-gate:blocking-comment',
+      )),
+      env,
+    );
+    expect((await parseStewardRuntimeControlMutationReceiptV2(
+      await converged.json(),
+    )).result).toEqual({
+      state: 'converged',
+      resourceId: 900,
+      retryAfterSeconds: null,
+    });
+    expect(fake.records.filter((record) => (
+      record.pathname === '/repos/splrad/steward/issues/comments/900'
+    )).map((record) => record.method)).toEqual(['GET', 'DELETE', 'GET']);
+
+    fake.comments = [comment];
+    fake.commentDelete404RemovesComment = false;
+    fake.clearObservations();
+    const stillPresent = await handler(fake).fetch(
+      v2Request(await applyBody(
+        prepared,
+        prepared.controlRevision,
+        'copilot-gate:blocking-comment',
+      )),
+      env,
+    );
+    expect((await parseStewardRuntimeControlMutationReceiptV2(
+      await stillPresent.json(),
+    )).result).toEqual({
+      state: 'unknown',
+      resourceId: null,
+      retryAfterSeconds: null,
+    });
+    expect(fake.records.filter((record) => (
+      record.pathname === '/repos/splrad/steward/issues/comments/900'
+    )).map((record) => record.method)).toEqual(['GET', 'DELETE', 'GET']);
+
+    fake.comments = [comment];
+    fake.commentDeleteReturns404 = false;
+    fake.commentDelete404RemovesComment = true;
+    fake.uncertainCommentDelete = true;
+    fake.clearObservations();
+    const uncertain = await handler(fake).fetch(
+      v2Request(await applyBody(
+        prepared,
+        prepared.controlRevision,
+        'copilot-gate:blocking-comment',
+      )),
+      env,
+    );
+    expect((await parseStewardRuntimeControlMutationReceiptV2(
+      await uncertain.json(),
+    )).result).toEqual({
+      state: 'unknown',
+      resourceId: null,
+      retryAfterSeconds: null,
+    });
+    expect(fake.records.filter((record) => (
+      record.pathname === '/repos/splrad/steward/issues/comments/900'
+    )).map((record) => record.method)).toEqual(['GET', 'DELETE']);
+
+    fake.uncertainCommentDelete = false;
+    fake.clearObservations();
+    const recovered = await handler(fake).fetch(
+      v2Request(await recoverBody(
+        prepared,
+        'governance-v2-comment-delete-response-loss',
+        prepared.controlRevision,
+        'copilot-gate:blocking-comment',
+      )),
+      env,
+    );
+    expect((await parseStewardRuntimeControlRecoveryReceiptV2(
+      await recovered.json(),
+    )).result).toEqual({ state: 'converged', resourceId: 900 });
+    expect(fake.records.filter((record) => (
+      record.pathname === '/repos/splrad/steward/issues/comments/900'
+    )).map((record) => record.method)).toEqual(['GET']);
+    expect(fake.repositoryMutationRecords()).toEqual([]);
+  });
+
+  it('recovers a delete only from an exact 404 for the original comment ID', async () => {
+    const fake = new FakeGitHub();
+    fake.omitRequestedReviewers = true;
+    const failed = await prepare(fake);
+    const failedPlan = await parseCanonicalControlPlanJson(
+      Buffer.from(failed.plan.canonicalPlanBase64, 'base64').toString('utf8'),
+    );
+    const create = failedPlan.mutations.find((mutation) => (
+      mutation.type === 'blocking-comment.upsert'
+    ));
+    if (!create || create.type !== 'blocking-comment.upsert') {
+      throw new Error('Expected a blocking comment creation');
+    }
+    const comment = {
+      id: 900,
+      body: create.body,
+      user: { id: 9_001, login: 'splrad-steward[bot]', type: 'Bot' },
+      performed_via_github_app: {
+        id: appId,
+        slug: manifest.automation.githubApp.slug,
+      },
+    };
+    fake.comments = [comment];
+    fake.omitRequestedReviewers = false;
+    const prepared = await prepare(fake);
+    const deleteMutation = (
+      await parseCanonicalControlPlanJson(
+        Buffer.from(
+          prepared.plan.canonicalPlanBase64,
+          'base64',
+        ).toString('utf8'),
+      )
+    ).mutations.find((mutation) => mutation.type === 'blocking-comment.delete');
+    expect(deleteMutation).toMatchObject({ commentId: 900 });
+
+    fake.clearObservations();
+    const present = await handler(fake).fetch(
+      v2Request(await recoverBody(
+        prepared,
+        'governance-v2-comment-delete-present',
+        prepared.controlRevision,
+        'copilot-gate:blocking-comment',
+      )),
+      env,
+    );
+    expect((await parseStewardRuntimeControlRecoveryReceiptV2(
+      await present.json(),
+    )).result).toEqual({ state: 'unknown', resourceId: null });
+    expect(fake.records).toContainEqual(expect.objectContaining({
+      method: 'GET',
+      pathname: '/repos/splrad/steward/issues/comments/900',
+    }));
+    expect(fake.records).not.toContainEqual(expect.objectContaining({
+      pathname: `/repos/splrad/steward/issues/${pullRequestNumber}/comments`,
+    }));
+
+    fake.comments = [{ ...comment, id: 901 }];
+    fake.clearObservations();
+    const absent = await handler(fake).fetch(
+      v2Request(await recoverBody(
+        prepared,
+        'governance-v2-comment-delete-absent',
+        prepared.controlRevision,
+        'copilot-gate:blocking-comment',
+      )),
+      env,
+    );
+    expect((await parseStewardRuntimeControlRecoveryReceiptV2(
+      await absent.json(),
+    )).result).toEqual({ state: 'converged', resourceId: 900 });
+    expect(fake.records).toContainEqual(expect.objectContaining({
+      method: 'GET',
+      pathname: '/repos/splrad/steward/issues/comments/900',
+    }));
+
+    fake.issueCommentReadFailureStatus = 403;
+    fake.clearObservations();
+    const unreadable = await handler(fake).fetch(
+      v2Request(await recoverBody(
+        prepared,
+        'governance-v2-comment-delete-read-failure',
+        prepared.controlRevision,
+        'copilot-gate:blocking-comment',
+      )),
+      env,
+    );
+    expect((await parseStewardRuntimeControlRecoveryReceiptV2(
+      await unreadable.json(),
+    )).result).toEqual({ state: 'unknown', resourceId: null });
+    expect(fake.repositoryMutationRecords()).toEqual([]);
+    expect(fake.copilotReviewToken).not.toHaveBeenCalled();
+  });
+
+  it('applies a single Gate request after the Gate Check has converged', async () => {
+    const fake = new FakeGitHub();
+    const initial = await prepare(fake);
+    const checkResponse = await handler(fake).fetch(
+      v2Request(await applyBody(
+        initial,
+        initial.controlRevision,
+        'copilot-gate:check',
+      )),
+      env,
+    );
+    expect((await parseStewardRuntimeControlMutationReceiptV2(
+      await checkResponse.json(),
+    )).result.state).toBe('applied');
+
+    const prepared = await prepare(fake);
+    const plan = await parseCanonicalControlPlanJson(
+      Buffer.from(
+        prepared.plan.canonicalPlanBase64,
+        'base64',
+      ).toString('utf8'),
+    );
+    expect(plan.mutations).toEqual([
+      expect.objectContaining({
+        type: 'copilot-review.request',
+        evidenceProtocol: 'copilot-gate-v1',
+      }),
+    ]);
     fake.clearObservations();
 
     const response = await handler(fake).fetch(
@@ -528,6 +1470,25 @@ describe('Control runtime v2 Governance minimum slice', () => {
     );
     expect(receipt.result.state).toBe('applied');
     expect(fake.copilotReviewToken).toHaveBeenCalledTimes(1);
+    expect(fake.records.filter((record) => (
+      record.pathname
+        === `/app/installations/${installationId}/access_tokens`
+    )).at(-1)?.body).toBe(JSON.stringify({
+      repository_ids: [repositoryId],
+      permissions: {
+        members: 'read',
+        metadata: 'read',
+        pull_requests: 'read',
+      },
+    }));
+    expect(fake.records).not.toContainEqual(expect.objectContaining({
+      method: 'GET',
+      pathname: `/repos/splrad/steward/commits/${headSha}/check-runs`,
+    }));
+    expect(fake.records).not.toContainEqual(expect.objectContaining({
+      method: 'GET',
+      pathname: `/repos/splrad/steward/issues/${pullRequestNumber}/comments`,
+    }));
 
     const humanRequests = fake.records.filter(
       (record) => record.authorization === `Bearer ${humanToken}`,
@@ -611,6 +1572,51 @@ describe('Control runtime v2 Governance minimum slice', () => {
     expect(fake.fetch).not.toHaveBeenCalled();
     expect(fake.appToken).not.toHaveBeenCalled();
     expect(fake.copilotReviewToken).not.toHaveBeenCalled();
+  });
+
+  it('rejects apply and recovery mutation ordinal, key, or type drift before network access', async () => {
+    const fake = new FakeGitHub();
+    const prepared = await prepare(fake);
+    const validBodies = {
+      apply: await applyBody(
+        prepared,
+        prepared.controlRevision,
+        'copilot-gate:check',
+      ),
+      recover: await recoverBody(
+        prepared,
+        'governance-v2-recover-binding-drift',
+        prepared.controlRevision,
+        'copilot-gate:check',
+      ),
+    };
+
+    for (const [phase, body] of Object.entries(validBodies)) {
+      for (const drift of ['ordinal', 'key', 'mutationType'] as const) {
+        const payload = JSON.parse(body) as {
+          mutation: {
+            ordinal: number;
+            key: string;
+            mutationType: string;
+          };
+        };
+        if (drift === 'ordinal') payload.mutation.ordinal += 1;
+        if (drift === 'key') payload.mutation.key = 'copilot-review:request';
+        if (drift === 'mutationType') {
+          payload.mutation.mutationType = 'copilot-review.request';
+        }
+        fake.clearObservations();
+        const response = await handler(fake).fetch(
+          v2Request(JSON.stringify(payload)),
+          env,
+        );
+        expect(response.status, `${phase}:${drift}`).toBe(400);
+        expect(fake.fetch, `${phase}:${drift}`).not.toHaveBeenCalled();
+        expect(fake.appToken, `${phase}:${drift}`).not.toHaveBeenCalled();
+        expect(fake.copilotReviewToken, `${phase}:${drift}`)
+          .not.toHaveBeenCalled();
+      }
+    }
   });
 
   it('records an uncertain reviewer POST as unknown instead of replayable failure', async () => {

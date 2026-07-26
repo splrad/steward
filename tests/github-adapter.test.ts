@@ -8,6 +8,8 @@ import {
   GitHubTransportError,
   createGitHubRestTransport,
   defaultGitHubRestApiVersion,
+  type GitHubCheckRun,
+  type GitHubIssueComment,
   type GitHubRequest,
   type GitHubTransport,
 } from '../packages/github/src/index.js';
@@ -386,6 +388,73 @@ describe('GitHub repository adapter', () => {
       .every((request) => request.query?.filter === 'all')).toBe(true);
     await expect(client.listPullRequestsForCommit('splrad', 'steward', 'not-a-sha'))
       .rejects.toThrow('40 hexadecimal characters');
+  });
+
+  it('reads Check runs and issue comments by exact resource ID', async () => {
+    const { transport, requests } = mockTransport((request) => (
+      request.path.endsWith('/check-runs/41')
+        ? {
+          id: 41,
+          head_sha: 'a'.repeat(40),
+          name: 'Copilot Code Review Gate',
+          status: 'completed',
+          conclusion: 'success',
+        }
+        : {
+          id: 17,
+          body: '## 🚧 PR 合并前有待处理事项',
+          user: { id: 99, login: 'splrad-steward[bot]', type: 'Bot' },
+          performed_via_github_app: { id: 4243096, slug: 'splrad-steward' },
+        }
+    ));
+    const client = new GitHubRepositoryClient(transport);
+
+    const checkRun: GitHubCheckRun | null = await client.getCheckRun('splrad', 'steward', 41);
+    const comment: GitHubIssueComment | null = await client.getIssueComment('splrad', 'steward', 17);
+
+    expect(checkRun).toMatchObject({ id: 41, name: 'Copilot Code Review Gate' });
+    expect(comment).toMatchObject({ id: 17, performed_via_github_app: { id: 4243096 } });
+    expect(requests).toEqual([
+      { path: '/repos/splrad/steward/check-runs/41' },
+      { path: '/repos/splrad/steward/issues/comments/17' },
+    ]);
+  });
+
+  it('returns null only for explicit 404 resource reads and preserves every other failure', async () => {
+    const notFound = new GitHubApiError({
+      status: 404,
+      method: 'GET',
+      path: '/missing',
+      message: 'Not Found',
+    });
+    const missing = new GitHubRepositoryClient(mockTransport(() => { throw notFound; }).transport);
+    await expect(missing.getCheckRun('splrad', 'steward', 41)).resolves.toBeNull();
+    await expect(missing.getIssueComment('splrad', 'steward', 17)).resolves.toBeNull();
+
+    const forbidden = new GitHubApiError({
+      status: 403,
+      method: 'GET',
+      path: '/forbidden',
+      message: 'Resource not accessible by integration',
+    });
+    const denied = new GitHubRepositoryClient(mockTransport(() => { throw forbidden; }).transport);
+    await expect(denied.getCheckRun('splrad', 'steward', 41)).rejects.toBe(forbidden);
+    await expect(denied.getIssueComment('splrad', 'steward', 17)).rejects.toBe(forbidden);
+
+    const transportFailure = new GitHubTransportError({
+      method: 'GET',
+      path: '/uncertain',
+      reason: 'network',
+      retryable: true,
+    });
+    const uncertain = new GitHubRepositoryClient(mockTransport(() => { throw transportFailure; }).transport);
+    await expect(uncertain.getCheckRun('splrad', 'steward', 41)).rejects.toBe(transportFailure);
+    await expect(uncertain.getIssueComment('splrad', 'steward', 17)).rejects.toBe(transportFailure);
+
+    const untyped404 = { status: 404 };
+    const impostor = new GitHubRepositoryClient(mockTransport(() => { throw untyped404; }).transport);
+    await expect(impostor.getCheckRun('splrad', 'steward', 41)).rejects.toBe(untyped404);
+    await expect(impostor.getIssueComment('splrad', 'steward', 17)).rejects.toBe(untyped404);
   });
 
   it('paginates review threads and fails closed on GraphQL errors', async () => {

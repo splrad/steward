@@ -31,13 +31,16 @@ import {
   ControlPullRequestHeadMismatchError,
   ControlPullRequestStateMismatchError,
   controlJsonDigest,
+  inspectGovernanceCopilotGateMutation,
   inspectGovernanceCopilotReviewMutation,
   inspectGovernanceCopilotReviewRecovery,
   parseCanonicalControlPlanJson,
-  planGovernanceCopilotReview,
+  planGovernanceCopilotGate,
+  recoverGovernanceCopilotGateMutation,
   resolvePullRequestControlContext,
   type ControlPlan,
   type ControlRuntimeIdentity,
+  type GovernanceCopilotGateFacts,
 } from '../../control/src/index.js';
 import {
   GITHUB_CLOUD_REST_API_VERSION,
@@ -397,6 +400,72 @@ interface GovernanceRepositoryAccess {
   readonly client: GitHubRepositoryClient;
   readonly identity: ControlRuntimeIdentity;
   readonly repositoryFullName: string;
+  readonly appToken: string;
+  readonly installationId: number;
+  readonly repositoryId: number;
+}
+
+type GitHubInstallationPermissionLevel = 'read' | 'write';
+type GitHubInstallationPermissions = Readonly<
+  Record<string, GitHubInstallationPermissionLevel>
+>;
+
+const governanceContextReadPermissions = {
+  contents: 'read',
+  metadata: 'read',
+  pull_requests: 'read',
+} as const satisfies GitHubInstallationPermissions;
+
+type GovernanceGateResources = 'both' | 'check' | 'comment' | 'none';
+
+function governanceGatePermissions(
+  resources: GovernanceGateResources,
+  mutationType?: ControlPlan['mutations'][number]['type'],
+  needsMembers = false,
+): GitHubInstallationPermissions {
+  return {
+    ...(resources === 'both' || resources === 'check'
+      ? {
+          checks: mutationType === 'copilot-gate-check.upsert'
+            ? 'write' as const
+            : 'read' as const,
+        }
+      : {}),
+    ...(resources === 'both' || resources === 'comment'
+      ? {
+          issues:
+            mutationType === 'blocking-comment.upsert'
+              || mutationType === 'blocking-comment.delete'
+              ? 'write' as const
+              : 'read' as const,
+        }
+      : {}),
+    ...(needsMembers ? { members: 'read' as const } : {}),
+    metadata: 'read',
+    pull_requests: 'read',
+  };
+}
+
+function governanceGateRecoveryPermissions(
+  mutationType: CopilotGateCheckMutation['type'] | BlockingCommentMutation['type'],
+): GitHubInstallationPermissions {
+  return mutationType === 'copilot-gate-check.upsert'
+    ? { checks: 'read', metadata: 'read' }
+    : { issues: 'read', metadata: 'read' };
+}
+
+const disabledGovernanceGatePermissions = {
+  checks: 'read',
+  issues: 'read',
+  metadata: 'read',
+} as const satisfies GitHubInstallationPermissions;
+
+function disabledGovernanceGateMutationPermissions(
+  mutationType: CopilotGateCheckMutation['type'] | BlockingCommentMutation['type'],
+): GitHubInstallationPermissions {
+  return mutationType === 'copilot-gate-check.upsert'
+    ? { checks: 'write', metadata: 'read' }
+    : { issues: 'write', metadata: 'read' };
 }
 
 interface CopilotReviewRequestPort {
@@ -486,6 +555,8 @@ async function resolveGovernanceRepositoryAccess(
     | StewardRuntimeControlApplyNextRequestV2
     | StewardRuntimeControlRecoverRequestV2,
   dependencies: ControlRuntimeDependencies,
+  requestedPermissions: GitHubInstallationPermissions =
+    governanceContextReadPermissions,
   parentSignal?: AbortSignal,
 ): Promise<GovernanceRepositoryAccess> {
   const organization = expectedOrganization(env);
@@ -552,11 +623,7 @@ async function resolveGovernanceRepositoryAccess(
     appToken,
     expectedInstallationId,
     subject.repositoryId,
-    {
-      contents: 'read',
-      metadata: 'read',
-      pull_requests: 'read',
-    },
+    requestedPermissions,
     parentSignal,
   );
   const repository = plainRecord(await githubJson(
@@ -583,12 +650,36 @@ async function resolveGovernanceRepositoryAccess(
   return {
     identity,
     repositoryFullName,
+    appToken,
+    installationId: expectedInstallationId,
+    repositoryId: subject.repositoryId,
     client: new GitHubRepositoryClient(createGitHubRestTransport({
       token: installationToken,
       fetch: boundedGitHubRestFetch(dependencies, parentSignal),
       userAgent: 'splrad-steward-control',
     })),
   };
+}
+
+async function governanceRepositoryClient(
+  access: GovernanceRepositoryAccess,
+  dependencies: ControlRuntimeDependencies,
+  requestedPermissions: GitHubInstallationPermissions,
+  parentSignal?: AbortSignal,
+): Promise<GitHubRepositoryClient> {
+  const installationToken = await createRepositoryInstallationToken(
+    dependencies,
+    access.appToken,
+    access.installationId,
+    access.repositoryId,
+    requestedPermissions,
+    parentSignal,
+  );
+  return new GitHubRepositoryClient(createGitHubRestTransport({
+    token: installationToken,
+    fetch: boundedGitHubRestFetch(dependencies, parentSignal),
+    userAgent: 'splrad-steward-control',
+  }));
 }
 
 export async function verifyDiagnosticsRepositoryScope(
@@ -804,9 +895,178 @@ function controlRoute(
   };
 }
 
+async function readGovernanceGateFacts(
+  context: Awaited<ReturnType<typeof resolvePullRequestControlContext>>,
+  client: GitHubRepositoryClient,
+  resources: GovernanceGateResources,
+) {
+  const owner = context.subject.repository.owner;
+  const repository = context.subject.repository.name;
+  const pullRequestNumber = context.subject.pullRequest.number;
+  const headSha = context.subject.pullRequest.headSha;
+  const appBotLogin = `${context.subject.platform.appSlug}[bot]`;
+  const maintainerConfiguration =
+    context.manifest.manifest.automation.maintainers;
+  const coreHandlersPromise = maintainerConfiguration.source
+    === 'organization-team'
+    ? client.listTeamMembers(owner, maintainerConfiguration.teamSlug)
+    : Promise.resolve(
+        maintainerConfiguration.logins.map((login) => ({ login })),
+      );
+  const [
+    actor,
+    reviews,
+    threads,
+    checks,
+    comments,
+    commits,
+    files,
+    coreHandlers,
+  ] = await Promise.all([
+    client.getUser(appBotLogin),
+    client.listPullRequestReviews(owner, repository, pullRequestNumber),
+    client.listReviewThreads(owner, repository, pullRequestNumber),
+    resources === 'both' || resources === 'check'
+      ? client.listCommitCheckRuns(owner, repository, headSha)
+      : Promise.resolve([]),
+    resources === 'both' || resources === 'comment'
+      ? client.listIssueComments(owner, repository, pullRequestNumber)
+      : Promise.resolve([]),
+    client.listPullRequestCommits(owner, repository, pullRequestNumber),
+    client.listPullRequestFiles(owner, repository, pullRequestNumber),
+    coreHandlersPromise,
+  ]);
+  return {
+    actor,
+    reviews,
+    threads,
+    checks,
+    comments,
+    commits,
+    files,
+    coreHandlers: coreHandlers.map((member) => member.login),
+  };
+}
+
+async function readGovernanceGateRecoveryFacts(
+  plan: ControlPlan,
+  mutation: CopilotGateCheckMutation | BlockingCommentMutation,
+  client: GitHubRepositoryClient,
+) {
+  const owner = plan.subject.repository.owner;
+  const repository = plan.subject.repository.name;
+  const pullRequestNumber = plan.subject.pullRequest.number;
+  const actorPromise = client.getUser(
+    `${plan.subject.platform.appSlug}[bot]`,
+  );
+  const checksPromise = mutation.type === 'copilot-gate-check.upsert'
+    ? client.listCommitCheckRuns(
+        owner,
+        repository,
+        plan.subject.pullRequest.headSha,
+      )
+    : Promise.resolve([]);
+  const commentsPromise = mutation.type === 'copilot-gate-check.upsert'
+    ? Promise.resolve([])
+    : client.listIssueComments(owner, repository, pullRequestNumber);
+  const [actor, checks, comments] = await Promise.all([
+    actorPromise,
+    checksPromise,
+    commentsPromise,
+  ]);
+  return { actor, checks, comments };
+}
+
+async function readDisabledGovernanceGateFacts(
+  context: Awaited<ReturnType<typeof resolvePullRequestControlContext>>,
+  client: GitHubRepositoryClient,
+) {
+  const owner = context.subject.repository.owner;
+  const repository = context.subject.repository.name;
+  const pullRequestNumber = context.subject.pullRequest.number;
+  const [actor, checks, comments] = await Promise.all([
+    client.getUser(`${context.subject.platform.appSlug}[bot]`),
+    client.listCommitCheckRuns(
+      owner,
+      repository,
+      context.subject.pullRequest.headSha,
+    ),
+    client.listIssueComments(owner, repository, pullRequestNumber),
+  ]);
+  return {
+    actor,
+    checks,
+    comments,
+    commits: [],
+    files: [],
+    reviews: [],
+    threads: [],
+    coreHandlers: [],
+  };
+}
+
+async function readDisabledGovernanceGateMutationFacts(
+  context: Awaited<ReturnType<typeof resolvePullRequestControlContext>>,
+  mutation: CopilotGateCheckMutation | BlockingCommentMutation,
+  client: GitHubRepositoryClient,
+) {
+  const owner = context.subject.repository.owner;
+  const repository = context.subject.repository.name;
+  const pullRequestNumber = context.subject.pullRequest.number;
+  const [actor, checks, comments] = await Promise.all([
+    client.getUser(`${context.subject.platform.appSlug}[bot]`),
+    mutation.type === 'copilot-gate-check.upsert'
+      ? client.listCommitCheckRuns(
+          owner,
+          repository,
+          context.subject.pullRequest.headSha,
+        )
+      : Promise.resolve([]),
+    mutation.type === 'copilot-gate-check.upsert'
+      ? Promise.resolve([])
+      : client.listIssueComments(owner, repository, pullRequestNumber),
+  ]);
+  return {
+    actor,
+    checks,
+    comments,
+    commits: [],
+    files: [],
+    reviews: [],
+    threads: [],
+    coreHandlers: [],
+  };
+}
+
+function governanceFactsNeedMembers(
+  context: Awaited<ReturnType<typeof resolvePullRequestControlContext>>,
+): boolean {
+  return context.manifest.manifest.automation.maintainers.source
+    === 'organization-team';
+}
+
 function boundedRetryAfter(value: number | undefined, fallback: number): number {
   if (!Number.isSafeInteger(value) || Number(value) < 0) return fallback;
   return Math.min(900, Number(value));
+}
+
+function repositoryScopeRetryAfter(error: unknown, fallback: number): number {
+  if (!(error instanceof RepositoryScopeError)
+    || error.kind !== 'rate-limited'
+    || !/^(?:0|[1-9]\d*)$/.test(error.retryAfter ?? '')) {
+    return fallback;
+  }
+  return boundedRetryAfter(Number(error.retryAfter), fallback);
+}
+
+function githubRateLimitRetryAfter(error: unknown): number | null {
+  if (error instanceof RepositoryScopeError && error.kind === 'rate-limited') {
+    return repositoryScopeRetryAfter(error, 30);
+  }
+  if (error instanceof GitHubApiError && error.rateLimited) {
+    return boundedRetryAfter(error.retryAfterSeconds, 30);
+  }
+  return null;
 }
 
 function validHumanCopilotToken(value: string): boolean {
@@ -840,6 +1100,173 @@ function createCopilotReviewRequestPort(
   };
 }
 
+type CopilotGateCheckMutation = Extract<
+  ControlPlan['mutations'][number],
+  { type: 'copilot-gate-check.upsert' }
+>;
+type BlockingCommentMutation = Extract<
+  ControlPlan['mutations'][number],
+  { type: 'blocking-comment.upsert' | 'blocking-comment.delete' }
+>;
+
+function desiredCheckResponseMatches(
+  check: Awaited<ReturnType<GitHubRepositoryClient['createCheckRun']>>,
+  mutation: CopilotGateCheckMutation,
+  plan: ControlPlan,
+): boolean {
+  const input = mutation.input;
+  return Number.isSafeInteger(check.id)
+    && check.id > 0
+    && (mutation.mode !== 'update' || check.id === mutation.checkRunId)
+    && check.head_sha.toLowerCase() === plan.subject.pullRequest.headSha
+    && check.name === input.name
+    && check.status === input.status
+    && (check.conclusion ?? null) === (input.conclusion ?? null)
+    && (check.external_id ?? null) === (input.externalId ?? null)
+    && check.app?.id === plan.subject.platform.appId
+    && String(check.app?.slug ?? '').toLowerCase()
+      === plan.subject.platform.appSlug
+    && (check.details_url ?? '') === (input.detailsUrl ?? '')
+    && check.output?.title === input.title
+    && check.output?.summary === input.summary;
+}
+
+function desiredCommentResponseMatches(
+  comment: Awaited<ReturnType<GitHubRepositoryClient['createIssueComment']>>,
+  mutation: Extract<BlockingCommentMutation, {
+    type: 'blocking-comment.upsert';
+  }>,
+  plan: ControlPlan,
+): boolean {
+  return Number.isSafeInteger(comment.id)
+    && comment.id > 0
+    && (mutation.mode !== 'update' || comment.id === mutation.commentId)
+    && comment.body === mutation.body
+    && mutation.body.includes(mutation.resourceMarker)
+    && comment.user?.id === mutation.actorId
+    && String(comment.user?.login ?? '').toLowerCase()
+      === mutation.actorLogin.toLowerCase()
+    && String(comment.user?.type ?? '').toLowerCase() === 'bot'
+    && comment.performed_via_github_app?.id === plan.subject.platform.appId
+    && String(comment.performed_via_github_app?.slug ?? '').toLowerCase()
+      === plan.subject.platform.appSlug;
+}
+
+function mutationRateLimitResult(
+  error: unknown,
+): StewardRuntimeControlMutationResultV2 | null {
+  return error instanceof GitHubApiError && error.rateLimited
+    ? {
+        state: 'not-attempted',
+        resourceId: null,
+        retryAfterSeconds: boundedRetryAfter(error.retryAfterSeconds, 30),
+      }
+    : null;
+}
+
+async function applyCopilotGateInstallationMutation(
+  mutation: CopilotGateCheckMutation | BlockingCommentMutation,
+  plan: ControlPlan,
+  context: Awaited<ReturnType<typeof resolvePullRequestControlContext>>,
+  client: GitHubRepositoryClient,
+): Promise<StewardRuntimeControlMutationResultV2> {
+  const owner = context.subject.repository.owner;
+  const repository = context.subject.repository.name;
+  const pullRequestNumber = context.subject.pullRequest.number;
+  try {
+    if (mutation.type === 'copilot-gate-check.upsert') {
+      const written = mutation.mode === 'create'
+        ? await client.createCheckRun(owner, repository, mutation.input)
+        : await client.updateCheckRun(
+            owner,
+            repository,
+            mutation.checkRunId,
+            mutation.input,
+          );
+      if (!desiredCheckResponseMatches(written, mutation, plan)) {
+        return {
+          state: 'unknown',
+          resourceId: null,
+          retryAfterSeconds: null,
+        };
+      }
+      return {
+        state: 'applied',
+        resourceId: written.id,
+        retryAfterSeconds: null,
+      };
+    }
+
+    if (mutation.type === 'blocking-comment.upsert') {
+      const written = mutation.mode === 'create'
+        ? await client.createIssueComment(
+            owner,
+            repository,
+            pullRequestNumber,
+            mutation.body,
+          )
+        : await client.updateIssueComment(
+            owner,
+            repository,
+            mutation.commentId,
+            mutation.body,
+          );
+      if (!desiredCommentResponseMatches(written, mutation, plan)) {
+        return {
+          state: 'unknown',
+          resourceId: null,
+          retryAfterSeconds: null,
+        };
+      }
+      return {
+        state: 'applied',
+        resourceId: written.id,
+        retryAfterSeconds: null,
+      };
+    }
+
+    let deleteState: 'applied' | 'converged' = 'applied';
+    try {
+      await client.deleteIssueComment(owner, repository, mutation.commentId);
+    } catch (error) {
+      if (!(error instanceof GitHubApiError) || error.status !== 404) throw error;
+      deleteState = 'converged';
+    }
+    let remaining;
+    try {
+      remaining = await client.getIssueComment(
+        owner,
+        repository,
+        mutation.commentId,
+      );
+    } catch {
+      return {
+        state: 'unknown',
+        resourceId: null,
+        retryAfterSeconds: null,
+      };
+    }
+    if (remaining !== null) {
+      return {
+        state: 'unknown',
+        resourceId: null,
+        retryAfterSeconds: null,
+      };
+    }
+    return {
+      state: deleteState,
+      resourceId: mutation.commentId,
+      retryAfterSeconds: null,
+    };
+  } catch (error) {
+    return mutationRateLimitResult(error) ?? {
+      state: 'unknown',
+      resourceId: null,
+      retryAfterSeconds: null,
+    };
+  }
+}
+
 async function prepareGovernanceV2(
   request: StewardRuntimeControlPrepareRequestV2,
   env: ControlRuntimeEnv,
@@ -858,6 +1285,7 @@ async function prepareGovernanceV2(
       env,
       request,
       dependencies,
+      governanceContextReadPermissions,
       parentSignal,
     );
   } catch (error) {
@@ -879,14 +1307,31 @@ async function prepareGovernanceV2(
       access.identity,
       access.client,
     );
-    const reviews = context.manifest.manifest.features.copilotReview
-      ? await access.client.listPullRequestReviews(
-          context.subject.repository.owner,
-          context.subject.repository.name,
-          context.subject.pullRequest.number,
+    const facts = context.manifest.manifest.features.copilotReview
+      ? await readGovernanceGateFacts(
+          context,
+          await governanceRepositoryClient(
+            access,
+            dependencies,
+            governanceGatePermissions(
+              'both',
+              undefined,
+              governanceFactsNeedMembers(context),
+            ),
+            parentSignal,
+          ),
+          'both',
         )
-      : [];
-    const decision = await planGovernanceCopilotReview(context, reviews);
+      : await readDisabledGovernanceGateFacts(
+          context,
+          await governanceRepositoryClient(
+            access,
+            dependencies,
+            disabledGovernanceGatePermissions,
+            parentSignal,
+          ),
+        );
+    const decision = await planGovernanceCopilotGate(context, facts);
     const receipt = await buildStewardRuntimeControlPreparedReceiptV2({
       binding: request.binding,
       resolvedContext: runtimeResolvedContext(decision.plan),
@@ -896,7 +1341,13 @@ async function prepareGovernanceV2(
     return canonicalV2Response(
       await canonicalStewardRuntimeControlPreparedReceiptV2Json(receipt),
     );
-  } catch {
+  } catch (error) {
+    const retryAfter = githubRateLimitRetryAfter(error);
+    if (retryAfter !== null) {
+      const response = jsonResponse(429, { error: 'github-rate-limited' });
+      response.headers.set('retry-after', String(retryAfter));
+      return response;
+    }
     return jsonResponse(503, { error: 'governance-prepare-unavailable' });
   }
 }
@@ -943,18 +1394,27 @@ async function applyGovernanceV2(
       env,
       request,
       dependencies,
+      governanceContextReadPermissions,
       parentSignal,
     );
-  } catch {
+  } catch (error) {
     return await mutationResponseV2(request, revision, {
       state: 'not-attempted',
       resourceId: null,
-      retryAfterSeconds: 30,
+      retryAfterSeconds: repositoryScopeRetryAfter(error, 30),
     });
   }
 
-  let context;
-  let reviews;
+  const mutation = plan.mutations[request.mutation.ordinal];
+  if (
+    mutation === undefined
+    || mutation.key !== request.mutation.key
+    || mutation.type !== request.mutation.mutationType
+  ) {
+    return jsonResponse(400, { error: 'invalid-control-request' });
+  }
+
+  let context: Awaited<ReturnType<typeof resolvePullRequestControlContext>>;
   try {
     context = await resolvePullRequestControlContext(
       controlRoute(
@@ -964,11 +1424,6 @@ async function applyGovernanceV2(
       ),
       access.identity,
       access.client,
-    );
-    reviews = await access.client.listPullRequestReviews(
-      context.subject.repository.owner,
-      context.subject.repository.name,
-      context.subject.pullRequest.number,
     );
   } catch (error) {
     if (
@@ -984,20 +1439,133 @@ async function applyGovernanceV2(
     return await mutationResponseV2(request, revision, {
       state: 'not-attempted',
       resourceId: null,
-      retryAfterSeconds: 30,
+      retryAfterSeconds: githubRateLimitRetryAfter(error) ?? 30,
     });
   }
 
-  const inspection = await inspectGovernanceCopilotReviewMutation(
-    plan,
-    context,
-    reviews,
-  );
-  if (inspection.state !== 'ready') {
+  if (
+    mutation.type === 'copilot-gate-check.upsert'
+    || mutation.type === 'blocking-comment.upsert'
+    || mutation.type === 'blocking-comment.delete'
+  ) {
+    let mutationClient: GitHubRepositoryClient;
+    let inspection: Awaited<
+      ReturnType<typeof inspectGovernanceCopilotGateMutation>
+    >;
+    try {
+      const featureEnabled =
+        context.manifest.manifest.features.copilotReview;
+      mutationClient = await governanceRepositoryClient(
+        access,
+        dependencies,
+        featureEnabled
+          ? governanceGatePermissions(
+              mutation.type === 'copilot-gate-check.upsert'
+                ? 'check'
+                : 'comment',
+              mutation.type,
+              governanceFactsNeedMembers(context),
+            )
+          : disabledGovernanceGateMutationPermissions(mutation.type),
+        parentSignal,
+      );
+      const facts: GovernanceCopilotGateFacts = featureEnabled
+        ? await readGovernanceGateFacts(
+            context,
+            mutationClient,
+            mutation.type === 'copilot-gate-check.upsert'
+              ? 'check'
+              : 'comment',
+          )
+        : await readDisabledGovernanceGateMutationFacts(
+            context,
+            mutation,
+            mutationClient,
+          );
+      if (mutation.type === 'blocking-comment.delete') {
+        facts.targetComment = await mutationClient.getIssueComment(
+          context.subject.repository.owner,
+          context.subject.repository.name,
+          mutation.commentId,
+        );
+      }
+      inspection = await inspectGovernanceCopilotGateMutation(
+        plan,
+        mutation.key,
+        context,
+        facts,
+      );
+    } catch (error) {
+      return await mutationResponseV2(request, revision, {
+        state: 'not-attempted',
+        resourceId: null,
+        retryAfterSeconds: githubRateLimitRetryAfter(error) ?? 30,
+      });
+    }
+    if (inspection.state !== 'ready') {
+      return await mutationResponseV2(request, revision, {
+        state: inspection.state,
+        resourceId: inspection.state === 'converged'
+          ? inspection.resourceId ?? null
+          : null,
+        retryAfterSeconds: null,
+      });
+    }
+    const result = await applyCopilotGateInstallationMutation(
+      mutation,
+      plan,
+      context,
+      mutationClient,
+    );
+    return await mutationResponseV2(request, revision, result);
+  }
+
+  if (mutation.type !== 'copilot-review.request') {
+    return jsonResponse(400, { error: 'invalid-control-request' });
+  }
+
+  try {
+    const inspection = mutation.evidenceProtocol === 'review-request-v1'
+      ? await inspectGovernanceCopilotReviewMutation(
+          plan,
+          context,
+          await access.client.listPullRequestReviews(
+            context.subject.repository.owner,
+            context.subject.repository.name,
+            context.subject.pullRequest.number,
+          ),
+        )
+      : await inspectGovernanceCopilotGateMutation(
+          plan,
+          mutation.key,
+          context,
+          await readGovernanceGateFacts(
+            context,
+            await governanceRepositoryClient(
+              access,
+              dependencies,
+              governanceGatePermissions(
+                'none',
+                undefined,
+                governanceFactsNeedMembers(context),
+              ),
+              parentSignal,
+            ),
+            'none',
+          ),
+        );
+    if (inspection.state !== 'ready') {
+      return await mutationResponseV2(request, revision, {
+        state: inspection.state,
+        resourceId: null,
+        retryAfterSeconds: null,
+      });
+    }
+  } catch (error) {
     return await mutationResponseV2(request, revision, {
-      state: inspection.state,
+      state: 'not-attempted',
       resourceId: null,
-      retryAfterSeconds: null,
+      retryAfterSeconds: githubRateLimitRetryAfter(error) ?? 30,
     });
   }
 
@@ -1086,6 +1654,7 @@ async function recoverGovernanceV2(
       env,
       request,
       dependencies,
+      governanceContextReadPermissions,
       parentSignal,
     );
   } catch {
@@ -1093,6 +1662,71 @@ async function recoverGovernanceV2(
       state: 'unknown',
       resourceId: null,
     });
+  }
+
+  const mutation = plan.mutations[request.mutation.ordinal];
+  if (
+    mutation === undefined
+    || mutation.key !== request.mutation.key
+    || mutation.type !== request.mutation.mutationType
+  ) {
+    return jsonResponse(400, { error: 'invalid-control-request' });
+  }
+
+  if (
+    mutation.type === 'copilot-gate-check.upsert'
+    || mutation.type === 'blocking-comment.upsert'
+    || mutation.type === 'blocking-comment.delete'
+  ) {
+    try {
+      const recoveryClient = await governanceRepositoryClient(
+        access,
+        dependencies,
+        governanceGateRecoveryPermissions(mutation.type),
+        parentSignal,
+      );
+      if (mutation.type === 'blocking-comment.delete') {
+        const comment = await recoveryClient.getIssueComment(
+          plan.subject.repository.owner,
+          plan.subject.repository.name,
+          mutation.commentId,
+        );
+        return await recoveryResponseV2(request, revision, comment === null
+          ? {
+              state: 'converged',
+              resourceId: mutation.commentId,
+            }
+          : {
+              state: 'unknown',
+              resourceId: null,
+            });
+      }
+      const facts = await readGovernanceGateRecoveryFacts(
+        plan,
+        mutation,
+        recoveryClient,
+      );
+      const inspection = await recoverGovernanceCopilotGateMutation(
+        plan,
+        mutation.key,
+        facts,
+      );
+      return await recoveryResponseV2(request, revision, {
+        state: inspection.state,
+        resourceId: inspection.state === 'converged'
+          ? inspection.resourceId ?? null
+          : null,
+      });
+    } catch {
+      return await recoveryResponseV2(request, revision, {
+        state: 'unknown',
+        resourceId: null,
+      });
+    }
+  }
+
+  if (mutation.type !== 'copilot-review.request') {
+    return jsonResponse(400, { error: 'invalid-control-request' });
   }
   try {
     const { owner, repository } = splitRepositoryFullName(

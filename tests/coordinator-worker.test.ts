@@ -156,6 +156,7 @@ async function preparedV2(
     type: 'copilot-review.request',
     key: 'copilot-review:request',
     principal: 'human',
+    evidenceProtocol: 'review-request-v1',
     observedEvidenceDigest: 'f'.repeat(64),
   } as const;
   const mutation: StewardRuntimeControlMutationBindingV2 | undefined =

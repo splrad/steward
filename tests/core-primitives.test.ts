@@ -11,6 +11,8 @@ import {
   normalizeBlockingFailure,
   normalizeGitHubLogin,
   orderedBlockingFailures,
+  blockingStateMaximumCanonicalBytes,
+  writeBlockingState,
   realContributorLoginsFromBody,
   uniqueHumanLogins,
 } from '../packages/core/src/index.js';
@@ -134,6 +136,74 @@ describe('blocking comment state', () => {
     const legacy = encoded.replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
     expect(decodeBlockingState(`<!-- workflow:pr-blocking-failures-state:${legacy} -->`)).toEqual(state);
     expect(decodeBlockingState('<!-- workflow:pr-blocking-failures-state:_w -->')).toBeNull();
+  });
+
+  it('writes one strict versioned state with deterministic ordering', () => {
+    const head = 'C'.repeat(40);
+    const first = writeBlockingState({
+      head,
+      failures: [
+        {
+          source: 'copilot-review:comment-protocol',
+          title: ' Protocol ',
+          handlers: ['Reviewer', 'core'],
+          details: ['z', 'a'],
+        },
+        {
+          source: 'main-authorization',
+          title: 'Approval',
+          handlers: ['core'],
+          details: [],
+        },
+      ],
+    });
+    const second = writeBlockingState({
+      head: head.toLowerCase(),
+      failures: [
+        {
+          source: 'main-authorization',
+          title: 'Approval',
+          handlers: ['core'],
+          details: [],
+        },
+        {
+          source: 'copilot-review:comment-protocol',
+          title: 'Protocol',
+          handlers: ['Reviewer', 'core'],
+          details: ['a', 'z'],
+        },
+      ],
+    });
+    expect(second).toBe(first);
+    expect(first).toMatch(/^<!-- workflow:pr-blocking-failures-state:v1:[A-Za-z0-9+/]+={0,2} -->$/);
+    expect(decodeBlockingState(first)).toEqual({
+      head: head.toLowerCase(),
+      failures: [
+        {
+          source: 'main-authorization',
+          title: 'Approval',
+          handlers: ['core'],
+          details: [],
+        },
+        {
+          source: 'copilot-review:comment-protocol',
+          title: 'Protocol',
+          handlers: ['Reviewer', 'core'],
+          details: ['a', 'z'],
+        },
+      ],
+    });
+  });
+
+  it('rejects malformed or oversized current writer state', () => {
+    expect(() => writeBlockingState({
+      head: 'not-a-head',
+      failures: [],
+    })).toThrow(/valid head SHA/);
+    expect(() => writeBlockingState({
+      head: 'a'.repeat(40),
+      failures: [{ source: 'main-authorization', title: 'x'.repeat(blockingStateMaximumCanonicalBytes) }],
+    })).toThrow(/byte limit/);
   });
 
   it('decodes the legacy hidden-state shape without requiring handlers', () => {
