@@ -252,18 +252,77 @@ export function stewardCheckExternalId(input: MatrixIdentityInput): string {
   ].join(':');
 }
 
+/**
+ * Compact Check identity for new Control-plane resources.
+ *
+ * V1 remains readable for deployed thin-entry workflows. V2 keeps the full
+ * SHA-256 bindings while encoding numeric IDs in base36 so the identity stays
+ * below GitHub's conservative 255-character external_id budget even at
+ * Number.MAX_SAFE_INTEGER.
+ */
+export function stewardCheckExternalIdV2(input: MatrixIdentityInput): string {
+  if (!Number.isSafeInteger(input.repositoryId) || input.repositoryId <= 0
+    || !Number.isSafeInteger(input.prNumber) || input.prNumber <= 0
+    || !/^[a-f0-9]{40}$/i.test(input.headSha)
+    || !/^[a-z0-9-]+$/i.test(input.checkId)
+    || !/^[a-f0-9]{64}$/i.test(input.configDigest)
+    || !/^[a-f0-9]{64}$/i.test(input.inputDigest)) {
+    throw new TypeError('Steward Check external ID v2 requires canonical identity fields');
+  }
+  const externalId = [
+    'splrad-steward:v2',
+    `r:${input.repositoryId.toString(36)}`,
+    `p:${input.prNumber.toString(36)}`,
+    `h:${input.headSha.toLowerCase()}`,
+    `c:${input.checkId.toLowerCase()}`,
+    `m:${input.configDigest.toLowerCase()}`,
+    `i:${input.inputDigest.toLowerCase()}`,
+  ].join(':');
+  if (externalId.length > 255) {
+    throw new RangeError('Steward Check external ID v2 exceeds the 255-character budget');
+  }
+  return externalId;
+}
+
+function safeIntegerFromRadix(value: string, radix: 10 | 36): number | null {
+  const parsed = Number.parseInt(value, radix);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return null;
+  return parsed.toString(radix) === value.toLowerCase() ? parsed : null;
+}
+
 export function parseStewardCheckExternalId(value: unknown): MatrixIdentityInput | null {
-  const match = String(value ?? '').match(
+  const text = String(value ?? '');
+  if (text.length > 255) return null;
+  const match = text.match(
     /^splrad-steward:v1:repo:(\d+):pr:(\d+):head:([a-f0-9]{40}):check:([a-z0-9-]+):config:([a-f0-9]{64}):input:([a-f0-9]{64})$/i,
   );
-  if (!match) return null;
+  if (match) {
+    const repositoryId = safeIntegerFromRadix(String(match[1]), 10);
+    const prNumber = safeIntegerFromRadix(String(match[2]), 10);
+    if (repositoryId === null || prNumber === null) return null;
+    return {
+      repositoryId,
+      prNumber,
+      headSha: String(match[3]).toLowerCase(),
+      checkId: String(match[4]).toLowerCase(),
+      configDigest: String(match[5]).toLowerCase(),
+      inputDigest: String(match[6]).toLowerCase(),
+    };
+  }
+  const compact = text.match(
+    /^splrad-steward:v2:r:([a-z0-9]+):p:([a-z0-9]+):h:([a-f0-9]{40}):c:([a-z0-9-]+):m:([a-f0-9]{64}):i:([a-f0-9]{64})$/i,
+  );
+  if (!compact) return null;
+  const repositoryId = safeIntegerFromRadix(String(compact[1]), 36);
+  const prNumber = safeIntegerFromRadix(String(compact[2]), 36);
+  if (repositoryId === null || prNumber === null) return null;
   return {
-    repositoryId: Number(match[1]),
-    prNumber: Number(match[2]),
-    headSha: String(match[3]).toLowerCase(),
-    checkId: String(match[4]).toLowerCase(),
-    configDigest: String(match[5]).toLowerCase(),
-    inputDigest: String(match[6]).toLowerCase(),
+    repositoryId,
+    prNumber,
+    headSha: String(compact[3]).toLowerCase(),
+    checkId: String(compact[4]).toLowerCase(),
+    configDigest: String(compact[5]).toLowerCase(),
+    inputDigest: String(compact[6]).toLowerCase(),
   };
 }
 

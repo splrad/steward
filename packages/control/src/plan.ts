@@ -160,7 +160,16 @@ function assertMutationEnvelope(value: unknown, index: number): void {
     'expectedOwnerLogin',
     'observedLabelsDigest',
     'observedCheckExternalId',
+    'evidenceProtocol',
     'observedEvidenceDigest',
+    'observedGateEvidenceDigest',
+    'observedCheckSetDigest',
+    'observedCheckDigest',
+    'observedCommentSetDigest',
+    'actorId',
+    'actorLogin',
+    'resourceMarker',
+    'body',
   ]);
   const type = stringField(base, 'type', path);
   stringField(base, 'key', path);
@@ -241,9 +250,76 @@ function assertMutationEnvelope(value: unknown, index: number): void {
       'principal',
       'desiredDigest',
       'preconditions',
+      'evidenceProtocol',
       'observedEvidenceDigest',
     ]);
+    const evidenceProtocol = stringField(base, 'evidenceProtocol', path);
+    if (!['review-request-v1', 'copilot-gate-v1'].includes(evidenceProtocol)) {
+      throw new TypeError(`${path}/evidenceProtocol is unsupported`);
+    }
     stringField(base, 'observedEvidenceDigest', path);
+    return;
+  }
+  if (type === 'copilot-gate-check.upsert') {
+    const mode = stringField(base, 'mode', path);
+    if (mode === 'create') {
+      strictRecord(value, path, [
+        'type', 'key', 'principal', 'desiredDigest', 'preconditions', 'mode', 'input',
+        'observedGateEvidenceDigest', 'observedCheckSetDigest',
+      ]);
+      assertCheckInputEnvelope(base.input, `${path}/input`, mode);
+    } else if (mode === 'update') {
+      strictRecord(value, path, [
+        'type', 'key', 'principal', 'desiredDigest', 'preconditions', 'mode', 'checkRunId',
+        'input', 'observedGateEvidenceDigest', 'observedCheckSetDigest', 'observedCheckDigest',
+      ]);
+      numberField(base, 'checkRunId', path);
+      assertCheckInputEnvelope(base.input, `${path}/input`, mode);
+      stringField(base, 'observedCheckDigest', path);
+    } else {
+      throw new TypeError(`${path}/mode is unsupported`);
+    }
+    stringField(base, 'observedGateEvidenceDigest', path);
+    stringField(base, 'observedCheckSetDigest', path);
+    return;
+  }
+  if (type === 'blocking-comment.upsert') {
+    const mode = stringField(base, 'mode', path);
+    const common = [
+      'type', 'key', 'principal', 'desiredDigest', 'preconditions', 'mode', 'actorId',
+      'actorLogin', 'resourceMarker', 'body', 'observedGateEvidenceDigest',
+      'observedCommentSetDigest',
+    ];
+    if (mode === 'create') {
+      strictRecord(value, path, common);
+    } else if (mode === 'update') {
+      strictRecord(value, path, [...common, 'commentId', 'observedBodyDigest']);
+      numberField(base, 'commentId', path);
+      stringField(base, 'observedBodyDigest', path);
+    } else {
+      throw new TypeError(`${path}/mode is unsupported`);
+    }
+    numberField(base, 'actorId', path);
+    stringField(base, 'actorLogin', path);
+    stringField(base, 'resourceMarker', path);
+    stringField(base, 'body', path);
+    stringField(base, 'observedGateEvidenceDigest', path);
+    stringField(base, 'observedCommentSetDigest', path);
+    return;
+  }
+  if (type === 'blocking-comment.delete') {
+    strictRecord(value, path, [
+      'type', 'key', 'principal', 'desiredDigest', 'preconditions', 'commentId', 'actorId',
+      'actorLogin', 'resourceMarker', 'observedGateEvidenceDigest',
+      'observedCommentSetDigest', 'observedBodyDigest',
+    ]);
+    numberField(base, 'commentId', path);
+    numberField(base, 'actorId', path);
+    stringField(base, 'actorLogin', path);
+    stringField(base, 'resourceMarker', path);
+    stringField(base, 'observedGateEvidenceDigest', path);
+    stringField(base, 'observedCommentSetDigest', path);
+    stringField(base, 'observedBodyDigest', path);
     return;
   }
   throw new TypeError(`${path}/type is unsupported`);
@@ -373,13 +449,15 @@ function assertObjectiveMutations(plan: ControlPlan): void {
       ? ['repository-label.ensure', 'issue-labels.add', 'issue-label.remove', 'check-run.upsert'].includes(mutation.type)
       : plan.objective === 'dco-advisory'
         ? mutation.type === 'issue-comment.delete'
-        : mutation.type === 'copilot-review.request';
+        : [
+            'copilot-gate-check.upsert',
+            'blocking-comment.upsert',
+            'blocking-comment.delete',
+            'copilot-review.request',
+          ].includes(mutation.type);
     if (!allowed) {
       throw new Error(`Control objective ${plan.objective} does not allow mutation ${mutation.type}`);
     }
-  }
-  if (plan.objective === 'governance' && plan.mutations.length > 1) {
-    throw new Error('Governance Control plans may contain at most one Copilot review request');
   }
 }
 
@@ -447,18 +525,45 @@ function assertClassificationCheckProtocol(plan: ControlPlan): void {
 
 function assertGovernanceCopilotRequestProtocol(plan: ControlPlan): void {
   if (plan.objective !== 'governance') return;
-  if (!['pending', 'ignored', 'action_required'].includes(plan.outcome.state)) {
-    throw new Error('Governance Copilot request plans must not claim a terminal gate result');
+  const checks = plan.mutations.filter((mutation) => mutation.type === 'copilot-gate-check.upsert');
+  const comments = plan.mutations.filter((mutation) => (
+    mutation.type === 'blocking-comment.upsert' || mutation.type === 'blocking-comment.delete'
+  ));
+  const requests = plan.mutations.filter((mutation) => mutation.type === 'copilot-review.request');
+  if (checks.length > 1 || comments.length > 1 || requests.length > 1) {
+    throw new Error('Governance Copilot Gate plan exceeds its single-resource mutation limits');
   }
-  const mutation = plan.mutations[0];
-  if (mutation !== undefined && (
-    plan.mutations.length !== 1
-    || mutation.type !== 'copilot-review.request'
-    || mutation.key !== 'copilot-review:request'
-    || mutation.principal !== 'human'
+  const ranks = plan.mutations.map((mutation) => (
+    mutation.type === 'copilot-gate-check.upsert' ? 0
+      : mutation.type === 'blocking-comment.upsert' || mutation.type === 'blocking-comment.delete' ? 1
+        : 2
+  ));
+  if (ranks.some((rank, index) => index > 0 && rank < ranks[index - 1]!)) {
+    throw new Error('Governance Copilot Gate mutations must be Check, comment, then human request');
+  }
+  const request = requests[0];
+  if (request && (
+    request.key !== 'copilot-review:request'
+    || request.principal !== 'human'
     || plan.outcome.state !== 'pending'
+    || plan.mutations.at(-1) !== request
+    || (request.evidenceProtocol === 'review-request-v1'
+      && plan.mutations.length !== 1)
   )) {
-    throw new Error('Governance Copilot request plan violates the single human intent protocol');
+    throw new Error('Governance Copilot request violates the final human intent protocol');
+  }
+  const check = checks[0];
+  if (check) {
+    const validState = plan.outcome.state === 'pending'
+      ? check.input.status === 'in_progress' && check.input.conclusion === undefined
+      : plan.outcome.state === 'passed' || plan.outcome.state === 'ignored'
+        ? check.input.status === 'completed' && check.input.conclusion === 'success'
+        : plan.outcome.state === 'failed'
+          ? check.input.status === 'completed' && check.input.conclusion === 'failure'
+          : check.input.status === 'completed' && check.input.conclusion === 'action_required';
+    if (!validState) {
+      throw new Error('Governance Copilot Gate Check does not match the plan outcome');
+    }
   }
 }
 
@@ -527,8 +632,70 @@ function assertMutationStructure(plan: ControlPlan, mutation: ControlMutation): 
   if (mutation.type === 'copilot-review.request') {
     if (mutation.key !== 'copilot-review:request'
       || mutation.principal !== 'human'
+      || !['review-request-v1', 'copilot-gate-v1'].includes(
+        mutation.evidenceProtocol,
+      )
       || !validDigest(mutation.observedEvidenceDigest)) {
       throw new Error(`Control mutation ${mutation.key} contains an invalid Copilot review request`);
+    }
+    return;
+  }
+  if (mutation.type === 'copilot-gate-check.upsert') {
+    const identity = parseStewardCheckExternalId(mutation.input.externalId);
+    if (mutation.key !== 'copilot-gate:check'
+      || mutation.principal !== 'installation'
+      || mutation.input.name !== 'Copilot Code Review Gate'
+      || !validDigest(mutation.observedGateEvidenceDigest)
+      || !validDigest(mutation.observedCheckSetDigest)
+      || !mutation.input.externalId
+      || mutation.input.externalId !== mutation.input.externalId.trim()
+      || !identity
+      || identity.repositoryId !== plan.subject.repository.id
+      || identity.prNumber !== plan.subject.pullRequest.number
+      || identity.headSha !== plan.subject.pullRequest.headSha
+      || identity.checkId !== 'copilot-gate'
+      || identity.configDigest !== plan.subject.manifest.configDigest
+      || identity.inputDigest !== mutation.observedGateEvidenceDigest) {
+      throw new Error(`Control mutation ${mutation.key} contains an invalid Copilot Gate Check`);
+    }
+    if ((mutation.input.status === 'completed') !== (mutation.input.conclusion !== undefined)) {
+      throw new Error(`Control mutation ${mutation.key} contains an invalid Check Run status and conclusion combination`);
+    }
+    if (mutation.mode === 'update') {
+      if (!Number.isSafeInteger(mutation.checkRunId) || mutation.checkRunId <= 0
+        || !validDigest(mutation.observedCheckDigest)
+        || 'headSha' in mutation.input) {
+        throw new Error(`Control mutation ${mutation.key} contains an invalid Copilot Gate Check update`);
+      }
+    } else if (!('headSha' in mutation.input)
+      || mutation.input.headSha !== plan.subject.pullRequest.headSha) {
+      throw new Error(`Control mutation ${mutation.key} requires the bound pull request head SHA`);
+    }
+    return;
+  }
+  if (mutation.type === 'blocking-comment.upsert'
+    || mutation.type === 'blocking-comment.delete') {
+    const expectedAppBotLogin = `${plan.subject.platform.appSlug.toLowerCase()}[bot]`;
+    if (mutation.key !== 'copilot-gate:blocking-comment'
+      || mutation.principal !== 'installation'
+      || !Number.isSafeInteger(mutation.actorId)
+      || mutation.actorId <= 0
+      || mutation.actorLogin !== expectedAppBotLogin
+      || mutation.resourceMarker !== '<!-- steward:resource:copilot-gate-blocking-comment:v1 -->'
+      || !validDigest(mutation.observedGateEvidenceDigest)
+      || !validDigest(mutation.observedCommentSetDigest)) {
+      throw new Error(`Control mutation ${mutation.key} contains an invalid blocking comment identity`);
+    }
+    if (mutation.type === 'blocking-comment.delete'
+      || mutation.mode === 'update') {
+      if (!Number.isSafeInteger(mutation.commentId) || mutation.commentId <= 0
+        || !validDigest(mutation.observedBodyDigest)) {
+        throw new Error(`Control mutation ${mutation.key} contains an invalid blocking comment update`);
+      }
+    }
+    if (mutation.type === 'blocking-comment.upsert'
+      && (!mutation.body.trim() || !mutation.body.includes(mutation.resourceMarker))) {
+      throw new Error(`Control mutation ${mutation.key} contains an invalid blocking comment body`);
     }
     return;
   }

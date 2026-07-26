@@ -764,7 +764,7 @@ describe('Control operation plans', () => {
         body: 'overwrite contributor content',
         observedBodyDigest: 'b'.repeat(64),
       };
-    }, '/body is not allowed'],
+    }, '/type is unsupported'],
     ['completed Check without conclusion', (plan: Record<string, unknown>) => {
       const mutations = plan.mutations as Array<Record<string, unknown>>;
       const check = mutations.find((mutation) => (

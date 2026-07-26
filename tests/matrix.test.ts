@@ -12,6 +12,7 @@ import {
   planProxyCompletions,
   projectMatrixLiveEvidence,
   stewardCheckExternalId,
+  stewardCheckExternalIdV2,
   validateReviewDispatch,
   type MatrixCheckRun,
   type MatrixConfiguration,
@@ -94,6 +95,25 @@ describe('Matrix Check identities', () => {
     expect(['pr-classification', 'pr-class-lease', 'pr-class-off'].map((checkId) => (
       stewardCheckExternalId({ ...base, checkId }).length
     ))).toEqual([253, 250, 248]);
+  });
+
+  it('keeps compact v2 identities within budget at maximum safe numeric IDs', () => {
+    const identity = {
+      repositoryId: Number.MAX_SAFE_INTEGER,
+      prNumber: Number.MAX_SAFE_INTEGER,
+      headSha: 'a'.repeat(40),
+      checkId: 'copilot-gate',
+      configDigest: 'b'.repeat(64),
+      inputDigest: 'c'.repeat(64),
+    };
+    const externalId = stewardCheckExternalIdV2(identity);
+
+    expect(externalId.length).toBeLessThanOrEqual(255);
+    expect(parseStewardCheckExternalId(externalId)).toEqual(identity);
+    expect(() => stewardCheckExternalIdV2({
+      ...identity,
+      checkId: 'x'.repeat(100),
+    })).toThrow(/255-character budget/);
   });
 
   it('canonically binds the full Matrix gate to current trusted child evidence and excludes itself', async () => {

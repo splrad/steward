@@ -3,18 +3,23 @@ import { describe, expect, it } from 'vitest';
 import {
   buildStewardRuntimeControlApplyNextRequestV2,
   buildStewardRuntimeControlPrepareRequestV2,
+  buildStewardRuntimeControlRecoverRequestV2,
   buildStewardRuntimeDiagnosticsControlProbe,
   buildStewardRuntimeControlRequest,
   buildStewardRuntimeWorkItem,
   canonicalControlJson,
   canonicalStewardRuntimeControlApplyNextRequestV2Json,
   canonicalStewardRuntimeControlPrepareRequestV2Json,
+  canonicalStewardRuntimeControlRecoverRequestV2Json,
   canonicalStewardRuntimeDiagnosticsControlProbeJson,
   canonicalStewardRuntimeControlRequestJson,
   controlJsonDigest,
   parseStewardRuntimeDiagnosticsControlReceipt,
+  parseStewardRuntimeControlMutationReceiptV2,
   parseStewardRuntimeControlPreparedReceiptV2,
+  parseStewardRuntimeControlRecoveryReceiptV2,
   parseStewardRuntimeControlReceipt,
+  parseStewardRuntimeWorkItem,
   type StewardRuntimeControlPlanBindingV2,
   type StewardRuntimeControlObjectiveV2,
 } from '../packages/core/src/index.js';
@@ -419,14 +424,23 @@ describe('Control runtime in workerd', () => {
         contractVersion: 1,
         preparedGeneration: 7,
         terminalOutcome: 'pending-external',
-        mutationCount: 1,
-        mutations: [{
-          ordinal: 0,
-          key: 'copilot-review:request',
-          mutationType: 'copilot-review.request',
-          principal: 'human',
-          recoveryPolicy: 'live-evidence-or-action-required',
-        }],
+        mutationCount: 2,
+        mutations: [
+          {
+            ordinal: 0,
+            key: 'copilot-gate:check',
+            mutationType: 'copilot-gate-check.upsert',
+            principal: 'installation',
+            recoveryPolicy: 'live-evidence',
+          },
+          {
+            ordinal: 1,
+            key: 'copilot-review:request',
+            mutationType: 'copilot-review.request',
+            principal: 'human',
+            recoveryPolicy: 'live-evidence-or-action-required',
+          },
+        ],
       },
       controlRevision: {
         stewardCommit: 'a'.repeat(40),
@@ -463,11 +477,102 @@ describe('Control runtime in workerd', () => {
       outcome: {
         state: 'pending',
       },
-      mutations: [{
-        type: 'copilot-review.request',
-        key: 'copilot-review:request',
-        principal: 'human',
-      }],
+      mutations: [
+        {
+          type: 'copilot-gate-check.upsert',
+          key: 'copilot-gate:check',
+          principal: 'installation',
+        },
+        {
+          type: 'copilot-review.request',
+          key: 'copilot-review:request',
+          principal: 'human',
+        },
+      ],
+    });
+  });
+
+  it('applies and read-only recovers one Governance Gate Check in workerd', async () => {
+    const preparedResponse = await controlRuntime.fetch(
+      await controlPrepareRequestV2('governance'),
+    );
+    expect(preparedResponse.status).toBe(200);
+    const prepared = await parseStewardRuntimeControlPreparedReceiptV2(
+      JSON.parse(await preparedResponse.text()) as unknown,
+    );
+    const mutation = prepared.plan.mutations.find(
+      (candidate) => candidate.key === 'copilot-gate:check',
+    );
+    if (mutation === undefined) {
+      throw new Error('Prepared plan has no Governance Gate Check mutation');
+    }
+
+    const appliedResponse = await controlRuntime.fetch(
+      new Request('https://control.internal/v2/reconcile', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-steward-internal-protocol': '2',
+        },
+        body: await canonicalStewardRuntimeControlApplyNextRequestV2Json(
+          await buildStewardRuntimeControlApplyNextRequestV2({
+            binding: prepared.binding,
+            expectedControlRevision: prepared.controlRevision,
+            resolvedContext: prepared.resolvedContext,
+            plan: prepared.plan,
+            mutation,
+          }),
+        ),
+      }),
+    );
+    expect(appliedResponse.status).toBe(200);
+    expect(appliedResponse.headers.get('cache-control')).toBe('no-store');
+    const applied = await parseStewardRuntimeControlMutationReceiptV2(
+      JSON.parse(await appliedResponse.text()) as unknown,
+    );
+    expect(applied.result).toEqual({
+      state: 'applied',
+      resourceId: 7_001,
+      retryAfterSeconds: null,
+    });
+
+    const recoveryWorkItem = parseStewardRuntimeWorkItem({
+      ...prepared.binding.workItem,
+      cause: {
+        ...prepared.binding.workItem.cause,
+        deliveryId: 'control-workerd-v2-recover-governance-check',
+      },
+    });
+    const recoveredResponse = await controlRuntime.fetch(
+      new Request('https://control.internal/v2/reconcile', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-steward-internal-protocol': '2',
+        },
+        body: await canonicalStewardRuntimeControlRecoverRequestV2Json(
+          await buildStewardRuntimeControlRecoverRequestV2({
+            binding: {
+              ...prepared.binding,
+              workItem: recoveryWorkItem,
+              generation: prepared.binding.generation + 1,
+            },
+            expectedControlRevision: prepared.controlRevision,
+            resolvedContext: prepared.resolvedContext,
+            plan: prepared.plan,
+            mutation,
+          }),
+        ),
+      }),
+    );
+    expect(recoveredResponse.status).toBe(200);
+    expect(recoveredResponse.headers.get('cache-control')).toBe('no-store');
+    const recovered = await parseStewardRuntimeControlRecoveryReceiptV2(
+      JSON.parse(await recoveredResponse.text()) as unknown,
+    );
+    expect(recovered.result).toEqual({
+      state: 'converged',
+      resourceId: 7_001,
     });
   });
 

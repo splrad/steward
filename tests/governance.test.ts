@@ -318,6 +318,8 @@ describe('Copilot governance protocol', () => {
 
   it.each([
     { name: 'waiting', reviews: [], findings: {}, state: 'pending', conclusion: undefined, failure: '' },
+    { name: 'blocking without a valid review', reviews: [], findings: { blocking: [finding('block')] }, state: 'failed', conclusion: 'failure', failure: 'blocking-comments' },
+    { name: 'unclassified without a valid review', reviews: [], findings: { unclassified: [finding('format')] }, state: 'failed', conclusion: 'failure', failure: 'comment-protocol' },
     { name: 'request failed', reviews: [], findings: {}, requestFailed: true, state: 'failed', conclusion: 'failure', failure: 'request-failed' },
     { name: 'blocking', reviews: [{}], findings: { blocking: [finding('block')] }, state: 'failed', conclusion: 'failure', failure: 'blocking-comments' },
     { name: 'unclassified', reviews: [{}], findings: { unclassified: [finding('format')] }, state: 'failed', conclusion: 'failure', failure: 'comment-protocol' },

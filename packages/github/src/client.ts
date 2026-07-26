@@ -1,7 +1,7 @@
 import type { ManifestRepositoryClient, RepositoryFile, RepositoryMetadata } from '../../manifest/src/index.js';
 import { workflowDispatchReturnsRunDetails } from './api-version.js';
 import { fetchPullRequestPages, maxPullRequestPages } from './pagination.js';
-import { resolveGitHubEndpointConfiguration, type GitHubTransport } from './transport.js';
+import { GitHubApiError, resolveGitHubEndpointConfiguration, type GitHubTransport } from './transport.js';
 
 export interface GitHubRepositoryMetadata extends RepositoryMetadata {
   id: number;
@@ -542,6 +542,21 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
     }));
   }
 
+  async getIssueComment(
+    owner: string,
+    repository: string,
+    commentId: number,
+  ): Promise<GitHubIssueComment | null> {
+    try {
+      return await this.transport.request<GitHubIssueComment>({
+        path: `${repositoryPath(owner, repository)}/issues/comments/${segment(commentId)}`,
+      });
+    } catch (error) {
+      if (error instanceof GitHubApiError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
   async listCommitCheckRuns(owner: string, repository: string, ref: string): Promise<GitHubCheckRun[]> {
     return await fetchPullRequestPages(async (page, perPage) => {
       const payload = await this.transport.request<{ check_runs?: GitHubCheckRun[] }>({
@@ -550,6 +565,17 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
       });
       return payload.check_runs ?? [];
     });
+  }
+
+  async getCheckRun(owner: string, repository: string, checkRunId: number): Promise<GitHubCheckRun | null> {
+    try {
+      return await this.transport.request<GitHubCheckRun>({
+        path: `${repositoryPath(owner, repository)}/check-runs/${segment(checkRunId)}`,
+      });
+    } catch (error) {
+      if (error instanceof GitHubApiError && error.status === 404) return null;
+      throw error;
+    }
   }
 
   async listWorkflowRuns(owner: string, repository: string): Promise<GitHubWorkflowRun[]> {

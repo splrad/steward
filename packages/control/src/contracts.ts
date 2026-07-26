@@ -152,7 +152,62 @@ export interface RequestCopilotReviewIntent extends ControlMutationIntentBase {
   type: 'copilot-review.request';
   key: 'copilot-review:request';
   principal: 'human';
+  evidenceProtocol: 'review-request-v1' | 'copilot-gate-v1';
   observedEvidenceDigest: string;
+}
+
+interface CopilotGateCheckUpsertIntentBase extends ControlMutationIntentBase {
+  type: 'copilot-gate-check.upsert';
+  key: 'copilot-gate:check';
+  principal: 'installation';
+  observedGateEvidenceDigest: string;
+  observedCheckSetDigest: string;
+}
+
+export interface CreateCopilotGateCheckIntent extends CopilotGateCheckUpsertIntentBase {
+  mode: 'create';
+  checkRunId?: never;
+  input: CheckRunCreate;
+  observedCheckDigest?: never;
+}
+
+export interface UpdateCopilotGateCheckIntent extends CopilotGateCheckUpsertIntentBase {
+  mode: 'update';
+  checkRunId: number;
+  input: CheckRunUpdate;
+  observedCheckDigest: string;
+}
+
+interface BlockingCommentIntentBase extends ControlMutationIntentBase {
+  key: 'copilot-gate:blocking-comment';
+  principal: 'installation';
+  actorId: number;
+  actorLogin: string;
+  resourceMarker: string;
+  observedGateEvidenceDigest: string;
+  observedCommentSetDigest: string;
+}
+
+export interface CreateBlockingCommentIntent extends BlockingCommentIntentBase {
+  type: 'blocking-comment.upsert';
+  mode: 'create';
+  commentId?: never;
+  body: string;
+  observedBodyDigest?: never;
+}
+
+export interface UpdateBlockingCommentIntent extends BlockingCommentIntentBase {
+  type: 'blocking-comment.upsert';
+  mode: 'update';
+  commentId: number;
+  body: string;
+  observedBodyDigest: string;
+}
+
+export interface DeleteBlockingCommentIntent extends BlockingCommentIntentBase {
+  type: 'blocking-comment.delete';
+  commentId: number;
+  observedBodyDigest: string;
 }
 
 export type ControlMutationIntent =
@@ -162,6 +217,11 @@ export type ControlMutationIntent =
   | CreateCheckRunIntent
   | UpdateCheckRunIntent
   | DeleteIssueCommentIntent
+  | CreateCopilotGateCheckIntent
+  | UpdateCopilotGateCheckIntent
+  | CreateBlockingCommentIntent
+  | UpdateBlockingCommentIntent
+  | DeleteBlockingCommentIntent
   | RequestCopilotReviewIntent;
 
 export type ControlMutation = ControlMutationIntent & {

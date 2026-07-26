@@ -36,6 +36,16 @@ const { privateKey, publicKey } = generateKeyPairSync('rsa', {
   },
 });
 
+const governancePrepareToken =
+  `${controlRuntimeInstallationToken}-governance-prepare`;
+const governanceCheckWriteToken =
+  `${controlRuntimeInstallationToken}-governance-check-write`;
+const governanceCheckRecoveryToken =
+  `${controlRuntimeInstallationToken}-governance-check-recovery`;
+const governanceCheckRunId = 7_001;
+
+let governanceGateCheck: Record<string, unknown> | null = null;
+
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -59,6 +69,7 @@ function assertGitHubHeaders(
   request: Request,
   expectedAuthorization: string,
   hasBody: boolean,
+  expectedBodyContentType = 'application/json; charset=utf-8',
 ): void {
   if (request.headers.get('accept') !== 'application/vnd.github+json') {
     throw new Error('Unexpected GitHub Accept header');
@@ -78,11 +89,33 @@ function assertGitHubHeaders(
   const contentType = request.headers.get('content-type');
   if (
     hasBody
-      ? contentType !== 'application/json; charset=utf-8'
+      ? contentType !== expectedBodyContentType
       : contentType !== null
   ) {
     throw new Error('Unexpected GitHub Content-Type header');
   }
+}
+
+function assertOneOfInstallationTokens(
+  request: Request,
+  tokens: readonly string[],
+  hasBody: boolean,
+  expectedBodyContentType?: string,
+): string {
+  const authorization = request.headers.get('authorization') ?? '';
+  const token = tokens.find((candidate) => (
+    authorization === `Bearer ${candidate}`
+  ));
+  if (token === undefined) {
+    throw new Error('Unexpected GitHub installation-token authorization');
+  }
+  assertGitHubHeaders(
+    request,
+    authorization,
+    hasBody,
+    expectedBodyContentType,
+  );
+  return token;
 }
 
 function assertAppAuthorization(request: Request): void {
@@ -245,19 +278,46 @@ async function githubOutboundService(request: Request): Promise<Response> {
       metadata: 'read',
       pull_requests: 'read',
     };
+    const governancePreparePermissions = {
+      checks: 'read',
+      issues: 'read',
+      members: 'read',
+      metadata: 'read',
+      pull_requests: 'read',
+    };
+    const governanceCheckWritePermissions = {
+      checks: 'write',
+      members: 'read',
+      metadata: 'read',
+      pull_requests: 'read',
+    };
+    const governanceCheckRecoveryPermissions = {
+      checks: 'read',
+      metadata: 'read',
+    };
     const permissions = JSON.stringify(body.permissions);
+    const installationToken = new Map<string, string>([
+      [JSON.stringify(diagnosticPermissions), controlRuntimeInstallationToken],
+      [JSON.stringify(governancePermissions), controlRuntimeInstallationToken],
+      [JSON.stringify(governancePreparePermissions), governancePrepareToken],
+      [
+        JSON.stringify(governanceCheckWritePermissions),
+        governanceCheckWriteToken,
+      ],
+      [
+        JSON.stringify(governanceCheckRecoveryPermissions),
+        governanceCheckRecoveryToken,
+      ],
+    ]).get(permissions);
     if (
       JSON.stringify(body.repository_ids)
         !== JSON.stringify([controlRuntimeDiagnosticsSubject.repositoryId])
-      || (
-        permissions !== JSON.stringify(diagnosticPermissions)
-        && permissions !== JSON.stringify(governancePermissions)
-      )
+      || installationToken === undefined
     ) {
       throw new Error('Unexpected GitHub installation-token request body');
     }
     return jsonResponse({
-      token: controlRuntimeInstallationToken,
+      token: installationToken,
       expires_at: '2026-07-24T03:00:00Z',
       permissions: body.permissions,
       repository_selection: 'selected',
@@ -425,12 +485,232 @@ async function githubOutboundService(request: Request): Promise<Response> {
     if (request.method !== 'GET') {
       throw new Error('Unexpected Governance reviews method');
     }
-    assertGitHubHeaders(
+    assertOneOfInstallationTokens(
       request,
-      `Bearer ${controlRuntimeInstallationToken}`,
+      [governancePrepareToken, governanceCheckWriteToken],
       false,
     );
     return jsonResponse([], 200);
+  }
+
+  if (
+    url.origin === 'https://api.github.com'
+    && url.pathname === '/users/splrad-steward%5Bbot%5D'
+    && url.search === ''
+  ) {
+    if (request.method !== 'GET') {
+      throw new Error('Unexpected Governance App bot method');
+    }
+    assertOneOfInstallationTokens(
+      request,
+      [
+        governancePrepareToken,
+        governanceCheckWriteToken,
+        governanceCheckRecoveryToken,
+      ],
+      false,
+    );
+    return jsonResponse({
+      id: 9_001,
+      login: 'splrad-steward[bot]',
+      type: 'Bot',
+    }, 200);
+  }
+
+  if (
+    url.origin === 'https://api.github.com'
+    && url.pathname === '/graphql'
+    && url.search === ''
+  ) {
+    if (request.method !== 'POST') {
+      throw new Error('Unexpected Governance GraphQL method');
+    }
+    assertOneOfInstallationTokens(
+      request,
+      [governancePrepareToken, governanceCheckWriteToken],
+      true,
+      'application/json',
+    );
+    return jsonResponse({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [],
+            },
+          },
+        },
+      },
+    }, 200);
+  }
+
+  if (
+    url.origin === 'https://api.github.com'
+    && url.pathname
+      === `${governanceRepositoryPath}/commits/${controlRuntimePullRequestHeadSha}/check-runs`
+    && url.searchParams.get('filter') === 'all'
+    && url.searchParams.get('page') === '1'
+    && url.searchParams.get('per_page') === '100'
+    && [...url.searchParams.keys()].length === 3
+  ) {
+    if (request.method !== 'GET') {
+      throw new Error('Unexpected Governance Checks method');
+    }
+    const authorization = request.headers.get('authorization');
+    assertOneOfInstallationTokens(
+      request,
+      [
+        governancePrepareToken,
+        governanceCheckWriteToken,
+        governanceCheckRecoveryToken,
+      ],
+      false,
+    );
+    // Every prepare starts an independent fixture scenario. Apply and
+    // recovery retain state within that scenario, while shuffle/retry cannot
+    // leak the prior test's Check into a new prepare.
+    if (authorization === `Bearer ${governancePrepareToken}`) {
+      governanceGateCheck = null;
+    }
+    const checkRuns = governanceGateCheck === null
+      ? []
+      : [governanceGateCheck];
+    return jsonResponse({
+      total_count: checkRuns.length,
+      check_runs: checkRuns,
+    }, 200);
+  }
+
+  if (
+    url.origin === 'https://api.github.com'
+    && url.pathname === `${governanceRepositoryPath}/check-runs`
+    && url.search === ''
+  ) {
+    if (request.method !== 'POST') {
+      throw new Error('Unexpected Governance Check mutation method');
+    }
+    assertOneOfInstallationTokens(
+      request,
+      [governanceCheckWriteToken],
+      true,
+      'application/json',
+    );
+    if (governanceGateCheck !== null) {
+      throw new Error('Governance Gate Check was written more than once');
+    }
+    const body = JSON.parse(await request.text()) as Record<string, unknown>;
+    const output = body.output as Record<string, unknown> | undefined;
+    if (
+      body.head_sha !== controlRuntimePullRequestHeadSha
+      || body.name !== 'Copilot Code Review Gate'
+      || body.status !== 'in_progress'
+      || 'conclusion' in body
+      || typeof body.external_id !== 'string'
+      || body.external_id.length === 0
+      || body.external_id.length > 255
+      || output?.title !== '等待 Copilot 代码审查'
+      || output.summary !== 'waiting-for-review'
+    ) {
+      throw new Error('Unexpected Governance Gate Check request body');
+    }
+    governanceGateCheck = {
+      id: governanceCheckRunId,
+      head_sha: body.head_sha,
+      name: body.name,
+      status: body.status,
+      conclusion: null,
+      external_id: body.external_id,
+      details_url: body.details_url ?? null,
+      app: {
+        id: controlRuntimeAppId,
+        slug: controlRuntimeAppSlug,
+      },
+      output,
+    };
+    return jsonResponse(governanceGateCheck, 201);
+  }
+
+  if (
+    url.origin === 'https://api.github.com'
+    && url.pathname === `${governanceRepositoryPath}/issues/6/comments`
+    && url.searchParams.get('page') === '1'
+    && url.searchParams.get('per_page') === '100'
+    && [...url.searchParams.keys()].length === 2
+  ) {
+    if (request.method !== 'GET') {
+      throw new Error('Unexpected Governance comments method');
+    }
+    assertOneOfInstallationTokens(
+      request,
+      [governancePrepareToken],
+      false,
+    );
+    return jsonResponse([], 200);
+  }
+
+  if (
+    url.origin === 'https://api.github.com'
+    && url.pathname === `${governancePullRequestPath}/commits`
+    && url.searchParams.get('page') === '1'
+    && url.searchParams.get('per_page') === '100'
+    && [...url.searchParams.keys()].length === 2
+  ) {
+    if (request.method !== 'GET') {
+      throw new Error('Unexpected Governance commits method');
+    }
+    assertOneOfInstallationTokens(
+      request,
+      [governancePrepareToken, governanceCheckWriteToken],
+      false,
+    );
+    return jsonResponse([{
+      sha: controlRuntimePullRequestHeadSha,
+      author: { login: 'dependabot[bot]', type: 'Bot' },
+    }], 200);
+  }
+
+  if (
+    url.origin === 'https://api.github.com'
+    && url.pathname === `${governancePullRequestPath}/files`
+    && url.searchParams.get('page') === '1'
+    && url.searchParams.get('per_page') === '100'
+    && [...url.searchParams.keys()].length === 2
+  ) {
+    if (request.method !== 'GET') {
+      throw new Error('Unexpected Governance files method');
+    }
+    assertOneOfInstallationTokens(
+      request,
+      [governancePrepareToken, governanceCheckWriteToken],
+      false,
+    );
+    return jsonResponse([{
+      filename: 'package-lock.json',
+      status: 'modified',
+      sha: 'f'.repeat(40),
+      additions: 1,
+      deletions: 1,
+    }], 200);
+  }
+
+  if (
+    url.origin === 'https://api.github.com'
+    && url.pathname === '/orgs/splrad/teams/maintainers/members'
+    && url.searchParams.get('role') === 'all'
+    && url.searchParams.get('page') === '1'
+    && url.searchParams.get('per_page') === '100'
+    && [...url.searchParams.keys()].length === 3
+  ) {
+    if (request.method !== 'GET') {
+      throw new Error('Unexpected Governance maintainers method');
+    }
+    assertOneOfInstallationTokens(
+      request,
+      [governancePrepareToken, governanceCheckWriteToken],
+      false,
+    );
+    return jsonResponse([{ login: 'axiomoth' }], 200);
   }
 
   throw new Error(

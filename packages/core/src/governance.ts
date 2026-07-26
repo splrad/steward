@@ -488,18 +488,6 @@ export function evaluateCopilotGate(input: {
     suggestions,
     unclassified,
   };
-  if (!input.reviews.length) {
-    if (input.requestFailed) {
-      result.state = 'failed';
-      result.checkConclusion = 'failure';
-      result.failureKind = 'request-failed';
-    } else {
-      result.state = 'pending';
-      result.checkStatus = 'in_progress';
-      delete result.checkConclusion;
-    }
-    return result;
-  }
   if (blocking.length) {
     result.state = 'failed';
     result.checkConclusion = 'failure';
@@ -510,6 +498,18 @@ export function evaluateCopilotGate(input: {
     result.state = 'failed';
     result.checkConclusion = 'failure';
     result.failureKind = 'comment-protocol';
+    return result;
+  }
+  if (!input.reviews.length) {
+    if (input.requestFailed) {
+      result.state = 'failed';
+      result.checkConclusion = 'failure';
+      result.failureKind = 'request-failed';
+    } else {
+      result.state = 'pending';
+      result.checkStatus = 'in_progress';
+      delete result.checkConclusion;
+    }
     return result;
   }
   if (suggestions.length) {
