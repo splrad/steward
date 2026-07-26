@@ -15,6 +15,7 @@ import {
   controlJsonDigest,
   type ControlPlan,
 } from '../packages/control/src/index.js';
+import { encodeBase64Utf8 } from '../packages/manifest/src/encoding.js';
 import {
   createControlRuntimeHandler,
   maximumControlRequestBytes,
@@ -172,7 +173,7 @@ async function controlV2RequestBodies(): Promise<Readonly<Record<
     preparedGeneration: binding.generation,
     terminalOutcome: 'pending-external',
     canonicalPlanByteLength: planBytes.byteLength,
-    canonicalPlanBase64: btoa(String.fromCharCode(...planBytes)),
+    canonicalPlanBase64: encodeBase64Utf8(canonicalPlan),
     mutationCount: 1,
     mutations: [mutation],
   };
@@ -317,7 +318,7 @@ describe('private Control runtime foundation', () => {
     plan.planId = planId;
     plan.planDigest = await controlJsonDigest({ ...decoded, planId });
     plan.canonicalPlanByteLength = planBytes.byteLength;
-    plan.canonicalPlanBase64 = btoa(String.fromCharCode(...planBytes));
+    plan.canonicalPlanBase64 = encodeBase64Utf8(canonicalPlan);
     const mutation = {
       ordinal: 0,
       key: intent.key,

@@ -16,6 +16,7 @@ import {
   parseStewardRuntimeControlReceipt,
   type StewardRuntimeControlPlanBindingV2,
 } from '../packages/core/src/index.js';
+import { encodeBase64Utf8 } from '../packages/manifest/src/encoding.js';
 import {
   controlRuntimeCanonicalRepositoryFullName,
   controlRuntimeDiagnosticsSubject,
@@ -219,7 +220,7 @@ async function controlApplyRequestV2(): Promise<Request> {
     preparedGeneration: binding.generation,
     terminalOutcome: 'pending-external',
     canonicalPlanByteLength: planBytes.byteLength,
-    canonicalPlanBase64: btoa(String.fromCharCode(...planBytes)),
+    canonicalPlanBase64: encodeBase64Utf8(canonicalPlan),
     mutationCount: 1,
     mutations: [mutation],
   };
