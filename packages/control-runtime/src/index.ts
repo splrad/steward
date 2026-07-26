@@ -1,7 +1,13 @@
 import { createAppAuth } from '@octokit/auth-app';
 import {
+  buildStewardRuntimeControlMutationReceiptV2,
+  buildStewardRuntimeControlPreparedReceiptV2,
+  buildStewardRuntimeControlRecoveryReceiptV2,
   buildStewardRuntimeDiagnosticsControlReceipt,
   buildStewardRuntimeControlReceipt,
+  canonicalStewardRuntimeControlMutationReceiptV2Json,
+  canonicalStewardRuntimeControlPreparedReceiptV2Json,
+  canonicalStewardRuntimeControlRecoveryReceiptV2Json,
   canonicalStewardRuntimeDiagnosticsControlReceiptJson,
   canonicalStewardRuntimeControlReceiptJson,
   parseStewardRuntimeControlApplyNextRequestV2,
@@ -10,13 +16,36 @@ import {
   parseStewardRuntimeControlRecoverRequestV2,
   parseStewardRuntimeControlRequest,
   type StewardRuntimeControlApplyNextRequestV2,
+  type StewardRuntimeControlMutationBindingV2,
+  type StewardRuntimeControlMutationResultV2,
+  type StewardRuntimeControlPlanBindingV2,
   type StewardRuntimeControlPrepareRequestV2,
+  type StewardRuntimeControlRecoveryResultV2,
   type StewardRuntimeControlRecoverRequestV2,
+  type StewardRuntimeControlResolvedContextV2,
   type StewardRuntimeControlRevisionV1,
   type StewardRuntimeDiagnosticsSubjectV1,
 } from '../../core/src/index.js';
-import { parseCanonicalControlPlanJson } from '../../control/src/plan.js';
-import { GITHUB_CLOUD_REST_API_VERSION } from '../../github/src/index.js';
+import {
+  canonicalControlJson,
+  ControlPullRequestHeadMismatchError,
+  ControlPullRequestStateMismatchError,
+  controlJsonDigest,
+  inspectGovernanceCopilotReviewMutation,
+  inspectGovernanceCopilotReviewRecovery,
+  parseCanonicalControlPlanJson,
+  planGovernanceCopilotReview,
+  resolvePullRequestControlContext,
+  type ControlPlan,
+  type ControlRuntimeIdentity,
+} from '../../control/src/index.js';
+import {
+  GITHUB_CLOUD_REST_API_VERSION,
+  GitHubApiError,
+  GitHubRepositoryClient,
+  createGitHubRestTransport,
+} from '../../github/src/index.js';
+import { encodeBase64Utf8 } from '../../manifest/src/encoding.js';
 
 const reconcilePathV1 = '/v1/reconcile';
 const reconcilePathV2 = '/v2/reconcile';
@@ -36,6 +65,7 @@ export interface ControlRuntimeEnv {
   readonly CF_VERSION_METADATA: ControlRuntimeVersionMetadata;
   readonly GITHUB_APP_ID?: string;
   readonly GITHUB_APP_PRIVATE_KEY?: string;
+  readonly COPILOT_REVIEW_REQUEST_TOKEN?: string;
   readonly STEWARD_ORGANIZATION_ID?: string | number;
   readonly STEWARD_ORGANIZATION_LOGIN?: string;
 }
@@ -47,6 +77,7 @@ export interface ControlRuntimeHandler {
 export interface ControlRuntimeDependencies {
   readonly fetch: typeof fetch;
   readonly appToken: (env: ControlRuntimeEnv) => Promise<string>;
+  readonly copilotReviewToken?: (env: ControlRuntimeEnv) => string;
 }
 
 class RepositoryScopeError extends Error {
@@ -157,36 +188,8 @@ async function readBoundedJson(request: Request): Promise<unknown> {
 }
 
 async function readBoundedResponseJson(response: Response): Promise<unknown> {
-  const declaredLength = response.headers.get('content-length');
-  if (
-    declaredLength !== null
-    && (!/^(?:0|[1-9]\d*)$/.test(declaredLength)
-      || Number(declaredLength) > maximumGitHubResponseBytes)
-  ) {
-    throw new Error('response-body-too-large');
-  }
-  if (response.body === null) throw new Error('response-body-empty');
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let byteLength = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    byteLength += value.byteLength;
-    if (byteLength > maximumGitHubResponseBytes) {
-      await reader.cancel().catch(() => undefined);
-      throw new Error('response-body-too-large');
-    }
-    chunks.push(value);
-  }
-
-  const body = new Uint8Array(byteLength);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
+  const body = await readBoundedResponseBytes(response);
+  if (body.byteLength === 0) throw new Error('response-body-empty');
   return JSON.parse(
     new TextDecoder('utf-8', { fatal: true }).decode(body),
   ) as unknown;
@@ -337,8 +340,14 @@ async function createRepositoryInstallationToken(
   appToken: string,
   installationId: number,
   repositoryId: number,
+  requestedPermissions: Readonly<Record<string, 'read' | 'write'>>,
   parentSignal?: AbortSignal,
 ): Promise<string> {
+  const permissionsInput = Object.fromEntries(
+    Object.entries(requestedPermissions).sort(([left], [right]) => (
+      left < right ? -1 : left > right ? 1 : 0
+    )),
+  );
   const result = plainRecord(await githubJson(
     dependencies,
     `https://api.github.com/app/installations/${installationId}/access_tokens`,
@@ -347,7 +356,7 @@ async function createRepositoryInstallationToken(
       method: 'POST',
       body: JSON.stringify({
         repository_ids: [repositoryId],
-        permissions: { metadata: 'read' },
+        permissions: permissionsInput,
       }),
       expectedStatus: 201,
       ...(parentSignal === undefined ? {} : { parentSignal }),
@@ -359,13 +368,17 @@ async function createRepositoryInstallationToken(
     ? plainRecord(repositories[0])
     : null;
   const token = result?.token;
+  const permissionKeys = permissions === null
+    ? []
+    : Object.keys(permissions).sort();
+  const expectedPermissionKeys = Object.keys(permissionsInput).sort();
   if (
     result === null
     || !validInstallationToken(token)
     || result.repository_selection !== 'selected'
     || permissions === null
-    || Reflect.ownKeys(permissions).length !== 1
-    || permissions.metadata !== 'read'
+    || JSON.stringify(permissionKeys) !== JSON.stringify(expectedPermissionKeys)
+    || expectedPermissionKeys.some((key) => permissions[key] !== permissionsInput[key])
     || repository === null
     || positiveSafeInteger(repository.id) !== repositoryId
   ) {
@@ -377,7 +390,206 @@ async function createRepositoryInstallationToken(
 const defaultDependencies: ControlRuntimeDependencies = {
   fetch: (input, init) => fetch(input, init),
   appToken: createAppToken,
+  copilotReviewToken: (env) => env.COPILOT_REVIEW_REQUEST_TOKEN ?? '',
 };
+
+interface GovernanceRepositoryAccess {
+  readonly client: GitHubRepositoryClient;
+  readonly identity: ControlRuntimeIdentity;
+  readonly repositoryFullName: string;
+}
+
+interface CopilotReviewRequestPort {
+  request(
+    owner: string,
+    repository: string,
+    pullRequestNumber: number,
+  ): Promise<void>;
+}
+
+async function readBoundedResponseBytes(response: Response): Promise<Uint8Array> {
+  const declaredLength = response.headers.get('content-length');
+  if (
+    declaredLength !== null
+    && (!/^(?:0|[1-9]\d*)$/.test(declaredLength)
+      || Number(declaredLength) > maximumGitHubResponseBytes)
+  ) {
+    throw new Error('response-body-too-large');
+  }
+  if (response.body === null) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    byteLength += value.byteLength;
+    if (byteLength > maximumGitHubResponseBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error('response-body-too-large');
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
+}
+
+function boundedGitHubRestFetch(
+  dependencies: ControlRuntimeDependencies,
+  parentSignal?: AbortSignal,
+): typeof fetch {
+  return async (input, init) => {
+    const headers = new Headers(init?.headers);
+    headers.set('cache-control', 'no-store');
+    const signals = [
+      parentSignal,
+      init?.signal ?? undefined,
+      AbortSignal.timeout(controlGitHubTimeoutMs),
+    ].filter((signal): signal is AbortSignal => signal !== undefined);
+    const response = await dependencies.fetch(input, {
+      ...init,
+      headers,
+      redirect: 'manual',
+      signal: AbortSignal.any(signals),
+    });
+    const bytes = await readBoundedResponseBytes(response);
+    return new Response(bytes.byteLength ? Uint8Array.from(bytes).buffer : null, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  };
+}
+
+function validAppSlug(value: unknown): value is string {
+  return typeof value === 'string'
+    && /^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/.test(value);
+}
+
+function validAppClientId(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length >= 1
+    && value.length <= 255
+    && value === value.trim()
+    && /^[\x21-\x7e]+$/.test(value);
+}
+
+async function resolveGovernanceRepositoryAccess(
+  env: ControlRuntimeEnv,
+  request:
+    | StewardRuntimeControlPrepareRequestV2
+    | StewardRuntimeControlApplyNextRequestV2
+    | StewardRuntimeControlRecoverRequestV2,
+  dependencies: ControlRuntimeDependencies,
+  parentSignal?: AbortSignal,
+): Promise<GovernanceRepositoryAccess> {
+  const organization = expectedOrganization(env);
+  const subject = request.binding.workItem.subject;
+  const [queuedOwner] = subject.repositoryFullName.split('/');
+  if (queuedOwner?.toLowerCase() !== organization.login.toLowerCase()) {
+    throw new RepositoryScopeError('denied');
+  }
+  const appId = positiveSafeInteger(Number(env.GITHUB_APP_ID));
+  if (appId === null || !env.GITHUB_APP_PRIVATE_KEY) {
+    throw new RepositoryScopeError('unavailable');
+  }
+
+  let appToken: string;
+  try {
+    appToken = await dependencies.appToken(env);
+  } catch {
+    throw new RepositoryScopeError('unavailable');
+  }
+  const app = plainRecord(await githubJson(
+    dependencies,
+    'https://api.github.com/app',
+    appToken,
+    parentSignal === undefined ? {} : { parentSignal },
+  ));
+  const identity: ControlRuntimeIdentity = {
+    appId,
+    clientId: String(app?.client_id ?? ''),
+    appSlug: String(app?.slug ?? '').toLowerCase(),
+  };
+  if (
+    app === null
+    || positiveSafeInteger(app.id) !== appId
+    || !validAppClientId(identity.clientId)
+    || !validAppSlug(identity.appSlug)
+  ) {
+    throw new RepositoryScopeError('unavailable');
+  }
+
+  const expectedInstallationId = request.binding.workItem.installationId;
+  const installation = plainRecord(await githubJson(
+    dependencies,
+    `https://api.github.com/app/installations/${expectedInstallationId}`,
+    appToken,
+    parentSignal === undefined ? {} : { parentSignal },
+  ));
+  const account = plainRecord(installation?.account);
+  if (
+    installation === null
+    || account === null
+    || positiveSafeInteger(installation.id) !== expectedInstallationId
+    || positiveSafeInteger(installation.app_id) !== appId
+    || positiveSafeInteger(account.id) !== organization.id
+    || String(account.login ?? '').toLowerCase() !== organization.login.toLowerCase()
+    || account.type !== 'Organization'
+    || installation.target_type !== 'Organization'
+    || installation.suspended_at !== null
+  ) {
+    throw new RepositoryScopeError('denied');
+  }
+
+  const installationToken = await createRepositoryInstallationToken(
+    dependencies,
+    appToken,
+    expectedInstallationId,
+    subject.repositoryId,
+    {
+      contents: 'read',
+      metadata: 'read',
+      pull_requests: 'read',
+    },
+    parentSignal,
+  );
+  const repository = plainRecord(await githubJson(
+    dependencies,
+    `https://api.github.com/repositories/${subject.repositoryId}`,
+    installationToken,
+    parentSignal === undefined ? {} : { parentSignal },
+  ));
+  const owner = plainRecord(repository?.owner);
+  const repositoryFullName = String(repository?.full_name ?? '');
+  if (
+    repository === null
+    || owner === null
+    || positiveSafeInteger(repository.id) !== subject.repositoryId
+    || positiveSafeInteger(owner.id) !== organization.id
+    || String(owner.login ?? '').toLowerCase() !== organization.login.toLowerCase()
+    || owner.type !== 'Organization'
+    || repositoryFullName.split('/').length !== 2
+    || repositoryFullName.split('/')[0]?.toLowerCase() !== organization.login.toLowerCase()
+  ) {
+    throw new RepositoryScopeError('denied');
+  }
+
+  return {
+    identity,
+    repositoryFullName,
+    client: new GitHubRepositoryClient(createGitHubRestTransport({
+      token: installationToken,
+      fetch: boundedGitHubRestFetch(dependencies, parentSignal),
+      userAgent: 'splrad-steward-control',
+    })),
+  };
+}
 
 export async function verifyDiagnosticsRepositoryScope(
   env: ControlRuntimeEnv,
@@ -430,6 +642,7 @@ export async function verifyDiagnosticsRepositoryScope(
       appToken,
       installationId,
       subject.repositoryId,
+      { metadata: 'read' },
       parentSignal,
     );
   } catch (error) {
@@ -480,6 +693,440 @@ function controlRevision(
   };
 }
 
+function sameControlRevision(
+  left: StewardRuntimeControlRevisionV1,
+  right: StewardRuntimeControlRevisionV1,
+): boolean {
+  return left.stewardCommit === right.stewardCommit
+    && left.workerVersionId === right.workerVersionId
+    && left.workerVersionTag === right.workerVersionTag
+    && left.workerVersionCreatedAt === right.workerVersionCreatedAt;
+}
+
+function canonicalV2Response(body: string): Response {
+  return new Response(body, {
+    status: 200,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+    },
+  });
+}
+
+function splitRepositoryFullName(fullName: string): {
+  readonly owner: string;
+  readonly repository: string;
+} {
+  const [owner, repository, extra] = fullName.split('/');
+  if (!owner || !repository || extra !== undefined) {
+    throw new Error('invalid-live-repository-full-name');
+  }
+  return { owner, repository };
+}
+
+function runtimeResolvedContext(
+  plan: ControlPlan,
+): StewardRuntimeControlResolvedContextV2 {
+  return {
+    repositoryId: plan.subject.repository.id,
+    repositoryFullName: `${plan.subject.repository.owner}/${plan.subject.repository.name}`,
+    pullRequestNumber: plan.subject.pullRequest.number,
+    headSha: plan.subject.pullRequest.headSha,
+    defaultBranch: plan.subject.repository.defaultBranch,
+    manifestBlobSha: plan.subject.manifest.blobSha,
+    configDigest: plan.subject.manifest.configDigest,
+    pullRequestDigest: plan.pullRequestDigest,
+  };
+}
+
+function runtimeTerminalOutcome(
+  plan: ControlPlan,
+): StewardRuntimeControlPlanBindingV2['terminalOutcome'] {
+  return plan.outcome.state === 'passed' || plan.outcome.state === 'failed'
+    ? 'settled'
+    : plan.outcome.state === 'pending'
+      ? 'pending-external'
+      : plan.outcome.state === 'ignored'
+        ? 'ignored'
+        : 'action-required';
+}
+
+async function runtimePlanBinding(
+  plan: ControlPlan,
+  generation: number,
+): Promise<StewardRuntimeControlPlanBindingV2> {
+  const canonicalPlan = canonicalControlJson(plan);
+  const bytes = new TextEncoder().encode(canonicalPlan);
+  const mutations: StewardRuntimeControlMutationBindingV2[] = plan.mutations.map(
+    (mutation, ordinal) => ({
+      ordinal,
+      key: mutation.key,
+      mutationType: mutation.type,
+      principal: mutation.principal,
+      recoveryPolicy: mutation.principal === 'human'
+        ? 'live-evidence-or-action-required'
+        : 'live-evidence',
+      desiredDigest: mutation.desiredDigest,
+    }),
+  );
+  return {
+    contractVersion: 1,
+    planId: plan.planId,
+    planDigest: await controlJsonDigest(plan),
+    preparedGeneration: generation,
+    terminalOutcome: runtimeTerminalOutcome(plan),
+    canonicalPlanByteLength: bytes.byteLength,
+    canonicalPlanBase64: encodeBase64Utf8(canonicalPlan),
+    mutationCount: mutations.length,
+    mutations,
+  };
+}
+
+function controlRoute(
+  request:
+    | StewardRuntimeControlPrepareRequestV2
+    | StewardRuntimeControlApplyNextRequestV2,
+  repositoryFullName: string,
+  expectedHeadSha?: string,
+) {
+  const { owner, repository } = splitRepositoryFullName(repositoryFullName);
+  return {
+    repository: {
+      id: request.binding.workItem.subject.repositoryId,
+      owner,
+      name: repository,
+    },
+    pullRequest: {
+      number: request.binding.workItem.subject.pullRequestNumber,
+      ...(expectedHeadSha === undefined ? {} : { expectedHeadSha }),
+    },
+    attemptId: `${request.binding.workItem.cause.deliveryId}:${request.binding.generation}`,
+  };
+}
+
+function boundedRetryAfter(value: number | undefined, fallback: number): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) return fallback;
+  return Math.min(900, Number(value));
+}
+
+function validHumanCopilotToken(value: string): boolean {
+  return value.length >= 20
+    && value.length <= 4_096
+    && value === value.trim()
+    && /^[\x21-\x7e]+$/.test(value)
+    && !value.startsWith('ghs_')
+    && value.split('.').length !== 3;
+}
+
+function createCopilotReviewRequestPort(
+  token: string,
+  dependencies: ControlRuntimeDependencies,
+  parentSignal?: AbortSignal,
+): CopilotReviewRequestPort {
+  const client = new GitHubRepositoryClient(createGitHubRestTransport({
+    token,
+    fetch: boundedGitHubRestFetch(dependencies, parentSignal),
+    userAgent: 'splrad-steward-control',
+  }));
+  return {
+    async request(owner, repository, pullRequestNumber) {
+      await client.requestReviewers({
+        owner,
+        repository,
+        number: pullRequestNumber,
+        reviewers: ['copilot-pull-request-reviewer[bot]'],
+      });
+    },
+  };
+}
+
+async function prepareGovernanceV2(
+  request: StewardRuntimeControlPrepareRequestV2,
+  env: ControlRuntimeEnv,
+  dependencies: ControlRuntimeDependencies,
+  parentSignal?: AbortSignal,
+): Promise<Response> {
+  let revision: StewardRuntimeControlRevisionV1;
+  try {
+    revision = controlRevision(env);
+  } catch {
+    return jsonResponse(503, { error: 'control-revision-unavailable' });
+  }
+  let access: GovernanceRepositoryAccess;
+  try {
+    access = await resolveGovernanceRepositoryAccess(
+      env,
+      request,
+      dependencies,
+      parentSignal,
+    );
+  } catch (error) {
+    if (error instanceof RepositoryScopeError) {
+      if (error.kind === 'denied') {
+        return jsonResponse(403, { error: 'repository-access-denied' });
+      }
+      if (error.kind === 'rate-limited') {
+        const response = jsonResponse(429, { error: 'github-rate-limited' });
+        if (error.retryAfter) response.headers.set('retry-after', error.retryAfter);
+        return response;
+      }
+    }
+    return jsonResponse(503, { error: 'repository-scope-unavailable' });
+  }
+  try {
+    const context = await resolvePullRequestControlContext(
+      controlRoute(request, access.repositoryFullName),
+      access.identity,
+      access.client,
+    );
+    const reviews = context.manifest.manifest.features.copilotReview
+      ? await access.client.listPullRequestReviews(
+          context.subject.repository.owner,
+          context.subject.repository.name,
+          context.subject.pullRequest.number,
+        )
+      : [];
+    const decision = await planGovernanceCopilotReview(context, reviews);
+    const receipt = await buildStewardRuntimeControlPreparedReceiptV2({
+      binding: request.binding,
+      resolvedContext: runtimeResolvedContext(decision.plan),
+      plan: await runtimePlanBinding(decision.plan, request.binding.generation),
+      controlRevision: revision,
+    });
+    return canonicalV2Response(
+      await canonicalStewardRuntimeControlPreparedReceiptV2Json(receipt),
+    );
+  } catch {
+    return jsonResponse(503, { error: 'governance-prepare-unavailable' });
+  }
+}
+
+async function mutationResponseV2(
+  request: StewardRuntimeControlApplyNextRequestV2,
+  revision: StewardRuntimeControlRevisionV1,
+  result: StewardRuntimeControlMutationResultV2,
+): Promise<Response> {
+  const receipt = await buildStewardRuntimeControlMutationReceiptV2({
+    binding: request.binding,
+    resolvedContext: request.resolvedContext,
+    planId: request.plan.planId,
+    planDigest: request.plan.planDigest,
+    mutation: request.mutation,
+    result,
+    controlRevision: revision,
+  });
+  return canonicalV2Response(
+    await canonicalStewardRuntimeControlMutationReceiptV2Json(receipt),
+  );
+}
+
+async function applyGovernanceV2(
+  request: StewardRuntimeControlApplyNextRequestV2,
+  plan: ControlPlan,
+  env: ControlRuntimeEnv,
+  dependencies: ControlRuntimeDependencies,
+  parentSignal?: AbortSignal,
+): Promise<Response> {
+  let revision: StewardRuntimeControlRevisionV1;
+  try {
+    revision = controlRevision(env);
+  } catch {
+    return jsonResponse(503, { error: 'control-revision-unavailable' });
+  }
+  if (!sameControlRevision(revision, request.expectedControlRevision)) {
+    return jsonResponse(409, { error: 'control-revision-mismatch' });
+  }
+
+  let access: GovernanceRepositoryAccess;
+  try {
+    access = await resolveGovernanceRepositoryAccess(
+      env,
+      request,
+      dependencies,
+      parentSignal,
+    );
+  } catch {
+    return await mutationResponseV2(request, revision, {
+      state: 'not-attempted',
+      resourceId: null,
+      retryAfterSeconds: 30,
+    });
+  }
+
+  let context;
+  let reviews;
+  try {
+    context = await resolvePullRequestControlContext(
+      controlRoute(
+        request,
+        access.repositoryFullName,
+        plan.subject.pullRequest.headSha,
+      ),
+      access.identity,
+      access.client,
+    );
+    reviews = await access.client.listPullRequestReviews(
+      context.subject.repository.owner,
+      context.subject.repository.name,
+      context.subject.pullRequest.number,
+    );
+  } catch (error) {
+    if (
+      error instanceof ControlPullRequestHeadMismatchError
+      || error instanceof ControlPullRequestStateMismatchError
+    ) {
+      return await mutationResponseV2(request, revision, {
+        state: 'stale-plan',
+        resourceId: null,
+        retryAfterSeconds: null,
+      });
+    }
+    return await mutationResponseV2(request, revision, {
+      state: 'not-attempted',
+      resourceId: null,
+      retryAfterSeconds: 30,
+    });
+  }
+
+  const inspection = await inspectGovernanceCopilotReviewMutation(
+    plan,
+    context,
+    reviews,
+  );
+  if (inspection.state !== 'ready') {
+    return await mutationResponseV2(request, revision, {
+      state: inspection.state,
+      resourceId: null,
+      retryAfterSeconds: null,
+    });
+  }
+
+  const humanToken = (
+    dependencies.copilotReviewToken?.(env)
+    ?? env.COPILOT_REVIEW_REQUEST_TOKEN
+    ?? ''
+  );
+  if (!validHumanCopilotToken(humanToken)) {
+    return await mutationResponseV2(request, revision, {
+      state: 'not-attempted',
+      resourceId: null,
+      retryAfterSeconds: 300,
+    });
+  }
+  const copilotReviewRequest = createCopilotReviewRequestPort(
+    humanToken,
+    dependencies,
+    parentSignal,
+  );
+  try {
+    await copilotReviewRequest.request(
+      context.subject.repository.owner,
+      context.subject.repository.name,
+      context.subject.pullRequest.number,
+    );
+    return await mutationResponseV2(request, revision, {
+      state: 'applied',
+      resourceId: null,
+      retryAfterSeconds: null,
+    });
+  } catch (error) {
+    if (error instanceof GitHubApiError && error.rateLimited) {
+      return await mutationResponseV2(request, revision, {
+        state: 'not-attempted',
+        resourceId: null,
+        retryAfterSeconds: boundedRetryAfter(error.retryAfterSeconds, 30),
+      });
+    }
+    return await mutationResponseV2(request, revision, {
+      state: 'unknown',
+      resourceId: null,
+      retryAfterSeconds: null,
+    });
+  }
+}
+
+async function recoveryResponseV2(
+  request: StewardRuntimeControlRecoverRequestV2,
+  revision: StewardRuntimeControlRevisionV1,
+  result: StewardRuntimeControlRecoveryResultV2,
+): Promise<Response> {
+  const receipt = await buildStewardRuntimeControlRecoveryReceiptV2({
+    binding: request.binding,
+    resolvedContext: request.resolvedContext,
+    planId: request.plan.planId,
+    planDigest: request.plan.planDigest,
+    mutation: request.mutation,
+    result,
+    controlRevision: revision,
+  });
+  return canonicalV2Response(
+    await canonicalStewardRuntimeControlRecoveryReceiptV2Json(receipt),
+  );
+}
+
+async function recoverGovernanceV2(
+  request: StewardRuntimeControlRecoverRequestV2,
+  plan: ControlPlan,
+  env: ControlRuntimeEnv,
+  dependencies: ControlRuntimeDependencies,
+  parentSignal?: AbortSignal,
+): Promise<Response> {
+  let revision: StewardRuntimeControlRevisionV1;
+  try {
+    revision = controlRevision(env);
+  } catch {
+    return jsonResponse(503, { error: 'control-revision-unavailable' });
+  }
+  if (!sameControlRevision(revision, request.expectedControlRevision)) {
+    return jsonResponse(409, { error: 'control-revision-mismatch' });
+  }
+  let access: GovernanceRepositoryAccess;
+  try {
+    access = await resolveGovernanceRepositoryAccess(
+      env,
+      request,
+      dependencies,
+      parentSignal,
+    );
+  } catch {
+    return await recoveryResponseV2(request, revision, {
+      state: 'unknown',
+      resourceId: null,
+    });
+  }
+  try {
+    const { owner, repository } = splitRepositoryFullName(
+      access.repositoryFullName,
+    );
+    const [pull, reviews] = await Promise.all([
+      access.client.getPullRequest(
+        owner,
+        repository,
+        request.binding.workItem.subject.pullRequestNumber,
+      ),
+      access.client.listPullRequestReviews(
+        owner,
+        repository,
+        request.binding.workItem.subject.pullRequestNumber,
+      ),
+    ]);
+    const inspection = await inspectGovernanceCopilotReviewRecovery(
+      plan,
+      pull,
+      reviews,
+    );
+    return await recoveryResponseV2(request, revision, {
+      state: inspection.state,
+      resourceId: null,
+    });
+  } catch {
+    return await recoveryResponseV2(request, revision, {
+      state: 'unknown',
+      resourceId: null,
+    });
+  }
+}
+
 export function createControlRuntimeHandler(
   dependencies: ControlRuntimeDependencies = defaultDependencies,
 ): ControlRuntimeHandler {
@@ -516,17 +1163,56 @@ export function createControlRuntimeHandler(
       }
 
       if (url.pathname === reconcilePathV2) {
+        let input: StewardRuntimeControlRequestV2;
         try {
-          await parseControlRequestV2(parsed);
+          input = await parseControlRequestV2(parsed);
         } catch {
           return jsonResponse(400, { error: 'invalid-control-request' });
         }
 
-        // The strict v2 transport and phase separation are available before
-        // semantic governance is allowed to read or mutate GitHub. Returning
-        // an empty plan or a terminal success here would falsely acknowledge
-        // work that the real handler has not performed.
-        return jsonResponse(501, { error: 'control-operation-not-implemented' });
+        if (input.binding.objective !== 'governance') {
+          return jsonResponse(501, {
+            error: 'control-operation-not-implemented',
+          });
+        }
+
+        try {
+          if (input.phase === 'prepare') {
+            return await prepareGovernanceV2(
+              input,
+              env,
+              dependencies,
+              request.signal,
+            );
+          }
+
+          const plan = await parseCanonicalControlPlanJson(
+            decodedCanonicalPlanJsonV2(input),
+          );
+          if (plan.objective !== 'governance') {
+            return jsonResponse(400, { error: 'invalid-control-request' });
+          }
+          if (input.phase === 'apply-next') {
+            return await applyGovernanceV2(
+              input,
+              plan,
+              env,
+              dependencies,
+              request.signal,
+            );
+          }
+          return await recoverGovernanceV2(
+            input,
+            plan,
+            env,
+            dependencies,
+            request.signal,
+          );
+        } catch {
+          return jsonResponse(503, {
+            error: 'governance-control-unavailable',
+          });
+        }
       }
 
       if (url.pathname === diagnosticsPath) {

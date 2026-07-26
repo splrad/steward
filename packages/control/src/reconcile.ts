@@ -16,6 +16,7 @@ import type {
   ClassificationLease,
   ControlMutationPorts,
   ControlReadPort,
+  ControlRepositoryReadPort,
   ControlReconcileResult,
   ControlRuntimeIdentity,
   InstallationMutationPort,
@@ -108,7 +109,7 @@ function validateRoute(route: PullRequestControlRoute): void {
 async function bindLivePullRequestRoute(
   route: PullRequestControlRoute,
   identityInput: ControlRuntimeIdentity,
-  read: ControlReadPort,
+  read: ControlRepositoryReadPort,
 ): Promise<BoundPullRequestRoute> {
   validateRoute(route);
   const identity = validatedRuntimeIdentity(identityInput);
@@ -169,6 +170,15 @@ function liveControlContext(bound: BoundPullRequestRoute, manifest: LoadedManife
   assertControlSubject(context.subject);
   assertPullRequestControlContext(context);
   return context;
+}
+
+export async function resolvePullRequestControlContext(
+  route: PullRequestControlRoute,
+  identity: ControlRuntimeIdentity,
+  read: ControlRepositoryReadPort,
+): Promise<PullRequestControlContext> {
+  const bound = await bindLivePullRequestRoute(route, identity, read);
+  return liveControlContext(bound, await bound.binding.loadManifest());
 }
 
 function ownedClassificationChecks(
@@ -378,7 +388,7 @@ function combinedFailure(primary: unknown, reporting: unknown): Error {
 export async function reconcileClassification(
   route: PullRequestControlRoute,
   ports: ControlPorts,
-): Promise<ControlReconcileResult> {
+): Promise<ControlReconcileResult<'classification'>> {
   const bound = await bindLivePullRequestRoute(route, ports.identity, ports.read);
   let lease: ClassificationLease | null = null;
   const acceptedExternalIds = new Set<string>();
@@ -449,7 +459,7 @@ export async function reconcileClassification(
 export async function reconcileDcoAdvisory(
   route: PullRequestControlRoute,
   ports: ControlPorts,
-): Promise<ControlReconcileResult> {
+): Promise<ControlReconcileResult<'dco-advisory'>> {
   const bound = await bindLivePullRequestRoute(route, ports.identity, ports.read);
   const context = liveControlContext(bound, await bound.binding.loadManifest());
   let snapshot = null;

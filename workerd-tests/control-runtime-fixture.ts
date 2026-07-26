@@ -5,6 +5,8 @@ export const controlRuntimeVersionMetadata = {
 } as const;
 
 export const controlRuntimeAppId = 4_243_096;
+export const controlRuntimeAppClientId = 'Iv23liuSr0qd4WLJdZhH';
+export const controlRuntimeAppSlug = 'splrad-steward';
 export const controlRuntimeInstallationId = 145_952_003;
 export const controlRuntimeOrganization = {
   id: 302_208_797,
@@ -16,5 +18,8 @@ export const controlRuntimeDiagnosticsSubject = {
 } as const;
 export const controlRuntimeCanonicalRepositoryFullName =
   'splrad/Steward-Sandbox-Install-E2E';
+export const controlRuntimeDefaultBranch = 'main';
+export const controlRuntimeManifestBlobSha = 'c'.repeat(40);
+export const controlRuntimePullRequestHeadSha = 'b'.repeat(40);
 export const controlRuntimeInstallationToken =
   'ghs_4243096_header.payload-signature';

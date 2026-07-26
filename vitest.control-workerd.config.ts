@@ -6,11 +6,16 @@ import {
 } from 'node:crypto';
 import {
   controlRuntimeAppId,
+  controlRuntimeAppClientId,
+  controlRuntimeAppSlug,
   controlRuntimeCanonicalRepositoryFullName,
+  controlRuntimeDefaultBranch,
   controlRuntimeDiagnosticsSubject,
   controlRuntimeInstallationId,
   controlRuntimeInstallationToken,
+  controlRuntimeManifestBlobSha,
   controlRuntimeOrganization,
+  controlRuntimePullRequestHeadSha,
   controlRuntimeVersionMetadata,
 } from './workerd-tests/control-runtime-fixture.js';
 
@@ -120,15 +125,74 @@ function assertAppAuthorization(request: Request): void {
 
 async function githubOutboundService(request: Request): Promise<Response> {
   const url = new URL(request.url);
+  const appPath = '/app';
   const installationPath =
     `/repos/${controlRuntimeOrganization.login}`
     + `/${controlRuntimeDiagnosticsSubject.repositoryFullName.split('/')[1]}`
     + '/installation';
+  const installationByIdPath =
+    `/app/installations/${controlRuntimeInstallationId}`;
   const tokenPath =
     `/app/installations/${controlRuntimeInstallationId}/access_tokens`;
   const repositoryPath =
     `/repos/${controlRuntimeOrganization.login}`
     + `/${controlRuntimeDiagnosticsSubject.repositoryFullName.split('/')[1]}`;
+  const governanceRepositoryPath =
+    `/repos/${controlRuntimeCanonicalRepositoryFullName}`;
+  const governancePullRequestPath =
+    `${governanceRepositoryPath}/pulls/6`;
+  const governanceManifestPath =
+    `${governanceRepositoryPath}/contents/.github/steward.json`;
+  const governanceReviewsPath =
+    `${governancePullRequestPath}/reviews`;
+
+  if (
+    url.origin === 'https://api.github.com'
+    && url.pathname === appPath
+    && url.search === ''
+  ) {
+    if (request.method !== 'GET') {
+      throw new Error('Unexpected GitHub App method');
+    }
+    assertAppAuthorization(request);
+    assertGitHubHeaders(
+      request,
+      request.headers.get('authorization') ?? '',
+      false,
+    );
+    return jsonResponse({
+      id: controlRuntimeAppId,
+      client_id: controlRuntimeAppClientId,
+      slug: controlRuntimeAppSlug,
+    }, 200);
+  }
+
+  if (
+    url.origin === 'https://api.github.com'
+    && url.pathname === installationByIdPath
+    && url.search === ''
+  ) {
+    if (request.method !== 'GET') {
+      throw new Error('Unexpected GitHub installation-by-ID method');
+    }
+    assertAppAuthorization(request);
+    assertGitHubHeaders(
+      request,
+      request.headers.get('authorization') ?? '',
+      false,
+    );
+    return jsonResponse({
+      id: controlRuntimeInstallationId,
+      app_id: controlRuntimeAppId,
+      account: {
+        id: controlRuntimeOrganization.id,
+        login: controlRuntimeOrganization.login,
+        type: 'Organization',
+      },
+      target_type: 'Organization',
+      suspended_at: null,
+    }, 200);
+  }
 
   if (
     url.origin === 'https://api.github.com'
@@ -171,22 +235,60 @@ async function githubOutboundService(request: Request): Promise<Response> {
       request.headers.get('authorization') ?? '',
       true,
     );
-    const body = JSON.parse(await request.text()) as unknown;
+    const body = JSON.parse(await request.text()) as {
+      repository_ids?: unknown;
+      permissions?: unknown;
+    };
+    const diagnosticPermissions = { metadata: 'read' };
+    const governancePermissions = {
+      contents: 'read',
+      metadata: 'read',
+      pull_requests: 'read',
+    };
+    const permissions = JSON.stringify(body.permissions);
     if (
-      JSON.stringify(body) !== JSON.stringify({
-        repository_ids: [controlRuntimeDiagnosticsSubject.repositoryId],
-        permissions: { metadata: 'read' },
-      })
+      JSON.stringify(body.repository_ids)
+        !== JSON.stringify([controlRuntimeDiagnosticsSubject.repositoryId])
+      || (
+        permissions !== JSON.stringify(diagnosticPermissions)
+        && permissions !== JSON.stringify(governancePermissions)
+      )
     ) {
       throw new Error('Unexpected GitHub installation-token request body');
     }
     return jsonResponse({
       token: controlRuntimeInstallationToken,
       expires_at: '2026-07-24T03:00:00Z',
-      permissions: { metadata: 'read' },
+      permissions: body.permissions,
       repository_selection: 'selected',
       repositories: [{ id: controlRuntimeDiagnosticsSubject.repositoryId }],
     }, 201);
+  }
+
+  if (
+    url.origin === 'https://api.github.com'
+    && url.pathname
+      === `/repositories/${controlRuntimeDiagnosticsSubject.repositoryId}`
+    && url.search === ''
+  ) {
+    if (request.method !== 'GET') {
+      throw new Error('Unexpected GitHub repository-by-ID method');
+    }
+    assertGitHubHeaders(
+      request,
+      `Bearer ${controlRuntimeInstallationToken}`,
+      false,
+    );
+    return jsonResponse({
+      id: controlRuntimeDiagnosticsSubject.repositoryId,
+      full_name: controlRuntimeCanonicalRepositoryFullName,
+      default_branch: controlRuntimeDefaultBranch,
+      owner: {
+        id: controlRuntimeOrganization.id,
+        login: controlRuntimeOrganization.login,
+        type: 'Organization',
+      },
+    }, 200);
   }
 
   if (
@@ -211,6 +313,124 @@ async function githubOutboundService(request: Request): Promise<Response> {
         type: 'Organization',
       },
     }, 200);
+  }
+
+  if (
+    url.origin === 'https://api.github.com'
+    && url.pathname === governanceRepositoryPath
+    && url.search === ''
+  ) {
+    if (request.method !== 'GET') {
+      throw new Error('Unexpected Governance repository method');
+    }
+    assertGitHubHeaders(
+      request,
+      `Bearer ${controlRuntimeInstallationToken}`,
+      false,
+    );
+    return jsonResponse({
+      id: controlRuntimeDiagnosticsSubject.repositoryId,
+      full_name: controlRuntimeCanonicalRepositoryFullName,
+      default_branch: controlRuntimeDefaultBranch,
+    }, 200);
+  }
+
+  if (
+    url.origin === 'https://api.github.com'
+    && url.pathname === governancePullRequestPath
+    && url.search === ''
+  ) {
+    if (request.method !== 'GET') {
+      throw new Error('Unexpected Governance pull-request method');
+    }
+    assertGitHubHeaders(
+      request,
+      `Bearer ${controlRuntimeInstallationToken}`,
+      false,
+    );
+    return jsonResponse({
+      number: 6,
+      state: 'open',
+      title: 'chore: update dependency',
+      body: '',
+      user: {
+        login: 'dependabot[bot]',
+        type: 'Bot',
+      },
+      labels: [],
+      base: {
+        ref: controlRuntimeDefaultBranch,
+        sha: 'd'.repeat(40),
+      },
+      head: {
+        ref: 'dependabot/npm/example-1.0.0',
+        sha: controlRuntimePullRequestHeadSha,
+      },
+      requested_reviewers: [],
+    }, 200);
+  }
+
+  if (
+    url.origin === 'https://api.github.com'
+    && url.pathname === governanceManifestPath
+    && url.searchParams.get('ref') === controlRuntimeDefaultBranch
+    && [...url.searchParams.keys()].length === 1
+  ) {
+    if (request.method !== 'GET') {
+      throw new Error('Unexpected Governance Manifest method');
+    }
+    assertGitHubHeaders(
+      request,
+      `Bearer ${controlRuntimeInstallationToken}`,
+      false,
+    );
+    const manifest = {
+      schemaVersion: 1,
+      automation: {
+        githubApp: {
+          clientId: controlRuntimeAppClientId,
+          slug: controlRuntimeAppSlug,
+        },
+        maintainers: {
+          source: 'organization-team',
+          teamSlug: 'maintainers',
+        },
+        language: 'zh-CN',
+      },
+      features: {
+        prAutomation: false,
+        classification: false,
+        dcoAdvisory: false,
+        governance: true,
+        copilotReview: true,
+        release: false,
+        webhookRelay: false,
+      },
+    };
+    return jsonResponse({
+      type: 'file',
+      encoding: 'base64',
+      content: Buffer.from(JSON.stringify(manifest)).toString('base64'),
+      sha: controlRuntimeManifestBlobSha,
+    }, 200);
+  }
+
+  if (
+    url.origin === 'https://api.github.com'
+    && url.pathname === governanceReviewsPath
+    && url.searchParams.get('page') === '1'
+    && url.searchParams.get('per_page') === '100'
+    && [...url.searchParams.keys()].length === 2
+  ) {
+    if (request.method !== 'GET') {
+      throw new Error('Unexpected Governance reviews method');
+    }
+    assertGitHubHeaders(
+      request,
+      `Bearer ${controlRuntimeInstallationToken}`,
+      false,
+    );
+    return jsonResponse([], 200);
   }
 
   throw new Error(
@@ -241,5 +461,18 @@ export default defineConfig({
   ],
   test: {
     include: ['workerd-tests/control-runtime.workerd.ts'],
+    deps: {
+      optimizer: {
+        ssr: {
+          enabled: true,
+          include: [
+            'ajv',
+            'ajv/dist/2020',
+            'ajv/dist/2020.js',
+            'ajv-formats',
+          ],
+        },
+      },
+    },
   },
 });

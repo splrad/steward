@@ -17,8 +17,8 @@ import type {
 
 export const controlPlanContractVersion = 1 as const;
 
-export type ControlObjective = 'classification' | 'dco-advisory';
-export type ControlPrincipal = 'installation';
+export type ControlObjective = 'governance' | 'classification' | 'dco-advisory';
+export type ControlPrincipal = 'installation' | 'human';
 export type ControlOperationState = 'passed' | 'pending' | 'failed' | 'action_required' | 'ignored';
 
 export interface ControlPlanSubject {
@@ -76,8 +76,10 @@ export interface ClassificationLease {
   appSlug: string;
 }
 
-export interface ControlOperationResult {
-  operation: ControlObjective;
+export interface ControlOperationResult<
+  Objective extends ControlObjective = ControlObjective,
+> {
+  operation: Objective;
   state: ControlOperationState;
   summary: string;
   details?: unknown;
@@ -146,13 +148,21 @@ export interface DeleteIssueCommentIntent extends ControlMutationIntentBase {
   observedBodyDigest: string;
 }
 
+export interface RequestCopilotReviewIntent extends ControlMutationIntentBase {
+  type: 'copilot-review.request';
+  key: 'copilot-review:request';
+  principal: 'human';
+  observedEvidenceDigest: string;
+}
+
 export type ControlMutationIntent =
   | EnsureRepositoryLabelIntent
   | AddIssueLabelsIntent
   | RemoveIssueLabelIntent
   | CreateCheckRunIntent
   | UpdateCheckRunIntent
-  | DeleteIssueCommentIntent;
+  | DeleteIssueCommentIntent
+  | RequestCopilotReviewIntent;
 
 export type ControlMutation = ControlMutationIntent & {
   desiredDigest: string;
@@ -170,9 +180,11 @@ export interface ControlPlan {
   mutations: ControlMutation[];
 }
 
-export interface ControlDecision {
+export interface ControlDecision<
+  Objective extends ControlObjective = ControlObjective,
+> {
   plan: ControlPlan;
-  result: ControlOperationResult;
+  result: ControlOperationResult<Objective>;
 }
 
 export interface ControlMutationReceipt {
@@ -183,7 +195,9 @@ export interface ControlMutationReceipt {
   resourceId?: number;
 }
 
-export interface ControlReconcileResult extends ControlDecision {
+export interface ControlReconcileResult<
+  Objective extends ControlObjective = ControlObjective,
+> extends ControlDecision<Objective> {
   receipts: ControlMutationReceipt[];
 }
 

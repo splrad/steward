@@ -45,7 +45,7 @@ The Actions-first `activate` module, adoption parser, and adoption source verifi
 - `packages/core/`, `packages/manifest/`, `packages/github/`, and `packages/control/`: runtime-neutral contracts, policy, transport adapters, and Control kernel.
 - `packages/ingress/`: bounded public-role GitHub webhook verification and durable Queue producer; it has no live route yet.
 - `packages/coordinator/`: private Queue consumer, fresh-wakeup producer, and per-PR SQLite Durable Object host.
-- `packages/control-runtime/`: private versioned Worker adapter; real PR reconciliation is still fail-closed.
+- `packages/control-runtime/`: private versioned Worker adapter; Control v2 now implements the narrow machine-authored Copilot review-request handler, while unsupported objectives remain fail-closed.
 - `packages/diagnostics/`: Access-protected, read-only runtime evidence gateway with private Control binding and separate Cloudflare read credentials.
 - `packages/relay/`: isolated legacy migration fixture and historical E2E evidence; deployment is manual-only and it is not a central-runtime rollback target.
 - `packages/cli/`: lifecycle planning, bootstrap, upgrade, and read-only Doctor surfaces.

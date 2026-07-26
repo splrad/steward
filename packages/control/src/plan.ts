@@ -160,6 +160,7 @@ function assertMutationEnvelope(value: unknown, index: number): void {
     'expectedOwnerLogin',
     'observedLabelsDigest',
     'observedCheckExternalId',
+    'observedEvidenceDigest',
   ]);
   const type = stringField(base, 'type', path);
   stringField(base, 'key', path);
@@ -233,6 +234,18 @@ function assertMutationEnvelope(value: unknown, index: number): void {
     stringField(base, 'observedBodyDigest', path);
     return;
   }
+  if (type === 'copilot-review.request') {
+    strictRecord(value, path, [
+      'type',
+      'key',
+      'principal',
+      'desiredDigest',
+      'preconditions',
+      'observedEvidenceDigest',
+    ]);
+    stringField(base, 'observedEvidenceDigest', path);
+    return;
+  }
   throw new TypeError(`${path}/type is unsupported`);
 }
 
@@ -252,7 +265,9 @@ function assertPlanEnvelope(value: unknown): asserts value is ControlPlan {
   stringField(plan, 'snapshotDigest', '$');
   stringField(plan, 'pullRequestDigest', '$');
   const objective = stringField(plan, 'objective', '$');
-  if (!['classification', 'dco-advisory'].includes(objective)) throw new TypeError('$/objective is unsupported');
+  if (!['governance', 'classification', 'dco-advisory'].includes(objective)) {
+    throw new TypeError('$/objective is unsupported');
+  }
   assertSubjectEnvelope(plan.subject);
   const outcome = strictRecord(plan.outcome, '$/outcome', ['state', 'summary']);
   const state = stringField(outcome, 'state', '$/outcome');
@@ -356,10 +371,15 @@ function assertObjectiveMutations(plan: ControlPlan): void {
   for (const mutation of plan.mutations) {
     const allowed = plan.objective === 'classification'
       ? ['repository-label.ensure', 'issue-labels.add', 'issue-label.remove', 'check-run.upsert'].includes(mutation.type)
-      : mutation.type === 'issue-comment.delete';
+      : plan.objective === 'dco-advisory'
+        ? mutation.type === 'issue-comment.delete'
+        : mutation.type === 'copilot-review.request';
     if (!allowed) {
       throw new Error(`Control objective ${plan.objective} does not allow mutation ${mutation.type}`);
     }
+  }
+  if (plan.objective === 'governance' && plan.mutations.length > 1) {
+    throw new Error('Governance Control plans may contain at most one Copilot review request');
   }
 }
 
@@ -425,9 +445,30 @@ function assertClassificationCheckProtocol(plan: ControlPlan): void {
   }
 }
 
+function assertGovernanceCopilotRequestProtocol(plan: ControlPlan): void {
+  if (plan.objective !== 'governance') return;
+  if (!['pending', 'ignored', 'action_required'].includes(plan.outcome.state)) {
+    throw new Error('Governance Copilot request plans must not claim a terminal gate result');
+  }
+  const mutation = plan.mutations[0];
+  if (mutation !== undefined && (
+    plan.mutations.length !== 1
+    || mutation.type !== 'copilot-review.request'
+    || mutation.key !== 'copilot-review:request'
+    || mutation.principal !== 'human'
+    || plan.outcome.state !== 'pending'
+  )) {
+    throw new Error('Governance Copilot request plan violates the single human intent protocol');
+  }
+}
+
 function assertMutationStructure(plan: ControlPlan, mutation: ControlMutation): void {
   if (!mutation.key.trim()) throw new Error('Control mutation requires a stable key');
-  if (mutation.principal !== 'installation') {
+  if (
+    mutation.type === 'copilot-review.request'
+      ? mutation.principal !== 'human'
+      : mutation.principal !== 'installation'
+  ) {
     throw new Error(`Control mutation ${mutation.key} has an unsupported principal`);
   }
   if (mutation.type === 'repository-label.ensure') {
@@ -480,6 +521,14 @@ function assertMutationStructure(plan: ControlPlan, mutation: ControlMutation): 
       || mutation.expectedOwnerLogin !== expectedAppBotLogin
       || !validDigest(mutation.observedBodyDigest)) {
       throw new Error(`Control mutation ${mutation.key} contains an invalid issue comment precondition`);
+    }
+    return;
+  }
+  if (mutation.type === 'copilot-review.request') {
+    if (mutation.key !== 'copilot-review:request'
+      || mutation.principal !== 'human'
+      || !validDigest(mutation.observedEvidenceDigest)) {
+      throw new Error(`Control mutation ${mutation.key} contains an invalid Copilot review request`);
     }
     return;
   }
@@ -538,6 +587,7 @@ export async function verifyControlPlan(plan: ControlPlan): Promise<void> {
   assertControlSubject(plan.subject);
   assertObjectiveMutations(plan);
   assertClassificationCheckProtocol(plan);
+  assertGovernanceCopilotRequestProtocol(plan);
   if (!/^[a-f0-9]{64}$/i.test(plan.snapshotDigest)
     || !/^[a-f0-9]{64}$/i.test(plan.pullRequestDigest)
     || !/^[a-f0-9]{64}$/i.test(plan.planId)) {

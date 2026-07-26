@@ -19,6 +19,7 @@ import {
   type ControlDecision,
   type ClassificationLease,
   type ControlMutationIntent,
+  type ControlObjective,
   type ControlOperationResult,
   type PullRequestControlContext,
 } from './contracts.js';
@@ -106,7 +107,10 @@ function classificationFile(file: GitHubPullRequestFile): GitHubPullRequestFile 
   };
 }
 
-function ignoredResult(operation: ControlOperationResult['operation'], summary: string): ControlOperationResult {
+function ignoredResult<Objective extends ControlObjective>(
+  operation: Objective,
+  summary: string,
+): ControlOperationResult<Objective> {
   return { operation, state: 'ignored', summary };
 }
 
@@ -145,7 +149,7 @@ function classificationCheckSummary(evaluation: ReturnType<typeof evaluateClassi
 export async function planClassification(
   context: PullRequestControlContext,
   snapshot: ClassificationSnapshot | null,
-): Promise<ControlDecision> {
+): Promise<ControlDecision<'classification'>> {
   context = { ...context, manifest: await verifyLoadedManifest(context.manifest) };
   assertPullRequestControlContext(context);
   const currentLabels = (context.pull.labels ?? []).map((label) => String(label.name ?? '').trim());
@@ -311,7 +315,7 @@ export async function planClassification(
     observedCheckExternalId: snapshot.lease.externalId,
   }];
 
-  const result: ControlOperationResult = {
+  const result: ControlOperationResult<'classification'> = {
     operation: 'classification',
     state: 'passed',
     summary: 'PR classification converged',
@@ -424,7 +428,7 @@ function normalizedDcoCommit(commit: GitHubCommit): Parameters<typeof evaluateDc
 export async function planDcoAdvisory(
   context: PullRequestControlContext,
   snapshot: DcoSnapshot | null,
-): Promise<ControlDecision> {
+): Promise<ControlDecision<'dco-advisory'>> {
   context = { ...context, manifest: await verifyLoadedManifest(context.manifest) };
   assertPullRequestControlContext(context);
   if (!context.manifest.manifest.features.dcoAdvisory) {
@@ -485,7 +489,7 @@ export async function planDcoAdvisory(
     });
   }
   const summary = dcoSummary(evaluation);
-  const result: ControlOperationResult = {
+  const result: ControlOperationResult<'dco-advisory'> = {
     operation: 'dco-advisory',
     state: 'passed',
     summary,

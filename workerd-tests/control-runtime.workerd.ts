@@ -13,13 +13,25 @@ import {
   canonicalStewardRuntimeControlRequestJson,
   controlJsonDigest,
   parseStewardRuntimeDiagnosticsControlReceipt,
+  parseStewardRuntimeControlPreparedReceiptV2,
   parseStewardRuntimeControlReceipt,
   type StewardRuntimeControlPlanBindingV2,
+  type StewardRuntimeControlObjectiveV2,
 } from '../packages/core/src/index.js';
-import { encodeBase64Utf8 } from '../packages/manifest/src/encoding.js';
+import { parseCanonicalControlPlanJson } from '../packages/control/src/index.js';
 import {
+  decodeBase64Utf8,
+  encodeBase64Utf8,
+} from '../packages/manifest/src/encoding.js';
+import {
+  controlRuntimeAppClientId,
+  controlRuntimeAppId,
+  controlRuntimeAppSlug,
   controlRuntimeCanonicalRepositoryFullName,
+  controlRuntimeDefaultBranch,
   controlRuntimeDiagnosticsSubject,
+  controlRuntimeManifestBlobSha,
+  controlRuntimePullRequestHeadSha,
   controlRuntimeVersionMetadata,
 } from './control-runtime-fixture.js';
 
@@ -81,7 +93,9 @@ function controlRequest(
   });
 }
 
-async function controlPrepareRequestV2(): Promise<Request> {
+async function controlPrepareRequestV2(
+  objective: StewardRuntimeControlObjectiveV2 = 'classification',
+): Promise<Request> {
   const workItem = buildStewardRuntimeWorkItem({
     operation: 'pull-request-reconcile',
     installationId: 145_952_003,
@@ -92,7 +106,7 @@ async function controlPrepareRequestV2(): Promise<Request> {
     },
     cause: {
       kind: 'github-webhook',
-      deliveryId: 'control-workerd-v2-prepare',
+      deliveryId: `control-workerd-v2-prepare-${objective}`,
       event: 'pull_request',
       action: 'synchronize',
       receivedAt: '2026-07-23T18:00:02.000Z',
@@ -110,7 +124,7 @@ async function controlPrepareRequestV2(): Promise<Request> {
         binding: {
           workItem,
           generation: 7,
-          objective: 'classification',
+          objective,
         },
       }),
     ),
@@ -354,9 +368,112 @@ describe('Control runtime in workerd', () => {
     });
   });
 
-  it('accepts the strict v2 prepare transport without claiming governance success', async () => {
+  it('keeps Classification v2 prepare fail-closed', async () => {
     const response = await controlRuntime.fetch(
       await controlPrepareRequestV2(),
+    );
+
+    expect(response.status).toBe(501);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(await response.json()).toEqual({
+      error: 'control-operation-not-implemented',
+    });
+  });
+
+  it('prepares a Governance Copilot plan from live GitHub evidence in workerd', async () => {
+    const response = await controlRuntime.fetch(
+      await controlPrepareRequestV2('governance'),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type'))
+      .toBe('application/json; charset=utf-8');
+    expect(response.headers.get('cache-control')).toBe('no-store');
+
+    const receipt = await parseStewardRuntimeControlPreparedReceiptV2(
+      JSON.parse(await response.text()) as unknown,
+    );
+    expect(receipt).toMatchObject({
+      schemaVersion: 2,
+      phase: 'prepared',
+      binding: {
+        generation: 7,
+        objective: 'governance',
+        workItem: {
+          installationId: 145_952_003,
+          subject: {
+            repositoryId: controlRuntimeDiagnosticsSubject.repositoryId,
+            pullRequestNumber: 6,
+          },
+        },
+      },
+      resolvedContext: {
+        repositoryId: controlRuntimeDiagnosticsSubject.repositoryId,
+        repositoryFullName: controlRuntimeCanonicalRepositoryFullName,
+        pullRequestNumber: 6,
+        headSha: controlRuntimePullRequestHeadSha,
+        defaultBranch: controlRuntimeDefaultBranch,
+        manifestBlobSha: controlRuntimeManifestBlobSha,
+      },
+      plan: {
+        contractVersion: 1,
+        preparedGeneration: 7,
+        terminalOutcome: 'pending-external',
+        mutationCount: 1,
+        mutations: [{
+          ordinal: 0,
+          key: 'copilot-review:request',
+          mutationType: 'copilot-review.request',
+          principal: 'human',
+          recoveryPolicy: 'live-evidence-or-action-required',
+        }],
+      },
+      controlRevision: {
+        stewardCommit: 'a'.repeat(40),
+        workerVersionId: controlRuntimeVersionMetadata.id,
+        workerVersionTag: controlRuntimeVersionMetadata.tag,
+        workerVersionCreatedAt: controlRuntimeVersionMetadata.timestamp,
+      },
+    });
+    const plan = await parseCanonicalControlPlanJson(
+      decodeBase64Utf8(receipt.plan.canonicalPlanBase64),
+    );
+    expect(plan).toMatchObject({
+      objective: 'governance',
+      subject: {
+        repository: {
+          id: controlRuntimeDiagnosticsSubject.repositoryId,
+          owner: 'splrad',
+          name: 'Steward-Sandbox-Install-E2E',
+          defaultBranch: controlRuntimeDefaultBranch,
+        },
+        pullRequest: {
+          number: 6,
+          headSha: controlRuntimePullRequestHeadSha,
+        },
+        manifest: {
+          blobSha: controlRuntimeManifestBlobSha,
+        },
+        platform: {
+          appId: controlRuntimeAppId,
+          clientId: controlRuntimeAppClientId,
+          appSlug: controlRuntimeAppSlug,
+        },
+      },
+      outcome: {
+        state: 'pending',
+      },
+      mutations: [{
+        type: 'copilot-review.request',
+        key: 'copilot-review:request',
+        principal: 'human',
+      }],
+    });
+  });
+
+  it('keeps DCO v2 prepare fail-closed while Governance is the only live objective', async () => {
+    const response = await controlRuntime.fetch(
+      await controlPrepareRequestV2('dco-advisory'),
     );
 
     expect(response.status).toBe(501);

@@ -243,7 +243,7 @@ describe('private Control runtime foundation', () => {
     });
   });
 
-  it('accepts strict v2 phases but never acknowledges unimplemented operations', async () => {
+  it('keeps unsupported strict v2 objectives fail closed without network access', async () => {
     const dependencies = {
       fetch: vi.fn<typeof fetch>(),
       appToken: vi.fn<() => Promise<string>>(),
@@ -265,19 +265,6 @@ describe('private Control runtime foundation', () => {
         error: 'control-operation-not-implemented',
       });
     }
-    const governancePrepare = JSON.parse(bodies.prepare) as {
-      binding: { objective: string };
-    };
-    governancePrepare.binding.objective = 'governance';
-    const governanceResponse = await handler.fetch(
-      request(
-        JSON.stringify(governancePrepare),
-        { 'x-steward-internal-protocol': '2' },
-        '/v2/reconcile',
-      ),
-      env,
-    );
-    expect(governanceResponse.status).toBe(501);
     expect(dependencies.fetch).not.toHaveBeenCalled();
     expect(dependencies.appToken).not.toHaveBeenCalled();
   });
