@@ -215,11 +215,11 @@ export class PullRequestCoordinator extends DurableObject {
     deliveryId: string,
     leaseDurationMs: number,
   ): Promise<CoordinatorClaimResult> {
-    const mutation = this.#mutate((machine) =>
+    const mutation = this.#mutate((machine, now) =>
       machine.claim(
         deliveryId,
         leaseDurationMs,
-        Date.now(),
+        now,
         crypto.randomUUID(),
       ),
     );
@@ -232,8 +232,8 @@ export class PullRequestCoordinator extends DurableObject {
     leaseToken: string,
     leaseDurationMs: number,
   ): Promise<CoordinatorRenewResult> {
-    const mutation = this.#mutate((machine) =>
-      machine.renew(generation, leaseToken, leaseDurationMs, Date.now()),
+    const mutation = this.#mutate((machine, now) =>
+      machine.renew(generation, leaseToken, leaseDurationMs, now),
     );
     await this.#scheduleAlarm(mutation.alarmAt);
     return mutation.result;
@@ -243,8 +243,8 @@ export class PullRequestCoordinator extends DurableObject {
     generation: number,
     leaseToken: string,
   ): Promise<CoordinatorCompleteResult> {
-    const mutation = this.#mutate((machine) =>
-      machine.complete(generation, leaseToken, Date.now()),
+    const mutation = this.#mutate((machine, now) =>
+      machine.complete(generation, leaseToken, now),
     );
     await this.#scheduleAlarm(mutation.alarmAt);
     return mutation.result;
@@ -255,8 +255,8 @@ export class PullRequestCoordinator extends DurableObject {
     leaseToken: string,
     failureCode: CoordinatorFailureCode,
   ): Promise<CoordinatorFailResult> {
-    const mutation = this.#mutate((machine) =>
-      machine.fail(generation, leaseToken, failureCode, Date.now()),
+    const mutation = this.#mutate((machine, now) =>
+      machine.fail(generation, leaseToken, failureCode, now),
     );
     await this.#scheduleAlarm(mutation.alarmAt);
     return mutation.result;
@@ -767,8 +767,8 @@ export class PullRequestCoordinator extends DurableObject {
   }
 
   async alarm(): Promise<void> {
-    const mutation = this.#mutate<CoordinatorAlarmResult>((machine) =>
-      machine.alarm(Date.now()),
+    const mutation = this.#mutate<CoordinatorAlarmResult>((machine, now) =>
+      machine.alarm(now),
     );
 
     // An early or superseded alarm is harmless. If a renewed lease is still
@@ -857,8 +857,9 @@ export class PullRequestCoordinator extends DurableObject {
       }
 
       this.#initializeMutationSchema();
-      this.#expireBaseLeaseIfNeeded(Date.now());
-      this.#auditStaleMutationPlans(Date.now());
+      const now = Date.now();
+      this.#expireBaseLeaseIfNeeded(now);
+      this.#auditStaleMutationPlans(now);
     });
   }
 
@@ -1045,13 +1046,17 @@ export class PullRequestCoordinator extends DurableObject {
   }
 
   #mutate<T>(
-    operation: (machine: PullRequestCoordinatorStateMachine) => T,
+    operation: (
+      machine: PullRequestCoordinatorStateMachine,
+      now: number,
+    ) => T,
   ): CoordinatorMutation<T> {
     return this.#ctx.storage.transactionSync(() => {
+      const now = Date.now();
       const machine = this.#loadMachine();
-      const result = operation(machine);
+      const result = operation(machine, now);
       this.#writeState(machine.exportState());
-      this.#auditStaleMutationPlans(Date.now());
+      this.#auditStaleMutationPlans(now);
       return {
         alarmAt: machine.alarmAt(),
         result,

@@ -1660,6 +1660,86 @@ describe('PullRequestCoordinator in workerd', () => {
     ).toEqual({ generation: 2, status: 'completed' });
   });
 
+  it('uses one logical time for an early alarm and sidecar audit', async () => {
+    const pullRequestNumber = 217;
+    const deliveryId = 'delivery-sidecar-early-alarm';
+    const stub = coordinator(1_298_587_318, pullRequestNumber);
+    const claim = await stub.claim(deliveryId, 60_000);
+    expect(claim.status).toBe('claimed');
+    if (claim.status !== 'claimed') {
+      throw new Error('Expected the early-alarm delivery to be claimed.');
+    }
+    const prepared = await v2PreparedReceipt(
+      claim.generation,
+      deliveryId,
+      pullRequestNumber,
+    );
+    await stub.persistPreparedPlan(
+      claim.generation,
+      claim.leaseToken,
+      60_000,
+      prepared,
+    );
+    await stub.beginNextMutation(
+      claim.generation,
+      claim.leaseToken,
+      60_000,
+    );
+
+    const expiresAt = Date.now() + 60_000;
+    const observed = await runInDurableObject(
+      stub,
+      async (instance, state) => {
+        state.storage.sql.exec(
+          `UPDATE coordinator_state
+           SET lease_expires_at = ?
+           WHERE singleton = 1`,
+          expiresAt,
+        );
+        const now = vi
+          .spyOn(Date, 'now')
+          .mockReturnValueOnce(expiresAt - 1)
+          .mockReturnValueOnce(expiresAt);
+        try {
+          await instance.alarm();
+          return {
+            alarmAt: await state.storage.getAlarm(),
+            base: state.storage.sql
+              .exec<{ phase: string; lease_expires_at: number | null }>(
+                `SELECT phase, lease_expires_at
+                 FROM coordinator_state
+                 WHERE singleton = 1`,
+              )
+              .one(),
+            intent: state.storage.sql
+              .exec<{ state: string }>(
+                `SELECT state
+                 FROM coordinator_mutation_intents
+                 WHERE generation = 1 AND ordinal = 0`,
+              )
+              .one(),
+            plan: state.storage.sql
+              .exec<{ state: string }>(
+                `SELECT state
+                 FROM coordinator_mutation_plans
+                 WHERE generation = 1`,
+              )
+              .one(),
+          };
+        } finally {
+          now.mockRestore();
+        }
+      },
+    );
+
+    expect(observed).toEqual({
+      alarmAt: expiresAt,
+      base: { phase: 'leased', lease_expires_at: expiresAt },
+      intent: { state: 'applying' },
+      plan: { state: 'applying' },
+    });
+  });
+
   it('maps an applying side effect to unknown when its alarm loses the lease', async () => {
     const pullRequestNumber = 202;
     const deliveryId = 'delivery-sidecar-alarm';
