@@ -2,9 +2,16 @@ import {
   buildStewardRuntimeControlRequest,
   canonicalStewardRuntimeControlRequestJson,
   canonicalStewardRuntimeWorkItemJson,
+  parseStewardRuntimeControlMutationReceiptV2,
+  parseStewardRuntimeControlPreparedReceiptV2,
+  parseStewardRuntimeControlRecoveryReceiptV2,
   parseStewardRuntimeControlReceipt,
   parseStewardRuntimeWorkItem,
+  type StewardRuntimeControlMutationReceiptV2,
+  type StewardRuntimeControlPreparedReceiptV2,
+  type StewardRuntimeControlRecoveryReceiptV2,
   type StewardRuntimeControlReceiptV1,
+  type StewardRuntimeControlRevisionV1,
   type StewardRuntimeWorkItem,
 } from '../../core/src/index.js';
 import {
@@ -14,6 +21,11 @@ import {
   type CoordinatorFailResult,
   type CoordinatorFailureCode,
 } from './contracts.js';
+import {
+  CoordinatorV2InvocationError,
+  runControlV2Generation,
+  type PullRequestCoordinatorV2Stub,
+} from './v2-runner.js';
 
 export const coordinatorLeaseDurationMs = 120_000;
 export const coordinatorControlTimeoutMs = 90_000;
@@ -24,14 +36,10 @@ export const controlWorkerName = 'steward-control';
 const versionIdPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-export interface PullRequestCoordinatorStub {
+export interface PullRequestCoordinatorStub
+  extends PullRequestCoordinatorV2Stub {
   claim(deliveryId: string, leaseDurationMs: number): Promise<CoordinatorClaimResult>;
   complete(generation: number, leaseToken: string): Promise<CoordinatorCompleteResult>;
-  fail(
-    generation: number,
-    leaseToken: string,
-    failureCode: CoordinatorFailureCode,
-  ): Promise<CoordinatorFailResult>;
 }
 
 export interface PullRequestCoordinatorNamespace {
@@ -176,7 +184,7 @@ function receiptMatchesRequest(
     && receipt.subject.pullRequestNumber === workItem.subject.pullRequestNumber;
 }
 
-async function invokeControl(
+async function invokeControlV1(
   workItem: StewardRuntimeWorkItem,
   generation: number,
   env: CoordinatorEnv,
@@ -253,6 +261,95 @@ async function invokeControl(
     // Invalid overrides silently fall back to percentage routing. The receipt
     // is therefore the authority, and a mismatch must never be acknowledged.
     throw new ControlInvocationError('control-error', fallbackDelay);
+  }
+  return receipt;
+}
+
+function controlHeaders(
+  protocol: '1' | '2',
+  expectedVersion: string | undefined,
+): Headers {
+  const headers = new Headers({
+    'content-type': 'application/json',
+    'x-steward-internal-protocol': protocol,
+  });
+  if (expectedVersion !== undefined) {
+    if (!versionIdPattern.test(expectedVersion)) {
+      throw new Error('control-version-invalid');
+    }
+    headers.set(
+      'cloudflare-workers-version-overrides',
+      `${controlWorkerName}="${expectedVersion}"`,
+    );
+  }
+  return headers;
+}
+
+async function invokeControlV2<
+  Receipt extends {
+    readonly controlRevision: StewardRuntimeControlRevisionV1;
+  },
+>(
+  body: string,
+  parseReceipt: (value: unknown) => Promise<Receipt>,
+  expectedVersion: string | undefined,
+  env: CoordinatorEnv,
+  attempts: number,
+): Promise<Receipt> {
+  const fallbackDelay = boundedRetryDelaySeconds(attempts);
+  let headers: Headers;
+  try {
+    headers = controlHeaders('2', expectedVersion);
+  } catch {
+    throw new CoordinatorV2InvocationError('runtime-error', fallbackDelay);
+  }
+
+  let response: Response;
+  try {
+    response = await env.CONTROL.fetch(
+      'https://control.internal/v2/reconcile',
+      {
+        method: 'POST',
+        headers,
+        signal: AbortSignal.timeout(coordinatorControlTimeoutMs),
+        body,
+      },
+    );
+  } catch {
+    throw new CoordinatorV2InvocationError(
+      'dependency-unavailable',
+      fallbackDelay,
+    );
+  }
+
+  if (!response.ok) {
+    const delay = response.status === 429
+      ? parseRetryAfter(response, fallbackDelay)
+      : fallbackDelay;
+    throw new CoordinatorV2InvocationError(
+      response.status === 429
+        ? 'rate-limited'
+        : response.status >= 500
+          ? 'dependency-unavailable'
+          : 'control-error',
+      delay,
+    );
+  }
+  if (!responseContentTypeIsJson(response)) {
+    throw new CoordinatorV2InvocationError('control-error', fallbackDelay);
+  }
+
+  let receipt: Receipt;
+  try {
+    receipt = await parseReceipt(await readBoundedResponseJson(response));
+  } catch {
+    throw new CoordinatorV2InvocationError('control-error', fallbackDelay);
+  }
+  if (
+    expectedVersion !== undefined
+    && receipt.controlRevision.workerVersionId !== expectedVersion
+  ) {
+    throw new CoordinatorV2InvocationError('control-error', fallbackDelay);
   }
   return receipt;
 }
@@ -334,36 +431,80 @@ export async function processCoordinatorMessage(
     immediateFollowups <= coordinatorMaximumImmediateFollowups;
     immediateFollowups += 1
   ) {
-    try {
-      await invokeControl(
-        workItem,
-        activeClaim.generation,
-        env,
-        message.attempts,
-      );
-    } catch (error) {
-      const failure = error instanceof ControlInvocationError
-        ? error
-        : new ControlInvocationError(
-            'runtime-error',
-            boundedRetryDelaySeconds(message.attempts),
-          );
-      await recordFailure(coordinator, activeClaim, failure);
-      message.retry({ delaySeconds: failure.retryDelaySeconds });
-      return;
-    }
-
     let completion: CoordinatorCompleteResult;
-    try {
-      completion = await coordinator.complete(
-        activeClaim.generation,
-        activeClaim.leaseToken,
+    if (workItem.schemaVersion === 2) {
+      const result = await runControlV2Generation(
+        coordinator,
+        activeClaim,
+        workItem,
+        message.attempts,
+        {
+          leaseDurationMs: coordinatorLeaseDurationMs,
+          retryDelaySeconds: boundedRetryDelaySeconds,
+          selectedControlVersion: () =>
+            selectedControlVersion(workItem, env),
+          invokePrepare: async (body, expectedVersion) =>
+            await invokeControlV2<StewardRuntimeControlPreparedReceiptV2>(
+              body,
+              parseStewardRuntimeControlPreparedReceiptV2,
+              expectedVersion,
+              env,
+              message.attempts,
+            ),
+          invokeMutation: async (body, expectedVersion) =>
+            await invokeControlV2<StewardRuntimeControlMutationReceiptV2>(
+              body,
+              parseStewardRuntimeControlMutationReceiptV2,
+              expectedVersion,
+              env,
+              message.attempts,
+            ),
+          invokeRecovery: async (body, expectedVersion) =>
+            await invokeControlV2<StewardRuntimeControlRecoveryReceiptV2>(
+              body,
+              parseStewardRuntimeControlRecoveryReceiptV2,
+              expectedVersion,
+              env,
+              message.attempts,
+            ),
+        },
       );
-    } catch {
-      message.retry({
-        delaySeconds: boundedRetryDelaySeconds(message.attempts),
-      });
-      return;
+      if (result.status === 'retry') {
+        message.retry({ delaySeconds: result.delaySeconds });
+        return;
+      }
+      completion = result.completion;
+    } else {
+      try {
+        await invokeControlV1(
+          workItem,
+          activeClaim.generation,
+          env,
+          message.attempts,
+        );
+      } catch (error) {
+        const failure = error instanceof ControlInvocationError
+          ? error
+          : new ControlInvocationError(
+              'runtime-error',
+              boundedRetryDelaySeconds(message.attempts),
+            );
+        await recordFailure(coordinator, activeClaim, failure);
+        message.retry({ delaySeconds: failure.retryDelaySeconds });
+        return;
+      }
+
+      try {
+        completion = await coordinator.complete(
+          activeClaim.generation,
+          activeClaim.leaseToken,
+        );
+      } catch {
+        message.retry({
+          delaySeconds: boundedRetryDelaySeconds(message.attempts),
+        });
+        return;
+      }
     }
     if (completion.status === 'stale') {
       message.retry({

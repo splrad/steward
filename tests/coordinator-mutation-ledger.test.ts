@@ -684,6 +684,35 @@ describe('CoordinatorMutationPlanStateMachine', () => {
     });
   });
 
+  it('records a fenced human intent as action-required before dispatch', async () => {
+    const { machine } = await createMachine([
+      mutation(0, 'live-evidence-or-action-required', 'human'),
+      mutation(1),
+    ]);
+
+    machine.recordHumanMutationActionRequired(1_100);
+    const stored = machine.exportState();
+    expect(stored).toMatchObject({
+      state: 'action-required',
+      intents: [
+        {
+          state: 'action-required',
+          dispatchCount: 0,
+          startedAt: null,
+        },
+        {
+          state: 'cancelled',
+          cancelReason: 'blocked-by-action-required',
+          dispatchCount: 0,
+          startedAt: null,
+        },
+      ],
+    });
+    expect(
+      new CoordinatorMutationPlanStateMachine(stored).exportState(),
+    ).toEqual(stored);
+  });
+
   it('keeps unreadable recovery unknown and non-terminal', async () => {
     const { machine, prepared } = await createMachine([mutation(0)]);
     machine.beginNextMutation(1_100);

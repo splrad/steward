@@ -37,8 +37,9 @@ generation and is never blindly replayed.
 While any `unknown` or `recovering` plan remains, later generations cannot
 persist a new plan or dispatch a new write. Recovery is fenced to the oldest
 unresolved plan, repeated recovery begins are idempotent for that plan, and
-the base coordinator retains a follow-up until every unresolved plan has been
-made safe.
+the base coordinator always retains a follow-up after recovery. The triggering
+event is then freshly prepared under a new generation before acknowledgement,
+so recovery evidence for an older write cannot swallow a newer review event.
 
 Human-principal dispatch also reserves an independent durable fence keyed by
 the numeric repository/PR object, exact head SHA, and mutation type before
@@ -50,11 +51,14 @@ The reservation is released only when Control proves the write converged
 without being attempted, or returns `not-attempted`/`stale-plan`; `applied`,
 `unknown`, recovery `converged`, and `action-required` retain it. These
 credential-free fences are not age-pruned. Their independent 128-entry bound
-fails closed, and diagnostics expose only the count.
+fails closed, and diagnostics expose only the count. A repeated same-head
+request or an exhausted fence ledger is persisted as `action-required` and the
+current delivery is completed; neither condition is converted into a blind
+Queue retry.
 
 A proven `not-attempted` result returns its bounded `retryAfterSeconds` hint
-to the caller; `stale-plan` returns `null`. The future v2 Queue runner must
-apply that hint as Queue retry delay before acknowledgement. The v1 sidecar
+to the caller; `stale-plan` returns `null`. The v2 Queue runner applies that
+hint as Queue retry delay before acknowledgement. The v1 sidecar
 does not persist a not-before timestamp: if the RPC response is lost, durable
 follow-up state plus normal Queue redelivery preserves the work and safety,
 while only the optimized backoff is lost.
@@ -83,16 +87,32 @@ the same Queue and only then acknowledges the completed root. A failed wakeup
 write retains the root for retry, so an interleaved event stream cannot exhaust
 one message's retry budget and strand a dirty object.
 
-The Queue consumer still uses the v1 probe path in this slice; the real v2
-governance runner and mutation adapters remain disabled. The Worker uses
-Cloudflare's declarative SQLite Durable Object `exports`
+The Queue consumer routes existing schema-v1 work items through the unchanged
+Control v1 probe path, so already queued messages and the deployed rollback
+reader keep their original behavior. Schema-v2 work items use the strict
+Governance v2 runner: recovery is attempted first, `prepare` is persisted in
+the sidecar before any mutation, each `apply-next` receipt is recorded before
+advancing, and an uncertain response becomes `unknown` for read-only recovery.
+Classification and DCO v2 remain disabled in Control; this runner does not
+silently fall back to v1 for a v2 work item.
+
+The Worker uses Cloudflare's declarative SQLite Durable Object `exports`
 lifecycle. That makes its state lifecycle atomic and intentionally keeps it
 out of Control's gradual deployment. Candidate routing is owner-controlled by
 `CONTROL_CANDIDATE_REPOSITORY_IDS` plus
 `CONTROL_CANDIDATE_VERSION_ID`; no webhook or Queue message can select a
-version. The returned Control version metadata is checked before acknowledgement
-because an invalid Cloudflare version override silently falls back to normal
-traffic percentages.
+version. Prepare verifies an owner-selected candidate when configured, while
+apply and recovery pin the exact version recorded by the prepared receipt.
+Returned Control version metadata is checked before acknowledgement because an
+invalid Cloudflare version override silently falls back to normal traffic
+percentages.
+
+Deployment must establish a compatible Control v2 version before a
+Coordinator candidate can consume schema-v2 messages. Ingress remains the last
+writer to enable: Control dual-read/strict v2 first, Coordinator dual-route
+second, then Ingress v2, and only after canary evidence may the GitHub App add
+the review-event subscriptions. Source integration alone is not live runtime
+activation.
 
 Those two values are deliberately not persisted as dashboard-only Wrangler
 variables: `keep_vars` remains false. A candidate deployment must pass both

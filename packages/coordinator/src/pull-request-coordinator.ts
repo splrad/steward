@@ -440,6 +440,42 @@ export class PullRequestCoordinator extends DurableObject {
     return mutation.result;
   }
 
+  async recordHumanMutationActionRequiredAndComplete(
+    generation: number,
+    leaseToken: string,
+  ): Promise<CoordinatorCompleteResult> {
+    const now = Date.now();
+    const mutation = this.#ctx.storage.transactionSync(() => {
+      this.#expireBaseLeaseIfNeeded(now);
+      this.#auditStaleMutationPlans(now);
+      const machine = this.#loadMachine();
+      const fence = machine.fence(generation, leaseToken, now);
+      if (fence.status === 'stale') {
+        this.#writeState(machine.exportState());
+        return {
+          alarmAt: machine.alarmAt(),
+          result: { status: 'stale' } as const,
+        };
+      }
+      const plan = this.#requireMutationPlan(generation);
+      plan.recordHumanMutationActionRequired(now);
+      const completion = machine.complete(generation, leaseToken, now);
+      if (completion.status === 'stale') {
+        throw new Error(
+          'Human mutation action-required fence changed inside one Durable Object transaction.',
+        );
+      }
+      this.#writeMutationPlan(plan.exportState());
+      this.#writeState(machine.exportState());
+      return {
+        alarmAt: machine.alarmAt(),
+        result: completion,
+      };
+    });
+    await this.#scheduleAlarm(mutation.alarmAt);
+    return mutation.result;
+  }
+
   async recordMutationResult(
     generation: number,
     leaseToken: string,
@@ -651,8 +687,6 @@ export class PullRequestCoordinator extends DurableObject {
         result,
         now,
       );
-      const hasAnotherUnresolved =
-        this.#hasUnresolvedMutationPlanExcept(planGeneration);
       const completion = disposition === 'retry'
         ? machine.fail(
             generation,
@@ -660,9 +694,7 @@ export class PullRequestCoordinator extends DurableObject {
             'dependency-unavailable',
             now,
           )
-        : disposition === 'followup' || hasAnotherUnresolved
-          ? machine.completeForFollowup(generation, leaseToken, now)
-          : machine.complete(generation, leaseToken, now);
+        : machine.completeForFollowup(generation, leaseToken, now);
       if (completion.status === 'stale') {
         throw new Error(
           'Recovery fence changed inside one Durable Object transaction.',
@@ -1627,17 +1659,6 @@ export class PullRequestCoordinator extends DurableObject {
     return generation === null
       ? null
       : this.#requireMutationPlan(generation);
-  }
-
-  #hasUnresolvedMutationPlanExcept(generation: number): boolean {
-    return this.#ctx.storage.sql
-      .exec<CountRow>(
-        `SELECT COUNT(*) AS count
-         FROM coordinator_mutation_plans
-         WHERE state IN ('unknown', 'recovering') AND generation <> ?`,
-        generation,
-      )
-      .one().count > 0;
   }
 
   #loadMachine(): PullRequestCoordinatorStateMachine {
