@@ -146,7 +146,7 @@ describe('central runtime deployment topology', () => {
     }
   });
 
-  it('binds Coordinator to one SQLite Durable Object, private Control, and a bounded retry Queue', () => {
+  it('binds Coordinator to separate PR and repository SQLite Durable Objects, private Control, and one bounded retry Queue', () => {
     expect(coordinator.name).toBe('steward-coordinator');
     expect(coordinator.main).toBe('src/entrypoint.ts');
     expect(coordinator.keep_vars).toBe(false);
@@ -156,10 +156,18 @@ describe('central runtime deployment topology', () => {
           name: 'PR_COORDINATOR',
           class_name: 'PullRequestCoordinator',
         },
+        {
+          name: 'REPOSITORY_FANOUT_COORDINATOR',
+          class_name: 'RepositoryFanoutCoordinator',
+        },
       ],
     });
     expect(coordinator.exports).toEqual({
       PullRequestCoordinator: {
+        type: 'durable-object',
+        storage: 'sqlite',
+      },
+      RepositoryFanoutCoordinator: {
         type: 'durable-object',
         storage: 'sqlite',
       },

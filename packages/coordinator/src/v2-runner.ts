@@ -12,6 +12,7 @@ import {
   type StewardRuntimeControlRecoveryReceiptV2,
   type StewardRuntimeControlRevisionV1,
   type StewardRuntimeWorkItemV2,
+  type StewardRuntimeWorkItemV3,
 } from '../../core/src/index.js';
 import type {
   CoordinatorClaimResult,
@@ -31,6 +32,10 @@ export type ClaimedCoordinatorGeneration = Extract<
   CoordinatorClaimResult,
   { status: 'claimed' }
 >;
+
+export type StewardRuntimeGovernanceWorkItem =
+  | StewardRuntimeWorkItemV2
+  | StewardRuntimeWorkItemV3;
 
 export interface PullRequestCoordinatorV2Stub {
   fail(
@@ -160,7 +165,7 @@ type StewardRuntimeControlReceiptV2 =
 
 function v2ReceiptMatchesBinding(
   receipt: StewardRuntimeControlReceiptV2,
-  workItem: StewardRuntimeWorkItemV2,
+  workItem: StewardRuntimeGovernanceWorkItem,
   generation: number,
   expectedRevision?: StewardRuntimeControlRevisionV1,
 ): boolean {
@@ -261,7 +266,7 @@ type V2RecoveryAttempt =
 async function recoverUnknownV2(
   coordinator: PullRequestCoordinatorV2Stub,
   claim: ClaimedCoordinatorGeneration,
-  workItem: StewardRuntimeWorkItemV2,
+  workItem: StewardRuntimeGovernanceWorkItem,
   attempts: number,
   ports: CoordinatorV2RunnerPorts,
 ): Promise<V2RecoveryAttempt> {
@@ -389,7 +394,7 @@ async function recoverUnknownV2(
 export async function runControlV2Generation(
   coordinator: PullRequestCoordinatorV2Stub,
   claim: ClaimedCoordinatorGeneration,
-  workItem: StewardRuntimeWorkItemV2,
+  workItem: StewardRuntimeGovernanceWorkItem,
   attempts: number,
   ports: CoordinatorV2RunnerPorts,
 ): Promise<V2GenerationResult> {

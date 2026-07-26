@@ -499,6 +499,205 @@ describe('GitHub repository adapter', () => {
     await expect(truncated.listReviewThreads('splrad', 'steward', 6)).rejects.toThrow('100-comment limit');
   });
 
+  it('reads an empty open pull request page with a minimal ordered GraphQL query', async () => {
+    const { transport, requests } = mockTransport(() => ({
+      data: {
+        repository: {
+          databaseId: 77,
+          nameWithOwner: 'SPLRAD/steward',
+          pullRequests: {
+            totalCount: 0,
+            pageInfo: { hasNextPage: false, endCursor: 'ignored-terminal-cursor' },
+            nodes: [],
+          },
+        },
+      },
+    }));
+    const client = new GitHubRepositoryClient(transport);
+
+    await expect(client.listOpenPullRequestsPage('splrad', 'steward', null)).resolves.toEqual({
+      repositoryId: 77,
+      repositoryFullName: 'SPLRAD/steward',
+      totalCount: 0,
+      pullRequestNumbers: [],
+      hasNextPage: false,
+      endCursor: null,
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      method: 'POST',
+      path: '/graphql',
+      body: { variables: { owner: 'splrad', repository: 'steward', cursor: null } },
+    });
+    const query = String((requests[0]?.body as { query?: string }).query);
+    expect(query).toContain('databaseId');
+    expect(query).toContain('nameWithOwner');
+    expect(query).toContain('states: OPEN');
+    expect(query).toContain('first: 100');
+    expect(query).toContain('after: $cursor');
+    expect(query).toContain('orderBy: { field: CREATED_AT, direction: ASC }');
+    expect(query).toContain('nodes { number state }');
+    expect(query).not.toMatch(/\b(?:title|body|author|labels)\b/);
+  });
+
+  it('returns one 100-item open pull request page and lets the caller fetch the terminal page', async () => {
+    const { transport, requests } = mockTransport((request) => {
+      const cursor = (request.body as { variables?: { cursor?: string | null } }).variables?.cursor;
+      return {
+        data: {
+          repository: {
+            databaseId: 77,
+            nameWithOwner: 'splrad/steward',
+            pullRequests: cursor === null
+              ? {
+                totalCount: 102,
+                pageInfo: { hasNextPage: true, endCursor: 'cursor-page-2==' },
+                nodes: Array.from({ length: 100 }, (_, index) => ({ number: index + 1, state: 'OPEN' })),
+              }
+              : {
+                totalCount: 102,
+                pageInfo: { hasNextPage: false, endCursor: 'last-node-cursor' },
+                nodes: [{ number: 101, state: 'OPEN' }, { number: 102, state: 'OPEN' }],
+              },
+          },
+        },
+      };
+    });
+    const client = new GitHubRepositoryClient(transport);
+
+    const first = await client.listOpenPullRequestsPage('splrad', 'steward', null);
+    expect(first).toMatchObject({
+      totalCount: 102,
+      hasNextPage: true,
+      endCursor: 'cursor-page-2==',
+    });
+    expect(first.pullRequestNumbers).toEqual(Array.from({ length: 100 }, (_, index) => index + 1));
+
+    await expect(client.listOpenPullRequestsPage('splrad', 'steward', first.endCursor)).resolves.toEqual({
+      repositoryId: 77,
+      repositoryFullName: 'splrad/steward',
+      totalCount: 102,
+      pullRequestNumbers: [101, 102],
+      hasNextPage: false,
+      endCursor: null,
+    });
+    expect(requests).toHaveLength(2);
+    expect((requests[1]?.body as { variables?: unknown }).variables).toEqual({
+      owner: 'splrad',
+      repository: 'steward',
+      cursor: 'cursor-page-2==',
+    });
+  });
+
+  it('fails closed on GraphQL errors and missing open pull request resources', async () => {
+    const denied = new GitHubRepositoryClient(mockTransport(() => ({
+      data: { repository: null },
+      errors: [{ message: 'denied' }],
+    })).transport);
+    await expect(denied.listOpenPullRequestsPage('splrad', 'steward', null))
+      .rejects.toThrow('denied');
+
+    const invalidErrors = new GitHubRepositoryClient(mockTransport(() => ({ errors: { message: 'denied' } })).transport);
+    await expect(invalidErrors.listOpenPullRequestsPage('splrad', 'steward', null))
+      .rejects.toThrow('invalid open pull requests errors');
+
+    const missingRepository = new GitHubRepositoryClient(mockTransport(() => ({ data: { repository: null } })).transport);
+    await expect(missingRepository.listOpenPullRequestsPage('splrad', 'steward', null))
+      .rejects.toThrow('no repository');
+
+    const missingConnection = new GitHubRepositoryClient(mockTransport(() => ({
+      data: { repository: { databaseId: 77, nameWithOwner: 'splrad/steward', pullRequests: null } },
+    })).transport);
+    await expect(missingConnection.listOpenPullRequestsPage('splrad', 'steward', null))
+      .rejects.toThrow('no open pull requests connection');
+  });
+
+  it.each([
+    ['unsafe repository ID', {
+      databaseId: Number.MAX_SAFE_INTEGER + 1,
+      nameWithOwner: 'splrad/steward',
+      pullRequests: { totalCount: 1, pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ number: 1, state: 'OPEN' }] },
+    }, 'repository identity'],
+    ['non-canonical repository name', {
+      databaseId: 77,
+      nameWithOwner: 'other/steward',
+      pullRequests: { totalCount: 1, pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ number: 1, state: 'OPEN' }] },
+    }, 'repository identity'],
+    ['excessive total count', {
+      databaseId: 77,
+      nameWithOwner: 'splrad/steward',
+      pullRequests: { totalCount: 3_001, pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+    }, 'page metadata'],
+    ['missing page info', {
+      databaseId: 77,
+      nameWithOwner: 'splrad/steward',
+      pullRequests: { totalCount: 0, nodes: [] },
+    }, 'page metadata'],
+    ['more than 100 nodes', {
+      databaseId: 77,
+      nameWithOwner: 'splrad/steward',
+      pullRequests: {
+        totalCount: 101,
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: Array.from({ length: 101 }, (_, index) => ({ number: index + 1, state: 'OPEN' })),
+      },
+    }, 'page metadata'],
+    ['duplicate pull request number', {
+      databaseId: 77,
+      nameWithOwner: 'splrad/steward',
+      pullRequests: {
+        totalCount: 2,
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: [{ number: 1, state: 'OPEN' }, { number: 1, state: 'OPEN' }],
+      },
+    }, 'invalid or duplicate'],
+    ['closed pull request node', {
+      databaseId: 77,
+      nameWithOwner: 'splrad/steward',
+      pullRequests: {
+        totalCount: 1,
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: [{ number: 1, state: 'CLOSED' }],
+      },
+    }, 'invalid or duplicate'],
+  ])('rejects malformed open pull request page data: %s', async (_description, repositoryPayload, expected) => {
+    const client = new GitHubRepositoryClient(mockTransport(() => ({
+      data: { repository: repositoryPayload },
+    })).transport);
+    await expect(client.listOpenPullRequestsPage('splrad', 'steward', null))
+      .rejects.toThrow(expected);
+  });
+
+  it('validates input and advancing GraphQL cursors as bounded visible ASCII', async () => {
+    const unused = mockTransport(() => {
+      throw new Error('GraphQL must not be called');
+    });
+    const inputClient = new GitHubRepositoryClient(unused.transport);
+    for (const cursor of ['', 'cursor with spaces', 'cursor\nnext', 'é', 'x'.repeat(1_025)]) {
+      await expect(inputClient.listOpenPullRequestsPage('splrad', 'steward', cursor))
+        .rejects.toThrow('1-1024 visible ASCII');
+    }
+    expect(unused.requests).toHaveLength(0);
+
+    for (const endCursor of [null, '', 'same-cursor', 'cursor next', 'é', 'x'.repeat(1_025)]) {
+      const client = new GitHubRepositoryClient(mockTransport(() => ({
+        data: {
+          repository: {
+            databaseId: 77,
+            nameWithOwner: 'splrad/steward',
+            pullRequests: {
+              totalCount: 1,
+              pageInfo: { hasNextPage: true, endCursor },
+              nodes: [{ number: 1, state: 'OPEN' }],
+            },
+          },
+        },
+      })).transport);
+      await expect(client.listOpenPullRequestsPage('splrad', 'steward', 'same-cursor'))
+        .rejects.toThrow('valid next cursor');
+    }
+  });
+
   it('keeps REST pull data separate and loads merged state atomically from GraphQL', async () => {
     const mergeCommitSha = 'a'.repeat(40);
     const rest = mockTransport(() => ({

@@ -9,14 +9,19 @@ import {
 import { env } from 'cloudflare:workers';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  buildStewardRuntimeRepositoryFanoutPageReceiptV1,
+  buildStewardRuntimeScopeWorkItemV1,
   buildStewardRuntimeControlMutationReceiptV2,
   buildStewardRuntimeControlPreparedReceiptV2,
   buildStewardRuntimeControlRecoveryReceiptV2,
   buildStewardRuntimeControlReceipt,
+  canonicalStewardRuntimeRepositoryFanoutPageReceiptV1Json,
+  canonicalStewardRuntimeScopeWorkItemJson,
   canonicalStewardRuntimeControlPreparedReceiptV2Json,
   canonicalStewardRuntimeControlRecoveryReceiptV2Json,
   canonicalStewardRuntimeControlReceiptJson,
   canonicalStewardRuntimeWorkItemJson,
+  parseStewardRuntimeRepositoryFanoutPageRequestV1,
   parseStewardRuntimeWorkItem,
   type StewardRuntimeWorkItem,
   type StewardRuntimeWorkItemV1,
@@ -31,12 +36,16 @@ import {
   coordinatorHumanMutationFenceLimit,
   pullRequestCoordinatorName,
   PullRequestCoordinator,
+  repositoryFanoutCoordinatorName,
+  RepositoryFanoutCoordinator,
   type CoordinatorEnv,
 } from '../packages/coordinator/src/index.js';
 import coordinatorWorker from '../packages/coordinator/src/worker.js';
 
 interface WorkerdEnv {
   PR_COORDINATOR: DurableObjectNamespace<PullRequestCoordinator>;
+  REPOSITORY_FANOUT_COORDINATOR:
+    DurableObjectNamespace<RepositoryFanoutCoordinator>;
 }
 
 const workerdEnv = env as unknown as WorkerdEnv;
@@ -634,6 +643,227 @@ async function seedV2MutationLedger(
     sql.exec('DELETE FROM coordinator_deliveries');
   });
 }
+
+describe('RepositoryFanoutCoordinator in workerd', () => {
+  it('durably enumerates two stable passes and dispatches one bounded child batch', async () => {
+    const repositoryId = 1_298_587_401;
+    const repositoryFullName = 'splrad/repository-fanout-workerd';
+    const scopeWorkItem = buildStewardRuntimeScopeWorkItemV1({
+      operation: 'scope-reconcile',
+      target: {
+        scope: 'repository',
+        mode: 'refresh',
+        installationId: 145_952_003,
+        repositoryId,
+        pullRequests: 'all-open',
+      },
+      cause: {
+        kind: 'github-webhook',
+        deliveryId: 'repository-fanout-workerd-root',
+        event: 'repository',
+        action: 'edited',
+        receivedAt: '2026-07-23T18:00:00.000Z',
+      },
+    });
+    const pageRequests: {
+      readonly pass: 1 | 2;
+      readonly cursor: string | null;
+    }[] = [];
+    const controlFetch = vi.fn(
+      async (input: Request | string | URL, init?: RequestInit) => {
+        expect(String(input)).toBe(
+          'https://control.internal/v1/repository-fanout/page',
+        );
+        expect(new Headers(init?.headers).get('x-steward-internal-protocol'))
+          .toBe('repository-fanout-1');
+        const request =
+          parseStewardRuntimeRepositoryFanoutPageRequestV1(
+            JSON.parse(String(init?.body)),
+          );
+        pageRequests.push({
+          pass: request.binding.pass,
+          cursor: request.binding.cursor,
+        });
+        const firstPage = request.binding.cursor === null;
+        return new Response(
+          canonicalStewardRuntimeRepositoryFanoutPageReceiptV1Json(
+            buildStewardRuntimeRepositoryFanoutPageReceiptV1({
+              binding: request.binding,
+              repository: {
+                state: 'live',
+                id: repositoryId,
+                fullName: repositoryFullName,
+              },
+              page: firstPage
+                ? {
+                    totalCount: 3,
+                    pullRequestNumbers: [4, 9],
+                    hasNextPage: true,
+                    endCursor: 'cursor-after-9',
+                  }
+                : {
+                    totalCount: 3,
+                    pullRequestNumbers: [12],
+                    hasNextPage: false,
+                    endCursor: null,
+                  },
+              controlRevision: v2Revision,
+            }),
+          ),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
+      },
+    );
+    const wakeupBodies: string[] = [];
+    const childBatches: {
+      readonly body: string;
+      readonly contentType?: 'text';
+    }[][] = [];
+    const wakeupSend = vi.fn(async (body: string) => {
+      wakeupBodies.push(body);
+    });
+    const childSendBatch = vi.fn(
+      async (
+        messages: readonly {
+          readonly body: string;
+          readonly contentType?: 'text';
+        }[],
+      ) => {
+        childBatches.push(messages.map((message) => ({ ...message })));
+      },
+    );
+    const coordinatorEnv: CoordinatorEnv = {
+      PR_COORDINATOR: workerdEnv.PR_COORDINATOR,
+      REPOSITORY_FANOUT_COORDINATOR:
+        workerdEnv.REPOSITORY_FANOUT_COORDINATOR,
+      CONTROL: { fetch: controlFetch },
+      EVENT_QUEUE: {
+        send: wakeupSend,
+        sendBatch: childSendBatch,
+      },
+    };
+
+    const invocationWork: ('page' | 'batch' | 'complete')[] = [];
+    let nextBody: string | undefined =
+      canonicalStewardRuntimeScopeWorkItemJson(scopeWorkItem);
+    let invocation = 0;
+    while (nextBody !== undefined) {
+      const pageCountBefore = controlFetch.mock.calls.length;
+      const batchCountBefore = childSendBatch.mock.calls.length;
+      const messageId = `queue-repository-fanout-${invocation}`;
+      const batch = createMessageBatch('steward-events', [{
+        id: messageId,
+        timestamp: new Date('2026-07-23T18:00:00.000Z'),
+        attempts: 1,
+        body: nextBody,
+      }]);
+
+      await coordinatorWorker.queue(batch, coordinatorEnv);
+
+      const result = await getQueueResult(
+        batch,
+        createExecutionContext(),
+      );
+      expect(result.explicitAcks).toEqual([messageId]);
+      expect(result.retryMessages).toEqual([]);
+      const pagesThisInvocation =
+        controlFetch.mock.calls.length - pageCountBefore;
+      const batchesThisInvocation =
+        childSendBatch.mock.calls.length - batchCountBefore;
+      expect(pagesThisInvocation).toBeLessThanOrEqual(1);
+      expect(batchesThisInvocation).toBeLessThanOrEqual(1);
+      expect(pagesThisInvocation + batchesThisInvocation)
+        .toBeLessThanOrEqual(1);
+      invocationWork.push(
+        pagesThisInvocation === 1
+          ? 'page'
+          : batchesThisInvocation === 1
+            ? 'batch'
+            : 'complete',
+      );
+
+      invocation += 1;
+      if (invocation > 8) {
+        throw new Error('Repository fan-out wakeup chain did not converge.');
+      }
+      nextBody = wakeupBodies.shift();
+      expect(wakeupBodies).toEqual([]);
+    }
+
+    expect(pageRequests).toEqual([
+      { pass: 1, cursor: null },
+      { pass: 1, cursor: 'cursor-after-9' },
+      { pass: 2, cursor: null },
+      { pass: 2, cursor: 'cursor-after-9' },
+    ]);
+    expect(invocationWork).toEqual([
+      'page',
+      'page',
+      'page',
+      'page',
+      'batch',
+      'complete',
+    ]);
+    expect(childBatches).toHaveLength(1);
+    expect(childBatches[0]).toHaveLength(3);
+    const childWorkItems = childBatches[0]!.map((message) => {
+      expect(message.contentType).toBe('text');
+      return parseStewardRuntimeWorkItem(JSON.parse(message.body));
+    });
+    expect(childWorkItems.map(
+      (item) => item.subject.pullRequestNumber,
+    )).toEqual([4, 9, 12]);
+    for (const child of childWorkItems) {
+      expect(child).toMatchObject({
+        schemaVersion: 3,
+        operation: 'pull-request-reconcile',
+        installationId: scopeWorkItem.target.installationId,
+        subject: {
+          repositoryId,
+          repositoryFullName,
+        },
+        cause: {
+          kind: 'scope-fanout',
+          rootDeliveryId: scopeWorkItem.cause.deliveryId,
+          scopeSchemaVersion: 1,
+          fanoutGeneration: 1,
+          event: 'repository',
+          action: 'edited',
+          receivedAt: scopeWorkItem.cause.receivedAt,
+        },
+      });
+      expect(child.cause.deliveryId).toMatch(/^fanout-v1:[0-9a-f]{64}$/);
+    }
+
+    const stub = workerdEnv.REPOSITORY_FANOUT_COORDINATOR.getByName(
+      repositoryFanoutCoordinatorName(repositoryId),
+    );
+    expect(await stub.snapshot()).toMatchObject({
+      schemaVersion: 1,
+      repositoryId: String(repositoryId),
+      generation: 1,
+      phase: 'idle',
+      dirty: false,
+      lease: null,
+      pendingDeliveryCount: 0,
+      completedDeliveryCount: 1,
+      targetCount: 3,
+      confirmedTargetCount: 3,
+      failureCode: null,
+    });
+    await evictDurableObject(stub);
+    expect(await stub.snapshot()).toMatchObject({
+      generation: 1,
+      phase: 'idle',
+      completedDeliveryCount: 1,
+      targetCount: 3,
+      confirmedTargetCount: 3,
+    });
+  });
+});
 
 describe('PullRequestCoordinator in workerd', () => {
   it('persists SQLite-backed completion state across an object eviction', async () => {
@@ -2590,9 +2820,12 @@ describe('PullRequestCoordinator in workerd', () => {
     );
     const coordinatorEnv: CoordinatorEnv = {
       PR_COORDINATOR: workerdEnv.PR_COORDINATOR,
+      REPOSITORY_FANOUT_COORDINATOR:
+        workerdEnv.REPOSITORY_FANOUT_COORDINATOR,
       CONTROL: { fetch: controlFetch },
       EVENT_QUEUE: {
         send: vi.fn().mockResolvedValue(undefined),
+        sendBatch: vi.fn().mockResolvedValue(undefined),
       },
     };
 
@@ -2687,9 +2920,12 @@ describe('PullRequestCoordinator in workerd', () => {
     );
     const coordinatorEnv: CoordinatorEnv = {
       PR_COORDINATOR: workerdEnv.PR_COORDINATOR,
+      REPOSITORY_FANOUT_COORDINATOR:
+        workerdEnv.REPOSITORY_FANOUT_COORDINATOR,
       CONTROL: { fetch: controlFetch },
       EVENT_QUEUE: {
         send: vi.fn().mockResolvedValue(undefined),
+        sendBatch: vi.fn().mockResolvedValue(undefined),
       },
     };
 
@@ -2827,9 +3063,12 @@ describe('PullRequestCoordinator in workerd', () => {
 
     await coordinatorWorker.queue(batch, {
       PR_COORDINATOR: workerdEnv.PR_COORDINATOR,
+      REPOSITORY_FANOUT_COORDINATOR:
+        workerdEnv.REPOSITORY_FANOUT_COORDINATOR,
       CONTROL: { fetch: controlFetch },
       EVENT_QUEUE: {
         send: vi.fn().mockResolvedValue(undefined),
+        sendBatch: vi.fn().mockResolvedValue(undefined),
       },
     });
 
@@ -2899,9 +3138,12 @@ describe('PullRequestCoordinator in workerd', () => {
     );
     const coordinatorEnv: CoordinatorEnv = {
       PR_COORDINATOR: workerdEnv.PR_COORDINATOR,
+      REPOSITORY_FANOUT_COORDINATOR:
+        workerdEnv.REPOSITORY_FANOUT_COORDINATOR,
       CONTROL: { fetch: controlFetch },
       EVENT_QUEUE: {
         send: vi.fn().mockResolvedValue(undefined),
+        sendBatch: vi.fn().mockResolvedValue(undefined),
       },
     };
     const messages = Array.from({ length: 140 }, (_unused, index) => {
@@ -3013,8 +3255,13 @@ describe('PullRequestCoordinator in workerd', () => {
     });
     const coordinatorEnv: CoordinatorEnv = {
       PR_COORDINATOR: workerdEnv.PR_COORDINATOR,
+      REPOSITORY_FANOUT_COORDINATOR:
+        workerdEnv.REPOSITORY_FANOUT_COORDINATOR,
       CONTROL: { fetch: controlFetch },
-      EVENT_QUEUE: { send: wakeupSend },
+      EVENT_QUEUE: {
+        send: wakeupSend,
+        sendBatch: vi.fn().mockResolvedValue(undefined),
+      },
     };
 
     let nextBody: string | undefined =

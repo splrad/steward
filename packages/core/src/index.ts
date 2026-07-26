@@ -16,5 +16,7 @@ export * from './runtime-diagnostics.js';
 export * from './runtime-diagnostics-transport.js';
 export * from './runtime-control.js';
 export * from './runtime-control-v2.js';
+export * from './runtime-repository-fanout.js';
+export * from './runtime-scope-work-item.js';
 export * from './runtime-work-item.js';
 export * from './webhook-causality.js';

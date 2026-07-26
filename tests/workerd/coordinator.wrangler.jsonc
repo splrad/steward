@@ -8,11 +8,19 @@
       {
         "name": "PR_COORDINATOR",
         "class_name": "PullRequestCoordinator"
+      },
+      {
+        "name": "REPOSITORY_FANOUT_COORDINATOR",
+        "class_name": "RepositoryFanoutCoordinator"
       }
     ]
   },
   "exports": {
     "PullRequestCoordinator": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
+    "RepositoryFanoutCoordinator": {
       "type": "durable-object",
       "storage": "sqlite"
     }

@@ -1,15 +1,29 @@
 # Steward Coordinator
 
-`steward-coordinator` is a stable, private Queue consumer and SQLite Durable
-Object host. One object named from the numeric repository ID and pull request
-number owns delivery deduplication, monotonic generations, dirty coalescing,
-and fenced leases. The original `coordinator_schema.version=1`, object name,
-base tables, phases, failure codes, and v1 RPCs remain unchanged.
+`steward-coordinator` is a private Queue consumer and SQLite Durable Object
+host with two independent object classes:
 
-The Queue reader accepts work-item schema versions 1 and 2. Version 1 retains
-its original `pull_request`-only event contract; version 2 adds direct
-pull-request review, review-comment, and review-thread triggers without storing
-event bodies or changing level-triggered reconcile semantics.
+- one pull-request object, named from the numeric repository ID and pull
+  request number, owns delivery deduplication, monotonic generations, dirty
+  coalescing, and fenced leases for one pull request;
+- one repository fan-out object, named only from the numeric repository ID,
+  owns bounded `all-open` enumeration and deterministic dispatch to the
+  pull-request objects.
+
+The original pull-request `coordinator_schema.version=1`, object name, base
+tables, phases, failure codes, and v1 RPCs remain unchanged. Repository fan-out
+uses a separate `RepositoryFanoutCoordinator` SQLite export and separate
+schema, so its repository-scoped lifecycle cannot collide with a pull-request
+object or alter the v1/v2 rollback state.
+
+The Queue reader accepts strict `ScopeWorkItem V1` repository envelopes and
+pull-request work-item schema versions 1, 2, and 3. Work-item v1 retains its
+original `pull_request`-only event contract; v2 adds direct pull-request
+review, review-comment, and review-thread triggers. A v3 item is a
+repository-fan-out child whose `scope-fanout` cause binds the canonical root
+scope delivery, repository fan-out generation, and pull request number. None
+of these paths stores webhook bodies or changes the pull-request object's
+level-triggered reconcile semantics.
 
 An independent `coordinator_mutation_schema.version=1` sidecar stores a bounded
 canonical v2 Control plan, its resolved current-head/Manifest identity,
@@ -87,14 +101,45 @@ the same Queue and only then acknowledges the completed root. A failed wakeup
 write retains the root for retry, so an interleaved event stream cannot exhaust
 one message's retry budget and strand a dirty object.
 
+## Repository fan-out
+
+Ingress repository lifecycle events enter Queue as a strict
+`ScopeWorkItem V1` with `scope-reconcile` / `repository` / `all-open` scope.
+The repository object durably selects a root delivery, generation, dirty
+follow-up state, and fenced lease before enumeration. Control then performs
+one live GitHub App page read per invocation; network I/O stays outside Durable
+Object transactions. Pagination is bounded to 100 pull requests per page and
+30 pages per pass.
+
+The object persists canonical page receipts and membership for two complete
+passes. Dispatch begins only when both passes prove the same live repository
+identity, total count, complete pull-request set, and Control revision. Drift
+restarts the bounded scan instead of treating a partial or unstable view as
+authoritative. An explicit live absence is a stable empty/tombstone result;
+installation suspension, rate limits, ambiguous GitHub failures, and other
+unavailable states remain retryable and are never collapsed to empty.
+
+Each confirmed open pull request becomes a `WorkItem V3`. Its delivery ID is
+derived from the canonical root scope, repository fan-out generation, and pull
+request number, and Coordinator recomputes that identity before enqueueing it.
+Dispatch uses bounded Queue `sendBatch` calls. After a successful batch write,
+the repository object durably confirms the exact target delivery IDs before
+advancing. If the response or confirmation is lost, retry sends the same
+deterministic IDs; the downstream pull-request object deduplicates them rather
+than creating a second logical reconciliation. A dirty repository event is
+retained as a later generation and cannot be swallowed by completion of the
+active one.
+
 The Queue consumer routes existing schema-v1 work items through the unchanged
 Control v1 probe path, so already queued messages and the deployed rollback
 reader keep their original behavior. Schema-v2 work items use the strict
 Governance v2 runner: recovery is attempted first, `prepare` is persisted in
 the sidecar before any mutation, each `apply-next` receipt is recorded before
 advancing, and an uncertain response becomes `unknown` for read-only recovery.
+Schema-v3 fan-out children use the same strict Governance v2 runner.
 Classification and DCO v2 remain disabled in Control; this runner does not
-silently fall back to v1 for a v2 work item.
+silently fall back to v1 for a v2 or v3 work item. Direct v1/v2 producer and
+rollback contracts remain unchanged.
 
 The Worker uses Cloudflare's declarative SQLite Durable Object `exports`
 lifecycle. That makes its state lifecycle atomic and intentionally keeps it
@@ -107,12 +152,22 @@ Returned Control version metadata is checked before acknowledgement because an
 invalid Cloudflare version override silently falls back to normal traffic
 percentages.
 
-Deployment must establish a compatible Control v2 version before a
-Coordinator candidate can consume schema-v2 messages. Ingress remains the last
-writer to enable: Control dual-read/strict v2 first, Coordinator dual-route
-second, then Ingress v2, and only after canary evidence may the GitHub App add
-the review-event subscriptions. Source integration alone is not live runtime
-activation.
+The first release containing `RepositoryFanoutCoordinator` adds a new Durable
+Object export and therefore requires a reviewed full Coordinator deploy; it
+must not be introduced through the normal gradual version-upload path. Rollout
+must first deploy a compatible Control repository-fan-out page endpoint, then
+fully deploy Coordinator with the new repository export and both Queue routes,
+and only then deploy the Ingress `ScopeWorkItem V1` writer. After sandbox and
+canary evidence prove the complete path, the GitHub App repository event may
+be enabled. Until that final owner action, repository events do not enter this
+path.
+
+The existing pull-request v2 order remains unchanged: Control
+dual-read/strict v2 first, Coordinator dual-route second, then Ingress v2, and
+only after canary evidence may the GitHub App add review-event subscriptions.
+Source integration alone is not live runtime activation, and this document
+does not claim that the repository export has been deployed or that the App
+repository event has been enabled.
 
 Those two values are deliberately not persisted as dashboard-only Wrangler
 variables: `keep_vars` remains false. A candidate deployment must pass both

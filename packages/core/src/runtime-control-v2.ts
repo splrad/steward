@@ -9,6 +9,12 @@ import {
   type StewardRuntimeWorkItemSubjectV1,
   type StewardRuntimeWorkItem,
 } from './runtime-work-item.js';
+import {
+  deriveStewardRuntimeFanoutDeliveryId,
+} from './runtime-repository-fanout.js';
+import {
+  buildStewardRuntimeScopeWorkItemV1,
+} from './runtime-scope-work-item.js';
 import { canonicalControlJson, controlJsonDigest } from './control-json.js';
 
 const commitPattern = /^[0-9a-f]{40}$/;
@@ -332,15 +338,48 @@ function requireDefaultBranchV2(value: unknown, field: string): string {
   return branch;
 }
 
-function parseBindingV2(value: unknown, field: string): StewardRuntimeControlBindingV2 {
+async function parseBindingV2(
+  value: unknown,
+  field: string,
+): Promise<StewardRuntimeControlBindingV2> {
   const binding = plainRecord(value, field);
   requireExactKeys(binding, ['workItem', 'generation', 'objective'], field);
   const workItem = parseStewardRuntimeWorkItem(binding.workItem);
-  if (
-    workItem.operation !== 'pull-request-reconcile'
-    || workItem.cause.kind !== 'github-webhook'
-  ) {
+  if (workItem.operation !== 'pull-request-reconcile') {
     invalid(`${field}.workItem must be a GitHub pull-request reconcile`);
+  }
+  if (workItem.cause.kind === 'internal-probe') {
+    invalid(`${field}.workItem must be a GitHub pull-request reconcile`);
+  }
+  if (workItem.cause.kind === 'scope-fanout') {
+    if (workItem.schemaVersion !== 3) {
+      invalid(`${field}.workItem scope fan-out cause requires schema version 3`);
+    }
+    const scopeWorkItem = buildStewardRuntimeScopeWorkItemV1({
+      operation: 'scope-reconcile',
+      target: {
+        scope: 'repository',
+        mode: 'refresh',
+        installationId: workItem.installationId,
+        repositoryId: workItem.subject.repositoryId,
+        pullRequests: 'all-open',
+      },
+      cause: {
+        kind: 'github-webhook',
+        deliveryId: workItem.cause.rootDeliveryId,
+        event: 'repository',
+        action: workItem.cause.action,
+        receivedAt: workItem.cause.receivedAt,
+      },
+    });
+    const expectedDeliveryId = await deriveStewardRuntimeFanoutDeliveryId(
+      scopeWorkItem,
+      workItem.cause.fanoutGeneration,
+      workItem.subject.pullRequestNumber,
+    );
+    if (workItem.cause.deliveryId !== expectedDeliveryId) {
+      invalid(`${field}.workItem scope fan-out delivery ID is not derivable from its binding`);
+    }
   }
   if (
     binding.objective !== 'governance'
@@ -1044,7 +1083,7 @@ export async function parseStewardRuntimeControlPrepareRequestV2(
   const parsed: StewardRuntimeControlPrepareRequestV2 = {
     schemaVersion: STEWARD_RUNTIME_CONTROL_V2_SCHEMA_VERSION,
     phase: 'prepare',
-    binding: parseBindingV2(request.binding, 'request.binding'),
+    binding: await parseBindingV2(request.binding, 'request.binding'),
   };
   assertEnvelopeSizeV2(prepareRequestValueV2(parsed));
   return parsed;
@@ -1094,7 +1133,7 @@ export async function parseStewardRuntimeControlPreparedReceiptV2(
   ) {
     invalid('receipt must be a Steward runtime Control v2 prepared receipt');
   }
-  const binding = parseBindingV2(receipt.binding, 'receipt.binding');
+  const binding = await parseBindingV2(receipt.binding, 'receipt.binding');
   const resolvedContext = parseResolvedContextV2(
     receipt.resolvedContext,
     'receipt.resolvedContext',
@@ -1182,7 +1221,7 @@ async function parseMutationPhaseRequestV2(
   ) {
     invalid(`request must be a Steward runtime Control v2 ${expectedPhase} request`);
   }
-  const binding = parseBindingV2(request.binding, 'request.binding');
+  const binding = await parseBindingV2(request.binding, 'request.binding');
   const resolvedContext = parseResolvedContextV2(
     request.resolvedContext,
     'request.resolvedContext',
@@ -1350,7 +1389,7 @@ export async function parseStewardRuntimeControlMutationReceiptV2(
   ) {
     invalid('receipt must be a Steward runtime Control v2 mutation receipt');
   }
-  const binding = parseBindingV2(receipt.binding, 'receipt.binding');
+  const binding = await parseBindingV2(receipt.binding, 'receipt.binding');
   const resolvedContext = parseResolvedContextV2(
     receipt.resolvedContext,
     'receipt.resolvedContext',
@@ -1445,7 +1484,7 @@ export async function parseStewardRuntimeControlRecoveryReceiptV2(
   ) {
     invalid('receipt must be a Steward runtime Control v2 recovery receipt');
   }
-  const binding = parseBindingV2(receipt.binding, 'receipt.binding');
+  const binding = await parseBindingV2(receipt.binding, 'receipt.binding');
   const resolvedContext = parseResolvedContextV2(
     receipt.resolvedContext,
     'receipt.resolvedContext',

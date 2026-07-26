@@ -3,11 +3,13 @@ import {
   buildStewardRuntimeControlMutationReceiptV2,
   buildStewardRuntimeControlPreparedReceiptV2,
   buildStewardRuntimeControlRecoveryReceiptV2,
+  buildStewardRuntimeRepositoryFanoutPageReceiptV1,
   buildStewardRuntimeDiagnosticsControlReceipt,
   buildStewardRuntimeControlReceipt,
   canonicalStewardRuntimeControlMutationReceiptV2Json,
   canonicalStewardRuntimeControlPreparedReceiptV2Json,
   canonicalStewardRuntimeControlRecoveryReceiptV2Json,
+  canonicalStewardRuntimeRepositoryFanoutPageReceiptV1Json,
   canonicalStewardRuntimeDiagnosticsControlReceiptJson,
   canonicalStewardRuntimeControlReceiptJson,
   parseStewardRuntimeControlApplyNextRequestV2,
@@ -15,6 +17,7 @@ import {
   parseStewardRuntimeControlPrepareRequestV2,
   parseStewardRuntimeControlRecoverRequestV2,
   parseStewardRuntimeControlRequest,
+  parseStewardRuntimeRepositoryFanoutPageRequestV1,
   type StewardRuntimeControlApplyNextRequestV2,
   type StewardRuntimeControlMutationBindingV2,
   type StewardRuntimeControlMutationResultV2,
@@ -25,6 +28,8 @@ import {
   type StewardRuntimeControlResolvedContextV2,
   type StewardRuntimeControlRevisionV1,
   type StewardRuntimeDiagnosticsSubjectV1,
+  type StewardRuntimeRepositoryFanoutPageRequestV1,
+  type StewardRuntimeScopeWorkItemV1,
 } from '../../core/src/index.js';
 import {
   canonicalControlJson,
@@ -52,6 +57,7 @@ import { encodeBase64Utf8 } from '../../manifest/src/encoding.js';
 
 const reconcilePathV1 = '/v1/reconcile';
 const reconcilePathV2 = '/v2/reconcile';
+const repositoryFanoutPathV1 = '/v1/repository-fanout/page';
 const diagnosticsPath = '/v1/runtime-diagnostics';
 export const maximumControlRequestBytes = 128 * 1024;
 export const maximumGitHubResponseBytes = 128 * 1024;
@@ -85,7 +91,11 @@ export interface ControlRuntimeDependencies {
 
 class RepositoryScopeError extends Error {
   constructor(
-    readonly kind: 'denied' | 'rate-limited' | 'unavailable',
+    readonly kind:
+      | 'absent'
+      | 'denied'
+      | 'rate-limited'
+      | 'unavailable',
     readonly retryAfter?: string,
   ) {
     super('Repository scope verification failed');
@@ -263,13 +273,15 @@ function classifyGitHubFailure(response: Response): RepositoryScopeError {
   ) {
     return new RepositoryScopeError('rate-limited', retryAfter);
   }
-  // A 404 is the only response that proves the App installation or its
-  // repository-scoped token cannot see the requested repository. GitHub can
-  // use a bare 403 for secondary rate limits, while 401/422 can describe
-  // credential or request-service failures. Preserve those ambiguous cases as
-  // unavailable instead of manufacturing an access-denial fact.
+  // A hidden or explicit 404 is the only response that proves the requested
+  // installation/repository is absent from the App-visible scope. Keep that
+  // fact distinct from malformed identity responses and policy denial so only
+  // repository fan-out may deliberately converge it to a tombstone. GitHub
+  // can use a bare 403 for secondary rate limits, while 401/422 can describe
+  // credential or request-service failures; preserve those ambiguous cases as
+  // unavailable.
   if (response.status === 404) {
-    return new RepositoryScopeError('denied');
+    return new RepositoryScopeError('absent');
   }
   return new RepositoryScopeError('unavailable');
 }
@@ -405,6 +417,33 @@ interface GovernanceRepositoryAccess {
   readonly repositoryId: number;
 }
 
+interface TrustedAppInstallationAccess {
+  readonly appId: number;
+  readonly appToken: string;
+  readonly identity: ControlRuntimeIdentity;
+  readonly installationId: number;
+  readonly organization: {
+    readonly id: number;
+    readonly login: string;
+  };
+}
+
+interface RepositoryFanoutLiveAccess {
+  readonly state: 'live';
+  readonly client: GitHubRepositoryClient;
+  readonly repositoryFullName: string;
+  readonly repositoryId: number;
+}
+
+interface RepositoryFanoutAbsentAccess {
+  readonly state: 'absent';
+  readonly repositoryId: number;
+}
+
+type RepositoryFanoutAccess =
+  | RepositoryFanoutLiveAccess
+  | RepositoryFanoutAbsentAccess;
+
 type GitHubInstallationPermissionLevel = 'read' | 'write';
 type GitHubInstallationPermissions = Readonly<
   Record<string, GitHubInstallationPermissionLevel>
@@ -412,6 +451,11 @@ type GitHubInstallationPermissions = Readonly<
 
 const governanceContextReadPermissions = {
   contents: 'read',
+  metadata: 'read',
+  pull_requests: 'read',
+} as const satisfies GitHubInstallationPermissions;
+
+const repositoryFanoutReadPermissions = {
   metadata: 'read',
   pull_requests: 'read',
 } as const satisfies GitHubInstallationPermissions;
@@ -548,23 +592,14 @@ function validAppClientId(value: unknown): value is string {
     && /^[\x21-\x7e]+$/.test(value);
 }
 
-async function resolveGovernanceRepositoryAccess(
+async function resolveTrustedAppInstallation(
   env: ControlRuntimeEnv,
-  request:
-    | StewardRuntimeControlPrepareRequestV2
-    | StewardRuntimeControlApplyNextRequestV2
-    | StewardRuntimeControlRecoverRequestV2,
+  installationId: number,
   dependencies: ControlRuntimeDependencies,
-  requestedPermissions: GitHubInstallationPermissions =
-    governanceContextReadPermissions,
   parentSignal?: AbortSignal,
-): Promise<GovernanceRepositoryAccess> {
+  suspendedInstallationKind: 'denied' | 'unavailable' = 'denied',
+): Promise<TrustedAppInstallationAccess> {
   const organization = expectedOrganization(env);
-  const subject = request.binding.workItem.subject;
-  const [queuedOwner] = subject.repositoryFullName.split('/');
-  if (queuedOwner?.toLowerCase() !== organization.login.toLowerCase()) {
-    throw new RepositoryScopeError('denied');
-  }
   const appId = positiveSafeInteger(Number(env.GITHUB_APP_ID));
   if (appId === null || !env.GITHUB_APP_PRIVATE_KEY) {
     throw new RepositoryScopeError('unavailable');
@@ -596,10 +631,9 @@ async function resolveGovernanceRepositoryAccess(
     throw new RepositoryScopeError('unavailable');
   }
 
-  const expectedInstallationId = request.binding.workItem.installationId;
   const installation = plainRecord(await githubJson(
     dependencies,
-    `https://api.github.com/app/installations/${expectedInstallationId}`,
+    `https://api.github.com/app/installations/${installationId}`,
     appToken,
     parentSignal === undefined ? {} : { parentSignal },
   ));
@@ -607,20 +641,60 @@ async function resolveGovernanceRepositoryAccess(
   if (
     installation === null
     || account === null
-    || positiveSafeInteger(installation.id) !== expectedInstallationId
+    || positiveSafeInteger(installation.id) !== installationId
     || positiveSafeInteger(installation.app_id) !== appId
     || positiveSafeInteger(account.id) !== organization.id
-    || String(account.login ?? '').toLowerCase() !== organization.login.toLowerCase()
+    || String(account.login ?? '').toLowerCase()
+      !== organization.login.toLowerCase()
     || account.type !== 'Organization'
     || installation.target_type !== 'Organization'
-    || installation.suspended_at !== null
   ) {
     throw new RepositoryScopeError('denied');
   }
+  if (installation.suspended_at !== null) {
+    // Keep the direct PR path's established denied behavior by default. A
+    // repository fan-out, however, must pause and retry because suspension is
+    // reversible and therefore cannot prove repository absence.
+    throw new RepositoryScopeError(suspendedInstallationKind);
+  }
+
+  return {
+    appId,
+    appToken,
+    identity,
+    installationId,
+    organization,
+  };
+}
+
+async function resolveGovernanceRepositoryAccess(
+  env: ControlRuntimeEnv,
+  request:
+    | StewardRuntimeControlPrepareRequestV2
+    | StewardRuntimeControlApplyNextRequestV2
+    | StewardRuntimeControlRecoverRequestV2,
+  dependencies: ControlRuntimeDependencies,
+  requestedPermissions: GitHubInstallationPermissions =
+    governanceContextReadPermissions,
+  parentSignal?: AbortSignal,
+): Promise<GovernanceRepositoryAccess> {
+  const organization = expectedOrganization(env);
+  const subject = request.binding.workItem.subject;
+  const [queuedOwner] = subject.repositoryFullName.split('/');
+  if (queuedOwner?.toLowerCase() !== organization.login.toLowerCase()) {
+    throw new RepositoryScopeError('denied');
+  }
+  const expectedInstallationId = request.binding.workItem.installationId;
+  const trusted = await resolveTrustedAppInstallation(
+    env,
+    expectedInstallationId,
+    dependencies,
+    parentSignal,
+  );
 
   const installationToken = await createRepositoryInstallationToken(
     dependencies,
-    appToken,
+    trusted.appToken,
     expectedInstallationId,
     subject.repositoryId,
     requestedPermissions,
@@ -648,9 +722,9 @@ async function resolveGovernanceRepositoryAccess(
   }
 
   return {
-    identity,
+    identity: trusted.identity,
     repositoryFullName,
-    appToken,
+    appToken: trusted.appToken,
     installationId: expectedInstallationId,
     repositoryId: subject.repositoryId,
     client: new GitHubRepositoryClient(createGitHubRestTransport({
@@ -680,6 +754,99 @@ async function governanceRepositoryClient(
     fetch: boundedGitHubRestFetch(dependencies, parentSignal),
     userAgent: 'splrad-steward-control',
   }));
+}
+
+async function resolveRepositoryFanoutAccess(
+  env: ControlRuntimeEnv,
+  scopeWorkItem: StewardRuntimeScopeWorkItemV1,
+  dependencies: ControlRuntimeDependencies,
+  parentSignal?: AbortSignal,
+): Promise<RepositoryFanoutAccess> {
+  const subject = scopeWorkItem.target;
+  let trusted: TrustedAppInstallationAccess;
+  try {
+    trusted = await resolveTrustedAppInstallation(
+      env,
+      subject.installationId,
+      dependencies,
+      parentSignal,
+      'unavailable',
+    );
+  } catch (error) {
+    if (error instanceof RepositoryScopeError && error.kind === 'absent') {
+      return { state: 'absent', repositoryId: subject.repositoryId };
+    }
+    throw error;
+  }
+
+  let installationToken: string;
+  try {
+    installationToken = await createRepositoryInstallationToken(
+      dependencies,
+      trusted.appToken,
+      trusted.installationId,
+      subject.repositoryId,
+      repositoryFanoutReadPermissions,
+      parentSignal,
+    );
+  } catch (error) {
+    if (error instanceof RepositoryScopeError && error.kind === 'absent') {
+      return { state: 'absent', repositoryId: subject.repositoryId };
+    }
+    throw error;
+  }
+
+  let repository: Record<string, unknown> | null;
+  try {
+    repository = plainRecord(await githubJson(
+      dependencies,
+      `https://api.github.com/repositories/${subject.repositoryId}`,
+      installationToken,
+      parentSignal === undefined ? {} : { parentSignal },
+    ));
+  } catch (error) {
+    if (error instanceof RepositoryScopeError && error.kind === 'absent') {
+      return { state: 'absent', repositoryId: subject.repositoryId };
+    }
+    throw error;
+  }
+  const owner = plainRecord(repository?.owner);
+  const repositoryFullName = String(repository?.full_name ?? '');
+  const repositoryFullNameParts = repositoryFullName.split('/');
+  if (
+    repository === null
+    || owner === null
+    || positiveSafeInteger(repository.id) !== subject.repositoryId
+    || positiveSafeInteger(owner.id) === null
+    || repositoryFullNameParts.length !== 2
+    || repositoryFullNameParts.some((part) => part.length === 0)
+  ) {
+    throw new RepositoryScopeError('denied');
+  }
+  if (
+    positiveSafeInteger(owner.id) !== trusted.organization.id
+    || String(owner.login ?? '').toLowerCase()
+      !== trusted.organization.login.toLowerCase()
+    || owner.type !== 'Organization'
+    || repositoryFullNameParts[0]?.toLowerCase()
+      !== trusted.organization.login.toLowerCase()
+  ) {
+    // A repository transfer preserves its immutable database ID. Seeing that
+    // exact ID under a different owner proves only that it has left the
+    // configured organization scope, so converge this scope to a tombstone.
+    return { state: 'absent', repositoryId: subject.repositoryId };
+  }
+
+  return {
+    state: 'live',
+    repositoryId: subject.repositoryId,
+    repositoryFullName,
+    client: new GitHubRepositoryClient(createGitHubRestTransport({
+      token: installationToken,
+      fetch: boundedGitHubRestFetch(dependencies, parentSignal),
+      userAgent: 'splrad-steward-control',
+    })),
+  };
 }
 
 export async function verifyDiagnosticsRepositoryScope(
@@ -802,6 +969,91 @@ function canonicalV2Response(body: string): Response {
       'cache-control': 'no-store',
     },
   });
+}
+
+async function enumerateRepositoryFanoutPage(
+  request: StewardRuntimeRepositoryFanoutPageRequestV1,
+  env: ControlRuntimeEnv,
+  dependencies: ControlRuntimeDependencies,
+  parentSignal?: AbortSignal,
+): Promise<Response> {
+  const access = await resolveRepositoryFanoutAccess(
+    env,
+    request.binding.scopeWorkItem,
+    dependencies,
+    parentSignal,
+  );
+  const revision = controlRevision(env);
+  if (access.state === 'absent') {
+    const receipt = buildStewardRuntimeRepositoryFanoutPageReceiptV1({
+      binding: request.binding,
+      repository: {
+        state: 'absent',
+        id: access.repositoryId,
+        fullName: null,
+      },
+      page: {
+        totalCount: 0,
+        pullRequestNumbers: [],
+        hasNextPage: false,
+        endCursor: null,
+      },
+      controlRevision: revision,
+    });
+    return canonicalV2Response(
+      canonicalStewardRuntimeRepositoryFanoutPageReceiptV1Json(receipt),
+    );
+  }
+
+  const [owner, repository] = access.repositoryFullName.split('/') as [
+    string,
+    string,
+  ];
+  let page: Awaited<
+    ReturnType<GitHubRepositoryClient['listOpenPullRequestsPage']>
+  >;
+  try {
+    page = await access.client.listOpenPullRequestsPage(
+      owner,
+      repository,
+      request.binding.cursor,
+    );
+  } catch (error) {
+    if (error instanceof GitHubApiError && error.rateLimited) {
+      throw new RepositoryScopeError(
+        'rate-limited',
+        error.retryAfterSeconds === undefined
+          ? undefined
+          : String(error.retryAfterSeconds),
+      );
+    }
+    throw error;
+  }
+  if (
+    page.repositoryId !== access.repositoryId
+    || page.repositoryFullName.toLowerCase()
+      !== access.repositoryFullName.toLowerCase()
+  ) {
+    throw new RepositoryScopeError('denied');
+  }
+  const receipt = buildStewardRuntimeRepositoryFanoutPageReceiptV1({
+    binding: request.binding,
+    repository: {
+      state: 'live',
+      id: page.repositoryId,
+      fullName: page.repositoryFullName,
+    },
+    page: {
+      totalCount: page.totalCount,
+      pullRequestNumbers: page.pullRequestNumbers,
+      hasNextPage: page.hasNextPage,
+      endCursor: page.endCursor,
+    },
+    controlRevision: revision,
+  });
+  return canonicalV2Response(
+    canonicalStewardRuntimeRepositoryFanoutPageReceiptV1Json(receipt),
+  );
 }
 
 function splitRepositoryFullName(fullName: string): {
@@ -1290,7 +1542,7 @@ async function prepareGovernanceV2(
     );
   } catch (error) {
     if (error instanceof RepositoryScopeError) {
-      if (error.kind === 'denied') {
+      if (error.kind === 'absent' || error.kind === 'denied') {
         return jsonResponse(403, { error: 'repository-access-denied' });
       }
       if (error.kind === 'rate-limited') {
@@ -1771,6 +2023,7 @@ export function createControlRuntimeHandler(
         (
           url.pathname !== reconcilePathV1
           && url.pathname !== reconcilePathV2
+          && url.pathname !== repositoryFanoutPathV1
           && url.pathname !== diagnosticsPath
         )
         || url.search !== ''
@@ -1778,7 +2031,11 @@ export function createControlRuntimeHandler(
       ) {
         return new Response('Not Found', { status: 404 });
       }
-      const expectedInternalProtocol = url.pathname === reconcilePathV2 ? '2' : '1';
+      const expectedInternalProtocol = url.pathname === reconcilePathV2
+        ? '2'
+        : url.pathname === repositoryFanoutPathV1
+          ? 'repository-fanout-1'
+          : '1';
       if (request.headers.get(internalProtocolHeader) !== expectedInternalProtocol) {
         return jsonResponse(403, { error: 'internal-protocol-required' });
       }
@@ -1794,6 +2051,41 @@ export function createControlRuntimeHandler(
           ? 413
           : 400;
         return jsonResponse(status, { error: status === 413 ? 'request-too-large' : 'invalid-json' });
+      }
+
+      if (url.pathname === repositoryFanoutPathV1) {
+        let input: StewardRuntimeRepositoryFanoutPageRequestV1;
+        try {
+          input = parseStewardRuntimeRepositoryFanoutPageRequestV1(parsed);
+        } catch {
+          return jsonResponse(400, { error: 'invalid-repository-fanout-request' });
+        }
+        try {
+          return await enumerateRepositoryFanoutPage(
+            input,
+            env,
+            dependencies,
+            request.signal,
+          );
+        } catch (error) {
+          if (error instanceof RepositoryScopeError) {
+            if (error.kind === 'absent' || error.kind === 'denied') {
+              return jsonResponse(403, { error: 'repository-access-denied' });
+            }
+            if (error.kind === 'rate-limited') {
+              const response = jsonResponse(429, {
+                error: 'github-rate-limited',
+              });
+              if (error.retryAfter) {
+                response.headers.set('retry-after', error.retryAfter);
+              }
+              return response;
+            }
+          }
+          return jsonResponse(503, {
+            error: 'repository-fanout-unavailable',
+          });
+        }
       }
 
       if (url.pathname === reconcilePathV2) {
@@ -1866,7 +2158,7 @@ export function createControlRuntimeHandler(
           );
         } catch (error) {
           if (error instanceof RepositoryScopeError) {
-            if (error.kind === 'denied') {
+            if (error.kind === 'absent' || error.kind === 'denied') {
               return jsonResponse(403, { error: 'repository-access-denied' });
             }
             if (error.kind === 'rate-limited') {

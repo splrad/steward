@@ -27,6 +27,15 @@ export interface GitHubPullRequestDetail extends GitHubPullRequest {
   mergeCommitSha: string | null;
 }
 
+export interface GitHubOpenPullRequestsPage {
+  repositoryId: number;
+  repositoryFullName: string;
+  totalCount: number;
+  pullRequestNumbers: number[];
+  hasNextPage: boolean;
+  endCursor: string | null;
+}
+
 export interface GitHubPullRequestMergeState {
   merged: boolean;
   mergeCommitSha: string | null;
@@ -201,6 +210,20 @@ function uniqueNonEmptyNames(values: readonly string[] | undefined): string[] {
   return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
 }
 
+const githubLoginPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+const repositoryNamePattern = /^[A-Za-z0-9._-]{1,100}$/;
+const visibleAsciiCursorPattern = /^[\x21-\x7e]+$/;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function validPaginationCursor(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length <= 1_024
+    && visibleAsciiCursorPattern.test(value);
+}
+
 function checkMutationBody(input: CheckRunUpdate): Record<string, unknown> {
   return {
     name: input.name,
@@ -247,6 +270,24 @@ query PullRequestMergeCommit($owner: String!, $repository: String!, $number: Int
       state
       merged
       mergeCommit { oid }
+    }
+  }
+}`;
+
+const openPullRequestsPageQuery = `
+query OpenPullRequestsPage($owner: String!, $repository: String!, $cursor: String) {
+  repository(owner: $owner, name: $repository) {
+    databaseId
+    nameWithOwner
+    pullRequests(
+      states: OPEN
+      first: 100
+      after: $cursor
+      orderBy: { field: CREATED_AT, direction: ASC }
+    ) {
+      totalCount
+      pageInfo { hasNextPage endCursor }
+      nodes { number state }
     }
   }
 }`;
@@ -403,6 +444,120 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
       path: `${repositoryPath(owner, repository)}/pulls`,
       query: { state: 'open', head: `${owner}:${head}`, base, sort: 'updated', direction: 'desc', per_page: 2 },
     });
+  }
+
+  async listOpenPullRequestsPage(
+    owner: string,
+    repository: string,
+    cursor: string | null,
+  ): Promise<GitHubOpenPullRequestsPage> {
+    if (cursor !== null && !validPaginationCursor(cursor)) {
+      throw new Error('GitHub GraphQL open pull requests cursor must be 1-1024 visible ASCII characters');
+    }
+    const payload = await this.graphqlTransport.request<unknown>({
+      method: 'POST',
+      path: '/graphql',
+      body: { query: openPullRequestsPageQuery, variables: { owner, repository, cursor } },
+    });
+    if (!isRecord(payload)) {
+      throw new Error('GitHub GraphQL returned an invalid open pull requests response');
+    }
+    if (payload.errors !== undefined) {
+      if (!Array.isArray(payload.errors)) {
+        throw new Error('GitHub GraphQL returned invalid open pull requests errors');
+      }
+      if (payload.errors.length > 0) {
+        const first = payload.errors[0];
+        const message = isRecord(first) && typeof first.message === 'string' && first.message
+          ? first.message
+          : 'unknown error';
+        throw new Error(`GitHub GraphQL open pull requests failed: ${message}`);
+      }
+    }
+
+    const data = isRecord(payload.data) ? payload.data : null;
+    const resolvedRepository = data && isRecord(data.repository) ? data.repository : null;
+    if (!resolvedRepository) {
+      throw new Error('GitHub GraphQL returned no repository for open pull requests');
+    }
+    const connection = isRecord(resolvedRepository.pullRequests)
+      ? resolvedRepository.pullRequests
+      : null;
+    if (!connection) {
+      throw new Error('GitHub GraphQL returned no open pull requests connection');
+    }
+
+    const repositoryId = resolvedRepository.databaseId;
+    const repositoryFullName = resolvedRepository.nameWithOwner;
+    const fullNameParts = typeof repositoryFullName === 'string'
+      ? repositoryFullName.split('/')
+      : [];
+    if (
+      !Number.isSafeInteger(repositoryId)
+      || Number(repositoryId) <= 0
+      || typeof repositoryFullName !== 'string'
+      || repositoryFullName !== repositoryFullName.trim()
+      || fullNameParts.length !== 2
+      || !githubLoginPattern.test(fullNameParts[0] ?? '')
+      || !repositoryNamePattern.test(fullNameParts[1] ?? '')
+      || repositoryFullName.toLowerCase() !== `${owner}/${repository}`.toLowerCase()
+    ) {
+      throw new Error('GitHub GraphQL returned invalid open pull requests repository identity');
+    }
+
+    const totalCount = connection.totalCount;
+    const pageInfo = isRecord(connection.pageInfo) ? connection.pageInfo : null;
+    const nodes = connection.nodes;
+    if (
+      !Number.isSafeInteger(totalCount)
+      || Number(totalCount) < 0
+      || Number(totalCount) > 3_000
+      || !pageInfo
+      || typeof pageInfo.hasNextPage !== 'boolean'
+      || !Array.isArray(nodes)
+      || nodes.length > 100
+      || nodes.length > Number(totalCount)
+    ) {
+      throw new Error('GitHub GraphQL returned invalid open pull requests page metadata');
+    }
+
+    const pullRequestNumbers: number[] = [];
+    const seenPullRequestNumbers = new Set<number>();
+    for (const node of nodes) {
+      if (
+        !isRecord(node)
+        || !Number.isSafeInteger(node.number)
+        || Number(node.number) <= 0
+        || node.state !== 'OPEN'
+        || seenPullRequestNumbers.has(Number(node.number))
+      ) {
+        throw new Error('GitHub GraphQL returned an invalid or duplicate open pull request');
+      }
+      const number = Number(node.number);
+      seenPullRequestNumbers.add(number);
+      pullRequestNumbers.push(number);
+    }
+
+    if (pageInfo.endCursor !== null
+      && pageInfo.endCursor !== undefined
+      && typeof pageInfo.endCursor !== 'string') {
+      throw new Error('GitHub GraphQL returned an invalid open pull requests cursor');
+    }
+    if (
+      pageInfo.hasNextPage
+      && (!validPaginationCursor(pageInfo.endCursor) || pageInfo.endCursor === cursor)
+    ) {
+      throw new Error('GitHub GraphQL open pull requests omitted a valid next cursor');
+    }
+
+    return {
+      repositoryId: Number(repositoryId),
+      repositoryFullName,
+      totalCount: Number(totalCount),
+      pullRequestNumbers,
+      hasNextPage: pageInfo.hasNextPage,
+      endCursor: pageInfo.hasNextPage ? pageInfo.endCursor as string : null,
+    };
   }
 
   async createPullRequest(input: {

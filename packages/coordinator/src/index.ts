@@ -28,6 +28,43 @@ export {
 } from './contracts.js';
 export { PullRequestCoordinator } from './pull-request-coordinator.js';
 export {
+  assertRepositoryFanoutDispatchBatchSize,
+  assertRepositoryFanoutFailureCode,
+  assertRepositoryFanoutGeneration,
+  assertRepositoryFanoutLeaseDurationMs,
+  assertRepositoryFanoutLeaseToken,
+  normalizeRepositoryFanoutRepositoryId,
+  parseRepositoryFanoutCoordinatorName,
+  parseRepositoryFanoutQueueConfirmations,
+  repositoryFanoutCompletedDeliveryRetentionLimit,
+  repositoryFanoutCompletedDeliveryRetentionMs,
+  repositoryFanoutCoordinatorName,
+  repositoryFanoutCoordinatorNamePrefix,
+  repositoryFanoutFailureCodes,
+  repositoryFanoutMaximumDispatchBatchSize,
+  repositoryFanoutMaximumDriftRestarts,
+  repositoryFanoutMaximumLeaseDurationMs,
+  repositoryFanoutPendingDeliveryRetentionLimit,
+  repositoryFanoutSchemaVersion,
+  type RepositoryFanoutAlarmResult,
+  type RepositoryFanoutClaimResult,
+  type RepositoryFanoutCompleteResult,
+  type RepositoryFanoutDispatchTarget,
+  type RepositoryFanoutFailResult,
+  type RepositoryFanoutFailureCode,
+  type RepositoryFanoutNextDispatchBatchResult,
+  type RepositoryFanoutPhase,
+  type RepositoryFanoutQueueConfirmation,
+  type RepositoryFanoutQueueConfirmations,
+  type RepositoryFanoutRecordPageResult,
+  type RepositoryFanoutRecordQueueConfirmedResult,
+  type RepositoryFanoutReleaseForContinuationResult,
+  type RepositoryFanoutSnapshot,
+} from './repository-fanout-contracts.js';
+export {
+  RepositoryFanoutCoordinator,
+} from './repository-fanout-coordinator.js';
+export {
   coordinatorMutationIntentCounts,
   coordinatorMaximumCanonicalPlanBytes,
   coordinatorMaximumMutationIntents,
@@ -77,6 +114,8 @@ export {
   coordinatorLeaseDurationMs,
   coordinatorMaximumImmediateFollowups,
   coordinatorMaximumControlResponseBytes,
+  coordinatorMaximumQueueBatchBytes,
+  coordinatorMaximumQueueMessageBytes,
   createCoordinatorHandler,
   processCoordinatorMessage,
   type ControlService,
@@ -87,5 +126,7 @@ export {
   type CoordinatorWakeupQueue,
   type PullRequestCoordinatorNamespace,
   type PullRequestCoordinatorStub,
+  type RepositoryFanoutCoordinatorNamespace,
+  type RepositoryFanoutCoordinatorStub,
 } from './worker.js';
 export { default } from './worker.js';
