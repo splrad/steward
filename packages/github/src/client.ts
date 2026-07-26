@@ -538,9 +538,10 @@ export class GitHubRepositoryClient implements ManifestRepositoryClient {
       pullRequestNumbers.push(number);
     }
 
-    if (pageInfo.endCursor !== null
-      && pageInfo.endCursor !== undefined
-      && typeof pageInfo.endCursor !== 'string') {
+    if (
+      pageInfo.endCursor !== null
+      && typeof pageInfo.endCursor !== 'string'
+    ) {
       throw new Error('GitHub GraphQL returned an invalid open pull requests cursor');
     }
     if (

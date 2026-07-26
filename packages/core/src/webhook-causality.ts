@@ -1,3 +1,7 @@
+import {
+  STEWARD_RUNTIME_REPOSITORY_ACTIONS_V1,
+} from './runtime-scope-work-item.js';
+
 export interface StewardWebhookCausalityContract {
   readonly propertyNames: readonly string[];
   readonly maintainerTeamId: number;
@@ -570,6 +574,3 @@ export function classifyWebhookCausality(
       return ignore('unsupported-event');
   }
 }
-import {
-  STEWARD_RUNTIME_REPOSITORY_ACTIONS_V1,
-} from './runtime-scope-work-item.js';

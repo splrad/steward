@@ -633,6 +633,15 @@ describe('GitHub repository adapter', () => {
       nameWithOwner: 'splrad/steward',
       pullRequests: { totalCount: 0, nodes: [] },
     }, 'page metadata'],
+    ['missing terminal cursor field', {
+      databaseId: 77,
+      nameWithOwner: 'splrad/steward',
+      pullRequests: {
+        totalCount: 0,
+        pageInfo: { hasNextPage: false },
+        nodes: [],
+      },
+    }, 'open pull requests cursor'],
     ['more than 100 nodes', {
       databaseId: 77,
       nameWithOwner: 'splrad/steward',
