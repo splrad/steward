@@ -6,6 +6,8 @@ import {
   buildStewardRuntimeControlPrepareRequestV2,
   buildStewardRuntimeControlRecoverRequestV2,
   buildStewardRuntimeControlRecoveryReceiptV2,
+  buildStewardRuntimeScopeWorkItemV1,
+  buildStewardRuntimeWorkItemV3,
   canonicalStewardRuntimeControlApplyNextRequestV2Json,
   canonicalStewardRuntimeControlMutationReceiptV2Json,
   canonicalStewardRuntimeControlPreparedReceiptV2Json,
@@ -14,6 +16,7 @@ import {
   canonicalStewardRuntimeControlRecoveryReceiptV2Json,
   canonicalControlJson,
   controlJsonDigest,
+  deriveStewardRuntimeFanoutDeliveryId,
   parseStewardRuntimeControlApplyNextRequestV2,
   parseStewardRuntimeControlMutationReceiptV2,
   parseStewardRuntimeControlPreparedReceiptV2,
@@ -88,6 +91,56 @@ function binding(generation = 7): StewardRuntimeControlBindingV2 {
     },
     generation,
     objective: 'dco-advisory',
+  };
+}
+
+async function fanoutBinding(
+  generation = 7,
+): Promise<StewardRuntimeControlBindingV2> {
+  const scopeWorkItem = buildStewardRuntimeScopeWorkItemV1({
+    operation: 'scope-reconcile',
+    target: {
+      scope: 'repository',
+      mode: 'refresh',
+      installationId: 145_952_003,
+      repositoryId,
+      pullRequests: 'all-open',
+    },
+    cause: {
+      kind: 'github-webhook',
+      deliveryId: '33f08dc0-7caf-11f1-8d3a-340f601f41b1',
+      event: 'repository',
+      action: 'renamed',
+      receivedAt: '2026-07-23T16:00:00.000Z',
+    },
+  });
+  const deliveryId = await deriveStewardRuntimeFanoutDeliveryId(
+    scopeWorkItem,
+    generation,
+    pullRequestNumber,
+  );
+  return {
+    workItem: buildStewardRuntimeWorkItemV3({
+      operation: 'pull-request-reconcile',
+      installationId: scopeWorkItem.target.installationId,
+      subject: {
+        repositoryId: scopeWorkItem.target.repositoryId,
+        repositoryFullName,
+        pullRequestNumber,
+      },
+      cause: {
+        kind: 'scope-fanout',
+        deliveryId,
+        rootDeliveryId: scopeWorkItem.cause.deliveryId,
+        scopeSchemaVersion: scopeWorkItem.schemaVersion,
+        fanoutGeneration: generation,
+        event: scopeWorkItem.cause.event,
+        action: scopeWorkItem.cause.action,
+        receivedAt: scopeWorkItem.cause.receivedAt,
+      },
+    }),
+    generation,
+    objective: 'governance',
   };
 }
 
@@ -435,6 +488,72 @@ describe('runtime Control v2 phased protocol', () => {
         },
       },
     }));
+  });
+
+  it('accepts only cryptographically derivable scope fan-out PR work', async () => {
+    const valid = {
+      schemaVersion: 2,
+      phase: 'prepare',
+      binding: await fanoutBinding(),
+    };
+    await expect(parseStewardRuntimeControlPrepareRequestV2(valid))
+      .resolves.toEqual(valid);
+    const cause = valid.binding.workItem.cause;
+    if (cause.kind !== 'scope-fanout') {
+      throw new Error('fan-out test fixture must use a scope-fanout cause');
+    }
+
+    const changedPull = {
+      ...valid,
+      binding: {
+        ...valid.binding,
+        workItem: {
+          ...valid.binding.workItem,
+          subject: {
+            ...valid.binding.workItem.subject,
+            pullRequestNumber:
+              valid.binding.workItem.subject.pullRequestNumber + 1,
+          },
+        },
+      },
+    };
+    await expectRejected(
+      parseStewardRuntimeControlPrepareRequestV2(changedPull),
+    );
+
+    const changedGeneration = {
+      ...valid,
+      binding: {
+        ...valid.binding,
+        workItem: {
+          ...valid.binding.workItem,
+          cause: {
+            ...cause,
+            fanoutGeneration: cause.fanoutGeneration + 1,
+          },
+        },
+      },
+    };
+    await expectRejected(
+      parseStewardRuntimeControlPrepareRequestV2(changedGeneration),
+    );
+
+    const changedRoot = {
+      ...valid,
+      binding: {
+        ...valid.binding,
+        workItem: {
+          ...valid.binding.workItem,
+          cause: {
+            ...cause,
+            rootDeliveryId: 'different-root',
+          },
+        },
+      },
+    };
+    await expectRejected(
+      parseStewardRuntimeControlPrepareRequestV2(changedRoot),
+    );
   });
 
   it('binds live head, default branch, Manifest, config, and PR input digest', async () => {

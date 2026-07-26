@@ -1,13 +1,21 @@
+import {
+  STEWARD_RUNTIME_REPOSITORY_ACTIONS_V1,
+  STEWARD_RUNTIME_SCOPE_WORK_ITEM_SCHEMA_VERSION_V1,
+  type StewardRuntimeRepositoryActionV1,
+} from './runtime-scope-work-item.js';
+
 export const STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V1 = 1 as const;
 export const STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V2 = 2 as const;
+export const STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V3 = 3 as const;
 export const STEWARD_RUNTIME_WORK_ITEM_CURRENT_SCHEMA_VERSION =
-  STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V2;
+  STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V3;
 
 const githubLoginPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
 const repositoryNamePattern = /^[A-Za-z0-9._-]{1,100}$/;
 const canonicalUtcTimestampPattern =
   /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
 const opaqueAsciiPattern = /^[\x21-\x7e]+$/;
+const fanoutDeliveryIdPattern = /^fanout-v1:[0-9a-f]{64}$/;
 
 export const STEWARD_RUNTIME_PULL_REQUEST_ACTIONS_V1 = [
   'closed',
@@ -102,6 +110,17 @@ export type StewardGitHubWebhookCauseV2 =
       readonly action: StewardRuntimePullRequestReviewThreadActionV2;
     };
 
+export interface StewardScopeFanoutCauseV3 {
+  readonly kind: 'scope-fanout';
+  readonly deliveryId: string;
+  readonly rootDeliveryId: string;
+  readonly scopeSchemaVersion: typeof STEWARD_RUNTIME_SCOPE_WORK_ITEM_SCHEMA_VERSION_V1;
+  readonly fanoutGeneration: number;
+  readonly event: 'repository';
+  readonly action: StewardRuntimeRepositoryActionV1;
+  readonly receivedAt: string;
+}
+
 type GitHubWebhookEventAction<Cause> =
   Cause extends StewardGitHubWebhookCauseV2
     ? Pick<Cause, 'event' | 'action'>
@@ -117,6 +136,10 @@ export type StewardRuntimeWorkItemCauseV1 =
 export type StewardRuntimeWorkItemCauseV2 =
   | StewardInternalProbeCauseV1
   | StewardGitHubWebhookCauseV2;
+
+export type StewardRuntimeWorkItemCauseV3 =
+  | StewardRuntimeWorkItemCauseV2
+  | StewardScopeFanoutCauseV3;
 
 export interface StewardRuntimeWorkItemV1 {
   readonly schemaVersion: typeof STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V1;
@@ -134,15 +157,27 @@ export interface StewardRuntimeWorkItemV2 {
   readonly cause: StewardRuntimeWorkItemCauseV2;
 }
 
+export interface StewardRuntimeWorkItemV3 {
+  readonly schemaVersion: typeof STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V3;
+  readonly operation: StewardRuntimeWorkItemOperationV1;
+  readonly installationId: number;
+  readonly subject: StewardRuntimeWorkItemSubjectV1;
+  readonly cause: StewardRuntimeWorkItemCauseV3;
+}
+
 export type StewardRuntimeWorkItem =
   | StewardRuntimeWorkItemV1
-  | StewardRuntimeWorkItemV2;
+  | StewardRuntimeWorkItemV2
+  | StewardRuntimeWorkItemV3;
 
 export type BuildStewardRuntimeWorkItemInput =
   Omit<StewardRuntimeWorkItemV1, 'schemaVersion'>;
 
 export type BuildStewardRuntimeWorkItemV2Input =
   Omit<StewardRuntimeWorkItemV2, 'schemaVersion'>;
+
+export type BuildStewardRuntimeWorkItemV3Input =
+  Omit<StewardRuntimeWorkItemV3, 'schemaVersion'>;
 
 export class RuntimeWorkItemValidationError extends Error {
   constructor(message: string) {
@@ -253,6 +288,16 @@ function requireCanonicalUtcTimestamp(value: unknown, field: string): string {
   return timestamp;
 }
 
+function requireFanoutDeliveryId(value: unknown): string {
+  const deliveryId = requireString(value, 'workItem.cause.deliveryId');
+  if (!fanoutDeliveryIdPattern.test(deliveryId)) {
+    invalid(
+      'workItem.cause.deliveryId must use fanout-v1 followed by a 64-character lowercase hex digest',
+    );
+  }
+  return deliveryId;
+}
+
 function parseCause(
   value: unknown,
   schemaVersion: typeof STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V1,
@@ -263,8 +308,12 @@ function parseCause(
 ): StewardRuntimeWorkItemCauseV2;
 function parseCause(
   value: unknown,
-  schemaVersion: 1 | 2,
-): StewardRuntimeWorkItemCauseV1 | StewardRuntimeWorkItemCauseV2 {
+  schemaVersion: typeof STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V3,
+): StewardRuntimeWorkItemCauseV3;
+function parseCause(
+  value: unknown,
+  schemaVersion: 1 | 2 | 3,
+): StewardRuntimeWorkItemCauseV1 | StewardRuntimeWorkItemCauseV2 | StewardRuntimeWorkItemCauseV3 {
   const cause = plainRecord(value, 'workItem.cause');
   const kind = requireString(cause.kind, 'workItem.cause.kind');
   if (kind === 'internal-probe') {
@@ -379,18 +428,82 @@ function parseCause(
         );
     }
   }
-  invalid('workItem.cause.kind must be one of: internal-probe, github-webhook');
+  if (
+    kind === 'scope-fanout'
+    && schemaVersion === STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V3
+  ) {
+    requireExactKeys(
+      cause,
+      [
+        'kind',
+        'deliveryId',
+        'rootDeliveryId',
+        'scopeSchemaVersion',
+        'fanoutGeneration',
+        'event',
+        'action',
+        'receivedAt',
+      ],
+      'workItem.cause',
+    );
+    if (
+      cause.scopeSchemaVersion
+      !== STEWARD_RUNTIME_SCOPE_WORK_ITEM_SCHEMA_VERSION_V1
+    ) {
+      invalid('workItem.cause.scopeSchemaVersion must be 1');
+    }
+    if (cause.event !== 'repository') {
+      invalid('workItem.cause.event must be repository for scope-fanout');
+    }
+    return {
+      kind,
+      deliveryId: requireFanoutDeliveryId(cause.deliveryId),
+      rootDeliveryId: requireOpaqueAscii(
+        cause.rootDeliveryId,
+        'workItem.cause.rootDeliveryId',
+        128,
+      ),
+      scopeSchemaVersion: STEWARD_RUNTIME_SCOPE_WORK_ITEM_SCHEMA_VERSION_V1,
+      fanoutGeneration: requirePositiveId(
+        cause.fanoutGeneration,
+        'workItem.cause.fanoutGeneration',
+      ),
+      event: cause.event,
+      action: requireSupportedAction(
+        cause.action,
+        'workItem.cause.action',
+        STEWARD_RUNTIME_REPOSITORY_ACTIONS_V1,
+        cause.event,
+      ),
+      receivedAt: requireCanonicalUtcTimestamp(
+        cause.receivedAt,
+        'workItem.cause.receivedAt',
+      ),
+    };
+  }
+  invalid(
+    schemaVersion === STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V3
+      ? 'workItem.cause.kind must be one of: internal-probe, github-webhook, scope-fanout'
+      : 'workItem.cause.kind must be one of: internal-probe, github-webhook',
+  );
 }
 
 function validateOperationCause(
   operation: StewardRuntimeWorkItemOperationV1,
-  cause: StewardRuntimeWorkItemCauseV1 | StewardRuntimeWorkItemCauseV2,
+  cause:
+    | StewardRuntimeWorkItemCauseV1
+    | StewardRuntimeWorkItemCauseV2
+    | StewardRuntimeWorkItemCauseV3,
 ): void {
   if (operation === 'runtime-probe' && cause.kind !== 'internal-probe') {
     invalid('runtime-probe requires an internal-probe cause');
   }
-  if (operation === 'pull-request-reconcile' && cause.kind !== 'github-webhook') {
-    invalid('pull-request-reconcile requires a GitHub webhook cause');
+  if (
+    operation === 'pull-request-reconcile'
+    && cause.kind !== 'github-webhook'
+    && cause.kind !== 'scope-fanout'
+  ) {
+    invalid('pull-request-reconcile requires a GitHub webhook or scope-fanout cause');
   }
 }
 
@@ -461,7 +574,19 @@ export function parseStewardRuntimeWorkItem(
       cause,
     };
   }
-  invalid('workItem.schemaVersion must be one of: 1, 2');
+  if (workItem.schemaVersion === STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V3) {
+    const cause = parseCause(
+      workItem.cause,
+      STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V3,
+    );
+    validateOperationCause(operation, cause);
+    return {
+      schemaVersion: STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V3,
+      ...common,
+      cause,
+    };
+  }
+  invalid('workItem.schemaVersion must be one of: 1, 2, 3');
 }
 
 export function parseStewardRuntimeWorkItemV1(
@@ -480,6 +605,16 @@ export function parseStewardRuntimeWorkItemV2(
   const workItem = parseStewardRuntimeWorkItem(value);
   if (workItem.schemaVersion !== STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V2) {
     invalid('workItem.schemaVersion must be 2');
+  }
+  return workItem;
+}
+
+export function parseStewardRuntimeWorkItemV3(
+  value: unknown,
+): StewardRuntimeWorkItemV3 {
+  const workItem = parseStewardRuntimeWorkItem(value);
+  if (workItem.schemaVersion !== STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V3) {
+    invalid('workItem.schemaVersion must be 3');
   }
   return workItem;
 }
@@ -520,6 +655,24 @@ export function buildStewardRuntimeWorkItemV2(
   });
 }
 
+export function buildStewardRuntimeWorkItemV3(
+  value: BuildStewardRuntimeWorkItemV3Input,
+): StewardRuntimeWorkItemV3 {
+  const input = plainRecord(value, 'builder input');
+  requireExactKeys(
+    input,
+    ['operation', 'installationId', 'subject', 'cause'],
+    'builder input',
+  );
+  return parseStewardRuntimeWorkItemV3({
+    schemaVersion: STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V3,
+    operation: input.operation,
+    installationId: input.installationId,
+    subject: input.subject,
+    cause: input.cause,
+  });
+}
+
 export function canonicalStewardRuntimeWorkItemJson(value: unknown): string {
   const workItem = parseStewardRuntimeWorkItem(value);
   const cause = workItem.cause.kind === 'internal-probe'
@@ -528,13 +681,24 @@ export function canonicalStewardRuntimeWorkItemJson(value: unknown): string {
         deliveryId: workItem.cause.deliveryId,
         receivedAt: workItem.cause.receivedAt,
       }
-    : {
-        kind: workItem.cause.kind,
-        deliveryId: workItem.cause.deliveryId,
-        event: workItem.cause.event,
-        action: workItem.cause.action,
-        receivedAt: workItem.cause.receivedAt,
-      };
+    : workItem.cause.kind === 'github-webhook'
+      ? {
+          kind: workItem.cause.kind,
+          deliveryId: workItem.cause.deliveryId,
+          event: workItem.cause.event,
+          action: workItem.cause.action,
+          receivedAt: workItem.cause.receivedAt,
+        }
+      : {
+          kind: workItem.cause.kind,
+          deliveryId: workItem.cause.deliveryId,
+          rootDeliveryId: workItem.cause.rootDeliveryId,
+          scopeSchemaVersion: workItem.cause.scopeSchemaVersion,
+          fanoutGeneration: workItem.cause.fanoutGeneration,
+          event: workItem.cause.event,
+          action: workItem.cause.action,
+          receivedAt: workItem.cause.receivedAt,
+        };
   return JSON.stringify({
     schemaVersion: workItem.schemaVersion,
     operation: workItem.operation,

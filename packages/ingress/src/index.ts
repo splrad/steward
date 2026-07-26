@@ -11,6 +11,15 @@ import {
   type StewardRuntimePullRequestReviewCommentActionV2,
   type StewardRuntimePullRequestReviewThreadActionV2,
 } from '../../core/src/runtime-work-item.js';
+import {
+  buildStewardRuntimeScopeWorkItemV1,
+  canonicalStewardRuntimeScopeWorkItemJson,
+  STEWARD_RUNTIME_REPOSITORY_ACTIONS_V1,
+  type StewardRuntimeRepositoryActionV1,
+} from '../../core/src/runtime-scope-work-item.js';
+import {
+  classifyRepositoryWebhookCausality,
+} from '../../core/src/webhook-causality.js';
 
 export const MAX_WEBHOOK_BODY_BYTES = 1024 * 1024;
 export const MAX_INGRESS_RESPONSE_MS = 9_000;
@@ -38,11 +47,17 @@ ReadonlySet<StewardRuntimePullRequestReviewThreadActionV2> = new Set([
   ...STEWARD_RUNTIME_PULL_REQUEST_REVIEW_THREAD_ACTIONS_V2,
 ]);
 
+export const SUPPORTED_REPOSITORY_ACTIONS:
+ReadonlySet<StewardRuntimeRepositoryActionV1> = new Set([
+  ...STEWARD_RUNTIME_REPOSITORY_ACTIONS_V1,
+]);
+
 const supportedGitHubWebhookEvents: ReadonlySet<string> = new Set([
   'pull_request',
   'pull_request_review',
   'pull_request_review_comment',
   'pull_request_review_thread',
+  'repository',
 ]);
 
 export interface Queue<Body> {
@@ -301,6 +316,57 @@ function extractWorkItem(
   }
 }
 
+function extractRepositoryScopeWorkItem(
+  payload: unknown,
+  deliveryId: string,
+  event: string,
+  action: string,
+  receivedAt: string,
+) {
+  const decision = classifyRepositoryWebhookCausality({
+    event,
+    action,
+    payload,
+  });
+  if (decision.disposition !== 'reconcile') return decision;
+  if (
+    decision.target.scope !== 'repository'
+    || decision.target.mode !== 'refresh'
+    || decision.target.pullRequests !== 'all-open'
+    || !SUPPORTED_REPOSITORY_ACTIONS.has(
+      action as StewardRuntimeRepositoryActionV1,
+    )
+  ) {
+    return {
+      disposition: 'quarantine' as const,
+      reason: 'malformed-payload' as const,
+      field: 'causality.target',
+    };
+  }
+  try {
+    return {
+      disposition: 'enqueue' as const,
+      workItem: buildStewardRuntimeScopeWorkItemV1({
+        operation: 'scope-reconcile',
+        target: decision.target,
+        cause: {
+          kind: 'github-webhook',
+          deliveryId,
+          event: 'repository',
+          action: action as StewardRuntimeRepositoryActionV1,
+          receivedAt,
+        },
+      }),
+    };
+  } catch {
+    return {
+      disposition: 'quarantine' as const,
+      reason: 'malformed-payload' as const,
+      field: 'scope-work-item',
+    };
+  }
+}
+
 export async function handleIngressRequest(
   request: Request,
   env: Env,
@@ -379,6 +445,38 @@ export async function handleIngressRequest(
   const action = record(payload)?.action;
   if (typeof action !== 'string' || !eventActionPattern.test(action)) {
     return response(422, 'Invalid webhook action');
+  }
+  if (event === 'repository') {
+    const extracted = extractRepositoryScopeWorkItem(
+      payload,
+      deliveryId,
+      event,
+      action,
+      dependencies.clock().toISOString(),
+    );
+    if (extracted.disposition === 'ignore') {
+      return response(202, 'Ignored event');
+    }
+    if (extracted.disposition !== 'enqueue') {
+      return response(422, 'Invalid repository webhook payload');
+    }
+    const canonicalText = canonicalStewardRuntimeScopeWorkItemJson(
+      extracted.workItem,
+    );
+    if (encoder.encode(canonicalText).byteLength >= MAX_QUEUE_MESSAGE_BYTES) {
+      return response(413, 'Queue message too large');
+    }
+    try {
+      await Promise.race([
+        env.EVENT_QUEUE.send(canonicalText, { contentType: 'text' }),
+        deadlineFailure,
+      ]);
+    } catch (error) {
+      return error instanceof IngressDeadlineError
+        ? response(503, 'Ingress deadline exceeded')
+        : response(503, 'Event queue unavailable');
+    }
+    return response(202, 'Accepted');
   }
   const supportedCause = supportedGitHubWebhookEventAction(event, action);
   if (supportedCause === null) {

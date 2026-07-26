@@ -1,3 +1,7 @@
+import {
+  STEWARD_RUNTIME_REPOSITORY_ACTIONS_V1,
+} from './runtime-scope-work-item.js';
+
 export interface StewardWebhookCausalityContract {
   readonly propertyNames: readonly string[];
   readonly maintainerTeamId: number;
@@ -393,10 +397,10 @@ function classifyRepository(input: TrustedWebhookCausalityInput): WebhookCausali
   const checked = checkedPayload(input);
   if (!checked.ok) return checked.decision;
   const { payload } = checked;
-  const refreshActions = [
-    'archived', 'created', 'edited', 'privatized', 'publicized', 'renamed', 'transferred', 'unarchived',
-  ];
-  if (input.action !== 'deleted' && !refreshActions.includes(input.action ?? '')) {
+  if (
+    !(STEWARD_RUNTIME_REPOSITORY_ACTIONS_V1 as readonly string[])
+      .includes(input.action ?? '')
+  ) {
     return quarantine('unsupported-action', 'action');
   }
 
@@ -417,6 +421,19 @@ function classifyRepository(input: TrustedWebhookCausalityInput): WebhookCausali
     repositoryTarget(installation, repository),
     repositoryRefreshReads,
   );
+}
+
+/**
+ * Narrow repository-only classifier for the public Ingress. Repository
+ * lifecycle routing does not depend on organization property or team
+ * configuration, so callers must not invent those unrelated values merely to
+ * reach the aggregate classifier.
+ */
+export function classifyRepositoryWebhookCausality(
+  input: TrustedWebhookCausalityInput,
+): WebhookCausalityDecision {
+  if (input.event !== 'repository') return ignore('unsupported-event');
+  return classifyRepository(input);
 }
 
 function classifyInstallation(input: TrustedWebhookCausalityInput): WebhookCausalityDecision {

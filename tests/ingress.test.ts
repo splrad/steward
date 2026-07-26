@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  parseStewardRuntimeScopeWorkItemV1,
+  STEWARD_RUNTIME_REPOSITORY_ACTIONS_V1,
+} from '../packages/core/src/index.js';
+import {
   handleIngressRequest,
   MAX_INGRESS_RESPONSE_MS,
   MAX_WEBHOOK_BODY_BYTES,
@@ -382,6 +386,87 @@ describe('Ingress payload extraction and durable enqueue', () => {
       expect(eventQueue.send).toHaveBeenCalledOnce();
     },
   );
+
+  it.each([...STEWARD_RUNTIME_REPOSITORY_ACTIONS_V1])(
+    'accepts repository action %s as one bounded repository scope envelope',
+    async (action) => {
+      const eventQueue = queue();
+      const body = JSON.stringify({
+        action,
+        installation: { id: 145_952_003 },
+        repository: {
+          id: 1_298_587_318,
+          full_name: 'untrusted-owner/untrusted-name',
+          name: 'untrusted-name',
+        },
+        changes: {
+          repository: {
+            name: { from: 'older-untrusted-name' },
+          },
+        },
+      });
+      const result = await handleIngressRequest(
+        await webhookRequest(body, { event: 'repository' }),
+        environment(eventQueue.binding),
+        dependencies,
+      );
+
+      expect(result.status).toBe(202);
+      expect(eventQueue.send).toHaveBeenCalledOnce();
+      const canonical = String(eventQueue.send.mock.calls[0]?.[0]);
+      expect(parseStewardRuntimeScopeWorkItemV1(JSON.parse(canonical)))
+        .toMatchObject({
+          schemaVersion: 1,
+          operation: 'scope-reconcile',
+          target: {
+            scope: 'repository',
+            mode: 'refresh',
+            installationId: 145_952_003,
+            repositoryId: 1_298_587_318,
+            pullRequests: 'all-open',
+          },
+          cause: {
+            kind: 'github-webhook',
+            deliveryId,
+            event: 'repository',
+            action,
+            receivedAt: fixedTime.toISOString(),
+          },
+        });
+      expect(canonical).not.toContain('untrusted');
+      expect(canonical).not.toContain('changes');
+    },
+  );
+
+  it.each([
+    ['unsupported action', {
+      action: 'future_action',
+      installation: { id: 145_952_003 },
+      repository: { id: 1_298_587_318 },
+    }],
+    ['missing repository ID', {
+      action: 'renamed',
+      installation: { id: 145_952_003 },
+      repository: {},
+    }],
+    ['numeric-string installation ID', {
+      action: 'renamed',
+      installation: { id: '145952003' },
+      repository: { id: 1_298_587_318 },
+    }],
+  ])('quarantines an invalid repository webhook: %s', async (
+    _description,
+    value,
+  ) => {
+    const eventQueue = queue();
+    const result = await handleIngressRequest(
+      await webhookRequest(JSON.stringify(value), { event: 'repository' }),
+      environment(eventQueue.binding),
+      dependencies,
+    );
+    expect(result.status).toBe(422);
+    expect(eventQueue.send).not.toHaveBeenCalled();
+  });
 
   it.each([
     ...[...SUPPORTED_PULL_REQUEST_REVIEW_ACTIONS]
