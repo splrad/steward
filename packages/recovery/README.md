@@ -65,7 +65,7 @@ safe only while Control has no public route, Recovery never exposes or logs
 capability headers, and neither layer automatically retries a redelivery POST.
 The durable `dispatching` fence is the normal-failure replay boundary.
 
-The worker has no GitHub credential and no Cloudflare account API token.
+The worker has no GitHub credentials and no Cloudflare account API token.
 Diagnostics remains read-only and also observes the terminal
 `steward-recovery-capture-dlq`; backlog in either DLQ is not healthy. Settled
 capture identity is the canonical body digest plus bounded source audit, so

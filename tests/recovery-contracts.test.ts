@@ -30,6 +30,18 @@ describe('delivery recovery operator command protocol', () => {
     );
   });
 
+  it('accepts canonical RFC 9562 UUIDv7 command identities', () => {
+    const uuidV7 = '018f47a2-9c73-7b1e-8e2d-1234567890ab';
+    expect(parseDeliveryRecoveryCommand({
+      schemaVersion: 1,
+      operation: 'inspect',
+      requestId: uuidV7,
+      requestedAt,
+    })).toMatchObject({
+      requestId: uuidV7,
+    });
+  });
+
   it('sorts an explicit replay selection and rejects broad or duplicate replay', () => {
     const second = 'b'.repeat(64);
     const first = 'a'.repeat(64);
