@@ -600,16 +600,20 @@ function boundedGitHubRestFetch(
       redirect: 'manual',
       signal: AbortSignal.any(signals),
     });
+    const bodyStreamPresent = response.body !== null;
     const bytes = await readBoundedResponseBytes(response);
-    // Preserve a non-null, zero-length body stream for valid GitHub 202
-    // responses. The delivery client intentionally distinguishes a readable
-    // empty body from a missing body because a lost 202 response body is an
-    // unknown mutation result.
-    return new Response(Uint8Array.from(bytes).buffer, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
-    });
+    // A network 202 is not a Fetch null-body status, so its zero-byte payload
+    // remains a readable empty stream. Preserve an actually missing stream as
+    // null: the delivery client treats that malformed mutation result as
+    // unknown rather than inventing acceptance evidence.
+    return new Response(
+      bodyStreamPresent ? Uint8Array.from(bytes).buffer : null,
+      {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      },
+    );
   };
 }
 

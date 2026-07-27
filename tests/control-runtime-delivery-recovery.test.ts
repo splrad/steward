@@ -201,6 +201,23 @@ describe('private Control GitHub delivery recovery', () => {
     });
   });
 
+  it('keeps a missing GitHub page body stream unavailable', async () => {
+    const fetcher = vi.fn(
+      async () => new Response(null, { status: 200 }),
+    ) as typeof fetch;
+    const current = runtime(fetcher);
+    const response = await current.handler.fetch(
+      await request('/v1/delivery-recovery/github/page', pageRequest()),
+      env,
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: 'delivery-recovery-unavailable',
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
   it('returns an accepted receipt only for GitHub HTTP 202', async () => {
     const fetcher = vi.fn(async (
       input: string | URL | Request,
@@ -211,7 +228,7 @@ describe('private Control GitHub delivery recovery', () => {
       expect(provider.url).toBe(
         'https://api.github.com/app/hook/deliveries/41/attempts',
       );
-      return new Response(null, { status: 202 });
+      return new Response(new Uint8Array(), { status: 202 });
     }) as typeof fetch;
     const current = runtime(fetcher);
     const response = await current.handler.fetch(
@@ -231,6 +248,26 @@ describe('private Control GitHub delivery recovery', () => {
       guid: 'delivery-guid',
       controlRevision,
     });
+  });
+
+  it('keeps a missing GitHub 202 body stream unknown', async () => {
+    const fetcher = vi.fn(
+      async () => new Response(null, { status: 202 }),
+    ) as typeof fetch;
+    const current = runtime(fetcher);
+    const response = await current.handler.fetch(
+      await request(
+        '/v1/delivery-recovery/github/redeliver',
+        redeliveryRequest(),
+      ),
+      env,
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: 'github-redelivery-result-unknown',
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   it('rejects revision drift before App JWT or network access', async () => {
