@@ -27,7 +27,9 @@ async function sourceFiles(directory: URL): Promise<URL[]> {
   return files;
 }
 
-async function runtimeSurface(packageName: 'ingress' | 'coordinator' | 'diagnostics'): Promise<string> {
+async function runtimeSurface(
+  packageName: 'ingress' | 'coordinator' | 'diagnostics' | 'recovery',
+): Promise<string> {
   const packageRoot = new URL(`packages/${packageName}/`, repositoryRoot);
   const files = [
     new URL('wrangler.jsonc', packageRoot),
@@ -48,6 +50,11 @@ const ingress = await readJsonObject('packages/ingress/wrangler.jsonc');
 const coordinator = await readJsonObject('packages/coordinator/wrangler.jsonc');
 const control = await readJsonObject('packages/control-runtime/wrangler.jsonc');
 const diagnostics = await readJsonObject('packages/diagnostics/wrangler.jsonc');
+const recovery = await readJsonObject('packages/recovery/wrangler.jsonc');
+const recoveryReadme = await readFile(
+  new URL('packages/recovery/README.md', repositoryRoot),
+  'utf8',
+);
 const relayWorkflowSource = await readFile(
   new URL('.github/workflows/deploy-relay.yml', repositoryRoot),
   'utf8',
@@ -61,7 +68,7 @@ describe('central runtime deployment topology', () => {
     for (const config of [ingress, coordinator, control]) expectNoPublicRoute(config);
   });
 
-  it('exposes only the Access-protected diagnostics gateway on its fixed workers.dev origin', () => {
+  it('keeps Diagnostics as the Access-protected read-only gateway on its fixed workers.dev origin', () => {
     expect(diagnostics.name).toBe('steward-diagnostics');
     expect(diagnostics.main).toBe('src/index.ts');
     expect(diagnostics.workers_dev).toBe(true);
@@ -95,8 +102,12 @@ describe('central runtime deployment topology', () => {
         'ACCESS_EXPECTED_CLIENT_ID',
         'CLOUDFLARE_WORKERS_READ_TOKEN',
         'CLOUDFLARE_QUEUES_READ_TOKEN',
+        'RECOVERY_CAPTURE_DEAD_LETTER_QUEUE_ID',
       ],
     });
+    expect(
+      (diagnostics.secrets as { required: string[] }).required,
+    ).not.toContain('RECOVERY_CONTROL_SHARED_SECRET');
     for (const forbiddenBinding of [
       'queues',
       'durable_objects',
@@ -112,6 +123,87 @@ describe('central runtime deployment topology', () => {
     ]) {
       expect(diagnostics).not.toHaveProperty(forbiddenBinding);
     }
+  });
+
+  it('isolates the Access-protected Recovery operator plane and its bounded Queue topology', () => {
+    expect(recovery.name).toBe('steward-recovery');
+    expect(recovery.main).toBe('src/entrypoint.ts');
+    expect(recovery.workers_dev).toBe(true);
+    expect(recovery.preview_urls).toBe(false);
+    expect(recovery.keep_vars).toBe(false);
+    expect(recovery).not.toHaveProperty('route');
+    expect(recovery).not.toHaveProperty('routes');
+    expect(recovery).not.toHaveProperty('workers_dev_routes');
+    expect(recovery.durable_objects).toEqual({
+      bindings: [
+        {
+          name: 'DELIVERY_RECOVERY_LEDGER',
+          class_name: 'DeliveryRecoveryLedger',
+        },
+      ],
+    });
+    expect(recovery.exports).toEqual({
+      DeliveryRecoveryLedger: {
+        type: 'durable-object',
+        storage: 'sqlite',
+      },
+    });
+    expect(recovery.services).toEqual([
+      {
+        binding: 'CONTROL',
+        service: 'steward-control',
+      },
+    ]);
+    expect(recovery.secrets).toEqual({
+      required: [
+        'ACCESS_TEAM_DOMAIN',
+        'ACCESS_POLICY_AUD',
+        'ACCESS_EXPECTED_CLIENT_ID',
+        'RECOVERY_CONTROL_SHARED_SECRET',
+      ],
+    });
+    expect(recovery.queues).toEqual({
+      producers: [
+        {
+          binding: 'EVENT_QUEUE',
+          queue: 'steward-events',
+        },
+      ],
+      consumers: [
+        {
+          queue: 'steward-events-dlq',
+          max_batch_size: 10,
+          max_batch_timeout: 1,
+          max_retries: 100,
+          retry_delay: 15,
+          dead_letter_queue: 'steward-recovery-capture-dlq',
+        },
+      ],
+    });
+    for (const forbiddenBinding of [
+      'vars',
+      'version_metadata',
+      'migrations',
+      'kv_namespaces',
+      'r2_buckets',
+      'd1_databases',
+      'hyperdrive',
+      'vectorize',
+      'dispatch_namespaces',
+      'pipelines',
+    ]) {
+      expect(recovery).not.toHaveProperty(forbiddenBinding);
+    }
+  });
+
+  it('requires a reviewed full deployment for the first Recovery SQLite Durable Object release', () => {
+    expect(recoveryReadme).toContain(
+      'The first deployment of\n'
+      + '`DeliveryRecoveryLedger` must be a reviewed full Durable Object deployment;',
+    );
+    expect(recoveryReadme).toContain(
+      'later compatible versions can use the normal candidate/canary promotion flow.',
+    );
   });
 
   it('gives Ingress only the webhook secret and event Queue producer', () => {
@@ -214,6 +306,7 @@ describe('central runtime deployment topology', () => {
         'COPILOT_REVIEW_REQUEST_TOKEN',
         'GITHUB_APP_ID',
         'GITHUB_APP_PRIVATE_KEY',
+        'RECOVERY_CONTROL_SHARED_SECRET',
       ],
     });
     expect(control).not.toHaveProperty('durable_objects');
@@ -235,6 +328,7 @@ describe('central runtime credential boundary', () => {
       for (const pattern of forbiddenCredentialPatterns) {
         expect(surface.match(pattern), `${packageName} must not bind ${pattern}`).toBeNull();
       }
+      expect(surface).not.toContain('RECOVERY_CONTROL_SHARED_SECRET');
     }
   });
 
@@ -251,6 +345,27 @@ describe('central runtime credential boundary', () => {
     }
     expect(surface).toContain('CLOUDFLARE_WORKERS_READ_TOKEN');
     expect(surface).toContain('CLOUDFLARE_QUEUES_READ_TOKEN');
+    expect(surface).not.toContain('RECOVERY_CONTROL_SHARED_SECRET');
+  });
+
+  it('gives Recovery only Access identity and delegated private Control authority', async () => {
+    const surface = await runtimeSurface('recovery');
+    for (const forbiddenPattern of [
+      /\b[A-Z0-9_]*APP_(?:ID|CLIENT_ID|PRIVATE_KEY|INSTALLATION_ID)\b/,
+      /\b(?:GH|GITHUB|COPILOT_REVIEW_REQUEST|CORE_AUTO_APPROVAL|STEWARD_APP_USER|STEWARD_ORGANIZATION_[A-Z0-9_]+)_TOKEN\b/,
+      /\bCLOUDFLARE_(?:API|WORKERS_READ|QUEUES_READ)_TOKEN\b/,
+      /\bCLOUDFLARE_ACCOUNT_ID\b/,
+      /\bGITHUB_WEBHOOK_SECRET\b/,
+      /\bCF_VERSION_METADATA\b/,
+    ]) {
+      expect(surface.match(forbiddenPattern), `recovery must not bind ${forbiddenPattern}`).toBeNull();
+    }
+    expect(surface).toContain('ACCESS_TEAM_DOMAIN');
+    expect(surface).toContain('ACCESS_POLICY_AUD');
+    expect(surface).toContain('ACCESS_EXPECTED_CLIENT_ID');
+    expect(surface).toContain('RECOVERY_CONTROL_SHARED_SECRET');
+    expect(surface).toContain('DELIVERY_RECOVERY_LEDGER');
+    expect(surface).toContain('EVENT_QUEUE');
   });
 });
 

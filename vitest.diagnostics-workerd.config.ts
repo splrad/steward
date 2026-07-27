@@ -42,6 +42,8 @@ export default defineConfig({
             EVENT_QUEUE_ID: diagnosticsFixture.eventQueueId,
             DEAD_LETTER_QUEUE_ID:
               diagnosticsFixture.deadLetterQueueId,
+            RECOVERY_CAPTURE_DEAD_LETTER_QUEUE_ID:
+              diagnosticsFixture.recoveryCaptureDeadLetterQueueId,
             TEST_ACCESS_PRIVATE_JWK: JSON.stringify({
               ...privateJwk,
               kid: diagnosticsFixture.keyId,

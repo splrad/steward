@@ -25,6 +25,8 @@ import {
 const accountId = '5efbba9a3813a37ac45e70cfa9f01cb5';
 const eventQueueId = 'b957c244a4bf478887da90ad3fe10909';
 const deadLetterQueueId = '7fb7d65f37774837ae7a22f71f7dde4c';
+const recoveryCaptureDeadLetterQueueId =
+  'c1f0a3e7595f4f53b65ab35d3f3a0f01';
 const stableVersion = '32b8936f-bbf7-4342-946c-ac9b730eb497';
 const deploymentId = '7b85e57e-9ef3-4271-9625-7884e4ddbc1c';
 const replacementDeploymentId = '8c96f680-b5b9-45c1-ae3c-ddd6da3a0cc7';
@@ -107,6 +109,20 @@ interface RuntimeOptions {
   }[];
   readonly dlqConsumers?: readonly unknown[];
   readonly dlqMetricsStatus?: number;
+  readonly terminalConfigurationStatus?: number;
+  readonly terminalMalformedConfiguration?: boolean;
+  readonly terminalPaused?: unknown;
+  readonly terminalDeliveryDelay?: number;
+  readonly terminalRetentionSeconds?: number;
+  readonly terminalProducers?: readonly {
+    readonly type: string;
+    readonly scriptName?: string;
+  }[];
+  readonly terminalConsumers?: readonly unknown[];
+  readonly terminalBacklog?: number;
+  readonly terminalBacklogBytes?: number;
+  readonly terminalOldestMessageTimestampMs?: number;
+  readonly terminalMetricsStatus?: number;
   readonly controlStatus?: number;
   readonly controlVersion?: string;
   readonly accessDecision?: DiagnosticsAccessDecision;
@@ -161,6 +177,9 @@ function runtime(options: RuntimeOptions = {}): {
       return json(null, 403);
     }
     const isEvent = url.pathname.includes(eventQueueId);
+    const isTerminal = url.pathname.includes(
+      recoveryCaptureDeadLetterQueueId,
+    );
     if (url.pathname.endsWith('/consumers')) {
       const scriptField = options.eventConsumerScriptField ?? 'script';
       const scriptReference = scriptField === 'script'
@@ -188,38 +207,85 @@ function runtime(options: RuntimeOptions = {}): {
                       script_name: 123,
                     }
                   : {};
-      return json(isEvent ? [{
-        type: 'worker',
-        ...scriptReference,
-        dead_letter_queue: 'steward-events-dlq',
-        settings: {
-          batch_size: 10,
-          max_wait_time_ms: 1_000,
-          max_retries: 3,
-          retry_delay: 5,
-        },
-      }] : options.dlqConsumers ?? []);
+      return json(
+        isEvent
+          ? [{
+              type: 'worker',
+              ...scriptReference,
+              dead_letter_queue: 'steward-events-dlq',
+              settings: {
+                batch_size: 10,
+                max_wait_time_ms: 1_000,
+                max_retries: 3,
+                retry_delay: 5,
+              },
+            }]
+          : isTerminal
+            ? options.terminalConsumers ?? []
+            : options.dlqConsumers ?? [{
+                type: 'worker',
+                script_name: 'steward-recovery',
+                dead_letter_queue: 'steward-recovery-capture-dlq',
+                settings: {
+                  batch_size: 10,
+                  max_wait_time_ms: 1_000,
+                  max_retries: 100,
+                  retry_delay: 15,
+                },
+              }],
+      );
     }
     if (url.pathname.endsWith('/metrics')) {
-      const status = isEvent ? 200 : options.dlqMetricsStatus ?? 200;
+      const status = isEvent
+        ? 200
+        : isTerminal
+          ? options.terminalMetricsStatus ?? 200
+          : options.dlqMetricsStatus ?? 200;
       return json({
-        backlog_count: isEvent ? 0 : options.dlqBacklog ?? 0,
-        backlog_bytes: isEvent ? 0 : options.dlqBacklogBytes ?? 0,
+        backlog_count: isEvent
+          ? 0
+          : isTerminal
+            ? options.terminalBacklog ?? 0
+            : options.dlqBacklog ?? 0,
+        backlog_bytes: isEvent
+          ? 0
+          : isTerminal
+            ? options.terminalBacklogBytes ?? 0
+            : options.dlqBacklogBytes ?? 0,
         oldest_message_timestamp_ms: isEvent
           ? 0
-          : options.dlqOldestMessageTimestampMs ?? 0,
+          : isTerminal
+            ? options.terminalOldestMessageTimestampMs ?? 0
+            : options.dlqOldestMessageTimestampMs ?? 0,
       }, status);
     }
+    const configurationStatus = isEvent
+      ? options.eventConfigurationStatus ?? 200
+      : isTerminal
+        ? options.terminalConfigurationStatus ?? 200
+        : 200;
     return json({
-      queue_id: isEvent ? eventQueueId : deadLetterQueueId,
-      queue_name: isEvent ? 'steward-events' : 'steward-events-dlq',
+      queue_id: isEvent
+        ? eventQueueId
+        : isTerminal
+          ? options.terminalMalformedConfiguration
+            ? deadLetterQueueId
+            : recoveryCaptureDeadLetterQueueId
+          : deadLetterQueueId,
+      queue_name: isEvent
+        ? 'steward-events'
+        : isTerminal
+          ? 'steward-recovery-capture-dlq'
+          : 'steward-events-dlq',
       producers: (
         isEvent
           ? options.eventProducers ?? [
             { type: 'worker', scriptName: 'steward-ingress' },
             { type: 'worker', scriptName: 'steward-coordinator' },
           ]
-          : options.dlqProducers ?? []
+          : isTerminal
+            ? options.terminalProducers ?? []
+            : options.dlqProducers ?? []
       ).map((producer) => ({
         type: producer.type,
         ...(producer.scriptName === undefined
@@ -228,22 +294,34 @@ function runtime(options: RuntimeOptions = {}): {
       })),
       settings: {
         ...(
-          (isEvent ? options.eventPaused : options.dlqPaused) !== undefined
+          (
+            isEvent
+              ? options.eventPaused
+              : isTerminal
+                ? options.terminalPaused
+                : options.dlqPaused
+          ) !== undefined
             ? {
                 delivery_paused: isEvent
                   ? options.eventPaused
-                  : options.dlqPaused,
+                  : isTerminal
+                    ? options.terminalPaused
+                    : options.dlqPaused,
               }
             : {}
         ),
         delivery_delay: isEvent
           ? options.eventDeliveryDelay ?? 0
-          : options.dlqDeliveryDelay ?? 0,
+          : isTerminal
+            ? options.terminalDeliveryDelay ?? 0
+            : options.dlqDeliveryDelay ?? 0,
         message_retention_period: isEvent
           ? options.eventRetentionSeconds ?? 86_400
-          : options.dlqRetentionSeconds ?? 86_400,
+          : isTerminal
+            ? options.terminalRetentionSeconds ?? 86_400
+            : options.dlqRetentionSeconds ?? 86_400,
       },
-    }, isEvent ? options.eventConfigurationStatus ?? 200 : 200);
+    }, configurationStatus);
   });
   const control = {
     fetch: vi.fn(async (_input: Request | string | URL, init?: RequestInit) => {
@@ -290,6 +368,8 @@ function runtime(options: RuntimeOptions = {}): {
       CLOUDFLARE_QUEUES_READ_TOKEN: 'queues-read-token',
       EVENT_QUEUE_ID: eventQueueId,
       DEAD_LETTER_QUEUE_ID: deadLetterQueueId,
+      RECOVERY_CAPTURE_DEAD_LETTER_QUEUE_ID:
+        recoveryCaptureDeadLetterQueueId,
     },
     dependencies: {
       fetch: fetchMock as unknown as typeof fetch,
@@ -332,7 +412,7 @@ describe('Access-protected runtime diagnostics gateway', () => {
         },
       },
     });
-    expect(current.dependencies.fetchMock).toHaveBeenCalledTimes(7);
+    expect(current.dependencies.fetchMock).toHaveBeenCalledTimes(10);
     for (const [, init] of current.dependencies.fetchMock.mock.calls) {
       expect(init?.signal).toBeInstanceOf(AbortSignal);
       expect(init?.redirect).toBe('manual');
@@ -586,11 +666,12 @@ describe('Access-protected runtime diagnostics gateway', () => {
     });
   });
 
-  it('requires the DLQ retention, delivery delay, zero-producer, and zero-consumer contract', async () => {
+  it('requires the DLQ retention, delivery delay, zero-producer, and exact Recovery consumer contract', async () => {
     for (const options of [
       { dlqPaused: true },
       { dlqRetentionSeconds: 86_399 },
       { dlqDeliveryDelay: 1 },
+      { dlqConsumers: [] },
       {
         dlqProducers: [{
           type: 'worker',
@@ -610,6 +691,32 @@ describe('Access-protected runtime diagnostics gateway', () => {
           },
         }],
       },
+      {
+        dlqConsumers: [{
+          type: 'worker',
+          script_name: 'steward-recovery',
+          dead_letter_queue: 'unexpected-terminal-dlq',
+          settings: {
+            batch_size: 10,
+            max_wait_time_ms: 1_000,
+            max_retries: 100,
+            retry_delay: 15,
+          },
+        }],
+      },
+      {
+        dlqConsumers: [{
+          type: 'worker',
+          script_name: 'steward-recovery',
+          dead_letter_queue: 'steward-recovery-capture-dlq',
+          settings: {
+            batch_size: 10,
+            max_wait_time_ms: 1_000,
+            max_retries: 99,
+            retry_delay: 15,
+          },
+        }],
+      },
     ] satisfies readonly RuntimeOptions[]) {
       const current = runtime(options);
       const response = await createDiagnosticsHandler(
@@ -625,6 +732,90 @@ describe('Access-protected runtime diagnostics gateway', () => {
         },
       });
     }
+  });
+
+  it('marks the aggregate DLQ unavailable when the terminal capture queue does not exist or is malformed', async () => {
+    for (const options of [
+      { terminalConfigurationStatus: 404 },
+      { terminalMalformedConfiguration: true },
+      { terminalPaused: true },
+      { terminalDeliveryDelay: 1 },
+      { terminalRetentionSeconds: 86_399 },
+      {
+        terminalProducers: [{
+          type: 'worker',
+          scriptName: 'unexpected-terminal-producer',
+        }],
+      },
+      {
+        terminalConsumers: [{
+          type: 'worker',
+          script_name: 'unexpected-terminal-consumer',
+          dead_letter_queue: '',
+          settings: {
+            batch_size: 1,
+            max_wait_time_ms: 1_000,
+            max_retries: 0,
+            retry_delay: 0,
+          },
+        }],
+      },
+    ] satisfies readonly RuntimeOptions[]) {
+      const current = runtime(options);
+      const response = await createDiagnosticsHandler(
+        current.dependencies,
+      ).fetch(request(), current.env);
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        envelope: {
+          diagnostics: {
+            queue: 'ready',
+            deadLetterQueue: 'unavailable',
+          },
+        },
+      });
+    }
+  });
+
+  it('aggregates every terminal capture backlog dimension into the existing pending DLQ state', async () => {
+    for (const options of [
+      { terminalBacklog: 1 },
+      { terminalBacklogBytes: 1 },
+      { terminalOldestMessageTimestampMs: 1 },
+    ] satisfies readonly RuntimeOptions[]) {
+      const current = runtime(options);
+      const response = await createDiagnosticsHandler(
+        current.dependencies,
+      ).fetch(request(), current.env);
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        envelope: {
+          diagnostics: {
+            queue: 'ready',
+            deadLetterQueue: 'pending',
+          },
+        },
+      });
+    }
+  });
+
+  it('marks the aggregate DLQ unavailable when terminal capture metrics cannot be read', async () => {
+    const current = runtime({ terminalMetricsStatus: 503 });
+    const response = await createDiagnosticsHandler(
+      current.dependencies,
+    ).fetch(request(), current.env);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      envelope: {
+        diagnostics: {
+          queue: 'ready',
+          deadLetterQueue: 'unavailable',
+        },
+      },
+    });
   });
 
   it('uses unavailable only for a DLQ whose live metrics cannot be proven', async () => {

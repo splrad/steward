@@ -9,6 +9,8 @@ export const diagnosticsFixture = {
   accountId: '5efbba9a3813a37ac45e70cfa9f01cb5',
   eventQueueId: 'b957c244a4bf478887da90ad3fe10909',
   deadLetterQueueId: '7fb7d65f37774837ae7a22f71f7dde4c',
+  recoveryCaptureDeadLetterQueueId:
+    '19e7da43b1874f31a97fc095f2fcba86',
   deploymentId: '7b85e57e-9ef3-4271-9625-7884e4ddbc1c',
   stableVersionId: '32b8936f-bbf7-4342-946c-ac9b730eb497',
   candidateVersionId: 'c2312517-bd5c-4041-a9cd-b6642dbf7e21',
@@ -170,6 +172,9 @@ export function createDiagnosticsOutboundService(
       `${accountPrefix}/queues/${diagnosticsFixture.eventQueueId}`;
     const deadLetterQueuePath =
       `${accountPrefix}/queues/${diagnosticsFixture.deadLetterQueueId}`;
+    const recoveryCaptureDeadLetterQueuePath =
+      `${accountPrefix}/queues/`
+      + diagnosticsFixture.recoveryCaptureDeadLetterQueueId;
     if (authorization !== `Bearer ${diagnosticsFixture.queuesToken}`) {
       return unexpectedRequest();
     }
@@ -214,9 +219,45 @@ export function createDiagnosticsOutboundService(
       });
     }
     if (url.pathname === `${deadLetterQueuePath}/consumers`) {
-      return cloudflareResult([]);
+      return cloudflareResult([{
+        type: 'worker',
+        script: 'steward-recovery',
+        dead_letter_queue: 'steward-recovery-capture-dlq',
+        settings: {
+          batch_size: 10,
+          max_wait_time_ms: 1_000,
+          max_retries: 100,
+          retry_delay: 15,
+        },
+      }]);
     }
     if (url.pathname === `${deadLetterQueuePath}/metrics`) {
+      return cloudflareResult({
+        backlog_count: 0,
+        backlog_bytes: 0,
+        oldest_message_timestamp_ms: 0,
+      });
+    }
+    if (url.pathname === recoveryCaptureDeadLetterQueuePath) {
+      return cloudflareResult({
+        queue_id: diagnosticsFixture.recoveryCaptureDeadLetterQueueId,
+        queue_name: 'steward-recovery-capture-dlq',
+        producers: [],
+        producers_total_count: 0,
+        settings: {
+          delivery_delay: 0,
+          message_retention_period: 86_400,
+        },
+      });
+    }
+    if (
+      url.pathname === `${recoveryCaptureDeadLetterQueuePath}/consumers`
+    ) {
+      return cloudflareResult([]);
+    }
+    if (
+      url.pathname === `${recoveryCaptureDeadLetterQueuePath}/metrics`
+    ) {
       return cloudflareResult({
         backlog_count: 0,
         backlog_bytes: 0,

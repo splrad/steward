@@ -1,4 +1,5 @@
 export * from './api-version.js';
+export * from './app-webhook-deliveries.js';
 export * from './client.js';
 export * from './organization.js';
 export * from './pagination.js';

@@ -3,6 +3,10 @@ import {
   buildStewardRuntimeControlMutationReceiptV2,
   buildStewardRuntimeControlPreparedReceiptV2,
   buildStewardRuntimeControlRecoveryReceiptV2,
+  canonicalStewardRuntimeDeliveryRecoveryAcceptedReceiptV1Json,
+  canonicalStewardRuntimeDeliveryRecoveryPageRequestV1Json,
+  canonicalStewardRuntimeDeliveryRecoveryPageReceiptV1Json,
+  canonicalStewardRuntimeDeliveryRecoveryRedeliveryRequestV1Json,
   buildStewardRuntimeRepositoryFanoutPageReceiptV1,
   buildStewardRuntimeDiagnosticsControlReceipt,
   buildStewardRuntimeControlReceipt,
@@ -17,7 +21,11 @@ import {
   parseStewardRuntimeControlPrepareRequestV2,
   parseStewardRuntimeControlRecoverRequestV2,
   parseStewardRuntimeControlRequest,
+  parseStewardRuntimeDeliveryRecoveryPageRequestV1,
+  parseStewardRuntimeDeliveryRecoveryRedeliveryRequestV1,
   parseStewardRuntimeRepositoryFanoutPageRequestV1,
+  type StewardRuntimeDeliveryRecoveryPageRequestV1,
+  type StewardRuntimeDeliveryRecoveryRedeliveryRequestV1,
   type StewardRuntimeControlApplyNextRequestV2,
   type StewardRuntimeControlMutationBindingV2,
   type StewardRuntimeControlMutationResultV2,
@@ -49,8 +57,11 @@ import {
 } from '../../control/src/index.js';
 import {
   GITHUB_CLOUD_REST_API_VERSION,
+  GitHubAppWebhookDeliveryControlRevisionMismatchError,
   GitHubApiError,
   GitHubRepositoryClient,
+  classifyGitHubAppWebhookDeliveryError,
+  createGitHubAppWebhookDeliveriesClient,
   createGitHubRestTransport,
 } from '../../github/src/index.js';
 import { encodeBase64Utf8 } from '../../manifest/src/encoding.js';
@@ -59,10 +70,28 @@ const reconcilePathV1 = '/v1/reconcile';
 const reconcilePathV2 = '/v2/reconcile';
 const repositoryFanoutPathV1 = '/v1/repository-fanout/page';
 const diagnosticsPath = '/v1/runtime-diagnostics';
+const deliveryRecoveryPagePath =
+  '/v1/delivery-recovery/github/page';
+const deliveryRecoveryRedeliveryPath =
+  '/v1/delivery-recovery/github/redeliver';
 export const maximumControlRequestBytes = 128 * 1024;
 export const maximumGitHubResponseBytes = 128 * 1024;
 export const controlGitHubTimeoutMs = 3_000;
+export const recoveryControlCapabilityFreshnessMs = 60_000;
 const internalProtocolHeader = 'x-steward-internal-protocol';
+const recoveryCapabilityTimestampHeader =
+  'x-steward-recovery-capability-timestamp';
+const recoveryCapabilityNonceHeader =
+  'x-steward-recovery-capability-nonce';
+const recoveryCapabilitySignatureHeader =
+  'x-steward-recovery-capability-signature';
+const recoveryCapabilityContext = 'steward-recovery-control-v1';
+const canonicalCapabilityTimestampPattern =
+  /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
+const recoveryCapabilityNoncePattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const recoveryCapabilitySignaturePattern = /^[0-9a-f]{64}$/;
+const recoveryControlSecretPattern = /^[\x21-\x7e]{32,512}$/;
 
 export interface ControlRuntimeVersionMetadata {
   readonly id: string;
@@ -75,6 +104,7 @@ export interface ControlRuntimeEnv {
   readonly GITHUB_APP_ID?: string;
   readonly GITHUB_APP_PRIVATE_KEY?: string;
   readonly COPILOT_REVIEW_REQUEST_TOKEN?: string;
+  readonly RECOVERY_CONTROL_SHARED_SECRET?: string;
   readonly STEWARD_ORGANIZATION_ID?: string | number;
   readonly STEWARD_ORGANIZATION_LOGIN?: string;
 }
@@ -570,12 +600,20 @@ function boundedGitHubRestFetch(
       redirect: 'manual',
       signal: AbortSignal.any(signals),
     });
+    const bodyStreamPresent = response.body !== null;
     const bytes = await readBoundedResponseBytes(response);
-    return new Response(bytes.byteLength ? Uint8Array.from(bytes).buffer : null, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
-    });
+    // A network 202 is not a Fetch null-body status, so its zero-byte payload
+    // remains a readable empty stream. Preserve an actually missing stream as
+    // null: the delivery client treats that malformed mutation result as
+    // unknown rather than inventing acceptance evidence.
+    return new Response(
+      bodyStreamPresent ? Uint8Array.from(bytes).buffer : null,
+      {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      },
+    );
   };
 }
 
@@ -959,6 +997,120 @@ function sameControlRevision(
     && left.workerVersionId === right.workerVersionId
     && left.workerVersionTag === right.workerVersionTag
     && left.workerVersionCreatedAt === right.workerVersionCreatedAt;
+}
+
+function recoveryControlCapabilityMessage(
+  method: string,
+  path: string,
+  bodyDigest: string,
+  timestamp: string,
+  nonce: string,
+  revision: StewardRuntimeControlRevisionV1,
+): string {
+  return [
+    recoveryCapabilityContext,
+    method,
+    path,
+    bodyDigest,
+    timestamp,
+    nonce,
+    revision.stewardCommit,
+    revision.workerVersionId,
+    revision.workerVersionTag,
+    revision.workerVersionCreatedAt,
+  ].join('\n');
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(value),
+  ));
+  return [...digest]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+async function recoveryControlHmacHex(
+  secret: string,
+  message: string,
+): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const signature = new Uint8Array(await crypto.subtle.sign(
+    'HMAC',
+    key,
+    new TextEncoder().encode(message),
+  ));
+  return [...signature]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function constantTimeHexEqual(left: string, right: string): boolean {
+  if (
+    !recoveryCapabilitySignaturePattern.test(left)
+    || !recoveryCapabilitySignaturePattern.test(right)
+  ) {
+    return false;
+  }
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 2) {
+    difference |= Number.parseInt(left.slice(index, index + 2), 16)
+      ^ Number.parseInt(right.slice(index, index + 2), 16);
+  }
+  return difference === 0;
+}
+
+async function verifyRecoveryControlCapability(
+  request: Request,
+  path: string,
+  canonicalBody: string,
+  revision: StewardRuntimeControlRevisionV1,
+  env: ControlRuntimeEnv,
+  now = new Date(),
+): Promise<boolean> {
+  const secret = String(env.RECOVERY_CONTROL_SHARED_SECRET ?? '');
+  const timestamp = request.headers.get(
+    recoveryCapabilityTimestampHeader,
+  ) ?? '';
+  const nonce = request.headers.get(recoveryCapabilityNonceHeader) ?? '';
+  const suppliedSignature = request.headers.get(
+    recoveryCapabilitySignatureHeader,
+  ) ?? '';
+  const timestampMs = Date.parse(timestamp);
+  const nowMs = now.getTime();
+  if (
+    !recoveryControlSecretPattern.test(secret)
+    || secret !== secret.trim()
+    || !canonicalCapabilityTimestampPattern.test(timestamp)
+    || !Number.isSafeInteger(timestampMs)
+    || new Date(timestampMs).toISOString() !== timestamp
+    || !Number.isSafeInteger(nowMs)
+    || Math.abs(nowMs - timestampMs) > recoveryControlCapabilityFreshnessMs
+    || !recoveryCapabilityNoncePattern.test(nonce)
+    || !recoveryCapabilitySignaturePattern.test(suppliedSignature)
+  ) {
+    return false;
+  }
+  const bodyDigest = await sha256Hex(canonicalBody);
+  const expectedSignature = await recoveryControlHmacHex(
+    secret,
+    recoveryControlCapabilityMessage(
+      request.method,
+      path,
+      bodyDigest,
+      timestamp,
+      nonce,
+      revision,
+    ),
+  );
+  return constantTimeHexEqual(suppliedSignature, expectedSignature);
 }
 
 function canonicalV2Response(body: string): Response {
@@ -2013,6 +2165,168 @@ async function recoverGovernanceV2(
   }
 }
 
+function canonicalDeliveryRecoveryResponse(
+  status: 200 | 202,
+  body: string,
+): Response {
+  return new Response(body, {
+    status,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+    },
+  });
+}
+
+function isDefiniteGitHubRedeliveryRejection(status: number): boolean {
+  // These responses prove that GitHub rejected the authenticated endpoint or
+  // payload. Timeout-like and uncommon 4xx responses remain unknown because
+  // a POST side effect cannot be excluded merely from the status class.
+  return status === 400
+    || status === 401
+    || status === 403
+    || status === 404
+    || status === 422;
+}
+
+function deliveryRecoveryFailureResponse(
+  error: unknown,
+  operation: 'list' | 'redeliver',
+): Response {
+  if (
+    error instanceof GitHubAppWebhookDeliveryControlRevisionMismatchError
+  ) {
+    return jsonResponse(409, { error: 'control-revision-mismatch' });
+  }
+  const failure = classifyGitHubAppWebhookDeliveryError(error);
+  if (failure?.kind === 'rate-limited') {
+    const response = jsonResponse(429, { error: 'github-rate-limited' });
+    if (failure.retryAfterSeconds !== null) {
+      response.headers.set(
+        'retry-after',
+        String(failure.retryAfterSeconds),
+      );
+    }
+    return response;
+  }
+  if (operation === 'redeliver') {
+    if (
+      failure?.kind === 'unknown'
+      && failure.status !== null
+      && isDefiniteGitHubRedeliveryRejection(failure.status)
+    ) {
+      return jsonResponse(422, {
+        error: 'github-redelivery-rejected',
+        providerStatus: failure.status,
+      });
+    }
+    if (
+      failure?.kind === 'unknown'
+      && failure.status !== null
+      && failure.status >= 500
+    ) {
+      return jsonResponse(503, {
+        // A provider 5xx proves only that GitHub returned an error, not that
+        // the POST had no side effect. Reconciliation must establish whether
+        // a redelivery was created before any further mutation is attempted.
+        error: 'github-redelivery-result-unknown',
+        providerStatus: failure.status,
+      });
+    }
+    return jsonResponse(503, {
+      error: 'github-redelivery-result-unknown',
+    });
+  }
+  return jsonResponse(503, { error: 'delivery-recovery-unavailable' });
+}
+
+async function listGitHubAppDeliveries(
+  input: StewardRuntimeDeliveryRecoveryPageRequestV1,
+  env: ControlRuntimeEnv,
+  dependencies: ControlRuntimeDependencies,
+  parentSignal: AbortSignal,
+): Promise<Response> {
+  let revision: StewardRuntimeControlRevisionV1;
+  try {
+    revision = controlRevision(env);
+  } catch {
+    return jsonResponse(503, { error: 'control-revision-unavailable' });
+  }
+  if (!sameControlRevision(input.expectedControlRevision, revision)) {
+    return jsonResponse(409, { error: 'control-revision-mismatch' });
+  }
+  let appJwt: string;
+  try {
+    appJwt = await dependencies.appToken(env);
+  } catch {
+    return jsonResponse(503, {
+      error: 'github-delivery-control-unavailable',
+    });
+  }
+  try {
+    const client = createGitHubAppWebhookDeliveriesClient({
+      appJwt,
+      controlRevision: revision,
+      fetch: boundedGitHubRestFetch(dependencies, parentSignal),
+      apiVersion: GITHUB_CLOUD_REST_API_VERSION,
+    });
+    const receipt = await client.listDeliveries(input);
+    return canonicalDeliveryRecoveryResponse(
+      200,
+      canonicalStewardRuntimeDeliveryRecoveryPageReceiptV1Json(receipt),
+    );
+  } catch (error) {
+    return deliveryRecoveryFailureResponse(error, 'list');
+  }
+}
+
+async function redeliverGitHubAppDelivery(
+  input: StewardRuntimeDeliveryRecoveryRedeliveryRequestV1,
+  env: ControlRuntimeEnv,
+  dependencies: ControlRuntimeDependencies,
+  parentSignal: AbortSignal,
+): Promise<Response> {
+  let revision: StewardRuntimeControlRevisionV1;
+  try {
+    revision = controlRevision(env);
+  } catch {
+    return jsonResponse(503, { error: 'control-revision-unavailable' });
+  }
+  if (!sameControlRevision(input.expectedControlRevision, revision)) {
+    return jsonResponse(409, { error: 'control-revision-mismatch' });
+  }
+  let appJwt: string;
+  try {
+    appJwt = await dependencies.appToken(env);
+  } catch {
+    return jsonResponse(503, {
+      error: 'github-redelivery-control-unavailable',
+    });
+  }
+  let client: ReturnType<typeof createGitHubAppWebhookDeliveriesClient>;
+  try {
+    client = createGitHubAppWebhookDeliveriesClient({
+      appJwt,
+      controlRevision: revision,
+      fetch: boundedGitHubRestFetch(dependencies, parentSignal),
+      apiVersion: GITHUB_CLOUD_REST_API_VERSION,
+    });
+  } catch {
+    return jsonResponse(503, {
+      error: 'github-redelivery-control-unavailable',
+    });
+  }
+  try {
+    const receipt = await client.requestRedelivery(input);
+    return canonicalDeliveryRecoveryResponse(
+      202,
+      canonicalStewardRuntimeDeliveryRecoveryAcceptedReceiptV1Json(receipt),
+    );
+  } catch (error) {
+    return deliveryRecoveryFailureResponse(error, 'redeliver');
+  }
+}
+
 export function createControlRuntimeHandler(
   dependencies: ControlRuntimeDependencies = defaultDependencies,
 ): ControlRuntimeHandler {
@@ -2025,6 +2339,8 @@ export function createControlRuntimeHandler(
           && url.pathname !== reconcilePathV2
           && url.pathname !== repositoryFanoutPathV1
           && url.pathname !== diagnosticsPath
+          && url.pathname !== deliveryRecoveryPagePath
+          && url.pathname !== deliveryRecoveryRedeliveryPath
         )
         || url.search !== ''
         || request.method !== 'POST'
@@ -2035,6 +2351,11 @@ export function createControlRuntimeHandler(
         ? '2'
         : url.pathname === repositoryFanoutPathV1
           ? 'repository-fanout-1'
+          : (
+              url.pathname === deliveryRecoveryPagePath
+              || url.pathname === deliveryRecoveryRedeliveryPath
+            )
+            ? 'delivery-recovery-1'
           : '1';
       if (request.headers.get(internalProtocolHeader) !== expectedInternalProtocol) {
         return jsonResponse(403, { error: 'internal-protocol-required' });
@@ -2086,6 +2407,77 @@ export function createControlRuntimeHandler(
             error: 'repository-fanout-unavailable',
           });
         }
+      }
+
+      if (url.pathname === deliveryRecoveryPagePath) {
+        let input: StewardRuntimeDeliveryRecoveryPageRequestV1;
+        try {
+          input = parseStewardRuntimeDeliveryRecoveryPageRequestV1(parsed);
+        } catch {
+          return jsonResponse(400, {
+            error: 'invalid-delivery-recovery-request',
+          });
+        }
+        let authorized = false;
+        try {
+          authorized = await verifyRecoveryControlCapability(
+            request,
+            deliveryRecoveryPagePath,
+            canonicalStewardRuntimeDeliveryRecoveryPageRequestV1Json(input),
+            input.expectedControlRevision,
+            env,
+          );
+        } catch {
+          authorized = false;
+        }
+        if (!authorized) {
+          return jsonResponse(403, {
+            error: 'recovery-control-capability-required',
+          });
+        }
+        return await listGitHubAppDeliveries(
+          input,
+          env,
+          dependencies,
+          request.signal,
+        );
+      }
+
+      if (url.pathname === deliveryRecoveryRedeliveryPath) {
+        let input: StewardRuntimeDeliveryRecoveryRedeliveryRequestV1;
+        try {
+          input =
+            parseStewardRuntimeDeliveryRecoveryRedeliveryRequestV1(parsed);
+        } catch {
+          return jsonResponse(400, {
+            error: 'invalid-delivery-recovery-request',
+          });
+        }
+        let authorized = false;
+        try {
+          authorized = await verifyRecoveryControlCapability(
+            request,
+            deliveryRecoveryRedeliveryPath,
+            canonicalStewardRuntimeDeliveryRecoveryRedeliveryRequestV1Json(
+              input,
+            ),
+            input.expectedControlRevision,
+            env,
+          );
+        } catch {
+          authorized = false;
+        }
+        if (!authorized) {
+          return jsonResponse(403, {
+            error: 'recovery-control-capability-required',
+          });
+        }
+        return await redeliverGitHubAppDelivery(
+          input,
+          env,
+          dependencies,
+          request.signal,
+        );
       }
 
       if (url.pathname === reconcilePathV2) {

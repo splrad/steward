@@ -1,12 +1,8 @@
 import {
-  createRemoteJWKSet,
-  customFetch,
-  importJWK,
-  jwksCache,
-  jwtVerify,
-  type JWK,
-  type JWKSCacheInput,
-} from 'jose';
+  verifyCloudflareAccessRequest as verifyAccessRequest,
+  type CloudflareAccessDecision,
+  type CloudflareAccessEnvironment,
+} from '../../access-auth/src/index.js';
 import {
   buildStewardRuntimeDiagnosticsControlProbe,
   buildStewardRuntimeDiagnosticsEnvelope,
@@ -20,11 +16,13 @@ import {
 
 const diagnosticsPath = '/v1/runtime-diagnostics';
 const internalProtocolHeader = 'x-steward-internal-protocol';
-const accessAssertionHeader = 'cf-access-jwt-assertion';
 const controlWorkerName = 'steward-control';
 const expectedQueueName = 'steward-events';
 const expectedDeadLetterQueueName = 'steward-events-dlq';
 const expectedConsumerScript = 'steward-coordinator';
+const expectedRecoveryConsumerScript = 'steward-recovery';
+const expectedRecoveryCaptureDeadLetterQueueName =
+  'steward-recovery-capture-dlq';
 const expectedEventQueueProducers = [
   'worker:steward-coordinator',
   'worker:steward-ingress',
@@ -33,12 +31,6 @@ const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const accountIdPattern = /^[0-9a-f]{32}$/;
 const queueIdPattern = /^[0-9a-f]{32}$/;
-const accessTeamDomainPattern =
-  /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.cloudflareaccess\.com$/;
-const accessJwksCaches = new WeakMap<
-  typeof fetch,
-  Map<string, JWKSCacheInput>
->();
 
 export const maximumDiagnosticsRequestBytes = 8 * 1024;
 export const maximumDiagnosticsUpstreamResponseBytes = 256 * 1024;
@@ -46,25 +38,20 @@ export const diagnosticsOverallTimeoutMs = 25_000;
 export const diagnosticsCloudflareTimeoutMs = 5_000;
 export const diagnosticsControlTimeoutMs = 10_000;
 
-export type DiagnosticsAccessDecision =
-  | 'authorized'
-  | 'denied'
-  | 'unavailable';
+export type DiagnosticsAccessDecision = CloudflareAccessDecision;
 
 export interface DiagnosticsControlService {
   fetch(input: Request | string | URL, init?: RequestInit): Promise<Response>;
 }
 
-export interface DiagnosticsEnv {
+export interface DiagnosticsEnv extends CloudflareAccessEnvironment {
   readonly CONTROL: DiagnosticsControlService;
-  readonly ACCESS_TEAM_DOMAIN?: string;
-  readonly ACCESS_POLICY_AUD?: string;
-  readonly ACCESS_EXPECTED_CLIENT_ID?: string;
   readonly CLOUDFLARE_ACCOUNT_ID?: string;
   readonly CLOUDFLARE_WORKERS_READ_TOKEN?: string;
   readonly CLOUDFLARE_QUEUES_READ_TOKEN?: string;
   readonly EVENT_QUEUE_ID?: string;
   readonly DEAD_LETTER_QUEUE_ID?: string;
+  readonly RECOVERY_CAPTURE_DEAD_LETTER_QUEUE_ID?: string;
 }
 
 export interface DiagnosticsDependencies {
@@ -123,13 +110,6 @@ class DiagnosticsUnavailableError extends Error {
   constructor() {
     super('Runtime diagnostics are unavailable');
     this.name = 'DiagnosticsUnavailableError';
-  }
-}
-
-class AccessJwksUnavailableError extends Error {
-  constructor() {
-    super('Cloudflare Access JWKS are unavailable');
-    this.name = 'AccessJwksUnavailableError';
   }
 }
 
@@ -272,150 +252,18 @@ async function readResponseJson(
   );
 }
 
-function accessConfiguration(env: DiagnosticsEnv): {
-  readonly teamDomain: string;
-  readonly audience: string;
-  readonly clientId: string;
-} {
-  const teamDomain = String(env.ACCESS_TEAM_DOMAIN ?? '').toLowerCase();
-  const audience = String(env.ACCESS_POLICY_AUD ?? '');
-  const clientId = String(env.ACCESS_EXPECTED_CLIENT_ID ?? '');
-  if (
-    !accessTeamDomainPattern.test(teamDomain)
-    || !/^[A-Za-z0-9_-]{20,128}$/.test(audience)
-    || !/^[\x21-\x7e]{1,256}$/.test(clientId)
-    || clientId !== clientId.trim()
-  ) {
-    throw new DiagnosticsUnavailableError();
-  }
-  return { teamDomain, audience, clientId };
-}
-
-function accessJwksCache(
-  fetchImplementation: typeof fetch,
-  teamDomain: string,
-): JWKSCacheInput {
-  let byTeamDomain = accessJwksCaches.get(fetchImplementation);
-  if (byTeamDomain === undefined) {
-    byTeamDomain = new Map();
-    accessJwksCaches.set(fetchImplementation, byTeamDomain);
-  }
-  let cache = byTeamDomain.get(teamDomain);
-  if (cache === undefined) {
-    cache = {};
-    byTeamDomain.set(teamDomain, cache);
-  }
-  return cache;
-}
-
 export async function verifyCloudflareAccessRequest(
   request: Request,
   env: DiagnosticsEnv,
   fetchImplementation: typeof fetch = fetch,
   parentSignal: AbortSignal = request.signal,
 ): Promise<DiagnosticsAccessDecision> {
-  let config: ReturnType<typeof accessConfiguration>;
-  try {
-    config = accessConfiguration(env);
-  } catch {
-    return 'unavailable';
-  }
-
-  const assertion = request.headers.get(accessAssertionHeader);
-  if (assertion === null || assertion.length < 32 || assertion.length > 16_384) {
-    return 'denied';
-  }
-
-  try {
-    const jwks = createRemoteJWKSet(
-      new URL(`https://${config.teamDomain}/cdn-cgi/access/certs`),
-      {
-        timeoutDuration: diagnosticsCloudflareTimeoutMs,
-        cooldownDuration: 30_000,
-        cacheMaxAge: 10 * 60_000,
-        // Recreate the resolver so its custom fetch keeps this request's
-        // cancellation signal, while the jose-managed JWKS bytes and refresh
-        // timestamp persist safely across requests in the same isolate.
-        [jwksCache]: accessJwksCache(
-          fetchImplementation,
-          config.teamDomain,
-        ),
-        [customFetch]: async (url, options) => {
-          try {
-            const jwksSignal = boundedSignal(
-              parentSignal,
-              diagnosticsCloudflareTimeoutMs,
-              options.signal,
-            );
-            const response = await fetchImplementation(url, {
-              ...options,
-              // Cloudflare Workers implements "follow" and "manual", but not
-              // the browser-only "error" mode. Keep redirects observable and
-              // reject every 3xx through the response.ok check below.
-              redirect: 'manual',
-              signal: jwksSignal,
-            });
-            if (!response.ok) throw new AccessJwksUnavailableError();
-            if (!contentTypeIsJson(response.headers)) {
-              throw new AccessJwksUnavailableError();
-            }
-            const jwksPayload = plainRecord(await readBoundedStreamJson(
-              response.clone().body,
-              response.headers.get('content-length'),
-              maximumDiagnosticsUpstreamResponseBytes,
-              jwksSignal,
-            ));
-            const keys = Array.isArray(jwksPayload?.keys)
-              ? jwksPayload.keys.map((candidate) => plainRecord(candidate))
-              : [];
-            if (
-              jwksPayload === null
-              || keys.length === 0
-              || !keys.every((key) =>
-                key !== null
-                  && key.kty === 'RSA'
-                  && key.alg === 'RS256'
-                  && key.use === 'sig'
-                  && typeof key.kid === 'string'
-                  && /^[A-Za-z0-9_-]{1,256}$/.test(key.kid)
-                  && typeof key.n === 'string'
-                  && /^[A-Za-z0-9_-]{32,2048}$/.test(key.n)
-                  && typeof key.e === 'string'
-                  && /^[A-Za-z0-9_-]{1,16}$/.test(key.e))
-              || new Set(keys.map((key) => key?.kid)).size !== keys.length
-            ) {
-              throw new AccessJwksUnavailableError();
-            }
-            await Promise.all(keys.map(
-              (key) => importJWK(key as JWK, 'RS256'),
-            ));
-            return response;
-          } catch (error) {
-            if (error instanceof AccessJwksUnavailableError) throw error;
-            throw new AccessJwksUnavailableError();
-          }
-        },
-      },
-    );
-    const verified = await jwtVerify(assertion, jwks, {
-      issuer: `https://${config.teamDomain}`,
-      audience: config.audience,
-      algorithms: ['RS256'],
-      clockTolerance: 30,
-      requiredClaims: ['iat', 'exp', 'iss', 'aud'],
-    });
-    return verified.protectedHeader.alg === 'RS256'
-      && verified.payload.type === 'app'
-      && verified.payload.sub === ''
-      && verified.payload.common_name === config.clientId
-      && Number.isSafeInteger(verified.payload.iat)
-      ? 'authorized'
-      : 'denied';
-  } catch (error) {
-    return error instanceof AccessJwksUnavailableError
-      ? 'unavailable'
-      : 'denied';
-  }
+  return await verifyAccessRequest(
+    request,
+    env,
+    fetchImplementation,
+    parentSignal,
+  );
 }
 
 const defaultDependencies: DiagnosticsDependencies = {
@@ -431,17 +279,24 @@ function cloudflareConfiguration(env: DiagnosticsEnv): {
   readonly queuesToken: string;
   readonly eventQueueId: string;
   readonly deadLetterQueueId: string;
+  readonly recoveryCaptureDeadLetterQueueId: string;
 } {
   const accountId = String(env.CLOUDFLARE_ACCOUNT_ID ?? '');
   const workersToken = String(env.CLOUDFLARE_WORKERS_READ_TOKEN ?? '');
   const queuesToken = String(env.CLOUDFLARE_QUEUES_READ_TOKEN ?? '');
   const eventQueueId = String(env.EVENT_QUEUE_ID ?? '');
   const deadLetterQueueId = String(env.DEAD_LETTER_QUEUE_ID ?? '');
+  const recoveryCaptureDeadLetterQueueId = String(
+    env.RECOVERY_CAPTURE_DEAD_LETTER_QUEUE_ID ?? '',
+  );
   if (
     !accountIdPattern.test(accountId)
     || !queueIdPattern.test(eventQueueId)
     || !queueIdPattern.test(deadLetterQueueId)
+    || !queueIdPattern.test(recoveryCaptureDeadLetterQueueId)
     || eventQueueId === deadLetterQueueId
+    || eventQueueId === recoveryCaptureDeadLetterQueueId
+    || deadLetterQueueId === recoveryCaptureDeadLetterQueueId
     || !workersToken
     || !queuesToken
     || workersToken === queuesToken
@@ -454,6 +309,7 @@ function cloudflareConfiguration(env: DiagnosticsEnv): {
     queuesToken,
     eventQueueId,
     deadLetterQueueId,
+    recoveryCaptureDeadLetterQueueId,
   };
 }
 
@@ -770,12 +626,43 @@ function deadLetterQueueAvailable(
   queue: QueueConfiguration,
   consumers: readonly QueueConsumer[],
 ): boolean {
-  return queue.name === expectedDeadLetterQueueName
+  if (
+    queue.name !== expectedDeadLetterQueueName
+    || queue.paused
+    || queue.deliveryDelay !== 0
+    || queue.retentionSeconds < 86_400
+    || queue.producers.length !== 0
+    || consumers.length !== 1
+  ) {
+    return false;
+  }
+  const [consumer] = consumers;
+  return consumer?.type === 'worker'
+    && consumer.scriptName === expectedRecoveryConsumerScript
+    && consumer.deadLetterQueue ===
+      expectedRecoveryCaptureDeadLetterQueueName
+    && consumer.batchSize === 10
+    && consumer.maxWaitTimeMs === 1_000
+    && consumer.maxRetries === 100
+    && consumer.retryDelay === 15;
+}
+
+function recoveryCaptureDeadLetterQueueAvailable(
+  queue: QueueConfiguration,
+  consumers: readonly QueueConsumer[],
+): boolean {
+  return queue.name === expectedRecoveryCaptureDeadLetterQueueName
     && !queue.paused
     && queue.deliveryDelay === 0
     && queue.retentionSeconds >= 86_400
     && queue.producers.length === 0
     && consumers.length === 0;
+}
+
+function queueMetricsEmpty(metrics: QueueMetrics): boolean {
+  return metrics.backlogCount === 0
+    && metrics.backlogBytes === 0
+    && metrics.oldestMessageTimestampMs === 0;
 }
 
 async function invokeControl(
@@ -909,6 +796,9 @@ export function createDiagnosticsHandler(
           deadLetterQueue,
           deadLetterConsumers,
           deadLetterMetrics,
+          recoveryCaptureDeadLetterQueue,
+          recoveryCaptureDeadLetterConsumers,
+          recoveryCaptureDeadLetterMetrics,
         ] = await Promise.all([
           readQueueConfiguration(
             dependencies,
@@ -940,6 +830,24 @@ export function createDiagnosticsHandler(
             config.deadLetterQueueId,
             overallSignal,
           ).catch(() => null),
+          readQueueConfiguration(
+            dependencies,
+            config,
+            config.recoveryCaptureDeadLetterQueueId,
+            overallSignal,
+          ).catch(() => null),
+          readQueueConsumers(
+            dependencies,
+            config,
+            config.recoveryCaptureDeadLetterQueueId,
+            overallSignal,
+          ).catch(() => null),
+          readQueueMetrics(
+            dependencies,
+            config,
+            config.recoveryCaptureDeadLetterQueueId,
+            overallSignal,
+          ).catch(() => null),
         ]);
 
         // Keep the deployment re-read as the final external-fact barrier.
@@ -963,9 +871,16 @@ export function createDiagnosticsHandler(
         const dlqAvailable = deadLetterQueue !== null
           && deadLetterConsumers !== null
           && deadLetterMetrics !== null
+          && recoveryCaptureDeadLetterQueue !== null
+          && recoveryCaptureDeadLetterConsumers !== null
+          && recoveryCaptureDeadLetterMetrics !== null
           && deadLetterQueueAvailable(
             deadLetterQueue,
             deadLetterConsumers,
+          )
+          && recoveryCaptureDeadLetterQueueAvailable(
+            recoveryCaptureDeadLetterQueue,
+            recoveryCaptureDeadLetterConsumers,
           );
         const envelope = buildStewardRuntimeDiagnosticsEnvelope({
           subject: control.subject,
@@ -984,9 +899,8 @@ export function createDiagnosticsHandler(
             control: 'ready',
             deadLetterQueue: !dlqAvailable
               ? 'unavailable'
-              : deadLetterMetrics.backlogCount === 0
-                  && deadLetterMetrics.backlogBytes === 0
-                  && deadLetterMetrics.oldestMessageTimestampMs === 0
+              : queueMetricsEmpty(deadLetterMetrics)
+                  && queueMetricsEmpty(recoveryCaptureDeadLetterMetrics)
                 ? 'clear'
                 : 'pending',
           },

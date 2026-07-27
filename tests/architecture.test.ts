@@ -25,45 +25,54 @@ const packageRoot = path.resolve('packages');
 const workerPortablePackages = new Set(['core', 'github', 'manifest', 'control']);
 const workerRuntimePackages = new Set([
   ...workerPortablePackages,
+  'access-auth',
   'control-runtime',
   'coordinator',
   'diagnostics',
   'ingress',
+  'recovery',
 ]);
 const workerFetchPackages = new Set([
+  'access-auth',
   'control-runtime',
   'coordinator',
   'diagnostics',
   'github',
   'ingress',
+  'recovery',
 ]);
 const nodeBuiltinModules = new Set(builtinModules.map((module) => module.replace(/^node:/, '')));
 const forbiddenWorkerGlobals = new Set(['Buffer', 'NodeJS', 'fetch', 'process']);
 const allowedDependencies: Record<string, ReadonlySet<string>> = {
+  'access-auth': new Set<string>(),
   manifest: new Set<string>(),
   core: new Set(['manifest']),
   github: new Set(['core', 'manifest']),
   control: new Set(['core', 'github', 'manifest']),
   'control-runtime': new Set(['control', 'core', 'github', 'manifest']),
   coordinator: new Set(['core']),
-  diagnostics: new Set(['core']),
+  diagnostics: new Set(['access-auth', 'core']),
   ingress: new Set(['core']),
+  recovery: new Set(['access-auth', 'core']),
   relay: new Set(['core', 'github', 'manifest']),
   cli: new Set(['core', 'github', 'manifest']),
 };
 const allowedRuntimeDependencies: Record<string, ReadonlySet<string>> = {
+  'access-auth': new Set(['jose']),
   manifest: new Set(['ajv', 'ajv-formats']),
   core: new Set<string>(),
   github: new Set<string>(),
   control: new Set<string>(),
   'control-runtime': new Set(['@octokit/auth-app']),
   coordinator: new Set(['cloudflare:workers']),
-  diagnostics: new Set(['jose']),
+  diagnostics: new Set<string>(),
   ingress: new Set<string>(),
+  recovery: new Set(['cloudflare:workers']),
   relay: new Set(['@octokit/auth-app']),
   cli: new Set(['ajv', 'ajv-formats', 'libsodium-wrappers']),
 };
 const allowedExternalResources: Record<string, ReadonlySet<string>> = {
+  'access-auth': new Set<string>(),
   manifest: new Set([path.resolve('schema/steward.schema.json')]),
   core: new Set<string>(),
   github: new Set<string>(),
@@ -72,6 +81,7 @@ const allowedExternalResources: Record<string, ReadonlySet<string>> = {
   coordinator: new Set<string>(),
   diagnostics: new Set<string>(),
   ingress: new Set<string>(),
+  recovery: new Set<string>(),
   relay: new Set<string>(),
   cli: new Set<string>(),
 };

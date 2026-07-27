@@ -176,8 +176,11 @@ ordinary Coordinator deploy therefore clears a stale candidate pin and falls
 safe to stable routing instead of silently preserving mutable control-plane
 state.
 
-The configured dead-letter queue has no automatic consumer in this foundation
-slice. Poison messages therefore remain retained for explicit operator
-inspection and replay instead of being acknowledged into a second, less
-durable store. Runtime diagnostics must continue to report DLQ state as
-`unavailable` until authenticated Queue metrics/readback are implemented.
+The deployed foundation still has no dead-letter consumer. The current source
+adds the separate Access-protected Recovery Worker: it captures
+`steward-events-dlq` into its SQLite ledger before acknowledging a message,
+and routes repeated capture failures to `steward-recovery-capture-dlq`.
+Authenticated diagnostics checks both queues, while replay remains an explicit
+operator action through the Recovery plane. None of that topology is live
+until the reviewed Recovery Durable Object deployment and its Queue bindings
+are completed.
