@@ -21,6 +21,8 @@
     "packages/relay/**/*.ts",
     "packages/coordinator/**/*.ts",
     "packages/control-runtime/**/*.ts",
-    "packages/ingress/**/*.ts"
+    "packages/ingress/**/*.ts",
+    "packages/recovery/**/*.ts",
+    "tests/workerd/**/*.ts"
   ]
 }

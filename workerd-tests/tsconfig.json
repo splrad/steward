@@ -11,6 +11,7 @@
   },
   "include": [
     "./**/*.ts",
+    "../tests/workerd/**/*.ts",
     "../packages/core/src/**/*.ts",
     "../packages/coordinator/src/**/*.ts",
     "../packages/control-runtime/src/**/*.ts",

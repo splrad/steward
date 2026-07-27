@@ -1,0 +1,55 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "steward-recovery",
+  "main": "src/entrypoint.ts",
+  "compatibility_date": "2026-07-23",
+  "workers_dev": true,
+  "preview_urls": false,
+  "keep_vars": false,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "DELIVERY_RECOVERY_LEDGER",
+        "class_name": "DeliveryRecoveryLedger"
+      }
+    ]
+  },
+  "exports": {
+    "DeliveryRecoveryLedger": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "services": [
+    {
+      "binding": "CONTROL",
+      "service": "steward-control"
+    }
+  ],
+  "secrets": {
+    "required": [
+      "ACCESS_TEAM_DOMAIN",
+      "ACCESS_POLICY_AUD",
+      "ACCESS_EXPECTED_CLIENT_ID",
+      "RECOVERY_CONTROL_SHARED_SECRET"
+    ]
+  },
+  "queues": {
+    "producers": [
+      {
+        "binding": "EVENT_QUEUE",
+        "queue": "steward-events"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "steward-events-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 1,
+        "max_retries": 100,
+        "retry_delay": 15,
+        "dead_letter_queue": "steward-recovery-capture-dlq"
+      }
+    ]
+  }
+}

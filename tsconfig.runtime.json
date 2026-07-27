@@ -13,7 +13,8 @@
     "packages/ingress/src/**/*.ts",
     "packages/coordinator/src/**/*.ts",
     "packages/control-runtime/src/**/*.ts",
-    "packages/diagnostics/src/**/*.ts"
+    "packages/diagnostics/src/**/*.ts",
+    "packages/recovery/src/**/*.ts"
   ],
   "exclude": []
 }

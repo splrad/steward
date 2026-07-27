@@ -17,7 +17,8 @@
     "required": [
       "COPILOT_REVIEW_REQUEST_TOKEN",
       "GITHUB_APP_ID",
-      "GITHUB_APP_PRIVATE_KEY"
+      "GITHUB_APP_PRIVATE_KEY",
+      "RECOVERY_CONTROL_SHARED_SECRET"
     ]
   }
 }
