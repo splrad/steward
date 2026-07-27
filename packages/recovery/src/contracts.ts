@@ -63,9 +63,13 @@ function exactKeys(
   value: Record<string, unknown>,
   expected: readonly string[],
 ): void {
-  const actual = Object.keys(value).sort();
-  const sortedExpected = [...expected].sort();
-  if (JSON.stringify(actual) !== JSON.stringify(sortedExpected)) {
+  const actual = Reflect.ownKeys(value);
+  if (
+    actual.length !== expected.length
+    || actual.some(
+      (key) => typeof key !== 'string' || !expected.includes(key),
+    )
+  ) {
     throw new TypeError('Delivery recovery command keys are invalid.');
   }
 }

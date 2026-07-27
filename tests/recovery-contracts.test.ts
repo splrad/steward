@@ -153,6 +153,14 @@ describe('delivery recovery operator command protocol', () => {
       requestedAt,
       replayAll: true,
     })).toThrow();
+    const symbolField = {
+      schemaVersion: 1,
+      operation: 'inspect',
+      requestId,
+      requestedAt,
+      [Symbol('hidden')]: true,
+    };
+    expect(() => parseDeliveryRecoveryCommand(symbolField)).toThrow();
     expect(() => parseDeliveryRecoveryCommand({
       schemaVersion: 1,
       operation: 'inspect',
