@@ -13,19 +13,33 @@ import {
 } from '../../core/src/runtime-work-item.js';
 import {
   buildStewardRuntimeScopeWorkItemV1,
+  buildStewardRuntimeScopeWorkItemV2,
   canonicalStewardRuntimeScopeWorkItemJson,
   STEWARD_RUNTIME_REPOSITORY_ACTIONS_V1,
   type StewardRuntimeRepositoryActionV1,
+  type StewardRuntimeScopeCauseV2,
+  type StewardRuntimeScopeTargetV2,
 } from '../../core/src/runtime-scope-work-item.js';
 import {
   classifyRepositoryWebhookCausality,
+  classifyRepositoryScopedWebhookCausality,
 } from '../../core/src/webhook-causality.js';
+import {
+  MAX_LARGE_WEBHOOK_BODY_BYTES,
+  MAX_STREAMED_REPOSITORY_IDS,
+  STREAMING_WEBHOOK_EVENTS,
+  StreamedBroadWebhookProcessor,
+  type StreamedBroadWebhookResult,
+} from './large-webhook.js';
 
 export const MAX_WEBHOOK_BODY_BYTES = 1024 * 1024;
+export { MAX_LARGE_WEBHOOK_BODY_BYTES } from './large-webhook.js';
 export const MAX_INGRESS_RESPONSE_MS = 9_000;
 // Cloudflare measures a Queue KB as 1000 bytes and counts roughly 100 bytes of
 // internal metadata against the 128 KB limit. Keep an explicit safety margin.
 export const MAX_QUEUE_MESSAGE_BYTES = 127_000;
+export const MAX_INSTALLATION_REPOSITORY_SET_IDS =
+  MAX_STREAMED_REPOSITORY_IDS;
 
 export const SUPPORTED_PULL_REQUEST_ACTIONS:
 ReadonlySet<StewardRuntimePullRequestActionV1> = new Set([
@@ -57,7 +71,16 @@ const supportedGitHubWebhookEvents: ReadonlySet<string> = new Set([
   'pull_request_review',
   'pull_request_review_comment',
   'pull_request_review_thread',
+  'custom_property',
+  'custom_property_values',
+  'membership',
   'repository',
+  'team',
+  'team_add',
+  'push',
+  'installation',
+  'installation_repositories',
+  'installation_target',
 ]);
 
 export interface Queue<Body> {
@@ -160,13 +183,16 @@ function supportedGitHubWebhookEventAction(
   return null;
 }
 
-function contentLengthResponse(request: Request): Response | null {
+function contentLengthResponse(request: Request, event: string): Response | null {
   const contentLength = request.headers.get('content-length');
   if (contentLength === null) return null;
   if (!/^(?:0|[1-9]\d*)$/.test(contentLength)) {
     return response(400, 'Invalid Content-Length');
   }
-  if (BigInt(contentLength) > BigInt(MAX_WEBHOOK_BODY_BYTES)) {
+  const maximumBytes = STREAMING_WEBHOOK_EVENTS.has(event)
+    ? MAX_LARGE_WEBHOOK_BODY_BYTES
+    : MAX_WEBHOOK_BODY_BYTES;
+  if (BigInt(contentLength) > BigInt(maximumBytes)) {
     return response(413, 'Webhook body too large');
   }
   return null;
@@ -228,6 +254,98 @@ async function readBodyWithLimit(
     offset += chunk.byteLength;
   }
   return body;
+}
+
+type BroadWebhookBody =
+  | {
+      readonly mode: 'buffered';
+      readonly rawBody: Uint8Array<ArrayBuffer>;
+    }
+  | ({
+      readonly mode: 'streamed';
+    } & StreamedBroadWebhookResult);
+
+async function readBroadBodyWithLimit(
+  request: Request,
+  event: string,
+  signature: string,
+  currentSecret: string,
+  previousSecret: string | undefined,
+  deadlineSignal: AbortSignal,
+): Promise<BroadWebhookBody> {
+  if (request.body === null) {
+    return {
+      mode: 'buffered',
+      rawBody: new Uint8Array(),
+    };
+  }
+
+  const reader = request.body.getReader();
+  const cancelAtDeadline = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  if (deadlineSignal.aborted) {
+    cancelAtDeadline();
+  } else {
+    deadlineSignal.addEventListener('abort', cancelAtDeadline, { once: true });
+  }
+
+  const bufferedChunks: Uint8Array[] = [];
+  let processor: StreamedBroadWebhookProcessor | undefined;
+  let byteLength = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      byteLength += value.byteLength;
+      if (byteLength > MAX_LARGE_WEBHOOK_BODY_BYTES) {
+        try {
+          await reader.cancel();
+        } catch {
+          // The provider-limit decision is already final.
+        }
+        throw new BodyTooLargeError();
+      }
+
+      if (processor !== undefined) {
+        processor.write(value);
+        continue;
+      }
+      if (byteLength <= MAX_WEBHOOK_BODY_BYTES) {
+        bufferedChunks.push(value);
+        continue;
+      }
+
+      processor = new StreamedBroadWebhookProcessor(
+        event,
+        currentSecret,
+        previousSecret,
+      );
+      for (const buffered of bufferedChunks) processor.write(buffered);
+      bufferedChunks.length = 0;
+      processor.write(value);
+    }
+  } finally {
+    deadlineSignal.removeEventListener('abort', cancelAtDeadline);
+  }
+
+  if (processor !== undefined) {
+    return {
+      mode: 'streamed',
+      ...processor.finish(signature),
+    };
+  }
+
+  const body = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of bufferedChunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return {
+    mode: 'buffered',
+    rawBody: body,
+  };
 }
 
 function hexBytes(value: string): Uint8Array<ArrayBuffer> {
@@ -367,6 +485,267 @@ function extractRepositoryScopeWorkItem(
   }
 }
 
+function extractRepositoryScopeWorkItemV2(
+  payload: unknown,
+  deliveryId: string,
+  event: string,
+  action: string | null,
+  receivedAt: string,
+) {
+  const decision = classifyRepositoryScopedWebhookCausality({
+    event,
+    action,
+    payload,
+  });
+  if (decision.disposition !== 'reconcile') return decision;
+  if (
+    decision.target.scope !== 'repository'
+    || decision.target.mode !== 'refresh'
+    || decision.target.pullRequests !== 'all-open'
+  ) {
+    return {
+      disposition: 'quarantine' as const,
+      reason: 'malformed-payload' as const,
+      field: 'causality.target',
+    };
+  }
+  const ref = event === 'push' ? record(payload)?.ref : null;
+  try {
+    return {
+      disposition: 'enqueue' as const,
+      workItem: buildStewardRuntimeScopeWorkItemV2({
+        operation: 'scope-reconcile',
+        target: decision.target,
+        cause: {
+          kind: 'github-webhook',
+          deliveryId,
+          event,
+          action,
+          ref,
+          receivedAt,
+        } as StewardRuntimeScopeCauseV2,
+      }),
+    };
+  } catch {
+    return {
+      disposition: 'quarantine' as const,
+      reason: 'malformed-payload' as const,
+      field: 'scope-work-item',
+    };
+  }
+}
+
+function repositoryIds(value: unknown): readonly number[] | null {
+  if (
+    !Array.isArray(value)
+    || value.length > MAX_INSTALLATION_REPOSITORY_SET_IDS
+  ) {
+    return null;
+  }
+  const ids: number[] = [];
+  for (const repositoryValue of value) {
+    const repositoryId = positiveSafeInteger(record(repositoryValue)?.id);
+    if (repositoryId === null) return null;
+    ids.push(repositoryId);
+  }
+  return [...new Set(ids)].sort((left, right) => left - right);
+}
+
+function extractInstallationScopeWorkItemV2(
+  payload: unknown,
+  deliveryId: string,
+  event: string,
+  action: string,
+  receivedAt: string,
+) {
+  const root = record(payload);
+  const installation = record(root?.installation);
+  const installationId = positiveSafeInteger(installation?.id);
+  if (
+    root === null
+    || root.action !== action
+    || installationId === null
+  ) {
+    return {
+      disposition: 'quarantine' as const,
+      reason: 'malformed-payload' as const,
+      field: 'installation.id',
+    };
+  }
+
+  let target: StewardRuntimeScopeTargetV2;
+  if (event === 'custom_property') {
+    const definition = record(root.definition);
+    if (
+      typeof definition?.property_name !== 'string'
+      || definition.property_name.length < 1
+    ) {
+      return {
+        disposition: 'quarantine' as const,
+        reason: 'malformed-payload' as const,
+        field: 'definition.property_name',
+      };
+    }
+    target = {
+      scope: 'installation',
+      mode: 'refresh',
+      installationId,
+      repositories: 'all-live',
+      pullRequests: 'all-open',
+    };
+  } else if (event === 'membership') {
+    const teamId = positiveSafeInteger(record(root.team)?.id);
+    const member = record(root.member);
+    if (
+      root.scope !== 'team'
+      || teamId === null
+      || !('member' in root)
+      || (root.member !== null && positiveSafeInteger(member?.id) === null)
+    ) {
+      return {
+        disposition: 'quarantine' as const,
+        reason: 'malformed-payload' as const,
+        field: 'membership',
+      };
+    }
+    target = {
+      scope: 'installation',
+      mode: 'refresh',
+      installationId,
+      repositories: 'all-live',
+      pullRequests: 'all-open',
+    };
+  } else if (event === 'team') {
+    if (positiveSafeInteger(record(root.team)?.id) === null) {
+      return {
+        disposition: 'quarantine' as const,
+        reason: 'malformed-payload' as const,
+        field: 'team.id',
+      };
+    }
+    target = {
+      scope: 'installation',
+      mode: 'refresh',
+      installationId,
+      repositories: 'all-live',
+      pullRequests: 'all-open',
+    };
+  } else if (event === 'installation') {
+    const teardown = action === 'suspend' || action === 'deleted';
+    if (teardown && 'repositories' in root) {
+      const snapshot = repositoryIds(root.repositories);
+      if (
+        snapshot === null
+        || snapshot.length > MAX_INSTALLATION_REPOSITORY_SET_IDS
+      ) {
+        return {
+          disposition: 'quarantine' as const,
+          reason: 'malformed-payload' as const,
+          field: 'installation.repositories',
+        };
+      }
+      target = {
+        scope: 'repository-set',
+        mode: 'refresh',
+        installationId,
+        repositoryIds: snapshot,
+        pullRequests: 'all-open',
+      };
+    } else {
+      target = {
+        scope: 'installation',
+        mode: 'refresh',
+        installationId,
+        repositories: 'all-live',
+        pullRequests: 'all-open',
+      };
+    }
+  } else if (event === 'installation_repositories') {
+    const added = repositoryIds(root.repositories_added);
+    const removed = repositoryIds(root.repositories_removed);
+    if (added === null || removed === null) {
+      return {
+        disposition: 'quarantine' as const,
+        reason: 'malformed-payload' as const,
+        field: 'installation_repositories.delta',
+      };
+    }
+    const selected = action === 'added' ? added : removed;
+    const opposite = action === 'added' ? removed : added;
+    if (
+      selected.length < 1
+      || selected.length > MAX_INSTALLATION_REPOSITORY_SET_IDS
+      || opposite.length !== 0
+    ) {
+      return {
+        disposition: 'quarantine' as const,
+        reason: 'malformed-payload' as const,
+        field: 'installation_repositories.delta',
+      };
+    }
+    target = {
+      scope: 'repository-set',
+      mode: 'refresh',
+      installationId,
+      repositoryIds: selected,
+      pullRequests: 'all-open',
+    };
+  } else if (event === 'installation_target') {
+    const accountId = positiveSafeInteger(record(root.account)?.id);
+    const installationAccountId =
+      positiveSafeInteger(record(installation?.account)?.id);
+    if (
+      root.target_type !== 'Organization'
+      || accountId === null
+      || installationAccountId !== accountId
+      || record(root.changes) === null
+    ) {
+      return {
+        disposition: 'quarantine' as const,
+        reason: 'malformed-payload' as const,
+        field: 'installation_target',
+      };
+    }
+    target = {
+      scope: 'installation',
+      mode: 'refresh',
+      installationId,
+      repositories: 'all-live',
+      pullRequests: 'all-open',
+      accountId,
+    };
+  } else {
+    return {
+      disposition: 'ignore' as const,
+      reason: 'unsupported-event' as const,
+    };
+  }
+
+  try {
+    return {
+      disposition: 'enqueue' as const,
+      workItem: buildStewardRuntimeScopeWorkItemV2({
+        operation: 'scope-reconcile',
+        target,
+        cause: {
+          kind: 'github-webhook',
+          deliveryId,
+          event,
+          action,
+          ref: null,
+          receivedAt,
+        } as StewardRuntimeScopeCauseV2,
+      }),
+    };
+  } catch {
+    return {
+      disposition: 'quarantine' as const,
+      reason: 'malformed-payload' as const,
+      field: 'scope-work-item',
+    };
+  }
+}
+
 export async function handleIngressRequest(
   request: Request,
   env: Env,
@@ -380,12 +759,11 @@ export async function handleIngressRequest(
     return response(415, 'Content-Type must be application/json');
   }
 
-  const declaredLengthFailure = contentLengthResponse(request);
-  if (declaredLengthFailure !== null) return declaredLengthFailure;
-
   const signature = request.headers.get('x-hub-signature-256') ?? '';
   const deliveryId = request.headers.get('x-github-delivery') ?? '';
   const event = request.headers.get('x-github-event') ?? '';
+  const declaredLengthFailure = contentLengthResponse(request, event);
+  if (declaredLengthFailure !== null) return declaredLengthFailure;
   if (!signaturePattern.test(signature)) return response(401, 'Invalid signature');
   if (!deliveryIdPattern.test(deliveryId)) return response(400, 'Invalid delivery ID');
   if (!eventActionPattern.test(event)) return response(400, 'Invalid event');
@@ -397,10 +775,22 @@ export async function handleIngressRequest(
     ?? AbortSignal.timeout(MAX_INGRESS_RESPONSE_MS);
   const deadlineFailure = rejectAtDeadline(deadlineSignal);
 
-  let rawBody: Uint8Array<ArrayBuffer>;
+  let body: BroadWebhookBody;
   try {
-    rawBody = await Promise.race([
-      readBodyWithLimit(request, deadlineSignal),
+    body = await Promise.race([
+      STREAMING_WEBHOOK_EVENTS.has(event)
+        ? readBroadBodyWithLimit(
+            request,
+            event,
+            signature,
+            env.GITHUB_WEBHOOK_SECRET,
+            env.GITHUB_WEBHOOK_SECRET_PREVIOUS,
+            deadlineSignal,
+          )
+        : readBodyWithLimit(request, deadlineSignal).then((rawBody) => ({
+            mode: 'buffered' as const,
+            rawBody,
+          })),
       deadlineFailure,
     ]);
   } catch (error) {
@@ -412,38 +802,52 @@ export async function handleIngressRequest(
       : response(400, 'Unable to read webhook body');
   }
 
-  let signatureValid: boolean;
-  try {
-    signatureValid = await Promise.race([
-      (dependencies.verifySignature ?? verifyGitHubWebhookSignature)(
-        rawBody,
-        signature,
-        env.GITHUB_WEBHOOK_SECRET,
-        env.GITHUB_WEBHOOK_SECRET_PREVIOUS,
-      ),
-      deadlineFailure,
-    ]);
-  } catch (error) {
-    return error instanceof IngressDeadlineError
-      ? response(503, 'Ingress deadline exceeded')
-      : response(503, 'Webhook verification unavailable');
-  }
-  if (!signatureValid) {
-    return response(401, 'Invalid signature');
-  }
-  if (!supportedGitHubWebhookEvents.has(event)) {
-    return response(202, 'Ignored event');
-  }
-
   let payload: unknown;
-  try {
-    payload = JSON.parse(utf8Decoder.decode(rawBody));
-  } catch {
-    return response(400, 'Invalid JSON');
+  if (body.mode === 'streamed') {
+    if (!body.signatureValid) return response(401, 'Invalid signature');
+    if (!body.jsonValid) return response(400, 'Invalid JSON');
+    if (!body.capacityValid) {
+      return response(413, 'Webhook JSON exceeds streaming limits');
+    }
+    if (!body.projectionValid) {
+      return response(422, 'Invalid streaming webhook payload');
+    }
+    payload = body.payload;
+  } else {
+    let signatureValid: boolean;
+    try {
+      signatureValid = await Promise.race([
+        (dependencies.verifySignature ?? verifyGitHubWebhookSignature)(
+          body.rawBody,
+          signature,
+          env.GITHUB_WEBHOOK_SECRET,
+          env.GITHUB_WEBHOOK_SECRET_PREVIOUS,
+        ),
+        deadlineFailure,
+      ]);
+    } catch (error) {
+      return error instanceof IngressDeadlineError
+        ? response(503, 'Ingress deadline exceeded')
+        : response(503, 'Webhook verification unavailable');
+    }
+    if (!signatureValid) return response(401, 'Invalid signature');
+    if (!supportedGitHubWebhookEvents.has(event)) {
+      return response(202, 'Ignored event');
+    }
+    try {
+      payload = JSON.parse(utf8Decoder.decode(body.rawBody));
+    } catch {
+      return response(400, 'Invalid JSON');
+    }
   }
 
-  const action = record(payload)?.action;
-  if (typeof action !== 'string' || !eventActionPattern.test(action)) {
+  const actionValue = record(payload)?.action;
+  const actionless = event === 'push' || event === 'team_add';
+  const action = actionless ? null : actionValue;
+  if (
+    !actionless
+    && (typeof action !== 'string' || !eventActionPattern.test(action))
+  ) {
     return response(422, 'Invalid webhook action');
   }
   if (event === 'repository') {
@@ -451,7 +855,7 @@ export async function handleIngressRequest(
       payload,
       deliveryId,
       event,
-      action,
+      action as string,
       dependencies.clock().toISOString(),
     );
     if (extracted.disposition === 'ignore') {
@@ -478,7 +882,96 @@ export async function handleIngressRequest(
     }
     return response(202, 'Accepted');
   }
-  const supportedCause = supportedGitHubWebhookEventAction(event, action);
+  const teamRepositoryScoped = event === 'team'
+    && (
+      action === 'added_to_repository'
+      || action === 'removed_from_repository'
+      || (
+        action === 'edited'
+        && record(record(record(payload)?.changes)?.repository)?.permissions
+          !== undefined
+      )
+    );
+  if (
+    event === 'custom_property_values'
+    || event === 'team_add'
+    || event === 'push'
+    || teamRepositoryScoped
+  ) {
+    const extracted = extractRepositoryScopeWorkItemV2(
+      payload,
+      deliveryId,
+      event,
+      action as string | null,
+      dependencies.clock().toISOString(),
+    );
+    if (extracted.disposition === 'ignore') {
+      return response(202, 'Ignored event');
+    }
+    if (extracted.disposition !== 'enqueue') {
+      return response(422, 'Invalid repository-scoped webhook payload');
+    }
+    const canonicalText = canonicalStewardRuntimeScopeWorkItemJson(
+      extracted.workItem,
+    );
+    if (encoder.encode(canonicalText).byteLength >= MAX_QUEUE_MESSAGE_BYTES) {
+      return response(413, 'Queue message too large');
+    }
+    try {
+      await Promise.race([
+        env.EVENT_QUEUE.send(canonicalText, { contentType: 'text' }),
+        deadlineFailure,
+      ]);
+    } catch (error) {
+      return error instanceof IngressDeadlineError
+        ? response(503, 'Ingress deadline exceeded')
+        : response(503, 'Event queue unavailable');
+    }
+    return response(202, 'Accepted');
+  }
+  if (
+    event === 'custom_property'
+    || event === 'membership'
+    || event === 'team'
+    || event === 'installation'
+    || event === 'installation_repositories'
+    || event === 'installation_target'
+  ) {
+    const extracted = extractInstallationScopeWorkItemV2(
+      payload,
+      deliveryId,
+      event,
+      action as string,
+      dependencies.clock().toISOString(),
+    );
+    if (extracted.disposition === 'ignore') {
+      return response(202, 'Ignored event');
+    }
+    if (extracted.disposition !== 'enqueue') {
+      return response(422, 'Invalid installation-scoped webhook payload');
+    }
+    const canonicalText = canonicalStewardRuntimeScopeWorkItemJson(
+      extracted.workItem,
+    );
+    if (encoder.encode(canonicalText).byteLength >= MAX_QUEUE_MESSAGE_BYTES) {
+      return response(413, 'Queue message too large');
+    }
+    try {
+      await Promise.race([
+        env.EVENT_QUEUE.send(canonicalText, { contentType: 'text' }),
+        deadlineFailure,
+      ]);
+    } catch (error) {
+      return error instanceof IngressDeadlineError
+        ? response(503, 'Ingress deadline exceeded')
+        : response(503, 'Event queue unavailable');
+    }
+    return response(202, 'Accepted');
+  }
+  const supportedCause = supportedGitHubWebhookEventAction(
+    event,
+    action as string,
+  );
   if (supportedCause === null) {
     return response(202, 'Ignored event or action');
   }

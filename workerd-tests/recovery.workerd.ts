@@ -1,22 +1,30 @@
 import {
   createExecutionContext,
   createMessageBatch,
+  evictDurableObject,
   getQueueResult,
   runInDurableObject,
 } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  buildStewardRuntimeInstallationRepositoryChildV1,
+  buildStewardRuntimeScopeWorkItemV2,
+  buildStewardRuntimeWorkItemV4,
+  buildStewardRuntimeWorkItemV5,
   buildStewardRuntimeDeliveryRecoveryAcceptedReceiptV1,
   buildStewardRuntimeDeliveryRecoveryPageReceiptV1,
   buildStewardRuntimeRepositoryFanoutPageReceiptV1,
   buildStewardRuntimeScopeWorkItemV1,
   canonicalStewardRuntimeDeliveryRecoveryAcceptedReceiptV1Json,
   canonicalStewardRuntimeDeliveryRecoveryPageReceiptV1Json,
+  canonicalStewardRuntimeInstallationRepositoryChildV1Json,
   canonicalStewardRuntimeRepositoryFanoutPageReceiptV1Json,
   canonicalStewardRuntimeScopeWorkItemJson,
   canonicalStewardRuntimeWorkItemJson,
   deriveStewardRuntimeFanoutDeliveryId,
+  deriveStewardRuntimeFanoutDeliveryIdV2,
+  deriveStewardRuntimeFanoutDeliveryIdV3,
   parseStewardRuntimeDeliveryRecoveryPageRequestV1,
   parseStewardRuntimeDeliveryRecoveryRedeliveryRequestV1,
   parseStewardRuntimeRepositoryFanoutPageRequestV1,
@@ -24,6 +32,7 @@ import {
   type StewardRuntimeWorkItemV1,
 } from '../packages/core/src/index.js';
 import {
+  InstallationFanoutCoordinator,
   PullRequestCoordinator,
   RepositoryFanoutCoordinator,
   pullRequestCoordinatorName,
@@ -32,10 +41,12 @@ import {
 } from '../packages/coordinator/src/index.js';
 import coordinatorWorker from '../packages/coordinator/src/worker.js';
 import {
+  deliveryRecoveryLedgerSchemaVersion,
   deliveryRecoveryLedgerName,
   type DeliveryRecoveryInspection,
 } from '../packages/recovery/src/ledger-contracts.js';
 import { DeliveryRecoveryLedger } from '../packages/recovery/src/ledger.js';
+import { classifyDeadLetterBody } from '../packages/recovery/src/capture.js';
 import {
   createDeliveryRecoveryHandler,
   type DeliveryRecoveryEnv,
@@ -48,6 +59,8 @@ interface RecoveryWorkerdEnv {
   PR_COORDINATOR: DurableObjectNamespace<PullRequestCoordinator>;
   REPOSITORY_FANOUT_COORDINATOR:
     DurableObjectNamespace<RepositoryFanoutCoordinator>;
+  INSTALLATION_FANOUT_COORDINATOR:
+    DurableObjectNamespace<InstallationFanoutCoordinator>;
 }
 
 const workerdEnv = env as unknown as RecoveryWorkerdEnv;
@@ -210,6 +223,390 @@ async function queueResult(
 }
 
 describe('Delivery Recovery in workerd', () => {
+  it('migrates an exact v1 entries table without losing durable identities or replay links', async () => {
+    const stub = ledger();
+    const legacyScope = buildStewardRuntimeScopeWorkItemV1({
+      operation: 'scope-reconcile',
+      target: {
+        scope: 'repository',
+        mode: 'refresh',
+        installationId: 145_952_003,
+        repositoryId: 1_298_587_901,
+        pullRequests: 'all-open',
+      },
+      cause: {
+        kind: 'github-webhook',
+        deliveryId: 'recovery-schema-v1-legacy',
+        event: 'repository',
+        action: 'edited',
+        receivedAt: '2026-07-27T07:50:00.000Z',
+      },
+    });
+    const legacyBody =
+      canonicalStewardRuntimeScopeWorkItemJson(legacyScope);
+    const legacyEntryId = await sha256Hex(legacyBody);
+    const legacyCommandId = '10000000-0000-4000-8000-000000000099';
+
+    await runInDurableObject(stub, (_instance, state) => {
+      const sql = state.storage.sql;
+      sql.exec('DELETE FROM delivery_recovery_replay_items');
+      sql.exec('DELETE FROM delivery_recovery_replay_commands');
+      sql.exec('DELETE FROM delivery_recovery_capture_audit');
+      sql.exec('DROP INDEX delivery_recovery_entries_state');
+      sql.exec('DROP TABLE delivery_recovery_entries');
+      sql.exec(`
+        CREATE TABLE delivery_recovery_entries (
+          entry_id TEXT PRIMARY KEY,
+          body_digest TEXT NOT NULL,
+          body TEXT NOT NULL,
+          byte_length INTEGER NOT NULL,
+          eligible INTEGER NOT NULL CHECK (eligible IN (0, 1)),
+          envelope_kind TEXT NOT NULL CHECK (
+            envelope_kind IN (
+              'scope-work-item-v1',
+              'work-item-v1',
+              'work-item-v2',
+              'work-item-v3',
+              'quarantined'
+            )
+          ),
+          delivery_id TEXT,
+          repository_id INTEGER,
+          pull_request_number INTEGER,
+          quarantine_reason TEXT,
+          state TEXT NOT NULL CHECK (
+            state IN (
+              'pending',
+              'enqueued',
+              'unknown',
+              'action-required',
+              'quarantined'
+            )
+          ),
+          cycle_count INTEGER NOT NULL,
+          replay_count INTEGER NOT NULL,
+          first_captured_at TEXT NOT NULL,
+          last_captured_at TEXT NOT NULL,
+          active_command_id TEXT
+        )
+      `);
+      sql.exec(`
+        CREATE INDEX delivery_recovery_entries_state
+        ON delivery_recovery_entries (state, last_captured_at, entry_id)
+      `);
+      sql.exec(
+        `INSERT INTO delivery_recovery_replay_commands (
+           command_id,
+           principal,
+           requested_at,
+           command_json
+         ) VALUES (?, ?, ?, ?)`,
+        legacyCommandId,
+        'legacy-recovery-client',
+        '2026-07-27T07:51:00.000Z',
+        JSON.stringify({
+          commandId: legacyCommandId,
+          legacy: true,
+        }),
+      );
+      sql.exec(
+        `INSERT INTO delivery_recovery_entries (
+           entry_id,
+           body_digest,
+           body,
+           byte_length,
+           eligible,
+           envelope_kind,
+           delivery_id,
+           repository_id,
+           pull_request_number,
+           quarantine_reason,
+           state,
+           cycle_count,
+           replay_count,
+           first_captured_at,
+           last_captured_at,
+           active_command_id
+         ) VALUES (?, ?, ?, ?, 1, 'scope-work-item-v1', ?, ?, NULL, NULL,
+                   'pending', 0, 0, ?, ?, ?)`,
+        legacyEntryId,
+        legacyEntryId,
+        legacyBody,
+        new TextEncoder().encode(legacyBody).byteLength,
+        legacyScope.cause.deliveryId,
+        legacyScope.target.repositoryId,
+        '2026-07-27T07:50:00.000Z',
+        '2026-07-27T07:50:00.000Z',
+        legacyCommandId,
+      );
+      sql.exec(
+        `INSERT INTO delivery_recovery_capture_audit (
+           audit_id,
+           entry_id,
+           source_queue,
+           source_message_id,
+           source_timestamp,
+           attempts,
+           captured_at
+         ) VALUES (41, ?, ?, ?, ?, 4, ?)`,
+        legacyEntryId,
+        'steward-events-dlq',
+        'legacy-v1-message',
+        '2026-07-27T07:50:00.000Z',
+        '2026-07-27T07:50:01.000Z',
+      );
+      sql.exec(
+        `INSERT INTO delivery_recovery_replay_items (
+           command_id,
+           ordinal,
+           entry_id,
+           state,
+           started_at,
+           settled_at
+         ) VALUES (?, 0, ?, 'authorized', NULL, NULL)`,
+        legacyCommandId,
+        legacyEntryId,
+      );
+      sql.exec(
+        `UPDATE delivery_recovery_schema
+         SET version = 1
+         WHERE singleton = 1`,
+      );
+    });
+    await evictDurableObject(stub);
+
+    const migrated = await stub.inspect(100);
+    expect(migrated.schemaVersion).toBe(
+      deliveryRecoveryLedgerSchemaVersion,
+    );
+    expect(migrated.entries).toEqual([
+      expect.objectContaining({
+        entryId: legacyEntryId,
+        envelopeKind: 'scope-work-item-v1',
+        deliveryId: legacyScope.cause.deliveryId,
+        latestSource: {
+          queue: 'steward-events-dlq',
+          messageId: 'legacy-v1-message',
+          timestamp: '2026-07-27T07:50:00.000Z',
+          attempts: 4,
+        },
+      }),
+    ]);
+    const migratedStorage = await runInDurableObject(
+      stub,
+      (_instance, state) => ({
+        version: state.storage.sql
+          .exec<{ version: number }>(
+            `SELECT version
+             FROM delivery_recovery_schema
+             WHERE singleton = 1`,
+          )
+          .one().version,
+        entryCount: state.storage.sql
+          .exec<{ count: number }>(
+            'SELECT COUNT(*) AS count FROM delivery_recovery_entries',
+          )
+          .one().count,
+        audit: state.storage.sql
+          .exec<{ audit_id: number; entry_id: string }>(
+            `SELECT audit_id, entry_id
+             FROM delivery_recovery_capture_audit`,
+          )
+          .one(),
+        auditSequence: state.storage.sql
+          .exec<{ seq: number }>(
+            `SELECT seq
+             FROM sqlite_sequence
+             WHERE name = 'delivery_recovery_capture_audit'`,
+          )
+          .one().seq,
+        replay: state.storage.sql
+          .exec<{ command_id: string; entry_id: string; state: string }>(
+            `SELECT command_id, entry_id, state
+             FROM delivery_recovery_replay_items`,
+          )
+          .one(),
+        indexSql: state.storage.sql
+          .exec<{ sql: string }>(
+            `SELECT sql
+             FROM sqlite_schema
+             WHERE name = 'delivery_recovery_entries_state'`,
+          )
+          .one().sql,
+        foreignKeyViolations: state.storage.sql
+          .exec<{
+            table: string;
+            rowid: number;
+            parent: string;
+            fkid: number;
+          }>('PRAGMA foreign_key_check')
+          .toArray(),
+        quickCheck: state.storage.sql
+          .exec<{ quick_check: string }>('PRAGMA quick_check')
+          .one().quick_check,
+      }),
+    );
+    expect(migratedStorage).toMatchObject({
+      version: deliveryRecoveryLedgerSchemaVersion,
+      entryCount: 1,
+      audit: { audit_id: 41, entry_id: legacyEntryId },
+      auditSequence: 41,
+      replay: {
+        command_id: legacyCommandId,
+        entry_id: legacyEntryId,
+        state: 'authorized',
+      },
+      quickCheck: 'ok',
+      foreignKeyViolations: [],
+    });
+    expect(migratedStorage.indexSql).toContain(
+      '(state, last_captured_at, entry_id)',
+    );
+
+    const installationScope = buildStewardRuntimeScopeWorkItemV2({
+      operation: 'scope-reconcile',
+      target: {
+        scope: 'repository-set',
+        mode: 'refresh',
+        installationId: 145_952_003,
+        repositoryIds: [1_298_587_902],
+        pullRequests: 'all-open',
+      },
+      cause: {
+        kind: 'github-webhook',
+        deliveryId: 'recovery-schema-v2-installation',
+        event: 'installation_repositories',
+        action: 'removed',
+        ref: null,
+        receivedAt: '2026-07-27T07:52:00.000Z',
+      },
+    });
+    if (installationScope.target.scope !== 'repository-set') {
+      throw new Error('Expected repository-set migration fixture.');
+    }
+    const child =
+      await buildStewardRuntimeInstallationRepositoryChildV1({
+        root: {
+          installationId: installationScope.target.installationId,
+          deliveryId: installationScope.cause.deliveryId,
+          scopeWorkItem: {
+            ...installationScope,
+            target: installationScope.target,
+          },
+        },
+        installationId: installationScope.target.installationId,
+        repositoryId: installationScope.target.repositoryIds[0]!,
+        installationGeneration: 3,
+      });
+    const repositoryScope = buildStewardRuntimeScopeWorkItemV2({
+      operation: 'scope-reconcile',
+      target: {
+        scope: 'repository',
+        mode: 'refresh',
+        installationId: 145_952_003,
+        repositoryId: child.repositoryId,
+        pullRequests: 'all-open',
+      },
+      cause: {
+        kind: 'github-webhook',
+        deliveryId: 'recovery-schema-v2-push',
+        event: 'push',
+        action: null,
+        ref: 'refs/heads/recovery-migration',
+        receivedAt: '2026-07-27T07:53:00.000Z',
+      },
+    });
+    if (repositoryScope.target.scope !== 'repository') {
+      throw new Error('Expected repository migration fixture.');
+    }
+    const workV4 = buildStewardRuntimeWorkItemV4({
+      operation: 'pull-request-reconcile',
+      installationId: repositoryScope.target.installationId,
+      subject: {
+        repositoryId: repositoryScope.target.repositoryId,
+        repositoryFullName: 'splrad/recovery-schema-migration',
+        pullRequestNumber: 4,
+      },
+      cause: {
+        kind: 'scope-fanout-2',
+        deliveryId: await deriveStewardRuntimeFanoutDeliveryIdV2(
+          repositoryScope,
+          5,
+          4,
+        ),
+        rootDeliveryId: repositoryScope.cause.deliveryId,
+        scopeSchemaVersion: 2,
+        fanoutGeneration: 5,
+        event: repositoryScope.cause.event,
+        action: repositoryScope.cause.action,
+        ref: repositoryScope.cause.ref,
+        receivedAt: repositoryScope.cause.receivedAt,
+      },
+    });
+    const workV5 = buildStewardRuntimeWorkItemV5({
+      operation: 'pull-request-reconcile',
+      installationId: child.installationId,
+      subject: {
+        repositoryId: child.repositoryId,
+        repositoryFullName: 'splrad/recovery-schema-migration',
+        pullRequestNumber: 5,
+      },
+      cause: {
+        kind: 'scope-fanout-3',
+        deliveryId: await deriveStewardRuntimeFanoutDeliveryIdV3(
+          child,
+          6,
+          5,
+        ),
+        rootDeliveryId: child.rootDeliveryId,
+        installationChild: child,
+        repositoryFanoutGeneration: 6,
+        event: child.cause.event,
+        action: child.cause.action,
+        ref: child.cause.ref,
+        receivedAt: child.cause.receivedAt,
+      },
+    });
+    const newBodies = [
+      canonicalStewardRuntimeScopeWorkItemJson(installationScope),
+      await canonicalStewardRuntimeInstallationRepositoryChildV1Json(child),
+      canonicalStewardRuntimeWorkItemJson(workV4),
+      canonicalStewardRuntimeWorkItemJson(workV5),
+    ];
+    for (const [index, body] of newBodies.entries()) {
+      const classified = await classifyDeadLetterBody(body);
+      expect(classified.eligible).toBe(true);
+      await expect(stub.captureDlq({
+        ...classified,
+        sourceQueue: 'steward-events-dlq',
+        sourceMessageId: `migration-v2-${index}`,
+        sourceTimestamp: '2026-07-27T07:54:00.000Z',
+        attempts: 4,
+        capturedAt: `2026-07-27T07:54:0${index}.000Z`,
+      })).resolves.toMatchObject({ status: 'captured' });
+    }
+    const afterNewCaptures = await stub.inspect(100);
+    expect(afterNewCaptures.schemaVersion).toBe(2);
+    expect(afterNewCaptures.entries.map((entry) => entry.envelopeKind))
+      .toEqual(expect.arrayContaining([
+        'scope-work-item-v1',
+        'scope-work-item-v2',
+        'installation-repository-child-v1',
+        'work-item-v4',
+        'work-item-v5',
+      ]));
+    await evictDurableObject(stub);
+    const afterV2Restart = await stub.inspect(100);
+    expect(afterV2Restart.schemaVersion).toBe(2);
+    expect(afterV2Restart.entries).toHaveLength(5);
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec('DELETE FROM delivery_recovery_replay_items');
+      state.storage.sql.exec('DELETE FROM delivery_recovery_replay_commands');
+      state.storage.sql.exec('DELETE FROM delivery_recovery_capture_audit');
+      state.storage.sql.exec('DELETE FROM delivery_recovery_entries');
+    });
+  });
+
   it('recovers retry-exhausted repository fan-out without assuming Queue send confirmation', async () => {
     const repositoryId = 1_298_587_611;
     const repositoryFullName = 'splrad/recovery-workerd';
@@ -245,6 +642,9 @@ describe('Delivery Recovery in workerd', () => {
       REPOSITORY_FANOUT_COORDINATOR:
         workerdEnv.REPOSITORY_FANOUT_COORDINATOR as unknown as
           CoordinatorEnv['REPOSITORY_FANOUT_COORDINATOR'],
+      INSTALLATION_FANOUT_COORDINATOR:
+        workerdEnv.INSTALLATION_FANOUT_COORDINATOR as unknown as
+          CoordinatorEnv['INSTALLATION_FANOUT_COORDINATOR'],
       CONTROL: { fetch: failedControl },
       EVENT_QUEUE: {
         send: vi.fn().mockResolvedValue(undefined),
@@ -401,6 +801,9 @@ describe('Delivery Recovery in workerd', () => {
       REPOSITORY_FANOUT_COORDINATOR:
         workerdEnv.REPOSITORY_FANOUT_COORDINATOR as unknown as
           CoordinatorEnv['REPOSITORY_FANOUT_COORDINATOR'],
+      INSTALLATION_FANOUT_COORDINATOR:
+        workerdEnv.INSTALLATION_FANOUT_COORDINATOR as unknown as
+          CoordinatorEnv['INSTALLATION_FANOUT_COORDINATOR'],
       CONTROL: { fetch: successfulControl },
       EVENT_QUEUE: {
         send: vi.fn(async (body: string) => {

@@ -11,9 +11,16 @@ import {
 } from './runtime-work-item.js';
 import {
   deriveStewardRuntimeFanoutDeliveryId,
+  deriveStewardRuntimeFanoutDeliveryIdV2,
+  deriveStewardRuntimeFanoutDeliveryIdV3,
 } from './runtime-repository-fanout.js';
 import {
+  parseStewardRuntimeInstallationRepositoryChildV1,
+} from './runtime-installation-fanout.js';
+import {
   buildStewardRuntimeScopeWorkItemV1,
+  buildStewardRuntimeScopeWorkItemV2,
+  type StewardRuntimeScopeCauseV2,
 } from './runtime-scope-work-item.js';
 import { canonicalControlJson, controlJsonDigest } from './control-json.js';
 
@@ -379,6 +386,69 @@ async function parseBindingV2(
     );
     if (workItem.cause.deliveryId !== expectedDeliveryId) {
       invalid(`${field}.workItem scope fan-out delivery ID is not derivable from its binding`);
+    }
+  }
+  if (workItem.cause.kind === 'scope-fanout-2') {
+    if (workItem.schemaVersion !== 4) {
+      invalid(`${field}.workItem scope fan-out v2 cause requires schema version 4`);
+    }
+    const scopeWorkItem = buildStewardRuntimeScopeWorkItemV2({
+      operation: 'scope-reconcile',
+      target: {
+        scope: 'repository',
+        mode: 'refresh',
+        installationId: workItem.installationId,
+        repositoryId: workItem.subject.repositoryId,
+        pullRequests: 'all-open',
+      },
+      cause: {
+        kind: 'github-webhook',
+        deliveryId: workItem.cause.rootDeliveryId,
+        event: workItem.cause.event,
+        action: workItem.cause.action,
+        ref: workItem.cause.ref,
+        receivedAt: workItem.cause.receivedAt,
+      } as StewardRuntimeScopeCauseV2,
+    });
+    const expectedDeliveryId = await deriveStewardRuntimeFanoutDeliveryIdV2(
+      scopeWorkItem,
+      workItem.cause.fanoutGeneration,
+      workItem.subject.pullRequestNumber,
+    );
+    if (workItem.cause.deliveryId !== expectedDeliveryId) {
+      invalid(`${field}.workItem scope fan-out v2 delivery ID is not derivable from its binding`);
+    }
+  }
+  if (workItem.cause.kind === 'scope-fanout-3') {
+    if (workItem.schemaVersion !== 5) {
+      invalid(`${field}.workItem layered scope fan-out cause requires schema version 5`);
+    }
+    const installationChild =
+      await parseStewardRuntimeInstallationRepositoryChildV1(
+        workItem.cause.installationChild,
+      );
+    if (
+      installationChild.installationId !== workItem.installationId
+      || installationChild.repositoryId !== workItem.subject.repositoryId
+      || installationChild.rootDeliveryId !== workItem.cause.rootDeliveryId
+      || installationChild.cause.event !== workItem.cause.event
+      || installationChild.cause.action !== workItem.cause.action
+      || installationChild.cause.ref !== workItem.cause.ref
+      || installationChild.cause.receivedAt !== workItem.cause.receivedAt
+    ) {
+      invalid(
+        `${field}.workItem layered scope fan-out evidence does not match its installation child`,
+      );
+    }
+    const expectedDeliveryId = await deriveStewardRuntimeFanoutDeliveryIdV3(
+      installationChild,
+      workItem.cause.repositoryFanoutGeneration,
+      workItem.subject.pullRequestNumber,
+    );
+    if (workItem.cause.deliveryId !== expectedDeliveryId) {
+      invalid(
+        `${field}.workItem layered scope fan-out delivery ID is not derivable from both fan-out levels`,
+      );
     }
   }
   if (

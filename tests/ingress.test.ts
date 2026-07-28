@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   parseStewardRuntimeScopeWorkItemV1,
+  parseStewardRuntimeScopeWorkItemV2,
   STEWARD_RUNTIME_REPOSITORY_ACTIONS_V1,
 } from '../packages/core/src/index.js';
 import {
@@ -437,6 +438,135 @@ describe('Ingress payload extraction and durable enqueue', () => {
       expect(canonical).not.toContain('changes');
     },
   );
+
+  it.each([
+    [
+      'custom_property_values',
+      {
+        action: 'updated',
+        installation: { id: 145_952_003 },
+        repository: { id: 1_298_587_318, full_name: 'untrusted/name' },
+        new_property_values: [{ property_name: 'steward_ring', value: 'canary' }],
+      },
+      'updated',
+      null,
+    ],
+    [
+      'team',
+      {
+        action: 'added_to_repository',
+        installation: { id: 145_952_003 },
+        repository: { id: 1_298_587_318 },
+        team: { id: 9_999, slug: 'untrusted-team' },
+      },
+      'added_to_repository',
+      null,
+    ],
+    [
+      'team',
+      {
+        action: 'edited',
+        installation: { id: 145_952_003 },
+        repository: { id: 1_298_587_318 },
+        team: { id: 9_999 },
+        changes: {
+          repository: {
+            permissions: { from: { pull: true, push: false } },
+          },
+        },
+      },
+      'edited',
+      null,
+    ],
+    [
+      'team_add',
+      {
+        installation: { id: 145_952_003 },
+        repository: { id: 1_298_587_318 },
+        team: { id: 9_999, slug: 'untrusted-team' },
+      },
+      null,
+      null,
+    ],
+    [
+      'push',
+      {
+        installation: { id: 145_952_003 },
+        repository: { id: 1_298_587_318, default_branch: 'untrusted' },
+        ref: 'refs/heads/main',
+        commits: [{ message: 'untrusted commit' }],
+      },
+      null,
+      'refs/heads/main',
+    ],
+  ] as const)(
+    'accepts repository-scoped %s as one bounded scope-v2 envelope',
+    async (event, value, action, ref) => {
+      const eventQueue = queue();
+      const result = await handleIngressRequest(
+        await webhookRequest(JSON.stringify(value), { event }),
+        environment(eventQueue.binding),
+        dependencies,
+      );
+
+      expect(result.status).toBe(202);
+      expect(eventQueue.send).toHaveBeenCalledOnce();
+      const canonical = String(eventQueue.send.mock.calls[0]?.[0]);
+      expect(parseStewardRuntimeScopeWorkItemV2(JSON.parse(canonical)))
+        .toMatchObject({
+          schemaVersion: 2,
+          target: {
+            scope: 'repository',
+            installationId: 145_952_003,
+            repositoryId: 1_298_587_318,
+          },
+          cause: {
+            deliveryId,
+            event,
+            action,
+            ref,
+            receivedAt: fixedTime.toISOString(),
+          },
+        });
+      expect(canonical).not.toContain('untrusted');
+      expect(canonical).not.toContain('commits');
+      expect(canonical).not.toContain('new_property_values');
+    },
+  );
+
+  it.each([
+    ['push action', 'push', {
+      action: 'pushed',
+      installation: { id: 145_952_003 },
+      repository: { id: 1_298_587_318 },
+      ref: 'refs/heads/main',
+    }],
+    ['team_add action', 'team_add', {
+      action: 'added_to_repository',
+      installation: { id: 145_952_003 },
+      repository: { id: 1_298_587_318 },
+      team: { id: 9_999 },
+    }],
+    ['malformed team ID', 'team', {
+      action: 'removed_from_repository',
+      installation: { id: 145_952_003 },
+      repository: { id: 1_298_587_318 },
+      team: { id: '9999' },
+    }],
+  ])('quarantines invalid repository-scoped causality: %s', async (
+    _description,
+    event,
+    value,
+  ) => {
+    const eventQueue = queue();
+    const result = await handleIngressRequest(
+      await webhookRequest(JSON.stringify(value), { event }),
+      environment(eventQueue.binding),
+      dependencies,
+    );
+    expect(result.status).toBe(422);
+    expect(eventQueue.send).not.toHaveBeenCalled();
+  });
 
   it.each([
     ['unsupported action', {

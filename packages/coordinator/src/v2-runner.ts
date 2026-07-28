@@ -13,6 +13,8 @@ import {
   type StewardRuntimeControlRevisionV1,
   type StewardRuntimeWorkItemV2,
   type StewardRuntimeWorkItemV3,
+  type StewardRuntimeWorkItemV4,
+  type StewardRuntimeWorkItemV5,
 } from '../../core/src/index.js';
 import type {
   CoordinatorClaimResult,
@@ -35,7 +37,9 @@ export type ClaimedCoordinatorGeneration = Extract<
 
 export type StewardRuntimeGovernanceWorkItem =
   | StewardRuntimeWorkItemV2
-  | StewardRuntimeWorkItemV3;
+  | StewardRuntimeWorkItemV3
+  | StewardRuntimeWorkItemV4
+  | StewardRuntimeWorkItemV5;
 
 export interface PullRequestCoordinatorV2Stub {
   fail(

@@ -313,6 +313,24 @@ describe('Webhook causality for repository and installation lifecycle', () => {
     expectRepositoryRefresh(decision, 'repository-deleted');
   });
 
+  it('treats an actionless push as a live repository/default-branch hint', () => {
+    expectRepositoryRefresh(classify(delivery('push', null, {
+      installation: installation(),
+      repository: repository(),
+      ref: 'refs/heads/main',
+      commits: [{ message: 'untrusted' }],
+    })), 'repository-default-branch-pushed');
+    expect(classify(delivery('push', null, {
+      installation: installation(),
+      repository: repository(),
+      ref: 'main',
+    }))).toEqual({
+      disposition: 'quarantine',
+      reason: 'malformed-payload',
+      field: 'ref',
+    });
+  });
+
   it.each(['created', 'new_permissions_accepted', 'unsuspend'])(
     'refreshes all live repositories for installation action %s',
     (action) => {
@@ -331,6 +349,47 @@ describe('Webhook causality for repository and installation lifecycle', () => {
       installation: installation(),
     })), cause);
   });
+
+  it.each([
+    ['suspend', 'installation-suspended'],
+    ['deleted', 'installation-deleted'],
+  ] as const)(
+    'commits an available complete repository snapshot for installation %s',
+    (action, cause) => {
+      expect(classify(delivery('installation', action, {
+        installation: installation(),
+        repositories: [repository(11), repository(7), repository(11)],
+      }))).toMatchObject({
+        disposition: 'reconcile',
+        cause,
+        target: {
+          scope: 'repository-set',
+          installationId,
+          repositoryIds: [7, 11],
+        },
+        liveReads: expect.arrayContaining(['installation', 'repository']),
+      });
+      expect(classify(delivery('installation', action, {
+        installation: installation(),
+        repositories: [],
+      }))).toMatchObject({
+        disposition: 'reconcile',
+        cause,
+        target: {
+          scope: 'repository-set',
+          repositoryIds: [],
+        },
+      });
+      expect(classify(delivery('installation', action, {
+        installation: installation(),
+        repositories: [{ id: 'not-an-id' }],
+      }))).toEqual({
+        disposition: 'quarantine',
+        reason: 'malformed-payload',
+        field: 'repositories',
+      });
+    },
+  );
 
   it('sorts and deduplicates every repository in an installation add delta', () => {
     const decision = classify(delivery('installation_repositories', 'added', {

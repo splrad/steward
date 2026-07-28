@@ -1,4 +1,22 @@
-import type { StewardRuntimeScopeWorkItemV1 } from '../../core/src/runtime-scope-work-item.js';
+import type {
+  StewardRuntimeRepositoryScopeTargetV2,
+  StewardRuntimeScopeWorkItemV1,
+  StewardRuntimeScopeWorkItemV2,
+} from '../../core/src/runtime-scope-work-item.js';
+import type {
+  StewardRuntimeInstallationRepositoryChildV1,
+} from '../../core/src/runtime-installation-fanout.js';
+
+export type RepositoryFanoutScopeWorkItem =
+  | StewardRuntimeScopeWorkItemV1
+  | (
+      StewardRuntimeScopeWorkItemV2
+      & { readonly target: StewardRuntimeRepositoryScopeTargetV2 }
+    );
+
+export type RepositoryFanoutInput =
+  | RepositoryFanoutScopeWorkItem
+  | StewardRuntimeInstallationRepositoryChildV1;
 
 export const repositoryFanoutSchemaVersion = 1;
 export const repositoryFanoutCoordinatorNamePrefix =
@@ -51,7 +69,7 @@ export type RepositoryFanoutClaimResult =
       readonly leaseToken: string;
       readonly expiresAt: number;
       readonly resumed: boolean;
-      readonly selectedScopeItem: StewardRuntimeScopeWorkItemV1;
+      readonly selectedScopeItem: RepositoryFanoutInput;
       readonly phase: 'enumerating' | 'dispatch';
       readonly pass: 1 | 2 | null;
       readonly cursor: string | null;

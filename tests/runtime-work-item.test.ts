@@ -3,11 +3,15 @@ import {
   buildStewardRuntimeWorkItem,
   buildStewardRuntimeWorkItemV2,
   buildStewardRuntimeWorkItemV3,
+  buildStewardRuntimeWorkItemV4,
+  buildStewardRuntimeWorkItemV5,
   canonicalStewardRuntimeWorkItemJson,
   parseStewardRuntimeWorkItem,
   parseStewardRuntimeWorkItemV1,
   parseStewardRuntimeWorkItemV2,
   parseStewardRuntimeWorkItemV3,
+  parseStewardRuntimeWorkItemV4,
+  parseStewardRuntimeWorkItemV5,
   RuntimeWorkItemValidationError,
   STEWARD_RUNTIME_PULL_REQUEST_REVIEW_ACTIONS_V2,
   STEWARD_RUNTIME_PULL_REQUEST_REVIEW_COMMENT_ACTIONS_V2,
@@ -16,6 +20,8 @@ import {
   type StewardRuntimeWorkItemV1,
   type StewardRuntimeWorkItemV2,
   type StewardRuntimeWorkItemV3,
+  type StewardRuntimeWorkItemV4,
+  type StewardRuntimeWorkItemV5,
 } from '../packages/core/src/runtime-work-item.js';
 import {
   STEWARD_RUNTIME_REPOSITORY_ACTIONS_V1,
@@ -71,6 +77,64 @@ function scopeFanoutItemV3(): StewardRuntimeWorkItemV3 {
   };
 }
 
+function scopeFanoutItemV4(): StewardRuntimeWorkItemV4 {
+  return {
+    ...webhookItem(),
+    schemaVersion: 4,
+    cause: {
+      kind: 'scope-fanout-2',
+      deliveryId: `fanout-v2:${'a'.repeat(64)}`,
+      rootDeliveryId: 'push-delivery-1',
+      scopeSchemaVersion: 2,
+      fanoutGeneration: 7,
+      event: 'push',
+      action: null,
+      ref: 'refs/heads/main',
+      receivedAt: '2026-07-27T00:00:00.123Z',
+    },
+  };
+}
+
+function scopeFanoutItemV5(): StewardRuntimeWorkItemV5 {
+  const rootDeliveryId = 'installation-delivery-1';
+  const rootDigest = 'b'.repeat(64);
+  return {
+    ...webhookItem(),
+    schemaVersion: 5,
+    cause: {
+      kind: 'scope-fanout-3',
+      deliveryId: `fanout-v3:${'c'.repeat(64)}`,
+      rootDeliveryId,
+      installationChild: {
+        schemaVersion: 1,
+        operation: 'installation-repository-fanout',
+        rootDigest,
+        rootTargetDigest: 'd'.repeat(64),
+        rootDeliveryId,
+        rootTargetScope: 'installation',
+        installationId: 145_952_003,
+        repositoryId: 1_298_587_318,
+        installationGeneration: 3,
+        cause: {
+          kind: 'github-webhook',
+          deliveryId: rootDeliveryId,
+          event: 'installation',
+          action: 'created',
+          ref: null,
+          receivedAt: '2026-07-27T00:00:00.123Z',
+        },
+        deliveryId:
+          `installation-fanout-v1:${rootDigest}:3:1298587318`,
+      },
+      repositoryFanoutGeneration: 7,
+      event: 'installation',
+      action: 'created',
+      ref: null,
+      receivedAt: '2026-07-27T00:00:00.123Z',
+    },
+  };
+}
+
 function expectInvalid(value: unknown): void {
   expect(() => parseStewardRuntimeWorkItem(value))
     .toThrow(RuntimeWorkItemValidationError);
@@ -114,6 +178,34 @@ describe('runtime work-item wire protocol', () => {
     expect(() => parseStewardRuntimeWorkItemV2(value))
       .toThrow(RuntimeWorkItemValidationError);
     expect(buildStewardRuntimeWorkItemV3({
+      operation: value.operation,
+      installationId: value.installationId,
+      subject: value.subject,
+      cause: value.cause,
+    })).toEqual(value);
+  });
+
+  it('parses and builds the exact version 4 scope-fanout-v2 envelope', () => {
+    const value = scopeFanoutItemV4();
+    expect(parseStewardRuntimeWorkItem(value)).toEqual(value);
+    expect(parseStewardRuntimeWorkItemV4(value)).toEqual(value);
+    expect(() => parseStewardRuntimeWorkItemV3(value))
+      .toThrow(RuntimeWorkItemValidationError);
+    expect(buildStewardRuntimeWorkItemV4({
+      operation: value.operation,
+      installationId: value.installationId,
+      subject: value.subject,
+      cause: value.cause,
+    })).toEqual(value);
+  });
+
+  it('parses and builds the bounded version 5 layered fan-out envelope', () => {
+    const value = scopeFanoutItemV5();
+    expect(parseStewardRuntimeWorkItem(value)).toEqual(value);
+    expect(parseStewardRuntimeWorkItemV5(value)).toEqual(value);
+    expect(() => parseStewardRuntimeWorkItemV4(value))
+      .toThrow(RuntimeWorkItemValidationError);
+    expect(buildStewardRuntimeWorkItemV5({
       operation: value.operation,
       installationId: value.installationId,
       subject: value.subject,
@@ -238,6 +330,25 @@ describe('runtime work-item wire protocol', () => {
     expect(parseStewardRuntimeWorkItem(JSON.parse(canonical))).toEqual(value);
   });
 
+  it('writes canonical version 4 bytes with an actionless ref-bound cause', () => {
+    const value = scopeFanoutItemV4();
+    const canonical = canonicalStewardRuntimeWorkItemJson(value);
+    expect(canonical).toContain('"schemaVersion":4');
+    expect(canonical).toContain(
+      '"event":"push","action":null,"ref":"refs/heads/main"',
+    );
+    expect(parseStewardRuntimeWorkItem(JSON.parse(canonical))).toEqual(value);
+  });
+
+  it('writes canonical version 5 bytes without embedding a repository set', () => {
+    const value = scopeFanoutItemV5();
+    const canonical = canonicalStewardRuntimeWorkItemJson(value);
+    expect(canonical).toContain('"schemaVersion":5');
+    expect(canonical).toContain('"rootTargetDigest"');
+    expect(canonical).not.toContain('"repositoryIds"');
+    expect(parseStewardRuntimeWorkItem(JSON.parse(canonical))).toEqual(value);
+  });
+
   it('keeps every accepted delivery ID valid at the Coordinator boundary', () => {
     for (const deliveryId of [
       'delivery-1',
@@ -314,11 +425,98 @@ describe('runtime work-item wire protocol', () => {
 
   it.each([
     0,
-    4,
+    6,
     '1',
     null,
   ])('rejects unsupported schema version %s', (schemaVersion) => {
     expectInvalid({ ...webhookItem(), schemaVersion });
+  });
+
+  it('rejects version 5 child, subject, and webhook evidence tampering', () => {
+    const child = structuredClone(scopeFanoutItemV5()) as unknown as Record<
+      string,
+      unknown
+    >;
+    const childCause = (child.cause as Record<string, unknown>);
+    (childCause.installationChild as Record<string, unknown>).repositoryId = 9;
+    expectInvalid(child);
+
+    const evidence = structuredClone(scopeFanoutItemV5()) as unknown as Record<
+      string,
+      unknown
+    >;
+    (evidence.cause as Record<string, unknown>).receivedAt =
+      '2026-07-27T00:00:01.123Z';
+    expectInvalid(evidence);
+
+    const digest = structuredClone(scopeFanoutItemV5()) as unknown as Record<
+      string,
+      unknown
+    >;
+    ((digest.cause as Record<string, unknown>).installationChild as Record<
+      string,
+      unknown
+    >).rootTargetDigest = 'A'.repeat(64);
+    expectInvalid(digest);
+  });
+
+  it('accepts version 5 evidence from an installation teardown snapshot only', () => {
+    for (const action of ['suspend', 'deleted'] as const) {
+      const value = structuredClone(scopeFanoutItemV5()) as unknown as Record<
+        string,
+        unknown
+      >;
+      const cause = value.cause as Record<string, unknown>;
+      const child = cause.installationChild as Record<string, unknown>;
+      const childCause = child.cause as Record<string, unknown>;
+      child.rootTargetScope = 'repository-set';
+      childCause.action = action;
+      cause.action = action;
+      expect(parseStewardRuntimeWorkItem(value)).toMatchObject({
+        schemaVersion: 5,
+        cause: {
+          event: 'installation',
+          action,
+          installationChild: {
+            rootTargetScope: 'repository-set',
+            cause: { event: 'installation', action },
+          },
+        },
+      });
+    }
+
+    const forged = structuredClone(scopeFanoutItemV5()) as unknown as Record<
+      string,
+      unknown
+    >;
+    const forgedCause = forged.cause as Record<string, unknown>;
+    (forgedCause.installationChild as Record<string, unknown>).rootTargetScope =
+      'repository-set';
+    expectInvalid(forged);
+  });
+
+  it('fails closed on forged version 4 actionless causality and v1 IDs', () => {
+    const action = structuredClone(scopeFanoutItemV4()) as unknown as Record<
+      string,
+      unknown
+    >;
+    (action.cause as Record<string, unknown>).action = 'pushed';
+    expectInvalid(action);
+
+    const ref = structuredClone(scopeFanoutItemV4()) as unknown as Record<
+      string,
+      unknown
+    >;
+    (ref.cause as Record<string, unknown>).ref = 'main';
+    expectInvalid(ref);
+
+    const delivery = structuredClone(scopeFanoutItemV4()) as unknown as Record<
+      string,
+      unknown
+    >;
+    (delivery.cause as Record<string, unknown>).deliveryId =
+      `fanout-v1:${'a'.repeat(64)}`;
+    expectInvalid(delivery);
   });
 
   it.each([

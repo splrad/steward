@@ -1,5 +1,9 @@
 import {
+  parseStewardRuntimeInstallationIndexBootstrapCommandV1,
+  parseStewardRuntimeInstallationIndexBootstrapStatusCommandV1,
   parseStewardRuntimeControlRevision,
+  type StewardRuntimeInstallationIndexBootstrapCommandV1,
+  type StewardRuntimeInstallationIndexBootstrapStatusCommandV1,
   type StewardRuntimeControlRevisionV1,
 } from '../../core/src/index.js';
 
@@ -42,7 +46,9 @@ export interface RecoverGitHubDeliveriesCommand
 export type DeliveryRecoveryCommand =
   | InspectDeliveryRecoveryCommand
   | ReplayDeadLetterEntriesCommand
-  | RecoverGitHubDeliveriesCommand;
+  | RecoverGitHubDeliveriesCommand
+  | StewardRuntimeInstallationIndexBootstrapCommandV1
+  | StewardRuntimeInstallationIndexBootstrapStatusCommandV1;
 
 function plainRecord(value: unknown): Record<string, unknown> {
   if (
@@ -181,6 +187,14 @@ export function parseDeliveryRecoveryCommand(
       takeover: record.takeover,
     };
   }
+  if (operation === 'installation-index-bootstrap') {
+    return parseStewardRuntimeInstallationIndexBootstrapCommandV1(record);
+  }
+  if (operation === 'inspect-installation-index-bootstrap') {
+    return parseStewardRuntimeInstallationIndexBootstrapStatusCommandV1(
+      record,
+    );
+  }
   throw new TypeError('Unsupported delivery recovery operation.');
 }
 
@@ -218,6 +232,27 @@ export function canonicalDeliveryRecoveryCommandJson(
       requestedAt: parsed.requestedAt,
       expectedLedgerRevision: parsed.expectedLedgerRevision,
       entryIds: parsed.entryIds,
+    });
+  }
+  if (parsed.operation === 'installation-index-bootstrap') {
+    return JSON.stringify({
+      schemaVersion: parsed.schemaVersion,
+      operation: parsed.operation,
+      requestId: parsed.requestId,
+      requestedAt: parsed.requestedAt,
+      installationId: parsed.installationId,
+      expectedControlRevision: parsed.expectedControlRevision,
+    });
+  }
+  if (parsed.operation === 'inspect-installation-index-bootstrap') {
+    return JSON.stringify({
+      schemaVersion: parsed.schemaVersion,
+      operation: parsed.operation,
+      requestId: parsed.requestId,
+      requestedAt: parsed.requestedAt,
+      bootstrapRequestId: parsed.bootstrapRequestId,
+      installationId: parsed.installationId,
+      expectedBootstrapDigest: parsed.expectedBootstrapDigest,
     });
   }
   return JSON.stringify({

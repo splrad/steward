@@ -11,6 +11,15 @@ returns `503`. A Queue write that succeeds after the deadline can only create
 a duplicate, which the delivery ID and per-PR Coordinator absorb. Ingress has
 no GitHub App or human credential.
 
+Pull-request and repository lifecycle deliveries retain the 1 MiB hard cap.
+The installation/property/team/push event set accepts GitHub's 25 MiB provider
+limit: after the first 1 MiB, Ingress incrementally computes HMAC-SHA256 for
+both rotation secrets while validating the complete JSON token stream and
+retaining only the bounded fields needed to build Scope V2. Repository-ID
+arrays are capped at 5,000 and fail closed instead of truncating. Invalid
+signatures, invalid JSON, provider-oversized bodies, deadline cancellation,
+and Queue failure never enqueue a partial projection.
+
 Ingress writes work-item schema version 2. Version 1 remains byte-for-byte
 stable and accepts only `pull_request`; Coordinator and Control readers accept
 both versions. A live rollout must therefore deploy the compatible

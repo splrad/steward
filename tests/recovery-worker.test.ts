@@ -4,9 +4,11 @@ import {
   buildStewardRuntimeDeliveryRecoveryPageReceiptV1,
   canonicalStewardRuntimeDeliveryRecoveryAcceptedReceiptV1Json,
   canonicalStewardRuntimeDeliveryRecoveryPageReceiptV1Json,
+  canonicalStewardRuntimeInstallationIndexBootstrapStatusReceiptV1Json,
   canonicalStewardRuntimeScopeWorkItemJson,
   parseStewardRuntimeDeliveryRecoveryPageRequestV1,
   parseStewardRuntimeDeliveryRecoveryRedeliveryRequestV1,
+  parseStewardRuntimeInstallationIndexBootstrapEnvelopeV1,
   type StewardRuntimeControlRevisionV1,
 } from '../packages/core/src/index.js';
 import {
@@ -346,6 +348,9 @@ function runtime(
   stub: DeliveryRecoveryLedgerStub,
   options: {
     readonly control?: DeliveryRecoveryEnv['CONTROL']['fetch'];
+    readonly coordinator?: NonNullable<
+      DeliveryRecoveryEnv['COORDINATOR']
+    >['fetch'];
     readonly send?: DeliveryRecoveryEnv['EVENT_QUEUE']['send'];
     readonly access?: DeliveryRecoveryDependencies['verifyAccess'];
     readonly now?: DeliveryRecoveryDependencies['now'];
@@ -359,6 +364,9 @@ function runtime(
       getByName: vi.fn(() => stub),
     },
     CONTROL: { fetch: control },
+    ...(options.coordinator === undefined
+      ? {}
+      : { COORDINATOR: { fetch: options.coordinator } }),
     EVENT_QUEUE: { send },
     RECOVERY_CONTROL_SHARED_SECRET: recoveryControlSharedSecret,
   };
@@ -414,6 +422,100 @@ describe('Delivery Recovery Worker', () => {
     expect(response.status).toBe(403);
     expect(request.bodyUsed).toBe(false);
     expect(stub.inspect).not.toHaveBeenCalled();
+  });
+
+  it('injects the verified Access principal and enqueues an independent bootstrap source', async () => {
+    const stub = ledgerStub();
+    const send = vi.fn(async () => undefined);
+    const current = runtime(stub, { send });
+    const response = await current.handler.fetch(publicRequest(JSON.stringify({
+      schemaVersion: 1,
+      operation: 'installation-index-bootstrap',
+      requestId,
+      requestedAt: now,
+      installationId: 145_952_003,
+      expectedControlRevision: revision,
+    })), current.env);
+
+    expect(response.status).toBe(202);
+    const responseBody = await response.json() as Record<string, unknown>;
+    expect(responseBody).toMatchObject({
+      operation: 'installation-index-bootstrap',
+      requestId,
+      status: 'enqueued',
+    });
+    expect(responseBody.commandDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(send).toHaveBeenCalledTimes(1);
+    const sendCalls = send.mock.calls as unknown as unknown[][];
+    const envelope = parseStewardRuntimeInstallationIndexBootstrapEnvelopeV1(
+      JSON.parse(String(sendCalls[0]?.[0])),
+    );
+    expect(envelope).toMatchObject({
+      requestId,
+      installationId: 145_952_003,
+      principal: { accessServiceClientId: 'service-client-id' },
+    });
+    expect(envelope).not.toHaveProperty('cause');
+    expect(envelope).not.toHaveProperty('scopeWorkItem');
+  });
+
+  it('polls bootstrap status through Coordinator with the same Access principal', async () => {
+    const stub = ledgerStub();
+    const bootstrapDigest = 'd'.repeat(64);
+    const coordinator = vi.fn(async (
+      _input: Request | string | URL,
+      init?: RequestInit,
+    ) => {
+      expect(init?.headers).toMatchObject({
+        'x-steward-internal-protocol':
+          'installation-index-bootstrap-status-1',
+      });
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        bootstrapRequestId: requestId,
+        installationId: 145_952_003,
+        expectedBootstrapDigest: bootstrapDigest,
+        principal: { accessServiceClientId: 'service-client-id' },
+      });
+      return new Response(
+        canonicalStewardRuntimeInstallationIndexBootstrapStatusReceiptV1Json({
+          schemaVersion: 1,
+          operation: 'installation-index-bootstrap-status',
+          requestId,
+          commandDigest: bootstrapDigest,
+          installationId: 145_952_003,
+          status: 'completed',
+          lastKnownIndexKnown: true,
+          repositoryCount: 3,
+          indexDigest: 'e'.repeat(64),
+          controlRevision: revision,
+          failureCode: null,
+          updatedAt: now,
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+        },
+      );
+    });
+    const current = runtime(stub, { coordinator });
+    const response = await current.handler.fetch(publicRequest(JSON.stringify({
+      schemaVersion: 1,
+      operation: 'inspect-installation-index-bootstrap',
+      requestId: '33333333-3333-4333-8333-333333333333',
+      requestedAt: now,
+      bootstrapRequestId: requestId,
+      installationId: 145_952_003,
+      expectedBootstrapDigest: bootstrapDigest,
+    })), current.env);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      requestId,
+      status: 'completed',
+      lastKnownIndexKnown: true,
+      repositoryCount: 3,
+    });
+    expect(coordinator).toHaveBeenCalledTimes(1);
   });
 
   it('captures and acknowledges an exact canonical DLQ body durably', async () => {

@@ -24,6 +24,10 @@
     {
       "binding": "CONTROL",
       "service": "steward-control"
+    },
+    {
+      "binding": "COORDINATOR",
+      "service": "steward-coordinator"
     }
   ],
   "secrets": {

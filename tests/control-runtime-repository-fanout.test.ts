@@ -1,9 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildStewardRuntimeRepositoryFanoutPageRequestV1,
+  buildStewardRuntimeRepositoryFanoutPageRequestV2,
   buildStewardRuntimeScopeWorkItemV1,
+  buildStewardRuntimeScopeWorkItemV2,
   canonicalStewardRuntimeRepositoryFanoutPageRequestV1Json,
+  canonicalStewardRuntimeRepositoryFanoutPageRequestV2Json,
   parseStewardRuntimeRepositoryFanoutPageReceiptV1,
+  parseStewardRuntimeRepositoryFanoutPageReceiptV2,
+  type StewardRuntimeRepositoryScopeTargetV2,
+  type StewardRuntimeScopeWorkItemV2,
 } from '../packages/core/src/index.js';
 import {
   createControlRuntimeHandler,
@@ -47,6 +53,27 @@ const scopeWorkItem = buildStewardRuntimeScopeWorkItemV1({
   },
 });
 
+const pushScopeWorkItem = buildStewardRuntimeScopeWorkItemV2({
+  operation: 'scope-reconcile',
+  target: {
+    scope: 'repository',
+    mode: 'refresh',
+    installationId,
+    repositoryId,
+    pullRequests: 'all-open',
+  },
+  cause: {
+    kind: 'github-webhook',
+    deliveryId: 'push-delivery-1',
+    event: 'push',
+    action: null,
+    ref: 'refs/heads/main',
+    receivedAt: '2026-07-27T03:04:05.678Z',
+  },
+}) as StewardRuntimeScopeWorkItemV2 & {
+  readonly target: StewardRuntimeRepositoryScopeTargetV2;
+};
+
 function pageRequest(cursor: string | null = null) {
   return buildStewardRuntimeRepositoryFanoutPageRequestV1({
     binding: {
@@ -79,7 +106,33 @@ function request(input = pageRequest(), protocol = 'repository-fanout-1') {
   );
 }
 
+function pushPageRequest() {
+  return buildStewardRuntimeRepositoryFanoutPageRequestV2({
+    binding: {
+      scopeWorkItem: pushScopeWorkItem,
+      generation: 8,
+      pass: 1,
+      cursor: null,
+    },
+  });
+}
+
+function pushRequest(input = pushPageRequest()) {
+  return new Request(
+    'https://control.internal/v2/repository-fanout/page',
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-steward-internal-protocol': 'repository-fanout-2',
+      },
+      body: canonicalStewardRuntimeRepositoryFanoutPageRequestV2Json(input),
+    },
+  );
+}
+
 interface FakeOptions {
+  readonly defaultBranch?: string;
   readonly installationAccountId?: number;
   readonly installationSuspendedAt?: string;
   readonly repositoryStatus?: number;
@@ -166,6 +219,7 @@ function fakeGitHub(options: FakeOptions = {}) {
       return jsonResponse({
         id: repositoryId,
         full_name: options.repositoryFullName ?? repositoryFullName,
+        default_branch: options.defaultBranch ?? 'main',
         owner: options.repositoryOwner ?? {
           id: organizationId,
           login: 'splrad',
@@ -248,6 +302,46 @@ describe('Control repository fan-out page handler', () => {
     });
     expect(github.records.find((record) => record.path === '/graphql')?.authorization)
       .toBe(`Bearer ${installationToken}`);
+  });
+
+  it('validates push ref against the live default branch before PR enumeration', async () => {
+    const matchingGitHub = fakeGitHub({ defaultBranch: 'main' });
+    const matchingHandler = createControlRuntimeHandler({
+      fetch: matchingGitHub.fetcher,
+      appToken: vi.fn(async () => 'test-app-jwt'),
+    });
+    const matchingResponse = await matchingHandler.fetch(pushRequest(), env);
+    expect(matchingResponse.status).toBe(200);
+    expect(parseStewardRuntimeRepositoryFanoutPageReceiptV2(
+      await matchingResponse.json(),
+    ).page.pullRequestNumbers).toEqual([130, 131]);
+    expect(matchingGitHub.records.some((record) => record.path === '/graphql'))
+      .toBe(true);
+
+    const renamedGitHub = fakeGitHub({ defaultBranch: 'trunk' });
+    const renamedHandler = createControlRuntimeHandler({
+      fetch: renamedGitHub.fetcher,
+      appToken: vi.fn(async () => 'test-app-jwt'),
+    });
+    const renamedResponse = await renamedHandler.fetch(pushRequest(), env);
+    expect(renamedResponse.status).toBe(200);
+    expect(parseStewardRuntimeRepositoryFanoutPageReceiptV2(
+      await renamedResponse.json(),
+    )).toMatchObject({
+      repository: {
+        state: 'live',
+        id: repositoryId,
+        fullName: repositoryFullName,
+      },
+      page: {
+        totalCount: 0,
+        pullRequestNumbers: [],
+        hasNextPage: false,
+        endCursor: null,
+      },
+    });
+    expect(renamedGitHub.records.some((record) => record.path === '/graphql'))
+      .toBe(false);
   });
 
   it('binds and forwards only the opaque cursor selected by the coordinator', async () => {

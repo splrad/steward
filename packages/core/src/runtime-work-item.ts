@@ -1,14 +1,24 @@
 import {
   STEWARD_RUNTIME_REPOSITORY_ACTIONS_V1,
   STEWARD_RUNTIME_SCOPE_WORK_ITEM_SCHEMA_VERSION_V1,
+  STEWARD_RUNTIME_SCOPE_WORK_ITEM_SCHEMA_VERSION_V2,
+  parseStewardRuntimeScopeCauseV2,
   type StewardRuntimeRepositoryActionV1,
+  type StewardRuntimeScopeCauseV2,
 } from './runtime-scope-work-item.js';
+import {
+  STEWARD_RUNTIME_INSTALLATION_REPOSITORY_CHILD_SCHEMA_VERSION,
+  buildStewardRuntimeInstallationFanoutDeliveryId,
+  type StewardRuntimeInstallationRepositoryChildV1,
+} from './runtime-installation-fanout.js';
 
 export const STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V1 = 1 as const;
 export const STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V2 = 2 as const;
 export const STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V3 = 3 as const;
+export const STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V4 = 4 as const;
+export const STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V5 = 5 as const;
 export const STEWARD_RUNTIME_WORK_ITEM_CURRENT_SCHEMA_VERSION =
-  STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V3;
+  STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V5;
 
 const githubLoginPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
 const repositoryNamePattern = /^[A-Za-z0-9._-]{1,100}$/;
@@ -16,6 +26,9 @@ const canonicalUtcTimestampPattern =
   /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
 const opaqueAsciiPattern = /^[\x21-\x7e]+$/;
 const fanoutDeliveryIdPattern = /^fanout-v1:[0-9a-f]{64}$/;
+const fanoutDeliveryIdV2Pattern = /^fanout-v2:[0-9a-f]{64}$/;
+const fanoutDeliveryIdV3Pattern = /^fanout-v3:[0-9a-f]{64}$/;
+const sha256Pattern = /^[0-9a-f]{64}$/;
 
 export const STEWARD_RUNTIME_PULL_REQUEST_ACTIONS_V1 = [
   'closed',
@@ -121,6 +134,30 @@ export interface StewardScopeFanoutCauseV3 {
   readonly receivedAt: string;
 }
 
+export interface StewardScopeFanoutCauseV4 {
+  readonly kind: 'scope-fanout-2';
+  readonly deliveryId: string;
+  readonly rootDeliveryId: string;
+  readonly scopeSchemaVersion: typeof STEWARD_RUNTIME_SCOPE_WORK_ITEM_SCHEMA_VERSION_V2;
+  readonly fanoutGeneration: number;
+  readonly event: StewardRuntimeScopeCauseV2['event'];
+  readonly action: StewardRuntimeScopeCauseV2['action'];
+  readonly ref: StewardRuntimeScopeCauseV2['ref'];
+  readonly receivedAt: string;
+}
+
+export interface StewardScopeFanoutCauseV5 {
+  readonly kind: 'scope-fanout-3';
+  readonly deliveryId: string;
+  readonly rootDeliveryId: string;
+  readonly installationChild: StewardRuntimeInstallationRepositoryChildV1;
+  readonly repositoryFanoutGeneration: number;
+  readonly event: StewardRuntimeScopeCauseV2['event'];
+  readonly action: StewardRuntimeScopeCauseV2['action'];
+  readonly ref: StewardRuntimeScopeCauseV2['ref'];
+  readonly receivedAt: string;
+}
+
 type GitHubWebhookEventAction<Cause> =
   Cause extends StewardGitHubWebhookCauseV2
     ? Pick<Cause, 'event' | 'action'>
@@ -140,6 +177,14 @@ export type StewardRuntimeWorkItemCauseV2 =
 export type StewardRuntimeWorkItemCauseV3 =
   | StewardRuntimeWorkItemCauseV2
   | StewardScopeFanoutCauseV3;
+
+export type StewardRuntimeWorkItemCauseV4 =
+  | StewardRuntimeWorkItemCauseV2
+  | StewardScopeFanoutCauseV4;
+
+export type StewardRuntimeWorkItemCauseV5 =
+  | StewardRuntimeWorkItemCauseV2
+  | StewardScopeFanoutCauseV5;
 
 export interface StewardRuntimeWorkItemV1 {
   readonly schemaVersion: typeof STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V1;
@@ -165,10 +210,28 @@ export interface StewardRuntimeWorkItemV3 {
   readonly cause: StewardRuntimeWorkItemCauseV3;
 }
 
+export interface StewardRuntimeWorkItemV4 {
+  readonly schemaVersion: typeof STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V4;
+  readonly operation: StewardRuntimeWorkItemOperationV1;
+  readonly installationId: number;
+  readonly subject: StewardRuntimeWorkItemSubjectV1;
+  readonly cause: StewardRuntimeWorkItemCauseV4;
+}
+
+export interface StewardRuntimeWorkItemV5 {
+  readonly schemaVersion: typeof STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V5;
+  readonly operation: StewardRuntimeWorkItemOperationV1;
+  readonly installationId: number;
+  readonly subject: StewardRuntimeWorkItemSubjectV1;
+  readonly cause: StewardRuntimeWorkItemCauseV5;
+}
+
 export type StewardRuntimeWorkItem =
   | StewardRuntimeWorkItemV1
   | StewardRuntimeWorkItemV2
-  | StewardRuntimeWorkItemV3;
+  | StewardRuntimeWorkItemV3
+  | StewardRuntimeWorkItemV4
+  | StewardRuntimeWorkItemV5;
 
 export type BuildStewardRuntimeWorkItemInput =
   Omit<StewardRuntimeWorkItemV1, 'schemaVersion'>;
@@ -178,6 +241,12 @@ export type BuildStewardRuntimeWorkItemV2Input =
 
 export type BuildStewardRuntimeWorkItemV3Input =
   Omit<StewardRuntimeWorkItemV3, 'schemaVersion'>;
+
+export type BuildStewardRuntimeWorkItemV4Input =
+  Omit<StewardRuntimeWorkItemV4, 'schemaVersion'>;
+
+export type BuildStewardRuntimeWorkItemV5Input =
+  Omit<StewardRuntimeWorkItemV5, 'schemaVersion'>;
 
 export class RuntimeWorkItemValidationError extends Error {
   constructor(message: string) {
@@ -298,6 +367,175 @@ function requireFanoutDeliveryId(value: unknown): string {
   return deliveryId;
 }
 
+function requireFanoutDeliveryIdV2(value: unknown): string {
+  const deliveryId = requireString(value, 'workItem.cause.deliveryId');
+  if (!fanoutDeliveryIdV2Pattern.test(deliveryId)) {
+    invalid(
+      'workItem.cause.deliveryId must use fanout-v2 followed by a 64-character lowercase hex digest',
+    );
+  }
+  return deliveryId;
+}
+
+function requireFanoutDeliveryIdV3(value: unknown): string {
+  const deliveryId = requireString(value, 'workItem.cause.deliveryId');
+  if (!fanoutDeliveryIdV3Pattern.test(deliveryId)) {
+    invalid(
+      'workItem.cause.deliveryId must use fanout-v3 followed by a 64-character lowercase hex digest',
+    );
+  }
+  return deliveryId;
+}
+
+function parseInstallationRepositoryChildCommitmentV1(
+  value: unknown,
+): StewardRuntimeInstallationRepositoryChildV1 {
+  const child = plainRecord(value, 'workItem.cause.installationChild');
+  requireExactKeys(
+    child,
+    [
+      'schemaVersion',
+      'operation',
+      'rootDigest',
+      'rootTargetDigest',
+      'rootDeliveryId',
+      'rootTargetScope',
+      'installationId',
+      'repositoryId',
+      'installationGeneration',
+      'cause',
+      'deliveryId',
+    ],
+    'workItem.cause.installationChild',
+  );
+  if (
+    child.schemaVersion
+      !== STEWARD_RUNTIME_INSTALLATION_REPOSITORY_CHILD_SCHEMA_VERSION
+    || child.operation !== 'installation-repository-fanout'
+  ) {
+    invalid('workItem.cause.installationChild is not a version 1 installation child');
+  }
+  const rootDigest = requireString(
+    child.rootDigest,
+    'workItem.cause.installationChild.rootDigest',
+  );
+  if (!sha256Pattern.test(rootDigest)) {
+    invalid(
+      'workItem.cause.installationChild.rootDigest must be a lowercase SHA-256 digest',
+    );
+  }
+  const rootTargetDigest = requireString(
+    child.rootTargetDigest,
+    'workItem.cause.installationChild.rootTargetDigest',
+  );
+  if (!sha256Pattern.test(rootTargetDigest)) {
+    invalid(
+      'workItem.cause.installationChild.rootTargetDigest must be a lowercase SHA-256 digest',
+    );
+  }
+  const rootDeliveryId = requireOpaqueAscii(
+    child.rootDeliveryId,
+    'workItem.cause.installationChild.rootDeliveryId',
+    128,
+  );
+  if (
+    child.rootTargetScope !== 'installation'
+    && child.rootTargetScope !== 'repository-set'
+  ) {
+    invalid(
+      'workItem.cause.installationChild.rootTargetScope must be installation or repository-set',
+    );
+  }
+  const installationId = requirePositiveId(
+    child.installationId,
+    'workItem.cause.installationChild.installationId',
+  );
+  const repositoryId = requirePositiveId(
+    child.repositoryId,
+    'workItem.cause.installationChild.repositoryId',
+  );
+  const installationGeneration = requirePositiveId(
+    child.installationGeneration,
+    'workItem.cause.installationChild.installationGeneration',
+  );
+  let cause: StewardRuntimeScopeCauseV2;
+  try {
+    cause = parseStewardRuntimeScopeCauseV2(child.cause);
+  } catch {
+    invalid(
+      'workItem.cause.installationChild.cause must be a valid scope schema version 2 cause',
+    );
+  }
+  if (cause.deliveryId !== rootDeliveryId) {
+    invalid(
+      'workItem.cause.installationChild.rootDeliveryId must match its cause delivery ID',
+    );
+  }
+  const installationRootCause =
+    cause.event === 'custom_property'
+    || cause.event === 'membership'
+    || cause.event === 'installation'
+    || cause.event === 'installation_target'
+    || (
+      cause.event === 'team'
+      && (
+        cause.action === 'created'
+        || cause.action === 'edited'
+        || cause.action === 'deleted'
+      )
+    );
+  const repositorySetRootCause =
+    cause.event === 'installation_repositories'
+    || (
+      cause.event === 'installation'
+      && (cause.action === 'suspend' || cause.action === 'deleted')
+    );
+  if (
+    (
+      child.rootTargetScope === 'installation'
+      && !installationRootCause
+    )
+    || (
+      child.rootTargetScope === 'repository-set'
+      && !repositorySetRootCause
+    )
+  ) {
+    invalid(
+      'workItem.cause.installationChild cause is incompatible with its root target scope',
+    );
+  }
+  const deliveryId = requireOpaqueAscii(
+    child.deliveryId,
+    'workItem.cause.installationChild.deliveryId',
+    128,
+  );
+  if (
+    deliveryId !== buildStewardRuntimeInstallationFanoutDeliveryId(
+      rootDigest,
+      installationGeneration,
+      repositoryId,
+    )
+  ) {
+    invalid(
+      'workItem.cause.installationChild.deliveryId is not derivable from its commitment',
+    );
+  }
+  return {
+    schemaVersion:
+      STEWARD_RUNTIME_INSTALLATION_REPOSITORY_CHILD_SCHEMA_VERSION,
+    operation: 'installation-repository-fanout',
+    rootDigest,
+    rootTargetDigest,
+    rootDeliveryId,
+    rootTargetScope: child.rootTargetScope,
+    installationId,
+    repositoryId,
+    installationGeneration,
+    cause,
+    deliveryId,
+  };
+}
+
 function parseCause(
   value: unknown,
   schemaVersion: typeof STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V1,
@@ -312,8 +550,21 @@ function parseCause(
 ): StewardRuntimeWorkItemCauseV3;
 function parseCause(
   value: unknown,
-  schemaVersion: 1 | 2 | 3,
-): StewardRuntimeWorkItemCauseV1 | StewardRuntimeWorkItemCauseV2 | StewardRuntimeWorkItemCauseV3 {
+  schemaVersion: typeof STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V4,
+): StewardRuntimeWorkItemCauseV4;
+function parseCause(
+  value: unknown,
+  schemaVersion: typeof STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V5,
+): StewardRuntimeWorkItemCauseV5;
+function parseCause(
+  value: unknown,
+  schemaVersion: 1 | 2 | 3 | 4 | 5,
+):
+  | StewardRuntimeWorkItemCauseV1
+  | StewardRuntimeWorkItemCauseV2
+  | StewardRuntimeWorkItemCauseV3
+  | StewardRuntimeWorkItemCauseV4
+  | StewardRuntimeWorkItemCauseV5 {
   const cause = plainRecord(value, 'workItem.cause');
   const kind = requireString(cause.kind, 'workItem.cause.kind');
   if (kind === 'internal-probe') {
@@ -481,10 +732,143 @@ function parseCause(
       ),
     };
   }
+  if (
+    kind === 'scope-fanout-2'
+    && schemaVersion === STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V4
+  ) {
+    requireExactKeys(
+      cause,
+      [
+        'kind',
+        'deliveryId',
+        'rootDeliveryId',
+        'scopeSchemaVersion',
+        'fanoutGeneration',
+        'event',
+        'action',
+        'ref',
+        'receivedAt',
+      ],
+      'workItem.cause',
+    );
+    if (
+      cause.scopeSchemaVersion
+      !== STEWARD_RUNTIME_SCOPE_WORK_ITEM_SCHEMA_VERSION_V2
+    ) {
+      invalid('workItem.cause.scopeSchemaVersion must be 2');
+    }
+    const rootDeliveryId = requireOpaqueAscii(
+      cause.rootDeliveryId,
+      'workItem.cause.rootDeliveryId',
+      128,
+    );
+    let scopeCause: StewardRuntimeScopeCauseV2;
+    try {
+      scopeCause = parseStewardRuntimeScopeCauseV2({
+        kind: 'github-webhook',
+        deliveryId: rootDeliveryId,
+        event: cause.event,
+        action: cause.action,
+        ref: cause.ref,
+        receivedAt: cause.receivedAt,
+      });
+    } catch {
+      invalid('workItem.cause is not a valid scope schema version 2 cause');
+    }
+    return {
+      kind,
+      deliveryId: requireFanoutDeliveryIdV2(cause.deliveryId),
+      rootDeliveryId,
+      scopeSchemaVersion: STEWARD_RUNTIME_SCOPE_WORK_ITEM_SCHEMA_VERSION_V2,
+      fanoutGeneration: requirePositiveId(
+        cause.fanoutGeneration,
+        'workItem.cause.fanoutGeneration',
+      ),
+      event: scopeCause.event,
+      action: scopeCause.action,
+      ref: scopeCause.ref,
+      receivedAt: scopeCause.receivedAt,
+    };
+  }
+  if (
+    kind === 'scope-fanout-3'
+    && schemaVersion === STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V5
+  ) {
+    requireExactKeys(
+      cause,
+      [
+        'kind',
+        'deliveryId',
+        'rootDeliveryId',
+        'installationChild',
+        'repositoryFanoutGeneration',
+        'event',
+        'action',
+        'ref',
+        'receivedAt',
+      ],
+      'workItem.cause',
+    );
+    const installationChild =
+      parseInstallationRepositoryChildCommitmentV1(
+        cause.installationChild,
+      );
+    const rootDeliveryId = requireOpaqueAscii(
+      cause.rootDeliveryId,
+      'workItem.cause.rootDeliveryId',
+      128,
+    );
+    if (rootDeliveryId !== installationChild.rootDeliveryId) {
+      invalid(
+        'workItem.cause.rootDeliveryId must match the installation child root delivery ID',
+      );
+    }
+    let scopeCause: StewardRuntimeScopeCauseV2;
+    try {
+      scopeCause = parseStewardRuntimeScopeCauseV2({
+        kind: 'github-webhook',
+        deliveryId: rootDeliveryId,
+        event: cause.event,
+        action: cause.action,
+        ref: cause.ref,
+        receivedAt: cause.receivedAt,
+      });
+    } catch {
+      invalid('workItem.cause is not a valid scope schema version 2 cause');
+    }
+    if (
+      scopeCause.event !== installationChild.cause.event
+      || scopeCause.action !== installationChild.cause.action
+      || scopeCause.ref !== installationChild.cause.ref
+      || scopeCause.receivedAt !== installationChild.cause.receivedAt
+    ) {
+      invalid(
+        'workItem.cause webhook evidence must match the installation child commitment',
+      );
+    }
+    return {
+      kind,
+      deliveryId: requireFanoutDeliveryIdV3(cause.deliveryId),
+      rootDeliveryId,
+      installationChild,
+      repositoryFanoutGeneration: requirePositiveId(
+        cause.repositoryFanoutGeneration,
+        'workItem.cause.repositoryFanoutGeneration',
+      ),
+      event: scopeCause.event,
+      action: scopeCause.action,
+      ref: scopeCause.ref,
+      receivedAt: scopeCause.receivedAt,
+    };
+  }
   invalid(
     schemaVersion === STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V3
       ? 'workItem.cause.kind must be one of: internal-probe, github-webhook, scope-fanout'
-      : 'workItem.cause.kind must be one of: internal-probe, github-webhook',
+      : schemaVersion === STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V4
+        ? 'workItem.cause.kind must be one of: internal-probe, github-webhook, scope-fanout-2'
+        : schemaVersion === STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V5
+          ? 'workItem.cause.kind must be one of: internal-probe, github-webhook, scope-fanout-3'
+          : 'workItem.cause.kind must be one of: internal-probe, github-webhook',
   );
 }
 
@@ -493,7 +877,9 @@ function validateOperationCause(
   cause:
     | StewardRuntimeWorkItemCauseV1
     | StewardRuntimeWorkItemCauseV2
-    | StewardRuntimeWorkItemCauseV3,
+    | StewardRuntimeWorkItemCauseV3
+    | StewardRuntimeWorkItemCauseV4
+    | StewardRuntimeWorkItemCauseV5,
 ): void {
   if (operation === 'runtime-probe' && cause.kind !== 'internal-probe') {
     invalid('runtime-probe requires an internal-probe cause');
@@ -502,6 +888,8 @@ function validateOperationCause(
     operation === 'pull-request-reconcile'
     && cause.kind !== 'github-webhook'
     && cause.kind !== 'scope-fanout'
+    && cause.kind !== 'scope-fanout-2'
+    && cause.kind !== 'scope-fanout-3'
   ) {
     invalid('pull-request-reconcile requires a GitHub webhook or scope-fanout cause');
   }
@@ -586,7 +974,43 @@ export function parseStewardRuntimeWorkItem(
       cause,
     };
   }
-  invalid('workItem.schemaVersion must be one of: 1, 2, 3');
+  if (workItem.schemaVersion === STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V4) {
+    const cause = parseCause(
+      workItem.cause,
+      STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V4,
+    );
+    validateOperationCause(operation, cause);
+    return {
+      schemaVersion: STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V4,
+      ...common,
+      cause,
+    };
+  }
+  if (workItem.schemaVersion === STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V5) {
+    const cause = parseCause(
+      workItem.cause,
+      STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V5,
+    );
+    validateOperationCause(operation, cause);
+    if (
+      cause.kind === 'scope-fanout-3'
+      && (
+        common.installationId !== cause.installationChild.installationId
+        || common.subject.repositoryId
+          !== cause.installationChild.repositoryId
+      )
+    ) {
+      invalid(
+        'workItem installation and repository IDs must match the installation child',
+      );
+    }
+    return {
+      schemaVersion: STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V5,
+      ...common,
+      cause,
+    };
+  }
+  invalid('workItem.schemaVersion must be one of: 1, 2, 3, 4, 5');
 }
 
 export function parseStewardRuntimeWorkItemV1(
@@ -615,6 +1039,26 @@ export function parseStewardRuntimeWorkItemV3(
   const workItem = parseStewardRuntimeWorkItem(value);
   if (workItem.schemaVersion !== STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V3) {
     invalid('workItem.schemaVersion must be 3');
+  }
+  return workItem;
+}
+
+export function parseStewardRuntimeWorkItemV4(
+  value: unknown,
+): StewardRuntimeWorkItemV4 {
+  const workItem = parseStewardRuntimeWorkItem(value);
+  if (workItem.schemaVersion !== STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V4) {
+    invalid('workItem.schemaVersion must be 4');
+  }
+  return workItem;
+}
+
+export function parseStewardRuntimeWorkItemV5(
+  value: unknown,
+): StewardRuntimeWorkItemV5 {
+  const workItem = parseStewardRuntimeWorkItem(value);
+  if (workItem.schemaVersion !== STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V5) {
+    invalid('workItem.schemaVersion must be 5');
   }
   return workItem;
 }
@@ -673,6 +1117,67 @@ export function buildStewardRuntimeWorkItemV3(
   });
 }
 
+export function buildStewardRuntimeWorkItemV4(
+  value: BuildStewardRuntimeWorkItemV4Input,
+): StewardRuntimeWorkItemV4 {
+  const input = plainRecord(value, 'builder input');
+  requireExactKeys(
+    input,
+    ['operation', 'installationId', 'subject', 'cause'],
+    'builder input',
+  );
+  return parseStewardRuntimeWorkItemV4({
+    schemaVersion: STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V4,
+    operation: input.operation,
+    installationId: input.installationId,
+    subject: input.subject,
+    cause: input.cause,
+  });
+}
+
+export function buildStewardRuntimeWorkItemV5(
+  value: BuildStewardRuntimeWorkItemV5Input,
+): StewardRuntimeWorkItemV5 {
+  const input = plainRecord(value, 'builder input');
+  requireExactKeys(
+    input,
+    ['operation', 'installationId', 'subject', 'cause'],
+    'builder input',
+  );
+  return parseStewardRuntimeWorkItemV5({
+    schemaVersion: STEWARD_RUNTIME_WORK_ITEM_SCHEMA_VERSION_V5,
+    operation: input.operation,
+    installationId: input.installationId,
+    subject: input.subject,
+    cause: input.cause,
+  });
+}
+
+function installationRepositoryChildCommitmentValue(
+  child: StewardRuntimeInstallationRepositoryChildV1,
+): Record<string, unknown> {
+  return {
+    schemaVersion: child.schemaVersion,
+    operation: child.operation,
+    rootDigest: child.rootDigest,
+    rootTargetDigest: child.rootTargetDigest,
+    rootDeliveryId: child.rootDeliveryId,
+    rootTargetScope: child.rootTargetScope,
+    installationId: child.installationId,
+    repositoryId: child.repositoryId,
+    installationGeneration: child.installationGeneration,
+    cause: {
+      kind: child.cause.kind,
+      deliveryId: child.cause.deliveryId,
+      event: child.cause.event,
+      action: child.cause.action,
+      ref: child.cause.ref,
+      receivedAt: child.cause.receivedAt,
+    },
+    deliveryId: child.deliveryId,
+  };
+}
+
 export function canonicalStewardRuntimeWorkItemJson(value: unknown): string {
   const workItem = parseStewardRuntimeWorkItem(value);
   const cause = workItem.cause.kind === 'internal-probe'
@@ -689,7 +1194,8 @@ export function canonicalStewardRuntimeWorkItemJson(value: unknown): string {
           action: workItem.cause.action,
           receivedAt: workItem.cause.receivedAt,
         }
-      : {
+      : workItem.cause.kind === 'scope-fanout'
+        ? {
           kind: workItem.cause.kind,
           deliveryId: workItem.cause.deliveryId,
           rootDeliveryId: workItem.cause.rootDeliveryId,
@@ -698,7 +1204,33 @@ export function canonicalStewardRuntimeWorkItemJson(value: unknown): string {
           event: workItem.cause.event,
           action: workItem.cause.action,
           receivedAt: workItem.cause.receivedAt,
-        };
+        }
+        : workItem.cause.kind === 'scope-fanout-2'
+          ? {
+            kind: workItem.cause.kind,
+            deliveryId: workItem.cause.deliveryId,
+            rootDeliveryId: workItem.cause.rootDeliveryId,
+            scopeSchemaVersion: workItem.cause.scopeSchemaVersion,
+            fanoutGeneration: workItem.cause.fanoutGeneration,
+            event: workItem.cause.event,
+            action: workItem.cause.action,
+            ref: workItem.cause.ref,
+            receivedAt: workItem.cause.receivedAt,
+          }
+          : {
+              kind: workItem.cause.kind,
+              deliveryId: workItem.cause.deliveryId,
+              rootDeliveryId: workItem.cause.rootDeliveryId,
+              installationChild: installationRepositoryChildCommitmentValue(
+                workItem.cause.installationChild,
+              ),
+              repositoryFanoutGeneration:
+                workItem.cause.repositoryFanoutGeneration,
+              event: workItem.cause.event,
+              action: workItem.cause.action,
+              ref: workItem.cause.ref,
+              receivedAt: workItem.cause.receivedAt,
+            };
   return JSON.stringify({
     schemaVersion: workItem.schemaVersion,
     operation: workItem.operation,

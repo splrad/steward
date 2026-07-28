@@ -30,6 +30,7 @@ const workerRuntimePackages = new Set([
   'coordinator',
   'diagnostics',
   'ingress',
+  'promotion',
   'recovery',
 ]);
 const workerFetchPackages = new Set([
@@ -39,8 +40,12 @@ const workerFetchPackages = new Set([
   'diagnostics',
   'github',
   'ingress',
+  'promotion',
   'recovery',
 ]);
+const workerNodeBuiltins: Readonly<Record<string, ReadonlySet<string>>> = {
+  ingress: new Set(['node:crypto']),
+};
 const nodeBuiltinModules = new Set(builtinModules.map((module) => module.replace(/^node:/, '')));
 const forbiddenWorkerGlobals = new Set(['Buffer', 'NodeJS', 'fetch', 'process']);
 const allowedDependencies: Record<string, ReadonlySet<string>> = {
@@ -53,6 +58,7 @@ const allowedDependencies: Record<string, ReadonlySet<string>> = {
   coordinator: new Set(['core']),
   diagnostics: new Set(['access-auth', 'core']),
   ingress: new Set(['core']),
+  promotion: new Set(['access-auth']),
   recovery: new Set(['access-auth', 'core']),
   relay: new Set(['core', 'github', 'manifest']),
   cli: new Set(['core', 'github', 'manifest']),
@@ -66,7 +72,8 @@ const allowedRuntimeDependencies: Record<string, ReadonlySet<string>> = {
   'control-runtime': new Set(['@octokit/auth-app']),
   coordinator: new Set(['cloudflare:workers']),
   diagnostics: new Set<string>(),
-  ingress: new Set<string>(),
+  ingress: new Set(['@streamparser/json']),
+  promotion: new Set(['cloudflare:workers']),
   recovery: new Set(['cloudflare:workers']),
   relay: new Set(['@octokit/auth-app']),
   cli: new Set(['ajv', 'ajv-formats', 'libsodium-wrappers']),
@@ -81,6 +88,7 @@ const allowedExternalResources: Record<string, ReadonlySet<string>> = {
   coordinator: new Set<string>(),
   diagnostics: new Set<string>(),
   ingress: new Set<string>(),
+  promotion: new Set<string>(),
   recovery: new Set<string>(),
   relay: new Set<string>(),
   cli: new Set<string>(),
@@ -242,10 +250,21 @@ function isNodeBuiltinSpecifier(specifier: string): boolean {
     || [...nodeBuiltinModules].some((module) => normalized.startsWith(`${module}/`));
 }
 
-function workerRuntimeUses(source: SourceFile, options: { allowFetch?: boolean } = {}): string[] {
+function workerRuntimeUses(
+  source: SourceFile,
+  options: {
+    readonly allowFetch?: boolean;
+    readonly nodeBuiltins?: ReadonlySet<string> | undefined;
+  } = {},
+): string[] {
   const uses = new Set<string>();
   for (const specifier of importSpecifiers(source)) {
-    if (isNodeBuiltinSpecifier(specifier)) uses.add(`Node built-in module ${specifier}`);
+    if (
+      isNodeBuiltinSpecifier(specifier)
+      && !options.nodeBuiltins?.has(specifier)
+    ) {
+      uses.add(`Node built-in module ${specifier}`);
+    }
     if (specifier.startsWith('@actions/')) uses.add(`GitHub Actions runtime ${specifier}`);
   }
   visitSource(source, (node) => {
@@ -417,6 +436,7 @@ describe('architecture boundary', () => {
       const source = sourceFile(file);
       for (const use of workerRuntimeUses(source, {
         allowFetch: workerFetchPackages.has(sourcePackage),
+        nodeBuiltins: workerNodeBuiltins[sourcePackage],
       })) {
         violations.push(`${path.relative('.', file)}: ${use}`);
       }

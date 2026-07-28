@@ -1,15 +1,21 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
   STEWARD_RUNTIME_REPOSITORY_FANOUT_MAXIMUM_PAGES,
-  canonicalStewardRuntimeRepositoryFanoutPageReceiptV1Json,
+  canonicalStewardRuntimeRepositoryFanoutPageReceiptAnyJson,
   deriveStewardRuntimeFanoutDeliveryId,
-  parseStewardRuntimeRepositoryFanoutPageReceiptV1,
-  type StewardRuntimeRepositoryFanoutPageReceiptV1,
+  deriveStewardRuntimeFanoutDeliveryIdV2,
+  deriveStewardRuntimeFanoutDeliveryIdV3,
+  parseStewardRuntimeRepositoryFanoutPageReceiptAny,
+  type StewardRuntimeRepositoryFanoutPageReceiptAny,
 } from '../../core/src/runtime-repository-fanout.js';
 import {
+  canonicalStewardRuntimeInstallationRepositoryChildV1Json,
+  parseStewardRuntimeInstallationRepositoryChildV1,
+  type StewardRuntimeInstallationRepositoryChildV1,
+} from '../../core/src/runtime-installation-fanout.js';
+import {
   canonicalStewardRuntimeScopeWorkItemJson,
-  parseStewardRuntimeScopeWorkItemV1,
-  type StewardRuntimeScopeWorkItemV1,
+  parseStewardRuntimeScopeWorkItem,
 } from '../../core/src/runtime-scope-work-item.js';
 import {
   assertRepositoryFanoutDispatchBatchSize,
@@ -34,6 +40,8 @@ import {
   type RepositoryFanoutRecordQueueConfirmedResult,
   type RepositoryFanoutReleaseForContinuationResult,
   type RepositoryFanoutSnapshot,
+  type RepositoryFanoutInput,
+  type RepositoryFanoutScopeWorkItem,
 } from './repository-fanout-contracts.js';
 
 type SqlValue = ArrayBuffer | string | number | null;
@@ -169,13 +177,13 @@ export class RepositoryFanoutCoordinator extends DurableObject {
     scopeItemValue: unknown,
     leaseDurationMs: number,
   ): Promise<RepositoryFanoutClaimResult> {
-    const scopeItem = parseStewardRuntimeScopeWorkItemV1(scopeItemValue);
-    const scopeJson = canonicalStewardRuntimeScopeWorkItemJson(scopeItem);
-    const deliveryId = scopeItem.cause.deliveryId;
+    const scopeItem = await parseRepositoryFanoutInput(scopeItemValue);
+    const scopeJson = await canonicalRepositoryFanoutInputJson(scopeItem);
+    const deliveryId = repositoryFanoutInputDeliveryId(scopeItem);
     const duration = assertRepositoryFanoutLeaseDurationMs(leaseDurationMs);
-    if (String(scopeItem.target.repositoryId) !== this.#repositoryId) {
+    if (String(repositoryFanoutInputRepositoryId(scopeItem)) !== this.#repositoryId) {
       throw new TypeError(
-        'Scope work item repository ID does not match the Durable Object.',
+        'Repository fan-out input does not match the Durable Object.',
       );
     }
 
@@ -185,6 +193,11 @@ export class RepositoryFanoutCoordinator extends DurableObject {
       const state = this.#loadState();
       this.#expireLeaseIfNeeded(state, now);
       const known = this.#loadDelivery(deliveryId);
+      if (known !== undefined && known.scope_json !== scopeJson) {
+        throw new TypeError(
+          'A delivery ID cannot identify different repository fan-out work.',
+        );
+      }
 
       if (known?.status === 'completed' && state.phase !== 'followup') {
         this.#writeState(state);
@@ -283,8 +296,9 @@ export class RepositoryFanoutCoordinator extends DurableObject {
       this.#ctx.storage.sql.exec(
         `UPDATE repository_fanout_deliveries
          SET covered_generation = ?
-         WHERE status = 'pending'`,
+         WHERE status = 'pending' AND delivery_id = ?`,
         generation,
+        selected.delivery_id,
       );
       state.generation = generation;
       state.phase = 'enumerating';
@@ -308,7 +322,9 @@ export class RepositoryFanoutCoordinator extends DurableObject {
           leaseToken: requireLeaseToken(state),
           expiresAt: requireLeaseExpiry(state),
           resumed: false,
-          selectedScopeItem: parseStoredScopeItem(selected.scope_json),
+          selectedScopeItem: parseStoredRepositoryFanoutInput(
+            selected.scope_json,
+          ),
           phase: 'enumerating',
           pass: 1,
           cursor: null,
@@ -316,6 +332,14 @@ export class RepositoryFanoutCoordinator extends DurableObject {
       };
     });
     await this.#scheduleAlarm(mutation.alarmAt);
+    if (mutation.result.status === 'claimed') {
+      return {
+        ...mutation.result,
+        selectedScopeItem: await parseRepositoryFanoutInput(
+          mutation.result.selectedScopeItem,
+        ),
+      };
+    }
     return mutation.result;
   }
 
@@ -326,19 +350,26 @@ export class RepositoryFanoutCoordinator extends DurableObject {
   ): Promise<RepositoryFanoutRecordPageResult> {
     const generation = assertRepositoryFanoutGeneration(generationValue);
     const leaseToken = assertRepositoryFanoutLeaseToken(leaseTokenValue);
-    const receipt = parseStewardRuntimeRepositoryFanoutPageReceiptV1(
+    const receipt = await parseStewardRuntimeRepositoryFanoutPageReceiptAny(
       receiptValue,
     );
     const receiptJson =
-      canonicalStewardRuntimeRepositoryFanoutPageReceiptV1Json(receipt);
-    const scopeJson = canonicalStewardRuntimeScopeWorkItemJson(
-      receipt.binding.scopeWorkItem,
-    );
+      await canonicalStewardRuntimeRepositoryFanoutPageReceiptAnyJson(receipt);
+    const input = receipt.schemaVersion === 3
+      ? receipt.binding.installationChild
+      : receipt.binding.scopeWorkItem;
+    const scopeJson = await canonicalRepositoryFanoutInputJson(input);
     const targetDeliveries = await Promise.all(
       receipt.page.pullRequestNumbers.map(async (pullRequestNumber) => ({
         pullRequestNumber,
-        deliveryId: await deriveStewardRuntimeFanoutDeliveryId(
-          receipt.binding.scopeWorkItem,
+        deliveryId: await (
+          receipt.schemaVersion === 1
+            ? deriveStewardRuntimeFanoutDeliveryId
+            : receipt.schemaVersion === 2
+              ? deriveStewardRuntimeFanoutDeliveryIdV2
+              : deriveStewardRuntimeFanoutDeliveryIdV3
+        )(
+          input,
           generation,
           pullRequestNumber,
         ),
@@ -802,9 +833,12 @@ export class RepositoryFanoutCoordinator extends DurableObject {
          SET status = 'completed',
              completed_at = ?,
              covered_generation = NULL
-         WHERE status = 'pending' AND covered_generation = ?`,
+         WHERE status = 'pending'
+           AND covered_generation = ?
+           AND delivery_id = ?`,
         now,
         generation,
+        requireSelectedDeliveryId(state),
       );
       const pendingDeliveryCount = this.#pendingDeliveryCount();
       const needsFollowup = state.dirty || pendingDeliveryCount > 0;
@@ -1544,11 +1578,11 @@ export class RepositoryFanoutCoordinator extends DurableObject {
 
   #selectedScopeItem(
     state: MutableFanoutState,
-  ): StewardRuntimeScopeWorkItemV1 {
+  ): RepositoryFanoutInput {
     if (state.selectedScopeJson === null) {
       throw new Error('Active repository fan-out is missing its scope item.');
     }
-    return parseStoredScopeItem(state.selectedScopeJson);
+    return parseStoredRepositoryFanoutInput(state.selectedScopeJson);
   }
 
   #grantLease(
@@ -1689,16 +1723,89 @@ function nullableNonNegativeInteger(
   return value === null ? null : nonNegativeInteger(value, field);
 }
 
-function parseStoredScopeItem(value: string): StewardRuntimeScopeWorkItemV1 {
+async function parseRepositoryFanoutInput(
+  value: unknown,
+): Promise<RepositoryFanoutInput> {
+  if (
+    value !== null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && (value as Record<string, unknown>).operation
+      === 'installation-repository-fanout'
+  ) {
+    return await parseStewardRuntimeInstallationRepositoryChildV1(value);
+  }
+  const scopeItem = parseStewardRuntimeScopeWorkItem(value);
+  if (scopeItem.target.scope !== 'repository') {
+    throw new TypeError(
+      'RepositoryFanoutCoordinator only accepts repository scope work items '
+      + 'or installation repository children.',
+    );
+  }
+  return scopeItem as RepositoryFanoutScopeWorkItem;
+}
+
+async function canonicalRepositoryFanoutInputJson(
+  value: RepositoryFanoutInput,
+): Promise<string> {
+  return value.operation === 'installation-repository-fanout'
+    ? await canonicalStewardRuntimeInstallationRepositoryChildV1Json(value)
+    : canonicalStewardRuntimeScopeWorkItemJson(value);
+}
+
+function repositoryFanoutInputDeliveryId(
+  value: RepositoryFanoutInput,
+): string {
+  return value.operation === 'installation-repository-fanout'
+    ? value.deliveryId
+    : value.cause.deliveryId;
+}
+
+function repositoryFanoutInputRepositoryId(
+  value: RepositoryFanoutInput,
+): number {
+  return value.operation === 'installation-repository-fanout'
+    ? value.repositoryId
+    : value.target.repositoryId;
+}
+
+function parseStoredRepositoryFanoutInput(
+  value: string,
+): RepositoryFanoutInput {
   try {
-    return parseStewardRuntimeScopeWorkItemV1(JSON.parse(value) as unknown);
+    const parsed = JSON.parse(value) as unknown;
+    if (
+      parsed !== null
+      && typeof parsed === 'object'
+      && !Array.isArray(parsed)
+      && (parsed as Record<string, unknown>).operation
+        === 'installation-repository-fanout'
+    ) {
+      const child = parsed as Partial<StewardRuntimeInstallationRepositoryChildV1>;
+      if (
+        child.schemaVersion !== 1
+        || !Number.isSafeInteger(child.repositoryId)
+        || Number(child.repositoryId) <= 0
+        || typeof child.deliveryId !== 'string'
+        || !/^installation-fanout-v1:[0-9a-f]{64}:[1-9]\d*:[1-9]\d*$/
+          .test(child.deliveryId)
+      ) {
+        throw new Error('stored installation child is invalid');
+      }
+      return parsed as StewardRuntimeInstallationRepositoryChildV1;
+    }
+    const scopeItem = parseStewardRuntimeScopeWorkItem(parsed);
+    if (scopeItem.target.scope !== 'repository') {
+      throw new Error('scope target is not repository');
+    }
+    return scopeItem as RepositoryFanoutScopeWorkItem;
   } catch {
-    throw new Error('Persisted repository fan-out scope item is invalid.');
+    throw new Error('Persisted repository fan-out input is invalid.');
   }
 }
 
 function canonicalControlRevisionJson(
-  receipt: StewardRuntimeRepositoryFanoutPageReceiptV1,
+  receipt: StewardRuntimeRepositoryFanoutPageReceiptAny,
 ): string {
   return JSON.stringify({
     stewardCommit: receipt.controlRevision.stewardCommit,
@@ -1713,6 +1820,13 @@ function requireLeaseToken(state: MutableFanoutState): string {
     throw new Error('Repository fan-out lease token is absent.');
   }
   return state.leaseToken;
+}
+
+function requireSelectedDeliveryId(state: MutableFanoutState): string {
+  if (state.selectedDeliveryId === null) {
+    throw new Error('Active repository fan-out has no selected delivery.');
+  }
+  return state.selectedDeliveryId;
 }
 
 function requireLeaseExpiry(state: MutableFanoutState): number {

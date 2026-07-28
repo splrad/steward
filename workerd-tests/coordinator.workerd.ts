@@ -9,19 +9,32 @@ import {
 import { env } from 'cloudflare:workers';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  buildStewardRuntimeRepositoryFanoutPageReceiptV3,
   buildStewardRuntimeRepositoryFanoutPageReceiptV1,
   buildStewardRuntimeScopeWorkItemV1,
+  buildStewardRuntimeScopeWorkItemV2,
   buildStewardRuntimeControlMutationReceiptV2,
   buildStewardRuntimeControlPreparedReceiptV2,
   buildStewardRuntimeControlRecoveryReceiptV2,
   buildStewardRuntimeControlReceipt,
+  buildStewardRuntimeInstallationFanoutPageReceiptV1,
+  buildStewardRuntimeInstallationIndexBootstrapEnvelopeV1,
+  buildStewardRuntimeInstallationIndexBootstrapPageRequestV1,
+  buildStewardRuntimeInstallationIndexBootstrapPageReceiptV1,
+  deriveStewardRuntimeInstallationIndexBootstrapDigest,
   canonicalStewardRuntimeRepositoryFanoutPageReceiptV1Json,
+  canonicalStewardRuntimeRepositoryFanoutPageReceiptV3Json,
+  canonicalStewardRuntimeInstallationFanoutPageReceiptV1Json,
   canonicalStewardRuntimeScopeWorkItemJson,
   canonicalStewardRuntimeControlPreparedReceiptV2Json,
   canonicalStewardRuntimeControlRecoveryReceiptV2Json,
   canonicalStewardRuntimeControlReceiptJson,
   canonicalStewardRuntimeWorkItemJson,
+  parseStewardRuntimeInstallationRepositoryChildV1,
+  parseStewardRuntimeInstallationFanoutPageRequestV1,
+  parseStewardRuntimeRepositoryFanoutPageRequestV3,
   parseStewardRuntimeRepositoryFanoutPageRequestV1,
+  parseStewardRuntimeWorkItemV5,
   parseStewardRuntimeWorkItem,
   type StewardRuntimeWorkItem,
   type StewardRuntimeWorkItemV1,
@@ -31,9 +44,13 @@ import {
   type StewardRuntimeControlPreparedReceiptV2,
   type StewardRuntimeControlRecoveryResultV2,
   type StewardRuntimeControlResolvedContextV2,
+  type StewardRuntimeInstallationFanoutRootV1,
+  type StewardRuntimeRepositorySetScopeTargetV2,
 } from '../packages/core/src/index.js';
 import {
   coordinatorHumanMutationFenceLimit,
+  installationFanoutCoordinatorName,
+  InstallationFanoutCoordinator,
   pullRequestCoordinatorName,
   PullRequestCoordinator,
   repositoryFanoutCoordinatorName,
@@ -46,6 +63,8 @@ interface WorkerdEnv {
   PR_COORDINATOR: DurableObjectNamespace<PullRequestCoordinator>;
   REPOSITORY_FANOUT_COORDINATOR:
     DurableObjectNamespace<RepositoryFanoutCoordinator>;
+  INSTALLATION_FANOUT_COORDINATOR:
+    DurableObjectNamespace<InstallationFanoutCoordinator>;
 }
 
 const workerdEnv = env as unknown as WorkerdEnv;
@@ -56,6 +75,14 @@ function coordinator(
 ): DurableObjectStub<PullRequestCoordinator> {
   return workerdEnv.PR_COORDINATOR.getByName(
     pullRequestCoordinatorName(repositoryId, pullRequestNumber),
+  );
+}
+
+function installationCoordinator(
+  installationId: number,
+): DurableObjectStub<InstallationFanoutCoordinator> {
+  return workerdEnv.INSTALLATION_FANOUT_COORDINATOR.getByName(
+    installationFanoutCoordinatorName(installationId),
   );
 }
 
@@ -644,6 +671,490 @@ async function seedV2MutationLedger(
   });
 }
 
+describe('InstallationFanoutCoordinator in workerd', () => {
+  it('recovers a stable zero-child index bootstrap across object evictions', async () => {
+    const installationId = 145_952_798;
+    const stub = installationCoordinator(installationId);
+    const stewardCommit = 'a'.repeat(40);
+    const controlRevision = {
+      stewardCommit,
+      workerVersionId: '11111111-2222-4333-8444-555555555555',
+      workerVersionTag: `steward-${stewardCommit}`,
+      workerVersionCreatedAt: '2026-07-28T04:00:00.000Z',
+    };
+    const command =
+      buildStewardRuntimeInstallationIndexBootstrapEnvelopeV1({
+        command: {
+          schemaVersion: 1,
+          operation: 'installation-index-bootstrap',
+          requestId: '11111111-2222-4333-8444-555555555555',
+          requestedAt: '2026-07-28T04:01:00.000Z',
+          installationId,
+          expectedControlRevision: controlRevision,
+        },
+        accessServiceClientId: 'workerd-bootstrap-service',
+      });
+    const digest =
+      await deriveStewardRuntimeInstallationIndexBootstrapDigest(command);
+    const receipt = async (pass: 1 | 2) => {
+      const request =
+        await buildStewardRuntimeInstallationIndexBootstrapPageRequestV1({
+          command,
+          pass,
+          cursor: null,
+        });
+      return await buildStewardRuntimeInstallationIndexBootstrapPageReceiptV1({
+        binding: request.binding,
+        installation: { state: 'live', id: installationId },
+        page: {
+          totalCount: 2,
+          repositoryIds: [101, 202],
+          hasNextPage: false,
+          endCursor: null,
+        },
+        controlRevision,
+      });
+    };
+
+    const first = await stub.claimIndexBootstrap(command, 60_000);
+    expect(first).toMatchObject({ status: 'claimed', pass: 1 });
+    if (first.status !== 'claimed') throw new Error('Expected first claim.');
+    expect(await stub.recordIndexBootstrapPage(
+      first.leaseToken,
+      await receipt(1),
+    )).toEqual({ status: 'pass-complete', nextPass: 2 });
+    expect(await stub.releaseIndexBootstrap(first.leaseToken))
+      .toEqual({ status: 'released' });
+    await evictDurableObject(stub);
+
+    const second = await stub.claimIndexBootstrap(command, 60_000);
+    expect(second).toMatchObject({ status: 'claimed', pass: 2, resumed: true });
+    if (second.status !== 'claimed') throw new Error('Expected second claim.');
+    expect(await stub.recordIndexBootstrapPage(
+      second.leaseToken,
+      await receipt(2),
+    )).toMatchObject({ status: 'accepted', pass: 2 });
+    expect(await stub.releaseIndexBootstrap(second.leaseToken))
+      .toEqual({ status: 'released' });
+    await evictDurableObject(stub);
+
+    const finalClaim = await stub.claimIndexBootstrap(command, 60_000);
+    expect(finalClaim).toMatchObject({
+      status: 'claimed',
+      phase: 'finalizing',
+      pass: null,
+    });
+    if (finalClaim.status !== 'claimed') {
+      throw new Error('Expected finalization claim.');
+    }
+    expect(await stub.finalizeIndexBootstrap(finalClaim.leaseToken))
+      .toMatchObject({
+        status: 'completed',
+        receipt: {
+          commandDigest: digest,
+          status: 'completed',
+          lastKnownIndexKnown: true,
+          repositoryCount: 2,
+        },
+      });
+    expect(await stub.inspectIndexBootstrap(
+      command.requestId,
+      digest,
+      command.principal.accessServiceClientId,
+    )).toMatchObject({
+      status: 'completed',
+      repositoryCount: 2,
+    });
+    const counts = await runInDurableObject(stub, (_instance, state) => ({
+      targets: state.storage.sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM installation_fanout_targets',
+      ).one().count,
+      known: state.storage.sql.exec<{ count: number }>(
+        `SELECT COUNT(*) AS count
+         FROM installation_fanout_last_known_repositories`,
+      ).one().count,
+    }));
+    expect(counts).toEqual({ targets: 0, known: 2 });
+    await evictDurableObject(stub);
+    expect(await stub.inspectIndexBootstrap(
+      command.requestId,
+      digest,
+      command.principal.accessServiceClientId,
+    )).toMatchObject({ status: 'completed', repositoryCount: 2 });
+  });
+
+  it('persists teardown snapshots and repository deltas in the last-known index', async () => {
+    const installationId = 145_952_799;
+    const stub = installationCoordinator(installationId);
+    const explicitRoot = (
+      deliveryId: string,
+      repositoryIds: readonly number[],
+      cause:
+        | {
+            readonly event: 'installation';
+            readonly action: 'suspend' | 'deleted';
+          }
+        | {
+            readonly event: 'installation_repositories';
+            readonly action: 'added' | 'removed';
+          },
+    ): StewardRuntimeInstallationFanoutRootV1 => {
+      const target = {
+        scope: 'repository-set',
+        mode: 'refresh',
+        installationId,
+        repositoryIds,
+        pullRequests: 'all-open',
+      } satisfies StewardRuntimeRepositorySetScopeTargetV2;
+      const scopeCause = cause.event === 'installation'
+        ? {
+            kind: 'github-webhook' as const,
+            deliveryId,
+            event: 'installation' as const,
+            action: cause.action,
+            ref: null,
+            receivedAt: '2026-07-23T18:00:00.000Z',
+          }
+        : {
+            kind: 'github-webhook' as const,
+            deliveryId,
+            event: 'installation_repositories' as const,
+            action: cause.action,
+            ref: null,
+            receivedAt: '2026-07-23T18:00:00.000Z',
+          };
+      const scopeWorkItem = buildStewardRuntimeScopeWorkItemV2({
+        operation: 'scope-reconcile',
+        target,
+        cause: scopeCause,
+      });
+      return {
+        installationId,
+        deliveryId,
+        scopeWorkItem: {
+          ...scopeWorkItem,
+          target,
+        },
+      };
+    };
+    const run = async (
+      rootValue: ReturnType<typeof explicitRoot>,
+      liveRepositoryIds?: readonly number[],
+    ): Promise<void> => {
+      const claim = await stub.claim(rootValue, 60_000);
+      if (claim.status !== 'claimed') throw new Error('Expected a claim.');
+      if (claim.phase === 'enumerating') {
+        if (liveRepositoryIds === undefined) {
+          throw new Error('Live inventory is required for a delta.');
+        }
+        for (const pass of [1, 2] as const) {
+          await stub.recordPage(
+            claim.generation,
+            claim.leaseToken,
+            buildStewardRuntimeInstallationFanoutPageReceiptV1({
+              binding: {
+                root: rootValue,
+                generation: claim.generation,
+                pass,
+                cursor: null,
+              },
+              installation: { state: 'live', id: installationId },
+              page: {
+                totalCount: liveRepositoryIds.length,
+                repositoryIds: liveRepositoryIds,
+                hasNextPage: false,
+                endCursor: null,
+              },
+              controlRevision: v2Revision,
+            }),
+          );
+        }
+      }
+      const batch = await stub.nextDispatchBatch(
+        claim.generation,
+        claim.leaseToken,
+      );
+      if (batch.status !== 'batch') throw new Error('Expected a batch.');
+      await stub.recordQueueConfirmed(
+        claim.generation,
+        claim.leaseToken,
+        { confirmations: batch.targets },
+      );
+      expect(await stub.complete(claim.generation, claim.leaseToken))
+        .toMatchObject({ status: 'completed' });
+    };
+
+    await run(explicitRoot(
+      'workerd-installation-suspend-snapshot',
+      [7],
+      { event: 'installation', action: 'suspend' },
+    ));
+    expect(await stub.snapshot()).toMatchObject({
+      lastKnownIndexKnown: true,
+      lastKnownRepositoryCount: 1,
+    });
+
+    await run(explicitRoot(
+      'workerd-installation-repository-added',
+      [11],
+      { event: 'installation_repositories', action: 'added' },
+    ), [7, 11]);
+    expect(await stub.snapshot()).toMatchObject({
+      lastKnownIndexKnown: true,
+      lastKnownRepositoryCount: 2,
+    });
+
+    await run(explicitRoot(
+      'workerd-installation-repository-removed',
+      [7],
+      { event: 'installation_repositories', action: 'removed' },
+    ), [11]);
+    expect(await stub.snapshot()).toMatchObject({
+      lastKnownIndexKnown: true,
+      lastKnownRepositoryCount: 1,
+    });
+  });
+
+  it('persists an explicit root and emits a strict V3 child and V5 PR work item', async () => {
+    const installationId = 145_952_701;
+    const repositoryId = 1_298_587_402;
+    const repositoryFullName = 'splrad/installation-fanout-workerd';
+    const scopeWorkItem = buildStewardRuntimeScopeWorkItemV2({
+      operation: 'scope-reconcile',
+      target: {
+        scope: 'repository-set',
+        mode: 'refresh',
+        installationId,
+        repositoryIds: [repositoryId],
+        pullRequests: 'all-open',
+      },
+      cause: {
+        kind: 'github-webhook',
+        deliveryId: 'installation-fanout-workerd-root',
+        event: 'installation_repositories',
+        action: 'removed',
+        ref: null,
+        receivedAt: '2026-07-23T18:00:00.000Z',
+      },
+    });
+    const installationPagePasses: (1 | 2)[] = [];
+    const pagePasses: (1 | 2)[] = [];
+    const controlFetch = vi.fn(
+      async (input: Request | string | URL, init?: RequestInit) => {
+        if (
+          String(input)
+            === 'https://control.internal/v1/installation-fanout/page'
+        ) {
+          expect(new Headers(init?.headers).get('x-steward-internal-protocol'))
+            .toBe('installation-fanout-1');
+          const request =
+            parseStewardRuntimeInstallationFanoutPageRequestV1(
+              JSON.parse(String(init?.body)),
+            );
+          installationPagePasses.push(request.binding.pass);
+          return new Response(
+            canonicalStewardRuntimeInstallationFanoutPageReceiptV1Json(
+              buildStewardRuntimeInstallationFanoutPageReceiptV1({
+                binding: request.binding,
+                installation: { state: 'live', id: installationId },
+                page: {
+                  totalCount: 0,
+                  repositoryIds: [],
+                  hasNextPage: false,
+                  endCursor: null,
+                },
+                controlRevision: v2Revision,
+              }),
+            ),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            },
+          );
+        }
+        expect(String(input)).toBe(
+          'https://control.internal/v3/repository-fanout/page',
+        );
+        expect(new Headers(init?.headers).get('x-steward-internal-protocol'))
+          .toBe('repository-fanout-3');
+        const request =
+          await parseStewardRuntimeRepositoryFanoutPageRequestV3(
+            JSON.parse(String(init?.body)),
+          );
+        pagePasses.push(request.binding.pass);
+        return new Response(
+          await canonicalStewardRuntimeRepositoryFanoutPageReceiptV3Json(
+            await buildStewardRuntimeRepositoryFanoutPageReceiptV3({
+              binding: request.binding,
+              repository: {
+                state: 'live',
+                id: repositoryId,
+                fullName: repositoryFullName,
+              },
+              page: {
+                totalCount: 1,
+                pullRequestNumbers: [6],
+                hasNextPage: false,
+                endCursor: null,
+              },
+              controlRevision: v2Revision,
+            }),
+          ),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
+      },
+    );
+    const pendingBodies: string[] = [
+      canonicalStewardRuntimeScopeWorkItemJson(scopeWorkItem),
+    ];
+    const installationChildren:
+      Awaited<
+        ReturnType<
+          typeof parseStewardRuntimeInstallationRepositoryChildV1
+        >
+      >[] = [];
+    const workItems:
+      ReturnType<typeof parseStewardRuntimeWorkItemV5>[] = [];
+    const wakeupSend = vi.fn(async (body: string) => {
+      pendingBodies.push(body);
+    });
+    const childSendBatch = vi.fn(
+      async (
+        messages: readonly {
+          readonly body: string;
+          readonly contentType?: 'text';
+        }[],
+      ) => {
+        for (const message of messages) {
+          expect(message.contentType).toBe('text');
+          const value = JSON.parse(message.body) as {
+            readonly schemaVersion?: number;
+            readonly operation?: string;
+          };
+          if (value.operation === 'installation-repository-fanout') {
+            installationChildren.push(
+              await parseStewardRuntimeInstallationRepositoryChildV1(value),
+            );
+            pendingBodies.push(message.body);
+          } else {
+            workItems.push(parseStewardRuntimeWorkItemV5(value));
+          }
+        }
+      },
+    );
+    const coordinatorEnv: CoordinatorEnv = {
+      PR_COORDINATOR: workerdEnv.PR_COORDINATOR,
+      REPOSITORY_FANOUT_COORDINATOR:
+        workerdEnv.REPOSITORY_FANOUT_COORDINATOR,
+      INSTALLATION_FANOUT_COORDINATOR:
+        workerdEnv.INSTALLATION_FANOUT_COORDINATOR,
+      CONTROL: { fetch: controlFetch },
+      EVENT_QUEUE: {
+        send: wakeupSend,
+        sendBatch: childSendBatch,
+      },
+    };
+
+    let invocation = 0;
+    while (pendingBodies.length > 0) {
+      const body = pendingBodies.shift();
+      if (body === undefined) break;
+      const messageId = `queue-installation-fanout-${invocation}`;
+      const batch = createMessageBatch('steward-events', [{
+        id: messageId,
+        timestamp: new Date('2026-07-23T18:00:00.000Z'),
+        attempts: 1,
+        body,
+      }]);
+      await coordinatorWorker.queue(batch, coordinatorEnv);
+      const result = await getQueueResult(
+        batch,
+        createExecutionContext(),
+      );
+      expect(result.explicitAcks).toEqual([messageId]);
+      expect(result.retryMessages).toEqual([]);
+      invocation += 1;
+      if (invocation > 8) {
+        throw new Error('Installation fan-out wakeup chain did not converge.');
+      }
+    }
+
+    expect(installationPagePasses).toEqual([1, 2]);
+    expect(pagePasses).toEqual([1, 2]);
+    expect(installationChildren).toHaveLength(1);
+    expect(installationChildren[0]).toMatchObject({
+      schemaVersion: 1,
+      operation: 'installation-repository-fanout',
+      rootDeliveryId: scopeWorkItem.cause.deliveryId,
+      rootTargetScope: 'repository-set',
+      installationId,
+      repositoryId,
+      installationGeneration: 1,
+      cause: scopeWorkItem.cause,
+    });
+    expect(JSON.stringify(installationChildren[0]))
+      .not.toContain('repositoryIds');
+    expect(workItems).toHaveLength(1);
+    expect(workItems[0]).toMatchObject({
+      schemaVersion: 5,
+      operation: 'pull-request-reconcile',
+      installationId,
+      subject: {
+        repositoryId,
+        repositoryFullName,
+        pullRequestNumber: 6,
+      },
+      cause: {
+        kind: 'scope-fanout-3',
+        rootDeliveryId: scopeWorkItem.cause.deliveryId,
+        installationChild: installationChildren[0],
+        repositoryFanoutGeneration: 1,
+        event: scopeWorkItem.cause.event,
+        action: scopeWorkItem.cause.action,
+        ref: null,
+      },
+    });
+
+    const installationStub = installationCoordinator(installationId);
+    const repositoryStub =
+      workerdEnv.REPOSITORY_FANOUT_COORDINATOR.getByName(
+        repositoryFanoutCoordinatorName(repositoryId),
+      );
+    expect(await installationStub.snapshot()).toMatchObject({
+      generation: 1,
+      phase: 'idle',
+      targetSource: 'explicit',
+      targetCount: 1,
+      confirmedTargetCount: 1,
+      pendingDeliveryCount: 0,
+      completedDeliveryCount: 1,
+    });
+    expect(await repositoryStub.snapshot()).toMatchObject({
+      generation: 1,
+      phase: 'idle',
+      targetCount: 1,
+      confirmedTargetCount: 1,
+      pendingDeliveryCount: 0,
+      completedDeliveryCount: 1,
+    });
+    await evictDurableObject(installationStub);
+    await evictDurableObject(repositoryStub);
+    expect(await installationStub.snapshot()).toMatchObject({
+      generation: 1,
+      phase: 'idle',
+      completedDeliveryCount: 1,
+    });
+    expect(await repositoryStub.snapshot()).toMatchObject({
+      generation: 1,
+      phase: 'idle',
+      completedDeliveryCount: 1,
+    });
+  });
+});
+
 describe('RepositoryFanoutCoordinator in workerd', () => {
   it('durably enumerates two stable passes and dispatches one bounded child batch', async () => {
     const repositoryId = 1_298_587_401;
@@ -739,6 +1250,8 @@ describe('RepositoryFanoutCoordinator in workerd', () => {
       PR_COORDINATOR: workerdEnv.PR_COORDINATOR,
       REPOSITORY_FANOUT_COORDINATOR:
         workerdEnv.REPOSITORY_FANOUT_COORDINATOR,
+      INSTALLATION_FANOUT_COORDINATOR:
+        workerdEnv.INSTALLATION_FANOUT_COORDINATOR,
       CONTROL: { fetch: controlFetch },
       EVENT_QUEUE: {
         send: wakeupSend,
@@ -2822,6 +3335,8 @@ describe('PullRequestCoordinator in workerd', () => {
       PR_COORDINATOR: workerdEnv.PR_COORDINATOR,
       REPOSITORY_FANOUT_COORDINATOR:
         workerdEnv.REPOSITORY_FANOUT_COORDINATOR,
+      INSTALLATION_FANOUT_COORDINATOR:
+        workerdEnv.INSTALLATION_FANOUT_COORDINATOR,
       CONTROL: { fetch: controlFetch },
       EVENT_QUEUE: {
         send: vi.fn().mockResolvedValue(undefined),
@@ -2922,6 +3437,8 @@ describe('PullRequestCoordinator in workerd', () => {
       PR_COORDINATOR: workerdEnv.PR_COORDINATOR,
       REPOSITORY_FANOUT_COORDINATOR:
         workerdEnv.REPOSITORY_FANOUT_COORDINATOR,
+      INSTALLATION_FANOUT_COORDINATOR:
+        workerdEnv.INSTALLATION_FANOUT_COORDINATOR,
       CONTROL: { fetch: controlFetch },
       EVENT_QUEUE: {
         send: vi.fn().mockResolvedValue(undefined),
@@ -3065,6 +3582,8 @@ describe('PullRequestCoordinator in workerd', () => {
       PR_COORDINATOR: workerdEnv.PR_COORDINATOR,
       REPOSITORY_FANOUT_COORDINATOR:
         workerdEnv.REPOSITORY_FANOUT_COORDINATOR,
+      INSTALLATION_FANOUT_COORDINATOR:
+        workerdEnv.INSTALLATION_FANOUT_COORDINATOR,
       CONTROL: { fetch: controlFetch },
       EVENT_QUEUE: {
         send: vi.fn().mockResolvedValue(undefined),
@@ -3140,6 +3659,8 @@ describe('PullRequestCoordinator in workerd', () => {
       PR_COORDINATOR: workerdEnv.PR_COORDINATOR,
       REPOSITORY_FANOUT_COORDINATOR:
         workerdEnv.REPOSITORY_FANOUT_COORDINATOR,
+      INSTALLATION_FANOUT_COORDINATOR:
+        workerdEnv.INSTALLATION_FANOUT_COORDINATOR,
       CONTROL: { fetch: controlFetch },
       EVENT_QUEUE: {
         send: vi.fn().mockResolvedValue(undefined),
@@ -3257,6 +3778,8 @@ describe('PullRequestCoordinator in workerd', () => {
       PR_COORDINATOR: workerdEnv.PR_COORDINATOR,
       REPOSITORY_FANOUT_COORDINATOR:
         workerdEnv.REPOSITORY_FANOUT_COORDINATOR,
+      INSTALLATION_FANOUT_COORDINATOR:
+        workerdEnv.INSTALLATION_FANOUT_COORDINATOR,
       CONTROL: { fetch: controlFetch },
       EVENT_QUEUE: {
         send: wakeupSend,

@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  deliveryRecoveryLedgerSchemaVersion,
   maximumGitHubDeliveryStatusLength,
   maximumGitHubProviderCoverageWindowMs,
   maximumGitHubUnresolvedRedeliveryInspectionEntries,
@@ -174,6 +175,47 @@ beforeEach(() => {
 });
 
 describe('DeliveryRecoveryLedger DLQ replay', () => {
+  it('fails closed for unsupported or incomplete persisted schemas', () => {
+    const unsupported = new TestDurableStorage();
+    unsupported.sql.exec(`
+      CREATE TABLE delivery_recovery_schema (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        version INTEGER NOT NULL
+      )
+    `);
+    unsupported.sql.exec(
+      `INSERT INTO delivery_recovery_schema (singleton, version)
+       VALUES (1, 99)`,
+    );
+    expect(() => new DeliveryRecoveryLedger(
+      {
+        id: { name: 'global-v1' },
+        storage: unsupported,
+      },
+      {},
+    )).toThrow('Unsupported delivery recovery schema version 99');
+
+    const incomplete = new TestDurableStorage();
+    incomplete.sql.exec(`
+      CREATE TABLE delivery_recovery_schema (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        version INTEGER NOT NULL
+      )
+    `);
+    incomplete.sql.exec(
+      `INSERT INTO delivery_recovery_schema (singleton, version)
+       VALUES (1, ?)`,
+      deliveryRecoveryLedgerSchemaVersion,
+    );
+    expect(() => new DeliveryRecoveryLedger(
+      {
+        id: { name: 'global-v1' },
+        storage: incomplete,
+      },
+      {},
+    )).toThrow('Delivery recovery entries table');
+  });
+
   it('persists intent before replay and stops a third returned cycle', async () => {
     const body = '{"canonical":"secret-body-not-for-inspection"}';
     const entryId = await sha256(body);

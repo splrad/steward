@@ -4,13 +4,20 @@ import {
   type CloudflareAccessPrincipalResult,
 } from '../../access-auth/src/index.js';
 import {
+  buildStewardRuntimeInstallationIndexBootstrapEnvelopeV1,
   buildStewardRuntimeDeliveryRecoveryPageRequestV1,
   buildStewardRuntimeDeliveryRecoveryRedeliveryRequestV1,
+  canonicalStewardRuntimeInstallationIndexBootstrapEnvelopeV1Json,
+  canonicalStewardRuntimeInstallationIndexBootstrapStatusReceiptV1Json,
   canonicalStewardRuntimeDeliveryRecoveryPageRequestV1Json,
   canonicalStewardRuntimeDeliveryRecoveryRedeliveryRequestV1Json,
+  deriveStewardRuntimeInstallationIndexBootstrapDigest,
+  parseStewardRuntimeInstallationIndexBootstrapStatusReceiptV1,
   parseStewardRuntimeDeliveryRecoveryAcceptedReceiptV1,
   parseStewardRuntimeDeliveryRecoveryPageReceiptV1,
   type StewardRuntimeControlRevisionV1,
+  type StewardRuntimeInstallationIndexBootstrapCommandV1,
+  type StewardRuntimeInstallationIndexBootstrapStatusCommandV1,
   type StewardRuntimeDeliveryRecoveryPageReceiptV1,
 } from '../../core/src/index.js';
 import { classifyDeadLetterBody } from './capture.js';
@@ -107,6 +114,10 @@ export interface DeliveryRecoveryControlService {
   fetch(input: Request | string | URL, init?: RequestInit): Promise<Response>;
 }
 
+export interface DeliveryRecoveryCoordinatorService {
+  fetch(input: Request | string | URL, init?: RequestInit): Promise<Response>;
+}
+
 export interface DeliveryRecoveryEventQueue {
   send(
     body: string,
@@ -117,6 +128,7 @@ export interface DeliveryRecoveryEventQueue {
 export interface DeliveryRecoveryEnv extends CloudflareAccessEnvironment {
   readonly DELIVERY_RECOVERY_LEDGER: DeliveryRecoveryLedgerNamespace;
   readonly CONTROL: DeliveryRecoveryControlService;
+  readonly COORDINATOR?: DeliveryRecoveryCoordinatorService;
   readonly EVENT_QUEUE: DeliveryRecoveryEventQueue;
   readonly RECOVERY_CONTROL_SHARED_SECRET?: string;
 }
@@ -1267,6 +1279,124 @@ async function recoverGitHubDeliveries(
   });
 }
 
+async function enqueueInstallationIndexBootstrap(
+  command: StewardRuntimeInstallationIndexBootstrapCommandV1,
+  accessServiceClientId: string,
+  env: DeliveryRecoveryEnv,
+): Promise<Response> {
+  const envelope =
+    buildStewardRuntimeInstallationIndexBootstrapEnvelopeV1({
+      command,
+      accessServiceClientId,
+    });
+  const commandDigest =
+    await deriveStewardRuntimeInstallationIndexBootstrapDigest(envelope);
+  try {
+    await env.EVENT_QUEUE.send(
+      canonicalStewardRuntimeInstallationIndexBootstrapEnvelopeV1Json(
+        envelope,
+      ),
+      { contentType: 'text' },
+    );
+  } catch {
+    return jsonResponse(503, {
+      error: 'installation-index-bootstrap-enqueue-unknown',
+      requestId: command.requestId,
+      commandDigest,
+    });
+  }
+  return jsonResponse(202, {
+    schemaVersion: 1,
+    operation: command.operation,
+    requestId: command.requestId,
+    commandDigest,
+    status: 'enqueued',
+  });
+}
+
+async function inspectInstallationIndexBootstrap(
+  command: StewardRuntimeInstallationIndexBootstrapStatusCommandV1,
+  accessServiceClientId: string,
+  env: DeliveryRecoveryEnv,
+  parentSignal: AbortSignal,
+): Promise<Response> {
+  let response: Response;
+  try {
+    if (env.COORDINATOR === undefined) {
+      throw new Error('Coordinator binding is unavailable.');
+    }
+    response = await env.COORDINATOR.fetch(
+      'https://coordinator.internal/v1/installation-index-bootstrap/status',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-steward-internal-protocol':
+            'installation-index-bootstrap-status-1',
+        },
+        signal: AbortSignal.any([
+          parentSignal,
+          AbortSignal.timeout(recoveryControlCallTimeoutMs),
+        ]),
+        body: JSON.stringify({
+          schemaVersion: 1,
+          operation: 'installation-index-bootstrap-status',
+          bootstrapRequestId: command.bootstrapRequestId,
+          installationId: command.installationId,
+          expectedBootstrapDigest: command.expectedBootstrapDigest,
+          principal: { accessServiceClientId },
+        }),
+      },
+    );
+  } catch {
+    return jsonResponse(503, {
+      error: 'installation-index-bootstrap-status-unavailable',
+      requestId: command.requestId,
+    });
+  }
+  if (response.status === 404) {
+    return jsonResponse(404, {
+      error: 'installation-index-bootstrap-not-found',
+      requestId: command.requestId,
+    });
+  }
+  if (response.status === 409) {
+    return jsonResponse(409, {
+      error: 'installation-index-bootstrap-status-conflict',
+      requestId: command.requestId,
+    });
+  }
+  if (!response.ok) {
+    return jsonResponse(503, {
+      error: 'installation-index-bootstrap-status-unavailable',
+      requestId: command.requestId,
+    });
+  }
+  try {
+    const receipt =
+      parseStewardRuntimeInstallationIndexBootstrapStatusReceiptV1(
+        await readBoundedResponseJson(response, parentSignal),
+      );
+    return new Response(
+      canonicalStewardRuntimeInstallationIndexBootstrapStatusReceiptV1Json(
+        receipt,
+      ),
+      {
+        status: 200,
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'no-store',
+        },
+      },
+    );
+  } catch {
+    return jsonResponse(503, {
+      error: 'installation-index-bootstrap-status-unavailable',
+      requestId: command.requestId,
+    });
+  }
+}
+
 async function handleCommand(
   command: DeliveryRecoveryCommand,
   accessServiceClientId: string,
@@ -1274,6 +1404,21 @@ async function handleCommand(
   dependencies: DeliveryRecoveryDependencies,
   parentSignal: AbortSignal,
 ): Promise<Response> {
+  if (command.operation === 'installation-index-bootstrap') {
+    return await enqueueInstallationIndexBootstrap(
+      command,
+      accessServiceClientId,
+      env,
+    );
+  }
+  if (command.operation === 'inspect-installation-index-bootstrap') {
+    return await inspectInstallationIndexBootstrap(
+      command,
+      accessServiceClientId,
+      env,
+      parentSignal,
+    );
+  }
   if (command.operation === 'inspect') {
     const stub = ledger(env);
     const [deadLetters, github] = await Promise.all([

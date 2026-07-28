@@ -6,8 +6,12 @@ import {
   buildStewardRuntimeControlPrepareRequestV2,
   buildStewardRuntimeControlRecoverRequestV2,
   buildStewardRuntimeControlRecoveryReceiptV2,
+  buildStewardRuntimeInstallationRepositoryChildV1,
   buildStewardRuntimeScopeWorkItemV1,
+  buildStewardRuntimeScopeWorkItemV2,
   buildStewardRuntimeWorkItemV3,
+  buildStewardRuntimeWorkItemV4,
+  buildStewardRuntimeWorkItemV5,
   canonicalStewardRuntimeControlApplyNextRequestV2Json,
   canonicalStewardRuntimeControlMutationReceiptV2Json,
   canonicalStewardRuntimeControlPreparedReceiptV2Json,
@@ -17,6 +21,8 @@ import {
   canonicalControlJson,
   controlJsonDigest,
   deriveStewardRuntimeFanoutDeliveryId,
+  deriveStewardRuntimeFanoutDeliveryIdV2,
+  deriveStewardRuntimeFanoutDeliveryIdV3,
   parseStewardRuntimeControlApplyNextRequestV2,
   parseStewardRuntimeControlMutationReceiptV2,
   parseStewardRuntimeControlPreparedReceiptV2,
@@ -137,6 +143,131 @@ async function fanoutBinding(
         event: scopeWorkItem.cause.event,
         action: scopeWorkItem.cause.action,
         receivedAt: scopeWorkItem.cause.receivedAt,
+      },
+    }),
+    generation,
+    objective: 'governance',
+  };
+}
+
+async function fanoutBindingV2(
+  generation = 8,
+): Promise<StewardRuntimeControlBindingV2> {
+  const scopeWorkItem = buildStewardRuntimeScopeWorkItemV2({
+    operation: 'scope-reconcile',
+    target: {
+      scope: 'repository',
+      mode: 'refresh',
+      installationId: 145_952_003,
+      repositoryId,
+      pullRequests: 'all-open',
+    },
+    cause: {
+      kind: 'github-webhook',
+      deliveryId: 'push-delivery-1',
+      event: 'push',
+      action: null,
+      ref: 'refs/heads/main',
+      receivedAt: '2026-07-23T16:00:00.000Z',
+    },
+  });
+  const deliveryId = await deriveStewardRuntimeFanoutDeliveryIdV2(
+    scopeWorkItem,
+    generation,
+    pullRequestNumber,
+  );
+  if (scopeWorkItem.target.scope !== 'repository') {
+    throw new Error('fan-out v2 fixture must use repository scope');
+  }
+  return {
+    workItem: buildStewardRuntimeWorkItemV4({
+      operation: 'pull-request-reconcile',
+      installationId: scopeWorkItem.target.installationId,
+      subject: {
+        repositoryId: scopeWorkItem.target.repositoryId,
+        repositoryFullName,
+        pullRequestNumber,
+      },
+      cause: {
+        kind: 'scope-fanout-2',
+        deliveryId,
+        rootDeliveryId: scopeWorkItem.cause.deliveryId,
+        scopeSchemaVersion: scopeWorkItem.schemaVersion,
+        fanoutGeneration: generation,
+        event: scopeWorkItem.cause.event,
+        action: scopeWorkItem.cause.action,
+        ref: scopeWorkItem.cause.ref,
+        receivedAt: scopeWorkItem.cause.receivedAt,
+      },
+    }),
+    generation,
+    objective: 'governance',
+  };
+}
+
+async function fanoutBindingV3(
+  generation = 9,
+): Promise<StewardRuntimeControlBindingV2> {
+  const scopeWorkItem = buildStewardRuntimeScopeWorkItemV2({
+    operation: 'scope-reconcile',
+    target: {
+      scope: 'installation',
+      mode: 'refresh',
+      installationId: 145_952_003,
+      repositories: 'all-live',
+      pullRequests: 'all-open',
+    },
+    cause: {
+      kind: 'github-webhook',
+      deliveryId: 'installation-delivery-1',
+      event: 'installation',
+      action: 'created',
+      ref: null,
+      receivedAt: '2026-07-23T16:00:00.000Z',
+    },
+  });
+  if (scopeWorkItem.target.scope !== 'installation') {
+    throw new Error('fan-out v3 fixture must use installation scope');
+  }
+  const root = {
+    installationId: scopeWorkItem.target.installationId,
+    deliveryId: scopeWorkItem.cause.deliveryId,
+    scopeWorkItem: {
+      ...scopeWorkItem,
+      target: scopeWorkItem.target,
+    },
+  };
+  const installationChild =
+    await buildStewardRuntimeInstallationRepositoryChildV1({
+      root,
+      installationId: scopeWorkItem.target.installationId,
+      repositoryId,
+      installationGeneration: 4,
+    });
+  const deliveryId = await deriveStewardRuntimeFanoutDeliveryIdV3(
+    installationChild,
+    generation,
+    pullRequestNumber,
+  );
+  return {
+    workItem: buildStewardRuntimeWorkItemV5({
+      operation: 'pull-request-reconcile',
+      installationId: installationChild.installationId,
+      subject: {
+        repositoryId: installationChild.repositoryId,
+        repositoryFullName,
+        pullRequestNumber,
+      },
+      cause: {
+        kind: 'scope-fanout-3',
+        deliveryId,
+        rootDeliveryId: installationChild.rootDeliveryId,
+        installationChild,
+        repositoryFanoutGeneration: generation,
+        event: installationChild.cause.event,
+        action: installationChild.cause.action,
+        ref: installationChild.cause.ref,
+        receivedAt: installationChild.cause.receivedAt,
       },
     }),
     generation,
@@ -554,6 +685,89 @@ describe('runtime Control v2 phased protocol', () => {
     await expectRejected(
       parseStewardRuntimeControlPrepareRequestV2(changedRoot),
     );
+  });
+
+  it('binds scope-fanout-v2 to the complete actionless root cause', async () => {
+    const valid = {
+      schemaVersion: 2,
+      phase: 'prepare',
+      binding: await fanoutBindingV2(),
+    };
+    await expect(parseStewardRuntimeControlPrepareRequestV2(valid))
+      .resolves.toEqual(valid);
+    const cause = valid.binding.workItem.cause;
+    if (cause.kind !== 'scope-fanout-2') {
+      throw new Error('fan-out v2 fixture must use a scope-fanout-2 cause');
+    }
+    await expectRejected(parseStewardRuntimeControlPrepareRequestV2({
+      ...valid,
+      binding: {
+        ...valid.binding,
+        workItem: {
+          ...valid.binding.workItem,
+          cause: { ...cause, ref: 'refs/heads/trunk' },
+        },
+      },
+    }));
+  });
+
+  it('recomputes both installation and repository fan-out provenance', async () => {
+    const valid = {
+      schemaVersion: 2,
+      phase: 'prepare',
+      binding: await fanoutBindingV3(),
+    };
+    await expect(parseStewardRuntimeControlPrepareRequestV2(valid))
+      .resolves.toEqual(valid);
+    const cause = valid.binding.workItem.cause;
+    if (cause.kind !== 'scope-fanout-3') {
+      throw new Error('fan-out v3 fixture must use a scope-fanout-3 cause');
+    }
+
+    await expectRejected(parseStewardRuntimeControlPrepareRequestV2({
+      ...valid,
+      binding: {
+        ...valid.binding,
+        workItem: {
+          ...valid.binding.workItem,
+          cause: {
+            ...cause,
+            installationChild: {
+              ...cause.installationChild,
+              rootTargetDigest: '0'.repeat(64),
+            },
+          },
+        },
+      },
+    }));
+    await expectRejected(parseStewardRuntimeControlPrepareRequestV2({
+      ...valid,
+      binding: {
+        ...valid.binding,
+        workItem: {
+          ...valid.binding.workItem,
+          cause: {
+            ...cause,
+            repositoryFanoutGeneration:
+              cause.repositoryFanoutGeneration + 1,
+          },
+        },
+      },
+    }));
+    await expectRejected(parseStewardRuntimeControlPrepareRequestV2({
+      ...valid,
+      binding: {
+        ...valid.binding,
+        workItem: {
+          ...valid.binding.workItem,
+          subject: {
+            ...valid.binding.workItem.subject,
+            pullRequestNumber:
+              valid.binding.workItem.subject.pullRequestNumber + 1,
+          },
+        },
+      },
+    }));
   });
 
   it('binds live head, default branch, Manifest, config, and PR input digest', async () => {

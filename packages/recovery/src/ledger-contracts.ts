@@ -3,7 +3,7 @@ import type {
   ClassifiedDeadLetterBody,
 } from './capture.js';
 
-export const deliveryRecoveryLedgerSchemaVersion = 1 as const;
+export const deliveryRecoveryLedgerSchemaVersion = 2 as const;
 export const deliveryRecoveryLedgerName = 'global-v1';
 export const maximumDeliveryRecoveryBodyBytes = 127_000;
 export const maximumDeliveryRecoveryCaptureAuditRows = 16;
@@ -495,17 +495,29 @@ export function parseDeliveryRecoveryCaptureInput(
 
   if (record.eligible === true) {
     const envelopeKind = requireEligibleEnvelopeKind(record.envelopeKind);
-    const deliveryId = requireVisibleAscii(
-      record.deliveryId,
-      'DLQ capture.deliveryId',
-      128,
-    );
-    const repositoryId = requirePositiveInteger(
-      record.repositoryId,
-      'DLQ capture.repositoryId',
-    );
+    const deliveryId = envelopeKind === 'installation-index-bootstrap-v1'
+      ? requireNull(record.deliveryId, 'DLQ capture.deliveryId')
+      : requireVisibleAscii(
+          record.deliveryId,
+          'DLQ capture.deliveryId',
+          128,
+        );
+    const repositoryId =
+      (
+        envelopeKind === 'scope-work-item-v2'
+        || envelopeKind === 'installation-index-bootstrap-v1'
+      )
+      && record.repositoryId === null
+        ? null
+        : requirePositiveInteger(
+            record.repositoryId,
+            'DLQ capture.repositoryId',
+          );
     const pullRequestNumber =
       envelopeKind === 'scope-work-item-v1'
+        || envelopeKind === 'scope-work-item-v2'
+        || envelopeKind === 'installation-repository-child-v1'
+        || envelopeKind === 'installation-index-bootstrap-v1'
         ? requireNull(
           record.pullRequestNumber,
           'DLQ capture.pullRequestNumber',
@@ -1219,9 +1231,14 @@ function requireEligibleEnvelopeKind(
 ): Exclude<CapturedEnvelopeKind, 'quarantined'> {
   if (
     value !== 'scope-work-item-v1'
+    && value !== 'scope-work-item-v2'
+    && value !== 'installation-repository-child-v1'
+    && value !== 'installation-index-bootstrap-v1'
     && value !== 'work-item-v1'
     && value !== 'work-item-v2'
     && value !== 'work-item-v3'
+    && value !== 'work-item-v4'
+    && value !== 'work-item-v5'
   ) {
     throw new TypeError(
       'DLQ capture.envelopeKind is not an eligible canonical envelope.',

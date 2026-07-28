@@ -153,6 +153,10 @@ describe('central runtime deployment topology', () => {
         binding: 'CONTROL',
         service: 'steward-control',
       },
+      {
+        binding: 'COORDINATOR',
+        service: 'steward-coordinator',
+      },
     ]);
     expect(recovery.secrets).toEqual({
       required: [
@@ -209,6 +213,7 @@ describe('central runtime deployment topology', () => {
   it('gives Ingress only the webhook secret and event Queue producer', () => {
     expect(ingress.name).toBe('steward-ingress');
     expect(ingress.main).toBe('src/index.ts');
+    expect(ingress.compatibility_flags).toEqual(['nodejs_compat']);
     expect(ingress.secrets).toEqual({
       required: ['GITHUB_WEBHOOK_SECRET'],
     });
@@ -252,6 +257,10 @@ describe('central runtime deployment topology', () => {
           name: 'REPOSITORY_FANOUT_COORDINATOR',
           class_name: 'RepositoryFanoutCoordinator',
         },
+        {
+          name: 'INSTALLATION_FANOUT_COORDINATOR',
+          class_name: 'InstallationFanoutCoordinator',
+        },
       ],
     });
     expect(coordinator.exports).toEqual({
@@ -260,6 +269,10 @@ describe('central runtime deployment topology', () => {
         storage: 'sqlite',
       },
       RepositoryFanoutCoordinator: {
+        type: 'durable-object',
+        storage: 'sqlite',
+      },
+      InstallationFanoutCoordinator: {
         type: 'durable-object',
         storage: 'sqlite',
       },

@@ -32,6 +32,7 @@ export type WebhookCausalityCause =
   | 'maintainer-team-membership-changed'
   | 'maintainer-team-definition-changed'
   | 'maintainer-team-repository-access-changed'
+  | 'repository-default-branch-pushed'
   | 'repository-lifecycle-changed'
   | 'repository-deleted'
   | 'installation-lifecycle-changed'
@@ -423,6 +424,59 @@ function classifyRepository(input: TrustedWebhookCausalityInput): WebhookCausali
   );
 }
 
+function classifyRepositoryTeamAccess(
+  input: TrustedWebhookCausalityInput,
+  actionless = false,
+): WebhookCausalityDecision {
+  const checked = checkedPayload(input, actionless);
+  if (!checked.ok) return checked.decision;
+  const { payload } = checked;
+  const action = actionless ? 'added_to_repository' : input.action;
+  if (
+    !['added_to_repository', 'removed_from_repository', 'edited']
+      .includes(action ?? '')
+    || (
+      action === 'edited'
+      && !record(record(record(payload.changes)?.repository)?.permissions)
+    )
+  ) {
+    return quarantine('unsupported-action', 'action');
+  }
+  if (teamId(payload) === null) return quarantine('malformed-payload', 'team.id');
+  const installation = installationId(payload);
+  if (installation === null) return quarantine('malformed-payload', 'installation.id');
+  const repository = repositoryId(payload);
+  if (repository === null) return quarantine('malformed-payload', 'repository.id');
+  return reconcile(
+    'maintainer-team-repository-access-changed',
+    repositoryTarget(installation, repository),
+    teamRepositoryReads,
+  );
+}
+
+function classifyPush(input: TrustedWebhookCausalityInput): WebhookCausalityDecision {
+  const checked = checkedPayload(input, true);
+  if (!checked.ok) return checked.decision;
+  const { payload } = checked;
+  const installation = installationId(payload);
+  if (installation === null) return quarantine('malformed-payload', 'installation.id');
+  const repository = repositoryId(payload);
+  if (repository === null) return quarantine('malformed-payload', 'repository.id');
+  if (
+    typeof payload.ref !== 'string'
+    || payload.ref !== payload.ref.trim()
+    || !payload.ref.startsWith('refs/')
+    || payload.ref.length <= 'refs/'.length
+  ) {
+    return quarantine('malformed-payload', 'ref');
+  }
+  return reconcile(
+    'repository-default-branch-pushed',
+    repositoryTarget(installation, repository),
+    repositoryRefreshReads,
+  );
+}
+
 /**
  * Narrow repository-only classifier for the public Ingress. Repository
  * lifecycle routing does not depend on organization property or team
@@ -434,6 +488,31 @@ export function classifyRepositoryWebhookCausality(
 ): WebhookCausalityDecision {
   if (input.event !== 'repository') return ignore('unsupported-event');
   return classifyRepository(input);
+}
+
+/**
+ * Public Ingress classifier for repository-scoped convergence. Team deliveries
+ * are deliberately over-routed after stable-ID validation because the public
+ * boundary has no live maintainer-team identity; Control re-reads the exact
+ * governance state before any mutation.
+ */
+export function classifyRepositoryScopedWebhookCausality(
+  input: TrustedWebhookCausalityInput,
+): WebhookCausalityDecision {
+  switch (input.event) {
+    case 'repository':
+      return classifyRepository(input);
+    case 'custom_property_values':
+      return classifyCustomPropertyValues(input);
+    case 'team':
+      return classifyRepositoryTeamAccess(input);
+    case 'team_add':
+      return classifyRepositoryTeamAccess(input, true);
+    case 'push':
+      return classifyPush(input);
+    default:
+      return ignore('unsupported-event');
+  }
 }
 
 function classifyInstallation(input: TrustedWebhookCausalityInput): WebhookCausalityDecision {
@@ -448,6 +527,23 @@ function classifyInstallation(input: TrustedWebhookCausalityInput): WebhookCausa
   const installation = installationId(payload);
   if (installation === null) return quarantine('malformed-payload', 'installation.id');
   if (input.action === 'deleted' || input.action === 'suspend') {
+    if ('repositories' in payload) {
+      const repositoryIds = readRepositoryIds(payload.repositories);
+      if (repositoryIds === null) {
+        return quarantine('malformed-payload', 'repositories');
+      }
+      return reconcile(
+        input.action === 'deleted' ? 'installation-deleted' : 'installation-suspended',
+        {
+          scope: 'repository-set',
+          mode: 'refresh',
+          installationId: installation,
+          repositoryIds,
+          pullRequests: 'all-open',
+        },
+        repositoryRefreshReads,
+      );
+    }
     return reconcile(
       input.action === 'deleted' ? 'installation-deleted' : 'installation-suspended',
       installationTarget(installation),
@@ -564,6 +660,8 @@ export function classifyWebhookCausality(
       return classifyTeam(input, contract.maintainerTeamId, contract.maintainerTeamSlug, true);
     case 'repository':
       return classifyRepository(input);
+    case 'push':
+      return classifyPush(input);
     case 'installation':
       return classifyInstallation(input);
     case 'installation_repositories':

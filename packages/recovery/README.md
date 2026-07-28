@@ -16,8 +16,9 @@
 
 ## Operator protocol
 
-The single `POST /v1/recovery` endpoint accepts three exact command shapes:
-`inspect`, `replay-dlq`, and `recover-github`. Every command carries a fresh
+The single `POST /v1/recovery` endpoint accepts five exact command shapes:
+`inspect`, `replay-dlq`, `recover-github`, `installation-index-bootstrap`, and
+`inspect-installation-index-bootstrap`. Every command carries a fresh
 canonical `requestedAt` and UUID `requestId`. A short DLQ-replay retry repeats
 the exact command; after its freshness window, the operator uses a new
 `requestId` and time. Only an in-progress GitHub scan preserves its
@@ -64,6 +65,25 @@ is a fresh signature-uniqueness field, not a durable one-time token. This is
 safe only while Control has no public route, Recovery never exposes or logs
 capability headers, and neither layer automatically retries a redelivery POST.
 The durable `dispatching` fence is the normal-failure replay boundary.
+
+## Installation index bootstrap gate
+
+`installation-index-bootstrap` is an Access-authorized, per-installation
+operator command. It is deliberately not a `ScopeWorkItem` and never claims
+GitHub-webhook causality. Recovery injects the verified Access service client
+into the canonical Queue envelope. Coordinator then uses the installation's
+existing single-writer Durable Object to perform two complete Control inventory
+passes. Only identical sets, totals, and Control revisions atomically replace
+the last-known repository index; the command emits no repository child work.
+
+This source contract does not enumerate every App installation. Before enabling
+App events after a deployment, operators must obtain the authoritative current
+installation-ID inventory from the App API, submit one bootstrap command for
+every returned ID, and poll each command with the same Access principal until
+its receipt reports `status=completed`, `lastKnownIndexKnown=true`, and the
+expected Control revision. A partial list, a remembered installation ID, a
+`pending`/`running` receipt, or any failed command keeps the event-enablement
+gate closed.
 
 The worker has no GitHub credentials and no Cloudflare account API token.
 Diagnostics remains read-only and also observes the terminal

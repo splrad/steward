@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildStewardRuntimeScopeWorkItemV1,
+  buildStewardRuntimeScopeWorkItemV2,
   canonicalStewardRuntimeScopeWorkItemJson,
+  parseStewardRuntimeScopeWorkItem,
   parseStewardRuntimeScopeWorkItemV1,
+  parseStewardRuntimeScopeWorkItemV2,
   RuntimeScopeWorkItemValidationError,
   STEWARD_RUNTIME_REPOSITORY_ACTIONS_V1,
   type StewardRuntimeScopeWorkItemV1,
+  type StewardRuntimeScopeWorkItemV2,
 } from '../packages/core/src/runtime-scope-work-item.js';
 
 function scopeItem(): StewardRuntimeScopeWorkItemV1 {
@@ -36,6 +40,28 @@ function clone(): Record<string, unknown> {
 function expectInvalid(value: unknown): void {
   expect(() => parseStewardRuntimeScopeWorkItemV1(value))
     .toThrow(RuntimeScopeWorkItemValidationError);
+}
+
+function pushScopeItemV2(): StewardRuntimeScopeWorkItemV2 {
+  return {
+    schemaVersion: 2,
+    operation: 'scope-reconcile',
+    target: {
+      scope: 'repository',
+      mode: 'refresh',
+      installationId: 145_952_003,
+      repositoryId: 1_298_587_318,
+      pullRequests: 'all-open',
+    },
+    cause: {
+      kind: 'github-webhook',
+      deliveryId: 'push-delivery-1',
+      event: 'push',
+      action: null,
+      ref: 'refs/heads/main',
+      receivedAt: '2026-07-27T00:00:00.123Z',
+    },
+  };
 }
 
 describe('runtime repository scope work-item v1 wire protocol', () => {
@@ -176,5 +202,165 @@ describe('runtime repository scope work-item v1 wire protocol', () => {
       cause: value.cause,
     } as unknown as Parameters<typeof buildStewardRuntimeScopeWorkItemV1>[0]))
       .toThrow(RuntimeScopeWorkItemValidationError);
+  });
+});
+
+describe('runtime scope work-item v2 wire protocol', () => {
+  it('adds actionless push causality without changing v1 canonical bytes', () => {
+    const value = pushScopeItemV2();
+    expect(parseStewardRuntimeScopeWorkItem(value)).toEqual(value);
+    expect(parseStewardRuntimeScopeWorkItemV2(value)).toEqual(value);
+    expect(buildStewardRuntimeScopeWorkItemV2({
+      operation: value.operation,
+      target: value.target,
+      cause: value.cause,
+    })).toEqual(value);
+    expect(canonicalStewardRuntimeScopeWorkItemJson(value)).toBe(
+      '{"schemaVersion":2,"operation":"scope-reconcile",'
+      + '"target":{"scope":"repository","mode":"refresh","installationId":145952003,'
+      + '"repositoryId":1298587318,"pullRequests":"all-open"},'
+      + '"cause":{"kind":"github-webhook","deliveryId":"push-delivery-1",'
+      + '"event":"push","action":null,"ref":"refs/heads/main",'
+      + '"receivedAt":"2026-07-27T00:00:00.123Z"}}',
+    );
+    expect(canonicalStewardRuntimeScopeWorkItemJson(scopeItem())).toBe(
+      '{"schemaVersion":1,"operation":"scope-reconcile",'
+      + '"target":{"scope":"repository","mode":"refresh","installationId":145952003,'
+      + '"repositoryId":1298587318,"pullRequests":"all-open"},'
+      + '"cause":{"kind":"github-webhook",'
+      + '"deliveryId":"72d3162e-cc78-11e3-81ab-4c9367dc0958",'
+      + '"event":"repository","action":"renamed",'
+      + '"receivedAt":"2026-07-27T00:00:00.123Z"}}',
+    );
+  });
+
+  it('strictly carries the installation and repository-set target union', () => {
+    const installation = buildStewardRuntimeScopeWorkItemV2({
+      operation: 'scope-reconcile',
+      target: {
+        scope: 'installation',
+        mode: 'refresh',
+        installationId: 145_952_003,
+        repositories: 'all-live',
+        pullRequests: 'all-open',
+        accountId: 302_208_797,
+      },
+      cause: {
+        kind: 'github-webhook',
+        deliveryId: 'property-delivery-1',
+        event: 'custom_property',
+        action: 'updated',
+        ref: null,
+        receivedAt: '2026-07-27T00:00:00.123Z',
+      },
+    });
+    expect(parseStewardRuntimeScopeWorkItemV2(installation)).toEqual(installation);
+
+    const repositorySet = buildStewardRuntimeScopeWorkItemV2({
+      operation: 'scope-reconcile',
+      target: {
+        scope: 'repository-set',
+        mode: 'refresh',
+        installationId: 145_952_003,
+        repositoryIds: [10, 20],
+        pullRequests: 'all-open',
+      },
+      cause: {
+        kind: 'github-webhook',
+        deliveryId: 'installation-repositories-delivery-1',
+        event: 'installation_repositories',
+        action: 'removed',
+        ref: null,
+        receivedAt: '2026-07-27T00:00:00.123Z',
+      },
+    });
+    expect(parseStewardRuntimeScopeWorkItemV2(repositorySet)).toEqual(repositorySet);
+  });
+
+  it('accepts a complete installation teardown snapshot and nothing broader', () => {
+    for (const [action, repositoryIds] of [
+      ['suspend', [10, 20]],
+      ['deleted', []],
+    ] as const) {
+      const snapshot = buildStewardRuntimeScopeWorkItemV2({
+        operation: 'scope-reconcile',
+        target: {
+          scope: 'repository-set',
+          mode: 'refresh',
+          installationId: 145_952_003,
+          repositoryIds,
+          pullRequests: 'all-open',
+        },
+        cause: {
+          kind: 'github-webhook',
+          deliveryId: `installation-${action}-snapshot`,
+          event: 'installation',
+          action,
+          ref: null,
+          receivedAt: '2026-07-27T00:00:00.123Z',
+        },
+      });
+      expect(parseStewardRuntimeScopeWorkItemV2(snapshot)).toEqual(snapshot);
+    }
+
+    expect(() => buildStewardRuntimeScopeWorkItemV2({
+      operation: 'scope-reconcile',
+      target: {
+        scope: 'repository-set',
+        mode: 'refresh',
+        installationId: 145_952_003,
+        repositoryIds: [10],
+        pullRequests: 'all-open',
+      },
+      cause: {
+        kind: 'github-webhook',
+        deliveryId: 'installation-created-forged-snapshot',
+        event: 'installation',
+        action: 'created',
+        ref: null,
+        receivedAt: '2026-07-27T00:00:00.123Z',
+      },
+    })).toThrow('must be installation');
+
+    expect(() => buildStewardRuntimeScopeWorkItemV2({
+      operation: 'scope-reconcile',
+      target: {
+        scope: 'repository-set',
+        mode: 'refresh',
+        installationId: 145_952_003,
+        repositoryIds: [],
+        pullRequests: 'all-open',
+      },
+      cause: {
+        kind: 'github-webhook',
+        deliveryId: 'installation-repositories-empty-delta',
+        event: 'installation_repositories',
+        action: 'removed',
+        ref: null,
+        receivedAt: '2026-07-27T00:00:00.123Z',
+      },
+    })).toThrow('may be empty only');
+  });
+
+  it('fails closed on forged actionless fields, invalid refs, and target mismatch', () => {
+    for (const mutate of [
+      (value: Record<string, unknown>) => {
+        (value.cause as Record<string, unknown>).action = 'pushed';
+      },
+      (value: Record<string, unknown>) => {
+        (value.cause as Record<string, unknown>).ref = 'main';
+      },
+      (value: Record<string, unknown>) => {
+        (value.target as Record<string, unknown>).scope = 'installation';
+      },
+    ]) {
+      const value = structuredClone(pushScopeItemV2()) as unknown as Record<
+        string,
+        unknown
+      >;
+      mutate(value);
+      expect(() => parseStewardRuntimeScopeWorkItemV2(value))
+        .toThrow(RuntimeScopeWorkItemValidationError);
+    }
   });
 });

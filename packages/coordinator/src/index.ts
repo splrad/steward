@@ -64,6 +64,10 @@ export {
 export {
   RepositoryFanoutCoordinator,
 } from './repository-fanout-coordinator.js';
+export * from './installation-fanout-contracts.js';
+export {
+  InstallationFanoutCoordinator,
+} from './installation-fanout-coordinator.js';
 export {
   coordinatorMutationIntentCounts,
   coordinatorMaximumCanonicalPlanBytes,
@@ -126,6 +130,8 @@ export {
   type CoordinatorWakeupQueue,
   type PullRequestCoordinatorNamespace,
   type PullRequestCoordinatorStub,
+  type InstallationFanoutCoordinatorNamespace,
+  type InstallationFanoutCoordinatorStub,
   type RepositoryFanoutCoordinatorNamespace,
   type RepositoryFanoutCoordinatorStub,
 } from './worker.js';

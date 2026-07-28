@@ -22,6 +22,7 @@
     "packages/coordinator/**/*.ts",
     "packages/control-runtime/**/*.ts",
     "packages/ingress/**/*.ts",
+    "packages/promotion/**/*.ts",
     "packages/recovery/**/*.ts",
     "tests/workerd/**/*.ts"
   ]

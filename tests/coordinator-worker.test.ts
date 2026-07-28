@@ -1,14 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  buildStewardRuntimeInstallationRepositoryChildV1,
   buildStewardRuntimeRepositoryFanoutPageReceiptV1,
+  buildStewardRuntimeRepositoryFanoutPageReceiptV2,
   buildStewardRuntimeScopeWorkItemV1,
+  buildStewardRuntimeScopeWorkItemV2,
   buildStewardRuntimeWorkItemV3,
+  buildStewardRuntimeWorkItemV5,
   buildStewardRuntimeControlMutationReceiptV2,
   buildStewardRuntimeControlPreparedReceiptV2,
   buildStewardRuntimeControlRecoveryReceiptV2,
   buildStewardRuntimeControlReceipt,
   canonicalControlJson,
   canonicalStewardRuntimeRepositoryFanoutPageReceiptV1Json,
+  canonicalStewardRuntimeRepositoryFanoutPageReceiptV2Json,
   canonicalStewardRuntimeScopeWorkItemJson,
   canonicalStewardRuntimeControlMutationReceiptV2Json,
   canonicalStewardRuntimeControlPreparedReceiptV2Json,
@@ -17,12 +22,17 @@ import {
   canonicalStewardRuntimeWorkItemJson,
   controlJsonDigest,
   deriveStewardRuntimeFanoutDeliveryId,
+  deriveStewardRuntimeFanoutDeliveryIdV2,
+  deriveStewardRuntimeFanoutDeliveryIdV3,
   parseStewardRuntimeRepositoryFanoutPageRequestV1,
+  parseStewardRuntimeRepositoryFanoutPageRequestV2,
   parseStewardRuntimeControlApplyNextRequestV2,
   parseStewardRuntimeControlPrepareRequestV2,
   parseStewardRuntimeControlRecoverRequestV2,
   parseStewardRuntimeWorkItem,
+  type StewardRuntimeInstallationFanoutRootV1,
   type StewardRuntimeScopeWorkItemV1,
+  type StewardRuntimeScopeWorkItemV2,
   type StewardRuntimeControlMutationBindingV2,
   type StewardRuntimeControlPreparedReceiptV2,
   type StewardRuntimeControlRevisionV1,
@@ -31,6 +41,8 @@ import {
   type StewardRuntimeWorkItemV1,
   type StewardRuntimeWorkItemV2,
   type StewardRuntimeWorkItemV3,
+  type StewardRuntimeWorkItemV4,
+  type StewardRuntimeWorkItemV5,
 } from '../packages/core/src/index.js';
 import {
   coordinatorControlTimeoutMs,
@@ -40,6 +52,7 @@ import {
   processCoordinatorMessage,
   type CoordinatorEnv,
   type CoordinatorQueueMessage,
+  type InstallationFanoutCoordinatorStub,
   type PullRequestCoordinatorStub,
   type RepositoryFanoutCoordinatorStub,
 } from '../packages/coordinator/src/worker.js';
@@ -108,6 +121,116 @@ function repositoryScopeWorkItem(
   });
 }
 
+function repositoryScopeWorkItemV2(
+  deliveryId = 'push-delivery-1',
+): StewardRuntimeScopeWorkItemV2 & {
+  readonly target: {
+    readonly scope: 'repository';
+    readonly mode: 'refresh';
+    readonly installationId: number;
+    readonly repositoryId: number;
+    readonly pullRequests: 'all-open';
+  };
+} {
+  return buildStewardRuntimeScopeWorkItemV2({
+    operation: 'scope-reconcile',
+    target: {
+      scope: 'repository',
+      mode: 'refresh',
+      installationId: 145_952_003,
+      repositoryId: 1_298_587_318,
+      pullRequests: 'all-open',
+    },
+    cause: {
+      kind: 'github-webhook',
+      deliveryId,
+      event: 'push',
+      action: null,
+      ref: 'refs/heads/main',
+      receivedAt: '2026-07-23T18:00:00.000Z',
+    },
+  }) as ReturnType<typeof repositoryScopeWorkItemV2>;
+}
+
+function installationRepositorySetRoot(
+  deliveryId: string,
+  repositoryIds: readonly number[],
+): StewardRuntimeInstallationFanoutRootV1 {
+  const scopeWorkItem = buildStewardRuntimeScopeWorkItemV2({
+    operation: 'scope-reconcile',
+    target: {
+      scope: 'repository-set',
+      mode: 'refresh',
+      installationId: 145_952_003,
+      repositoryIds,
+      pullRequests: 'all-open',
+    },
+    cause: {
+      kind: 'github-webhook',
+      deliveryId,
+      event: 'installation_repositories',
+      action: 'removed',
+      ref: null,
+      receivedAt: '2026-07-23T18:00:00.000Z',
+    },
+  });
+  if (scopeWorkItem.target.scope !== 'repository-set') {
+    throw new Error('Installation fixture must use repository-set scope');
+  }
+  return {
+    installationId: scopeWorkItem.target.installationId,
+    deliveryId: scopeWorkItem.cause.deliveryId,
+    scopeWorkItem: {
+      ...scopeWorkItem,
+      target: scopeWorkItem.target,
+    },
+  };
+}
+
+async function installationFanoutWorkItemV5(
+  repositoryFanoutGeneration = 9,
+): Promise<StewardRuntimeWorkItemV5> {
+  const root = installationRepositorySetRoot(
+    'installation-fanout-v5-direct',
+    [1_298_587_318],
+  );
+  if (root.scopeWorkItem.target.scope !== 'repository-set') {
+    throw new Error('V5 fixture must use repository-set scope');
+  }
+  const installationChild =
+    await buildStewardRuntimeInstallationRepositoryChildV1({
+      root,
+      installationId: root.installationId,
+      repositoryId: root.scopeWorkItem.target.repositoryIds[0]!,
+      installationGeneration: 4,
+    });
+  const pullRequestNumber = 6;
+  return buildStewardRuntimeWorkItemV5({
+    operation: 'pull-request-reconcile',
+    installationId: installationChild.installationId,
+    subject: {
+      repositoryId: installationChild.repositoryId,
+      repositoryFullName: 'splrad/steward-sandbox-install-e2e',
+      pullRequestNumber,
+    },
+    cause: {
+      kind: 'scope-fanout-3',
+      deliveryId: await deriveStewardRuntimeFanoutDeliveryIdV3(
+        installationChild,
+        repositoryFanoutGeneration,
+        pullRequestNumber,
+      ),
+      rootDeliveryId: installationChild.rootDeliveryId,
+      installationChild,
+      repositoryFanoutGeneration,
+      event: installationChild.cause.event,
+      action: installationChild.cause.action,
+      ref: installationChild.cause.ref,
+      receivedAt: installationChild.cause.receivedAt,
+    },
+  });
+}
+
 function message(body: unknown, attempts = 1): CoordinatorQueueMessage & {
   ack: ReturnType<typeof vi.fn<() => void>>;
   retry: ReturnType<typeof vi.fn<(options?: { readonly delaySeconds?: number }) => void>>;
@@ -162,7 +285,11 @@ function utf8Base64(value: string): string {
 }
 
 async function preparedV2(
-  item: StewardRuntimeWorkItemV2 | StewardRuntimeWorkItemV3,
+  item:
+    | StewardRuntimeWorkItemV2
+    | StewardRuntimeWorkItemV3
+    | StewardRuntimeWorkItemV4
+    | StewardRuntimeWorkItemV5,
   generation: number,
   withMutation = false,
   revision = v2Revision,
@@ -347,6 +474,11 @@ function environment(
         throw new Error('missing repository fan-out coordinator stub');
       },
     },
+    INSTALLATION_FANOUT_COORDINATOR: {
+      getByName() {
+        throw new Error('missing installation fan-out coordinator stub');
+      },
+    },
     CONTROL: control ?? {
       async fetch(_input, init) {
         const parsed = JSON.parse(String(init?.body)) as {
@@ -366,7 +498,7 @@ function environment(
       sendBatch: vi.fn().mockResolvedValue(undefined),
     },
     ...variables,
-  };
+  } as CoordinatorEnv;
 }
 
 function stub(
@@ -1521,6 +1653,89 @@ describe('Coordinator Queue consumer', () => {
     expect(queued.retry).not.toHaveBeenCalled();
   });
 
+  it('uses repository-fanout-v2 for a scope-v2 page and preserves its cause', async () => {
+    const scopeItem = repositoryScopeWorkItemV2();
+    const fanout = repositoryFanoutStub({
+      status: 'claimed',
+      generation: 2,
+      leaseToken: 'fanout-v2-page-lease-token',
+      expiresAt: Date.now() + 120_000,
+      resumed: false,
+      selectedScopeItem: scopeItem,
+      phase: 'enumerating',
+      pass: 1,
+      cursor: null,
+    });
+    const receiptValue = buildStewardRuntimeRepositoryFanoutPageReceiptV2({
+      binding: {
+        scopeWorkItem: scopeItem,
+        generation: 2,
+        pass: 1,
+        cursor: null,
+      },
+      repository: {
+        state: 'live',
+        id: scopeItem.target.repositoryId,
+        fullName: 'splrad/steward-sandbox-install-e2e',
+      },
+      page: {
+        totalCount: 1,
+        pullRequestNumbers: [6],
+        hasNextPage: false,
+        endCursor: null,
+      },
+      controlRevision: v2Revision,
+    });
+    const control = {
+      fetch: vi.fn(async (
+        input: Request | string | URL,
+        init?: RequestInit,
+      ) => {
+        expect(String(input)).toBe(
+          'https://control.internal/v2/repository-fanout/page',
+        );
+        expect(new Headers(init?.headers).get('x-steward-internal-protocol'))
+          .toBe('repository-fanout-2');
+        expect(parseStewardRuntimeRepositoryFanoutPageRequestV2(
+          JSON.parse(String(init?.body)) as unknown,
+        ).binding.scopeWorkItem).toEqual(scopeItem);
+        return jsonResponse(
+          canonicalStewardRuntimeRepositoryFanoutPageReceiptV2Json(
+            receiptValue,
+          ),
+        );
+      }),
+    };
+    const eventQueue = {
+      send: vi.fn().mockResolvedValue(undefined),
+      sendBatch: vi.fn().mockResolvedValue(undefined),
+    };
+    const queued = message(
+      canonicalStewardRuntimeScopeWorkItemJson(scopeItem),
+    );
+
+    await processCoordinatorMessage(
+      queued,
+      environment({}, control, {
+        REPOSITORY_FANOUT_COORDINATOR: {
+          getByName: vi.fn().mockReturnValue(fanout),
+        },
+        EVENT_QUEUE: eventQueue,
+      }),
+    );
+
+    expect(fanout.recordPage).toHaveBeenCalledWith(
+      2,
+      'fanout-v2-page-lease-token',
+      receiptValue,
+    );
+    expect(eventQueue.send).toHaveBeenCalledWith(
+      canonicalStewardRuntimeScopeWorkItemJson(scopeItem),
+      { contentType: 'text' },
+    );
+    expect(queued.ack).toHaveBeenCalledOnce();
+  });
+
   it('dispatches canonical v3 children before durable confirmation, release, and wakeup', async () => {
     const scopeItem = repositoryScopeWorkItem(
       'repository-dispatch-delivery',
@@ -1642,6 +1857,81 @@ describe('Coordinator Queue consumer', () => {
     expect(queued.retry).not.toHaveBeenCalled();
   });
 
+  it('dispatches a ref-bound canonical v4 child from scope-v2', async () => {
+    const scopeItem = repositoryScopeWorkItemV2('push-dispatch-delivery');
+    const generation = 8;
+    const deliveryId = await deriveStewardRuntimeFanoutDeliveryIdV2(
+      scopeItem,
+      generation,
+      6,
+    );
+    const fanout = repositoryFanoutStub({
+      status: 'claimed',
+      generation,
+      leaseToken: 'fanout-v2-dispatch-lease-token',
+      expiresAt: Date.now() + 120_000,
+      resumed: false,
+      selectedScopeItem: scopeItem,
+      phase: 'dispatch',
+      pass: null,
+      cursor: null,
+    });
+    fanout.nextDispatchBatch.mockResolvedValue({
+      status: 'batch',
+      generation,
+      repositoryFullName: 'splrad/steward-sandbox-install-e2e',
+      targets: [{ pullRequestNumber: 6, deliveryId }],
+      remaining: 0,
+    });
+    fanout.recordQueueConfirmed.mockResolvedValue({
+      status: 'recorded',
+      generation,
+      newlyConfirmed: 1,
+      remaining: 0,
+    });
+    fanout.releaseForContinuation.mockResolvedValue({
+      status: 'released',
+      generation,
+    });
+    const eventQueue = {
+      send: vi.fn().mockResolvedValue(undefined),
+      sendBatch: vi.fn().mockResolvedValue(undefined),
+    };
+    const queued = message(
+      canonicalStewardRuntimeScopeWorkItemJson(scopeItem),
+    );
+
+    await processCoordinatorMessage(
+      queued,
+      environment({}, undefined, {
+        REPOSITORY_FANOUT_COORDINATOR: {
+          getByName: vi.fn().mockReturnValue(fanout),
+        },
+        EVENT_QUEUE: eventQueue,
+      }),
+    );
+
+    const dispatched = eventQueue.sendBatch.mock.calls[0]![0];
+    const child = parseStewardRuntimeWorkItem(
+      JSON.parse(dispatched[0]!.body) as unknown,
+    );
+    expect(child).toMatchObject({
+      schemaVersion: 4,
+      cause: {
+        kind: 'scope-fanout-2',
+        deliveryId,
+        rootDeliveryId: scopeItem.cause.deliveryId,
+        scopeSchemaVersion: 2,
+        fanoutGeneration: generation,
+        event: 'push',
+        action: null,
+        ref: 'refs/heads/main',
+      },
+    });
+    expect(queued.ack).toHaveBeenCalledOnce();
+    expect(queued.retry).not.toHaveBeenCalled();
+  });
+
   it('routes a derived v3 child through Control v2 and rejects a tampered child before invocation', async () => {
     const scopeItem = repositoryScopeWorkItem(
       'repository-v3-direct-delivery',
@@ -1756,6 +2046,99 @@ describe('Coordinator Queue consumer', () => {
     expect(tamperedCoordinator.fail).toHaveBeenCalledWith(
       1,
       'v3-direct-tampered-lease-token',
+      'runtime-error',
+    );
+    expect(tamperedMessage.ack).not.toHaveBeenCalled();
+    expect(tamperedMessage.retry).toHaveBeenCalledOnce();
+  });
+
+  it('routes a two-level V5 child through Control and rejects a tampered commitment before invocation', async () => {
+    const child = await installationFanoutWorkItemV5();
+    const validCoordinator = stub({
+      status: 'claimed',
+      generation: 1,
+      leaseToken: 'v5-direct-valid-lease-token',
+      expiresAt: Date.now() + 120_000,
+    });
+    const validControl = {
+      fetch: vi.fn(async (
+        _input: Request | string | URL,
+        init?: RequestInit,
+      ) => {
+        const request = await parseStewardRuntimeControlPrepareRequestV2(
+          JSON.parse(String(init?.body)) as unknown,
+        );
+        expect(request.binding).toEqual({
+          workItem: child,
+          generation: 1,
+          objective: 'governance',
+        });
+        return jsonResponse(
+          await canonicalStewardRuntimeControlPreparedReceiptV2Json(
+            await preparedV2(child, request.binding.generation),
+          ),
+        );
+      }),
+    };
+    const validMessage = message(
+      canonicalStewardRuntimeWorkItemJson(child),
+    );
+
+    await processCoordinatorMessage(
+      validMessage,
+      environment(
+        { [child.subject.repositoryId]: validCoordinator },
+        validControl,
+      ),
+    );
+
+    expect(validControl.fetch).toHaveBeenCalledOnce();
+    expect(validCoordinator.persistPreparedPlan).toHaveBeenCalledOnce();
+    expect(validCoordinator.completeMutationPlan).toHaveBeenCalledWith(
+      1,
+      'v5-direct-valid-lease-token',
+    );
+    expect(validMessage.ack).toHaveBeenCalledOnce();
+    expect(validMessage.retry).not.toHaveBeenCalled();
+
+    if (child.cause.kind !== 'scope-fanout-3') {
+      throw new Error('V5 fixture must use scope-fanout-3');
+    }
+    const tamperedChild = {
+      ...child,
+      cause: {
+        ...child.cause,
+        installationChild: {
+          ...child.cause.installationChild,
+          rootTargetDigest: '0'.repeat(64),
+        },
+      },
+    };
+    const tamperedCoordinator = stub({
+      status: 'claimed',
+      generation: 1,
+      leaseToken: 'v5-direct-tampered-lease-token',
+      expiresAt: Date.now() + 120_000,
+    });
+    const tamperedControl = { fetch: vi.fn() };
+    const tamperedMessage = message(
+      canonicalStewardRuntimeWorkItemJson(tamperedChild),
+    );
+
+    await processCoordinatorMessage(
+      tamperedMessage,
+      environment(
+        { [child.subject.repositoryId]: tamperedCoordinator },
+        tamperedControl,
+      ),
+    );
+
+    expect(tamperedControl.fetch).not.toHaveBeenCalled();
+    expect(tamperedCoordinator.persistPreparedPlan).not.toHaveBeenCalled();
+    expect(tamperedCoordinator.completeMutationPlan).not.toHaveBeenCalled();
+    expect(tamperedCoordinator.fail).toHaveBeenCalledWith(
+      1,
+      'v5-direct-tampered-lease-token',
       'runtime-error',
     );
     expect(tamperedMessage.ack).not.toHaveBeenCalled();

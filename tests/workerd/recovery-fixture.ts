@@ -1,4 +1,5 @@
 export {
+  InstallationFanoutCoordinator,
   PullRequestCoordinator,
   RepositoryFanoutCoordinator,
 } from '../../packages/coordinator/src/index.js';

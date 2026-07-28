@@ -1,11 +1,15 @@
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  buildStewardRuntimeInstallationRepositoryChildV1,
+} from '../packages/core/src/runtime-installation-fanout.js';
+import {
   buildStewardRuntimeRepositoryFanoutPageReceiptV1,
   type StewardRuntimeRepositoryFanoutPageReceiptV1,
 } from '../packages/core/src/runtime-repository-fanout.js';
 import {
   buildStewardRuntimeScopeWorkItemV1,
+  buildStewardRuntimeScopeWorkItemV2,
   type StewardRuntimeScopeWorkItemV1,
 } from '../packages/core/src/runtime-scope-work-item.js';
 import {
@@ -192,14 +196,57 @@ function coordinator(): {
   readonly storage: TestDurableStorage;
 } {
   const storage = new TestDurableStorage();
+  return {
+    object: coordinatorWithStorage(storage),
+    storage,
+  };
+}
+
+function coordinatorWithStorage(
+  storage: TestDurableStorage,
+): TestCoordinatorApi {
   const ctx = {
     id: { name: repositoryFanoutCoordinatorName(repositoryId) },
     storage,
   };
-  return {
-    object: new RepositoryFanoutCoordinator(ctx, {}),
-    storage,
-  };
+  return new RepositoryFanoutCoordinator(ctx, {});
+}
+
+async function installationChild() {
+  const scopeWorkItem = buildStewardRuntimeScopeWorkItemV2({
+    operation: 'scope-reconcile',
+    target: {
+      scope: 'repository-set',
+      mode: 'refresh',
+      installationId: 145_952_003,
+      repositoryIds: [repositoryId],
+      pullRequests: 'all-open',
+    },
+    cause: {
+      kind: 'github-webhook',
+      deliveryId: 'installation-repositories-removed-child',
+      event: 'installation_repositories',
+      action: 'removed',
+      ref: null,
+      receivedAt: '2026-07-27T04:00:00.000Z',
+    },
+  });
+  if (scopeWorkItem.target.scope !== 'repository-set') {
+    throw new Error('installation child fixture must use repository-set scope');
+  }
+  return await buildStewardRuntimeInstallationRepositoryChildV1({
+    root: {
+      installationId: scopeWorkItem.target.installationId,
+      deliveryId: scopeWorkItem.cause.deliveryId,
+      scopeWorkItem: {
+        ...scopeWorkItem,
+        target: scopeWorkItem.target,
+      },
+    },
+    installationId: scopeWorkItem.target.installationId,
+    repositoryId,
+    installationGeneration: 1,
+  });
 }
 
 beforeEach(() => {
@@ -468,6 +515,35 @@ describe('repository fan-out coordinator contract', () => {
       resumed: false,
       selectedScopeItem: later,
     });
+  });
+
+  it('strictly revalidates a persisted V3 child after restart before dispatch', async () => {
+    const { object, storage } = coordinator();
+    const child = await installationChild();
+    const claim = await object.claim(child, 60_000);
+    expect(claim).toMatchObject({
+      status: 'claimed',
+      selectedScopeItem: child,
+      phase: 'enumerating',
+    });
+    if (claim.status !== 'claimed') throw new Error('Expected a claim.');
+    await object.releaseForContinuation(
+      claim.generation,
+      claim.leaseToken,
+    );
+
+    const tamperedChild = {
+      ...child,
+      rootTargetDigest: '0'.repeat(64),
+    };
+    storage.sql.exec(
+      `UPDATE repository_fanout_state
+       SET selected_scope_json = ?`,
+      JSON.stringify(tamperedChild),
+    );
+    const restarted = coordinatorWithStorage(storage);
+    await expect(restarted.claim(child, 60_000))
+      .rejects.toThrow(/compact root commitment/);
   });
 
   it('bounds pagination drift restarts and leaves the delivery recoverable in a fresh generation', async () => {

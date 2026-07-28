@@ -15,6 +15,10 @@
       {
         "name": "REPOSITORY_FANOUT_COORDINATOR",
         "class_name": "RepositoryFanoutCoordinator"
+      },
+      {
+        "name": "INSTALLATION_FANOUT_COORDINATOR",
+        "class_name": "InstallationFanoutCoordinator"
       }
     ]
   },
@@ -24,6 +28,10 @@
       "storage": "sqlite"
     },
     "RepositoryFanoutCoordinator": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
+    "InstallationFanoutCoordinator": {
       "type": "durable-object",
       "storage": "sqlite"
     }

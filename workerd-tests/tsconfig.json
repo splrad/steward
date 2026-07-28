@@ -12,10 +12,12 @@
   "include": [
     "./**/*.ts",
     "../tests/workerd/**/*.ts",
+    "../packages/access-auth/src/**/*.ts",
     "../packages/core/src/**/*.ts",
     "../packages/coordinator/src/**/*.ts",
     "../packages/control-runtime/src/**/*.ts",
-    "../packages/diagnostics/src/**/*.ts"
+    "../packages/diagnostics/src/**/*.ts",
+    "../packages/promotion/src/**/*.ts"
   ],
   "exclude": []
 }

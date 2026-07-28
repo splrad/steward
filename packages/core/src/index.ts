@@ -17,6 +17,8 @@ export * from './runtime-diagnostics-transport.js';
 export * from './runtime-control.js';
 export * from './runtime-control-v2.js';
 export * from './runtime-delivery-recovery.js';
+export * from './runtime-installation-fanout.js';
+export * from './runtime-installation-index-bootstrap.js';
 export * from './runtime-repository-fanout.js';
 export * from './runtime-scope-work-item.js';
 export * from './runtime-work-item.js';

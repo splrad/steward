@@ -73,6 +73,24 @@ interface SchemaVersionRow {
   version: number;
 }
 
+interface SqliteSchemaRow {
+  name: string;
+  sql: string | null;
+}
+
+interface SqliteTableInfoRow {
+  cid: number;
+  name: string;
+  type: string;
+  notnull: number;
+  dflt_value: string | null;
+  pk: number;
+}
+
+interface SqliteCheckRow {
+  quick_check: string;
+}
+
 interface CountRow {
   count: number;
 }
@@ -227,6 +245,88 @@ interface GitHubCandidateRow {
 }
 
 const cursorStartKey = '';
+const legacyDeliveryRecoveryLedgerSchemaVersion = 1;
+const deliveryRecoveryEntryColumns = [
+  ['entry_id', 'TEXT', 0, 1],
+  ['body_digest', 'TEXT', 1, 0],
+  ['body', 'TEXT', 1, 0],
+  ['byte_length', 'INTEGER', 1, 0],
+  ['eligible', 'INTEGER', 1, 0],
+  ['envelope_kind', 'TEXT', 1, 0],
+  ['delivery_id', 'TEXT', 0, 0],
+  ['repository_id', 'INTEGER', 0, 0],
+  ['pull_request_number', 'INTEGER', 0, 0],
+  ['quarantine_reason', 'TEXT', 0, 0],
+  ['state', 'TEXT', 1, 0],
+  ['cycle_count', 'INTEGER', 1, 0],
+  ['replay_count', 'INTEGER', 1, 0],
+  ['first_captured_at', 'TEXT', 1, 0],
+  ['last_captured_at', 'TEXT', 1, 0],
+  ['active_command_id', 'TEXT', 0, 0],
+] as const;
+const deliveryRecoveryEnvelopeKindsV2 = [
+  'scope-work-item-v1',
+  'scope-work-item-v2',
+  'installation-repository-child-v1',
+  'installation-index-bootstrap-v1',
+  'work-item-v1',
+  'work-item-v2',
+  'work-item-v3',
+  'work-item-v4',
+  'work-item-v5',
+  'quarantined',
+] as const;
+
+function createDeliveryRecoveryEntriesTable(
+  sql: SqlStorage,
+  table:
+    | 'delivery_recovery_entries'
+    | 'delivery_recovery_entries_v2',
+  ifNotExists: boolean,
+): void {
+  const existenceClause = ifNotExists ? 'IF NOT EXISTS ' : '';
+  sql.exec(`
+    CREATE TABLE ${existenceClause}${table} (
+      entry_id TEXT PRIMARY KEY,
+      body_digest TEXT NOT NULL,
+      body TEXT NOT NULL,
+      byte_length INTEGER NOT NULL,
+      eligible INTEGER NOT NULL CHECK (eligible IN (0, 1)),
+      envelope_kind TEXT NOT NULL CHECK (
+        envelope_kind IN (
+          'scope-work-item-v1',
+          'scope-work-item-v2',
+          'installation-repository-child-v1',
+          'installation-index-bootstrap-v1',
+          'work-item-v1',
+          'work-item-v2',
+          'work-item-v3',
+          'work-item-v4',
+          'work-item-v5',
+          'quarantined'
+        )
+      ),
+      delivery_id TEXT,
+      repository_id INTEGER,
+      pull_request_number INTEGER,
+      quarantine_reason TEXT,
+      state TEXT NOT NULL CHECK (
+        state IN (
+          'pending',
+          'enqueued',
+          'unknown',
+          'action-required',
+          'quarantined'
+        )
+      ),
+      cycle_count INTEGER NOT NULL,
+      replay_count INTEGER NOT NULL,
+      first_captured_at TEXT NOT NULL,
+      last_captured_at TEXT NOT NULL,
+      active_command_id TEXT
+    )
+  `);
+}
 
 /**
  * Global recovery state only. Queue sends and GitHub calls are deliberately
@@ -2327,6 +2427,246 @@ export class DeliveryRecoveryLedger extends DurableObject {
     return revision;
   }
 
+  #assertSqliteHealth(sql: SqlStorage): void {
+    const checks = sql
+      .exec<SqliteCheckRow>('PRAGMA quick_check')
+      .toArray();
+    if (
+      checks.length !== 1
+      || checks[0]?.quick_check !== 'ok'
+    ) {
+      throw new Error('Delivery recovery SQLite quick_check failed.');
+    }
+    if (
+      sql.exec<Record<string, SqlValue>>('PRAGMA foreign_key_check')
+        .toArray().length !== 0
+    ) {
+      throw new Error('Delivery recovery SQLite foreign key check failed.');
+    }
+  }
+
+  #assertEntryTableColumns(sql: SqlStorage): void {
+    const columns = sql
+      .exec<SqliteTableInfoRow>(
+        'PRAGMA table_info(delivery_recovery_entries)',
+      )
+      .toArray();
+    if (columns.length !== deliveryRecoveryEntryColumns.length) {
+      throw new Error(
+        'Delivery recovery entries table has an unsupported column layout.',
+      );
+    }
+    for (const [index, expected] of
+      deliveryRecoveryEntryColumns.entries()) {
+      const column = columns[index];
+      if (
+        column === undefined
+        || column.cid !== index
+        || column.name !== expected[0]
+        || column.type.toUpperCase() !== expected[1]
+        || column.notnull !== expected[2]
+        || column.pk !== expected[3]
+        || column.dflt_value !== null
+      ) {
+        throw new Error(
+          'Delivery recovery entries table has an unsupported column layout.',
+        );
+      }
+    }
+  }
+
+  #assertEntryTableIndex(sql: SqlStorage): void {
+    const indexes = sql
+      .exec<SqliteSchemaRow>(
+        `SELECT name, sql
+         FROM sqlite_schema
+         WHERE type = 'index'
+           AND tbl_name = 'delivery_recovery_entries'
+           AND sql IS NOT NULL
+         ORDER BY name`,
+      )
+      .toArray();
+    if (
+      indexes.length !== 1
+      || indexes[0]?.name !== 'delivery_recovery_entries_state'
+      || indexes[0].sql === null
+      || !indexes[0].sql.includes(
+        '(state, last_captured_at, entry_id)',
+      )
+    ) {
+      throw new Error(
+        'Delivery recovery entries table has unsupported indexes.',
+      );
+    }
+  }
+
+  #assertEntryTableV2(sql: SqlStorage): void {
+    this.#assertEntryTableColumns(sql);
+    this.#assertEntryTableIndex(sql);
+    const table = sql
+      .exec<SqliteSchemaRow>(
+        `SELECT name, sql
+         FROM sqlite_schema
+         WHERE type = 'table'
+           AND name = 'delivery_recovery_entries'`,
+      )
+      .toArray()[0];
+    if (table?.sql === null || table?.sql === undefined) {
+      throw new Error('Delivery recovery entries table is missing.');
+    }
+    for (const kind of deliveryRecoveryEnvelopeKindsV2) {
+      if (!table.sql.includes(`'${kind}'`)) {
+        throw new Error(
+          'Delivery recovery entries table has an unsupported envelope check.',
+        );
+      }
+    }
+    for (const requiredConstraint of [
+      'CHECK (eligible IN (0, 1))',
+      "'pending'",
+      "'enqueued'",
+      "'unknown'",
+      "'action-required'",
+    ]) {
+      if (!table.sql.includes(requiredConstraint)) {
+        throw new Error(
+          'Delivery recovery entries table has unsupported constraints.',
+        );
+      }
+    }
+  }
+
+  #migrateSchemaV1ToV2(sql: SqlStorage): void {
+    this.#assertSqliteHealth(sql);
+    this.#assertEntryTableColumns(sql);
+    this.#assertEntryTableIndex(sql);
+    const staging = sql
+      .exec<SqliteSchemaRow>(
+        `SELECT name, sql
+         FROM sqlite_schema
+         WHERE name = 'delivery_recovery_entries_v2'`,
+      )
+      .toArray();
+    if (staging.length !== 0) {
+      throw new Error(
+        'Delivery recovery v2 migration staging table already exists.',
+      );
+    }
+    const referencingTables = sql
+      .exec<SqliteSchemaRow>(
+        `SELECT name, sql
+         FROM sqlite_schema
+         WHERE type = 'table'
+           AND sql IS NOT NULL
+           AND instr(lower(sql), 'references delivery_recovery_entries') > 0`,
+      )
+      .toArray();
+    if (referencingTables.length !== 0) {
+      throw new Error(
+        'Delivery recovery v1 schema has unsupported foreign keys.',
+      );
+    }
+    const beforeCount = sql
+      .exec<CountRow>(
+        'SELECT COUNT(*) AS count FROM delivery_recovery_entries',
+      )
+      .one().count;
+
+    createDeliveryRecoveryEntriesTable(
+      sql,
+      'delivery_recovery_entries_v2',
+      false,
+    );
+    sql.exec(`
+      INSERT INTO delivery_recovery_entries_v2 (
+        entry_id,
+        body_digest,
+        body,
+        byte_length,
+        eligible,
+        envelope_kind,
+        delivery_id,
+        repository_id,
+        pull_request_number,
+        quarantine_reason,
+        state,
+        cycle_count,
+        replay_count,
+        first_captured_at,
+        last_captured_at,
+        active_command_id
+      )
+      SELECT
+        entry_id,
+        body_digest,
+        body,
+        byte_length,
+        eligible,
+        envelope_kind,
+        delivery_id,
+        repository_id,
+        pull_request_number,
+        quarantine_reason,
+        state,
+        cycle_count,
+        replay_count,
+        first_captured_at,
+        last_captured_at,
+        active_command_id
+      FROM delivery_recovery_entries
+    `);
+    const copiedCount = sql
+      .exec<CountRow>(
+        'SELECT COUNT(*) AS count FROM delivery_recovery_entries_v2',
+      )
+      .one().count;
+    if (copiedCount !== beforeCount) {
+      throw new Error(
+        'Delivery recovery v2 migration did not preserve every entry.',
+      );
+    }
+    sql.exec('DROP TABLE delivery_recovery_entries');
+    sql.exec(
+      `ALTER TABLE delivery_recovery_entries_v2
+       RENAME TO delivery_recovery_entries`,
+    );
+    sql.exec(`
+      CREATE INDEX delivery_recovery_entries_state
+      ON delivery_recovery_entries (state, last_captured_at, entry_id)
+    `);
+    sql.exec(
+      `UPDATE delivery_recovery_schema
+       SET version = ?
+       WHERE singleton = 1 AND version = ?`,
+      deliveryRecoveryLedgerSchemaVersion,
+      legacyDeliveryRecoveryLedgerSchemaVersion,
+    );
+    const migratedVersion = sql
+      .exec<SchemaVersionRow>(
+        `SELECT version
+         FROM delivery_recovery_schema
+         WHERE singleton = 1`,
+      )
+      .one().version;
+    if (migratedVersion !== deliveryRecoveryLedgerSchemaVersion) {
+      throw new Error(
+        'Delivery recovery v2 migration did not advance schema version.',
+      );
+    }
+    this.#assertEntryTableV2(sql);
+    const afterCount = sql
+      .exec<CountRow>(
+        'SELECT COUNT(*) AS count FROM delivery_recovery_entries',
+      )
+      .one().count;
+    if (afterCount !== beforeCount) {
+      throw new Error(
+        'Delivery recovery v2 migration did not preserve every entry.',
+      );
+    }
+    this.#assertSqliteHealth(sql);
+  }
+
   #initializeSchema(): void {
     this.#ctx.storage.transactionSync(() => {
       const sql = this.#ctx.storage.sql;
@@ -2343,13 +2683,17 @@ export class DeliveryRecoveryLedger extends DurableObject {
            WHERE singleton = 1`,
         )
         .toArray()[0];
-      if (
+      if (version?.version === legacyDeliveryRecoveryLedgerSchemaVersion) {
+        this.#migrateSchemaV1ToV2(sql);
+      } else if (
         version !== undefined
         && version.version !== deliveryRecoveryLedgerSchemaVersion
       ) {
         throw new Error(
           `Unsupported delivery recovery schema version ${version.version}.`,
         );
+      } else if (version !== undefined) {
+        this.#assertEntryTableV2(sql);
       }
 
       sql.exec(`
@@ -2392,42 +2736,11 @@ export class DeliveryRecoveryLedger extends DurableObject {
           active_last_attempt_id INTEGER
         )
       `);
-      sql.exec(`
-        CREATE TABLE IF NOT EXISTS delivery_recovery_entries (
-          entry_id TEXT PRIMARY KEY,
-          body_digest TEXT NOT NULL,
-          body TEXT NOT NULL,
-          byte_length INTEGER NOT NULL,
-          eligible INTEGER NOT NULL CHECK (eligible IN (0, 1)),
-          envelope_kind TEXT NOT NULL CHECK (
-            envelope_kind IN (
-              'scope-work-item-v1',
-              'work-item-v1',
-              'work-item-v2',
-              'work-item-v3',
-              'quarantined'
-            )
-          ),
-          delivery_id TEXT,
-          repository_id INTEGER,
-          pull_request_number INTEGER,
-          quarantine_reason TEXT,
-          state TEXT NOT NULL CHECK (
-            state IN (
-              'pending',
-              'enqueued',
-              'unknown',
-              'action-required',
-              'quarantined'
-            )
-          ),
-          cycle_count INTEGER NOT NULL,
-          replay_count INTEGER NOT NULL,
-          first_captured_at TEXT NOT NULL,
-          last_captured_at TEXT NOT NULL,
-          active_command_id TEXT
-        )
-      `);
+      createDeliveryRecoveryEntriesTable(
+        sql,
+        'delivery_recovery_entries',
+        true,
+      );
       sql.exec(`
         CREATE INDEX IF NOT EXISTS delivery_recovery_entries_state
         ON delivery_recovery_entries (state, last_captured_at, entry_id)
@@ -2608,6 +2921,8 @@ export class DeliveryRecoveryLedger extends DurableObject {
           deliveryRecoveryLedgerSchemaVersion,
         );
       }
+      this.#assertEntryTableV2(sql);
+      this.#assertSqliteHealth(sql);
       const state = sql
         .exec<LedgerStateRow>(
           `SELECT *
@@ -2689,15 +3004,25 @@ function toEnvelopeKind(
   value: string,
 ):
   | 'scope-work-item-v1'
+  | 'scope-work-item-v2'
+  | 'installation-repository-child-v1'
+  | 'installation-index-bootstrap-v1'
   | 'work-item-v1'
   | 'work-item-v2'
   | 'work-item-v3'
+  | 'work-item-v4'
+  | 'work-item-v5'
   | 'quarantined' {
   if (
     value !== 'scope-work-item-v1'
+    && value !== 'scope-work-item-v2'
+    && value !== 'installation-repository-child-v1'
+    && value !== 'installation-index-bootstrap-v1'
     && value !== 'work-item-v1'
     && value !== 'work-item-v2'
     && value !== 'work-item-v3'
+    && value !== 'work-item-v4'
+    && value !== 'work-item-v5'
     && value !== 'quarantined'
   ) {
     throw new Error(`Unsupported captured envelope kind ${value}.`);

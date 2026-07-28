@@ -1,0 +1,20 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "steward-promotion-workerd-test",
+  "main": "./promotion-fixture.ts",
+  "compatibility_date": "2026-07-23",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "RUNTIME_PROMOTION_LEDGER",
+        "class_name": "RuntimePromotionLedger"
+      }
+    ]
+  },
+  "exports": {
+    "RuntimePromotionLedger": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  }
+}

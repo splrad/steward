@@ -7,13 +7,21 @@ import {
   canonicalStewardRuntimeDeliveryRecoveryPageRequestV1Json,
   canonicalStewardRuntimeDeliveryRecoveryPageReceiptV1Json,
   canonicalStewardRuntimeDeliveryRecoveryRedeliveryRequestV1Json,
+  buildStewardRuntimeInstallationFanoutPageReceiptV1,
+  buildStewardRuntimeInstallationIndexBootstrapPageReceiptV1,
   buildStewardRuntimeRepositoryFanoutPageReceiptV1,
+  buildStewardRuntimeRepositoryFanoutPageReceiptV2,
+  buildStewardRuntimeRepositoryFanoutPageReceiptV3,
   buildStewardRuntimeDiagnosticsControlReceipt,
   buildStewardRuntimeControlReceipt,
   canonicalStewardRuntimeControlMutationReceiptV2Json,
   canonicalStewardRuntimeControlPreparedReceiptV2Json,
   canonicalStewardRuntimeControlRecoveryReceiptV2Json,
+  canonicalStewardRuntimeInstallationFanoutPageReceiptV1Json,
+  canonicalStewardRuntimeInstallationIndexBootstrapPageReceiptV1Json,
   canonicalStewardRuntimeRepositoryFanoutPageReceiptV1Json,
+  canonicalStewardRuntimeRepositoryFanoutPageReceiptV2Json,
+  canonicalStewardRuntimeRepositoryFanoutPageReceiptV3Json,
   canonicalStewardRuntimeDiagnosticsControlReceiptJson,
   canonicalStewardRuntimeControlReceiptJson,
   parseStewardRuntimeControlApplyNextRequestV2,
@@ -23,7 +31,14 @@ import {
   parseStewardRuntimeControlRequest,
   parseStewardRuntimeDeliveryRecoveryPageRequestV1,
   parseStewardRuntimeDeliveryRecoveryRedeliveryRequestV1,
+  parseStewardRuntimeInstallationFanoutPageRequestV1,
+  parseStewardRuntimeInstallationIndexBootstrapPageRequestV1,
   parseStewardRuntimeRepositoryFanoutPageRequestV1,
+  parseStewardRuntimeRepositoryFanoutPageRequestV2,
+  parseStewardRuntimeRepositoryFanoutPageRequestV3,
+  STEWARD_RUNTIME_INSTALLATION_FANOUT_MAXIMUM_PAGES,
+  STEWARD_RUNTIME_INSTALLATION_FANOUT_MAXIMUM_REPOSITORIES,
+  STEWARD_RUNTIME_INSTALLATION_FANOUT_PAGE_SIZE,
   type StewardRuntimeDeliveryRecoveryPageRequestV1,
   type StewardRuntimeDeliveryRecoveryRedeliveryRequestV1,
   type StewardRuntimeControlApplyNextRequestV2,
@@ -36,8 +51,13 @@ import {
   type StewardRuntimeControlResolvedContextV2,
   type StewardRuntimeControlRevisionV1,
   type StewardRuntimeDiagnosticsSubjectV1,
+  type StewardRuntimeInstallationFanoutPageRequestV1,
+  type StewardRuntimeInstallationIndexBootstrapPageRequestV1,
   type StewardRuntimeRepositoryFanoutPageRequestV1,
+  type StewardRuntimeRepositoryFanoutPageRequestV2,
+  type StewardRuntimeRepositoryFanoutPageRequestV3,
   type StewardRuntimeScopeWorkItemV1,
+  type StewardRuntimeScopeWorkItemV2,
 } from '../../core/src/index.js';
 import {
   canonicalControlJson,
@@ -68,7 +88,12 @@ import { encodeBase64Utf8 } from '../../manifest/src/encoding.js';
 
 const reconcilePathV1 = '/v1/reconcile';
 const reconcilePathV2 = '/v2/reconcile';
+const installationFanoutPathV1 = '/v1/installation-fanout/page';
+const installationIndexBootstrapPathV1 =
+  '/v1/installation-index-bootstrap/page';
 const repositoryFanoutPathV1 = '/v1/repository-fanout/page';
+const repositoryFanoutPathV2 = '/v2/repository-fanout/page';
+const repositoryFanoutPathV3 = '/v3/repository-fanout/page';
 const diagnosticsPath = '/v1/runtime-diagnostics';
 const deliveryRecoveryPagePath =
   '/v1/delivery-recovery/github/page';
@@ -125,6 +150,7 @@ class RepositoryScopeError extends Error {
       | 'absent'
       | 'denied'
       | 'rate-limited'
+      | 'suspended'
       | 'unavailable',
     readonly retryAfter?: string,
   ) {
@@ -432,6 +458,52 @@ async function createRepositoryInstallationToken(
   return token;
 }
 
+async function createInstallationFanoutToken(
+  dependencies: ControlRuntimeDependencies,
+  appToken: string,
+  installationId: number,
+  parentSignal?: AbortSignal,
+): Promise<string> {
+  const permissions = Object.fromEntries(
+    Object.entries(installationFanoutReadPermissions).sort(
+      ([left], [right]) => left < right ? -1 : left > right ? 1 : 0,
+    ),
+  );
+  const result = plainRecord(await githubJson(
+    dependencies,
+    `https://api.github.com/app/installations/${installationId}/access_tokens`,
+    appToken,
+    {
+      method: 'POST',
+      body: JSON.stringify({ permissions }),
+      expectedStatus: 201,
+      ...(parentSignal === undefined ? {} : { parentSignal }),
+    },
+  ));
+  const observedPermissions = plainRecord(result?.permissions);
+  const observedPermissionKeys = observedPermissions === null
+    ? []
+    : Object.keys(observedPermissions).sort();
+  const expectedPermissionKeys = Object.keys(permissions).sort();
+  if (
+    result === null
+    || !validInstallationToken(result.token)
+    || (
+      result.repository_selection !== 'all'
+      && result.repository_selection !== 'selected'
+    )
+    || observedPermissions === null
+    || JSON.stringify(observedPermissionKeys)
+      !== JSON.stringify(expectedPermissionKeys)
+    || expectedPermissionKeys.some(
+      (key) => observedPermissions[key] !== permissions[key],
+    )
+  ) {
+    throw new RepositoryScopeError('unavailable');
+  }
+  return result.token;
+}
+
 const defaultDependencies: ControlRuntimeDependencies = {
   fetch: (input, init) => fetch(input, init),
   appToken: createAppToken,
@@ -458,9 +530,26 @@ interface TrustedAppInstallationAccess {
   };
 }
 
+interface InstallationFanoutLiveAccess {
+  readonly state: 'live';
+  readonly installationId: number;
+  readonly installationToken: string;
+  readonly organization: TrustedAppInstallationAccess['organization'];
+}
+
+interface InstallationFanoutTerminalAccess {
+  readonly state: 'suspended' | 'absent';
+  readonly installationId: number;
+}
+
+type InstallationFanoutAccess =
+  | InstallationFanoutLiveAccess
+  | InstallationFanoutTerminalAccess;
+
 interface RepositoryFanoutLiveAccess {
   readonly state: 'live';
   readonly client: GitHubRepositoryClient;
+  readonly defaultBranch: string | null;
   readonly repositoryFullName: string;
   readonly repositoryId: number;
 }
@@ -488,6 +577,10 @@ const governanceContextReadPermissions = {
 const repositoryFanoutReadPermissions = {
   metadata: 'read',
   pull_requests: 'read',
+} as const satisfies GitHubInstallationPermissions;
+
+const installationFanoutReadPermissions = {
+  metadata: 'read',
 } as const satisfies GitHubInstallationPermissions;
 
 type GovernanceGateResources = 'both' | 'check' | 'comment' | 'none';
@@ -635,7 +728,7 @@ async function resolveTrustedAppInstallation(
   installationId: number,
   dependencies: ControlRuntimeDependencies,
   parentSignal?: AbortSignal,
-  suspendedInstallationKind: 'denied' | 'unavailable' = 'denied',
+  suspendedInstallationKind: 'denied' | 'suspended' | 'unavailable' = 'denied',
 ): Promise<TrustedAppInstallationAccess> {
   const organization = expectedOrganization(env);
   const appId = positiveSafeInteger(Number(env.GITHUB_APP_ID));
@@ -649,12 +742,21 @@ async function resolveTrustedAppInstallation(
   } catch {
     throw new RepositoryScopeError('unavailable');
   }
-  const app = plainRecord(await githubJson(
-    dependencies,
-    'https://api.github.com/app',
-    appToken,
-    parentSignal === undefined ? {} : { parentSignal },
-  ));
+  let appResponse: unknown;
+  try {
+    appResponse = await githubJson(
+      dependencies,
+      'https://api.github.com/app',
+      appToken,
+      parentSignal === undefined ? {} : { parentSignal },
+    );
+  } catch (error) {
+    if (error instanceof RepositoryScopeError && error.kind === 'absent') {
+      throw new RepositoryScopeError('unavailable');
+    }
+    throw error;
+  }
+  const app = plainRecord(appResponse);
   const identity: ControlRuntimeIdentity = {
     appId,
     clientId: String(app?.client_id ?? ''),
@@ -689,7 +791,18 @@ async function resolveTrustedAppInstallation(
   ) {
     throw new RepositoryScopeError('denied');
   }
-  if (installation.suspended_at !== null) {
+  const suspendedAt = installation.suspended_at;
+  if (
+    suspendedAt !== null
+    && (
+      typeof suspendedAt !== 'string'
+      || suspendedAt.length < 1
+      || !Number.isFinite(Date.parse(suspendedAt))
+    )
+  ) {
+    throw new RepositoryScopeError('unavailable');
+  }
+  if (suspendedAt !== null) {
     // Keep the direct PR path's established denied behavior by default. A
     // repository fan-out, however, must pause and retry because suspension is
     // reversible and therefore cannot prove repository absence.
@@ -702,6 +815,101 @@ async function resolveTrustedAppInstallation(
     identity,
     installationId,
     organization,
+  };
+}
+
+async function resolveInstallationFanoutAccess(
+  env: ControlRuntimeEnv,
+  request: StewardRuntimeInstallationFanoutPageRequestV1,
+  dependencies: ControlRuntimeDependencies,
+  parentSignal?: AbortSignal,
+): Promise<InstallationFanoutAccess> {
+  const target = request.binding.root.scopeWorkItem.target;
+  const installationDelta =
+    target.scope === 'repository-set'
+    && request.binding.root.scopeWorkItem.cause.event
+      === 'installation_repositories';
+  if (target.scope !== 'installation' && !installationDelta) {
+    throw new RepositoryScopeError('denied');
+  }
+  const organization = expectedOrganization(env);
+  if (
+    target.scope === 'installation'
+    && target.accountId !== undefined
+    && target.accountId !== organization.id
+  ) {
+    throw new RepositoryScopeError('denied');
+  }
+  let trusted: TrustedAppInstallationAccess;
+  try {
+    trusted = await resolveTrustedAppInstallation(
+      env,
+      request.binding.root.installationId,
+      dependencies,
+      parentSignal,
+      'suspended',
+    );
+  } catch (error) {
+    if (
+      error instanceof RepositoryScopeError
+      && (error.kind === 'absent' || error.kind === 'suspended')
+    ) {
+      return {
+        state: error.kind,
+        installationId: request.binding.root.installationId,
+      };
+    }
+    throw error;
+  }
+  const installationToken = await createInstallationFanoutToken(
+    dependencies,
+    trusted.appToken,
+    trusted.installationId,
+    parentSignal,
+  );
+  return {
+    state: 'live',
+    installationId: trusted.installationId,
+    installationToken,
+    organization: trusted.organization,
+  };
+}
+
+async function resolveInstallationIndexBootstrapAccess(
+  env: ControlRuntimeEnv,
+  installationId: number,
+  dependencies: ControlRuntimeDependencies,
+  parentSignal?: AbortSignal,
+): Promise<InstallationFanoutAccess> {
+  let trusted: TrustedAppInstallationAccess;
+  try {
+    trusted = await resolveTrustedAppInstallation(
+      env,
+      installationId,
+      dependencies,
+      parentSignal,
+      'suspended',
+    );
+  } catch (error) {
+    if (
+      error instanceof RepositoryScopeError
+      && (error.kind === 'absent' || error.kind === 'suspended')
+    ) {
+      return { state: error.kind, installationId };
+    }
+    throw error;
+  }
+  const installationToken = await createInstallationFanoutToken(
+    dependencies,
+    trusted.appToken,
+    trusted.installationId,
+    parentSignal,
+  );
+  return {
+    state: 'live',
+    installationId: trusted.installationId,
+    installationToken,
+    organization: trusted.organization,
   };
 }
 
@@ -794,59 +1002,142 @@ async function governanceRepositoryClient(
   }));
 }
 
-async function resolveRepositoryFanoutAccess(
+async function resolveRepositoryFanoutAccessByIds(
   env: ControlRuntimeEnv,
-  scopeWorkItem: StewardRuntimeScopeWorkItemV1,
+  installationId: number,
+  repositoryId: number,
+  readDefaultBranch: boolean,
+  allowInstallationScopeFallback: boolean,
   dependencies: ControlRuntimeDependencies,
   parentSignal?: AbortSignal,
 ): Promise<RepositoryFanoutAccess> {
-  const subject = scopeWorkItem.target;
   let trusted: TrustedAppInstallationAccess;
   try {
     trusted = await resolveTrustedAppInstallation(
       env,
-      subject.installationId,
+      installationId,
       dependencies,
       parentSignal,
       'unavailable',
     );
   } catch (error) {
     if (error instanceof RepositoryScopeError && error.kind === 'absent') {
-      return { state: 'absent', repositoryId: subject.repositoryId };
+      return { state: 'absent', repositoryId };
     }
     throw error;
   }
 
   let installationToken: string;
+  let repository: Record<string, unknown> | null = null;
+  let resolvedThroughInstallationScope = false;
   try {
     installationToken = await createRepositoryInstallationToken(
       dependencies,
       trusted.appToken,
       trusted.installationId,
-      subject.repositoryId,
+      repositoryId,
       repositoryFanoutReadPermissions,
       parentSignal,
     );
   } catch (error) {
-    if (error instanceof RepositoryScopeError && error.kind === 'absent') {
-      return { state: 'absent', repositoryId: subject.repositoryId };
+    if (!allowInstallationScopeFallback) {
+      if (error instanceof RepositoryScopeError && error.kind === 'absent') {
+        return { state: 'absent', repositoryId };
+      }
+      throw error;
     }
-    throw error;
+    if (
+      error instanceof RepositoryScopeError
+      && error.kind === 'rate-limited'
+    ) {
+      throw error;
+    }
+    let installationScopeToken: string;
+    try {
+      installationScopeToken = await createInstallationFanoutToken(
+        dependencies,
+        trusted.appToken,
+        trusted.installationId,
+        parentSignal,
+      );
+    } catch (fallbackError) {
+      if (
+        fallbackError instanceof RepositoryScopeError
+        && fallbackError.kind === 'rate-limited'
+      ) {
+        throw fallbackError;
+      }
+      throw new RepositoryScopeError('unavailable');
+    }
+    try {
+      repository = plainRecord(await githubJson(
+        dependencies,
+        `https://api.github.com/repositories/${repositoryId}`,
+        installationScopeToken,
+        parentSignal === undefined ? {} : { parentSignal },
+      ));
+    } catch (fallbackError) {
+      if (
+        fallbackError instanceof RepositoryScopeError
+        && fallbackError.kind === 'absent'
+      ) {
+        return { state: 'absent', repositoryId };
+      }
+      throw fallbackError;
+    }
+    const fallbackOwner = plainRecord(repository?.owner);
+    const fallbackFullName = String(repository?.full_name ?? '');
+    const fallbackFullNameParts = fallbackFullName.split('/');
+    if (
+      repository === null
+      || fallbackOwner === null
+      || positiveSafeInteger(repository.id) !== repositoryId
+      || positiveSafeInteger(fallbackOwner.id) !== trusted.organization.id
+      || String(fallbackOwner.login ?? '').toLowerCase()
+        !== trusted.organization.login.toLowerCase()
+      || fallbackOwner.type !== 'Organization'
+      || fallbackFullNameParts.length !== 2
+      || fallbackFullNameParts.some((part) => part.length === 0)
+      || fallbackFullNameParts[0]?.toLowerCase()
+        !== trusted.organization.login.toLowerCase()
+    ) {
+      throw new RepositoryScopeError('denied');
+    }
+    resolvedThroughInstallationScope = true;
+    try {
+      installationToken = await createRepositoryInstallationToken(
+        dependencies,
+        trusted.appToken,
+        trusted.installationId,
+        repositoryId,
+        repositoryFanoutReadPermissions,
+        parentSignal,
+      );
+    } catch (fallbackError) {
+      if (
+        fallbackError instanceof RepositoryScopeError
+        && fallbackError.kind === 'rate-limited'
+      ) {
+        throw fallbackError;
+      }
+      throw new RepositoryScopeError('unavailable');
+    }
   }
 
-  let repository: Record<string, unknown> | null;
-  try {
-    repository = plainRecord(await githubJson(
-      dependencies,
-      `https://api.github.com/repositories/${subject.repositoryId}`,
-      installationToken,
-      parentSignal === undefined ? {} : { parentSignal },
-    ));
-  } catch (error) {
-    if (error instanceof RepositoryScopeError && error.kind === 'absent') {
-      return { state: 'absent', repositoryId: subject.repositoryId };
+  if (repository === null) {
+    try {
+      repository = plainRecord(await githubJson(
+        dependencies,
+        `https://api.github.com/repositories/${repositoryId}`,
+        installationToken,
+        parentSignal === undefined ? {} : { parentSignal },
+      ));
+    } catch (error) {
+      if (error instanceof RepositoryScopeError && error.kind === 'absent') {
+        return { state: 'absent', repositoryId };
+      }
+      throw error;
     }
-    throw error;
   }
   const owner = plainRecord(repository?.owner);
   const repositoryFullName = String(repository?.full_name ?? '');
@@ -854,7 +1145,7 @@ async function resolveRepositoryFanoutAccess(
   if (
     repository === null
     || owner === null
-    || positiveSafeInteger(repository.id) !== subject.repositoryId
+    || positiveSafeInteger(repository.id) !== repositoryId
     || positiveSafeInteger(owner.id) === null
     || repositoryFullNameParts.length !== 2
     || repositoryFullNameParts.some((part) => part.length === 0)
@@ -869,15 +1160,33 @@ async function resolveRepositoryFanoutAccess(
     || repositoryFullNameParts[0]?.toLowerCase()
       !== trusted.organization.login.toLowerCase()
   ) {
+    if (resolvedThroughInstallationScope) {
+      throw new RepositoryScopeError('denied');
+    }
     // A repository transfer preserves its immutable database ID. Seeing that
     // exact ID under a different owner proves only that it has left the
     // configured organization scope, so converge this scope to a tombstone.
-    return { state: 'absent', repositoryId: subject.repositoryId };
+    return { state: 'absent', repositoryId };
+  }
+  let defaultBranch: string | null = null;
+  if (readDefaultBranch) {
+    const observedDefaultBranch = repository.default_branch;
+    if (
+      typeof observedDefaultBranch !== 'string'
+      || observedDefaultBranch.length < 1
+      || observedDefaultBranch !== observedDefaultBranch.trim()
+      || /[\x00-\x20\x7f]/.test(observedDefaultBranch)
+      || new TextEncoder().encode(observedDefaultBranch).byteLength > 255
+    ) {
+      throw new RepositoryScopeError('denied');
+    }
+    defaultBranch = observedDefaultBranch;
   }
 
   return {
     state: 'live',
-    repositoryId: subject.repositoryId,
+    defaultBranch,
+    repositoryId,
     repositoryFullName,
     client: new GitHubRepositoryClient(createGitHubRestTransport({
       token: installationToken,
@@ -885,6 +1194,47 @@ async function resolveRepositoryFanoutAccess(
       userAgent: 'splrad-steward-control',
     })),
   };
+}
+
+async function resolveRepositoryFanoutAccess(
+  env: ControlRuntimeEnv,
+  scopeWorkItem:
+    | StewardRuntimeScopeWorkItemV1
+    | StewardRuntimeScopeWorkItemV2,
+  dependencies: ControlRuntimeDependencies,
+  parentSignal?: AbortSignal,
+): Promise<RepositoryFanoutAccess> {
+  if (scopeWorkItem.target.scope !== 'repository') {
+    throw new RepositoryScopeError('denied');
+  }
+  return await resolveRepositoryFanoutAccessByIds(
+    env,
+    scopeWorkItem.target.installationId,
+    scopeWorkItem.target.repositoryId,
+    scopeWorkItem.schemaVersion === 2
+      && scopeWorkItem.cause.event === 'push',
+    false,
+    dependencies,
+    parentSignal,
+  );
+}
+
+async function resolveInstallationChildRepositoryFanoutAccess(
+  env: ControlRuntimeEnv,
+  request: StewardRuntimeRepositoryFanoutPageRequestV3,
+  dependencies: ControlRuntimeDependencies,
+  parentSignal?: AbortSignal,
+): Promise<RepositoryFanoutAccess> {
+  const child = request.binding.installationChild;
+  return await resolveRepositoryFanoutAccessByIds(
+    env,
+    child.installationId,
+    child.repositoryId,
+    false,
+    true,
+    dependencies,
+    parentSignal,
+  );
 }
 
 export async function verifyDiagnosticsRepositoryScope(
@@ -1123,6 +1473,269 @@ function canonicalV2Response(body: string): Response {
   });
 }
 
+function installationFanoutPageNumber(cursor: string | null): number {
+  if (cursor === null) return 1;
+  if (!/^(?:[2-9]|[1-9]\d+)$/.test(cursor)) {
+    throw new RepositoryScopeError('denied');
+  }
+  const page = Number(cursor);
+  if (
+    !Number.isSafeInteger(page)
+    || page > STEWARD_RUNTIME_INSTALLATION_FANOUT_MAXIMUM_PAGES
+  ) {
+    throw new RepositoryScopeError('denied');
+  }
+  return page;
+}
+
+async function enumerateInstallationFanoutPage(
+  request: StewardRuntimeInstallationFanoutPageRequestV1,
+  env: ControlRuntimeEnv,
+  dependencies: ControlRuntimeDependencies,
+  parentSignal?: AbortSignal,
+): Promise<Response> {
+  const revision = controlRevision(env);
+  const access = await resolveInstallationFanoutAccess(
+    env,
+    request,
+    dependencies,
+    parentSignal,
+  );
+  if (access.state !== 'live') {
+    const receipt = buildStewardRuntimeInstallationFanoutPageReceiptV1({
+      binding: request.binding,
+      installation: {
+        state: access.state,
+        id: access.installationId,
+      },
+      page: {
+        totalCount: 0,
+        repositoryIds: [],
+        hasNextPage: false,
+        endCursor: null,
+      },
+      controlRevision: revision,
+    });
+    return canonicalV2Response(
+      canonicalStewardRuntimeInstallationFanoutPageReceiptV1Json(receipt),
+    );
+  }
+
+  const pageNumber = installationFanoutPageNumber(request.binding.cursor);
+  const response = plainRecord(await githubJson(
+    dependencies,
+    'https://api.github.com/installation/repositories'
+      + `?per_page=${STEWARD_RUNTIME_INSTALLATION_FANOUT_PAGE_SIZE}`
+      + `&page=${pageNumber}`,
+    access.installationToken,
+    parentSignal === undefined ? {} : { parentSignal },
+  ));
+  const totalCount = response?.total_count;
+  const repositories = response?.repositories;
+  if (
+    response === null
+    || !Number.isSafeInteger(totalCount)
+    || Number(totalCount) < 0
+    || Number(totalCount)
+      > STEWARD_RUNTIME_INSTALLATION_FANOUT_MAXIMUM_REPOSITORIES
+    || !Array.isArray(repositories)
+    || repositories.length > STEWARD_RUNTIME_INSTALLATION_FANOUT_PAGE_SIZE
+  ) {
+    throw new RepositoryScopeError('unavailable');
+  }
+  const repositoryIds: number[] = [];
+  for (const repositoryValue of repositories) {
+    const repository = plainRecord(repositoryValue);
+    const owner = plainRecord(repository?.owner);
+    const repositoryId = positiveSafeInteger(repository?.id);
+    if (
+      repository === null
+      || owner === null
+      || repositoryId === null
+      || positiveSafeInteger(owner.id) !== access.organization.id
+      || String(owner.login ?? '').toLowerCase()
+        !== access.organization.login.toLowerCase()
+      || owner.type !== 'Organization'
+    ) {
+      throw new RepositoryScopeError('unavailable');
+    }
+    repositoryIds.push(repositoryId);
+  }
+  if (new Set(repositoryIds).size !== repositoryIds.length) {
+    throw new RepositoryScopeError('unavailable');
+  }
+  const offset =
+    (pageNumber - 1) * STEWARD_RUNTIME_INSTALLATION_FANOUT_PAGE_SIZE;
+  const observedCount = offset + repositoryIds.length;
+  if (
+    observedCount > Number(totalCount)
+    || (
+      observedCount < Number(totalCount)
+      && repositoryIds.length
+        !== STEWARD_RUNTIME_INSTALLATION_FANOUT_PAGE_SIZE
+    )
+    || (pageNumber > 1 && repositoryIds.length === 0)
+  ) {
+    throw new RepositoryScopeError('unavailable');
+  }
+  const hasNextPage = observedCount < Number(totalCount);
+  if (
+    hasNextPage
+    && pageNumber >= STEWARD_RUNTIME_INSTALLATION_FANOUT_MAXIMUM_PAGES
+  ) {
+    throw new RepositoryScopeError('unavailable');
+  }
+  const receipt = buildStewardRuntimeInstallationFanoutPageReceiptV1({
+    binding: request.binding,
+    installation: {
+      state: 'live',
+      id: access.installationId,
+    },
+    page: {
+      totalCount: Number(totalCount),
+      repositoryIds,
+      hasNextPage,
+      endCursor: hasNextPage ? String(pageNumber + 1) : null,
+    },
+    controlRevision: revision,
+  });
+  return canonicalV2Response(
+    canonicalStewardRuntimeInstallationFanoutPageReceiptV1Json(receipt),
+  );
+}
+
+async function enumerateInstallationIndexBootstrapPage(
+  request: StewardRuntimeInstallationIndexBootstrapPageRequestV1,
+  env: ControlRuntimeEnv,
+  dependencies: ControlRuntimeDependencies,
+  parentSignal?: AbortSignal,
+): Promise<Response> {
+  const revision = controlRevision(env);
+  if (
+    !sameControlRevision(
+      request.binding.command.expectedControlRevision,
+      revision,
+    )
+  ) {
+    return jsonResponse(409, {
+      error: 'control-revision-conflict',
+    });
+  }
+  const access = await resolveInstallationIndexBootstrapAccess(
+    env,
+    request.binding.command.installationId,
+    dependencies,
+    parentSignal,
+  );
+  if (access.state !== 'live') {
+    const receipt =
+      await buildStewardRuntimeInstallationIndexBootstrapPageReceiptV1({
+        binding: request.binding,
+        installation: {
+          state: access.state,
+          id: access.installationId,
+        },
+        page: {
+          totalCount: 0,
+          repositoryIds: [],
+          hasNextPage: false,
+          endCursor: null,
+        },
+        controlRevision: revision,
+      });
+    return canonicalV2Response(
+      await canonicalStewardRuntimeInstallationIndexBootstrapPageReceiptV1Json(
+        receipt,
+      ),
+    );
+  }
+
+  const pageNumber = installationFanoutPageNumber(request.binding.cursor);
+  const response = plainRecord(await githubJson(
+    dependencies,
+    'https://api.github.com/installation/repositories'
+      + `?per_page=${STEWARD_RUNTIME_INSTALLATION_FANOUT_PAGE_SIZE}`
+      + `&page=${pageNumber}`,
+    access.installationToken,
+    parentSignal === undefined ? {} : { parentSignal },
+  ));
+  const totalCount = response?.total_count;
+  const repositories = response?.repositories;
+  if (
+    response === null
+    || !Number.isSafeInteger(totalCount)
+    || Number(totalCount) < 0
+    || Number(totalCount)
+      > STEWARD_RUNTIME_INSTALLATION_FANOUT_MAXIMUM_REPOSITORIES
+    || !Array.isArray(repositories)
+    || repositories.length > STEWARD_RUNTIME_INSTALLATION_FANOUT_PAGE_SIZE
+  ) {
+    throw new RepositoryScopeError('unavailable');
+  }
+  const repositoryIds: number[] = [];
+  for (const repositoryValue of repositories) {
+    const repository = plainRecord(repositoryValue);
+    const owner = plainRecord(repository?.owner);
+    const repositoryId = positiveSafeInteger(repository?.id);
+    if (
+      repository === null
+      || owner === null
+      || repositoryId === null
+      || positiveSafeInteger(owner.id) !== access.organization.id
+      || String(owner.login ?? '').toLowerCase()
+        !== access.organization.login.toLowerCase()
+      || owner.type !== 'Organization'
+    ) {
+      throw new RepositoryScopeError('unavailable');
+    }
+    repositoryIds.push(repositoryId);
+  }
+  if (new Set(repositoryIds).size !== repositoryIds.length) {
+    throw new RepositoryScopeError('unavailable');
+  }
+  const offset =
+    (pageNumber - 1) * STEWARD_RUNTIME_INSTALLATION_FANOUT_PAGE_SIZE;
+  const observedCount = offset + repositoryIds.length;
+  if (
+    observedCount > Number(totalCount)
+    || (
+      observedCount < Number(totalCount)
+      && repositoryIds.length
+        !== STEWARD_RUNTIME_INSTALLATION_FANOUT_PAGE_SIZE
+    )
+    || (pageNumber > 1 && repositoryIds.length === 0)
+  ) {
+    throw new RepositoryScopeError('unavailable');
+  }
+  const hasNextPage = observedCount < Number(totalCount);
+  if (
+    hasNextPage
+    && pageNumber >= STEWARD_RUNTIME_INSTALLATION_FANOUT_MAXIMUM_PAGES
+  ) {
+    throw new RepositoryScopeError('unavailable');
+  }
+  const receipt =
+    await buildStewardRuntimeInstallationIndexBootstrapPageReceiptV1({
+      binding: request.binding,
+      installation: {
+        state: 'live',
+        id: access.installationId,
+      },
+      page: {
+        totalCount: Number(totalCount),
+        repositoryIds,
+        hasNextPage,
+        endCursor: hasNextPage ? String(pageNumber + 1) : null,
+      },
+      controlRevision: revision,
+    });
+  return canonicalV2Response(
+    await canonicalStewardRuntimeInstallationIndexBootstrapPageReceiptV1Json(
+      receipt,
+    ),
+  );
+}
+
 async function enumerateRepositoryFanoutPage(
   request: StewardRuntimeRepositoryFanoutPageRequestV1,
   env: ControlRuntimeEnv,
@@ -1205,6 +1818,201 @@ async function enumerateRepositoryFanoutPage(
   });
   return canonicalV2Response(
     canonicalStewardRuntimeRepositoryFanoutPageReceiptV1Json(receipt),
+  );
+}
+
+async function enumerateRepositoryFanoutPageV2(
+  request: StewardRuntimeRepositoryFanoutPageRequestV2,
+  env: ControlRuntimeEnv,
+  dependencies: ControlRuntimeDependencies,
+  parentSignal?: AbortSignal,
+): Promise<Response> {
+  const access = await resolveRepositoryFanoutAccess(
+    env,
+    request.binding.scopeWorkItem,
+    dependencies,
+    parentSignal,
+  );
+  const revision = controlRevision(env);
+  if (access.state === 'absent') {
+    const receipt = buildStewardRuntimeRepositoryFanoutPageReceiptV2({
+      binding: request.binding,
+      repository: {
+        state: 'absent',
+        id: access.repositoryId,
+        fullName: null,
+      },
+      page: {
+        totalCount: 0,
+        pullRequestNumbers: [],
+        hasNextPage: false,
+        endCursor: null,
+      },
+      controlRevision: revision,
+    });
+    return canonicalV2Response(
+      canonicalStewardRuntimeRepositoryFanoutPageReceiptV2Json(receipt),
+    );
+  }
+
+  const cause = request.binding.scopeWorkItem.cause;
+  if (
+    cause.event === 'push'
+    && cause.ref !== `refs/heads/${access.defaultBranch ?? ''}`
+  ) {
+    const receipt = buildStewardRuntimeRepositoryFanoutPageReceiptV2({
+      binding: request.binding,
+      repository: {
+        state: 'live',
+        id: access.repositoryId,
+        fullName: access.repositoryFullName,
+      },
+      page: {
+        totalCount: 0,
+        pullRequestNumbers: [],
+        hasNextPage: false,
+        endCursor: null,
+      },
+      controlRevision: revision,
+    });
+    return canonicalV2Response(
+      canonicalStewardRuntimeRepositoryFanoutPageReceiptV2Json(receipt),
+    );
+  }
+
+  const [owner, repository] = access.repositoryFullName.split('/') as [
+    string,
+    string,
+  ];
+  let page: Awaited<
+    ReturnType<GitHubRepositoryClient['listOpenPullRequestsPage']>
+  >;
+  try {
+    page = await access.client.listOpenPullRequestsPage(
+      owner,
+      repository,
+      request.binding.cursor,
+    );
+  } catch (error) {
+    if (error instanceof GitHubApiError && error.rateLimited) {
+      throw new RepositoryScopeError(
+        'rate-limited',
+        error.retryAfterSeconds === undefined
+          ? undefined
+          : String(error.retryAfterSeconds),
+      );
+    }
+    throw error;
+  }
+  if (
+    page.repositoryId !== access.repositoryId
+    || page.repositoryFullName.toLowerCase()
+      !== access.repositoryFullName.toLowerCase()
+  ) {
+    throw new RepositoryScopeError('denied');
+  }
+  const receipt = buildStewardRuntimeRepositoryFanoutPageReceiptV2({
+    binding: request.binding,
+    repository: {
+      state: 'live',
+      id: page.repositoryId,
+      fullName: page.repositoryFullName,
+    },
+    page: {
+      totalCount: page.totalCount,
+      pullRequestNumbers: page.pullRequestNumbers,
+      hasNextPage: page.hasNextPage,
+      endCursor: page.endCursor,
+    },
+    controlRevision: revision,
+  });
+  return canonicalV2Response(
+    canonicalStewardRuntimeRepositoryFanoutPageReceiptV2Json(receipt),
+  );
+}
+
+async function enumerateRepositoryFanoutPageV3(
+  request: StewardRuntimeRepositoryFanoutPageRequestV3,
+  env: ControlRuntimeEnv,
+  dependencies: ControlRuntimeDependencies,
+  parentSignal?: AbortSignal,
+): Promise<Response> {
+  const access = await resolveInstallationChildRepositoryFanoutAccess(
+    env,
+    request,
+    dependencies,
+    parentSignal,
+  );
+  const revision = controlRevision(env);
+  if (access.state === 'absent') {
+    const receipt = await buildStewardRuntimeRepositoryFanoutPageReceiptV3({
+      binding: request.binding,
+      repository: {
+        state: 'absent',
+        id: access.repositoryId,
+        fullName: null,
+      },
+      page: {
+        totalCount: 0,
+        pullRequestNumbers: [],
+        hasNextPage: false,
+        endCursor: null,
+      },
+      controlRevision: revision,
+    });
+    return canonicalV2Response(
+      await canonicalStewardRuntimeRepositoryFanoutPageReceiptV3Json(receipt),
+    );
+  }
+
+  const [owner, repository] = access.repositoryFullName.split('/') as [
+    string,
+    string,
+  ];
+  let page: Awaited<
+    ReturnType<GitHubRepositoryClient['listOpenPullRequestsPage']>
+  >;
+  try {
+    page = await access.client.listOpenPullRequestsPage(
+      owner,
+      repository,
+      request.binding.cursor,
+    );
+  } catch (error) {
+    if (error instanceof GitHubApiError && error.rateLimited) {
+      throw new RepositoryScopeError(
+        'rate-limited',
+        error.retryAfterSeconds === undefined
+          ? undefined
+          : String(error.retryAfterSeconds),
+      );
+    }
+    throw error;
+  }
+  if (
+    page.repositoryId !== access.repositoryId
+    || page.repositoryFullName.toLowerCase()
+      !== access.repositoryFullName.toLowerCase()
+  ) {
+    throw new RepositoryScopeError('denied');
+  }
+  const receipt = await buildStewardRuntimeRepositoryFanoutPageReceiptV3({
+    binding: request.binding,
+    repository: {
+      state: 'live',
+      id: page.repositoryId,
+      fullName: page.repositoryFullName,
+    },
+    page: {
+      totalCount: page.totalCount,
+      pullRequestNumbers: page.pullRequestNumbers,
+      hasNextPage: page.hasNextPage,
+      endCursor: page.endCursor,
+    },
+    controlRevision: revision,
+  });
+  return canonicalV2Response(
+    await canonicalStewardRuntimeRepositoryFanoutPageReceiptV3Json(receipt),
   );
 }
 
@@ -2337,7 +3145,11 @@ export function createControlRuntimeHandler(
         (
           url.pathname !== reconcilePathV1
           && url.pathname !== reconcilePathV2
+          && url.pathname !== installationFanoutPathV1
+          && url.pathname !== installationIndexBootstrapPathV1
           && url.pathname !== repositoryFanoutPathV1
+          && url.pathname !== repositoryFanoutPathV2
+          && url.pathname !== repositoryFanoutPathV3
           && url.pathname !== diagnosticsPath
           && url.pathname !== deliveryRecoveryPagePath
           && url.pathname !== deliveryRecoveryRedeliveryPath
@@ -2349,8 +3161,16 @@ export function createControlRuntimeHandler(
       }
       const expectedInternalProtocol = url.pathname === reconcilePathV2
         ? '2'
-        : url.pathname === repositoryFanoutPathV1
-          ? 'repository-fanout-1'
+        : url.pathname === installationFanoutPathV1
+          ? 'installation-fanout-1'
+          : url.pathname === installationIndexBootstrapPathV1
+            ? 'installation-index-bootstrap-1'
+          : url.pathname === repositoryFanoutPathV1
+            ? 'repository-fanout-1'
+            : url.pathname === repositoryFanoutPathV2
+              ? 'repository-fanout-2'
+              : url.pathname === repositoryFanoutPathV3
+                ? 'repository-fanout-3'
           : (
               url.pathname === deliveryRecoveryPagePath
               || url.pathname === deliveryRecoveryRedeliveryPath
@@ -2374,6 +3194,82 @@ export function createControlRuntimeHandler(
         return jsonResponse(status, { error: status === 413 ? 'request-too-large' : 'invalid-json' });
       }
 
+      if (url.pathname === installationFanoutPathV1) {
+        let input: StewardRuntimeInstallationFanoutPageRequestV1;
+        try {
+          input = parseStewardRuntimeInstallationFanoutPageRequestV1(parsed);
+        } catch {
+          return jsonResponse(400, {
+            error: 'invalid-installation-fanout-request',
+          });
+        }
+        try {
+          return await enumerateInstallationFanoutPage(
+            input,
+            env,
+            dependencies,
+            request.signal,
+          );
+        } catch (error) {
+          if (error instanceof RepositoryScopeError) {
+            if (error.kind === 'denied') {
+              return jsonResponse(403, {
+                error: 'installation-access-denied',
+              });
+            }
+            if (error.kind === 'rate-limited') {
+              const response = jsonResponse(429, {
+                error: 'github-rate-limited',
+              });
+              if (error.retryAfter) {
+                response.headers.set('retry-after', error.retryAfter);
+              }
+              return response;
+            }
+          }
+          return jsonResponse(503, {
+            error: 'installation-fanout-unavailable',
+          });
+        }
+      }
+
+      if (url.pathname === installationIndexBootstrapPathV1) {
+        let input: StewardRuntimeInstallationIndexBootstrapPageRequestV1;
+        try {
+          input =
+            await parseStewardRuntimeInstallationIndexBootstrapPageRequestV1(
+              parsed,
+            );
+        } catch {
+          return jsonResponse(400, {
+            error: 'invalid-installation-index-bootstrap-request',
+          });
+        }
+        try {
+          return await enumerateInstallationIndexBootstrapPage(
+            input,
+            env,
+            dependencies,
+            request.signal,
+          );
+        } catch (error) {
+          if (error instanceof RepositoryScopeError) {
+            if (error.kind === 'rate-limited') {
+              const response = jsonResponse(429, {
+                error: 'github-rate-limited',
+              });
+              if (error.retryAfter) {
+                response.headers.set('retry-after', error.retryAfter);
+              }
+              return response;
+            }
+          }
+          return jsonResponse(503, {
+            error: 'installation-index-bootstrap-unavailable',
+          });
+        }
+      }
+
       if (url.pathname === repositoryFanoutPathV1) {
         let input: StewardRuntimeRepositoryFanoutPageRequestV1;
         try {
@@ -2392,6 +3288,82 @@ export function createControlRuntimeHandler(
           if (error instanceof RepositoryScopeError) {
             if (error.kind === 'absent' || error.kind === 'denied') {
               return jsonResponse(403, { error: 'repository-access-denied' });
+            }
+            if (error.kind === 'rate-limited') {
+              const response = jsonResponse(429, {
+                error: 'github-rate-limited',
+              });
+              if (error.retryAfter) {
+                response.headers.set('retry-after', error.retryAfter);
+              }
+              return response;
+            }
+          }
+          return jsonResponse(503, {
+            error: 'repository-fanout-unavailable',
+          });
+        }
+      }
+
+      if (url.pathname === repositoryFanoutPathV2) {
+        let input: StewardRuntimeRepositoryFanoutPageRequestV2;
+        try {
+          input = parseStewardRuntimeRepositoryFanoutPageRequestV2(parsed);
+        } catch {
+          return jsonResponse(400, { error: 'invalid-repository-fanout-request' });
+        }
+        try {
+          return await enumerateRepositoryFanoutPageV2(
+            input,
+            env,
+            dependencies,
+            request.signal,
+          );
+        } catch (error) {
+          if (error instanceof RepositoryScopeError) {
+            if (error.kind === 'absent' || error.kind === 'denied') {
+              return jsonResponse(403, { error: 'repository-access-denied' });
+            }
+            if (error.kind === 'rate-limited') {
+              const response = jsonResponse(429, {
+                error: 'github-rate-limited',
+              });
+              if (error.retryAfter) {
+                response.headers.set('retry-after', error.retryAfter);
+              }
+              return response;
+            }
+          }
+          return jsonResponse(503, {
+            error: 'repository-fanout-unavailable',
+          });
+        }
+      }
+
+      if (url.pathname === repositoryFanoutPathV3) {
+        let input: StewardRuntimeRepositoryFanoutPageRequestV3;
+        try {
+          input = await parseStewardRuntimeRepositoryFanoutPageRequestV3(
+            parsed,
+          );
+        } catch {
+          return jsonResponse(400, {
+            error: 'invalid-repository-fanout-request',
+          });
+        }
+        try {
+          return await enumerateRepositoryFanoutPageV3(
+            input,
+            env,
+            dependencies,
+            request.signal,
+          );
+        } catch (error) {
+          if (error instanceof RepositoryScopeError) {
+            if (error.kind === 'absent' || error.kind === 'denied') {
+              return jsonResponse(403, {
+                error: 'repository-access-denied',
+              });
             }
             if (error.kind === 'rate-limited') {
               const response = jsonResponse(429, {
