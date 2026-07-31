@@ -35,8 +35,8 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "0.18.8",
-    "@cloudflare/workers-types": "5.20260723.1",
-    "@types/node": "26.1.1",
+    "@cloudflare/workers-types": "5.20260728.1",
+    "@types/node": "26.1.2",
     "@vercel/ncc": "0.44.1",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
