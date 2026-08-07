@@ -30,7 +30,7 @@
   "dependencies": {
     "@actions/core": "3.0.1",
     "@octokit/auth-app": "8.2.0",
-    "jose": "6.2.4",
+    "jose": "6.2.8",
     "libsodium-wrappers": "0.8.4"
   },
   "devDependencies": {
