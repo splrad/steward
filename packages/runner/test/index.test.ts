@@ -2,7 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { env, parseInvocation } from "../src/index.js";
+import { classificationInstallationPermissions, env, isCopilotReviewerIdentity, parseInvocation } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -25,6 +25,22 @@ describe("中央命令入口", () => {
     expect(() => env("TEST_REQUIRED_ENV")).toThrow("缺少环境变量");
     process.env.TEST_REQUIRED_ENV = "present";
     expect(env("TEST_REQUIRED_ENV")).toBe("present");
+  });
+
+  it("识别平台实际返回的Copilot身份并给分类令牌完整的拉取请求写权限", () => {
+    for (const identity of ["Copilot", "copilot", "copilot-pull-request-reviewer", "copilot-pull-request-reviewer[bot]"]) {
+      expect(isCopilotReviewerIdentity(identity)).toBe(true);
+    }
+    for (const identity of ["copilot-agent[bot]", "splrad-steward[bot]", "maintainers", ""]) {
+      expect(isCopilotReviewerIdentity(identity)).toBe(false);
+    }
+    expect(classificationInstallationPermissions()).toEqual({
+      contents: "read",
+      pull_requests: "write",
+      issues: "write",
+      checks: "write",
+      metadata: "read",
+    });
   });
 
   it("四个结构文件接受全部中央配置并拒绝额外字段", async () => {
