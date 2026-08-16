@@ -407,6 +407,12 @@ function run(command: string, args: string[], cwd: string) {
   if (value.status !== 0) throw new Error((value.stderr || value.stdout || `${command}失败`).trim());
   return (value.stdout || "").trim();
 }
+
+export function matchesGeneratedCopilotInstructions(actual: string, generated: string): boolean {
+  const normalizeCheckoutLineEndings = (value: string) => value.replace(/\r\n/gu, "\n");
+  return normalizeCheckoutLineEndings(actual) === normalizeCheckoutLineEndings(generated);
+}
+
 async function validate(args: Readonly<Record<string, string>>) {
   const workspace = resolve(required(args, "workspace"));
   const repositoryId = integer(required(args, "repository-id"), "repository-id");
@@ -434,7 +440,7 @@ async function validate(args: Readonly<Record<string, string>>) {
       if (!files.includes(file)) throw new Error("缺少中央生成的Copilot说明");
       const common = await runtimeReadFile(configPath("copilot", "common.md"), "utf8");
       const project = configuration.copilotInstructionsProfile === "layerscape" ? await runtimeReadFile(configPath("copilot", "layerscape.md"), "utf8") : null;
-      if (await runtimeReadFile(file, "utf8") !== renderCopilotInstructions(common, project)) throw new Error("Copilot说明不等于中央生成结果");
+      if (!matchesGeneratedCopilotInstructions(await runtimeReadFile(file, "utf8"), renderCopilotInstructions(common, project))) throw new Error("Copilot说明不等于中央生成结果");
       return { state: "success" as const, detail: "Copilot说明与中央配置一致" };
     }
     if (task === "actionlint-if-present") return { state: actualWorkflows.length ? "success" as const : "not-applicable" as const, detail: actualWorkflows.length ? "工作流属于中央允许范围" : "未配置本地工作流" };

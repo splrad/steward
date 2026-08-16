@@ -2,7 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertManagedBranchPull, classificationInstallationPermissions, env, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, parseInvocation, prAutomationInstallationPermissions, writeManagedFileToBranch } from "../src/index.js";
+import { assertManagedBranchPull, classificationInstallationPermissions, env, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -25,6 +25,15 @@ describe("中央命令入口", () => {
     expect(() => env("TEST_REQUIRED_ENV")).toThrow("缺少环境变量");
     process.env.TEST_REQUIRED_ENV = "present";
     expect(env("TEST_REQUIRED_ENV")).toBe("present");
+  });
+
+  it("Copilot说明只忽略Git检出产生的CRLF差异", () => {
+    const generated = "第一行\n第二行\n";
+    expect(matchesGeneratedCopilotInstructions("第一行\r\n第二行\r\n", generated)).toBe(true);
+    expect(matchesGeneratedCopilotInstructions("第一行\n第二行\n", generated)).toBe(true);
+    expect(matchesGeneratedCopilotInstructions("第一行\r第二行\r", generated)).toBe(false);
+    expect(matchesGeneratedCopilotInstructions("第一行\r\n修改内容\r\n", generated)).toBe(false);
+    expect(matchesGeneratedCopilotInstructions("第一行\r\n第二行", generated)).toBe(false);
   });
 
   it("识别平台实际返回的Copilot身份并给分类令牌完整的拉取请求写权限", () => {
