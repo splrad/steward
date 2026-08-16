@@ -2,7 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertManagedBranchPull, classificationInstallationPermissions, env, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, parseInvocation, writeManagedFileToBranch } from "../src/index.js";
+import { assertManagedBranchPull, classificationInstallationPermissions, env, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, parseInvocation, prAutomationInstallationPermissions, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -48,6 +48,12 @@ describe("中央命令入口", () => {
       pull_requests: "write",
       issues: "write",
       checks: "write",
+      metadata: "read",
+    });
+    expect(prAutomationInstallationPermissions()).toEqual({
+      contents: "read",
+      pull_requests: "write",
+      checks: "read",
       metadata: "read",
     });
   });

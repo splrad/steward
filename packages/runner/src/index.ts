@@ -133,6 +133,9 @@ export function hasActiveCopilotCheckRun(checkRuns: readonly any[], pullRequestN
 export function classificationInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
   return { contents: "read", pull_requests: "write", issues: "write", checks: "write", metadata: "read" } as const;
 }
+export function prAutomationInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
+  return { contents: "read", pull_requests: "write", checks: "read", metadata: "read" } as const;
+}
 async function hasCurrentCopilotReview(clientValue: GitHubClient, owner: string, repo: string, number: number, headSha: string, afterEventId?: number, checkClientValue: GitHubClient = clientValue): Promise<boolean> {
   const [requested, reviews, events, checkRuns] = await Promise.all([
     clientValue.getRequestedReviewers(owner, repo, number),
@@ -267,7 +270,7 @@ async function automate(args: Readonly<Record<string, string>>) {
   const eventAfterSha = sha(required(args, "event-after-sha"), "event-after-sha");
   const sourceActor = { id: integer(required(args, "source-actor-id"), "source-actor-id"), login: required(args, "source-actor-login"), type: "User" };
   if (!isHumanActor(sourceActor)) throw new Error("来源推送者不是有效真人账号");
-  const gh = await client(repositoryId, { contents: "read", pull_requests: "write", metadata: "read" }, policySha);
+  const gh = await client(repositoryId, prAutomationInstallationPermissions(), policySha);
   const repository = await gh.getRepositoryById(repositoryId); const [owner, repo] = splitRepository(repository.full_name);
   const repositoryConfiguration = configurationFor(await catalog(), repository);
   if (!repositoryConfiguration.managed || !repositoryConfiguration.prAutomation) return summary(["状态：ignored", "原因：仓库没有启用中央拉取请求创建"]);
