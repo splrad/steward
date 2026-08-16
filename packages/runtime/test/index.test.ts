@@ -23,6 +23,10 @@ const baseEnv = (): Env => ({
   STEWARD_WEBHOOK_SECRET: "webhook-value-456",
 });
 const repository = (id = 1296724484, fullName = "splrad/steward") => ({ id, full_name: fullName, private: false, fork: false, archived: false, disabled: false, default_branch: "main", owner: { id: 302208797 } });
+const ownerlessRepository = (id = 1296724484, fullName = "splrad/steward") => {
+  const { owner: _owner, ...value } = repository(id, fullName);
+  return value;
+};
 function signedRequest(event: string, payload: unknown, secret = "webhook-value-456"): Request {
   const body = JSON.stringify(payload);
   const signature = createHmac("sha256", secret).update(body).digest("hex");
@@ -30,6 +34,9 @@ function signedRequest(event: string, payload: unknown, secret = "webhook-value-
 }
 function scoped(payload: Record<string, unknown>): Record<string, unknown> {
   return { organization: { id: 302208797 }, installation: { id: 145952003 }, ...payload };
+}
+function installationScoped(payload: Record<string, unknown>): Record<string, unknown> {
+  return { installation: { id: 145952003, account: { id: 302208797, login: "splrad" } }, ...payload };
 }
 
 describe("中央运行程序", () => {
@@ -65,8 +72,8 @@ describe("中央运行程序", () => {
     });
     const env = baseEnv();
     const cases: [string, Record<string, unknown>][] = [
-      ["installation", scoped({ action: "created", repositories: [repository()] })],
-      ["installation_repositories", scoped({ action: "added", repositories_added: [repository()] })],
+      ["installation", installationScoped({ action: "created", repositories: [ownerlessRepository()] })],
+      ["installation_repositories", installationScoped({ action: "added", repositories_added: [ownerlessRepository()] })],
       ["push", scoped({ ref: "refs/heads/feature/a", before: "b".repeat(40), after: "c".repeat(40), deleted: false, repository: repository(), sender: { id: 44151430, login: "axiomoth", type: "User" } })],
       ["pull_request", scoped({ action: "opened", repository: repository(), pull_request: { number: 8, head: { sha: "d".repeat(40) }, base: { ref: "main" }, user: { id: 44151430 } } })],
       ["pull_request", scoped({ action: "closed", repository: repository(1187527897, "splrad/LayerScape"), pull_request: { number: 9, merged: true, merge_commit_sha: "e".repeat(40), base: { ref: "main" } } })],
@@ -74,6 +81,24 @@ describe("中央运行程序", () => {
     for (const [event, payload] of cases) expect((await handleWebhook(signedRequest(event, payload), env)).status).toBe(202);
     expect(dispatched.map(value => value.workflow)).toEqual(["onboard-repository.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "release.yml"]);
     for (const dispatch of dispatched) expect(dispatch.body.ref).toBe(env.POLICY_SHA);
+  });
+
+  it("安装事件使用已验证的安装账户并接受省略owner的组织仓库", async () => {
+    const dispatched: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (String(url).includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      const workflow = /\/actions\/workflows\/([^/]+)\/dispatches/.exec(String(url))?.[1];
+      if (workflow) { dispatched.push(workflow); return new Response(null, { status: 204 }); }
+      return new Response("unexpected", { status: 500 });
+    });
+    const env = baseEnv();
+    const accepted = installationScoped({ action: "added", repositories_added: [ownerlessRepository(1187527897, "splrad/LayerScape"), ownerlessRepository(1296725317, "splrad/.github")] });
+    expect((await handleWebhook(signedRequest("installation_repositories", accepted), env)).status).toBe(202);
+    expect(dispatched).toEqual(["onboard-repository.yml", "onboard-repository.yml"]);
+
+    const foreign = installationScoped({ action: "added", repositories_added: [ownerlessRepository(987654321, "someone/example"), { ...ownerlessRepository(987654322, "splrad/example"), owner: { id: 1, login: "someone" } }] });
+    expect((await handleWebhook(signedRequest("installation_repositories", foreign), env)).status).toBe(202);
+    expect(dispatched).toHaveLength(2);
   });
 
   it("默认分支首次推送补接入，后续推送扫描全部拉取请求", async () => {

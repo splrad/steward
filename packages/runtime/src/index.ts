@@ -40,7 +40,15 @@ function repositoryConfiguration(repository: any): any {
   if (override?.fullName && override.fullName !== repository.full_name) throw new Error("仓库编号与中央目录名称不一致");
   return { ...(repository.private ? repositoryCatalog.defaults.private : repositoryCatalog.defaults.public), ...(override ?? {}) };
 }
-function isManaged(repository: any): boolean { return repository?.owner?.id === Number(repositoryCatalog.organization.id) && repositoryConfiguration(repository).managed === true; }
+function belongsToOrganization(repository: any): boolean {
+  if (!Number.isSafeInteger(repository?.id) || repository.id <= 0 || typeof repository.full_name !== "string") return false;
+  const parts = repository.full_name.split("/");
+  if (parts.length !== 2 || !parts[1] || parts[0]!.toLowerCase() !== repositoryCatalog.organization.login.toLowerCase()) return false;
+  if (repository.owner?.id !== undefined && repository.owner.id !== Number(repositoryCatalog.organization.id)) return false;
+  if (repository.owner?.login !== undefined && String(repository.owner.login).toLowerCase() !== repositoryCatalog.organization.login.toLowerCase()) return false;
+  return true;
+}
+function isManaged(repository: any): boolean { return belongsToOrganization(repository) && repositoryConfiguration(repository).managed === true; }
 
 export async function handleWebhook(request: Request, env: Env): Promise<Response> {
   const declared = Number(request.headers.get("content-length") ?? "0"); if (declared > MAX_BODY) return response(413);
