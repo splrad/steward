@@ -102,6 +102,8 @@ async function dispatchClassification(input: { repositoryId: number; pullRequest
 }
 
 const copilotReviewer = "copilot-pull-request-reviewer[bot]";
+const copilotCheckName = "copilot-pull-request-reviewer";
+const githubActionsAppId = 15368;
 export function isCopilotReviewerIdentity(value: unknown): boolean {
   const normalized = String(value ?? "").trim().toLowerCase().replace(/\[bot\]$/u, "");
   return normalized === "copilot" || normalized === "copilot-pull-request-reviewer";
@@ -115,21 +117,36 @@ export function hasNewCopilotRequestEvent(events: readonly any[], afterEventId: 
     || value.event === "copilot_work_started"
   ));
 }
+export function hasActiveCopilotCheckRun(checkRuns: readonly any[], pullRequestNumber: number, headSha: string): boolean {
+  const expectedHead = headSha.toLowerCase();
+  const activeStatuses = new Set(["queued", "in_progress", "pending", "waiting", "requested"]);
+  return checkRuns.some(value =>
+    value.name === copilotCheckName
+    && Number(value.app?.id) === githubActionsAppId
+    && String(value.head_sha ?? "").toLowerCase() === expectedHead
+    && activeStatuses.has(String(value.status ?? "").toLowerCase())
+    && Array.isArray(value.pull_requests)
+    && value.pull_requests.some((pull: any) =>
+      Number(pull.number) === pullRequestNumber
+      && String(pull.head?.sha ?? "").toLowerCase() === expectedHead));
+}
 export function classificationInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
   return { contents: "read", pull_requests: "write", issues: "write", checks: "write", metadata: "read" } as const;
 }
-async function hasCurrentCopilotReview(clientValue: GitHubClient, owner: string, repo: string, number: number, headSha: string, afterEventId?: number): Promise<boolean> {
-  const [requested, reviews, events] = await Promise.all([
+async function hasCurrentCopilotReview(clientValue: GitHubClient, owner: string, repo: string, number: number, headSha: string, afterEventId?: number, checkClientValue: GitHubClient = clientValue): Promise<boolean> {
+  const [requested, reviews, events, checkRuns] = await Promise.all([
     clientValue.getRequestedReviewers(owner, repo, number),
     clientValue.listPullRequestReviews(owner, repo, number),
     afterEventId === undefined ? Promise.resolve([]) : clientValue.listIssueEvents(owner, repo, number),
+    checkClientValue.listAllCheckRuns(owner, repo, headSha),
   ]);
   const pending = hasRequestedCopilotReviewer(requested);
   const completed = reviews.some((value: any) =>
     isCopilotReviewerIdentity(value.user?.login)
     && String(value.commit_id ?? "").toLowerCase() === headSha.toLowerCase()
     && String(value.state ?? "").toUpperCase() !== "DISMISSED");
-  return pending || completed || (afterEventId !== undefined && hasNewCopilotRequestEvent(events, afterEventId));
+  const activeCheck = hasActiveCopilotCheckRun(checkRuns, number, headSha);
+  return pending || completed || activeCheck || (afterEventId !== undefined && hasNewCopilotRequestEvent(events, afterEventId));
 }
 async function ensureCopilotReview(clientValue: GitHubClient, owner: string, repo: string, number: number, headSha: string, policySha: string): Promise<"already-present" | "requested-and-confirmed"> {
   if (await hasCurrentCopilotReview(clientValue, owner, repo, number, headSha)) return "already-present";
@@ -138,7 +155,7 @@ async function ensureCopilotReview(clientValue: GitHubClient, owner: string, rep
   const eventCursor = eventsBefore.reduce((maximum: number, value: any) => Math.max(maximum, Number(value.id) || 0), 0);
   await reviewerClient.requestReviewers(owner, repo, number, [copilotReviewer]);
   for (let attempt = 0; attempt < 5; attempt++) {
-    if (await hasCurrentCopilotReview(reviewerClient, owner, repo, number, headSha, eventCursor)) return "requested-and-confirmed";
+    if (await hasCurrentCopilotReview(reviewerClient, owner, repo, number, headSha, eventCursor, clientValue)) return "requested-and-confirmed";
     if (attempt < 4) await delay(2_000);
   }
   throw new Error("Copilot审查请求未能通过实时读取确认");
@@ -213,7 +230,7 @@ async function onboard(args: Readonly<Record<string, string>>) {
     const discovered = await new GitHubClient(discoveryToken, "https://api.github.com", fetch, policySha).getRepository(owner, repo);
     repositoryId = discovered.id;
   }
-  const gh = await client(repositoryId, { administration: "write", contents: "write", pull_requests: "write", metadata: "read", members: "read" }, policySha);
+  const gh = await client(repositoryId, { administration: "write", contents: "write", pull_requests: "write", checks: "read", metadata: "read", members: "read" }, policySha);
   const repository = await gh.getRepositoryById(repositoryId); const cfg = configurationFor(await catalog(), repository);
   if (repository.full_name !== fullName) throw new Error("仓库编号与完整名称不一致");
   const state = validateRepositoryForOnboarding({ id: repository.id, fullName: repository.full_name, ownerId: repository.owner.id, visibility: repository.private ? "private" : "public", fork: repository.fork, archived: repository.archived, disabled: repository.disabled, defaultBranch: repository.default_branch }, 302208797, cfg);
@@ -369,7 +386,7 @@ async function syncInstructions(args: Readonly<Record<string, string>>) {
   const policySha = sha(required(args, "policy-sha"), "policy-sha");
   const selected = args["repository-id"] ? [integer(args["repository-id"], "repository-id")] : Object.keys((await catalog()).repositories).map(Number);
   const common = await runtimeReadFile(configPath("copilot", "common.md"), "utf8");
-  for (const id of selected) { const cat = await catalog(); const cfg = cat.repositories[String(id)]; if (!cfg) throw new Error(`未知仓库编号: ${id}`); const project = cfg.copilotInstructionsProfile === "layerscape" ? await runtimeReadFile(configPath("copilot", "layerscape.md"), "utf8") : null; const rendered = renderCopilotInstructions(common, project); const gh = await client(id, { contents: "write", pull_requests: "write", metadata: "read" }, policySha); const repository = await gh.getRepositoryById(id); const result = await reconcileManagedFile({ repository, gh, path: ".github/copilot-instructions.md", content: rendered, branch: "steward/copilot-instructions", title: "chore(copilot): 同步中文代码审查说明", policySha, deliveryId: `manual-sync:${id}` }); await summary([`仓库：${cfg.fullName}`, `状态：${result}`, `字符数：${[...rendered].length}`]); }
+  for (const id of selected) { const cat = await catalog(); const cfg = cat.repositories[String(id)]; if (!cfg) throw new Error(`未知仓库编号: ${id}`); const project = cfg.copilotInstructionsProfile === "layerscape" ? await runtimeReadFile(configPath("copilot", "layerscape.md"), "utf8") : null; const rendered = renderCopilotInstructions(common, project); const gh = await client(id, { contents: "write", pull_requests: "write", checks: "read", metadata: "read" }, policySha); const repository = await gh.getRepositoryById(id); const result = await reconcileManagedFile({ repository, gh, path: ".github/copilot-instructions.md", content: rendered, branch: "steward/copilot-instructions", title: "chore(copilot): 同步中文代码审查说明", policySha, deliveryId: `manual-sync:${id}` }); await summary([`仓库：${cfg.fullName}`, `状态：${result}`, `字符数：${[...rendered].length}`]); }
 }
 
 async function walk(root: string): Promise<string[]> {
