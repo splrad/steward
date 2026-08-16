@@ -22,6 +22,12 @@ for (const file of files) {
 const prAutomation = await readFile(".github/workflows/pr-automation.yml", "utf8");
 if (!prAutomation.includes("copilot-requests: write") || !prAutomation.includes("GITHUB_TOKEN: ${{ github.token }}")) throw new Error("Copilot CLI没有使用内置GITHUB_TOKEN及其最小权限");
 if (/COPILOT_CLI_TOKEN|COPILOT_GITHUB_TOKEN/u.test(prAutomation)) throw new Error("Copilot CLI仍引用长期个人令牌");
+const deployRuntime = await readFile(".github/workflows/deploy-runtime.yml", "utf8");
+for (const required of ["id: deploy", "复核运行程序健康状态", "steps.deploy.outputs.runtime_url", "EXPECTED_POLICY_SHA", "健康接口字段集合不正确", "真实Cloudflare版本编号"]) {
+  if (!deployRuntime.includes(required)) throw new Error(`部署工作流缺少固定健康复核合同: ${required}`);
+}
+const runtimeConfiguration = await readFile("packages/runtime/wrangler.toml", "utf8");
+if (!/\[version_metadata\]\s*binding\s*=\s*"CF_VERSION_METADATA"/u.test(runtimeConfiguration)) throw new Error("运行程序未绑定Cloudflare版本元数据");
 const actionlintVersion = "1.7.12";
 const platform = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "darwin" : "linux";
 const architecture = process.arch === "arm64" ? "arm64" : "amd64";
