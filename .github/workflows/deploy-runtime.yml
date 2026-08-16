@@ -53,16 +53,44 @@ jobs:
           EXPECTED_POLICY_SHA: ${{ github.sha }}
         run: |
           node --input-type=module <<'NODE'
-          const response = await fetch(`${process.env.RUNTIME_URL}/health`, { headers: { accept: "application/json" } });
-          if (!response.ok) throw new Error(`健康接口返回HTTP ${response.status}`);
-          const body = await response.json();
           const expectedKeys = ["appId", "organizationId", "policySha", "secretsReady", "status", "version"];
-          if (JSON.stringify(Object.keys(body).sort()) !== JSON.stringify(expectedKeys)) throw new Error("健康接口字段集合不正确");
-          if (body.status !== "ok") throw new Error("运行程序状态不是ok");
-          if (body.policySha !== process.env.EXPECTED_POLICY_SHA) throw new Error("运行程序规则提交与部署提交不一致");
-          if (body.organizationId !== 302208797) throw new Error("运行程序组织编号不正确");
-          if (body.appId !== 4243096) throw new Error("运行程序应用编号不正确");
-          if (body.secretsReady !== true) throw new Error("运行程序密钥尚未齐备");
-          if (typeof body.version !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(body.version)) throw new Error("运行程序没有返回真实Cloudflare版本编号");
-          console.log(JSON.stringify({ status: body.status, policySha: body.policySha, version: body.version, organizationId: body.organizationId, appId: body.appId, secretsReady: body.secretsReady }));
+          const deadline = Date.now() + 60_000;
+          let attempt = 0;
+          let verifiedBody;
+          let lastFailure = "尚未请求健康接口";
+          while (Date.now() < deadline) {
+            attempt += 1;
+            try {
+              const remaining = Math.max(1, deadline - Date.now());
+              const response = await fetch(`${process.env.RUNTIME_URL}/health`, {
+                headers: { accept: "application/json" },
+                signal: AbortSignal.timeout(Math.min(10_000, remaining)),
+              });
+              if (!response.ok) {
+                lastFailure = `健康接口返回HTTP ${response.status}`;
+              } else {
+                const body = await response.json();
+                const failures = [];
+                if (JSON.stringify(Object.keys(body).sort()) !== JSON.stringify(expectedKeys)) failures.push("字段集合尚未匹配");
+                if (body.status !== "ok") failures.push("状态尚未匹配");
+                if (body.policySha !== process.env.EXPECTED_POLICY_SHA) failures.push("规则提交尚未传播");
+                if (body.organizationId !== 302208797) failures.push("组织编号尚未匹配");
+                if (body.appId !== 4243096) failures.push("应用编号尚未匹配");
+                if (body.secretsReady !== true) failures.push("运行时密钥尚未齐备");
+                if (typeof body.version !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(body.version)) failures.push("Cloudflare版本编号尚未匹配");
+                if (failures.length === 0) {
+                  verifiedBody = body;
+                  break;
+                }
+                lastFailure = failures.join("；");
+              }
+            } catch (error) {
+              lastFailure = error instanceof Error ? error.message : "未知网络错误";
+            }
+            console.log(JSON.stringify({ status: "waiting", attempt, reason: lastFailure }));
+            const pause = Math.min(2_000, Math.max(0, deadline - Date.now()));
+            if (pause > 0) await new Promise(resolve => setTimeout(resolve, pause));
+          }
+          if (!verifiedBody) throw new Error(`健康复核在60秒内未收敛：${lastFailure}`);
+          console.log(JSON.stringify({ status: verifiedBody.status, policySha: verifiedBody.policySha, version: verifiedBody.version, organizationId: verifiedBody.organizationId, appId: verifiedBody.appId, secretsReady: verifiedBody.secretsReady }));
           NODE
