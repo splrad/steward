@@ -102,15 +102,24 @@ async function dispatchClassification(input: { repositoryId: number; pullRequest
 }
 
 const copilotReviewer = "copilot-pull-request-reviewer[bot]";
+export function isCopilotReviewerIdentity(value: unknown): boolean {
+  const normalized = String(value ?? "").trim().toLowerCase().replace(/\[bot\]$/u, "");
+  return normalized === "copilot" || normalized === "copilot-pull-request-reviewer";
+}
+export function hasRequestedCopilotReviewer(requested: { users?: readonly { login?: unknown }[] }): boolean {
+  return (requested.users ?? []).some(value => isCopilotReviewerIdentity(value.login));
+}
+export function classificationInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
+  return { contents: "read", pull_requests: "write", issues: "write", checks: "write", metadata: "read" } as const;
+}
 async function hasCurrentCopilotReview(clientValue: GitHubClient, owner: string, repo: string, number: number, headSha: string): Promise<boolean> {
   const [requested, reviews] = await Promise.all([
     clientValue.getRequestedReviewers(owner, repo, number),
     clientValue.listPullRequestReviews(owner, repo, number),
   ]);
-  const pending = [...(requested.users ?? []), ...(requested.teams ?? [])]
-    .some((value: any) => String(value.login ?? value.slug ?? "").toLowerCase() === copilotReviewer);
+  const pending = hasRequestedCopilotReviewer(requested);
   const completed = reviews.some((value: any) =>
-    String(value.user?.login ?? "").toLowerCase() === copilotReviewer
+    isCopilotReviewerIdentity(value.user?.login)
     && String(value.commit_id ?? "").toLowerCase() === headSha.toLowerCase()
     && String(value.state ?? "").toUpperCase() !== "DISMISSED");
   return pending || completed;
@@ -269,7 +278,7 @@ async function classify(args: Readonly<Record<string, string>>) {
   }
   if (args["scan-all"] && args["scan-all"] !== "false") throw new Error("scan-all只能是true或false");
   const number = integer(required(args, "pull-request-number"), "pull-request-number");
-  const expectedHead = sha(required(args, "event-head-sha"), "event-head-sha"); const gh = await client(repositoryId, { contents: "read", pull_requests: "read", issues: "write", checks: "write", metadata: "read" }, policySha);
+  const expectedHead = sha(required(args, "event-head-sha"), "event-head-sha"); const gh = await client(repositoryId, classificationInstallationPermissions(), policySha);
   const repository = await gh.getRepositoryById(repositoryId); const [owner, repo] = splitRepository(repository.full_name);
   const same = (await gh.listAllCheckRuns(owner, repo, expectedHead)).filter((value: any) => value.name === "PR Classification Gate" && value.app?.id === 4243096);
   if (same.length > 1) throw new Error("同名分类检查存在歧义");
