@@ -1,6 +1,8 @@
 import { githubHeaders } from "./api-version.js";
 import { collectAllPages, nextLink } from "./pagination.js";
 
+const encodeGitReferencePath = (ref: string) => ref.split("/").map(encodeURIComponent).join("/");
+
 export class GitHubRequestError extends Error {
   constructor(public readonly status: number, public readonly method: string, public readonly path: string, message: string) {
     super(`${method} ${path}: ${status} ${message}`);
@@ -64,18 +66,18 @@ export class GitHubClient {
   listPullRequestReviews(owner: string, repo: string, number: number) { return this.paginate<any>(`/repos/${owner}/${repo}/pulls/${number}/reviews?per_page=100`); }
   requestReviewers(owner: string, repo: string, number: number, reviewers: readonly string[]) { return this.request<any>("POST", `/repos/${owner}/${repo}/pulls/${number}/requested_reviewers`, { reviewers }); }
   updateRepository(owner: string, repo: string, body: unknown) { return this.request<any>("PATCH", `/repos/${owner}/${repo}`, body); }
-  getRef(owner: string, repo: string, ref: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/git/ref/${ref}`); }
+  getRef(owner: string, repo: string, ref: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/git/ref/${encodeGitReferencePath(ref)}`); }
   getContent(owner: string, repo: string, path: string, ref?: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/contents/${path}${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`); }
   putContent(owner: string, repo: string, path: string, body: unknown) { return this.request<any>("PUT", `/repos/${owner}/${repo}/contents/${path}`, body); }
   createRef(owner: string, repo: string, ref: string, sha: string) { return this.request<any>("POST", `/repos/${owner}/${repo}/git/refs`, { ref, sha }); }
-  updateRef(owner: string, repo: string, ref: string, sha: string, force = false) { return this.request<any>("PATCH", `/repos/${owner}/${repo}/git/refs/${ref}`, { sha, force }); }
+  updateRef(owner: string, repo: string, ref: string, sha: string, force = false) { return this.request<any>("PATCH", `/repos/${owner}/${repo}/git/refs/${encodeGitReferencePath(ref)}`, { sha, force }); }
   createRelease(owner: string, repo: string, body: unknown) { return this.request<any>("POST", `/repos/${owner}/${repo}/releases`, body); }
   updateRelease(owner: string, repo: string, id: number, body: unknown) { return this.request<any>("PATCH", `/repos/${owner}/${repo}/releases/${id}`, body); }
   getReleaseByTag(owner: string, repo: string, tag: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/releases/tags/${encodeURIComponent(tag)}`); }
   getLatestRelease(owner: string, repo: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/releases/latest`); }
   listReleases(owner: string, repo: string) { return this.paginate<any>(`/repos/${owner}/${repo}/releases?per_page=100`); }
   listPullsForCommit(owner: string, repo: string, sha: string) { return this.paginate<any>(`/repos/${owner}/${repo}/commits/${sha}/pulls?per_page=100`); }
-  getGitRef(owner: string, repo: string, ref: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/git/ref/${ref}`); }
+  getGitRef(owner: string, repo: string, ref: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/git/ref/${encodeGitReferencePath(ref)}`); }
   getGitTag(owner: string, repo: string, sha: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/git/tags/${sha}`); }
   getImmutableReleaseStatus(owner: string, repo: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/immutable-releases`); }
   listOrganizationRepositories(owner: string) { return this.paginate<any>(`/orgs/${owner}/repos?type=all&per_page=100`); }

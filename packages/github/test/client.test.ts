@@ -65,6 +65,27 @@ describe("代码托管平台客户端", () => {
     ]);
   });
 
+  it("对Git引用路径中的特殊字符编码并保留分支层级", async () => {
+    const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+    const transport = async (url: any, init?: RequestInit) => {
+      requests.push({
+        url: String(url),
+        method: String(init?.method),
+        ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) }),
+      });
+      return new Response(JSON.stringify({ object: { sha: "a".repeat(40) } }), { status: 200 });
+    };
+    const client = new GitHubClient("token", "https://example.test", transport as typeof fetch);
+    await client.getRef("splrad", "steward", "heads/release#stable");
+    await client.getGitRef("splrad", "steward", "tags/v1%beta");
+    await client.updateRef("splrad", "steward", "heads/feature/one#two", "b".repeat(40), true);
+    expect(requests).toEqual([
+      { url: "https://example.test/repos/splrad/steward/git/ref/heads/release%23stable", method: "GET" },
+      { url: "https://example.test/repos/splrad/steward/git/ref/tags/v1%25beta", method: "GET" },
+      { url: "https://example.test/repos/splrad/steward/git/refs/heads/feature/one%23two", method: "PATCH", body: { sha: "b".repeat(40), force: true } },
+    ]);
+  });
+
   it("只允许四个中央工作流并从中央仓库实时默认分支派发", async () => {
     const requests: unknown[] = [];
     const client = {
