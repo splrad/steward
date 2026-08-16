@@ -2,7 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertManagedBranchPull, classificationInstallationPermissions, env, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, parseInvocation, writeManagedFileToBranch } from "../src/index.js";
+import { assertManagedBranchPull, classificationInstallationPermissions, env, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, parseInvocation, prAutomationInstallationPermissions, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -50,6 +50,29 @@ describe("中央命令入口", () => {
       checks: "write",
       metadata: "read",
     });
+    expect(prAutomationInstallationPermissions()).toEqual({
+      contents: "read",
+      pull_requests: "write",
+      checks: "read",
+      metadata: "read",
+    });
+  });
+
+  it("只接受绑定当前拉取请求和当前提交的活动Copilot检查", () => {
+    const activeCopilotCheck = {
+      name: "copilot-pull-request-reviewer",
+      app: { id: 15368, slug: "github-actions" },
+      head_sha: "a".repeat(40),
+      status: "in_progress",
+      pull_requests: [{ number: 7, head: { sha: "a".repeat(40) } }],
+    };
+    expect(hasActiveCopilotCheckRun([activeCopilotCheck], 7, "a".repeat(40))).toBe(true);
+    expect(hasActiveCopilotCheckRun([{ ...activeCopilotCheck, status: "queued" }], 7, "a".repeat(40))).toBe(true);
+    expect(hasActiveCopilotCheckRun([{ ...activeCopilotCheck, status: "completed", conclusion: "success" }], 7, "a".repeat(40))).toBe(false);
+    expect(hasActiveCopilotCheckRun([{ ...activeCopilotCheck, app: { id: 4243096, slug: "splrad-steward" } }], 7, "a".repeat(40))).toBe(false);
+    expect(hasActiveCopilotCheckRun([{ ...activeCopilotCheck, head_sha: "b".repeat(40) }], 7, "a".repeat(40))).toBe(false);
+    expect(hasActiveCopilotCheckRun([{ ...activeCopilotCheck, pull_requests: [{ number: 8, head: { sha: "a".repeat(40) } }] }], 7, "a".repeat(40))).toBe(false);
+    expect(hasActiveCopilotCheckRun([{ ...activeCopilotCheck, pull_requests: [] }], 7, "a".repeat(40))).toBe(false);
   });
 
   it("已有受管文件内容相同时复用当前来源提交且不重置分支", async () => {
