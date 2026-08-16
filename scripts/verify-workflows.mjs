@@ -23,7 +23,7 @@ const prAutomation = await readFile(".github/workflows/pr-automation.yml", "utf8
 if (!prAutomation.includes("copilot-requests: write") || !prAutomation.includes("GITHUB_TOKEN: ${{ github.token }}")) throw new Error("Copilot CLI没有使用内置GITHUB_TOKEN及其最小权限");
 if (/COPILOT_CLI_TOKEN|COPILOT_GITHUB_TOKEN/u.test(prAutomation)) throw new Error("Copilot CLI仍引用长期个人令牌");
 const deployRuntime = await readFile(".github/workflows/deploy-runtime.yml", "utf8");
-for (const required of ["id: deploy", "tee \"$deployment_log\"", "PIPESTATUS[0]", "复核运行程序健康状态", "steps.deploy.outputs.runtime_url", "EXPECTED_POLICY_SHA", "Date.now() + 60_000", "AbortSignal.timeout", "status: \"waiting\"", "iu.test(body.version)", "健康复核在60秒内未收敛"]) {
+for (const required of [".github/workflows/deploy-runtime.yml", "scripts/verify-workflows.mjs", "id: deploy", "tee \"$deployment_log\"", "PIPESTATUS[0]", "复核运行程序健康状态", "steps.deploy.outputs.runtime_url", "EXPECTED_POLICY_SHA", "Date.now() + 60_000", "AbortSignal.timeout", "await response.body?.cancel()", "status: \"waiting\"", "iu.test(body.version)", "健康复核在60秒内未收敛"]) {
   if (!deployRuntime.includes(required)) throw new Error(`部署工作流缺少固定健康复核合同: ${required}`);
 }
 const runtimeConfiguration = await readFile("packages/runtime/wrangler.toml", "utf8");
