@@ -1,0 +1,53 @@
+name: SPLRAD Steward / PR Validation
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 解析中央规则提交
+        id: policy
+        shell: bash
+        run: |
+          value="${GITHUB_WORKFLOW_REF##*@}"
+          [[ "$value" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "工作流来源不是完整提交编号" >&2; exit 1; }
+          echo "sha=${value,,}" >> "$GITHUB_OUTPUT"
+      - name: 检出合并候选
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { path: target, fetch-depth: 0, persist-credentials: false }
+      - name: 检出中央规则
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: splrad/steward
+          ref: ${{ steps.policy.outputs.sha }}
+          path: steward-policy
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: steward-policy/.node-version, cache: npm, cache-dependency-path: steward-policy/package-lock.json }
+      - run: npm ci --ignore-scripts
+        working-directory: steward-policy
+      - name: 选择验证配置
+        id: profile
+        shell: bash
+        run: |
+          case "${{ github.repository_id }}" in
+            1187527897) echo "name=layerscape" >> "$GITHUB_OUTPUT" ;;
+            1296724484) echo "name=steward" >> "$GITHUB_OUTPUT" ;;
+            *)
+              if [[ "${{ github.event.repository.private }}" == "true" ]]; then
+                echo "私有仓库尚未纳管" >&2
+                exit 1
+              fi
+              echo "name=public-basic" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+      - name: 执行中央验证
+        env:
+          VALIDATION_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node steward-policy/packages/runner/dist/index.js validate --workspace target --repository-id "${{ github.repository_id }}" --profile "${{ steps.profile.outputs.name }}"

@@ -1,267 +1,111 @@
-import {
-  formatMentions,
-  isBotLogin,
-  normalizeGitHubLogin,
-  uniqueHumanLogins,
-} from './identity.js';
+import type { Contributor } from './identity.js';
 
-export const automationSummaryStartMarker = '<!-- workflow:auto-summary:start -->';
-export const automationSummaryEndMarker = '<!-- workflow:auto-summary:end -->';
-export const automationCreatedNoticeMarker = '<!-- workflow:pr-created-notice -->';
+export const summaryStart = '<!-- workflow:auto-summary:start -->';
+export const summaryEnd = '<!-- workflow:auto-summary:end -->';
+export const coauthorMarker = '<!-- workflow:co-authored-by -->';
+export const organizationPullRequestTemplate = `${summaryStart}\n等待SPLRAD Steward根据当前提交和代码差异生成标题与正文。\n${summaryEnd}\n\n### 人工补充\n\n<!-- 只填写自动摘要没有覆盖、但审查者必须知道的内容；没有时保留为空。 -->\n`;
 
-export interface AutomationCommitInput {
-  sha?: string | undefined;
-  message?: string | undefined;
-  authorLogin?: string | undefined;
-  authorName?: string | undefined;
-  authorEmail?: string | undefined;
-}
+export const conventionalTypes = ['feat', 'fix', 'refactor', 'perf', 'style', 'docs', 'test', 'build', 'ci', 'chore', 'revert'] as const;
+export type ConventionalType = typeof conventionalTypes[number];
 
-export interface AutomationFileInput {
-  filename?: string | undefined;
-  status?: string | undefined;
-  additions?: number | undefined;
-  deletions?: number | undefined;
-}
-
-export interface PullRequestAutomationInput {
-  sourceBranch: string;
-  targetBranch: string;
-  headSha: string;
-  actor: string;
-  compareStatus: string;
-  aheadBy: number;
-  totalCommits: number;
-  commits: readonly AutomationCommitInput[];
-  files: readonly AutomationFileInput[];
-  existingBody?: string | null | undefined;
-  templateBody?: string | null | undefined;
-  maintainers?: readonly unknown[] | undefined;
-  botLogins?: readonly unknown[] | undefined;
-}
-
-export interface PullRequestAutomationIgnored {
-  state: 'ignored';
-  reason: 'default-branch' | 'bot-actor' | 'no-ahead-commits';
-}
-
-export interface PullRequestAutomationPlan {
-  state: 'planned';
+export interface GeneratedSummary {
+  type: ConventionalType;
+  scope: string;
   title: string;
-  body: string;
-  noticeBody: string;
-  contributors: string[];
-  changedFiles: number;
-  commits: number;
+  summary: string;
+  changes: string[];
+  reviewNotes: string[];
 }
 
-export type PullRequestAutomationEvaluation = PullRequestAutomationIgnored | PullRequestAutomationPlan;
-
-function boundedLine(value: unknown, limit: number): string {
-  const line = String(value ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
-  return line.length <= limit ? line : `${line.slice(0, Math.max(0, limit - 1))}…`;
+export interface AutomationFacts {
+  sourceRef: string;
+  targetRef: string;
+  headSha: string;
+  baseSha: string;
+  commitSubjects: string[];
+  files: string[];
+  diffStat: string;
+  diffExcerpt: string;
+  areas: string[];
+  contributors: Contributor[];
 }
 
-function safeMarkdownText(value: unknown, limit = 180): string {
-  return boundedLine(value, limit)
-    .replace(/\\/g, '\\\\')
-    .replace(/`/g, "'")
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/([*_\[\]])/g, '\\$1')
-    .replace(/@/g, '@\u200b');
+function hanCount(value: string): number {
+  return (value.match(/[\p{Script=Han}]/gu) ?? []).length;
 }
 
-function safeCodeText(value: unknown, limit = 240): string {
-  return boundedLine(value, limit).replace(/`/g, "'").replace(/@/g, '@\u200b');
+function requireText(value: unknown, name: string, minimum: number, maximum: number): string {
+  if (typeof value !== 'string') throw new TypeError(`${name}必须是字符串`);
+  const result = value.trim();
+  const count = hanCount(result);
+  if (count < minimum || count > maximum || /[\r\n]/u.test(result)) throw new Error(`${name}长度或格式无效`);
+  return result;
 }
 
-function htmlCommentValue(value: unknown): string {
-  return boundedLine(value, 240).replace(/--/g, '- -').replace(/>/g, '&gt;');
+export function validateGeneratedSummary(value: unknown): GeneratedSummary {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Copilot结果必须是对象');
+  const object = value as Record<string, unknown>;
+  const allowed = new Set(['type', 'scope', 'title', 'summary', 'changes', 'reviewNotes']);
+  if (Object.keys(object).some((key) => !allowed.has(key))) throw new Error('Copilot结果包含额外字段');
+  if (!conventionalTypes.includes(object.type as ConventionalType)) throw new Error('type无效');
+  if (typeof object.scope !== 'string' || !/^[a-z0-9-]{1,20}$/.test(object.scope)) throw new Error('scope无效');
+  const title = requireText(object.title, 'title', 1, 50);
+  if (/[。.]$/u.test(title) || /^(feat|fix|refactor|perf|style|docs|test|build|ci|chore|revert)(\(|:)/u.test(title)) throw new Error('title格式无效');
+  const summary = requireText(object.summary, 'summary', 20, 120);
+  if (!Array.isArray(object.changes) || object.changes.length < 1 || object.changes.length > 8) throw new Error('changes无效');
+  if (!Array.isArray(object.reviewNotes) || object.reviewNotes.length > 5) throw new Error('reviewNotes无效');
+  const changes = object.changes.map((item) => requireText(item, 'changes[]', 10, 100));
+  const reviewNotes = object.reviewNotes.map((item) => requireText(item, 'reviewNotes[]', 10, 100));
+  return { type: object.type as ConventionalType, scope: object.scope, title, summary, changes, reviewNotes };
 }
 
-function validCount(value: unknown, label: string): number {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 0) throw new Error(`Automation requires a valid ${label}`);
-  return number;
-}
-
-function conventionalTitle(commits: readonly AutomationCommitInput[]): string {
-  const subject = boundedLine(commits.at(-1)?.message?.split(/\r?\n/, 1)[0], 100);
-  return !/[@<>]/.test(subject) && /^(feat|fix|refactor|perf|style|docs|test|build|ci|chore|revert)(\([a-z0-9-]+\))?!?:\s*\S.{0,80}$/u
-    .test(subject) ? subject : '';
-}
-
-function fallbackTitle(files: readonly { filename: string }[]): string {
-  const paths = files.map((file) => file.filename.toLowerCase());
-  if (paths.every((path) => path.startsWith('docs/') || /(^|\/)readme(?:\.|$)/i.test(path))) {
-    return 'docs: 更新项目文档';
+export function buildDeterministicSummary(facts: AutomationFacts): GeneratedSummary {
+  const subjects = facts.commitSubjects.map((item) => item.trim()).filter(Boolean);
+  const first = subjects[0] ?? '';
+  const match = /^(feat|fix|refactor|perf|style|docs|test|build|ci|chore|revert)(?:\(([a-z0-9-]+)\))?!?:\s*(.+)$/iu.exec(first);
+  const type = (match?.[1]?.toLowerCase() as ConventionalType | undefined) ?? (facts.files.every((file) => /^(docs\/|README|SECURITY|CONTRIBUTING)/i.test(file)) ? 'docs' : 'chore');
+  const scope = match?.[2] ?? (facts.areas.length === 1 ? facts.areas[0]!.replace(/^area:/, '') : 'repo');
+  const candidate = match?.[3]?.trim() ?? '';
+  const title = hanCount(candidate) > 0 ? candidate.replace(/[。.]$/u, '').slice(0, 50) : `更新${scope}相关内容`;
+  const groups = new Map<string, number>();
+  for (const file of facts.files) {
+    const group = file.includes('/') ? file.split('/')[0]! : '仓库根目录';
+    groups.set(group, (groups.get(group) ?? 0) + 1);
   }
-  if (paths.every((path) => /(^|\/)(tests?|__tests__)(\/|$)/i.test(path) || /\.(test|spec)\.[^.]+$/i.test(path))) {
-    return 'test: 更新测试覆盖';
-  }
-  if (paths.every((path) => path.startsWith('.github/'))) return 'ci: 更新仓库自动化';
-  if (paths.every((path) => /(^|\/)(package(?:-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|.*\.(?:csproj|slnx?|props|targets))$/i.test(path))) {
-    return 'build: 更新构建配置';
-  }
-  return `chore: 更新 ${files.length} 个文件`;
-}
-
-function statusLabel(status: string): string {
-  if (status === 'added') return '新增';
-  if (status === 'removed') return '删除';
-  if (status === 'renamed') return '重命名';
-  return '更新';
-}
-
-function sanitizedTrailer(commit: AutomationCommitInput, botLogins: readonly unknown[]): string {
-  if (commit.authorLogin && isBotLogin(commit.authorLogin, botLogins)) return '';
-  const name = boundedLine(commit.authorName, 120)
-    .replace(/[<>]/g, ' ')
-    .replace(/@/g, '@\u200b')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const email = String(commit.authorEmail ?? '').trim();
-  if (!name || /\[bot\]/i.test(name) || !/^[^<>\s@]+@[^<>\s@]+$/.test(email)
-    || /\[bot\]@users\.noreply\.github\.com$/i.test(email)) return '';
-  return `Co-authored-by: ${name} <${email}>`;
-}
-
-function stripManagedCoAuthors(body: string): string {
-  return body.replace(/\n*\s*<!-- workflow:co-authored-by -->[\s\S]*$/i, '').trimEnd();
-}
-
-function stripEditableIdentityMetadata(body: string): string {
-  return body.replace(
-    /<!--\s*workflow:(?:source-actor|source-contributors|auto-context):[\s\S]*?-->/gi,
-    '',
-  );
-}
-
-function appendManagedCoAuthors(body: string, commits: readonly AutomationCommitInput[], botLogins: readonly unknown[]): string {
-  const seen = new Set<string>();
-  const trailers: string[] = [];
-  for (const commit of commits) {
-    const trailer = sanitizedTrailer(commit, botLogins);
-    const key = String(commit.authorEmail ?? '').trim().toLowerCase();
-    if (!trailer || !key || seen.has(key)) continue;
-    seen.add(key);
-    trailers.push(trailer);
-  }
-  if (!trailers.length) return body;
-  return [
-    body.trimEnd(),
-    '',
-    '<!-- workflow:co-authored-by -->',
-    '<details>',
-    '<summary>Co-authored-by</summary>',
-    '',
-    ...trailers,
-    '',
-    '</details>',
-    '',
-  ].join('\n');
-}
-
-function replaceOrAppendSummary(body: string, autoBlock: string): string {
-  const markerPattern = /<!-- workflow:auto-summary:start -->[\s\S]*?<!-- workflow:auto-summary:end -->/;
-  if (markerPattern.test(body)) return body.replace(markerPattern, autoBlock);
-  if (!body.trim()) return `${autoBlock}\n`;
-  return `${body.trim()}\n\n---\n\n${autoBlock}\n`;
-}
-
-export function evaluatePullRequestAutomation(input: PullRequestAutomationInput): PullRequestAutomationEvaluation {
-  const sourceBranch = boundedLine(input.sourceBranch, 240);
-  const targetBranch = boundedLine(input.targetBranch, 240);
-  const headSha = String(input.headSha ?? '').trim().toLowerCase();
-  const botLogins = input.botLogins ?? [];
-  const actor = normalizeGitHubLogin(input.actor);
-  if (!sourceBranch || !targetBranch || sourceBranch === targetBranch) return { state: 'ignored', reason: 'default-branch' };
-  if (!actor || isBotLogin(actor, botLogins)) return { state: 'ignored', reason: 'bot-actor' };
-  if (!/^[a-f0-9]{40}$/.test(headSha)) throw new Error('Automation requires a valid head SHA');
-
-  const aheadBy = validCount(input.aheadBy, 'ahead commit count');
-  const totalCommits = validCount(input.totalCommits, 'total commit count');
-  if (aheadBy === 0) return { state: 'ignored', reason: 'no-ahead-commits' };
-  if (!['ahead', 'diverged'].includes(input.compareStatus) || totalCommits !== aheadBy
-    || input.commits.length !== totalCommits || totalCommits > 100) {
-    throw new Error('Automation compare commit evidence is incomplete or inconsistent');
-  }
-  if (String(input.commits.at(-1)?.sha ?? '').toLowerCase() !== headSha) {
-    throw new Error('Automation compare evidence does not end at the trusted head SHA');
-  }
-  if (!input.files.length || input.files.length >= 300) {
-    throw new Error('Automation compare file evidence is empty or may be truncated');
-  }
-  const files = input.files.map((file) => {
-    const filename = boundedLine(file.filename, 500);
-    if (!filename) throw new Error('Automation compare returned a file without a path');
-    return {
-      filename,
-      status: boundedLine(file.status, 40).toLowerCase(),
-      additions: validCount(file.additions ?? 0, 'file additions'),
-      deletions: validCount(file.deletions ?? 0, 'file deletions'),
-    };
-  });
-
-  const contributors = uniqueHumanLogins([
-    actor,
-    ...input.commits.map((commit) => commit.authorLogin),
-  ], { botLogins });
-  const title = conventionalTitle(input.commits) || fallbackTitle(files);
-  const latestSubject = boundedLine(input.commits.at(-1)?.message?.split(/\r?\n/, 1)[0], 160);
-  const summary = latestSubject
-    ? `${safeMarkdownText(latestSubject)}，共涉及 ${files.length} 个文件。`
-    : `当前分支共有 ${totalCommits} 个提交，涉及 ${files.length} 个文件。`;
-  const shownFiles = files.slice(0, 20).map((file) => (
-    `- ${statusLabel(file.status)} \`${safeCodeText(file.filename, 500)}\`（+${file.additions}/-${file.deletions}）`
-  ));
-  if (files.length > shownFiles.length) shownFiles.push(`- 另有 ${files.length - shownFiles.length} 个文件未在摘要中展开。`);
-  const autoBlock = [
-    automationSummaryStartMarker,
-    `<!-- workflow:source-actor:${actor} -->`,
-    `<!-- workflow:source-contributors:${contributors.join(',')} -->`,
-    `<!-- workflow:auto-context:source=${htmlCommentValue(sourceBranch)};target=${htmlCommentValue(targetBranch)};generation=deterministic-api;changed-files=${files.length} -->`,
-    '### 摘要',
-    '',
-    summary,
-    '',
-    '### 改动内容',
-    ...shownFiles,
-    '',
-    automationSummaryEndMarker,
-  ].join('\n');
-  const startingBody = stripEditableIdentityMetadata(stripManagedCoAuthors(String(input.existingBody ?? '').trim()
-    || stripManagedCoAuthors(String(input.templateBody ?? ''))));
-  const body = appendManagedCoAuthors(replaceOrAppendSummary(startingBody, autoBlock), input.commits, botLogins);
-  if (body.length > 60_000) throw new Error('Automation pull request body exceeds the supported size');
-
-  const authorMention = formatMentions([actor], { botLogins, emptyText: actor });
-  const recipients = formatMentions([...(input.maintainers ?? []), actor], {
-    botLogins,
-    emptyText: '核心维护者',
-  });
-  const noticeBody = [
-    automationCreatedNoticeMarker,
-    '## PR 创建成功',
-    '',
-    '- PR 链接：__PR_NUMBER__',
-    `- 标题：${safeMarkdownText(title, 240)}`,
-    `- 分支流向：${safeMarkdownText(sourceBranch, 240)} -> ${safeMarkdownText(targetBranch, 240)}`,
-    `- 提交人：${authorMention}`,
-    '- 摘要生成：确定性 GitHub API 证据',
-    `- 通知对象：${recipients}`,
-    '',
-    '> 本通知由 SPLRAD Steward 自动维护。',
-  ].join('\n');
-
+  const changes = [...groups].slice(0, 8).map(([group, count]) => `更新${group}区域中的${count}个文件并保持相关内容一致`);
   return {
-    state: 'planned',
-    title,
-    body,
-    noticeBody,
-    contributors,
-    changedFiles: files.length,
-    commits: totalCommits,
+    type, scope, title,
+    summary: `本次改动更新${facts.areas.length ? facts.areas.join('、') : '仓库'}相关内容，共涉及${facts.files.length}个文件。`,
+    changes: changes.length ? changes : ['更新仓库相关内容并保持现有行为一致'],
+    reviewNotes: [],
   };
+}
+
+export function buildPrompt(facts: AutomationFacts, fallback: GeneratedSummary): string {
+  const excerpt = [...facts.diffExcerpt].slice(0, 22_000).join('');
+  const truncated = excerpt.length < facts.diffExcerpt.length ? '\n差异已截断，禁止推断未显示内容。' : '';
+  return [
+    '你是SPLRAD拉取请求编辑器。只返回一个JSON对象，不要代码围栏、解释或额外字段。',
+    '字段固定为type、scope、title、summary、changes、reviewNotes。主体使用简体中文。',
+    `来源分支：${facts.sourceRef}`, `目标分支：${facts.targetRef}`,
+    `最新提交：\n${facts.commitSubjects.slice(0, 20).join('\n')}`,
+    `全部文件：\n${facts.files.join('\n')}`, `差异统计：\n${facts.diffStat}`,
+    `确定性回退：${JSON.stringify(fallback)}`, `差异：\n${excerpt}${truncated}`,
+  ].join('\n\n');
+}
+
+export function renderManagedBody(input: { generated: GeneratedSummary; existingBody?: string | null; templateBody: string; actor: string; contributors: Contributor[]; context: string }): string {
+  const current = input.existingBody || input.templateBody;
+  const start = current.indexOf(summaryStart);
+  const end = current.indexOf(summaryEnd);
+  if (start < 0 || end < start || current.indexOf(summaryStart, start + 1) >= 0 || current.indexOf(summaryEnd, end + 1) >= 0) throw new Error('拉取请求模板受管标记缺失或重复');
+  const sections = [`### 摘要\n\n${input.generated.summary}`, `### 改动内容\n\n${input.generated.changes.map((item) => `- ${item}`).join('\n')}`];
+  if (input.generated.reviewNotes.length) sections.push(`### 审查提示\n\n${input.generated.reviewNotes.map((item) => `- ${item}`).join('\n')}`);
+  if (input.contributors.length) sections.push(`### 贡献者\n\n${input.contributors.map((item) => `[@${item.login}](https://github.com/${item.login})`).join('、')}`);
+  const markers = [`<!-- workflow:source-actor:${input.actor} -->`, `<!-- workflow:source-contributors:${input.contributors.map((item) => item.login).join(',')} -->`, `<!-- workflow:auto-context:${input.context} -->`].join('\n');
+  let body = `${current.slice(0, start)}${summaryStart}\n${sections.join('\n\n')}\n\n${markers}\n${summaryEnd}${current.slice(end + summaryEnd.length)}`;
+  const coauthors = input.contributors.filter((item) => item.name && item.email).map((item) => `Co-authored-by: ${item.name} <${item.email}>`);
+  body = body.replace(new RegExp(`\\n?${coauthorMarker}[\\s\\S]*$`, 'u'), '');
+  if (coauthors.length) body += `\n\n${coauthorMarker}\n${coauthors.join('\n')}`;
+  return body;
 }

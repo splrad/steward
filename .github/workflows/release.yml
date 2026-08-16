@@ -1,164 +1,130 @@
-name: Release
+name: SPLRAD Steward / Release
 
 on:
-  workflow_call:
+  workflow_dispatch:
     inputs:
-      app_client_id:
-        description: GitHub App client ID used to mint repository-scoped Release tokens.
-        required: true
-        type: string
-      pr_number:
-        description: Merged pull request number for workflow_dispatch recovery.
-        required: false
-        default: 0
-        type: number
-    secrets:
-      app_private_key:
-        description: Private key for the installed Steward GitHub App.
-        required: true
-    outputs:
-      state:
-        description: Release publication state when publication runs.
-        value: ${{ jobs.release.outputs.state }}
-      release_url:
-        description: Published Release URL when available.
-        value: ${{ jobs.release.outputs.release_url }}
-
-concurrency:
-  group: steward-release-${{ github.repository_id }}-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
-  cancel-in-progress: false
+      repositoryId: { required: true, type: string }
+      pullRequestNumber: { required: true, type: string }
+      targetSha: { required: true, type: string }
 
 permissions:
   contents: read
+concurrency:
+  group: steward-release-${{ inputs.repositoryId }}
+  cancel-in-progress: false
 
 jobs:
   preflight:
-    name: Validate Release Candidate
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
+    environment: steward-release
     outputs:
-      release_needed: ${{ steps.steward.outputs['release-needed'] }}
-      release_context: ${{ steps.steward.outputs['release-context'] }}
-      release_runner: ${{ steps.steward.outputs['release-runner'] }}
-      adapter_command: ${{ steps.steward.outputs['release-adapter-command'] }}
+      shouldRelease: ${{ steps.plan.outputs.shouldRelease }}
+      displayVersion: ${{ steps.plan.outputs.displayVersion }}
+      buildId: ${{ steps.plan.outputs.buildId }}
     steps:
-      - name: Create Release preflight token
-        id: platform_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
-        with:
-          client-id: ${{ inputs.app_client_id }}
-          private-key: ${{ secrets.app_private_key }}
-          permission-checks: write
-          permission-contents: read
-          permission-pull-requests: read
-
-      - name: Validate merged Release candidate
-        id: steward
-        continue-on-error: true
-        uses: splrad/steward/action@6e33424e7fb18100145845b49e8ccf2c90d504e0
-        with:
-          operation: release-preflight
-          github-token: ${{ steps.platform_token.outputs.token }}
-          pr-number: ${{ inputs.pr_number }}
-
-      - name: Finalize Release preflight failure
-        if: ${{ steps.steward.outcome == 'failure' }}
-        uses: splrad/steward/action@6e33424e7fb18100145845b49e8ccf2c90d504e0
-        with:
-          operation: release-finalize
-          github-token: ${{ steps.platform_token.outputs.token }}
-          pr-number: ${{ inputs.pr_number }}
-          release-failure-summary: Release preflight failed before adapter execution.
-
-  release:
-    name: Build and Publish Release
-    needs: preflight
-    if: ${{ needs.preflight.outputs.release_needed == 'true' }}
-    runs-on: ${{ needs.preflight.outputs.release_runner }}
-    timeout-minutes: 60
-    outputs:
-      state: ${{ steps.publish.outputs.state || steps.reconcile.outputs.state || steps.status.outputs.state }}
-      release_url: ${{ steps.publish.outputs['release-url'] || steps.reconcile.outputs['release-url'] }}
-    steps:
-      - name: Create Release publication token
-        id: platform_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
-        with:
-          client-id: ${{ inputs.app_client_id }}
-          private-key: ${{ secrets.app_private_key }}
-          permission-checks: write
-          permission-contents: write
-          permission-pull-requests: read
-
-      - name: Check out merged source
-        id: checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ fromJSON(needs.preflight.outputs.release_context).pullRequest.mergeSha }}
-          persist-credentials: false
-
-      - name: Plan Release
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { repository: splrad/LayerScape, ref: "${{ inputs.targetSha }}", path: target, fetch-depth: 0, persist-credentials: false }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: "${{ github.sha }}", path: steward-policy, persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: steward-policy/.node-version, cache: npm, cache-dependency-path: steward-policy/package-lock.json }
+      - run: npm ci --ignore-scripts
+        working-directory: steward-policy
+      - name: 重新读取并规划发布
         id: plan
-        uses: splrad/steward/action@6e33424e7fb18100145845b49e8ccf2c90d504e0
-        with:
-          operation: release-adapter
-          release-adapter-phase: plan
-          release-adapter-command: ${{ needs.preflight.outputs.adapter_command }}
-          release-context: ${{ needs.preflight.outputs.release_context }}
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          TRIGGER_ACTOR_ID: ${{ github.actor_id }}
+          TRIGGER_ACTOR_LOGIN: ${{ github.actor }}
+        run: node steward-policy/packages/runner/dist/index.js release-preflight --workspace target --repository-id "${{ inputs.repositoryId }}" --pull-request-number "${{ inputs.pullRequestNumber }}" --target-sha "${{ inputs.targetSha }}" --policy-sha "${{ github.sha }}" --trigger "${{ github.actor_id == '301115370' && 'app' || 'manual' }}" --manifest "${{ runner.temp }}/release-manifest.json"
 
-      - name: Check existing publication state
-        id: status
-        uses: splrad/steward/action@6e33424e7fb18100145845b49e8ccf2c90d504e0
-        with:
-          operation: release-status
-          github-token: ${{ steps.platform_token.outputs.token }}
-          release-context: ${{ needs.preflight.outputs.release_context }}
-          release-plan: ${{ steps.plan.outputs['release-plan'] }}
+  build:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.shouldRelease == 'true' }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { repository: splrad/LayerScape, ref: "${{ inputs.targetSha }}", path: target, fetch-depth: 0, persist-credentials: false }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: "${{ github.sha }}", path: steward-policy, persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: steward-policy/.node-version, cache: npm, cache-dependency-path: steward-policy/package-lock.json }
+      - run: npm ci --ignore-scripts
+        working-directory: steward-policy
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with: { global-json-file: target/global.json }
+      - name: 构建三项发布资产
+        shell: pwsh
+        working-directory: target
+        run: pwsh -NoProfile -NonInteractive -File ./tools/Publish-ReleaseAssets.ps1
+      - name: 生成发布清单
+        run: node steward-policy/packages/runner/dist/index.js release-preflight --workspace target --repository-id "${{ inputs.repositoryId }}" --target-sha "${{ inputs.targetSha }}" --policy-sha "${{ github.sha }}" --manifest "target/artifacts/ReleaseAssets/release-manifest.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with: { name: "layerscape-release-${{ inputs.targetSha }}", path: "target/artifacts/ReleaseAssets", retention-days: 1, if-no-files-found: error, compression-level: 0 }
 
-      - name: Reconcile existing publication
-        id: reconcile
-        if: ${{ steps.status.outputs['release-build-needed'] != 'true' }}
-        uses: splrad/steward/action@6e33424e7fb18100145845b49e8ccf2c90d504e0
-        with:
-          operation: release-reconcile
-          github-token: ${{ steps.platform_token.outputs.token }}
-          release-context: ${{ needs.preflight.outputs.release_context }}
-          release-plan: ${{ steps.plan.outputs['release-plan'] }}
+  notes:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.shouldRelease == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: steward-release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: "${{ github.sha }}", persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: .node-version, cache: npm }
+      - run: npm ci --ignore-scripts
+      - name: 生成确定性发布说明
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+        run: node packages/runner/dist/index.js release-notes --repository-id "${{ inputs.repositoryId }}" --pull-request-number "${{ inputs.pullRequestNumber }}" --target-sha "${{ inputs.targetSha }}" --policy-sha "${{ github.sha }}" --display-version "${{ needs.preflight.outputs.displayVersion }}" --output release-notes.md
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with: { name: "layerscape-notes-${{ inputs.targetSha }}", path: release-notes.md, retention-days: 1, if-no-files-found: error }
 
-      - name: Build Release assets
-        id: build
-        if: ${{ steps.status.outputs['release-build-needed'] == 'true' }}
-        uses: splrad/steward/action@6e33424e7fb18100145845b49e8ccf2c90d504e0
-        with:
-          operation: release-adapter
-          release-adapter-phase: build
-          release-adapter-command: ${{ needs.preflight.outputs.adapter_command }}
-          release-context: ${{ needs.preflight.outputs.release_context }}
+  publish:
+    needs: [build, notes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: steward-release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: "${{ github.sha }}", persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: .node-version, cache: npm }
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with: { name: "layerscape-release-${{ inputs.targetSha }}", path: release }
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with: { name: "layerscape-notes-${{ inputs.targetSha }}", path: release-notes }
+      - name: 发布或继续唯一匹配草稿
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+        run: node packages/runner/dist/index.js release-publish --manifest release/release-manifest.json --notes release-notes/release-notes.md --repository splrad/LayerScape
 
-      - name: Publish Release
-        id: publish
-        if: ${{ steps.status.outputs['release-build-needed'] == 'true' }}
-        uses: splrad/steward/action@6e33424e7fb18100145845b49e8ccf2c90d504e0
-        with:
-          operation: release-publish
-          github-token: ${{ steps.platform_token.outputs.token }}
-          release-context: ${{ needs.preflight.outputs.release_context }}
-          release-plan: ${{ steps.plan.outputs['release-plan'] }}
-          release-assets: ${{ steps.build.outputs['release-assets'] }}
-          release-output-directory: ${{ steps.build.outputs['release-output-directory'] }}
-
-      - name: Finalize pre-publication failure
-        if: >-
-          ${{ always() && (
-            steps.checkout.outcome == 'failure' ||
-            steps.plan.outcome == 'failure' ||
-            steps.status.outcome == 'failure' ||
-            steps.reconcile.outcome == 'failure' ||
-            steps.build.outcome == 'failure'
-          ) }}
-        uses: splrad/steward/action@6e33424e7fb18100145845b49e8ccf2c90d504e0
-        with:
-          operation: release-finalize
-          github-token: ${{ steps.platform_token.outputs.token }}
-          release-context: ${{ needs.preflight.outputs.release_context }}
-          release-failure-summary: Release workflow failed before publication could complete.
+  verify:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: steward-release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: "${{ github.sha }}", persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: .node-version, cache: npm }
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with: { name: "layerscape-release-${{ inputs.targetSha }}", path: release }
+      - name: 复核远程不可变发布
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+        run: node packages/runner/dist/index.js release-verify --manifest release/release-manifest.json --repository splrad/LayerScape

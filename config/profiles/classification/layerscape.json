@@ -1,0 +1,51 @@
+{
+  "$schema": "../../../schema/classification-profile.schema.json",
+  "schemaVersion": 1,
+  "name": "layerscape",
+  "areas": [
+    { "name": "area:runtime", "patterns": ["src/**", "tools/Publish-ReleaseAssets.ps1", "Directory.Build.props", "Directory.Packages.props", "global.json", "chore/Fonts.zip"] },
+    { "name": "area:release", "patterns": ["Version.props", "tools/Publish-ReleaseAssets.ps1", "chore/Fonts.zip"] },
+    { "name": "area:automation", "patterns": [".github/dependabot.yml", ".github/copilot-instructions.md", ".github/instructions/**"] },
+    { "name": "area:docs", "patterns": ["README.md", "docs/**"] },
+    { "name": "area:config", "patterns": [".editorconfig", ".gitattributes", ".gitignore", "*.slnx", "*.props", "global.json"] }
+  ],
+  "decisions": {
+    "kindOrder": ["breaking-change", "security", "bug", "feature", "performance", "build", "plugin", "documentation", "chore"],
+    "conventionalTypes": ["feat", "fix", "refactor", "perf", "style", "docs", "test", "build", "ci", "chore", "revert"],
+    "typeToKind": { "feat": "feature", "fix": "bug", "refactor": "plugin", "perf": "performance", "style": "chore", "docs": "documentation", "test": "chore", "build": "build", "ci": "chore", "chore": "chore", "revert": "bug" },
+    "breakingPatterns": ["(^|\\s)(feat|fix|refactor|perf|build)(\\([a-z0-9-]+\\))?!:", "breaking", "破坏性", "不兼容"],
+    "securityPatterns": ["security", "vulnerability", "cve", "安全", "漏洞"],
+    "fallbackKind": "chore"
+  },
+  "runtimeRelease": {
+    "includePrefixes": ["src/"],
+    "includeFiles": ["tools/Publish-ReleaseAssets.ps1", "Directory.Build.props", "Directory.Packages.props", "global.json", "chore/Fonts.zip"],
+    "excludePrefixes": [".github/", ".local/", ".agents/", ".codex/", ".claude/", ".vscode/", "docs/"],
+    "excludeFiles": ["README.md", "LICENSE.txt", "Version.props", "CADFontAutoReplace.slnx", ".editorconfig", ".gitattributes", ".gitignore"]
+  },
+  "installOrPackage": { "includeFiles": ["tools/Publish-ReleaseAssets.ps1", "chore/Fonts.zip", "Directory.Build.props", "Directory.Packages.props", "global.json"] },
+  "labels": {
+    "public": [
+      { "name": "breaking-change", "color": "b60205", "description": "存在破坏性或不兼容变更。" },
+      { "name": "security", "color": "d73a4a", "description": "包含安全修复或漏洞加固。" },
+      { "name": "feature", "color": "1d76db", "description": "新增用户可见功能或增强。" },
+      { "name": "bug", "color": "d73a4a", "description": "修复缺陷或回归。" },
+      { "name": "performance", "color": "fbca04", "description": "包含性能改进。" },
+      { "name": "build", "color": "fef2c0", "description": "修改安装器、打包或运行时构建。" },
+      { "name": "plugin", "color": "cfd3d7", "description": "修改运行时插件。" },
+      { "name": "documentation", "color": "0075ca", "description": "只修改文档。" },
+      { "name": "chore", "color": "ededed", "description": "仓库维护、依赖或配置改动。" }
+    ],
+    "release": ["breaking-change", "security", "feature", "bug", "performance", "build", "plugin"],
+    "internalPrefixes": ["area:", "kind:"]
+  },
+  "releaseCategories": [
+    { "title": "破坏性变更", "icon": "🚨", "releaseLabel": "breaking-change", "labels": ["breaking-change", "breaking", "semver-major"], "textPatterns": ["(^|\\s|\\n)(feat|fix|refactor|perf|docs|test|build|ci|chore|style|revert)(\\([a-z0-9-]+\\))?!:", "breaking", "破坏性", "不兼容", "semver-major"], "installOrPackage": false, "fallback": false },
+    { "title": "安全修复", "icon": "🔒", "releaseLabel": "security", "labels": ["security", "vulnerability"], "textPatterns": ["security", "安全", "漏洞", "cve"], "installOrPackage": false, "fallback": false },
+    { "title": "新增功能", "icon": "✨", "releaseLabel": "feature", "labels": ["feature", "feat", "enhancement", "semver-minor"], "textPatterns": ["(^|\\s|\\n)(feat|feature|enhancement)(\\([a-z0-9-]+\\))?!?:", "新增", "添加", "功能"], "installOrPackage": false, "fallback": false },
+    { "title": "问题修复", "icon": "🛠", "releaseLabel": "bug", "labels": ["bug", "fix", "bugfix", "regression"], "textPatterns": ["(^|\\s|\\n)(fix|bug|bugfix|regression)(\\([a-z0-9-]+\\))?!?:", "修复", "缺陷", "问题"], "installOrPackage": false, "fallback": false },
+    { "title": "性能优化", "icon": "⚡", "releaseLabel": "performance", "labels": ["performance", "perf"], "textPatterns": ["(^|\\s|\\n)(perf|performance)(\\([a-z0-9-]+\\))?!?:", "性能"], "installOrPackage": false, "fallback": false },
+    { "title": "安装与发布包", "icon": "📦", "releaseLabel": "build", "labels": ["build"], "textPatterns": ["(^|\\s|\\n)build(\\([a-z0-9-]+\\))?!?:", "packag", "package", "installer", "打包", "构建", "安装", "发布包"], "installOrPackage": true, "fallback": false },
+    { "title": "其他插件变更", "icon": "🔌", "releaseLabel": "plugin", "labels": ["plugin", "runtime"], "textPatterns": [], "installOrPackage": false, "fallback": true }
+  ]
+}

@@ -1,46 +1,25 @@
-import type { GitHubReleaseAsset } from './client.js';
-import { resolveGitHubRestApiVersion } from './api-version.js';
-import { GitHubApiError, resolveGitHubEndpointConfiguration } from './transport.js';
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { githubHeaders } from "./api-version.js";
+
+const TYPES: Record<string, string> = { ".exe": "application/x-msdownload", ".zip": "application/zip" };
 
 export async function uploadReleaseAsset(input: {
-  token: string;
-  apiBaseUrl: string;
-  uploadUrl: string;
-  owner: string;
-  repository: string;
-  releaseId: number;
-  name: string;
-  mediaType: string;
-  body: Blob;
-  apiVersion?: string;
-  fetch?: typeof globalThis.fetch;
-}): Promise<GitHubReleaseAsset> {
-  const token = input.token.trim();
-  if (!token) throw new Error('GitHub API token is required');
-  const endpoints = resolveGitHubEndpointConfiguration(input.apiBaseUrl);
-  const templateSuffix = '{?name,label}';
-  if (!input.uploadUrl.endsWith(templateSuffix)) throw new Error('GitHub returned an invalid Release upload URL template');
-  const url = new URL(input.uploadUrl.slice(0, -templateSuffix.length));
-  const expectedPath = `${endpoints.releaseUploadPathPrefix}/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repository)}/releases/${input.releaseId}/assets`;
-  if (url.protocol !== 'https:' || url.origin !== endpoints.releaseUploadOrigin || url.username || url.password
-    || url.search || url.hash || url.pathname.toLowerCase() !== expectedPath.toLowerCase()) {
-    throw new Error('GitHub Release upload URL escaped the trusted repository endpoint');
-  }
-  url.searchParams.set('name', input.name);
-  const response = await (input.fetch ?? globalThis.fetch)(url, {
-    // Manual redirect handling is supported by both Node and Workers. The
-    // response.ok gate below rejects every 3xx without forwarding asset bytes.
-    method: 'POST', redirect: 'manual', body: input.body,
-    headers: {
-      accept: 'application/vnd.github+json', authorization: `Bearer ${token}`,
-      'content-type': input.mediaType, 'user-agent': 'splrad-steward',
-      'x-github-api-version': resolveGitHubRestApiVersion(input.apiBaseUrl, input.apiVersion),
-    },
+  token: string; policySha: string; uploadUrl: string; filePath: string; fileName: string; expectedSha256: string; transport?: typeof fetch;
+}) {
+  const bytes = await readFile(input.filePath);
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  if (digest !== input.expectedSha256.toLowerCase()) throw new Error(`资产摘要不匹配: ${input.fileName}`);
+  const extension = input.fileName.slice(input.fileName.lastIndexOf("."));
+  const contentType = TYPES[extension];
+  if (!contentType) throw new Error(`不支持的资产类型: ${extension}`);
+  const base = input.uploadUrl.replace(/\{.*$/, "");
+  const response = await (input.transport ?? fetch)(`${base}?name=${encodeURIComponent(input.fileName)}`, {
+    method: "POST", headers: { ...githubHeaders(input.token, input.policySha), "Content-Type": contentType, "Content-Length": String(bytes.byteLength) }, body: bytes,
   });
-  if (!response.ok) {
-    let message = response.statusText || 'request failed';
-    try { message = String((await response.json() as { message?: string }).message || message); } catch { /* safe fallback */ }
-    throw new GitHubApiError({ status: response.status, method: 'POST', path: url.pathname, message });
-  }
-  return await response.json() as GitHubReleaseAsset;
+  if (!response.ok) throw new Error(`上传资产失败: ${response.status} ${(await response.text()).slice(0, 500)}`);
+  const remote = await response.json() as { size?: number; digest?: string };
+  if (remote.size !== undefined && remote.size !== bytes.byteLength) throw new Error(`远程资产字节数不一致: ${input.fileName}`);
+  if (remote.digest !== undefined && remote.digest !== `sha256:${digest}`) throw new Error(`远程资产摘要不一致: ${input.fileName}`);
+  return { response: remote, sha256: digest, size: bytes.byteLength, contentType };
 }

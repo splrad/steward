@@ -1,0 +1,30 @@
+name: SPLRAD Steward / Deploy Runtime
+
+on:
+  push:
+    branches: [main]
+    paths: ["packages/runtime/**", "packages/core/**", "packages/github/**", "packages/runner/**", "config/**", "schema/**", "package.json", "package-lock.json"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: steward-deployment
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: "${{ github.sha }}", persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: .node-version, cache: npm }
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run verify:dist
+      - run: npm run verify:workflows
+      - name: 部署中央运行程序
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx wrangler deploy --config packages/runtime/wrangler.toml --var POLICY_SHA:${{ github.sha }}

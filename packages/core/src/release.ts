@@ -1,276 +1,50 @@
-import { repositoryPathPatternMatches } from './fingerprint.js';
+export interface ParsedVersion { displayVersion: string; buildId: string; displayParts: [number, number, number]; buildParts: [number, number] }
+export interface ReleaseAsset { name: string; size: number; sha256: string }
+export interface ReleaseManifest { schemaVersion: 1; repositoryId: number; targetSha: string; policySha: string; displayVersion: string; buildId: string; assets: ReleaseAsset[] }
 
-export const RELEASE_ADAPTER_CONTRACT_VERSION = 1 as const;
+function tupleGreater(left: readonly number[], right: readonly number[]): boolean {
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const a = left[index] ?? 0; const b = right[index] ?? 0;
+    if (a !== b) return a > b;
+  }
+  return false;
+}
 
-export class ReleaseContractError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ReleaseContractError';
+export function parseVersion(displayVersion: string, buildId: string): ParsedVersion {
+  if (!/^\d+\.\d+\.\d+$/.test(displayVersion) || !/^\d{8}\.\d+$/.test(buildId)) throw new Error('版本或构建编号格式无效');
+  const display = displayVersion.split('.').map(Number) as [number, number, number];
+  const build = buildId.split('.').map(Number) as [number, number];
+  return { displayVersion, buildId, displayParts: display, buildParts: build };
+}
+
+export function planRelease(input: { next: ParsedVersion; previous?: ParsedVersion | null; targetSha: string }): { tag: string; title: string; targetSha: string } {
+  if (!/^[0-9a-f]{40}$/i.test(input.targetSha)) throw new Error('目标提交必须是40位提交编号');
+  if (input.previous && (!tupleGreater(input.next.displayParts, input.previous.displayParts) || !tupleGreater(input.next.buildParts, input.previous.buildParts))) throw new Error('版本和构建编号必须严格增长');
+  return { tag: `v${input.next.displayVersion}`, title: `AFR v${input.next.displayVersion} (${input.next.buildId})`, targetSha: input.targetSha };
+}
+
+export function verifyAssetManifest(manifest: ReleaseManifest, expectedNames: readonly string[]): void {
+  if (manifest.schemaVersion !== 1 || !Number.isSafeInteger(manifest.repositoryId) || !/^[0-9a-f]{40}$/i.test(manifest.targetSha) || !/^[0-9a-f]{40}$/i.test(manifest.policySha)) throw new Error('发布清单基础字段无效');
+  if (manifest.assets.length !== expectedNames.length) throw new Error('发布资产数量不正确');
+  const expected = new Set(expectedNames);
+  if (expected.size !== expectedNames.length || new Set(manifest.assets.map(asset => asset.name)).size !== manifest.assets.length) throw new Error('发布资产名称重复');
+  for (const asset of manifest.assets) {
+    if (!expected.has(asset.name) || !Number.isSafeInteger(asset.size) || asset.size <= 0 || !/^[0-9a-f]{64}$/.test(asset.sha256)) throw new Error(`发布资产无效: ${asset.name}`);
   }
 }
 
-export interface ReleaseAdapterContext {
-  contractVersion: typeof RELEASE_ADAPTER_CONTRACT_VERSION;
-  repository: {
-    id: number;
-    fullName: string;
-  };
-  pullRequest: {
-    number: number;
-    mergeSha: string;
-  };
-}
+export type RemoteReleaseState =
+  | { state: 'create-draft' }
+  | { state: 'resume-draft'; releaseId: number }
+  | { state: 'already-complete'; releaseId: number }
+  | { state: 'conflict'; reason: string };
 
-export interface ReleasePlan {
-  contractVersion: typeof RELEASE_ADAPTER_CONTRACT_VERSION;
-  displayVersion: string;
-  buildId: string;
-  tagName: string;
-  releaseTitle: string;
-}
-
-export interface ReleaseAsset {
-  path: string;
-  name: string;
-  mediaType: string;
-  size?: number;
-  sha256?: string;
-}
-
-export interface ReleaseAssetsManifest {
-  contractVersion: typeof RELEASE_ADAPTER_CONTRACT_VERSION;
-  assets: ReleaseAsset[];
-}
-
-export interface ReleaseOutputFile {
-  path: string;
-  type: 'file' | 'directory' | 'symlink';
-  size: number;
-  sha256?: string;
-}
-
-export interface ReleaseTriggerDecision {
-  state: 'ignored' | 'planned';
-  reason: 'feature-disabled' | 'trigger-path-not-matched' | 'trigger-path-matched';
-  matchedPaths: string[];
-}
-
-export interface ReleasePublicationDecision {
-  state: 'planned' | 'ignored';
-  reason: 'release-available' | 'already-published';
-}
-
-type JsonObject = Record<string, unknown>;
-
-function fail(path: string, message: string): never {
-  throw new ReleaseContractError(`${path} ${message}`);
-}
-
-function object(value: unknown, path: string, allowed: readonly string[]): JsonObject {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) fail(path, 'must be an object');
-  const result = value as JsonObject;
-  const unknown = Object.keys(result).filter((key) => !allowed.includes(key));
-  if (unknown.length) fail(path, `contains unknown properties: ${unknown.sort().join(', ')}`);
-  return result;
-}
-
-function contractVersion(value: unknown, path: string): typeof RELEASE_ADAPTER_CONTRACT_VERSION {
-  if (value !== RELEASE_ADAPTER_CONTRACT_VERSION) {
-    fail(path, `must equal ${RELEASE_ADAPTER_CONTRACT_VERSION}`);
-  }
-  return RELEASE_ADAPTER_CONTRACT_VERSION;
-}
-
-function positiveInteger(value: unknown, path: string): number {
-  if (!Number.isSafeInteger(value) || Number(value) <= 0) fail(path, 'must be a positive integer');
-  return Number(value);
-}
-
-function text(value: unknown, path: string, maximum: number): string {
-  if (typeof value !== 'string' || !value || value !== value.trim()) {
-    fail(path, 'must be a non-empty string without surrounding whitespace');
-  }
-  if (value.length > maximum) fail(path, `must not exceed ${maximum} characters`);
-  if (/\p{Cc}/u.test(value)) fail(path, 'must not contain control characters');
-  return value;
-}
-
-function repositoryPath(value: unknown, path: string): string {
-  const result = text(value, path, 1024);
-  if (result.startsWith('/') || /^[A-Za-z]:/.test(result) || result.includes('\\')) {
-    fail(path, 'must be a relative POSIX path');
-  }
-  const segments = result.split('/');
-  if (segments.some((segment) => (
-    !segment || segment === '.' || segment === '..' || segment.endsWith('.') || segment.endsWith(' ')
-  ))) {
-    fail(path, 'contains an unsafe path segment');
-  }
-  return result;
-}
-
-function uploadName(value: unknown, path: string): string {
-  const result = text(value, path, 255);
-  if (result === '.' || result === '..' || /[\\/]/.test(result)) fail(path, 'must be a file name');
-  return result;
-}
-
-function tagName(value: unknown, path: string): string {
-  const result = text(value, path, 255);
-  const segments = result.split('/');
-  if (result === '@'
-    || result.startsWith('/')
-    || result.endsWith('/')
-    || result.endsWith('.')
-    || result.endsWith('.lock')
-    || result.includes('..')
-    || result.includes('@{')
-    || segments.some((segment) => !segment || segment.startsWith('.'))
-    || /[\s~^:?*[\\]/.test(result)) {
-    fail(path, 'is not a safe Git tag name');
-  }
-  return result;
-}
-
-function optionalSize(value: unknown, path: string): number | undefined {
-  if (value === undefined) return undefined;
-  return positiveInteger(value, path);
-}
-
-function optionalSha256(value: unknown, path: string): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== 'string' || !/^[a-f0-9]{64}$/i.test(value)) fail(path, 'must be a SHA-256 hex digest');
-  return value.toLowerCase();
-}
-
-export function evaluateReleaseTrigger(input: {
-  enabled: boolean;
-  triggerPaths: readonly string[];
-  changedFiles: readonly string[];
-}): ReleaseTriggerDecision {
-  if (!input.enabled) return { state: 'ignored', reason: 'feature-disabled', matchedPaths: [] };
-  const matchedPaths = [...new Set(input.triggerPaths.filter((pattern) => (
-    input.changedFiles.some((file) => repositoryPathPatternMatches(file, pattern))
-  )))].sort();
-  return matchedPaths.length
-    ? { state: 'planned', reason: 'trigger-path-matched', matchedPaths }
-    : { state: 'ignored', reason: 'trigger-path-not-matched', matchedPaths: [] };
-}
-
-export function evaluateReleasePublication(input: {
-  mergeSha: string;
-  tagName: string;
-  tagCommitSha?: string;
-  release?: { id: number; tagName: string; draft: boolean };
-}): ReleasePublicationDecision {
-  const mergeSha = text(input.mergeSha, 'mergeSha', 40).toLowerCase();
-  if (!/^[a-f0-9]{40}$/.test(mergeSha)) fail('mergeSha', 'must be a 40-character commit SHA');
-  const expectedTag = tagName(input.tagName, 'tagName');
-  const tagCommitSha = input.tagCommitSha?.toLowerCase();
-  if (tagCommitSha !== undefined && !/^[a-f0-9]{40}$/.test(tagCommitSha)) {
-    fail('tagCommitSha', 'must be a 40-character commit SHA');
-  }
-  if (!tagCommitSha && !input.release) return { state: 'planned', reason: 'release-available' };
-  if (!tagCommitSha || !input.release) fail('$', 'contains an incomplete existing tag/Release pair');
-  if (!Number.isSafeInteger(input.release.id) || input.release.id <= 0) fail('release.id', 'must be a positive integer');
-  if (input.release.tagName !== expectedTag) fail('release.tagName', 'does not match the planned tag');
-  if (input.release.draft) fail('release.draft', 'must be false for an existing published Release');
-  if (tagCommitSha !== mergeSha) fail('tagCommitSha', 'does not target the merged pull request commit');
-  return { state: 'ignored', reason: 'already-published' };
-}
-
-export function parseReleaseAdapterContext(value: unknown): ReleaseAdapterContext {
-  const root = object(value, '$', ['contractVersion', 'repository', 'pullRequest']);
-  const version = contractVersion(root.contractVersion, '$.contractVersion');
-  const repository = object(root.repository, '$.repository', ['id', 'fullName']);
-  const pullRequest = object(root.pullRequest, '$.pullRequest', ['number', 'mergeSha']);
-  const fullName = text(repository.fullName, '$.repository.fullName', 201);
-  if (!/^[^\s/]+\/[^\s/]+$/.test(fullName)) fail('$.repository.fullName', 'must use owner/repository form');
-  const mergeSha = text(pullRequest.mergeSha, '$.pullRequest.mergeSha', 40).toLowerCase();
-  if (!/^[a-f0-9]{40}$/.test(mergeSha)) fail('$.pullRequest.mergeSha', 'must be a 40-character commit SHA');
-  return {
-    contractVersion: version,
-    repository: {
-      id: positiveInteger(repository.id, '$.repository.id'),
-      fullName,
-    },
-    pullRequest: {
-      number: positiveInteger(pullRequest.number, '$.pullRequest.number'),
-      mergeSha,
-    },
-  };
-}
-
-export function parseReleasePlan(value: unknown): ReleasePlan {
-  const root = object(value, '$', [
-    'contractVersion', 'displayVersion', 'buildId', 'tagName', 'releaseTitle',
-  ]);
-  return {
-    contractVersion: contractVersion(root.contractVersion, '$.contractVersion'),
-    displayVersion: text(root.displayVersion, '$.displayVersion', 128),
-    buildId: text(root.buildId, '$.buildId', 256),
-    tagName: tagName(root.tagName, '$.tagName'),
-    releaseTitle: text(root.releaseTitle, '$.releaseTitle', 256),
-  };
-}
-
-export function parseReleaseAssetsManifest(
-  value: unknown,
-  outputFiles: readonly ReleaseOutputFile[],
-): ReleaseAssetsManifest {
-  const root = object(value, '$', ['contractVersion', 'assets']);
-  contractVersion(root.contractVersion, '$.contractVersion');
-  if (!Array.isArray(root.assets) || !root.assets.length) fail('$.assets', 'must be a non-empty array');
-  const files = new Map<string, ReleaseOutputFile>();
-  const foldedFilePaths = new Set<string>();
-  for (const [index, candidate] of outputFiles.entries()) {
-    const safePath = repositoryPath(candidate.path, `outputFiles[${index}].path`);
-    const foldedPath = safePath.toLowerCase();
-    if (files.has(safePath) || foldedFilePaths.has(foldedPath)) {
-      fail('outputFiles', `contains duplicate path: ${safePath}`);
-    }
-    files.set(safePath, { ...candidate, path: safePath });
-    foldedFilePaths.add(foldedPath);
-  }
-  const paths = new Set<string>();
-  const foldedPaths = new Set<string>();
-  const names = new Set<string>();
-  const assets = root.assets.map((candidate, index): ReleaseAsset => {
-    const path = `$.assets[${index}]`;
-    const asset = object(candidate, path, ['path', 'name', 'mediaType', 'size', 'sha256']);
-    const assetPath = repositoryPath(asset.path, `${path}.path`);
-    const foldedPath = assetPath.toLowerCase();
-    const name = uploadName(asset.name, `${path}.name`);
-    const foldedName = name.toLowerCase();
-    if (paths.has(assetPath) || foldedPaths.has(foldedPath)) fail(path, `duplicates asset path: ${assetPath}`);
-    if (names.has(foldedName)) fail(path, `duplicates upload name: ${name}`);
-    paths.add(assetPath);
-    foldedPaths.add(foldedPath);
-    names.add(foldedName);
-    const file = files.get(assetPath);
-    if (!file) fail(`${path}.path`, `does not exist in the output directory: ${assetPath}`);
-    if (file.type !== 'file') fail(`${path}.path`, 'must reference a regular file');
-    if (!Number.isSafeInteger(file.size) || file.size <= 0) fail(`${path}.path`, 'must reference a non-empty file');
-    const size = optionalSize(asset.size, `${path}.size`);
-    if (size !== undefined && size !== file.size) fail(`${path}.size`, 'does not match the output file');
-    const sha256 = optionalSha256(asset.sha256, `${path}.sha256`);
-    if (sha256 !== undefined && sha256 !== optionalSha256(file.sha256, `outputFiles[${index}].sha256`)) {
-      fail(`${path}.sha256`, 'does not match the output file');
-    }
-    return {
-      path: assetPath,
-      name,
-      mediaType: (() => {
-        const mediaType = text(asset.mediaType, `${path}.mediaType`, 255);
-        if (!/^[^\s/]+\/[^\s/]+$/.test(mediaType)) fail(`${path}.mediaType`, 'must be an Internet media type');
-        return mediaType;
-      })(),
-      ...(size === undefined ? {} : { size }),
-      ...(sha256 === undefined ? {} : { sha256 }),
-    };
-  });
-  return {
-    contractVersion: RELEASE_ADAPTER_CONTRACT_VERSION,
-    assets: assets.sort((left, right) => left.path.localeCompare(right.path, 'en')),
-  };
+export function classifyRemoteReleaseState(input: { tagExists: boolean; release?: { id: number; draft: boolean; prerelease: boolean; targetMatches: boolean; titleMatches: boolean; markerMatches: boolean; assetsMatch: boolean; hasUnexpectedAssets: boolean } | null }): RemoteReleaseState {
+  const release = input.release;
+  if (!input.tagExists && !release) return { state: 'create-draft' };
+  if (input.tagExists && !release) return { state: 'conflict', reason: '标签存在但发布不存在' };
+  if (!input.tagExists && release) return { state: 'conflict', reason: '发布存在但标签不存在' };
+  if (!release || release.prerelease || !release.targetMatches || !release.titleMatches || !release.markerMatches || release.hasUnexpectedAssets) return { state: 'conflict', reason: '远程发布与当前计划不一致' };
+  if (release.draft) return { state: 'resume-draft', releaseId: release.id };
+  return release.assetsMatch ? { state: 'already-complete', releaseId: release.id } : { state: 'conflict', reason: '已发布资产不一致' };
 }

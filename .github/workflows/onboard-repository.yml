@@ -1,0 +1,37 @@
+name: SPLRAD Steward / Onboard Repository
+
+on:
+  workflow_dispatch:
+    inputs:
+      repositoryId: { required: false, type: string }
+      repositoryFullName: { required: true, type: string }
+      trigger: { required: false, type: string, default: manual }
+      deliveryId: { required: false, type: string, default: manual }
+      policySha: { required: false, type: string }
+
+permissions: {}
+concurrency:
+  group: steward-onboard-${{ inputs.repositoryFullName }}
+  cancel-in-progress: false
+
+jobs:
+  onboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: steward-automation
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: "${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}", persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: .node-version, cache: npm }
+      - run: npm ci --ignore-scripts
+      - name: 校验并接入仓库
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          COPILOT_REVIEW_REQUEST_TOKEN: ${{ secrets.COPILOT_REVIEW_REQUEST_TOKEN }}
+          TRIGGER_ACTOR_ID: ${{ github.actor_id }}
+          TRIGGER_ACTOR_LOGIN: ${{ github.actor }}
+        run: node packages/runner/dist/index.js onboard-repository ${{ inputs.repositoryId && format('--repository-id "{0}"', inputs.repositoryId) || '' }} --repository-full-name "${{ inputs.repositoryFullName }}" --trigger "${{ github.actor_id == '301115370' && inputs.trigger || 'manual' }}" --delivery-id "${{ github.actor_id == '301115370' && inputs.deliveryId || format('manual-{0}-{1}', github.run_id, github.run_attempt) }}" --policy-sha "${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}"

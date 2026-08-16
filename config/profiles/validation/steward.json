@@ -1,0 +1,9 @@
+{
+  "$schema": "../../../schema/validation-profile.schema.json",
+  "schemaVersion": 1,
+  "runner": "ubuntu-latest",
+  "timeoutMinutes": 20,
+  "tasks": ["git-diff-check", "parse-json", "parse-yaml", "verify-copilot-instructions", "actionlint", "npm-ci", "npm-test", "npm-typecheck", "npm-verify-dist", "npm-verify-workflows"],
+  "nodeVersionFile": ".node-version",
+  "disclosure": { "productBuild": "不适用；此仓库是自动化源代码", "productTests": "已运行 npm test" }
+}

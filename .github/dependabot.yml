@@ -4,13 +4,18 @@ updates:
     directory: /
     schedule:
       interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: Asia/Bangkok
     groups:
       development-dependencies:
         dependency-type: development
     open-pull-requests-limit: 5
-
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Bangkok
     open-pull-requests-limit: 5

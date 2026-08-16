@@ -1,0 +1,1 @@
+{ "name": "@splrad/steward-github", "private": true, "type": "module", "exports": "./src/index.ts" }

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/splrad/steward/schema/classification-profile.schema.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "name", "areas", "decisions", "runtimeRelease", "installOrPackage", "labels", "releaseCategories"],
+  "properties": {
+    "$schema": { "type": "string" }, "schemaVersion": { "const": 1 }, "name": { "type": "string", "minLength": 1 },
+    "areas": { "type": "array", "items": { "$ref": "#/$defs/area" } },
+    "decisions": { "$ref": "#/$defs/decisions" }, "runtimeRelease": { "$ref": "#/$defs/pathSet" }, "installOrPackage": { "$ref": "#/$defs/includeFiles" },
+    "labels": { "$ref": "#/$defs/labels" }, "releaseCategories": { "type": "array", "items": { "$ref": "#/$defs/category" } }
+  },
+  "$defs": {
+    "strings": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "area": { "type": "object", "additionalProperties": false, "required": ["name", "patterns"], "properties": { "name": { "type": "string", "pattern": "^area:" }, "patterns": { "$ref": "#/$defs/strings" } } },
+    "decisions": { "type": "object", "additionalProperties": false, "required": ["kindOrder", "conventionalTypes", "typeToKind", "breakingPatterns", "securityPatterns", "fallbackKind"], "properties": { "kindOrder": { "$ref": "#/$defs/strings" }, "conventionalTypes": { "$ref": "#/$defs/strings" }, "typeToKind": { "type": "object", "additionalProperties": { "type": "string" } }, "breakingPatterns": { "$ref": "#/$defs/strings" }, "securityPatterns": { "$ref": "#/$defs/strings" }, "fallbackKind": { "type": "string" } } },
+    "pathSet": { "type": "object", "additionalProperties": false, "required": ["includePrefixes", "includeFiles", "excludePrefixes", "excludeFiles"], "properties": { "includePrefixes": { "$ref": "#/$defs/strings" }, "includeFiles": { "$ref": "#/$defs/strings" }, "excludePrefixes": { "$ref": "#/$defs/strings" }, "excludeFiles": { "$ref": "#/$defs/strings" } } },
+    "includeFiles": { "type": "object", "additionalProperties": false, "required": ["includeFiles"], "properties": { "includeFiles": { "$ref": "#/$defs/strings" } } },
+    "label": { "type": "object", "additionalProperties": false, "required": ["name", "color", "description"], "properties": { "name": { "type": "string" }, "color": { "type": "string", "pattern": "^[0-9a-fA-F]{6}$" }, "description": { "type": "string" } } },
+    "labels": { "type": "object", "additionalProperties": false, "required": ["public", "release", "internalPrefixes"], "properties": { "public": { "type": "array", "items": { "$ref": "#/$defs/label" } }, "release": { "$ref": "#/$defs/strings" }, "internalPrefixes": { "$ref": "#/$defs/strings" } } },
+    "category": { "type": "object", "additionalProperties": false, "required": ["title", "icon", "releaseLabel", "labels", "textPatterns", "installOrPackage", "fallback"], "properties": { "title": { "type": "string" }, "icon": { "type": "string" }, "releaseLabel": { "type": "string" }, "labels": { "$ref": "#/$defs/strings" }, "textPatterns": { "$ref": "#/$defs/strings" }, "installOrPackage": { "type": "boolean" }, "fallback": { "type": "boolean" } } }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "$schema": "../../../schema/release-profile.schema.json",
+  "schemaVersion": 1,
+  "name": "layerscape",
+  "repository": { "id": 1187527897, "fullName": "splrad/LayerScape", "defaultBranch": "main" },
+  "trigger": { "event": "pull_request.closed", "merged": true, "changedFiles": ["Version.props"] },
+  "runner": { "label": "windows-latest", "timeoutMinutes": 45 },
+  "version": {
+    "file": "Version.props",
+    "displayElement": "PluginDisplayVersion",
+    "displayPattern": "^\\d+\\.\\d+\\.\\d+$",
+    "buildElement": "PluginBuildId",
+    "buildPattern": "^\\d{8}\\.\\d+$",
+    "tagTemplate": "v{displayVersion}",
+    "titleTemplate": "AFR v{displayVersion} ({buildId})"
+  },
+  "build": {
+    "sdkVersion": "10.0.201",
+    "sdkRollForward": "latestFeature",
+    "shell": "pwsh",
+    "command": "./tools/Publish-ReleaseAssets.ps1",
+    "projects": [
+      { "path": "src/AutoCAD/AFR-ACAD2018/AFR-ACAD2018.csproj", "framework": "net462" },
+      { "path": "src/AutoCAD/AFR-ACAD2019/AFR-ACAD2019.csproj", "framework": "net472" },
+      { "path": "src/AutoCAD/AFR-ACAD2020/AFR-ACAD2020.csproj", "framework": "net472" },
+      { "path": "src/AutoCAD/AFR-ACAD2021/AFR-ACAD2021.csproj", "framework": "net48" },
+      { "path": "src/AutoCAD/AFR-ACAD2022/AFR-ACAD2022.csproj", "framework": "net48" },
+      { "path": "src/AutoCAD/AFR-ACAD2023/AFR-ACAD2023.csproj", "framework": "net48" },
+      { "path": "src/AutoCAD/AFR-ACAD2024/AFR-ACAD2024.csproj", "framework": "net48" },
+      { "path": "src/AutoCAD/AFR-ACAD2025/AFR-ACAD2025.csproj", "framework": "net8.0-windows" },
+      { "path": "src/AutoCAD/AFR-ACAD2026/AFR-ACAD2026.csproj", "framework": "net8.0-windows" },
+      { "path": "src/AutoCAD/AFR-ACAD2027/AFR-ACAD2027.csproj", "framework": "net10.0-windows" }
+    ],
+    "deployer": { "path": "src/AFR.Deployer/AFR.Deployer.csproj", "framework": "net10.0-windows", "runtime": "win-x64", "selfContained": true, "singleFile": true }
+  },
+  "assets": [
+    { "nameTemplate": "AFR-Deployer_v{displayVersion}.exe", "pathTemplate": "artifacts/ReleaseAssets/AFR-Deployer_v{displayVersion}.exe", "contentType": "application/x-msdownload" },
+    { "nameTemplate": "AFR-DLL_v{displayVersion}.zip", "pathTemplate": "artifacts/ReleaseAssets/AFR-DLL_v{displayVersion}.zip", "contentType": "application/zip" },
+    { "nameTemplate": "Fonts.zip", "pathTemplate": "artifacts/ReleaseAssets/Fonts.zip", "contentType": "application/zip" }
+  ],
+  "releaseNotes": {
+    "classificationProfile": "layerscape",
+    "excludedLabels": ["ignore-for-release", "skip-changelog", "no-changelog", "no-release-notes"],
+    "previousRelease": "latest-published-first-parent-ancestor",
+    "pullRequestOrder": ["mergedAtAscending", "numberAscending"],
+    "emptyRuntimeText": "本版本无用户可见运行代码变化。",
+    "downloadText": "一般用户只需下载 **AFR-Deployer_v{displayVersion}.exe**。需要手工部署插件文件时下载 **AFR-DLL_v{displayVersion}.zip**；仅需字体资源时下载 **Fonts.zip**。",
+    "upgradeItems": ["支持直接覆盖安装。", "无需卸载旧版本。", "已安装字体不会被删除。"]
+  },
+  "release": { "draftDuringUpload": true, "prerelease": false, "makeLatest": true, "requireImmutablePolicy": true }
+}

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/splrad/steward/schema/repositories.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "organization", "defaults", "repositories"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": 1 },
+    "organization": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "login", "defaultBranch"],
+      "properties": { "id": { "type": "integer", "minimum": 1 }, "login": { "type": "string", "minLength": 1 }, "defaultBranch": { "type": "string", "minLength": 1 } }
+    },
+    "defaults": {
+      "type": "object", "additionalProperties": false,
+      "required": ["public", "private"],
+      "properties": { "public": { "$ref": "#/$defs/managed" }, "private": { "$ref": "#/$defs/unmanaged" } }
+    },
+    "repositories": { "type": "object", "propertyNames": { "pattern": "^[1-9][0-9]*$" }, "additionalProperties": { "$ref": "#/$defs/repository" } }
+  },
+  "$defs": {
+    "unmanaged": { "type": "object", "additionalProperties": false, "required": ["managed"], "properties": { "managed": { "const": false } } },
+    "managed": {
+      "type": "object", "additionalProperties": false,
+      "required": ["managed", "prAutomation", "pullRequestTemplate", "copilotInstructionsProfile", "classificationProfile", "validationProfile", "allowedWorkflowPaths", "releaseProfile"],
+      "properties": {
+        "managed": { "const": true }, "prAutomation": { "type": "boolean" },
+        "pullRequestTemplate": { "enum": ["organization-default", "organization-provider"] },
+        "copilotInstructionsProfile": { "type": "string", "minLength": 1 }, "classificationProfile": { "type": "string", "minLength": 1 }, "validationProfile": { "type": "string", "minLength": 1 },
+        "allowedWorkflowPaths": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^\\.github/workflows/[^/]+\\.ya?ml$" } },
+        "releaseProfile": { "type": ["string", "null"] }
+      }
+    },
+    "repository": {
+      "type": "object", "additionalProperties": false,
+      "required": ["fullName", "prAutomation", "pullRequestTemplate", "copilotInstructionsProfile", "classificationProfile", "validationProfile", "allowedWorkflowPaths", "releaseProfile"],
+      "properties": {
+        "fullName": { "type": "string", "pattern": "^splrad/[^/]+$" }, "prAutomation": { "type": "boolean" },
+        "pullRequestTemplate": { "enum": ["organization-default", "organization-provider"] },
+        "copilotInstructionsProfile": { "type": "string", "minLength": 1 }, "classificationProfile": { "type": "string", "minLength": 1 }, "validationProfile": { "type": "string", "minLength": 1 },
+        "allowedWorkflowPaths": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^\\.github/workflows/[^/]+\\.ya?ml$" } },
+        "releaseProfile": { "type": ["string", "null"] }
+      }
+    }
+  }
+}
