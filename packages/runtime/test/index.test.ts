@@ -18,6 +18,7 @@ const baseEnv = (): Env => ({
   INSTALLATION_ID: "145952003",
   STEWARDSHIP_REPOSITORY: "splrad/steward",
   POLICY_SHA: "a".repeat(40),
+  CF_VERSION_METADATA: { id: "0831157d-b402-4db7-aea8-40f2a47ab3ed" },
   STEWARD_APP_PRIVATE_KEY: privateKey,
   STEWARD_WEBHOOK_SECRET: "webhook-value-456",
 });
@@ -39,7 +40,7 @@ describe("中央运行程序", () => {
     expect(response.status).toBe(200);
     expect(text).not.toContain(env.STEWARD_WEBHOOK_SECRET);
     expect(text).not.toContain(env.STEWARD_APP_PRIVATE_KEY);
-    expect(JSON.parse(text)).toMatchObject({ status: "ok", policySha: env.POLICY_SHA, organizationId: 302208797, appId: 4243096, secretsReady: true });
+    expect(JSON.parse(text)).toEqual({ status: "ok", policySha: env.POLICY_SHA, version: env.CF_VERSION_METADATA!.id, organizationId: 302208797, appId: 4243096, secretsReady: true });
     expect((await worker.fetch(new Request("https://example.test/unknown"), env)).status).toBe(404);
   });
 

@@ -25,6 +25,44 @@ jobs:
       - run: npm run verify:dist
       - run: npm run verify:workflows
       - name: 部署中央运行程序
+        id: deploy
+        shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: npx wrangler deploy --config packages/runtime/wrangler.toml --var POLICY_SHA:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          deployment_log="$(mktemp)"
+          trap 'rm -f "$deployment_log"' EXIT
+          set +e
+          npx wrangler deploy --config packages/runtime/wrangler.toml --var POLICY_SHA:${{ github.sha }} 2>&1 | tee "$deployment_log"
+          deploy_status="${PIPESTATUS[0]}"
+          set -e
+          if [[ "$deploy_status" -ne 0 ]]; then
+            exit "$deploy_status"
+          fi
+          runtime_url="$(grep -Eo 'https://[^[:space:]]+\.workers\.dev' "$deployment_log" | tail -n 1 || true)"
+          if [[ -z "$runtime_url" ]]; then
+            echo '部署输出中没有运行程序网址。' >&2
+            exit 1
+          fi
+          printf 'runtime_url=%s\n' "$runtime_url" >> "$GITHUB_OUTPUT"
+      - name: 复核运行程序健康状态
+        shell: bash
+        env:
+          RUNTIME_URL: ${{ steps.deploy.outputs.runtime_url }}
+          EXPECTED_POLICY_SHA: ${{ github.sha }}
+        run: |
+          node --input-type=module <<'NODE'
+          const response = await fetch(`${process.env.RUNTIME_URL}/health`, { headers: { accept: "application/json" } });
+          if (!response.ok) throw new Error(`健康接口返回HTTP ${response.status}`);
+          const body = await response.json();
+          const expectedKeys = ["appId", "organizationId", "policySha", "secretsReady", "status", "version"];
+          if (JSON.stringify(Object.keys(body).sort()) !== JSON.stringify(expectedKeys)) throw new Error("健康接口字段集合不正确");
+          if (body.status !== "ok") throw new Error("运行程序状态不是ok");
+          if (body.policySha !== process.env.EXPECTED_POLICY_SHA) throw new Error("运行程序规则提交与部署提交不一致");
+          if (body.organizationId !== 302208797) throw new Error("运行程序组织编号不正确");
+          if (body.appId !== 4243096) throw new Error("运行程序应用编号不正确");
+          if (body.secretsReady !== true) throw new Error("运行程序密钥尚未齐备");
+          if (typeof body.version !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(body.version)) throw new Error("运行程序没有返回真实Cloudflare版本编号");
+          console.log(JSON.stringify({ status: body.status, policySha: body.policySha, version: body.version, organizationId: body.organizationId, appId: body.appId, secretsReady: body.secretsReady }));
+          NODE
