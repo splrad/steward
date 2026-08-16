@@ -72,7 +72,10 @@ describe("代码托管平台客户端", () => {
       await dispatchWorkflow(client, { owner: "splrad", repo: "steward", workflow, policySha: "a".repeat(40), inputs: { value: "x" } });
     }
     expect(requests).toHaveLength(4);
-    expect(requests[0]).toEqual(["POST", "/repos/splrad/steward/actions/workflows/onboard-repository.yml/dispatches", { ref: "main", inputs: { value: "x" } }]);
+    expect(requests[0]).toEqual(["POST", "/repos/splrad/steward/actions/workflows/onboard-repository.yml/dispatches", { ref: "main", inputs: { value: "x", policySha: "a".repeat(40) } }]);
+    expect(requests[1]).toEqual(["POST", "/repos/splrad/steward/actions/workflows/pr-automation.yml/dispatches", { ref: "main", inputs: { value: "x", policySha: "a".repeat(40) } }]);
+    expect(requests[2]).toEqual(["POST", "/repos/splrad/steward/actions/workflows/pr-classification.yml/dispatches", { ref: "main", inputs: { value: "x", policySha: "a".repeat(40) } }]);
+    expect(requests[3]).toEqual(["POST", "/repos/splrad/steward/actions/workflows/release.yml/dispatches", { ref: "main", inputs: { value: "x" } }]);
     await expect(dispatchWorkflow(client, { owner: "splrad", repo: "steward", workflow: "unknown.yml", policySha: "a".repeat(40), inputs: {} })).rejects.toThrow("不允许");
     await expect(dispatchWorkflow(client, { owner: "splrad", repo: "steward", workflow: "release.yml", policySha: "short", inputs: {} })).rejects.toThrow("40位");
   });
