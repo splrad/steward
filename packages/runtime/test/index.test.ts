@@ -80,7 +80,10 @@ describe("中央运行程序", () => {
     ];
     for (const [event, payload] of cases) expect((await handleWebhook(signedRequest(event, payload), env)).status).toBe(202);
     expect(dispatched.map(value => value.workflow)).toEqual(["onboard-repository.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "release.yml"]);
-    for (const dispatch of dispatched) expect(dispatch.body.ref).toBe(env.POLICY_SHA);
+    for (const dispatch of dispatched) {
+      expect(dispatch.body.ref).toBe("main");
+      if (dispatch.workflow !== "release.yml") expect(dispatch.body.inputs.policySha).toBe(env.POLICY_SHA);
+    }
   });
 
   it("安装事件使用已验证的安装账户并接受省略owner的组织仓库", async () => {
