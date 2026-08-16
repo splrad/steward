@@ -1,66 +1,19 @@
-import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
-import { bundleAction } from './bundle-action.mjs';
-import { bundleCli } from './bundle-cli.mjs';
-import { runProcess } from './process.mjs';
+import { mkdir, readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { spawn } from "node:child_process";
 
-async function files(root, relative = '') {
-  const directory = path.join(root, relative);
-  const entries = await readdir(directory, { withFileTypes: true });
-  const result = [];
-  for (const entry of entries) {
-    const child = path.join(relative, entry.name);
-    if (entry.isDirectory()) result.push(...await files(root, child));
-    else result.push(child.replaceAll('\\', '/'));
-  }
-  return result.sort();
-}
-
-const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'steward-dist-'));
+const temporary = ".runner-dist-verify";
+const compiled = ".runner-build";
 try {
-  for (const target of [
-    { name: 'action/dist', bundle: bundleAction },
-    { name: 'packages/cli/dist', bundle: bundleCli },
-  ]) {
-    const output = path.join(temporaryRoot, target.name.replaceAll('/', '-'));
-    await target.bundle(output);
-    const committed = path.resolve(target.name);
-    const [committedFiles, generatedFiles] = await Promise.all([files(committed), files(output)]);
-    if (JSON.stringify(committedFiles) !== JSON.stringify(generatedFiles)) {
-      throw new Error(`${target.name} file list does not match a clean build`);
-    }
-    for (const file of committedFiles) {
-      const [left, right] = await Promise.all([
-        readFile(path.join(committed, file)),
-        readFile(path.join(output, file)),
-      ]);
-      if (!left.equals(right)) throw new Error(`${target.name}/${file} is not reproducible`);
-    }
-    if (target.name === 'packages/cli/dist') {
-      if (generatedFiles.some((file) => file.startsWith('templates/adoption/'))) {
-        throw new Error('bundled CLI must not publish legacy adoption profiles');
-      }
-      const entry = await readFile(path.join(output, 'index.js'), 'utf8');
-      for (const marker of [
-        'steward activate --repo',
-        'Steward activate plan:',
-        'init spec adoption.profile',
-        'cadfontautoreplace-f6331185',
-      ]) {
-        if (entry.includes(marker)) throw new Error(`bundled CLI exposes a legacy surface: ${marker}`);
-      }
-      const dryRunTarget = path.join(temporaryRoot, 'cli-init-target');
-      await mkdir(dryRunTarget);
-      await runProcess(process.execPath, [
-        path.join(output, 'index.js'),
-        'init', '--dry-run',
-        '--spec', path.resolve('tests/fixtures/cli/init-minimal.json'),
-        '--target', dryRunTarget,
-      ]);
-      if ((await readdir(dryRunTarget)).length !== 0) throw new Error('bundled CLI init --dry-run modified its target');
-    }
-  }
-} finally {
-  await rm(temporaryRoot, { force: true, recursive: true });
-}
+  await Promise.all([rm(temporary, { recursive: true, force: true }), rm(compiled, { recursive: true, force: true })]);
+  await mkdir(temporary, { recursive: true });
+  let child = spawn(process.execPath, ["node_modules/typescript/bin/tsc", "--outDir", compiled, "--noEmit", "false", "--declaration", "false", "--sourceMap", "false"], { stdio: "inherit" });
+  let code = await new Promise(resolve => child.on("close", resolve));
+  if (code !== 0) process.exit(code ?? 1);
+  child = spawn(process.execPath, ["node_modules/@vercel/ncc/dist/ncc/cli.js", "build", join(compiled, "packages/runner/src/index.js"), "-o", temporary, "--minify"], { stdio: "inherit" });
+  code = await new Promise(resolve => child.on("close", resolve));
+  if (code !== 0) process.exit(code ?? 1);
+  const [actual, rebuilt] = await Promise.all([readFile("packages/runner/dist/index.js"), readFile(join(temporary, "index.js"))]);
+  if (!actual.equals(rebuilt)) throw new Error("packages/runner/dist/index.js不是当前源代码的可重复构建结果");
+  console.log("runner dist verified");
+} finally { await Promise.all([rm(temporary, { recursive: true, force: true }), rm(compiled, { recursive: true, force: true })]); }

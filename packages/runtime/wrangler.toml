@@ -1,0 +1,11 @@
+name = "splrad-steward-runtime"
+main = "src/index.ts"
+compatibility_date = "2026-08-16"
+workers_dev = true
+
+[vars]
+ORGANIZATION_ID = "302208797"
+ORGANIZATION_LOGIN = "splrad"
+APP_ID = "4243096"
+INSTALLATION_ID = "145952003"
+STEWARDSHIP_REPOSITORY = "splrad/steward"

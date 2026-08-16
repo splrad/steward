@@ -1,64 +1,64 @@
-name: PR Automation
+name: SPLRAD Steward / PR Automation
 
 on:
-  workflow_call:
+  workflow_dispatch:
     inputs:
-      app_client_id:
-        description: GitHub App client ID used to mint the Automation token.
-        required: true
-        type: string
-      source_branch:
-        description: Source branch from the trusted push event.
-        required: true
-        type: string
-      head_sha:
-        description: Expected source branch head SHA from the trusted push event.
-        required: true
-        type: string
-    secrets:
-      app_private_key:
-        description: Private key for the installed Steward GitHub App.
-        required: true
-    outputs:
-      state:
-        description: Automation operation state.
-        value: ${{ jobs.automation.outputs.state }}
-      operation_result:
-        description: Serialized Automation operation result.
-        value: ${{ jobs.automation.outputs.operation_result }}
-
-concurrency:
-  group: steward-automation-${{ github.repository_id }}-${{ inputs.source_branch }}
-  cancel-in-progress: true
+      deliveryId: { required: true, type: string }
+      repositoryId: { required: true, type: string }
+      sourceRef: { required: true, type: string }
+      eventAfterSha: { required: true, type: string }
+      sourceActorId: { required: true, type: string }
+      sourceActorLogin: { required: true, type: string }
+      policySha: { required: true, type: string }
 
 permissions:
   contents: read
+  copilot-requests: write
+concurrency:
+  group: steward-pr-automation-${{ inputs.repositoryId }}-${{ inputs.sourceRef }}
+  cancel-in-progress: false
 
 jobs:
-  automation:
-    name: Create or Update Pull Request
+  reconcile:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      state: ${{ steps.steward.outputs.state }}
-      operation_result: ${{ steps.steward.outputs['operation-result'] }}
+    timeout-minutes: 15
+    environment: steward-automation
     steps:
-      - name: Create Automation token
-        id: platform_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
-        with:
-          client-id: ${{ inputs.app_client_id }}
-          private-key: ${{ secrets.app_private_key }}
-          permission-contents: read
-          permission-issues: write
-          permission-members: read
-          permission-pull-requests: write
-
-      - name: Converge pull request
-        id: steward
-        uses: splrad/steward/action@3a8a41035db1df7795a7546d9708a42d15617104
-        with:
-          operation: automation
-          github-token: ${{ steps.platform_token.outputs.token }}
-          source-branch: ${{ inputs.source_branch }}
-          head-sha: ${{ inputs.head_sha }}
+      - name: 检出中央规则
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: "${{ inputs.policySha }}", persist-credentials: false }
+      - name: 准备Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: .node-version, cache: npm }
+      - name: 安装依赖
+        run: npm ci --ignore-scripts
+      - name: 生成Copilot输入
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          COPILOT_OUTPUT_PATH: ${{ runner.temp }}/copilot-output.json
+          PR_COPILOT_PROMPT_PATH: ${{ runner.temp }}/copilot-prompt.txt
+          PR_PREPARED_FACTS_PATH: ${{ runner.temp }}/pr-prepared-facts.json
+          PREPARE_ONLY: "true"
+        run: node packages/runner/dist/index.js pr-automation --delivery-id "${{ inputs.deliveryId }}" --repository-id "${{ inputs.repositoryId }}" --source-ref "${{ inputs.sourceRef }}" --event-after-sha "${{ inputs.eventAfterSha }}" --source-actor-id "${{ inputs.sourceActorId }}" --source-actor-login "${{ inputs.sourceActorLogin }}" --policy-sha "${{ inputs.policySha }}"
+      - name: 使用Copilot润色
+        if: ${{ always() && hashFiles(format('{0}/copilot-prompt.txt', runner.temp)) != '' }}
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_COPILOT_PROMPT_PATH: ${{ runner.temp }}/copilot-prompt.txt
+        run: npx --no-install copilot -p "$(cat "$PR_COPILOT_PROMPT_PATH")" --allow-tool='shell(git:*)' --no-ask-user > "${{ runner.temp }}/copilot-output.json"
+      - name: 收敛拉取请求
+        id: reconcile
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          COPILOT_OUTPUT_PATH: ${{ runner.temp }}/copilot-output.json
+          PR_PREPARED_FACTS_PATH: ${{ runner.temp }}/pr-prepared-facts.json
+          COPILOT_REVIEW_REQUEST_TOKEN: ${{ secrets.COPILOT_REVIEW_REQUEST_TOKEN }}
+        run: node packages/runner/dist/index.js pr-automation --delivery-id "${{ inputs.deliveryId }}" --repository-id "${{ inputs.repositoryId }}" --source-ref "${{ inputs.sourceRef }}" --event-after-sha "${{ inputs.eventAfterSha }}" --source-actor-id "${{ inputs.sourceActorId }}" --source-actor-login "${{ inputs.sourceActorLogin }}" --policy-sha "${{ inputs.policySha }}"
+      - name: 删除临时人工智能输入
+        if: always()
+        run: rm -f "${{ runner.temp }}/copilot-prompt.txt" "${{ runner.temp }}/copilot-output.json" "${{ runner.temp }}/pr-prepared-facts.json"

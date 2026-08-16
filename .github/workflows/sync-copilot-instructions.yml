@@ -1,0 +1,30 @@
+name: SPLRAD Steward / Sync Copilot Instructions
+
+on:
+  workflow_dispatch:
+    inputs:
+      repositoryId: { required: false, type: string }
+
+permissions: {}
+concurrency:
+  group: steward-copilot-instructions-sync
+  cancel-in-progress: false
+
+jobs:
+  synchronize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: steward-automation
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: .node-version, cache: npm }
+      - run: npm ci --ignore-scripts
+      - name: 同步中文审查说明
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          COPILOT_REVIEW_REQUEST_TOKEN: ${{ secrets.COPILOT_REVIEW_REQUEST_TOKEN }}
+        run: node packages/runner/dist/index.js sync-copilot-instructions ${{ inputs.repositoryId && format('--repository-id "{0}"', inputs.repositoryId) || '' }} --policy-sha "${{ github.sha }}"

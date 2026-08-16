@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/splrad/steward/schema/validation-profile.schema.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "runner", "timeoutMinutes", "tasks", "disclosure"],
+  "properties": {
+    "$schema": { "type": "string" }, "schemaVersion": { "const": 1 }, "runner": { "enum": ["ubuntu-latest"] },
+    "timeoutMinutes": { "type": "integer", "minimum": 1, "maximum": 30 },
+    "tasks": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["git-diff-check", "parse-json", "parse-yaml", "verify-copilot-instructions", "actionlint-if-present", "actionlint", "parse-powershell", "parse-msbuild-xml", "npm-ci", "npm-test", "npm-typecheck", "npm-verify-dist", "npm-verify-workflows"] } },
+    "powershellFiles": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+    "msbuildFiles": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+    "nodeVersionFile": { "type": "string" },
+    "disclosure": { "type": "object", "additionalProperties": false, "required": ["productBuild", "productTests"], "properties": { "productBuild": { "type": "string", "minLength": 1 }, "productTests": { "type": "string", "minLength": 1 } } }
+  }
+}

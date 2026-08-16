@@ -1,98 +1,38 @@
-export const maxPullRequestPages = 30;
-export const pullRequestPageSize = 100;
-
-export interface PaginationOptions {
-  maxPages?: number;
-  pageSize?: number;
-}
-
-export interface LinkPage<T> {
+export interface Page<T> {
   items: readonly T[];
-  link?: string | null;
+  next?: string;
 }
 
-export class GitHubPaginationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'GitHubPaginationError';
+export async function collectAllPages<T>(
+  firstUrl: string,
+  load: (url: string) => Promise<Page<T>>,
+  limits: { maxPages?: number; maxItems?: number } = {},
+): Promise<readonly T[]> {
+  const maxPages = limits.maxPages ?? 100;
+  const maxItems = limits.maxItems ?? 10_000;
+  const result: T[] = [];
+  const seen = new Set<string>();
+  let next: string | undefined = firstUrl;
+  let pages = 0;
+  while (next) {
+    if (seen.has(next)) throw new Error("分页链接形成循环");
+    if (++pages > maxPages) throw new Error("分页页数超过合同上限");
+    seen.add(next);
+    const page = await load(next);
+    if (!Array.isArray(page.items)) throw new Error("分页响应不是项目数组");
+    result.push(...page.items);
+    if (result.length > maxItems) throw new Error("分页项目数超过合同上限");
+    next = page.next;
   }
+  return Object.freeze(result);
 }
 
-function boundedPositiveInteger(value: number, maximum: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`${name} must be a positive integer`);
-  if (value > maximum) throw new RangeError(`${name} must not exceed ${maximum}`);
-  return value;
-}
-
-export async function fetchPullRequestPages<T>(
-  fetchPage: (page: number, pageSize: number) => readonly T[] | Promise<readonly T[]>,
-  options: PaginationOptions = {},
-): Promise<T[]> {
-  const maxPages = boundedPositiveInteger(
-    options.maxPages ?? maxPullRequestPages,
-    maxPullRequestPages,
-    'maxPages',
-  );
-  const pageSize = boundedPositiveInteger(
-    options.pageSize ?? pullRequestPageSize,
-    pullRequestPageSize,
-    'pageSize',
-  );
-  const all: T[] = [];
-  for (let page = 1; page <= maxPages; page += 1) {
-    const items = await fetchPage(page, pageSize);
-    if (!Array.isArray(items)) throw new TypeError('GitHub page response must be an array');
-    if (items.length === 0) break;
-    all.push(...items);
-    if (items.length < pageSize) break;
-    if (page === maxPages) {
-      throw new GitHubPaginationError(`GitHub pagination reached the ${maxPages}-page safety limit before a terminal page`);
-    }
+export function nextLink(headers: Headers): string | undefined {
+  const link = headers.get("link");
+  if (!link) return undefined;
+  for (const entry of link.split(",")) {
+    const match = entry.match(/<([^>]+)>;\s*rel="([^"]+)"/);
+    if (match?.[2] === "next") return match[1];
   }
-  return all;
-}
-
-export function nextPageUrl(linkHeader: string | null | undefined): string | null {
-  for (const part of String(linkHeader ?? '').split(',')) {
-    const match = part.trim().match(/^<([^>]+)>\s*;\s*rel="([^"]+)"$/i);
-    if (match?.[2]?.split(/\s+/).some((relation) => relation.toLowerCase() === 'next')) {
-      return match[1] ?? null;
-    }
-  }
-  return null;
-}
-
-export async function fetchGitHubLinkPages<T>(
-  initialUrl: string,
-  fetchPage: (url: string) => LinkPage<T> | Promise<LinkPage<T>>,
-  options: Pick<PaginationOptions, 'maxPages'> = {},
-): Promise<T[]> {
-  const maximum = boundedPositiveInteger(
-    options.maxPages ?? maxPullRequestPages,
-    maxPullRequestPages,
-    'maxPages',
-  );
-  const initial = new URL(initialUrl);
-  const visited = new Set<string>();
-  const all: T[] = [];
-  let current: URL | null = initial;
-  for (let page = 1; page <= maximum && current; page += 1) {
-    const currentUrl = current.href;
-    if (visited.has(currentUrl)) throw new GitHubPaginationError('GitHub pagination link cycle detected');
-    visited.add(currentUrl);
-    const response = await fetchPage(currentUrl);
-    if (!Array.isArray(response?.items)) throw new TypeError('GitHub page response items must be an array');
-    all.push(...response.items);
-    const next = nextPageUrl(response.link);
-    if (!next) break;
-    if (page === maximum) {
-      throw new GitHubPaginationError(`GitHub pagination exceeded the ${maximum}-page safety limit`);
-    }
-    const resolved = new URL(next, current);
-    if (resolved.origin !== initial.origin) {
-      throw new GitHubPaginationError('GitHub pagination next link changed origin');
-    }
-    current = resolved;
-  }
-  return all;
+  return undefined;
 }
