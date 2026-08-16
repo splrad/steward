@@ -26,7 +26,8 @@ const deployRuntime = await readFile(".github/workflows/deploy-runtime.yml", "ut
 for (const required of [".github/workflows/deploy-runtime.yml", "scripts/verify-workflows.mjs", "github.event.repository.default_branch", "id: deploy", "tee \"$deployment_log\"", "PIPESTATUS[0]", "复核运行程序健康状态", "steps.deploy.outputs.runtime_url", "EXPECTED_POLICY_SHA", "Date.now() + 60_000", "AbortSignal.timeout", "await response.body?.cancel()", "status: \"waiting\"", "iu.test(body.version)", "健康复核在60秒内未收敛"]) {
   if (!deployRuntime.includes(required)) throw new Error(`部署工作流缺少固定健康复核合同: ${required}`);
 }
-if (/branches:\s*\[main\]/u.test(deployRuntime)) throw new Error("部署工作流仍固定默认分支名称");
+const deployRuntimeDocument = YAML.parse(deployRuntime);
+if (Object.hasOwn(deployRuntimeDocument?.on?.push ?? {}, "branches")) throw new Error("部署工作流仍固定默认分支名称");
 const runtimeConfiguration = await readFile("packages/runtime/wrangler.toml", "utf8");
 if (!/\[version_metadata\]\s*binding\s*=\s*"CF_VERSION_METADATA"/u.test(runtimeConfiguration)) throw new Error("运行程序未绑定Cloudflare版本元数据");
 const actionlintVersion = "1.7.12";
