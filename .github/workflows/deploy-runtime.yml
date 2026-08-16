@@ -3,7 +3,17 @@ name: SPLRAD Steward / Deploy Runtime
 on:
   push:
     branches: [main]
-    paths: ["packages/runtime/**", "packages/core/**", "packages/github/**", "packages/runner/**", "config/**", "schema/**", "package.json", "package-lock.json"]
+    paths:
+      - ".github/workflows/deploy-runtime.yml"
+      - "scripts/verify-workflows.mjs"
+      - "packages/runtime/**"
+      - "packages/core/**"
+      - "packages/github/**"
+      - "packages/runner/**"
+      - "config/**"
+      - "schema/**"
+      - "package.json"
+      - "package-lock.json"
   workflow_dispatch:
 
 permissions:
@@ -67,6 +77,7 @@ jobs:
                 signal: AbortSignal.timeout(Math.min(10_000, remaining)),
               });
               if (!response.ok) {
+                await response.body?.cancel();
                 lastFailure = `健康接口返回HTTP ${response.status}`;
               } else {
                 const body = await response.json();
