@@ -2,7 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { classificationInstallationPermissions, env, isCopilotReviewerIdentity, parseInvocation } from "../src/index.js";
+import { classificationInstallationPermissions, env, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, parseInvocation } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -34,6 +34,9 @@ describe("中央命令入口", () => {
     for (const identity of ["copilot-agent[bot]", "splrad-steward[bot]", "maintainers", ""]) {
       expect(isCopilotReviewerIdentity(identity)).toBe(false);
     }
+    expect(hasRequestedCopilotReviewer({ users: [{ login: "Copilot" }] })).toBe(true);
+    expect(hasRequestedCopilotReviewer({ users: [{ login: "copilot-pull-request-reviewer[bot]" }] })).toBe(true);
+    expect(hasRequestedCopilotReviewer({ users: [], teams: [{ slug: "copilot" }] } as any)).toBe(false);
     expect(classificationInstallationPermissions()).toEqual({
       contents: "read",
       pull_requests: "write",

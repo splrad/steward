@@ -106,7 +106,10 @@ export function isCopilotReviewerIdentity(value: unknown): boolean {
   const normalized = String(value ?? "").trim().toLowerCase().replace(/\[bot\]$/u, "");
   return normalized === "copilot" || normalized === "copilot-pull-request-reviewer";
 }
-export function classificationInstallationPermissions() {
+export function hasRequestedCopilotReviewer(requested: { users?: readonly { login?: unknown }[] }): boolean {
+  return (requested.users ?? []).some(value => isCopilotReviewerIdentity(value.login));
+}
+export function classificationInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
   return { contents: "read", pull_requests: "write", issues: "write", checks: "write", metadata: "read" } as const;
 }
 async function hasCurrentCopilotReview(clientValue: GitHubClient, owner: string, repo: string, number: number, headSha: string): Promise<boolean> {
@@ -114,8 +117,7 @@ async function hasCurrentCopilotReview(clientValue: GitHubClient, owner: string,
     clientValue.getRequestedReviewers(owner, repo, number),
     clientValue.listPullRequestReviews(owner, repo, number),
   ]);
-  const pending = [...(requested.users ?? []), ...(requested.teams ?? [])]
-    .some((value: any) => isCopilotReviewerIdentity(value.login ?? value.slug));
+  const pending = hasRequestedCopilotReviewer(requested);
   const completed = reviews.some((value: any) =>
     isCopilotReviewerIdentity(value.user?.login)
     && String(value.commit_id ?? "").toLowerCase() === headSha.toLowerCase()
