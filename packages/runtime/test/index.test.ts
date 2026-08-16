@@ -22,7 +22,7 @@ const baseEnv = (): Env => ({
   STEWARD_APP_PRIVATE_KEY: privateKey,
   STEWARD_WEBHOOK_SECRET: "webhook-value-456",
 });
-const repository = (id = 1296724484, fullName = "splrad/steward") => ({ id, full_name: fullName, private: false, fork: false, archived: false, disabled: false, default_branch: "main", owner: { id: 302208797 } });
+const repository = (id = 1296724484, fullName = "splrad/steward", defaultBranch = "main") => ({ id, full_name: fullName, private: false, fork: false, archived: false, disabled: false, default_branch: defaultBranch, owner: { id: 302208797 } });
 const ownerlessRepository = (id = 1296724484, fullName = "splrad/steward") => {
   const { owner: _owner, ...value } = repository(id, fullName);
   return value;
@@ -63,6 +63,7 @@ describe("中央运行程序", () => {
     const dispatched: { workflow: string; body: any }[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
       if (String(url).includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (String(url).endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "trunk" }), { status: 200 });
       const match = /\/actions\/workflows\/([^/]+)\/dispatches/.exec(String(url));
       if (match) {
         dispatched.push({ workflow: match[1]!, body: JSON.parse(String(init.body)) });
@@ -80,13 +81,17 @@ describe("中央运行程序", () => {
     ];
     for (const [event, payload] of cases) expect((await handleWebhook(signedRequest(event, payload), env)).status).toBe(202);
     expect(dispatched.map(value => value.workflow)).toEqual(["onboard-repository.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "release.yml"]);
-    for (const dispatch of dispatched) expect(dispatch.body.ref).toBe(env.POLICY_SHA);
+    for (const dispatch of dispatched) {
+      expect(dispatch.body.ref).toBe("trunk");
+      if (dispatch.workflow !== "release.yml") expect(dispatch.body.inputs.policySha).toBe(env.POLICY_SHA);
+    }
   });
 
   it("安装事件使用已验证的安装账户并接受省略owner的组织仓库", async () => {
     const dispatched: string[] = [];
     vi.stubGlobal("fetch", async (url: string) => {
       if (String(url).includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (String(url).endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "trunk" }), { status: 200 });
       const workflow = /\/actions\/workflows\/([^/]+)\/dispatches/.exec(String(url))?.[1];
       if (workflow) { dispatched.push(workflow); return new Response(null, { status: 204 }); }
       return new Response("unexpected", { status: 500 });
@@ -105,13 +110,14 @@ describe("中央运行程序", () => {
     const workflows: { name: string; inputs: Record<string, string> }[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
       if (String(url).includes("/access_tokens")) return new Response(JSON.stringify({ token: "token" }), { status: 201 });
+      if (String(url).endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "trunk" }), { status: 200 });
       const name = /\/workflows\/([^/]+)\/dispatches/.exec(String(url))?.[1];
       workflows.push({ name: name!, inputs: JSON.parse(String(init.body)).inputs });
       return new Response(null, { status: 204 });
     });
     const env = baseEnv();
     for (const before of ["0".repeat(40), "1".repeat(40)]) {
-      const payload = scoped({ ref: "refs/heads/main", before, after: "2".repeat(40), deleted: false, repository: repository(), sender: { id: 44151430, login: "axiomoth", type: "User" } });
+      const payload = scoped({ ref: "refs/heads/trunk", before, after: "2".repeat(40), deleted: false, repository: repository(1296724484, "splrad/steward", "trunk"), sender: { id: 44151430, login: "axiomoth", type: "User" } });
       expect((await handleWebhook(signedRequest("push", payload), env)).status).toBe(202);
     }
     expect(workflows).toEqual([

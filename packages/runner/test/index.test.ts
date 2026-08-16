@@ -53,7 +53,7 @@ describe("中央命令入口", () => {
   it("中央配置黄金事实逐字冻结", async () => {
     const repositories = JSON.parse(await readFile("config/repositories.json", "utf8"));
     const release = JSON.parse(await readFile("config/profiles/release/layerscape.json", "utf8"));
-    expect(repositories.organization).toEqual({ id: 302208797, login: "splrad", defaultBranch: "main" });
+    expect(repositories.organization).toEqual({ id: 302208797, login: "splrad" });
     expect(repositories.defaults.public).toMatchObject({ managed: true, prAutomation: true, validationProfile: "public-basic", releaseProfile: null });
     expect(Object.keys(repositories.repositories).sort()).toEqual(["1187527897", "1296724484", "1296725317"]);
     expect(release.build.projects.map((value: any) => value.path)).toEqual(Array.from({ length: 10 }, (_, index) => {
@@ -75,7 +75,9 @@ describe("中央命令入口", () => {
       "同名分类检查存在歧义",
       "分类输入在写入期间已经漂移",
       "LayerScape不可变发布尚未启用",
+      "当前默认分支第一父提交链",
     ]) expect(source).toContain(fragment);
+    expect(source).not.toMatch(/heads\/main|base\.ref\s*!==\s*"main"|default_branch\s*!==\s*"main"/u);
   });
 
   it("终态没有普通评论写入、旧包或旧运行目录", async () => {

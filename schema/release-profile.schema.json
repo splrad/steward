@@ -5,7 +5,7 @@
   "required": ["$schema", "schemaVersion", "name", "repository", "trigger", "runner", "version", "build", "assets", "releaseNotes", "release"],
   "properties": {
     "$schema": { "type": "string" }, "schemaVersion": { "const": 1 }, "name": { "type": "string" },
-    "repository": { "type": "object", "additionalProperties": false, "required": ["id", "fullName", "defaultBranch"], "properties": { "id": { "type": "integer", "minimum": 1 }, "fullName": { "type": "string" }, "defaultBranch": { "type": "string" } } },
+    "repository": { "type": "object", "additionalProperties": false, "required": ["id", "fullName"], "properties": { "id": { "type": "integer", "minimum": 1 }, "fullName": { "type": "string" } } },
     "trigger": { "type": "object", "additionalProperties": false, "required": ["event", "merged", "changedFiles"], "properties": { "event": { "const": "pull_request.closed" }, "merged": { "const": true }, "changedFiles": { "$ref": "#/$defs/strings" } } },
     "runner": { "type": "object", "additionalProperties": false, "required": ["label", "timeoutMinutes"], "properties": { "label": { "const": "windows-latest" }, "timeoutMinutes": { "type": "integer", "minimum": 1, "maximum": 60 } } },
     "version": { "type": "object", "additionalProperties": false, "required": ["file", "displayElement", "displayPattern", "buildElement", "buildPattern", "tagTemplate", "titleTemplate"], "properties": { "file": { "type": "string" }, "displayElement": { "type": "string" }, "displayPattern": { "type": "string" }, "buildElement": { "type": "string" }, "buildPattern": { "type": "string" }, "tagTemplate": { "type": "string" }, "titleTemplate": { "type": "string" } } },
