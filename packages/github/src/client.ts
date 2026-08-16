@@ -20,7 +20,7 @@ export class GitHubClient {
     const headers = new Headers(githubHeaders(this.token, this.policySha));
     const init: RequestInit = { method, headers };
     if (body !== undefined) { headers.set("Content-Type", "application/json"); init.body = JSON.stringify(body); }
-    const response = await this.transport(url, init);
+    const response = await this.transport.call(globalThis, url, init);
     if (!response.ok) {
       const text = (await response.text()).slice(0, 1000);
       throw new GitHubRequestError(response.status, method, path, text || response.statusText);
@@ -32,7 +32,7 @@ export class GitHubClient {
   async paginate<T>(path: string, select: (value: unknown) => readonly T[] = value => value as readonly T[]): Promise<readonly T[]> {
     return collectAllPages(path, async url => {
       const absolute = url.startsWith("http") ? url : `${this.apiBase}${url}`;
-      const response = await this.transport(absolute, { headers: githubHeaders(this.token, this.policySha) });
+      const response = await this.transport.call(globalThis, absolute, { headers: githubHeaders(this.token, this.policySha) });
       if (!response.ok) throw new GitHubRequestError(response.status, "GET", url, await response.text());
       const value = await response.json();
       const next = nextLink(response.headers);

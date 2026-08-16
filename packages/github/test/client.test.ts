@@ -9,8 +9,10 @@ afterEach(() => vi.unstubAllGlobals());
 describe("代码托管平台客户端", () => {
   it("发送固定版本和规则提交请求头且不重试写入", async () => {
     let calls = 0;
+    let receiver: unknown;
     const policySha = "a".repeat(40);
-    const transport = async (_url: any, init?: RequestInit) => {
+    const transport = async function (this: unknown, _url: any, init?: RequestInit) {
+      receiver = this;
       calls += 1;
       const headers = new Headers(init?.headers);
       expect(headers.get("X-GitHub-Api-Version")).toBe("2026-03-10");
@@ -22,6 +24,7 @@ describe("代码托管平台客户端", () => {
     const client = new GitHubClient("token", "https://example.test", transport as typeof fetch, policySha);
     await client.request("POST", "/value", { a: 1 });
     expect(calls).toBe(1);
+    expect(receiver).toBe(globalThis);
   });
 
   it("限流和任意非成功响应立即失败且不自动重试", async () => {
