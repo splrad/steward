@@ -58,6 +58,7 @@ describe("拉取请求自动化", () => {
     expect(organizationPullRequestTemplate).toContain(summaryEnd);
     expect(organizationPullRequestTemplate).toContain("### 人工补充");
     expect(buildPrompt(facts, generated)).toContain(JSON.stringify(generated));
+    expect(buildDeterministicSummary({ ...facts, commitSubjects: [`ci:${" ".repeat(100_000)}修复中央验证`] })).toMatchObject({ type: "ci", title: "修复中央验证" });
   });
 
   it("只替换唯一受管区并逐字保留人工正文", () => {
@@ -90,6 +91,7 @@ describe("拉取请求自动化", () => {
     expect(isHumanActor({ id: 44151430, login: "axiomoth", type: "User" })).toBe(true);
     expect(isHumanActor({ id: 301115370, login: "splrad-steward[bot]", type: "Bot" })).toBe(false);
     expect(normalizeContributor({ id: 44151430, login: "axiomoth", type: "User", name: " Axiom ", email: " owner@example.com " })).toEqual({ id: 44151430, login: "axiomoth", name: "Axiom", email: "owner@example.com" });
+    expect(normalizeContributor({ id: 44151430, login: "axiomoth", type: "User", email: `${"a".repeat(100_000)}@example.com` })).toEqual({ id: 44151430, login: "axiomoth" });
     expect(normalizeContributor({ id: 301115370, login: "splrad-steward[bot]", type: "Bot" })).toBeNull();
   });
 });

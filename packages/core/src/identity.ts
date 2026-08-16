@@ -31,12 +31,21 @@ export function isHumanActor(actor: GitHubActor): boolean {
     && !isBotActor(actor);
 }
 
+function isContributorEmail(value: string): boolean {
+  if (value.length > 254) return false;
+  for (const character of value) if (character.trim() === '') return false;
+  const at = value.indexOf('@');
+  if (at <= 0 || at !== value.lastIndexOf('@')) return false;
+  const dot = value.lastIndexOf('.');
+  return dot > at + 1 && dot < value.length - 1;
+}
+
 export function normalizeContributor(actor: GitHubActor): Contributor | null {
   if (!isHumanActor(actor)) return null;
   const contributor: Contributor = { id: actor.id, login: actor.login };
   const name = actor.name?.trim();
   const email = actor.email?.trim();
   if (name) contributor.name = name;
-  if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) contributor.email = email;
+  if (email && isContributorEmail(email)) contributor.email = email;
   return contributor;
 }

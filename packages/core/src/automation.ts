@@ -59,13 +59,34 @@ export function validateGeneratedSummary(value: unknown): GeneratedSummary {
   return { type: object.type as ConventionalType, scope: object.scope, title, summary, changes, reviewNotes };
 }
 
+function parseConventionalSubject(subject: string): { type: ConventionalType; scope?: string; title: string } | null {
+  const separator = subject.indexOf(':');
+  if (separator <= 0) return null;
+  let prefix = subject.slice(0, separator);
+  const title = subject.slice(separator + 1).trim();
+  if (!title) return null;
+  if (prefix.endsWith('!')) prefix = prefix.slice(0, -1);
+  let typeText = prefix;
+  let scope: string | undefined;
+  const scopeStart = prefix.indexOf('(');
+  if (scopeStart >= 0) {
+    if (!prefix.endsWith(')') || prefix.indexOf(')', scopeStart) !== prefix.length - 1) return null;
+    typeText = prefix.slice(0, scopeStart);
+    scope = prefix.slice(scopeStart + 1, -1);
+    if (!/^[a-z0-9-]+$/iu.test(scope)) return null;
+  }
+  const type = typeText.toLowerCase() as ConventionalType;
+  if (!conventionalTypes.includes(type)) return null;
+  return { type, ...(scope ? { scope } : {}), title };
+}
+
 export function buildDeterministicSummary(facts: AutomationFacts): GeneratedSummary {
   const subjects = facts.commitSubjects.map((item) => item.trim()).filter(Boolean);
   const first = subjects[0] ?? '';
-  const match = /^(feat|fix|refactor|perf|style|docs|test|build|ci|chore|revert)(?:\(([a-z0-9-]+)\))?!?:\s*(.+)$/iu.exec(first);
-  const type = (match?.[1]?.toLowerCase() as ConventionalType | undefined) ?? (facts.files.every((file) => /^(docs\/|README|SECURITY|CONTRIBUTING)/i.test(file)) ? 'docs' : 'chore');
-  const scope = match?.[2] ?? (facts.areas.length === 1 ? facts.areas[0]!.replace(/^area:/, '') : 'repo');
-  const candidate = match?.[3]?.trim() ?? '';
+  const parsed = parseConventionalSubject(first);
+  const type = parsed?.type ?? (facts.files.every((file) => /^(docs\/|README|SECURITY|CONTRIBUTING)/i.test(file)) ? 'docs' : 'chore');
+  const scope = parsed?.scope ?? (facts.areas.length === 1 ? facts.areas[0]!.replace(/^area:/, '') : 'repo');
+  const candidate = parsed?.title ?? '';
   const title = hanCount(candidate) > 0 ? candidate.replace(/[。.]$/u, '').slice(0, 50) : `更新${scope}相关内容`;
   const groups = new Map<string, number>();
   for (const file of facts.files) {

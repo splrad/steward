@@ -30,6 +30,18 @@ describe("发布资产上传", () => {
         });
         expect(value).toMatchObject({ contentType, size: bytes.length, sha256: digest });
       }
+      const path = join(directory, "long.zip");
+      const bytes = Buffer.from("long");
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      await writeFile(path, bytes);
+      await uploadReleaseAsset({
+        token: "x", policySha: "a".repeat(40), uploadUrl: `https://example.test/assets{${"{".repeat(100_000)}`,
+        filePath: path, fileName: "long.zip", expectedSha256: digest,
+        transport: (async (url: string) => {
+          expect(url).toBe("https://example.test/assets?name=long.zip");
+          return new Response(JSON.stringify({ size: bytes.length, digest: `sha256:${digest}` }), { status: 201 });
+        }) as typeof fetch,
+      });
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

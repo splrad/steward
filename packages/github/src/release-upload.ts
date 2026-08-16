@@ -13,7 +13,8 @@ export async function uploadReleaseAsset(input: {
   const extension = input.fileName.slice(input.fileName.lastIndexOf("."));
   const contentType = TYPES[extension];
   if (!contentType) throw new Error(`不支持的资产类型: ${extension}`);
-  const base = input.uploadUrl.replace(/\{.*$/, "");
+  const templateStart = input.uploadUrl.indexOf("{");
+  const base = templateStart >= 0 ? input.uploadUrl.slice(0, templateStart) : input.uploadUrl;
   const response = await (input.transport ?? fetch)(`${base}?name=${encodeURIComponent(input.fileName)}`, {
     method: "POST", headers: { ...githubHeaders(input.token, input.policySha), "Content-Type": contentType, "Content-Length": String(bytes.byteLength) }, body: bytes,
   });
