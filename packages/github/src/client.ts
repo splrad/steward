@@ -64,6 +64,7 @@ export class GitHubClient {
   updateCheckRun(owner: string, repo: string, id: number, body: unknown) { return this.request<any>("PATCH", `/repos/${owner}/${repo}/check-runs/${id}`, body); }
   getRequestedReviewers(owner: string, repo: string, number: number) { return this.request<any>("GET", `/repos/${owner}/${repo}/pulls/${number}/requested_reviewers`); }
   listPullRequestReviews(owner: string, repo: string, number: number) { return this.paginate<any>(`/repos/${owner}/${repo}/pulls/${number}/reviews?per_page=100`); }
+  listIssueEvents(owner: string, repo: string, number: number) { return this.paginate<any>(`/repos/${owner}/${repo}/issues/${number}/events?per_page=100`); }
   requestReviewers(owner: string, repo: string, number: number, reviewers: readonly string[]) { return this.request<any>("POST", `/repos/${owner}/${repo}/pulls/${number}/requested_reviewers`, { reviewers }); }
   updateRepository(owner: string, repo: string, body: unknown) { return this.request<any>("PATCH", `/repos/${owner}/${repo}`, body); }
   getRef(owner: string, repo: string, ref: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/git/ref/${encodeGitReferencePath(ref)}`); }
