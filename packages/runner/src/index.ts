@@ -109,48 +109,95 @@ export function isCopilotReviewerIdentity(value: unknown): boolean {
 export function hasRequestedCopilotReviewer(requested: { users?: readonly { login?: unknown }[] }): boolean {
   return (requested.users ?? []).some(value => isCopilotReviewerIdentity(value.login));
 }
+export function hasNewCopilotRequestEvent(events: readonly any[], afterEventId: number): boolean {
+  return events.some(value => Number(value.id) > afterEventId && (
+    (value.event === "review_requested" && isCopilotReviewerIdentity(value.requested_reviewer?.login))
+    || value.event === "copilot_work_started"
+  ));
+}
 export function classificationInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
   return { contents: "read", pull_requests: "write", issues: "write", checks: "write", metadata: "read" } as const;
 }
-async function hasCurrentCopilotReview(clientValue: GitHubClient, owner: string, repo: string, number: number, headSha: string): Promise<boolean> {
-  const [requested, reviews] = await Promise.all([
+async function hasCurrentCopilotReview(clientValue: GitHubClient, owner: string, repo: string, number: number, headSha: string, afterEventId?: number): Promise<boolean> {
+  const [requested, reviews, events] = await Promise.all([
     clientValue.getRequestedReviewers(owner, repo, number),
     clientValue.listPullRequestReviews(owner, repo, number),
+    afterEventId === undefined ? Promise.resolve([]) : clientValue.listIssueEvents(owner, repo, number),
   ]);
   const pending = hasRequestedCopilotReviewer(requested);
   const completed = reviews.some((value: any) =>
     isCopilotReviewerIdentity(value.user?.login)
     && String(value.commit_id ?? "").toLowerCase() === headSha.toLowerCase()
     && String(value.state ?? "").toUpperCase() !== "DISMISSED");
-  return pending || completed;
+  return pending || completed || (afterEventId !== undefined && hasNewCopilotRequestEvent(events, afterEventId));
 }
 async function ensureCopilotReview(clientValue: GitHubClient, owner: string, repo: string, number: number, headSha: string, policySha: string): Promise<"already-present" | "requested-and-confirmed"> {
   if (await hasCurrentCopilotReview(clientValue, owner, repo, number, headSha)) return "already-present";
   const reviewerClient = new GitHubClient(env("COPILOT_REVIEW_REQUEST_TOKEN"), "https://api.github.com", fetch, policySha);
+  const eventsBefore = await reviewerClient.listIssueEvents(owner, repo, number);
+  const eventCursor = eventsBefore.reduce((maximum: number, value: any) => Math.max(maximum, Number(value.id) || 0), 0);
   await reviewerClient.requestReviewers(owner, repo, number, [copilotReviewer]);
   for (let attempt = 0; attempt < 5; attempt++) {
-    if (await hasCurrentCopilotReview(reviewerClient, owner, repo, number, headSha)) return "requested-and-confirmed";
+    if (await hasCurrentCopilotReview(reviewerClient, owner, repo, number, headSha, eventCursor)) return "requested-and-confirmed";
     if (attempt < 4) await delay(2_000);
   }
   throw new Error("Copilot审查请求未能通过实时读取确认");
 }
+
+export async function writeManagedFileToBranch(input: {
+  gh: GitHubClient;
+  owner: string;
+  repo: string;
+  path: string;
+  content: string;
+  branch: string;
+  title: string;
+  defaultSha: string;
+  branchSha: string | null;
+}): Promise<{ changed: boolean; headSha: string }> {
+  if (!input.branchSha) {
+    await input.gh.createRef(input.owner, input.repo, `refs/heads/${input.branch}`, input.defaultSha);
+  } else {
+    const comparisonToDefault = await input.gh.compare(input.owner, input.repo, input.defaultSha, input.branchSha);
+    const mergeBaseSha = String(comparisonToDefault.merge_base_commit?.sha ?? "");
+    if (!/^[0-9a-f]{40}$/iu.test(mergeBaseSha)) throw new Error("受管分支比较结果缺少共同基准提交");
+    const comparison = mergeBaseSha === input.defaultSha
+      ? comparisonToDefault
+      : await input.gh.compare(input.owner, input.repo, mergeBaseSha, input.branchSha);
+    if (!Array.isArray(comparison.commits) || !Array.isArray(comparison.files)
+      || Number(comparison.total_commits) !== comparison.commits.length || comparison.files.length >= 300) {
+      throw new Error("受管分支比较结果不完整");
+    }
+    if (Number(comparison.ahead_by) < 1 || comparison.files.length !== 1 || comparison.files[0]?.filename !== input.path) {
+      throw new Error(`受管分支包含非预期改动: ${input.branch}`);
+    }
+  }
+  const existing = await optional(() => input.gh.getContent(input.owner, input.repo, input.path, input.branch));
+  if (decodeContent(existing) === input.content) return { changed: false, headSha: input.branchSha ?? input.defaultSha };
+  const put: Record<string, unknown> = { message: input.title, content: Buffer.from(input.content, "utf8").toString("base64"), branch: input.branch };
+  if (existing?.sha) put.sha = existing.sha;
+  const written = await input.gh.putContent(input.owner, input.repo, input.path, put);
+  return { changed: true, headSha: written.commit.sha };
+}
+
+export function assertManagedBranchPull(branchExists: boolean, pull: any | undefined, branch: string): void {
+  if ((pull && (pull.user?.id !== 301115370 || pull.merged_at)) || (branchExists && !pull)) {
+    throw new Error(`受管分支不是Steward拥有的开放拉取请求: ${branch}`);
+  }
+}
+
 async function reconcileManagedFile(input: { repository: any; gh: GitHubClient; path: string; content: string; branch: string; title: string; policySha: string; deliveryId: string }): Promise<"unchanged" | "pull-request-created" | "pull-request-updated"> {
   const [owner, repo] = splitRepository(input.repository.full_name); const defaultBranch = input.repository.default_branch;
   const current = await optional(() => input.gh.getContent(owner, repo, input.path, defaultBranch)); if (decodeContent(current) === input.content) return "unchanged";
   const pulls = await input.gh.listPullRequests(owner, repo, `${owner}:${input.branch}`); if (pulls.length > 1) throw new Error(`受管分支存在多个拉取请求: ${input.branch}`);
   const defaultRef = await input.gh.getRef(owner, repo, `heads/${defaultBranch}`); const branchRef = await optional(() => input.gh.getRef(owner, repo, `heads/${input.branch}`));
-  if (!branchRef) await input.gh.createRef(owner, repo, `refs/heads/${input.branch}`, defaultRef.object.sha);
-  else if (!pulls[0] || pulls[0].user?.id !== 301115370 || pulls[0].merged_at) throw new Error(`受管分支不是Steward拥有的开放拉取请求: ${input.branch}`);
-  else await input.gh.updateRef(owner, repo, `heads/${input.branch}`, defaultRef.object.sha, true);
-  const existing = await optional(() => input.gh.getContent(owner, repo, input.path, input.branch));
-  const put: Record<string, unknown> = { message: input.title, content: Buffer.from(input.content, "utf8").toString("base64"), branch: input.branch };
-  if (existing?.sha) put.sha = existing.sha;
-  const written = await input.gh.putContent(owner, repo, input.path, put);
+  assertManagedBranchPull(Boolean(branchRef), pulls[0], input.branch);
+  const written = await writeManagedFileToBranch({ gh: input.gh, owner, repo, path: input.path, content: input.content, branch: input.branch, title: input.title, defaultSha: defaultRef.object.sha, branchSha: branchRef?.object.sha ?? null });
   const generated = { type: "chore" as const, scope: "steward", title: input.title.replace(/^chore\([^)]*\):\s*/u, ""), summary: "由SPLRAD Steward同步中央管理文件并保持仓库规则与中央配置一致。", changes: [`更新${input.path}并保持中央配置为唯一人工维护来源`], reviewNotes: ["确认生成文件逐字等于中央模板并且没有仓库专用手工改动"] };
   const body = renderManagedBody({ generated, existingBody: pulls[0]?.body, templateBody: organizationPullRequestTemplate, actor: "splrad-steward[bot]", contributors: [], context: `${input.repository.id}:${input.path}:${input.policySha}` });
   const pull = pulls[0] ? await input.gh.updatePullRequest(owner, repo, pulls[0].number, { title: input.title, body }) : await input.gh.createPullRequest(owner, repo, { title: input.title, body, head: input.branch, base: defaultBranch });
-  await ensureCopilotReview(input.gh, owner, repo, pull.number, written.commit.sha, input.policySha);
-  await dispatchClassification({ repositoryId: input.repository.id, pullRequestNumber: pull.number, headSha: written.commit.sha, policySha: input.policySha, deliveryId: input.deliveryId });
+  await ensureCopilotReview(input.gh, owner, repo, pull.number, written.headSha, input.policySha);
+  await dispatchClassification({ repositoryId: input.repository.id, pullRequestNumber: pull.number, headSha: written.headSha, policySha: input.policySha, deliveryId: input.deliveryId });
   return pulls[0] ? "pull-request-updated" : "pull-request-created";
 }
 

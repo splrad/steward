@@ -50,7 +50,7 @@ describe("代码托管平台客户端", () => {
     expect(body).toEqual({ permissions: { contents: "read", metadata: "read" }, repository_ids: [1187527897] });
   });
 
-  it("使用拉取请求接口读取待审查人和完整审查分页", async () => {
+  it("使用拉取请求接口读取待审查人、完整审查和事件分页", async () => {
     const paths: string[] = [];
     const transport = async (url: any) => {
       paths.push(String(url));
@@ -59,9 +59,11 @@ describe("代码托管平台客户端", () => {
     const client = new GitHubClient("token", "https://example.test", transport as typeof fetch);
     await client.getRequestedReviewers("splrad", "steward", 7);
     await client.listPullRequestReviews("splrad", "steward", 7);
+    await client.listIssueEvents("splrad", "steward", 7);
     expect(paths).toEqual([
       "https://example.test/repos/splrad/steward/pulls/7/requested_reviewers",
       "https://example.test/repos/splrad/steward/pulls/7/reviews?per_page=100",
+      "https://example.test/repos/splrad/steward/issues/7/events?per_page=100",
     ]);
   });
 

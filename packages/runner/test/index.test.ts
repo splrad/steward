@@ -2,7 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { classificationInstallationPermissions, env, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, parseInvocation } from "../src/index.js";
+import { assertManagedBranchPull, classificationInstallationPermissions, env, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, parseInvocation, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -37,6 +37,12 @@ describe("中央命令入口", () => {
     expect(hasRequestedCopilotReviewer({ users: [{ login: "Copilot" }] })).toBe(true);
     expect(hasRequestedCopilotReviewer({ users: [{ login: "copilot-pull-request-reviewer[bot]" }] })).toBe(true);
     expect(hasRequestedCopilotReviewer({ users: [], teams: [{ slug: "copilot" }] } as any)).toBe(false);
+    expect(hasNewCopilotRequestEvent([
+      { id: 9, event: "review_requested", requested_reviewer: { login: "Copilot" } },
+      { id: 11, event: "review_requested", requested_reviewer: { login: "human" } },
+    ], 10)).toBe(false);
+    expect(hasNewCopilotRequestEvent([{ id: 11, event: "review_requested", requested_reviewer: { login: "Copilot" } }], 10)).toBe(true);
+    expect(hasNewCopilotRequestEvent([{ id: 12, event: "copilot_work_started" }], 10)).toBe(true);
     expect(classificationInstallationPermissions()).toEqual({
       contents: "read",
       pull_requests: "write",
@@ -44,6 +50,75 @@ describe("中央命令入口", () => {
       checks: "write",
       metadata: "read",
     });
+  });
+
+  it("已有受管文件内容相同时复用当前来源提交且不重置分支", async () => {
+    const calls: string[] = [];
+    const client = {
+      compare: async () => ({ merge_base_commit: { sha: "a".repeat(40) }, ahead_by: 1, total_commits: 1, commits: [{}], files: [{ filename: ".github/copilot-instructions.md" }] }),
+      getContent: async () => ({ encoding: "base64", content: Buffer.from("相同内容", "utf8").toString("base64"), sha: "f".repeat(40) }),
+      createRef: async () => { calls.push("createRef"); },
+      putContent: async () => { calls.push("putContent"); return { commit: { sha: "c".repeat(40) } }; },
+      updateRef: async () => { calls.push("updateRef"); },
+    } as any;
+    await expect(writeManagedFileToBranch({ gh: client, owner: "splrad", repo: ".github", path: ".github/copilot-instructions.md", content: "相同内容", branch: "steward/repository-onboarding", title: "接入", defaultSha: "a".repeat(40), branchSha: "b".repeat(40) })).resolves.toEqual({ changed: false, headSha: "b".repeat(40) });
+    expect(calls).toEqual([]);
+  });
+
+  it("已有受管文件变化时直接在来源分支提交且不经过默认分支", async () => {
+    const calls: Array<{ name: string; body?: any }> = [];
+    const client = {
+      compare: async () => ({ merge_base_commit: { sha: "a".repeat(40) }, ahead_by: 1, total_commits: 1, commits: [{}], files: [{ filename: ".github/copilot-instructions.md" }] }),
+      getContent: async () => ({ encoding: "base64", content: Buffer.from("旧内容", "utf8").toString("base64"), sha: "f".repeat(40) }),
+      createRef: async () => { calls.push({ name: "createRef" }); },
+      putContent: async (_owner: string, _repo: string, _path: string, body: any) => { calls.push({ name: "putContent", body }); return { commit: { sha: "c".repeat(40) } }; },
+      updateRef: async () => { calls.push({ name: "updateRef" }); },
+    } as any;
+    await expect(writeManagedFileToBranch({ gh: client, owner: "splrad", repo: ".github", path: ".github/copilot-instructions.md", content: "新内容", branch: "steward/repository-onboarding", title: "接入", defaultSha: "a".repeat(40), branchSha: "b".repeat(40) })).resolves.toEqual({ changed: true, headSha: "c".repeat(40) });
+    expect(calls).toEqual([{ name: "putContent", body: { message: "接入", content: Buffer.from("新内容", "utf8").toString("base64"), branch: "steward/repository-onboarding", sha: "f".repeat(40) } }]);
+  });
+
+  it("默认分支前进时只按共同基准校验受管分支自己的改动", async () => {
+    const comparisons: string[] = [];
+    const mergeBaseSha = "9".repeat(40);
+    const client = {
+      compare: async (_owner: string, _repo: string, base: string) => {
+        comparisons.push(base);
+        return base === "a".repeat(40)
+          ? { merge_base_commit: { sha: mergeBaseSha }, ahead_by: 1, total_commits: 1, commits: [{}], files: [{ filename: "默认分支新增文件" }, { filename: ".github/copilot-instructions.md" }] }
+          : { merge_base_commit: { sha: mergeBaseSha }, ahead_by: 1, total_commits: 1, commits: [{}], files: [{ filename: ".github/copilot-instructions.md" }] };
+      },
+      getContent: async () => ({ encoding: "base64", content: Buffer.from("目标内容", "utf8").toString("base64"), sha: "f".repeat(40) }),
+    } as any;
+    await expect(writeManagedFileToBranch({ gh: client, owner: "splrad", repo: ".github", path: ".github/copilot-instructions.md", content: "目标内容", branch: "steward/repository-onboarding", title: "接入", defaultSha: "a".repeat(40), branchSha: "b".repeat(40) })).resolves.toEqual({ changed: false, headSha: "b".repeat(40) });
+    expect(comparisons).toEqual(["a".repeat(40), mergeBaseSha]);
+  });
+
+  it("首次写入后重复运行只创建一次提交", async () => {
+    let content: string | null = null;
+    let headSha = "a".repeat(40);
+    let writes = 0;
+    const client = {
+      compare: async () => ({ merge_base_commit: { sha: "a".repeat(40) }, ahead_by: 1, total_commits: 1, commits: [{}], files: [{ filename: ".github/copilot-instructions.md" }] }),
+      getContent: async () => content === null ? null : ({ encoding: "base64", content: Buffer.from(content, "utf8").toString("base64"), sha: "f".repeat(40) }),
+      createRef: async () => undefined,
+      putContent: async (_owner: string, _repo: string, _path: string, body: any) => { writes += 1; content = Buffer.from(body.content, "base64").toString("utf8"); headSha = "b".repeat(40); return { commit: { sha: headSha } }; },
+    } as any;
+    const first = await writeManagedFileToBranch({ gh: client, owner: "splrad", repo: ".github", path: ".github/copilot-instructions.md", content: "目标内容", branch: "steward/repository-onboarding", title: "接入", defaultSha: "a".repeat(40), branchSha: null });
+    const second = await writeManagedFileToBranch({ gh: client, owner: "splrad", repo: ".github", path: ".github/copilot-instructions.md", content: "目标内容", branch: "steward/repository-onboarding", title: "接入", defaultSha: "a".repeat(40), branchSha: headSha });
+    expect(first).toEqual({ changed: true, headSha: "b".repeat(40) });
+    expect(second).toEqual({ changed: false, headSha: "b".repeat(40) });
+    expect(writes).toBe(1);
+  });
+
+  it("受管分支与开放拉取请求必须成对且拉取请求必须属于Steward", () => {
+    const stewardPull = { user: { id: 301115370 }, merged_at: null };
+    expect(() => assertManagedBranchPull(false, undefined, "steward/repository-onboarding")).not.toThrow();
+    expect(() => assertManagedBranchPull(false, stewardPull, "steward/repository-onboarding")).not.toThrow();
+    expect(() => assertManagedBranchPull(true, stewardPull, "steward/repository-onboarding")).not.toThrow();
+    expect(() => assertManagedBranchPull(true, undefined, "steward/repository-onboarding")).toThrow("受管分支不是Steward拥有的开放拉取请求");
+    expect(() => assertManagedBranchPull(false, { user: { id: 44151430 }, merged_at: null }, "steward/repository-onboarding")).toThrow("受管分支不是Steward拥有的开放拉取请求");
+    expect(() => assertManagedBranchPull(false, { user: { id: 301115370 }, merged_at: "2026-08-17T00:00:00Z" }, "steward/repository-onboarding")).toThrow("受管分支不是Steward拥有的开放拉取请求");
   });
 
   it("四个结构文件接受全部中央配置并拒绝额外字段", async () => {
