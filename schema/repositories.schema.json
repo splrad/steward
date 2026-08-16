@@ -9,8 +9,8 @@
     "schemaVersion": { "const": 1 },
     "organization": {
       "type": "object", "additionalProperties": false,
-      "required": ["id", "login", "defaultBranch"],
-      "properties": { "id": { "type": "integer", "minimum": 1 }, "login": { "type": "string", "minLength": 1 }, "defaultBranch": { "type": "string", "minLength": 1 } }
+      "required": ["id", "login"],
+      "properties": { "id": { "type": "integer", "minimum": 1 }, "login": { "type": "string", "minLength": 1 } }
     },
     "defaults": {
       "type": "object", "additionalProperties": false,

@@ -260,7 +260,9 @@ async function classify(args: Readonly<Record<string, string>>) {
     if (args["pull-request-number"] || args["event-head-sha"]) throw new Error("全量分类不能同时指定单个拉取请求");
     const reader = await client(repositoryId, { pull_requests: "read", metadata: "read" }, policySha);
     const repository = await reader.getRepositoryById(repositoryId); const [owner, repo] = splitRepository(repository.full_name);
-    const pulls = await reader.listOpenPullRequests(owner, repo);
+    const defaultBranch = repository.default_branch;
+    if (typeof defaultBranch !== "string" || !defaultBranch.trim()) throw new Error("仓库没有可用的默认分支");
+    const pulls = await reader.listOpenPullRequests(owner, repo, defaultBranch);
     for (const pull of pulls) await classify({ ...args, "scan-all": "false", "pull-request-number": String(pull.number), "event-head-sha": pull.head.sha, "delivery-id": `${required(args, "delivery-id")}:pr-${pull.number}` });
     await summary([`仓库：${repository.full_name}`, `重新分类开放拉取请求：${pulls.length}`]);
     return;
@@ -466,22 +468,25 @@ async function releasePreflight(args: Readonly<Record<string, string>>) {
       if (membership.state !== "active") throw new Error("手工发布触发者不是Maintainers当前成员");
     }
     const repository = await gh.getRepositoryById(repositoryId);
-    if (repository.full_name !== profile.repository.fullName || repository.default_branch !== profile.repository.defaultBranch) throw new Error("发布仓库身份或默认分支不匹配");
+    if (repository.full_name !== profile.repository.fullName) throw new Error("发布仓库身份不匹配");
+    const defaultBranch = repository.default_branch;
+    if (typeof defaultBranch !== "string" || !defaultBranch.trim()) throw new Error("发布仓库没有可用的默认分支");
+    const [owner, repo] = splitRepository(repository.full_name);
     const number = integer(required(args, "pull-request-number"), "pull-request-number");
-    const pull = await gh.getPullRequest("splrad", "LayerScape", number);
-    if (!pull.merged || pull.base.ref !== "main" || pull.merge_commit_sha !== targetSha) throw new Error("发布拉取请求与目标提交不一致");
-    const files = await gh.listPullFiles("splrad", "LayerScape", number);
+    const pull = await gh.getPullRequest(owner, repo, number);
+    if (!pull.merged || pull.base.ref !== defaultBranch || pull.merge_commit_sha !== targetSha) throw new Error("发布拉取请求与目标提交不一致");
+    const files = await gh.listPullFiles(owner, repo, number);
     if (!files.some((file: any) => file.filename === profile.version.file)) {
       await output({ shouldRelease: "false", targetSha, policySha });
       await summary(["状态：not-applicable", "原因：本次合并没有修改Version.props", `目标提交：${targetSha}`]);
       return;
     }
-    const main = await gh.getRef("splrad", "LayerScape", "heads/main");
-    if (!await isFirstParentAncestor(gh, "splrad", "LayerScape", targetSha, main.object.sha)) throw new Error("目标提交不在当前main第一父提交链中");
-    const immutable = await gh.getImmutableReleaseStatus("splrad", "LayerScape");
+    const defaultRef = await gh.getRef(owner, repo, `heads/${defaultBranch}`);
+    if (!await isFirstParentAncestor(gh, owner, repo, targetSha, defaultRef.object.sha)) throw new Error("目标提交不在当前默认分支第一父提交链中");
+    const immutable = await gh.getImmutableReleaseStatus(owner, repo);
     if (immutable.enabled !== true) throw new Error("LayerScape不可变发布尚未启用");
-    const releases = await gh.listReleases("splrad", "LayerScape");
-    const history = await collectFirstParentRange(gh, "splrad", "LayerScape", targetSha, releases, plan.tag);
+    const releases = await gh.listReleases(owner, repo);
+    const history = await collectFirstParentRange(gh, owner, repo, targetSha, releases, plan.tag);
     if (history.previousRelease) {
       previousTag = history.previousRelease.tag_name;
       const version = /^v(\d+\.\d+\.\d+)$/.exec(history.previousRelease.tag_name)?.[1];
@@ -489,7 +494,7 @@ async function releasePreflight(args: Readonly<Record<string, string>>) {
       if (!version || !priorBuild) throw new Error("上一稳定发布的版本字段无效");
       planRelease({ next: parsed, previous: parseVersion(version, priorBuild), targetSha });
     }
-    const tagCommit = await resolveTagCommit(gh, "splrad", "LayerScape", plan.tag);
+    const tagCommit = await resolveTagCommit(gh, owner, repo, plan.tag);
     const release = releases.find((value: any) => value.tag_name === plan.tag) ?? null;
     if (Boolean(tagCommit) !== Boolean(release)) throw new Error(tagCommit ? "标签存在但发布不存在" : "发布存在但标签不存在");
     remoteState = release ? (release.draft ? "matching-state-pending-publish-check" : "published-state-pending-content-check") : "create-draft";
@@ -526,7 +531,8 @@ async function releaseNotesCommand(args: Readonly<Record<string, string>>) {
   parseVersion(displayVersion, "20000101.1");
   const gh = await client(repositoryId, { contents: "read", pull_requests: "read", metadata: "read" }, policySha);
   const repository = await gh.getRepositoryById(repositoryId); const [owner, repo] = splitRepository(repository.full_name);
-  if (repositoryId !== 1187527897 || repository.full_name !== "splrad/LayerScape" || repository.default_branch !== "main") throw new Error("发布说明仓库身份不匹配");
+  if (repositoryId !== 1187527897 || repository.full_name !== "splrad/LayerScape") throw new Error("发布说明仓库身份不匹配");
+  if (typeof repository.default_branch !== "string" || !repository.default_branch.trim()) throw new Error("发布仓库没有可用的默认分支");
   const releases = await gh.listReleases(owner, repo);
   const history = await collectFirstParentRange(gh, owner, repo, targetSha, releases, `v${displayVersion}`);
   const range = new Set(history.commits.map(commit => commit.sha));

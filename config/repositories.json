@@ -1,7 +1,7 @@
 {
   "$schema": "../schema/repositories.schema.json",
   "schemaVersion": 1,
-  "organization": { "id": 302208797, "login": "splrad", "defaultBranch": "main" },
+  "organization": { "id": 302208797, "login": "splrad" },
   "defaults": {
     "public": { "managed": true, "prAutomation": true, "pullRequestTemplate": "organization-default", "copilotInstructionsProfile": "common", "classificationProfile": "default", "validationProfile": "public-basic", "allowedWorkflowPaths": [], "releaseProfile": null },
     "private": { "managed": false }

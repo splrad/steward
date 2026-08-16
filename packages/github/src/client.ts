@@ -44,7 +44,7 @@ export class GitHubClient {
   getRepositoryById(id: number) { return this.request<any>("GET", `/repositories/${id}`); }
   getPullRequest(owner: string, repo: string, number: number) { return this.request<any>("GET", `/repos/${owner}/${repo}/pulls/${number}`); }
   listPullRequests(owner: string, repo: string, head: string) { return this.paginate<any>(`/repos/${owner}/${repo}/pulls?state=open&head=${encodeURIComponent(head)}&per_page=100`); }
-  listOpenPullRequests(owner: string, repo: string) { return this.paginate<any>(`/repos/${owner}/${repo}/pulls?state=open&base=main&per_page=100`); }
+  listOpenPullRequests(owner: string, repo: string, base: string) { return this.paginate<any>(`/repos/${owner}/${repo}/pulls?state=open&base=${encodeURIComponent(base)}&per_page=100`); }
   createPullRequest(owner: string, repo: string, body: unknown) { return this.request<any>("POST", `/repos/${owner}/${repo}/pulls`, body); }
   updatePullRequest(owner: string, repo: string, number: number, body: unknown) { return this.request<any>("PATCH", `/repos/${owner}/${repo}/pulls/${number}`, body); }
   compare(owner: string, repo: string, base: string, head: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`); }

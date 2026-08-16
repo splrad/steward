@@ -2,7 +2,7 @@
   "$schema": "../../../schema/release-profile.schema.json",
   "schemaVersion": 1,
   "name": "layerscape",
-  "repository": { "id": 1187527897, "fullName": "splrad/LayerScape", "defaultBranch": "main" },
+  "repository": { "id": 1187527897, "fullName": "splrad/LayerScape" },
   "trigger": { "event": "pull_request.closed", "merged": true, "changedFiles": ["Version.props"] },
   "runner": { "label": "windows-latest", "timeoutMinutes": 45 },
   "version": {
