@@ -45,7 +45,6 @@ jobs:
           PREPARE_ONLY: "true"
         run: node packages/runner/dist/index.js pr-automation --delivery-id "${{ inputs.deliveryId }}" --repository-id "${{ inputs.repositoryId }}" --source-ref "${{ inputs.sourceRef }}" --event-after-sha "${{ inputs.eventAfterSha }}" --source-actor-id "${{ inputs.sourceActorId }}" --source-actor-login "${{ inputs.sourceActorLogin }}" --policy-sha "${{ inputs.policySha }}"
       - name: 使用Copilot润色
-        if: ${{ always() && hashFiles(format('{0}/copilot-prompt.txt', runner.temp)) != '' }}
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}

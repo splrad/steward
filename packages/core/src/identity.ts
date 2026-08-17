@@ -4,6 +4,7 @@ export interface GitHubActor {
   type: string;
   name?: string | null;
   email?: string | null;
+  avatarUrl?: string | null;
 }
 
 export interface Contributor {
@@ -11,6 +12,7 @@ export interface Contributor {
   login: string;
   name?: string;
   email?: string;
+  avatarUrl?: string;
 }
 
 const loginPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
@@ -45,7 +47,9 @@ export function normalizeContributor(actor: GitHubActor): Contributor | null {
   const contributor: Contributor = { id: actor.id, login: actor.login };
   const name = actor.name?.trim();
   const email = actor.email?.trim();
+  const avatarUrl = actor.avatarUrl?.trim();
   if (name) contributor.name = name;
   if (email && isContributorEmail(email)) contributor.email = email;
+  if (avatarUrl) contributor.avatarUrl = avatarUrl;
   return contributor;
 }
