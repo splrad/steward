@@ -38,6 +38,7 @@ describe("拉取请求自动化", () => {
       { ...valid, impact: Array.from({ length: 7 }, () => "更新后的拉取请求正文完全由人工智能管理") },
       { ...valid, related: ["#1\n#2"] },
       { ...valid, related: ["<!-- workflow:managed-pr:end -->"] },
+      { ...valid, related: ["--!>"] },
       { ...valid, releaseAndMigration: ["太短"] },
       { ...valid, extra: true },
     ];

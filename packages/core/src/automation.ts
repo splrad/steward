@@ -42,14 +42,14 @@ function requireText(value: unknown, name: string, minimum: number, maximum: num
   if (typeof value !== 'string') throw new TypeError(`${name}必须是字符串`);
   const result = value.trim();
   const count = hanCount(result);
-  if (count < minimum || count > maximum || /[\r\n]|<!--|-->/u.test(result)) throw new Error(`${name}长度或格式无效`);
+  if (count < minimum || count > maximum || /[\r\n]/u.test(result) || result.includes('<') || result.includes('>')) throw new Error(`${name}长度或格式无效`);
   return result;
 }
 
 function requirePlainText(value: unknown, name: string, minimum: number, maximum: number): string {
   if (typeof value !== 'string') throw new TypeError(`${name}必须是字符串`);
   const result = value.trim();
-  if (result.length < minimum || result.length > maximum || /[\r\n]|<!--|-->/u.test(result)) throw new Error(`${name}长度或格式无效`);
+  if (result.length < minimum || result.length > maximum || /[\r\n]/u.test(result) || result.includes('<') || result.includes('>')) throw new Error(`${name}长度或格式无效`);
   return result;
 }
 
