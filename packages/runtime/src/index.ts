@@ -29,6 +29,14 @@ async function dispatcher(env: Env): Promise<GitHubClient> {
 }
 async function send(env: Env, workflow: string, inputs: Record<string, string>) { const [owner, repo] = env.STEWARDSHIP_REPOSITORY.split("/") as [string, string]; await dispatchWorkflow(await dispatcher(env), { owner, repo, workflow, policySha: env.POLICY_SHA, inputs }); }
 
+async function pullRequestChangesVersion(env: Env, repository: any, pullRequestNumber: number): Promise<boolean> {
+  if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
+  const [owner, repo] = String(repository.full_name).split("/") as [string, string];
+  const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY, installationId: Number(env.INSTALLATION_ID), repositoryId: Number(repository.id), permissions: { metadata: "read", pull_requests: "read" }, policySha: env.POLICY_SHA });
+  const files = await new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA).listPullFiles(owner, repo, pullRequestNumber);
+  return files.some(file => file?.filename === "Version.props");
+}
+
 function validScope(payload: any, env: Env): boolean {
   const organizationId = payload.organization?.id ?? payload.installation?.account?.id ?? payload.repository?.owner?.id;
   const installationId = payload.installation?.id;
@@ -84,6 +92,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
     }
     if (event === "pull_request" && action === "closed" && payload.pull_request?.merged && payload.pull_request?.base?.ref === payload.repository?.default_branch) {
       const repository = payload.repository; if (!isManaged(repository) || repositoryConfiguration(repository).releaseProfile !== "layerscape") return response(204);
+      if (!await pullRequestChangesVersion(env, repository, Number(payload.pull_request.number))) return response(204);
       await send(env, "release.yml", { repositoryId: String(repository.id), pullRequestNumber: String(payload.pull_request.number), targetSha: payload.pull_request.merge_commit_sha }); return response(202);
     }
     return response(204);
