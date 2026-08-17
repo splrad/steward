@@ -87,6 +87,7 @@ describe("拉取请求自动化", () => {
     expect(body).toContain("## 主要改动");
     expect(body).toContain("## 影响分析");
     expect(body).toContain("## 关联事项");
+    expect(body).toContain("- #135");
     expect(body).not.toContain("## 发布与迁移");
     expect(body).toContain("## 贡献者");
     expect(body).toContain('aria-label="查看第1位贡献者的GitHub资料"');

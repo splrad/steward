@@ -176,9 +176,10 @@ function escapeHtml(value: string): string {
   return value.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;').replace(/"/gu, '&quot;').replace(/'/gu, '&#39;');
 }
 
-function escapeMarkdownText(value: string): string {
+function escapeMarkdownText(value: string, preserveHash = false): string {
   const normalized = value.replace(/[\r\n]+/gu, ' ');
-  return escapeHtml(normalized.replace(/([\\`*_\[\]{}()#+.!|-])/gu, '\\$1'));
+  const markdownControl = preserveHash ? /([\\`*_\[\]{}()+.!|-])/gu : /([\\`*_\[\]{}()#+.!|-])/gu;
+  return escapeHtml(normalized.replace(markdownControl, '\\$1'));
 }
 
 function contributorAvatarUrl(contributor: Contributor): string {
@@ -218,7 +219,7 @@ export function renderManagedBody(input: { generated: GeneratedSummary; existing
   if (input.generated.motivation) sections.push(`## 背景与目标\n\n${escapeMarkdownText(input.generated.motivation)}`);
   sections.push(`## 主要改动\n\n${input.generated.changes.map((item) => `- ${escapeMarkdownText(item)}`).join('\n')}`);
   if (input.generated.impact.length) sections.push(`## 影响分析\n\n${input.generated.impact.map((item) => `- ${escapeMarkdownText(item)}`).join('\n')}`);
-  if (input.generated.related.length) sections.push(`## 关联事项\n\n${input.generated.related.map((item) => `- ${escapeMarkdownText(item)}`).join('\n')}`);
+  if (input.generated.related.length) sections.push(`## 关联事项\n\n${input.generated.related.map((item) => `- ${escapeMarkdownText(item, true)}`).join('\n')}`);
   if (input.generated.releaseAndMigration.length) sections.push(`## 发布与迁移\n\n${input.generated.releaseAndMigration.map((item) => `- ${escapeMarkdownText(item)}`).join('\n')}`);
   if (input.contributors.length) sections.push(renderContributors(input.contributors));
   const markers = [`<!-- workflow:source-actor:${input.actor} -->`, `<!-- workflow:source-contributors:${input.contributors.map((item) => item.login).join(',')} -->`, `<!-- workflow:auto-context:${input.context} -->`].join('\n');
