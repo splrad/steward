@@ -5,7 +5,7 @@ import { join } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertManagedBranchPull, classificationInstallationPermissions, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, writeManagedFileToBranch } from "../src/index.js";
+import { assertManagedBranchPull, assertWorkflowPaths, classificationInstallationPermissions, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -85,6 +85,16 @@ describe("中央命令入口", () => {
     } finally {
       await rm(repository, { recursive: true, force: true });
     }
+  });
+
+  it("工作流引导路径允许文件在下一阶段出现但不冒充当前工作流", () => {
+    const allowed = [".github/workflows/current.yml"];
+    const bootstrap = [".github/workflows/next.yml"];
+    expect(() => assertWorkflowPaths(allowed, allowed, bootstrap)).not.toThrow();
+    expect(() => assertWorkflowPaths([...allowed, ...bootstrap], allowed, bootstrap)).not.toThrow();
+    expect(() => assertWorkflowPaths([], allowed, bootstrap)).toThrow("超出中央允许范围");
+    expect(() => assertWorkflowPaths([...allowed, ".github/workflows/unknown.yml"], allowed, bootstrap)).toThrow("超出中央允许范围");
+    expect(() => assertWorkflowPaths(allowed, allowed, allowed)).toThrow("重复");
   });
 
   it("识别平台实际返回的Copilot身份并给分类令牌完整的拉取请求写权限", () => {
