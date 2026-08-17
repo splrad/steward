@@ -44,9 +44,25 @@ function isContributorEmail(value: string): boolean {
 
 function normalizeContributorName(value: string | null | undefined): string | undefined {
   if (typeof value !== 'string') return undefined;
-  const sanitized = value.replace(/[\p{Cc}\p{Cf}]+/gu, ' ').trim();
-  if (!sanitized) return undefined;
-  return [...sanitized].slice(0, 80).join('').trimEnd() || undefined;
+  let result = '';
+  let characterCount = 0;
+  let separatorPending = false;
+  for (const character of value) {
+    if (/[\p{Cc}\p{Cf}\s]/u.test(character)) {
+      if (result) separatorPending = true;
+      continue;
+    }
+    if (separatorPending) {
+      if (characterCount + 1 >= 80) break;
+      result += ' ';
+      characterCount += 1;
+      separatorPending = false;
+    }
+    result += character;
+    characterCount += 1;
+    if (characterCount >= 80) break;
+  }
+  return result || undefined;
 }
 
 export function normalizeContributor(actor: GitHubActor): Contributor | null {
