@@ -151,9 +151,9 @@ export function buildPrompt(facts: AutomationFacts, fallback: GeneratedSummary):
     '字段固定为type、scope、title、summary、motivation、changes、impact、related、releaseAndMigration。主体使用简体中文。',
     'type只能使用feat、fix、refactor、perf、style、docs、test、build、ci、chore、revert；scope只能使用1至20个小写字母、数字或连字符。',
     'title使用1至50个汉字的中文动宾结构且总字符不超过100，不含类型前缀、编号、换行或句号；summary使用20至120个汉字陈述实际改动且总字符不超过240。',
-    'changes包含1至8项，每项10至100个汉字；motivation有事实时使用10至200个汉字，否则为null；这些中文字段的总字符数不得超过汉字上限的两倍。',
+    'changes包含1至8项，每项10至100个汉字；motivation仅在本次提交信息或差异中存在明确的问题、需求或决策依据时使用10至200个汉字，否则为null；这些中文字段的总字符数不得超过汉字上限的两倍。',
     'impact和releaseAndMigration各为0至6项，每项5至120个汉字；related为0至6项，每项2至200个字符。',
-    'summary和changes必须基于事实填写。没有独立背景与目标时motivation必须为null。',
+    'summary、motivation和changes必须基于本次提交信息和差异事实填写。motivation只说明为什么需要本次修改，不得重复summary或changes；本次提交信息或差异中没有明确问题、需求或决策依据时必须为null。',
     'impact、related、releaseAndMigration没有对应事实时必须返回空数组，不得用“无”“不适用”“未涉及”等占位。',
     '不得生成验证情况、审查重点、界面与输出变化或人工补充内容。',
     `来源分支：${facts.sourceRef}`, `目标分支：${facts.targetRef}`,
@@ -215,7 +215,7 @@ export function renderManagedBody(input: { generated: GeneratedSummary; existing
     throw new Error('拉取请求模板受管标记缺失、重复或交叉');
   }
   const sections = [`## 摘要\n\n${escapeMarkdownText(input.generated.summary)}`];
-  if (input.generated.motivation) sections.push(`## 背景与目标\n\n${escapeMarkdownText(input.generated.motivation)}`);
+  if (input.generated.motivation) sections.push(`## 变更原因\n\n${escapeMarkdownText(input.generated.motivation)}`);
   sections.push(`## 主要改动\n\n${input.generated.changes.map((item) => `- ${escapeMarkdownText(item)}`).join('\n')}`);
   if (input.generated.impact.length) sections.push(`## 影响分析\n\n${input.generated.impact.map((item) => `- ${escapeMarkdownText(item)}`).join('\n')}`);
   if (input.generated.related.length) sections.push(`## 关联事项\n\n${input.generated.related.map((item) => `- ${escapeMarkdownText(item, true)}`).join('\n')}`);
