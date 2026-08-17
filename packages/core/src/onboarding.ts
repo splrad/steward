@@ -5,7 +5,15 @@ export interface RepositoryForOnboarding {
   fork: boolean; archived: boolean; disabled: boolean; defaultBranch?: string | null;
 }
 export interface OnboardingConfiguration { managed: boolean; copilotInstructionsProfile?: string; classificationProfile?: string; validationProfile?: string; releaseProfile?: string | null }
-export interface RepositorySettings { allow_squash_merge: true; allow_merge_commit: false; allow_rebase_merge: false; allow_auto_merge: false; delete_branch_on_merge: true }
+export interface RepositorySettings {
+  allow_squash_merge: true;
+  allow_merge_commit: false;
+  allow_rebase_merge: false;
+  allow_auto_merge: false;
+  delete_branch_on_merge: true;
+  squash_merge_commit_title: 'PR_TITLE';
+  squash_merge_commit_message: 'PR_BODY';
+}
 
 export function validateRepositoryForOnboarding(repository: RepositoryForOnboarding, organizationId: number, configuration: OnboardingConfiguration): 'ready' | 'waiting-for-default-branch' {
   if (repository.ownerId !== organizationId || !repository.fullName.startsWith('splrad/')) throw new Error('仓库不属于目标组织');
@@ -16,7 +24,15 @@ export function validateRepositoryForOnboarding(repository: RepositoryForOnboard
 }
 
 export function planRepositorySettings(): RepositorySettings {
-  return { allow_squash_merge: true, allow_merge_commit: false, allow_rebase_merge: false, allow_auto_merge: false, delete_branch_on_merge: true };
+  return {
+    allow_squash_merge: true,
+    allow_merge_commit: false,
+    allow_rebase_merge: false,
+    allow_auto_merge: false,
+    delete_branch_on_merge: true,
+    squash_merge_commit_title: 'PR_TITLE',
+    squash_merge_commit_message: 'PR_BODY',
+  };
 }
 
 export function renderOnboardingPullRequest(input: { template: string; configuration: Required<Pick<OnboardingConfiguration, 'copilotInstructionsProfile' | 'classificationProfile' | 'validationProfile'>> & Pick<OnboardingConfiguration, 'releaseProfile'>; actor: string; context: string }): { title: string; body: string; branch: string } {
@@ -26,7 +42,7 @@ export function renderOnboardingPullRequest(input: { template: string; configura
     motivation: '通过中央配置统一仓库接入方式，避免各仓库重复维护相同的自动化规则。',
     changes: [
       `使用${input.configuration.classificationProfile}分类配置和${input.configuration.validationProfile}验证配置`,
-      `生成${input.configuration.copilotInstructionsProfile}代码审查说明并设置压缩合并和来源分支清理`,
+      `生成${input.configuration.copilotInstructionsProfile}代码审查说明，并设置压缩合并使用拉取请求标题与正文及来源分支清理`,
       ...(input.configuration.releaseProfile ? [`启用${input.configuration.releaseProfile}中央发布配置`] : []),
     ],
     impact: ['仓库将使用中央分类、验证和代码审查说明配置，并采用统一的合并设置'],
