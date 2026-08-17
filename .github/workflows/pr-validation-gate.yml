@@ -1,0 +1,108 @@
+name: SPLRAD Steward / PR Validation Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      deliveryId: { required: true, type: string }
+      repositoryId: { required: true, type: string }
+      pullRequestNumber: { required: true, type: string }
+      eventHeadSha: { required: true, type: string }
+      eventBaseSha: { required: true, type: string }
+      policySha: { required: true, type: string }
+
+permissions:
+  contents: read
+concurrency:
+  group: steward-pr-validation-${{ inputs.repositoryId }}-${{ inputs.eventHeadSha }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: steward-automation
+      deployment: false
+    outputs:
+      repositoryFullName: ${{ steps.prepare.outputs.repositoryFullName }}
+      profile: ${{ steps.prepare.outputs.profile }}
+      checkRunId: ${{ steps.prepare.outputs.checkRunId }}
+      headSha: ${{ steps.prepare.outputs.headSha }}
+      baseSha: ${{ steps.prepare.outputs.baseSha }}
+    steps:
+      - name: 检出中央规则
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: "${{ inputs.policySha }}", fetch-depth: 0, persist-credentials: false }
+      - name: 验证中央规则提交
+        run: git merge-base --is-ancestor "${{ inputs.policySha }}" "${{ github.sha }}"
+      - name: 准备Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: .node-version, cache: npm }
+      - name: 安装中央依赖
+        run: npm ci --ignore-scripts
+      - name: 建立提交级验证检查
+        id: prepare
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+        run: node packages/runner/dist/index.js pr-validation-prepare --repository-id "${{ inputs.repositoryId }}" --pull-request-number "${{ inputs.pullRequestNumber }}" --event-head-sha "${{ inputs.eventHeadSha }}" --event-base-sha "${{ inputs.eventBaseSha }}" --policy-sha "${{ inputs.policySha }}" --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+  validate:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 检出拉取请求当前提交
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ needs.prepare.outputs.repositoryFullName }}
+          ref: ${{ needs.prepare.outputs.headSha }}
+          path: target
+          fetch-depth: 0
+          persist-credentials: false
+      - name: 检出中央规则
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.policySha }}
+          path: steward-policy
+          fetch-depth: 0
+          persist-credentials: false
+      - name: 验证中央规则提交
+        run: git -C steward-policy merge-base --is-ancestor "${{ inputs.policySha }}" "${{ github.sha }}"
+      - name: 准备Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: steward-policy/.node-version }
+      - name: 安装中央依赖
+        run: npm ci --ignore-scripts
+        working-directory: steward-policy
+      - name: 执行中央验证
+        env:
+          VALIDATION_BASE_SHA: ${{ needs.prepare.outputs.baseSha }}
+        run: node steward-policy/packages/runner/dist/index.js validate --workspace target --repository-id "${{ inputs.repositoryId }}" --profile "${{ needs.prepare.outputs.profile }}"
+
+  report:
+    if: ${{ always() && needs.prepare.result == 'success' }}
+    needs: [prepare, validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: steward-automation
+      deployment: false
+    steps:
+      - name: 检出中央规则
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: "${{ inputs.policySha }}", fetch-depth: 0, persist-credentials: false }
+      - name: 验证中央规则提交
+        run: git merge-base --is-ancestor "${{ inputs.policySha }}" "${{ github.sha }}"
+      - name: 准备Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: .node-version, cache: npm }
+      - name: 安装中央依赖
+        run: npm ci --ignore-scripts
+      - name: 发布验证结果
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+        run: node packages/runner/dist/index.js pr-validation-report --repository-id "${{ inputs.repositoryId }}" --pull-request-number "${{ inputs.pullRequestNumber }}" --head-sha "${{ needs.prepare.outputs.headSha }}" --check-run-id "${{ needs.prepare.outputs.checkRunId }}" --policy-sha "${{ inputs.policySha }}" --result "${{ needs.validate.result }}" --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

@@ -1,22 +1,25 @@
 import { spawnSync } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
-import { afterEach, describe, expect, it } from "vitest";
-import { assertManagedBranchPull, classificationInstallationPermissions, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, writeManagedFileToBranch } from "../src/index.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { assertManagedBranchPull, assertValidationCheck, classificationInstallationPermissions, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, main, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, selectValidationCheck, validationConclusion, validationInstallationPermissions, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
 
 afterEach(() => {
-  delete process.env.TEST_REQUIRED_ENV;
+  for (const name of ["TEST_REQUIRED_ENV", "APP_ID", "INSTALLATION_ID", "STEWARD_APP_PRIVATE_KEY", "STEWARD_CONFIG_DIRECTORY", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY"]) delete process.env[name];
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("中央命令入口", () => {
-  it("只接受九个命令及其已知、唯一、成对参数", () => {
-    const commands = ["onboard-repository", "pr-automation", "pr-classification", "sync-copilot-instructions", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"];
+  it("只接受十一个命令及其已知、唯一、成对参数", () => {
+    const commands = ["onboard-repository", "pr-automation", "pr-classification", "pr-validation-prepare", "pr-validation-report", "sync-copilot-instructions", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"];
     for (const command of commands) expect(parseInvocation([command]).command).toBe(command);
     expect(() => parseInvocation(["unknown"])).toThrow("未知命令");
     expect(() => parseInvocation(["validate", "--unknown", "x"])).toThrow("未知参数");
@@ -116,6 +119,70 @@ describe("中央命令入口", () => {
       checks: "read",
       metadata: "read",
     });
+    expect(validationInstallationPermissions()).toEqual({
+      contents: "read",
+      pull_requests: "read",
+      checks: "write",
+      metadata: "read",
+    });
+  });
+
+  it("验证门禁只复用Steward写入当前提交的唯一检查", () => {
+    const headSha = "a".repeat(40);
+    const expected = { id: 7, name: "PR Validation Gate", app: { id: 4243096 }, head_sha: headSha };
+    expect(selectValidationCheck([expected], headSha)).toBe(expected);
+    expect(selectValidationCheck([{ ...expected, app: { id: 15368 } }], headSha)).toBeNull();
+    expect(selectValidationCheck([{ ...expected, head_sha: "b".repeat(40) }], headSha)).toBeNull();
+    expect(() => selectValidationCheck([expected, { ...expected, id: 8 }], headSha)).toThrow("歧义");
+    expect(validationConclusion("success")).toBe("success");
+    for (const result of ["failure", "cancelled", "skipped"]) expect(validationConclusion(result)).toBe("failure");
+    expect(() => validationConclusion("in_progress")).toThrow("无效");
+    const policySha = "b".repeat(40);
+    const reportable = { ...expected, external_id: `1296724484:105:${headSha}:${policySha}:pending` };
+    expect(() => assertValidationCheck(reportable, 1296724484, 105, headSha, policySha)).not.toThrow();
+    expect(() => assertValidationCheck({ ...reportable, external_id: `1296724484:106:${headSha}:${policySha}:pending` }, 1296724484, 105, headSha, policySha)).toThrow("运行上下文");
+  });
+
+  it("验证门禁按当前提交创建检查并只向同一检查发布最终结果", async () => {
+    const temporary = await mkdtemp(join(tmpdir(), "steward-validation-gate-"));
+    const outputPath = join(temporary, "output.txt");
+    const summaryPath = join(temporary, "summary.md");
+    const headSha = "a".repeat(40);
+    const baseSha = "b".repeat(40);
+    const policySha = "c".repeat(40);
+    const pendingExternalId = `1296724484:105:${headSha}:${policySha}:pending`;
+    const requests: Array<{ method: string; path: string; body: any }> = [];
+    let createdCheck: any = null;
+    process.env.APP_ID = "4243096";
+    process.env.INSTALLATION_ID = "145952003";
+    process.env.STEWARD_APP_PRIVATE_KEY = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } }).privateKey;
+    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
+    process.env.GITHUB_OUTPUT = outputPath;
+    process.env.GITHUB_STEP_SUMMARY = summaryPath;
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+      const path = new URL(String(url)).pathname + new URL(String(url)).search;
+      const method = init.method ?? "GET";
+      const body = init.body ? JSON.parse(String(init.body)) : null;
+      requests.push({ method, path, body });
+      if (path.endsWith("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (path === "/repositories/1296724484") return new Response(JSON.stringify({ id: 1296724484, full_name: "splrad/steward", private: false, default_branch: "main" }), { status: 200 });
+      if (path === "/repos/splrad/steward/pulls/105") return new Response(JSON.stringify({ number: 105, state: "open", head: { sha: headSha }, base: { ref: "main", sha: baseSha } }), { status: 200 });
+      if (path === `/repos/splrad/steward/commits/${headSha}/check-runs?per_page=100`) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
+      if (path === "/repos/splrad/steward/check-runs" && method === "POST") { createdCheck = { id: 77, ...body, app: { id: 4243096 } }; return new Response(JSON.stringify(createdCheck), { status: 201 }); }
+      if (path === "/repos/splrad/steward/check-runs/77" && method === "GET") return new Response(JSON.stringify(createdCheck), { status: 200 });
+      if (path === "/repos/splrad/steward/check-runs/77" && method === "PATCH") return new Response(JSON.stringify({ ...createdCheck, ...body }), { status: 200 });
+      return new Response(`unexpected ${method} ${path}`, { status: 500 });
+    });
+    try {
+      await main(["pr-validation-prepare", "--repository-id", "1296724484", "--pull-request-number", "105", "--event-head-sha", headSha, "--event-base-sha", baseSha, "--policy-sha", policySha, "--run-url", "https://github.com/splrad/steward/actions/runs/1"]);
+      expect(await readFile(outputPath, "utf8")).toContain("checkRunId=77");
+      expect(createdCheck).toMatchObject({ name: "PR Validation Gate", head_sha: headSha, status: "in_progress", external_id: pendingExternalId });
+      await main(["pr-validation-report", "--repository-id", "1296724484", "--pull-request-number", "105", "--head-sha", headSha, "--check-run-id", "77", "--policy-sha", policySha, "--result", "success", "--run-url", "https://github.com/splrad/steward/actions/runs/1"]);
+      const completed = requests.findLast(value => value.method === "PATCH" && value.path === "/repos/splrad/steward/check-runs/77")?.body;
+      expect(completed).toMatchObject({ name: "PR Validation Gate", status: "completed", conclusion: "success", external_id: `1296724484:105:${headSha}:${policySha}:success` });
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
   });
 
   it("只接受绑定当前拉取请求和当前提交的活动Copilot检查", () => {
