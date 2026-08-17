@@ -23,11 +23,15 @@ export function renderOnboardingPullRequest(input: { template: string; configura
   const generated: GeneratedSummary = {
     type: 'chore', scope: 'steward', title: '接入中央仓库管理',
     summary: '将本仓库接入SPLRAD Steward中央自动化并应用统一仓库设置。',
+    motivation: '通过中央配置统一仓库接入方式，避免各仓库重复维护相同的自动化规则。',
     changes: [
       `使用${input.configuration.classificationProfile}分类配置和${input.configuration.validationProfile}验证配置`,
       `生成${input.configuration.copilotInstructionsProfile}代码审查说明并设置压缩合并和来源分支清理`,
-      input.configuration.releaseProfile ? `启用${input.configuration.releaseProfile}中央发布配置` : '本仓库不启用中央发布配置',
-    ], reviewNotes: ['请确认组织规则集、维护者权限和五项仓库设置均已生效'],
+      ...(input.configuration.releaseProfile ? [`启用${input.configuration.releaseProfile}中央发布配置`] : []),
+    ],
+    impact: ['仓库将使用中央分类、验证和代码审查说明配置，并采用统一的合并设置'],
+    related: [],
+    releaseAndMigration: input.configuration.releaseProfile ? [`接入后由${input.configuration.releaseProfile}中央配置管理后续发布`] : [],
   };
   return { title: 'chore(steward): 接入中央仓库管理', branch: 'steward/repository-onboarding', body: renderManagedBody({ generated, templateBody: input.template, actor: input.actor, contributors: [], context: input.context }) };
 }
