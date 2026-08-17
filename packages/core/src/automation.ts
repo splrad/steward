@@ -42,7 +42,8 @@ function requireText(value: unknown, name: string, minimum: number, maximum: num
   if (typeof value !== 'string') throw new TypeError(`${name}必须是字符串`);
   const result = value.trim();
   const count = hanCount(result);
-  if (count < minimum || count > maximum || /[\r\n]/u.test(result) || result.includes('<') || result.includes('>')) throw new Error(`${name}长度或格式无效`);
+  const characterCount = [...result].length;
+  if (count < minimum || count > maximum || characterCount > maximum * 2 || /[\r\n]/u.test(result) || result.includes('<') || result.includes('>')) throw new Error(`${name}长度或格式无效`);
   return result;
 }
 
@@ -131,8 +132,8 @@ export function buildPrompt(facts: AutomationFacts, fallback: GeneratedSummary):
     '你是SPLRAD拉取请求编辑器。只返回一个JSON对象，不要代码围栏、解释或额外字段。',
     '字段固定为type、scope、title、summary、motivation、changes、impact、related、releaseAndMigration。主体使用简体中文。',
     'type只能使用feat、fix、refactor、perf、style、docs、test、build、ci、chore、revert；scope只能使用1至20个小写字母、数字或连字符。',
-    'title使用1至50个汉字的中文动宾结构，不含类型前缀、编号、换行或句号；summary使用20至120个汉字陈述实际改动。',
-    'changes包含1至8项，每项10至100个汉字；motivation有事实时使用10至200个汉字，否则为null。',
+    'title使用1至50个汉字的中文动宾结构且总字符不超过100，不含类型前缀、编号、换行或句号；summary使用20至120个汉字陈述实际改动且总字符不超过240。',
+    'changes包含1至8项，每项10至100个汉字；motivation有事实时使用10至200个汉字，否则为null；这些中文字段的总字符数不得超过汉字上限的两倍。',
     'impact和releaseAndMigration各为0至6项，每项5至120个汉字；related为0至6项，每项2至200个字符。',
     'summary和changes必须基于事实填写。没有独立背景与目标时motivation必须为null。',
     'impact、related、releaseAndMigration没有对应事实时必须返回空数组，不得用“无”“不适用”“未涉及”等占位。',
@@ -170,7 +171,7 @@ function contributorAvatarUrl(contributor: Contributor): string {
 function renderContributors(contributors: Contributor[]): string {
   const avatars = contributors.map((item) => {
     const profile = `https://github.com/${encodeURIComponent(item.login)}`;
-    return `<a href="${profile}"><img src="${escapeHtml(contributorAvatarUrl(item))}" alt="贡献者头像" width="48" height="48"></a>`;
+    return `<a href="${profile}"><img src="${escapeHtml(contributorAvatarUrl(item))}" alt="" width="48" height="48"></a>`;
   }).join(' ');
   const details = contributors.map((item) => {
     const login = escapeHtml(item.login);

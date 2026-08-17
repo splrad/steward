@@ -31,6 +31,7 @@ describe("拉取请求自动化", () => {
       { ...valid, scope: "UPPER" },
       { ...valid, title: "feat: 增加中央规则" },
       { ...valid, title: "增加中央规则。" },
+      { ...valid, title: `增加中央规则${"a".repeat(100)}` },
       { ...valid, summary: "太短" },
       { ...valid, motivation: "太短" },
       { ...valid, changes: [] },
@@ -85,7 +86,7 @@ describe("拉取请求自动化", () => {
     expect(body).toContain("## 关联事项");
     expect(body).not.toContain("## 发布与迁移");
     expect(body).toContain("## 贡献者");
-    expect(body).toContain('<img src="https://avatars.githubusercontent.com/u/44151430?v=4"');
+    expect(body).toContain('<img src="https://avatars.githubusercontent.com/u/44151430?v=4" alt=""');
     expect(body).toContain("<details>");
     expect(body).toContain("显示名称：</strong>Axiom Oth");
     expect(body).toContain('GitHub：</strong><a href="https://github.com/axiomoth">@axiomoth</a>');
