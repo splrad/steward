@@ -51,6 +51,7 @@ describe("新仓库接入", () => {
     const settings = planRepositorySettings();
     expect(verifyOnboardingReadback(settings, "expected", "expected", ["allowed.yml"], ["allowed.yml"])).toBe(true);
     expect(verifyOnboardingReadback({ ...settings, allow_auto_merge: true as never }, "expected", "expected", [], [])).toBe(false);
+    expect(verifyOnboardingReadback({ ...settings, squash_merge_commit_title: "COMMIT_OR_PR_TITLE" as never }, "expected", "expected", [], [])).toBe(false);
     expect(verifyOnboardingReadback({ ...settings, squash_merge_commit_message: "COMMIT_MESSAGES" as never }, "expected", "expected", [], [])).toBe(false);
     expect(verifyOnboardingReadback(settings, "expected", "different", [], [])).toBe(false);
     expect(verifyOnboardingReadback(settings, "expected", "expected", ["unexpected.yml"], [])).toBe(false);
