@@ -8,6 +8,7 @@ import YAML from "yaml";
 const expected = ["deploy-runtime.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "pr-validation.yml", "release.yml", "sync-copilot-instructions.yml"];
 const files = (await readdir(".github/workflows")).sort();
 if (JSON.stringify(files) !== JSON.stringify(expected)) throw new Error(`工作流集合不正确: ${files.join(", ")}`);
+const workflowDocuments = new Map();
 const allowedActions = new Set([
   "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
   "actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
@@ -15,10 +16,33 @@ const allowedActions = new Set([
 ]);
 const forbidden = [/issue.*comment/iu, /DCO/iu, /validation-matrix/iu, /durable.?object/iu, /queue/iu, /relay/iu, /secrets:\s*inherit/iu];
 for (const file of files) {
-  const text = await readFile(`.github/workflows/${file}`, "utf8"); YAML.parse(text);
+  const text = await readFile(`.github/workflows/${file}`, "utf8"); workflowDocuments.set(file, YAML.parse(text));
   for (const match of text.matchAll(/uses:\s*([^\s}]+)/gu)) if (!allowedActions.has(match[1])) throw new Error(`${file}使用未锁定操作: ${match[1]}`);
   for (const pattern of forbidden) if (pattern.test(text)) throw new Error(`${file}包含终态禁止内容: ${pattern}`);
 }
+const expectedJobEnvironments = new Map([
+  ["deploy-runtime.yml:deploy", { name: "steward-deployment", deployment: true }],
+  ["onboard-repository.yml:onboard", { name: "steward-automation", deployment: false }],
+  ["pr-automation.yml:reconcile", { name: "steward-automation", deployment: false }],
+  ["pr-classification.yml:classify", { name: "steward-automation", deployment: false }],
+  ["release.yml:preflight", { name: "steward-release", deployment: false }],
+  ["release.yml:notes", { name: "steward-release", deployment: false }],
+  ["release.yml:publish", { name: "steward-release", deployment: false }],
+  ["release.yml:verify", { name: "steward-release", deployment: false }],
+  ["sync-copilot-instructions.yml:synchronize", { name: "steward-automation", deployment: false }],
+]);
+for (const [file, document] of workflowDocuments) {
+  for (const [jobName, job] of Object.entries(document?.jobs ?? {})) {
+    const key = `${file}:${jobName}`; const expectedEnvironment = expectedJobEnvironments.get(key);
+    if (job.environment === undefined) {
+      if (expectedEnvironment) throw new Error(`${key}缺少固定环境`);
+      continue;
+    }
+    if (!expectedEnvironment || job.environment?.name !== expectedEnvironment.name || job.environment?.deployment !== expectedEnvironment.deployment) throw new Error(`${key}的环境或部署记录策略不正确`);
+    expectedJobEnvironments.delete(key);
+  }
+}
+if (expectedJobEnvironments.size > 0) throw new Error(`缺少固定环境作业: ${[...expectedJobEnvironments.keys()].join(", ")}`);
 const prAutomation = await readFile(".github/workflows/pr-automation.yml", "utf8");
 if (!prAutomation.includes("copilot-requests: write") || !prAutomation.includes("GITHUB_TOKEN: ${{ github.token }}")) throw new Error("Copilot CLI没有使用内置GITHUB_TOKEN及其最小权限");
 if (/COPILOT_CLI_TOKEN|COPILOT_GITHUB_TOKEN/u.test(prAutomation)) throw new Error("Copilot CLI仍引用长期个人令牌");

@@ -17,7 +17,9 @@ jobs:
   preflight:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: steward-release
+    environment:
+      name: steward-release
+      deployment: false
     outputs:
       shouldRelease: ${{ steps.plan.outputs.shouldRelease }}
       displayVersion: ${{ steps.plan.outputs.displayVersion }}
@@ -71,7 +73,9 @@ jobs:
     if: ${{ needs.preflight.outputs.shouldRelease == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: steward-release
+    environment:
+      name: steward-release
+      deployment: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: { ref: "${{ github.sha }}", persist-credentials: false }
@@ -91,7 +95,9 @@ jobs:
     needs: [build, notes]
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: steward-release
+    environment:
+      name: steward-release
+      deployment: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: { ref: "${{ github.sha }}", persist-credentials: false }
@@ -113,7 +119,9 @@ jobs:
     needs: publish
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: steward-release
+    environment:
+      name: steward-release
+      deployment: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: { ref: "${{ github.sha }}", persist-credentials: false }

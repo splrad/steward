@@ -22,7 +22,9 @@ jobs:
   reconcile:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: steward-automation
+    environment:
+      name: steward-automation
+      deployment: false
     steps:
       - name: 检出中央规则
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
