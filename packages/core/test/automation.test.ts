@@ -67,6 +67,7 @@ describe("拉取请求自动化", () => {
     expect(organizationPullRequestTemplate).not.toContain("人工补充");
     expect(buildPrompt(facts, generated)).toContain(JSON.stringify(generated));
     expect(buildPrompt(facts, generated)).toContain("没有对应事实时必须返回空数组");
+    expect(buildPrompt(facts, generated)).toContain("motivation只说明为什么需要本次修改，不得重复summary或changes");
     expect(buildDeterministicSummary({ ...facts, commitSubjects: [`ci:${" ".repeat(100_000)}修复中央验证`] })).toMatchObject({ type: "ci", title: "修复中央验证" });
     expect(buildDeterministicSummary({ ...facts, commitSubjects: ["fix(THIS-SCOPE-IS-WAY-TOO-LONG): 修复错误"] })).toMatchObject({ scope: "this-scope-is-way-to" });
     expect(buildDeterministicSummary({ ...facts, commitSubjects: ["普通提交"], areas: ["area:中文"] })).toMatchObject({ scope: "repo" });
@@ -86,7 +87,8 @@ describe("拉取请求自动化", () => {
       context: "c".repeat(64),
     });
     expect(body.startsWith(`${summaryStart}\n## 摘要`)).toBe(true);
-    expect(body).toContain("## 背景与目标");
+    expect(body).toContain("## 变更原因");
+    expect(body).not.toContain("## 背景与目标");
     expect(body).toContain("## 主要改动");
     expect(body).toContain("## 影响分析");
     expect(body).toContain("## 关联事项");
@@ -112,7 +114,7 @@ describe("拉取请求自动化", () => {
   it("没有对应内容时省略可选章节和机器人贡献者章节", () => {
     const generated = validateGeneratedSummary({ ...valid, motivation: null, impact: [], related: [], releaseAndMigration: [] });
     const body = renderManagedBody({ generated, templateBody: organizationPullRequestTemplate, actor: "splrad-steward[bot]", contributors: [], context: "x" });
-    for (const heading of ["背景与目标", "影响分析", "关联事项", "发布与迁移", "贡献者"]) expect(body).not.toContain(`## ${heading}`);
+    for (const heading of ["变更原因", "背景与目标", "影响分析", "关联事项", "发布与迁移", "贡献者"]) expect(body).not.toContain(`## ${heading}`);
     expect(body).toContain("## 摘要");
     expect(body).toContain("## 主要改动");
   });

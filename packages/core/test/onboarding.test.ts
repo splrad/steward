@@ -30,7 +30,8 @@ describe("新仓库接入", () => {
     expect(value.branch).toBe("steward/repository-onboarding");
     expect(value.title).toBe("chore(steward): 接入中央仓库管理");
     expect(value.body).toContain("## 摘要");
-    expect(value.body).toContain("## 背景与目标");
+    expect(value.body).toContain("## 变更原因");
+    expect(value.body).not.toContain("## 背景与目标");
     expect(value.body).toContain("## 影响分析");
     expect(value.body).not.toContain("## 发布与迁移");
     expect(value.body).not.toContain("人工补充");
