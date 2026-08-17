@@ -200,7 +200,7 @@ function renderContributors(contributors: Contributor[]): string {
   const details = contributors.map((item) => {
     const login = escapeHtml(item.login);
     const profile = `https://github.com/${encodeURIComponent(item.login)}`;
-    return `<li><strong>GitHub：</strong><a href="${profile}">@${login}</a></li>`;
+    return `<li><a href="${profile}">@${login}</a></li>`;
   }).join('\n');
   return `## 贡献者\n\n${avatars}\n\n<details>\n<summary>查看贡献者信息</summary>\n\n<ul>\n${details}\n</ul>\n</details>`;
 }
