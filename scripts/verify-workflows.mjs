@@ -44,8 +44,12 @@ for (const [file, document] of workflowDocuments) {
 }
 if (expectedJobEnvironments.size > 0) throw new Error(`缺少固定环境作业: ${[...expectedJobEnvironments.keys()].join(", ")}`);
 const prAutomation = await readFile(".github/workflows/pr-automation.yml", "utf8");
-if (!prAutomation.includes("copilot-requests: write") || !prAutomation.includes("GITHUB_TOKEN: ${{ github.token }}")) throw new Error("Copilot CLI没有使用内置GITHUB_TOKEN及其最小权限");
-if (/COPILOT_CLI_TOKEN|COPILOT_GITHUB_TOKEN/u.test(prAutomation)) throw new Error("Copilot CLI仍引用长期个人令牌");
+const prAutomationDocument = workflowDocuments.get("pr-automation.yml");
+const prAutomationPermissions = prAutomationDocument?.permissions ?? {};
+if (typeof prAutomationPermissions !== "object" || prAutomationPermissions === null || Array.isArray(prAutomationPermissions) || Object.keys(prAutomationPermissions).length !== 1 || prAutomationPermissions.contents !== "read") throw new Error("拉取请求自动化工作流权限必须只有contents: read");
+const copilotStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "使用Copilot润色");
+if (copilotStep?.env?.COPILOT_GITHUB_TOKEN?.replace(/\s+/gu, "") !== "${{secrets.COPILOT_CLI_TOKEN}}") throw new Error("Copilot CLI没有使用个人Copilot专用环境密钥");
+if (Object.hasOwn(copilotStep?.env ?? {}, "GITHUB_TOKEN") || /copilot-requests/iu.test(prAutomation)) throw new Error("Copilot CLI仍引用组织内置令牌路径");
 if (!prAutomation.includes("- name: 使用Copilot润色") || !prAutomation.includes('npx --no-install copilot -p')) throw new Error("拉取请求工作流缺少Copilot正文生成步骤");
 if (/hashFiles\([^\n]*runner\.temp/iu.test(prAutomation)) throw new Error("Copilot正文生成仍使用无法读取runner.temp的hashFiles条件");
 const deployRuntime = await readFile(".github/workflows/deploy-runtime.yml", "utf8");
@@ -72,7 +76,7 @@ try {
   const archivePath = join(temporary, archiveName); await writeFile(archivePath, archive);
   const extracted = spawnSync("tar", ["-xf", archivePath, "-C", temporary], { encoding: "utf8" }); if (extracted.status !== 0) throw new Error(extracted.stderr || "无法解压actionlint");
   const executable = join(temporary, platform === "windows" ? "actionlint.exe" : "actionlint"); if (platform !== "windows") await chmod(executable, 0o755);
-  const actionlintArguments = ["-ignore", "unknown permission scope \\\"copilot-requests\\\"", ...files.map(file => `.github/workflows/${file}`)];
+  const actionlintArguments = files.map(file => `.github/workflows/${file}`);
   const checked = spawnSync(executable, actionlintArguments, { encoding: "utf8" }); if (checked.status !== 0) throw new Error(checked.stdout || checked.stderr || "actionlint失败");
 } finally { await rm(temporary, { recursive: true, force: true }); }
 console.log("workflows verified");

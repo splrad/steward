@@ -13,7 +13,6 @@ on:
 
 permissions:
   contents: read
-  copilot-requests: write
 concurrency:
   group: steward-pr-automation-${{ inputs.repositoryId }}-${{ inputs.sourceRef }}
   cancel-in-progress: false
@@ -47,7 +46,7 @@ jobs:
       - name: 使用Copilot润色
         continue-on-error: true
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_CLI_TOKEN }}
           PR_COPILOT_PROMPT_PATH: ${{ runner.temp }}/copilot-prompt.txt
         run: npx --no-install copilot -p "$(cat "$PR_COPILOT_PROMPT_PATH")" --allow-tool='shell(git:*)' --no-ask-user > "${{ runner.temp }}/copilot-output.json"
       - name: 收敛拉取请求
