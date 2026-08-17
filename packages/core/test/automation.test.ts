@@ -79,7 +79,10 @@ describe("拉取请求自动化", () => {
       generated: validateGeneratedSummary(valid),
       templateBody: template,
       actor: "axiomoth",
-      contributors: [{ id: 44151430, login: "axiomoth", name: "Axiom Oth", avatarUrl: "https://avatars.githubusercontent.com/u/44151430?v=4" }],
+      contributors: [
+        { id: 44151430, login: "axiomoth", name: "Axiom Oth", avatarUrl: "https://avatars.githubusercontent.com/u/44151430?v=4" },
+        { id: 12345678, login: "contributor2", name: "Contributor Two", avatarUrl: "https://avatars.githubusercontent.com/u/12345678?v=4" },
+      ],
       context: "c".repeat(64),
     });
     expect(body.startsWith(`${summaryStart}\n## 摘要`)).toBe(true);
@@ -93,8 +96,11 @@ describe("拉取请求自动化", () => {
     expect(body).toContain('aria-label="查看第1位贡献者的GitHub资料"');
     expect(body).toContain('<img src="https://avatars.githubusercontent.com/u/44151430?v=4" alt=""');
     expect(body).toContain("<details>");
-    expect(body).toContain("显示名称：</strong>Axiom Oth");
-    expect(body).toContain('GitHub：</strong><a href="https://github.com/axiomoth">@axiomoth</a>');
+    expect(body).not.toContain("显示名称");
+    expect(body).not.toContain("Axiom Oth");
+    expect(body).not.toContain("GitHub：");
+    expect(body).toContain('<li><a href="https://github.com/axiomoth">@axiomoth</a></li>');
+    expect(body).toContain('<li><a href="https://github.com/contributor2">@contributor2</a></li>');
     expect(body).not.toContain("人工前言");
     expect(body).not.toContain("### 人工补充");
     expect(body).not.toContain("旧内容");
