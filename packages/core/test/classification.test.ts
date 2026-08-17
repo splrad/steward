@@ -95,5 +95,7 @@ describe("拉取请求分类", () => {
       { ...base, contributors: [{ id: 2, login: "b" }] },
     ]) expect(await computePullRequestFingerprint(changed)).not.toBe(value);
     expect(await computePullRequestFingerprint({ ...base, commits: [...base.commits].reverse(), files: [...base.files].reverse() })).toBe(value);
+    const contributorsWithDisplayFields = [{ id: 1, login: "a", name: "显示名称", email: "a@example.com", avatarUrl: "https://avatars.githubusercontent.com/u/1?v=4" }];
+    expect(await computePullRequestFingerprint({ ...base, contributors: contributorsWithDisplayFields })).toBe(value);
   });
 });

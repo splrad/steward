@@ -68,6 +68,8 @@ describe("拉取请求自动化", () => {
     expect(buildPrompt(facts, generated)).toContain(JSON.stringify(generated));
     expect(buildPrompt(facts, generated)).toContain("没有对应事实时必须返回空数组");
     expect(buildDeterministicSummary({ ...facts, commitSubjects: [`ci:${" ".repeat(100_000)}修复中央验证`] })).toMatchObject({ type: "ci", title: "修复中央验证" });
+    expect(buildDeterministicSummary({ ...facts, commitSubjects: ["fix(THIS-SCOPE-IS-WAY-TOO-LONG): 修复错误"] })).toMatchObject({ scope: "this-scope-is-way-to" });
+    expect(buildDeterministicSummary({ ...facts, commitSubjects: ["普通提交"], areas: ["area:中文"] })).toMatchObject({ scope: "repo" });
   });
 
   it("生成完整正文、折叠贡献者信息并迁移旧模板", () => {
@@ -86,6 +88,7 @@ describe("拉取请求自动化", () => {
     expect(body).toContain("## 关联事项");
     expect(body).not.toContain("## 发布与迁移");
     expect(body).toContain("## 贡献者");
+    expect(body).toContain('aria-label="查看第1位贡献者的GitHub资料"');
     expect(body).toContain('<img src="https://avatars.githubusercontent.com/u/44151430?v=4" alt=""');
     expect(body).toContain("<details>");
     expect(body).toContain("显示名称：</strong>Axiom Oth");

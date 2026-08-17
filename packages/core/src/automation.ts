@@ -100,12 +100,22 @@ function parseConventionalSubject(subject: string): { type: ConventionalType; sc
   return { type, ...(scope ? { scope } : {}), title };
 }
 
+function normalizeScope(value: string): string {
+  const normalized = value.toLowerCase()
+    .replace(/[^a-z0-9-]+/gu, '-')
+    .replace(/-+/gu, '-')
+    .replace(/^-+|-+$/gu, '')
+    .slice(0, 20)
+    .replace(/-+$/gu, '');
+  return normalized || 'repo';
+}
+
 export function buildDeterministicSummary(facts: AutomationFacts): GeneratedSummary {
   const subjects = facts.commitSubjects.map((item) => item.trim()).filter(Boolean);
   const first = subjects[0] ?? '';
   const parsed = parseConventionalSubject(first);
   const type = parsed?.type ?? (facts.files.every((file) => /^(docs\/|README|SECURITY|CONTRIBUTING)/i.test(file)) ? 'docs' : 'chore');
-  const scope = parsed?.scope ?? (facts.areas.length === 1 ? facts.areas[0]!.replace(/^area:/, '') : 'repo');
+  const scope = normalizeScope(parsed?.scope ?? (facts.areas.length === 1 ? facts.areas[0]!.replace(/^area:/, '') : 'repo'));
   const candidate = parsed?.title ?? '';
   const title = hanCount(candidate) > 0 ? candidate.replace(/[。.]$/u, '').slice(0, 50) : `更新${scope}相关内容`;
   const groups = new Map<string, number>();
@@ -169,9 +179,9 @@ function contributorAvatarUrl(contributor: Contributor): string {
 }
 
 function renderContributors(contributors: Contributor[]): string {
-  const avatars = contributors.map((item) => {
+  const avatars = contributors.map((item, index) => {
     const profile = `https://github.com/${encodeURIComponent(item.login)}`;
-    return `<a href="${profile}"><img src="${escapeHtml(contributorAvatarUrl(item))}" alt="" width="48" height="48"></a>`;
+    return `<a href="${profile}" aria-label="查看第${index + 1}位贡献者的GitHub资料"><img src="${escapeHtml(contributorAvatarUrl(item))}" alt="" width="48" height="48"></a>`;
   }).join(' ');
   const details = contributors.map((item) => {
     const login = escapeHtml(item.login);
