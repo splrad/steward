@@ -135,8 +135,8 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
   const run = await gh.getWorkflowRun(owner, repo, runId);
   if (!trustedValidationRun(run, repository)) return false;
   const headSha = commitSha(run.head_sha)!;
-  const pulls = (await gh.listOpenPullRequests(owner, repo, String(repository.default_branch))).filter((pull: any) =>
-    pull?.base?.ref === repository.default_branch && commitSha(pull?.head?.sha) === headSha);
+  const pulls = (await gh.listPullsForCommit(owner, repo, headSha)).filter((pull: any) =>
+    pull?.state === "open" && pull?.base?.ref === repository.default_branch && commitSha(pull?.head?.sha) === headSha);
   if (!pulls.length) return false;
   if (pulls.length > 1) return false;
   const pull = pulls[0]!; const number = Number(pull.number);
@@ -220,7 +220,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
     }
     if (event === "pull_request" && ["opened", "synchronize", "reopened", "edited"].includes(action)) {
       const repository = payload.repository; const pull = payload.pull_request; if (!repository || !isManaged(repository) || !pull || pull.base?.ref !== repository.default_branch) return response(204);
-      if (action !== "edited") await ensureValidationPending(env, repository, pull);
+      await ensureValidationPending(env, repository, pull);
       await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), eventHeadSha: pull.head.sha, policySha: env.POLICY_SHA });
       if (action === "synchronize" && pull.user?.id === 301115370 && pull.head?.repo?.owner?.id === Number(env.ORGANIZATION_ID) && payload.sender?.type === "User") await send(env, "pr-automation.yml", { deliveryId, repositoryId: String(repository.id), sourceRef: `refs/heads/${pull.head.ref}`, eventAfterSha: pull.head.sha, sourceActorId: String(payload.sender.id), sourceActorLogin: String(payload.sender.login), policySha: env.POLICY_SHA });
       return response(202);

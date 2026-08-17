@@ -95,6 +95,32 @@ describe("中央运行程序", () => {
     }
   });
 
+  it("edited使拉取请求首次指向默认分支时也建立pending门禁", async () => {
+    const headSha = "d".repeat(40); const validationChecks: any[] = []; const dispatched: string[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.includes(`/commits/${headSha}/check-runs?per_page=100`)) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/check-runs")) {
+        validationChecks.push(JSON.parse(String(init.body)));
+        return new Response(JSON.stringify({ id: 101 }), { status: 201 });
+      }
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      const match = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(value);
+      if (match) { dispatched.push(match[1]!); return new Response(null, { status: 204 }); }
+      return new Response("unexpected", { status: 500 });
+    });
+    const payload = scoped({
+      action: "edited",
+      changes: { base: { ref: { from: "release" } } },
+      repository: repository(),
+      pull_request: { number: 8, head: { sha: headSha }, base: { ref: "main" }, user: { id: 44151430 } },
+    });
+    expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(202);
+    expect(validationChecks).toEqual([expect.objectContaining({ name: "PR Validation Gate", head_sha: headSha, status: "in_progress", external_id: `1296724484:8:${headSha}:pending` })]);
+    expect(dispatched).toEqual(["pr-classification.yml"]);
+  });
+
   it("只把GitHub API核实的当前PR验证运行同步到来源提交的全部有效重复检查", async () => {
     const headSha = "d".repeat(40); const runId = 777; const writes: Array<{ url: string; body: any }> = []; const tokenBodies: any[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
@@ -117,9 +143,11 @@ describe("中央运行程序", () => {
         head_sha: headSha,
         html_url: `https://github.com/splrad/steward/actions/runs/${runId}`,
       }), { status: 200 });
-      if (value.includes("/repos/splrad/steward/pulls?state=open&base=main&per_page=100")) return new Response(JSON.stringify([
-        { number: 8, base: { ref: "main" }, head: { sha: headSha } },
-        { number: 9, base: { ref: "main" }, head: { sha: "e".repeat(40) } },
+      if (value.includes(`/commits/${headSha}/pulls?per_page=100`)) return new Response(JSON.stringify([
+        { number: 8, state: "open", base: { ref: "main" }, head: { sha: headSha } },
+        { number: 9, state: "closed", base: { ref: "main" }, head: { sha: headSha } },
+        { number: 10, state: "open", base: { ref: "release" }, head: { sha: headSha } },
+        { number: 11, state: "open", base: { ref: "main" }, head: { sha: "e".repeat(40) } },
       ]), { status: 200 });
       if (value.includes(`/commits/${headSha}/check-runs?per_page=100`)) return new Response(JSON.stringify({ check_runs: [
         { id: 91, name: "PR Validation Gate", app: { id: 4243096 }, head_sha: headSha, external_id: `1296724484:8:${headSha}:pending` },
@@ -171,7 +199,7 @@ describe("中央运行程序", () => {
         head_sha: headSha,
         html_url: `https://github.com/splrad/steward/actions/runs/${runId}`,
       }), { status: 200 });
-      if (value.includes("/pulls?state=open&base=main&per_page=100")) return new Response(JSON.stringify([{ number: 8, base: { ref: "main" }, head: { sha: headSha } }]), { status: 200 });
+      if (value.includes(`/commits/${headSha}/pulls?per_page=100`)) return new Response(JSON.stringify([{ number: 8, state: "open", base: { ref: "main" }, head: { sha: headSha } }]), { status: 200 });
       if (value.includes(`/commits/${headSha}/check-runs?per_page=100`)) return new Response(JSON.stringify({ check_runs: [{ id: 91, name: "PR Validation Gate", app: { id: 4243096 }, head_sha: headSha, external_id: `1296724484:8:${headSha}:778:1` }] }), { status: 200 });
       if (value.endsWith("/check-runs/91")) { written = JSON.parse(String(init.body)); return new Response(JSON.stringify({ id: 91 }), { status: 200 }); }
       return new Response("unexpected", { status: 500 });
@@ -193,7 +221,7 @@ describe("中央运行程序", () => {
       const value = String(url); requests.push(value);
       if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
       if (value.includes("/actions/runs/778")) return new Response(JSON.stringify({ id: 778, workflow_id: 335795406, workflow_url: workflowUrl, run_attempt: 1, repository: { id: 1296724484 }, name: "SPLRAD Steward / PR Validation", path: ".github/workflows/pr-validation.yml", event: "pull_request", status: "completed", conclusion: "success", head_sha: headSha, html_url: "https://github.com/splrad/steward/actions/runs/778" }), { status: 200 });
-      if (value.includes("/pulls?state=open&base=main&per_page=100")) return new Response(JSON.stringify([{ number: 8, base: { ref: "main" }, head: { sha: "e".repeat(40) } }]), { status: 200 });
+      if (value.includes(`/commits/${headSha}/pulls?per_page=100`)) return new Response(JSON.stringify([{ number: 8, state: "open", base: { ref: "main" }, head: { sha: "e".repeat(40) } }]), { status: 200 });
       return new Response("unexpected", { status: 500 });
     });
     const payload = scoped({ action: "completed", repository: repository(), workflow_run: { id: 778 } });
@@ -224,9 +252,9 @@ describe("中央运行程序", () => {
         head_sha: headSha,
         html_url: `https://github.com/splrad/steward/actions/runs/${runId}`,
       }), { status: 200 });
-      if (value.includes("/pulls?state=open&base=main&per_page=100")) return new Response(JSON.stringify([
-        { number: 8, base: { ref: "main" }, head: { sha: headSha } },
-        { number: 9, base: { ref: "main" }, head: { sha: headSha } },
+      if (value.includes(`/commits/${headSha}/pulls?per_page=100`)) return new Response(JSON.stringify([
+        { number: 8, state: "open", base: { ref: "main" }, head: { sha: headSha } },
+        { number: 9, state: "open", base: { ref: "main" }, head: { sha: headSha } },
       ]), { status: 200 });
       return new Response("unexpected", { status: 500 });
     });
