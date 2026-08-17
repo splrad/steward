@@ -121,6 +121,46 @@ describe("中央运行程序", () => {
     expect(dispatched).toEqual(["pr-classification.yml"]);
   });
 
+  it("来源分支push及synchronize事件只调度一次正文生成", async () => {
+    const headSha = "d".repeat(40); const validationChecks: any[] = []; const dispatched: string[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.includes(`/commits/${headSha}/check-runs?per_page=100`)) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/check-runs")) {
+        validationChecks.push(JSON.parse(String(init.body)));
+        return new Response(JSON.stringify({ id: 101 }), { status: 201 });
+      }
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      const match = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(value);
+      if (match) { dispatched.push(match[1]!); return new Response(null, { status: 204 }); }
+      return new Response("unexpected", { status: 500 });
+    });
+    const pushPayload = scoped({
+      ref: "refs/heads/feature/a",
+      before: "c".repeat(40),
+      after: headSha,
+      deleted: false,
+      sender: { id: 44151430, login: "axiomoth", type: "User" },
+      repository: repository(),
+    });
+    expect((await handleWebhook(signedRequest("push", pushPayload), baseEnv())).status).toBe(202);
+    const synchronizePayload = scoped({
+      action: "synchronize",
+      sender: { id: 44151430, login: "axiomoth", type: "User" },
+      repository: repository(),
+      pull_request: {
+        number: 8,
+        user: { id: 301115370 },
+        head: { sha: headSha, ref: "feature/a", repo: { owner: { id: 302208797 } } },
+        base: { ref: "main" },
+      },
+    });
+    expect((await handleWebhook(signedRequest("pull_request", synchronizePayload), baseEnv())).status).toBe(202);
+    expect(validationChecks).toEqual([expect.objectContaining({ name: "PR Validation Gate", head_sha: headSha, status: "in_progress", external_id: `1296724484:8:${headSha}:pending` })]);
+    expect(dispatched).toEqual(["pr-automation.yml", "pr-classification.yml"]);
+  });
+
   it("只把GitHub API核实的当前PR验证运行同步到来源提交的全部有效重复检查", async () => {
     const headSha = "d".repeat(40); const runId = 777; const writes: Array<{ url: string; body: any }> = []; const tokenBodies: any[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
