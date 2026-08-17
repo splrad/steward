@@ -93,7 +93,8 @@ describe("拉取请求自动化", () => {
     expect(body).toContain('aria-label="查看第1位贡献者的GitHub资料"');
     expect(body).toContain('<img src="https://avatars.githubusercontent.com/u/44151430?v=4" alt=""');
     expect(body).toContain("<details>");
-    expect(body).toContain("显示名称：</strong>Axiom Oth");
+    expect(body).not.toContain("显示名称");
+    expect(body).not.toContain("Axiom Oth");
     expect(body).toContain('GitHub：</strong><a href="https://github.com/axiomoth">@axiomoth</a>');
     expect(body).not.toContain("人工前言");
     expect(body).not.toContain("### 人工补充");
