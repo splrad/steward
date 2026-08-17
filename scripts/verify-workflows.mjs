@@ -46,9 +46,9 @@ if (expectedJobEnvironments.size > 0) throw new Error(`缺少固定环境作业:
 const prAutomation = await readFile(".github/workflows/pr-automation.yml", "utf8");
 const prAutomationDocument = workflowDocuments.get("pr-automation.yml");
 const prAutomationPermissions = prAutomationDocument?.permissions ?? {};
-if (JSON.stringify(prAutomationPermissions) !== JSON.stringify({ contents: "read" })) throw new Error("拉取请求自动化工作流权限必须只有contents: read");
+if (typeof prAutomationPermissions !== "object" || prAutomationPermissions === null || Array.isArray(prAutomationPermissions) || Object.keys(prAutomationPermissions).length !== 1 || prAutomationPermissions.contents !== "read") throw new Error("拉取请求自动化工作流权限必须只有contents: read");
 const copilotStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "使用Copilot润色");
-if (copilotStep?.env?.COPILOT_GITHUB_TOKEN !== "${{ secrets.COPILOT_CLI_TOKEN }}") throw new Error("Copilot CLI没有使用个人Copilot专用环境密钥");
+if (copilotStep?.env?.COPILOT_GITHUB_TOKEN?.replace(/\s+/gu, "") !== "${{secrets.COPILOT_CLI_TOKEN}}") throw new Error("Copilot CLI没有使用个人Copilot专用环境密钥");
 if (Object.hasOwn(copilotStep?.env ?? {}, "GITHUB_TOKEN") || /copilot-requests/iu.test(prAutomation)) throw new Error("Copilot CLI仍引用组织内置令牌路径");
 if (!prAutomation.includes("- name: 使用Copilot润色") || !prAutomation.includes('npx --no-install copilot -p')) throw new Error("拉取请求工作流缺少Copilot正文生成步骤");
 if (/hashFiles\([^\n]*runner\.temp/iu.test(prAutomation)) throw new Error("Copilot正文生成仍使用无法读取runner.temp的hashFiles条件");
