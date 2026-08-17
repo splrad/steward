@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 
-const expected = ["deploy-runtime.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "pr-validation-gate.yml", "pr-validation.yml", "release.yml", "sync-copilot-instructions.yml"];
+const expected = ["deploy-runtime.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "pr-validation.yml", "release.yml", "sync-copilot-instructions.yml"];
 const files = (await readdir(".github/workflows")).sort();
 if (JSON.stringify(files) !== JSON.stringify(expected)) throw new Error(`工作流集合不正确: ${files.join(", ")}`);
 const workflowDocuments = new Map();
@@ -25,8 +25,6 @@ const expectedJobEnvironments = new Map([
   ["onboard-repository.yml:onboard", { name: "steward-automation", deployment: false }],
   ["pr-automation.yml:reconcile", { name: "steward-automation", deployment: false }],
   ["pr-classification.yml:classify", { name: "steward-automation", deployment: false }],
-  ["pr-validation-gate.yml:prepare", { name: "steward-automation", deployment: false }],
-  ["pr-validation-gate.yml:report", { name: "steward-automation", deployment: false }],
   ["release.yml:preflight", { name: "steward-release", deployment: false }],
   ["release.yml:notes", { name: "steward-release", deployment: false }],
   ["release.yml:publish", { name: "steward-release", deployment: false }],
@@ -48,12 +46,6 @@ if (expectedJobEnvironments.size > 0) throw new Error(`缺少固定环境作业:
 const prAutomation = await readFile(".github/workflows/pr-automation.yml", "utf8");
 if (!prAutomation.includes("copilot-requests: write") || !prAutomation.includes("GITHUB_TOKEN: ${{ github.token }}")) throw new Error("Copilot CLI没有使用内置GITHUB_TOKEN及其最小权限");
 if (/COPILOT_CLI_TOKEN|COPILOT_GITHUB_TOKEN/u.test(prAutomation)) throw new Error("Copilot CLI仍引用长期个人令牌");
-const prValidationGate = await readFile(".github/workflows/pr-validation-gate.yml", "utf8");
-for (const required of ["workflow_dispatch", "pr-validation-prepare", "pr-validation-report", "needs.prepare.outputs.headSha", "needs.validate.result", "always() && needs.prepare.result == 'success'", "merge-base --is-ancestor", "deployment: false"]) {
-  if (!prValidationGate.includes(required)) throw new Error(`提交级验证门禁缺少固定合同: ${required}`);
-}
-const validationJob = prValidationGate.split("  validate:")[1]?.split("  report:")[0] ?? "";
-if (validationJob.includes("STEWARD_APP_PRIVATE_KEY") || validationJob.includes("environment:") || validationJob.includes("cache:")) throw new Error("无密钥验证作业引用了应用私钥、受保护环境或跨运行缓存");
 const deployRuntime = await readFile(".github/workflows/deploy-runtime.yml", "utf8");
 for (const required of [".github/workflows/deploy-runtime.yml", "scripts/verify-workflows.mjs", "github.event.repository.default_branch", "id: deploy", "tee \"$deployment_log\"", "PIPESTATUS[0]", "复核运行程序健康状态", "steps.deploy.outputs.runtime_url", "EXPECTED_POLICY_SHA", "Date.now() + 60_000", "AbortSignal.timeout", "await response.body?.cancel()", "status: \"waiting\"", "iu.test(body.version)", "健康复核在60秒内未收敛"]) {
   if (!deployRuntime.includes(required)) throw new Error(`部署工作流缺少固定健康复核合同: ${required}`);

@@ -77,17 +77,15 @@ describe("中央运行程序", () => {
       ["installation", installationScoped({ action: "created", repositories: [ownerlessRepository()] })],
       ["installation_repositories", installationScoped({ action: "added", repositories_added: [ownerlessRepository()] })],
       ["push", scoped({ ref: "refs/heads/feature/a", before: "b".repeat(40), after: "c".repeat(40), deleted: false, repository: repository(), sender: { id: 44151430, login: "axiomoth", type: "User" } })],
-      ["pull_request", scoped({ action: "opened", repository: repository(), pull_request: { number: 8, head: { sha: "d".repeat(40) }, base: { ref: "main", sha: "a".repeat(40) }, user: { id: 44151430 } } })],
-      ["pull_request", scoped({ action: "edited", repository: repository(), pull_request: { number: 8, head: { sha: "d".repeat(40) }, base: { ref: "main", sha: "a".repeat(40) }, user: { id: 44151430 } } })],
+      ["pull_request", scoped({ action: "opened", repository: repository(), pull_request: { number: 8, head: { sha: "d".repeat(40) }, base: { ref: "main" }, user: { id: 44151430 } } })],
       ["pull_request", scoped({ action: "closed", repository: repository(1187527897, "splrad/LayerScape"), pull_request: { number: 9, merged: true, merge_commit_sha: "e".repeat(40), base: { ref: "main" } } })],
     ];
     for (const [event, payload] of cases) expect((await handleWebhook(signedRequest(event, payload), env)).status).toBe(202);
-    expect(dispatched.map(value => value.workflow)).toEqual(["onboard-repository.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "pr-validation-gate.yml", "pr-classification.yml", "release.yml"]);
+    expect(dispatched.map(value => value.workflow)).toEqual(["onboard-repository.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "release.yml"]);
     for (const dispatch of dispatched) {
       expect(dispatch.body.ref).toBe("trunk");
       if (dispatch.workflow !== "release.yml") expect(dispatch.body.inputs.policySha).toBe(env.POLICY_SHA);
     }
-    expect(dispatched.find(value => value.workflow === "pr-validation-gate.yml")?.body.inputs).toEqual(expect.objectContaining({ pullRequestNumber: "8", eventHeadSha: "d".repeat(40), eventBaseSha: "a".repeat(40) }));
   });
 
   it("普通合并不调度发布，只有Version.props合并才调度", async () => {

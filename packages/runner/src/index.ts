@@ -19,7 +19,7 @@ import { createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestE
 import { minimatch } from "minimatch";
 import YAML from "yaml";
 
-const commands = new Set(["onboard-repository", "pr-automation", "pr-classification", "pr-validation-prepare", "pr-validation-report", "sync-copilot-instructions", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"]);
+const commands = new Set(["onboard-repository", "pr-automation", "pr-classification", "sync-copilot-instructions", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"]);
 // Repository configuration and workspace files are runtime inputs, not bundle assets.
 // This wrapper keeps their paths opaque to the static asset tracer used by ncc.
 const runtimeReadFile = ((path: Parameters<typeof readFile>[0], options?: Parameters<typeof readFile>[1]) =>
@@ -28,8 +28,6 @@ const allowedArguments: Record<string, Set<string>> = {
   "onboard-repository": new Set(["repository-id", "repository-full-name", "trigger", "delivery-id", "policy-sha"]),
   "pr-automation": new Set(["delivery-id", "repository-id", "source-ref", "event-after-sha", "source-actor-id", "source-actor-login", "policy-sha"]),
   "pr-classification": new Set(["delivery-id", "repository-id", "pull-request-number", "event-head-sha", "scan-all", "policy-sha"]),
-  "pr-validation-prepare": new Set(["repository-id", "pull-request-number", "event-head-sha", "event-base-sha", "policy-sha", "run-url"]),
-  "pr-validation-report": new Set(["repository-id", "pull-request-number", "head-sha", "check-run-id", "policy-sha", "result", "run-url"]),
   "sync-copilot-instructions": new Set(["repository-id", "policy-sha"]),
   validate: new Set(["workspace", "repository-id", "profile"]),
   "release-preflight": new Set(["workspace", "repository-id", "pull-request-number", "target-sha", "policy-sha", "trigger", "manifest"]),
@@ -106,8 +104,6 @@ async function dispatchClassification(input: { repositoryId: number; pullRequest
 const copilotReviewer = "copilot-pull-request-reviewer[bot]";
 const copilotCheckName = "copilot-pull-request-reviewer";
 const githubActionsAppId = 15368;
-const stewardAppId = 4243096;
-const validationCheckName = "PR Validation Gate";
 export function isCopilotReviewerIdentity(value: unknown): boolean {
   const normalized = String(value ?? "").trim().toLowerCase().replace(/\[bot\]$/u, "");
   return normalized === "copilot" || normalized === "copilot-pull-request-reviewer";
@@ -139,26 +135,6 @@ export function classificationInstallationPermissions(): Parameters<typeof creat
 }
 export function prAutomationInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
   return { contents: "read", pull_requests: "write", checks: "read", metadata: "read" } as const;
-}
-export function validationInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
-  return { contents: "read", pull_requests: "read", checks: "write", metadata: "read" } as const;
-}
-export function selectValidationCheck(checkRuns: readonly any[], headSha: string): any | null {
-  const matching = checkRuns.filter(value => value.name === validationCheckName
-    && Number(value.app?.id) === stewardAppId
-    && String(value.head_sha ?? "").toLowerCase() === headSha.toLowerCase());
-  if (matching.length > 1) throw new Error("同名验证检查存在歧义");
-  return matching[0] ?? null;
-}
-export function validationConclusion(result: string): "success" | "failure" {
-  if (!["success", "failure", "cancelled", "skipped"].includes(result)) throw new Error("验证作业结果无效");
-  return result === "success" ? "success" : "failure";
-}
-export function assertValidationCheck(check: any, repositoryId: number, pullRequestNumber: number, headSha: string, policySha: string): void {
-  const expectedExternalId = `${repositoryId}:${pullRequestNumber}:${headSha}:${policySha}:pending`;
-  if (check?.name !== validationCheckName || Number(check?.app?.id) !== stewardAppId || String(check?.head_sha ?? "").toLowerCase() !== headSha.toLowerCase() || check?.external_id !== expectedExternalId) {
-    throw new Error("验证检查身份、来源提交或运行上下文不一致");
-  }
 }
 async function hasCurrentCopilotReview(clientValue: GitHubClient, owner: string, repo: string, number: number, headSha: string, afterEventId?: number, checkClientValue: GitHubClient = clientValue): Promise<boolean> {
   const [requested, reviews, events, checkRuns] = await Promise.all([
@@ -442,65 +418,6 @@ export function gitDiffCheckArguments(base?: string): string[] {
 export function matchesGeneratedCopilotInstructions(actual: string, generated: string): boolean {
   const normalizeCheckoutLineEndings = (value: string) => value.replace(/\r\n/gu, "\n");
   return normalizeCheckoutLineEndings(actual) === normalizeCheckoutLineEndings(generated);
-}
-
-async function prepareValidation(args: Readonly<Record<string, string>>) {
-  const repositoryId = integer(required(args, "repository-id"), "repository-id");
-  const number = integer(required(args, "pull-request-number"), "pull-request-number");
-  const headSha = sha(required(args, "event-head-sha"), "event-head-sha");
-  const baseSha = sha(required(args, "event-base-sha"), "event-base-sha");
-  const policySha = sha(required(args, "policy-sha"), "policy-sha");
-  const runUrl = required(args, "run-url");
-  const gh = await client(repositoryId, validationInstallationPermissions(), policySha);
-  const repository = await gh.getRepositoryById(repositoryId);
-  const configuration = configurationFor(await catalog(), repository);
-  if (!configuration?.managed) throw new Error("仓库没有启用中央验证");
-  if (repository.private) throw new Error("私有仓库尚未纳管");
-  const defaultBranch = repository.default_branch;
-  if (typeof defaultBranch !== "string" || !defaultBranch.trim()) throw new Error("仓库没有可用的默认分支");
-  const [owner, repo] = splitRepository(repository.full_name);
-  const pull = await gh.getPullRequest(owner, repo, number);
-  if (pull.state !== "open" || pull.base?.ref !== defaultBranch) throw new Error("拉取请求没有以当前默认分支为目标");
-  if (String(pull.head?.sha ?? "").toLowerCase() !== headSha) throw new Error("拉取请求来源提交已经漂移");
-  const existing = selectValidationCheck(await gh.listAllCheckRuns(owner, repo, headSha), headSha);
-  const started = {
-    name: validationCheckName,
-    head_sha: headSha,
-    status: "in_progress",
-    details_url: runUrl,
-    external_id: `${repositoryId}:${number}:${headSha}:${policySha}:pending`,
-    output: { title: "正在验证拉取请求", summary: `来源提交：${headSha}\n比较基准：${baseSha}\n中央规则：${policySha}` },
-  };
-  const check = existing
-    ? await gh.updateCheckRun(owner, repo, existing.id, { name: started.name, status: started.status, details_url: started.details_url, external_id: started.external_id, output: started.output })
-    : await gh.createCheckRun(owner, repo, started);
-  await output({ repositoryFullName: repository.full_name, profile: configuration.validationProfile, checkRunId: check.id, headSha, baseSha });
-  await summary([`拉取请求：#${number}`, `来源提交：${headSha}`, `比较基准：${baseSha}`, `验证检查：${check.id}`, `验证配置：${configuration.validationProfile}`]);
-}
-
-async function reportValidation(args: Readonly<Record<string, string>>) {
-  const repositoryId = integer(required(args, "repository-id"), "repository-id");
-  const number = integer(required(args, "pull-request-number"), "pull-request-number");
-  const headSha = sha(required(args, "head-sha"), "head-sha");
-  const checkRunId = integer(required(args, "check-run-id"), "check-run-id");
-  const policySha = sha(required(args, "policy-sha"), "policy-sha");
-  const result = required(args, "result");
-  const conclusion = validationConclusion(result);
-  const runUrl = required(args, "run-url");
-  const gh = await client(repositoryId, validationInstallationPermissions(), policySha);
-  const repository = await gh.getRepositoryById(repositoryId); const [owner, repo] = splitRepository(repository.full_name);
-  const check = await gh.getCheckRun(owner, repo, checkRunId);
-  assertValidationCheck(check, repositoryId, number, headSha, policySha);
-  const title = conclusion === "success" ? "拉取请求验证通过" : "拉取请求验证失败";
-  await gh.updateCheckRun(owner, repo, checkRunId, {
-    name: validationCheckName,
-    status: "completed",
-    conclusion,
-    details_url: runUrl,
-    external_id: `${repositoryId}:${number}:${headSha}:${policySha}:${conclusion}`,
-    output: { title, summary: `来源提交：${headSha}\n中央规则：${policySha}\n验证作业：${result}\n运行记录：${runUrl}` },
-  });
-  await summary([`拉取请求：#${number}`, `来源提交：${headSha}`, `状态：${conclusion}`, `运行记录：${runUrl}`]);
 }
 
 async function validate(args: Readonly<Record<string, string>>) {
@@ -807,7 +724,7 @@ async function releaseVerify(args: Readonly<Record<string, string>>) {
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const invocation = parseInvocation(argv);
-  const handlers: Record<string, (args: Readonly<Record<string, string>>) => Promise<void>> = { "onboard-repository": onboard, "pr-automation": automate, "pr-classification": classify, "pr-validation-prepare": prepareValidation, "pr-validation-report": reportValidation, "sync-copilot-instructions": syncInstructions, validate, "release-preflight": releasePreflight, "release-notes": releaseNotesCommand, "release-publish": releasePublish, "release-verify": releaseVerify };
+  const handlers: Record<string, (args: Readonly<Record<string, string>>) => Promise<void>> = { "onboard-repository": onboard, "pr-automation": automate, "pr-classification": classify, "sync-copilot-instructions": syncInstructions, validate, "release-preflight": releasePreflight, "release-notes": releaseNotesCommand, "release-publish": releasePublish, "release-verify": releaseVerify };
   await handlers[invocation.command]!(invocation.args);
 }
 
