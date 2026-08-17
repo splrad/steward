@@ -67,6 +67,8 @@ describe("拉取请求自动化", () => {
     expect(organizationPullRequestTemplate).not.toContain("人工补充");
     expect(buildPrompt(facts, generated)).toContain(JSON.stringify(generated));
     expect(buildPrompt(facts, generated)).toContain("没有对应事实时必须返回空数组");
+    expect(buildPrompt(facts, generated)).toContain("motivation仅在本次提交信息或差异中存在明确的问题、需求或决策依据时使用");
+    expect(buildPrompt(facts, generated)).toContain("summary、motivation和changes必须基于本次提交信息和差异事实填写");
     expect(buildPrompt(facts, generated)).toContain("motivation只说明为什么需要本次修改，不得重复summary或changes");
     expect(buildDeterministicSummary({ ...facts, commitSubjects: [`ci:${" ".repeat(100_000)}修复中央验证`] })).toMatchObject({ type: "ci", title: "修复中央验证" });
     expect(buildDeterministicSummary({ ...facts, commitSubjects: ["fix(THIS-SCOPE-IS-WAY-TOO-LONG): 修复错误"] })).toMatchObject({ scope: "this-scope-is-way-to" });
