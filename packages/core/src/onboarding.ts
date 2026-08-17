@@ -12,7 +12,7 @@ export interface RepositorySettings {
   allow_auto_merge: false;
   delete_branch_on_merge: true;
   squash_merge_commit_title: 'PR_TITLE';
-  squash_merge_commit_message: 'PR_BODY';
+  squash_merge_commit_message: 'BLANK';
 }
 
 export function validateRepositoryForOnboarding(repository: RepositoryForOnboarding, organizationId: number, configuration: OnboardingConfiguration): 'ready' | 'waiting-for-default-branch' {
@@ -31,7 +31,7 @@ export function planRepositorySettings(): RepositorySettings {
     allow_auto_merge: false,
     delete_branch_on_merge: true,
     squash_merge_commit_title: 'PR_TITLE',
-    squash_merge_commit_message: 'PR_BODY',
+    squash_merge_commit_message: 'BLANK',
   };
 }
 
@@ -42,7 +42,7 @@ export function renderOnboardingPullRequest(input: { template: string; configura
     motivation: '通过中央配置统一仓库接入方式，避免各仓库重复维护相同的自动化规则。',
     changes: [
       `使用${input.configuration.classificationProfile}分类配置和${input.configuration.validationProfile}验证配置`,
-      `生成${input.configuration.copilotInstructionsProfile}代码审查说明，并设置压缩合并使用拉取请求标题与正文及来源分支清理`,
+      `生成${input.configuration.copilotInstructionsProfile}代码审查说明，并设置压缩合并只使用拉取请求标题且不生成扩展描述，同时清理来源分支`,
       ...(input.configuration.releaseProfile ? [`启用${input.configuration.releaseProfile}中央发布配置`] : []),
     ],
     impact: ['仓库将使用中央分类、验证和代码审查说明配置，并采用统一的合并设置'],
