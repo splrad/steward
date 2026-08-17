@@ -29,6 +29,7 @@
         "pullRequestTemplate": { "enum": ["organization-default", "organization-provider"] },
         "copilotInstructionsProfile": { "type": "string", "minLength": 1 }, "classificationProfile": { "type": "string", "minLength": 1 }, "validationProfile": { "type": "string", "minLength": 1 },
         "allowedWorkflowPaths": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^\\.github/workflows/[^/]+\\.ya?ml$" } },
+        "workflowBootstrapPaths": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^\\.github/workflows/[^/]+\\.ya?ml$" } },
         "releaseProfile": { "type": ["string", "null"] }
       }
     },
@@ -40,6 +41,7 @@
         "pullRequestTemplate": { "enum": ["organization-default", "organization-provider"] },
         "copilotInstructionsProfile": { "type": "string", "minLength": 1 }, "classificationProfile": { "type": "string", "minLength": 1 }, "validationProfile": { "type": "string", "minLength": 1 },
         "allowedWorkflowPaths": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^\\.github/workflows/[^/]+\\.ya?ml$" } },
+        "workflowBootstrapPaths": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^\\.github/workflows/[^/]+\\.ya?ml$" } },
         "releaseProfile": { "type": ["string", "null"] }
       }
     }
