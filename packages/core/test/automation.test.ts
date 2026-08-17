@@ -110,6 +110,25 @@ describe("拉取请求自动化", () => {
     expect(body).toContain("## 主要改动");
   });
 
+  it("将确定性回退中的路径片段作为纯文本渲染", () => {
+    const generated = buildDeterministicSummary({
+      sourceRef: "refs/heads/feature/untrusted-path",
+      targetRef: "refs/heads/main",
+      headSha: "a".repeat(40),
+      baseSha: "b".repeat(40),
+      commitSubjects: ["普通提交"],
+      files: ["<img src=x onerror=alert(1)>\n#伪标题/a.ts"],
+      diffStat: "1个文件",
+      diffExcerpt: "diff",
+      areas: ["area:source"],
+      contributors: [],
+    });
+    const body = renderManagedBody({ generated, templateBody: organizationPullRequestTemplate, actor: "axiomoth", contributors: [], context: "x" });
+    expect(body).toContain("&lt;img src=x onerror=alert\\(1\\)&gt; \\#伪标题");
+    expect(body).not.toContain("<img src=x");
+    expect(body).not.toContain("\n#伪标题");
+  });
+
   it("拒绝缺失、重复或交叉的受管标记", () => {
     const input = { generated: validateGeneratedSummary(valid), actor: "axiomoth", contributors: [], context: "x" };
     expect(() => renderManagedBody({ ...input, templateBody: "无标记" })).toThrow("标记");

@@ -176,6 +176,11 @@ function escapeHtml(value: string): string {
   return value.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;').replace(/"/gu, '&quot;').replace(/'/gu, '&#39;');
 }
 
+function escapeMarkdownText(value: string): string {
+  const normalized = value.replace(/[\r\n]+/gu, ' ');
+  return escapeHtml(normalized.replace(/([\\`*_\[\]{}()#+.!|-])/gu, '\\$1'));
+}
+
 function contributorAvatarUrl(contributor: Contributor): string {
   if (contributor.avatarUrl) {
     try {
@@ -209,12 +214,12 @@ export function renderManagedBody(input: { generated: GeneratedSummary; existing
   if ((hasCurrentMarker && hasLegacyMarker) || (hasCurrentMarker && !validCurrentRegion) || (hasLegacyMarker && !validLegacyRegion) || (!hasCurrentMarker && !hasLegacyMarker)) {
     throw new Error('拉取请求模板受管标记缺失、重复或交叉');
   }
-  const sections = [`## 摘要\n\n${input.generated.summary}`];
-  if (input.generated.motivation) sections.push(`## 背景与目标\n\n${input.generated.motivation}`);
-  sections.push(`## 主要改动\n\n${input.generated.changes.map((item) => `- ${item}`).join('\n')}`);
-  if (input.generated.impact.length) sections.push(`## 影响分析\n\n${input.generated.impact.map((item) => `- ${item}`).join('\n')}`);
-  if (input.generated.related.length) sections.push(`## 关联事项\n\n${input.generated.related.map((item) => `- ${item}`).join('\n')}`);
-  if (input.generated.releaseAndMigration.length) sections.push(`## 发布与迁移\n\n${input.generated.releaseAndMigration.map((item) => `- ${item}`).join('\n')}`);
+  const sections = [`## 摘要\n\n${escapeMarkdownText(input.generated.summary)}`];
+  if (input.generated.motivation) sections.push(`## 背景与目标\n\n${escapeMarkdownText(input.generated.motivation)}`);
+  sections.push(`## 主要改动\n\n${input.generated.changes.map((item) => `- ${escapeMarkdownText(item)}`).join('\n')}`);
+  if (input.generated.impact.length) sections.push(`## 影响分析\n\n${input.generated.impact.map((item) => `- ${escapeMarkdownText(item)}`).join('\n')}`);
+  if (input.generated.related.length) sections.push(`## 关联事项\n\n${input.generated.related.map((item) => `- ${escapeMarkdownText(item)}`).join('\n')}`);
+  if (input.generated.releaseAndMigration.length) sections.push(`## 发布与迁移\n\n${input.generated.releaseAndMigration.map((item) => `- ${escapeMarkdownText(item)}`).join('\n')}`);
   if (input.contributors.length) sections.push(renderContributors(input.contributors));
   const markers = [`<!-- workflow:source-actor:${input.actor} -->`, `<!-- workflow:source-contributors:${input.contributors.map((item) => item.login).join(',')} -->`, `<!-- workflow:auto-context:${input.context} -->`].join('\n');
   return `${summaryStart}\n${sections.join('\n\n')}\n\n${markers}\n${summaryEnd}\n`;
