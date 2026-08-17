@@ -101,12 +101,20 @@ function parseConventionalSubject(subject: string): { type: ConventionalType; sc
 }
 
 function normalizeScope(value: string): string {
-  const normalized = value.toLowerCase()
-    .replace(/[^a-z0-9-]+/gu, '-')
-    .replace(/-+/gu, '-')
-    .replace(/^-+|-+$/gu, '')
-    .slice(0, 20)
-    .replace(/-+$/gu, '');
+  let normalized = '';
+  let separatorPending = false;
+  for (const character of value.toLowerCase()) {
+    const isLetter = character >= 'a' && character <= 'z';
+    const isDigit = character >= '0' && character <= '9';
+    if (isLetter || isDigit) {
+      if (separatorPending && normalized.length + 1 < 20) normalized += '-';
+      if (normalized.length < 20) normalized += character;
+      separatorPending = false;
+    } else if (normalized) {
+      separatorPending = true;
+    }
+    if (normalized.length >= 20) break;
+  }
   return normalized || 'repo';
 }
 

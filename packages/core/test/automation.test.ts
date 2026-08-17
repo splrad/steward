@@ -70,6 +70,7 @@ describe("拉取请求自动化", () => {
     expect(buildDeterministicSummary({ ...facts, commitSubjects: [`ci:${" ".repeat(100_000)}修复中央验证`] })).toMatchObject({ type: "ci", title: "修复中央验证" });
     expect(buildDeterministicSummary({ ...facts, commitSubjects: ["fix(THIS-SCOPE-IS-WAY-TOO-LONG): 修复错误"] })).toMatchObject({ scope: "this-scope-is-way-to" });
     expect(buildDeterministicSummary({ ...facts, commitSubjects: ["普通提交"], areas: ["area:中文"] })).toMatchObject({ scope: "repo" });
+    expect(buildDeterministicSummary({ ...facts, commitSubjects: [`fix(${"-".repeat(100_000)}): 修复错误`] })).toMatchObject({ scope: "repo" });
   });
 
   it("生成完整正文、折叠贡献者信息并迁移旧模板", () => {
