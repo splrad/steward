@@ -408,6 +408,13 @@ function run(command: string, args: string[], cwd: string) {
   return (value.stdout || "").trim();
 }
 
+export function gitDiffCheckArguments(base?: string): string[] {
+  return [
+    "-c", "core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol",
+    "diff", "--check", ...(base ? [`${base}...HEAD`] : []),
+  ];
+}
+
 export function matchesGeneratedCopilotInstructions(actual: string, generated: string): boolean {
   const normalizeCheckoutLineEndings = (value: string) => value.replace(/\r\n/gu, "\n");
   return normalizeCheckoutLineEndings(actual) === normalizeCheckoutLineEndings(generated);
@@ -430,7 +437,7 @@ async function validate(args: Readonly<Record<string, string>>) {
   const results = await runValidationTasks(profile, async task => {
     if (task === "git-diff-check") {
       const base = process.env.VALIDATION_BASE_SHA;
-      run("git", base ? ["diff", "--check", `${sha(base, "VALIDATION_BASE_SHA")}...HEAD`] : ["diff", "--check"], workspace);
+      run("git", gitDiffCheckArguments(base ? sha(base, "VALIDATION_BASE_SHA") : undefined), workspace);
       return { state: "success" as const, detail: "未发现空白错误" };
     }
     if (task === "parse-json") { for (const file of files.filter(path => path.endsWith(".json"))) JSON.parse(await runtimeReadFile(file, "utf8")); return { state: "success" as const, detail: "JSON有效" }; }
