@@ -1,8 +1,11 @@
-import { readFile, stat } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertManagedBranchPull, classificationInstallationPermissions, env, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, writeManagedFileToBranch } from "../src/index.js";
+import { assertManagedBranchPull, classificationInstallationPermissions, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -34,6 +37,54 @@ describe("中央命令入口", () => {
     expect(matchesGeneratedCopilotInstructions("第一行\r第二行\r", generated)).toBe(false);
     expect(matchesGeneratedCopilotInstructions("第一行\r\n修改内容\r\n", generated)).toBe(false);
     expect(matchesGeneratedCopilotInstructions("第一行\r\n第二行", generated)).toBe(false);
+  });
+
+  it("Git空白检查接受CRLF并继续拒绝真正的行尾空格", async () => {
+    const repository = await mkdtemp(join(tmpdir(), "steward-git-diff-check-"));
+    const runGit = (args: string[]) => spawnSync("git", args, { cwd: repository, encoding: "utf8" });
+    const requireGit = (args: string[]) => {
+      const result = runGit(args);
+      if (result.status !== 0) throw new Error((result.stderr || result.stdout || `git ${args.join(" ")}失败`).trim());
+      return result.stdout.trim();
+    };
+    try {
+      requireGit(["init", "--quiet"]);
+      requireGit(["config", "user.name", "SPLRAD Steward Tests"]);
+      requireGit(["config", "user.email", "tests@splrad.invalid"]);
+      requireGit(["config", "core.autocrlf", "false"]);
+      const file = join(repository, "sample.txt");
+      await writeFile(file, "value=1\r\n", "utf8");
+      requireGit(["add", "sample.txt"]);
+      requireGit(["commit", "--quiet", "-m", "base"]);
+      const base = requireGit(["rev-parse", "HEAD"]);
+
+      await writeFile(file, "value=2\r\n", "utf8");
+      requireGit(["add", "sample.txt"]);
+      requireGit(["commit", "--quiet", "-m", "crlf"]);
+      expect(gitDiffCheckArguments(base)).toEqual([
+        "-c", "core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol",
+        "diff", "--check", `${base}...HEAD`,
+      ]);
+      expect(gitDiffCheckArguments()).toEqual([
+        "-c", "core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol",
+        "diff", "--check",
+      ]);
+      expect(runGit(gitDiffCheckArguments(base)).status).toBe(0);
+
+      await writeFile(file, "value=3 \r\n", "utf8");
+      requireGit(["add", "sample.txt"]);
+      requireGit(["commit", "--quiet", "-m", "real trailing whitespace"]);
+      const invalid = runGit(gitDiffCheckArguments(base));
+      expect(invalid.status).not.toBe(0);
+      expect(invalid.stdout).toContain("trailing whitespace");
+
+      await writeFile(file, "value=4\n", "utf8");
+      requireGit(["add", "sample.txt"]);
+      requireGit(["commit", "--quiet", "-m", "lf"]);
+      expect(runGit(gitDiffCheckArguments(base)).status).toBe(0);
+    } finally {
+      await rm(repository, { recursive: true, force: true });
+    }
   });
 
   it("识别平台实际返回的Copilot身份并给分类令牌完整的拉取请求写权限", () => {
