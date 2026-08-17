@@ -90,8 +90,8 @@ describe("中央命令入口", () => {
   it("工作流允许清单与仓库当前文件必须逐项一致", () => {
     const allowed = [".github/workflows/current.yml"];
     expect(() => assertWorkflowPaths(allowed, allowed)).not.toThrow();
-    expect(() => assertWorkflowPaths([], allowed)).toThrow("超出中央允许范围");
-    expect(() => assertWorkflowPaths([...allowed, ".github/workflows/unknown.yml"], allowed)).toThrow("超出中央允许范围");
+    expect(() => assertWorkflowPaths([], allowed)).toThrow("缺少：.github/workflows/current.yml；未允许：无");
+    expect(() => assertWorkflowPaths([...allowed, ".github/workflows/unknown.yml"], allowed)).toThrow("缺少：无；未允许：.github/workflows/unknown.yml");
   });
 
   it("识别平台实际返回的Copilot身份并给分类令牌完整的拉取请求写权限", () => {

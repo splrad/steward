@@ -422,8 +422,11 @@ export function matchesGeneratedCopilotInstructions(actual: string, generated: s
 
 export function assertWorkflowPaths(actual: readonly string[], allowed: readonly string[]): void {
   const allowedSet = new Set(allowed);
-  if (allowed.some(path => !actual.includes(path)) || actual.some(path => !allowedSet.has(path))) {
-    throw new Error(`仓库工作流超出中央允许范围: ${actual.join(", ") || "无"}`);
+  const actualSet = new Set(actual);
+  const missing = allowed.filter(path => !actualSet.has(path));
+  const unexpected = actual.filter(path => !allowedSet.has(path));
+  if (missing.length || unexpected.length) {
+    throw new Error(`仓库工作流超出中央允许范围；缺少：${missing.join(", ") || "无"}；未允许：${unexpected.join(", ") || "无"}`);
   }
 }
 

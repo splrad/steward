@@ -46,12 +46,32 @@ export function validationConclusion(value: unknown): "success" | "failure" | nu
   if (["action_required", "cancelled", "failure", "neutral", "skipped", "stale", "startup_failure", "timed_out"].includes(String(value))) return "failure";
   return null;
 }
-function selectValidationCheck(checkRuns: readonly any[], headSha: string, appId: number): any | null {
-  const matches = checkRuns.filter(value => value?.name === VALIDATION_CHECK_NAME
-    && Number(value.app?.id) === appId
-    && commitSha(value.head_sha) === headSha);
-  if (matches.length > 1) throw new Error("同名拉取请求验证检查存在歧义");
-  return matches[0] ?? null;
+type ValidationCheckState = Readonly<{ runId: number | null; attempt: number | null; pending: boolean }>;
+type ValidationCheck = Readonly<{ check: any; state: ValidationCheckState }>;
+
+function validationCheckState(externalId: unknown, repositoryId: number, pullRequestNumber: number, headSha: string): ValidationCheckState | null {
+  const value = String(externalId ?? "");
+  const prefix = `${repositoryId}:${pullRequestNumber}:${headSha}:`;
+  if (value === `${prefix}pending`) return { runId: null, attempt: null, pending: true };
+  if (!value.startsWith(prefix)) return null;
+  const parts = value.slice(prefix.length).split(":");
+  if (parts.length !== 2 && !(parts.length === 3 && parts[2] === "pending")) return null;
+  const runId = Number(parts[0]); const attempt = Number(parts[1]);
+  if (!Number.isSafeInteger(runId) || runId <= 0 || !Number.isSafeInteger(attempt) || attempt <= 0) return null;
+  return { runId, attempt, pending: parts.length === 3 };
+}
+function validationChecksForPull(checkRuns: readonly any[], headSha: string, appId: number, repositoryId: number, pullRequestNumber: number): ValidationCheck[] {
+  const matches: ValidationCheck[] = [];
+  for (const check of checkRuns) {
+    if (check?.name !== VALIDATION_CHECK_NAME
+      || Number(check.app?.id) !== appId
+      || commitSha(check.head_sha) !== headSha
+      || !Number.isSafeInteger(check.id)
+      || check.id <= 0) continue;
+    const state = validationCheckState(check.external_id, repositoryId, pullRequestNumber, headSha);
+    if (state) matches.push({ check, state });
+  }
+  return matches;
 }
 async function validationClient(env: Env, repositoryId: number): Promise<GitHubClient> {
   if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
@@ -70,8 +90,8 @@ async function ensureValidationPending(env: Env, repository: any, pull: any): Pr
   if (!headSha || !Number.isSafeInteger(number) || number <= 0) throw new Error("拉取请求验证输入无效");
   const [owner, repo] = splitRepository(String(repository.full_name));
   const gh = await validationClient(env, Number(repository.id));
-  const current = selectValidationCheck(await gh.listAllCheckRuns(owner, repo, headSha), headSha, Number(env.APP_ID));
-  if (current) return;
+  const current = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, headSha), headSha, Number(env.APP_ID), Number(repository.id), number);
+  if (current.length) return;
   await gh.createCheckRun(owner, repo, {
     name: VALIDATION_CHECK_NAME,
     head_sha: headSha,
@@ -99,16 +119,13 @@ function trustedValidationRun(run: any, repository: any): boolean {
 function completedValidationIdentity(repositoryId: number, pullRequestNumber: number, headSha: string, runId: number, attempt: number): string {
   return `${repositoryId}:${pullRequestNumber}:${headSha}:${runId}:${attempt}`;
 }
-function existingValidationBlocksUpdate(externalId: unknown, repositoryId: number, pullRequestNumber: number, headSha: string, runId: number, attempt: number, incomingCompleted: boolean): boolean {
-  const value = String(externalId ?? "");
-  if (value === `${repositoryId}:${pullRequestNumber}:${headSha}:pending`) return false;
-  const match = new RegExp(`^${repositoryId}:${pullRequestNumber}:${headSha}:(\\d+):(\\d+)(:pending)?$`, "u").exec(value);
-  if (!match) throw new Error("现有拉取请求验证检查上下文无效");
-  const existingRunId = Number(match[1]); const existingAttempt = Number(match[2]);
-  if (existingRunId !== runId) return existingRunId > runId;
-  if (existingAttempt !== attempt) return existingAttempt > attempt;
-  const existingPending = Boolean(match[3]);
-  return !existingPending || !incomingCompleted;
+function compareValidationState(state: ValidationCheckState, runId: number, attempt: number, incomingCompleted: boolean): "older" | "same" | "newer" {
+  if (state.runId === null || state.attempt === null) return "older";
+  if (state.runId !== runId) return state.runId > runId ? "newer" : "older";
+  if (state.attempt !== attempt) return state.attempt > attempt ? "newer" : "older";
+  if (!state.pending && !incomingCompleted) return "newer";
+  if (state.pending && incomingCompleted) return "older";
+  return "same";
 }
 async function publishValidationState(env: Env, repository: any, workflowRunId: unknown): Promise<boolean> {
   const runId = Number(workflowRunId);
@@ -121,12 +138,13 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
   const pulls = (await gh.listOpenPullRequests(owner, repo, String(repository.default_branch))).filter((pull: any) =>
     pull?.base?.ref === repository.default_branch && commitSha(pull?.head?.sha) === headSha);
   if (!pulls.length) return false;
-  if (pulls.length > 1) throw new Error("工作流运行对应多个当前拉取请求");
+  if (pulls.length > 1) return false;
   const pull = pulls[0]!; const number = Number(pull.number);
   if (!Number.isSafeInteger(number) || number <= 0) throw new Error("拉取请求编号无效");
-  const check = selectValidationCheck(await gh.listAllCheckRuns(owner, repo, headSha), headSha, Number(env.APP_ID));
+  const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, headSha), headSha, Number(env.APP_ID), Number(repository.id), number);
   const conclusion = validationConclusion(run.conclusion); const completed = run.status === "completed";
-  if (check && existingValidationBlocksUpdate(check.external_id, Number(repository.id), number, headSha, run.id, run.run_attempt, completed)) return false;
+  const comparisons = checks.map(value => compareValidationState(value.state, run.id, run.run_attempt, completed));
+  if (comparisons.includes("newer")) return false;
   const body: Record<string, unknown> = {
     name: VALIDATION_CHECK_NAME,
     head_sha: headSha,
@@ -138,8 +156,10 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
       : { title: "中央拉取请求验证正在运行", summary: `拉取请求：#${number}\n来源提交：${headSha}\n源工作流运行：${run.id}` },
   };
   if (completed) body.conclusion = conclusion;
-  if (check) await gh.updateCheckRun(owner, repo, check.id, body);
-  else await gh.createCheckRun(owner, repo, body);
+  const outdatedChecks = checks.filter((_value, index) => comparisons[index] === "older");
+  if (!checks.length) await gh.createCheckRun(owner, repo, body);
+  else if (!outdatedChecks.length) return false;
+  else for (const { check } of outdatedChecks) await gh.updateCheckRun(owner, repo, check.id, body);
   return true;
 }
 
