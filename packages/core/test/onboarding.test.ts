@@ -6,9 +6,17 @@ const publicRepository = { id: 1, fullName: "splrad/new", ownerId: 302208797, vi
 const configured = { managed: true, copilotInstructionsProfile: "common", classificationProfile: "default", validationProfile: "public-basic", releaseProfile: null };
 
 describe("新仓库接入", () => {
-  it("公开组织仓库可接入并固定五项设置", () => {
+  it("公开组织仓库可接入并固定七项设置", () => {
     expect(validateRepositoryForOnboarding(publicRepository, 302208797, configured)).toBe("ready");
-    expect(planRepositorySettings()).toEqual({ allow_squash_merge: true, allow_merge_commit: false, allow_rebase_merge: false, allow_auto_merge: false, delete_branch_on_merge: true });
+    expect(planRepositorySettings()).toEqual({
+      allow_squash_merge: true,
+      allow_merge_commit: false,
+      allow_rebase_merge: false,
+      allow_auto_merge: false,
+      delete_branch_on_merge: true,
+      squash_merge_commit_title: "PR_TITLE",
+      squash_merge_commit_message: "PR_BODY",
+    });
   });
 
   it("空仓库等待首次默认分支推送", () => {
@@ -43,6 +51,7 @@ describe("新仓库接入", () => {
     const settings = planRepositorySettings();
     expect(verifyOnboardingReadback(settings, "expected", "expected", ["allowed.yml"], ["allowed.yml"])).toBe(true);
     expect(verifyOnboardingReadback({ ...settings, allow_auto_merge: true as never }, "expected", "expected", [], [])).toBe(false);
+    expect(verifyOnboardingReadback({ ...settings, squash_merge_commit_message: "COMMIT_MESSAGES" as never }, "expected", "expected", [], [])).toBe(false);
     expect(verifyOnboardingReadback(settings, "expected", "different", [], [])).toBe(false);
     expect(verifyOnboardingReadback(settings, "expected", "expected", ["unexpected.yml"], [])).toBe(false);
   });
