@@ -140,6 +140,7 @@ describe("拉取请求自动化", () => {
     expect(isHumanActor({ id: 44151430, login: "axiomoth", type: "User" })).toBe(true);
     expect(isHumanActor({ id: 301115370, login: "splrad-steward[bot]", type: "Bot" })).toBe(false);
     expect(normalizeContributor({ id: 44151430, login: "axiomoth", type: "User", name: " Axiom ", email: " owner@example.com ", avatarUrl: " https://avatars.githubusercontent.com/u/44151430?v=4 " })).toEqual({ id: 44151430, login: "axiomoth", name: "Axiom", email: "owner@example.com", avatarUrl: "https://avatars.githubusercontent.com/u/44151430?v=4" });
+    expect(normalizeContributor({ id: 44151430, login: "axiomoth", type: "User", name: ` A\n\tB${"字".repeat(100_000)} ` })).toEqual({ id: 44151430, login: "axiomoth", name: `A B${"字".repeat(77)}` });
     expect(normalizeContributor({ id: 44151430, login: "axiomoth", type: "User", email: `${"a".repeat(100_000)}@example.com` })).toEqual({ id: 44151430, login: "axiomoth" });
     expect(normalizeContributor({ id: 301115370, login: "splrad-steward[bot]", type: "Bot" })).toBeNull();
   });

@@ -42,10 +42,17 @@ function isContributorEmail(value: string): boolean {
   return dot > at + 1 && dot < value.length - 1;
 }
 
+function normalizeContributorName(value: string | null | undefined): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const sanitized = value.replace(/[\p{Cc}\p{Cf}]+/gu, ' ').trim();
+  if (!sanitized) return undefined;
+  return [...sanitized].slice(0, 80).join('').trimEnd() || undefined;
+}
+
 export function normalizeContributor(actor: GitHubActor): Contributor | null {
   if (!isHumanActor(actor)) return null;
   const contributor: Contributor = { id: actor.id, login: actor.login };
-  const name = actor.name?.trim();
+  const name = normalizeContributorName(actor.name);
   const email = actor.email?.trim();
   const avatarUrl = actor.avatarUrl?.trim();
   if (name) contributor.name = name;
