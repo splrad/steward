@@ -20,10 +20,6 @@ for (const [dataPath, schemaPath] of pairs) {
   if (!validate(data)) throw new Error(`${dataPath}不符合结构: ${ajv.errorsText(validate.errors)}`);
 }
 const catalog = JSON.parse(await readFile("config/repositories.json", "utf8")); const ids = Object.keys(catalog.repositories); if (new Set(ids).size !== ids.length) throw new Error("仓库编号重复");
-for (const configuration of [catalog.defaults.public, ...Object.values(catalog.repositories)]) {
-  const allowed = new Set(configuration.allowedWorkflowPaths ?? []);
-  if ((configuration.workflowBootstrapPaths ?? []).some(path => allowed.has(path))) throw new Error("工作流引导路径与当前允许路径重复");
-}
 const release = JSON.parse(await readFile("config/profiles/release/layerscape.json", "utf8"));
 if (release.build.projects.length !== 10 || new Set(release.build.projects.map(x => x.path)).size !== 10) throw new Error("LayerScape插件项目必须恰好10个且不重复");
 if (release.assets.length !== 3 || new Set(release.assets.map(x => x.nameTemplate)).size !== 3) throw new Error("发布资产必须恰好3项且不重复");

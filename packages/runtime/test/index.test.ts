@@ -1,6 +1,6 @@
 import { createHmac, generateKeyPairSync } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import worker, { handleWebhook, verifyWebhookSignature, type Env } from "../src/index.js";
+import worker, { handleWebhook, validationConclusion, verifyWebhookSignature, type Env } from "../src/index.js";
 
 let privateKey = "";
 beforeAll(() => {
@@ -61,10 +61,16 @@ describe("中央运行程序", () => {
 
   it("四个允许事件逐仓调度固定中央工作流", async () => {
     const dispatched: { workflow: string; body: any }[] = [];
+    const validationChecks: any[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
       if (String(url).includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
       if (String(url).endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "trunk" }), { status: 200 });
       if (String(url).includes("/repos/splrad/LayerScape/pulls/9/files?per_page=100")) return new Response(JSON.stringify([{ filename: "Version.props" }]), { status: 200 });
+      if (String(url).includes(`/commits/${"d".repeat(40)}/check-runs?per_page=100`)) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
+      if (String(url).endsWith("/repos/splrad/steward/check-runs")) {
+        validationChecks.push(JSON.parse(String(init.body)));
+        return new Response(JSON.stringify({ id: 101 }), { status: 201 });
+      }
       const match = /\/actions\/workflows\/([^/]+)\/dispatches/.exec(String(url));
       if (match) {
         dispatched.push({ workflow: match[1]!, body: JSON.parse(String(init.body)) });
@@ -82,10 +88,185 @@ describe("中央运行程序", () => {
     ];
     for (const [event, payload] of cases) expect((await handleWebhook(signedRequest(event, payload), env)).status).toBe(202);
     expect(dispatched.map(value => value.workflow)).toEqual(["onboard-repository.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "release.yml"]);
+    expect(validationChecks).toEqual([expect.objectContaining({ name: "PR Validation Gate", head_sha: "d".repeat(40), status: "in_progress", external_id: `1296724484:8:${"d".repeat(40)}:pending` })]);
     for (const dispatch of dispatched) {
       expect(dispatch.body.ref).toBe("trunk");
       if (dispatch.workflow !== "release.yml") expect(dispatch.body.inputs.policySha).toBe(env.POLICY_SHA);
     }
+  });
+
+  it("edited使拉取请求首次指向默认分支时也建立pending门禁", async () => {
+    const headSha = "d".repeat(40); const validationChecks: any[] = []; const dispatched: string[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.includes(`/commits/${headSha}/check-runs?per_page=100`)) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/check-runs")) {
+        validationChecks.push(JSON.parse(String(init.body)));
+        return new Response(JSON.stringify({ id: 101 }), { status: 201 });
+      }
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      const match = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(value);
+      if (match) { dispatched.push(match[1]!); return new Response(null, { status: 204 }); }
+      return new Response("unexpected", { status: 500 });
+    });
+    const payload = scoped({
+      action: "edited",
+      changes: { base: { ref: { from: "release" } } },
+      repository: repository(),
+      pull_request: { number: 8, head: { sha: headSha }, base: { ref: "main" }, user: { id: 44151430 } },
+    });
+    expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(202);
+    expect(validationChecks).toEqual([expect.objectContaining({ name: "PR Validation Gate", head_sha: headSha, status: "in_progress", external_id: `1296724484:8:${headSha}:pending` })]);
+    expect(dispatched).toEqual(["pr-classification.yml"]);
+  });
+
+  it("只把GitHub API核实的当前PR验证运行同步到来源提交的全部有效重复检查", async () => {
+    const headSha = "d".repeat(40); const runId = 777; const writes: Array<{ url: string; body: any }> = []; const tokenBodies: any[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) {
+        tokenBodies.push(JSON.parse(String(init.body)));
+        return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      }
+      if (value.endsWith(`/repos/splrad/steward/actions/runs/${runId}`)) return new Response(JSON.stringify({
+        id: runId,
+        workflow_id: 335795406,
+        workflow_url: "https://api.github.com/repos/splrad/steward/actions/required_workflows/335795406",
+        run_attempt: 2,
+        repository: { id: 1296724484 },
+        name: "SPLRAD Steward / PR Validation",
+        path: ".github/workflows/pr-validation.yml",
+        event: "pull_request",
+        status: "completed",
+        conclusion: "success",
+        head_sha: headSha,
+        html_url: `https://github.com/splrad/steward/actions/runs/${runId}`,
+      }), { status: 200 });
+      if (value.includes(`/commits/${headSha}/pulls?per_page=100`)) return new Response(JSON.stringify([
+        { number: 8, state: "open", base: { ref: "main" }, head: { sha: headSha } },
+        { number: 9, state: "closed", base: { ref: "main" }, head: { sha: headSha } },
+        { number: 10, state: "open", base: { ref: "release" }, head: { sha: headSha } },
+        { number: 11, state: "open", base: { ref: "main" }, head: { sha: "e".repeat(40) } },
+      ]), { status: 200 });
+      if (value.includes(`/commits/${headSha}/check-runs?per_page=100`)) return new Response(JSON.stringify({ check_runs: [
+        { id: 91, name: "PR Validation Gate", app: { id: 4243096 }, head_sha: headSha, external_id: `1296724484:8:${headSha}:pending` },
+        { id: 92, name: "PR Validation Gate", app: { id: 4243096 }, head_sha: headSha, external_id: `1296724484:8:${headSha}:${runId}:2:pending` },
+        { id: 93, name: "PR Validation Gate", app: { id: 4243096 }, head_sha: headSha, external_id: "malformed-context" },
+      ] }), { status: 200 });
+      if (/\/repos\/splrad\/steward\/check-runs\/(91|92)$/u.test(value)) {
+        writes.push({ url: value, body: JSON.parse(String(init.body)) });
+        return new Response(JSON.stringify({ id: Number(value.split("/").at(-1)) }), { status: 200 });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    const payload = scoped({ action: "completed", repository: repository(), workflow_run: { id: runId, conclusion: "failure", head_sha: "f".repeat(40) } });
+    expect((await handleWebhook(signedRequest("workflow_run", payload), baseEnv())).status).toBe(202);
+    expect(tokenBodies).toEqual([expect.objectContaining({
+      repository_ids: [1296724484],
+      permissions: { actions: "read", checks: "write", metadata: "read", pull_requests: "read" },
+    })]);
+    expect(writes.map(value => value.url)).toEqual([
+      "https://api.github.com/repos/splrad/steward/check-runs/91",
+      "https://api.github.com/repos/splrad/steward/check-runs/92",
+    ]);
+    for (const write of writes) expect(write.body).toEqual(expect.objectContaining({
+      name: "PR Validation Gate",
+      head_sha: headSha,
+      status: "completed",
+      conclusion: "success",
+      details_url: `https://github.com/splrad/steward/actions/runs/${runId}`,
+      external_id: `1296724484:8:${headSha}:${runId}:2`,
+    }));
+  });
+
+  it("默认分支变化产生新运行时立即撤销旧的成功门禁", async () => {
+    const headSha = "d".repeat(40); const runId = 779; let written: any = null;
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith(`/actions/runs/${runId}`)) return new Response(JSON.stringify({
+        id: runId,
+        workflow_id: 335795406,
+        workflow_url: "https://api.github.com/repos/splrad/steward/actions/required_workflows/335795406",
+        run_attempt: 1,
+        repository: { id: 1296724484 },
+        name: "SPLRAD Steward / PR Validation",
+        path: ".github/workflows/pr-validation.yml",
+        event: "pull_request",
+        status: "in_progress",
+        conclusion: null,
+        head_sha: headSha,
+        html_url: `https://github.com/splrad/steward/actions/runs/${runId}`,
+      }), { status: 200 });
+      if (value.includes(`/commits/${headSha}/pulls?per_page=100`)) return new Response(JSON.stringify([{ number: 8, state: "open", base: { ref: "main" }, head: { sha: headSha } }]), { status: 200 });
+      if (value.includes(`/commits/${headSha}/check-runs?per_page=100`)) return new Response(JSON.stringify({ check_runs: [{ id: 91, name: "PR Validation Gate", app: { id: 4243096 }, head_sha: headSha, external_id: `1296724484:8:${headSha}:778:1` }] }), { status: 200 });
+      if (value.endsWith("/check-runs/91")) { written = JSON.parse(String(init.body)); return new Response(JSON.stringify({ id: 91 }), { status: 200 }); }
+      return new Response("unexpected", { status: 500 });
+    });
+    const payload = scoped({ action: "in_progress", repository: repository(), workflow_run: { id: runId } });
+    expect((await handleWebhook(signedRequest("workflow_run", payload), baseEnv())).status).toBe(202);
+    expect(written).toEqual(expect.objectContaining({
+      name: "PR Validation Gate",
+      head_sha: headSha,
+      status: "in_progress",
+      external_id: `1296724484:8:${headSha}:${runId}:1:pending`,
+    }));
+    expect(written).not.toHaveProperty("conclusion");
+  });
+
+  it("忽略同名本地工作流和已经漂移的来源提交", async () => {
+    const headSha = "d".repeat(40); const requests: string[] = []; let workflowUrl = "https://api.github.com/repos/splrad/steward/actions/workflows/335795406";
+    vi.stubGlobal("fetch", async (url: string) => {
+      const value = String(url); requests.push(value);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.includes("/actions/runs/778")) return new Response(JSON.stringify({ id: 778, workflow_id: 335795406, workflow_url: workflowUrl, run_attempt: 1, repository: { id: 1296724484 }, name: "SPLRAD Steward / PR Validation", path: ".github/workflows/pr-validation.yml", event: "pull_request", status: "completed", conclusion: "success", head_sha: headSha, html_url: "https://github.com/splrad/steward/actions/runs/778" }), { status: 200 });
+      if (value.includes(`/commits/${headSha}/pulls?per_page=100`)) return new Response(JSON.stringify([{ number: 8, state: "open", base: { ref: "main" }, head: { sha: "e".repeat(40) } }]), { status: 200 });
+      return new Response("unexpected", { status: 500 });
+    });
+    const payload = scoped({ action: "completed", repository: repository(), workflow_run: { id: 778 } });
+    expect((await handleWebhook(signedRequest("workflow_run", payload), baseEnv())).status).toBe(204);
+    expect(requests.some(value => value.includes("/pulls?"))).toBe(false);
+    workflowUrl = "https://api.github.com/repos/splrad/steward/actions/required_workflows/335795406";
+    requests.length = 0;
+    expect((await handleWebhook(signedRequest("workflow_run", payload), baseEnv())).status).toBe(204);
+    expect(requests.some(value => value.includes("/check-runs"))).toBe(false);
+  });
+
+  it("同一来源提交对应多个开放拉取请求时安静地保持失败关闭", async () => {
+    const headSha = "d".repeat(40); const runId = 780; const requests: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const value = String(url); requests.push(value);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith(`/actions/runs/${runId}`)) return new Response(JSON.stringify({
+        id: runId,
+        workflow_id: 335795406,
+        workflow_url: "https://api.github.com/repos/splrad/steward/actions/required_workflows/335795406",
+        run_attempt: 1,
+        repository: { id: 1296724484 },
+        name: "SPLRAD Steward / PR Validation",
+        path: ".github/workflows/pr-validation.yml",
+        event: "pull_request",
+        status: "completed",
+        conclusion: "success",
+        head_sha: headSha,
+        html_url: `https://github.com/splrad/steward/actions/runs/${runId}`,
+      }), { status: 200 });
+      if (value.includes(`/commits/${headSha}/pulls?per_page=100`)) return new Response(JSON.stringify([
+        { number: 8, state: "open", base: { ref: "main" }, head: { sha: headSha } },
+        { number: 9, state: "open", base: { ref: "main" }, head: { sha: headSha } },
+      ]), { status: 200 });
+      return new Response("unexpected", { status: 500 });
+    });
+    const payload = scoped({ action: "completed", repository: repository(), workflow_run: { id: runId } });
+    expect((await handleWebhook(signedRequest("workflow_run", payload), baseEnv())).status).toBe(204);
+    expect(requests.some(value => value.includes("/check-runs"))).toBe(false);
+  });
+
+  it("验证运行只有成功可以生成通过结论", () => {
+    expect(validationConclusion("success")).toBe("success");
+    for (const value of ["action_required", "cancelled", "failure", "neutral", "skipped", "stale", "startup_failure", "timed_out"]) expect(validationConclusion(value)).toBe("failure");
+    for (const value of ["", "queued", "in_progress", null]) expect(validationConclusion(value)).toBeNull();
   });
 
   it("普通合并不调度发布，只有Version.props合并才调度", async () => {
