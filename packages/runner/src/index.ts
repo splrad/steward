@@ -420,11 +420,9 @@ export function matchesGeneratedCopilotInstructions(actual: string, generated: s
   return normalizeCheckoutLineEndings(actual) === normalizeCheckoutLineEndings(generated);
 }
 
-export function assertWorkflowPaths(actual: readonly string[], allowed: readonly string[], bootstrap: readonly string[] = []): void {
+export function assertWorkflowPaths(actual: readonly string[], allowed: readonly string[]): void {
   const allowedSet = new Set(allowed);
-  if (bootstrap.some(path => allowedSet.has(path))) throw new Error("工作流引导路径与当前允许路径重复");
-  const permitted = new Set([...allowed, ...bootstrap]);
-  if (allowed.some(path => !actual.includes(path)) || actual.some(path => !permitted.has(path))) {
+  if (allowed.some(path => !actual.includes(path)) || actual.some(path => !allowedSet.has(path))) {
     throw new Error(`仓库工作流超出中央允许范围: ${actual.join(", ") || "无"}`);
   }
 }
@@ -442,8 +440,7 @@ async function validate(args: Readonly<Record<string, string>>) {
   const relative = files.map(path => path.slice(workspace.length + 1).replace(/\\/g, "/"));
   const actualWorkflows = relative.filter(path => /^\.github\/workflows\/[^/]+\.ya?ml$/u.test(path)).sort();
   const allowedWorkflows = [...configuration.allowedWorkflowPaths].sort();
-  const bootstrapWorkflows = [...(configuration.workflowBootstrapPaths ?? [])].sort();
-  assertWorkflowPaths(actualWorkflows, allowedWorkflows, bootstrapWorkflows);
+  assertWorkflowPaths(actualWorkflows, allowedWorkflows);
   const results = await runValidationTasks(profile, async task => {
     if (task === "git-diff-check") {
       const base = process.env.VALIDATION_BASE_SHA;

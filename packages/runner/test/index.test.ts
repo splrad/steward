@@ -87,14 +87,11 @@ describe("中央命令入口", () => {
     }
   });
 
-  it("工作流引导路径允许文件在下一阶段出现但不冒充当前工作流", () => {
+  it("工作流允许清单与仓库当前文件必须逐项一致", () => {
     const allowed = [".github/workflows/current.yml"];
-    const bootstrap = [".github/workflows/next.yml"];
-    expect(() => assertWorkflowPaths(allowed, allowed, bootstrap)).not.toThrow();
-    expect(() => assertWorkflowPaths([...allowed, ...bootstrap], allowed, bootstrap)).not.toThrow();
-    expect(() => assertWorkflowPaths([], allowed, bootstrap)).toThrow("超出中央允许范围");
-    expect(() => assertWorkflowPaths([...allowed, ".github/workflows/unknown.yml"], allowed, bootstrap)).toThrow("超出中央允许范围");
-    expect(() => assertWorkflowPaths(allowed, allowed, allowed)).toThrow("重复");
+    expect(() => assertWorkflowPaths(allowed, allowed)).not.toThrow();
+    expect(() => assertWorkflowPaths([], allowed)).toThrow("超出中央允许范围");
+    expect(() => assertWorkflowPaths([...allowed, ".github/workflows/unknown.yml"], allowed)).toThrow("超出中央允许范围");
   });
 
   it("识别平台实际返回的Copilot身份并给分类令牌完整的拉取请求写权限", () => {

@@ -9,6 +9,9 @@ export interface Env {
 
 const MAX_BODY = 10 * 1024 * 1024;
 const ZERO_SHA = "0".repeat(40);
+const VALIDATION_WORKFLOW_NAME = "SPLRAD Steward / PR Validation";
+const VALIDATION_WORKFLOW_PATH = ".github/workflows/pr-validation.yml";
+const VALIDATION_CHECK_NAME = "PR Validation Gate";
 
 function response(status: number, body?: unknown): Response {
   return new Response(body === undefined ? null : JSON.stringify(body), { status, headers: body === undefined ? undefined : { "Content-Type": "application/json; charset=utf-8" } });
@@ -28,6 +31,117 @@ async function dispatcher(env: Env): Promise<GitHubClient> {
   return new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA);
 }
 async function send(env: Env, workflow: string, inputs: Record<string, string>) { const [owner, repo] = env.STEWARDSHIP_REPOSITORY.split("/") as [string, string]; await dispatchWorkflow(await dispatcher(env), { owner, repo, workflow, policySha: env.POLICY_SHA, inputs }); }
+
+function splitRepository(fullName: string): [string, string] {
+  const parts = fullName.split("/");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) throw new Error("仓库完整名称无效");
+  return parts as [string, string];
+}
+function commitSha(value: unknown): string | null {
+  const normalized = String(value ?? "").toLowerCase();
+  return /^[0-9a-f]{40}$/u.test(normalized) ? normalized : null;
+}
+export function validationConclusion(value: unknown): "success" | "failure" | null {
+  if (value === "success") return "success";
+  if (["action_required", "cancelled", "failure", "neutral", "skipped", "stale", "startup_failure", "timed_out"].includes(String(value))) return "failure";
+  return null;
+}
+function selectValidationCheck(checkRuns: readonly any[], headSha: string, appId: number): any | null {
+  const matches = checkRuns.filter(value => value?.name === VALIDATION_CHECK_NAME
+    && Number(value.app?.id) === appId
+    && commitSha(value.head_sha) === headSha);
+  if (matches.length > 1) throw new Error("同名拉取请求验证检查存在歧义");
+  return matches[0] ?? null;
+}
+async function validationClient(env: Env, repositoryId: number): Promise<GitHubClient> {
+  if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
+  const token = await createInstallationToken({
+    appId: env.APP_ID,
+    privateKey: env.STEWARD_APP_PRIVATE_KEY,
+    installationId: Number(env.INSTALLATION_ID),
+    repositoryId,
+    permissions: { actions: "read", checks: "write", metadata: "read", pull_requests: "read" },
+    policySha: env.POLICY_SHA,
+  });
+  return new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA);
+}
+async function ensureValidationPending(env: Env, repository: any, pull: any): Promise<void> {
+  const headSha = commitSha(pull?.head?.sha); const number = Number(pull?.number);
+  if (!headSha || !Number.isSafeInteger(number) || number <= 0) throw new Error("拉取请求验证输入无效");
+  const [owner, repo] = splitRepository(String(repository.full_name));
+  const gh = await validationClient(env, Number(repository.id));
+  const current = selectValidationCheck(await gh.listAllCheckRuns(owner, repo, headSha), headSha, Number(env.APP_ID));
+  if (current) return;
+  await gh.createCheckRun(owner, repo, {
+    name: VALIDATION_CHECK_NAME,
+    head_sha: headSha,
+    status: "in_progress",
+    external_id: `${repository.id}:${number}:${headSha}:pending`,
+    output: { title: "正在等待中央拉取请求验证", summary: `拉取请求：#${number}\n来源提交：${headSha}` },
+  });
+}
+function trustedValidationRun(run: any, repository: any): boolean {
+  const [owner, repo] = splitRepository(String(repository.full_name));
+  const status = String(run?.status ?? ""); const conclusion = validationConclusion(run?.conclusion);
+  return Number.isSafeInteger(run?.id) && run.id > 0
+    && Number.isSafeInteger(run?.workflow_id) && run.workflow_id > 0
+    && Number.isSafeInteger(run?.run_attempt) && run.run_attempt > 0
+    && run?.repository?.id === repository.id
+    && run?.name === VALIDATION_WORKFLOW_NAME
+    && run?.path === VALIDATION_WORKFLOW_PATH
+    && run?.event === "pull_request"
+    && ["queued", "in_progress", "completed"].includes(status)
+    && (status === "completed" ? conclusion !== null : run?.conclusion == null)
+    && commitSha(run?.head_sha) !== null
+    && run?.workflow_url === `https://api.github.com/repos/${owner}/${repo}/actions/required_workflows/${run.workflow_id}`
+    && typeof run?.html_url === "string";
+}
+function completedValidationIdentity(repositoryId: number, pullRequestNumber: number, headSha: string, runId: number, attempt: number): string {
+  return `${repositoryId}:${pullRequestNumber}:${headSha}:${runId}:${attempt}`;
+}
+function existingValidationBlocksUpdate(externalId: unknown, repositoryId: number, pullRequestNumber: number, headSha: string, runId: number, attempt: number, incomingCompleted: boolean): boolean {
+  const value = String(externalId ?? "");
+  if (value === `${repositoryId}:${pullRequestNumber}:${headSha}:pending`) return false;
+  const match = new RegExp(`^${repositoryId}:${pullRequestNumber}:${headSha}:(\\d+):(\\d+)(:pending)?$`, "u").exec(value);
+  if (!match) throw new Error("现有拉取请求验证检查上下文无效");
+  const existingRunId = Number(match[1]); const existingAttempt = Number(match[2]);
+  if (existingRunId !== runId) return existingRunId > runId;
+  if (existingAttempt !== attempt) return existingAttempt > attempt;
+  const existingPending = Boolean(match[3]);
+  return !existingPending || !incomingCompleted;
+}
+async function publishValidationState(env: Env, repository: any, workflowRunId: unknown): Promise<boolean> {
+  const runId = Number(workflowRunId);
+  if (!Number.isSafeInteger(runId) || runId <= 0) throw new Error("工作流运行编号无效");
+  const [owner, repo] = splitRepository(String(repository.full_name));
+  const gh = await validationClient(env, Number(repository.id));
+  const run = await gh.getWorkflowRun(owner, repo, runId);
+  if (!trustedValidationRun(run, repository)) return false;
+  const headSha = commitSha(run.head_sha)!;
+  const pulls = (await gh.listOpenPullRequests(owner, repo, String(repository.default_branch))).filter((pull: any) =>
+    pull?.base?.ref === repository.default_branch && commitSha(pull?.head?.sha) === headSha);
+  if (!pulls.length) return false;
+  if (pulls.length > 1) throw new Error("工作流运行对应多个当前拉取请求");
+  const pull = pulls[0]!; const number = Number(pull.number);
+  if (!Number.isSafeInteger(number) || number <= 0) throw new Error("拉取请求编号无效");
+  const check = selectValidationCheck(await gh.listAllCheckRuns(owner, repo, headSha), headSha, Number(env.APP_ID));
+  const conclusion = validationConclusion(run.conclusion); const completed = run.status === "completed";
+  if (check && existingValidationBlocksUpdate(check.external_id, Number(repository.id), number, headSha, run.id, run.run_attempt, completed)) return false;
+  const body: Record<string, unknown> = {
+    name: VALIDATION_CHECK_NAME,
+    head_sha: headSha,
+    status: completed ? "completed" : "in_progress",
+    details_url: run.html_url,
+    external_id: completed ? completedValidationIdentity(Number(repository.id), number, headSha, run.id, run.run_attempt) : `${completedValidationIdentity(Number(repository.id), number, headSha, run.id, run.run_attempt)}:pending`,
+    output: completed
+      ? { title: conclusion === "success" ? "中央拉取请求验证通过" : "中央拉取请求验证失败", summary: `拉取请求：#${number}\n来源提交：${headSha}\n源工作流运行：${run.id}\n源结论：${run.conclusion}` }
+      : { title: "中央拉取请求验证正在运行", summary: `拉取请求：#${number}\n来源提交：${headSha}\n源工作流运行：${run.id}` },
+  };
+  if (completed) body.conclusion = conclusion;
+  if (check) await gh.updateCheckRun(owner, repo, check.id, body);
+  else await gh.createCheckRun(owner, repo, body);
+  return true;
+}
 
 async function pullRequestChangesVersion(env: Env, repository: any, pullRequestNumber: number): Promise<boolean> {
   if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
@@ -86,9 +200,14 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
     }
     if (event === "pull_request" && ["opened", "synchronize", "reopened", "edited"].includes(action)) {
       const repository = payload.repository; const pull = payload.pull_request; if (!repository || !isManaged(repository) || !pull || pull.base?.ref !== repository.default_branch) return response(204);
+      if (action !== "edited") await ensureValidationPending(env, repository, pull);
       await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), eventHeadSha: pull.head.sha, policySha: env.POLICY_SHA });
       if (action === "synchronize" && pull.user?.id === 301115370 && pull.head?.repo?.owner?.id === Number(env.ORGANIZATION_ID) && payload.sender?.type === "User") await send(env, "pr-automation.yml", { deliveryId, repositoryId: String(repository.id), sourceRef: `refs/heads/${pull.head.ref}`, eventAfterSha: pull.head.sha, sourceActorId: String(payload.sender.id), sourceActorLogin: String(payload.sender.login), policySha: env.POLICY_SHA });
       return response(202);
+    }
+    if (event === "workflow_run" && ["requested", "in_progress", "completed"].includes(action)) {
+      const repository = payload.repository; if (!repository || !isManaged(repository)) return response(204);
+      return response(await publishValidationState(env, repository, payload.workflow_run?.id) ? 202 : 204);
     }
     if (event === "pull_request" && action === "closed" && payload.pull_request?.merged && payload.pull_request?.base?.ref === payload.repository?.default_branch) {
       const repository = payload.repository; if (!isManaged(repository) || repositoryConfiguration(repository).releaseProfile !== "layerscape") return response(204);
