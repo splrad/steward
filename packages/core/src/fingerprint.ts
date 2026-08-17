@@ -32,7 +32,9 @@ export async function computePullRequestFingerprint(input: PullRequestFingerprin
     ...input,
     commits: [...input.commits].sort(),
     files: [...input.files].sort((a, b) => a.path.localeCompare(b.path)),
-    contributors: [...input.contributors].sort((a, b) => a.id - b.id || a.login.localeCompare(b.login)),
+    contributors: input.contributors
+      .map(({ id, login }) => ({ id, login }))
+      .sort((a, b) => a.id - b.id || a.login.localeCompare(b.login)),
   };
   return sha256Hex(JSON.stringify(canonicalize(normalized)));
 }

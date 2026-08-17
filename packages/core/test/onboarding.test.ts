@@ -29,9 +29,12 @@ describe("新仓库接入", () => {
     const value = renderOnboardingPullRequest({ template: organizationPullRequestTemplate, configuration: configured, actor: "splrad-steward[bot]", context: "a".repeat(64) });
     expect(value.branch).toBe("steward/repository-onboarding");
     expect(value.title).toBe("chore(steward): 接入中央仓库管理");
-    expect(value.body).toContain("### 摘要");
-    expect(value.body).toContain("### 人工补充");
-    expect(value.body).toContain("本仓库不启用中央发布配置");
+    expect(value.body).toContain("## 摘要");
+    expect(value.body).toContain("## 背景与目标");
+    expect(value.body).toContain("## 影响分析");
+    expect(value.body).not.toContain("## 发布与迁移");
+    expect(value.body).not.toContain("人工补充");
+    expect(value.body).not.toContain("## 贡献者");
     expect(value.body).not.toContain("issue_comment");
   });
 

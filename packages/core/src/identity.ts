@@ -4,6 +4,7 @@ export interface GitHubActor {
   type: string;
   name?: string | null;
   email?: string | null;
+  avatarUrl?: string | null;
 }
 
 export interface Contributor {
@@ -11,6 +12,7 @@ export interface Contributor {
   login: string;
   name?: string;
   email?: string;
+  avatarUrl?: string;
 }
 
 const loginPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
@@ -40,12 +42,37 @@ function isContributorEmail(value: string): boolean {
   return dot > at + 1 && dot < value.length - 1;
 }
 
+function normalizeContributorName(value: string | null | undefined): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  let result = '';
+  let characterCount = 0;
+  let separatorPending = false;
+  for (const character of value) {
+    if (/[\p{Cc}\p{Cf}\s]/u.test(character)) {
+      if (result) separatorPending = true;
+      continue;
+    }
+    if (separatorPending) {
+      if (characterCount + 1 >= 80) break;
+      result += ' ';
+      characterCount += 1;
+      separatorPending = false;
+    }
+    result += character;
+    characterCount += 1;
+    if (characterCount >= 80) break;
+  }
+  return result || undefined;
+}
+
 export function normalizeContributor(actor: GitHubActor): Contributor | null {
   if (!isHumanActor(actor)) return null;
   const contributor: Contributor = { id: actor.id, login: actor.login };
-  const name = actor.name?.trim();
+  const name = normalizeContributorName(actor.name);
   const email = actor.email?.trim();
+  const avatarUrl = actor.avatarUrl?.trim();
   if (name) contributor.name = name;
   if (email && isContributorEmail(email)) contributor.email = email;
+  if (avatarUrl) contributor.avatarUrl = avatarUrl;
   return contributor;
 }

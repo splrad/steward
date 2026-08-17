@@ -213,7 +213,17 @@ async function reconcileManagedFile(input: { repository: any; gh: GitHubClient; 
   const defaultRef = await input.gh.getRef(owner, repo, `heads/${defaultBranch}`); const branchRef = await optional(() => input.gh.getRef(owner, repo, `heads/${input.branch}`));
   assertManagedBranchPull(Boolean(branchRef), pulls[0], input.branch);
   const written = await writeManagedFileToBranch({ gh: input.gh, owner, repo, path: input.path, content: input.content, branch: input.branch, title: input.title, defaultSha: defaultRef.object.sha, branchSha: branchRef?.object.sha ?? null });
-  const generated = { type: "chore" as const, scope: "steward", title: input.title.replace(/^chore\([^)]*\):\s*/u, ""), summary: "由SPLRAD Steward同步中央管理文件并保持仓库规则与中央配置一致。", changes: [`更新${input.path}并保持中央配置为唯一人工维护来源`], reviewNotes: ["确认生成文件逐字等于中央模板并且没有仓库专用手工改动"] };
+  const generated = {
+    type: "chore" as const,
+    scope: "steward",
+    title: input.title.replace(/^chore\([^)]*\):\s*/u, ""),
+    summary: "由SPLRAD Steward同步中央管理文件并保持仓库规则与中央配置一致。",
+    motivation: "中央管理文件需要跟随当前规则更新，避免目标仓库保留已经过期的配置。",
+    changes: [`更新${input.path}并保持中央配置为唯一人工维护来源`],
+    impact: ["目标仓库后续使用更新后的中央管理规则"],
+    related: [],
+    releaseAndMigration: [],
+  };
   const body = renderManagedBody({ generated, existingBody: pulls[0]?.body, templateBody: organizationPullRequestTemplate, actor: "splrad-steward[bot]", contributors: [], context: `${input.repository.id}:${input.path}:${input.policySha}` });
   const pull = pulls[0] ? await input.gh.updatePullRequest(owner, repo, pulls[0].number, { title: input.title, body }) : await input.gh.createPullRequest(owner, repo, { title: input.title, body, head: input.branch, base: defaultBranch });
   await ensureCopilotReview(input.gh, owner, repo, pull.number, written.headSha, input.policySha);
@@ -260,9 +270,6 @@ async function onboard(args: Readonly<Record<string, string>>) {
   const result = await reconcileManagedFile({ repository, gh, path: ".github/copilot-instructions.md", content: rendered, branch: planned.branch, title: planned.title, policySha, deliveryId: required(args, "delivery-id") });
   await summary([`仓库：${fullName}`, `状态：${result === "unchanged" ? "onboarded" : result}`, `接入分支：${planned.branch}`, `分类配置：${cfg.classificationProfile}`, `验证配置：${cfg.validationProfile}`, `Copilot说明配置：${cfg.copilotInstructionsProfile}`, `发布配置：${cfg.releaseProfile ?? "未启用"}`, `Copilot说明字符数：${[...rendered].length}`]);
 }
-function summaryStartTemplate() { return "<!-- workflow:auto-summary:start -->"; }
-function summaryEndTemplate() { return "<!-- workflow:auto-summary:end -->"; }
-
 async function automate(args: Readonly<Record<string, string>>) {
   const repositoryId = integer(required(args, "repository-id"), "repository-id");
   const policySha = sha(required(args, "policy-sha"), "policy-sha");
@@ -293,7 +300,7 @@ async function automate(args: Readonly<Record<string, string>>) {
   const contributorMap = new Map<number, Contributor>();
   contributorMap.set(sourceActor.id, { id: sourceActor.id, login: sourceActor.login });
   for (const commit of compare.commits) {
-    const normalized = commit.author ? normalizeContributor({ ...commit.author, name: commit.commit?.author?.name, email: commit.commit?.author?.email }) : null;
+    const normalized = commit.author ? normalizeContributor({ ...commit.author, name: commit.commit?.author?.name, email: commit.commit?.author?.email, avatarUrl: commit.author.avatar_url }) : null;
     if (normalized) contributorMap.set(normalized.id, normalized);
   }
   const contributors = [...contributorMap.values()];
@@ -373,7 +380,7 @@ async function classify(args: Readonly<Record<string, string>>) {
     await gh.setLabels(owner, repo, number, [...plan.keep, ...result.publicLabels]);
     const currentAfterWrite = await gh.getPullRequest(owner, repo, number);
     if (currentAfterWrite.head.sha !== expectedHead || currentAfterWrite.base.sha !== pull.base.sha || currentAfterWrite.title !== pull.title || (currentAfterWrite.body ?? "") !== (pull.body ?? "")) throw new Error("分类输入在写入期间已经漂移");
-    const contributors = commits.map((commit: any) => commit.author ? normalizeContributor({ ...commit.author, name: commit.commit?.author?.name, email: commit.commit?.author?.email }) : null).filter(Boolean) as Contributor[];
+    const contributors = commits.map((commit: any) => commit.author ? normalizeContributor({ ...commit.author, name: commit.commit?.author?.name, email: commit.commit?.author?.email, avatarUrl: commit.author.avatar_url }) : null).filter(Boolean) as Contributor[];
     const fingerprint = await computePullRequestFingerprint({ repositoryId, pullRequestNumber: number, headSha: expectedHead, baseSha: pull.base.sha, commits: commits.map((value: any) => value.sha), files: files.map((value: any) => ({ path: value.filename, status: value.status, additions: value.additions, deletions: value.deletions })), title: pull.title, body: pull.body ?? "", contributors });
     await gh.updateCheckRun(owner, repo, check.id, { name: "PR Classification Gate", status: "completed", conclusion: "success", external_id: `${repositoryId}:${number}:${expectedHead}:${fingerprint}`, output: { title: "拉取请求分类完成", summary: `区域：${result.areas.join("、") || "无"}\n类型：${result.kind}\n标签：${result.publicLabels.join("、")}\n输入摘要：${fingerprint}` } });
     await summary([`拉取请求：#${number}`, `来源提交：${expectedHead}`, `分类：${result.kind}`, `标签：${result.publicLabels.join("、")}`, `输入摘要：${fingerprint}`]);
