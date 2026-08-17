@@ -64,6 +64,7 @@ describe("中央运行程序", () => {
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
       if (String(url).includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
       if (String(url).endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "trunk" }), { status: 200 });
+      if (String(url).includes("/repos/splrad/LayerScape/pulls/9/files?per_page=100")) return new Response(JSON.stringify([{ filename: "Version.props" }]), { status: 200 });
       const match = /\/actions\/workflows\/([^/]+)\/dispatches/.exec(String(url));
       if (match) {
         dispatched.push({ workflow: match[1]!, body: JSON.parse(String(init.body)) });
@@ -85,6 +86,21 @@ describe("中央运行程序", () => {
       expect(dispatch.body.ref).toBe("trunk");
       if (dispatch.workflow !== "release.yml") expect(dispatch.body.inputs.policySha).toBe(env.POLICY_SHA);
     }
+  });
+
+  it("普通合并不调度发布，只有Version.props合并才调度", async () => {
+    const requests: { url: string; body: any }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      requests.push({ url: String(url), body: init.body ? JSON.parse(String(init.body)) : null });
+      if (String(url).includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (String(url).includes("/repos/splrad/LayerScape/pulls/10/files?per_page=100")) return new Response(JSON.stringify([{ filename: "src/Version.props" }, { filename: "src/example.cs" }]), { status: 200 });
+      return new Response("unexpected", { status: 500 });
+    });
+    const payload = scoped({ action: "closed", repository: repository(1187527897, "splrad/LayerScape"), pull_request: { number: 10, merged: true, merge_commit_sha: "f".repeat(40), base: { ref: "main" } } });
+    expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(204);
+    expect(requests).toHaveLength(2);
+    expect(requests[0]!.body).toEqual(expect.objectContaining({ repository_ids: [1187527897], permissions: { metadata: "read", pull_requests: "read" } }));
+    expect(requests.some(request => request.url.includes("/actions/workflows/release.yml/dispatches"))).toBe(false);
   });
 
   it("安装事件使用已验证的安装账户并接受省略owner的组织仓库", async () => {
