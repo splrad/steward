@@ -69,6 +69,25 @@ describe("代码托管平台客户端", () => {
     ]);
   });
 
+  it("使用团队审查字段请求Maintainers", async () => {
+    let request: { method: string; path: string; body: unknown } | null = null;
+    const transport = async (url: any, init?: RequestInit) => {
+      request = {
+        method: String(init?.method),
+        path: new URL(String(url)).pathname,
+        body: JSON.parse(String(init?.body)),
+      };
+      return new Response(JSON.stringify({ users: [], teams: [{ slug: "maintainers" }] }), { status: 201 });
+    };
+    const client = new GitHubClient("token", "https://example.test", transport as typeof fetch);
+    await client.requestTeamReviewers("splrad", "steward", 7, ["maintainers"]);
+    expect(request).toEqual({
+      method: "POST",
+      path: "/repos/splrad/steward/pulls/7/requested_reviewers",
+      body: { team_reviewers: ["maintainers"] },
+    });
+  });
+
   it("对Git引用路径中的特殊字符编码并保留分支层级", async () => {
     const requests: Array<{ url: string; method: string; body?: unknown }> = [];
     const transport = async (url: any, init?: RequestInit) => {

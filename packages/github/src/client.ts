@@ -67,6 +67,7 @@ export class GitHubClient {
   listPullRequestReviews(owner: string, repo: string, number: number) { return this.paginate<any>(`/repos/${owner}/${repo}/pulls/${number}/reviews?per_page=100`); }
   listIssueEvents(owner: string, repo: string, number: number) { return this.paginate<any>(`/repos/${owner}/${repo}/issues/${number}/events?per_page=100`); }
   requestReviewers(owner: string, repo: string, number: number, reviewers: readonly string[]) { return this.request<any>("POST", `/repos/${owner}/${repo}/pulls/${number}/requested_reviewers`, { reviewers }); }
+  requestTeamReviewers(owner: string, repo: string, number: number, teams: readonly string[]) { return this.request<any>("POST", `/repos/${owner}/${repo}/pulls/${number}/requested_reviewers`, { team_reviewers: teams }); }
   updateRepository(owner: string, repo: string, body: unknown) { return this.request<any>("PATCH", `/repos/${owner}/${repo}`, body); }
   getRef(owner: string, repo: string, ref: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/git/ref/${encodeGitReferencePath(ref)}`); }
   getContent(owner: string, repo: string, path: string, ref?: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/contents/${path}${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`); }

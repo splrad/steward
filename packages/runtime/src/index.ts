@@ -171,6 +171,18 @@ async function pullRequestChangesVersion(env: Env, repository: any, pullRequestN
   return files.some(file => file?.filename === "Version.props");
 }
 
+async function requestMaintainersReview(env: Env, repository: any, pull: any): Promise<boolean> {
+  if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
+  const [owner, repo] = String(repository.full_name).split("/") as [string, string];
+  const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY, installationId: Number(env.INSTALLATION_ID), repositoryId: Number(repository.id), permissions: { metadata: "read", pull_requests: "write" }, policySha: env.POLICY_SHA });
+  const gh = new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA);
+  const isRequested = (value: any) => (value?.teams ?? []).some((team: any) => String(team?.slug ?? "").toLowerCase() === "maintainers");
+  if (isRequested(await gh.getRequestedReviewers(owner, repo, Number(pull.number)))) return false;
+  await gh.requestTeamReviewers(owner, repo, Number(pull.number), ["maintainers"]);
+  if (!isRequested(await gh.getRequestedReviewers(owner, repo, Number(pull.number)))) throw new Error("Maintainers审查请求未能通过实时读取确认");
+  return true;
+}
+
 function validScope(payload: any, env: Env): boolean {
   const organizationId = payload.organization?.id ?? payload.installation?.account?.id ?? payload.repository?.owner?.id;
   const installationId = payload.installation?.id;
@@ -223,6 +235,11 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       await ensureValidationPending(env, repository, pull);
       await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), eventHeadSha: pull.head.sha, policySha: env.POLICY_SHA });
       return response(202);
+    }
+    if (event === "pull_request" && action === "ready_for_review") {
+      const repository = payload.repository; const pull = payload.pull_request;
+      if (!repository || !isManaged(repository) || !pull || pull.user?.id !== 301115370 || pull.draft !== false || pull.base?.ref !== repository.default_branch) return response(204);
+      return response(await requestMaintainersReview(env, repository, pull) ? 202 : 204);
     }
     if (event === "workflow_run" && ["requested", "in_progress", "completed"].includes(action)) {
       const repository = payload.repository; if (!repository || !isManaged(repository)) return response(204);
