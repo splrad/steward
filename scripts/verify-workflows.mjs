@@ -56,9 +56,17 @@ if (copilotStep?.env?.COPILOT_GITHUB_TOKEN?.replace(/\s+/gu, "") !== "${{secrets
 if (copilotStep?.id !== "copilot" || copilotStep?.["continue-on-error"] !== true) throw new Error("Copilot CLI步骤没有保留可读取的失败结果");
 if (Object.hasOwn(copilotStep?.env ?? {}, "GITHUB_TOKEN") || /copilot-requests/iu.test(prAutomation)) throw new Error("Copilot CLI仍引用组织内置令牌路径");
 const copilotCommand = String(copilotStep?.run ?? "");
-if (!/(?:^|\s)(?:-s|--silent)(?:\s|$)/u.test(copilotCommand)) throw new Error("Copilot CLI没有使用静默脚本输出");
+const expectedCopilotCommand = 'npx --no-install copilot -p "$(cat "$PR_COPILOT_PROMPT_PATH")" --output-format json --stream off --no-color --no-custom-instructions --disable-builtin-mcps --no-ask-user > "${{ runner.temp }}/copilot-output.jsonl"';
+if (copilotCommand !== expectedCopilotCommand) throw new Error("Copilot CLI没有使用固定JSONL输出合同");
+if (/(?:^|\s)--allow-tool(?:=|\s|$)/u.test(copilotCommand)) throw new Error("Copilot正文生成不得启用工具");
 const reconcileStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "收敛拉取请求");
 if (reconcileStep?.env?.COPILOT_STEP_OUTCOME?.replace(/\s+/gu, "") !== "${{steps.copilot.outcome}}") throw new Error("收敛步骤没有接收Copilot CLI结果");
+const prepareStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "生成Copilot输入");
+const expectedCopilotOutputPath = "${{runner.temp}}/copilot-output.jsonl";
+if (String(prepareStep?.env?.COPILOT_OUTPUT_PATH ?? "").replace(/\s+/gu, "") !== expectedCopilotOutputPath || String(reconcileStep?.env?.COPILOT_OUTPUT_PATH ?? "").replace(/\s+/gu, "") !== expectedCopilotOutputPath) throw new Error("Copilot JSONL输出路径没有贯穿准备与收敛步骤");
+const cleanupStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "删除临时人工智能输入");
+const expectedCleanupCommand = 'rm -f "${{ runner.temp }}/copilot-prompt.txt" "${{ runner.temp }}/copilot-output.jsonl" "${{ runner.temp }}/pr-prepared-facts.json"';
+if (String(cleanupStep?.if ?? "").replace(/\s+/gu, "") !== "always()" || cleanupStep?.run !== expectedCleanupCommand) throw new Error("Copilot临时输入输出没有固定为始终清理");
 if (!prAutomation.includes("- name: 使用Copilot润色") || !prAutomation.includes('npx --no-install copilot -p')) throw new Error("拉取请求工作流缺少Copilot正文生成步骤");
 if (/hashFiles\([^\n]*runner\.temp/iu.test(prAutomation)) throw new Error("Copilot正文生成仍使用无法读取runner.temp的hashFiles条件");
 const prClassificationDocument = workflowDocuments.get("pr-classification.yml");

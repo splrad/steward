@@ -5,13 +5,14 @@ import { join } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertFreshValidationBase, assertManagedBranchPull, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, describeCopilotFallback, encodeAiClassificationPayload, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, writeManagedFileToBranch } from "../src/index.js";
+import { assertFreshValidationBase, assertManagedBranchPull, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, describeCopilotFallback, encodeAiClassificationPayload, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
 
 afterEach(() => {
   delete process.env.TEST_REQUIRED_ENV;
+  delete process.env.GITHUB_STEP_SUMMARY;
 });
 
 describe("中央命令入口", () => {
@@ -71,10 +72,67 @@ describe("中央命令入口", () => {
     expect(describeCopilotFallback("prepared-facts-parse", new Error("原始JSON"))).toBe("人工智能输入文件不是有效JSON");
     expect(describeCopilotFallback("prepared-facts-check", new Error("人工智能输入对应的分支事实已经漂移"))).toBe("人工智能输入对应的分支事实已经漂移");
     expect(describeCopilotFallback("copilot-output-read", new Error("临时路径"))).toBe("Copilot输出文件无法读取");
+    expect(describeCopilotFallback("copilot-output-envelope", new Error("token=secret"))).toBe("Copilot输出传输封装无效");
     expect(describeCopilotFallback("copilot-output-parse", new Error("原始JSON"))).toBe("Copilot输出不是有效JSON");
     expect(describeCopilotFallback("copilot-output-parse", new SyntaxError("Unexpected non-whitespace character after JSON at position 123 (line 2 column 1)"))).toBe("Copilot输出不是有效JSON（位置123）");
     expect(describeCopilotFallback("copilot-output-validate", new Error("summary长度或格式无效"))).toBe("Copilot输出字段校验失败：summary长度或格式无效");
     expect(describeCopilotFallback("copilot-output-validate", new Error("不可信内容\nsecret=value"))).toBe("Copilot输出字段校验失败");
+  });
+
+  it("从唯一成功结果中的最后一条根消息提取原始业务JSON", () => {
+    const generated = JSON.stringify({ type: "fix", scope: "pr", title: "使用JSONL正文" });
+    const wrapped = [
+      JSON.stringify({ type: "assistant.turn_start", data: { turnId: "0" } }),
+      JSON.stringify({ type: "assistant.message", data: { messageId: "message-1", content: "处理中", toolRequests: [] } }),
+      JSON.stringify({ type: "assistant.message", agentId: "subagent-1", data: { messageId: "message-2", content: "子代理内容", toolRequests: [] } }),
+      JSON.stringify({ type: "assistant.message", data: { messageId: "message-3", content: generated, toolRequests: [] } }),
+      JSON.stringify({ type: "assistant.turn_end", data: { turnId: "0" } }),
+      JSON.stringify({ type: "result", sessionId: "session-1", exitCode: 0, usage: {} }),
+    ].join("\n") + "\n";
+    expect(() => JSON.parse(wrapped)).toThrow();
+    expect(JSON.parse(extractCopilotAssistantContent(wrapped))).toEqual({ type: "fix", scope: "pr", title: "使用JSONL正文" });
+    expect(extractCopilotAssistantContent(wrapped.replaceAll("\n", "\r\n"))).toBe(generated);
+  });
+
+  it("拒绝缺失、重复结果、失败或带工具行为的Copilot JSONL封装", () => {
+    const message = JSON.stringify({ type: "assistant.message", data: { content: "{}", toolRequests: [] } });
+    const success = JSON.stringify({ type: "result", sessionId: "session-1", exitCode: 0, usage: {} });
+    const failure = JSON.stringify({ type: "result", sessionId: "session-1", exitCode: 1, usage: {} });
+    const toolMessage = JSON.stringify({ type: "assistant.message", data: { content: "{}", toolRequests: [{ toolCallId: "call-1", name: "bash" }] } });
+    const serverToolMessage = JSON.stringify({ type: "assistant.message", data: { content: "{}", toolRequests: [], serverTools: { provider: "test" } } });
+    const toolExecution = JSON.stringify({ type: "tool.execution_start", data: { toolCallId: "call-1" } });
+    const subagentMessage = JSON.stringify({ type: "assistant.message", agentId: "subagent-1", data: { content: "{}", toolRequests: [] } });
+    const childMessage = JSON.stringify({ type: "assistant.message", data: { content: "{}", parentToolCallId: "call-1", toolRequests: [] } });
+    expect(() => extractCopilotAssistantContent(`${success}\n`)).toThrow("Copilot JSONL消息无效");
+    expect(() => extractCopilotAssistantContent(`${message}\n`)).toThrow("Copilot JSONL结果无效");
+    expect(() => extractCopilotAssistantContent(`${message}\n${success}\n${success}\n`)).toThrow("Copilot JSONL结果无效");
+    expect(() => extractCopilotAssistantContent(`${message}\n${failure}\n`)).toThrow("Copilot JSONL结果无效");
+    expect(() => extractCopilotAssistantContent(`${message}\n${success}\n${JSON.stringify({ type: "session.end", data: {} })}\n`)).toThrow("Copilot JSONL结果无效");
+    expect(() => extractCopilotAssistantContent(`${toolMessage}\n${success}\n`)).toThrow("Copilot JSONL消息无效");
+    expect(() => extractCopilotAssistantContent(`${serverToolMessage}\n${success}\n`)).toThrow("Copilot JSONL消息无效");
+    expect(() => extractCopilotAssistantContent(`${message}\n${toolExecution}\n${success}\n`)).toThrow("Copilot JSONL消息无效");
+    expect(() => extractCopilotAssistantContent(`${subagentMessage}\n${success}\n`)).toThrow("Copilot JSONL消息无效");
+    expect(() => extractCopilotAssistantContent(`${childMessage}\n${success}\n`)).toThrow("Copilot JSONL消息无效");
+  });
+
+  it("严格限制Copilot JSONL格式和大小且不泄露原始内容", () => {
+    const secret = "COPILOT_GITHUB_TOKEN=secret-value";
+    try {
+      extractCopilotAssistantContent(`{\"type\":\"assistant.message\",\"data\":{\"content\":\"${secret}\"}\n`);
+      throw new Error("非JSON输入未被拒绝");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe("Copilot JSONL输出格式无效");
+      expect((error as Error).message).not.toContain(secret);
+    }
+    expect(() => extractCopilotAssistantContent(`${JSON.stringify(["not-an-event"])}\n`)).toThrow("Copilot JSONL输出格式无效");
+    expect(() => extractCopilotAssistantContent("x".repeat(2_097_153))).toThrow("Copilot JSONL输出大小无效");
+    const oversizedContent = JSON.stringify({ type: "assistant.message", data: { content: "文".repeat(21_846), toolRequests: [] } });
+    const success = JSON.stringify({ type: "result", sessionId: "session-1", exitCode: 0, usage: {} });
+    expect(() => extractCopilotAssistantContent(`${oversizedContent}\n${success}\n`)).toThrow("Copilot JSONL消息无效");
+    const tooManyLines = Array.from({ length: 256 }, () => JSON.stringify({ type: "assistant.turn_start", data: {} }));
+    expect(() => extractCopilotAssistantContent(`${tooManyLines.join("\n")}\n${success}\n`)).toThrow("Copilot JSONL输出格式无效");
+    expect(() => extractCopilotAssistantContent("{}\n\n")).toThrow("Copilot JSONL输出格式无效");
   });
 
   it("Copilot说明只忽略Git检出产生的CRLF差异", () => {
@@ -180,6 +238,21 @@ describe("中央命令入口", () => {
       expect(() => assertFreshValidationBase(repository, eventBase, "../main")).toThrow("基础分支引用无效");
     } finally {
       await rm(repository, { recursive: true, force: true });
+    }
+  });
+
+  it("基础分支摘要无论写入成功失败都保留原始校验错误", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "steward-validation-summary-"));
+    const primary = new Error("基础分支已更新");
+    process.env.GITHUB_STEP_SUMMARY = join(directory, "missing", "summary.md");
+    try {
+      await expect(throwFreshValidationBaseFailure(primary)).rejects.toBe(primary);
+      const summaryPath = join(directory, "summary.md");
+      process.env.GITHUB_STEP_SUMMARY = summaryPath;
+      await expect(throwFreshValidationBaseFailure(primary)).rejects.toBe(primary);
+      expect(await readFile(summaryPath, "utf8")).toBe("# SPLRAD Steward / PR Validation\n\n- ❌ verify-base-freshness: 基础分支已更新\n");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
     }
   });
 
