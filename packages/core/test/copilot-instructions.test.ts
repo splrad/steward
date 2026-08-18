@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { computeCopilotInstructionsDigest, planCopilotInstructionsSync, renderCopilotInstructions } from "../src/copilot-instructions.js";
+import { copilotInstructionSyncContract, computeCopilotInstructionsDigest, planCopilotInstructionsSync, renderCopilotInstructions } from "../src/copilot-instructions.js";
 
 describe("Copilot代码审查说明", () => {
   it("通用目标逐字等于中央源文件生成结果", async () => {
@@ -23,6 +23,20 @@ describe("Copilot代码审查说明", () => {
     expect(renderCopilotInstructions("# 最小说明")).toBe("# 最小说明\n");
     expect(() => renderCopilotInstructions(" \n")).toThrow("不能为空");
     expect(() => renderCopilotInstructions("说明".repeat(2001))).toThrow("4000");
+  });
+
+  it("只允许明确配置的说明源同步到固定目标文件", () => {
+    expect(copilotInstructionSyncContract("common")).toEqual({
+      targetPath: ".github/copilot-instructions.md",
+      sourceFiles: ["common.md"],
+    });
+    expect(copilotInstructionSyncContract("layerscape")).toEqual({
+      targetPath: ".github/copilot-instructions.md",
+      sourceFiles: ["common.md", "layerscape.md"],
+    });
+    for (const profile of ["", "other", ".github/workflows/release.yml", null]) {
+      expect(() => copilotInstructionSyncContract(profile)).toThrow("不属于允许的同步合同");
+    }
   });
 
   it("只允许无变化、创建或唯一受管分支更新", () => {

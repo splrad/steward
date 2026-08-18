@@ -296,6 +296,12 @@ describe("中央命令入口", () => {
       invalid.unexpectedField = true;
       expect(validate(invalid), `${dataPath}反例`).toBe(false);
     }
+    const repositories = JSON.parse(await readFile("config/repositories.json", "utf8"));
+    const schema = JSON.parse(await readFile("schema/repositories.schema.json", "utf8"));
+    const ajv = new Ajv({ allErrors: true, strict: true }); addFormats(ajv);
+    const validate = ajv.compile(schema);
+    repositories.repositories["1296724484"].copilotInstructionsProfile = "unregistered";
+    expect(validate(repositories)).toBe(false);
   });
 
   it("中央配置黄金事实逐字冻结", async () => {
