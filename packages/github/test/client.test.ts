@@ -77,15 +77,16 @@ describe("代码托管平台客户端", () => {
         path: new URL(String(url)).pathname,
         body: JSON.parse(String(init?.body)),
       };
-      return new Response(JSON.stringify({ users: [], teams: [{ slug: "maintainers" }] }), { status: 201 });
+      return new Response(JSON.stringify({ number: 7, requested_teams: [{ slug: "maintainers" }] }), { status: 201 });
     };
     const client = new GitHubClient("token", "https://example.test", transport as typeof fetch);
-    await client.requestTeamReviewers("splrad", "steward", 7, ["maintainers"]);
+    const result = await client.requestTeamReviewers("splrad", "steward", 7, ["maintainers"]);
     expect(request).toEqual({
       method: "POST",
       path: "/repos/splrad/steward/pulls/7/requested_reviewers",
       body: { team_reviewers: ["maintainers"] },
     });
+    expect(result).toEqual({ number: 7, requested_teams: [{ slug: "maintainers" }] });
   });
 
   it("对Git引用路径中的特殊字符编码并保留分支层级", async () => {

@@ -162,7 +162,7 @@ describe("中央运行程序", () => {
   });
 
   it("草案转为可审查后幂等请求Maintainers团队", async () => {
-    const tokenBodies: any[] = []; const reviewBodies: any[] = []; let alreadyRequested = false;
+    const tokenBodies: any[] = []; const reviewBodies: any[] = []; let alreadyRequested = false; let requestedReviewerReads = 0;
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
       const value = String(url); const method = init?.method ?? "GET";
       if (value.includes("/access_tokens")) {
@@ -170,11 +170,12 @@ describe("中央运行程序", () => {
         return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
       }
       if (value.endsWith("/repos/splrad/steward/pulls/8/requested_reviewers") && method === "GET") {
+        requestedReviewerReads++;
         return new Response(JSON.stringify({ users: [], teams: alreadyRequested ? [{ slug: "maintainers" }] : [] }), { status: 200 });
       }
       if (value.endsWith("/repos/splrad/steward/pulls/8/requested_reviewers") && method === "POST") {
         reviewBodies.push(JSON.parse(String(init.body))); alreadyRequested = true;
-        return new Response(JSON.stringify({ users: [], teams: [{ slug: "maintainers" }] }), { status: 201 });
+        return new Response(JSON.stringify({ number: 8, requested_teams: [{ slug: "maintainers" }] }), { status: 201 });
       }
       return new Response("unexpected", { status: 500 });
     });
@@ -190,6 +191,27 @@ describe("中央运行程序", () => {
       expect.objectContaining({ repository_ids: [1296724484], permissions: { metadata: "read", pull_requests: "write" } }),
     ]);
     expect(reviewBodies).toEqual([{ team_reviewers: ["maintainers"] }]);
+    expect(requestedReviewerReads).toBe(2);
+  });
+
+  it("团队审查创建响应未确认Maintainers时失败关闭", async () => {
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const value = String(url); const method = init?.method ?? "GET";
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith("/repos/splrad/steward/pulls/8/requested_reviewers") && method === "GET") {
+        return new Response(JSON.stringify({ users: [], teams: [] }), { status: 200 });
+      }
+      if (value.endsWith("/repos/splrad/steward/pulls/8/requested_reviewers") && method === "POST") {
+        return new Response(JSON.stringify({ number: 8, requested_teams: [] }), { status: 201 });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    const payload = scoped({
+      action: "ready_for_review",
+      repository: repository(),
+      pull_request: { number: 8, draft: false, user: { id: 301115370 }, head: { sha: "d".repeat(40) }, base: { ref: "main" } },
+    });
+    expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(503);
   });
 
   it("只把GitHub API核实的当前PR验证运行同步到来源提交的全部有效重复检查", async () => {
