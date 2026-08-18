@@ -21,6 +21,7 @@ import { minimatch } from "minimatch";
 import YAML from "yaml";
 
 const commands = new Set(["onboard-repository", "pr-automation", "pr-classification", "sync-copilot-instructions", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"]);
+const stewardRepositoryId = 1296724484;
 // Repository configuration and workspace files are runtime inputs, not bundle assets.
 // This wrapper keeps their paths opaque to the static asset tracer used by ncc.
 const runtimeReadFile = ((path: Parameters<typeof readFile>[0], options?: Parameters<typeof readFile>[1]) =>
@@ -134,7 +135,7 @@ export function renderAiClassificationEvidence(value: AiClassificationSuggestion
   return value ? value.evidence.map((item) => escapeMarkdownText(item)).join("；") : "未提供";
 }
 async function dispatchClassification(input: { repositoryId: number; pullRequestNumber: number; headSha: string; policySha: string; deliveryId: string; aiClassification?: string }) {
-  const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId: 1296724484, permissions: { actions: "write", metadata: "read" }, policySha: input.policySha });
+  const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId: stewardRepositoryId, permissions: { actions: "write", metadata: "read" }, policySha: input.policySha });
   await dispatchWorkflow(new GitHubClient(token, "https://api.github.com", fetch, input.policySha), { owner: "splrad", repo: "steward", workflow: "pr-classification.yml", policySha: input.policySha, inputs: { deliveryId: input.deliveryId, repositoryId: String(input.repositoryId), pullRequestNumber: String(input.pullRequestNumber), eventHeadSha: input.headSha, policySha: input.policySha, ...(input.aiClassification ? { aiClassification: input.aiClassification } : {}) } });
 }
 
@@ -519,7 +520,7 @@ export function matchesGeneratedCopilotInstructions(actual: string, generated: s
 }
 
 export function copilotInstructionSourcePath(repositoryId: number, workspace: string, file: "common.md" | "layerscape.md"): string {
-  return repositoryId === 1296724484
+  return repositoryId === stewardRepositoryId
     ? join(workspace, "config", "copilot", file)
     : configPath("copilot", file);
 }

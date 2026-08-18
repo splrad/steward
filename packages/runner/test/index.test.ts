@@ -87,11 +87,19 @@ describe("中央命令入口", () => {
 
   it("仅Steward中央仓库从候选工作区读取Copilot说明源", () => {
     const workspace = join(tmpdir(), "candidate-steward");
-    expect(copilotInstructionSourcePath(1296724484, workspace, "common.md")).toBe(join(workspace, "config", "copilot", "common.md"));
-    expect(copilotInstructionSourcePath(1187527897, workspace, "common.md")).toMatch(/config[\\/]copilot[\\/]common\.md$/u);
-    expect(copilotInstructionSourcePath(1187527897, workspace, "common.md")).not.toBe(join(workspace, "config", "copilot", "common.md"));
-    expect(copilotInstructionSourcePath(1296725317, workspace, "common.md")).toMatch(/config[\\/]copilot[\\/]common\.md$/u);
-    expect(copilotInstructionSourcePath(1296725317, workspace, "common.md")).not.toBe(join(workspace, "config", "copilot", "common.md"));
+    const configuredDirectory = process.env.STEWARD_CONFIG_DIRECTORY;
+    delete process.env.STEWARD_CONFIG_DIRECTORY;
+    try {
+      expect(copilotInstructionSourcePath(1296724484, workspace, "common.md")).toBe(join(workspace, "config", "copilot", "common.md"));
+      expect(copilotInstructionSourcePath(1296724484, workspace, "layerscape.md")).toBe(join(workspace, "config", "copilot", "layerscape.md"));
+      expect(copilotInstructionSourcePath(1187527897, workspace, "common.md")).toMatch(/config[\\/]copilot[\\/]common\.md$/u);
+      expect(copilotInstructionSourcePath(1187527897, workspace, "common.md")).not.toBe(join(workspace, "config", "copilot", "common.md"));
+      expect(copilotInstructionSourcePath(1296725317, workspace, "common.md")).toMatch(/config[\\/]copilot[\\/]common\.md$/u);
+      expect(copilotInstructionSourcePath(1296725317, workspace, "common.md")).not.toBe(join(workspace, "config", "copilot", "common.md"));
+    } finally {
+      if (configuredDirectory === undefined) delete process.env.STEWARD_CONFIG_DIRECTORY;
+      else process.env.STEWARD_CONFIG_DIRECTORY = configuredDirectory;
+    }
   });
 
   it("Git空白检查接受CRLF并继续拒绝真正的行尾空格", async () => {
