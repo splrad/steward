@@ -12,8 +12,8 @@ import {
   organizationPullRequestTemplate,
   parseVersion, planRelease, planRepositorySettings, reconcileManagedLabels, renderCopilotInstructions, renderManagedBody,
   renderOnboardingPullRequest, renderReleaseNotes, renderValidationSummary, runValidationTasks,
-  validateGeneratedSummary, validateRepositoryForOnboarding, verifyAssetManifest,
-  type AutomationFacts, type ClassificationProfile, type Contributor, type ReleaseManifest, type ValidationProfile,
+  validateAiClassificationSuggestion, validateGeneratedSummary, validateRepositoryForOnboarding, verifyAssetManifest,
+  type AiClassificationSuggestion, type AutomationFacts, type ClassificationProfile, type Contributor, type ReleaseManifest, type ValidationProfile,
 } from "../../core/src/index.js";
 import { createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestError, uploadReleaseAsset } from "../../github/src/index.js";
 import { minimatch } from "minimatch";
@@ -96,9 +96,19 @@ function configurationFor(catalogValue: Catalog, repository: any): any {
 
 async function optional<T>(operation: () => Promise<T>): Promise<T | null> { try { return await operation(); } catch (error) { if (error instanceof GitHubRequestError && error.status === 404) return null; throw error; } }
 function decodeContent(value: any): string | null { return value?.encoding === "base64" && typeof value.content === "string" ? Buffer.from(value.content.replace(/\n/g, ""), "base64").toString("utf8") : null; }
-async function dispatchClassification(input: { repositoryId: number; pullRequestNumber: number; headSha: string; policySha: string; deliveryId: string }) {
+export function encodeAiClassificationPayload(value: AiClassificationSuggestion, allowedKinds: readonly string[]): string {
+  const validated = validateAiClassificationSuggestion(value, allowedKinds);
+  return Buffer.from(JSON.stringify(validated), "utf8").toString("base64url");
+}
+export function decodeAiClassificationPayload(value: string, allowedKinds: readonly string[]): AiClassificationSuggestion {
+  if (!value || value.length > 4_096 || !/^[A-Za-z0-9_-]+$/u.test(value)) throw new Error("AI影子分类载荷格式无效");
+  const decoded = Buffer.from(value, "base64url");
+  if (decoded.toString("base64url") !== value) throw new Error("AI影子分类载荷不是规范编码");
+  return validateAiClassificationSuggestion(JSON.parse(decoded.toString("utf8")), allowedKinds);
+}
+async function dispatchClassification(input: { repositoryId: number; pullRequestNumber: number; headSha: string; policySha: string; deliveryId: string; aiClassification?: string }) {
   const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId: 1296724484, permissions: { actions: "write", metadata: "read" }, policySha: input.policySha });
-  await dispatchWorkflow(new GitHubClient(token, "https://api.github.com", fetch, input.policySha), { owner: "splrad", repo: "steward", workflow: "pr-classification.yml", policySha: input.policySha, inputs: { deliveryId: input.deliveryId, repositoryId: String(input.repositoryId), pullRequestNumber: String(input.pullRequestNumber), eventHeadSha: input.headSha, policySha: input.policySha } });
+  await dispatchWorkflow(new GitHubClient(token, "https://api.github.com", fetch, input.policySha), { owner: "splrad", repo: "steward", workflow: "pr-classification.yml", policySha: input.policySha, inputs: { deliveryId: input.deliveryId, repositoryId: String(input.repositoryId), pullRequestNumber: String(input.pullRequestNumber), eventHeadSha: input.headSha, policySha: input.policySha, ...(input.aiClassification ? { aiClassification: input.aiClassification } : {}) } });
 }
 
 const copilotReviewer = "copilot-pull-request-reviewer[bot]";
@@ -281,6 +291,7 @@ async function automate(args: Readonly<Record<string, string>>) {
   const repository = await gh.getRepositoryById(repositoryId); const [owner, repo] = splitRepository(repository.full_name);
   const repositoryConfiguration = configurationFor(await catalog(), repository);
   if (!repositoryConfiguration.managed || !repositoryConfiguration.prAutomation) return summary(["状态：ignored", "原因：仓库没有启用中央拉取请求创建"]);
+  const classificationProfile = await json<ClassificationProfile>(configPath("profiles", "classification", `${repositoryConfiguration.classificationProfile}.json`));
   const sourceBranch = sourceRef.slice("refs/heads/".length); if (sourceBranch === repository.default_branch) return summary(["状态：ignored", "原因：默认分支推送不创建拉取请求"]);
   const [baseBefore, sourceBefore] = await Promise.all([
     gh.getRef(owner, repo, `heads/${repository.default_branch}`),
@@ -305,12 +316,12 @@ async function automate(args: Readonly<Record<string, string>>) {
   }
   const contributors = [...contributorMap.values()];
   const files = (compare.files ?? []).map((file: any) => file.filename);
-  const facts: AutomationFacts = { sourceRef, targetRef: `refs/heads/${repository.default_branch}`, headSha: sourceBefore.object.sha, baseSha: baseBefore.object.sha, commitSubjects: (compare.commits ?? []).map((c: any) => c.commit.message.split("\n")[0]), files, diffStat: `${files.length}个文件`, diffExcerpt: (compare.files ?? []).map((file: any) => file.patch ?? "").join("\n"), areas: [], contributors };
+  const facts: AutomationFacts = { sourceRef, targetRef: `refs/heads/${repository.default_branch}`, headSha: sourceBefore.object.sha, baseSha: baseBefore.object.sha, commitSubjects: (compare.commits ?? []).map((c: any) => c.commit.message.split("\n")[0]), files, diffStat: `${files.length}个文件`, diffExcerpt: (compare.files ?? []).map((file: any) => `文件：${file.filename}\n${file.patch ?? "未提供补丁内容"}`).join("\n\n"), areas: [], contributors };
   const fallback = buildDeterministicSummary(facts); let generated = fallback; let mode = "deterministic";
   if (process.env.PREPARE_ONLY === "true") {
     const promptPath = env("PR_COPILOT_PROMPT_PATH");
     const preparedFactsPath = env("PR_PREPARED_FACTS_PATH");
-    await writeFile(promptPath, buildPrompt(facts, fallback));
+    await writeFile(promptPath, buildPrompt(facts, fallback, classificationProfile.decisions.kindOrder));
     await writeFile(preparedFactsPath, JSON.stringify({ repositoryId, sourceRef, headSha: facts.headSha, baseSha: facts.baseSha, policySha }) + "\n");
     await summary(["状态：prepared", `来源提交：${facts.headSha}`, `提示文件：${basename(promptPath)}`]);
     return;
@@ -324,6 +335,16 @@ async function automate(args: Readonly<Record<string, string>>) {
       mode = "copilot";
     } catch { generated = fallback; }
   }
+  let aiClassification: string | undefined;
+  let aiClassificationSummary = mode === "copilot" ? "未提供" : "Copilot不可用，未提供";
+  if (mode === "copilot" && generated.classification) {
+    try {
+      aiClassification = encodeAiClassificationPayload(generated.classification, classificationProfile.decisions.kindOrder);
+      aiClassificationSummary = `${generated.classification.kind}（${generated.classification.confidence}）`;
+    } catch {
+      aiClassificationSummary = "不属于当前分类配置，未传递";
+    }
+  }
   const template = process.env.PR_TEMPLATE_PATH ? await runtimeReadFile(process.env.PR_TEMPLATE_PATH, "utf8") : organizationPullRequestTemplate;
   const title = `${generated.type}(${generated.scope}): ${generated.title}`;
   const context = await computePullRequestFingerprint({ repositoryId, pullRequestNumber: pulls[0]?.number ?? 0, headSha: facts.headSha, baseSha: facts.baseSha, commits: (compare.commits ?? []).map((c: any) => c.sha), files: (compare.files ?? []).map((f: any) => ({ path: f.filename, status: f.status, additions: f.additions, deletions: f.deletions })), title, body: "", contributors });
@@ -331,9 +352,9 @@ async function automate(args: Readonly<Record<string, string>>) {
   const pull = pulls[0] ? await gh.updatePullRequest(owner, repo, pulls[0].number, { title, body }) : await gh.createPullRequest(owner, repo, { title, body, head: sourceBranch, base: repository.default_branch });
   await output({ pullRequestNumber: pull.number, headSha: facts.headSha, repositoryFullName: repository.full_name });
   const copilot = await ensureCopilotReview(gh, owner, repo, pull.number, facts.headSha, policySha);
-  await dispatchClassification({ repositoryId, pullRequestNumber: pull.number, headSha: facts.headSha, policySha, deliveryId: required(args, "delivery-id") });
-  await summary([`状态：${pulls[0] ? "updated" : "created"}`, `拉取请求：#${pull.number}`, `来源提交：${facts.headSha}`, `事件提交：${eventAfterSha}`, `标题生成：${mode}`, `Copilot审查：${copilot}`]);
-  if (process.env.PR_COPILOT_PROMPT_PATH) await writeFile(process.env.PR_COPILOT_PROMPT_PATH, buildPrompt(facts, fallback));
+  await dispatchClassification({ repositoryId, pullRequestNumber: pull.number, headSha: facts.headSha, policySha, deliveryId: required(args, "delivery-id"), ...(aiClassification ? { aiClassification } : {}) });
+  await summary([`状态：${pulls[0] ? "updated" : "created"}`, `拉取请求：#${pull.number}`, `来源提交：${facts.headSha}`, `事件提交：${eventAfterSha}`, `标题生成：${mode}`, `AI分类建议：${aiClassificationSummary}`, `Copilot审查：${copilot}`]);
+  if (process.env.PR_COPILOT_PROMPT_PATH) await writeFile(process.env.PR_COPILOT_PROMPT_PATH, buildPrompt(facts, fallback, classificationProfile.decisions.kindOrder));
 }
 
 async function classify(args: Readonly<Record<string, string>>) {
@@ -341,6 +362,7 @@ async function classify(args: Readonly<Record<string, string>>) {
   const policySha = sha(required(args, "policy-sha"), "policy-sha");
   if (args["scan-all"] === "true") {
     if (args["pull-request-number"] || args["event-head-sha"]) throw new Error("全量分类不能同时指定单个拉取请求");
+    if (process.env.AI_CLASSIFICATION) throw new Error("全量分类不能携带单个拉取请求的AI影子建议");
     const reader = await client(repositoryId, { pull_requests: "read", metadata: "read" }, policySha);
     const repository = await reader.getRepositoryById(repositoryId); const [owner, repo] = splitRepository(repository.full_name);
     const defaultBranch = repository.default_branch;
@@ -369,6 +391,18 @@ async function classify(args: Readonly<Record<string, string>>) {
     const [files, commits, labels] = await Promise.all([gh.listPullFiles(owner, repo, number), gh.listPullCommits(owner, repo, number), gh.listLabels(owner, repo, number)]);
     if (!files.length || !commits.length) throw new Error("提交或文件分页结果为空");
     const result = classifyPullRequest(profile, { title: pull.title, body: pull.body ?? "", files: files.map((value: any) => value.filename), currentLabels: labels.map((value: any) => value.name) });
+    let aiClassification: AiClassificationSuggestion | null = null;
+    let aiClassificationState = process.env.AI_CLASSIFICATION ? "无效，已忽略" : "未提供";
+    if (process.env.AI_CLASSIFICATION) {
+      try {
+        aiClassification = decodeAiClassificationPayload(process.env.AI_CLASSIFICATION, profile.decisions.kindOrder);
+        aiClassificationState = `${aiClassification.kind}（${aiClassification.confidence}）`;
+      } catch { /* shadow advice never blocks deterministic classification */ }
+    }
+    const aiComparison = aiClassification
+      ? (aiClassification.kind === result.kind ? "与确定性规则一致" : `与确定性规则不一致（规则：${result.kind}）`)
+      : "未比较";
+    const aiEvidence = aiClassification ? aiClassification.evidence.join("；") : "未提供";
     const plan = reconcileManagedLabels(profile, labels.map((value: any) => value.name), result);
     const currentBeforeWrite = await gh.getPullRequest(owner, repo, number);
     if (currentBeforeWrite.head.sha !== expectedHead) throw new Error("写入标签前来源提交已经漂移");
@@ -382,8 +416,8 @@ async function classify(args: Readonly<Record<string, string>>) {
     if (currentAfterWrite.head.sha !== expectedHead || currentAfterWrite.base.sha !== pull.base.sha || currentAfterWrite.title !== pull.title || (currentAfterWrite.body ?? "") !== (pull.body ?? "")) throw new Error("分类输入在写入期间已经漂移");
     const contributors = commits.map((commit: any) => commit.author ? normalizeContributor({ ...commit.author, name: commit.commit?.author?.name, email: commit.commit?.author?.email, avatarUrl: commit.author.avatar_url }) : null).filter(Boolean) as Contributor[];
     const fingerprint = await computePullRequestFingerprint({ repositoryId, pullRequestNumber: number, headSha: expectedHead, baseSha: pull.base.sha, commits: commits.map((value: any) => value.sha), files: files.map((value: any) => ({ path: value.filename, status: value.status, additions: value.additions, deletions: value.deletions })), title: pull.title, body: pull.body ?? "", contributors });
-    await gh.updateCheckRun(owner, repo, check.id, { name: "PR Classification Gate", status: "completed", conclusion: "success", external_id: `${repositoryId}:${number}:${expectedHead}:${fingerprint}`, output: { title: "拉取请求分类完成", summary: `区域：${result.areas.join("、") || "无"}\n类型：${result.kind}\n标签：${result.publicLabels.join("、")}\n输入摘要：${fingerprint}` } });
-    await summary([`拉取请求：#${number}`, `来源提交：${expectedHead}`, `分类：${result.kind}`, `标签：${result.publicLabels.join("、")}`, `输入摘要：${fingerprint}`]);
+    await gh.updateCheckRun(owner, repo, check.id, { name: "PR Classification Gate", status: "completed", conclusion: "success", external_id: `${repositoryId}:${number}:${expectedHead}:${fingerprint}`, output: { title: "拉取请求分类完成", summary: `区域：${result.areas.join("、") || "无"}\n类型：${result.kind}\n标签：${result.publicLabels.join("、")}\n标签来源：确定性规则（AI影子建议未参与标签写入）\nAI影子建议：${aiClassificationState}\nAI影子对照：${aiComparison}\nAI依据：${aiEvidence}\n输入摘要：${fingerprint}` } });
+    await summary([`拉取请求：#${number}`, `来源提交：${expectedHead}`, `分类：${result.kind}`, `标签：${result.publicLabels.join("、")}`, "标签来源：确定性规则（AI影子建议未参与标签写入）", `AI影子建议：${aiClassificationState}`, `AI影子对照：${aiComparison}`, `AI依据：${aiEvidence}`, `输入摘要：${fingerprint}`]);
   } catch (error) {
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 60_000);
     await gh.updateCheckRun(owner, repo, check.id, { name: "PR Classification Gate", status: "completed", conclusion: "failure", external_id: `${repositoryId}:${number}:${expectedHead}:failure`, output: { title: "拉取请求分类失败", summary: message } });
