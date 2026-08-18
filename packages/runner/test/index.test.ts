@@ -30,7 +30,7 @@ describe("中央命令入口", () => {
     expect(env("TEST_REQUIRED_ENV")).toBe("present");
   });
 
-  it("人类推送只在首次创建时生成草案拉取请求", () => {
+  it("创建拉取请求的输入显式包含draft标记", () => {
     expect(humanPushPullRequestCreateInput({ title: "feat(pr): 草案", body: "正文", head: "feature/a", base: "main" })).toEqual({
       title: "feat(pr): 草案",
       body: "正文",

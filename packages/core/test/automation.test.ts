@@ -87,6 +87,10 @@ describe("拉取请求自动化", () => {
     expect(prompt).toContain("motivation仅在本次提交信息或差异中存在明确的问题、需求或决策依据时使用");
     expect(prompt).toContain("summary、motivation和changes必须基于本次提交信息和差异事实填写");
     expect(prompt).toContain("motivation只说明为什么需要本次修改，不得重复summary或changes");
+    expect(prompt).toContain("使用自然、简洁、具体的工程中文");
+    expect(prompt).toContain("不使用“人类推送”“真人推送”“普通人类”等内部分类称呼");
+    expect(prompt).toContain("不使用“不仅……而且……”和为了凑数的三项并列");
+    expect(prompt).toContain("不得加入第一人称、情绪、幽默、主观评价或差异没有提供的事实");
     expect(prompt).toContain("classification是只读影子建议，不直接写入标签");
     expect(prompt).toContain("无法基于已显示差异给出建议时必须为null");
     expect(prompt).toContain("kind只能使用feature、bug、chore");
