@@ -5,7 +5,7 @@ import { join } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertManagedBranchPull, assertWorkflowPaths, classificationInstallationPermissions, decodeAiClassificationPayload, describeCopilotFallback, encodeAiClassificationPayload, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, writeManagedFileToBranch } from "../src/index.js";
+import { assertManagedBranchPull, assertWorkflowPaths, classificationInstallationPermissions, decodeAiClassificationPayload, describeCopilotFallback, encodeAiClassificationPayload, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -28,6 +28,16 @@ describe("中央命令入口", () => {
     expect(() => env("TEST_REQUIRED_ENV")).toThrow("缺少环境变量");
     process.env.TEST_REQUIRED_ENV = "present";
     expect(env("TEST_REQUIRED_ENV")).toBe("present");
+  });
+
+  it("创建拉取请求的输入显式包含draft标记", () => {
+    expect(humanPushPullRequestCreateInput({ title: "feat(pr): 草案", body: "正文", head: "feature/a", base: "main" })).toEqual({
+      title: "feat(pr): 草案",
+      body: "正文",
+      head: "feature/a",
+      base: "main",
+      draft: true,
+    });
   });
 
   it("AI影子分类载荷使用规范编码并受当前分类配置约束", () => {

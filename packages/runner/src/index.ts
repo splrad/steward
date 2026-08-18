@@ -173,6 +173,9 @@ export function classificationInstallationPermissions(): Parameters<typeof creat
 export function prAutomationInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
   return { contents: "read", pull_requests: "write", checks: "read", metadata: "read" } as const;
 }
+export function humanPushPullRequestCreateInput(input: { title: string; body: string; head: string; base: string }) {
+  return { ...input, draft: true } as const;
+}
 async function hasCurrentCopilotReview(clientValue: GitHubClient, owner: string, repo: string, number: number, headSha: string, afterEventId?: number, checkClientValue: GitHubClient = clientValue): Promise<boolean> {
   const [requested, reviews, events, checkRuns] = await Promise.all([
     clientValue.getRequestedReviewers(owner, repo, number),
@@ -393,12 +396,12 @@ async function automate(args: Readonly<Record<string, string>>) {
   const title = `${generated.type}(${generated.scope}): ${generated.title}`;
   const context = await computePullRequestFingerprint({ repositoryId, pullRequestNumber: pulls[0]?.number ?? 0, headSha: facts.headSha, baseSha: facts.baseSha, commits: (compare.commits ?? []).map((c: any) => c.sha), files: (compare.files ?? []).map((f: any) => ({ path: f.filename, status: f.status, additions: f.additions, deletions: f.deletions })), title, body: "", contributors });
   const body = renderManagedBody({ generated, existingBody: pulls[0]?.body, templateBody: template, actor: sourceActor.login, contributors, context });
-  const pull = pulls[0] ? await gh.updatePullRequest(owner, repo, pulls[0].number, { title, body }) : await gh.createPullRequest(owner, repo, { title, body, head: sourceBranch, base: repository.default_branch });
+  const pull = pulls[0] ? await gh.updatePullRequest(owner, repo, pulls[0].number, { title, body }) : await gh.createPullRequest(owner, repo, humanPushPullRequestCreateInput({ title, body, head: sourceBranch, base: repository.default_branch }));
   await output({ pullRequestNumber: pull.number, headSha: facts.headSha, repositoryFullName: repository.full_name });
   const copilot = await ensureCopilotReview(gh, owner, repo, pull.number, facts.headSha, policySha);
   await dispatchClassification({ repositoryId, pullRequestNumber: pull.number, headSha: facts.headSha, policySha, deliveryId: required(args, "delivery-id"), ...(aiClassification ? { aiClassification } : {}) });
   await summary([
-    `状态：${pulls[0] ? "updated" : "created"}`,
+    `状态：${pulls[0] ? "updated" : "draft-created"}`,
     `拉取请求：#${pull.number}`,
     `来源提交：${facts.headSha}`,
     `事件提交：${eventAfterSha}`,

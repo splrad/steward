@@ -171,6 +171,20 @@ async function pullRequestChangesVersion(env: Env, repository: any, pullRequestN
   return files.some(file => file?.filename === "Version.props");
 }
 
+async function requestMaintainersReview(env: Env, repository: any, pull: any): Promise<boolean> {
+  if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
+  const pullNumber = Number(pull?.number);
+  if (!Number.isSafeInteger(pullNumber) || pullNumber <= 0) throw new Error("拉取请求编号无效");
+  const [owner, repo] = splitRepository(String(repository.full_name));
+  const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY, installationId: Number(env.INSTALLATION_ID), repositoryId: Number(repository.id), permissions: { metadata: "read", pull_requests: "write" }, policySha: env.POLICY_SHA });
+  const gh = new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA);
+  const includesMaintainers = (teams: readonly any[]) => teams.some(team => String(team?.slug ?? "").toLowerCase() === "maintainers");
+  if (includesMaintainers((await gh.getRequestedReviewers(owner, repo, pullNumber))?.teams ?? [])) return false;
+  const updatedPull = await gh.requestTeamReviewers(owner, repo, pullNumber, ["maintainers"]);
+  if (!includesMaintainers(updatedPull?.requested_teams ?? [])) throw new Error("Maintainers审查请求未能通过创建响应确认");
+  return true;
+}
+
 function validScope(payload: any, env: Env): boolean {
   const organizationId = payload.organization?.id ?? payload.installation?.account?.id ?? payload.repository?.owner?.id;
   const installationId = payload.installation?.id;
@@ -223,6 +237,11 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       await ensureValidationPending(env, repository, pull);
       await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), eventHeadSha: pull.head.sha, policySha: env.POLICY_SHA });
       return response(202);
+    }
+    if (event === "pull_request" && action === "ready_for_review") {
+      const repository = payload.repository; const pull = payload.pull_request;
+      if (!repository || !isManaged(repository) || !pull || pull.user?.id !== 301115370 || pull.draft !== false || pull.base?.ref !== repository.default_branch) return response(204);
+      return response(await requestMaintainersReview(env, repository, pull) ? 202 : 204);
     }
     if (event === "workflow_run" && ["requested", "in_progress", "completed"].includes(action)) {
       const repository = payload.repository; if (!repository || !isManaged(repository)) return response(204);
