@@ -72,6 +72,7 @@ describe("中央命令入口", () => {
     expect(describeCopilotFallback("prepared-facts-check", new Error("人工智能输入对应的分支事实已经漂移"))).toBe("人工智能输入对应的分支事实已经漂移");
     expect(describeCopilotFallback("copilot-output-read", new Error("临时路径"))).toBe("Copilot输出文件无法读取");
     expect(describeCopilotFallback("copilot-output-parse", new Error("原始JSON"))).toBe("Copilot输出不是有效JSON");
+    expect(describeCopilotFallback("copilot-output-parse", new SyntaxError("Unexpected non-whitespace character after JSON at position 123 (line 2 column 1)"))).toBe("Copilot输出不是有效JSON（位置123）");
     expect(describeCopilotFallback("copilot-output-validate", new Error("summary长度或格式无效"))).toBe("Copilot输出字段校验失败：summary长度或格式无效");
     expect(describeCopilotFallback("copilot-output-validate", new Error("不可信内容\nsecret=value"))).toBe("Copilot输出字段校验失败");
   });

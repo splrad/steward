@@ -51,6 +51,8 @@ const copilotStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => s
 if (copilotStep?.env?.COPILOT_GITHUB_TOKEN?.replace(/\s+/gu, "") !== "${{secrets.COPILOT_CLI_TOKEN}}") throw new Error("Copilot CLI没有使用个人Copilot专用环境密钥");
 if (copilotStep?.id !== "copilot" || copilotStep?.["continue-on-error"] !== true) throw new Error("Copilot CLI步骤没有保留可读取的失败结果");
 if (Object.hasOwn(copilotStep?.env ?? {}, "GITHUB_TOKEN") || /copilot-requests/iu.test(prAutomation)) throw new Error("Copilot CLI仍引用组织内置令牌路径");
+const copilotCommand = String(copilotStep?.run ?? "");
+if (!/(?:^|\s)(?:-s|--silent)(?:\s|$)/u.test(copilotCommand)) throw new Error("Copilot CLI没有使用静默脚本输出");
 const reconcileStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "收敛拉取请求");
 if (reconcileStep?.env?.COPILOT_STEP_OUTCOME?.replace(/\s+/gu, "") !== "${{steps.copilot.outcome}}") throw new Error("收敛步骤没有接收Copilot CLI结果");
 if (!prAutomation.includes("- name: 使用Copilot润色") || !prAutomation.includes('npx --no-install copilot -p')) throw new Error("拉取请求工作流缺少Copilot正文生成步骤");
