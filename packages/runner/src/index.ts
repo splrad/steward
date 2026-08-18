@@ -91,6 +91,10 @@ async function output(values: Record<string, string | number>): Promise<void> { 
 type CopilotFallbackStage = "copilot-step" | "prepared-facts-read" | "prepared-facts-parse" | "prepared-facts-check" | "copilot-output-read" | "copilot-output-parse" | "copilot-output-validate";
 const safeGeneratedSummaryValidationMessage = /^(?:Copilot结果必须是对象|Copilot结果包含额外字段|type无效|scope无效|title格式无效|changes无效|related无效|(?:title|summary|motivation|changes\[\]|impact|impact\[\]|related\[\]|releaseAndMigration|releaseAndMigration\[\])(?:必须是字符串|长度或格式无效|无效))$/u;
 export function describeCopilotFallback(stage: CopilotFallbackStage, error: unknown): string {
+  if (stage === "copilot-output-parse") {
+    const position = error instanceof Error ? /\bposition (\d{1,9})\b/u.exec(error.message)?.[1] : undefined;
+    return position ? `Copilot输出不是有效JSON（位置${position}）` : "Copilot输出不是有效JSON";
+  }
   if (stage === "copilot-output-validate") {
     const message = error instanceof Error ? error.message : "";
     return safeGeneratedSummaryValidationMessage.test(message) ? `Copilot输出字段校验失败：${message}` : "Copilot输出字段校验失败";
@@ -101,7 +105,6 @@ export function describeCopilotFallback(stage: CopilotFallbackStage, error: unkn
     "prepared-facts-parse": "人工智能输入文件不是有效JSON",
     "prepared-facts-check": "人工智能输入对应的分支事实已经漂移",
     "copilot-output-read": "Copilot输出文件无法读取",
-    "copilot-output-parse": "Copilot输出不是有效JSON",
   }[stage];
 }
 
