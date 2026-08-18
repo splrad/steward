@@ -214,6 +214,22 @@ describe("中央运行程序", () => {
     expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(503);
   });
 
+  it("团队审查编号无效时不签发令牌或调用GitHub API", async () => {
+    let requests = 0;
+    vi.stubGlobal("fetch", async (url: string) => {
+      requests++;
+      if (String(url).includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      return new Response("unexpected", { status: 500 });
+    });
+    const payload = scoped({
+      action: "ready_for_review",
+      repository: repository(),
+      pull_request: { number: "invalid", draft: false, user: { id: 301115370 }, head: { sha: "d".repeat(40) }, base: { ref: "main" } },
+    });
+    expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(503);
+    expect(requests).toBe(0);
+  });
+
   it("只把GitHub API核实的当前PR验证运行同步到来源提交的全部有效重复检查", async () => {
     const headSha = "d".repeat(40); const runId = 777; const writes: Array<{ url: string; body: any }> = []; const tokenBodies: any[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {

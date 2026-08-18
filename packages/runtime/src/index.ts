@@ -173,12 +173,14 @@ async function pullRequestChangesVersion(env: Env, repository: any, pullRequestN
 
 async function requestMaintainersReview(env: Env, repository: any, pull: any): Promise<boolean> {
   if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
+  const pullNumber = Number(pull?.number);
+  if (!Number.isSafeInteger(pullNumber) || pullNumber <= 0) throw new Error("拉取请求编号无效");
   const [owner, repo] = String(repository.full_name).split("/") as [string, string];
   const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY, installationId: Number(env.INSTALLATION_ID), repositoryId: Number(repository.id), permissions: { metadata: "read", pull_requests: "write" }, policySha: env.POLICY_SHA });
   const gh = new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA);
   const includesMaintainers = (teams: readonly any[]) => teams.some(team => String(team?.slug ?? "").toLowerCase() === "maintainers");
-  if (includesMaintainers((await gh.getRequestedReviewers(owner, repo, Number(pull.number)))?.teams ?? [])) return false;
-  const updatedPull = await gh.requestTeamReviewers(owner, repo, Number(pull.number), ["maintainers"]);
+  if (includesMaintainers((await gh.getRequestedReviewers(owner, repo, pullNumber))?.teams ?? [])) return false;
+  const updatedPull = await gh.requestTeamReviewers(owner, repo, pullNumber, ["maintainers"]);
   if (!includesMaintainers(updatedPull?.requested_teams ?? [])) throw new Error("Maintainers审查请求未能通过创建响应确认");
   return true;
 }
