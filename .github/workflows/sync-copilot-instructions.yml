@@ -23,7 +23,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with: { node-version-file: .node-version, cache: npm }
       - run: npm ci --ignore-scripts
-      - name: 同步中文审查说明
+      - name: 同步代码审查说明
         env:
           APP_ID: "4243096"
           INSTALLATION_ID: "145952003"

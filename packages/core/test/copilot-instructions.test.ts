@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { computeCopilotInstructionsDigest, planCopilotInstructionsSync, renderCopilotInstructions } from "../src/copilot-instructions.js";
 
-describe("Copilot中文审查说明", () => {
+describe("Copilot代码审查说明", () => {
   it("通用目标逐字等于中央源文件生成结果", async () => {
     const common = await readFile("config/copilot/common.md", "utf8");
     const target = await readFile(".github/copilot-instructions.md", "utf8");
