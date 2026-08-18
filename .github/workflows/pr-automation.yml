@@ -44,6 +44,7 @@ jobs:
           PREPARE_ONLY: "true"
         run: node packages/runner/dist/index.js pr-automation --delivery-id "${{ inputs.deliveryId }}" --repository-id "${{ inputs.repositoryId }}" --source-ref "${{ inputs.sourceRef }}" --event-after-sha "${{ inputs.eventAfterSha }}" --source-actor-id "${{ inputs.sourceActorId }}" --source-actor-login "${{ inputs.sourceActorLogin }}" --policy-sha "${{ inputs.policySha }}"
       - name: 使用Copilot润色
+        id: copilot
         continue-on-error: true
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_CLI_TOKEN }}
@@ -57,6 +58,7 @@ jobs:
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
           COPILOT_OUTPUT_PATH: ${{ runner.temp }}/copilot-output.json
           PR_PREPARED_FACTS_PATH: ${{ runner.temp }}/pr-prepared-facts.json
+          COPILOT_STEP_OUTCOME: ${{ steps.copilot.outcome }}
           COPILOT_REVIEW_REQUEST_TOKEN: ${{ secrets.COPILOT_REVIEW_REQUEST_TOKEN }}
         run: node packages/runner/dist/index.js pr-automation --delivery-id "${{ inputs.deliveryId }}" --repository-id "${{ inputs.repositoryId }}" --source-ref "${{ inputs.sourceRef }}" --event-after-sha "${{ inputs.eventAfterSha }}" --source-actor-id "${{ inputs.sourceActorId }}" --source-actor-login "${{ inputs.sourceActorLogin }}" --policy-sha "${{ inputs.policySha }}"
       - name: 删除临时人工智能输入
