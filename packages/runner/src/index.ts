@@ -301,8 +301,8 @@ async function automate(args: Readonly<Record<string, string>>) {
   const repository = await gh.getRepositoryById(repositoryId); const [owner, repo] = splitRepository(repository.full_name);
   const repositoryConfiguration = configurationFor(await catalog(), repository);
   if (!repositoryConfiguration.managed || !repositoryConfiguration.prAutomation) return summary(["状态：ignored", "原因：仓库没有启用中央拉取请求创建"]);
-  const classificationProfile = await json<ClassificationProfile>(configPath("profiles", "classification", `${repositoryConfiguration.classificationProfile}.json`));
   const sourceBranch = sourceRef.slice("refs/heads/".length); if (sourceBranch === repository.default_branch) return summary(["状态：ignored", "原因：默认分支推送不创建拉取请求"]);
+  const classificationProfile = await json<ClassificationProfile>(configPath("profiles", "classification", `${repositoryConfiguration.classificationProfile}.json`));
   const [baseBefore, sourceBefore] = await Promise.all([
     gh.getRef(owner, repo, `heads/${repository.default_branch}`),
     gh.getRef(owner, repo, `heads/${sourceBranch}`),

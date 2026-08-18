@@ -288,6 +288,11 @@ describe("中央命令入口", () => {
       "当前默认分支第一父提交链",
     ]) expect(source).toContain(fragment);
     expect(source).not.toMatch(/heads\/main|base\.ref\s*!==\s*"main"|default_branch\s*!==\s*"main"/u);
+    const automateSource = source.slice(source.indexOf("async function automate"), source.indexOf("async function classify"));
+    const defaultBranchIgnore = automateSource.indexOf("sourceBranch === repository.default_branch");
+    const classificationProfileRead = automateSource.indexOf('configPath("profiles", "classification"');
+    expect(defaultBranchIgnore).toBeGreaterThanOrEqual(0);
+    expect(classificationProfileRead).toBeGreaterThan(defaultBranchIgnore);
   });
 
   it("终态没有普通评论写入、旧包或旧运行目录", async () => {
