@@ -21,10 +21,10 @@ describe("Copilot中文审查说明", () => {
     expect(await computeCopilotInstructionsDigest(value)).toBe(await computeCopilotInstructionsDigest(value));
   });
 
-  it("拒绝超长或缺失固定字段的源文件", () => {
-    const valid = "严重程度：阻断 严重程度：建议 标题： 问题： 证据： 影响： 建议： 未发现需要阻断合并的问题。 发现需要修复后再合并的问题";
-    expect(() => renderCopilotInstructions(valid.repeat(400))).toThrow("4000");
-    expect(() => renderCopilotInstructions(valid.replace("证据：", ""))).toThrow("证据");
+  it("只强制非空和长度，不把审查正文硬编码到生成器", () => {
+    expect(renderCopilotInstructions("# 最小说明")).toBe("# 最小说明\n");
+    expect(() => renderCopilotInstructions(" \n")).toThrow("不能为空");
+    expect(() => renderCopilotInstructions("说明".repeat(2001))).toThrow("4000");
   });
 
   it("只允许无变化、创建或唯一受管分支更新", () => {
