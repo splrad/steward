@@ -9,6 +9,15 @@ export const organizationPullRequestTemplate = `${summaryStart}\n等待SPLRAD St
 export const conventionalTypes = ['feat', 'fix', 'refactor', 'perf', 'style', 'docs', 'test', 'build', 'ci', 'chore', 'revert'] as const;
 export type ConventionalType = typeof conventionalTypes[number];
 
+export const aiClassificationConfidences = ['high', 'medium', 'low'] as const;
+export type AiClassificationConfidence = typeof aiClassificationConfidences[number];
+
+export interface AiClassificationSuggestion {
+  kind: string;
+  confidence: AiClassificationConfidence;
+  evidence: string[];
+}
+
 export interface GeneratedSummary {
   type: ConventionalType;
   scope: string;
@@ -19,6 +28,7 @@ export interface GeneratedSummary {
   impact: string[];
   related: string[];
   releaseAndMigration: string[];
+  classification?: AiClassificationSuggestion;
 }
 
 export interface AutomationFacts {
@@ -59,10 +69,34 @@ function requireTextArray(value: unknown, name: string, maximumItems: number, mi
   return value.map((item) => requireText(item, `${name}[]`, minimumHan, maximumHan));
 }
 
+export function validateAiClassificationSuggestion(
+  value: unknown,
+  allowedKinds?: readonly string[],
+): AiClassificationSuggestion {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('classification必须是对象');
+  const object = value as Record<string, unknown>;
+  const allowed = new Set(['kind', 'confidence', 'evidence']);
+  if (Object.keys(object).some((key) => !allowed.has(key))) throw new Error('classification包含额外字段');
+  if (typeof object.kind !== 'string' || !/^[a-z][a-z0-9-]{0,39}$/u.test(object.kind)) throw new Error('classification.kind无效');
+  if (allowedKinds && !allowedKinds.includes(object.kind)) throw new Error('classification.kind不属于当前分类配置');
+  if (!aiClassificationConfidences.includes(object.confidence as AiClassificationConfidence)) throw new Error('classification.confidence无效');
+  if (!Array.isArray(object.evidence) || object.evidence.length < 1 || object.evidence.length > 3) throw new Error('classification.evidence无效');
+  const evidence = object.evidence.map((item) => {
+    const text = requirePlainText(item, 'classification.evidence[]', 4, 180);
+    if (/[<>\[\]`]/u.test(text)) throw new Error('classification.evidence[]必须是无标记纯文本');
+    return text;
+  });
+  return {
+    kind: object.kind,
+    confidence: object.confidence as AiClassificationConfidence,
+    evidence,
+  };
+}
+
 export function validateGeneratedSummary(value: unknown): GeneratedSummary {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Copilot结果必须是对象');
   const object = value as Record<string, unknown>;
-  const allowed = new Set(['type', 'scope', 'title', 'summary', 'motivation', 'changes', 'impact', 'related', 'releaseAndMigration']);
+  const allowed = new Set(['type', 'scope', 'title', 'summary', 'motivation', 'changes', 'impact', 'related', 'releaseAndMigration', 'classification']);
   if (Object.keys(object).some((key) => !allowed.has(key))) throw new Error('Copilot结果包含额外字段');
   if (!conventionalTypes.includes(object.type as ConventionalType)) throw new Error('type无效');
   if (typeof object.scope !== 'string' || !/^[a-z0-9-]{1,20}$/.test(object.scope)) throw new Error('scope无效');
@@ -76,7 +110,21 @@ export function validateGeneratedSummary(value: unknown): GeneratedSummary {
   if (!Array.isArray(object.related) || object.related.length > 6) throw new Error('related无效');
   const related = object.related.map((item) => requirePlainText(item, 'related[]', 2, 200));
   const releaseAndMigration = requireTextArray(object.releaseAndMigration, 'releaseAndMigration', 6, 5, 120);
-  return { type: object.type as ConventionalType, scope: object.scope, title, summary, motivation, changes, impact, related, releaseAndMigration };
+  const classification = object.classification === undefined || object.classification === null
+    ? undefined
+    : validateAiClassificationSuggestion(object.classification);
+  return {
+    type: object.type as ConventionalType,
+    scope: object.scope,
+    title,
+    summary,
+    motivation,
+    changes,
+    impact,
+    related,
+    releaseAndMigration,
+    ...(classification ? { classification } : {}),
+  };
 }
 
 function parseConventionalSubject(subject: string): { type: ConventionalType; scope?: string; title: string } | null {
@@ -143,18 +191,23 @@ export function buildDeterministicSummary(facts: AutomationFacts): GeneratedSumm
   };
 }
 
-export function buildPrompt(facts: AutomationFacts, fallback: GeneratedSummary): string {
+export function buildPrompt(
+  facts: AutomationFacts,
+  fallback: GeneratedSummary,
+  classificationKinds: readonly string[],
+): string {
   const excerpt = [...facts.diffExcerpt].slice(0, 22_000).join('');
   const truncated = excerpt.length < facts.diffExcerpt.length ? '\n差异已截断，禁止推断未显示内容。' : '';
   return [
     '你是SPLRAD拉取请求编辑器。只返回一个JSON对象，不要代码围栏、解释或额外字段。',
-    '字段固定为type、scope、title、summary、motivation、changes、impact、related、releaseAndMigration。主体使用简体中文。',
+    '字段固定为type、scope、title、summary、motivation、changes、impact、related、releaseAndMigration、classification。主体使用简体中文。',
     'type只能使用feat、fix、refactor、perf、style、docs、test、build、ci、chore、revert；scope只能使用1至20个小写字母、数字或连字符。',
     'title使用1至50个汉字的中文动宾结构且总字符不超过100，不含类型前缀、编号、换行或句号；summary使用20至120个汉字陈述实际改动且总字符不超过240。',
     'changes包含1至8项，每项10至100个汉字；motivation仅在本次提交信息或差异中存在明确的问题、需求或决策依据时使用10至200个汉字，否则为null；这些中文字段的总字符数不得超过汉字上限的两倍。',
     'impact和releaseAndMigration各为0至6项，每项5至120个汉字；related为0至6项，每项2至200个字符。',
     'summary、motivation和changes必须基于本次提交信息和差异事实填写。motivation只说明为什么需要本次修改，不得重复summary或changes；本次提交信息或差异中没有明确问题、需求或决策依据时必须为null。',
     'impact、related、releaseAndMigration没有对应事实时必须返回空数组，不得用“无”“不适用”“未涉及”等占位。',
+    `classification是只读影子建议，不直接写入标签；无法基于已显示差异给出建议时必须为null，不为null时kind只能使用${classificationKinds.join('、')}，confidence只能使用high、medium或low，evidence必须包含1至3项基于已显示差异的无Markdown纯文本依据，每项4至180个字符并尽量写明文件路径。`,
     '不得生成验证情况、审查重点、界面与输出变化或人工补充内容。',
     `来源分支：${facts.sourceRef}`, `目标分支：${facts.targetRef}`,
     `最新提交：\n${facts.commitSubjects.slice(0, 20).join('\n')}`,
@@ -176,9 +229,9 @@ function escapeHtml(value: string): string {
   return value.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;').replace(/"/gu, '&quot;').replace(/'/gu, '&#39;');
 }
 
-function escapeMarkdownText(value: string, preserveHash = false): string {
+export function escapeMarkdownText(value: string, preserveHash = false): string {
   const normalized = value.replace(/[\r\n]+/gu, ' ');
-  const markdownControl = preserveHash ? /([\\`*_\[\]{}()+.!|-])/gu : /([\\`*_\[\]{}()#+.!|-])/gu;
+  const markdownControl = preserveHash ? /([\\`*_~\[\]{}()+.!|-])/gu : /([\\`*_~\[\]{}()#+.!|-])/gu;
   return escapeHtml(normalized.replace(markdownControl, '\\$1'));
 }
 

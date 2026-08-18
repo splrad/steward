@@ -5,7 +5,7 @@ import { join } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertManagedBranchPull, assertWorkflowPaths, classificationInstallationPermissions, describeCopilotFallback, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, writeManagedFileToBranch } from "../src/index.js";
+import { assertManagedBranchPull, assertWorkflowPaths, classificationInstallationPermissions, decodeAiClassificationPayload, describeCopilotFallback, encodeAiClassificationPayload, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -28,6 +28,31 @@ describe("中央命令入口", () => {
     expect(() => env("TEST_REQUIRED_ENV")).toThrow("缺少环境变量");
     process.env.TEST_REQUIRED_ENV = "present";
     expect(env("TEST_REQUIRED_ENV")).toBe("present");
+  });
+
+  it("AI影子分类载荷使用规范编码并受当前分类配置约束", () => {
+    const suggestion = {
+      kind: "feature",
+      confidence: "high" as const,
+      evidence: ["packages/core/src/automation.ts新增分类建议字段"],
+    };
+    const encoded = encodeAiClassificationPayload(suggestion, ["feature", "bug"]);
+    expect(encoded).toMatch(/^[A-Za-z0-9_-]+$/u);
+    expect(decodeAiClassificationPayload(encoded, ["feature", "bug"])).toEqual(suggestion);
+    expect(() => decodeAiClassificationPayload(encoded, ["bug"])).toThrow("不属于当前分类配置");
+    expect(() => decodeAiClassificationPayload(`${encoded}=`, ["feature"])).toThrow("载荷格式无效");
+    expect(() => decodeAiClassificationPayload("a".repeat(4_097), ["feature"])).toThrow("载荷格式无效");
+    expect(() => decodeAiClassificationPayload(Buffer.from("not-json", "utf8").toString("base64url"), ["feature"]))
+      .toThrow("AI影子分类载荷格式无效");
+  });
+
+  it("AI影子分类依据以Markdown纯文本写入检查摘要", () => {
+    expect(renderAiClassificationEvidence({
+      kind: "feature",
+      confidence: "medium",
+      evidence: ["packages/core/a_b*~|file.ts"],
+    })).toBe("packages/core/a\\_b\\*\\~\\|file\\.ts");
+    expect(renderAiClassificationEvidence(null)).toBe("未提供");
   });
 
   it("Copilot回退原因按安全阶段记录且不输出未知异常正文", () => {
@@ -271,10 +296,16 @@ describe("中央命令入口", () => {
       "人工智能输出证据：",
       "同名分类检查存在歧义",
       "分类输入在写入期间已经漂移",
+      "AI影子建议未参与标签写入",
       "LayerScape不可变发布尚未启用",
       "当前默认分支第一父提交链",
     ]) expect(source).toContain(fragment);
     expect(source).not.toMatch(/heads\/main|base\.ref\s*!==\s*"main"|default_branch\s*!==\s*"main"/u);
+    const automateSource = source.slice(source.indexOf("async function automate"), source.indexOf("async function classify"));
+    const defaultBranchIgnore = automateSource.indexOf("sourceBranch === repository.default_branch");
+    const classificationProfileRead = automateSource.indexOf('configPath("profiles", "classification"');
+    expect(defaultBranchIgnore).toBeGreaterThanOrEqual(0);
+    expect(classificationProfileRead).toBeGreaterThan(defaultBranchIgnore);
   });
 
   it("终态没有普通评论写入、旧包或旧运行目录", async () => {

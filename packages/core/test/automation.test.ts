@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   buildDeterministicSummary,
   buildPrompt,
+  escapeMarkdownText,
   organizationPullRequestTemplate,
   renderManagedBody,
   summaryEnd,
   summaryStart,
+  validateAiClassificationSuggestion,
   validateGeneratedSummary,
 } from "../src/automation.js";
 import { isHumanActor, normalizeContributor } from "../src/identity.js";
@@ -20,11 +22,18 @@ const valid = {
   impact: ["后续自动拉取请求的正文将完全由人工智能或确定性回退生成"],
   related: ["#135"],
   releaseAndMigration: [],
+  classification: {
+    kind: "feature",
+    confidence: "high",
+    evidence: ["packages/core/src/automation.ts新增结构化分类建议字段"],
+  },
 } as const;
 
 describe("拉取请求自动化", () => {
   it("接受完整中文结构并拒绝每类无效字段", () => {
     expect(validateGeneratedSummary(valid)).toEqual(valid);
+    const { classification: _classification, ...withoutClassification } = valid;
+    expect(validateGeneratedSummary({ ...valid, classification: null })).toEqual(withoutClassification);
     const invalid: unknown[] = [
       null,
       { ...valid, type: "unknown" },
@@ -41,9 +50,16 @@ describe("拉取请求自动化", () => {
       { ...valid, related: ["<!-- workflow:managed-pr:end -->"] },
       { ...valid, related: ["--!>"] },
       { ...valid, releaseAndMigration: ["太短"] },
+      { ...valid, classification: { ...valid.classification, kind: "feature?" } },
+      { ...valid, classification: { ...valid.classification, confidence: "certain" } },
+      { ...valid, classification: { ...valid.classification, evidence: [] } },
+      { ...valid, classification: { ...valid.classification, evidence: ["src/a.ts\n伪造第二行"] } },
+      { ...valid, classification: { ...valid.classification, extra: true } },
       { ...valid, extra: true },
     ];
     for (const value of invalid) expect(() => validateGeneratedSummary(value)).toThrow();
+    expect(validateAiClassificationSuggestion(valid.classification, ["feature", "bug"])).toEqual(valid.classification);
+    expect(() => validateAiClassificationSuggestion(valid.classification, ["bug"])).toThrow("不属于当前分类配置");
   });
 
   it("生成约定式标题、完整模板和确定性中文回退", () => {
@@ -65,11 +81,15 @@ describe("拉取请求自动化", () => {
     expect(organizationPullRequestTemplate).toContain(summaryStart);
     expect(organizationPullRequestTemplate).toContain(summaryEnd);
     expect(organizationPullRequestTemplate).not.toContain("人工补充");
-    expect(buildPrompt(facts, generated)).toContain(JSON.stringify(generated));
-    expect(buildPrompt(facts, generated)).toContain("没有对应事实时必须返回空数组");
-    expect(buildPrompt(facts, generated)).toContain("motivation仅在本次提交信息或差异中存在明确的问题、需求或决策依据时使用");
-    expect(buildPrompt(facts, generated)).toContain("summary、motivation和changes必须基于本次提交信息和差异事实填写");
-    expect(buildPrompt(facts, generated)).toContain("motivation只说明为什么需要本次修改，不得重复summary或changes");
+    const prompt = buildPrompt(facts, generated, ["feature", "bug", "chore"]);
+    expect(prompt).toContain(JSON.stringify(generated));
+    expect(prompt).toContain("没有对应事实时必须返回空数组");
+    expect(prompt).toContain("motivation仅在本次提交信息或差异中存在明确的问题、需求或决策依据时使用");
+    expect(prompt).toContain("summary、motivation和changes必须基于本次提交信息和差异事实填写");
+    expect(prompt).toContain("motivation只说明为什么需要本次修改，不得重复summary或changes");
+    expect(prompt).toContain("classification是只读影子建议，不直接写入标签");
+    expect(prompt).toContain("无法基于已显示差异给出建议时必须为null");
+    expect(prompt).toContain("kind只能使用feature、bug、chore");
     expect(buildDeterministicSummary({ ...facts, commitSubjects: [`ci:${" ".repeat(100_000)}修复中央验证`] })).toMatchObject({ type: "ci", title: "修复中央验证" });
     expect(buildDeterministicSummary({ ...facts, commitSubjects: ["fix(THIS-SCOPE-IS-WAY-TOO-LONG): 修复错误"] })).toMatchObject({ scope: "this-scope-is-way-to" });
     expect(buildDeterministicSummary({ ...facts, commitSubjects: ["普通提交"], areas: ["area:中文"] })).toMatchObject({ scope: "repo" });
@@ -138,6 +158,11 @@ describe("拉取请求自动化", () => {
     expect(body).toContain("&lt;img src=x onerror=alert\\(1\\)&gt; \\#伪标题");
     expect(body).not.toContain("<img src=x");
     expect(body).not.toContain("\n#伪标题");
+  });
+
+  it("将人工智能依据中的Markdown控制符转义为纯文本", () => {
+    expect(escapeMarkdownText("packages/core/a_b*~|file.ts"))
+      .toBe("packages/core/a\\_b\\*\\~\\|file\\.ts");
   });
 
   it("拒绝缺失、重复或交叉的受管标记", () => {
