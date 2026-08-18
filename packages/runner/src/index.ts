@@ -87,6 +87,23 @@ async function summary(lines: readonly string[]): Promise<void> {
 }
 async function output(values: Record<string, string | number>): Promise<void> { const target = process.env.GITHUB_OUTPUT; if (!target) return; await writeFile(target, Object.entries(values).map(([key, value]) => `${key}=${String(value).replace(/[\r\n]/g, " ")}`).join("\n") + "\n", { flag: "a" }); }
 
+type CopilotFallbackStage = "copilot-step" | "prepared-facts-read" | "prepared-facts-parse" | "prepared-facts-check" | "copilot-output-read" | "copilot-output-parse" | "copilot-output-validate";
+const safeGeneratedSummaryValidationMessage = /^(?:Copilot结果必须是对象|Copilot结果包含额外字段|type无效|scope无效|title格式无效|changes无效|related无效|(?:title|summary|motivation|changes\[\]|impact|impact\[\]|related\[\]|releaseAndMigration|releaseAndMigration\[\])(?:必须是字符串|长度或格式无效|无效))$/u;
+export function describeCopilotFallback(stage: CopilotFallbackStage, error: unknown): string {
+  if (stage === "copilot-output-validate") {
+    const message = error instanceof Error ? error.message : "";
+    return safeGeneratedSummaryValidationMessage.test(message) ? `Copilot输出字段校验失败：${message}` : "Copilot输出字段校验失败";
+  }
+  return {
+    "copilot-step": "Copilot命令执行失败",
+    "prepared-facts-read": "人工智能输入文件无法读取",
+    "prepared-facts-parse": "人工智能输入文件不是有效JSON",
+    "prepared-facts-check": "人工智能输入对应的分支事实已经漂移",
+    "copilot-output-read": "Copilot输出文件无法读取",
+    "copilot-output-parse": "Copilot输出不是有效JSON",
+  }[stage];
+}
+
 interface Catalog { organization: { id: number; login: string }; defaults: { public: any; private: any }; repositories: Record<string, any> }
 async function catalog(): Promise<Catalog> { return json(configPath("repositories.json")); }
 function configurationFor(catalogValue: Catalog, repository: any): any {
@@ -328,6 +345,8 @@ async function automate(args: Readonly<Record<string, string>>) {
   const files = (compare.files ?? []).map((file: any) => file.filename);
   const facts: AutomationFacts = { sourceRef, targetRef: `refs/heads/${repository.default_branch}`, headSha: sourceBefore.object.sha, baseSha: baseBefore.object.sha, commitSubjects: (compare.commits ?? []).map((c: any) => c.commit.message.split("\n")[0]), files, diffStat: `${files.length}个文件`, diffExcerpt: (compare.files ?? []).map((file: any) => `文件：${file.filename}\n${file.patch ?? "未提供补丁内容"}`).join("\n\n"), areas: [], contributors };
   const fallback = buildDeterministicSummary(facts); let generated = fallback; let mode = "deterministic";
+  let fallbackReason: string | null = null;
+  let copilotOutputEvidence: string | null = null;
   if (process.env.PREPARE_ONLY === "true") {
     const promptPath = env("PR_COPILOT_PROMPT_PATH");
     const preparedFactsPath = env("PR_PREPARED_FACTS_PATH");
@@ -337,13 +356,28 @@ async function automate(args: Readonly<Record<string, string>>) {
     return;
   }
   const copilotOutput = process.env.COPILOT_OUTPUT_PATH;
-  if (copilotOutput && process.env.PR_PREPARED_FACTS_PATH) {
+  if (process.env.COPILOT_STEP_OUTCOME && process.env.COPILOT_STEP_OUTCOME !== "success") {
+    fallbackReason = describeCopilotFallback("copilot-step", null);
+  } else if (copilotOutput && process.env.PR_PREPARED_FACTS_PATH) {
+    let stage: CopilotFallbackStage = "prepared-facts-read";
     try {
-      const prepared = JSON.parse(await runtimeReadFile(process.env.PR_PREPARED_FACTS_PATH, "utf8"));
+      const preparedText = await runtimeReadFile(process.env.PR_PREPARED_FACTS_PATH, "utf8");
+      stage = "prepared-facts-parse";
+      const prepared = JSON.parse(preparedText);
+      stage = "prepared-facts-check";
       if (prepared.repositoryId !== repositoryId || prepared.sourceRef !== sourceRef || prepared.headSha !== facts.headSha || prepared.baseSha !== facts.baseSha || prepared.policySha !== policySha) throw new Error("人工智能输入对应的分支事实已经漂移");
-      generated = validateGeneratedSummary(JSON.parse(await runtimeReadFile(copilotOutput, "utf8")));
+      stage = "copilot-output-read";
+      const copilotOutputText = await runtimeReadFile(copilotOutput, "utf8");
+      copilotOutputEvidence = `${Buffer.byteLength(copilotOutputText, "utf8")}字节，SHA-256 ${createHash("sha256").update(copilotOutputText, "utf8").digest("hex")}`;
+      stage = "copilot-output-parse";
+      const parsedCopilotOutput = JSON.parse(copilotOutputText);
+      stage = "copilot-output-validate";
+      generated = validateGeneratedSummary(parsedCopilotOutput);
       mode = "copilot";
-    } catch { generated = fallback; }
+    } catch (error) {
+      generated = fallback;
+      fallbackReason = describeCopilotFallback(stage, error);
+    }
   }
   let aiClassification: string | undefined;
   let aiClassificationSummary = mode === "copilot" ? "未提供" : "Copilot不可用，未提供";
@@ -363,7 +397,17 @@ async function automate(args: Readonly<Record<string, string>>) {
   await output({ pullRequestNumber: pull.number, headSha: facts.headSha, repositoryFullName: repository.full_name });
   const copilot = await ensureCopilotReview(gh, owner, repo, pull.number, facts.headSha, policySha);
   await dispatchClassification({ repositoryId, pullRequestNumber: pull.number, headSha: facts.headSha, policySha, deliveryId: required(args, "delivery-id"), ...(aiClassification ? { aiClassification } : {}) });
-  await summary([`状态：${pulls[0] ? "updated" : "created"}`, `拉取请求：#${pull.number}`, `来源提交：${facts.headSha}`, `事件提交：${eventAfterSha}`, `标题生成：${mode}`, `AI分类建议：${aiClassificationSummary}`, `Copilot审查：${copilot}`]);
+  await summary([
+    `状态：${pulls[0] ? "updated" : "created"}`,
+    `拉取请求：#${pull.number}`,
+    `来源提交：${facts.headSha}`,
+    `事件提交：${eventAfterSha}`,
+    `标题生成：${mode}`,
+    ...(fallbackReason ? [`人工智能回退原因：${fallbackReason}`] : []),
+    ...(fallbackReason && copilotOutputEvidence ? [`人工智能输出证据：${copilotOutputEvidence}`] : []),
+    `AI分类建议：${aiClassificationSummary}`,
+    `Copilot审查：${copilot}`,
+  ]);
   if (process.env.PR_COPILOT_PROMPT_PATH) await writeFile(process.env.PR_COPILOT_PROMPT_PATH, buildPrompt(facts, fallback, classificationProfile.decisions.kindOrder));
 }
 

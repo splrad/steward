@@ -5,7 +5,7 @@ import { join } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertManagedBranchPull, assertWorkflowPaths, classificationInstallationPermissions, decodeAiClassificationPayload, encodeAiClassificationPayload, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, writeManagedFileToBranch } from "../src/index.js";
+import { assertManagedBranchPull, assertWorkflowPaths, classificationInstallationPermissions, decodeAiClassificationPayload, describeCopilotFallback, encodeAiClassificationPayload, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -53,6 +53,17 @@ describe("中央命令入口", () => {
       evidence: ["packages/core/a_b*~|file.ts"],
     })).toBe("packages/core/a\\_b\\*\\~\\|file\\.ts");
     expect(renderAiClassificationEvidence(null)).toBe("未提供");
+  });
+
+  it("Copilot回退原因按安全阶段记录且不输出未知异常正文", () => {
+    expect(describeCopilotFallback("copilot-step", new Error("命令输出"))).toBe("Copilot命令执行失败");
+    expect(describeCopilotFallback("prepared-facts-read", new Error("临时路径"))).toBe("人工智能输入文件无法读取");
+    expect(describeCopilotFallback("prepared-facts-parse", new Error("原始JSON"))).toBe("人工智能输入文件不是有效JSON");
+    expect(describeCopilotFallback("prepared-facts-check", new Error("人工智能输入对应的分支事实已经漂移"))).toBe("人工智能输入对应的分支事实已经漂移");
+    expect(describeCopilotFallback("copilot-output-read", new Error("临时路径"))).toBe("Copilot输出文件无法读取");
+    expect(describeCopilotFallback("copilot-output-parse", new Error("原始JSON"))).toBe("Copilot输出不是有效JSON");
+    expect(describeCopilotFallback("copilot-output-validate", new Error("summary长度或格式无效"))).toBe("Copilot输出字段校验失败：summary长度或格式无效");
+    expect(describeCopilotFallback("copilot-output-validate", new Error("不可信内容\nsecret=value"))).toBe("Copilot输出字段校验失败");
   });
 
   it("Copilot说明只忽略Git检出产生的CRLF差异", () => {
@@ -281,6 +292,8 @@ describe("中央命令入口", () => {
       "同一来源分支存在多个匹配拉取请求",
       "读取期间来源或目标分支已经漂移",
       "人工智能输入对应的分支事实已经漂移",
+      "人工智能回退原因：",
+      "人工智能输出证据：",
       "同名分类检查存在歧义",
       "分类输入在写入期间已经漂移",
       "AI影子建议未参与标签写入",
