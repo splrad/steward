@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   buildDeterministicSummary, buildPrompt, classifyPullRequest, computePullRequestFingerprint,
   categorizeReleasePullRequests, classifyRemoteReleaseState, collectReleasePullRequests,
+  escapeMarkdownText,
   isHumanActor, normalizeContributor,
   organizationPullRequestTemplate,
   parseVersion, planRelease, planRepositorySettings, reconcileManagedLabels, renderCopilotInstructions, renderManagedBody,
@@ -104,7 +105,16 @@ export function decodeAiClassificationPayload(value: string, allowedKinds: reado
   if (!value || value.length > 4_096 || !/^[A-Za-z0-9_-]+$/u.test(value)) throw new Error("AI影子分类载荷格式无效");
   const decoded = Buffer.from(value, "base64url");
   if (decoded.toString("base64url") !== value) throw new Error("AI影子分类载荷不是规范编码");
-  return validateAiClassificationSuggestion(JSON.parse(decoded.toString("utf8")), allowedKinds);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(decoded.toString("utf8"));
+  } catch {
+    throw new Error("AI影子分类载荷格式无效");
+  }
+  return validateAiClassificationSuggestion(parsed, allowedKinds);
+}
+export function renderAiClassificationEvidence(value: AiClassificationSuggestion | null): string {
+  return value ? value.evidence.map((item) => escapeMarkdownText(item)).join("；") : "未提供";
 }
 async function dispatchClassification(input: { repositoryId: number; pullRequestNumber: number; headSha: string; policySha: string; deliveryId: string; aiClassification?: string }) {
   const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId: 1296724484, permissions: { actions: "write", metadata: "read" }, policySha: input.policySha });
@@ -402,7 +412,7 @@ async function classify(args: Readonly<Record<string, string>>) {
     const aiComparison = aiClassification
       ? (aiClassification.kind === result.kind ? "与确定性规则一致" : `与确定性规则不一致（规则：${result.kind}）`)
       : "未比较";
-    const aiEvidence = aiClassification ? aiClassification.evidence.join("；") : "未提供";
+    const aiEvidence = renderAiClassificationEvidence(aiClassification);
     const plan = reconcileManagedLabels(profile, labels.map((value: any) => value.name), result);
     const currentBeforeWrite = await gh.getPullRequest(owner, repo, number);
     if (currentBeforeWrite.head.sha !== expectedHead) throw new Error("写入标签前来源提交已经漂移");

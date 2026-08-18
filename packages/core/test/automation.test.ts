@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildDeterministicSummary,
   buildPrompt,
+  escapeMarkdownText,
   organizationPullRequestTemplate,
   renderManagedBody,
   summaryEnd,
@@ -154,6 +155,11 @@ describe("拉取请求自动化", () => {
     expect(body).toContain("&lt;img src=x onerror=alert\\(1\\)&gt; \\#伪标题");
     expect(body).not.toContain("<img src=x");
     expect(body).not.toContain("\n#伪标题");
+  });
+
+  it("将人工智能依据中的Markdown控制符转义为纯文本", () => {
+    expect(escapeMarkdownText("packages/core/a_b*~|file.ts"))
+      .toBe("packages/core/a\\_b\\*\\~\\|file\\.ts");
   });
 
   it("拒绝缺失、重复或交叉的受管标记", () => {

@@ -229,9 +229,9 @@ function escapeHtml(value: string): string {
   return value.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;').replace(/"/gu, '&quot;').replace(/'/gu, '&#39;');
 }
 
-function escapeMarkdownText(value: string, preserveHash = false): string {
+export function escapeMarkdownText(value: string, preserveHash = false): string {
   const normalized = value.replace(/[\r\n]+/gu, ' ');
-  const markdownControl = preserveHash ? /([\\`*_\[\]{}()+.!|-])/gu : /([\\`*_\[\]{}()#+.!|-])/gu;
+  const markdownControl = preserveHash ? /([\\`*_~\[\]{}()+.!|-])/gu : /([\\`*_~\[\]{}()#+.!|-])/gu;
   return escapeHtml(normalized.replace(markdownControl, '\\$1'));
 }
 

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertManagedBranchPull, assertWorkflowPaths, classificationInstallationPermissions, decodeAiClassificationPayload, encodeAiClassificationPayload, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, writeManagedFileToBranch } from "../src/index.js";
+import { assertManagedBranchPull, assertWorkflowPaths, classificationInstallationPermissions, decodeAiClassificationPayload, encodeAiClassificationPayload, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -42,6 +42,17 @@ describe("中央命令入口", () => {
     expect(() => decodeAiClassificationPayload(encoded, ["bug"])).toThrow("不属于当前分类配置");
     expect(() => decodeAiClassificationPayload(`${encoded}=`, ["feature"])).toThrow("载荷格式无效");
     expect(() => decodeAiClassificationPayload("a".repeat(4_097), ["feature"])).toThrow("载荷格式无效");
+    expect(() => decodeAiClassificationPayload(Buffer.from("not-json", "utf8").toString("base64url"), ["feature"]))
+      .toThrow("AI影子分类载荷格式无效");
+  });
+
+  it("AI影子分类依据以Markdown纯文本写入检查摘要", () => {
+    expect(renderAiClassificationEvidence({
+      kind: "feature",
+      confidence: "medium",
+      evidence: ["packages/core/a_b*~|file.ts"],
+    })).toBe("packages/core/a\\_b\\*\\~\\|file\\.ts");
+    expect(renderAiClassificationEvidence(null)).toBe("未提供");
   });
 
   it("Copilot说明只忽略Git检出产生的CRLF差异", () => {
