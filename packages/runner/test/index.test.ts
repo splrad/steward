@@ -5,7 +5,7 @@ import { join } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertManagedBranchPull, assertWorkflowPaths, classificationInstallationPermissions, decodeAiClassificationPayload, describeCopilotFallback, encodeAiClassificationPayload, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, writeManagedFileToBranch } from "../src/index.js";
+import { assertManagedBranchPull, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, describeCopilotFallback, encodeAiClassificationPayload, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -83,6 +83,15 @@ describe("中央命令入口", () => {
     expect(matchesGeneratedCopilotInstructions("第一行\r第二行\r", generated)).toBe(false);
     expect(matchesGeneratedCopilotInstructions("第一行\r\n修改内容\r\n", generated)).toBe(false);
     expect(matchesGeneratedCopilotInstructions("第一行\r\n第二行", generated)).toBe(false);
+  });
+
+  it("仅Steward中央仓库从候选工作区读取Copilot说明源", () => {
+    const workspace = join(tmpdir(), "candidate-steward");
+    expect(copilotInstructionSourcePath(1296724484, workspace, "common.md")).toBe(join(workspace, "config", "copilot", "common.md"));
+    expect(copilotInstructionSourcePath(1187527897, workspace, "common.md")).toMatch(/config[\\/]copilot[\\/]common\.md$/u);
+    expect(copilotInstructionSourcePath(1187527897, workspace, "common.md")).not.toBe(join(workspace, "config", "copilot", "common.md"));
+    expect(copilotInstructionSourcePath(1296725317, workspace, "common.md")).toMatch(/config[\\/]copilot[\\/]common\.md$/u);
+    expect(copilotInstructionSourcePath(1296725317, workspace, "common.md")).not.toBe(join(workspace, "config", "copilot", "common.md"));
   });
 
   it("Git空白检查接受CRLF并继续拒绝真正的行尾空格", async () => {

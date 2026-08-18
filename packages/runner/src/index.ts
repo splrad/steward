@@ -518,6 +518,12 @@ export function matchesGeneratedCopilotInstructions(actual: string, generated: s
   return normalizeCheckoutLineEndings(actual) === normalizeCheckoutLineEndings(generated);
 }
 
+export function copilotInstructionSourcePath(repositoryId: number, workspace: string, file: "common.md" | "layerscape.md"): string {
+  return repositoryId === 1296724484
+    ? join(workspace, "config", "copilot", file)
+    : configPath("copilot", file);
+}
+
 export function assertWorkflowPaths(actual: readonly string[], allowed: readonly string[]): void {
   const allowedSet = new Set(allowed);
   const actualSet = new Set(actual);
@@ -553,8 +559,8 @@ async function validate(args: Readonly<Record<string, string>>) {
     if (task === "verify-copilot-instructions") {
       const file = join(workspace, ".github/copilot-instructions.md");
       if (!files.includes(file)) throw new Error("缺少中央生成的Copilot说明");
-      const common = await runtimeReadFile(configPath("copilot", "common.md"), "utf8");
-      const project = configuration.copilotInstructionsProfile === "layerscape" ? await runtimeReadFile(configPath("copilot", "layerscape.md"), "utf8") : null;
+      const common = await runtimeReadFile(copilotInstructionSourcePath(repositoryId, workspace, "common.md"), "utf8");
+      const project = configuration.copilotInstructionsProfile === "layerscape" ? await runtimeReadFile(copilotInstructionSourcePath(repositoryId, workspace, "layerscape.md"), "utf8") : null;
       if (!matchesGeneratedCopilotInstructions(await runtimeReadFile(file, "utf8"), renderCopilotInstructions(common, project))) throw new Error("Copilot说明不等于中央生成结果");
       return { state: "success" as const, detail: "Copilot说明与中央配置一致" };
     }
