@@ -20,6 +20,10 @@ for (const file of files) {
   for (const match of text.matchAll(/uses:\s*([^\s}]+)/gu)) if (!allowedActions.has(match[1])) throw new Error(`${file}使用未锁定操作: ${match[1]}`);
   for (const pattern of forbidden) if (pattern.test(text)) throw new Error(`${file}包含终态禁止内容: ${pattern}`);
 }
+const validationDocument = workflowDocuments.get("pr-validation.yml");
+const validationStep = validationDocument?.jobs?.validate?.steps?.find(step => step?.name === "执行中央验证");
+if (String(validationStep?.env?.VALIDATION_BASE_SHA ?? "").replace(/\s+/gu, "") !== "${{github.event.pull_request.base.sha}}") throw new Error("中央验证没有通过环境变量接收基础分支提交");
+if (String(validationStep?.env?.VALIDATION_BASE_REF ?? "").replace(/\s+/gu, "") !== "${{github.event.pull_request.base.ref}}") throw new Error("中央验证没有通过环境变量接收基础分支引用");
 const expectedJobEnvironments = new Map([
   ["deploy-runtime.yml:deploy", { name: "steward-deployment", deployment: true }],
   ["onboard-repository.yml:onboard", { name: "steward-automation", deployment: false }],

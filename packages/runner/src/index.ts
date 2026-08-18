@@ -528,6 +528,25 @@ export function gitDiffCheckArguments(base?: string): string[] {
   ];
 }
 
+export function assertFreshValidationBase(workspace: string, eventBaseSha: string, baseRef: string): string {
+  const expectedBase = sha(eventBaseSha, "VALIDATION_BASE_SHA");
+  try {
+    run("git", ["check-ref-format", "--branch", baseRef], workspace);
+  } catch {
+    throw new Error("基础分支引用无效");
+  }
+  let currentBase: string;
+  try {
+    currentBase = sha(run("git", ["rev-parse", "--verify", `refs/remotes/origin/${baseRef}^{commit}`], workspace), "当前基础分支提交");
+  } catch {
+    throw new Error(`无法解析当前基础分支：${baseRef}`);
+  }
+  if (currentBase !== expectedBase) {
+    throw new Error(`基础分支已更新；当前运行基于${expectedBase}，${baseRef}现为${currentBase}，请更新拉取请求分支后重新验证`);
+  }
+  return currentBase;
+}
+
 export function matchesGeneratedCopilotInstructions(actual: string, generated: string): boolean {
   const normalizeCheckoutLineEndings = (value: string) => value.replace(/\r\n/gu, "\n");
   return normalizeCheckoutLineEndings(actual) === normalizeCheckoutLineEndings(generated);
@@ -558,6 +577,18 @@ async function validate(args: Readonly<Record<string, string>>) {
   const profileName = required(args, "profile");
   if (profileName !== configuration.validationProfile) throw new Error("验证配置与中央仓库目录不一致");
   const profile = await json<ValidationProfile>(configPath("profiles", "validation", `${profileName}.json`));
+  const validationBaseSha = process.env.VALIDATION_BASE_SHA;
+  const validationBaseRef = process.env.VALIDATION_BASE_REF;
+  if (Boolean(validationBaseSha) !== Boolean(validationBaseRef)) throw new Error("基础分支验证参数不完整");
+  if (validationBaseSha && validationBaseRef) {
+    try {
+      assertFreshValidationBase(workspace, validationBaseSha, validationBaseRef);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "基础分支新鲜度检查失败";
+      await summary(["# SPLRAD Steward / PR Validation", "", `- ❌ verify-base-freshness: ${message}`]);
+      throw error;
+    }
+  }
   const files = await walk(workspace);
   const relative = files.map(path => path.slice(workspace.length + 1).replace(/\\/g, "/"));
   const actualWorkflows = relative.filter(path => /^\.github\/workflows\/[^/]+\.ya?ml$/u.test(path)).sort();
@@ -565,8 +596,7 @@ async function validate(args: Readonly<Record<string, string>>) {
   assertWorkflowPaths(actualWorkflows, allowedWorkflows);
   const results = await runValidationTasks(profile, async task => {
     if (task === "git-diff-check") {
-      const base = process.env.VALIDATION_BASE_SHA;
-      run("git", gitDiffCheckArguments(base ? sha(base, "VALIDATION_BASE_SHA") : undefined), workspace);
+      run("git", gitDiffCheckArguments(validationBaseSha ? sha(validationBaseSha, "VALIDATION_BASE_SHA") : undefined), workspace);
       return { state: "success" as const, detail: "未发现空白错误" };
     }
     if (task === "parse-json") { for (const file of files.filter(path => path.endsWith(".json"))) JSON.parse(await runtimeReadFile(file, "utf8")); return { state: "success" as const, detail: "JSON有效" }; }

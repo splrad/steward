@@ -50,4 +50,5 @@ jobs:
       - name: 执行中央验证
         env:
           VALIDATION_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          VALIDATION_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: node steward-policy/packages/runner/dist/index.js validate --workspace target --repository-id "${{ github.repository_id }}" --profile "${{ steps.profile.outputs.name }}"
