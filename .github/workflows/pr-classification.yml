@@ -19,7 +19,7 @@ concurrency:
 jobs:
   classify:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 11
     environment:
       name: steward-automation
       deployment: false
