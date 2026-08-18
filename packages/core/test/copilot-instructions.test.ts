@@ -15,23 +15,16 @@ describe("Copilot中文审查说明", () => {
     const project = await readFile("config/copilot/layerscape.md", "utf8");
     const value = renderCopilotInstructions(common, project);
     expect(value).toBe(`${common.trimEnd()}\n\n${project.trim()}\n`);
-    expect(value).toContain("当前拉取请求差异");
+    expect(value).toContain("严重程度：阻断");
     expect(value).toContain("AutoCAD");
     expect(await computeCopilotInstructionsDigest(value)).toMatch(/^[0-9a-f]{64}$/);
     expect(await computeCopilotInstructionsDigest(value)).toBe(await computeCopilotInstructionsDigest(value));
   });
 
-  it("拒绝超长或缺失固定字段的源文件", () => {
-    const valid = "简体中文 当前拉取请求差异 直接证据 正确性 安全 兼容性 构建 部署 发布 不提出命名、格式、个人偏好、非必要重构或主观可读性意见";
-    expect(() => renderCopilotInstructions(valid.repeat(400))).toThrow("4000");
-    expect(() => renderCopilotInstructions(valid.replace("直接证据", ""))).toThrow("直接证据");
-  });
-
-  it("不再要求Copilot改变评论格式或拉取请求概览", async () => {
-    const target = await readFile(".github/copilot-instructions.md", "utf8");
-    expect(target).not.toContain("严重程度：建议");
-    expect(target).not.toContain("每条意见严格使用");
-    expect(target).not.toContain("## 结论");
+  it("只强制非空和长度，不把审查正文硬编码到生成器", () => {
+    expect(renderCopilotInstructions("# 最小说明")).toBe("# 最小说明\n");
+    expect(() => renderCopilotInstructions(" \n")).toThrow("不能为空");
+    expect(() => renderCopilotInstructions("说明".repeat(2001))).toThrow("4000");
   });
 
   it("只允许无变化、创建或唯一受管分支更新", () => {
