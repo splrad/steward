@@ -79,7 +79,12 @@ if (String(syncJob?.env?.POLICY_SHA ?? "").replace(/\s+/gu, "") !== "${{github.e
 const syncCheckout = syncJob?.steps?.find(step => step?.uses?.startsWith("actions/checkout@"));
 if (String(syncCheckout?.with?.ref ?? "").replace(/\s+/gu, "") !== "${{env.POLICY_SHA}}" || syncCheckout?.with?.["persist-credentials"] !== false) throw new Error("Copilot说明同步没有检出精确中央提交或仍保留检出凭据");
 const syncStep = syncJob?.steps?.find(step => step?.name === "同步代码审查说明");
-if (!String(syncStep?.run ?? "").includes('--policy-sha "$POLICY_SHA"') || /--(?:source|target|path|content)(?:\s|=)/iu.test(String(syncStep?.run ?? ""))) throw new Error("Copilot说明同步允许工作流输入指定文件或内容");
+const syncCommand = String(syncStep?.run ?? "");
+if (!syncCommand.includes('--policy-sha "$POLICY_SHA"') || /--(?:source|target|path|content)(?:\s|=)/iu.test(syncCommand)) throw new Error("Copilot说明同步允许工作流输入指定文件或内容");
+if (String(syncStep?.env?.REPOSITORY_ID ?? "").replace(/\s+/gu, "") !== "${{inputs.repositoryId}}" || /\$\{\{[^}]*inputs\.repositoryId/iu.test(syncCommand)) throw new Error("Copilot说明同步把仓库编号直接拼接进shell命令");
+for (const required of ['repository_arguments=()', 'repository_arguments+=(--repository-id "$REPOSITORY_ID")', '"${repository_arguments[@]}"']) {
+  if (!syncCommand.includes(required)) throw new Error(`Copilot说明同步没有安全传递可选仓库编号: ${required}`);
+}
 const syncInputs = syncInstructionsDocument?.on?.workflow_dispatch?.inputs ?? {};
 if (JSON.stringify(Object.keys(syncInputs)) !== JSON.stringify(["repositoryId"])) throw new Error("Copilot说明同步暴露了未允许的手工输入");
 const deployRuntime = await readFile(".github/workflows/deploy-runtime.yml", "utf8");

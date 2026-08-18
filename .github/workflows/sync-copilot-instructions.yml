@@ -40,4 +40,10 @@ jobs:
           INSTALLATION_ID: "145952003"
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
           COPILOT_REVIEW_REQUEST_TOKEN: ${{ secrets.COPILOT_REVIEW_REQUEST_TOKEN }}
-        run: node packages/runner/dist/index.js sync-copilot-instructions ${{ inputs.repositoryId && format('--repository-id "{0}"', inputs.repositoryId) || '' }} --policy-sha "$POLICY_SHA"
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+        run: |
+          repository_arguments=()
+          if [[ -n "$REPOSITORY_ID" ]]; then
+            repository_arguments+=(--repository-id "$REPOSITORY_ID")
+          fi
+          node packages/runner/dist/index.js sync-copilot-instructions "${repository_arguments[@]}" --policy-sha "$POLICY_SHA"
