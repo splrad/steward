@@ -5,13 +5,14 @@ import { join } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertManagedBranchPull, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, describeCopilotFallback, encodeAiClassificationPayload, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, writeManagedFileToBranch } from "../src/index.js";
+import { assertFreshValidationBase, assertManagedBranchPull, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, describeCopilotFallback, encodeAiClassificationPayload, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
 
 afterEach(() => {
   delete process.env.TEST_REQUIRED_ENV;
+  delete process.env.GITHUB_STEP_SUMMARY;
 });
 
 describe("中央命令入口", () => {
@@ -205,6 +206,53 @@ describe("中央命令入口", () => {
       expect(runGit(gitDiffCheckArguments(base)).status).toBe(0);
     } finally {
       await rm(repository, { recursive: true, force: true });
+    }
+  });
+
+  it("中央验证拒绝已经落后于当前目标分支的旧合并候选", async () => {
+    const repository = await mkdtemp(join(tmpdir(), "steward-validation-base-"));
+    const runGit = (args: string[]) => spawnSync("git", args, { cwd: repository, encoding: "utf8" });
+    const requireGit = (args: string[]) => {
+      const result = runGit(args);
+      if (result.status !== 0) throw new Error((result.stderr || result.stdout || `git ${args.join(" ")}失败`).trim());
+      return result.stdout.trim();
+    };
+    try {
+      requireGit(["init", "--quiet"]);
+      requireGit(["config", "user.name", "SPLRAD Steward Tests"]);
+      requireGit(["config", "user.email", "tests@splrad.invalid"]);
+      await writeFile(join(repository, "sample.txt"), "base\n", "utf8");
+      requireGit(["add", "sample.txt"]);
+      requireGit(["commit", "--quiet", "-m", "base"]);
+      const eventBase = requireGit(["rev-parse", "HEAD"]);
+      requireGit(["update-ref", "refs/remotes/origin/main", eventBase]);
+      expect(assertFreshValidationBase(repository, eventBase, "main")).toBe(eventBase);
+
+      await writeFile(join(repository, "sample.txt"), "current\n", "utf8");
+      requireGit(["add", "sample.txt"]);
+      requireGit(["commit", "--quiet", "-m", "current"]);
+      const currentBase = requireGit(["rev-parse", "HEAD"]);
+      requireGit(["update-ref", "refs/remotes/origin/main", currentBase]);
+      expect(() => assertFreshValidationBase(repository, eventBase, "main"))
+        .toThrow(`基础分支已更新；当前运行基于${eventBase}，main现为${currentBase}，请更新拉取请求分支后重新验证`);
+      expect(() => assertFreshValidationBase(repository, eventBase, "../main")).toThrow("基础分支引用无效");
+    } finally {
+      await rm(repository, { recursive: true, force: true });
+    }
+  });
+
+  it("基础分支摘要无论写入成功失败都保留原始校验错误", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "steward-validation-summary-"));
+    const primary = new Error("基础分支已更新");
+    process.env.GITHUB_STEP_SUMMARY = join(directory, "missing", "summary.md");
+    try {
+      await expect(throwFreshValidationBaseFailure(primary)).rejects.toBe(primary);
+      const summaryPath = join(directory, "summary.md");
+      process.env.GITHUB_STEP_SUMMARY = summaryPath;
+      await expect(throwFreshValidationBaseFailure(primary)).rejects.toBe(primary);
+      expect(await readFile(summaryPath, "utf8")).toBe("# SPLRAD Steward / PR Validation\n\n- ❌ verify-base-freshness: 基础分支已更新\n");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
     }
   });
 
