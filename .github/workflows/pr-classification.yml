@@ -7,6 +7,7 @@ on:
       repositoryId: { required: true, type: string }
       pullRequestNumber: { required: false, type: string }
       eventHeadSha: { required: false, type: string }
+      aiClassification: { required: false, type: string }
       scanAll: { required: false, type: boolean, default: false }
       policySha: { required: true, type: string }
 
@@ -33,4 +34,5 @@ jobs:
           APP_ID: "4243096"
           INSTALLATION_ID: "145952003"
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          AI_CLASSIFICATION: ${{ inputs.aiClassification }}
         run: node packages/runner/dist/index.js pr-classification --delivery-id "${{ inputs.deliveryId }}" --repository-id "${{ inputs.repositoryId }}" ${{ inputs.scanAll && '--scan-all true' || format('--pull-request-number "{0}" --event-head-sha "{1}" --scan-all false', inputs.pullRequestNumber, inputs.eventHeadSha) }} --policy-sha "${{ inputs.policySha }}"
