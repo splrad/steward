@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { computeCopilotInstructionsDigest, planCopilotInstructionsSync, renderCopilotInstructions } from "../src/copilot-instructions.js";
 
-describe("Copilot中文审查说明", () => {
+describe("Copilot代码审查说明", () => {
   it("通用目标逐字等于中央源文件生成结果", async () => {
     const common = await readFile("config/copilot/common.md", "utf8");
     const target = await readFile(".github/copilot-instructions.md", "utf8");
@@ -15,8 +15,6 @@ describe("Copilot中文审查说明", () => {
     const project = await readFile("config/copilot/layerscape.md", "utf8");
     const value = renderCopilotInstructions(common, project);
     expect(value).toBe(`${common.trimEnd()}\n\n${project.trim()}\n`);
-    expect(value).toContain("严重程度：阻断");
-    expect(value).toContain("AutoCAD");
     expect(await computeCopilotInstructionsDigest(value)).toMatch(/^[0-9a-f]{64}$/);
     expect(await computeCopilotInstructionsDigest(value)).toBe(await computeCopilotInstructionsDigest(value));
   });

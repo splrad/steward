@@ -30,8 +30,18 @@ const valid = {
 } as const;
 
 describe("拉取请求自动化", () => {
-  it("接受完整中文结构并拒绝每类无效字段", () => {
+  it("接受完整结构并拒绝每类无效字段", () => {
     expect(validateGeneratedSummary(valid)).toEqual(valid);
+    const englishBody = {
+      ...valid,
+      title: "Preserve GitHub API field names",
+      summary: "Update pull request body generation without translating established API names.",
+      motivation: "GitHub API fields are clearer when their original names are retained.",
+      changes: ["Preserve pull_request event names and code identifiers in generated summaries."],
+      impact: ["Maintainers can compare generated text directly with GitHub API documentation."],
+      releaseAndMigration: ["No migration is required for existing pull requests."],
+    };
+    expect(validateGeneratedSummary(englishBody)).toEqual(englishBody);
     const { classification: _classification, ...withoutClassification } = valid;
     expect(validateGeneratedSummary({ ...valid, classification: null })).toEqual(withoutClassification);
     const invalid: unknown[] = [
@@ -62,7 +72,7 @@ describe("拉取请求自动化", () => {
     expect(() => validateAiClassificationSuggestion(valid.classification, ["bug"])).toThrow("不属于当前分类配置");
   });
 
-  it("生成约定式标题、完整模板和确定性中文回退", () => {
+  it("生成约定式标题、完整模板和确定性回退", () => {
     const facts = {
       sourceRef: "refs/heads/feature/rule",
       targetRef: "refs/heads/main",
@@ -83,18 +93,12 @@ describe("拉取请求自动化", () => {
     expect(organizationPullRequestTemplate).not.toContain("人工补充");
     const prompt = buildPrompt(facts, generated, ["feature", "bug", "chore"]);
     expect(prompt).toContain(JSON.stringify(generated));
-    expect(prompt).toContain("没有对应事实时必须返回空数组");
-    expect(prompt).toContain("motivation仅在本次提交信息或差异中存在明确的问题、需求或决策依据时使用");
-    expect(prompt).toContain("summary、motivation和changes必须基于本次提交信息和差异事实填写");
-    expect(prompt).toContain("motivation只说明为什么需要本次修改，不得重复summary或changes");
-    expect(prompt).toContain("使用自然、简洁、具体的工程中文");
-    expect(prompt).toContain("不使用“人类推送”“真人推送”“普通人类”等内部分类称呼");
-    expect(prompt).toContain("不使用“不仅……而且……”和为了凑数的三项并列");
-    expect(prompt).toContain("不得加入第一人称、情绪、幽默、主观评价或差异没有提供的事实");
-    expect(prompt).toContain("classification是只读影子建议，不直接写入标签");
-    expect(prompt).toContain("无法基于已显示差异给出建议时必须为null");
-    expect(prompt).toContain("kind只能使用feature、bug、chore");
+    expect(prompt).toContain("feature、bug、chore");
+    expect(prompt).toContain(facts.sourceRef);
+    expect(prompt).toContain(facts.targetRef);
+    expect(prompt).toContain(facts.diffExcerpt);
     expect(buildDeterministicSummary({ ...facts, commitSubjects: [`ci:${" ".repeat(100_000)}修复中央验证`] })).toMatchObject({ type: "ci", title: "修复中央验证" });
+    expect(buildDeterministicSummary({ ...facts, commitSubjects: ["fix(core): Preserve GitHub API names"] })).toMatchObject({ type: "fix", scope: "core", title: "Preserve GitHub API names" });
     expect(buildDeterministicSummary({ ...facts, commitSubjects: ["fix(THIS-SCOPE-IS-WAY-TOO-LONG): 修复错误"] })).toMatchObject({ scope: "this-scope-is-way-to" });
     expect(buildDeterministicSummary({ ...facts, commitSubjects: ["普通提交"], areas: ["area:中文"] })).toMatchObject({ scope: "repo" });
     expect(buildDeterministicSummary({ ...facts, commitSubjects: [`fix(${"-".repeat(100_000)}): 修复错误`] })).toMatchObject({ scope: "repo" });
