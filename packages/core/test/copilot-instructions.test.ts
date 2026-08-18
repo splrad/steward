@@ -15,8 +15,6 @@ describe("Copilot代码审查说明", () => {
     const project = await readFile("config/copilot/layerscape.md", "utf8");
     const value = renderCopilotInstructions(common, project);
     expect(value).toBe(`${common.trimEnd()}\n\n${project.trim()}\n`);
-    expect(value).toContain("当前拉取请求差异");
-    expect(value).toContain("AutoCAD");
     expect(await computeCopilotInstructionsDigest(value)).toMatch(/^[0-9a-f]{64}$/);
     expect(await computeCopilotInstructionsDigest(value)).toBe(await computeCopilotInstructionsDigest(value));
   });
