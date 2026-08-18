@@ -1,8 +1,8 @@
 import { sha256Hex } from './fingerprint.js';
 
 const requiredFragments = [
-  '严重程度：阻断', '严重程度：建议', '标题：', '问题：', '证据：', '影响：', '建议：',
-  '未发现需要阻断合并的问题。', '发现需要修复后再合并的问题',
+  '简体中文', '当前拉取请求差异', '直接证据', '正确性', '安全', '兼容性', '构建', '部署', '发布',
+  '不提出命名、格式、个人偏好、非必要重构或主观可读性意见',
 ];
 
 export function renderCopilotInstructions(common: string, project?: string | null): string {
