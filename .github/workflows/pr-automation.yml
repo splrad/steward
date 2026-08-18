@@ -49,7 +49,7 @@ jobs:
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_CLI_TOKEN }}
           PR_COPILOT_PROMPT_PATH: ${{ runner.temp }}/copilot-prompt.txt
-        run: npx --no-install copilot -p "$(cat "$PR_COPILOT_PROMPT_PATH")" --allow-tool='shell(git:*)' --no-ask-user > "${{ runner.temp }}/copilot-output.json"
+        run: npx --no-install copilot -p "$(cat "$PR_COPILOT_PROMPT_PATH")" -s --stream off --no-color --allow-tool='shell(git:*)' --no-ask-user > "${{ runner.temp }}/copilot-output.json"
       - name: 收敛拉取请求
         id: reconcile
         env:
