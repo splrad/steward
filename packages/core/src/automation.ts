@@ -110,7 +110,7 @@ export function validateGeneratedSummary(value: unknown): GeneratedSummary {
   if (!Array.isArray(object.related) || object.related.length > 6) throw new Error('related无效');
   const related = object.related.map((item) => requirePlainText(item, 'related[]', 2, 200));
   const releaseAndMigration = requireTextArray(object.releaseAndMigration, 'releaseAndMigration', 6, 5, 120);
-  const classification = object.classification === undefined
+  const classification = object.classification === undefined || object.classification === null
     ? undefined
     : validateAiClassificationSuggestion(object.classification);
   return {
@@ -207,7 +207,7 @@ export function buildPrompt(
     'impact和releaseAndMigration各为0至6项，每项5至120个汉字；related为0至6项，每项2至200个字符。',
     'summary、motivation和changes必须基于本次提交信息和差异事实填写。motivation只说明为什么需要本次修改，不得重复summary或changes；本次提交信息或差异中没有明确问题、需求或决策依据时必须为null。',
     'impact、related、releaseAndMigration没有对应事实时必须返回空数组，不得用“无”“不适用”“未涉及”等占位。',
-    `classification是只读影子建议，不直接写入标签；kind只能使用${classificationKinds.join('、')}，confidence只能使用high、medium或low，evidence必须包含1至3项基于已显示差异的无Markdown纯文本依据，每项4至180个字符并尽量写明文件路径。`,
+    `classification是只读影子建议，不直接写入标签；无法基于已显示差异给出建议时必须为null，不为null时kind只能使用${classificationKinds.join('、')}，confidence只能使用high、medium或low，evidence必须包含1至3项基于已显示差异的无Markdown纯文本依据，每项4至180个字符并尽量写明文件路径。`,
     '不得生成验证情况、审查重点、界面与输出变化或人工补充内容。',
     `来源分支：${facts.sourceRef}`, `目标分支：${facts.targetRef}`,
     `最新提交：\n${facts.commitSubjects.slice(0, 20).join('\n')}`,

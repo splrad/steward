@@ -32,6 +32,8 @@ const valid = {
 describe("拉取请求自动化", () => {
   it("接受完整中文结构并拒绝每类无效字段", () => {
     expect(validateGeneratedSummary(valid)).toEqual(valid);
+    const { classification: _classification, ...withoutClassification } = valid;
+    expect(validateGeneratedSummary({ ...valid, classification: null })).toEqual(withoutClassification);
     const invalid: unknown[] = [
       null,
       { ...valid, type: "unknown" },
@@ -86,6 +88,7 @@ describe("拉取请求自动化", () => {
     expect(prompt).toContain("summary、motivation和changes必须基于本次提交信息和差异事实填写");
     expect(prompt).toContain("motivation只说明为什么需要本次修改，不得重复summary或changes");
     expect(prompt).toContain("classification是只读影子建议，不直接写入标签");
+    expect(prompt).toContain("无法基于已显示差异给出建议时必须为null");
     expect(prompt).toContain("kind只能使用feature、bug、chore");
     expect(buildDeterministicSummary({ ...facts, commitSubjects: [`ci:${" ".repeat(100_000)}修复中央验证`] })).toMatchObject({ type: "ci", title: "修复中央验证" });
     expect(buildDeterministicSummary({ ...facts, commitSubjects: ["fix(THIS-SCOPE-IS-WAY-TOO-LONG): 修复错误"] })).toMatchObject({ scope: "this-scope-is-way-to" });
