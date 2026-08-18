@@ -61,6 +61,25 @@ if (aiClassificationInput?.required !== false || aiClassificationInput?.type !==
 const classificationStep = prClassificationDocument?.jobs?.classify?.steps?.find(step => step?.name === "分类并发布门禁");
 if (classificationStep?.env?.AI_CLASSIFICATION?.replace(/\s+/gu, "") !== "${{inputs.aiClassification}}") throw new Error("AI影子分类输入没有通过环境变量传递");
 if (/--ai-classification/iu.test(classificationStep?.run ?? "")) throw new Error("AI影子分类输入不得拼接进shell命令");
+const syncInstructionsDocument = workflowDocuments.get("sync-copilot-instructions.yml");
+const syncWorkflowRun = syncInstructionsDocument?.on?.workflow_run;
+if (JSON.stringify(syncWorkflowRun?.workflows) !== JSON.stringify(["SPLRAD Steward / Deploy Runtime"]) || JSON.stringify(syncWorkflowRun?.types) !== JSON.stringify(["completed"])) throw new Error("Copilot说明同步没有只绑定中央部署完成事件");
+const syncJob = syncInstructionsDocument?.jobs?.synchronize;
+const syncCondition = String(syncJob?.if ?? "").replace(/\s+/gu, "");
+for (const required of [
+  "github.event_name=='workflow_dispatch'",
+  "github.event.workflow_run.conclusion=='success'",
+  "github.event.workflow_run.event=='push'",
+  "github.event.workflow_run.head_branch==github.event.repository.default_branch",
+  "github.event.workflow_run.head_repository.full_name==github.repository",
+]) if (!syncCondition.includes(required)) throw new Error(`Copilot说明自动同步缺少可信触发条件: ${required}`);
+if (String(syncJob?.env?.POLICY_SHA ?? "").replace(/\s+/gu, "") !== "${{github.event_name=='workflow_run'&&github.event.workflow_run.head_sha||github.sha}}") throw new Error("Copilot说明同步没有绑定已部署的精确中央提交");
+const syncCheckout = syncJob?.steps?.find(step => step?.uses?.startsWith("actions/checkout@"));
+if (String(syncCheckout?.with?.ref ?? "").replace(/\s+/gu, "") !== "${{env.POLICY_SHA}}" || syncCheckout?.with?.["persist-credentials"] !== false) throw new Error("Copilot说明同步没有检出精确中央提交或仍保留检出凭据");
+const syncStep = syncJob?.steps?.find(step => step?.name === "同步代码审查说明");
+if (!String(syncStep?.run ?? "").includes('--policy-sha "$POLICY_SHA"') || /--(?:source|target|path|content)(?:\s|=)/iu.test(String(syncStep?.run ?? ""))) throw new Error("Copilot说明同步允许工作流输入指定文件或内容");
+const syncInputs = syncInstructionsDocument?.on?.workflow_dispatch?.inputs ?? {};
+if (JSON.stringify(Object.keys(syncInputs)) !== JSON.stringify(["repositoryId"])) throw new Error("Copilot说明同步暴露了未允许的手工输入");
 const deployRuntime = await readFile(".github/workflows/deploy-runtime.yml", "utf8");
 for (const required of [".github/workflows/deploy-runtime.yml", "scripts/verify-workflows.mjs", "github.event.repository.default_branch", "id: deploy", "tee \"$deployment_log\"", "PIPESTATUS[0]", "复核运行程序健康状态", "steps.deploy.outputs.runtime_url", "EXPECTED_POLICY_SHA", "Date.now() + 60_000", "AbortSignal.timeout", "await response.body?.cancel()", "status: \"waiting\"", "iu.test(body.version)", "健康复核在60秒内未收敛"]) {
   if (!deployRuntime.includes(required)) throw new Error(`部署工作流缺少固定健康复核合同: ${required}`);

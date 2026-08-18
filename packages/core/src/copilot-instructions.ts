@@ -1,5 +1,19 @@
 import { sha256Hex } from './fingerprint.js';
 
+export const copilotInstructionProfiles = ['common', 'layerscape'] as const;
+export type CopilotInstructionProfile = typeof copilotInstructionProfiles[number];
+export const copilotInstructionsTargetPath = '.github/copilot-instructions.md' as const;
+
+const syncContracts = {
+  common: { targetPath: copilotInstructionsTargetPath, sourceFiles: ['common.md'] as const },
+  layerscape: { targetPath: copilotInstructionsTargetPath, sourceFiles: ['common.md', 'layerscape.md'] as const },
+} as const;
+
+export function copilotInstructionSyncContract(profile: unknown): typeof syncContracts[CopilotInstructionProfile] {
+  if (typeof profile !== 'string' || !Object.hasOwn(syncContracts, profile)) throw new Error('Copilot说明配置不属于允许的同步合同');
+  return syncContracts[profile as CopilotInstructionProfile];
+}
+
 export function renderCopilotInstructions(common: string, project?: string | null): string {
   const base = common.trimEnd();
   if (!base) throw new Error('Copilot通用说明不能为空');

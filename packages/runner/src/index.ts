@@ -11,7 +11,7 @@ import {
   escapeMarkdownText,
   isHumanActor, normalizeContributor,
   organizationPullRequestTemplate,
-  parseVersion, planRelease, planRepositorySettings, reconcileManagedLabels, renderCopilotInstructions, renderManagedBody,
+  copilotInstructionSyncContract, parseVersion, planRelease, planRepositorySettings, reconcileManagedLabels, renderCopilotInstructions, renderManagedBody,
   renderOnboardingPullRequest, renderReleaseNotes, renderValidationSummary, runValidationTasks,
   validateAiClassificationSuggestion, validateGeneratedSummary, validateRepositoryForOnboarding, verifyAssetManifest,
   type AiClassificationSuggestion, type AutomationFacts, type ClassificationProfile, type Contributor, type ReleaseManifest, type ValidationProfile,
@@ -107,6 +107,12 @@ export function describeCopilotFallback(stage: CopilotFallbackStage, error: unkn
 
 interface Catalog { organization: { id: number; login: string }; defaults: { public: any; private: any }; repositories: Record<string, any> }
 async function catalog(): Promise<Catalog> { return json(configPath("repositories.json")); }
+type CopilotInstructionSourceFile = "common.md" | "layerscape.md";
+async function loadCopilotInstructions(profile: unknown, sourcePath: (sourceFile: CopilotInstructionSourceFile) => string): Promise<{ targetPath: string; content: string }> {
+  const contract = copilotInstructionSyncContract(profile);
+  const sources = await Promise.all(contract.sourceFiles.map((sourceFile) => runtimeReadFile(sourcePath(sourceFile), "utf8")));
+  return { targetPath: contract.targetPath, content: renderCopilotInstructions(sources[0]!, sources[1] ?? null) };
+}
 function configurationFor(catalogValue: Catalog, repository: any): any {
   const override = catalogValue.repositories[String(repository.id)];
   if (override && override.fullName !== repository.full_name) throw new Error("仓库编号与中央目录名称不一致");
@@ -304,12 +310,10 @@ async function onboard(args: Readonly<Record<string, string>>) {
   await gh.updateRepository(owner, repo, settings);
   const readback = await gh.getRepositoryById(repositoryId);
   for (const [name, value] of Object.entries(settings)) if (readback[name] !== value) throw new Error(`仓库设置读回不一致: ${name}`);
-  const common = await runtimeReadFile(configPath("copilot", "common.md"), "utf8");
-  const project = cfg.copilotInstructionsProfile === "layerscape" ? await runtimeReadFile(configPath("copilot", "layerscape.md"), "utf8") : null;
-  const rendered = renderCopilotInstructions(common, project);
+  const instructions = await loadCopilotInstructions(cfg.copilotInstructionsProfile, (sourceFile) => configPath("copilot", sourceFile));
   const planned = renderOnboardingPullRequest({ template: organizationPullRequestTemplate, configuration: cfg, actor: "splrad-steward[bot]", context: `onboard:${repositoryId}` });
-  const result = await reconcileManagedFile({ repository, gh, path: ".github/copilot-instructions.md", content: rendered, branch: planned.branch, title: planned.title, policySha, deliveryId: required(args, "delivery-id") });
-  await summary([`仓库：${fullName}`, `状态：${result === "unchanged" ? "onboarded" : result}`, `接入分支：${planned.branch}`, `分类配置：${cfg.classificationProfile}`, `验证配置：${cfg.validationProfile}`, `Copilot说明配置：${cfg.copilotInstructionsProfile}`, `发布配置：${cfg.releaseProfile ?? "未启用"}`, `Copilot说明字符数：${[...rendered].length}`]);
+  const result = await reconcileManagedFile({ repository, gh, path: instructions.targetPath, content: instructions.content, branch: planned.branch, title: planned.title, policySha, deliveryId: required(args, "delivery-id") });
+  await summary([`仓库：${fullName}`, `状态：${result === "unchanged" ? "onboarded" : result}`, `接入分支：${planned.branch}`, `分类配置：${cfg.classificationProfile}`, `验证配置：${cfg.validationProfile}`, `Copilot说明配置：${cfg.copilotInstructionsProfile}`, `发布配置：${cfg.releaseProfile ?? "未启用"}`, `Copilot说明字符数：${[...instructions.content].length}`]);
 }
 async function automate(args: Readonly<Record<string, string>>) {
   const repositoryId = integer(required(args, "repository-id"), "repository-id");
@@ -487,8 +491,15 @@ async function classify(args: Readonly<Record<string, string>>) {
 async function syncInstructions(args: Readonly<Record<string, string>>) {
   const policySha = sha(required(args, "policy-sha"), "policy-sha");
   const selected = args["repository-id"] ? [integer(args["repository-id"], "repository-id")] : Object.keys((await catalog()).repositories).map(Number);
-  const common = await runtimeReadFile(configPath("copilot", "common.md"), "utf8");
-  for (const id of selected) { const cat = await catalog(); const cfg = cat.repositories[String(id)]; if (!cfg) throw new Error(`未知仓库编号: ${id}`); const project = cfg.copilotInstructionsProfile === "layerscape" ? await runtimeReadFile(configPath("copilot", "layerscape.md"), "utf8") : null; const rendered = renderCopilotInstructions(common, project); const gh = await client(id, { contents: "write", pull_requests: "write", checks: "read", metadata: "read" }, policySha); const repository = await gh.getRepositoryById(id); const result = await reconcileManagedFile({ repository, gh, path: ".github/copilot-instructions.md", content: rendered, branch: "steward/copilot-instructions", title: "chore(copilot): 同步代码审查说明", policySha, deliveryId: `manual-sync:${id}` }); await summary([`仓库：${cfg.fullName}`, `状态：${result}`, `字符数：${[...rendered].length}`]); }
+  for (const id of selected) {
+    const cat = await catalog(); const cfg = cat.repositories[String(id)];
+    if (!cfg || cfg.managed !== true || typeof cfg.fullName !== "string") throw new Error(`仓库没有明确的Copilot说明同步登记: ${id}`);
+    const instructions = await loadCopilotInstructions(cfg.copilotInstructionsProfile, (sourceFile) => configPath("copilot", sourceFile));
+    const gh = await client(id, { contents: "write", pull_requests: "write", checks: "read", metadata: "read" }, policySha); const repository = await gh.getRepositoryById(id);
+    if (repository.full_name !== cfg.fullName) throw new Error("仓库编号与中央同步登记名称不一致");
+    const result = await reconcileManagedFile({ repository, gh, path: instructions.targetPath, content: instructions.content, branch: "steward/copilot-instructions", title: "chore(copilot): 同步代码审查说明", policySha, deliveryId: `copilot-sync:${policySha}:${id}` });
+    await summary([`仓库：${cfg.fullName}`, `目标文件：${instructions.targetPath}`, `状态：${result}`, `字符数：${[...instructions.content].length}`]);
+  }
 }
 
 async function walk(root: string): Promise<string[]> {
@@ -558,11 +569,10 @@ async function validate(args: Readonly<Record<string, string>>) {
     if (task === "parse-json") { for (const file of files.filter(path => path.endsWith(".json"))) JSON.parse(await runtimeReadFile(file, "utf8")); return { state: "success" as const, detail: "JSON有效" }; }
     if (task === "parse-yaml") { for (const file of files.filter(path => /\.ya?ml$/.test(path))) YAML.parse(await runtimeReadFile(file, "utf8")); return { state: "success" as const, detail: "YAML有效" }; }
     if (task === "verify-copilot-instructions") {
-      const file = join(workspace, ".github/copilot-instructions.md");
+      const instructions = await loadCopilotInstructions(configuration.copilotInstructionsProfile, (sourceFile) => copilotInstructionSourcePath(repositoryId, workspace, sourceFile));
+      const file = join(workspace, instructions.targetPath);
       if (!files.includes(file)) throw new Error("缺少中央生成的Copilot说明");
-      const common = await runtimeReadFile(copilotInstructionSourcePath(repositoryId, workspace, "common.md"), "utf8");
-      const project = configuration.copilotInstructionsProfile === "layerscape" ? await runtimeReadFile(copilotInstructionSourcePath(repositoryId, workspace, "layerscape.md"), "utf8") : null;
-      if (!matchesGeneratedCopilotInstructions(await runtimeReadFile(file, "utf8"), renderCopilotInstructions(common, project))) throw new Error("Copilot说明不等于中央生成结果");
+      if (!matchesGeneratedCopilotInstructions(await runtimeReadFile(file, "utf8"), instructions.content)) throw new Error("Copilot说明不等于中央生成结果");
       return { state: "success" as const, detail: "Copilot说明与中央配置一致" };
     }
     if (task === "actionlint-if-present") return { state: actualWorkflows.length ? "success" as const : "not-applicable" as const, detail: actualWorkflows.length ? "工作流属于中央允许范围" : "未配置本地工作流" };
