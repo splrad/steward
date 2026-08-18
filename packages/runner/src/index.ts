@@ -88,8 +88,49 @@ async function summary(lines: readonly string[]): Promise<void> {
 }
 async function output(values: Record<string, string | number>): Promise<void> { const target = process.env.GITHUB_OUTPUT; if (!target) return; await writeFile(target, Object.entries(values).map(([key, value]) => `${key}=${String(value).replace(/[\r\n]/g, " ")}`).join("\n") + "\n", { flag: "a" }); }
 
-type CopilotFallbackStage = "copilot-step" | "prepared-facts-read" | "prepared-facts-parse" | "prepared-facts-check" | "copilot-output-read" | "copilot-output-parse" | "copilot-output-validate";
+type CopilotFallbackStage = "copilot-step" | "prepared-facts-read" | "prepared-facts-parse" | "prepared-facts-check" | "copilot-output-read" | "copilot-output-envelope" | "copilot-output-parse" | "copilot-output-validate";
 const safeGeneratedSummaryValidationMessage = /^(?:Copilot结果必须是对象|Copilot结果包含额外字段|type无效|scope无效|title格式无效|changes无效|related无效|(?:title|summary|motivation|changes\[\]|impact|impact\[\]|related\[\]|releaseAndMigration|releaseAndMigration\[\])(?:必须是字符串|长度或格式无效|无效))$/u;
+const maximumCopilotJsonlBytes = 2_097_152;
+const maximumCopilotJsonlLines = 256;
+const maximumCopilotContentBytes = 65_536;
+// JSON mode emits transport events; the business JSON remains inside the final root message.
+export function extractCopilotAssistantContent(value: string): string {
+  const size = Buffer.byteLength(value, "utf8");
+  if (size === 0 || size > maximumCopilotJsonlBytes) throw new Error("Copilot JSONL输出大小无效");
+  const lines = value.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  if (lines.length === 0 || lines.length > maximumCopilotJsonlLines || lines.some(line => line === "" || line === "\r")) throw new Error("Copilot JSONL输出格式无效");
+  const events = lines.map(line => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line.endsWith("\r") ? line.slice(0, -1) : line);
+    } catch {
+      throw new Error("Copilot JSONL输出格式无效");
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed) || typeof (parsed as Record<string, unknown>).type !== "string") throw new Error("Copilot JSONL输出格式无效");
+    const event = parsed as Record<string, unknown>;
+    if (event.agentId !== undefined && typeof event.agentId !== "string") throw new Error("Copilot JSONL输出格式无效");
+    return event;
+  });
+  const results = events.filter(event => event.type === "result");
+  if (results.length !== 1 || events.at(-1) !== results[0] || results[0]?.exitCode !== 0) throw new Error("Copilot JSONL结果无效");
+  if (events.some(event => event.agentId === undefined && String(event.type).startsWith("tool."))) throw new Error("Copilot JSONL消息无效");
+  const rootContents: string[] = [];
+  for (const event of events.filter(candidate => candidate.type === "assistant.message")) {
+    const data = event.data;
+    if (typeof data !== "object" || data === null || Array.isArray(data)) throw new Error("Copilot JSONL消息无效");
+    const message = data as Record<string, unknown>;
+    if (message.parentToolCallId !== undefined && typeof message.parentToolCallId !== "string") throw new Error("Copilot JSONL消息无效");
+    if (event.agentId !== undefined || message.parentToolCallId !== undefined) continue;
+    const toolRequests = message.toolRequests;
+    if ((toolRequests !== undefined && (!Array.isArray(toolRequests) || toolRequests.length !== 0)) || message.serverTools !== undefined) throw new Error("Copilot JSONL消息无效");
+    if (typeof message.content !== "string") throw new Error("Copilot JSONL消息无效");
+    if (message.content.trim()) rootContents.push(message.content);
+  }
+  const content = rootContents.at(-1);
+  if (!content || Buffer.byteLength(content, "utf8") > maximumCopilotContentBytes) throw new Error("Copilot JSONL消息无效");
+  return content;
+}
 export function describeCopilotFallback(stage: CopilotFallbackStage, error: unknown): string {
   if (stage === "copilot-output-parse") {
     const position = error instanceof Error ? /\bposition (\d{1,9})\b/u.exec(error.message)?.[1] : undefined;
@@ -105,6 +146,7 @@ export function describeCopilotFallback(stage: CopilotFallbackStage, error: unkn
     "prepared-facts-parse": "人工智能输入文件不是有效JSON",
     "prepared-facts-check": "人工智能输入对应的分支事实已经漂移",
     "copilot-output-read": "Copilot输出文件无法读取",
+    "copilot-output-envelope": "Copilot输出传输封装无效",
   }[stage];
 }
 
@@ -378,10 +420,17 @@ async function automate(args: Readonly<Record<string, string>>) {
       stage = "prepared-facts-check";
       if (prepared.repositoryId !== repositoryId || prepared.sourceRef !== sourceRef || prepared.headSha !== facts.headSha || prepared.baseSha !== facts.baseSha || prepared.policySha !== policySha) throw new Error("人工智能输入对应的分支事实已经漂移");
       stage = "copilot-output-read";
+      const copilotOutputMetadata = await stat(copilotOutput);
+      if (!copilotOutputMetadata.isFile() || copilotOutputMetadata.size === 0 || copilotOutputMetadata.size > maximumCopilotJsonlBytes) {
+        stage = "copilot-output-envelope";
+        throw new Error("Copilot JSONL输出大小无效");
+      }
       const copilotOutputText = await runtimeReadFile(copilotOutput, "utf8");
       copilotOutputEvidence = `${Buffer.byteLength(copilotOutputText, "utf8")}字节，SHA-256 ${createHash("sha256").update(copilotOutputText, "utf8").digest("hex")}`;
+      stage = "copilot-output-envelope";
+      const copilotAssistantContent = extractCopilotAssistantContent(copilotOutputText);
       stage = "copilot-output-parse";
-      const parsedCopilotOutput = JSON.parse(copilotOutputText);
+      const parsedCopilotOutput = JSON.parse(copilotAssistantContent);
       stage = "copilot-output-validate";
       generated = validateGeneratedSummary(parsedCopilotOutput);
       mode = "copilot";
