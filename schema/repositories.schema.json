@@ -7,7 +7,7 @@
     "$schema": { "type": "string" }, "schemaVersion": { "const": 2 },
     "organization": { "type": "object", "additionalProperties": false, "required": ["id", "login"], "properties": { "id": { "const": 302208797 }, "login": { "const": "splrad" } } },
     "defaults": { "type": "object", "additionalProperties": false, "required": ["public", "private"], "properties": { "public": { "$ref": "#/$defs/defaultConfig" }, "private": { "$ref": "#/$defs/defaultConfig" } } },
-    "repositories": { "type": "object", "additionalProperties": { "$ref": "#/$defs/repositoryConfig" } }
+    "repositories": { "type": "object", "propertyNames": { "pattern": "^[1-9][0-9]*$" }, "additionalProperties": { "$ref": "#/$defs/repositoryConfig" } }
   },
   "$defs": {
     "strings": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },

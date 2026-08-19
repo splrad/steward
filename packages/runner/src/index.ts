@@ -14,7 +14,7 @@ import {
   copilotInstructionSyncContract, parseVersion, planClassificationLabels, planLabelDefinitions, planRelease, planRepositorySettings, renderCopilotInstructions, renderManagedBody,
   renderOnboardingPullRequest, renderReleaseNotes, renderValidationSummary, runValidationTasks,
   validateAiClassificationSuggestion, validateGeneratedSummary, validateRepositoryForOnboarding, verifyAssetManifest,
-  type AiClassificationSuggestion, type AutomationFacts, type ClassificationProfile, type Contributor, type ReleaseManifest, type RepositoryClassification, type SemanticCatalog, type ValidationProfile,
+  type AiClassificationSuggestion, type AutomationFacts, type ClassificationProfile, type ClassifiedReleasePullRequest, type Contributor, type ReleaseManifest, type RepositoryClassification, type SemanticCatalog, type ValidationProfile,
 } from "../../core/src/index.js";
 import { createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestError, uploadReleaseAsset } from "../../github/src/index.js";
 import { managedRepositoryTargets, runManagedRepositorySync, type ManagedTarget } from "./managed-repository-sync.js";
@@ -955,7 +955,7 @@ async function releaseNotesCommand(args: Readonly<Record<string, string>>) {
   const repositoryConfiguration = configurationFor(await catalog(), repository);
   const repositoryClassification = repositoryConfiguration.classification as RepositoryClassification;
   const profile = await json<ClassificationProfile>(configPath("profiles", "classification", `${repositoryClassification.profile}.json`));
-  const rich: any[] = [];
+  const rich: ClassifiedReleasePullRequest[] = [];
   for (const number of numbers) {
     const pull = await gh.getPullRequest(owner, repo, number);
     if (!pull.merged || pull.base?.ref !== repository.default_branch || !range.has(pull.merge_commit_sha)) throw new Error(`拉取请求事实与提交范围不一致: #${number}`);
@@ -968,7 +968,7 @@ async function releaseNotesCommand(args: Readonly<Record<string, string>>) {
       commits: commits.map((value: any) => ({ sha: String(value.sha), message: String(value.commit?.message ?? "") })),
       files: files.map((value: any) => ({ path: String(value.filename), ...(value.previous_filename ? { previousPath: String(value.previous_filename) } : {}), status: String(value.status), additions: Number(value.additions), deletions: Number(value.deletions) })),
     }, { currentLabels, stewardOwnedRiskFlags: [], stewardOwnedFacets: [] });
-    rich.push({ number, title: pull.title, body: pull.body ?? "", labels: currentLabels, files: files.map((value: any) => value.filename), author: { login: pull.user.login, type: pull.user.type }, mergedBy: pull.merged_by?.login ?? null, mergedAt: pull.merged_at, mergeSha: pull.merge_commit_sha, decision });
+    rich.push({ number, title: pull.title, body: pull.body ?? "", labels: currentLabels, files: files.map((value: any) => value.filename), author: { login: pull.user.login, type: pull.user.type }, mergedAt: pull.merged_at, mergeSha: pull.merge_commit_sha, decision });
   }
   const releaseProfile = await json<any>(configPath("profiles", "release", "layerscape.json"));
   const eligible = collectReleasePullRequests(rich, releaseProfile.releaseNotes.excludedLabels);

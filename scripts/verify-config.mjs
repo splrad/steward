@@ -21,6 +21,11 @@ for (const [dataPath, schemaPath] of pairs) {
   if (!validate(data)) throw new Error(`${dataPath}不符合结构: ${ajv.errorsText(validate.errors)}`);
 }
 const catalog = JSON.parse(await readFile("config/repositories.json", "utf8")); const ids = Object.keys(catalog.repositories); if (new Set(ids).size !== ids.length) throw new Error("仓库编号重复");
+const repositoryValidator = validators.get("schema/repositories.schema.json");
+const sampleRepository = Object.values(catalog.repositories)[0];
+if (!repositoryValidator || !sampleRepository) throw new Error("仓库配置反例验证缺少基础数据");
+const invalidRepositoryKeyCatalog = { ...catalog, repositories: { ...catalog.repositories, invalid: sampleRepository } };
+if (repositoryValidator(invalidRepositoryKeyCatalog)) throw new Error("仓库编号schema允许非数字键");
 const semantics = JSON.parse(await readFile("config/labels/pr-semantics.json", "utf8"));
 const primaryIds = semantics.roles.primaryKind.definitions.map(x => x.id);
 const exactRoles = {
