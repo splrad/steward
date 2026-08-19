@@ -152,9 +152,24 @@ export function describeCopilotFallback(stage: CopilotFallbackStage, error: unkn
   }[stage];
 }
 
+export type CopilotJsonNormalization = "none" | "single-json-fence";
+
+export function normalizeCopilotJsonCandidate(value: string): { candidate: string; normalization: CopilotJsonNormalization } {
+  const trimmed = value.trim();
+  const lines = trimmed.split(/\r?\n/u);
+  if (lines.length >= 3 && /^```json$/iu.test(lines[0] ?? "") && lines.at(-1) === "```" && lines.slice(1, -1).every(line => !line.trimStart().startsWith("```"))) {
+    return { candidate: lines.slice(1, -1).join("\n").trim(), normalization: "single-json-fence" };
+  }
+  return { candidate: trimmed, normalization: "none" };
+}
+
+function describeCopilotJsonParseFailure(value: string, normalization: CopilotJsonNormalization, error: unknown): string {
+  return normalization === "none" && value.includes("```") ? "Copilot输出JSON代码围栏无效" : describeCopilotFallback("copilot-output-parse", error);
+}
+
 export type CopilotGeneratedSummaryInspection =
-  | { state: "valid"; generated: ReturnType<typeof validateGeneratedSummary> }
-  | { state: "repairable"; stage: "copilot-output-parse" | "copilot-output-validate"; reason: string; assistantContent: string }
+  | { state: "valid"; generated: ReturnType<typeof validateGeneratedSummary>; normalization: CopilotJsonNormalization }
+  | { state: "repairable"; stage: "copilot-output-parse" | "copilot-output-validate"; reason: string; assistantContent: string; normalization: CopilotJsonNormalization }
   | { state: "rejected"; stage: "copilot-output-envelope"; reason: string };
 
 export function inspectCopilotGeneratedSummary(value: string): CopilotGeneratedSummaryInspection {
@@ -164,31 +179,32 @@ export function inspectCopilotGeneratedSummary(value: string): CopilotGeneratedS
   } catch (error) {
     return { state: "rejected", stage: "copilot-output-envelope", reason: describeCopilotFallback("copilot-output-envelope", error) };
   }
+  const normalized = normalizeCopilotJsonCandidate(assistantContent);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(assistantContent);
+    parsed = JSON.parse(normalized.candidate);
   } catch (error) {
-    return { state: "repairable", stage: "copilot-output-parse", reason: describeCopilotFallback("copilot-output-parse", error), assistantContent };
+    return { state: "repairable", stage: "copilot-output-parse", reason: describeCopilotJsonParseFailure(assistantContent, normalized.normalization, error), assistantContent: normalized.candidate, normalization: normalized.normalization };
   }
   try {
-    return { state: "valid", generated: validateGeneratedSummary(parsed) };
+    return { state: "valid", generated: validateGeneratedSummary(parsed), normalization: normalized.normalization };
   } catch (error) {
-    return { state: "repairable", stage: "copilot-output-validate", reason: describeCopilotFallback("copilot-output-validate", error), assistantContent };
+    return { state: "repairable", stage: "copilot-output-validate", reason: describeCopilotFallback("copilot-output-validate", error), assistantContent: normalized.candidate, normalization: normalized.normalization };
   }
 }
 
 export type CopilotGeneratedSummaryResolution =
-  | { state: "adopted"; mode: "copilot" | "copilot-repaired"; generated: ReturnType<typeof validateGeneratedSummary>; primaryFailureReason?: string }
+  | { state: "adopted"; mode: "copilot" | "copilot-repaired"; generated: ReturnType<typeof validateGeneratedSummary>; normalization: CopilotJsonNormalization; primaryFailureReason?: string }
   | { state: "repair-required"; primaryFailureReason: string; assistantContent: string }
   | { state: "fallback"; fallbackReason: string; primaryFailureReason?: string; repairFailureReason?: string };
 
 export function resolveCopilotGeneratedSummary(primaryValue: string, repairValue?: string): CopilotGeneratedSummaryResolution {
   const primary = inspectCopilotGeneratedSummary(primaryValue);
-  if (primary.state === "valid") return { state: "adopted", mode: "copilot", generated: primary.generated };
+  if (primary.state === "valid") return { state: "adopted", mode: "copilot", generated: primary.generated, normalization: primary.normalization };
   if (primary.state === "rejected") return { state: "fallback", fallbackReason: primary.reason };
   if (repairValue === undefined) return { state: "repair-required", primaryFailureReason: primary.reason, assistantContent: primary.assistantContent };
   const repair = inspectCopilotGeneratedSummary(repairValue);
-  if (repair.state === "valid") return { state: "adopted", mode: "copilot-repaired", generated: repair.generated, primaryFailureReason: primary.reason };
+  if (repair.state === "valid") return { state: "adopted", mode: "copilot-repaired", generated: repair.generated, normalization: repair.normalization, primaryFailureReason: primary.reason };
   return {
     state: "fallback",
     fallbackReason: primary.reason,
@@ -228,7 +244,7 @@ async function prepareCopilotRepair(): Promise<void> {
   const primary = await readCopilotOutput(env("COPILOT_OUTPUT_PATH"));
   if (primary.inspection.state === "valid") {
     await output({ "repair-required": "false" });
-    await summary(["人工智能修复：不需要", `人工智能首次输出证据：${primary.evidence}`]);
+    await summary(["人工智能修复：不需要", ...(primary.inspection.normalization === "single-json-fence" ? ["人工智能JSON规范化：首次输出已剥离单一json代码围栏"] : []), `人工智能首次输出证据：${primary.evidence}`]);
     return;
   }
   if (primary.inspection.state === "rejected") {
@@ -531,6 +547,7 @@ async function automate(args: Readonly<Record<string, string>>) {
   let fallbackReason: string | null = null;
   let primaryFailureReason: string | null = null;
   let repairSummary: string | null = null;
+  let copilotNormalizationSummary: string | null = null;
   let copilotOutputEvidence: string | null = null;
   let copilotRepairOutputEvidence: string | null = null;
   if (process.env.PREPARE_REPAIR_ONLY === "true") {
@@ -572,6 +589,7 @@ async function automate(args: Readonly<Record<string, string>>) {
       if (primaryResolution.state === "adopted") {
         generated = primaryResolution.generated;
         mode = primaryResolution.mode;
+        if (primaryResolution.normalization === "single-json-fence") copilotNormalizationSummary = "首次输出已剥离单一json代码围栏";
       } else if (primaryResolution.state === "fallback") {
         fallbackReason = primaryResolution.fallbackReason;
       } else {
@@ -596,6 +614,7 @@ async function automate(args: Readonly<Record<string, string>>) {
             if (repairedResolution.state === "adopted" && repairedResolution.mode === "copilot-repaired") {
               generated = repairedResolution.generated;
               mode = repairedResolution.mode;
+              if (repairedResolution.normalization === "single-json-fence") copilotNormalizationSummary = "修复输出已剥离单一json代码围栏";
               fallbackReason = null;
               repairSummary = "已采用";
             } else {
@@ -636,6 +655,7 @@ async function automate(args: Readonly<Record<string, string>>) {
     `来源提交：${facts.headSha}`,
     `事件提交：${eventAfterSha}`,
     `标题生成：${mode}`,
+    ...(copilotNormalizationSummary ? [`人工智能JSON规范化：${copilotNormalizationSummary}`] : []),
     ...(fallbackReason ? [`人工智能回退原因：${fallbackReason}`] : []),
     ...(primaryFailureReason ? [`人工智能首次失败原因：${primaryFailureReason}`] : []),
     ...(repairSummary ? [`人工智能修复：${repairSummary}`] : []),
