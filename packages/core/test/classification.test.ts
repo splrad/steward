@@ -5,7 +5,7 @@ import layerScapeJson from "../../../config/profiles/classification/layerscape.j
 import regressionCanaries from "./fixtures/classification/regression-canaries.v1.json" with { type: "json" };
 import digestVectors from "./fixtures/classification/digests.v1.json" with { type: "json" };
 import {
-  classificationDigests, classificationInputDigest, classifyPullRequest, evaluateClassificationRules, planClassificationLabels,
+  canonicalize, classificationDigests, classificationInputDigest, classifyPullRequest, digest, evaluateClassificationRules, planClassificationLabels,
   validateClassificationProfile, validateRepositoryClassification, validateSemanticCatalog,
   type ClassificationProfile, type RawClassificationFacts, type RepositoryClassification, type SemanticCatalog,
 } from "../src/classification.js";
@@ -37,6 +37,16 @@ describe("角色化拉取请求分类", () => {
     const first = classificationDigests(catalog, defaultProfile, repository("default"));
     const reordered = { ...repository("default"), ai: { mode: "shadow" as const, adoptedPrimaryKinds: [], canaries: [] } };
     expect(classificationDigests(catalog, defaultProfile, reordered)).toEqual(first);
+  });
+
+  it("规范化摘要显式拒绝JSON不支持的类型", () => {
+    expect(canonicalize({ z: 1, a: [true, null, "x"] })).toBe('{"a":[true,null,"x"],"z":1}');
+    for (const value of [undefined, Symbol("x"), () => "x", 1n]) {
+      expect(() => canonicalize(value)).toThrow("规范化输入包含JSON不支持的类型");
+      expect(() => digest(value)).toThrow("规范化输入包含JSON不支持的类型");
+    }
+    expect(() => canonicalize([undefined])).toThrow("规范化输入包含JSON不支持的类型: undefined");
+    expect(() => canonicalize({ value: 1n })).toThrow("规范化输入包含JSON不支持的类型: bigint");
   });
 
   it("固定跨平台策略与输入摘要黄金向量", () => {

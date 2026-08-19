@@ -184,7 +184,13 @@ export function validateRepositoryClassification(profile: ClassificationProfile,
 }
 
 export function canonicalize(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  const valueType = typeof value;
+  if (valueType === "undefined" || valueType === "symbol" || valueType === "function" || valueType === "bigint") throw new TypeError(`规范化输入包含JSON不支持的类型: ${valueType}`);
+  if (value === null || valueType !== "object") {
+    const serialized = JSON.stringify(value);
+    if (serialized === undefined) throw new TypeError("规范化输入无法序列化为JSON");
+    return serialized;
+  }
   if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
   const object = value as Record<string, unknown>;
   return `{${Object.keys(object).filter((key) => key !== "$schema").sort().map((key) => `${JSON.stringify(key)}:${canonicalize(object[key])}`).join(",")}}`;
