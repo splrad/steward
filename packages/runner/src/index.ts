@@ -358,7 +358,7 @@ export function hasActiveCopilotCheckRun(checkRuns: readonly any[], pullRequestN
       && String(pull.head?.sha ?? "").toLowerCase() === expectedHead));
 }
 export function classificationInstallationPermissions(mode: "observe" | "enforce" = "enforce"): Parameters<typeof createInstallationToken>[0]["permissions"] {
-  return { contents: "read", pull_requests: "read", issues: mode === "enforce" ? "write" : "read", checks: "write", metadata: "read" } as const;
+  return { contents: "read", pull_requests: mode === "enforce" ? "write" : "read", issues: mode === "enforce" ? "write" : "read", checks: "write", metadata: "read" } as const;
 }
 export function prAutomationInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
   return { contents: "read", pull_requests: "write", checks: "read", metadata: "read" } as const;

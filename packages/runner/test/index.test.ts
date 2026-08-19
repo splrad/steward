@@ -363,12 +363,18 @@ describe("中央命令入口", () => {
     expect(hasNewCopilotRequestEvent([{ id: 12, event: "copilot_work_started" }], 10)).toBe(true);
     expect(classificationInstallationPermissions()).toEqual({
       contents: "read",
-      pull_requests: "read",
+      pull_requests: "write",
       issues: "write",
       checks: "write",
       metadata: "read",
     });
-    expect(classificationInstallationPermissions("observe").issues).toBe("read");
+    expect(classificationInstallationPermissions("observe")).toEqual({
+      contents: "read",
+      pull_requests: "read",
+      issues: "read",
+      checks: "write",
+      metadata: "read",
+    });
     expect(prAutomationInstallationPermissions()).toEqual({
       contents: "read",
       pull_requests: "write",
