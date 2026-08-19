@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "fixtureSet": "legacy-canaries-regression",
+  "metricEligible": false,
+  "cases": [
+    {
+      "id": "github-8",
+      "source": "synthetic",
+      "profile": "default",
+      "facts": {
+        "repositoryId": 1296725317,
+        "pullRequestNumber": 8,
+        "sourceRepositoryId": 1296725317,
+        "sourceRef": "refs/heads/chore/ai-classification-probe-20260819-01",
+        "targetRef": "refs/heads/main",
+        "author": { "login": "splrad-steward[bot]", "type": "Bot" },
+        "headSha": "019be52b8256db38917d5cd859562d50a4963bfb",
+        "baseSha": "20339eedf72770bc926d745724812527f30c2222",
+        "commits": [{ "sha": "019be52b8256db38917d5cd859562d50a4963bfb", "message": "test(classification): 添加样本 01" }],
+        "files": [{
+          "path": "README.md", "status": "modified", "additions": 1, "deletions": 0, "patchState": "available",
+          "patch": "@@ -37,6 +37,7 @@ LICENSE                        Apache License 2.0\n 2. 如果文件由 Steward 生成，先修改 Steward 中的来源文件。\n 3. 检查模板中的受管注释标记是否完整，不要改名或删除。\n 4. 通过拉取请求提交，以便查看 Steward 生成的摘要和验证结果。\n+5. 分类检查会分别显示确定性标签与 AI 影子建议；观察阶段的 AI 建议不会直接写入标签。\n \n ## 许可证\n "
+        }]
+      },
+      "expectedDecision": { "primaryKind": "documentation", "riskFlags": [], "facets": [], "areas": ["area:docs"] },
+      "expectedPr1Deterministic": { "primaryKind": "documentation", "riskFlags": [], "facets": [], "areas": ["area:docs"] },
+      "humanReason": "全部改动均为README文档，规则应锁定documentation。"
+    },
+    {
+      "id": "steward-138",
+      "source": "synthetic",
+      "profile": "default",
+      "facts": {
+        "repositoryId": 1296724484,
+        "pullRequestNumber": 138,
+        "sourceRepositoryId": 1296724484,
+        "sourceRef": "refs/heads/chore/ai-classification-probe-20260819-02",
+        "targetRef": "refs/heads/main",
+        "author": { "login": "splrad-steward[bot]", "type": "Bot" },
+        "headSha": "fd97b72626fddecbaaebe53cc82533356bfd5b14",
+        "baseSha": "77fc197318d669d532aaf64dbc650f846b44aa77",
+        "commits": [{ "sha": "fd97b72626fddecbaaebe53cc82533356bfd5b14", "message": "test(classification): 添加样本 02" }],
+        "files": [{
+          "path": ".github/workflows/pr-classification.yml", "status": "modified", "additions": 1, "deletions": 1, "patchState": "available",
+          "patch": "@@ -19,7 +19,7 @@ concurrency:\n jobs:\n   classify:\n     runs-on: ubuntu-latest\n-    timeout-minutes: 10\n+    timeout-minutes: 11\n     environment:\n       name: steward-automation\n       deployment: false"
+        }]
+      },
+      "expectedDecision": { "primaryKind": "workflow", "riskFlags": [], "facets": ["github_actions"], "areas": ["area:workflow", "area:automation"] },
+      "expectedPr1Deterministic": { "primaryKind": "workflow", "riskFlags": [], "facets": ["github_actions"], "areas": ["area:workflow", "area:automation"] },
+      "humanReason": "唯一改动是GitHub Actions工作流，标题中的test不能覆盖完整diff。"
+    },
+    {
+      "id": "layerscape-150",
+      "source": "synthetic",
+      "profile": "layerscape",
+      "facts": {
+        "repositoryId": 1187527897,
+        "pullRequestNumber": 150,
+        "sourceRepositoryId": 1187527897,
+        "sourceRef": "refs/heads/chore/ai-classification-probe-20260819-03",
+        "targetRef": "refs/heads/main",
+        "author": { "login": "splrad-steward[bot]", "type": "Bot" },
+        "headSha": "eb3b2d76a6a8666c055f59a1990ba1f13ea9886f",
+        "baseSha": "574a04b5cecddc503852ae02001f0052092950c3",
+        "commits": [{ "sha": "eb3b2d76a6a8666c055f59a1990ba1f13ea9886f", "message": "test(classification): 添加样本 03" }],
+        "files": [{
+          "path": "src/AFR.Core/Services/PluginVersionService.cs", "status": "modified", "additions": 3, "deletions": 3, "patchState": "available",
+          "patch": "@@ -37,9 +37,9 @@ public static string GetPluginVersion()\n     /// </summary>\n     public static string GetDisplayVersion()\n     {\n-        var full = GetPluginVersion();\n-        var idx = full.IndexOf('+');\n-        return idx > 0 ? full[..idx] : full;\n+        var fullVersion = GetPluginVersion();\n+        var separatorIndex = fullVersion.IndexOf('+');\n+        return separatorIndex > 0 ? fullVersion[..separatorIndex] : fullVersion;\n     }\n \n     /// <summary>"
+        }]
+      },
+      "expectedDecision": { "primaryKind": "refactor", "riskFlags": [], "facets": [], "areas": ["area:runtime"] },
+      "expectedPr1Deterministic": { "primaryKind": "chore", "riskFlags": [], "facets": [], "areas": ["area:runtime"] },
+      "humanReason": "生产代码只做局部变量重命名，行为不变；旧plugin答案废止，语义答案为refactor加area:runtime。"
+    },
+    {
+      "id": "layerscape-151",
+      "source": "synthetic",
+      "profile": "layerscape",
+      "facts": {
+        "repositoryId": 1187527897,
+        "pullRequestNumber": 151,
+        "sourceRepositoryId": 1187527897,
+        "sourceRef": "refs/heads/chore/ai-classification-probe-20260819-04",
+        "targetRef": "refs/heads/main",
+        "author": { "login": "splrad-steward[bot]", "type": "Bot" },
+        "headSha": "87e994de58ad8d006a38b50125bf472f12acab27",
+        "baseSha": "574a04b5cecddc503852ae02001f0052092950c3",
+        "commits": [{ "sha": "87e994de58ad8d006a38b50125bf472f12acab27", "message": "test(classification): 添加样本 04" }],
+        "files": [{
+          "path": "Directory.Build.props", "status": "modified", "additions": 1, "deletions": 0, "patchState": "available",
+          "patch": "@@ -19,6 +19,7 @@\n \t  否则会变成 \"9.0.0+20260503.1+c6a2544...\"，使日志/注册表里的 build 后缀变成 commit SHA 而非我们维护的 PluginBuildId。\n \t-->\n \t<IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>\n+\t<Deterministic>true</Deterministic>\n \n     <!-- 统一构建产物输出到 artifacts/ 目录（仅 bin，不含 obj） -->\n     <ArtifactsPath>$(MSBuildThisFileDirectory)artifacts</ArtifactsPath>"
+        }]
+      },
+      "expectedDecision": { "primaryKind": "build", "riskFlags": [], "facets": ["dependencies", "config"], "areas": ["area:config"] },
+      "expectedPr1Deterministic": { "primaryKind": "build", "riskFlags": [], "facets": ["dependencies", "config"], "areas": ["area:config"] },
+      "humanReason": "唯一改动是中央MSBuild构建属性，规则应锁定build；标题中的test不能覆盖完整diff。"
+    }
+  ]
+}

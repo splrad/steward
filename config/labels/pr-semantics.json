@@ -1,0 +1,62 @@
+{
+  "$schema": "../../schema/pr-semantics.schema.json",
+  "schemaVersion": 1,
+  "catalogId": "pr-semantics",
+  "roles": {
+    "primaryKind": {
+      "cardinality": "exactly-one",
+      "management": { "metadataOwner": "steward", "assignmentOwner": "steward", "reconcile": "exclusive-replace" },
+      "order": ["feature", "bug", "performance", "refactor", "test", "build", "documentation", "workflow", "chore"],
+      "definitions": [
+        { "id": "feature", "selection": "ai-eligible", "description": "新增或扩展用户、开发者可观察能力。", "includes": "新增功能、增强或新的可观察行为。", "excludes": "恢复既有行为、纯优化、纯重构和维护。", "githubLabel": { "name": "feature", "color": "1d76db" } },
+        { "id": "bug", "selection": "ai-eligible", "description": "修复缺陷、回归或错误结果。", "includes": "恢复已定义或合理预期的行为。", "excludes": "新增能力、纯优化、纯测试和纯重构。", "githubLabel": { "name": "bug", "color": "d73a4a" } },
+        { "id": "performance", "selection": "ai-eligible", "description": "在行为基本不变时改进性能。", "includes": "降低耗时、内存或I/O并提高吞吐。", "excludes": "构建提速和修复导致功能失败的性能回归。", "githubLabel": { "name": "performance", "color": "fbca04" } },
+        { "id": "refactor", "selection": "ai-eligible", "description": "重组生产代码且保持外部行为不变。", "includes": "重命名、抽取、重组或结构改进。", "excludes": "新增能力、修复缺陷和纯格式化。", "githubLabel": { "name": "refactor", "color": "a2eeef" } },
+        { "id": "test", "selection": "rule-only", "description": "只修改测试、夹具或测试基础设施。", "includes": "全部有效改动均属于测试。", "excludes": "生产、构建或工作流语义变化。", "githubLabel": { "name": "test", "color": "5319e7" } },
+        { "id": "build", "selection": "ai-eligible", "description": "修改编译、依赖、打包或构建工具链。", "includes": "依赖图、安装器、发布资产和本地构建。", "excludes": "GitHub Actions编排和普通仓库维护。", "githubLabel": { "name": "build", "color": "fef2c0" } },
+        { "id": "documentation", "selection": "rule-only", "description": "只修改面向人的文档。", "includes": "全部有效改动均为文档。", "excludes": "代码改动的配套文档和生成产物。", "githubLabel": { "name": "documentation", "color": "0075ca" } },
+        { "id": "workflow", "selection": "rule-only", "description": "只修改CI/CD和GitHub自动化编排。", "includes": "GitHub Actions工作流及其专用编排。", "excludes": "本地编译、打包工具和运行时代码。", "githubLabel": { "name": "workflow", "color": "0e8a16" } },
+        { "id": "chore", "selection": "fallback-only", "description": "其他仓库维护、元数据或一般配置。", "includes": "不属于其他主类的维护改动。", "excludes": "可明确归入功能、修复、重构、测试、构建、文档或工作流的改动。", "githubLabel": { "name": "chore", "color": "ededed" } }
+      ]
+    },
+    "riskFlags": {
+      "cardinality": "zero-or-more",
+      "management": { "metadataOwner": "steward", "assignmentOwner": "shared", "reconcile": "provenance-aware-set" },
+      "definitions": [
+        { "id": "security", "description": "包含有事实依据的安全修复或加固。", "includes": "漏洞、权限、认证或秘密处理的实际修复。", "excludes": "普通健壮性修改和模板中的通用安全文字。", "githubLabel": { "name": "security", "color": "d73a4a" } },
+        { "id": "breaking-change", "description": "包含需要迁移的不兼容变更。", "includes": "公共API、兼容性或持久格式的实际破坏。", "excludes": "只讨论未来可能发生的不兼容。", "githubLabel": { "name": "breaking-change", "color": "b60205" } }
+      ]
+    },
+    "areas": {
+      "cardinality": "zero-or-more",
+      "management": { "metadataOwner": "steward", "assignmentOwner": "steward", "reconcile": "authoritative-set" },
+      "definitions": [
+        { "id": "area:source", "description": "修改主要源代码。", "includes": "源代码目录。", "excludes": "测试、文档和自动化专用文件。", "githubLabel": { "name": "area:source", "color": "0052cc" } },
+        { "id": "area:test", "description": "修改测试或测试夹具。", "includes": "测试目录和测试文件。", "excludes": "生产源代码。", "githubLabel": { "name": "area:test", "color": "5319e7" } },
+        { "id": "area:workflow", "description": "修改GitHub Actions工作流。", "includes": "工作流定义。", "excludes": "其他自动化脚本。", "githubLabel": { "name": "area:workflow", "color": "0e8a16" } },
+        { "id": "area:automation", "description": "修改仓库自动化。", "includes": "GitHub、脚本和工具。", "excludes": "产品运行时代码。", "githubLabel": { "name": "area:automation", "color": "006b75" } },
+        { "id": "area:docs", "description": "修改文档。", "includes": "README和docs内容。", "excludes": "源代码。", "githubLabel": { "name": "area:docs", "color": "0075ca" } },
+        { "id": "area:config", "description": "修改仓库配置。", "includes": "根级配置和项目配置。", "excludes": "业务代码。", "githubLabel": { "name": "area:config", "color": "c5def5" } },
+        { "id": "area:runtime", "description": "修改LayerScape运行时代码。", "includes": "插件运行时源代码。", "excludes": "文档、工作流和发布元数据。", "githubLabel": { "name": "area:runtime", "color": "7057ff" } },
+        { "id": "area:release", "description": "修改版本或发布资产。", "includes": "版本、发布脚本和安装资产。", "excludes": "普通源代码。", "githubLabel": { "name": "area:release", "color": "f9d0c4" } }
+      ]
+    },
+    "facets": {
+      "cardinality": "zero-or-more",
+      "management": { "metadataOwner": "steward", "assignmentOwner": "shared", "reconcile": "provenance-aware-set" },
+      "definitions": [
+        { "id": "dependencies", "description": "修改第三方依赖或锁文件。", "includes": "依赖清单、锁文件和版本集中管理。", "excludes": "不改变依赖图的普通代码。", "githubLabel": { "name": "dependencies", "color": "0366d6" } },
+        { "id": "github_actions", "description": "修改GitHub Actions依赖或配置。", "includes": "Actions工作流和Action版本。", "excludes": "非GitHub自动化。", "githubLabel": { "name": "github_actions", "color": "000000" } },
+        { "id": "javascript", "description": "修改JavaScript或TypeScript生态依赖。", "includes": "npm清单、锁文件和JS/TS工具链。", "excludes": "其他语言依赖。", "githubLabel": { "name": "javascript", "color": "f1e05a" } },
+        { "id": "config", "description": "包含一般配置变更。", "includes": "配置文件或元数据。", "excludes": "主语义已由其他角色表达的内容。", "githubLabel": null },
+        { "id": "revert", "description": "撤销先前变更。", "includes": "明确的回滚提交。", "excludes": "普通修复。", "githubLabel": null },
+        { "id": "style", "description": "只调整格式或样式。", "includes": "无语义的格式化。", "excludes": "行为或结构变化。", "githubLabel": null },
+        { "id": "localization", "description": "修改本地化资源。", "includes": "翻译和区域化资源。", "excludes": "普通文档。", "githubLabel": null }
+      ]
+    }
+  },
+  "fallback": {
+    "defaultPrimaryKind": "chore",
+    "commitTypeToPrimaryKind": { "feat": "feature", "fix": "bug", "perf": "performance", "refactor": "refactor", "build": "build", "docs": "chore", "test": "chore", "ci": "chore", "style": "chore", "chore": "chore", "revert": "chore" }
+  }
+}

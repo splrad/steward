@@ -1,7 +1,7 @@
-import { classifyPullRequest, classifyReleasePullRequest, type ClassificationProfile } from './classification.js';
+import { classifyReleaseDecision, type ClassificationDecision, type ClassificationProfile } from './classification.js';
 
 export interface PublishedRelease { tag: string; targetSha: string; publishedAt: string; draft: boolean; prerelease: boolean }
-export interface ReleasePullRequest { number: number; title: string; body: string; labels: string[]; files: string[]; author: { login: string; type: string }; mergedAt: string; mergeSha: string }
+export interface ReleasePullRequest { number: number; title: string; body: string; labels: string[]; files: string[]; author: { login: string; type: string }; mergedAt: string; mergeSha: string; decision?: ClassificationDecision }
 export interface CategorizedReleasePullRequest extends ReleasePullRequest { category: { title: string; icon: string } }
 
 const categoryOrder = ["🚨 破坏性变更", "🔒 安全修复", "✨ 新增功能", "🛠 问题修复", "⚡ 性能优化", "📦 安装与发布包", "🔌 其他插件变更"] as const;
@@ -21,9 +21,8 @@ export function collectReleasePullRequests(pullRequests: readonly ReleasePullReq
 
 export function categorizeReleasePullRequests(profile: ClassificationProfile, pullRequests: readonly ReleasePullRequest[]): CategorizedReleasePullRequest[] {
   return pullRequests.flatMap((pull) => {
-    const facts = { title: pull.title, body: pull.body, files: pull.files, currentLabels: pull.labels };
-    const classification = classifyPullRequest(profile, facts);
-    const category = classifyReleasePullRequest(profile, facts, classification);
+    if (!pull.decision) throw new Error(`发布缺少角色化分类决策: #${pull.number}`);
+    const category = classifyReleaseDecision(profile, pull.decision);
     return category ? [{ ...pull, category: { title: category.title, icon: category.icon } }] : [];
   });
 }

@@ -55,10 +55,12 @@ export class GitHubClient {
   listPullFiles(owner: string, repo: string, number: number) { return this.paginate<any>(`/repos/${owner}/${repo}/pulls/${number}/files?per_page=100`); }
   listPullCommits(owner: string, repo: string, number: number) { return this.paginate<any>(`/repos/${owner}/${repo}/pulls/${number}/commits?per_page=100`); }
   listLabels(owner: string, repo: string, number: number) { return this.paginate<any>(`/repos/${owner}/${repo}/issues/${number}/labels?per_page=100`); }
-  setLabels(owner: string, repo: string, number: number, labels: readonly string[]) { return this.request<any>("POST", `/repos/${owner}/${repo}/issues/${number}/labels`, { labels }); }
+  addLabels(owner: string, repo: string, number: number, labels: readonly string[]) { return this.request<any>("POST", `/repos/${owner}/${repo}/issues/${number}/labels`, { labels }); }
+  removeLabel(owner: string, repo: string, number: number, label: string) { return this.request<void>("DELETE", `/repos/${owner}/${repo}/issues/${number}/labels/${encodeURIComponent(label)}`); }
   getLabel(owner: string, repo: string, name: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/labels/${encodeURIComponent(name)}`); }
   createLabel(owner: string, repo: string, body: unknown) { return this.request<any>("POST", `/repos/${owner}/${repo}/labels`, body); }
   updateLabel(owner: string, repo: string, name: string, body: unknown) { return this.request<any>("PATCH", `/repos/${owner}/${repo}/labels/${encodeURIComponent(name)}`, body); }
+  listRepositoryLabels(owner: string, repo: string) { return this.paginate<any>(`/repos/${owner}/${repo}/labels?per_page=100`); }
   listCheckRuns(owner: string, repo: string, ref: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/commits/${ref}/check-runs?per_page=100`); }
   listAllCheckRuns(owner: string, repo: string, ref: string) { return this.paginate<any>(`/repos/${owner}/${repo}/commits/${ref}/check-runs?per_page=100`, value => (value as any).check_runs); }
   createCheckRun(owner: string, repo: string, body: unknown) { return this.request<any>("POST", `/repos/${owner}/${repo}/check-runs`, body); }
@@ -84,6 +86,7 @@ export class GitHubClient {
   getGitTag(owner: string, repo: string, sha: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/git/tags/${sha}`); }
   getImmutableReleaseStatus(owner: string, repo: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/immutable-releases`); }
   listOrganizationRepositories(owner: string) { return this.paginate<any>(`/orgs/${owner}/repos?type=all&per_page=100`); }
+  listInstallationRepositories() { return this.paginate<any>("/installation/repositories?per_page=100", value => (value as any).repositories); }
   listRepositoryTeams(owner: string, repo: string) { return this.paginate<any>(`/repos/${owner}/${repo}/teams?per_page=100`); }
   listRepositoryRulesets(owner: string, repo: string) { return this.paginate<any>(`/repos/${owner}/${repo}/rulesets?includes_parents=true&per_page=100`); }
   getTeamMembership(owner: string, teamSlug: string, username: string) { return this.request<any>("GET", `/orgs/${owner}/teams/${teamSlug}/memberships/${username}`); }

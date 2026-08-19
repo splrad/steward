@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 
-const expected = ["deploy-runtime.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "pr-validation.yml", "release.yml", "sync-copilot-instructions.yml"];
+const expected = ["deploy-runtime.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "pr-validation.yml", "release.yml", "sync-copilot-instructions.yml", "sync-managed-labels.yml"];
 const files = (await readdir(".github/workflows")).sort();
 if (JSON.stringify(files) !== JSON.stringify(expected)) throw new Error(`工作流集合不正确: ${files.join(", ")}`);
 const workflowDocuments = new Map();
@@ -34,6 +34,7 @@ const expectedJobEnvironments = new Map([
   ["release.yml:publish", { name: "steward-release", deployment: false }],
   ["release.yml:verify", { name: "steward-release", deployment: false }],
   ["sync-copilot-instructions.yml:synchronize", { name: "steward-automation", deployment: false }],
+  ["sync-managed-labels.yml:synchronize", { name: "steward-automation", deployment: false }],
 ]);
 for (const [file, document] of workflowDocuments) {
   for (const [jobName, job] of Object.entries(document?.jobs ?? {})) {
@@ -87,18 +88,40 @@ for (const required of [
   "github.event.workflow_run.head_branch==github.event.repository.default_branch",
   "github.event.workflow_run.head_repository.full_name==github.repository",
 ]) if (!syncCondition.includes(required)) throw new Error(`Copilot说明自动同步缺少可信触发条件: ${required}`);
-if (String(syncJob?.env?.POLICY_SHA ?? "").replace(/\s+/gu, "") !== "${{github.event_name=='workflow_run'&&github.event.workflow_run.head_sha||github.sha}}") throw new Error("Copilot说明同步没有绑定已部署的精确中央提交");
+const syncPolicyStep = syncJob?.steps?.find(step => step?.name === "解析已部署规则提交");
+if (String(syncPolicyStep?.env?.EVENT_NAME ?? "").replace(/\s+/gu, "") !== "${{github.event_name}}" || String(syncPolicyStep?.env?.DEPLOYED_HEAD_SHA ?? "").replace(/\s+/gu, "") !== "${{github.event.workflow_run.head_sha}}" || !String(syncPolicyStep?.run ?? "").includes('process.env.RUNTIME_URL+"/health"')) throw new Error("Copilot说明同步没有从部署事件或线上健康接口解析策略提交");
 const syncCheckout = syncJob?.steps?.find(step => step?.uses?.startsWith("actions/checkout@"));
-if (String(syncCheckout?.with?.ref ?? "").replace(/\s+/gu, "") !== "${{env.POLICY_SHA}}" || syncCheckout?.with?.["persist-credentials"] !== false) throw new Error("Copilot说明同步没有检出精确中央提交或仍保留检出凭据");
+if (String(syncCheckout?.with?.ref ?? "").replace(/\s+/gu, "") !== "${{steps.policy.outputs.policy_sha}}" || syncCheckout?.with?.["persist-credentials"] !== false) throw new Error("Copilot说明同步没有检出精确中央提交或仍保留检出凭据");
 const syncStep = syncJob?.steps?.find(step => step?.name === "同步代码审查说明");
 const syncCommand = String(syncStep?.run ?? "");
 if (!syncCommand.includes('--policy-sha "$POLICY_SHA"') || /--(?:source|target|path|content)(?:\s|=)/iu.test(syncCommand)) throw new Error("Copilot说明同步允许工作流输入指定文件或内容");
 if (String(syncStep?.env?.REPOSITORY_ID ?? "").replace(/\s+/gu, "") !== "${{inputs.repositoryId}}" || /\$\{\{[^}]*inputs\.repositoryId/iu.test(syncCommand)) throw new Error("Copilot说明同步把仓库编号直接拼接进shell命令");
+if (String(syncStep?.env?.POLICY_SHA ?? "").replace(/\s+/gu, "") !== "${{steps.policy.outputs.policy_sha}}" || String(syncStep?.env?.SYNC_TRIGGER ?? "").replace(/\s+/gu, "") !== "${{github.event_name}}" || String(syncStep?.env?.TRIGGER_ACTOR_ID ?? "").replace(/\s+/gu, "") !== "${{github.actor_id}}" || String(syncStep?.env?.TRIGGER_ACTOR_LOGIN ?? "").replace(/\s+/gu, "") !== "${{github.actor}}") throw new Error("Copilot说明手工同步没有绑定线上策略与触发者身份");
 for (const required of ['repository_arguments=()', 'repository_arguments+=(--repository-id "$REPOSITORY_ID")', '"${repository_arguments[@]}"']) {
   if (!syncCommand.includes(required)) throw new Error(`Copilot说明同步没有安全传递可选仓库编号: ${required}`);
 }
 const syncInputs = syncInstructionsDocument?.on?.workflow_dispatch?.inputs ?? {};
 if (JSON.stringify(Object.keys(syncInputs)) !== JSON.stringify(["repositoryId"])) throw new Error("Copilot说明同步暴露了未允许的手工输入");
+const syncLabelsDocument = workflowDocuments.get("sync-managed-labels.yml");
+const syncLabelsJob = syncLabelsDocument?.jobs?.synchronize;
+if (JSON.stringify(syncLabelsDocument?.on?.workflow_run?.workflows) !== JSON.stringify(["SPLRAD Steward / Deploy Runtime"]) || JSON.stringify(syncLabelsDocument?.on?.workflow_run?.types) !== JSON.stringify(["completed"])) throw new Error("标签同步没有绑定部署完成事件");
+if (!Object.hasOwn(syncLabelsDocument?.on ?? {}, "schedule")) throw new Error("标签同步缺少定期漂移扫描");
+const labelCondition = String(syncLabelsJob?.if ?? "").replace(/\s+/gu, "");
+for (const required of ["github.event_name=='workflow_dispatch'", "github.event_name=='schedule'", "github.event.workflow_run.conclusion=='success'", "github.event.workflow_run.event=='push'", "github.event.workflow_run.head_branch==github.event.repository.default_branch", "github.event.workflow_run.head_repository.full_name==github.repository"]) if (!labelCondition.includes(required)) throw new Error(`标签同步缺少可信触发条件: ${required}`);
+const labelPolicyStep = syncLabelsJob?.steps?.find(step => step?.name === "解析已部署规则提交");
+if (String(labelPolicyStep?.env?.EVENT_NAME ?? "").replace(/\s+/gu, "") !== "${{github.event_name}}" || String(labelPolicyStep?.env?.DEPLOYED_HEAD_SHA ?? "").replace(/\s+/gu, "") !== "${{github.event.workflow_run.head_sha}}" || !String(labelPolicyStep?.run ?? "").includes('process.env.RUNTIME_URL+"/health"')) throw new Error("标签同步没有从部署事件或线上健康接口解析策略提交");
+const labelCheckout = syncLabelsJob?.steps?.find(step => step?.uses?.startsWith("actions/checkout@"));
+if (String(labelCheckout?.with?.ref ?? "").replace(/\s+/gu, "") !== "${{steps.policy.outputs.policy_sha}}" || labelCheckout?.with?.["persist-credentials"] !== false) throw new Error("标签同步没有检出精确已部署提交");
+const labelStep = syncLabelsJob?.steps?.find(step => step?.name === "同步受管标签定义");
+if (String(labelStep?.env?.REPOSITORY_ID ?? "").replace(/\s+/gu, "") !== "${{inputs.repositoryId}}" || /\$\{\{[^}]*inputs\.repositoryId/iu.test(String(labelStep?.run ?? ""))) throw new Error("标签同步没有安全传递仓库编号");
+if (!String(labelStep?.run ?? "").includes('sync-managed-labels "${repository_arguments[@]}" --policy-sha "$POLICY_SHA"')) throw new Error("标签同步没有调用固定runner入口");
+if (String(labelStep?.env?.POLICY_SHA ?? "").replace(/\s+/gu, "") !== "${{steps.policy.outputs.policy_sha}}" || String(labelStep?.env?.SYNC_TRIGGER ?? "").replace(/\s+/gu, "") !== "${{github.event_name}}" || String(labelStep?.env?.TRIGGER_ACTOR_ID ?? "").replace(/\s+/gu, "") !== "${{github.actor_id}}" || String(labelStep?.env?.TRIGGER_ACTOR_LOGIN ?? "").replace(/\s+/gu, "") !== "${{github.actor}}") throw new Error("标签手工同步没有绑定线上策略与触发者身份");
+if (Object.hasOwn(labelStep?.env ?? {}, "COPILOT_REVIEW_REQUEST_TOKEN")) throw new Error("标签同步不应读取Copilot令牌");
+const onboardDocument = workflowDocuments.get("onboard-repository.yml");
+const onboardStep = onboardDocument?.jobs?.onboard?.steps?.find(step => step?.name === "校验并接入仓库");
+const onboardCommand = String(onboardStep?.run ?? "");
+for (const [name, expectedValue] of [["REPOSITORY_ID", "${{inputs.repositoryId}}"], ["REPOSITORY_FULL_NAME", "${{inputs.repositoryFullName}}"], ["TRIGGER_ACTOR_ID", "${{github.actor_id}}"], ["TRIGGER_ACTOR_LOGIN", "${{github.actor}}"]]) if (String(onboardStep?.env?.[name] ?? "").replace(/\s+/gu, "") !== expectedValue) throw new Error(`onboarding没有通过环境变量传递${name}`);
+if (/\$\{\{/u.test(onboardCommand) || !onboardCommand.includes('repository_arguments+=(--repository-id "$REPOSITORY_ID")') || !onboardCommand.includes('"${repository_arguments[@]}"')) throw new Error("onboarding没有使用环境变量和参数数组传递不可信输入");
 const deployRuntime = await readFile(".github/workflows/deploy-runtime.yml", "utf8");
 for (const required of [".github/workflows/deploy-runtime.yml", "scripts/verify-workflows.mjs", "github.event.repository.default_branch", "id: deploy", "tee \"$deployment_log\"", "PIPESTATUS[0]", "复核运行程序健康状态", "steps.deploy.outputs.runtime_url", "EXPECTED_POLICY_SHA", "Date.now() + 60_000", "AbortSignal.timeout", "await response.body?.cancel()", "status: \"waiting\"", "iu.test(body.version)", "健康复核在60秒内未收敛"]) {
   if (!deployRuntime.includes(required)) throw new Error(`部署工作流缺少固定健康复核合同: ${required}`);

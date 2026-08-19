@@ -3,6 +3,7 @@ import Ajv from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 
 const pairs = [
+  ["config/labels/pr-semantics.json", "schema/pr-semantics.schema.json"],
   ["config/repositories.json", "schema/repositories.schema.json"],
   ["config/profiles/classification/default.json", "schema/classification-profile.schema.json"],
   ["config/profiles/classification/layerscape.json", "schema/classification-profile.schema.json"],
@@ -20,10 +21,49 @@ for (const [dataPath, schemaPath] of pairs) {
   if (!validate(data)) throw new Error(`${dataPath}不符合结构: ${ajv.errorsText(validate.errors)}`);
 }
 const catalog = JSON.parse(await readFile("config/repositories.json", "utf8")); const ids = Object.keys(catalog.repositories); if (new Set(ids).size !== ids.length) throw new Error("仓库编号重复");
+const semantics = JSON.parse(await readFile("config/labels/pr-semantics.json", "utf8"));
+const primaryIds = semantics.roles.primaryKind.definitions.map(x => x.id);
+const exactRoles = {
+  primaryKind: ["feature", "bug", "performance", "refactor", "test", "build", "documentation", "workflow", "chore"],
+  riskFlags: ["security", "breaking-change"],
+  areas: ["area:source", "area:test", "area:workflow", "area:automation", "area:docs", "area:config", "area:runtime", "area:release"],
+  facets: ["dependencies", "github_actions", "javascript", "config", "revert", "style", "localization"],
+};
+for (const [role, expected] of Object.entries(exactRoles)) if (JSON.stringify(semantics.roles[role].definitions.map(x => x.id)) !== JSON.stringify(expected)) throw new Error(`中央语义目录${role}不是v1固定集合`);
+const exactManagement = { primaryKind: { metadataOwner: "steward", assignmentOwner: "steward", reconcile: "exclusive-replace" }, riskFlags: { metadataOwner: "steward", assignmentOwner: "shared", reconcile: "provenance-aware-set" }, areas: { metadataOwner: "steward", assignmentOwner: "steward", reconcile: "authoritative-set" }, facets: { metadataOwner: "steward", assignmentOwner: "shared", reconcile: "provenance-aware-set" } };
+for (const [role, expected] of Object.entries(exactManagement)) for (const [name, value] of Object.entries(expected)) if (semantics.roles[role].management[name] !== value) throw new Error(`中央语义目录${role}管理合同无效`);
+if (JSON.stringify(primaryIds) !== JSON.stringify(semantics.roles.primaryKind.order)) throw new Error("主类定义顺序与order不一致");
+const roleDefinitions = Object.values(semantics.roles).flatMap(role => role.definitions);
+const definitionIds = roleDefinitions.map(x => x.id); if (new Set(definitionIds).size !== definitionIds.length) throw new Error("中央语义定义编号重复");
+const physicalNames = roleDefinitions.flatMap(x => x.githubLabel ? [x.githubLabel.name.toLowerCase()] : []);
+if (new Set(physicalNames).size !== physicalNames.length) throw new Error("中央物理标签名称跨角色重复");
+const profiles = new Map();
+for (const name of ["default", "layerscape"]) {
+  const profile = JSON.parse(await readFile(`config/profiles/classification/${name}.json`, "utf8")); profiles.set(name, profile);
+  const fileSets = new Set(Object.keys(profile.fileSets)); const textSets = new Set(Object.keys(profile.commitTextSets));
+  const allRules = [...profile.rules.primaryKind, ...profile.rules.riskFlags, ...profile.rules.facets, ...profile.areas];
+  const ruleIds = allRules.map(x => x.id); if (new Set(ruleIds).size !== ruleIds.length) throw new Error(`${name}规则编号重复`);
+  for (const rule of allRules) {
+    for (const set of rule.match.fileSets ?? []) if (!fileSets.has(set)) throw new Error(`${name}引用未知fileSet: ${set}`);
+    for (const set of rule.match.commitTextSets ?? []) if (!textSets.has(set)) throw new Error(`${name}引用未知commitTextSet: ${set}`);
+  }
+  for (const set of [...profile.runtimeRelease.includeFileSets, ...profile.runtimeRelease.excludeFileSets, ...profile.installOrPackage.fileSets]) if (!fileSets.has(set)) throw new Error(`${name}发布事实引用未知fileSet: ${set}`);
+  for (const patterns of Object.values(profile.commitTextSets)) for (const pattern of patterns) new RegExp(pattern, "iu");
+  if (profile.releaseCategories.filter(x => x.fallback).length !== (profile.releaseCategories.length ? 1 : 0)) throw new Error(`${name}发布回退类别数量无效`);
+}
+for (const configuration of [...Object.values(catalog.defaults), ...Object.values(catalog.repositories)]) {
+  const profile = profiles.get(configuration.classification.profile); if (!profile) throw new Error("仓库引用未知分类profile");
+  const classification = configuration.classification;
+  if (classification.labelAssignmentMode === "enforce" && classification.labelDefinitionMode !== "enforce") throw new Error("PR标签enforce要求定义enforce");
+  if (classification.ai.mode === "shadow" && (classification.ai.adoptedPrimaryKinds.length || classification.ai.canaries.length)) throw new Error("shadow模式不得配置采用主类或canary");
+  if (classification.ai.mode !== "shadow" && (!classification.ai.adoptedPrimaryKinds.length || classification.labelAssignmentMode !== "enforce")) throw new Error("AI采用要求主类集合和PR标签enforce");
+  if (classification.ai.mode === "draft-canary" && !classification.ai.canaries.length) throw new Error("draft-canary必须配置精确canary");
+  if (classification.ai.mode !== "draft-canary" && classification.ai.canaries.length) throw new Error("只有draft-canary允许canary清单");
+  for (const kind of classification.ai.adoptedPrimaryKinds) if (!profile.ai.eligiblePrimaryKinds.includes(kind)) throw new Error(`仓库采用未知AI主类: ${kind}`);
+}
 const release = JSON.parse(await readFile("config/profiles/release/layerscape.json", "utf8"));
 if (release.build.projects.length !== 10 || new Set(release.build.projects.map(x => x.path)).size !== 10) throw new Error("LayerScape插件项目必须恰好10个且不重复");
 if (release.assets.length !== 3 || new Set(release.assets.map(x => x.nameTemplate)).size !== 3) throw new Error("发布资产必须恰好3项且不重复");
-const classification = JSON.parse(await readFile("config/profiles/classification/layerscape.json", "utf8")); if (classification.releaseCategories.filter(x => x.fallback).length !== 1) throw new Error("发布回退类别必须恰好一个");
 const forbiddenRuntime = ["queues", "durable_objects", "kv_namespaces", "d1_databases", "r2_buckets", "services", "triggers"];
 const wrangler = await readFile("packages/runtime/wrangler.toml", "utf8"); for (const name of forbiddenRuntime) if (wrangler.includes(name)) throw new Error(`运行配置包含禁止绑定: ${name}`);
 console.log("configuration verified");

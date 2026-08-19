@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import profile from "../../../config/profiles/classification/layerscape.json" with { type: "json" };
+import type { ClassificationDecision, ClassificationProfile } from "../src/classification.js";
 import { categorizeReleasePullRequests, collectReleasePullRequests, renderReleaseNotes, selectPreviousRelease, type CategorizedReleasePullRequest, type ReleasePullRequest } from "../src/release-notes.js";
 
 function pull(number: number, title: string, files = ["src/a.cs"], labels: string[] = [], login = "alice", type = "User"): ReleasePullRequest {
-  return { number, title, body: "", labels, files, author: { login, type }, mergedAt: `2026-08-16T00:00:0${number}Z`, mergeSha: String(number).repeat(40).slice(0, 40) };
+  const runtimeRelease = files.some(file => file.startsWith("src/"));
+  const decision: ClassificationDecision = { primaryKind: { id: "chore", source: "deterministic-fallback", reasonCode: "primary-fallback-selected" }, riskFlags: [], facets: [], areas: runtimeRelease ? [{ id: "area:runtime", source: "rule", ruleId: "test" }] : [], aiState: "missing", runtimeRelease, installOrPackage: false };
+  return { number, title, body: "", labels, files, author: { login, type }, mergedAt: `2026-08-16T00:00:0${number}Z`, mergeSha: String(number).repeat(40).slice(0, 40), decision };
 }
 
 describe("发布说明", () => {
@@ -26,7 +29,7 @@ describe("发布说明", () => {
 
   it("排除纯版本、文档和自动化改动", () => {
     const values = [pull(1, "version", ["Version.props"]), pull(2, "docs", ["docs/a.md"]), pull(3, "automation", [".github/copilot-instructions.md"]), pull(4, "runtime", ["src/a.cs"])];
-    expect(categorizeReleasePullRequests(profile, values).map(value => value.number)).toEqual([4]);
+    expect(categorizeReleasePullRequests(profile as unknown as ClassificationProfile, values).map(value => value.number)).toEqual([4]);
   });
 
   it("类别始终按七类固定顺序输出，机器人不生成账号链接，真人贡献者去重", () => {
