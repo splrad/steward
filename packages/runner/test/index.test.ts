@@ -5,7 +5,7 @@ import { join } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
+import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -158,6 +158,24 @@ describe("中央命令入口", () => {
     });
     expect(inspectCopilotGeneratedSummary(wrap(valid))).toMatchObject({ state: "valid" });
 
+    expect(normalizeCopilotJsonCandidate(`\n\uFEFF${valid}\n`)).toEqual({ candidate: valid, normalization: "none" });
+    expect(normalizeCopilotJsonCandidate(`\n\`\`\`json\n${valid}\n\`\`\`\n`)).toEqual({ candidate: valid, normalization: "single-json-fence" });
+    expect(inspectCopilotGeneratedSummary(wrap(`\`\`\`JSON\n${valid}\n\`\`\``))).toMatchObject({ state: "valid", normalization: "single-json-fence" });
+    expect(resolveCopilotGeneratedSummary(wrap(`\`\`\`json\n${valid}\n\`\`\``))).toMatchObject({ state: "adopted", mode: "copilot", normalization: "single-json-fence" });
+
+    const unsafeWrappers = [
+      `说明\n\`\`\`json\n${valid}\n\`\`\``,
+      `\`\`\`json\n${valid}\n\`\`\`\n说明`,
+      `\`\`\`\n${valid}\n\`\`\``,
+      `\`\`\`json\n${valid}\n\`\`\`\n\`\`\`json\n${valid}\n\`\`\``,
+      `\`\`\`json\n\`\`\`json\n${valid}\n\`\`\`\n\`\`\``,
+    ];
+    for (const unsafeWrapper of unsafeWrappers) {
+      expect(inspectCopilotGeneratedSummary(wrap(unsafeWrapper))).toMatchObject({ state: "repairable", stage: "copilot-output-parse" });
+    }
+    expect(inspectCopilotGeneratedSummary(wrap(unsafeWrappers[0]!))).toMatchObject({ reason: "Copilot输出JSON代码围栏无效" });
+    expect(inspectCopilotGeneratedSummary(wrap("```json\n{\"type\":\n```"))).toMatchObject({ state: "repairable", stage: "copilot-output-parse", reason: "Copilot输出不是有效JSON", normalization: "single-json-fence" });
+
     const malformed = inspectCopilotGeneratedSummary(wrap(`${valid}\n额外说明`));
     expect(malformed).toMatchObject({ state: "repairable", stage: "copilot-output-parse" });
     if (malformed.state !== "repairable") throw new Error("畸形业务JSON没有进入修复状态");
@@ -173,6 +191,7 @@ describe("中央命令入口", () => {
     expect(repaired).toMatchObject({ state: "adopted", mode: "copilot-repaired" });
     if (repaired.state !== "adopted") throw new Error("有效修复结果没有被采用");
     expect(repaired.primaryFailureReason).toMatch(/^Copilot输出不是有效JSON/u);
+    expect(resolveCopilotGeneratedSummary(wrap(`${valid}\n额外说明`), wrap(`\`\`\`json\n${valid}\n\`\`\``))).toMatchObject({ state: "adopted", mode: "copilot-repaired", normalization: "single-json-fence" });
     const repairFailed = resolveCopilotGeneratedSummary(wrap(`${valid}\n额外说明`), wrap("仍然不是JSON"));
     expect(repairFailed).toMatchObject({ state: "fallback", repairFailureReason: "Copilot修复输出不是有效JSON" });
     if (repairFailed.state !== "fallback") throw new Error("无效修复结果没有回退");
