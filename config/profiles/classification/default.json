@@ -1,39 +1,43 @@
 {
-  "$schema": "../../../schema/classification-profile.schema.json",
-  "schemaVersion": 1,
-  "name": "default",
-  "areas": [
-    { "name": "area:source", "patterns": ["src/**", "packages/**"] },
-    { "name": "area:test", "patterns": ["test/**", "tests/**", "**/*.test.*", "**/*.spec.*"] },
-    { "name": "area:workflow", "patterns": [".github/workflows/**"] },
-    { "name": "area:automation", "patterns": [".github/**", "scripts/**", "tools/**"] },
-    { "name": "area:docs", "patterns": ["README*", "SECURITY*", "CONTRIBUTING*", "docs/**"] },
-    { "name": "area:config", "patterns": [".editorconfig", ".gitattributes", ".gitignore", "*.json", "*.yml", "*.yaml", "*.props", "*.toml"] }
-  ],
-  "decisions": {
-    "kindOrder": ["breaking-change", "security", "bug", "feature", "performance", "build", "documentation", "workflow", "chore"],
-    "conventionalTypes": ["feat", "fix", "refactor", "perf", "style", "docs", "test", "build", "ci", "chore", "revert"],
-    "typeToKind": { "feat": "feature", "fix": "bug", "refactor": "chore", "perf": "performance", "style": "chore", "docs": "documentation", "test": "chore", "build": "build", "ci": "workflow", "chore": "chore", "revert": "bug" },
-    "breakingPatterns": ["(^|\\s)(feat|fix|refactor|perf|build)(\\([a-z0-9-]+\\))?!:", "breaking", "破坏性", "不兼容"],
-    "securityPatterns": ["security", "vulnerability", "cve", "安全", "漏洞"],
-    "fallbackKind": "chore"
+  "$schema": "../../../schema/classification-profile.schema.json", "schemaVersion": 2, "name": "default",
+  "semanticCatalog": { "id": "pr-semantics", "schemaVersion": 1 },
+  "fileSets": {
+    "docs": ["README*", "SECURITY*", "CONTRIBUTING*", "docs/**"],
+    "tests": ["test/**", "tests/**", "**/*.test.*", "**/*.spec.*"],
+    "workflows": [".github/workflows/**"],
+    "dependencies": ["package.json", "package-lock.json", "npm-shrinkwrap.json", "**/package.json", "**/package-lock.json"],
+    "javascript": ["**/*.js", "**/*.mjs", "**/*.cjs", "**/*.ts", "package.json", "package-lock.json"],
+    "source": ["src/**", "packages/**"], "automation": [".github/**", "scripts/**", "tools/**"],
+    "config": [".editorconfig", ".gitattributes", ".gitignore", "*.json", "*.toml", "*.yaml", "*.yml"],
+    "runtime": ["packages/**"], "runtimeExcluded": [".github/**", "docs/**", "README*", "SECURITY*", "CONTRIBUTING*", "tests/**", "**/*.test.*", "**/*.spec.*"],
+    "installPackage": ["package.json", "package-lock.json"]
   },
-  "runtimeRelease": { "includePrefixes": [], "includeFiles": [], "excludePrefixes": [], "excludeFiles": [] },
-  "installOrPackage": { "includeFiles": [] },
-  "labels": {
-    "public": [
-      { "name": "breaking-change", "color": "b60205", "description": "存在破坏性或不兼容变更。" },
-      { "name": "security", "color": "d73a4a", "description": "包含安全修复或安全加固。" },
-      { "name": "feature", "color": "1d76db", "description": "新增用户可见功能。" },
-      { "name": "bug", "color": "d73a4a", "description": "修复缺陷或回归。" },
-      { "name": "performance", "color": "fbca04", "description": "包含性能改进。" },
-      { "name": "build", "color": "fef2c0", "description": "修改构建、打包或依赖。" },
-      { "name": "documentation", "color": "0075ca", "description": "只修改文档。" },
-      { "name": "workflow", "color": "5319e7", "description": "修改自动化工作流。" },
-      { "name": "chore", "color": "ededed", "description": "仓库维护性改动。" }
+  "commitTextSets": { "breakingMarkers": ["^[^\\n]+!:", "(^|\\n)BREAKING CHANGE:"] },
+  "rules": {
+    "primaryKind": [
+      { "id": "documentation-only", "primaryKind": "documentation", "match": { "type": "all-files", "fileSets": ["docs"] } },
+      { "id": "test-only", "primaryKind": "test", "match": { "type": "all-files", "fileSets": ["tests"] } },
+      { "id": "workflow-only", "primaryKind": "workflow", "match": { "type": "all-files", "fileSets": ["workflows"] } },
+      { "id": "dependency-only", "primaryKind": "build", "match": { "type": "all-files", "fileSets": ["dependencies"] } }
     ],
-    "release": [],
-    "internalPrefixes": ["area:", "kind:"]
+    "riskFlags": [{ "id": "breaking-commit-marker", "riskFlag": "breaking-change", "match": { "type": "commit-text-any", "commitTextSets": ["breakingMarkers"] } }],
+    "facets": [
+      { "id": "dependency-files", "facet": "dependencies", "match": { "type": "any-file", "fileSets": ["dependencies"] } },
+      { "id": "github-actions-files", "facet": "github_actions", "match": { "type": "any-file", "fileSets": ["workflows"] } },
+      { "id": "javascript-files", "facet": "javascript", "match": { "type": "any-file", "fileSets": ["javascript"] } },
+      { "id": "configuration-files", "facet": "config", "match": { "type": "any-file", "fileSets": ["config"] } }
+    ]
   },
+  "areas": [
+    { "id": "area-source-files", "area": "area:source", "match": { "type": "any-file", "fileSets": ["source"] } },
+    { "id": "area-test-files", "area": "area:test", "match": { "type": "any-file", "fileSets": ["tests"] } },
+    { "id": "area-workflow-files", "area": "area:workflow", "match": { "type": "any-file", "fileSets": ["workflows"] } },
+    { "id": "area-automation-files", "area": "area:automation", "match": { "type": "any-file", "fileSets": ["automation"] } },
+    { "id": "area-documentation-files", "area": "area:docs", "match": { "type": "any-file", "fileSets": ["docs"] } },
+    { "id": "area-configuration-files", "area": "area:config", "match": { "type": "any-file", "fileSets": ["config"] } }
+  ],
+  "ai": { "eligiblePrimaryKinds": ["feature", "bug", "performance", "refactor", "build"], "minimumConfidence": "high" },
+  "runtimeRelease": { "includeFileSets": ["runtime"], "excludeFileSets": ["runtimeExcluded"] },
+  "installOrPackage": { "fileSets": ["installPackage"] },
   "releaseCategories": []
 }

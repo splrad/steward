@@ -36,6 +36,8 @@ describe("拉取请求自动化", () => {
     const prompt = buildCopilotRepairPrompt(raw);
     expect(prompt).toContain("只修复JSON语法和字段结构");
     expect(prompt).toContain("不得补充原始候选文本中不存在的事实");
+    expect(prompt).toContain("motivation和classification使用null");
+    expect(prompt).toContain("impact、related和releaseAndMigration使用空数组");
     expect(prompt).toContain(JSON.stringify(raw));
     expect(prompt).not.toContain("```");
   });

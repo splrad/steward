@@ -110,6 +110,27 @@ describe("代码托管平台客户端", () => {
     ]);
   });
 
+  it("以增量标签接口写入并分页读取仓库标签与安装仓库", async () => {
+    const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+    const transport = async (url: any, init?: RequestInit) => {
+      requests.push({ url: String(url), method: String(init?.method ?? "GET"), ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) }) });
+      if (String(url).includes("/installation/repositories")) return new Response(JSON.stringify({ repositories: [{ id: 1 }] }), { status: 200 });
+      if (init?.method === "DELETE") return new Response(null, { status: 204 });
+      return new Response(JSON.stringify([]), { status: 200 });
+    };
+    const client = new GitHubClient("token", "https://example.test", transport as typeof fetch);
+    await client.addLabels("splrad", "steward", 7, ["feature"]);
+    await client.removeLabel("splrad", "steward", 7, "area:source");
+    await client.listRepositoryLabels("splrad", "steward");
+    await expect(client.listInstallationRepositories()).resolves.toEqual([{ id: 1 }]);
+    expect(requests).toEqual([
+      { url: "https://example.test/repos/splrad/steward/issues/7/labels", method: "POST", body: { labels: ["feature"] } },
+      { url: "https://example.test/repos/splrad/steward/issues/7/labels/area%3Asource", method: "DELETE" },
+      { url: "https://example.test/repos/splrad/steward/labels?per_page=100", method: "GET" },
+      { url: "https://example.test/installation/repositories?per_page=100", method: "GET" },
+    ]);
+  });
+
   it("只允许四个中央工作流并从中央仓库实时默认分支派发", async () => {
     const requests: unknown[] = [];
     const client = {

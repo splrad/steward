@@ -216,7 +216,7 @@ export function buildCopilotRepairPrompt(candidate: string): string {
     'title为1至100个字符且不含类型前缀、换行或句号；summary为20至240个字符；motivation为null或10至400个字符。',
     'changes包含1至8项，每项10至200个字符；impact和releaseAndMigration各为0至6项，每项5至240个字符；related为0至6项，每项2至200个字符。',
     'classification为null，或只包含kind、confidence、evidence；无法仅从原始候选文本可靠修复时必须为null。',
-    '无法可靠修复的可选内容使用null或空数组；必填内容只能整理原始候选文本已经表达的事实。',
+    '无法可靠修复时，motivation和classification使用null，impact、related和releaseAndMigration使用空数组；changes仍必须包含1至8项且只能整理原始候选文本已经表达的变更。',
     `原始候选文本（JSON字符串编码）：\n${JSON.stringify(candidate)}`,
   ].join('\n\n');
 }
