@@ -358,7 +358,9 @@ export function hasActiveCopilotCheckRun(checkRuns: readonly any[], pullRequestN
       && String(pull.head?.sha ?? "").toLowerCase() === expectedHead));
 }
 export function classificationInstallationPermissions(mode: "observe" | "enforce" = "enforce"): Parameters<typeof createInstallationToken>[0]["permissions"] {
-  return { contents: "read", pull_requests: mode === "enforce" ? "write" : "read", issues: mode === "enforce" ? "write" : "read", checks: "write", metadata: "read" } as const;
+  // GitHub对PR调用issues/labels端点时仍要求pull_requests:write；observe必须保持只读。
+  const assignmentPermission = mode === "enforce" ? "write" : "read";
+  return { contents: "read", pull_requests: assignmentPermission, issues: assignmentPermission, checks: "write", metadata: "read" } as const;
 }
 export function prAutomationInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
   return { contents: "read", pull_requests: "write", checks: "read", metadata: "read" } as const;
