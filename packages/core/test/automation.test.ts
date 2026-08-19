@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildCopilotRepairPrompt,
   buildDeterministicSummary,
   buildPrompt,
   escapeMarkdownText,
@@ -30,6 +31,15 @@ const valid = {
 } as const;
 
 describe("拉取请求自动化", () => {
+  it("修复提示把原始输出作为不可信JSON字符串且禁止补造事实", () => {
+    const raw = '{"summary":"未闭合\nCOPILOT_GITHUB_TOKEN=secret"';
+    const prompt = buildCopilotRepairPrompt(raw);
+    expect(prompt).toContain("只修复JSON语法和字段结构");
+    expect(prompt).toContain("不得补充原始候选文本中不存在的事实");
+    expect(prompt).toContain(JSON.stringify(raw));
+    expect(prompt).not.toContain("```");
+  });
+
   it("接受完整结构并拒绝每类无效字段", () => {
     expect(validateGeneratedSummary(valid)).toEqual(valid);
     const englishBody = {
