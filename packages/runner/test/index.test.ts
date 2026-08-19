@@ -5,7 +5,7 @@ import { join } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertFreshValidationBase, assertManagedBranchPull, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, encodeAiClassificationPayload, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
+import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -142,6 +142,60 @@ describe("中央命令入口", () => {
     const tooManyLines = Array.from({ length: 256 }, () => JSON.stringify({ type: "assistant.turn_start", data: {} }));
     expect(() => extractCopilotAssistantContent(`${tooManyLines.join("\n")}\n${success}\n`)).toThrow("Copilot JSONL输出格式无效");
     expect(() => extractCopilotAssistantContent("{}\n\n")).toThrow("Copilot JSONL输出格式无效");
+  });
+
+  it("只允许业务JSON解析或字段校验失败进入一次修复", () => {
+    const wrap = (content: string, toolRequests: unknown[] = []) => [
+      JSON.stringify({ type: "assistant.message", data: { content, toolRequests } }),
+      JSON.stringify({ type: "result", sessionId: "session-1", exitCode: 0, usage: {} }),
+    ].join("\n") + "\n";
+    const valid = JSON.stringify({
+      type: "fix", scope: "pr", title: "修复正文生成",
+      summary: "本次修改为正文生成增加严格校验后的受控修复步骤。",
+      motivation: null,
+      changes: ["增加一次受控修复并保留确定性回退边界"],
+      impact: [], related: [], releaseAndMigration: [], classification: null,
+    });
+    expect(inspectCopilotGeneratedSummary(wrap(valid))).toMatchObject({ state: "valid" });
+
+    const malformed = inspectCopilotGeneratedSummary(wrap(`${valid}\n额外说明`));
+    expect(malformed).toMatchObject({ state: "repairable", stage: "copilot-output-parse" });
+    if (malformed.state !== "repairable") throw new Error("畸形业务JSON没有进入修复状态");
+    expect(malformed.reason).not.toContain("额外说明");
+
+    const invalidFields = inspectCopilotGeneratedSummary(wrap(JSON.stringify({ type: "fix", scope: "pr" })));
+    expect(invalidFields).toMatchObject({ state: "repairable", stage: "copilot-output-validate" });
+
+    const toolEnvelope = inspectCopilotGeneratedSummary(wrap(valid, [{ toolCallId: "call-1", name: "bash" }]));
+    expect(toolEnvelope).toEqual({ state: "rejected", stage: "copilot-output-envelope", reason: "Copilot输出传输封装无效" });
+
+    const repaired = resolveCopilotGeneratedSummary(wrap(`${valid}\n额外说明`), wrap(valid));
+    expect(repaired).toMatchObject({ state: "adopted", mode: "copilot-repaired" });
+    if (repaired.state !== "adopted") throw new Error("有效修复结果没有被采用");
+    expect(repaired.primaryFailureReason).toMatch(/^Copilot输出不是有效JSON/u);
+    const repairFailed = resolveCopilotGeneratedSummary(wrap(`${valid}\n额外说明`), wrap("仍然不是JSON"));
+    expect(repairFailed).toMatchObject({ state: "fallback", repairFailureReason: "Copilot修复输出不是有效JSON" });
+    if (repairFailed.state !== "fallback") throw new Error("无效修复结果没有回退");
+    expect(repairFailed.fallbackReason).toMatch(/^Copilot输出不是有效JSON/u);
+  });
+
+  it("修复判断和最终收敛使用同一份准备事实漂移校验", () => {
+    const expected = { repositoryId: 1, sourceRef: "refs/heads/fix", headSha: "a".repeat(40), baseSha: "b".repeat(40), policySha: "c".repeat(40) };
+    expect(() => assertPreparedCopilotFacts({ ...expected }, expected)).not.toThrow();
+    expect(() => assertPreparedCopilotFacts({ ...expected, headSha: "d".repeat(40) }, expected)).toThrow("人工智能输入对应的分支事实已经漂移");
+    expect(() => assertPreparedCopilotFacts(null, expected)).toThrow("人工智能输入对应的分支事实已经漂移");
+  });
+
+  it("区分Copilot修复步骤结果和输出读取失败阶段", () => {
+    expect(describeCopilotRepairAvailability("success", "repair.jsonl")).toBeNull();
+    expect(describeCopilotRepairAvailability("success", undefined)).toBe("失败（Copilot修复输出路径缺失）");
+    expect(describeCopilotRepairAvailability(undefined, "repair.jsonl")).toBe("未运行（未收到Copilot修复步骤结果）");
+    expect(describeCopilotRepairAvailability("skipped", "repair.jsonl")).toBe("未运行（Copilot修复步骤已跳过）");
+    expect(describeCopilotRepairAvailability("cancelled", "repair.jsonl")).toBe("未完成（Copilot修复步骤已取消）");
+    expect(describeCopilotRepairAvailability("failure", "repair.jsonl")).toBe("失败（Copilot修复命令执行失败）");
+    expect(describeCopilotRepairAvailability("unexpected", "repair.jsonl")).toBe("未完成（Copilot修复步骤结果无效）");
+    expect(describeCopilotRepairOutputFailure("read")).toBe("失败（Copilot修复输出文件无法读取）");
+    expect(describeCopilotRepairOutputFailure("envelope")).toBe("失败（Copilot修复输出传输封装无效）");
   });
 
   it("Copilot说明只忽略Git检出产生的CRLF差异", () => {

@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import {
-  buildDeterministicSummary, buildPrompt, classifyPullRequest, classificationDigests, classificationInputDigest, computePullRequestFingerprint, digest,
+  buildCopilotRepairPrompt, buildDeterministicSummary, buildPrompt, classifyPullRequest, classificationDigests, classificationInputDigest, computePullRequestFingerprint, digest,
   categorizeReleasePullRequests, classifyRemoteReleaseState, collectReleasePullRequests,
   escapeMarkdownText,
   isHumanActor, normalizeContributor,
@@ -150,6 +150,96 @@ export function describeCopilotFallback(stage: CopilotFallbackStage, error: unkn
     "copilot-output-read": "Copilot输出文件无法读取",
     "copilot-output-envelope": "Copilot输出传输封装无效",
   }[stage];
+}
+
+export type CopilotGeneratedSummaryInspection =
+  | { state: "valid"; generated: ReturnType<typeof validateGeneratedSummary> }
+  | { state: "repairable"; stage: "copilot-output-parse" | "copilot-output-validate"; reason: string; assistantContent: string }
+  | { state: "rejected"; stage: "copilot-output-envelope"; reason: string };
+
+export function inspectCopilotGeneratedSummary(value: string): CopilotGeneratedSummaryInspection {
+  let assistantContent: string;
+  try {
+    assistantContent = extractCopilotAssistantContent(value);
+  } catch (error) {
+    return { state: "rejected", stage: "copilot-output-envelope", reason: describeCopilotFallback("copilot-output-envelope", error) };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(assistantContent);
+  } catch (error) {
+    return { state: "repairable", stage: "copilot-output-parse", reason: describeCopilotFallback("copilot-output-parse", error), assistantContent };
+  }
+  try {
+    return { state: "valid", generated: validateGeneratedSummary(parsed) };
+  } catch (error) {
+    return { state: "repairable", stage: "copilot-output-validate", reason: describeCopilotFallback("copilot-output-validate", error), assistantContent };
+  }
+}
+
+export type CopilotGeneratedSummaryResolution =
+  | { state: "adopted"; mode: "copilot" | "copilot-repaired"; generated: ReturnType<typeof validateGeneratedSummary>; primaryFailureReason?: string }
+  | { state: "repair-required"; primaryFailureReason: string; assistantContent: string }
+  | { state: "fallback"; fallbackReason: string; primaryFailureReason?: string; repairFailureReason?: string };
+
+export function resolveCopilotGeneratedSummary(primaryValue: string, repairValue?: string): CopilotGeneratedSummaryResolution {
+  const primary = inspectCopilotGeneratedSummary(primaryValue);
+  if (primary.state === "valid") return { state: "adopted", mode: "copilot", generated: primary.generated };
+  if (primary.state === "rejected") return { state: "fallback", fallbackReason: primary.reason };
+  if (repairValue === undefined) return { state: "repair-required", primaryFailureReason: primary.reason, assistantContent: primary.assistantContent };
+  const repair = inspectCopilotGeneratedSummary(repairValue);
+  if (repair.state === "valid") return { state: "adopted", mode: "copilot-repaired", generated: repair.generated, primaryFailureReason: primary.reason };
+  return {
+    state: "fallback",
+    fallbackReason: primary.reason,
+    primaryFailureReason: primary.reason,
+    repairFailureReason: repair.reason.replace(/^Copilot输出/u, "Copilot修复输出"),
+  };
+}
+
+export function assertPreparedCopilotFacts(prepared: unknown, expected: { repositoryId: number; sourceRef: string; headSha: string; baseSha: string; policySha: string }): void {
+  if (!prepared || typeof prepared !== "object" || Array.isArray(prepared)) throw new Error("人工智能输入对应的分支事实已经漂移");
+  const value = prepared as Record<string, unknown>;
+  if (value.repositoryId !== expected.repositoryId || value.sourceRef !== expected.sourceRef || value.headSha !== expected.headSha || value.baseSha !== expected.baseSha || value.policySha !== expected.policySha) throw new Error("人工智能输入对应的分支事实已经漂移");
+}
+
+export function describeCopilotRepairAvailability(outcome: string | undefined, outputPath: string | undefined): string | null {
+  if (outcome === "success") return outputPath ? null : "失败（Copilot修复输出路径缺失）";
+  if (outcome === undefined || outcome === "") return "未运行（未收到Copilot修复步骤结果）";
+  if (outcome === "skipped") return "未运行（Copilot修复步骤已跳过）";
+  if (outcome === "cancelled") return "未完成（Copilot修复步骤已取消）";
+  if (outcome === "failure") return "失败（Copilot修复命令执行失败）";
+  return "未完成（Copilot修复步骤结果无效）";
+}
+
+export function describeCopilotRepairOutputFailure(stage: "read" | "envelope"): string {
+  return stage === "read" ? "失败（Copilot修复输出文件无法读取）" : "失败（Copilot修复输出传输封装无效）";
+}
+
+async function readCopilotOutput(path: string): Promise<{ evidence: string; inspection: CopilotGeneratedSummaryInspection }> {
+  const metadata = await stat(path);
+  if (!metadata.isFile() || metadata.size === 0 || metadata.size > maximumCopilotJsonlBytes) throw new Error("Copilot JSONL输出大小无效");
+  const text = await runtimeReadFile(path, "utf8");
+  const evidence = `${Buffer.byteLength(text, "utf8")}字节，SHA-256 ${createHash("sha256").update(text, "utf8").digest("hex")}`;
+  return { evidence, inspection: inspectCopilotGeneratedSummary(text) };
+}
+
+async function prepareCopilotRepair(): Promise<void> {
+  const primary = await readCopilotOutput(env("COPILOT_OUTPUT_PATH"));
+  if (primary.inspection.state === "valid") {
+    await output({ "repair-required": "false" });
+    await summary(["人工智能修复：不需要", `人工智能首次输出证据：${primary.evidence}`]);
+    return;
+  }
+  if (primary.inspection.state === "rejected") {
+    await output({ "repair-required": "false" });
+    await summary(["人工智能修复：协议层失败，不允许修复", `人工智能回退原因：${primary.inspection.reason}`, `人工智能首次输出证据：${primary.evidence}`]);
+    return;
+  }
+  const promptPath = env("PR_COPILOT_REPAIR_PROMPT_PATH");
+  await writeFile(promptPath, buildCopilotRepairPrompt(primary.inspection.assistantContent));
+  await output({ "repair-required": "true" });
+  await summary(["人工智能修复：已准备", `人工智能首次失败原因：${primary.inspection.reason}`, `人工智能首次输出证据：${primary.evidence}`]);
 }
 
 interface Catalog { organization: { id: number; login: string }; defaults: { public: any; private: any }; repositories: Record<string, any> }
@@ -439,7 +529,17 @@ async function automate(args: Readonly<Record<string, string>>) {
   const facts: AutomationFacts = { sourceRef, targetRef: `refs/heads/${repository.default_branch}`, headSha: sourceBefore.object.sha, baseSha: baseBefore.object.sha, commitSubjects: (compare.commits ?? []).map((c: any) => c.commit.message.split("\n")[0]), files, diffStat: `${files.length}个文件`, diffExcerpt: (compare.files ?? []).map((file: any) => `文件：${file.filename}\n${file.patch ?? "未提供补丁内容"}`).join("\n\n"), areas: [], contributors };
   const fallback = buildDeterministicSummary(facts); let generated = fallback; let mode = "deterministic";
   let fallbackReason: string | null = null;
+  let primaryFailureReason: string | null = null;
+  let repairSummary: string | null = null;
   let copilotOutputEvidence: string | null = null;
+  let copilotRepairOutputEvidence: string | null = null;
+  if (process.env.PREPARE_REPAIR_ONLY === "true") {
+    const preparedText = await runtimeReadFile(env("PR_PREPARED_FACTS_PATH"), "utf8");
+    const prepared = JSON.parse(preparedText);
+    assertPreparedCopilotFacts(prepared, { repositoryId, sourceRef, headSha: facts.headSha, baseSha: facts.baseSha, policySha });
+    await prepareCopilotRepair();
+    return;
+  }
   if (process.env.PREPARE_ONLY === "true") {
     const promptPath = env("PR_COPILOT_PROMPT_PATH");
     const preparedFactsPath = env("PR_PREPARED_FACTS_PATH");
@@ -458,7 +558,7 @@ async function automate(args: Readonly<Record<string, string>>) {
       stage = "prepared-facts-parse";
       const prepared = JSON.parse(preparedText);
       stage = "prepared-facts-check";
-      if (prepared.repositoryId !== repositoryId || prepared.sourceRef !== sourceRef || prepared.headSha !== facts.headSha || prepared.baseSha !== facts.baseSha || prepared.policySha !== policySha) throw new Error("人工智能输入对应的分支事实已经漂移");
+      assertPreparedCopilotFacts(prepared, { repositoryId, sourceRef, headSha: facts.headSha, baseSha: facts.baseSha, policySha });
       stage = "copilot-output-read";
       const copilotOutputMetadata = await stat(copilotOutput);
       if (!copilotOutputMetadata.isFile() || copilotOutputMetadata.size === 0 || copilotOutputMetadata.size > maximumCopilotJsonlBytes) {
@@ -468,20 +568,53 @@ async function automate(args: Readonly<Record<string, string>>) {
       const copilotOutputText = await runtimeReadFile(copilotOutput, "utf8");
       copilotOutputEvidence = `${Buffer.byteLength(copilotOutputText, "utf8")}字节，SHA-256 ${createHash("sha256").update(copilotOutputText, "utf8").digest("hex")}`;
       stage = "copilot-output-envelope";
-      const copilotAssistantContent = extractCopilotAssistantContent(copilotOutputText);
-      stage = "copilot-output-parse";
-      const parsedCopilotOutput = JSON.parse(copilotAssistantContent);
-      stage = "copilot-output-validate";
-      generated = validateGeneratedSummary(parsedCopilotOutput);
-      mode = "copilot";
+      const primaryResolution = resolveCopilotGeneratedSummary(copilotOutputText);
+      if (primaryResolution.state === "adopted") {
+        generated = primaryResolution.generated;
+        mode = primaryResolution.mode;
+      } else if (primaryResolution.state === "fallback") {
+        fallbackReason = primaryResolution.fallbackReason;
+      } else {
+        primaryFailureReason = primaryResolution.primaryFailureReason;
+        fallbackReason = primaryResolution.primaryFailureReason;
+        const repairOutput = process.env.COPILOT_REPAIR_OUTPUT_PATH;
+        const repairAvailability = describeCopilotRepairAvailability(process.env.COPILOT_REPAIR_STEP_OUTCOME, repairOutput);
+        if (repairAvailability) {
+          repairSummary = repairAvailability;
+        } else {
+          let repairStage: "read" | "envelope" = "read";
+          try {
+            const repairMetadata = await stat(repairOutput!);
+            if (!repairMetadata.isFile() || repairMetadata.size === 0 || repairMetadata.size > maximumCopilotJsonlBytes) {
+              repairStage = "envelope";
+              throw new Error("Copilot修复JSONL输出大小无效");
+            }
+            const repairText = await runtimeReadFile(repairOutput!, "utf8");
+            copilotRepairOutputEvidence = `${Buffer.byteLength(repairText, "utf8")}字节，SHA-256 ${createHash("sha256").update(repairText, "utf8").digest("hex")}`;
+            repairStage = "envelope";
+            const repairedResolution = resolveCopilotGeneratedSummary(copilotOutputText, repairText);
+            if (repairedResolution.state === "adopted" && repairedResolution.mode === "copilot-repaired") {
+              generated = repairedResolution.generated;
+              mode = repairedResolution.mode;
+              fallbackReason = null;
+              repairSummary = "已采用";
+            } else {
+              const reason = repairedResolution.state === "fallback" ? repairedResolution.repairFailureReason : undefined;
+              repairSummary = `失败（${reason ?? "Copilot修复输出无效"}）`;
+            }
+          } catch {
+            repairSummary = describeCopilotRepairOutputFailure(repairStage);
+          }
+        }
+      }
     } catch (error) {
       generated = fallback;
       fallbackReason = describeCopilotFallback(stage, error);
     }
   }
   let aiClassification: string | undefined;
-  let aiClassificationSummary = mode === "copilot" ? "未提供" : "Copilot不可用，未提供";
-  if (mode === "copilot" && generated.classification) {
+  let aiClassificationSummary = mode !== "deterministic" ? "未提供" : "Copilot不可用，未提供";
+  if (mode !== "deterministic" && generated.classification) {
     try {
       aiClassification = encodeAiClassificationPayload(generated.classification, classificationProfile.ai.eligiblePrimaryKinds);
       aiClassificationSummary = `${generated.classification.kind}（${generated.classification.confidence}）`;
@@ -504,7 +637,11 @@ async function automate(args: Readonly<Record<string, string>>) {
     `事件提交：${eventAfterSha}`,
     `标题生成：${mode}`,
     ...(fallbackReason ? [`人工智能回退原因：${fallbackReason}`] : []),
-    ...(fallbackReason && copilotOutputEvidence ? [`人工智能输出证据：${copilotOutputEvidence}`] : []),
+    ...(primaryFailureReason ? [`人工智能首次失败原因：${primaryFailureReason}`] : []),
+    ...(repairSummary ? [`人工智能修复：${repairSummary}`] : []),
+    ...(fallbackReason && !primaryFailureReason && copilotOutputEvidence ? [`人工智能输出证据：${copilotOutputEvidence}`] : []),
+    ...(primaryFailureReason && copilotOutputEvidence ? [`人工智能首次输出证据：${copilotOutputEvidence}`] : []),
+    ...(copilotRepairOutputEvidence ? [`人工智能修复输出证据：${copilotRepairOutputEvidence}`] : []),
     `AI分类建议：${aiClassificationSummary}`,
     `Copilot审查：${copilot}`,
   ]);
