@@ -26,6 +26,14 @@ const sampleRepository = Object.values(catalog.repositories)[0];
 if (!repositoryValidator || !sampleRepository) throw new Error("仓库配置反例验证缺少基础数据");
 const invalidRepositoryKeyCatalog = { ...catalog, repositories: { ...catalog.repositories, invalid: sampleRepository } };
 if (repositoryValidator(invalidRepositoryKeyCatalog)) throw new Error("仓库编号schema允许非数字键");
+const emptyRepositoryCatalog = { ...catalog, repositories: {} };
+if (repositoryValidator(emptyRepositoryCatalog)) throw new Error("仓库目录schema允许空集合");
+const invalidDefaultWorkflowCatalog = structuredClone(catalog);
+invalidDefaultWorkflowCatalog.defaults.public.allowedWorkflowPaths = ["README.md"];
+if (repositoryValidator(invalidDefaultWorkflowCatalog)) throw new Error("默认仓库配置允许非工作流路径");
+const invalidRepositoryWorkflowCatalog = structuredClone(catalog);
+invalidRepositoryWorkflowCatalog.repositories[ids[0]].allowedWorkflowPaths = ["docs/workflow.yml"];
+if (repositoryValidator(invalidRepositoryWorkflowCatalog)) throw new Error("单仓配置允许非工作流路径");
 const semantics = JSON.parse(await readFile("config/labels/pr-semantics.json", "utf8"));
 const primaryIds = semantics.roles.primaryKind.definitions.map(x => x.id);
 const exactRoles = {
