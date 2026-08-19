@@ -5,7 +5,7 @@ import { join } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, encodeAiClassificationPayload, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
+import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -184,6 +184,18 @@ describe("中央命令入口", () => {
     expect(() => assertPreparedCopilotFacts({ ...expected }, expected)).not.toThrow();
     expect(() => assertPreparedCopilotFacts({ ...expected, headSha: "d".repeat(40) }, expected)).toThrow("人工智能输入对应的分支事实已经漂移");
     expect(() => assertPreparedCopilotFacts(null, expected)).toThrow("人工智能输入对应的分支事实已经漂移");
+  });
+
+  it("区分Copilot修复步骤结果和输出读取失败阶段", () => {
+    expect(describeCopilotRepairAvailability("success", "repair.jsonl")).toBeNull();
+    expect(describeCopilotRepairAvailability("success", undefined)).toBe("失败（Copilot修复输出路径缺失）");
+    expect(describeCopilotRepairAvailability(undefined, "repair.jsonl")).toBe("未运行（未收到Copilot修复步骤结果）");
+    expect(describeCopilotRepairAvailability("skipped", "repair.jsonl")).toBe("未运行（Copilot修复步骤已跳过）");
+    expect(describeCopilotRepairAvailability("cancelled", "repair.jsonl")).toBe("未完成（Copilot修复步骤已取消）");
+    expect(describeCopilotRepairAvailability("failure", "repair.jsonl")).toBe("失败（Copilot修复命令执行失败）");
+    expect(describeCopilotRepairAvailability("unexpected", "repair.jsonl")).toBe("未完成（Copilot修复步骤结果无效）");
+    expect(describeCopilotRepairOutputFailure("read")).toBe("失败（Copilot修复输出文件无法读取）");
+    expect(describeCopilotRepairOutputFailure("envelope")).toBe("失败（Copilot修复输出传输封装无效）");
   });
 
   it("Copilot说明只忽略Git检出产生的CRLF差异", () => {

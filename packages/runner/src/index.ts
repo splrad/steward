@@ -203,6 +203,19 @@ export function assertPreparedCopilotFacts(prepared: unknown, expected: { reposi
   if (value.repositoryId !== expected.repositoryId || value.sourceRef !== expected.sourceRef || value.headSha !== expected.headSha || value.baseSha !== expected.baseSha || value.policySha !== expected.policySha) throw new Error("人工智能输入对应的分支事实已经漂移");
 }
 
+export function describeCopilotRepairAvailability(outcome: string | undefined, outputPath: string | undefined): string | null {
+  if (outcome === "success") return outputPath ? null : "失败（Copilot修复输出路径缺失）";
+  if (outcome === undefined || outcome === "") return "未运行（未收到Copilot修复步骤结果）";
+  if (outcome === "skipped") return "未运行（Copilot修复步骤已跳过）";
+  if (outcome === "cancelled") return "未完成（Copilot修复步骤已取消）";
+  if (outcome === "failure") return "失败（Copilot修复命令执行失败）";
+  return "未完成（Copilot修复步骤结果无效）";
+}
+
+export function describeCopilotRepairOutputFailure(stage: "read" | "envelope"): string {
+  return stage === "read" ? "失败（Copilot修复输出文件无法读取）" : "失败（Copilot修复输出传输封装无效）";
+}
+
 async function readCopilotOutput(path: string): Promise<{ evidence: string; inspection: CopilotGeneratedSummaryInspection }> {
   const metadata = await stat(path);
   if (!metadata.isFile() || metadata.size === 0 || metadata.size > maximumCopilotJsonlBytes) throw new Error("Copilot JSONL输出大小无效");
@@ -565,16 +578,20 @@ async function automate(args: Readonly<Record<string, string>>) {
         primaryFailureReason = primaryResolution.primaryFailureReason;
         fallbackReason = primaryResolution.primaryFailureReason;
         const repairOutput = process.env.COPILOT_REPAIR_OUTPUT_PATH;
-        if (process.env.COPILOT_REPAIR_STEP_OUTCOME !== "success" || !repairOutput) {
-          repairSummary = process.env.COPILOT_REPAIR_STEP_OUTCOME
-            ? "失败（Copilot修复命令执行失败）"
-            : "未运行";
+        const repairAvailability = describeCopilotRepairAvailability(process.env.COPILOT_REPAIR_STEP_OUTCOME, repairOutput);
+        if (repairAvailability) {
+          repairSummary = repairAvailability;
         } else {
+          let repairStage: "read" | "envelope" = "read";
           try {
-            const repairMetadata = await stat(repairOutput);
-            if (!repairMetadata.isFile() || repairMetadata.size === 0 || repairMetadata.size > maximumCopilotJsonlBytes) throw new Error("Copilot修复JSONL输出大小无效");
-            const repairText = await runtimeReadFile(repairOutput, "utf8");
+            const repairMetadata = await stat(repairOutput!);
+            if (!repairMetadata.isFile() || repairMetadata.size === 0 || repairMetadata.size > maximumCopilotJsonlBytes) {
+              repairStage = "envelope";
+              throw new Error("Copilot修复JSONL输出大小无效");
+            }
+            const repairText = await runtimeReadFile(repairOutput!, "utf8");
             copilotRepairOutputEvidence = `${Buffer.byteLength(repairText, "utf8")}字节，SHA-256 ${createHash("sha256").update(repairText, "utf8").digest("hex")}`;
+            repairStage = "envelope";
             const repairedResolution = resolveCopilotGeneratedSummary(copilotOutputText, repairText);
             if (repairedResolution.state === "adopted" && repairedResolution.mode === "copilot-repaired") {
               generated = repairedResolution.generated;
@@ -586,7 +603,7 @@ async function automate(args: Readonly<Record<string, string>>) {
               repairSummary = `失败（${reason ?? "Copilot修复输出无效"}）`;
             }
           } catch {
-            repairSummary = "失败（Copilot修复输出文件无法读取）";
+            repairSummary = describeCopilotRepairOutputFailure(repairStage);
           }
         }
       }
