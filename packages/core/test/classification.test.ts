@@ -78,6 +78,22 @@ describe("角色化拉取请求分类", () => {
     expect(decision.primaryKind).toMatchObject({ id: expected, source: "hard-rule" });
   });
 
+  it("all-files要求重命名前后路径同属目标集合且any-file仍观察两端", () => {
+    const movedOut = facts(["packages/core/src/a.ts"]);
+    movedOut.files[0] = { ...movedOut.files[0]!, previousPath: "docs/a.md", status: "renamed" };
+    const movedOutEvaluation = evaluateClassificationRules(catalog, defaultProfile, movedOut);
+    expect(movedOutEvaluation.primaryCandidates).not.toContainEqual(expect.objectContaining({ id: "documentation" }));
+    expect(movedOutEvaluation.areas.map((area) => area.id)).toEqual(expect.arrayContaining(["area:source", "area:docs"]));
+
+    const movedIn = facts(["docs/a.md"]);
+    movedIn.files[0] = { ...movedIn.files[0]!, previousPath: "packages/core/src/a.ts", status: "renamed" };
+    expect(evaluateClassificationRules(catalog, defaultProfile, movedIn).primaryCandidates).not.toContainEqual(expect.objectContaining({ id: "documentation" }));
+
+    const renamedWithin = facts(["docs/new.md"]);
+    renamedWithin.files[0] = { ...renamedWithin.files[0]!, previousPath: "docs/old.md", status: "renamed" };
+    expect(evaluateClassificationRules(catalog, defaultProfile, renamedWithin).primaryCandidates).toContainEqual({ id: "documentation", ruleId: "documentation-only" });
+  });
+
   it("从原始提交回退并独立派生风险、facet和area", () => {
     const decision = classifyPullRequest(catalog, defaultProfile, repository("default"), facts(["packages/core/src/a.ts", "package.json"], "feat!: 新增能力"), { currentLabels: [], stewardOwnedRiskFlags: [], stewardOwnedFacets: [] });
     expect(decision.primaryKind).toMatchObject({ id: "feature", source: "deterministic-fallback" });

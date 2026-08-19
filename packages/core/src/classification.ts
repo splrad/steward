@@ -233,7 +233,7 @@ function fileSetMatch(profile: ClassificationProfile, fileSetNames: readonly str
   return fileSetNames.flatMap((name) => profile.fileSets[name] ?? []).some((pattern) => minimatch(path, pattern, { dot: true, nocase: false }));
 }
 function ruleMatches(profile: ClassificationProfile, facts: RawClassificationFacts, match: RuleMatch): boolean {
-  if (match.type === "all-files") return facts.files.length > 0 && facts.files.every((file) => [file.path, file.previousPath].filter((value): value is string => Boolean(value)).some((path) => fileSetMatch(profile, match.fileSets, path)));
+  if (match.type === "all-files") return facts.files.length > 0 && facts.files.every((file) => [file.path, file.previousPath].filter((value): value is string => Boolean(value)).every((path) => fileSetMatch(profile, match.fileSets, path)));
   if (match.type === "any-file") return paths(facts).some((path) => fileSetMatch(profile, match.fileSets, path));
   if (!("commitTextSets" in match)) return false;
   const patterns = match.commitTextSets.flatMap((name: string) => profile.commitTextSets[name] ?? []).map((pattern: string) => new RegExp(pattern, "iu"));
