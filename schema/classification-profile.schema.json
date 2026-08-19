@@ -2,21 +2,51 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/splrad/steward/schema/classification-profile.schema.json",
   "type": "object", "additionalProperties": false,
-  "required": ["$schema", "schemaVersion", "name", "areas", "decisions", "runtimeRelease", "installOrPackage", "labels", "releaseCategories"],
+  "required": ["$schema", "schemaVersion", "name", "semanticCatalog", "fileSets", "commitTextSets", "rules", "areas", "ai", "runtimeRelease", "installOrPackage", "releaseCategories"],
   "properties": {
-    "$schema": { "type": "string" }, "schemaVersion": { "const": 1 }, "name": { "type": "string", "minLength": 1 },
-    "areas": { "type": "array", "items": { "$ref": "#/$defs/area" } },
-    "decisions": { "$ref": "#/$defs/decisions" }, "runtimeRelease": { "$ref": "#/$defs/pathSet" }, "installOrPackage": { "$ref": "#/$defs/includeFiles" },
-    "labels": { "$ref": "#/$defs/labels" }, "releaseCategories": { "type": "array", "items": { "$ref": "#/$defs/category" } }
+    "$schema": { "type": "string" }, "schemaVersion": { "const": 2 }, "name": { "type": "string", "minLength": 1 },
+    "semanticCatalog": { "type": "object", "additionalProperties": false, "required": ["id", "schemaVersion"], "properties": { "id": { "const": "pr-semantics" }, "schemaVersion": { "const": 1 } } },
+    "fileSets": { "$ref": "#/$defs/namedStrings" }, "commitTextSets": { "$ref": "#/$defs/namedStrings" },
+    "rules": {
+      "type": "object", "additionalProperties": false, "required": ["primaryKind", "riskFlags", "facets"],
+      "properties": {
+        "primaryKind": { "type": "array", "items": { "$ref": "#/$defs/primaryRule" } },
+        "riskFlags": { "type": "array", "items": { "$ref": "#/$defs/riskRule" } },
+        "facets": { "type": "array", "items": { "$ref": "#/$defs/facetRule" } }
+      }
+    },
+    "areas": { "type": "array", "items": { "$ref": "#/$defs/areaRule" } },
+    "ai": { "type": "object", "additionalProperties": false, "required": ["eligiblePrimaryKinds", "minimumConfidence"], "properties": { "eligiblePrimaryKinds": { "$ref": "#/$defs/strings" }, "minimumConfidence": { "const": "high" } } },
+    "runtimeRelease": { "type": "object", "additionalProperties": false, "required": ["includeFileSets", "excludeFileSets"], "properties": { "includeFileSets": { "$ref": "#/$defs/strings" }, "excludeFileSets": { "$ref": "#/$defs/strings" } } },
+    "installOrPackage": { "type": "object", "additionalProperties": false, "required": ["fileSets"], "properties": { "fileSets": { "$ref": "#/$defs/strings" } } },
+    "releaseCategories": { "type": "array", "items": { "$ref": "#/$defs/releaseCategory" } }
   },
   "$defs": {
-    "strings": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
-    "area": { "type": "object", "additionalProperties": false, "required": ["name", "patterns"], "properties": { "name": { "type": "string", "pattern": "^area:" }, "patterns": { "$ref": "#/$defs/strings" } } },
-    "decisions": { "type": "object", "additionalProperties": false, "required": ["kindOrder", "conventionalTypes", "typeToKind", "breakingPatterns", "securityPatterns", "fallbackKind"], "properties": { "kindOrder": { "$ref": "#/$defs/strings" }, "conventionalTypes": { "$ref": "#/$defs/strings" }, "typeToKind": { "type": "object", "additionalProperties": { "type": "string" } }, "breakingPatterns": { "$ref": "#/$defs/strings" }, "securityPatterns": { "$ref": "#/$defs/strings" }, "fallbackKind": { "type": "string" } } },
-    "pathSet": { "type": "object", "additionalProperties": false, "required": ["includePrefixes", "includeFiles", "excludePrefixes", "excludeFiles"], "properties": { "includePrefixes": { "$ref": "#/$defs/strings" }, "includeFiles": { "$ref": "#/$defs/strings" }, "excludePrefixes": { "$ref": "#/$defs/strings" }, "excludeFiles": { "$ref": "#/$defs/strings" } } },
-    "includeFiles": { "type": "object", "additionalProperties": false, "required": ["includeFiles"], "properties": { "includeFiles": { "$ref": "#/$defs/strings" } } },
-    "label": { "type": "object", "additionalProperties": false, "required": ["name", "color", "description"], "properties": { "name": { "type": "string" }, "color": { "type": "string", "pattern": "^[0-9a-fA-F]{6}$" }, "description": { "type": "string" } } },
-    "labels": { "type": "object", "additionalProperties": false, "required": ["public", "release", "internalPrefixes"], "properties": { "public": { "type": "array", "items": { "$ref": "#/$defs/label" } }, "release": { "$ref": "#/$defs/strings" }, "internalPrefixes": { "$ref": "#/$defs/strings" } } },
-    "category": { "type": "object", "additionalProperties": false, "required": ["title", "icon", "releaseLabel", "labels", "textPatterns", "installOrPackage", "fallback"], "properties": { "title": { "type": "string" }, "icon": { "type": "string" }, "releaseLabel": { "type": "string" }, "labels": { "$ref": "#/$defs/strings" }, "textPatterns": { "$ref": "#/$defs/strings" }, "installOrPackage": { "type": "boolean" }, "fallback": { "type": "boolean" } } }
+    "strings": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "namedStrings": { "type": "object", "additionalProperties": { "$ref": "#/$defs/strings" } },
+    "fileMatch": { "type": "object", "additionalProperties": false, "required": ["type", "fileSets"], "properties": { "type": { "enum": ["all-files", "any-file"] }, "fileSets": { "$ref": "#/$defs/strings" } } },
+    "textMatch": { "type": "object", "additionalProperties": false, "required": ["type", "commitTextSets"], "properties": { "type": { "const": "commit-text-any" }, "commitTextSets": { "$ref": "#/$defs/strings" } } },
+    "match": { "oneOf": [{ "$ref": "#/$defs/fileMatch" }, { "$ref": "#/$defs/textMatch" }] },
+    "primaryRule": { "type": "object", "additionalProperties": false, "required": ["id", "primaryKind", "match"], "properties": { "id": { "type": "string" }, "primaryKind": { "type": "string" }, "match": { "$ref": "#/$defs/match" } } },
+    "riskRule": { "type": "object", "additionalProperties": false, "required": ["id", "riskFlag", "match"], "properties": { "id": { "type": "string" }, "riskFlag": { "type": "string" }, "match": { "$ref": "#/$defs/match" } } },
+    "facetRule": { "type": "object", "additionalProperties": false, "required": ["id", "facet", "match"], "properties": { "id": { "type": "string" }, "facet": { "type": "string" }, "match": { "$ref": "#/$defs/match" } } },
+    "areaRule": { "type": "object", "additionalProperties": false, "required": ["id", "area", "match"], "properties": { "id": { "type": "string" }, "area": { "type": "string" }, "match": { "$ref": "#/$defs/fileMatch" } } },
+    "releaseClause": { "type": "object", "additionalProperties": false, "minProperties": 1, "properties": { "primaryKindsAny": { "$ref": "#/$defs/strings" }, "riskFlagsAny": { "$ref": "#/$defs/strings" }, "areasAny": { "$ref": "#/$defs/strings" }, "facetsAny": { "$ref": "#/$defs/strings" }, "runtimeRelease": { "type": "boolean" }, "installOrPackage": { "type": "boolean" } } },
+    "releaseCategory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "icon", "fallback"],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "icon": { "type": "string" },
+        "matchAny": { "type": "array", "items": { "$ref": "#/$defs/releaseClause" }, "minItems": 1 },
+        "fallback": { "type": "boolean" }
+      },
+      "oneOf": [
+        { "required": ["matchAny"], "properties": { "matchAny": {}, "fallback": { "const": false } } },
+        { "properties": { "fallback": { "const": true } }, "not": { "required": ["matchAny"], "properties": { "matchAny": {} } } }
+      ]
+    }
   }
 }

@@ -6,21 +6,22 @@ import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import {
-  buildDeterministicSummary, buildPrompt, classifyPullRequest, computePullRequestFingerprint,
+  buildDeterministicSummary, buildPrompt, classifyPullRequest, classificationDigests, classificationInputDigest, computePullRequestFingerprint, digest,
   categorizeReleasePullRequests, classifyRemoteReleaseState, collectReleasePullRequests,
   escapeMarkdownText,
   isHumanActor, normalizeContributor,
   organizationPullRequestTemplate,
-  copilotInstructionSyncContract, parseVersion, planRelease, planRepositorySettings, reconcileManagedLabels, renderCopilotInstructions, renderManagedBody,
+  copilotInstructionSyncContract, parseVersion, planClassificationLabels, planLabelDefinitions, planRelease, planRepositorySettings, renderCopilotInstructions, renderManagedBody,
   renderOnboardingPullRequest, renderReleaseNotes, renderValidationSummary, runValidationTasks,
   validateAiClassificationSuggestion, validateGeneratedSummary, validateRepositoryForOnboarding, verifyAssetManifest,
-  type AiClassificationSuggestion, type AutomationFacts, type ClassificationProfile, type Contributor, type ReleaseManifest, type ValidationProfile,
+  type AiClassificationSuggestion, type AutomationFacts, type ClassificationProfile, type ClassifiedReleasePullRequest, type Contributor, type ReleaseManifest, type RepositoryClassification, type SemanticCatalog, type ValidationProfile,
 } from "../../core/src/index.js";
 import { createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestError, uploadReleaseAsset } from "../../github/src/index.js";
+import { managedRepositoryTargets, runManagedRepositorySync, type ManagedTarget } from "./managed-repository-sync.js";
 import { minimatch } from "minimatch";
 import YAML from "yaml";
 
-const commands = new Set(["onboard-repository", "pr-automation", "pr-classification", "sync-copilot-instructions", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"]);
+const commands = new Set(["onboard-repository", "pr-automation", "pr-classification", "sync-copilot-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"]);
 const stewardRepositoryId = 1296724484;
 // Repository configuration and workspace files are runtime inputs, not bundle assets.
 // This wrapper keeps their paths opaque to the static asset tracer used by ncc.
@@ -31,6 +32,7 @@ const allowedArguments: Record<string, Set<string>> = {
   "pr-automation": new Set(["delivery-id", "repository-id", "source-ref", "event-after-sha", "source-actor-id", "source-actor-login", "policy-sha"]),
   "pr-classification": new Set(["delivery-id", "repository-id", "pull-request-number", "event-head-sha", "scan-all", "policy-sha"]),
   "sync-copilot-instructions": new Set(["repository-id", "policy-sha"]),
+  "sync-managed-labels": new Set(["repository-id", "policy-sha"]),
   validate: new Set(["workspace", "repository-id", "profile"]),
   "release-preflight": new Set(["workspace", "repository-id", "pull-request-number", "target-sha", "policy-sha", "trigger", "manifest"]),
   "release-notes": new Set(["repository-id", "pull-request-number", "target-sha", "policy-sha", "display-version", "output"]),
@@ -152,6 +154,7 @@ export function describeCopilotFallback(stage: CopilotFallbackStage, error: unkn
 
 interface Catalog { organization: { id: number; login: string }; defaults: { public: any; private: any }; repositories: Record<string, any> }
 async function catalog(): Promise<Catalog> { return json(configPath("repositories.json")); }
+async function semanticCatalog(): Promise<SemanticCatalog> { return json(configPath("labels", "pr-semantics.json")); }
 type CopilotInstructionSourceFile = "common.md" | "layerscape.md";
 async function loadCopilotInstructions(profile: unknown, sourcePath: (sourceFile: CopilotInstructionSourceFile) => string): Promise<{ targetPath: string; content: string }> {
   const contract = copilotInstructionSyncContract(profile);
@@ -181,6 +184,35 @@ export function decodeAiClassificationPayload(value: string, allowedKinds: reado
     throw new Error("AI影子分类载荷格式无效");
   }
   return validateAiClassificationSuggestion(parsed, allowedKinds);
+}
+export interface ClassificationCheckStateV3 {
+  v: 3;
+  inputDigest: string;
+  policy: string;
+  primary: { id: string; source: string; reasonCode: string; hardRuleId?: string };
+  risks: string[];
+  facets: string[];
+  areas: string[];
+  decisionDigest: string;
+}
+export function decodeClassificationCheckState(value: unknown): ClassificationCheckStateV3 | null {
+  if (typeof value !== "string" || !value.startsWith("v3:") || value.length > 16_384) return null;
+  const encoded = value.slice(3);
+  if (!encoded || !/^[A-Za-z0-9_-]+$/u.test(encoded)) return null;
+  const decoded = Buffer.from(encoded, "base64url");
+  if (decoded.toString("base64url") !== encoded) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(decoded.toString("utf8")); } catch { return null; }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  const state = parsed as Record<string, unknown>;
+  const primary = state.primary;
+  const stringArray = (candidate: unknown): candidate is string[] => Array.isArray(candidate) && candidate.every((item) => typeof item === "string");
+  if (state.v !== 3 || !/^[0-9a-f]{64}$/u.test(String(state.inputDigest ?? "")) || !/^[0-9a-f]{64}$/u.test(String(state.policy ?? "")) || !/^[0-9a-f]{64}$/u.test(String(state.decisionDigest ?? ""))) return null;
+  if (typeof primary !== "object" || primary === null || Array.isArray(primary)) return null;
+  const primaryValue = primary as Record<string, unknown>;
+  if (![primaryValue.id, primaryValue.source, primaryValue.reasonCode].every((item) => typeof item === "string") || (primaryValue.hardRuleId !== undefined && typeof primaryValue.hardRuleId !== "string")) return null;
+  if (!stringArray(state.risks) || !stringArray(state.facets) || !stringArray(state.areas)) return null;
+  return state as unknown as ClassificationCheckStateV3;
 }
 export function renderAiClassificationEvidence(value: AiClassificationSuggestion | null): string {
   return value ? value.evidence.map((item) => escapeMarkdownText(item)).join("；") : "未提供";
@@ -219,8 +251,8 @@ export function hasActiveCopilotCheckRun(checkRuns: readonly any[], pullRequestN
       Number(pull.number) === pullRequestNumber
       && String(pull.head?.sha ?? "").toLowerCase() === expectedHead));
 }
-export function classificationInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
-  return { contents: "read", pull_requests: "write", issues: "write", checks: "write", metadata: "read" } as const;
+export function classificationInstallationPermissions(mode: "observe" | "enforce" = "enforce"): Parameters<typeof createInstallationToken>[0]["permissions"] {
+  return { contents: "read", pull_requests: "read", issues: mode === "enforce" ? "write" : "read", checks: "write", metadata: "read" } as const;
 }
 export function prAutomationInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
   return { contents: "read", pull_requests: "write", checks: "read", metadata: "read" } as const;
@@ -339,13 +371,20 @@ async function onboard(args: Readonly<Record<string, string>>) {
   const repository = await gh.getRepositoryById(repositoryId); const cfg = configurationFor(await catalog(), repository);
   if (repository.full_name !== fullName) throw new Error("仓库编号与完整名称不一致");
   const state = validateRepositoryForOnboarding({ id: repository.id, fullName: repository.full_name, ownerId: repository.owner.id, visibility: repository.private ? "private" : "public", fork: repository.fork, archived: repository.archived, disabled: repository.disabled, defaultBranch: repository.default_branch }, 302208797, cfg);
-  const defaultRef = await optional(() => gh.getRef(owner, repo, `heads/${repository.default_branch}`));
-  if (state === "waiting-for-default-branch" || !defaultRef) return summary([`仓库：${fullName}`, "状态：等待首次默认分支推送"]);
   if (trigger === "manual") {
     const actorLogin = env("TRIGGER_ACTOR_LOGIN");
     integer(env("TRIGGER_ACTOR_ID"), "TRIGGER_ACTOR_ID");
     const membership = await gh.getTeamMembership("splrad", "maintainers", actorLogin);
     if (membership.state !== "active") throw new Error("手工接入触发者不是Maintainers当前成员");
+  }
+  let labelSyncFailure: string | null = null;
+  try { await syncManagedLabels({ "policy-sha": policySha, "repository-id": String(repositoryId) }); }
+  catch (error) { labelSyncFailure = error instanceof Error ? error.message : "internal-error"; }
+  const defaultRef = await optional(() => gh.getRef(owner, repo, `heads/${repository.default_branch}`));
+  if (state === "waiting-for-default-branch" || !defaultRef) {
+    await summary([`仓库：${fullName}`, "Copilot说明：waiting-for-default-branch", `标签定义：${labelSyncFailure ? "failed" : "checked"}`]);
+    if (labelSyncFailure) throw new Error(labelSyncFailure);
+    return;
   }
   const teams = await gh.listRepositoryTeams(owner, repo);
   if (!teams.some((team: any) => team.slug === "maintainers" && ["maintain", "admin"].includes(team.permission))) throw new Error("Maintainers没有获得仓库维护权限");
@@ -358,7 +397,8 @@ async function onboard(args: Readonly<Record<string, string>>) {
   const instructions = await loadCopilotInstructions(cfg.copilotInstructionsProfile, (sourceFile) => configPath("copilot", sourceFile));
   const planned = renderOnboardingPullRequest({ template: organizationPullRequestTemplate, configuration: cfg, actor: "splrad-steward[bot]", context: `onboard:${repositoryId}` });
   const result = await reconcileManagedFile({ repository, gh, path: instructions.targetPath, content: instructions.content, branch: planned.branch, title: planned.title, policySha, deliveryId: required(args, "delivery-id") });
-  await summary([`仓库：${fullName}`, `状态：${result === "unchanged" ? "onboarded" : result}`, `接入分支：${planned.branch}`, `分类配置：${cfg.classificationProfile}`, `验证配置：${cfg.validationProfile}`, `Copilot说明配置：${cfg.copilotInstructionsProfile}`, `发布配置：${cfg.releaseProfile ?? "未启用"}`, `Copilot说明字符数：${[...instructions.content].length}`]);
+  await summary([`仓库：${fullName}`, `状态：${result === "unchanged" ? "onboarded" : result}`, `接入分支：${planned.branch}`, `分类配置：${cfg.classification.profile}`, `验证配置：${cfg.validationProfile}`, `Copilot说明配置：${cfg.copilotInstructionsProfile}`, `发布配置：${cfg.releaseProfile ?? "未启用"}`, `Copilot说明字符数：${[...instructions.content].length}`, `标签定义：${labelSyncFailure ? "failed" : "checked"}`]);
+  if (labelSyncFailure) throw new Error(labelSyncFailure);
 }
 async function automate(args: Readonly<Record<string, string>>) {
   const repositoryId = integer(required(args, "repository-id"), "repository-id");
@@ -372,7 +412,7 @@ async function automate(args: Readonly<Record<string, string>>) {
   const repositoryConfiguration = configurationFor(await catalog(), repository);
   if (!repositoryConfiguration.managed || !repositoryConfiguration.prAutomation) return summary(["状态：ignored", "原因：仓库没有启用中央拉取请求创建"]);
   const sourceBranch = sourceRef.slice("refs/heads/".length); if (sourceBranch === repository.default_branch) return summary(["状态：ignored", "原因：默认分支推送不创建拉取请求"]);
-  const classificationProfile = await json<ClassificationProfile>(configPath("profiles", "classification", `${repositoryConfiguration.classificationProfile}.json`));
+  const classificationProfile = await json<ClassificationProfile>(configPath("profiles", "classification", `${repositoryConfiguration.classification.profile}.json`));
   const [baseBefore, sourceBefore] = await Promise.all([
     gh.getRef(owner, repo, `heads/${repository.default_branch}`),
     gh.getRef(owner, repo, `heads/${sourceBranch}`),
@@ -403,7 +443,7 @@ async function automate(args: Readonly<Record<string, string>>) {
   if (process.env.PREPARE_ONLY === "true") {
     const promptPath = env("PR_COPILOT_PROMPT_PATH");
     const preparedFactsPath = env("PR_PREPARED_FACTS_PATH");
-    await writeFile(promptPath, buildPrompt(facts, fallback, classificationProfile.decisions.kindOrder));
+    await writeFile(promptPath, buildPrompt(facts, fallback, classificationProfile.ai.eligiblePrimaryKinds));
     await writeFile(preparedFactsPath, JSON.stringify({ repositoryId, sourceRef, headSha: facts.headSha, baseSha: facts.baseSha, policySha }) + "\n");
     await summary(["状态：prepared", `来源提交：${facts.headSha}`, `提示文件：${basename(promptPath)}`]);
     return;
@@ -443,7 +483,7 @@ async function automate(args: Readonly<Record<string, string>>) {
   let aiClassificationSummary = mode === "copilot" ? "未提供" : "Copilot不可用，未提供";
   if (mode === "copilot" && generated.classification) {
     try {
-      aiClassification = encodeAiClassificationPayload(generated.classification, classificationProfile.decisions.kindOrder);
+      aiClassification = encodeAiClassificationPayload(generated.classification, classificationProfile.ai.eligiblePrimaryKinds);
       aiClassificationSummary = `${generated.classification.kind}（${generated.classification.confidence}）`;
     } catch {
       aiClassificationSummary = "不属于当前分类配置，未传递";
@@ -468,7 +508,7 @@ async function automate(args: Readonly<Record<string, string>>) {
     `AI分类建议：${aiClassificationSummary}`,
     `Copilot审查：${copilot}`,
   ]);
-  if (process.env.PR_COPILOT_PROMPT_PATH) await writeFile(process.env.PR_COPILOT_PROMPT_PATH, buildPrompt(facts, fallback, classificationProfile.decisions.kindOrder));
+  if (process.env.PR_COPILOT_PROMPT_PATH) await writeFile(process.env.PR_COPILOT_PROMPT_PATH, buildPrompt(facts, fallback, classificationProfile.ai.eligiblePrimaryKinds));
 }
 
 async function classify(args: Readonly<Record<string, string>>) {
@@ -488,10 +528,16 @@ async function classify(args: Readonly<Record<string, string>>) {
   }
   if (args["scan-all"] && args["scan-all"] !== "false") throw new Error("scan-all只能是true或false");
   const number = integer(required(args, "pull-request-number"), "pull-request-number");
-  const expectedHead = sha(required(args, "event-head-sha"), "event-head-sha"); const gh = await client(repositoryId, classificationInstallationPermissions(), policySha);
-  const repository = await gh.getRepositoryById(repositoryId); const [owner, repo] = splitRepository(repository.full_name);
+  const expectedHead = sha(required(args, "event-head-sha"), "event-head-sha");
+  const discovery = await client(repositoryId, { metadata: "read" }, policySha);
+  const repository = await discovery.getRepositoryById(repositoryId); const [owner, repo] = splitRepository(repository.full_name);
+  const cfg = configurationFor(await catalog(), repository);
+  if (!cfg.managed) throw new Error("仓库没有启用中央分类");
+  const repositoryClassification = cfg.classification as RepositoryClassification;
+  const gh = await client(repositoryId, classificationInstallationPermissions(repositoryClassification.labelAssignmentMode), policySha);
   const same = (await gh.listAllCheckRuns(owner, repo, expectedHead)).filter((value: any) => value.name === "PR Classification Gate" && value.app?.id === 4243096);
   if (same.length > 1) throw new Error("同名分类检查存在歧义");
+  const previousState = same[0]?.status === "completed" && same[0]?.conclusion === "success" ? decodeClassificationCheckState(same[0]?.external_id) : null;
   const started = { name: "PR Classification Gate", head_sha: expectedHead, status: "in_progress", external_id: `${repositoryId}:${number}:${expectedHead}:pending`, output: { title: "正在计算拉取请求分类", summary: `来源提交：${expectedHead}\n中央规则：${policySha}` } };
   const check = same[0]
     ? await gh.updateCheckRun(owner, repo, same[0].id, { name: started.name, status: started.status, external_id: started.external_id, output: started.output })
@@ -499,39 +545,55 @@ async function classify(args: Readonly<Record<string, string>>) {
   try {
     const pull = await gh.getPullRequest(owner, repo, number);
     if (pull.head.sha !== expectedHead) throw new Error("拉取请求来源提交已经漂移");
-    const cfg = configurationFor(await catalog(), repository);
-    if (!cfg.managed) throw new Error("仓库没有启用中央分类");
-    const profile = await json<ClassificationProfile>(configPath("profiles", "classification", `${cfg.classificationProfile}.json`));
-    const [files, commits, labels] = await Promise.all([gh.listPullFiles(owner, repo, number), gh.listPullCommits(owner, repo, number), gh.listLabels(owner, repo, number)]);
-    if (!files.length || !commits.length) throw new Error("提交或文件分页结果为空");
-    const result = classifyPullRequest(profile, { title: pull.title, body: pull.body ?? "", files: files.map((value: any) => value.filename), currentLabels: labels.map((value: any) => value.name) });
-    let aiClassification: AiClassificationSuggestion | null = null;
-    let aiClassificationState = process.env.AI_CLASSIFICATION ? "无效，已忽略" : "未提供";
-    if (process.env.AI_CLASSIFICATION) {
-      try {
-        aiClassification = decodeAiClassificationPayload(process.env.AI_CLASSIFICATION, profile.decisions.kindOrder);
-        aiClassificationState = `${aiClassification.kind}（${aiClassification.confidence}）`;
-      } catch { /* shadow advice never blocks deterministic classification */ }
+    const semantics = await semanticCatalog();
+    const profile = await json<ClassificationProfile>(configPath("profiles", "classification", `${repositoryClassification.profile}.json`));
+    const [files, commits, labels, repositoryLabels] = await Promise.all([
+      gh.listPullFiles(owner, repo, number), gh.listPullCommits(owner, repo, number), gh.listLabels(owner, repo, number), gh.listRepositoryLabels(owner, repo),
+    ]);
+    if (!files.length || !commits.length || Number(pull.changed_files) !== files.length || Number(pull.commits) !== commits.length) throw new Error("pagination-incomplete");
+    const currentLabels = labels.map((value: any) => String(value.name));
+    const rawFacts = {
+      repositoryId, pullRequestNumber: number, sourceRepositoryId: Number(pull.head.repo.id), sourceRef: `refs/heads/${pull.head.ref}`,
+      targetRef: `refs/heads/${pull.base.ref}`, author: { login: String(pull.user.login), type: pull.user.type as "User" | "Bot" | "Organization" | "Mannequin" },
+      headSha: expectedHead, baseSha: String(pull.base.sha),
+      commits: commits.map((value: any) => ({ sha: String(value.sha), message: String(value.commit?.message ?? "") })),
+      files: files.map((value: any) => ({ path: String(value.filename), ...(value.previous_filename ? { previousPath: String(value.previous_filename) } : {}), status: String(value.status), additions: Number(value.additions), deletions: Number(value.deletions), patch: typeof value.patch === "string" ? value.patch : null, patchState: typeof value.patch === "string" ? "available" as const : "missing" as const })),
+    };
+    const policy = classificationDigests(semantics, profile, repositoryClassification);
+    const inputDigest = classificationInputDigest(rawFacts, policySha, policy.classificationPolicyDigest);
+    const priorOwnership = previousState?.policy === policy.classificationPolicyDigest && previousState.inputDigest === inputDigest
+      ? { stewardOwnedRiskFlags: previousState.risks, stewardOwnedFacets: previousState.facets }
+      : { stewardOwnedRiskFlags: [], stewardOwnedFacets: [] };
+    const existing = { currentLabels, ...priorOwnership };
+    const result = classifyPullRequest(semantics, profile, repositoryClassification, rawFacts, existing);
+    const labelPlan = planClassificationLabels(semantics, profile, existing, result);
+    const definitionPlan = planLabelDefinitions(semantics, profile, repositoryLabels.map((value: any) => ({ name: String(value.name), color: String(value.color), description: value.description == null ? null : String(value.description) })));
+    if (repositoryClassification.labelAssignmentMode === "enforce") {
+      if (repositoryClassification.labelDefinitionMode !== "enforce" || definitionPlan.status !== "in-sync") throw new Error("label-definitions-not-ready");
+      const currentBeforeWrite = await gh.getPullRequest(owner, repo, number);
+      if (currentBeforeWrite.head.sha !== expectedHead || currentBeforeWrite.base.sha !== pull.base.sha) throw new Error("分类输入在写入期间已经漂移（写入前）");
+      if (labelPlan.add.length) await gh.addLabels(owner, repo, number, labelPlan.add);
+      for (const label of labelPlan.remove) await gh.removeLabel(owner, repo, number, label);
+      const afterLabels = (await gh.listLabels(owner, repo, number)).map((value: any) => String(value.name)).sort();
+      const expectedLabels = [...new Set([...currentLabels.filter((label: string) => !labelPlan.remove.includes(label)), ...labelPlan.add])].sort();
+      const afterSet = new Set(afterLabels);
+      const exclusiveLabels = new Set(semantics.roles.primaryKind.definitions.flatMap(value => value.githubLabel ? [value.githubLabel.name] : []));
+      for (const area of profile.areas) {
+        const label = semantics.roles.areas.definitions.find(value => value.id === area.area)?.githubLabel?.name;
+        if (label) exclusiveLabels.add(label);
+      }
+      const unexpectedExclusive = afterLabels.some(label => !expectedLabels.includes(label) && exclusiveLabels.has(label));
+      if (expectedLabels.some(label => !afterSet.has(label)) || labelPlan.remove.some(label => afterSet.has(label)) || unexpectedExclusive) throw new Error("post-write-mismatch");
     }
-    const aiComparison = aiClassification
-      ? (aiClassification.kind === result.kind ? "与确定性规则一致" : `与确定性规则不一致（规则：${result.kind}）`)
-      : "未比较";
-    const aiEvidence = renderAiClassificationEvidence(aiClassification);
-    const plan = reconcileManagedLabels(profile, labels.map((value: any) => value.name), result);
-    const currentBeforeWrite = await gh.getPullRequest(owner, repo, number);
-    if (currentBeforeWrite.head.sha !== expectedHead) throw new Error("写入标签前来源提交已经漂移");
-    for (const definition of plan.ensure) {
-      const existing = await optional(() => gh.getLabel(owner, repo, definition.name));
-      if (!existing) await gh.createLabel(owner, repo, definition);
-      else if (existing.color.toLowerCase() !== definition.color.toLowerCase() || existing.description !== definition.description) await gh.updateLabel(owner, repo, definition.name, definition);
-    }
-    await gh.setLabels(owner, repo, number, [...plan.keep, ...result.publicLabels]);
     const currentAfterWrite = await gh.getPullRequest(owner, repo, number);
-    if (currentAfterWrite.head.sha !== expectedHead || currentAfterWrite.base.sha !== pull.base.sha || currentAfterWrite.title !== pull.title || (currentAfterWrite.body ?? "") !== (pull.body ?? "")) throw new Error("分类输入在写入期间已经漂移");
+    if (currentAfterWrite.head.sha !== expectedHead || currentAfterWrite.base.sha !== pull.base.sha || currentAfterWrite.title !== pull.title || (currentAfterWrite.body ?? "") !== (pull.body ?? "")) throw new Error("分类输入在写入期间已经漂移（写入后）");
     const contributors = commits.map((commit: any) => commit.author ? normalizeContributor({ ...commit.author, name: commit.commit?.author?.name, email: commit.commit?.author?.email, avatarUrl: commit.author.avatar_url }) : null).filter(Boolean) as Contributor[];
-    const fingerprint = await computePullRequestFingerprint({ repositoryId, pullRequestNumber: number, headSha: expectedHead, baseSha: pull.base.sha, commits: commits.map((value: any) => value.sha), files: files.map((value: any) => ({ path: value.filename, status: value.status, additions: value.additions, deletions: value.deletions })), title: pull.title, body: pull.body ?? "", contributors });
-    await gh.updateCheckRun(owner, repo, check.id, { name: "PR Classification Gate", status: "completed", conclusion: "success", external_id: `${repositoryId}:${number}:${expectedHead}:${fingerprint}`, output: { title: "拉取请求分类完成", summary: `区域：${result.areas.join("、") || "无"}\n类型：${result.kind}\n标签：${result.publicLabels.join("、")}\n标签来源：确定性规则（AI影子建议未参与标签写入）\nAI影子建议：${aiClassificationState}\nAI影子对照：${aiComparison}\nAI依据：${aiEvidence}\n输入摘要：${fingerprint}` } });
-    await summary([`拉取请求：#${number}`, `来源提交：${expectedHead}`, `分类：${result.kind}`, `标签：${result.publicLabels.join("、")}`, "标签来源：确定性规则（AI影子建议未参与标签写入）", `AI影子建议：${aiClassificationState}`, `AI影子对照：${aiComparison}`, `AI依据：${aiEvidence}`, `输入摘要：${fingerprint}`]);
+    const decisionDigest = digest(result);
+    const state = Buffer.from(JSON.stringify({ v: 3, inputDigest, policy: policy.classificationPolicyDigest, primary: result.primaryKind, risks: labelPlan.ownedRiskFlags, facets: labelPlan.ownedFacets, areas: result.areas.map(value => value.id), decisionDigest }), "utf8").toString("base64url");
+    const aiState = process.env.AI_CLASSIFICATION ? "AI影子建议未参与标签写入（PR1观察载荷）" : "未提供";
+    const checkSummary = `主类：${result.primaryKind.id}（${result.primaryKind.source} / ${result.primaryKind.reasonCode}）\n风险：${result.riskFlags.map(value => value.id).join("、") || "无"}\nFacet：${result.facets.map(value => value.id).join("、") || "无"}\n区域：${result.areas.map(value => value.id).join("、") || "无"}\nAI状态：${aiState}\n物理定义模式：${repositoryClassification.labelDefinitionMode}（${definitionPlan.status}）\nPR分配模式：${repositoryClassification.labelAssignmentMode}\nAI模式：${repositoryClassification.ai.mode}\n目标添加：${labelPlan.add.join("、") || "无"}\n目标删除：${labelPlan.remove.join("、") || "无"}\n目录摘要：${policy.catalogDigest}\n配置摘要：${policy.profileDigest}\n仓库摘要：${policy.repositoryClassificationDigest}\n策略摘要：${policy.classificationPolicyDigest}\n输入摘要：${inputDigest}\n决策摘要：${decisionDigest}`;
+    await gh.updateCheckRun(owner, repo, check.id, { name: "PR Classification Gate", status: "completed", conclusion: "success", external_id: `v3:${state}`, output: { title: "拉取请求分类完成", summary: checkSummary } });
+    await summary([`拉取请求：#${number}`, `来源提交：${expectedHead}`, ...checkSummary.split("\n")]);
   } catch (error) {
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 60_000);
     await gh.updateCheckRun(owner, repo, check.id, { name: "PR Classification Gate", status: "completed", conclusion: "failure", external_id: `${repositoryId}:${number}:${expectedHead}:failure`, output: { title: "拉取请求分类失败", summary: message } });
@@ -540,18 +602,60 @@ async function classify(args: Readonly<Record<string, string>>) {
   }
 }
 
+async function managedTargets(policySha: string, selectedId?: number): Promise<ManagedTarget[]> {
+  const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), permissions: { metadata: "read" }, policySha });
+  const repositories = await new GitHubClient(token, "https://api.github.com", fetch, policySha).listInstallationRepositories();
+  return managedRepositoryTargets(await catalog(), repositories, selectedId);
+}
+async function assertManualSyncAuthorization(policySha: string): Promise<void> {
+  if (process.env.SYNC_TRIGGER !== "workflow_dispatch") return;
+  integer(env("TRIGGER_ACTOR_ID"), "TRIGGER_ACTOR_ID");
+  const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), permissions: { metadata: "read", members: "read" }, policySha });
+  const membership = await new GitHubClient(token, "https://api.github.com", fetch, policySha).getTeamMembership("splrad", "maintainers", env("TRIGGER_ACTOR_LOGIN"));
+  if (membership.state !== "active") throw new Error("手工同步触发者不是Maintainers当前成员");
+}
 async function syncInstructions(args: Readonly<Record<string, string>>) {
   const policySha = sha(required(args, "policy-sha"), "policy-sha");
-  const selected = args["repository-id"] ? [integer(args["repository-id"], "repository-id")] : Object.keys((await catalog()).repositories).map(Number);
-  for (const id of selected) {
-    const cat = await catalog(); const cfg = cat.repositories[String(id)];
-    if (!cfg || cfg.managed !== true || typeof cfg.fullName !== "string") throw new Error(`仓库没有明确的Copilot说明同步登记: ${id}`);
-    const instructions = await loadCopilotInstructions(cfg.copilotInstructionsProfile, (sourceFile) => configPath("copilot", sourceFile));
-    const gh = await client(id, { contents: "write", pull_requests: "write", checks: "read", metadata: "read" }, policySha); const repository = await gh.getRepositoryById(id);
-    if (repository.full_name !== cfg.fullName) throw new Error("仓库编号与中央同步登记名称不一致");
-    const result = await reconcileManagedFile({ repository, gh, path: instructions.targetPath, content: instructions.content, branch: "steward/copilot-instructions", title: "chore(copilot): 同步代码审查说明", policySha, deliveryId: `copilot-sync:${policySha}:${id}` });
-    await summary([`仓库：${cfg.fullName}`, `目标文件：${instructions.targetPath}`, `状态：${result}`, `字符数：${[...instructions.content].length}`]);
-  }
+  await assertManualSyncAuthorization(policySha);
+  const targets = await managedTargets(policySha, args["repository-id"] ? integer(args["repository-id"], "repository-id") : undefined);
+  const results = await runManagedRepositorySync(targets, async ({ repository, configuration }) => {
+    const instructions = await loadCopilotInstructions(configuration.copilotInstructionsProfile, (sourceFile) => configPath("copilot", sourceFile));
+    const gh = await client(repository.id, { contents: "write", pull_requests: "write", checks: "read", metadata: "read" }, policySha);
+    const result = await reconcileManagedFile({ repository, gh, path: instructions.targetPath, content: instructions.content, branch: "steward/copilot-instructions", title: "chore(copilot): 同步代码审查说明", policySha, deliveryId: `copilot-sync:${policySha}:${repository.id}` });
+    await summary([`仓库：${repository.full_name}`, `目标文件：${instructions.targetPath}`, `状态：${result}`, `字符数：${[...instructions.content].length}`]);
+    return result;
+  });
+  for (const value of results.filter(item => item.status === "ignored")) await summary([`仓库：${value.target.repository.full_name}`, `登记来源：${value.target.registration}`, "状态：ignored"]);
+  const failures = results.filter(value => value.error);
+  if (failures.length) throw new Error(`Copilot说明同步失败: ${failures.map(value => value.target.repository.full_name).join("、")}`);
+}
+async function syncManagedLabels(args: Readonly<Record<string, string>>) {
+  const policySha = sha(required(args, "policy-sha"), "policy-sha");
+  await assertManualSyncAuthorization(policySha);
+  const semantics = await semanticCatalog();
+  const targets = await managedTargets(policySha, args["repository-id"] ? integer(args["repository-id"], "repository-id") : undefined);
+  const results = await runManagedRepositorySync(targets, async ({ repository, configuration, registration }) => {
+    const classification = configuration.classification as RepositoryClassification;
+    const profile = await json<ClassificationProfile>(configPath("profiles", "classification", `${classification.profile}.json`));
+    const gh = await client(repository.id, { metadata: "read", issues: classification.labelDefinitionMode === "enforce" ? "write" : "read" }, policySha);
+    const actual = (await gh.listRepositoryLabels(...splitRepository(repository.full_name))).map((value: any) => ({ name: String(value.name), color: String(value.color), description: value.description == null ? null : String(value.description) }));
+    let plan = planLabelDefinitions(semantics, profile, actual);
+    if (classification.labelDefinitionMode === "enforce") {
+      if (plan.conflicts.length) throw new Error("managed-label-conflict");
+      const [owner, repo] = splitRepository(repository.full_name);
+      for (const item of plan.missing) await gh.createLabel(owner, repo, { name: item.name, color: item.color, description: item.description });
+      for (const item of plan.metadataDrift) await gh.updateLabel(owner, repo, item.desired.name, { new_name: item.desired.name, color: item.desired.color, description: item.desired.description });
+      const readback = (await gh.listRepositoryLabels(owner, repo)).map((value: any) => ({ name: String(value.name), color: String(value.color), description: value.description == null ? null : String(value.description) }));
+      plan = planLabelDefinitions(semantics, profile, readback);
+      if (plan.status !== "in-sync") throw new Error("post-write-mismatch");
+    }
+    const reportedStatus = registration !== "explicit" && plan.missing.length === plan.desired.length ? "pending-label-activation" : plan.status;
+    await summary([`仓库：${repository.full_name}`, `登记来源：${registration}`, `物理定义模式：${classification.labelDefinitionMode}`, `PR分配模式：${classification.labelAssignmentMode}`, `AI模式：${classification.ai.mode}`, `状态：${reportedStatus}`, `缺失：${plan.missing.length}`, `元数据漂移：${plan.metadataDrift.length}`, `冲突：${plan.conflicts.length}`, `Legacy：${plan.legacy.length}`, `定义摘要：${plan.desiredDigest}`, `实际摘要：${plan.actualDigest}`]);
+    return reportedStatus;
+  });
+  for (const value of results.filter(item => item.status === "ignored")) await summary([`仓库：${value.target.repository.full_name}`, `登记来源：${value.target.registration}`, "状态：ignored"]);
+  const failures = results.filter(value => value.error);
+  if (failures.length) throw new Error(`受管标签同步失败: ${failures.map(value => value.target.repository.full_name).join("、")}`);
 }
 
 async function walk(root: string): Promise<string[]> {
@@ -847,15 +951,25 @@ async function releaseNotesCommand(args: Readonly<Record<string, string>>) {
     }
   }
   if (!numbers.has(triggerPullRequest)) throw new Error("触发发布的拉取请求不在第一父提交范围中");
-  const rich: any[] = [];
+  const semantics = await semanticCatalog();
+  const repositoryConfiguration = configurationFor(await catalog(), repository);
+  const repositoryClassification = repositoryConfiguration.classification as RepositoryClassification;
+  const profile = await json<ClassificationProfile>(configPath("profiles", "classification", `${repositoryClassification.profile}.json`));
+  const rich: ClassifiedReleasePullRequest[] = [];
   for (const number of numbers) {
     const pull = await gh.getPullRequest(owner, repo, number);
     if (!pull.merged || pull.base?.ref !== repository.default_branch || !range.has(pull.merge_commit_sha)) throw new Error(`拉取请求事实与提交范围不一致: #${number}`);
-    const [files, labels] = await Promise.all([gh.listPullFiles(owner, repo, number), gh.listLabels(owner, repo, number)]);
-    if (!files.length) throw new Error(`拉取请求文件读取为空: #${number}`);
-    rich.push({ number, title: pull.title, body: pull.body ?? "", labels: labels.map((value: any) => value.name), files: files.map((value: any) => value.filename), author: { login: pull.user.login, type: pull.user.type }, mergedBy: pull.merged_by?.login ?? null, mergedAt: pull.merged_at, mergeSha: pull.merge_commit_sha });
+    const [files, commits, labels] = await Promise.all([gh.listPullFiles(owner, repo, number), gh.listPullCommits(owner, repo, number), gh.listLabels(owner, repo, number)]);
+    if (!files.length || !commits.length || Number(pull.changed_files) !== files.length || Number(pull.commits) !== commits.length) throw new Error(`拉取请求事实分页不完整: #${number}`);
+    const currentLabels = labels.map((value: any) => String(value.name));
+    const decision = classifyPullRequest(semantics, profile, repositoryClassification, {
+      repositoryId, pullRequestNumber: number, sourceRepositoryId: Number(pull.head.repo.id), sourceRef: `refs/heads/${pull.head.ref}`, targetRef: `refs/heads/${pull.base.ref}`,
+      author: { login: String(pull.user.login), type: pull.user.type as "User" | "Bot" | "Organization" | "Mannequin" }, headSha: String(pull.head.sha), baseSha: String(pull.base.sha),
+      commits: commits.map((value: any) => ({ sha: String(value.sha), message: String(value.commit?.message ?? "") })),
+      files: files.map((value: any) => ({ path: String(value.filename), ...(value.previous_filename ? { previousPath: String(value.previous_filename) } : {}), status: String(value.status), additions: Number(value.additions), deletions: Number(value.deletions) })),
+    }, { currentLabels, stewardOwnedRiskFlags: [], stewardOwnedFacets: [] });
+    rich.push({ number, title: pull.title, body: pull.body ?? "", labels: currentLabels, files: files.map((value: any) => value.filename), author: { login: pull.user.login, type: pull.user.type }, mergedAt: pull.merged_at, mergeSha: pull.merge_commit_sha, decision });
   }
-  const profile = await json<ClassificationProfile>(configPath("profiles", "classification", "layerscape.json"));
   const releaseProfile = await json<any>(configPath("profiles", "release", "layerscape.json"));
   const eligible = collectReleasePullRequests(rich, releaseProfile.releaseNotes.excludedLabels);
   const categorized = categorizeReleasePullRequests(profile, eligible);
@@ -939,7 +1053,7 @@ async function releaseVerify(args: Readonly<Record<string, string>>) {
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const invocation = parseInvocation(argv);
-  const handlers: Record<string, (args: Readonly<Record<string, string>>) => Promise<void>> = { "onboard-repository": onboard, "pr-automation": automate, "pr-classification": classify, "sync-copilot-instructions": syncInstructions, validate, "release-preflight": releasePreflight, "release-notes": releaseNotesCommand, "release-publish": releasePublish, "release-verify": releaseVerify };
+  const handlers: Record<string, (args: Readonly<Record<string, string>>) => Promise<void>> = { "onboard-repository": onboard, "pr-automation": automate, "pr-classification": classify, "sync-copilot-instructions": syncInstructions, "sync-managed-labels": syncManagedLabels, validate, "release-preflight": releasePreflight, "release-notes": releaseNotesCommand, "release-publish": releasePublish, "release-verify": releaseVerify };
   await handlers[invocation.command]!(invocation.args);
 }
 

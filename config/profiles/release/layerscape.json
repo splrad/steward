@@ -39,7 +39,6 @@
     { "nameTemplate": "Fonts.zip", "pathTemplate": "artifacts/ReleaseAssets/Fonts.zip", "contentType": "application/zip" }
   ],
   "releaseNotes": {
-    "classificationProfile": "layerscape",
     "excludedLabels": ["ignore-for-release", "skip-changelog", "no-changelog", "no-release-notes"],
     "previousRelease": "latest-published-first-parent-ancestor",
     "pullRequestOrder": ["mergedAtAscending", "numberAscending"],

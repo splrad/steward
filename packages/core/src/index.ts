@@ -3,6 +3,7 @@ export * from './classification.js';
 export * from './copilot-instructions.js';
 export * from './fingerprint.js';
 export * from './identity.js';
+export * from './label-sync.js';
 export * from './onboarding.js';
 export * from './release-notes.js';
 export * from './release.js';

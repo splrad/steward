@@ -5,7 +5,7 @@ import { join } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertFreshValidationBase, assertManagedBranchPull, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, describeCopilotFallback, encodeAiClassificationPayload, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
+import { assertFreshValidationBase, assertManagedBranchPull, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, encodeAiClassificationPayload, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -16,8 +16,8 @@ afterEach(() => {
 });
 
 describe("中央命令入口", () => {
-  it("只接受九个命令及其已知、唯一、成对参数", () => {
-    const commands = ["onboard-repository", "pr-automation", "pr-classification", "sync-copilot-instructions", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"];
+  it("只接受十个命令及其已知、唯一、成对参数", () => {
+    const commands = ["onboard-repository", "pr-automation", "pr-classification", "sync-copilot-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"];
     for (const command of commands) expect(parseInvocation([command]).command).toBe(command);
     expect(() => parseInvocation(["unknown"])).toThrow("未知命令");
     expect(() => parseInvocation(["validate", "--unknown", "x"])).toThrow("未知参数");
@@ -55,6 +55,15 @@ describe("中央命令入口", () => {
     expect(() => decodeAiClassificationPayload("a".repeat(4_097), ["feature"])).toThrow("载荷格式无效");
     expect(() => decodeAiClassificationPayload(Buffer.from("not-json", "utf8").toString("base64url"), ["feature"]))
       .toThrow("AI影子分类载荷格式无效");
+  });
+
+  it("只接受规范编码且字段完整的Check v3所有权状态", () => {
+    const state = { v: 3, inputDigest: "a".repeat(64), policy: "b".repeat(64), primary: { id: "feature", source: "deterministic-fallback", reasonCode: "primary-deterministic-type-selected" }, risks: ["breaking-change"], facets: ["javascript"], areas: ["area:source"], decisionDigest: "c".repeat(64) };
+    const encoded = `v3:${Buffer.from(JSON.stringify(state), "utf8").toString("base64url")}`;
+    expect(decodeClassificationCheckState(encoded)).toEqual(state);
+    expect(decodeClassificationCheckState(encoded.replace("v3:", "v2:"))).toBeNull();
+    expect(decodeClassificationCheckState(`${encoded}=`)).toBeNull();
+    expect(decodeClassificationCheckState(`v3:${Buffer.from("{}", "utf8").toString("base64url")}`)).toBeNull();
   });
 
   it("AI影子分类依据以Markdown纯文本写入检查摘要", () => {
@@ -281,11 +290,12 @@ describe("中央命令入口", () => {
     expect(hasNewCopilotRequestEvent([{ id: 12, event: "copilot_work_started" }], 10)).toBe(true);
     expect(classificationInstallationPermissions()).toEqual({
       contents: "read",
-      pull_requests: "write",
+      pull_requests: "read",
       issues: "write",
       checks: "write",
       metadata: "read",
     });
+    expect(classificationInstallationPermissions("observe").issues).toBe("read");
     expect(prAutomationInstallationPermissions()).toEqual({
       contents: "read",
       pull_requests: "write",
@@ -440,6 +450,8 @@ describe("中央命令入口", () => {
       "当前默认分支第一父提交链",
     ]) expect(source).toContain(fragment);
     expect(source).not.toMatch(/heads\/main|base\.ref\s*!==\s*"main"|default_branch\s*!==\s*"main"/u);
+    expect(source).toMatch(/if\s*\(labelPlan\.add\.length\)\s*await gh\.addLabels\(owner, repo, number, labelPlan\.add\);/u);
+    expect(source).not.toMatch(/for\s*\([^)]*labelPlan\.add[^)]*\)\s*await gh\.addLabels/u);
     const automateSource = source.slice(source.indexOf("async function automate"), source.indexOf("async function classify"));
     const defaultBranchIgnore = automateSource.indexOf("sourceBranch === repository.default_branch");
     const classificationProfileRead = automateSource.indexOf('configPath("profiles", "classification"');

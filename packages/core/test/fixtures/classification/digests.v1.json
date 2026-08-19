@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "policySha": "77fc197318d669d532aaf64dbc650f846b44aa77",
+  "policy": {
+    "default": {
+      "catalogDigest": "a86d3e1ebab0ab5aee397d5627c368572c13cb7d393b2c9d828c440eaef38fb6",
+      "profileDigest": "e5ba133d8e8957386ee8c76f40d71ba90f4a89d1d848273ccc7d5cbb9faffe04",
+      "repositoryClassificationDigest": "452ac2ea92e4781a9d7d0001886d1fe3fe99cbddee8736a83f09f3061358f862",
+      "classificationPolicyDigest": "d8b4ef8066d56b09d148ada64b8394437ff35e880ae4d271a73a210e5657f2b4"
+    },
+    "layerscape": {
+      "catalogDigest": "a86d3e1ebab0ab5aee397d5627c368572c13cb7d393b2c9d828c440eaef38fb6",
+      "profileDigest": "7412db0999b340f1e5d20d7e9a6157994358ca8efd604f2ee6d6c9d0ebf733a7",
+      "repositoryClassificationDigest": "4e60166c4778a91bb600b3218ee84180dab257152e5af5ed2ef344b30aabbc9a",
+      "classificationPolicyDigest": "953a88c8ee5b7f08f66f663b611a61532c4c133ecd381408b6a92f0e0c1361c3"
+    }
+  },
+  "inputs": {
+    "github-8": "57ae8b7ea1cf360ab2c31f87000bc31b93d1b577a2cf15b01c54818dce17f98f",
+    "steward-138": "d99631807a61e4da868374dc61109c6afdfcbfb59016cef0d5ccbf04d67ae6cc",
+    "layerscape-150": "4dabb38c775321182ccc774d26508b4dd51e6562905c1226d899bf0590f889e6",
+    "layerscape-151": "e2831925d044ab675a8d5c5b8b339503d2f280a2afb28e328ba8fde0b02f34f8"
+  }
+}
