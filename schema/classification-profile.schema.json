@@ -32,6 +32,21 @@
     "facetRule": { "type": "object", "additionalProperties": false, "required": ["id", "facet", "match"], "properties": { "id": { "type": "string" }, "facet": { "type": "string" }, "match": { "$ref": "#/$defs/match" } } },
     "areaRule": { "type": "object", "additionalProperties": false, "required": ["id", "area", "match"], "properties": { "id": { "type": "string" }, "area": { "type": "string" }, "match": { "$ref": "#/$defs/fileMatch" } } },
     "releaseClause": { "type": "object", "additionalProperties": false, "minProperties": 1, "properties": { "primaryKindsAny": { "$ref": "#/$defs/strings" }, "riskFlagsAny": { "$ref": "#/$defs/strings" }, "areasAny": { "$ref": "#/$defs/strings" }, "facetsAny": { "$ref": "#/$defs/strings" }, "runtimeRelease": { "type": "boolean" }, "installOrPackage": { "type": "boolean" } } },
-    "releaseCategory": { "type": "object", "additionalProperties": false, "required": ["id", "title", "icon", "fallback"], "properties": { "id": { "type": "string" }, "title": { "type": "string" }, "icon": { "type": "string" }, "matchAny": { "type": "array", "items": { "$ref": "#/$defs/releaseClause" }, "minItems": 1 }, "fallback": { "type": "boolean" } } }
+    "releaseCategory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "icon", "fallback"],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "icon": { "type": "string" },
+        "matchAny": { "type": "array", "items": { "$ref": "#/$defs/releaseClause" }, "minItems": 1 },
+        "fallback": { "type": "boolean" }
+      },
+      "oneOf": [
+        { "required": ["matchAny"], "properties": { "matchAny": {}, "fallback": { "const": false } } },
+        { "properties": { "fallback": { "const": true } }, "not": { "required": ["matchAny"], "properties": { "matchAny": {} } } }
+      ]
+    }
   }
 }

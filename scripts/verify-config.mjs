@@ -56,6 +56,18 @@ for (const name of ["default", "layerscape"]) {
   for (const patterns of Object.values(profile.commitTextSets)) for (const pattern of patterns) new RegExp(pattern, "iu");
   if (profile.releaseCategories.filter(x => x.fallback).length !== (profile.releaseCategories.length ? 1 : 0)) throw new Error(`${name}发布回退类别数量无效`);
 }
+const classificationProfileValidator = validators.get("schema/classification-profile.schema.json");
+const layerscapeProfile = profiles.get("layerscape");
+if (!classificationProfileValidator || !layerscapeProfile) throw new Error("分类配置反例验证缺少基础数据");
+const nonFallbackIndex = layerscapeProfile.releaseCategories.findIndex(category => !category.fallback);
+const fallbackIndex = layerscapeProfile.releaseCategories.findIndex(category => category.fallback);
+if (nonFallbackIndex < 0 || fallbackIndex < 0) throw new Error("分类配置反例验证缺少发布类别");
+const missingMatchProfile = structuredClone(layerscapeProfile);
+delete missingMatchProfile.releaseCategories[nonFallbackIndex].matchAny;
+if (classificationProfileValidator(missingMatchProfile)) throw new Error("发布类别schema允许非回退类别缺少matchAny");
+const matchedFallbackProfile = structuredClone(layerscapeProfile);
+matchedFallbackProfile.releaseCategories[fallbackIndex].matchAny = structuredClone(layerscapeProfile.releaseCategories[nonFallbackIndex].matchAny);
+if (classificationProfileValidator(matchedFallbackProfile)) throw new Error("发布类别schema允许回退类别包含matchAny");
 for (const configuration of [...Object.values(catalog.defaults), ...Object.values(catalog.repositories)]) {
   const profile = profiles.get(configuration.classification.profile); if (!profile) throw new Error("仓库引用未知分类profile");
   const classification = configuration.classification;
