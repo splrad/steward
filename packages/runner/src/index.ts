@@ -572,7 +572,7 @@ async function classify(args: Readonly<Record<string, string>>) {
       if (repositoryClassification.labelDefinitionMode !== "enforce" || definitionPlan.status !== "in-sync") throw new Error("label-definitions-not-ready");
       const currentBeforeWrite = await gh.getPullRequest(owner, repo, number);
       if (currentBeforeWrite.head.sha !== expectedHead || currentBeforeWrite.base.sha !== pull.base.sha) throw new Error("分类输入在写入期间已经漂移（写入前）");
-      for (const label of labelPlan.add) await gh.addLabels(owner, repo, number, [label]);
+      if (labelPlan.add.length) await gh.addLabels(owner, repo, number, labelPlan.add);
       for (const label of labelPlan.remove) await gh.removeLabel(owner, repo, number, label);
       const afterLabels = (await gh.listLabels(owner, repo, number)).map((value: any) => String(value.name)).sort();
       const expectedLabels = [...new Set([...currentLabels.filter((label: string) => !labelPlan.remove.includes(label)), ...labelPlan.add])].sort();

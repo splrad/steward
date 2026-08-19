@@ -450,6 +450,8 @@ describe("中央命令入口", () => {
       "当前默认分支第一父提交链",
     ]) expect(source).toContain(fragment);
     expect(source).not.toMatch(/heads\/main|base\.ref\s*!==\s*"main"|default_branch\s*!==\s*"main"/u);
+    expect(source).toMatch(/if\s*\(labelPlan\.add\.length\)\s*await gh\.addLabels\(owner, repo, number, labelPlan\.add\);/u);
+    expect(source).not.toMatch(/for\s*\([^)]*labelPlan\.add[^)]*\)\s*await gh\.addLabels/u);
     const automateSource = source.slice(source.indexOf("async function automate"), source.indexOf("async function classify"));
     const defaultBranchIgnore = automateSource.indexOf("sourceBranch === repository.default_branch");
     const classificationProfileRead = automateSource.indexOf('configPath("profiles", "classification"');
