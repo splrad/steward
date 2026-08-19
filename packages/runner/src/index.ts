@@ -358,7 +358,7 @@ export function hasActiveCopilotCheckRun(checkRuns: readonly any[], pullRequestN
       && String(pull.head?.sha ?? "").toLowerCase() === expectedHead));
 }
 export function classificationInstallationPermissions(mode: "observe" | "enforce" = "enforce"): Parameters<typeof createInstallationToken>[0]["permissions"] {
-  // GitHub对PR调用issues/labels端点时仍要求pull_requests:write；observe必须保持只读。
+  // GitHub对PR调用issues/labels端点时仍要求pull_requests:write；observe下仅issues/pull_requests保持只读。
   const assignmentPermission = mode === "enforce" ? "write" : "read";
   return { contents: "read", pull_requests: assignmentPermission, issues: assignmentPermission, checks: "write", metadata: "read" } as const;
 }
