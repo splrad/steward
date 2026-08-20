@@ -5,7 +5,7 @@ import { join } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, encodeClassificationCheckState, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, isTrustedAiClassificationSource, matchesGeneratedCopilotInstructions, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, reusedAiClassificationAssessment, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
+import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, encodeClassificationCheckState, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, isTrustedAiClassificationSource, matchesGeneratedCopilotInstructions, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, prepareAiClassificationPayload, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, reusedAiClassificationAssessment, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -57,6 +57,26 @@ describe("中央命令入口", () => {
     expect(() => decodeAiClassificationPayload(`${encoded}=`)).toThrow("封装格式无效");
     expect(() => decodeAiClassificationPayload("a".repeat(16_385))).toThrow("封装格式无效");
     expect(() => decodeAiClassificationPayload(Buffer.from("not-json", "utf8").toString("base64url"))).toThrow("AI分类封装格式无效");
+  });
+
+  it("无效AI分类只传固定占位值且封装失败时安全降级", () => {
+    const envelope = {
+      schemaVersion: 2 as const,
+      repositoryId: 1, pullRequestNumber: 2, sourceRepositoryId: 1,
+      sourceRef: "refs/heads/change", targetRef: "refs/heads/main",
+      headSha: "a".repeat(40), baseSha: "b".repeat(40), policySha: "c".repeat(40),
+      catalogDigest: "d".repeat(64), profileDigest: "e".repeat(64), repositoryClassificationDigest: "f".repeat(64), classificationPolicyDigest: "1".repeat(64), inputDigest: "2".repeat(64),
+      effectiveAiMode: "shadow" as const,
+      suggestion: null,
+    };
+    const invalid = prepareAiClassificationPayload({ state: "invalid", raw: { untrusted: "x".repeat(20_000) }, reason: "classification.primaryKind无效" }, envelope);
+    expect(invalid.state).toBe("encoded");
+    if (invalid.state === "encoded") expect(decodeAiClassificationPayload(invalid.payload)).toEqual({ ...envelope, suggestion: { invalid: true } });
+
+    const validSuggestion = { primaryKind: "feature", confidence: "high" as const, evidence: [{ path: "packages/core/src/automation.ts", reason: "新增分类建议字段" }] };
+    const valid = { state: "valid" as const, suggestion: validSuggestion, raw: validSuggestion };
+    expect(prepareAiClassificationPayload(valid, { ...envelope, sourceRef: "x".repeat(20_000) })).toEqual({ state: "encoding-failed" });
+    expect(prepareAiClassificationPayload({ state: "missing" }, envelope)).toEqual({ state: "missing" });
   });
 
   it("AI分类来源必须绑定App触发者、Steward工作流和当前策略提交", () => {

@@ -294,6 +294,22 @@ export function decodeAiClassificationPayload(value: string): unknown {
   }
   return parsed;
 }
+export function prepareAiClassificationPayload(
+  classificationField: AiClassificationFieldInspection,
+  envelope: AiClassificationEnvelopeV2,
+): { state: "missing" } | { state: "encoded"; payload: string } | { state: "encoding-failed" } {
+  if (classificationField.state === "missing") return { state: "missing" };
+  const suggestion = classificationField.state === "valid"
+    ? classificationField.suggestion
+    : classificationField.state === "abstained"
+      ? null
+      : { invalid: true };
+  try {
+    return { state: "encoded", payload: encodeAiClassificationPayload({ ...envelope, suggestion }) };
+  } catch {
+    return { state: "encoding-failed" };
+  }
+}
 export function isTrustedAiClassificationSource(policySha: string, environment: NodeJS.ProcessEnv = process.env): boolean {
   return environment.TRIGGER_ACTOR_ID === "301115370"
     && environment.WORKFLOW_REPOSITORY === "splrad/steward"
@@ -796,8 +812,10 @@ async function automate(args: Readonly<Record<string, string>>) {
   if (classificationField.state !== "missing") {
     const rawFacts: RawClassificationFacts = { ...rawFactsBase, pullRequestNumber: pull.number };
     const policy = classificationDigests(semantics, classificationProfile, repositoryClassification);
-    const suggestion = classificationField.state === "valid" ? classificationField.suggestion : classificationField.state === "abstained" ? null : classificationField.raw;
-    aiClassification = encodeAiClassificationPayload(createAiClassificationEnvelope({ facts: rawFacts, policySha, digests: policy, effectiveAiMode: repositoryClassification.ai.mode, suggestion }));
+    const envelope = createAiClassificationEnvelope({ facts: rawFacts, policySha, digests: policy, effectiveAiMode: repositoryClassification.ai.mode, suggestion: null });
+    const payload = prepareAiClassificationPayload(classificationField, envelope);
+    if (payload.state === "encoded") aiClassification = payload.payload;
+    else if (payload.state === "encoding-failed") aiClassificationSummary = `${aiClassificationSummary}；封装失败，未传递`;
   }
   await output({ pullRequestNumber: pull.number, headSha: facts.headSha, repositoryFullName: repository.full_name });
   const copilot = await ensureCopilotReview(gh, owner, repo, pull.number, facts.headSha, policySha);
