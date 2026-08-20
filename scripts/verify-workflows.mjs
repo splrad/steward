@@ -57,7 +57,7 @@ if (copilotStep?.env?.COPILOT_GITHUB_TOKEN?.replace(/\s+/gu, "") !== "${{secrets
 if (copilotStep?.id !== "copilot" || copilotStep?.["continue-on-error"] !== true) throw new Error("Copilot CLI步骤没有保留可读取的失败结果");
 if (Object.hasOwn(copilotStep?.env ?? {}, "GITHUB_TOKEN") || /copilot-requests/iu.test(prAutomation)) throw new Error("Copilot CLI仍引用组织内置令牌路径");
 const copilotCommand = String(copilotStep?.run ?? "");
-const expectedCopilotCommand = 'npx --no-install copilot -p "$(cat "$PR_COPILOT_PROMPT_PATH")" --available-tools= --no-auto-update --output-format json --stream off --no-color --no-custom-instructions --disable-builtin-mcps --no-ask-user > "${{ runner.temp }}/copilot-output.jsonl"';
+const expectedCopilotCommand = 'npx --no-install copilot --available-tools= --no-auto-update --output-format json --stream off --no-color --no-custom-instructions --disable-builtin-mcps --no-ask-user < "$PR_COPILOT_PROMPT_PATH" > "${{ runner.temp }}/copilot-output.jsonl"';
 if (copilotCommand !== expectedCopilotCommand) throw new Error("Copilot CLI没有使用固定JSONL输出合同");
 if (/(?:^|\s)--allow-tool(?:=|\s|$)/u.test(copilotCommand)) throw new Error("Copilot正文生成不得启用工具");
 const prepareStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "生成Copilot输入");
@@ -67,7 +67,7 @@ if (repairPlanStep?.env?.PREPARE_REPAIR_ONLY !== "true" || repairPlanStep?.env?.
 const copilotRepairStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "修复Copilot业务JSON");
 if (copilotRepairStep?.id !== "copilot_repair" || copilotRepairStep?.["continue-on-error"] !== true || String(copilotRepairStep?.if ?? "").replace(/\s+/gu, "") !== "steps.repair_plan.outputs.repair-required=='true'") throw new Error("Copilot修复步骤没有限制为一次条件调用");
 if (copilotRepairStep?.env?.COPILOT_GITHUB_TOKEN?.replace(/\s+/gu, "") !== "${{secrets.COPILOT_CLI_TOKEN}}" || Object.hasOwn(copilotRepairStep?.env ?? {}, "GITHUB_TOKEN")) throw new Error("Copilot修复步骤没有使用隔离的个人令牌");
-const expectedCopilotRepairCommand = 'npx --no-install copilot -p "$(cat "$PR_COPILOT_REPAIR_PROMPT_PATH")" --available-tools= --no-auto-update --output-format json --stream off --no-color --no-custom-instructions --disable-builtin-mcps --no-ask-user > "${{ runner.temp }}/copilot-repair-output.jsonl"';
+const expectedCopilotRepairCommand = 'npx --no-install copilot --available-tools= --no-auto-update --output-format json --stream off --no-color --no-custom-instructions --disable-builtin-mcps --no-ask-user < "$PR_COPILOT_REPAIR_PROMPT_PATH" > "${{ runner.temp }}/copilot-repair-output.jsonl"';
 if (copilotRepairStep?.run !== expectedCopilotRepairCommand) throw new Error("Copilot修复步骤没有使用固定的无工具JSONL合同");
 const reconcileStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "收敛拉取请求");
 if (reconcileStep?.env?.COPILOT_STEP_OUTCOME?.replace(/\s+/gu, "") !== "${{steps.copilot.outcome}}") throw new Error("收敛步骤没有接收Copilot CLI结果");
@@ -79,13 +79,16 @@ if (String(repairPlanStep?.env?.COPILOT_OUTPUT_PATH ?? "").replace(/\s+/gu, "") 
 const cleanupStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "删除临时人工智能输入");
 const expectedCleanupCommand = 'rm -f "${{ runner.temp }}/copilot-prompt.txt" "${{ runner.temp }}/copilot-output.jsonl" "${{ runner.temp }}/copilot-repair-prompt.txt" "${{ runner.temp }}/copilot-repair-output.jsonl" "${{ runner.temp }}/pr-prepared-facts.json"';
 if (String(cleanupStep?.if ?? "").replace(/\s+/gu, "") !== "always()" || cleanupStep?.run !== expectedCleanupCommand) throw new Error("Copilot临时输入输出没有固定为始终清理");
-if (!prAutomation.includes("- name: 使用Copilot润色") || !prAutomation.includes('npx --no-install copilot -p')) throw new Error("拉取请求工作流缺少Copilot正文生成步骤");
+if (!prAutomation.includes("- name: 使用Copilot润色") || !prAutomation.includes('npx --no-install copilot --available-tools=')) throw new Error("拉取请求工作流缺少Copilot正文生成步骤");
 if (/hashFiles\([^\n]*runner\.temp/iu.test(prAutomation)) throw new Error("Copilot正文生成仍使用无法读取runner.temp的hashFiles条件");
 const prClassificationDocument = workflowDocuments.get("pr-classification.yml");
 const aiClassificationInput = prClassificationDocument?.on?.workflow_dispatch?.inputs?.aiClassification;
 if (aiClassificationInput?.required !== false || aiClassificationInput?.type !== "string") throw new Error("分类工作流缺少可选AI影子分类输入");
 const classificationStep = prClassificationDocument?.jobs?.classify?.steps?.find(step => step?.name === "分类并发布门禁");
 if (classificationStep?.env?.AI_CLASSIFICATION?.replace(/\s+/gu, "") !== "${{inputs.aiClassification}}") throw new Error("AI影子分类输入没有通过环境变量传递");
+for (const [name, expectedValue] of [["TRIGGER_ACTOR_ID", "${{github.actor_id}}"], ["WORKFLOW_REPOSITORY", "${{github.repository}}"], ["WORKFLOW_EVENT", "${{github.event_name}}"], ["WORKFLOW_REF", "${{github.workflow_ref}}"], ["WORKFLOW_RUN_REF", "${{github.ref}}"], ["WORKFLOW_SHA", "${{github.workflow_sha}}"]]) {
+  if (String(classificationStep?.env?.[name] ?? "").replace(/\s+/gu, "") !== expectedValue) throw new Error(`AI分类工作流没有绑定可信上下文: ${name}`);
+}
 if (/--ai-classification/iu.test(classificationStep?.run ?? "")) throw new Error("AI影子分类输入不得拼接进shell命令");
 const syncInstructionsDocument = workflowDocuments.get("sync-copilot-instructions.yml");
 const syncWorkflowRun = syncInstructionsDocument?.on?.workflow_run;
