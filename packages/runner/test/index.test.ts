@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, encodeClassificationCheckState, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectAutomationPullRequestBinding, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, isTrustedAiClassificationSource, matchesGeneratedCopilotInstructions, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, prepareAiClassificationPayload, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, reusedAiClassificationAssessment, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
@@ -113,6 +113,13 @@ describe("中央命令入口", () => {
     expect(decodeClassificationCheckState(encoded.replace("v3:", "v2:"), codec)).toBeNull();
     expect(decodeClassificationCheckState(`${encoded}=`, codec)).toBeNull();
     expect(decodeClassificationCheckState(`v3:${Buffer.from("{}", "utf8").toString("base64url")}`, codec)).toBeNull();
+    const bufferFrom = vi.spyOn(Buffer, "from");
+    try {
+      expect(decodeClassificationCheckState(`v3:${"A".repeat(20_000)}`, codec)).toBeNull();
+      expect(bufferFrom).not.toHaveBeenCalled();
+    } finally {
+      bufferFrom.mockRestore();
+    }
     const corrupted = `${encoded.slice(0, -1)}${encoded.endsWith("A") ? "B" : "A"}`;
     expect(decodeClassificationCheckState(corrupted, codec)).toBeNull();
     const aiState = { ...state, mode: "active" as const, primary: { id: "feature", source: "ai" as const, reasonCode: "primary-ai-accepted" }, acceptedAiPrimaryKind: "feature" };

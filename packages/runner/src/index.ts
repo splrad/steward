@@ -358,6 +358,7 @@ const classificationCheckReasons = [
 ] as const;
 const classificationCheckStateBodyBytes = 133;
 const classificationCheckStateBytes = classificationCheckStateBodyBytes + 32;
+const classificationCheckStateEncodedLength = Math.ceil(classificationCheckStateBytes * 4 / 3);
 export function classificationCheckStateCodec(catalog: SemanticCatalog, profile: ClassificationProfile): ClassificationCheckStateCodec {
   return {
     primaryKinds: [...catalog.roles.primaryKind.order],
@@ -414,7 +415,7 @@ export function decodeClassificationCheckState(value: unknown, codec: Classifica
   try { validateClassificationCheckCodec(codec); } catch { return null; }
   if (typeof value !== "string" || !value.startsWith("v3:")) return null;
   const encoded = value.slice(3);
-  if (!encoded || !/^[A-Za-z0-9_-]+$/u.test(encoded)) return null;
+  if (encoded.length !== classificationCheckStateEncodedLength || !/^[A-Za-z0-9_-]+$/u.test(encoded)) return null;
   const decoded = Buffer.from(encoded, "base64url");
   if (decoded.length !== classificationCheckStateBytes || decoded.toString("base64url") !== encoded || decoded[0] !== 3) return null;
   const checksum = createHash("sha256").update(decoded.subarray(0, classificationCheckStateBodyBytes)).digest();
