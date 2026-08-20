@@ -59,6 +59,7 @@ describe("拉取请求自动化", () => {
     };
     expect(validateGeneratedSummary(englishBody)).toEqual(englishBody);
     const { classification: _classification, ...withoutClassification } = valid;
+    expect(() => validateGeneratedSummary(withoutClassification)).toThrow("classification字段缺失");
     expect(validateGeneratedSummary({ ...valid, classification: null })).toEqual(withoutClassification);
     const invalid: unknown[] = [
       null,

@@ -91,7 +91,7 @@ async function summary(lines: readonly string[]): Promise<void> {
 async function output(values: Record<string, string | number>): Promise<void> { const target = process.env.GITHUB_OUTPUT; if (!target) return; await writeFile(target, Object.entries(values).map(([key, value]) => `${key}=${String(value).replace(/[\r\n]/g, " ")}`).join("\n") + "\n", { flag: "a" }); }
 
 type CopilotFallbackStage = "copilot-step" | "prepared-facts-read" | "prepared-facts-parse" | "prepared-facts-check" | "copilot-output-read" | "copilot-output-envelope" | "copilot-output-parse" | "copilot-output-validate";
-const safeGeneratedSummaryValidationMessage = /^(?:Copilot结果必须是对象|Copilot结果包含额外字段|type无效|scope无效|title格式无效|changes无效|related无效|(?:title|summary|motivation|changes\[\]|impact|impact\[\]|related\[\]|releaseAndMigration|releaseAndMigration\[\])(?:必须是字符串|长度或格式无效|无效))$/u;
+const safeGeneratedSummaryValidationMessage = /^(?:Copilot结果必须是对象|Copilot结果包含额外字段|classification字段缺失|type无效|scope无效|title格式无效|changes无效|related无效|(?:title|summary|motivation|changes\[\]|impact|impact\[\]|related\[\]|releaseAndMigration|releaseAndMigration\[\])(?:必须是字符串|长度或格式无效|无效))$/u;
 const maximumCopilotJsonlBytes = 2_097_152;
 const maximumCopilotJsonlLines = 256;
 const maximumCopilotContentBytes = 65_536;
