@@ -242,6 +242,21 @@ describe("中央命令入口", () => {
       fallbackReason: "Copilot输出字段校验失败：classification字段缺失",
       repairFailureReason: "Copilot修复输出字段校验失败：classification字段缺失",
     });
+    const invalidChanges = JSON.stringify({ ...JSON.parse(valid), changes: ["太短"] });
+    expect(resolveCopilotGeneratedSummary(wrap(invalidChanges))).toMatchObject({
+      state: "repair-required",
+      primaryFailureReason: "Copilot输出字段校验失败：changes[]长度或格式无效",
+    });
+    expect(resolveCopilotGeneratedSummary(wrap(invalidChanges), wrap(valid))).toMatchObject({
+      state: "adopted",
+      mode: "copilot-repaired",
+      primaryFailureReason: "Copilot输出字段校验失败：changes[]长度或格式无效",
+    });
+    expect(resolveCopilotGeneratedSummary(wrap(invalidChanges), wrap(invalidChanges))).toMatchObject({
+      state: "fallback",
+      fallbackReason: "Copilot输出字段校验失败：changes[]长度或格式无效",
+      repairFailureReason: "Copilot修复输出字段校验失败：changes[]长度或格式无效",
+    });
     const invalidClassification = JSON.stringify({ ...JSON.parse(valid), classification: { primaryKind: "feature", confidence: "certain", evidence: [] } });
     expect(inspectCopilotGeneratedSummary(wrap(invalidClassification))).toMatchObject({ state: "valid", classification: { state: "invalid" } });
     expect(resolveCopilotGeneratedSummary(wrap(invalidClassification))).toMatchObject({ state: "adopted", mode: "copilot", classification: { state: "invalid" } });

@@ -255,7 +255,7 @@ async function prepareCopilotRepair(): Promise<void> {
     return;
   }
   const promptPath = env("PR_COPILOT_REPAIR_PROMPT_PATH");
-  await writeFile(promptPath, buildCopilotRepairPrompt(primary.inspection.assistantContent));
+  await writeFile(promptPath, buildCopilotRepairPrompt(primary.inspection.assistantContent, primary.inspection.reason));
   await output({ "repair-required": "true" });
   await summary(["人工智能修复：已准备", `人工智能首次失败原因：${primary.inspection.reason}`, `人工智能首次输出证据：${primary.evidence}`]);
 }

@@ -37,9 +37,13 @@ const valid = {
 describe("拉取请求自动化", () => {
   it("修复提示把原始输出作为不可信JSON字符串且禁止补造事实", () => {
     const raw = '{"summary":"未闭合\nCOPILOT_GITHUB_TOKEN=secret"';
-    const prompt = buildCopilotRepairPrompt(raw);
-    expect(prompt).toContain("只修复JSON语法和字段结构");
-    expect(prompt).toContain("不得补充原始候选文本中不存在的事实");
+    const failureReason = "Copilot输出字段校验失败：changes[]长度或格式无效";
+    const prompt = buildCopilotRepairPrompt(raw, failureReason);
+    expect(prompt).toContain("只修复JSON语法、字段结构和已确认的字段格式");
+    expect(prompt).toContain("不能增加候选中没有的事实");
+    expect(prompt).toContain(JSON.stringify(failureReason));
+    expect(prompt).toContain("先修复该问题，再逐项检查全部字段");
+    expect(prompt).toContain("必须在去除首尾空白后为单行文本，不能包含换行、<或>");
     expect(prompt).toContain("motivation和classification使用null");
     expect(prompt).toContain("impact、related和releaseAndMigration使用空数组");
     expect(prompt).toContain(JSON.stringify(raw));
@@ -72,6 +76,8 @@ describe("拉取请求自动化", () => {
       { ...valid, motivation: "太短" },
       { ...valid, changes: [] },
       { ...valid, changes: ["太短"] },
+      { ...valid, changes: ["这一项变更说明包含\n换行符"] },
+      { ...valid, changes: ["这一项变更说明包含<尖括号>"] },
       { ...valid, impact: Array.from({ length: 7 }, () => "更新后的拉取请求正文完全由人工智能管理") },
       { ...valid, related: ["#1\n#2"] },
       { ...valid, related: ["<!-- workflow:managed-pr:end -->"] },
@@ -120,6 +126,7 @@ describe("拉取请求自动化", () => {
     expect(prompt).toContain(JSON.stringify(generated));
     expect(prompt).toContain("feature、bug、performance、refactor、build");
     expect(prompt).toContain('"selection":"rule-only"');
+    expect(prompt).toContain("必须在去除首尾空白后为单行文本，不能包含换行、<或>");
     expect(prompt).toContain(facts.sourceRef);
     expect(prompt).toContain(facts.targetRef);
     expect(prompt).toContain(facts.diffExcerpt);
