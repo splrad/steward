@@ -6,15 +6,15 @@ import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import {
-  buildCopilotRepairPrompt, buildDeterministicSummary, buildPrompt, classifyPullRequest, classificationDigests, classificationInputDigest, computePullRequestFingerprint, digest,
+  buildAiDiffObservation, buildCopilotRepairPrompt, buildDeterministicSummary, buildPrompt, classifyPullRequest, classificationDigests, classificationInputDigest, computePullRequestFingerprint, createAiClassificationEnvelope, digest,
   categorizeReleasePullRequests, classifyRemoteReleaseState, collectReleasePullRequests,
   escapeMarkdownText,
   isHumanActor, normalizeContributor,
   organizationPullRequestTemplate,
   copilotInstructionSyncContract, parseVersion, planClassificationLabels, planLabelDefinitions, planRelease, planRepositorySettings, renderCopilotInstructions, renderManagedBody,
   renderOnboardingPullRequest, renderReleaseNotes, renderValidationSummary, runValidationTasks,
-  validateAiClassificationSuggestion, validateGeneratedSummary, validateRepositoryForOnboarding, verifyAssetManifest,
-  type AiClassificationSuggestion, type AutomationFacts, type ClassificationProfile, type ClassifiedReleasePullRequest, type Contributor, type ReleaseManifest, type RepositoryClassification, type SemanticCatalog, type ValidationProfile,
+  inspectAiClassificationField, validateGeneratedSummary, validateRepositoryForOnboarding, verifyAiClassificationEnvelope, verifyAssetManifest,
+  type AiClassificationAssessment, type AiClassificationEnvelopeV2, type AiClassificationFieldInspection, type AiClassificationSuggestion, type AutomationFacts, type ClassificationProfile, type ClassifiedReleasePullRequest, type Contributor, type RawClassificationFacts, type ReleaseManifest, type RepositoryClassification, type SemanticCatalog, type ValidationProfile,
 } from "../../core/src/index.js";
 import { createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestError, uploadReleaseAsset } from "../../github/src/index.js";
 import { managedRepositoryTargets, runManagedRepositorySync, type ManagedTarget } from "./managed-repository-sync.js";
@@ -168,7 +168,7 @@ function describeCopilotJsonParseFailure(value: string, normalization: CopilotJs
 }
 
 export type CopilotGeneratedSummaryInspection =
-  | { state: "valid"; generated: ReturnType<typeof validateGeneratedSummary>; normalization: CopilotJsonNormalization }
+  | { state: "valid"; generated: ReturnType<typeof validateGeneratedSummary>; classification: AiClassificationFieldInspection; normalization: CopilotJsonNormalization }
   | { state: "repairable"; stage: "copilot-output-parse" | "copilot-output-validate"; reason: string; assistantContent: string; normalization: CopilotJsonNormalization }
   | { state: "rejected"; stage: "copilot-output-envelope"; reason: string };
 
@@ -187,24 +187,26 @@ export function inspectCopilotGeneratedSummary(value: string): CopilotGeneratedS
     return { state: "repairable", stage: "copilot-output-parse", reason: describeCopilotJsonParseFailure(assistantContent, normalized.normalization, error), assistantContent: normalized.candidate, normalization: normalized.normalization };
   }
   try {
-    return { state: "valid", generated: validateGeneratedSummary(parsed), normalization: normalized.normalization };
+    const generated = validateGeneratedSummary(parsed);
+    const classification = inspectAiClassificationField(parsed as Record<string, unknown>);
+    return { state: "valid", generated, classification, normalization: normalized.normalization };
   } catch (error) {
     return { state: "repairable", stage: "copilot-output-validate", reason: describeCopilotFallback("copilot-output-validate", error), assistantContent: normalized.candidate, normalization: normalized.normalization };
   }
 }
 
 export type CopilotGeneratedSummaryResolution =
-  | { state: "adopted"; mode: "copilot" | "copilot-repaired"; generated: ReturnType<typeof validateGeneratedSummary>; normalization: CopilotJsonNormalization; primaryFailureReason?: string }
+  | { state: "adopted"; mode: "copilot" | "copilot-repaired"; generated: ReturnType<typeof validateGeneratedSummary>; classification: AiClassificationFieldInspection; normalization: CopilotJsonNormalization; primaryFailureReason?: string }
   | { state: "repair-required"; primaryFailureReason: string; assistantContent: string }
   | { state: "fallback"; fallbackReason: string; primaryFailureReason?: string; repairFailureReason?: string };
 
 export function resolveCopilotGeneratedSummary(primaryValue: string, repairValue?: string): CopilotGeneratedSummaryResolution {
   const primary = inspectCopilotGeneratedSummary(primaryValue);
-  if (primary.state === "valid") return { state: "adopted", mode: "copilot", generated: primary.generated, normalization: primary.normalization };
+  if (primary.state === "valid") return { state: "adopted", mode: "copilot", generated: primary.generated, classification: primary.classification, normalization: primary.normalization };
   if (primary.state === "rejected") return { state: "fallback", fallbackReason: primary.reason };
   if (repairValue === undefined) return { state: "repair-required", primaryFailureReason: primary.reason, assistantContent: primary.assistantContent };
   const repair = inspectCopilotGeneratedSummary(repairValue);
-  if (repair.state === "valid") return { state: "adopted", mode: "copilot-repaired", generated: repair.generated, normalization: repair.normalization, primaryFailureReason: primary.reason };
+  if (repair.state === "valid") return { state: "adopted", mode: "copilot-repaired", generated: repair.generated, classification: repair.classification, normalization: repair.normalization, primaryFailureReason: primary.reason };
   return {
     state: "fallback",
     fallbackReason: primary.reason,
@@ -275,53 +277,187 @@ function configurationFor(catalogValue: Catalog, repository: any): any {
 
 async function optional<T>(operation: () => Promise<T>): Promise<T | null> { try { return await operation(); } catch (error) { if (error instanceof GitHubRequestError && error.status === 404) return null; throw error; } }
 function decodeContent(value: any): string | null { return value?.encoding === "base64" && typeof value.content === "string" ? Buffer.from(value.content.replace(/\n/g, ""), "base64").toString("utf8") : null; }
-export function encodeAiClassificationPayload(value: AiClassificationSuggestion, allowedKinds: readonly string[]): string {
-  const validated = validateAiClassificationSuggestion(value, allowedKinds);
-  return Buffer.from(JSON.stringify(validated), "utf8").toString("base64url");
+export function encodeAiClassificationPayload(value: AiClassificationEnvelopeV2): string {
+  const encoded = Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+  if (encoded.length > 16_384) throw new Error("AI分类封装超过长度上限");
+  return encoded;
 }
-export function decodeAiClassificationPayload(value: string, allowedKinds: readonly string[]): AiClassificationSuggestion {
-  if (!value || value.length > 4_096 || !/^[A-Za-z0-9_-]+$/u.test(value)) throw new Error("AI影子分类载荷格式无效");
+export function decodeAiClassificationPayload(value: string): unknown {
+  if (!value || value.length > 16_384 || !/^[A-Za-z0-9_-]+$/u.test(value)) throw new Error("AI分类封装格式无效");
   const decoded = Buffer.from(value, "base64url");
-  if (decoded.toString("base64url") !== value) throw new Error("AI影子分类载荷不是规范编码");
+  if (decoded.toString("base64url") !== value) throw new Error("AI分类封装不是规范编码");
   let parsed: unknown;
   try {
     parsed = JSON.parse(decoded.toString("utf8"));
   } catch {
-    throw new Error("AI影子分类载荷格式无效");
+    throw new Error("AI分类封装格式无效");
   }
-  return validateAiClassificationSuggestion(parsed, allowedKinds);
+  return parsed;
+}
+export function prepareAiClassificationPayload(
+  classificationField: AiClassificationFieldInspection,
+  envelope: AiClassificationEnvelopeV2,
+): { state: "missing" } | { state: "encoded"; payload: string } | { state: "encoding-failed" } {
+  if (classificationField.state === "missing") return { state: "missing" };
+  const suggestion = classificationField.state === "valid"
+    ? classificationField.suggestion
+    : classificationField.state === "abstained"
+      ? null
+      : { invalid: true };
+  try {
+    return { state: "encoded", payload: encodeAiClassificationPayload({ ...envelope, suggestion }) };
+  } catch {
+    return { state: "encoding-failed" };
+  }
+}
+export function inspectAutomationPullRequestBinding(
+  pull: { head: { repo: { id: unknown }; ref: unknown; sha: unknown }; base: { ref: unknown; sha: unknown } },
+  expected: { repositoryId: number; sourceBranch: string; headSha: string; baseBranch: string; baseSha: string },
+): "matched" | "base-sha-drifted" {
+  if (Number(pull.head.repo.id) !== expected.repositoryId || pull.head.ref !== expected.sourceBranch || pull.head.sha !== expected.headSha
+    || pull.base.ref !== expected.baseBranch) throw new Error("AI分类封装对应的拉取请求事实已经漂移");
+  return pull.base.sha === expected.baseSha ? "matched" : "base-sha-drifted";
+}
+export function isTrustedAiClassificationSource(policySha: string, environment: NodeJS.ProcessEnv = process.env): boolean {
+  return environment.TRIGGER_ACTOR_ID === "301115370"
+    && environment.WORKFLOW_REPOSITORY === "splrad/steward"
+    && environment.WORKFLOW_EVENT === "workflow_dispatch"
+    && typeof environment.WORKFLOW_RUN_REF === "string"
+    && environment.WORKFLOW_RUN_REF.startsWith("refs/heads/")
+    && environment.WORKFLOW_REF === `${environment.WORKFLOW_REPOSITORY}/.github/workflows/pr-classification.yml@${environment.WORKFLOW_RUN_REF}`
+    && environment.WORKFLOW_SHA === policySha;
 }
 export interface ClassificationCheckStateV3 {
   v: 3;
+  repositoryId: number;
+  pullRequestNumber: number;
+  headSha: string;
   inputDigest: string;
   policy: string;
-  primary: { id: string; source: string; reasonCode: string; hardRuleId?: string };
+  mode: RepositoryClassification["ai"]["mode"];
+  primary: { id: string; source: "hard-rule" | "ai" | "deterministic-fallback"; reasonCode: string };
+  acceptedAiPrimaryKind?: string;
   risks: string[];
   facets: string[];
   areas: string[];
   decisionDigest: string;
 }
-export function decodeClassificationCheckState(value: unknown): ClassificationCheckStateV3 | null {
-  if (typeof value !== "string" || !value.startsWith("v3:") || value.length > 16_384) return null;
+export interface ClassificationCheckStateCodec {
+  primaryKinds: string[];
+  riskFlags: string[];
+  facets: string[];
+  areas: string[];
+}
+const classificationCheckModes = ["shadow", "draft-canary", "active"] as const;
+const classificationCheckSources = ["hard-rule", "ai", "deterministic-fallback"] as const;
+const classificationCheckReasons = [
+  "primary-hard-rule-selected", "primary-ai-accepted", "primary-ai-reused", "primary-ai-missing", "primary-ai-abstained",
+  "primary-ai-invalid-payload", "primary-ai-untrusted-actor", "primary-ai-context-mismatch", "primary-ai-incomplete-facts",
+  "primary-ai-incomplete-diff", "primary-ai-low-confidence", "primary-ai-kind-ineligible", "primary-ai-evidence-invalid",
+  "primary-ai-hard-rule-conflict", "primary-ai-mode-shadow", "primary-deterministic-type-selected", "primary-fallback-selected",
+] as const;
+const classificationCheckStateBodyBytes = 133;
+const classificationCheckStateBytes = classificationCheckStateBodyBytes + 32;
+const classificationCheckStateEncodedLength = Math.ceil(classificationCheckStateBytes * 4 / 3);
+export function classificationCheckStateCodec(catalog: SemanticCatalog, profile: ClassificationProfile): ClassificationCheckStateCodec {
+  return {
+    primaryKinds: [...catalog.roles.primaryKind.order],
+    riskFlags: catalog.roles.riskFlags.definitions.map((item) => item.id),
+    facets: catalog.roles.facets.definitions.map((item) => item.id),
+    areas: profile.areas.map((item) => item.area),
+  };
+}
+function validateClassificationCheckCodec(codec: ClassificationCheckStateCodec): void {
+  for (const [name, values, maximum] of [["primaryKinds", codec.primaryKinds, 254], ["riskFlags", codec.riskFlags, 8], ["facets", codec.facets, 8], ["areas", codec.areas, 8]] as const) {
+    if (!values.length || values.length > maximum || new Set(values).size !== values.length) throw new Error(`分类检查状态位序无效: ${name}`);
+  }
+}
+function encodeStateIndex(value: string, values: readonly string[], name: string): number {
+  const index = values.indexOf(value);
+  if (index < 0 || index > 254) throw new Error(`分类检查状态包含未知${name}: ${value}`);
+  return index;
+}
+function encodeStateBits(values: readonly string[], order: readonly string[], name: string): number {
+  if (new Set(values).size !== values.length) throw new Error(`分类检查状态${name}重复`);
+  return values.reduce((bits, value) => bits | (1 << encodeStateIndex(value, order, name)), 0);
+}
+function decodeStateBits(bits: number, order: readonly string[]): string[] | null {
+  if ((bits >>> order.length) !== 0) return null;
+  return order.filter((_value, index) => (bits & (1 << index)) !== 0);
+}
+export function encodeClassificationCheckState(state: ClassificationCheckStateV3, codec: ClassificationCheckStateCodec): string {
+  validateClassificationCheckCodec(codec);
+  if (!Number.isSafeInteger(state.repositoryId) || state.repositoryId < 1 || state.repositoryId > 0xffff_ffff
+    || !Number.isSafeInteger(state.pullRequestNumber) || state.pullRequestNumber < 1 || state.pullRequestNumber > 0xffff_ffff
+    || !/^[0-9a-f]{40}$/u.test(state.headSha) || !/^[0-9a-f]{64}$/u.test(state.inputDigest)
+    || !/^[0-9a-f]{64}$/u.test(state.policy) || !/^[0-9a-f]{64}$/u.test(state.decisionDigest)) throw new Error("分类检查状态上下文无效");
+  const buffer = Buffer.alloc(classificationCheckStateBytes);
+  buffer[0] = 3;
+  buffer.writeUInt32BE(state.repositoryId, 1);
+  buffer.writeUInt32BE(state.pullRequestNumber, 5);
+  Buffer.from(state.headSha, "hex").copy(buffer, 9);
+  Buffer.from(state.inputDigest, "hex").copy(buffer, 29);
+  Buffer.from(state.policy, "hex").copy(buffer, 61);
+  Buffer.from(state.decisionDigest, "hex").copy(buffer, 93);
+  buffer[125] = encodeStateIndex(state.mode, classificationCheckModes, "AI模式");
+  buffer[126] = encodeStateIndex(state.primary.id, codec.primaryKinds, "主类");
+  buffer[127] = encodeStateIndex(state.primary.source, classificationCheckSources, "主类来源");
+  buffer[128] = encodeStateIndex(state.primary.reasonCode, classificationCheckReasons, "主类原因");
+  buffer[129] = encodeStateBits(state.risks, codec.riskFlags, "风险");
+  buffer[130] = encodeStateBits(state.facets, codec.facets, "Facet");
+  buffer[131] = encodeStateBits(state.areas, codec.areas, "区域");
+  buffer[132] = state.acceptedAiPrimaryKind === undefined ? 255 : encodeStateIndex(state.acceptedAiPrimaryKind, codec.primaryKinds, "已采用AI主类");
+  if (state.acceptedAiPrimaryKind !== undefined && (state.primary.source !== "ai" || state.primary.id !== state.acceptedAiPrimaryKind || !["primary-ai-accepted", "primary-ai-reused"].includes(state.primary.reasonCode))) throw new Error("分类检查状态的AI主类不一致");
+  createHash("sha256").update(buffer.subarray(0, classificationCheckStateBodyBytes)).digest().copy(buffer, classificationCheckStateBodyBytes);
+  return `v3:${buffer.toString("base64url")}`;
+}
+export function decodeClassificationCheckState(value: unknown, codec: ClassificationCheckStateCodec, expected?: { repositoryId: number; pullRequestNumber: number; headSha: string }): ClassificationCheckStateV3 | null {
+  try { validateClassificationCheckCodec(codec); } catch { return null; }
+  if (typeof value !== "string" || !value.startsWith("v3:")) return null;
   const encoded = value.slice(3);
-  if (!encoded || !/^[A-Za-z0-9_-]+$/u.test(encoded)) return null;
+  if (encoded.length !== classificationCheckStateEncodedLength || !/^[A-Za-z0-9_-]+$/u.test(encoded)) return null;
   const decoded = Buffer.from(encoded, "base64url");
-  if (decoded.toString("base64url") !== encoded) return null;
-  let parsed: unknown;
-  try { parsed = JSON.parse(decoded.toString("utf8")); } catch { return null; }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
-  const state = parsed as Record<string, unknown>;
-  const primary = state.primary;
-  const stringArray = (candidate: unknown): candidate is string[] => Array.isArray(candidate) && candidate.every((item) => typeof item === "string");
-  if (state.v !== 3 || !/^[0-9a-f]{64}$/u.test(String(state.inputDigest ?? "")) || !/^[0-9a-f]{64}$/u.test(String(state.policy ?? "")) || !/^[0-9a-f]{64}$/u.test(String(state.decisionDigest ?? ""))) return null;
-  if (typeof primary !== "object" || primary === null || Array.isArray(primary)) return null;
-  const primaryValue = primary as Record<string, unknown>;
-  if (![primaryValue.id, primaryValue.source, primaryValue.reasonCode].every((item) => typeof item === "string") || (primaryValue.hardRuleId !== undefined && typeof primaryValue.hardRuleId !== "string")) return null;
-  if (!stringArray(state.risks) || !stringArray(state.facets) || !stringArray(state.areas)) return null;
-  return state as unknown as ClassificationCheckStateV3;
+  if (decoded.length !== classificationCheckStateBytes || decoded.toString("base64url") !== encoded || decoded[0] !== 3) return null;
+  const checksum = createHash("sha256").update(decoded.subarray(0, classificationCheckStateBodyBytes)).digest();
+  if (!checksum.equals(decoded.subarray(classificationCheckStateBodyBytes))) return null;
+  const repositoryId = decoded.readUInt32BE(1);
+  const pullRequestNumber = decoded.readUInt32BE(5);
+  const headSha = decoded.subarray(9, 29).toString("hex");
+  if (!repositoryId || !pullRequestNumber || (expected && (repositoryId !== expected.repositoryId || pullRequestNumber !== expected.pullRequestNumber || headSha !== expected.headSha))) return null;
+  const mode = classificationCheckModes[decoded[125]!];
+  const primaryKind = codec.primaryKinds[decoded[126]!];
+  const source = classificationCheckSources[decoded[127]!];
+  const reasonCode = classificationCheckReasons[decoded[128]!];
+  const risks = decodeStateBits(decoded[129]!, codec.riskFlags);
+  const facets = decodeStateBits(decoded[130]!, codec.facets);
+  const areas = decodeStateBits(decoded[131]!, codec.areas);
+  const acceptedAiPrimaryKind = decoded[132] === 255 ? undefined : codec.primaryKinds[decoded[132]!];
+  if (!mode || !primaryKind || !source || !reasonCode || !risks || !facets || !areas) return null;
+  if (acceptedAiPrimaryKind !== undefined && (source !== "ai" || primaryKind !== acceptedAiPrimaryKind || !["primary-ai-accepted", "primary-ai-reused"].includes(reasonCode))) return null;
+  return {
+    v: 3, repositoryId, pullRequestNumber, headSha,
+    inputDigest: decoded.subarray(29, 61).toString("hex"),
+    policy: decoded.subarray(61, 93).toString("hex"),
+    mode,
+    primary: { id: primaryKind, source, reasonCode },
+    ...(acceptedAiPrimaryKind ? { acceptedAiPrimaryKind } : {}),
+    risks, facets, areas,
+    decisionDigest: decoded.subarray(93, 125).toString("hex"),
+  };
+}
+export function reusedAiClassificationAssessment(state: ClassificationCheckStateV3 | null): AiClassificationAssessment | null {
+  if (!state?.acceptedAiPrimaryKind || state.primary.source !== "ai" || state.primary.id !== state.acceptedAiPrimaryKind) return null;
+  return {
+    state: "valid",
+    status: "reused",
+    reasonCode: "primary-ai-reused",
+    suggestion: null,
+    verifiedSuggestion: { primaryKind: state.acceptedAiPrimaryKind, adoptable: true, reused: true },
+    wouldPrimary: state.acceptedAiPrimaryKind,
+  };
 }
 export function renderAiClassificationEvidence(value: AiClassificationSuggestion | null): string {
-  return value ? value.evidence.map((item) => escapeMarkdownText(item)).join("；") : "未提供";
+  return value ? value.evidence.map((item) => `${escapeMarkdownText(item.path)}：${escapeMarkdownText(item.reason)}`).join("；") : "未提供";
 }
 async function dispatchClassification(input: { repositoryId: number; pullRequestNumber: number; headSha: string; policySha: string; deliveryId: string; aiClassification?: string }) {
   const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId: stewardRepositoryId, permissions: { actions: "write", metadata: "read" }, policySha: input.policySha });
@@ -521,6 +657,8 @@ async function automate(args: Readonly<Record<string, string>>) {
   if (!repositoryConfiguration.managed || !repositoryConfiguration.prAutomation) return summary(["状态：ignored", "原因：仓库没有启用中央拉取请求创建"]);
   const sourceBranch = sourceRef.slice("refs/heads/".length); if (sourceBranch === repository.default_branch) return summary(["状态：ignored", "原因：默认分支推送不创建拉取请求"]);
   const classificationProfile = await json<ClassificationProfile>(configPath("profiles", "classification", `${repositoryConfiguration.classification.profile}.json`));
+  const semantics = await semanticCatalog();
+  const repositoryClassification = repositoryConfiguration.classification as RepositoryClassification;
   const [baseBefore, sourceBefore] = await Promise.all([
     gh.getRef(owner, repo, `heads/${repository.default_branch}`),
     gh.getRef(owner, repo, `heads/${sourceBranch}`),
@@ -544,7 +682,38 @@ async function automate(args: Readonly<Record<string, string>>) {
   }
   const contributors = [...contributorMap.values()];
   const files = (compare.files ?? []).map((file: any) => file.filename);
-  const facts: AutomationFacts = { sourceRef, targetRef: `refs/heads/${repository.default_branch}`, headSha: sourceBefore.object.sha, baseSha: baseBefore.object.sha, commitSubjects: (compare.commits ?? []).map((c: any) => c.commit.message.split("\n")[0]), files, diffStat: `${files.length}个文件`, diffExcerpt: (compare.files ?? []).map((file: any) => `文件：${file.filename}\n${file.patch ?? "未提供补丁内容"}`).join("\n\n"), areas: [], contributors };
+  const rawFactsBase: Omit<RawClassificationFacts, "pullRequestNumber"> = {
+    repositoryId,
+    sourceRepositoryId: repositoryId,
+    sourceRef,
+    targetRef: `refs/heads/${repository.default_branch}`,
+    author: { login: sourceActor.login, type: sourceActor.type as RawClassificationFacts["author"]["type"] },
+    headSha: sourceBefore.object.sha,
+    baseSha: baseBefore.object.sha,
+    commits: (compare.commits ?? []).map((commit: any) => ({ sha: String(commit.sha), message: String(commit.commit?.message ?? "") })),
+    files: (compare.files ?? []).map((file: any) => ({
+      path: String(file.filename),
+      ...(file.previous_filename ? { previousPath: String(file.previous_filename) } : {}),
+      status: String(file.status),
+      additions: Number(file.additions),
+      deletions: Number(file.deletions),
+      patch: typeof file.patch === "string" ? file.patch : null,
+      patchState: typeof file.patch === "string" ? "available" as const : "missing" as const,
+    })),
+  };
+  const aiObservation = buildAiDiffObservation(rawFactsBase.files);
+  const facts: AutomationFacts = {
+    sourceRef,
+    targetRef: rawFactsBase.targetRef,
+    headSha: rawFactsBase.headSha,
+    baseSha: rawFactsBase.baseSha,
+    commitSubjects: rawFactsBase.commits.map((commit) => commit.message.split("\n")[0]!),
+    files,
+    diffStat: `${files.length}个文件`,
+    diffExcerpt: aiObservation.excerpt,
+    areas: [],
+    contributors,
+  };
   const fallback = buildDeterministicSummary(facts); let generated = fallback; let mode = "deterministic";
   let fallbackReason: string | null = null;
   let primaryFailureReason: string | null = null;
@@ -552,6 +721,7 @@ async function automate(args: Readonly<Record<string, string>>) {
   let copilotNormalizationSummary: string | null = null;
   let copilotOutputEvidence: string | null = null;
   let copilotRepairOutputEvidence: string | null = null;
+  let classificationField: AiClassificationFieldInspection = { state: "missing" };
   if (process.env.PREPARE_REPAIR_ONLY === "true") {
     const preparedText = await runtimeReadFile(env("PR_PREPARED_FACTS_PATH"), "utf8");
     const prepared = JSON.parse(preparedText);
@@ -562,7 +732,7 @@ async function automate(args: Readonly<Record<string, string>>) {
   if (process.env.PREPARE_ONLY === "true") {
     const promptPath = env("PR_COPILOT_PROMPT_PATH");
     const preparedFactsPath = env("PR_PREPARED_FACTS_PATH");
-    await writeFile(promptPath, buildPrompt(facts, fallback, classificationProfile.ai.eligiblePrimaryKinds));
+    await writeFile(promptPath, buildPrompt(facts, fallback, semantics, classificationProfile, aiObservation));
     await writeFile(preparedFactsPath, JSON.stringify({ repositoryId, sourceRef, headSha: facts.headSha, baseSha: facts.baseSha, policySha }) + "\n");
     await summary(["状态：prepared", `来源提交：${facts.headSha}`, `提示文件：${basename(promptPath)}`]);
     return;
@@ -590,6 +760,7 @@ async function automate(args: Readonly<Record<string, string>>) {
       const primaryResolution = resolveCopilotGeneratedSummary(copilotOutputText);
       if (primaryResolution.state === "adopted") {
         generated = primaryResolution.generated;
+        classificationField = primaryResolution.classification;
         mode = primaryResolution.mode;
         if (primaryResolution.normalization === "single-json-fence") copilotNormalizationSummary = "首次输出已剥离单一json代码围栏";
       } else if (primaryResolution.state === "fallback") {
@@ -615,6 +786,7 @@ async function automate(args: Readonly<Record<string, string>>) {
             const repairedResolution = resolveCopilotGeneratedSummary(copilotOutputText, repairText);
             if (repairedResolution.state === "adopted" && repairedResolution.mode === "copilot-repaired") {
               generated = repairedResolution.generated;
+              classificationField = repairedResolution.classification;
               mode = repairedResolution.mode;
               if (repairedResolution.normalization === "single-json-fence") copilotNormalizationSummary = "修复输出已剥离单一json代码围栏";
               fallbackReason = null;
@@ -635,19 +807,25 @@ async function automate(args: Readonly<Record<string, string>>) {
   }
   let aiClassification: string | undefined;
   let aiClassificationSummary = mode !== "deterministic" ? "未提供" : "Copilot不可用，未提供";
-  if (mode !== "deterministic" && generated.classification) {
-    try {
-      aiClassification = encodeAiClassificationPayload(generated.classification, classificationProfile.ai.eligiblePrimaryKinds);
-      aiClassificationSummary = `${generated.classification.kind}（${generated.classification.confidence}）`;
-    } catch {
-      aiClassificationSummary = "不属于当前分类配置，未传递";
-    }
-  }
+  if (classificationField.state === "valid") aiClassificationSummary = `${classificationField.suggestion.primaryKind}（${classificationField.suggestion.confidence}）`;
+  else if (classificationField.state === "abstained") aiClassificationSummary = "弃权";
+  else if (classificationField.state === "invalid") aiClassificationSummary = `无效（${classificationField.reason}）`;
   const template = process.env.PR_TEMPLATE_PATH ? await runtimeReadFile(process.env.PR_TEMPLATE_PATH, "utf8") : organizationPullRequestTemplate;
   const title = `${generated.type}(${generated.scope}): ${generated.title}`;
   const context = await computePullRequestFingerprint({ repositoryId, pullRequestNumber: pulls[0]?.number ?? 0, headSha: facts.headSha, baseSha: facts.baseSha, commits: (compare.commits ?? []).map((c: any) => c.sha), files: (compare.files ?? []).map((f: any) => ({ path: f.filename, status: f.status, additions: f.additions, deletions: f.deletions })), title, body: "", contributors });
   const body = renderManagedBody({ generated, existingBody: pulls[0]?.body, templateBody: template, actor: sourceActor.login, contributors, context });
   const pull = pulls[0] ? await gh.updatePullRequest(owner, repo, pulls[0].number, { title, body }) : await gh.createPullRequest(owner, repo, humanPushPullRequestCreateInput({ title, body, head: sourceBranch, base: repository.default_branch }));
+  const boundPull = await gh.getPullRequest(owner, repo, pull.number);
+  const pullBinding = inspectAutomationPullRequestBinding(boundPull, { repositoryId, sourceBranch, headSha: facts.headSha, baseBranch: repository.default_branch, baseSha: facts.baseSha });
+  if (pullBinding === "base-sha-drifted") aiClassificationSummary = `${aiClassificationSummary}；目标分支已前进，未传递`;
+  else if (classificationField.state !== "missing") {
+    const rawFacts: RawClassificationFacts = { ...rawFactsBase, pullRequestNumber: pull.number };
+    const policy = classificationDigests(semantics, classificationProfile, repositoryClassification);
+    const envelope = createAiClassificationEnvelope({ facts: rawFacts, policySha, digests: policy, effectiveAiMode: repositoryClassification.ai.mode, suggestion: null });
+    const payload = prepareAiClassificationPayload(classificationField, envelope);
+    if (payload.state === "encoded") aiClassification = payload.payload;
+    else if (payload.state === "encoding-failed") aiClassificationSummary = `${aiClassificationSummary}；封装失败，未传递`;
+  }
   await output({ pullRequestNumber: pull.number, headSha: facts.headSha, repositoryFullName: repository.full_name });
   const copilot = await ensureCopilotReview(gh, owner, repo, pull.number, facts.headSha, policySha);
   await dispatchClassification({ repositoryId, pullRequestNumber: pull.number, headSha: facts.headSha, policySha, deliveryId: required(args, "delivery-id"), ...(aiClassification ? { aiClassification } : {}) });
@@ -667,7 +845,7 @@ async function automate(args: Readonly<Record<string, string>>) {
     `AI分类建议：${aiClassificationSummary}`,
     `Copilot审查：${copilot}`,
   ]);
-  if (process.env.PR_COPILOT_PROMPT_PATH) await writeFile(process.env.PR_COPILOT_PROMPT_PATH, buildPrompt(facts, fallback, classificationProfile.ai.eligiblePrimaryKinds));
+  if (process.env.PR_COPILOT_PROMPT_PATH) await writeFile(process.env.PR_COPILOT_PROMPT_PATH, buildPrompt(facts, fallback, semantics, classificationProfile, aiObservation));
 }
 
 async function classify(args: Readonly<Record<string, string>>) {
@@ -693,10 +871,15 @@ async function classify(args: Readonly<Record<string, string>>) {
   const cfg = configurationFor(await catalog(), repository);
   if (!cfg.managed) throw new Error("仓库没有启用中央分类");
   const repositoryClassification = cfg.classification as RepositoryClassification;
+  const semantics = await semanticCatalog();
+  const profile = await json<ClassificationProfile>(configPath("profiles", "classification", `${repositoryClassification.profile}.json`));
+  const stateCodec = classificationCheckStateCodec(semantics, profile);
   const gh = await client(repositoryId, classificationInstallationPermissions(repositoryClassification.labelAssignmentMode), policySha);
   const same = (await gh.listAllCheckRuns(owner, repo, expectedHead)).filter((value: any) => value.name === "PR Classification Gate" && value.app?.id === 4243096);
   if (same.length > 1) throw new Error("同名分类检查存在歧义");
-  const previousState = same[0]?.status === "completed" && same[0]?.conclusion === "success" ? decodeClassificationCheckState(same[0]?.external_id) : null;
+  const decodedPreviousState = same[0]?.status === "completed" && same[0]?.conclusion === "success" ? decodeClassificationCheckState(same[0]?.external_id, stateCodec) : null;
+  if (decodedPreviousState && (decodedPreviousState.repositoryId !== repositoryId || decodedPreviousState.pullRequestNumber !== number || decodedPreviousState.headSha !== expectedHead)) throw new Error("同名分类检查绑定了不同拉取请求上下文");
+  const previousState = decodedPreviousState;
   const started = { name: "PR Classification Gate", head_sha: expectedHead, status: "in_progress", external_id: `${repositoryId}:${number}:${expectedHead}:pending`, output: { title: "正在计算拉取请求分类", summary: `来源提交：${expectedHead}\n中央规则：${policySha}` } };
   const check = same[0]
     ? await gh.updateCheckRun(owner, repo, same[0].id, { name: started.name, status: started.status, external_id: started.external_id, output: started.output })
@@ -704,8 +887,6 @@ async function classify(args: Readonly<Record<string, string>>) {
   try {
     const pull = await gh.getPullRequest(owner, repo, number);
     if (pull.head.sha !== expectedHead) throw new Error("拉取请求来源提交已经漂移");
-    const semantics = await semanticCatalog();
-    const profile = await json<ClassificationProfile>(configPath("profiles", "classification", `${repositoryClassification.profile}.json`));
     const [files, commits, labels, repositoryLabels] = await Promise.all([
       gh.listPullFiles(owner, repo, number), gh.listPullCommits(owner, repo, number), gh.listLabels(owner, repo, number), gh.listRepositoryLabels(owner, repo),
     ]);
@@ -720,13 +901,40 @@ async function classify(args: Readonly<Record<string, string>>) {
     };
     const policy = classificationDigests(semantics, profile, repositoryClassification);
     const inputDigest = classificationInputDigest(rawFacts, policySha, policy.classificationPolicyDigest);
-    const priorOwnership = previousState?.policy === policy.classificationPolicyDigest && previousState.inputDigest === inputDigest
-      ? { stewardOwnedRiskFlags: previousState.risks, stewardOwnedFacets: previousState.facets }
+    const reusablePreviousState = previousState?.policy === policy.classificationPolicyDigest
+      && previousState.inputDigest === inputDigest
+      && previousState.mode === repositoryClassification.ai.mode
+      ? previousState
+      : null;
+    const priorOwnership = reusablePreviousState
+      ? { stewardOwnedRiskFlags: reusablePreviousState.risks, stewardOwnedFacets: reusablePreviousState.facets }
       : { stewardOwnedRiskFlags: [], stewardOwnedFacets: [] };
     const existing = { currentLabels, ...priorOwnership };
-    const result = classifyPullRequest(semantics, profile, repositoryClassification, rawFacts, existing);
+    let aiAssessment: AiClassificationAssessment;
+    if (process.env.AI_CLASSIFICATION) {
+      let decoded: unknown;
+      try {
+        decoded = decodeAiClassificationPayload(process.env.AI_CLASSIFICATION);
+        aiAssessment = verifyAiClassificationEnvelope(decoded, {
+          trustedSource: isTrustedAiClassificationSource(policySha),
+          catalog: semantics,
+          profile,
+          repository: repositoryClassification,
+          facts: rawFacts,
+          policySha,
+          digests: policy,
+        });
+      } catch {
+        aiAssessment = { state: "invalid", status: "rejected", reasonCode: "primary-ai-invalid-payload", suggestion: null, verifiedSuggestion: null };
+      }
+    } else {
+      aiAssessment = reusedAiClassificationAssessment(reusablePreviousState)
+        ?? { state: "missing", status: "absent", reasonCode: "primary-ai-missing", suggestion: null, verifiedSuggestion: null };
+    }
+    const result = classifyPullRequest(semantics, profile, repositoryClassification, rawFacts, existing, aiAssessment);
     const labelPlan = planClassificationLabels(semantics, profile, existing, result);
     const definitionPlan = planLabelDefinitions(semantics, profile, repositoryLabels.map((value: any) => ({ name: String(value.name), color: String(value.color), description: value.description == null ? null : String(value.description) })));
+    let actualLabels = [...currentLabels].sort();
     if (repositoryClassification.labelAssignmentMode === "enforce") {
       if (repositoryClassification.labelDefinitionMode !== "enforce" || definitionPlan.status !== "in-sync") throw new Error("label-definitions-not-ready");
       const currentBeforeWrite = await gh.getPullRequest(owner, repo, number);
@@ -734,6 +942,7 @@ async function classify(args: Readonly<Record<string, string>>) {
       if (labelPlan.add.length) await gh.addLabels(owner, repo, number, labelPlan.add);
       for (const label of labelPlan.remove) await gh.removeLabel(owner, repo, number, label);
       const afterLabels = (await gh.listLabels(owner, repo, number)).map((value: any) => String(value.name)).sort();
+      actualLabels = afterLabels;
       const expectedLabels = [...new Set([...currentLabels.filter((label: string) => !labelPlan.remove.includes(label)), ...labelPlan.add])].sort();
       const afterSet = new Set(afterLabels);
       const exclusiveLabels = new Set(semantics.roles.primaryKind.definitions.flatMap(value => value.githubLabel ? [value.githubLabel.name] : []));
@@ -748,10 +957,24 @@ async function classify(args: Readonly<Record<string, string>>) {
     if (currentAfterWrite.head.sha !== expectedHead || currentAfterWrite.base.sha !== pull.base.sha || currentAfterWrite.title !== pull.title || (currentAfterWrite.body ?? "") !== (pull.body ?? "")) throw new Error("分类输入在写入期间已经漂移（写入后）");
     const contributors = commits.map((commit: any) => commit.author ? normalizeContributor({ ...commit.author, name: commit.commit?.author?.name, email: commit.commit?.author?.email, avatarUrl: commit.author.avatar_url }) : null).filter(Boolean) as Contributor[];
     const decisionDigest = digest(result);
-    const state = Buffer.from(JSON.stringify({ v: 3, inputDigest, policy: policy.classificationPolicyDigest, primary: result.primaryKind, risks: labelPlan.ownedRiskFlags, facets: labelPlan.ownedFacets, areas: result.areas.map(value => value.id), decisionDigest }), "utf8").toString("base64url");
-    const aiState = process.env.AI_CLASSIFICATION ? "AI影子建议未参与标签写入（PR1观察载荷）" : "未提供";
-    const checkSummary = `主类：${result.primaryKind.id}（${result.primaryKind.source} / ${result.primaryKind.reasonCode}）\n风险：${result.riskFlags.map(value => value.id).join("、") || "无"}\nFacet：${result.facets.map(value => value.id).join("、") || "无"}\n区域：${result.areas.map(value => value.id).join("、") || "无"}\nAI状态：${aiState}\n物理定义模式：${repositoryClassification.labelDefinitionMode}（${definitionPlan.status}）\nPR分配模式：${repositoryClassification.labelAssignmentMode}\nAI模式：${repositoryClassification.ai.mode}\n目标添加：${labelPlan.add.join("、") || "无"}\n目标删除：${labelPlan.remove.join("、") || "无"}\n目录摘要：${policy.catalogDigest}\n配置摘要：${policy.profileDigest}\n仓库摘要：${policy.repositoryClassificationDigest}\n策略摘要：${policy.classificationPolicyDigest}\n输入摘要：${inputDigest}\n决策摘要：${decisionDigest}`;
-    await gh.updateCheckRun(owner, repo, check.id, { name: "PR Classification Gate", status: "completed", conclusion: "success", external_id: `v3:${state}`, output: { title: "拉取请求分类完成", summary: checkSummary } });
+    const resultAi = result.ai!;
+    const state = encodeClassificationCheckState({
+      v: 3,
+      repositoryId,
+      pullRequestNumber: number,
+      headSha: expectedHead,
+      inputDigest,
+      policy: policy.classificationPolicyDigest,
+      mode: repositoryClassification.ai.mode,
+      primary: result.primaryKind,
+      ...(result.primaryKind.source === "ai" ? { acceptedAiPrimaryKind: result.primaryKind.id } : {}),
+      risks: labelPlan.ownedRiskFlags,
+      facets: labelPlan.ownedFacets,
+      areas: result.areas.map(value => value.id),
+      decisionDigest,
+    }, stateCodec);
+    const checkSummary = `主类：${result.primaryKind.id}（${result.primaryKind.source} / ${result.primaryKind.reasonCode}）\n主类硬规则：${result.primaryKind.hardRuleId ?? "无"}\n风险：${result.riskFlags.map(value => `${value.id}(${value.source})`).join("、") || "无"}\nFacet：${result.facets.map(value => `${value.id}(${value.source})`).join("、") || "无"}\n区域：${result.areas.map(value => `${value.id}(${value.source})`).join("、") || "无"}\nAI字段状态：${resultAi.state}\nAI处理状态：${resultAi.status}\nAI原因：${resultAi.reasonCode}\nAI建议：${resultAi.suggestion ? `${resultAi.suggestion.primaryKind}（${resultAi.suggestion.confidence}）` : "未提供"}\nAI证据：${renderAiClassificationEvidence(resultAi.suggestion)}\nAI复用：${resultAi.status === "reused" ? "是" : "否"}\nwouldPrimary：${resultAi.wouldPrimary ?? "无"}\n物理定义模式：${repositoryClassification.labelDefinitionMode}（${definitionPlan.status}）\nPR分配模式：${repositoryClassification.labelAssignmentMode}\nAI模式：${repositoryClassification.ai.mode}\n实际PR标签：${actualLabels.join("、") || "无"}\n目标添加：${labelPlan.add.join("、") || "无"}\n目标删除：${labelPlan.remove.join("、") || "无"}\nSteward风险所有权：${labelPlan.ownedRiskFlags.join("、") || "无"}\nSteward Facet所有权：${labelPlan.ownedFacets.join("、") || "无"}\n目录摘要：${policy.catalogDigest}\n配置摘要：${policy.profileDigest}\n仓库摘要：${policy.repositoryClassificationDigest}\n策略摘要：${policy.classificationPolicyDigest}\n输入摘要：${inputDigest}\n决策摘要：${decisionDigest}`;
+    await gh.updateCheckRun(owner, repo, check.id, { name: "PR Classification Gate", status: "completed", conclusion: "success", external_id: state, output: { title: "拉取请求分类完成", summary: checkSummary } });
     await summary([`拉取请求：#${number}`, `来源提交：${expectedHead}`, ...checkSummary.split("\n")]);
   } catch (error) {
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 60_000);

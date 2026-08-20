@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
-import { afterEach, describe, expect, it } from "vitest";
-import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, matchesGeneratedCopilotInstructions, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, encodeClassificationCheckState, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectAutomationPullRequestBinding, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, isTrustedAiClassificationSource, matchesGeneratedCopilotInstructions, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, prepareAiClassificationPayload, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, reusedAiClassificationAssessment, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -41,37 +41,100 @@ describe("中央命令入口", () => {
     });
   });
 
-  it("AI影子分类载荷使用规范编码并受当前分类配置约束", () => {
-    const suggestion = {
-      kind: "feature",
-      confidence: "high" as const,
-      evidence: ["packages/core/src/automation.ts新增分类建议字段"],
+  it("AI分类上下文封装使用规范、限长编码", () => {
+    const envelope = {
+      schemaVersion: 2 as const,
+      repositoryId: 1, pullRequestNumber: 2, sourceRepositoryId: 1,
+      sourceRef: "refs/heads/change", targetRef: "refs/heads/main",
+      headSha: "a".repeat(40), baseSha: "b".repeat(40), policySha: "c".repeat(40),
+      catalogDigest: "d".repeat(64), profileDigest: "e".repeat(64), repositoryClassificationDigest: "f".repeat(64), classificationPolicyDigest: "1".repeat(64), inputDigest: "2".repeat(64),
+      effectiveAiMode: "shadow" as const,
+      suggestion: { primaryKind: "feature", confidence: "high" as const, evidence: [{ path: "packages/core/src/automation.ts", reason: "新增分类建议字段" }] },
     };
-    const encoded = encodeAiClassificationPayload(suggestion, ["feature", "bug"]);
+    const encoded = encodeAiClassificationPayload(envelope);
     expect(encoded).toMatch(/^[A-Za-z0-9_-]+$/u);
-    expect(decodeAiClassificationPayload(encoded, ["feature", "bug"])).toEqual(suggestion);
-    expect(() => decodeAiClassificationPayload(encoded, ["bug"])).toThrow("不属于当前分类配置");
-    expect(() => decodeAiClassificationPayload(`${encoded}=`, ["feature"])).toThrow("载荷格式无效");
-    expect(() => decodeAiClassificationPayload("a".repeat(4_097), ["feature"])).toThrow("载荷格式无效");
-    expect(() => decodeAiClassificationPayload(Buffer.from("not-json", "utf8").toString("base64url"), ["feature"]))
-      .toThrow("AI影子分类载荷格式无效");
+    expect(decodeAiClassificationPayload(encoded)).toEqual(envelope);
+    expect(() => decodeAiClassificationPayload(`${encoded}=`)).toThrow("封装格式无效");
+    expect(() => decodeAiClassificationPayload("a".repeat(16_385))).toThrow("封装格式无效");
+    expect(() => decodeAiClassificationPayload(Buffer.from("not-json", "utf8").toString("base64url"))).toThrow("AI分类封装格式无效");
+  });
+
+  it("无效AI分类只传固定占位值且封装失败时安全降级", () => {
+    const envelope = {
+      schemaVersion: 2 as const,
+      repositoryId: 1, pullRequestNumber: 2, sourceRepositoryId: 1,
+      sourceRef: "refs/heads/change", targetRef: "refs/heads/main",
+      headSha: "a".repeat(40), baseSha: "b".repeat(40), policySha: "c".repeat(40),
+      catalogDigest: "d".repeat(64), profileDigest: "e".repeat(64), repositoryClassificationDigest: "f".repeat(64), classificationPolicyDigest: "1".repeat(64), inputDigest: "2".repeat(64),
+      effectiveAiMode: "shadow" as const,
+      suggestion: null,
+    };
+    const invalid = prepareAiClassificationPayload({ state: "invalid", raw: { untrusted: "x".repeat(20_000) }, reason: "classification.primaryKind无效" }, envelope);
+    expect(invalid.state).toBe("encoded");
+    if (invalid.state === "encoded") expect(decodeAiClassificationPayload(invalid.payload)).toEqual({ ...envelope, suggestion: { invalid: true } });
+
+    const validSuggestion = { primaryKind: "feature", confidence: "high" as const, evidence: [{ path: "packages/core/src/automation.ts", reason: "新增分类建议字段" }] };
+    const valid = { state: "valid" as const, suggestion: validSuggestion, raw: validSuggestion };
+    expect(prepareAiClassificationPayload(valid, { ...envelope, sourceRef: "x".repeat(20_000) })).toEqual({ state: "encoding-failed" });
+    expect(prepareAiClassificationPayload({ state: "missing" }, envelope)).toEqual({ state: "missing" });
+  });
+
+  it("默认分支仅SHA前进时跳过AI封装，其他拉取请求绑定漂移仍失败", () => {
+    const expected = { repositoryId: 1, sourceBranch: "change", headSha: "a".repeat(40), baseBranch: "main", baseSha: "b".repeat(40) };
+    const pull = {
+      head: { repo: { id: 1 }, ref: "change", sha: "a".repeat(40) },
+      base: { ref: "main", sha: "b".repeat(40) },
+    };
+    expect(inspectAutomationPullRequestBinding(pull, expected)).toBe("matched");
+    expect(inspectAutomationPullRequestBinding({ ...pull, base: { ...pull.base, sha: "c".repeat(40) } }, expected)).toBe("base-sha-drifted");
+    for (const changed of [
+      { ...pull, head: { ...pull.head, repo: { id: 2 } } },
+      { ...pull, head: { ...pull.head, ref: "other" } },
+      { ...pull, head: { ...pull.head, sha: "d".repeat(40) } },
+      { ...pull, base: { ...pull.base, ref: "release" } },
+    ]) expect(() => inspectAutomationPullRequestBinding(changed, expected)).toThrow("AI分类封装对应的拉取请求事实已经漂移");
+  });
+
+  it("AI分类来源必须绑定App触发者、Steward工作流和当前策略提交", () => {
+    const policySha = "a".repeat(40);
+    const trusted = { TRIGGER_ACTOR_ID: "301115370", WORKFLOW_REPOSITORY: "splrad/steward", WORKFLOW_EVENT: "workflow_dispatch", WORKFLOW_REF: "splrad/steward/.github/workflows/pr-classification.yml@refs/heads/trunk", WORKFLOW_RUN_REF: "refs/heads/trunk", WORKFLOW_SHA: policySha };
+    expect(isTrustedAiClassificationSource(policySha, trusted)).toBe(true);
+    for (const key of Object.keys(trusted)) expect(isTrustedAiClassificationSource(policySha, { ...trusted, [key]: "untrusted" })).toBe(false);
   });
 
   it("只接受规范编码且字段完整的Check v3所有权状态", () => {
-    const state = { v: 3, inputDigest: "a".repeat(64), policy: "b".repeat(64), primary: { id: "feature", source: "deterministic-fallback", reasonCode: "primary-deterministic-type-selected" }, risks: ["breaking-change"], facets: ["javascript"], areas: ["area:source"], decisionDigest: "c".repeat(64) };
-    const encoded = `v3:${Buffer.from(JSON.stringify(state), "utf8").toString("base64url")}`;
-    expect(decodeClassificationCheckState(encoded)).toEqual(state);
-    expect(decodeClassificationCheckState(encoded.replace("v3:", "v2:"))).toBeNull();
-    expect(decodeClassificationCheckState(`${encoded}=`)).toBeNull();
-    expect(decodeClassificationCheckState(`v3:${Buffer.from("{}", "utf8").toString("base64url")}`)).toBeNull();
+    const codec = { primaryKinds: ["feature", "bug"], riskFlags: ["breaking-change"], facets: ["javascript"], areas: ["area:source"] };
+    const state = { v: 3 as const, repositoryId: 1, pullRequestNumber: 2, headSha: "f".repeat(40), inputDigest: "a".repeat(64), policy: "b".repeat(64), mode: "shadow" as const, primary: { id: "feature", source: "deterministic-fallback" as const, reasonCode: "primary-deterministic-type-selected" }, risks: ["breaking-change"], facets: ["javascript"], areas: ["area:source"], decisionDigest: "c".repeat(64) };
+    const encoded = encodeClassificationCheckState(state, codec);
+    expect(encoded).toHaveLength(223);
+    expect(decodeClassificationCheckState(encoded, codec)).toEqual(state);
+    expect(decodeClassificationCheckState(encoded, codec, { repositoryId: 1, pullRequestNumber: 2, headSha: "f".repeat(40) })).toEqual(state);
+    expect(decodeClassificationCheckState(encoded, codec, { repositoryId: 1, pullRequestNumber: 3, headSha: "f".repeat(40) })).toBeNull();
+    expect(decodeClassificationCheckState(encoded.replace("v3:", "v2:"), codec)).toBeNull();
+    expect(decodeClassificationCheckState(`${encoded}=`, codec)).toBeNull();
+    expect(decodeClassificationCheckState(`v3:${Buffer.from("{}", "utf8").toString("base64url")}`, codec)).toBeNull();
+    const bufferFrom = vi.spyOn(Buffer, "from");
+    try {
+      expect(decodeClassificationCheckState(`v3:${"A".repeat(20_000)}`, codec)).toBeNull();
+      expect(bufferFrom).not.toHaveBeenCalled();
+    } finally {
+      bufferFrom.mockRestore();
+    }
+    const corrupted = `${encoded.slice(0, -1)}${encoded.endsWith("A") ? "B" : "A"}`;
+    expect(decodeClassificationCheckState(corrupted, codec)).toBeNull();
+    const aiState = { ...state, mode: "active" as const, primary: { id: "feature", source: "ai" as const, reasonCode: "primary-ai-accepted" }, acceptedAiPrimaryKind: "feature" };
+    const decodedAi = decodeClassificationCheckState(encodeClassificationCheckState(aiState, codec), codec);
+    expect(reusedAiClassificationAssessment(decodedAi)).toMatchObject({ status: "reused", suggestion: null, verifiedSuggestion: { primaryKind: "feature", reused: true } });
+    expect(reusedAiClassificationAssessment(decodeClassificationCheckState(encoded, codec))).toBeNull();
+    expect(() => encodeClassificationCheckState({ ...aiState, acceptedAiPrimaryKind: "bug" }, codec)).toThrow("AI主类不一致");
   });
 
   it("AI影子分类依据以Markdown纯文本写入检查摘要", () => {
     expect(renderAiClassificationEvidence({
-      kind: "feature",
+      primaryKind: "feature",
       confidence: "medium",
-      evidence: ["packages/core/a_b*~|file.ts"],
-    })).toBe("packages/core/a\\_b\\*\\~\\|file\\.ts");
+      evidence: [{ path: "packages/core/a_b*~|file.ts", reason: "仅调整内部实现" }],
+    })).toBe("packages/core/a\\_b\\*\\~\\|file\\.ts：仅调整内部实现");
     expect(renderAiClassificationEvidence(null)).toBe("未提供");
   });
 
@@ -157,6 +220,9 @@ describe("中央命令入口", () => {
       impact: [], related: [], releaseAndMigration: [], classification: null,
     });
     expect(inspectCopilotGeneratedSummary(wrap(valid))).toMatchObject({ state: "valid" });
+    const invalidClassification = JSON.stringify({ ...JSON.parse(valid), classification: { primaryKind: "feature", confidence: "certain", evidence: [] } });
+    expect(inspectCopilotGeneratedSummary(wrap(invalidClassification))).toMatchObject({ state: "valid", classification: { state: "invalid" } });
+    expect(resolveCopilotGeneratedSummary(wrap(invalidClassification))).toMatchObject({ state: "adopted", mode: "copilot", classification: { state: "invalid" } });
 
     expect(normalizeCopilotJsonCandidate(`\n\uFEFF${valid}\n`)).toEqual({ candidate: valid, normalization: "none" });
     expect(normalizeCopilotJsonCandidate(`\n\`\`\`json\n${valid}\n\`\`\`\n`)).toEqual({ candidate: valid, normalization: "single-json-fence" });
@@ -524,7 +590,8 @@ describe("中央命令入口", () => {
       "人工智能输出证据：",
       "同名分类检查存在歧义",
       "分类输入在写入期间已经漂移",
-      "AI影子建议未参与标签写入",
+      "TRIGGER_ACTOR_ID === \"301115370\"",
+      "AI处理状态：",
       "LayerScape不可变发布尚未启用",
       "当前默认分支第一父提交链",
     ]) expect(source).toContain(fragment);

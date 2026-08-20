@@ -4,6 +4,23 @@ import { minimatch } from "minimatch";
 export type PrimarySelection = "ai-eligible" | "rule-only" | "fallback-only";
 export type AiMode = "shadow" | "draft-canary" | "active";
 export type LabelMode = "observe" | "enforce";
+export type AiClassificationConfidence = "high" | "medium" | "low";
+export interface AiClassificationEvidence { path: string; reason: string }
+export interface AiClassificationSuggestion {
+  primaryKind: string;
+  confidence: AiClassificationConfidence;
+  evidence: AiClassificationEvidence[];
+}
+export interface AiDiffFileObservation {
+  path: string;
+  patchState: "complete" | "missing" | "truncated";
+  shownPatchDigest: string;
+}
+export interface AiDiffObservation {
+  truncated: boolean;
+  files: AiDiffFileObservation[];
+  excerpt: string;
+}
 export interface GitHubLabelDefinition { name: string; color: string }
 export interface SemanticDefinition {
   id: string; description: string; includes: string; excludes: string; githubLabel: GitHubLabelDefinition | null;
@@ -83,6 +100,7 @@ export interface ClassificationDecision {
   facets: Array<{ id: string; source: "rule" | "human" | "external"; ruleId?: string }>;
   areas: Array<{ id: string; source: "rule"; ruleId: string }>;
   aiState: "valid" | "abstained" | "missing" | "invalid";
+  ai?: AiClassificationAssessment;
   runtimeRelease: boolean;
   installOrPackage: boolean;
 }
@@ -101,6 +119,46 @@ export interface ManagedLabelPlan {
 }
 export interface ClassificationDigests {
   catalogDigest: string; profileDigest: string; repositoryClassificationDigest: string; classificationPolicyDigest: string;
+}
+export interface AiClassificationEnvelopeV2 {
+  schemaVersion: 2;
+  repositoryId: number;
+  pullRequestNumber: number;
+  sourceRepositoryId: number;
+  sourceRef: string;
+  targetRef: string;
+  headSha: string;
+  baseSha: string;
+  policySha: string;
+  catalogDigest: string;
+  profileDigest: string;
+  repositoryClassificationDigest: string;
+  classificationPolicyDigest: string;
+  inputDigest: string;
+  effectiveAiMode: AiMode;
+  suggestion: unknown;
+}
+export interface VerifiedAiSuggestion {
+  primaryKind: string;
+  adoptable: boolean;
+  reused?: boolean;
+}
+export interface AiClassificationAssessment {
+  state: "valid" | "abstained" | "missing" | "invalid";
+  status: "accepted" | "rejected" | "stale" | "reused" | "absent";
+  reasonCode: string;
+  suggestion: AiClassificationSuggestion | null;
+  verifiedSuggestion: VerifiedAiSuggestion | null;
+  wouldPrimary?: string;
+}
+export interface AiEnvelopeVerificationContext {
+  trustedSource: boolean;
+  catalog: SemanticCatalog;
+  profile: ClassificationProfile;
+  repository: RepositoryClassification;
+  facts: RawClassificationFacts;
+  policySha: string;
+  digests: ClassificationDigests;
 }
 
 function unique(values: readonly string[], name: string): void {
@@ -201,19 +259,58 @@ export function classificationDigests(catalog: SemanticCatalog, profile: Classif
   return { catalogDigest, profileDigest, repositoryClassificationDigest, classificationPolicyDigest: digest({ catalogDigest, profileDigest, repositoryClassificationDigest }) };
 }
 function normalizeLf(value: string): string { return value.replace(/\r\n?/gu, "\n"); }
+function sha256Text(value: string): string { return createHash("sha256").update(value, "utf8").digest("hex"); }
+function compareText(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0; }
+function takeCharacters(value: string, maximum: number): string {
+  if (maximum <= 0) return "";
+  let count = 0;
+  let end = 0;
+  for (const character of value) {
+    if (count >= maximum) break;
+    count += 1;
+    end += character.length;
+  }
+  return value.slice(0, end);
+}
+export function buildAiDiffObservation(
+  files: RawClassificationFacts["files"],
+  maximumPatchCharacters = 22_000,
+): AiDiffObservation {
+  if (!Number.isSafeInteger(maximumPatchCharacters) || maximumPatchCharacters < 0) throw new Error("AI差异字符上限无效");
+  let remaining = maximumPatchCharacters;
+  const excerpts: string[] = [];
+  const observations = [...files]
+    .sort((left, right) => compareText(left.path, right.path) || compareText(left.previousPath ?? "", right.previousPath ?? ""))
+    .map((file): AiDiffFileObservation => {
+      const patch = typeof file.patch === "string" ? normalizeLf(file.patch) : null;
+      if (patch === null) {
+        excerpts.push(`文件：${file.path}\n补丁：未提供`);
+        return { path: file.path, patchState: "missing", shownPatchDigest: sha256Text("") };
+      }
+      const shown = takeCharacters(patch, remaining);
+      remaining -= [...shown].length;
+      const patchState = shown.length === patch.length ? "complete" : "truncated";
+      excerpts.push(`文件：${file.path}\n补丁状态：${patchState}\n${shown}`);
+      return { path: file.path, patchState, shownPatchDigest: sha256Text(shown) };
+    });
+  return {
+    truncated: observations.some((file) => file.patchState !== "complete"),
+    files: observations,
+    excerpt: excerpts.join("\n\n"),
+  };
+}
 export function classificationInputDigest(facts: RawClassificationFacts, policySha: string, classificationPolicyDigest: string): string {
   if (!/^[0-9a-f]{40}$/u.test(policySha) || !/^[0-9a-f]{64}$/u.test(classificationPolicyDigest)) throw new Error("分类输入摘要的策略标识无效");
+  const observation = buildAiDiffObservation(facts.files);
   const files = facts.files.map((file) => ({
     path: file.path,
     ...(file.previousPath ? { previousPath: file.previousPath } : {}),
     status: file.status,
     additions: file.additions,
     deletions: file.deletions,
-    patchState: file.patchState ?? (typeof file.patch === "string" ? "available" : "missing"),
-    patch: typeof file.patch === "string" ? normalizeLf(file.patch) : null,
-  })).sort((left, right) => left.path.localeCompare(right.path) || (left.previousPath ?? "").localeCompare(right.previousPath ?? ""));
+  })).sort((left, right) => compareText(left.path, right.path) || compareText(left.previousPath ?? "", right.previousPath ?? ""));
   return digest({
-    schemaVersion: 1,
+    schemaVersion: 2,
     repositoryId: facts.repositoryId,
     pullRequestNumber: facts.pullRequestNumber,
     sourceRepositoryId: facts.sourceRepositoryId,
@@ -225,7 +322,159 @@ export function classificationInputDigest(facts: RawClassificationFacts, policyS
     classificationPolicyDigest,
     commits: facts.commits.map((commit) => ({ sha: commit.sha, message: normalizeLf(commit.message) })),
     files,
+    aiObservation: {
+      truncated: observation.truncated,
+      files: observation.files,
+    },
   });
+}
+
+export function createAiClassificationEnvelope(input: {
+  facts: RawClassificationFacts;
+  policySha: string;
+  digests: ClassificationDigests;
+  effectiveAiMode: AiMode;
+  suggestion: unknown;
+}): AiClassificationEnvelopeV2 {
+  return {
+    schemaVersion: 2,
+    repositoryId: input.facts.repositoryId,
+    pullRequestNumber: input.facts.pullRequestNumber,
+    sourceRepositoryId: input.facts.sourceRepositoryId,
+    sourceRef: input.facts.sourceRef,
+    targetRef: input.facts.targetRef,
+    headSha: input.facts.headSha,
+    baseSha: input.facts.baseSha,
+    policySha: input.policySha,
+    catalogDigest: input.digests.catalogDigest,
+    profileDigest: input.digests.profileDigest,
+    repositoryClassificationDigest: input.digests.repositoryClassificationDigest,
+    classificationPolicyDigest: input.digests.classificationPolicyDigest,
+    inputDigest: classificationInputDigest(input.facts, input.policySha, input.digests.classificationPolicyDigest),
+    effectiveAiMode: input.effectiveAiMode,
+    suggestion: input.suggestion,
+  };
+}
+
+function validSha(value: unknown, length: 40 | 64): value is string {
+  return typeof value === "string" && new RegExp(`^[0-9a-f]{${length}}$`, "u").test(value);
+}
+function classificationPlainText(value: unknown, name: string, minimum: number, maximum: number): string {
+  if (typeof value !== "string") throw new TypeError(`${name}必须是字符串`);
+  const result = value.trim();
+  const count = [...result].length;
+  if (count < minimum || count > maximum || /[\r\n<>]/u.test(result)) throw new Error(`${name}长度或格式无效`);
+  return result;
+}
+function classificationEvidencePath(value: unknown): string {
+  const name = "classification.evidence[].path";
+  if (typeof value !== "string") throw new TypeError(`${name}必须是字符串`);
+  const count = [...value].length;
+  if (count < 1 || count > 500 || /[\r\n<>]/u.test(value)) throw new Error(`${name}长度或格式无效`);
+  return value;
+}
+export function validateClassificationSuggestion(
+  value: unknown,
+  eligiblePrimaryKinds?: readonly string[],
+  observation?: AiDiffObservation,
+): AiClassificationSuggestion {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("classification必须是对象");
+  const object = value as Record<string, unknown>;
+  if (Object.keys(object).some((key) => !["primaryKind", "confidence", "evidence"].includes(key))) throw new Error("classification包含额外字段");
+  if (typeof object.primaryKind !== "string" || !/^[a-z][a-z0-9-]{0,39}$/u.test(object.primaryKind)) throw new Error("classification.primaryKind无效");
+  if (eligiblePrimaryKinds && !eligiblePrimaryKinds.includes(object.primaryKind)) throw new Error("classification.primaryKind不属于当前分类配置");
+  if (!(["high", "medium", "low"] as const).includes(object.confidence as AiClassificationConfidence)) throw new Error("classification.confidence无效");
+  if (!Array.isArray(object.evidence) || object.evidence.length < 1 || object.evidence.length > 3) throw new Error("classification.evidence无效");
+  const observed = observation ? new Map(observation.files.map((file) => [file.path, file])) : null;
+  const uniquePaths = new Set<string>();
+  const evidence = object.evidence.map((item): AiClassificationEvidence => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("classification.evidence[]必须是对象");
+    const evidenceObject = item as Record<string, unknown>;
+    if (Object.keys(evidenceObject).some((key) => !["path", "reason"].includes(key))) throw new Error("classification.evidence[]包含额外字段");
+    const path = classificationEvidencePath(evidenceObject.path);
+    const reason = classificationPlainText(evidenceObject.reason, "classification.evidence[].reason", 4, 180);
+    if (/[\[\]`*_~|]/u.test(reason)) throw new Error("classification.evidence[].reason必须是无Markdown纯文本");
+    if (uniquePaths.has(path)) throw new Error("classification.evidence路径重复");
+    uniquePaths.add(path);
+    if (observed && observed.get(path)?.patchState !== "complete") throw new Error("classification.evidence路径不属于完整已显示差异");
+    return { path, reason };
+  });
+  return { primaryKind: object.primaryKind, confidence: object.confidence as AiClassificationConfidence, evidence };
+}
+
+function absentAi(state: AiClassificationAssessment["state"], reasonCode: string): AiClassificationAssessment {
+  return { state, status: "absent", reasonCode, suggestion: null, verifiedSuggestion: null };
+}
+export function verifyAiClassificationEnvelope(
+  value: unknown,
+  context: AiEnvelopeVerificationContext,
+): AiClassificationAssessment {
+  if (value === undefined) return absentAi("missing", "primary-ai-missing");
+  if (!context.trustedSource) return { ...absentAi("invalid", "primary-ai-untrusted-actor"), status: "rejected" };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ...absentAi("invalid", "primary-ai-invalid-payload"), status: "rejected" };
+  const envelope = value as Record<string, unknown>;
+  const expectedKeys = [
+    "schemaVersion", "repositoryId", "pullRequestNumber", "sourceRepositoryId", "sourceRef", "targetRef", "headSha", "baseSha", "policySha",
+    "catalogDigest", "profileDigest", "repositoryClassificationDigest", "classificationPolicyDigest", "inputDigest", "effectiveAiMode", "suggestion",
+  ];
+  if (Object.keys(envelope).length !== expectedKeys.length || expectedKeys.some((key) => !Object.hasOwn(envelope, key))) return { ...absentAi("invalid", "primary-ai-invalid-payload"), status: "rejected" };
+  if (envelope.schemaVersion !== 2
+    || !Number.isSafeInteger(envelope.repositoryId) || !Number.isSafeInteger(envelope.pullRequestNumber) || !Number.isSafeInteger(envelope.sourceRepositoryId)
+    || ![envelope.sourceRef, envelope.targetRef].every((item) => typeof item === "string" && item.startsWith("refs/heads/"))
+    || !validSha(envelope.headSha, 40) || !validSha(envelope.baseSha, 40) || !validSha(envelope.policySha, 40)
+    || !validSha(envelope.catalogDigest, 64) || !validSha(envelope.profileDigest, 64) || !validSha(envelope.repositoryClassificationDigest, 64)
+    || !validSha(envelope.classificationPolicyDigest, 64) || !validSha(envelope.inputDigest, 64)
+    || !["shadow", "draft-canary", "active"].includes(String(envelope.effectiveAiMode))) {
+    return { ...absentAi("invalid", "primary-ai-invalid-payload"), status: "rejected" };
+  }
+  const expectedInputDigest = classificationInputDigest(context.facts, context.policySha, context.digests.classificationPolicyDigest);
+  const contextMatches = envelope.repositoryId === context.facts.repositoryId
+    && envelope.pullRequestNumber === context.facts.pullRequestNumber
+    && envelope.sourceRepositoryId === context.facts.sourceRepositoryId
+    && envelope.sourceRef === context.facts.sourceRef
+    && envelope.targetRef === context.facts.targetRef
+    && envelope.headSha === context.facts.headSha
+    && envelope.baseSha === context.facts.baseSha
+    && envelope.policySha === context.policySha
+    && envelope.catalogDigest === context.digests.catalogDigest
+    && envelope.profileDigest === context.digests.profileDigest
+    && envelope.repositoryClassificationDigest === context.digests.repositoryClassificationDigest
+    && envelope.classificationPolicyDigest === context.digests.classificationPolicyDigest
+    && envelope.inputDigest === expectedInputDigest
+    && envelope.effectiveAiMode === context.repository.ai.mode;
+  if (!contextMatches) return { ...absentAi("invalid", "primary-ai-context-mismatch"), status: "stale" };
+  if (envelope.suggestion === null) return { state: "abstained", status: "absent", reasonCode: "primary-ai-abstained", suggestion: null, verifiedSuggestion: null };
+  const observation = buildAiDiffObservation(context.facts.files);
+  let suggestion: AiClassificationSuggestion;
+  try {
+    suggestion = validateClassificationSuggestion(envelope.suggestion, undefined, observation);
+  } catch (error) {
+    const evidenceFailure = error instanceof Error && /evidence/u.test(error.message);
+    return { ...absentAi("invalid", evidenceFailure ? "primary-ai-evidence-invalid" : "primary-ai-invalid-payload"), status: "rejected" };
+  }
+  if (!context.profile.ai.eligiblePrimaryKinds.includes(suggestion.primaryKind)) return { state: "valid", status: "rejected", reasonCode: "primary-ai-kind-ineligible", suggestion, verifiedSuggestion: null, wouldPrimary: suggestion.primaryKind };
+  if (observation.truncated) return { state: "valid", status: "rejected", reasonCode: "primary-ai-incomplete-diff", suggestion, verifiedSuggestion: null, wouldPrimary: suggestion.primaryKind };
+  if (suggestion.confidence !== context.profile.ai.minimumConfidence) return { state: "valid", status: "rejected", reasonCode: "primary-ai-low-confidence", suggestion, verifiedSuggestion: null, wouldPrimary: suggestion.primaryKind };
+  let adoptable = false;
+  let reasonCode = "primary-ai-mode-shadow";
+  if (context.repository.ai.mode === "active") {
+    adoptable = context.repository.ai.adoptedPrimaryKinds.includes(suggestion.primaryKind);
+    reasonCode = adoptable ? "primary-ai-accepted" : "primary-ai-kind-ineligible";
+  } else if (context.repository.ai.mode === "draft-canary") {
+    const canary = context.repository.ai.canaries.some((item) => item.repositoryId === context.facts.repositoryId
+      && item.pullRequestNumber === context.facts.pullRequestNumber && item.headSha === context.facts.headSha
+      && item.sourceRepositoryId === context.facts.sourceRepositoryId && item.sourceRef === context.facts.sourceRef);
+    adoptable = canary && context.repository.ai.adoptedPrimaryKinds.includes(suggestion.primaryKind);
+    reasonCode = adoptable ? "primary-ai-accepted" : (canary ? "primary-ai-kind-ineligible" : "primary-ai-context-mismatch");
+  }
+  return {
+    state: "valid",
+    status: adoptable ? "accepted" : "rejected",
+    reasonCode,
+    suggestion,
+    verifiedSuggestion: { primaryKind: suggestion.primaryKind, adoptable },
+    wouldPrimary: suggestion.primaryKind,
+  };
 }
 
 function paths(facts: RawClassificationFacts): string[] { return facts.files.flatMap((file) => file.previousPath ? [file.path, file.previousPath] : [file.path]); }
@@ -267,7 +516,7 @@ export function selectPrimaryKind(
   repository: RepositoryClassification,
   facts: RawClassificationFacts,
   evaluation: RuleEvaluation,
-  verifiedAiSuggestion: { primaryKind: string; adoptable: boolean; reused?: boolean } | null = null,
+  verifiedAiSuggestion: VerifiedAiSuggestion | null = null,
 ): PrimaryDecision {
   const hard = evaluation.primaryCandidates[0];
   if (hard) return { id: hard.id, source: "hard-rule", reasonCode: "primary-hard-rule-selected", hardRuleId: hard.ruleId };
@@ -283,7 +532,7 @@ export function resolveClassificationRoles(
   evaluation: RuleEvaluation,
   primaryKind: PrimaryDecision,
   existing: ExistingClassificationState,
-  aiState: ClassificationDecision["aiState"] = "missing",
+  ai: AiClassificationAssessment = absentAi("missing", "primary-ai-missing"),
 ): ClassificationDecision {
   const riskDefinitions = definitionMap(catalog.roles.riskFlags.definitions);
   const facetDefinitions = definitionMap(catalog.roles.facets.definitions);
@@ -294,7 +543,7 @@ export function resolveClassificationRoles(
   for (const [id, definition] of riskDefinitions) if (definition.githubLabel && labels.has(definition.githubLabel.name) && !stewardOwnedRiskFlags.has(id) && !riskFlags.some((item) => item.id === id)) riskFlags.push({ id, source: "human" });
   const facets: ClassificationDecision["facets"] = evaluation.facets.map((item) => ({ ...item, source: "rule" }));
   for (const [id, definition] of facetDefinitions) if (definition.githubLabel && labels.has(definition.githubLabel.name) && !stewardOwnedFacets.has(id) && !facets.some((item) => item.id === id)) facets.push({ id, source: "external" });
-  return { primaryKind, riskFlags, facets, areas: evaluation.areas.map((item) => ({ ...item, source: "rule" })), aiState, runtimeRelease: evaluation.runtimeRelease, installOrPackage: evaluation.installOrPackage };
+  return { primaryKind, riskFlags, facets, areas: evaluation.areas.map((item) => ({ ...item, source: "rule" })), aiState: ai.state, ai, runtimeRelease: evaluation.runtimeRelease, installOrPackage: evaluation.installOrPackage };
 }
 function physicalName(definitions: readonly SemanticDefinition[], id: string): string | null {
   return definitions.find((item) => item.id === id)?.githubLabel?.name ?? null;
@@ -332,10 +581,15 @@ export function classifyPullRequest(
   repository: RepositoryClassification,
   facts: RawClassificationFacts,
   existing: ExistingClassificationState,
+  ai: AiClassificationAssessment = absentAi("missing", "primary-ai-missing"),
 ): ClassificationDecision {
   const evaluation = evaluateClassificationRules(catalog, profile, facts);
-  const primary = selectPrimaryKind(catalog, profile, repository, facts, evaluation);
-  return resolveClassificationRoles(catalog, evaluation, primary, existing);
+  const hard = evaluation.primaryCandidates[0];
+  const effectiveAi = hard && ai.suggestion
+    ? { ...ai, status: "rejected" as const, reasonCode: "primary-ai-hard-rule-conflict", verifiedSuggestion: null }
+    : ai;
+  const primary = selectPrimaryKind(catalog, profile, repository, facts, evaluation, effectiveAi.verifiedSuggestion);
+  return resolveClassificationRoles(catalog, evaluation, primary, existing, effectiveAi);
 }
 export function classifyReleaseDecision(profile: ClassificationProfile, decision: ClassificationDecision): ReleaseCategory | null {
   if (!decision.runtimeRelease) return null;

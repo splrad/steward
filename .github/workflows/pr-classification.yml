@@ -35,4 +35,10 @@ jobs:
           INSTALLATION_ID: "145952003"
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
           AI_CLASSIFICATION: ${{ inputs.aiClassification }}
+          TRIGGER_ACTOR_ID: ${{ github.actor_id }}
+          WORKFLOW_REPOSITORY: ${{ github.repository }}
+          WORKFLOW_EVENT: ${{ github.event_name }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_RUN_REF: ${{ github.ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: node packages/runner/dist/index.js pr-classification --delivery-id "${{ inputs.deliveryId }}" --repository-id "${{ inputs.repositoryId }}" ${{ inputs.scanAll && '--scan-all true' || format('--pull-request-number "{0}" --event-head-sha "{1}" --scan-all false', inputs.pullRequestNumber, inputs.eventHeadSha) }} --policy-sha "${{ inputs.policySha }}"
