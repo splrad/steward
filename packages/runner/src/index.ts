@@ -310,6 +310,14 @@ export function prepareAiClassificationPayload(
     return { state: "encoding-failed" };
   }
 }
+export function inspectAutomationPullRequestBinding(
+  pull: { head: { repo: { id: unknown }; ref: unknown; sha: unknown }; base: { ref: unknown; sha: unknown } },
+  expected: { repositoryId: number; sourceBranch: string; headSha: string; baseBranch: string; baseSha: string },
+): "matched" | "base-sha-drifted" {
+  if (Number(pull.head.repo.id) !== expected.repositoryId || pull.head.ref !== expected.sourceBranch || pull.head.sha !== expected.headSha
+    || pull.base.ref !== expected.baseBranch) throw new Error("AI分类封装对应的拉取请求事实已经漂移");
+  return pull.base.sha === expected.baseSha ? "matched" : "base-sha-drifted";
+}
 export function isTrustedAiClassificationSource(policySha: string, environment: NodeJS.ProcessEnv = process.env): boolean {
   return environment.TRIGGER_ACTOR_ID === "301115370"
     && environment.WORKFLOW_REPOSITORY === "splrad/steward"
@@ -807,9 +815,9 @@ async function automate(args: Readonly<Record<string, string>>) {
   const body = renderManagedBody({ generated, existingBody: pulls[0]?.body, templateBody: template, actor: sourceActor.login, contributors, context });
   const pull = pulls[0] ? await gh.updatePullRequest(owner, repo, pulls[0].number, { title, body }) : await gh.createPullRequest(owner, repo, humanPushPullRequestCreateInput({ title, body, head: sourceBranch, base: repository.default_branch }));
   const boundPull = await gh.getPullRequest(owner, repo, pull.number);
-  if (Number(boundPull.head.repo.id) !== repositoryId || boundPull.head.ref !== sourceBranch || boundPull.head.sha !== facts.headSha
-    || boundPull.base.ref !== repository.default_branch || boundPull.base.sha !== facts.baseSha) throw new Error("AI分类封装对应的拉取请求事实已经漂移");
-  if (classificationField.state !== "missing") {
+  const pullBinding = inspectAutomationPullRequestBinding(boundPull, { repositoryId, sourceBranch, headSha: facts.headSha, baseBranch: repository.default_branch, baseSha: facts.baseSha });
+  if (pullBinding === "base-sha-drifted") aiClassificationSummary = `${aiClassificationSummary}；目标分支已前进，未传递`;
+  else if (classificationField.state !== "missing") {
     const rawFacts: RawClassificationFacts = { ...rawFactsBase, pullRequestNumber: pull.number };
     const policy = classificationDigests(semantics, classificationProfile, repositoryClassification);
     const envelope = createAiClassificationEnvelope({ facts: rawFacts, policySha, digests: policy, effectiveAiMode: repositoryClassification.ai.mode, suggestion: null });

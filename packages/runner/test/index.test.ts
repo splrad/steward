@@ -5,7 +5,7 @@ import { join } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, encodeClassificationCheckState, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, isTrustedAiClassificationSource, matchesGeneratedCopilotInstructions, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, prepareAiClassificationPayload, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, reusedAiClassificationAssessment, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
+import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, encodeClassificationCheckState, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectAutomationPullRequestBinding, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, isTrustedAiClassificationSource, matchesGeneratedCopilotInstructions, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, prepareAiClassificationPayload, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, reusedAiClassificationAssessment, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -77,6 +77,22 @@ describe("中央命令入口", () => {
     const valid = { state: "valid" as const, suggestion: validSuggestion, raw: validSuggestion };
     expect(prepareAiClassificationPayload(valid, { ...envelope, sourceRef: "x".repeat(20_000) })).toEqual({ state: "encoding-failed" });
     expect(prepareAiClassificationPayload({ state: "missing" }, envelope)).toEqual({ state: "missing" });
+  });
+
+  it("默认分支仅SHA前进时跳过AI封装，其他拉取请求绑定漂移仍失败", () => {
+    const expected = { repositoryId: 1, sourceBranch: "change", headSha: "a".repeat(40), baseBranch: "main", baseSha: "b".repeat(40) };
+    const pull = {
+      head: { repo: { id: 1 }, ref: "change", sha: "a".repeat(40) },
+      base: { ref: "main", sha: "b".repeat(40) },
+    };
+    expect(inspectAutomationPullRequestBinding(pull, expected)).toBe("matched");
+    expect(inspectAutomationPullRequestBinding({ ...pull, base: { ...pull.base, sha: "c".repeat(40) } }, expected)).toBe("base-sha-drifted");
+    for (const changed of [
+      { ...pull, head: { ...pull.head, repo: { id: 2 } } },
+      { ...pull, head: { ...pull.head, ref: "other" } },
+      { ...pull, head: { ...pull.head, sha: "d".repeat(40) } },
+      { ...pull, base: { ...pull.base, ref: "release" } },
+    ]) expect(() => inspectAutomationPullRequestBinding(changed, expected)).toThrow("AI分类封装对应的拉取请求事实已经漂移");
   });
 
   it("AI分类来源必须绑定App触发者、Steward工作流和当前策略提交", () => {
