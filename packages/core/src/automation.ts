@@ -92,6 +92,7 @@ export function validateGeneratedSummary(value: unknown): GeneratedSummary {
   const object = value as Record<string, unknown>;
   const allowed = new Set(['type', 'scope', 'title', 'summary', 'motivation', 'changes', 'impact', 'related', 'releaseAndMigration', 'classification']);
   if (Object.keys(object).some((key) => !allowed.has(key))) throw new Error('Copilot结果包含额外字段');
+  if (!Object.hasOwn(object, 'classification')) throw new Error('classification字段缺失');
   if (!conventionalTypes.includes(object.type as ConventionalType)) throw new Error('type无效');
   if (typeof object.scope !== 'string' || !/^[a-z0-9-]{1,20}$/.test(object.scope)) throw new Error('scope无效');
   const title = requirePlainText(object.title, 'title', 1, 100);

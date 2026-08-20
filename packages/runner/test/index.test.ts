@@ -220,6 +220,28 @@ describe("中央命令入口", () => {
       impact: [], related: [], releaseAndMigration: [], classification: null,
     });
     expect(inspectCopilotGeneratedSummary(wrap(valid))).toMatchObject({ state: "valid" });
+    const { classification: _classification, ...withoutClassification } = JSON.parse(valid);
+    const missingClassification = JSON.stringify(withoutClassification);
+    expect(inspectCopilotGeneratedSummary(wrap(missingClassification))).toMatchObject({
+      state: "repairable",
+      stage: "copilot-output-validate",
+      reason: "Copilot输出字段校验失败：classification字段缺失",
+    });
+    expect(resolveCopilotGeneratedSummary(wrap(missingClassification))).toMatchObject({
+      state: "repair-required",
+      primaryFailureReason: "Copilot输出字段校验失败：classification字段缺失",
+    });
+    expect(resolveCopilotGeneratedSummary(wrap(missingClassification), wrap(valid))).toMatchObject({
+      state: "adopted",
+      mode: "copilot-repaired",
+      classification: { state: "abstained" },
+      primaryFailureReason: "Copilot输出字段校验失败：classification字段缺失",
+    });
+    expect(resolveCopilotGeneratedSummary(wrap(missingClassification), wrap(missingClassification))).toMatchObject({
+      state: "fallback",
+      fallbackReason: "Copilot输出字段校验失败：classification字段缺失",
+      repairFailureReason: "Copilot修复输出字段校验失败：classification字段缺失",
+    });
     const invalidClassification = JSON.stringify({ ...JSON.parse(valid), classification: { primaryKind: "feature", confidence: "certain", evidence: [] } });
     expect(inspectCopilotGeneratedSummary(wrap(invalidClassification))).toMatchObject({ state: "valid", classification: { state: "invalid" } });
     expect(resolveCopilotGeneratedSummary(wrap(invalidClassification))).toMatchObject({ state: "adopted", mode: "copilot", classification: { state: "invalid" } });
