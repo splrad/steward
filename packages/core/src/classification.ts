@@ -366,6 +366,13 @@ function classificationPlainText(value: unknown, name: string, minimum: number, 
   if (count < minimum || count > maximum || /[\r\n<>]/u.test(result)) throw new Error(`${name}长度或格式无效`);
   return result;
 }
+function classificationEvidencePath(value: unknown): string {
+  const name = "classification.evidence[].path";
+  if (typeof value !== "string") throw new TypeError(`${name}必须是字符串`);
+  const count = [...value].length;
+  if (count < 1 || count > 500 || /[\r\n<>]/u.test(value)) throw new Error(`${name}长度或格式无效`);
+  return value;
+}
 export function validateClassificationSuggestion(
   value: unknown,
   eligiblePrimaryKinds?: readonly string[],
@@ -384,7 +391,7 @@ export function validateClassificationSuggestion(
     if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("classification.evidence[]必须是对象");
     const evidenceObject = item as Record<string, unknown>;
     if (Object.keys(evidenceObject).some((key) => !["path", "reason"].includes(key))) throw new Error("classification.evidence[]包含额外字段");
-    const path = classificationPlainText(evidenceObject.path, "classification.evidence[].path", 1, 500);
+    const path = classificationEvidencePath(evidenceObject.path);
     const reason = classificationPlainText(evidenceObject.reason, "classification.evidence[].reason", 4, 180);
     if (/[\[\]`*_~|]/u.test(reason)) throw new Error("classification.evidence[].reason必须是无Markdown纯文本");
     if (uniquePaths.has(path)) throw new Error("classification.evidence路径重复");

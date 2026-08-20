@@ -6,7 +6,7 @@ import regressionCanaries from "./fixtures/classification/regression-canaries.v1
 import digestVectors from "./fixtures/classification/digests.v1.json" with { type: "json" };
 import {
   buildAiDiffObservation, canonicalize, classificationDigests, classificationInputDigest, classifyPullRequest, createAiClassificationEnvelope, digest, evaluateClassificationRules, planClassificationLabels,
-  validateClassificationProfile, validateRepositoryClassification, validateSemanticCatalog, verifyAiClassificationEnvelope,
+  validateClassificationProfile, validateClassificationSuggestion, validateRepositoryClassification, validateSemanticCatalog, verifyAiClassificationEnvelope,
   type ClassificationProfile, type RawClassificationFacts, type RepositoryClassification, type SemanticCatalog,
 } from "../src/classification.js";
 
@@ -124,6 +124,17 @@ describe("角色化拉取请求分类", () => {
     incomplete.files.push({ path: "packages/core/src/missing.ts", status: "modified", additions: 1, deletions: 0, patch: null, patchState: "missing" });
     const incompleteEnvelope = createAiClassificationEnvelope({ facts: incomplete, policySha: digestVectors.policySha, digests, effectiveAiMode: "shadow", suggestion });
     expect(verifyAiClassificationEnvelope(incompleteEnvelope, { ...context, facts: incomplete })).toMatchObject({ reasonCode: "primary-ai-incomplete-diff" });
+  });
+
+  it("证据路径保留原始字符并与完整差异逐字匹配", () => {
+    const path = "packages/core/src/a.ts";
+    const reason = "引用完整显示的实现差异";
+    const observation = buildAiDiffObservation([{ path, status: "modified", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n-old\n+new" }]);
+    expect(() => validateClassificationSuggestion({ primaryKind: "feature", confidence: "high", evidence: [{ path: ` ${path} `, reason }] }, ["feature"], observation)).toThrow("路径不属于完整已显示差异");
+
+    const whitespacePath = ` ${path} `;
+    const whitespaceObservation = buildAiDiffObservation([{ path: whitespacePath, status: "modified", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n-old\n+new" }]);
+    expect(validateClassificationSuggestion({ primaryKind: "feature", confidence: "high", evidence: [{ path: whitespacePath, reason }] }, ["feature"], whitespaceObservation)).toEqual({ primaryKind: "feature", confidence: "high", evidence: [{ path: whitespacePath, reason }] });
   });
 
   it("active和精确draft-canary采用合格主类，硬规则仍锁定最终主类", () => {
