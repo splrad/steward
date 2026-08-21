@@ -196,6 +196,38 @@ describe("拉取请求议题关联运行器", () => {
     });
   });
 
+  it("收敛前置事实读取失败时仍完成已经开始的检查", async () => {
+    await withRunnerEnvironment(async (directory) => {
+      const fullDiffDigest = "e".repeat(64);
+      const openSetDigest = openIssueSetDigest(repositoryId, []);
+      const unmanagedBodyDigest = managedBodyOutsideIssueLinksDigest("");
+      const prepared = {
+        schemaVersion: 1, repositoryId, repositoryFullName: "splrad/steward", pullRequestNumber: 42,
+        baseSha, headSha, generation: 2, policySha, fullDiffDigest, changedFiles: [], candidateDigests: [], candidates: [],
+        openSetDigest, unmanagedBodyDigest,
+        analysisInputDigest: analysisInputDigest({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 2, policySha, fullDiffDigest, candidateDigests: [], openSetDigest, unmanagedBodyDigest }),
+      };
+      process.env.ISSUE_PREPARED_FACTS_PATH = join(directory, "prepared.json");
+      process.env.RUNTIME_URL = "https://runtime.test";
+      await writeFile(process.env.ISSUE_PREPARED_FACTS_PATH, JSON.stringify(prepared));
+      const calls: Array<{ url: string; method: string; body: any }> = [];
+      vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+        const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
+        calls.push({ url: value, method, body });
+        if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+        if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response("temporarily unavailable", { status: 503 });
+        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [{ id: 1, name: "PR Issue Link Gate", app: { id: 4243096 }, head_sha: headSha }] }), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/check-runs/1")) return new Response(JSON.stringify({ id: 1 }), { status: 200 });
+        return new Response("unexpected", { status: 500 });
+      });
+      await expect(runPrIssueLink(invocation())).rejects.toThrow("503");
+      const check = calls.find(call => call.method === "PATCH" && call.url.endsWith("/check-runs/1"));
+      expect(check?.body).toEqual(expect.objectContaining({ status: "completed", conclusion: "failure" }));
+      expect(check?.body.output.summary).toContain("prerequisite-failed-unclean");
+    });
+  });
+
   it("事实准备失败时，在确认清空后以 safe-empty 成功结束", async () => {
     await withRunnerEnvironment(async (directory) => {
       const outer = '<!-- workflow:managed-pr:start -->\n## 摘要\n\n正文\n\n## 发布与迁移\n\n无\n\n<!-- workflow:source-actor:bot -->\n<!-- workflow:managed-pr:end -->\n';

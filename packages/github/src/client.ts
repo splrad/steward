@@ -178,8 +178,14 @@ export class GitHubClient {
     if (path.toLowerCase() !== expected || issue?.number !== number || Object.hasOwn(issue ?? {}, "pull_request")) throw new Error("issue-repository-mismatch");
   }
 
-  async readIssueFacts(owner: string, repo: string, number: number): Promise<GitHubIssueFacts> {
+  async readIssueWithValidator(owner: string, repo: string, number: number): Promise<ValidatedValue<any>> {
     const issue = await this.getIssueWithValidator(owner, repo, number);
+    this.assertIssueBelongsToRepository(issue.value, owner, repo, number);
+    return issue;
+  }
+
+  async readIssueFacts(owner: string, repo: string, number: number, prefetchedIssue?: ValidatedValue<any>): Promise<GitHubIssueFacts> {
+    const issue = prefetchedIssue ?? await this.readIssueWithValidator(owner, repo, number);
     this.assertIssueBelongsToRepository(issue.value, owner, repo, number);
     const [comments, fieldValues, parent, subIssues, blockedBy, blocking] = await Promise.all([
       this.listIssueCommentsWithValidators(owner, repo, number),

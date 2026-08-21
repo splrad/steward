@@ -5,7 +5,7 @@ import { join } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, encodeClassificationCheckState, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectAutomationPullRequestBinding, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, isTrustedAiClassificationSource, issueSyncInstallationPermissions, matchesGeneratedCopilotInstructions, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, prepareAiClassificationPayload, reconcileIssueSnapshots, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, reusedAiClassificationAssessment, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
+import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, encodeClassificationCheckState, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectAutomationPullRequestBinding, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, isTrustedAiClassificationSource, issueSyncInstallationPermissions, main, matchesGeneratedCopilotInstructions, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, prepareAiClassificationPayload, reconcileIssueSnapshots, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, reusedAiClassificationAssessment, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -23,6 +23,16 @@ describe("中央命令入口", () => {
     expect(() => parseInvocation(["validate", "--unknown", "x"])).toThrow("未知参数");
     expect(() => parseInvocation(["validate", "--workspace"])).toThrow("参数格式");
     expect(() => parseInvocation(["validate", "--workspace", "a", "--workspace", "b"])).toThrow("重复参数");
+  });
+
+  it("在创建安装令牌前拒绝超出安全整数范围的编号", async () => {
+    await expect(main([
+      "issue-sync",
+      "--delivery-id", "delivery-unsafe-integer",
+      "--repository-id", "9007199254740993",
+      "--scan-all", "true",
+      "--policy-sha", "a".repeat(40),
+    ])).rejects.toThrow("安全整数");
   });
 
   it("缺失环境变量立即失败", () => {

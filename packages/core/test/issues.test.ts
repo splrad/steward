@@ -168,6 +168,12 @@ describe("议题核心合同", () => {
     expect(extractIssueLinksBlock(legacyInserted)?.metadata.issueNumbers).toEqual([123, 456]);
     expect(removeIssueLinksBlock(legacyInserted)).toBe(legacyOuter);
     expect(managedBodyOutsideIssueLinksDigest(upsertIssueLinksBlock(legacyInserted, empty))).toBe(managedBodyOutsideIssueLinksDigest(legacyInserted));
+    const damagedMetadata = inserted.replace('generation=17', 'generation=broken');
+    const damagedContent = inserted.replace('Resolves #123', 'Resolves issue 123');
+    expect(() => extractIssueLinksBlock(damagedMetadata)).toThrow('字段无效');
+    expect(() => extractIssueLinksBlock(damagedContent)).toThrow('关闭关键字无效');
+    expect(removeIssueLinksBlock(damagedMetadata)).toBe(outer);
+    expect(removeIssueLinksBlock(damagedContent)).toBe(outer);
     expect(() => upsertIssueLinksBlock(`${inserted}\n${first}`, empty)).toThrow("重复");
     expect(() => upsertIssueLinksBlock(`${outer}${legacyOuter}`, empty)).toThrow("外层");
     expect(() => upsertIssueLinksBlock(outer.replace("## 摘要", `${first}\n## 摘要`).replace("<!-- workflow:managed-pr:start -->\n", ""), empty)).toThrow("外层");

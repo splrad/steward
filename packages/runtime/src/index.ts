@@ -255,7 +255,8 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
   try {
     if (event === "installation" && action === "deleted") {
       if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
-      await new IssueSnapshotStore(env.ISSUE_SNAPSHOTS).deleteAllRepositories();
+      const repositoryIds = (payload.repositories ?? []).filter(isManaged).map((repository: any) => Number(repository.id));
+      await new IssueSnapshotStore(env.ISSUE_SNAPSHOTS).deleteAllRepositories(repositoryIds);
       return response(202);
     }
     if (event === "installation_repositories" && action === "removed") {

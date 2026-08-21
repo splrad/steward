@@ -644,32 +644,45 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
   if (Buffer.byteLength(preparedText, "utf8") > 2 * 1024 * 1024) throw new Error("议题准备证据过大");
   const prepared = validatePrepared(JSON.parse(preparedText), args);
   const { token, client } = await createTargetClient(args.repositoryId, args.policySha);
-  const repository = await client.getRepositoryById(args.repositoryId);
-  configuration(repository);
-  if (repository.full_name !== prepared.repositoryFullName) throw new Error("议题准备仓库名称已经漂移");
-  const [owner, repo] = splitRepository(repository.full_name);
-  const current = await client.getPullRequest(owner, repo, prepared.pullRequestNumber);
-  const facts = currentPullFacts(current, args.repositoryId);
-  const currentBase = sha((await client.getRef(owner, repo, `heads/${repository.default_branch}`)).object.sha, "baseSha");
-  let currentState: SnapshotState;
+  const [preparedOwner, preparedRepo] = splitRepository(prepared.repositoryFullName);
+  let repositoryForCleanup: any = null;
+  let pullForCleanup: any = null;
+  let prerequisites: { repository: any; owner: string; repo: string; current: any; facts: ReturnType<typeof currentPullFacts>; currentBase: string; currentState: SnapshotState } | null = null;
+  let prerequisiteCategory = "prerequisite-failed";
   try {
-    currentState = validateSnapshotState(await runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${args.repositoryId}`), args.repositoryId);
+    const repository = await client.getRepositoryById(args.repositoryId);
+    repositoryForCleanup = repository;
+    configuration(repository);
+    if (repository.full_name !== prepared.repositoryFullName) throw new Error("议题准备仓库名称已经漂移");
+    const [owner, repo] = splitRepository(repository.full_name);
+    const current = await client.getPullRequest(owner, repo, prepared.pullRequestNumber);
+    pullForCleanup = current;
+    const facts = currentPullFacts(current, args.repositoryId);
+    const currentBase = sha((await client.getRef(owner, repo, `heads/${repository.default_branch}`)).object.sha, "baseSha");
+    prerequisiteCategory = "snapshot-not-ready";
+    const currentState = validateSnapshotState(await runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${args.repositoryId}`), args.repositoryId);
+    prerequisites = { repository, owner, repo, current, facts, currentBase, currentState };
   } catch (error) {
     let cleaned = false;
     try {
-      if (facts.headSha === prepared.headSha && facts.baseSha === prepared.baseSha) {
-        await applyBodyAndVerify({ client, repository, pull: current, desired: [], removeBlock: true });
-        cleaned = true;
+      if (repositoryForCleanup && pullForCleanup) {
+        const cleanupFacts = currentPullFacts(pullForCleanup, args.repositoryId);
+        if (cleanupFacts.headSha === prepared.headSha && cleanupFacts.baseSha === prepared.baseSha) {
+          await applyBodyAndVerify({ client, repository: repositoryForCleanup, pull: pullForCleanup, desired: [], removeBlock: true });
+          cleaned = true;
+        }
       }
     } catch {}
-    await publishCheck(client, args.repositoryId, owner, repo, prepared.pullRequestNumber, prepared.headSha, {
+    await publishCheck(client, args.repositoryId, preparedOwner, preparedRepo, prepared.pullRequestNumber, prepared.headSha, {
       status: "completed", conclusion: cleaned ? "success" : "failure", title: cleaned ? "议题关联已安全跳过" : "议题关联清理失败",
-      summary: `拉取请求：#${prepared.pullRequestNumber}\n状态：${cleaned ? "safe-empty" : "failure"}\n类别：${cleaned ? "snapshot-not-ready-cleaned" : "snapshot-not-ready-unclean"}`,
+      summary: `拉取请求：#${prepared.pullRequestNumber}\n状态：${cleaned ? "safe-empty" : "failure"}\n类别：${prerequisiteCategory}-${cleaned ? "cleaned" : "unclean"}`,
     });
     if (!cleaned) throw error;
-    await writeSummary([`拉取请求：#${prepared.pullRequestNumber}`, "状态：snapshot-not-ready-cleaned"]);
+    await writeSummary([`拉取请求：#${prepared.pullRequestNumber}`, `状态：${prerequisiteCategory}-cleaned`]);
     return;
   }
+  if (!prerequisites) throw new Error("议题关联前置事实缺失");
+  const { repository, owner, repo, current, facts, currentBase, currentState } = prerequisites;
   if (current?.state !== "open" || current?.base?.ref !== repository.default_branch || facts.baseSha !== prepared.baseSha || facts.headSha !== prepared.headSha
     || currentBase !== prepared.baseSha || currentState.generation !== prepared.generation
     || managedBodyOutsideIssueLinksDigest(facts.body) !== prepared.unmanagedBodyDigest) {

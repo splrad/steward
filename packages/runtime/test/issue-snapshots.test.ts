@@ -259,8 +259,7 @@ describe("议题快照内部接口", () => {
         state: "closed", labels: [], milestone: null, state_reason: "completed", type: null,
         created_at: "2026-08-20T00:00:00Z", updated_at: "2026-08-21T00:00:00Z", comments: 0,
       }), { status: 200, headers: { etag: '"issue-closed"' } });
-      if (url.endsWith("/issues/8/parent")) return new Response("not found", { status: 404 });
-      if (url.includes("/issues/8/")) return new Response(JSON.stringify([]), { status: 200, headers: { etag: '"empty"' } });
+      if (url.includes("/issues/8/")) return new Response("unrelated endpoint unavailable", { status: 500 });
       return undefined;
     });
     const response = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/8/refresh", { method: "POST", headers: { authorization: "Bearer one-repository-token" } }), env(database));
@@ -355,10 +354,12 @@ describe("已验签Webhook直连清理", () => {
   it("安装删除会清理全部仓库并留下防复活墓碑", async () => {
     const database = new SqliteD1(); const store = new IssueSnapshotStore(database.binding());
     const steward = snapshot(1296724484, "splrad/steward", 7);
+    const pending = snapshot(1187527897, "splrad/LayerScape", 7);
     await put(store, steward, 0);
-    const payload = { installation: { id: 145952003, account: { id: 302208797 } }, action: "deleted" };
+    const payload = { installation: { id: 145952003, account: { id: 302208797 } }, action: "deleted", repositories: [repository(), repository(1187527897, "splrad/LayerScape")] };
     expect((await handleWebhook(signedRequest("installation", payload), env(database))).status).toBe(202);
     expect(await store.getRepositoryState(1296724484)).toBeNull();
     await expect(put(store, steward, 0, "late-installation-write")).rejects.toThrow("issue-snapshot-generation-conflict");
+    await expect(put(store, pending, 0, "late-uninitialized-write")).rejects.toThrow("issue-snapshot-generation-conflict");
   });
 });

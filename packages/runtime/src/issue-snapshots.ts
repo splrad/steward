@@ -1,4 +1,4 @@
-import { createAppJwt, createInstallationToken, GitHubClient, GitHubRequestError, type GitHubIssueFacts, type PageValidator } from "../../github/src/index.js";
+import { createAppJwt, createInstallationToken, GitHubClient, GitHubRequestError, type GitHubIssueFacts, type PageValidator, type ValidatedValue } from "../../github/src/index.js";
 import { issueSnapshotContentDigest, normalizeIssueSnapshot, openIssueSetDigest, type IssueRelationSnapshot, type IssueSnapshot } from "../../core/src/issues.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
 
@@ -297,9 +297,11 @@ export class IssueSnapshotStore {
     if (Number(remaining?.count ?? -1) !== 0 || await this.getRepositoryState(repositoryId)) throw new Error("仓库快照清理读回不一致");
   }
 
-  async deleteAllRepositories(): Promise<void> {
+  async deleteAllRepositories(repositoryIds: readonly number[] = []): Promise<void> {
     const result = await this.db.prepare("SELECT repository_id FROM issue_snapshot_repositories ORDER BY repository_id").all<{ repository_id: number }>();
-    for (const row of result.results) await this.deleteRepository(rowInteger(row.repository_id, "repository_id", 1));
+    const targets = new Set(result.results.map(row => rowInteger(row.repository_id, "repository_id", 1)));
+    for (const repositoryId of repositoryIds) targets.add(rowInteger(repositoryId, "repositoryId", 1));
+    for (const repositoryId of [...targets].sort((left, right) => left - right)) await this.deleteRepository(repositoryId);
   }
 
   async setScanState(repositoryId: number, syncState: Exclude<IssueSnapshotSyncState, "uninitialized">, expectedGeneration: number, now: string, liveOpenNumbers?: readonly number[]): Promise<IssueSnapshotRepositoryState> {
@@ -499,14 +501,19 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
       const current = await store.getRepositoryState(repositoryId);
       const expectedGeneration = current?.generation ?? 0;
       const [owner, repo] = repositoryParts(repository);
-      let facts: GitHubIssueFacts;
-      try { facts = await client.readIssueFacts(owner, repo, issueNumber); }
+      let issue: ValidatedValue<any>;
+      try { issue = await client.readIssueWithValidator(owner, repo, issueNumber); }
       catch (error) {
         const authoritativeMissing = error instanceof GitHubRequestError && error.status === 404 && error.path === `/repos/${owner}/${repo}/issues/${issueNumber}`;
         if (!authoritativeMissing) throw error;
         const deleted = await store.deleteSnapshot(repositoryId, issueNumber, expectedGeneration, new Date().toISOString());
         return noStoreResponse(200, { repositoryId, issueNumber, deleted: deleted.changed, generation: deleted.state?.generation ?? 0 });
       }
+      if (issue.value?.state === "closed") {
+        const deleted = await store.deleteSnapshot(repositoryId, issueNumber, expectedGeneration, new Date().toISOString());
+        return noStoreResponse(200, { repositoryId, issueNumber, deleted: deleted.changed, generation: deleted.state?.generation ?? expectedGeneration });
+      }
+      let facts: GitHubIssueFacts = await client.readIssueFacts(owner, repo, issueNumber, issue);
       facts = await hydrateRelationRepositoryIds(client, repository, facts, env);
       const snapshot = normalizeGitHubIssueFacts(repository, facts);
       if (snapshot.repository.id !== repositoryId || snapshot.issue.number !== issueNumber) throw new Error("issue-repository-mismatch");

@@ -64,7 +64,12 @@ function required(args: Readonly<Record<string, string>>, name: string): string 
   const value = args[name]; if (!value) throw new Error(`缺少参数: --${name}`); return value;
 }
 export function env(name: string): string { const value = process.env[name]; if (!value) throw new Error(`缺少环境变量: ${name}`); return value; }
-function integer(value: string, name: string): number { if (!/^\d+$/.test(value)) throw new Error(`${name}必须是十进制整数`); return Number(value); }
+function integer(value: string, name: string): number {
+  if (!/^\d+$/.test(value)) throw new Error(`${name}必须是十进制整数`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) throw new Error(`${name}必须是安全整数`);
+  return parsed;
+}
 function sha(value: string, name: string): string { if (!/^[0-9a-f]{40}$/i.test(value)) throw new Error(`${name}必须是40位提交编号`); return value.toLowerCase(); }
 function deepFreeze<T>(value: T): T {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {

@@ -551,6 +551,12 @@ export interface IssueLinksRegion {
   metadata: ParsedIssueLinksMetadata;
 }
 
+interface IssueLinksBlockBounds {
+  start: number;
+  end: number;
+  block: string;
+}
+
 function occurrences(value: string, needle: string): number {
   let count = 0;
   let offset = 0;
@@ -603,16 +609,22 @@ export function renderIssueLinksBlock(metadata: IssueLinksMetadata, issues: read
   return `${start}${visible}\n${issueLinksEnd}`;
 }
 
-export function extractIssueLinksBlock(body: string): IssueLinksRegion | null {
+function locateIssueLinksBlock(body: string): IssueLinksBlockBounds | null {
   const startCount = occurrences(body, issueLinksStartPrefix);
   const endCount = occurrences(body, issueLinksEnd);
   if (startCount === 0 && endCount === 0) return null;
   if (startCount !== 1 || endCount !== 1) throw new Error('议题子块标记缺失或重复');
   const start = body.indexOf(issueLinksStartPrefix);
-  const end = body.indexOf(issueLinksEnd, start) + issueLinksEnd.length;
-  if (start < 0 || end <= start || (start > 0 && body[start - 1] !== '\n') || (end < body.length && body[end] !== '\n')) throw new Error('议题子块边界无效');
+  const endMarker = body.indexOf(issueLinksEnd, start + issueLinksStartPrefix.length);
+  const end = endMarker < 0 ? -1 : endMarker + issueLinksEnd.length;
+  if (start < 0 || endMarker < 0 || end <= start || (start > 0 && body[start - 1] !== '\n') || (end < body.length && body[end] !== '\n')) throw new Error('议题子块边界无效');
   const block = body.slice(start, end);
-  return { start, end, block, metadata: parseIssueLinksBlock(block) };
+  return { start, end, block };
+}
+
+export function extractIssueLinksBlock(body: string): IssueLinksRegion | null {
+  const region = locateIssueLinksBlock(body);
+  return region ? { ...region, metadata: parseIssueLinksBlock(region.block) } : null;
 }
 
 function managedOuterRegion(body: string): { start: number; contentStart: number; end: number } {
@@ -649,7 +661,7 @@ export function upsertIssueLinksBlock(body: string, block: string): string {
 
 export function removeIssueLinksBlock(body: string): string {
   const outer = managedOuterRegion(body);
-  const current = extractIssueLinksBlock(body);
+  const current = locateIssueLinksBlock(body);
   if (!current) return body;
   if (current.start <= outer.start || current.end > outer.end) throw new Error('议题子块不在唯一外层受管区域内');
   const end = body.slice(current.end, current.end + 2) === '\n\n' ? current.end + 2 : current.end;
