@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 
-const expected = ["deploy-runtime.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "pr-validation.yml", "release.yml", "sync-copilot-instructions.yml", "sync-managed-labels.yml"];
+const expected = ["deploy-runtime.yml", "issue-sync.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "pr-issue-link.yml", "pr-validation.yml", "release.yml", "sync-copilot-instructions.yml", "sync-managed-labels.yml"];
 const files = (await readdir(".github/workflows")).sort();
 if (JSON.stringify(files) !== JSON.stringify(expected)) throw new Error(`工作流集合不正确: ${files.join(", ")}`);
 const workflowDocuments = new Map();
@@ -26,9 +26,12 @@ if (String(validationStep?.env?.VALIDATION_BASE_SHA ?? "").replace(/\s+/gu, "") 
 if (String(validationStep?.env?.VALIDATION_BASE_REF ?? "").replace(/\s+/gu, "") !== "${{github.event.pull_request.base.ref}}") throw new Error("中央验证没有通过环境变量接收基础分支引用");
 const expectedJobEnvironments = new Map([
   ["deploy-runtime.yml:deploy", { name: "steward-deployment", deployment: true }],
+  ["issue-sync.yml:synchronize", { name: "steward-automation", deployment: false }],
   ["onboard-repository.yml:onboard", { name: "steward-automation", deployment: false }],
   ["pr-automation.yml:reconcile", { name: "steward-automation", deployment: false }],
   ["pr-classification.yml:classify", { name: "steward-automation", deployment: false }],
+  ["pr-issue-link.yml:resolve", { name: "steward-automation", deployment: false }],
+  ["pr-issue-link.yml:analyze", { name: "steward-automation", deployment: false }],
   ["release.yml:preflight", { name: "steward-release", deployment: false }],
   ["release.yml:notes", { name: "steward-release", deployment: false }],
   ["release.yml:publish", { name: "steward-release", deployment: false }],
@@ -90,6 +93,52 @@ for (const [name, expectedValue] of [["TRIGGER_ACTOR_ID", "${{github.actor_id}}"
   if (String(classificationStep?.env?.[name] ?? "").replace(/\s+/gu, "") !== expectedValue) throw new Error(`AI分类工作流没有绑定可信上下文: ${name}`);
 }
 if (/--ai-classification/iu.test(classificationStep?.run ?? "")) throw new Error("AI影子分类输入不得拼接进shell命令");
+const issueSyncDocument = workflowDocuments.get("issue-sync.yml");
+const issueSyncInputs = issueSyncDocument?.on?.workflow_dispatch?.inputs ?? {};
+if (JSON.stringify(Object.keys(issueSyncInputs)) !== JSON.stringify(["deliveryId", "repositoryId", "issueNumber", "scanAll", "policySha"])) throw new Error("议题同步工作流输入集合不正确");
+if (issueSyncDocument?.permissions && Object.keys(issueSyncDocument.permissions).length !== 0) throw new Error("议题同步工作流不应使用GITHUB_TOKEN权限");
+const issueSyncConcurrency = String(issueSyncDocument?.concurrency?.group ?? "").replace(/\s+/gu, "");
+for (const required of ["steward-issue-sync-", "inputs.repositoryId", "inputs.scanAll", "'all'", "inputs.issueNumber"]) if (!issueSyncConcurrency.includes(required)) throw new Error(`议题同步并发键不完整: ${required}`);
+const issueSyncStep = issueSyncDocument?.jobs?.synchronize?.steps?.find(step => step?.name === "同步议题快照");
+const issueSyncCommand = String(issueSyncStep?.run ?? "");
+for (const required of ['issue_arguments=()', 'issue_arguments+=(--issue-number "$ISSUE_NUMBER")', '"${issue_arguments[@]}"', '--scan-all "$SCAN_ALL"', '--policy-sha "$POLICY_SHA"']) if (!issueSyncCommand.includes(required)) throw new Error(`议题同步命令没有安全传递固定输入: ${required}`);
+for (const name of ["DELIVERY_ID", "REPOSITORY_ID", "ISSUE_NUMBER", "SCAN_ALL", "POLICY_SHA", "RUNTIME_URL"]) if (!Object.hasOwn(issueSyncStep?.env ?? {}, name)) throw new Error(`议题同步环境缺少${name}`);
+if (Object.hasOwn(issueSyncStep?.env ?? {}, "COPILOT_GITHUB_TOKEN") || Object.hasOwn(issueSyncStep?.env ?? {}, "COPILOT_CLI_TOKEN") || /\bcopilot\b/iu.test(issueSyncCommand)) throw new Error("议题同步路径不得调用Copilot");
+const issueLinkDocument = workflowDocuments.get("pr-issue-link.yml");
+const issueLinkInputs = issueLinkDocument?.on?.workflow_dispatch?.inputs ?? {};
+if (JSON.stringify(Object.keys(issueLinkInputs)) !== JSON.stringify(["deliveryId", "repositoryId", "pullRequestNumber", "scanAll", "invalidateOnly", "policySha"])) throw new Error("议题关联工作流输入集合不正确");
+if (issueLinkInputs.pullRequestNumber?.required !== false || issueLinkInputs.scanAll?.type !== "boolean" || issueLinkInputs.invalidateOnly?.type !== "boolean") throw new Error("议题关联工作流可选编号或布尔输入契约不正确");
+const issueLinkPermissions = issueLinkDocument?.permissions ?? {};
+if (JSON.stringify(issueLinkPermissions) !== JSON.stringify({ contents: "read", "copilot-requests": "write" })) throw new Error("议题关联内置令牌权限不正确");
+const issueLinkConcurrency = String(issueLinkDocument?.concurrency?.group ?? "").replace(/\s+/gu, "");
+for (const required of ["steward-pr-issue-link-", "inputs.repositoryId", "inputs.scanAll", "'all'", "inputs.pullRequestNumber"]) if (!issueLinkConcurrency.includes(required)) throw new Error(`议题关联并发键不完整: ${required}`);
+if (issueLinkDocument?.concurrency?.["cancel-in-progress"] !== false) throw new Error("议题关联工作流不得取消在途运行");
+const issueLinkResolve = issueLinkDocument?.jobs?.resolve;
+const issueLinkMatrixStep = issueLinkResolve?.steps?.find(step => step?.name === "解析开放拉取请求");
+const issueLinkMatrixCommand = String(issueLinkMatrixStep?.run ?? "");
+for (const required of ['ISSUE_LINK_LIST_ONLY', 'pull_arguments=()', 'pull_arguments+=(--pull-request-number "$PULL_REQUEST_NUMBER")', '"${pull_arguments[@]}"', '--scan-all "$SCAN_ALL"', '--invalidate-only "$INVALIDATE_ONLY"']) {
+  if (!(Object.hasOwn(issueLinkMatrixStep?.env ?? {}, required) || issueLinkMatrixCommand.includes(required))) throw new Error(`议题关联矩阵解析缺少固定约束: ${required}`);
+}
+if (issueLinkDocument?.jobs?.analyze?.strategy?.["max-parallel"] !== 4 || issueLinkDocument?.jobs?.analyze?.strategy?.["fail-fast"] !== false) throw new Error("议题关联矩阵并发策略不正确");
+const issueLinkAnalyze = issueLinkDocument?.jobs?.analyze;
+for (const name of ["DELIVERY_ID", "REPOSITORY_ID", "PULL_REQUEST_NUMBER", "INVALIDATE_ONLY", "POLICY_SHA"]) if (!Object.hasOwn(issueLinkAnalyze?.env ?? {}, name)) throw new Error(`议题关联分析环境缺少${name}`);
+const issuePrepareStep = issueLinkAnalyze?.steps?.find(step => step?.name === "准备议题与差异证据");
+const issueReconcileStep = issueLinkAnalyze?.steps?.find(step => step?.name === "收敛议题关联");
+for (const step of [issuePrepareStep, issueReconcileStep]) {
+  const command = String(step?.run ?? "");
+  if (/\$\{\{/u.test(command) || !command.includes('--delivery-id "$DELIVERY_ID"') || !command.includes('--repository-id "$REPOSITORY_ID"') || !command.includes('--pull-request-number "$PULL_REQUEST_NUMBER"') || !command.includes('--policy-sha "$POLICY_SHA"')) throw new Error("议题关联运行器输入没有通过环境变量安全传递");
+}
+const issueCopilotStep = issueLinkAnalyze?.steps?.find(step => step?.name === "使用Copilot判断议题");
+const expectedIssueCopilotCommand = 'npx --no-install copilot --available-tools= --no-auto-update --output-format json --stream off --no-color --no-custom-instructions --disable-builtin-mcps --no-ask-user < "$ISSUE_COPILOT_PROMPT_PATH" > "$ISSUE_COPILOT_OUTPUT_PATH"';
+if (issueCopilotStep?.id !== "copilot" || issueCopilotStep?.["continue-on-error"] !== true || issueCopilotStep?.run !== expectedIssueCopilotCommand || issueCopilotStep?.env?.GITHUB_TOKEN?.replace(/\s+/gu, "") !== "${{github.token}}" || Object.hasOwn(issueCopilotStep?.env ?? {}, "COPILOT_GITHUB_TOKEN")) throw new Error("议题关联Copilot调用合同不正确");
+if (/(?:^|\s)(?:-p|--prompt|--allow-tool)(?:=|\s|$)/u.test(String(issueCopilotStep?.run ?? ""))) throw new Error("议题关联Copilot不得使用参数提示或启用工具");
+if (String(issueReconcileStep?.env?.COPILOT_STEP_OUTCOME ?? "").replace(/\s+/gu, "") !== "${{steps.copilot.outcome}}") throw new Error("议题关联收敛没有接收Copilot结果");
+const issueCleanupStep = issueLinkAnalyze?.steps?.find(step => step?.name === "删除临时议题输入输出");
+if (String(issueCleanupStep?.if ?? "").replace(/\s+/gu, "") !== "always()" || issueCleanupStep?.run !== 'rm -f "$ISSUE_PREPARED_FACTS_PATH" "$ISSUE_COPILOT_PROMPT_PATH" "$ISSUE_COPILOT_OUTPUT_PATH"') throw new Error("议题关联临时输入输出没有始终清理");
+for (const [step, names] of [[issuePrepareStep, ["ISSUE_PREPARED_FACTS_PATH", "ISSUE_COPILOT_PROMPT_PATH"]], [issueCopilotStep, ["ISSUE_COPILOT_PROMPT_PATH", "ISSUE_COPILOT_OUTPUT_PATH"]], [issueReconcileStep, ["ISSUE_PREPARED_FACTS_PATH", "ISSUE_COPILOT_OUTPUT_PATH"]], [issueCleanupStep, ["ISSUE_PREPARED_FACTS_PATH", "ISSUE_COPILOT_PROMPT_PATH", "ISSUE_COPILOT_OUTPUT_PATH"]]]) {
+  for (const name of names) if (!String(step?.env?.[name] ?? "").includes("${{ runner.temp }}")) throw new Error(`议题关联临时路径缺少${name}`);
+}
+if (String(issueLinkDocument).includes("upload-artifact") || (await readFile(".github/workflows/pr-issue-link.yml", "utf8")).includes("actions/upload-artifact")) throw new Error("议题关联不得上传模型输入输出制品");
 const syncInstructionsDocument = workflowDocuments.get("sync-copilot-instructions.yml");
 const syncWorkflowRun = syncInstructionsDocument?.on?.workflow_run;
 if (JSON.stringify(syncWorkflowRun?.workflows) !== JSON.stringify(["SPLRAD Steward / Deploy Runtime"]) || JSON.stringify(syncWorkflowRun?.types) !== JSON.stringify(["completed"])) throw new Error("Copilot说明同步没有只绑定中央部署完成事件");
@@ -142,6 +191,17 @@ for (const required of [".github/workflows/deploy-runtime.yml", "scripts/verify-
 }
 const deployRuntimeDocument = YAML.parse(deployRuntime);
 if (Object.hasOwn(deployRuntimeDocument?.on?.push ?? {}, "branches")) throw new Error("部署工作流仍固定默认分支名称");
+const deploySteps = deployRuntimeDocument?.jobs?.deploy?.steps ?? [];
+const migrationStepIndex = deploySteps.findIndex(step => step?.name === "列出并应用D1迁移");
+const deployStepIndex = deploySteps.findIndex(step => step?.id === "deploy");
+if (migrationStepIndex < 0 || deployStepIndex < 0 || migrationStepIndex >= deployStepIndex) throw new Error("D1迁移没有在运行程序部署前执行");
+const migrationStep = deploySteps[migrationStepIndex];
+if (String(migrationStep?.env?.CLOUDFLARE_API_TOKEN ?? "").replace(/\s+/gu, "") !== "${{secrets.CLOUDFLARE_API_TOKEN}}") throw new Error("D1迁移没有使用固定Cloudflare密钥");
+const expectedMigrationCommand = `set -euo pipefail
+npx wrangler d1 migrations list splrad-steward-issue-snapshots --remote --config packages/runtime/wrangler.toml
+npx wrangler d1 migrations apply splrad-steward-issue-snapshots --remote --config packages/runtime/wrangler.toml
+`;
+if (migrationStep?.shell !== "bash" || migrationStep?.run !== expectedMigrationCommand) throw new Error("D1迁移没有固定为先列出、后应用的远程命令");
 const runtimeConfiguration = await readFile("packages/runtime/wrangler.toml", "utf8");
 if (!/\[version_metadata\]\s*binding\s*=\s*"CF_VERSION_METADATA"/u.test(runtimeConfiguration)) throw new Error("运行程序未绑定Cloudflare版本元数据");
 const actionlintVersion = "1.7.12";
@@ -160,7 +220,7 @@ try {
   const archivePath = join(temporary, archiveName); await writeFile(archivePath, archive);
   const extracted = spawnSync("tar", ["-xf", archivePath, "-C", temporary], { encoding: "utf8" }); if (extracted.status !== 0) throw new Error(extracted.stderr || "无法解压actionlint");
   const executable = join(temporary, platform === "windows" ? "actionlint.exe" : "actionlint"); if (platform !== "windows") await chmod(executable, 0o755);
-  const actionlintArguments = files.map(file => `.github/workflows/${file}`);
+  const actionlintArguments = ["-ignore", 'unknown permission scope "copilot-requests"', ...files.map(file => `.github/workflows/${file}`)];
   const checked = spawnSync(executable, actionlintArguments, { encoding: "utf8" }); if (checked.status !== 0) throw new Error(checked.stdout || checked.stderr || "actionlint失败");
 } finally { await rm(temporary, { recursive: true, force: true }); }
 console.log("workflows verified");

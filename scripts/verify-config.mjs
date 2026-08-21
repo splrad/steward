@@ -89,6 +89,22 @@ for (const configuration of [...Object.values(catalog.defaults), ...Object.value
 const release = JSON.parse(await readFile("config/profiles/release/layerscape.json", "utf8"));
 if (release.build.projects.length !== 10 || new Set(release.build.projects.map(x => x.path)).size !== 10) throw new Error("LayerScape插件项目必须恰好10个且不重复");
 if (release.assets.length !== 3 || new Set(release.assets.map(x => x.nameTemplate)).size !== 3) throw new Error("发布资产必须恰好3项且不重复");
-const forbiddenRuntime = ["queues", "durable_objects", "kv_namespaces", "d1_databases", "r2_buckets", "services", "triggers"];
-const wrangler = await readFile("packages/runtime/wrangler.toml", "utf8"); for (const name of forbiddenRuntime) if (wrangler.includes(name)) throw new Error(`运行配置包含禁止绑定: ${name}`);
+const forbiddenRuntime = ["queues", "durable_objects", "kv_namespaces", "r2_buckets", "services", "triggers"];
+const wrangler = await readFile("packages/runtime/wrangler.toml", "utf8");
+for (const name of forbiddenRuntime) if (wrangler.includes(name)) throw new Error(`运行配置包含禁止绑定: ${name}`);
+const wranglerLines = wrangler.split(/\r?\n/u);
+const arrayTables = wranglerLines.filter(line => /^\[\[[^\]]+\]\]$/u.test(line));
+if (JSON.stringify(arrayTables) !== JSON.stringify(["[[d1_databases]]"])) throw new Error("运行配置必须恰好包含一个D1绑定");
+const d1Start = wranglerLines.indexOf("[[d1_databases]]");
+const d1EndOffset = wranglerLines.slice(d1Start + 1).findIndex(line => /^\[[^\]]+\]$/u.test(line));
+const d1End = d1EndOffset < 0 ? wranglerLines.length : d1Start + 1 + d1EndOffset;
+const actualD1Block = wranglerLines.slice(d1Start, d1End).filter(Boolean);
+const expectedD1Block = [
+  "[[d1_databases]]",
+  'binding = "ISSUE_SNAPSHOTS"',
+  'database_name = "splrad-steward-issue-snapshots"',
+  'database_id = "75ae2ef8-683d-4a44-b113-e58961473d03"',
+  'migrations_dir = "migrations"',
+];
+if (JSON.stringify(actualD1Block) !== JSON.stringify(expectedD1Block)) throw new Error("运行配置的D1绑定不符合固定合同");
 console.log("configuration verified");

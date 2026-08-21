@@ -1,0 +1,126 @@
+name: SPLRAD Steward / PR Issue Link
+
+on:
+  workflow_dispatch:
+    inputs:
+      deliveryId: { required: true, type: string }
+      repositoryId: { required: true, type: string }
+      pullRequestNumber: { required: false, type: string }
+      scanAll: { required: true, type: boolean }
+      invalidateOnly: { required: true, type: boolean }
+      policySha: { required: true, type: string }
+
+permissions:
+  contents: read
+  copilot-requests: write
+
+concurrency:
+  group: steward-pr-issue-link-${{ inputs.repositoryId }}-${{ inputs.scanAll && 'all' || inputs.pullRequestNumber }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: steward-automation
+      deployment: false
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      count: ${{ steps.matrix.outputs.count }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: "${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}", persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: .node-version, cache: npm }
+      - run: npm ci --ignore-scripts
+      - name: 解析开放拉取请求
+        id: matrix
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          DELIVERY_ID: ${{ github.actor_id == '301115370' && inputs.deliveryId || format('manual-{0}-{1}', github.run_id, github.run_attempt) }}
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          PULL_REQUEST_NUMBER: ${{ inputs.pullRequestNumber }}
+          SCAN_ALL: ${{ inputs.scanAll }}
+          INVALIDATE_ONLY: ${{ inputs.invalidateOnly }}
+          POLICY_SHA: ${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}
+          ISSUE_LINK_LIST_ONLY: "true"
+        run: |
+          pull_arguments=()
+          if [[ "$SCAN_ALL" == "false" ]]; then
+            if [[ -z "$PULL_REQUEST_NUMBER" ]]; then
+              echo "单拉取请求运行缺少编号" >&2
+              exit 1
+            fi
+            pull_arguments+=(--pull-request-number "$PULL_REQUEST_NUMBER")
+          elif [[ -n "$PULL_REQUEST_NUMBER" ]]; then
+            echo "仓库扫描不能指定拉取请求编号" >&2
+            exit 1
+          fi
+          node packages/runner/dist/index.js pr-issue-link --delivery-id "$DELIVERY_ID" --repository-id "$REPOSITORY_ID" "${pull_arguments[@]}" --scan-all "$SCAN_ALL" --invalidate-only "$INVALIDATE_ONLY" --policy-sha "$POLICY_SHA"
+
+  analyze:
+    needs: resolve
+    if: needs.resolve.outputs.count != '0'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: steward-automation
+      deployment: false
+    env:
+      DELIVERY_ID: ${{ github.actor_id == '301115370' && inputs.deliveryId || format('manual-{0}-{1}', github.run_id, github.run_attempt) }}
+      REPOSITORY_ID: ${{ inputs.repositoryId }}
+      PULL_REQUEST_NUMBER: ${{ matrix.pullRequestNumber }}
+      INVALIDATE_ONLY: ${{ inputs.invalidateOnly }}
+      POLICY_SHA: ${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: "${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}", persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: .node-version, cache: npm }
+      - run: npm ci --ignore-scripts
+      - name: 准备议题与差异证据
+        id: prepare
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
+          ISSUE_LINK_PREPARE_ONLY: "true"
+          ISSUE_PREPARED_FACTS_PATH: ${{ runner.temp }}/issue-prepared-${{ matrix.pullRequestNumber }}.json
+          ISSUE_COPILOT_PROMPT_PATH: ${{ runner.temp }}/issue-prompt-${{ matrix.pullRequestNumber }}.txt
+        run: node packages/runner/dist/index.js pr-issue-link --delivery-id "$DELIVERY_ID" --repository-id "$REPOSITORY_ID" --pull-request-number "$PULL_REQUEST_NUMBER" --scan-all false --invalidate-only "$INVALIDATE_ONLY" --policy-sha "$POLICY_SHA"
+      - name: 使用Copilot判断议题
+        id: copilot
+        if: steps.prepare.outputs.copilot-required == 'true'
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ISSUE_COPILOT_PROMPT_PATH: ${{ runner.temp }}/issue-prompt-${{ matrix.pullRequestNumber }}.txt
+          ISSUE_COPILOT_OUTPUT_PATH: ${{ runner.temp }}/issue-copilot-output-${{ matrix.pullRequestNumber }}.jsonl
+        run: npx --no-install copilot --available-tools= --no-auto-update --output-format json --stream off --no-color --no-custom-instructions --disable-builtin-mcps --no-ask-user < "$ISSUE_COPILOT_PROMPT_PATH" > "$ISSUE_COPILOT_OUTPUT_PATH"
+      - name: 收敛议题关联
+        if: steps.prepare.outputs.copilot-required == 'true'
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
+          COPILOT_STEP_OUTCOME: ${{ steps.copilot.outcome }}
+          ISSUE_PREPARED_FACTS_PATH: ${{ runner.temp }}/issue-prepared-${{ matrix.pullRequestNumber }}.json
+          ISSUE_COPILOT_OUTPUT_PATH: ${{ runner.temp }}/issue-copilot-output-${{ matrix.pullRequestNumber }}.jsonl
+        run: node packages/runner/dist/index.js pr-issue-link --delivery-id "$DELIVERY_ID" --repository-id "$REPOSITORY_ID" --pull-request-number "$PULL_REQUEST_NUMBER" --scan-all false --invalidate-only false --policy-sha "$POLICY_SHA"
+      - name: 删除临时议题输入输出
+        if: always()
+        env:
+          ISSUE_PREPARED_FACTS_PATH: ${{ runner.temp }}/issue-prepared-${{ matrix.pullRequestNumber }}.json
+          ISSUE_COPILOT_PROMPT_PATH: ${{ runner.temp }}/issue-prompt-${{ matrix.pullRequestNumber }}.txt
+          ISSUE_COPILOT_OUTPUT_PATH: ${{ runner.temp }}/issue-copilot-output-${{ matrix.pullRequestNumber }}.jsonl
+        run: rm -f "$ISSUE_PREPARED_FACTS_PATH" "$ISSUE_COPILOT_PROMPT_PATH" "$ISSUE_COPILOT_OUTPUT_PATH"

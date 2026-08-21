@@ -1,9 +1,11 @@
 import { createInstallationToken, dispatchWorkflow, GitHubClient } from "../../github/src/index.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
+import { handleIssueSnapshotInternalRequest, IssueSnapshotStore } from "./issue-snapshots.js";
 
 export interface Env {
   ORGANIZATION_ID: string; ORGANIZATION_LOGIN: string; APP_ID: string; INSTALLATION_ID: string;
   STEWARDSHIP_REPOSITORY: string; POLICY_SHA: string; STEWARD_APP_PRIVATE_KEY?: string; STEWARD_WEBHOOK_SECRET?: string;
+  ISSUE_SNAPSHOTS?: D1Database;
   CF_VERSION_METADATA?: { id: string };
 }
 
@@ -206,6 +208,43 @@ function belongsToOrganization(repository: any): boolean {
 }
 function isManaged(repository: any): boolean { return belongsToOrganization(repository) && repositoryConfiguration(repository).managed === true; }
 
+async function dispatchIssueInvalidation(env: Env, repository: any, deliveryId: string): Promise<void> {
+  await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "true", policySha: env.POLICY_SHA });
+}
+
+async function dispatchIssueRefreshes(env: Env, repository: any, deliveryId: string, issueNumbers: readonly number[] | null): Promise<void> {
+  await dispatchIssueInvalidation(env, repository, deliveryId);
+  if (issueNumbers === null) {
+    await send(env, "issue-sync.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", policySha: env.POLICY_SHA });
+    return;
+  }
+  const unique = [...new Set(issueNumbers)].sort((left, right) => left - right);
+  if (!unique.length || unique.some(number => !Number.isSafeInteger(number) || number <= 0)) throw new Error("议题事件编号无效");
+  for (const issueNumber of unique) await send(env, "issue-sync.yml", { deliveryId, repositoryId: String(repository.id), issueNumber: String(issueNumber), scanAll: "false", policySha: env.POLICY_SHA });
+}
+
+async function dispatchRelationRefreshes(env: Env, deliveryId: string, payload: any, targets: readonly { repository: any; issueNumber: unknown }[]): Promise<void> {
+  const grouped = new Map<number, { repository: any; issueNumbers: number[] | null }>();
+  let incomplete = false;
+  for (const target of targets) {
+    if (!target.repository || !isManaged(target.repository)) { incomplete = true; continue; }
+    const repositoryId = Number(target.repository.id);
+    const issueNumber = Number(target.issueNumber);
+    const existing = grouped.get(repositoryId) ?? { repository: target.repository, issueNumbers: [] };
+    if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) existing.issueNumbers = null;
+    else if (existing.issueNumbers) existing.issueNumbers.push(issueNumber);
+    grouped.set(repositoryId, existing);
+  }
+  if (incomplete && payload.repository && isManaged(payload.repository)) {
+    const repositoryId = Number(payload.repository.id);
+    const existing = grouped.get(repositoryId) ?? { repository: payload.repository, issueNumbers: [] };
+    existing.issueNumbers = null;
+    grouped.set(repositoryId, existing);
+  }
+  if (!grouped.size && payload.repository && isManaged(payload.repository)) grouped.set(Number(payload.repository.id), { repository: payload.repository, issueNumbers: null });
+  for (const target of grouped.values()) await dispatchIssueRefreshes(env, target.repository, deliveryId, target.issueNumbers);
+}
+
 export async function handleWebhook(request: Request, env: Env): Promise<Response> {
   const declared = Number(request.headers.get("content-length") ?? "0"); if (declared > MAX_BODY) return response(413);
   const bytes = await request.arrayBuffer(); if (bytes.byteLength > MAX_BODY) return response(413);
@@ -214,29 +253,100 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
   if (!validScope(payload, env)) return response(403);
   const event = request.headers.get("x-github-event") ?? ""; const deliveryId = request.headers.get("x-github-delivery") ?? ""; const action = payload.action ?? "";
   try {
+    if (event === "installation_repositories" && action === "removed") {
+      if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
+      for (const repository of payload.repositories_removed ?? []) if (isManaged(repository)) await new IssueSnapshotStore(env.ISSUE_SNAPSHOTS).deleteRepository(Number(repository.id));
+      return response(202);
+    }
+    if (event === "issues" && ["deleted", "transferred"].includes(action)) {
+      const repository = payload.repository; const issueNumber = Number(payload.issue?.number);
+      if (!repository || !isManaged(repository) || !Number.isSafeInteger(issueNumber) || issueNumber <= 0) return response(204);
+      if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
+      const store = new IssueSnapshotStore(env.ISSUE_SNAPSHOTS);
+      const state = await store.getRepositoryState(Number(repository.id));
+      if (!state) return response(204);
+      const result = await store.deleteSnapshot(Number(repository.id), issueNumber, state.generation, new Date().toISOString());
+      if (result.changed) {
+        await dispatchIssueInvalidation(env, repository, deliveryId);
+        await send(env, "issue-sync.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", policySha: env.POLICY_SHA });
+      }
+      return response(result.changed ? 202 : 204);
+    }
+    if (event === "issues") {
+      const repository = payload.repository; const issueNumber = Number(payload.issue?.number);
+      if (!repository || !isManaged(repository) || payload.issue?.pull_request || !Number.isSafeInteger(issueNumber) || issueNumber <= 0) return response(204);
+      await dispatchIssueRefreshes(env, repository, deliveryId, [issueNumber]);
+      return response(202);
+    }
+    if (event === "issue_comment" && ["created", "edited", "deleted"].includes(action)) {
+      const repository = payload.repository; const issueNumber = Number(payload.issue?.number);
+      if (!repository || !isManaged(repository) || payload.issue?.pull_request || !Number.isSafeInteger(issueNumber) || issueNumber <= 0) return response(204);
+      await dispatchIssueRefreshes(env, repository, deliveryId, [issueNumber]);
+      return response(202);
+    }
+    if (event === "sub_issues") {
+      await dispatchRelationRefreshes(env, deliveryId, payload, [
+        { repository: payload.parent_issue_repo, issueNumber: payload.parent_issue?.number },
+        { repository: payload.repository, issueNumber: payload.sub_issue?.number },
+      ]);
+      return response(202);
+    }
+    if (event === "issue_dependencies") {
+      await dispatchRelationRefreshes(env, deliveryId, payload, [
+        { repository: payload.repository, issueNumber: payload.blocked_issue?.number },
+        { repository: payload.blocking_issue_repo, issueNumber: payload.blocking_issue?.number },
+      ]);
+      return response(202);
+    }
     if (event === "installation" && action === "created") {
-      for (const repository of payload.repositories ?? []) if (isManaged(repository)) await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "installation-created", deliveryId, policySha: env.POLICY_SHA });
+      for (const repository of payload.repositories ?? []) if (isManaged(repository)) {
+        await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "installation-created", deliveryId, policySha: env.POLICY_SHA });
+        await dispatchIssueInvalidation(env, repository, deliveryId);
+      }
       return response(202);
     }
     if (event === "installation_repositories" && action === "added") {
-      for (const repository of payload.repositories_added ?? []) if (isManaged(repository)) await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "installation-repositories-added", deliveryId, policySha: env.POLICY_SHA });
+      for (const repository of payload.repositories_added ?? []) if (isManaged(repository)) {
+        await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "installation-repositories-added", deliveryId, policySha: env.POLICY_SHA });
+        await dispatchIssueInvalidation(env, repository, deliveryId);
+      }
+      return response(202);
+    }
+    if (event === "repository" && action === "edited") {
+      const repository = payload.repository; if (!repository || !isManaged(repository)) return response(204);
+      await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "false", policySha: env.POLICY_SHA });
       return response(202);
     }
     if (event === "push") {
       const repository = payload.repository; if (!repository || !isManaged(repository) || repository.fork || repository.archived || repository.disabled || payload.deleted || !String(payload.ref).startsWith("refs/heads/") || payload.after === ZERO_SHA) return response(204);
       if (payload.ref === `refs/heads/${repository.default_branch}`) {
         if (payload.before === ZERO_SHA) await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "default-branch-push", deliveryId, policySha: env.POLICY_SHA });
-        else await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", policySha: env.POLICY_SHA });
+        else {
+          await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", policySha: env.POLICY_SHA });
+          await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "false", policySha: env.POLICY_SHA });
+        }
         return response(202);
       }
       const sender = payload.sender; if (!sender || sender.type !== "User" || String(sender.login).endsWith("[bot]")) return response(204);
       await send(env, "pr-automation.yml", { deliveryId, repositoryId: String(repository.id), sourceRef: payload.ref, eventAfterSha: payload.after, sourceActorId: String(sender.id), sourceActorLogin: String(sender.login), policySha: env.POLICY_SHA }); return response(202);
     }
     if (event === "pull_request" && ["opened", "synchronize", "reopened", "edited"].includes(action)) {
-      const repository = payload.repository; const pull = payload.pull_request; if (!repository || !isManaged(repository) || !pull || pull.base?.ref !== repository.default_branch) return response(204);
-      await ensureValidationPending(env, repository, pull);
-      await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), eventHeadSha: pull.head.sha, policySha: env.POLICY_SHA });
-      return response(202);
+      const repository = payload.repository; const pull = payload.pull_request;
+      if (!repository || !isManaged(repository) || !pull) return response(204);
+      const targetsDefault = pull.base?.ref === repository.default_branch;
+      const leftDefault = action === "edited" && payload.changes?.base?.ref?.from === repository.default_branch;
+      const hasManagedIssueBlock = String(pull.body ?? "").includes("<!-- workflow:issue-links:start ");
+      let dispatched = false;
+      if (targetsDefault) {
+        await ensureValidationPending(env, repository, pull);
+        await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), eventHeadSha: pull.head.sha, policySha: env.POLICY_SHA });
+        dispatched = true;
+      }
+      if (targetsDefault || leftDefault || hasManagedIssueBlock) {
+        await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), scanAll: "false", invalidateOnly: "false", policySha: env.POLICY_SHA });
+        dispatched = true;
+      }
+      return response(dispatched ? 202 : 204);
     }
     if (event === "pull_request" && action === "ready_for_review") {
       const repository = payload.repository; const pull = payload.pull_request;
@@ -264,6 +374,8 @@ export default {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") return response(200, { status: "ok", policySha: env.POLICY_SHA, version: env.CF_VERSION_METADATA?.id ?? "local", organizationId: Number(env.ORGANIZATION_ID), appId: Number(env.APP_ID), secretsReady: Boolean(env.STEWARD_APP_PRIVATE_KEY && env.STEWARD_WEBHOOK_SECRET) });
     if (request.method === "POST" && url.pathname === "/github/webhook") return handleWebhook(request, env);
+    const internal = await handleIssueSnapshotInternalRequest(request, env);
+    if (internal) return internal;
     return response(404);
   },
 };
