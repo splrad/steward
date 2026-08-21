@@ -721,11 +721,10 @@ describe("议题快照同步", () => {
           if (result.changed === true || result.deleted === true) pendingGeneration = result.generation;
           return { repositoryId: 1296724484, issueNumber, ...result };
         },
-        dispatchFormalReconciliation: async () => { dispatched++; if (input.failDispatch || (input.failDispatchOnce && dispatched === 1)) throw new Error("工作流派发失败"); },
-        acknowledgeFormalReconciliation: async (generation: number) => {
-          if (pendingGeneration !== generation) return false;
-          pendingGeneration = null;
-          return true;
+        dispatchFormalReconciliation: async (generation: number) => {
+          if (pendingGeneration !== generation) throw new Error("待处理代次不一致");
+          dispatched++;
+          if (input.failDispatch || (input.failDispatchOnce && dispatched === 1)) throw new Error("工作流派发失败");
         },
       },
     };
@@ -768,6 +767,13 @@ describe("议题快照同步", () => {
   it("派发失败后保留D1待处理代次，重试即使内容未变也会再次派发", async () => {
     const fixture = dependencies({ refresh: () => ({ changed: true, generation: 5 }), failDispatchOnce: true });
     await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, fixture.value)).rejects.toThrow("工作流派发失败");
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, fixture.value)).resolves.toEqual(expect.objectContaining({ dispatched: true }));
+    expect(fixture.dispatched()).toBe(2);
+  });
+
+  it("派发成功后仍保留D1待处理代次，由正式收敛成功路径另行确认", async () => {
+    const fixture = dependencies({ refresh: () => ({ changed: true, generation: 5 }) });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, fixture.value)).resolves.toEqual(expect.objectContaining({ dispatched: true }));
     await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, fixture.value)).resolves.toEqual(expect.objectContaining({ dispatched: true }));
     expect(fixture.dispatched()).toBe(2);
   });

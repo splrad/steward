@@ -33,7 +33,7 @@ const allowedArguments: Record<string, Set<string>> = {
   "onboard-repository": new Set(["repository-id", "repository-full-name", "trigger", "delivery-id", "policy-sha"]),
   "pr-automation": new Set(["delivery-id", "repository-id", "source-ref", "event-after-sha", "source-actor-id", "source-actor-login", "policy-sha"]),
   "pr-classification": new Set(["delivery-id", "repository-id", "pull-request-number", "event-head-sha", "scan-all", "policy-sha"]),
-  "pr-issue-link": new Set(["delivery-id", "repository-id", "pull-request-number", "scan-all", "invalidate-only", "policy-sha"]),
+  "pr-issue-link": new Set(["delivery-id", "repository-id", "pull-request-number", "scan-all", "invalidate-only", "reconciliation-generation", "policy-sha"]),
   "sync-copilot-instructions": new Set(["repository-id", "policy-sha"]),
   "sync-managed-labels": new Set(["repository-id", "policy-sha"]),
   validate: new Set(["workspace", "repository-id", "profile"]),
@@ -512,8 +512,7 @@ export interface IssueSyncDependencies {
   getState(): Promise<IssueSyncRepositoryState>;
   setScanState(state: "scanning" | "ready" | "degraded"): Promise<IssueSyncRepositoryState>;
   refresh(issueNumber: number): Promise<IssueSyncRefreshResult>;
-  dispatchFormalReconciliation(): Promise<void>;
-  acknowledgeFormalReconciliation(generation: number): Promise<boolean>;
+  dispatchFormalReconciliation(generation: number): Promise<void>;
 }
 
 function uniqueIssueNumbers(values: readonly number[], name: string): number[] {
@@ -536,8 +535,7 @@ async function dispatchPendingReconciliation(repositoryId: number, dependencies:
   assertIssueSyncState(state, repositoryId);
   const generation = state.reconciliationGeneration;
   if (generation === undefined || generation === null) return false;
-  await dependencies.dispatchFormalReconciliation();
-  await dependencies.acknowledgeFormalReconciliation(generation);
+  await dependencies.dispatchFormalReconciliation(generation);
   return true;
 }
 
@@ -638,11 +636,14 @@ async function issueSync(args: Readonly<Record<string, string>>): Promise<void> 
     getState: () => requestRuntime<IssueSyncRepositoryState>("GET", `/internal/issue-snapshots/${repositoryId}`),
     setScanState: (state) => requestRuntime<IssueSyncRepositoryState>("POST", `/internal/issue-snapshots/${repositoryId}/scan-state`, { "x-steward-scan-state": state }),
     refresh: (number) => requestRuntime<IssueSyncRefreshResult>("POST", `/internal/issue-snapshots/${repositoryId}/${number}/refresh`, { "x-github-delivery": deliveryId }),
-    dispatchFormalReconciliation: () => dispatchCentralWorkflow("pr-issue-link.yml", policySha, { deliveryId, repositoryId: String(repositoryId), scanAll: "true", invalidateOnly: "false", policySha }),
-    async acknowledgeFormalReconciliation(generation) {
-      const result = await requestRuntime<{ acknowledged: boolean }>("POST", `/internal/issue-snapshots/${repositoryId}/reconciliation`, { "x-steward-reconciliation-generation": String(generation) });
-      return result.acknowledged === true;
-    },
+    dispatchFormalReconciliation: (generation) => dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
+      deliveryId,
+      repositoryId: String(repositoryId),
+      scanAll: "true",
+      invalidateOnly: "false",
+      reconciliationGeneration: String(generation),
+      policySha,
+    }),
   });
   await summary([`仓库编号：${result.repositoryId}`, `议题编号：${result.issueNumber ?? "all"}`, `刷新数量：${result.refreshed}`, `跳过数量：${result.skipped}`, `变更数量：${result.changed}`, `仓库代次：${result.generation}`, `全拉取请求重算：${result.dispatched ? "scheduled" : "unchanged"}`]);
 }

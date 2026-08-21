@@ -8,6 +8,7 @@ on:
       pullRequestNumber: { required: false, type: string }
       scanAll: { required: true, type: boolean }
       invalidateOnly: { required: true, type: boolean }
+      reconciliationGeneration: { required: false, type: string }
       policySha: { required: true, type: string }
 
 permissions:
@@ -30,6 +31,7 @@ jobs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       count: ${{ steps.matrix.outputs.count }}
       snapshot-generation: ${{ steps.matrix.outputs.snapshot-generation }}
+      revalidation-budget: ${{ steps.matrix.outputs.revalidation-budget }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: { ref: "${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}", persist-credentials: false }
@@ -84,6 +86,7 @@ jobs:
       INVALIDATE_ONLY: ${{ inputs.invalidateOnly }}
       POLICY_SHA: ${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}
       SNAPSHOT_VALIDATED_GENERATION: ${{ needs.resolve.outputs.snapshot-generation }}
+      SNAPSHOT_REVALIDATION_BUDGET: ${{ needs.resolve.outputs.revalidation-budget }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: { ref: "${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}", persist-credentials: false }
@@ -128,3 +131,30 @@ jobs:
           ISSUE_COPILOT_PROMPT_PATH: ${{ runner.temp }}/issue-prompt-${{ matrix.pullRequestNumber }}.txt
           ISSUE_COPILOT_OUTPUT_PATH: ${{ runner.temp }}/issue-copilot-output-${{ matrix.pullRequestNumber }}.jsonl
         run: rm -f "$ISSUE_PREPARED_FACTS_PATH" "$ISSUE_COPILOT_PROMPT_PATH" "$ISSUE_COPILOT_OUTPUT_PATH"
+
+  acknowledge:
+    needs: [resolve, analyze]
+    if: ${{ always() && inputs.reconciliationGeneration != '' && needs.resolve.result == 'success' && (needs.analyze.result == 'success' || needs.analyze.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: steward-automation
+      deployment: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: "${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}", persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: .node-version, cache: npm }
+      - run: npm ci --ignore-scripts
+      - name: 确认成功收敛代次
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
+          ISSUE_LINK_ACK_ONLY: "true"
+          DELIVERY_ID: ${{ github.actor_id == '301115370' && inputs.deliveryId || format('manual-{0}-{1}', github.run_id, github.run_attempt) }}
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          RECONCILIATION_GENERATION: ${{ inputs.reconciliationGeneration }}
+          POLICY_SHA: ${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}
+        run: node packages/runner/dist/index.js pr-issue-link --delivery-id "$DELIVERY_ID" --repository-id "$REPOSITORY_ID" --scan-all true --invalidate-only false --reconciliation-generation "$RECONCILIATION_GENERATION" --policy-sha "$POLICY_SHA"
