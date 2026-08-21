@@ -130,12 +130,22 @@ export class GitHubClient {
       const url = this.absoluteUrl(validator.url);
       const following = validators[index + 1];
       const expectedNext = following?.resource === validator.resource ? this.absoluteUrl(following.url) : null;
-      if (validator.next !== expectedNext || validator.status !== 200 || !validator.etag) return { state: "unverifiable", resource: validator.resource, url };
+      if (validator.next !== expectedNext) return { state: "unverifiable", resource: validator.resource, url };
+      if (validator.status === 404) {
+        if (validator.resource !== "parent" || validator.etag !== null || validator.next !== null) return { state: "unverifiable", resource: validator.resource, url };
+        continue;
+      }
+      if (validator.status !== 200 || !validator.etag) return { state: "unverifiable", resource: validator.resource, url };
     }
     for (const validator of validators) {
       const headers = new Headers(githubHeaders(this.token, this.policySha));
-      headers.set("If-None-Match", validator.etag!);
+      if (validator.status === 200) headers.set("If-None-Match", validator.etag!);
       const response = await this.transport.call(globalThis, validator.url, { method: "GET", headers });
+      if (validator.status === 404) {
+        if (response.status === 404) continue;
+        if (response.ok) return { state: "modified", resource: validator.resource, url: validator.url };
+        throw new GitHubRequestError(response.status, "GET", validator.url, (await response.text()).slice(0, 1000) || response.statusText);
+      }
       if (response.status === 304) {
         const responseNext = nextLink(response.headers);
         const normalizedNext = responseNext ? this.absoluteUrl(responseNext) : null;

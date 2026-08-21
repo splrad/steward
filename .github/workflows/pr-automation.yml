@@ -14,7 +14,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: steward-pr-automation-${{ inputs.repositoryId }}-${{ inputs.sourceRef }}
+  group: steward-pr-body-${{ inputs.repositoryId }}
   cancel-in-progress: false
 
 jobs:

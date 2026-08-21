@@ -197,6 +197,16 @@ describe("议题快照内部接口", () => {
     const ambiguous = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/7/refresh", { method: "POST", headers: { authorization: "Bearer one-repository-token" } }), env(database));
     expect(ambiguous.status).toBe(502);
     expect(await store.getSnapshot(1296724484, 7)).not.toBeNull();
+
+    installAuthorization((url) => {
+      if (url.endsWith("/issues/7")) return new Response(JSON.stringify({ number: 7, repository_url: "https://api.github.com/repos/splrad/LayerScape" }), { status: 200 });
+      if (url.endsWith("/issues/7/parent")) return new Response("not found", { status: 404 });
+      if (url.includes("/issues/7/")) return new Response(JSON.stringify([]), { status: 200 });
+      return undefined;
+    });
+    const mismatched = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/7/refresh", { method: "POST", headers: { authorization: "Bearer one-repository-token" } }), env(database));
+    expect(mismatched.status).toBe(503);
+    expect(await store.getSnapshot(1296724484, 7)).not.toBeNull();
   });
 
   it("只有主议题的权威404能按CAS删除精确复合键", async () => {
@@ -283,6 +293,26 @@ describe("议题快照内部接口", () => {
     expect(response.status).toBe(200);
     expect(tokenBodies).toContainEqual({ permissions: { issues: "read", metadata: "read" }, repositories: ["LayerScape"] });
     expect((await new IssueSnapshotStore(database.binding()).getSnapshot(1296724484, 8))?.snapshot.subIssues[0]?.repositoryId).toBe(1187527897);
+  });
+
+  it("私有或未纳管的关系仓库不会进入快照", async () => {
+    const database = new SqliteD1();
+    installAuthorization((url) => {
+      if (url.includes("/access_tokens")) return new Response(JSON.stringify({ token: "related-repository-token" }), { status: 201 });
+      if (url.endsWith("/repos/splrad/secret")) return new Response(JSON.stringify({ ...repository(999, "splrad/secret"), private: true }), { status: 200 });
+      if (url.endsWith("/issues/8")) return new Response(JSON.stringify({
+        number: 8, repository_url: "https://api.github.com/repos/splrad/steward", title: "受控关系", body: "验收",
+        state: "open", labels: [], milestone: null, state_reason: null, type: null,
+        created_at: "2026-08-20T00:00:00Z", updated_at: "2026-08-21T00:00:00Z", comments: 0,
+      }), { status: 200, headers: { etag: '"issue"' } });
+      if (url.endsWith("/issues/8/parent")) return new Response("not found", { status: 404 });
+      if (url.includes("/sub_issues?")) return new Response(JSON.stringify([{ number: 9, repository_url: "https://api.github.com/repos/splrad/secret", title: "私有关系", state: "open", updated_at: "2026-08-21T00:00:00Z" }]), { status: 200, headers: { etag: '"sub"' } });
+      if (url.includes("/issues/8/")) return new Response(JSON.stringify([]), { status: 200, headers: { etag: '"empty"' } });
+      return undefined;
+    });
+    const response = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/8/refresh", { method: "POST", headers: { authorization: "Bearer one-repository-token" } }), env(database));
+    expect(response.status).toBe(503);
+    expect(await new IssueSnapshotStore(database.binding()).getSnapshot(1296724484, 8)).toBeNull();
   });
 
   it("不暴露DELETE路由，scan-state不接受正文且ready会实时复核开放集合", async () => {

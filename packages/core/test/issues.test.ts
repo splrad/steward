@@ -163,7 +163,13 @@ describe("议题核心合同", () => {
     expect(managedBodyOutsideIssueLinksDigest(replaced)).toBe(outsideDigest);
     expect(removeIssueLinksBlock(inserted)).toBe(outer);
     expect(removeIssueLinksBlock(outer)).toBe(outer);
+    const legacyOuter = '<!-- workflow:auto-summary:start -->\n## 摘要\n\n旧版正文\n\n<!-- workflow:source-actor:bot -->\n<!-- workflow:auto-summary:end -->\n';
+    const legacyInserted = upsertIssueLinksBlock(legacyOuter, first);
+    expect(extractIssueLinksBlock(legacyInserted)?.metadata.issueNumbers).toEqual([123, 456]);
+    expect(removeIssueLinksBlock(legacyInserted)).toBe(legacyOuter);
+    expect(managedBodyOutsideIssueLinksDigest(upsertIssueLinksBlock(legacyInserted, empty))).toBe(managedBodyOutsideIssueLinksDigest(legacyInserted));
     expect(() => upsertIssueLinksBlock(`${inserted}\n${first}`, empty)).toThrow("重复");
+    expect(() => upsertIssueLinksBlock(`${outer}${legacyOuter}`, empty)).toThrow("外层");
     expect(() => upsertIssueLinksBlock(outer.replace("## 摘要", `${first}\n## 摘要`).replace("<!-- workflow:managed-pr:start -->\n", ""), empty)).toThrow("外层");
     expect(() => managedBodyOutsideIssueLinksDigest(`${first}\n${outer}`)).toThrow("外层");
   });

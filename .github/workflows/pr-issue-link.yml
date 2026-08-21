@@ -15,7 +15,7 @@ permissions:
   copilot-requests: write
 
 concurrency:
-  group: steward-pr-issue-link-${{ inputs.repositoryId }}-${{ inputs.scanAll && 'all' || inputs.pullRequestNumber }}
+  group: steward-pr-body-${{ inputs.repositoryId }}
   cancel-in-progress: false
 
 jobs:

@@ -539,6 +539,7 @@ export async function reconcileIssueSnapshots(
     if (changed) await dependencies.dispatchFormalReconciliation();
     return { repositoryId: input.repositoryId, issueNumber: input.issueNumber!, refreshed: 1, skipped: 0, changed: changed ? 1 : 0, generation: refreshed.generation, dispatched: changed };
   }
+  let completed: Omit<IssueSyncResult, "dispatched">;
   try {
     const scanning = await dependencies.setScanState("scanning");
     assertIssueSyncState(scanning, input.repositoryId, "scanning");
@@ -559,12 +560,13 @@ export async function reconcileIssueSnapshots(
     const ready = await dependencies.setScanState("ready");
     assertIssueSyncState(ready, input.repositoryId, "ready");
     if (ready.generation < generation) throw new Error("扫描就绪响应无效");
-    await dependencies.dispatchFormalReconciliation();
-    return { repositoryId: input.repositoryId, issueNumber: null, refreshed: union.length, skipped: live.skipped, changed, generation: ready.generation, dispatched: true };
+    completed = { repositoryId: input.repositoryId, issueNumber: null, refreshed: union.length, skipped: live.skipped, changed, generation: ready.generation };
   } catch (error) {
     try { await dependencies.setScanState("degraded"); } catch { /* preserve the original failure */ }
     throw error;
   }
+  await dependencies.dispatchFormalReconciliation();
+  return { ...completed, dispatched: true };
 }
 
 function runtimeBaseUrl(value: string): string {

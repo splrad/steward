@@ -148,7 +148,7 @@ describe("代码托管平台客户端", () => {
     ]);
   });
 
-  it("完整读取议题各类事实、逐页保存验证器并把无父议题404保留为不可条件验证", async () => {
+  it("完整读取议题事实、逐页保存验证器，并保留无父议题的404结果", async () => {
     const requests: string[] = [];
     const issue = { id: 1, number: 7, repository_url: "https://api.github.com/repos/splrad/steward" };
     const transport = async (urlValue: any) => {
@@ -221,6 +221,14 @@ describe("代码托管平台客户端", () => {
     const unverifiable = new GitHubClient("token", "https://example.test", (async () => { calls += 1; return new Response(null, { status: 304 }); }) as typeof fetch);
     await expect(unverifiable.revalidatePageValidators([{ ...validators[0]!, etag: null }])).resolves.toEqual({ state: "unverifiable", resource: "comments", url: "https://example.test/page/1" });
     expect(calls).toBe(0);
+    const missingParent = { resource: "parent" as const, url: "https://example.test/parent", etag: null, next: null, status: 404 as const };
+    const parentStillMissing = new GitHubClient("token", "https://example.test", (async (_url: any, init?: RequestInit) => {
+      expect(new Headers(init?.headers).has("If-None-Match")).toBe(false);
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch);
+    await expect(parentStillMissing.revalidatePageValidators([missingParent])).resolves.toEqual({ state: "not-modified" });
+    const parentAppeared = new GitHubClient("token", "https://example.test", (async () => new Response(JSON.stringify({ number: 1 }), { status: 200 })) as typeof fetch);
+    await expect(parentAppeared.revalidatePageValidators([missingParent])).resolves.toEqual({ state: "modified", resource: "parent", url: "https://example.test/parent" });
   });
 
   it("分页拒绝跨API来源并保留404与权限错误的精确端点", async () => {

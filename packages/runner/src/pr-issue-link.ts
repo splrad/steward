@@ -697,51 +697,39 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
   } catch {
     desired = [];
   }
-  let fresh = true;
-  for (const issue of desired) {
-    const candidate = prepared.candidates.find(item => item.repositoryId === issue.repositoryId && item.number === issue.number);
-    if (!candidate) { fresh = false; break; }
-    const validation = await client.revalidatePageValidators(candidate.validators);
-    if (validation.state !== "not-modified") {
-      const refreshed = await runtimeRequest<any>(token, "POST", `/internal/issue-snapshots/${args.repositoryId}/${issue.number}/refresh`, { "x-github-delivery": args.deliveryId });
-      if (refreshed.changed === true || refreshed.deleted === true) { fresh = false; break; }
-    }
-  }
-  const afterValidation = validateSnapshotState(await runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${args.repositoryId}`), args.repositoryId);
-  if (afterValidation.generation !== prepared.generation) fresh = false;
-  for (const issue of desired) {
-    const expected = prepared.candidates.find(item => item.number === issue.number)?.contentDigest;
-    const actual = afterValidation.snapshots.find(item => item.issueNumber === issue.number)?.contentDigest;
-    if (!expected || expected !== actual) fresh = false;
-  }
-  if (!fresh) {
-    try {
-      const latest = await client.getPullRequest(owner, repo, prepared.pullRequestNumber);
-      await applyBodyAndVerify({ client, repository, pull: latest, desired: [], removeBlock: true });
-      await publishCheck(client, args.repositoryId, owner, repo, prepared.pullRequestNumber, prepared.headSha, {
-        status: "completed", conclusion: "success", title: "议题关联已安全跳过",
-        summary: `拉取请求：#${prepared.pullRequestNumber}\n状态：safe-empty\n类别：stale-analysis-cleaned`,
-      });
-      await writeSummary([`拉取请求：#${prepared.pullRequestNumber}`, "状态：stale-analysis-cleaned"]);
-      return;
-    } catch (error) {
-      await publishCheck(client, args.repositoryId, owner, repo, prepared.pullRequestNumber, prepared.headSha, {
-        status: "completed", conclusion: "failure", title: "议题关联清理失败",
-        summary: `拉取请求：#${prepared.pullRequestNumber}\n状态：failure\n类别：stale-analysis-unclean`,
-      });
-      throw error;
-    }
-  }
-  const freshness = async (): Promise<boolean> => {
-    const [pull, branch, state] = await Promise.all([
-      client.getPullRequest(owner, repo, prepared.pullRequestNumber),
-      client.getRef(owner, repo, `heads/${repository.default_branch}`),
-      runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${args.repositoryId}`),
-    ]);
-    return pull?.state === "open" && pull?.head?.sha === prepared.headSha && pull?.base?.sha === prepared.baseSha && pull?.base?.ref === repository.default_branch
-      && branch?.object?.sha === prepared.baseSha && state.generation === prepared.generation;
-  };
+  let failureCategory = "freshness-failed";
   try {
+    let fresh = true;
+    for (const issue of desired) {
+      const candidate = prepared.candidates.find(item => item.repositoryId === issue.repositoryId && item.number === issue.number);
+      if (!candidate) { fresh = false; break; }
+      const validation = await client.revalidatePageValidators(candidate.validators);
+      if (validation.state !== "not-modified") {
+        const refreshed = await runtimeRequest<any>(token, "POST", `/internal/issue-snapshots/${args.repositoryId}/${issue.number}/refresh`, { "x-github-delivery": args.deliveryId });
+        if (refreshed.changed === true || refreshed.deleted === true) { fresh = false; break; }
+      }
+    }
+    const afterValidation = validateSnapshotState(await runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${args.repositoryId}`), args.repositoryId);
+    if (afterValidation.generation !== prepared.generation) fresh = false;
+    for (const issue of desired) {
+      const expected = prepared.candidates.find(item => item.number === issue.number)?.contentDigest;
+      const actual = afterValidation.snapshots.find(item => item.issueNumber === issue.number)?.contentDigest;
+      if (!expected || expected !== actual) fresh = false;
+    }
+    if (!fresh) {
+      failureCategory = "stale-analysis";
+      throw new Error("议题关联分析已过期");
+    }
+    const freshness = async (): Promise<boolean> => {
+      const [pull, branch, state] = await Promise.all([
+        client.getPullRequest(owner, repo, prepared.pullRequestNumber),
+        client.getRef(owner, repo, `heads/${repository.default_branch}`),
+        runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${args.repositoryId}`),
+      ]);
+      return pull?.state === "open" && pull?.head?.sha === prepared.headSha && pull?.base?.sha === prepared.baseSha && pull?.base?.ref === repository.default_branch
+        && branch?.object?.sha === prepared.baseSha && state.syncState === "ready" && state.generation === prepared.generation;
+    };
+    failureCategory = "reconcile-failed";
     await applyBodyAndVerify({ client, repository, pull: current, prepared, desired, freshness });
     await publishCheck(client, args.repositoryId, owner, repo, prepared.pullRequestNumber, prepared.headSha, {
       status: "completed", conclusion: "success", title: desired.length ? "议题关联已收敛" : "没有正式议题关联",
@@ -759,10 +747,10 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
     } catch {}
     await publishCheck(client, args.repositoryId, owner, repo, prepared.pullRequestNumber, prepared.headSha, {
       status: "completed", conclusion: cleaned ? "success" : "failure", title: cleaned ? "议题关联已安全跳过" : "议题关联收敛失败",
-      summary: `拉取请求：#${prepared.pullRequestNumber}\n状态：${cleaned ? "safe-empty" : "failure"}\n清理：${cleaned ? "confirmed" : "unconfirmed"}`,
+      summary: `拉取请求：#${prepared.pullRequestNumber}\n状态：${cleaned ? "safe-empty" : "failure"}\n类别：${failureCategory}-${cleaned ? "cleaned" : "unclean"}`,
     });
     if (!cleaned) throw error;
-    await writeSummary([`拉取请求：#${prepared.pullRequestNumber}`, "状态：reconcile-failed-cleaned"]);
+    await writeSummary([`拉取请求：#${prepared.pullRequestNumber}`, `状态：${failureCategory}-cleaned`]);
   }
 }
 

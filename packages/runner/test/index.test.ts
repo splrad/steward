@@ -686,6 +686,7 @@ describe("议题快照同步", () => {
     stored?: readonly number[];
     refresh?: (issueNumber: number) => { changed?: boolean; deleted?: boolean; generation: number };
     failReady?: boolean;
+    failDispatch?: boolean;
     initialState?: "uninitialized" | "scanning" | "ready" | "degraded";
   } = {}) {
     const states: string[] = [];
@@ -705,7 +706,7 @@ describe("议题快照同步", () => {
           refreshed.push(issueNumber);
           return { repositoryId: 1296724484, issueNumber, ...(input.refresh?.(issueNumber) ?? { changed: false, generation: 4 }) };
         },
-        dispatchFormalReconciliation: async () => { dispatched++; },
+        dispatchFormalReconciliation: async () => { dispatched++; if (input.failDispatch) throw new Error("工作流派发失败"); },
       },
     };
   }
@@ -738,6 +739,10 @@ describe("议题快照同步", () => {
     await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, scanAll: true }, failed.value)).rejects.toThrow("开放集合未收敛");
     expect(failed.states).toEqual(["scanning", "ready", "degraded"]);
     expect(failed.dispatched()).toBe(0);
+    const dispatchFailed = dependencies({ failDispatch: true });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, scanAll: true }, dispatchFailed.value)).rejects.toThrow("工作流派发失败");
+    expect(dispatchFailed.states).toEqual(["scanning", "ready"]);
+    expect(dispatchFailed.dispatched()).toBe(1);
   });
 
   it("拒绝重复开放编号和互相矛盾的单项参数", async () => {

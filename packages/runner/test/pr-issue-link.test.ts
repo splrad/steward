@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { renderIssueLinksBlock, upsertIssueLinksBlock } from "../../core/src/issues.js";
+import { analysisInputDigest, managedBodyOutsideIssueLinksDigest, openIssueSetDigest, renderIssueLinksBlock, upsertIssueLinksBlock } from "../../core/src/issues.js";
 import { extractIssueCopilotContent, parsePrIssueLinkArgs, runPrIssueLink, verifyIssueLinkConvergence } from "../src/pr-issue-link.js";
 
 const repositoryId = 1296724484;
@@ -146,6 +146,53 @@ describe("拉取请求议题关联运行器", () => {
       expect(currentBody).toBe(outer);
       expect(calls.filter(call => call.url.endsWith("/graphql"))).toHaveLength(3);
       expect(calls.some(call => call.url.includes("workers.dev"))).toBe(false);
+    });
+  });
+
+  it("新鲜度复核失败后清理旧块，并完成已经开始的检查", async () => {
+    await withRunnerEnvironment(async (directory) => {
+      const outer = '<!-- workflow:managed-pr:start -->\n## 摘要\n\n正文\n\n<!-- workflow:source-actor:bot -->\n<!-- workflow:managed-pr:end -->\n';
+      const oldBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 2, analysisInputDigest: "d".repeat(64) }, [{ repositoryId, number: 7 }]);
+      let currentBody = upsertIssueLinksBlock(outer, oldBlock);
+      const fullDiffDigest = "e".repeat(64);
+      const openSetDigest = openIssueSetDigest(repositoryId, []);
+      const unmanagedBodyDigest = managedBodyOutsideIssueLinksDigest(currentBody);
+      const prepared = {
+        schemaVersion: 1, repositoryId, repositoryFullName: "splrad/steward", pullRequestNumber: 42,
+        baseSha, headSha, generation: 2, policySha, fullDiffDigest, changedFiles: [], candidateDigests: [], candidates: [],
+        openSetDigest, unmanagedBodyDigest,
+        analysisInputDigest: analysisInputDigest({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 2, policySha, fullDiffDigest, candidateDigests: [], openSetDigest, unmanagedBodyDigest }),
+      };
+      process.env.ISSUE_PREPARED_FACTS_PATH = join(directory, "prepared.json");
+      process.env.RUNTIME_URL = "https://runtime.test";
+      process.env.COPILOT_STEP_OUTCOME = "failure";
+      await writeFile(process.env.ISSUE_PREPARED_FACTS_PATH, JSON.stringify(prepared));
+      let snapshotReads = 0;
+      const calls: Array<{ url: string; method: string; body: any }> = [];
+      vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+        const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
+        calls.push({ url: value, method, body });
+        if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+        if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/pulls/42") && method === "PATCH") { currentBody = body.body; return new Response(JSON.stringify(pull(currentBody, 301115370)), { status: 200 }); }
+        if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify(pull(currentBody, 301115370)), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/git/ref/heads/main")) return new Response(JSON.stringify({ object: { sha: baseSha } }), { status: 200 });
+        if (value.endsWith(`/internal/issue-snapshots/${repositoryId}`)) {
+          snapshotReads++;
+          return snapshotReads === 1
+            ? new Response(JSON.stringify({ repositoryId, generation: 2, syncState: "ready", openSetDigest, snapshots: [] }), { status: 200 })
+            : new Response("unavailable", { status: 503 });
+        }
+        if (value.endsWith("/graphql")) return new Response(JSON.stringify({ data: { repository: { databaseId: repositoryId, pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } }), { status: 200 });
+        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [{ id: 1, name: "PR Issue Link Gate", app: { id: 4243096 }, head_sha: headSha }] }), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/check-runs/1")) return new Response(JSON.stringify({ id: 1 }), { status: 200 });
+        return new Response("unexpected", { status: 500 });
+      });
+      await runPrIssueLink(invocation());
+      expect(currentBody).toBe(outer);
+      const check = calls.find(call => call.method === "PATCH" && call.url.endsWith("/check-runs/1"));
+      expect(check?.body).toEqual(expect.objectContaining({ status: "completed", conclusion: "success" }));
+      expect(check?.body.output.summary).toContain("freshness-failed-cleaned");
     });
   });
 

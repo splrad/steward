@@ -11,7 +11,7 @@ on:
 
 permissions: {}
 concurrency:
-  group: steward-onboard-${{ inputs.repositoryFullName }}
+  group: steward-pr-body-${{ inputs.repositoryId || inputs.repositoryFullName }}
   cancel-in-progress: false
 
 jobs:

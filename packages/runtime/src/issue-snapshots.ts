@@ -373,6 +373,10 @@ async function hydrateRelationRepositoryIds(client: GitHubClient, repository: an
     const relatedClient = new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA);
     const relatedRepository = await relatedClient.getRepository(owner, repo);
     if (!Number.isSafeInteger(relatedRepository?.id) || relatedRepository.id <= 0 || String(relatedRepository?.full_name).toLowerCase() !== fullName.toLowerCase()) throw new Error("议题关系仓库身份无效");
+    const override = (repositoryCatalog.repositories as Record<string, any>)[String(relatedRepository.id)];
+    if (override?.fullName && override.fullName !== relatedRepository.full_name) throw new Error("议题关系仓库身份无效");
+    const configuration = { ...(relatedRepository.private ? repositoryCatalog.defaults.private : repositoryCatalog.defaults.public), ...(override ?? {}) };
+    if (relatedRepository.private !== false || configuration.managed !== true) throw new Error("议题关系仓库不允许进入快照");
     ids.set(fullName.toLowerCase(), relatedRepository.id);
   }
   const hydrate = (value: any) => value ? { ...value, repository: { id: ids.get(relationRepositoryPath(value).toLowerCase()) } } : null;
@@ -499,8 +503,7 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
       try { facts = await client.readIssueFacts(owner, repo, issueNumber); }
       catch (error) {
         const authoritativeMissing = error instanceof GitHubRequestError && error.status === 404 && error.path === `/repos/${owner}/${repo}/issues/${issueNumber}`;
-        const authoritativeMismatch = error instanceof Error && error.message === "issue-repository-mismatch";
-        if (!authoritativeMissing && !authoritativeMismatch) throw error;
+        if (!authoritativeMissing) throw error;
         const deleted = await store.deleteSnapshot(repositoryId, issueNumber, expectedGeneration, new Date().toISOString());
         return noStoreResponse(200, { repositoryId, issueNumber, deleted: deleted.changed, generation: deleted.state?.generation ?? 0 });
       }

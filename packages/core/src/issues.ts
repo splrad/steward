@@ -75,6 +75,8 @@ const shaPattern = /^[0-9a-f]{40}$/u;
 const digestPattern = /^[0-9a-f]{64}$/u;
 const managedPrStart = '<!-- workflow:managed-pr:start -->';
 const managedPrEnd = '<!-- workflow:managed-pr:end -->';
+const legacyManagedPrStart = '<!-- workflow:auto-summary:start -->';
+const legacyManagedPrEnd = '<!-- workflow:auto-summary:end -->';
 const issueLinksStartPrefix = '<!-- workflow:issue-links:start';
 export const issueLinksEnd = '<!-- workflow:issue-links:end -->';
 
@@ -613,12 +615,18 @@ export function extractIssueLinksBlock(body: string): IssueLinksRegion | null {
   return { start, end, block, metadata: parseIssueLinksBlock(block) };
 }
 
-function managedOuterRegion(body: string): { start: number; end: number } {
-  if (occurrences(body, managedPrStart) !== 1 || occurrences(body, managedPrEnd) !== 1) throw new Error('议题子块缺少唯一外层受管标记');
-  const start = body.indexOf(managedPrStart);
-  const end = body.indexOf(managedPrEnd, start);
+function managedOuterRegion(body: string): { start: number; contentStart: number; end: number } {
+  const current = occurrences(body, managedPrStart) === 1 && occurrences(body, managedPrEnd) === 1;
+  const legacy = occurrences(body, legacyManagedPrStart) === 1 && occurrences(body, legacyManagedPrEnd) === 1;
+  const hasCurrent = body.includes(managedPrStart) || body.includes(managedPrEnd);
+  const hasLegacy = body.includes(legacyManagedPrStart) || body.includes(legacyManagedPrEnd);
+  if ((hasCurrent && hasLegacy) || (hasCurrent && !current) || (hasLegacy && !legacy) || (!hasCurrent && !hasLegacy)) throw new Error('议题子块缺少唯一外层受管标记');
+  const startMarker = current ? managedPrStart : legacyManagedPrStart;
+  const endMarker = current ? managedPrEnd : legacyManagedPrEnd;
+  const start = body.indexOf(startMarker);
+  const end = body.indexOf(endMarker, start);
   if (end <= start) throw new Error('议题子块外层受管标记交叉');
-  return { start, end };
+  return { start, contentStart: start + startMarker.length, end };
 }
 
 export function upsertIssueLinksBlock(body: string, block: string): string {
@@ -630,7 +638,7 @@ export function upsertIssueLinksBlock(body: string, block: string): string {
     if (current.start <= outer.start || current.end > outer.end) throw new Error('议题子块不在唯一外层受管区域内');
     return `${body.slice(0, current.start)}${block}${body.slice(current.end)}`;
   }
-  const searchStart = outer.start + managedPrStart.length;
+  const searchStart = outer.contentStart;
   const anchors = ['\n## 发布与迁移\n', '\n## 贡献者\n', '\n<!-- workflow:source-actor:']
     .map((anchor) => body.indexOf(anchor, searchStart))
     .filter((index) => index >= searchStart && index < outer.end)
