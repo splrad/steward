@@ -3,7 +3,7 @@ name: SPLRAD Steward / Onboard Repository
 on:
   workflow_dispatch:
     inputs:
-      repositoryId: { required: false, type: string }
+      repositoryId: { required: true, type: string }
       repositoryFullName: { required: true, type: string }
       trigger: { required: false, type: string, default: manual }
       deliveryId: { required: false, type: string, default: manual }
@@ -11,8 +11,9 @@ on:
 
 permissions: {}
 concurrency:
-  group: steward-pr-body-${{ inputs.repositoryId || inputs.repositoryFullName }}
+  group: steward-pr-body-${{ inputs.repositoryId }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   onboard:
@@ -42,8 +43,4 @@ jobs:
           DELIVERY_ID: ${{ github.actor_id == '301115370' && inputs.deliveryId || format('manual-{0}-{1}', github.run_id, github.run_attempt) }}
           POLICY_SHA: ${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}
         run: |
-          repository_arguments=()
-          if [[ -n "$REPOSITORY_ID" ]]; then
-            repository_arguments+=(--repository-id "$REPOSITORY_ID")
-          fi
-          node packages/runner/dist/index.js onboard-repository "${repository_arguments[@]}" --repository-full-name "$REPOSITORY_FULL_NAME" --trigger "$ONBOARD_TRIGGER" --delivery-id "$DELIVERY_ID" --policy-sha "$POLICY_SHA"
+          node packages/runner/dist/index.js onboard-repository --repository-id "$REPOSITORY_ID" --repository-full-name "$REPOSITORY_FULL_NAME" --trigger "$ONBOARD_TRIGGER" --delivery-id "$DELIVERY_ID" --policy-sha "$POLICY_SHA"

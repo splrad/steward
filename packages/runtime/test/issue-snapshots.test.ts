@@ -22,6 +22,7 @@ class SqliteD1 {
   constructor() {
     this.database.exec(readFileSync(new URL("../migrations/0001_issue_snapshots.sql", import.meta.url), "utf8"));
     this.database.exec(readFileSync(new URL("../migrations/0002_issue_snapshot_tombstones.sql", import.meta.url), "utf8"));
+    this.database.exec(readFileSync(new URL("../migrations/0003_issue_snapshot_reconciliation.sql", import.meta.url), "utf8"));
   }
   prepare(sql: string): D1PreparedStatement { return new SqliteD1Statement(this.database, sql) as unknown as D1PreparedStatement; }
   async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
@@ -86,11 +87,13 @@ function installAuthorization(fetchIssue?: (url: string) => Response | undefined
 }
 
 describe("议题快照D1存储", () => {
-  it("迁移只创建固定的三张表和一个业务索引", () => {
+  it("迁移只创建固定快照、墓碑和重算请求表", () => {
     const database = new SqliteD1();
     const objects = database.database.prepare("SELECT type, name, tbl_name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all();
     expect(objects).toEqual([
       { type: "index", name: "issue_snapshots_open", tbl_name: "issue_snapshots" },
+      { type: "table", name: "issue_snapshot_issue_tombstones", tbl_name: "issue_snapshot_issue_tombstones" },
+      { type: "table", name: "issue_snapshot_reconciliation_requests", tbl_name: "issue_snapshot_reconciliation_requests" },
       { type: "table", name: "issue_snapshot_repositories", tbl_name: "issue_snapshot_repositories" },
       { type: "table", name: "issue_snapshot_repository_tombstones", tbl_name: "issue_snapshot_repository_tombstones" },
       { type: "table", name: "issue_snapshots", tbl_name: "issue_snapshots" },
@@ -113,6 +116,20 @@ describe("议题快照D1存储", () => {
     expect((await store.getSnapshot(1296724484, 7))?.snapshot.issue.title).toBe("Steward议题");
     expect((await put(store, steward, 1, "delivery-repeat")).changed).toBe(false);
     expect((await store.getRepositoryState(1296724484))?.generation).toBe(1);
+    expect(await store.getReconciliationRequest(1296724484)).toEqual(expect.objectContaining({ generation: 1 }));
+    expect(await store.acknowledgeReconciliation(1296724484, 0)).toBe(false);
+    expect(await store.acknowledgeReconciliation(1296724484, 1)).toBe(true);
+    expect(await store.getReconciliationRequest(1296724484)).toBeNull();
+  });
+
+  it("缺失快照的删除也推进墓碑代次，迟到刷新不能复活议题", async () => {
+    const store = new IssueSnapshotStore(new SqliteD1().binding());
+    const value = snapshot(1296724484, "splrad/steward", 44);
+    const deleted = await store.deleteSnapshot(1296724484, 44, 0, "2026-08-21T00:00:00Z");
+    expect(deleted).toEqual(expect.objectContaining({ changed: true, state: expect.objectContaining({ generation: 1 }) }));
+    await expect(put(store, value, 0, "late-refresh")).rejects.toThrow("issue-snapshot-generation-conflict");
+    expect((await store.deleteSnapshot(1296724484, 44, 1, "2026-08-21T00:01:00Z")).changed).toBe(false);
+    await expect(put(store, value, 1, "reopened-refresh")).resolves.toEqual(expect.objectContaining({ changed: true, state: expect.objectContaining({ generation: 2 }) }));
   });
 
   it("扫描只有在实时开放集合与D1集合完全一致时才能就绪", async () => {
@@ -122,6 +139,7 @@ describe("议题快照D1存储", () => {
     await expect(store.setScanState(1296724484, "ready", 1, "2026-08-21T00:01:00Z", [])).rejects.toThrow("开放议题集合尚未收敛");
     const ready = await store.setScanState(1296724484, "ready", 1, "2026-08-21T00:02:00Z", [7]);
     expect(ready).toEqual(expect.objectContaining({ generation: 1, syncState: "ready", openSetDigest: openIssueSetDigest(1296724484, [7]), lastFullScanAt: "2026-08-21T00:02:00Z" }));
+    expect(await store.getReconciliationRequest(1296724484)).toEqual(expect.objectContaining({ generation: 1 }));
   });
 
   it("删除始终绑定复合主键，仓库清理不影响另一个仓库的同号议题", async () => {

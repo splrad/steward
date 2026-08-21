@@ -486,6 +486,7 @@ interface IssueSyncRepositoryState {
   generation: number;
   syncState: "uninitialized" | "scanning" | "ready" | "degraded";
   snapshots?: readonly { issueNumber: number }[];
+  reconciliationGeneration?: number | null;
 }
 
 interface IssueSyncRefreshResult {
@@ -512,6 +513,7 @@ export interface IssueSyncDependencies {
   setScanState(state: "scanning" | "ready" | "degraded"): Promise<IssueSyncRepositoryState>;
   refresh(issueNumber: number): Promise<IssueSyncRefreshResult>;
   dispatchFormalReconciliation(): Promise<void>;
+  acknowledgeFormalReconciliation(generation: number): Promise<boolean>;
 }
 
 function uniqueIssueNumbers(values: readonly number[], name: string): number[] {
@@ -524,7 +526,19 @@ function assertIssueSyncState(value: IssueSyncRepositoryState, repositoryId: num
   if (value.repositoryId !== repositoryId || !Number.isSafeInteger(value.generation) || value.generation < 0
     || !["uninitialized", "scanning", "ready", "degraded"].includes(value.syncState)
     || (expectedState !== undefined && value.syncState !== expectedState)
+    || (value.reconciliationGeneration !== undefined && value.reconciliationGeneration !== null
+      && (!Number.isSafeInteger(value.reconciliationGeneration) || value.reconciliationGeneration < 0))
     || (snapshotsRequired && !Array.isArray(value.snapshots))) throw new Error("议题同步仓库状态响应无效");
+}
+
+async function dispatchPendingReconciliation(repositoryId: number, dependencies: IssueSyncDependencies): Promise<boolean> {
+  const state = await dependencies.getState();
+  assertIssueSyncState(state, repositoryId);
+  const generation = state.reconciliationGeneration;
+  if (generation === undefined || generation === null) return false;
+  await dependencies.dispatchFormalReconciliation();
+  await dependencies.acknowledgeFormalReconciliation(generation);
+  return true;
 }
 
 export async function reconcileIssueSnapshots(
@@ -541,8 +555,8 @@ export async function reconcileIssueSnapshots(
     const refreshed = await dependencies.refresh(input.issueNumber!);
     if (refreshed.repositoryId !== input.repositoryId || refreshed.issueNumber !== input.issueNumber || !Number.isSafeInteger(refreshed.generation) || refreshed.generation < 0) throw new Error("议题刷新响应无效");
     const changed = refreshed.changed === true || refreshed.deleted === true;
-    if (changed) await dependencies.dispatchFormalReconciliation();
-    return { repositoryId: input.repositoryId, issueNumber: input.issueNumber!, refreshed: 1, skipped: 0, changed: changed ? 1 : 0, generation: refreshed.generation, dispatched: changed };
+    const dispatched = await dispatchPendingReconciliation(input.repositoryId, dependencies);
+    return { repositoryId: input.repositoryId, issueNumber: input.issueNumber!, refreshed: 1, skipped: 0, changed: changed ? 1 : 0, generation: refreshed.generation, dispatched };
   }
   let completed: Omit<IssueSyncResult, "dispatched">;
   try {
@@ -570,8 +584,8 @@ export async function reconcileIssueSnapshots(
     try { await dependencies.setScanState("degraded"); } catch { /* preserve the original failure */ }
     throw error;
   }
-  await dependencies.dispatchFormalReconciliation();
-  return { ...completed, dispatched: true };
+  const dispatched = await dispatchPendingReconciliation(input.repositoryId, dependencies);
+  return { ...completed, dispatched };
 }
 
 function runtimeBaseUrl(value: string): string {
@@ -625,6 +639,10 @@ async function issueSync(args: Readonly<Record<string, string>>): Promise<void> 
     setScanState: (state) => requestRuntime<IssueSyncRepositoryState>("POST", `/internal/issue-snapshots/${repositoryId}/scan-state`, { "x-steward-scan-state": state }),
     refresh: (number) => requestRuntime<IssueSyncRefreshResult>("POST", `/internal/issue-snapshots/${repositoryId}/${number}/refresh`, { "x-github-delivery": deliveryId }),
     dispatchFormalReconciliation: () => dispatchCentralWorkflow("pr-issue-link.yml", policySha, { deliveryId, repositoryId: String(repositoryId), scanAll: "true", invalidateOnly: "false", policySha }),
+    async acknowledgeFormalReconciliation(generation) {
+      const result = await requestRuntime<{ acknowledged: boolean }>("POST", `/internal/issue-snapshots/${repositoryId}/reconciliation`, { "x-steward-reconciliation-generation": String(generation) });
+      return result.acknowledged === true;
+    },
   });
   await summary([`仓库编号：${result.repositoryId}`, `议题编号：${result.issueNumber ?? "all"}`, `刷新数量：${result.refreshed}`, `跳过数量：${result.skipped}`, `变更数量：${result.changed}`, `仓库代次：${result.generation}`, `全拉取请求重算：${result.dispatched ? "scheduled" : "unchanged"}`]);
 }

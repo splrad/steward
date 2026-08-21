@@ -14,7 +14,7 @@ const allowedActions = new Set([
   "actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
   "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
 ]);
-const forbidden = [/issue.*comment/iu, /DCO/iu, /validation-matrix/iu, /durable.?object/iu, /queue/iu, /relay/iu, /secrets:\s*inherit/iu];
+const forbidden = [/issue.*comment/iu, /DCO/iu, /validation-matrix/iu, /durable.?object/iu, /relay/iu, /secrets:\s*inherit/iu];
 for (const file of files) {
   const text = await readFile(`.github/workflows/${file}`, "utf8"); workflowDocuments.set(file, YAML.parse(text));
   for (const match of text.matchAll(/uses:\s*([^\s}]+)/gu)) if (!allowedActions.has(match[1])) throw new Error(`${file}使用未锁定操作: ${match[1]}`);
@@ -99,6 +99,7 @@ if (JSON.stringify(Object.keys(issueSyncInputs)) !== JSON.stringify(["deliveryId
 if (issueSyncDocument?.permissions && Object.keys(issueSyncDocument.permissions).length !== 0) throw new Error("议题同步工作流不应使用GITHUB_TOKEN权限");
 const issueSyncConcurrency = String(issueSyncDocument?.concurrency?.group ?? "").replace(/\s+/gu, "");
 if (issueSyncConcurrency !== "steward-issue-sync-${{inputs.repositoryId}}") throw new Error("议题同步必须使用仓库级并发锁");
+if (issueSyncDocument?.concurrency?.["cancel-in-progress"] !== false || issueSyncDocument?.concurrency?.queue !== "max") throw new Error("议题同步必须保留全部等待运行");
 const issueSyncStep = issueSyncDocument?.jobs?.synchronize?.steps?.find(step => step?.name === "同步议题快照");
 const issueSyncCommand = String(issueSyncStep?.run ?? "");
 for (const required of ['issue_arguments=()', 'issue_arguments+=(--issue-number "$ISSUE_NUMBER")', '"${issue_arguments[@]}"', '--scan-all "$SCAN_ALL"', '--policy-sha "$POLICY_SHA"']) if (!issueSyncCommand.includes(required)) throw new Error(`议题同步命令没有安全传递固定输入: ${required}`);
@@ -113,10 +114,16 @@ if (JSON.stringify(issueLinkPermissions) !== JSON.stringify({ contents: "read", 
 const issueLinkConcurrency = String(issueLinkDocument?.concurrency?.group ?? "").replace(/\s+/gu, "");
 if (issueLinkConcurrency !== "steward-pr-body-${{inputs.repositoryId}}") throw new Error("议题关联必须与正文自动化共用仓库级并发锁");
 if (issueLinkDocument?.concurrency?.["cancel-in-progress"] !== false) throw new Error("议题关联工作流不得取消在途运行");
+if (issueLinkDocument?.concurrency?.queue !== "max") throw new Error("议题关联必须保留全部等待运行");
 const prAutomationConcurrency = String(workflowDocuments.get("pr-automation.yml")?.concurrency?.group ?? "").replace(/\s+/gu, "");
 if (prAutomationConcurrency !== issueLinkConcurrency) throw new Error("拉取请求自动化没有与议题关联共用正文并发锁");
+if (workflowDocuments.get("pr-automation.yml")?.concurrency?.queue !== "max") throw new Error("拉取请求自动化必须保留全部等待运行");
 const onboardConcurrency = String(workflowDocuments.get("onboard-repository.yml")?.concurrency?.group ?? "").replace(/\s+/gu, "");
-if (onboardConcurrency !== "steward-pr-body-${{inputs.repositoryId||inputs.repositoryFullName}}") throw new Error("接入工作流没有使用正文并发锁");
+if (onboardConcurrency !== "steward-pr-body-${{inputs.repositoryId}}") throw new Error("接入工作流没有使用数值仓库编号正文并发锁");
+if (workflowDocuments.get("onboard-repository.yml")?.on?.workflow_dispatch?.inputs?.repositoryId?.required !== true
+  || workflowDocuments.get("onboard-repository.yml")?.concurrency?.queue !== "max") throw new Error("接入工作流必须要求仓库编号并保留全部等待运行");
+const queuedWorkflows = [...workflowDocuments.entries()].filter(([, document]) => Object.hasOwn(document?.concurrency ?? {}, "queue")).map(([name]) => name).sort();
+if (JSON.stringify(queuedWorkflows) !== JSON.stringify(["issue-sync.yml", "onboard-repository.yml", "pr-automation.yml", "pr-issue-link.yml"])) throw new Error("工作流等待队列范围不正确");
 const issueLinkResolve = issueLinkDocument?.jobs?.resolve;
 const issueLinkMatrixStep = issueLinkResolve?.steps?.find(step => step?.name === "解析开放拉取请求");
 const issueLinkMatrixCommand = String(issueLinkMatrixStep?.run ?? "");
@@ -188,7 +195,7 @@ const onboardDocument = workflowDocuments.get("onboard-repository.yml");
 const onboardStep = onboardDocument?.jobs?.onboard?.steps?.find(step => step?.name === "校验并接入仓库");
 const onboardCommand = String(onboardStep?.run ?? "");
 for (const [name, expectedValue] of [["REPOSITORY_ID", "${{inputs.repositoryId}}"], ["REPOSITORY_FULL_NAME", "${{inputs.repositoryFullName}}"], ["TRIGGER_ACTOR_ID", "${{github.actor_id}}"], ["TRIGGER_ACTOR_LOGIN", "${{github.actor}}"]]) if (String(onboardStep?.env?.[name] ?? "").replace(/\s+/gu, "") !== expectedValue) throw new Error(`onboarding没有通过环境变量传递${name}`);
-if (/\$\{\{/u.test(onboardCommand) || !onboardCommand.includes('repository_arguments+=(--repository-id "$REPOSITORY_ID")') || !onboardCommand.includes('"${repository_arguments[@]}"')) throw new Error("onboarding没有使用环境变量和参数数组传递不可信输入");
+if (/\$\{\{/u.test(onboardCommand) || !onboardCommand.includes('--repository-id "$REPOSITORY_ID"') || !onboardCommand.includes('--repository-full-name "$REPOSITORY_FULL_NAME"')) throw new Error("onboarding没有通过环境变量安全传递必填仓库身份");
 const deployRuntime = await readFile(".github/workflows/deploy-runtime.yml", "utf8");
 for (const required of [".github/workflows/deploy-runtime.yml", "scripts/verify-workflows.mjs", "github.event.repository.default_branch", "id: deploy", "tee \"$deployment_log\"", "PIPESTATUS[0]", "复核运行程序健康状态", "steps.deploy.outputs.runtime_url", "EXPECTED_POLICY_SHA", "Date.now() + 60_000", "AbortSignal.timeout", "await response.body?.cancel()", "status: \"waiting\"", "iu.test(body.version)", "健康复核在60秒内未收敛"]) {
   if (!deployRuntime.includes(required)) throw new Error(`部署工作流缺少固定健康复核合同: ${required}`);
@@ -224,7 +231,7 @@ try {
   const archivePath = join(temporary, archiveName); await writeFile(archivePath, archive);
   const extracted = spawnSync("tar", ["-xf", archivePath, "-C", temporary], { encoding: "utf8" }); if (extracted.status !== 0) throw new Error(extracted.stderr || "无法解压actionlint");
   const executable = join(temporary, platform === "windows" ? "actionlint.exe" : "actionlint"); if (platform !== "windows") await chmod(executable, 0o755);
-  const actionlintArguments = ["-ignore", 'unknown permission scope "copilot-requests"', ...files.map(file => `.github/workflows/${file}`)];
+  const actionlintArguments = ["-ignore", 'unknown permission scope "copilot-requests"', "-ignore", 'unexpected key "queue" for "concurrency" section', ...files.map(file => `.github/workflows/${file}`)];
   const checked = spawnSync(executable, actionlintArguments, { encoding: "utf8" }); if (checked.status !== 0) throw new Error(checked.stdout || checked.stderr || "actionlint失败");
 } finally { await rm(temporary, { recursive: true, force: true }); }
 console.log("workflows verified");

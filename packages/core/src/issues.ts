@@ -118,8 +118,9 @@ function text(value: unknown, name: string, minimum = 0, maximum = 1_000_000): s
 }
 
 function singleLine(value: unknown, name: string, minimum = 1, maximum = 500): string {
-  const result = text(value, name, minimum, maximum).trim();
-  if (/\r|\n/u.test(result)) throw new Error(`${name}长度或格式无效`);
+  const result = text(value, name, 0, 1_000_000).trim();
+  const size = [...result].length;
+  if (size < minimum || size > maximum || /\r|\n/u.test(result)) throw new Error(`${name}长度或格式无效`);
   return result;
 }
 

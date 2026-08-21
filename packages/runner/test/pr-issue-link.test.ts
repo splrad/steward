@@ -56,6 +56,31 @@ describe("拉取请求议题关联运行器", () => {
     expect(() => parsePrIssueLinkArgs({ "delivery-id": "delivery-4", "repository-id": String(repositoryId), "pull-request-number": "42", "scan-all": "true", "invalidate-only": "false", "policy-sha": policySha })).toThrow("不一致");
   });
 
+  it("失效检查按external_id隔离PR并以失败终态结束", async () => {
+    await withRunnerEnvironment(async () => {
+      process.env.ISSUE_LINK_PREPARE_ONLY = "true";
+      const calls: Array<{ url: string; method: string; body: any }> = [];
+      vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+        const value = String(url); const method = init.method ?? "GET"; const body = init.body ? JSON.parse(String(init.body)) : null;
+        calls.push({ url: value, method, body });
+        if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+        if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify(pull("", 301115370)), { status: 200 });
+        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [{
+          id: 99, name: "PR Issue Link Gate", app: { id: 4243096 }, head_sha: headSha, external_id: `v1:${repositoryId}:41:${headSha}`,
+        }] }), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/check-runs")) return new Response(JSON.stringify({ id: 1 }), { status: 201 });
+        return new Response("unexpected", { status: 500 });
+      });
+      await runPrIssueLink(invocation({ "invalidate-only": "true" }));
+      const created = calls.find(call => call.method === "POST" && call.url.endsWith("/check-runs"));
+      expect(created?.body).toEqual(expect.objectContaining({
+        status: "completed", conclusion: "failure", external_id: `v1:${repositoryId}:42:${headSha}`,
+      }));
+      expect(calls.some(call => call.method === "PATCH" && call.url.endsWith("/check-runs/99"))).toBe(false);
+    });
+  });
+
   it("只接受无工具、无子代理且以唯一成功结果结束的JSONL", () => {
     const content = JSON.stringify({ issueDecisions: [] });
     const message = JSON.stringify({ type: "assistant.message", data: { content, toolRequests: [] } });
@@ -184,7 +209,7 @@ describe("拉取请求议题关联运行器", () => {
             : new Response("unavailable", { status: 503 });
         }
         if (value.endsWith("/graphql")) return new Response(JSON.stringify({ data: { repository: { databaseId: repositoryId, pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } }), { status: 200 });
-        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [{ id: 1, name: "PR Issue Link Gate", app: { id: 4243096 }, head_sha: headSha }] }), { status: 200 });
+        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [{ id: 1, name: "PR Issue Link Gate", app: { id: 4243096 }, head_sha: headSha, external_id: `v1:${repositoryId}:42:${headSha}` }] }), { status: 200 });
         if (value.endsWith("/repos/splrad/steward/check-runs/1")) return new Response(JSON.stringify({ id: 1 }), { status: 200 });
         return new Response("unexpected", { status: 500 });
       });
@@ -217,7 +242,7 @@ describe("拉取请求议题关联运行器", () => {
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
         if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
         if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response("temporarily unavailable", { status: 503 });
-        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [{ id: 1, name: "PR Issue Link Gate", app: { id: 4243096 }, head_sha: headSha }] }), { status: 200 });
+        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [{ id: 1, name: "PR Issue Link Gate", app: { id: 4243096 }, head_sha: headSha, external_id: `v1:${repositoryId}:42:${headSha}` }] }), { status: 200 });
         if (value.endsWith("/repos/splrad/steward/check-runs/1")) return new Response(JSON.stringify({ id: 1 }), { status: 200 });
         return new Response("unexpected", { status: 500 });
       });
@@ -244,7 +269,7 @@ describe("拉取请求议题关联运行器", () => {
         if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify(pull(currentBody, 301115370)), { status: 200 });
         if (value.endsWith("/internal/issue-snapshots/1296724484")) return new Response("unavailable", { status: 503 });
         if (value.endsWith("/graphql")) return new Response(JSON.stringify({ data: { repository: { databaseId: repositoryId, pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } }), { status: 200 });
-        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: checkExists ? [{ id: 1, name: "PR Issue Link Gate", app: { id: 4243096 }, head_sha: headSha }] : [] }), { status: 200 });
+        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: checkExists ? [{ id: 1, name: "PR Issue Link Gate", app: { id: 4243096 }, head_sha: headSha, external_id: `v1:${repositoryId}:42:${headSha}` }] : [] }), { status: 200 });
         if (value.endsWith("/repos/splrad/steward/check-runs")) { checkExists = true; return new Response(JSON.stringify({ id: 1 }), { status: 201 }); }
         if (value.endsWith("/repos/splrad/steward/check-runs/1")) return new Response(JSON.stringify({ id: 1 }), { status: 200 });
         return new Response("unexpected", { status: 500 });

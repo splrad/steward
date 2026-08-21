@@ -223,6 +223,16 @@ async function dispatchIssueRefreshes(env: Env, repository: any, deliveryId: str
   for (const issueNumber of unique) await send(env, "issue-sync.yml", { deliveryId, repositoryId: String(repository.id), issueNumber: String(issueNumber), scanAll: "false", policySha: env.POLICY_SHA });
 }
 
+async function dispatchAllManagedIssueScans(env: Env, deliveryId: string, currentRepository?: any): Promise<void> {
+  if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
+  const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY,
+    installationId: Number(env.INSTALLATION_ID), permissions: { metadata: "read" }, policySha: env.POLICY_SHA });
+  const installed = await new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA).listInstallationRepositories();
+  const repositories = new Map(installed.filter(isManaged).map(repository => [Number(repository.id), repository]));
+  if (currentRepository && isManaged(currentRepository)) repositories.set(Number(currentRepository.id), currentRepository);
+  for (const repository of [...repositories.values()].sort((left, right) => Number(left.id) - Number(right.id))) await dispatchIssueRefreshes(env, repository, deliveryId, null);
+}
+
 async function dispatchRelationRefreshes(env: Env, deliveryId: string, payload: any, targets: readonly { repository: any; issueNumber: unknown }[]): Promise<void> {
   const grouped = new Map<number, { repository: any; issueNumbers: number[] | null }>();
   let incomplete = false;
@@ -255,13 +265,13 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
   try {
     if (event === "installation" && action === "deleted") {
       if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
-      const repositoryIds = (payload.repositories ?? []).filter(isManaged).map((repository: any) => Number(repository.id));
+      const repositoryIds = (payload.repositories ?? []).filter(belongsToOrganization).map((repository: any) => Number(repository.id));
       await new IssueSnapshotStore(env.ISSUE_SNAPSHOTS).deleteAllRepositories(repositoryIds);
       return response(202);
     }
     if (event === "installation_repositories" && action === "removed") {
       if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
-      for (const repository of payload.repositories_removed ?? []) if (isManaged(repository)) await new IssueSnapshotStore(env.ISSUE_SNAPSHOTS).deleteRepository(Number(repository.id));
+      for (const repository of payload.repositories_removed ?? []) if (belongsToOrganization(repository)) await new IssueSnapshotStore(env.ISSUE_SNAPSHOTS).deleteRepository(Number(repository.id));
       return response(202);
     }
     if (event === "issues" && ["deleted", "transferred"].includes(action)) {
@@ -270,37 +280,44 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
       const store = new IssueSnapshotStore(env.ISSUE_SNAPSHOTS);
       const state = await store.getRepositoryState(Number(repository.id));
-      if (!state) return response(204);
-      const result = await store.deleteSnapshot(Number(repository.id), issueNumber, state.generation, new Date().toISOString());
-      if (result.changed) {
-        await dispatchIssueInvalidation(env, repository, deliveryId);
-        await send(env, "issue-sync.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", policySha: env.POLICY_SHA });
+      await store.deleteSnapshot(Number(repository.id), issueNumber, state?.generation ?? 0, new Date().toISOString());
+      await dispatchIssueRefreshes(env, repository, deliveryId, null);
+      if (action === "transferred") {
+        const destinationRepository = payload.changes?.new_repository;
+        const destinationIssueNumber = Number(payload.changes?.new_issue?.number ?? payload.issue?.number);
+        if (destinationRepository && isManaged(destinationRepository) && Number.isSafeInteger(destinationIssueNumber) && destinationIssueNumber > 0) {
+          await dispatchIssueRefreshes(env, destinationRepository, deliveryId, [destinationIssueNumber]);
+        }
       }
-      return response(result.changed ? 202 : 204);
+      return response(202);
     }
     if (event === "issues") {
       const repository = payload.repository; const issueNumber = Number(payload.issue?.number);
       if (!repository || !isManaged(repository) || payload.issue?.pull_request || !Number.isSafeInteger(issueNumber) || issueNumber <= 0) return response(204);
-      await dispatchIssueRefreshes(env, repository, deliveryId, [issueNumber]);
+      await dispatchAllManagedIssueScans(env, deliveryId, repository);
       return response(202);
     }
     if (event === "issue_comment" && ["created", "edited", "deleted"].includes(action)) {
       const repository = payload.repository; const issueNumber = Number(payload.issue?.number);
       if (!repository || !isManaged(repository) || payload.issue?.pull_request || !Number.isSafeInteger(issueNumber) || issueNumber <= 0) return response(204);
-      await dispatchIssueRefreshes(env, repository, deliveryId, [issueNumber]);
+      await dispatchAllManagedIssueScans(env, deliveryId, repository);
       return response(202);
     }
     if (event === "sub_issues") {
+      const parentRepository = String(action).startsWith("parent_issue_") ? payload.parent_issue_repo : payload.repository;
+      const subIssueRepository = String(action).startsWith("sub_issue_") ? payload.sub_issue_repo : payload.repository;
       await dispatchRelationRefreshes(env, deliveryId, payload, [
-        { repository: payload.parent_issue_repo, issueNumber: payload.parent_issue?.number },
-        { repository: payload.repository, issueNumber: payload.sub_issue?.number },
+        { repository: parentRepository, issueNumber: payload.parent_issue?.number },
+        { repository: subIssueRepository, issueNumber: payload.sub_issue?.number },
       ]);
       return response(202);
     }
     if (event === "issue_dependencies") {
+      const blockedRepository = String(action).startsWith("blocking_") ? payload.blocked_issue_repo : payload.repository;
+      const blockingRepository = String(action).startsWith("blocked_by_") ? payload.blocking_issue_repo : payload.repository;
       await dispatchRelationRefreshes(env, deliveryId, payload, [
-        { repository: payload.repository, issueNumber: payload.blocked_issue?.number },
-        { repository: payload.blocking_issue_repo, issueNumber: payload.blocking_issue?.number },
+        { repository: blockedRepository, issueNumber: payload.blocked_issue?.number },
+        { repository: blockingRepository, issueNumber: payload.blocking_issue?.number },
       ]);
       return response(202);
     }

@@ -341,8 +341,10 @@ async function loadFreshSnapshotState(client: GitHubClient, token: string, owner
   return state;
 }
 
-async function currentChecks(client: GitHubClient, owner: string, repo: string, headSha: string): Promise<any[]> {
-  return (await client.listAllCheckRuns(owner, repo, headSha)).filter((check: any) => check?.name === checkName && Number(check?.app?.id) === appId && check?.head_sha === headSha);
+async function currentChecks(client: GitHubClient, owner: string, repo: string, repositoryId: number, pullRequestNumber: number, headSha: string): Promise<any[]> {
+  const externalId = `v1:${repositoryId}:${pullRequestNumber}:${headSha}`;
+  return (await client.listAllCheckRuns(owner, repo, headSha)).filter((check: any) => check?.name === checkName
+    && Number(check?.app?.id) === appId && check?.head_sha === headSha && check?.external_id === externalId);
 }
 
 async function publishCheck(client: GitHubClient, repositoryId: number, owner: string, repo: string, pullRequestNumber: number, headSha: string, input: {
@@ -351,7 +353,7 @@ async function publishCheck(client: GitHubClient, repositoryId: number, owner: s
   title: string;
   summary: string;
 }): Promise<void> {
-  const checks = await currentChecks(client, owner, repo, headSha);
+  const checks = await currentChecks(client, owner, repo, repositoryId, pullRequestNumber, headSha);
   if (checks.length > 1) throw new Error("同名议题检查存在歧义");
   const body: Record<string, unknown> = {
     name: checkName,
@@ -504,12 +506,17 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
   const [owner, repo] = splitRepository(repository.full_name);
   const pull = await client.getPullRequest(owner, repo, pullRequestNumber);
   const facts = currentPullFacts(pull, args.repositoryId);
-  if (pull?.state !== "open") return writeOutput({ "copilot-required": "false", completed: "true" });
+  if (pull?.state !== "open") {
+    await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
+      status: "completed", conclusion: "success", title: "议题关联不适用", summary: `拉取请求：#${pullRequestNumber}\n状态：closed`,
+    });
+    return writeOutput({ "copilot-required": "false", completed: "true" });
+  }
   const managed = isManagedPull(pull, args.repositoryId);
   const targetsDefault = pull?.base?.ref === repository.default_branch;
   if (args.invalidateOnly) {
     if (managed && targetsDefault) await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
-      status: "in_progress", title: "议题事实正在重新同步", summary: `拉取请求：#${pullRequestNumber}\n状态：in-progress`,
+      status: "completed", conclusion: "failure", title: "议题事实等待重新同步", summary: `拉取请求：#${pullRequestNumber}\n状态：failure\n类别：snapshot-invalidated`,
     });
     await writeOutput({ "copilot-required": "false", completed: "true" });
     return;

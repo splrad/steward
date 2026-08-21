@@ -17,6 +17,7 @@ permissions:
 concurrency:
   group: steward-pr-body-${{ inputs.repositoryId }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   resolve:
