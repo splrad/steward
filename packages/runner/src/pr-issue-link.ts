@@ -681,7 +681,6 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
     await writeSummary([`拉取请求：#${prepared.pullRequestNumber}`, `状态：${prerequisiteCategory}-cleaned`]);
     return;
   }
-  if (!prerequisites) throw new Error("议题关联前置事实缺失");
   const { repository, owner, repo, current, facts, currentBase, currentState } = prerequisites;
   if (current?.state !== "open" || current?.base?.ref !== repository.default_branch || facts.baseSha !== prepared.baseSha || facts.headSha !== prepared.headSha
     || currentBase !== prepared.baseSha || currentState.generation !== prepared.generation
