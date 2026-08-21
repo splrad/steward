@@ -213,8 +213,8 @@ async function dispatchIssueInvalidation(env: Env, repository: any, deliveryId: 
 }
 
 async function dispatchIssueRefreshes(env: Env, repository: any, deliveryId: string, issueNumbers: readonly number[] | null): Promise<void> {
-  await dispatchIssueInvalidation(env, repository, deliveryId);
   if (issueNumbers === null) {
+    await dispatchIssueInvalidation(env, repository, deliveryId);
     await send(env, "issue-sync.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", policySha: env.POLICY_SHA });
     return;
   }
@@ -253,6 +253,11 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
   if (!validScope(payload, env)) return response(403);
   const event = request.headers.get("x-github-event") ?? ""; const deliveryId = request.headers.get("x-github-delivery") ?? ""; const action = payload.action ?? "";
   try {
+    if (event === "installation" && action === "deleted") {
+      if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
+      await new IssueSnapshotStore(env.ISSUE_SNAPSHOTS).deleteAllRepositories();
+      return response(202);
+    }
     if (event === "installation_repositories" && action === "removed") {
       if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
       for (const repository of payload.repositories_removed ?? []) if (isManaged(repository)) await new IssueSnapshotStore(env.ISSUE_SNAPSHOTS).deleteRepository(Number(repository.id));
@@ -299,16 +304,18 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       return response(202);
     }
     if (event === "installation" && action === "created") {
+      const store = env.ISSUE_SNAPSHOTS ? new IssueSnapshotStore(env.ISSUE_SNAPSHOTS) : null;
       for (const repository of payload.repositories ?? []) if (isManaged(repository)) {
+        await store?.activateRepository(Number(repository.id));
         await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "installation-created", deliveryId, policySha: env.POLICY_SHA });
-        await dispatchIssueInvalidation(env, repository, deliveryId);
       }
       return response(202);
     }
     if (event === "installation_repositories" && action === "added") {
+      const store = env.ISSUE_SNAPSHOTS ? new IssueSnapshotStore(env.ISSUE_SNAPSHOTS) : null;
       for (const repository of payload.repositories_added ?? []) if (isManaged(repository)) {
+        await store?.activateRepository(Number(repository.id));
         await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "installation-repositories-added", deliveryId, policySha: env.POLICY_SHA });
-        await dispatchIssueInvalidation(env, repository, deliveryId);
       }
       return response(202);
     }

@@ -1,6 +1,7 @@
 name = "splrad-steward-runtime"
 main = "src/index.ts"
 compatibility_date = "2026-08-16"
+compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
 [version_metadata]

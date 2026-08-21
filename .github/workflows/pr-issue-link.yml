@@ -28,6 +28,7 @@ jobs:
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       count: ${{ steps.matrix.outputs.count }}
+      snapshot-generation: ${{ steps.matrix.outputs.snapshot-generation }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: { ref: "${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}", persist-credentials: false }
@@ -46,6 +47,7 @@ jobs:
           SCAN_ALL: ${{ inputs.scanAll }}
           INVALIDATE_ONLY: ${{ inputs.invalidateOnly }}
           POLICY_SHA: ${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}
+          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
           ISSUE_LINK_LIST_ONLY: "true"
         run: |
           pull_arguments=()
@@ -80,6 +82,7 @@ jobs:
       PULL_REQUEST_NUMBER: ${{ matrix.pullRequestNumber }}
       INVALIDATE_ONLY: ${{ inputs.invalidateOnly }}
       POLICY_SHA: ${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}
+      SNAPSHOT_VALIDATED_GENERATION: ${{ needs.resolve.outputs.snapshot-generation }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: { ref: "${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}", persist-credentials: false }

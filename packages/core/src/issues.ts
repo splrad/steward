@@ -171,7 +171,13 @@ function referenceType(url: URL, explicitImage: boolean): UnfetchedReferenceType
 }
 
 function normalizeUrl(candidate: string): URL | null {
-  const cleaned = candidate.trim().replace(/^</u, '').replace(/>$/u, '').replace(/[),.;!?\]}]+$/u, '');
+  let cleaned = candidate.trim();
+  if (cleaned.startsWith('<')) cleaned = cleaned.slice(1);
+  if (cleaned.endsWith('>')) cleaned = cleaned.slice(0, -1);
+  const trailing = new Set([')', ',', '.', ';', '!', '?', ']', '}']);
+  let end = cleaned.length;
+  while (end > 0 && trailing.has(cleaned[end - 1]!)) end--;
+  cleaned = cleaned.slice(0, end);
   try {
     const url = new URL(cleaned);
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
@@ -179,6 +185,79 @@ function normalizeUrl(candidate: string): URL | null {
   } catch {
     return null;
   }
+}
+
+function markdownDestinations(line: string): readonly { value: string; image: boolean }[] {
+  const values: { value: string; image: boolean }[] = [];
+  let labelStart = -1;
+  for (let cursor = 0; cursor < line.length; cursor++) {
+    if (line[cursor] === '[') { labelStart = cursor; continue; }
+    if (line[cursor] !== ']' || line[cursor + 1] !== '(') continue;
+    let start = cursor + 2;
+    while (start < line.length && (line[start] === ' ' || line[start] === '\t')) start++;
+    const angle = line[start] === '<';
+    if (angle) start++;
+    const lower = line.slice(start, start + 8).toLowerCase();
+    if (lower.startsWith('http://') || lower.startsWith('https://')) {
+      let end = start;
+      while (end < line.length) {
+        const character = line[end]!;
+        if ((angle && character === '>') || (!angle && (character === ')' || character === ' ' || character === '\t'))) break;
+        end++;
+      }
+      values.push({ value: line.slice(start, end), image: labelStart > 0 && line[labelStart - 1] === '!' });
+    }
+    labelStart = -1;
+  }
+  return values;
+}
+
+function htmlAttributeUrls(line: string, tagName: 'img' | 'a', attribute: 'src' | 'href'): readonly string[] {
+  const values: string[] = [];
+  const lower = line.toLowerCase();
+  for (let cursor = 0; cursor < line.length;) {
+    const tagStart = lower.indexOf(`<${tagName}`, cursor);
+    if (tagStart < 0) break;
+    const tagEnd = line.indexOf('>', tagStart + tagName.length + 1);
+    if (tagEnd < 0) break;
+    const tag = line.slice(tagStart, tagEnd + 1);
+    const tagLower = tag.toLowerCase();
+    for (let attributeCursor = 0; attributeCursor < tag.length;) {
+      const nameStart = tagLower.indexOf(attribute, attributeCursor);
+      if (nameStart < 0) break;
+      const before = nameStart === 0 ? ' ' : tagLower[nameStart - 1]!;
+      const afterName = nameStart + attribute.length;
+      if (/[A-Za-z0-9_-]/u.test(before) || /[A-Za-z0-9_-]/u.test(tagLower[afterName] ?? '')) { attributeCursor = afterName; continue; }
+      let equals = afterName;
+      while (equals < tag.length && (tag[equals] === ' ' || tag[equals] === '\t')) equals++;
+      if (tag[equals] !== '=') { attributeCursor = afterName; continue; }
+      let valueStart = equals + 1;
+      while (valueStart < tag.length && (tag[valueStart] === ' ' || tag[valueStart] === '\t')) valueStart++;
+      const quote = tag[valueStart];
+      if (quote !== '"' && quote !== "'") { attributeCursor = valueStart + 1; continue; }
+      const valueEnd = tag.indexOf(quote, valueStart + 1);
+      if (valueEnd < 0) break;
+      values.push(tag.slice(valueStart + 1, valueEnd));
+      attributeCursor = valueEnd + 1;
+    }
+    cursor = tagEnd + 1;
+  }
+  return values;
+}
+
+function bareHttpUrls(line: string): readonly string[] {
+  const values: string[] = [];
+  const lower = line.toLowerCase();
+  for (let cursor = 0; cursor < line.length;) {
+    const start = lower.indexOf('http', cursor);
+    if (start < 0) break;
+    if (!lower.startsWith('http://', start) && !lower.startsWith('https://', start)) { cursor = start + 4; continue; }
+    let end = start;
+    while (end < line.length && ![' ', '\t', '<', '>', '"', "'"].includes(line[end]!)) end++;
+    values.push(line.slice(start, end));
+    cursor = Math.max(end, start + 1);
+  }
+  return values;
 }
 
 function extractReferences(body: string, source: string): UnfetchedReference[] {
@@ -189,14 +268,15 @@ function extractReferences(body: string, source: string): UnfetchedReference[] {
     if (!url) return;
     const urlDigest = sha256(url.href);
     const key = `${source}:${line}:${urlDigest}`;
-    if (!references.has(key)) references.set(key, { source, line, type: referenceType(url, explicitImage), urlDigest });
+    const value = { source, line, type: referenceType(url, explicitImage), urlDigest };
+    const existing = references.get(key);
+    if (!existing || (explicitImage && existing.type !== 'image')) references.set(key, value);
   };
   lines.forEach((lineText, index) => {
-    for (const match of lineText.matchAll(/(!)?\[[^\]]*\]\(\s*(?:<([^>]+)>|(https?:\/\/[^\s)]+))(?:\s+["'][^)]*)?\)/giu)) add(match[2] ?? match[3] ?? '', index + 1, match[1] === '!');
-    for (const match of lineText.matchAll(/<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/giu)) add(match[1] ?? '', index + 1, true);
-    for (const match of lineText.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>/giu)) add(match[1] ?? '', index + 1, false);
-    for (const match of lineText.matchAll(/<((?:https?):\/\/[^>]+)>/giu)) add(match[1] ?? '', index + 1, false);
-    for (const match of lineText.matchAll(/https?:\/\/[^\s<>"']+/giu)) add(match[0], index + 1, false);
+    for (const destination of markdownDestinations(lineText)) add(destination.value, index + 1, destination.image);
+    for (const value of htmlAttributeUrls(lineText, 'img', 'src')) add(value, index + 1, true);
+    for (const value of htmlAttributeUrls(lineText, 'a', 'href')) add(value, index + 1, false);
+    for (const value of bareHttpUrls(lineText)) add(value, index + 1, false);
   });
   return [...references.values()].sort((left, right) => left.source.localeCompare(right.source) || left.line - right.line || left.urlDigest.localeCompare(right.urlDigest));
 }

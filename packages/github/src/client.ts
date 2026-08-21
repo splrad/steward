@@ -138,7 +138,8 @@ export class GitHubClient {
       const response = await this.transport.call(globalThis, validator.url, { method: "GET", headers });
       if (response.status === 304) {
         const responseNext = nextLink(response.headers);
-        if (responseNext && this.absoluteUrl(responseNext) !== validator.next) return { state: "modified", resource: validator.resource, url: validator.url };
+        const normalizedNext = responseNext ? this.absoluteUrl(responseNext) : null;
+        if (normalizedNext !== validator.next) return { state: "modified", resource: validator.resource, url: validator.url };
         continue;
       }
       if (response.ok) return { state: "modified", resource: validator.resource, url: validator.url };

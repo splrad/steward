@@ -473,7 +473,7 @@ async function publishNotApplicable(client: GitHubClient, repository: any, pull:
 }
 
 async function listPullRequestMatrix(args: PrIssueLinkArgs): Promise<void> {
-  const { client } = await createTargetClient(args.repositoryId, args.policySha);
+  const { token, client } = await createTargetClient(args.repositoryId, args.policySha);
   const repository = await client.getRepositoryById(args.repositoryId);
   configuration(repository);
   const [owner, repo] = splitRepository(repository.full_name);
@@ -487,7 +487,12 @@ async function listPullRequestMatrix(args: PrIssueLinkArgs): Promise<void> {
   }
   numbers.sort((left, right) => left - right);
   if (new Set(numbers).size !== numbers.length) throw new Error("开放拉取请求集合重复");
-  await writeOutput({ matrix: JSON.stringify(numbers.map(pullRequestNumber => ({ pullRequestNumber }))), count: String(numbers.length) });
+  let snapshotGeneration = "";
+  if (args.scanAll && !args.invalidateOnly && numbers.length && process.env.RUNTIME_URL) {
+    const state = await loadFreshSnapshotState(client, token, owner, repo, args.repositoryId, args.deliveryId);
+    snapshotGeneration = String(state.generation);
+  }
+  await writeOutput({ matrix: JSON.stringify(numbers.map(pullRequestNumber => ({ pullRequestNumber }))), count: String(numbers.length), "snapshot-generation": snapshotGeneration });
   await writeSummary([`仓库编号：${args.repositoryId}`, `开放拉取请求：${numbers.length}`]);
 }
 
@@ -533,7 +538,13 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
     const preparedPath = requiredEnvironment("ISSUE_PREPARED_FACTS_PATH");
     const promptPath = requiredEnvironment("ISSUE_COPILOT_PROMPT_PATH");
     if (extractIssueLinksBlock(facts.body) && managedBodyOutsideIssueLinksDigest(facts.body).length !== 64) throw new Error("议题子块无效");
-    const state = await loadFreshSnapshotState(client, token, owner, repo, args.repositoryId, args.deliveryId);
+    const validatedGeneration = process.env.SNAPSHOT_VALIDATED_GENERATION;
+    const state = validatedGeneration
+      ? validateSnapshotState(await runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${args.repositoryId}`), args.repositoryId)
+      : await loadFreshSnapshotState(client, token, owner, repo, args.repositoryId, args.deliveryId);
+    const expectedGeneration = validatedGeneration ? Number(validatedGeneration) : null;
+    if (expectedGeneration !== null && (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0)) throw new Error("SNAPSHOT_VALIDATED_GENERATION无效");
+    if (expectedGeneration !== null && state.generation !== expectedGeneration) throw new Error("共享议题快照代次已经漂移");
     if (state.snapshots.length > maximumCandidates) throw new Error("开放议题候选超过50个");
     const candidateBytes = Buffer.byteLength(JSON.stringify(state.snapshots.map(item => item.snapshot)), "utf8");
     if (candidateBytes > maximumCandidateBytes) throw new Error("议题候选上下文超过1 MiB");
@@ -640,10 +651,31 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
   const current = await client.getPullRequest(owner, repo, prepared.pullRequestNumber);
   const facts = currentPullFacts(current, args.repositoryId);
   const currentBase = sha((await client.getRef(owner, repo, `heads/${repository.default_branch}`)).object.sha, "baseSha");
-  const currentState = validateSnapshotState(await runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${args.repositoryId}`), args.repositoryId);
+  let currentState: SnapshotState;
+  try {
+    currentState = validateSnapshotState(await runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${args.repositoryId}`), args.repositoryId);
+  } catch (error) {
+    let cleaned = false;
+    try {
+      if (facts.headSha === prepared.headSha && facts.baseSha === prepared.baseSha) {
+        await applyBodyAndVerify({ client, repository, pull: current, desired: [], removeBlock: true });
+        cleaned = true;
+      }
+    } catch {}
+    await publishCheck(client, args.repositoryId, owner, repo, prepared.pullRequestNumber, prepared.headSha, {
+      status: "completed", conclusion: cleaned ? "success" : "failure", title: cleaned ? "议题关联已安全跳过" : "议题关联清理失败",
+      summary: `拉取请求：#${prepared.pullRequestNumber}\n状态：${cleaned ? "safe-empty" : "failure"}\n类别：${cleaned ? "snapshot-not-ready-cleaned" : "snapshot-not-ready-unclean"}`,
+    });
+    if (!cleaned) throw error;
+    await writeSummary([`拉取请求：#${prepared.pullRequestNumber}`, "状态：snapshot-not-ready-cleaned"]);
+    return;
+  }
   if (current?.state !== "open" || current?.base?.ref !== repository.default_branch || facts.baseSha !== prepared.baseSha || facts.headSha !== prepared.headSha
     || currentBase !== prepared.baseSha || currentState.generation !== prepared.generation
     || managedBodyOutsideIssueLinksDigest(facts.body) !== prepared.unmanagedBodyDigest) {
+    await publishCheck(client, args.repositoryId, owner, repo, prepared.pullRequestNumber, prepared.headSha, {
+      status: "completed", conclusion: "success", title: "议题关联分析已过期", summary: `拉取请求：#${prepared.pullRequestNumber}\n状态：stale-discarded`,
+    });
     await writeSummary([`拉取请求：#${prepared.pullRequestNumber}`, "状态：stale-discarded"]);
     return;
   }

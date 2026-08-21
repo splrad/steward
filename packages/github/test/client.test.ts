@@ -61,6 +61,10 @@ describe("代码托管平台客户端", () => {
     });
     await expect(createInstallationToken({ appId: "4243096", privateKey, installationId: 145952003, repositoryId: 1187527897, permissions: { contents: "read", metadata: "read" }, policySha: "a".repeat(40) })).resolves.toBe("installation-token");
     expect(body).toEqual({ permissions: { contents: "read", metadata: "read" }, repository_ids: [1187527897] });
+
+    await expect(createInstallationToken({ appId: "4243096", privateKey, installationId: 145952003, repositoryName: "LayerScape", permissions: { issues: "read", metadata: "read" }, policySha: "a".repeat(40) })).resolves.toBe("installation-token");
+    expect(body).toEqual({ permissions: { issues: "read", metadata: "read" }, repositories: ["LayerScape"] });
+    await expect(createInstallationToken({ appId: "4243096", privateKey, installationId: 145952003, repositoryId: 1187527897, repositoryName: "LayerScape", permissions: { metadata: "read" }, policySha: "a".repeat(40) })).rejects.toThrow("不能同时使用");
   });
 
   it("使用拉取请求接口读取待审查人、完整审查、事件分页和工作流运行", async () => {
@@ -197,9 +201,11 @@ describe("代码托管平台客户端", () => {
       { resource: "comments" as const, url: "https://example.test/page/2", etag: '"two"', next: null, status: 200 as const },
     ];
     const headers: string[] = [];
-    const unchanged = new GitHubClient("token", "https://example.test", (async (_url: any, init?: RequestInit) => {
+    const unchanged = new GitHubClient("token", "https://example.test", (async (url: any, init?: RequestInit) => {
       headers.push(new Headers(init?.headers).get("If-None-Match") ?? "");
-      return new Response(null, { status: 304 });
+      const responseInit: ResponseInit = { status: 304 };
+      if (String(url).endsWith("/page/1")) responseInit.headers = { Link: '<https://example.test/page/2>; rel="next"' };
+      return new Response(null, responseInit);
     }) as typeof fetch);
     await expect(unchanged.revalidatePageValidators(validators)).resolves.toEqual({ state: "not-modified" });
     expect(headers).toEqual(['"one"', '"two"']);
@@ -209,6 +215,8 @@ describe("代码托管平台客户端", () => {
     ])).resolves.toEqual({ state: "not-modified" });
     const changed = new GitHubClient("token", "https://example.test", (async () => new Response(JSON.stringify([]), { status: 200, headers: { ETag: '"new"' } })) as typeof fetch);
     await expect(changed.revalidatePageValidators(validators)).resolves.toEqual({ state: "modified", resource: "comments", url: "https://example.test/page/1" });
+    const missingLink = new GitHubClient("token", "https://example.test", (async () => new Response(null, { status: 304 })) as typeof fetch);
+    await expect(missingLink.revalidatePageValidators(validators)).resolves.toEqual({ state: "modified", resource: "comments", url: "https://example.test/page/1" });
     let calls = 0;
     const unverifiable = new GitHubClient("token", "https://example.test", (async () => { calls += 1; return new Response(null, { status: 304 }); }) as typeof fetch);
     await expect(unverifiable.revalidatePageValidators([{ ...validators[0]!, etag: null }])).resolves.toEqual({ state: "unverifiable", resource: "comments", url: "https://example.test/page/1" });

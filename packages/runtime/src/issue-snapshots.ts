@@ -1,4 +1,4 @@
-import { createAppJwt, GitHubClient, GitHubRequestError, type GitHubIssueFacts, type PageValidator } from "../../github/src/index.js";
+import { createAppJwt, createInstallationToken, GitHubClient, GitHubRequestError, type GitHubIssueFacts, type PageValidator } from "../../github/src/index.js";
 import { issueSnapshotContentDigest, normalizeIssueSnapshot, openIssueSetDigest, type IssueRelationSnapshot, type IssueSnapshot } from "../../core/src/issues.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
 
@@ -37,7 +37,8 @@ export interface StoredIssueSnapshot {
 }
 
 const internalPrefix = "/internal/issue-snapshots/";
-const maxOpenSnapshots = 500;
+const maxOpenSnapshots = 50;
+const maxOpenSnapshotBytes = 1024 * 1024;
 const maxInternalResponseBytes = 8 * 1024 * 1024;
 const deliveryPattern = /^[A-Za-z0-9._:-]{1,200}$/u;
 const digestPattern = /^[0-9a-f]{64}$/u;
@@ -89,6 +90,20 @@ function normalizeValidators(value: unknown): readonly PageValidator[] {
 
 function resultChanges(result: D1Result<unknown> | undefined): number {
   return Number(result?.meta?.changes ?? 0);
+}
+
+function snapshotJsonForSize(snapshot: IssueSnapshot, validators: readonly PageValidator[], contentDigest: string, syncedAt = "9999-12-31T23:59:59.999Z"): string {
+  return JSON.stringify({
+    repositoryId: snapshot.repository.id,
+    issueNumber: snapshot.issue.number,
+    state: snapshot.issue.state,
+    sourceUpdatedAt: snapshot.issue.updatedAt,
+    commentsCount: snapshot.issue.commentsCount,
+    contentDigest,
+    validators: normalizeValidators(validators),
+    snapshot,
+    syncedAt,
+  });
 }
 
 function noStoreResponse(status: number, body?: unknown): Response {
@@ -152,8 +167,14 @@ export class IssueSnapshotStore {
     const digest = openIssueSetDigest(repositoryId, []);
     await this.db.prepare(`INSERT OR IGNORE INTO issue_snapshot_repositories
       (repository_id, generation, sync_state, open_set_digest, last_full_scan_at, updated_at)
-      VALUES (?, 0, 'uninitialized', ?, NULL, ?)`)
-      .bind(repositoryId, digest, now).run();
+      SELECT ?, 0, 'uninitialized', ?, NULL, ?
+      WHERE NOT EXISTS (SELECT 1 FROM issue_snapshot_repository_tombstones WHERE repository_id = ?)`)
+      .bind(repositoryId, digest, now, repositoryId).run();
+  }
+
+  async activateRepository(repositoryId: number): Promise<void> {
+    rowInteger(repositoryId, "repositoryId", 1);
+    await this.db.prepare("DELETE FROM issue_snapshot_repository_tombstones WHERE repository_id = ?").bind(repositoryId).run();
   }
 
   async getRepositoryState(repositoryId: number): Promise<IssueSnapshotRepositoryState | null> {
@@ -192,8 +213,13 @@ export class IssueSnapshotStore {
     if (!before || before.generation !== input.expectedGeneration) throw new Error("issue-snapshot-generation-conflict");
     const existing = await this.getSnapshot(repositoryId, issueNumber);
     const changed = existing?.contentDigest !== input.contentDigest;
-    const openNumbers = (await this.listOpenSnapshots(repositoryId)).map((item) => item.issueNumber).filter((number) => number !== issueNumber);
+    const currentOpen = await this.listOpenSnapshots(repositoryId);
+    const projectedOpen = currentOpen.filter((item) => item.issueNumber !== issueNumber);
+    const openNumbers = projectedOpen.map((item) => item.issueNumber);
     if (input.snapshot.issue.state === "open") openNumbers.push(issueNumber);
+    const projectedBytes = projectedOpen.reduce((total, item) => total + new TextEncoder().encode(JSON.stringify(publicSnapshot(item))).byteLength, 0)
+      + (input.snapshot.issue.state === "open" ? new TextEncoder().encode(snapshotJsonForSize(input.snapshot, input.validators, input.contentDigest, input.now)).byteLength : 0);
+    if (openNumbers.length > maxOpenSnapshots || projectedBytes > maxOpenSnapshotBytes) throw new Error("开放议题候选超过固定上限");
     const openDigest = openIssueSetDigest(repositoryId, openNumbers);
     const validatorsJson = JSON.stringify(normalizeValidators(input.validators));
     const snapshotJson = JSON.stringify(input.snapshot);
@@ -260,12 +286,20 @@ export class IssueSnapshotStore {
 
   async deleteRepository(repositoryId: number): Promise<void> {
     rowInteger(repositoryId, "repositoryId", 1);
+    const now = new Date().toISOString();
     await this.db.batch([
+      this.db.prepare(`INSERT INTO issue_snapshot_repository_tombstones (repository_id, deleted_at) VALUES (?, ?)
+        ON CONFLICT(repository_id) DO UPDATE SET deleted_at = excluded.deleted_at`).bind(repositoryId, now),
       this.db.prepare("DELETE FROM issue_snapshots WHERE repository_id = ?").bind(repositoryId),
       this.db.prepare("DELETE FROM issue_snapshot_repositories WHERE repository_id = ?").bind(repositoryId),
     ]);
     const remaining = await this.db.prepare("SELECT COUNT(*) AS count FROM issue_snapshots WHERE repository_id = ?").bind(repositoryId).first<{ count: number }>();
     if (Number(remaining?.count ?? -1) !== 0 || await this.getRepositoryState(repositoryId)) throw new Error("仓库快照清理读回不一致");
+  }
+
+  async deleteAllRepositories(): Promise<void> {
+    const result = await this.db.prepare("SELECT repository_id FROM issue_snapshot_repositories ORDER BY repository_id").all<{ repository_id: number }>();
+    for (const row of result.results) await this.deleteRepository(rowInteger(row.repository_id, "repository_id", 1));
   }
 
   async setScanState(repositoryId: number, syncState: Exclude<IssueSnapshotSyncState, "uninitialized">, expectedGeneration: number, now: string, liveOpenNumbers?: readonly number[]): Promise<IssueSnapshotRepositoryState> {
@@ -319,7 +353,7 @@ function relationRepositoryPath(value: any): string {
   } catch { throw new Error("议题关系仓库身份无效"); }
 }
 
-async function hydrateRelationRepositoryIds(client: GitHubClient, repository: any, facts: GitHubIssueFacts): Promise<GitHubIssueFacts> {
+async function hydrateRelationRepositoryIds(client: GitHubClient, repository: any, facts: GitHubIssueFacts, env: IssueSnapshotRuntimeEnv): Promise<GitHubIssueFacts> {
   const currentFullName = String(repository.full_name);
   const ids = new Map<string, number>([[currentFullName.toLowerCase(), Number(repository.id)]]);
   const values = [facts.parent, ...facts.subIssues, ...facts.blockedBy, ...facts.blocking].filter(Boolean);
@@ -327,7 +361,17 @@ async function hydrateRelationRepositoryIds(client: GitHubClient, repository: an
     const fullName = relationRepositoryPath(value);
     if (ids.has(fullName.toLowerCase())) continue;
     const [owner, repo] = fullName.split("/") as [string, string];
-    const relatedRepository = await client.getRepository(owner, repo);
+    if (owner.toLowerCase() !== env.ORGANIZATION_LOGIN.toLowerCase() || !env.STEWARD_APP_PRIVATE_KEY) throw new Error("议题关系仓库身份无效");
+    const token = await createInstallationToken({
+      appId: env.APP_ID,
+      privateKey: env.STEWARD_APP_PRIVATE_KEY,
+      installationId: Number(env.INSTALLATION_ID),
+      repositoryName: repo,
+      permissions: { issues: "read", metadata: "read" },
+      policySha: env.POLICY_SHA,
+    });
+    const relatedClient = new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA);
+    const relatedRepository = await relatedClient.getRepository(owner, repo);
     if (!Number.isSafeInteger(relatedRepository?.id) || relatedRepository.id <= 0 || String(relatedRepository?.full_name).toLowerCase() !== fullName.toLowerCase()) throw new Error("议题关系仓库身份无效");
     ids.set(fullName.toLowerCase(), relatedRepository.id);
   }
@@ -460,9 +504,13 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
         const deleted = await store.deleteSnapshot(repositoryId, issueNumber, expectedGeneration, new Date().toISOString());
         return noStoreResponse(200, { repositoryId, issueNumber, deleted: deleted.changed, generation: deleted.state?.generation ?? 0 });
       }
-      facts = await hydrateRelationRepositoryIds(client, repository, facts);
+      facts = await hydrateRelationRepositoryIds(client, repository, facts, env);
       const snapshot = normalizeGitHubIssueFacts(repository, facts);
       if (snapshot.repository.id !== repositoryId || snapshot.issue.number !== issueNumber) throw new Error("issue-repository-mismatch");
+      if (snapshot.issue.state === "closed") {
+        const deleted = await store.deleteSnapshot(repositoryId, issueNumber, expectedGeneration, new Date().toISOString());
+        return noStoreResponse(200, { repositoryId, issueNumber, deleted: deleted.changed, generation: deleted.state?.generation ?? expectedGeneration });
+      }
       const contentDigest = issueSnapshotContentDigest(snapshot);
       const saved = await store.putSnapshot({ expectedGeneration, snapshot, contentDigest, validators: facts.validators, deliveryId, now: new Date().toISOString() });
       return noStoreResponse(200, { repositoryId, issueNumber, changed: saved.changed, generation: saved.state.generation, contentDigest });

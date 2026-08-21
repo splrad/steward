@@ -92,6 +92,7 @@ if (release.assets.length !== 3 || new Set(release.assets.map(x => x.nameTemplat
 const forbiddenRuntime = ["queues", "durable_objects", "kv_namespaces", "r2_buckets", "services", "triggers"];
 const wrangler = await readFile("packages/runtime/wrangler.toml", "utf8");
 for (const name of forbiddenRuntime) if (wrangler.includes(name)) throw new Error(`运行配置包含禁止绑定: ${name}`);
+if (!wrangler.includes('compatibility_flags = ["nodejs_compat"]')) throw new Error("运行配置必须显式启用nodejs_compat");
 const wranglerLines = wrangler.split(/\r?\n/u);
 const arrayTables = wranglerLines.filter(line => /^\[\[[^\]]+\]\]$/u.test(line));
 if (JSON.stringify(arrayTables) !== JSON.stringify(["[[d1_databases]]"])) throw new Error("运行配置必须恰好包含一个D1绑定");

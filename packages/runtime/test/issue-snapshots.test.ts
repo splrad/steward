@@ -19,7 +19,10 @@ class SqliteD1Statement {
 
 class SqliteD1 {
   readonly database = new DatabaseSync(":memory:");
-  constructor() { this.database.exec(readFileSync(new URL("../migrations/0001_issue_snapshots.sql", import.meta.url), "utf8")); }
+  constructor() {
+    this.database.exec(readFileSync(new URL("../migrations/0001_issue_snapshots.sql", import.meta.url), "utf8"));
+    this.database.exec(readFileSync(new URL("../migrations/0002_issue_snapshot_tombstones.sql", import.meta.url), "utf8"));
+  }
   prepare(sql: string): D1PreparedStatement { return new SqliteD1Statement(this.database, sql) as unknown as D1PreparedStatement; }
   async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
     this.database.exec("BEGIN IMMEDIATE");
@@ -52,10 +55,10 @@ const env = (database: SqliteD1): Env => ({
   STEWARD_WEBHOOK_SECRET: "webhook-secret", ISSUE_SNAPSHOTS: database.binding(),
 });
 
-function snapshot(repositoryId: number, fullName: string, issueNumber: number, title = "议题"): IssueSnapshot {
+function snapshot(repositoryId: number, fullName: string, issueNumber: number, title = "议题", body = "明确的验收要求"): IssueSnapshot {
   return normalizeIssueSnapshot({
     repository: { id: repositoryId, fullName },
-    issue: { number: issueNumber, title, body: "明确的验收要求", state: "open", labels: ["bug"], milestone: null, stateReason: null, issueType: null, fieldValues: [], createdAt: "2026-08-20T00:00:00Z", updatedAt: "2026-08-20T01:00:00Z", commentsCount: 0 },
+    issue: { number: issueNumber, title, body, state: "open", labels: ["bug"], milestone: null, stateReason: null, issueType: null, fieldValues: [], createdAt: "2026-08-20T00:00:00Z", updatedAt: "2026-08-20T01:00:00Z", commentsCount: 0 },
     comments: [], parent: null, subIssues: [], blockedBy: [], blocking: [],
   });
 }
@@ -83,12 +86,13 @@ function installAuthorization(fetchIssue?: (url: string) => Response | undefined
 }
 
 describe("议题快照D1存储", () => {
-  it("迁移只创建固定的两张表和一个业务索引", () => {
+  it("迁移只创建固定的三张表和一个业务索引", () => {
     const database = new SqliteD1();
     const objects = database.database.prepare("SELECT type, name, tbl_name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all();
     expect(objects).toEqual([
       { type: "index", name: "issue_snapshots_open", tbl_name: "issue_snapshots" },
       { type: "table", name: "issue_snapshot_repositories", tbl_name: "issue_snapshot_repositories" },
+      { type: "table", name: "issue_snapshot_repository_tombstones", tbl_name: "issue_snapshot_repository_tombstones" },
       { type: "table", name: "issue_snapshots", tbl_name: "issue_snapshots" },
     ]);
     const source = readFileSync(new URL("../src/issue-snapshots.ts", import.meta.url), "utf8");
@@ -122,14 +126,29 @@ describe("议题快照D1存储", () => {
 
   it("删除始终绑定复合主键，仓库清理不影响另一个仓库的同号议题", async () => {
     const store = new IssueSnapshotStore(new SqliteD1().binding());
+    const layerScape = snapshot(1187527897, "splrad/LayerScape", 7);
     await put(store, snapshot(1296724484, "splrad/steward", 7), 0);
-    await put(store, snapshot(1187527897, "splrad/LayerScape", 7), 0);
+    await put(store, layerScape, 0);
     const deleted = await store.deleteSnapshot(1296724484, 7, 1, "2026-08-21T00:03:00Z");
     expect(deleted.changed).toBe(true);
     expect(await store.getSnapshot(1296724484, 7)).toBeNull();
     expect(await store.getSnapshot(1187527897, 7)).not.toBeNull();
     await store.deleteRepository(1187527897);
     expect(await store.getRepositoryState(1187527897)).toBeNull();
+    await expect(put(store, layerScape, 0, "late-delivery")).rejects.toThrow("issue-snapshot-generation-conflict");
+    await store.activateRepository(1187527897);
+    await expect(put(store, layerScape, 0, "re-added")).resolves.toEqual(expect.objectContaining({ changed: true }));
+  });
+
+  it("开放候选总量在写入时受1 MiB固定上限约束", async () => {
+    const store = new IssueSnapshotStore(new SqliteD1().binding());
+    let generation = 0;
+    for (let issueNumber = 1; issueNumber <= 4; issueNumber++) {
+      const large = snapshot(1296724484, "splrad/steward", issueNumber, "大快照", `${issueNumber}${"x".repeat(210_000)}`);
+      generation = (await put(store, large, generation)).state.generation;
+    }
+    const tooLarge = snapshot(1296724484, "splrad/steward", 5, "大快照", `5${"x".repeat(210_000)}`);
+    await expect(put(store, tooLarge, generation)).rejects.toThrow("开放议题候选超过固定上限");
   });
 });
 
@@ -221,6 +240,51 @@ describe("议题快照内部接口", () => {
     expect(saved?.validators.map((validator) => validator.resource)).toEqual(["issue", "comments", "field-values", "parent", "sub-issues", "blocked-by", "blocking"]);
   });
 
+  it("关闭议题立即删除已有快照，不保留无界历史", async () => {
+    const database = new SqliteD1(); const store = new IssueSnapshotStore(database.binding());
+    await put(store, snapshot(1296724484, "splrad/steward", 8), 0);
+    installAuthorization((url) => {
+      if (url.endsWith("/issues/8")) return new Response(JSON.stringify({
+        number: 8, repository_url: "https://api.github.com/repos/splrad/steward", title: "已关闭", body: "完成",
+        state: "closed", labels: [], milestone: null, state_reason: "completed", type: null,
+        created_at: "2026-08-20T00:00:00Z", updated_at: "2026-08-21T00:00:00Z", comments: 0,
+      }), { status: 200, headers: { etag: '"issue-closed"' } });
+      if (url.endsWith("/issues/8/parent")) return new Response("not found", { status: 404 });
+      if (url.includes("/issues/8/")) return new Response(JSON.stringify([]), { status: 200, headers: { etag: '"empty"' } });
+      return undefined;
+    });
+    const response = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/8/refresh", { method: "POST", headers: { authorization: "Bearer one-repository-token" } }), env(database));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(expect.objectContaining({ deleted: true, generation: 2 }));
+    expect(await store.getSnapshot(1296724484, 8)).toBeNull();
+  });
+
+  it("跨仓关系使用按仓库名称收窄的新令牌读取身份", async () => {
+    const database = new SqliteD1(); const tokenBodies: any[] = [];
+    installAuthorization((url) => {
+      if (url.includes("/access_tokens")) return new Response(JSON.stringify({ token: "related-repository-token" }), { status: 201 });
+      if (url.endsWith("/repos/splrad/LayerScape")) return new Response(JSON.stringify(repository(1187527897, "splrad/LayerScape")), { status: 200 });
+      if (url.endsWith("/issues/8")) return new Response(JSON.stringify({
+        number: 8, repository_url: "https://api.github.com/repos/splrad/steward", title: "跨仓关系", body: "验收",
+        state: "open", labels: [], milestone: null, state_reason: null, type: null,
+        created_at: "2026-08-20T00:00:00Z", updated_at: "2026-08-21T00:00:00Z", comments: 0,
+      }), { status: 200, headers: { etag: '"issue"' } });
+      if (url.endsWith("/issues/8/parent")) return new Response("not found", { status: 404 });
+      if (url.includes("/sub_issues?")) return new Response(JSON.stringify([{ number: 9, repository_url: "https://api.github.com/repos/splrad/LayerScape", title: "跨仓子议题", state: "open", updated_at: "2026-08-21T00:00:00Z" }]), { status: 200, headers: { etag: '"sub"' } });
+      if (url.includes("/issues/8/")) return new Response(JSON.stringify([]), { status: 200, headers: { etag: '"empty"' } });
+      return undefined;
+    });
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+      if (String(url).includes("/access_tokens")) tokenBodies.push(JSON.parse(String(init.body)));
+      return originalFetch(url, init);
+    });
+    const response = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/8/refresh", { method: "POST", headers: { authorization: "Bearer one-repository-token" } }), env(database));
+    expect(response.status).toBe(200);
+    expect(tokenBodies).toContainEqual({ permissions: { issues: "read", metadata: "read" }, repositories: ["LayerScape"] });
+    expect((await new IssueSnapshotStore(database.binding()).getSnapshot(1296724484, 8))?.snapshot.subIssues[0]?.repositoryId).toBe(1187527897);
+  });
+
   it("不暴露DELETE路由，scan-state不接受正文且ready会实时复核开放集合", async () => {
     const database = new SqliteD1(); installAuthorization((url) => url.includes("issues?state=open") ? new Response(JSON.stringify([]), { status: 200 }) : undefined);
     expect((await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/7", { method: "DELETE", headers: { authorization: "Bearer one-repository-token" } }), env(database))).status).toBe(404);
@@ -256,5 +320,15 @@ describe("已验签Webhook直连清理", () => {
     expect(await store.getRepositoryState(1187527897)).toBeNull();
     expect(workflows).toEqual(["pr-issue-link.yml", "issue-sync.yml"]);
     expect(fetchSpy.mock.calls.some(([url]) => String(url).includes("/internal/issue-snapshots/"))).toBe(false);
+  });
+
+  it("安装删除会清理全部仓库并留下防复活墓碑", async () => {
+    const database = new SqliteD1(); const store = new IssueSnapshotStore(database.binding());
+    const steward = snapshot(1296724484, "splrad/steward", 7);
+    await put(store, steward, 0);
+    const payload = { installation: { id: 145952003, account: { id: 302208797 } }, action: "deleted" };
+    expect((await handleWebhook(signedRequest("installation", payload), env(database))).status).toBe(202);
+    expect(await store.getRepositoryState(1296724484)).toBeNull();
+    await expect(put(store, steward, 0, "late-installation-write")).rejects.toThrow("issue-snapshot-generation-conflict");
   });
 });

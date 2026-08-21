@@ -65,6 +65,16 @@ describe("议题核心合同", () => {
     expect(issueSnapshotContentDigest(normalizeIssueSnapshot(snapshotInput()))).toBe(issueSnapshotContentDigest(snapshot));
   });
 
+  it("以线性扫描处理长尾标点、Markdown和尖括号链接", () => {
+    const tail = "]".repeat(100_000);
+    const value = normalizeIssueSnapshot(snapshotInput({
+      issue: { ...snapshotInput().issue, body: `![图](https://example.com/image.png) <https://example.com/doc>${tail}`, commentsCount: 0 },
+      comments: [],
+    }));
+    expect(value.unfetchedReferences).toHaveLength(2);
+    expect(value.unfetchedReferences.map(reference => reference.type).sort()).toEqual(["document", "image"]);
+  });
+
   it("拒绝非固定字段、不完整评论和超过256 KiB的快照", () => {
     const withExtra = snapshotInput() as IssueSnapshotInput & { extra?: boolean };
     withExtra.extra = true;

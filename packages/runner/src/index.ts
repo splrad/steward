@@ -530,6 +530,9 @@ export async function reconcileIssueSnapshots(
   if (input.scanAll === (input.issueNumber !== undefined)) throw new Error("全量同步与单议题同步参数不一致");
   if (input.issueNumber !== undefined && (!Number.isSafeInteger(input.issueNumber) || input.issueNumber <= 0)) throw new Error("issueNumber无效");
   if (!input.scanAll) {
+    const state = await dependencies.getState();
+    assertIssueSyncState(state, input.repositoryId);
+    if (state.syncState !== "ready") return reconcileIssueSnapshots({ repositoryId: input.repositoryId, scanAll: true }, dependencies);
     const refreshed = await dependencies.refresh(input.issueNumber!);
     if (refreshed.repositoryId !== input.repositoryId || refreshed.issueNumber !== input.issueNumber || !Number.isSafeInteger(refreshed.generation) || refreshed.generation < 0) throw new Error("议题刷新响应无效");
     const changed = refreshed.changed === true || refreshed.deleted === true;
@@ -729,7 +732,7 @@ export function assertManagedBranchPull(branchExists: boolean, pull: any | undef
   }
 }
 
-async function reconcileManagedFile(input: { repository: any; gh: GitHubClient; path: string; content: string; branch: string; title: string; policySha: string; deliveryId: string }): Promise<"unchanged" | "pull-request-created" | "pull-request-updated"> {
+async function reconcileManagedFile(input: { repository: any; gh: GitHubClient; path: string; content: string; branch: string; title: string; policySha: string; deliveryId: string; dispatchIssueLink?: boolean }): Promise<"unchanged" | "pull-request-created" | "pull-request-updated"> {
   const [owner, repo] = splitRepository(input.repository.full_name); const defaultBranch = input.repository.default_branch;
   const current = await optional(() => input.gh.getContent(owner, repo, input.path, defaultBranch)); if (decodeContent(current) === input.content) return "unchanged";
   const pulls = await input.gh.listPullRequests(owner, repo, `${owner}:${input.branch}`); if (pulls.length > 1) throw new Error(`受管分支存在多个拉取请求: ${input.branch}`);
@@ -750,14 +753,16 @@ async function reconcileManagedFile(input: { repository: any; gh: GitHubClient; 
   const pull = pulls[0] ? await input.gh.updatePullRequest(owner, repo, pulls[0].number, { title: input.title, body }) : await input.gh.createPullRequest(owner, repo, { title: input.title, body, head: input.branch, base: defaultBranch });
   await ensureCopilotReview(input.gh, owner, repo, pull.number, written.headSha, input.policySha);
   await dispatchClassification({ repositoryId: input.repository.id, pullRequestNumber: pull.number, headSha: written.headSha, policySha: input.policySha, deliveryId: input.deliveryId });
-  await dispatchCentralWorkflow("pr-issue-link.yml", input.policySha, {
-    deliveryId: input.deliveryId,
-    repositoryId: String(input.repository.id),
-    pullRequestNumber: String(pull.number),
-    scanAll: "false",
-    invalidateOnly: "false",
-    policySha: input.policySha,
-  });
+  if (input.dispatchIssueLink !== false) {
+    await dispatchCentralWorkflow("pr-issue-link.yml", input.policySha, {
+      deliveryId: input.deliveryId,
+      repositoryId: String(input.repository.id),
+      pullRequestNumber: String(pull.number),
+      scanAll: "false",
+      invalidateOnly: "false",
+      policySha: input.policySha,
+    });
+  }
   return pulls[0] ? "pull-request-updated" : "pull-request-created";
 }
 
@@ -802,12 +807,10 @@ async function onboard(args: Readonly<Record<string, string>>) {
   for (const [name, value] of Object.entries(settings)) if (readback[name] !== value) throw new Error(`仓库设置读回不一致: ${name}`);
   const instructions = await loadCopilotInstructions(cfg.copilotInstructionsProfile, (sourceFile) => configPath("copilot", sourceFile));
   const planned = renderOnboardingPullRequest({ template: organizationPullRequestTemplate, configuration: cfg, actor: "splrad-steward[bot]", context: `onboard:${repositoryId}` });
-  const result = await reconcileManagedFile({ repository, gh, path: instructions.targetPath, content: instructions.content, branch: planned.branch, title: planned.title, policySha, deliveryId: required(args, "delivery-id") });
+  const result = await reconcileManagedFile({ repository, gh, path: instructions.targetPath, content: instructions.content, branch: planned.branch, title: planned.title, policySha, deliveryId: required(args, "delivery-id"), dispatchIssueLink: false });
   await summary([`仓库：${fullName}`, `状态：${result === "unchanged" ? "onboarded" : result}`, `接入分支：${planned.branch}`, `分类配置：${cfg.classification.profile}`, `验证配置：${cfg.validationProfile}`, `Copilot说明配置：${cfg.copilotInstructionsProfile}`, `发布配置：${cfg.releaseProfile ?? "未启用"}`, `Copilot说明字符数：${[...instructions.content].length}`, `标签定义：${labelSyncFailure ? "failed" : "checked"}`]);
   if (labelSyncFailure) throw new Error(labelSyncFailure);
-  if (["installation-created", "installation-repositories-added"].includes(trigger)) {
-    await dispatchCentralWorkflow("issue-sync.yml", policySha, { deliveryId: required(args, "delivery-id"), repositoryId: String(repositoryId), scanAll: "true", policySha });
-  }
+  await dispatchCentralWorkflow("issue-sync.yml", policySha, { deliveryId: required(args, "delivery-id"), repositoryId: String(repositoryId), scanAll: "true", policySha });
 }
 async function automate(args: Readonly<Record<string, string>>) {
   const repositoryId = integer(required(args, "repository-id"), "repository-id");

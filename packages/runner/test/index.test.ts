@@ -686,6 +686,7 @@ describe("议题快照同步", () => {
     stored?: readonly number[];
     refresh?: (issueNumber: number) => { changed?: boolean; deleted?: boolean; generation: number };
     failReady?: boolean;
+    initialState?: "uninitialized" | "scanning" | "ready" | "degraded";
   } = {}) {
     const states: string[] = [];
     const refreshed: number[] = [];
@@ -694,7 +695,7 @@ describe("议题快照同步", () => {
       states, refreshed, dispatched: () => dispatched,
       value: {
         listLiveOpenIssues: async () => ({ numbers: input.live ?? [], skipped: 2 }),
-        getState: async () => ({ repositoryId: 1296724484, generation: 4, syncState: "scanning" as const, snapshots: (input.stored ?? []).map(issueNumber => ({ issueNumber })) }),
+        getState: async () => ({ repositoryId: 1296724484, generation: 4, syncState: input.initialState ?? "ready", snapshots: (input.stored ?? []).map(issueNumber => ({ issueNumber })) }),
         setScanState: async (state: "scanning" | "ready" | "degraded") => {
           states.push(state);
           if (state === "ready" && input.failReady) throw new Error("开放集合未收敛");
@@ -716,6 +717,9 @@ describe("议题快照同步", () => {
     const duplicate = dependencies({ refresh: () => ({ changed: false, generation: 5 }) });
     await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, duplicate.value)).resolves.toEqual(expect.objectContaining({ changed: 0, dispatched: false }));
     expect(duplicate.dispatched()).toBe(0);
+    const uninitialized = dependencies({ initialState: "uninitialized", live: [8], refresh: () => ({ changed: true, generation: 5 }) });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, uninitialized.value)).resolves.toEqual(expect.objectContaining({ issueNumber: null, dispatched: true }));
+    expect(uninitialized.states).toEqual(["scanning", "ready"]);
   });
 
   it("全量同步对GitHub与D1开放集合取并集并修复漏关闭或删除", async () => {
