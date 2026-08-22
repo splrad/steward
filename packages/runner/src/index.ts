@@ -19,6 +19,7 @@ import {
 import { createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestError, uploadReleaseAsset } from "../../github/src/index.js";
 import { managedRepositoryTargets, runManagedRepositorySync, type ManagedTarget } from "./managed-repository-sync.js";
 import { runPrIssueLink } from "./pr-issue-link.js";
+import { targetManagedBlock, updatePullRequestBodyDurably } from "./pr-body-writer.js";
 import { minimatch } from "minimatch";
 import YAML from "yaml";
 
@@ -89,8 +90,11 @@ function configPath(...segments: string[]): string {
 }
 function splitRepository(fullName: string): [string, string] { const parts = fullName.split("/"); if (parts.length !== 2 || parts.some(x => !x)) throw new Error("仓库完整名称无效"); return parts as [string, string]; }
 async function client(repositoryId: number, permissions: Parameters<typeof createInstallationToken>[0]["permissions"], policySha: string): Promise<GitHubClient> {
+  return (await clientWithToken(repositoryId, permissions, policySha)).client;
+}
+async function clientWithToken(repositoryId: number, permissions: Parameters<typeof createInstallationToken>[0]["permissions"], policySha: string): Promise<{ token: string; client: GitHubClient }> {
   const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId, permissions, policySha });
-  return new GitHubClient(token, "https://api.github.com", fetch, policySha);
+  return { token, client: new GitHubClient(token, "https://api.github.com", fetch, policySha) };
 }
 async function summary(lines: readonly string[]): Promise<void> {
   const target = process.env.GITHUB_STEP_SUMMARY;
@@ -683,7 +687,7 @@ export function classificationInstallationPermissions(mode: "observe" | "enforce
   return { contents: "read", pull_requests: assignmentPermission, issues: assignmentPermission, checks: "write", metadata: "read" } as const;
 }
 export function prAutomationInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
-  return { contents: "read", pull_requests: "write", checks: "read", metadata: "read" } as const;
+  return { contents: "read", pull_requests: "write", issues: "read", checks: "read", metadata: "read" } as const;
 }
 export function humanPushPullRequestCreateInput(input: { title: string; body: string; head: string; base: string }) {
   return { ...input, draft: true } as const;
@@ -758,7 +762,7 @@ export function assertManagedBranchPull(branchExists: boolean, pull: any | undef
   }
 }
 
-async function reconcileManagedFile(input: { repository: any; gh: GitHubClient; path: string; content: string; branch: string; title: string; policySha: string; deliveryId: string; dispatchIssueLink?: boolean }): Promise<"unchanged" | "pull-request-created" | "pull-request-updated"> {
+async function reconcileManagedFile(input: { repository: any; gh: GitHubClient; token: string; path: string; content: string; branch: string; title: string; policySha: string; deliveryId: string; dispatchIssueLink?: boolean }): Promise<"unchanged" | "pull-request-created" | "pull-request-updated"> {
   const [owner, repo] = splitRepository(input.repository.full_name); const defaultBranch = input.repository.default_branch;
   const current = await optional(() => input.gh.getContent(owner, repo, input.path, defaultBranch)); if (decodeContent(current) === input.content) return "unchanged";
   const pulls = await input.gh.listPullRequests(owner, repo, `${owner}:${input.branch}`); if (pulls.length > 1) throw new Error(`受管分支存在多个拉取请求: ${input.branch}`);
@@ -776,7 +780,20 @@ async function reconcileManagedFile(input: { repository: any; gh: GitHubClient; 
     releaseAndMigration: [],
   };
   const body = renderManagedBody({ generated, existingBody: pulls[0]?.body, templateBody: organizationPullRequestTemplate, actor: "splrad-steward[bot]", contributors: [], context: `${input.repository.id}:${input.path}:${input.policySha}` });
-  const pull = pulls[0] ? await input.gh.updatePullRequest(owner, repo, pulls[0].number, { title: input.title, body }) : await input.gh.createPullRequest(owner, repo, { title: input.title, body, head: input.branch, base: defaultBranch });
+  const pull = pulls[0] ? await updatePullRequestBodyDurably({
+    client: input.gh,
+    token: input.token,
+    runtimeUrl: env("RUNTIME_URL"),
+    owner,
+    repo,
+    repositoryId: Number(input.repository.id),
+    pullRequestNumber: Number(pulls[0].number),
+    headSha: String(written.headSha),
+    baseSha: String(defaultRef.object.sha),
+    regionKind: "managed-pr",
+    targetBlock: targetManagedBlock(body, "managed-pr"),
+    additionalPatch: { title: input.title },
+  }) : await input.gh.createPullRequest(owner, repo, { title: input.title, body, head: input.branch, base: defaultBranch });
   await ensureCopilotReview(input.gh, owner, repo, pull.number, written.headSha, input.policySha);
   await dispatchClassification({ repositoryId: input.repository.id, pullRequestNumber: pull.number, headSha: written.headSha, policySha: input.policySha, deliveryId: input.deliveryId });
   if (input.dispatchIssueLink !== false) {
@@ -804,7 +821,7 @@ async function onboard(args: Readonly<Record<string, string>>) {
     const discovered = await new GitHubClient(discoveryToken, "https://api.github.com", fetch, policySha).getRepository(owner, repo);
     repositoryId = discovered.id;
   }
-  const gh = await client(repositoryId, { administration: "write", contents: "write", pull_requests: "write", checks: "read", metadata: "read", members: "read" }, policySha);
+  const { token, client: gh } = await clientWithToken(repositoryId, { administration: "write", contents: "write", pull_requests: "write", issues: "read", checks: "read", metadata: "read", members: "read" }, policySha);
   const repository = await gh.getRepositoryById(repositoryId); const cfg = configurationFor(await catalog(), repository);
   if (repository.full_name !== fullName) throw new Error("仓库编号与完整名称不一致");
   const state = validateRepositoryForOnboarding({ id: repository.id, fullName: repository.full_name, ownerId: repository.owner.id, visibility: repository.private ? "private" : "public", fork: repository.fork, archived: repository.archived, disabled: repository.disabled, defaultBranch: repository.default_branch }, 302208797, cfg);
@@ -833,7 +850,7 @@ async function onboard(args: Readonly<Record<string, string>>) {
   for (const [name, value] of Object.entries(settings)) if (readback[name] !== value) throw new Error(`仓库设置读回不一致: ${name}`);
   const instructions = await loadCopilotInstructions(cfg.copilotInstructionsProfile, (sourceFile) => configPath("copilot", sourceFile));
   const planned = renderOnboardingPullRequest({ template: organizationPullRequestTemplate, configuration: cfg, actor: "splrad-steward[bot]", context: `onboard:${repositoryId}` });
-  const result = await reconcileManagedFile({ repository, gh, path: instructions.targetPath, content: instructions.content, branch: planned.branch, title: planned.title, policySha, deliveryId: required(args, "delivery-id"), dispatchIssueLink: false });
+  const result = await reconcileManagedFile({ repository, gh, token, path: instructions.targetPath, content: instructions.content, branch: planned.branch, title: planned.title, policySha, deliveryId: required(args, "delivery-id"), dispatchIssueLink: false });
   await summary([`仓库：${fullName}`, `状态：${result === "unchanged" ? "onboarded" : result}`, `接入分支：${planned.branch}`, `分类配置：${cfg.classification.profile}`, `验证配置：${cfg.validationProfile}`, `Copilot说明配置：${cfg.copilotInstructionsProfile}`, `发布配置：${cfg.releaseProfile ?? "未启用"}`, `Copilot说明字符数：${[...instructions.content].length}`, `标签定义：${labelSyncFailure ? "failed" : "checked"}`]);
   if (labelSyncFailure) throw new Error(labelSyncFailure);
   await dispatchCentralWorkflow("issue-sync.yml", policySha, { deliveryId: required(args, "delivery-id"), repositoryId: String(repositoryId), scanAll: "true", policySha });
@@ -845,7 +862,7 @@ async function automate(args: Readonly<Record<string, string>>) {
   const eventAfterSha = sha(required(args, "event-after-sha"), "event-after-sha");
   const sourceActor = { id: integer(required(args, "source-actor-id"), "source-actor-id"), login: required(args, "source-actor-login"), type: "User" };
   if (!isHumanActor(sourceActor)) throw new Error("来源推送者不是有效真人账号");
-  const gh = await client(repositoryId, prAutomationInstallationPermissions(), policySha);
+  const { token, client: gh } = await clientWithToken(repositoryId, prAutomationInstallationPermissions(), policySha);
   const repository = await gh.getRepositoryById(repositoryId); const [owner, repo] = splitRepository(repository.full_name);
   const repositoryConfiguration = configurationFor(await catalog(), repository);
   if (!repositoryConfiguration.managed || !repositoryConfiguration.prAutomation) return summary(["状态：ignored", "原因：仓库没有启用中央拉取请求创建"]);
@@ -1008,7 +1025,20 @@ async function automate(args: Readonly<Record<string, string>>) {
   const title = `${generated.type}(${generated.scope}): ${generated.title}`;
   const context = await computePullRequestFingerprint({ repositoryId, pullRequestNumber: pulls[0]?.number ?? 0, headSha: facts.headSha, baseSha: facts.baseSha, commits: (compare.commits ?? []).map((c: any) => c.sha), files: (compare.files ?? []).map((f: any) => ({ path: f.filename, status: f.status, additions: f.additions, deletions: f.deletions })), title, body: "", contributors });
   const body = renderManagedBody({ generated, existingBody: pulls[0]?.body, templateBody: template, actor: sourceActor.login, contributors, context });
-  const pull = pulls[0] ? await gh.updatePullRequest(owner, repo, pulls[0].number, { title, body }) : await gh.createPullRequest(owner, repo, humanPushPullRequestCreateInput({ title, body, head: sourceBranch, base: repository.default_branch }));
+  const pull = pulls[0] ? await updatePullRequestBodyDurably({
+    client: gh,
+    token,
+    runtimeUrl: env("RUNTIME_URL"),
+    owner,
+    repo,
+    repositoryId,
+    pullRequestNumber: Number(pulls[0].number),
+    headSha: facts.headSha,
+    baseSha: facts.baseSha,
+    regionKind: "managed-pr",
+    targetBlock: targetManagedBlock(body, "managed-pr"),
+    additionalPatch: { title },
+  }) : await gh.createPullRequest(owner, repo, humanPushPullRequestCreateInput({ title, body, head: sourceBranch, base: repository.default_branch }));
   const boundPull = await gh.getPullRequest(owner, repo, pull.number);
   const pullBinding = inspectAutomationPullRequestBinding(boundPull, { repositoryId, sourceBranch, headSha: facts.headSha, baseBranch: repository.default_branch, baseSha: facts.baseSha });
   if (pullBinding === "base-sha-drifted") aiClassificationSummary = `${aiClassificationSummary}；目标分支已前进，未传递`;
@@ -1196,8 +1226,8 @@ async function syncInstructions(args: Readonly<Record<string, string>>) {
   const targets = await managedTargets(policySha, args["repository-id"] ? integer(args["repository-id"], "repository-id") : undefined);
   const results = await runManagedRepositorySync(targets, async ({ repository, configuration }) => {
     const instructions = await loadCopilotInstructions(configuration.copilotInstructionsProfile, (sourceFile) => configPath("copilot", sourceFile));
-    const gh = await client(repository.id, { contents: "write", pull_requests: "write", checks: "read", metadata: "read" }, policySha);
-    const result = await reconcileManagedFile({ repository, gh, path: instructions.targetPath, content: instructions.content, branch: "steward/copilot-instructions", title: "chore(copilot): 同步代码审查说明", policySha, deliveryId: `copilot-sync:${policySha}:${repository.id}` });
+    const { token, client: gh } = await clientWithToken(repository.id, { contents: "write", pull_requests: "write", issues: "read", checks: "read", metadata: "read" }, policySha);
+    const result = await reconcileManagedFile({ repository, gh, token, path: instructions.targetPath, content: instructions.content, branch: "steward/copilot-instructions", title: "chore(copilot): 同步代码审查说明", policySha, deliveryId: `copilot-sync:${policySha}:${repository.id}` });
     await summary([`仓库：${repository.full_name}`, `目标文件：${instructions.targetPath}`, `状态：${result}`, `字符数：${[...instructions.content].length}`]);
     return result;
   });

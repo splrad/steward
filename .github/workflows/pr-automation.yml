@@ -39,6 +39,7 @@ jobs:
           APP_ID: "4243096"
           INSTALLATION_ID: "145952003"
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
           COPILOT_OUTPUT_PATH: ${{ runner.temp }}/copilot-output.jsonl
           PR_COPILOT_PROMPT_PATH: ${{ runner.temp }}/copilot-prompt.txt
           PR_PREPARED_FACTS_PATH: ${{ runner.temp }}/pr-prepared-facts.json
@@ -78,6 +79,7 @@ jobs:
           APP_ID: "4243096"
           INSTALLATION_ID: "145952003"
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
           COPILOT_OUTPUT_PATH: ${{ runner.temp }}/copilot-output.jsonl
           COPILOT_REPAIR_OUTPUT_PATH: ${{ runner.temp }}/copilot-repair-output.jsonl
           PR_PREPARED_FACTS_PATH: ${{ runner.temp }}/pr-prepared-facts.json

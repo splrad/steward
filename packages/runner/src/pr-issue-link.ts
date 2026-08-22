@@ -22,6 +22,7 @@ import {
 } from "../../core/src/index.js";
 import { createInstallationToken, GitHubClient, type PageValidator } from "../../github/src/index.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
+import { targetManagedBlock, updatePullRequestBodyDurably } from "./pr-body-writer.js";
 
 const checkName = "PR Issue Link Gate";
 const appId = 4243096;
@@ -457,6 +458,7 @@ async function confirmClosingSets(client: GitHubClient, owner: string, repo: str
 
 async function applyBodyAndVerify(input: {
   client: GitHubClient;
+  token: string;
   repository: any;
   pull: any;
   prepared?: PreparedEvidence;
@@ -467,53 +469,36 @@ async function applyBodyAndVerify(input: {
   const [owner, repo] = splitRepository(input.repository.full_name);
   const facts = currentPullFacts(input.pull, Number(input.repository.id));
   if (!input.removeBlock && !input.prepared) throw new Error("缺少议题关联输入摘要");
-  const renderNext = (before: string): string => {
-    if (input.removeBlock) return removeIssueLinksBlock(before);
-    const prepared = input.prepared!;
-    const block = renderIssueLinksBlock({
-      repositoryId: prepared.repositoryId,
-      pullRequestNumber: prepared.pullRequestNumber,
-      baseSha: prepared.baseSha,
-      headSha: prepared.headSha,
-      generation: prepared.generation,
-      analysisInputDigest: prepared.analysisInputDigest,
-    }, input.desired);
-    return upsertIssueLinksBlock(before, block);
-  };
-  let readback: any = null;
-  let next = "";
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const current = await input.client.getPullRequest(owner, repo, facts.number);
-    const before = String(current?.body ?? "");
-    if (current?.head?.sha !== facts.headSha || current?.base?.sha !== facts.baseSha) throw new Error("拉取请求正文CAS失败");
-    if (input.prepared && managedBodyOutsideIssueLinksDigest(before) !== input.prepared.unmanagedBodyDigest) throw new Error("受管块外正文发生变化");
-    next = renderNext(before);
-    if (next === before) {
-      readback = current;
-      break;
-    }
-    const confirmed = await input.client.getPullRequest(owner, repo, facts.number);
-    if (String(confirmed?.body ?? "") !== before || confirmed?.head?.sha !== facts.headSha || confirmed?.base?.sha !== facts.baseSha) {
-      if (attempt < 2) continue;
-      throw new Error("拉取请求正文CAS重试失败");
-    }
-    const written = await input.client.updatePullRequest(owner, repo, facts.number, { body: next });
-    if (String(written?.body ?? "") !== next || written?.head?.sha !== facts.headSha || written?.base?.sha !== facts.baseSha) throw new Error("拉取请求正文写入响应不一致");
-    readback = await input.client.getPullRequest(owner, repo, facts.number);
-    if (String(readback?.body ?? "") === next && readback?.head?.sha === facts.headSha && readback?.base?.sha === facts.baseSha) break;
-    if (readback?.head?.sha !== facts.headSha || readback?.base?.sha !== facts.baseSha
-      || (input.prepared && managedBodyOutsideIssueLinksDigest(String(readback?.body ?? "")) !== input.prepared.unmanagedBodyDigest)) throw new Error("拉取请求正文写入读回不一致");
-    if (attempt === 2) throw new Error("拉取请求正文并发重试失败");
-  }
-  if (!readback || String(readback?.body ?? "") !== next || readback?.head?.sha !== facts.headSha || readback?.base?.sha !== facts.baseSha) throw new Error("拉取请求正文写入读回不一致");
+  const targetBlock = input.removeBlock ? null : targetManagedBlock(renderIssueLinksBlock({
+    repositoryId: input.prepared!.repositoryId,
+    pullRequestNumber: input.prepared!.pullRequestNumber,
+    baseSha: input.prepared!.baseSha,
+    headSha: input.prepared!.headSha,
+    generation: input.prepared!.generation,
+    analysisInputDigest: input.prepared!.analysisInputDigest,
+  }, input.desired), "issue-links");
+  const readback = await updatePullRequestBodyDurably({
+    client: input.client,
+    token: input.token,
+    runtimeUrl: requiredEnvironment("RUNTIME_URL"),
+    owner,
+    repo,
+    repositoryId: Number(input.repository.id),
+    pullRequestNumber: facts.number,
+    headSha: facts.headSha,
+    baseSha: facts.baseSha,
+    issueGeneration: input.prepared?.generation ?? 0,
+    regionKind: "issue-links",
+    targetBlock,
+  });
   if (input.prepared && managedBodyOutsideIssueLinksDigest(String(readback.body ?? "")) !== input.prepared.unmanagedBodyDigest) throw new Error("受管块外正文发生变化");
   if (!await confirmClosingSets(input.client, owner, repo, facts.number, Number(input.repository.id), input.desired, input.freshness)) throw new Error("GitHub关闭议题集合未收敛");
 }
 
-async function publishNotApplicable(client: GitHubClient, repository: any, pull: any, managed: boolean): Promise<void> {
+async function publishNotApplicable(client: GitHubClient, token: string, repository: any, pull: any, managed: boolean): Promise<void> {
   const [owner, repo] = splitRepository(repository.full_name);
   const facts = currentPullFacts(pull, Number(repository.id));
-  if (managed) await applyBodyAndVerify({ client, repository, pull, desired: [], removeBlock: true });
+  if (managed) await applyBodyAndVerify({ client, token, repository, pull, desired: [], removeBlock: true });
   await publishCheck(client, Number(repository.id), owner, repo, facts.number, facts.headSha, {
     status: "completed", conclusion: "success", title: "议题关联不适用", summary: `拉取请求：#${facts.number}\n状态：not-applicable`,
   });
@@ -568,13 +553,13 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
     return;
   }
   if (!managed) {
-    if (targetsDefault) await publishNotApplicable(client, repository, pull, false);
+    if (targetsDefault) await publishNotApplicable(client, token, repository, pull, false);
     await writeOutput({ "copilot-required": "false", completed: "true" });
     return;
   }
   if (!targetsDefault) {
     try {
-      await publishNotApplicable(client, repository, pull, true);
+      await publishNotApplicable(client, token, repository, pull, true);
     } catch (error) {
       await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
         status: "completed", conclusion: "failure", title: "议题关联清理失败", summary: `拉取请求：#${pullRequestNumber}\n状态：failure\n类别：not-applicable-unclean`,
@@ -628,7 +613,7 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
     };
     await writeFile(preparedPath, `${JSON.stringify(prepared)}\n`);
     if (!included.length) {
-      await applyBodyAndVerify({ client, repository, pull, prepared, desired: [] });
+      await applyBodyAndVerify({ client, token, repository, pull, prepared, desired: [] });
       await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, { status: "completed", conclusion: "success", title: "没有可分析的完整议题", summary: `拉取请求：#${pullRequestNumber}\n正式关联：0` });
       await writeOutput({ "copilot-required": "false", completed: "true" });
       return;
@@ -642,7 +627,7 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
       const current = await client.getPullRequest(owner, repo, pullRequestNumber);
       const currentFacts = currentPullFacts(current, args.repositoryId);
       if (currentFacts.headSha === facts.headSha && currentFacts.baseSha === facts.baseSha) {
-        await applyBodyAndVerify({ client, repository, pull: current, desired: [], removeBlock: true });
+        await applyBodyAndVerify({ client, token, repository, pull: current, desired: [], removeBlock: true });
         cleaned = true;
       }
     } catch {}
@@ -727,7 +712,7 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
       if (repositoryForCleanup && pullForCleanup) {
         const cleanupFacts = currentPullFacts(pullForCleanup, args.repositoryId);
         if (cleanupFacts.headSha === prepared.headSha && cleanupFacts.baseSha === prepared.baseSha) {
-          await applyBodyAndVerify({ client, repository: repositoryForCleanup, pull: pullForCleanup, desired: [], removeBlock: true });
+          await applyBodyAndVerify({ client, token, repository: repositoryForCleanup, pull: pullForCleanup, desired: [], removeBlock: true });
           cleaned = true;
         }
       }
@@ -801,7 +786,7 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
         && branch?.object?.sha === prepared.baseSha && state.syncState === "ready" && state.generation === prepared.generation;
     };
     failureCategory = "reconcile-failed";
-    await applyBodyAndVerify({ client, repository, pull: current, prepared, desired, freshness });
+    await applyBodyAndVerify({ client, token, repository, pull: current, prepared, desired, freshness });
     await publishCheck(client, args.repositoryId, owner, repo, prepared.pullRequestNumber, prepared.headSha, {
       status: "completed", conclusion: "success", title: desired.length ? "议题关联已收敛" : "没有正式议题关联",
       summary: `拉取请求：#${prepared.pullRequestNumber}\n正式关联：${desired.length}\n模型结果：${modelAccepted ? "validated" : "safe-empty"}`,
@@ -812,7 +797,7 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
     try {
       const latest = await client.getPullRequest(owner, repo, prepared.pullRequestNumber);
       if (latest?.head?.sha === prepared.headSha && latest?.base?.sha === prepared.baseSha) {
-        await applyBodyAndVerify({ client, repository, pull: latest, desired: [], removeBlock: true });
+        await applyBodyAndVerify({ client, token, repository, pull: latest, desired: [], removeBlock: true });
         cleaned = true;
       }
     } catch {}
