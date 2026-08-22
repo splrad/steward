@@ -663,7 +663,7 @@ describe("中央命令入口", () => {
     const source = (await Promise.all(sourceFiles.map(path => readFile(path, "utf8")))).join("\n");
     expect(source).not.toMatch(/createComment|updateComment/iu);
     expect(source).not.toMatch(/request(?:<[^>]*>)?\("(?:POST|PATCH|DELETE)",\s*`\/repos\/\$\{owner\}\/\$\{repo\}\/issues\/\$\{number\}\/comments/iu);
-    expect(source).toContain('paginateWithValidators<any>("comments", `/repos/${owner}/${repo}/issues/${number}/comments?per_page=100`)');
+    expect(source).toMatch(/paginateWithValidators(?:<[^>]*>)?\(\s*["']comments["']\s*,\s*`\/repos\/\$\{owner\}\/\$\{repo\}\/issues\/\$\{number\}\/comments\?per_page=100`\s*\)/u);
     for (const path of [
       "action",
       "packages/access-auth",
