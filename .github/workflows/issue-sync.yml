@@ -1,0 +1,13 @@
+name: SPLRAD Steward / Issue Sync
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  pending:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 等待后续堆叠层
+        run: echo "议题同步将在后续堆叠PR中启用。"

@@ -229,6 +229,16 @@ describe("代码托管平台客户端", () => {
     await expect(parentStillMissing.revalidatePageValidators([missingParent])).resolves.toEqual({ state: "not-modified" });
     const parentAppeared = new GitHubClient("token", "https://example.test", (async () => new Response(JSON.stringify({ number: 1 }), { status: 200 })) as typeof fetch);
     await expect(parentAppeared.revalidatePageValidators([missingParent])).resolves.toEqual({ state: "modified", resource: "parent", url: "https://example.test/parent" });
+
+    const mutable = validators.map((validator) => ({ ...validator }));
+    const requested: string[] = [];
+    const mutationSafe = new GitHubClient("token", "https://example.test", (async (url: any) => {
+      requested.push(String(url));
+      if (requested.length === 1) mutable[1]!.url = "https://evil.test/page/2";
+      return new Response(null, { status: 304, ...(String(url).endsWith("/page/1") ? { headers: { Link: '<https://example.test/page/2>; rel="next"' } } : {}) });
+    }) as typeof fetch);
+    await expect(mutationSafe.revalidatePageValidators(mutable)).resolves.toEqual({ state: "not-modified" });
+    expect(requested).toEqual(["https://example.test/page/1", "https://example.test/page/2"]);
   });
 
   it("分页拒绝跨API来源并保留404与权限错误的精确端点", async () => {
