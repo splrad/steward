@@ -6,6 +6,7 @@ import type {
   SemanticCatalog,
 } from './classification.js';
 import { validateClassificationSuggestion } from './classification.js';
+import { extractIssueLinksBlock } from './issues.js';
 
 export type { AiClassificationConfidence, AiClassificationSuggestion } from './classification.js';
 
@@ -330,11 +331,18 @@ export function renderManagedBody(input: { generated: GeneratedSummary; existing
   if ((hasCurrentMarker && hasLegacyMarker) || (hasCurrentMarker && !validCurrentRegion) || (hasLegacyMarker && !validLegacyRegion) || (!hasCurrentMarker && !hasLegacyMarker)) {
     throw new Error('拉取请求模板受管标记缺失、重复或交叉');
   }
+  const issueLinks = extractIssueLinksBlock(current);
+  if (issueLinks) {
+    const outerStart = current.indexOf(hasCurrentMarker ? summaryStart : legacySummaryStart);
+    const outerEnd = current.indexOf(hasCurrentMarker ? summaryEnd : legacySummaryEnd, outerStart);
+    if (issueLinks.start <= outerStart || issueLinks.end > outerEnd) throw new Error('议题子块不在唯一外层受管区域内');
+  }
   const sections = [`## 摘要\n\n${escapeMarkdownText(input.generated.summary)}`];
   if (input.generated.motivation) sections.push(`## 变更原因\n\n${escapeMarkdownText(input.generated.motivation)}`);
   sections.push(`## 主要改动\n\n${input.generated.changes.map((item) => `- ${escapeMarkdownText(item)}`).join('\n')}`);
   if (input.generated.impact.length) sections.push(`## 影响分析\n\n${input.generated.impact.map((item) => `- ${escapeMarkdownText(item)}`).join('\n')}`);
   if (input.generated.related.length) sections.push(`## 关联事项\n\n${input.generated.related.map((item) => `- ${escapeMarkdownText(item, true)}`).join('\n')}`);
+  if (issueLinks) sections.push(issueLinks.block);
   if (input.generated.releaseAndMigration.length) sections.push(`## 发布与迁移\n\n${input.generated.releaseAndMigration.map((item) => `- ${escapeMarkdownText(item)}`).join('\n')}`);
   if (input.contributors.length) sections.push(renderContributors(input.contributors));
   const markers = [`<!-- workflow:source-actor:${input.actor} -->`, `<!-- workflow:source-contributors:${input.contributors.map((item) => item.login).join(',')} -->`, `<!-- workflow:auto-context:${input.context} -->`].join('\n');

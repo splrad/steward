@@ -16,6 +16,7 @@ import {
 } from "../src/automation.js";
 import { buildAiDiffObservation, type ClassificationProfile, type SemanticCatalog } from "../src/classification.js";
 import { isHumanActor, normalizeContributor } from "../src/identity.js";
+import { renderIssueLinksBlock, upsertIssueLinksBlock } from "../src/issues.js";
 
 const valid = {
   type: "feat",
@@ -181,6 +182,28 @@ describe("拉取请求自动化", () => {
     for (const heading of ["变更原因", "背景与目标", "影响分析", "关联事项", "发布与迁移", "贡献者"]) expect(body).not.toContain(`## ${heading}`);
     expect(body).toContain("## 摘要");
     expect(body).toContain("## 主要改动");
+  });
+
+  it("重建普通正文时逐字保留唯一合法议题子块", () => {
+    const issueBlock = renderIssueLinksBlock({
+      repositoryId: 1187527897,
+      pullRequestNumber: 42,
+      baseSha: "0".repeat(40),
+      headSha: "1".repeat(40),
+      generation: 17,
+      analysisInputDigest: "a".repeat(64),
+    }, [{ repositoryId: 1187527897, number: 135 }]);
+    const withRelease = validateGeneratedSummary({ ...valid, releaseAndMigration: ["无需迁移，发布行为保持不变"] });
+    const previous = upsertIssueLinksBlock(
+      renderManagedBody({ generated: withRelease, templateBody: organizationPullRequestTemplate, actor: "axiomoth", contributors: [], context: "old" }),
+      issueBlock,
+    );
+    const rebuilt = renderManagedBody({ generated: validateGeneratedSummary({ ...valid, summary: "本次修改重新生成普通正文，同时必须保留议题工作流拥有的原始子块。", releaseAndMigration: ["无需迁移，发布行为保持不变"] }), existingBody: previous, templateBody: organizationPullRequestTemplate, actor: "axiomoth", contributors: [], context: "new" });
+    expect(rebuilt).toContain(issueBlock);
+    expect(rebuilt.match(/workflow:issue-links:start/g)).toHaveLength(1);
+    expect(rebuilt.indexOf("## 关联事项")).toBeLessThan(rebuilt.indexOf("## 解决的议题"));
+    expect(rebuilt.indexOf("## 解决的议题")).toBeLessThan(rebuilt.indexOf("## 发布与迁移"));
+    expect(() => renderManagedBody({ generated: validateGeneratedSummary(valid), existingBody: previous.replace("workflow:issue-links:end", "workflow:issue-links:broken"), templateBody: organizationPullRequestTemplate, actor: "axiomoth", contributors: [], context: "new" })).toThrow("议题");
   });
 
   it("将确定性回退中的路径片段作为纯文本渲染", () => {
