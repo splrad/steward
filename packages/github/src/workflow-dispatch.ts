@@ -1,6 +1,6 @@
 import { GitHubClient } from "./client.js";
 
-const ALLOWED = new Set(["onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "release.yml"]);
+const ALLOWED = new Set(["issue-sync.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "pr-issue-link.yml", "release.yml"]);
 
 export async function dispatchWorkflow(client: GitHubClient, input: {
   owner: string; repo: string; workflow: string; policySha: string; inputs: Record<string, string>;
