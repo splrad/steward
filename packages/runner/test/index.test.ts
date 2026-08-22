@@ -5,7 +5,7 @@ import { join } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, encodeClassificationCheckState, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectAutomationPullRequestBinding, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, isTrustedAiClassificationSource, matchesGeneratedCopilotInstructions, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, prepareAiClassificationPayload, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, reusedAiClassificationAssessment, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
+import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, encodeClassificationCheckState, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectAutomationPullRequestBinding, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, isTrustedAiClassificationSource, issueSyncInstallationPermissions, main, matchesGeneratedCopilotInstructions, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, prepareAiClassificationPayload, reconcileIssueSnapshots, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, reusedAiClassificationAssessment, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -16,13 +16,23 @@ afterEach(() => {
 });
 
 describe("中央命令入口", () => {
-  it("只接受十个命令及其已知、唯一、成对参数", () => {
-    const commands = ["onboard-repository", "pr-automation", "pr-classification", "sync-copilot-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"];
+  it("只接受十二个命令及其已知、唯一、成对参数", () => {
+    const commands = ["issue-sync", "onboard-repository", "pr-automation", "pr-classification", "pr-issue-link", "sync-copilot-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"];
     for (const command of commands) expect(parseInvocation([command]).command).toBe(command);
     expect(() => parseInvocation(["unknown"])).toThrow("未知命令");
     expect(() => parseInvocation(["validate", "--unknown", "x"])).toThrow("未知参数");
     expect(() => parseInvocation(["validate", "--workspace"])).toThrow("参数格式");
     expect(() => parseInvocation(["validate", "--workspace", "a", "--workspace", "b"])).toThrow("重复参数");
+  });
+
+  it("在创建安装令牌前拒绝超出安全整数范围的编号", async () => {
+    await expect(main([
+      "issue-sync",
+      "--delivery-id", "delivery-unsafe-integer",
+      "--repository-id", "9007199254740993",
+      "--scan-all", "true",
+      "--policy-sha", "a".repeat(40),
+    ])).rejects.toThrow("安全整数");
   });
 
   it("缺失环境变量立即失败", () => {
@@ -217,7 +227,7 @@ describe("中央命令入口", () => {
       summary: "本次修改为正文生成增加严格校验后的受控修复步骤。",
       motivation: null,
       changes: ["增加一次受控修复并保留确定性回退边界"],
-      impact: [], related: [], releaseAndMigration: [], classification: null,
+      impact: [], releaseAndMigration: [], classification: null,
     });
     expect(inspectCopilotGeneratedSummary(wrap(valid))).toMatchObject({ state: "valid" });
     const { classification: _classification, ...withoutClassification } = JSON.parse(valid);
@@ -481,6 +491,7 @@ describe("中央命令入口", () => {
     expect(prAutomationInstallationPermissions()).toEqual({
       contents: "read",
       pull_requests: "write",
+      issues: "read",
       checks: "read",
       metadata: "read",
     });
@@ -678,5 +689,105 @@ describe("中央命令入口", () => {
     const source = await readFile("packages/runner/src/index.ts", "utf8");
     const summaries = source.split("\n").filter(line => line.includes("summary([")).join("\n");
     expect(summaries).not.toMatch(/STEWARD_APP_PRIVATE_KEY|COPILOT_REVIEW_REQUEST_TOKEN|installation-token|upload_url/iu);
+  });
+});
+
+describe("议题快照同步", () => {
+  it("目标仓库令牌只申请Issues和Metadata读取权限", () => {
+    expect(issueSyncInstallationPermissions()).toEqual({ issues: "read", metadata: "read" });
+  });
+
+  function dependencies(input: {
+    live?: readonly number[];
+    stored?: readonly number[];
+    refresh?: (issueNumber: number) => { changed?: boolean; deleted?: boolean; generation: number };
+    failReady?: boolean;
+    failDispatch?: boolean;
+    failDispatchOnce?: boolean;
+    initialState?: "uninitialized" | "scanning" | "ready" | "degraded";
+  } = {}) {
+    const states: string[] = [];
+    const refreshed: number[] = [];
+    let dispatched = 0;
+    let pendingGeneration: number | null = null;
+    return {
+      states, refreshed, dispatched: () => dispatched,
+      value: {
+        listLiveOpenIssues: async () => ({ numbers: input.live ?? [], skipped: 2 }),
+        getState: async () => ({ repositoryId: 1296724484, generation: 4, syncState: input.initialState ?? "ready", reconciliationGeneration: pendingGeneration, snapshots: (input.stored ?? []).map(issueNumber => ({ issueNumber })) }),
+        setScanState: async (state: "scanning" | "ready" | "degraded") => {
+          states.push(state);
+          if (state === "ready" && input.failReady) throw new Error("开放集合未收敛");
+          if (state === "ready") pendingGeneration = 7;
+          return { repositoryId: 1296724484, generation: 7, syncState: state, snapshots: [] };
+        },
+        refresh: async (issueNumber: number) => {
+          refreshed.push(issueNumber);
+          const result = input.refresh?.(issueNumber) ?? { changed: false, generation: 4 };
+          if (result.changed === true || result.deleted === true) pendingGeneration = result.generation;
+          return { repositoryId: 1296724484, issueNumber, ...result };
+        },
+        dispatchFormalReconciliation: async (generation: number) => {
+          if (pendingGeneration !== generation) throw new Error("待处理代次不一致");
+          dispatched++;
+          if (input.failDispatch || (input.failDispatchOnce && dispatched === 1)) throw new Error("工作流派发失败");
+        },
+      },
+    };
+  }
+
+  it("单议题仅在内容或开放集合变化时调度全PR重算", async () => {
+    const changed = dependencies({ refresh: () => ({ changed: true, generation: 5 }) });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, changed.value)).resolves.toEqual(expect.objectContaining({ refreshed: 1, changed: 1, generation: 5, dispatched: true }));
+    expect(changed.dispatched()).toBe(1);
+    const duplicate = dependencies({ refresh: () => ({ changed: false, generation: 5 }) });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, duplicate.value)).resolves.toEqual(expect.objectContaining({ changed: 0, dispatched: false }));
+    expect(duplicate.dispatched()).toBe(0);
+    const uninitialized = dependencies({ initialState: "uninitialized", live: [8], refresh: () => ({ changed: true, generation: 5 }) });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, uninitialized.value)).resolves.toEqual(expect.objectContaining({ issueNumber: null, dispatched: true }));
+    expect(uninitialized.states).toEqual(["scanning", "ready"]);
+  });
+
+  it("全量同步对GitHub与D1开放集合取并集并修复漏关闭或删除", async () => {
+    const fixture = dependencies({ live: [1, 2], stored: [2, 3], refresh: issueNumber => issueNumber === 3 ? { deleted: true, generation: 7 } : { changed: true, generation: 4 + issueNumber } });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, scanAll: true }, fixture.value)).resolves.toEqual({ repositoryId: 1296724484, issueNumber: null, refreshed: 3, skipped: 2, changed: 3, generation: 7, dispatched: true });
+    expect(fixture.refreshed).toEqual([1, 2, 3]);
+    expect(fixture.states).toEqual(["scanning", "ready"]);
+    expect(fixture.dispatched()).toBe(1);
+  });
+
+  it("空仓也收敛为ready，失败则尽力标记degraded", async () => {
+    const empty = dependencies();
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, scanAll: true }, empty.value)).resolves.toEqual(expect.objectContaining({ refreshed: 0, changed: 0, generation: 7, dispatched: true }));
+    expect(empty.states).toEqual(["scanning", "ready"]);
+    const failed = dependencies({ failReady: true });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, scanAll: true }, failed.value)).rejects.toThrow("开放集合未收敛");
+    expect(failed.states).toEqual(["scanning", "ready", "degraded"]);
+    expect(failed.dispatched()).toBe(0);
+    const dispatchFailed = dependencies({ failDispatch: true });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, scanAll: true }, dispatchFailed.value)).rejects.toThrow("工作流派发失败");
+    expect(dispatchFailed.states).toEqual(["scanning", "ready"]);
+    expect(dispatchFailed.dispatched()).toBe(1);
+  });
+
+  it("派发失败后保留D1待处理代次，重试即使内容未变也会再次派发", async () => {
+    const fixture = dependencies({ refresh: () => ({ changed: true, generation: 5 }), failDispatchOnce: true });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, fixture.value)).rejects.toThrow("工作流派发失败");
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, fixture.value)).resolves.toEqual(expect.objectContaining({ dispatched: true }));
+    expect(fixture.dispatched()).toBe(2);
+  });
+
+  it("派发成功后仍保留D1待处理代次，由正式收敛成功路径另行确认", async () => {
+    const fixture = dependencies({ refresh: () => ({ changed: true, generation: 5 }) });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, fixture.value)).resolves.toEqual(expect.objectContaining({ dispatched: true }));
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, fixture.value)).resolves.toEqual(expect.objectContaining({ dispatched: true }));
+    expect(fixture.dispatched()).toBe(2);
+  });
+
+  it("拒绝重复开放编号和互相矛盾的单项参数", async () => {
+    const duplicate = dependencies({ live: [1, 1] });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, scanAll: true }, duplicate.value)).rejects.toThrow("GitHub开放议题集合无效");
+    expect(duplicate.states).toEqual(["scanning", "degraded"]);
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 1, scanAll: true }, dependencies().value)).rejects.toThrow("参数不一致");
   });
 });

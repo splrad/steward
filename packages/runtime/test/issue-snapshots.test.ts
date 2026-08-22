@@ -1,11 +1,12 @@
-import { generateKeyPairSync } from "node:crypto";
+import { createHmac, generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { issueSnapshotContentDigest, normalizeIssueSnapshot, openIssueSetDigest, renderIssueLinksBlock, type IssueSnapshot } from "../../core/src/issues.js";
-import worker, { type Env } from "../src/index.js";
+import { extractManagedPullRequestBlock, renderManagedBody } from "../../core/src/automation.js";
+import worker, { handleWebhook, recoverPullRequestBodyWriteIntents, type Env } from "../src/index.js";
 import { IssueSnapshotStore } from "../src/issue-snapshots.js";
-import { pullRequestBodyDigest } from "../src/pr-body-write-intents.js";
+import { bodyOutsideManagedRegionDigest, pullRequestBodyDigest, PullRequestBodyWriteIntentStore } from "../src/pr-body-write-intents.js";
 
 class SqliteD1Statement {
   constructor(private readonly database: DatabaseSync, private readonly sql: string, private readonly values: readonly SQLInputValue[] = []) {}
@@ -68,6 +69,12 @@ function snapshot(repositoryId: number, fullName: string, issueNumber: number, t
 
 async function put(store: IssueSnapshotStore, value: IssueSnapshot, expectedGeneration: number, deliveryId = "delivery-1") {
   return store.putSnapshot({ expectedGeneration, snapshot: value, contentDigest: issueSnapshotContentDigest(value), validators: [], deliveryId, now: "2026-08-21T00:00:00Z" });
+}
+
+function signedRequest(event: string, payload: unknown): Request {
+  const body = JSON.stringify(payload);
+  const signature = createHmac("sha256", "webhook-secret").update(body).digest("hex");
+  return new Request("https://example.test/github/webhook", { method: "POST", body, headers: { "x-github-event": event, "x-github-delivery": "delivery-1", "x-hub-signature-256": `sha256=${signature}` } });
 }
 
 function installAuthorization(fetchIssue?: (url: string) => Response | undefined, repositories: any[] = [repository()], installationId = 145952003, viewerLogin = "splrad-steward[bot]") {
@@ -361,5 +368,111 @@ describe("议题快照内部接口", () => {
     const ready = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/scan-state", { method: "POST", headers: { authorization: "Bearer one-repository-token", "x-steward-scan-state": "ready" } }), env(database));
     expect(ready.status).toBe(200);
     expect(await ready.json()).toEqual(expect.objectContaining({ repositoryId: 1296724484, generation: 0, syncState: "ready" }));
+  });
+});
+
+describe("正文写意图交付恢复", () => {
+  it("证据不足的正文交付持久阻断后返回成功且不进入通用工作流", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const oldBody = renderManagedBody({ generated: { type: "chore", scope: "test", title: "测试", summary: "旧摘要", motivation: "原因", changes: ["改动"], impact: [], releaseAndMigration: [] }, templateBody: "<!-- workflow:managed-pr:start -->\n<!-- workflow:managed-pr:end -->\n", actor: "splrad-steward[bot]", contributors: [], context: "old" });
+    const targetBody = renderManagedBody({ generated: { type: "chore", scope: "test", title: "测试", summary: "新摘要", motivation: "原因", changes: ["改动"], impact: [], releaseAndMigration: [] }, templateBody: oldBody, actor: "splrad-steward[bot]", contributors: [], context: "new" });
+    const now = new Date();
+    const writeId = "22222222-2222-4222-8222-222222222222";
+    await store.prepare({ repositoryId: 1296724484, pullRequestNumber: 42, writeId, regionKind: "managed-pr", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
+      beforeBodyDigest: pullRequestBodyDigest(oldBody), outsideBodyDigest: bodyOutsideManagedRegionDigest(oldBody, "managed-pr"), targetBlock: extractManagedPullRequestBlock(targetBody).block,
+      targetBodyDigest: pullRequestBodyDigest(targetBody), now: now.toISOString(), expiresAt: new Date(now.getTime() + 10 * 60_000).toISOString() });
+    const workflows: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      const workflow = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
+      if (workflow) { workflows.push(workflow); return new Response(null, { status: 204 }); }
+      return new Response("unexpected", { status: 500 });
+    });
+    const payload = {
+      organization: { id: 302208797 }, installation: { id: 145952003 }, action: "edited", repository: repository(), sender: { id: 301115370 },
+      changes: { body: {} }, pull_request: { number: 42, body: targetBody, head: { sha: "c".repeat(40) }, base: { sha: "b".repeat(40), ref: "main" }, user: { id: 301115370 } },
+    };
+    expect((await handleWebhook(signedRequest("pull_request", payload), env(database))).status).toBe(202);
+    expect(await store.get(1296724484, 42)).toEqual(expect.objectContaining({ status: "blocked", blockedReason: "edited-evidence-unavailable" }));
+    expect(await store.listPendingRedrives()).toEqual([expect.objectContaining({ repositoryId: 1296724484, pullRequestNumber: 42, writeId })]);
+    expect(workflows).toEqual([]);
+  });
+
+  it("无待处理意图时零外部请求，有待处理意图时从App交付记录恢复", async () => {
+    const database = new SqliteD1();
+    const runtimeEnv = env(database);
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await recoverPullRequestBodyWriteIntents(runtimeEnv, new Date("2026-08-22T00:01:00Z"))).toBe(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    const oldBody = renderManagedBody({ generated: { type: "chore", scope: "test", title: "测试", summary: "旧摘要", motivation: "原因", changes: ["改动"], impact: [], releaseAndMigration: [] }, templateBody: "<!-- workflow:managed-pr:start -->\n<!-- workflow:managed-pr:end -->\n", actor: "splrad-steward[bot]", contributors: [], context: "old" });
+    const targetBody = renderManagedBody({ generated: { type: "chore", scope: "test", title: "测试", summary: "新摘要", motivation: "原因", changes: ["改动"], impact: [], releaseAndMigration: [] }, templateBody: oldBody, actor: "splrad-steward[bot]", contributors: [], context: "new" });
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const writeId = "33333333-3333-4333-8333-333333333333";
+    await store.prepare({ repositoryId: 1296724484, pullRequestNumber: 42, writeId, regionKind: "managed-pr", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
+      beforeBodyDigest: pullRequestBodyDigest(oldBody), outsideBodyDigest: bodyOutsideManagedRegionDigest(oldBody, "managed-pr"), targetBlock: extractManagedPullRequestBlock(targetBody).block,
+      targetBodyDigest: pullRequestBodyDigest(targetBody), now: "2026-08-22T00:00:00Z", expiresAt: "2026-08-22T00:10:00Z" });
+    await store.markPatched(1296724484, 42, writeId, "2026-08-22T00:00:01Z");
+    const editedPayload = { action: "edited", repository: repository(), sender: { id: 301115370 }, changes: { body: { from: oldBody } }, pull_request: { number: 42, body: targetBody, head: { sha: "c".repeat(40) }, base: { sha: "b".repeat(40) } } };
+    const dispatched: any[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.includes("/app/hook/deliveries?")) return new Response(JSON.stringify([{ id: 9, repository_id: 1296724484, event: "pull_request", action: "edited", guid: "delivery-recovered" }]), { status: 200 });
+      if (value.endsWith("/app/hook/deliveries/9")) return new Response(JSON.stringify({ guid: "delivery-recovered", request: { headers: { "X-GitHub-Delivery": "delivery-recovered" }, payload: editedPayload } }), { status: 200 });
+      if (value.endsWith("/repositories/1296724484")) return new Response(JSON.stringify(repository()), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ ...repository(), default_branch: "main" }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) { dispatched.push(JSON.parse(String(init.body))); return new Response(null, { status: 204 }); }
+      if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify({ number: 42, body: targetBody, head: { sha: "c".repeat(40) }, base: { sha: "b".repeat(40) } }), { status: 200 });
+      return new Response("unexpected", { status: 500 });
+    });
+    expect(await recoverPullRequestBodyWriteIntents(runtimeEnv, new Date("2026-08-22T00:02:00Z"))).toBe(1);
+    expect((await store.get(1296724484, 42))?.deliveryProven).toBe(true);
+    expect(await recoverPullRequestBodyWriteIntents(runtimeEnv, new Date("2026-08-22T00:03:00Z"))).toBe(1);
+    expect((await store.get(1296724484, 42))?.status).toBe("confirmed");
+    expect(dispatched).toEqual([expect.objectContaining({ inputs: expect.objectContaining({ repositoryId: "1296724484", pullRequestNumber: "42", scanAll: "false", invalidateOnly: "false" }) })]);
+  });
+});
+
+describe("已验签Webhook直连清理", () => {
+  it("议题删除和安装范围移除直接清理D1，删除后只调度失效与全量收敛", async () => {
+    const database = new SqliteD1(); const store = new IssueSnapshotStore(database.binding());
+    await put(store, snapshot(1296724484, "splrad/steward", 7), 0);
+    await put(store, snapshot(1187527897, "splrad/LayerScape", 7), 0);
+    const workflows: string[] = [];
+    const fetchSpy = vi.fn(async (url: string) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "trunk" }), { status: 200 });
+      const workflow = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
+      if (workflow) { workflows.push(workflow); return new Response(null, { status: 204 }); }
+      return new Response("unexpected", { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const issuePayload = { organization: { id: 302208797 }, installation: { id: 145952003 }, action: "deleted", repository: { ...repository(), default_branch: "main" }, issue: { number: 7 } };
+    expect((await handleWebhook(signedRequest("issues", issuePayload), env(database))).status).toBe(202);
+    expect(await store.getSnapshot(1296724484, 7)).toBeNull();
+    expect(await store.getSnapshot(1187527897, 7)).not.toBeNull();
+
+    const removedPayload = { installation: { id: 145952003, account: { id: 302208797 } }, action: "removed", repositories_removed: [{ ...repository(1187527897, "splrad/LayerScape"), default_branch: "main" }] };
+    expect((await handleWebhook(signedRequest("installation_repositories", removedPayload), env(database))).status).toBe(202);
+    expect(await store.getRepositoryState(1187527897)).toBeNull();
+    expect(workflows).toEqual(["pr-issue-link.yml", "issue-sync.yml"]);
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).includes("/internal/issue-snapshots/"))).toBe(false);
+  });
+
+  it("安装删除会清理全部仓库并留下防复活墓碑", async () => {
+    const database = new SqliteD1(); const store = new IssueSnapshotStore(database.binding());
+    const steward = snapshot(1296724484, "splrad/steward", 7);
+    const pending = snapshot(1187527897, "splrad/LayerScape", 7);
+    await put(store, steward, 0);
+    const payload = { installation: { id: 145952003, account: { id: 302208797 } }, action: "deleted", repositories: [repository(), repository(1187527897, "splrad/LayerScape")] };
+    expect((await handleWebhook(signedRequest("installation", payload), env(database))).status).toBe(202);
+    expect(await store.getRepositoryState(1296724484)).toBeNull();
+    await expect(put(store, steward, 0, "late-installation-write")).rejects.toThrow("issue-snapshot-generation-conflict");
+    await expect(put(store, pending, 0, "late-uninitialized-write")).rejects.toThrow("issue-snapshot-generation-conflict");
   });
 });

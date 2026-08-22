@@ -43,7 +43,7 @@ const repository = { id: repositoryId, full_name: "splrad/steward" };
 
 function managedBlock(summary: string): string {
   const body = renderManagedBody({
-    generated: { type: "chore", scope: "test", title: "测试", summary, motivation: "原因", changes: ["改动"], impact: [], related: [], releaseAndMigration: [] },
+    generated: { type: "chore", scope: "test", title: "测试", summary, motivation: "原因", changes: ["改动"], impact: [], releaseAndMigration: [] },
     templateBody: "<!-- workflow:managed-pr:start -->\n<!-- workflow:managed-pr:end -->\n",
     actor: "splrad-steward[bot]",
     contributors: [],

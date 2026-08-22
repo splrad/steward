@@ -89,7 +89,7 @@ for (const configuration of [...Object.values(catalog.defaults), ...Object.value
 const release = JSON.parse(await readFile("config/profiles/release/layerscape.json", "utf8"));
 if (release.build.projects.length !== 10 || new Set(release.build.projects.map(x => x.path)).size !== 10) throw new Error("LayerScape插件项目必须恰好10个且不重复");
 if (release.assets.length !== 3 || new Set(release.assets.map(x => x.nameTemplate)).size !== 3) throw new Error("发布资产必须恰好3项且不重复");
-const forbiddenRuntime = ["queues", "durable_objects", "kv_namespaces", "r2_buckets", "services", "triggers"];
+const forbiddenRuntime = ["queues", "durable_objects", "kv_namespaces", "r2_buckets", "services"];
 const wrangler = await readFile("packages/runtime/wrangler.toml", "utf8");
 for (const name of forbiddenRuntime) if (wrangler.includes(name)) throw new Error(`运行配置包含禁止绑定: ${name}`);
 if (!wrangler.includes('compatibility_flags = ["nodejs_compat"]')) throw new Error("运行配置必须显式启用nodejs_compat");
@@ -108,4 +108,9 @@ const expectedD1Block = [
   'migrations_dir = "migrations"',
 ];
 if (JSON.stringify(actualD1Block) !== JSON.stringify(expectedD1Block)) throw new Error("运行配置的D1绑定不符合固定合同");
+const triggerStart = wranglerLines.indexOf("[triggers]");
+if (triggerStart < 0 || wranglerLines.filter(line => line === "[triggers]").length !== 1) throw new Error("运行配置必须恰好包含一个Cron触发器块");
+const triggerEndOffset = wranglerLines.slice(triggerStart + 1).findIndex(line => /^\[\[?[^\]]+\]\]?$/u.test(line));
+const triggerEnd = triggerEndOffset < 0 ? wranglerLines.length : triggerStart + 1 + triggerEndOffset;
+if (JSON.stringify(wranglerLines.slice(triggerStart, triggerEnd).filter(Boolean)) !== JSON.stringify(["[triggers]", 'crons = ["* * * * *"]'])) throw new Error("运行配置必须每分钟触发一次正文写意图恢复");
 console.log("configuration verified");
