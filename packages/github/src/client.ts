@@ -125,19 +125,25 @@ export class GitHubClient {
   }
 
   async revalidatePageValidators(validators: readonly PageValidator[]): Promise<{ state: "not-modified" } | { state: "modified" | "unverifiable"; resource: IssueFactResource; url: string }> {
-    for (let index = 0; index < validators.length; index += 1) {
-      const validator = validators[index]!;
-      const url = this.absoluteUrl(validator.url);
-      const following = validators[index + 1];
-      const expectedNext = following?.resource === validator.resource ? this.absoluteUrl(following.url) : null;
-      if (validator.next !== expectedNext) return { state: "unverifiable", resource: validator.resource, url };
+    const normalized = validators.map((validator) => Object.freeze({
+      resource: validator.resource,
+      url: this.absoluteUrl(validator.url),
+      etag: validator.etag,
+      next: validator.next === null ? null : this.absoluteUrl(validator.next),
+      status: validator.status,
+    }));
+    for (let index = 0; index < normalized.length; index += 1) {
+      const validator = normalized[index]!;
+      const following = normalized[index + 1];
+      const expectedNext = following?.resource === validator.resource ? following.url : null;
+      if (validator.next !== expectedNext) return { state: "unverifiable", resource: validator.resource, url: validator.url };
       if (validator.status === 404) {
-        if (validator.resource !== "parent" || validator.etag !== null || validator.next !== null) return { state: "unverifiable", resource: validator.resource, url };
+        if (validator.resource !== "parent" || validator.etag !== null || validator.next !== null) return { state: "unverifiable", resource: validator.resource, url: validator.url };
         continue;
       }
-      if (validator.status !== 200 || !validator.etag) return { state: "unverifiable", resource: validator.resource, url };
+      if (validator.status !== 200 || !validator.etag) return { state: "unverifiable", resource: validator.resource, url: validator.url };
     }
-    for (const validator of validators) {
+    for (const validator of normalized) {
       const headers = new Headers(githubHeaders(this.token, this.policySha));
       if (validator.status === 200) headers.set("If-None-Match", validator.etag!);
       const response = await this.transport.call(globalThis, validator.url, { method: "GET", headers });

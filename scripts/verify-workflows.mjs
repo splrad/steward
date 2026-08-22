@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 
-const expected = ["deploy-runtime.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "pr-validation.yml", "release.yml", "sync-copilot-instructions.yml", "sync-managed-labels.yml"];
+const expected = ["deploy-runtime.yml", "issue-sync.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "pr-issue-link.yml", "pr-validation.yml", "release.yml", "sync-copilot-instructions.yml", "sync-managed-labels.yml"];
 const files = (await readdir(".github/workflows")).sort();
 if (JSON.stringify(files) !== JSON.stringify(expected)) throw new Error(`工作流集合不正确: ${files.join(", ")}`);
 const workflowDocuments = new Map();
