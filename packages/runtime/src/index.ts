@@ -1,9 +1,11 @@
 import { createInstallationToken, dispatchWorkflow, GitHubClient } from "../../github/src/index.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
+import { handleIssueSnapshotInternalRequest } from "./issue-snapshots.js";
 
 export interface Env {
   ORGANIZATION_ID: string; ORGANIZATION_LOGIN: string; APP_ID: string; INSTALLATION_ID: string;
   STEWARDSHIP_REPOSITORY: string; POLICY_SHA: string; STEWARD_APP_PRIVATE_KEY?: string; STEWARD_WEBHOOK_SECRET?: string;
+  ISSUE_SNAPSHOTS?: D1Database;
   CF_VERSION_METADATA?: { id: string };
 }
 
@@ -264,6 +266,8 @@ export default {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") return response(200, { status: "ok", policySha: env.POLICY_SHA, version: env.CF_VERSION_METADATA?.id ?? "local", organizationId: Number(env.ORGANIZATION_ID), appId: Number(env.APP_ID), secretsReady: Boolean(env.STEWARD_APP_PRIVATE_KEY && env.STEWARD_WEBHOOK_SECRET) });
     if (request.method === "POST" && url.pathname === "/github/webhook") return handleWebhook(request, env);
+    const internal = await handleIssueSnapshotInternalRequest(request, env);
+    if (internal) return internal;
     return response(404);
   },
 };
