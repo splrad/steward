@@ -134,7 +134,7 @@ jobs:
 
   acknowledge:
     needs: [resolve, analyze]
-    if: ${{ always() && inputs.reconciliationGeneration != '' && needs.resolve.result == 'success' && (needs.analyze.result == 'success' || needs.analyze.result == 'skipped') }}
+    if: ${{ always() && inputs.invalidateOnly == false && inputs.reconciliationGeneration != '' && needs.resolve.result == 'success' && (needs.analyze.result == 'success' || needs.analyze.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:

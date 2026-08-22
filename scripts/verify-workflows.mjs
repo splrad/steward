@@ -152,7 +152,7 @@ for (const [step, names] of [[issuePrepareStep, ["ISSUE_PREPARED_FACTS_PATH", "I
 }
 const issueLinkAcknowledge = issueLinkDocument?.jobs?.acknowledge;
 const acknowledgeCondition = String(issueLinkAcknowledge?.if ?? "").replace(/\s+/gu, "");
-for (const required of ["always()", "inputs.reconciliationGeneration!=''", "needs.resolve.result=='success'", "needs.analyze.result=='success'", "needs.analyze.result=='skipped'"]) if (!acknowledgeCondition.includes(required)) throw new Error(`议题收敛确认缺少成功边界: ${required}`);
+for (const required of ["always()", "inputs.invalidateOnly==false", "inputs.reconciliationGeneration!=''", "needs.resolve.result=='success'", "needs.analyze.result=='success'", "needs.analyze.result=='skipped'"]) if (!acknowledgeCondition.includes(required)) throw new Error(`议题收敛确认缺少成功边界: ${required}`);
 const acknowledgementStep = issueLinkAcknowledge?.steps?.find(step => step?.name === "确认成功收敛代次");
 for (const name of ["ISSUE_LINK_ACK_ONLY", "REPOSITORY_ID", "RECONCILIATION_GENERATION", "POLICY_SHA", "RUNTIME_URL"]) if (!Object.hasOwn(acknowledgementStep?.env ?? {}, name)) throw new Error(`议题收敛确认环境缺少${name}`);
 const acknowledgementCommand = String(acknowledgementStep?.run ?? "");

@@ -15,6 +15,8 @@ CREATE TABLE pull_request_body_write_intents (
   attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
   delivery_proven INTEGER NOT NULL DEFAULT 0 CHECK (delivery_proven IN (0, 1)),
   last_delivery_id TEXT,
+  redrive_required INTEGER NOT NULL DEFAULT 0 CHECK (redrive_required IN (0, 1)),
+  redrive_dispatched INTEGER NOT NULL DEFAULT 0 CHECK (redrive_dispatched IN (0, 1)),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
@@ -27,12 +29,16 @@ CREATE TABLE pull_request_body_write_intents (
 CREATE INDEX pull_request_body_write_intents_pending
   ON pull_request_body_write_intents (status, expires_at, updated_at);
 
+CREATE INDEX pull_request_body_write_intents_redrive
+  ON pull_request_body_write_intents (redrive_required, redrive_dispatched, updated_at);
+
 CREATE TABLE pull_request_body_write_deliveries (
   delivery_id TEXT PRIMARY KEY,
   repository_id INTEGER NOT NULL,
   pull_request_number INTEGER NOT NULL,
   write_id TEXT NOT NULL,
-  outcome TEXT NOT NULL CHECK (outcome IN ('ignored', 'proven', 'compensated', 'blocked')),
+  claim_id TEXT NOT NULL,
+  outcome TEXT NOT NULL CHECK (outcome IN ('processing', 'ignored', 'proven', 'compensated', 'blocked')),
   processed_at TEXT NOT NULL
 );
 

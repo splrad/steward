@@ -97,6 +97,7 @@ describe("议题快照D1存储", () => {
       { type: "index", name: "issue_snapshots_open", tbl_name: "issue_snapshots" },
       { type: "index", name: "pull_request_body_write_deliveries_intent", tbl_name: "pull_request_body_write_deliveries" },
       { type: "index", name: "pull_request_body_write_intents_pending", tbl_name: "pull_request_body_write_intents" },
+      { type: "index", name: "pull_request_body_write_intents_redrive", tbl_name: "pull_request_body_write_intents" },
       { type: "table", name: "issue_snapshot_issue_tombstones", tbl_name: "issue_snapshot_issue_tombstones" },
       { type: "table", name: "issue_snapshot_reconciliation_requests", tbl_name: "issue_snapshot_reconciliation_requests" },
       { type: "table", name: "issue_snapshot_repositories", tbl_name: "issue_snapshot_repositories" },
@@ -388,12 +389,15 @@ describe("正文写意图交付恢复", () => {
       targetBodyDigest: pullRequestBodyDigest(targetBody), now: "2026-08-22T00:00:00Z", expiresAt: "2026-08-22T00:10:00Z" });
     await store.markPatched(1296724484, 42, writeId, "2026-08-22T00:00:01Z");
     const editedPayload = { action: "edited", repository: repository(), sender: { id: 301115370 }, changes: { body: { from: oldBody } }, pull_request: { number: 42, body: targetBody, head: { sha: "c".repeat(40) }, base: { sha: "b".repeat(40) } } };
-    vi.stubGlobal("fetch", async (url: string) => {
+    const dispatched: any[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
       const value = String(url);
       if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
       if (value.includes("/app/hook/deliveries?")) return new Response(JSON.stringify([{ id: 9, repository_id: 1296724484, event: "pull_request", action: "edited", guid: "delivery-recovered" }]), { status: 200 });
       if (value.endsWith("/app/hook/deliveries/9")) return new Response(JSON.stringify({ guid: "delivery-recovered", request: { headers: { "X-GitHub-Delivery": "delivery-recovered" }, payload: editedPayload } }), { status: 200 });
       if (value.endsWith("/repositories/1296724484")) return new Response(JSON.stringify(repository()), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ ...repository(), default_branch: "main" }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) { dispatched.push(JSON.parse(String(init.body))); return new Response(null, { status: 204 }); }
       if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify({ number: 42, body: targetBody, head: { sha: "c".repeat(40) }, base: { sha: "b".repeat(40) } }), { status: 200 });
       return new Response("unexpected", { status: 500 });
     });
@@ -401,6 +405,7 @@ describe("正文写意图交付恢复", () => {
     expect((await store.get(1296724484, 42))?.deliveryProven).toBe(true);
     expect(await recoverPullRequestBodyWriteIntents(runtimeEnv, new Date("2026-08-22T00:03:00Z"))).toBe(1);
     expect((await store.get(1296724484, 42))?.status).toBe("confirmed");
+    expect(dispatched).toEqual([expect.objectContaining({ inputs: expect.objectContaining({ repositoryId: "1296724484", pullRequestNumber: "42", scanAll: "false", invalidateOnly: "false" }) })]);
   });
 });
 

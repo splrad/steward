@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { analysisInputDigest, issueSnapshotContentDigest, managedBodyOutsideIssueLinksDigest, normalizeIssueSnapshot, openIssueSetDigest, renderIssueLinksBlock, upsertIssueLinksBlock } from "../../core/src/issues.js";
-import { extractIssueCopilotContent, parsePrIssueLinkArgs, runPrIssueLink, verifyIssueLinkConvergence } from "../src/pr-issue-link.js";
+import { extractIssueCopilotContent, parsePrIssueLinkArgs, runPrIssueLink, selectRevalidationCandidates, verifyIssueLinkConvergence } from "../src/pr-issue-link.js";
 
 const repositoryId = 1296724484;
 const policySha = "a".repeat(40);
@@ -73,6 +73,7 @@ describe("拉取请求议题关联运行器", () => {
       .toEqual({ deliveryId: "delivery-2", repositoryId, scanAll: true, invalidateOnly: false, reconciliationGeneration: 7, policySha });
     expect(() => parsePrIssueLinkArgs({ "delivery-id": "delivery-3", "repository-id": String(repositoryId), "scan-all": "false", "invalidate-only": "false", "policy-sha": policySha })).toThrow("不一致");
     expect(() => parsePrIssueLinkArgs({ "delivery-id": "delivery-4", "repository-id": String(repositoryId), "pull-request-number": "42", "scan-all": "true", "invalidate-only": "false", "policy-sha": policySha })).toThrow("不一致");
+    expect(() => parsePrIssueLinkArgs({ "delivery-id": "delivery-5", "repository-id": String(repositoryId), "scan-all": "true", "invalidate-only": "true", "reconciliation-generation": "7", "policy-sha": policySha })).toThrow("不能确认");
   });
 
   it("失效检查按external_id隔离PR并以失败终态结束", async () => {
@@ -286,7 +287,7 @@ describe("拉取请求议题关联运行器", () => {
     });
   });
 
-  it("模型收敛前复核全部候选而不只复核模型选中的议题", async () => {
+  it("模型安全清空时不消耗单PR最终复核预算", async () => {
     await withRunnerEnvironment(async (directory) => {
       const snapshots = [1, 2].map(number => {
         const snapshot = issueSnapshot(number);
@@ -329,35 +330,18 @@ describe("拉取请求议题关联运行器", () => {
         return new Response("unexpected", { status: 500 });
       });
       await runPrIssueLink(invocation());
-      expect(validatorReads.sort()).toEqual([
-        "https://api.github.com/repos/splrad/steward/issues/1",
-        "https://api.github.com/repos/splrad/steward/issues/2",
-      ]);
+      expect(validatorReads).toEqual([]);
     });
   });
 
-  it("准备证据的复核请求数超过预算时在任何网络写入前失败关闭", async () => {
-    await withRunnerEnvironment(async (directory) => {
-      const contentDigest = "f".repeat(64);
-      const openSetDigest = openIssueSetDigest(repositoryId, [1]);
-      const unmanagedBodyDigest = managedBodyOutsideIssueLinksDigest("");
-      const fullDiffDigest = "e".repeat(64);
-      const candidateDigests = [{ repositoryId, number: 1, contentDigest }];
-      const validators = Array.from({ length: 3 }, (_, index) => ({ resource: "issue", url: `https://api.github.com/repos/splrad/steward/issues/1?page=${index + 1}`, etag: `\"etag-${index}\"`, next: null, status: 200 }));
-      const prepared = {
-        schemaVersion: 1, repositoryId, repositoryFullName: "splrad/steward", pullRequestNumber: 42,
-        baseSha, headSha, generation: 2, policySha, fullDiffDigest, changedFiles: [], candidateDigests,
-        candidates: [{ repositoryId, number: 1, state: "open", contentDigest, unfetchedReferences: [], validators }],
-        openSetDigest, unmanagedBodyDigest, revalidationBudget: 2,
-        analysisInputDigest: analysisInputDigest({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 2, policySha, fullDiffDigest, candidateDigests, openSetDigest, unmanagedBodyDigest }),
-      };
-      process.env.ISSUE_PREPARED_FACTS_PATH = join(directory, "prepared.json");
-      await writeFile(process.env.ISSUE_PREPARED_FACTS_PATH, JSON.stringify(prepared));
-      const fetchMock = vi.fn();
-      vi.stubGlobal("fetch", fetchMock);
-      await expect(runPrIssueLink(invocation())).rejects.toThrow("超过预算:3/2");
-      expect(fetchMock).not.toHaveBeenCalled();
-    });
+  it("单PR最终复核预算只约束模型实际选中的议题", () => {
+    const candidates = [1, 2].map((number) => ({
+      repositoryId,
+      number,
+      validators: Array.from({ length: 6 }, (_, index) => ({ resource: "issue" as const, url: `https://api.github.com/issues/${number}?page=${index}`, etag: `\"etag-${number}-${index}\"`, next: null, status: 200 as const })),
+    }));
+    expect(selectRevalidationCandidates(candidates, [{ repositoryId, number: 1 }], 9)).toEqual([candidates[0]]);
+    expect(() => selectRevalidationCandidates(candidates, [{ repositoryId, number: 1 }, { repositoryId, number: 2 }], 9)).toThrow("超过预算:12/9");
   });
 
   it("新鲜度复核失败后清理旧块，并完成已经开始的检查", async () => {

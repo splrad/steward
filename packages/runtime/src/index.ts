@@ -1,7 +1,7 @@
 import { createAppJwt, createInstallationToken, dispatchWorkflow, GitHubClient } from "../../github/src/index.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
 import { handleIssueSnapshotInternalRequest, IssueSnapshotStore } from "./issue-snapshots.js";
-import { confirmPullRequestBodyWriteIntent, processPullRequestBodyEditedDelivery, PullRequestBodyWriteIntentStore } from "./pr-body-write-intents.js";
+import { confirmPullRequestBodyWriteIntent, processPullRequestBodyEditedDelivery, PullRequestBodyWriteIntentStore, type PullRequestBodyWriteIntent } from "./pr-body-write-intents.js";
 
 export interface Env {
   ORGANIZATION_ID: string; ORGANIZATION_LOGIN: string; APP_ID: string; INSTALLATION_ID: string;
@@ -426,10 +426,27 @@ function deliveryHeader(headers: Record<string, unknown> | undefined, name: stri
 export async function recoverPullRequestBodyWriteIntents(env: Env, now = new Date()): Promise<number> {
   if (!env.ISSUE_SNAPSHOTS) return 0;
   const store = new PullRequestBodyWriteIntentStore(env.ISSUE_SNAPSHOTS);
-  const expired = await store.blockExpired(now.toISOString(), 20);
-  const pending = await store.listRecoverable(now.toISOString(), 20);
-  if (!pending.length) return expired;
+  const nowIso = now.toISOString();
+  const expired = await store.blockExpired(nowIso, 20);
+  const pending = await store.listRecoverable(nowIso, 20);
+  const queuedRedrives = await store.listPendingRedrives(20);
+  if (!pending.length && !queuedRedrives.length) return expired;
   if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
+  const dispatchRedrives = async (redrives: readonly PullRequestBodyWriteIntent[]) => {
+    for (const current of redrives) {
+      await send(env, "pr-issue-link.yml", {
+        deliveryId: `body-write-recovery:${current.writeId}`,
+        repositoryId: String(current.repositoryId),
+        pullRequestNumber: String(current.pullRequestNumber),
+        scanAll: "false",
+        invalidateOnly: "false",
+        policySha: env.POLICY_SHA,
+      });
+      await store.markRedriveDispatched(current.repositoryId, current.pullRequestNumber, current.writeId, nowIso);
+    }
+  };
+  await dispatchRedrives(queuedRedrives);
+  if (!pending.length) return expired;
   const app = new GitHubClient(await createAppJwt(env.APP_ID, env.STEWARD_APP_PRIVATE_KEY), "https://api.github.com", fetch, env.POLICY_SHA);
   const deliveries = await app.request<any[]>("GET", "/app/hook/deliveries?per_page=100");
   if (!Array.isArray(deliveries) || deliveries.length > 100) throw new Error("GitHub App交付列表无效");
@@ -441,8 +458,11 @@ export async function recoverPullRequestBodyWriteIntents(env: Env, now = new Dat
     const repository = await client.getRepositoryById(current.repositoryId);
     if (current.deliveryProven) {
       try {
-        const confirmed = await confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber: current.pullRequestNumber, writeId: current.writeId, now: now.toISOString() });
-        if (confirmed.status === "confirmed") recovered += 1;
+        const confirmed = await confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber: current.pullRequestNumber, writeId: current.writeId, now: nowIso });
+        if (["confirmed", "blocked"].includes(confirmed.status)) {
+          await store.requestRedrive(confirmed.repositoryId, confirmed.pullRequestNumber, confirmed.writeId, nowIso);
+          recovered += 1;
+        }
       } catch { /* keep the durable intent pending for the next bounded scan */ }
       continue;
     }
@@ -453,10 +473,11 @@ export async function recoverPullRequestBodyWriteIntents(env: Env, now = new Dat
       const deliveryId = deliveryHeader(detail?.request?.headers, "x-github-delivery") || String(detail?.guid ?? candidate?.guid ?? "");
       const payload = detail?.request?.payload;
       if (!deliveryId || !payload || Number(payload?.repository?.id) !== current.repositoryId || Number(payload?.pull_request?.number) !== current.pullRequestNumber) continue;
-      const outcome = await processPullRequestBodyEditedDelivery({ store, client, repository, payload, deliveryId, now: now.toISOString() });
+      const outcome = await processPullRequestBodyEditedDelivery({ store, client, repository, payload, deliveryId, now: nowIso });
       if (["proven", "compensated", "blocked"].includes(outcome)) { recovered += 1; break; }
     }
   }
+  await dispatchRedrives(await store.listPendingRedrives(20));
   return recovered;
 }
 

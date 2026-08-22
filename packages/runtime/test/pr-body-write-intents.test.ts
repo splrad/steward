@@ -106,6 +106,33 @@ describe("拉取请求正文持久补偿协议", () => {
     expect(await processPullRequestBodyEditedDelivery({ store, client, repository, payload: payload(before, target), deliveryId: "delivery-1", now })).toBe("duplicate");
   });
 
+  it("同一交付并发到达时只有一个处理器取得原子声明", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const before = body("人工前言", managedBlock("旧摘要"));
+    const { target } = await prepared(store, before, managedBlock("新摘要"));
+    await store.markPatched(repositoryId, pullRequestNumber, "11111111-1111-4111-8111-111111111111", now);
+    let reads = 0;
+    const client = { getPullRequest: async () => { reads += 1; await Promise.resolve(); return { number: pullRequestNumber, body: target, head: { sha: headSha }, base: { sha: baseSha } }; } } as any;
+    const outcomes = await Promise.all([
+      processPullRequestBodyEditedDelivery({ store, client, repository, payload: payload(before, target), deliveryId: "delivery-concurrent", now }),
+      processPullRequestBodyEditedDelivery({ store, client, repository, payload: payload(before, target), deliveryId: "delivery-concurrent", now }),
+    ]);
+    expect(outcomes.sort()).toEqual(["duplicate", "proven"]);
+    expect(reads).toBe(1);
+  });
+
+  it("机器人只改标题时忽略交付并保留活动意图", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const before = body("人工前言", managedBlock("旧摘要"));
+    const { target, writeId } = await prepared(store, before, managedBlock("新摘要"));
+    await store.markPatched(repositoryId, pullRequestNumber, writeId, now);
+    const titleOnly = payload(before, target); titleOnly.changes = { title: { from: "旧标题" } };
+    expect(await processPullRequestBodyEditedDelivery({ store, client: {} as any, repository, payload: titleOnly, deliveryId: "delivery-title-only", now })).toBe("ignored");
+    expect((await store.get(repositoryId, pullRequestNumber))?.status).toBe("patched");
+  });
+
   it("议题正文意图确认会校验GitHub关闭议题集合", async () => {
     const database = new SqliteD1();
     const store = new PullRequestBodyWriteIntentStore(database.binding());
@@ -137,6 +164,23 @@ describe("拉取请求正文持久补偿协议", () => {
     } as any;
 
     expect((await confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber, writeId, now })).status).toBe("confirmed");
+  });
+
+  it("议题正文意图从零代开始也会阻断代次漂移", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const before = body("人工前言", managedBlock("摘要"));
+    const targetBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber, baseSha, headSha, generation: 0, analysisInputDigest: "c".repeat(64) }, [{ repositoryId, number: 7 }]);
+    const target = upsertIssueLinksBlock(before, targetBlock);
+    const writeId = "88888888-8888-4888-8888-888888888888";
+    await store.prepare({ repositoryId, pullRequestNumber, writeId, regionKind: "issue-links", baseSha, headSha, issueGeneration: 0,
+      beforeBodyDigest: pullRequestBodyDigest(before), outsideBodyDigest: bodyOutsideManagedRegionDigest(before, "issue-links"), targetBlock, targetBodyDigest: pullRequestBodyDigest(target), now, expiresAt });
+    await store.markPatched(repositoryId, pullRequestNumber, writeId, now);
+    await store.proveDelivery({ repositoryId, pullRequestNumber, writeId, deliveryId: "delivery-generation-zero", now });
+    database.database.prepare("INSERT INTO issue_snapshot_repositories (repository_id, generation, open_set_digest, sync_state, updated_at) VALUES (?, 1, ?, 'ready', ?)")
+      .run(repositoryId, "d".repeat(64), now);
+    const client = { getPullRequest: async () => ({ number: pullRequestNumber, body: target, head: { sha: headSha }, base: { sha: baseSha } }) } as any;
+    expect((await confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber, writeId, now })).blockedReason).toBe("issue-generation-drifted");
   });
 
   it("最终GET后发生块外人工编辑时自动补偿并逐字保留", async () => {
@@ -187,6 +231,24 @@ describe("拉取请求正文持久补偿协议", () => {
     expect(await processPullRequestBodyEditedDelivery({ store, client, repository, payload: payload(overwritten, compensatedBody), deliveryId: "delivery-crash-confirm", now })).toBe("proven");
   });
 
+  it("补偿PATCH成功但状态回写失败时保留可恢复状态而不误阻断", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const original = body("人工前言", managedBlock("旧摘要"));
+    const humanBeforePatch = body("人工前言\n人工追加一行", managedBlock("旧摘要"));
+    const { target: overwritten, writeId } = await prepared(store, original, managedBlock("新摘要"));
+    await store.markPatched(repositoryId, pullRequestNumber, writeId, now);
+    let live = overwritten;
+    const client = {
+      getPullRequest: async () => ({ number: pullRequestNumber, body: live, head: { sha: headSha }, base: { sha: baseSha } }),
+      updatePullRequest: async (_owner: string, _repo: string, _number: number, patch: any) => ({ number: pullRequestNumber, body: (live = patch.body), head: { sha: headSha }, base: { sha: baseSha } }),
+    } as any;
+    store.markPatched = async () => { throw new Error("d1 unavailable"); };
+    expect(await processPullRequestBodyEditedDelivery({ store, client, repository, payload: payload(humanBeforePatch, overwritten), deliveryId: "delivery-mark-failed", now })).toBe("compensated");
+    expect((await store.get(repositoryId, pullRequestNumber))?.status).toBe("compensating");
+    expect(live).toContain("人工追加一行");
+  });
+
   it("证据缺失、提交漂移和旧意图交付都失败关闭或忽略", async () => {
     const database = new SqliteD1();
     const store = new PullRequestBodyWriteIntentStore(database.binding());
@@ -212,6 +274,10 @@ describe("拉取请求正文持久补偿协议", () => {
     await prepared(store, before, managedBlock("新摘要"));
     await expect(prepared(store, before, managedBlock("并发摘要"), "44444444-4444-4444-8444-444444444444")).rejects.toThrow("body-write-intent-conflict");
     expect((await store.get(repositoryId, pullRequestNumber))?.writeId).toBe("11111111-1111-4111-8111-111111111111");
+    await store.markPatched(repositoryId, pullRequestNumber, "11111111-1111-4111-8111-111111111111", now);
+    await store.proveDelivery({ repositoryId, pullRequestNumber, writeId: "11111111-1111-4111-8111-111111111111", deliveryId: "delivery-conflict", now });
+    await store.confirm(repositoryId, pullRequestNumber, "11111111-1111-4111-8111-111111111111", now);
+    expect(await store.listPendingRedrives()).toEqual([expect.objectContaining({ repositoryId, pullRequestNumber, writeId: "11111111-1111-4111-8111-111111111111" })]);
   });
 
   it("Webhook先于Runner回报时对同一写入意图幂等接受已PATCH状态", async () => {

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   extractIssueLinksBlock,
   extractManagedPullRequestBlock,
@@ -192,10 +192,15 @@ export class PullRequestBodyWriteIntentStore {
         write_id=excluded.write_id, region_kind=excluded.region_kind, base_sha=excluded.base_sha, head_sha=excluded.head_sha,
         issue_generation=excluded.issue_generation, before_body_digest=excluded.before_body_digest, outside_body_digest=excluded.outside_body_digest,
         target_block=excluded.target_block, target_body_digest=excluded.target_body_digest, status='prepared', compensation_generation=0,
-        attempt_count=0, delivery_proven=0, last_delivery_id=NULL, created_at=excluded.created_at, updated_at=excluded.updated_at,
+        attempt_count=0, delivery_proven=0, last_delivery_id=NULL, redrive_required=0, redrive_dispatched=0, created_at=excluded.created_at, updated_at=excluded.updated_at,
         expires_at=excluded.expires_at, confirmed_at=NULL, blocked_reason=NULL
       WHERE pull_request_body_write_intents.status IN ('confirmed','blocked') OR pull_request_body_write_intents.expires_at <= excluded.created_at`).bind(...values).run();
-    if (affected(result) !== 1) throw new Error("body-write-intent-conflict");
+    if (affected(result) !== 1) {
+      await this.db.prepare(`UPDATE pull_request_body_write_intents SET redrive_required=1, redrive_dispatched=0, updated_at=?
+        WHERE repository_id=? AND pull_request_number=? AND status IN ('prepared','patched','compensating')`)
+        .bind(input.now, repositoryId, pullRequestNumber).run();
+      throw new Error("body-write-intent-conflict");
+    }
     return (await this.get(repositoryId, pullRequestNumber))!;
   }
 
@@ -238,23 +243,32 @@ export class PullRequestBodyWriteIntentStore {
 
   async block(repositoryId: number, pullRequestNumber: number, writeId: string, reason: string, now: string): Promise<PullRequestBodyWriteIntent> {
     if (!/^[a-z0-9-]{1,80}$/u.test(reason)) throw new Error("blockedReason无效");
-    await this.db.prepare(`UPDATE pull_request_body_write_intents SET status='blocked', blocked_reason=?, updated_at=?
+    await this.db.prepare(`UPDATE pull_request_body_write_intents SET status='blocked', blocked_reason=?, redrive_required=1, redrive_dispatched=0, updated_at=?
       WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status NOT IN ('confirmed','blocked')`)
       .bind(reason, now, repositoryId, pullRequestNumber, writeId).run();
     return (await this.get(repositoryId, pullRequestNumber))!;
   }
 
-  async recordDelivery(input: { deliveryId: string; repositoryId: number; pullRequestNumber: number; writeId: string; outcome: "ignored" | "proven" | "compensated" | "blocked"; now: string }): Promise<boolean> {
+  async claimDelivery(input: { deliveryId: string; repositoryId: number; pullRequestNumber: number; writeId: string; now: string }): Promise<string | null> {
     if (!deliveryPattern.test(input.deliveryId)) throw new Error("deliveryId无效");
-    const result = await this.db.prepare(`INSERT OR IGNORE INTO pull_request_body_write_deliveries
-      (delivery_id, repository_id, pull_request_number, write_id, outcome, processed_at) VALUES (?, ?, ?, ?, ?, ?)`)
-      .bind(input.deliveryId, input.repositoryId, input.pullRequestNumber, input.writeId, input.outcome, input.now).run();
-    return affected(result) === 1;
+    const claimedAt = new Date(input.now);
+    if (!Number.isFinite(claimedAt.getTime())) throw new Error("交付处理时间无效");
+    const staleBefore = new Date(claimedAt.getTime() - 5 * 60_000).toISOString();
+    const claimId = randomUUID();
+    const result = await this.db.prepare(`INSERT INTO pull_request_body_write_deliveries
+      (delivery_id, repository_id, pull_request_number, write_id, claim_id, outcome, processed_at) VALUES (?, ?, ?, ?, ?, 'processing', ?)
+      ON CONFLICT(delivery_id) DO UPDATE SET repository_id=excluded.repository_id, pull_request_number=excluded.pull_request_number,
+        write_id=excluded.write_id, claim_id=excluded.claim_id, outcome='processing', processed_at=excluded.processed_at
+      WHERE pull_request_body_write_deliveries.outcome='processing' AND pull_request_body_write_deliveries.processed_at <= ?`)
+      .bind(input.deliveryId, input.repositoryId, input.pullRequestNumber, input.writeId, claimId, input.now, staleBefore).run();
+    return affected(result) === 1 ? claimId : null;
   }
 
-  async deliveryProcessed(deliveryId: string): Promise<boolean> {
-    const row = await this.db.prepare("SELECT delivery_id FROM pull_request_body_write_deliveries WHERE delivery_id = ?").bind(deliveryId).first<{ delivery_id: string }>();
-    return Boolean(row);
+  async completeDelivery(input: { deliveryId: string; claimId: string; outcome: "ignored" | "proven" | "compensated" | "blocked"; now: string }): Promise<void> {
+    const result = await this.db.prepare(`UPDATE pull_request_body_write_deliveries SET outcome=?, processed_at=?
+      WHERE delivery_id=? AND claim_id=? AND outcome='processing'`)
+      .bind(input.outcome, input.now, input.deliveryId, input.claimId).run();
+    if (affected(result) !== 1) throw new Error("正文写交付声明已经失效");
   }
 
   async listRecoverable(now: string, limit = 20): Promise<readonly PullRequestBodyWriteIntent[]> {
@@ -265,6 +279,28 @@ export class PullRequestBodyWriteIntentStore {
     return rows.results.map((row) => intent(row)!);
   }
 
+  async requestRedrive(repositoryId: number, pullRequestNumber: number, writeId: string, now: string): Promise<void> {
+    const result = await this.db.prepare(`UPDATE pull_request_body_write_intents SET redrive_required=1, redrive_dispatched=0, updated_at=?
+      WHERE repository_id=? AND pull_request_number=? AND write_id=?`)
+      .bind(now, repositoryId, pullRequestNumber, writeId).run();
+    if (affected(result) !== 1) throw new Error("正文写意图不能重新调度");
+  }
+
+  async listPendingRedrives(limit = 20): Promise<readonly PullRequestBodyWriteIntent[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new Error("重新调度批量无效");
+    const rows = await this.db.prepare(`SELECT * FROM pull_request_body_write_intents
+      WHERE status IN ('confirmed','blocked') AND redrive_required=1 AND redrive_dispatched=0
+      ORDER BY updated_at, repository_id, pull_request_number LIMIT ?`).bind(limit).all<IntentRow>();
+    return rows.results.map((row) => intent(row)!);
+  }
+
+  async markRedriveDispatched(repositoryId: number, pullRequestNumber: number, writeId: string, now: string): Promise<void> {
+    const result = await this.db.prepare(`UPDATE pull_request_body_write_intents SET redrive_dispatched=1, updated_at=?
+      WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status IN ('confirmed','blocked') AND redrive_required=1 AND redrive_dispatched=0`)
+      .bind(now, repositoryId, pullRequestNumber, writeId).run();
+    if (affected(result) !== 1) throw new Error("正文写意图重新调度状态冲突");
+  }
+
   async blockExpired(now: string, limit = 20): Promise<number> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new Error("过期批量无效");
     const rows = await this.db.prepare(`SELECT repository_id, pull_request_number, write_id FROM pull_request_body_write_intents
@@ -272,7 +308,7 @@ export class PullRequestBodyWriteIntentStore {
       .bind(now, limit).all<{ repository_id: number; pull_request_number: number; write_id: string }>();
     let blocked = 0;
     for (const row of rows.results) {
-      const result = await this.db.prepare(`UPDATE pull_request_body_write_intents SET status='blocked', blocked_reason='recovery-window-expired', updated_at=?
+      const result = await this.db.prepare(`UPDATE pull_request_body_write_intents SET status='blocked', blocked_reason='recovery-window-expired', redrive_required=1, redrive_dispatched=0, updated_at=?
         WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status IN ('prepared','patched','compensating') AND expires_at <= ?`)
         .bind(now, row.repository_id, row.pull_request_number, row.write_id, now).run();
       blocked += affected(result);
@@ -301,15 +337,17 @@ export async function processPullRequestBodyEditedDelivery(input: {
   const pullRequestNumber = positiveInteger(input.payload?.pull_request?.number, "pullRequestNumber");
   let current = await input.store.get(repositoryId, pullRequestNumber);
   if (!current) return "none";
-  if (await input.store.deliveryProcessed(input.deliveryId)) return "duplicate";
+  const claimId = await input.store.claimDelivery({ deliveryId: input.deliveryId, repositoryId, pullRequestNumber, writeId: current.writeId, now: input.now });
+  if (!claimId) return "duplicate";
   const record = async (outcome: "ignored" | "proven" | "compensated" | "blocked") => {
-    await input.store.recordDelivery({ deliveryId: input.deliveryId, repositoryId, pullRequestNumber, writeId: current.writeId, outcome, now: input.now });
+    await input.store.completeDelivery({ deliveryId: input.deliveryId, claimId, outcome, now: input.now });
     return outcome;
   };
   if (!["prepared", "patched", "compensating"].includes(current.status)) return record("ignored");
   const after = input.payload?.pull_request?.body;
   if (typeof after !== "string" || Buffer.byteLength(after, "utf8") > 1024 * 1024) return record("ignored");
   if (Number(input.payload?.sender?.id) !== 301115370) return record("ignored");
+  if (!Object.prototype.hasOwnProperty.call(input.payload?.changes ?? {}, "body")) return record("ignored");
   const before = input.payload?.changes?.body?.from;
   if (typeof before !== "string" || Buffer.byteLength(before, "utf8") > 1024 * 1024) {
     await input.store.block(repositoryId, pullRequestNumber, current.writeId, "edited-evidence-unavailable", input.now);
@@ -322,16 +360,23 @@ export async function processPullRequestBodyEditedDelivery(input: {
   const [owner, repo] = splitRepository(String(input.repository.full_name));
   const afterDigest = pullRequestBodyDigest(after);
   if (current.status === "compensating" && afterDigest !== current.targetBodyDigest) {
+    let compensationWritten = false;
     try {
       const compensatedBody = applyManagedRegion(before, current.regionKind, current.targetBlock);
       if (pullRequestBodyDigest(compensatedBody) !== current.targetBodyDigest) throw new Error("补偿目标正文摘要不一致");
       const liveBeforeCompensation = await input.client.getPullRequest(owner, repo, pullRequestNumber);
-      if (liveBeforeCompensation?.head?.sha !== current.headSha || liveBeforeCompensation?.base?.sha !== current.baseSha || String(liveBeforeCompensation?.body ?? "") !== after) throw new Error("补偿恢复前正文已经漂移");
-      const written = await input.client.updatePullRequest(owner, repo, pullRequestNumber, { body: compensatedBody });
-      if (written?.head?.sha !== current.headSha || written?.base?.sha !== current.baseSha || String(written?.body ?? "") !== compensatedBody) throw new Error("补偿恢复写入响应不一致");
+      if (liveBeforeCompensation?.head?.sha !== current.headSha || liveBeforeCompensation?.base?.sha !== current.baseSha) throw new Error("补偿恢复前提交已经漂移");
+      if (String(liveBeforeCompensation?.body ?? "") === compensatedBody) compensationWritten = true;
+      else {
+        if (String(liveBeforeCompensation?.body ?? "") !== after) throw new Error("补偿恢复前正文已经漂移");
+        const written = await input.client.updatePullRequest(owner, repo, pullRequestNumber, { body: compensatedBody });
+        if (written?.head?.sha !== current.headSha || written?.base?.sha !== current.baseSha || String(written?.body ?? "") !== compensatedBody) throw new Error("补偿恢复写入响应不一致");
+        compensationWritten = true;
+      }
       await input.store.markPatched(repositoryId, pullRequestNumber, current.writeId, input.now);
       return record("compensated");
     } catch {
+      if (compensationWritten) return record("compensated");
       await input.store.block(repositoryId, pullRequestNumber, current.writeId, "compensation-recovery-failed", input.now);
       return record("blocked");
     }
@@ -347,9 +392,10 @@ export async function processPullRequestBodyEditedDelivery(input: {
     await input.store.proveDelivery({ repositoryId, pullRequestNumber, writeId: current.writeId, deliveryId: input.deliveryId, now: input.now });
     return record("proven");
   }
+  const compensatedBody = applyManagedRegion(before, current.regionKind, current.targetBlock);
+  let compensated: PullRequestBodyWriteIntent;
   try {
-    const compensatedBody = applyManagedRegion(before, current.regionKind, current.targetBlock);
-    const compensated = await input.store.beginCompensation({
+    compensated = await input.store.beginCompensation({
       repositoryId,
       pullRequestNumber,
       writeId: current.writeId,
@@ -359,11 +405,21 @@ export async function processPullRequestBodyEditedDelivery(input: {
       targetBodyDigest: pullRequestBodyDigest(compensatedBody),
       now: input.now,
     });
+  } catch {
+    const latest = await input.store.get(repositoryId, pullRequestNumber);
+    if (latest?.writeId === current.writeId && ["compensating", "patched", "confirmed"].includes(latest.status)) return record("ignored");
+    await input.store.block(repositoryId, pullRequestNumber, current.writeId, "compensation-failed", input.now);
+    return record("blocked");
+  }
+  let compensationWritten = false;
+  try {
     const written = await input.client.updatePullRequest(owner, repo, pullRequestNumber, { body: compensatedBody });
     if (written?.head?.sha !== current.headSha || written?.base?.sha !== current.baseSha || String(written?.body ?? "") !== compensatedBody) throw new Error("补偿正文写入响应不一致");
+    compensationWritten = true;
     await input.store.markPatched(repositoryId, pullRequestNumber, compensated.writeId, input.now);
     return record("compensated");
   } catch {
+    if (compensationWritten) return record("compensated");
     await input.store.block(repositoryId, pullRequestNumber, current.writeId, "compensation-failed", input.now);
     return record("blocked");
   }
@@ -387,7 +443,7 @@ export async function confirmPullRequestBodyWriteIntent(input: {
   }
   if (current.regionKind === "issue-links") {
     const state = await input.store.issueGeneration(repositoryId);
-    if (current.issueGeneration > 0 && state !== current.issueGeneration) return input.store.block(repositoryId, input.pullRequestNumber, input.writeId, "issue-generation-drifted", input.now);
+    if (current.targetBlock !== null && state !== current.issueGeneration) return input.store.block(repositoryId, input.pullRequestNumber, input.writeId, "issue-generation-drifted", input.now);
     const desired = current.targetBlock ? extractIssueLinksBlock(current.targetBlock)!.metadata.issueNumbers.map((number) => ({ repositoryId, number })) : [];
     const sets = await input.client.listPullRequestClosingIssueSets(owner, repo, input.pullRequestNumber, repositoryId);
     if (!verifyIssueLinkConvergence(desired, sets, repositoryId).converged) throw new Error("GitHub关闭议题集合尚未收敛");
