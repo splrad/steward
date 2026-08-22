@@ -257,6 +257,37 @@ function hasUniqueManagedRegion(value: string, startMarker: string, endMarker: s
     && value.indexOf(endMarker, end + endMarker.length) < 0;
 }
 
+export interface ManagedPullRequestRegion {
+  start: number;
+  end: number;
+  block: string;
+}
+
+export function extractManagedPullRequestBlock(body: string): ManagedPullRequestRegion {
+  const current = hasUniqueManagedRegion(body, summaryStart, summaryEnd);
+  const legacy = hasUniqueManagedRegion(body, legacySummaryStart, legacySummaryEnd);
+  const hasCurrent = body.includes(summaryStart) || body.includes(summaryEnd);
+  const hasLegacy = body.includes(legacySummaryStart) || body.includes(legacySummaryEnd);
+  if ((hasCurrent && hasLegacy) || (hasCurrent && !current) || (hasLegacy && !legacy) || (!hasCurrent && !hasLegacy)) {
+    throw new Error('拉取请求模板受管标记缺失、重复或交叉');
+  }
+  const startMarker = current ? summaryStart : legacySummaryStart;
+  const endMarker = current ? summaryEnd : legacySummaryEnd;
+  const start = body.indexOf(startMarker);
+  const end = body.indexOf(endMarker, start) + endMarker.length;
+  if (start < 0 || end <= start) throw new Error('拉取请求模板受管标记缺失、重复或交叉');
+  return { start, end, block: body.slice(start, end) };
+}
+
+export function replaceManagedPullRequestBlock(body: string, block: string): string {
+  const current = extractManagedPullRequestBlock(body);
+  const replacement = extractManagedPullRequestBlock(block);
+  if (replacement.start !== 0 || replacement.end !== block.length || !block.startsWith(summaryStart) || !block.endsWith(summaryEnd)) {
+    throw new Error('替换拉取请求受管块无效');
+  }
+  return `${body.slice(0, current.start)}${block}${body.slice(current.end)}`;
+}
+
 function escapeHtml(value: string): string {
   return value.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;').replace(/"/gu, '&quot;').replace(/'/gu, '&#39;');
 }
