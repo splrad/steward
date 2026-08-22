@@ -72,7 +72,9 @@ function parseJson<T>(value: unknown, name: string): T {
 
 function githubApiUrl(value: unknown, name: string): string {
   if (typeof value !== "string" || value.length > 4_096) throw new Error(`${name}无效`);
-  const url = new URL(value);
+  let url: URL;
+  try { url = new URL(value); }
+  catch { throw new Error(`${name}无效`); }
   if (url.origin !== "https://api.github.com" || url.username || url.password || url.hash) throw new Error(`${name}无效`);
   return url.href;
 }

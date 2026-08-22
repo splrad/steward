@@ -162,6 +162,21 @@ describe("议题快照D1存储", () => {
     const tooLarge = snapshot(1296724484, "splrad/steward", 5, "大快照", `5${"x".repeat(210_000)}`);
     await expect(put(store, tooLarge, generation)).rejects.toThrow("开放议题候选超过固定上限");
   });
+
+  it("非法验证器URL在写入和损坏数据读回时使用字段错误", async () => {
+    const database = new SqliteD1(); const store = new IssueSnapshotStore(database.binding());
+    const value = snapshot(1296724484, "splrad/steward", 7);
+    await expect(store.putSnapshot({
+      expectedGeneration: 0, snapshot: value, contentDigest: issueSnapshotContentDigest(value),
+      validators: [{ resource: "issue", url: "not-a-url", etag: null, next: null, status: 200 }],
+      deliveryId: "invalid-url", now: "2026-08-21T00:00:00Z",
+    })).rejects.toThrow("validator[0].url无效");
+
+    await put(store, value, 0);
+    database.database.prepare("UPDATE issue_snapshots SET validators_json = ? WHERE repository_id = ? AND issue_number = ?")
+      .run(JSON.stringify([{ resource: "issue", url: "https://api.github.com/repos/splrad/steward/issues/7", etag: null, next: "not-a-url", status: 200 }]), 1296724484, 7);
+    await expect(store.getSnapshot(1296724484, 7)).rejects.toThrow("validator[0].next无效");
+  });
 });
 
 describe("议题快照内部接口", () => {
