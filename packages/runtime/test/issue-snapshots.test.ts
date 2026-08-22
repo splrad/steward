@@ -79,7 +79,8 @@ function snapshot(repositoryId: number, fullName: string, issueNumber: number, t
 }
 
 async function put(store: IssueSnapshotStore, value: IssueSnapshot, expectedGeneration: number, deliveryId = "delivery-1") {
-  return store.putSnapshot({ expectedGeneration, snapshot: value, contentDigest: issueSnapshotContentDigest(value), validators: [], deliveryId, now: "2026-08-21T00:00:00Z" });
+  const current = await store.getRepositoryState(value.repository.id);
+  return store.putSnapshot({ expectedGeneration, expectedStateRevision: current?.stateRevision ?? 0, snapshot: value, contentDigest: issueSnapshotContentDigest(value), validators: [], deliveryId, now: "2026-08-21T00:00:00Z" });
 }
 
 function installAuthorization(fetchIssue?: (url: string) => Response | undefined, repositories: any[] = [repository()], installationId = 145952003, viewerLogin = "splrad-steward[bot]") {
@@ -133,10 +134,10 @@ describe("议题快照D1存储", () => {
   it("缺失快照的删除也推进墓碑代次，迟到刷新不能复活议题", async () => {
     const store = new IssueSnapshotStore(new SqliteD1().binding());
     const value = snapshot(1296724484, "splrad/steward", 44);
-    const deleted = await store.deleteSnapshot(1296724484, 44, 0, "2026-08-21T00:00:00Z");
+    const deleted = await store.deleteSnapshot(1296724484, 44, 0, 0, "2026-08-21T00:00:00Z");
     expect(deleted).toEqual(expect.objectContaining({ changed: true, state: expect.objectContaining({ generation: 1 }) }));
     await expect(put(store, value, 0, "late-refresh")).rejects.toThrow("issue-snapshot-generation-conflict");
-    expect((await store.deleteSnapshot(1296724484, 44, 1, "2026-08-21T00:01:00Z")).changed).toBe(false);
+    expect((await store.deleteSnapshot(1296724484, 44, 1, deleted.state!.stateRevision, "2026-08-21T00:01:00Z")).changed).toBe(false);
     await expect(put(store, value, 1, "reopened-refresh")).resolves.toEqual(expect.objectContaining({ changed: true, state: expect.objectContaining({ generation: 2 }) }));
   });
 
@@ -144,7 +145,7 @@ describe("议题快照D1存储", () => {
     const database = new SqliteD1(); const winner = new IssueSnapshotStore(database.binding());
     await put(winner, snapshot(1296724484, "splrad/steward", 7), 0);
     const interleaved = new BeforeFirstBatchD1(database, async () => {
-      await winner.deleteSnapshot(1296724484, 7, 1, "2026-08-21T00:01:00Z");
+      await winner.deleteSnapshot(1296724484, 7, 1, 0, "2026-08-21T00:01:00Z");
     });
     const loser = new IssueSnapshotStore(interleaved.binding());
     await expect(put(loser, snapshot(1296724484, "splrad/steward", 7, "迟到开放结果"), 1, "late-open"))
@@ -153,6 +154,24 @@ describe("议题快照D1存储", () => {
     expect(await winner.getRepositoryState(1296724484)).toEqual(expect.objectContaining({ generation: 2 }));
     expect(database.database.prepare("SELECT generation FROM issue_snapshot_issue_tombstones WHERE repository_id = ? AND issue_number = ?")
       .get(1296724484, 7)).toEqual({ generation: 2 });
+  });
+
+  it("已有墓碑的重复关闭会使途中重新开放写入失效", async () => {
+    const database = new SqliteD1(); const winner = new IssueSnapshotStore(database.binding());
+    const firstClose = await winner.deleteSnapshot(1296724484, 7, 0, 0, "2026-08-21T00:00:00Z");
+    const expectedStateRevision = firstClose.state!.stateRevision;
+    const interleaved = new BeforeFirstBatchD1(database, async () => {
+      const repeatedClose = await winner.deleteSnapshot(1296724484, 7, 1, expectedStateRevision, "2026-08-21T00:01:00Z");
+      expect(repeatedClose).toEqual(expect.objectContaining({ changed: false, state: expect.objectContaining({ generation: 1, stateRevision: expectedStateRevision + 1 }) }));
+    });
+    const loser = new IssueSnapshotStore(interleaved.binding());
+
+    await expect(put(loser, snapshot(1296724484, "splrad/steward", 7, "途中重新开放"), 1, "stale-reopen"))
+      .rejects.toThrow("issue-snapshot-generation-conflict");
+    expect(await winner.getSnapshot(1296724484, 7)).toBeNull();
+    expect(await winner.getRepositoryState(1296724484)).toEqual(expect.objectContaining({ generation: 1, stateRevision: expectedStateRevision + 1 }));
+    expect(database.database.prepare("SELECT generation, deleted_at FROM issue_snapshot_issue_tombstones WHERE repository_id = ? AND issue_number = ?")
+      .get(1296724484, 7)).toEqual({ generation: 1, deleted_at: "2026-08-21T00:01:00Z" });
   });
 
   it("读取跨越代次提交时重试到一致视图", async () => {
@@ -199,7 +218,7 @@ describe("议题快照D1存储", () => {
     const layerScape = snapshot(1187527897, "splrad/LayerScape", 7);
     await put(store, snapshot(1296724484, "splrad/steward", 7), 0);
     await put(store, layerScape, 0);
-    const deleted = await store.deleteSnapshot(1296724484, 7, 1, "2026-08-21T00:03:00Z");
+    const deleted = await store.deleteSnapshot(1296724484, 7, 1, 0, "2026-08-21T00:03:00Z");
     expect(deleted.changed).toBe(true);
     expect(await store.getSnapshot(1296724484, 7)).toBeNull();
     expect(await store.getSnapshot(1187527897, 7)).not.toBeNull();
@@ -226,6 +245,7 @@ describe("议题快照D1存储", () => {
     const value = snapshot(1296724484, "splrad/steward", 7);
     await expect(store.putSnapshot({
       expectedGeneration: 0, snapshot: value, contentDigest: issueSnapshotContentDigest(value),
+      expectedStateRevision: 0,
       validators: [{ resource: "issue", url: "not-a-url", etag: null, next: null, status: 200 }],
       deliveryId: "invalid-url", now: "2026-08-21T00:00:00Z",
     })).rejects.toThrow("validator[0].url无效");
@@ -243,6 +263,7 @@ describe("议题快照D1存储", () => {
       const invalid = { ...valid, issue: { ...valid.issue, number: issueNumber } };
       await expect(store.putSnapshot({
         expectedGeneration: 0, snapshot: invalid, contentDigest: issueSnapshotContentDigest(invalid), validators: [],
+        expectedStateRevision: 0,
         deliveryId: "invalid-issue-number", now: "2026-08-21T00:00:00Z",
       })).rejects.toThrow("issueNumber无效");
       expect(await store.getRepositoryState(1296724484)).toBeNull();
