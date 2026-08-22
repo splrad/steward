@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { extractManagedPullRequestBlock, renderManagedBody, replaceManagedPullRequestBlock } from "../../core/src/automation.js";
+import { renderIssueLinksBlock, upsertIssueLinksBlock } from "../../core/src/issues.js";
 import {
   bodyOutsideManagedRegionDigest,
   confirmPullRequestBodyWriteIntent,
@@ -103,6 +104,39 @@ describe("拉取请求正文持久补偿协议", () => {
     expect((await store.get(repositoryId, pullRequestNumber))?.deliveryProven).toBe(true);
     expect((await confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber, writeId, now })).status).toBe("confirmed");
     expect(await processPullRequestBodyEditedDelivery({ store, client, repository, payload: payload(before, target), deliveryId: "delivery-1", now })).toBe("duplicate");
+  });
+
+  it("议题正文意图确认会校验GitHub关闭议题集合", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const before = body("人工前言", managedBlock("摘要"));
+    const targetBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber, baseSha, headSha, generation: 1, analysisInputDigest: "c".repeat(64) }, [{ repositoryId, number: 7 }]);
+    const target = upsertIssueLinksBlock(before, targetBlock);
+    const writeId = "77777777-7777-4777-8777-777777777777";
+    await store.prepare({
+      repositoryId,
+      pullRequestNumber,
+      writeId,
+      regionKind: "issue-links",
+      baseSha,
+      headSha,
+      issueGeneration: 0,
+      beforeBodyDigest: pullRequestBodyDigest(before),
+      outsideBodyDigest: bodyOutsideManagedRegionDigest(before, "issue-links"),
+      targetBlock,
+      targetBodyDigest: pullRequestBodyDigest(target),
+      now,
+      expiresAt,
+    });
+    await store.markPatched(repositoryId, pullRequestNumber, writeId, now);
+    await store.proveDelivery({ repositoryId, pullRequestNumber, writeId, deliveryId: "delivery-issue-links", now });
+    const reference = { repositoryId, number: 7 };
+    const client = {
+      getPullRequest: async () => ({ number: pullRequestNumber, body: target, head: { sha: headSha }, base: { sha: baseSha } }),
+      listPullRequestClosingIssueSets: async () => ({ all: [reference], manual: [], automatic: [reference] }),
+    } as any;
+
+    expect((await confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber, writeId, now })).status).toBe("confirmed");
   });
 
   it("最终GET后发生块外人工编辑时自动补偿并逐字保留", async () => {

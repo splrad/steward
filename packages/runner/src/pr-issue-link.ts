@@ -11,11 +11,10 @@ import {
   issueSnapshotContentDigest,
   managedBodyOutsideIssueLinksDigest,
   openIssueSetDigest,
-  removeIssueLinksBlock,
   renderIssueLinksBlock,
   selectDesiredIssueSet,
-  upsertIssueLinksBlock,
   validateIssueDecisionEnvelope,
+  verifyIssueLinkConvergence,
   type DesiredIssueReference,
   type IssueSnapshot,
   type UnfetchedReference,
@@ -90,10 +89,8 @@ interface PreparedEvidence {
   revalidationBudget: number;
 }
 
-export interface IssueLinkConvergence {
-  converged: boolean;
-  expectedAutomatic: DesiredIssueReference[];
-}
+export { verifyIssueLinkConvergence } from "../../core/src/index.js";
+export type { IssueLinkConvergence } from "../../core/src/index.js";
 
 function requiredEnvironment(name: string): string {
   const value = process.env[name];
@@ -150,28 +147,6 @@ function configuration(repository: any): any {
   const value = { ...(repository.private ? repositoryCatalog.defaults.private : repositoryCatalog.defaults.public), ...(override ?? {}) };
   if (value.managed !== true || String(repository.full_name).split("/")[0]?.toLowerCase() !== repositoryCatalog.organization.login.toLowerCase()) throw new Error("仓库不在中央纳管范围");
   return value;
-}
-
-function stableSet(values: readonly DesiredIssueReference[]): string[] {
-  return values.map(value => `${value.repositoryId}:${value.number}`).sort();
-}
-
-export function verifyIssueLinkConvergence(
-  desired: readonly DesiredIssueReference[],
-  sets: { all: readonly DesiredIssueReference[]; manual: readonly DesiredIssueReference[]; automatic: readonly DesiredIssueReference[] },
-  repositoryId: number,
-): IssueLinkConvergence {
-  const desiredKeys = new Set(stableSet(desired));
-  const manualKeys = new Set(stableSet(sets.manual));
-  const expectedAutomatic = desired.filter(item => !manualKeys.has(`${item.repositoryId}:${item.number}`));
-  const expectedKeys = stableSet(expectedAutomatic);
-  const automaticKeys = stableSet(sets.automatic);
-  const allKeys = new Set(stableSet(sets.all));
-  const converged = desired.every(item => allKeys.has(`${item.repositoryId}:${item.number}`))
-    && sets.automatic.every(item => item.repositoryId === repositoryId)
-    && JSON.stringify(automaticKeys) === JSON.stringify(expectedKeys)
-    && desiredKeys.size === desired.length;
-  return { converged, expectedAutomatic };
 }
 
 export function extractIssueCopilotContent(value: string): string {

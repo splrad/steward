@@ -384,6 +384,33 @@ export function openIssueSetDigest(repositoryId: number, issueNumbers: readonly 
 
 export interface DesiredIssueReference { repositoryId: number; number: number }
 
+export interface IssueLinkConvergence {
+  converged: boolean;
+  expectedAutomatic: DesiredIssueReference[];
+}
+
+function stableIssueReferenceSet(values: readonly DesiredIssueReference[]): string[] {
+  return values.map(value => `${value.repositoryId}:${value.number}`).sort();
+}
+
+export function verifyIssueLinkConvergence(
+  desired: readonly DesiredIssueReference[],
+  sets: { all: readonly DesiredIssueReference[]; manual: readonly DesiredIssueReference[]; automatic: readonly DesiredIssueReference[] },
+  repositoryId: number,
+): IssueLinkConvergence {
+  const desiredKeys = new Set(stableIssueReferenceSet(desired));
+  const manualKeys = new Set(stableIssueReferenceSet(sets.manual));
+  const expectedAutomatic = desired.filter(item => !manualKeys.has(`${item.repositoryId}:${item.number}`));
+  const expectedKeys = stableIssueReferenceSet(expectedAutomatic);
+  const automaticKeys = stableIssueReferenceSet(sets.automatic);
+  const allKeys = new Set(stableIssueReferenceSet(sets.all));
+  const converged = desired.every(item => allKeys.has(`${item.repositoryId}:${item.number}`))
+    && sets.automatic.every(item => item.repositoryId === repositoryId)
+    && JSON.stringify(automaticKeys) === JSON.stringify(expectedKeys)
+    && desiredKeys.size === desired.length;
+  return { converged, expectedAutomatic };
+}
+
 export function desiredIssueSetDigest(issues: readonly DesiredIssueReference[]): string {
   const normalized = issues.map((issue) => ({ repositoryId: integer(issue.repositoryId, 'repositoryId'), number: integer(issue.number, 'issueNumber') }))
     .sort((left, right) => left.repositoryId - right.repositoryId || left.number - right.number);
