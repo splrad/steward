@@ -283,8 +283,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
           deliveryId,
           now: new Date().toISOString(),
         });
-        if (["proven", "compensated", "duplicate"].includes(outcome)) return response(202);
-        if (outcome === "blocked") return response(503);
+        if (["proven", "compensated", "duplicate", "blocked"].includes(outcome)) return response(202);
       }
     }
     if (event === "installation" && action === "deleted") {

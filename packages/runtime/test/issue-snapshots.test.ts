@@ -372,6 +372,34 @@ describe("议题快照内部接口", () => {
 });
 
 describe("正文写意图交付恢复", () => {
+  it("证据不足的正文交付持久阻断后返回成功且不进入通用工作流", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const oldBody = renderManagedBody({ generated: { type: "chore", scope: "test", title: "测试", summary: "旧摘要", motivation: "原因", changes: ["改动"], impact: [], releaseAndMigration: [] }, templateBody: "<!-- workflow:managed-pr:start -->\n<!-- workflow:managed-pr:end -->\n", actor: "splrad-steward[bot]", contributors: [], context: "old" });
+    const targetBody = renderManagedBody({ generated: { type: "chore", scope: "test", title: "测试", summary: "新摘要", motivation: "原因", changes: ["改动"], impact: [], releaseAndMigration: [] }, templateBody: oldBody, actor: "splrad-steward[bot]", contributors: [], context: "new" });
+    const now = new Date();
+    const writeId = "22222222-2222-4222-8222-222222222222";
+    await store.prepare({ repositoryId: 1296724484, pullRequestNumber: 42, writeId, regionKind: "managed-pr", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
+      beforeBodyDigest: pullRequestBodyDigest(oldBody), outsideBodyDigest: bodyOutsideManagedRegionDigest(oldBody, "managed-pr"), targetBlock: extractManagedPullRequestBlock(targetBody).block,
+      targetBodyDigest: pullRequestBodyDigest(targetBody), now: now.toISOString(), expiresAt: new Date(now.getTime() + 10 * 60_000).toISOString() });
+    const workflows: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      const workflow = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
+      if (workflow) { workflows.push(workflow); return new Response(null, { status: 204 }); }
+      return new Response("unexpected", { status: 500 });
+    });
+    const payload = {
+      organization: { id: 302208797 }, installation: { id: 145952003 }, action: "edited", repository: repository(), sender: { id: 301115370 },
+      changes: { body: {} }, pull_request: { number: 42, body: targetBody, head: { sha: "c".repeat(40) }, base: { sha: "b".repeat(40), ref: "main" }, user: { id: 301115370 } },
+    };
+    expect((await handleWebhook(signedRequest("pull_request", payload), env(database))).status).toBe(202);
+    expect(await store.get(1296724484, 42)).toEqual(expect.objectContaining({ status: "blocked", blockedReason: "edited-evidence-unavailable" }));
+    expect(await store.listPendingRedrives()).toEqual([expect.objectContaining({ repositoryId: 1296724484, pullRequestNumber: 42, writeId })]);
+    expect(workflows).toEqual([]);
+  });
+
   it("无待处理意图时零外部请求，有待处理意图时从App交付记录恢复", async () => {
     const database = new SqliteD1();
     const runtimeEnv = env(database);
