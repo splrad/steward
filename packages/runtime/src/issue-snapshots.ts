@@ -1,6 +1,7 @@
 import { createAppJwt, createInstallationToken, GitHubClient, GitHubRequestError, type GitHubIssueFacts, type PageValidator, type ValidatedValue } from "../../github/src/index.js";
 import { issueSnapshotContentDigest, normalizeIssueSnapshot, openIssueSetDigest, type IssueRelationSnapshot, type IssueSnapshot } from "../../core/src/issues.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
+import { confirmPullRequestBodyWriteIntent, PullRequestBodyWriteIntentStore } from "./pr-body-write-intents.js";
 
 export type IssueSnapshotSyncState = "uninitialized" | "scanning" | "ready" | "degraded";
 
@@ -126,6 +127,17 @@ async function requireEmptyBody(request: Request): Promise<void> {
   const length = request.headers.get("content-length");
   if (length !== null && length !== "0") throw new Error("内部请求正文必须为空");
   if ((await request.arrayBuffer()).byteLength !== 0) throw new Error("内部请求正文必须为空");
+}
+
+async function readJsonObject(request: Request): Promise<Record<string, unknown>> {
+  const declared = Number(request.headers.get("content-length") ?? "0");
+  if (declared > 512 * 1024) throw new Error("内部请求正文过大");
+  const text = await request.text();
+  if (Buffer.byteLength(text, "utf8") > 512 * 1024) throw new Error("内部请求正文过大");
+  let value: unknown;
+  try { value = JSON.parse(text); } catch { throw new Error("内部请求正文无效"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("内部请求正文无效");
+  return value as Record<string, unknown>;
 }
 
 function repositoryStateFromRow(row: Record<string, unknown>): IssueSnapshotRepositoryState {
@@ -525,6 +537,52 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
   const store = new IssueSnapshotStore(env.ISSUE_SNAPSHOTS);
   try {
     const { repository, client } = await authorizeSingleRepository(request, env, repositoryId);
+    if (parts[1] === "body-write-intents") {
+      if (parts.length < 4 || parts.length > 5) return noStoreResponse(404, { error: "internal-route-not-found" });
+      const pullRequestNumber = positiveInteger(parts[2]!, "pullRequestNumber");
+      const intentStore = new PullRequestBodyWriteIntentStore(env.ISSUE_SNAPSHOTS);
+      const now = new Date().toISOString();
+      if (request.method === "POST" && parts.length === 4 && parts[3] === "prepare") {
+        const body = await readJsonObject(request);
+        const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+        return noStoreResponse(200, await intentStore.prepare({
+          repositoryId,
+          pullRequestNumber,
+          writeId: String(body.writeId ?? ""),
+          regionKind: String(body.regionKind ?? "") as "managed-pr" | "issue-links",
+          baseSha: String(body.baseSha ?? ""),
+          headSha: String(body.headSha ?? ""),
+          issueGeneration: Number(body.issueGeneration ?? 0),
+          beforeBodyDigest: String(body.beforeBodyDigest ?? ""),
+          outsideBodyDigest: String(body.outsideBodyDigest ?? ""),
+          targetBlock: body.targetBlock === null ? null : String(body.targetBlock ?? ""),
+          targetBodyDigest: String(body.targetBodyDigest ?? ""),
+          now,
+          expiresAt,
+        }));
+      }
+      if (parts.length === 4 && request.method === "GET") {
+        const current = await intentStore.get(repositoryId, pullRequestNumber);
+        if (!current || current.writeId !== parts[3]) return noStoreResponse(404, { error: "body-write-intent-not-found" });
+        return noStoreResponse(200, current);
+      }
+      if (parts.length === 5 && request.method === "POST") {
+        const writeId = parts[3]!;
+        if (parts[4] === "patched") {
+          await requireEmptyBody(request);
+          return noStoreResponse(200, await intentStore.markPatched(repositoryId, pullRequestNumber, writeId, now));
+        }
+        if (parts[4] === "block") {
+          const body = await readJsonObject(request);
+          return noStoreResponse(200, await intentStore.block(repositoryId, pullRequestNumber, writeId, String(body.reason ?? "invalid"), now));
+        }
+        if (parts[4] === "confirm") {
+          await requireEmptyBody(request);
+          return noStoreResponse(200, await confirmPullRequestBodyWriteIntent({ store: intentStore, client, repository, pullRequestNumber, writeId, now }));
+        }
+      }
+      return noStoreResponse(404, { error: "internal-route-not-found" });
+    }
     if (request.method === "GET" && parts.length === 1) {
       const state = await store.getRepositoryState(repositoryId) ?? { repositoryId, generation: 0, syncState: "uninitialized" as const, openSetDigest: openIssueSetDigest(repositoryId, []), lastFullScanAt: null, updatedAt: new Date(0).toISOString() };
       const snapshots = await store.listOpenSnapshots(repositoryId);
@@ -590,6 +648,7 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
       return noStoreResponse(502, { error: "github-read-failed" });
     }
     if (error instanceof Error && error.message === "issue-snapshot-generation-conflict") return noStoreResponse(409, { error: error.message });
+    if (error instanceof Error && error.message === "body-write-intent-conflict") return noStoreResponse(409, { error: error.message });
     if (error instanceof Error && ["内部请求正文必须为空", "issueNumber无效"].includes(error.message)) return noStoreResponse(400, { error: "invalid-internal-request" });
     return noStoreResponse(503, { error: "issue-snapshot-operation-failed" });
   }

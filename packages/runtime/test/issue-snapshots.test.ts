@@ -2,9 +2,10 @@ import { generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { issueSnapshotContentDigest, normalizeIssueSnapshot, openIssueSetDigest, type IssueSnapshot } from "../../core/src/issues.js";
+import { issueSnapshotContentDigest, normalizeIssueSnapshot, openIssueSetDigest, renderIssueLinksBlock, type IssueSnapshot } from "../../core/src/issues.js";
 import worker, { type Env } from "../src/index.js";
 import { IssueSnapshotStore } from "../src/issue-snapshots.js";
+import { pullRequestBodyDigest } from "../src/pr-body-write-intents.js";
 
 class SqliteD1Statement {
   constructor(private readonly database: DatabaseSync, private readonly sql: string, private readonly values: readonly SQLInputValue[] = []) {}
@@ -23,6 +24,7 @@ class SqliteD1 {
     this.database.exec(readFileSync(new URL("../migrations/0001_issue_snapshots.sql", import.meta.url), "utf8"));
     this.database.exec(readFileSync(new URL("../migrations/0002_issue_snapshot_tombstones.sql", import.meta.url), "utf8"));
     this.database.exec(readFileSync(new URL("../migrations/0003_issue_snapshot_reconciliation.sql", import.meta.url), "utf8"));
+    this.database.exec(readFileSync(new URL("../migrations/0004_pull_request_body_write_intents.sql", import.meta.url), "utf8"));
   }
   prepare(sql: string): D1PreparedStatement { return new SqliteD1Statement(this.database, sql) as unknown as D1PreparedStatement; }
   async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
@@ -81,16 +83,21 @@ function installAuthorization(fetchIssue?: (url: string) => Response | undefined
 }
 
 describe("议题快照D1存储", () => {
-  it("迁移只创建固定快照、墓碑和重算请求表", () => {
+  it("迁移只创建固定快照、墓碑、重算请求和正文写意图表", () => {
     const database = new SqliteD1();
     const objects = database.database.prepare("SELECT type, name, tbl_name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all();
     expect(objects).toEqual([
       { type: "index", name: "issue_snapshots_open", tbl_name: "issue_snapshots" },
+      { type: "index", name: "pull_request_body_write_deliveries_intent", tbl_name: "pull_request_body_write_deliveries" },
+      { type: "index", name: "pull_request_body_write_intents_pending", tbl_name: "pull_request_body_write_intents" },
+      { type: "index", name: "pull_request_body_write_intents_redrive", tbl_name: "pull_request_body_write_intents" },
       { type: "table", name: "issue_snapshot_issue_tombstones", tbl_name: "issue_snapshot_issue_tombstones" },
       { type: "table", name: "issue_snapshot_reconciliation_requests", tbl_name: "issue_snapshot_reconciliation_requests" },
       { type: "table", name: "issue_snapshot_repositories", tbl_name: "issue_snapshot_repositories" },
       { type: "table", name: "issue_snapshot_repository_tombstones", tbl_name: "issue_snapshot_repository_tombstones" },
       { type: "table", name: "issue_snapshots", tbl_name: "issue_snapshots" },
+      { type: "table", name: "pull_request_body_write_deliveries", tbl_name: "pull_request_body_write_deliveries" },
+      { type: "table", name: "pull_request_body_write_intents", tbl_name: "pull_request_body_write_intents" },
     ]);
     const source = readFileSync(new URL("../src/issue-snapshots.ts", import.meta.url), "utf8");
     expect(source).not.toMatch(/(?:FROM|UPDATE|DELETE FROM) issue_snapshots WHERE issue_number/u);
@@ -195,6 +202,27 @@ describe("议题快照内部接口", () => {
     expect(accepted.status).toBe(200);
     expect(accepted.headers.get("cache-control")).toBe("no-store");
     expect(await accepted.json()).toEqual(expect.objectContaining({ repositoryId: 1296724484, generation: 0, syncState: "uninitialized", snapshots: [] }));
+  });
+
+  it("正文写意图接口复用单仓App鉴权并按write_id推进状态", async () => {
+    const database = new SqliteD1();
+    installAuthorization();
+    const writeId = "11111111-1111-4111-8111-111111111111";
+    const targetBlock = renderIssueLinksBlock({ repositoryId: 1296724484, pullRequestNumber: 42, baseSha: "b".repeat(40), headSha: "c".repeat(40), generation: 0, analysisInputDigest: "d".repeat(64) }, []);
+    const prepare = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/prepare", {
+      method: "POST",
+      headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" },
+      body: JSON.stringify({ writeId, regionKind: "issue-links", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
+        beforeBodyDigest: pullRequestBodyDigest("before"), outsideBodyDigest: pullRequestBodyDigest("outside"), targetBlock, targetBodyDigest: pullRequestBodyDigest("after") }),
+    }), env(database));
+    expect(prepare.status).toBe(200);
+    expect(await prepare.json()).toEqual(expect.objectContaining({ writeId, status: "prepared", deliveryProven: false }));
+    const patched = await worker.fetch(new Request(`https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/${writeId}/patched`, { method: "POST", headers: { authorization: "Bearer one-repository-token" } }), env(database));
+    expect(patched.status).toBe(200);
+    expect(await patched.json()).toEqual(expect.objectContaining({ writeId, status: "patched", attemptCount: 1 }));
+    const readback = await worker.fetch(new Request(`https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/${writeId}`, { headers: { authorization: "Bearer one-repository-token" } }), env(database));
+    expect(readback.status).toBe(200);
+    expect(readback.headers.get("cache-control")).toBe("no-store");
   });
 
   it("调用者不能提交删除指令，上游歧义也不会删除已有快照", async () => {
