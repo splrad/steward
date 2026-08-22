@@ -102,6 +102,13 @@ function resultChanges(result: D1Result<unknown> | undefined): number {
   return Number(result?.meta?.changes ?? 0);
 }
 
+function sameRepositoryState(left: IssueSnapshotRepositoryState | null, right: IssueSnapshotRepositoryState | null): boolean {
+  if (!left || !right) return left === right;
+  return left.repositoryId === right.repositoryId && left.generation === right.generation && left.syncState === right.syncState
+    && left.openSetDigest === right.openSetDigest && left.lastFullScanAt === right.lastFullScanAt && left.updatedAt === right.updatedAt
+    && left.reconciliationGeneration === right.reconciliationGeneration;
+}
+
 function snapshotJsonForSize(snapshot: IssueSnapshot, validators: readonly PageValidator[], contentDigest: string, syncedAt = "9999-12-31T23:59:59.999Z"): string {
   return JSON.stringify({
     repositoryId: snapshot.repository.id,
@@ -230,6 +237,18 @@ export class IssueSnapshotStore {
     return result.results.map(snapshotFromRow);
   }
 
+  async readOpenSnapshotView(repositoryId: number): Promise<{ state: IssueSnapshotRepositoryState | null; snapshots: readonly StoredIssueSnapshot[] }> {
+    rowInteger(repositoryId, "repositoryId", 1);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const before = await this.getRepositoryState(repositoryId);
+      const snapshots = await this.listOpenSnapshots(repositoryId);
+      const after = await this.getRepositoryState(repositoryId);
+      const digest = openIssueSetDigest(repositoryId, snapshots.map((item) => item.issueNumber));
+      if (sameRepositoryState(before, after) && digest === (after?.openSetDigest ?? openIssueSetDigest(repositoryId, []))) return { state: after, snapshots };
+    }
+    throw new Error("仓库开放集合摘要读回不一致");
+  }
+
   async putSnapshot(input: { expectedGeneration: number; snapshot: IssueSnapshot; contentDigest: string; validators: readonly PageValidator[]; deliveryId: string; now: string }): Promise<{ changed: boolean; state: IssueSnapshotRepositoryState }> {
     const repositoryId = input.snapshot.repository.id;
     const issueNumber = input.snapshot.issue.number;
@@ -274,19 +293,21 @@ export class IssueSnapshotStore {
             last_delivery_id = excluded.last_delivery_id, synced_at = excluded.synced_at`)
           .bind(repositoryId, issueNumber, input.snapshot.issue.state, input.snapshot.issue.updatedAt, input.snapshot.issue.commentsCount,
             input.contentDigest, validatorsJson, snapshotJson, input.deliveryId, input.now, repositoryId, input.expectedGeneration),
+        this.db.prepare(`DELETE FROM issue_snapshot_issue_tombstones WHERE repository_id = ? AND issue_number = ?
+          AND EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ?)
+          AND EXISTS (SELECT 1 FROM issue_snapshots WHERE repository_id = ? AND issue_number = ? AND content_digest = ? AND last_delivery_id = ?)`)
+          .bind(repositoryId, issueNumber, repositoryId, input.expectedGeneration,
+            repositoryId, issueNumber, input.contentDigest, input.deliveryId),
         this.db.prepare(`UPDATE issue_snapshot_repositories SET generation = generation + 1, open_set_digest = ?, updated_at = ?
           WHERE repository_id = ? AND generation = ?
           AND EXISTS (SELECT 1 FROM issue_snapshots WHERE repository_id = ? AND issue_number = ? AND content_digest = ?)`)
           .bind(openDigest, input.now, repositoryId, input.expectedGeneration, repositoryId, issueNumber, input.contentDigest),
-        this.db.prepare(`DELETE FROM issue_snapshot_issue_tombstones WHERE repository_id = ? AND issue_number = ?
-          AND EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ?)`)
-          .bind(repositoryId, issueNumber, repositoryId, input.expectedGeneration + 1),
         this.db.prepare(`INSERT INTO issue_snapshot_reconciliation_requests (repository_id, requested_generation, requested_at)
           SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ?)
           ON CONFLICT(repository_id) DO UPDATE SET requested_generation = excluded.requested_generation, requested_at = excluded.requested_at`)
           .bind(repositoryId, input.expectedGeneration + 1, input.now, repositoryId, input.expectedGeneration + 1),
       ]);
-      if (resultChanges(results[0]) !== 1 || resultChanges(results[1]) !== 1 || resultChanges(results[3]) !== 1) throw new Error("issue-snapshot-generation-conflict");
+      if (resultChanges(results[0]) !== 1 || resultChanges(results[2]) !== 1 || resultChanges(results[3]) !== 1) throw new Error("issue-snapshot-generation-conflict");
     }
     const state = await this.getRepositoryState(repositoryId);
     const saved = await this.getSnapshot(repositoryId, issueNumber);
@@ -529,9 +550,9 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
   try {
     const { repository, client } = await authorizeSingleRepository(request, env, repositoryId);
     if (request.method === "GET" && parts.length === 1) {
-      const state = await store.getRepositoryState(repositoryId) ?? { repositoryId, generation: 0, syncState: "uninitialized" as const, openSetDigest: openIssueSetDigest(repositoryId, []), lastFullScanAt: null, updatedAt: new Date(0).toISOString() };
-      const snapshots = await store.listOpenSnapshots(repositoryId);
-      if (state.openSetDigest !== openIssueSetDigest(repositoryId, snapshots.map((item) => item.issueNumber))) throw new Error("仓库开放集合摘要读回不一致");
+      const view = await store.readOpenSnapshotView(repositoryId);
+      const state = view.state ?? { repositoryId, generation: 0, syncState: "uninitialized" as const, openSetDigest: openIssueSetDigest(repositoryId, []), lastFullScanAt: null, updatedAt: new Date(0).toISOString() };
+      const snapshots = view.snapshots;
       return noStoreResponse(200, { ...state, snapshots: snapshots.map(publicSnapshot) });
     }
     if (request.method === "POST" && parts.length === 2 && parts[1] === "scan-state") {

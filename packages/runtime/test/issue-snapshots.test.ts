@@ -40,6 +40,19 @@ class SqliteD1 {
   binding(): D1Database { return this as unknown as D1Database; }
 }
 
+class BeforeFirstBatchD1 {
+  private pending: (() => Promise<void>) | null;
+  constructor(private readonly database: SqliteD1, beforeBatch: () => Promise<void>) { this.pending = beforeBatch; }
+  prepare(sql: string): D1PreparedStatement { return this.database.prepare(sql); }
+  async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
+    const beforeBatch = this.pending;
+    this.pending = null;
+    if (beforeBatch) await beforeBatch();
+    return this.database.batch<T>(statements);
+  }
+  binding(): D1Database { return this as unknown as D1Database; }
+}
+
 let privateKey = "";
 beforeAll(() => {
   privateKey = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } }).privateKey;
@@ -124,6 +137,35 @@ describe("议题快照D1存储", () => {
     await expect(put(store, value, 0, "late-refresh")).rejects.toThrow("issue-snapshot-generation-conflict");
     expect((await store.deleteSnapshot(1296724484, 44, 1, "2026-08-21T00:01:00Z")).changed).toBe(false);
     await expect(put(store, value, 1, "reopened-refresh")).resolves.toEqual(expect.objectContaining({ changed: true, state: expect.objectContaining({ generation: 2 }) }));
+  });
+
+  it("失败的开放刷新不会删除并发关闭写入的墓碑", async () => {
+    const database = new SqliteD1(); const winner = new IssueSnapshotStore(database.binding());
+    await put(winner, snapshot(1296724484, "splrad/steward", 7), 0);
+    const interleaved = new BeforeFirstBatchD1(database, async () => {
+      await winner.deleteSnapshot(1296724484, 7, 1, "2026-08-21T00:01:00Z");
+    });
+    const loser = new IssueSnapshotStore(interleaved.binding());
+    await expect(put(loser, snapshot(1296724484, "splrad/steward", 7, "迟到开放结果"), 1, "late-open"))
+      .rejects.toThrow("issue-snapshot-generation-conflict");
+    expect(await winner.getSnapshot(1296724484, 7)).toBeNull();
+    expect(await winner.getRepositoryState(1296724484)).toEqual(expect.objectContaining({ generation: 2 }));
+    expect(database.database.prepare("SELECT generation FROM issue_snapshot_issue_tombstones WHERE repository_id = ? AND issue_number = ?")
+      .get(1296724484, 7)).toEqual({ generation: 2 });
+  });
+
+  it("读取跨越代次提交时重试到一致视图", async () => {
+    const store = new IssueSnapshotStore(new SqliteD1().binding());
+    await put(store, snapshot(1296724484, "splrad/steward", 7), 0);
+    const before = await store.getRepositoryState(1296724484);
+    await put(store, snapshot(1296724484, "splrad/steward", 8), 1, "delivery-2");
+    const after = await store.getRepositoryState(1296724484);
+    const snapshots = await store.listOpenSnapshots(1296724484);
+    const stateReads = vi.spyOn(store, "getRepositoryState").mockResolvedValueOnce(before).mockResolvedValue(after);
+    vi.spyOn(store, "listOpenSnapshots").mockResolvedValue(snapshots);
+    const view = await store.readOpenSnapshotView(1296724484);
+    expect(view).toEqual({ state: after, snapshots });
+    expect(stateReads).toHaveBeenCalledTimes(4);
   });
 
   it("扫描只有在实时开放集合与D1集合完全一致时才能就绪", async () => {
