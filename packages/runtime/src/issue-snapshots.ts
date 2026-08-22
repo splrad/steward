@@ -234,6 +234,7 @@ export class IssueSnapshotStore {
     const repositoryId = input.snapshot.repository.id;
     const issueNumber = input.snapshot.issue.number;
     rowInteger(input.expectedGeneration, "expectedGeneration");
+    rowInteger(issueNumber, "issueNumber", 1);
     if (!digestPattern.test(input.contentDigest) || issueSnapshotContentDigest(input.snapshot) !== input.contentDigest) throw new Error("议题快照摘要无效");
     await this.ensureRepository(repositoryId, input.now);
     const before = await this.getRepositoryState(repositoryId);

@@ -177,6 +177,19 @@ describe("议题快照D1存储", () => {
       .run(JSON.stringify([{ resource: "issue", url: "https://api.github.com/repos/splrad/steward/issues/7", etag: null, next: "not-a-url", status: 200 }]), 1296724484, 7);
     await expect(store.getSnapshot(1296724484, 7)).rejects.toThrow("validator[0].next无效");
   });
+
+  it("写入前拒绝非法议题编号且不创建仓库状态", async () => {
+    for (const issueNumber of [0, -1, Number.MAX_SAFE_INTEGER + 1]) {
+      const database = new SqliteD1(); const store = new IssueSnapshotStore(database.binding());
+      const valid = snapshot(1296724484, "splrad/steward", 7);
+      const invalid = { ...valid, issue: { ...valid.issue, number: issueNumber } };
+      await expect(store.putSnapshot({
+        expectedGeneration: 0, snapshot: invalid, contentDigest: issueSnapshotContentDigest(invalid), validators: [],
+        deliveryId: "invalid-issue-number", now: "2026-08-21T00:00:00Z",
+      })).rejects.toThrow("issueNumber无效");
+      expect(await store.getRepositoryState(1296724484)).toBeNull();
+    }
+  });
 });
 
 describe("议题快照内部接口", () => {
