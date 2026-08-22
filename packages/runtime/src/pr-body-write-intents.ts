@@ -90,6 +90,17 @@ function requireSha(value: unknown, name: string): string {
   return result;
 }
 
+function issueLinksMetadataForIntent(block: string, expected: { repositoryId: number; pullRequestNumber: number; baseSha: string; headSha: string; issueGeneration: number }) {
+  const region = extractIssueLinksBlock(block);
+  if (!region || region.start !== 0 || region.end !== block.length) throw new Error("目标议题受管块无效");
+  const metadata = region.metadata;
+  if (metadata.repositoryId !== expected.repositoryId || metadata.pullRequestNumber !== expected.pullRequestNumber
+    || metadata.baseSha !== expected.baseSha || metadata.headSha !== expected.headSha || metadata.generation !== expected.issueGeneration) {
+    throw new Error("目标议题受管块上下文不匹配");
+  }
+  return metadata;
+}
+
 function affected(result: D1Result): number {
   return Number(result.meta?.changes ?? 0);
 }
@@ -98,7 +109,7 @@ function intent(row: IntentRow | null): PullRequestBodyWriteIntent | null {
   if (!row) return null;
   if (!writeIdPattern.test(row.write_id) || !["managed-pr", "issue-links"].includes(row.region_kind)
     || !["prepared", "patched", "compensating", "confirmed", "blocked"].includes(row.status)) throw new Error("正文写意图数据无效");
-  return {
+  const result: PullRequestBodyWriteIntent = {
     repositoryId: positiveInteger(row.repository_id, "repositoryId"),
     pullRequestNumber: positiveInteger(row.pull_request_number, "pullRequestNumber"),
     writeId: row.write_id,
@@ -121,6 +132,8 @@ function intent(row: IntentRow | null): PullRequestBodyWriteIntent | null {
     confirmedAt: row.confirmed_at,
     blockedReason: row.blocked_reason,
   };
+  if (result.regionKind === "issue-links" && result.targetBlock !== null) issueLinksMetadataForIntent(result.targetBlock, result);
+  return result;
 }
 
 export function pullRequestBodyDigest(body: string): string {
@@ -177,13 +190,16 @@ export class PullRequestBodyWriteIntentStore {
   }): Promise<PullRequestBodyWriteIntent> {
     const repositoryId = positiveInteger(input.repositoryId, "repositoryId");
     const pullRequestNumber = positiveInteger(input.pullRequestNumber, "pullRequestNumber");
+    const baseSha = requireSha(input.baseSha, "baseSha");
+    const headSha = requireSha(input.headSha, "headSha");
+    const issueGeneration = nonNegativeInteger(input.issueGeneration, "issueGeneration");
     if (!writeIdPattern.test(input.writeId)) throw new Error("writeId无效");
     if (!["managed-pr", "issue-links"].includes(input.regionKind)) throw new Error("regionKind无效");
     if (input.targetBlock !== null && Buffer.byteLength(input.targetBlock, "utf8") > 256 * 1024) throw new Error("目标受管块过大");
     if (input.regionKind === "managed-pr" && (input.targetBlock === null || managedRegionBlock(input.targetBlock, "managed-pr") !== input.targetBlock)) throw new Error("目标拉取请求受管块无效");
-    if (input.regionKind === "issue-links" && input.targetBlock !== null && managedRegionBlock(input.targetBlock, "issue-links") !== input.targetBlock) throw new Error("目标议题受管块无效");
-    const values = [repositoryId, pullRequestNumber, input.writeId, input.regionKind, requireSha(input.baseSha, "baseSha"), requireSha(input.headSha, "headSha"),
-      nonNegativeInteger(input.issueGeneration, "issueGeneration"), requireDigest(input.beforeBodyDigest, "beforeBodyDigest"), requireDigest(input.outsideBodyDigest, "outsideBodyDigest"),
+    if (input.regionKind === "issue-links" && input.targetBlock !== null) issueLinksMetadataForIntent(input.targetBlock, { repositoryId, pullRequestNumber, baseSha, headSha, issueGeneration });
+    const values = [repositoryId, pullRequestNumber, input.writeId, input.regionKind, baseSha, headSha,
+      issueGeneration, requireDigest(input.beforeBodyDigest, "beforeBodyDigest"), requireDigest(input.outsideBodyDigest, "outsideBodyDigest"),
       input.targetBlock, requireDigest(input.targetBodyDigest, "targetBodyDigest"), input.now, input.now, input.expiresAt];
     const result = await this.db.prepare(`INSERT INTO pull_request_body_write_intents
       (repository_id, pull_request_number, write_id, region_kind, base_sha, head_sha, issue_generation, before_body_digest, outside_body_digest, target_block, target_body_digest, status, compensation_generation, attempt_count, delivery_proven, created_at, updated_at, expires_at)
@@ -444,7 +460,8 @@ export async function confirmPullRequestBodyWriteIntent(input: {
   if (current.regionKind === "issue-links") {
     const state = await input.store.issueGeneration(repositoryId);
     if (current.targetBlock !== null && state !== current.issueGeneration) return input.store.block(repositoryId, input.pullRequestNumber, input.writeId, "issue-generation-drifted", input.now);
-    const desired = current.targetBlock ? extractIssueLinksBlock(current.targetBlock)!.metadata.issueNumbers.map((number) => ({ repositoryId, number })) : [];
+    const metadata = current.targetBlock ? issueLinksMetadataForIntent(current.targetBlock, current) : null;
+    const desired = metadata ? metadata.issueNumbers.map((number) => ({ repositoryId, number })) : [];
     const sets = await input.client.listPullRequestClosingIssueSets(owner, repo, input.pullRequestNumber, repositoryId);
     if (!verifyIssueLinkConvergence(desired, sets, repositoryId).converged) throw new Error("GitHub关闭议题集合尚未收敛");
   }

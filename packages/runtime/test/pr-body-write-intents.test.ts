@@ -137,7 +137,7 @@ describe("拉取请求正文持久补偿协议", () => {
     const database = new SqliteD1();
     const store = new PullRequestBodyWriteIntentStore(database.binding());
     const before = body("人工前言", managedBlock("摘要"));
-    const targetBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber, baseSha, headSha, generation: 1, analysisInputDigest: "c".repeat(64) }, [{ repositoryId, number: 7 }]);
+    const targetBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber, baseSha, headSha, generation: 0, analysisInputDigest: "c".repeat(64) }, [{ repositoryId, number: 7 }]);
     const target = upsertIssueLinksBlock(before, targetBlock);
     const writeId = "77777777-7777-4777-8777-777777777777";
     await store.prepare({
@@ -164,6 +164,45 @@ describe("拉取请求正文持久补偿协议", () => {
     } as any;
 
     expect((await confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber, writeId, now })).status).toBe("confirmed");
+  });
+
+  it("议题正文意图把子块元数据绑定到当前写入上下文", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const before = body("人工前言", managedBlock("摘要"));
+    const metadataCases = [
+      { repositoryId: repositoryId + 1, pullRequestNumber, baseSha, headSha, generation: 0 },
+      { repositoryId, pullRequestNumber: pullRequestNumber + 1, baseSha, headSha, generation: 0 },
+      { repositoryId, pullRequestNumber, baseSha: "c".repeat(40), headSha, generation: 0 },
+      { repositoryId, pullRequestNumber, baseSha, headSha: "d".repeat(40), generation: 0 },
+      { repositoryId, pullRequestNumber, baseSha, headSha, generation: 1 },
+    ];
+    for (const metadata of metadataCases) {
+      const targetBlock = renderIssueLinksBlock({ ...metadata, analysisInputDigest: "e".repeat(64) }, [{ repositoryId: metadata.repositoryId, number: 7 }]);
+      await expect(store.prepare({
+        repositoryId,
+        pullRequestNumber,
+        writeId: "99999999-9999-4999-8999-999999999999",
+        regionKind: "issue-links",
+        baseSha,
+        headSha,
+        issueGeneration: 0,
+        beforeBodyDigest: pullRequestBodyDigest(before),
+        outsideBodyDigest: bodyOutsideManagedRegionDigest(before, "issue-links"),
+        targetBlock,
+        targetBodyDigest: pullRequestBodyDigest(upsertIssueLinksBlock(before, targetBlock)),
+        now,
+        expiresAt,
+      })).rejects.toThrow("上下文不匹配");
+    }
+
+    const targetBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber, baseSha, headSha, generation: 0, analysisInputDigest: "e".repeat(64) }, [{ repositoryId, number: 7 }]);
+    await store.prepare({ repositoryId, pullRequestNumber, writeId: "99999999-9999-4999-8999-999999999999", regionKind: "issue-links", baseSha, headSha, issueGeneration: 0,
+      beforeBodyDigest: pullRequestBodyDigest(before), outsideBodyDigest: bodyOutsideManagedRegionDigest(before, "issue-links"), targetBlock,
+      targetBodyDigest: pullRequestBodyDigest(upsertIssueLinksBlock(before, targetBlock)), now, expiresAt });
+    const driftedBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber, baseSha, headSha: "d".repeat(40), generation: 0, analysisInputDigest: "e".repeat(64) }, [{ repositoryId, number: 7 }]);
+    database.database.prepare("UPDATE pull_request_body_write_intents SET target_block = ? WHERE repository_id = ? AND pull_request_number = ?").run(driftedBlock, repositoryId, pullRequestNumber);
+    await expect(store.get(repositoryId, pullRequestNumber)).rejects.toThrow("上下文不匹配");
   });
 
   it("议题正文意图从零代开始也会阻断代次漂移", async () => {
