@@ -23,6 +23,7 @@ class SqliteD1 {
     this.database.exec(readFileSync(new URL("../migrations/0001_issue_snapshots.sql", import.meta.url), "utf8"));
     this.database.exec(readFileSync(new URL("../migrations/0002_issue_snapshot_tombstones.sql", import.meta.url), "utf8"));
     this.database.exec(readFileSync(new URL("../migrations/0003_issue_snapshot_reconciliation.sql", import.meta.url), "utf8"));
+    this.database.exec(readFileSync(new URL("../migrations/0004_issue_snapshot_state_revision.sql", import.meta.url), "utf8"));
   }
   prepare(sql: string): D1PreparedStatement { return new SqliteD1Statement(this.database, sql) as unknown as D1PreparedStatement; }
   async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
@@ -170,12 +171,27 @@ describe("议题快照D1存储", () => {
 
   it("扫描只有在实时开放集合与D1集合完全一致时才能就绪", async () => {
     const store = new IssueSnapshotStore(new SqliteD1().binding());
-    await store.setScanState(1296724484, "scanning", 0, "2026-08-21T00:00:00Z");
-    await put(store, snapshot(1296724484, "splrad/steward", 7), 0);
-    await expect(store.setScanState(1296724484, "ready", 1, "2026-08-21T00:01:00Z", [])).rejects.toThrow("开放议题集合尚未收敛");
-    const ready = await store.setScanState(1296724484, "ready", 1, "2026-08-21T00:02:00Z", [7]);
-    expect(ready).toEqual(expect.objectContaining({ generation: 1, syncState: "ready", openSetDigest: openIssueSetDigest(1296724484, [7]), lastFullScanAt: "2026-08-21T00:02:00Z" }));
+    const scanning = await store.setScanState(1296724484, "scanning", 0, 0, "2026-08-21T00:00:00Z");
+    const written = await put(store, snapshot(1296724484, "splrad/steward", 7), 0);
+    await expect(store.setScanState(1296724484, "ready", 1, written.state.stateRevision, "2026-08-21T00:01:00Z", [])).rejects.toThrow("开放议题集合尚未收敛");
+    const ready = await store.setScanState(1296724484, "ready", 1, scanning.stateRevision, "2026-08-21T00:02:00Z", [7]);
+    expect(ready).toEqual(expect.objectContaining({ generation: 1, stateRevision: 2, syncState: "ready", openSetDigest: openIssueSetDigest(1296724484, [7]), lastFullScanAt: "2026-08-21T00:02:00Z" }));
     expect(await store.getReconciliationRequest(1296724484)).toEqual(expect.objectContaining({ generation: 1 }));
+  });
+
+  it("同代次的迟到ready不能覆盖较新的degraded状态", async () => {
+    const database = new SqliteD1();
+    const winner = new IssueSnapshotStore(database.binding());
+    const slowReady = await winner.setScanState(1296724484, "scanning", 0, 0, "2026-08-21T00:00:00Z");
+    const interleaved = new BeforeFirstBatchD1(database, async () => {
+      await winner.setScanState(1296724484, "degraded", 0, slowReady.stateRevision, "2026-08-21T00:01:00Z");
+    });
+    const loser = new IssueSnapshotStore(interleaved.binding());
+
+    await expect(loser.setScanState(1296724484, "ready", slowReady.generation, slowReady.stateRevision, "2026-08-21T00:02:00Z", []))
+      .rejects.toThrow("issue-snapshot-generation-conflict");
+    expect(await winner.getRepositoryState(1296724484)).toEqual(expect.objectContaining({ generation: 0, stateRevision: 2, syncState: "degraded" }));
+    expect(await winner.getReconciliationRequest(1296724484)).toBeNull();
   });
 
   it("删除始终绑定复合主键，仓库清理不影响另一个仓库的同号议题", async () => {

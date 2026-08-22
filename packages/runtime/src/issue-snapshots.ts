@@ -17,6 +17,7 @@ export interface IssueSnapshotRuntimeEnv {
 export interface IssueSnapshotRepositoryState {
   repositoryId: number;
   generation: number;
+  stateRevision: number;
   syncState: IssueSnapshotSyncState;
   openSetDigest: string;
   lastFullScanAt: string | null;
@@ -104,7 +105,7 @@ function resultChanges(result: D1Result<unknown> | undefined): number {
 
 function sameRepositoryState(left: IssueSnapshotRepositoryState | null, right: IssueSnapshotRepositoryState | null): boolean {
   if (!left || !right) return left === right;
-  return left.repositoryId === right.repositoryId && left.generation === right.generation && left.syncState === right.syncState
+  return left.repositoryId === right.repositoryId && left.generation === right.generation && left.stateRevision === right.stateRevision && left.syncState === right.syncState
     && left.openSetDigest === right.openSetDigest && left.lastFullScanAt === right.lastFullScanAt && left.updatedAt === right.updatedAt
     && left.reconciliationGeneration === right.reconciliationGeneration;
 }
@@ -145,6 +146,7 @@ function repositoryStateFromRow(row: Record<string, unknown>): IssueSnapshotRepo
   return {
     repositoryId: rowInteger(row.repository_id, "repository_id", 1),
     generation: rowInteger(row.generation, "generation"),
+    stateRevision: rowInteger(row.state_revision, "state_revision"),
     syncState,
     openSetDigest,
     lastFullScanAt: row.last_full_scan_at === null ? null : String(row.last_full_scan_at),
@@ -196,7 +198,7 @@ export class IssueSnapshotStore {
 
   async getRepositoryState(repositoryId: number): Promise<IssueSnapshotRepositoryState | null> {
     rowInteger(repositoryId, "repositoryId", 1);
-    const row = await this.db.prepare(`SELECT repository_id, generation, sync_state, open_set_digest, last_full_scan_at, updated_at
+    const row = await this.db.prepare(`SELECT repository_id, generation, state_revision, sync_state, open_set_digest, last_full_scan_at, updated_at
       FROM issue_snapshot_repositories WHERE repository_id = ?`).bind(repositoryId).first<Record<string, unknown>>();
     if (!row) return null;
     const state = repositoryStateFromRow(row);
@@ -371,11 +373,11 @@ export class IssueSnapshotStore {
     for (const repositoryId of [...targets].sort((left, right) => left - right)) await this.deleteRepository(repositoryId);
   }
 
-  async setScanState(repositoryId: number, syncState: Exclude<IssueSnapshotSyncState, "uninitialized">, expectedGeneration: number, now: string, liveOpenNumbers?: readonly number[]): Promise<IssueSnapshotRepositoryState> {
-    rowInteger(repositoryId, "repositoryId", 1); rowInteger(expectedGeneration, "expectedGeneration");
+  async setScanState(repositoryId: number, syncState: Exclude<IssueSnapshotSyncState, "uninitialized">, expectedGeneration: number, expectedStateRevision: number, now: string, liveOpenNumbers?: readonly number[]): Promise<IssueSnapshotRepositoryState> {
+    rowInteger(repositoryId, "repositoryId", 1); rowInteger(expectedGeneration, "expectedGeneration"); rowInteger(expectedStateRevision, "expectedStateRevision");
     await this.ensureRepository(repositoryId, now);
     const before = await this.getRepositoryState(repositoryId);
-    if (!before || before.generation !== expectedGeneration) throw new Error("issue-snapshot-generation-conflict");
+    if (!before || before.generation !== expectedGeneration || before.stateRevision !== expectedStateRevision) throw new Error("issue-snapshot-generation-conflict");
     let openDigest = before.openSetDigest;
     let lastFullScanAt = before.lastFullScanAt;
     if (syncState === "ready") {
@@ -386,16 +388,19 @@ export class IssueSnapshotStore {
       lastFullScanAt = now;
     }
     const statements = [this.db.prepare(`UPDATE issue_snapshot_repositories SET sync_state = ?, open_set_digest = ?,
-      last_full_scan_at = ?, updated_at = ? WHERE repository_id = ? AND generation = ?`)
-      .bind(syncState, openDigest, lastFullScanAt, now, repositoryId, expectedGeneration)];
+      last_full_scan_at = ?, updated_at = ?, state_revision = state_revision + 1
+      WHERE repository_id = ? AND generation = ? AND state_revision = ?`)
+      .bind(syncState, openDigest, lastFullScanAt, now, repositoryId, expectedGeneration, expectedStateRevision)];
     if (syncState === "ready") statements.push(this.db.prepare(`INSERT INTO issue_snapshot_reconciliation_requests (repository_id, requested_generation, requested_at)
-      SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ?)
+      SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM issue_snapshot_repositories
+        WHERE repository_id = ? AND generation = ? AND state_revision = ? AND sync_state = 'ready' AND updated_at = ?)
       ON CONFLICT(repository_id) DO UPDATE SET requested_generation = excluded.requested_generation, requested_at = excluded.requested_at`)
-      .bind(repositoryId, expectedGeneration, now, repositoryId, expectedGeneration));
+      .bind(repositoryId, expectedGeneration, now, repositoryId, expectedGeneration, expectedStateRevision + 1, now));
     const results = await this.db.batch(statements);
     if (resultChanges(results[0]) !== 1 || (syncState === "ready" && resultChanges(results[1]) !== 1)) throw new Error("issue-snapshot-generation-conflict");
     const state = await this.getRepositoryState(repositoryId);
-    if (!state || state.generation !== expectedGeneration || state.syncState !== syncState || state.openSetDigest !== openDigest) throw new Error("仓库扫描状态写入读回不一致");
+    if (!state || state.generation !== expectedGeneration || state.stateRevision !== expectedStateRevision + 1
+      || state.syncState !== syncState || state.openSetDigest !== openDigest) throw new Error("仓库扫描状态写入读回不一致");
     return state;
   }
 }
@@ -551,7 +556,7 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
     const { repository, client } = await authorizeSingleRepository(request, env, repositoryId);
     if (request.method === "GET" && parts.length === 1) {
       const view = await store.readOpenSnapshotView(repositoryId);
-      const state = view.state ?? { repositoryId, generation: 0, syncState: "uninitialized" as const, openSetDigest: openIssueSetDigest(repositoryId, []), lastFullScanAt: null, updatedAt: new Date(0).toISOString() };
+      const state = view.state ?? { repositoryId, generation: 0, stateRevision: 0, syncState: "uninitialized" as const, openSetDigest: openIssueSetDigest(repositoryId, []), lastFullScanAt: null, updatedAt: new Date(0).toISOString() };
       const snapshots = view.snapshots;
       return noStoreResponse(200, { ...state, snapshots: snapshots.map(publicSnapshot) });
     }
@@ -561,8 +566,9 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
       if (requested !== "scanning" && requested !== "degraded" && requested !== "ready") return noStoreResponse(400, { error: "invalid-scan-state" });
       const current = await store.getRepositoryState(repositoryId);
       const expectedGeneration = current?.generation ?? 0;
+      const expectedStateRevision = current?.stateRevision ?? 0;
       const live = requested === "ready" ? await listLiveOpenIssueNumbers(client, repository) : undefined;
-      const state = await store.setScanState(repositoryId, requested, expectedGeneration, new Date().toISOString(), live);
+      const state = await store.setScanState(repositoryId, requested, expectedGeneration, expectedStateRevision, new Date().toISOString(), live);
       return noStoreResponse(200, state);
     }
     if (request.method === "POST" && parts.length === 2 && parts[1] === "reconciliation") {
