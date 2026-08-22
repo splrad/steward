@@ -142,6 +142,17 @@ for (const required of [".github/workflows/deploy-runtime.yml", "scripts/verify-
 }
 const deployRuntimeDocument = YAML.parse(deployRuntime);
 if (Object.hasOwn(deployRuntimeDocument?.on?.push ?? {}, "branches")) throw new Error("部署工作流仍固定默认分支名称");
+const deploySteps = deployRuntimeDocument?.jobs?.deploy?.steps ?? [];
+const migrationStepIndex = deploySteps.findIndex(step => step?.name === "列出并应用D1迁移");
+const deployStepIndex = deploySteps.findIndex(step => step?.id === "deploy");
+if (migrationStepIndex < 0 || deployStepIndex < 0 || migrationStepIndex >= deployStepIndex) throw new Error("D1迁移没有在运行程序部署前执行");
+const migrationStep = deploySteps[migrationStepIndex];
+if (String(migrationStep?.env?.CLOUDFLARE_API_TOKEN ?? "").replace(/\s+/gu, "") !== "${{secrets.CLOUDFLARE_API_TOKEN}}") throw new Error("D1迁移没有使用固定Cloudflare密钥");
+const expectedMigrationCommand = `set -euo pipefail
+npx wrangler d1 migrations list splrad-steward-issue-snapshots --remote --config packages/runtime/wrangler.toml
+npx wrangler d1 migrations apply splrad-steward-issue-snapshots --remote --config packages/runtime/wrangler.toml
+`;
+if (migrationStep?.shell !== "bash" || migrationStep?.run !== expectedMigrationCommand) throw new Error("D1迁移没有固定为先列出、后应用的远程命令");
 const runtimeConfiguration = await readFile("packages/runtime/wrangler.toml", "utf8");
 if (!/\[version_metadata\]\s*binding\s*=\s*"CF_VERSION_METADATA"/u.test(runtimeConfiguration)) throw new Error("运行程序未绑定Cloudflare版本元数据");
 const actionlintVersion = "1.7.12";
