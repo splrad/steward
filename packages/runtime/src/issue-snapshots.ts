@@ -654,6 +654,7 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
         if (!managed && (body.regionKind !== "issue-links" || body.targetBlock !== null)) throw new GitHubRequestError(403, "POST", url.pathname, "repository-not-managed");
         const regionKind = String(body.regionKind ?? "") as "managed-pr" | "issue-links";
         const redrive = normalizePullRequestBodyRedrive(body.redrive, { repositoryId, pullRequestNumber, regionKind });
+        if (!managed && (redrive.workflow !== "pr-issue-link.yml" || redrive.inputs.cleanupUnmanaged !== "true")) return noStoreResponse(400, { error: "invalid-internal-request" });
         if (redrive.workflow === "onboard-repository.yml" && redrive.inputs.repositoryFullName !== repository.full_name) return noStoreResponse(400, { error: "invalid-internal-request" });
         const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
         return noStoreResponse(200, await intentStore.prepare({

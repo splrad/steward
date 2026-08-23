@@ -450,6 +450,13 @@ describe("议题快照内部接口", () => {
     const endpoint = "https://example.test/internal/issue-snapshots/1400000000/body-write-intents/42/prepare";
     const common = { baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
       beforeBodyDigest: pullRequestBodyDigest("before"), outsideBodyDigest: pullRequestBodyDigest("outside"), targetBodyDigest: pullRequestBodyDigest("after") };
+    const invalidCleanup = await worker.fetch(new Request(endpoint, {
+      method: "POST", headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" },
+      body: JSON.stringify({ ...common, writeId: "11111111-1111-4111-8111-111111111111", regionKind: "issue-links", targetBlock: null,
+        redrive: { workflow: "pr-issue-link.yml", inputs: { deliveryId: "delivery-invalid-cleanup", repositoryId: "1400000000", pullRequestNumber: "42", scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: "a".repeat(40) } } }),
+    }), env(database));
+    expect(invalidCleanup.status).toBe(400);
+    expect(await invalidCleanup.json()).toEqual({ error: "invalid-internal-request" });
     const cleanup = await worker.fetch(new Request(endpoint, {
       method: "POST", headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" },
       body: JSON.stringify({ ...common, writeId: "22222222-2222-4222-8222-222222222222", regionKind: "issue-links", targetBlock: null,
