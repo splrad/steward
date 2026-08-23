@@ -268,23 +268,47 @@ describe("议题快照D1存储", () => {
     expect(await store.getRepositoryState(1187527897)).toBeNull();
     await expect(put(store, layerScape, 0, "late-delivery")).rejects.toThrow("issue-snapshot-generation-conflict");
     await store.activateRepository(1187527897);
-    await expect(put(store, layerScape, 0, "re-added")).resolves.toEqual(expect.objectContaining({ changed: true }));
+    await expect(put(store, layerScape, 1, "re-added")).resolves.toEqual(expect.objectContaining({ changed: true, state: expect.objectContaining({ generation: 2, stateRevision: 1 }) }));
   });
 
   it("仓库删除提交后的重新激活不会把本次成功误报为失败", async () => {
     const database = new SqliteD1();
     const winner = new IssueSnapshotStore(database.binding());
     await put(winner, snapshot(1296724484, "splrad/steward", 7), 0);
+    const oldRequest = await winner.getReconciliationRequest(1296724484);
     const interleaved = new AfterFirstBatchD1(database, async () => {
       await winner.activateRepository(1296724484);
-      await put(winner, snapshot(1296724484, "splrad/steward", 8), 0, "reactivated-write");
+      await put(winner, snapshot(1296724484, "splrad/steward", 8), 1, "reactivated-write");
     });
     const deleter = new IssueSnapshotStore(interleaved.binding());
 
     await expect(deleter.deleteRepository(1296724484)).resolves.toBeUndefined();
-    expect(await winner.getRepositoryState(1296724484)).toEqual(expect.objectContaining({ generation: 1 }));
+    expect(await winner.getRepositoryState(1296724484)).toEqual(expect.objectContaining({ generation: 2, stateRevision: 1 }));
     expect(await winner.getSnapshot(1296724484, 7)).toBeNull();
     expect(await winner.getSnapshot(1296724484, 8)).not.toBeNull();
+    expect(await winner.acknowledgeReconciliation(1296724484, oldRequest!.generation, oldRequest!.stateRevision)).toBe(false);
+    expect(await winner.getReconciliationRequest(1296724484)).toEqual(expect.objectContaining({ generation: 2, stateRevision: 1 }));
+  });
+
+  it("重新激活不会让旧生命周期写入命中复用的CAS版本", async () => {
+    const database = new SqliteD1();
+    const winner = new IssueSnapshotStore(database.binding());
+    const interleaved = new BeforeFirstBatchD1(database, async () => {
+      await winner.deleteRepository(1296724484);
+      await winner.activateRepository(1296724484);
+      database.database.prepare(`INSERT OR IGNORE INTO issue_snapshot_repositories
+        (repository_id, generation, sync_state, open_set_digest, last_full_scan_at, updated_at)
+        VALUES (?, 0, 'uninitialized', ?, NULL, ?)`)
+        .run(1296724484, openIssueSetDigest(1296724484, []), "2026-08-21T00:01:00Z");
+    });
+    const stale = new IssueSnapshotStore(interleaved.binding());
+
+    await expect(put(stale, snapshot(1296724484, "splrad/steward", 7), 0, "old-lifecycle"))
+      .rejects.toThrow("issue-snapshot-generation-conflict");
+    expect(await winner.getRepositoryState(1296724484)).toEqual(expect.objectContaining({ generation: 0, stateRevision: 1 }));
+    expect(await winner.getSnapshot(1296724484, 7)).toBeNull();
+    await expect(put(winner, snapshot(1296724484, "splrad/steward", 8), 0, "new-lifecycle"))
+      .resolves.toEqual(expect.objectContaining({ changed: true, state: expect.objectContaining({ generation: 1, stateRevision: 1 }) }));
   });
 
   it("开放候选总量在写入时受1 MiB固定上限约束", async () => {

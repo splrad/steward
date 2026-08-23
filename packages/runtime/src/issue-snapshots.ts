@@ -200,7 +200,9 @@ export class IssueSnapshotStore {
   async getRepositoryState(repositoryId: number): Promise<IssueSnapshotRepositoryState | null> {
     rowInteger(repositoryId, "repositoryId", 1);
     const row = await this.db.prepare(`SELECT repository_id, generation, state_revision, sync_state, open_set_digest, last_full_scan_at, updated_at
-      FROM issue_snapshot_repositories WHERE repository_id = ?`).bind(repositoryId).first<Record<string, unknown>>();
+      FROM issue_snapshot_repositories AS repositories WHERE repository_id = ?
+      AND NOT EXISTS (SELECT 1 FROM issue_snapshot_repository_tombstones AS tombstones
+        WHERE tombstones.repository_id = repositories.repository_id)`).bind(repositoryId).first<Record<string, unknown>>();
     if (!row) return null;
     const state = repositoryStateFromRow(row);
     const reconciliation = await this.getReconciliationRequest(repositoryId);
@@ -394,19 +396,28 @@ export class IssueSnapshotStore {
   async deleteRepository(repositoryId: number): Promise<void> {
     rowInteger(repositoryId, "repositoryId", 1);
     const now = new Date().toISOString();
+    const emptyDigest = openIssueSetDigest(repositoryId, []);
     const results = await this.db.batch([
       this.db.prepare(`INSERT INTO issue_snapshot_repository_tombstones (repository_id, deleted_at) VALUES (?, ?)
         ON CONFLICT(repository_id) DO UPDATE SET deleted_at = excluded.deleted_at`).bind(repositoryId, now),
       this.db.prepare("DELETE FROM issue_snapshots WHERE repository_id = ?").bind(repositoryId),
       this.db.prepare("DELETE FROM issue_snapshot_issue_tombstones WHERE repository_id = ?").bind(repositoryId),
       this.db.prepare("DELETE FROM issue_snapshot_reconciliation_requests WHERE repository_id = ?").bind(repositoryId),
-      this.db.prepare("DELETE FROM issue_snapshot_repositories WHERE repository_id = ?").bind(repositoryId),
+      this.db.prepare(`INSERT INTO issue_snapshot_repositories
+        (repository_id, generation, state_revision, sync_state, open_set_digest, last_full_scan_at, updated_at)
+        VALUES (?, 0, 1, 'uninitialized', ?, NULL, ?)
+        ON CONFLICT(repository_id) DO UPDATE SET state_revision = issue_snapshot_repositories.state_revision + 1,
+          sync_state = excluded.sync_state, open_set_digest = excluded.open_set_digest,
+          last_full_scan_at = excluded.last_full_scan_at, updated_at = excluded.updated_at`)
+        .bind(repositoryId, emptyDigest, now),
     ]);
     if (results.length !== 5 || results.some((result) => !result.success)) throw new Error("仓库快照清理失败");
   }
 
   async deleteAllRepositories(repositoryIds: readonly number[] = []): Promise<void> {
-    const result = await this.db.prepare("SELECT repository_id FROM issue_snapshot_repositories ORDER BY repository_id").all<{ repository_id: number }>();
+    const result = await this.db.prepare(`SELECT repositories.repository_id FROM issue_snapshot_repositories AS repositories
+      WHERE NOT EXISTS (SELECT 1 FROM issue_snapshot_repository_tombstones AS tombstones
+        WHERE tombstones.repository_id = repositories.repository_id) ORDER BY repositories.repository_id`).all<{ repository_id: number }>();
     const targets = new Set(result.results.map(row => rowInteger(row.repository_id, "repository_id", 1)));
     for (const repositoryId of repositoryIds) targets.add(rowInteger(repositoryId, "repositoryId", 1));
     for (const repositoryId of [...targets].sort((left, right) => left - right)) await this.deleteRepository(repositoryId);
