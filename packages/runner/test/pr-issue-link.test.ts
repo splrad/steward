@@ -154,7 +154,7 @@ describe("拉取请求议题关联运行器", () => {
     });
   });
 
-  it("未纳管清理矩阵包含带受管议题块的已关闭未合并Steward拉取请求", async () => {
+  it("未纳管清理矩阵只计入带受管议题块的Steward拉取请求", async () => {
     await withRunnerEnvironment(async () => {
       const managedBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber: 5, baseSha, headSha, generation: 1, analysisInputDigest: "d".repeat(64) }, [{ repositoryId, number: 7 }]);
       let requested = "";
@@ -165,7 +165,8 @@ describe("拉取请求议题关联运行器", () => {
         if (value.includes("/repos/splrad/steward/pulls?state=all")) {
           requested = value;
           return new Response(JSON.stringify([
-            { ...pull("", 44151430), number: 9 },
+            ...Array.from({ length: 257 }, (_, index) => ({ ...pull("", 44151430), number: 100 + index })),
+            { ...pull(managedBlock, 301115370), number: 9 },
             { ...pull(managedBlock, 301115370, "main", "closed", null), number: 5 },
             { ...pull(managedBlock, 301115370, "main", "closed", "2026-08-23T00:00:00Z"), number: 6 },
             { ...pull(managedBlock, 44151430, "main", "closed", null), number: 7 },

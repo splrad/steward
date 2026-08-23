@@ -787,9 +787,23 @@ describe("中央命令入口", () => {
   it("Runner内所有议题关联派发都显式传递未纳管清理模式", async () => {
     const source = await readFile("packages/runner/src/index.ts", "utf8");
     const dispatches = [...source.matchAll(/dispatchCentralWorkflow\("pr-issue-link\.yml"/gu)];
-    expect(dispatches).toHaveLength(4);
+    expect(dispatches).toHaveLength(5);
     const modes = dispatches.map(dispatch => /cleanupUnmanaged:\s*"(true|false)"/u.exec(source.slice(dispatch.index, dispatch.index + 700))?.[1]);
-    expect(modes.sort()).toEqual(["false", "false", "false", "true"]);
+    expect(modes.sort()).toEqual(["false", "false", "false", "false", "true"]);
+  });
+
+  it("PR自动化正文写入后显式重调度议题关联", async () => {
+    const source = await readFile("packages/runner/src/index.ts", "utf8");
+    const automation = source.slice(source.indexOf("async function automate("), source.indexOf("async function classify("));
+    const bodyWrite = automation.indexOf("updatePullRequestBodyDurably(");
+    const dispatch = automation.indexOf('dispatchCentralWorkflow("pr-issue-link.yml"');
+    const copilot = automation.indexOf("ensureCopilotReview(", dispatch);
+    const classification = automation.indexOf("dispatchClassification(", dispatch);
+    expect(bodyWrite).toBeGreaterThan(-1);
+    expect(dispatch).toBeGreaterThan(bodyWrite);
+    expect(copilot).toBeGreaterThan(dispatch);
+    expect(classification).toBeGreaterThan(dispatch);
+    expect(automation.slice(dispatch, dispatch + 700)).toMatch(/pullRequestNumber:\s*String\(pull\.number\)[\s\S]*cleanupUnmanaged:\s*"false"/u);
   });
 });
 

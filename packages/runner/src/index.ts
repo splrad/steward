@@ -1052,6 +1052,15 @@ async function automate(args: Readonly<Record<string, string>>) {
   }) : await gh.createPullRequest(owner, repo, humanPushPullRequestCreateInput({ title, body, head: sourceBranch, base: repository.default_branch }));
   const boundPull = await gh.getPullRequest(owner, repo, pull.number);
   const pullBinding = inspectAutomationPullRequestBinding(boundPull, { repositoryId, sourceBranch, headSha: facts.headSha, baseBranch: repository.default_branch, baseSha: facts.baseSha });
+  await dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
+    deliveryId: required(args, "delivery-id"),
+    repositoryId: String(repositoryId),
+    pullRequestNumber: String(pull.number),
+    scanAll: "false",
+    invalidateOnly: "false",
+    cleanupUnmanaged: "false",
+    policySha,
+  });
   if (pullBinding === "base-sha-drifted") aiClassificationSummary = `${aiClassificationSummary}；目标分支已前进，未传递`;
   else if (classificationField.state !== "missing") {
     const rawFacts: RawClassificationFacts = { ...rawFactsBase, pullRequestNumber: pull.number };

@@ -513,6 +513,16 @@ describe("议题快照内部接口", () => {
     expect(await missingRedrive.json()).toEqual({ error: "invalid-internal-request" });
   });
 
+  it("正文写意图接口把无效拉取请求编号映射为400", async () => {
+    const database = new SqliteD1();
+    installAuthorization();
+    const response = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/body-write-intents/not-a-number/prepare", {
+      method: "POST", headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" }, body: "{}",
+    }), env(database));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "invalid-pull-request-number" });
+  });
+
   it("调用者不能提交删除指令，上游歧义也不会删除已有快照", async () => {
     const database = new SqliteD1(); const store = new IssueSnapshotStore(database.binding());
     await put(store, snapshot(1296724484, "splrad/steward", 7), 0);

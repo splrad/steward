@@ -520,9 +520,9 @@ async function listPullRequestMatrix(args: PrIssueLinkArgs): Promise<void> {
   let numbers: number[];
   if (args.scanAll) {
     const pulls = args.cleanupUnmanaged
-      ? (await client.listAllPullRequests(owner, repo)).filter((pull: any) => pull?.state === "open"
-        || (pull?.state === "closed" && pull?.merged_at === null && isManagedPull(pull, args.repositoryId)
-          && String(pull?.body ?? "").includes("<!-- workflow:issue-links:start ")))
+      ? (await client.listAllPullRequests(owner, repo)).filter((pull: any) => isManagedPull(pull, args.repositoryId)
+        && String(pull?.body ?? "").includes("<!-- workflow:issue-links:start ")
+        && (pull?.state === "open" || (pull?.state === "closed" && pull?.merged_at === null)))
       : await client.listAllOpenPullRequests(owner, repo);
     if (pulls.length > maximumPullRequests) throw new Error(`${args.cleanupUnmanaged ? "待清理" : "开放"}拉取请求超过矩阵上限`);
     numbers = pulls.map((pull: any) => safeInteger(pull?.number, "pullRequestNumber"));

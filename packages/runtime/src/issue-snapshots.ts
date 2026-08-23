@@ -641,7 +641,9 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
     }
     if (parts[1] === "body-write-intents") {
       if (parts.length < 4 || parts.length > 5) return noStoreResponse(404, { error: "internal-route-not-found" });
-      const pullRequestNumber = positiveInteger(parts[2]!, "pullRequestNumber");
+      let pullRequestNumber: number;
+      try { pullRequestNumber = positiveInteger(parts[2]!, "pullRequestNumber"); }
+      catch { return noStoreResponse(400, { error: "invalid-pull-request-number" }); }
       const intentStore = new PullRequestBodyWriteIntentStore(env.ISSUE_SNAPSHOTS);
       const now = new Date().toISOString();
       const requireCleanupIntent = async (): Promise<PullRequestBodyWriteIntent | null> => {
