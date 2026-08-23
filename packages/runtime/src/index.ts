@@ -336,11 +336,8 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
         if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
         const store = new IssueSnapshotStore(env.ISSUE_SNAPSHOTS);
         await deleteIssueSnapshotWithRetry(store, Number(repository.id), issueNumber, new Date().toISOString());
-        await dispatchIssueRefreshes(env, repository, deliveryId, null);
       }
-      if (destinationManaged) {
-        await dispatchIssueRefreshes(env, destinationRepository, deliveryId, [destinationIssueNumber]);
-      }
+      await dispatchAllManagedIssueScans(env, deliveryId, sourceManaged ? repository : destinationRepository);
       return response(202);
     }
     if (event === "issues") {

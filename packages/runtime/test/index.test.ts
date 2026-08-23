@@ -462,7 +462,7 @@ describe("中央运行程序", () => {
     expect(dispatched.at(-1)).toEqual({ name: "pr-issue-link.yml", inputs: expect.objectContaining({ invalidateOnly: "false", scanAll: "true" }) });
   });
 
-  it("议题转移通过新议题URL和当前安装解析目标仓库", async () => {
+  it("议题转移通过新议题URL解析目标并刷新全部受管仓库", async () => {
     vi.spyOn(IssueSnapshotStore.prototype, "getRepositoryState").mockResolvedValue(null);
     const deleted = vi.spyOn(IssueSnapshotStore.prototype, "deleteSnapshot").mockResolvedValue();
     const requests: string[] = [];
@@ -470,8 +470,8 @@ describe("中央运行程序", () => {
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
       const value = String(url); requests.push(value);
       if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
-      if (value.includes("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ total_count: 2, repositories: [
-        repository(), repository(1187527897, "splrad/LayerScape"),
+      if (value.includes("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ total_count: 3, repositories: [
+        repository(), repository(1187527897, "splrad/LayerScape"), repository(1296725317, "splrad/.github"),
       ] }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "trunk" }), { status: 200 });
       const name = /\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
@@ -489,9 +489,39 @@ describe("中央运行程序", () => {
     expect(deleted).toHaveBeenCalledWith(1296724484, 4, 0, 0, expect.any(String));
     expect(requests.some(value => value.includes("/installation/repositories?per_page=100"))).toBe(true);
     expect(dispatched).toEqual([
+      { name: "pr-issue-link.yml", inputs: expect.objectContaining({ repositoryId: "1187527897", scanAll: "true", invalidateOnly: "true" }) },
+      { name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1187527897", scanAll: "true" }) },
       { name: "pr-issue-link.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", scanAll: "true", invalidateOnly: "true" }) },
       { name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", scanAll: "true" }) },
-      { name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1187527897", issueNumber: "9", scanAll: "false" }) },
+      { name: "pr-issue-link.yml", inputs: expect.objectContaining({ repositoryId: "1296725317", scanAll: "true", invalidateOnly: "true" }) },
+      { name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1296725317", scanAll: "true" }) },
+    ]);
+  });
+
+  it("议题删除会刷新来源以外的受管仓库", async () => {
+    vi.spyOn(IssueSnapshotStore.prototype, "getRepositoryState").mockResolvedValue(null);
+    const deleted = vi.spyOn(IssueSnapshotStore.prototype, "deleteSnapshot").mockResolvedValue();
+    const dispatched: { name: string; inputs: Record<string, string> }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.includes("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ total_count: 2, repositories: [
+        repository(), repository(1296725317, "splrad/.github"),
+      ] }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "trunk" }), { status: 200 });
+      const name = /\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
+      if (name) { dispatched.push({ name, inputs: JSON.parse(String(init.body)).inputs }); return new Response(null, { status: 204 }); }
+      return new Response("unexpected", { status: 500 });
+    });
+    const env = { ...baseEnv(), ISSUE_SNAPSHOTS: {} as D1Database };
+    const payload = scoped({ action: "deleted", repository: repository(), issue: { number: 4 } });
+    expect((await handleWebhook(signedRequest("issues", payload), env)).status).toBe(202);
+    expect(deleted).toHaveBeenCalledWith(1296724484, 4, 0, 0, expect.any(String));
+    expect(dispatched).toEqual([
+      { name: "pr-issue-link.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", scanAll: "true", invalidateOnly: "true" }) },
+      { name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", scanAll: "true" }) },
+      { name: "pr-issue-link.yml", inputs: expect.objectContaining({ repositoryId: "1296725317", scanAll: "true", invalidateOnly: "true" }) },
+      { name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1296725317", scanAll: "true" }) },
     ]);
   });
 
@@ -517,7 +547,8 @@ describe("中央运行程序", () => {
     });
     expect((await handleWebhook(signedRequest("issues", payload), baseEnv())).status).toBe(202);
     expect(dispatched).toEqual([
-      { name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1187527897", issueNumber: "9", scanAll: "false" }) },
+      { name: "pr-issue-link.yml", inputs: expect.objectContaining({ repositoryId: "1187527897", scanAll: "true", invalidateOnly: "true" }) },
+      { name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1187527897", scanAll: "true" }) },
     ]);
   });
 

@@ -814,6 +814,7 @@ describe("已验签Webhook直连清理", () => {
     vi.stubGlobal("fetch", async (url: string) => {
       const value = String(url);
       if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.includes("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ total_count: 1, repositories: [repository()] }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
       const workflow = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
       if (workflow) { workflows.push(workflow); return new Response(null, { status: 204 }); }
@@ -828,7 +829,7 @@ describe("已验签Webhook直连清理", () => {
     expect(workflows).toEqual(["pr-issue-link.yml", "issue-sync.yml"]);
   });
 
-  it("议题删除和安装范围移除直接清理D1，删除后只调度失效与全量收敛", async () => {
+  it("议题删除和安装范围移除直接清理D1，删除后刷新全部受管仓库", async () => {
     const database = new SqliteD1(); const store = new IssueSnapshotStore(database.binding());
     await put(store, snapshot(1296724484, "splrad/steward", 7), 0);
     await put(store, snapshot(1187527897, "splrad/LayerScape", 7), 0);
@@ -836,6 +837,9 @@ describe("已验签Webhook直连清理", () => {
     const fetchSpy = vi.fn(async (url: string) => {
       const value = String(url);
       if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.includes("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ total_count: 2, repositories: [
+        repository(), repository(1187527897, "splrad/LayerScape"),
+      ] }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "trunk" }), { status: 200 });
       const workflow = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
       if (workflow) { workflows.push(workflow); return new Response(null, { status: 204 }); }
@@ -850,7 +854,7 @@ describe("已验签Webhook直连清理", () => {
     const removedPayload = { installation: { id: 145952003, account: { id: 302208797 } }, action: "removed", repositories_removed: [{ ...repository(1187527897, "splrad/LayerScape"), default_branch: "main" }] };
     expect((await handleWebhook(signedRequest("installation_repositories", removedPayload), env(database))).status).toBe(202);
     expect(await store.getRepositoryState(1187527897)).toBeNull();
-    expect(workflows).toEqual(["pr-issue-link.yml", "issue-sync.yml"]);
+    expect(workflows).toEqual(["pr-issue-link.yml", "issue-sync.yml", "pr-issue-link.yml", "issue-sync.yml"]);
     expect(fetchSpy.mock.calls.some(([url]) => String(url).includes("/internal/issue-snapshots/"))).toBe(false);
   });
 

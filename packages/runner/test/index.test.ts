@@ -59,6 +59,36 @@ describe("中央命令入口", () => {
     });
   });
 
+  it("部署全量扫描失败前已经调度全PR议题关联失效", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
+    process.env.APP_ID = "4243096";
+    process.env.INSTALLATION_ID = "145952003";
+    process.env.STEWARD_APP_PRIVATE_KEY = privateKey;
+    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
+    process.env.RUNTIME_URL = "https://runtime.test";
+    const calls: Array<{ url: string; body: any }> = [];
+    const managedRepository = { id: 1296724484, full_name: "splrad/steward", private: false, owner: { id: 302208797, login: "splrad" } };
+    vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+      const value = String(url); const body = init?.body ? JSON.parse(String(init.body)) : null;
+      calls.push({ url: value, body });
+      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [managedRepository] }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1296724484, managed: true }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) return new Response(null, { status: 204 });
+      if (value.endsWith("/internal/issue-snapshots/1296724484/scan-state")) return new Response("scan failed", { status: 503 });
+      return new Response("unexpected", { status: 500 });
+    });
+    await expect(main(["reconcile-repository-lifecycle", "--delivery-id", "deploy-1-2", "--policy-sha", "a".repeat(40)])).rejects.toThrow("议题同步运行时请求失败:503");
+    const invalidationIndex = calls.findIndex(call => call.url.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches"));
+    const scanIndex = calls.findIndex(call => call.url.endsWith("/internal/issue-snapshots/1296724484/scan-state"));
+    expect(invalidationIndex).toBeGreaterThan(-1);
+    expect(scanIndex).toBeGreaterThan(invalidationIndex);
+    expect(calls[invalidationIndex]!.body.inputs).toEqual({
+      deliveryId: "deploy-1-2:1296724484", repositoryId: "1296724484", scanAll: "true", invalidateOnly: "true", cleanupUnmanaged: "false", policySha: "a".repeat(40),
+    });
+  });
+
   it("部署初始化仓库清单包含公开默认纳管仓库并排除默认private仓库", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
     process.env.APP_ID = "4243096";
@@ -757,9 +787,9 @@ describe("中央命令入口", () => {
   it("Runner内所有议题关联派发都显式传递未纳管清理模式", async () => {
     const source = await readFile("packages/runner/src/index.ts", "utf8");
     const dispatches = [...source.matchAll(/dispatchCentralWorkflow\("pr-issue-link\.yml"/gu)];
-    expect(dispatches).toHaveLength(3);
+    expect(dispatches).toHaveLength(4);
     const modes = dispatches.map(dispatch => /cleanupUnmanaged:\s*"(true|false)"/u.exec(source.slice(dispatch.index, dispatch.index + 700))?.[1]);
-    expect(modes.sort()).toEqual(["false", "false", "true"]);
+    expect(modes.sort()).toEqual(["false", "false", "false", "true"]);
   });
 });
 

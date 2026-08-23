@@ -1244,6 +1244,14 @@ async function reconcileRepositoryLifecycle(args: Readonly<Record<string, string
     try { state = JSON.parse(text); } catch { throw new Error("仓库生命周期运行时响应无效"); }
     if (state?.repositoryId !== repositoryId || state?.managed !== target.managed) throw new Error("仓库生命周期运行时读回不一致");
     if (target.managed) {
+      await dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
+        deliveryId: `${deliveryId}:${repositoryId}`,
+        repositoryId: String(repositoryId),
+        scanAll: "true",
+        invalidateOnly: "true",
+        cleanupUnmanaged: "false",
+        policySha,
+      });
       await issueSync({ "delivery-id": `${deliveryId}:${repositoryId}`, "repository-id": String(repositoryId), "scan-all": "true", "policy-sha": policySha });
     } else {
       await dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
