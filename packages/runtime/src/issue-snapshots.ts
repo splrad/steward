@@ -134,6 +134,10 @@ function noStoreResponse(status: number, body?: unknown): Response {
   return new Response(serialized, { status, headers });
 }
 
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 async function requireEmptyBody(request: Request): Promise<void> {
   const length = request.headers.get("content-length");
   if (length !== null && length !== "0") throw new Error("内部请求正文必须为空");
@@ -649,6 +653,9 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
           expiresAt,
         }));
       }
+      if (request.method === "GET" && parts.length === 4 && parts[3] === "active") {
+        return noStoreResponse(200, await intentStore.get(repositoryId, pullRequestNumber));
+      }
       if (parts.length === 4 && request.method === "GET") {
         const current = await intentStore.get(repositoryId, pullRequestNumber);
         if (!current || current.writeId !== parts[3]) return noStoreResponse(404, { error: "body-write-intent-not-found" });
@@ -667,6 +674,23 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
         if (parts[4] === "confirm") {
           await requireEmptyBody(request);
           return noStoreResponse(200, await confirmPullRequestBodyWriteIntent({ store: intentStore, client, repository, pullRequestNumber, writeId, now }));
+        }
+        if (parts[4] === "wait") {
+          const body = await readJsonObject(request);
+          const attempts = Number(body.attempts);
+          if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 60) return noStoreResponse(400, { error: "invalid-confirmation-attempts" });
+          let current = await intentStore.get(repositoryId, pullRequestNumber);
+          if (!current || current.writeId !== writeId) return noStoreResponse(404, { error: "body-write-intent-not-found" });
+          for (let attempt = 0; attempt < attempts; attempt += 1) {
+            if (["confirmed", "blocked"].includes(current.status)) return noStoreResponse(200, current);
+            if (current.status === "patched" && current.deliveryProven && (attempt === 0 || (attempt + 1) % 10 === 0 || attempt + 1 === attempts)) {
+              current = await confirmPullRequestBodyWriteIntent({ store: intentStore, client, repository, pullRequestNumber, writeId, now: new Date().toISOString() });
+              if (["confirmed", "blocked"].includes(current.status)) return noStoreResponse(200, current);
+            }
+            if (attempt + 1 < attempts) await delay(500);
+            current = (await intentStore.get(repositoryId, pullRequestNumber)) ?? current;
+          }
+          return noStoreResponse(200, current);
         }
       }
       return noStoreResponse(404, { error: "internal-route-not-found" });
@@ -742,7 +766,7 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
     }
     if (error instanceof Error && error.message === "issue-snapshot-generation-conflict") return noStoreResponse(409, { error: error.message });
     if (error instanceof Error && error.message === "body-write-intent-conflict") return noStoreResponse(409, { error: error.message });
-    if (error instanceof Error && ["内部请求正文必须为空", "issueNumber无效"].includes(error.message)) return noStoreResponse(400, { error: "invalid-internal-request" });
+    if (error instanceof Error && ["内部请求正文必须为空", "内部请求正文过大", "内部请求正文无效", "issueNumber无效"].includes(error.message)) return noStoreResponse(400, { error: "invalid-internal-request" });
     return noStoreResponse(503, { error: "issue-snapshot-operation-failed" });
   }
 }

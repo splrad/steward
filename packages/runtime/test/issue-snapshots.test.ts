@@ -5,7 +5,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { issueSnapshotContentDigest, normalizeIssueSnapshot, openIssueSetDigest, renderIssueLinksBlock, type IssueSnapshot } from "../../core/src/issues.js";
 import worker, { type Env } from "../src/index.js";
 import { IssueSnapshotStore } from "../src/issue-snapshots.js";
-import { pullRequestBodyDigest } from "../src/pr-body-write-intents.js";
+import { pullRequestBodyDigest, PullRequestBodyWriteIntentStore } from "../src/pr-body-write-intents.js";
 
 class SqliteD1Statement {
   constructor(private readonly database: DatabaseSync, private readonly sql: string, private readonly values: readonly SQLInputValue[] = []) {}
@@ -412,6 +412,30 @@ describe("议题快照内部接口", () => {
     const readback = await worker.fetch(new Request(`https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/${writeId}`, { headers: { authorization: "Bearer one-repository-token" } }), env(database));
     expect(readback.status).toBe(200);
     expect(readback.headers.get("cache-control")).toBe("no-store");
+    const active = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/active", { headers: { authorization: "Bearer one-repository-token" } }), env(database));
+    expect(active.status).toBe(200);
+    expect(await active.json()).toEqual(expect.objectContaining({ writeId, status: "patched" }));
+
+    const intentStore = new PullRequestBodyWriteIntentStore(database.binding());
+    await intentStore.proveDelivery({ repositoryId: 1296724484, pullRequestNumber: 42, writeId, deliveryId: "delivery-runtime-wait", now: new Date().toISOString() });
+    await intentStore.confirm(1296724484, 42, writeId, new Date().toISOString());
+    const waited = await worker.fetch(new Request(`https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/${writeId}/wait`, {
+      method: "POST", headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" }, body: JSON.stringify({ attempts: 1 }),
+    }), env(database));
+    expect(waited.status).toBe(200);
+    expect(await waited.json()).toEqual(expect.objectContaining({ writeId, status: "confirmed" }));
+  });
+
+  it("正文写意图接口把无效JSON和非对象正文映射为400", async () => {
+    const database = new SqliteD1();
+    for (const body of ["{", "[]", JSON.stringify({ value: "x".repeat(512 * 1024) })]) {
+      installAuthorization();
+      const response = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/prepare", {
+        method: "POST", headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" }, body,
+      }), env(database));
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: "invalid-internal-request" });
+    }
   });
 
   it("调用者不能提交删除指令，上游歧义也不会删除已有快照", async () => {
