@@ -54,7 +54,7 @@ jobs:
           COPILOT_REVIEW_REQUEST_TOKEN: ${{ secrets.COPILOT_REVIEW_REQUEST_TOKEN }}
           REPOSITORY_ID: ${{ inputs.repositoryId }}
           POLICY_SHA: ${{ steps.policy.outputs.policy_sha }}
-          SYNC_TRIGGER: ${{ github.event_name }}
+          SYNC_TRIGGER: ${{ github.actor_id == '301115370' && 'app-redrive' || github.event_name }}
           TRIGGER_ACTOR_ID: ${{ github.actor_id }}
           TRIGGER_ACTOR_LOGIN: ${{ github.actor }}
         run: |

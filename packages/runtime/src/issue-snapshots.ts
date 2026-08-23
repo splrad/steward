@@ -1,7 +1,7 @@
 import { createAppJwt, createInstallationToken, GitHubClient, GitHubRequestError, type GitHubIssueFacts, type PageValidator, type ValidatedValue } from "../../github/src/index.js";
 import { issueSnapshotContentDigest, normalizeIssueSnapshot, openIssueSetDigest, type IssueRelationSnapshot, type IssueSnapshot } from "../../core/src/issues.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
-import { confirmPullRequestBodyWriteIntent, PullRequestBodyWriteIntentStore, type PullRequestBodyWriteIntent } from "./pr-body-write-intents.js";
+import { confirmPullRequestBodyWriteIntent, normalizePullRequestBodyRedrive, PullRequestBodyWriteIntentStore, type PullRequestBodyWriteIntent } from "./pr-body-write-intents.js";
 
 export type IssueSnapshotSyncState = "uninitialized" | "scanning" | "ready" | "degraded";
 
@@ -630,7 +630,15 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
   const store = new IssueSnapshotStore(env.ISSUE_SNAPSHOTS);
   try {
     const bodyWriteRoute = parts[1] === "body-write-intents";
-    const { repository, client, managed } = await authorizeSingleRepository(request, env, repositoryId, bodyWriteRoute);
+    const lifecycleRoute = parts[1] === "lifecycle";
+    const { repository, client, managed } = await authorizeSingleRepository(request, env, repositoryId, bodyWriteRoute || lifecycleRoute);
+    if (lifecycleRoute) {
+      if (parts.length !== 2 || request.method !== "POST") return noStoreResponse(404, { error: "internal-route-not-found" });
+      await requireEmptyBody(request);
+      if (managed) await store.activateRepository(repositoryId);
+      else await store.deleteRepository(repositoryId);
+      return noStoreResponse(200, { repositoryId, managed });
+    }
     if (parts[1] === "body-write-intents") {
       if (parts.length < 4 || parts.length > 5) return noStoreResponse(404, { error: "internal-route-not-found" });
       const pullRequestNumber = positiveInteger(parts[2]!, "pullRequestNumber");
@@ -644,12 +652,15 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
       if (request.method === "POST" && parts.length === 4 && parts[3] === "prepare") {
         const body = await readJsonObject(request);
         if (!managed && (body.regionKind !== "issue-links" || body.targetBlock !== null)) throw new GitHubRequestError(403, "POST", url.pathname, "repository-not-managed");
+        const regionKind = String(body.regionKind ?? "") as "managed-pr" | "issue-links";
+        const redrive = normalizePullRequestBodyRedrive(body.redrive, { repositoryId, pullRequestNumber, regionKind });
+        if (redrive.workflow === "onboard-repository.yml" && redrive.inputs.repositoryFullName !== repository.full_name) return noStoreResponse(400, { error: "invalid-internal-request" });
         const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
         return noStoreResponse(200, await intentStore.prepare({
           repositoryId,
           pullRequestNumber,
           writeId: String(body.writeId ?? ""),
-          regionKind: String(body.regionKind ?? "") as "managed-pr" | "issue-links",
+          regionKind,
           baseSha: String(body.baseSha ?? ""),
           headSha: String(body.headSha ?? ""),
           issueGeneration: Number(body.issueGeneration ?? 0),
@@ -659,6 +670,7 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
           targetBodyDigest: String(body.targetBodyDigest ?? ""),
           now,
           expiresAt,
+          redrive,
         }));
       }
       if (request.method === "GET" && parts.length === 4 && parts[3] === "active") {
@@ -671,7 +683,8 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
       }
       if (parts.length === 5 && request.method === "POST") {
         const writeId = parts[3]!;
-        await requireCleanupIntent();
+        const current = await requireCleanupIntent();
+        if (!current || current.writeId !== writeId) return noStoreResponse(404, { error: "body-write-intent-not-found" });
         if (parts[4] === "patched") {
           await requireEmptyBody(request);
           return noStoreResponse(200, await intentStore.markPatched(repositoryId, pullRequestNumber, writeId, now));
@@ -775,7 +788,8 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
     }
     if (error instanceof Error && error.message === "issue-snapshot-generation-conflict") return noStoreResponse(409, { error: error.message });
     if (error instanceof Error && error.message === "body-write-intent-conflict") return noStoreResponse(409, { error: error.message });
-    if (error instanceof Error && ["内部请求正文必须为空", "内部请求正文过大", "内部请求正文无效", "issueNumber无效"].includes(error.message)) return noStoreResponse(400, { error: "invalid-internal-request" });
+    if (error instanceof Error && (["内部请求正文必须为空", "内部请求正文过大", "内部请求正文无效", "issueNumber无效"].includes(error.message)
+      || error.message.startsWith("正文写重调度"))) return noStoreResponse(400, { error: "invalid-internal-request" });
     return noStoreResponse(503, { error: "issue-snapshot-operation-failed" });
   }
 }

@@ -454,15 +454,11 @@ export async function recoverPullRequestBodyWriteIntents(env: Env, now = new Dat
   if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
   const dispatchRedrives = async (redrives: readonly PullRequestBodyWriteIntent[]) => {
     for (const current of redrives) {
-      await send(env, "pr-issue-link.yml", {
-        deliveryId: `body-write-recovery:${current.writeId}`,
-        repositoryId: String(current.repositoryId),
-        pullRequestNumber: String(current.pullRequestNumber),
-        scanAll: "false",
-        invalidateOnly: "false",
-        cleanupUnmanaged: current.regionKind === "issue-links" && current.targetBlock === null ? "true" : "false",
-        policySha: env.POLICY_SHA,
-      });
+      if (!current.redrive) throw new Error("正文写意图缺少重调度来源");
+      const inputs = { ...current.redrive.inputs };
+      if (Object.hasOwn(inputs, "deliveryId")) inputs.deliveryId = `body-write-recovery:${current.writeId}`;
+      if (Object.hasOwn(inputs, "policySha")) inputs.policySha = env.POLICY_SHA;
+      await send(env, current.redrive.workflow, inputs);
       await store.markRedriveDispatched(current.repositoryId, current.pullRequestNumber, current.writeId, nowIso);
     }
   };

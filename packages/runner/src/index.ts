@@ -19,11 +19,11 @@ import {
 import { createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestError, uploadReleaseAsset } from "../../github/src/index.js";
 import { managedRepositoryIds, managedRepositoryTargets, runManagedRepositorySync, type ManagedTarget } from "./managed-repository-sync.js";
 import { runPrIssueLink } from "./pr-issue-link.js";
-import { targetManagedBlock, updatePullRequestBodyDurably } from "./pr-body-writer.js";
+import { targetManagedBlock, updatePullRequestBodyDurably, type DurableBodyRedrive } from "./pr-body-writer.js";
 import { minimatch } from "minimatch";
 import YAML from "yaml";
 
-const commands = new Set(["issue-sync", "managed-repository-ids", "onboard-repository", "pr-automation", "pr-classification", "pr-issue-link", "sync-copilot-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"]);
+const commands = new Set(["issue-sync", "managed-repository-ids", "reconcile-repository-lifecycle", "onboard-repository", "pr-automation", "pr-classification", "pr-issue-link", "sync-copilot-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"]);
 const stewardRepositoryId = 1296724484;
 // Repository configuration and workspace files are runtime inputs, not bundle assets.
 // This wrapper keeps their paths opaque to the static asset tracer used by ncc.
@@ -32,6 +32,7 @@ const runtimeReadFile = ((path: Parameters<typeof readFile>[0], options?: Parame
 const allowedArguments: Record<string, Set<string>> = {
   "issue-sync": new Set(["delivery-id", "repository-id", "issue-number", "scan-all", "policy-sha"]),
   "managed-repository-ids": new Set(["policy-sha"]),
+  "reconcile-repository-lifecycle": new Set(["delivery-id", "policy-sha"]),
   "onboard-repository": new Set(["repository-id", "repository-full-name", "trigger", "delivery-id", "policy-sha"]),
   "pr-automation": new Set(["delivery-id", "repository-id", "source-ref", "event-after-sha", "source-actor-id", "source-actor-login", "policy-sha"]),
   "pr-classification": new Set(["delivery-id", "repository-id", "pull-request-number", "event-head-sha", "scan-all", "policy-sha"]),
@@ -764,7 +765,7 @@ export function assertManagedBranchPull(branchExists: boolean, pull: any | undef
   }
 }
 
-async function reconcileManagedFile(input: { repository: any; gh: GitHubClient; token: string; path: string; content: string; branch: string; title: string; policySha: string; deliveryId: string; dispatchIssueLink?: boolean }): Promise<"unchanged" | "pull-request-created" | "pull-request-updated"> {
+async function reconcileManagedFile(input: { repository: any; gh: GitHubClient; token: string; path: string; content: string; branch: string; title: string; policySha: string; deliveryId: string; redrive: DurableBodyRedrive; dispatchIssueLink?: boolean }): Promise<"unchanged" | "pull-request-created" | "pull-request-updated"> {
   const [owner, repo] = splitRepository(input.repository.full_name); const defaultBranch = input.repository.default_branch;
   const current = await optional(() => input.gh.getContent(owner, repo, input.path, defaultBranch)); if (decodeContent(current) === input.content) return "unchanged";
   const pulls = await input.gh.listPullRequests(owner, repo, `${owner}:${input.branch}`); if (pulls.length > 1) throw new Error(`受管分支存在多个拉取请求: ${input.branch}`);
@@ -794,6 +795,7 @@ async function reconcileManagedFile(input: { repository: any; gh: GitHubClient; 
     baseSha: String(defaultRef.object.sha),
     regionKind: "managed-pr",
     targetBlock: targetManagedBlock(body, "managed-pr"),
+    redrive: input.redrive,
     additionalPatch: { title: input.title },
   }) : await input.gh.createPullRequest(owner, repo, { title: input.title, body, head: input.branch, base: defaultBranch });
   await ensureCopilotReview(input.gh, owner, repo, pull.number, written.headSha, input.policySha);
@@ -853,10 +855,12 @@ async function onboard(args: Readonly<Record<string, string>>) {
   for (const [name, value] of Object.entries(settings)) if (readback[name] !== value) throw new Error(`仓库设置读回不一致: ${name}`);
   const instructions = await loadCopilotInstructions(cfg.copilotInstructionsProfile, (sourceFile) => configPath("copilot", sourceFile));
   const planned = renderOnboardingPullRequest({ template: organizationPullRequestTemplate, configuration: cfg, actor: "splrad-steward[bot]", context: `onboard:${repositoryId}` });
-  const result = await reconcileManagedFile({ repository, gh, token, path: instructions.targetPath, content: instructions.content, branch: planned.branch, title: planned.title, policySha, deliveryId: required(args, "delivery-id"), dispatchIssueLink: false });
+  const deliveryId = required(args, "delivery-id");
+  const result = await reconcileManagedFile({ repository, gh, token, path: instructions.targetPath, content: instructions.content, branch: planned.branch, title: planned.title, policySha, deliveryId, dispatchIssueLink: false,
+    redrive: { workflow: "onboard-repository.yml", inputs: { repositoryId: String(repositoryId), repositoryFullName: fullName, trigger, deliveryId, policySha } } });
   await summary([`仓库：${fullName}`, `状态：${result === "unchanged" ? "onboarded" : result}`, `接入分支：${planned.branch}`, `分类配置：${cfg.classification.profile}`, `验证配置：${cfg.validationProfile}`, `Copilot说明配置：${cfg.copilotInstructionsProfile}`, `发布配置：${cfg.releaseProfile ?? "未启用"}`, `Copilot说明字符数：${[...instructions.content].length}`, `标签定义：${labelSyncFailure ? "failed" : "checked"}`]);
   if (labelSyncFailure) throw new Error(labelSyncFailure);
-  await dispatchCentralWorkflow("issue-sync.yml", policySha, { deliveryId: required(args, "delivery-id"), repositoryId: String(repositoryId), scanAll: "true", policySha });
+  await dispatchCentralWorkflow("issue-sync.yml", policySha, { deliveryId, repositoryId: String(repositoryId), scanAll: "true", policySha });
 }
 async function automate(args: Readonly<Record<string, string>>) {
   const repositoryId = integer(required(args, "repository-id"), "repository-id");
@@ -1040,6 +1044,10 @@ async function automate(args: Readonly<Record<string, string>>) {
     baseSha: facts.baseSha,
     regionKind: "managed-pr",
     targetBlock: targetManagedBlock(body, "managed-pr"),
+    redrive: { workflow: "pr-automation.yml", inputs: {
+      deliveryId: required(args, "delivery-id"), repositoryId: String(repositoryId), sourceRef, eventAfterSha,
+      sourceActorId: String(sourceActor.id), sourceActorLogin: sourceActor.login, policySha,
+    } },
     additionalPatch: { title },
   }) : await gh.createPullRequest(owner, repo, humanPushPullRequestCreateInput({ title, body, head: sourceBranch, base: repository.default_branch }));
   const boundPull = await gh.getPullRequest(owner, repo, pull.number);
@@ -1220,6 +1228,36 @@ async function listManagedRepositoryIds(args: Readonly<Record<string, string>>) 
   const policySha = sha(required(args, "policy-sha"), "policy-sha");
   process.stdout.write(`${managedRepositoryIds(await managedTargets(policySha)).join("\n")}\n`);
 }
+async function reconcileRepositoryLifecycle(args: Readonly<Record<string, string>>) {
+  const policySha = sha(required(args, "policy-sha"), "policy-sha");
+  const deliveryId = required(args, "delivery-id");
+  if (!/^[A-Za-z0-9._:-]{1,200}$/u.test(deliveryId)) throw new Error("delivery-id无效");
+  const targets = await managedTargets(policySha);
+  for (const target of targets) {
+    const repositoryId = integer(String(target.repository.id), "repository-id");
+    const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId, permissions: { metadata: "read" }, policySha });
+    const response = await fetch(`${runtimeBaseUrl(env("RUNTIME_URL"))}/internal/issue-snapshots/${repositoryId}/lifecycle`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) throw new Error(`仓库生命周期运行时请求失败:${response.status}`);
+    const text = await response.text();
+    if (Buffer.byteLength(text, "utf8") > 16 * 1024) throw new Error("仓库生命周期运行时响应过大");
+    let state: any;
+    try { state = JSON.parse(text); } catch { throw new Error("仓库生命周期运行时响应无效"); }
+    if (state?.repositoryId !== repositoryId || state?.managed !== target.managed) throw new Error("仓库生命周期运行时读回不一致");
+    if (target.managed) {
+      await issueSync({ "delivery-id": `${deliveryId}:${repositoryId}`, "repository-id": String(repositoryId), "scan-all": "true", "policy-sha": policySha });
+    } else {
+      await dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
+        deliveryId: `${deliveryId}:${repositoryId}`,
+        repositoryId: String(repositoryId),
+        scanAll: "true",
+        invalidateOnly: "false",
+        cleanupUnmanaged: "true",
+        policySha,
+      });
+    }
+    await summary([`仓库编号：${repositoryId}`, `生命周期：${target.managed ? "managed" : "unmanaged"}`, `登记来源：${target.registration}`]);
+  }
+}
 async function assertManualSyncAuthorization(policySha: string): Promise<void> {
   if (process.env.SYNC_TRIGGER !== "workflow_dispatch") return;
   integer(env("TRIGGER_ACTOR_ID"), "TRIGGER_ACTOR_ID");
@@ -1234,7 +1272,8 @@ async function syncInstructions(args: Readonly<Record<string, string>>) {
   const results = await runManagedRepositorySync(targets, async ({ repository, configuration }) => {
     const instructions = await loadCopilotInstructions(configuration.copilotInstructionsProfile, (sourceFile) => configPath("copilot", sourceFile));
     const { token, client: gh } = await clientWithToken(repository.id, { contents: "write", pull_requests: "write", issues: "read", checks: "read", metadata: "read" }, policySha);
-    const result = await reconcileManagedFile({ repository, gh, token, path: instructions.targetPath, content: instructions.content, branch: "steward/copilot-instructions", title: "chore(copilot): 同步代码审查说明", policySha, deliveryId: `copilot-sync:${policySha}:${repository.id}` });
+    const result = await reconcileManagedFile({ repository, gh, token, path: instructions.targetPath, content: instructions.content, branch: "steward/copilot-instructions", title: "chore(copilot): 同步代码审查说明", policySha, deliveryId: `copilot-sync:${policySha}:${repository.id}`,
+      redrive: { workflow: "sync-copilot-instructions.yml", inputs: { repositoryId: String(repository.id) } } });
     await summary([`仓库：${repository.full_name}`, `目标文件：${instructions.targetPath}`, `状态：${result}`, `字符数：${[...instructions.content].length}`]);
     return result;
   });
@@ -1666,7 +1705,7 @@ async function releaseVerify(args: Readonly<Record<string, string>>) {
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const invocation = parseInvocation(argv);
-  const handlers: Record<string, (args: Readonly<Record<string, string>>) => Promise<void>> = { "issue-sync": issueSync, "managed-repository-ids": listManagedRepositoryIds, "onboard-repository": onboard, "pr-automation": automate, "pr-classification": classify, "pr-issue-link": runPrIssueLink, "sync-copilot-instructions": syncInstructions, "sync-managed-labels": syncManagedLabels, validate, "release-preflight": releasePreflight, "release-notes": releaseNotesCommand, "release-publish": releasePublish, "release-verify": releaseVerify };
+  const handlers: Record<string, (args: Readonly<Record<string, string>>) => Promise<void>> = { "issue-sync": issueSync, "managed-repository-ids": listManagedRepositoryIds, "reconcile-repository-lifecycle": reconcileRepositoryLifecycle, "onboard-repository": onboard, "pr-automation": automate, "pr-classification": classify, "pr-issue-link": runPrIssueLink, "sync-copilot-instructions": syncInstructions, "sync-managed-labels": syncManagedLabels, validate, "release-preflight": releasePreflight, "release-notes": releaseNotesCommand, "release-publish": releasePublish, "release-verify": releaseVerify };
   await handlers[invocation.command]!(invocation.args);
 }
 

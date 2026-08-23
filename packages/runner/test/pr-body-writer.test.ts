@@ -7,6 +7,7 @@ const repositoryId = 1296724484;
 const pullRequestNumber = 42;
 const headSha = "a".repeat(40);
 const baseSha = "b".repeat(40);
+const redrive = { workflow: "sync-copilot-instructions.yml" as const, inputs: { repositoryId: String(repositoryId) } };
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -45,7 +46,7 @@ describe("Runner正文持久写入器", () => {
       getPullRequest: async () => pull(live),
       updatePullRequest: async (_owner: string, _repo: string, _number: number, patch: any) => pull(live = patch.body),
     } as any;
-    const result = await updatePullRequestBodyDurably({ client, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock });
+    const result = await updatePullRequestBodyDurably({ client, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock, redrive });
     expect(result.body).toContain("新摘要");
     expect(calls.some((value) => value.endsWith("/prepare"))).toBe(true);
     expect(calls.some((value) => value.endsWith("/patched"))).toBe(true);
@@ -57,7 +58,7 @@ describe("Runner正文持久写入器", () => {
     const before = `人工前言\n${block("旧摘要")}\n`;
     const updatePullRequest = vi.fn();
     vi.stubGlobal("fetch", async () => new Response("failed", { status: 503 }));
-    await expect(updatePullRequestBodyDurably({ client: { getPullRequest: async () => pull(before), updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock: block("新摘要") })).rejects.toThrow("运行时请求失败");
+    await expect(updatePullRequestBodyDurably({ client: { getPullRequest: async () => pull(before), updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock: block("新摘要"), redrive })).rejects.toThrow("运行时请求失败");
     expect(updatePullRequest).not.toHaveBeenCalled();
   });
 
@@ -71,7 +72,7 @@ describe("Runner正文持久写入器", () => {
       runtimeCalls.push(String(url));
       return new Response(JSON.stringify(intentFromRequest(init)), { status: 200 });
     });
-    await expect(updatePullRequestBodyDurably({ client: { getPullRequest: async () => pull(reads++ === 0 ? before : drifted), updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock: block("新摘要") })).rejects.toThrow("写入前发生漂移");
+    await expect(updatePullRequestBodyDurably({ client: { getPullRequest: async () => pull(reads++ === 0 ? before : drifted), updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock: block("新摘要"), redrive })).rejects.toThrow("写入前发生漂移");
     expect(updatePullRequest).not.toHaveBeenCalled();
     expect(runtimeCalls.some((value) => value.endsWith("/block"))).toBe(true);
   });
@@ -83,7 +84,7 @@ describe("Runner正文持久写入器", () => {
     vi.stubGlobal("fetch", async (_url: string, init: RequestInit = {}) => ++requests === 1
       ? new Response(JSON.stringify(intentFromRequest(init)), { status: 200 })
       : new Response("failed", { status: 503 }));
-    await expect(updatePullRequestBodyDurably({ client: { getPullRequest: async () => pull(live), updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock: block("新摘要") })).rejects.toThrow("运行时请求失败");
+    await expect(updatePullRequestBodyDurably({ client: { getPullRequest: async () => pull(live), updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock: block("新摘要"), redrive })).rejects.toThrow("运行时请求失败");
     expect(updatePullRequest).toHaveBeenCalledOnce();
   });
 
@@ -94,7 +95,7 @@ describe("Runner正文持久写入器", () => {
   it("附加正文和无效确认次数在任何读取或写入前被拒绝", async () => {
     const getPullRequest = vi.fn();
     const updatePullRequest = vi.fn();
-    const common = { client: { getPullRequest, updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr" as const, targetBlock: block("新摘要") };
+    const common = { client: { getPullRequest, updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr" as const, targetBlock: block("新摘要"), redrive };
     await expect(updatePullRequestBodyDurably({ ...common, additionalPatch: { body: "绕过" } })).rejects.toThrow("不能包含正文");
     await expect(updatePullRequestBodyDurably({ ...common, confirmationAttempts: 0 })).rejects.toThrow("确认次数无效");
     expect(getPullRequest).not.toHaveBeenCalled();
@@ -109,15 +110,25 @@ describe("Runner正文持久写入器", () => {
     const calls: string[] = [];
     vi.stubGlobal("fetch", async (url: string) => {
       const value = String(url); calls.push(value);
-      if (value.endsWith("/active")) return new Response(JSON.stringify({ writeId: "saved-id", regionKind: "managed-pr", baseSha, headSha, issueGeneration: 0, targetBlock, targetBodyDigest, status: "prepared", deliveryProven: false, blockedReason: null }), { status: 200 });
+      if (value.endsWith("/active")) return new Response(JSON.stringify({ writeId: "saved-id", regionKind: "managed-pr", baseSha, headSha, issueGeneration: 0, targetBlock, targetBodyDigest, status: "prepared", deliveryProven: false, blockedReason: null, redrive }), { status: 200 });
       if (value.endsWith("/patched")) return new Response(JSON.stringify({ writeId: "saved-id", status: "patched" }), { status: 200 });
       if (value.endsWith("/wait")) return new Response(JSON.stringify({ writeId: "saved-id", status: "confirmed", deliveryProven: true, blockedReason: null }), { status: 200 });
       return new Response("unexpected", { status: 500 });
     });
-    const result = await updatePullRequestBodyDurably({ client: { getPullRequest: async () => pull(live), updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock, confirmationAttempts: 1 });
+    const result = await updatePullRequestBodyDurably({ client: { getPullRequest: async () => pull(live), updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock, redrive, confirmationAttempts: 1 });
     expect(result.body).toBe(live);
     expect(updatePullRequest).not.toHaveBeenCalled();
     expect(calls.some((value) => value.endsWith("/saved-id/patched"))).toBe(true);
     expect(calls.filter((value) => value.endsWith("/saved-id/wait"))).toHaveLength(1);
+  });
+
+  it("目标正文已经收敛时允许原工作流越过旧的终态意图继续后续步骤", async () => {
+    const live = `人工前言\n${block("新摘要")}\n`;
+    const updatePullRequest = vi.fn(async (_owner: string, _repo: string, _number: number, patch: any) => ({ ...pull(live), ...patch }));
+    vi.stubGlobal("fetch", async (url: string) => String(url).endsWith("/active")
+      ? new Response(JSON.stringify({ writeId: "blocked-id", status: "blocked", blockedReason: "edited-evidence-unavailable" }), { status: 200 })
+      : new Response("unexpected", { status: 500 }));
+    await expect(updatePullRequestBodyDurably({ client: { getPullRequest: async () => pull(live), updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock: block("新摘要"), redrive, additionalPatch: { title: "新标题" } })).resolves.toEqual(expect.objectContaining({ title: "新标题" }));
+    expect(updatePullRequest).toHaveBeenCalledOnce();
   });
 });

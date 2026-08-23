@@ -115,7 +115,7 @@ jobs:
           if (!verifiedBody) throw new Error(`健康复核在60秒内未收敛：${lastFailure}`);
           console.log(JSON.stringify({ status: verifiedBody.status, policySha: verifiedBody.policySha, version: verifiedBody.version, organizationId: verifiedBody.organizationId, appId: verifiedBody.appId, secretsReady: verifiedBody.secretsReady }));
           NODE
-      - name: 初始化已纳管仓库议题快照
+      - name: 收敛安装仓库生命周期与议题快照
         shell: bash
         env:
           APP_ID: "4243096"
@@ -126,8 +126,4 @@ jobs:
           DEPLOYMENT_DELIVERY_ID: deploy-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          repository_ids="$(node packages/runner/dist/index.js managed-repository-ids --policy-sha "$POLICY_SHA")"
-          while IFS= read -r repository_id; do
-            [[ "$repository_id" =~ ^[1-9][0-9]*$ ]] || { echo "已纳管仓库编号无效" >&2; exit 1; }
-            node packages/runner/dist/index.js issue-sync --delivery-id "$DEPLOYMENT_DELIVERY_ID:$repository_id" --repository-id "$repository_id" --scan-all true --policy-sha "$POLICY_SHA"
-          done <<< "$repository_ids"
+          node packages/runner/dist/index.js reconcile-repository-lifecycle --delivery-id "$DEPLOYMENT_DELIVERY_ID" --policy-sha "$POLICY_SHA"

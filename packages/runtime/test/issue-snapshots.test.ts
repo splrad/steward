@@ -28,6 +28,7 @@ class SqliteD1 {
     this.database.exec(readFileSync(new URL("../migrations/0004_issue_snapshot_state_revision.sql", import.meta.url), "utf8"));
     this.database.exec(readFileSync(new URL("../migrations/0005_issue_snapshot_reconciliation_revision.sql", import.meta.url), "utf8"));
     this.database.exec(readFileSync(new URL("../migrations/0006_pull_request_body_write_intents.sql", import.meta.url), "utf8"));
+    this.database.exec(readFileSync(new URL("../migrations/0007_pull_request_body_write_redrive.sql", import.meta.url), "utf8"));
   }
   prepare(sql: string): D1PreparedStatement { return new SqliteD1Statement(this.database, sql) as unknown as D1PreparedStatement; }
   async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
@@ -410,7 +411,8 @@ describe("议题快照内部接口", () => {
       method: "POST",
       headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" },
       body: JSON.stringify({ writeId, regionKind: "issue-links", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
-        beforeBodyDigest: pullRequestBodyDigest("before"), outsideBodyDigest: pullRequestBodyDigest("outside"), targetBlock, targetBodyDigest: pullRequestBodyDigest("after") }),
+        beforeBodyDigest: pullRequestBodyDigest("before"), outsideBodyDigest: pullRequestBodyDigest("outside"), targetBlock, targetBodyDigest: pullRequestBodyDigest("after"),
+        redrive: { workflow: "pr-issue-link.yml", inputs: { deliveryId: "delivery-runtime", repositoryId: "1296724484", pullRequestNumber: "42", scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: "a".repeat(40) } } }),
     }), env(database));
     expect(prepare.status).toBe(200);
     expect(await prepare.json()).toEqual(expect.objectContaining({ writeId, status: "prepared", deliveryProven: false }));
@@ -432,6 +434,13 @@ describe("议题快照内部接口", () => {
     }), env(database));
     expect(waited.status).toBe(200);
     expect(await waited.json()).toEqual(expect.objectContaining({ writeId, status: "confirmed" }));
+
+    for (const missingWriteId of ["99999999-9999-4999-8999-999999999999", writeId]) {
+      const number = missingWriteId === writeId ? 43 : 42;
+      const missing = await worker.fetch(new Request(`https://example.test/internal/issue-snapshots/1296724484/body-write-intents/${number}/${missingWriteId}/patched`, { method: "POST", headers: { authorization: "Bearer one-repository-token" } }), env(database));
+      expect(missing.status).toBe(404);
+      expect(await missing.json()).toEqual({ error: "body-write-intent-not-found" });
+    }
   });
 
   it("未纳管仓库的正文写接口只接受议题块删除意图", async () => {
@@ -443,15 +452,37 @@ describe("议题快照内部接口", () => {
       beforeBodyDigest: pullRequestBodyDigest("before"), outsideBodyDigest: pullRequestBodyDigest("outside"), targetBodyDigest: pullRequestBodyDigest("after") };
     const cleanup = await worker.fetch(new Request(endpoint, {
       method: "POST", headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" },
-      body: JSON.stringify({ ...common, writeId: "22222222-2222-4222-8222-222222222222", regionKind: "issue-links", targetBlock: null }),
+      body: JSON.stringify({ ...common, writeId: "22222222-2222-4222-8222-222222222222", regionKind: "issue-links", targetBlock: null,
+        redrive: { workflow: "pr-issue-link.yml", inputs: { deliveryId: "delivery-cleanup", repositoryId: "1400000000", pullRequestNumber: "42", scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "true", policySha: "a".repeat(40) } } }),
     }), env(database));
     expect(cleanup.status).toBe(200);
     const forbiddenBlock = renderIssueLinksBlock({ repositoryId: 1400000000, pullRequestNumber: 42, baseSha: common.baseSha, headSha: common.headSha, generation: 0, analysisInputDigest: "d".repeat(64) }, []);
     const forbidden = await worker.fetch(new Request(endpoint, {
       method: "POST", headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" },
-      body: JSON.stringify({ ...common, writeId: "33333333-3333-4333-8333-333333333333", regionKind: "issue-links", targetBlock: forbiddenBlock }),
+      body: JSON.stringify({ ...common, writeId: "33333333-3333-4333-8333-333333333333", regionKind: "issue-links", targetBlock: forbiddenBlock,
+        redrive: { workflow: "pr-issue-link.yml", inputs: { deliveryId: "delivery-forbidden", repositoryId: "1400000000", pullRequestNumber: "42", scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: "a".repeat(40) } } }),
     }), env(database));
     expect(forbidden.status).toBe(403);
+  });
+
+  it("仓库生命周期接口按当前目录状态墓碑或重新激活", async () => {
+    const database = new SqliteD1();
+    const store = new IssueSnapshotStore(database.binding());
+    await put(store, snapshot(1400000000, "splrad/default-managed", 7), 0);
+    const endpoint = "https://example.test/internal/issue-snapshots/1400000000/lifecycle";
+    const unmanaged = { ...repository(1400000000, "splrad/default-managed"), private: true };
+    installAuthorization(undefined, [unmanaged]);
+    const removed = await worker.fetch(new Request(endpoint, { method: "POST", headers: { authorization: "Bearer one-repository-token" } }), env(database));
+    expect(removed.status).toBe(200);
+    expect(await removed.json()).toEqual({ repositoryId: 1400000000, managed: false });
+    expect(await store.getSnapshot(1400000000, 7)).toBeNull();
+    expect(await store.getRepositoryState(1400000000)).toBeNull();
+
+    installAuthorization(undefined, [repository(1400000000, "splrad/default-managed")]);
+    const activated = await worker.fetch(new Request(endpoint, { method: "POST", headers: { authorization: "Bearer one-repository-token" } }), env(database));
+    expect(activated.status).toBe(200);
+    expect(await activated.json()).toEqual({ repositoryId: 1400000000, managed: true });
+    expect(await store.getRepositoryState(1400000000)).not.toBeNull();
   });
 
   it("正文写意图接口把无效JSON和非对象正文映射为400", async () => {
@@ -464,6 +495,15 @@ describe("议题快照内部接口", () => {
       expect(response.status).toBe(400);
       expect(await response.json()).toEqual({ error: "invalid-internal-request" });
     }
+    installAuthorization();
+    const missingRedrive = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/prepare", {
+      method: "POST", headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" }, body: JSON.stringify({
+        writeId: "44444444-4444-4444-8444-444444444444", regionKind: "issue-links", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
+        beforeBodyDigest: pullRequestBodyDigest("before"), outsideBodyDigest: pullRequestBodyDigest("outside"), targetBlock: null, targetBodyDigest: pullRequestBodyDigest("after"),
+      }),
+    }), env(database));
+    expect(missingRedrive.status).toBe(400);
+    expect(await missingRedrive.json()).toEqual({ error: "invalid-internal-request" });
   });
 
   it("调用者不能提交删除指令，上游歧义也不会删除已有快照", async () => {
@@ -634,7 +674,8 @@ describe("正文写意图交付恢复", () => {
     const writeId = "22222222-2222-4222-8222-222222222222";
     await store.prepare({ repositoryId: 1296724484, pullRequestNumber: 42, writeId, regionKind: "managed-pr", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
       beforeBodyDigest: pullRequestBodyDigest(oldBody), outsideBodyDigest: bodyOutsideManagedRegionDigest(oldBody, "managed-pr"), targetBlock: extractManagedPullRequestBlock(targetBody).block,
-      targetBodyDigest: pullRequestBodyDigest(targetBody), now: now.toISOString(), expiresAt: new Date(now.getTime() + 10 * 60_000).toISOString() });
+      targetBodyDigest: pullRequestBodyDigest(targetBody), now: now.toISOString(), expiresAt: new Date(now.getTime() + 10 * 60_000).toISOString(),
+      redrive: { workflow: "onboard-repository.yml", inputs: { repositoryId: "1296724484", repositoryFullName: "splrad/steward", trigger: "manual", deliveryId: "delivery-onboard", policySha: "a".repeat(40) } } });
     const workflows: string[] = [];
     vi.stubGlobal("fetch", async (url: string) => {
       const value = String(url);
@@ -667,7 +708,8 @@ describe("正文写意图交付恢复", () => {
     const writeId = "33333333-3333-4333-8333-333333333333";
     await store.prepare({ repositoryId: 1296724484, pullRequestNumber: 42, writeId, regionKind: "managed-pr", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
       beforeBodyDigest: pullRequestBodyDigest(oldBody), outsideBodyDigest: bodyOutsideManagedRegionDigest(oldBody, "managed-pr"), targetBlock: extractManagedPullRequestBlock(targetBody).block,
-      targetBodyDigest: pullRequestBodyDigest(targetBody), now: "2026-08-22T00:00:00Z", expiresAt: "2026-08-22T00:10:00Z" });
+      targetBodyDigest: pullRequestBodyDigest(targetBody), now: "2026-08-22T00:00:00Z", expiresAt: "2026-08-22T00:10:00Z",
+      redrive: { workflow: "pr-automation.yml", inputs: { deliveryId: "delivery-push", repositoryId: "1296724484", sourceRef: "refs/heads/feature/test", eventAfterSha: "c".repeat(40), sourceActorId: "44151430", sourceActorLogin: "axiomoth", policySha: "a".repeat(40) } } });
     await store.markPatched(1296724484, 42, writeId, "2026-08-22T00:00:01Z");
     const editedPayload = { action: "edited", repository: repository(), sender: { id: 301115370 }, changes: { body: { from: oldBody } }, pull_request: { number: 42, body: targetBody, head: { sha: "c".repeat(40) }, base: { sha: "b".repeat(40) } } };
     const dispatched: any[] = [];
@@ -678,7 +720,7 @@ describe("正文写意图交付恢复", () => {
       if (value.endsWith("/app/hook/deliveries/9")) return new Response(JSON.stringify({ guid: "delivery-recovered", request: { headers: { "X-GitHub-Delivery": "delivery-recovered" }, payload: editedPayload } }), { status: 200 });
       if (value.endsWith("/repositories/1296724484")) return new Response(JSON.stringify(repository()), { status: 200 });
       if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ ...repository(), default_branch: "main" }), { status: 200 });
-      if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) { dispatched.push(JSON.parse(String(init.body))); return new Response(null, { status: 204 }); }
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-automation.yml/dispatches")) { dispatched.push(JSON.parse(String(init.body))); return new Response(null, { status: 204 }); }
       if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify({ number: 42, body: targetBody, head: { sha: "c".repeat(40) }, base: { sha: "b".repeat(40) } }), { status: 200 });
       return new Response("unexpected", { status: 500 });
     });
@@ -686,7 +728,7 @@ describe("正文写意图交付恢复", () => {
     expect((await store.get(1296724484, 42))?.deliveryProven).toBe(true);
     expect(await recoverPullRequestBodyWriteIntents(runtimeEnv, new Date("2026-08-22T00:03:00Z"))).toBe(1);
     expect((await store.get(1296724484, 42))?.status).toBe("confirmed");
-    expect(dispatched).toEqual([expect.objectContaining({ inputs: expect.objectContaining({ repositoryId: "1296724484", pullRequestNumber: "42", scanAll: "false", invalidateOnly: "false" }) })]);
+    expect(dispatched).toEqual([expect.objectContaining({ inputs: expect.objectContaining({ repositoryId: "1296724484", sourceRef: "refs/heads/feature/test", eventAfterSha: "c".repeat(40), deliveryId: `body-write-recovery:${writeId}` }) })]);
   });
 });
 

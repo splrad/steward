@@ -447,6 +447,10 @@ async function confirmClosingSets(client: GitHubClient, owner: string, repo: str
   return false;
 }
 
+function bodyWriteRedrive(args: PrIssueLinkArgs): { deliveryId: string; cleanupUnmanaged: boolean; policySha: string } {
+  return { deliveryId: args.deliveryId, cleanupUnmanaged: args.cleanupUnmanaged, policySha: args.policySha };
+}
+
 async function applyBodyAndVerify(input: {
   client: GitHubClient;
   token: string;
@@ -456,6 +460,7 @@ async function applyBodyAndVerify(input: {
   desired: readonly DesiredIssueReference[];
   removeBlock?: boolean;
   freshness?: () => Promise<boolean>;
+  redrive: { deliveryId: string; cleanupUnmanaged: boolean; policySha: string };
 }): Promise<void> {
   const [owner, repo] = splitRepository(input.repository.full_name);
   const facts = currentPullFacts(input.pull, Number(input.repository.id));
@@ -481,15 +486,27 @@ async function applyBodyAndVerify(input: {
     issueGeneration: input.prepared?.generation ?? 0,
     regionKind: "issue-links",
     targetBlock,
+    redrive: {
+      workflow: "pr-issue-link.yml",
+      inputs: {
+        deliveryId: input.redrive.deliveryId,
+        repositoryId: String(input.repository.id),
+        pullRequestNumber: String(facts.number),
+        scanAll: "false",
+        invalidateOnly: "false",
+        cleanupUnmanaged: String(input.redrive.cleanupUnmanaged),
+        policySha: input.redrive.policySha,
+      },
+    },
   });
   if (input.prepared && managedBodyOutsideIssueLinksDigest(String(readback.body ?? "")) !== input.prepared.unmanagedBodyDigest) throw new Error("受管块外正文发生变化");
   if (!await confirmClosingSets(input.client, owner, repo, facts.number, Number(input.repository.id), input.desired, input.freshness)) throw new Error("GitHub关闭议题集合未收敛");
 }
 
-async function publishNotApplicable(client: GitHubClient, token: string, repository: any, pull: any, managed: boolean): Promise<void> {
+async function publishNotApplicable(client: GitHubClient, token: string, repository: any, pull: any, managed: boolean, args: PrIssueLinkArgs): Promise<void> {
   const [owner, repo] = splitRepository(repository.full_name);
   const facts = currentPullFacts(pull, Number(repository.id));
-  if (managed) await applyBodyAndVerify({ client, token, repository, pull, desired: [], removeBlock: true });
+  if (managed) await applyBodyAndVerify({ client, token, repository, pull, desired: [], removeBlock: true, redrive: bodyWriteRedrive(args) });
   await publishCheck(client, Number(repository.id), owner, repo, facts.number, facts.headSha, {
     status: "completed", conclusion: "success", title: "议题关联不适用", summary: `拉取请求：#${facts.number}\n状态：not-applicable`,
   });
@@ -537,7 +554,7 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
   const managed = isManagedPull(pull, args.repositoryId);
   if (args.cleanupUnmanaged) {
     try {
-      await publishNotApplicable(client, token, repository, pull, managed);
+      await publishNotApplicable(client, token, repository, pull, managed, args);
     } catch (error) {
       await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
         status: "completed", conclusion: "failure", title: "议题关联清理失败", summary: `拉取请求：#${pullRequestNumber}\n状态：failure\n类别：repository-unmanaged-unclean`,
@@ -556,13 +573,13 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
     return;
   }
   if (!managed) {
-    if (targetsDefault) await publishNotApplicable(client, token, repository, pull, false);
+    if (targetsDefault) await publishNotApplicable(client, token, repository, pull, false, args);
     await writeOutput({ "copilot-required": "false", completed: "true" });
     return;
   }
   if (!targetsDefault) {
     try {
-      await publishNotApplicable(client, token, repository, pull, true);
+      await publishNotApplicable(client, token, repository, pull, true, args);
     } catch (error) {
       await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
         status: "completed", conclusion: "failure", title: "议题关联清理失败", summary: `拉取请求：#${pullRequestNumber}\n状态：failure\n类别：not-applicable-unclean`,
@@ -616,7 +633,7 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
     };
     await writeFile(preparedPath, `${JSON.stringify(prepared)}\n`);
     if (!included.length) {
-      await applyBodyAndVerify({ client, token, repository, pull, prepared, desired: [] });
+      await applyBodyAndVerify({ client, token, repository, pull, prepared, desired: [], redrive: bodyWriteRedrive(args) });
       await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, { status: "completed", conclusion: "success", title: "没有可分析的完整议题", summary: `拉取请求：#${pullRequestNumber}\n正式关联：0` });
       await writeOutput({ "copilot-required": "false", completed: "true" });
       return;
@@ -630,7 +647,7 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
       const current = await client.getPullRequest(owner, repo, pullRequestNumber);
       const currentFacts = currentPullFacts(current, args.repositoryId);
       if (currentFacts.headSha === facts.headSha && currentFacts.baseSha === facts.baseSha) {
-        await applyBodyAndVerify({ client, token, repository, pull: current, desired: [], removeBlock: true });
+        await applyBodyAndVerify({ client, token, repository, pull: current, desired: [], removeBlock: true, redrive: bodyWriteRedrive(args) });
         cleaned = true;
       }
     } catch {}
@@ -714,7 +731,7 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
       if (repositoryForCleanup && pullForCleanup) {
         const cleanupFacts = currentPullFacts(pullForCleanup, args.repositoryId);
         if (cleanupFacts.headSha === prepared.headSha && cleanupFacts.baseSha === prepared.baseSha) {
-          await applyBodyAndVerify({ client, token, repository: repositoryForCleanup, pull: pullForCleanup, desired: [], removeBlock: true });
+          await applyBodyAndVerify({ client, token, repository: repositoryForCleanup, pull: pullForCleanup, desired: [], removeBlock: true, redrive: bodyWriteRedrive(args) });
           cleaned = true;
         }
       }
@@ -788,7 +805,7 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
         && branch?.object?.sha === prepared.baseSha && state.syncState === "ready" && state.generation === prepared.generation;
     };
     failureCategory = "reconcile-failed";
-    await applyBodyAndVerify({ client, token, repository, pull: current, prepared, desired, freshness });
+    await applyBodyAndVerify({ client, token, repository, pull: current, prepared, desired, freshness, redrive: bodyWriteRedrive(args) });
     await publishCheck(client, args.repositoryId, owner, repo, prepared.pullRequestNumber, prepared.headSha, {
       status: "completed", conclusion: "success", title: desired.length ? "议题关联已收敛" : "没有正式议题关联",
       summary: `拉取请求：#${prepared.pullRequestNumber}\n正式关联：${desired.length}\n模型结果：${modelAccepted ? "validated" : "safe-empty"}`,
@@ -799,7 +816,7 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
     try {
       const latest = await client.getPullRequest(owner, repo, prepared.pullRequestNumber);
       if (latest?.head?.sha === prepared.headSha && latest?.base?.sha === prepared.baseSha) {
-        await applyBodyAndVerify({ client, token, repository, pull: latest, desired: [], removeBlock: true });
+        await applyBodyAndVerify({ client, token, repository, pull: latest, desired: [], removeBlock: true, redrive: bodyWriteRedrive(args) });
         cleaned = true;
       }
     } catch {}

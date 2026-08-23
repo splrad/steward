@@ -181,7 +181,7 @@ const syncStep = syncJob?.steps?.find(step => step?.name === "同步代码审查
 const syncCommand = String(syncStep?.run ?? "");
 if (!syncCommand.includes('--policy-sha "$POLICY_SHA"') || /--(?:source|target|path|content)(?:\s|=)/iu.test(syncCommand)) throw new Error("Copilot说明同步允许工作流输入指定文件或内容");
 if (String(syncStep?.env?.REPOSITORY_ID ?? "").replace(/\s+/gu, "") !== "${{inputs.repositoryId}}" || /\$\{\{[^}]*inputs\.repositoryId/iu.test(syncCommand)) throw new Error("Copilot说明同步把仓库编号直接拼接进shell命令");
-if (String(syncStep?.env?.POLICY_SHA ?? "").replace(/\s+/gu, "") !== "${{steps.policy.outputs.policy_sha}}" || String(syncStep?.env?.SYNC_TRIGGER ?? "").replace(/\s+/gu, "") !== "${{github.event_name}}" || String(syncStep?.env?.TRIGGER_ACTOR_ID ?? "").replace(/\s+/gu, "") !== "${{github.actor_id}}" || String(syncStep?.env?.TRIGGER_ACTOR_LOGIN ?? "").replace(/\s+/gu, "") !== "${{github.actor}}") throw new Error("Copilot说明手工同步没有绑定线上策略与触发者身份");
+if (String(syncStep?.env?.POLICY_SHA ?? "").replace(/\s+/gu, "") !== "${{steps.policy.outputs.policy_sha}}" || String(syncStep?.env?.SYNC_TRIGGER ?? "").replace(/\s+/gu, "") !== "${{github.actor_id=='301115370'&&'app-redrive'||github.event_name}}" || String(syncStep?.env?.TRIGGER_ACTOR_ID ?? "").replace(/\s+/gu, "") !== "${{github.actor_id}}" || String(syncStep?.env?.TRIGGER_ACTOR_LOGIN ?? "").replace(/\s+/gu, "") !== "${{github.actor}}") throw new Error("Copilot说明同步没有绑定线上策略、可信App恢复或手工触发者身份");
 for (const required of ['repository_arguments=()', 'repository_arguments+=(--repository-id "$REPOSITORY_ID")', '"${repository_arguments[@]}"']) {
   if (!syncCommand.includes(required)) throw new Error(`Copilot说明同步没有安全传递可选仓库编号: ${required}`);
 }
@@ -225,12 +225,12 @@ npx wrangler d1 migrations apply splrad-steward-issue-snapshots --remote --confi
 `;
 if (migrationStep?.shell !== "bash" || migrationStep?.run !== expectedMigrationCommand) throw new Error("D1迁移没有固定为先列出、后应用的远程命令");
 const healthStepIndex = deploySteps.findIndex(step => step?.name === "复核运行程序健康状态");
-const initializeStepIndex = deploySteps.findIndex(step => step?.name === "初始化已纳管仓库议题快照");
+const initializeStepIndex = deploySteps.findIndex(step => step?.name === "收敛安装仓库生命周期与议题快照");
 if (healthStepIndex < 0 || initializeStepIndex <= healthStepIndex) throw new Error("现有仓库议题快照没有在部署健康复核后初始化");
 const initializeStep = deploySteps[initializeStepIndex];
 const initializeCommand = String(initializeStep?.run ?? "");
 for (const name of ["APP_ID", "INSTALLATION_ID", "STEWARD_APP_PRIVATE_KEY", "RUNTIME_URL", "POLICY_SHA", "DEPLOYMENT_DELIVERY_ID"]) if (!Object.hasOwn(initializeStep?.env ?? {}, name)) throw new Error(`部署后议题初始化环境缺少${name}`);
-for (const required of ['managed-repository-ids --policy-sha "$POLICY_SHA"', 'issue-sync --delivery-id "$DEPLOYMENT_DELIVERY_ID:$repository_id"', '--scan-all true', '--policy-sha "$POLICY_SHA"']) if (!initializeCommand.includes(required)) throw new Error(`部署后议题初始化缺少固定合同: ${required}`);
+for (const required of ['reconcile-repository-lifecycle', '--delivery-id "$DEPLOYMENT_DELIVERY_ID"', '--policy-sha "$POLICY_SHA"']) if (!initializeCommand.includes(required)) throw new Error(`部署后仓库生命周期收敛缺少固定合同: ${required}`);
 const runtimeConfiguration = await readFile("packages/runtime/wrangler.toml", "utf8");
 if (!/\[version_metadata\]\s*binding\s*=\s*"CF_VERSION_METADATA"/u.test(runtimeConfiguration)) throw new Error("运行程序未绑定Cloudflare版本元数据");
 const actionlintVersion = "1.7.12";

@@ -25,7 +25,7 @@ class SqliteD1Statement {
 class SqliteD1 {
   readonly database = new DatabaseSync(":memory:");
   constructor() {
-    for (const migration of ["0001_issue_snapshots.sql", "0002_issue_snapshot_tombstones.sql", "0003_issue_snapshot_reconciliation.sql", "0004_issue_snapshot_state_revision.sql", "0005_issue_snapshot_reconciliation_revision.sql", "0006_pull_request_body_write_intents.sql"]) {
+    for (const migration of ["0001_issue_snapshots.sql", "0002_issue_snapshot_tombstones.sql", "0003_issue_snapshot_reconciliation.sql", "0004_issue_snapshot_state_revision.sql", "0005_issue_snapshot_reconciliation_revision.sql", "0006_pull_request_body_write_intents.sql", "0007_pull_request_body_write_redrive.sql"]) {
       this.database.exec(readFileSync(new URL(`../migrations/${migration}`, import.meta.url), "utf8"));
     }
   }
