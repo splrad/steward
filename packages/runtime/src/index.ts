@@ -237,11 +237,30 @@ async function dispatchIssueRefreshes(env: Env, repository: any, deliveryId: str
   for (const issueNumber of unique) await send(env, "issue-sync.yml", { deliveryId, repositoryId: String(repository.id), issueNumber: String(issueNumber), scanAll: "false", policySha: env.POLICY_SHA });
 }
 
-async function dispatchAllManagedIssueScans(env: Env, deliveryId: string, currentRepository?: any): Promise<void> {
+async function installationRepositories(env: Env): Promise<any[]> {
   if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
   const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY,
     installationId: Number(env.INSTALLATION_ID), permissions: { metadata: "read" }, policySha: env.POLICY_SHA });
-  const installed = await new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA).listInstallationRepositories();
+  return new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA).listInstallationRepositories();
+}
+
+function repositoryFullNameFromApiUrl(value: unknown): string | null {
+  try {
+    const url = new URL(String(value));
+    if (url.origin !== "https://api.github.com" || url.username || url.password || url.search || url.hash || !/^\/repos\/[^/]+\/[^/]+$/u.test(url.pathname)) return null;
+    return url.pathname.slice("/repos/".length);
+  } catch { return null; }
+}
+
+async function transferredIssueRepository(env: Env, issue: any): Promise<any | null> {
+  const fullName = repositoryFullNameFromApiUrl(issue?.repository_url);
+  if (!fullName) return null;
+  const matches = (await installationRepositories(env)).filter(repository => belongsToOrganization(repository) && String(repository.full_name).toLowerCase() === fullName.toLowerCase());
+  return matches.length === 1 ? matches[0] : null;
+}
+
+async function dispatchAllManagedIssueScans(env: Env, deliveryId: string, currentRepository?: any): Promise<void> {
+  const installed = await installationRepositories(env);
   const repositories = new Map(installed.filter(isManaged).map(repository => [Number(repository.id), repository]));
   if (currentRepository && isManaged(currentRepository)) repositories.set(Number(currentRepository.id), currentRepository);
   for (const repository of [...repositories.values()].sort((left, right) => Number(left.id) - Number(right.id))) await dispatchIssueRefreshes(env, repository, deliveryId, null);
@@ -312,7 +331,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       await store.deleteSnapshot(Number(repository.id), issueNumber, state?.generation ?? 0, state?.stateRevision ?? 0, new Date().toISOString());
       await dispatchIssueRefreshes(env, repository, deliveryId, null);
       if (action === "transferred") {
-        const destinationRepository = payload.changes?.new_repository;
+        const destinationRepository = await transferredIssueRepository(env, payload.changes?.new_issue);
         const destinationIssueNumber = Number(payload.changes?.new_issue?.number ?? payload.issue?.number);
         if (destinationRepository && isManaged(destinationRepository) && Number.isSafeInteger(destinationIssueNumber) && destinationIssueNumber > 0) {
           await dispatchIssueRefreshes(env, destinationRepository, deliveryId, [destinationIssueNumber]);

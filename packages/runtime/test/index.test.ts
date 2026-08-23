@@ -462,6 +462,39 @@ describe("中央运行程序", () => {
     expect(dispatched.at(-1)).toEqual({ name: "pr-issue-link.yml", inputs: expect.objectContaining({ invalidateOnly: "false", scanAll: "true" }) });
   });
 
+  it("议题转移通过新议题URL和当前安装解析目标仓库", async () => {
+    vi.spyOn(IssueSnapshotStore.prototype, "getRepositoryState").mockResolvedValue(null);
+    const deleted = vi.spyOn(IssueSnapshotStore.prototype, "deleteSnapshot").mockResolvedValue();
+    const requests: string[] = [];
+    const dispatched: { name: string; inputs: Record<string, string> }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const value = String(url); requests.push(value);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.includes("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ total_count: 2, repositories: [
+        repository(), repository(1187527897, "splrad/LayerScape"),
+      ] }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "trunk" }), { status: 200 });
+      const name = /\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
+      if (name) { dispatched.push({ name, inputs: JSON.parse(String(init.body)).inputs }); return new Response(null, { status: 204 }); }
+      return new Response("unexpected", { status: 500 });
+    });
+    const env = { ...baseEnv(), ISSUE_SNAPSHOTS: {} as D1Database };
+    const payload = scoped({
+      action: "transferred",
+      repository: repository(),
+      issue: { number: 4 },
+      changes: { new_issue: { number: 9, repository_url: "https://api.github.com/repos/splrad/LayerScape" } },
+    });
+    expect((await handleWebhook(signedRequest("issues", payload), env)).status).toBe(202);
+    expect(deleted).toHaveBeenCalledWith(1296724484, 4, 0, 0, expect.any(String));
+    expect(requests.some(value => value.includes("/installation/repositories?per_page=100"))).toBe(true);
+    expect(dispatched).toEqual([
+      { name: "pr-issue-link.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", scanAll: "true", invalidateOnly: "true" }) },
+      { name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", scanAll: "true" }) },
+      { name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1187527897", issueNumber: "9", scanAll: "false" }) },
+    ]);
+  });
+
   it("默认纳管公开仓库转为私有时墓碑化快照并调度PR状态清理", async () => {
     const deleted = vi.spyOn(IssueSnapshotStore.prototype, "deleteRepository").mockResolvedValue();
     const dispatched: { name: string; inputs: Record<string, string> }[] = [];
