@@ -600,6 +600,7 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
   await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
     status: "in_progress", title: "正在核对议题关联", summary: `拉取请求：#${pullRequestNumber}\n状态：in-progress`,
   });
+  let unmanagedClosingKeywords = false;
   try {
     const preparedPath = requiredEnvironment("ISSUE_PREPARED_FACTS_PATH");
     const promptPath = requiredEnvironment("ISSUE_COPILOT_PROMPT_PATH");
@@ -618,6 +619,10 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
     if (state.snapshots.length > maximumCandidates) throw new Error("开放议题候选超过50个");
     const candidateBytes = Buffer.byteLength(JSON.stringify(state.snapshots.map(item => item.snapshot)), "utf8");
     if (candidateBytes > maximumCandidateBytes) throw new Error("议题候选上下文超过1 MiB");
+    const commits = await client.listPullCommits(owner, repo, pullRequestNumber);
+    const unmanagedBodyDigest = managedBodyOutsideIssueLinksDigest(facts.body);
+    unmanagedClosingKeywords = detectUnmanagedClosingKeywords({ body: facts.body, commitMessages: commits.map((commit: any) => String(commit?.commit?.message ?? "")) }).length > 0;
+    if (unmanagedClosingKeywords) throw new Error("受管块外或提交消息存在关闭关键字");
     const included = state.snapshots.filter(item => item.snapshot.unfetchedReferences.length === 0);
     const files = await client.listPullFiles(owner, repo, pullRequestNumber);
     if (files.length >= 300 || Number(pull.changed_files) !== files.length) throw new Error("GitHub改动文件集合不完整");
@@ -627,9 +632,6 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
     const fullDiff = await collectFullDiffEvidence({ owner, repo, defaultBranch: repository.default_branch, pullRequestNumber, baseSha: liveBase, headSha: facts.headSha, token, expectedFiles: changedFiles });
     const currentBase = sha((await client.getRef(owner, repo, `heads/${repository.default_branch}`)).object.sha, "baseSha");
     if (currentBase !== facts.baseSha) throw new Error("默认分支提交已经漂移");
-    const commits = await client.listPullCommits(owner, repo, pullRequestNumber);
-    const unmanagedBodyDigest = managedBodyOutsideIssueLinksDigest(facts.body);
-    if (detectUnmanagedClosingKeywords({ body: facts.body, commitMessages: commits.map((commit: any) => String(commit?.commit?.message ?? "")) }).length) throw new Error("受管块外或提交消息存在关闭关键字");
     const candidateDigests = state.snapshots.map(item => ({ repositoryId: args.repositoryId, number: item.issueNumber, contentDigest: item.contentDigest }));
     const inputDigest = analysisInputDigest({ repositoryId: args.repositoryId, pullRequestNumber, baseSha: facts.baseSha, headSha: facts.headSha, generation: state.generation, policySha: args.policySha, fullDiffDigest: fullDiff.fullDiffDigest, candidateDigests, openSetDigest: state.openSetDigest, unmanagedBodyDigest });
     const prepared: PreparedEvidence = {
@@ -659,11 +661,13 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
         cleaned = true;
       }
     } catch {}
+    const safeEmpty = cleaned && !unmanagedClosingKeywords;
     await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
-      status: "completed", conclusion: cleaned ? "success" : "failure", title: cleaned ? "议题关联已安全跳过" : "议题关联清理失败",
-      summary: `拉取请求：#${pullRequestNumber}\n状态：${cleaned ? "safe-empty" : "failure"}\n类别：${cleaned ? "prepare-failed-cleaned" : "prepare-failed-unclean"}`,
+      status: "completed", conclusion: safeEmpty ? "success" : "failure",
+      title: safeEmpty ? "议题关联已安全跳过" : unmanagedClosingKeywords ? "检测到未受管关闭关键字" : "议题关联清理失败",
+      summary: `拉取请求：#${pullRequestNumber}\n状态：${safeEmpty ? "safe-empty" : "failure"}\n类别：${unmanagedClosingKeywords ? `unmanaged-closing-keywords-${cleaned ? "managed-block-cleaned" : "unclean"}` : cleaned ? "prepare-failed-cleaned" : "prepare-failed-unclean"}`,
     });
-    if (!cleaned) throw error;
+    if (!safeEmpty) throw error;
     await writeOutput({ "copilot-required": "false", completed: "true" });
     return;
   }
@@ -757,7 +761,7 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
     || currentBase !== prepared.baseSha || currentState.generation !== prepared.generation
     || managedBodyOutsideIssueLinksDigest(facts.body) !== prepared.unmanagedBodyDigest) {
     await publishCheck(client, args.repositoryId, owner, repo, prepared.pullRequestNumber, prepared.headSha, {
-      status: "completed", conclusion: "success", title: "议题关联分析已过期", summary: `拉取请求：#${prepared.pullRequestNumber}\n状态：stale-discarded`,
+      status: "completed", conclusion: "failure", title: "议题关联分析已过期", summary: `拉取请求：#${prepared.pullRequestNumber}\n状态：stale-discarded`,
     });
     await writeSummary([`拉取请求：#${prepared.pullRequestNumber}`, "状态：stale-discarded"]);
     return;

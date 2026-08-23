@@ -18,7 +18,7 @@ beforeAll(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  for (const name of ["APP_ID", "INSTALLATION_ID", "STEWARD_APP_PRIVATE_KEY", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY", "ISSUE_LINK_LIST_ONLY", "ISSUE_LINK_PREPARE_ONLY", "ISSUE_LINK_ACK_ONLY", "ISSUE_PREPARED_FACTS_PATH", "ISSUE_COPILOT_PROMPT_PATH", "ISSUE_COPILOT_OUTPUT_PATH", "COPILOT_STEP_OUTCOME", "RUNTIME_URL", "SNAPSHOT_REVALIDATION_BUDGET"]) delete process.env[name];
+  for (const name of ["APP_ID", "INSTALLATION_ID", "STEWARD_APP_PRIVATE_KEY", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY", "ISSUE_LINK_LIST_ONLY", "ISSUE_LINK_PREPARE_ONLY", "ISSUE_LINK_ACK_ONLY", "ISSUE_PREPARED_FACTS_PATH", "ISSUE_COPILOT_PROMPT_PATH", "ISSUE_COPILOT_OUTPUT_PATH", "COPILOT_STEP_OUTCOME", "RUNTIME_URL", "SNAPSHOT_REVALIDATION_BUDGET", "SNAPSHOT_VALIDATED_GENERATION"]) delete process.env[name];
 });
 
 async function withRunnerEnvironment<T>(operation: (directory: string) => Promise<T>): Promise<T> {
@@ -438,6 +438,44 @@ describe("拉取请求议题关联运行器", () => {
     });
   });
 
+  it("准备证据已经过期时保持失败门禁直到替代分析完成", async () => {
+    await withRunnerEnvironment(async (directory) => {
+      const outer = '<!-- workflow:managed-pr:start -->\n## 摘要\n\n正文\n\n<!-- workflow:source-actor:bot -->\n<!-- workflow:managed-pr:end -->\n';
+      const oldBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 2, analysisInputDigest: "d".repeat(64) }, [{ repositoryId, number: 7 }]);
+      const currentBody = upsertIssueLinksBlock(outer, oldBlock);
+      const fullDiffDigest = "e".repeat(64);
+      const openSetDigest = openIssueSetDigest(repositoryId, []);
+      const unmanagedBodyDigest = managedBodyOutsideIssueLinksDigest(currentBody);
+      const prepared = {
+        schemaVersion: 1, repositoryId, repositoryFullName: "splrad/steward", pullRequestNumber: 42,
+        baseSha, headSha, generation: 2, policySha, fullDiffDigest, changedFiles: [], candidateDigests: [], candidates: [],
+        openSetDigest, unmanagedBodyDigest, revalidationBudget: 1_250,
+        analysisInputDigest: analysisInputDigest({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 2, policySha, fullDiffDigest, candidateDigests: [], openSetDigest, unmanagedBodyDigest }),
+      };
+      process.env.ISSUE_PREPARED_FACTS_PATH = join(directory, "prepared.json");
+      process.env.RUNTIME_URL = "https://runtime.test";
+      await writeFile(process.env.ISSUE_PREPARED_FACTS_PATH, JSON.stringify(prepared));
+      const calls: Array<{ url: string; method: string; body: any }> = [];
+      vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+        const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
+        calls.push({ url: value, method, body });
+        if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+        if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify(pull(currentBody, 301115370)), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/git/ref/heads/main")) return new Response(JSON.stringify({ object: { sha: baseSha } }), { status: 200 });
+        if (value.endsWith(`/internal/issue-snapshots/${repositoryId}`)) return new Response(JSON.stringify({ repositoryId, generation: 3, stateRevision: 1, syncState: "ready", openSetDigest, snapshots: [] }), { status: 200 });
+        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [{ id: 1, name: "PR Issue Link Gate", app: { id: 4243096 }, head_sha: headSha, external_id: `v1:${repositoryId}:42:${headSha}` }] }), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/check-runs/1")) return new Response(JSON.stringify({ id: 1 }), { status: 200 });
+        return new Response("unexpected", { status: 500 });
+      });
+      await runPrIssueLink(invocation());
+      const check = calls.find(call => call.method === "PATCH" && call.url.endsWith("/check-runs/1"));
+      expect(check?.body).toEqual(expect.objectContaining({ status: "completed", conclusion: "failure" }));
+      expect(check?.body.output.summary).toContain("stale-discarded");
+      expect(calls.some(call => call.method === "PATCH" && call.url.endsWith("/pulls/42"))).toBe(false);
+    });
+  });
+
   it("单PR最终复核预算只约束模型实际选中的议题", () => {
     const candidates = [1, 2].map((number) => ({
       repositoryId,
@@ -526,6 +564,46 @@ describe("拉取请求议题关联运行器", () => {
       const check = calls.find(call => call.method === "PATCH" && call.url.endsWith("/check-runs/1"));
       expect(check?.body).toEqual(expect.objectContaining({ status: "completed", conclusion: "failure" }));
       expect(check?.body.output.summary).toContain("prerequisite-failed-unclean");
+    });
+  });
+
+  it("未受管关闭关键字在旧议题块清理后仍保持失败门禁", async () => {
+    for (const testCase of [
+      { bodySuffix: "", commits: [{ commit: { message: "fix: resolves #99" } }] },
+      { bodySuffix: "\nFixes #98\n", commits: [{ commit: { message: "fix: ordinary change" } }] },
+    ]) await withRunnerEnvironment(async (directory) => {
+      const outer = `<!-- workflow:managed-pr:start -->\n## 摘要\n\n正文\n\n<!-- workflow:source-actor:bot -->\n<!-- workflow:managed-pr:end -->${testCase.bodySuffix}`;
+      const block = renderIssueLinksBlock({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 2, analysisInputDigest: "d".repeat(64) }, [{ repositoryId, number: 7 }]);
+      let currentBody = upsertIssueLinksBlock(outer, block);
+      const openSetDigest = openIssueSetDigest(repositoryId, []);
+      let checkExists = false;
+      const calls: Array<{ url: string; method: string; body: any }> = [];
+      vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+        const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
+        calls.push({ url: value, method, body });
+        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method, body); if (bodyWriteResponse) return bodyWriteResponse;
+        if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+        if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/pulls/42") && method === "PATCH") { currentBody = body.body; return new Response(JSON.stringify(pull(currentBody, 301115370)), { status: 200 }); }
+        if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify(pull(currentBody, 301115370)), { status: 200 });
+        if (value.includes("/repos/splrad/steward/pulls/42/commits?")) return new Response(JSON.stringify(testCase.commits), { status: 200 });
+        if (value.endsWith(`/internal/issue-snapshots/${repositoryId}`)) return new Response(JSON.stringify({ repositoryId, generation: 2, stateRevision: 0, syncState: "ready", openSetDigest, snapshots: [] }), { status: 200 });
+        if (value.endsWith("/graphql")) return new Response(JSON.stringify({ data: { repository: { databaseId: repositoryId, pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } }), { status: 200 });
+        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: checkExists ? [{ id: 1, name: "PR Issue Link Gate", app: { id: 4243096 }, head_sha: headSha, external_id: `v1:${repositoryId}:42:${headSha}` }] : [] }), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/check-runs")) { checkExists = true; return new Response(JSON.stringify({ id: 1 }), { status: 201 }); }
+        if (value.endsWith("/repos/splrad/steward/check-runs/1")) return new Response(JSON.stringify({ id: 1 }), { status: 200 });
+        return new Response("unexpected", { status: 500 });
+      });
+      process.env.ISSUE_LINK_PREPARE_ONLY = "true";
+      process.env.RUNTIME_URL = "https://runtime.test";
+      process.env.SNAPSHOT_VALIDATED_GENERATION = "2";
+      process.env.ISSUE_PREPARED_FACTS_PATH = join(directory, "prepared.json");
+      process.env.ISSUE_COPILOT_PROMPT_PATH = join(directory, "prompt.txt");
+      await expect(runPrIssueLink(invocation())).rejects.toThrow("关闭关键字");
+      expect(currentBody).toBe(outer);
+      const check = calls.find(call => call.method === "PATCH" && call.url.endsWith("/check-runs/1"));
+      expect(check?.body).toEqual(expect.objectContaining({ status: "completed", conclusion: "failure" }));
+      expect(check?.body.output.summary).toContain("unmanaged-closing-keywords-managed-block-cleaned");
     });
   });
 
