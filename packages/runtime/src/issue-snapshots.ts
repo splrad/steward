@@ -700,6 +700,10 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
           await requireEmptyBody(request);
           return noStoreResponse(200, await confirmPullRequestBodyWriteIntent({ store: intentStore, client, repository, pullRequestNumber, writeId, now }));
         }
+        if (parts[4] === "redrive-completed") {
+          await requireEmptyBody(request);
+          return noStoreResponse(200, await intentStore.completeRedrive(repositoryId, pullRequestNumber, writeId));
+        }
         if (parts[4] === "wait") {
           const body = await readJsonObject(request);
           const attempts = Number(body.attempts);

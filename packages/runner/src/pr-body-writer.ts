@@ -142,7 +142,11 @@ export async function updatePullRequestBodyDurably(input: {
   const path = `/internal/issue-snapshots/${input.repositoryId}/body-write-intents/${input.pullRequestNumber}`;
   if (next === before) {
     const active = await runtimeRequest<RuntimeIntent | null>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "GET", path: `${path}/active` });
-    if (active && !["confirmed", "blocked"].includes(active.status)) {
+    if (active && ["confirmed", "blocked"].includes(active.status)) {
+      if (matchingIntent({ intent: active, regionKind: input.regionKind, baseSha: input.baseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest, redrive: input.redrive })) {
+        await runtimeRequest<RuntimeIntent>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "POST", path: `${path}/${active.writeId}/redrive-completed` });
+      }
+    } else if (active) {
       if (!matchingIntent({ intent: active, regionKind: input.regionKind, baseSha: input.baseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest, redrive: input.redrive })) {
         throw new Error("活动正文写意图与当前目标冲突");
       }

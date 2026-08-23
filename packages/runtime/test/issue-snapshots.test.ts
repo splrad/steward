@@ -434,6 +434,14 @@ describe("议题快照内部接口", () => {
     }), env(database));
     expect(waited.status).toBe(200);
     expect(await waited.json()).toEqual(expect.objectContaining({ writeId, status: "confirmed" }));
+    const claimedAt = new Date().toISOString();
+    await intentStore.requestRedrive(1296724484, 42, writeId, claimedAt);
+    const prematureCompletion = await worker.fetch(new Request(`https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/${writeId}/redrive-completed`, { method: "POST", headers: { authorization: "Bearer one-repository-token" } }), env(database));
+    expect(prematureCompletion.status).toBe(400);
+    expect(await intentStore.claimRedrive(1296724484, 42, writeId, claimedAt, new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString())).toBe(true);
+    const redriveCompleted = await worker.fetch(new Request(`https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/${writeId}/redrive-completed`, { method: "POST", headers: { authorization: "Bearer one-repository-token" } }), env(database));
+    expect(redriveCompleted.status).toBe(200);
+    expect(await intentStore.listPendingRedrives()).toEqual([]);
 
     for (const missingWriteId of ["99999999-9999-4999-8999-999999999999", writeId]) {
       const number = missingWriteId === writeId ? 43 : 42;

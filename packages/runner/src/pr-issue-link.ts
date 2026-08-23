@@ -394,6 +394,11 @@ function isManagedPull(pull: any, repositoryId: number): boolean {
   return Number(pull?.user?.id) === botUserId && Number(pull?.head?.repo?.id) === repositoryId && Number(pull?.base?.repo?.id) === repositoryId;
 }
 
+function isClosedUnmergedManagedPull(pull: any, repositoryId: number): boolean {
+  return pull?.state === "closed" && pull?.merged_at === null && isManagedPull(pull, repositoryId)
+    && String(pull?.body ?? "").includes("<!-- workflow:issue-links:start ");
+}
+
 function currentPullFacts(pull: any, repositoryId: number): { number: number; headSha: string; baseSha: string; body: string } {
   if (Number(pull?.base?.repo?.id) !== repositoryId) throw new Error("issue-repository-mismatch");
   return {
@@ -519,11 +524,10 @@ async function listPullRequestMatrix(args: PrIssueLinkArgs): Promise<void> {
   const [owner, repo] = splitRepository(repository.full_name);
   let numbers: number[];
   if (args.scanAll) {
-    const pulls = args.cleanupUnmanaged
-      ? (await client.listAllPullRequests(owner, repo)).filter((pull: any) => isManagedPull(pull, args.repositoryId)
-        && String(pull?.body ?? "").includes("<!-- workflow:issue-links:start ")
-        && (pull?.state === "open" || (pull?.state === "closed" && pull?.merged_at === null)))
-      : await client.listAllOpenPullRequests(owner, repo);
+    const pulls = (await client.listAllPullRequests(owner, repo)).filter((pull: any) => args.cleanupUnmanaged
+      ? isManagedPull(pull, args.repositoryId) && String(pull?.body ?? "").includes("<!-- workflow:issue-links:start ")
+        && (pull?.state === "open" || (pull?.state === "closed" && pull?.merged_at === null))
+      : pull?.state === "open" || isClosedUnmergedManagedPull(pull, args.repositoryId));
     if (pulls.length > maximumPullRequests) throw new Error(`${args.cleanupUnmanaged ? "待清理" : "开放"}拉取请求超过矩阵上限`);
     numbers = pulls.map((pull: any) => safeInteger(pull?.number, "pullRequestNumber"));
   } else {
@@ -549,14 +553,13 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
   const [owner, repo] = splitRepository(repository.full_name);
   const pull = await client.getPullRequest(owner, repo, pullRequestNumber);
   const facts = currentPullFacts(pull, args.repositoryId);
-  const closedUnmergedCleanup = args.cleanupUnmanaged && pull?.state === "closed" && pull?.merged_at === null;
-  if (pull?.state !== "open" && !closedUnmergedCleanup) {
+  const managed = isManagedPull(pull, args.repositoryId);
+  if (pull?.state !== "open" && !isClosedUnmergedManagedPull(pull, args.repositoryId)) {
     await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
       status: "completed", conclusion: "success", title: "议题关联不适用", summary: `拉取请求：#${pullRequestNumber}\n状态：closed`,
     });
     return writeOutput({ "copilot-required": "false", completed: "true" });
   }
-  const managed = isManagedPull(pull, args.repositoryId);
   if (args.cleanupUnmanaged) {
     try {
       await publishNotApplicable(client, token, repository, pull, managed, args);

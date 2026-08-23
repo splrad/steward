@@ -124,11 +124,18 @@ describe("Runner正文持久写入器", () => {
 
   it("目标正文已经收敛时允许原工作流越过旧的终态意图继续后续步骤", async () => {
     const live = `人工前言\n${block("新摘要")}\n`;
+    const targetBlock = block("新摘要");
+    const targetBodyDigest = createHash("sha256").update(live, "utf8").digest("hex");
     const updatePullRequest = vi.fn(async (_owner: string, _repo: string, _number: number, patch: any) => ({ ...pull(live), ...patch }));
-    vi.stubGlobal("fetch", async (url: string) => String(url).endsWith("/active")
-      ? new Response(JSON.stringify({ writeId: "blocked-id", status: "blocked", blockedReason: "edited-evidence-unavailable" }), { status: 200 })
-      : new Response("unexpected", { status: 500 }));
-    await expect(updatePullRequestBodyDurably({ client: { getPullRequest: async () => pull(live), updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock: block("新摘要"), redrive, additionalPatch: { title: "新标题" } })).resolves.toEqual(expect.objectContaining({ title: "新标题" }));
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const value = String(url); calls.push(value);
+      if (value.endsWith("/active")) return new Response(JSON.stringify({ writeId: "blocked-id", regionKind: "managed-pr", baseSha, headSha, issueGeneration: 0, targetBlock, targetBodyDigest, status: "blocked", deliveryProven: false, blockedReason: "edited-evidence-unavailable", redrive }), { status: 200 });
+      if (value.endsWith("/blocked-id/redrive-completed")) return new Response(JSON.stringify({ writeId: "blocked-id", status: "blocked" }), { status: 200 });
+      return new Response("unexpected", { status: 500 });
+    });
+    await expect(updatePullRequestBodyDurably({ client: { getPullRequest: async () => pull(live), updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock, redrive, additionalPatch: { title: "新标题" } })).resolves.toEqual(expect.objectContaining({ title: "新标题" }));
     expect(updatePullRequest).toHaveBeenCalledOnce();
+    expect(calls.some((value) => value.endsWith("/blocked-id/redrive-completed"))).toBe(true);
   });
 });

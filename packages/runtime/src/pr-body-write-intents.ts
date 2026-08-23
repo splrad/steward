@@ -394,6 +394,20 @@ export class PullRequestBodyWriteIntentStore {
     return affected(result) === 1;
   }
 
+  async completeRedrive(repositoryId: number, pullRequestNumber: number, writeId: string): Promise<PullRequestBodyWriteIntent> {
+    const result = await this.db.prepare(`UPDATE pull_request_body_write_intents SET redrive_required=0
+      WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status IN ('confirmed','blocked') AND redrive_required=1 AND redrive_dispatched=1`)
+      .bind(repositoryId, pullRequestNumber, writeId).run();
+    const state = await this.db.prepare(`SELECT write_id, status, redrive_required FROM pull_request_body_write_intents
+      WHERE repository_id=? AND pull_request_number=?`).bind(repositoryId, pullRequestNumber).first<{ write_id: string; status: string; redrive_required: number }>();
+    const current = await this.get(repositoryId, pullRequestNumber);
+    if (!state || !current || state.write_id !== writeId || current.writeId !== writeId || !["confirmed", "blocked"].includes(state.status) || state.redrive_required !== 0) {
+      throw new Error("正文写重调度不能确认完成");
+    }
+    if (affected(result) !== 1 && current.redriveRequired) throw new Error("正文写重调度不能确认完成");
+    return current;
+  }
+
   async blockExpired(now: string, limit = 20): Promise<number> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new Error("过期批量无效");
     const rows = await this.db.prepare(`SELECT repository_id, pull_request_number, write_id FROM pull_request_body_write_intents

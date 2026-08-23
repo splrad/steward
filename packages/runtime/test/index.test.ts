@@ -459,7 +459,10 @@ describe("中央运行程序", () => {
     ]);
     expect(dispatched).toContainEqual({ name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", issueNumber: "5", scanAll: "false" }) });
     expect(dispatched).toContainEqual({ name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", issueNumber: "6", scanAll: "false" }) });
-    expect(dispatched.at(-1)).toEqual({ name: "pr-issue-link.yml", inputs: expect.objectContaining({ invalidateOnly: "false", scanAll: "true" }) });
+    expect(dispatched.slice(-2)).toEqual([
+      { name: "pr-issue-link.yml", inputs: expect.objectContaining({ invalidateOnly: "true", scanAll: "true" }) },
+      { name: "pr-issue-link.yml", inputs: expect.objectContaining({ invalidateOnly: "false", scanAll: "true" }) },
+    ]);
   });
 
   it("议题转移通过新议题URL解析目标并刷新全部受管仓库", async () => {
@@ -609,6 +612,7 @@ describe("中央运行程序", () => {
     }
     expect(workflows).toEqual([
       { name: "onboard-repository.yml", inputs: expect.objectContaining({ trigger: "default-branch-push" }) },
+      { name: "pr-issue-link.yml", inputs: expect.objectContaining({ scanAll: "true", invalidateOnly: "true" }) },
       { name: "pr-classification.yml", inputs: expect.objectContaining({ scanAll: "true" }) },
       { name: "pr-issue-link.yml", inputs: expect.objectContaining({ scanAll: "true", invalidateOnly: "false" }) },
     ]);

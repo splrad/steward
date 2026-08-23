@@ -403,6 +403,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
         return response(202);
       }
       if (!managed) return response(204);
+      await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "true", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
       await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
       return response(202);
     }
@@ -411,6 +412,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       if (payload.ref === `refs/heads/${repository.default_branch}`) {
         if (payload.before === ZERO_SHA) await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "default-branch-push", deliveryId, policySha: env.POLICY_SHA });
         else {
+          await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "true", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
           await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", policySha: env.POLICY_SHA });
           await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
         }

@@ -82,16 +82,17 @@ describe("拉取请求议题关联运行器", () => {
     expect(() => runGit(process.cwd(), ["--version"], process.env, 1, "完整差异超过1 MiB")).toThrow("完整差异超过1 MiB");
   });
 
-  it("失效检查按external_id隔离PR并以失败终态结束", async () => {
+  it("失效检查覆盖关闭未合并且保留议题块的受管PR", async () => {
     await withRunnerEnvironment(async () => {
       process.env.ISSUE_LINK_PREPARE_ONLY = "true";
+      const managedBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 1, analysisInputDigest: "d".repeat(64) }, [{ repositoryId, number: 7 }]);
       const calls: Array<{ url: string; method: string; body: any }> = [];
       vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
         const value = String(url); const method = init.method ?? "GET"; const body = init.body ? JSON.parse(String(init.body)) : null;
         calls.push({ url: value, method, body });
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
         if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
-        if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify(pull("", 301115370)), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify(pull(managedBlock, 301115370, "main", "closed", null)), { status: 200 });
         if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [{
           id: 99, name: "PR Issue Link Gate", app: { id: 4243096 }, head_sha: headSha, external_id: `v1:${repositoryId}:41:${headSha}`,
         }] }), { status: 200 });
@@ -131,8 +132,9 @@ describe("拉取请求议题关联运行器", () => {
     }, repositoryId).converged).toBe(false);
   });
 
-  it("仓库扫描完整列出所有开放拉取请求且只写入矩阵输出", async () => {
+  it("仓库扫描列出全部开放PR及带议题块的关闭未合并受管PR", async () => {
     await withRunnerEnvironment(async () => {
+      const managedBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber: 5, baseSha, headSha, generation: 1, analysisInputDigest: "d".repeat(64) }, [{ repositoryId, number: 7 }]);
       const calls: Array<{ url: string; method: string; body: any }> = [];
       vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
         const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
@@ -140,15 +142,21 @@ describe("拉取请求议题关联运行器", () => {
         const bodyWriteResponse = bodyWriteRuntimeResponse(value, method, body); if (bodyWriteResponse) return bodyWriteResponse;
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
         if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
-        if (value.includes("/repos/splrad/steward/pulls?state=open")) return new Response(JSON.stringify([{ number: 9 }, { number: 3 }]), { status: 200 });
+        if (value.includes("/repos/splrad/steward/pulls?state=all")) return new Response(JSON.stringify([
+          { ...pull("", 44151430), number: 9 },
+          { ...pull("", 44151430), number: 3 },
+          { ...pull(managedBlock, 301115370, "main", "closed", null), number: 5 },
+          { ...pull(managedBlock, 44151430, "main", "closed", null), number: 6 },
+          { ...pull("", 301115370, "main", "closed", null), number: 7 },
+        ]), { status: 200 });
         return new Response("unexpected", { status: 500 });
       });
       process.env.ISSUE_LINK_LIST_ONLY = "true";
       await runPrIssueLink(invocation({ "scan-all": "true", "pull-request-number": undefined as unknown as string }));
       const output = await readFile(process.env.GITHUB_OUTPUT!, "utf8");
-      expect(output).toContain('matrix=[{"pullRequestNumber":3},{"pullRequestNumber":9}]');
-      expect(output).toContain("count=2");
-      expect(output).toContain("revalidation-budget=833");
+      expect(output).toContain('matrix=[{"pullRequestNumber":3},{"pullRequestNumber":5},{"pullRequestNumber":9}]');
+      expect(output).toContain("count=3");
+      expect(output).toContain("revalidation-budget=625");
       expect(calls.filter(call => ["PATCH", "PUT", "DELETE"].includes(call.method))).toEqual([]);
       expect(calls.find(call => call.url.includes("/access_tokens"))?.body.permissions).toEqual({ contents: "read", pull_requests: "write", issues: "read", checks: "write", metadata: "read" });
     });
