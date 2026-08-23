@@ -1,6 +1,7 @@
 import { createHmac, generateKeyPairSync } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import worker, { handleWebhook, validationConclusion, verifyWebhookSignature, type Env } from "../src/index.js";
+import { IssueSnapshotStore } from "../src/issue-snapshots.js";
 
 let privateKey = "";
 beforeAll(() => {
@@ -459,6 +460,24 @@ describe("中央运行程序", () => {
     expect(dispatched).toContainEqual({ name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", issueNumber: "5", scanAll: "false" }) });
     expect(dispatched).toContainEqual({ name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", issueNumber: "6", scanAll: "false" }) });
     expect(dispatched.at(-1)).toEqual({ name: "pr-issue-link.yml", inputs: expect.objectContaining({ invalidateOnly: "false", scanAll: "true" }) });
+  });
+
+  it("默认纳管公开仓库转为私有时墓碑化快照并调度PR状态清理", async () => {
+    const deleted = vi.spyOn(IssueSnapshotStore.prototype, "deleteRepository").mockResolvedValue();
+    const dispatched: { name: string; inputs: Record<string, string> }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      if (String(url).includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (String(url).endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      const name = /\/workflows\/([^/]+)\/dispatches/u.exec(String(url))?.[1];
+      if (name) { dispatched.push({ name, inputs: JSON.parse(String(init.body)).inputs }); return new Response(null, { status: 204 }); }
+      return new Response("unexpected", { status: 500 });
+    });
+    const env = { ...baseEnv(), ISSUE_SNAPSHOTS: {} as D1Database };
+    const current = { ...repository(1400000000, "splrad/default-managed"), private: true };
+    const result = await handleWebhook(signedRequest("repository", scoped({ action: "edited", repository: current, changes: { visibility: { from: "public" } } })), env);
+    expect(result.status).toBe(202);
+    expect(deleted).toHaveBeenCalledWith(1400000000);
+    expect(dispatched).toEqual([{ name: "pr-issue-link.yml", inputs: expect.objectContaining({ repositoryId: "1400000000", scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "true" }) }]);
   });
 
   it("子议题和依赖事件按动作选择携带仓库字段", async () => {

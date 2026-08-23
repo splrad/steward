@@ -488,8 +488,10 @@ export async function confirmPullRequestBodyWriteIntent(input: {
     return input.store.block(repositoryId, input.pullRequestNumber, input.writeId, "confirmation-facts-drifted", input.now);
   }
   if (current.regionKind === "issue-links") {
-    const state = await input.store.issueGeneration(repositoryId);
-    if (state !== current.issueGeneration) return input.store.block(repositoryId, input.pullRequestNumber, input.writeId, "issue-generation-drifted", input.now);
+    if (current.targetBlock !== null) {
+      const state = await input.store.issueGeneration(repositoryId);
+      if (state !== current.issueGeneration) return input.store.block(repositoryId, input.pullRequestNumber, input.writeId, "issue-generation-drifted", input.now);
+    }
     const metadata = current.targetBlock ? issueLinksMetadataForIntent(current.targetBlock, current) : null;
     const desired = metadata ? metadata.issueNumbers.map((number) => ({ repositoryId, number })) : [];
     const sets = await input.client.listPullRequestClosingIssueSets(owner, repo, input.pullRequestNumber, repositoryId);

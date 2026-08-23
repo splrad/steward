@@ -108,13 +108,14 @@ function signedRequest(event: string, payload: unknown): Request {
 }
 
 function installAuthorization(fetchIssue?: (url: string) => Response | undefined, repositories: any[] = [repository()], installationId = 145952003, viewerLogin = "splrad-steward[bot]") {
+  const targetRepository = repositories[0] ?? repository();
   vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
     const value = String(url);
     if (value.includes("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ total_count: repositories.length, repositories }), { status: 200 });
-    if (value.endsWith("/repos/splrad/steward/installation")) return new Response(JSON.stringify({ id: installationId, app_id: 4243096 }), { status: 200 });
+    if (value.endsWith(`/repos/${targetRepository.full_name}/installation`)) return new Response(JSON.stringify({ id: installationId, app_id: 4243096 }), { status: 200 });
     if (value.endsWith("/app")) return new Response(JSON.stringify({ id: 4243096, slug: "splrad-steward" }), { status: 200 });
     if (value.endsWith("/graphql")) return new Response(JSON.stringify({ data: { viewer: { login: viewerLogin } } }), { status: 200 });
-    if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify(repository()), { status: 200 });
+    if (value.endsWith(`/repos/${targetRepository.full_name}`)) return new Response(JSON.stringify(targetRepository), { status: 200 });
     return fetchIssue?.(value) ?? new Response("unexpected", { status: 500 });
   });
 }
@@ -431,6 +432,26 @@ describe("议题快照内部接口", () => {
     }), env(database));
     expect(waited.status).toBe(200);
     expect(await waited.json()).toEqual(expect.objectContaining({ writeId, status: "confirmed" }));
+  });
+
+  it("未纳管仓库的正文写接口只接受议题块删除意图", async () => {
+    const database = new SqliteD1();
+    const unmanaged = { ...repository(1400000000, "splrad/default-private"), private: true };
+    installAuthorization(undefined, [unmanaged]);
+    const endpoint = "https://example.test/internal/issue-snapshots/1400000000/body-write-intents/42/prepare";
+    const common = { baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
+      beforeBodyDigest: pullRequestBodyDigest("before"), outsideBodyDigest: pullRequestBodyDigest("outside"), targetBodyDigest: pullRequestBodyDigest("after") };
+    const cleanup = await worker.fetch(new Request(endpoint, {
+      method: "POST", headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" },
+      body: JSON.stringify({ ...common, writeId: "22222222-2222-4222-8222-222222222222", regionKind: "issue-links", targetBlock: null }),
+    }), env(database));
+    expect(cleanup.status).toBe(200);
+    const forbiddenBlock = renderIssueLinksBlock({ repositoryId: 1400000000, pullRequestNumber: 42, baseSha: common.baseSha, headSha: common.headSha, generation: 0, analysisInputDigest: "d".repeat(64) }, []);
+    const forbidden = await worker.fetch(new Request(endpoint, {
+      method: "POST", headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" },
+      body: JSON.stringify({ ...common, writeId: "33333333-3333-4333-8333-333333333333", regionKind: "issue-links", targetBlock: forbiddenBlock }),
+    }), env(database));
+    expect(forbidden.status).toBe(403);
   });
 
   it("正文写意图接口把无效JSON和非对象正文映射为400", async () => {

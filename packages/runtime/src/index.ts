@@ -216,8 +216,14 @@ function belongsToOrganization(repository: any): boolean {
 }
 function isManaged(repository: any): boolean { return belongsToOrganization(repository) && repositoryConfiguration(repository).managed === true; }
 
+function wasManagedBeforeVisibilityEdit(repository: any, changes: any): boolean {
+  const previousVisibility = changes?.visibility?.from;
+  if (!["public", "private", "internal"].includes(previousVisibility)) return isManaged(repository);
+  return isManaged({ ...repository, private: previousVisibility !== "public" });
+}
+
 async function dispatchIssueInvalidation(env: Env, repository: any, deliveryId: string): Promise<void> {
-  await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "true", policySha: env.POLICY_SHA });
+  await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "true", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
 }
 
 async function dispatchIssueRefreshes(env: Env, repository: any, deliveryId: string, issueNumbers: readonly number[] | null): Promise<void> {
@@ -361,8 +367,23 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       return response(202);
     }
     if (event === "repository" && action === "edited") {
-      const repository = payload.repository; if (!repository || !isManaged(repository)) return response(204);
-      await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "false", policySha: env.POLICY_SHA });
+      const repository = payload.repository; if (!repository || !belongsToOrganization(repository)) return response(204);
+      const managed = isManaged(repository);
+      const previouslyManaged = wasManagedBeforeVisibilityEdit(repository, payload.changes);
+      if (previouslyManaged && !managed) {
+        if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
+        await new IssueSnapshotStore(env.ISSUE_SNAPSHOTS).deleteRepository(Number(repository.id));
+        await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "true", policySha: env.POLICY_SHA });
+        return response(202);
+      }
+      if (!previouslyManaged && managed) {
+        if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
+        await new IssueSnapshotStore(env.ISSUE_SNAPSHOTS).activateRepository(Number(repository.id));
+        await send(env, "issue-sync.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", policySha: env.POLICY_SHA });
+        return response(202);
+      }
+      if (!managed) return response(204);
+      await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
       return response(202);
     }
     if (event === "push") {
@@ -371,7 +392,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
         if (payload.before === ZERO_SHA) await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "default-branch-push", deliveryId, policySha: env.POLICY_SHA });
         else {
           await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", policySha: env.POLICY_SHA });
-          await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "false", policySha: env.POLICY_SHA });
+          await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
         }
         return response(202);
       }
@@ -391,7 +412,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
         dispatched = true;
       }
       if (targetsDefault || leftDefault || hasManagedIssueBlock) {
-        await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), scanAll: "false", invalidateOnly: "false", policySha: env.POLICY_SHA });
+        await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
         dispatched = true;
       }
       return response(dispatched ? 202 : 204);
@@ -439,6 +460,7 @@ export async function recoverPullRequestBodyWriteIntents(env: Env, now = new Dat
         pullRequestNumber: String(current.pullRequestNumber),
         scanAll: "false",
         invalidateOnly: "false",
+        cleanupUnmanaged: current.regionKind === "issue-links" && current.targetBlock === null ? "true" : "false",
         policySha: env.POLICY_SHA,
       });
       await store.markRedriveDispatched(current.repositoryId, current.pullRequestNumber, current.writeId, nowIso);

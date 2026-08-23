@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { analysisInputDigest, issueSnapshotContentDigest, managedBodyOutsideIssueLinksDigest, normalizeIssueSnapshot, openIssueSetDigest, renderIssueLinksBlock, upsertIssueLinksBlock } from "../../core/src/issues.js";
-import { extractIssueCopilotContent, parsePrIssueLinkArgs, runPrIssueLink, selectRevalidationCandidates, verifyIssueLinkConvergence } from "../src/pr-issue-link.js";
+import { extractIssueCopilotContent, parsePrIssueLinkArgs, runGit, runPrIssueLink, selectRevalidationCandidates, verifyIssueLinkConvergence } from "../src/pr-issue-link.js";
 
 const repositoryId = 1296724484;
 const policySha = "a".repeat(40);
@@ -45,7 +45,7 @@ function bodyWriteRuntimeResponse(value: string, method: string, body: any): Res
 }
 
 function invocation(overrides: Record<string, string> = {}): Record<string, string> {
-  return { "delivery-id": "delivery-1", "repository-id": String(repositoryId), "pull-request-number": "42", "scan-all": "false", "invalidate-only": "false", "policy-sha": policySha, ...overrides };
+  return { "delivery-id": "delivery-1", "repository-id": String(repositoryId), "pull-request-number": "42", "scan-all": "false", "invalidate-only": "false", "cleanup-unmanaged": "false", "policy-sha": policySha, ...overrides };
 }
 
 function repository(): any {
@@ -66,15 +66,20 @@ function issueSnapshot(number: number): any {
 
 describe("拉取请求议题关联运行器", () => {
   it("严格区分单拉取请求与仓库扫描参数", () => {
-    expect(parsePrIssueLinkArgs({ "delivery-id": "delivery-1", "repository-id": String(repositoryId), "pull-request-number": "42", "scan-all": "false", "invalidate-only": "false", "policy-sha": policySha }))
-      .toEqual({ deliveryId: "delivery-1", repositoryId, pullRequestNumber: 42, scanAll: false, invalidateOnly: false, policySha });
-    expect(parsePrIssueLinkArgs({ "delivery-id": "delivery-2", "repository-id": String(repositoryId), "scan-all": "true", "invalidate-only": "true", "policy-sha": policySha }))
-      .toEqual({ deliveryId: "delivery-2", repositoryId, scanAll: true, invalidateOnly: true, policySha });
-    expect(parsePrIssueLinkArgs({ "delivery-id": "delivery-2", "repository-id": String(repositoryId), "scan-all": "true", "invalidate-only": "false", "reconciliation-generation": "7", "policy-sha": policySha }))
-      .toEqual({ deliveryId: "delivery-2", repositoryId, scanAll: true, invalidateOnly: false, reconciliationGeneration: 7, policySha });
-    expect(() => parsePrIssueLinkArgs({ "delivery-id": "delivery-3", "repository-id": String(repositoryId), "scan-all": "false", "invalidate-only": "false", "policy-sha": policySha })).toThrow("不一致");
-    expect(() => parsePrIssueLinkArgs({ "delivery-id": "delivery-4", "repository-id": String(repositoryId), "pull-request-number": "42", "scan-all": "true", "invalidate-only": "false", "policy-sha": policySha })).toThrow("不一致");
-    expect(() => parsePrIssueLinkArgs({ "delivery-id": "delivery-5", "repository-id": String(repositoryId), "scan-all": "true", "invalidate-only": "true", "reconciliation-generation": "7", "policy-sha": policySha })).toThrow("不能确认");
+    expect(parsePrIssueLinkArgs({ "delivery-id": "delivery-1", "repository-id": String(repositoryId), "pull-request-number": "42", "scan-all": "false", "invalidate-only": "false", "cleanup-unmanaged": "false", "policy-sha": policySha }))
+      .toEqual({ deliveryId: "delivery-1", repositoryId, pullRequestNumber: 42, scanAll: false, invalidateOnly: false, cleanupUnmanaged: false, policySha });
+    expect(parsePrIssueLinkArgs({ "delivery-id": "delivery-2", "repository-id": String(repositoryId), "scan-all": "true", "invalidate-only": "true", "cleanup-unmanaged": "false", "policy-sha": policySha }))
+      .toEqual({ deliveryId: "delivery-2", repositoryId, scanAll: true, invalidateOnly: true, cleanupUnmanaged: false, policySha });
+    expect(parsePrIssueLinkArgs({ "delivery-id": "delivery-2", "repository-id": String(repositoryId), "scan-all": "true", "invalidate-only": "false", "cleanup-unmanaged": "false", "reconciliation-generation": "7", "policy-sha": policySha }))
+      .toEqual({ deliveryId: "delivery-2", repositoryId, scanAll: true, invalidateOnly: false, cleanupUnmanaged: false, reconciliationGeneration: 7, policySha });
+    expect(() => parsePrIssueLinkArgs({ "delivery-id": "delivery-3", "repository-id": String(repositoryId), "scan-all": "false", "invalidate-only": "false", "cleanup-unmanaged": "false", "policy-sha": policySha })).toThrow("不一致");
+    expect(() => parsePrIssueLinkArgs({ "delivery-id": "delivery-4", "repository-id": String(repositoryId), "pull-request-number": "42", "scan-all": "true", "invalidate-only": "false", "cleanup-unmanaged": "false", "policy-sha": policySha })).toThrow("不一致");
+    expect(() => parsePrIssueLinkArgs({ "delivery-id": "delivery-5", "repository-id": String(repositoryId), "scan-all": "true", "invalidate-only": "true", "cleanup-unmanaged": "false", "reconciliation-generation": "7", "policy-sha": policySha })).toThrow("不能确认");
+    expect(() => parsePrIssueLinkArgs({ "delivery-id": "delivery-6", "repository-id": String(repositoryId), "scan-all": "true", "invalidate-only": "true", "cleanup-unmanaged": "true", "policy-sha": policySha })).toThrow("未纳管仓库清理");
+  });
+
+  it("Git输出超限时保留调用方定义的大小错误", () => {
+    expect(() => runGit(process.cwd(), ["--version"], process.env, 1, "完整差异超过1 MiB")).toThrow("完整差异超过1 MiB");
   });
 
   it("失效检查按external_id隔离PR并以失败终态结束", async () => {
@@ -198,6 +203,34 @@ describe("拉取请求议题关联运行器", () => {
       expect(check?.body).toEqual(expect.objectContaining({ name: "PR Issue Link Gate", head_sha: headSha, status: "completed", conclusion: "success" }));
       expect(check?.body.output.title).toBe("议题关联不适用");
       expect(calls.some(call => call.url.includes("workers.dev") || (call.method === "PATCH" && call.url.endsWith("/pulls/42")))).toBe(false);
+    });
+  });
+
+  it("仓库退出纳管后不读取快照并清理所有受管PR议题状态", async () => {
+    await withRunnerEnvironment(async () => {
+      process.env.RUNTIME_URL = "https://runtime.test";
+      const outer = '<!-- workflow:managed-pr:start -->\n## 摘要\n\n正文\n\n<!-- workflow:source-actor:bot -->\n<!-- workflow:managed-pr:end -->\n';
+      const block = renderIssueLinksBlock({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 9, analysisInputDigest: "d".repeat(64) }, [{ repositoryId, number: 7 }]);
+      let currentBody = upsertIssueLinksBlock(outer, block);
+      const calls: Array<{ url: string; method: string; body: any }> = [];
+      vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+        const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
+        calls.push({ url: value, method, body });
+        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method, body); if (bodyWriteResponse) return bodyWriteResponse;
+        if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+        if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify({ ...repository(), private: true }), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/pulls/42") && method === "PATCH") { currentBody = body.body; return new Response(JSON.stringify(pull(currentBody, 301115370)), { status: 200 }); }
+        if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify(pull(currentBody, 301115370)), { status: 200 });
+        if (value.endsWith("/graphql")) return new Response(JSON.stringify({ data: { repository: { databaseId: repositoryId, pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } }), { status: 200 });
+        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/check-runs")) return new Response(JSON.stringify({ id: 1 }), { status: 201 });
+        return new Response("unexpected", { status: 500 });
+      });
+      process.env.ISSUE_LINK_PREPARE_ONLY = "true";
+      await runPrIssueLink(invocation({ "cleanup-unmanaged": "true" }));
+      expect(currentBody).toBe(outer);
+      expect(calls.some(call => /\/internal\/issue-snapshots\/\d+$/u.test(call.url))).toBe(false);
+      expect(calls.some(call => call.url.includes("/body-write-intents/"))).toBe(true);
     });
   });
 

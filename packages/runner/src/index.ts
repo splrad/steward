@@ -35,7 +35,7 @@ const allowedArguments: Record<string, Set<string>> = {
   "onboard-repository": new Set(["repository-id", "repository-full-name", "trigger", "delivery-id", "policy-sha"]),
   "pr-automation": new Set(["delivery-id", "repository-id", "source-ref", "event-after-sha", "source-actor-id", "source-actor-login", "policy-sha"]),
   "pr-classification": new Set(["delivery-id", "repository-id", "pull-request-number", "event-head-sha", "scan-all", "policy-sha"]),
-  "pr-issue-link": new Set(["delivery-id", "repository-id", "pull-request-number", "scan-all", "invalidate-only", "reconciliation-generation", "policy-sha"]),
+  "pr-issue-link": new Set(["delivery-id", "repository-id", "pull-request-number", "scan-all", "invalidate-only", "cleanup-unmanaged", "reconciliation-generation", "policy-sha"]),
   "sync-copilot-instructions": new Set(["repository-id", "policy-sha"]),
   "sync-managed-labels": new Set(["repository-id", "policy-sha"]),
   validate: new Set(["workspace", "repository-id", "profile"]),

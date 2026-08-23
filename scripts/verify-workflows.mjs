@@ -108,14 +108,17 @@ for (const name of ["DELIVERY_ID", "REPOSITORY_ID", "ISSUE_NUMBER", "SCAN_ALL", 
 if (Object.hasOwn(issueSyncStep?.env ?? {}, "COPILOT_GITHUB_TOKEN") || Object.hasOwn(issueSyncStep?.env ?? {}, "COPILOT_CLI_TOKEN") || /\bcopilot\b/iu.test(issueSyncCommand)) throw new Error("议题同步路径不得调用Copilot");
 const issueLinkDocument = workflowDocuments.get("pr-issue-link.yml");
 const issueLinkInputs = issueLinkDocument?.on?.workflow_dispatch?.inputs ?? {};
-if (JSON.stringify(Object.keys(issueLinkInputs)) !== JSON.stringify(["deliveryId", "repositoryId", "pullRequestNumber", "scanAll", "invalidateOnly", "reconciliationGeneration", "policySha"])) throw new Error("议题关联工作流输入集合不正确");
-if (issueLinkInputs.pullRequestNumber?.required !== false || issueLinkInputs.reconciliationGeneration?.required !== false || issueLinkInputs.scanAll?.type !== "boolean" || issueLinkInputs.invalidateOnly?.type !== "boolean") throw new Error("议题关联工作流可选编号或布尔输入契约不正确");
+if (JSON.stringify(Object.keys(issueLinkInputs)) !== JSON.stringify(["deliveryId", "repositoryId", "pullRequestNumber", "scanAll", "invalidateOnly", "cleanupUnmanaged", "reconciliationGeneration", "policySha"])) throw new Error("议题关联工作流输入集合不正确");
+if (issueLinkInputs.pullRequestNumber?.required !== false || issueLinkInputs.reconciliationGeneration?.required !== false || issueLinkInputs.scanAll?.type !== "boolean" || issueLinkInputs.invalidateOnly?.type !== "boolean" || issueLinkInputs.cleanupUnmanaged?.type !== "boolean") throw new Error("议题关联工作流可选编号或布尔输入契约不正确");
 const issueLinkPermissions = issueLinkDocument?.permissions ?? {};
 if (JSON.stringify(issueLinkPermissions) !== JSON.stringify({ contents: "read", "copilot-requests": "write" })) throw new Error("议题关联内置令牌权限不正确");
 const issueLinkConcurrency = String(issueLinkDocument?.concurrency?.group ?? "").replace(/\s+/gu, "");
 if (issueLinkConcurrency !== "steward-pr-body-${{inputs.repositoryId}}") throw new Error("议题关联必须与正文自动化共用仓库级并发锁");
 if (issueLinkDocument?.concurrency?.["cancel-in-progress"] !== false) throw new Error("议题关联工作流不得取消在途运行");
 if (issueLinkDocument?.concurrency?.queue !== "max") throw new Error("议题关联必须保留全部等待运行");
+const issueLinkCleanupMatrixStep = issueLinkDocument?.jobs?.resolve?.steps?.find(step => step?.name === "解析开放拉取请求");
+const issueLinkCleanupPrepareStep = issueLinkDocument?.jobs?.analyze?.steps?.find(step => step?.name === "准备议题与差异证据");
+if (issueLinkCleanupMatrixStep?.env?.CLEANUP_UNMANAGED !== "${{ inputs.cleanupUnmanaged }}" || issueLinkCleanupPrepareStep?.run?.includes('--cleanup-unmanaged "$CLEANUP_UNMANAGED"') !== true) throw new Error("未纳管仓库清理输入没有贯穿全仓扫描与单PR清理");
 const prAutomationConcurrency = String(workflowDocuments.get("pr-automation.yml")?.concurrency?.group ?? "").replace(/\s+/gu, "");
 if (prAutomationConcurrency !== issueLinkConcurrency) throw new Error("拉取请求自动化没有与议题关联共用正文并发锁");
 if (workflowDocuments.get("pr-automation.yml")?.concurrency?.queue !== "max") throw new Error("拉取请求自动化必须保留全部等待运行");
@@ -128,12 +131,12 @@ if (JSON.stringify(queuedWorkflows) !== JSON.stringify(["issue-sync.yml", "onboa
 const issueLinkResolve = issueLinkDocument?.jobs?.resolve;
 const issueLinkMatrixStep = issueLinkResolve?.steps?.find(step => step?.name === "解析开放拉取请求");
 const issueLinkMatrixCommand = String(issueLinkMatrixStep?.run ?? "");
-for (const required of ['ISSUE_LINK_LIST_ONLY', 'pull_arguments=()', 'pull_arguments+=(--pull-request-number "$PULL_REQUEST_NUMBER")', '"${pull_arguments[@]}"', '--scan-all "$SCAN_ALL"', '--invalidate-only "$INVALIDATE_ONLY"']) {
+for (const required of ['ISSUE_LINK_LIST_ONLY', 'pull_arguments=()', 'pull_arguments+=(--pull-request-number "$PULL_REQUEST_NUMBER")', '"${pull_arguments[@]}"', '--scan-all "$SCAN_ALL"', '--invalidate-only "$INVALIDATE_ONLY"', '--cleanup-unmanaged "$CLEANUP_UNMANAGED"']) {
   if (!(Object.hasOwn(issueLinkMatrixStep?.env ?? {}, required) || issueLinkMatrixCommand.includes(required))) throw new Error(`议题关联矩阵解析缺少固定约束: ${required}`);
 }
 if (issueLinkDocument?.jobs?.analyze?.strategy?.["max-parallel"] !== 4 || issueLinkDocument?.jobs?.analyze?.strategy?.["fail-fast"] !== false) throw new Error("议题关联矩阵并发策略不正确");
 const issueLinkAnalyze = issueLinkDocument?.jobs?.analyze;
-for (const name of ["DELIVERY_ID", "REPOSITORY_ID", "PULL_REQUEST_NUMBER", "INVALIDATE_ONLY", "POLICY_SHA", "SNAPSHOT_VALIDATED_GENERATION", "SNAPSHOT_REVALIDATION_BUDGET"]) if (!Object.hasOwn(issueLinkAnalyze?.env ?? {}, name)) throw new Error(`议题关联分析环境缺少${name}`);
+for (const name of ["DELIVERY_ID", "REPOSITORY_ID", "PULL_REQUEST_NUMBER", "INVALIDATE_ONLY", "CLEANUP_UNMANAGED", "POLICY_SHA", "SNAPSHOT_VALIDATED_GENERATION", "SNAPSHOT_REVALIDATION_BUDGET"]) if (!Object.hasOwn(issueLinkAnalyze?.env ?? {}, name)) throw new Error(`议题关联分析环境缺少${name}`);
 const issuePrepareStep = issueLinkAnalyze?.steps?.find(step => step?.name === "准备议题与差异证据");
 const issueReconcileStep = issueLinkAnalyze?.steps?.find(step => step?.name === "收敛议题关联");
 for (const step of [issuePrepareStep, issueReconcileStep]) {

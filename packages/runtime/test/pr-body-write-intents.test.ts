@@ -222,7 +222,7 @@ describe("拉取请求正文持久补偿协议", () => {
     expect((await confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber, writeId, now })).blockedReason).toBe("issue-generation-drifted");
   });
 
-  it("删除议题受管块时也会阻断代次漂移", async () => {
+  it("删除议题受管块不因快照代次漂移而阻断", async () => {
     const database = new SqliteD1();
     const store = new PullRequestBodyWriteIntentStore(database.binding());
     const issueBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber, baseSha, headSha, generation: 1, analysisInputDigest: "c".repeat(64) }, [{ repositoryId, number: 7 }]);
@@ -237,8 +237,11 @@ describe("拉取请求正文持久补偿协议", () => {
     await store.markPatched(repositoryId, pullRequestNumber, writeId, now);
     await store.proveDelivery({ repositoryId, pullRequestNumber, writeId, deliveryId: "delivery-remove-generation", now });
     database.database.prepare("UPDATE issue_snapshot_repositories SET generation = 2 WHERE repository_id = ?").run(repositoryId);
-    const client = { getPullRequest: async () => ({ number: pullRequestNumber, body: target, head: { sha: headSha }, base: { sha: baseSha } }) } as any;
-    expect((await confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber, writeId, now })).blockedReason).toBe("issue-generation-drifted");
+    const client = {
+      getPullRequest: async () => ({ number: pullRequestNumber, body: target, head: { sha: headSha }, base: { sha: baseSha } }),
+      listPullRequestClosingIssueSets: async () => ({ all: [], manual: [], automatic: [] }),
+    } as any;
+    expect((await confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber, writeId, now })).status).toBe("confirmed");
   });
 
   it("GitHub关闭议题集合暂未收敛时保持patched供固定窗口重试", async () => {

@@ -42,6 +42,7 @@ export interface PrIssueLinkArgs {
   pullRequestNumber?: number;
   scanAll: boolean;
   invalidateOnly: boolean;
+  cleanupUnmanaged: boolean;
   reconciliationGeneration?: number;
   policySha: string;
 }
@@ -190,8 +191,9 @@ export function extractIssueCopilotContent(value: string): string {
   return content;
 }
 
-function runGit(cwd: string, arguments_: string[], gitEnvironment: NodeJS.ProcessEnv, maximum = 4 * 1024 * 1024): Buffer {
+export function runGit(cwd: string, arguments_: string[], gitEnvironment: NodeJS.ProcessEnv, maximum = 4 * 1024 * 1024, overflowMessage = "Git输出超过固定上限"): Buffer {
   const result = spawnSync("git", arguments_, { cwd, env: gitEnvironment, encoding: "buffer", maxBuffer: maximum, shell: false });
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ENOBUFS") throw new Error(overflowMessage);
   if (result.status !== 0) throw new Error("完整三点差异读取失败");
   return result.stdout;
 }
@@ -243,10 +245,10 @@ export async function collectFullDiffEvidence(input: {
     if (/(?:^|\0)-\t-\t/u.test(numstat.toString("utf8"))) throw new Error("完整差异包含二进制文件");
     const raw = runGit(temporary, ["diff", "--no-ext-diff", "--no-textconv", "--raw", range], gitEnvironment).toString("utf8");
     if (/(?:^|\n):160000 | 160000 /u.test(raw)) throw new Error("完整差异包含子模块");
-    const fullDiffBuffer = runGit(temporary, ["diff", "--no-ext-diff", "--no-textconv", "--binary", range], gitEnvironment, maximumDiffBytes + 1);
+    const fullDiffBuffer = runGit(temporary, ["diff", "--no-ext-diff", "--no-textconv", "--binary", range], gitEnvironment, maximumDiffBytes + 1, "完整差异超过1 MiB");
     if (fullDiffBuffer.length > maximumDiffBytes) throw new Error("完整差异超过1 MiB");
     for (const file of changedFiles) {
-      const fileDiff = runGit(temporary, ["diff", "--no-ext-diff", "--no-textconv", "--binary", range, "--", file], gitEnvironment, maximumFileDiffBytes + 1);
+      const fileDiff = runGit(temporary, ["diff", "--no-ext-diff", "--no-textconv", "--binary", range, "--", file], gitEnvironment, maximumFileDiffBytes + 1, "单文件差异超过256 KiB");
       if (fileDiff.length > maximumFileDiffBytes) throw new Error("单文件差异超过256 KiB");
     }
     const fullDiff = fullDiffBuffer.toString("utf8");
@@ -496,7 +498,7 @@ async function publishNotApplicable(client: GitHubClient, token: string, reposit
 async function listPullRequestMatrix(args: PrIssueLinkArgs): Promise<void> {
   const { token, client } = await createTargetClient(args.repositoryId, args.policySha);
   const repository = await client.getRepositoryById(args.repositoryId);
-  configuration(repository);
+  if (!args.cleanupUnmanaged) configuration(repository);
   const [owner, repo] = splitRepository(repository.full_name);
   let numbers: number[];
   if (args.scanAll) {
@@ -510,7 +512,7 @@ async function listPullRequestMatrix(args: PrIssueLinkArgs): Promise<void> {
   if (new Set(numbers).size !== numbers.length) throw new Error("开放拉取请求集合重复");
   const revalidationBudget = workflowRevalidationBudget(numbers.length);
   let snapshotGeneration = "";
-  if (args.scanAll && !args.invalidateOnly && numbers.length && process.env.RUNTIME_URL) {
+  if (args.scanAll && !args.invalidateOnly && !args.cleanupUnmanaged && numbers.length && process.env.RUNTIME_URL) {
     const state = await loadFreshSnapshotState(client, token, owner, repo, args.repositoryId, args.deliveryId, maximumRevalidationRequests);
     snapshotGeneration = String(state.generation);
   }
@@ -522,7 +524,7 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
   const pullRequestNumber = safeInteger(args.pullRequestNumber, "pullRequestNumber");
   const { token, client } = await createTargetClient(args.repositoryId, args.policySha);
   const repository = await client.getRepositoryById(args.repositoryId);
-  configuration(repository);
+  if (!args.cleanupUnmanaged) configuration(repository);
   const [owner, repo] = splitRepository(repository.full_name);
   const pull = await client.getPullRequest(owner, repo, pullRequestNumber);
   const facts = currentPullFacts(pull, args.repositoryId);
@@ -533,6 +535,18 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
     return writeOutput({ "copilot-required": "false", completed: "true" });
   }
   const managed = isManagedPull(pull, args.repositoryId);
+  if (args.cleanupUnmanaged) {
+    try {
+      await publishNotApplicable(client, token, repository, pull, managed);
+    } catch (error) {
+      await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
+        status: "completed", conclusion: "failure", title: "议题关联清理失败", summary: `拉取请求：#${pullRequestNumber}\n状态：failure\n类别：repository-unmanaged-unclean`,
+      });
+      throw error;
+    }
+    await writeOutput({ "copilot-required": "false", completed: "true" });
+    return;
+  }
   const targetsDefault = pull?.base?.ref === repository.default_branch;
   if (args.invalidateOnly) {
     if (managed && targetsDefault) await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
@@ -832,15 +846,18 @@ export function parsePrIssueLinkArgs(args: Readonly<Record<string, string>>): Pr
   const policySha = sha(args["policy-sha"], "policy-sha");
   const scanAllValue = args["scan-all"];
   const invalidateOnlyValue = args["invalidate-only"];
-  if (!/^(?:true|false)$/u.test(scanAllValue ?? "") || !/^(?:true|false)$/u.test(invalidateOnlyValue ?? "")) throw new Error("scan-all或invalidate-only无效");
+  const cleanupUnmanagedValue = args["cleanup-unmanaged"];
+  if (!/^(?:true|false)$/u.test(scanAllValue ?? "") || !/^(?:true|false)$/u.test(invalidateOnlyValue ?? "") || !/^(?:true|false)$/u.test(cleanupUnmanagedValue ?? "")) throw new Error("scan-all、invalidate-only或cleanup-unmanaged无效");
   const scanAll = scanAllValue === "true";
   const invalidateOnly = invalidateOnlyValue === "true";
+  const cleanupUnmanaged = cleanupUnmanagedValue === "true";
   const pullRequestNumber = args["pull-request-number"] === undefined ? undefined : safeInteger(args["pull-request-number"], "pull-request-number");
   const reconciliationGeneration = args["reconciliation-generation"] === undefined ? undefined : nonNegativeInteger(args["reconciliation-generation"], "reconciliation-generation");
   if (scanAll === (pullRequestNumber !== undefined)) throw new Error("仓库扫描与单拉取请求参数不一致");
   if (reconciliationGeneration !== undefined && !scanAll) throw new Error("议题收敛确认只能用于仓库扫描");
   if (reconciliationGeneration !== undefined && invalidateOnly) throw new Error("议题失效扫描不能确认收敛代次");
-  return { deliveryId, repositoryId, ...(pullRequestNumber === undefined ? {} : { pullRequestNumber }), scanAll, invalidateOnly, ...(reconciliationGeneration === undefined ? {} : { reconciliationGeneration }), policySha };
+  if (cleanupUnmanaged && (invalidateOnly || reconciliationGeneration !== undefined)) throw new Error("未纳管仓库清理不能失效或确认议题代次");
+  return { deliveryId, repositoryId, ...(pullRequestNumber === undefined ? {} : { pullRequestNumber }), scanAll, invalidateOnly, cleanupUnmanaged, ...(reconciliationGeneration === undefined ? {} : { reconciliationGeneration }), policySha };
 }
 
 export async function runPrIssueLink(args: Readonly<Record<string, string>>): Promise<void> {

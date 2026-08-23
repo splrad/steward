@@ -8,6 +8,7 @@ on:
       pullRequestNumber: { required: false, type: string }
       scanAll: { required: true, type: boolean }
       invalidateOnly: { required: true, type: boolean }
+      cleanupUnmanaged: { required: true, type: boolean }
       reconciliationGeneration: { required: false, type: string }
       policySha: { required: true, type: string }
 
@@ -49,6 +50,7 @@ jobs:
           PULL_REQUEST_NUMBER: ${{ inputs.pullRequestNumber }}
           SCAN_ALL: ${{ inputs.scanAll }}
           INVALIDATE_ONLY: ${{ inputs.invalidateOnly }}
+          CLEANUP_UNMANAGED: ${{ inputs.cleanupUnmanaged }}
           POLICY_SHA: ${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}
           RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
           ISSUE_LINK_LIST_ONLY: "true"
@@ -64,7 +66,7 @@ jobs:
             echo "仓库扫描不能指定拉取请求编号" >&2
             exit 1
           fi
-          node packages/runner/dist/index.js pr-issue-link --delivery-id "$DELIVERY_ID" --repository-id "$REPOSITORY_ID" "${pull_arguments[@]}" --scan-all "$SCAN_ALL" --invalidate-only "$INVALIDATE_ONLY" --policy-sha "$POLICY_SHA"
+          node packages/runner/dist/index.js pr-issue-link --delivery-id "$DELIVERY_ID" --repository-id "$REPOSITORY_ID" "${pull_arguments[@]}" --scan-all "$SCAN_ALL" --invalidate-only "$INVALIDATE_ONLY" --cleanup-unmanaged "$CLEANUP_UNMANAGED" --policy-sha "$POLICY_SHA"
 
   analyze:
     needs: resolve
@@ -84,6 +86,7 @@ jobs:
       REPOSITORY_ID: ${{ inputs.repositoryId }}
       PULL_REQUEST_NUMBER: ${{ matrix.pullRequestNumber }}
       INVALIDATE_ONLY: ${{ inputs.invalidateOnly }}
+      CLEANUP_UNMANAGED: ${{ inputs.cleanupUnmanaged }}
       POLICY_SHA: ${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}
       SNAPSHOT_VALIDATED_GENERATION: ${{ needs.resolve.outputs.snapshot-generation }}
       SNAPSHOT_REVALIDATION_BUDGET: ${{ needs.resolve.outputs.revalidation-budget }}
@@ -103,7 +106,7 @@ jobs:
           ISSUE_LINK_PREPARE_ONLY: "true"
           ISSUE_PREPARED_FACTS_PATH: ${{ runner.temp }}/issue-prepared-${{ matrix.pullRequestNumber }}.json
           ISSUE_COPILOT_PROMPT_PATH: ${{ runner.temp }}/issue-prompt-${{ matrix.pullRequestNumber }}.txt
-        run: node packages/runner/dist/index.js pr-issue-link --delivery-id "$DELIVERY_ID" --repository-id "$REPOSITORY_ID" --pull-request-number "$PULL_REQUEST_NUMBER" --scan-all false --invalidate-only "$INVALIDATE_ONLY" --policy-sha "$POLICY_SHA"
+        run: node packages/runner/dist/index.js pr-issue-link --delivery-id "$DELIVERY_ID" --repository-id "$REPOSITORY_ID" --pull-request-number "$PULL_REQUEST_NUMBER" --scan-all false --invalidate-only "$INVALIDATE_ONLY" --cleanup-unmanaged "$CLEANUP_UNMANAGED" --policy-sha "$POLICY_SHA"
       - name: 使用Copilot判断议题
         id: copilot
         if: steps.prepare.outputs.copilot-required == 'true'
@@ -123,7 +126,7 @@ jobs:
           COPILOT_STEP_OUTCOME: ${{ steps.copilot.outcome }}
           ISSUE_PREPARED_FACTS_PATH: ${{ runner.temp }}/issue-prepared-${{ matrix.pullRequestNumber }}.json
           ISSUE_COPILOT_OUTPUT_PATH: ${{ runner.temp }}/issue-copilot-output-${{ matrix.pullRequestNumber }}.jsonl
-        run: node packages/runner/dist/index.js pr-issue-link --delivery-id "$DELIVERY_ID" --repository-id "$REPOSITORY_ID" --pull-request-number "$PULL_REQUEST_NUMBER" --scan-all false --invalidate-only false --policy-sha "$POLICY_SHA"
+        run: node packages/runner/dist/index.js pr-issue-link --delivery-id "$DELIVERY_ID" --repository-id "$REPOSITORY_ID" --pull-request-number "$PULL_REQUEST_NUMBER" --scan-all false --invalidate-only false --cleanup-unmanaged false --policy-sha "$POLICY_SHA"
       - name: 删除临时议题输入输出
         if: always()
         env:
@@ -134,7 +137,7 @@ jobs:
 
   acknowledge:
     needs: [resolve, analyze]
-    if: ${{ always() && inputs.invalidateOnly == false && inputs.reconciliationGeneration != '' && needs.resolve.result == 'success' && (needs.analyze.result == 'success' || needs.analyze.result == 'skipped') }}
+    if: ${{ always() && inputs.invalidateOnly == false && inputs.cleanupUnmanaged == false && inputs.reconciliationGeneration != '' && needs.resolve.result == 'success' && (needs.analyze.result == 'success' || needs.analyze.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
@@ -157,4 +160,4 @@ jobs:
           REPOSITORY_ID: ${{ inputs.repositoryId }}
           RECONCILIATION_GENERATION: ${{ inputs.reconciliationGeneration }}
           POLICY_SHA: ${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}
-        run: node packages/runner/dist/index.js pr-issue-link --delivery-id "$DELIVERY_ID" --repository-id "$REPOSITORY_ID" --scan-all true --invalidate-only false --reconciliation-generation "$RECONCILIATION_GENERATION" --policy-sha "$POLICY_SHA"
+        run: node packages/runner/dist/index.js pr-issue-link --delivery-id "$DELIVERY_ID" --repository-id "$REPOSITORY_ID" --scan-all true --invalidate-only false --cleanup-unmanaged false --reconciliation-generation "$RECONCILIATION_GENERATION" --policy-sha "$POLICY_SHA"

@@ -1,7 +1,7 @@
 import { createAppJwt, createInstallationToken, GitHubClient, GitHubRequestError, type GitHubIssueFacts, type PageValidator, type ValidatedValue } from "../../github/src/index.js";
 import { issueSnapshotContentDigest, normalizeIssueSnapshot, openIssueSetDigest, type IssueRelationSnapshot, type IssueSnapshot } from "../../core/src/issues.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
-import { confirmPullRequestBodyWriteIntent, PullRequestBodyWriteIntentStore } from "./pr-body-write-intents.js";
+import { confirmPullRequestBodyWriteIntent, PullRequestBodyWriteIntentStore, type PullRequestBodyWriteIntent } from "./pr-body-write-intents.js";
 
 export type IssueSnapshotSyncState = "uninitialized" | "scanning" | "ready" | "degraded";
 
@@ -562,7 +562,7 @@ export function normalizeGitHubIssueFacts(repository: any, facts: GitHubIssueFac
   });
 }
 
-async function authorizeSingleRepository(request: Request, env: IssueSnapshotRuntimeEnv, repositoryId: number): Promise<{ repository: any; client: GitHubClient }> {
+async function authorizeSingleRepository(request: Request, env: IssueSnapshotRuntimeEnv, repositoryId: number, allowUnmanaged = false): Promise<{ repository: any; client: GitHubClient; managed: boolean }> {
   const authorization = request.headers.get("authorization");
   const match = authorization?.match(/^Bearer ([^\s]{1,4096})$/u);
   if (!match) throw new GitHubRequestError(401, "GET", "/installation/repositories", "missing-bearer");
@@ -589,8 +589,9 @@ async function authorizeSingleRepository(request: Request, env: IssueSnapshotRun
   const override = (repositoryCatalog.repositories as Record<string, any>)[String(repositoryId)];
   if (override?.fullName && override.fullName !== current.full_name) throw new GitHubRequestError(403, "GET", `/repos/${owner}/${repo}`, "repository-catalog-mismatch");
   const configuration = { ...(current.private ? repositoryCatalog.defaults.private : repositoryCatalog.defaults.public), ...(override ?? {}) };
-  if (configuration.managed !== true) throw new GitHubRequestError(403, "GET", `/repos/${owner}/${repo}`, "repository-not-managed");
-  return { repository: current, client };
+  const managed = configuration.managed === true;
+  if (!managed && !allowUnmanaged) throw new GitHubRequestError(403, "GET", `/repos/${owner}/${repo}`, "repository-not-managed");
+  return { repository: current, client, managed };
 }
 
 function repositoryParts(repository: any): [string, string] {
@@ -628,14 +629,21 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
   catch { return noStoreResponse(400, { error: "invalid-repository-id" }); }
   const store = new IssueSnapshotStore(env.ISSUE_SNAPSHOTS);
   try {
-    const { repository, client } = await authorizeSingleRepository(request, env, repositoryId);
+    const bodyWriteRoute = parts[1] === "body-write-intents";
+    const { repository, client, managed } = await authorizeSingleRepository(request, env, repositoryId, bodyWriteRoute);
     if (parts[1] === "body-write-intents") {
       if (parts.length < 4 || parts.length > 5) return noStoreResponse(404, { error: "internal-route-not-found" });
       const pullRequestNumber = positiveInteger(parts[2]!, "pullRequestNumber");
       const intentStore = new PullRequestBodyWriteIntentStore(env.ISSUE_SNAPSHOTS);
       const now = new Date().toISOString();
+      const requireCleanupIntent = async (): Promise<PullRequestBodyWriteIntent | null> => {
+        const current = await intentStore.get(repositoryId, pullRequestNumber);
+        if (!managed && current && (current.regionKind !== "issue-links" || current.targetBlock !== null)) throw new GitHubRequestError(403, "POST", url.pathname, "repository-not-managed");
+        return current;
+      };
       if (request.method === "POST" && parts.length === 4 && parts[3] === "prepare") {
         const body = await readJsonObject(request);
+        if (!managed && (body.regionKind !== "issue-links" || body.targetBlock !== null)) throw new GitHubRequestError(403, "POST", url.pathname, "repository-not-managed");
         const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
         return noStoreResponse(200, await intentStore.prepare({
           repositoryId,
@@ -654,15 +662,16 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
         }));
       }
       if (request.method === "GET" && parts.length === 4 && parts[3] === "active") {
-        return noStoreResponse(200, await intentStore.get(repositoryId, pullRequestNumber));
+        return noStoreResponse(200, await requireCleanupIntent());
       }
       if (parts.length === 4 && request.method === "GET") {
-        const current = await intentStore.get(repositoryId, pullRequestNumber);
+        const current = await requireCleanupIntent();
         if (!current || current.writeId !== parts[3]) return noStoreResponse(404, { error: "body-write-intent-not-found" });
         return noStoreResponse(200, current);
       }
       if (parts.length === 5 && request.method === "POST") {
         const writeId = parts[3]!;
+        await requireCleanupIntent();
         if (parts[4] === "patched") {
           await requireEmptyBody(request);
           return noStoreResponse(200, await intentStore.markPatched(repositoryId, pullRequestNumber, writeId, now));
