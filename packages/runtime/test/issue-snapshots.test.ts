@@ -271,6 +271,22 @@ describe("议题快照D1存储", () => {
     await expect(put(store, layerScape, 0, "re-added")).resolves.toEqual(expect.objectContaining({ changed: true }));
   });
 
+  it("仓库删除提交后的重新激活不会把本次成功误报为失败", async () => {
+    const database = new SqliteD1();
+    const winner = new IssueSnapshotStore(database.binding());
+    await put(winner, snapshot(1296724484, "splrad/steward", 7), 0);
+    const interleaved = new AfterFirstBatchD1(database, async () => {
+      await winner.activateRepository(1296724484);
+      await put(winner, snapshot(1296724484, "splrad/steward", 8), 0, "reactivated-write");
+    });
+    const deleter = new IssueSnapshotStore(interleaved.binding());
+
+    await expect(deleter.deleteRepository(1296724484)).resolves.toBeUndefined();
+    expect(await winner.getRepositoryState(1296724484)).toEqual(expect.objectContaining({ generation: 1 }));
+    expect(await winner.getSnapshot(1296724484, 7)).toBeNull();
+    expect(await winner.getSnapshot(1296724484, 8)).not.toBeNull();
+  });
+
   it("开放候选总量在写入时受1 MiB固定上限约束", async () => {
     const store = new IssueSnapshotStore(new SqliteD1().binding());
     let generation = 0;

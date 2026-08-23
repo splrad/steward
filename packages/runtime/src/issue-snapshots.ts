@@ -394,7 +394,7 @@ export class IssueSnapshotStore {
   async deleteRepository(repositoryId: number): Promise<void> {
     rowInteger(repositoryId, "repositoryId", 1);
     const now = new Date().toISOString();
-    await this.db.batch([
+    const results = await this.db.batch([
       this.db.prepare(`INSERT INTO issue_snapshot_repository_tombstones (repository_id, deleted_at) VALUES (?, ?)
         ON CONFLICT(repository_id) DO UPDATE SET deleted_at = excluded.deleted_at`).bind(repositoryId, now),
       this.db.prepare("DELETE FROM issue_snapshots WHERE repository_id = ?").bind(repositoryId),
@@ -402,8 +402,7 @@ export class IssueSnapshotStore {
       this.db.prepare("DELETE FROM issue_snapshot_reconciliation_requests WHERE repository_id = ?").bind(repositoryId),
       this.db.prepare("DELETE FROM issue_snapshot_repositories WHERE repository_id = ?").bind(repositoryId),
     ]);
-    const remaining = await this.db.prepare("SELECT COUNT(*) AS count FROM issue_snapshots WHERE repository_id = ?").bind(repositoryId).first<{ count: number }>();
-    if (Number(remaining?.count ?? -1) !== 0 || await this.getRepositoryState(repositoryId)) throw new Error("仓库快照清理读回不一致");
+    if (results.length !== 5 || results.some((result) => !result.success)) throw new Error("仓库快照清理失败");
   }
 
   async deleteAllRepositories(repositoryIds: readonly number[] = []): Promise<void> {
