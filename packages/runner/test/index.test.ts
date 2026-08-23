@@ -725,6 +725,15 @@ describe("中央命令入口", () => {
     const summaries = source.split("\n").filter(line => line.includes("summary([")).join("\n");
     expect(summaries).not.toMatch(/STEWARD_APP_PRIVATE_KEY|COPILOT_REVIEW_REQUEST_TOKEN|installation-token|upload_url/iu);
   });
+
+  it("Runner内所有议题关联派发都显式传递未纳管清理模式", async () => {
+    const source = await readFile("packages/runner/src/index.ts", "utf8");
+    const dispatches = [...source.matchAll(/dispatchCentralWorkflow\("pr-issue-link\.yml"/gu)];
+    expect(dispatches).toHaveLength(2);
+    for (const dispatch of dispatches) {
+      expect(source.slice(dispatch.index, dispatch.index + 500)).toContain('cleanupUnmanaged: "false"');
+    }
+  });
 });
 
 describe("议题快照同步", () => {

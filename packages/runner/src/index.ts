@@ -646,6 +646,7 @@ async function issueSync(args: Readonly<Record<string, string>>): Promise<void> 
       repositoryId: String(repositoryId),
       scanAll: "true",
       invalidateOnly: "false",
+      cleanupUnmanaged: "false",
       reconciliationGeneration: String(generation),
       policySha,
     }),
@@ -804,6 +805,7 @@ async function reconcileManagedFile(input: { repository: any; gh: GitHubClient; 
       pullRequestNumber: String(pull.number),
       scanAll: "false",
       invalidateOnly: "false",
+      cleanupUnmanaged: "false",
       policySha: input.policySha,
     });
   }
