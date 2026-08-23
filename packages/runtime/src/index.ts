@@ -426,8 +426,13 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       if (!repository || !isManaged(repository) || !pull) return response(204);
       const targetsDefault = pull.base?.ref === repository.default_branch;
       const leftDefault = action === "edited" && payload.changes?.base?.ref?.from === repository.default_branch;
+      const retargetedDefault = action === "edited" && typeof payload.changes?.base?.ref?.from === "string"
+        && payload.changes.base.ref.from !== pull.base?.ref && (targetsDefault || leftDefault);
       const hasManagedIssueBlock = String(pull.body ?? "").includes("<!-- workflow:issue-links:start ");
       let dispatched = false;
+      if (retargetedDefault) {
+        await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), scanAll: "false", invalidateOnly: "true", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
+      }
       if (targetsDefault) {
         await ensureValidationPending(env, repository, pull);
         await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), eventHeadSha: pull.head.sha, policySha: env.POLICY_SHA });

@@ -122,7 +122,7 @@ describe("Runner正文持久写入器", () => {
     expect(calls.filter((value) => value.endsWith("/saved-id/wait"))).toHaveLength(1);
   });
 
-  it("目标正文已经收敛时允许原工作流越过旧的终态意图继续后续步骤", async () => {
+  it("目标正文已经收敛时未声明的原工作流不确认重调度并继续后续步骤", async () => {
     const live = `人工前言\n${block("新摘要")}\n`;
     const targetBlock = block("新摘要");
     const targetBodyDigest = createHash("sha256").update(live, "utf8").digest("hex");
@@ -130,12 +130,29 @@ describe("Runner正文持久写入器", () => {
     const calls: string[] = [];
     vi.stubGlobal("fetch", async (url: string) => {
       const value = String(url); calls.push(value);
-      if (value.endsWith("/active")) return new Response(JSON.stringify({ writeId: "blocked-id", regionKind: "managed-pr", baseSha, headSha, issueGeneration: 0, targetBlock, targetBodyDigest, status: "blocked", deliveryProven: false, blockedReason: "edited-evidence-unavailable", redrive }), { status: 200 });
-      if (value.endsWith("/blocked-id/redrive-completed")) return new Response(JSON.stringify({ writeId: "blocked-id", status: "blocked" }), { status: 200 });
+      if (value.endsWith("/active")) return new Response(JSON.stringify({ writeId: "blocked-id", regionKind: "managed-pr", baseSha, headSha, issueGeneration: 0, targetBlock, targetBodyDigest, status: "blocked", deliveryProven: false, blockedReason: "edited-evidence-unavailable", redrive, redriveRequired: true, redriveDispatched: false }), { status: 200 });
       return new Response("unexpected", { status: 500 });
     });
     await expect(updatePullRequestBodyDurably({ client: { getPullRequest: async () => pull(live), updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock, redrive, additionalPatch: { title: "新标题" } })).resolves.toEqual(expect.objectContaining({ title: "新标题" }));
     expect(updatePullRequest).toHaveBeenCalledOnce();
-    expect(calls.some((value) => value.endsWith("/blocked-id/redrive-completed"))).toBe(true);
+    expect(calls.some((value) => value.endsWith("/blocked-id/redrive-completed"))).toBe(false);
+  });
+
+  it("目标正文已经收敛时确认已声明且输入经过规范替换的恢复重调度", async () => {
+    const live = `人工前言\n${block("新摘要")}\n`;
+    const targetBlock = block("新摘要");
+    const targetBodyDigest = createHash("sha256").update(live, "utf8").digest("hex");
+    const writeId = "77777777-7777-4777-8777-777777777777";
+    const originRedrive = { workflow: "pr-automation.yml" as const, inputs: { deliveryId: "delivery-original", repositoryId: String(repositoryId), sourceRef: "refs/heads/feature/test", eventAfterSha: headSha, sourceActorId: "44151430", sourceActorLogin: "axiomoth", policySha: "c".repeat(40) } };
+    const recoveryRedrive = { workflow: "pr-automation.yml" as const, inputs: { ...originRedrive.inputs, deliveryId: `body-write-recovery:${writeId}`, policySha: "d".repeat(40) } };
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const value = String(url); calls.push(value);
+      if (value.endsWith("/active")) return new Response(JSON.stringify({ writeId, regionKind: "managed-pr", baseSha, headSha, issueGeneration: 0, targetBlock, targetBodyDigest, status: "confirmed", deliveryProven: true, blockedReason: null, redrive: originRedrive, redriveRequired: true, redriveDispatched: true }), { status: 200 });
+      if (value.endsWith(`/${writeId}/redrive-completed`)) return new Response(JSON.stringify({ writeId, status: "confirmed", redriveRequired: false, redriveDispatched: true }), { status: 200 });
+      return new Response("unexpected", { status: 500 });
+    });
+    await expect(updatePullRequestBodyDurably({ client: { getPullRequest: async () => pull(live), updatePullRequest: vi.fn() } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock, redrive: recoveryRedrive })).resolves.toEqual(pull(live));
+    expect(calls.filter((value) => value.endsWith(`/${writeId}/redrive-completed`))).toHaveLength(1);
   });
 });

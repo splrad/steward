@@ -99,8 +99,8 @@ describe("中央运行程序", () => {
     }
   });
 
-  it("edited使拉取请求首次指向默认分支时也建立pending门禁", async () => {
-    const headSha = "d".repeat(40); const validationChecks: any[] = []; const dispatched: string[] = [];
+  it("edited使拉取请求首次指向默认分支时先失效议题门禁再建立pending门禁", async () => {
+    const headSha = "d".repeat(40); const validationChecks: any[] = []; const dispatched: { workflow: string; inputs: any }[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
       const value = String(url);
       if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
@@ -111,7 +111,7 @@ describe("中央运行程序", () => {
       }
       if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
       const match = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(value);
-      if (match) { dispatched.push(match[1]!); return new Response(null, { status: 204 }); }
+      if (match) { dispatched.push({ workflow: match[1]!, inputs: JSON.parse(String(init.body)).inputs }); return new Response(null, { status: 204 }); }
       return new Response("unexpected", { status: 500 });
     });
     const payload = scoped({
@@ -122,7 +122,29 @@ describe("中央运行程序", () => {
     });
     expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(202);
     expect(validationChecks).toEqual([expect.objectContaining({ name: "PR Validation Gate", head_sha: headSha, status: "in_progress", external_id: `1296724484:8:${headSha}:pending` })]);
-    expect(dispatched).toEqual(["pr-classification.yml", "pr-issue-link.yml"]);
+    expect(dispatched.map(value => value.workflow)).toEqual(["pr-issue-link.yml", "pr-classification.yml", "pr-issue-link.yml"]);
+    expect(dispatched.filter(value => value.workflow === "pr-issue-link.yml").map(value => value.inputs.invalidateOnly)).toEqual(["true", "false"]);
+  });
+
+  it("edited使拉取请求离开默认分支时先失效议题门禁再清理", async () => {
+    const dispatched: { workflow: string; inputs: any }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      const match = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(value);
+      if (match) { dispatched.push({ workflow: match[1]!, inputs: JSON.parse(String(init.body)).inputs }); return new Response(null, { status: 204 }); }
+      return new Response("unexpected", { status: 500 });
+    });
+    const payload = scoped({
+      action: "edited",
+      changes: { base: { ref: { from: "main" } } },
+      repository: repository(),
+      pull_request: { number: 8, body: "", head: { sha: "d".repeat(40) }, base: { ref: "release" }, user: { id: 44151430 } },
+    });
+    expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(202);
+    expect(dispatched.map(value => value.workflow)).toEqual(["pr-issue-link.yml", "pr-issue-link.yml"]);
+    expect(dispatched.map(value => value.inputs.invalidateOnly)).toEqual(["true", "false"]);
   });
 
   it("来源分支push及synchronize事件只调度一次正文生成", async () => {

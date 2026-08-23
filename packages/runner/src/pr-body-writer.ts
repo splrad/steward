@@ -27,6 +27,8 @@ interface RuntimeIntent {
   deliveryProven: boolean;
   blockedReason: string | null;
   redrive: DurableBodyRedrive | null;
+  redriveRequired: boolean;
+  redriveDispatched: boolean;
 }
 
 function digest(body: string): string {
@@ -85,14 +87,35 @@ function matchingIntent(input: {
   targetBodyDigest: string;
   redrive: DurableBodyRedrive;
 }): boolean {
-  const canonicalRedrive = (value: DurableBodyRedrive | null) => value === null ? "null" : JSON.stringify({ workflow: value.workflow, inputs: Object.fromEntries(Object.entries(value.inputs).sort(([left], [right]) => left.localeCompare(right))) });
+  return matchingIntentTarget(input)
+    && canonicalRedrive(input.intent.redrive) === canonicalRedrive(input.redrive);
+}
+
+function canonicalRedrive(value: DurableBodyRedrive | null): string {
+  return value === null ? "null" : JSON.stringify({ workflow: value.workflow, inputs: Object.fromEntries(Object.entries(value.inputs).sort(([left], [right]) => left.localeCompare(right))) });
+}
+
+function matchingIntentTarget(input: Omit<Parameters<typeof matchingIntent>[0], "redrive">): boolean {
   return input.intent.regionKind === input.regionKind
     && input.intent.baseSha === input.baseSha
     && input.intent.headSha === input.headSha
     && input.intent.issueGeneration === input.issueGeneration
     && input.intent.targetBlock === input.targetBlock
-    && input.intent.targetBodyDigest === input.targetBodyDigest
-    && canonicalRedrive(input.intent.redrive) === canonicalRedrive(input.redrive);
+    && input.intent.targetBodyDigest === input.targetBodyDigest;
+}
+
+function matchingRecoveryRedrive(intent: RuntimeIntent, redrive: DurableBodyRedrive): boolean {
+  if (!intent.redrive || intent.redrive.workflow !== redrive.workflow) return false;
+  const inputs = { ...redrive.inputs };
+  if (Object.hasOwn(intent.redrive.inputs, "deliveryId")) {
+    if (inputs.deliveryId !== `body-write-recovery:${intent.writeId}`) return false;
+    inputs.deliveryId = intent.redrive.inputs.deliveryId!;
+  }
+  if (Object.hasOwn(intent.redrive.inputs, "policySha")) {
+    if (!/^[0-9a-f]{40}$/u.test(inputs.policySha ?? "")) return false;
+    inputs.policySha = intent.redrive.inputs.policySha!;
+  }
+  return canonicalRedrive(intent.redrive) === canonicalRedrive({ workflow: redrive.workflow, inputs });
 }
 
 async function waitForIntent(input: {
@@ -143,7 +166,9 @@ export async function updatePullRequestBodyDurably(input: {
   if (next === before) {
     const active = await runtimeRequest<RuntimeIntent | null>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "GET", path: `${path}/active` });
     if (active && ["confirmed", "blocked"].includes(active.status)) {
-      if (matchingIntent({ intent: active, regionKind: input.regionKind, baseSha: input.baseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest, redrive: input.redrive })) {
+      if (active.redriveRequired && active.redriveDispatched
+        && matchingIntentTarget({ intent: active, regionKind: input.regionKind, baseSha: input.baseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest })
+        && matchingRecoveryRedrive(active, input.redrive)) {
         await runtimeRequest<RuntimeIntent>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "POST", path: `${path}/${active.writeId}/redrive-completed` });
       }
     } else if (active) {

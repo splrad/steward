@@ -41,6 +41,8 @@ export interface PullRequestBodyWriteIntent {
   confirmedAt: string | null;
   blockedReason: string | null;
   redrive: PullRequestBodyRedrive | null;
+  redriveRequired: boolean;
+  redriveDispatched: boolean;
 }
 
 interface IntentRow {
@@ -67,6 +69,8 @@ interface IntentRow {
   blocked_reason: string | null;
   redrive_workflow: string | null;
   redrive_inputs: string | null;
+  redrive_required: number;
+  redrive_dispatched: number;
 }
 
 const shaPattern = /^[0-9a-f]{40}$/u;
@@ -177,6 +181,8 @@ function intent(row: IntentRow | null): PullRequestBodyWriteIntent | null {
     confirmedAt: row.confirmed_at,
     blockedReason: row.blocked_reason,
     redrive: redriveValue,
+    redriveRequired: row.redrive_required === 1,
+    redriveDispatched: row.redrive_dispatched === 1,
   };
   if (result.redrive?.workflow === "pr-issue-link.yml" && result.redrive.inputs.cleanupUnmanaged === "true" && result.targetBlock !== null) throw new Error("正文写重调度清理目标无效");
   if (result.regionKind === "issue-links" && result.targetBlock !== null) issueLinksMetadataForIntent(result.targetBlock, result);
