@@ -18,11 +18,13 @@ export interface IssueSnapshotRuntimeEnv {
 export interface IssueSnapshotRepositoryState {
   repositoryId: number;
   generation: number;
+  stateRevision: number;
   syncState: IssueSnapshotSyncState;
   openSetDigest: string;
   lastFullScanAt: string | null;
   updatedAt: string;
   reconciliationGeneration?: number | null;
+  reconciliationStateRevision?: number | null;
 }
 
 export interface StoredIssueSnapshot {
@@ -73,7 +75,9 @@ function parseJson<T>(value: unknown, name: string): T {
 
 function githubApiUrl(value: unknown, name: string): string {
   if (typeof value !== "string" || value.length > 4_096) throw new Error(`${name}无效`);
-  const url = new URL(value);
+  let url: URL;
+  try { url = new URL(value); }
+  catch { throw new Error(`${name}无效`); }
   if (url.origin !== "https://api.github.com" || url.username || url.password || url.hash) throw new Error(`${name}无效`);
   return url.href;
 }
@@ -99,6 +103,13 @@ function normalizeValidators(value: unknown): readonly PageValidator[] {
 
 function resultChanges(result: D1Result<unknown> | undefined): number {
   return Number(result?.meta?.changes ?? 0);
+}
+
+function sameRepositoryState(left: IssueSnapshotRepositoryState | null, right: IssueSnapshotRepositoryState | null): boolean {
+  if (!left || !right) return left === right;
+  return left.repositoryId === right.repositoryId && left.generation === right.generation && left.stateRevision === right.stateRevision && left.syncState === right.syncState
+    && left.openSetDigest === right.openSetDigest && left.lastFullScanAt === right.lastFullScanAt && left.updatedAt === right.updatedAt
+    && left.reconciliationGeneration === right.reconciliationGeneration && left.reconciliationStateRevision === right.reconciliationStateRevision;
 }
 
 function snapshotJsonForSize(snapshot: IssueSnapshot, validators: readonly PageValidator[], contentDigest: string, syncedAt = "9999-12-31T23:59:59.999Z"): string {
@@ -148,6 +159,7 @@ function repositoryStateFromRow(row: Record<string, unknown>): IssueSnapshotRepo
   return {
     repositoryId: rowInteger(row.repository_id, "repository_id", 1),
     generation: rowInteger(row.generation, "generation"),
+    stateRevision: rowInteger(row.state_revision, "state_revision"),
     syncState,
     openSetDigest,
     lastFullScanAt: row.last_full_scan_at === null ? null : String(row.last_full_scan_at),
@@ -199,25 +211,32 @@ export class IssueSnapshotStore {
 
   async getRepositoryState(repositoryId: number): Promise<IssueSnapshotRepositoryState | null> {
     rowInteger(repositoryId, "repositoryId", 1);
-    const row = await this.db.prepare(`SELECT repository_id, generation, sync_state, open_set_digest, last_full_scan_at, updated_at
-      FROM issue_snapshot_repositories WHERE repository_id = ?`).bind(repositoryId).first<Record<string, unknown>>();
+    const row = await this.db.prepare(`SELECT repository_id, generation, state_revision, sync_state, open_set_digest, last_full_scan_at, updated_at
+      FROM issue_snapshot_repositories AS repositories WHERE repository_id = ?
+      AND NOT EXISTS (SELECT 1 FROM issue_snapshot_repository_tombstones AS tombstones
+        WHERE tombstones.repository_id = repositories.repository_id)`).bind(repositoryId).first<Record<string, unknown>>();
     if (!row) return null;
     const state = repositoryStateFromRow(row);
     const reconciliation = await this.getReconciliationRequest(repositoryId);
-    return { ...state, reconciliationGeneration: reconciliation?.generation ?? null };
+    return { ...state, reconciliationGeneration: reconciliation?.generation ?? null, reconciliationStateRevision: reconciliation?.stateRevision ?? null };
   }
 
-  async getReconciliationRequest(repositoryId: number): Promise<{ repositoryId: number; generation: number; requestedAt: string } | null> {
+  async getReconciliationRequest(repositoryId: number): Promise<{ repositoryId: number; generation: number; stateRevision: number; requestedAt: string } | null> {
     rowInteger(repositoryId, "repositoryId", 1);
-    const row = await this.db.prepare(`SELECT repository_id, requested_generation, requested_at
+    const row = await this.db.prepare(`SELECT repository_id, requested_generation, requested_state_revision, requested_at
       FROM issue_snapshot_reconciliation_requests WHERE repository_id = ?`).bind(repositoryId).first<Record<string, unknown>>();
-    return row ? { repositoryId: rowInteger(row.repository_id, "repository_id", 1), generation: rowInteger(row.requested_generation, "requested_generation"), requestedAt: String(row.requested_at) } : null;
+    return row ? {
+      repositoryId: rowInteger(row.repository_id, "repository_id", 1),
+      generation: rowInteger(row.requested_generation, "requested_generation"),
+      stateRevision: rowInteger(row.requested_state_revision, "requested_state_revision"),
+      requestedAt: String(row.requested_at),
+    } : null;
   }
 
-  async acknowledgeReconciliation(repositoryId: number, generation: number): Promise<boolean> {
-    rowInteger(repositoryId, "repositoryId", 1); rowInteger(generation, "generation");
+  async acknowledgeReconciliation(repositoryId: number, generation: number, stateRevision: number): Promise<boolean> {
+    rowInteger(repositoryId, "repositoryId", 1); rowInteger(generation, "generation"); rowInteger(stateRevision, "stateRevision");
     const result = await this.db.prepare(`DELETE FROM issue_snapshot_reconciliation_requests
-      WHERE repository_id = ? AND requested_generation = ?`).bind(repositoryId, generation).run();
+      WHERE repository_id = ? AND requested_generation = ? AND requested_state_revision = ?`).bind(repositoryId, generation, stateRevision).run();
     return resultChanges(result) === 1;
   }
 
@@ -240,14 +259,28 @@ export class IssueSnapshotStore {
     return result.results.map(snapshotFromRow);
   }
 
-  async putSnapshot(input: { expectedGeneration: number; snapshot: IssueSnapshot; contentDigest: string; validators: readonly PageValidator[]; deliveryId: string; now: string }): Promise<{ changed: boolean; state: IssueSnapshotRepositoryState }> {
+  async readOpenSnapshotView(repositoryId: number): Promise<{ state: IssueSnapshotRepositoryState | null; snapshots: readonly StoredIssueSnapshot[] }> {
+    rowInteger(repositoryId, "repositoryId", 1);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const before = await this.getRepositoryState(repositoryId);
+      const snapshots = await this.listOpenSnapshots(repositoryId);
+      const after = await this.getRepositoryState(repositoryId);
+      const digest = openIssueSetDigest(repositoryId, snapshots.map((item) => item.issueNumber));
+      if (sameRepositoryState(before, after) && digest === (after?.openSetDigest ?? openIssueSetDigest(repositoryId, []))) return { state: after, snapshots };
+    }
+    throw new Error("仓库开放集合摘要读回不一致");
+  }
+
+  async putSnapshot(input: { expectedGeneration: number; expectedStateRevision: number; snapshot: IssueSnapshot; contentDigest: string; validators: readonly PageValidator[]; deliveryId: string; now: string }): Promise<{ changed: boolean; state: IssueSnapshotRepositoryState }> {
     const repositoryId = input.snapshot.repository.id;
     const issueNumber = input.snapshot.issue.number;
     rowInteger(input.expectedGeneration, "expectedGeneration");
+    rowInteger(issueNumber, "issueNumber", 1);
+    rowInteger(input.expectedStateRevision, "expectedStateRevision");
     if (!digestPattern.test(input.contentDigest) || issueSnapshotContentDigest(input.snapshot) !== input.contentDigest) throw new Error("议题快照摘要无效");
     await this.ensureRepository(repositoryId, input.now);
     const before = await this.getRepositoryState(repositoryId);
-    if (!before || before.generation !== input.expectedGeneration) throw new Error("issue-snapshot-generation-conflict");
+    if (!before || before.generation !== input.expectedGeneration || before.stateRevision !== input.expectedStateRevision) throw new Error("issue-snapshot-generation-conflict");
     const existing = await this.getSnapshot(repositoryId, issueNumber);
     const changed = existing?.contentDigest !== input.contentDigest;
     const currentOpen = await this.listOpenSnapshots(repositoryId);
@@ -265,10 +298,11 @@ export class IssueSnapshotStore {
         this.db.prepare(`UPDATE issue_snapshots SET source_updated_at = ?, comments_count = ?, validators_json = ?,
           snapshot_json = ?, last_delivery_id = ?, synced_at = ?
           WHERE repository_id = ? AND issue_number = ? AND content_digest = ?
-          AND EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ?)`)
-          .bind(input.snapshot.issue.updatedAt, input.snapshot.issue.commentsCount, validatorsJson, snapshotJson, input.deliveryId, input.now, repositoryId, issueNumber, input.contentDigest, repositoryId, input.expectedGeneration),
-        this.db.prepare(`UPDATE issue_snapshot_repositories SET updated_at = ? WHERE repository_id = ? AND generation = ?`)
-          .bind(input.now, repositoryId, input.expectedGeneration),
+          AND EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ? AND state_revision = ?)`)
+          .bind(input.snapshot.issue.updatedAt, input.snapshot.issue.commentsCount, validatorsJson, snapshotJson, input.deliveryId, input.now, repositoryId, issueNumber, input.contentDigest, repositoryId, input.expectedGeneration, input.expectedStateRevision),
+        this.db.prepare(`UPDATE issue_snapshot_repositories SET updated_at = ?
+          WHERE repository_id = ? AND generation = ? AND state_revision = ? AND open_set_digest = ?`)
+          .bind(input.now, repositoryId, input.expectedGeneration, input.expectedStateRevision, openDigest),
       ]);
       if (resultChanges(results[0]) !== 1 || resultChanges(results[1]) !== 1) throw new Error("issue-snapshot-generation-conflict");
     } else {
@@ -276,94 +310,136 @@ export class IssueSnapshotStore {
         this.db.prepare(`INSERT INTO issue_snapshots
           (repository_id, issue_number, state, source_updated_at, comments_count, content_digest, validators_json, snapshot_json, last_delivery_id, synced_at)
           SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-          WHERE EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ?)
+          WHERE EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ? AND state_revision = ?)
           ON CONFLICT(repository_id, issue_number) DO UPDATE SET
             state = excluded.state, source_updated_at = excluded.source_updated_at, comments_count = excluded.comments_count,
             content_digest = excluded.content_digest, validators_json = excluded.validators_json, snapshot_json = excluded.snapshot_json,
             last_delivery_id = excluded.last_delivery_id, synced_at = excluded.synced_at`)
           .bind(repositoryId, issueNumber, input.snapshot.issue.state, input.snapshot.issue.updatedAt, input.snapshot.issue.commentsCount,
-            input.contentDigest, validatorsJson, snapshotJson, input.deliveryId, input.now, repositoryId, input.expectedGeneration),
-        this.db.prepare(`UPDATE issue_snapshot_repositories SET generation = generation + 1, open_set_digest = ?, updated_at = ?
-          WHERE repository_id = ? AND generation = ?
-          AND EXISTS (SELECT 1 FROM issue_snapshots WHERE repository_id = ? AND issue_number = ? AND content_digest = ?)`)
-          .bind(openDigest, input.now, repositoryId, input.expectedGeneration, repositoryId, issueNumber, input.contentDigest),
+            input.contentDigest, validatorsJson, snapshotJson, input.deliveryId, input.now, repositoryId, input.expectedGeneration, input.expectedStateRevision),
         this.db.prepare(`DELETE FROM issue_snapshot_issue_tombstones WHERE repository_id = ? AND issue_number = ?
-          AND EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ?)`)
-          .bind(repositoryId, issueNumber, repositoryId, input.expectedGeneration + 1),
-        this.db.prepare(`INSERT INTO issue_snapshot_reconciliation_requests (repository_id, requested_generation, requested_at)
-          SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ?)
-          ON CONFLICT(repository_id) DO UPDATE SET requested_generation = excluded.requested_generation, requested_at = excluded.requested_at`)
-          .bind(repositoryId, input.expectedGeneration + 1, input.now, repositoryId, input.expectedGeneration + 1),
+          AND EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ? AND state_revision = ?)
+          AND EXISTS (SELECT 1 FROM issue_snapshots WHERE repository_id = ? AND issue_number = ? AND content_digest = ? AND last_delivery_id = ?)`)
+          .bind(repositoryId, issueNumber, repositoryId, input.expectedGeneration, input.expectedStateRevision,
+            repositoryId, issueNumber, input.contentDigest, input.deliveryId),
+        this.db.prepare(`UPDATE issue_snapshot_repositories SET generation = generation + 1, open_set_digest = ?, updated_at = ?
+          WHERE repository_id = ? AND generation = ? AND state_revision = ?
+          AND EXISTS (SELECT 1 FROM issue_snapshots WHERE repository_id = ? AND issue_number = ? AND content_digest = ?)`)
+          .bind(openDigest, input.now, repositoryId, input.expectedGeneration, input.expectedStateRevision, repositoryId, issueNumber, input.contentDigest),
+        this.db.prepare(`INSERT INTO issue_snapshot_reconciliation_requests
+          (repository_id, requested_generation, requested_state_revision, requested_at)
+          SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ? AND state_revision = ?)
+          ON CONFLICT(repository_id) DO UPDATE SET requested_generation = excluded.requested_generation,
+            requested_state_revision = excluded.requested_state_revision, requested_at = excluded.requested_at`)
+          .bind(repositoryId, input.expectedGeneration + 1, input.expectedStateRevision, input.now,
+            repositoryId, input.expectedGeneration + 1, input.expectedStateRevision),
       ]);
-      if (resultChanges(results[0]) !== 1 || resultChanges(results[1]) !== 1 || resultChanges(results[3]) !== 1) throw new Error("issue-snapshot-generation-conflict");
+      if (resultChanges(results[0]) !== 1 || resultChanges(results[2]) !== 1 || resultChanges(results[3]) !== 1) throw new Error("issue-snapshot-generation-conflict");
     }
-    const state = await this.getRepositoryState(repositoryId);
-    const saved = await this.getSnapshot(repositoryId, issueNumber);
-    if (!state || !saved || saved.contentDigest !== input.contentDigest || saved.commentsCount !== input.snapshot.issue.commentsCount
-      || state.generation !== input.expectedGeneration + (changed ? 1 : 0) || state.openSetDigest !== openDigest) throw new Error("议题快照写入读回不一致");
+    const state: IssueSnapshotRepositoryState = {
+      ...before,
+      generation: input.expectedGeneration + (changed ? 1 : 0),
+      openSetDigest: openDigest,
+      updatedAt: input.now,
+      reconciliationGeneration: changed ? input.expectedGeneration + 1 : before.reconciliationGeneration,
+      reconciliationStateRevision: changed ? input.expectedStateRevision : before.reconciliationStateRevision,
+    };
     return { changed, state };
   }
 
-  async deleteSnapshot(repositoryId: number, issueNumber: number, expectedGeneration: number, now: string): Promise<{ changed: boolean; state: IssueSnapshotRepositoryState | null }> {
-    rowInteger(repositoryId, "repositoryId", 1); rowInteger(issueNumber, "issueNumber", 1); rowInteger(expectedGeneration, "expectedGeneration");
+  async deleteSnapshot(repositoryId: number, issueNumber: number, expectedGeneration: number, expectedStateRevision: number, now: string): Promise<{ changed: boolean; state: IssueSnapshotRepositoryState | null }> {
+    rowInteger(repositoryId, "repositoryId", 1); rowInteger(issueNumber, "issueNumber", 1); rowInteger(expectedGeneration, "expectedGeneration"); rowInteger(expectedStateRevision, "expectedStateRevision");
     await this.ensureRepository(repositoryId, now);
     const before = await this.getRepositoryState(repositoryId);
     if (!before) return { changed: false, state: null };
-    if (before.generation !== expectedGeneration) throw new Error("issue-snapshot-generation-conflict");
+    if (before.generation !== expectedGeneration || before.stateRevision !== expectedStateRevision) throw new Error("issue-snapshot-generation-conflict");
     const tombstone = await this.db.prepare(`SELECT generation FROM issue_snapshot_issue_tombstones
       WHERE repository_id = ? AND issue_number = ?`).bind(repositoryId, issueNumber).first<{ generation: number }>();
-    if (tombstone) return { changed: false, state: before };
+    if (tombstone) {
+      const results = await this.db.batch([
+        this.db.prepare(`UPDATE issue_snapshot_issue_tombstones SET generation = ?, deleted_at = ?
+          WHERE repository_id = ? AND issue_number = ?
+          AND EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ? AND state_revision = ?)`)
+          .bind(expectedGeneration, now, repositoryId, issueNumber, repositoryId, expectedGeneration, expectedStateRevision),
+        this.db.prepare(`UPDATE issue_snapshot_repositories SET state_revision = state_revision + 1, updated_at = ?
+          WHERE repository_id = ? AND generation = ? AND state_revision = ?
+          AND EXISTS (SELECT 1 FROM issue_snapshot_issue_tombstones
+            WHERE repository_id = ? AND issue_number = ? AND generation = ? AND deleted_at = ?)
+          AND NOT EXISTS (SELECT 1 FROM issue_snapshots WHERE repository_id = ? AND issue_number = ?)`)
+          .bind(now, repositoryId, expectedGeneration, expectedStateRevision, repositoryId, issueNumber, expectedGeneration, now, repositoryId, issueNumber),
+      ]);
+      if (resultChanges(results[0]) !== 1 || resultChanges(results[1]) !== 1) throw new Error("issue-snapshot-generation-conflict");
+      const state: IssueSnapshotRepositoryState = { ...before, stateRevision: expectedStateRevision + 1, updatedAt: now };
+      return { changed: false, state };
+    }
     const openNumbers = (await this.listOpenSnapshots(repositoryId)).map((item) => item.issueNumber).filter((number) => number !== issueNumber);
     const openDigest = openIssueSetDigest(repositoryId, openNumbers);
     const results = await this.db.batch([
       this.db.prepare(`DELETE FROM issue_snapshots WHERE repository_id = ? AND issue_number = ?
-        AND EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ?)`)
-        .bind(repositoryId, issueNumber, repositoryId, expectedGeneration),
+        AND EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ? AND state_revision = ?)`)
+        .bind(repositoryId, issueNumber, repositoryId, expectedGeneration, expectedStateRevision),
       this.db.prepare(`INSERT INTO issue_snapshot_issue_tombstones (repository_id, issue_number, generation, deleted_at)
-        SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ?)`)
-        .bind(repositoryId, issueNumber, expectedGeneration + 1, now, repositoryId, expectedGeneration),
+        SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ? AND state_revision = ?)`)
+        .bind(repositoryId, issueNumber, expectedGeneration + 1, now, repositoryId, expectedGeneration, expectedStateRevision),
       this.db.prepare(`UPDATE issue_snapshot_repositories SET generation = generation + 1, open_set_digest = ?, updated_at = ?
-        WHERE repository_id = ? AND generation = ?
+        WHERE repository_id = ? AND generation = ? AND state_revision = ?
         AND NOT EXISTS (SELECT 1 FROM issue_snapshots WHERE repository_id = ? AND issue_number = ?)`)
-        .bind(openDigest, now, repositoryId, expectedGeneration, repositoryId, issueNumber),
-      this.db.prepare(`INSERT INTO issue_snapshot_reconciliation_requests (repository_id, requested_generation, requested_at)
-        SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ?)
-        ON CONFLICT(repository_id) DO UPDATE SET requested_generation = excluded.requested_generation, requested_at = excluded.requested_at`)
-        .bind(repositoryId, expectedGeneration + 1, now, repositoryId, expectedGeneration + 1),
+        .bind(openDigest, now, repositoryId, expectedGeneration, expectedStateRevision, repositoryId, issueNumber),
+      this.db.prepare(`INSERT INTO issue_snapshot_reconciliation_requests
+        (repository_id, requested_generation, requested_state_revision, requested_at)
+        SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ? AND state_revision = ?)
+        ON CONFLICT(repository_id) DO UPDATE SET requested_generation = excluded.requested_generation,
+          requested_state_revision = excluded.requested_state_revision, requested_at = excluded.requested_at`)
+        .bind(repositoryId, expectedGeneration + 1, expectedStateRevision, now,
+          repositoryId, expectedGeneration + 1, expectedStateRevision),
     ]);
     if (resultChanges(results[1]) !== 1 || resultChanges(results[2]) !== 1 || resultChanges(results[3]) !== 1) throw new Error("issue-snapshot-generation-conflict");
-    const state = await this.getRepositoryState(repositoryId);
-    if (!state || state.generation !== expectedGeneration + 1 || state.openSetDigest !== openDigest || await this.getSnapshot(repositoryId, issueNumber)) throw new Error("议题快照删除读回不一致");
+    const state: IssueSnapshotRepositoryState = {
+      ...before,
+      generation: expectedGeneration + 1,
+      openSetDigest: openDigest,
+      updatedAt: now,
+      reconciliationGeneration: expectedGeneration + 1,
+      reconciliationStateRevision: expectedStateRevision,
+    };
     return { changed: true, state };
   }
 
   async deleteRepository(repositoryId: number): Promise<void> {
     rowInteger(repositoryId, "repositoryId", 1);
     const now = new Date().toISOString();
-    await this.db.batch([
+    const emptyDigest = openIssueSetDigest(repositoryId, []);
+    const results = await this.db.batch([
       this.db.prepare(`INSERT INTO issue_snapshot_repository_tombstones (repository_id, deleted_at) VALUES (?, ?)
         ON CONFLICT(repository_id) DO UPDATE SET deleted_at = excluded.deleted_at`).bind(repositoryId, now),
       this.db.prepare("DELETE FROM issue_snapshots WHERE repository_id = ?").bind(repositoryId),
       this.db.prepare("DELETE FROM issue_snapshot_issue_tombstones WHERE repository_id = ?").bind(repositoryId),
       this.db.prepare("DELETE FROM issue_snapshot_reconciliation_requests WHERE repository_id = ?").bind(repositoryId),
-      this.db.prepare("DELETE FROM issue_snapshot_repositories WHERE repository_id = ?").bind(repositoryId),
+      this.db.prepare(`INSERT INTO issue_snapshot_repositories
+        (repository_id, generation, state_revision, sync_state, open_set_digest, last_full_scan_at, updated_at)
+        VALUES (?, 0, 1, 'uninitialized', ?, NULL, ?)
+        ON CONFLICT(repository_id) DO UPDATE SET state_revision = issue_snapshot_repositories.state_revision + 1,
+          sync_state = excluded.sync_state, open_set_digest = excluded.open_set_digest,
+          last_full_scan_at = excluded.last_full_scan_at, updated_at = excluded.updated_at`)
+        .bind(repositoryId, emptyDigest, now),
     ]);
-    const remaining = await this.db.prepare("SELECT COUNT(*) AS count FROM issue_snapshots WHERE repository_id = ?").bind(repositoryId).first<{ count: number }>();
-    if (Number(remaining?.count ?? -1) !== 0 || await this.getRepositoryState(repositoryId)) throw new Error("仓库快照清理读回不一致");
+    if (results.length !== 5 || results.some((result) => !result.success)) throw new Error("仓库快照清理失败");
   }
 
   async deleteAllRepositories(repositoryIds: readonly number[] = []): Promise<void> {
-    const result = await this.db.prepare("SELECT repository_id FROM issue_snapshot_repositories ORDER BY repository_id").all<{ repository_id: number }>();
+    const result = await this.db.prepare(`SELECT repositories.repository_id FROM issue_snapshot_repositories AS repositories
+      WHERE NOT EXISTS (SELECT 1 FROM issue_snapshot_repository_tombstones AS tombstones
+        WHERE tombstones.repository_id = repositories.repository_id) ORDER BY repositories.repository_id`).all<{ repository_id: number }>();
     const targets = new Set(result.results.map(row => rowInteger(row.repository_id, "repository_id", 1)));
     for (const repositoryId of repositoryIds) targets.add(rowInteger(repositoryId, "repositoryId", 1));
     for (const repositoryId of [...targets].sort((left, right) => left - right)) await this.deleteRepository(repositoryId);
   }
 
-  async setScanState(repositoryId: number, syncState: Exclude<IssueSnapshotSyncState, "uninitialized">, expectedGeneration: number, now: string, liveOpenNumbers?: readonly number[]): Promise<IssueSnapshotRepositoryState> {
-    rowInteger(repositoryId, "repositoryId", 1); rowInteger(expectedGeneration, "expectedGeneration");
+  async setScanState(repositoryId: number, syncState: Exclude<IssueSnapshotSyncState, "uninitialized">, expectedGeneration: number, expectedStateRevision: number, now: string, liveOpenNumbers?: readonly number[]): Promise<IssueSnapshotRepositoryState> {
+    rowInteger(repositoryId, "repositoryId", 1); rowInteger(expectedGeneration, "expectedGeneration"); rowInteger(expectedStateRevision, "expectedStateRevision");
     await this.ensureRepository(repositoryId, now);
     const before = await this.getRepositoryState(repositoryId);
-    if (!before || before.generation !== expectedGeneration) throw new Error("issue-snapshot-generation-conflict");
+    if (!before || before.generation !== expectedGeneration || before.stateRevision !== expectedStateRevision) throw new Error("issue-snapshot-generation-conflict");
     let openDigest = before.openSetDigest;
     let lastFullScanAt = before.lastFullScanAt;
     if (syncState === "ready") {
@@ -374,17 +450,29 @@ export class IssueSnapshotStore {
       lastFullScanAt = now;
     }
     const statements = [this.db.prepare(`UPDATE issue_snapshot_repositories SET sync_state = ?, open_set_digest = ?,
-      last_full_scan_at = ?, updated_at = ? WHERE repository_id = ? AND generation = ?`)
-      .bind(syncState, openDigest, lastFullScanAt, now, repositoryId, expectedGeneration)];
-    if (syncState === "ready") statements.push(this.db.prepare(`INSERT INTO issue_snapshot_reconciliation_requests (repository_id, requested_generation, requested_at)
-      SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ?)
-      ON CONFLICT(repository_id) DO UPDATE SET requested_generation = excluded.requested_generation, requested_at = excluded.requested_at`)
-      .bind(repositoryId, expectedGeneration, now, repositoryId, expectedGeneration));
+      last_full_scan_at = ?, updated_at = ?, state_revision = state_revision + 1
+      WHERE repository_id = ? AND generation = ? AND state_revision = ?`)
+      .bind(syncState, openDigest, lastFullScanAt, now, repositoryId, expectedGeneration, expectedStateRevision)];
+    if (syncState === "ready") statements.push(this.db.prepare(`INSERT INTO issue_snapshot_reconciliation_requests
+      (repository_id, requested_generation, requested_state_revision, requested_at)
+      SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM issue_snapshot_repositories
+        WHERE repository_id = ? AND generation = ? AND state_revision = ? AND sync_state = 'ready' AND updated_at = ?)
+      ON CONFLICT(repository_id) DO UPDATE SET requested_generation = excluded.requested_generation,
+        requested_state_revision = excluded.requested_state_revision, requested_at = excluded.requested_at`)
+      .bind(repositoryId, expectedGeneration, expectedStateRevision + 1, now,
+        repositoryId, expectedGeneration, expectedStateRevision + 1, now));
     const results = await this.db.batch(statements);
     if (resultChanges(results[0]) !== 1 || (syncState === "ready" && resultChanges(results[1]) !== 1)) throw new Error("issue-snapshot-generation-conflict");
-    const state = await this.getRepositoryState(repositoryId);
-    if (!state || state.generation !== expectedGeneration || state.syncState !== syncState || state.openSetDigest !== openDigest) throw new Error("仓库扫描状态写入读回不一致");
-    return state;
+    return {
+      ...before,
+      stateRevision: expectedStateRevision + 1,
+      syncState,
+      openSetDigest: openDigest,
+      lastFullScanAt,
+      updatedAt: now,
+      reconciliationGeneration: syncState === "ready" ? expectedGeneration : before.reconciliationGeneration,
+      reconciliationStateRevision: syncState === "ready" ? expectedStateRevision + 1 : before.reconciliationStateRevision,
+    };
   }
 }
 
@@ -584,9 +672,9 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
       return noStoreResponse(404, { error: "internal-route-not-found" });
     }
     if (request.method === "GET" && parts.length === 1) {
-      const state = await store.getRepositoryState(repositoryId) ?? { repositoryId, generation: 0, syncState: "uninitialized" as const, openSetDigest: openIssueSetDigest(repositoryId, []), lastFullScanAt: null, updatedAt: new Date(0).toISOString() };
-      const snapshots = await store.listOpenSnapshots(repositoryId);
-      if (state.openSetDigest !== openIssueSetDigest(repositoryId, snapshots.map((item) => item.issueNumber))) throw new Error("仓库开放集合摘要读回不一致");
+      const view = await store.readOpenSnapshotView(repositoryId);
+      const state = view.state ?? { repositoryId, generation: 0, stateRevision: 0, syncState: "uninitialized" as const, openSetDigest: openIssueSetDigest(repositoryId, []), lastFullScanAt: null, updatedAt: new Date(0).toISOString() };
+      const snapshots = view.snapshots;
       return noStoreResponse(200, { ...state, snapshots: snapshots.map(publicSnapshot) });
     }
     if (request.method === "POST" && parts.length === 2 && parts[1] === "scan-state") {
@@ -595,18 +683,22 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
       if (requested !== "scanning" && requested !== "degraded" && requested !== "ready") return noStoreResponse(400, { error: "invalid-scan-state" });
       const current = await store.getRepositoryState(repositoryId);
       const expectedGeneration = current?.generation ?? 0;
+      const expectedStateRevision = current?.stateRevision ?? 0;
       const live = requested === "ready" ? await listLiveOpenIssueNumbers(client, repository) : undefined;
-      const state = await store.setScanState(repositoryId, requested, expectedGeneration, new Date().toISOString(), live);
+      const state = await store.setScanState(repositoryId, requested, expectedGeneration, expectedStateRevision, new Date().toISOString(), live);
       return noStoreResponse(200, state);
     }
     if (request.method === "POST" && parts.length === 2 && parts[1] === "reconciliation") {
       await requireEmptyBody(request);
       const generationHeader = request.headers.get("x-steward-reconciliation-generation") ?? "";
-      let generation: number;
+      const stateRevisionHeader = request.headers.get("x-steward-reconciliation-state-revision") ?? "";
+      let generation: number; let stateRevision: number;
       try { generation = nonNegativeInteger(generationHeader, "generation"); }
       catch { return noStoreResponse(400, { error: "invalid-reconciliation-generation" }); }
-      const acknowledged = await store.acknowledgeReconciliation(repositoryId, generation);
-      return noStoreResponse(200, { repositoryId, generation, acknowledged });
+      try { stateRevision = nonNegativeInteger(stateRevisionHeader, "stateRevision"); }
+      catch { return noStoreResponse(400, { error: "invalid-reconciliation-state-revision" }); }
+      const acknowledged = await store.acknowledgeReconciliation(repositoryId, generation, stateRevision);
+      return noStoreResponse(200, { repositoryId, generation, stateRevision, acknowledged });
     }
     if (request.method === "POST" && parts.length === 3 && parts[2] === "refresh") {
       await requireEmptyBody(request);
@@ -615,17 +707,18 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
       if (!deliveryPattern.test(deliveryId)) return noStoreResponse(400, { error: "invalid-delivery-id" });
       const current = await store.getRepositoryState(repositoryId);
       const expectedGeneration = current?.generation ?? 0;
+      const expectedStateRevision = current?.stateRevision ?? 0;
       const [owner, repo] = repositoryParts(repository);
       let issue: ValidatedValue<any>;
       try { issue = await client.readIssueWithValidator(owner, repo, issueNumber); }
       catch (error) {
         const authoritativeMissing = error instanceof GitHubRequestError && error.status === 404 && error.path === `/repos/${owner}/${repo}/issues/${issueNumber}`;
         if (!authoritativeMissing) throw error;
-        const deleted = await store.deleteSnapshot(repositoryId, issueNumber, expectedGeneration, new Date().toISOString());
+        const deleted = await store.deleteSnapshot(repositoryId, issueNumber, expectedGeneration, expectedStateRevision, new Date().toISOString());
         return noStoreResponse(200, { repositoryId, issueNumber, deleted: deleted.changed, generation: deleted.state?.generation ?? 0 });
       }
       if (issue.value?.state === "closed") {
-        const deleted = await store.deleteSnapshot(repositoryId, issueNumber, expectedGeneration, new Date().toISOString());
+        const deleted = await store.deleteSnapshot(repositoryId, issueNumber, expectedGeneration, expectedStateRevision, new Date().toISOString());
         return noStoreResponse(200, { repositoryId, issueNumber, deleted: deleted.changed, generation: deleted.state?.generation ?? expectedGeneration });
       }
       let facts: GitHubIssueFacts = await client.readIssueFacts(owner, repo, issueNumber, issue);
@@ -633,11 +726,11 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
       const snapshot = normalizeGitHubIssueFacts(repository, facts);
       if (snapshot.repository.id !== repositoryId || snapshot.issue.number !== issueNumber) throw new Error("issue-repository-mismatch");
       if (snapshot.issue.state === "closed") {
-        const deleted = await store.deleteSnapshot(repositoryId, issueNumber, expectedGeneration, new Date().toISOString());
+        const deleted = await store.deleteSnapshot(repositoryId, issueNumber, expectedGeneration, expectedStateRevision, new Date().toISOString());
         return noStoreResponse(200, { repositoryId, issueNumber, deleted: deleted.changed, generation: deleted.state?.generation ?? expectedGeneration });
       }
       const contentDigest = issueSnapshotContentDigest(snapshot);
-      const saved = await store.putSnapshot({ expectedGeneration, snapshot, contentDigest, validators: facts.validators, deliveryId, now: new Date().toISOString() });
+      const saved = await store.putSnapshot({ expectedGeneration, expectedStateRevision, snapshot, contentDigest, validators: facts.validators, deliveryId, now: new Date().toISOString() });
       return noStoreResponse(200, { repositoryId, issueNumber, changed: saved.changed, generation: saved.state.generation, contentDigest });
     }
     return noStoreResponse(404, { error: "internal-route-not-found" });
