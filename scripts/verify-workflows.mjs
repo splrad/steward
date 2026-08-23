@@ -157,7 +157,7 @@ const acknowledgementStep = issueLinkAcknowledge?.steps?.find(step => step?.name
 for (const name of ["ISSUE_LINK_ACK_ONLY", "REPOSITORY_ID", "RECONCILIATION_GENERATION", "POLICY_SHA", "RUNTIME_URL"]) if (!Object.hasOwn(acknowledgementStep?.env ?? {}, name)) throw new Error(`议题收敛确认环境缺少${name}`);
 const acknowledgementCommand = String(acknowledgementStep?.run ?? "");
 for (const required of ['--repository-id "$REPOSITORY_ID"', '--reconciliation-generation "$RECONCILIATION_GENERATION"', '--policy-sha "$POLICY_SHA"']) if (!acknowledgementCommand.includes(required)) throw new Error(`议题收敛确认命令没有安全传递固定输入: ${required}`);
-if (String(issueLinkDocument).includes("upload-artifact") || (await readFile(".github/workflows/pr-issue-link.yml", "utf8")).includes("actions/upload-artifact")) throw new Error("议题关联不得上传模型输入输出制品");
+if ((await readFile(".github/workflows/pr-issue-link.yml", "utf8")).includes("actions/upload-artifact")) throw new Error("议题关联不得上传模型输入输出制品");
 const syncInstructionsDocument = workflowDocuments.get("sync-copilot-instructions.yml");
 const syncWorkflowRun = syncInstructionsDocument?.on?.workflow_run;
 if (JSON.stringify(syncWorkflowRun?.workflows) !== JSON.stringify(["SPLRAD Steward / Deploy Runtime"]) || JSON.stringify(syncWorkflowRun?.types) !== JSON.stringify(["completed"])) throw new Error("Copilot说明同步没有只绑定中央部署完成事件");
@@ -227,7 +227,7 @@ if (healthStepIndex < 0 || initializeStepIndex <= healthStepIndex) throw new Err
 const initializeStep = deploySteps[initializeStepIndex];
 const initializeCommand = String(initializeStep?.run ?? "");
 for (const name of ["APP_ID", "INSTALLATION_ID", "STEWARD_APP_PRIVATE_KEY", "RUNTIME_URL", "POLICY_SHA", "DEPLOYMENT_DELIVERY_ID"]) if (!Object.hasOwn(initializeStep?.env ?? {}, name)) throw new Error(`部署后议题初始化环境缺少${name}`);
-for (const required of ['configuration.managed === true', 'issue-sync --delivery-id "$DEPLOYMENT_DELIVERY_ID:$repository_id"', '--scan-all true', '--policy-sha "$POLICY_SHA"']) if (!initializeCommand.includes(required)) throw new Error(`部署后议题初始化缺少固定合同: ${required}`);
+for (const required of ['managed-repository-ids --policy-sha "$POLICY_SHA"', 'issue-sync --delivery-id "$DEPLOYMENT_DELIVERY_ID:$repository_id"', '--scan-all true', '--policy-sha "$POLICY_SHA"']) if (!initializeCommand.includes(required)) throw new Error(`部署后议题初始化缺少固定合同: ${required}`);
 const runtimeConfiguration = await readFile("packages/runtime/wrangler.toml", "utf8");
 if (!/\[version_metadata\]\s*binding\s*=\s*"CF_VERSION_METADATA"/u.test(runtimeConfiguration)) throw new Error("运行程序未绑定Cloudflare版本元数据");
 const actionlintVersion = "1.7.12";

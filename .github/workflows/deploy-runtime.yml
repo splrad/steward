@@ -126,18 +126,7 @@ jobs:
           DEPLOYMENT_DELIVERY_ID: deploy-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          repository_ids="$(node --input-type=module <<'NODE'
-          import { readFile } from "node:fs/promises";
-          const catalog = JSON.parse(await readFile("config/repositories.json", "utf8"));
-          const ids = Object.entries(catalog.repositories)
-            .filter(([, configuration]) => configuration.managed === true)
-            .map(([id]) => Number(id))
-            .filter(Number.isSafeInteger)
-            .sort((left, right) => left - right);
-          if (!ids.length || new Set(ids).size !== ids.length) throw new Error("中央目录没有唯一的已纳管仓库编号");
-          process.stdout.write(`${ids.join("\n")}\n`);
-          NODE
-          )"
+          repository_ids="$(node packages/runner/dist/index.js managed-repository-ids --policy-sha "$POLICY_SHA")"
           while IFS= read -r repository_id; do
             [[ "$repository_id" =~ ^[1-9][0-9]*$ ]] || { echo "已纳管仓库编号无效" >&2; exit 1; }
             node packages/runner/dist/index.js issue-sync --delivery-id "$DEPLOYMENT_DELIVERY_ID:$repository_id" --repository-id "$repository_id" --scan-all true --policy-sha "$POLICY_SHA"

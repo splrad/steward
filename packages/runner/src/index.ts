@@ -17,13 +17,13 @@ import {
   type AiClassificationAssessment, type AiClassificationEnvelopeV2, type AiClassificationFieldInspection, type AiClassificationSuggestion, type AutomationFacts, type ClassificationProfile, type ClassifiedReleasePullRequest, type Contributor, type RawClassificationFacts, type ReleaseManifest, type RepositoryClassification, type SemanticCatalog, type ValidationProfile,
 } from "../../core/src/index.js";
 import { createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestError, uploadReleaseAsset } from "../../github/src/index.js";
-import { managedRepositoryTargets, runManagedRepositorySync, type ManagedTarget } from "./managed-repository-sync.js";
+import { managedRepositoryIds, managedRepositoryTargets, runManagedRepositorySync, type ManagedTarget } from "./managed-repository-sync.js";
 import { runPrIssueLink } from "./pr-issue-link.js";
 import { targetManagedBlock, updatePullRequestBodyDurably } from "./pr-body-writer.js";
 import { minimatch } from "minimatch";
 import YAML from "yaml";
 
-const commands = new Set(["issue-sync", "onboard-repository", "pr-automation", "pr-classification", "pr-issue-link", "sync-copilot-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"]);
+const commands = new Set(["issue-sync", "managed-repository-ids", "onboard-repository", "pr-automation", "pr-classification", "pr-issue-link", "sync-copilot-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"]);
 const stewardRepositoryId = 1296724484;
 // Repository configuration and workspace files are runtime inputs, not bundle assets.
 // This wrapper keeps their paths opaque to the static asset tracer used by ncc.
@@ -31,6 +31,7 @@ const runtimeReadFile = ((path: Parameters<typeof readFile>[0], options?: Parame
   Reflect.apply(readFile, undefined, options === undefined ? [path] : [path, options])) as typeof readFile;
 const allowedArguments: Record<string, Set<string>> = {
   "issue-sync": new Set(["delivery-id", "repository-id", "issue-number", "scan-all", "policy-sha"]),
+  "managed-repository-ids": new Set(["policy-sha"]),
   "onboard-repository": new Set(["repository-id", "repository-full-name", "trigger", "delivery-id", "policy-sha"]),
   "pr-automation": new Set(["delivery-id", "repository-id", "source-ref", "event-after-sha", "source-actor-id", "source-actor-login", "policy-sha"]),
   "pr-classification": new Set(["delivery-id", "repository-id", "pull-request-number", "event-head-sha", "scan-all", "policy-sha"]),
@@ -1213,6 +1214,10 @@ async function managedTargets(policySha: string, selectedId?: number): Promise<M
   const repositories = await new GitHubClient(token, "https://api.github.com", fetch, policySha).listInstallationRepositories();
   return managedRepositoryTargets(await catalog(), repositories, selectedId);
 }
+async function listManagedRepositoryIds(args: Readonly<Record<string, string>>) {
+  const policySha = sha(required(args, "policy-sha"), "policy-sha");
+  process.stdout.write(`${managedRepositoryIds(await managedTargets(policySha)).join("\n")}\n`);
+}
 async function assertManualSyncAuthorization(policySha: string): Promise<void> {
   if (process.env.SYNC_TRIGGER !== "workflow_dispatch") return;
   integer(env("TRIGGER_ACTOR_ID"), "TRIGGER_ACTOR_ID");
@@ -1659,7 +1664,7 @@ async function releaseVerify(args: Readonly<Record<string, string>>) {
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const invocation = parseInvocation(argv);
-  const handlers: Record<string, (args: Readonly<Record<string, string>>) => Promise<void>> = { "issue-sync": issueSync, "onboard-repository": onboard, "pr-automation": automate, "pr-classification": classify, "pr-issue-link": runPrIssueLink, "sync-copilot-instructions": syncInstructions, "sync-managed-labels": syncManagedLabels, validate, "release-preflight": releasePreflight, "release-notes": releaseNotesCommand, "release-publish": releasePublish, "release-verify": releaseVerify };
+  const handlers: Record<string, (args: Readonly<Record<string, string>>) => Promise<void>> = { "issue-sync": issueSync, "managed-repository-ids": listManagedRepositoryIds, "onboard-repository": onboard, "pr-automation": automate, "pr-classification": classify, "pr-issue-link": runPrIssueLink, "sync-copilot-instructions": syncInstructions, "sync-managed-labels": syncManagedLabels, validate, "release-preflight": releasePreflight, "release-notes": releaseNotesCommand, "release-publish": releasePublish, "release-verify": releaseVerify };
   await handlers[invocation.command]!(invocation.args);
 }
 

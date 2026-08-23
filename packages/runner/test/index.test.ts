@@ -1,7 +1,8 @@
+import { generateKeyPairSync } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,16 +14,50 @@ const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").d
 afterEach(() => {
   delete process.env.TEST_REQUIRED_ENV;
   delete process.env.GITHUB_STEP_SUMMARY;
+  delete process.env.APP_ID;
+  delete process.env.INSTALLATION_ID;
+  delete process.env.STEWARD_APP_PRIVATE_KEY;
+  delete process.env.STEWARD_CONFIG_DIRECTORY;
+  vi.unstubAllGlobals();
 });
 
 describe("中央命令入口", () => {
-  it("只接受十二个命令及其已知、唯一、成对参数", () => {
-    const commands = ["issue-sync", "onboard-repository", "pr-automation", "pr-classification", "pr-issue-link", "sync-copilot-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"];
+  it("只接受十三个命令及其已知、唯一、成对参数", () => {
+    const commands = ["issue-sync", "managed-repository-ids", "onboard-repository", "pr-automation", "pr-classification", "pr-issue-link", "sync-copilot-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"];
     for (const command of commands) expect(parseInvocation([command]).command).toBe(command);
     expect(() => parseInvocation(["unknown"])).toThrow("未知命令");
     expect(() => parseInvocation(["validate", "--unknown", "x"])).toThrow("未知参数");
     expect(() => parseInvocation(["validate", "--workspace"])).toThrow("参数格式");
     expect(() => parseInvocation(["validate", "--workspace", "a", "--workspace", "b"])).toThrow("重复参数");
+  });
+
+  it("部署初始化仓库清单包含公开默认纳管仓库并排除默认private仓库", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
+    process.env.APP_ID = "4243096";
+    process.env.INSTALLATION_ID = "145952003";
+    process.env.STEWARD_APP_PRIVATE_KEY = privateKey;
+    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
+    const requests: Array<{ url: string; body: any }> = [];
+    vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+      const value = String(url);
+      requests.push({ url: value, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [
+        { id: 1296724484, full_name: "splrad/steward", private: false, owner: { id: 302208797, login: "splrad" } },
+        { id: 1400000000, full_name: "splrad/default-managed", private: false, owner: { id: 302208797, login: "splrad" } },
+        { id: 1400000001, full_name: "splrad/default-private", private: true, owner: { id: 302208797, login: "splrad" } },
+      ] }), { status: 200 });
+      return new Response("unexpected", { status: 500 });
+    });
+    const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      await main(["managed-repository-ids", "--policy-sha", "a".repeat(40)]);
+      expect(output).toHaveBeenCalledWith("1296724484\n1400000000\n");
+      expect(requests[0]!.body).toEqual({ permissions: { metadata: "read" } });
+      expect(requests[0]!.body).not.toHaveProperty("repository_ids");
+    } finally {
+      output.mockRestore();
+    }
   });
 
   it("在创建安装令牌前拒绝超出安全整数范围的编号", async () => {
