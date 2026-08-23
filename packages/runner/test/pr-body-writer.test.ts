@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { extractManagedPullRequestBlock, renderManagedBody } from "../../core/src/automation.js";
 import { targetManagedBlock, updatePullRequestBodyDurably } from "../src/pr-body-writer.js";
@@ -23,6 +24,11 @@ function pull(body: string): any {
   return { number: pullRequestNumber, body, head: { sha: headSha, repo: { id: repositoryId } }, base: { sha: baseSha, repo: { id: repositoryId } } };
 }
 
+function intentFromRequest(init: RequestInit, status: "prepared" | "patched" | "confirmed" = "prepared", writeId = "id"): any {
+  const request = JSON.parse(String(init.body ?? "{}"));
+  return { ...request, writeId, status, deliveryProven: status === "confirmed", blockedReason: null };
+}
+
 describe("Runner正文持久写入器", () => {
   it("持久化成功、交付已证明且Runtime确认后才返回", async () => {
     let live = `人工前言\n${block("旧摘要")}\n`;
@@ -30,10 +36,10 @@ describe("Runner正文持久写入器", () => {
     const calls: string[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
       const value = String(url); calls.push(`${init.method ?? "GET"} ${value}`);
-      if (value.endsWith("/prepare")) return new Response(JSON.stringify({ writeId: "id", status: "prepared", deliveryProven: false, blockedReason: null }), { status: 200 });
-      if (value.endsWith("/patched")) return new Response(JSON.stringify({ writeId: "id", status: "patched", deliveryProven: false, blockedReason: null }), { status: 200 });
-      if (value.endsWith("/confirm")) return new Response(JSON.stringify({ writeId: "id", status: "confirmed", deliveryProven: true, blockedReason: null }), { status: 200 });
-      return new Response(JSON.stringify({ writeId: "id", status: "patched", deliveryProven: true, blockedReason: null }), { status: 200 });
+      if (value.endsWith("/prepare")) return new Response(JSON.stringify(intentFromRequest(init)), { status: 200 });
+      if (value.endsWith("/patched")) return new Response(JSON.stringify({ writeId: "id", status: "patched" }), { status: 200 });
+      if (value.endsWith("/wait")) return new Response(JSON.stringify({ writeId: "id", status: "confirmed", deliveryProven: true, blockedReason: null }), { status: 200 });
+      return new Response("unexpected", { status: 500 });
     });
     const client = {
       getPullRequest: async () => pull(live),
@@ -43,7 +49,8 @@ describe("Runner正文持久写入器", () => {
     expect(result.body).toContain("新摘要");
     expect(calls.some((value) => value.endsWith("/prepare"))).toBe(true);
     expect(calls.some((value) => value.endsWith("/patched"))).toBe(true);
-    expect(calls.some((value) => value.endsWith("/confirm"))).toBe(true);
+    expect(calls.filter((value) => value.endsWith("/wait"))).toHaveLength(1);
+    expect(calls.some((value) => value.endsWith("/confirm"))).toBe(false);
   });
 
   it("写意图持久化失败时不调用GitHub PATCH", async () => {
@@ -60,9 +67,9 @@ describe("Runner正文持久写入器", () => {
     let reads = 0;
     const updatePullRequest = vi.fn();
     const runtimeCalls: string[] = [];
-    vi.stubGlobal("fetch", async (url: string) => {
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
       runtimeCalls.push(String(url));
-      return new Response(JSON.stringify({ writeId: "id", status: "prepared", deliveryProven: false, blockedReason: null }), { status: 200 });
+      return new Response(JSON.stringify(intentFromRequest(init)), { status: 200 });
     });
     await expect(updatePullRequestBodyDurably({ client: { getPullRequest: async () => pull(reads++ === 0 ? before : drifted), updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock: block("新摘要") })).rejects.toThrow("写入前发生漂移");
     expect(updatePullRequest).not.toHaveBeenCalled();
@@ -73,8 +80,8 @@ describe("Runner正文持久写入器", () => {
     let live = `人工前言\n${block("旧摘要")}\n`;
     let requests = 0;
     const updatePullRequest = vi.fn(async (_owner: string, _repo: string, _number: number, patch: any) => pull(live = patch.body));
-    vi.stubGlobal("fetch", async () => ++requests === 1
-      ? new Response(JSON.stringify({ writeId: "id", status: "prepared", deliveryProven: false, blockedReason: null }), { status: 200 })
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit = {}) => ++requests === 1
+      ? new Response(JSON.stringify(intentFromRequest(init)), { status: 200 })
       : new Response("failed", { status: 503 }));
     await expect(updatePullRequestBodyDurably({ client: { getPullRequest: async () => pull(live), updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock: block("新摘要") })).rejects.toThrow("运行时请求失败");
     expect(updatePullRequest).toHaveBeenCalledOnce();
@@ -82,5 +89,35 @@ describe("Runner正文持久写入器", () => {
 
   it("损坏或混用的目标受管块在任何外部写入前被拒绝", () => {
     expect(() => targetManagedBlock("<!-- workflow:managed-pr:start -->\n损坏", "managed-pr")).toThrow("标记");
+  });
+
+  it("附加正文和无效确认次数在任何读取或写入前被拒绝", async () => {
+    const getPullRequest = vi.fn();
+    const updatePullRequest = vi.fn();
+    const common = { client: { getPullRequest, updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr" as const, targetBlock: block("新摘要") };
+    await expect(updatePullRequestBodyDurably({ ...common, additionalPatch: { body: "绕过" } })).rejects.toThrow("不能包含正文");
+    await expect(updatePullRequestBodyDurably({ ...common, confirmationAttempts: 0 })).rejects.toThrow("确认次数无效");
+    expect(getPullRequest).not.toHaveBeenCalled();
+    expect(updatePullRequest).not.toHaveBeenCalled();
+  });
+
+  it("正文PATCH成功但状态回写失败后复用活动意图恢复且不重复PATCH", async () => {
+    const live = `人工前言\n${block("新摘要")}\n`;
+    const targetBlock = block("新摘要");
+    const targetBodyDigest = createHash("sha256").update(live, "utf8").digest("hex");
+    const updatePullRequest = vi.fn();
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const value = String(url); calls.push(value);
+      if (value.endsWith("/active")) return new Response(JSON.stringify({ writeId: "saved-id", regionKind: "managed-pr", baseSha, headSha, issueGeneration: 0, targetBlock, targetBodyDigest, status: "prepared", deliveryProven: false, blockedReason: null }), { status: 200 });
+      if (value.endsWith("/patched")) return new Response(JSON.stringify({ writeId: "saved-id", status: "patched" }), { status: 200 });
+      if (value.endsWith("/wait")) return new Response(JSON.stringify({ writeId: "saved-id", status: "confirmed", deliveryProven: true, blockedReason: null }), { status: 200 });
+      return new Response("unexpected", { status: 500 });
+    });
+    const result = await updatePullRequestBodyDurably({ client: { getPullRequest: async () => pull(live), updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock, confirmationAttempts: 1 });
+    expect(result.body).toBe(live);
+    expect(updatePullRequest).not.toHaveBeenCalled();
+    expect(calls.some((value) => value.endsWith("/saved-id/patched"))).toBe(true);
+    expect(calls.filter((value) => value.endsWith("/saved-id/wait"))).toHaveLength(1);
   });
 });

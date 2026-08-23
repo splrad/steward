@@ -303,7 +303,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
       const store = new IssueSnapshotStore(env.ISSUE_SNAPSHOTS);
       const state = await store.getRepositoryState(Number(repository.id));
-      await store.deleteSnapshot(Number(repository.id), issueNumber, state?.generation ?? 0, new Date().toISOString());
+      await store.deleteSnapshot(Number(repository.id), issueNumber, state?.generation ?? 0, state?.stateRevision ?? 0, new Date().toISOString());
       await dispatchIssueRefreshes(env, repository, deliveryId, null);
       if (action === "transferred") {
         const destinationRepository = payload.changes?.new_repository;

@@ -49,10 +49,12 @@ export interface PrIssueLinkArgs {
 interface SnapshotState {
   repositoryId: number;
   generation: number;
+  stateRevision: number;
   syncState: "uninitialized" | "scanning" | "ready" | "degraded";
   openSetDigest: string;
   snapshots: StoredSnapshot[];
   reconciliationGeneration?: number | null;
+  reconciliationStateRevision?: number | null;
 }
 
 interface StoredSnapshot {
@@ -303,6 +305,7 @@ async function runtimeRequest<T>(token: string, method: "GET" | "POST", path: st
 
 function validateSnapshotState(value: SnapshotState, repositoryId: number): SnapshotState {
   if (!value || value.repositoryId !== repositoryId || !Number.isSafeInteger(value.generation) || value.generation < 0
+    || !Number.isSafeInteger(value.stateRevision) || value.stateRevision < 0
     || value.syncState !== "ready" || !/^[0-9a-f]{64}$/u.test(value.openSetDigest) || !Array.isArray(value.snapshots)) throw new Error("议题快照仓库尚未就绪");
   for (const item of value.snapshots) {
     if (item.repositoryId !== repositoryId || item.issueNumber !== item.snapshot?.issue?.number || item.snapshot?.repository?.id !== repositoryId
@@ -803,18 +806,22 @@ async function acknowledgeReconciliation(args: PrIssueLinkArgs): Promise<void> {
   const before = await runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${args.repositoryId}`);
   if (before.repositoryId !== args.repositoryId) throw new Error("议题收敛确认仓库身份不一致");
   const pending = before.reconciliationGeneration;
+  const pendingStateRevision = before.reconciliationStateRevision;
   if (pending === undefined) throw new Error("议题收敛确认状态缺少待处理代次");
+  if (pendingStateRevision === undefined) throw new Error("议题收敛确认状态缺少待处理修订号");
   if (pending === null || pending > generation) {
     await writeSummary([`仓库编号：${args.repositoryId}`, `完成代次：${generation}`, `待处理代次：${pending ?? "none"}`, "状态：stale-or-already-acknowledged"]);
     return;
   }
   if (pending < generation) throw new Error("议题收敛完成代次领先于D1待处理代次");
-  const result = await runtimeRequest<{ repositoryId: number; generation: number; acknowledged: boolean }>(token, "POST", `/internal/issue-snapshots/${args.repositoryId}/reconciliation`, {
+  if (typeof pendingStateRevision !== "number" || !Number.isSafeInteger(pendingStateRevision) || pendingStateRevision < 0) throw new Error("议题收敛确认修订号无效");
+  const result = await runtimeRequest<{ repositoryId: number; generation: number; stateRevision: number; acknowledged: boolean }>(token, "POST", `/internal/issue-snapshots/${args.repositoryId}/reconciliation`, {
     "x-steward-reconciliation-generation": String(generation),
+    "x-steward-reconciliation-state-revision": String(pendingStateRevision),
   });
-  if (result.repositoryId !== args.repositoryId || result.generation !== generation || result.acknowledged !== true) throw new Error("议题收敛确认写入失败");
+  if (result.repositoryId !== args.repositoryId || result.generation !== generation || result.stateRevision !== pendingStateRevision || result.acknowledged !== true) throw new Error("议题收敛确认写入失败");
   const after = await runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${args.repositoryId}`);
-  if (after.repositoryId !== args.repositoryId || after.reconciliationGeneration === generation) throw new Error("议题收敛确认读回失败");
+  if (after.repositoryId !== args.repositoryId || (after.reconciliationGeneration === generation && after.reconciliationStateRevision === pendingStateRevision)) throw new Error("议题收敛确认读回失败");
   await writeSummary([`仓库编号：${args.repositoryId}`, `完成代次：${generation}`, `待处理代次：${after.reconciliationGeneration ?? "none"}`, "状态：acknowledged"]);
 }
 

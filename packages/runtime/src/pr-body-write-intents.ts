@@ -198,9 +198,11 @@ export class PullRequestBodyWriteIntentStore {
     if (input.targetBlock !== null && Buffer.byteLength(input.targetBlock, "utf8") > 256 * 1024) throw new Error("目标受管块过大");
     if (input.regionKind === "managed-pr" && (input.targetBlock === null || managedRegionBlock(input.targetBlock, "managed-pr") !== input.targetBlock)) throw new Error("目标拉取请求受管块无效");
     if (input.regionKind === "issue-links" && input.targetBlock !== null) issueLinksMetadataForIntent(input.targetBlock, { repositoryId, pullRequestNumber, baseSha, headSha, issueGeneration });
+    const beforeBodyDigest = requireDigest(input.beforeBodyDigest, "beforeBodyDigest");
+    const outsideBodyDigest = requireDigest(input.outsideBodyDigest, "outsideBodyDigest");
+    const targetBodyDigest = requireDigest(input.targetBodyDigest, "targetBodyDigest");
     const values = [repositoryId, pullRequestNumber, input.writeId, input.regionKind, baseSha, headSha,
-      issueGeneration, requireDigest(input.beforeBodyDigest, "beforeBodyDigest"), requireDigest(input.outsideBodyDigest, "outsideBodyDigest"),
-      input.targetBlock, requireDigest(input.targetBodyDigest, "targetBodyDigest"), input.now, input.now, input.expiresAt];
+      issueGeneration, beforeBodyDigest, outsideBodyDigest, input.targetBlock, targetBodyDigest, input.now, input.now, input.expiresAt];
     const result = await this.db.prepare(`INSERT INTO pull_request_body_write_intents
       (repository_id, pull_request_number, write_id, region_kind, base_sha, head_sha, issue_generation, before_body_digest, outside_body_digest, target_block, target_body_digest, status, compensation_generation, attempt_count, delivery_proven, created_at, updated_at, expires_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', 0, 0, 0, ?, ?, ?)
@@ -212,6 +214,11 @@ export class PullRequestBodyWriteIntentStore {
         expires_at=excluded.expires_at, confirmed_at=NULL, blocked_reason=NULL
       WHERE pull_request_body_write_intents.status IN ('confirmed','blocked') OR pull_request_body_write_intents.expires_at <= excluded.created_at`).bind(...values).run();
     if (affected(result) !== 1) {
+      const current = await this.get(repositoryId, pullRequestNumber);
+      if (current && ["prepared", "patched"].includes(current.status)
+        && current.regionKind === input.regionKind && current.baseSha === baseSha && current.headSha === headSha
+        && current.issueGeneration === issueGeneration && current.beforeBodyDigest === beforeBodyDigest
+        && current.outsideBodyDigest === outsideBodyDigest && current.targetBlock === input.targetBlock && current.targetBodyDigest === targetBodyDigest) return current;
       await this.db.prepare(`UPDATE pull_request_body_write_intents SET redrive_required=1, redrive_dispatched=0, updated_at=?
         WHERE repository_id=? AND pull_request_number=? AND status IN ('prepared','patched','compensating')`)
         .bind(input.now, repositoryId, pullRequestNumber).run();
@@ -242,7 +249,7 @@ export class PullRequestBodyWriteIntentStore {
   async beginCompensation(input: { repositoryId: number; pullRequestNumber: number; writeId: string; deliveryId: string; beforeBodyDigest: string; outsideBodyDigest: string; targetBodyDigest: string; now: string }): Promise<PullRequestBodyWriteIntent> {
     const result = await this.db.prepare(`UPDATE pull_request_body_write_intents SET status='compensating', compensation_generation=compensation_generation+1,
       before_body_digest=?, outside_body_digest=?, target_body_digest=?, delivery_proven=0, last_delivery_id=?, updated_at=?
-      WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status='patched' AND compensation_generation < 4 AND expires_at > ?`)
+      WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status IN ('patched','compensating') AND compensation_generation < 4 AND expires_at > ?`)
       .bind(requireDigest(input.beforeBodyDigest, "beforeBodyDigest"), requireDigest(input.outsideBodyDigest, "outsideBodyDigest"), requireDigest(input.targetBodyDigest, "targetBodyDigest"),
         input.deliveryId, input.now, input.repositoryId, input.pullRequestNumber, input.writeId, input.now).run();
     if (affected(result) !== 1) throw new Error("正文补偿上限或状态冲突");
@@ -378,13 +385,30 @@ export async function processPullRequestBodyEditedDelivery(input: {
   if (current.status === "compensating" && afterDigest !== current.targetBodyDigest) {
     let compensationWritten = false;
     try {
-      const compensatedBody = applyManagedRegion(before, current.regionKind, current.targetBlock);
-      if (pullRequestBodyDigest(compensatedBody) !== current.targetBodyDigest) throw new Error("补偿目标正文摘要不一致");
       const liveBeforeCompensation = await input.client.getPullRequest(owner, repo, pullRequestNumber);
       if (liveBeforeCompensation?.head?.sha !== current.headSha || liveBeforeCompensation?.base?.sha !== current.baseSha) throw new Error("补偿恢复前提交已经漂移");
-      if (String(liveBeforeCompensation?.body ?? "") === compensatedBody) compensationWritten = true;
-      else {
-        if (String(liveBeforeCompensation?.body ?? "") !== after) throw new Error("补偿恢复前正文已经漂移");
+      const liveBody = String(liveBeforeCompensation?.body ?? "");
+      let compensatedBody: string;
+      if (current.lastDeliveryId === input.deliveryId) {
+        compensatedBody = applyManagedRegion(before, current.regionKind, current.targetBlock);
+        if (pullRequestBodyDigest(compensatedBody) !== current.targetBodyDigest) throw new Error("补偿目标正文摘要不一致");
+        if (liveBody === compensatedBody) compensationWritten = true;
+        else if (liveBody !== after) throw new Error("补偿恢复前正文已经漂移");
+      } else {
+        if (liveBody !== after) throw new Error("补偿恢复前正文已经漂移");
+        compensatedBody = applyManagedRegion(after, current.regionKind, current.targetBlock);
+        current = await input.store.beginCompensation({
+          repositoryId,
+          pullRequestNumber,
+          writeId: current.writeId,
+          deliveryId: input.deliveryId,
+          beforeBodyDigest: afterDigest,
+          outsideBodyDigest: bodyOutsideManagedRegionDigest(compensatedBody, current.regionKind),
+          targetBodyDigest: pullRequestBodyDigest(compensatedBody),
+          now: input.now,
+        });
+      }
+      if (!compensationWritten) {
         const written = await input.client.updatePullRequest(owner, repo, pullRequestNumber, { body: compensatedBody });
         if (written?.head?.sha !== current.headSha || written?.base?.sha !== current.baseSha || String(written?.body ?? "") !== compensatedBody) throw new Error("补偿恢复写入响应不一致");
         compensationWritten = true;
@@ -408,7 +432,13 @@ export async function processPullRequestBodyEditedDelivery(input: {
     await input.store.proveDelivery({ repositoryId, pullRequestNumber, writeId: current.writeId, deliveryId: input.deliveryId, now: input.now });
     return record("proven");
   }
-  const compensatedBody = applyManagedRegion(before, current.regionKind, current.targetBlock);
+  let compensatedBody: string;
+  try {
+    compensatedBody = applyManagedRegion(before, current.regionKind, current.targetBlock);
+  } catch {
+    await input.store.block(repositoryId, pullRequestNumber, current.writeId, "compensation-input-invalid", input.now);
+    return record("blocked");
+  }
   let compensated: PullRequestBodyWriteIntent;
   try {
     compensated = await input.store.beginCompensation({
@@ -459,11 +489,11 @@ export async function confirmPullRequestBodyWriteIntent(input: {
   }
   if (current.regionKind === "issue-links") {
     const state = await input.store.issueGeneration(repositoryId);
-    if (current.targetBlock !== null && state !== current.issueGeneration) return input.store.block(repositoryId, input.pullRequestNumber, input.writeId, "issue-generation-drifted", input.now);
+    if (state !== current.issueGeneration) return input.store.block(repositoryId, input.pullRequestNumber, input.writeId, "issue-generation-drifted", input.now);
     const metadata = current.targetBlock ? issueLinksMetadataForIntent(current.targetBlock, current) : null;
     const desired = metadata ? metadata.issueNumbers.map((number) => ({ repositoryId, number })) : [];
     const sets = await input.client.listPullRequestClosingIssueSets(owner, repo, input.pullRequestNumber, repositoryId);
-    if (!verifyIssueLinkConvergence(desired, sets, repositoryId).converged) throw new Error("GitHub关闭议题集合尚未收敛");
+    if (!verifyIssueLinkConvergence(desired, sets, repositoryId).converged) return current;
   }
   return input.store.confirm(repositoryId, input.pullRequestNumber, input.writeId, input.now);
 }

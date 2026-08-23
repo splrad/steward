@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
 import {
   extractIssueLinksBlock,
   extractManagedPullRequestBlock,
@@ -14,6 +13,12 @@ export type DurableBodyRegionKind = "managed-pr" | "issue-links";
 
 interface RuntimeIntent {
   writeId: string;
+  regionKind: DurableBodyRegionKind;
+  baseSha: string;
+  headSha: string;
+  issueGeneration: number;
+  targetBlock: string | null;
+  targetBodyDigest: string;
   status: "prepared" | "patched" | "compensating" | "confirmed" | "blocked";
   deliveryProven: boolean;
   blockedReason: string | null;
@@ -65,6 +70,42 @@ function pullFacts(pull: any, repositoryId: number, pullRequestNumber: number, h
   return String(pull?.body ?? "");
 }
 
+function matchingIntent(input: {
+  intent: RuntimeIntent;
+  regionKind: DurableBodyRegionKind;
+  baseSha: string;
+  headSha: string;
+  issueGeneration: number;
+  targetBlock: string | null;
+  targetBodyDigest: string;
+}): boolean {
+  return input.intent.regionKind === input.regionKind
+    && input.intent.baseSha === input.baseSha
+    && input.intent.headSha === input.headSha
+    && input.intent.issueGeneration === input.issueGeneration
+    && input.intent.targetBlock === input.targetBlock
+    && input.intent.targetBodyDigest === input.targetBodyDigest;
+}
+
+async function waitForIntent(input: {
+  runtimeUrl: string;
+  token: string;
+  path: string;
+  writeId: string;
+  attempts: number;
+}): Promise<RuntimeIntent> {
+  const state = await runtimeRequest<RuntimeIntent>({
+    runtimeUrl: input.runtimeUrl,
+    token: input.token,
+    method: "POST",
+    path: `${input.path}/${input.writeId}/wait`,
+    body: { attempts: input.attempts },
+  });
+  if (state.status === "blocked") throw new Error(`正文写意图失败:${state.blockedReason ?? "blocked"}`);
+  if (state.status !== "confirmed") throw new Error("正文写意图未在固定窗口内确认");
+  return state;
+}
+
 export async function updatePullRequestBodyDurably(input: {
   client: GitHubClient;
   token: string;
@@ -81,33 +122,54 @@ export async function updatePullRequestBodyDurably(input: {
   additionalPatch?: Readonly<Record<string, unknown>>;
   confirmationAttempts?: number;
 }): Promise<any> {
+  const attempts = input.confirmationAttempts ?? 60;
+  if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 60) throw new Error("正文写入确认次数无效");
+  if (input.additionalPatch && Object.prototype.hasOwnProperty.call(input.additionalPatch, "body")) throw new Error("附加更新不能包含正文");
   const current = await input.client.getPullRequest(input.owner, input.repo, input.pullRequestNumber);
   const before = pullFacts(current, input.repositoryId, input.pullRequestNumber, input.headSha, input.baseSha);
   const next = applyRegion(before, input.regionKind, input.targetBlock);
+  const issueGeneration = input.issueGeneration ?? 0;
+  const targetBodyDigest = digest(next);
+  const path = `/internal/issue-snapshots/${input.repositoryId}/body-write-intents/${input.pullRequestNumber}`;
   if (next === before) {
+    const active = await runtimeRequest<RuntimeIntent | null>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "GET", path: `${path}/active` });
+    if (active) {
+      if (!matchingIntent({ intent: active, regionKind: input.regionKind, baseSha: input.baseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest })) {
+        throw new Error("活动正文写意图与当前目标冲突");
+      }
+      if (active.status === "blocked") throw new Error(`正文写意图失败:${active.blockedReason ?? "blocked"}`);
+      if (active.status !== "confirmed") {
+        if (active.status === "prepared" || active.status === "compensating") {
+          await runtimeRequest<RuntimeIntent>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "POST", path: `${path}/${active.writeId}/patched` });
+        }
+        await waitForIntent({ runtimeUrl: input.runtimeUrl, token: input.token, path, writeId: active.writeId, attempts });
+      }
+    }
     return input.additionalPatch && Object.keys(input.additionalPatch).length
       ? input.client.updatePullRequest(input.owner, input.repo, input.pullRequestNumber, input.additionalPatch)
       : current;
   }
-  const writeId = randomUUID();
-  const path = `/internal/issue-snapshots/${input.repositoryId}/body-write-intents/${input.pullRequestNumber}`;
-  await runtimeRequest<RuntimeIntent>({
+  const prepared = await runtimeRequest<RuntimeIntent>({
     runtimeUrl: input.runtimeUrl,
     token: input.token,
     method: "POST",
     path: `${path}/prepare`,
     body: {
-      writeId,
+      writeId: randomUUID(),
       regionKind: input.regionKind,
       baseSha: input.baseSha,
       headSha: input.headSha,
-      issueGeneration: input.issueGeneration ?? 0,
+      issueGeneration,
       beforeBodyDigest: digest(before),
       outsideBodyDigest: outsideDigest(before, input.regionKind),
       targetBlock: input.targetBlock,
-      targetBodyDigest: digest(next),
+      targetBodyDigest,
     },
   });
+  if (prepared.status !== "prepared" || !matchingIntent({ intent: prepared, regionKind: input.regionKind, baseSha: input.baseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest })) {
+    throw new Error("正文写意图恢复状态与当前正文不一致");
+  }
+  const writeId = prepared.writeId;
   const confirmedBefore = pullFacts(await input.client.getPullRequest(input.owner, input.repo, input.pullRequestNumber), input.repositoryId, input.pullRequestNumber, input.headSha, input.baseSha);
   if (confirmedBefore !== before) {
     await runtimeRequest({ runtimeUrl: input.runtimeUrl, token: input.token, method: "POST", path: `${path}/${writeId}/block`, body: { reason: "pre-patch-drift" } });
@@ -117,27 +179,9 @@ export async function updatePullRequestBodyDurably(input: {
   pullFacts(written, input.repositoryId, input.pullRequestNumber, input.headSha, input.baseSha);
   if (String(written?.body ?? "") !== next) throw new Error("拉取请求正文写入响应不一致");
   await runtimeRequest<RuntimeIntent>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "POST", path: `${path}/${writeId}/patched` });
-  const attempts = input.confirmationAttempts ?? 60;
-  if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 60) throw new Error("正文写入确认次数无效");
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const state = await runtimeRequest<RuntimeIntent>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "GET", path: `${path}/${writeId}` });
-    if (state.status === "blocked") throw new Error(`正文写意图失败:${state.blockedReason ?? "blocked"}`);
-    if (state.status === "confirmed") {
-      const finalPull = await input.client.getPullRequest(input.owner, input.repo, input.pullRequestNumber);
-      const finalBody = pullFacts(finalPull, input.repositoryId, input.pullRequestNumber, input.headSha, input.baseSha);
-      if (targetManagedBlock(finalBody, input.regionKind) !== input.targetBlock) throw new Error("拉取请求正文写入最终读回不一致");
-      return finalPull;
-    }
-    if (state.status === "patched" && state.deliveryProven) {
-      const confirmed = await runtimeRequest<RuntimeIntent>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "POST", path: `${path}/${writeId}/confirm` });
-      if (confirmed.status === "confirmed") {
-        const finalPull = await input.client.getPullRequest(input.owner, input.repo, input.pullRequestNumber);
-        const finalBody = pullFacts(finalPull, input.repositoryId, input.pullRequestNumber, input.headSha, input.baseSha);
-        if (targetManagedBlock(finalBody, input.regionKind) !== input.targetBlock) throw new Error("拉取请求正文写入最终读回不一致");
-        return finalPull;
-      }
-    }
-    if (attempt + 1 < attempts) await delay(500);
-  }
-  throw new Error("正文写意图未在固定窗口内确认");
+  await waitForIntent({ runtimeUrl: input.runtimeUrl, token: input.token, path, writeId, attempts });
+  const finalPull = await input.client.getPullRequest(input.owner, input.repo, input.pullRequestNumber);
+  const finalBody = pullFacts(finalPull, input.repositoryId, input.pullRequestNumber, input.headSha, input.baseSha);
+  if (targetManagedBlock(finalBody, input.regionKind) !== input.targetBlock) throw new Error("拉取请求正文写入最终读回不一致");
+  return finalPull;
 }

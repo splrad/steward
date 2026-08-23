@@ -34,12 +34,13 @@ async function withRunnerEnvironment<T>(operation: (directory: string) => Promis
   finally { await rm(directory, { recursive: true, force: true }); }
 }
 
-function bodyWriteRuntimeResponse(value: string, method: string): Response | null {
+function bodyWriteRuntimeResponse(value: string, method: string, body: any): Response | null {
   if (!value.includes(`/internal/issue-snapshots/${repositoryId}/body-write-intents/42`)) return null;
-  if (method === "POST" && value.endsWith("/prepare")) return new Response(JSON.stringify({ writeId: "intent", status: "prepared", deliveryProven: false, blockedReason: null }), { status: 200 });
+  if (method === "POST" && value.endsWith("/prepare")) return new Response(JSON.stringify({ ...body, writeId: "intent", status: "prepared", deliveryProven: false, blockedReason: null }), { status: 200 });
   if (method === "POST" && value.endsWith("/patched")) return new Response(JSON.stringify({ writeId: "intent", status: "patched", deliveryProven: false, blockedReason: null }), { status: 200 });
   if (method === "POST" && value.endsWith("/block")) return new Response(JSON.stringify({ writeId: "intent", status: "blocked", deliveryProven: false, blockedReason: "pre-patch-drift" }), { status: 200 });
-  if (method === "GET") return new Response(JSON.stringify({ writeId: "intent", status: "confirmed", deliveryProven: true, blockedReason: null }), { status: 200 });
+  if (method === "GET" && value.endsWith("/active")) return new Response("null", { status: 200 });
+  if (method === "POST" && value.endsWith("/wait")) return new Response(JSON.stringify({ writeId: "intent", status: "confirmed", deliveryProven: true, blockedReason: null }), { status: 200 });
   return new Response("unexpected body write request", { status: 500 });
 }
 
@@ -131,7 +132,7 @@ describe("拉取请求议题关联运行器", () => {
       vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
         const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
         calls.push({ url: value, method, body });
-        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method); if (bodyWriteResponse) return bodyWriteResponse;
+        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method, body); if (bodyWriteResponse) return bodyWriteResponse;
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
         if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
         if (value.includes("/repos/splrad/steward/pulls?state=open")) return new Response(JSON.stringify([{ number: 9 }, { number: 3 }]), { status: 200 });
@@ -153,6 +154,7 @@ describe("拉取请求议题关联运行器", () => {
       process.env.ISSUE_LINK_ACK_ONLY = "true";
       process.env.RUNTIME_URL = "https://runtime.test";
       let pending: number | null = 7;
+      let pendingStateRevision: number | null = 4;
       const calls: Array<{ url: string; method: string; headers: Headers }> = [];
       vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
         const value = String(url); const method = init.method ?? "GET"; const headers = new Headers(init.headers);
@@ -161,10 +163,12 @@ describe("拉取请求议题关联运行器", () => {
         if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
         if (value.endsWith(`/internal/issue-snapshots/${repositoryId}/reconciliation`) && method === "POST") {
           expect(headers.get("x-steward-reconciliation-generation")).toBe("7");
+          expect(headers.get("x-steward-reconciliation-state-revision")).toBe("4");
           pending = null;
-          return new Response(JSON.stringify({ repositoryId, generation: 7, acknowledged: true }), { status: 200 });
+          pendingStateRevision = null;
+          return new Response(JSON.stringify({ repositoryId, generation: 7, stateRevision: 4, acknowledged: true }), { status: 200 });
         }
-        if (value.endsWith(`/internal/issue-snapshots/${repositoryId}`)) return new Response(JSON.stringify({ repositoryId, reconciliationGeneration: pending }), { status: 200 });
+        if (value.endsWith(`/internal/issue-snapshots/${repositoryId}`)) return new Response(JSON.stringify({ repositoryId, reconciliationGeneration: pending, reconciliationStateRevision: pendingStateRevision }), { status: 200 });
         return new Response("unexpected", { status: 500 });
       });
       await runPrIssueLink(invocation({ "scan-all": "true", "pull-request-number": undefined as unknown as string, "reconciliation-generation": "7" }));
@@ -180,7 +184,7 @@ describe("拉取请求议题关联运行器", () => {
       vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
         const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
         calls.push({ url: value, method, body });
-        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method); if (bodyWriteResponse) return bodyWriteResponse;
+        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method, body); if (bodyWriteResponse) return bodyWriteResponse;
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
         if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
         if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify(pull()), { status: 200 });
@@ -207,7 +211,7 @@ describe("拉取请求议题关联运行器", () => {
       vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
         const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
         calls.push({ url: value, method, body });
-        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method); if (bodyWriteResponse) return bodyWriteResponse;
+        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method, body); if (bodyWriteResponse) return bodyWriteResponse;
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
         if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
         if (value.endsWith("/repos/splrad/steward/pulls/42") && method === "PATCH") { currentBody = body.body; return new Response(JSON.stringify(pull(currentBody, 301115370, "release")), { status: 200 }); }
@@ -235,7 +239,7 @@ describe("拉取请求议题关联运行器", () => {
       let pullReads = 0;
       vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
         const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
-        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method); if (bodyWriteResponse) return bodyWriteResponse;
+        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method, body); if (bodyWriteResponse) return bodyWriteResponse;
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
         if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
         if (value.endsWith("/repos/splrad/steward/pulls/42") && method === "PATCH") { currentBody = body.body; return new Response(JSON.stringify(pull(currentBody, 301115370, "release")), { status: 200 }); }
@@ -265,7 +269,7 @@ describe("拉取请求议题关联运行器", () => {
       let drifted = false;
       vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
         const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
-        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method); if (bodyWriteResponse) return bodyWriteResponse;
+        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method, body); if (bodyWriteResponse) return bodyWriteResponse;
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
         if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
         if (value.endsWith("/repos/splrad/steward/pulls/42") && method === "PATCH") {
@@ -317,12 +321,13 @@ describe("拉取请求议题关联运行器", () => {
       const validatorReads: string[] = [];
       vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
         const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
+        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method, body); if (bodyWriteResponse) return bodyWriteResponse;
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
         if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
         if (value.endsWith("/repos/splrad/steward/pulls/42") && method === "PATCH") { currentBody = body.body; return new Response(JSON.stringify(pull(currentBody, 301115370)), { status: 200 }); }
         if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify(pull(currentBody, 301115370)), { status: 200 });
         if (value.endsWith("/repos/splrad/steward/git/ref/heads/main")) return new Response(JSON.stringify({ object: { sha: baseSha } }), { status: 200 });
-        if (value.endsWith(`/internal/issue-snapshots/${repositoryId}`)) return new Response(JSON.stringify({ repositoryId, generation: 2, syncState: "ready", openSetDigest, snapshots }), { status: 200 });
+        if (value.endsWith(`/internal/issue-snapshots/${repositoryId}`)) return new Response(JSON.stringify({ repositoryId, generation: 2, stateRevision: 0, syncState: "ready", openSetDigest, snapshots }), { status: 200 });
         if (/\/issues\/[12]$/u.test(value)) { validatorReads.push(value); return new Response(null, { status: 304 }); }
         if (value.endsWith("/graphql")) return new Response(JSON.stringify({ data: { repository: { databaseId: repositoryId, pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } }), { status: 200 });
         if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
@@ -367,7 +372,7 @@ describe("拉取请求议题关联运行器", () => {
       vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
         const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
         calls.push({ url: value, method, body });
-        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method); if (bodyWriteResponse) return bodyWriteResponse;
+        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method, body); if (bodyWriteResponse) return bodyWriteResponse;
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
         if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
         if (value.endsWith("/repos/splrad/steward/pulls/42") && method === "PATCH") { currentBody = body.body; return new Response(JSON.stringify(pull(currentBody, 301115370)), { status: 200 }); }
@@ -376,7 +381,7 @@ describe("拉取请求议题关联运行器", () => {
         if (value.endsWith(`/internal/issue-snapshots/${repositoryId}`)) {
           snapshotReads++;
           return snapshotReads === 1
-            ? new Response(JSON.stringify({ repositoryId, generation: 2, syncState: "ready", openSetDigest, snapshots: [] }), { status: 200 })
+            ? new Response(JSON.stringify({ repositoryId, generation: 2, stateRevision: 0, syncState: "ready", openSetDigest, snapshots: [] }), { status: 200 })
             : new Response("unavailable", { status: 503 });
         }
         if (value.endsWith("/graphql")) return new Response(JSON.stringify({ data: { repository: { databaseId: repositoryId, pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } }), { status: 200 });
@@ -410,7 +415,7 @@ describe("拉取请求议题关联运行器", () => {
       vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
         const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
         calls.push({ url: value, method, body });
-        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method); if (bodyWriteResponse) return bodyWriteResponse;
+        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method, body); if (bodyWriteResponse) return bodyWriteResponse;
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
         if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
         if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response("temporarily unavailable", { status: 503 });
@@ -435,7 +440,7 @@ describe("拉取请求议题关联运行器", () => {
       vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
         const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
         calls.push({ url: value, method, body });
-        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method); if (bodyWriteResponse) return bodyWriteResponse;
+        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method, body); if (bodyWriteResponse) return bodyWriteResponse;
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
         if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
         if (value.endsWith("/repos/splrad/steward/pulls/42") && method === "PATCH") { currentBody = body.body; return new Response(JSON.stringify(pull(currentBody, 301115370)), { status: 200 }); }
