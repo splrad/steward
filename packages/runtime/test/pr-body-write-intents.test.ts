@@ -397,6 +397,24 @@ describe("拉取请求正文持久补偿协议", () => {
     expect(await store.listPendingRedrives()).toEqual([expect.objectContaining({ repositoryId, pullRequestNumber, writeId: "11111111-1111-4111-8111-111111111111" })]);
   });
 
+  it("重新调度声明使用持久租约并允许失败释放或超时重试", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const before = body("人工前言", managedBlock("旧摘要"));
+    const { writeId } = await prepared(store, before, managedBlock("新摘要"));
+    await store.markPatched(repositoryId, pullRequestNumber, writeId, now);
+    await store.proveDelivery({ repositoryId, pullRequestNumber, writeId, deliveryId: "delivery-redrive-lease", now });
+    await store.confirm(repositoryId, pullRequestNumber, writeId, now);
+    await store.requestRedrive(repositoryId, pullRequestNumber, writeId, now);
+
+    expect(await store.claimRedrive(repositoryId, pullRequestNumber, writeId, "2026-08-22T00:01:00.000Z", "2026-08-21T22:01:00.000Z")).toBe(true);
+    expect(await store.claimRedrive(repositoryId, pullRequestNumber, writeId, "2026-08-22T00:02:00.000Z", "2026-08-21T22:02:00.000Z")).toBe(false);
+    expect(await store.listPendingRedrives(20, "2026-08-22T00:00:59.999Z")).toEqual([]);
+    expect(await store.listPendingRedrives(20, "2026-08-22T00:01:00.000Z")).toEqual([expect.objectContaining({ writeId })]);
+    expect(await store.releaseRedrive(repositoryId, pullRequestNumber, writeId, "2026-08-22T00:01:00.000Z")).toBe(true);
+    expect(await store.listPendingRedrives()).toEqual([expect.objectContaining({ writeId })]);
+  });
+
   it("同一目标的重复prepare复用原活动意图以恢复中断写入", async () => {
     const database = new SqliteD1();
     const store = new PullRequestBodyWriteIntentStore(database.binding());

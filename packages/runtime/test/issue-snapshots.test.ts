@@ -753,10 +753,74 @@ describe("正文写意图交付恢复", () => {
     expect(await recoverPullRequestBodyWriteIntents(env(database), new Date("2026-08-22T00:02:00Z"))).toBe(0);
     expect(dispatched).toEqual([{ ref: "main", inputs: { repositoryId: "1296724484" } }]);
     expect(await store.listPendingRedrives()).toEqual([]);
+    expect(await recoverPullRequestBodyWriteIntents(env(database), new Date("2026-08-22T00:03:00Z"))).toBe(0);
+    expect(dispatched).toHaveLength(1);
+    expect(await recoverPullRequestBodyWriteIntents(env(database), new Date("2026-08-22T02:02:00Z"))).toBe(0);
+    expect(dispatched).toEqual([
+      { ref: "main", inputs: { repositoryId: "1296724484" } },
+      { ref: "main", inputs: { repositoryId: "1296724484" } },
+    ]);
+  });
+
+  it("缺少来源的恢复项被隔离且不阻断后续工作流", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const oldBody = renderManagedBody({ generated: { type: "chore", scope: "test", title: "测试", summary: "旧摘要", motivation: "原因", changes: ["改动"], impact: [], releaseAndMigration: [] }, templateBody: "<!-- workflow:managed-pr:start -->\n<!-- workflow:managed-pr:end -->\n", actor: "splrad-steward[bot]", contributors: [], context: "old" });
+    const targetBody = renderManagedBody({ generated: { type: "chore", scope: "test", title: "测试", summary: "新摘要", motivation: "原因", changes: ["改动"], impact: [], releaseAndMigration: [] }, templateBody: oldBody, actor: "splrad-steward[bot]", contributors: [], context: "new" });
+    const targetBlock = extractManagedPullRequestBlock(targetBody).block;
+    const prepare = async (pullRequestNumber: number, writeId: string, redrive?: any) => {
+      await store.prepare({ repositoryId: 1296724484, pullRequestNumber, writeId, regionKind: "managed-pr", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
+        beforeBodyDigest: pullRequestBodyDigest(oldBody), outsideBodyDigest: bodyOutsideManagedRegionDigest(oldBody, "managed-pr"), targetBlock,
+        targetBodyDigest: pullRequestBodyDigest(targetBody), now: `2026-08-22T00:00:0${pullRequestNumber - 41}Z`, expiresAt: "2026-08-22T00:10:00Z", redrive });
+      await store.block(1296724484, pullRequestNumber, writeId, "test-recovery", `2026-08-22T00:00:0${pullRequestNumber - 40}Z`);
+    };
+    await prepare(42, "55555555-5555-4555-8555-555555555555");
+    await prepare(43, "66666666-6666-4666-8666-666666666666", { workflow: "sync-copilot-instructions.yml", inputs: { repositoryId: "1296724484" } });
+    const warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dispatched: any[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ ...repository(), default_branch: "main" }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/sync-copilot-instructions.yml/dispatches")) { dispatched.push(JSON.parse(String(init.body))); return new Response(null, { status: 204 }); }
+      return new Response("unexpected", { status: 500 });
+    });
+
+    expect(await recoverPullRequestBodyWriteIntents(env(database), new Date("2026-08-22T00:02:00Z"))).toBe(0);
+    expect(dispatched).toEqual([{ ref: "main", inputs: { repositoryId: "1296724484" } }]);
+    expect(warnings).toHaveBeenCalledWith(expect.stringContaining('"reason":"missing-redrive-origin"'));
+    expect(database.database.prepare("SELECT redrive_required, redrive_dispatched FROM pull_request_body_write_intents WHERE pull_request_number=42").get())
+      .toEqual({ redrive_required: 0, redrive_dispatched: 1 });
+    expect(await store.listPendingRedrives()).toEqual([]);
   });
 });
 
 describe("已验签Webhook直连清理", () => {
+  it("删除快照遇到并发代次推进时重读状态后继续清理和调度", async () => {
+    const database = new SqliteD1();
+    const winner = new IssueSnapshotStore(database.binding());
+    await put(winner, snapshot(1296724484, "splrad/steward", 7), 0);
+    const interleaved = new BeforeFirstBatchD1(database, async () => {
+      await put(winner, snapshot(1296724484, "splrad/steward", 8), 1, "concurrent-refresh");
+    });
+    const workflows: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      const workflow = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
+      if (workflow) { workflows.push(workflow); return new Response(null, { status: 204 }); }
+      return new Response("unexpected", { status: 500 });
+    });
+    const payload = { organization: { id: 302208797 }, installation: { id: 145952003 }, action: "deleted", repository: { ...repository(), default_branch: "main" }, issue: { number: 7 } };
+
+    expect((await handleWebhook(signedRequest("issues", payload), env(interleaved as unknown as SqliteD1))).status).toBe(202);
+    expect(await winner.getSnapshot(1296724484, 7)).toBeNull();
+    expect(await winner.getSnapshot(1296724484, 8)).not.toBeNull();
+    expect(await winner.getRepositoryState(1296724484)).toEqual(expect.objectContaining({ generation: 3 }));
+    expect(workflows).toEqual(["pr-issue-link.yml", "issue-sync.yml"]);
+  });
+
   it("议题删除和安装范围移除直接清理D1，删除后只调度失效与全量收敛", async () => {
     const database = new SqliteD1(); const store = new IssueSnapshotStore(database.binding());
     await put(store, snapshot(1296724484, "splrad/steward", 7), 0);

@@ -15,6 +15,8 @@ const ZERO_SHA = "0".repeat(40);
 const VALIDATION_WORKFLOW_NAME = "SPLRAD Steward / PR Validation";
 const VALIDATION_WORKFLOW_PATH = ".github/workflows/pr-validation.yml";
 const VALIDATION_CHECK_NAME = "PR Validation Gate";
+const BODY_WRITE_REDRIVE_RETRY_MS = 2 * 60 * 60_000;
+const ISSUE_SNAPSHOT_DELETE_ATTEMPTS = 3;
 
 function response(status: number, body?: unknown): Response {
   return new Response(body === undefined ? null : JSON.stringify(body), { status, headers: body === undefined ? undefined : { "Content-Type": "application/json; charset=utf-8" } });
@@ -333,8 +335,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       if (sourceManaged) {
         if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
         const store = new IssueSnapshotStore(env.ISSUE_SNAPSHOTS);
-        const state = await store.getRepositoryState(Number(repository.id));
-        await store.deleteSnapshot(Number(repository.id), issueNumber, state?.generation ?? 0, state?.stateRevision ?? 0, new Date().toISOString());
+        await deleteIssueSnapshotWithRetry(store, Number(repository.id), issueNumber, new Date().toISOString());
         await dispatchIssueRefreshes(env, repository, deliveryId, null);
       }
       if (destinationManaged) {
@@ -465,23 +466,47 @@ function deliveryHeader(headers: Record<string, unknown> | undefined, name: stri
   return typeof entry?.[1] === "string" ? entry[1] : "";
 }
 
+async function deleteIssueSnapshotWithRetry(store: IssueSnapshotStore, repositoryId: number, issueNumber: number, now: string): Promise<void> {
+  for (let attempt = 1; attempt <= ISSUE_SNAPSHOT_DELETE_ATTEMPTS; attempt += 1) {
+    const state = await store.getRepositoryState(repositoryId);
+    try {
+      await store.deleteSnapshot(repositoryId, issueNumber, state?.generation ?? 0, state?.stateRevision ?? 0, now);
+      return;
+    } catch (error) {
+      if (!(error instanceof Error && error.message === "issue-snapshot-generation-conflict") || attempt === ISSUE_SNAPSHOT_DELETE_ATTEMPTS) throw error;
+    }
+  }
+}
+
 export async function recoverPullRequestBodyWriteIntents(env: Env, now = new Date()): Promise<number> {
   if (!env.ISSUE_SNAPSHOTS) return 0;
   const store = new PullRequestBodyWriteIntentStore(env.ISSUE_SNAPSHOTS);
   const nowIso = now.toISOString();
+  const redriveRetryBefore = new Date(now.getTime() - BODY_WRITE_REDRIVE_RETRY_MS).toISOString();
   const expired = await store.blockExpired(nowIso, 20);
   const pending = await store.listRecoverable(nowIso, 20);
-  const queuedRedrives = await store.listPendingRedrives(20);
+  const queuedRedrives = await store.listPendingRedrives(20, redriveRetryBefore);
   if (!pending.length && !queuedRedrives.length) return expired;
   if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
   const dispatchRedrives = async (redrives: readonly PullRequestBodyWriteIntent[]) => {
     for (const current of redrives) {
-      if (!current.redrive) throw new Error("正文写意图缺少重调度来源");
+      const claimed = await store.claimRedrive(current.repositoryId, current.pullRequestNumber, current.writeId, nowIso, redriveRetryBefore);
+      if (!claimed) continue;
+      if (!current.redrive) {
+        console.warn(JSON.stringify({ repositoryId: current.repositoryId, pullRequestNumber: current.pullRequestNumber, writeId: current.writeId,
+          status: "body-write-redrive-abandoned", reason: "missing-redrive-origin" }));
+        await store.abandonClaimedRedrive(current.repositoryId, current.pullRequestNumber, current.writeId, nowIso);
+        continue;
+      }
       const inputs = { ...current.redrive.inputs };
       if (Object.hasOwn(inputs, "deliveryId")) inputs.deliveryId = `body-write-recovery:${current.writeId}`;
       if (Object.hasOwn(inputs, "policySha")) inputs.policySha = env.POLICY_SHA;
-      await send(env, current.redrive.workflow, inputs);
-      await store.markRedriveDispatched(current.repositoryId, current.pullRequestNumber, current.writeId, nowIso);
+      try {
+        await send(env, current.redrive.workflow, inputs);
+      } catch (error) {
+        await store.releaseRedrive(current.repositoryId, current.pullRequestNumber, current.writeId, nowIso);
+        throw error;
+      }
     }
   };
   await dispatchRedrives(queuedRedrives);
@@ -516,7 +541,7 @@ export async function recoverPullRequestBodyWriteIntents(env: Env, now = new Dat
       if (["proven", "compensated", "blocked"].includes(outcome)) { recovered += 1; break; }
     }
   }
-  await dispatchRedrives(await store.listPendingRedrives(20));
+  await dispatchRedrives(await store.listPendingRedrives(20, redriveRetryBefore));
   return recovered;
 }
 

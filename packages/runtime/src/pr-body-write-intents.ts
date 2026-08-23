@@ -360,19 +360,38 @@ export class PullRequestBodyWriteIntentStore {
     if (affected(result) !== 1) throw new Error("正文写意图不能重新调度");
   }
 
-  async listPendingRedrives(limit = 20): Promise<readonly PullRequestBodyWriteIntent[]> {
+  async listPendingRedrives(limit = 20, retryBefore = ""): Promise<readonly PullRequestBodyWriteIntent[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new Error("重新调度批量无效");
+    if (retryBefore && !Number.isFinite(new Date(retryBefore).getTime())) throw new Error("重新调度重试时间无效");
     const rows = await this.db.prepare(`SELECT * FROM pull_request_body_write_intents
-      WHERE status IN ('confirmed','blocked') AND redrive_required=1 AND redrive_dispatched=0
-      ORDER BY updated_at, repository_id, pull_request_number LIMIT ?`).bind(limit).all<IntentRow>();
+      WHERE status IN ('confirmed','blocked') AND redrive_required=1 AND (redrive_dispatched=0 OR updated_at <= ?)
+      ORDER BY updated_at, repository_id, pull_request_number LIMIT ?`).bind(retryBefore, limit).all<IntentRow>();
     return rows.results.map((row) => intent(row)!);
   }
 
-  async markRedriveDispatched(repositoryId: number, pullRequestNumber: number, writeId: string, now: string): Promise<void> {
+  async claimRedrive(repositoryId: number, pullRequestNumber: number, writeId: string, now: string, retryBefore: string): Promise<boolean> {
+    if (!Number.isFinite(new Date(now).getTime()) || !Number.isFinite(new Date(retryBefore).getTime())) throw new Error("重新调度声明时间无效");
     const result = await this.db.prepare(`UPDATE pull_request_body_write_intents SET redrive_dispatched=1, updated_at=?
-      WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status IN ('confirmed','blocked') AND redrive_required=1 AND redrive_dispatched=0`)
-      .bind(now, repositoryId, pullRequestNumber, writeId).run();
-    if (affected(result) !== 1) throw new Error("正文写意图重新调度状态冲突");
+      WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status IN ('confirmed','blocked') AND redrive_required=1
+      AND (redrive_dispatched=0 OR updated_at <= ?)`)
+      .bind(now, repositoryId, pullRequestNumber, writeId, retryBefore).run();
+    return affected(result) === 1;
+  }
+
+  async releaseRedrive(repositoryId: number, pullRequestNumber: number, writeId: string, claimedAt: string): Promise<boolean> {
+    const result = await this.db.prepare(`UPDATE pull_request_body_write_intents SET redrive_dispatched=0
+      WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status IN ('confirmed','blocked') AND redrive_required=1
+      AND redrive_dispatched=1 AND updated_at=?`)
+      .bind(repositoryId, pullRequestNumber, writeId, claimedAt).run();
+    return affected(result) === 1;
+  }
+
+  async abandonClaimedRedrive(repositoryId: number, pullRequestNumber: number, writeId: string, claimedAt: string): Promise<boolean> {
+    const result = await this.db.prepare(`UPDATE pull_request_body_write_intents SET redrive_required=0
+      WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status IN ('confirmed','blocked') AND redrive_required=1
+      AND redrive_dispatched=1 AND updated_at=?`)
+      .bind(repositoryId, pullRequestNumber, writeId, claimedAt).run();
+    return affected(result) === 1;
   }
 
   async blockExpired(now: string, limit = 20): Promise<number> {
