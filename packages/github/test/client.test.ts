@@ -20,6 +20,16 @@ describe("代码托管平台客户端", () => {
     expect(new URL(requested).searchParams.has("base")).toBe(false);
   });
 
+  it("未纳管清理可以分页列出全部状态的拉取请求", async () => {
+    let requested = "";
+    const client = new GitHubClient("token", "https://example.test", (async (url: string) => {
+      requested = String(url);
+      return new Response(JSON.stringify([{ number: 1 }]), { status: 200 });
+    }) as typeof fetch);
+    await expect(client.listAllPullRequests("splrad", "steward")).resolves.toEqual([{ number: 1 }]);
+    expect(new URL(requested).searchParams.get("state")).toBe("all");
+  });
+
   it("发送固定版本和规则提交请求头且不重试写入", async () => {
     let calls = 0;
     let receiver: unknown;

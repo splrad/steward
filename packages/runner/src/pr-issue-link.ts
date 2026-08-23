@@ -519,14 +519,18 @@ async function listPullRequestMatrix(args: PrIssueLinkArgs): Promise<void> {
   const [owner, repo] = splitRepository(repository.full_name);
   let numbers: number[];
   if (args.scanAll) {
-    const pulls = await client.listAllOpenPullRequests(owner, repo);
-    if (pulls.length > maximumPullRequests) throw new Error("开放拉取请求超过矩阵上限");
+    const pulls = args.cleanupUnmanaged
+      ? (await client.listAllPullRequests(owner, repo)).filter((pull: any) => pull?.state === "open"
+        || (pull?.state === "closed" && pull?.merged_at === null && isManagedPull(pull, args.repositoryId)
+          && String(pull?.body ?? "").includes("<!-- workflow:issue-links:start ")))
+      : await client.listAllOpenPullRequests(owner, repo);
+    if (pulls.length > maximumPullRequests) throw new Error(`${args.cleanupUnmanaged ? "待清理" : "开放"}拉取请求超过矩阵上限`);
     numbers = pulls.map((pull: any) => safeInteger(pull?.number, "pullRequestNumber"));
   } else {
     numbers = [safeInteger(args.pullRequestNumber, "pullRequestNumber")];
   }
   numbers.sort((left, right) => left - right);
-  if (new Set(numbers).size !== numbers.length) throw new Error("开放拉取请求集合重复");
+  if (new Set(numbers).size !== numbers.length) throw new Error(`${args.cleanupUnmanaged ? "待清理" : "开放"}拉取请求集合重复`);
   const revalidationBudget = workflowRevalidationBudget(numbers.length);
   let snapshotGeneration = "";
   if (args.scanAll && !args.invalidateOnly && !args.cleanupUnmanaged && numbers.length && process.env.RUNTIME_URL) {
@@ -534,7 +538,7 @@ async function listPullRequestMatrix(args: PrIssueLinkArgs): Promise<void> {
     snapshotGeneration = String(state.generation);
   }
   await writeOutput({ matrix: JSON.stringify(numbers.map(pullRequestNumber => ({ pullRequestNumber }))), count: String(numbers.length), "snapshot-generation": snapshotGeneration, "revalidation-budget": String(revalidationBudget) });
-  await writeSummary([`仓库编号：${args.repositoryId}`, `开放拉取请求：${numbers.length}`, `单阶段快照复核预算：${revalidationBudget}`]);
+  await writeSummary([`仓库编号：${args.repositoryId}`, `${args.cleanupUnmanaged ? "待清理" : "开放"}拉取请求：${numbers.length}`, `单阶段快照复核预算：${revalidationBudget}`]);
 }
 
 async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
@@ -545,7 +549,8 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
   const [owner, repo] = splitRepository(repository.full_name);
   const pull = await client.getPullRequest(owner, repo, pullRequestNumber);
   const facts = currentPullFacts(pull, args.repositoryId);
-  if (pull?.state !== "open") {
+  const closedUnmergedCleanup = args.cleanupUnmanaged && pull?.state === "closed" && pull?.merged_at === null;
+  if (pull?.state !== "open" && !closedUnmergedCleanup) {
     await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
       status: "completed", conclusion: "success", title: "议题关联不适用", summary: `拉取请求：#${pullRequestNumber}\n状态：closed`,
     });
