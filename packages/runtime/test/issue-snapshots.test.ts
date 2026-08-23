@@ -24,6 +24,7 @@ class SqliteD1 {
     this.database.exec(readFileSync(new URL("../migrations/0002_issue_snapshot_tombstones.sql", import.meta.url), "utf8"));
     this.database.exec(readFileSync(new URL("../migrations/0003_issue_snapshot_reconciliation.sql", import.meta.url), "utf8"));
     this.database.exec(readFileSync(new URL("../migrations/0004_issue_snapshot_state_revision.sql", import.meta.url), "utf8"));
+    this.database.exec(readFileSync(new URL("../migrations/0005_issue_snapshot_reconciliation_revision.sql", import.meta.url), "utf8"));
   }
   prepare(sql: string): D1PreparedStatement { return new SqliteD1Statement(this.database, sql) as unknown as D1PreparedStatement; }
   async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
@@ -50,6 +51,20 @@ class BeforeFirstBatchD1 {
     this.pending = null;
     if (beforeBatch) await beforeBatch();
     return this.database.batch<T>(statements);
+  }
+  binding(): D1Database { return this as unknown as D1Database; }
+}
+
+class AfterFirstBatchD1 {
+  private pending: (() => Promise<void>) | null;
+  constructor(private readonly database: SqliteD1, afterBatch: () => Promise<void>) { this.pending = afterBatch; }
+  prepare(sql: string): D1PreparedStatement { return this.database.prepare(sql); }
+  async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
+    const results = await this.database.batch<T>(statements);
+    const afterBatch = this.pending;
+    this.pending = null;
+    if (afterBatch) await afterBatch();
+    return results;
   }
   binding(): D1Database { return this as unknown as D1Database; }
 }
@@ -125,9 +140,10 @@ describe("议题快照D1存储", () => {
     expect((await store.getSnapshot(1296724484, 7))?.snapshot.issue.title).toBe("Steward议题");
     expect((await put(store, steward, 1, "delivery-repeat")).changed).toBe(false);
     expect((await store.getRepositoryState(1296724484))?.generation).toBe(1);
-    expect(await store.getReconciliationRequest(1296724484)).toEqual(expect.objectContaining({ generation: 1 }));
-    expect(await store.acknowledgeReconciliation(1296724484, 0)).toBe(false);
-    expect(await store.acknowledgeReconciliation(1296724484, 1)).toBe(true);
+    expect(await store.getReconciliationRequest(1296724484)).toEqual(expect.objectContaining({ generation: 1, stateRevision: 0 }));
+    expect(await store.acknowledgeReconciliation(1296724484, 0, 0)).toBe(false);
+    expect(await store.acknowledgeReconciliation(1296724484, 1, 1)).toBe(false);
+    expect(await store.acknowledgeReconciliation(1296724484, 1, 0)).toBe(true);
     expect(await store.getReconciliationRequest(1296724484)).toBeNull();
   });
 
@@ -188,6 +204,21 @@ describe("议题快照D1存储", () => {
     expect(stateReads).toHaveBeenCalledTimes(4);
   });
 
+  it("快照批处理提交后的后续写入不会把本次成功误报为失败", async () => {
+    const database = new SqliteD1();
+    const winner = new IssueSnapshotStore(database.binding());
+    const interleaved = new AfterFirstBatchD1(database, async () => {
+      await put(winner, snapshot(1296724484, "splrad/steward", 8), 1, "later-write");
+    });
+    const first = new IssueSnapshotStore(interleaved.binding());
+
+    const committed = await put(first, snapshot(1296724484, "splrad/steward", 7), 0, "first-write");
+    expect(committed).toEqual(expect.objectContaining({ changed: true, state: expect.objectContaining({ generation: 1 }) }));
+    expect(await winner.getRepositoryState(1296724484)).toEqual(expect.objectContaining({ generation: 2 }));
+    expect(await winner.getSnapshot(1296724484, 7)).not.toBeNull();
+    expect(await winner.getSnapshot(1296724484, 8)).not.toBeNull();
+  });
+
   it("扫描只有在实时开放集合与D1集合完全一致时才能就绪", async () => {
     const store = new IssueSnapshotStore(new SqliteD1().binding());
     const scanning = await store.setScanState(1296724484, "scanning", 0, 0, "2026-08-21T00:00:00Z");
@@ -211,6 +242,17 @@ describe("议题快照D1存储", () => {
       .rejects.toThrow("issue-snapshot-generation-conflict");
     expect(await winner.getRepositoryState(1296724484)).toEqual(expect.objectContaining({ generation: 0, stateRevision: 2, syncState: "degraded" }));
     expect(await winner.getReconciliationRequest(1296724484)).toBeNull();
+  });
+
+  it("迟到确认不能删除同代次下较新的重算请求", async () => {
+    const store = new IssueSnapshotStore(new SqliteD1().binding());
+    const firstReady = await store.setScanState(1296724484, "ready", 0, 0, "2026-08-21T00:00:00Z", []);
+    await store.setScanState(1296724484, "degraded", 0, firstReady.stateRevision, "2026-08-21T00:01:00Z");
+    const secondReady = await store.setScanState(1296724484, "ready", 0, firstReady.stateRevision + 1, "2026-08-21T00:02:00Z", []);
+
+    expect(await store.acknowledgeReconciliation(1296724484, 0, firstReady.stateRevision)).toBe(false);
+    expect(await store.getReconciliationRequest(1296724484)).toEqual(expect.objectContaining({ generation: 0, stateRevision: secondReady.stateRevision }));
+    expect(await store.acknowledgeReconciliation(1296724484, 0, secondReady.stateRevision)).toBe(true);
   });
 
   it("删除始终绑定复合主键，仓库清理不影响另一个仓库的同号议题", async () => {
@@ -440,5 +482,24 @@ describe("议题快照内部接口", () => {
     const ready = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/scan-state", { method: "POST", headers: { authorization: "Bearer one-repository-token", "x-steward-scan-state": "ready" } }), env(database));
     expect(ready.status).toBe(200);
     expect(await ready.json()).toEqual(expect.objectContaining({ repositoryId: 1296724484, generation: 0, syncState: "ready" }));
+  });
+
+  it("重算确认必须同时匹配请求代次和状态修订号", async () => {
+    const database = new SqliteD1();
+    const store = new IssueSnapshotStore(database.binding());
+    const ready = await store.setScanState(1296724484, "ready", 0, 0, "2026-08-21T00:00:00Z", []);
+    installAuthorization();
+    const url = "https://example.test/internal/issue-snapshots/1296724484/reconciliation";
+    const authorization = "Bearer one-repository-token";
+
+    expect((await worker.fetch(new Request(url, { method: "POST", headers: { authorization, "x-steward-reconciliation-generation": "0" } }), env(database))).status).toBe(400);
+    const stale = await worker.fetch(new Request(url, { method: "POST", headers: {
+      authorization, "x-steward-reconciliation-generation": "0", "x-steward-reconciliation-state-revision": "0",
+    } }), env(database));
+    expect(await stale.json()).toEqual({ repositoryId: 1296724484, generation: 0, stateRevision: 0, acknowledged: false });
+    const current = await worker.fetch(new Request(url, { method: "POST", headers: {
+      authorization, "x-steward-reconciliation-generation": "0", "x-steward-reconciliation-state-revision": String(ready.stateRevision),
+    } }), env(database));
+    expect(await current.json()).toEqual({ repositoryId: 1296724484, generation: 0, stateRevision: ready.stateRevision, acknowledged: true });
   });
 });
