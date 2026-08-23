@@ -730,6 +730,30 @@ describe("正文写意图交付恢复", () => {
     expect((await store.get(1296724484, 42))?.status).toBe("confirmed");
     expect(dispatched).toEqual([expect.objectContaining({ inputs: expect.objectContaining({ repositoryId: "1296724484", sourceRef: "refs/heads/feature/test", eventAfterSha: "c".repeat(40), deliveryId: `body-write-recovery:${writeId}` }) })]);
   });
+
+  it("Copilot说明正文意图通过原工作流恢复且不注入未声明输入", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const oldBody = renderManagedBody({ generated: { type: "chore", scope: "test", title: "测试", summary: "旧摘要", motivation: "原因", changes: ["改动"], impact: [], releaseAndMigration: [] }, templateBody: "<!-- workflow:managed-pr:start -->\n<!-- workflow:managed-pr:end -->\n", actor: "splrad-steward[bot]", contributors: [], context: "old" });
+    const targetBody = renderManagedBody({ generated: { type: "chore", scope: "test", title: "测试", summary: "新摘要", motivation: "原因", changes: ["改动"], impact: [], releaseAndMigration: [] }, templateBody: oldBody, actor: "splrad-steward[bot]", contributors: [], context: "new" });
+    const writeId = "44444444-4444-4444-8444-444444444444";
+    await store.prepare({ repositoryId: 1296724484, pullRequestNumber: 42, writeId, regionKind: "managed-pr", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
+      beforeBodyDigest: pullRequestBodyDigest(oldBody), outsideBodyDigest: bodyOutsideManagedRegionDigest(oldBody, "managed-pr"), targetBlock: extractManagedPullRequestBlock(targetBody).block,
+      targetBodyDigest: pullRequestBodyDigest(targetBody), now: "2026-08-22T00:00:00Z", expiresAt: "2026-08-22T00:10:00Z",
+      redrive: { workflow: "sync-copilot-instructions.yml", inputs: { repositoryId: "1296724484" } } });
+    await store.block(1296724484, 42, writeId, "test-recovery", "2026-08-22T00:00:01Z");
+    const dispatched: any[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ ...repository(), default_branch: "main" }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/sync-copilot-instructions.yml/dispatches")) { dispatched.push(JSON.parse(String(init.body))); return new Response(null, { status: 204 }); }
+      return new Response("unexpected", { status: 500 });
+    });
+    expect(await recoverPullRequestBodyWriteIntents(env(database), new Date("2026-08-22T00:02:00Z"))).toBe(0);
+    expect(dispatched).toEqual([{ ref: "main", inputs: { repositoryId: "1296724484" } }]);
+    expect(await store.listPendingRedrives()).toEqual([]);
+  });
 });
 
 describe("已验签Webhook直连清理", () => {

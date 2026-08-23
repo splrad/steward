@@ -495,6 +495,32 @@ describe("中央运行程序", () => {
     ]);
   });
 
+  it("议题从未纳管来源转入受管仓库时仍刷新目标", async () => {
+    const dispatched: { name: string; inputs: Record<string, string> }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.includes("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ total_count: 1, repositories: [
+        repository(1187527897, "splrad/LayerScape"),
+      ] }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "trunk" }), { status: 200 });
+      const name = /\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
+      if (name) { dispatched.push({ name, inputs: JSON.parse(String(init.body)).inputs }); return new Response(null, { status: 204 }); }
+      return new Response("unexpected", { status: 500 });
+    });
+    const source = { ...repository(1400000000, "splrad/private-source"), private: true };
+    const payload = scoped({
+      action: "transferred",
+      repository: source,
+      issue: { number: 4 },
+      changes: { new_issue: { number: 9, repository_url: "https://api.github.com/repos/splrad/LayerScape" } },
+    });
+    expect((await handleWebhook(signedRequest("issues", payload), baseEnv())).status).toBe(202);
+    expect(dispatched).toEqual([
+      { name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1187527897", issueNumber: "9", scanAll: "false" }) },
+    ]);
+  });
+
   it("默认纳管公开仓库转为私有时墓碑化快照并调度PR状态清理", async () => {
     const deleted = vi.spyOn(IssueSnapshotStore.prototype, "deleteRepository").mockResolvedValue();
     const dispatched: { name: string; inputs: Record<string, string> }[] = [];
