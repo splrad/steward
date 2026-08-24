@@ -679,4 +679,18 @@ describe("中央命令入口", () => {
     const summaries = source.split("\n").filter(line => line.includes("summary([")).join("\n");
     expect(summaries).not.toMatch(/STEWARD_APP_PRIVATE_KEY|COPILOT_REVIEW_REQUEST_TOKEN|installation-token|upload_url/iu);
   });
+
+  it("已有自动化拉取请求只通过持久正文写入器更新正文", async () => {
+    const source = await readFile("packages/runner/src/index.ts", "utf8");
+    const managedFile = source.slice(source.indexOf("async function reconcileManagedFile"), source.indexOf("async function onboard"));
+    const automation = source.slice(source.indexOf("async function automate"), source.indexOf("async function classify"));
+    for (const section of [managedFile, automation]) {
+      expect(section).toContain("updatePullRequestBodyDurably({");
+      expect(section).toContain('regionKind: "managed-pr"');
+      expect(section).toContain('runtimeUrl: env("RUNTIME_URL")');
+      expect(section).not.toMatch(/updatePullRequest\([^)]*\{\s*title[^}]*body/u);
+    }
+    expect(managedFile).toContain("redrive: input.redrive");
+    expect(automation).toContain('workflow: "pr-automation.yml"');
+  });
 });

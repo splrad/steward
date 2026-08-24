@@ -14,7 +14,7 @@ const allowedActions = new Set([
   "actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
   "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
 ]);
-const forbidden = [/issue.*comment/iu, /DCO/iu, /validation-matrix/iu, /durable.?object/iu, /queue/iu, /relay/iu, /secrets:\s*inherit/iu];
+const forbidden = [/issue.*comment/iu, /DCO/iu, /validation-matrix/iu, /durable.?object/iu, /relay/iu, /secrets:\s*inherit/iu];
 for (const file of files) {
   const text = await readFile(`.github/workflows/${file}`, "utf8"); workflowDocuments.set(file, YAML.parse(text));
   for (const match of text.matchAll(/uses:\s*([^\s}]+)/gu)) if (!allowedActions.has(match[1])) throw new Error(`${file}使用未锁定操作: ${match[1]}`);
@@ -90,6 +90,13 @@ for (const [name, expectedValue] of [["TRIGGER_ACTOR_ID", "${{github.actor_id}}"
   if (String(classificationStep?.env?.[name] ?? "").replace(/\s+/gu, "") !== expectedValue) throw new Error(`AI分类工作流没有绑定可信上下文: ${name}`);
 }
 if (/--ai-classification/iu.test(classificationStep?.run ?? "")) throw new Error("AI影子分类输入不得拼接进shell命令");
+const prAutomationConcurrency = String(prAutomationDocument?.concurrency?.group ?? "").replace(/\s+/gu, "");
+if (prAutomationConcurrency !== "steward-pr-body-${{inputs.repositoryId}}" || prAutomationDocument?.concurrency?.["cancel-in-progress"] !== false || prAutomationDocument?.concurrency?.queue !== "max") throw new Error("拉取请求自动化必须串行保留仓库正文写入");
+const onboardDocument = workflowDocuments.get("onboard-repository.yml");
+const onboardConcurrency = String(onboardDocument?.concurrency?.group ?? "").replace(/\s+/gu, "");
+if (onboardConcurrency !== "steward-pr-body-${{inputs.repositoryId}}" || onboardDocument?.concurrency?.["cancel-in-progress"] !== false || onboardDocument?.concurrency?.queue !== "max") throw new Error("接入工作流必须串行保留仓库正文写入");
+const queuedWorkflows = [...workflowDocuments.entries()].filter(([, document]) => Object.hasOwn(document?.concurrency ?? {}, "queue")).map(([name]) => name).sort();
+if (JSON.stringify(queuedWorkflows) !== JSON.stringify(["onboard-repository.yml", "pr-automation.yml"])) throw new Error("正文写入等待队列范围不正确");
 const syncInstructionsDocument = workflowDocuments.get("sync-copilot-instructions.yml");
 const syncWorkflowRun = syncInstructionsDocument?.on?.workflow_run;
 if (JSON.stringify(syncWorkflowRun?.workflows) !== JSON.stringify(["SPLRAD Steward / Deploy Runtime"]) || JSON.stringify(syncWorkflowRun?.types) !== JSON.stringify(["completed"])) throw new Error("Copilot说明同步没有只绑定中央部署完成事件");
@@ -110,7 +117,7 @@ const syncStep = syncJob?.steps?.find(step => step?.name === "同步代码审查
 const syncCommand = String(syncStep?.run ?? "");
 if (!syncCommand.includes('--policy-sha "$POLICY_SHA"') || /--(?:source|target|path|content)(?:\s|=)/iu.test(syncCommand)) throw new Error("Copilot说明同步允许工作流输入指定文件或内容");
 if (String(syncStep?.env?.REPOSITORY_ID ?? "").replace(/\s+/gu, "") !== "${{inputs.repositoryId}}" || /\$\{\{[^}]*inputs\.repositoryId/iu.test(syncCommand)) throw new Error("Copilot说明同步把仓库编号直接拼接进shell命令");
-if (String(syncStep?.env?.POLICY_SHA ?? "").replace(/\s+/gu, "") !== "${{steps.policy.outputs.policy_sha}}" || String(syncStep?.env?.SYNC_TRIGGER ?? "").replace(/\s+/gu, "") !== "${{github.event_name}}" || String(syncStep?.env?.TRIGGER_ACTOR_ID ?? "").replace(/\s+/gu, "") !== "${{github.actor_id}}" || String(syncStep?.env?.TRIGGER_ACTOR_LOGIN ?? "").replace(/\s+/gu, "") !== "${{github.actor}}") throw new Error("Copilot说明手工同步没有绑定线上策略与触发者身份");
+if (String(syncStep?.env?.POLICY_SHA ?? "").replace(/\s+/gu, "") !== "${{steps.policy.outputs.policy_sha}}" || String(syncStep?.env?.SYNC_TRIGGER ?? "").replace(/\s+/gu, "") !== "${{github.actor_id=='301115370'&&'app-redrive'||github.event_name}}" || String(syncStep?.env?.TRIGGER_ACTOR_ID ?? "").replace(/\s+/gu, "") !== "${{github.actor_id}}" || String(syncStep?.env?.TRIGGER_ACTOR_LOGIN ?? "").replace(/\s+/gu, "") !== "${{github.actor}}") throw new Error("Copilot说明同步没有绑定线上策略、可信App恢复或手工触发者身份");
 for (const required of ['repository_arguments=()', 'repository_arguments+=(--repository-id "$REPOSITORY_ID")', '"${repository_arguments[@]}"']) {
   if (!syncCommand.includes(required)) throw new Error(`Copilot说明同步没有安全传递可选仓库编号: ${required}`);
 }
@@ -131,11 +138,11 @@ if (String(labelStep?.env?.REPOSITORY_ID ?? "").replace(/\s+/gu, "") !== "${{inp
 if (!String(labelStep?.run ?? "").includes('sync-managed-labels "${repository_arguments[@]}" --policy-sha "$POLICY_SHA"')) throw new Error("标签同步没有调用固定runner入口");
 if (String(labelStep?.env?.POLICY_SHA ?? "").replace(/\s+/gu, "") !== "${{steps.policy.outputs.policy_sha}}" || String(labelStep?.env?.SYNC_TRIGGER ?? "").replace(/\s+/gu, "") !== "${{github.event_name}}" || String(labelStep?.env?.TRIGGER_ACTOR_ID ?? "").replace(/\s+/gu, "") !== "${{github.actor_id}}" || String(labelStep?.env?.TRIGGER_ACTOR_LOGIN ?? "").replace(/\s+/gu, "") !== "${{github.actor}}") throw new Error("标签手工同步没有绑定线上策略与触发者身份");
 if (Object.hasOwn(labelStep?.env ?? {}, "COPILOT_REVIEW_REQUEST_TOKEN")) throw new Error("标签同步不应读取Copilot令牌");
-const onboardDocument = workflowDocuments.get("onboard-repository.yml");
 const onboardStep = onboardDocument?.jobs?.onboard?.steps?.find(step => step?.name === "校验并接入仓库");
 const onboardCommand = String(onboardStep?.run ?? "");
 for (const [name, expectedValue] of [["REPOSITORY_ID", "${{inputs.repositoryId}}"], ["REPOSITORY_FULL_NAME", "${{inputs.repositoryFullName}}"], ["TRIGGER_ACTOR_ID", "${{github.actor_id}}"], ["TRIGGER_ACTOR_LOGIN", "${{github.actor}}"]]) if (String(onboardStep?.env?.[name] ?? "").replace(/\s+/gu, "") !== expectedValue) throw new Error(`onboarding没有通过环境变量传递${name}`);
-if (/\$\{\{/u.test(onboardCommand) || !onboardCommand.includes('repository_arguments+=(--repository-id "$REPOSITORY_ID")') || !onboardCommand.includes('"${repository_arguments[@]}"')) throw new Error("onboarding没有使用环境变量和参数数组传递不可信输入");
+if (onboardDocument?.on?.workflow_dispatch?.inputs?.repositoryId?.required !== true || /\$\{\{/u.test(onboardCommand) || !onboardCommand.includes('--repository-id "$REPOSITORY_ID"') || !onboardCommand.includes('--repository-full-name "$REPOSITORY_FULL_NAME"')) throw new Error("onboarding没有通过环境变量安全传递必填仓库身份");
+for (const step of [prepareStep, reconcileStep, onboardStep, syncStep]) if (!Object.hasOwn(step?.env ?? {}, "RUNTIME_URL")) throw new Error("正文写入工作流缺少运行时地址");
 const deployRuntime = await readFile(".github/workflows/deploy-runtime.yml", "utf8");
 for (const required of [".github/workflows/deploy-runtime.yml", "scripts/verify-workflows.mjs", "github.event.repository.default_branch", "id: deploy", "tee \"$deployment_log\"", "PIPESTATUS[0]", "复核运行程序健康状态", "steps.deploy.outputs.runtime_url", "EXPECTED_POLICY_SHA", "Date.now() + 60_000", "AbortSignal.timeout", "await response.body?.cancel()", "status: \"waiting\"", "iu.test(body.version)", "健康复核在60秒内未收敛"]) {
   if (!deployRuntime.includes(required)) throw new Error(`部署工作流缺少固定健康复核合同: ${required}`);
@@ -171,7 +178,7 @@ try {
   const archivePath = join(temporary, archiveName); await writeFile(archivePath, archive);
   const extracted = spawnSync("tar", ["-xf", archivePath, "-C", temporary], { encoding: "utf8" }); if (extracted.status !== 0) throw new Error(extracted.stderr || "无法解压actionlint");
   const executable = join(temporary, platform === "windows" ? "actionlint.exe" : "actionlint"); if (platform !== "windows") await chmod(executable, 0o755);
-  const actionlintArguments = files.map(file => `.github/workflows/${file}`);
+  const actionlintArguments = ["-ignore", 'unexpected key "queue" for "concurrency" section', ...files.map(file => `.github/workflows/${file}`)];
   const checked = spawnSync(executable, actionlintArguments, { encoding: "utf8" }); if (checked.status !== 0) throw new Error(checked.stdout || checked.stderr || "actionlint失败");
 } finally { await rm(temporary, { recursive: true, force: true }); }
 console.log("workflows verified");
