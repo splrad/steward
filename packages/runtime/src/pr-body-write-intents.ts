@@ -287,8 +287,9 @@ export class PullRequestBodyWriteIntentStore {
 
   async markPatched(repositoryId: number, pullRequestNumber: number, writeId: string, now: string): Promise<PullRequestBodyWriteIntent> {
     const result = await this.db.prepare(`UPDATE pull_request_body_write_intents SET status='patched', attempt_count=attempt_count+1,
-      delivery_proven=0, last_delivery_id=NULL, updated_at=? WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status IN ('prepared','compensating')`)
-      .bind(now, repositoryId, pullRequestNumber, writeId).run();
+      delivery_proven=0, last_delivery_id=NULL, updated_at=? WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status IN ('prepared','compensating') AND expires_at > ?`)
+      .bind(now, repositoryId, pullRequestNumber, writeId, now).run();
+    if (affected(result) !== 1) await this.blockExpiredIntent(repositoryId, pullRequestNumber, writeId, now);
     const current = await this.get(repositoryId, pullRequestNumber);
     if (affected(result) === 1) return current!;
     if (current?.writeId === writeId && ["patched", "confirmed"].includes(current.status)) return current;
@@ -298,8 +299,9 @@ export class PullRequestBodyWriteIntentStore {
   async proveDelivery(input: { repositoryId: number; pullRequestNumber: number; writeId: string; deliveryId: string; now: string }): Promise<PullRequestBodyWriteIntent> {
     if (!deliveryPattern.test(input.deliveryId)) throw new Error("deliveryId无效");
     const result = await this.db.prepare(`UPDATE pull_request_body_write_intents SET delivery_proven=1, last_delivery_id=?, updated_at=?
-      WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status='patched'`)
-      .bind(input.deliveryId, input.now, input.repositoryId, input.pullRequestNumber, input.writeId).run();
+      WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status='patched' AND expires_at > ?`)
+      .bind(input.deliveryId, input.now, input.repositoryId, input.pullRequestNumber, input.writeId, input.now).run();
+    if (affected(result) !== 1) await this.blockExpiredIntent(input.repositoryId, input.pullRequestNumber, input.writeId, input.now);
     if (affected(result) !== 1) throw new Error("正文写意图状态冲突");
     return (await this.get(input.repositoryId, input.pullRequestNumber))!;
   }
@@ -316,12 +318,19 @@ export class PullRequestBodyWriteIntentStore {
 
   async confirm(repositoryId: number, pullRequestNumber: number, writeId: string, now: string): Promise<PullRequestBodyWriteIntent> {
     const result = await this.db.prepare(`UPDATE pull_request_body_write_intents SET status='confirmed', confirmed_at=?, updated_at=?
-      WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status='patched' AND delivery_proven=1`)
-      .bind(now, now, repositoryId, pullRequestNumber, writeId).run();
+      WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status='patched' AND delivery_proven=1 AND expires_at > ?`)
+      .bind(now, now, repositoryId, pullRequestNumber, writeId, now).run();
+    if (affected(result) !== 1) await this.blockExpiredIntent(repositoryId, pullRequestNumber, writeId, now);
     if (affected(result) !== 1) throw new Error("正文写意图尚未得到交付证明");
     const current = await this.get(repositoryId, pullRequestNumber);
     if (!current || current.writeId !== writeId || current.status !== "confirmed") throw new Error("body-write-intent-conflict");
     return current;
+  }
+
+  private async blockExpiredIntent(repositoryId: number, pullRequestNumber: number, writeId: string, now: string): Promise<void> {
+    await this.db.prepare(`UPDATE pull_request_body_write_intents SET status='blocked', blocked_reason='recovery-window-expired', redrive_required=1, redrive_dispatched=0, updated_at=?
+      WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status IN ('prepared','patched','compensating') AND expires_at <= ?`)
+      .bind(now, repositoryId, pullRequestNumber, writeId, now).run();
   }
 
   async block(repositoryId: number, pullRequestNumber: number, writeId: string, reason: string, now: string): Promise<PullRequestBodyWriteIntent> {

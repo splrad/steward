@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { analysisInputDigest, issueSnapshotContentDigest, managedBodyOutsideIssueLinksDigest, normalizeIssueSnapshot, openIssueSetDigest, renderIssueLinksBlock, upsertIssueLinksBlock } from "../../core/src/issues.js";
-import { extractIssueCopilotContent, parsePrIssueLinkArgs, runGit, runPrIssueLink, selectRevalidationCandidates, verifyIssueLinkConvergence } from "../src/pr-issue-link.js";
+import { extractIssueCopilotContent, parsePrIssueLinkArgs, revalidationCandidates, runGit, runPrIssueLink, verifyIssueLinkConvergence } from "../src/pr-issue-link.js";
 
 const repositoryId = 1296724484;
 const policySha = "a".repeat(40);
@@ -390,7 +390,7 @@ describe("拉取请求议题关联运行器", () => {
     });
   });
 
-  it("模型安全清空时不消耗单PR最终复核预算", async () => {
+  it("模型安全清空时仍复核全部模型输入", async () => {
     await withRunnerEnvironment(async (directory) => {
       const snapshots = [1, 2].map(number => {
         const snapshot = issueSnapshot(number);
@@ -434,7 +434,10 @@ describe("拉取请求议题关联运行器", () => {
         return new Response("unexpected", { status: 500 });
       });
       await runPrIssueLink(invocation());
-      expect(validatorReads).toEqual([]);
+      expect(validatorReads).toEqual([
+        "https://api.github.com/repos/splrad/steward/issues/1",
+        "https://api.github.com/repos/splrad/steward/issues/2",
+      ]);
     });
   });
 
@@ -476,14 +479,14 @@ describe("拉取请求议题关联运行器", () => {
     });
   });
 
-  it("单PR最终复核预算只约束模型实际选中的议题", () => {
+  it("单PR最终复核预算约束全部模型输入", () => {
     const candidates = [1, 2].map((number) => ({
       repositoryId,
       number,
       validators: Array.from({ length: 6 }, (_, index) => ({ resource: "issue" as const, url: `https://api.github.com/issues/${number}?page=${index}`, etag: `\"etag-${number}-${index}\"`, next: null, status: 200 as const })),
     }));
-    expect(selectRevalidationCandidates(candidates, [{ repositoryId, number: 1 }], 9)).toEqual([candidates[0]]);
-    expect(() => selectRevalidationCandidates(candidates, [{ repositoryId, number: 1 }, { repositoryId, number: 2 }], 9)).toThrow("超过预算:12/9");
+    expect(revalidationCandidates(candidates, 12)).toEqual(candidates);
+    expect(() => revalidationCandidates(candidates, 9)).toThrow("超过预算:12/9");
   });
 
   it("新鲜度复核失败后清理旧块，并完成已经开始的检查", async () => {

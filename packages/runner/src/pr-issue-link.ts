@@ -133,15 +133,12 @@ function assertRevalidationBudget(candidates: readonly { validators: readonly Pa
   if (requests > budget) throw new Error(`议题快照复核请求超过预算:${requests}/${budget}`);
 }
 
-export function selectRevalidationCandidates<T extends { repositoryId: number; number: number; validators: readonly PageValidator[] }>(
+export function revalidationCandidates<T extends { validators: readonly PageValidator[] }>(
   candidates: readonly T[],
-  desired: readonly DesiredIssueReference[],
   budget: number,
 ): readonly T[] {
-  const desiredKeys = new Set(desired.map((candidate) => `${candidate.repositoryId}:${candidate.number}`));
-  const selected = candidates.filter((candidate) => desiredKeys.has(`${candidate.repositoryId}:${candidate.number}`));
-  assertRevalidationBudget(selected, budget);
-  return selected;
+  assertRevalidationBudget(candidates, budget);
+  return candidates;
 }
 
 function workflowRevalidationBudget(pullRequestCount: number): number {
@@ -787,8 +784,8 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
   let failureCategory = "freshness-failed";
   try {
     let fresh = true;
-    const desiredCandidates = selectRevalidationCandidates(prepared.candidates, desired, prepared.revalidationBudget);
-    for (const candidate of desiredCandidates) {
+    const candidatesToRevalidate = revalidationCandidates(prepared.candidates, prepared.revalidationBudget);
+    for (const candidate of candidatesToRevalidate) {
       const validation = await client.revalidatePageValidators(candidate.validators);
       if (validation.state !== "not-modified") {
         const refreshed = await runtimeRequest<any>(token, "POST", `/internal/issue-snapshots/${args.repositoryId}/${candidate.number}/refresh`, { "x-github-delivery": args.deliveryId });

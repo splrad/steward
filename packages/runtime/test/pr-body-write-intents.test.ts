@@ -87,6 +87,40 @@ function payload(before: string, after: string, deliverySender = 301115370): any
 }
 
 describe("拉取请求正文持久补偿协议", () => {
+  it("过期意图不能继续推进，并进入阻断重调度状态", async () => {
+    const expiredNow = "2026-08-22T00:11:00.000Z";
+
+    const markDatabase = new SqliteD1();
+    const markStore = new PullRequestBodyWriteIntentStore(markDatabase.binding());
+    const markBefore = body("人工前言", managedBlock("旧摘要"));
+    const { writeId: markWriteId } = await prepared(markStore, markBefore, managedBlock("新摘要"));
+    await expect(markStore.markPatched(repositoryId, pullRequestNumber, markWriteId, expiredNow)).rejects.toThrow("状态冲突");
+    expect(await markStore.get(repositoryId, pullRequestNumber)).toEqual(expect.objectContaining({
+      status: "blocked", blockedReason: "recovery-window-expired", redriveRequired: true,
+    }));
+
+    const proveDatabase = new SqliteD1();
+    const proveStore = new PullRequestBodyWriteIntentStore(proveDatabase.binding());
+    const proveBefore = body("人工前言", managedBlock("旧摘要"));
+    const { writeId: proveWriteId } = await prepared(proveStore, proveBefore, managedBlock("新摘要"));
+    await proveStore.markPatched(repositoryId, pullRequestNumber, proveWriteId, now);
+    await expect(proveStore.proveDelivery({ repositoryId, pullRequestNumber, writeId: proveWriteId, deliveryId: "delivery-expired", now: expiredNow })).rejects.toThrow("状态冲突");
+    expect(await proveStore.get(repositoryId, pullRequestNumber)).toEqual(expect.objectContaining({
+      status: "blocked", blockedReason: "recovery-window-expired", redriveRequired: true,
+    }));
+
+    const confirmDatabase = new SqliteD1();
+    const confirmStore = new PullRequestBodyWriteIntentStore(confirmDatabase.binding());
+    const confirmBefore = body("人工前言", managedBlock("旧摘要"));
+    const { writeId: confirmWriteId } = await prepared(confirmStore, confirmBefore, managedBlock("新摘要"));
+    await confirmStore.markPatched(repositoryId, pullRequestNumber, confirmWriteId, now);
+    await confirmStore.proveDelivery({ repositoryId, pullRequestNumber, writeId: confirmWriteId, deliveryId: "delivery-before-expiry", now });
+    await expect(confirmStore.confirm(repositoryId, pullRequestNumber, confirmWriteId, expiredNow)).rejects.toThrow("交付证明");
+    expect(await confirmStore.get(repositoryId, pullRequestNumber)).toEqual(expect.objectContaining({
+      status: "blocked", blockedReason: "recovery-window-expired", redriveRequired: true,
+    }));
+  });
+
   it("只有edited前值证明匹配后才确认写意图", async () => {
     const database = new SqliteD1();
     const store = new PullRequestBodyWriteIntentStore(database.binding());
