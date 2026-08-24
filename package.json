@@ -17,7 +17,7 @@
     "verify": "npm run test && npm run typecheck && npm run verify:config && npm run verify:dist && npm run verify:workflows"
   },
   "dependencies": {
-    "@github/copilot": "1.0.79",
+    "@github/copilot": "1.0.80",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
     "jose": "6.2.9",
