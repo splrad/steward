@@ -188,6 +188,49 @@ describe("中央命令入口", () => {
     }
   });
 
+  it("接入成功后即使标签同步失败也先派发首次议题快照", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
+    process.env.APP_ID = "4243096";
+    process.env.INSTALLATION_ID = "145952003";
+    process.env.STEWARD_APP_PRIVATE_KEY = privateKey;
+    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
+    const policySha = "a".repeat(40);
+    const repositoryId = 1296724484;
+    const desiredSettings = {
+      allow_squash_merge: true, allow_merge_commit: false, allow_rebase_merge: false, allow_auto_merge: false,
+      delete_branch_on_merge: true, squash_merge_commit_title: "PR_TITLE", squash_merge_commit_message: "BLANK",
+    };
+    const repository = {
+      id: repositoryId, full_name: "splrad/steward", private: false, owner: { id: 302208797, login: "splrad" },
+      fork: false, archived: false, disabled: false, default_branch: "main", ...desiredSettings,
+    };
+    const instructions = `${(await readFile(resolve("config", "copilot", "common.md"), "utf8")).trimEnd()}\n`;
+    const calls: Array<{ url: string; method: string; body: any }> = [];
+    vi.stubGlobal("fetch", async (url: string | URL | Request, init: RequestInit = {}) => {
+      const value = String(url); const method = init.method ?? "GET"; const body = init.body ? JSON.parse(String(init.body)) : null;
+      calls.push({ url: value, method, body });
+      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository), { status: 200 });
+      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [repository] }), { status: 200 });
+      if (value.includes("/repos/splrad/steward/labels?per_page=100")) return new Response("label failure", { status: 500 });
+      if (value.endsWith("/repos/splrad/steward/git/ref/heads/main")) return new Response(JSON.stringify({ object: { sha: "b".repeat(40) } }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/teams?per_page=100")) return new Response(JSON.stringify([{ slug: "maintainers", permission: "maintain" }]), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/rulesets?includes_parents=true&per_page=100")) return new Response(JSON.stringify([{ id: 18883080, enforcement: "active" }]), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward") && method === "PATCH") return new Response(JSON.stringify(repository), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward") && method === "GET") return new Response(JSON.stringify(repository), { status: 200 });
+      if (value.includes("/repos/splrad/steward/contents/.github/copilot-instructions.md?ref=main")) return new Response(JSON.stringify({ encoding: "base64", content: Buffer.from(instructions, "utf8").toString("base64") }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches")) return new Response(null, { status: 204 });
+      return new Response("unexpected", { status: 500 });
+    });
+
+    await expect(main([
+      "onboard-repository", "--repository-id", String(repositoryId), "--repository-full-name", "splrad/steward",
+      "--trigger", "installation-created", "--delivery-id", "onboard-label-failure", "--policy-sha", policySha,
+    ])).rejects.toThrow("受管标签同步失败: splrad/steward");
+    const dispatch = calls.find(call => call.url.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches"));
+    expect(dispatch?.body).toEqual({ ref: "main", inputs: { deliveryId: "onboard-label-failure", repositoryId: String(repositoryId), scanAll: "true", policySha } });
+  });
+
   it("在创建安装令牌前拒绝超出安全整数范围的编号", async () => {
     await expect(main([
       "issue-sync",
