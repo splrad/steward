@@ -318,7 +318,9 @@ export class PullRequestBodyWriteIntentStore {
       WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status='patched' AND delivery_proven=1`)
       .bind(now, now, repositoryId, pullRequestNumber, writeId).run();
     if (affected(result) !== 1) throw new Error("正文写意图尚未得到交付证明");
-    return (await this.get(repositoryId, pullRequestNumber))!;
+    const current = await this.get(repositoryId, pullRequestNumber);
+    if (!current || current.writeId !== writeId || current.status !== "confirmed") throw new Error("body-write-intent-conflict");
+    return current;
   }
 
   async block(repositoryId: number, pullRequestNumber: number, writeId: string, reason: string, now: string): Promise<PullRequestBodyWriteIntent> {
@@ -337,9 +339,11 @@ export class PullRequestBodyWriteIntentStore {
     const claimId = randomUUID();
     const result = await this.db.prepare(`INSERT INTO pull_request_body_write_deliveries
       (delivery_id, repository_id, pull_request_number, write_id, claim_id, outcome, processed_at) VALUES (?, ?, ?, ?, ?, 'processing', ?)
-      ON CONFLICT(delivery_id) DO UPDATE SET repository_id=excluded.repository_id, pull_request_number=excluded.pull_request_number,
-        write_id=excluded.write_id, claim_id=excluded.claim_id, outcome='processing', processed_at=excluded.processed_at
-      WHERE pull_request_body_write_deliveries.outcome='processing' AND pull_request_body_write_deliveries.processed_at <= ?`)
+      ON CONFLICT(delivery_id) DO UPDATE SET claim_id=excluded.claim_id, outcome='processing', processed_at=excluded.processed_at
+      WHERE pull_request_body_write_deliveries.outcome='processing' AND pull_request_body_write_deliveries.processed_at <= ?
+        AND pull_request_body_write_deliveries.repository_id=excluded.repository_id
+        AND pull_request_body_write_deliveries.pull_request_number=excluded.pull_request_number
+        AND pull_request_body_write_deliveries.write_id=excluded.write_id`)
       .bind(input.deliveryId, input.repositoryId, input.pullRequestNumber, input.writeId, claimId, input.now, staleBefore).run();
     return affected(result) === 1 ? claimId : null;
   }

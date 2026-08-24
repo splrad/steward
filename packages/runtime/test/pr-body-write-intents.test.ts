@@ -122,6 +122,43 @@ describe("拉取请求正文持久补偿协议", () => {
     expect(reads).toBe(1);
   });
 
+  it("过期交付声明只能由原写意图重新取得", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const originalWriteId = "11111111-1111-4111-8111-111111111111";
+    const claimed = await store.claimDelivery({ deliveryId: "delivery-stale", repositoryId, pullRequestNumber, writeId: originalWriteId, now });
+    expect(claimed).not.toBeNull();
+
+    const reclaimedAt = "2026-08-22T00:06:00.000Z";
+    expect(await store.claimDelivery({
+      deliveryId: "delivery-stale",
+      repositoryId,
+      pullRequestNumber,
+      writeId: "22222222-2222-4222-8222-222222222222",
+      now: reclaimedAt,
+    })).toBeNull();
+    expect(await store.claimDelivery({ deliveryId: "delivery-stale", repositoryId, pullRequestNumber, writeId: originalWriteId, now: reclaimedAt })).not.toBeNull();
+  });
+
+  it("确认后的读取漂移到新写意图时拒绝返回新状态", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const before = body("人工前言", managedBlock("旧摘要"));
+    const { target, writeId } = await prepared(store, before, managedBlock("新摘要"));
+    await store.markPatched(repositoryId, pullRequestNumber, writeId, now);
+    await store.proveDelivery({ repositoryId, pullRequestNumber, writeId, deliveryId: "delivery-confirm-race", now });
+    const originalGet = store.get.bind(store);
+    let reads = 0;
+    store.get = async (...args) => {
+      const current = await originalGet(...args);
+      reads += 1;
+      return reads === 2 && current ? { ...current, writeId: "22222222-2222-4222-8222-222222222222" } : current;
+    };
+    const client = { getPullRequest: async () => ({ number: pullRequestNumber, body: target, head: { sha: headSha }, base: { sha: baseSha } }) } as any;
+
+    await expect(confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber, writeId, now })).rejects.toThrow("body-write-intent-conflict");
+  });
+
   it("机器人只改标题时忽略交付并保留活动意图", async () => {
     const database = new SqliteD1();
     const store = new PullRequestBodyWriteIntentStore(database.binding());

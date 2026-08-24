@@ -451,6 +451,38 @@ describe("议题快照内部接口", () => {
     }
   });
 
+  it("等待确认时不会把新写意图作为旧write_id的结果返回", async () => {
+    const database = new SqliteD1();
+    installAuthorization();
+    const writeId = "11111111-1111-4111-8111-111111111111";
+    const targetBlock = renderIssueLinksBlock({ repositoryId: 1296724484, pullRequestNumber: 42, baseSha: "b".repeat(40), headSha: "c".repeat(40), generation: 0, analysisInputDigest: "d".repeat(64) }, []);
+    const prepare = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/prepare", {
+      method: "POST",
+      headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" },
+      body: JSON.stringify({ writeId, regionKind: "issue-links", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
+        beforeBodyDigest: pullRequestBodyDigest("before"), outsideBodyDigest: pullRequestBodyDigest("outside"), targetBlock, targetBodyDigest: pullRequestBodyDigest("after"),
+        redrive: { workflow: "pr-issue-link.yml", inputs: { deliveryId: "delivery-runtime-race", repositoryId: "1296724484", pullRequestNumber: "42", scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: "a".repeat(40) } } }),
+    }), env(database));
+    expect(prepare.status).toBe(200);
+    const originalGet = PullRequestBodyWriteIntentStore.prototype.get;
+    let reads = 0;
+    const get = vi.spyOn(PullRequestBodyWriteIntentStore.prototype, "get").mockImplementation(async function (...args) {
+      const current = await originalGet.apply(this, args);
+      reads += 1;
+      return reads === 3 && current ? { ...current, writeId: "22222222-2222-4222-8222-222222222222" } : current;
+    });
+
+    try {
+      const waited = await worker.fetch(new Request(`https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/${writeId}/wait`, {
+        method: "POST", headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" }, body: JSON.stringify({ attempts: 1 }),
+      }), env(database));
+      expect(waited.status).toBe(404);
+      expect(await waited.json()).toEqual({ error: "body-write-intent-not-found" });
+    } finally {
+      get.mockRestore();
+    }
+  });
+
   it("未纳管仓库的正文写接口只接受议题块删除意图", async () => {
     const database = new SqliteD1();
     const unmanaged = { ...repository(1400000000, "splrad/default-private"), private: true };

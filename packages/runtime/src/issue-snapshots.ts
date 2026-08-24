@@ -698,7 +698,9 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
         }
         if (parts[4] === "confirm") {
           await requireEmptyBody(request);
-          return noStoreResponse(200, await confirmPullRequestBodyWriteIntent({ store: intentStore, client, repository, pullRequestNumber, writeId, now }));
+          const confirmed = await confirmPullRequestBodyWriteIntent({ store: intentStore, client, repository, pullRequestNumber, writeId, now });
+          if (confirmed.writeId !== writeId) return noStoreResponse(404, { error: "body-write-intent-not-found" });
+          return noStoreResponse(200, confirmed);
         }
         if (parts[4] === "redrive-completed") {
           await requireEmptyBody(request);
@@ -714,10 +716,13 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
             if (["confirmed", "blocked"].includes(current.status)) return noStoreResponse(200, current);
             if (current.status === "patched" && current.deliveryProven && (attempt === 0 || (attempt + 1) % 10 === 0 || attempt + 1 === attempts)) {
               current = await confirmPullRequestBodyWriteIntent({ store: intentStore, client, repository, pullRequestNumber, writeId, now: new Date().toISOString() });
+              if (current.writeId !== writeId) return noStoreResponse(404, { error: "body-write-intent-not-found" });
               if (["confirmed", "blocked"].includes(current.status)) return noStoreResponse(200, current);
             }
             if (attempt + 1 < attempts) await delay(500);
-            current = (await intentStore.get(repositoryId, pullRequestNumber)) ?? current;
+            const refreshed = await intentStore.get(repositoryId, pullRequestNumber);
+            if (!refreshed || refreshed.writeId !== writeId) return noStoreResponse(404, { error: "body-write-intent-not-found" });
+            current = refreshed;
           }
           return noStoreResponse(200, current);
         }
