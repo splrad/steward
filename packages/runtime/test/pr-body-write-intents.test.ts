@@ -204,6 +204,30 @@ describe("拉取请求正文持久补偿协议", () => {
     expect((await store.get(repositoryId, pullRequestNumber))?.status).toBe("patched");
   });
 
+  it("人工正文编辑会阻断旧意图并留下可重调度状态", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const before = body("人工前言", managedBlock("旧摘要"));
+    const { target } = await prepared(store, before, managedBlock("新摘要"));
+    const edited = `${target}\n人工补充\n`;
+    expect(await processPullRequestBodyEditedDelivery({ store, client: {} as any, repository, payload: payload(target, edited, 44151430), deliveryId: "delivery-human-body", now })).toBe("ignored");
+    expect(await store.get(repositoryId, pullRequestNumber)).toEqual(expect.objectContaining({
+      status: "blocked", blockedReason: "non-steward-body-edit", redriveRequired: true, redriveDispatched: false,
+    }));
+  });
+
+  it("机器人正文不匹配目标时阻断旧意图而不是永久忽略", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const before = body("人工前言", managedBlock("旧摘要"));
+    const { target } = await prepared(store, before, managedBlock("新摘要"));
+    const drifted = `${target}\n漂移\n`;
+    expect(await processPullRequestBodyEditedDelivery({ store, client: {} as any, repository, payload: payload(target, drifted), deliveryId: "delivery-bot-drift", now })).toBe("ignored");
+    expect(await store.get(repositoryId, pullRequestNumber)).toEqual(expect.objectContaining({
+      status: "blocked", blockedReason: "target-body-drifted", redriveRequired: true, redriveDispatched: false,
+    }));
+  });
+
   it("议题正文意图确认会校验GitHub关闭议题集合", async () => {
     const database = new SqliteD1();
     const store = new PullRequestBodyWriteIntentStore(database.binding());

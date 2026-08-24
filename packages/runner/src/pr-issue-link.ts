@@ -90,6 +90,7 @@ interface PreparedEvidence {
   baseSha: string;
   headSha: string;
   generation: number;
+  stateRevision: number;
   policySha: string;
   fullDiffDigest: string;
   changedFiles: string[];
@@ -538,6 +539,7 @@ async function applyBodyAndVerify(input: {
     generation: input.prepared!.generation,
     analysisInputDigest: input.prepared!.analysisInputDigest,
   }, input.desired), "issue-links");
+  if (input.freshness && !await input.freshness()) throw new Error("写入前发生漂移");
   const readback = await updatePullRequestBodyDurably({
     client: input.client,
     token: input.token,
@@ -666,6 +668,7 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
     status: "in_progress", title: "正在核对议题关联", summary: `拉取请求：#${pullRequestNumber}\n状态：in-progress`,
   });
   let unmanagedClosingKeywords = false;
+  let failClosed = false;
   try {
     const preparedPath = requiredEnvironment("ISSUE_PREPARED_FACTS_PATH");
     const promptPath = requiredEnvironment("ISSUE_COPILOT_PROMPT_PATH");
@@ -701,14 +704,19 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
     const inputDigest = analysisInputDigest({ repositoryId: args.repositoryId, pullRequestNumber, baseSha: facts.baseSha, headSha: facts.headSha, generation: state.generation, policySha: args.policySha, fullDiffDigest: fullDiff.fullDiffDigest, candidateDigests, openSetDigest: state.openSetDigest, unmanagedBodyDigest });
     const prepared: PreparedEvidence = {
       schemaVersion: 1, repositoryId: args.repositoryId, repositoryFullName: repository.full_name, pullRequestNumber,
-      baseSha: facts.baseSha, headSha: facts.headSha, generation: state.generation, policySha: args.policySha,
+      baseSha: facts.baseSha, headSha: facts.headSha, generation: state.generation, stateRevision: state.stateRevision, policySha: args.policySha,
       fullDiffDigest: fullDiff.fullDiffDigest, changedFiles: fullDiff.changedFiles, candidateDigests,
       candidates: state.snapshots.map(item => ({ repositoryId: item.repositoryId, number: item.issueNumber, state: item.state, contentDigest: item.contentDigest, unfetchedReferences: item.snapshot.unfetchedReferences, validators: item.validators })),
       openSetDigest: state.openSetDigest, unmanagedBodyDigest, analysisInputDigest: inputDigest, revalidationBudget,
     };
     await writeFile(preparedPath, `${JSON.stringify(prepared)}\n`);
     if (!included.length) {
-      await applyBodyAndVerify({ client, token, repository, pull, prepared, desired: [], redrive: bodyWriteRedrive(args) });
+      const freshness = async () => {
+        const fresh = await preparedInputsAreFresh({ client, token, repository, owner, repo, prepared });
+        if (!fresh) failClosed = true;
+        return fresh;
+      };
+      await applyBodyAndVerify({ client, token, repository, pull, prepared, desired: [], freshness, redrive: bodyWriteRedrive(args) });
       await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, { status: "completed", conclusion: "success", title: "没有可分析的完整议题", summary: `拉取请求：#${pullRequestNumber}\n正式关联：0` });
       await writeOutput({ "copilot-required": "false", completed: "true" });
       return;
@@ -718,14 +726,16 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
     await writeSummary([`仓库编号：${args.repositoryId}`, `拉取请求：#${pullRequestNumber}`, `候选议题：${included.length}`, `差异文件：${fullDiff.changedFiles.length}`, `提示文件：${basename(promptPath)}`]);
   } catch (error) {
     let cleaned = false;
-    try {
-      const current = await client.getPullRequest(owner, repo, pullRequestNumber);
-      const currentFacts = currentPullFacts(current, args.repositoryId);
-      if (currentFacts.headSha === facts.headSha && currentFacts.baseSha === facts.baseSha) {
-        await applyBodyAndVerify({ client, token, repository, pull: current, desired: [], removeBlock: true, redrive: bodyWriteRedrive(args) });
-        cleaned = true;
-      }
-    } catch {}
+    if (!failClosed) {
+      try {
+        const current = await client.getPullRequest(owner, repo, pullRequestNumber);
+        const currentFacts = currentPullFacts(current, args.repositoryId);
+        if (currentFacts.headSha === facts.headSha && currentFacts.baseSha === facts.baseSha) {
+          await applyBodyAndVerify({ client, token, repository, pull: current, desired: [], removeBlock: true, redrive: bodyWriteRedrive(args) });
+          cleaned = true;
+        }
+      } catch {}
+    }
     const safeEmpty = cleaned && !unmanagedClosingKeywords;
     await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
       status: "completed", conclusion: safeEmpty ? "success" : "failure",
@@ -739,7 +749,7 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
 }
 
 function validatePrepared(value: any, args: PrIssueLinkArgs): PreparedEvidence {
-  const expectedKeys = ["analysisInputDigest", "baseSha", "candidateDigests", "candidates", "changedFiles", "fullDiffDigest", "generation", "headSha", "openSetDigest", "policySha", "pullRequestNumber", "repositoryFullName", "repositoryId", "revalidationBudget", "schemaVersion", "unmanagedBodyDigest"];
+  const expectedKeys = ["analysisInputDigest", "baseSha", "candidateDigests", "candidates", "changedFiles", "fullDiffDigest", "generation", "headSha", "openSetDigest", "policySha", "pullRequestNumber", "repositoryFullName", "repositoryId", "revalidationBudget", "schemaVersion", "stateRevision", "unmanagedBodyDigest"];
   if (!value || typeof value !== "object" || Array.isArray(value) || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(expectedKeys)
     || value.schemaVersion !== 1 || value.repositoryId !== args.repositoryId || value.pullRequestNumber !== args.pullRequestNumber
     || value.policySha !== args.policySha || !Array.isArray(value.changedFiles) || !Array.isArray(value.candidates) || !Array.isArray(value.candidateDigests)) throw new Error("议题准备证据无效");
@@ -748,6 +758,7 @@ function validatePrepared(value: any, args: PrIssueLinkArgs): PreparedEvidence {
   const fullDiffDigest = digest(value.fullDiffDigest, "fullDiffDigest"); const openSetDigest = digest(value.openSetDigest, "openSetDigest");
   const unmanagedBodyDigest = digest(value.unmanagedBodyDigest, "unmanagedBodyDigest"); const inputDigest = digest(value.analysisInputDigest, "analysisInputDigest");
   if (!Number.isSafeInteger(value.generation) || value.generation < 0) throw new Error("议题准备代次无效");
+  if (!Number.isSafeInteger(value.stateRevision) || value.stateRevision < 0) throw new Error("议题准备状态版本无效");
   if (!Number.isSafeInteger(value.revalidationBudget) || value.revalidationBudget <= 0 || value.revalidationBudget > maximumRevalidationRequests) throw new Error("议题准备复核预算无效");
   if (value.changedFiles.length >= 300 || value.changedFiles.some((file: unknown) => typeof file !== "string" || !file || file.length > 1_000 || /[\r\n\0]/u.test(file))
     || new Set(value.changedFiles).size !== value.changedFiles.length) throw new Error("议题准备文件集合无效");
@@ -777,6 +788,31 @@ function validatePrepared(value: any, args: PrIssueLinkArgs): PreparedEvidence {
   });
   if (recomputed !== inputDigest) throw new Error("议题准备输入摘要不一致");
   return value as PreparedEvidence;
+}
+
+async function preparedInputsAreFresh(input: {
+  client: GitHubClient;
+  token: string;
+  repository: any;
+  owner: string;
+  repo: string;
+  prepared: PreparedEvidence;
+}): Promise<boolean> {
+  const [pull, branch, rawState, liveNumbers] = await Promise.all([
+    input.client.getPullRequest(input.owner, input.repo, input.prepared.pullRequestNumber),
+    input.client.getRef(input.owner, input.repo, `heads/${input.repository.default_branch}`),
+    runtimeRequest<SnapshotState>(input.token, "GET", `/internal/issue-snapshots/${input.prepared.repositoryId}`),
+    liveOpenIssueNumbers(input.client, input.owner, input.repo),
+  ]);
+  const state = validateSnapshotState(rawState, input.prepared.repositoryId);
+  const facts = currentPullFacts(pull, input.prepared.repositoryId);
+  return pull?.state === "open" && pull?.base?.ref === input.repository.default_branch
+    && facts.headSha === input.prepared.headSha && facts.baseSha === input.prepared.baseSha
+    && branch?.object?.sha === input.prepared.baseSha
+    && managedBodyOutsideIssueLinksDigest(facts.body) === input.prepared.unmanagedBodyDigest
+    && state.generation === input.prepared.generation && state.stateRevision === input.prepared.stateRevision
+    && state.openSetDigest === input.prepared.openSetDigest
+    && openIssueSetDigest(input.prepared.repositoryId, liveNumbers) === input.prepared.openSetDigest;
 }
 
 async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
@@ -823,7 +859,7 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
   }
   const { repository, owner, repo, current, facts, currentBase, currentState } = prerequisites;
   if (current?.state !== "open" || current?.base?.ref !== repository.default_branch || facts.baseSha !== prepared.baseSha || facts.headSha !== prepared.headSha
-    || currentBase !== prepared.baseSha || currentState.generation !== prepared.generation
+    || currentBase !== prepared.baseSha || currentState.generation !== prepared.generation || currentState.stateRevision !== prepared.stateRevision
     || managedBodyOutsideIssueLinksDigest(facts.body) !== prepared.unmanagedBodyDigest) {
     await publishCheck(client, args.repositoryId, owner, repo, prepared.pullRequestNumber, prepared.headSha, {
       status: "completed", conclusion: "failure", title: "议题关联分析已过期", summary: `拉取请求：#${prepared.pullRequestNumber}\n状态：stale-discarded`,
@@ -862,14 +898,29 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
         if (refreshed.changed === true || refreshed.deleted === true) { snapshotChanged = true; fresh = false; break; }
       }
     }
-    const afterValidation = validateSnapshotState(await runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${args.repositoryId}`), args.repositoryId);
-    if (snapshotChanged) {
+    const [afterValidationRaw, liveNumbers] = await Promise.all([
+      runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${args.repositoryId}`),
+      liveOpenIssueNumbers(client, owner, repo),
+    ]);
+    const afterValidation = validateSnapshotState(afterValidationRaw, args.repositoryId);
+    const liveSetChanged = openIssueSetDigest(args.repositoryId, liveNumbers) !== prepared.openSetDigest;
+    let replacementState = afterValidation;
+    if (liveSetChanged) {
+      const storedNumbers = afterValidation.snapshots.map(item => item.issueNumber);
+      for (const issueNumber of [...new Set([...liveNumbers, ...storedNumbers])].sort((left, right) => left - right)) {
+        await refreshSnapshot(token, args.repositoryId, issueNumber, args.deliveryId);
+      }
+      replacementState = validateSnapshotState(await runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${args.repositoryId}`), args.repositoryId);
+    }
+    if (snapshotChanged || liveSetChanged) {
       failureCategory = "reconciliation-dispatch-failed";
       failClosed = true;
-      await dispatchInlineReconciliation(args, afterValidation);
-      failClosed = false;
+      await dispatchInlineReconciliation(args, replacementState);
+      failureCategory = "stale-analysis";
+      throw new Error("议题关联分析已过期");
     }
     if (afterValidation.generation !== prepared.generation) fresh = false;
+    if (afterValidation.stateRevision !== prepared.stateRevision) fresh = false;
     if (afterValidation.openSetDigest !== prepared.openSetDigest || afterValidation.snapshots.length !== prepared.candidates.length) fresh = false;
     for (const candidate of prepared.candidates) {
       const expected = candidate.contentDigest;
@@ -880,14 +931,10 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
       failureCategory = "stale-analysis";
       throw new Error("议题关联分析已过期");
     }
-    const freshness = async (): Promise<boolean> => {
-      const [pull, branch, state] = await Promise.all([
-        client.getPullRequest(owner, repo, prepared.pullRequestNumber),
-        client.getRef(owner, repo, `heads/${repository.default_branch}`),
-        runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${args.repositoryId}`),
-      ]);
-      return pull?.state === "open" && pull?.head?.sha === prepared.headSha && pull?.base?.sha === prepared.baseSha && pull?.base?.ref === repository.default_branch
-        && branch?.object?.sha === prepared.baseSha && state.syncState === "ready" && state.generation === prepared.generation;
+    const freshness = async () => {
+      const fresh = await preparedInputsAreFresh({ client, token, repository, owner, repo, prepared });
+      if (!fresh) failClosed = true;
+      return fresh;
     };
     failureCategory = "reconcile-failed";
     await applyBodyAndVerify({ client, token, repository, pull: current, prepared, desired, freshness, redrive: bodyWriteRedrive(args) });

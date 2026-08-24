@@ -556,11 +556,26 @@ export async function reconcileIssueSnapshots(
     const state = await dependencies.getState();
     assertIssueSyncState(state, input.repositoryId);
     if (state.syncState !== "ready") return reconcileIssueSnapshots({ repositoryId: input.repositoryId, scanAll: true }, dependencies);
-    const refreshed = await dependencies.refresh(input.issueNumber!);
-    if (refreshed.repositoryId !== input.repositoryId || refreshed.issueNumber !== input.issueNumber || !Number.isSafeInteger(refreshed.generation) || refreshed.generation < 0) throw new Error("议题刷新响应无效");
-    const changed = refreshed.changed === true || refreshed.deleted === true;
+    let completed: Omit<IssueSyncResult, "dispatched">;
+    try {
+      const scanning = await dependencies.setScanState("scanning");
+      assertIssueSyncState(scanning, input.repositoryId, "scanning");
+      const refreshed = await dependencies.refresh(input.issueNumber!);
+      if (refreshed.repositoryId !== input.repositoryId || refreshed.issueNumber !== input.issueNumber || !Number.isSafeInteger(refreshed.generation) || refreshed.generation < 0) throw new Error("议题刷新响应无效");
+      const live = await dependencies.listLiveOpenIssues();
+      if (!Number.isSafeInteger(live.skipped) || live.skipped < 0) throw new Error("GitHub开放议题集合无效");
+      uniqueIssueNumbers(live.numbers, "GitHub开放议题集合");
+      const ready = await dependencies.setScanState("ready");
+      assertIssueSyncState(ready, input.repositoryId, "ready");
+      if (ready.generation < refreshed.generation) throw new Error("扫描就绪响应无效");
+      const changed = refreshed.changed === true || refreshed.deleted === true;
+      completed = { repositoryId: input.repositoryId, issueNumber: input.issueNumber!, refreshed: 1, skipped: live.skipped, changed: changed ? 1 : 0, generation: ready.generation };
+    } catch (error) {
+      try { await dependencies.setScanState("degraded"); } catch { /* preserve the original failure */ }
+      throw error;
+    }
     const dispatched = await dispatchPendingReconciliation(input.repositoryId, dependencies);
-    return { repositoryId: input.repositoryId, issueNumber: input.issueNumber!, refreshed: 1, skipped: 0, changed: changed ? 1 : 0, generation: refreshed.generation, dispatched };
+    return { ...completed, dispatched };
   }
   let completed: Omit<IssueSyncResult, "dispatched">;
   try {

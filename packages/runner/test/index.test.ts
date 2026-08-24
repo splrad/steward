@@ -851,13 +851,15 @@ describe("议题快照同步", () => {
     };
   }
 
-  it("单议题仅在内容或开放集合变化时调度全PR重算", async () => {
+  it("单议题在失效后即使内容未变也创建并调度同代次重算", async () => {
     const changed = dependencies({ refresh: () => ({ changed: true, generation: 5 }) });
-    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, changed.value)).resolves.toEqual(expect.objectContaining({ refreshed: 1, changed: 1, generation: 5, dispatched: true }));
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, changed.value)).resolves.toEqual(expect.objectContaining({ refreshed: 1, changed: 1, generation: 7, dispatched: true }));
     expect(changed.dispatched()).toBe(1);
+    expect(changed.states).toEqual(["scanning", "ready"]);
     const duplicate = dependencies({ refresh: () => ({ changed: false, generation: 5 }) });
-    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, duplicate.value)).resolves.toEqual(expect.objectContaining({ changed: 0, dispatched: false }));
-    expect(duplicate.dispatched()).toBe(0);
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, duplicate.value)).resolves.toEqual(expect.objectContaining({ changed: 0, generation: 7, dispatched: true }));
+    expect(duplicate.dispatched()).toBe(1);
+    expect(duplicate.states).toEqual(["scanning", "ready"]);
     const uninitialized = dependencies({ initialState: "uninitialized", live: [8], refresh: () => ({ changed: true, generation: 5 }) });
     await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, uninitialized.value)).resolves.toEqual(expect.objectContaining({ issueNumber: null, dispatched: true }));
     expect(uninitialized.states).toEqual(["scanning", "ready"]);

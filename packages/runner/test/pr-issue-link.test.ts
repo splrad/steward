@@ -459,7 +459,7 @@ describe("拉取请求议题关联运行器", () => {
       const fullDiffDigest = "e".repeat(64);
       const prepared = {
         schemaVersion: 1, repositoryId, repositoryFullName: "splrad/steward", pullRequestNumber: 42,
-        baseSha, headSha, generation: 2, policySha, fullDiffDigest, changedFiles: [], candidateDigests,
+        baseSha, headSha, generation: 2, stateRevision: 0, policySha, fullDiffDigest, changedFiles: [], candidateDigests,
         candidates: snapshots.map(item => ({ repositoryId, number: item.issueNumber, state: "open", contentDigest: item.contentDigest, unfetchedReferences: [], validators: item.validators })),
         openSetDigest, unmanagedBodyDigest, revalidationBudget: 1_250,
         analysisInputDigest: analysisInputDigest({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 2, policySha, fullDiffDigest, candidateDigests, openSetDigest, unmanagedBodyDigest }),
@@ -479,6 +479,7 @@ describe("拉取请求议题关联运行器", () => {
         if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify(pull(currentBody, 301115370)), { status: 200 });
         if (value.endsWith("/repos/splrad/steward/git/ref/heads/main")) return new Response(JSON.stringify({ object: { sha: baseSha } }), { status: 200 });
         if (value.endsWith(`/internal/issue-snapshots/${repositoryId}`)) return new Response(JSON.stringify({ repositoryId, generation: 2, stateRevision: 0, syncState: "ready", openSetDigest, snapshots }), { status: 200 });
+        if (value.includes("/repos/splrad/steward/issues?")) return new Response(JSON.stringify([1, 2].map(number => ({ number, repository_url: "https://api.github.com/repos/splrad/steward" }))), { status: 200 });
         if (/\/issues\/[12]$/u.test(value)) { validatorReads.push(value); return new Response(null, { status: 304 }); }
         if (value.endsWith("/graphql")) return new Response(JSON.stringify({ data: { repository: { databaseId: repositoryId, pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } }), { status: 200 });
         if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
@@ -493,6 +494,48 @@ describe("拉取请求议题关联运行器", () => {
     });
   });
 
+  it("正文写入前出现新开放议题时保持失败并等待替代重算", async () => {
+    await withRunnerEnvironment(async (directory) => {
+      const outer = '<!-- workflow:managed-pr:start -->\n## 摘要\n\n正文\n\n<!-- workflow:source-actor:bot -->\n<!-- workflow:managed-pr:end -->\n';
+      const fullDiffDigest = "e".repeat(64);
+      const openSetDigest = openIssueSetDigest(repositoryId, []);
+      const unmanagedBodyDigest = managedBodyOutsideIssueLinksDigest(outer);
+      const prepared = {
+        schemaVersion: 1, repositoryId, repositoryFullName: "splrad/steward", pullRequestNumber: 42,
+        baseSha, headSha, generation: 2, stateRevision: 0, policySha, fullDiffDigest, changedFiles: [], candidateDigests: [], candidates: [],
+        openSetDigest, unmanagedBodyDigest, revalidationBudget: 1_250,
+        analysisInputDigest: analysisInputDigest({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 2, policySha, fullDiffDigest, candidateDigests: [], openSetDigest, unmanagedBodyDigest }),
+      };
+      process.env.ISSUE_PREPARED_FACTS_PATH = join(directory, "prepared.json");
+      process.env.RUNTIME_URL = "https://runtime.test";
+      process.env.COPILOT_STEP_OUTCOME = "failure";
+      await writeFile(process.env.ISSUE_PREPARED_FACTS_PATH, JSON.stringify(prepared));
+      let liveReads = 0;
+      const calls: Array<{ url: string; method: string; body: any }> = [];
+      vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+        const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
+        calls.push({ url: value, method, body });
+        if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+        if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify(pull(outer, 301115370)), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/git/ref/heads/main")) return new Response(JSON.stringify({ object: { sha: baseSha } }), { status: 200 });
+        if (value.endsWith(`/internal/issue-snapshots/${repositoryId}`)) return new Response(JSON.stringify({ repositoryId, generation: 2, stateRevision: 0, syncState: "ready", openSetDigest, snapshots: [] }), { status: 200 });
+        if (value.includes("/repos/splrad/steward/issues?")) {
+          liveReads++;
+          return new Response(JSON.stringify(liveReads === 1 ? [] : [{ number: 7, repository_url: "https://api.github.com/repos/splrad/steward" }]), { status: 200 });
+        }
+        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [{ id: 1, name: "PR Issue Link Gate", app: { id: 4243096 }, head_sha: headSha, external_id: `v1:${repositoryId}:42:${headSha}` }] }), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/check-runs/1")) return new Response(JSON.stringify({ id: 1 }), { status: 200 });
+        return new Response("unexpected", { status: 500 });
+      });
+      await expect(runPrIssueLink(invocation())).rejects.toThrow("写入前发生漂移");
+      expect(calls.some(call => call.method === "PATCH" && call.url.endsWith("/pulls/42"))).toBe(false);
+      const check = calls.find(call => call.method === "PATCH" && call.url.endsWith("/check-runs/1"));
+      expect(check?.body).toEqual(expect.objectContaining({ status: "completed", conclusion: "failure" }));
+      expect(check?.body.output.summary).toContain("reconcile-failed-unclean");
+    });
+  });
+
   it("准备证据已经过期时保持失败门禁直到替代分析完成", async () => {
     await withRunnerEnvironment(async (directory) => {
       const outer = '<!-- workflow:managed-pr:start -->\n## 摘要\n\n正文\n\n<!-- workflow:source-actor:bot -->\n<!-- workflow:managed-pr:end -->\n';
@@ -503,7 +546,7 @@ describe("拉取请求议题关联运行器", () => {
       const unmanagedBodyDigest = managedBodyOutsideIssueLinksDigest(currentBody);
       const prepared = {
         schemaVersion: 1, repositoryId, repositoryFullName: "splrad/steward", pullRequestNumber: 42,
-        baseSha, headSha, generation: 2, policySha, fullDiffDigest, changedFiles: [], candidateDigests: [], candidates: [],
+        baseSha, headSha, generation: 2, stateRevision: 0, policySha, fullDiffDigest, changedFiles: [], candidateDigests: [], candidates: [],
         openSetDigest, unmanagedBodyDigest, revalidationBudget: 1_250,
         analysisInputDigest: analysisInputDigest({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 2, policySha, fullDiffDigest, candidateDigests: [], openSetDigest, unmanagedBodyDigest }),
       };
@@ -568,7 +611,7 @@ describe("拉取请求议题关联运行器", () => {
       const unmanagedBodyDigest = managedBodyOutsideIssueLinksDigest(currentBody);
       const prepared = {
         schemaVersion: 1, repositoryId, repositoryFullName: "splrad/steward", pullRequestNumber: 42,
-        baseSha, headSha, generation: 2, policySha, fullDiffDigest, changedFiles: [], candidateDigests: [], candidates: [],
+        baseSha, headSha, generation: 2, stateRevision: 0, policySha, fullDiffDigest, changedFiles: [], candidateDigests: [], candidates: [],
         openSetDigest, unmanagedBodyDigest, revalidationBudget: 1_250,
         analysisInputDigest: analysisInputDigest({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 2, policySha, fullDiffDigest, candidateDigests: [], openSetDigest, unmanagedBodyDigest }),
       };
@@ -613,7 +656,7 @@ describe("拉取请求议题关联运行器", () => {
       const unmanagedBodyDigest = managedBodyOutsideIssueLinksDigest("");
       const prepared = {
         schemaVersion: 1, repositoryId, repositoryFullName: "splrad/steward", pullRequestNumber: 42,
-        baseSha, headSha, generation: 2, policySha, fullDiffDigest, changedFiles: [], candidateDigests: [], candidates: [],
+        baseSha, headSha, generation: 2, stateRevision: 0, policySha, fullDiffDigest, changedFiles: [], candidateDigests: [], candidates: [],
         openSetDigest, unmanagedBodyDigest, revalidationBudget: 1_250,
         analysisInputDigest: analysisInputDigest({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 2, policySha, fullDiffDigest, candidateDigests: [], openSetDigest, unmanagedBodyDigest }),
       };

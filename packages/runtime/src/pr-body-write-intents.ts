@@ -471,10 +471,13 @@ export async function processPullRequestBodyEditedDelivery(input: {
     return outcome;
   };
   if (!["prepared", "patched", "compensating"].includes(current.status)) return record("ignored");
+  if (!Object.prototype.hasOwnProperty.call(input.payload?.changes ?? {}, "body")) return record("ignored");
   const after = input.payload?.pull_request?.body;
   if (typeof after !== "string" || Buffer.byteLength(after, "utf8") > 1024 * 1024) return record("ignored");
-  if (Number(input.payload?.sender?.id) !== 301115370) return record("ignored");
-  if (!Object.prototype.hasOwnProperty.call(input.payload?.changes ?? {}, "body")) return record("ignored");
+  if (Number(input.payload?.sender?.id) !== 301115370) {
+    await input.store.block(repositoryId, pullRequestNumber, current.writeId, "non-steward-body-edit", input.now);
+    return record("ignored");
+  }
   const before = input.payload?.changes?.body?.from;
   if (typeof before !== "string" || Buffer.byteLength(before, "utf8") > 1024 * 1024) {
     await input.store.block(repositoryId, pullRequestNumber, current.writeId, "edited-evidence-unavailable", input.now);
@@ -525,7 +528,10 @@ export async function processPullRequestBodyEditedDelivery(input: {
       return record("blocked");
     }
   }
-  if (afterDigest !== current.targetBodyDigest) return record("ignored");
+  if (afterDigest !== current.targetBodyDigest) {
+    await input.store.block(repositoryId, pullRequestNumber, current.writeId, "target-body-drifted", input.now);
+    return record("ignored");
+  }
   const live = await input.client.getPullRequest(owner, repo, pullRequestNumber);
   if (live?.head?.sha !== current.headSha || live?.base?.sha !== current.baseSha || pullRequestBodyDigest(String(live?.body ?? "")) !== current.targetBodyDigest) {
     await input.store.block(repositoryId, pullRequestNumber, current.writeId, "post-edit-readback-drifted", input.now);

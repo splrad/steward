@@ -11,7 +11,7 @@ on:
 
 permissions: {}
 concurrency:
-  group: steward-issue-sync-${{ inputs.repositoryId }}
+  group: steward-pr-body-${{ inputs.repositoryId }}
   cancel-in-progress: false
   queue: max
 
