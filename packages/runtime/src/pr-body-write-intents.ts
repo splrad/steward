@@ -156,7 +156,8 @@ function intent(row: IntentRow | null): PullRequestBodyWriteIntent | null {
     if (!row.redrive_workflow || !row.redrive_inputs) throw new Error("正文写重调度数据无效");
     let inputs: unknown;
     try { inputs = JSON.parse(row.redrive_inputs); } catch { throw new Error("正文写重调度数据无效"); }
-    return normalizePullRequestBodyRedrive({ workflow: row.redrive_workflow, inputs }, { repositoryId: row.repository_id, pullRequestNumber: row.pull_request_number, regionKind: row.region_kind as PullRequestBodyRegionKind });
+    const redriveRegionKind = row.redrive_workflow === "pr-issue-link.yml" ? "issue-links" : "managed-pr";
+    return normalizePullRequestBodyRedrive({ workflow: row.redrive_workflow, inputs }, { repositoryId: row.repository_id, pullRequestNumber: row.pull_request_number, regionKind: redriveRegionKind });
   })();
   const result: PullRequestBodyWriteIntent = {
     repositoryId: positiveInteger(row.repository_id, "repositoryId"),
@@ -276,9 +277,9 @@ export class PullRequestBodyWriteIntentStore {
         && current.issueGeneration === issueGeneration && current.beforeBodyDigest === beforeBodyDigest
         && current.outsideBodyDigest === outsideBodyDigest && current.targetBlock === input.targetBlock && current.targetBodyDigest === targetBodyDigest
         && JSON.stringify(current.redrive) === JSON.stringify(redrive)) return current;
-      await this.db.prepare(`UPDATE pull_request_body_write_intents SET redrive_required=1, redrive_dispatched=0, updated_at=?
+      await this.db.prepare(`UPDATE pull_request_body_write_intents SET redrive_workflow=?, redrive_inputs=?, redrive_required=1, redrive_dispatched=0, updated_at=?
         WHERE repository_id=? AND pull_request_number=? AND status IN ('prepared','patched','compensating')`)
-        .bind(input.now, repositoryId, pullRequestNumber).run();
+        .bind(redrive?.workflow ?? null, redrive ? JSON.stringify(redrive.inputs) : null, input.now, repositoryId, pullRequestNumber).run();
       throw new Error("body-write-intent-conflict");
     }
     return (await this.get(repositoryId, pullRequestNumber))!;

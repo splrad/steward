@@ -421,17 +421,27 @@ describe("拉取请求正文持久补偿协议", () => {
     expect((await store.get(repositoryId, pullRequestNumber))?.writeId).toBe(newer.writeId);
   });
 
-  it("同一PR的活动意图不能被并发写入器替换", async () => {
+  it("同一PR的活动意图保留胜出写入并重调度失败方", async () => {
     const database = new SqliteD1();
     const store = new PullRequestBodyWriteIntentStore(database.binding());
     const before = body("人工前言", managedBlock("旧摘要"));
-    await prepared(store, before, managedBlock("新摘要"));
-    await expect(prepared(store, before, managedBlock("并发摘要"), "44444444-4444-4444-8444-444444444444")).rejects.toThrow("body-write-intent-conflict");
+    const winnerRedrive = { workflow: "pr-automation.yml", inputs: { deliveryId: "delivery-winner", repositoryId: String(repositoryId), sourceRef: "refs/heads/feature/test", eventAfterSha: headSha, sourceActorId: "44151430", sourceActorLogin: "axiomoth", policySha: "a".repeat(40) } } as const;
+    const winnerTargetBlock = managedBlock("新摘要");
+    const winnerTarget = body("人工前言", winnerTargetBlock);
+    await store.prepare({ repositoryId, pullRequestNumber, writeId: "11111111-1111-4111-8111-111111111111", regionKind: "managed-pr", baseSha, headSha, issueGeneration: 0,
+      beforeBodyDigest: pullRequestBodyDigest(before), outsideBodyDigest: bodyOutsideManagedRegionDigest(before, "managed-pr"), targetBlock: winnerTargetBlock,
+      targetBodyDigest: pullRequestBodyDigest(winnerTarget), now, expiresAt, redrive: winnerRedrive });
+    const loserTargetBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber, baseSha, headSha, generation: 0, analysisInputDigest: "d".repeat(64) }, []);
+    const loserTarget = upsertIssueLinksBlock(before, loserTargetBlock);
+    const loserRedrive = { workflow: "pr-issue-link.yml", inputs: { deliveryId: "delivery-loser", repositoryId: String(repositoryId), pullRequestNumber: String(pullRequestNumber), scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: "a".repeat(40) } } as const;
+    await expect(store.prepare({ repositoryId, pullRequestNumber, writeId: "44444444-4444-4444-8444-444444444444", regionKind: "issue-links", baseSha, headSha, issueGeneration: 0,
+      beforeBodyDigest: pullRequestBodyDigest(before), outsideBodyDigest: bodyOutsideManagedRegionDigest(before, "issue-links"), targetBlock: loserTargetBlock,
+      targetBodyDigest: pullRequestBodyDigest(loserTarget), now, expiresAt, redrive: loserRedrive })).rejects.toThrow("body-write-intent-conflict");
     expect((await store.get(repositoryId, pullRequestNumber))?.writeId).toBe("11111111-1111-4111-8111-111111111111");
     await store.markPatched(repositoryId, pullRequestNumber, "11111111-1111-4111-8111-111111111111", now);
     await store.proveDelivery({ repositoryId, pullRequestNumber, writeId: "11111111-1111-4111-8111-111111111111", deliveryId: "delivery-conflict", now });
     await store.confirm(repositoryId, pullRequestNumber, "11111111-1111-4111-8111-111111111111", now);
-    expect(await store.listPendingRedrives()).toEqual([expect.objectContaining({ repositoryId, pullRequestNumber, writeId: "11111111-1111-4111-8111-111111111111" })]);
+    expect(await store.listPendingRedrives()).toEqual([expect.objectContaining({ repositoryId, pullRequestNumber, writeId: "11111111-1111-4111-8111-111111111111", redrive: loserRedrive })]);
   });
 
   it("重新调度声明使用持久租约并允许失败释放或超时重试", async () => {
