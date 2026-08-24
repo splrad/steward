@@ -404,6 +404,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
     if (event === "installation" && action === "created") {
       const store = env.ISSUE_SNAPSHOTS ? new IssueSnapshotStore(env.ISSUE_SNAPSHOTS) : null;
       for (const repository of payload.repositories ?? []) if (isManaged(repository)) {
+        await dispatchIssueInvalidation(env, repository, deliveryId);
         await store?.activateRepository(Number(repository.id));
         await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "installation-created", deliveryId, policySha: env.POLICY_SHA });
       }
@@ -412,6 +413,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
     if (event === "installation_repositories" && action === "added") {
       const store = env.ISSUE_SNAPSHOTS ? new IssueSnapshotStore(env.ISSUE_SNAPSHOTS) : null;
       for (const repository of payload.repositories_added ?? []) if (isManaged(repository)) {
+        await dispatchIssueInvalidation(env, repository, deliveryId);
         await store?.activateRepository(Number(repository.id));
         await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "installation-repositories-added", deliveryId, policySha: env.POLICY_SHA });
       }

@@ -91,7 +91,10 @@ describe("中央运行程序", () => {
       ["pull_request", scoped({ action: "closed", repository: repository(1187527897, "splrad/LayerScape"), pull_request: { number: 9, merged: true, merge_commit_sha: "e".repeat(40), base: { ref: "main" } } })],
     ];
     for (const [event, payload] of cases) expect((await handleWebhook(signedRequest(event, payload), env)).status).toBe(202);
-    expect(dispatched.map(value => value.workflow)).toEqual(["onboard-repository.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "pr-issue-link.yml", "release.yml"]);
+    expect(dispatched.map(value => value.workflow)).toEqual([
+      "pr-issue-link.yml", "onboard-repository.yml", "pr-issue-link.yml", "onboard-repository.yml",
+      "pr-automation.yml", "pr-classification.yml", "pr-issue-link.yml", "release.yml",
+    ]);
     expect(validationChecks).toEqual([expect.objectContaining({ name: "PR Validation Gate", head_sha: "d".repeat(40), status: "in_progress", external_id: `1296724484:8:${"d".repeat(40)}:pending` })]);
     for (const dispatch of dispatched) {
       expect(dispatch.body.ref).toBe("trunk");
@@ -478,23 +481,54 @@ describe("中央运行程序", () => {
     expect(requests.some(request => request.url.includes("/actions/workflows/release.yml/dispatches"))).toBe(false);
   });
 
-  it("安装事件使用已验证的安装账户并接受省略owner的组织仓库", async () => {
-    const dispatched: string[] = [];
+  it("安装事件先失效旧议题门禁，再激活存储并执行接入", async () => {
+    const events: string[] = [];
+    const activated = vi.spyOn(IssueSnapshotStore.prototype, "activateRepository").mockImplementation(async (repositoryId) => { events.push(`activate:${repositoryId}`); });
+    const dispatched: { workflow: string; inputs: Record<string, string> }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      if (String(url).includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (String(url).endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "trunk" }), { status: 200 });
+      const workflow = /\/actions\/workflows\/([^/]+)\/dispatches/.exec(String(url))?.[1];
+      if (workflow) {
+        const inputs = JSON.parse(String(init.body)).inputs;
+        dispatched.push({ workflow, inputs }); events.push(`${workflow}:${inputs.repositoryId}`);
+        return new Response(null, { status: 204 });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    const env = { ...baseEnv(), ISSUE_SNAPSHOTS: {} as D1Database };
+    const accepted = installationScoped({ action: "added", repositories_added: [ownerlessRepository(1187527897, "splrad/LayerScape"), ownerlessRepository(1296725317, "splrad/.github")] });
+    expect((await handleWebhook(signedRequest("installation_repositories", accepted), env)).status).toBe(202);
+    expect(dispatched.map(item => [item.workflow, item.inputs.repositoryId, item.inputs.invalidateOnly ?? null])).toEqual([
+      ["pr-issue-link.yml", "1187527897", "true"], ["onboard-repository.yml", "1187527897", null],
+      ["pr-issue-link.yml", "1296725317", "true"], ["onboard-repository.yml", "1296725317", null],
+    ]);
+    expect(events).toEqual([
+      "pr-issue-link.yml:1187527897", "activate:1187527897", "onboard-repository.yml:1187527897",
+      "pr-issue-link.yml:1296725317", "activate:1296725317", "onboard-repository.yml:1296725317",
+    ]);
+    expect(activated).toHaveBeenCalledTimes(2);
+
+    const foreign = installationScoped({ action: "added", repositories_added: [ownerlessRepository(987654321, "someone/example"), { ...ownerlessRepository(987654322, "splrad/example"), owner: { id: 1, login: "someone" } }] });
+    expect((await handleWebhook(signedRequest("installation_repositories", foreign), env)).status).toBe(202);
+    expect(dispatched).toHaveLength(4);
+  });
+
+  it("安装门禁失效派发失败时不会激活存储或执行接入", async () => {
+    const activated = vi.spyOn(IssueSnapshotStore.prototype, "activateRepository").mockResolvedValue();
+    const workflows: string[] = [];
     vi.stubGlobal("fetch", async (url: string) => {
       if (String(url).includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
       if (String(url).endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "trunk" }), { status: 200 });
       const workflow = /\/actions\/workflows\/([^/]+)\/dispatches/.exec(String(url))?.[1];
-      if (workflow) { dispatched.push(workflow); return new Response(null, { status: 204 }); }
+      if (workflow) { workflows.push(workflow); return new Response("failure", { status: 500 }); }
       return new Response("unexpected", { status: 500 });
     });
-    const env = baseEnv();
-    const accepted = installationScoped({ action: "added", repositories_added: [ownerlessRepository(1187527897, "splrad/LayerScape"), ownerlessRepository(1296725317, "splrad/.github")] });
-    expect((await handleWebhook(signedRequest("installation_repositories", accepted), env)).status).toBe(202);
-    expect(dispatched).toEqual(["onboard-repository.yml", "onboard-repository.yml"]);
-
-    const foreign = installationScoped({ action: "added", repositories_added: [ownerlessRepository(987654321, "someone/example"), { ...ownerlessRepository(987654322, "splrad/example"), owner: { id: 1, login: "someone" } }] });
-    expect((await handleWebhook(signedRequest("installation_repositories", foreign), env)).status).toBe(202);
-    expect(dispatched).toHaveLength(2);
+    const env = { ...baseEnv(), ISSUE_SNAPSHOTS: {} as D1Database };
+    const payload = installationScoped({ action: "created", repositories: [ownerlessRepository()] });
+    expect((await handleWebhook(signedRequest("installation", payload), env)).status).toBe(503);
+    expect(workflows).toEqual(["pr-issue-link.yml"]);
+    expect(activated).not.toHaveBeenCalled();
   });
 
   it("议题变化全量刷新受管仓库，关系事件按动作刷新两端", async () => {
