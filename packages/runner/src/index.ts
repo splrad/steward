@@ -833,7 +833,7 @@ async function onboard(args: Readonly<Record<string, string>>) {
   const fullName = required(args, "repository-full-name"); const [owner, repo] = splitRepository(fullName);
   const policySha = sha(required(args, "policy-sha"), "policy-sha");
   const trigger = required(args, "trigger");
-  if (!["installation-created", "installation-repositories-added", "default-branch-push", "manual"].includes(trigger)) throw new Error("接入触发来源无效");
+  if (!["installation-created", "installation-repositories-added", "repository-visibility-changed", "default-branch-push", "manual"].includes(trigger)) throw new Error("接入触发来源无效");
   if (trigger !== "manual" && !args["repository-id"]) throw new Error("事件接入必须提供仓库编号");
   let repositoryId = args["repository-id"] ? integer(args["repository-id"], "repository-id") : 0;
   if (!repositoryId) {

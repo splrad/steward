@@ -143,6 +143,10 @@ for (const required of ['ISSUE_LINK_LIST_ONLY', 'pull_arguments=()', 'pull_argum
 if (issueLinkDocument?.jobs?.analyze?.strategy?.["max-parallel"] !== 4 || issueLinkDocument?.jobs?.analyze?.strategy?.["fail-fast"] !== false) throw new Error("议题关联矩阵并发策略不正确");
 const issueLinkAnalyze = issueLinkDocument?.jobs?.analyze;
 for (const name of ["DELIVERY_ID", "REPOSITORY_ID", "PULL_REQUEST_NUMBER", "INVALIDATE_ONLY", "CLEANUP_UNMANAGED", "POLICY_SHA", "SNAPSHOT_VALIDATED_GENERATION", "SNAPSHOT_REVALIDATION_BUDGET"]) if (!Object.hasOwn(issueLinkAnalyze?.env ?? {}, name)) throw new Error(`议题关联分析环境缺少${name}`);
+if (String(issueLinkResolve?.outputs?.["snapshot-generation"] ?? "").replace(/\s+/gu, "") !== "${{steps.matrix.outputs['snapshot-generation']}}"
+  || String(issueLinkResolve?.outputs?.["revalidation-budget"] ?? "").replace(/\s+/gu, "") !== "${{steps.matrix.outputs['revalidation-budget']}}"
+  || String(issueLinkAnalyze?.env?.SNAPSHOT_VALIDATED_GENERATION ?? "").replace(/\s+/gu, "") !== "${{needs.resolve.outputs['snapshot-generation']}}"
+  || String(issueLinkAnalyze?.env?.SNAPSHOT_REVALIDATION_BUDGET ?? "").replace(/\s+/gu, "") !== "${{needs.resolve.outputs['revalidation-budget']}}") throw new Error("议题关联连字符输出没有使用安全属性访问");
 const issuePrepareStep = issueLinkAnalyze?.steps?.find(step => step?.name === "准备议题与差异证据");
 const issueReconcileStep = issueLinkAnalyze?.steps?.find(step => step?.name === "收敛议题关联");
 for (const step of [issuePrepareStep, issueReconcileStep]) {
@@ -214,6 +218,7 @@ const onboardStep = onboardDocument?.jobs?.onboard?.steps?.find(step => step?.na
 const onboardCommand = String(onboardStep?.run ?? "");
 for (const [name, expectedValue] of [["REPOSITORY_ID", "${{inputs.repositoryId}}"], ["REPOSITORY_FULL_NAME", "${{inputs.repositoryFullName}}"], ["TRIGGER_ACTOR_ID", "${{github.actor_id}}"], ["TRIGGER_ACTOR_LOGIN", "${{github.actor}}"]]) if (String(onboardStep?.env?.[name] ?? "").replace(/\s+/gu, "") !== expectedValue) throw new Error(`onboarding没有通过环境变量传递${name}`);
 if (/\$\{\{/u.test(onboardCommand) || !onboardCommand.includes('--repository-id "$REPOSITORY_ID"') || !onboardCommand.includes('--repository-full-name "$REPOSITORY_FULL_NAME"')) throw new Error("onboarding没有通过环境变量安全传递必填仓库身份");
+for (const step of [issuePrepareStep, issueReconcileStep, onboardStep, syncStep]) if (!Object.hasOwn(step?.env ?? {}, "RUNTIME_URL")) throw new Error("正文写入工作流缺少运行时地址");
 const deployRuntime = await readFile(".github/workflows/deploy-runtime.yml", "utf8");
 for (const required of [".github/workflows/deploy-runtime.yml", "scripts/verify-workflows.mjs", "github.event.repository.default_branch", "id: deploy", "tee \"$deployment_log\"", "PIPESTATUS[0]", "复核运行程序健康状态", "steps.deploy.outputs.runtime_url", "EXPECTED_POLICY_SHA", "Date.now() + 60_000", "AbortSignal.timeout", "await response.body?.cancel()", "status: \"waiting\"", "iu.test(body.version)", "健康复核在60秒内未收敛"]) {
   if (!deployRuntime.includes(required)) throw new Error(`部署工作流缺少固定健康复核合同: ${required}`);

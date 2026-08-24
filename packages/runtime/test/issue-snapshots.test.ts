@@ -299,9 +299,9 @@ describe("议题快照D1存储", () => {
       }
       return new Response("unexpected", { status: 500 });
     });
-    expect(await recoverIssueSnapshotReconciliations(env(database), new Date("2026-08-21T00:09:59.999Z"))).toBe(0);
-    expect(await recoverIssueSnapshotReconciliations(env(database), new Date("2026-08-21T00:10:00.000Z"))).toBe(1);
-    expect(await recoverIssueSnapshotReconciliations(env(database), new Date("2026-08-21T00:10:01.000Z"))).toBe(0);
+    expect(await recoverIssueSnapshotReconciliations(env(database), new Date("2026-08-21T01:14:59.999Z"))).toBe(0);
+    expect(await recoverIssueSnapshotReconciliations(env(database), new Date("2026-08-21T01:15:00.000Z"))).toBe(1);
+    expect(await recoverIssueSnapshotReconciliations(env(database), new Date("2026-08-21T01:15:01.000Z"))).toBe(0);
     expect(dispatches).toEqual([{
       deliveryId: `issue-reconciliation-recovery:1296724484:0:${ready.stateRevision}`,
       repositoryId: "1296724484", scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "false",

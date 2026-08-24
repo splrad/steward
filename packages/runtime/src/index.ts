@@ -16,7 +16,7 @@ const VALIDATION_WORKFLOW_NAME = "SPLRAD Steward / PR Validation";
 const VALIDATION_WORKFLOW_PATH = ".github/workflows/pr-validation.yml";
 const VALIDATION_CHECK_NAME = "PR Validation Gate";
 const BODY_WRITE_REDRIVE_RETRY_MS = 2 * 60 * 60_000;
-const ISSUE_RECONCILIATION_RETRY_MS = 10 * 60_000;
+const ISSUE_RECONCILIATION_RETRY_MS = 75 * 60_000;
 const ISSUE_SNAPSHOT_DELETE_ATTEMPTS = 3;
 
 function response(status: number, body?: unknown): Response {
@@ -441,9 +441,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       }
       if (!previouslyManaged && managed) {
         if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
-        await dispatchIssueInvalidation(env, repository, deliveryId);
-        await new IssueSnapshotStore(env.ISSUE_SNAPSHOTS).activateRepository(Number(repository.id));
-        await dispatchIssueSyncs(env, repository, deliveryId, null);
+        await onboardManagedRepositories(env, [repository], deliveryId, "repository-visibility-changed");
         return response(202);
       }
       if (!managed) return response(204);

@@ -225,7 +225,7 @@ describe("中央命令入口", () => {
 
     await expect(main([
       "onboard-repository", "--repository-id", String(repositoryId), "--repository-full-name", "splrad/steward",
-      "--trigger", "installation-created", "--delivery-id", "onboard-label-failure", "--policy-sha", policySha,
+      "--trigger", "repository-visibility-changed", "--delivery-id", "onboard-label-failure", "--policy-sha", policySha,
     ])).rejects.toThrow("受管标签同步失败: splrad/steward");
     const dispatch = calls.find(call => call.url.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches"));
     expect(dispatch?.body).toEqual({ ref: "main", inputs: { deliveryId: "onboard-label-failure", repositoryId: String(repositoryId), scanAll: "true", policySha } });

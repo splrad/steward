@@ -808,7 +808,7 @@ describe("中央运行程序", () => {
     expect(deleted).not.toHaveBeenCalled();
   });
 
-  it("仓库重新纳管时先失效旧议题门禁再执行全量同步", async () => {
+  it("仓库重新纳管时先失效旧议题门禁再执行完整接入", async () => {
     const events: string[] = [];
     const activated = vi.spyOn(IssueSnapshotStore.prototype, "activateRepository").mockImplementation(async (repositoryId) => { events.push(`activate:${repositoryId}`); });
     const dispatched: { name: string; inputs: Record<string, string> }[] = [];
@@ -831,9 +831,9 @@ describe("中央运行程序", () => {
     expect(activated).toHaveBeenCalledWith(1400000000);
     expect(dispatched).toEqual([
       { name: "pr-issue-link.yml", inputs: expect.objectContaining({ repositoryId: "1400000000", scanAll: "true", invalidateOnly: "true" }) },
-      { name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1400000000", scanAll: "true" }) },
+      { name: "onboard-repository.yml", inputs: expect.objectContaining({ repositoryId: "1400000000", repositoryFullName: "splrad/default-managed", trigger: "repository-visibility-changed" }) },
     ]);
-    expect(events).toEqual(["pr-issue-link.yml", "activate:1400000000", "issue-sync.yml"]);
+    expect(events).toEqual(["pr-issue-link.yml", "activate:1400000000", "onboard-repository.yml"]);
   });
 
   it("子议题和依赖事件按动作选择携带仓库字段", async () => {

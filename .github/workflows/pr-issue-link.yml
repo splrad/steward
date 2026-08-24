@@ -31,8 +31,8 @@ jobs:
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       count: ${{ steps.matrix.outputs.count }}
-      snapshot-generation: ${{ steps.matrix.outputs.snapshot-generation }}
-      revalidation-budget: ${{ steps.matrix.outputs.revalidation-budget }}
+      snapshot-generation: ${{ steps.matrix.outputs['snapshot-generation'] }}
+      revalidation-budget: ${{ steps.matrix.outputs['revalidation-budget'] }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: { ref: "${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}", persist-credentials: false }
@@ -88,8 +88,8 @@ jobs:
       INVALIDATE_ONLY: ${{ inputs.invalidateOnly }}
       CLEANUP_UNMANAGED: ${{ inputs.cleanupUnmanaged }}
       POLICY_SHA: ${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}
-      SNAPSHOT_VALIDATED_GENERATION: ${{ needs.resolve.outputs.snapshot-generation }}
-      SNAPSHOT_REVALIDATION_BUDGET: ${{ needs.resolve.outputs.revalidation-budget }}
+      SNAPSHOT_VALIDATED_GENERATION: ${{ needs.resolve.outputs['snapshot-generation'] }}
+      SNAPSHOT_REVALIDATION_BUDGET: ${{ needs.resolve.outputs['revalidation-budget'] }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: { ref: "${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}", persist-credentials: false }
