@@ -10,6 +10,10 @@ import {
 import type { GitHubClient } from "../../github/src/index.js";
 
 export type DurableBodyRegionKind = "managed-pr" | "issue-links";
+export interface DurableBodyRedrive {
+  workflow: "pr-automation.yml" | "onboard-repository.yml" | "sync-copilot-instructions.yml" | "pr-issue-link.yml";
+  inputs: Readonly<Record<string, string>>;
+}
 
 interface RuntimeIntent {
   writeId: string;
@@ -22,6 +26,9 @@ interface RuntimeIntent {
   status: "prepared" | "patched" | "compensating" | "confirmed" | "blocked";
   deliveryProven: boolean;
   blockedReason: string | null;
+  redrive: DurableBodyRedrive | null;
+  redriveRequired: boolean;
+  redriveDispatched: boolean;
 }
 
 function digest(body: string): string {
@@ -78,13 +85,37 @@ function matchingIntent(input: {
   issueGeneration: number;
   targetBlock: string | null;
   targetBodyDigest: string;
+  redrive: DurableBodyRedrive;
 }): boolean {
+  return matchingIntentTarget(input)
+    && canonicalRedrive(input.intent.redrive) === canonicalRedrive(input.redrive);
+}
+
+function canonicalRedrive(value: DurableBodyRedrive | null): string {
+  return value === null ? "null" : JSON.stringify({ workflow: value.workflow, inputs: Object.fromEntries(Object.entries(value.inputs).sort(([left], [right]) => left.localeCompare(right))) });
+}
+
+function matchingIntentTarget(input: Omit<Parameters<typeof matchingIntent>[0], "redrive">): boolean {
   return input.intent.regionKind === input.regionKind
     && input.intent.baseSha === input.baseSha
     && input.intent.headSha === input.headSha
     && input.intent.issueGeneration === input.issueGeneration
     && input.intent.targetBlock === input.targetBlock
     && input.intent.targetBodyDigest === input.targetBodyDigest;
+}
+
+function matchingRecoveryRedrive(intent: RuntimeIntent, redrive: DurableBodyRedrive): boolean {
+  if (!intent.redrive || intent.redrive.workflow !== redrive.workflow) return false;
+  const inputs = { ...redrive.inputs };
+  if (Object.hasOwn(intent.redrive.inputs, "deliveryId")) {
+    if (inputs.deliveryId !== `body-write-recovery:${intent.writeId}`) return false;
+    inputs.deliveryId = intent.redrive.inputs.deliveryId!;
+  }
+  if (Object.hasOwn(intent.redrive.inputs, "policySha")) {
+    if (!/^[0-9a-f]{40}$/u.test(inputs.policySha ?? "")) return false;
+    inputs.policySha = intent.redrive.inputs.policySha!;
+  }
+  return canonicalRedrive(intent.redrive) === canonicalRedrive({ workflow: redrive.workflow, inputs });
 }
 
 async function waitForIntent(input: {
@@ -119,6 +150,7 @@ export async function updatePullRequestBodyDurably(input: {
   issueGeneration?: number;
   regionKind: DurableBodyRegionKind;
   targetBlock: string | null;
+  redrive: DurableBodyRedrive;
   additionalPatch?: Readonly<Record<string, unknown>>;
   confirmationAttempts?: number;
 }): Promise<any> {
@@ -133,17 +165,20 @@ export async function updatePullRequestBodyDurably(input: {
   const path = `/internal/issue-snapshots/${input.repositoryId}/body-write-intents/${input.pullRequestNumber}`;
   if (next === before) {
     const active = await runtimeRequest<RuntimeIntent | null>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "GET", path: `${path}/active` });
-    if (active) {
-      if (!matchingIntent({ intent: active, regionKind: input.regionKind, baseSha: input.baseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest })) {
+    if (active && ["confirmed", "blocked"].includes(active.status)) {
+      if (active.redriveRequired && active.redriveDispatched
+        && matchingIntentTarget({ intent: active, regionKind: input.regionKind, baseSha: input.baseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest })
+        && matchingRecoveryRedrive(active, input.redrive)) {
+        await runtimeRequest<RuntimeIntent>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "POST", path: `${path}/${active.writeId}/redrive-completed` });
+      }
+    } else if (active) {
+      if (!matchingIntent({ intent: active, regionKind: input.regionKind, baseSha: input.baseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest, redrive: input.redrive })) {
         throw new Error("活动正文写意图与当前目标冲突");
       }
-      if (active.status === "blocked") throw new Error(`正文写意图失败:${active.blockedReason ?? "blocked"}`);
-      if (active.status !== "confirmed") {
-        if (active.status === "prepared" || active.status === "compensating") {
-          await runtimeRequest<RuntimeIntent>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "POST", path: `${path}/${active.writeId}/patched` });
-        }
-        await waitForIntent({ runtimeUrl: input.runtimeUrl, token: input.token, path, writeId: active.writeId, attempts });
+      if (active.status === "prepared" || active.status === "compensating") {
+        await runtimeRequest<RuntimeIntent>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "POST", path: `${path}/${active.writeId}/patched` });
       }
+      await waitForIntent({ runtimeUrl: input.runtimeUrl, token: input.token, path, writeId: active.writeId, attempts });
     }
     return input.additionalPatch && Object.keys(input.additionalPatch).length
       ? input.client.updatePullRequest(input.owner, input.repo, input.pullRequestNumber, input.additionalPatch)
@@ -164,9 +199,10 @@ export async function updatePullRequestBodyDurably(input: {
       outsideBodyDigest: outsideDigest(before, input.regionKind),
       targetBlock: input.targetBlock,
       targetBodyDigest,
+      redrive: input.redrive,
     },
   });
-  if (prepared.status !== "prepared" || !matchingIntent({ intent: prepared, regionKind: input.regionKind, baseSha: input.baseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest })) {
+  if (prepared.status !== "prepared" || !matchingIntent({ intent: prepared, regionKind: input.regionKind, baseSha: input.baseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest, redrive: input.redrive })) {
     throw new Error("正文写意图恢复状态与当前正文不一致");
   }
   const writeId = prepared.writeId;

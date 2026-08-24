@@ -25,7 +25,7 @@ class SqliteD1Statement {
 class SqliteD1 {
   readonly database = new DatabaseSync(":memory:");
   constructor() {
-    for (const migration of ["0001_issue_snapshots.sql", "0002_issue_snapshot_tombstones.sql", "0003_issue_snapshot_reconciliation.sql", "0004_issue_snapshot_state_revision.sql", "0005_issue_snapshot_reconciliation_revision.sql", "0006_pull_request_body_write_intents.sql"]) {
+    for (const migration of ["0001_issue_snapshots.sql", "0002_issue_snapshot_tombstones.sql", "0003_issue_snapshot_reconciliation.sql", "0004_issue_snapshot_state_revision.sql", "0005_issue_snapshot_reconciliation_revision.sql", "0006_pull_request_body_write_intents.sql", "0007_pull_request_body_write_redrive.sql"]) {
       this.database.exec(readFileSync(new URL(`../migrations/${migration}`, import.meta.url), "utf8"));
     }
   }
@@ -43,7 +43,7 @@ const repository = { id: repositoryId, full_name: "splrad/steward" };
 
 function managedBlock(summary: string): string {
   const body = renderManagedBody({
-    generated: { type: "chore", scope: "test", title: "测试", summary, motivation: "原因", changes: ["改动"], impact: [], related: [], releaseAndMigration: [] },
+    generated: { type: "chore", scope: "test", title: "测试", summary, motivation: "原因", changes: ["改动"], impact: [], releaseAndMigration: [] },
     templateBody: "<!-- workflow:managed-pr:start -->\n<!-- workflow:managed-pr:end -->\n",
     actor: "splrad-steward[bot]",
     contributors: [],
@@ -222,7 +222,7 @@ describe("拉取请求正文持久补偿协议", () => {
     expect((await confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber, writeId, now })).blockedReason).toBe("issue-generation-drifted");
   });
 
-  it("删除议题受管块时也会阻断代次漂移", async () => {
+  it("删除议题受管块不因快照代次漂移而阻断", async () => {
     const database = new SqliteD1();
     const store = new PullRequestBodyWriteIntentStore(database.binding());
     const issueBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber, baseSha, headSha, generation: 1, analysisInputDigest: "c".repeat(64) }, [{ repositoryId, number: 7 }]);
@@ -237,8 +237,11 @@ describe("拉取请求正文持久补偿协议", () => {
     await store.markPatched(repositoryId, pullRequestNumber, writeId, now);
     await store.proveDelivery({ repositoryId, pullRequestNumber, writeId, deliveryId: "delivery-remove-generation", now });
     database.database.prepare("UPDATE issue_snapshot_repositories SET generation = 2 WHERE repository_id = ?").run(repositoryId);
-    const client = { getPullRequest: async () => ({ number: pullRequestNumber, body: target, head: { sha: headSha }, base: { sha: baseSha } }) } as any;
-    expect((await confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber, writeId, now })).blockedReason).toBe("issue-generation-drifted");
+    const client = {
+      getPullRequest: async () => ({ number: pullRequestNumber, body: target, head: { sha: headSha }, base: { sha: baseSha } }),
+      listPullRequestClosingIssueSets: async () => ({ all: [], manual: [], automatic: [] }),
+    } as any;
+    expect((await confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber, writeId, now })).status).toBe("confirmed");
   });
 
   it("GitHub关闭议题集合暂未收敛时保持patched供固定窗口重试", async () => {
@@ -392,6 +395,24 @@ describe("拉取请求正文持久补偿协议", () => {
     await store.proveDelivery({ repositoryId, pullRequestNumber, writeId: "11111111-1111-4111-8111-111111111111", deliveryId: "delivery-conflict", now });
     await store.confirm(repositoryId, pullRequestNumber, "11111111-1111-4111-8111-111111111111", now);
     expect(await store.listPendingRedrives()).toEqual([expect.objectContaining({ repositoryId, pullRequestNumber, writeId: "11111111-1111-4111-8111-111111111111" })]);
+  });
+
+  it("重新调度声明使用持久租约并允许失败释放或超时重试", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const before = body("人工前言", managedBlock("旧摘要"));
+    const { writeId } = await prepared(store, before, managedBlock("新摘要"));
+    await store.markPatched(repositoryId, pullRequestNumber, writeId, now);
+    await store.proveDelivery({ repositoryId, pullRequestNumber, writeId, deliveryId: "delivery-redrive-lease", now });
+    await store.confirm(repositoryId, pullRequestNumber, writeId, now);
+    await store.requestRedrive(repositoryId, pullRequestNumber, writeId, now);
+
+    expect(await store.claimRedrive(repositoryId, pullRequestNumber, writeId, "2026-08-22T00:01:00.000Z", "2026-08-21T22:01:00.000Z")).toBe(true);
+    expect(await store.claimRedrive(repositoryId, pullRequestNumber, writeId, "2026-08-22T00:02:00.000Z", "2026-08-21T22:02:00.000Z")).toBe(false);
+    expect(await store.listPendingRedrives(20, "2026-08-22T00:00:59.999Z")).toEqual([]);
+    expect(await store.listPendingRedrives(20, "2026-08-22T00:01:00.000Z")).toEqual([expect.objectContaining({ writeId })]);
+    expect(await store.releaseRedrive(repositoryId, pullRequestNumber, writeId, "2026-08-22T00:01:00.000Z")).toBe(true);
+    expect(await store.listPendingRedrives()).toEqual([expect.objectContaining({ writeId })]);
   });
 
   it("同一目标的重复prepare复用原活动意图以恢复中断写入", async () => {

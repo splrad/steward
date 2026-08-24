@@ -17,20 +17,26 @@ import {
   type AiClassificationAssessment, type AiClassificationEnvelopeV2, type AiClassificationFieldInspection, type AiClassificationSuggestion, type AutomationFacts, type ClassificationProfile, type ClassifiedReleasePullRequest, type Contributor, type RawClassificationFacts, type ReleaseManifest, type RepositoryClassification, type SemanticCatalog, type ValidationProfile,
 } from "../../core/src/index.js";
 import { createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestError, uploadReleaseAsset } from "../../github/src/index.js";
-import { managedRepositoryTargets, runManagedRepositorySync, type ManagedTarget } from "./managed-repository-sync.js";
+import { managedRepositoryIds, managedRepositoryTargets, runManagedRepositorySync, type ManagedTarget } from "./managed-repository-sync.js";
+import { runPrIssueLink } from "./pr-issue-link.js";
+import { targetManagedBlock, updatePullRequestBodyDurably, type DurableBodyRedrive } from "./pr-body-writer.js";
 import { minimatch } from "minimatch";
 import YAML from "yaml";
 
-const commands = new Set(["onboard-repository", "pr-automation", "pr-classification", "sync-copilot-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"]);
+const commands = new Set(["issue-sync", "managed-repository-ids", "reconcile-repository-lifecycle", "onboard-repository", "pr-automation", "pr-classification", "pr-issue-link", "sync-copilot-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"]);
 const stewardRepositoryId = 1296724484;
 // Repository configuration and workspace files are runtime inputs, not bundle assets.
 // This wrapper keeps their paths opaque to the static asset tracer used by ncc.
 const runtimeReadFile = ((path: Parameters<typeof readFile>[0], options?: Parameters<typeof readFile>[1]) =>
   Reflect.apply(readFile, undefined, options === undefined ? [path] : [path, options])) as typeof readFile;
 const allowedArguments: Record<string, Set<string>> = {
+  "issue-sync": new Set(["delivery-id", "repository-id", "issue-number", "scan-all", "policy-sha"]),
+  "managed-repository-ids": new Set(["policy-sha"]),
+  "reconcile-repository-lifecycle": new Set(["delivery-id", "policy-sha"]),
   "onboard-repository": new Set(["repository-id", "repository-full-name", "trigger", "delivery-id", "policy-sha"]),
   "pr-automation": new Set(["delivery-id", "repository-id", "source-ref", "event-after-sha", "source-actor-id", "source-actor-login", "policy-sha"]),
   "pr-classification": new Set(["delivery-id", "repository-id", "pull-request-number", "event-head-sha", "scan-all", "policy-sha"]),
+  "pr-issue-link": new Set(["delivery-id", "repository-id", "pull-request-number", "scan-all", "invalidate-only", "cleanup-unmanaged", "reconciliation-generation", "policy-sha"]),
   "sync-copilot-instructions": new Set(["repository-id", "policy-sha"]),
   "sync-managed-labels": new Set(["repository-id", "policy-sha"]),
   validate: new Set(["workspace", "repository-id", "profile"]),
@@ -61,7 +67,12 @@ function required(args: Readonly<Record<string, string>>, name: string): string 
   const value = args[name]; if (!value) throw new Error(`缺少参数: --${name}`); return value;
 }
 export function env(name: string): string { const value = process.env[name]; if (!value) throw new Error(`缺少环境变量: ${name}`); return value; }
-function integer(value: string, name: string): number { if (!/^\d+$/.test(value)) throw new Error(`${name}必须是十进制整数`); return Number(value); }
+function integer(value: string, name: string): number {
+  if (!/^\d+$/.test(value)) throw new Error(`${name}必须是十进制整数`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) throw new Error(`${name}必须是安全整数`);
+  return parsed;
+}
 function sha(value: string, name: string): string { if (!/^[0-9a-f]{40}$/i.test(value)) throw new Error(`${name}必须是40位提交编号`); return value.toLowerCase(); }
 function deepFreeze<T>(value: T): T {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {
@@ -81,8 +92,11 @@ function configPath(...segments: string[]): string {
 }
 function splitRepository(fullName: string): [string, string] { const parts = fullName.split("/"); if (parts.length !== 2 || parts.some(x => !x)) throw new Error("仓库完整名称无效"); return parts as [string, string]; }
 async function client(repositoryId: number, permissions: Parameters<typeof createInstallationToken>[0]["permissions"], policySha: string): Promise<GitHubClient> {
+  return (await clientWithToken(repositoryId, permissions, policySha)).client;
+}
+async function clientWithToken(repositoryId: number, permissions: Parameters<typeof createInstallationToken>[0]["permissions"], policySha: string): Promise<{ token: string; client: GitHubClient }> {
   const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId, permissions, policySha });
-  return new GitHubClient(token, "https://api.github.com", fetch, policySha);
+  return { token, client: new GitHubClient(token, "https://api.github.com", fetch, policySha) };
 }
 async function summary(lines: readonly string[]): Promise<void> {
   const target = process.env.GITHUB_STEP_SUMMARY;
@@ -91,7 +105,7 @@ async function summary(lines: readonly string[]): Promise<void> {
 async function output(values: Record<string, string | number>): Promise<void> { const target = process.env.GITHUB_OUTPUT; if (!target) return; await writeFile(target, Object.entries(values).map(([key, value]) => `${key}=${String(value).replace(/[\r\n]/g, " ")}`).join("\n") + "\n", { flag: "a" }); }
 
 type CopilotFallbackStage = "copilot-step" | "prepared-facts-read" | "prepared-facts-parse" | "prepared-facts-check" | "copilot-output-read" | "copilot-output-envelope" | "copilot-output-parse" | "copilot-output-validate";
-const safeGeneratedSummaryValidationMessage = /^(?:Copilot结果必须是对象|Copilot结果包含额外字段|classification字段缺失|type无效|scope无效|title格式无效|changes无效|related无效|(?:title|summary|motivation|changes\[\]|impact|impact\[\]|related\[\]|releaseAndMigration|releaseAndMigration\[\])(?:必须是字符串|长度或格式无效|无效))$/u;
+const safeGeneratedSummaryValidationMessage = /^(?:Copilot结果必须是对象|Copilot结果包含额外字段|classification字段缺失|type无效|scope无效|title格式无效|changes无效|(?:title|summary|motivation|changes\[\]|impact|impact\[\]|releaseAndMigration|releaseAndMigration\[\])(?:必须是字符串|长度或格式无效|无效))$/u;
 const maximumCopilotJsonlBytes = 2_097_152;
 const maximumCopilotJsonlLines = 256;
 const maximumCopilotContentBytes = 65_536;
@@ -464,6 +478,183 @@ async function dispatchClassification(input: { repositoryId: number; pullRequest
   await dispatchWorkflow(new GitHubClient(token, "https://api.github.com", fetch, input.policySha), { owner: "splrad", repo: "steward", workflow: "pr-classification.yml", policySha: input.policySha, inputs: { deliveryId: input.deliveryId, repositoryId: String(input.repositoryId), pullRequestNumber: String(input.pullRequestNumber), eventHeadSha: input.headSha, policySha: input.policySha, ...(input.aiClassification ? { aiClassification: input.aiClassification } : {}) } });
 }
 
+async function dispatchCentralWorkflow(workflow: "issue-sync.yml" | "pr-issue-link.yml", policySha: string, inputs: Record<string, string>): Promise<void> {
+  const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId: stewardRepositoryId, permissions: { actions: "write", metadata: "read" }, policySha });
+  await dispatchWorkflow(new GitHubClient(token, "https://api.github.com", fetch, policySha), { owner: "splrad", repo: "steward", workflow, policySha, inputs });
+}
+
+export function issueSyncInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
+  return { issues: "read", metadata: "read" };
+}
+
+interface IssueSyncRepositoryState {
+  repositoryId: number;
+  generation: number;
+  syncState: "uninitialized" | "scanning" | "ready" | "degraded";
+  snapshots?: readonly { issueNumber: number }[];
+  reconciliationGeneration?: number | null;
+}
+
+interface IssueSyncRefreshResult {
+  repositoryId: number;
+  issueNumber: number;
+  generation: number;
+  changed?: boolean;
+  deleted?: boolean;
+}
+
+export interface IssueSyncResult {
+  repositoryId: number;
+  issueNumber: number | null;
+  refreshed: number;
+  skipped: number;
+  changed: number;
+  generation: number;
+  dispatched: boolean;
+}
+
+export interface IssueSyncDependencies {
+  listLiveOpenIssues(): Promise<{ numbers: readonly number[]; skipped: number }>;
+  getState(): Promise<IssueSyncRepositoryState>;
+  setScanState(state: "scanning" | "ready" | "degraded"): Promise<IssueSyncRepositoryState>;
+  refresh(issueNumber: number): Promise<IssueSyncRefreshResult>;
+  dispatchFormalReconciliation(generation: number): Promise<void>;
+}
+
+function uniqueIssueNumbers(values: readonly number[], name: string): number[] {
+  const numbers = [...values];
+  if (numbers.some(value => !Number.isSafeInteger(value) || value <= 0) || new Set(numbers).size !== numbers.length) throw new Error(`${name}无效`);
+  return numbers.sort((left, right) => left - right);
+}
+
+function assertIssueSyncState(value: IssueSyncRepositoryState, repositoryId: number, expectedState?: IssueSyncRepositoryState["syncState"], snapshotsRequired = false): void {
+  if (value.repositoryId !== repositoryId || !Number.isSafeInteger(value.generation) || value.generation < 0
+    || !["uninitialized", "scanning", "ready", "degraded"].includes(value.syncState)
+    || (expectedState !== undefined && value.syncState !== expectedState)
+    || (value.reconciliationGeneration !== undefined && value.reconciliationGeneration !== null
+      && (!Number.isSafeInteger(value.reconciliationGeneration) || value.reconciliationGeneration < 0))
+    || (snapshotsRequired && !Array.isArray(value.snapshots))) throw new Error("议题同步仓库状态响应无效");
+}
+
+async function dispatchPendingReconciliation(repositoryId: number, dependencies: IssueSyncDependencies): Promise<boolean> {
+  const state = await dependencies.getState();
+  assertIssueSyncState(state, repositoryId);
+  const generation = state.reconciliationGeneration;
+  if (generation === undefined || generation === null) return false;
+  await dependencies.dispatchFormalReconciliation(generation);
+  return true;
+}
+
+export async function reconcileIssueSnapshots(
+  input: { repositoryId: number; issueNumber?: number; scanAll: boolean },
+  dependencies: IssueSyncDependencies,
+): Promise<IssueSyncResult> {
+  if (!Number.isSafeInteger(input.repositoryId) || input.repositoryId <= 0) throw new Error("repositoryId无效");
+  if (input.scanAll === (input.issueNumber !== undefined)) throw new Error("全量同步与单议题同步参数不一致");
+  if (input.issueNumber !== undefined && (!Number.isSafeInteger(input.issueNumber) || input.issueNumber <= 0)) throw new Error("issueNumber无效");
+  if (!input.scanAll) {
+    const state = await dependencies.getState();
+    assertIssueSyncState(state, input.repositoryId);
+    if (state.syncState !== "ready") return reconcileIssueSnapshots({ repositoryId: input.repositoryId, scanAll: true }, dependencies);
+    const refreshed = await dependencies.refresh(input.issueNumber!);
+    if (refreshed.repositoryId !== input.repositoryId || refreshed.issueNumber !== input.issueNumber || !Number.isSafeInteger(refreshed.generation) || refreshed.generation < 0) throw new Error("议题刷新响应无效");
+    const changed = refreshed.changed === true || refreshed.deleted === true;
+    const dispatched = await dispatchPendingReconciliation(input.repositoryId, dependencies);
+    return { repositoryId: input.repositoryId, issueNumber: input.issueNumber!, refreshed: 1, skipped: 0, changed: changed ? 1 : 0, generation: refreshed.generation, dispatched };
+  }
+  let completed: Omit<IssueSyncResult, "dispatched">;
+  try {
+    const scanning = await dependencies.setScanState("scanning");
+    assertIssueSyncState(scanning, input.repositoryId, "scanning");
+    const [live, stored] = await Promise.all([dependencies.listLiveOpenIssues(), dependencies.getState()]);
+    assertIssueSyncState(stored, input.repositoryId, undefined, true);
+    if (!Number.isSafeInteger(live.skipped) || live.skipped < 0) throw new Error("GitHub开放议题集合无效");
+    const liveNumbers = uniqueIssueNumbers(live.numbers, "GitHub开放议题集合");
+    const storedNumbers = uniqueIssueNumbers(stored.snapshots!.map(item => item.issueNumber), "D1开放议题集合");
+    const union = [...new Set([...liveNumbers, ...storedNumbers])].sort((left, right) => left - right);
+    let changed = 0;
+    let generation = stored.generation;
+    for (const issueNumber of union) {
+      const refreshed = await dependencies.refresh(issueNumber);
+      if (refreshed.repositoryId !== input.repositoryId || refreshed.issueNumber !== issueNumber || !Number.isSafeInteger(refreshed.generation) || refreshed.generation < generation) throw new Error("议题刷新响应无效");
+      generation = refreshed.generation;
+      if (refreshed.changed === true || refreshed.deleted === true) changed++;
+    }
+    const ready = await dependencies.setScanState("ready");
+    assertIssueSyncState(ready, input.repositoryId, "ready");
+    if (ready.generation < generation) throw new Error("扫描就绪响应无效");
+    completed = { repositoryId: input.repositoryId, issueNumber: null, refreshed: union.length, skipped: live.skipped, changed, generation: ready.generation };
+  } catch (error) {
+    try { await dependencies.setScanState("degraded"); } catch { /* preserve the original failure */ }
+    throw error;
+  }
+  const dispatched = await dispatchPendingReconciliation(input.repositoryId, dependencies);
+  return { ...completed, dispatched };
+}
+
+function runtimeBaseUrl(value: string): string {
+  const url = new URL(value);
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || (url.pathname !== "/" && url.pathname !== "")) throw new Error("RUNTIME_URL无效");
+  return url.origin;
+}
+
+async function issueSync(args: Readonly<Record<string, string>>): Promise<void> {
+  const repositoryId = integer(required(args, "repository-id"), "repository-id");
+  const policySha = sha(required(args, "policy-sha"), "policy-sha");
+  const deliveryId = required(args, "delivery-id");
+  if (!/^[A-Za-z0-9._:-]{1,200}$/u.test(deliveryId)) throw new Error("delivery-id无效");
+  const scanAllValue = required(args, "scan-all");
+  if (scanAllValue !== "true" && scanAllValue !== "false") throw new Error("scan-all必须是true或false");
+  const scanAll = scanAllValue === "true";
+  const issueNumber = args["issue-number"] === undefined ? undefined : integer(args["issue-number"], "issue-number");
+  if (scanAll === (issueNumber !== undefined)) throw new Error("全量同步与单议题同步参数不一致");
+  const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId, permissions: issueSyncInstallationPermissions(), policySha });
+  const gh = new GitHubClient(token, "https://api.github.com", fetch, policySha);
+  const repositories = await gh.listInstallationRepositories();
+  if (repositories.length !== 1 || Number(repositories[0]?.id) !== repositoryId || typeof repositories[0]?.full_name !== "string") throw new Error("同步令牌仓库范围无效");
+  const repository = repositories[0];
+  const [owner, repo] = splitRepository(repository.full_name);
+  const baseUrl = runtimeBaseUrl(env("RUNTIME_URL"));
+  const requestRuntime = async <T>(method: "GET" | "POST", path: string, headers: Record<string, string> = {}): Promise<T> => {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const response = await fetch(`${baseUrl}${path}`, { method, headers: { Authorization: `Bearer ${token}`, ...headers } });
+      if (response.status === 409 && attempt < 3) continue;
+      if (!response.ok) throw new Error(`议题同步运行时请求失败:${response.status}`);
+      const text = await response.text();
+      if (Buffer.byteLength(text, "utf8") > 8 * 1024 * 1024) throw new Error("议题同步运行时响应过大");
+      try { return JSON.parse(text) as T; } catch { throw new Error("议题同步运行时响应无效"); }
+    }
+    throw new Error("议题同步运行时冲突重试失败");
+  };
+  const result = await reconcileIssueSnapshots({ repositoryId, ...(issueNumber === undefined ? {} : { issueNumber }), scanAll }, {
+    async listLiveOpenIssues() {
+      const result = await gh.listOpenIssuesWithValidators(owner, repo);
+      const issues = result.items.filter((item: any) => !Object.hasOwn(item ?? {}, "pull_request"));
+      const numbers = issues.map((item: any) => {
+        const number = Number(item?.number);
+        let path = "";
+        try { path = new URL(String(item?.repository_url)).pathname.toLowerCase(); } catch { /* checked below */ }
+        if (!Number.isSafeInteger(number) || number <= 0 || path !== `/repos/${owner}/${repo}`.toLowerCase()) throw new Error("GitHub开放议题仓库身份无效");
+        return number;
+      });
+      return { numbers, skipped: result.items.length - issues.length };
+    },
+    getState: () => requestRuntime<IssueSyncRepositoryState>("GET", `/internal/issue-snapshots/${repositoryId}`),
+    setScanState: (state) => requestRuntime<IssueSyncRepositoryState>("POST", `/internal/issue-snapshots/${repositoryId}/scan-state`, { "x-steward-scan-state": state }),
+    refresh: (number) => requestRuntime<IssueSyncRefreshResult>("POST", `/internal/issue-snapshots/${repositoryId}/${number}/refresh`, { "x-github-delivery": deliveryId }),
+    dispatchFormalReconciliation: (generation) => dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
+      deliveryId,
+      repositoryId: String(repositoryId),
+      scanAll: "true",
+      invalidateOnly: "false",
+      cleanupUnmanaged: "false",
+      reconciliationGeneration: String(generation),
+      policySha,
+    }),
+  });
+  await summary([`仓库编号：${result.repositoryId}`, `议题编号：${result.issueNumber ?? "all"}`, `刷新数量：${result.refreshed}`, `跳过数量：${result.skipped}`, `变更数量：${result.changed}`, `仓库代次：${result.generation}`, `全拉取请求重算：${result.dispatched ? "scheduled" : "unchanged"}`]);
+}
+
 const copilotReviewer = "copilot-pull-request-reviewer[bot]";
 const copilotCheckName = "copilot-pull-request-reviewer";
 const githubActionsAppId = 15368;
@@ -499,7 +690,7 @@ export function classificationInstallationPermissions(mode: "observe" | "enforce
   return { contents: "read", pull_requests: assignmentPermission, issues: assignmentPermission, checks: "write", metadata: "read" } as const;
 }
 export function prAutomationInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
-  return { contents: "read", pull_requests: "write", checks: "read", metadata: "read" } as const;
+  return { contents: "read", pull_requests: "write", issues: "read", checks: "read", metadata: "read" } as const;
 }
 export function humanPushPullRequestCreateInput(input: { title: string; body: string; head: string; base: string }) {
   return { ...input, draft: true } as const;
@@ -574,7 +765,7 @@ export function assertManagedBranchPull(branchExists: boolean, pull: any | undef
   }
 }
 
-async function reconcileManagedFile(input: { repository: any; gh: GitHubClient; path: string; content: string; branch: string; title: string; policySha: string; deliveryId: string }): Promise<"unchanged" | "pull-request-created" | "pull-request-updated"> {
+async function reconcileManagedFile(input: { repository: any; gh: GitHubClient; token: string; path: string; content: string; branch: string; title: string; policySha: string; deliveryId: string; redrive: DurableBodyRedrive; dispatchIssueLink?: boolean }): Promise<"unchanged" | "pull-request-created" | "pull-request-updated"> {
   const [owner, repo] = splitRepository(input.repository.full_name); const defaultBranch = input.repository.default_branch;
   const current = await optional(() => input.gh.getContent(owner, repo, input.path, defaultBranch)); if (decodeContent(current) === input.content) return "unchanged";
   const pulls = await input.gh.listPullRequests(owner, repo, `${owner}:${input.branch}`); if (pulls.length > 1) throw new Error(`受管分支存在多个拉取请求: ${input.branch}`);
@@ -589,13 +780,37 @@ async function reconcileManagedFile(input: { repository: any; gh: GitHubClient; 
     motivation: "中央管理文件需要跟随当前规则更新，避免目标仓库保留已经过期的配置。",
     changes: [`更新${input.path}并保持中央配置为唯一人工维护来源`],
     impact: ["目标仓库后续使用更新后的中央管理规则"],
-    related: [],
     releaseAndMigration: [],
   };
   const body = renderManagedBody({ generated, existingBody: pulls[0]?.body, templateBody: organizationPullRequestTemplate, actor: "splrad-steward[bot]", contributors: [], context: `${input.repository.id}:${input.path}:${input.policySha}` });
-  const pull = pulls[0] ? await input.gh.updatePullRequest(owner, repo, pulls[0].number, { title: input.title, body }) : await input.gh.createPullRequest(owner, repo, { title: input.title, body, head: input.branch, base: defaultBranch });
+  const pull = pulls[0] ? await updatePullRequestBodyDurably({
+    client: input.gh,
+    token: input.token,
+    runtimeUrl: env("RUNTIME_URL"),
+    owner,
+    repo,
+    repositoryId: Number(input.repository.id),
+    pullRequestNumber: Number(pulls[0].number),
+    headSha: String(written.headSha),
+    baseSha: String(defaultRef.object.sha),
+    regionKind: "managed-pr",
+    targetBlock: targetManagedBlock(body, "managed-pr"),
+    redrive: input.redrive,
+    additionalPatch: { title: input.title },
+  }) : await input.gh.createPullRequest(owner, repo, { title: input.title, body, head: input.branch, base: defaultBranch });
   await ensureCopilotReview(input.gh, owner, repo, pull.number, written.headSha, input.policySha);
   await dispatchClassification({ repositoryId: input.repository.id, pullRequestNumber: pull.number, headSha: written.headSha, policySha: input.policySha, deliveryId: input.deliveryId });
+  if (input.dispatchIssueLink !== false) {
+    await dispatchCentralWorkflow("pr-issue-link.yml", input.policySha, {
+      deliveryId: input.deliveryId,
+      repositoryId: String(input.repository.id),
+      pullRequestNumber: String(pull.number),
+      scanAll: "false",
+      invalidateOnly: "false",
+      cleanupUnmanaged: "false",
+      policySha: input.policySha,
+    });
+  }
   return pulls[0] ? "pull-request-updated" : "pull-request-created";
 }
 
@@ -611,7 +826,7 @@ async function onboard(args: Readonly<Record<string, string>>) {
     const discovered = await new GitHubClient(discoveryToken, "https://api.github.com", fetch, policySha).getRepository(owner, repo);
     repositoryId = discovered.id;
   }
-  const gh = await client(repositoryId, { administration: "write", contents: "write", pull_requests: "write", checks: "read", metadata: "read", members: "read" }, policySha);
+  const { token, client: gh } = await clientWithToken(repositoryId, { administration: "write", contents: "write", pull_requests: "write", issues: "read", checks: "read", metadata: "read", members: "read" }, policySha);
   const repository = await gh.getRepositoryById(repositoryId); const cfg = configurationFor(await catalog(), repository);
   if (repository.full_name !== fullName) throw new Error("仓库编号与完整名称不一致");
   const state = validateRepositoryForOnboarding({ id: repository.id, fullName: repository.full_name, ownerId: repository.owner.id, visibility: repository.private ? "private" : "public", fork: repository.fork, archived: repository.archived, disabled: repository.disabled, defaultBranch: repository.default_branch }, 302208797, cfg);
@@ -640,9 +855,12 @@ async function onboard(args: Readonly<Record<string, string>>) {
   for (const [name, value] of Object.entries(settings)) if (readback[name] !== value) throw new Error(`仓库设置读回不一致: ${name}`);
   const instructions = await loadCopilotInstructions(cfg.copilotInstructionsProfile, (sourceFile) => configPath("copilot", sourceFile));
   const planned = renderOnboardingPullRequest({ template: organizationPullRequestTemplate, configuration: cfg, actor: "splrad-steward[bot]", context: `onboard:${repositoryId}` });
-  const result = await reconcileManagedFile({ repository, gh, path: instructions.targetPath, content: instructions.content, branch: planned.branch, title: planned.title, policySha, deliveryId: required(args, "delivery-id") });
+  const deliveryId = required(args, "delivery-id");
+  const result = await reconcileManagedFile({ repository, gh, token, path: instructions.targetPath, content: instructions.content, branch: planned.branch, title: planned.title, policySha, deliveryId, dispatchIssueLink: false,
+    redrive: { workflow: "onboard-repository.yml", inputs: { repositoryId: String(repositoryId), repositoryFullName: fullName, trigger, deliveryId, policySha } } });
   await summary([`仓库：${fullName}`, `状态：${result === "unchanged" ? "onboarded" : result}`, `接入分支：${planned.branch}`, `分类配置：${cfg.classification.profile}`, `验证配置：${cfg.validationProfile}`, `Copilot说明配置：${cfg.copilotInstructionsProfile}`, `发布配置：${cfg.releaseProfile ?? "未启用"}`, `Copilot说明字符数：${[...instructions.content].length}`, `标签定义：${labelSyncFailure ? "failed" : "checked"}`]);
   if (labelSyncFailure) throw new Error(labelSyncFailure);
+  await dispatchCentralWorkflow("issue-sync.yml", policySha, { deliveryId, repositoryId: String(repositoryId), scanAll: "true", policySha });
 }
 async function automate(args: Readonly<Record<string, string>>) {
   const repositoryId = integer(required(args, "repository-id"), "repository-id");
@@ -651,7 +869,7 @@ async function automate(args: Readonly<Record<string, string>>) {
   const eventAfterSha = sha(required(args, "event-after-sha"), "event-after-sha");
   const sourceActor = { id: integer(required(args, "source-actor-id"), "source-actor-id"), login: required(args, "source-actor-login"), type: "User" };
   if (!isHumanActor(sourceActor)) throw new Error("来源推送者不是有效真人账号");
-  const gh = await client(repositoryId, prAutomationInstallationPermissions(), policySha);
+  const { token, client: gh } = await clientWithToken(repositoryId, prAutomationInstallationPermissions(), policySha);
   const repository = await gh.getRepositoryById(repositoryId); const [owner, repo] = splitRepository(repository.full_name);
   const repositoryConfiguration = configurationFor(await catalog(), repository);
   if (!repositoryConfiguration.managed || !repositoryConfiguration.prAutomation) return summary(["状态：ignored", "原因：仓库没有启用中央拉取请求创建"]);
@@ -814,9 +1032,35 @@ async function automate(args: Readonly<Record<string, string>>) {
   const title = `${generated.type}(${generated.scope}): ${generated.title}`;
   const context = await computePullRequestFingerprint({ repositoryId, pullRequestNumber: pulls[0]?.number ?? 0, headSha: facts.headSha, baseSha: facts.baseSha, commits: (compare.commits ?? []).map((c: any) => c.sha), files: (compare.files ?? []).map((f: any) => ({ path: f.filename, status: f.status, additions: f.additions, deletions: f.deletions })), title, body: "", contributors });
   const body = renderManagedBody({ generated, existingBody: pulls[0]?.body, templateBody: template, actor: sourceActor.login, contributors, context });
-  const pull = pulls[0] ? await gh.updatePullRequest(owner, repo, pulls[0].number, { title, body }) : await gh.createPullRequest(owner, repo, humanPushPullRequestCreateInput({ title, body, head: sourceBranch, base: repository.default_branch }));
+  const pull = pulls[0] ? await updatePullRequestBodyDurably({
+    client: gh,
+    token,
+    runtimeUrl: env("RUNTIME_URL"),
+    owner,
+    repo,
+    repositoryId,
+    pullRequestNumber: Number(pulls[0].number),
+    headSha: facts.headSha,
+    baseSha: facts.baseSha,
+    regionKind: "managed-pr",
+    targetBlock: targetManagedBlock(body, "managed-pr"),
+    redrive: { workflow: "pr-automation.yml", inputs: {
+      deliveryId: required(args, "delivery-id"), repositoryId: String(repositoryId), sourceRef, eventAfterSha,
+      sourceActorId: String(sourceActor.id), sourceActorLogin: sourceActor.login, policySha,
+    } },
+    additionalPatch: { title },
+  }) : await gh.createPullRequest(owner, repo, humanPushPullRequestCreateInput({ title, body, head: sourceBranch, base: repository.default_branch }));
   const boundPull = await gh.getPullRequest(owner, repo, pull.number);
   const pullBinding = inspectAutomationPullRequestBinding(boundPull, { repositoryId, sourceBranch, headSha: facts.headSha, baseBranch: repository.default_branch, baseSha: facts.baseSha });
+  await dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
+    deliveryId: required(args, "delivery-id"),
+    repositoryId: String(repositoryId),
+    pullRequestNumber: String(pull.number),
+    scanAll: "false",
+    invalidateOnly: "false",
+    cleanupUnmanaged: "false",
+    policySha,
+  });
   if (pullBinding === "base-sha-drifted") aiClassificationSummary = `${aiClassificationSummary}；目标分支已前进，未传递`;
   else if (classificationField.state !== "missing") {
     const rawFacts: RawClassificationFacts = { ...rawFactsBase, pullRequestNumber: pull.number };
@@ -989,6 +1233,48 @@ async function managedTargets(policySha: string, selectedId?: number): Promise<M
   const repositories = await new GitHubClient(token, "https://api.github.com", fetch, policySha).listInstallationRepositories();
   return managedRepositoryTargets(await catalog(), repositories, selectedId);
 }
+async function listManagedRepositoryIds(args: Readonly<Record<string, string>>) {
+  const policySha = sha(required(args, "policy-sha"), "policy-sha");
+  process.stdout.write(`${managedRepositoryIds(await managedTargets(policySha)).join("\n")}\n`);
+}
+async function reconcileRepositoryLifecycle(args: Readonly<Record<string, string>>) {
+  const policySha = sha(required(args, "policy-sha"), "policy-sha");
+  const deliveryId = required(args, "delivery-id");
+  if (!/^[A-Za-z0-9._:-]{1,200}$/u.test(deliveryId)) throw new Error("delivery-id无效");
+  const targets = await managedTargets(policySha);
+  for (const target of targets) {
+    const repositoryId = integer(String(target.repository.id), "repository-id");
+    const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId, permissions: { metadata: "read" }, policySha });
+    const response = await fetch(`${runtimeBaseUrl(env("RUNTIME_URL"))}/internal/issue-snapshots/${repositoryId}/lifecycle`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) throw new Error(`仓库生命周期运行时请求失败:${response.status}`);
+    const text = await response.text();
+    if (Buffer.byteLength(text, "utf8") > 16 * 1024) throw new Error("仓库生命周期运行时响应过大");
+    let state: any;
+    try { state = JSON.parse(text); } catch { throw new Error("仓库生命周期运行时响应无效"); }
+    if (state?.repositoryId !== repositoryId || state?.managed !== target.managed) throw new Error("仓库生命周期运行时读回不一致");
+    if (target.managed) {
+      await dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
+        deliveryId: `${deliveryId}:${repositoryId}`,
+        repositoryId: String(repositoryId),
+        scanAll: "true",
+        invalidateOnly: "true",
+        cleanupUnmanaged: "false",
+        policySha,
+      });
+      await issueSync({ "delivery-id": `${deliveryId}:${repositoryId}`, "repository-id": String(repositoryId), "scan-all": "true", "policy-sha": policySha });
+    } else {
+      await dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
+        deliveryId: `${deliveryId}:${repositoryId}`,
+        repositoryId: String(repositoryId),
+        scanAll: "true",
+        invalidateOnly: "false",
+        cleanupUnmanaged: "true",
+        policySha,
+      });
+    }
+    await summary([`仓库编号：${repositoryId}`, `生命周期：${target.managed ? "managed" : "unmanaged"}`, `登记来源：${target.registration}`]);
+  }
+}
 async function assertManualSyncAuthorization(policySha: string): Promise<void> {
   if (process.env.SYNC_TRIGGER !== "workflow_dispatch") return;
   integer(env("TRIGGER_ACTOR_ID"), "TRIGGER_ACTOR_ID");
@@ -1002,8 +1288,9 @@ async function syncInstructions(args: Readonly<Record<string, string>>) {
   const targets = await managedTargets(policySha, args["repository-id"] ? integer(args["repository-id"], "repository-id") : undefined);
   const results = await runManagedRepositorySync(targets, async ({ repository, configuration }) => {
     const instructions = await loadCopilotInstructions(configuration.copilotInstructionsProfile, (sourceFile) => configPath("copilot", sourceFile));
-    const gh = await client(repository.id, { contents: "write", pull_requests: "write", checks: "read", metadata: "read" }, policySha);
-    const result = await reconcileManagedFile({ repository, gh, path: instructions.targetPath, content: instructions.content, branch: "steward/copilot-instructions", title: "chore(copilot): 同步代码审查说明", policySha, deliveryId: `copilot-sync:${policySha}:${repository.id}` });
+    const { token, client: gh } = await clientWithToken(repository.id, { contents: "write", pull_requests: "write", issues: "read", checks: "read", metadata: "read" }, policySha);
+    const result = await reconcileManagedFile({ repository, gh, token, path: instructions.targetPath, content: instructions.content, branch: "steward/copilot-instructions", title: "chore(copilot): 同步代码审查说明", policySha, deliveryId: `copilot-sync:${policySha}:${repository.id}`,
+      redrive: { workflow: "sync-copilot-instructions.yml", inputs: { repositoryId: String(repository.id) } } });
     await summary([`仓库：${repository.full_name}`, `目标文件：${instructions.targetPath}`, `状态：${result}`, `字符数：${[...instructions.content].length}`]);
     return result;
   });
@@ -1435,7 +1722,7 @@ async function releaseVerify(args: Readonly<Record<string, string>>) {
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const invocation = parseInvocation(argv);
-  const handlers: Record<string, (args: Readonly<Record<string, string>>) => Promise<void>> = { "onboard-repository": onboard, "pr-automation": automate, "pr-classification": classify, "sync-copilot-instructions": syncInstructions, "sync-managed-labels": syncManagedLabels, validate, "release-preflight": releasePreflight, "release-notes": releaseNotesCommand, "release-publish": releasePublish, "release-verify": releaseVerify };
+  const handlers: Record<string, (args: Readonly<Record<string, string>>) => Promise<void>> = { "issue-sync": issueSync, "managed-repository-ids": listManagedRepositoryIds, "reconcile-repository-lifecycle": reconcileRepositoryLifecycle, "onboard-repository": onboard, "pr-automation": automate, "pr-classification": classify, "pr-issue-link": runPrIssueLink, "sync-copilot-instructions": syncInstructions, "sync-managed-labels": syncManagedLabels, validate, "release-preflight": releasePreflight, "release-notes": releaseNotesCommand, "release-publish": releasePublish, "release-verify": releaseVerify };
   await handlers[invocation.command]!(invocation.args);
 }
 

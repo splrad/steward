@@ -12,6 +12,11 @@ import type { GitHubClient } from "../../github/src/index.js";
 
 export type PullRequestBodyRegionKind = "managed-pr" | "issue-links";
 export type PullRequestBodyWriteStatus = "prepared" | "patched" | "compensating" | "confirmed" | "blocked";
+export type PullRequestBodyRedriveWorkflow = "pr-automation.yml" | "onboard-repository.yml" | "sync-copilot-instructions.yml" | "pr-issue-link.yml";
+export interface PullRequestBodyRedrive {
+  workflow: PullRequestBodyRedriveWorkflow;
+  inputs: Readonly<Record<string, string>>;
+}
 
 export interface PullRequestBodyWriteIntent {
   repositoryId: number;
@@ -35,6 +40,9 @@ export interface PullRequestBodyWriteIntent {
   expiresAt: string;
   confirmedAt: string | null;
   blockedReason: string | null;
+  redrive: PullRequestBodyRedrive | null;
+  redriveRequired: boolean;
+  redriveDispatched: boolean;
 }
 
 interface IntentRow {
@@ -59,12 +67,23 @@ interface IntentRow {
   expires_at: string;
   confirmed_at: string | null;
   blocked_reason: string | null;
+  redrive_workflow: string | null;
+  redrive_inputs: string | null;
+  redrive_required: number;
+  redrive_dispatched: number;
 }
 
 const shaPattern = /^[0-9a-f]{40}$/u;
 const digestPattern = /^[0-9a-f]{64}$/u;
 const writeIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const deliveryPattern = /^[A-Za-z0-9_.:-]{1,200}$/u;
+const repositoryNamePattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
+const redriveContracts: Readonly<Record<PullRequestBodyRedriveWorkflow, readonly string[]>> = {
+  "pr-automation.yml": ["deliveryId", "repositoryId", "sourceRef", "eventAfterSha", "sourceActorId", "sourceActorLogin", "policySha"],
+  "onboard-repository.yml": ["repositoryId", "repositoryFullName", "trigger", "deliveryId", "policySha"],
+  "sync-copilot-instructions.yml": ["repositoryId"],
+  "pr-issue-link.yml": ["deliveryId", "repositoryId", "pullRequestNumber", "scanAll", "invalidateOnly", "cleanupUnmanaged", "policySha"],
+};
 
 function positiveInteger(value: unknown, name: string): number {
   const result = Number(value);
@@ -105,10 +124,40 @@ function affected(result: D1Result): number {
   return Number(result.meta?.changes ?? 0);
 }
 
+export function normalizePullRequestBodyRedrive(value: unknown, expected: { repositoryId: number; pullRequestNumber: number; regionKind: PullRequestBodyRegionKind }): PullRequestBodyRedrive {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("正文写重调度来源无效");
+  const workflow = String((value as any).workflow ?? "") as PullRequestBodyRedriveWorkflow;
+  const required = redriveContracts[workflow];
+  const rawInputs = (value as any).inputs;
+  if (!required || !rawInputs || typeof rawInputs !== "object" || Array.isArray(rawInputs)) throw new Error("正文写重调度来源无效");
+  const keys = Object.keys(rawInputs).sort();
+  if (keys.length !== required.length || keys.some((key, index) => key !== [...required].sort()[index])) throw new Error("正文写重调度输入无效");
+  const inputs = Object.fromEntries(keys.map(key => [key, typeof rawInputs[key] === "string" ? rawInputs[key] : ""]));
+  if (Buffer.byteLength(JSON.stringify(inputs), "utf8") > 4096 || Object.values(inputs).some(input => !input || input.length > 1000 || /[\r\n\0]/u.test(input))) throw new Error("正文写重调度输入无效");
+  if (inputs.repositoryId !== String(expected.repositoryId)) throw new Error("正文写重调度仓库不匹配");
+  if (workflow === "pr-issue-link.yml") {
+    if (expected.regionKind !== "issue-links" || inputs.pullRequestNumber !== String(expected.pullRequestNumber)
+      || inputs.scanAll !== "false" || inputs.invalidateOnly !== "false" || !/^(?:true|false)$/u.test(inputs.cleanupUnmanaged ?? "")) throw new Error("正文写重调度输入无效");
+  } else if (expected.regionKind !== "managed-pr") throw new Error("正文写重调度区域不匹配");
+  if (workflow === "pr-automation.yml" && (!deliveryPattern.test(inputs.deliveryId ?? "") || !/^refs\/heads\/.+/u.test(inputs.sourceRef ?? "")
+    || !shaPattern.test(inputs.eventAfterSha ?? "") || !/^[1-9][0-9]*$/u.test(inputs.sourceActorId ?? "") || !(inputs.sourceActorLogin ?? "").length)) throw new Error("正文写重调度输入无效");
+  if (workflow === "onboard-repository.yml" && (!repositoryNamePattern.test(inputs.repositoryFullName ?? "")
+    || !["installation-created", "installation-repositories-added", "default-branch-push", "manual"].includes(inputs.trigger ?? "")
+    || !deliveryPattern.test(inputs.deliveryId ?? ""))) throw new Error("正文写重调度输入无效");
+  if (workflow !== "sync-copilot-instructions.yml" && !shaPattern.test(inputs.policySha ?? "")) throw new Error("正文写重调度输入无效");
+  return Object.freeze({ workflow, inputs: Object.freeze(inputs) });
+}
+
 function intent(row: IntentRow | null): PullRequestBodyWriteIntent | null {
   if (!row) return null;
   if (!writeIdPattern.test(row.write_id) || !["managed-pr", "issue-links"].includes(row.region_kind)
     || !["prepared", "patched", "compensating", "confirmed", "blocked"].includes(row.status)) throw new Error("正文写意图数据无效");
+  const redriveValue = row.redrive_workflow === null && row.redrive_inputs === null ? null : (() => {
+    if (!row.redrive_workflow || !row.redrive_inputs) throw new Error("正文写重调度数据无效");
+    let inputs: unknown;
+    try { inputs = JSON.parse(row.redrive_inputs); } catch { throw new Error("正文写重调度数据无效"); }
+    return normalizePullRequestBodyRedrive({ workflow: row.redrive_workflow, inputs }, { repositoryId: row.repository_id, pullRequestNumber: row.pull_request_number, regionKind: row.region_kind as PullRequestBodyRegionKind });
+  })();
   const result: PullRequestBodyWriteIntent = {
     repositoryId: positiveInteger(row.repository_id, "repositoryId"),
     pullRequestNumber: positiveInteger(row.pull_request_number, "pullRequestNumber"),
@@ -131,7 +180,11 @@ function intent(row: IntentRow | null): PullRequestBodyWriteIntent | null {
     expiresAt: row.expires_at,
     confirmedAt: row.confirmed_at,
     blockedReason: row.blocked_reason,
+    redrive: redriveValue,
+    redriveRequired: row.redrive_required === 1,
+    redriveDispatched: row.redrive_dispatched === 1,
   };
+  if (result.redrive?.workflow === "pr-issue-link.yml" && result.redrive.inputs.cleanupUnmanaged === "true" && result.targetBlock !== null) throw new Error("正文写重调度清理目标无效");
   if (result.regionKind === "issue-links" && result.targetBlock !== null) issueLinksMetadataForIntent(result.targetBlock, result);
   return result;
 }
@@ -187,6 +240,7 @@ export class PullRequestBodyWriteIntentStore {
     targetBodyDigest: string;
     now: string;
     expiresAt: string;
+    redrive?: PullRequestBodyRedrive;
   }): Promise<PullRequestBodyWriteIntent> {
     const repositoryId = positiveInteger(input.repositoryId, "repositoryId");
     const pullRequestNumber = positiveInteger(input.pullRequestNumber, "pullRequestNumber");
@@ -201,15 +255,17 @@ export class PullRequestBodyWriteIntentStore {
     const beforeBodyDigest = requireDigest(input.beforeBodyDigest, "beforeBodyDigest");
     const outsideBodyDigest = requireDigest(input.outsideBodyDigest, "outsideBodyDigest");
     const targetBodyDigest = requireDigest(input.targetBodyDigest, "targetBodyDigest");
+    const redrive = input.redrive ? normalizePullRequestBodyRedrive(input.redrive, { repositoryId, pullRequestNumber, regionKind: input.regionKind }) : null;
+    if (redrive?.workflow === "pr-issue-link.yml" && redrive.inputs.cleanupUnmanaged === "true" && input.targetBlock !== null) throw new Error("正文写重调度清理目标无效");
     const values = [repositoryId, pullRequestNumber, input.writeId, input.regionKind, baseSha, headSha,
-      issueGeneration, beforeBodyDigest, outsideBodyDigest, input.targetBlock, targetBodyDigest, input.now, input.now, input.expiresAt];
+      issueGeneration, beforeBodyDigest, outsideBodyDigest, input.targetBlock, targetBodyDigest, redrive?.workflow ?? null, redrive ? JSON.stringify(redrive.inputs) : null, input.now, input.now, input.expiresAt];
     const result = await this.db.prepare(`INSERT INTO pull_request_body_write_intents
-      (repository_id, pull_request_number, write_id, region_kind, base_sha, head_sha, issue_generation, before_body_digest, outside_body_digest, target_block, target_body_digest, status, compensation_generation, attempt_count, delivery_proven, created_at, updated_at, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', 0, 0, 0, ?, ?, ?)
+      (repository_id, pull_request_number, write_id, region_kind, base_sha, head_sha, issue_generation, before_body_digest, outside_body_digest, target_block, target_body_digest, redrive_workflow, redrive_inputs, status, compensation_generation, attempt_count, delivery_proven, created_at, updated_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', 0, 0, 0, ?, ?, ?)
       ON CONFLICT(repository_id, pull_request_number) DO UPDATE SET
         write_id=excluded.write_id, region_kind=excluded.region_kind, base_sha=excluded.base_sha, head_sha=excluded.head_sha,
         issue_generation=excluded.issue_generation, before_body_digest=excluded.before_body_digest, outside_body_digest=excluded.outside_body_digest,
-        target_block=excluded.target_block, target_body_digest=excluded.target_body_digest, status='prepared', compensation_generation=0,
+        target_block=excluded.target_block, target_body_digest=excluded.target_body_digest, redrive_workflow=excluded.redrive_workflow, redrive_inputs=excluded.redrive_inputs, status='prepared', compensation_generation=0,
         attempt_count=0, delivery_proven=0, last_delivery_id=NULL, redrive_required=0, redrive_dispatched=0, created_at=excluded.created_at, updated_at=excluded.updated_at,
         expires_at=excluded.expires_at, confirmed_at=NULL, blocked_reason=NULL
       WHERE pull_request_body_write_intents.status IN ('confirmed','blocked') OR pull_request_body_write_intents.expires_at <= excluded.created_at`).bind(...values).run();
@@ -218,7 +274,8 @@ export class PullRequestBodyWriteIntentStore {
       if (current && ["prepared", "patched"].includes(current.status)
         && current.regionKind === input.regionKind && current.baseSha === baseSha && current.headSha === headSha
         && current.issueGeneration === issueGeneration && current.beforeBodyDigest === beforeBodyDigest
-        && current.outsideBodyDigest === outsideBodyDigest && current.targetBlock === input.targetBlock && current.targetBodyDigest === targetBodyDigest) return current;
+        && current.outsideBodyDigest === outsideBodyDigest && current.targetBlock === input.targetBlock && current.targetBodyDigest === targetBodyDigest
+        && JSON.stringify(current.redrive) === JSON.stringify(redrive)) return current;
       await this.db.prepare(`UPDATE pull_request_body_write_intents SET redrive_required=1, redrive_dispatched=0, updated_at=?
         WHERE repository_id=? AND pull_request_number=? AND status IN ('prepared','patched','compensating')`)
         .bind(input.now, repositoryId, pullRequestNumber).run();
@@ -309,19 +366,52 @@ export class PullRequestBodyWriteIntentStore {
     if (affected(result) !== 1) throw new Error("正文写意图不能重新调度");
   }
 
-  async listPendingRedrives(limit = 20): Promise<readonly PullRequestBodyWriteIntent[]> {
+  async listPendingRedrives(limit = 20, retryBefore = ""): Promise<readonly PullRequestBodyWriteIntent[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new Error("重新调度批量无效");
+    if (retryBefore && !Number.isFinite(new Date(retryBefore).getTime())) throw new Error("重新调度重试时间无效");
     const rows = await this.db.prepare(`SELECT * FROM pull_request_body_write_intents
-      WHERE status IN ('confirmed','blocked') AND redrive_required=1 AND redrive_dispatched=0
-      ORDER BY updated_at, repository_id, pull_request_number LIMIT ?`).bind(limit).all<IntentRow>();
+      WHERE status IN ('confirmed','blocked') AND redrive_required=1 AND (redrive_dispatched=0 OR updated_at <= ?)
+      ORDER BY updated_at, repository_id, pull_request_number LIMIT ?`).bind(retryBefore, limit).all<IntentRow>();
     return rows.results.map((row) => intent(row)!);
   }
 
-  async markRedriveDispatched(repositoryId: number, pullRequestNumber: number, writeId: string, now: string): Promise<void> {
+  async claimRedrive(repositoryId: number, pullRequestNumber: number, writeId: string, now: string, retryBefore: string): Promise<boolean> {
+    if (!Number.isFinite(new Date(now).getTime()) || !Number.isFinite(new Date(retryBefore).getTime())) throw new Error("重新调度声明时间无效");
     const result = await this.db.prepare(`UPDATE pull_request_body_write_intents SET redrive_dispatched=1, updated_at=?
-      WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status IN ('confirmed','blocked') AND redrive_required=1 AND redrive_dispatched=0`)
-      .bind(now, repositoryId, pullRequestNumber, writeId).run();
-    if (affected(result) !== 1) throw new Error("正文写意图重新调度状态冲突");
+      WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status IN ('confirmed','blocked') AND redrive_required=1
+      AND (redrive_dispatched=0 OR updated_at <= ?)`)
+      .bind(now, repositoryId, pullRequestNumber, writeId, retryBefore).run();
+    return affected(result) === 1;
+  }
+
+  async releaseRedrive(repositoryId: number, pullRequestNumber: number, writeId: string, claimedAt: string): Promise<boolean> {
+    const result = await this.db.prepare(`UPDATE pull_request_body_write_intents SET redrive_dispatched=0
+      WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status IN ('confirmed','blocked') AND redrive_required=1
+      AND redrive_dispatched=1 AND updated_at=?`)
+      .bind(repositoryId, pullRequestNumber, writeId, claimedAt).run();
+    return affected(result) === 1;
+  }
+
+  async abandonClaimedRedrive(repositoryId: number, pullRequestNumber: number, writeId: string, claimedAt: string): Promise<boolean> {
+    const result = await this.db.prepare(`UPDATE pull_request_body_write_intents SET redrive_required=0
+      WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status IN ('confirmed','blocked') AND redrive_required=1
+      AND redrive_dispatched=1 AND updated_at=?`)
+      .bind(repositoryId, pullRequestNumber, writeId, claimedAt).run();
+    return affected(result) === 1;
+  }
+
+  async completeRedrive(repositoryId: number, pullRequestNumber: number, writeId: string): Promise<PullRequestBodyWriteIntent> {
+    const result = await this.db.prepare(`UPDATE pull_request_body_write_intents SET redrive_required=0
+      WHERE repository_id=? AND pull_request_number=? AND write_id=? AND status IN ('confirmed','blocked') AND redrive_required=1 AND redrive_dispatched=1`)
+      .bind(repositoryId, pullRequestNumber, writeId).run();
+    const state = await this.db.prepare(`SELECT write_id, status, redrive_required FROM pull_request_body_write_intents
+      WHERE repository_id=? AND pull_request_number=?`).bind(repositoryId, pullRequestNumber).first<{ write_id: string; status: string; redrive_required: number }>();
+    const current = await this.get(repositoryId, pullRequestNumber);
+    if (!state || !current || state.write_id !== writeId || current.writeId !== writeId || !["confirmed", "blocked"].includes(state.status) || state.redrive_required !== 0) {
+      throw new Error("正文写重调度不能确认完成");
+    }
+    if (affected(result) !== 1 && current.redriveRequired) throw new Error("正文写重调度不能确认完成");
+    return current;
   }
 
   async blockExpired(now: string, limit = 20): Promise<number> {
@@ -488,8 +578,10 @@ export async function confirmPullRequestBodyWriteIntent(input: {
     return input.store.block(repositoryId, input.pullRequestNumber, input.writeId, "confirmation-facts-drifted", input.now);
   }
   if (current.regionKind === "issue-links") {
-    const state = await input.store.issueGeneration(repositoryId);
-    if (state !== current.issueGeneration) return input.store.block(repositoryId, input.pullRequestNumber, input.writeId, "issue-generation-drifted", input.now);
+    if (current.targetBlock !== null) {
+      const state = await input.store.issueGeneration(repositoryId);
+      if (state !== current.issueGeneration) return input.store.block(repositoryId, input.pullRequestNumber, input.writeId, "issue-generation-drifted", input.now);
+    }
     const metadata = current.targetBlock ? issueLinksMetadataForIntent(current.targetBlock, current) : null;
     const desired = metadata ? metadata.issueNumbers.map((number) => ({ repositoryId, number })) : [];
     const sets = await input.client.listPullRequestClosingIssueSets(owner, repo, input.pullRequestNumber, repositoryId);

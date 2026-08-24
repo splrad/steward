@@ -267,6 +267,7 @@ export class GitHubClient {
   listPullRequests(owner: string, repo: string, head: string) { return this.paginate<any>(`/repos/${owner}/${repo}/pulls?state=open&head=${encodeURIComponent(head)}&per_page=100`); }
   listOpenPullRequests(owner: string, repo: string, base: string) { return this.paginate<any>(`/repos/${owner}/${repo}/pulls?state=open&base=${encodeURIComponent(base)}&per_page=100`); }
   listAllOpenPullRequests(owner: string, repo: string) { return this.paginate<any>(`/repos/${owner}/${repo}/pulls?state=open&per_page=100`); }
+  listAllPullRequests(owner: string, repo: string) { return this.paginate<any>(`/repos/${owner}/${repo}/pulls?state=all&per_page=100`); }
   getWorkflowRun(owner: string, repo: string, id: number) { return this.request<any>("GET", `/repos/${owner}/${repo}/actions/runs/${id}`); }
   createPullRequest(owner: string, repo: string, body: unknown) { return this.request<any>("POST", `/repos/${owner}/${repo}/pulls`, body); }
   updatePullRequest(owner: string, repo: string, number: number, body: unknown) { return this.request<any>("PATCH", `/repos/${owner}/${repo}/pulls/${number}`, body); }
