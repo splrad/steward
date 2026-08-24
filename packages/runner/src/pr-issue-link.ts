@@ -765,14 +765,8 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
     };
     await writeFile(preparedPath, `${JSON.stringify(prepared)}\n`);
     if (!included.length) {
-      const freshness = async () => {
-        const fresh = await preparedInputsAreFresh({ client, token, repository, owner, repo, prepared });
-        if (!fresh) failClosed = true;
-        return fresh;
-      };
-      await applyBodyAndVerify({ client, token, repository, pull, prepared, desired: [], freshness, redrive: bodyWriteRedrive(args) });
-      await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, { status: "completed", conclusion: "success", title: "没有可分析的完整议题", summary: `拉取请求：#${pullRequestNumber}\n正式关联：0` });
-      await writeOutput({ "copilot-required": "false", completed: "true" });
+      await writeOutput({ "copilot-required": "false", completed: "false" });
+      await writeSummary([`仓库编号：${args.repositoryId}`, `拉取请求：#${pullRequestNumber}`, "候选议题均需在收敛阶段复核"]);
       return;
     }
     await writeFile(promptPath, buildPrompt({ repositoryId: args.repositoryId, repositoryFullName: repository.full_name, pullRequestNumber, baseSha: facts.baseSha, headSha: facts.headSha, generation: state.generation, fullDiffDigest: fullDiff.fullDiffDigest, fullDiff: fullDiff.fullDiff, candidates: included }));

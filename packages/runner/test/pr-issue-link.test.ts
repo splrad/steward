@@ -541,7 +541,7 @@ describe("拉取请求议题关联运行器", () => {
       const prepared = {
         schemaVersion: 1, repositoryId, repositoryFullName: "splrad/steward", pullRequestNumber: 42,
         baseSha, headSha, generation: 2, stateRevision: 0, policySha, fullDiffDigest, changedFiles: [], candidateDigests,
-        candidates: snapshots.map(item => ({ repositoryId, number: item.issueNumber, state: "open", contentDigest: item.contentDigest, unfetchedReferences: [], validators: item.validators })),
+        candidates: snapshots.map(item => ({ repositoryId, number: item.issueNumber, state: "open", contentDigest: item.contentDigest, unfetchedReferences: [{ kind: "attachment", reference: `issue-${item.issueNumber}` }], validators: item.validators })),
         openSetDigest, unmanagedBodyDigest, revalidationBudget: 1_250,
         analysisInputDigest: analysisInputDigest({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 2, policySha, fullDiffDigest, candidateDigests, openSetDigest, unmanagedBodyDigest }),
       };

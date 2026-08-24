@@ -117,7 +117,7 @@ jobs:
           ISSUE_COPILOT_OUTPUT_PATH: ${{ runner.temp }}/issue-copilot-output-${{ matrix.pullRequestNumber }}.jsonl
         run: npx --no-install copilot --available-tools= --no-auto-update --output-format json --stream off --no-color --no-custom-instructions --disable-builtin-mcps --no-ask-user < "$ISSUE_COPILOT_PROMPT_PATH" > "$ISSUE_COPILOT_OUTPUT_PATH"
       - name: 收敛议题关联
-        if: steps.prepare.outputs.copilot-required == 'true'
+        if: steps.prepare.outputs.completed == 'false'
         env:
           APP_ID: "4243096"
           INSTALLATION_ID: "145952003"
