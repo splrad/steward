@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { analysisInputDigest, issueSnapshotContentDigest, managedBodyOutsideIssueLinksDigest, normalizeIssueSnapshot, openIssueSetDigest, renderIssueLinksBlock, upsertIssueLinksBlock } from "../../core/src/issues.js";
-import { extractIssueCopilotContent, parsePrIssueLinkArgs, revalidationCandidates, runGit, runPrIssueLink, verifyIssueLinkConvergence } from "../src/pr-issue-link.js";
+import { extractIssueCopilotContent, parsePrIssueLinkArgs, revalidationCandidates, runGit, runPrIssueLink, verifyIssueLinkConvergence, workflowRevalidationPlan } from "../src/pr-issue-link.js";
 
 const repositoryId = 1296724484;
 const policySha = "a".repeat(40);
@@ -156,9 +156,61 @@ describe("拉取请求议题关联运行器", () => {
       const output = await readFile(process.env.GITHUB_OUTPUT!, "utf8");
       expect(output).toContain('matrix=[{"pullRequestNumber":3},{"pullRequestNumber":5},{"pullRequestNumber":9}]');
       expect(output).toContain("count=3");
-      expect(output).toContain("revalidation-budget=625");
+      expect(output).toContain("revalidation-budget=1");
       expect(calls.filter(call => ["PATCH", "PUT", "DELETE"].includes(call.method))).toEqual([]);
       expect(calls.find(call => call.url.includes("/access_tokens"))?.body.permissions).toEqual({ contents: "read", pull_requests: "write", issues: "read", checks: "write", metadata: "read" });
+    });
+  });
+
+  it("正式矩阵按实际validator数量分配预算，并在内联刷新后调度精确代次的全PR收敛", async () => {
+    await withRunnerEnvironment(async () => {
+      const initialSnapshot = issueSnapshot(7);
+      const refreshedSnapshot = { ...initialSnapshot, issue: { ...initialSnapshot.issue, title: "更新后的议题7" } };
+      const validator = { resource: "issue" as const, url: "https://api.github.com/repos/splrad/steward/issues/7", etag: '"old"', next: null, status: 200 as const };
+      const refreshedValidator = { ...validator, etag: '"new"' };
+      const initialState = {
+        repositoryId, generation: 1, stateRevision: 1, syncState: "ready", openSetDigest: openIssueSetDigest(repositoryId, [7]),
+        snapshots: [{ repositoryId, issueNumber: 7, state: "open", contentDigest: issueSnapshotContentDigest(initialSnapshot), validators: [validator], snapshot: initialSnapshot }],
+        reconciliationGeneration: null, reconciliationStateRevision: null,
+      };
+      const refreshedState = {
+        repositoryId, generation: 2, stateRevision: 2, syncState: "ready", openSetDigest: openIssueSetDigest(repositoryId, [7]),
+        snapshots: [{ repositoryId, issueNumber: 7, state: "open", contentDigest: issueSnapshotContentDigest(refreshedSnapshot), validators: [refreshedValidator], snapshot: refreshedSnapshot }],
+        reconciliationGeneration: 2, reconciliationStateRevision: 1,
+      };
+      let snapshotReads = 0;
+      const calls: Array<{ url: string; method: string; body: any }> = [];
+      vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+        const value = String(url); const method = init.method ?? "GET"; const body = init.body ? JSON.parse(String(init.body)) : null;
+        calls.push({ url: value, method, body });
+        if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+        if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
+        if (value.includes("/repos/splrad/steward/pulls?state=all")) return new Response(JSON.stringify([
+          { ...pull(), number: 3 }, { ...pull(), number: 9 },
+        ]), { status: 200 });
+        if (value.endsWith(`/internal/issue-snapshots/${repositoryId}`)) {
+          snapshotReads++;
+          return new Response(JSON.stringify(snapshotReads === 1 ? initialState : refreshedState), { status: 200 });
+        }
+        if (value.includes("/repos/splrad/steward/issues?state=open")) return new Response(JSON.stringify([{ number: 7, repository_url: "https://api.github.com/repos/splrad/steward" }]), { status: 200, headers: { etag: '"open"' } });
+        if (value === validator.url) return new Response(JSON.stringify({ number: 7 }), { status: 200, headers: { etag: '"new"' } });
+        if (value.endsWith(`/internal/issue-snapshots/${repositoryId}/7/refresh`)) return new Response(JSON.stringify({ repositoryId, issueNumber: 7, changed: true, generation: 2 }), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify(repository()), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) return new Response(null, { status: 204 });
+        return new Response("unexpected", { status: 500 });
+      });
+      process.env.ISSUE_LINK_LIST_ONLY = "true";
+      process.env.RUNTIME_URL = "https://runtime.test";
+      await runPrIssueLink(invocation({ "scan-all": "true", "pull-request-number": undefined as unknown as string }));
+      const output = await readFile(process.env.GITHUB_OUTPUT!, "utf8");
+      expect(output).toContain("snapshot-generation=2");
+      expect(output).toContain("revalidation-budget=1");
+      const dispatch = calls.find(call => call.method === "POST" && call.url.endsWith("/actions/workflows/pr-issue-link.yml/dispatches"));
+      expect(dispatch?.body).toEqual({ ref: "main", inputs: {
+        deliveryId: "delivery-1", repositoryId: String(repositoryId), scanAll: "true", invalidateOnly: "false",
+        cleanupUnmanaged: "false", reconciliationGeneration: "2", policySha,
+      } });
+      expect(calls.filter(call => call.url.includes("/access_tokens"))[1]?.body.permissions).toEqual({ actions: "write", metadata: "read" });
     });
   });
 
@@ -487,6 +539,21 @@ describe("拉取请求议题关联运行器", () => {
     }));
     expect(revalidationCandidates(candidates, 12)).toEqual(candidates);
     expect(() => revalidationCandidates(candidates, 9)).toThrow("超过预算:12/9");
+  });
+
+  it("全工作流预算按实际请求数计算，并在矩阵展开前拒绝超限组合", () => {
+    const candidates = Array.from({ length: 50 }, (_, number) => ({
+      validators: Array.from({ length: 6 }, (_, index) => ({
+        resource: index === 5 ? "parent" as const : "issue" as const,
+        url: `https://api.github.com/issues/${number}?page=${index}`,
+        etag: index === 5 ? null : `"etag-${number}-${index}"`,
+        next: null,
+        status: index === 5 ? 404 as const : 200 as const,
+      })),
+    }));
+    expect(workflowRevalidationPlan(candidates.slice(0, 2), 9)).toEqual({ perPullRequestBudget: 12, totalRequests: 120 });
+    expect(() => workflowRevalidationPlan(candidates, 9)).toThrow("超过全工作流预算:3000/2500");
+    expect(() => revalidationCandidates([{ validators: candidates[0]!.validators.slice(0, 2) }], 1)).toThrow("超过预算:2/1");
   });
 
   it("新鲜度复核失败后清理旧块，并完成已经开始的检查", async () => {

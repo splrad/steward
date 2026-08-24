@@ -19,13 +19,14 @@ import {
   type IssueSnapshot,
   type UnfetchedReference,
 } from "../../core/src/index.js";
-import { createInstallationToken, GitHubClient, type PageValidator } from "../../github/src/index.js";
+import { createInstallationToken, dispatchWorkflow, GitHubClient, type PageValidator } from "../../github/src/index.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
 import { targetManagedBlock, updatePullRequestBodyDurably } from "./pr-body-writer.js";
 
 const checkName = "PR Issue Link Gate";
 const appId = 4243096;
 const installationId = 145952003;
+const stewardRepositoryId = 1296724484;
 const botUserId = 301115370;
 const maximumPullRequests = 256;
 const maximumCandidates = 50;
@@ -65,6 +66,14 @@ interface StoredSnapshot {
   contentDigest: string;
   validators: PageValidator[];
   snapshot: IssueSnapshot;
+}
+
+interface SnapshotRefreshResult {
+  repositoryId: number;
+  issueNumber: number;
+  generation: number;
+  changed?: boolean;
+  deleted?: boolean;
 }
 
 interface FullDiffEvidence {
@@ -124,7 +133,7 @@ function nonNegativeInteger(value: unknown, name: string): number {
 }
 
 function revalidationRequestCount(candidates: readonly { validators: readonly PageValidator[] }[]): number {
-  return candidates.reduce((total, candidate) => total + candidate.validators.filter(validator => validator.status === 200).length, 0);
+  return candidates.reduce((total, candidate) => total + candidate.validators.length, 0);
 }
 
 function assertRevalidationBudget(candidates: readonly { validators: readonly PageValidator[] }[], budget: number): void {
@@ -141,9 +150,17 @@ export function revalidationCandidates<T extends { validators: readonly PageVali
   return candidates;
 }
 
-function workflowRevalidationBudget(pullRequestCount: number): number {
+export function workflowRevalidationPlan(candidates: readonly { validators: readonly PageValidator[] }[], pullRequestCount: number): {
+  perPullRequestBudget: number;
+  totalRequests: number;
+} {
   if (!Number.isSafeInteger(pullRequestCount) || pullRequestCount < 0 || pullRequestCount > maximumPullRequests) throw new Error("开放拉取请求数量无效");
-  return Math.max(1, Math.floor(maximumRevalidationRequests / (pullRequestCount + 1)));
+  const perPullRequestBudget = revalidationRequestCount(candidates);
+  const totalRequests = perPullRequestBudget * (pullRequestCount + 1);
+  if (!Number.isSafeInteger(totalRequests) || totalRequests > maximumRevalidationRequests) {
+    throw new Error(`议题快照复核请求超过全工作流预算:${totalRequests}/${maximumRevalidationRequests}`);
+  }
+  return { perPullRequestBudget: Math.max(1, perPullRequestBudget), totalRequests };
 }
 
 function splitRepository(fullName: string): [string, string] {
@@ -329,13 +346,24 @@ async function liveOpenIssueNumbers(client: GitHubClient, owner: string, repo: s
   return numbers;
 }
 
-async function loadFreshSnapshotState(client: GitHubClient, token: string, owner: string, repo: string, repositoryId: number, deliveryId: string, revalidationBudget: number): Promise<SnapshotState> {
+async function refreshSnapshot(token: string, repositoryId: number, issueNumber: number, deliveryId: string): Promise<SnapshotRefreshResult> {
+  const result = await runtimeRequest<SnapshotRefreshResult>(token, "POST", `/internal/issue-snapshots/${repositoryId}/${issueNumber}/refresh`, { "x-github-delivery": deliveryId });
+  if (result.repositoryId !== repositoryId || result.issueNumber !== issueNumber || !Number.isSafeInteger(result.generation) || result.generation < 0
+    || (result.changed !== undefined && typeof result.changed !== "boolean") || (result.deleted !== undefined && typeof result.deleted !== "boolean")) {
+    throw new Error("议题快照刷新响应无效");
+  }
+  return result;
+}
+
+async function loadFreshSnapshotState(client: GitHubClient, token: string, owner: string, repo: string, repositoryId: number, deliveryId: string, revalidationBudget: number): Promise<{ state: SnapshotState; changed: boolean }> {
+  let changed = false;
   let state = validateSnapshotState(await runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${repositoryId}`), repositoryId);
   let live = await liveOpenIssueNumbers(client, owner, repo);
   const stored = state.snapshots.map(item => item.issueNumber).sort((a, b) => a - b);
   if (openIssueSetDigest(repositoryId, live) !== state.openSetDigest || JSON.stringify(live) !== JSON.stringify(stored)) {
     for (const issueNumber of [...new Set([...live, ...stored])].sort((left, right) => left - right)) {
-      await runtimeRequest(token, "POST", `/internal/issue-snapshots/${repositoryId}/${issueNumber}/refresh`, { "x-github-delivery": deliveryId });
+      const refreshed = await refreshSnapshot(token, repositoryId, issueNumber, deliveryId);
+      changed ||= refreshed.changed === true || refreshed.deleted === true;
     }
     state = validateSnapshotState(await runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${repositoryId}`), repositoryId);
     live = await liveOpenIssueNumbers(client, owner, repo);
@@ -348,13 +376,46 @@ async function loadFreshSnapshotState(client: GitHubClient, token: string, owner
     if (validation.state !== "not-modified") refreshNumbers.push(candidate.issueNumber);
   }
   if (refreshNumbers.length) {
-    for (const issueNumber of refreshNumbers) await runtimeRequest(token, "POST", `/internal/issue-snapshots/${repositoryId}/${issueNumber}/refresh`, { "x-github-delivery": deliveryId });
+    for (const issueNumber of refreshNumbers) {
+      const refreshed = await refreshSnapshot(token, repositoryId, issueNumber, deliveryId);
+      changed ||= refreshed.changed === true || refreshed.deleted === true;
+    }
     state = validateSnapshotState(await runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${repositoryId}`), repositoryId);
     assertRevalidationBudget(state.snapshots, revalidationBudget);
     const after = await liveOpenIssueNumbers(client, owner, repo);
     if (openIssueSetDigest(repositoryId, after) !== state.openSetDigest) throw new Error("刷新后开放议题集合仍不一致");
   }
-  return state;
+  return { state, changed };
+}
+
+async function dispatchInlineReconciliation(args: PrIssueLinkArgs, state: SnapshotState): Promise<void> {
+  const generation = state.reconciliationGeneration;
+  const stateRevision = state.reconciliationStateRevision;
+  if (!Number.isSafeInteger(generation) || Number(generation) < 0 || generation !== state.generation
+    || !Number.isSafeInteger(stateRevision) || Number(stateRevision) < 0) throw new Error("内联刷新缺少有效的议题收敛请求");
+  const token = await createInstallationToken({
+    appId: String(appId),
+    privateKey: requiredEnvironment("STEWARD_APP_PRIVATE_KEY"),
+    installationId,
+    repositoryId: stewardRepositoryId,
+    permissions: { actions: "write", metadata: "read" },
+    policySha: args.policySha,
+  });
+  await dispatchWorkflow(new GitHubClient(token, "https://api.github.com", fetch, args.policySha), {
+    owner: "splrad",
+    repo: "steward",
+    workflow: "pr-issue-link.yml",
+    policySha: args.policySha,
+    inputs: {
+      deliveryId: args.deliveryId,
+      repositoryId: String(args.repositoryId),
+      scanAll: "true",
+      invalidateOnly: "false",
+      cleanupUnmanaged: "false",
+      reconciliationGeneration: String(generation),
+      policySha: args.policySha,
+    },
+  });
 }
 
 async function currentChecks(client: GitHubClient, owner: string, repo: string, repositoryId: number, pullRequestNumber: number, headSha: string): Promise<any[]> {
@@ -532,14 +593,19 @@ async function listPullRequestMatrix(args: PrIssueLinkArgs): Promise<void> {
   }
   numbers.sort((left, right) => left - right);
   if (new Set(numbers).size !== numbers.length) throw new Error(`${args.cleanupUnmanaged ? "待清理" : "开放"}拉取请求集合重复`);
-  const revalidationBudget = workflowRevalidationBudget(numbers.length);
+  let revalidationBudget = 1;
+  let totalRevalidationRequests = 0;
   let snapshotGeneration = "";
-  if (args.scanAll && !args.invalidateOnly && !args.cleanupUnmanaged && numbers.length && process.env.RUNTIME_URL) {
-    const state = await loadFreshSnapshotState(client, token, owner, repo, args.repositoryId, args.deliveryId, maximumRevalidationRequests);
-    snapshotGeneration = String(state.generation);
+  if (!args.invalidateOnly && !args.cleanupUnmanaged && numbers.length && process.env.RUNTIME_URL) {
+    const fresh = await loadFreshSnapshotState(client, token, owner, repo, args.repositoryId, args.deliveryId, maximumRevalidationRequests);
+    if (fresh.changed) await dispatchInlineReconciliation(args, fresh.state);
+    const plan = workflowRevalidationPlan(fresh.state.snapshots, numbers.length);
+    revalidationBudget = plan.perPullRequestBudget;
+    totalRevalidationRequests = plan.totalRequests;
+    snapshotGeneration = String(fresh.state.generation);
   }
   await writeOutput({ matrix: JSON.stringify(numbers.map(pullRequestNumber => ({ pullRequestNumber }))), count: String(numbers.length), "snapshot-generation": snapshotGeneration, "revalidation-budget": String(revalidationBudget) });
-  await writeSummary([`仓库编号：${args.repositoryId}`, `${args.cleanupUnmanaged ? "待清理" : "开放"}拉取请求：${numbers.length}`, `单阶段快照复核预算：${revalidationBudget}`]);
+  await writeSummary([`仓库编号：${args.repositoryId}`, `${args.cleanupUnmanaged ? "待清理" : "开放"}拉取请求：${numbers.length}`, `单PR最终快照复核预算：${revalidationBudget}`, `全工作流快照复核请求：${totalRevalidationRequests}/${maximumRevalidationRequests}`]);
 }
 
 async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
@@ -605,10 +671,10 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
     const validatedGeneration = process.env.SNAPSHOT_VALIDATED_GENERATION;
     const revalidationBudget = process.env.SNAPSHOT_REVALIDATION_BUDGET
       ? safeInteger(process.env.SNAPSHOT_REVALIDATION_BUDGET, "SNAPSHOT_REVALIDATION_BUDGET")
-      : workflowRevalidationBudget(1);
+      : Math.floor(maximumRevalidationRequests / 2);
     const state = validatedGeneration
       ? validateSnapshotState(await runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${args.repositoryId}`), args.repositoryId)
-      : await loadFreshSnapshotState(client, token, owner, repo, args.repositoryId, args.deliveryId, revalidationBudget);
+      : (await loadFreshSnapshotState(client, token, owner, repo, args.repositoryId, args.deliveryId, revalidationBudget)).state;
     const expectedGeneration = validatedGeneration ? Number(validatedGeneration) : null;
     if (expectedGeneration !== null && (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0)) throw new Error("SNAPSHOT_VALIDATED_GENERATION无效");
     if (expectedGeneration !== null && state.generation !== expectedGeneration) throw new Error("共享议题快照代次已经漂移");
@@ -782,17 +848,25 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
     desired = [];
   }
   let failureCategory = "freshness-failed";
+  let failClosed = false;
   try {
     let fresh = true;
+    let snapshotChanged = false;
     const candidatesToRevalidate = revalidationCandidates(prepared.candidates, prepared.revalidationBudget);
     for (const candidate of candidatesToRevalidate) {
       const validation = await client.revalidatePageValidators(candidate.validators);
       if (validation.state !== "not-modified") {
-        const refreshed = await runtimeRequest<any>(token, "POST", `/internal/issue-snapshots/${args.repositoryId}/${candidate.number}/refresh`, { "x-github-delivery": args.deliveryId });
-        if (refreshed.changed === true || refreshed.deleted === true) { fresh = false; break; }
+        const refreshed = await refreshSnapshot(token, args.repositoryId, candidate.number, args.deliveryId);
+        if (refreshed.changed === true || refreshed.deleted === true) { snapshotChanged = true; fresh = false; break; }
       }
     }
     const afterValidation = validateSnapshotState(await runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${args.repositoryId}`), args.repositoryId);
+    if (snapshotChanged) {
+      failureCategory = "reconciliation-dispatch-failed";
+      failClosed = true;
+      await dispatchInlineReconciliation(args, afterValidation);
+      failClosed = false;
+    }
     if (afterValidation.generation !== prepared.generation) fresh = false;
     if (afterValidation.openSetDigest !== prepared.openSetDigest || afterValidation.snapshots.length !== prepared.candidates.length) fresh = false;
     for (const candidate of prepared.candidates) {
@@ -822,13 +896,15 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
     await writeSummary([`拉取请求：#${prepared.pullRequestNumber}`, `正式关联：${desired.length}`, `仓库代次：${prepared.generation}`]);
   } catch (error) {
     let cleaned = false;
-    try {
-      const latest = await client.getPullRequest(owner, repo, prepared.pullRequestNumber);
-      if (latest?.head?.sha === prepared.headSha && latest?.base?.sha === prepared.baseSha) {
-        await applyBodyAndVerify({ client, token, repository, pull: latest, desired: [], removeBlock: true, redrive: bodyWriteRedrive(args) });
-        cleaned = true;
-      }
-    } catch {}
+    if (!failClosed) {
+      try {
+        const latest = await client.getPullRequest(owner, repo, prepared.pullRequestNumber);
+        if (latest?.head?.sha === prepared.headSha && latest?.base?.sha === prepared.baseSha) {
+          await applyBodyAndVerify({ client, token, repository, pull: latest, desired: [], removeBlock: true, redrive: bodyWriteRedrive(args) });
+          cleaned = true;
+        }
+      } catch {}
+    }
     await publishCheck(client, args.repositoryId, owner, repo, prepared.pullRequestNumber, prepared.headSha, {
       status: "completed", conclusion: cleaned ? "success" : "failure", title: cleaned ? "议题关联已安全跳过" : "议题关联收敛失败",
       summary: `拉取请求：#${prepared.pullRequestNumber}\n状态：${cleaned ? "safe-empty" : "failure"}\n类别：${failureCategory}-${cleaned ? "cleaned" : "unclean"}`,
