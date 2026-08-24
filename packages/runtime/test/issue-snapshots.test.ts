@@ -914,7 +914,7 @@ describe("已验签Webhook直连清理", () => {
     const removedPayload = { installation: { id: 145952003, account: { id: 302208797 } }, action: "removed", repositories_removed: [{ ...repository(1187527897, "splrad/LayerScape"), default_branch: "main" }] };
     expect((await handleWebhook(signedRequest("installation_repositories", removedPayload), env(database))).status).toBe(202);
     expect(await store.getRepositoryState(1187527897)).toBeNull();
-    expect(workflows).toEqual(["pr-issue-link.yml", "issue-sync.yml", "pr-issue-link.yml", "issue-sync.yml"]);
+    expect(workflows).toEqual(["pr-issue-link.yml", "pr-issue-link.yml", "issue-sync.yml", "issue-sync.yml"]);
     expect(fetchSpy.mock.calls.some(([url]) => String(url).includes("/internal/issue-snapshots/"))).toBe(false);
   });
 
@@ -928,5 +928,15 @@ describe("已验签Webhook直连清理", () => {
     expect(await store.getRepositoryState(1296724484)).toBeNull();
     await expect(put(store, steward, 0, "late-installation-write")).rejects.toThrow("issue-snapshot-generation-conflict");
     await expect(put(store, pending, 0, "late-uninitialized-write")).rejects.toThrow("issue-snapshot-generation-conflict");
+  });
+
+  it("部署生命周期按当前安装集合墓碑化已经移除的仓库", async () => {
+    const database = new SqliteD1(); const store = new IssueSnapshotStore(database.binding());
+    await put(store, snapshot(1296724484, "splrad/steward", 7), 0);
+    await put(store, snapshot(1187527897, "splrad/LayerScape", 7), 0);
+
+    await expect(store.reconcileInstalledRepositories([1296724484])).resolves.toEqual([1187527897]);
+    expect(await store.getRepositoryState(1296724484)).not.toBeNull();
+    expect(await store.getRepositoryState(1187527897)).toBeNull();
   });
 });

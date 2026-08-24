@@ -269,7 +269,18 @@ async function dispatchAllManagedIssueScans(env: Env, deliveryId: string, curren
   const installed = await installationRepositories(env);
   const repositories = new Map(installed.filter(isManaged).map(repository => [Number(repository.id), repository]));
   if (currentRepository && isManaged(currentRepository)) repositories.set(Number(currentRepository.id), currentRepository);
-  for (const repository of [...repositories.values()].sort((left, right) => Number(left.id) - Number(right.id))) await dispatchIssueRefreshes(env, repository, deliveryId, null);
+  const ordered = [...repositories.values()].sort((left, right) => Number(left.id) - Number(right.id));
+  let firstFailure: unknown = null;
+  for (const repository of ordered) {
+    try { await dispatchIssueInvalidation(env, repository, deliveryId); }
+    catch (error) { if (firstFailure === null) firstFailure = error; }
+  }
+  if (firstFailure !== null) throw firstFailure;
+  for (const repository of ordered) {
+    try { await dispatchIssueSyncs(env, repository, deliveryId, null); }
+    catch (error) { if (firstFailure === null) firstFailure = error; }
+  }
+  if (firstFailure !== null) throw firstFailure;
 }
 
 async function dispatchRelationRefreshes(env: Env, deliveryId: string, payload: any, targets: readonly { repository: any; issueNumber: unknown }[]): Promise<void> {
@@ -414,7 +425,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       if (!previouslyManaged && managed) {
         if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
         await new IssueSnapshotStore(env.ISSUE_SNAPSHOTS).activateRepository(Number(repository.id));
-        await send(env, "issue-sync.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", policySha: env.POLICY_SHA });
+        await dispatchIssueRefreshes(env, repository, deliveryId, null);
         return response(202);
       }
       if (!managed) return response(204);
@@ -462,6 +473,13 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       const repository = payload.repository; const pull = payload.pull_request;
       if (!repository || !isManaged(repository) || !pull || pull.user?.id !== 301115370 || pull.draft !== false || pull.base?.ref !== repository.default_branch) return response(204);
       return response(await requestMaintainersReview(env, repository, pull) ? 202 : 204);
+    }
+    if (event === "pull_request" && action === "closed" && payload.pull_request?.merged === false) {
+      const repository = payload.repository; const pull = payload.pull_request;
+      if (!repository || !isManaged(repository) || pull?.base?.ref !== repository.default_branch
+        || !String(pull?.body ?? "").includes("<!-- workflow:issue-links:start ")) return response(204);
+      await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
+      return response(202);
     }
     if (event === "workflow_run" && ["requested", "in_progress", "completed"].includes(action)) {
       const repository = payload.repository; if (!repository || !isManaged(repository)) return response(204);

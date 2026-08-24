@@ -1257,6 +1257,21 @@ async function reconcileRepositoryLifecycle(args: Readonly<Record<string, string
   const deliveryId = required(args, "delivery-id");
   if (!/^[A-Za-z0-9._:-]{1,200}$/u.test(deliveryId)) throw new Error("delivery-id无效");
   const targets = await managedTargets(policySha);
+  const installedRepositoryIds = targets.map(target => integer(String(target.repository.id), "repository-id")).sort((left, right) => left - right);
+  const stewardshipToken = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId: stewardRepositoryId, permissions: { metadata: "read" }, policySha });
+  const reconciliationResponse = await fetch(`${runtimeBaseUrl(env("RUNTIME_URL"))}/internal/issue-snapshots/${stewardRepositoryId}/lifecycle/reconcile`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${stewardshipToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ repositoryIds: installedRepositoryIds }),
+  });
+  if (!reconciliationResponse.ok) throw new Error(`安装仓库生命周期运行时请求失败:${reconciliationResponse.status}`);
+  const reconciliationText = await reconciliationResponse.text();
+  if (Buffer.byteLength(reconciliationText, "utf8") > 16 * 1024) throw new Error("安装仓库生命周期运行时响应过大");
+  let reconciliation: any;
+  try { reconciliation = JSON.parse(reconciliationText); } catch { throw new Error("安装仓库生命周期运行时响应无效"); }
+  if (reconciliation?.repositoryId !== stewardRepositoryId || !Array.isArray(reconciliation?.removedRepositoryIds)
+    || reconciliation.removedRepositoryIds.some((value: unknown) => typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0 || installedRepositoryIds.includes(value))
+    || new Set(reconciliation.removedRepositoryIds).size !== reconciliation.removedRepositoryIds.length) throw new Error("安装仓库生命周期运行时读回不一致");
   for (const target of targets) {
     const repositoryId = integer(String(target.repository.id), "repository-id");
     const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId, permissions: { metadata: "read" }, policySha });

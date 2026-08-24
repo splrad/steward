@@ -441,6 +441,17 @@ export class IssueSnapshotStore {
     for (const repositoryId of [...targets].sort((left, right) => left - right)) await this.deleteRepository(repositoryId);
   }
 
+  async reconcileInstalledRepositories(repositoryIds: readonly number[]): Promise<readonly number[]> {
+    const installed = new Set(repositoryIds.map(repositoryId => rowInteger(repositoryId, "repositoryId", 1)));
+    if (installed.size !== repositoryIds.length || installed.size > 1_000) throw new Error("安装仓库集合无效");
+    const result = await this.db.prepare(`SELECT repositories.repository_id FROM issue_snapshot_repositories AS repositories
+      WHERE NOT EXISTS (SELECT 1 FROM issue_snapshot_repository_tombstones AS tombstones
+        WHERE tombstones.repository_id = repositories.repository_id) ORDER BY repositories.repository_id`).all<{ repository_id: number }>();
+    const removed = result.results.map(row => rowInteger(row.repository_id, "repository_id", 1)).filter(repositoryId => !installed.has(repositoryId));
+    for (const repositoryId of removed) await this.deleteRepository(repositoryId);
+    return removed;
+  }
+
   async setScanState(repositoryId: number, syncState: Exclude<IssueSnapshotSyncState, "uninitialized">, expectedGeneration: number, expectedStateRevision: number, now: string, liveOpenNumbers?: readonly number[]): Promise<IssueSnapshotRepositoryState> {
     rowInteger(repositoryId, "repositoryId", 1); rowInteger(expectedGeneration, "expectedGeneration"); rowInteger(expectedStateRevision, "expectedStateRevision");
     await this.ensureRepository(repositoryId, now);
@@ -635,7 +646,15 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
     const lifecycleRoute = parts[1] === "lifecycle";
     const { repository, client, managed } = await authorizeSingleRepository(request, env, repositoryId, bodyWriteRoute || lifecycleRoute);
     if (lifecycleRoute) {
-      if (parts.length !== 2 || request.method !== "POST") return noStoreResponse(404, { error: "internal-route-not-found" });
+      if (request.method !== "POST" || (parts.length !== 2 && !(parts.length === 3 && parts[2] === "reconcile"))) return noStoreResponse(404, { error: "internal-route-not-found" });
+      if (parts.length === 3) {
+        if (String(repository.full_name).toLowerCase() !== `${env.ORGANIZATION_LOGIN}/steward`.toLowerCase()) throw new GitHubRequestError(403, "POST", url.pathname, "steward-repository-required");
+        const body = await readJsonObject(request);
+        if (Object.keys(body).length !== 1 || !Array.isArray(body.repositoryIds)) return noStoreResponse(400, { error: "invalid-internal-request" });
+        if (body.repositoryIds.some(value => typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0)) return noStoreResponse(400, { error: "invalid-internal-request" });
+        const removedRepositoryIds = await store.reconcileInstalledRepositories(body.repositoryIds as number[]);
+        return noStoreResponse(200, { repositoryId, removedRepositoryIds });
+      }
       await requireEmptyBody(request);
       if (managed) await store.activateRepository(repositoryId);
       else await store.deleteRepository(repositoryId);

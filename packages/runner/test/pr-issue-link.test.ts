@@ -132,9 +132,8 @@ describe("拉取请求议题关联运行器", () => {
     }, repositoryId).converged).toBe(false);
   });
 
-  it("仓库扫描列出全部开放PR及带议题块的关闭未合并受管PR", async () => {
+  it("普通仓库扫描只枚举开放PR，不以完整历史分页为成功前提", async () => {
     await withRunnerEnvironment(async () => {
-      const managedBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber: 5, baseSha, headSha, generation: 1, analysisInputDigest: "d".repeat(64) }, [{ repositoryId, number: 7 }]);
       const calls: Array<{ url: string; method: string; body: any }> = [];
       vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
         const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
@@ -142,20 +141,18 @@ describe("拉取请求议题关联运行器", () => {
         const bodyWriteResponse = bodyWriteRuntimeResponse(value, method, body); if (bodyWriteResponse) return bodyWriteResponse;
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
         if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
-        if (value.includes("/repos/splrad/steward/pulls?state=all")) return new Response(JSON.stringify([
+        if (value.includes("/repos/splrad/steward/pulls?state=open")) return new Response(JSON.stringify([
           { ...pull("", 44151430), number: 9 },
           { ...pull("", 44151430), number: 3 },
-          { ...pull(managedBlock, 301115370, "main", "closed", null), number: 5 },
-          { ...pull(managedBlock, 44151430, "main", "closed", null), number: 6 },
-          { ...pull("", 301115370, "main", "closed", null), number: 7 },
         ]), { status: 200 });
+        if (value.includes("/repos/splrad/steward/pulls?state=all")) return new Response("history-limit", { status: 422 });
         return new Response("unexpected", { status: 500 });
       });
       process.env.ISSUE_LINK_LIST_ONLY = "true";
       await runPrIssueLink(invocation({ "scan-all": "true", "pull-request-number": undefined as unknown as string }));
       const output = await readFile(process.env.GITHUB_OUTPUT!, "utf8");
-      expect(output).toContain('matrix=[{"pullRequestNumber":3},{"pullRequestNumber":5},{"pullRequestNumber":9}]');
-      expect(output).toContain("count=3");
+      expect(output).toContain('matrix=[{"pullRequestNumber":3},{"pullRequestNumber":9}]');
+      expect(output).toContain("count=2");
       expect(output).toContain("revalidation-budget=1");
       expect(calls.filter(call => ["PATCH", "PUT", "DELETE"].includes(call.method))).toEqual([]);
       expect(calls.find(call => call.url.includes("/access_tokens"))?.body.permissions).toEqual({ contents: "read", pull_requests: "write", issues: "read", checks: "write", metadata: "read" });
@@ -185,7 +182,7 @@ describe("拉取请求议题关联运行器", () => {
         calls.push({ url: value, method, body });
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
         if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
-        if (value.includes("/repos/splrad/steward/pulls?state=all")) return new Response(JSON.stringify([
+        if (value.includes("/repos/splrad/steward/pulls?state=open")) return new Response(JSON.stringify([
           { ...pull(), number: 3 }, { ...pull(), number: 9 },
         ]), { status: 200 });
         if (value.endsWith(`/internal/issue-snapshots/${repositoryId}`)) {
@@ -378,6 +375,35 @@ describe("拉取请求议题关联运行器", () => {
     });
   });
 
+  it("受管PR关闭未合并后直接清理议题块并发布不适用状态", async () => {
+    await withRunnerEnvironment(async () => {
+      process.env.RUNTIME_URL = "https://runtime.test";
+      const outer = '<!-- workflow:managed-pr:start -->\n## 摘要\n\n正文\n\n<!-- workflow:source-actor:bot -->\n<!-- workflow:managed-pr:end -->\n';
+      const block = renderIssueLinksBlock({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 9, analysisInputDigest: "d".repeat(64) }, [{ repositoryId, number: 7 }]);
+      let currentBody = upsertIssueLinksBlock(outer, block);
+      const calls: Array<{ url: string; method: string; body: any }> = [];
+      vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+        const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
+        calls.push({ url: value, method, body });
+        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method, body); if (bodyWriteResponse) return bodyWriteResponse;
+        if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+        if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/pulls/42") && method === "PATCH") { currentBody = body.body; return new Response(JSON.stringify(pull(currentBody, 301115370, "main", "closed", null)), { status: 200 }); }
+        if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify(pull(currentBody, 301115370, "main", "closed", null)), { status: 200 });
+        if (value.endsWith("/graphql")) return new Response(JSON.stringify({ data: { repository: { databaseId: repositoryId, pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } }), { status: 200 });
+        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/check-runs")) return new Response(JSON.stringify({ id: 1 }), { status: 201 });
+        return new Response("unexpected", { status: 500 });
+      });
+      process.env.ISSUE_LINK_PREPARE_ONLY = "true";
+      await runPrIssueLink(invocation());
+      expect(currentBody).toBe(outer);
+      expect(calls.some(call => call.method === "PATCH" && call.url.endsWith("/pulls/42"))).toBe(true);
+      const check = calls.find(call => call.method === "POST" && call.url.endsWith("/check-runs"));
+      expect(check?.body.output.title).toBe("议题关联不适用");
+    });
+  });
+
   it("受管拉取请求离开默认分支后只清理议题块并确认自动关系为空", async () => {
     await withRunnerEnvironment(async () => {
       process.env.RUNTIME_URL = "https://runtime.test";
@@ -434,6 +460,35 @@ describe("拉取请求议题关联运行器", () => {
       await expect(runPrIssueLink(invocation())).rejects.toThrow("写入前发生漂移");
       expect(currentBody).toBe(upsertIssueLinksBlock(humanOuter, block));
       expect(pullReads).toBe(3);
+    });
+  });
+
+  it("正文清理在写入前观察到PR已经合并时停止删除", async () => {
+    await withRunnerEnvironment(async () => {
+      process.env.RUNTIME_URL = "https://runtime.test";
+      const outer = '<!-- workflow:managed-pr:start -->\n## 摘要\n\n正文\n\n<!-- workflow:source-actor:bot -->\n<!-- workflow:managed-pr:end -->\n';
+      const block = renderIssueLinksBlock({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 2, analysisInputDigest: "d".repeat(64) }, [{ repositoryId, number: 7 }]);
+      const currentBody = upsertIssueLinksBlock(outer, block);
+      let pullReads = 0;
+      const calls: Array<{ url: string; method: string }> = [];
+      vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+        const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
+        calls.push({ url: value, method });
+        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method, body); if (bodyWriteResponse) return bodyWriteResponse;
+        if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+        if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/pulls/42")) {
+          pullReads++;
+          return new Response(JSON.stringify(pull(currentBody, 301115370, "release", pullReads >= 3 ? "closed" : "open", pullReads >= 3 ? "2026-08-24T00:00:00Z" : null)), { status: 200 });
+        }
+        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/check-runs")) return new Response(JSON.stringify({ id: 1 }), { status: 201 });
+        return new Response("unexpected", { status: 500 });
+      });
+      process.env.ISSUE_LINK_PREPARE_ONLY = "true";
+      await expect(runPrIssueLink(invocation())).rejects.toThrow("写入前发生漂移");
+      expect(pullReads).toBe(3);
+      expect(calls.some(call => call.method === "PATCH" && call.url.endsWith("/pulls/42"))).toBe(false);
     });
   });
 

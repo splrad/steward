@@ -47,12 +47,14 @@ describe("中央命令入口", () => {
       if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [
         { id: 1400000001, full_name: "splrad/default-private", private: true, owner: { id: 302208797, login: "splrad" } },
       ] }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile")) return new Response(JSON.stringify({ repositoryId: 1296724484, removedRepositoryIds: [1296725317] }), { status: 200 });
       if (value.endsWith("/internal/issue-snapshots/1400000001/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1400000001, managed: false }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) return new Response(null, { status: 204 });
       return new Response("unexpected", { status: 500 });
     });
     await main(["reconcile-repository-lifecycle", "--delivery-id", "deploy-1-1", "--policy-sha", "a".repeat(40)]);
+    expect(calls.find(call => call.url.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile"))?.body).toEqual({ repositoryIds: [1400000001] });
     expect(calls.some(call => call.url.endsWith("/internal/issue-snapshots/1400000001/lifecycle"))).toBe(true);
     expect(calls.find(call => call.url.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches"))?.body.inputs).toEqual({
       deliveryId: "deploy-1-1:1400000001", repositoryId: "1400000001", scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "true", policySha: "a".repeat(40),
@@ -73,6 +75,7 @@ describe("中央命令入口", () => {
       calls.push({ url: value, body });
       if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
       if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [managedRepository] }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile")) return new Response(JSON.stringify({ repositoryId: 1296724484, removedRepositoryIds: [] }), { status: 200 });
       if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1296724484, managed: true }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) return new Response(null, { status: 204 });
