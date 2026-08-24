@@ -239,11 +239,6 @@ async function dispatchIssueSyncs(env: Env, repository: any, deliveryId: string,
   for (const issueNumber of unique) await send(env, "issue-sync.yml", { deliveryId, repositoryId: String(repository.id), issueNumber: String(issueNumber), scanAll: "false", policySha: env.POLICY_SHA });
 }
 
-async function dispatchIssueRefreshes(env: Env, repository: any, deliveryId: string, issueNumbers: readonly number[] | null): Promise<void> {
-  await dispatchIssueInvalidation(env, repository, deliveryId);
-  await dispatchIssueSyncs(env, repository, deliveryId, issueNumbers);
-}
-
 function orderedManagedRepositories(repositories: readonly any[]): any[] {
   return [...new Map(repositories.filter(isManaged).map(repository => [Number(repository.id), repository])).values()]
     .sort((left, right) => Number(left.id) - Number(right.id));

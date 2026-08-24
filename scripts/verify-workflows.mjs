@@ -5,6 +5,11 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 
+function hasExactKeys(value, expectedKeys) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...expectedKeys].sort());
+}
+
 const expected = ["deploy-runtime.yml", "issue-sync.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "pr-issue-link.yml", "pr-validation.yml", "release.yml", "sync-copilot-instructions.yml", "sync-managed-labels.yml"];
 const files = (await readdir(".github/workflows")).sort();
 if (JSON.stringify(files) !== JSON.stringify(expected)) throw new Error(`工作流集合不正确: ${files.join(", ")}`);
@@ -96,7 +101,7 @@ for (const [name, expectedValue] of [["TRIGGER_ACTOR_ID", "${{github.actor_id}}"
 if (/--ai-classification/iu.test(classificationStep?.run ?? "")) throw new Error("AI影子分类输入不得拼接进shell命令");
 const issueSyncDocument = workflowDocuments.get("issue-sync.yml");
 const issueSyncInputs = issueSyncDocument?.on?.workflow_dispatch?.inputs ?? {};
-if (JSON.stringify(Object.keys(issueSyncInputs)) !== JSON.stringify(["deliveryId", "repositoryId", "issueNumber", "scanAll", "policySha"])) throw new Error("议题同步工作流输入集合不正确");
+if (!hasExactKeys(issueSyncInputs, ["deliveryId", "repositoryId", "issueNumber", "scanAll", "policySha"])) throw new Error("议题同步工作流输入集合不正确");
 if (issueSyncDocument?.permissions && Object.keys(issueSyncDocument.permissions).length !== 0) throw new Error("议题同步工作流不应使用GITHUB_TOKEN权限");
 const issueSyncConcurrency = String(issueSyncDocument?.concurrency?.group ?? "").replace(/\s+/gu, "");
 if (issueSyncConcurrency !== "steward-pr-body-${{inputs.repositoryId}}") throw new Error("议题同步必须与议题失效及正文写入共用仓库级并发锁");
@@ -108,10 +113,10 @@ for (const name of ["DELIVERY_ID", "REPOSITORY_ID", "ISSUE_NUMBER", "SCAN_ALL", 
 if (Object.hasOwn(issueSyncStep?.env ?? {}, "COPILOT_GITHUB_TOKEN") || Object.hasOwn(issueSyncStep?.env ?? {}, "COPILOT_CLI_TOKEN") || /\bcopilot\b/iu.test(issueSyncCommand)) throw new Error("议题同步路径不得调用Copilot");
 const issueLinkDocument = workflowDocuments.get("pr-issue-link.yml");
 const issueLinkInputs = issueLinkDocument?.on?.workflow_dispatch?.inputs ?? {};
-if (JSON.stringify(Object.keys(issueLinkInputs)) !== JSON.stringify(["deliveryId", "repositoryId", "pullRequestNumber", "scanAll", "invalidateOnly", "cleanupUnmanaged", "reconciliationGeneration", "policySha"])) throw new Error("议题关联工作流输入集合不正确");
+if (!hasExactKeys(issueLinkInputs, ["deliveryId", "repositoryId", "pullRequestNumber", "scanAll", "invalidateOnly", "cleanupUnmanaged", "reconciliationGeneration", "policySha"])) throw new Error("议题关联工作流输入集合不正确");
 if (issueLinkInputs.pullRequestNumber?.required !== false || issueLinkInputs.reconciliationGeneration?.required !== false || issueLinkInputs.scanAll?.type !== "boolean" || issueLinkInputs.invalidateOnly?.type !== "boolean" || issueLinkInputs.cleanupUnmanaged?.type !== "boolean") throw new Error("议题关联工作流可选编号或布尔输入契约不正确");
 const issueLinkPermissions = issueLinkDocument?.permissions ?? {};
-if (JSON.stringify(issueLinkPermissions) !== JSON.stringify({ contents: "read", "copilot-requests": "write" })) throw new Error("议题关联内置令牌权限不正确");
+if (!hasExactKeys(issueLinkPermissions, ["contents", "copilot-requests"]) || issueLinkPermissions.contents !== "read" || issueLinkPermissions["copilot-requests"] !== "write") throw new Error("议题关联内置令牌权限不正确");
 const issueLinkConcurrency = String(issueLinkDocument?.concurrency?.group ?? "").replace(/\s+/gu, "");
 if (issueLinkConcurrency !== "steward-pr-body-${{inputs.repositoryId}}") throw new Error("议题关联必须与正文自动化共用仓库级并发锁");
 if (issueSyncConcurrency !== issueLinkConcurrency) throw new Error("议题同步没有与失效及正式重算共用并发锁");
@@ -188,7 +193,7 @@ for (const required of ['repository_arguments=()', 'repository_arguments+=(--rep
   if (!syncCommand.includes(required)) throw new Error(`Copilot说明同步没有安全传递可选仓库编号: ${required}`);
 }
 const syncInputs = syncInstructionsDocument?.on?.workflow_dispatch?.inputs ?? {};
-if (JSON.stringify(Object.keys(syncInputs)) !== JSON.stringify(["repositoryId"])) throw new Error("Copilot说明同步暴露了未允许的手工输入");
+if (!hasExactKeys(syncInputs, ["repositoryId"])) throw new Error("Copilot说明同步暴露了未允许的手工输入");
 const syncLabelsDocument = workflowDocuments.get("sync-managed-labels.yml");
 const syncLabelsJob = syncLabelsDocument?.jobs?.synchronize;
 if (JSON.stringify(syncLabelsDocument?.on?.workflow_run?.workflows) !== JSON.stringify(["SPLRAD Steward / Deploy Runtime"]) || JSON.stringify(syncLabelsDocument?.on?.workflow_run?.types) !== JSON.stringify(["completed"])) throw new Error("标签同步没有绑定部署完成事件");
