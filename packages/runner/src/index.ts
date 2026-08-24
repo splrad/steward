@@ -1272,17 +1272,11 @@ async function reconcileRepositoryLifecycle(args: Readonly<Record<string, string
   if (reconciliation?.repositoryId !== stewardRepositoryId || !Array.isArray(reconciliation?.removedRepositoryIds)
     || reconciliation.removedRepositoryIds.some((value: unknown) => typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0 || installedRepositoryIds.includes(value))
     || new Set(reconciliation.removedRepositoryIds).size !== reconciliation.removedRepositoryIds.length) throw new Error("安装仓库生命周期运行时读回不一致");
+
+  let firstFailure: unknown = null;
   for (const target of targets) {
     const repositoryId = integer(String(target.repository.id), "repository-id");
-    const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId, permissions: { metadata: "read" }, policySha });
-    const response = await fetch(`${runtimeBaseUrl(env("RUNTIME_URL"))}/internal/issue-snapshots/${repositoryId}/lifecycle`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
-    if (!response.ok) throw new Error(`仓库生命周期运行时请求失败:${response.status}`);
-    const text = await response.text();
-    if (Buffer.byteLength(text, "utf8") > 16 * 1024) throw new Error("仓库生命周期运行时响应过大");
-    let state: any;
-    try { state = JSON.parse(text); } catch { throw new Error("仓库生命周期运行时响应无效"); }
-    if (state?.repositoryId !== repositoryId || state?.managed !== target.managed) throw new Error("仓库生命周期运行时读回不一致");
-    if (target.managed) {
+    try {
       await dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
         deliveryId: `${deliveryId}:${repositoryId}`,
         repositoryId: String(repositoryId),
@@ -1291,24 +1285,50 @@ async function reconcileRepositoryLifecycle(args: Readonly<Record<string, string
         cleanupUnmanaged: "false",
         policySha,
       });
-      await dispatchCentralWorkflow("issue-sync.yml", policySha, {
-        deliveryId: `${deliveryId}:${repositoryId}`,
-        repositoryId: String(repositoryId),
-        scanAll: "true",
-        policySha,
-      });
-    } else {
-      await dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
-        deliveryId: `${deliveryId}:${repositoryId}`,
-        repositoryId: String(repositoryId),
-        scanAll: "true",
-        invalidateOnly: "false",
-        cleanupUnmanaged: "true",
-        policySha,
-      });
-    }
-    await summary([`仓库编号：${repositoryId}`, `生命周期：${target.managed ? "managed" : "unmanaged"}`, `登记来源：${target.registration}`]);
+    } catch (error) { if (firstFailure === null) firstFailure = error; }
   }
+  if (firstFailure !== null) throw firstFailure;
+
+  const reconciled: ManagedTarget[] = [];
+  for (const target of targets) {
+    const repositoryId = integer(String(target.repository.id), "repository-id");
+    try {
+      const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId, permissions: { metadata: "read" }, policySha });
+      const response = await fetch(`${runtimeBaseUrl(env("RUNTIME_URL"))}/internal/issue-snapshots/${repositoryId}/lifecycle`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) throw new Error(`仓库生命周期运行时请求失败:${response.status}`);
+      const text = await response.text();
+      if (Buffer.byteLength(text, "utf8") > 16 * 1024) throw new Error("仓库生命周期运行时响应过大");
+      let state: any;
+      try { state = JSON.parse(text); } catch { throw new Error("仓库生命周期运行时响应无效"); }
+      if (state?.repositoryId !== repositoryId || state?.managed !== target.managed) throw new Error("仓库生命周期运行时读回不一致");
+      reconciled.push(target);
+    } catch (error) { if (firstFailure === null) firstFailure = error; }
+  }
+
+  for (const target of reconciled) {
+    const repositoryId = integer(String(target.repository.id), "repository-id");
+    try {
+      if (target.managed) {
+        await dispatchCentralWorkflow("issue-sync.yml", policySha, {
+          deliveryId: `${deliveryId}:${repositoryId}`,
+          repositoryId: String(repositoryId),
+          scanAll: "true",
+          policySha,
+        });
+      } else {
+        await dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
+          deliveryId: `${deliveryId}:${repositoryId}`,
+          repositoryId: String(repositoryId),
+          scanAll: "true",
+          invalidateOnly: "false",
+          cleanupUnmanaged: "true",
+          policySha,
+        });
+      }
+      await summary([`仓库编号：${repositoryId}`, `生命周期：${target.managed ? "managed" : "unmanaged"}`, `登记来源：${target.registration}`]);
+    } catch (error) { if (firstFailure === null) firstFailure = error; }
+  }
+  if (firstFailure !== null) throw firstFailure;
 }
 async function assertManualSyncAuthorization(policySha: string): Promise<void> {
   if (process.env.SYNC_TRIGGER !== "workflow_dispatch") return;

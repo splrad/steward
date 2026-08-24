@@ -244,6 +244,29 @@ async function dispatchIssueRefreshes(env: Env, repository: any, deliveryId: str
   await dispatchIssueSyncs(env, repository, deliveryId, issueNumbers);
 }
 
+function orderedManagedRepositories(repositories: readonly any[]): any[] {
+  return [...new Map(repositories.filter(isManaged).map(repository => [Number(repository.id), repository])).values()]
+    .sort((left, right) => Number(left.id) - Number(right.id));
+}
+
+async function onboardManagedRepositories(env: Env, repositories: readonly any[], deliveryId: string, trigger: string): Promise<void> {
+  const ordered = orderedManagedRepositories(repositories);
+  let firstFailure: unknown = null;
+  for (const repository of ordered) {
+    try { await dispatchIssueInvalidation(env, repository, deliveryId); }
+    catch (error) { if (firstFailure === null) firstFailure = error; }
+  }
+  if (firstFailure !== null) throw firstFailure;
+  const store = env.ISSUE_SNAPSHOTS ? new IssueSnapshotStore(env.ISSUE_SNAPSHOTS) : null;
+  for (const repository of ordered) {
+    try {
+      await store?.activateRepository(Number(repository.id));
+      await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger, deliveryId, policySha: env.POLICY_SHA });
+    } catch (error) { if (firstFailure === null) firstFailure = error; }
+  }
+  if (firstFailure !== null) throw firstFailure;
+}
+
 async function installationRepositories(env: Env): Promise<any[]> {
   if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
   const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY,
@@ -403,21 +426,11 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       return response(202);
     }
     if (event === "installation" && action === "created") {
-      const store = env.ISSUE_SNAPSHOTS ? new IssueSnapshotStore(env.ISSUE_SNAPSHOTS) : null;
-      for (const repository of payload.repositories ?? []) if (isManaged(repository)) {
-        await dispatchIssueInvalidation(env, repository, deliveryId);
-        await store?.activateRepository(Number(repository.id));
-        await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "installation-created", deliveryId, policySha: env.POLICY_SHA });
-      }
+      await onboardManagedRepositories(env, payload.repositories ?? [], deliveryId, "installation-created");
       return response(202);
     }
     if (event === "installation_repositories" && action === "added") {
-      const store = env.ISSUE_SNAPSHOTS ? new IssueSnapshotStore(env.ISSUE_SNAPSHOTS) : null;
-      for (const repository of payload.repositories_added ?? []) if (isManaged(repository)) {
-        await dispatchIssueInvalidation(env, repository, deliveryId);
-        await store?.activateRepository(Number(repository.id));
-        await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "installation-repositories-added", deliveryId, policySha: env.POLICY_SHA });
-      }
+      await onboardManagedRepositories(env, payload.repositories_added ?? [], deliveryId, "installation-repositories-added");
       return response(202);
     }
     if (event === "repository" && action === "edited") {
@@ -433,8 +446,9 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       }
       if (!previouslyManaged && managed) {
         if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
+        await dispatchIssueInvalidation(env, repository, deliveryId);
         await new IssueSnapshotStore(env.ISSUE_SNAPSHOTS).activateRepository(Number(repository.id));
-        await dispatchIssueRefreshes(env, repository, deliveryId, null);
+        await dispatchIssueSyncs(env, repository, deliveryId, null);
         return response(202);
       }
       if (!managed) return response(204);

@@ -55,13 +55,21 @@ describe("中央命令入口", () => {
     });
     await main(["reconcile-repository-lifecycle", "--delivery-id", "deploy-1-1", "--policy-sha", "a".repeat(40)]);
     expect(calls.find(call => call.url.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile"))?.body).toEqual({ repositoryIds: [1400000001] });
-    expect(calls.some(call => call.url.endsWith("/internal/issue-snapshots/1400000001/lifecycle"))).toBe(true);
-    expect(calls.find(call => call.url.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches"))?.body.inputs).toEqual({
+    const invalidationIndex = calls.findIndex(call => call.body?.inputs?.invalidateOnly === "true");
+    const lifecycleIndex = calls.findIndex(call => call.url.endsWith("/internal/issue-snapshots/1400000001/lifecycle"));
+    const cleanupIndex = calls.findIndex(call => call.body?.inputs?.cleanupUnmanaged === "true");
+    expect(invalidationIndex).toBeGreaterThan(-1);
+    expect(lifecycleIndex).toBeGreaterThan(invalidationIndex);
+    expect(cleanupIndex).toBeGreaterThan(lifecycleIndex);
+    expect(calls[invalidationIndex]!.body.inputs).toEqual({
+      deliveryId: "deploy-1-1:1400000001", repositoryId: "1400000001", scanAll: "true", invalidateOnly: "true", cleanupUnmanaged: "false", policySha: "a".repeat(40),
+    });
+    expect(calls[cleanupIndex]!.body.inputs).toEqual({
       deliveryId: "deploy-1-1:1400000001", repositoryId: "1400000001", scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "true", policySha: "a".repeat(40),
     });
   });
 
-  it("部署全量扫描通过同仓库队列排在全PR议题关联失效之后", async () => {
+  it("部署对账先失效全部仓库，并在单仓同步失败后继续调度后续仓库", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
     process.env.APP_ID = "4243096";
     process.env.INSTALLATION_ID = "145952003";
@@ -69,30 +77,86 @@ describe("中央命令入口", () => {
     process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
     process.env.RUNTIME_URL = "https://runtime.test";
     const calls: Array<{ url: string; body: any }> = [];
-    const managedRepository = { id: 1296724484, full_name: "splrad/steward", private: false, owner: { id: 302208797, login: "splrad" } };
+    const managedRepositories = [
+      { id: 1187527897, full_name: "splrad/LayerScape", private: false, owner: { id: 302208797, login: "splrad" } },
+      { id: 1296724484, full_name: "splrad/steward", private: false, owner: { id: 302208797, login: "splrad" } },
+    ];
     vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
       const value = String(url); const body = init?.body ? JSON.parse(String(init.body)) : null;
       calls.push({ url: value, body });
       if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
-      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [managedRepository] }), { status: 200 });
+      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: managedRepositories }), { status: 200 });
       if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile")) return new Response(JSON.stringify({ repositoryId: 1296724484, removedRepositoryIds: [] }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1187527897/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1187527897, managed: true }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1296724484, managed: true }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) return new Response(null, { status: 204 });
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches")) return new Response(body.inputs.repositoryId === "1187527897" ? "failure" : null, { status: body.inputs.repositoryId === "1187527897" ? 500 : 204 });
+      return new Response("unexpected", { status: 500 });
+    });
+    await expect(main(["reconcile-repository-lifecycle", "--delivery-id", "deploy-1-2", "--policy-sha", "a".repeat(40)])).rejects.toThrow();
+    const invalidations = calls.filter(call => call.body?.inputs?.invalidateOnly === "true");
+    const lifecycleIndexes = calls.map((call, index) => /\/internal\/issue-snapshots\/\d+\/lifecycle$/u.test(call.url) ? index : -1).filter(index => index >= 0);
+    const scans = calls.filter(call => call.url.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches"));
+    expect(invalidations.map(call => call.body.inputs.repositoryId)).toEqual(["1187527897", "1296724484"]);
+    expect(Math.max(...invalidations.map(call => calls.indexOf(call)))).toBeLessThan(Math.min(...lifecycleIndexes));
+    expect(scans.map(call => call.body.inputs.repositoryId)).toEqual(["1187527897", "1296724484"]);
+    expect(Math.max(...lifecycleIndexes)).toBeLessThan(calls.indexOf(scans[0]!));
+  });
+
+  it("部署对账会尝试失效全部仓库，任一失效失败时不变更生命周期", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
+    process.env.APP_ID = "4243096";
+    process.env.INSTALLATION_ID = "145952003";
+    process.env.STEWARD_APP_PRIVATE_KEY = privateKey;
+    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
+    process.env.RUNTIME_URL = "https://runtime.test";
+    const calls: Array<{ url: string; body: any }> = [];
+    vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+      const value = String(url); const body = init?.body ? JSON.parse(String(init.body)) : null;
+      calls.push({ url: value, body });
+      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [
+        { id: 1187527897, full_name: "splrad/LayerScape", private: false, owner: { id: 302208797, login: "splrad" } },
+        { id: 1296724484, full_name: "splrad/steward", private: false, owner: { id: 302208797, login: "splrad" } },
+      ] }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile")) return new Response(JSON.stringify({ repositoryId: 1296724484, removedRepositoryIds: [] }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) return new Response(body.inputs.repositoryId === "1187527897" ? "failure" : null, { status: body.inputs.repositoryId === "1187527897" ? 500 : 204 });
+      return new Response("unexpected", { status: 500 });
+    });
+    await expect(main(["reconcile-repository-lifecycle", "--delivery-id", "deploy-1-3", "--policy-sha", "a".repeat(40)])).rejects.toThrow();
+    expect(calls.filter(call => call.body?.inputs?.invalidateOnly === "true").map(call => call.body.inputs.repositoryId)).toEqual(["1187527897", "1296724484"]);
+    expect(calls.some(call => /\/internal\/issue-snapshots\/\d+\/lifecycle$/u.test(call.url))).toBe(false);
+  });
+
+  it("部署对账在单仓生命周期失败后继续收敛并同步其他仓库", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
+    process.env.APP_ID = "4243096";
+    process.env.INSTALLATION_ID = "145952003";
+    process.env.STEWARD_APP_PRIVATE_KEY = privateKey;
+    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
+    process.env.RUNTIME_URL = "https://runtime.test";
+    const calls: Array<{ url: string; body: any }> = [];
+    vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+      const value = String(url); const body = init?.body ? JSON.parse(String(init.body)) : null;
+      calls.push({ url: value, body });
+      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [
+        { id: 1187527897, full_name: "splrad/LayerScape", private: false, owner: { id: 302208797, login: "splrad" } },
+        { id: 1296724484, full_name: "splrad/steward", private: false, owner: { id: 302208797, login: "splrad" } },
+      ] }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile")) return new Response(JSON.stringify({ repositoryId: 1296724484, removedRepositoryIds: [] }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1187527897/lifecycle")) return new Response("failure", { status: 500 });
       if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1296724484, managed: true }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) return new Response(null, { status: 204 });
       if (value.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches")) return new Response(null, { status: 204 });
       return new Response("unexpected", { status: 500 });
     });
-    await main(["reconcile-repository-lifecycle", "--delivery-id", "deploy-1-2", "--policy-sha", "a".repeat(40)]);
-    const invalidationIndex = calls.findIndex(call => call.url.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches"));
-    const scanIndex = calls.findIndex(call => call.url.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches"));
-    expect(invalidationIndex).toBeGreaterThan(-1);
-    expect(scanIndex).toBeGreaterThan(invalidationIndex);
-    expect(calls[invalidationIndex]!.body.inputs).toEqual({
-      deliveryId: "deploy-1-2:1296724484", repositoryId: "1296724484", scanAll: "true", invalidateOnly: "true", cleanupUnmanaged: "false", policySha: "a".repeat(40),
-    });
-    expect(calls[scanIndex]!.body.inputs).toEqual({
-      deliveryId: "deploy-1-2:1296724484", repositoryId: "1296724484", scanAll: "true", policySha: "a".repeat(40),
-    });
+    await expect(main(["reconcile-repository-lifecycle", "--delivery-id", "deploy-1-4", "--policy-sha", "a".repeat(40)])).rejects.toThrow("仓库生命周期运行时请求失败:500");
+    expect(calls.filter(call => /\/internal\/issue-snapshots\/\d+\/lifecycle$/u.test(call.url)).map(call => call.url.match(/issue-snapshots\/(\d+)/u)?.[1])).toEqual(["1187527897", "1296724484"]);
+    expect(calls.filter(call => call.url.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches")).map(call => call.body.inputs.repositoryId)).toEqual(["1296724484"]);
   });
 
   it("部署初始化仓库清单包含公开默认纳管仓库并排除默认private仓库", async () => {
