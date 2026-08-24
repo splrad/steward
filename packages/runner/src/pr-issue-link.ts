@@ -734,7 +734,6 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
   });
   let unmanagedClosingKeywords = false;
   let closingKeywordsInspected = false;
-  let failClosed = false;
   try {
     const preparedPath = requiredEnvironment("ISSUE_PREPARED_FACTS_PATH");
     const promptPath = requiredEnvironment("ISSUE_COPILOT_PROMPT_PATH");
@@ -787,11 +786,9 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
     await writeSummary([`仓库编号：${args.repositoryId}`, `拉取请求：#${pullRequestNumber}`, `候选议题：${included.length}`, `差异文件：${fullDiff.changedFiles.length}`, `提示文件：${basename(promptPath)}`]);
   } catch (error) {
     let cleaned = false;
-    if (!failClosed) {
-      try {
-        cleaned = await removeIssueLinksIfEligible({ client, token, repository, pullRequestNumber, expectedHeadSha: facts.headSha, expectedBaseSha: facts.baseSha, expectedOutsideBodyDigest: managedBodyOutsideIssueLinksDigest(facts.body), args });
-      } catch {}
-    }
+    try {
+      cleaned = await removeIssueLinksIfEligible({ client, token, repository, pullRequestNumber, expectedHeadSha: facts.headSha, expectedBaseSha: facts.baseSha, expectedOutsideBodyDigest: managedBodyOutsideIssueLinksDigest(facts.body), args });
+    } catch {}
     const safeEmpty = cleaned && closingKeywordsInspected && !unmanagedClosingKeywords;
     await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
       status: "completed", conclusion: safeEmpty ? "success" : "failure",
