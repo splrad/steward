@@ -722,6 +722,7 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
     status: "in_progress", title: "正在核对议题关联", summary: `拉取请求：#${pullRequestNumber}\n状态：in-progress`,
   });
   let unmanagedClosingKeywords = false;
+  let closingKeywordsInspected = false;
   let failClosed = false;
   try {
     const preparedPath = requiredEnvironment("ISSUE_PREPARED_FACTS_PATH");
@@ -742,6 +743,7 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
     const candidateBytes = Buffer.byteLength(JSON.stringify(state.snapshots.map(item => item.snapshot)), "utf8");
     if (candidateBytes > maximumCandidateBytes) throw new Error("议题候选上下文超过1 MiB");
     const commits = await client.listPullCommits(owner, repo, pullRequestNumber);
+    closingKeywordsInspected = true;
     const unmanagedBodyDigest = managedBodyOutsideIssueLinksDigest(facts.body);
     unmanagedClosingKeywords = detectUnmanagedClosingKeywords({ body: facts.body, commitMessages: commits.map((commit: any) => String(commit?.commit?.message ?? "")) }).length > 0;
     if (unmanagedClosingKeywords) throw new Error("受管块外或提交消息存在关闭关键字");
@@ -779,11 +781,11 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
         cleaned = await removeIssueLinksIfEligible({ client, token, repository, pullRequestNumber, expectedHeadSha: facts.headSha, expectedBaseSha: facts.baseSha, expectedOutsideBodyDigest: managedBodyOutsideIssueLinksDigest(facts.body), args });
       } catch {}
     }
-    const safeEmpty = cleaned && !unmanagedClosingKeywords;
+    const safeEmpty = cleaned && closingKeywordsInspected && !unmanagedClosingKeywords;
     await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
       status: "completed", conclusion: safeEmpty ? "success" : "failure",
-      title: safeEmpty ? "议题关联已安全跳过" : unmanagedClosingKeywords ? "检测到未受管关闭关键字" : "议题关联清理失败",
-      summary: `拉取请求：#${pullRequestNumber}\n状态：${safeEmpty ? "safe-empty" : "failure"}\n类别：${unmanagedClosingKeywords ? `unmanaged-closing-keywords-${cleaned ? "managed-block-cleaned" : "unclean"}` : cleaned ? "prepare-failed-cleaned" : "prepare-failed-unclean"}`,
+      title: safeEmpty ? "议题关联已安全跳过" : !closingKeywordsInspected ? "提交关闭关键字核验失败" : unmanagedClosingKeywords ? "检测到未受管关闭关键字" : "议题关联清理失败",
+      summary: `拉取请求：#${pullRequestNumber}\n状态：${safeEmpty ? "safe-empty" : "failure"}\n类别：${!closingKeywordsInspected ? `commit-keywords-unverified-${cleaned ? "managed-block-cleaned" : "unclean"}` : unmanagedClosingKeywords ? `unmanaged-closing-keywords-${cleaned ? "managed-block-cleaned" : "unclean"}` : cleaned ? "prepare-failed-cleaned" : "prepare-failed-unclean"}`,
     });
     if (!safeEmpty) throw error;
     await writeOutput({ "copilot-required": "false", completed: "true" });

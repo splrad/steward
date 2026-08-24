@@ -803,8 +803,11 @@ describe("拉取请求议题关联运行器", () => {
     });
   });
 
-  it("事实准备失败时，在确认清空后以 safe-empty 成功结束", async () => {
-    await withRunnerEnvironment(async (directory) => {
+  it("仅在提交关闭关键字核验完成后允许 safe-empty", async () => {
+    for (const testCase of [
+      { snapshotAvailable: false, succeeds: false, category: "commit-keywords-unverified-managed-block-cleaned" },
+      { snapshotAvailable: true, succeeds: true, category: "prepare-failed-cleaned" },
+    ]) await withRunnerEnvironment(async (directory) => {
       const outer = '<!-- workflow:managed-pr:start -->\n## 摘要\n\n正文\n\n## 发布与迁移\n\n无\n\n<!-- workflow:source-actor:bot -->\n<!-- workflow:managed-pr:end -->\n';
       const block = renderIssueLinksBlock({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 2, analysisInputDigest: "d".repeat(64) }, [{ repositoryId, number: 7 }]);
       let currentBody = upsertIssueLinksBlock(outer, block);
@@ -818,7 +821,11 @@ describe("拉取请求议题关联运行器", () => {
         if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
         if (value.endsWith("/repos/splrad/steward/pulls/42") && method === "PATCH") { currentBody = body.body; return new Response(JSON.stringify(pull(currentBody, 301115370)), { status: 200 }); }
         if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify(pull(currentBody, 301115370)), { status: 200 });
-        if (value.endsWith("/internal/issue-snapshots/1296724484")) return new Response("unavailable", { status: 503 });
+        if (value.endsWith("/internal/issue-snapshots/1296724484")) return testCase.snapshotAvailable
+          ? new Response(JSON.stringify({ repositoryId, generation: 2, stateRevision: 0, syncState: "ready", openSetDigest: openIssueSetDigest(repositoryId, []), snapshots: [] }), { status: 200 })
+          : new Response("unavailable", { status: 503 });
+        if (value.includes("/repos/splrad/steward/pulls/42/commits?")) return new Response(JSON.stringify([{ commit: { message: "fix: ordinary change" } }]), { status: 200 });
+        if (value.includes("/repos/splrad/steward/pulls/42/files?")) return new Response("unavailable", { status: 503 });
         if (value.endsWith("/graphql")) return new Response(JSON.stringify({ data: { repository: { databaseId: repositoryId, pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } }), { status: 200 });
         if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: checkExists ? [{ id: 1, name: "PR Issue Link Gate", app: { id: 4243096 }, head_sha: headSha, external_id: `v1:${repositoryId}:42:${headSha}` }] : [] }), { status: 200 });
         if (value.endsWith("/repos/splrad/steward/check-runs")) { checkExists = true; return new Response(JSON.stringify({ id: 1 }), { status: 201 }); }
@@ -827,14 +834,17 @@ describe("拉取请求议题关联运行器", () => {
       });
       process.env.ISSUE_LINK_PREPARE_ONLY = "true";
       process.env.RUNTIME_URL = "https://runtime.test";
+      process.env.SNAPSHOT_VALIDATED_GENERATION = "2";
       process.env.ISSUE_PREPARED_FACTS_PATH = join(directory, "prepared.json");
       process.env.ISSUE_COPILOT_PROMPT_PATH = join(directory, "prompt.txt");
-      await runPrIssueLink(invocation());
+      const result = runPrIssueLink(invocation());
+      if (testCase.succeeds) await result;
+      else await expect(result).rejects.toThrow();
       expect(currentBody).toBe(outer);
       const update = calls.find(call => call.method === "PATCH" && call.url.endsWith("/check-runs/1"));
-      expect(update?.body).toEqual(expect.objectContaining({ status: "completed", conclusion: "success" }));
-      expect(update?.body.output.title).toBe("议题关联已安全跳过");
-      expect(await readFile(process.env.GITHUB_OUTPUT!, "utf8")).toContain("copilot-required=false");
+      expect(update?.body).toEqual(expect.objectContaining({ status: "completed", conclusion: testCase.succeeds ? "success" : "failure" }));
+      expect(update?.body.output.summary).toContain(testCase.category);
+      if (testCase.succeeds) expect(await readFile(process.env.GITHUB_OUTPUT!, "utf8")).toContain("copilot-required=false");
     });
   });
 });

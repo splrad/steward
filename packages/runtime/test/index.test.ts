@@ -610,7 +610,8 @@ describe("中央运行程序", () => {
 
   it("议题删除会刷新来源以外的受管仓库", async () => {
     vi.spyOn(IssueSnapshotStore.prototype, "getRepositoryState").mockResolvedValue(null);
-    const deleted = vi.spyOn(IssueSnapshotStore.prototype, "deleteSnapshot").mockResolvedValue();
+    const events: string[] = [];
+    const deleted = vi.spyOn(IssueSnapshotStore.prototype, "deleteSnapshot").mockImplementation(async () => { events.push("snapshot-deleted"); });
     const dispatched: { name: string; inputs: Record<string, string> }[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
       const value = String(url);
@@ -620,7 +621,11 @@ describe("中央运行程序", () => {
       ] }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "trunk" }), { status: 200 });
       const name = /\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
-      if (name) { dispatched.push({ name, inputs: JSON.parse(String(init.body)).inputs }); return new Response(null, { status: 204 }); }
+      if (name) {
+        const inputs = JSON.parse(String(init.body)).inputs;
+        dispatched.push({ name, inputs }); events.push(`${name}:${inputs.repositoryId}`);
+        return new Response(null, { status: 204 });
+      }
       return new Response("unexpected", { status: 500 });
     });
     const env = { ...baseEnv(), ISSUE_SNAPSHOTS: {} as D1Database };
@@ -633,6 +638,34 @@ describe("中央运行程序", () => {
       { name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", scanAll: "true" }) },
       { name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1296725317", scanAll: "true" }) },
     ]);
+    expect(events).toEqual([
+      "pr-issue-link.yml:1296724484", "pr-issue-link.yml:1296725317", "snapshot-deleted",
+      "issue-sync.yml:1296724484", "issue-sync.yml:1296725317",
+    ]);
+  });
+
+  it("议题删除会在所有门禁失效成功前保留来源快照", async () => {
+    vi.spyOn(IssueSnapshotStore.prototype, "getRepositoryState").mockResolvedValue(null);
+    const deleted = vi.spyOn(IssueSnapshotStore.prototype, "deleteSnapshot").mockResolvedValue();
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.includes("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ total_count: 2, repositories: [
+        repository(), repository(1296725317, "splrad/.github"),
+      ] }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "trunk" }), { status: 200 });
+      const name = /\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
+      if (name) {
+        const inputs = JSON.parse(String(init.body)).inputs;
+        if (name === "pr-issue-link.yml" && inputs.repositoryId === "1296724484") return new Response("failure", { status: 500 });
+        return new Response(null, { status: 204 });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    const env = { ...baseEnv(), ISSUE_SNAPSHOTS: {} as D1Database };
+    const payload = scoped({ action: "deleted", repository: repository(), issue: { number: 4 } });
+    expect((await handleWebhook(signedRequest("issues", payload), env)).status).toBe(503);
+    expect(deleted).not.toHaveBeenCalled();
   });
 
   it("议题从未纳管来源转入受管仓库时仍刷新目标", async () => {

@@ -265,7 +265,12 @@ async function transferredIssueRepository(env: Env, issue: any): Promise<any | n
   return matches.length === 1 ? matches[0] : null;
 }
 
-async function dispatchAllManagedIssueScans(env: Env, deliveryId: string, currentRepository?: any): Promise<void> {
+async function dispatchAllManagedIssueScans(
+  env: Env,
+  deliveryId: string,
+  currentRepository?: any,
+  afterInvalidation?: () => Promise<void>,
+): Promise<void> {
   const installed = await installationRepositories(env);
   const repositories = new Map(installed.filter(isManaged).map(repository => [Number(repository.id), repository]));
   if (currentRepository && isManaged(currentRepository)) repositories.set(Number(currentRepository.id), currentRepository);
@@ -276,6 +281,7 @@ async function dispatchAllManagedIssueScans(env: Env, deliveryId: string, curren
     catch (error) { if (firstFailure === null) firstFailure = error; }
   }
   if (firstFailure !== null) throw firstFailure;
+  if (afterInvalidation) await afterInvalidation();
   for (const repository of ordered) {
     try { await dispatchIssueSyncs(env, repository, deliveryId, null); }
     catch (error) { if (firstFailure === null) firstFailure = error; }
@@ -358,12 +364,11 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
         ? await transferredIssueRepository(env, payload.changes?.new_issue) : null;
       const destinationManaged = Boolean(destinationRepository && isManaged(destinationRepository));
       if (!sourceManaged && !destinationManaged) return response(204);
-      if (sourceManaged) {
+      await dispatchAllManagedIssueScans(env, deliveryId, sourceManaged ? repository : destinationRepository, sourceManaged ? async () => {
         if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
         const store = new IssueSnapshotStore(env.ISSUE_SNAPSHOTS);
         await deleteIssueSnapshotWithRetry(store, Number(repository.id), issueNumber, new Date().toISOString());
-      }
-      await dispatchAllManagedIssueScans(env, deliveryId, sourceManaged ? repository : destinationRepository);
+      } : undefined);
       return response(202);
     }
     if (event === "issues") {
