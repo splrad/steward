@@ -516,6 +516,14 @@ describe("议题快照内部接口", () => {
     const database = new SqliteD1();
     const store = new IssueSnapshotStore(database.binding());
     await put(store, snapshot(1400000000, "splrad/default-managed", 7), 0);
+    const intentStore = new PullRequestBodyWriteIntentStore(database.binding());
+    const writeId = "11111111-1111-4111-8111-111111111111";
+    const targetBlock = renderIssueLinksBlock({ repositoryId: 1400000000, pullRequestNumber: 42, baseSha: "b".repeat(40), headSha: "c".repeat(40), generation: 0, analysisInputDigest: "d".repeat(64) }, []);
+    await intentStore.prepare({ repositoryId: 1400000000, pullRequestNumber: 42, writeId, regionKind: "issue-links", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
+      beforeBodyDigest: pullRequestBodyDigest("before"), outsideBodyDigest: pullRequestBodyDigest("outside"), targetBlock, targetBodyDigest: pullRequestBodyDigest("after"),
+      now: "2026-08-22T00:00:00Z", expiresAt: "2026-08-22T00:10:00Z",
+      redrive: { workflow: "pr-issue-link.yml", inputs: { deliveryId: "delivery-lifecycle", repositoryId: "1400000000", pullRequestNumber: "42", scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: "a".repeat(40) } } });
+    expect(await intentStore.claimDelivery({ deliveryId: "delivery-lifecycle", repositoryId: 1400000000, pullRequestNumber: 42, writeId, now: "2026-08-22T00:00:01Z" })).not.toBeNull();
     const endpoint = "https://example.test/internal/issue-snapshots/1400000000/lifecycle";
     const unmanaged = { ...repository(1400000000, "splrad/default-managed"), private: true };
     installAuthorization(undefined, [unmanaged]);
@@ -524,6 +532,8 @@ describe("议题快照内部接口", () => {
     expect(await removed.json()).toEqual({ repositoryId: 1400000000, managed: false });
     expect(await store.getSnapshot(1400000000, 7)).toBeNull();
     expect(await store.getRepositoryState(1400000000)).toBeNull();
+    expect(await intentStore.get(1400000000, 42)).toBeNull();
+    expect(database.database.prepare("SELECT COUNT(*) AS count FROM pull_request_body_write_deliveries WHERE repository_id = 1400000000").get()).toEqual({ count: 0 });
 
     installAuthorization(undefined, [repository(1400000000, "splrad/default-managed")]);
     const activated = await worker.fetch(new Request(endpoint, { method: "POST", headers: { authorization: "Bearer one-repository-token" } }), env(database));

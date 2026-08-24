@@ -414,6 +414,8 @@ export class IssueSnapshotStore {
     const now = new Date().toISOString();
     const emptyDigest = openIssueSetDigest(repositoryId, []);
     const results = await this.db.batch([
+      this.db.prepare("DELETE FROM pull_request_body_write_deliveries WHERE repository_id = ?").bind(repositoryId),
+      this.db.prepare("DELETE FROM pull_request_body_write_intents WHERE repository_id = ?").bind(repositoryId),
       this.db.prepare(`INSERT INTO issue_snapshot_repository_tombstones (repository_id, deleted_at) VALUES (?, ?)
         ON CONFLICT(repository_id) DO UPDATE SET deleted_at = excluded.deleted_at`).bind(repositoryId, now),
       this.db.prepare("DELETE FROM issue_snapshots WHERE repository_id = ?").bind(repositoryId),
@@ -427,7 +429,7 @@ export class IssueSnapshotStore {
           last_full_scan_at = excluded.last_full_scan_at, updated_at = excluded.updated_at`)
         .bind(repositoryId, emptyDigest, now),
     ]);
-    if (results.length !== 5 || results.some((result) => !result.success)) throw new Error("仓库快照清理失败");
+    if (results.length !== 7 || results.some((result) => !result.success)) throw new Error("仓库快照清理失败");
   }
 
   async deleteAllRepositories(repositoryIds: readonly number[] = []): Promise<void> {
