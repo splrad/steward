@@ -3,7 +3,7 @@ name: SPLRAD Steward / Onboard Repository
 on:
   workflow_dispatch:
     inputs:
-      repositoryId: { required: false, type: string }
+      repositoryId: { required: true, type: string }
       repositoryFullName: { required: true, type: string }
       trigger: { required: false, type: string, default: manual }
       deliveryId: { required: false, type: string, default: manual }
@@ -11,8 +11,9 @@ on:
 
 permissions: {}
 concurrency:
-  group: steward-onboard-${{ inputs.repositoryFullName }}
+  group: steward-pr-body-${{ inputs.repositoryId }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   onboard:
@@ -33,6 +34,7 @@ jobs:
           APP_ID: "4243096"
           INSTALLATION_ID: "145952003"
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
           COPILOT_REVIEW_REQUEST_TOKEN: ${{ secrets.COPILOT_REVIEW_REQUEST_TOKEN }}
           TRIGGER_ACTOR_ID: ${{ github.actor_id }}
           TRIGGER_ACTOR_LOGIN: ${{ github.actor }}
@@ -42,8 +44,4 @@ jobs:
           DELIVERY_ID: ${{ github.actor_id == '301115370' && inputs.deliveryId || format('manual-{0}-{1}', github.run_id, github.run_attempt) }}
           POLICY_SHA: ${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}
         run: |
-          repository_arguments=()
-          if [[ -n "$REPOSITORY_ID" ]]; then
-            repository_arguments+=(--repository-id "$REPOSITORY_ID")
-          fi
-          node packages/runner/dist/index.js onboard-repository "${repository_arguments[@]}" --repository-full-name "$REPOSITORY_FULL_NAME" --trigger "$ONBOARD_TRIGGER" --delivery-id "$DELIVERY_ID" --policy-sha "$POLICY_SHA"
+          node packages/runner/dist/index.js onboard-repository --repository-id "$REPOSITORY_ID" --repository-full-name "$REPOSITORY_FULL_NAME" --trigger "$ONBOARD_TRIGGER" --delivery-id "$DELIVERY_ID" --policy-sha "$POLICY_SHA"

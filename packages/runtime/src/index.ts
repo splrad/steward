@@ -1,6 +1,7 @@
-import { createInstallationToken, dispatchWorkflow, GitHubClient } from "../../github/src/index.js";
+import { createAppJwt, createInstallationToken, dispatchWorkflow, GitHubClient } from "../../github/src/index.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
 import { handleIssueSnapshotInternalRequest } from "./issue-snapshots.js";
+import { confirmPullRequestBodyWriteIntent, processPullRequestBodyEditedDelivery, PullRequestBodyWriteIntentStore, type PullRequestBodyWriteIntent } from "./pr-body-write-intents.js";
 
 export interface Env {
   ORGANIZATION_ID: string; ORGANIZATION_LOGIN: string; APP_ID: string; INSTALLATION_ID: string;
@@ -14,6 +15,7 @@ const ZERO_SHA = "0".repeat(40);
 const VALIDATION_WORKFLOW_NAME = "SPLRAD Steward / PR Validation";
 const VALIDATION_WORKFLOW_PATH = ".github/workflows/pr-validation.yml";
 const VALIDATION_CHECK_NAME = "PR Validation Gate";
+const BODY_WRITE_REDRIVE_RETRY_MS = 2 * 60 * 60_000;
 
 function response(status: number, body?: unknown): Response {
   return new Response(body === undefined ? null : JSON.stringify(body), { status, headers: body === undefined ? undefined : { "Content-Type": "application/json; charset=utf-8" } });
@@ -33,6 +35,13 @@ async function dispatcher(env: Env): Promise<GitHubClient> {
   return new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA);
 }
 async function send(env: Env, workflow: string, inputs: Record<string, string>) { const [owner, repo] = env.STEWARDSHIP_REPOSITORY.split("/") as [string, string]; await dispatchWorkflow(await dispatcher(env), { owner, repo, workflow, policySha: env.POLICY_SHA, inputs }); }
+
+async function bodyWriteClient(env: Env, repositoryId: number): Promise<GitHubClient> {
+  if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
+  const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY, installationId: Number(env.INSTALLATION_ID), repositoryId,
+    permissions: { issues: "read", metadata: "read", pull_requests: "write" }, policySha: env.POLICY_SHA });
+  return new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA);
+}
 
 function splitRepository(fullName: string): [string, string] {
   const parts = fullName.split("/");
@@ -216,6 +225,21 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
   if (!validScope(payload, env)) return response(403);
   const event = request.headers.get("x-github-event") ?? ""; const deliveryId = request.headers.get("x-github-delivery") ?? ""; const action = payload.action ?? "";
   try {
+    if (event === "pull_request" && action === "edited" && env.ISSUE_SNAPSHOTS && payload.repository && payload.pull_request) {
+      const store = new PullRequestBodyWriteIntentStore(env.ISSUE_SNAPSHOTS);
+      const current = await store.get(Number(payload.repository.id), Number(payload.pull_request.number));
+      if (current && ["prepared", "patched", "compensating"].includes(current.status)) {
+        const outcome = await processPullRequestBodyEditedDelivery({
+          store,
+          client: await bodyWriteClient(env, Number(payload.repository.id)),
+          repository: payload.repository,
+          payload,
+          deliveryId,
+          now: new Date().toISOString(),
+        });
+        if (["proven", "compensated", "duplicate", "blocked"].includes(outcome)) return response(202);
+      }
+    }
     if (event === "installation" && action === "created") {
       for (const repository of payload.repositories ?? []) if (isManaged(repository)) await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "installation-created", deliveryId, policySha: env.POLICY_SHA });
       return response(202);
@@ -261,6 +285,78 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
   }
 }
 
+function deliveryHeader(headers: Record<string, unknown> | undefined, name: string): string {
+  const entry = Object.entries(headers ?? {}).find(([key]) => key.toLowerCase() === name.toLowerCase());
+  return typeof entry?.[1] === "string" ? entry[1] : "";
+}
+
+export async function recoverPullRequestBodyWriteIntents(env: Env, now = new Date()): Promise<number> {
+  if (!env.ISSUE_SNAPSHOTS) return 0;
+  const store = new PullRequestBodyWriteIntentStore(env.ISSUE_SNAPSHOTS);
+  const nowIso = now.toISOString();
+  const redriveRetryBefore = new Date(now.getTime() - BODY_WRITE_REDRIVE_RETRY_MS).toISOString();
+  const expired = await store.blockExpired(nowIso, 20);
+  const pending = await store.listRecoverable(nowIso, 20);
+  const queuedRedrives = await store.listPendingRedrives(20, redriveRetryBefore);
+  if (!pending.length && !queuedRedrives.length) return expired;
+  if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
+  const dispatchRedrives = async (redrives: readonly PullRequestBodyWriteIntent[]) => {
+    for (const current of redrives) {
+      const claimed = await store.claimRedrive(current.repositoryId, current.pullRequestNumber, current.writeId, nowIso, redriveRetryBefore);
+      if (!claimed) continue;
+      if (!current.redrive) {
+        console.warn(JSON.stringify({ repositoryId: current.repositoryId, pullRequestNumber: current.pullRequestNumber, writeId: current.writeId,
+          status: "body-write-redrive-abandoned", reason: "missing-redrive-origin" }));
+        await store.abandonClaimedRedrive(current.repositoryId, current.pullRequestNumber, current.writeId, nowIso);
+        continue;
+      }
+      const inputs = { ...current.redrive.inputs };
+      if (Object.hasOwn(inputs, "deliveryId")) inputs.deliveryId = `body-write-recovery:${current.writeId}`;
+      if (Object.hasOwn(inputs, "policySha")) inputs.policySha = env.POLICY_SHA;
+      try {
+        await send(env, current.redrive.workflow, inputs);
+      } catch (error) {
+        await store.releaseRedrive(current.repositoryId, current.pullRequestNumber, current.writeId, nowIso);
+        throw error;
+      }
+    }
+  };
+  await dispatchRedrives(queuedRedrives);
+  if (!pending.length) return expired;
+  const app = new GitHubClient(await createAppJwt(env.APP_ID, env.STEWARD_APP_PRIVATE_KEY), "https://api.github.com", fetch, env.POLICY_SHA);
+  const deliveries = await app.request<any[]>("GET", "/app/hook/deliveries?per_page=100");
+  if (!Array.isArray(deliveries) || deliveries.length > 100) throw new Error("GitHub App交付列表无效");
+  let recovered = expired;
+  const clients = new Map<number, GitHubClient>();
+  for (const current of pending) {
+    const client = clients.get(current.repositoryId) ?? await bodyWriteClient(env, current.repositoryId);
+    clients.set(current.repositoryId, client);
+    const repository = await client.getRepositoryById(current.repositoryId);
+    if (current.deliveryProven) {
+      try {
+        const confirmed = await confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber: current.pullRequestNumber, writeId: current.writeId, now: nowIso });
+        if (["confirmed", "blocked"].includes(confirmed.status)) {
+          await store.requestRedrive(confirmed.repositoryId, confirmed.pullRequestNumber, confirmed.writeId, nowIso);
+          recovered += 1;
+        }
+      } catch { /* keep the durable intent pending for the next bounded scan */ }
+      continue;
+    }
+    const candidates = deliveries.filter((delivery) => Number(delivery?.repository_id) === current.repositoryId && delivery?.event === "pull_request" && delivery?.action === "edited").slice(0, 20);
+    for (const candidate of candidates) {
+      if (!Number.isSafeInteger(candidate?.id) || candidate.id <= 0) continue;
+      const detail = await app.request<any>("GET", `/app/hook/deliveries/${candidate.id}`);
+      const deliveryId = deliveryHeader(detail?.request?.headers, "x-github-delivery") || String(detail?.guid ?? candidate?.guid ?? "");
+      const payload = detail?.request?.payload;
+      if (!deliveryId || !payload || Number(payload?.repository?.id) !== current.repositoryId || Number(payload?.pull_request?.number) !== current.pullRequestNumber) continue;
+      const outcome = await processPullRequestBodyEditedDelivery({ store, client, repository, payload, deliveryId, now: nowIso });
+      if (["proven", "compensated", "blocked"].includes(outcome)) { recovered += 1; break; }
+    }
+  }
+  await dispatchRedrives(await store.listPendingRedrives(20, redriveRetryBefore));
+  return recovered;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -269,5 +365,8 @@ export default {
     const internal = await handleIssueSnapshotInternalRequest(request, env);
     if (internal) return internal;
     return response(404);
+  },
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    await recoverPullRequestBodyWriteIntents(env);
   },
 };
