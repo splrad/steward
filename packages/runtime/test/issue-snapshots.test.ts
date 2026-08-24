@@ -4,7 +4,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { issueSnapshotContentDigest, normalizeIssueSnapshot, openIssueSetDigest, renderIssueLinksBlock, type IssueSnapshot } from "../../core/src/issues.js";
 import { extractManagedPullRequestBlock, renderManagedBody } from "../../core/src/automation.js";
-import worker, { handleWebhook, recoverPullRequestBodyWriteIntents, type Env } from "../src/index.js";
+import worker, { handleWebhook, recoverIssueSnapshotReconciliations, recoverPullRequestBodyWriteIntents, type Env } from "../src/index.js";
 import { IssueSnapshotStore } from "../src/issue-snapshots.js";
 import { bodyOutsideManagedRegionDigest, pullRequestBodyDigest, PullRequestBodyWriteIntentStore } from "../src/pr-body-write-intents.js";
 
@@ -29,6 +29,7 @@ class SqliteD1 {
     this.database.exec(readFileSync(new URL("../migrations/0005_issue_snapshot_reconciliation_revision.sql", import.meta.url), "utf8"));
     this.database.exec(readFileSync(new URL("../migrations/0006_pull_request_body_write_intents.sql", import.meta.url), "utf8"));
     this.database.exec(readFileSync(new URL("../migrations/0007_pull_request_body_write_redrive.sql", import.meta.url), "utf8"));
+    this.database.exec(readFileSync(new URL("../migrations/0008_issue_snapshot_reconciliation_redrive.sql", import.meta.url), "utf8"));
   }
   prepare(sql: string): D1PreparedStatement { return new SqliteD1Statement(this.database, sql) as unknown as D1PreparedStatement; }
   async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
@@ -126,6 +127,7 @@ describe("议题快照D1存储", () => {
     const database = new SqliteD1();
     const objects = database.database.prepare("SELECT type, name, tbl_name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all();
     expect(objects).toEqual([
+      { type: "index", name: "issue_snapshot_reconciliation_dispatch_idx", tbl_name: "issue_snapshot_reconciliation_requests" },
       { type: "index", name: "issue_snapshots_open", tbl_name: "issue_snapshots" },
       { type: "index", name: "pull_request_body_write_deliveries_intent", tbl_name: "pull_request_body_write_deliveries" },
       { type: "index", name: "pull_request_body_write_intents_pending", tbl_name: "pull_request_body_write_intents" },
@@ -269,6 +271,42 @@ describe("议题快照D1存储", () => {
     expect(await store.acknowledgeReconciliation(1296724484, 0, firstReady.stateRevision)).toBe(false);
     expect(await store.getReconciliationRequest(1296724484)).toEqual(expect.objectContaining({ generation: 0, stateRevision: secondReady.stateRevision }));
     expect(await store.acknowledgeReconciliation(1296724484, 0, secondReady.stateRevision)).toBe(true);
+  });
+
+  it("待处理重算只在租约到期后由一个恢复者取得重派声明", async () => {
+    const store = new IssueSnapshotStore(new SqliteD1().binding());
+    const ready = await store.setScanState(1296724484, "ready", 0, 0, "2026-08-21T00:00:00.000Z", []);
+    expect(await store.listReconciliationDispatchCandidates("2026-08-20T23:59:59.999Z", 20)).toEqual([]);
+    expect(await store.listReconciliationDispatchCandidates("2026-08-21T00:00:00.000Z", 20)).toEqual([
+      expect.objectContaining({ repositoryId: 1296724484, generation: 0, stateRevision: ready.stateRevision, lastDispatchedAt: "2026-08-21T00:00:00.000Z" }),
+    ]);
+    expect(await store.claimReconciliationDispatch(1296724484, 0, ready.stateRevision, "2026-08-21T00:10:00.000Z", "2026-08-21T00:00:00.000Z")).toBe(true);
+    expect(await store.claimReconciliationDispatch(1296724484, 0, ready.stateRevision, "2026-08-21T00:10:01.000Z", "2026-08-21T00:00:00.000Z")).toBe(false);
+  });
+
+  it("定时恢复会有界重派未确认的精确重算代次", async () => {
+    const database = new SqliteD1();
+    const store = new IssueSnapshotStore(database.binding());
+    const ready = await store.setScanState(1296724484, "ready", 0, 0, "2026-08-21T00:00:00.000Z", []);
+    const dispatches: any[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+      const value = String(url);
+      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) {
+        dispatches.push(JSON.parse(String(init.body)).inputs);
+        return new Response(null, { status: 204 });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    expect(await recoverIssueSnapshotReconciliations(env(database), new Date("2026-08-21T00:09:59.999Z"))).toBe(0);
+    expect(await recoverIssueSnapshotReconciliations(env(database), new Date("2026-08-21T00:10:00.000Z"))).toBe(1);
+    expect(await recoverIssueSnapshotReconciliations(env(database), new Date("2026-08-21T00:10:01.000Z"))).toBe(0);
+    expect(dispatches).toEqual([{
+      deliveryId: `issue-reconciliation-recovery:1296724484:0:${ready.stateRevision}`,
+      repositoryId: "1296724484", scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "false",
+      reconciliationGeneration: "0", policySha: "a".repeat(40),
+    }]);
   });
 
   it("删除始终绑定复合主键，仓库清理不影响另一个仓库的同号议题", async () => {

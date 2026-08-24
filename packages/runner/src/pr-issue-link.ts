@@ -624,7 +624,7 @@ async function publishNotApplicable(client: GitHubClient, token: string, reposit
 async function listPullRequestMatrix(args: PrIssueLinkArgs): Promise<void> {
   const { token, client } = await createTargetClient(args.repositoryId, args.policySha);
   const repository = await client.getRepositoryById(args.repositoryId);
-  if (!args.cleanupUnmanaged) configuration(repository);
+  if (!args.cleanupUnmanaged && !args.invalidateOnly) configuration(repository);
   const [owner, repo] = splitRepository(repository.full_name);
   let numbers: number[];
   if (args.scanAll) {
@@ -658,7 +658,7 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
   const pullRequestNumber = safeInteger(args.pullRequestNumber, "pullRequestNumber");
   const { token, client } = await createTargetClient(args.repositoryId, args.policySha);
   const repository = await client.getRepositoryById(args.repositoryId);
-  if (!args.cleanupUnmanaged) configuration(repository);
+  if (!args.cleanupUnmanaged && !args.invalidateOnly) configuration(repository);
   const [owner, repo] = splitRepository(repository.full_name);
   const pull = await client.getPullRequest(owner, repo, pullRequestNumber);
   const facts = currentPullFacts(pull, args.repositoryId);

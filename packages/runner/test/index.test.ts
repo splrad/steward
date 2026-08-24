@@ -61,7 +61,7 @@ describe("中央命令入口", () => {
     });
   });
 
-  it("部署全量扫描失败前已经调度全PR议题关联失效", async () => {
+  it("部署全量扫描通过同仓库队列排在全PR议题关联失效之后", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
     process.env.APP_ID = "4243096";
     process.env.INSTALLATION_ID = "145952003";
@@ -79,16 +79,19 @@ describe("中央命令入口", () => {
       if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1296724484, managed: true }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) return new Response(null, { status: 204 });
-      if (value.endsWith("/internal/issue-snapshots/1296724484/scan-state")) return new Response("scan failed", { status: 503 });
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches")) return new Response(null, { status: 204 });
       return new Response("unexpected", { status: 500 });
     });
-    await expect(main(["reconcile-repository-lifecycle", "--delivery-id", "deploy-1-2", "--policy-sha", "a".repeat(40)])).rejects.toThrow("议题同步运行时请求失败:503");
+    await main(["reconcile-repository-lifecycle", "--delivery-id", "deploy-1-2", "--policy-sha", "a".repeat(40)]);
     const invalidationIndex = calls.findIndex(call => call.url.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches"));
-    const scanIndex = calls.findIndex(call => call.url.endsWith("/internal/issue-snapshots/1296724484/scan-state"));
+    const scanIndex = calls.findIndex(call => call.url.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches"));
     expect(invalidationIndex).toBeGreaterThan(-1);
     expect(scanIndex).toBeGreaterThan(invalidationIndex);
     expect(calls[invalidationIndex]!.body.inputs).toEqual({
       deliveryId: "deploy-1-2:1296724484", repositoryId: "1296724484", scanAll: "true", invalidateOnly: "true", cleanupUnmanaged: "false", policySha: "a".repeat(40),
+    });
+    expect(calls[scanIndex]!.body.inputs).toEqual({
+      deliveryId: "deploy-1-2:1296724484", repositoryId: "1296724484", scanAll: "true", policySha: "a".repeat(40),
     });
   });
 

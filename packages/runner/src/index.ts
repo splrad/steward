@@ -1291,7 +1291,12 @@ async function reconcileRepositoryLifecycle(args: Readonly<Record<string, string
         cleanupUnmanaged: "false",
         policySha,
       });
-      await issueSync({ "delivery-id": `${deliveryId}:${repositoryId}`, "repository-id": String(repositoryId), "scan-all": "true", "policy-sha": policySha });
+      await dispatchCentralWorkflow("issue-sync.yml", policySha, {
+        deliveryId: `${deliveryId}:${repositoryId}`,
+        repositoryId: String(repositoryId),
+        scanAll: "true",
+        policySha,
+      });
     } else {
       await dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
         deliveryId: `${deliveryId}:${repositoryId}`,

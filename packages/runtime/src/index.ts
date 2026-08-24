@@ -16,6 +16,7 @@ const VALIDATION_WORKFLOW_NAME = "SPLRAD Steward / PR Validation";
 const VALIDATION_WORKFLOW_PATH = ".github/workflows/pr-validation.yml";
 const VALIDATION_CHECK_NAME = "PR Validation Gate";
 const BODY_WRITE_REDRIVE_RETRY_MS = 2 * 60 * 60_000;
+const ISSUE_RECONCILIATION_RETRY_MS = 10 * 60_000;
 const ISSUE_SNAPSHOT_DELETE_ATTEMPTS = 3;
 
 function response(status: number, body?: unknown): Response {
@@ -425,6 +426,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       const previouslyManaged = wasManagedBeforeVisibilityEdit(repository, payload.changes);
       if (previouslyManaged && !managed) {
         if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
+        await dispatchIssueInvalidation(env, repository, deliveryId);
         await new IssueSnapshotStore(env.ISSUE_SNAPSHOTS).deleteRepository(Number(repository.id));
         await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "true", policySha: env.POLICY_SHA });
         return response(202);
@@ -588,6 +590,35 @@ export async function recoverPullRequestBodyWriteIntents(env: Env, now = new Dat
   return recovered;
 }
 
+export async function recoverIssueSnapshotReconciliations(env: Env, now = new Date()): Promise<number> {
+  if (!env.ISSUE_SNAPSHOTS) return 0;
+  const store = new IssueSnapshotStore(env.ISSUE_SNAPSHOTS);
+  const nowIso = now.toISOString();
+  const retryBefore = new Date(now.getTime() - ISSUE_RECONCILIATION_RETRY_MS).toISOString();
+  const candidates = await store.listReconciliationDispatchCandidates(retryBefore, 20);
+  let dispatched = 0;
+  let firstError: unknown;
+  for (const current of candidates) {
+    if (!await store.claimReconciliationDispatch(current.repositoryId, current.generation, current.stateRevision, nowIso, retryBefore)) continue;
+    try {
+      await send(env, "pr-issue-link.yml", {
+        deliveryId: `issue-reconciliation-recovery:${current.repositoryId}:${current.generation}:${current.stateRevision}`,
+        repositoryId: String(current.repositoryId),
+        scanAll: "true",
+        invalidateOnly: "false",
+        cleanupUnmanaged: "false",
+        reconciliationGeneration: String(current.generation),
+        policySha: env.POLICY_SHA,
+      });
+      dispatched += 1;
+    } catch (error) {
+      firstError ??= error;
+    }
+  }
+  if (firstError) throw firstError;
+  return dispatched;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -598,6 +629,11 @@ export default {
     return response(404);
   },
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
-    await recoverPullRequestBodyWriteIntents(env);
+    const results = await Promise.allSettled([
+      recoverPullRequestBodyWriteIntents(env),
+      recoverIssueSnapshotReconciliations(env),
+    ]);
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failed) throw failed.reason;
   },
 };

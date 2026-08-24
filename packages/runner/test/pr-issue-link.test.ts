@@ -82,7 +82,7 @@ describe("拉取请求议题关联运行器", () => {
     expect(() => runGit(process.cwd(), ["--version"], process.env, 1, "完整差异超过1 MiB")).toThrow("完整差异超过1 MiB");
   });
 
-  it("失效检查覆盖关闭未合并且保留议题块的受管PR", async () => {
+  it("仓库已转未纳管后，失效检查仍覆盖关闭未合并且保留议题块的受管PR", async () => {
     await withRunnerEnvironment(async () => {
       process.env.ISSUE_LINK_PREPARE_ONLY = "true";
       const managedBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 1, analysisInputDigest: "d".repeat(64) }, [{ repositoryId, number: 7 }]);
@@ -91,7 +91,7 @@ describe("拉取请求议题关联运行器", () => {
         const value = String(url); const method = init.method ?? "GET"; const body = init.body ? JSON.parse(String(init.body)) : null;
         calls.push({ url: value, method, body });
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
-        if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
+        if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify({ ...repository(), private: true }), { status: 200 });
         if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify(pull(managedBlock, 301115370, "main", "closed", null)), { status: 200 });
         if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [{
           id: 99, name: "PR Issue Link Gate", app: { id: 4243096 }, head_sha: headSha, external_id: `v1:${repositoryId}:41:${headSha}`,
