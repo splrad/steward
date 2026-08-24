@@ -1,4 +1,5 @@
 name: SPLRAD Steward / PR Issue Link
+run-name: "PR Issue Link / repository=${{ inputs.repositoryId }} / generation=${{ inputs.reconciliationGeneration || 'none' }}"
 
 on:
   workflow_dispatch:

@@ -17,6 +17,10 @@ const VALIDATION_WORKFLOW_PATH = ".github/workflows/pr-validation.yml";
 const VALIDATION_CHECK_NAME = "PR Validation Gate";
 const BODY_WRITE_REDRIVE_RETRY_MS = 2 * 60 * 60_000;
 const ISSUE_RECONCILIATION_RETRY_MS = 75 * 60_000;
+const ISSUE_LINK_WORKFLOW_NAME = "SPLRAD Steward / PR Issue Link";
+const ISSUE_LINK_WORKFLOW_FILE = "pr-issue-link.yml";
+const ISSUE_LINK_WORKFLOW_PATH = `.github/workflows/${ISSUE_LINK_WORKFLOW_FILE}`;
+const ACTIVE_WORKFLOW_RUN_STATUSES = ["queued", "in_progress", "waiting", "pending", "requested"] as const;
 const ISSUE_SNAPSHOT_DELETE_ATTEMPTS = 3;
 
 function response(status: number, body?: unknown): Response {
@@ -36,7 +40,36 @@ async function dispatcher(env: Env): Promise<GitHubClient> {
   const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY, installationId: Number(env.INSTALLATION_ID), repositoryId: 1296724484, permissions: { actions: "write", metadata: "read" }, policySha: env.POLICY_SHA });
   return new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA);
 }
-async function send(env: Env, workflow: string, inputs: Record<string, string>) { const [owner, repo] = env.STEWARDSHIP_REPOSITORY.split("/") as [string, string]; await dispatchWorkflow(await dispatcher(env), { owner, repo, workflow, policySha: env.POLICY_SHA, inputs }); }
+async function sendWithClient(env: Env, client: GitHubClient, workflow: string, inputs: Record<string, string>) { const [owner, repo] = env.STEWARDSHIP_REPOSITORY.split("/") as [string, string]; await dispatchWorkflow(client, { owner, repo, workflow, policySha: env.POLICY_SHA, inputs }); }
+async function send(env: Env, workflow: string, inputs: Record<string, string>) { await sendWithClient(env, await dispatcher(env), workflow, inputs); }
+
+function issueReconciliationRunName(repositoryId: number, generation: number): string {
+  return `PR Issue Link / repository=${repositoryId} / generation=${generation}`;
+}
+
+async function activeIssueReconciliationRuns(env: Env, client: GitHubClient): Promise<ReadonlySet<string>> {
+  const [owner, repo] = env.STEWARDSHIP_REPOSITORY.split("/") as [string, string];
+  const pages = await Promise.all(ACTIVE_WORKFLOW_RUN_STATUSES.map(status => client.paginate<any>(
+    `/repos/${owner}/${repo}/actions/workflows/${ISSUE_LINK_WORKFLOW_FILE}/runs?event=workflow_dispatch&status=${status}&per_page=100`,
+    value => {
+      const runs = (value as any)?.workflow_runs;
+      if (!Array.isArray(runs)) throw new Error("议题关联工作流运行列表无效");
+      return runs;
+    },
+    { maxPages: 20, maxItems: 2_000 },
+  )));
+  const names = new Set<string>();
+  for (const run of pages.flat()) {
+    if (!Number.isSafeInteger(run?.id) || run.id <= 0 || run?.name !== ISSUE_LINK_WORKFLOW_NAME || run?.event !== "workflow_dispatch"
+      || !ACTIVE_WORKFLOW_RUN_STATUSES.includes(run?.status) || run?.conclusion !== null
+      || run?.repository?.full_name !== `${owner}/${repo}` || typeof run?.display_title !== "string"
+      || typeof run?.path !== "string" || !run.path.startsWith(`${ISSUE_LINK_WORKFLOW_PATH}@`) || run.path.length === ISSUE_LINK_WORKFLOW_PATH.length + 1) {
+      throw new Error("议题关联工作流运行身份无效");
+    }
+    names.add(run.display_title);
+  }
+  return names;
+}
 
 async function bodyWriteClient(env: Env, repositoryId: number): Promise<GitHubClient> {
   if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
@@ -603,12 +636,19 @@ export async function recoverIssueSnapshotReconciliations(env: Env, now = new Da
   const nowIso = now.toISOString();
   const retryBefore = new Date(now.getTime() - ISSUE_RECONCILIATION_RETRY_MS).toISOString();
   const candidates = await store.listReconciliationDispatchCandidates(retryBefore, 20);
+  if (!candidates.length) return 0;
+  const client = await dispatcher(env);
+  const activeRuns = await activeIssueReconciliationRuns(env, client);
   let dispatched = 0;
   let firstError: unknown;
   for (const current of candidates) {
+    if (activeRuns.has(issueReconciliationRunName(current.repositoryId, current.generation))) {
+      await store.claimReconciliationDispatch(current.repositoryId, current.generation, current.stateRevision, nowIso, retryBefore);
+      continue;
+    }
     if (!await store.claimReconciliationDispatch(current.repositoryId, current.generation, current.stateRevision, nowIso, retryBefore)) continue;
     try {
-      await send(env, "pr-issue-link.yml", {
+      await sendWithClient(env, client, ISSUE_LINK_WORKFLOW_FILE, {
         deliveryId: `issue-reconciliation-recovery:${current.repositoryId}:${current.generation}:${current.stateRevision}`,
         repositoryId: String(current.repositoryId),
         scanAll: "true",
@@ -619,6 +659,7 @@ export async function recoverIssueSnapshotReconciliations(env: Env, now = new Da
       });
       dispatched += 1;
     } catch (error) {
+      await store.releaseReconciliationDispatch(current.repositoryId, current.generation, current.stateRevision, nowIso, current.lastDispatchedAt);
       firstError ??= error;
     }
   }

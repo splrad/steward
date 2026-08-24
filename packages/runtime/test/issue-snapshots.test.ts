@@ -282,6 +282,9 @@ describe("议题快照D1存储", () => {
     ]);
     expect(await store.claimReconciliationDispatch(1296724484, 0, ready.stateRevision, "2026-08-21T00:10:00.000Z", "2026-08-21T00:00:00.000Z")).toBe(true);
     expect(await store.claimReconciliationDispatch(1296724484, 0, ready.stateRevision, "2026-08-21T00:10:01.000Z", "2026-08-21T00:00:00.000Z")).toBe(false);
+    expect(await store.releaseReconciliationDispatch(1296724484, 0, ready.stateRevision, "2026-08-21T00:10:01.000Z", "2026-08-21T00:00:00.000Z")).toBe(false);
+    expect(await store.releaseReconciliationDispatch(1296724484, 0, ready.stateRevision, "2026-08-21T00:10:00.000Z", "2026-08-21T00:00:00.000Z")).toBe(true);
+    expect(await store.claimReconciliationDispatch(1296724484, 0, ready.stateRevision, "2026-08-21T00:10:02.000Z", "2026-08-21T00:00:00.000Z")).toBe(true);
   });
 
   it("定时恢复会有界重派未确认的精确重算代次", async () => {
@@ -292,6 +295,7 @@ describe("议题快照D1存储", () => {
     vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
       const value = String(url);
       if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.includes("/actions/workflows/pr-issue-link.yml/runs?")) return new Response(JSON.stringify({ workflow_runs: [] }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) {
         dispatches.push(JSON.parse(String(init.body)).inputs);
@@ -307,6 +311,57 @@ describe("议题快照D1存储", () => {
       repositoryId: "1296724484", scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "false",
       reconciliationGeneration: "0", policySha: "a".repeat(40),
     }]);
+  });
+
+  it("定时恢复续租同仓库同代次的在途工作流而不重复派发", async () => {
+    const database = new SqliteD1();
+    const store = new IssueSnapshotStore(database.binding());
+    const ready = await store.setScanState(1296724484, "ready", 0, 0, "2026-08-21T00:00:00.000Z", []);
+    const listStatuses: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const value = String(url);
+      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.includes("/actions/workflows/pr-issue-link.yml/runs?")) {
+        const status = new URL(value).searchParams.get("status")!;
+        listStatuses.push(status);
+        return new Response(JSON.stringify({ workflow_runs: status === "in_progress" ? [{
+          id: 91, name: "SPLRAD Steward / PR Issue Link", event: "workflow_dispatch", status: "in_progress", conclusion: null,
+          display_title: "PR Issue Link / repository=1296724484 / generation=0",
+          path: ".github/workflows/pr-issue-link.yml@main", repository: { full_name: "splrad/steward" },
+        }] : [] }), { status: 200 });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    expect(await recoverIssueSnapshotReconciliations(env(database), new Date("2026-08-21T01:15:00.000Z"))).toBe(0);
+    expect(listStatuses.sort()).toEqual(["in_progress", "pending", "queued", "requested", "waiting"]);
+    expect(await store.listReconciliationDispatchCandidates("2026-08-21T01:14:59.999Z", 20)).toEqual([]);
+    expect(await store.listReconciliationDispatchCandidates("2026-08-21T01:15:00.000Z", 20)).toEqual([
+      expect.objectContaining({ repositoryId: 1296724484, generation: 0, stateRevision: ready.stateRevision, lastDispatchedAt: "2026-08-21T01:15:00.000Z" }),
+    ]);
+  });
+
+  it("定时恢复在派发失败后释放声明供下一轮立即重试", async () => {
+    const database = new SqliteD1();
+    const store = new IssueSnapshotStore(database.binding());
+    const ready = await store.setScanState(1296724484, "ready", 0, 0, "2026-08-21T00:00:00.000Z", []);
+    let dispatchAttempts = 0;
+    vi.stubGlobal("fetch", async (url: string) => {
+      const value = String(url);
+      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.includes("/actions/workflows/pr-issue-link.yml/runs?")) return new Response(JSON.stringify({ workflow_runs: [] }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) {
+        dispatchAttempts += 1;
+        return dispatchAttempts === 1 ? new Response("failure", { status: 500 }) : new Response(null, { status: 204 });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    await expect(recoverIssueSnapshotReconciliations(env(database), new Date("2026-08-21T01:15:00.000Z"))).rejects.toThrow();
+    expect(await store.listReconciliationDispatchCandidates("2026-08-21T00:00:00.000Z", 20)).toEqual([
+      expect.objectContaining({ repositoryId: 1296724484, generation: 0, stateRevision: ready.stateRevision, lastDispatchedAt: "2026-08-21T00:00:00.000Z" }),
+    ]);
+    expect(await recoverIssueSnapshotReconciliations(env(database), new Date("2026-08-21T01:16:00.000Z"))).toBe(1);
+    expect(dispatchAttempts).toBe(2);
   });
 
   it("删除始终绑定复合主键，仓库清理不影响另一个仓库的同号议题", async () => {

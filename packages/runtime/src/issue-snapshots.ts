@@ -271,6 +271,15 @@ export class IssueSnapshotStore {
     return resultChanges(result) === 1;
   }
 
+  async releaseReconciliationDispatch(repositoryId: number, generation: number, stateRevision: number, claimedAt: string, previousDispatchedAt: string): Promise<boolean> {
+    rowInteger(repositoryId, "repositoryId", 1); rowInteger(generation, "generation"); rowInteger(stateRevision, "stateRevision");
+    if (!Number.isFinite(new Date(claimedAt).getTime()) || !Number.isFinite(new Date(previousDispatchedAt).getTime())) throw new Error("reconciliation release时间无效");
+    const result = await this.db.prepare(`UPDATE issue_snapshot_reconciliation_requests SET last_dispatched_at = ?
+      WHERE repository_id = ? AND requested_generation = ? AND requested_state_revision = ? AND last_dispatched_at = ?`)
+      .bind(previousDispatchedAt, repositoryId, generation, stateRevision, claimedAt).run();
+    return resultChanges(result) === 1;
+  }
+
   async acknowledgeReconciliation(repositoryId: number, generation: number, stateRevision: number): Promise<boolean> {
     rowInteger(repositoryId, "repositoryId", 1); rowInteger(generation, "generation"); rowInteger(stateRevision, "stateRevision");
     const result = await this.db.prepare(`DELETE FROM issue_snapshot_reconciliation_requests

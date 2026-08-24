@@ -112,6 +112,7 @@ for (const required of ['issue_arguments=()', 'issue_arguments+=(--issue-number 
 for (const name of ["DELIVERY_ID", "REPOSITORY_ID", "ISSUE_NUMBER", "SCAN_ALL", "POLICY_SHA", "RUNTIME_URL"]) if (!Object.hasOwn(issueSyncStep?.env ?? {}, name)) throw new Error(`议题同步环境缺少${name}`);
 if (Object.hasOwn(issueSyncStep?.env ?? {}, "COPILOT_GITHUB_TOKEN") || Object.hasOwn(issueSyncStep?.env ?? {}, "COPILOT_CLI_TOKEN") || /\bcopilot\b/iu.test(issueSyncCommand)) throw new Error("议题同步路径不得调用Copilot");
 const issueLinkDocument = workflowDocuments.get("pr-issue-link.yml");
+if (String(issueLinkDocument?.["run-name"] ?? "").replace(/\s+/gu, " ") !== "PR Issue Link / repository=${{ inputs.repositoryId }} / generation=${{ inputs.reconciliationGeneration || 'none' }}") throw new Error("议题关联工作流没有暴露精确重算运行身份");
 const issueLinkInputs = issueLinkDocument?.on?.workflow_dispatch?.inputs ?? {};
 if (!hasExactKeys(issueLinkInputs, ["deliveryId", "repositoryId", "pullRequestNumber", "scanAll", "invalidateOnly", "cleanupUnmanaged", "reconciliationGeneration", "policySha"])) throw new Error("议题关联工作流输入集合不正确");
 if (issueLinkInputs.pullRequestNumber?.required !== false || issueLinkInputs.reconciliationGeneration?.required !== false || issueLinkInputs.scanAll?.type !== "boolean" || issueLinkInputs.invalidateOnly?.type !== "boolean" || issueLinkInputs.cleanupUnmanaged?.type !== "boolean") throw new Error("议题关联工作流可选编号或布尔输入契约不正确");
