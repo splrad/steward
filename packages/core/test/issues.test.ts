@@ -156,6 +156,7 @@ describe("议题核心合同", () => {
     expect(inserted.indexOf("## 影响分析")).toBeLessThan(inserted.indexOf("## 解决的议题"));
     expect(inserted.indexOf("## 解决的议题")).toBeLessThan(inserted.indexOf("## 发布与迁移"));
     const outsideDigest = managedBodyOutsideIssueLinksDigest(inserted);
+    expect(outsideDigest).toBe(managedBodyOutsideIssueLinksDigest(outer));
     const empty = renderIssueLinksBlock({ ...metadata, generation: 18, analysisInputDigest: digestB }, []);
     const replaced = upsertIssueLinksBlock(inserted, empty);
     expect(replaced).not.toContain("## 解决的议题");

@@ -14,6 +14,7 @@ import {
   validateAiClassificationSuggestion,
   validateGeneratedSummary,
 } from "../src/automation.js";
+import { renderIssueLinksBlock, upsertIssueLinksBlock } from "../src/issues.js";
 import { buildAiDiffObservation, type ClassificationProfile, type SemanticCatalog } from "../src/classification.js";
 import { isHumanActor, normalizeContributor } from "../src/identity.js";
 
@@ -25,7 +26,6 @@ const valid = {
   motivation: "现有流程仍保留人工补充区，而且Copilot生成步骤可能被条件判断跳过。",
   changes: ["调整人工智能输出字段并按实际内容渲染正文章节", "修复Copilot生成步骤的工作流触发条件"],
   impact: ["后续自动拉取请求的正文将完全由人工智能或确定性回退生成"],
-  related: ["#135"],
   releaseAndMigration: [],
   classification: {
     primaryKind: "feature",
@@ -45,7 +45,8 @@ describe("拉取请求自动化", () => {
     expect(prompt).toContain("先修复该问题，再逐项检查全部字段");
     expect(prompt).toContain("必须在去除首尾空白后为单行文本，不能包含换行、<或>");
     expect(prompt).toContain("motivation和classification使用null");
-    expect(prompt).toContain("impact、related和releaseAndMigration使用空数组");
+    expect(prompt).toContain("impact和releaseAndMigration使用空数组");
+    expect(prompt).not.toContain("related");
     expect(prompt).toContain(JSON.stringify(raw));
     expect(prompt).not.toContain("```");
   });
@@ -79,9 +80,7 @@ describe("拉取请求自动化", () => {
       { ...valid, changes: ["这一项变更说明包含\n换行符"] },
       { ...valid, changes: ["这一项变更说明包含<尖括号>"] },
       { ...valid, impact: Array.from({ length: 7 }, () => "更新后的拉取请求正文完全由人工智能管理") },
-      { ...valid, related: ["#1\n#2"] },
-      { ...valid, related: ["<!-- workflow:managed-pr:end -->"] },
-      { ...valid, related: ["--!>"] },
+      { ...valid, related: ["#135"] },
       { ...valid, releaseAndMigration: ["太短"] },
       { ...valid, extra: true },
     ];
@@ -155,8 +154,7 @@ describe("拉取请求自动化", () => {
     expect(body).not.toContain("## 背景与目标");
     expect(body).toContain("## 主要改动");
     expect(body).toContain("## 影响分析");
-    expect(body).toContain("## 关联事项");
-    expect(body).toContain("- #135");
+    expect(body).not.toContain("## 关联事项");
     expect(body).not.toContain("## 发布与迁移");
     expect(body).toContain("## 贡献者");
     expect(body).toContain('aria-label="查看第1位贡献者的GitHub资料"');
@@ -176,11 +174,33 @@ describe("拉取请求自动化", () => {
   });
 
   it("没有对应内容时省略可选章节和机器人贡献者章节", () => {
-    const generated = validateGeneratedSummary({ ...valid, motivation: null, impact: [], related: [], releaseAndMigration: [] });
+    const generated = validateGeneratedSummary({ ...valid, motivation: null, impact: [], releaseAndMigration: [] });
     const body = renderManagedBody({ generated, templateBody: organizationPullRequestTemplate, actor: "splrad-steward[bot]", contributors: [], context: "x" });
     for (const heading of ["变更原因", "背景与目标", "影响分析", "关联事项", "发布与迁移", "贡献者"]) expect(body).not.toContain(`## ${heading}`);
     expect(body).toContain("## 摘要");
     expect(body).toContain("## 主要改动");
+  });
+
+  it("普通正文重建逐字保留唯一合法议题子块并拒绝损坏子块", () => {
+    const issueBlock = renderIssueLinksBlock({
+      repositoryId: 1187527897,
+      pullRequestNumber: 42,
+      baseSha: "0".repeat(40),
+      headSha: "1".repeat(40),
+      generation: 17,
+      analysisInputDigest: "a".repeat(64),
+    }, [{ repositoryId: 1187527897, number: 135 }]);
+    const withRelease = validateGeneratedSummary({ ...valid, releaseAndMigration: ["无需迁移，发布行为保持不变"] });
+    const previous = upsertIssueLinksBlock(
+      renderManagedBody({ generated: withRelease, templateBody: organizationPullRequestTemplate, actor: "axiomoth", contributors: [], context: "old" }),
+      issueBlock,
+    );
+    const rebuilt = renderManagedBody({ generated: validateGeneratedSummary({ ...valid, summary: "本次修改重新生成普通正文，同时必须保留议题工作流拥有的原始子块。", releaseAndMigration: ["无需迁移，发布行为保持不变"] }), existingBody: previous, templateBody: organizationPullRequestTemplate, actor: "axiomoth", contributors: [], context: "new" });
+    expect(rebuilt).toContain(issueBlock);
+    expect(rebuilt.match(/workflow:issue-links:start/g)).toHaveLength(1);
+    expect(rebuilt.indexOf("## 影响分析")).toBeLessThan(rebuilt.indexOf("## 解决的议题"));
+    expect(rebuilt.indexOf("## 解决的议题")).toBeLessThan(rebuilt.indexOf("## 发布与迁移"));
+    expect(() => renderManagedBody({ generated: validateGeneratedSummary(valid), existingBody: previous.replace("workflow:issue-links:end", "workflow:issue-links:broken"), templateBody: organizationPullRequestTemplate, actor: "axiomoth", contributors: [], context: "new" })).toThrow("议题");
   });
 
   it("将确定性回退中的路径片段作为纯文本渲染", () => {

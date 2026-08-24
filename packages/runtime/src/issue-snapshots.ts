@@ -1,6 +1,7 @@
 import { createAppJwt, createInstallationToken, GitHubClient, GitHubRequestError, type GitHubIssueFacts, type PageValidator, type ValidatedValue } from "../../github/src/index.js";
 import { issueSnapshotContentDigest, normalizeIssueSnapshot, openIssueSetDigest, type IssueRelationSnapshot, type IssueSnapshot } from "../../core/src/issues.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
+import { confirmPullRequestBodyWriteIntent, normalizePullRequestBodyRedrive, PullRequestBodyWriteIntentStore, type PullRequestBodyWriteIntent } from "./pr-body-write-intents.js";
 
 export type IssueSnapshotSyncState = "uninitialized" | "scanning" | "ready" | "degraded";
 
@@ -37,6 +38,14 @@ export interface StoredIssueSnapshot {
   snapshot: IssueSnapshot;
   lastDeliveryId: string;
   syncedAt: string;
+}
+
+export interface IssueSnapshotReconciliationRequest {
+  repositoryId: number;
+  generation: number;
+  stateRevision: number;
+  requestedAt: string;
+  lastDispatchedAt: string;
 }
 
 const internalPrefix = "/internal/issue-snapshots/";
@@ -133,10 +142,25 @@ function noStoreResponse(status: number, body?: unknown): Response {
   return new Response(serialized, { status, headers });
 }
 
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 async function requireEmptyBody(request: Request): Promise<void> {
   const length = request.headers.get("content-length");
   if (length !== null && length !== "0") throw new Error("内部请求正文必须为空");
   if ((await request.arrayBuffer()).byteLength !== 0) throw new Error("内部请求正文必须为空");
+}
+
+async function readJsonObject(request: Request): Promise<Record<string, unknown>> {
+  const declared = Number(request.headers.get("content-length") ?? "0");
+  if (declared > 512 * 1024) throw new Error("内部请求正文过大");
+  const text = await request.text();
+  if (Buffer.byteLength(text, "utf8") > 512 * 1024) throw new Error("内部请求正文过大");
+  let value: unknown;
+  try { value = JSON.parse(text); } catch { throw new Error("内部请求正文无效"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("内部请求正文无效");
+  return value as Record<string, unknown>;
 }
 
 function repositoryStateFromRow(row: Record<string, unknown>): IssueSnapshotRepositoryState {
@@ -219,6 +243,49 @@ export class IssueSnapshotStore {
       stateRevision: rowInteger(row.requested_state_revision, "requested_state_revision"),
       requestedAt: String(row.requested_at),
     } : null;
+  }
+
+  async listReconciliationDispatchCandidates(retryBefore: string, limit: number): Promise<IssueSnapshotReconciliationRequest[]> {
+    if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 100) throw new Error("reconciliation limit无效");
+    const rows = await this.db.prepare(`SELECT requests.repository_id, requests.requested_generation,
+      requests.requested_state_revision, requests.requested_at, requests.last_dispatched_at
+      FROM issue_snapshot_reconciliation_requests AS requests
+      WHERE requests.last_dispatched_at <= ?
+      AND NOT EXISTS (SELECT 1 FROM issue_snapshot_repository_tombstones AS tombstones
+        WHERE tombstones.repository_id = requests.repository_id)
+      ORDER BY requests.last_dispatched_at, requests.repository_id LIMIT ?`).bind(retryBefore, limit).all<Record<string, unknown>>();
+    return (rows.results ?? []).map((row) => ({
+      repositoryId: rowInteger(row.repository_id, "repository_id", 1),
+      generation: rowInteger(row.requested_generation, "requested_generation"),
+      stateRevision: rowInteger(row.requested_state_revision, "requested_state_revision"),
+      requestedAt: String(row.requested_at),
+      lastDispatchedAt: String(row.last_dispatched_at),
+    }));
+  }
+
+  async claimReconciliationDispatch(repositoryId: number, generation: number, stateRevision: number, now: string, retryBefore: string): Promise<boolean> {
+    rowInteger(repositoryId, "repositoryId", 1); rowInteger(generation, "generation"); rowInteger(stateRevision, "stateRevision");
+    const result = await this.db.prepare(`UPDATE issue_snapshot_reconciliation_requests SET last_dispatched_at = ?
+      WHERE repository_id = ? AND requested_generation = ? AND requested_state_revision = ? AND last_dispatched_at <= ?`)
+      .bind(now, repositoryId, generation, stateRevision, retryBefore).run();
+    return resultChanges(result) === 1;
+  }
+
+  async releaseReconciliationDispatch(repositoryId: number, generation: number, stateRevision: number, claimedAt: string, previousDispatchedAt: string): Promise<boolean> {
+    rowInteger(repositoryId, "repositoryId", 1); rowInteger(generation, "generation"); rowInteger(stateRevision, "stateRevision");
+    if (!Number.isFinite(new Date(claimedAt).getTime()) || !Number.isFinite(new Date(previousDispatchedAt).getTime())) throw new Error("reconciliation release时间无效");
+    const result = await this.db.prepare(`UPDATE issue_snapshot_reconciliation_requests SET last_dispatched_at = ?
+      WHERE repository_id = ? AND requested_generation = ? AND requested_state_revision = ? AND last_dispatched_at = ?`)
+      .bind(previousDispatchedAt, repositoryId, generation, stateRevision, claimedAt).run();
+    return resultChanges(result) === 1;
+  }
+
+  async releaseInitialReconciliationDispatch(repositoryId: number, generation: number, stateRevision: number): Promise<boolean> {
+    rowInteger(repositoryId, "repositoryId", 1); rowInteger(generation, "generation"); rowInteger(stateRevision, "stateRevision");
+    const result = await this.db.prepare(`UPDATE issue_snapshot_reconciliation_requests SET last_dispatched_at = ?
+      WHERE repository_id = ? AND requested_generation = ? AND requested_state_revision = ? AND last_dispatched_at = requested_at`)
+      .bind(new Date(0).toISOString(), repositoryId, generation, stateRevision).run();
+    return resultChanges(result) === 1;
   }
 
   async acknowledgeReconciliation(repositoryId: number, generation: number, stateRevision: number): Promise<boolean> {
@@ -315,11 +382,12 @@ export class IssueSnapshotStore {
           AND EXISTS (SELECT 1 FROM issue_snapshots WHERE repository_id = ? AND issue_number = ? AND content_digest = ?)`)
           .bind(openDigest, input.now, repositoryId, input.expectedGeneration, input.expectedStateRevision, repositoryId, issueNumber, input.contentDigest),
         this.db.prepare(`INSERT INTO issue_snapshot_reconciliation_requests
-          (repository_id, requested_generation, requested_state_revision, requested_at)
-          SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ? AND state_revision = ?)
+          (repository_id, requested_generation, requested_state_revision, requested_at, last_dispatched_at)
+          SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ? AND state_revision = ?)
           ON CONFLICT(repository_id) DO UPDATE SET requested_generation = excluded.requested_generation,
-            requested_state_revision = excluded.requested_state_revision, requested_at = excluded.requested_at`)
-          .bind(repositoryId, input.expectedGeneration + 1, input.expectedStateRevision, input.now,
+            requested_state_revision = excluded.requested_state_revision, requested_at = excluded.requested_at,
+            last_dispatched_at = excluded.last_dispatched_at`)
+          .bind(repositoryId, input.expectedGeneration + 1, input.expectedStateRevision, input.now, input.now,
             repositoryId, input.expectedGeneration + 1, input.expectedStateRevision),
       ]);
       if (resultChanges(results[0]) !== 1 || resultChanges(results[2]) !== 1 || resultChanges(results[3]) !== 1) throw new Error("issue-snapshot-generation-conflict");
@@ -374,11 +442,12 @@ export class IssueSnapshotStore {
         AND NOT EXISTS (SELECT 1 FROM issue_snapshots WHERE repository_id = ? AND issue_number = ?)`)
         .bind(openDigest, now, repositoryId, expectedGeneration, expectedStateRevision, repositoryId, issueNumber),
       this.db.prepare(`INSERT INTO issue_snapshot_reconciliation_requests
-        (repository_id, requested_generation, requested_state_revision, requested_at)
-        SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ? AND state_revision = ?)
+        (repository_id, requested_generation, requested_state_revision, requested_at, last_dispatched_at)
+        SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM issue_snapshot_repositories WHERE repository_id = ? AND generation = ? AND state_revision = ?)
         ON CONFLICT(repository_id) DO UPDATE SET requested_generation = excluded.requested_generation,
-          requested_state_revision = excluded.requested_state_revision, requested_at = excluded.requested_at`)
-        .bind(repositoryId, expectedGeneration + 1, expectedStateRevision, now,
+          requested_state_revision = excluded.requested_state_revision, requested_at = excluded.requested_at,
+          last_dispatched_at = excluded.last_dispatched_at`)
+        .bind(repositoryId, expectedGeneration + 1, expectedStateRevision, now, now,
           repositoryId, expectedGeneration + 1, expectedStateRevision),
     ]);
     if (resultChanges(results[1]) !== 1 || resultChanges(results[2]) !== 1 || resultChanges(results[3]) !== 1) throw new Error("issue-snapshot-generation-conflict");
@@ -398,6 +467,8 @@ export class IssueSnapshotStore {
     const now = new Date().toISOString();
     const emptyDigest = openIssueSetDigest(repositoryId, []);
     const results = await this.db.batch([
+      this.db.prepare("DELETE FROM pull_request_body_write_deliveries WHERE repository_id = ?").bind(repositoryId),
+      this.db.prepare("DELETE FROM pull_request_body_write_intents WHERE repository_id = ?").bind(repositoryId),
       this.db.prepare(`INSERT INTO issue_snapshot_repository_tombstones (repository_id, deleted_at) VALUES (?, ?)
         ON CONFLICT(repository_id) DO UPDATE SET deleted_at = excluded.deleted_at`).bind(repositoryId, now),
       this.db.prepare("DELETE FROM issue_snapshots WHERE repository_id = ?").bind(repositoryId),
@@ -411,7 +482,7 @@ export class IssueSnapshotStore {
           last_full_scan_at = excluded.last_full_scan_at, updated_at = excluded.updated_at`)
         .bind(repositoryId, emptyDigest, now),
     ]);
-    if (results.length !== 5 || results.some((result) => !result.success)) throw new Error("仓库快照清理失败");
+    if (results.length !== 7 || results.some((result) => !result.success)) throw new Error("仓库快照清理失败");
   }
 
   async deleteAllRepositories(repositoryIds: readonly number[] = []): Promise<void> {
@@ -421,6 +492,17 @@ export class IssueSnapshotStore {
     const targets = new Set(result.results.map(row => rowInteger(row.repository_id, "repository_id", 1)));
     for (const repositoryId of repositoryIds) targets.add(rowInteger(repositoryId, "repositoryId", 1));
     for (const repositoryId of [...targets].sort((left, right) => left - right)) await this.deleteRepository(repositoryId);
+  }
+
+  async reconcileInstalledRepositories(repositoryIds: readonly number[]): Promise<readonly number[]> {
+    const installed = new Set(repositoryIds.map(repositoryId => rowInteger(repositoryId, "repositoryId", 1)));
+    if (installed.size !== repositoryIds.length || installed.size > 1_000) throw new Error("安装仓库集合无效");
+    const result = await this.db.prepare(`SELECT repositories.repository_id FROM issue_snapshot_repositories AS repositories
+      WHERE NOT EXISTS (SELECT 1 FROM issue_snapshot_repository_tombstones AS tombstones
+        WHERE tombstones.repository_id = repositories.repository_id) ORDER BY repositories.repository_id`).all<{ repository_id: number }>();
+    const removed = result.results.map(row => rowInteger(row.repository_id, "repository_id", 1)).filter(repositoryId => !installed.has(repositoryId));
+    for (const repositoryId of removed) await this.deleteRepository(repositoryId);
+    return removed;
   }
 
   async setScanState(repositoryId: number, syncState: Exclude<IssueSnapshotSyncState, "uninitialized">, expectedGeneration: number, expectedStateRevision: number, now: string, liveOpenNumbers?: readonly number[]): Promise<IssueSnapshotRepositoryState> {
@@ -442,12 +524,13 @@ export class IssueSnapshotStore {
       WHERE repository_id = ? AND generation = ? AND state_revision = ?`)
       .bind(syncState, openDigest, lastFullScanAt, now, repositoryId, expectedGeneration, expectedStateRevision)];
     if (syncState === "ready") statements.push(this.db.prepare(`INSERT INTO issue_snapshot_reconciliation_requests
-      (repository_id, requested_generation, requested_state_revision, requested_at)
-      SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM issue_snapshot_repositories
+      (repository_id, requested_generation, requested_state_revision, requested_at, last_dispatched_at)
+      SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM issue_snapshot_repositories
         WHERE repository_id = ? AND generation = ? AND state_revision = ? AND sync_state = 'ready' AND updated_at = ?)
       ON CONFLICT(repository_id) DO UPDATE SET requested_generation = excluded.requested_generation,
-        requested_state_revision = excluded.requested_state_revision, requested_at = excluded.requested_at`)
-      .bind(repositoryId, expectedGeneration, expectedStateRevision + 1, now,
+        requested_state_revision = excluded.requested_state_revision, requested_at = excluded.requested_at,
+        last_dispatched_at = excluded.last_dispatched_at`)
+      .bind(repositoryId, expectedGeneration, expectedStateRevision + 1, now, now,
         repositoryId, expectedGeneration, expectedStateRevision + 1, now));
     const results = await this.db.batch(statements);
     if (resultChanges(results[0]) !== 1 || (syncState === "ready" && resultChanges(results[1]) !== 1)) throw new Error("issue-snapshot-generation-conflict");
@@ -546,7 +629,7 @@ export function normalizeGitHubIssueFacts(repository: any, facts: GitHubIssueFac
   });
 }
 
-async function authorizeSingleRepository(request: Request, env: IssueSnapshotRuntimeEnv, repositoryId: number): Promise<{ repository: any; client: GitHubClient }> {
+async function authorizeSingleRepository(request: Request, env: IssueSnapshotRuntimeEnv, repositoryId: number, allowUnmanaged = false): Promise<{ repository: any; client: GitHubClient; managed: boolean }> {
   const authorization = request.headers.get("authorization");
   const match = authorization?.match(/^Bearer ([^\s]{1,4096})$/u);
   if (!match) throw new GitHubRequestError(401, "GET", "/installation/repositories", "missing-bearer");
@@ -573,8 +656,9 @@ async function authorizeSingleRepository(request: Request, env: IssueSnapshotRun
   const override = (repositoryCatalog.repositories as Record<string, any>)[String(repositoryId)];
   if (override?.fullName && override.fullName !== current.full_name) throw new GitHubRequestError(403, "GET", `/repos/${owner}/${repo}`, "repository-catalog-mismatch");
   const configuration = { ...(current.private ? repositoryCatalog.defaults.private : repositoryCatalog.defaults.public), ...(override ?? {}) };
-  if (configuration.managed !== true) throw new GitHubRequestError(403, "GET", `/repos/${owner}/${repo}`, "repository-not-managed");
-  return { repository: current, client };
+  const managed = configuration.managed === true;
+  if (!managed && !allowUnmanaged) throw new GitHubRequestError(403, "GET", `/repos/${owner}/${repo}`, "repository-not-managed");
+  return { repository: current, client, managed };
 }
 
 function repositoryParts(repository: any): [string, string] {
@@ -612,7 +696,114 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
   catch { return noStoreResponse(400, { error: "invalid-repository-id" }); }
   const store = new IssueSnapshotStore(env.ISSUE_SNAPSHOTS);
   try {
-    const { repository, client } = await authorizeSingleRepository(request, env, repositoryId);
+    const bodyWriteRoute = parts[1] === "body-write-intents";
+    const lifecycleRoute = parts[1] === "lifecycle";
+    const { repository, client, managed } = await authorizeSingleRepository(request, env, repositoryId, bodyWriteRoute || lifecycleRoute);
+    if (lifecycleRoute) {
+      if (request.method !== "POST" || (parts.length !== 2 && !(parts.length === 3 && parts[2] === "reconcile"))) return noStoreResponse(404, { error: "internal-route-not-found" });
+      if (parts.length === 3) {
+        if (String(repository.full_name).toLowerCase() !== `${env.ORGANIZATION_LOGIN}/steward`.toLowerCase()) throw new GitHubRequestError(403, "POST", url.pathname, "steward-repository-required");
+        const body = await readJsonObject(request);
+        if (Object.keys(body).length !== 1 || !Array.isArray(body.repositoryIds)) return noStoreResponse(400, { error: "invalid-internal-request" });
+        if (body.repositoryIds.some(value => typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0)) return noStoreResponse(400, { error: "invalid-internal-request" });
+        const removedRepositoryIds = await store.reconcileInstalledRepositories(body.repositoryIds as number[]);
+        return noStoreResponse(200, { repositoryId, removedRepositoryIds });
+      }
+      await requireEmptyBody(request);
+      if (managed) await store.activateRepository(repositoryId);
+      else await store.deleteRepository(repositoryId);
+      return noStoreResponse(200, { repositoryId, managed });
+    }
+    if (parts[1] === "body-write-intents") {
+      if (parts.length < 4 || parts.length > 5) return noStoreResponse(404, { error: "internal-route-not-found" });
+      let pullRequestNumber: number;
+      try { pullRequestNumber = positiveInteger(parts[2]!, "pullRequestNumber"); }
+      catch { return noStoreResponse(400, { error: "invalid-pull-request-number" }); }
+      const intentStore = new PullRequestBodyWriteIntentStore(env.ISSUE_SNAPSHOTS);
+      const now = new Date().toISOString();
+      const requireCleanupIntent = async (): Promise<PullRequestBodyWriteIntent | null> => {
+        const current = await intentStore.get(repositoryId, pullRequestNumber);
+        if (!managed && current && (current.regionKind !== "issue-links" || current.targetBlock !== null)) throw new GitHubRequestError(403, "POST", url.pathname, "repository-not-managed");
+        return current;
+      };
+      if (request.method === "POST" && parts.length === 4 && parts[3] === "prepare") {
+        const body = await readJsonObject(request);
+        if (!managed && (body.regionKind !== "issue-links" || body.targetBlock !== null)) throw new GitHubRequestError(403, "POST", url.pathname, "repository-not-managed");
+        const regionKind = String(body.regionKind ?? "") as "managed-pr" | "issue-links";
+        const redrive = normalizePullRequestBodyRedrive(body.redrive, { repositoryId, pullRequestNumber, regionKind });
+        if (!managed && (redrive.workflow !== "pr-issue-link.yml" || redrive.inputs.cleanupUnmanaged !== "true")) return noStoreResponse(400, { error: "invalid-internal-request" });
+        if (redrive.workflow === "onboard-repository.yml" && redrive.inputs.repositoryFullName !== repository.full_name) return noStoreResponse(400, { error: "invalid-internal-request" });
+        const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+        return noStoreResponse(200, await intentStore.prepare({
+          repositoryId,
+          pullRequestNumber,
+          writeId: String(body.writeId ?? ""),
+          regionKind,
+          baseSha: String(body.baseSha ?? ""),
+          headSha: String(body.headSha ?? ""),
+          issueGeneration: Number(body.issueGeneration ?? 0),
+          beforeBodyDigest: String(body.beforeBodyDigest ?? ""),
+          outsideBodyDigest: String(body.outsideBodyDigest ?? ""),
+          targetBlock: body.targetBlock === null ? null : String(body.targetBlock ?? ""),
+          targetBodyDigest: String(body.targetBodyDigest ?? ""),
+          now,
+          expiresAt,
+          redrive,
+        }));
+      }
+      if (request.method === "GET" && parts.length === 4 && parts[3] === "active") {
+        return noStoreResponse(200, await requireCleanupIntent());
+      }
+      if (parts.length === 4 && request.method === "GET") {
+        const current = await requireCleanupIntent();
+        if (!current || current.writeId !== parts[3]) return noStoreResponse(404, { error: "body-write-intent-not-found" });
+        return noStoreResponse(200, current);
+      }
+      if (parts.length === 5 && request.method === "POST") {
+        const writeId = parts[3]!;
+        const current = await requireCleanupIntent();
+        if (!current || current.writeId !== writeId) return noStoreResponse(404, { error: "body-write-intent-not-found" });
+        if (parts[4] === "patched") {
+          await requireEmptyBody(request);
+          return noStoreResponse(200, await intentStore.markPatched(repositoryId, pullRequestNumber, writeId, now));
+        }
+        if (parts[4] === "block") {
+          const body = await readJsonObject(request);
+          return noStoreResponse(200, await intentStore.block(repositoryId, pullRequestNumber, writeId, String(body.reason ?? "invalid"), now));
+        }
+        if (parts[4] === "confirm") {
+          await requireEmptyBody(request);
+          const confirmed = await confirmPullRequestBodyWriteIntent({ store: intentStore, client, repository, pullRequestNumber, writeId, now });
+          if (confirmed.writeId !== writeId) return noStoreResponse(404, { error: "body-write-intent-not-found" });
+          return noStoreResponse(200, confirmed);
+        }
+        if (parts[4] === "redrive-completed") {
+          await requireEmptyBody(request);
+          return noStoreResponse(200, await intentStore.completeRedrive(repositoryId, pullRequestNumber, writeId));
+        }
+        if (parts[4] === "wait") {
+          const body = await readJsonObject(request);
+          const attempts = Number(body.attempts);
+          if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 60) return noStoreResponse(400, { error: "invalid-confirmation-attempts" });
+          let current = await intentStore.get(repositoryId, pullRequestNumber);
+          if (!current || current.writeId !== writeId) return noStoreResponse(404, { error: "body-write-intent-not-found" });
+          for (let attempt = 0; attempt < attempts; attempt += 1) {
+            if (["confirmed", "blocked"].includes(current.status)) return noStoreResponse(200, current);
+            if (current.status === "patched" && current.deliveryProven && (attempt === 0 || (attempt + 1) % 10 === 0 || attempt + 1 === attempts)) {
+              current = await confirmPullRequestBodyWriteIntent({ store: intentStore, client, repository, pullRequestNumber, writeId, now: new Date().toISOString() });
+              if (current.writeId !== writeId) return noStoreResponse(404, { error: "body-write-intent-not-found" });
+              if (["confirmed", "blocked"].includes(current.status)) return noStoreResponse(200, current);
+            }
+            if (attempt + 1 < attempts) await delay(500);
+            const refreshed = await intentStore.get(repositoryId, pullRequestNumber);
+            if (!refreshed || refreshed.writeId !== writeId) return noStoreResponse(404, { error: "body-write-intent-not-found" });
+            current = refreshed;
+          }
+          return noStoreResponse(200, current);
+        }
+      }
+      return noStoreResponse(404, { error: "internal-route-not-found" });
+    }
     if (request.method === "GET" && parts.length === 1) {
       const view = await store.readOpenSnapshotView(repositoryId);
       const state = view.state ?? { repositoryId, generation: 0, stateRevision: 0, syncState: "uninitialized" as const, openSetDigest: openIssueSetDigest(repositoryId, []), lastFullScanAt: null, updatedAt: new Date(0).toISOString() };
@@ -630,7 +821,7 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
       const state = await store.setScanState(repositoryId, requested, expectedGeneration, expectedStateRevision, new Date().toISOString(), live);
       return noStoreResponse(200, state);
     }
-    if (request.method === "POST" && parts.length === 2 && parts[1] === "reconciliation") {
+    if (request.method === "POST" && (parts.length === 2 || (parts.length === 3 && parts[2] === "release")) && parts[1] === "reconciliation") {
       await requireEmptyBody(request);
       const generationHeader = request.headers.get("x-steward-reconciliation-generation") ?? "";
       const stateRevisionHeader = request.headers.get("x-steward-reconciliation-state-revision") ?? "";
@@ -639,6 +830,10 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
       catch { return noStoreResponse(400, { error: "invalid-reconciliation-generation" }); }
       try { stateRevision = nonNegativeInteger(stateRevisionHeader, "stateRevision"); }
       catch { return noStoreResponse(400, { error: "invalid-reconciliation-state-revision" }); }
+      if (parts.length === 3) {
+        const released = await store.releaseInitialReconciliationDispatch(repositoryId, generation, stateRevision);
+        return noStoreResponse(200, { repositoryId, generation, stateRevision, released });
+      }
       const acknowledged = await store.acknowledgeReconciliation(repositoryId, generation, stateRevision);
       return noStoreResponse(200, { repositoryId, generation, stateRevision, acknowledged });
     }
@@ -683,7 +878,9 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
       return noStoreResponse(502, { error: "github-read-failed" });
     }
     if (error instanceof Error && error.message === "issue-snapshot-generation-conflict") return noStoreResponse(409, { error: error.message });
-    if (error instanceof Error && ["内部请求正文必须为空", "issueNumber无效"].includes(error.message)) return noStoreResponse(400, { error: "invalid-internal-request" });
+    if (error instanceof Error && error.message === "body-write-intent-conflict") return noStoreResponse(409, { error: error.message });
+    if (error instanceof Error && (["内部请求正文必须为空", "内部请求正文过大", "内部请求正文无效", "issueNumber无效"].includes(error.message)
+      || error.message.startsWith("正文写重调度"))) return noStoreResponse(400, { error: "invalid-internal-request" });
     return noStoreResponse(503, { error: "issue-snapshot-operation-failed" });
   }
 }

@@ -2,12 +2,53 @@ name: SPLRAD Steward / Issue Sync
 
 on:
   workflow_dispatch:
+    inputs:
+      deliveryId: { required: true, type: string }
+      repositoryId: { required: true, type: string }
+      issueNumber: { required: false, type: string }
+      scanAll: { required: true, type: boolean }
+      policySha: { required: true, type: string }
 
 permissions: {}
+concurrency:
+  group: steward-pr-body-${{ inputs.repositoryId }}
+  cancel-in-progress: false
+  queue: max
 
 jobs:
-  pending:
+  synchronize:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: steward-automation
+      deployment: false
     steps:
-      - name: 等待后续堆叠层
-        run: echo "议题同步将在后续堆叠PR中启用。"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: "${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}", persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: .node-version, cache: npm }
+      - run: npm ci --ignore-scripts
+      - name: 同步议题快照
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
+          DELIVERY_ID: ${{ github.actor_id == '301115370' && inputs.deliveryId || format('manual-{0}-{1}', github.run_id, github.run_attempt) }}
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          ISSUE_NUMBER: ${{ inputs.issueNumber }}
+          SCAN_ALL: ${{ inputs.scanAll }}
+          POLICY_SHA: ${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}
+        run: |
+          issue_arguments=()
+          if [[ "$SCAN_ALL" == "false" ]]; then
+            if [[ -z "$ISSUE_NUMBER" ]]; then
+              echo "单议题同步缺少议题编号" >&2
+              exit 1
+            fi
+            issue_arguments+=(--issue-number "$ISSUE_NUMBER")
+          elif [[ -n "$ISSUE_NUMBER" ]]; then
+            echo "全量同步不能指定议题编号" >&2
+            exit 1
+          fi
+          node packages/runner/dist/index.js issue-sync --delivery-id "$DELIVERY_ID" --repository-id "$REPOSITORY_ID" "${issue_arguments[@]}" --scan-all "$SCAN_ALL" --policy-sha "$POLICY_SHA"
