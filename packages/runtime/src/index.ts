@@ -228,16 +228,19 @@ async function dispatchIssueInvalidation(env: Env, repository: any, deliveryId: 
   await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "true", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
 }
 
-async function dispatchIssueRefreshes(env: Env, repository: any, deliveryId: string, issueNumbers: readonly number[] | null): Promise<void> {
+async function dispatchIssueSyncs(env: Env, repository: any, deliveryId: string, issueNumbers: readonly number[] | null): Promise<void> {
   if (issueNumbers === null) {
-    await dispatchIssueInvalidation(env, repository, deliveryId);
     await send(env, "issue-sync.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", policySha: env.POLICY_SHA });
     return;
   }
   const unique = [...new Set(issueNumbers)].sort((left, right) => left - right);
   if (!unique.length || unique.some(number => !Number.isSafeInteger(number) || number <= 0)) throw new Error("议题事件编号无效");
-  await dispatchIssueInvalidation(env, repository, deliveryId);
   for (const issueNumber of unique) await send(env, "issue-sync.yml", { deliveryId, repositoryId: String(repository.id), issueNumber: String(issueNumber), scanAll: "false", policySha: env.POLICY_SHA });
+}
+
+async function dispatchIssueRefreshes(env: Env, repository: any, deliveryId: string, issueNumbers: readonly number[] | null): Promise<void> {
+  await dispatchIssueInvalidation(env, repository, deliveryId);
+  await dispatchIssueSyncs(env, repository, deliveryId, issueNumbers);
 }
 
 async function installationRepositories(env: Env): Promise<any[]> {
@@ -288,7 +291,18 @@ async function dispatchRelationRefreshes(env: Env, deliveryId: string, payload: 
     grouped.set(repositoryId, existing);
   }
   if (!grouped.size && payload.repository && isManaged(payload.repository)) grouped.set(Number(payload.repository.id), { repository: payload.repository, issueNumbers: null });
-  for (const target of grouped.values()) await dispatchIssueRefreshes(env, target.repository, deliveryId, target.issueNumbers);
+  const ordered = [...grouped.values()];
+  let firstFailure: unknown = null;
+  for (const target of ordered) {
+    try { await dispatchIssueInvalidation(env, target.repository, deliveryId); }
+    catch (error) { if (firstFailure === null) firstFailure = error; }
+  }
+  if (firstFailure !== null) throw firstFailure;
+  for (const target of ordered) {
+    try { await dispatchIssueSyncs(env, target.repository, deliveryId, target.issueNumbers); }
+    catch (error) { if (firstFailure === null) firstFailure = error; }
+  }
+  if (firstFailure !== null) throw firstFailure;
 }
 
 export async function handleWebhook(request: Request, env: Env): Promise<Response> {

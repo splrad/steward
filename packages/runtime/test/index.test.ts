@@ -650,12 +650,38 @@ describe("中央运行程序", () => {
       dispatched.length = 0;
       expect((await handleWebhook(signedRequest(scenario.event, scenario.payload), baseEnv())).status).toBe(202);
       expect(dispatched.map(item => [item.name, Number(item.inputs.repositoryId), item.inputs.issueNumber ?? null, item.inputs.invalidateOnly ?? null])).toEqual(
-        scenario.expected.flatMap(([repositoryId, issueNumber]) => [
-          ["pr-issue-link.yml", repositoryId, null, "true"],
-          ["issue-sync.yml", repositoryId, String(issueNumber), null],
-        ]),
+        [
+          ...scenario.expected.map(([repositoryId]) => ["pr-issue-link.yml", repositoryId, null, "true"]),
+          ...scenario.expected.map(([repositoryId, issueNumber]) => ["issue-sync.yml", repositoryId, String(issueNumber), null]),
+        ],
       );
     }
+  });
+
+  it("跨仓关系刷新会先失效全部仓库并继续派发后续刷新", async () => {
+    const dispatched: { name: string; inputs: Record<string, string> }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      if (String(url).includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (String(url).endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "trunk" }), { status: 200 });
+      const name = /\/workflows\/([^/]+)\/dispatches/u.exec(String(url))?.[1];
+      if (name) {
+        const inputs = JSON.parse(String(init.body)).inputs;
+        dispatched.push({ name, inputs });
+        if (name === "issue-sync.yml" && inputs.repositoryId === "1296724484") return new Response("failure", { status: 500 });
+        return new Response(null, { status: 204 });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    const current = repository(); const related = repository(1187527897, "splrad/LayerScape");
+    const payload = scoped({ action: "sub_issue_added", repository: current, sub_issue_repo: related, parent_issue: { number: 5 }, sub_issue: { number: 6 } });
+
+    expect((await handleWebhook(signedRequest("sub_issues", payload), baseEnv())).status).toBe(503);
+    expect(dispatched.map(item => [item.name, item.inputs.repositoryId, item.inputs.invalidateOnly ?? null])).toEqual([
+      ["pr-issue-link.yml", "1296724484", "true"],
+      ["pr-issue-link.yml", "1187527897", "true"],
+      ["issue-sync.yml", "1296724484", null],
+      ["issue-sync.yml", "1187527897", null],
+    ]);
   });
 
   it("默认分支首次推送补接入，后续推送扫描全部拉取请求", async () => {
