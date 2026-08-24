@@ -150,13 +150,14 @@ export function revalidationCandidates<T extends { validators: readonly PageVali
   return candidates;
 }
 
-export function workflowRevalidationPlan(candidates: readonly { validators: readonly PageValidator[] }[], pullRequestCount: number): {
+export function workflowRevalidationPlan(candidates: readonly { validators: readonly PageValidator[] }[], pullRequestCount: number, sharedRequests = revalidationRequestCount(candidates)): {
   perPullRequestBudget: number;
   totalRequests: number;
 } {
   if (!Number.isSafeInteger(pullRequestCount) || pullRequestCount < 0 || pullRequestCount > maximumPullRequests) throw new Error("开放拉取请求数量无效");
+  if (!Number.isSafeInteger(sharedRequests) || sharedRequests < 0 || sharedRequests > maximumRevalidationRequests) throw new Error("共享议题快照复核请求数无效");
   const perPullRequestBudget = revalidationRequestCount(candidates);
-  const totalRequests = perPullRequestBudget * (pullRequestCount + 1);
+  const totalRequests = sharedRequests + perPullRequestBudget * pullRequestCount;
   if (!Number.isSafeInteger(totalRequests) || totalRequests > maximumRevalidationRequests) {
     throw new Error(`议题快照复核请求超过全工作流预算:${totalRequests}/${maximumRevalidationRequests}`);
   }
@@ -355,7 +356,7 @@ async function refreshSnapshot(token: string, repositoryId: number, issueNumber:
   return result;
 }
 
-async function loadFreshSnapshotState(client: GitHubClient, token: string, owner: string, repo: string, repositoryId: number, deliveryId: string, revalidationBudget: number): Promise<{ state: SnapshotState; changed: boolean }> {
+async function loadFreshSnapshotState(client: GitHubClient, token: string, owner: string, repo: string, repositoryId: number, deliveryId: string, revalidationBudget: number): Promise<{ state: SnapshotState; changed: boolean; revalidationRequests: number }> {
   let changed = false;
   let state = validateSnapshotState(await runtimeRequest<SnapshotState>(token, "GET", `/internal/issue-snapshots/${repositoryId}`), repositoryId);
   let live = await liveOpenIssueNumbers(client, owner, repo);
@@ -369,6 +370,7 @@ async function loadFreshSnapshotState(client: GitHubClient, token: string, owner
     live = await liveOpenIssueNumbers(client, owner, repo);
     if (openIssueSetDigest(repositoryId, live) !== state.openSetDigest || JSON.stringify(live) !== JSON.stringify(state.snapshots.map(item => item.issueNumber).sort((a, b) => a - b))) throw new Error("GitHub与D1开放议题集合不一致");
   }
+  const revalidationRequests = revalidationRequestCount(state.snapshots);
   assertRevalidationBudget(state.snapshots, revalidationBudget);
   const refreshNumbers: number[] = [];
   for (const candidate of state.snapshots) {
@@ -385,7 +387,7 @@ async function loadFreshSnapshotState(client: GitHubClient, token: string, owner
     const after = await liveOpenIssueNumbers(client, owner, repo);
     if (openIssueSetDigest(repositoryId, after) !== state.openSetDigest) throw new Error("刷新后开放议题集合仍不一致");
   }
-  return { state, changed };
+  return { state, changed, revalidationRequests };
 }
 
 async function dispatchInlineReconciliation(args: PrIssueLinkArgs, state: SnapshotState): Promise<void> {
@@ -599,7 +601,7 @@ async function listPullRequestMatrix(args: PrIssueLinkArgs): Promise<void> {
   if (!args.invalidateOnly && !args.cleanupUnmanaged && numbers.length && process.env.RUNTIME_URL) {
     const fresh = await loadFreshSnapshotState(client, token, owner, repo, args.repositoryId, args.deliveryId, maximumRevalidationRequests);
     if (fresh.changed) await dispatchInlineReconciliation(args, fresh.state);
-    const plan = workflowRevalidationPlan(fresh.state.snapshots, numbers.length);
+    const plan = workflowRevalidationPlan(fresh.state.snapshots, numbers.length, fresh.revalidationRequests);
     revalidationBudget = plan.perPullRequestBudget;
     totalRevalidationRequests = plan.totalRequests;
     snapshotGeneration = String(fresh.state.generation);

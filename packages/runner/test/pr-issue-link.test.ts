@@ -552,7 +552,9 @@ describe("拉取请求议题关联运行器", () => {
       })),
     }));
     expect(workflowRevalidationPlan(candidates.slice(0, 2), 9)).toEqual({ perPullRequestBudget: 12, totalRequests: 120 });
+    expect(workflowRevalidationPlan(candidates.slice(0, 2), 9, 30)).toEqual({ perPullRequestBudget: 12, totalRequests: 138 });
     expect(() => workflowRevalidationPlan(candidates, 9)).toThrow("超过全工作流预算:3000/2500");
+    expect(() => workflowRevalidationPlan(candidates.slice(0, 2), 9, 2_501)).toThrow("共享议题快照复核请求数无效");
     expect(() => revalidationCandidates([{ validators: candidates[0]!.validators.slice(0, 2) }], 1)).toThrow("超过预算:2/1");
   });
 
