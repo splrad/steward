@@ -47,6 +47,10 @@ function issueReconciliationRunName(repositoryId: number, generation: number): s
   return `PR Issue Link / repository=${repositoryId} / generation=${generation}`;
 }
 
+function issueLinkWorkflowRunPath(value: unknown): boolean {
+  return value === ISSUE_LINK_WORKFLOW_PATH || (typeof value === "string" && value.startsWith(`${ISSUE_LINK_WORKFLOW_PATH}@`) && value.length > ISSUE_LINK_WORKFLOW_PATH.length + 1);
+}
+
 async function activeIssueReconciliationRuns(env: Env, client: GitHubClient): Promise<ReadonlySet<string>> {
   const [owner, repo] = env.STEWARDSHIP_REPOSITORY.split("/") as [string, string];
   const pages = await Promise.all(ACTIVE_WORKFLOW_RUN_STATUSES.map(status => client.paginate<any>(
@@ -63,7 +67,7 @@ async function activeIssueReconciliationRuns(env: Env, client: GitHubClient): Pr
     if (!Number.isSafeInteger(run?.id) || run.id <= 0 || run?.name !== ISSUE_LINK_WORKFLOW_NAME || run?.event !== "workflow_dispatch"
       || !ACTIVE_WORKFLOW_RUN_STATUSES.includes(run?.status) || run?.conclusion !== null
       || run?.repository?.full_name !== `${owner}/${repo}` || typeof run?.display_title !== "string"
-      || typeof run?.path !== "string" || !run.path.startsWith(`${ISSUE_LINK_WORKFLOW_PATH}@`) || run.path.length === ISSUE_LINK_WORKFLOW_PATH.length + 1) {
+      || !issueLinkWorkflowRunPath(run?.path)) {
       throw new Error("议题关联工作流运行身份无效");
     }
     names.add(run.display_title);

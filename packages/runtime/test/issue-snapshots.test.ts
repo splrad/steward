@@ -327,7 +327,7 @@ describe("议题快照D1存储", () => {
         return new Response(JSON.stringify({ workflow_runs: status === "in_progress" ? [{
           id: 91, name: "SPLRAD Steward / PR Issue Link", event: "workflow_dispatch", status: "in_progress", conclusion: null,
           display_title: "PR Issue Link / repository=1296724484 / generation=0",
-          path: ".github/workflows/pr-issue-link.yml@main", repository: { full_name: "splrad/steward" },
+          path: ".github/workflows/pr-issue-link.yml", repository: { full_name: "splrad/steward" },
         }] : [] }), { status: 200 });
       }
       return new Response("unexpected", { status: 500 });
