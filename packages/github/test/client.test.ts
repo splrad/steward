@@ -30,6 +30,22 @@ describe("代码托管平台客户端", () => {
     expect(new URL(requested).searchParams.get("state")).toBe("all");
   });
 
+  it("未纳管清理按每页筛选结果达到上限后停止分页", async () => {
+    const requested: string[] = [];
+    const client = new GitHubClient("token", "https://example.test", (async (url: string) => {
+      const value = String(url); requested.push(value);
+      if (!new URL(value).searchParams.has("page")) return new Response(JSON.stringify([{ number: 1, managed: true }, { number: 2, managed: false }]), {
+        status: 200, headers: { link: '<https://example.test/repos/splrad/steward/pulls?state=all&per_page=100&page=2>; rel="next"' },
+      });
+      return new Response(JSON.stringify([{ number: 3, managed: true }, { number: 4, managed: true }]), {
+        status: 200, headers: { link: '<https://example.test/repos/splrad/steward/pulls?state=all&per_page=100&page=3>; rel="next"' },
+      });
+    }) as typeof fetch);
+    await expect(client.listAllPullRequests("splrad", "steward", value => (value as any[]).filter(item => item.managed), 2)).rejects.toThrow("分页项目数超过合同上限");
+    expect(requested).toHaveLength(2);
+    expect(new URL(requested[1]!).searchParams.get("page")).toBe("2");
+  });
+
   it("发送固定版本和规则提交请求头且不重试写入", async () => {
     let calls = 0;
     let receiver: unknown;

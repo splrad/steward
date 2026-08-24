@@ -79,7 +79,11 @@ export class GitHubClient {
     return (await response.json()) as T;
   }
 
-  async paginate<T>(path: string, select: (value: unknown) => readonly T[] = value => value as readonly T[]): Promise<readonly T[]> {
+  async paginate<T>(
+    path: string,
+    select: (value: unknown) => readonly T[] = value => value as readonly T[],
+    limits: { maxPages?: number; maxItems?: number } = {},
+  ): Promise<readonly T[]> {
     return collectAllPages(path, async url => {
       const absolute = this.absoluteUrl(url);
       const response = await this.transport.call(globalThis, absolute, { headers: githubHeaders(this.token, this.policySha) });
@@ -87,7 +91,7 @@ export class GitHubClient {
       const value = await response.json();
       const next = nextLink(response.headers);
       return next ? { items: select(value), next: this.absoluteUrl(next) } : { items: select(value) };
-    });
+    }, limits);
   }
 
   private async readValidatedPage<T>(resource: IssueFactResource, path: string, select: (value: unknown) => readonly T[], allowNotFound = false): Promise<{ items: readonly T[]; validator: PageValidator }> {
@@ -267,7 +271,9 @@ export class GitHubClient {
   listPullRequests(owner: string, repo: string, head: string) { return this.paginate<any>(`/repos/${owner}/${repo}/pulls?state=open&head=${encodeURIComponent(head)}&per_page=100`); }
   listOpenPullRequests(owner: string, repo: string, base: string) { return this.paginate<any>(`/repos/${owner}/${repo}/pulls?state=open&base=${encodeURIComponent(base)}&per_page=100`); }
   listAllOpenPullRequests(owner: string, repo: string) { return this.paginate<any>(`/repos/${owner}/${repo}/pulls?state=open&per_page=100`); }
-  listAllPullRequests(owner: string, repo: string) { return this.paginate<any>(`/repos/${owner}/${repo}/pulls?state=all&per_page=100`); }
+  listAllPullRequests<T = any>(owner: string, repo: string, select: (value: unknown) => readonly T[] = value => value as readonly T[], maxItems?: number) {
+    return this.paginate<T>(`/repos/${owner}/${repo}/pulls?state=all&per_page=100`, select, maxItems === undefined ? {} : { maxItems });
+  }
   getWorkflowRun(owner: string, repo: string, id: number) { return this.request<any>("GET", `/repos/${owner}/${repo}/actions/runs/${id}`); }
   createPullRequest(owner: string, repo: string, body: unknown) { return this.request<any>("POST", `/repos/${owner}/${repo}/pulls`, body); }
   updatePullRequest(owner: string, repo: string, number: number, body: unknown) { return this.request<any>("PATCH", `/repos/${owner}/${repo}/pulls/${number}`, body); }

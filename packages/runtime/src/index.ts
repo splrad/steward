@@ -327,7 +327,7 @@ async function dispatchRelationRefreshes(env: Env, deliveryId: string, payload: 
     grouped.set(repositoryId, existing);
   }
   if (!grouped.size && payload.repository && isManaged(payload.repository)) grouped.set(Number(payload.repository.id), { repository: payload.repository, issueNumbers: null });
-  const ordered = [...grouped.values()];
+  const ordered = [...grouped.values()].sort((left, right) => Number(left.repository.id) - Number(right.repository.id));
   let firstFailure: unknown = null;
   for (const target of ordered) {
     try { await dispatchIssueInvalidation(env, target.repository, deliveryId); }

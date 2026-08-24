@@ -847,10 +847,10 @@ describe("中央运行程序", () => {
     });
     const current = repository(); const related = repository(1187527897, "splrad/LayerScape");
     const scenarios = [
-      { event: "sub_issues", payload: scoped({ action: "sub_issue_added", repository: current, sub_issue_repo: related, parent_issue: { number: 5 }, sub_issue: { number: 6 } }), expected: [[1296724484, 5], [1187527897, 6]] },
+      { event: "sub_issues", payload: scoped({ action: "sub_issue_added", repository: current, sub_issue_repo: related, parent_issue: { number: 5 }, sub_issue: { number: 6 } }), expected: [[1187527897, 6], [1296724484, 5]] },
       { event: "sub_issues", payload: scoped({ action: "parent_issue_added", repository: current, parent_issue_repo: related, parent_issue: { number: 5 }, sub_issue: { number: 6 } }), expected: [[1187527897, 5], [1296724484, 6]] },
       { event: "issue_dependencies", payload: scoped({ action: "blocking_added", repository: current, blocked_issue_repo: related, blocked_issue: { number: 7 }, blocking_issue: { number: 8 } }), expected: [[1187527897, 7], [1296724484, 8]] },
-      { event: "issue_dependencies", payload: scoped({ action: "blocked_by_added", repository: current, blocking_issue_repo: related, blocked_issue: { number: 7 }, blocking_issue: { number: 8 } }), expected: [[1296724484, 7], [1187527897, 8]] },
+      { event: "issue_dependencies", payload: scoped({ action: "blocked_by_added", repository: current, blocking_issue_repo: related, blocked_issue: { number: 7 }, blocking_issue: { number: 8 } }), expected: [[1187527897, 8], [1296724484, 7]] },
     ];
     for (const scenario of scenarios) {
       dispatched.length = 0;
@@ -883,10 +883,10 @@ describe("中央运行程序", () => {
 
     expect((await handleWebhook(signedRequest("sub_issues", payload), baseEnv())).status).toBe(503);
     expect(dispatched.map(item => [item.name, item.inputs.repositoryId, item.inputs.invalidateOnly ?? null])).toEqual([
-      ["pr-issue-link.yml", "1296724484", "true"],
       ["pr-issue-link.yml", "1187527897", "true"],
-      ["issue-sync.yml", "1296724484", null],
+      ["pr-issue-link.yml", "1296724484", "true"],
       ["issue-sync.yml", "1187527897", null],
+      ["issue-sync.yml", "1296724484", null],
     ]);
   });
 

@@ -241,6 +241,28 @@ describe("拉取请求议题关联运行器", () => {
     });
   });
 
+  it("未纳管清理匹配项超过矩阵上限后不再请求下一页", async () => {
+    await withRunnerEnvironment(async () => {
+      const managedBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber: 5, baseSha, headSha, generation: 1, analysisInputDigest: "d".repeat(64) }, [{ repositoryId, number: 7 }]);
+      const requestedPages: string[] = [];
+      vi.stubGlobal("fetch", async (url: string) => {
+        const value = String(url);
+        if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+        if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify({ ...repository(), private: true }), { status: 200 });
+        if (value.includes("/repos/splrad/steward/pulls?state=all")) {
+          requestedPages.push(value);
+          const page = new URL(value).searchParams.get("page");
+          const items = Array.from({ length: page === "3" ? 57 : 100 }, (_, index) => ({ ...pull(managedBlock, 301115370), number: (page === "2" ? 101 : page === "3" ? 201 : 1) + index }));
+          return new Response(JSON.stringify(items), { status: 200, headers: { link: `<https://api.github.com/repos/splrad/steward/pulls?state=all&per_page=100&page=${page === null ? 2 : Number(page) + 1}>; rel="next"` } });
+        }
+        return new Response("unexpected", { status: 500 });
+      });
+      process.env.ISSUE_LINK_LIST_ONLY = "true";
+      await expect(runPrIssueLink(invocation({ "scan-all": "true", "pull-request-number": undefined as unknown as string, "cleanup-unmanaged": "true" }))).rejects.toThrow("待清理拉取请求超过矩阵上限");
+      expect(requestedPages.map(value => new URL(value).searchParams.get("page"))).toEqual([null, "2", "3"]);
+    });
+  });
+
   it("只有正式收敛成功路径才按精确代次确认D1待处理记录", async () => {
     await withRunnerEnvironment(async () => {
       process.env.ISSUE_LINK_ACK_ONLY = "true";
