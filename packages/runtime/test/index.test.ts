@@ -473,11 +473,23 @@ describe("中央运行程序", () => {
     const env = baseEnv(); const current = repository();
     expect((await handleWebhook(signedRequest("issues", scoped({ action: "edited", repository: current, issue: { number: 4 } })), env)).status).toBe(202);
     expect((await handleWebhook(signedRequest("issue_comment", scoped({ action: "created", repository: current, issue: { number: 99, pull_request: { url: "https://api.github.test/pulls/99" } } })), env)).status).toBe(204);
+    const subIssueStart = dispatched.length;
     expect((await handleWebhook(signedRequest("sub_issues", scoped({ action: "parent_issue_added", repository: current, parent_issue_repo: current, parent_issue: { number: 5 }, sub_issue: { number: 6 } })), env)).status).toBe(202);
-    expect((await handleWebhook(signedRequest("issue_dependencies", scoped({ action: "blocked_by_added", repository: current, blocked_issue: { number: 7 }, blocking_issue_repo: current })), env)).status).toBe(202);
+    expect(dispatched.slice(subIssueStart)).toEqual([
+      { name: "pr-issue-link.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", invalidateOnly: "true", scanAll: "true" }) },
+      { name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", issueNumber: "5", scanAll: "false" }) },
+      { name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", issueNumber: "6", scanAll: "false" }) },
+    ]);
+    const dependencyStart = dispatched.length;
+    expect((await handleWebhook(signedRequest("issue_dependencies", scoped({ action: "blocked_by_added", repository: current, blocked_issue: { number: 7 }, blocking_issue_repo: current, blocking_issue: { number: 8 } })), env)).status).toBe(202);
+    expect(dispatched.slice(dependencyStart)).toEqual([
+      { name: "pr-issue-link.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", invalidateOnly: "true", scanAll: "true" }) },
+      { name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", issueNumber: "7", scanAll: "false" }) },
+      { name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", issueNumber: "8", scanAll: "false" }) },
+    ]);
     expect((await handleWebhook(signedRequest("repository", scoped({ action: "edited", repository: current })), env)).status).toBe(202);
     expect(dispatched.filter(item => item.name === "issue-sync.yml" && item.inputs.scanAll === "true").map(item => item.inputs.repositoryId)).toEqual([
-      "1187527897", "1296724484", "1296725317", "1296724484",
+      "1187527897", "1296724484", "1296725317",
     ]);
     expect(dispatched).toContainEqual({ name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", issueNumber: "5", scanAll: "false" }) });
     expect(dispatched).toContainEqual({ name: "issue-sync.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", issueNumber: "6", scanAll: "false" }) });
@@ -614,7 +626,12 @@ describe("中央运行程序", () => {
     for (const scenario of scenarios) {
       dispatched.length = 0;
       expect((await handleWebhook(signedRequest(scenario.event, scenario.payload), baseEnv())).status).toBe(202);
-      expect(dispatched.map(item => [Number(item.inputs.repositoryId), Number(item.inputs.issueNumber)])).toEqual(scenario.expected);
+      expect(dispatched.map(item => [item.name, Number(item.inputs.repositoryId), item.inputs.issueNumber ?? null, item.inputs.invalidateOnly ?? null])).toEqual(
+        scenario.expected.flatMap(([repositoryId, issueNumber]) => [
+          ["pr-issue-link.yml", repositoryId, null, "true"],
+          ["issue-sync.yml", repositoryId, String(issueNumber), null],
+        ]),
+      );
     }
   });
 

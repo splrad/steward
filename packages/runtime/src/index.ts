@@ -236,6 +236,7 @@ async function dispatchIssueRefreshes(env: Env, repository: any, deliveryId: str
   }
   const unique = [...new Set(issueNumbers)].sort((left, right) => left - right);
   if (!unique.length || unique.some(number => !Number.isSafeInteger(number) || number <= 0)) throw new Error("议题事件编号无效");
+  await dispatchIssueInvalidation(env, repository, deliveryId);
   for (const issueNumber of unique) await send(env, "issue-sync.yml", { deliveryId, repositoryId: String(repository.id), issueNumber: String(issueNumber), scanAll: "false", policySha: env.POLICY_SHA });
 }
 
