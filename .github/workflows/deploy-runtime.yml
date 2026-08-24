@@ -115,3 +115,15 @@ jobs:
           if (!verifiedBody) throw new Error(`健康复核在60秒内未收敛：${lastFailure}`);
           console.log(JSON.stringify({ status: verifiedBody.status, policySha: verifiedBody.policySha, version: verifiedBody.version, organizationId: verifiedBody.organizationId, appId: verifiedBody.appId, secretsReady: verifiedBody.secretsReady }));
           NODE
+      - name: 收敛安装仓库生命周期与议题快照
+        shell: bash
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          RUNTIME_URL: ${{ steps.deploy.outputs.runtime_url }}
+          POLICY_SHA: ${{ github.sha }}
+          DEPLOYMENT_DELIVERY_ID: deploy-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          node packages/runner/dist/index.js reconcile-repository-lifecycle --delivery-id "$DEPLOYMENT_DELIVERY_ID" --policy-sha "$POLICY_SHA"

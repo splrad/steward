@@ -1,6 +1,6 @@
 import { createAppJwt, createInstallationToken, dispatchWorkflow, GitHubClient } from "../../github/src/index.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
-import { handleIssueSnapshotInternalRequest } from "./issue-snapshots.js";
+import { handleIssueSnapshotInternalRequest, IssueSnapshotStore } from "./issue-snapshots.js";
 import { confirmPullRequestBodyWriteIntent, processPullRequestBodyEditedDelivery, PullRequestBodyWriteIntentStore, type PullRequestBodyWriteIntent } from "./pr-body-write-intents.js";
 
 export interface Env {
@@ -16,6 +16,12 @@ const VALIDATION_WORKFLOW_NAME = "SPLRAD Steward / PR Validation";
 const VALIDATION_WORKFLOW_PATH = ".github/workflows/pr-validation.yml";
 const VALIDATION_CHECK_NAME = "PR Validation Gate";
 const BODY_WRITE_REDRIVE_RETRY_MS = 2 * 60 * 60_000;
+const ISSUE_RECONCILIATION_RETRY_MS = 75 * 60_000;
+const ISSUE_LINK_WORKFLOW_NAME = "SPLRAD Steward / PR Issue Link";
+const ISSUE_LINK_WORKFLOW_FILE = "pr-issue-link.yml";
+const ISSUE_LINK_WORKFLOW_PATH = `.github/workflows/${ISSUE_LINK_WORKFLOW_FILE}`;
+const ACTIVE_WORKFLOW_RUN_STATUSES = ["queued", "in_progress", "waiting", "pending", "requested"] as const;
+const ISSUE_SNAPSHOT_DELETE_ATTEMPTS = 3;
 
 function response(status: number, body?: unknown): Response {
   return new Response(body === undefined ? null : JSON.stringify(body), { status, headers: body === undefined ? undefined : { "Content-Type": "application/json; charset=utf-8" } });
@@ -34,7 +40,40 @@ async function dispatcher(env: Env): Promise<GitHubClient> {
   const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY, installationId: Number(env.INSTALLATION_ID), repositoryId: 1296724484, permissions: { actions: "write", metadata: "read" }, policySha: env.POLICY_SHA });
   return new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA);
 }
-async function send(env: Env, workflow: string, inputs: Record<string, string>) { const [owner, repo] = env.STEWARDSHIP_REPOSITORY.split("/") as [string, string]; await dispatchWorkflow(await dispatcher(env), { owner, repo, workflow, policySha: env.POLICY_SHA, inputs }); }
+async function sendWithClient(env: Env, client: GitHubClient, workflow: string, inputs: Record<string, string>) { const [owner, repo] = env.STEWARDSHIP_REPOSITORY.split("/") as [string, string]; await dispatchWorkflow(client, { owner, repo, workflow, policySha: env.POLICY_SHA, inputs }); }
+async function send(env: Env, workflow: string, inputs: Record<string, string>) { await sendWithClient(env, await dispatcher(env), workflow, inputs); }
+
+function issueReconciliationRunName(repositoryId: number, generation: number): string {
+  return `PR Issue Link / repository=${repositoryId} / generation=${generation}`;
+}
+
+function issueLinkWorkflowRunPath(value: unknown): boolean {
+  return value === ISSUE_LINK_WORKFLOW_PATH || (typeof value === "string" && value.startsWith(`${ISSUE_LINK_WORKFLOW_PATH}@`) && value.length > ISSUE_LINK_WORKFLOW_PATH.length + 1);
+}
+
+async function activeIssueReconciliationRuns(env: Env, client: GitHubClient): Promise<ReadonlySet<string>> {
+  const [owner, repo] = env.STEWARDSHIP_REPOSITORY.split("/") as [string, string];
+  const pages = await Promise.all(ACTIVE_WORKFLOW_RUN_STATUSES.map(status => client.paginate<any>(
+    `/repos/${owner}/${repo}/actions/workflows/${ISSUE_LINK_WORKFLOW_FILE}/runs?event=workflow_dispatch&status=${status}&per_page=100`,
+    value => {
+      const runs = (value as any)?.workflow_runs;
+      if (!Array.isArray(runs)) throw new Error("议题关联工作流运行列表无效");
+      return runs;
+    },
+    { maxPages: 20, maxItems: 2_000 },
+  )));
+  const names = new Set<string>();
+  for (const run of pages.flat()) {
+    if (!Number.isSafeInteger(run?.id) || run.id <= 0 || run?.name !== ISSUE_LINK_WORKFLOW_NAME || run?.event !== "workflow_dispatch"
+      || !ACTIVE_WORKFLOW_RUN_STATUSES.includes(run?.status) || run?.conclusion !== null
+      || run?.repository?.full_name !== `${owner}/${repo}` || typeof run?.display_title !== "string"
+      || !issueLinkWorkflowRunPath(run?.path)) {
+      throw new Error("议题关联工作流运行身份无效");
+    }
+    names.add(run.display_title);
+  }
+  return names;
+}
 
 async function bodyWriteClient(env: Env, repositoryId: number): Promise<GitHubClient> {
   if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
@@ -217,6 +256,128 @@ function belongsToOrganization(repository: any): boolean {
 }
 function isManaged(repository: any): boolean { return belongsToOrganization(repository) && repositoryConfiguration(repository).managed === true; }
 
+function wasManagedBeforeVisibilityEdit(repository: any, changes: any): boolean {
+  const previousVisibility = changes?.visibility?.from;
+  if (!["public", "private", "internal"].includes(previousVisibility)) return isManaged(repository);
+  return isManaged({ ...repository, private: previousVisibility !== "public" });
+}
+
+async function dispatchIssueInvalidation(env: Env, repository: any, deliveryId: string): Promise<void> {
+  await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "true", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
+}
+
+async function dispatchIssueSyncs(env: Env, repository: any, deliveryId: string, issueNumbers: readonly number[] | null): Promise<void> {
+  if (issueNumbers === null) {
+    await send(env, "issue-sync.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", policySha: env.POLICY_SHA });
+    return;
+  }
+  const unique = [...new Set(issueNumbers)].sort((left, right) => left - right);
+  if (!unique.length || unique.some(number => !Number.isSafeInteger(number) || number <= 0)) throw new Error("议题事件编号无效");
+  for (const issueNumber of unique) await send(env, "issue-sync.yml", { deliveryId, repositoryId: String(repository.id), issueNumber: String(issueNumber), scanAll: "false", policySha: env.POLICY_SHA });
+}
+
+function orderedManagedRepositories(repositories: readonly any[]): any[] {
+  return [...new Map(repositories.filter(isManaged).map(repository => [Number(repository.id), repository])).values()]
+    .sort((left, right) => Number(left.id) - Number(right.id));
+}
+
+async function onboardManagedRepositories(env: Env, repositories: readonly any[], deliveryId: string, trigger: string): Promise<void> {
+  const ordered = orderedManagedRepositories(repositories);
+  let firstFailure: unknown = null;
+  for (const repository of ordered) {
+    try { await dispatchIssueInvalidation(env, repository, deliveryId); }
+    catch (error) { if (firstFailure === null) firstFailure = error; }
+  }
+  if (firstFailure !== null) throw firstFailure;
+  const store = env.ISSUE_SNAPSHOTS ? new IssueSnapshotStore(env.ISSUE_SNAPSHOTS) : null;
+  for (const repository of ordered) {
+    try {
+      await store?.activateRepository(Number(repository.id));
+      await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger, deliveryId, policySha: env.POLICY_SHA });
+    } catch (error) { if (firstFailure === null) firstFailure = error; }
+  }
+  if (firstFailure !== null) throw firstFailure;
+}
+
+async function installationRepositories(env: Env): Promise<any[]> {
+  if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
+  const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY,
+    installationId: Number(env.INSTALLATION_ID), permissions: { metadata: "read" }, policySha: env.POLICY_SHA });
+  return new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA).listInstallationRepositories();
+}
+
+function repositoryFullNameFromApiUrl(value: unknown): string | null {
+  try {
+    const url = new URL(String(value));
+    if (url.origin !== "https://api.github.com" || url.username || url.password || url.search || url.hash || !/^\/repos\/[^/]+\/[^/]+$/u.test(url.pathname)) return null;
+    return url.pathname.slice("/repos/".length);
+  } catch { return null; }
+}
+
+async function transferredIssueRepository(env: Env, issue: any): Promise<any | null> {
+  const fullName = repositoryFullNameFromApiUrl(issue?.repository_url);
+  if (!fullName) return null;
+  const matches = (await installationRepositories(env)).filter(repository => belongsToOrganization(repository) && String(repository.full_name).toLowerCase() === fullName.toLowerCase());
+  return matches.length === 1 ? matches[0] : null;
+}
+
+async function dispatchAllManagedIssueScans(
+  env: Env,
+  deliveryId: string,
+  currentRepository?: any,
+  afterInvalidation?: () => Promise<void>,
+): Promise<void> {
+  const installed = await installationRepositories(env);
+  const repositories = new Map(installed.filter(isManaged).map(repository => [Number(repository.id), repository]));
+  if (currentRepository && isManaged(currentRepository)) repositories.set(Number(currentRepository.id), currentRepository);
+  const ordered = [...repositories.values()].sort((left, right) => Number(left.id) - Number(right.id));
+  let firstFailure: unknown = null;
+  for (const repository of ordered) {
+    try { await dispatchIssueInvalidation(env, repository, deliveryId); }
+    catch (error) { if (firstFailure === null) firstFailure = error; }
+  }
+  if (firstFailure !== null) throw firstFailure;
+  if (afterInvalidation) await afterInvalidation();
+  for (const repository of ordered) {
+    try { await dispatchIssueSyncs(env, repository, deliveryId, null); }
+    catch (error) { if (firstFailure === null) firstFailure = error; }
+  }
+  if (firstFailure !== null) throw firstFailure;
+}
+
+async function dispatchRelationRefreshes(env: Env, deliveryId: string, payload: any, targets: readonly { repository: any; issueNumber: unknown }[]): Promise<void> {
+  const grouped = new Map<number, { repository: any; issueNumbers: number[] | null }>();
+  let incomplete = false;
+  for (const target of targets) {
+    if (!target.repository || !isManaged(target.repository)) { incomplete = true; continue; }
+    const repositoryId = Number(target.repository.id);
+    const issueNumber = Number(target.issueNumber);
+    const existing = grouped.get(repositoryId) ?? { repository: target.repository, issueNumbers: [] };
+    if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) existing.issueNumbers = null;
+    else if (existing.issueNumbers) existing.issueNumbers.push(issueNumber);
+    grouped.set(repositoryId, existing);
+  }
+  if (incomplete && payload.repository && isManaged(payload.repository)) {
+    const repositoryId = Number(payload.repository.id);
+    const existing = grouped.get(repositoryId) ?? { repository: payload.repository, issueNumbers: [] };
+    existing.issueNumbers = null;
+    grouped.set(repositoryId, existing);
+  }
+  if (!grouped.size && payload.repository && isManaged(payload.repository)) grouped.set(Number(payload.repository.id), { repository: payload.repository, issueNumbers: null });
+  const ordered = [...grouped.values()].sort((left, right) => Number(left.repository.id) - Number(right.repository.id));
+  let firstFailure: unknown = null;
+  for (const target of ordered) {
+    try { await dispatchIssueInvalidation(env, target.repository, deliveryId); }
+    catch (error) { if (firstFailure === null) firstFailure = error; }
+  }
+  if (firstFailure !== null) throw firstFailure;
+  for (const target of ordered) {
+    try { await dispatchIssueSyncs(env, target.repository, deliveryId, target.issueNumbers); }
+    catch (error) { if (firstFailure === null) firstFailure = error; }
+  }
+  if (firstFailure !== null) throw firstFailure;
+}
+
 export async function handleWebhook(request: Request, env: Env): Promise<Response> {
   const declared = Number(request.headers.get("content-length") ?? "0"); if (declared > MAX_BODY) return response(413);
   const bytes = await request.arrayBuffer(); if (bytes.byteLength > MAX_BODY) return response(413);
@@ -240,34 +401,138 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
         if (["proven", "compensated", "duplicate", "blocked"].includes(outcome)) return response(202);
       }
     }
+    if (event === "installation" && action === "deleted") {
+      if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
+      const repositoryIds = (payload.repositories ?? []).filter(belongsToOrganization).map((repository: any) => Number(repository.id));
+      await new IssueSnapshotStore(env.ISSUE_SNAPSHOTS).deleteAllRepositories(repositoryIds);
+      return response(202);
+    }
+    if (event === "installation_repositories" && action === "removed") {
+      if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
+      for (const repository of payload.repositories_removed ?? []) if (belongsToOrganization(repository)) await new IssueSnapshotStore(env.ISSUE_SNAPSHOTS).deleteRepository(Number(repository.id));
+      return response(202);
+    }
+    if (event === "issues" && ["deleted", "transferred"].includes(action)) {
+      const repository = payload.repository; const issueNumber = Number(payload.issue?.number);
+      const sourceManaged = Boolean(repository && isManaged(repository) && Number.isSafeInteger(issueNumber) && issueNumber > 0);
+      const destinationIssueNumber = Number(payload.changes?.new_issue?.number);
+      const destinationRepository = action === "transferred" && Number.isSafeInteger(destinationIssueNumber) && destinationIssueNumber > 0
+        ? await transferredIssueRepository(env, payload.changes?.new_issue) : null;
+      const destinationManaged = Boolean(destinationRepository && isManaged(destinationRepository));
+      if (!sourceManaged && !destinationManaged) return response(204);
+      await dispatchAllManagedIssueScans(env, deliveryId, sourceManaged ? repository : destinationRepository, sourceManaged ? async () => {
+        if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
+        const store = new IssueSnapshotStore(env.ISSUE_SNAPSHOTS);
+        await deleteIssueSnapshotWithRetry(store, Number(repository.id), issueNumber, new Date().toISOString());
+      } : undefined);
+      return response(202);
+    }
+    if (event === "issues") {
+      const repository = payload.repository; const issueNumber = Number(payload.issue?.number);
+      if (!repository || !isManaged(repository) || payload.issue?.pull_request || !Number.isSafeInteger(issueNumber) || issueNumber <= 0) return response(204);
+      await dispatchAllManagedIssueScans(env, deliveryId, repository);
+      return response(202);
+    }
+    if (event === "issue_comment" && ["created", "edited", "deleted"].includes(action)) {
+      const repository = payload.repository; const issueNumber = Number(payload.issue?.number);
+      if (!repository || !isManaged(repository) || payload.issue?.pull_request || !Number.isSafeInteger(issueNumber) || issueNumber <= 0) return response(204);
+      await dispatchAllManagedIssueScans(env, deliveryId, repository);
+      return response(202);
+    }
+    if (event === "sub_issues") {
+      const parentRepository = String(action).startsWith("parent_issue_") ? payload.parent_issue_repo : payload.repository;
+      const subIssueRepository = String(action).startsWith("sub_issue_") ? payload.sub_issue_repo : payload.repository;
+      await dispatchRelationRefreshes(env, deliveryId, payload, [
+        { repository: parentRepository, issueNumber: payload.parent_issue?.number },
+        { repository: subIssueRepository, issueNumber: payload.sub_issue?.number },
+      ]);
+      return response(202);
+    }
+    if (event === "issue_dependencies") {
+      const blockedRepository = String(action).startsWith("blocking_") ? payload.blocked_issue_repo : payload.repository;
+      const blockingRepository = String(action).startsWith("blocked_by_") ? payload.blocking_issue_repo : payload.repository;
+      await dispatchRelationRefreshes(env, deliveryId, payload, [
+        { repository: blockedRepository, issueNumber: payload.blocked_issue?.number },
+        { repository: blockingRepository, issueNumber: payload.blocking_issue?.number },
+      ]);
+      return response(202);
+    }
     if (event === "installation" && action === "created") {
-      for (const repository of payload.repositories ?? []) if (isManaged(repository)) await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "installation-created", deliveryId, policySha: env.POLICY_SHA });
+      await onboardManagedRepositories(env, payload.repositories ?? [], deliveryId, "installation-created");
       return response(202);
     }
     if (event === "installation_repositories" && action === "added") {
-      for (const repository of payload.repositories_added ?? []) if (isManaged(repository)) await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "installation-repositories-added", deliveryId, policySha: env.POLICY_SHA });
+      await onboardManagedRepositories(env, payload.repositories_added ?? [], deliveryId, "installation-repositories-added");
+      return response(202);
+    }
+    if (event === "repository" && action === "edited") {
+      const repository = payload.repository; if (!repository || !belongsToOrganization(repository)) return response(204);
+      const managed = isManaged(repository);
+      const previouslyManaged = wasManagedBeforeVisibilityEdit(repository, payload.changes);
+      if (previouslyManaged && !managed) {
+        if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
+        await dispatchIssueInvalidation(env, repository, deliveryId);
+        await new IssueSnapshotStore(env.ISSUE_SNAPSHOTS).deleteRepository(Number(repository.id));
+        await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "true", policySha: env.POLICY_SHA });
+        return response(202);
+      }
+      if (!previouslyManaged && managed) {
+        if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
+        await onboardManagedRepositories(env, [repository], deliveryId, "repository-visibility-changed");
+        return response(202);
+      }
+      if (!managed) return response(204);
+      await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "true", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
+      await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
       return response(202);
     }
     if (event === "push") {
       const repository = payload.repository; if (!repository || !isManaged(repository) || repository.fork || repository.archived || repository.disabled || payload.deleted || !String(payload.ref).startsWith("refs/heads/") || payload.after === ZERO_SHA) return response(204);
       if (payload.ref === `refs/heads/${repository.default_branch}`) {
         if (payload.before === ZERO_SHA) await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "default-branch-push", deliveryId, policySha: env.POLICY_SHA });
-        else await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", policySha: env.POLICY_SHA });
+        else {
+          await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "true", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
+          await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", policySha: env.POLICY_SHA });
+          await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
+        }
         return response(202);
       }
       const sender = payload.sender; if (!sender || sender.type !== "User" || String(sender.login).endsWith("[bot]")) return response(204);
       await send(env, "pr-automation.yml", { deliveryId, repositoryId: String(repository.id), sourceRef: payload.ref, eventAfterSha: payload.after, sourceActorId: String(sender.id), sourceActorLogin: String(sender.login), policySha: env.POLICY_SHA }); return response(202);
     }
     if (event === "pull_request" && ["opened", "synchronize", "reopened", "edited"].includes(action)) {
-      const repository = payload.repository; const pull = payload.pull_request; if (!repository || !isManaged(repository) || !pull || pull.base?.ref !== repository.default_branch) return response(204);
-      await ensureValidationPending(env, repository, pull);
-      await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), eventHeadSha: pull.head.sha, policySha: env.POLICY_SHA });
-      return response(202);
+      const repository = payload.repository; const pull = payload.pull_request;
+      if (!repository || !isManaged(repository) || !pull) return response(204);
+      const targetsDefault = pull.base?.ref === repository.default_branch;
+      const leftDefault = action === "edited" && payload.changes?.base?.ref?.from === repository.default_branch;
+      const shouldInvalidateIssueGate = action === "edited" && (targetsDefault || leftDefault);
+      const hasManagedIssueBlock = String(pull.body ?? "").includes("<!-- workflow:issue-links:start ");
+      let dispatched = false;
+      if (shouldInvalidateIssueGate) {
+        await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), scanAll: "false", invalidateOnly: "true", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
+      }
+      if (targetsDefault) {
+        await ensureValidationPending(env, repository, pull);
+        await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), eventHeadSha: pull.head.sha, policySha: env.POLICY_SHA });
+        dispatched = true;
+      }
+      if (targetsDefault || leftDefault || hasManagedIssueBlock) {
+        await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
+        dispatched = true;
+      }
+      return response(dispatched ? 202 : 204);
     }
     if (event === "pull_request" && action === "ready_for_review") {
       const repository = payload.repository; const pull = payload.pull_request;
       if (!repository || !isManaged(repository) || !pull || pull.user?.id !== 301115370 || pull.draft !== false || pull.base?.ref !== repository.default_branch) return response(204);
       return response(await requestMaintainersReview(env, repository, pull) ? 202 : 204);
+    }
+    if (event === "pull_request" && action === "closed" && payload.pull_request?.merged === false) {
+      const repository = payload.repository; const pull = payload.pull_request;
+      if (!repository || !isManaged(repository) || pull?.base?.ref !== repository.default_branch
+        || !String(pull?.body ?? "").includes("<!-- workflow:issue-links:start ")) return response(204);
+      await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
+      return response(202);
     }
     if (event === "workflow_run" && ["requested", "in_progress", "completed"].includes(action)) {
       const repository = payload.repository; if (!repository || !isManaged(repository)) return response(204);
@@ -288,6 +553,18 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
 function deliveryHeader(headers: Record<string, unknown> | undefined, name: string): string {
   const entry = Object.entries(headers ?? {}).find(([key]) => key.toLowerCase() === name.toLowerCase());
   return typeof entry?.[1] === "string" ? entry[1] : "";
+}
+
+async function deleteIssueSnapshotWithRetry(store: IssueSnapshotStore, repositoryId: number, issueNumber: number, now: string): Promise<void> {
+  for (let attempt = 1; attempt <= ISSUE_SNAPSHOT_DELETE_ATTEMPTS; attempt += 1) {
+    const state = await store.getRepositoryState(repositoryId);
+    try {
+      await store.deleteSnapshot(repositoryId, issueNumber, state?.generation ?? 0, state?.stateRevision ?? 0, now);
+      return;
+    } catch (error) {
+      if (!(error instanceof Error && error.message === "issue-snapshot-generation-conflict") || attempt === ISSUE_SNAPSHOT_DELETE_ATTEMPTS) throw error;
+    }
+  }
 }
 
 export async function recoverPullRequestBodyWriteIntents(env: Env, now = new Date()): Promise<number> {
@@ -357,6 +634,43 @@ export async function recoverPullRequestBodyWriteIntents(env: Env, now = new Dat
   return recovered;
 }
 
+export async function recoverIssueSnapshotReconciliations(env: Env, now = new Date()): Promise<number> {
+  if (!env.ISSUE_SNAPSHOTS) return 0;
+  const store = new IssueSnapshotStore(env.ISSUE_SNAPSHOTS);
+  const nowIso = now.toISOString();
+  const retryBefore = new Date(now.getTime() - ISSUE_RECONCILIATION_RETRY_MS).toISOString();
+  const candidates = await store.listReconciliationDispatchCandidates(retryBefore, 20);
+  if (!candidates.length) return 0;
+  const client = await dispatcher(env);
+  const activeRuns = await activeIssueReconciliationRuns(env, client);
+  let dispatched = 0;
+  let firstError: unknown;
+  for (const current of candidates) {
+    if (activeRuns.has(issueReconciliationRunName(current.repositoryId, current.generation))) {
+      await store.claimReconciliationDispatch(current.repositoryId, current.generation, current.stateRevision, nowIso, retryBefore);
+      continue;
+    }
+    if (!await store.claimReconciliationDispatch(current.repositoryId, current.generation, current.stateRevision, nowIso, retryBefore)) continue;
+    try {
+      await sendWithClient(env, client, ISSUE_LINK_WORKFLOW_FILE, {
+        deliveryId: `issue-reconciliation-recovery:${current.repositoryId}:${current.generation}:${current.stateRevision}`,
+        repositoryId: String(current.repositoryId),
+        scanAll: "true",
+        invalidateOnly: "false",
+        cleanupUnmanaged: "false",
+        reconciliationGeneration: String(current.generation),
+        policySha: env.POLICY_SHA,
+      });
+      dispatched += 1;
+    } catch (error) {
+      await store.releaseReconciliationDispatch(current.repositoryId, current.generation, current.stateRevision, nowIso, current.lastDispatchedAt);
+      firstError ??= error;
+    }
+  }
+  if (firstError) throw firstError;
+  return dispatched;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -367,6 +681,11 @@ export default {
     return response(404);
   },
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
-    await recoverPullRequestBodyWriteIntents(env);
+    const results = await Promise.allSettled([
+      recoverPullRequestBodyWriteIntents(env),
+      recoverIssueSnapshotReconciliations(env),
+    ]);
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failed) throw failed.reason;
   },
 };

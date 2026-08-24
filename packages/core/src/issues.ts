@@ -702,7 +702,7 @@ export function managedBodyOutsideIssueLinksDigest(body: string): string {
     const outer = managedOuterRegion(body);
     if (region.start <= outer.start || region.end > outer.end) throw new Error('议题子块不在唯一外层受管区域内');
   }
-  return sha256(region ? `${body.slice(0, region.start)}${body.slice(region.end)}` : body);
+  return sha256(region ? removeIssueLinksBlock(body) : body);
 }
 
 export interface ClosingKeywordMatch {

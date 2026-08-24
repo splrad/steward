@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { managedRepositoryTargets, runManagedRepositorySync } from "../src/managed-repository-sync.js";
+import { managedRepositoryIds, managedRepositoryTargets, runManagedRepositorySync } from "../src/managed-repository-sync.js";
 
 const catalog = { organization: { id: 1, login: "splrad" }, defaults: { public: { managed: true }, private: { managed: false } }, repositories: { "2": { managed: true, fullName: "splrad/explicit" } } };
 const repositories = [
@@ -10,7 +10,10 @@ const repositories = [
 
 describe("共同受管仓库协调器", () => {
   it("覆盖显式和公开默认登记并在签发目标令牌前忽略private", () => {
-    expect(managedRepositoryTargets(catalog, repositories).map(value => [value.repository.id, value.registration, value.managed])).toEqual([[2, "explicit", true], [3, "default-public", true], [4, "default-private", false]]);
+    const targets = managedRepositoryTargets(catalog, repositories);
+    expect(targets.map(value => [value.repository.id, value.registration, value.managed])).toEqual([[2, "explicit", true], [3, "default-public", true], [4, "default-private", false]]);
+    expect(managedRepositoryIds(targets)).toEqual([2, 3]);
+    expect(() => managedRepositoryIds(targets.filter(target => !target.managed))).toThrow("没有唯一的已纳管仓库编号");
   });
   it("单仓选择必须属于安装，且逐仓失败不阻止后续仓", async () => {
     expect(() => managedRepositoryTargets(catalog, repositories, 9)).toThrow("当前安装");

@@ -29,6 +29,12 @@ export function managedRepositoryTargets(catalog: ManagedCatalog, repositories: 
   return targets.sort((left, right) => Number(left.repository.id) - Number(right.repository.id));
 }
 
+export function managedRepositoryIds(targets: readonly ManagedTarget[]): number[] {
+  const ids = targets.filter(target => target.managed).map(target => Number(target.repository?.id));
+  if (!ids.length || ids.some(id => !Number.isSafeInteger(id) || id <= 0) || new Set(ids).size !== ids.length) throw new Error("当前安装没有唯一的已纳管仓库编号");
+  return ids.sort((left, right) => left - right);
+}
+
 export async function runManagedRepositorySync<T>(
   targets: readonly ManagedTarget[],
   adapter: (target: ManagedTarget) => Promise<T>,

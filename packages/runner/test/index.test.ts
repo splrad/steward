@@ -1,11 +1,12 @@
+import { generateKeyPairSync } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, encodeClassificationCheckState, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectAutomationPullRequestBinding, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, isTrustedAiClassificationSource, matchesGeneratedCopilotInstructions, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, prepareAiClassificationPayload, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, reusedAiClassificationAssessment, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
+import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, encodeClassificationCheckState, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectAutomationPullRequestBinding, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, isTrustedAiClassificationSource, issueSyncInstallationPermissions, main, matchesGeneratedCopilotInstructions, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, prepareAiClassificationPayload, reconcileIssueSnapshots, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, reusedAiClassificationAssessment, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -13,16 +14,231 @@ const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").d
 afterEach(() => {
   delete process.env.TEST_REQUIRED_ENV;
   delete process.env.GITHUB_STEP_SUMMARY;
+  delete process.env.APP_ID;
+  delete process.env.INSTALLATION_ID;
+  delete process.env.STEWARD_APP_PRIVATE_KEY;
+  delete process.env.STEWARD_CONFIG_DIRECTORY;
+  delete process.env.RUNTIME_URL;
+  vi.unstubAllGlobals();
 });
 
 describe("中央命令入口", () => {
-  it("只接受十个命令及其已知、唯一、成对参数", () => {
-    const commands = ["onboard-repository", "pr-automation", "pr-classification", "sync-copilot-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"];
+  it("只接受十四个命令及其已知、唯一、成对参数", () => {
+    const commands = ["issue-sync", "managed-repository-ids", "reconcile-repository-lifecycle", "onboard-repository", "pr-automation", "pr-classification", "pr-issue-link", "sync-copilot-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"];
     for (const command of commands) expect(parseInvocation([command]).command).toBe(command);
     expect(() => parseInvocation(["unknown"])).toThrow("未知命令");
     expect(() => parseInvocation(["validate", "--unknown", "x"])).toThrow("未知参数");
     expect(() => parseInvocation(["validate", "--workspace"])).toThrow("参数格式");
     expect(() => parseInvocation(["validate", "--workspace", "a", "--workspace", "b"])).toThrow("重复参数");
+  });
+
+  it("部署生命周期收敛会墓碑当前未纳管仓库并调度全PR清理", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
+    process.env.APP_ID = "4243096";
+    process.env.INSTALLATION_ID = "145952003";
+    process.env.STEWARD_APP_PRIVATE_KEY = privateKey;
+    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
+    process.env.RUNTIME_URL = "https://runtime.test";
+    const calls: Array<{ url: string; body: any }> = [];
+    vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+      const value = String(url); const body = init?.body ? JSON.parse(String(init.body)) : null;
+      calls.push({ url: value, body });
+      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [
+        { id: 1400000001, full_name: "splrad/default-private", private: true, owner: { id: 302208797, login: "splrad" } },
+      ] }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile")) return new Response(JSON.stringify({ repositoryId: 1296724484, removedRepositoryIds: [1296725317] }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1400000001/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1400000001, managed: false }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) return new Response(null, { status: 204 });
+      return new Response("unexpected", { status: 500 });
+    });
+    await main(["reconcile-repository-lifecycle", "--delivery-id", "deploy-1-1", "--policy-sha", "a".repeat(40)]);
+    expect(calls.find(call => call.url.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile"))?.body).toEqual({ repositoryIds: [1400000001] });
+    const invalidationIndex = calls.findIndex(call => call.body?.inputs?.invalidateOnly === "true");
+    const lifecycleIndex = calls.findIndex(call => call.url.endsWith("/internal/issue-snapshots/1400000001/lifecycle"));
+    const cleanupIndex = calls.findIndex(call => call.body?.inputs?.cleanupUnmanaged === "true");
+    expect(invalidationIndex).toBeGreaterThan(-1);
+    expect(lifecycleIndex).toBeGreaterThan(invalidationIndex);
+    expect(cleanupIndex).toBeGreaterThan(lifecycleIndex);
+    expect(calls[invalidationIndex]!.body.inputs).toEqual({
+      deliveryId: "deploy-1-1:1400000001", repositoryId: "1400000001", scanAll: "true", invalidateOnly: "true", cleanupUnmanaged: "false", policySha: "a".repeat(40),
+    });
+    expect(calls[cleanupIndex]!.body.inputs).toEqual({
+      deliveryId: "deploy-1-1:1400000001", repositoryId: "1400000001", scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "true", policySha: "a".repeat(40),
+    });
+  });
+
+  it("部署对账先失效全部仓库，并在单仓同步失败后继续调度后续仓库", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
+    process.env.APP_ID = "4243096";
+    process.env.INSTALLATION_ID = "145952003";
+    process.env.STEWARD_APP_PRIVATE_KEY = privateKey;
+    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
+    process.env.RUNTIME_URL = "https://runtime.test";
+    const calls: Array<{ url: string; body: any }> = [];
+    const managedRepositories = [
+      { id: 1187527897, full_name: "splrad/LayerScape", private: false, owner: { id: 302208797, login: "splrad" } },
+      { id: 1296724484, full_name: "splrad/steward", private: false, owner: { id: 302208797, login: "splrad" } },
+    ];
+    vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+      const value = String(url); const body = init?.body ? JSON.parse(String(init.body)) : null;
+      calls.push({ url: value, body });
+      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: managedRepositories }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile")) return new Response(JSON.stringify({ repositoryId: 1296724484, removedRepositoryIds: [] }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1187527897/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1187527897, managed: true }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1296724484, managed: true }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) return new Response(null, { status: 204 });
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches")) return new Response(body.inputs.repositoryId === "1187527897" ? "failure" : null, { status: body.inputs.repositoryId === "1187527897" ? 500 : 204 });
+      return new Response("unexpected", { status: 500 });
+    });
+    await expect(main(["reconcile-repository-lifecycle", "--delivery-id", "deploy-1-2", "--policy-sha", "a".repeat(40)])).rejects.toThrow();
+    const invalidations = calls.filter(call => call.body?.inputs?.invalidateOnly === "true");
+    const lifecycleIndexes = calls.map((call, index) => /\/internal\/issue-snapshots\/\d+\/lifecycle$/u.test(call.url) ? index : -1).filter(index => index >= 0);
+    const scans = calls.filter(call => call.url.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches"));
+    expect(invalidations.map(call => call.body.inputs.repositoryId)).toEqual(["1187527897", "1296724484"]);
+    expect(Math.max(...invalidations.map(call => calls.indexOf(call)))).toBeLessThan(Math.min(...lifecycleIndexes));
+    expect(scans.map(call => call.body.inputs.repositoryId)).toEqual(["1187527897", "1296724484"]);
+    expect(Math.max(...lifecycleIndexes)).toBeLessThan(calls.indexOf(scans[0]!));
+  });
+
+  it("部署对账会尝试失效全部仓库，任一失效失败时不变更生命周期", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
+    process.env.APP_ID = "4243096";
+    process.env.INSTALLATION_ID = "145952003";
+    process.env.STEWARD_APP_PRIVATE_KEY = privateKey;
+    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
+    process.env.RUNTIME_URL = "https://runtime.test";
+    const calls: Array<{ url: string; body: any }> = [];
+    vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+      const value = String(url); const body = init?.body ? JSON.parse(String(init.body)) : null;
+      calls.push({ url: value, body });
+      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [
+        { id: 1187527897, full_name: "splrad/LayerScape", private: false, owner: { id: 302208797, login: "splrad" } },
+        { id: 1296724484, full_name: "splrad/steward", private: false, owner: { id: 302208797, login: "splrad" } },
+      ] }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile")) return new Response(JSON.stringify({ repositoryId: 1296724484, removedRepositoryIds: [] }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) return new Response(body.inputs.repositoryId === "1187527897" ? "failure" : null, { status: body.inputs.repositoryId === "1187527897" ? 500 : 204 });
+      return new Response("unexpected", { status: 500 });
+    });
+    await expect(main(["reconcile-repository-lifecycle", "--delivery-id", "deploy-1-3", "--policy-sha", "a".repeat(40)])).rejects.toThrow();
+    expect(calls.filter(call => call.body?.inputs?.invalidateOnly === "true").map(call => call.body.inputs.repositoryId)).toEqual(["1187527897", "1296724484"]);
+    expect(calls.some(call => /\/internal\/issue-snapshots\/\d+\/lifecycle$/u.test(call.url))).toBe(false);
+  });
+
+  it("部署对账在单仓生命周期失败后继续收敛并同步其他仓库", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
+    process.env.APP_ID = "4243096";
+    process.env.INSTALLATION_ID = "145952003";
+    process.env.STEWARD_APP_PRIVATE_KEY = privateKey;
+    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
+    process.env.RUNTIME_URL = "https://runtime.test";
+    const calls: Array<{ url: string; body: any }> = [];
+    vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+      const value = String(url); const body = init?.body ? JSON.parse(String(init.body)) : null;
+      calls.push({ url: value, body });
+      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [
+        { id: 1187527897, full_name: "splrad/LayerScape", private: false, owner: { id: 302208797, login: "splrad" } },
+        { id: 1296724484, full_name: "splrad/steward", private: false, owner: { id: 302208797, login: "splrad" } },
+      ] }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile")) return new Response(JSON.stringify({ repositoryId: 1296724484, removedRepositoryIds: [] }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1187527897/lifecycle")) return new Response("failure", { status: 500 });
+      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1296724484, managed: true }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) return new Response(null, { status: 204 });
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches")) return new Response(null, { status: 204 });
+      return new Response("unexpected", { status: 500 });
+    });
+    await expect(main(["reconcile-repository-lifecycle", "--delivery-id", "deploy-1-4", "--policy-sha", "a".repeat(40)])).rejects.toThrow("仓库生命周期运行时请求失败:500");
+    expect(calls.filter(call => /\/internal\/issue-snapshots\/\d+\/lifecycle$/u.test(call.url)).map(call => call.url.match(/issue-snapshots\/(\d+)/u)?.[1])).toEqual(["1187527897", "1296724484"]);
+    expect(calls.filter(call => call.url.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches")).map(call => call.body.inputs.repositoryId)).toEqual(["1296724484"]);
+  });
+
+  it("部署初始化仓库清单包含公开默认纳管仓库并排除默认private仓库", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
+    process.env.APP_ID = "4243096";
+    process.env.INSTALLATION_ID = "145952003";
+    process.env.STEWARD_APP_PRIVATE_KEY = privateKey;
+    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
+    const requests: Array<{ url: string; body: any }> = [];
+    vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+      const value = String(url);
+      requests.push({ url: value, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [
+        { id: 1296724484, full_name: "splrad/steward", private: false, owner: { id: 302208797, login: "splrad" } },
+        { id: 1400000000, full_name: "splrad/default-managed", private: false, owner: { id: 302208797, login: "splrad" } },
+        { id: 1400000001, full_name: "splrad/default-private", private: true, owner: { id: 302208797, login: "splrad" } },
+      ] }), { status: 200 });
+      return new Response("unexpected", { status: 500 });
+    });
+    const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      await main(["managed-repository-ids", "--policy-sha", "a".repeat(40)]);
+      expect(output).toHaveBeenCalledWith("1296724484\n1400000000\n");
+      expect(requests[0]!.body).toEqual({ permissions: { metadata: "read" } });
+      expect(requests[0]!.body).not.toHaveProperty("repository_ids");
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it("接入成功后即使标签同步失败也先派发首次议题快照", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
+    process.env.APP_ID = "4243096";
+    process.env.INSTALLATION_ID = "145952003";
+    process.env.STEWARD_APP_PRIVATE_KEY = privateKey;
+    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
+    const policySha = "a".repeat(40);
+    const repositoryId = 1296724484;
+    const desiredSettings = {
+      allow_squash_merge: true, allow_merge_commit: false, allow_rebase_merge: false, allow_auto_merge: false,
+      delete_branch_on_merge: true, squash_merge_commit_title: "PR_TITLE", squash_merge_commit_message: "BLANK",
+    };
+    const repository = {
+      id: repositoryId, full_name: "splrad/steward", private: false, owner: { id: 302208797, login: "splrad" },
+      fork: false, archived: false, disabled: false, default_branch: "main", ...desiredSettings,
+    };
+    const instructions = `${(await readFile(resolve("config", "copilot", "common.md"), "utf8")).trimEnd()}\n`;
+    const calls: Array<{ url: string; method: string; body: any }> = [];
+    vi.stubGlobal("fetch", async (url: string | URL | Request, init: RequestInit = {}) => {
+      const value = String(url); const method = init.method ?? "GET"; const body = init.body ? JSON.parse(String(init.body)) : null;
+      calls.push({ url: value, method, body });
+      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository), { status: 200 });
+      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [repository] }), { status: 200 });
+      if (value.includes("/repos/splrad/steward/labels?per_page=100")) return new Response("label failure", { status: 500 });
+      if (value.endsWith("/repos/splrad/steward/git/ref/heads/main")) return new Response(JSON.stringify({ object: { sha: "b".repeat(40) } }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/teams?per_page=100")) return new Response(JSON.stringify([{ slug: "maintainers", permission: "maintain" }]), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/rulesets?includes_parents=true&per_page=100")) return new Response(JSON.stringify([{ id: 18883080, enforcement: "active" }]), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward") && method === "PATCH") return new Response(JSON.stringify(repository), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward") && method === "GET") return new Response(JSON.stringify(repository), { status: 200 });
+      if (value.includes("/repos/splrad/steward/contents/.github/copilot-instructions.md?ref=main")) return new Response(JSON.stringify({ encoding: "base64", content: Buffer.from(instructions, "utf8").toString("base64") }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches")) return new Response(null, { status: 204 });
+      return new Response("unexpected", { status: 500 });
+    });
+
+    await expect(main([
+      "onboard-repository", "--repository-id", String(repositoryId), "--repository-full-name", "splrad/steward",
+      "--trigger", "repository-visibility-changed", "--delivery-id", "onboard-label-failure", "--policy-sha", policySha,
+    ])).rejects.toThrow("受管标签同步失败: splrad/steward");
+    const dispatch = calls.find(call => call.url.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches"));
+    expect(dispatch?.body).toEqual({ ref: "main", inputs: { deliveryId: "onboard-label-failure", repositoryId: String(repositoryId), scanAll: "true", policySha } });
+  });
+
+  it("在创建安装令牌前拒绝超出安全整数范围的编号", async () => {
+    await expect(main([
+      "issue-sync",
+      "--delivery-id", "delivery-unsafe-integer",
+      "--repository-id", "9007199254740993",
+      "--scan-all", "true",
+      "--policy-sha", "a".repeat(40),
+    ])).rejects.toThrow("安全整数");
   });
 
   it("缺失环境变量立即失败", () => {
@@ -217,7 +433,7 @@ describe("中央命令入口", () => {
       summary: "本次修改为正文生成增加严格校验后的受控修复步骤。",
       motivation: null,
       changes: ["增加一次受控修复并保留确定性回退边界"],
-      impact: [], related: [], releaseAndMigration: [], classification: null,
+      impact: [], releaseAndMigration: [], classification: null,
     });
     expect(inspectCopilotGeneratedSummary(wrap(valid))).toMatchObject({ state: "valid" });
     const { classification: _classification, ...withoutClassification } = JSON.parse(valid);
@@ -481,6 +697,7 @@ describe("中央命令入口", () => {
     expect(prAutomationInstallationPermissions()).toEqual({
       contents: "read",
       pull_requests: "write",
+      issues: "read",
       checks: "read",
       metadata: "read",
     });
@@ -680,17 +897,135 @@ describe("中央命令入口", () => {
     expect(summaries).not.toMatch(/STEWARD_APP_PRIVATE_KEY|COPILOT_REVIEW_REQUEST_TOKEN|installation-token|upload_url/iu);
   });
 
-  it("已有自动化拉取请求只通过持久正文写入器更新正文", async () => {
+  it("Runner内所有议题关联派发都显式传递未纳管清理模式", async () => {
     const source = await readFile("packages/runner/src/index.ts", "utf8");
-    const managedFile = source.slice(source.indexOf("async function reconcileManagedFile"), source.indexOf("async function onboard"));
-    const automation = source.slice(source.indexOf("async function automate"), source.indexOf("async function classify"));
-    for (const section of [managedFile, automation]) {
-      expect(section).toContain("updatePullRequestBodyDurably({");
-      expect(section).toContain('regionKind: "managed-pr"');
-      expect(section).toContain('runtimeUrl: env("RUNTIME_URL")');
-      expect(section).not.toMatch(/updatePullRequest\([^)]*\{\s*title[^}]*body/u);
-    }
-    expect(managedFile).toContain("redrive: input.redrive");
-    expect(automation).toContain('workflow: "pr-automation.yml"');
+    const dispatches = [...source.matchAll(/dispatchCentralWorkflow\("pr-issue-link\.yml"/gu)];
+    expect(dispatches).toHaveLength(5);
+    const modes = dispatches.map(dispatch => /cleanupUnmanaged:\s*"(true|false)"/u.exec(source.slice(dispatch.index, dispatch.index + 700))?.[1]);
+    expect(modes.sort()).toEqual(["false", "false", "false", "false", "true"]);
+  });
+
+  it("PR自动化正文写入后显式重调度议题关联", async () => {
+    const source = await readFile("packages/runner/src/index.ts", "utf8");
+    const automation = source.slice(source.indexOf("async function automate("), source.indexOf("async function classify("));
+    const bodyWrite = automation.indexOf("updatePullRequestBodyDurably(");
+    const dispatch = automation.indexOf('dispatchCentralWorkflow("pr-issue-link.yml"');
+    const copilot = automation.indexOf("ensureCopilotReview(", dispatch);
+    const classification = automation.indexOf("dispatchClassification(", dispatch);
+    expect(bodyWrite).toBeGreaterThan(-1);
+    expect(dispatch).toBeGreaterThan(bodyWrite);
+    expect(copilot).toBeGreaterThan(dispatch);
+    expect(classification).toBeGreaterThan(dispatch);
+    expect(automation.slice(dispatch, dispatch + 700)).toMatch(/pullRequestNumber:\s*String\(pull\.number\)[\s\S]*cleanupUnmanaged:\s*"false"/u);
+  });
+});
+
+describe("议题快照同步", () => {
+  it("目标仓库令牌只申请Issues和Metadata读取权限", () => {
+    expect(issueSyncInstallationPermissions()).toEqual({ issues: "read", metadata: "read" });
+  });
+
+  function dependencies(input: {
+    live?: readonly number[];
+    stored?: readonly number[];
+    refresh?: (issueNumber: number) => { changed?: boolean; deleted?: boolean; generation: number };
+    failReady?: boolean;
+    failDispatch?: boolean;
+    failDispatchOnce?: boolean;
+    initialState?: "uninitialized" | "scanning" | "ready" | "degraded";
+  } = {}) {
+    const states: string[] = [];
+    const refreshed: number[] = [];
+    let dispatched = 0;
+    let released = 0;
+    let pendingGeneration: number | null = null;
+    let pendingStateRevision: number | null = null;
+    return {
+      states, refreshed, dispatched: () => dispatched, released: () => released,
+      value: {
+        listLiveOpenIssues: async () => ({ numbers: input.live ?? [], skipped: 2 }),
+        getState: async () => ({ repositoryId: 1296724484, generation: 4, syncState: input.initialState ?? "ready", reconciliationGeneration: pendingGeneration, reconciliationStateRevision: pendingStateRevision, snapshots: (input.stored ?? []).map(issueNumber => ({ issueNumber })) }),
+        setScanState: async (state: "scanning" | "ready" | "degraded") => {
+          states.push(state);
+          if (state === "ready" && input.failReady) throw new Error("开放集合未收敛");
+          if (state === "ready") { pendingGeneration = 7; pendingStateRevision = 9; }
+          return { repositoryId: 1296724484, generation: 7, syncState: state, snapshots: [] };
+        },
+        refresh: async (issueNumber: number) => {
+          refreshed.push(issueNumber);
+          const result = input.refresh?.(issueNumber) ?? { changed: false, generation: 4 };
+          if (result.changed === true || result.deleted === true) pendingGeneration = result.generation;
+          return { repositoryId: 1296724484, issueNumber, ...result };
+        },
+        dispatchFormalReconciliation: async (generation: number) => {
+          if (pendingGeneration !== generation) throw new Error("待处理代次不一致");
+          dispatched++;
+          if (input.failDispatch || (input.failDispatchOnce && dispatched === 1)) throw new Error("工作流派发失败");
+        },
+        releaseFormalReconciliation: async (generation: number, stateRevision: number) => {
+          if (pendingGeneration !== generation || pendingStateRevision !== stateRevision) throw new Error("待释放重算请求不一致");
+          released++;
+        },
+      },
+    };
+  }
+
+  it("单议题在失效后即使内容未变也创建并调度同代次重算", async () => {
+    const changed = dependencies({ refresh: () => ({ changed: true, generation: 5 }) });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, changed.value)).resolves.toEqual(expect.objectContaining({ refreshed: 1, changed: 1, generation: 7, dispatched: true }));
+    expect(changed.dispatched()).toBe(1);
+    expect(changed.states).toEqual(["scanning", "ready"]);
+    const duplicate = dependencies({ refresh: () => ({ changed: false, generation: 5 }) });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, duplicate.value)).resolves.toEqual(expect.objectContaining({ changed: 0, generation: 7, dispatched: true }));
+    expect(duplicate.dispatched()).toBe(1);
+    expect(duplicate.states).toEqual(["scanning", "ready"]);
+    const uninitialized = dependencies({ initialState: "uninitialized", live: [8], refresh: () => ({ changed: true, generation: 5 }) });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, uninitialized.value)).resolves.toEqual(expect.objectContaining({ issueNumber: null, dispatched: true }));
+    expect(uninitialized.states).toEqual(["scanning", "ready"]);
+  });
+
+  it("全量同步对GitHub与D1开放集合取并集并修复漏关闭或删除", async () => {
+    const fixture = dependencies({ live: [1, 2], stored: [2, 3], refresh: issueNumber => issueNumber === 3 ? { deleted: true, generation: 7 } : { changed: true, generation: 4 + issueNumber } });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, scanAll: true }, fixture.value)).resolves.toEqual({ repositoryId: 1296724484, issueNumber: null, refreshed: 3, skipped: 2, changed: 3, generation: 7, dispatched: true });
+    expect(fixture.refreshed).toEqual([1, 2, 3]);
+    expect(fixture.states).toEqual(["scanning", "ready"]);
+    expect(fixture.dispatched()).toBe(1);
+  });
+
+  it("空仓也收敛为ready，失败则尽力标记degraded", async () => {
+    const empty = dependencies();
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, scanAll: true }, empty.value)).resolves.toEqual(expect.objectContaining({ refreshed: 0, changed: 0, generation: 7, dispatched: true }));
+    expect(empty.states).toEqual(["scanning", "ready"]);
+    const failed = dependencies({ failReady: true });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, scanAll: true }, failed.value)).rejects.toThrow("开放集合未收敛");
+    expect(failed.states).toEqual(["scanning", "ready", "degraded"]);
+    expect(failed.dispatched()).toBe(0);
+    const dispatchFailed = dependencies({ failDispatch: true });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, scanAll: true }, dispatchFailed.value)).rejects.toThrow("工作流派发失败");
+    expect(dispatchFailed.states).toEqual(["scanning", "ready"]);
+    expect(dispatchFailed.dispatched()).toBe(1);
+    expect(dispatchFailed.released()).toBe(1);
+  });
+
+  it("派发失败后保留D1待处理代次，重试即使内容未变也会再次派发", async () => {
+    const fixture = dependencies({ refresh: () => ({ changed: true, generation: 5 }), failDispatchOnce: true });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, fixture.value)).rejects.toThrow("工作流派发失败");
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, fixture.value)).resolves.toEqual(expect.objectContaining({ dispatched: true }));
+    expect(fixture.dispatched()).toBe(2);
+    expect(fixture.released()).toBe(1);
+  });
+
+  it("派发成功后仍保留D1待处理代次，由正式收敛成功路径另行确认", async () => {
+    const fixture = dependencies({ refresh: () => ({ changed: true, generation: 5 }) });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, fixture.value)).resolves.toEqual(expect.objectContaining({ dispatched: true }));
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, fixture.value)).resolves.toEqual(expect.objectContaining({ dispatched: true }));
+    expect(fixture.dispatched()).toBe(2);
+  });
+
+  it("拒绝重复开放编号和互相矛盾的单项参数", async () => {
+    const duplicate = dependencies({ live: [1, 1] });
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, scanAll: true }, duplicate.value)).rejects.toThrow("GitHub开放议题集合无效");
+    expect(duplicate.states).toEqual(["scanning", "degraded"]);
+    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 1, scanAll: true }, dependencies().value)).rejects.toThrow("参数不一致");
   });
 });

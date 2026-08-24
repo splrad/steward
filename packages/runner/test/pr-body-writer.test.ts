@@ -13,7 +13,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 function block(summary: string): string {
   return extractManagedPullRequestBlock(renderManagedBody({
-    generated: { type: "chore", scope: "test", title: "测试", summary, motivation: "原因", changes: ["改动"], impact: [], related: [], releaseAndMigration: [] },
+    generated: { type: "chore", scope: "test", title: "测试", summary, motivation: "原因", changes: ["改动"], impact: [], releaseAndMigration: [] },
     templateBody: "<!-- workflow:managed-pr:start -->\n<!-- workflow:managed-pr:end -->\n",
     actor: "splrad-steward[bot]",
     contributors: [],
