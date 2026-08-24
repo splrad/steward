@@ -126,6 +126,29 @@ describe("中央运行程序", () => {
     expect(dispatched.filter(value => value.workflow === "pr-issue-link.yml").map(value => value.inputs.invalidateOnly)).toEqual(["true", "false"]);
   });
 
+  it("默认分支拉取请求正文编辑时先失效同一head上的旧议题门禁", async () => {
+    const headSha = "d".repeat(40); const dispatched: { workflow: string; inputs: any }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.includes(`/commits/${headSha}/check-runs?per_page=100`)) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/check-runs")) return new Response(JSON.stringify({ id: 101 }), { status: 201 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      const match = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(value);
+      if (match) { dispatched.push({ workflow: match[1]!, inputs: JSON.parse(String(init.body)).inputs }); return new Response(null, { status: 204 }); }
+      return new Response("unexpected", { status: 500 });
+    });
+    const payload = scoped({
+      action: "edited",
+      changes: { body: { from: "原正文" } },
+      repository: repository(),
+      pull_request: { number: 8, body: "Resolves #7", head: { sha: headSha }, base: { ref: "main" }, user: { id: 44151430 } },
+    });
+    expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(202);
+    expect(dispatched.map(value => value.workflow)).toEqual(["pr-issue-link.yml", "pr-classification.yml", "pr-issue-link.yml"]);
+    expect(dispatched.filter(value => value.workflow === "pr-issue-link.yml").map(value => value.inputs.invalidateOnly)).toEqual(["true", "false"]);
+  });
+
   it("edited使拉取请求离开默认分支时先失效议题门禁再清理", async () => {
     const dispatched: { workflow: string; inputs: any }[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {

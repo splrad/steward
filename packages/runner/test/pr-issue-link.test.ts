@@ -296,6 +296,32 @@ describe("拉取请求议题关联运行器", () => {
     });
   });
 
+  it("外部来源PR只用目标仓库权限发布 not-applicable 且不写正文", async () => {
+    await withRunnerEnvironment(async () => {
+      const calls: Array<{ url: string; method: string; body: any }> = [];
+      vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+        const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
+        calls.push({ url: value, method, body });
+        if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+        if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/pulls/42")) {
+          const external = pull("", 44151430); external.head.repo.id = 987654321;
+          return new Response(JSON.stringify(external), { status: 200 });
+        }
+        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/check-runs")) return new Response(JSON.stringify({ id: 1 }), { status: 201 });
+        return new Response("unexpected", { status: 500 });
+      });
+      process.env.ISSUE_LINK_PREPARE_ONLY = "true";
+      await runPrIssueLink(invocation());
+      const check = calls.find(call => call.method === "POST" && call.url.endsWith("/check-runs"));
+      expect(check?.body).toEqual(expect.objectContaining({ name: "PR Issue Link Gate", head_sha: headSha, status: "completed", conclusion: "success" }));
+      expect(check?.body.output.title).toBe("议题关联不适用");
+      expect(calls.some(call => call.url.includes("workers.dev") || (call.method === "PATCH" && call.url.endsWith("/pulls/42")))).toBe(false);
+      expect(calls.filter(call => call.url.includes("/access_tokens")).map(call => call.body.repository_ids)).toEqual([[repositoryId]]);
+    });
+  });
+
   it("仓库退出纳管后不读取快照并清理所有受管PR议题状态", async () => {
     await withRunnerEnvironment(async () => {
       process.env.RUNTIME_URL = "https://runtime.test";
