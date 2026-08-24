@@ -493,6 +493,7 @@ interface IssueSyncRepositoryState {
   syncState: "uninitialized" | "scanning" | "ready" | "degraded";
   snapshots?: readonly { issueNumber: number }[];
   reconciliationGeneration?: number | null;
+  reconciliationStateRevision?: number | null;
 }
 
 interface IssueSyncRefreshResult {
@@ -519,6 +520,7 @@ export interface IssueSyncDependencies {
   setScanState(state: "scanning" | "ready" | "degraded"): Promise<IssueSyncRepositoryState>;
   refresh(issueNumber: number): Promise<IssueSyncRefreshResult>;
   dispatchFormalReconciliation(generation: number): Promise<void>;
+  releaseFormalReconciliation(generation: number, stateRevision: number): Promise<void>;
 }
 
 function uniqueIssueNumbers(values: readonly number[], name: string): number[] {
@@ -533,6 +535,9 @@ function assertIssueSyncState(value: IssueSyncRepositoryState, repositoryId: num
     || (expectedState !== undefined && value.syncState !== expectedState)
     || (value.reconciliationGeneration !== undefined && value.reconciliationGeneration !== null
       && (!Number.isSafeInteger(value.reconciliationGeneration) || value.reconciliationGeneration < 0))
+    || (value.reconciliationStateRevision !== undefined && value.reconciliationStateRevision !== null
+      && (!Number.isSafeInteger(value.reconciliationStateRevision) || value.reconciliationStateRevision < 0))
+    || ((value.reconciliationGeneration ?? null) === null) !== ((value.reconciliationStateRevision ?? null) === null)
     || (snapshotsRequired && !Array.isArray(value.snapshots))) throw new Error("议题同步仓库状态响应无效");
 }
 
@@ -541,7 +546,13 @@ async function dispatchPendingReconciliation(repositoryId: number, dependencies:
   assertIssueSyncState(state, repositoryId);
   const generation = state.reconciliationGeneration;
   if (generation === undefined || generation === null) return false;
-  await dependencies.dispatchFormalReconciliation(generation);
+  const stateRevision = state.reconciliationStateRevision!;
+  try {
+    await dependencies.dispatchFormalReconciliation(generation);
+  } catch (error) {
+    try { await dependencies.releaseFormalReconciliation(generation, stateRevision); } catch { /* preserve the dispatch failure */ }
+    throw error;
+  }
   return true;
 }
 
@@ -666,6 +677,13 @@ async function issueSync(args: Readonly<Record<string, string>>): Promise<void> 
       reconciliationGeneration: String(generation),
       policySha,
     }),
+    async releaseFormalReconciliation(generation, stateRevision) {
+      const released = await requestRuntime<{ repositoryId: number; generation: number; stateRevision: number; released: boolean }>("POST", `/internal/issue-snapshots/${repositoryId}/reconciliation/release`, {
+        "x-steward-reconciliation-generation": String(generation),
+        "x-steward-reconciliation-state-revision": String(stateRevision),
+      });
+      if (released.repositoryId !== repositoryId || released.generation !== generation || released.stateRevision !== stateRevision || typeof released.released !== "boolean") throw new Error("议题重算首次派发释放响应无效");
+    },
   });
   await summary([`仓库编号：${result.repositoryId}`, `议题编号：${result.issueNumber ?? "all"}`, `刷新数量：${result.refreshed}`, `跳过数量：${result.skipped}`, `变更数量：${result.changed}`, `仓库代次：${result.generation}`, `全拉取请求重算：${result.dispatched ? "scheduled" : "unchanged"}`]);
 }

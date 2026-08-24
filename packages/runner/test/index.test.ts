@@ -937,16 +937,18 @@ describe("议题快照同步", () => {
     const states: string[] = [];
     const refreshed: number[] = [];
     let dispatched = 0;
+    let released = 0;
     let pendingGeneration: number | null = null;
+    let pendingStateRevision: number | null = null;
     return {
-      states, refreshed, dispatched: () => dispatched,
+      states, refreshed, dispatched: () => dispatched, released: () => released,
       value: {
         listLiveOpenIssues: async () => ({ numbers: input.live ?? [], skipped: 2 }),
-        getState: async () => ({ repositoryId: 1296724484, generation: 4, syncState: input.initialState ?? "ready", reconciliationGeneration: pendingGeneration, snapshots: (input.stored ?? []).map(issueNumber => ({ issueNumber })) }),
+        getState: async () => ({ repositoryId: 1296724484, generation: 4, syncState: input.initialState ?? "ready", reconciliationGeneration: pendingGeneration, reconciliationStateRevision: pendingStateRevision, snapshots: (input.stored ?? []).map(issueNumber => ({ issueNumber })) }),
         setScanState: async (state: "scanning" | "ready" | "degraded") => {
           states.push(state);
           if (state === "ready" && input.failReady) throw new Error("开放集合未收敛");
-          if (state === "ready") pendingGeneration = 7;
+          if (state === "ready") { pendingGeneration = 7; pendingStateRevision = 9; }
           return { repositoryId: 1296724484, generation: 7, syncState: state, snapshots: [] };
         },
         refresh: async (issueNumber: number) => {
@@ -959,6 +961,10 @@ describe("议题快照同步", () => {
           if (pendingGeneration !== generation) throw new Error("待处理代次不一致");
           dispatched++;
           if (input.failDispatch || (input.failDispatchOnce && dispatched === 1)) throw new Error("工作流派发失败");
+        },
+        releaseFormalReconciliation: async (generation: number, stateRevision: number) => {
+          if (pendingGeneration !== generation || pendingStateRevision !== stateRevision) throw new Error("待释放重算请求不一致");
+          released++;
         },
       },
     };
@@ -998,6 +1004,7 @@ describe("议题快照同步", () => {
     await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, scanAll: true }, dispatchFailed.value)).rejects.toThrow("工作流派发失败");
     expect(dispatchFailed.states).toEqual(["scanning", "ready"]);
     expect(dispatchFailed.dispatched()).toBe(1);
+    expect(dispatchFailed.released()).toBe(1);
   });
 
   it("派发失败后保留D1待处理代次，重试即使内容未变也会再次派发", async () => {
@@ -1005,6 +1012,7 @@ describe("议题快照同步", () => {
     await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, fixture.value)).rejects.toThrow("工作流派发失败");
     await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, fixture.value)).resolves.toEqual(expect.objectContaining({ dispatched: true }));
     expect(fixture.dispatched()).toBe(2);
+    expect(fixture.released()).toBe(1);
   });
 
   it("派发成功后仍保留D1待处理代次，由正式收敛成功路径另行确认", async () => {

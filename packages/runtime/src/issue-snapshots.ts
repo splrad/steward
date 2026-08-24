@@ -280,6 +280,14 @@ export class IssueSnapshotStore {
     return resultChanges(result) === 1;
   }
 
+  async releaseInitialReconciliationDispatch(repositoryId: number, generation: number, stateRevision: number): Promise<boolean> {
+    rowInteger(repositoryId, "repositoryId", 1); rowInteger(generation, "generation"); rowInteger(stateRevision, "stateRevision");
+    const result = await this.db.prepare(`UPDATE issue_snapshot_reconciliation_requests SET last_dispatched_at = ?
+      WHERE repository_id = ? AND requested_generation = ? AND requested_state_revision = ? AND last_dispatched_at = requested_at`)
+      .bind(new Date(0).toISOString(), repositoryId, generation, stateRevision).run();
+    return resultChanges(result) === 1;
+  }
+
   async acknowledgeReconciliation(repositoryId: number, generation: number, stateRevision: number): Promise<boolean> {
     rowInteger(repositoryId, "repositoryId", 1); rowInteger(generation, "generation"); rowInteger(stateRevision, "stateRevision");
     const result = await this.db.prepare(`DELETE FROM issue_snapshot_reconciliation_requests
@@ -813,7 +821,7 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
       const state = await store.setScanState(repositoryId, requested, expectedGeneration, expectedStateRevision, new Date().toISOString(), live);
       return noStoreResponse(200, state);
     }
-    if (request.method === "POST" && parts.length === 2 && parts[1] === "reconciliation") {
+    if (request.method === "POST" && (parts.length === 2 || (parts.length === 3 && parts[2] === "release")) && parts[1] === "reconciliation") {
       await requireEmptyBody(request);
       const generationHeader = request.headers.get("x-steward-reconciliation-generation") ?? "";
       const stateRevisionHeader = request.headers.get("x-steward-reconciliation-state-revision") ?? "";
@@ -822,6 +830,10 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
       catch { return noStoreResponse(400, { error: "invalid-reconciliation-generation" }); }
       try { stateRevision = nonNegativeInteger(stateRevisionHeader, "stateRevision"); }
       catch { return noStoreResponse(400, { error: "invalid-reconciliation-state-revision" }); }
+      if (parts.length === 3) {
+        const released = await store.releaseInitialReconciliationDispatch(repositoryId, generation, stateRevision);
+        return noStoreResponse(200, { repositoryId, generation, stateRevision, released });
+      }
       const acknowledged = await store.acknowledgeReconciliation(repositoryId, generation, stateRevision);
       return noStoreResponse(200, { repositoryId, generation, stateRevision, acknowledged });
     }

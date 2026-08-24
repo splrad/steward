@@ -822,6 +822,23 @@ describe("议题快照内部接口", () => {
     } }), env(database));
     expect(await current.json()).toEqual({ repositoryId: 1296724484, generation: 0, stateRevision: ready.stateRevision, acknowledged: true });
   });
+
+  it("首次派发失败只释放仍未被恢复者声明的精确重算请求", async () => {
+    const database = new SqliteD1();
+    const store = new IssueSnapshotStore(database.binding());
+    const ready = await store.setScanState(1296724484, "ready", 0, 0, "2026-08-21T00:00:00.000Z", []);
+    installAuthorization();
+    const url = "https://example.test/internal/issue-snapshots/1296724484/reconciliation/release";
+    const request = (stateRevision: number) => worker.fetch(new Request(url, { method: "POST", headers: {
+      authorization: "Bearer one-repository-token", "x-steward-reconciliation-generation": "0", "x-steward-reconciliation-state-revision": String(stateRevision),
+    } }), env(database));
+    expect(await (await request(ready.stateRevision + 1)).json()).toEqual({ repositoryId: 1296724484, generation: 0, stateRevision: ready.stateRevision + 1, released: false });
+    expect(await (await request(ready.stateRevision)).json()).toEqual({ repositoryId: 1296724484, generation: 0, stateRevision: ready.stateRevision, released: true });
+    expect(await (await request(ready.stateRevision)).json()).toEqual({ repositoryId: 1296724484, generation: 0, stateRevision: ready.stateRevision, released: false });
+    expect(await store.listReconciliationDispatchCandidates("1970-01-01T00:00:00.000Z", 20)).toEqual([
+      expect.objectContaining({ repositoryId: 1296724484, generation: 0, stateRevision: ready.stateRevision, lastDispatchedAt: "1970-01-01T00:00:00.000Z" }),
+    ]);
+  });
 });
 
 describe("正文写意图交付恢复", () => {
