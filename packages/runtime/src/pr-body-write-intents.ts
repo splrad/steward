@@ -142,7 +142,7 @@ export function normalizePullRequestBodyRedrive(value: unknown, expected: { repo
   if (workflow === "pr-automation.yml" && (!deliveryPattern.test(inputs.deliveryId ?? "") || !/^refs\/heads\/.+/u.test(inputs.sourceRef ?? "")
     || !shaPattern.test(inputs.eventAfterSha ?? "") || !/^[1-9][0-9]*$/u.test(inputs.sourceActorId ?? "") || !(inputs.sourceActorLogin ?? "").length)) throw new Error("正文写重调度输入无效");
   if (workflow === "onboard-repository.yml" && (!repositoryNamePattern.test(inputs.repositoryFullName ?? "")
-    || !["installation-created", "installation-repositories-added", "default-branch-push", "manual"].includes(inputs.trigger ?? "")
+    || !["installation-created", "installation-repositories-added", "repository-visibility-changed", "repository-unarchived", "default-branch-push", "manual"].includes(inputs.trigger ?? "")
     || !deliveryPattern.test(inputs.deliveryId ?? ""))) throw new Error("正文写重调度输入无效");
   if (workflow !== "sync-copilot-instructions.yml" && !shaPattern.test(inputs.policySha ?? "")) throw new Error("正文写重调度输入无效");
   return Object.freeze({ workflow, inputs: Object.freeze(inputs) });

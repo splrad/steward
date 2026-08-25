@@ -683,6 +683,12 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
   }
   if (args.cleanupUnmanaged) {
     await cleanupManagedIssueBlock(client, token, repository, pull, managed, args);
+    if (managed && pull?.state === "open" && managedConfiguration(repository) !== null && !isIssueCapableRepository(repository, true)) {
+      await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
+        status: "completed", conclusion: "success", title: "议题关联不适用",
+        summary: `拉取请求：#${pullRequestNumber}\n状态：not-applicable\n类别：repository-issues-disabled`,
+      });
+    }
     await writeOutput({ "copilot-required": "false", completed: "true" });
     return;
   }

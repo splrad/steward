@@ -6,6 +6,7 @@ import { removeIssueLinksBlock, renderIssueLinksBlock, upsertIssueLinksBlock } f
 import {
   bodyOutsideManagedRegionDigest,
   confirmPullRequestBodyWriteIntent,
+  normalizePullRequestBodyRedrive,
   processPullRequestBodyEditedDelivery,
   pullRequestBodyDigest,
   PullRequestBodyWriteIntentStore,
@@ -87,6 +88,21 @@ function payload(before: string, after: string, deliverySender = 301115370): any
 }
 
 describe("拉取请求正文持久补偿协议", () => {
+  it("接入重调度接受运行器支持的全部触发来源", () => {
+    for (const trigger of ["installation-created", "installation-repositories-added", "repository-visibility-changed", "repository-unarchived", "default-branch-push", "manual"]) {
+      expect(normalizePullRequestBodyRedrive({
+        workflow: "onboard-repository.yml",
+        inputs: { repositoryId: String(repositoryId), repositoryFullName: "splrad/steward", trigger, deliveryId: "delivery-onboard", policySha: "a".repeat(40) },
+      }, { repositoryId, pullRequestNumber, regionKind: "managed-pr" })).toEqual(expect.objectContaining({
+        workflow: "onboard-repository.yml", inputs: expect.objectContaining({ trigger }),
+      }));
+    }
+    expect(() => normalizePullRequestBodyRedrive({
+      workflow: "onboard-repository.yml",
+      inputs: { repositoryId: String(repositoryId), repositoryFullName: "splrad/steward", trigger: "unsupported", deliveryId: "delivery-onboard", policySha: "a".repeat(40) },
+    }, { repositoryId, pullRequestNumber, regionKind: "managed-pr" })).toThrow("正文写重调度输入无效");
+  });
+
   it("过期意图不能继续推进，并进入阻断重调度状态", async () => {
     const expiredNow = "2026-08-22T00:11:00.000Z";
 
