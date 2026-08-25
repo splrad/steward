@@ -462,13 +462,16 @@ export class IssueSnapshotStore {
     return { changed: true, state };
   }
 
-  async deleteRepository(repositoryId: number): Promise<void> {
+  private async tombstoneRepository(repositoryId: number, deleteBodyWrites: boolean): Promise<void> {
     rowInteger(repositoryId, "repositoryId", 1);
     const now = new Date().toISOString();
     const emptyDigest = openIssueSetDigest(repositoryId, []);
-    const results = await this.db.batch([
+    const statements: D1PreparedStatement[] = [];
+    if (deleteBodyWrites) statements.push(
       this.db.prepare("DELETE FROM pull_request_body_write_deliveries WHERE repository_id = ?").bind(repositoryId),
       this.db.prepare("DELETE FROM pull_request_body_write_intents WHERE repository_id = ?").bind(repositoryId),
+    );
+    statements.push(
       this.db.prepare(`INSERT INTO issue_snapshot_repository_tombstones (repository_id, deleted_at) VALUES (?, ?)
         ON CONFLICT(repository_id) DO UPDATE SET deleted_at = excluded.deleted_at`).bind(repositoryId, now),
       this.db.prepare("DELETE FROM issue_snapshots WHERE repository_id = ?").bind(repositoryId),
@@ -481,8 +484,17 @@ export class IssueSnapshotStore {
           sync_state = excluded.sync_state, open_set_digest = excluded.open_set_digest,
           last_full_scan_at = excluded.last_full_scan_at, updated_at = excluded.updated_at`)
         .bind(repositoryId, emptyDigest, now),
-    ]);
-    if (results.length !== 7 || results.some((result) => !result.success)) throw new Error("仓库快照清理失败");
+    );
+    const results = await this.db.batch(statements);
+    if (results.length !== statements.length || results.some((result) => !result.success)) throw new Error("仓库快照清理失败");
+  }
+
+  async tombstoneIssueSnapshots(repositoryId: number): Promise<void> {
+    await this.tombstoneRepository(repositoryId, false);
+  }
+
+  async deleteRepository(repositoryId: number): Promise<void> {
+    await this.tombstoneRepository(repositoryId, true);
   }
 
   async deleteAllRepositories(repositoryIds: readonly number[] = []): Promise<void> {
@@ -711,6 +723,7 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
       }
       await requireEmptyBody(request);
       if (issueCapable) await store.activateRepository(repositoryId);
+      else if (managed) await store.tombstoneIssueSnapshots(repositoryId);
       else await store.deleteRepository(repositoryId);
       return noStoreResponse(200, { repositoryId, managed, issueCapable });
     }

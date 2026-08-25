@@ -64,7 +64,8 @@ describe("中央运行程序", () => {
 
   it("关闭Issues会墓碑化快照并只调度Steward受管块清理", async () => {
     const events: string[] = [];
-    vi.spyOn(IssueSnapshotStore.prototype, "deleteRepository").mockImplementation(async (repositoryId) => { events.push(`delete:${repositoryId}`); });
+    const tombstoned = vi.spyOn(IssueSnapshotStore.prototype, "tombstoneIssueSnapshots").mockImplementation(async (repositoryId) => { events.push(`tombstone:${repositoryId}`); });
+    const deleted = vi.spyOn(IssueSnapshotStore.prototype, "deleteRepository").mockResolvedValue();
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
       const value = String(url);
       if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
@@ -76,10 +77,13 @@ describe("中央运行程序", () => {
     const current = { ...repository(), has_issues: false };
     const payload = scoped({ action: "edited", repository: current, changes: { has_issues: { from: true } } });
     expect((await handleWebhook(signedRequest("repository", payload), { ...baseEnv(), ISSUE_SNAPSHOTS: {} as D1Database })).status).toBe(202);
-    expect(events).toEqual(["delete:1296724484", "pr-issue-link.yml:false:true"]);
+    expect(events).toEqual(["tombstone:1296724484", "pr-issue-link.yml:false:true"]);
+    expect(tombstoned).toHaveBeenCalledWith(1296724484);
+    expect(deleted).not.toHaveBeenCalled();
   });
 
   it("归档动作墓碑化快照但不向只读仓库调度正文清理", async () => {
+    const tombstoned = vi.spyOn(IssueSnapshotStore.prototype, "tombstoneIssueSnapshots").mockResolvedValue();
     const deleted = vi.spyOn(IssueSnapshotStore.prototype, "deleteRepository").mockResolvedValue();
     const requests: string[] = [];
     vi.stubGlobal("fetch", async (url: string) => {
@@ -89,7 +93,8 @@ describe("中央运行程序", () => {
     const current = { ...repository(), archived: true };
     const result = await handleWebhook(signedRequest("repository", scoped({ action: "archived", repository: current })), { ...baseEnv(), ISSUE_SNAPSHOTS: {} as D1Database });
     expect(result.status).toBe(202);
-    expect(deleted).toHaveBeenCalledWith(1296724484);
+    expect(tombstoned).toHaveBeenCalledWith(1296724484);
+    expect(deleted).not.toHaveBeenCalled();
     expect(requests).toEqual([]);
   });
 

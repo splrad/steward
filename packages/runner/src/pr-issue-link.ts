@@ -705,7 +705,17 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
     return;
   }
   if (!targetsDefault) {
-    await cleanupManagedIssueBlock(client, token, repository, pull, true, args);
+    try {
+      await cleanupManagedIssueBlock(client, token, repository, pull, true, args);
+      await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
+        status: "completed", conclusion: "success", title: "议题关联不适用", summary: `拉取请求：#${pullRequestNumber}\n状态：not-applicable`,
+      });
+    } catch (error) {
+      await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
+        status: "completed", conclusion: "failure", title: "议题关联清理失败", summary: `拉取请求：#${pullRequestNumber}\n状态：failure\n类别：not-applicable-unclean`,
+      });
+      throw error;
+    }
     await writeOutput({ "copilot-required": "false", completed: "true" });
     return;
   }

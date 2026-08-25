@@ -639,12 +639,22 @@ describe("议题快照内部接口", () => {
     const database = new SqliteD1();
     const store = new IssueSnapshotStore(database.binding());
     await put(store, snapshot(1296724484, "splrad/steward", 7), 0);
+    const intentStore = new PullRequestBodyWriteIntentStore(database.binding());
+    const writeId = "11111111-1111-4111-8111-111111111111";
+    const targetBlock = renderIssueLinksBlock({ repositoryId: 1296724484, pullRequestNumber: 42, baseSha: "b".repeat(40), headSha: "c".repeat(40), generation: 1, analysisInputDigest: "d".repeat(64) }, []);
+    await intentStore.prepare({ repositoryId: 1296724484, pullRequestNumber: 42, writeId, regionKind: "issue-links", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 1,
+      beforeBodyDigest: pullRequestBodyDigest("before"), outsideBodyDigest: pullRequestBodyDigest("outside"), targetBlock, targetBodyDigest: pullRequestBodyDigest("after"),
+      now: "2026-08-22T00:00:00Z", expiresAt: "2026-08-22T00:10:00Z",
+      redrive: { workflow: "pr-issue-link.yml", inputs: { deliveryId: "delivery-issues-disabled", repositoryId: "1296724484", pullRequestNumber: "42", scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: "a".repeat(40) } } });
+    expect(await intentStore.claimDelivery({ deliveryId: "delivery-issues-disabled", repositoryId: 1296724484, pullRequestNumber: 42, writeId, now: "2026-08-22T00:00:01Z" })).not.toBeNull();
     installAuthorization(undefined, [{ ...repository(), has_issues: false }]);
     const authorization = { authorization: "Bearer one-repository-token" };
     const lifecycle = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/lifecycle", { method: "POST", headers: authorization }), env(database));
     expect(lifecycle.status).toBe(200);
     expect(await lifecycle.json()).toEqual({ repositoryId: 1296724484, managed: true, issueCapable: false });
     expect(await store.getRepositoryState(1296724484)).toBeNull();
+    expect(await intentStore.get(1296724484, 42)).toEqual(expect.objectContaining({ writeId, status: "prepared" }));
+    expect(database.database.prepare("SELECT COUNT(*) AS count FROM pull_request_body_write_deliveries WHERE repository_id = 1296724484").get()).toEqual({ count: 1 });
 
     installAuthorization(undefined, [{ ...repository(), has_issues: false }]);
     const read = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484", { headers: authorization }), env(database));

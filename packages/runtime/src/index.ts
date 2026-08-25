@@ -300,7 +300,7 @@ async function onboardManagedRepositories(env: Env, repositories: readonly any[]
   for (const repository of ordered) {
     try {
       if (isIssueCapable(repository)) await store?.activateRepository(Number(repository.id));
-      else await store?.deleteRepository(Number(repository.id));
+      else await store?.tombstoneIssueSnapshots(Number(repository.id));
       await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger, deliveryId, policySha: env.POLICY_SHA });
     } catch (error) { if (firstFailure === null) firstFailure = error; }
   }
@@ -484,7 +484,9 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       const previouslyCapable = isIssueCapable(previousRepository);
       if ((previouslyManaged && !managed) || (previouslyCapable && !capable)) {
         if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
-        await new IssueSnapshotStore(env.ISSUE_SNAPSHOTS).deleteRepository(Number(repository.id));
+        const store = new IssueSnapshotStore(env.ISSUE_SNAPSHOTS);
+        if (previouslyManaged && !managed) await store.deleteRepository(Number(repository.id));
+        else await store.tombstoneIssueSnapshots(Number(repository.id));
         if (repository.archived !== true && repository.disabled !== true) {
           await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "true", policySha: env.POLICY_SHA });
         }

@@ -418,7 +418,7 @@ describe("拉取请求议题关联运行器", () => {
     });
   });
 
-  it("受管拉取请求离开默认分支后只清理议题块并确认自动关系为空", async () => {
+  it("受管拉取请求离开默认分支后清理议题块并把失效门禁收敛为不适用", async () => {
     await withRunnerEnvironment(async () => {
       process.env.RUNTIME_URL = "https://runtime.test";
       const outer = '<!-- workflow:managed-pr:start -->\n## 摘要\n\n正文\n\n## 发布与迁移\n\n无\n\n<!-- workflow:source-actor:bot -->\n<!-- workflow:managed-pr:end -->\n';
@@ -434,8 +434,8 @@ describe("拉取请求议题关联运行器", () => {
         if (value.endsWith("/repos/splrad/steward/pulls/42") && method === "PATCH") { currentBody = body.body; return new Response(JSON.stringify(pull(currentBody, 301115370, "release")), { status: 200 }); }
         if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify(pull(currentBody, 301115370, "release")), { status: 200 });
         if (value.endsWith("/graphql")) return new Response(JSON.stringify({ data: { repository: { databaseId: repositoryId, pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } }), { status: 200 });
-        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
-        if (value.endsWith("/repos/splrad/steward/check-runs")) return new Response(JSON.stringify({ id: 1 }), { status: 201 });
+        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [{ id: 1, name: "PR Issue Link Gate", app: { id: 4243096 }, head_sha: headSha, external_id: `v1:${repositoryId}:42:${headSha}` }] }), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/check-runs/1")) return new Response(JSON.stringify({ id: 1 }), { status: 200 });
         return new Response("unexpected", { status: 500 });
       });
       process.env.ISSUE_LINK_PREPARE_ONLY = "true";
@@ -443,6 +443,10 @@ describe("拉取请求议题关联运行器", () => {
       expect(currentBody).toBe(outer);
       expect(calls.filter(call => call.url.endsWith("/graphql"))).toHaveLength(3);
       expect(calls.some(call => call.url.includes("/body-write-intents/"))).toBe(true);
+      const check = calls.find(call => call.method === "PATCH" && call.url.endsWith("/check-runs/1"));
+      expect(check?.body).toEqual(expect.objectContaining({ status: "completed", conclusion: "success" }));
+      expect(check?.body.output.summary).toContain("not-applicable");
+      expect(calls.some(call => call.method === "POST" && call.url.endsWith("/check-runs"))).toBe(false);
     });
   });
 
