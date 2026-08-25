@@ -473,22 +473,26 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       await onboardManagedRepositories(env, payload.repositories_added ?? [], deliveryId, "installation-repositories-added");
       return response(202);
     }
-    if (event === "repository" && action === "edited") {
+    if (event === "repository" && ["edited", "archived", "unarchived"].includes(action)) {
       const repository = payload.repository; if (!repository || !belongsToOrganization(repository)) return response(204);
       const managed = isManaged(repository);
       const capable = isIssueCapable(repository);
-      const previousRepository = repositoryBeforeEdit(repository, payload.changes);
+      const previousRepository = action === "archived" ? { ...repository, archived: false }
+        : action === "unarchived" ? { ...repository, archived: true }
+          : repositoryBeforeEdit(repository, payload.changes);
       const previouslyManaged = isManaged(previousRepository);
       const previouslyCapable = isIssueCapable(previousRepository);
       if ((previouslyManaged && !managed) || (previouslyCapable && !capable)) {
         if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
         await new IssueSnapshotStore(env.ISSUE_SNAPSHOTS).deleteRepository(Number(repository.id));
-        await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "true", policySha: env.POLICY_SHA });
+        if (repository.archived !== true && repository.disabled !== true) {
+          await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "true", policySha: env.POLICY_SHA });
+        }
         return response(202);
       }
       if ((!previouslyManaged && managed) || (!previouslyCapable && capable)) {
         if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
-        await onboardManagedRepositories(env, [repository], deliveryId, "repository-visibility-changed");
+        await onboardManagedRepositories(env, [repository], deliveryId, action === "unarchived" ? "repository-unarchived" : "repository-visibility-changed");
         return response(202);
       }
       if (!capable) return response(204);

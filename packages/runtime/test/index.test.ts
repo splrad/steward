@@ -79,6 +79,46 @@ describe("中央运行程序", () => {
     expect(events).toEqual(["delete:1296724484", "pr-issue-link.yml:false:true"]);
   });
 
+  it("归档动作墓碑化快照但不向只读仓库调度正文清理", async () => {
+    const deleted = vi.spyOn(IssueSnapshotStore.prototype, "deleteRepository").mockResolvedValue();
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      requests.push(String(url));
+      return new Response("unexpected", { status: 500 });
+    });
+    const current = { ...repository(), archived: true };
+    const result = await handleWebhook(signedRequest("repository", scoped({ action: "archived", repository: current })), { ...baseEnv(), ISSUE_SNAPSHOTS: {} as D1Database });
+    expect(result.status).toBe(202);
+    expect(deleted).toHaveBeenCalledWith(1296724484);
+    expect(requests).toEqual([]);
+  });
+
+  it("解归档动作重新激活快照并执行完整接入", async () => {
+    const events: string[] = [];
+    const activated = vi.spyOn(IssueSnapshotStore.prototype, "activateRepository").mockImplementation(async (repositoryId) => { events.push(`activate:${repositoryId}`); });
+    const dispatched: { name: string; inputs: Record<string, string> }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      const name = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
+      if (name) {
+        const inputs = JSON.parse(String(init.body)).inputs;
+        dispatched.push({ name, inputs }); events.push(name);
+        return new Response(null, { status: 204 });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    const result = await handleWebhook(signedRequest("repository", scoped({ action: "unarchived", repository: repository() })), { ...baseEnv(), ISSUE_SNAPSHOTS: {} as D1Database });
+    expect(result.status).toBe(202);
+    expect(activated).toHaveBeenCalledWith(1296724484);
+    expect(dispatched).toEqual([
+      { name: "pr-issue-link.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", scanAll: "true", invalidateOnly: "true" }) },
+      { name: "onboard-repository.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", repositoryFullName: "splrad/steward", trigger: "repository-unarchived" }) },
+    ]);
+    expect(events).toEqual(["pr-issue-link.yml", "activate:1296724484", "onboard-repository.yml"]);
+  });
+
   it("健康检查不泄露密钥并只返回固定事实", async () => {
     const env = baseEnv();
     const response = await worker.fetch(new Request("https://example.test/health"), env);

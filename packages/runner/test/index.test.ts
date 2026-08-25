@@ -65,6 +65,30 @@ describe("中央命令入口", () => {
     });
   });
 
+  it("部署生命周期收敛会墓碑归档仓库但不调度只读正文清理", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
+    process.env.APP_ID = "4243096";
+    process.env.INSTALLATION_ID = "145952003";
+    process.env.STEWARD_APP_PRIVATE_KEY = privateKey;
+    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
+    process.env.RUNTIME_URL = "https://runtime.test";
+    const calls: Array<{ url: string; body: any }> = [];
+    vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+      const value = String(url); const body = init?.body ? JSON.parse(String(init.body)) : null;
+      calls.push({ url: value, body });
+      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [
+        { id: 1296724484, full_name: "splrad/steward", private: false, has_issues: true, archived: true, disabled: false, owner: { id: 302208797, login: "splrad" } },
+      ] }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile")) return new Response(JSON.stringify({ repositoryId: 1296724484, removedRepositoryIds: [] }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1296724484, managed: true, issueCapable: false }), { status: 200 });
+      return new Response("unexpected", { status: 500 });
+    });
+    await main(["reconcile-repository-lifecycle", "--delivery-id", "deploy-archive", "--policy-sha", "a".repeat(40)]);
+    expect(calls.some(call => call.body?.inputs?.cleanupUnmanaged === "true")).toBe(false);
+    expect(calls.some(call => call.url.endsWith("/internal/issue-snapshots/1296724484/lifecycle"))).toBe(true);
+  });
+
   it("部署对账先失效全部仓库，并在单仓同步失败后继续调度后续仓库", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
     process.env.APP_ID = "4243096";
@@ -925,16 +949,22 @@ describe("中央命令入口", () => {
     expect(modes.sort()).toEqual(["false", "false", "false", "false", "true"]);
   });
 
-  it("PR自动化正文写入后显式重调度议题关联", async () => {
+  it("PR自动化在正文写入失败后仍先请求当前提交审查再显式重调度议题关联", async () => {
     const source = await readFile("packages/runner/src/index.ts", "utf8");
     const automation = source.slice(source.indexOf("async function automate("), source.indexOf("async function classify("));
     const bodyWrite = automation.indexOf("updatePullRequestBodyDurably(");
+    const bodyWriteCapture = automation.indexOf("bodyWriteFailure = error;");
+    const binding = automation.indexOf("inspectAutomationPullRequestBinding(");
     const dispatch = automation.indexOf('dispatchCentralWorkflow("pr-issue-link.yml"');
-    const copilot = automation.indexOf("ensureCopilotReview(", dispatch);
+    const copilot = automation.indexOf("ensureCopilotReview(");
+    const bodyWriteFailure = automation.indexOf("if (bodyWriteFailure !== null) throw bodyWriteFailure;");
     const classification = automation.indexOf("dispatchClassification(", dispatch);
     expect(bodyWrite).toBeGreaterThan(-1);
-    expect(dispatch).toBeGreaterThan(bodyWrite);
-    expect(copilot).toBeGreaterThan(dispatch);
+    expect(bodyWriteCapture).toBeGreaterThan(bodyWrite);
+    expect(binding).toBeGreaterThan(bodyWriteCapture);
+    expect(copilot).toBeGreaterThan(binding);
+    expect(bodyWriteFailure).toBeGreaterThan(copilot);
+    expect(dispatch).toBeGreaterThan(bodyWriteFailure);
     expect(classification).toBeGreaterThan(dispatch);
     expect(automation.slice(dispatch, dispatch + 700)).toMatch(/pullRequestNumber:\s*String\(pull\.number\)[\s\S]*cleanupUnmanaged:\s*"false"/u);
   });

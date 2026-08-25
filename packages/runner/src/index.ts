@@ -853,7 +853,7 @@ async function onboard(args: Readonly<Record<string, string>>) {
   const fullName = required(args, "repository-full-name"); const [owner, repo] = splitRepository(fullName);
   const policySha = sha(required(args, "policy-sha"), "policy-sha");
   const trigger = required(args, "trigger");
-  if (!["installation-created", "installation-repositories-added", "repository-visibility-changed", "default-branch-push", "manual"].includes(trigger)) throw new Error("接入触发来源无效");
+  if (!["installation-created", "installation-repositories-added", "repository-visibility-changed", "repository-unarchived", "default-branch-push", "manual"].includes(trigger)) throw new Error("接入触发来源无效");
   if (trigger !== "manual" && !args["repository-id"]) throw new Error("事件接入必须提供仓库编号");
   let repositoryId = args["repository-id"] ? integer(args["repository-id"], "repository-id") : 0;
   if (!repositoryId) {
@@ -1069,26 +1069,47 @@ async function automate(args: Readonly<Record<string, string>>) {
   const title = `${generated.type}(${generated.scope}): ${generated.title}`;
   const context = await computePullRequestFingerprint({ repositoryId, pullRequestNumber: pulls[0]?.number ?? 0, headSha: facts.headSha, baseSha: facts.baseSha, commits: (compare.commits ?? []).map((c: any) => c.sha), files: (compare.files ?? []).map((f: any) => ({ path: f.filename, status: f.status, additions: f.additions, deletions: f.deletions })), title, body: "", contributors });
   const body = renderManagedBody({ generated, existingBody: pulls[0]?.body, templateBody: template, actor: sourceActor.login, contributors, context });
-  const pull = pulls[0] ? await updatePullRequestBodyDurably({
-    client: gh,
-    token,
-    runtimeUrl: env("RUNTIME_URL"),
-    owner,
-    repo,
-    repositoryId,
-    pullRequestNumber: Number(pulls[0].number),
-    headSha: facts.headSha,
-    baseSha: facts.baseSha,
-    regionKind: "managed-pr",
-    targetBlock: targetManagedBlock(body, "managed-pr"),
-    redrive: { workflow: "pr-automation.yml", inputs: {
-      deliveryId: required(args, "delivery-id"), repositoryId: String(repositoryId), sourceRef, eventAfterSha,
-      sourceActorId: String(sourceActor.id), sourceActorLogin: sourceActor.login, policySha,
-    } },
-    additionalPatch: { title },
-  }) : await gh.createPullRequest(owner, repo, humanPushPullRequestCreateInput({ title, body, head: sourceBranch, base: repository.default_branch }));
+  let bodyWriteFailure: unknown = null;
+  let pull = pulls[0];
+  if (pull) {
+    try {
+      pull = await updatePullRequestBodyDurably({
+        client: gh,
+        token,
+        runtimeUrl: env("RUNTIME_URL"),
+        owner,
+        repo,
+        repositoryId,
+        pullRequestNumber: Number(pull.number),
+        headSha: facts.headSha,
+        baseSha: facts.baseSha,
+        regionKind: "managed-pr",
+        targetBlock: targetManagedBlock(body, "managed-pr"),
+        redrive: { workflow: "pr-automation.yml", inputs: {
+          deliveryId: required(args, "delivery-id"), repositoryId: String(repositoryId), sourceRef, eventAfterSha,
+          sourceActorId: String(sourceActor.id), sourceActorLogin: sourceActor.login, policySha,
+        } },
+        additionalPatch: { title },
+      });
+    } catch (error) {
+      bodyWriteFailure = error;
+    }
+  } else {
+    pull = await gh.createPullRequest(owner, repo, humanPushPullRequestCreateInput({ title, body, head: sourceBranch, base: repository.default_branch }));
+  }
   const boundPull = await gh.getPullRequest(owner, repo, pull.number);
   const pullBinding = inspectAutomationPullRequestBinding(boundPull, { repositoryId, sourceBranch, headSha: facts.headSha, baseBranch: repository.default_branch, baseSha: facts.baseSha });
+  let copilot: "already-present" | "requested-and-confirmed";
+  try {
+    copilot = await ensureCopilotReview(gh, owner, repo, pull.number, facts.headSha, policySha);
+  } catch (error) {
+    if (bodyWriteFailure !== null) {
+      console.error(JSON.stringify({ status: "copilot-review-after-body-write-failure-failed", error: error instanceof Error ? error.message : "unknown" }));
+      throw bodyWriteFailure;
+    }
+    throw error;
+  }
+  if (bodyWriteFailure !== null) throw bodyWriteFailure;
   if (isIssueCapableRepository(repository, repositoryConfiguration.managed === true)) {
     await dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
       deliveryId: required(args, "delivery-id"),
@@ -1110,7 +1131,6 @@ async function automate(args: Readonly<Record<string, string>>) {
     else if (payload.state === "encoding-failed") aiClassificationSummary = `${aiClassificationSummary}；封装失败，未传递`;
   }
   await output({ pullRequestNumber: pull.number, headSha: facts.headSha, repositoryFullName: repository.full_name });
-  const copilot = await ensureCopilotReview(gh, owner, repo, pull.number, facts.headSha, policySha);
   await dispatchClassification({ repositoryId, pullRequestNumber: pull.number, headSha: facts.headSha, policySha, deliveryId: required(args, "delivery-id"), ...(aiClassification ? { aiClassification } : {}) });
   await summary([
     `状态：${pulls[0] ? "updated" : "draft-created"}`,
@@ -1339,7 +1359,7 @@ async function reconcileRepositoryLifecycle(args: Readonly<Record<string, string
           scanAll: "true",
           policySha,
         });
-      } else {
+      } else if (target.repository.archived !== true && target.repository.disabled !== true) {
         await dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
           deliveryId: `${deliveryId}:${repositoryId}`,
           repositoryId: String(repositoryId),
