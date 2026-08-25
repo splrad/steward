@@ -524,7 +524,8 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       const targetsDefault = pull.base?.ref === repository.default_branch;
       const leftDefault = action === "edited" && payload.changes?.base?.ref?.from === repository.default_branch;
       const shouldInvalidateIssueGate = stewardOwned && capable && action === "edited" && (targetsDefault || leftDefault);
-      const hasManagedIssueBlock = stewardOwned && String(pull.body ?? "").includes("<!-- workflow:issue-links:start ");
+      const hasManagedIssueBlock = stewardOwned && repository.archived !== true && repository.disabled !== true
+        && String(pull.body ?? "").includes("<!-- workflow:issue-links:start ");
       let dispatched = false;
       if (shouldInvalidateIssueGate) {
         await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), scanAll: "false", invalidateOnly: "true", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
@@ -548,6 +549,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
     if (event === "pull_request" && action === "closed" && payload.pull_request?.merged === false) {
       const repository = payload.repository; const pull = payload.pull_request;
       if (!repository || !isManaged(repository) || !isStewardOwnedPullRequest(pull, Number(repository.id))
+        || repository.archived === true || repository.disabled === true
         || !String(pull?.body ?? "").includes("<!-- workflow:issue-links:start ")) return response(204);
       await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: String(!isIssueCapable(repository)), policySha: env.POLICY_SHA });
       return response(202);

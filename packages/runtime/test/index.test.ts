@@ -310,6 +310,9 @@ describe("中央运行程序", () => {
     expect((await handleWebhook(signedRequest("pull_request", ordinary), baseEnv())).status).toBe(204);
     const cleanup = scoped({ action: "edited", repository: repository(), pull_request: { number: 8, body: "<!-- workflow:issue-links:start repo=1296724484 -->", head: { sha: "d".repeat(40), repo: { id: 1296724484 } }, base: { ref: "release", repo: { id: 1296724484 } }, user: { id: 301115370 } } });
     expect((await handleWebhook(signedRequest("pull_request", cleanup), baseEnv())).status).toBe(202);
+    for (const readOnlyRepository of [{ ...repository(), archived: true }, { ...repository(), disabled: true }]) {
+      expect((await handleWebhook(signedRequest("pull_request", { ...cleanup, repository: readOnlyRepository }), baseEnv())).status).toBe(204);
+    }
     expect(dispatched).toEqual(["pr-issue-link.yml"]);
   });
 
@@ -329,6 +332,9 @@ describe("中央运行程序", () => {
       pull_request: { number: 8, merged: false, merged_at: null, body: "<!-- workflow:issue-links:start repo=1296724484 -->", user: { id: 301115370 }, head: { sha: "d".repeat(40), repo: { id: 1296724484 } }, base: { ref: "main", repo: { id: 1296724484 } } },
     });
     expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(202);
+    for (const readOnlyRepository of [{ ...repository(), archived: true }, { ...repository(), disabled: true }]) {
+      expect((await handleWebhook(signedRequest("pull_request", { ...payload, repository: readOnlyRepository }), baseEnv())).status).toBe(204);
+    }
     expect(dispatched).toEqual([{ name: "pr-issue-link.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", pullRequestNumber: "8", scanAll: "false", invalidateOnly: "false" }) }]);
   });
 
