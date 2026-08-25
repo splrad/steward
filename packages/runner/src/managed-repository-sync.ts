@@ -1,3 +1,5 @@
+import { isIssueCapableRepository } from "../../core/src/issues.js";
+
 export interface ManagedCatalog {
   organization: { id: number; login: string };
   defaults: { public: Record<string, unknown>; private: Record<string, unknown> };
@@ -8,6 +10,7 @@ export interface ManagedTarget {
   configuration: any;
   registration: "explicit" | "default-public" | "default-private";
   managed: boolean;
+  issueCapable: boolean;
 }
 
 export function managedRepositoryTargets(catalog: ManagedCatalog, repositories: readonly any[], repositoryId?: number): ManagedTarget[] {
@@ -23,7 +26,8 @@ export function managedRepositoryTargets(catalog: ManagedCatalog, repositories: 
     if (override?.fullName && override.fullName !== repository.full_name) throw new Error("仓库编号与中央目录名称不一致");
     const registration = override ? "explicit" : repository.private ? "default-private" : "default-public";
     const configuration = Object.freeze({ ...(repository.private ? catalog.defaults.private : catalog.defaults.public), ...(override ?? {}) });
-    targets.push({ repository, configuration, registration, managed: configuration.managed === true });
+    const managed = configuration.managed === true;
+    targets.push({ repository, configuration, registration, managed, issueCapable: isIssueCapableRepository(repository, managed) });
   }
   if (repositoryId && !seen.has(repositoryId)) throw new Error("目标仓库不属于当前安装");
   return targets.sort((left, right) => Number(left.repository.id) - Number(right.repository.id));

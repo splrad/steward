@@ -83,7 +83,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const repository = (id = 1296724484, fullName = "splrad/steward") => ({ id, full_name: fullName, private: false, owner: { id: 302208797, login: "splrad" } });
+const repository = (id = 1296724484, fullName = "splrad/steward") => ({ id, full_name: fullName, private: false, has_issues: true, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } });
 const env = (database: SqliteD1): Env => ({
   ORGANIZATION_ID: "302208797", ORGANIZATION_LOGIN: "splrad", APP_ID: "4243096", INSTALLATION_ID: "145952003",
   STEWARDSHIP_REPOSITORY: "splrad/steward", POLICY_SHA: "a".repeat(40), STEWARD_APP_PRIVATE_KEY: privateKey,
@@ -622,7 +622,7 @@ describe("议题快照内部接口", () => {
     installAuthorization(undefined, [unmanaged]);
     const removed = await worker.fetch(new Request(endpoint, { method: "POST", headers: { authorization: "Bearer one-repository-token" } }), env(database));
     expect(removed.status).toBe(200);
-    expect(await removed.json()).toEqual({ repositoryId: 1400000000, managed: false });
+    expect(await removed.json()).toEqual({ repositoryId: 1400000000, managed: false, issueCapable: false });
     expect(await store.getSnapshot(1400000000, 7)).toBeNull();
     expect(await store.getRepositoryState(1400000000)).toBeNull();
     expect(await intentStore.get(1400000000, 42)).toBeNull();
@@ -631,8 +631,60 @@ describe("议题快照内部接口", () => {
     installAuthorization(undefined, [repository(1400000000, "splrad/default-managed")]);
     const activated = await worker.fetch(new Request(endpoint, { method: "POST", headers: { authorization: "Bearer one-repository-token" } }), env(database));
     expect(activated.status).toBe(200);
-    expect(await activated.json()).toEqual({ repositoryId: 1400000000, managed: true });
+    expect(await activated.json()).toEqual({ repositoryId: 1400000000, managed: true, issueCapable: true });
     expect(await store.getRepositoryState(1400000000)).not.toBeNull();
+  });
+
+  it("平台仍纳管但未启用 Issues 时墓碑快照并拒绝议题路由", async () => {
+    const database = new SqliteD1();
+    const store = new IssueSnapshotStore(database.binding());
+    await put(store, snapshot(1296724484, "splrad/steward", 7), 0);
+    const intentStore = new PullRequestBodyWriteIntentStore(database.binding());
+    const writeId = "11111111-1111-4111-8111-111111111111";
+    const targetBlock = renderIssueLinksBlock({ repositoryId: 1296724484, pullRequestNumber: 42, baseSha: "b".repeat(40), headSha: "c".repeat(40), generation: 1, analysisInputDigest: "d".repeat(64) }, []);
+    const intentNow = new Date();
+    await intentStore.prepare({ repositoryId: 1296724484, pullRequestNumber: 42, writeId, regionKind: "issue-links", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 1,
+      beforeBodyDigest: pullRequestBodyDigest("before"), outsideBodyDigest: pullRequestBodyDigest("outside"), targetBlock, targetBodyDigest: pullRequestBodyDigest("after"),
+      now: intentNow.toISOString(), expiresAt: new Date(intentNow.getTime() + 10 * 60_000).toISOString(),
+      redrive: { workflow: "pr-issue-link.yml", inputs: { deliveryId: "delivery-issues-disabled", repositoryId: "1296724484", pullRequestNumber: "42", scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: "a".repeat(40) } } });
+    expect(await intentStore.claimDelivery({ deliveryId: "delivery-issues-disabled", repositoryId: 1296724484, pullRequestNumber: 42, writeId, now: intentNow.toISOString() })).not.toBeNull();
+    installAuthorization(undefined, [{ ...repository(), has_issues: false }]);
+    const authorization = { authorization: "Bearer one-repository-token" };
+    const lifecycle = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/lifecycle", { method: "POST", headers: authorization }), env(database));
+    expect(lifecycle.status).toBe(200);
+    expect(await lifecycle.json()).toEqual({ repositoryId: 1296724484, managed: true, issueCapable: false });
+    expect(await store.getRepositoryState(1296724484)).toBeNull();
+    expect(await intentStore.get(1296724484, 42)).toEqual(expect.objectContaining({ writeId, status: "prepared" }));
+    expect(database.database.prepare("SELECT COUNT(*) AS count FROM pull_request_body_write_deliveries WHERE repository_id = 1296724484").get()).toEqual({ count: 1 });
+
+    const intentEndpoint = `https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/${writeId}`;
+    const active = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/active", { headers: authorization }), env(database));
+    expect(active.status).toBe(200);
+    expect(await active.json()).toEqual(expect.objectContaining({ writeId, status: "prepared" }));
+    const patched = await worker.fetch(new Request(`${intentEndpoint}/patched`, { method: "POST", headers: authorization }), env(database));
+    expect(patched.status).toBe(200);
+    expect(await patched.json()).toEqual(expect.objectContaining({ writeId, status: "patched" }));
+    const waited = await worker.fetch(new Request(`${intentEndpoint}/wait`, {
+      method: "POST", headers: { ...authorization, "content-type": "application/json" }, body: JSON.stringify({ attempts: 1 }),
+    }), env(database));
+    expect(waited.status).toBe(200);
+    expect(await waited.json()).toEqual(expect.objectContaining({ writeId, status: "patched" }));
+    const existing = await worker.fetch(new Request(intentEndpoint, { headers: authorization }), env(database));
+    expect(existing.status).toBe(200);
+    expect(await existing.json()).toEqual(expect.objectContaining({ writeId, status: "patched" }));
+
+    const rejectedPrepare = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/body-write-intents/43/prepare", {
+      method: "POST", headers: { ...authorization, "content-type": "application/json" },
+      body: JSON.stringify({ writeId: "22222222-2222-4222-8222-222222222222", regionKind: "issue-links", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 1,
+        beforeBodyDigest: pullRequestBodyDigest("before"), outsideBodyDigest: pullRequestBodyDigest("outside"), targetBlock, targetBodyDigest: pullRequestBodyDigest("after"),
+        redrive: { workflow: "pr-issue-link.yml", inputs: { deliveryId: "delivery-issues-disabled-new", repositoryId: "1296724484", pullRequestNumber: "43", scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: "a".repeat(40) } } }),
+    }), env(database));
+    expect(rejectedPrepare.status).toBe(403);
+
+    installAuthorization(undefined, [{ ...repository(), has_issues: false }]);
+    const read = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484", { headers: authorization }), env(database));
+    expect(read.status).toBe(403);
+    expect(await read.json()).toEqual({ error: "internal-scope-rejected" });
   });
 
   it("正文写意图接口把无效JSON和非对象正文映射为400", async () => {

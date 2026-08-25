@@ -9,6 +9,8 @@ import {
   detectUnmanagedClosingKeywords,
   extractIssueLinksBlock,
   issueSnapshotContentDigest,
+  isIssueCapableRepository,
+  isStewardOwnedPullRequest,
   managedBodyOutsideIssueLinksDigest,
   openIssueSetDigest,
   renderIssueLinksBlock,
@@ -27,7 +29,6 @@ const checkName = "PR Issue Link Gate";
 const appId = 4243096;
 const installationId = 145952003;
 const stewardRepositoryId = 1296724484;
-const botUserId = 301115370;
 const maximumPullRequests = 256;
 const maximumCandidates = 50;
 const maximumCandidateBytes = 1024 * 1024;
@@ -171,11 +172,18 @@ function splitRepository(fullName: string): [string, string] {
   return parts as [string, string];
 }
 
-function configuration(repository: any): any {
+function managedConfiguration(repository: any): any | null {
   const override = (repositoryCatalog.repositories as Record<string, any>)[String(repository.id)];
   if (override?.fullName && override.fullName !== repository.full_name) throw new Error("仓库编号与中央目录名称不一致");
   const value = { ...(repository.private ? repositoryCatalog.defaults.private : repositoryCatalog.defaults.public), ...(override ?? {}) };
-  if (value.managed !== true || String(repository.full_name).split("/")[0]?.toLowerCase() !== repositoryCatalog.organization.login.toLowerCase()) throw new Error("仓库不在中央纳管范围");
+  if (value.managed !== true || String(repository.full_name).split("/")[0]?.toLowerCase() !== repositoryCatalog.organization.login.toLowerCase()) return null;
+  return value;
+}
+
+function configuration(repository: any): any {
+  const value = managedConfiguration(repository);
+  if (!value) throw new Error("仓库不在中央纳管范围");
+  if (!isIssueCapableRepository(repository, true)) throw new Error("仓库未启用议题关联");
   return value;
 }
 
@@ -452,7 +460,7 @@ async function publishCheck(client: GitHubClient, repositoryId: number, owner: s
 }
 
 function isManagedPull(pull: any, repositoryId: number): boolean {
-  return Number(pull?.user?.id) === botUserId && Number(pull?.head?.repo?.id) === repositoryId && Number(pull?.base?.repo?.id) === repositoryId;
+  return isStewardOwnedPullRequest(pull, repositoryId);
 }
 
 function isClosedUnmergedManagedPull(pull: any, repositoryId: number): boolean {
@@ -610,15 +618,11 @@ async function removeIssueLinksIfEligible(input: {
   return true;
 }
 
-async function publishNotApplicable(client: GitHubClient, token: string, repository: any, pull: any, managed: boolean, args: PrIssueLinkArgs): Promise<void> {
-  const [owner, repo] = splitRepository(repository.full_name);
+async function cleanupManagedIssueBlock(client: GitHubClient, token: string, repository: any, pull: any, managed: boolean, args: PrIssueLinkArgs): Promise<void> {
   const facts = currentPullFacts(pull, Number(repository.id));
-  if (managed && !await removeIssueLinksIfEligible({ client, token, repository, pullRequestNumber: facts.number, expectedHeadSha: facts.headSha, expectedBaseSha: facts.baseSha, expectedOutsideBodyDigest: managedBodyOutsideIssueLinksDigest(facts.body), args })) {
+  if (managed && facts.body.includes("<!-- workflow:issue-links:start ") && !await removeIssueLinksIfEligible({ client, token, repository, pullRequestNumber: facts.number, expectedHeadSha: facts.headSha, expectedBaseSha: facts.baseSha, expectedOutsideBodyDigest: managedBodyOutsideIssueLinksDigest(facts.body), args })) {
     throw new Error("议题关联清理前拉取请求状态已经漂移");
   }
-  await publishCheck(client, Number(repository.id), owner, repo, facts.number, facts.headSha, {
-    status: "completed", conclusion: "success", title: "议题关联不适用", summary: `拉取请求：#${facts.number}\n状态：not-applicable`,
-  });
 }
 
 async function listPullRequestMatrix(args: PrIssueLinkArgs): Promise<void> {
@@ -628,10 +632,15 @@ async function listPullRequestMatrix(args: PrIssueLinkArgs): Promise<void> {
   const [owner, repo] = splitRepository(repository.full_name);
   let numbers: number[];
   if (args.scanAll) {
+    const completeOpenGates = args.cleanupUnmanaged && !isIssueCapableRepository(repository, managedConfiguration(repository) !== null);
     const cleanupPulls = (value: unknown): readonly any[] => {
       if (!Array.isArray(value)) throw new Error("分页响应不是项目数组");
-      return value.filter((pull: any) => isManagedPull(pull, args.repositoryId) && String(pull?.body ?? "").includes("<!-- workflow:issue-links:start ")
-        && (pull?.state === "open" || (pull?.state === "closed" && pull?.merged_at === null)));
+      return value.filter((pull: any) => {
+        if (!isManagedPull(pull, args.repositoryId)) return false;
+        const hasManagedBlock = String(pull?.body ?? "").includes("<!-- workflow:issue-links:start ");
+        if (pull?.state === "open") return hasManagedBlock || (completeOpenGates && pull?.base?.ref === repository.default_branch);
+        return hasManagedBlock && pull?.state === "closed" && pull?.merged_at === null;
+      });
     };
     let pulls: readonly any[];
     if (args.cleanupUnmanaged) {
@@ -641,7 +650,7 @@ async function listPullRequestMatrix(args: PrIssueLinkArgs): Promise<void> {
         throw error;
       }
     } else {
-      pulls = (await client.listAllOpenPullRequests(owner, repo)).filter((pull: any) => pull?.state === "open");
+      pulls = (await client.listAllOpenPullRequests(owner, repo)).filter((pull: any) => pull?.state === "open" && isManagedPull(pull, args.repositoryId));
     }
     if (pulls.length > maximumPullRequests) throw new Error(`${args.cleanupUnmanaged ? "待清理" : "开放"}拉取请求超过矩阵上限`);
     numbers = pulls.map((pull: any) => safeInteger(pull?.number, "pullRequestNumber"));
@@ -675,51 +684,44 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
   const facts = currentPullFacts(pull, args.repositoryId);
   const managed = isManagedPull(pull, args.repositoryId);
   if (pull?.state !== "open" && !isClosedUnmergedManagedPull(pull, args.repositoryId)) {
-    await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
-      status: "completed", conclusion: "success", title: "议题关联不适用", summary: `拉取请求：#${pullRequestNumber}\n状态：closed`,
-    });
     return writeOutput({ "copilot-required": "false", completed: "true" });
   }
   if (args.cleanupUnmanaged) {
-    try {
-      await publishNotApplicable(client, token, repository, pull, managed, args);
-    } catch (error) {
+    await cleanupManagedIssueBlock(client, token, repository, pull, managed, args);
+    const repositoryManaged = managedConfiguration(repository) !== null;
+    if (managed && pull?.state === "open" && !isIssueCapableRepository(repository, repositoryManaged)) {
       await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
-        status: "completed", conclusion: "failure", title: "议题关联清理失败", summary: `拉取请求：#${pullRequestNumber}\n状态：failure\n类别：repository-unmanaged-unclean`,
+        status: "completed", conclusion: "success", title: "议题关联不适用",
+        summary: `拉取请求：#${pullRequestNumber}\n状态：not-applicable\n类别：${repositoryManaged ? "repository-issues-disabled" : "repository-not-managed"}`,
       });
-      throw error;
     }
     await writeOutput({ "copilot-required": "false", completed: "true" });
     return;
   }
   const targetsDefault = pull?.base?.ref === repository.default_branch;
   if (args.invalidateOnly) {
-    if (managed && targetsDefault) await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
+    const repositoryManaged = managedConfiguration(repository) !== null;
+    if (managed && targetsDefault && isIssueCapableRepository(repository, repositoryManaged)) await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
       status: "completed", conclusion: "failure", title: "议题事实等待重新同步", summary: `拉取请求：#${pullRequestNumber}\n状态：failure\n类别：snapshot-invalidated`,
     });
     await writeOutput({ "copilot-required": "false", completed: "true" });
     return;
   }
   if (!managed) {
-    if (targetsDefault) await publishNotApplicable(client, token, repository, pull, false, args);
     await writeOutput({ "copilot-required": "false", completed: "true" });
     return;
   }
   if (isClosedUnmergedManagedPull(pull, args.repositoryId)) {
-    try {
-      await publishNotApplicable(client, token, repository, pull, true, args);
-    } catch (error) {
-      await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
-        status: "completed", conclusion: "failure", title: "议题关联清理失败", summary: `拉取请求：#${pullRequestNumber}\n状态：failure\n类别：closed-unmerged-unclean`,
-      });
-      throw error;
-    }
+    await cleanupManagedIssueBlock(client, token, repository, pull, true, args);
     await writeOutput({ "copilot-required": "false", completed: "true" });
     return;
   }
   if (!targetsDefault) {
     try {
-      await publishNotApplicable(client, token, repository, pull, true, args);
+      await cleanupManagedIssueBlock(client, token, repository, pull, true, args);
+      await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
+        status: "completed", conclusion: "success", title: "议题关联不适用", summary: `拉取请求：#${pullRequestNumber}\n状态：not-applicable`,
+      });
     } catch (error) {
       await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
         status: "completed", conclusion: "failure", title: "议题关联清理失败", summary: `拉取请求：#${pullRequestNumber}\n状态：failure\n类别：not-applicable-unclean`,

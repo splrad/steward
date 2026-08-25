@@ -79,6 +79,17 @@ const legacyManagedPrStart = '<!-- workflow:auto-summary:start -->';
 const legacyManagedPrEnd = '<!-- workflow:auto-summary:end -->';
 const issueLinksStartPrefix = '<!-- workflow:issue-links:start';
 export const issueLinksEnd = '<!-- workflow:issue-links:end -->';
+export const stewardBotUserId = 301115370;
+
+export function isIssueCapableRepository(repository: any, managed: boolean): boolean {
+  return managed && repository?.has_issues === true && repository?.archived !== true && repository?.disabled !== true;
+}
+
+export function isStewardOwnedPullRequest(pull: any, repositoryId: number): boolean {
+  return Number(pull?.user?.id) === stewardBotUserId
+    && Number(pull?.head?.repo?.id) === repositoryId
+    && Number(pull?.base?.repo?.id) === repositoryId;
+}
 
 function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');

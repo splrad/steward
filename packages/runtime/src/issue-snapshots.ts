@@ -1,5 +1,5 @@
 import { createAppJwt, createInstallationToken, GitHubClient, GitHubRequestError, type GitHubIssueFacts, type PageValidator, type ValidatedValue } from "../../github/src/index.js";
-import { issueSnapshotContentDigest, normalizeIssueSnapshot, openIssueSetDigest, type IssueRelationSnapshot, type IssueSnapshot } from "../../core/src/issues.js";
+import { isIssueCapableRepository, issueSnapshotContentDigest, normalizeIssueSnapshot, openIssueSetDigest, type IssueRelationSnapshot, type IssueSnapshot } from "../../core/src/issues.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
 import { confirmPullRequestBodyWriteIntent, normalizePullRequestBodyRedrive, PullRequestBodyWriteIntentStore, type PullRequestBodyWriteIntent } from "./pr-body-write-intents.js";
 
@@ -462,13 +462,16 @@ export class IssueSnapshotStore {
     return { changed: true, state };
   }
 
-  async deleteRepository(repositoryId: number): Promise<void> {
+  private async tombstoneRepository(repositoryId: number, deleteBodyWrites: boolean): Promise<void> {
     rowInteger(repositoryId, "repositoryId", 1);
     const now = new Date().toISOString();
     const emptyDigest = openIssueSetDigest(repositoryId, []);
-    const results = await this.db.batch([
+    const statements: D1PreparedStatement[] = [];
+    if (deleteBodyWrites) statements.push(
       this.db.prepare("DELETE FROM pull_request_body_write_deliveries WHERE repository_id = ?").bind(repositoryId),
       this.db.prepare("DELETE FROM pull_request_body_write_intents WHERE repository_id = ?").bind(repositoryId),
+    );
+    statements.push(
       this.db.prepare(`INSERT INTO issue_snapshot_repository_tombstones (repository_id, deleted_at) VALUES (?, ?)
         ON CONFLICT(repository_id) DO UPDATE SET deleted_at = excluded.deleted_at`).bind(repositoryId, now),
       this.db.prepare("DELETE FROM issue_snapshots WHERE repository_id = ?").bind(repositoryId),
@@ -481,8 +484,17 @@ export class IssueSnapshotStore {
           sync_state = excluded.sync_state, open_set_digest = excluded.open_set_digest,
           last_full_scan_at = excluded.last_full_scan_at, updated_at = excluded.updated_at`)
         .bind(repositoryId, emptyDigest, now),
-    ]);
-    if (results.length !== 7 || results.some((result) => !result.success)) throw new Error("仓库快照清理失败");
+    );
+    const results = await this.db.batch(statements);
+    if (results.length !== statements.length || results.some((result) => !result.success)) throw new Error("仓库快照清理失败");
+  }
+
+  async tombstoneIssueSnapshots(repositoryId: number): Promise<void> {
+    await this.tombstoneRepository(repositoryId, false);
+  }
+
+  async deleteRepository(repositoryId: number): Promise<void> {
+    await this.tombstoneRepository(repositoryId, true);
   }
 
   async deleteAllRepositories(repositoryIds: readonly number[] = []): Promise<void> {
@@ -629,7 +641,7 @@ export function normalizeGitHubIssueFacts(repository: any, facts: GitHubIssueFac
   });
 }
 
-async function authorizeSingleRepository(request: Request, env: IssueSnapshotRuntimeEnv, repositoryId: number, allowUnmanaged = false): Promise<{ repository: any; client: GitHubClient; managed: boolean }> {
+async function authorizeSingleRepository(request: Request, env: IssueSnapshotRuntimeEnv, repositoryId: number, allowUnmanaged = false): Promise<{ repository: any; client: GitHubClient; managed: boolean; issueCapable: boolean }> {
   const authorization = request.headers.get("authorization");
   const match = authorization?.match(/^Bearer ([^\s]{1,4096})$/u);
   if (!match) throw new GitHubRequestError(401, "GET", "/installation/repositories", "missing-bearer");
@@ -658,7 +670,7 @@ async function authorizeSingleRepository(request: Request, env: IssueSnapshotRun
   const configuration = { ...(current.private ? repositoryCatalog.defaults.private : repositoryCatalog.defaults.public), ...(override ?? {}) };
   const managed = configuration.managed === true;
   if (!managed && !allowUnmanaged) throw new GitHubRequestError(403, "GET", `/repos/${owner}/${repo}`, "repository-not-managed");
-  return { repository: current, client, managed };
+  return { repository: current, client, managed, issueCapable: isIssueCapableRepository(current, managed) };
 }
 
 function repositoryParts(repository: any): [string, string] {
@@ -698,7 +710,7 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
   try {
     const bodyWriteRoute = parts[1] === "body-write-intents";
     const lifecycleRoute = parts[1] === "lifecycle";
-    const { repository, client, managed } = await authorizeSingleRepository(request, env, repositoryId, bodyWriteRoute || lifecycleRoute);
+    const { repository, client, managed, issueCapable } = await authorizeSingleRepository(request, env, repositoryId, bodyWriteRoute || lifecycleRoute);
     if (lifecycleRoute) {
       if (request.method !== "POST" || (parts.length !== 2 && !(parts.length === 3 && parts[2] === "reconcile"))) return noStoreResponse(404, { error: "internal-route-not-found" });
       if (parts.length === 3) {
@@ -710,10 +722,12 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
         return noStoreResponse(200, { repositoryId, removedRepositoryIds });
       }
       await requireEmptyBody(request);
-      if (managed) await store.activateRepository(repositoryId);
+      if (issueCapable) await store.activateRepository(repositoryId);
+      else if (managed) await store.tombstoneIssueSnapshots(repositoryId);
       else await store.deleteRepository(repositoryId);
-      return noStoreResponse(200, { repositoryId, managed });
+      return noStoreResponse(200, { repositoryId, managed, issueCapable });
     }
+    if (!bodyWriteRoute && !issueCapable) throw new GitHubRequestError(403, "GET", `/repos/${repository.full_name}`, "repository-issues-disabled");
     if (parts[1] === "body-write-intents") {
       if (parts.length < 4 || parts.length > 5) return noStoreResponse(404, { error: "internal-route-not-found" });
       let pullRequestNumber: number;
@@ -729,6 +743,7 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
       if (request.method === "POST" && parts.length === 4 && parts[3] === "prepare") {
         const body = await readJsonObject(request);
         if (!managed && (body.regionKind !== "issue-links" || body.targetBlock !== null)) throw new GitHubRequestError(403, "POST", url.pathname, "repository-not-managed");
+        if (!issueCapable && body.regionKind === "issue-links" && body.targetBlock !== null) throw new GitHubRequestError(403, "POST", url.pathname, "repository-issues-disabled");
         const regionKind = String(body.regionKind ?? "") as "managed-pr" | "issue-links";
         const redrive = normalizePullRequestBodyRedrive(body.redrive, { repositoryId, pullRequestNumber, regionKind });
         if (!managed && (redrive.workflow !== "pr-issue-link.yml" || redrive.inputs.cleanupUnmanaged !== "true")) return noStoreResponse(400, { error: "invalid-internal-request" });

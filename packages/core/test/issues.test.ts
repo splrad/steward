@@ -5,6 +5,8 @@ import {
   desiredIssueSetDigest,
   extractIssueLinksBlock,
   issueSnapshotContentDigest,
+  isIssueCapableRepository,
+  isStewardOwnedPullRequest,
   managedBodyOutsideIssueLinksDigest,
   normalizeIssueSnapshot,
   openIssueSetDigest,
@@ -53,6 +55,19 @@ function snapshotInput(overrides: Partial<IssueSnapshotInput> = {}): IssueSnapsh
 }
 
 describe("议题核心合同", () => {
+  it("分别判定仓库议题能力和Steward拉取请求身份", () => {
+    const repository = { id: repositoryId, has_issues: true, archived: false, disabled: false };
+    expect(isIssueCapableRepository(repository, true)).toBe(true);
+    expect(isIssueCapableRepository({ ...repository, has_issues: false }, true)).toBe(false);
+    expect(isIssueCapableRepository({ ...repository, archived: true }, true)).toBe(false);
+    expect(isIssueCapableRepository(repository, false)).toBe(false);
+
+    const pull = { user: { id: 301115370 }, head: { repo: { id: repositoryId } }, base: { repo: { id: repositoryId } } };
+    expect(isStewardOwnedPullRequest(pull, repositoryId)).toBe(true);
+    expect(isStewardOwnedPullRequest({ ...pull, user: { id: 49699333 } }, repositoryId)).toBe(false);
+    expect(isStewardOwnedPullRequest({ ...pull, head: { repo: { id: 999 } } }, repositoryId)).toBe(false);
+  });
+
   it("规范化固定事实、稳定排序并只保存未抓取URL摘要", () => {
     const snapshot = normalizeIssueSnapshot(snapshotInput());
     expect(snapshot.schemaVersion).toBe(1);
