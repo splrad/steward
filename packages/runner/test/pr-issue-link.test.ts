@@ -49,7 +49,7 @@ function invocation(overrides: Record<string, string> = {}): Record<string, stri
 }
 
 function repository(): any {
-  return { id: repositoryId, full_name: "splrad/steward", private: false, default_branch: "main" };
+  return { id: repositoryId, full_name: "splrad/steward", private: false, default_branch: "main", has_issues: true, archived: false, disabled: false };
 }
 
 function pull(body = "", userId = 44151430, baseRef = "main", state = "open", mergedAt: string | null = null): any {
@@ -82,7 +82,7 @@ describe("拉取请求议题关联运行器", () => {
     expect(() => runGit(process.cwd(), ["--version"], process.env, 1, "完整差异超过1 MiB")).toThrow("完整差异超过1 MiB");
   });
 
-  it("仓库已转未纳管后，失效检查仍覆盖关闭未合并且保留议题块的受管PR", async () => {
+  it("仓库不具备议题能力时不创建失效检查", async () => {
     await withRunnerEnvironment(async () => {
       process.env.ISSUE_LINK_PREPARE_ONLY = "true";
       const managedBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 1, analysisInputDigest: "d".repeat(64) }, [{ repositoryId, number: 7 }]);
@@ -91,7 +91,7 @@ describe("拉取请求议题关联运行器", () => {
         const value = String(url); const method = init.method ?? "GET"; const body = init.body ? JSON.parse(String(init.body)) : null;
         calls.push({ url: value, method, body });
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
-        if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify({ ...repository(), private: true }), { status: 200 });
+        if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify({ ...repository(), has_issues: false }), { status: 200 });
         if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify(pull(managedBlock, 301115370, "main", "closed", null)), { status: 200 });
         if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [{
           id: 99, name: "PR Issue Link Gate", app: { id: 4243096 }, head_sha: headSha, external_id: `v1:${repositoryId}:41:${headSha}`,
@@ -100,10 +100,7 @@ describe("拉取请求议题关联运行器", () => {
         return new Response("unexpected", { status: 500 });
       });
       await runPrIssueLink(invocation({ "invalidate-only": "true" }));
-      const created = calls.find(call => call.method === "POST" && call.url.endsWith("/check-runs"));
-      expect(created?.body).toEqual(expect.objectContaining({
-        status: "completed", conclusion: "failure", external_id: `v1:${repositoryId}:42:${headSha}`,
-      }));
+      expect(calls.some(call => call.method === "POST" && call.url.endsWith("/check-runs"))).toBe(false);
       expect(calls.some(call => call.method === "PATCH" && call.url.endsWith("/check-runs/99"))).toBe(false);
     });
   });
@@ -142,8 +139,8 @@ describe("拉取请求议题关联运行器", () => {
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
         if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
         if (value.includes("/repos/splrad/steward/pulls?state=open")) return new Response(JSON.stringify([
-          { ...pull("", 44151430), number: 9 },
-          { ...pull("", 44151430), number: 3 },
+          { ...pull("", 301115370), number: 9 },
+          { ...pull("", 301115370), number: 3 },
         ]), { status: 200 });
         if (value.includes("/repos/splrad/steward/pulls?state=all")) return new Response("history-limit", { status: 422 });
         return new Response("unexpected", { status: 500 });
@@ -183,7 +180,7 @@ describe("拉取请求议题关联运行器", () => {
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
         if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
         if (value.includes("/repos/splrad/steward/pulls?state=open")) return new Response(JSON.stringify([
-          { ...pull(), number: 3 }, { ...pull(), number: 9 },
+          { ...pull("", 301115370), number: 3 }, { ...pull("", 301115370), number: 9 },
         ]), { status: 200 });
         if (value.endsWith(`/internal/issue-snapshots/${repositoryId}`)) {
           snapshotReads++;
@@ -292,7 +289,7 @@ describe("拉取请求议题关联运行器", () => {
     });
   });
 
-  it("非受管默认分支拉取请求只发布 not-applicable 检查", async () => {
+  it("非 Steward 默认分支拉取请求不创建议题检查", async () => {
     await withRunnerEnvironment(async () => {
       const calls: Array<{ url: string; method: string; body: any }> = [];
       vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
@@ -308,14 +305,12 @@ describe("拉取请求议题关联运行器", () => {
       });
       process.env.ISSUE_LINK_PREPARE_ONLY = "true";
       await runPrIssueLink(invocation());
-      const check = calls.find(call => call.method === "POST" && call.url.endsWith("/check-runs"));
-      expect(check?.body).toEqual(expect.objectContaining({ name: "PR Issue Link Gate", head_sha: headSha, status: "completed", conclusion: "success" }));
-      expect(check?.body.output.title).toBe("议题关联不适用");
+      expect(calls.some(call => call.method === "POST" && call.url.endsWith("/check-runs"))).toBe(false);
       expect(calls.some(call => call.url.includes("workers.dev") || (call.method === "PATCH" && call.url.endsWith("/pulls/42")))).toBe(false);
     });
   });
 
-  it("外部来源PR只用目标仓库权限发布 not-applicable 且不写正文", async () => {
+  it("外部来源PR只读取目标仓库且不创建议题检查", async () => {
     await withRunnerEnvironment(async () => {
       const calls: Array<{ url: string; method: string; body: any }> = [];
       vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
@@ -333,9 +328,7 @@ describe("拉取请求议题关联运行器", () => {
       });
       process.env.ISSUE_LINK_PREPARE_ONLY = "true";
       await runPrIssueLink(invocation());
-      const check = calls.find(call => call.method === "POST" && call.url.endsWith("/check-runs"));
-      expect(check?.body).toEqual(expect.objectContaining({ name: "PR Issue Link Gate", head_sha: headSha, status: "completed", conclusion: "success" }));
-      expect(check?.body.output.title).toBe("议题关联不适用");
+      expect(calls.some(call => call.method === "POST" && call.url.endsWith("/check-runs"))).toBe(false);
       expect(calls.some(call => call.url.includes("workers.dev") || (call.method === "PATCH" && call.url.endsWith("/pulls/42")))).toBe(false);
       expect(calls.filter(call => call.url.includes("/access_tokens")).map(call => call.body.repository_ids)).toEqual([[repositoryId]]);
     });
@@ -397,7 +390,7 @@ describe("拉取请求议题关联运行器", () => {
     });
   });
 
-  it("受管PR关闭未合并后直接清理议题块并发布不适用状态", async () => {
+  it("受管PR关闭未合并后只清理议题块", async () => {
     await withRunnerEnvironment(async () => {
       process.env.RUNTIME_URL = "https://runtime.test";
       const outer = '<!-- workflow:managed-pr:start -->\n## 摘要\n\n正文\n\n<!-- workflow:source-actor:bot -->\n<!-- workflow:managed-pr:end -->\n';
@@ -421,8 +414,7 @@ describe("拉取请求议题关联运行器", () => {
       await runPrIssueLink(invocation());
       expect(currentBody).toBe(outer);
       expect(calls.some(call => call.method === "PATCH" && call.url.endsWith("/pulls/42"))).toBe(true);
-      const check = calls.find(call => call.method === "POST" && call.url.endsWith("/check-runs"));
-      expect(check?.body.output.title).toBe("议题关联不适用");
+      expect(calls.some(call => call.method === "POST" && call.url.endsWith("/check-runs"))).toBe(false);
     });
   });
 

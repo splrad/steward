@@ -83,7 +83,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const repository = (id = 1296724484, fullName = "splrad/steward") => ({ id, full_name: fullName, private: false, owner: { id: 302208797, login: "splrad" } });
+const repository = (id = 1296724484, fullName = "splrad/steward") => ({ id, full_name: fullName, private: false, has_issues: true, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } });
 const env = (database: SqliteD1): Env => ({
   ORGANIZATION_ID: "302208797", ORGANIZATION_LOGIN: "splrad", APP_ID: "4243096", INSTALLATION_ID: "145952003",
   STEWARDSHIP_REPOSITORY: "splrad/steward", POLICY_SHA: "a".repeat(40), STEWARD_APP_PRIVATE_KEY: privateKey,
@@ -622,7 +622,7 @@ describe("议题快照内部接口", () => {
     installAuthorization(undefined, [unmanaged]);
     const removed = await worker.fetch(new Request(endpoint, { method: "POST", headers: { authorization: "Bearer one-repository-token" } }), env(database));
     expect(removed.status).toBe(200);
-    expect(await removed.json()).toEqual({ repositoryId: 1400000000, managed: false });
+    expect(await removed.json()).toEqual({ repositoryId: 1400000000, managed: false, issueCapable: false });
     expect(await store.getSnapshot(1400000000, 7)).toBeNull();
     expect(await store.getRepositoryState(1400000000)).toBeNull();
     expect(await intentStore.get(1400000000, 42)).toBeNull();
@@ -631,8 +631,25 @@ describe("议题快照内部接口", () => {
     installAuthorization(undefined, [repository(1400000000, "splrad/default-managed")]);
     const activated = await worker.fetch(new Request(endpoint, { method: "POST", headers: { authorization: "Bearer one-repository-token" } }), env(database));
     expect(activated.status).toBe(200);
-    expect(await activated.json()).toEqual({ repositoryId: 1400000000, managed: true });
+    expect(await activated.json()).toEqual({ repositoryId: 1400000000, managed: true, issueCapable: true });
     expect(await store.getRepositoryState(1400000000)).not.toBeNull();
+  });
+
+  it("平台仍纳管但未启用 Issues 时墓碑快照并拒绝议题路由", async () => {
+    const database = new SqliteD1();
+    const store = new IssueSnapshotStore(database.binding());
+    await put(store, snapshot(1296724484, "splrad/steward", 7), 0);
+    installAuthorization(undefined, [{ ...repository(), has_issues: false }]);
+    const authorization = { authorization: "Bearer one-repository-token" };
+    const lifecycle = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/lifecycle", { method: "POST", headers: authorization }), env(database));
+    expect(lifecycle.status).toBe(200);
+    expect(await lifecycle.json()).toEqual({ repositoryId: 1296724484, managed: true, issueCapable: false });
+    expect(await store.getRepositoryState(1296724484)).toBeNull();
+
+    installAuthorization(undefined, [{ ...repository(), has_issues: false }]);
+    const read = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484", { headers: authorization }), env(database));
+    expect(read.status).toBe(403);
+    expect(await read.json()).toEqual({ error: "internal-scope-rejected" });
   });
 
   it("正文写意图接口把无效JSON和非对象正文映射为400", async () => {

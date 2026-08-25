@@ -23,7 +23,7 @@ const baseEnv = (): Env => ({
   STEWARD_APP_PRIVATE_KEY: privateKey,
   STEWARD_WEBHOOK_SECRET: "webhook-value-456",
 });
-const repository = (id = 1296724484, fullName = "splrad/steward", defaultBranch = "main") => ({ id, full_name: fullName, private: false, fork: false, archived: false, disabled: false, default_branch: defaultBranch, owner: { id: 302208797 } });
+const repository = (id = 1296724484, fullName = "splrad/steward", defaultBranch = "main") => ({ id, full_name: fullName, private: false, fork: false, archived: false, disabled: false, has_issues: true, default_branch: defaultBranch, owner: { id: 302208797 } });
 const ownerlessRepository = (id = 1296724484, fullName = "splrad/steward") => {
   const { owner: _owner, ...value } = repository(id, fullName);
   return value;
@@ -41,6 +41,44 @@ function installationScoped(payload: Record<string, unknown>): Record<string, un
 }
 
 describe("中央运行程序", () => {
+  it("Dependabot默认分支拉取请求只进入平台分类，不派发议题工作流或创建议题检查", async () => {
+    const headSha = "d".repeat(40); const dispatched: string[] = []; const checks: any[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.includes(`/commits/${headSha}/check-runs?per_page=100`)) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/check-runs")) { checks.push(JSON.parse(String(init.body))); return new Response(JSON.stringify({ id: 101 }), { status: 201 }); }
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      const workflow = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
+      if (workflow) { dispatched.push(workflow); return new Response(null, { status: 204 }); }
+      return new Response("unexpected", { status: 500 });
+    });
+    const payload = scoped({
+      action: "opened", repository: repository(),
+      pull_request: { number: 160, head: { sha: headSha, repo: { id: 1296724484 } }, base: { ref: "main", repo: { id: 1296724484 } }, user: { id: 49699333 } },
+    });
+    expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(202);
+    expect(dispatched).toEqual(["pr-classification.yml"]);
+    expect(checks.map(check => check.name)).toEqual(["PR Validation Gate"]);
+  });
+
+  it("关闭Issues会墓碑化快照并只调度Steward受管块清理", async () => {
+    const events: string[] = [];
+    vi.spyOn(IssueSnapshotStore.prototype, "deleteRepository").mockImplementation(async (repositoryId) => { events.push(`delete:${repositoryId}`); });
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      const workflow = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
+      if (workflow) { const inputs = JSON.parse(String(init.body)).inputs; events.push(`${workflow}:${inputs.invalidateOnly}:${inputs.cleanupUnmanaged}`); return new Response(null, { status: 204 }); }
+      return new Response("unexpected", { status: 500 });
+    });
+    const current = { ...repository(), has_issues: false };
+    const payload = scoped({ action: "edited", repository: current, changes: { has_issues: { from: true } } });
+    expect((await handleWebhook(signedRequest("repository", payload), { ...baseEnv(), ISSUE_SNAPSHOTS: {} as D1Database })).status).toBe(202);
+    expect(events).toEqual(["delete:1296724484", "pr-issue-link.yml:false:true"]);
+  });
+
   it("健康检查不泄露密钥并只返回固定事实", async () => {
     const env = baseEnv();
     const response = await worker.fetch(new Request("https://example.test/health"), env);
@@ -87,7 +125,7 @@ describe("中央运行程序", () => {
       ["installation", installationScoped({ action: "created", repositories: [ownerlessRepository()] })],
       ["installation_repositories", installationScoped({ action: "added", repositories_added: [ownerlessRepository()] })],
       ["push", scoped({ ref: "refs/heads/feature/a", before: "b".repeat(40), after: "c".repeat(40), deleted: false, repository: repository(), sender: { id: 44151430, login: "axiomoth", type: "User" } })],
-      ["pull_request", scoped({ action: "opened", repository: repository(), pull_request: { number: 8, head: { sha: "d".repeat(40) }, base: { ref: "main" }, user: { id: 44151430 } } })],
+      ["pull_request", scoped({ action: "opened", repository: repository(), pull_request: { number: 8, head: { sha: "d".repeat(40), repo: { id: 1296724484 } }, base: { ref: "main", repo: { id: 1296724484 } }, user: { id: 301115370 } } })],
       ["pull_request", scoped({ action: "closed", repository: repository(1187527897, "splrad/LayerScape"), pull_request: { number: 9, merged: true, merge_commit_sha: "e".repeat(40), base: { ref: "main" } } })],
     ];
     for (const [event, payload] of cases) expect((await handleWebhook(signedRequest(event, payload), env)).status).toBe(202);
@@ -121,7 +159,7 @@ describe("中央运行程序", () => {
       action: "edited",
       changes: { base: { ref: { from: "release" } } },
       repository: repository(),
-      pull_request: { number: 8, head: { sha: headSha }, base: { ref: "main" }, user: { id: 44151430 } },
+      pull_request: { number: 8, head: { sha: headSha, repo: { id: 1296724484 } }, base: { ref: "main", repo: { id: 1296724484 } }, user: { id: 301115370 } },
     });
     expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(202);
     expect(validationChecks).toEqual([expect.objectContaining({ name: "PR Validation Gate", head_sha: headSha, status: "in_progress", external_id: `1296724484:8:${headSha}:pending` })]);
@@ -145,7 +183,7 @@ describe("中央运行程序", () => {
       action: "edited",
       changes: { body: { from: "原正文" } },
       repository: repository(),
-      pull_request: { number: 8, body: "Resolves #7", head: { sha: headSha }, base: { ref: "main" }, user: { id: 44151430 } },
+      pull_request: { number: 8, body: "Resolves #7", head: { sha: headSha, repo: { id: 1296724484 } }, base: { ref: "main", repo: { id: 1296724484 } }, user: { id: 301115370 } },
     });
     expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(202);
     expect(dispatched.map(value => value.workflow)).toEqual(["pr-issue-link.yml", "pr-classification.yml", "pr-issue-link.yml"]);
@@ -166,7 +204,7 @@ describe("中央运行程序", () => {
       action: "edited",
       changes: { base: { ref: { from: "main" } } },
       repository: repository(),
-      pull_request: { number: 8, body: "", head: { sha: "d".repeat(40) }, base: { ref: "release" }, user: { id: 44151430 } },
+      pull_request: { number: 8, body: "", head: { sha: "d".repeat(40), repo: { id: 1296724484 } }, base: { ref: "release", repo: { id: 1296724484 } }, user: { id: 301115370 } },
     });
     expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(202);
     expect(dispatched.map(value => value.workflow)).toEqual(["pr-issue-link.yml", "pr-issue-link.yml"]);
@@ -204,8 +242,8 @@ describe("中央运行程序", () => {
       pull_request: {
         number: 8,
         user: { id: 301115370 },
-        head: { sha: headSha, ref: "feature/a", repo: { owner: { id: 302208797 } } },
-        base: { ref: "main" },
+        head: { sha: headSha, ref: "feature/a", repo: { id: 1296724484, owner: { id: 302208797 } } },
+        base: { ref: "main", repo: { id: 1296724484 } },
       },
     });
     expect((await handleWebhook(signedRequest("pull_request", synchronizePayload), baseEnv())).status).toBe(202);
@@ -223,9 +261,9 @@ describe("中央运行程序", () => {
       if (name) { dispatched.push(name); return new Response(null, { status: 204 }); }
       return new Response(`unexpected:${init?.method ?? "GET"}`, { status: 500 });
     });
-    const ordinary = scoped({ action: "edited", repository: repository(), pull_request: { number: 8, body: "正文", head: { sha: "d".repeat(40) }, base: { ref: "release" }, user: { id: 301115370 } } });
+    const ordinary = scoped({ action: "edited", repository: repository(), pull_request: { number: 8, body: "正文", head: { sha: "d".repeat(40), repo: { id: 1296724484 } }, base: { ref: "release", repo: { id: 1296724484 } }, user: { id: 301115370 } } });
     expect((await handleWebhook(signedRequest("pull_request", ordinary), baseEnv())).status).toBe(204);
-    const cleanup = scoped({ action: "edited", repository: repository(), pull_request: { number: 8, body: "<!-- workflow:issue-links:start repo=1296724484 -->", head: { sha: "d".repeat(40) }, base: { ref: "release" }, user: { id: 301115370 } } });
+    const cleanup = scoped({ action: "edited", repository: repository(), pull_request: { number: 8, body: "<!-- workflow:issue-links:start repo=1296724484 -->", head: { sha: "d".repeat(40), repo: { id: 1296724484 } }, base: { ref: "release", repo: { id: 1296724484 } }, user: { id: 301115370 } } });
     expect((await handleWebhook(signedRequest("pull_request", cleanup), baseEnv())).status).toBe(202);
     expect(dispatched).toEqual(["pr-issue-link.yml"]);
   });
@@ -243,10 +281,28 @@ describe("中央运行程序", () => {
     const payload = scoped({
       action: "closed",
       repository: repository(),
-      pull_request: { number: 8, merged: false, merged_at: null, body: "<!-- workflow:issue-links:start repo=1296724484 -->", head: { sha: "d".repeat(40) }, base: { ref: "main" } },
+      pull_request: { number: 8, merged: false, merged_at: null, body: "<!-- workflow:issue-links:start repo=1296724484 -->", user: { id: 301115370 }, head: { sha: "d".repeat(40), repo: { id: 1296724484 } }, base: { ref: "main", repo: { id: 1296724484 } } },
     });
     expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(202);
     expect(dispatched).toEqual([{ name: "pr-issue-link.yml", inputs: expect.objectContaining({ repositoryId: "1296724484", pullRequestNumber: "8", scanAll: "false", invalidateOnly: "false" }) }]);
+  });
+
+  it("非 Steward PR 即使伪造议题块且关闭未合并也不调度清理", async () => {
+    const dispatched: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      const name = /\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
+      if (name) { dispatched.push(name); return new Response(null, { status: 204 }); }
+      return new Response("unexpected", { status: 500 });
+    });
+    const payload = scoped({
+      action: "closed",
+      repository: repository(),
+      pull_request: { number: 160, merged: false, merged_at: null, body: "<!-- workflow:issue-links:start repo=1296724484 -->", user: { id: 49699333 }, head: { sha: "d".repeat(40), repo: { id: 1296724484 } }, base: { ref: "main", repo: { id: 1296724484 } } },
+    });
+    expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(204);
+    expect(dispatched).toEqual([]);
   });
 
   it("草案转为可审查后幂等请求Maintainers团队", async () => {
@@ -762,7 +818,7 @@ describe("中央运行程序", () => {
     ]);
   });
 
-  it("默认纳管公开仓库转为私有时先失效门禁，再墓碑化快照并调度PR状态清理", async () => {
+  it("默认纳管公开仓库转为私有时墓碑化快照并调度受管块清理", async () => {
     const events: string[] = [];
     const deleted = vi.spyOn(IssueSnapshotStore.prototype, "deleteRepository").mockImplementation(async (repositoryId) => { events.push(`delete:${repositoryId}`); });
     const dispatched: { name: string; inputs: Record<string, string> }[] = [];
@@ -783,13 +839,12 @@ describe("中央运行程序", () => {
     expect(result.status).toBe(202);
     expect(deleted).toHaveBeenCalledWith(1400000000);
     expect(dispatched).toEqual([
-      { name: "pr-issue-link.yml", inputs: expect.objectContaining({ repositoryId: "1400000000", scanAll: "true", invalidateOnly: "true", cleanupUnmanaged: "false" }) },
       { name: "pr-issue-link.yml", inputs: expect.objectContaining({ repositoryId: "1400000000", scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "true" }) },
     ]);
-    expect(events).toEqual(["pr-issue-link.yml:true", "delete:1400000000", "pr-issue-link.yml:false"]);
+    expect(events).toEqual(["delete:1400000000", "pr-issue-link.yml:false"]);
   });
 
-  it("公开仓库转为私有时失效派发失败会保留快照并停止清理", async () => {
+  it("公开仓库转为私有时清理派发失败仍保持快照墓碑", async () => {
     const deleted = vi.spyOn(IssueSnapshotStore.prototype, "deleteRepository").mockResolvedValue();
     const dispatched: string[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
@@ -804,8 +859,8 @@ describe("中央运行程序", () => {
     const current = { ...repository(1400000000, "splrad/default-managed"), private: true };
     const result = await handleWebhook(signedRequest("repository", scoped({ action: "edited", repository: current, changes: { visibility: { from: "public" } } })), env);
     expect(result.status).toBe(503);
-    expect(dispatched).toEqual(["true"]);
-    expect(deleted).not.toHaveBeenCalled();
+    expect(dispatched).toEqual(["false"]);
+    expect(deleted).toHaveBeenCalledWith(1400000000);
   });
 
   it("仓库重新纳管时先失效旧议题门禁再执行完整接入", async () => {

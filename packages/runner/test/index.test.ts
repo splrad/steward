@@ -32,7 +32,7 @@ describe("中央命令入口", () => {
     expect(() => parseInvocation(["validate", "--workspace", "a", "--workspace", "b"])).toThrow("重复参数");
   });
 
-  it("部署生命周期收敛会墓碑当前未纳管仓库并调度全PR清理", async () => {
+  it("部署生命周期收敛会墓碑当前不具备议题能力的仓库并调度全PR清理", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
     process.env.APP_ID = "4243096";
     process.env.INSTALLATION_ID = "145952003";
@@ -45,25 +45,21 @@ describe("中央命令入口", () => {
       calls.push({ url: value, body });
       if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
       if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [
-        { id: 1400000001, full_name: "splrad/default-private", private: true, owner: { id: 302208797, login: "splrad" } },
+        { id: 1400000001, full_name: "splrad/default-private", private: true, has_issues: false, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } },
       ] }), { status: 200 });
       if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile")) return new Response(JSON.stringify({ repositoryId: 1296724484, removedRepositoryIds: [1296725317] }), { status: 200 });
-      if (value.endsWith("/internal/issue-snapshots/1400000001/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1400000001, managed: false }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1400000001/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1400000001, managed: false, issueCapable: false }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) return new Response(null, { status: 204 });
       return new Response("unexpected", { status: 500 });
     });
     await main(["reconcile-repository-lifecycle", "--delivery-id", "deploy-1-1", "--policy-sha", "a".repeat(40)]);
     expect(calls.find(call => call.url.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile"))?.body).toEqual({ repositoryIds: [1400000001] });
-    const invalidationIndex = calls.findIndex(call => call.body?.inputs?.invalidateOnly === "true");
     const lifecycleIndex = calls.findIndex(call => call.url.endsWith("/internal/issue-snapshots/1400000001/lifecycle"));
     const cleanupIndex = calls.findIndex(call => call.body?.inputs?.cleanupUnmanaged === "true");
-    expect(invalidationIndex).toBeGreaterThan(-1);
-    expect(lifecycleIndex).toBeGreaterThan(invalidationIndex);
+    expect(calls.some(call => call.body?.inputs?.invalidateOnly === "true")).toBe(false);
+    expect(lifecycleIndex).toBeGreaterThan(-1);
     expect(cleanupIndex).toBeGreaterThan(lifecycleIndex);
-    expect(calls[invalidationIndex]!.body.inputs).toEqual({
-      deliveryId: "deploy-1-1:1400000001", repositoryId: "1400000001", scanAll: "true", invalidateOnly: "true", cleanupUnmanaged: "false", policySha: "a".repeat(40),
-    });
     expect(calls[cleanupIndex]!.body.inputs).toEqual({
       deliveryId: "deploy-1-1:1400000001", repositoryId: "1400000001", scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "true", policySha: "a".repeat(40),
     });
@@ -78,8 +74,8 @@ describe("中央命令入口", () => {
     process.env.RUNTIME_URL = "https://runtime.test";
     const calls: Array<{ url: string; body: any }> = [];
     const managedRepositories = [
-      { id: 1187527897, full_name: "splrad/LayerScape", private: false, owner: { id: 302208797, login: "splrad" } },
-      { id: 1296724484, full_name: "splrad/steward", private: false, owner: { id: 302208797, login: "splrad" } },
+      { id: 1187527897, full_name: "splrad/LayerScape", private: false, has_issues: true, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } },
+      { id: 1296724484, full_name: "splrad/steward", private: false, has_issues: true, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } },
     ];
     vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
       const value = String(url); const body = init?.body ? JSON.parse(String(init.body)) : null;
@@ -87,8 +83,8 @@ describe("中央命令入口", () => {
       if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
       if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: managedRepositories }), { status: 200 });
       if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile")) return new Response(JSON.stringify({ repositoryId: 1296724484, removedRepositoryIds: [] }), { status: 200 });
-      if (value.endsWith("/internal/issue-snapshots/1187527897/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1187527897, managed: true }), { status: 200 });
-      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1296724484, managed: true }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1187527897/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1187527897, managed: true, issueCapable: true }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1296724484, managed: true, issueCapable: true }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) return new Response(null, { status: 204 });
       if (value.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches")) return new Response(body.inputs.repositoryId === "1187527897" ? "failure" : null, { status: body.inputs.repositoryId === "1187527897" ? 500 : 204 });
@@ -117,8 +113,8 @@ describe("中央命令入口", () => {
       calls.push({ url: value, body });
       if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
       if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [
-        { id: 1187527897, full_name: "splrad/LayerScape", private: false, owner: { id: 302208797, login: "splrad" } },
-        { id: 1296724484, full_name: "splrad/steward", private: false, owner: { id: 302208797, login: "splrad" } },
+        { id: 1187527897, full_name: "splrad/LayerScape", private: false, has_issues: true, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } },
+        { id: 1296724484, full_name: "splrad/steward", private: false, has_issues: true, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } },
       ] }), { status: 200 });
       if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile")) return new Response(JSON.stringify({ repositoryId: 1296724484, removedRepositoryIds: [] }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
@@ -143,12 +139,12 @@ describe("中央命令入口", () => {
       calls.push({ url: value, body });
       if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
       if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [
-        { id: 1187527897, full_name: "splrad/LayerScape", private: false, owner: { id: 302208797, login: "splrad" } },
-        { id: 1296724484, full_name: "splrad/steward", private: false, owner: { id: 302208797, login: "splrad" } },
+        { id: 1187527897, full_name: "splrad/LayerScape", private: false, has_issues: true, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } },
+        { id: 1296724484, full_name: "splrad/steward", private: false, has_issues: true, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } },
       ] }), { status: 200 });
       if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile")) return new Response(JSON.stringify({ repositoryId: 1296724484, removedRepositoryIds: [] }), { status: 200 });
       if (value.endsWith("/internal/issue-snapshots/1187527897/lifecycle")) return new Response("failure", { status: 500 });
-      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1296724484, managed: true }), { status: 200 });
+      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1296724484, managed: true, issueCapable: true }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
       if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) return new Response(null, { status: 204 });
       if (value.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches")) return new Response(null, { status: 204 });
@@ -202,7 +198,7 @@ describe("中央命令入口", () => {
     };
     const repository = {
       id: repositoryId, full_name: "splrad/steward", private: false, owner: { id: 302208797, login: "splrad" },
-      fork: false, archived: false, disabled: false, default_branch: "main", ...desiredSettings,
+      fork: false, has_issues: true, archived: false, disabled: false, default_branch: "main", ...desiredSettings,
     };
     const instructions = `${(await readFile(resolve("config", "copilot", "common.md"), "utf8")).trimEnd()}\n`;
     const calls: Array<{ url: string; method: string; body: any }> = [];
@@ -239,6 +235,27 @@ describe("中央命令入口", () => {
       "--scan-all", "true",
       "--policy-sha", "a".repeat(40),
     ])).rejects.toThrow("安全整数");
+  });
+
+  it("未启用 Issues 的仓库在读取议题或 Runtime 前停止同步", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
+    process.env.APP_ID = "4243096";
+    process.env.INSTALLATION_ID = "145952003";
+    process.env.STEWARD_APP_PRIVATE_KEY = privateKey;
+    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
+    process.env.RUNTIME_URL = "https://runtime.test";
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string | URL | Request) => {
+      const value = String(url); calls.push(value);
+      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [
+        { id: 1296724484, full_name: "splrad/steward", private: false, has_issues: false, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } },
+      ] }), { status: 200 });
+      return new Response("unexpected", { status: 500 });
+    });
+    await expect(main(["issue-sync", "--delivery-id", "issues-disabled", "--repository-id", "1296724484", "--scan-all", "true", "--policy-sha", "a".repeat(40)]))
+      .rejects.toThrow("仓库未启用议题同步");
+    expect(calls.some(value => value.includes("/issues") || value.startsWith("https://runtime.test"))).toBe(false);
   });
 
   it("缺失环境变量立即失败", () => {

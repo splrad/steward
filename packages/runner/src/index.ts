@@ -9,7 +9,7 @@ import {
   buildAiDiffObservation, buildCopilotRepairPrompt, buildDeterministicSummary, buildPrompt, classifyPullRequest, classificationDigests, classificationInputDigest, computePullRequestFingerprint, createAiClassificationEnvelope, digest,
   categorizeReleasePullRequests, classifyRemoteReleaseState, collectReleasePullRequests,
   escapeMarkdownText,
-  isHumanActor, normalizeContributor,
+  isHumanActor, isIssueCapableRepository, normalizeContributor,
   organizationPullRequestTemplate,
   copilotInstructionSyncContract, parseVersion, planClassificationLabels, planLabelDefinitions, planRelease, planRepositorySettings, renderCopilotInstructions, renderManagedBody,
   renderOnboardingPullRequest, renderReleaseNotes, renderValidationSummary, runValidationTasks,
@@ -639,6 +639,8 @@ async function issueSync(args: Readonly<Record<string, string>>): Promise<void> 
   const repositories = await gh.listInstallationRepositories();
   if (repositories.length !== 1 || Number(repositories[0]?.id) !== repositoryId || typeof repositories[0]?.full_name !== "string") throw new Error("同步令牌仓库范围无效");
   const repository = repositories[0];
+  const issueConfiguration = configurationFor(await catalog(), repository);
+  if (!isIssueCapableRepository(repository, issueConfiguration.managed === true)) throw new Error("仓库未启用议题同步");
   const [owner, repo] = splitRepository(repository.full_name);
   const baseUrl = runtimeBaseUrl(env("RUNTIME_URL"));
   const requestRuntime = async <T>(method: "GET" | "POST", path: string, headers: Record<string, string> = {}): Promise<T> => {
@@ -833,7 +835,7 @@ async function reconcileManagedFile(input: { repository: any; gh: GitHubClient; 
   }) : await input.gh.createPullRequest(owner, repo, { title: input.title, body, head: input.branch, base: defaultBranch });
   await ensureCopilotReview(input.gh, owner, repo, pull.number, written.headSha, input.policySha);
   await dispatchClassification({ repositoryId: input.repository.id, pullRequestNumber: pull.number, headSha: written.headSha, policySha: input.policySha, deliveryId: input.deliveryId });
-  if (input.dispatchIssueLink !== false) {
+  if ((input.dispatchIssueLink ?? isIssueCapableRepository(input.repository, true)) === true) {
     await dispatchCentralWorkflow("pr-issue-link.yml", input.policySha, {
       deliveryId: input.deliveryId,
       repositoryId: String(input.repository.id),
@@ -892,7 +894,9 @@ async function onboard(args: Readonly<Record<string, string>>) {
   const result = await reconcileManagedFile({ repository, gh, token, path: instructions.targetPath, content: instructions.content, branch: planned.branch, title: planned.title, policySha, deliveryId, dispatchIssueLink: false,
     redrive: { workflow: "onboard-repository.yml", inputs: { repositoryId: String(repositoryId), repositoryFullName: fullName, trigger, deliveryId, policySha } } });
   await summary([`仓库：${fullName}`, `状态：${result === "unchanged" ? "onboarded" : result}`, `接入分支：${planned.branch}`, `分类配置：${cfg.classification.profile}`, `验证配置：${cfg.validationProfile}`, `Copilot说明配置：${cfg.copilotInstructionsProfile}`, `发布配置：${cfg.releaseProfile ?? "未启用"}`, `Copilot说明字符数：${[...instructions.content].length}`, `标签定义：${labelSyncFailure ? "failed" : "checked"}`]);
-  await dispatchCentralWorkflow("issue-sync.yml", policySha, { deliveryId, repositoryId: String(repositoryId), scanAll: "true", policySha });
+  if (isIssueCapableRepository(repository, cfg.managed === true)) {
+    await dispatchCentralWorkflow("issue-sync.yml", policySha, { deliveryId, repositoryId: String(repositoryId), scanAll: "true", policySha });
+  }
   if (labelSyncFailure) throw new Error(labelSyncFailure);
 }
 async function automate(args: Readonly<Record<string, string>>) {
@@ -1085,15 +1089,17 @@ async function automate(args: Readonly<Record<string, string>>) {
   }) : await gh.createPullRequest(owner, repo, humanPushPullRequestCreateInput({ title, body, head: sourceBranch, base: repository.default_branch }));
   const boundPull = await gh.getPullRequest(owner, repo, pull.number);
   const pullBinding = inspectAutomationPullRequestBinding(boundPull, { repositoryId, sourceBranch, headSha: facts.headSha, baseBranch: repository.default_branch, baseSha: facts.baseSha });
-  await dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
-    deliveryId: required(args, "delivery-id"),
-    repositoryId: String(repositoryId),
-    pullRequestNumber: String(pull.number),
-    scanAll: "false",
-    invalidateOnly: "false",
-    cleanupUnmanaged: "false",
-    policySha,
-  });
+  if (isIssueCapableRepository(repository, repositoryConfiguration.managed === true)) {
+    await dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
+      deliveryId: required(args, "delivery-id"),
+      repositoryId: String(repositoryId),
+      pullRequestNumber: String(pull.number),
+      scanAll: "false",
+      invalidateOnly: "false",
+      cleanupUnmanaged: "false",
+      policySha,
+    });
+  }
   if (pullBinding === "base-sha-drifted") aiClassificationSummary = `${aiClassificationSummary}；目标分支已前进，未传递`;
   else if (classificationField.state !== "missing") {
     const rawFacts: RawClassificationFacts = { ...rawFactsBase, pullRequestNumber: pull.number };
@@ -1292,7 +1298,7 @@ async function reconcileRepositoryLifecycle(args: Readonly<Record<string, string
     || new Set(reconciliation.removedRepositoryIds).size !== reconciliation.removedRepositoryIds.length) throw new Error("安装仓库生命周期运行时读回不一致");
 
   let firstFailure: unknown = null;
-  for (const target of targets) {
+  for (const target of targets.filter(target => target.issueCapable)) {
     const repositoryId = integer(String(target.repository.id), "repository-id");
     try {
       await dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
@@ -1318,7 +1324,7 @@ async function reconcileRepositoryLifecycle(args: Readonly<Record<string, string
       if (Buffer.byteLength(text, "utf8") > 16 * 1024) throw new Error("仓库生命周期运行时响应过大");
       let state: any;
       try { state = JSON.parse(text); } catch { throw new Error("仓库生命周期运行时响应无效"); }
-      if (state?.repositoryId !== repositoryId || state?.managed !== target.managed) throw new Error("仓库生命周期运行时读回不一致");
+      if (state?.repositoryId !== repositoryId || state?.managed !== target.managed || state?.issueCapable !== target.issueCapable) throw new Error("仓库生命周期运行时读回不一致");
       reconciled.push(target);
     } catch (error) { if (firstFailure === null) firstFailure = error; }
   }
@@ -1326,7 +1332,7 @@ async function reconcileRepositoryLifecycle(args: Readonly<Record<string, string
   for (const target of reconciled) {
     const repositoryId = integer(String(target.repository.id), "repository-id");
     try {
-      if (target.managed) {
+      if (target.issueCapable) {
         await dispatchCentralWorkflow("issue-sync.yml", policySha, {
           deliveryId: `${deliveryId}:${repositoryId}`,
           repositoryId: String(repositoryId),
@@ -1343,7 +1349,7 @@ async function reconcileRepositoryLifecycle(args: Readonly<Record<string, string
           policySha,
         });
       }
-      await summary([`仓库编号：${repositoryId}`, `生命周期：${target.managed ? "managed" : "unmanaged"}`, `登记来源：${target.registration}`]);
+      await summary([`仓库编号：${repositoryId}`, `平台纳管：${target.managed ? "managed" : "unmanaged"}`, `议题能力：${target.issueCapable ? "enabled" : "disabled"}`, `登记来源：${target.registration}`]);
     } catch (error) { if (firstFailure === null) firstFailure = error; }
   }
   if (firstFailure !== null) throw firstFailure;

@@ -1,3 +1,4 @@
+import { isIssueCapableRepository, isStewardOwnedPullRequest } from "../../core/src/issues.js";
 import { createAppJwt, createInstallationToken, dispatchWorkflow, GitHubClient } from "../../github/src/index.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
 import { handleIssueSnapshotInternalRequest, IssueSnapshotStore } from "./issue-snapshots.js";
@@ -255,11 +256,17 @@ function belongsToOrganization(repository: any): boolean {
   return true;
 }
 function isManaged(repository: any): boolean { return belongsToOrganization(repository) && repositoryConfiguration(repository).managed === true; }
+function isIssueCapable(repository: any): boolean { return isIssueCapableRepository(repository, isManaged(repository)); }
 
-function wasManagedBeforeVisibilityEdit(repository: any, changes: any): boolean {
+function repositoryBeforeEdit(repository: any, changes: any): any {
   const previousVisibility = changes?.visibility?.from;
-  if (!["public", "private", "internal"].includes(previousVisibility)) return isManaged(repository);
-  return isManaged({ ...repository, private: previousVisibility !== "public" });
+  return {
+    ...repository,
+    ...(["public", "private", "internal"].includes(previousVisibility) ? { private: previousVisibility !== "public" } : {}),
+    ...(typeof changes?.has_issues?.from === "boolean" ? { has_issues: changes.has_issues.from } : {}),
+    ...(typeof changes?.archived?.from === "boolean" ? { archived: changes.archived.from } : {}),
+    ...(typeof changes?.disabled?.from === "boolean" ? { disabled: changes.disabled.from } : {}),
+  };
 }
 
 async function dispatchIssueInvalidation(env: Env, repository: any, deliveryId: string): Promise<void> {
@@ -284,7 +291,7 @@ function orderedManagedRepositories(repositories: readonly any[]): any[] {
 async function onboardManagedRepositories(env: Env, repositories: readonly any[], deliveryId: string, trigger: string): Promise<void> {
   const ordered = orderedManagedRepositories(repositories);
   let firstFailure: unknown = null;
-  for (const repository of ordered) {
+  for (const repository of ordered.filter(isIssueCapable)) {
     try { await dispatchIssueInvalidation(env, repository, deliveryId); }
     catch (error) { if (firstFailure === null) firstFailure = error; }
   }
@@ -292,7 +299,8 @@ async function onboardManagedRepositories(env: Env, repositories: readonly any[]
   const store = env.ISSUE_SNAPSHOTS ? new IssueSnapshotStore(env.ISSUE_SNAPSHOTS) : null;
   for (const repository of ordered) {
     try {
-      await store?.activateRepository(Number(repository.id));
+      if (isIssueCapable(repository)) await store?.activateRepository(Number(repository.id));
+      else await store?.deleteRepository(Number(repository.id));
       await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger, deliveryId, policySha: env.POLICY_SHA });
     } catch (error) { if (firstFailure === null) firstFailure = error; }
   }
@@ -328,8 +336,8 @@ async function dispatchAllManagedIssueScans(
   afterInvalidation?: () => Promise<void>,
 ): Promise<void> {
   const installed = await installationRepositories(env);
-  const repositories = new Map(installed.filter(isManaged).map(repository => [Number(repository.id), repository]));
-  if (currentRepository && isManaged(currentRepository)) repositories.set(Number(currentRepository.id), currentRepository);
+  const repositories = new Map(installed.filter(isIssueCapable).map(repository => [Number(repository.id), repository]));
+  if (currentRepository && isIssueCapable(currentRepository)) repositories.set(Number(currentRepository.id), currentRepository);
   const ordered = [...repositories.values()].sort((left, right) => Number(left.id) - Number(right.id));
   let firstFailure: unknown = null;
   for (const repository of ordered) {
@@ -349,7 +357,7 @@ async function dispatchRelationRefreshes(env: Env, deliveryId: string, payload: 
   const grouped = new Map<number, { repository: any; issueNumbers: number[] | null }>();
   let incomplete = false;
   for (const target of targets) {
-    if (!target.repository || !isManaged(target.repository)) { incomplete = true; continue; }
+    if (!target.repository || !isIssueCapable(target.repository)) { incomplete = true; continue; }
     const repositoryId = Number(target.repository.id);
     const issueNumber = Number(target.issueNumber);
     const existing = grouped.get(repositoryId) ?? { repository: target.repository, issueNumbers: [] };
@@ -357,13 +365,13 @@ async function dispatchRelationRefreshes(env: Env, deliveryId: string, payload: 
     else if (existing.issueNumbers) existing.issueNumbers.push(issueNumber);
     grouped.set(repositoryId, existing);
   }
-  if (incomplete && payload.repository && isManaged(payload.repository)) {
+  if (incomplete && payload.repository && isIssueCapable(payload.repository)) {
     const repositoryId = Number(payload.repository.id);
     const existing = grouped.get(repositoryId) ?? { repository: payload.repository, issueNumbers: [] };
     existing.issueNumbers = null;
     grouped.set(repositoryId, existing);
   }
-  if (!grouped.size && payload.repository && isManaged(payload.repository)) grouped.set(Number(payload.repository.id), { repository: payload.repository, issueNumbers: null });
+  if (!grouped.size && payload.repository && isIssueCapable(payload.repository)) grouped.set(Number(payload.repository.id), { repository: payload.repository, issueNumbers: null });
   const ordered = [...grouped.values()].sort((left, right) => Number(left.repository.id) - Number(right.repository.id));
   let firstFailure: unknown = null;
   for (const target of ordered) {
@@ -429,13 +437,13 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
     }
     if (event === "issues") {
       const repository = payload.repository; const issueNumber = Number(payload.issue?.number);
-      if (!repository || !isManaged(repository) || payload.issue?.pull_request || !Number.isSafeInteger(issueNumber) || issueNumber <= 0) return response(204);
+      if (!repository || !isIssueCapable(repository) || payload.issue?.pull_request || !Number.isSafeInteger(issueNumber) || issueNumber <= 0) return response(204);
       await dispatchAllManagedIssueScans(env, deliveryId, repository);
       return response(202);
     }
     if (event === "issue_comment" && ["created", "edited", "deleted"].includes(action)) {
       const repository = payload.repository; const issueNumber = Number(payload.issue?.number);
-      if (!repository || !isManaged(repository) || payload.issue?.pull_request || !Number.isSafeInteger(issueNumber) || issueNumber <= 0) return response(204);
+      if (!repository || !isIssueCapable(repository) || payload.issue?.pull_request || !Number.isSafeInteger(issueNumber) || issueNumber <= 0) return response(204);
       await dispatchAllManagedIssueScans(env, deliveryId, repository);
       return response(202);
     }
@@ -468,20 +476,22 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
     if (event === "repository" && action === "edited") {
       const repository = payload.repository; if (!repository || !belongsToOrganization(repository)) return response(204);
       const managed = isManaged(repository);
-      const previouslyManaged = wasManagedBeforeVisibilityEdit(repository, payload.changes);
-      if (previouslyManaged && !managed) {
+      const capable = isIssueCapable(repository);
+      const previousRepository = repositoryBeforeEdit(repository, payload.changes);
+      const previouslyManaged = isManaged(previousRepository);
+      const previouslyCapable = isIssueCapable(previousRepository);
+      if ((previouslyManaged && !managed) || (previouslyCapable && !capable)) {
         if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
-        await dispatchIssueInvalidation(env, repository, deliveryId);
         await new IssueSnapshotStore(env.ISSUE_SNAPSHOTS).deleteRepository(Number(repository.id));
         await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "true", policySha: env.POLICY_SHA });
         return response(202);
       }
-      if (!previouslyManaged && managed) {
+      if ((!previouslyManaged && managed) || (!previouslyCapable && capable)) {
         if (!env.ISSUE_SNAPSHOTS) throw new Error("议题快照存储不可用");
         await onboardManagedRepositories(env, [repository], deliveryId, "repository-visibility-changed");
         return response(202);
       }
-      if (!managed) return response(204);
+      if (!capable) return response(204);
       await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "true", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
       await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
       return response(202);
@@ -491,9 +501,9 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       if (payload.ref === `refs/heads/${repository.default_branch}`) {
         if (payload.before === ZERO_SHA) await send(env, "onboard-repository.yml", { ...repositoryInputs(repository), trigger: "default-branch-push", deliveryId, policySha: env.POLICY_SHA });
         else {
-          await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "true", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
+          if (isIssueCapable(repository)) await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "true", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
           await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", policySha: env.POLICY_SHA });
-          await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
+          if (isIssueCapable(repository)) await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
         }
         return response(202);
       }
@@ -503,10 +513,12 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
     if (event === "pull_request" && ["opened", "synchronize", "reopened", "edited"].includes(action)) {
       const repository = payload.repository; const pull = payload.pull_request;
       if (!repository || !isManaged(repository) || !pull) return response(204);
+      const stewardOwned = isStewardOwnedPullRequest(pull, Number(repository.id));
+      const capable = isIssueCapable(repository);
       const targetsDefault = pull.base?.ref === repository.default_branch;
       const leftDefault = action === "edited" && payload.changes?.base?.ref?.from === repository.default_branch;
-      const shouldInvalidateIssueGate = action === "edited" && (targetsDefault || leftDefault);
-      const hasManagedIssueBlock = String(pull.body ?? "").includes("<!-- workflow:issue-links:start ");
+      const shouldInvalidateIssueGate = stewardOwned && capable && action === "edited" && (targetsDefault || leftDefault);
+      const hasManagedIssueBlock = stewardOwned && String(pull.body ?? "").includes("<!-- workflow:issue-links:start ");
       let dispatched = false;
       if (shouldInvalidateIssueGate) {
         await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), scanAll: "false", invalidateOnly: "true", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
@@ -516,8 +528,8 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
         await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), eventHeadSha: pull.head.sha, policySha: env.POLICY_SHA });
         dispatched = true;
       }
-      if (targetsDefault || leftDefault || hasManagedIssueBlock) {
-        await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
+      if ((stewardOwned && capable && (targetsDefault || leftDefault)) || hasManagedIssueBlock) {
+        await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: String(!capable), policySha: env.POLICY_SHA });
         dispatched = true;
       }
       return response(dispatched ? 202 : 204);
@@ -529,9 +541,9 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
     }
     if (event === "pull_request" && action === "closed" && payload.pull_request?.merged === false) {
       const repository = payload.repository; const pull = payload.pull_request;
-      if (!repository || !isManaged(repository) || pull?.base?.ref !== repository.default_branch
+      if (!repository || !isManaged(repository) || !isStewardOwnedPullRequest(pull, Number(repository.id))
         || !String(pull?.body ?? "").includes("<!-- workflow:issue-links:start ")) return response(204);
-      await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: env.POLICY_SHA });
+      await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: String(!isIssueCapable(repository)), policySha: env.POLICY_SHA });
       return response(202);
     }
     if (event === "workflow_run" && ["requested", "in_progress", "completed"].includes(action)) {
