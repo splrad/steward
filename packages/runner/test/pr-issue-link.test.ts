@@ -34,8 +34,8 @@ async function withRunnerEnvironment<T>(operation: (directory: string) => Promis
   finally { await rm(directory, { recursive: true, force: true }); }
 }
 
-function bodyWriteRuntimeResponse(value: string, method: string, body: any): Response | null {
-  if (!value.includes(`/internal/issue-snapshots/${repositoryId}/body-write-intents/42`)) return null;
+function bodyWriteRuntimeResponse(value: string, method: string, body: any, targetRepositoryId = repositoryId): Response | null {
+  if (!value.includes(`/internal/issue-snapshots/${targetRepositoryId}/body-write-intents/42`)) return null;
   if (method === "POST" && value.endsWith("/prepare")) return new Response(JSON.stringify({ ...body, writeId: "intent", status: "prepared", deliveryProven: false, blockedReason: null }), { status: 200 });
   if (method === "POST" && value.endsWith("/patched")) return new Response(JSON.stringify({ writeId: "intent", status: "patched", deliveryProven: false, blockedReason: null }), { status: 200 });
   if (method === "POST" && value.endsWith("/block")) return new Response(JSON.stringify({ writeId: "intent", status: "blocked", deliveryProven: false, blockedReason: "pre-patch-drift" }), { status: 200 });
@@ -52,8 +52,8 @@ function repository(): any {
   return { id: repositoryId, full_name: "splrad/steward", private: false, default_branch: "main", has_issues: true, archived: false, disabled: false };
 }
 
-function pull(body = "", userId = 44151430, baseRef = "main", state = "open", mergedAt: string | null = null): any {
-  return { number: 42, state, merged_at: mergedAt, body, user: { id: userId }, head: { sha: headSha, repo: { id: repositoryId } }, base: { sha: baseSha, ref: baseRef, repo: { id: repositoryId } } };
+function pull(body = "", userId = 44151430, baseRef = "main", state = "open", mergedAt: string | null = null, targetRepositoryId = repositoryId): any {
+  return { number: 42, state, merged_at: mergedAt, body, user: { id: userId }, head: { sha: headSha, repo: { id: targetRepositoryId } }, base: { sha: baseSha, ref: baseRef, repo: { id: targetRepositoryId } } };
 }
 
 function issueSnapshot(number: number): any {
@@ -337,28 +337,33 @@ describe("拉取请求议题关联运行器", () => {
   it("仓库退出纳管后不读取快照并清理所有受管PR议题状态", async () => {
     await withRunnerEnvironment(async () => {
       process.env.RUNTIME_URL = "https://runtime.test";
+      const targetRepositoryId = 1400000000;
+      const targetRepository = { ...repository(), id: targetRepositoryId, full_name: "splrad/default-managed", private: true };
       const outer = '<!-- workflow:managed-pr:start -->\n## 摘要\n\n正文\n\n<!-- workflow:source-actor:bot -->\n<!-- workflow:managed-pr:end -->\n';
-      const block = renderIssueLinksBlock({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 9, analysisInputDigest: "d".repeat(64) }, [{ repositoryId, number: 7 }]);
+      const block = renderIssueLinksBlock({ repositoryId: targetRepositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 9, analysisInputDigest: "d".repeat(64) }, [{ repositoryId: targetRepositoryId, number: 7 }]);
       let currentBody = upsertIssueLinksBlock(outer, block);
       const calls: Array<{ url: string; method: string; body: any }> = [];
       vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
         const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
         calls.push({ url: value, method, body });
-        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method, body); if (bodyWriteResponse) return bodyWriteResponse;
+        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method, body, targetRepositoryId); if (bodyWriteResponse) return bodyWriteResponse;
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
-        if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify({ ...repository(), private: true }), { status: 200 });
-        if (value.endsWith("/repos/splrad/steward/pulls/42") && method === "PATCH") { currentBody = body.body; return new Response(JSON.stringify(pull(currentBody, 301115370)), { status: 200 }); }
-        if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify(pull(currentBody, 301115370)), { status: 200 });
-        if (value.endsWith("/graphql")) return new Response(JSON.stringify({ data: { repository: { databaseId: repositoryId, pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } }), { status: 200 });
-        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
-        if (value.endsWith("/repos/splrad/steward/check-runs")) return new Response(JSON.stringify({ id: 1 }), { status: 201 });
+        if (value.endsWith(`/repositories/${targetRepositoryId}`)) return new Response(JSON.stringify(targetRepository), { status: 200 });
+        if (value.endsWith("/repos/splrad/default-managed/pulls/42") && method === "PATCH") { currentBody = body.body; return new Response(JSON.stringify(pull(currentBody, 301115370, "main", "open", null, targetRepositoryId)), { status: 200 }); }
+        if (value.endsWith("/repos/splrad/default-managed/pulls/42")) return new Response(JSON.stringify(pull(currentBody, 301115370, "main", "open", null, targetRepositoryId)), { status: 200 });
+        if (value.endsWith("/graphql")) return new Response(JSON.stringify({ data: { repository: { databaseId: targetRepositoryId, pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } }), { status: 200 });
+        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [{ id: 1, name: "PR Issue Link Gate", app: { id: 4243096 }, head_sha: headSha, external_id: `v1:${targetRepositoryId}:42:${headSha}` }] }), { status: 200 });
+        if (value.endsWith("/repos/splrad/default-managed/check-runs/1")) return new Response(JSON.stringify({ id: 1 }), { status: 200 });
         return new Response("unexpected", { status: 500 });
       });
       process.env.ISSUE_LINK_PREPARE_ONLY = "true";
-      await runPrIssueLink(invocation({ "cleanup-unmanaged": "true" }));
+      await runPrIssueLink(invocation({ "repository-id": String(targetRepositoryId), "cleanup-unmanaged": "true" }));
       expect(currentBody).toBe(outer);
       expect(calls.some(call => /\/internal\/issue-snapshots\/\d+$/u.test(call.url))).toBe(false);
       expect(calls.some(call => call.url.includes("/body-write-intents/"))).toBe(true);
+      const check = calls.find(call => call.method === "PATCH" && call.url.endsWith("/check-runs/1"));
+      expect(check?.body).toEqual(expect.objectContaining({ status: "completed", conclusion: "success" }));
+      expect(check?.body.output.summary).toContain("repository-not-managed");
     });
   });
 
