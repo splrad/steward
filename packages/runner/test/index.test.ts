@@ -255,7 +255,10 @@ describe("中央命令入口", () => {
     });
     await expect(main(["issue-sync", "--delivery-id", "issues-disabled", "--repository-id", "1296724484", "--scan-all", "true", "--policy-sha", "a".repeat(40)]))
       .rejects.toThrow("仓库未启用议题同步");
-    expect(calls.some(value => value.includes("/issues") || value.startsWith("https://runtime.test"))).toBe(false);
+    expect(calls.some(value => {
+      const url = new URL(value);
+      return url.pathname.includes("/issues") || url.origin === "https://runtime.test";
+    })).toBe(false);
   });
 
   it("缺失环境变量立即失败", () => {
