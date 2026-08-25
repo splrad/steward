@@ -642,11 +642,12 @@ describe("议题快照内部接口", () => {
     const intentStore = new PullRequestBodyWriteIntentStore(database.binding());
     const writeId = "11111111-1111-4111-8111-111111111111";
     const targetBlock = renderIssueLinksBlock({ repositoryId: 1296724484, pullRequestNumber: 42, baseSha: "b".repeat(40), headSha: "c".repeat(40), generation: 1, analysisInputDigest: "d".repeat(64) }, []);
+    const intentNow = new Date();
     await intentStore.prepare({ repositoryId: 1296724484, pullRequestNumber: 42, writeId, regionKind: "issue-links", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 1,
       beforeBodyDigest: pullRequestBodyDigest("before"), outsideBodyDigest: pullRequestBodyDigest("outside"), targetBlock, targetBodyDigest: pullRequestBodyDigest("after"),
-      now: "2026-08-22T00:00:00Z", expiresAt: "2026-08-22T00:10:00Z",
+      now: intentNow.toISOString(), expiresAt: new Date(intentNow.getTime() + 10 * 60_000).toISOString(),
       redrive: { workflow: "pr-issue-link.yml", inputs: { deliveryId: "delivery-issues-disabled", repositoryId: "1296724484", pullRequestNumber: "42", scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: "a".repeat(40) } } });
-    expect(await intentStore.claimDelivery({ deliveryId: "delivery-issues-disabled", repositoryId: 1296724484, pullRequestNumber: 42, writeId, now: "2026-08-22T00:00:01Z" })).not.toBeNull();
+    expect(await intentStore.claimDelivery({ deliveryId: "delivery-issues-disabled", repositoryId: 1296724484, pullRequestNumber: 42, writeId, now: intentNow.toISOString() })).not.toBeNull();
     installAuthorization(undefined, [{ ...repository(), has_issues: false }]);
     const authorization = { authorization: "Bearer one-repository-token" };
     const lifecycle = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/lifecycle", { method: "POST", headers: authorization }), env(database));
@@ -655,6 +656,30 @@ describe("议题快照内部接口", () => {
     expect(await store.getRepositoryState(1296724484)).toBeNull();
     expect(await intentStore.get(1296724484, 42)).toEqual(expect.objectContaining({ writeId, status: "prepared" }));
     expect(database.database.prepare("SELECT COUNT(*) AS count FROM pull_request_body_write_deliveries WHERE repository_id = 1296724484").get()).toEqual({ count: 1 });
+
+    const intentEndpoint = `https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/${writeId}`;
+    const active = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/active", { headers: authorization }), env(database));
+    expect(active.status).toBe(200);
+    expect(await active.json()).toEqual(expect.objectContaining({ writeId, status: "prepared" }));
+    const patched = await worker.fetch(new Request(`${intentEndpoint}/patched`, { method: "POST", headers: authorization }), env(database));
+    expect(patched.status).toBe(200);
+    expect(await patched.json()).toEqual(expect.objectContaining({ writeId, status: "patched" }));
+    const waited = await worker.fetch(new Request(`${intentEndpoint}/wait`, {
+      method: "POST", headers: { ...authorization, "content-type": "application/json" }, body: JSON.stringify({ attempts: 1 }),
+    }), env(database));
+    expect(waited.status).toBe(200);
+    expect(await waited.json()).toEqual(expect.objectContaining({ writeId, status: "patched" }));
+    const existing = await worker.fetch(new Request(intentEndpoint, { headers: authorization }), env(database));
+    expect(existing.status).toBe(200);
+    expect(await existing.json()).toEqual(expect.objectContaining({ writeId, status: "patched" }));
+
+    const rejectedPrepare = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/body-write-intents/43/prepare", {
+      method: "POST", headers: { ...authorization, "content-type": "application/json" },
+      body: JSON.stringify({ writeId: "22222222-2222-4222-8222-222222222222", regionKind: "issue-links", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 1,
+        beforeBodyDigest: pullRequestBodyDigest("before"), outsideBodyDigest: pullRequestBodyDigest("outside"), targetBlock, targetBodyDigest: pullRequestBodyDigest("after"),
+        redrive: { workflow: "pr-issue-link.yml", inputs: { deliveryId: "delivery-issues-disabled-new", repositoryId: "1296724484", pullRequestNumber: "43", scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: "a".repeat(40) } } }),
+    }), env(database));
+    expect(rejectedPrepare.status).toBe(403);
 
     installAuthorization(undefined, [{ ...repository(), has_issues: false }]);
     const read = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484", { headers: authorization }), env(database));

@@ -738,7 +738,6 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
       const requireCleanupIntent = async (): Promise<PullRequestBodyWriteIntent | null> => {
         const current = await intentStore.get(repositoryId, pullRequestNumber);
         if (!managed && current && (current.regionKind !== "issue-links" || current.targetBlock !== null)) throw new GitHubRequestError(403, "POST", url.pathname, "repository-not-managed");
-        if (!issueCapable && current?.regionKind === "issue-links" && current.targetBlock !== null) throw new GitHubRequestError(403, "POST", url.pathname, "repository-issues-disabled");
         return current;
       };
       if (request.method === "POST" && parts.length === 4 && parts[3] === "prepare") {
