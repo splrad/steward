@@ -371,7 +371,7 @@ describe("中央运行程序", () => {
     const payload = scoped({
       action: "ready_for_review",
       repository: repository(),
-      pull_request: { number: 8, draft: false, user: { id: 301115370 }, head: { sha: "d".repeat(40) }, base: { ref: "main" } },
+      pull_request: { number: 8, draft: false, user: { id: 301115370 }, head: { sha: "d".repeat(40), repo: { id: 1296724484 } }, base: { ref: "main", repo: { id: 1296724484 } } },
     });
     expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(202);
     expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(204);
@@ -398,7 +398,7 @@ describe("中央运行程序", () => {
     const payload = scoped({
       action: "ready_for_review",
       repository: repository(),
-      pull_request: { number: 8, draft: false, user: { id: 301115370 }, head: { sha: "d".repeat(40) }, base: { ref: "main" } },
+      pull_request: { number: 8, draft: false, user: { id: 301115370 }, head: { sha: "d".repeat(40), repo: { id: 1296724484 } }, base: { ref: "main", repo: { id: 1296724484 } } },
     });
     expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(503);
   });
@@ -413,9 +413,21 @@ describe("中央运行程序", () => {
     const payload = scoped({
       action: "ready_for_review",
       repository: repository(),
-      pull_request: { number: "invalid", draft: false, user: { id: 301115370 }, head: { sha: "d".repeat(40) }, base: { ref: "main" } },
+      pull_request: { number: "invalid", draft: false, user: { id: 301115370 }, head: { sha: "d".repeat(40), repo: { id: 1296724484 } }, base: { ref: "main", repo: { id: 1296724484 } } },
     });
     expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(503);
+    expect(requests).toBe(0);
+  });
+
+  it("团队审查不会处理外部head上的同作者拉取请求", async () => {
+    let requests = 0;
+    vi.stubGlobal("fetch", async () => { requests++; return new Response("unexpected", { status: 500 }); });
+    const payload = scoped({
+      action: "ready_for_review",
+      repository: repository(),
+      pull_request: { number: 8, draft: false, user: { id: 301115370 }, head: { sha: "d".repeat(40), repo: { id: 987654321 } }, base: { ref: "main", repo: { id: 1296724484 } } },
+    });
+    expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(204);
     expect(requests).toBe(0);
   });
 

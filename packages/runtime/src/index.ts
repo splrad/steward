@@ -542,7 +542,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
     }
     if (event === "pull_request" && action === "ready_for_review") {
       const repository = payload.repository; const pull = payload.pull_request;
-      if (!repository || !isManaged(repository) || !pull || pull.user?.id !== 301115370 || pull.draft !== false || pull.base?.ref !== repository.default_branch) return response(204);
+      if (!repository || !isManaged(repository) || !pull || !isStewardOwnedPullRequest(pull, Number(repository.id)) || pull.draft !== false || pull.base?.ref !== repository.default_branch) return response(204);
       return response(await requestMaintainersReview(env, repository, pull) ? 202 : 204);
     }
     if (event === "pull_request" && action === "closed" && payload.pull_request?.merged === false) {
