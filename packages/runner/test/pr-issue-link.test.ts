@@ -238,6 +238,31 @@ describe("拉取请求议题关联运行器", () => {
     });
   });
 
+  it("关闭议题能力后的清理矩阵纳入默认分支无议题块的开放 Steward PR", async () => {
+    await withRunnerEnvironment(async () => {
+      const managedBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber: 5, baseSha, headSha, generation: 1, analysisInputDigest: "d".repeat(64) }, [{ repositoryId, number: 7 }]);
+      vi.stubGlobal("fetch", async (url: string) => {
+        const value = String(url);
+        if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+        if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify({ ...repository(), has_issues: false }), { status: 200 });
+        if (value.includes("/repos/splrad/steward/pulls?state=all")) return new Response(JSON.stringify([
+          { ...pull("", 301115370), number: 3 },
+          { ...pull("", 301115370, "release"), number: 4 },
+          { ...pull(managedBlock, 301115370, "release"), number: 5 },
+          { ...pull(managedBlock, 301115370, "main", "closed", null), number: 6 },
+          { ...pull("", 301115370, "main", "closed", null), number: 7 },
+          { ...pull(managedBlock, 44151430), number: 8 },
+        ]), { status: 200 });
+        return new Response("unexpected", { status: 500 });
+      });
+      process.env.ISSUE_LINK_LIST_ONLY = "true";
+      await runPrIssueLink(invocation({ "scan-all": "true", "pull-request-number": undefined as unknown as string, "cleanup-unmanaged": "true" }));
+      const output = await readFile(process.env.GITHUB_OUTPUT!, "utf8");
+      expect(output).toContain('matrix=[{"pullRequestNumber":3},{"pullRequestNumber":5},{"pullRequestNumber":6}]');
+      expect(output).toContain("count=3");
+    });
+  });
+
   it("未纳管清理匹配项超过矩阵上限后不再请求下一页", async () => {
     await withRunnerEnvironment(async () => {
       const managedBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber: 5, baseSha, headSha, generation: 1, analysisInputDigest: "d".repeat(64) }, [{ repositoryId, number: 7 }]);

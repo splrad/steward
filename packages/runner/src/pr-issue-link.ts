@@ -632,10 +632,15 @@ async function listPullRequestMatrix(args: PrIssueLinkArgs): Promise<void> {
   const [owner, repo] = splitRepository(repository.full_name);
   let numbers: number[];
   if (args.scanAll) {
+    const completeOpenGates = args.cleanupUnmanaged && !isIssueCapableRepository(repository, managedConfiguration(repository) !== null);
     const cleanupPulls = (value: unknown): readonly any[] => {
       if (!Array.isArray(value)) throw new Error("分页响应不是项目数组");
-      return value.filter((pull: any) => isManagedPull(pull, args.repositoryId) && String(pull?.body ?? "").includes("<!-- workflow:issue-links:start ")
-        && (pull?.state === "open" || (pull?.state === "closed" && pull?.merged_at === null)));
+      return value.filter((pull: any) => {
+        if (!isManagedPull(pull, args.repositoryId)) return false;
+        const hasManagedBlock = String(pull?.body ?? "").includes("<!-- workflow:issue-links:start ");
+        if (pull?.state === "open") return hasManagedBlock || (completeOpenGates && pull?.base?.ref === repository.default_branch);
+        return hasManagedBlock && pull?.state === "closed" && pull?.merged_at === null;
+      });
     };
     let pulls: readonly any[];
     if (args.cleanupUnmanaged) {
