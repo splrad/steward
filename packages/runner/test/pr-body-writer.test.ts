@@ -54,6 +54,30 @@ describe("Runner正文持久写入器", () => {
     expect(calls.some((value) => value.endsWith("/confirm"))).toBe(false);
   });
 
+  it("写意图绑定实时分析base并独立核对PR对象base", async () => {
+    const pullBaseSha = "c".repeat(40);
+    let live = `人工前言\n${block("旧摘要")}\n`;
+    const targetBlock = block("新摘要");
+    let preparedBody: any = null;
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+      const value = String(url);
+      if (value.endsWith("/prepare")) {
+        preparedBody = JSON.parse(String(init.body));
+        return new Response(JSON.stringify(intentFromRequest(init)), { status: 200 });
+      }
+      if (value.endsWith("/patched")) return new Response(JSON.stringify({ writeId: "id", status: "patched" }), { status: 200 });
+      if (value.endsWith("/wait")) return new Response(JSON.stringify({ writeId: "id", status: "confirmed", deliveryProven: true, blockedReason: null }), { status: 200 });
+      return new Response("unexpected", { status: 500 });
+    });
+    const currentPull = (body: string) => ({ ...pull(body), base: { sha: pullBaseSha, repo: { id: repositoryId } } });
+    const client = {
+      getPullRequest: async () => currentPull(live),
+      updatePullRequest: async (_owner: string, _repo: string, _number: number, patch: any) => currentPull(live = patch.body),
+    } as any;
+    await updatePullRequestBodyDurably({ client, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, pullBaseSha, regionKind: "managed-pr", targetBlock, redrive });
+    expect(preparedBody).toEqual(expect.objectContaining({ baseSha, headSha }));
+  });
+
   it("写意图持久化失败时不调用GitHub PATCH", async () => {
     const before = `人工前言\n${block("旧摘要")}\n`;
     const updatePullRequest = vi.fn();
