@@ -30,6 +30,7 @@ class SqliteD1 {
     this.database.exec(readFileSync(new URL("../migrations/0006_pull_request_body_write_intents.sql", import.meta.url), "utf8"));
     this.database.exec(readFileSync(new URL("../migrations/0007_pull_request_body_write_redrive.sql", import.meta.url), "utf8"));
     this.database.exec(readFileSync(new URL("../migrations/0008_issue_snapshot_reconciliation_redrive.sql", import.meta.url), "utf8"));
+    this.database.exec(readFileSync(new URL("../migrations/0009_pull_request_body_write_pull_base.sql", import.meta.url), "utf8"));
   }
   prepare(sql: string): D1PreparedStatement { return new SqliteD1Statement(this.database, sql) as unknown as D1PreparedStatement; }
   async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
@@ -503,12 +504,12 @@ describe("议题快照内部接口", () => {
     const prepare = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/prepare", {
       method: "POST",
       headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" },
-      body: JSON.stringify({ writeId, regionKind: "issue-links", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
+      body: JSON.stringify({ writeId, regionKind: "issue-links", baseSha: "b".repeat(40), pullBaseSha: "e".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
         beforeBodyDigest: pullRequestBodyDigest("before"), outsideBodyDigest: pullRequestBodyDigest("outside"), targetBlock, targetBodyDigest: pullRequestBodyDigest("after"),
         redrive: { workflow: "pr-issue-link.yml", inputs: { deliveryId: "delivery-runtime", repositoryId: "1296724484", pullRequestNumber: "42", scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: "a".repeat(40) } } }),
     }), env(database));
     expect(prepare.status).toBe(200);
-    expect(await prepare.json()).toEqual(expect.objectContaining({ writeId, status: "prepared", deliveryProven: false }));
+    expect(await prepare.json()).toEqual(expect.objectContaining({ writeId, baseSha: "b".repeat(40), pullBaseSha: "e".repeat(40), status: "prepared", deliveryProven: false }));
     const patched = await worker.fetch(new Request(`https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/${writeId}/patched`, { method: "POST", headers: { authorization: "Bearer one-repository-token" } }), env(database));
     expect(patched.status).toBe(200);
     expect(await patched.json()).toEqual(expect.objectContaining({ writeId, status: "patched", attemptCount: 1 }));

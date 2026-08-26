@@ -75,7 +75,7 @@ describe("Runner正文持久写入器", () => {
       updatePullRequest: async (_owner: string, _repo: string, _number: number, patch: any) => currentPull(live = patch.body),
     } as any;
     await updatePullRequestBodyDurably({ client, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, pullBaseSha, regionKind: "managed-pr", targetBlock, redrive });
-    expect(preparedBody).toEqual(expect.objectContaining({ baseSha, headSha }));
+    expect(preparedBody).toEqual(expect.objectContaining({ baseSha, pullBaseSha, headSha }));
   });
 
   it("写意图持久化失败时不调用GitHub PATCH", async () => {
@@ -134,7 +134,7 @@ describe("Runner正文持久写入器", () => {
     const calls: string[] = [];
     vi.stubGlobal("fetch", async (url: string) => {
       const value = String(url); calls.push(value);
-      if (value.endsWith("/active")) return new Response(JSON.stringify({ writeId: "saved-id", regionKind: "managed-pr", baseSha, headSha, issueGeneration: 0, targetBlock, targetBodyDigest, status: "prepared", deliveryProven: false, blockedReason: null, redrive }), { status: 200 });
+      if (value.endsWith("/active")) return new Response(JSON.stringify({ writeId: "saved-id", regionKind: "managed-pr", baseSha, pullBaseSha: baseSha, headSha, issueGeneration: 0, targetBlock, targetBodyDigest, status: "prepared", deliveryProven: false, blockedReason: null, redrive }), { status: 200 });
       if (value.endsWith("/patched")) return new Response(JSON.stringify({ writeId: "saved-id", status: "patched" }), { status: 200 });
       if (value.endsWith("/wait")) return new Response(JSON.stringify({ writeId: "saved-id", status: "confirmed", deliveryProven: true, blockedReason: null }), { status: 200 });
       return new Response("unexpected", { status: 500 });
@@ -154,7 +154,7 @@ describe("Runner正文持久写入器", () => {
     const calls: string[] = [];
     vi.stubGlobal("fetch", async (url: string) => {
       const value = String(url); calls.push(value);
-      if (value.endsWith("/active")) return new Response(JSON.stringify({ writeId: "blocked-id", regionKind: "managed-pr", baseSha, headSha, issueGeneration: 0, targetBlock, targetBodyDigest, status: "blocked", deliveryProven: false, blockedReason: "edited-evidence-unavailable", redrive, redriveRequired: true, redriveDispatched: false }), { status: 200 });
+      if (value.endsWith("/active")) return new Response(JSON.stringify({ writeId: "blocked-id", regionKind: "managed-pr", baseSha, pullBaseSha: baseSha, headSha, issueGeneration: 0, targetBlock, targetBodyDigest, status: "blocked", deliveryProven: false, blockedReason: "edited-evidence-unavailable", redrive, redriveRequired: true, redriveDispatched: false }), { status: 200 });
       return new Response("unexpected", { status: 500 });
     });
     await expect(updatePullRequestBodyDurably({ client: { getPullRequest: async () => pull(live), updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock, redrive, additionalPatch: { title: "新标题" } })).resolves.toEqual(expect.objectContaining({ title: "新标题" }));
@@ -172,7 +172,7 @@ describe("Runner正文持久写入器", () => {
     const calls: string[] = [];
     vi.stubGlobal("fetch", async (url: string) => {
       const value = String(url); calls.push(value);
-      if (value.endsWith("/active")) return new Response(JSON.stringify({ writeId, regionKind: "managed-pr", baseSha, headSha, issueGeneration: 0, targetBlock, targetBodyDigest, status: "confirmed", deliveryProven: true, blockedReason: null, redrive: originRedrive, redriveRequired: true, redriveDispatched: true }), { status: 200 });
+      if (value.endsWith("/active")) return new Response(JSON.stringify({ writeId, regionKind: "managed-pr", baseSha, pullBaseSha: baseSha, headSha, issueGeneration: 0, targetBlock, targetBodyDigest, status: "confirmed", deliveryProven: true, blockedReason: null, redrive: originRedrive, redriveRequired: true, redriveDispatched: true }), { status: 200 });
       if (value.endsWith(`/${writeId}/redrive-completed`)) return new Response(JSON.stringify({ writeId, status: "confirmed", redriveRequired: false, redriveDispatched: true }), { status: 200 });
       return new Response("unexpected", { status: 500 });
     });

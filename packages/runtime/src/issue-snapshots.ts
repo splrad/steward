@@ -755,6 +755,7 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
           writeId: String(body.writeId ?? ""),
           regionKind,
           baseSha: String(body.baseSha ?? ""),
+          pullBaseSha: String(body.pullBaseSha ?? body.baseSha ?? ""),
           headSha: String(body.headSha ?? ""),
           issueGeneration: Number(body.issueGeneration ?? 0),
           beforeBodyDigest: String(body.beforeBodyDigest ?? ""),
