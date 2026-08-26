@@ -15,7 +15,6 @@ on:
 
 permissions:
   contents: read
-  copilot-requests: write
 
 concurrency:
   group: steward-pr-body-${{ inputs.repositoryId }}
@@ -113,7 +112,7 @@ jobs:
         if: steps.prepare.outputs.copilot-required == 'true'
         continue-on-error: true
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_CLI_TOKEN }}
           ISSUE_COPILOT_PROMPT_PATH: ${{ runner.temp }}/issue-prompt-${{ matrix.pullRequestNumber }}.txt
           ISSUE_COPILOT_OUTPUT_PATH: ${{ runner.temp }}/issue-copilot-output-${{ matrix.pullRequestNumber }}.jsonl
         run: npx --no-install copilot --available-tools= --no-auto-update --output-format json --stream off --no-color --no-custom-instructions --disable-builtin-mcps --no-ask-user < "$ISSUE_COPILOT_PROMPT_PATH" > "$ISSUE_COPILOT_OUTPUT_PATH"
