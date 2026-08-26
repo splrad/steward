@@ -945,15 +945,6 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
     return;
   }
   const { repository, owner, repo, current, facts, currentBase, currentState } = prerequisites;
-  if (current?.state !== "open" || current?.base?.ref !== repository.default_branch || facts.baseSha !== prepared.baseSha || facts.headSha !== prepared.headSha
-    || currentBase !== prepared.baseSha || currentState.generation !== prepared.generation || currentState.stateRevision !== prepared.stateRevision
-    || managedBodyOutsideIssueLinksDigest(facts.body) !== prepared.unmanagedBodyDigest) {
-    await publishCheck(client, args.repositoryId, owner, repo, prepared.pullRequestNumber, prepared.headSha, {
-      status: "completed", conclusion: "failure", title: "议题关联分析已过期", summary: `拉取请求：#${prepared.pullRequestNumber}\n状态：stale-discarded`,
-    });
-    await writeSummary([`拉取请求：#${prepared.pullRequestNumber}`, "状态：stale-discarded"]);
-    return;
-  }
   const parsed = await loadIssueCopilotResult(process.env.COPILOT_STEP_OUTCOME, process.env.ISSUE_COPILOT_OUTPUT_PATH, {
     targetRepositoryId: args.repositoryId,
     candidates: prepared.candidates,
@@ -962,6 +953,15 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
   const desired = parsed.desired;
   const modelDiagnostic = parsed.diagnostic;
   const modelAccepted = modelDiagnostic === "validated";
+  if (current?.state !== "open" || current?.base?.ref !== repository.default_branch || facts.baseSha !== prepared.baseSha || facts.headSha !== prepared.headSha
+    || currentBase !== prepared.baseSha || currentState.generation !== prepared.generation || currentState.stateRevision !== prepared.stateRevision
+    || managedBodyOutsideIssueLinksDigest(facts.body) !== prepared.unmanagedBodyDigest) {
+    await publishCheck(client, args.repositoryId, owner, repo, prepared.pullRequestNumber, prepared.headSha, {
+      status: "completed", conclusion: "failure", title: "议题关联分析已过期", summary: `拉取请求：#${prepared.pullRequestNumber}\n状态：stale-discarded\n模型诊断：${modelDiagnostic}`,
+    });
+    await writeSummary([`拉取请求：#${prepared.pullRequestNumber}`, "状态：stale-discarded", `模型诊断：${modelDiagnostic}`]);
+    return;
+  }
   let failureCategory = "freshness-failed";
   let failClosed = false;
   try {

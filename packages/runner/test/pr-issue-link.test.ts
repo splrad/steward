@@ -754,6 +754,7 @@ describe("拉取请求议题关联运行器", () => {
       };
       process.env.ISSUE_PREPARED_FACTS_PATH = join(directory, "prepared.json");
       process.env.RUNTIME_URL = "https://runtime.test";
+      process.env.COPILOT_STEP_OUTCOME = "skipped";
       await writeFile(process.env.ISSUE_PREPARED_FACTS_PATH, JSON.stringify(prepared));
       const calls: Array<{ url: string; method: string; body: any }> = [];
       vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
@@ -772,6 +773,8 @@ describe("拉取请求议题关联运行器", () => {
       const check = calls.find(call => call.method === "PATCH" && call.url.endsWith("/check-runs/1"));
       expect(check?.body).toEqual(expect.objectContaining({ status: "completed", conclusion: "failure" }));
       expect(check?.body.output.summary).toContain("stale-discarded");
+      expect(check?.body.output.summary).toContain("模型诊断：copilot-not-required");
+      expect(await readFile(process.env.GITHUB_STEP_SUMMARY!, "utf8")).toContain("模型诊断：copilot-not-required");
       expect(calls.some(call => call.method === "PATCH" && call.url.endsWith("/pulls/42"))).toBe(false);
     });
   });
