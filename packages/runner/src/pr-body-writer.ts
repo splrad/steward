@@ -98,23 +98,27 @@ function canonicalRedrive(value: DurableBodyRedrive | null): string {
 }
 
 function matchingIntentTarget(input: Omit<Parameters<typeof matchingIntent>[0], "redrive">): boolean {
+  return matchingIntentTargetWithoutPullBase(input)
+    && input.intent.pullBaseSha === input.pullBaseSha;
+}
+
+function matchingIntentTargetWithoutPullBase(input: Omit<Parameters<typeof matchingIntent>[0], "redrive">): boolean {
   return input.intent.regionKind === input.regionKind
     && input.intent.baseSha === input.baseSha
-    && input.intent.pullBaseSha === input.pullBaseSha
     && input.intent.headSha === input.headSha
     && input.intent.issueGeneration === input.issueGeneration
     && input.intent.targetBlock === input.targetBlock
     && input.intent.targetBodyDigest === input.targetBodyDigest;
 }
 
+function matchingTerminalIntentTarget(input: Omit<Parameters<typeof matchingIntent>[0], "redrive">): boolean {
+  return matchingIntentTarget(input)
+    || (input.intent.pullBaseSha === null && matchingIntentTargetWithoutPullBase(input));
+}
+
 function matchingLegacyIntent(input: Parameters<typeof matchingIntent>[0]): boolean {
   return input.intent.pullBaseSha === null
-    && input.intent.regionKind === input.regionKind
-    && input.intent.baseSha === input.baseSha
-    && input.intent.headSha === input.headSha
-    && input.intent.issueGeneration === input.issueGeneration
-    && input.intent.targetBlock === input.targetBlock
-    && input.intent.targetBodyDigest === input.targetBodyDigest
+    && matchingIntentTargetWithoutPullBase(input)
     && canonicalRedrive(input.intent.redrive) === canonicalRedrive(input.redrive);
 }
 
@@ -183,7 +187,7 @@ export async function updatePullRequestBodyDurably(input: {
     let active = await runtimeRequest<RuntimeIntent | null>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "GET", path: `${path}/active` });
     if (active && ["confirmed", "blocked"].includes(active.status)) {
       if (active.redriveRequired && active.redriveDispatched
-        && matchingIntentTarget({ intent: active, regionKind: input.regionKind, baseSha: input.baseSha, pullBaseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest })
+        && matchingTerminalIntentTarget({ intent: active, regionKind: input.regionKind, baseSha: input.baseSha, pullBaseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest })
         && matchingRecoveryRedrive(active, input.redrive)) {
         await runtimeRequest<RuntimeIntent>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "POST", path: `${path}/${active.writeId}/redrive-completed` });
       }

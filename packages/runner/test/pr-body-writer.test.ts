@@ -225,4 +225,43 @@ describe("Runner正文持久写入器", () => {
     await expect(updatePullRequestBodyDurably({ client: { getPullRequest: async () => pull(live), updatePullRequest: vi.fn() } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock, redrive: recoveryRedrive })).resolves.toEqual(pull(live));
     expect(calls.filter((value) => value.endsWith(`/${writeId}/redrive-completed`))).toHaveLength(1);
   });
+
+  it("终态迁移前意图在双base不同时仍能确认恢复重调度", async () => {
+    const pullBaseSha = "e".repeat(40);
+    const live = `人工前言\n${block("新摘要")}\n`;
+    const targetBlock = block("新摘要");
+    const targetBodyDigest = createHash("sha256").update(live, "utf8").digest("hex");
+    const writeId = "88888888-8888-4888-8888-888888888888";
+    const originRedrive = { workflow: "pr-automation.yml" as const, inputs: { deliveryId: "delivery-legacy-terminal", repositoryId: String(repositoryId), sourceRef: "refs/heads/feature/test", eventAfterSha: headSha, sourceActorId: "44151430", sourceActorLogin: "axiomoth", policySha: "c".repeat(40) } };
+    const recoveryRedrive = { workflow: "pr-automation.yml" as const, inputs: { ...originRedrive.inputs, deliveryId: `body-write-recovery:${writeId}`, policySha: "d".repeat(40) } };
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const value = String(url); calls.push(value);
+      if (value.endsWith("/active")) return new Response(JSON.stringify({ writeId, regionKind: "managed-pr", baseSha, pullBaseSha: null, headSha, issueGeneration: 0, targetBlock, targetBodyDigest, status: "confirmed", deliveryProven: true, blockedReason: null, redrive: originRedrive, redriveRequired: true, redriveDispatched: true }), { status: 200 });
+      if (value.endsWith(`/${writeId}/redrive-completed`)) return new Response(JSON.stringify({ writeId, status: "confirmed", redriveRequired: false, redriveDispatched: true }), { status: 200 });
+      return new Response("unexpected", { status: 500 });
+    });
+    const currentPull = { ...pull(live), base: { sha: pullBaseSha, repo: { id: repositoryId } } };
+    await expect(updatePullRequestBodyDurably({ client: { getPullRequest: async () => currentPull, updatePullRequest: vi.fn() } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, pullBaseSha, regionKind: "managed-pr", targetBlock, redrive: recoveryRedrive })).resolves.toEqual(currentPull);
+    expect(calls.filter((value) => value.endsWith(`/${writeId}/redrive-completed`))).toHaveLength(1);
+  });
+
+  it("终态显式异base意图不会确认恢复重调度", async () => {
+    const pullBaseSha = "e".repeat(40);
+    const live = `人工前言\n${block("新摘要")}\n`;
+    const targetBlock = block("新摘要");
+    const targetBodyDigest = createHash("sha256").update(live, "utf8").digest("hex");
+    const writeId = "99999999-9999-4999-8999-999999999999";
+    const originRedrive = { workflow: "pr-automation.yml" as const, inputs: { deliveryId: "delivery-explicit-terminal", repositoryId: String(repositoryId), sourceRef: "refs/heads/feature/test", eventAfterSha: headSha, sourceActorId: "44151430", sourceActorLogin: "axiomoth", policySha: "c".repeat(40) } };
+    const recoveryRedrive = { workflow: "pr-automation.yml" as const, inputs: { ...originRedrive.inputs, deliveryId: `body-write-recovery:${writeId}`, policySha: "d".repeat(40) } };
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const value = String(url); calls.push(value);
+      if (value.endsWith("/active")) return new Response(JSON.stringify({ writeId, regionKind: "managed-pr", baseSha, pullBaseSha: baseSha, headSha, issueGeneration: 0, targetBlock, targetBodyDigest, status: "confirmed", deliveryProven: true, blockedReason: null, redrive: originRedrive, redriveRequired: true, redriveDispatched: true }), { status: 200 });
+      return new Response("unexpected", { status: 500 });
+    });
+    const currentPull = { ...pull(live), base: { sha: pullBaseSha, repo: { id: repositoryId } } };
+    await expect(updatePullRequestBodyDurably({ client: { getPullRequest: async () => currentPull, updatePullRequest: vi.fn() } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, pullBaseSha, regionKind: "managed-pr", targetBlock, redrive: recoveryRedrive })).resolves.toEqual(currentPull);
+    expect(calls.some((value) => value.endsWith(`/${writeId}/redrive-completed`))).toBe(false);
+  });
 });
