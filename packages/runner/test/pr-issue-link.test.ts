@@ -1,10 +1,10 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { analysisInputDigest, issueSnapshotContentDigest, managedBodyOutsideIssueLinksDigest, normalizeIssueSnapshot, openIssueSetDigest, renderIssueLinksBlock, upsertIssueLinksBlock } from "../../core/src/issues.js";
-import { extractIssueCopilotContent, gitInstallationTokenAuthorizationHeader, loadIssueCopilotResult, parseIssueCopilotResult, parsePrIssueLinkArgs, revalidationCandidates, runGit, runPrIssueLink, verifyIssueLinkConvergence, workflowRevalidationPlan } from "../src/pr-issue-link.js";
+import { buildIssueCopilotPrompt, canonicalizeDiffHeaders, extractIssueCopilotContent, gitInstallationTokenAuthorizationHeader, loadIssueCopilotResult, parseIssueCopilotResult, parsePrIssueLinkArgs, revalidationCandidates, runGit, runPrIssueLink, verifyIssueLinkConvergence, workflowRevalidationPlan } from "../src/pr-issue-link.js";
 
 const repositoryId = 1296724484;
 const policySha = "a".repeat(40);
@@ -82,6 +82,65 @@ describe("拉取请求议题关联运行器", () => {
     expect(() => runGit(process.cwd(), ["--version"], process.env, 1, "完整差异超过1 MiB")).toThrow("完整差异超过1 MiB");
   });
 
+  it("Git差异保留非ASCII规范路径", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "steward-unicode-diff-test-"));
+    const filename = "设计说明.txt";
+    const gitEnvironment = {
+      ...process.env,
+      GIT_AUTHOR_NAME: "Steward Test",
+      GIT_AUTHOR_EMAIL: "steward-test@example.com",
+      GIT_COMMITTER_NAME: "Steward Test",
+      GIT_COMMITTER_EMAIL: "steward-test@example.com",
+    };
+    try {
+      runGit(directory, ["init", "--quiet"], gitEnvironment);
+      await writeFile(join(directory, filename), "初始内容\n");
+      runGit(directory, ["add", "--", filename], gitEnvironment);
+      runGit(directory, ["commit", "--quiet", "-m", "baseline"], gitEnvironment);
+      await writeFile(join(directory, filename), "修改内容\n");
+      const diff = runGit(directory, ["diff", "--binary", "HEAD"], gitEnvironment).toString("utf8");
+      expect(diff).toContain(`diff --git a/${filename} b/${filename}`);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform !== "win32")("Git必须转义的路径转换为可逆规范头部", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "steward-special-path-diff-test-"));
+    const filenames = ["d/a\tb.txt", 'd/a"b.txt', "d/a\\b.txt"];
+    const gitEnvironment = {
+      ...process.env,
+      GIT_AUTHOR_NAME: "Steward Test",
+      GIT_AUTHOR_EMAIL: "steward-test@example.com",
+      GIT_COMMITTER_NAME: "Steward Test",
+      GIT_COMMITTER_EMAIL: "steward-test@example.com",
+    };
+    try {
+      runGit(directory, ["init", "--quiet"], gitEnvironment);
+      await mkdir(join(directory, "d"));
+      for (const filename of filenames) await writeFile(join(directory, filename), "initial\n");
+      runGit(directory, ["add", "--", ...filenames], gitEnvironment);
+      runGit(directory, ["commit", "--quiet", "-m", "baseline"], gitEnvironment);
+      for (const filename of filenames) await writeFile(join(directory, filename), "changed\n");
+      const changedFiles = runGit(directory, ["diff", "--name-only", "-z", "HEAD"], gitEnvironment).toString("utf8").split("\0").filter(Boolean);
+      const diff = runGit(directory, ["diff", "--binary", "HEAD"], gitEnvironment).toString("utf8");
+      expect(diff.match(/^diff --git "/gmu)).toHaveLength(filenames.length);
+      const canonical = canonicalizeDiffHeaders(diff, changedFiles);
+      const headers = canonical.match(/^diff --path .+$/gmu) ?? [];
+      expect(headers.map(header => JSON.parse(header.slice("diff --path ".length)))).toEqual(changedFiles);
+      expect(new Set(changedFiles)).toEqual(new Set(filenames));
+      expect(canonical).not.toMatch(/^diff --git /mu);
+      expect(Buffer.byteLength(canonical, "utf8")).toBeLessThan(Buffer.byteLength(diff, "utf8"));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("规范差异头部数量不一致时失败关闭", () => {
+    expect(() => canonicalizeDiffHeaders("diff --git a/a.txt b/a.txt\n", [])).toThrow("完整差异头部与文件集合不一致");
+    expect(() => canonicalizeDiffHeaders("diff --git a/a.txt b/a.txt\n", ["a.txt", "b.txt"])).toThrow("完整差异头部与文件集合不一致");
+  });
+
   it("Git访问把安装令牌作为x-access-token密码传递", () => {
     const header = gitInstallationTokenAuthorizationHeader("installation-token");
     expect(header).toMatch(/^Authorization: Basic [A-Za-z0-9+/]+=*$/u);
@@ -133,9 +192,100 @@ describe("拉取请求议题关联运行器", () => {
     const nonJson = JSON.stringify({ type: "assistant.message", data: { content: "not-json", toolRequests: [] } });
     expect(parseIssueCopilotResult(`${nonJson}\n${result}\n`, context)).toEqual({ desired: [], diagnostic: "business-json-invalid" });
     const wrongContract = JSON.stringify({ type: "assistant.message", data: { content: JSON.stringify({ secret: "must-not-leak" }), toolRequests: [] } });
-    const rejected = parseIssueCopilotResult(`${wrongContract}\n${result}\n`, context);
-    expect(rejected).toEqual({ desired: [], diagnostic: "decision-contract-invalid" });
-    expect(JSON.stringify(rejected)).not.toContain("must-not-leak");
+    const rejectedEnvelope = parseIssueCopilotResult(`${wrongContract}\n${result}\n`, context);
+    expect(rejectedEnvelope).toEqual({ desired: [], diagnostic: "decision-envelope-invalid" });
+    expect(JSON.stringify(rejectedEnvelope)).not.toContain("must-not-leak");
+    const wrongSelection = JSON.stringify({ type: "assistant.message", data: { content: JSON.stringify({ issueDecisions: [{
+      repositoryId: repositoryId + 1, number: 7, decision: "related", confidence: "low",
+      requirements: ["候选议题要求"], evidence: [], unresolved: [],
+    }] }), toolRequests: [] } });
+    expect(parseIssueCopilotResult(`${wrongSelection}\n${result}\n`, context)).toEqual({ desired: [], diagnostic: "decision-selection-invalid" });
+  });
+
+  it("在提示中给出与严格校验器一致且失败关闭的JSON合同", () => {
+    const changedFile = "src/AutoCAD/AFR-ACAD2027/Properties/launchSettings.json";
+    const candidate = {
+      repositoryId,
+      issueNumber: 154,
+      state: "open" as const,
+      contentDigest: "d".repeat(64),
+      validators: [],
+      snapshot: issueSnapshot(154),
+    };
+    const prompt = buildIssueCopilotPrompt({
+      repositoryId,
+      repositoryFullName: "splrad/LayerScape",
+      pullRequestNumber: 155,
+      baseSha,
+      headSha,
+      generation: 1,
+      fullDiffDigest: "e".repeat(64),
+      fullDiff: `diff --git a/${changedFile} b/${changedFile}`,
+      changedFiles: [changedFile],
+      candidates: [candidate],
+    });
+    expect(prompt).toContain("根对象、决策项和证据项都不得增加合同以外的键");
+    expect(prompt).toContain("requirement是从0开始的整数");
+    expect(prompt).toContain("上下文包含changedFiles时，files必须逐字来自该数组");
+    expect(prompt).toContain(`"changedFiles":["${changedFile.replaceAll("\\", "\\\\")}"]`);
+    expect(prompt).toContain('"confidence":"low"');
+    expect(prompt).toContain(`"files":["${changedFile.replaceAll("\\", "\\\\")}"]`);
+    expect(prompt).not.toContain('"decision":"resolves","confidence":"high"');
+    const examplePrefix = "合法结构示例（仅示范字段和类型，decision为partial且confidence为low；不得照抄语义）：";
+    const exampleLine = prompt.split("\n\n").find(line => line.startsWith(examplePrefix));
+    expect(exampleLine).toBeDefined();
+    const exampleMessage = JSON.stringify({ type: "assistant.message", data: { content: exampleLine!.slice(examplePrefix.length), toolRequests: [] } });
+    const result = JSON.stringify({ type: "result", exitCode: 0 });
+    expect(parseIssueCopilotResult(`${exampleMessage}\n${result}\n`, {
+      targetRepositoryId: repositoryId,
+      candidates: [{ repositoryId, number: 154, state: "open", contentDigest: candidate.contentDigest, unfetchedReferences: [] }],
+      changedFiles: [changedFile],
+    })).toEqual({ desired: [], diagnostic: "validated" });
+  });
+
+  it("不重复变更路径并保留特殊字符路径与既有容量", () => {
+    const specialFile = "src/设计\"\t\\说明.txt";
+    const changedFiles = Array.from({ length: 299 }, (_, index) => {
+      const prefix = `src/${String(index).padStart(3, "0")}/`;
+      return `${prefix}${"x".repeat(1_000 - prefix.length)}`;
+    });
+    changedFiles[changedFiles.length - 1] = specialFile;
+    const diffHeaders = changedFiles.map(file => `diff --git a/${file} b/${file}\n`).join("");
+    const fullDiff = `${diffHeaders}${"+".repeat((1024 * 1024) - Buffer.byteLength(diffHeaders, "utf8"))}`;
+    const snapshot = issueSnapshot(154);
+    const emptySnapshot = { ...snapshot, issue: { ...snapshot.issue, body: "" } };
+    const snapshotOverhead = Buffer.byteLength(JSON.stringify([emptySnapshot]), "utf8");
+    const maximumSnapshot = { ...emptySnapshot, issue: { ...emptySnapshot.issue, body: "x".repeat((1024 * 1024) - snapshotOverhead) } };
+    expect(Buffer.byteLength(JSON.stringify([maximumSnapshot]), "utf8")).toBe(1024 * 1024);
+    expect(Buffer.byteLength(fullDiff, "utf8")).toBe(1024 * 1024);
+
+    const prompt = buildIssueCopilotPrompt({
+      repositoryId,
+      repositoryFullName: "splrad/LayerScape",
+      pullRequestNumber: 155,
+      baseSha,
+      headSha,
+      generation: 1,
+      fullDiffDigest: "e".repeat(64),
+      fullDiff,
+      changedFiles,
+      candidates: [{ repositoryId, issueNumber: 154, state: "open", contentDigest: "d".repeat(64), validators: [], snapshot: maximumSnapshot }],
+    });
+    expect(prompt).not.toContain('"changedFiles":');
+    expect(prompt).toContain(`diff --path ${JSON.stringify(specialFile)}`);
+    expect(prompt).not.toMatch(/^diff --git /mu);
+    expect(Buffer.byteLength(prompt, "utf8")).toBeLessThanOrEqual(Math.floor(2.25 * 1024 * 1024));
+    const content = JSON.stringify({ issueDecisions: [{
+      repositoryId, number: 154, decision: "resolves", confidence: "high",
+      requirements: ["支持特殊字符路径"], evidence: [{ requirement: 0, files: [specialFile], explanation: "当前差异提供实现证据" }], unresolved: [],
+    }] });
+    const message = JSON.stringify({ type: "assistant.message", data: { content, toolRequests: [] } });
+    const result = JSON.stringify({ type: "result", exitCode: 0 });
+    expect(parseIssueCopilotResult(`${message}\n${result}\n`, {
+      targetRepositoryId: repositoryId,
+      candidates: [{ repositoryId, number: 154, state: "open", contentDigest: "d".repeat(64), unfetchedReferences: [] }],
+      changedFiles,
+    })).toEqual({ desired: [{ repositoryId, number: 154 }], diagnostic: "validated" });
   });
 
   it("区分Copilot无需运行、步骤失败和输出文件失败", async () => {
