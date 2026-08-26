@@ -551,6 +551,37 @@ describe("议题快照内部接口", () => {
     }
   });
 
+  it("PR对象base接口区分非法请求和存储故障", async () => {
+    const database = new SqliteD1();
+    installAuthorization();
+    const writeId = "11111111-1111-4111-8111-111111111111";
+    const targetBlock = renderIssueLinksBlock({ repositoryId: 1296724484, pullRequestNumber: 42, baseSha: "b".repeat(40), headSha: "c".repeat(40), generation: 0, analysisInputDigest: "d".repeat(64) }, []);
+    const prepare = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/prepare", {
+      method: "POST", headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" },
+      body: JSON.stringify({ writeId, regionKind: "issue-links", baseSha: "b".repeat(40), pullBaseSha: "e".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
+        beforeBodyDigest: pullRequestBodyDigest("before"), outsideBodyDigest: pullRequestBodyDigest("outside"), targetBlock, targetBodyDigest: pullRequestBodyDigest("after"),
+        redrive: { workflow: "pr-issue-link.yml", inputs: { deliveryId: "delivery-invalid-pull-base", repositoryId: "1296724484", pullRequestNumber: "42", scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: "a".repeat(40) } } }),
+    }), env(database));
+    expect(prepare.status).toBe(200);
+    database.database.prepare("UPDATE pull_request_body_write_intents SET pull_base_sha = NULL").run();
+
+    for (const body of [{ pullBaseSha: "invalid" }, { pullBaseSha: 42 }, {}]) {
+      const response = await worker.fetch(new Request(`https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/${writeId}/pull-base`, {
+        method: "POST", headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" }, body: JSON.stringify(body),
+      }), env(database));
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: "invalid-internal-request" });
+      expect(database.database.prepare("SELECT pull_base_sha FROM pull_request_body_write_intents WHERE write_id = ?").get(writeId)).toEqual({ pull_base_sha: null });
+    }
+
+    database.database.prepare("UPDATE pull_request_body_write_intents SET pull_base_sha = 'invalid' WHERE write_id = ?").run(writeId);
+    const corrupted = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/active", {
+      headers: { authorization: "Bearer one-repository-token" },
+    }), env(database));
+    expect(corrupted.status).toBe(503);
+    expect(await corrupted.json()).toEqual({ error: "issue-snapshot-operation-failed" });
+  });
+
   it("等待确认时不会把新写意图作为旧write_id的结果返回", async () => {
     const database = new SqliteD1();
     installAuthorization();

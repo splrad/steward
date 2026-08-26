@@ -54,6 +54,7 @@ const maxOpenSnapshotBytes = 1024 * 1024;
 const maxInternalResponseBytes = 8 * 1024 * 1024;
 const deliveryPattern = /^[A-Za-z0-9._:-]{1,200}$/u;
 const digestPattern = /^[0-9a-f]{64}$/u;
+const shaPattern = /^[0-9a-f]{40}$/iu;
 const validatorResources = new Set(["issue", "comments", "field-values", "parent", "sub-issues", "blocked-by", "blocking", "open-issues"]);
 
 function positiveInteger(value: string, name: string): number {
@@ -781,7 +782,8 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
         if (!current || current.writeId !== writeId) return noStoreResponse(404, { error: "body-write-intent-not-found" });
         if (parts[4] === "pull-base") {
           const body = await readJsonObject(request);
-          return noStoreResponse(200, await intentStore.bindPullBaseSha(repositoryId, pullRequestNumber, writeId, String(body.pullBaseSha ?? ""), now));
+          if (typeof body.pullBaseSha !== "string" || !shaPattern.test(body.pullBaseSha)) return noStoreResponse(400, { error: "invalid-internal-request" });
+          return noStoreResponse(200, await intentStore.bindPullBaseSha(repositoryId, pullRequestNumber, writeId, body.pullBaseSha, now));
         }
         if (parts[4] === "patched") {
           await requireEmptyBody(request);
