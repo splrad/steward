@@ -251,7 +251,7 @@ export async function loadIssueCopilotResult(outcome: string | undefined, output
 }
 
 export function runGit(cwd: string, arguments_: string[], gitEnvironment: NodeJS.ProcessEnv, maximum = 4 * 1024 * 1024, overflowMessage = "Git输出超过固定上限"): Buffer {
-  const result = spawnSync("git", arguments_, { cwd, env: gitEnvironment, encoding: "buffer", maxBuffer: maximum, shell: false });
+  const result = spawnSync("git", ["-c", "core.quotePath=false", ...arguments_], { cwd, env: gitEnvironment, encoding: "buffer", maxBuffer: maximum, shell: false });
   if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ENOBUFS") throw new Error(overflowMessage);
   if (result.status !== 0) throw new Error("完整三点差异读取失败");
   return result.stdout;

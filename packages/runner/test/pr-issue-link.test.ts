@@ -82,6 +82,29 @@ describe("拉取请求议题关联运行器", () => {
     expect(() => runGit(process.cwd(), ["--version"], process.env, 1, "完整差异超过1 MiB")).toThrow("完整差异超过1 MiB");
   });
 
+  it("Git差异保留非ASCII规范路径", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "steward-unicode-diff-test-"));
+    const filename = "设计说明.txt";
+    const gitEnvironment = {
+      ...process.env,
+      GIT_AUTHOR_NAME: "Steward Test",
+      GIT_AUTHOR_EMAIL: "steward-test@example.com",
+      GIT_COMMITTER_NAME: "Steward Test",
+      GIT_COMMITTER_EMAIL: "steward-test@example.com",
+    };
+    try {
+      runGit(directory, ["init", "--quiet"], gitEnvironment);
+      await writeFile(join(directory, filename), "初始内容\n");
+      runGit(directory, ["add", "--", filename], gitEnvironment);
+      runGit(directory, ["commit", "--quiet", "-m", "baseline"], gitEnvironment);
+      await writeFile(join(directory, filename), "修改内容\n");
+      const diff = runGit(directory, ["diff", "--binary", "HEAD"], gitEnvironment).toString("utf8");
+      expect(diff).toContain(`diff --git a/${filename} b/${filename}`);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("Git访问把安装令牌作为x-access-token密码传递", () => {
     const header = gitInstallationTokenAuthorizationHeader("installation-token");
     expect(header).toMatch(/^Authorization: Basic [A-Za-z0-9+/]+=*$/u);
@@ -185,10 +208,12 @@ describe("拉取请求议题关联运行器", () => {
   });
 
   it("不重复变更路径并保留候选与差异的既有容量", () => {
+    const unicodeFile = "src/设计说明.txt";
     const changedFiles = Array.from({ length: 299 }, (_, index) => {
       const prefix = `src/${String(index).padStart(3, "0")}/`;
       return `${prefix}${"x".repeat(1_000 - prefix.length)}`;
     });
+    changedFiles[changedFiles.length - 1] = unicodeFile;
     const diffHeaders = changedFiles.map(file => `diff --git a/${file} b/${file}\n`).join("");
     const fullDiff = `${diffHeaders}${"+".repeat((1024 * 1024) - Buffer.byteLength(diffHeaders, "utf8"))}`;
     const snapshot = issueSnapshot(154);
@@ -211,7 +236,19 @@ describe("拉取请求议题关联运行器", () => {
       candidates: [{ repositoryId, issueNumber: 154, state: "open", contentDigest: "d".repeat(64), validators: [], snapshot: maximumSnapshot }],
     });
     expect(prompt).not.toContain('"changedFiles":');
+    expect(prompt).toContain(`diff --git a/${unicodeFile} b/${unicodeFile}`);
     expect(Buffer.byteLength(prompt, "utf8")).toBeLessThanOrEqual(Math.floor(2.25 * 1024 * 1024));
+    const content = JSON.stringify({ issueDecisions: [{
+      repositoryId, number: 154, decision: "resolves", confidence: "high",
+      requirements: ["支持非ASCII路径"], evidence: [{ requirement: 0, files: [unicodeFile], explanation: "当前差异提供实现证据" }], unresolved: [],
+    }] });
+    const message = JSON.stringify({ type: "assistant.message", data: { content, toolRequests: [] } });
+    const result = JSON.stringify({ type: "result", exitCode: 0 });
+    expect(parseIssueCopilotResult(`${message}\n${result}\n`, {
+      targetRepositoryId: repositoryId,
+      candidates: [{ repositoryId, number: 154, state: "open", contentDigest: "d".repeat(64), unfetchedReferences: [] }],
+      changedFiles,
+    })).toEqual({ desired: [{ repositoryId, number: 154 }], diagnostic: "validated" });
   });
 
   it("区分Copilot无需运行、步骤失败和输出文件失败", async () => {
