@@ -215,6 +215,34 @@ export function extractIssueCopilotContent(value: string): string {
   return content;
 }
 
+export type IssueCopilotDiagnostic = "validated" | "step-failed" | "output-file-invalid" | "jsonl-invalid" | "business-json-invalid" | "decision-contract-invalid";
+
+export function parseIssueCopilotResult(value: string, context: Parameters<typeof selectDesiredIssueSet>[1]): { desired: DesiredIssueReference[]; diagnostic: IssueCopilotDiagnostic } {
+  let content: string;
+  try { content = extractIssueCopilotContent(value); }
+  catch { return { desired: [], diagnostic: "jsonl-invalid" }; }
+  let parsed: unknown;
+  try { parsed = JSON.parse(content); }
+  catch { return { desired: [], diagnostic: "business-json-invalid" }; }
+  try {
+    return { desired: selectDesiredIssueSet(validateIssueDecisionEnvelope(parsed), context), diagnostic: "validated" };
+  } catch {
+    return { desired: [], diagnostic: "decision-contract-invalid" };
+  }
+}
+
+export async function loadIssueCopilotResult(outcome: string | undefined, outputPath: string | undefined, context: Parameters<typeof selectDesiredIssueSet>[1]): Promise<{ desired: DesiredIssueReference[]; diagnostic: IssueCopilotDiagnostic }> {
+  if (outcome !== "success") return { desired: [], diagnostic: "step-failed" };
+  if (!outputPath) return { desired: [], diagnostic: "output-file-invalid" };
+  try {
+    const metadata = await stat(outputPath);
+    if (!metadata.isFile() || metadata.size === 0 || metadata.size > maximumCopilotJsonlBytes) return { desired: [], diagnostic: "output-file-invalid" };
+    return parseIssueCopilotResult(await readFile(outputPath, "utf8"), context);
+  } catch {
+    return { desired: [], diagnostic: "output-file-invalid" };
+  }
+}
+
 export function runGit(cwd: string, arguments_: string[], gitEnvironment: NodeJS.ProcessEnv, maximum = 4 * 1024 * 1024, overflowMessage = "Git输出超过固定上限"): Buffer {
   const result = spawnSync("git", arguments_, { cwd, env: gitEnvironment, encoding: "buffer", maxBuffer: maximum, shell: false });
   if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ENOBUFS") throw new Error(overflowMessage);
@@ -925,24 +953,14 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
     await writeSummary([`拉取请求：#${prepared.pullRequestNumber}`, "状态：stale-discarded"]);
     return;
   }
-  let desired: DesiredIssueReference[] = [];
-  let modelAccepted = false;
-  try {
-    if (process.env.COPILOT_STEP_OUTCOME === "success") {
-      const outputPath = requiredEnvironment("ISSUE_COPILOT_OUTPUT_PATH");
-      const metadata = await stat(outputPath);
-      if (!metadata.isFile() || metadata.size === 0 || metadata.size > maximumCopilotJsonlBytes) throw new Error("Copilot议题输出文件无效");
-      const envelope = validateIssueDecisionEnvelope(JSON.parse(extractIssueCopilotContent(await readFile(outputPath, "utf8"))));
-      desired = selectDesiredIssueSet(envelope, {
-        targetRepositoryId: args.repositoryId,
-        candidates: prepared.candidates,
-        changedFiles: prepared.changedFiles,
-      });
-      modelAccepted = true;
-    }
-  } catch {
-    desired = [];
-  }
+  const parsed = await loadIssueCopilotResult(process.env.COPILOT_STEP_OUTCOME, process.env.ISSUE_COPILOT_OUTPUT_PATH, {
+    targetRepositoryId: args.repositoryId,
+    candidates: prepared.candidates,
+    changedFiles: prepared.changedFiles,
+  });
+  const desired = parsed.desired;
+  const modelDiagnostic = parsed.diagnostic;
+  const modelAccepted = modelDiagnostic === "validated";
   let failureCategory = "freshness-failed";
   let failClosed = false;
   try {
@@ -998,9 +1016,9 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
     await applyBodyAndVerify({ client, token, repository, pull: current, prepared, desired, freshness, redrive: bodyWriteRedrive(args) });
     await publishCheck(client, args.repositoryId, owner, repo, prepared.pullRequestNumber, prepared.headSha, {
       status: "completed", conclusion: "success", title: desired.length ? "议题关联已收敛" : "没有正式议题关联",
-      summary: `拉取请求：#${prepared.pullRequestNumber}\n正式关联：${desired.length}\n模型结果：${modelAccepted ? "validated" : "safe-empty"}`,
+      summary: `拉取请求：#${prepared.pullRequestNumber}\n正式关联：${desired.length}\n模型结果：${modelAccepted ? "validated" : "safe-empty"}\n模型诊断：${modelDiagnostic}`,
     });
-    await writeSummary([`拉取请求：#${prepared.pullRequestNumber}`, `正式关联：${desired.length}`, `仓库代次：${prepared.generation}`]);
+    await writeSummary([`拉取请求：#${prepared.pullRequestNumber}`, `正式关联：${desired.length}`, `模型诊断：${modelDiagnostic}`, `仓库代次：${prepared.generation}`]);
   } catch (error) {
     let cleaned = false;
     if (!failClosed) {
