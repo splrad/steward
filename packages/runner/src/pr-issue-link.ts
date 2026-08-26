@@ -215,12 +215,12 @@ export function extractIssueCopilotContent(value: string): string {
   return content;
 }
 
-export type IssueCopilotDiagnostic = "validated" | "step-failed" | "output-file-invalid" | "jsonl-invalid" | "business-json-invalid" | "decision-contract-invalid";
+export type IssueCopilotDiagnostic = "validated" | "step-failed" | "output-file-invalid" | "copilot-output-invalid" | "business-json-invalid" | "decision-contract-invalid";
 
 export function parseIssueCopilotResult(value: string, context: Parameters<typeof selectDesiredIssueSet>[1]): { desired: DesiredIssueReference[]; diagnostic: IssueCopilotDiagnostic } {
   let content: string;
   try { content = extractIssueCopilotContent(value); }
-  catch { return { desired: [], diagnostic: "jsonl-invalid" }; }
+  catch { return { desired: [], diagnostic: "copilot-output-invalid" }; }
   let parsed: unknown;
   try { parsed = JSON.parse(content); }
   catch { return { desired: [], diagnostic: "business-json-invalid" }; }
@@ -1028,10 +1028,10 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
     }
     await publishCheck(client, args.repositoryId, owner, repo, prepared.pullRequestNumber, prepared.headSha, {
       status: "completed", conclusion: cleaned ? "success" : "failure", title: cleaned ? "议题关联已安全跳过" : "议题关联收敛失败",
-      summary: `拉取请求：#${prepared.pullRequestNumber}\n状态：${cleaned ? "safe-empty" : "failure"}\n类别：${failureCategory}-${cleaned ? "cleaned" : "unclean"}`,
+      summary: `拉取请求：#${prepared.pullRequestNumber}\n状态：${cleaned ? "safe-empty" : "failure"}\n类别：${failureCategory}-${cleaned ? "cleaned" : "unclean"}\n模型诊断：${modelDiagnostic}`,
     });
     if (!cleaned) throw error;
-    await writeSummary([`拉取请求：#${prepared.pullRequestNumber}`, `状态：${failureCategory}-cleaned`]);
+    await writeSummary([`拉取请求：#${prepared.pullRequestNumber}`, `状态：${failureCategory}-cleaned`, `模型诊断：${modelDiagnostic}`]);
   }
 }
 

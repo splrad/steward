@@ -124,7 +124,12 @@ describe("拉取请求议题关联运行器", () => {
     expect(() => extractIssueCopilotContent(`${message}\n${result}\n${result}\n`)).toThrow("结果无效");
     const context = { targetRepositoryId: repositoryId, candidates: [], changedFiles: [] };
     expect(parseIssueCopilotResult(`${message}\n${result}\n`, context)).toEqual({ desired: [], diagnostic: "validated" });
-    expect(parseIssueCopilotResult("not-jsonl", context)).toEqual({ desired: [], diagnostic: "jsonl-invalid" });
+    for (const output of [
+      "not-jsonl",
+      `${message}\n${JSON.stringify({ type: "tool.execution_start" })}\n${result}\n`,
+      `${message}\n${result}\n${result}\n`,
+      `${JSON.stringify({ type: "assistant.message", data: { content: "", toolRequests: [] } })}\n${result}\n`,
+    ]) expect(parseIssueCopilotResult(output, context)).toEqual({ desired: [], diagnostic: "copilot-output-invalid" });
     const nonJson = JSON.stringify({ type: "assistant.message", data: { content: "not-json", toolRequests: [] } });
     expect(parseIssueCopilotResult(`${nonJson}\n${result}\n`, context)).toEqual({ desired: [], diagnostic: "business-json-invalid" });
     const wrongContract = JSON.stringify({ type: "assistant.message", data: { content: JSON.stringify({ secret: "must-not-leak" }), toolRequests: [] } });
@@ -839,6 +844,8 @@ describe("拉取请求议题关联运行器", () => {
       const check = calls.find(call => call.method === "PATCH" && call.url.endsWith("/check-runs/1"));
       expect(check?.body).toEqual(expect.objectContaining({ status: "completed", conclusion: "success" }));
       expect(check?.body.output.summary).toContain("freshness-failed-cleaned");
+      expect(check?.body.output.summary).toContain("模型诊断：step-failed");
+      expect(await readFile(process.env.GITHUB_STEP_SUMMARY!, "utf8")).toContain("模型诊断：step-failed");
     });
   });
 
