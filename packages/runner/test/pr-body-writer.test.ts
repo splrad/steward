@@ -146,6 +146,52 @@ describe("Runner正文持久写入器", () => {
     expect(calls.filter((value) => value.endsWith("/saved-id/wait"))).toHaveLength(1);
   });
 
+  it("正文已收敛时先绑定同目标迁移前活动意图再恢复", async () => {
+    const pullBaseSha = "c".repeat(40);
+    const live = `人工前言\n${block("新摘要")}\n`;
+    const targetBlock = block("新摘要");
+    const targetBodyDigest = createHash("sha256").update(live, "utf8").digest("hex");
+    const updatePullRequest = vi.fn();
+    const calls: string[] = [];
+    let bindingBody: unknown;
+    const legacy = { writeId: "saved-id", regionKind: "managed-pr", baseSha, pullBaseSha: null, headSha, issueGeneration: 0, targetBlock, targetBodyDigest, status: "prepared", deliveryProven: false, blockedReason: null, redrive };
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+      const value = String(url); calls.push(`${init.method ?? "GET"} ${value}`);
+      if (value.endsWith("/active")) return new Response(JSON.stringify(legacy), { status: 200 });
+      if (value.endsWith("/pull-base")) {
+        bindingBody = JSON.parse(String(init.body));
+        return new Response(JSON.stringify({ ...legacy, pullBaseSha }), { status: 200 });
+      }
+      if (value.endsWith("/patched")) return new Response(JSON.stringify({ ...legacy, pullBaseSha, status: "patched" }), { status: 200 });
+      if (value.endsWith("/wait")) return new Response(JSON.stringify({ ...legacy, pullBaseSha, status: "confirmed", deliveryProven: true }), { status: 200 });
+      return new Response("unexpected", { status: 500 });
+    });
+    const currentPull = { ...pull(live), base: { sha: pullBaseSha, repo: { id: repositoryId } } };
+    await expect(updatePullRequestBodyDurably({ client: { getPullRequest: async () => currentPull, updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, pullBaseSha, regionKind: "managed-pr", targetBlock, redrive, confirmationAttempts: 1 })).resolves.toEqual(currentPull);
+    expect(bindingBody).toEqual({ pullBaseSha });
+    expect(calls.filter((value) => value.endsWith("/saved-id/pull-base"))).toHaveLength(1);
+    expect(calls.some((value) => value.endsWith("/saved-id/patched"))).toBe(true);
+    expect(updatePullRequest).not.toHaveBeenCalled();
+  });
+
+  it("显式等于分析base的活动意图不会被误判为迁移前记录", async () => {
+    const pullBaseSha = "c".repeat(40);
+    const live = `人工前言\n${block("新摘要")}\n`;
+    const targetBlock = block("新摘要");
+    const targetBodyDigest = createHash("sha256").update(live, "utf8").digest("hex");
+    const updatePullRequest = vi.fn();
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const value = String(url); calls.push(value);
+      if (value.endsWith("/active")) return new Response(JSON.stringify({ writeId: "saved-id", regionKind: "managed-pr", baseSha, pullBaseSha: baseSha, headSha, issueGeneration: 0, targetBlock, targetBodyDigest, status: "prepared", deliveryProven: false, blockedReason: null, redrive }), { status: 200 });
+      return new Response("unexpected", { status: 500 });
+    });
+    const currentPull = { ...pull(live), base: { sha: pullBaseSha, repo: { id: repositoryId } } };
+    await expect(updatePullRequestBodyDurably({ client: { getPullRequest: async () => currentPull, updatePullRequest } as any, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, pullBaseSha, regionKind: "managed-pr", targetBlock, redrive })).rejects.toThrow("活动正文写意图与当前目标冲突");
+    expect(calls.some((value) => value.endsWith("/pull-base"))).toBe(false);
+    expect(updatePullRequest).not.toHaveBeenCalled();
+  });
+
   it("目标正文已经收敛时未声明的原工作流不确认重调度并继续后续步骤", async () => {
     const live = `人工前言\n${block("新摘要")}\n`;
     const targetBlock = block("新摘要");

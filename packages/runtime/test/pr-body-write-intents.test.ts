@@ -211,21 +211,64 @@ describe("拉取请求正文持久补偿协议", () => {
     expect((await confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber, writeId, now })).status).toBe("confirmed");
   });
 
-  it("读取迁移前写意图时用分析base兼容PR对象base", async () => {
+  it("迁移前写意图保留空PR对象base并只允许条件绑定一次", async () => {
     const database = new SqliteD1();
     const store = new PullRequestBodyWriteIntentStore(database.binding());
     const before = body("人工前言", managedBlock("旧摘要"));
-    await prepared(store, before, managedBlock("新摘要"));
+    const { writeId } = await prepared(store, before, managedBlock("新摘要"));
     database.database.prepare("UPDATE pull_request_body_write_intents SET pull_base_sha = NULL").run();
-    expect(await store.get(repositoryId, pullRequestNumber)).toEqual(expect.objectContaining({ baseSha, pullBaseSha: baseSha }));
+    expect(await store.get(repositoryId, pullRequestNumber)).toEqual(expect.objectContaining({ baseSha, pullBaseSha: null }));
+    const pullBaseSha = "c".repeat(40);
+    const bound = await Promise.all([
+      store.bindPullBaseSha(repositoryId, pullRequestNumber, writeId, pullBaseSha, now),
+      store.bindPullBaseSha(repositoryId, pullRequestNumber, writeId, pullBaseSha, now),
+    ]);
+    expect(bound).toEqual([
+      expect.objectContaining({ writeId, pullBaseSha }),
+      expect.objectContaining({ writeId, pullBaseSha }),
+    ]);
+    await expect(store.bindPullBaseSha(repositoryId, pullRequestNumber, writeId, "d".repeat(40), now)).rejects.toThrow("绑定冲突");
   });
 
-  it("活动写意图不能在PR对象base不同时复用", async () => {
+  it("未绑定的迁移前意图继续用分析base核对既有交付", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const before = body("人工前言", managedBlock("旧摘要"));
+    const { target, writeId } = await prepared(store, before, managedBlock("新摘要"));
+    database.database.prepare("UPDATE pull_request_body_write_intents SET pull_base_sha = NULL").run();
+    const client = { getPullRequest: async () => ({ number: pullRequestNumber, body: target, head: { sha: headSha }, base: { sha: baseSha } }) } as any;
+    expect(await processPullRequestBodyEditedDelivery({ store, client, repository, payload: payload(before, target), deliveryId: "delivery-legacy-base", now })).toBe("proven");
+    expect((await confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber, writeId, now })).status).toBe("confirmed");
+  });
+
+  it("prepare会升级同目标旧意图但不猜测显式相等的双base", async () => {
     const database = new SqliteD1();
     const store = new PullRequestBodyWriteIntentStore(database.binding());
     const before = body("人工前言", managedBlock("旧摘要"));
     const targetBlock = managedBlock("新摘要");
-    const { target, writeId } = await prepared(store, before, targetBlock, undefined, "c".repeat(40));
+    const { target, writeId } = await prepared(store, before, targetBlock);
+    database.database.prepare("UPDATE pull_request_body_write_intents SET pull_base_sha = NULL").run();
+    const pullBaseSha = "c".repeat(40);
+    await expect(store.prepare({
+      repositoryId,
+      pullRequestNumber,
+      writeId,
+      regionKind: "managed-pr",
+      baseSha,
+      pullBaseSha,
+      headSha,
+      issueGeneration: 0,
+      beforeBodyDigest: pullRequestBodyDigest(before),
+      outsideBodyDigest: bodyOutsideManagedRegionDigest(before, "managed-pr"),
+      targetBlock,
+      targetBodyDigest: pullRequestBodyDigest(target),
+      now,
+      expiresAt,
+    })).resolves.toEqual(expect.objectContaining({ writeId, pullBaseSha }));
+
+    const explicitDatabase = new SqliteD1();
+    const explicitStore = new PullRequestBodyWriteIntentStore(explicitDatabase.binding());
+    await prepared(explicitStore, before, targetBlock);
     await expect(store.prepare({
       repositoryId,
       pullRequestNumber,
@@ -233,6 +276,22 @@ describe("拉取请求正文持久补偿协议", () => {
       regionKind: "managed-pr",
       baseSha,
       pullBaseSha: "d".repeat(40),
+      headSha,
+      issueGeneration: 0,
+      beforeBodyDigest: pullRequestBodyDigest(before),
+      outsideBodyDigest: bodyOutsideManagedRegionDigest(before, "managed-pr"),
+      targetBlock,
+      targetBodyDigest: pullRequestBodyDigest(target),
+      now,
+      expiresAt,
+    })).rejects.toThrow("body-write-intent-conflict");
+    await expect(explicitStore.prepare({
+      repositoryId,
+      pullRequestNumber,
+      writeId,
+      regionKind: "managed-pr",
+      baseSha,
+      pullBaseSha,
       headSha,
       issueGeneration: 0,
       beforeBodyDigest: pullRequestBodyDigest(before),

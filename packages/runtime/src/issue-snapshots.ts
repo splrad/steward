@@ -779,6 +779,10 @@ export async function handleIssueSnapshotInternalRequest(request: Request, env: 
         const writeId = parts[3]!;
         const current = await requireCleanupIntent();
         if (!current || current.writeId !== writeId) return noStoreResponse(404, { error: "body-write-intent-not-found" });
+        if (parts[4] === "pull-base") {
+          const body = await readJsonObject(request);
+          return noStoreResponse(200, await intentStore.bindPullBaseSha(repositoryId, pullRequestNumber, writeId, String(body.pullBaseSha ?? ""), now));
+        }
         if (parts[4] === "patched") {
           await requireEmptyBody(request);
           return noStoreResponse(200, await intentStore.markPatched(repositoryId, pullRequestNumber, writeId, now));

@@ -510,6 +510,12 @@ describe("议题快照内部接口", () => {
     }), env(database));
     expect(prepare.status).toBe(200);
     expect(await prepare.json()).toEqual(expect.objectContaining({ writeId, baseSha: "b".repeat(40), pullBaseSha: "e".repeat(40), status: "prepared", deliveryProven: false }));
+    database.database.prepare("UPDATE pull_request_body_write_intents SET pull_base_sha = NULL").run();
+    const pullBase = await worker.fetch(new Request(`https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/${writeId}/pull-base`, {
+      method: "POST", headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" }, body: JSON.stringify({ pullBaseSha: "e".repeat(40) }),
+    }), env(database));
+    expect(pullBase.status).toBe(200);
+    expect(await pullBase.json()).toEqual(expect.objectContaining({ writeId, pullBaseSha: "e".repeat(40), status: "prepared" }));
     const patched = await worker.fetch(new Request(`https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/${writeId}/patched`, { method: "POST", headers: { authorization: "Bearer one-repository-token" } }), env(database));
     expect(patched.status).toBe(200);
     expect(await patched.json()).toEqual(expect.objectContaining({ writeId, status: "patched", attemptCount: 1 }));

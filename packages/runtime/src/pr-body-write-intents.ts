@@ -24,7 +24,7 @@ export interface PullRequestBodyWriteIntent {
   writeId: string;
   regionKind: PullRequestBodyRegionKind;
   baseSha: string;
-  pullBaseSha: string;
+  pullBaseSha: string | null;
   headSha: string;
   issueGeneration: number;
   beforeBodyDigest: string;
@@ -167,7 +167,7 @@ function intent(row: IntentRow | null): PullRequestBodyWriteIntent | null {
     writeId: row.write_id,
     regionKind: row.region_kind as PullRequestBodyRegionKind,
     baseSha: requireSha(row.base_sha, "baseSha"),
-    pullBaseSha: requireSha(row.pull_base_sha ?? row.base_sha, "pullBaseSha"),
+    pullBaseSha: row.pull_base_sha === null ? null : requireSha(row.pull_base_sha, "pullBaseSha"),
     headSha: requireSha(row.head_sha, "headSha"),
     issueGeneration: nonNegativeInteger(row.issue_generation, "issueGeneration"),
     beforeBodyDigest: requireDigest(row.before_body_digest, "beforeBodyDigest"),
@@ -230,6 +230,22 @@ export class PullRequestBodyWriteIntentStore {
     return intent(row);
   }
 
+  async bindPullBaseSha(repositoryId: number, pullRequestNumber: number, writeId: string, pullBaseSha: string, now: string): Promise<PullRequestBodyWriteIntent> {
+    repositoryId = positiveInteger(repositoryId, "repositoryId");
+    pullRequestNumber = positiveInteger(pullRequestNumber, "pullRequestNumber");
+    if (!writeIdPattern.test(writeId)) throw new Error("writeId无效");
+    pullBaseSha = requireSha(pullBaseSha, "pullBaseSha");
+    if (!Number.isFinite(Date.parse(now))) throw new Error("now无效");
+    const result = await this.db.prepare(`UPDATE pull_request_body_write_intents SET pull_base_sha=?, updated_at=?
+      WHERE repository_id=? AND pull_request_number=? AND write_id=? AND pull_base_sha IS NULL
+      AND status IN ('prepared','patched','compensating') AND expires_at > ?`)
+      .bind(pullBaseSha, now, repositoryId, pullRequestNumber, writeId, now).run();
+    if (affected(result) !== 1) await this.blockExpiredIntent(repositoryId, pullRequestNumber, writeId, now);
+    const current = await this.get(repositoryId, pullRequestNumber);
+    if (current?.writeId === writeId && current.pullBaseSha === pullBaseSha) return current;
+    throw new Error("正文写意图PR对象base绑定冲突");
+  }
+
   async prepare(input: {
     repositoryId: number;
     pullRequestNumber: number;
@@ -278,10 +294,13 @@ export class PullRequestBodyWriteIntentStore {
     if (affected(result) !== 1) {
       const current = await this.get(repositoryId, pullRequestNumber);
       if (current && ["prepared", "patched"].includes(current.status)
-        && current.regionKind === input.regionKind && current.baseSha === baseSha && current.pullBaseSha === pullBaseSha && current.headSha === headSha
+        && current.regionKind === input.regionKind && current.baseSha === baseSha && current.headSha === headSha
         && current.issueGeneration === issueGeneration && current.beforeBodyDigest === beforeBodyDigest
         && current.outsideBodyDigest === outsideBodyDigest && current.targetBlock === input.targetBlock && current.targetBodyDigest === targetBodyDigest
-        && JSON.stringify(current.redrive) === JSON.stringify(redrive)) return current;
+        && JSON.stringify(current.redrive) === JSON.stringify(redrive)) {
+        if (current.pullBaseSha === pullBaseSha) return current;
+        if (current.pullBaseSha === null) return this.bindPullBaseSha(repositoryId, pullRequestNumber, current.writeId, pullBaseSha, input.now);
+      }
       await this.db.prepare(`UPDATE pull_request_body_write_intents SET redrive_workflow=?, redrive_inputs=?, redrive_required=1, redrive_dispatched=0, updated_at=?
         WHERE repository_id=? AND pull_request_number=? AND status IN ('prepared','patched','compensating')`)
         .bind(redrive?.workflow ?? null, redrive ? JSON.stringify(redrive.inputs) : null, input.now, repositoryId, pullRequestNumber).run();
@@ -451,6 +470,10 @@ export class PullRequestBodyWriteIntentStore {
 
 export type BodyWriteDeliveryOutcome = "none" | "ignored" | "duplicate" | "proven" | "compensated" | "blocked";
 
+function intentPullBaseSha(intent: PullRequestBodyWriteIntent): string {
+  return intent.pullBaseSha ?? intent.baseSha;
+}
+
 function splitRepository(fullName: string): [string, string] {
   const [owner, repo, extra] = fullName.split("/");
   if (!owner || !repo || extra) throw new Error("仓库名称无效");
@@ -488,7 +511,7 @@ export async function processPullRequestBodyEditedDelivery(input: {
     await input.store.block(repositoryId, pullRequestNumber, current.writeId, "edited-evidence-unavailable", input.now);
     return record("blocked");
   }
-  if (input.payload.pull_request?.head?.sha !== current.headSha || input.payload.pull_request?.base?.sha !== current.pullBaseSha) {
+  if (input.payload.pull_request?.head?.sha !== current.headSha || input.payload.pull_request?.base?.sha !== intentPullBaseSha(current)) {
     await input.store.block(repositoryId, pullRequestNumber, current.writeId, "pull-facts-drifted", input.now);
     return record("blocked");
   }
@@ -498,7 +521,7 @@ export async function processPullRequestBodyEditedDelivery(input: {
     let compensationWritten = false;
     try {
       const liveBeforeCompensation = await input.client.getPullRequest(owner, repo, pullRequestNumber);
-      if (liveBeforeCompensation?.head?.sha !== current.headSha || liveBeforeCompensation?.base?.sha !== current.pullBaseSha) throw new Error("补偿恢复前提交已经漂移");
+      if (liveBeforeCompensation?.head?.sha !== current.headSha || liveBeforeCompensation?.base?.sha !== intentPullBaseSha(current)) throw new Error("补偿恢复前提交已经漂移");
       const liveBody = String(liveBeforeCompensation?.body ?? "");
       let compensatedBody: string;
       if (current.lastDeliveryId === input.deliveryId) {
@@ -522,7 +545,7 @@ export async function processPullRequestBodyEditedDelivery(input: {
       }
       if (!compensationWritten) {
         const written = await input.client.updatePullRequest(owner, repo, pullRequestNumber, { body: compensatedBody });
-        if (written?.head?.sha !== current.headSha || written?.base?.sha !== current.pullBaseSha || String(written?.body ?? "") !== compensatedBody) throw new Error("补偿恢复写入响应不一致");
+        if (written?.head?.sha !== current.headSha || written?.base?.sha !== intentPullBaseSha(current) || String(written?.body ?? "") !== compensatedBody) throw new Error("补偿恢复写入响应不一致");
         compensationWritten = true;
       }
       await input.store.markPatched(repositoryId, pullRequestNumber, current.writeId, input.now);
@@ -538,7 +561,7 @@ export async function processPullRequestBodyEditedDelivery(input: {
     return record("ignored");
   }
   const live = await input.client.getPullRequest(owner, repo, pullRequestNumber);
-  if (live?.head?.sha !== current.headSha || live?.base?.sha !== current.pullBaseSha || pullRequestBodyDigest(String(live?.body ?? "")) !== current.targetBodyDigest) {
+  if (live?.head?.sha !== current.headSha || live?.base?.sha !== intentPullBaseSha(current) || pullRequestBodyDigest(String(live?.body ?? "")) !== current.targetBodyDigest) {
     await input.store.block(repositoryId, pullRequestNumber, current.writeId, "post-edit-readback-drifted", input.now);
     return record("blocked");
   }
@@ -575,7 +598,7 @@ export async function processPullRequestBodyEditedDelivery(input: {
   let compensationWritten = false;
   try {
     const written = await input.client.updatePullRequest(owner, repo, pullRequestNumber, { body: compensatedBody });
-    if (written?.head?.sha !== current.headSha || written?.base?.sha !== current.pullBaseSha || String(written?.body ?? "") !== compensatedBody) throw new Error("补偿正文写入响应不一致");
+    if (written?.head?.sha !== current.headSha || written?.base?.sha !== intentPullBaseSha(current) || String(written?.body ?? "") !== compensatedBody) throw new Error("补偿正文写入响应不一致");
     compensationWritten = true;
     await input.store.markPatched(repositoryId, pullRequestNumber, compensated.writeId, input.now);
     return record("compensated");
@@ -599,7 +622,7 @@ export async function confirmPullRequestBodyWriteIntent(input: {
   if (!current || current.writeId !== input.writeId || current.status !== "patched" || !current.deliveryProven) throw new Error("正文写意图尚未得到交付证明");
   const [owner, repo] = splitRepository(String(input.repository.full_name));
   const pull = await input.client.getPullRequest(owner, repo, input.pullRequestNumber);
-  if (pull?.head?.sha !== current.headSha || pull?.base?.sha !== current.pullBaseSha || pullRequestBodyDigest(String(pull?.body ?? "")) !== current.targetBodyDigest) {
+  if (pull?.head?.sha !== current.headSha || pull?.base?.sha !== intentPullBaseSha(current) || pullRequestBodyDigest(String(pull?.body ?? "")) !== current.targetBodyDigest) {
     return input.store.block(repositoryId, input.pullRequestNumber, input.writeId, "confirmation-facts-drifted", input.now);
   }
   if (current.regionKind === "issue-links") {

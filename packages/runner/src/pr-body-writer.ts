@@ -19,7 +19,7 @@ interface RuntimeIntent {
   writeId: string;
   regionKind: DurableBodyRegionKind;
   baseSha: string;
-  pullBaseSha: string;
+  pullBaseSha: string | null;
   headSha: string;
   issueGeneration: number;
   targetBlock: string | null;
@@ -107,6 +107,17 @@ function matchingIntentTarget(input: Omit<Parameters<typeof matchingIntent>[0], 
     && input.intent.targetBodyDigest === input.targetBodyDigest;
 }
 
+function matchingLegacyIntent(input: Parameters<typeof matchingIntent>[0]): boolean {
+  return input.intent.pullBaseSha === null
+    && input.intent.regionKind === input.regionKind
+    && input.intent.baseSha === input.baseSha
+    && input.intent.headSha === input.headSha
+    && input.intent.issueGeneration === input.issueGeneration
+    && input.intent.targetBlock === input.targetBlock
+    && input.intent.targetBodyDigest === input.targetBodyDigest
+    && canonicalRedrive(input.intent.redrive) === canonicalRedrive(input.redrive);
+}
+
 function matchingRecoveryRedrive(intent: RuntimeIntent, redrive: DurableBodyRedrive): boolean {
   if (!intent.redrive || intent.redrive.workflow !== redrive.workflow) return false;
   const inputs = { ...redrive.inputs };
@@ -169,7 +180,7 @@ export async function updatePullRequestBodyDurably(input: {
   const targetBodyDigest = digest(next);
   const path = `/internal/issue-snapshots/${input.repositoryId}/body-write-intents/${input.pullRequestNumber}`;
   if (next === before) {
-    const active = await runtimeRequest<RuntimeIntent | null>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "GET", path: `${path}/active` });
+    let active = await runtimeRequest<RuntimeIntent | null>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "GET", path: `${path}/active` });
     if (active && ["confirmed", "blocked"].includes(active.status)) {
       if (active.redriveRequired && active.redriveDispatched
         && matchingIntentTarget({ intent: active, regionKind: input.regionKind, baseSha: input.baseSha, pullBaseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest })
@@ -177,6 +188,12 @@ export async function updatePullRequestBodyDurably(input: {
         await runtimeRequest<RuntimeIntent>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "POST", path: `${path}/${active.writeId}/redrive-completed` });
       }
     } else if (active) {
+      if (active.pullBaseSha === null) {
+        if (!matchingLegacyIntent({ intent: active, regionKind: input.regionKind, baseSha: input.baseSha, pullBaseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest, redrive: input.redrive })) {
+          throw new Error("活动正文写意图与当前目标冲突");
+        }
+        active = await runtimeRequest<RuntimeIntent>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "POST", path: `${path}/${active.writeId}/pull-base`, body: { pullBaseSha } });
+      }
       if (!matchingIntent({ intent: active, regionKind: input.regionKind, baseSha: input.baseSha, pullBaseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest, redrive: input.redrive })) {
         throw new Error("活动正文写意图与当前目标冲突");
       }
