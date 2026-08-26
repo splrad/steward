@@ -117,7 +117,7 @@ const issueLinkInputs = issueLinkDocument?.on?.workflow_dispatch?.inputs ?? {};
 if (!hasExactKeys(issueLinkInputs, ["deliveryId", "repositoryId", "pullRequestNumber", "scanAll", "invalidateOnly", "cleanupUnmanaged", "reconciliationGeneration", "policySha"])) throw new Error("议题关联工作流输入集合不正确");
 if (issueLinkInputs.pullRequestNumber?.required !== false || issueLinkInputs.reconciliationGeneration?.required !== false || issueLinkInputs.scanAll?.type !== "boolean" || issueLinkInputs.invalidateOnly?.type !== "boolean" || issueLinkInputs.cleanupUnmanaged?.type !== "boolean") throw new Error("议题关联工作流可选编号或布尔输入契约不正确");
 const issueLinkPermissions = issueLinkDocument?.permissions ?? {};
-if (!hasExactKeys(issueLinkPermissions, ["contents", "copilot-requests"]) || issueLinkPermissions.contents !== "read" || issueLinkPermissions["copilot-requests"] !== "write") throw new Error("议题关联内置令牌权限不正确");
+if (!hasExactKeys(issueLinkPermissions, ["contents"]) || issueLinkPermissions.contents !== "read") throw new Error("议题关联工作流权限必须只有contents: read");
 const issueLinkConcurrency = String(issueLinkDocument?.concurrency?.group ?? "").replace(/\s+/gu, "");
 if (issueLinkConcurrency !== "steward-pr-body-${{inputs.repositoryId}}") throw new Error("议题关联必须与正文自动化共用仓库级并发锁");
 if (issueSyncConcurrency !== issueLinkConcurrency) throw new Error("议题同步没有与失效及正式重算共用并发锁");
@@ -156,7 +156,7 @@ for (const step of [issuePrepareStep, issueReconcileStep]) {
 }
 const issueCopilotStep = issueLinkAnalyze?.steps?.find(step => step?.name === "使用Copilot判断议题");
 const expectedIssueCopilotCommand = 'npx --no-install copilot --available-tools= --no-auto-update --output-format json --stream off --no-color --no-custom-instructions --disable-builtin-mcps --no-ask-user < "$ISSUE_COPILOT_PROMPT_PATH" > "$ISSUE_COPILOT_OUTPUT_PATH"';
-if (issueCopilotStep?.id !== "copilot" || issueCopilotStep?.["continue-on-error"] !== true || issueCopilotStep?.run !== expectedIssueCopilotCommand || issueCopilotStep?.env?.GITHUB_TOKEN?.replace(/\s+/gu, "") !== "${{github.token}}" || Object.hasOwn(issueCopilotStep?.env ?? {}, "COPILOT_GITHUB_TOKEN")) throw new Error("议题关联Copilot调用合同不正确");
+if (issueCopilotStep?.id !== "copilot" || issueCopilotStep?.["continue-on-error"] !== true || issueCopilotStep?.run !== expectedIssueCopilotCommand || issueCopilotStep?.env?.COPILOT_GITHUB_TOKEN?.replace(/\s+/gu, "") !== "${{secrets.COPILOT_CLI_TOKEN}}" || Object.hasOwn(issueCopilotStep?.env ?? {}, "GITHUB_TOKEN")) throw new Error("议题关联Copilot没有使用个人Copilot专用环境密钥");
 if (/(?:^|\s)(?:-p|--prompt|--allow-tool)(?:=|\s|$)/u.test(String(issueCopilotStep?.run ?? ""))) throw new Error("议题关联Copilot不得使用参数提示或启用工具");
 if (String(issueReconcileStep?.env?.COPILOT_STEP_OUTCOME ?? "").replace(/\s+/gu, "") !== "${{steps.copilot.outcome}}") throw new Error("议题关联收敛没有接收Copilot结果");
 if (String(issueReconcileStep?.if ?? "").replace(/\s+/gu, "") !== "steps.prepare.outputs.completed=='false'") throw new Error("议题关联收敛没有覆盖无需Copilot的候选复核");
@@ -262,7 +262,7 @@ try {
   const archivePath = join(temporary, archiveName); await writeFile(archivePath, archive);
   const extracted = spawnSync("tar", ["-xf", archivePath, "-C", temporary], { encoding: "utf8" }); if (extracted.status !== 0) throw new Error(extracted.stderr || "无法解压actionlint");
   const executable = join(temporary, platform === "windows" ? "actionlint.exe" : "actionlint"); if (platform !== "windows") await chmod(executable, 0o755);
-  const actionlintArguments = ["-ignore", 'unknown permission scope "copilot-requests"', "-ignore", 'unexpected key "queue" for "concurrency" section', ...files.map(file => `.github/workflows/${file}`)];
+  const actionlintArguments = ["-ignore", 'unexpected key "queue" for "concurrency" section', ...files.map(file => `.github/workflows/${file}`)];
   const checked = spawnSync(executable, actionlintArguments, { encoding: "utf8" }); if (checked.status !== 0) throw new Error(checked.stdout || checked.stderr || "actionlint失败");
 } finally { await rm(temporary, { recursive: true, force: true }); }
 console.log("workflows verified");
