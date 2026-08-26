@@ -222,6 +222,12 @@ export function runGit(cwd: string, arguments_: string[], gitEnvironment: NodeJS
   return result.stdout;
 }
 
+export function gitInstallationTokenAuthorizationHeader(token: string): string {
+  if (!token || /[\0\r\n]/u.test(token)) throw new Error("Git安装令牌无效");
+  const credentials = Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");
+  return `Authorization: Basic ${credentials}`;
+}
+
 function nulList(value: Buffer): string[] {
   const text = value.toString("utf8");
   const items = text.split("\0");
@@ -246,7 +252,7 @@ export async function collectFullDiffEvidence(input: {
     GIT_TERMINAL_PROMPT: "0",
     GIT_CONFIG_COUNT: "2",
     GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
-    GIT_CONFIG_VALUE_0: `Authorization: Bearer ${input.token}`,
+    GIT_CONFIG_VALUE_0: gitInstallationTokenAuthorizationHeader(input.token),
     GIT_CONFIG_KEY_1: "credential.helper",
     GIT_CONFIG_VALUE_1: "",
   };

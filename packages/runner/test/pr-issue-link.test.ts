@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { analysisInputDigest, issueSnapshotContentDigest, managedBodyOutsideIssueLinksDigest, normalizeIssueSnapshot, openIssueSetDigest, renderIssueLinksBlock, upsertIssueLinksBlock } from "../../core/src/issues.js";
-import { extractIssueCopilotContent, parsePrIssueLinkArgs, revalidationCandidates, runGit, runPrIssueLink, verifyIssueLinkConvergence, workflowRevalidationPlan } from "../src/pr-issue-link.js";
+import { extractIssueCopilotContent, gitInstallationTokenAuthorizationHeader, parsePrIssueLinkArgs, revalidationCandidates, runGit, runPrIssueLink, verifyIssueLinkConvergence, workflowRevalidationPlan } from "../src/pr-issue-link.js";
 
 const repositoryId = 1296724484;
 const policySha = "a".repeat(40);
@@ -80,6 +80,15 @@ describe("拉取请求议题关联运行器", () => {
 
   it("Git输出超限时保留调用方定义的大小错误", () => {
     expect(() => runGit(process.cwd(), ["--version"], process.env, 1, "完整差异超过1 MiB")).toThrow("完整差异超过1 MiB");
+  });
+
+  it("Git访问把安装令牌作为x-access-token密码传递", () => {
+    const header = gitInstallationTokenAuthorizationHeader("installation-token");
+    expect(header).toMatch(/^Authorization: Basic [A-Za-z0-9+/]+=*$/u);
+    expect(Buffer.from(header.slice("Authorization: Basic ".length), "base64").toString("utf8"))
+      .toBe("x-access-token:installation-token");
+    expect(header).not.toContain("installation-token");
+    expect(() => gitInstallationTokenAuthorizationHeader("installation-token\nextra-header: value")).toThrow("Git安装令牌无效");
   });
 
   it("仓库不具备议题能力时不创建失效检查", async () => {
