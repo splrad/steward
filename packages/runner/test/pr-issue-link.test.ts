@@ -1,10 +1,10 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { analysisInputDigest, issueSnapshotContentDigest, managedBodyOutsideIssueLinksDigest, normalizeIssueSnapshot, openIssueSetDigest, renderIssueLinksBlock, upsertIssueLinksBlock } from "../../core/src/issues.js";
-import { buildIssueCopilotPrompt, extractIssueCopilotContent, gitInstallationTokenAuthorizationHeader, loadIssueCopilotResult, parseIssueCopilotResult, parsePrIssueLinkArgs, revalidationCandidates, runGit, runPrIssueLink, verifyIssueLinkConvergence, workflowRevalidationPlan } from "../src/pr-issue-link.js";
+import { buildIssueCopilotPrompt, canonicalizeDiffHeaders, extractIssueCopilotContent, gitInstallationTokenAuthorizationHeader, loadIssueCopilotResult, parseIssueCopilotResult, parsePrIssueLinkArgs, revalidationCandidates, runGit, runPrIssueLink, verifyIssueLinkConvergence, workflowRevalidationPlan } from "../src/pr-issue-link.js";
 
 const repositoryId = 1296724484;
 const policySha = "a".repeat(40);
@@ -103,6 +103,42 @@ describe("拉取请求议题关联运行器", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+
+  it.runIf(process.platform !== "win32")("Git必须转义的路径转换为可逆规范头部", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "steward-special-path-diff-test-"));
+    const filenames = ["d/a\tb.txt", 'd/a"b.txt', "d/a\\b.txt"];
+    const gitEnvironment = {
+      ...process.env,
+      GIT_AUTHOR_NAME: "Steward Test",
+      GIT_AUTHOR_EMAIL: "steward-test@example.com",
+      GIT_COMMITTER_NAME: "Steward Test",
+      GIT_COMMITTER_EMAIL: "steward-test@example.com",
+    };
+    try {
+      runGit(directory, ["init", "--quiet"], gitEnvironment);
+      await mkdir(join(directory, "d"));
+      for (const filename of filenames) await writeFile(join(directory, filename), "initial\n");
+      runGit(directory, ["add", "--", ...filenames], gitEnvironment);
+      runGit(directory, ["commit", "--quiet", "-m", "baseline"], gitEnvironment);
+      for (const filename of filenames) await writeFile(join(directory, filename), "changed\n");
+      const changedFiles = runGit(directory, ["diff", "--name-only", "-z", "HEAD"], gitEnvironment).toString("utf8").split("\0").filter(Boolean);
+      const diff = runGit(directory, ["diff", "--binary", "HEAD"], gitEnvironment).toString("utf8");
+      expect(diff.match(/^diff --git "/gmu)).toHaveLength(filenames.length);
+      const canonical = canonicalizeDiffHeaders(diff, changedFiles);
+      const headers = canonical.match(/^diff --path .+$/gmu) ?? [];
+      expect(headers.map(header => JSON.parse(header.slice("diff --path ".length)))).toEqual(changedFiles);
+      expect(new Set(changedFiles)).toEqual(new Set(filenames));
+      expect(canonical).not.toMatch(/^diff --git /mu);
+      expect(Buffer.byteLength(canonical, "utf8")).toBeLessThan(Buffer.byteLength(diff, "utf8"));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("规范差异头部数量不一致时失败关闭", () => {
+    expect(() => canonicalizeDiffHeaders("diff --git a/a.txt b/a.txt\n", [])).toThrow("完整差异头部与文件集合不一致");
+    expect(() => canonicalizeDiffHeaders("diff --git a/a.txt b/a.txt\n", ["a.txt", "b.txt"])).toThrow("完整差异头部与文件集合不一致");
   });
 
   it("Git访问把安装令牌作为x-access-token密码传递", () => {
@@ -207,13 +243,13 @@ describe("拉取请求议题关联运行器", () => {
     })).toEqual({ desired: [], diagnostic: "validated" });
   });
 
-  it("不重复变更路径并保留候选与差异的既有容量", () => {
-    const unicodeFile = "src/设计说明.txt";
+  it("不重复变更路径并保留特殊字符路径与既有容量", () => {
+    const specialFile = "src/设计\"\t\\说明.txt";
     const changedFiles = Array.from({ length: 299 }, (_, index) => {
       const prefix = `src/${String(index).padStart(3, "0")}/`;
       return `${prefix}${"x".repeat(1_000 - prefix.length)}`;
     });
-    changedFiles[changedFiles.length - 1] = unicodeFile;
+    changedFiles[changedFiles.length - 1] = specialFile;
     const diffHeaders = changedFiles.map(file => `diff --git a/${file} b/${file}\n`).join("");
     const fullDiff = `${diffHeaders}${"+".repeat((1024 * 1024) - Buffer.byteLength(diffHeaders, "utf8"))}`;
     const snapshot = issueSnapshot(154);
@@ -236,11 +272,12 @@ describe("拉取请求议题关联运行器", () => {
       candidates: [{ repositoryId, issueNumber: 154, state: "open", contentDigest: "d".repeat(64), validators: [], snapshot: maximumSnapshot }],
     });
     expect(prompt).not.toContain('"changedFiles":');
-    expect(prompt).toContain(`diff --git a/${unicodeFile} b/${unicodeFile}`);
+    expect(prompt).toContain(`diff --path ${JSON.stringify(specialFile)}`);
+    expect(prompt).not.toMatch(/^diff --git /mu);
     expect(Buffer.byteLength(prompt, "utf8")).toBeLessThanOrEqual(Math.floor(2.25 * 1024 * 1024));
     const content = JSON.stringify({ issueDecisions: [{
       repositoryId, number: 154, decision: "resolves", confidence: "high",
-      requirements: ["支持非ASCII路径"], evidence: [{ requirement: 0, files: [unicodeFile], explanation: "当前差异提供实现证据" }], unresolved: [],
+      requirements: ["支持特殊字符路径"], evidence: [{ requirement: 0, files: [specialFile], explanation: "当前差异提供实现证据" }], unresolved: [],
     }] });
     const message = JSON.stringify({ type: "assistant.message", data: { content, toolRequests: [] } });
     const result = JSON.stringify({ type: "result", exitCode: 0 });
