@@ -783,7 +783,7 @@ describe("拉取请求议题关联运行器", () => {
     });
   });
 
-  it("模型安全清空时仍复核全部模型输入", async () => {
+  it("PR对象base落后实时默认分支时仍按当前base复核模型输入", async () => {
     for (const testCase of [
       { outcome: "success", output: `${JSON.stringify({ type: "assistant.message", data: { content: "not-json", toolRequests: [] } })}\n${JSON.stringify({ type: "result", exitCode: 0 })}\n`, diagnostic: "business-json-invalid" },
       { outcome: "skipped", output: null, diagnostic: "copilot-not-required" },
@@ -801,6 +801,12 @@ describe("拉取请求议题关联运行器", () => {
       const outer = '<!-- workflow:managed-pr:start -->\n## 摘要\n\n正文\n\n<!-- workflow:source-actor:bot -->\n<!-- workflow:managed-pr:end -->\n';
       const unmanagedBodyDigest = managedBodyOutsideIssueLinksDigest(outer);
       const fullDiffDigest = "e".repeat(64);
+      const pullBaseSha = "f".repeat(40);
+      const currentPull = (body: string) => {
+        const value = pull(body, 301115370);
+        value.base.sha = pullBaseSha;
+        return value;
+      };
       const prepared = {
         schemaVersion: 1, repositoryId, repositoryFullName: "splrad/steward", pullRequestNumber: 42,
         baseSha, headSha, generation: 2, stateRevision: 0, policySha, fullDiffDigest, changedFiles: [], candidateDigests,
@@ -823,8 +829,8 @@ describe("拉取请求议题关联运行器", () => {
         const bodyWriteResponse = bodyWriteRuntimeResponse(value, method, body); if (bodyWriteResponse) return bodyWriteResponse;
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
         if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
-        if (value.endsWith("/repos/splrad/steward/pulls/42") && method === "PATCH") { currentBody = body.body; return new Response(JSON.stringify(pull(currentBody, 301115370)), { status: 200 }); }
-        if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify(pull(currentBody, 301115370)), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/pulls/42") && method === "PATCH") { currentBody = body.body; return new Response(JSON.stringify(currentPull(currentBody)), { status: 200 }); }
+        if (value.endsWith("/repos/splrad/steward/pulls/42")) return new Response(JSON.stringify(currentPull(currentBody)), { status: 200 });
         if (value.endsWith("/repos/splrad/steward/git/ref/heads/main")) return new Response(JSON.stringify({ object: { sha: baseSha } }), { status: 200 });
         if (value.endsWith(`/internal/issue-snapshots/${repositoryId}`)) return new Response(JSON.stringify({ repositoryId, generation: 2, stateRevision: 0, syncState: "ready", openSetDigest, snapshots }), { status: 200 });
         if (value.includes("/repos/splrad/steward/issues?")) return new Response(JSON.stringify([1, 2].map(number => ({ number, repository_url: "https://api.github.com/repos/splrad/steward" }))), { status: 200 });

@@ -509,12 +509,12 @@ function isClosedUnmergedManagedPull(pull: any, repositoryId: number): boolean {
     && String(pull?.body ?? "").includes("<!-- workflow:issue-links:start ");
 }
 
-function currentPullFacts(pull: any, repositoryId: number): { number: number; headSha: string; baseSha: string; body: string } {
+function currentPullFacts(pull: any, repositoryId: number): { number: number; headSha: string; pullBaseSha: string; body: string } {
   if (Number(pull?.base?.repo?.id) !== repositoryId) throw new Error("issue-repository-mismatch");
   return {
     number: safeInteger(pull?.number, "pullRequestNumber"),
     headSha: sha(pull?.head?.sha, "headSha"),
-    baseSha: sha(pull?.base?.sha, "baseSha"),
+    pullBaseSha: sha(pull?.base?.sha, "pullBaseSha"),
     body: String(pull?.body ?? ""),
   };
 }
@@ -612,6 +612,7 @@ async function applyBodyAndVerify(input: {
 }): Promise<void> {
   const [owner, repo] = splitRepository(input.repository.full_name);
   const facts = currentPullFacts(input.pull, Number(input.repository.id));
+  const analysisBaseSha = input.prepared?.baseSha ?? facts.pullBaseSha;
   if (!input.removeBlock && !input.prepared) throw new Error("缺少议题关联输入摘要");
   const targetBlock = input.removeBlock ? null : targetManagedBlock(renderIssueLinksBlock({
     repositoryId: input.prepared!.repositoryId,
@@ -631,7 +632,8 @@ async function applyBodyAndVerify(input: {
     repositoryId: Number(input.repository.id),
     pullRequestNumber: facts.number,
     headSha: facts.headSha,
-    baseSha: facts.baseSha,
+    baseSha: analysisBaseSha,
+    pullBaseSha: facts.pullBaseSha,
     issueGeneration: input.prepared?.generation ?? 0,
     regionKind: "issue-links",
     targetBlock,
@@ -655,7 +657,7 @@ async function applyBodyAndVerify(input: {
 function canRemoveIssueLinks(pull: any, repositoryId: number, expectedHeadSha: string, expectedBaseSha: string, expectedOutsideBodyDigest: string): boolean {
   if (!isManagedPull(pull, repositoryId) || (pull?.state !== "open" && !(pull?.state === "closed" && pull?.merged_at === null))) return false;
   const facts = currentPullFacts(pull, repositoryId);
-  return facts.headSha === expectedHeadSha && facts.baseSha === expectedBaseSha
+  return facts.headSha === expectedHeadSha && facts.pullBaseSha === expectedBaseSha
     && managedBodyOutsideIssueLinksDigest(facts.body) === expectedOutsideBodyDigest;
 }
 
@@ -694,7 +696,7 @@ async function removeIssueLinksIfEligible(input: {
 
 async function cleanupManagedIssueBlock(client: GitHubClient, token: string, repository: any, pull: any, managed: boolean, args: PrIssueLinkArgs): Promise<void> {
   const facts = currentPullFacts(pull, Number(repository.id));
-  if (managed && facts.body.includes("<!-- workflow:issue-links:start ") && !await removeIssueLinksIfEligible({ client, token, repository, pullRequestNumber: facts.number, expectedHeadSha: facts.headSha, expectedBaseSha: facts.baseSha, expectedOutsideBodyDigest: managedBodyOutsideIssueLinksDigest(facts.body), args })) {
+  if (managed && facts.body.includes("<!-- workflow:issue-links:start ") && !await removeIssueLinksIfEligible({ client, token, repository, pullRequestNumber: facts.number, expectedHeadSha: facts.headSha, expectedBaseSha: facts.pullBaseSha, expectedOutsideBodyDigest: managedBodyOutsideIssueLinksDigest(facts.body), args })) {
     throw new Error("议题关联清理前拉取请求状态已经漂移");
   }
 }
@@ -838,15 +840,14 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
     if (files.length >= 300 || Number(pull.changed_files) !== files.length) throw new Error("GitHub改动文件集合不完整");
     const changedFiles = files.map((file: any) => String(file.filename));
     const liveBase = sha((await client.getRef(owner, repo, `heads/${repository.default_branch}`)).object.sha, "baseSha");
-    if (liveBase !== facts.baseSha) throw new Error("默认分支提交已经漂移");
     const fullDiff = await collectFullDiffEvidence({ owner, repo, defaultBranch: repository.default_branch, pullRequestNumber, baseSha: liveBase, headSha: facts.headSha, token, expectedFiles: changedFiles });
     const currentBase = sha((await client.getRef(owner, repo, `heads/${repository.default_branch}`)).object.sha, "baseSha");
-    if (currentBase !== facts.baseSha) throw new Error("默认分支提交已经漂移");
+    if (currentBase !== liveBase) throw new Error("默认分支提交已经漂移");
     const candidateDigests = state.snapshots.map(item => ({ repositoryId: args.repositoryId, number: item.issueNumber, contentDigest: item.contentDigest }));
-    const inputDigest = analysisInputDigest({ repositoryId: args.repositoryId, pullRequestNumber, baseSha: facts.baseSha, headSha: facts.headSha, generation: state.generation, policySha: args.policySha, fullDiffDigest: fullDiff.fullDiffDigest, candidateDigests, openSetDigest: state.openSetDigest, unmanagedBodyDigest });
+    const inputDigest = analysisInputDigest({ repositoryId: args.repositoryId, pullRequestNumber, baseSha: liveBase, headSha: facts.headSha, generation: state.generation, policySha: args.policySha, fullDiffDigest: fullDiff.fullDiffDigest, candidateDigests, openSetDigest: state.openSetDigest, unmanagedBodyDigest });
     const prepared: PreparedEvidence = {
       schemaVersion: 1, repositoryId: args.repositoryId, repositoryFullName: repository.full_name, pullRequestNumber,
-      baseSha: facts.baseSha, headSha: facts.headSha, generation: state.generation, stateRevision: state.stateRevision, policySha: args.policySha,
+      baseSha: liveBase, headSha: facts.headSha, generation: state.generation, stateRevision: state.stateRevision, policySha: args.policySha,
       fullDiffDigest: fullDiff.fullDiffDigest, changedFiles: fullDiff.changedFiles, candidateDigests,
       candidates: state.snapshots.map(item => ({ repositoryId: item.repositoryId, number: item.issueNumber, state: item.state, contentDigest: item.contentDigest, unfetchedReferences: item.snapshot.unfetchedReferences, validators: item.validators })),
       openSetDigest: state.openSetDigest, unmanagedBodyDigest, analysisInputDigest: inputDigest, revalidationBudget,
@@ -857,13 +858,13 @@ async function prepareSingle(args: PrIssueLinkArgs): Promise<void> {
       await writeSummary([`仓库编号：${args.repositoryId}`, `拉取请求：#${pullRequestNumber}`, "候选议题均需在收敛阶段复核"]);
       return;
     }
-    await writeFile(promptPath, buildIssueCopilotPrompt({ repositoryId: args.repositoryId, repositoryFullName: repository.full_name, pullRequestNumber, baseSha: facts.baseSha, headSha: facts.headSha, generation: state.generation, fullDiffDigest: fullDiff.fullDiffDigest, fullDiff: fullDiff.fullDiff, changedFiles: fullDiff.changedFiles, candidates: included }));
+    await writeFile(promptPath, buildIssueCopilotPrompt({ repositoryId: args.repositoryId, repositoryFullName: repository.full_name, pullRequestNumber, baseSha: liveBase, headSha: facts.headSha, generation: state.generation, fullDiffDigest: fullDiff.fullDiffDigest, fullDiff: fullDiff.fullDiff, changedFiles: fullDiff.changedFiles, candidates: included }));
     await writeOutput({ "copilot-required": "true", completed: "false" });
     await writeSummary([`仓库编号：${args.repositoryId}`, `拉取请求：#${pullRequestNumber}`, `候选议题：${included.length}`, `差异文件：${fullDiff.changedFiles.length}`, `提示文件：${basename(promptPath)}`]);
   } catch (error) {
     let cleaned = false;
     try {
-      cleaned = await removeIssueLinksIfEligible({ client, token, repository, pullRequestNumber, expectedHeadSha: facts.headSha, expectedBaseSha: facts.baseSha, expectedOutsideBodyDigest: managedBodyOutsideIssueLinksDigest(facts.body), args });
+      cleaned = await removeIssueLinksIfEligible({ client, token, repository, pullRequestNumber, expectedHeadSha: facts.headSha, expectedBaseSha: facts.pullBaseSha, expectedOutsideBodyDigest: managedBodyOutsideIssueLinksDigest(facts.body), args });
     } catch {}
     const safeEmpty = cleaned && closingKeywordsInspected && !unmanagedClosingKeywords;
     await publishCheck(client, args.repositoryId, owner, repo, pullRequestNumber, facts.headSha, {
@@ -936,7 +937,7 @@ async function preparedInputsAreFresh(input: {
   const state = validateSnapshotState(rawState, input.prepared.repositoryId);
   const facts = currentPullFacts(pull, input.prepared.repositoryId);
   return pull?.state === "open" && pull?.base?.ref === input.repository.default_branch
-    && facts.headSha === input.prepared.headSha && facts.baseSha === input.prepared.baseSha
+    && facts.headSha === input.prepared.headSha
     && branch?.object?.sha === input.prepared.baseSha
     && managedBodyOutsideIssueLinksDigest(facts.body) === input.prepared.unmanagedBodyDigest
     && state.generation === input.prepared.generation && state.stateRevision === input.prepared.stateRevision
@@ -972,7 +973,7 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
     try {
       if (repositoryForCleanup && pullForCleanup) cleaned = await removeIssueLinksIfEligible({
         client, token, repository: repositoryForCleanup, pullRequestNumber: prepared.pullRequestNumber,
-        expectedHeadSha: prepared.headSha, expectedBaseSha: prepared.baseSha, expectedOutsideBodyDigest: prepared.unmanagedBodyDigest, args,
+        expectedHeadSha: prepared.headSha, expectedBaseSha: currentPullFacts(pullForCleanup, args.repositoryId).pullBaseSha, expectedOutsideBodyDigest: prepared.unmanagedBodyDigest, args,
       });
     } catch {}
     await publishCheck(client, args.repositoryId, preparedOwner, preparedRepo, prepared.pullRequestNumber, prepared.headSha, {
@@ -992,7 +993,7 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
   const desired = parsed.desired;
   const modelDiagnostic = parsed.diagnostic;
   const modelAccepted = modelDiagnostic === "validated";
-  if (current?.state !== "open" || current?.base?.ref !== repository.default_branch || facts.baseSha !== prepared.baseSha || facts.headSha !== prepared.headSha
+  if (current?.state !== "open" || current?.base?.ref !== repository.default_branch || facts.headSha !== prepared.headSha
     || currentBase !== prepared.baseSha || currentState.generation !== prepared.generation || currentState.stateRevision !== prepared.stateRevision
     || managedBodyOutsideIssueLinksDigest(facts.body) !== prepared.unmanagedBodyDigest) {
     await publishCheck(client, args.repositoryId, owner, repo, prepared.pullRequestNumber, prepared.headSha, {
@@ -1063,7 +1064,7 @@ async function reconcileSingle(args: PrIssueLinkArgs): Promise<void> {
     let cleaned = false;
     if (!failClosed) {
       try {
-        cleaned = await removeIssueLinksIfEligible({ client, token, repository, pullRequestNumber: prepared.pullRequestNumber, expectedHeadSha: prepared.headSha, expectedBaseSha: prepared.baseSha, expectedOutsideBodyDigest: prepared.unmanagedBodyDigest, args });
+        cleaned = await removeIssueLinksIfEligible({ client, token, repository, pullRequestNumber: prepared.pullRequestNumber, expectedHeadSha: prepared.headSha, expectedBaseSha: facts.pullBaseSha, expectedOutsideBodyDigest: prepared.unmanagedBodyDigest, args });
       } catch {}
     }
     await publishCheck(client, args.repositoryId, owner, repo, prepared.pullRequestNumber, prepared.headSha, {
