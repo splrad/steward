@@ -167,7 +167,8 @@ describe("拉取请求议题关联运行器", () => {
     });
     expect(prompt).toContain("根对象、决策项和证据项都不得增加合同以外的键");
     expect(prompt).toContain("requirement是从0开始的整数");
-    expect(prompt).toContain("每个值1至1000个字符且逐字来自changedFiles");
+    expect(prompt).toContain("上下文包含changedFiles时，files必须逐字来自该数组");
+    expect(prompt).toContain(`"changedFiles":["${changedFile.replaceAll("\\", "\\\\")}"]`);
     expect(prompt).toContain('"confidence":"low"');
     expect(prompt).toContain(`"files":["${changedFile.replaceAll("\\", "\\\\")}"]`);
     expect(prompt).not.toContain('"decision":"resolves","confidence":"high"');
@@ -181,6 +182,36 @@ describe("拉取请求议题关联运行器", () => {
       candidates: [{ repositoryId, number: 154, state: "open", contentDigest: candidate.contentDigest, unfetchedReferences: [] }],
       changedFiles: [changedFile],
     })).toEqual({ desired: [], diagnostic: "validated" });
+  });
+
+  it("不重复变更路径并保留候选与差异的既有容量", () => {
+    const changedFiles = Array.from({ length: 299 }, (_, index) => {
+      const prefix = `src/${String(index).padStart(3, "0")}/`;
+      return `${prefix}${"x".repeat(1_000 - prefix.length)}`;
+    });
+    const diffHeaders = changedFiles.map(file => `diff --git a/${file} b/${file}\n`).join("");
+    const fullDiff = `${diffHeaders}${"+".repeat((1024 * 1024) - Buffer.byteLength(diffHeaders, "utf8"))}`;
+    const snapshot = issueSnapshot(154);
+    const emptySnapshot = { ...snapshot, issue: { ...snapshot.issue, body: "" } };
+    const snapshotOverhead = Buffer.byteLength(JSON.stringify([emptySnapshot]), "utf8");
+    const maximumSnapshot = { ...emptySnapshot, issue: { ...emptySnapshot.issue, body: "x".repeat((1024 * 1024) - snapshotOverhead) } };
+    expect(Buffer.byteLength(JSON.stringify([maximumSnapshot]), "utf8")).toBe(1024 * 1024);
+    expect(Buffer.byteLength(fullDiff, "utf8")).toBe(1024 * 1024);
+
+    const prompt = buildIssueCopilotPrompt({
+      repositoryId,
+      repositoryFullName: "splrad/LayerScape",
+      pullRequestNumber: 155,
+      baseSha,
+      headSha,
+      generation: 1,
+      fullDiffDigest: "e".repeat(64),
+      fullDiff,
+      changedFiles,
+      candidates: [{ repositoryId, issueNumber: 154, state: "open", contentDigest: "d".repeat(64), validators: [], snapshot: maximumSnapshot }],
+    });
+    expect(prompt).not.toContain('"changedFiles":');
+    expect(Buffer.byteLength(prompt, "utf8")).toBeLessThanOrEqual(Math.floor(2.25 * 1024 * 1024));
   });
 
   it("区分Copilot无需运行、步骤失败和输出文件失败", async () => {
