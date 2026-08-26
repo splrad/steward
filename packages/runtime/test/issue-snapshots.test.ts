@@ -565,7 +565,7 @@ describe("议题快照内部接口", () => {
     expect(prepare.status).toBe(200);
     database.database.prepare("UPDATE pull_request_body_write_intents SET pull_base_sha = NULL").run();
 
-    for (const body of [{ pullBaseSha: "invalid" }, { pullBaseSha: 42 }, {}]) {
+    for (const body of [{ pullBaseSha: "invalid" }, { pullBaseSha: "A".repeat(40) }, { pullBaseSha: 42 }, {}]) {
       const response = await worker.fetch(new Request(`https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/${writeId}/pull-base`, {
         method: "POST", headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" }, body: JSON.stringify(body),
       }), env(database));

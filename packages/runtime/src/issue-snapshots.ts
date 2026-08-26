@@ -54,7 +54,7 @@ const maxOpenSnapshotBytes = 1024 * 1024;
 const maxInternalResponseBytes = 8 * 1024 * 1024;
 const deliveryPattern = /^[A-Za-z0-9._:-]{1,200}$/u;
 const digestPattern = /^[0-9a-f]{64}$/u;
-const shaPattern = /^[0-9a-f]{40}$/iu;
+const shaPattern = /^[0-9a-f]{40}$/u;
 const validatorResources = new Set(["issue", "comments", "field-values", "parent", "sub-issues", "blocked-by", "blocking", "open-issues"]);
 
 function positiveInteger(value: string, name: string): number {
