@@ -215,7 +215,7 @@ export function extractIssueCopilotContent(value: string): string {
   return content;
 }
 
-export type IssueCopilotDiagnostic = "validated" | "step-failed" | "output-file-invalid" | "copilot-output-invalid" | "business-json-invalid" | "decision-contract-invalid";
+export type IssueCopilotDiagnostic = "validated" | "copilot-not-required" | "step-failed" | "output-file-invalid" | "copilot-output-invalid" | "business-json-invalid" | "decision-contract-invalid";
 
 export function parseIssueCopilotResult(value: string, context: Parameters<typeof selectDesiredIssueSet>[1]): { desired: DesiredIssueReference[]; diagnostic: IssueCopilotDiagnostic } {
   let content: string;
@@ -232,6 +232,7 @@ export function parseIssueCopilotResult(value: string, context: Parameters<typeo
 }
 
 export async function loadIssueCopilotResult(outcome: string | undefined, outputPath: string | undefined, context: Parameters<typeof selectDesiredIssueSet>[1]): Promise<{ desired: DesiredIssueReference[]; diagnostic: IssueCopilotDiagnostic }> {
+  if (outcome === "skipped") return { desired: [], diagnostic: "copilot-not-required" };
   if (outcome !== "success") return { desired: [], diagnostic: "step-failed" };
   if (!outputPath) return { desired: [], diagnostic: "output-file-invalid" };
   try {

@@ -138,8 +138,9 @@ describe("拉取请求议题关联运行器", () => {
     expect(JSON.stringify(rejected)).not.toContain("must-not-leak");
   });
 
-  it("只用固定类别报告Copilot步骤和输出文件失败", async () => {
+  it("区分Copilot无需运行、步骤失败和输出文件失败", async () => {
     const context = { targetRepositoryId: repositoryId, candidates: [], changedFiles: [] };
+    expect(await loadIssueCopilotResult("skipped", undefined, context)).toEqual({ desired: [], diagnostic: "copilot-not-required" });
     expect(await loadIssueCopilotResult("failure", undefined, context)).toEqual({ desired: [], diagnostic: "step-failed" });
     expect(await loadIssueCopilotResult("success", undefined, context)).toEqual({ desired: [], diagnostic: "output-file-invalid" });
     await withRunnerEnvironment(async directory => {
@@ -633,7 +634,10 @@ describe("拉取请求议题关联运行器", () => {
   });
 
   it("模型安全清空时仍复核全部模型输入", async () => {
-    await withRunnerEnvironment(async (directory) => {
+    for (const testCase of [
+      { outcome: "success", output: `${JSON.stringify({ type: "assistant.message", data: { content: "not-json", toolRequests: [] } })}\n${JSON.stringify({ type: "result", exitCode: 0 })}\n`, diagnostic: "business-json-invalid" },
+      { outcome: "skipped", output: null, diagnostic: "copilot-not-required" },
+    ]) await withRunnerEnvironment(async (directory) => {
       const snapshots = [1, 2].map(number => {
         const snapshot = issueSnapshot(number);
         return {
@@ -657,9 +661,9 @@ describe("拉取请求议题关联运行器", () => {
       process.env.ISSUE_PREPARED_FACTS_PATH = join(directory, "prepared.json");
       process.env.ISSUE_COPILOT_OUTPUT_PATH = join(directory, "copilot.jsonl");
       process.env.RUNTIME_URL = "https://runtime.test";
-      process.env.COPILOT_STEP_OUTCOME = "success";
+      process.env.COPILOT_STEP_OUTCOME = testCase.outcome;
       await writeFile(process.env.ISSUE_PREPARED_FACTS_PATH, JSON.stringify(prepared));
-      await writeFile(process.env.ISSUE_COPILOT_OUTPUT_PATH, `${JSON.stringify({ type: "assistant.message", data: { content: "not-json", toolRequests: [] } })}\n${JSON.stringify({ type: "result", exitCode: 0 })}\n`);
+      if (testCase.output !== null) await writeFile(process.env.ISSUE_COPILOT_OUTPUT_PATH, testCase.output);
       let currentBody = outer;
       const validatorReads: string[] = [];
       const calls: Array<{ url: string; method: string; body: any }> = [];
@@ -687,8 +691,8 @@ describe("拉取请求议题关联运行器", () => {
       ]);
       const check = calls.find(call => call.method === "POST" && call.url.endsWith("/check-runs"));
       expect(check?.body.output.summary).toContain("模型结果：safe-empty");
-      expect(check?.body.output.summary).toContain("模型诊断：business-json-invalid");
-      expect(await readFile(process.env.GITHUB_STEP_SUMMARY!, "utf8")).toContain("模型诊断：business-json-invalid");
+      expect(check?.body.output.summary).toContain(`模型诊断：${testCase.diagnostic}`);
+      expect(await readFile(process.env.GITHUB_STEP_SUMMARY!, "utf8")).toContain(`模型诊断：${testCase.diagnostic}`);
     });
   });
 
