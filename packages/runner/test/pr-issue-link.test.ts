@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { analysisInputDigest, issueSnapshotContentDigest, managedBodyOutsideIssueLinksDigest, normalizeIssueSnapshot, openIssueSetDigest, renderIssueLinksBlock, upsertIssueLinksBlock } from "../../core/src/issues.js";
-import { extractIssueCopilotContent, gitInstallationTokenAuthorizationHeader, parsePrIssueLinkArgs, revalidationCandidates, runGit, runPrIssueLink, verifyIssueLinkConvergence, workflowRevalidationPlan } from "../src/pr-issue-link.js";
+import { extractIssueCopilotContent, gitInstallationTokenAuthorizationHeader, loadIssueCopilotResult, parseIssueCopilotResult, parsePrIssueLinkArgs, revalidationCandidates, runGit, runPrIssueLink, verifyIssueLinkConvergence, workflowRevalidationPlan } from "../src/pr-issue-link.js";
 
 const repositoryId = 1296724484;
 const policySha = "a".repeat(40);
@@ -122,6 +122,30 @@ describe("拉取请求议题关联运行器", () => {
     expect(() => extractIssueCopilotContent(`${message}\n${JSON.stringify({ type: "tool.execution_start" })}\n${result}\n`)).toThrow("子代理或工具");
     expect(() => extractIssueCopilotContent(`${JSON.stringify({ type: "assistant.message", agentId: "child", data: { content, toolRequests: [] } })}\n${result}\n`)).toThrow("子代理或工具");
     expect(() => extractIssueCopilotContent(`${message}\n${result}\n${result}\n`)).toThrow("结果无效");
+    const context = { targetRepositoryId: repositoryId, candidates: [], changedFiles: [] };
+    expect(parseIssueCopilotResult(`${message}\n${result}\n`, context)).toEqual({ desired: [], diagnostic: "validated" });
+    for (const output of [
+      "not-jsonl",
+      `${message}\n${JSON.stringify({ type: "tool.execution_start" })}\n${result}\n`,
+      `${message}\n${result}\n${result}\n`,
+      `${JSON.stringify({ type: "assistant.message", data: { content: "", toolRequests: [] } })}\n${result}\n`,
+    ]) expect(parseIssueCopilotResult(output, context)).toEqual({ desired: [], diagnostic: "copilot-output-invalid" });
+    const nonJson = JSON.stringify({ type: "assistant.message", data: { content: "not-json", toolRequests: [] } });
+    expect(parseIssueCopilotResult(`${nonJson}\n${result}\n`, context)).toEqual({ desired: [], diagnostic: "business-json-invalid" });
+    const wrongContract = JSON.stringify({ type: "assistant.message", data: { content: JSON.stringify({ secret: "must-not-leak" }), toolRequests: [] } });
+    const rejected = parseIssueCopilotResult(`${wrongContract}\n${result}\n`, context);
+    expect(rejected).toEqual({ desired: [], diagnostic: "decision-contract-invalid" });
+    expect(JSON.stringify(rejected)).not.toContain("must-not-leak");
+  });
+
+  it("区分Copilot无需运行、步骤失败和输出文件失败", async () => {
+    const context = { targetRepositoryId: repositoryId, candidates: [], changedFiles: [] };
+    expect(await loadIssueCopilotResult("skipped", undefined, context)).toEqual({ desired: [], diagnostic: "copilot-not-required" });
+    expect(await loadIssueCopilotResult("failure", undefined, context)).toEqual({ desired: [], diagnostic: "step-failed" });
+    expect(await loadIssueCopilotResult("success", undefined, context)).toEqual({ desired: [], diagnostic: "output-file-invalid" });
+    await withRunnerEnvironment(async directory => {
+      expect(await loadIssueCopilotResult("success", join(directory, "missing.jsonl"), context)).toEqual({ desired: [], diagnostic: "output-file-invalid" });
+    });
   });
 
   it("保留人工关联，只要求自动关联等于期望集合扣除人工集合", () => {
@@ -610,7 +634,10 @@ describe("拉取请求议题关联运行器", () => {
   });
 
   it("模型安全清空时仍复核全部模型输入", async () => {
-    await withRunnerEnvironment(async (directory) => {
+    for (const testCase of [
+      { outcome: "success", output: `${JSON.stringify({ type: "assistant.message", data: { content: "not-json", toolRequests: [] } })}\n${JSON.stringify({ type: "result", exitCode: 0 })}\n`, diagnostic: "business-json-invalid" },
+      { outcome: "skipped", output: null, diagnostic: "copilot-not-required" },
+    ]) await withRunnerEnvironment(async (directory) => {
       const snapshots = [1, 2].map(number => {
         const snapshot = issueSnapshot(number);
         return {
@@ -632,13 +659,17 @@ describe("拉取请求议题关联运行器", () => {
         analysisInputDigest: analysisInputDigest({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 2, policySha, fullDiffDigest, candidateDigests, openSetDigest, unmanagedBodyDigest }),
       };
       process.env.ISSUE_PREPARED_FACTS_PATH = join(directory, "prepared.json");
+      process.env.ISSUE_COPILOT_OUTPUT_PATH = join(directory, "copilot.jsonl");
       process.env.RUNTIME_URL = "https://runtime.test";
-      process.env.COPILOT_STEP_OUTCOME = "failure";
+      process.env.COPILOT_STEP_OUTCOME = testCase.outcome;
       await writeFile(process.env.ISSUE_PREPARED_FACTS_PATH, JSON.stringify(prepared));
+      if (testCase.output !== null) await writeFile(process.env.ISSUE_COPILOT_OUTPUT_PATH, testCase.output);
       let currentBody = outer;
       const validatorReads: string[] = [];
+      const calls: Array<{ url: string; method: string; body: any }> = [];
       vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
         const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
+        calls.push({ url: value, method, body });
         const bodyWriteResponse = bodyWriteRuntimeResponse(value, method, body); if (bodyWriteResponse) return bodyWriteResponse;
         if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
         if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
@@ -658,6 +689,10 @@ describe("拉取请求议题关联运行器", () => {
         "https://api.github.com/repos/splrad/steward/issues/1",
         "https://api.github.com/repos/splrad/steward/issues/2",
       ]);
+      const check = calls.find(call => call.method === "POST" && call.url.endsWith("/check-runs"));
+      expect(check?.body.output.summary).toContain("模型结果：safe-empty");
+      expect(check?.body.output.summary).toContain(`模型诊断：${testCase.diagnostic}`);
+      expect(await readFile(process.env.GITHUB_STEP_SUMMARY!, "utf8")).toContain(`模型诊断：${testCase.diagnostic}`);
     });
   });
 
@@ -719,6 +754,7 @@ describe("拉取请求议题关联运行器", () => {
       };
       process.env.ISSUE_PREPARED_FACTS_PATH = join(directory, "prepared.json");
       process.env.RUNTIME_URL = "https://runtime.test";
+      process.env.COPILOT_STEP_OUTCOME = "skipped";
       await writeFile(process.env.ISSUE_PREPARED_FACTS_PATH, JSON.stringify(prepared));
       const calls: Array<{ url: string; method: string; body: any }> = [];
       vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
@@ -737,6 +773,8 @@ describe("拉取请求议题关联运行器", () => {
       const check = calls.find(call => call.method === "PATCH" && call.url.endsWith("/check-runs/1"));
       expect(check?.body).toEqual(expect.objectContaining({ status: "completed", conclusion: "failure" }));
       expect(check?.body.output.summary).toContain("stale-discarded");
+      expect(check?.body.output.summary).toContain("模型诊断：copilot-not-required");
+      expect(await readFile(process.env.GITHUB_STEP_SUMMARY!, "utf8")).toContain("模型诊断：copilot-not-required");
       expect(calls.some(call => call.method === "PATCH" && call.url.endsWith("/pulls/42"))).toBe(false);
     });
   });
@@ -813,6 +851,8 @@ describe("拉取请求议题关联运行器", () => {
       const check = calls.find(call => call.method === "PATCH" && call.url.endsWith("/check-runs/1"));
       expect(check?.body).toEqual(expect.objectContaining({ status: "completed", conclusion: "success" }));
       expect(check?.body.output.summary).toContain("freshness-failed-cleaned");
+      expect(check?.body.output.summary).toContain("模型诊断：step-failed");
+      expect(await readFile(process.env.GITHUB_STEP_SUMMARY!, "utf8")).toContain("模型诊断：step-failed");
     });
   });
 
