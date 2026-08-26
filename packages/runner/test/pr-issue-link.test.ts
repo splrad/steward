@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { analysisInputDigest, issueSnapshotContentDigest, managedBodyOutsideIssueLinksDigest, normalizeIssueSnapshot, openIssueSetDigest, renderIssueLinksBlock, upsertIssueLinksBlock } from "../../core/src/issues.js";
-import { extractIssueCopilotContent, gitInstallationTokenAuthorizationHeader, loadIssueCopilotResult, parseIssueCopilotResult, parsePrIssueLinkArgs, revalidationCandidates, runGit, runPrIssueLink, verifyIssueLinkConvergence, workflowRevalidationPlan } from "../src/pr-issue-link.js";
+import { buildIssueCopilotPrompt, extractIssueCopilotContent, gitInstallationTokenAuthorizationHeader, loadIssueCopilotResult, parseIssueCopilotResult, parsePrIssueLinkArgs, revalidationCandidates, runGit, runPrIssueLink, verifyIssueLinkConvergence, workflowRevalidationPlan } from "../src/pr-issue-link.js";
 
 const repositoryId = 1296724484;
 const policySha = "a".repeat(40);
@@ -133,9 +133,54 @@ describe("拉取请求议题关联运行器", () => {
     const nonJson = JSON.stringify({ type: "assistant.message", data: { content: "not-json", toolRequests: [] } });
     expect(parseIssueCopilotResult(`${nonJson}\n${result}\n`, context)).toEqual({ desired: [], diagnostic: "business-json-invalid" });
     const wrongContract = JSON.stringify({ type: "assistant.message", data: { content: JSON.stringify({ secret: "must-not-leak" }), toolRequests: [] } });
-    const rejected = parseIssueCopilotResult(`${wrongContract}\n${result}\n`, context);
-    expect(rejected).toEqual({ desired: [], diagnostic: "decision-contract-invalid" });
-    expect(JSON.stringify(rejected)).not.toContain("must-not-leak");
+    const rejectedEnvelope = parseIssueCopilotResult(`${wrongContract}\n${result}\n`, context);
+    expect(rejectedEnvelope).toEqual({ desired: [], diagnostic: "decision-envelope-invalid" });
+    expect(JSON.stringify(rejectedEnvelope)).not.toContain("must-not-leak");
+    const wrongSelection = JSON.stringify({ type: "assistant.message", data: { content: JSON.stringify({ issueDecisions: [{
+      repositoryId: repositoryId + 1, number: 7, decision: "related", confidence: "low",
+      requirements: ["候选议题要求"], evidence: [], unresolved: [],
+    }] }), toolRequests: [] } });
+    expect(parseIssueCopilotResult(`${wrongSelection}\n${result}\n`, context)).toEqual({ desired: [], diagnostic: "decision-selection-invalid" });
+  });
+
+  it("在提示中给出与严格校验器一致且失败关闭的JSON合同", () => {
+    const changedFile = "src/AutoCAD/AFR-ACAD2027/Properties/launchSettings.json";
+    const candidate = {
+      repositoryId,
+      issueNumber: 154,
+      state: "open" as const,
+      contentDigest: "d".repeat(64),
+      validators: [],
+      snapshot: issueSnapshot(154),
+    };
+    const prompt = buildIssueCopilotPrompt({
+      repositoryId,
+      repositoryFullName: "splrad/LayerScape",
+      pullRequestNumber: 155,
+      baseSha,
+      headSha,
+      generation: 1,
+      fullDiffDigest: "e".repeat(64),
+      fullDiff: `diff --git a/${changedFile} b/${changedFile}`,
+      changedFiles: [changedFile],
+      candidates: [candidate],
+    });
+    expect(prompt).toContain("根对象、决策项和证据项都不得增加合同以外的键");
+    expect(prompt).toContain("requirement是从0开始的整数");
+    expect(prompt).toContain("每个值1至1000个字符且逐字来自changedFiles");
+    expect(prompt).toContain('"confidence":"low"');
+    expect(prompt).toContain(`"files":["${changedFile.replaceAll("\\", "\\\\")}"]`);
+    expect(prompt).not.toContain('"decision":"resolves","confidence":"high"');
+    const examplePrefix = "合法结构示例（仅示范字段和类型，decision为partial且confidence为low；不得照抄语义）：";
+    const exampleLine = prompt.split("\n\n").find(line => line.startsWith(examplePrefix));
+    expect(exampleLine).toBeDefined();
+    const exampleMessage = JSON.stringify({ type: "assistant.message", data: { content: exampleLine!.slice(examplePrefix.length), toolRequests: [] } });
+    const result = JSON.stringify({ type: "result", exitCode: 0 });
+    expect(parseIssueCopilotResult(`${exampleMessage}\n${result}\n`, {
+      targetRepositoryId: repositoryId,
+      candidates: [{ repositoryId, number: 154, state: "open", contentDigest: candidate.contentDigest, unfetchedReferences: [] }],
+      changedFiles: [changedFile],
+    })).toEqual({ desired: [], diagnostic: "validated" });
   });
 
   it("区分Copilot无需运行、步骤失败和输出文件失败", async () => {
