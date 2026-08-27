@@ -775,6 +775,31 @@ describe("中央命令入口", () => {
     await expect(writeManagedFilesToBranch({ gh: client, owner: "splrad", repo: ".github", files, branch: "steward/review-instructions", title: "同步", defaultSha: "a".repeat(40), branchSha: "b".repeat(40) })).resolves.toEqual({ changed: false, headSha: "b".repeat(40) });
   });
 
+  it("受管分支只修改一个目标时仍可继续更新", async () => {
+    const files = [{ path: "AGENTS.md", content: "新共享" }, { path: ".github/copilot-instructions.md", content: "新补充" }];
+    const client = {
+      compare: async () => ({ merge_base_commit: { sha: "a".repeat(40) }, ahead_by: 1, total_commits: 1, commits: [{}], files: [{ filename: files[1]!.path }] }),
+      getContent: async (_owner: string, _repo: string, path: string, ref: string) => ({ encoding: "base64", content: Buffer.from(ref === "c".repeat(40) ? files.find(file => file.path === path)!.content : "旧内容", "utf8").toString("base64") }),
+      getGitCommit: async () => ({ tree: { sha: "f".repeat(40) } }),
+      createBlob: async () => ({ sha: "1".repeat(40) }),
+      createTree: async () => ({ sha: "2".repeat(40) }),
+      createCommit: async () => ({ sha: "c".repeat(40) }),
+      updateRef: async () => undefined,
+      getRef: async () => ({ object: { sha: "c".repeat(40) } }),
+    } as any;
+    await expect(writeManagedFilesToBranch({ gh: client, owner: "splrad", repo: ".github", files, branch: "steward/review-instructions", title: "同步", defaultSha: "a".repeat(40), branchSha: "b".repeat(40) })).resolves.toEqual({ changed: true, headSha: "c".repeat(40) });
+  });
+
+  it("受管分支发现空差异或资源集外文件时停止更新", async () => {
+    const files = [{ path: "AGENTS.md", content: "共享" }, { path: ".github/copilot-instructions.md", content: "补充" }];
+    const input = { owner: "splrad", repo: ".github", files, branch: "steward/review-instructions", title: "同步", defaultSha: "a".repeat(40), branchSha: "b".repeat(40) };
+    const client = (changedFiles: readonly string[]) => ({
+      compare: async () => ({ merge_base_commit: { sha: "a".repeat(40) }, ahead_by: 1, total_commits: 1, commits: [{}], files: changedFiles.map(filename => ({ filename })) }),
+    }) as any;
+    await expect(writeManagedFilesToBranch({ gh: client([]), ...input })).rejects.toThrow("受管分支包含非预期改动");
+    await expect(writeManagedFilesToBranch({ gh: client(["README.md"]), ...input })).rejects.toThrow("受管分支包含非预期改动");
+  });
+
   it("双文件通过一个tree和一个commit原子写入并逐字读回", async () => {
     const files = [{ path: "AGENTS.md", content: "新共享" }, { path: ".github/copilot-instructions.md", content: "新补充" }];
     const calls: string[] = [];

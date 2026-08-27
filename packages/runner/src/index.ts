@@ -770,7 +770,8 @@ export async function writeManagedFilesToBranch(input: {
   branchSha: string | null;
 }): Promise<{ changed: boolean; headSha: string }> {
   const expectedPaths = input.files.map(file => file.path).sort();
-  if (input.files.length === 0 || new Set(expectedPaths).size !== input.files.length || input.files.some(file => !file.path || !file.content)) throw new Error("受管资源集文件无效");
+  const expectedPathSet = new Set(expectedPaths);
+  if (input.files.length === 0 || expectedPathSet.size !== input.files.length || input.files.some(file => !file.path || !file.content)) throw new Error("受管资源集文件无效");
   if (input.branchSha) {
     const comparisonToDefault = await input.gh.compare(input.owner, input.repo, input.defaultSha, input.branchSha);
     const mergeBaseSha = String(comparisonToDefault.merge_base_commit?.sha ?? "");
@@ -782,8 +783,8 @@ export async function writeManagedFilesToBranch(input: {
       || Number(comparison.total_commits) !== comparison.commits.length || comparison.files.length >= 300) {
       throw new Error("受管分支比较结果不完整");
     }
-    const actualPaths = comparison.files.map((file: any) => String(file.filename)).sort();
-    if (Number(comparison.ahead_by) < 1 || JSON.stringify(actualPaths) !== JSON.stringify(expectedPaths)) {
+    const actualPaths: string[] = comparison.files.map((file: any) => String(file.filename)).sort();
+    if (Number(comparison.ahead_by) < 1 || actualPaths.length === 0 || actualPaths.some(path => !expectedPathSet.has(path))) {
       throw new Error(`受管分支包含非预期改动: ${input.branch}`);
     }
   }
