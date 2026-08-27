@@ -26,7 +26,7 @@ class SqliteD1Statement {
 class SqliteD1 {
   readonly database = new DatabaseSync(":memory:");
   constructor() {
-    for (const migration of ["0001_issue_snapshots.sql", "0002_issue_snapshot_tombstones.sql", "0003_issue_snapshot_reconciliation.sql", "0004_issue_snapshot_state_revision.sql", "0005_issue_snapshot_reconciliation_revision.sql", "0006_pull_request_body_write_intents.sql", "0007_pull_request_body_write_redrive.sql", "0008_issue_snapshot_reconciliation_redrive.sql"]) {
+    for (const migration of ["0001_issue_snapshots.sql", "0002_issue_snapshot_tombstones.sql", "0003_issue_snapshot_reconciliation.sql", "0004_issue_snapshot_state_revision.sql", "0005_issue_snapshot_reconciliation_revision.sql", "0006_pull_request_body_write_intents.sql", "0007_pull_request_body_write_redrive.sql", "0008_issue_snapshot_reconciliation_redrive.sql", "0009_pull_request_body_write_pull_base.sql"]) {
       this.database.exec(readFileSync(new URL(`../migrations/${migration}`, import.meta.url), "utf8"));
     }
   }
@@ -57,7 +57,7 @@ function body(outside: string, block: string): string {
   return `${outside}\n${block}\n尾部\n`;
 }
 
-async function prepared(store: PullRequestBodyWriteIntentStore, before: string, targetBlock: string, writeId = "11111111-1111-4111-8111-111111111111") {
+async function prepared(store: PullRequestBodyWriteIntentStore, before: string, targetBlock: string, writeId = "11111111-1111-4111-8111-111111111111", pullBaseSha = baseSha) {
   const target = body("人工前言", targetBlock);
   await store.prepare({
     repositoryId,
@@ -65,6 +65,7 @@ async function prepared(store: PullRequestBodyWriteIntentStore, before: string, 
     writeId,
     regionKind: "managed-pr",
     baseSha,
+    pullBaseSha,
     headSha,
     issueGeneration: 0,
     beforeBodyDigest: pullRequestBodyDigest(before),
@@ -77,13 +78,13 @@ async function prepared(store: PullRequestBodyWriteIntentStore, before: string, 
   return { target, writeId };
 }
 
-function payload(before: string, after: string, deliverySender = 301115370): any {
+function payload(before: string, after: string, deliverySender = 301115370, pullBaseSha = baseSha): any {
   return {
     action: "edited",
     repository,
     sender: { id: deliverySender },
     changes: { body: { from: before } },
-    pull_request: { number: pullRequestNumber, body: after, head: { sha: headSha }, base: { sha: baseSha } },
+    pull_request: { number: pullRequestNumber, body: after, head: { sha: headSha }, base: { sha: pullBaseSha } },
   };
 }
 
@@ -154,6 +155,152 @@ describe("拉取请求正文持久补偿协议", () => {
     expect((await store.get(repositoryId, pullRequestNumber))?.deliveryProven).toBe(true);
     expect((await confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber, writeId, now })).status).toBe("confirmed");
     expect(await processPullRequestBodyEditedDelivery({ store, client, repository, payload: payload(before, target), deliveryId: "delivery-1", now })).toBe("duplicate");
+  });
+
+  it("分别持久分析base和PR对象base并用后者完成交付确认", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const pullBaseSha = "c".repeat(40);
+    const before = body("人工前言", managedBlock("旧摘要"));
+    const targetBlock = managedBlock("新摘要");
+    const target = body("人工前言", targetBlock);
+    const writeId = "11111111-1111-4111-8111-111111111111";
+    const preparedIntent = await store.prepare({
+      repositoryId,
+      pullRequestNumber,
+      writeId,
+      regionKind: "managed-pr",
+      baseSha,
+      pullBaseSha,
+      headSha,
+      issueGeneration: 0,
+      beforeBodyDigest: pullRequestBodyDigest(before),
+      outsideBodyDigest: bodyOutsideManagedRegionDigest(before, "managed-pr"),
+      targetBlock,
+      targetBodyDigest: pullRequestBodyDigest(target),
+      now,
+      expiresAt,
+    });
+    expect(preparedIntent).toEqual(expect.objectContaining({ baseSha, pullBaseSha }));
+    const currentPull = () => ({ number: pullRequestNumber, body: target, head: { sha: headSha }, base: { sha: pullBaseSha } });
+    const client = { getPullRequest: async () => currentPull() } as any;
+    const editedPayload = payload(before, target);
+    editedPayload.pull_request.base.sha = pullBaseSha;
+    expect(await processPullRequestBodyEditedDelivery({ store, client, repository, payload: editedPayload, deliveryId: "delivery-dual-base", now })).toBe("proven");
+    expect((await confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber, writeId, now })).status).toBe("confirmed");
+  });
+
+  it("双base写意图在块外人工编辑竞争时仍能补偿并确认", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const pullBaseSha = "c".repeat(40);
+    const original = body("人工前言", managedBlock("旧摘要"));
+    const humanBeforePatch = body("人工前言\n人工追加一行", managedBlock("旧摘要"));
+    const targetBlock = managedBlock("新摘要");
+    const { target: overwritten, writeId } = await prepared(store, original, targetBlock, undefined, pullBaseSha);
+    await store.markPatched(repositoryId, pullRequestNumber, writeId, now);
+    let live = overwritten;
+    const currentPull = () => ({ number: pullRequestNumber, body: live, head: { sha: headSha }, base: { sha: pullBaseSha } });
+    const client = {
+      getPullRequest: async () => currentPull(),
+      updatePullRequest: async (_owner: string, _repo: string, _number: number, patch: any) => ({ ...currentPull(), body: (live = patch.body) }),
+    } as any;
+    expect(await processPullRequestBodyEditedDelivery({ store, client, repository, payload: payload(humanBeforePatch, overwritten, 301115370, pullBaseSha), deliveryId: "delivery-dual-base-race", now })).toBe("compensated");
+    expect(live).toContain("人工追加一行");
+    expect(await processPullRequestBodyEditedDelivery({ store, client, repository, payload: payload(overwritten, live, 301115370, pullBaseSha), deliveryId: "delivery-dual-base-proof", now })).toBe("proven");
+    expect((await confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber, writeId, now })).status).toBe("confirmed");
+  });
+
+  it("迁移前写意图保留空PR对象base并只允许条件绑定一次", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const before = body("人工前言", managedBlock("旧摘要"));
+    const { writeId } = await prepared(store, before, managedBlock("新摘要"));
+    database.database.prepare("UPDATE pull_request_body_write_intents SET pull_base_sha = NULL").run();
+    expect(await store.get(repositoryId, pullRequestNumber)).toEqual(expect.objectContaining({ baseSha, pullBaseSha: null }));
+    const pullBaseSha = "c".repeat(40);
+    const bound = await Promise.all([
+      store.bindPullBaseSha(repositoryId, pullRequestNumber, writeId, pullBaseSha, now),
+      store.bindPullBaseSha(repositoryId, pullRequestNumber, writeId, pullBaseSha, now),
+    ]);
+    expect(bound).toEqual([
+      expect.objectContaining({ writeId, pullBaseSha }),
+      expect.objectContaining({ writeId, pullBaseSha }),
+    ]);
+    await expect(store.bindPullBaseSha(repositoryId, pullRequestNumber, writeId, "d".repeat(40), now)).rejects.toThrow("绑定冲突");
+  });
+
+  it("未绑定的迁移前意图继续用分析base核对既有交付", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const before = body("人工前言", managedBlock("旧摘要"));
+    const { target, writeId } = await prepared(store, before, managedBlock("新摘要"));
+    database.database.prepare("UPDATE pull_request_body_write_intents SET pull_base_sha = NULL").run();
+    const client = { getPullRequest: async () => ({ number: pullRequestNumber, body: target, head: { sha: headSha }, base: { sha: baseSha } }) } as any;
+    expect(await processPullRequestBodyEditedDelivery({ store, client, repository, payload: payload(before, target), deliveryId: "delivery-legacy-base", now })).toBe("proven");
+    expect((await confirmPullRequestBodyWriteIntent({ store, client, repository, pullRequestNumber, writeId, now })).status).toBe("confirmed");
+  });
+
+  it("prepare会升级同目标旧意图但不猜测显式相等的双base", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const before = body("人工前言", managedBlock("旧摘要"));
+    const targetBlock = managedBlock("新摘要");
+    const { target, writeId } = await prepared(store, before, targetBlock);
+    database.database.prepare("UPDATE pull_request_body_write_intents SET pull_base_sha = NULL").run();
+    const pullBaseSha = "c".repeat(40);
+    await expect(store.prepare({
+      repositoryId,
+      pullRequestNumber,
+      writeId,
+      regionKind: "managed-pr",
+      baseSha,
+      pullBaseSha,
+      headSha,
+      issueGeneration: 0,
+      beforeBodyDigest: pullRequestBodyDigest(before),
+      outsideBodyDigest: bodyOutsideManagedRegionDigest(before, "managed-pr"),
+      targetBlock,
+      targetBodyDigest: pullRequestBodyDigest(target),
+      now,
+      expiresAt,
+    })).resolves.toEqual(expect.objectContaining({ writeId, pullBaseSha }));
+
+    const explicitDatabase = new SqliteD1();
+    const explicitStore = new PullRequestBodyWriteIntentStore(explicitDatabase.binding());
+    await prepared(explicitStore, before, targetBlock);
+    await expect(store.prepare({
+      repositoryId,
+      pullRequestNumber,
+      writeId,
+      regionKind: "managed-pr",
+      baseSha,
+      pullBaseSha: "d".repeat(40),
+      headSha,
+      issueGeneration: 0,
+      beforeBodyDigest: pullRequestBodyDigest(before),
+      outsideBodyDigest: bodyOutsideManagedRegionDigest(before, "managed-pr"),
+      targetBlock,
+      targetBodyDigest: pullRequestBodyDigest(target),
+      now,
+      expiresAt,
+    })).rejects.toThrow("body-write-intent-conflict");
+    await expect(explicitStore.prepare({
+      repositoryId,
+      pullRequestNumber,
+      writeId,
+      regionKind: "managed-pr",
+      baseSha,
+      pullBaseSha,
+      headSha,
+      issueGeneration: 0,
+      beforeBodyDigest: pullRequestBodyDigest(before),
+      outsideBodyDigest: bodyOutsideManagedRegionDigest(before, "managed-pr"),
+      targetBlock,
+      targetBodyDigest: pullRequestBodyDigest(target),
+      now,
+      expiresAt,
+    })).rejects.toThrow("body-write-intent-conflict");
   });
 
   it("同一交付并发到达时只有一个处理器取得原子声明", async () => {
@@ -404,22 +551,23 @@ describe("拉取请求正文持久补偿协议", () => {
   it("补偿状态持久化后崩溃可由同一交付恢复PATCH", async () => {
     const database = new SqliteD1();
     const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const pullBaseSha = "c".repeat(40);
     const original = body("人工前言", managedBlock("旧摘要"));
     const humanBeforePatch = body("人工前言\n人工追加一行", managedBlock("旧摘要"));
     const targetBlock = managedBlock("新摘要");
-    const { target: overwritten, writeId } = await prepared(store, original, targetBlock);
+    const { target: overwritten, writeId } = await prepared(store, original, targetBlock, undefined, pullBaseSha);
     await store.markPatched(repositoryId, pullRequestNumber, writeId, now);
     const compensatedBody = replaceManagedPullRequestBlock(humanBeforePatch, targetBlock);
     await store.beginCompensation({ repositoryId, pullRequestNumber, writeId, deliveryId: "delivery-crash", beforeBodyDigest: pullRequestBodyDigest(overwritten), outsideBodyDigest: bodyOutsideManagedRegionDigest(compensatedBody, "managed-pr"), targetBodyDigest: pullRequestBodyDigest(compensatedBody), now });
     let live = overwritten;
     const client = {
-      getPullRequest: async () => ({ number: pullRequestNumber, body: live, head: { sha: headSha }, base: { sha: baseSha } }),
-      updatePullRequest: async (_owner: string, _repo: string, _number: number, patch: any) => ({ number: pullRequestNumber, body: (live = patch.body), head: { sha: headSha }, base: { sha: baseSha } }),
+      getPullRequest: async () => ({ number: pullRequestNumber, body: live, head: { sha: headSha }, base: { sha: pullBaseSha } }),
+      updatePullRequest: async (_owner: string, _repo: string, _number: number, patch: any) => ({ number: pullRequestNumber, body: (live = patch.body), head: { sha: headSha }, base: { sha: pullBaseSha } }),
     } as any;
-    expect(await processPullRequestBodyEditedDelivery({ store, client, repository, payload: payload(humanBeforePatch, overwritten), deliveryId: "delivery-crash", now })).toBe("compensated");
+    expect(await processPullRequestBodyEditedDelivery({ store, client, repository, payload: payload(humanBeforePatch, overwritten, 301115370, pullBaseSha), deliveryId: "delivery-crash", now })).toBe("compensated");
     expect(live).toBe(compensatedBody);
     expect((await store.get(repositoryId, pullRequestNumber))?.status).toBe("patched");
-    expect(await processPullRequestBodyEditedDelivery({ store, client, repository, payload: payload(overwritten, compensatedBody), deliveryId: "delivery-crash-confirm", now })).toBe("proven");
+    expect(await processPullRequestBodyEditedDelivery({ store, client, repository, payload: payload(overwritten, compensatedBody, 301115370, pullBaseSha), deliveryId: "delivery-crash-confirm", now })).toBe("proven");
   });
 
   it("补偿PATCH成功但状态回写失败时保留可恢复状态而不误阻断", async () => {

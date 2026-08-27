@@ -19,6 +19,7 @@ interface RuntimeIntent {
   writeId: string;
   regionKind: DurableBodyRegionKind;
   baseSha: string;
+  pullBaseSha: string | null;
   headSha: string;
   issueGeneration: number;
   targetBlock: string | null;
@@ -81,6 +82,7 @@ function matchingIntent(input: {
   intent: RuntimeIntent;
   regionKind: DurableBodyRegionKind;
   baseSha: string;
+  pullBaseSha: string;
   headSha: string;
   issueGeneration: number;
   targetBlock: string | null;
@@ -96,12 +98,28 @@ function canonicalRedrive(value: DurableBodyRedrive | null): string {
 }
 
 function matchingIntentTarget(input: Omit<Parameters<typeof matchingIntent>[0], "redrive">): boolean {
+  return matchingIntentTargetWithoutPullBase(input)
+    && input.intent.pullBaseSha === input.pullBaseSha;
+}
+
+function matchingIntentTargetWithoutPullBase(input: Omit<Parameters<typeof matchingIntent>[0], "redrive">): boolean {
   return input.intent.regionKind === input.regionKind
     && input.intent.baseSha === input.baseSha
     && input.intent.headSha === input.headSha
     && input.intent.issueGeneration === input.issueGeneration
     && input.intent.targetBlock === input.targetBlock
     && input.intent.targetBodyDigest === input.targetBodyDigest;
+}
+
+function matchingTerminalIntentTarget(input: Omit<Parameters<typeof matchingIntent>[0], "redrive">): boolean {
+  return matchingIntentTarget(input)
+    || (input.intent.pullBaseSha === null && matchingIntentTargetWithoutPullBase(input));
+}
+
+function matchingLegacyIntent(input: Parameters<typeof matchingIntent>[0]): boolean {
+  return input.intent.pullBaseSha === null
+    && matchingIntentTargetWithoutPullBase(input)
+    && canonicalRedrive(input.intent.redrive) === canonicalRedrive(input.redrive);
 }
 
 function matchingRecoveryRedrive(intent: RuntimeIntent, redrive: DurableBodyRedrive): boolean {
@@ -166,15 +184,21 @@ export async function updatePullRequestBodyDurably(input: {
   const targetBodyDigest = digest(next);
   const path = `/internal/issue-snapshots/${input.repositoryId}/body-write-intents/${input.pullRequestNumber}`;
   if (next === before) {
-    const active = await runtimeRequest<RuntimeIntent | null>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "GET", path: `${path}/active` });
+    let active = await runtimeRequest<RuntimeIntent | null>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "GET", path: `${path}/active` });
     if (active && ["confirmed", "blocked"].includes(active.status)) {
       if (active.redriveRequired && active.redriveDispatched
-        && matchingIntentTarget({ intent: active, regionKind: input.regionKind, baseSha: input.baseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest })
+        && matchingTerminalIntentTarget({ intent: active, regionKind: input.regionKind, baseSha: input.baseSha, pullBaseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest })
         && matchingRecoveryRedrive(active, input.redrive)) {
         await runtimeRequest<RuntimeIntent>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "POST", path: `${path}/${active.writeId}/redrive-completed` });
       }
     } else if (active) {
-      if (!matchingIntent({ intent: active, regionKind: input.regionKind, baseSha: input.baseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest, redrive: input.redrive })) {
+      if (active.pullBaseSha === null) {
+        if (!matchingLegacyIntent({ intent: active, regionKind: input.regionKind, baseSha: input.baseSha, pullBaseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest, redrive: input.redrive })) {
+          throw new Error("活动正文写意图与当前目标冲突");
+        }
+        active = await runtimeRequest<RuntimeIntent>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "POST", path: `${path}/${active.writeId}/pull-base`, body: { pullBaseSha } });
+      }
+      if (!matchingIntent({ intent: active, regionKind: input.regionKind, baseSha: input.baseSha, pullBaseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest, redrive: input.redrive })) {
         throw new Error("活动正文写意图与当前目标冲突");
       }
       if (active.status === "prepared" || active.status === "compensating") {
@@ -195,6 +219,7 @@ export async function updatePullRequestBodyDurably(input: {
       writeId: randomUUID(),
       regionKind: input.regionKind,
       baseSha: input.baseSha,
+      pullBaseSha,
       headSha: input.headSha,
       issueGeneration,
       beforeBodyDigest: digest(before),
@@ -204,7 +229,7 @@ export async function updatePullRequestBodyDurably(input: {
       redrive: input.redrive,
     },
   });
-  if (prepared.status !== "prepared" || !matchingIntent({ intent: prepared, regionKind: input.regionKind, baseSha: input.baseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest, redrive: input.redrive })) {
+  if (prepared.status !== "prepared" || !matchingIntent({ intent: prepared, regionKind: input.regionKind, baseSha: input.baseSha, pullBaseSha, headSha: input.headSha, issueGeneration, targetBlock: input.targetBlock, targetBodyDigest, redrive: input.redrive })) {
     throw new Error("正文写意图恢复状态与当前正文不一致");
   }
   const writeId = prepared.writeId;
