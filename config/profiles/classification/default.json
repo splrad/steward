@@ -7,8 +7,8 @@
     "workflows": [".github/workflows/**"],
     "dependencies": ["package.json", "package-lock.json", "npm-shrinkwrap.json", "**/package.json", "**/package-lock.json"],
     "javascript": ["**/*.js", "**/*.mjs", "**/*.cjs", "**/*.ts", "package.json", "package-lock.json"],
-    "source": ["src/**", "packages/**"], "automation": [".github/**", "scripts/**", "tools/**"],
-    "config": [".editorconfig", ".gitattributes", ".gitignore", "*.json", "*.toml", "*.yaml", "*.yml"],
+    "source": ["src/**", "packages/**"], "automation": [".github/**", "scripts/**", "tools/**", "AGENTS.md", "config/review/**"],
+    "config": [".editorconfig", ".gitattributes", ".gitignore", "*.json", "*.toml", "*.yaml", "*.yml", "AGENTS.md", "config/review/**"],
     "runtime": ["packages/**"], "runtimeExcluded": [".github/**", "docs/**", "README*", "SECURITY*", "CONTRIBUTING*", "tests/**", "**/*.test.*", "**/*.spec.*"],
     "installPackage": ["package.json", "package-lock.json"]
   },

@@ -3,7 +3,7 @@
   "schemaVersion": 1,
   "runner": "ubuntu-latest",
   "timeoutMinutes": 10,
-  "tasks": ["git-diff-check", "parse-json", "parse-yaml", "verify-copilot-instructions", "parse-powershell", "parse-msbuild-xml", "actionlint-if-present"],
+  "tasks": ["git-diff-check", "parse-json", "parse-yaml", "verify-review-instructions", "parse-powershell", "parse-msbuild-xml", "actionlint-if-present"],
   "powershellFiles": ["tools/Publish-ReleaseAssets.ps1"],
   "msbuildFiles": ["Version.props", "Directory.Build.props", "Directory.Packages.props", "src/**/*.csproj"],
   "disclosure": { "productBuild": "未运行；产品只在版本发布时构建", "productTests": "未配置；仓库当前没有正式测试项目" }

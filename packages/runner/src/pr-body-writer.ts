@@ -11,7 +11,7 @@ import type { GitHubClient } from "../../github/src/index.js";
 
 export type DurableBodyRegionKind = "managed-pr" | "issue-links";
 export interface DurableBodyRedrive {
-  workflow: "pr-automation.yml" | "onboard-repository.yml" | "sync-copilot-instructions.yml" | "pr-issue-link.yml";
+  workflow: "pr-automation.yml" | "onboard-repository.yml" | "sync-review-instructions.yml" | "pr-issue-link.yml";
   inputs: Readonly<Record<string, string>>;
 }
 

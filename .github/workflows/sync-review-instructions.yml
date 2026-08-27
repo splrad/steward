@@ -1,4 +1,4 @@
-name: SPLRAD Steward / Sync Copilot Instructions
+name: SPLRAD Steward / Sync Review Instructions
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
 
 permissions: {}
 concurrency:
-  group: steward-copilot-instructions-sync
+  group: steward-review-instructions-sync
   cancel-in-progress: false
 
 jobs:
@@ -62,4 +62,4 @@ jobs:
           if [[ -n "$REPOSITORY_ID" ]]; then
             repository_arguments+=(--repository-id "$REPOSITORY_ID")
           fi
-          node packages/runner/dist/index.js sync-copilot-instructions "${repository_arguments[@]}" --policy-sha "$POLICY_SHA"
+          node packages/runner/dist/index.js sync-review-instructions "${repository_arguments[@]}" --policy-sha "$POLICY_SHA"

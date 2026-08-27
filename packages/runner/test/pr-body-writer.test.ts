@@ -7,7 +7,7 @@ const repositoryId = 1296724484;
 const pullRequestNumber = 42;
 const headSha = "a".repeat(40);
 const baseSha = "b".repeat(40);
-const redrive = { workflow: "sync-copilot-instructions.yml" as const, inputs: { repositoryId: String(repositoryId) } };
+const redrive = { workflow: "sync-review-instructions.yml" as const, inputs: { repositoryId: String(repositoryId) } };
 
 afterEach(() => vi.unstubAllGlobals());
 

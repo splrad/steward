@@ -5,6 +5,8 @@ import addFormats from "ajv-formats";
 const pairs = [
   ["config/labels/pr-semantics.json", "schema/pr-semantics.schema.json"],
   ["config/repositories.json", "schema/repositories.schema.json"],
+  ["config/review/profiles.json", "schema/review-profiles.schema.json"],
+  ["config/review/rules.json", "schema/review-rules.schema.json"],
   ["config/profiles/classification/default.json", "schema/classification-profile.schema.json"],
   ["config/profiles/classification/layerscape.json", "schema/classification-profile.schema.json"],
   ["config/profiles/validation/public-basic.json", "schema/validation-profile.schema.json"],
@@ -34,6 +36,26 @@ if (repositoryValidator(invalidDefaultWorkflowCatalog)) throw new Error("默认�
 const invalidRepositoryWorkflowCatalog = structuredClone(catalog);
 invalidRepositoryWorkflowCatalog.repositories[ids[0]].allowedWorkflowPaths = ["docs/workflow.yml"];
 if (repositoryValidator(invalidRepositoryWorkflowCatalog)) throw new Error("单仓配置允许非工作流路径");
+const reviewProfiles = JSON.parse(await readFile("config/review/profiles.json", "utf8"));
+const reviewRules = JSON.parse(await readFile("config/review/rules.json", "utf8"));
+const profileIds = reviewProfiles.profiles.map(profile => profile.id);
+if (new Set(profileIds).size !== profileIds.length || reviewProfiles.profiles.find(profile => profile.id === "common")?.status !== "active") throw new Error("审查profile注册表无效");
+const activeProfiles = new Set(reviewProfiles.profiles.filter(profile => profile.status === "active").map(profile => profile.id));
+const reviewRuleIds = reviewRules.rules.map(rule => rule.id);
+if (new Set(reviewRuleIds).size !== reviewRuleIds.length) throw new Error("审查规则编号重复");
+for (const rule of reviewRules.rules) {
+  for (const profile of rule.profiles) if (!activeProfiles.has(profile)) throw new Error(`审查规则引用不存在或已退役的profile: ${profile}`);
+}
+const languageRule = reviewRules.rules.find(rule => rule.id === "common.review-language-zh");
+if (languageRule?.status !== "active" || languageRule.audience !== "shared" || !languageRule.profiles.includes("common")) throw new Error("简体中文审查规则未固定为common shared规则");
+for (const configuration of Object.values(catalog.repositories)) {
+  if (!activeProfiles.has(configuration.reviewInstructionsProfile)) throw new Error("仓库引用不存在或已退役的审查profile");
+  if (configuration.reviewGovernance.owner !== "splrad/maintainers") throw new Error("仓库审查治理owner不一致");
+  if (configuration.reviewGovernance.scope === "policy-only" && !["discovered", "repository-ready"].includes(configuration.reviewGovernance.lifecycle)) throw new Error("policy-only仓库生命周期无效");
+}
+const expectedReviewProfiles = { "1187527897": "layerscape", "1296724484": "steward", "1296725317": "github" };
+for (const [repositoryId, profile] of Object.entries(expectedReviewProfiles)) if (catalog.repositories[repositoryId]?.reviewInstructionsProfile !== profile) throw new Error(`仓库审查profile不符合冻结合同: ${repositoryId}`);
+if (catalog.repositories["1187527897"].reviewGovernance.scope !== "full" || catalog.repositories["1296724484"].reviewGovernance.scope !== "full" || catalog.repositories["1296725317"].reviewGovernance.scope !== "policy-only") throw new Error("三仓审查治理scope不符合冻结合同");
 const semantics = JSON.parse(await readFile("config/labels/pr-semantics.json", "utf8"));
 const primaryIds = semantics.roles.primaryKind.definitions.map(x => x.id);
 const exactRoles = {

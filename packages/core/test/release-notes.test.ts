@@ -28,7 +28,7 @@ describe("发布说明", () => {
   });
 
   it("排除纯版本、文档和自动化改动", () => {
-    const values = [pull(1, "version", ["Version.props"]), pull(2, "docs", ["docs/a.md"]), pull(3, "automation", [".github/copilot-instructions.md"]), pull(4, "runtime", ["src/a.cs"])];
+    const values = [pull(1, "version", ["Version.props"]), pull(2, "docs", ["docs/a.md"]), pull(3, "automation", [".github/copilot-instructions.md", "AGENTS.md", "config/review/rules.json"]), pull(4, "runtime", ["src/a.cs"])];
     expect(categorizeReleasePullRequests(profile as unknown as ClassificationProfile, values).map(value => value.number)).toEqual([4]);
   });
 

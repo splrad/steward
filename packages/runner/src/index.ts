@@ -11,10 +11,10 @@ import {
   escapeMarkdownText,
   isHumanActor, isIssueCapableRepository, normalizeContributor,
   organizationPullRequestTemplate,
-  copilotInstructionSyncContract, parseVersion, planClassificationLabels, planLabelDefinitions, planRelease, planRepositorySettings, renderCopilotInstructions, renderManagedBody,
+  generateReviewInstructionSet, parseVersion, planClassificationLabels, planLabelDefinitions, planRelease, planRepositorySettings, renderManagedBody,
   renderOnboardingPullRequest, renderReleaseNotes, renderValidationSummary, runValidationTasks,
   inspectAiClassificationField, validateGeneratedSummary, validateRepositoryForOnboarding, verifyAiClassificationEnvelope, verifyAssetManifest,
-  type AiClassificationAssessment, type AiClassificationEnvelopeV2, type AiClassificationFieldInspection, type AiClassificationSuggestion, type AutomationFacts, type ClassificationProfile, type ClassifiedReleasePullRequest, type Contributor, type RawClassificationFacts, type ReleaseManifest, type RepositoryClassification, type SemanticCatalog, type ValidationProfile,
+  type AiClassificationAssessment, type AiClassificationEnvelopeV2, type AiClassificationFieldInspection, type AiClassificationSuggestion, type AutomationFacts, type ClassificationProfile, type ClassifiedReleasePullRequest, type Contributor, type GeneratedReviewInstructionSet, type RawClassificationFacts, type ReleaseManifest, type RepositoryClassification, type ReviewProfileRegistry, type ReviewRuleRegistry, type SemanticCatalog, type ValidationProfile,
 } from "../../core/src/index.js";
 import { createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestError, uploadReleaseAsset } from "../../github/src/index.js";
 import { managedRepositoryIds, managedRepositoryTargets, runManagedRepositorySync, type ManagedTarget } from "./managed-repository-sync.js";
@@ -23,7 +23,7 @@ import { targetManagedBlock, updatePullRequestBodyDurably, type DurableBodyRedri
 import { minimatch } from "minimatch";
 import YAML from "yaml";
 
-const commands = new Set(["issue-sync", "managed-repository-ids", "reconcile-repository-lifecycle", "onboard-repository", "pr-automation", "pr-classification", "pr-issue-link", "sync-copilot-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"]);
+const commands = new Set(["issue-sync", "managed-repository-ids", "reconcile-repository-lifecycle", "onboard-repository", "pr-automation", "pr-classification", "pr-issue-link", "sync-review-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"]);
 const stewardRepositoryId = 1296724484;
 // Repository configuration and workspace files are runtime inputs, not bundle assets.
 // This wrapper keeps their paths opaque to the static asset tracer used by ncc.
@@ -37,7 +37,7 @@ const allowedArguments: Record<string, Set<string>> = {
   "pr-automation": new Set(["delivery-id", "repository-id", "source-ref", "event-after-sha", "source-actor-id", "source-actor-login", "policy-sha"]),
   "pr-classification": new Set(["delivery-id", "repository-id", "pull-request-number", "event-head-sha", "scan-all", "policy-sha"]),
   "pr-issue-link": new Set(["delivery-id", "repository-id", "pull-request-number", "scan-all", "invalidate-only", "cleanup-unmanaged", "reconciliation-generation", "policy-sha"]),
-  "sync-copilot-instructions": new Set(["repository-id", "policy-sha"]),
+  "sync-review-instructions": new Set(["repository-id", "policy-sha"]),
   "sync-managed-labels": new Set(["repository-id", "policy-sha"]),
   validate: new Set(["workspace", "repository-id", "profile"]),
   "release-preflight": new Set(["workspace", "repository-id", "pull-request-number", "target-sha", "policy-sha", "trigger", "manifest"]),
@@ -277,11 +277,12 @@ async function prepareCopilotRepair(): Promise<void> {
 interface Catalog { organization: { id: number; login: string }; defaults: { public: any; private: any }; repositories: Record<string, any> }
 async function catalog(): Promise<Catalog> { return json(configPath("repositories.json")); }
 async function semanticCatalog(): Promise<SemanticCatalog> { return json(configPath("labels", "pr-semantics.json")); }
-type CopilotInstructionSourceFile = "common.md" | "layerscape.md";
-async function loadCopilotInstructions(profile: unknown, sourcePath: (sourceFile: CopilotInstructionSourceFile) => string): Promise<{ targetPath: string; content: string }> {
-  const contract = copilotInstructionSyncContract(profile);
-  const sources = await Promise.all(contract.sourceFiles.map((sourceFile) => runtimeReadFile(sourcePath(sourceFile), "utf8")));
-  return { targetPath: contract.targetPath, content: renderCopilotInstructions(sources[0]!, sources[1] ?? null) };
+async function loadReviewInstructions(profile: unknown, paths: { profiles: string; rules: string }): Promise<GeneratedReviewInstructionSet> {
+  const profiles = await json<ReviewProfileRegistry & { $schema?: string }>(paths.profiles);
+  const rules = await json<ReviewRuleRegistry & { $schema?: string }>(paths.rules);
+  const { $schema: _profileSchema, ...profileRegistry } = profiles;
+  const { $schema: _ruleSchema, ...ruleRegistry } = rules;
+  return generateReviewInstructionSet(profile, profileRegistry, ruleRegistry);
 }
 function configurationFor(catalogValue: Catalog, repository: any): any {
   const override = catalogValue.repositories[String(repository.id)];
@@ -758,20 +759,19 @@ async function ensureCopilotReview(clientValue: GitHubClient, owner: string, rep
   throw new Error("Copilot审查请求未能通过实时读取确认");
 }
 
-export async function writeManagedFileToBranch(input: {
+export async function writeManagedFilesToBranch(input: {
   gh: GitHubClient;
   owner: string;
   repo: string;
-  path: string;
-  content: string;
+  files: readonly { path: string; content: string }[];
   branch: string;
   title: string;
   defaultSha: string;
   branchSha: string | null;
 }): Promise<{ changed: boolean; headSha: string }> {
-  if (!input.branchSha) {
-    await input.gh.createRef(input.owner, input.repo, `refs/heads/${input.branch}`, input.defaultSha);
-  } else {
+  const expectedPaths = input.files.map(file => file.path).sort();
+  if (input.files.length === 0 || new Set(expectedPaths).size !== input.files.length || input.files.some(file => !file.path || !file.content)) throw new Error("受管资源集文件无效");
+  if (input.branchSha) {
     const comparisonToDefault = await input.gh.compare(input.owner, input.repo, input.defaultSha, input.branchSha);
     const mergeBaseSha = String(comparisonToDefault.merge_base_commit?.sha ?? "");
     if (!/^[0-9a-f]{40}$/iu.test(mergeBaseSha)) throw new Error("受管分支比较结果缺少共同基准提交");
@@ -782,16 +782,34 @@ export async function writeManagedFileToBranch(input: {
       || Number(comparison.total_commits) !== comparison.commits.length || comparison.files.length >= 300) {
       throw new Error("受管分支比较结果不完整");
     }
-    if (Number(comparison.ahead_by) < 1 || comparison.files.length !== 1 || comparison.files[0]?.filename !== input.path) {
+    const actualPaths = comparison.files.map((file: any) => String(file.filename)).sort();
+    if (Number(comparison.ahead_by) < 1 || JSON.stringify(actualPaths) !== JSON.stringify(expectedPaths)) {
       throw new Error(`受管分支包含非预期改动: ${input.branch}`);
     }
   }
-  const existing = await optional(() => input.gh.getContent(input.owner, input.repo, input.path, input.branch));
-  if (decodeContent(existing) === input.content) return { changed: false, headSha: input.branchSha ?? input.defaultSha };
-  const put: Record<string, unknown> = { message: input.title, content: Buffer.from(input.content, "utf8").toString("base64"), branch: input.branch };
-  if (existing?.sha) put.sha = existing.sha;
-  const written = await input.gh.putContent(input.owner, input.repo, input.path, put);
-  return { changed: true, headSha: written.commit.sha };
+  const parentSha = input.branchSha ?? input.defaultSha;
+  const existing = await Promise.all(input.files.map(async file => ({ file, value: await optional(() => input.gh.getContent(input.owner, input.repo, file.path, input.branch)) })));
+  if (existing.every(item => decodeContent(item.value) === item.file.content)) return { changed: false, headSha: parentSha };
+  const parent = await input.gh.getGitCommit(input.owner, input.repo, parentSha);
+  const treeSha = String(parent.tree?.sha ?? "");
+  if (!/^[0-9a-f]{40}$/iu.test(treeSha)) throw new Error("受管资源集父提交缺少有效tree");
+  const blobs = await Promise.all(input.files.map(async file => ({ file, blob: await input.gh.createBlob(input.owner, input.repo, file.content) })));
+  if (blobs.some(item => !/^[0-9a-f]{40}$/iu.test(String(item.blob?.sha ?? "")))) throw new Error("受管资源集blob写入结果无效");
+  const tree = await input.gh.createTree(input.owner, input.repo, {
+    base_tree: treeSha,
+    tree: blobs.map(item => ({ path: item.file.path, mode: "100644", type: "blob", sha: item.blob.sha })),
+  });
+  if (!/^[0-9a-f]{40}$/iu.test(String(tree?.sha ?? ""))) throw new Error("受管资源集tree写入结果无效");
+  const commit = await input.gh.createCommit(input.owner, input.repo, { message: input.title, tree: tree.sha, parents: [parentSha] });
+  const commitSha = String(commit?.sha ?? "");
+  if (!/^[0-9a-f]{40}$/iu.test(commitSha)) throw new Error("受管资源集提交结果无效");
+  if (input.branchSha) await input.gh.updateRef(input.owner, input.repo, `heads/${input.branch}`, commitSha, false);
+  else await input.gh.createRef(input.owner, input.repo, `refs/heads/${input.branch}`, commitSha);
+  const readback = await Promise.all(input.files.map(async file => ({ file, value: await input.gh.getContent(input.owner, input.repo, file.path, commitSha) })));
+  if (readback.some(item => decodeContent(item.value) !== item.file.content)) throw new Error("受管资源集写入后逐字读回不一致");
+  const branchReadback = await input.gh.getRef(input.owner, input.repo, `heads/${input.branch}`);
+  if (String(branchReadback.object?.sha ?? "") !== commitSha) throw new Error("受管资源集写入后分支head不一致");
+  return { changed: true, headSha: commitSha };
 }
 
 export function assertManagedBranchPull(branchExists: boolean, pull: any | undefined, branch: string): void {
@@ -800,24 +818,29 @@ export function assertManagedBranchPull(branchExists: boolean, pull: any | undef
   }
 }
 
-async function reconcileManagedFile(input: { repository: any; gh: GitHubClient; token: string; path: string; content: string; branch: string; title: string; policySha: string; deliveryId: string; redrive: DurableBodyRedrive; dispatchIssueLink?: boolean }): Promise<"unchanged" | "pull-request-created" | "pull-request-updated"> {
+async function reconcileManagedFiles(input: { repository: any; gh: GitHubClient; token: string; instructions: GeneratedReviewInstructionSet; branch: string; title: string; policySha: string; deliveryId: string; redrive: DurableBodyRedrive; dispatchIssueLink?: boolean }): Promise<"unchanged" | "pull-request-created" | "pull-request-updated"> {
   const [owner, repo] = splitRepository(input.repository.full_name); const defaultBranch = input.repository.default_branch;
-  const current = await optional(() => input.gh.getContent(owner, repo, input.path, defaultBranch)); if (decodeContent(current) === input.content) return "unchanged";
+  const current = await Promise.all(input.instructions.files.map(file => optional(() => input.gh.getContent(owner, repo, file.path, defaultBranch))));
+  if (current.every((value, index) => decodeContent(value) === input.instructions.files[index]!.content)) return "unchanged";
   const pulls = await input.gh.listPullRequests(owner, repo, `${owner}:${input.branch}`); if (pulls.length > 1) throw new Error(`受管分支存在多个拉取请求: ${input.branch}`);
   const defaultRef = await input.gh.getRef(owner, repo, `heads/${defaultBranch}`); const branchRef = await optional(() => input.gh.getRef(owner, repo, `heads/${input.branch}`));
   assertManagedBranchPull(Boolean(branchRef), pulls[0], input.branch);
-  const written = await writeManagedFileToBranch({ gh: input.gh, owner, repo, path: input.path, content: input.content, branch: input.branch, title: input.title, defaultSha: defaultRef.object.sha, branchSha: branchRef?.object.sha ?? null });
+  const written = await writeManagedFilesToBranch({ gh: input.gh, owner, repo, files: input.instructions.files, branch: input.branch, title: input.title, defaultSha: defaultRef.object.sha, branchSha: branchRef?.object.sha ?? null });
   const generated = {
     type: "chore" as const,
     scope: "steward",
     title: input.title.replace(/^chore\([^)]*\):\s*/u, ""),
     summary: "由SPLRAD Steward同步中央管理文件并保持仓库规则与中央配置一致。",
     motivation: "中央管理文件需要跟随当前规则更新，避免目标仓库保留已经过期的配置。",
-    changes: [`更新${input.path}并保持中央配置为唯一人工维护来源`],
-    impact: ["目标仓库后续使用更新后的中央管理规则"],
+    changes: [
+      `按${input.instructions.profile} profile同步AGENTS.md与.github/copilot-instructions.md`,
+      `共享规则：${input.instructions.files[0].ruleIds.join("、")}；摘要：${input.instructions.files[0].digest}`,
+      `Copilot补充规则：${input.instructions.files[1].ruleIds.join("、")}；摘要：${input.instructions.files[1].digest}`,
+    ],
+    impact: ["目标仓库使用同一中央资源集生成的共享规则和Copilot补充规则"],
     releaseAndMigration: [],
   };
-  const body = renderManagedBody({ generated, existingBody: pulls[0]?.body, templateBody: organizationPullRequestTemplate, actor: "splrad-steward[bot]", contributors: [], context: `${input.repository.id}:${input.path}:${input.policySha}` });
+  const body = renderManagedBody({ generated, existingBody: pulls[0]?.body, templateBody: organizationPullRequestTemplate, actor: "splrad-steward[bot]", contributors: [], context: `${input.repository.id}:review-instructions:${input.policySha}` });
   const pull = pulls[0] ? await updatePullRequestBodyDurably({
     client: input.gh,
     token: input.token,
@@ -876,7 +899,7 @@ async function onboard(args: Readonly<Record<string, string>>) {
   catch (error) { labelSyncFailure = error instanceof Error ? error.message : "internal-error"; }
   const defaultRef = await optional(() => gh.getRef(owner, repo, `heads/${repository.default_branch}`));
   if (state === "waiting-for-default-branch" || !defaultRef) {
-    await summary([`仓库：${fullName}`, "Copilot说明：waiting-for-default-branch", `标签定义：${labelSyncFailure ? "failed" : "checked"}`]);
+    await summary([`仓库：${fullName}`, "审查说明：waiting-for-default-branch", `标签定义：${labelSyncFailure ? "failed" : "checked"}`]);
     if (labelSyncFailure) throw new Error(labelSyncFailure);
     return;
   }
@@ -888,12 +911,12 @@ async function onboard(args: Readonly<Record<string, string>>) {
   await gh.updateRepository(owner, repo, settings);
   const readback = await gh.getRepositoryById(repositoryId);
   for (const [name, value] of Object.entries(settings)) if (readback[name] !== value) throw new Error(`仓库设置读回不一致: ${name}`);
-  const instructions = await loadCopilotInstructions(cfg.copilotInstructionsProfile, (sourceFile) => configPath("copilot", sourceFile));
+  const instructions = await loadReviewInstructions(cfg.reviewInstructionsProfile, { profiles: configPath("review", "profiles.json"), rules: configPath("review", "rules.json") });
   const planned = renderOnboardingPullRequest({ template: organizationPullRequestTemplate, configuration: cfg, actor: "splrad-steward[bot]", context: `onboard:${repositoryId}` });
   const deliveryId = required(args, "delivery-id");
-  const result = await reconcileManagedFile({ repository, gh, token, path: instructions.targetPath, content: instructions.content, branch: planned.branch, title: planned.title, policySha, deliveryId, dispatchIssueLink: false,
+  const result = await reconcileManagedFiles({ repository, gh, token, instructions, branch: planned.branch, title: planned.title, policySha, deliveryId, dispatchIssueLink: false,
     redrive: { workflow: "onboard-repository.yml", inputs: { repositoryId: String(repositoryId), repositoryFullName: fullName, trigger, deliveryId, policySha } } });
-  await summary([`仓库：${fullName}`, `状态：${result === "unchanged" ? "onboarded" : result}`, `接入分支：${planned.branch}`, `分类配置：${cfg.classification.profile}`, `验证配置：${cfg.validationProfile}`, `Copilot说明配置：${cfg.copilotInstructionsProfile}`, `发布配置：${cfg.releaseProfile ?? "未启用"}`, `Copilot说明字符数：${[...instructions.content].length}`, `标签定义：${labelSyncFailure ? "failed" : "checked"}`]);
+  await summary([`仓库：${fullName}`, `状态：${result === "unchanged" ? "onboarded" : result}`, `接入分支：${planned.branch}`, `分类配置：${cfg.classification.profile}`, `验证配置：${cfg.validationProfile}`, `审查说明配置：${cfg.reviewInstructionsProfile}`, `发布配置：${cfg.releaseProfile ?? "未启用"}`, ...instructions.files.map(file => `${file.path}：${file.ruleIds.join("、")}；${file.digest}`), `标签定义：${labelSyncFailure ? "failed" : "checked"}`]);
   if (isIssueCapableRepository(repository, cfg.managed === true)) {
     await dispatchCentralWorkflow("issue-sync.yml", policySha, { deliveryId, repositoryId: String(repositoryId), scanAll: "true", policySha });
   }
@@ -1381,21 +1404,26 @@ async function assertManualSyncAuthorization(policySha: string): Promise<void> {
   const membership = await new GitHubClient(token, "https://api.github.com", fetch, policySha).getTeamMembership("splrad", "maintainers", env("TRIGGER_ACTOR_LOGIN"));
   if (membership.state !== "active") throw new Error("手工同步触发者不是Maintainers当前成员");
 }
-async function syncInstructions(args: Readonly<Record<string, string>>) {
+async function syncReviewInstructions(args: Readonly<Record<string, string>>) {
   const policySha = sha(required(args, "policy-sha"), "policy-sha");
   await assertManualSyncAuthorization(policySha);
   const targets = await managedTargets(policySha, args["repository-id"] ? integer(args["repository-id"], "repository-id") : undefined);
   const results = await runManagedRepositorySync(targets, async ({ repository, configuration }) => {
-    const instructions = await loadCopilotInstructions(configuration.copilotInstructionsProfile, (sourceFile) => configPath("copilot", sourceFile));
-    const { token, client: gh } = await clientWithToken(repository.id, { contents: "write", pull_requests: "write", issues: "read", checks: "read", metadata: "read" }, policySha);
-    const result = await reconcileManagedFile({ repository, gh, token, path: instructions.targetPath, content: instructions.content, branch: "steward/copilot-instructions", title: "chore(copilot): 同步代码审查说明", policySha, deliveryId: `copilot-sync:${policySha}:${repository.id}`,
-      redrive: { workflow: "sync-copilot-instructions.yml", inputs: { repositoryId: String(repository.id) } } });
-    await summary([`仓库：${repository.full_name}`, `目标文件：${instructions.targetPath}`, `状态：${result}`, `字符数：${[...instructions.content].length}`]);
+    const instructions = await loadReviewInstructions(configuration.reviewInstructionsProfile, { profiles: configPath("review", "profiles.json"), rules: configPath("review", "rules.json") });
+    const { token, client: gh } = await clientWithToken(repository.id, { contents: "write", pull_requests: "write", issues: "read", checks: "read", metadata: "read", members: "read" }, policySha);
+    const owner = String(configuration.reviewGovernance?.owner ?? "splrad/maintainers");
+    const [ownerOrganization, ownerTeam] = owner.split("/");
+    if (ownerOrganization !== "splrad" || !ownerTeam) throw new Error("审查治理owner无效");
+    const teams = await gh.listRepositoryTeams(...splitRepository(repository.full_name));
+    if (!teams.some((team: any) => team.slug === ownerTeam && ["maintain", "admin"].includes(team.permission))) throw new Error(`${owner}没有目标仓库的maintain或admin权限`);
+    const result = await reconcileManagedFiles({ repository, gh, token, instructions, branch: "steward/review-instructions", title: "chore(review): 同步代码审查说明", policySha, deliveryId: `review-sync:${policySha}:${repository.id}`,
+      redrive: { workflow: "sync-review-instructions.yml", inputs: { repositoryId: String(repository.id) } } });
+    await summary([`仓库：${repository.full_name}`, `profile：${instructions.profile}`, `状态：${result}`, ...instructions.files.map(file => `${file.path}：${file.ruleIds.join("、")}；${file.digest}`)]);
     return result;
   });
   for (const value of results.filter(item => item.status === "ignored")) await summary([`仓库：${value.target.repository.full_name}`, `登记来源：${value.target.registration}`, "状态：ignored"]);
   const failures = results.filter(value => value.error);
-  if (failures.length) throw new Error(`Copilot说明同步失败: ${failures.map(value => value.target.repository.full_name).join("、")}`);
+  if (failures.length) throw new Error(`审查说明同步失败: ${failures.map(value => value.target.repository.full_name).join("、")}`);
 }
 async function syncManagedLabels(args: Readonly<Record<string, string>>) {
   const policySha = sha(required(args, "policy-sha"), "policy-sha");
@@ -1478,15 +1506,14 @@ export async function throwFreshValidationBaseFailure(error: unknown): Promise<n
   throw error;
 }
 
-export function matchesGeneratedCopilotInstructions(actual: string, generated: string): boolean {
+export function matchesGeneratedReviewInstructions(actual: string, generated: string): boolean {
   const normalizeCheckoutLineEndings = (value: string) => value.replace(/\r\n/gu, "\n");
   return normalizeCheckoutLineEndings(actual) === normalizeCheckoutLineEndings(generated);
 }
 
-export function copilotInstructionSourcePath(repositoryId: number, workspace: string, file: "common.md" | "layerscape.md"): string {
-  return repositoryId === stewardRepositoryId
-    ? join(workspace, "config", "copilot", file)
-    : configPath("copilot", file);
+export function reviewRegistryPaths(_repositoryId: number, _workspace: string): { profiles: string; rules: string } {
+  const root = configPath("review");
+  return { profiles: join(root, "profiles.json"), rules: join(root, "rules.json") };
 }
 
 export function assertWorkflowPaths(actual: readonly string[], allowed: readonly string[]): void {
@@ -1530,12 +1557,14 @@ async function validate(args: Readonly<Record<string, string>>) {
     }
     if (task === "parse-json") { for (const file of files.filter(path => path.endsWith(".json"))) JSON.parse(await runtimeReadFile(file, "utf8")); return { state: "success" as const, detail: "JSON有效" }; }
     if (task === "parse-yaml") { for (const file of files.filter(path => /\.ya?ml$/.test(path))) YAML.parse(await runtimeReadFile(file, "utf8")); return { state: "success" as const, detail: "YAML有效" }; }
-    if (task === "verify-copilot-instructions") {
-      const instructions = await loadCopilotInstructions(configuration.copilotInstructionsProfile, (sourceFile) => copilotInstructionSourcePath(repositoryId, workspace, sourceFile));
-      const file = join(workspace, instructions.targetPath);
-      if (!files.includes(file)) throw new Error("缺少中央生成的Copilot说明");
-      if (!matchesGeneratedCopilotInstructions(await runtimeReadFile(file, "utf8"), instructions.content)) throw new Error("Copilot说明不等于中央生成结果");
-      return { state: "success" as const, detail: "Copilot说明与中央配置一致" };
+    if (task === "verify-review-instructions") {
+      const instructions = await loadReviewInstructions(configuration.reviewInstructionsProfile, reviewRegistryPaths(repositoryId, workspace));
+      for (const expected of instructions.files) {
+        const file = join(workspace, expected.path);
+        if (!files.includes(file)) throw new Error(`缺少中央生成的审查说明: ${expected.path}`);
+        if (!matchesGeneratedReviewInstructions(await runtimeReadFile(file, "utf8"), expected.content)) throw new Error(`审查说明不等于中央生成结果: ${expected.path}`);
+      }
+      return { state: "success" as const, detail: "双目标审查说明与中央配置一致" };
     }
     if (task === "actionlint-if-present") return { state: actualWorkflows.length ? "success" as const : "not-applicable" as const, detail: actualWorkflows.length ? "工作流属于中央允许范围" : "未配置本地工作流" };
     if (task === "actionlint") return { state: "success" as const, detail: "工作流由中央校验脚本验证" };
@@ -1821,7 +1850,7 @@ async function releaseVerify(args: Readonly<Record<string, string>>) {
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const invocation = parseInvocation(argv);
-  const handlers: Record<string, (args: Readonly<Record<string, string>>) => Promise<void>> = { "issue-sync": issueSync, "managed-repository-ids": listManagedRepositoryIds, "reconcile-repository-lifecycle": reconcileRepositoryLifecycle, "onboard-repository": onboard, "pr-automation": automate, "pr-classification": classify, "pr-issue-link": runPrIssueLink, "sync-copilot-instructions": syncInstructions, "sync-managed-labels": syncManagedLabels, validate, "release-preflight": releasePreflight, "release-notes": releaseNotesCommand, "release-publish": releasePublish, "release-verify": releaseVerify };
+  const handlers: Record<string, (args: Readonly<Record<string, string>>) => Promise<void>> = { "issue-sync": issueSync, "managed-repository-ids": listManagedRepositoryIds, "reconcile-repository-lifecycle": reconcileRepositoryLifecycle, "onboard-repository": onboard, "pr-automation": automate, "pr-classification": classify, "pr-issue-link": runPrIssueLink, "sync-review-instructions": syncReviewInstructions, "sync-managed-labels": syncManagedLabels, validate, "release-preflight": releasePreflight, "release-notes": releaseNotesCommand, "release-publish": releasePublish, "release-verify": releaseVerify };
   await handlers[invocation.command]!(invocation.args);
 }
 

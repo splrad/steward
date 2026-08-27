@@ -3,7 +3,7 @@ import { organizationPullRequestTemplate } from "../src/automation.js";
 import { planRepositorySettings, renderOnboardingPullRequest, validateRepositoryForOnboarding, verifyOnboardingReadback } from "../src/onboarding.js";
 
 const publicRepository = { id: 1, fullName: "splrad/new", ownerId: 302208797, visibility: "public" as const, fork: false, archived: false, disabled: false, defaultBranch: "main" };
-const configured = { managed: true, copilotInstructionsProfile: "common", classification: { profile: "default" }, validationProfile: "public-basic", releaseProfile: null };
+const configured = { managed: true, reviewInstructionsProfile: "common", classification: { profile: "default" }, validationProfile: "public-basic", releaseProfile: null };
 
 describe("新仓库接入", () => {
   it("公开组织仓库可接入并固定七项设置", () => {
@@ -51,11 +51,12 @@ describe("新仓库接入", () => {
 
   it("读回完全一致时通过，任一设置、说明或工作流越界时失败", () => {
     const settings = planRepositorySettings();
-    expect(verifyOnboardingReadback(settings, "expected", "expected", ["allowed.yml"], ["allowed.yml"])).toBe(true);
-    expect(verifyOnboardingReadback({ ...settings, allow_auto_merge: true as never }, "expected", "expected", [], [])).toBe(false);
-    expect(verifyOnboardingReadback({ ...settings, squash_merge_commit_title: "COMMIT_OR_PR_TITLE" as never }, "expected", "expected", [], [])).toBe(false);
-    expect(verifyOnboardingReadback({ ...settings, squash_merge_commit_message: "PR_BODY" as never }, "expected", "expected", [], [])).toBe(false);
-    expect(verifyOnboardingReadback(settings, "expected", "different", [], [])).toBe(false);
-    expect(verifyOnboardingReadback(settings, "expected", "expected", ["unexpected.yml"], [])).toBe(false);
+    const instructions = { "AGENTS.md": "shared", ".github/copilot-instructions.md": "copilot" };
+    expect(verifyOnboardingReadback(settings, instructions, instructions, ["allowed.yml"], ["allowed.yml"])).toBe(true);
+    expect(verifyOnboardingReadback({ ...settings, allow_auto_merge: true as never }, instructions, instructions, [], [])).toBe(false);
+    expect(verifyOnboardingReadback({ ...settings, squash_merge_commit_title: "COMMIT_OR_PR_TITLE" as never }, instructions, instructions, [], [])).toBe(false);
+    expect(verifyOnboardingReadback({ ...settings, squash_merge_commit_message: "PR_BODY" as never }, instructions, instructions, [], [])).toBe(false);
+    expect(verifyOnboardingReadback(settings, instructions, { ...instructions, "AGENTS.md": "different" }, [], [])).toBe(false);
+    expect(verifyOnboardingReadback(settings, instructions, instructions, ["unexpected.yml"], [])).toBe(false);
   });
 });

@@ -998,7 +998,7 @@ describe("正文写意图交付恢复", () => {
     expect(dispatched).toEqual([expect.objectContaining({ inputs: expect.objectContaining({ repositoryId: "1296724484", sourceRef: "refs/heads/feature/test", eventAfterSha: "c".repeat(40), deliveryId: `body-write-recovery:${writeId}` }) })]);
   });
 
-  it("Copilot说明正文意图通过原工作流恢复且不注入未声明输入", async () => {
+  it("审查说明正文意图通过原工作流恢复且不注入未声明输入", async () => {
     const database = new SqliteD1();
     const store = new PullRequestBodyWriteIntentStore(database.binding());
     const oldBody = renderManagedBody({ generated: { type: "chore", scope: "test", title: "测试", summary: "旧摘要", motivation: "原因", changes: ["改动"], impact: [], releaseAndMigration: [] }, templateBody: "<!-- workflow:managed-pr:start -->\n<!-- workflow:managed-pr:end -->\n", actor: "splrad-steward[bot]", contributors: [], context: "old" });
@@ -1007,14 +1007,14 @@ describe("正文写意图交付恢复", () => {
     await store.prepare({ repositoryId: 1296724484, pullRequestNumber: 42, writeId, regionKind: "managed-pr", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
       beforeBodyDigest: pullRequestBodyDigest(oldBody), outsideBodyDigest: bodyOutsideManagedRegionDigest(oldBody, "managed-pr"), targetBlock: extractManagedPullRequestBlock(targetBody).block,
       targetBodyDigest: pullRequestBodyDigest(targetBody), now: "2026-08-22T00:00:00Z", expiresAt: "2026-08-22T00:10:00Z",
-      redrive: { workflow: "sync-copilot-instructions.yml", inputs: { repositoryId: "1296724484" } } });
+      redrive: { workflow: "sync-review-instructions.yml", inputs: { repositoryId: "1296724484" } } });
     await store.block(1296724484, 42, writeId, "test-recovery", "2026-08-22T00:00:01Z");
     const dispatched: any[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
       const value = String(url);
       if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
       if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ ...repository(), default_branch: "main" }), { status: 200 });
-      if (value.endsWith("/repos/splrad/steward/actions/workflows/sync-copilot-instructions.yml/dispatches")) { dispatched.push(JSON.parse(String(init.body))); return new Response(null, { status: 204 }); }
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/sync-review-instructions.yml/dispatches")) { dispatched.push(JSON.parse(String(init.body))); return new Response(null, { status: 204 }); }
       return new Response("unexpected", { status: 500 });
     });
     expect(await recoverPullRequestBodyWriteIntents(env(database), new Date("2026-08-22T00:02:00Z"))).toBe(0);
@@ -1042,14 +1042,14 @@ describe("正文写意图交付恢复", () => {
       await store.block(1296724484, pullRequestNumber, writeId, "test-recovery", `2026-08-22T00:00:0${pullRequestNumber - 40}Z`);
     };
     await prepare(42, "55555555-5555-4555-8555-555555555555");
-    await prepare(43, "66666666-6666-4666-8666-666666666666", { workflow: "sync-copilot-instructions.yml", inputs: { repositoryId: "1296724484" } });
+    await prepare(43, "66666666-6666-4666-8666-666666666666", { workflow: "sync-review-instructions.yml", inputs: { repositoryId: "1296724484" } });
     const warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
     const dispatched: any[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
       const value = String(url);
       if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
       if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ ...repository(), default_branch: "main" }), { status: 200 });
-      if (value.endsWith("/repos/splrad/steward/actions/workflows/sync-copilot-instructions.yml/dispatches")) { dispatched.push(JSON.parse(String(init.body))); return new Response(null, { status: 204 }); }
+      if (value.endsWith("/repos/splrad/steward/actions/workflows/sync-review-instructions.yml/dispatches")) { dispatched.push(JSON.parse(String(init.body))); return new Response(null, { status: 204 }); }
       return new Response("unexpected", { status: 500 });
     });
 

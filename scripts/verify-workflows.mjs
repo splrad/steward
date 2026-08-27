@@ -10,7 +10,7 @@ function hasExactKeys(value, expectedKeys) {
   return JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...expectedKeys].sort());
 }
 
-const expected = ["deploy-runtime.yml", "issue-sync.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "pr-issue-link.yml", "pr-validation.yml", "release.yml", "sync-copilot-instructions.yml", "sync-managed-labels.yml"];
+const expected = ["deploy-runtime.yml", "issue-sync.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "pr-issue-link.yml", "pr-validation.yml", "release.yml", "sync-managed-labels.yml", "sync-review-instructions.yml"];
 const files = (await readdir(".github/workflows")).sort();
 if (JSON.stringify(files) !== JSON.stringify(expected)) throw new Error(`工作流集合不正确: ${files.join(", ")}`);
 const workflowDocuments = new Map();
@@ -42,7 +42,7 @@ const expectedJobEnvironments = new Map([
   ["release.yml:notes", { name: "steward-release", deployment: false }],
   ["release.yml:publish", { name: "steward-release", deployment: false }],
   ["release.yml:verify", { name: "steward-release", deployment: false }],
-  ["sync-copilot-instructions.yml:synchronize", { name: "steward-automation", deployment: false }],
+  ["sync-review-instructions.yml:synchronize", { name: "steward-automation", deployment: false }],
   ["sync-managed-labels.yml:synchronize", { name: "steward-automation", deployment: false }],
 ]);
 for (const [file, document] of workflowDocuments) {
@@ -173,9 +173,9 @@ for (const name of ["ISSUE_LINK_ACK_ONLY", "REPOSITORY_ID", "RECONCILIATION_GENE
 const acknowledgementCommand = String(acknowledgementStep?.run ?? "");
 for (const required of ['--repository-id "$REPOSITORY_ID"', '--reconciliation-generation "$RECONCILIATION_GENERATION"', '--policy-sha "$POLICY_SHA"']) if (!acknowledgementCommand.includes(required)) throw new Error(`议题收敛确认命令没有安全传递固定输入: ${required}`);
 if ((await readFile(".github/workflows/pr-issue-link.yml", "utf8")).includes("actions/upload-artifact")) throw new Error("议题关联不得上传模型输入输出制品");
-const syncInstructionsDocument = workflowDocuments.get("sync-copilot-instructions.yml");
+const syncInstructionsDocument = workflowDocuments.get("sync-review-instructions.yml");
 const syncWorkflowRun = syncInstructionsDocument?.on?.workflow_run;
-if (JSON.stringify(syncWorkflowRun?.workflows) !== JSON.stringify(["SPLRAD Steward / Deploy Runtime"]) || JSON.stringify(syncWorkflowRun?.types) !== JSON.stringify(["completed"])) throw new Error("Copilot说明同步没有只绑定中央部署完成事件");
+if (JSON.stringify(syncWorkflowRun?.workflows) !== JSON.stringify(["SPLRAD Steward / Deploy Runtime"]) || JSON.stringify(syncWorkflowRun?.types) !== JSON.stringify(["completed"])) throw new Error("审查说明同步没有只绑定中央部署完成事件");
 const syncJob = syncInstructionsDocument?.jobs?.synchronize;
 const syncCondition = String(syncJob?.if ?? "").replace(/\s+/gu, "");
 for (const required of [
@@ -184,21 +184,21 @@ for (const required of [
   "github.event.workflow_run.event=='push'",
   "github.event.workflow_run.head_branch==github.event.repository.default_branch",
   "github.event.workflow_run.head_repository.full_name==github.repository",
-]) if (!syncCondition.includes(required)) throw new Error(`Copilot说明自动同步缺少可信触发条件: ${required}`);
+]) if (!syncCondition.includes(required)) throw new Error(`审查说明自动同步缺少可信触发条件: ${required}`);
 const syncPolicyStep = syncJob?.steps?.find(step => step?.name === "解析已部署规则提交");
-if (String(syncPolicyStep?.env?.EVENT_NAME ?? "").replace(/\s+/gu, "") !== "${{github.event_name}}" || String(syncPolicyStep?.env?.DEPLOYED_HEAD_SHA ?? "").replace(/\s+/gu, "") !== "${{github.event.workflow_run.head_sha}}" || !String(syncPolicyStep?.run ?? "").includes('process.env.RUNTIME_URL+"/health"')) throw new Error("Copilot说明同步没有从部署事件或线上健康接口解析策略提交");
+if (String(syncPolicyStep?.env?.EVENT_NAME ?? "").replace(/\s+/gu, "") !== "${{github.event_name}}" || String(syncPolicyStep?.env?.DEPLOYED_HEAD_SHA ?? "").replace(/\s+/gu, "") !== "${{github.event.workflow_run.head_sha}}" || !String(syncPolicyStep?.run ?? "").includes('process.env.RUNTIME_URL+"/health"')) throw new Error("审查说明同步没有从部署事件或线上健康接口解析策略提交");
 const syncCheckout = syncJob?.steps?.find(step => step?.uses?.startsWith("actions/checkout@"));
-if (String(syncCheckout?.with?.ref ?? "").replace(/\s+/gu, "") !== "${{steps.policy.outputs.policy_sha}}" || syncCheckout?.with?.["persist-credentials"] !== false) throw new Error("Copilot说明同步没有检出精确中央提交或仍保留检出凭据");
+if (String(syncCheckout?.with?.ref ?? "").replace(/\s+/gu, "") !== "${{steps.policy.outputs.policy_sha}}" || syncCheckout?.with?.["persist-credentials"] !== false) throw new Error("审查说明同步没有检出精确中央提交或仍保留检出凭据");
 const syncStep = syncJob?.steps?.find(step => step?.name === "同步代码审查说明");
 const syncCommand = String(syncStep?.run ?? "");
-if (!syncCommand.includes('--policy-sha "$POLICY_SHA"') || /--(?:source|target|path|content)(?:\s|=)/iu.test(syncCommand)) throw new Error("Copilot说明同步允许工作流输入指定文件或内容");
-if (String(syncStep?.env?.REPOSITORY_ID ?? "").replace(/\s+/gu, "") !== "${{inputs.repositoryId}}" || /\$\{\{[^}]*inputs\.repositoryId/iu.test(syncCommand)) throw new Error("Copilot说明同步把仓库编号直接拼接进shell命令");
-if (String(syncStep?.env?.POLICY_SHA ?? "").replace(/\s+/gu, "") !== "${{steps.policy.outputs.policy_sha}}" || String(syncStep?.env?.SYNC_TRIGGER ?? "").replace(/\s+/gu, "") !== "${{github.actor_id=='301115370'&&'app-redrive'||github.event_name}}" || String(syncStep?.env?.TRIGGER_ACTOR_ID ?? "").replace(/\s+/gu, "") !== "${{github.actor_id}}" || String(syncStep?.env?.TRIGGER_ACTOR_LOGIN ?? "").replace(/\s+/gu, "") !== "${{github.actor}}") throw new Error("Copilot说明同步没有绑定线上策略、可信App恢复或手工触发者身份");
+if (!syncCommand.includes('sync-review-instructions "${repository_arguments[@]}" --policy-sha "$POLICY_SHA"') || /--(?:source|target|path|content)(?:\s|=)/iu.test(syncCommand)) throw new Error("审查说明同步命令或输入合同无效");
+if (String(syncStep?.env?.REPOSITORY_ID ?? "").replace(/\s+/gu, "") !== "${{inputs.repositoryId}}" || /\$\{\{[^}]*inputs\.repositoryId/iu.test(syncCommand)) throw new Error("审查说明同步把仓库编号直接拼接进shell命令");
+if (String(syncStep?.env?.POLICY_SHA ?? "").replace(/\s+/gu, "") !== "${{steps.policy.outputs.policy_sha}}" || String(syncStep?.env?.SYNC_TRIGGER ?? "").replace(/\s+/gu, "") !== "${{github.actor_id=='301115370'&&'app-redrive'||github.event_name}}" || String(syncStep?.env?.TRIGGER_ACTOR_ID ?? "").replace(/\s+/gu, "") !== "${{github.actor_id}}" || String(syncStep?.env?.TRIGGER_ACTOR_LOGIN ?? "").replace(/\s+/gu, "") !== "${{github.actor}}") throw new Error("审查说明同步没有绑定线上策略、可信App恢复或手工触发者身份");
 for (const required of ['repository_arguments=()', 'repository_arguments+=(--repository-id "$REPOSITORY_ID")', '"${repository_arguments[@]}"']) {
-  if (!syncCommand.includes(required)) throw new Error(`Copilot说明同步没有安全传递可选仓库编号: ${required}`);
+  if (!syncCommand.includes(required)) throw new Error(`审查说明同步没有安全传递可选仓库编号: ${required}`);
 }
 const syncInputs = syncInstructionsDocument?.on?.workflow_dispatch?.inputs ?? {};
-if (!hasExactKeys(syncInputs, ["repositoryId"])) throw new Error("Copilot说明同步暴露了未允许的手工输入");
+if (!hasExactKeys(syncInputs, ["repositoryId"])) throw new Error("审查说明同步暴露了未允许的手工输入");
 const syncLabelsDocument = workflowDocuments.get("sync-managed-labels.yml");
 const syncLabelsJob = syncLabelsDocument?.jobs?.synchronize;
 if (JSON.stringify(syncLabelsDocument?.on?.workflow_run?.workflows) !== JSON.stringify(["SPLRAD Steward / Deploy Runtime"]) || JSON.stringify(syncLabelsDocument?.on?.workflow_run?.types) !== JSON.stringify(["completed"])) throw new Error("标签同步没有绑定部署完成事件");

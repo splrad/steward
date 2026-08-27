@@ -1,0 +1,10 @@
+{
+  "$schema": "../../schema/review-profiles.schema.json",
+  "schemaVersion": 1,
+  "profiles": [
+    { "id": "common", "owner": "splrad/maintainers", "status": "active" },
+    { "id": "steward", "owner": "splrad/maintainers", "status": "active" },
+    { "id": "layerscape", "owner": "splrad/maintainers", "status": "active" },
+    { "id": "github", "owner": "splrad/maintainers", "status": "active" }
+  ]
+}

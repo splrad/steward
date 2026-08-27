@@ -12,7 +12,7 @@ import type { GitHubClient } from "../../github/src/index.js";
 
 export type PullRequestBodyRegionKind = "managed-pr" | "issue-links";
 export type PullRequestBodyWriteStatus = "prepared" | "patched" | "compensating" | "confirmed" | "blocked";
-export type PullRequestBodyRedriveWorkflow = "pr-automation.yml" | "onboard-repository.yml" | "sync-copilot-instructions.yml" | "pr-issue-link.yml";
+export type PullRequestBodyRedriveWorkflow = "pr-automation.yml" | "onboard-repository.yml" | "sync-review-instructions.yml" | "pr-issue-link.yml";
 export interface PullRequestBodyRedrive {
   workflow: PullRequestBodyRedriveWorkflow;
   inputs: Readonly<Record<string, string>>;
@@ -83,7 +83,7 @@ const repositoryNamePattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const redriveContracts: Readonly<Record<PullRequestBodyRedriveWorkflow, readonly string[]>> = {
   "pr-automation.yml": ["deliveryId", "repositoryId", "sourceRef", "eventAfterSha", "sourceActorId", "sourceActorLogin", "policySha"],
   "onboard-repository.yml": ["repositoryId", "repositoryFullName", "trigger", "deliveryId", "policySha"],
-  "sync-copilot-instructions.yml": ["repositoryId"],
+  "sync-review-instructions.yml": ["repositoryId"],
   "pr-issue-link.yml": ["deliveryId", "repositoryId", "pullRequestNumber", "scanAll", "invalidateOnly", "cleanupUnmanaged", "policySha"],
 };
 
@@ -146,7 +146,7 @@ export function normalizePullRequestBodyRedrive(value: unknown, expected: { repo
   if (workflow === "onboard-repository.yml" && (!repositoryNamePattern.test(inputs.repositoryFullName ?? "")
     || !["installation-created", "installation-repositories-added", "repository-visibility-changed", "repository-unarchived", "default-branch-push", "manual"].includes(inputs.trigger ?? "")
     || !deliveryPattern.test(inputs.deliveryId ?? ""))) throw new Error("正文写重调度输入无效");
-  if (workflow !== "sync-copilot-instructions.yml" && !shaPattern.test(inputs.policySha ?? "")) throw new Error("正文写重调度输入无效");
+  if (workflow !== "sync-review-instructions.yml" && !shaPattern.test(inputs.policySha ?? "")) throw new Error("正文写重调度输入无效");
   return Object.freeze({ workflow, inputs: Object.freeze(inputs) });
 }
 

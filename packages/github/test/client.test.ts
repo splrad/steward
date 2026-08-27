@@ -310,7 +310,7 @@ describe("代码托管平台客户端", () => {
       getRepository: async () => ({ default_branch: "trunk" }),
       request: async (...args: unknown[]) => { requests.push(args); },
     } as unknown as GitHubClient;
-    for (const workflow of ["issue-sync.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "pr-issue-link.yml", "release.yml", "sync-copilot-instructions.yml"]) {
+    for (const workflow of ["issue-sync.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "pr-issue-link.yml", "release.yml", "sync-review-instructions.yml"]) {
       await dispatchWorkflow(client, { owner: "splrad", repo: "steward", workflow, policySha: "a".repeat(40), inputs: { value: "x" } });
     }
     expect(requests).toHaveLength(7);
@@ -320,7 +320,7 @@ describe("代码托管平台客户端", () => {
     expect(requests[3]).toEqual(["POST", "/repos/splrad/steward/actions/workflows/pr-classification.yml/dispatches", { ref: "trunk", inputs: { value: "x", policySha: "a".repeat(40) } }]);
     expect(requests[4]).toEqual(["POST", "/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches", { ref: "trunk", inputs: { value: "x", policySha: "a".repeat(40) } }]);
     expect(requests[5]).toEqual(["POST", "/repos/splrad/steward/actions/workflows/release.yml/dispatches", { ref: "trunk", inputs: { value: "x" } }]);
-    expect(requests[6]).toEqual(["POST", "/repos/splrad/steward/actions/workflows/sync-copilot-instructions.yml/dispatches", { ref: "trunk", inputs: { value: "x" } }]);
+    expect(requests[6]).toEqual(["POST", "/repos/splrad/steward/actions/workflows/sync-review-instructions.yml/dispatches", { ref: "trunk", inputs: { value: "x" } }]);
     await expect(dispatchWorkflow(client, { owner: "splrad", repo: "steward", workflow: "unknown.yml", policySha: "a".repeat(40), inputs: {} })).rejects.toThrow("不允许");
     await expect(dispatchWorkflow(client, { owner: "splrad", repo: "steward", workflow: "release.yml", policySha: "short", inputs: {} })).rejects.toThrow("40位");
   });
