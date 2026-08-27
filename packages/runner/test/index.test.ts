@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, encodeClassificationCheckState, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectAutomationPullRequestBinding, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, isTrustedAiClassificationSource, issueSyncInstallationPermissions, main, matchesGeneratedCopilotInstructions, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, prepareAiClassificationPayload, reconcileIssueSnapshots, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, reusedAiClassificationAssessment, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
+import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowMigrationFiles, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, encodeClassificationCheckState, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectAutomationPullRequestBinding, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, isTrustedAiClassificationSource, issueSyncInstallationPermissions, main, matchesGeneratedCopilotInstructions, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, prepareAiClassificationPayload, reconcileIssueSnapshots, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, reusedAiClassificationAssessment, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -703,9 +703,43 @@ describe("中央命令入口", () => {
 
   it("工作流允许清单与仓库当前文件必须逐项一致", () => {
     const allowed = [".github/workflows/current.yml"];
-    expect(() => assertWorkflowPaths(allowed, allowed)).not.toThrow();
+    expect(assertWorkflowPaths(allowed, allowed)).toBe(false);
     expect(() => assertWorkflowPaths([], allowed)).toThrow("缺少：.github/workflows/current.yml；未允许：无");
     expect(() => assertWorkflowPaths([...allowed, ".github/workflows/unknown.yml"], allowed)).toThrow("缺少：无；未允许：.github/workflows/unknown.yml");
+  });
+
+  it("仅允许受信工作流清单中的单一路径迁移", () => {
+    const stable = ".github/workflows/current.yml";
+    const from = ".github/workflows/sync-copilot-instructions.yml";
+    const to = ".github/workflows/sync-review-instructions.yml";
+    const transition = { from, to };
+    const allowed = [stable, from];
+
+    expect(assertWorkflowPaths([stable, to], allowed, transition)).toBe(true);
+    expect(() => assertWorkflowPaths([stable, to], allowed)).toThrow(`缺少：${from}；未允许：${to}`);
+    expect(() => assertWorkflowPaths([stable, from, to], allowed, transition)).toThrow(`缺少：无；未允许：${to}`);
+    expect(() => assertWorkflowPaths([to], allowed, transition)).toThrow(`缺少：${stable}, ${from}；未允许：${to}`);
+    expect(() => assertWorkflowPaths([stable, to, ".github/workflows/unknown.yml"], allowed, transition)).toThrow(`缺少：${from}；未允许：${to}, .github/workflows/unknown.yml`);
+  });
+
+  it("工作流迁移文件必须逐项匹配受信摘要且不保留旧文件", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "steward-workflow-migration-"));
+    const current = join(directory, "current.txt");
+    const removed = join(directory, "removed.txt");
+    const expectedContent = "expected\n";
+    const expectedDigest = createHash("sha256").update(expectedContent, "utf8").digest("hex");
+    try {
+      await writeFile(current, expectedContent, "utf8");
+      await expect(assertWorkflowMigrationFiles(directory, [current], { "current.txt": expectedDigest }, ["removed.txt"])).resolves.toBeUndefined();
+      await writeFile(current, "changed\n", "utf8");
+      await expect(assertWorkflowMigrationFiles(directory, [current], { "current.txt": expectedDigest }, ["removed.txt"])).rejects.toThrow("工作流迁移文件不等于受信候选: current.txt");
+      await expect(assertWorkflowMigrationFiles(directory, [], { "current.txt": expectedDigest }, ["removed.txt"])).rejects.toThrow("缺少受信工作流迁移文件: current.txt");
+      await writeFile(removed, "legacy\n", "utf8");
+      await writeFile(current, expectedContent, "utf8");
+      await expect(assertWorkflowMigrationFiles(directory, [current, removed], { "current.txt": expectedDigest }, ["removed.txt"])).rejects.toThrow("工作流迁移仍保留旧文件: removed.txt");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("识别平台实际返回的Copilot身份并给分类令牌完整的拉取请求写权限", () => {

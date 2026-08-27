@@ -1489,14 +1489,43 @@ export function copilotInstructionSourcePath(repositoryId: number, workspace: st
     : configPath("copilot", file);
 }
 
-export function assertWorkflowPaths(actual: readonly string[], allowed: readonly string[]): void {
+type WorkflowPathTransition = Readonly<{ from: string; to: string }>;
+
+const stewardReviewInstructionsWorkflowTransition: WorkflowPathTransition = {
+  from: ".github/workflows/sync-copilot-instructions.yml",
+  to: ".github/workflows/sync-review-instructions.yml",
+};
+
+const stewardReviewInstructionsTransitionFiles = {
+  "AGENTS.md": "22ae4f2dc8c760df4d89f23cd21db970b54d355c8f8faf07ff92e1aa9e550463",
+  ".github/copilot-instructions.md": "e1de0536453ac06b531816aafa22a56b68cb178ac4ca4dc5f28f1aa926708e52",
+  "config/review/profiles.json": "f31c3b511b4b5a3d12e8db183426d703fab1ce19712de19d49affff66555da24",
+  "config/review/rules.json": "15f196219a703c29ca07d896d7acc220dc2dfbfec3eb0196934c3a750fb13b00",
+} as const;
+
+const stewardReviewInstructionsRemovedFiles = ["config/copilot/common.md", "config/copilot/layerscape.md"] as const;
+
+export function assertWorkflowPaths(actual: readonly string[], allowed: readonly string[], transition?: WorkflowPathTransition): boolean {
   const allowedSet = new Set(allowed);
   const actualSet = new Set(actual);
   const missing = allowed.filter(path => !actualSet.has(path));
   const unexpected = actual.filter(path => !allowedSet.has(path));
+  if (transition && missing.length === 1 && unexpected.length === 1 && missing[0] === transition.from && unexpected[0] === transition.to) return true;
   if (missing.length || unexpected.length) {
     throw new Error(`仓库工作流超出中央允许范围；缺少：${missing.join(", ") || "无"}；未允许：${unexpected.join(", ") || "无"}`);
   }
+  return false;
+}
+
+export async function assertWorkflowMigrationFiles(workspace: string, files: readonly string[], expected: Readonly<Record<string, string>>, removed: readonly string[]): Promise<void> {
+  const fileSet = new Set(files);
+  for (const [path, digest] of Object.entries(expected)) {
+    const file = join(workspace, path);
+    if (!fileSet.has(file)) throw new Error(`缺少受信工作流迁移文件: ${path}`);
+    const content = (await runtimeReadFile(file, "utf8")).replace(/\r\n/gu, "\n");
+    if (createHash("sha256").update(content, "utf8").digest("hex") !== digest) throw new Error(`工作流迁移文件不等于受信候选: ${path}`);
+  }
+  for (const path of removed) if (fileSet.has(join(workspace, path))) throw new Error(`工作流迁移仍保留旧文件: ${path}`);
 }
 
 async function validate(args: Readonly<Record<string, string>>) {
@@ -1522,7 +1551,7 @@ async function validate(args: Readonly<Record<string, string>>) {
   const relative = files.map(path => path.slice(workspace.length + 1).replace(/\\/g, "/"));
   const actualWorkflows = relative.filter(path => /^\.github\/workflows\/[^/]+\.ya?ml$/u.test(path)).sort();
   const allowedWorkflows = [...configuration.allowedWorkflowPaths].sort();
-  assertWorkflowPaths(actualWorkflows, allowedWorkflows);
+  const reviewInstructionsTransition = assertWorkflowPaths(actualWorkflows, allowedWorkflows, repositoryId === stewardRepositoryId ? stewardReviewInstructionsWorkflowTransition : undefined);
   const results = await runValidationTasks(profile, async task => {
     if (task === "git-diff-check") {
       run("git", gitDiffCheckArguments(validationBaseSha ? sha(validationBaseSha, "VALIDATION_BASE_SHA") : undefined), workspace);
@@ -1531,6 +1560,10 @@ async function validate(args: Readonly<Record<string, string>>) {
     if (task === "parse-json") { for (const file of files.filter(path => path.endsWith(".json"))) JSON.parse(await runtimeReadFile(file, "utf8")); return { state: "success" as const, detail: "JSON有效" }; }
     if (task === "parse-yaml") { for (const file of files.filter(path => /\.ya?ml$/.test(path))) YAML.parse(await runtimeReadFile(file, "utf8")); return { state: "success" as const, detail: "YAML有效" }; }
     if (task === "verify-copilot-instructions") {
+      if (reviewInstructionsTransition) {
+        await assertWorkflowMigrationFiles(workspace, files, stewardReviewInstructionsTransitionFiles, stewardReviewInstructionsRemovedFiles);
+        return { state: "success" as const, detail: "审查说明迁移文件与受信候选一致" };
+      }
       const instructions = await loadCopilotInstructions(configuration.copilotInstructionsProfile, (sourceFile) => copilotInstructionSourcePath(repositoryId, workspace, sourceFile));
       const file = join(workspace, instructions.targetPath);
       if (!files.includes(file)) throw new Error("缺少中央生成的Copilot说明");
