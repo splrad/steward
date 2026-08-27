@@ -37,6 +37,17 @@ describe("代码审查说明", () => {
     expect(first.files[0].ruleIds).toEqual([...first.files[0].ruleIds].sort());
   });
 
+  it("线性归一化大量尾随换行且只保留一个LF", async () => {
+    const { profiles, rules } = await registries();
+    const modified = structuredClone(rules);
+    modified.rules.find(rule => rule.id === "copilot.review-scope")!.safePath += "\n".repeat(10_000);
+    const generated = await generateReviewInstructionSet("steward", profiles, modified);
+    const copilot = generated.files.find(file => file.path === ".github/copilot-instructions.md")!;
+    expect(copilot.content.endsWith("\n")).toBe(true);
+    expect(copilot.content.endsWith("\n\n")).toBe(false);
+    expect([...copilot.content].length).toBeLessThanOrEqual(4000);
+  });
+
   it("拒绝未知、退役和不完整引用", async () => {
     const { profiles, rules } = await registries();
     await expect(generateReviewInstructionSet("missing", profiles, rules)).rejects.toThrow("不存在或已退役");
