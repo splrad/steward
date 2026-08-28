@@ -728,6 +728,9 @@ export function classificationInstallationPermissions(mode: "observe" | "enforce
 export function prAutomationInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
   return { contents: "read", pull_requests: "write", issues: "read", checks: "read", metadata: "read" } as const;
 }
+export function reviewInstructionSyncInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
+  return { administration: "read", contents: "write", pull_requests: "write", issues: "read", checks: "read", metadata: "read", members: "read" } as const;
+}
 export function humanPushPullRequestCreateInput(input: { title: string; body: string; head: string; base: string }) {
   return { ...input, draft: true } as const;
 }
@@ -1411,7 +1414,7 @@ async function syncReviewInstructions(args: Readonly<Record<string, string>>) {
   const targets = await managedTargets(policySha, args["repository-id"] ? integer(args["repository-id"], "repository-id") : undefined);
   const results = await runManagedRepositorySync(targets, async ({ repository, configuration }) => {
     const instructions = await loadReviewInstructions(configuration.reviewInstructionsProfile, { profiles: configPath("review", "profiles.json"), rules: configPath("review", "rules.json") });
-    const { token, client: gh } = await clientWithToken(repository.id, { contents: "write", pull_requests: "write", issues: "read", checks: "read", metadata: "read", members: "read" }, policySha);
+    const { token, client: gh } = await clientWithToken(repository.id, reviewInstructionSyncInstallationPermissions(), policySha);
     const owner = String(configuration.reviewGovernance?.owner ?? "splrad/maintainers");
     const [ownerOrganization, ownerTeam] = owner.split("/");
     if (ownerOrganization !== "splrad" || !ownerTeam) throw new Error("审查治理owner无效");
