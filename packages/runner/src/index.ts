@@ -1496,9 +1496,10 @@ const stewardReviewInstructionsWorkflowTransition: WorkflowPathTransition = {
   to: ".github/workflows/sync-review-instructions.yml",
 };
 
-const stewardReviewInstructionsTransitionFiles = {
+export const stewardReviewInstructionsTransitionFiles = {
   "AGENTS.md": "22ae4f2dc8c760df4d89f23cd21db970b54d355c8f8faf07ff92e1aa9e550463",
   ".github/copilot-instructions.md": "e1de0536453ac06b531816aafa22a56b68cb178ac4ca4dc5f28f1aa926708e52",
+  ".github/workflows/sync-review-instructions.yml": "b3425ff5bc54a42316e501096ebfe46340956ac54398ff90cebb8e0f747a9a38",
   "config/review/profiles.json": "f31c3b511b4b5a3d12e8db183426d703fab1ce19712de19d49affff66555da24",
   "config/review/rules.json": "15f196219a703c29ca07d896d7acc220dc2dfbfec3eb0196934c3a750fb13b00",
 } as const;

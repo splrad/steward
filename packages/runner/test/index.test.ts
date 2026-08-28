@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowMigrationFiles, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, encodeClassificationCheckState, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectAutomationPullRequestBinding, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, isTrustedAiClassificationSource, issueSyncInstallationPermissions, main, matchesGeneratedCopilotInstructions, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, prepareAiClassificationPayload, reconcileIssueSnapshots, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, reusedAiClassificationAssessment, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
+import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowMigrationFiles, assertWorkflowPaths, classificationInstallationPermissions, copilotInstructionSourcePath, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, encodeClassificationCheckState, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectAutomationPullRequestBinding, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, isTrustedAiClassificationSource, issueSyncInstallationPermissions, main, matchesGeneratedCopilotInstructions, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, prepareAiClassificationPayload, reconcileIssueSnapshots, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, reusedAiClassificationAssessment, stewardReviewInstructionsTransitionFiles, throwFreshValidationBaseFailure, writeManagedFileToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -740,6 +740,10 @@ describe("中央命令入口", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+
+  it("审查说明迁移清单绑定新工作流内容", () => {
+    expect(stewardReviewInstructionsTransitionFiles[".github/workflows/sync-review-instructions.yml"]).toBe("b3425ff5bc54a42316e501096ebfe46340956ac54398ff90cebb8e0f747a9a38");
   });
 
   it("识别平台实际返回的Copilot身份并给分类令牌完整的拉取请求写权限", () => {
