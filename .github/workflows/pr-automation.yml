@@ -44,7 +44,24 @@ jobs:
           PR_COPILOT_PROMPT_PATH: ${{ runner.temp }}/copilot-prompt.txt
           PR_PREPARED_FACTS_PATH: ${{ runner.temp }}/pr-prepared-facts.json
           PREPARE_ONLY: "true"
-        run: node packages/runner/dist/index.js pr-automation --delivery-id "${{ inputs.deliveryId }}" --repository-id "${{ inputs.repositoryId }}" --source-ref "${{ inputs.sourceRef }}" --event-after-sha "${{ inputs.eventAfterSha }}" --source-actor-id "${{ inputs.sourceActorId }}" --source-actor-login "${{ inputs.sourceActorLogin }}" --policy-sha "${{ inputs.policySha }}"
+          DELIVERY_ID: ${{ inputs.deliveryId }}
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          SOURCE_REF: ${{ inputs.sourceRef }}
+          EVENT_AFTER_SHA: ${{ inputs.eventAfterSha }}
+          SOURCE_ACTOR_ID: ${{ inputs.sourceActorId }}
+          SOURCE_ACTOR_LOGIN: ${{ inputs.sourceActorLogin }}
+          POLICY_SHA: ${{ inputs.policySha }}
+        run: |
+          pr_automation_arguments=(
+            --delivery-id "$DELIVERY_ID"
+            --repository-id "$REPOSITORY_ID"
+            --source-ref "$SOURCE_REF"
+            --event-after-sha "$EVENT_AFTER_SHA"
+            --source-actor-id "$SOURCE_ACTOR_ID"
+            --source-actor-login "$SOURCE_ACTOR_LOGIN"
+            --policy-sha "$POLICY_SHA"
+          )
+          node packages/runner/dist/index.js pr-automation "${pr_automation_arguments[@]}"
       - name: 使用Copilot润色
         id: copilot
         continue-on-error: true
@@ -64,7 +81,24 @@ jobs:
           PR_COPILOT_REPAIR_PROMPT_PATH: ${{ runner.temp }}/copilot-repair-prompt.txt
           PR_PREPARED_FACTS_PATH: ${{ runner.temp }}/pr-prepared-facts.json
           PREPARE_REPAIR_ONLY: "true"
-        run: node packages/runner/dist/index.js pr-automation --delivery-id "${{ inputs.deliveryId }}" --repository-id "${{ inputs.repositoryId }}" --source-ref "${{ inputs.sourceRef }}" --event-after-sha "${{ inputs.eventAfterSha }}" --source-actor-id "${{ inputs.sourceActorId }}" --source-actor-login "${{ inputs.sourceActorLogin }}" --policy-sha "${{ inputs.policySha }}"
+          DELIVERY_ID: ${{ inputs.deliveryId }}
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          SOURCE_REF: ${{ inputs.sourceRef }}
+          EVENT_AFTER_SHA: ${{ inputs.eventAfterSha }}
+          SOURCE_ACTOR_ID: ${{ inputs.sourceActorId }}
+          SOURCE_ACTOR_LOGIN: ${{ inputs.sourceActorLogin }}
+          POLICY_SHA: ${{ inputs.policySha }}
+        run: |
+          pr_automation_arguments=(
+            --delivery-id "$DELIVERY_ID"
+            --repository-id "$REPOSITORY_ID"
+            --source-ref "$SOURCE_REF"
+            --event-after-sha "$EVENT_AFTER_SHA"
+            --source-actor-id "$SOURCE_ACTOR_ID"
+            --source-actor-login "$SOURCE_ACTOR_LOGIN"
+            --policy-sha "$POLICY_SHA"
+          )
+          node packages/runner/dist/index.js pr-automation "${pr_automation_arguments[@]}"
       - name: 修复Copilot业务JSON
         id: copilot_repair
         if: steps.repair_plan.outputs.repair-required == 'true'
@@ -86,7 +120,24 @@ jobs:
           COPILOT_STEP_OUTCOME: ${{ steps.copilot.outcome }}
           COPILOT_REPAIR_STEP_OUTCOME: ${{ steps.copilot_repair.outcome }}
           COPILOT_REVIEW_REQUEST_TOKEN: ${{ secrets.COPILOT_REVIEW_REQUEST_TOKEN }}
-        run: node packages/runner/dist/index.js pr-automation --delivery-id "${{ inputs.deliveryId }}" --repository-id "${{ inputs.repositoryId }}" --source-ref "${{ inputs.sourceRef }}" --event-after-sha "${{ inputs.eventAfterSha }}" --source-actor-id "${{ inputs.sourceActorId }}" --source-actor-login "${{ inputs.sourceActorLogin }}" --policy-sha "${{ inputs.policySha }}"
+          DELIVERY_ID: ${{ inputs.deliveryId }}
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          SOURCE_REF: ${{ inputs.sourceRef }}
+          EVENT_AFTER_SHA: ${{ inputs.eventAfterSha }}
+          SOURCE_ACTOR_ID: ${{ inputs.sourceActorId }}
+          SOURCE_ACTOR_LOGIN: ${{ inputs.sourceActorLogin }}
+          POLICY_SHA: ${{ inputs.policySha }}
+        run: |
+          pr_automation_arguments=(
+            --delivery-id "$DELIVERY_ID"
+            --repository-id "$REPOSITORY_ID"
+            --source-ref "$SOURCE_REF"
+            --event-after-sha "$EVENT_AFTER_SHA"
+            --source-actor-id "$SOURCE_ACTOR_ID"
+            --source-actor-login "$SOURCE_ACTOR_LOGIN"
+            --policy-sha "$POLICY_SHA"
+          )
+          node packages/runner/dist/index.js pr-automation "${pr_automation_arguments[@]}"
       - name: 删除临时人工智能输入
         if: always()
         run: rm -f "${{ runner.temp }}/copilot-prompt.txt" "${{ runner.temp }}/copilot-output.jsonl" "${{ runner.temp }}/copilot-repair-prompt.txt" "${{ runner.temp }}/copilot-repair-output.jsonl" "${{ runner.temp }}/pr-prepared-facts.json"

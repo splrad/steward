@@ -71,6 +71,34 @@ if (copilotCommand !== expectedCopilotCommand) throw new Error("Copilot CLI没�
 if (/(?:^|\s)--allow-tool(?:=|\s|$)/u.test(copilotCommand)) throw new Error("Copilot正文生成不得启用工具");
 const prepareStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "生成Copilot输入");
 const repairPlanStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "判断Copilot输出是否需要修复");
+const reconcileStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "收敛拉取请求");
+const prAutomationInputEnvironment = new Map([
+  ["DELIVERY_ID", "${{inputs.deliveryId}}"],
+  ["REPOSITORY_ID", "${{inputs.repositoryId}}"],
+  ["SOURCE_REF", "${{inputs.sourceRef}}"],
+  ["EVENT_AFTER_SHA", "${{inputs.eventAfterSha}}"],
+  ["SOURCE_ACTOR_ID", "${{inputs.sourceActorId}}"],
+  ["SOURCE_ACTOR_LOGIN", "${{inputs.sourceActorLogin}}"],
+  ["POLICY_SHA", "${{inputs.policySha}}"],
+]);
+const expectedPrAutomationCommand = `pr_automation_arguments=(
+  --delivery-id "$DELIVERY_ID"
+  --repository-id "$REPOSITORY_ID"
+  --source-ref "$SOURCE_REF"
+  --event-after-sha "$EVENT_AFTER_SHA"
+  --source-actor-id "$SOURCE_ACTOR_ID"
+  --source-actor-login "$SOURCE_ACTOR_LOGIN"
+  --policy-sha "$POLICY_SHA"
+)
+node packages/runner/dist/index.js pr-automation "\${pr_automation_arguments[@]}"
+`;
+for (const step of [prepareStep, repairPlanStep, reconcileStep]) {
+  for (const [name, expectedValue] of prAutomationInputEnvironment) {
+    if (String(step?.env?.[name] ?? "").replace(/\s+/gu, "") !== expectedValue) throw new Error(`拉取请求自动化输入没有通过环境变量安全传递: ${name}`);
+  }
+  if (step?.run !== expectedPrAutomationCommand) throw new Error("拉取请求自动化命令没有使用固定参数数组");
+  if (/\$\{\{\s*inputs\./u.test(step?.run ?? "")) throw new Error("拉取请求自动化输入不得直接拼接进shell命令");
+}
 if (repairPlanStep?.id !== "repair_plan" || repairPlanStep?.["continue-on-error"] !== true || String(repairPlanStep?.if ?? "").replace(/\s+/gu, "") !== "steps.copilot.outcome=='success'") throw new Error("Copilot修复判断没有严格绑定首次调用成功结果");
 if (repairPlanStep?.env?.PREPARE_REPAIR_ONLY !== "true" || repairPlanStep?.env?.STEWARD_APP_PRIVATE_KEY?.replace(/\s+/gu, "") !== "${{secrets.STEWARD_APP_PRIVATE_KEY}}" || repairPlanStep?.run !== prepareStep?.run) throw new Error("Copilot修复判断没有重新读取并核对当前分支事实");
 const copilotRepairStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "修复Copilot业务JSON");
@@ -78,7 +106,6 @@ if (copilotRepairStep?.id !== "copilot_repair" || copilotRepairStep?.["continue-
 if (copilotRepairStep?.env?.COPILOT_GITHUB_TOKEN?.replace(/\s+/gu, "") !== "${{secrets.COPILOT_CLI_TOKEN}}" || Object.hasOwn(copilotRepairStep?.env ?? {}, "GITHUB_TOKEN")) throw new Error("Copilot修复步骤没有使用隔离的个人令牌");
 const expectedCopilotRepairCommand = 'npx --no-install copilot --available-tools= --no-auto-update --output-format json --stream off --no-color --no-custom-instructions --disable-builtin-mcps --no-ask-user < "$PR_COPILOT_REPAIR_PROMPT_PATH" > "${{ runner.temp }}/copilot-repair-output.jsonl"';
 if (copilotRepairStep?.run !== expectedCopilotRepairCommand) throw new Error("Copilot修复步骤没有使用固定的无工具JSONL合同");
-const reconcileStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "收敛拉取请求");
 if (reconcileStep?.env?.COPILOT_STEP_OUTCOME?.replace(/\s+/gu, "") !== "${{steps.copilot.outcome}}") throw new Error("收敛步骤没有接收Copilot CLI结果");
 if (reconcileStep?.env?.COPILOT_REPAIR_STEP_OUTCOME?.replace(/\s+/gu, "") !== "${{steps.copilot_repair.outcome}}") throw new Error("收敛步骤没有接收Copilot修复结果");
 const expectedCopilotOutputPath = "${{runner.temp}}/copilot-output.jsonl";
