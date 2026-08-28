@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, encodeClassificationCheckState, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectAutomationPullRequestBinding, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, isTrustedAiClassificationSource, issueSyncInstallationPermissions, main, matchesGeneratedReviewInstructions, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, prepareAiClassificationPayload, reconcileIssueSnapshots, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, reusedAiClassificationAssessment, reviewInstructionSyncInstallationPermissions, reviewRegistryPaths, throwFreshValidationBaseFailure, writeManagedFilesToBranch } from "../src/index.js";
+import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertTrustedMigrationFiles, assertWorkflowPaths, classificationInstallationPermissions, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, encodeClassificationCheckState, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectAutomationPullRequestBinding, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, isTrustedAiClassificationSource, issueSyncInstallationPermissions, main, matchesGeneratedReviewInstructions, matchesTrustedMigrationTrigger, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, prepareAiClassificationPayload, reconcileIssueSnapshots, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, reusedAiClassificationAssessment, reviewInstructionSyncInstallationPermissions, reviewRegistryPaths, stewardReviewLanguageMigrationFiles, throwFreshValidationBaseFailure, writeManagedFilesToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -606,6 +606,56 @@ describe("中央命令入口", () => {
       if (configuredDirectory === undefined) delete process.env.STEWARD_CONFIG_DIRECTORY;
       else process.env.STEWARD_CONFIG_DIRECTORY = configuredDirectory;
     }
+  });
+
+  it("审查语言迁移只由固定规则摘要触发", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "steward-review-language-trigger-"));
+    const file = join(directory, "rules.json");
+    const content = "trusted\n";
+    const digest = createHash("sha256").update(content, "utf8").digest("hex");
+    try {
+      await writeFile(file, content, "utf8");
+      await expect(matchesTrustedMigrationTrigger(directory, [file], "rules.json", digest)).resolves.toBe(true);
+      await writeFile(file, "trusted\r\n", "utf8");
+      await expect(matchesTrustedMigrationTrigger(directory, [file], "rules.json", digest)).resolves.toBe(true);
+      await expect(matchesTrustedMigrationTrigger(directory, [], "rules.json", digest)).resolves.toBe(false);
+      await writeFile(file, "changed\n", "utf8");
+      await expect(matchesTrustedMigrationTrigger(directory, [file], "rules.json", digest)).resolves.toBe(false);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("审查语言迁移文件必须逐项匹配受信摘要", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "steward-review-language-migration-"));
+    const current = join(directory, "current.txt");
+    const expectedContent = "expected\n";
+    const expectedDigest = createHash("sha256").update(expectedContent, "utf8").digest("hex");
+    try {
+      await writeFile(current, expectedContent, "utf8");
+      await expect(assertTrustedMigrationFiles(directory, [current], { "current.txt": expectedDigest })).resolves.toBeUndefined();
+      await writeFile(current, "expected\r\n", "utf8");
+      await expect(assertTrustedMigrationFiles(directory, [current], { "current.txt": expectedDigest })).resolves.toBeUndefined();
+      await writeFile(current, "changed\n", "utf8");
+      await expect(assertTrustedMigrationFiles(directory, [current], { "current.txt": expectedDigest })).rejects.toThrow("迁移文件不等于受信候选: current.txt");
+      await expect(assertTrustedMigrationFiles(directory, [], { "current.txt": expectedDigest })).rejects.toThrow("缺少受信迁移文件: current.txt");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("审查语言迁移同时绑定规则投影和最终runner", () => {
+    expect(Object.keys(stewardReviewLanguageMigrationFiles)).toEqual([
+      "AGENTS.md",
+      ".github/copilot-instructions.md",
+      "config/review/profiles.json",
+      "config/review/rules.json",
+      "packages/runner/src/index.ts",
+      "packages/runner/test/index.test.ts",
+      "packages/runner/dist/index.js",
+    ]);
+    expect(stewardReviewLanguageMigrationFiles["config/review/rules.json"]).toBe("a9238855ccb78852ab7790c8e88ee5293930e8289df6188c210890f2d7b051ae");
+    expect(stewardReviewLanguageMigrationFiles["packages/runner/src/index.ts"]).toBe("95cb104b4aa26d016f6c59db874f626522058b6a8ac099e06734edf8aecbb72d");
   });
 
   it("Git空白检查接受CRLF并继续拒绝真正的行尾空格", async () => {
