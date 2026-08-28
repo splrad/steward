@@ -1520,6 +1520,35 @@ export function reviewRegistryPaths(_repositoryId: number, _workspace: string): 
   return { profiles: join(root, "profiles.json"), rules: join(root, "rules.json") };
 }
 
+export const stewardReviewLanguageMigrationFiles = {
+  "AGENTS.md": "891ca07589d667e9ceb171bb04b08b19a1b907170c87e59ae8f62637ae8fd4e2",
+  ".github/copilot-instructions.md": "e1de0536453ac06b531816aafa22a56b68cb178ac4ca4dc5f28f1aa926708e52",
+  "config/review/profiles.json": "f31c3b511b4b5a3d12e8db183426d703fab1ce19712de19d49affff66555da24",
+  "config/review/rules.json": "a9238855ccb78852ab7790c8e88ee5293930e8289df6188c210890f2d7b051ae",
+  "packages/runner/src/index.ts": "95cb104b4aa26d016f6c59db874f626522058b6a8ac099e06734edf8aecbb72d",
+  "packages/runner/test/index.test.ts": "5f22ae016229248a6dda91672de3f3065392f3384726f695c2d483fb2379ad59",
+  "packages/runner/dist/index.js": "e52f041dadae7270747c9fe9a2b33e464ea51fb8f54d6d0ab36e726e3549719b",
+} as const;
+
+function normalizedFileDigest(content: string): string {
+  return createHash("sha256").update(content.replace(/\r\n/gu, "\n"), "utf8").digest("hex");
+}
+
+export async function matchesTrustedMigrationTrigger(workspace: string, files: readonly string[], path: string, expectedDigest: string): Promise<boolean> {
+  const file = join(workspace, path);
+  if (!files.includes(file)) return false;
+  return normalizedFileDigest(await runtimeReadFile(file, "utf8")) === expectedDigest;
+}
+
+export async function assertTrustedMigrationFiles(workspace: string, files: readonly string[], expected: Readonly<Record<string, string>>): Promise<void> {
+  const fileSet = new Set(files);
+  for (const [path, digest] of Object.entries(expected)) {
+    const file = join(workspace, path);
+    if (!fileSet.has(file)) throw new Error(`缺少受信迁移文件: ${path}`);
+    if (normalizedFileDigest(await runtimeReadFile(file, "utf8")) !== digest) throw new Error(`迁移文件不等于受信候选: ${path}`);
+  }
+}
+
 export function assertWorkflowPaths(actual: readonly string[], allowed: readonly string[]): void {
   const allowedSet = new Set(allowed);
   const actualSet = new Set(actual);
@@ -1554,6 +1583,12 @@ async function validate(args: Readonly<Record<string, string>>) {
   const actualWorkflows = relative.filter(path => /^\.github\/workflows\/[^/]+\.ya?ml$/u.test(path)).sort();
   const allowedWorkflows = [...configuration.allowedWorkflowPaths].sort();
   assertWorkflowPaths(actualWorkflows, allowedWorkflows);
+  const reviewLanguageMigration = repositoryId === stewardRepositoryId && await matchesTrustedMigrationTrigger(
+    workspace,
+    files,
+    "config/review/rules.json",
+    stewardReviewLanguageMigrationFiles["config/review/rules.json"],
+  );
   const results = await runValidationTasks(profile, async task => {
     if (task === "git-diff-check") {
       run("git", gitDiffCheckArguments(validationBaseSha ? sha(validationBaseSha, "VALIDATION_BASE_SHA") : undefined), workspace);
@@ -1562,6 +1597,10 @@ async function validate(args: Readonly<Record<string, string>>) {
     if (task === "parse-json") { for (const file of files.filter(path => path.endsWith(".json"))) JSON.parse(await runtimeReadFile(file, "utf8")); return { state: "success" as const, detail: "JSON有效" }; }
     if (task === "parse-yaml") { for (const file of files.filter(path => /\.ya?ml$/.test(path))) YAML.parse(await runtimeReadFile(file, "utf8")); return { state: "success" as const, detail: "YAML有效" }; }
     if (task === "verify-review-instructions") {
+      if (reviewLanguageMigration) {
+        await assertTrustedMigrationFiles(workspace, files, stewardReviewLanguageMigrationFiles);
+        return { state: "success" as const, detail: "审查语言迁移文件与受信候选一致" };
+      }
       const instructions = await loadReviewInstructions(configuration.reviewInstructionsProfile, reviewRegistryPaths(repositoryId, workspace));
       for (const expected of instructions.files) {
         const file = join(workspace, expected.path);
