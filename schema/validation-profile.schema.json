@@ -6,7 +6,7 @@
   "properties": {
     "$schema": { "type": "string" }, "schemaVersion": { "const": 1 }, "runner": { "enum": ["ubuntu-latest"] },
     "timeoutMinutes": { "type": "integer", "minimum": 1, "maximum": 30 },
-    "tasks": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["git-diff-check", "parse-json", "parse-yaml", "verify-copilot-instructions", "actionlint-if-present", "actionlint", "parse-powershell", "parse-msbuild-xml", "npm-ci", "npm-test", "npm-typecheck", "npm-verify-dist", "npm-verify-workflows"] } },
+    "tasks": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["git-diff-check", "parse-json", "parse-yaml", "verify-review-instructions", "actionlint-if-present", "actionlint", "parse-powershell", "parse-msbuild-xml", "npm-ci", "npm-test", "npm-typecheck", "npm-verify-dist", "npm-verify-workflows"] } },
     "powershellFiles": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
     "msbuildFiles": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
     "nodeVersionFile": { "type": "string" },

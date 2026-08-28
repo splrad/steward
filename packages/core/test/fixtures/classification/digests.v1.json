@@ -4,21 +4,21 @@
   "policy": {
     "default": {
       "catalogDigest": "a86d3e1ebab0ab5aee397d5627c368572c13cb7d393b2c9d828c440eaef38fb6",
-      "profileDigest": "e5ba133d8e8957386ee8c76f40d71ba90f4a89d1d848273ccc7d5cbb9faffe04",
+      "profileDigest": "c50894b060db357e675bd670cfefbcdc6172750004d818e10fb62040016dccc0",
       "repositoryClassificationDigest": "452ac2ea92e4781a9d7d0001886d1fe3fe99cbddee8736a83f09f3061358f862",
-      "classificationPolicyDigest": "d8b4ef8066d56b09d148ada64b8394437ff35e880ae4d271a73a210e5657f2b4"
+      "classificationPolicyDigest": "d9dab005a825e28b10cfa87bbc4e80c311aa4cc5ded7e32bec8ea14964a29a26"
     },
     "layerscape": {
       "catalogDigest": "a86d3e1ebab0ab5aee397d5627c368572c13cb7d393b2c9d828c440eaef38fb6",
-      "profileDigest": "7412db0999b340f1e5d20d7e9a6157994358ca8efd604f2ee6d6c9d0ebf733a7",
+      "profileDigest": "4e825814cb32ebc3eb28029c404e29d8186cf6d3445cfc3151c14e366f285150",
       "repositoryClassificationDigest": "4e60166c4778a91bb600b3218ee84180dab257152e5af5ed2ef344b30aabbc9a",
-      "classificationPolicyDigest": "953a88c8ee5b7f08f66f663b611a61532c4c133ecd381408b6a92f0e0c1361c3"
+      "classificationPolicyDigest": "07a1269b1796af3fbd468d53cd20d5f1eef824c45b3072ce8ee5660691cd935c"
     }
   },
   "inputs": {
-    "github-8": "8025574c56cdff08c41a59f29db070a1772664523a7e2484fe54efa6057682b9",
-    "steward-138": "5cc11ad4c6b4653210142c0c5ac99e8df02f0cd04182939ad92179d3a51a5893",
-    "layerscape-150": "2f6a4533de10d7d31eb537af8aed4eb9843af0bedbe45fd6a2b680ae8b77d996",
-    "layerscape-151": "2c0fb92b33bb608952eb42b146f8e4fe2484401b4b075bc62c15ad662035b880"
+    "github-8": "52d34d87addc200d91c9ca730169b5b8c87ca5cb8c9d85f75c073d9a7361bea3",
+    "steward-138": "804dbb8bb0eb5c6153665e5ac14992539f2d1d8eea96572f90eb0c2aef834f01",
+    "layerscape-150": "cb0df063c280b7775b4918189d6ec3bbbb24469674d3a47e732e130c7c6b65cc",
+    "layerscape-151": "120f79b372d38e4d6dc8fb9133bd37e6c54218fa711dc5b10a40bd84e8e7c88c"
   }
 }

@@ -1,6 +1,6 @@
 export * from './automation.js';
 export * from './classification.js';
-export * from './copilot-instructions.js';
+export * from './review-instructions.js';
 export * from './fingerprint.js';
 export * from './identity.js';
 export * from './issues.js';

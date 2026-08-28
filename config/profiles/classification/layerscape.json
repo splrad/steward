@@ -6,7 +6,7 @@
     "dependencies": ["Directory.Build.props", "Directory.Packages.props", "global.json", "**/*.csproj", "**/packages.lock.json"],
     "javascript": ["package.json", "package-lock.json", "**/*.js", "**/*.ts"],
     "runtime": ["src/**"], "release": ["Version.props", "tools/Publish-ReleaseAssets.ps1", "chore/Fonts.zip"],
-    "automation": [".github/**", "tools/**"], "config": [".editorconfig", ".gitattributes", ".gitignore", "*.slnx", "*.props", "global.json"],
+    "automation": [".github/**", "tools/**", "AGENTS.md", "config/review/**"], "config": [".editorconfig", ".gitattributes", ".gitignore", "*.slnx", "*.props", "global.json", "AGENTS.md", "config/review/**"],
     "runtimeRelease": ["src/**", "tools/Publish-ReleaseAssets.ps1", "Directory.Build.props", "Directory.Packages.props", "global.json", "chore/Fonts.zip"],
     "runtimeExcluded": [".github/**", ".local/**", ".agents/**", ".codex/**", ".claude/**", ".vscode/**", "docs/**", "README.md", "LICENSE.txt", "Version.props", "CADFontAutoReplace.slnx", ".editorconfig", ".gitattributes", ".gitignore"],
     "installPackage": ["tools/Publish-ReleaseAssets.ps1", "chore/Fonts.zip", "Directory.Build.props", "Directory.Packages.props", "global.json"]

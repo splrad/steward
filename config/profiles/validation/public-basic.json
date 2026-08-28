@@ -3,6 +3,6 @@
   "schemaVersion": 1,
   "runner": "ubuntu-latest",
   "timeoutMinutes": 10,
-  "tasks": ["git-diff-check", "parse-json", "parse-yaml", "verify-copilot-instructions", "actionlint-if-present"],
+  "tasks": ["git-diff-check", "parse-json", "parse-yaml", "verify-review-instructions", "actionlint-if-present"],
   "disclosure": { "productBuild": "未配置", "productTests": "未配置" }
 }

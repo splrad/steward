@@ -6,11 +6,11 @@ import { renderValidationSummary, runValidationTasks, selectValidationProfile, t
 
 describe("中央验证", () => {
   it("三个配置冻结完整任务清单", () => {
-    expect(publicBasic.tasks).toEqual(["git-diff-check", "parse-json", "parse-yaml", "verify-copilot-instructions", "actionlint-if-present"]);
-    expect(layerScape.tasks).toEqual(["git-diff-check", "parse-json", "parse-yaml", "verify-copilot-instructions", "parse-powershell", "parse-msbuild-xml", "actionlint-if-present"]);
+    expect(publicBasic.tasks).toEqual(["git-diff-check", "parse-json", "parse-yaml", "verify-review-instructions", "actionlint-if-present"]);
+    expect(layerScape.tasks).toEqual(["git-diff-check", "parse-json", "parse-yaml", "verify-review-instructions", "parse-powershell", "parse-msbuild-xml", "actionlint-if-present"]);
     expect(layerScape.powershellFiles).toEqual(["tools/Publish-ReleaseAssets.ps1"]);
     expect(layerScape.msbuildFiles).toContain("src/**/*.csproj");
-    expect(steward.tasks).toEqual(["git-diff-check", "parse-json", "parse-yaml", "verify-copilot-instructions", "actionlint", "npm-ci", "npm-test", "npm-typecheck", "npm-verify-dist", "npm-verify-workflows"]);
+    expect(steward.tasks).toEqual(["git-diff-check", "parse-json", "parse-yaml", "verify-review-instructions", "actionlint", "npm-ci", "npm-test", "npm-typecheck", "npm-verify-dist", "npm-verify-workflows"]);
   });
 
   it("逐项执行、保留失败并诚实披露未构建", async () => {

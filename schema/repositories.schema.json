@@ -4,7 +4,7 @@
   "type": "object", "additionalProperties": false,
   "required": ["$schema", "schemaVersion", "organization", "defaults", "repositories"],
   "properties": {
-    "$schema": { "type": "string" }, "schemaVersion": { "const": 2 },
+    "$schema": { "type": "string" }, "schemaVersion": { "const": 3 },
     "organization": { "type": "object", "additionalProperties": false, "required": ["id", "login"], "properties": { "id": { "const": 302208797 }, "login": { "const": "splrad" } } },
     "defaults": { "type": "object", "additionalProperties": false, "required": ["public", "private"], "properties": { "public": { "$ref": "#/$defs/defaultConfig" }, "private": { "$ref": "#/$defs/defaultConfig" } } },
     "repositories": { "type": "object", "minProperties": 1, "propertyNames": { "pattern": "^[1-9][0-9]*$" }, "additionalProperties": { "$ref": "#/$defs/repositoryConfig" } }
@@ -14,14 +14,30 @@
     "workflowPaths": { "type": "array", "items": { "type": "string", "pattern": "^\\.github/workflows/[^/]+\\.ya?ml$" }, "uniqueItems": true },
     "canary": { "type": "object", "additionalProperties": false, "required": ["repositoryId", "pullRequestNumber", "headSha", "sourceRepositoryId", "sourceRef"], "properties": { "repositoryId": { "type": "integer", "minimum": 1 }, "pullRequestNumber": { "type": "integer", "minimum": 1 }, "headSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }, "sourceRepositoryId": { "type": "integer", "minimum": 1 }, "sourceRef": { "type": "string", "pattern": "^refs/heads/.+" } } },
     "classification": { "type": "object", "additionalProperties": false, "required": ["profile", "labelDefinitionMode", "labelAssignmentMode", "ai"], "properties": { "profile": { "type": "string", "minLength": 1 }, "labelDefinitionMode": { "enum": ["observe", "enforce"] }, "labelAssignmentMode": { "enum": ["observe", "enforce"] }, "ai": { "type": "object", "additionalProperties": false, "required": ["mode", "adoptedPrimaryKinds", "canaries"], "properties": { "mode": { "enum": ["shadow", "draft-canary", "active"] }, "adoptedPrimaryKinds": { "$ref": "#/$defs/strings" }, "canaries": { "type": "array", "items": { "$ref": "#/$defs/canary" } } } } } },
-    "defaultConfig": { "type": "object", "additionalProperties": false, "required": ["managed", "prAutomation", "pullRequestTemplate", "copilotInstructionsProfile", "classification", "validationProfile", "allowedWorkflowPaths", "releaseProfile"], "properties": { "managed": { "type": "boolean" }, "prAutomation": { "type": "boolean" }, "pullRequestTemplate": { "enum": ["organization-default", "organization-provider"] }, "copilotInstructionsProfile": { "enum": ["common", "layerscape"] }, "classification": { "$ref": "#/$defs/classification" }, "validationProfile": { "type": "string" }, "allowedWorkflowPaths": { "$ref": "#/$defs/workflowPaths" }, "releaseProfile": { "type": ["string", "null"] } } },
+    "reviewGovernance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scope", "lifecycle", "owner", "exception", "lastVerifiedAt", "nextReviewAt"],
+      "properties": {
+        "scope": { "enum": ["full", "policy-only", "excluded"] },
+        "lifecycle": { "enum": ["discovered", "repository-ready", "external-control-ready", "operational"] },
+        "owner": { "type": "string", "pattern": "^splrad/[a-z0-9-]+$" },
+        "exception": { "type": ["object", "null"], "additionalProperties": false, "required": ["reason", "approvedBy", "reviewAt"], "properties": { "reason": { "type": "string", "minLength": 1 }, "approvedBy": { "type": "string", "minLength": 1 }, "reviewAt": { "type": "string", "format": "date-time" } } },
+        "lastVerifiedAt": { "type": "string", "format": "date-time" },
+        "nextReviewAt": { "type": "string", "format": "date-time" }
+      },
+      "allOf": [
+        { "if": { "properties": { "scope": { "const": "excluded" } }, "required": ["scope"] }, "then": { "properties": { "exception": { "type": "object" } } }, "else": { "properties": { "exception": { "type": "null" } } } },
+        { "if": { "properties": { "scope": { "const": "policy-only" } }, "required": ["scope"] }, "then": { "properties": { "lifecycle": { "enum": ["discovered", "repository-ready"] } } } }
+      ]
+    },
+    "defaultConfig": { "type": "object", "additionalProperties": false, "required": ["managed", "prAutomation", "pullRequestTemplate", "reviewInstructionsProfile", "classification", "validationProfile", "allowedWorkflowPaths", "releaseProfile"], "properties": { "managed": { "type": "boolean" }, "prAutomation": { "type": "boolean" }, "pullRequestTemplate": { "enum": ["organization-default", "organization-provider"] }, "reviewInstructionsProfile": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }, "classification": { "$ref": "#/$defs/classification" }, "validationProfile": { "type": "string" }, "allowedWorkflowPaths": { "$ref": "#/$defs/workflowPaths" }, "releaseProfile": { "type": ["string", "null"] } } },
     "repositoryConfig": {
       "type": "object", "additionalProperties": false,
-      "required": ["managed", "fullName", "prAutomation", "pullRequestTemplate", "copilotInstructionsProfile", "classification", "validationProfile", "allowedWorkflowPaths", "releaseProfile"],
+      "required": ["managed", "fullName", "prAutomation", "pullRequestTemplate", "reviewInstructionsProfile", "reviewGovernance", "classification", "validationProfile", "allowedWorkflowPaths", "releaseProfile"],
       "properties": {
         "managed": { "type": "boolean" }, "fullName": { "type": "string", "pattern": "^splrad/[^/]+$" },
         "prAutomation": { "type": "boolean" }, "pullRequestTemplate": { "enum": ["organization-default", "organization-provider"] },
-        "copilotInstructionsProfile": { "enum": ["common", "layerscape"] }, "classification": { "$ref": "#/$defs/classification" },
+        "reviewInstructionsProfile": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }, "reviewGovernance": { "$ref": "#/$defs/reviewGovernance" }, "classification": { "$ref": "#/$defs/classification" },
         "validationProfile": { "type": "string" }, "allowedWorkflowPaths": { "$ref": "#/$defs/workflowPaths" }, "releaseProfile": { "type": ["string", "null"] }
       }
     }

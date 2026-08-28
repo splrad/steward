@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/splrad/steward/schema/review-rules.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "rules"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": 1 },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "audience", "profiles", "scope", "consequence", "safePath", "owner", "evidence", "status"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*\\.[a-z][a-z0-9-]*$" },
+          "audience": { "enum": ["shared", "copilot"] },
+          "profiles": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" } },
+          "scope": { "const": "repository" },
+          "consequence": { "type": "string", "minLength": 1 },
+          "safePath": { "type": "string", "minLength": 1 },
+          "owner": { "type": "string", "pattern": "^splrad/[a-z0-9-]+$" },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "reference", "confirmedAt"],
+              "properties": {
+                "kind": { "enum": ["source", "pull-request", "commit"] },
+                "reference": { "type": "string", "minLength": 1 },
+                "confirmedAt": { "type": "string", "format": "date" }
+              }
+            }
+          },
+          "status": { "enum": ["active", "retired"] }
+        }
+      }
+    }
+  }
+}
