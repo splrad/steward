@@ -25,11 +25,11 @@
     "yaml": "2.9.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20260815.1",
-    "@types/node": "26.2.0",
+    "@cloudflare/workers-types": "5.20260827.1",
+    "@types/node": "26.4.0",
     "@vercel/ncc": "0.45.0",
     "typescript": "7.0.2",
-    "vitest": "4.1.10",
-    "wrangler": "4.123.0"
+    "vitest": "4.1.11",
+    "wrangler": "4.127.0"
   }
 }
