@@ -910,8 +910,9 @@ describe("中央命令入口", () => {
     const release = JSON.parse(await readFile("config/profiles/release/layerscape.json", "utf8"));
     expect(repositories.organization).toEqual({ id: 302208797, login: "splrad" });
     expect(repositories.defaults.public).toMatchObject({ managed: true, prAutomation: true, reviewInstructionsProfile: "common", validationProfile: "public-basic", releaseProfile: null });
-    expect(repositories.repositories["1187527897"].reviewGovernance).toMatchObject({ scope: "full", lifecycle: "discovered", owner: "splrad/maintainers", exception: null });
-    expect(repositories.repositories["1296725317"].reviewGovernance).toMatchObject({ scope: "policy-only", lifecycle: "discovered" });
+    expect(repositories.repositories["1187527897"].reviewGovernance).toMatchObject({ scope: "full", lifecycle: "repository-ready", owner: "splrad/maintainers", exception: null });
+    expect(repositories.repositories["1296724484"].reviewGovernance).toMatchObject({ scope: "full", lifecycle: "repository-ready", owner: "splrad/maintainers", exception: null });
+    expect(repositories.repositories["1296725317"].reviewGovernance).toMatchObject({ scope: "policy-only", lifecycle: "repository-ready" });
     expect(Object.keys(repositories.repositories).sort()).toEqual(["1187527897", "1296724484", "1296725317"]);
     expect(release.build.projects.map((value: any) => value.path)).toEqual(Array.from({ length: 10 }, (_, index) => {
       const year = 2018 + index;
