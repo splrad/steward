@@ -209,6 +209,23 @@ describe("拉取请求自动化", () => {
     expect(renderManagedBody({ ...input, existingBody: rebuilt })).toBe(rebuilt);
   });
 
+  it.each([false, true])("单人正文插入议题块与完整重建顺序一致，包含发布章节：%s", (withRelease) => {
+    const input = {
+      generated: validateGeneratedSummary({ ...valid, releaseAndMigration: withRelease ? ["更新发布说明"] : [] }),
+      templateBody: organizationPullRequestTemplate, actor: "axiomoth",
+      contributors: [{ id: 44151430, login: "axiomoth" }], context: "issue-order",
+    };
+    const issueBlock = renderIssueLinksBlock({
+      repositoryId: 1187527897, pullRequestNumber: 191,
+      baseSha: "0".repeat(40), headSha: "1".repeat(40), generation: 1, analysisInputDigest: "a".repeat(64),
+    }, [{ repositoryId: 1187527897, number: 135 }]);
+    const inserted = upsertIssueLinksBlock(renderManagedBody(input), issueBlock);
+    expect(inserted.indexOf("## 解决的议题")).toBeLessThan(inserted.indexOf("贡献者："));
+    if (withRelease) expect(inserted.indexOf("## 解决的议题")).toBeLessThan(inserted.indexOf("## 发布与迁移"));
+    expect(inserted).toBe(renderManagedBody({ ...input, existingBody: inserted }));
+    expect(upsertIssueLinksBlock(inserted, issueBlock)).toBe(inserted);
+  });
+
   it("普通正文重建逐字保留唯一合法议题子块并拒绝损坏子块", () => {
     const issueBlock = renderIssueLinksBlock({
       repositoryId: 1187527897,
