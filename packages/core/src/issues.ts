@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+export const contributorBlockAnchor = '<!-- workflow:contributors -->';
+
 export type IssueState = 'open' | 'closed';
 export type UnfetchedReferenceType = 'image' | 'file' | 'document';
 
@@ -690,7 +692,7 @@ export function upsertIssueLinksBlock(body: string, block: string): string {
     return `${body.slice(0, current.start)}${block}${body.slice(current.end)}`;
   }
   const searchStart = outer.contentStart;
-  const anchors = ['\n## 发布与迁移\n', '\n## 贡献者\n', '\n<!-- workflow:source-actor:']
+  const anchors = ['\n## 发布与迁移\n', `\n${contributorBlockAnchor}\n`, '\n## 贡献者\n', '\n<!-- workflow:source-actor:']
     .map((anchor) => body.indexOf(anchor, searchStart))
     .filter((index) => index >= searchStart && index < outer.end)
     .map((index) => index + 1);
