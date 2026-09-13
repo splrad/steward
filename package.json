@@ -17,7 +17,7 @@
     "verify": "npm run test && npm run typecheck && npm run verify:config && npm run verify:dist && npm run verify:workflows"
   },
   "dependencies": {
-    "@github/copilot": "1.0.80",
+    "@github/copilot": "1.0.83",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
     "jose": "6.2.10",
@@ -25,11 +25,11 @@
     "yaml": "2.9.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20260815.1",
-    "@types/node": "26.2.0",
+    "@cloudflare/workers-types": "5.20260903.1",
+    "@types/node": "26.4.1",
     "@vercel/ncc": "0.45.0",
     "typescript": "7.0.2",
-    "vitest": "4.1.10",
-    "wrangler": "4.123.0"
+    "vitest": "5.0.0",
+    "wrangler": "4.131.1"
   }
 }
