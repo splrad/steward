@@ -104,7 +104,17 @@ describe("Dependabot审查请求", () => {
   it("Review读取失败时不发请求", async () => {
     const f = fixture({ unreadableReviews: true }); await expect(f.run()).rejects.toThrow(); expect(f.writes).toEqual([]);
   });
-  it("只有pending但没有新事件时不能确认请求", async () => {
-    const f = fixture({ pending: true, noEvent: true }); await expect(f.run()).rejects.toThrow("未能通过实时读取确认"); expect(f.writes).toHaveLength(1);
+  it("只有pending但没有新事件时保留未确认状态", async () => {
+    const f = fixture({ pending: true, noEvent: true });
+    expect(await f.run()).toBe("requested-unconfirmed"); expect(f.writes).toHaveLength(1);
+  }, 15000);
+  it("同head重复请求没有新增事件时不误报确认或失败", async () => {
+    const f = fixture({ pending: true });
+    expect(await f.run()).toBe("requested-and-confirmed");
+    expect(await f.run()).toBe("requested-unconfirmed"); expect(f.writes).toHaveLength(2);
+  }, 15000);
+  it("未确认请求之后head变化仍报告版本变化", async () => {
+    const f = fixture({ pending: true, noEvent: true, driftAt: 3 });
+    expect(await f.run()).toBe("changed-during-request");
   }, 15000);
 });

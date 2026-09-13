@@ -750,7 +750,9 @@ async function hasCurrentCopilotReview(clientValue: GitHubClient, owner: string,
   const activeCheck = hasActiveCopilotCheckRun(checkRuns, number, headSha);
   return (acceptPending && pending) || completed || activeCheck || (afterEventId !== undefined && hasNewCopilotRequestEvent(events, afterEventId));
 }
-async function ensureCopilotReview(clientValue: GitHubClient, owner: string, repo: string, number: number, headSha: string, policySha: string, acceptPending = true, beforeRequest?: () => Promise<void>): Promise<"already-present" | "requested-and-confirmed"> {
+function ensureCopilotReview(clientValue: GitHubClient, owner: string, repo: string, number: number, headSha: string, policySha: string, acceptPending?: true, beforeRequest?: () => Promise<void>): Promise<"already-present" | "requested-and-confirmed">;
+function ensureCopilotReview(clientValue: GitHubClient, owner: string, repo: string, number: number, headSha: string, policySha: string, acceptPending: false, beforeRequest?: () => Promise<void>): Promise<"already-present" | "requested-and-confirmed" | "requested-unconfirmed">;
+async function ensureCopilotReview(clientValue: GitHubClient, owner: string, repo: string, number: number, headSha: string, policySha: string, acceptPending = true, beforeRequest?: () => Promise<void>): Promise<"already-present" | "requested-and-confirmed" | "requested-unconfirmed"> {
   if (await hasCurrentCopilotReview(clientValue, owner, repo, number, headSha, undefined, clientValue, acceptPending)) return "already-present";
   const reviewerClient = new GitHubClient(env("COPILOT_REVIEW_REQUEST_TOKEN"), "https://api.github.com", fetch, policySha);
   const eventsBefore = await reviewerClient.listIssueEvents(owner, repo, number);
@@ -761,6 +763,7 @@ async function ensureCopilotReview(clientValue: GitHubClient, owner: string, rep
     if (await hasCurrentCopilotReview(reviewerClient, owner, repo, number, headSha, eventCursor, clientValue, acceptPending)) return "requested-and-confirmed";
     if (attempt < 4) await delay(2_000);
   }
+  if (!acceptPending) return "requested-unconfirmed";
   throw new Error("Copilot审查请求未能通过实时读取确认");
 }
 
@@ -808,6 +811,9 @@ async function requestCopilotReviewCommand(args: Readonly<Record<string, string>
     return Boolean(registry.repositories[String(repository.id)]) && configuration.managed === true && configuration.prAutomation === true;
   });
   await summary([`仓库编号：${repositoryId}`, `PR：${number}`, `目标提交：${headSha}`, `Copilot请求状态：${result}`]);
+  if (result === "requested-unconfirmed") {
+    console.log("::warning::Copilot请求已提交，但尚无新请求事件或当前head审查证据；请核查该PR的审查任务。");
+  }
 }
 
 export async function writeManagedFilesToBranch(input: {

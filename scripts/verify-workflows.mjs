@@ -65,9 +65,9 @@ const reviewStep = reviewSteps?.[3];
 if (!hasExactKeys(reviewDocument?.on, ["workflow_dispatch"]) || !hasExactKeys(reviewDocument?.on?.workflow_dispatch?.inputs, ["deliveryId", "repositoryId", "sourceRef", "eventAfterSha", "sourceActorId", "sourceActorLogin", "policySha", "pullRequestNumber"])) throw new Error("审查请求触发和输入范围无效");
 for (const [name, value] of Object.entries(reviewDocument.on.workflow_dispatch.inputs)) if (value.required !== (name !== "pullRequestNumber") || value.type !== "string") throw new Error("审查请求输入合同无效");
 if (!hasExactKeys(reviewDocument.permissions, ["contents"]) || reviewDocument.permissions.contents !== "read" || reviewJob?.permissions !== undefined || reviewDocument.env !== undefined || reviewJob?.env !== undefined) throw new Error("审查请求工作流权限或环境范围无效");
-if (!hasExactKeys(reviewDocument.jobs, ["reconcile", "request"]) || reviewDocument.jobs.reconcile.if !== "inputs.pullRequestNumber == ''" || reviewJob?.if !== "inputs.pullRequestNumber != '' && github.actor_id == '301115370' && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.policySha == github.sha") throw new Error("审查请求缺少可信工作流身份校验");
+if (!hasExactKeys(reviewDocument.jobs, ["reconcile", "request"]) || reviewDocument.jobs.reconcile.if !== "inputs.pullRequestNumber == ''" || reviewJob?.if !== "inputs.pullRequestNumber != '' && github.actor_id == '301115370' && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)") throw new Error("审查请求缺少可信工作流身份校验");
 if (reviewJob["runs-on"] !== "ubuntu-latest" || reviewJob["timeout-minutes"] !== 5 || reviewSteps?.length !== 4) throw new Error("审查请求运行范围无效");
-if (reviewSteps[0]?.uses !== "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || reviewSteps[0]?.with?.ref !== "${{ github.sha }}" || reviewSteps[0]?.with?.["persist-credentials"] !== false) throw new Error("审查请求没有检出可信中央提交");
+if (reviewSteps[0]?.uses !== "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || reviewSteps[0]?.with?.ref !== "${{ github.workflow_sha }}" || reviewSteps[0]?.with?.["persist-credentials"] !== false) throw new Error("审查请求没有检出可信中央提交");
 if (reviewSteps[1]?.uses !== "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020" || reviewSteps[1]?.with?.["node-version-file"] !== ".node-version" || reviewSteps[2]?.run !== "npm ci --ignore-scripts") throw new Error("审查请求准备步骤无效");
 if (reviewSteps.slice(0, 3).some(step => step.env !== undefined) || reviewStep?.shell !== "bash" || reviewStep?.["continue-on-error"] !== undefined) throw new Error("审查请求密钥或失败处理范围无效");
 const reviewInputEnvironment = new Map([
@@ -76,7 +76,7 @@ const reviewInputEnvironment = new Map([
   ["TRIGGER_ACTOR_ID", "${{ github.actor_id }}"], ["WORKFLOW_REPOSITORY", "${{ github.repository }}"], ["WORKFLOW_EVENT", "${{ github.event_name }}"],
   ["WORKFLOW_REF", "${{ github.workflow_ref }}"], ["WORKFLOW_RUN_REF", "${{ github.ref }}"], ["WORKFLOW_SHA", "${{ github.workflow_sha }}"], ["WORKFLOW_DEFAULT_BRANCH", "${{ github.event.repository.default_branch }}"],
   ["DELIVERY_ID", "${{ inputs.deliveryId }}"], ["REPOSITORY_ID", "${{ inputs.repositoryId }}"], ["PULL_REQUEST_NUMBER", "${{ inputs.pullRequestNumber }}"],
-  ["EVENT_HEAD_SHA", "${{ inputs.eventAfterSha }}"], ["POLICY_SHA", "${{ inputs.policySha }}"],
+  ["EVENT_HEAD_SHA", "${{ inputs.eventAfterSha }}"], ["POLICY_SHA", "${{ github.workflow_sha }}"],
 ]);
 if (!hasExactKeys(reviewStep?.env, [...reviewInputEnvironment.keys()])) throw new Error("审查请求环境字段无效");
 for (const [name, value] of reviewInputEnvironment) if (reviewStep.env[name] !== value) throw new Error(`审查请求输入没有安全传递: ${name}`);
