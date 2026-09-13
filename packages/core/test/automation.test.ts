@@ -137,7 +137,7 @@ describe("拉取请求自动化", () => {
     expect(buildDeterministicSummary({ ...facts, commitSubjects: [`fix(${"-".repeat(100_000)}): 修复错误`] })).toMatchObject({ scope: "repo" });
   });
 
-  it("生成完整正文、折叠贡献者信息并迁移旧模板", () => {
+  it("生成完整正文、展示多人贡献者并迁移旧模板", () => {
     const template = `人工前言\n<!-- workflow:auto-summary:start -->\n等待生成\n<!-- workflow:auto-summary:end -->\n### 人工补充\n旧内容\n`;
     const body = renderManagedBody({
       generated: validateGeneratedSummary(valid),
@@ -159,12 +159,12 @@ describe("拉取请求自动化", () => {
     expect(body).toContain("## 贡献者");
     expect(body).toContain('aria-label="查看第1位贡献者的GitHub资料"');
     expect(body).toContain('<img src="https://avatars.githubusercontent.com/u/44151430?v=4" alt=""');
-    expect(body).toContain("<details>");
+    expect(body).not.toContain("<details>");
     expect(body).not.toContain("显示名称");
     expect(body).not.toContain("Axiom Oth");
     expect(body).not.toContain("GitHub：");
-    expect(body).toContain('<li><a href="https://github.com/axiomoth">@axiomoth</a></li>');
-    expect(body).toContain('<li><a href="https://github.com/contributor2">@contributor2</a></li>');
+    expect(body).toContain('<a href="https://github.com/axiomoth">@axiomoth</a> · <a href="https://github.com/contributor2">@contributor2</a>');
+    expect(body).toContain('<!-- workflow:source-contributors:axiomoth,contributor2 -->');
     expect(body).not.toContain("人工前言");
     expect(body).not.toContain("### 人工补充");
     expect(body).not.toContain("旧内容");
@@ -179,6 +179,34 @@ describe("拉取请求自动化", () => {
     for (const heading of ["变更原因", "背景与目标", "影响分析", "关联事项", "发布与迁移", "贡献者"]) expect(body).not.toContain(`## ${heading}`);
     expect(body).toContain("## 摘要");
     expect(body).toContain("## 主要改动");
+    expect(body).not.toContain("贡献者：");
+    expect(body).toContain("<!-- workflow:source-contributors: -->");
+  });
+
+  it.each(["axiomoth", "splrad-steward[bot]"])("单人贡献者显示为一行，来源账号为%s", (actor) => {
+    const body = renderManagedBody({
+      generated: validateGeneratedSummary(valid), templateBody: organizationPullRequestTemplate,
+      actor, contributors: [{ id: 44151430, login: "axiomoth" }], context: "single",
+    });
+    expect(body).toContain('\n\n贡献者：<a href="https://github.com/axiomoth">@axiomoth</a>\n\n<!-- workflow:source-actor:');
+    expect(body).not.toContain("## 贡献者");
+    expect(body).not.toContain("<img");
+    expect(body).not.toContain("<details>");
+    expect(body).toContain(`<!-- workflow:source-actor:${actor} -->`);
+    expect(body).toContain("<!-- workflow:source-contributors:axiomoth -->");
+  });
+
+  it.each([0, 1, 2])("旧贡献者章节更新为当前%d人样式", (count) => {
+    const contributors = [{ id: 44151430, login: "axiomoth" }, { id: 12345678, login: "contributor2" }].slice(0, count);
+    const existingBody = `${summaryStart}\n## 贡献者\n\n<details>\n<summary>查看贡献者信息</summary>\n旧贡献者列表\n</details>\n<!-- workflow:source-contributors:former -->\n${summaryEnd}\n`;
+    const input = { generated: validateGeneratedSummary(valid), templateBody: organizationPullRequestTemplate, actor: "axiomoth", contributors, context: "updated" };
+    const rebuilt = renderManagedBody({ ...input, existingBody });
+    expect(rebuilt).toBe(renderManagedBody(input));
+    expect(rebuilt).not.toContain("查看贡献者信息");
+    expect(rebuilt).not.toContain("旧贡献者列表");
+    expect(rebuilt).not.toContain("former");
+    expect(rebuilt.match(/workflow:source-contributors:/g)).toHaveLength(1);
+    expect(renderManagedBody({ ...input, existingBody: rebuilt })).toBe(rebuilt);
   });
 
   it("普通正文重建逐字保留唯一合法议题子块并拒绝损坏子块", () => {

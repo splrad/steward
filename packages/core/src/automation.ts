@@ -305,16 +305,16 @@ function contributorAvatarUrl(contributor: Contributor): string {
 }
 
 function renderContributors(contributors: Contributor[]): string {
+  const profiles = contributors.map((item) => {
+    const profile = `https://github.com/${encodeURIComponent(item.login)}`;
+    return `<a href="${profile}">@${escapeHtml(item.login)}</a>`;
+  }).join(' · ');
+  if (contributors.length === 1) return `贡献者：${profiles}`;
   const avatars = contributors.map((item, index) => {
     const profile = `https://github.com/${encodeURIComponent(item.login)}`;
     return `<a href="${profile}" aria-label="查看第${index + 1}位贡献者的GitHub资料"><img src="${escapeHtml(contributorAvatarUrl(item))}" alt="" width="48" height="48"></a>`;
   }).join(' ');
-  const details = contributors.map((item) => {
-    const login = escapeHtml(item.login);
-    const profile = `https://github.com/${encodeURIComponent(item.login)}`;
-    return `<li><a href="${profile}">@${login}</a></li>`;
-  }).join('\n');
-  return `## 贡献者\n\n${avatars}\n\n<details>\n<summary>查看贡献者信息</summary>\n\n<ul>\n${details}\n</ul>\n</details>`;
+  return `## 贡献者\n\n${avatars}\n\n${profiles}`;
 }
 
 export function renderManagedBody(input: { generated: GeneratedSummary; existingBody?: string | null; templateBody: string; actor: string; contributors: Contributor[]; context: string }): string {
