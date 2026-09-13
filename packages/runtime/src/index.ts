@@ -258,8 +258,10 @@ function belongsToOrganization(repository: any): boolean {
 function isManaged(repository: any): boolean { return belongsToOrganization(repository) && repositoryConfiguration(repository).managed === true; }
 function isIssueCapable(repository: any): boolean { return isIssueCapableRepository(repository, isManaged(repository)); }
 
-async function dispatchDependabotReview(env: Env, repository: any, pull: any, action: string, deliveryId: string): Promise<boolean> {
-  if (!["opened", "synchronize", "reopened", "ready_for_review"].includes(action)
+async function dispatchDependabotReview(env: Env, repository: any, pull: any, action: string, deliveryId: string, previousBaseRef?: unknown): Promise<boolean> {
+  const enteredDefault = action === "edited" && typeof previousBaseRef === "string" && previousBaseRef.length > 0
+    && previousBaseRef !== repository?.default_branch && pull?.base?.ref === repository?.default_branch;
+  if ((!enteredDefault && !["opened", "synchronize", "reopened", "ready_for_review"].includes(action))
     || !repository || !isManaged(repository) || repositoryConfiguration(repository).prAutomation !== true
     || !isDependabotReviewEligible(repository, pull, String(pull?.head?.sha ?? ""))
     || typeof pull.head.ref !== "string" || !pull.head.ref) return false;
@@ -547,7 +549,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
         await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: String(!capable), policySha: env.POLICY_SHA });
         dispatched = true;
       }
-      const reviewDispatched = await dispatchDependabotReview(env, repository, pull, action, deliveryId);
+      const reviewDispatched = await dispatchDependabotReview(env, repository, pull, action, deliveryId, payload.changes?.base?.ref?.from);
       return response(dispatched || reviewDispatched ? 202 : 204);
     }
     if (event === "pull_request" && action === "ready_for_review") {

@@ -1065,7 +1065,17 @@ describe("Dependabot独立审查派发", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it.each(["opened", "synchronize", "reopened", "ready_for_review"])("%s请求审查并保留原分类路径", async action => {
+  const reviewCases: Array<{ name: string; action: string; changes?: object; base?: string; draft?: boolean; workflows: string[] }> = [
+    ...["opened", "synchronize", "reopened"].map(action => ({ name: action, action, workflows: ["pr-classification.yml", "pr-automation.yml"] })),
+    { name: "ready_for_review", action: "ready_for_review", workflows: ["pr-automation.yml"] },
+    { name: "切换到默认分支", action: "edited", changes: { base: { ref: { from: "release" } } }, workflows: ["pr-classification.yml", "pr-automation.yml"] },
+    { name: "仅编辑标题", action: "edited", changes: { title: { from: "old title" } }, workflows: ["pr-classification.yml"] },
+    { name: "仅编辑正文", action: "edited", changes: { body: { from: "old body" } }, workflows: ["pr-classification.yml"] },
+    { name: "离开默认分支", action: "edited", changes: { base: { ref: { from: "main" } } }, base: "release", workflows: [] },
+    { name: "Draft切换到默认分支", action: "edited", changes: { base: { ref: { from: "release" } } }, draft: true, workflows: ["pr-classification.yml"] },
+    { name: "两个非默认分支间切换", action: "edited", changes: { base: { ref: { from: "release" } } }, base: "develop", workflows: [] },
+  ];
+  it.each(reviewCases)("$name保留适用的分类与审查派发", async ({ action, changes, base = "main", draft = false, workflows }) => {
     const headSha = "d".repeat(40); const sent: { workflow: string; body: any }[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
       const value = String(url);
@@ -1077,14 +1087,14 @@ describe("Dependabot独立审查派发", () => {
       if (workflow) { sent.push({ workflow, body: JSON.parse(String(init.body)) }); return new Response(null, { status: 204 }); }
       throw new Error(`unexpected: ${value}`);
     });
-    const payload = scoped({ action, repository: repository(), pull_request: {
-      number: 187, state: "open", draft: false,
-      head: { sha: headSha, ref: "dependabot/npm", repo: { id: 1296724484 } }, base: { ref: "main", repo: { id: 1296724484 } },
+    const payload = scoped({ action, changes, repository: repository(), pull_request: {
+      number: 187, state: "open", draft,
+      head: { sha: headSha, ref: "dependabot/npm", repo: { id: 1296724484 } }, base: { ref: base, repo: { id: 1296724484 } },
       user: { id: 49699333, login: "dependabot[bot]", type: "Bot" },
     } });
-    expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(202);
-    expect(sent.map(item => item.workflow)).toEqual(action === "ready_for_review" ? ["pr-automation.yml"] : ["pr-classification.yml", "pr-automation.yml"]);
-    expect(sent.find(item => item.workflow === "pr-automation.yml")?.body).toEqual({ ref: "main", inputs: { deliveryId: "delivery-1", repositoryId: "1296724484", pullRequestNumber: "187", sourceRef: "refs/heads/dependabot/npm", eventAfterSha: headSha, sourceActorId: "49699333", sourceActorLogin: "dependabot[bot]", policySha: "a".repeat(40) } });
+    expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(workflows.length ? 202 : 204);
+    expect(sent.map(item => item.workflow)).toEqual(workflows);
+    if (workflows.includes("pr-automation.yml")) expect(sent.find(item => item.workflow === "pr-automation.yml")?.body).toEqual({ ref: "main", inputs: { deliveryId: "delivery-1", repositoryId: "1296724484", pullRequestNumber: "187", sourceRef: "refs/heads/dependabot/npm", eventAfterSha: headSha, sourceActorId: "49699333", sourceActorLogin: "dependabot[bot]", policySha: "a".repeat(40) } });
   });
 
   it("机器人push仍不创建受管PR", async () => {
