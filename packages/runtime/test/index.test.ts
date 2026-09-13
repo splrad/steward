@@ -1052,3 +1052,77 @@ describe("中央运行程序", () => {
     expect(logged).not.toContain("installation-token");
   });
 });
+
+describe("Dependabot独立审查派发", () => {
+  it("缺少来源分支时不派发审查任务", async () => {
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    const payload = scoped({ action: "ready_for_review", repository: repository(), pull_request: {
+      number: 187, state: "open", draft: false,
+      head: { sha: "d".repeat(40), repo: { id: 1296724484 } }, base: { ref: "main", repo: { id: 1296724484 } },
+      user: { id: 49699333, login: "dependabot[bot]", type: "Bot" },
+    } });
+    expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(204);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  const reviewCases: Array<{ name: string; action: string; changes?: object; base?: string; draft?: boolean; workflows: string[] }> = [
+    ...["opened", "synchronize", "reopened"].map(action => ({ name: action, action, workflows: ["pr-classification.yml", "pr-automation.yml"] })),
+    { name: "ready_for_review", action: "ready_for_review", workflows: ["pr-automation.yml"] },
+    { name: "切换到默认分支", action: "edited", changes: { base: { ref: { from: "release" } } }, workflows: ["pr-classification.yml", "pr-automation.yml"] },
+    { name: "仅编辑标题", action: "edited", changes: { title: { from: "old title" } }, workflows: ["pr-classification.yml"] },
+    { name: "仅编辑正文", action: "edited", changes: { body: { from: "old body" } }, workflows: ["pr-classification.yml"] },
+    { name: "离开默认分支", action: "edited", changes: { base: { ref: { from: "main" } } }, base: "release", workflows: [] },
+    { name: "Draft切换到默认分支", action: "edited", changes: { base: { ref: { from: "release" } } }, draft: true, workflows: ["pr-classification.yml"] },
+    { name: "两个非默认分支间切换", action: "edited", changes: { base: { ref: { from: "release" } } }, base: "develop", workflows: [] },
+  ];
+  it.each(reviewCases)("$name保留适用的分类与审查派发", async ({ action, changes, base = "main", draft = false, workflows }) => {
+    const headSha = "d".repeat(40); const sent: { workflow: string; body: any }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.includes(`/commits/${headSha}/check-runs?per_page=100`)) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/check-runs")) return new Response(JSON.stringify({ id: 101 }), { status: 201 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      const workflow = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
+      if (workflow) { sent.push({ workflow, body: JSON.parse(String(init.body)) }); return new Response(null, { status: 204 }); }
+      throw new Error(`unexpected: ${value}`);
+    });
+    const payload = scoped({ action, changes, repository: repository(), pull_request: {
+      number: 187, state: "open", draft,
+      head: { sha: headSha, ref: "dependabot/npm", repo: { id: 1296724484 } }, base: { ref: base, repo: { id: 1296724484 } },
+      user: { id: 49699333, login: "dependabot[bot]", type: "Bot" },
+    } });
+    expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(workflows.length ? 202 : 204);
+    expect(sent.map(item => item.workflow)).toEqual(workflows);
+    if (workflows.includes("pr-automation.yml")) expect(sent.find(item => item.workflow === "pr-automation.yml")?.body).toEqual({ ref: "main", inputs: { deliveryId: "delivery-1", repositoryId: "1296724484", pullRequestNumber: "187", sourceRef: "refs/heads/dependabot/npm", eventAfterSha: headSha, sourceActorId: "49699333", sourceActorLogin: "dependabot[bot]", policySha: "a".repeat(40) } });
+  });
+
+  it("机器人push仍不创建受管PR", async () => {
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    const result = await handleWebhook(signedRequest("push", scoped({ repository: repository(), ref: "refs/heads/dependabot/npm", before: "a".repeat(40), after: "d".repeat(40), sender: { id: 49699333, login: "dependabot[bot]", type: "Bot" } })), baseEnv());
+    expect(result.status).toBe(204); expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("Dependabot派发故障隔离", () => {
+  it("新增审查请求失败仍先完成原验证和分类派发", async () => {
+    const headSha = "d".repeat(40); const effects: string[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.includes(`/commits/${headSha}/check-runs?per_page=100`)) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/check-runs")) { effects.push("validation"); return new Response(JSON.stringify({ id: 101 }), { status: 201 }); }
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      const workflow = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
+      if (workflow) { effects.push(workflow); return workflow === "pr-automation.yml" ? new Response("denied", { status: 403 }) : new Response(null, { status: 204 }); }
+      throw new Error(`unexpected: ${value}`);
+    });
+    const result = await handleWebhook(signedRequest("pull_request", scoped({ action: "synchronize", repository: repository(), pull_request: {
+      number: 187, state: "open", draft: false,
+      head: { sha: headSha, ref: "dependabot/npm", repo: { id: 1296724484 } }, base: { ref: "main", repo: { id: 1296724484 } },
+      user: { id: 49699333, login: "dependabot[bot]", type: "Bot" },
+    } })), baseEnv());
+    expect(result.status).toBe(503);
+    expect(effects).toEqual(["validation", "pr-classification.yml", "pr-automation.yml"]);
+  });
+});

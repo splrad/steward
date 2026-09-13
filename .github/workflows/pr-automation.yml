@@ -10,6 +10,7 @@ on:
       sourceActorId: { required: true, type: string }
       sourceActorLogin: { required: true, type: string }
       policySha: { required: true, type: string }
+      pullRequestNumber: { required: false, type: string }
 
 permissions:
   contents: read
@@ -20,6 +21,7 @@ concurrency:
 
 jobs:
   reconcile:
+    if: inputs.pullRequestNumber == ''
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
@@ -141,3 +143,45 @@ jobs:
       - name: 删除临时人工智能输入
         if: always()
         run: rm -f "${{ runner.temp }}/copilot-prompt.txt" "${{ runner.temp }}/copilot-output.jsonl" "${{ runner.temp }}/copilot-repair-prompt.txt" "${{ runner.temp }}/copilot-repair-output.jsonl" "${{ runner.temp }}/pr-prepared-facts.json"
+
+  request:
+    if: inputs.pullRequestNumber != '' && github.actor_id == '301115370' && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: steward-automation
+      deployment: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: "${{ github.workflow_sha }}", persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: .node-version, cache: npm }
+      - run: npm ci --ignore-scripts
+      - name: 请求并核对Copilot审查
+        shell: bash
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          COPILOT_REVIEW_REQUEST_TOKEN: ${{ secrets.COPILOT_REVIEW_REQUEST_TOKEN }}
+          TRIGGER_ACTOR_ID: ${{ github.actor_id }}
+          WORKFLOW_REPOSITORY: ${{ github.repository }}
+          WORKFLOW_EVENT: ${{ github.event_name }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_RUN_REF: ${{ github.ref }}
+          WORKFLOW_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          DELIVERY_ID: ${{ inputs.deliveryId }}
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          PULL_REQUEST_NUMBER: ${{ inputs.pullRequestNumber }}
+          EVENT_HEAD_SHA: ${{ inputs.eventAfterSha }}
+          POLICY_SHA: ${{ github.workflow_sha }}
+        run: |
+          review_arguments=(
+            --delivery-id "$DELIVERY_ID"
+            --repository-id "$REPOSITORY_ID"
+            --pull-request-number "$PULL_REQUEST_NUMBER"
+            --event-head-sha "$EVENT_HEAD_SHA"
+            --policy-sha "$POLICY_SHA"
+          )
+          node packages/runner/dist/index.js request-copilot-review "${review_arguments[@]}"
