@@ -1052,3 +1052,67 @@ describe("中央运行程序", () => {
     expect(logged).not.toContain("installation-token");
   });
 });
+
+describe("Dependabot独立审查派发", () => {
+  it("缺少来源分支时不派发审查任务", async () => {
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    const payload = scoped({ action: "ready_for_review", repository: repository(), pull_request: {
+      number: 187, state: "open", draft: false,
+      head: { sha: "d".repeat(40), repo: { id: 1296724484 } }, base: { ref: "main", repo: { id: 1296724484 } },
+      user: { id: 49699333, login: "dependabot[bot]", type: "Bot" },
+    } });
+    expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(204);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["opened", "synchronize", "reopened", "ready_for_review"])("%s请求审查并保留原分类路径", async action => {
+    const headSha = "d".repeat(40); const sent: { workflow: string; body: any }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.includes(`/commits/${headSha}/check-runs?per_page=100`)) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/check-runs")) return new Response(JSON.stringify({ id: 101 }), { status: 201 });
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      const workflow = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
+      if (workflow) { sent.push({ workflow, body: JSON.parse(String(init.body)) }); return new Response(null, { status: 204 }); }
+      throw new Error(`unexpected: ${value}`);
+    });
+    const payload = scoped({ action, repository: repository(), pull_request: {
+      number: 187, state: "open", draft: false,
+      head: { sha: headSha, ref: "dependabot/npm", repo: { id: 1296724484 } }, base: { ref: "main", repo: { id: 1296724484 } },
+      user: { id: 49699333, login: "dependabot[bot]", type: "Bot" },
+    } });
+    expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(202);
+    expect(sent.map(item => item.workflow)).toEqual(action === "ready_for_review" ? ["pr-automation.yml"] : ["pr-classification.yml", "pr-automation.yml"]);
+    expect(sent.find(item => item.workflow === "pr-automation.yml")?.body).toEqual({ ref: "main", inputs: { deliveryId: "delivery-1", repositoryId: "1296724484", pullRequestNumber: "187", sourceRef: "refs/heads/dependabot/npm", eventAfterSha: headSha, sourceActorId: "49699333", sourceActorLogin: "dependabot[bot]", policySha: "a".repeat(40) } });
+  });
+
+  it("机器人push仍不创建受管PR", async () => {
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    const result = await handleWebhook(signedRequest("push", scoped({ repository: repository(), ref: "refs/heads/dependabot/npm", before: "a".repeat(40), after: "d".repeat(40), sender: { id: 49699333, login: "dependabot[bot]", type: "Bot" } })), baseEnv());
+    expect(result.status).toBe(204); expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("Dependabot派发故障隔离", () => {
+  it("新增审查请求失败仍先完成原验证和分类派发", async () => {
+    const headSha = "d".repeat(40); const effects: string[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const value = String(url);
+      if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (value.includes(`/commits/${headSha}/check-runs?per_page=100`)) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
+      if (value.endsWith("/repos/splrad/steward/check-runs")) { effects.push("validation"); return new Response(JSON.stringify({ id: 101 }), { status: 201 }); }
+      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      const workflow = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
+      if (workflow) { effects.push(workflow); return workflow === "pr-automation.yml" ? new Response("denied", { status: 403 }) : new Response(null, { status: 204 }); }
+      throw new Error(`unexpected: ${value}`);
+    });
+    const result = await handleWebhook(signedRequest("pull_request", scoped({ action: "synchronize", repository: repository(), pull_request: {
+      number: 187, state: "open", draft: false,
+      head: { sha: headSha, ref: "dependabot/npm", repo: { id: 1296724484 } }, base: { ref: "main", repo: { id: 1296724484 } },
+      user: { id: 49699333, login: "dependabot[bot]", type: "Bot" },
+    } })), baseEnv());
+    expect(result.status).toBe(503);
+    expect(effects).toEqual(["validation", "pr-classification.yml", "pr-automation.yml"]);
+  });
+});

@@ -4,3 +4,4 @@ export * from "./client.js";
 export * from "./pagination.js";
 export * from "./release-upload.js";
 export * from "./workflow-dispatch.js";
+export * from "./dependabot-review.js";

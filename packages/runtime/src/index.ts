@@ -1,5 +1,5 @@
 import { isIssueCapableRepository, isStewardOwnedPullRequest } from "../../core/src/issues.js";
-import { createAppJwt, createInstallationToken, dispatchWorkflow, GitHubClient } from "../../github/src/index.js";
+import { createAppJwt, createInstallationToken, dispatchWorkflow, GitHubClient, isDependabotReviewEligible } from "../../github/src/index.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
 import { handleIssueSnapshotInternalRequest, IssueSnapshotStore } from "./issue-snapshots.js";
 import { confirmPullRequestBodyWriteIntent, processPullRequestBodyEditedDelivery, PullRequestBodyWriteIntentStore, type PullRequestBodyWriteIntent } from "./pr-body-write-intents.js";
@@ -258,6 +258,14 @@ function belongsToOrganization(repository: any): boolean {
 function isManaged(repository: any): boolean { return belongsToOrganization(repository) && repositoryConfiguration(repository).managed === true; }
 function isIssueCapable(repository: any): boolean { return isIssueCapableRepository(repository, isManaged(repository)); }
 
+async function dispatchDependabotReview(env: Env, repository: any, pull: any, action: string, deliveryId: string): Promise<boolean> {
+  if (!["opened", "synchronize", "reopened", "ready_for_review"].includes(action)
+    || !repository || !isManaged(repository) || repositoryConfiguration(repository).prAutomation !== true
+    || !isDependabotReviewEligible(repository, pull, String(pull?.head?.sha ?? ""))
+    || typeof pull.head.ref !== "string" || !pull.head.ref) return false;
+  await send(env, "pr-automation.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), sourceRef: `refs/heads/${pull.head.ref}`, eventAfterSha: pull.head.sha, sourceActorId: String(pull.user.id), sourceActorLogin: pull.user.login, policySha: env.POLICY_SHA });
+  return true;
+}
 function repositoryBeforeEdit(repository: any, changes: any): any {
   const previousVisibility = changes?.visibility?.from;
   return {
@@ -539,11 +547,12 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
         await send(env, "pr-issue-link.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: String(!capable), policySha: env.POLICY_SHA });
         dispatched = true;
       }
-      return response(dispatched ? 202 : 204);
+      const reviewDispatched = await dispatchDependabotReview(env, repository, pull, action, deliveryId);
+      return response(dispatched || reviewDispatched ? 202 : 204);
     }
     if (event === "pull_request" && action === "ready_for_review") {
       const repository = payload.repository; const pull = payload.pull_request;
-      if (!repository || !isManaged(repository) || !pull || !isStewardOwnedPullRequest(pull, Number(repository.id)) || pull.draft !== false || pull.base?.ref !== repository.default_branch) return response(204);
+      if (!repository || !isManaged(repository) || !pull || !isStewardOwnedPullRequest(pull, Number(repository.id)) || pull.draft !== false || pull.base?.ref !== repository.default_branch) return response(await dispatchDependabotReview(env, repository, pull, action, deliveryId) ? 202 : 204);
       return response(await requestMaintainersReview(env, repository, pull) ? 202 : 204);
     }
     if (event === "pull_request" && action === "closed" && payload.pull_request?.merged === false) {
