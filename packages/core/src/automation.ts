@@ -6,7 +6,7 @@ import type {
   SemanticCatalog,
 } from './classification.js';
 import { validateClassificationSuggestion } from './classification.js';
-import { extractIssueLinksBlock } from './issues.js';
+import { contributorBlockAnchor, extractIssueLinksBlock } from './issues.js';
 
 export type { AiClassificationConfidence, AiClassificationSuggestion } from './classification.js';
 
@@ -338,7 +338,7 @@ export function renderManagedBody(input: { generated: GeneratedSummary; existing
   if (input.generated.impact.length) sections.push(`## 影响分析\n\n${input.generated.impact.map((item) => `- ${escapeMarkdownText(item)}`).join('\n')}`);
   if (issueLinks) sections.push(issueLinks.block);
   if (input.generated.releaseAndMigration.length) sections.push(`## 发布与迁移\n\n${input.generated.releaseAndMigration.map((item) => `- ${escapeMarkdownText(item)}`).join('\n')}`);
-  if (input.contributors.length) sections.push(renderContributors(input.contributors));
+  if (input.contributors.length) sections.push(`${contributorBlockAnchor}\n\n${renderContributors(input.contributors)}`);
   const markers = [`<!-- workflow:source-actor:${input.actor} -->`, `<!-- workflow:source-contributors:${input.contributors.map((item) => item.login).join(',')} -->`, `<!-- workflow:auto-context:${input.context} -->`].join('\n');
   return `${summaryStart}\n${sections.join('\n\n')}\n\n${markers}\n${summaryEnd}\n`;
 }

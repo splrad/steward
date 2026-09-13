@@ -14,7 +14,7 @@ import {
   validateAiClassificationSuggestion,
   validateGeneratedSummary,
 } from "../src/automation.js";
-import { renderIssueLinksBlock, upsertIssueLinksBlock } from "../src/issues.js";
+import { contributorBlockAnchor, renderIssueLinksBlock, upsertIssueLinksBlock } from "../src/issues.js";
 import { buildAiDiffObservation, type ClassificationProfile, type SemanticCatalog } from "../src/classification.js";
 import { isHumanActor, normalizeContributor } from "../src/identity.js";
 
@@ -181,6 +181,7 @@ describe("拉取请求自动化", () => {
     expect(body).toContain("## 主要改动");
     expect(body).not.toContain("贡献者：");
     expect(body).toContain("<!-- workflow:source-contributors: -->");
+    expect(body).not.toContain(contributorBlockAnchor);
   });
 
   it.each(["axiomoth", "splrad-steward[bot]"])("单人贡献者显示为一行，来源账号为%s", (actor) => {
@@ -194,6 +195,7 @@ describe("拉取请求自动化", () => {
     expect(body).not.toContain("<details>");
     expect(body).toContain(`<!-- workflow:source-actor:${actor} -->`);
     expect(body).toContain("<!-- workflow:source-contributors:axiomoth -->");
+    expect(body).toContain(`${contributorBlockAnchor}\n\n贡献者：`);
   });
 
   it.each([0, 1, 2])("旧贡献者章节更新为当前%d人样式", (count) => {
@@ -206,6 +208,7 @@ describe("拉取请求自动化", () => {
     expect(rebuilt).not.toContain("旧贡献者列表");
     expect(rebuilt).not.toContain("former");
     expect(rebuilt.match(/workflow:source-contributors:/g)).toHaveLength(1);
+    expect(rebuilt.split(contributorBlockAnchor).length - 1).toBe(count ? 1 : 0);
     expect(renderManagedBody({ ...input, existingBody: rebuilt })).toBe(rebuilt);
   });
 
@@ -223,6 +226,27 @@ describe("拉取请求自动化", () => {
     expect(inserted.indexOf("## 解决的议题")).toBeLessThan(inserted.indexOf("贡献者："));
     if (withRelease) expect(inserted.indexOf("## 解决的议题")).toBeLessThan(inserted.indexOf("## 发布与迁移"));
     expect(inserted).toBe(renderManagedBody({ ...input, existingBody: inserted }));
+    expect(upsertIssueLinksBlock(inserted, issueBlock)).toBe(inserted);
+  });
+
+  it.each([1, 2])("议题块通过语义标记定位%d人贡献者区域", (count) => {
+    const input = {
+      generated: validateGeneratedSummary({ ...valid, releaseAndMigration: [] }),
+      templateBody: organizationPullRequestTemplate, actor: "axiomoth",
+      contributors: [{ id: 44151430, login: "axiomoth" }, { id: 12345678, login: "contributor2" }].slice(0, count),
+      context: "semantic-anchor",
+    };
+    const body = renderManagedBody(input)
+      .replaceAll("https://github.com/", "https://profiles.example/")
+      .replaceAll("## 贡献者", "## Contributors")
+      .replaceAll("贡献者：", "Contributors: ");
+    const issueBlock = renderIssueLinksBlock({
+      repositoryId: 1187527897, pullRequestNumber: 191,
+      baseSha: "0".repeat(40), headSha: "1".repeat(40), generation: 1, analysisInputDigest: "a".repeat(64),
+    }, [{ repositoryId: 1187527897, number: 135 }]);
+    const inserted = upsertIssueLinksBlock(body, issueBlock);
+    expect(inserted.indexOf("## 解决的议题")).toBeLessThan(inserted.indexOf(contributorBlockAnchor));
+    expect(inserted.replace(`${issueBlock}\n\n`, "")).toBe(body);
     expect(upsertIssueLinksBlock(inserted, issueBlock)).toBe(inserted);
   });
 
