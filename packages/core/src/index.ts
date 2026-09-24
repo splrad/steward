@@ -7,5 +7,6 @@ export * from './issues.js';
 export * from './label-sync.js';
 export * from './onboarding.js';
 export * from './release-notes.js';
+export * from './release-note-fragment.js';
 export * from './release.js';
 export * from './validation.js';
