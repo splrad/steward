@@ -80,12 +80,42 @@ function object(value: unknown, allowed: readonly string[], field: string): Reco
   return value as Record<string, unknown>;
 }
 
+function hasInlineFormatting(value: string): boolean {
+  const characters = [...value];
+  const openers: { marker: string; length: number; canClose: boolean }[] = [];
+  const whitespace = (character: string) => /\s/u.test(character);
+  const punctuation = (character: string) => /[\p{P}\p{S}]/u.test(character);
+  for (let index = 0; index < characters.length;) {
+    const marker = characters[index++]!;
+    if (marker === '\\' && /[!-/:-@\[-`{-~]/u.test(characters[index] ?? '')) { index++; continue; }
+    if (!'*_~'.includes(marker)) continue;
+    const start = index - 1;
+    while (characters[index] === marker) index++;
+    const length = index - start;
+    const before = characters[start - 1] ?? ' ';
+    const after = characters[index] ?? ' ';
+    const left = !whitespace(after) && (!punctuation(after) || whitespace(before) || punctuation(before));
+    const right = !whitespace(before) && (!punctuation(before) || whitespace(after) || punctuation(after));
+    const canOpen = marker === '_' ? left && (!right || punctuation(before)) : left;
+    const canClose = marker === '_' ? right && (!left || punctuation(after)) : right;
+    if (canClose && openers.some((opener) => {
+      if (opener.marker !== marker) return false;
+      if (marker === '~') return length <= 2 && opener.length === length;
+      return !(opener.canClose || canOpen) || (opener.length + length) % 3 !== 0
+        || (opener.length % 3 === 0 && length % 3 === 0);
+    })) return true;
+    if (canOpen) openers.push({ marker, length, canClose });
+  }
+  return false;
+}
+
 function text(value: unknown, min: number, field: string): string {
   if (typeof value !== 'string') fail('RN_FRAGMENT_SCHEMA', field);
   checkString(value, field);
   const normalized = value.normalize('NFC').trim();
   const length = [...normalized].length;
   if (length < min || length > 240) fail('RN_FRAGMENT_TEXT', field);
+  if (hasInlineFormatting(normalized)) fail('RN_FRAGMENT_TEXT', field);
   if (/`|~{3}|!?\[[^\]]*\]\s*[(:\[]|<\/?[a-z!][^>]*>|(?:[a-z][a-z\d+.-]*:\/\/|\b(?:mailto|data|javascript):|\bwww\.)|^(?:#{1,6}\s|>\s?|[-+*]\s|\d+[.)]\s)|\||\{\{|\}\}|\$\{|<%|%>|\{[a-z_][\w.-]*\}/iu.test(normalized)) {
     fail('RN_FRAGMENT_TEXT', field);
   }

@@ -64,6 +64,23 @@ describe('T01: fragment bytes and JSON', () => {
 });
 
 describe('T02: text and entry boundaries', () => {
+  it.each(['change', 'userImpact', 'reason', 'action'])('rejects inline formatting in %s', (field) => {
+    for (const content of ['**breaking change**', '_important text_', '~~removed item~~',
+      '*important text*', '__important text__', '***important text***', '~removed item~',
+      'Before **bold _nested_ text** after.', '修复了**重要问题**并保留详细信息。',
+      'Before (**important text**) after.', 'The __init__ method retains its behavior.']) {
+      const value = field === 'reason' ? { ...hidden, reason: content }
+        : { ...documented, entries: [{ ...entry, ...(field === 'action' ? { actionRequired: true } : {}), [field]: content }] };
+      errorCode(() => parseFragment(encode(value)), 'RN_FRAGMENT_TEXT');
+    }
+  });
+  it.each(['The user_id and build_number fields remain stable.', 'Names foo__bar__baz retain their behavior.',
+    'Calculate 2 * 3 * 4 before saving.', 'About ~10 to ~20 items are processed.',
+    'An unmatched **marker remains literal.', 'Spaces in * literal * remain unchanged.',
+    'Escaped \\*literal text\\* remains readable.', 'Escaped \\_literal text\\_ remains readable.',
+    'Names foo_bar_baz remain unchanged.'])('preserves literal punctuation: %s', (reason) => {
+    expect(parseFragment(encode({ ...hidden, reason }))).toEqual({ ...hidden, reason });
+  });
   it.each([1, 5])('accepts %i facts and repeated text in separate objects', (count) => {
     const value = { ...documented, entries: Array.from({ length: count }, () => ({ ...entry })) };
     expect(parseFragment(encode(value))).toEqual(value);
