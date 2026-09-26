@@ -18,6 +18,24 @@ function errorCode(run: () => unknown, code: FragmentErrorCode): void {
 const decision = (path: string, classification: FragmentClassification | null = null) => evaluateRequirement([{ status: 'modified', path }], classification, profile);
 
 describe('T01: fragment bytes and JSON', () => {
+  it('preserves escaped string boundaries and decoded duplicate keys', () => {
+    const reason = 'Quoted "value", braces {}, brackets [] and slash \\ remain text.';
+    expect(parseFragment(encode({ ...hidden, reason }))).toEqual({ ...hidden, reason });
+    const source = '{"schemaVersion":1,"status":"not-user-facing","reason":"Escaped \\"quote\\" and braces {}","reas\\u006fn":"Duplicate reason value"}';
+    errorCode(() => parseFragment(new TextEncoder().encode(source)), 'RN_FRAGMENT_DUPLICATE_KEY');
+  });
+  it('rejects long escaped inputs and retains duplicate-key detection after them', () => {
+    const repeated = '\\"'.repeat(100_000);
+    errorCode(() => parseFragment(encode({ ...hidden, reason: repeated })), 'RN_FRAGMENT_TEXT');
+    errorCode(() => parseFragment(new TextEncoder().encode('"' + repeated)), 'RN_FRAGMENT_JSON');
+    const source = '{"reason":' + JSON.stringify(repeated) + ',"reason":"Duplicate reason value"}';
+    errorCode(() => parseFragment(new TextEncoder().encode(source)), 'RN_FRAGMENT_DUPLICATE_KEY');
+  });
+  it.each([42, null, {}])('rejects non-string actions in both validators %#', (action) => {
+    const value = { ...documented, entries: [{ ...entry, actionRequired: true, action }] };
+    expect(validateSchema(value)).toBe(false);
+    errorCode(() => parseFragment(encode(value)), 'RN_FRAGMENT_SCHEMA');
+  });
   it.each([documented, hidden])('accepts both fragment statuses', (value) => {
     expect(parseFragment(encode(value))).toEqual(value);
     expect(validateSchema(value)).toBe(true);
@@ -82,6 +100,14 @@ describe('T02: text and entry boundaries', () => {
 });
 
 describe('T03: path requirements', () => {
+  it.each(['fragments/*', 'fragments/**', 'fragments/?', 'fragments/{a,b}', 'fragments/[ab]', 'fragments/!(a)'])('rejects a pattern directory in both entry points: %s', (directory) => {
+    errorCode(() => validateFragmentProfile({ ...profile, fragmentDirectory: directory }), 'RN_PROFILE_INVALID');
+    errorCode(() => fragmentIdFromPath(`${directory}/abcdefgh.json`, directory), 'RN_PROFILE_INVALID');
+  });
+  it('accepts a custom literal directory in both entry points', () => {
+    expect(() => validateFragmentProfile({ ...profile, fragmentDirectory: 'changes/facts' })).not.toThrow();
+    expect(fragmentIdFromPath('changes/facts/abcdefgh.json', 'changes/facts')).toBe('abcdefgh');
+  });
   it.each([
     ['src/main.ts', 'required'], ['docs/user/start.md', 'required'], ['docs/internal.md', 'ignored'],
     ['tests/spec.ts', 'ignored'], ['VERSION', 'ignored'], ['package.json', 'review-required'],

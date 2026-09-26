@@ -24,6 +24,26 @@ function checkString(value: string, field: string): void {
   if (/[\ud800-\udfff]/u.test(value) || forbiddenCharacters.test(value)) fail('RN_FRAGMENT_TEXT', field);
 }
 
+// The caller validates JSON syntax before scanning tokens from left to right.
+function* jsonTokens(source: string): Generator<string> {
+  let cursor = 0;
+  while (cursor < source.length) {
+    const start = cursor;
+    const character = source[cursor++]!;
+    if (' \t\r\n'.includes(character)) continue;
+    if (character === '"') {
+      while (cursor < source.length) {
+        const next = source[cursor++]!;
+        if (next === '\\') cursor++;
+        else if (next === '"') break;
+      }
+    } else if (!'{}[],:'.includes(character)) {
+      while (cursor < source.length && !' \t\r\n{}[],:'.includes(source[cursor]!)) cursor++;
+    }
+    yield source.slice(start, cursor);
+  }
+}
+
 function readJson(bytes: Uint8Array): unknown {
   let source: string;
   try { source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
@@ -35,8 +55,7 @@ function readJson(bytes: Uint8Array): unknown {
 
   // JSON.parse validates syntax; token inspection preserves duplicate object keys.
   const stack: ({ keys: Set<string>; expectingKey: boolean } | null)[] = [];
-  const tokens = source.matchAll(/"(?:[^"\\]|\\[\s\S])*"|[{}\[\],:]|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null/g);
-  for (const [token] of tokens) {
+  for (const token of jsonTokens(source)) {
     if (token === '{') stack.push({ keys: new Set(), expectingKey: true });
     else if (token === '[') stack.push(null);
     else if (token === '}' || token === ']') stack.pop();
@@ -119,10 +138,13 @@ function relativePath(value: string, code: 'RN_PATH_INVALID' | 'RN_PROFILE_INVAL
   return value;
 }
 
-export function validateFragmentProfile(profile: FragmentProfile): void {
-  const directory = profile.fragmentDirectory;
+function validateFragmentDirectory(directory: string): void {
   relativePath(directory, 'RN_PROFILE_INVALID');
   if (/[*!?{}()[\]]/u.test(directory)) fail('RN_PROFILE_INVALID', 'fragmentDirectory');
+}
+
+export function validateFragmentProfile(profile: FragmentProfile): void {
+  validateFragmentDirectory(profile.fragmentDirectory);
   for (const patterns of [profile.required, profile.reviewRequired, profile.ignored]) {
     for (const pattern of patterns) {
       relativePath(pattern, 'RN_PROFILE_INVALID');
@@ -135,7 +157,7 @@ export function validateFragmentProfile(profile: FragmentProfile): void {
 
 export function fragmentIdFromPath(path: string, directory = '.release-notes/fragments'): string {
   relativePath(path, 'RN_PATH_INVALID');
-  relativePath(directory, 'RN_PROFILE_INVALID');
+  validateFragmentDirectory(directory);
   if (!path.startsWith(`${directory}/`)) fail('RN_FRAGMENT_ID', 'path');
   const name = path.slice(directory.length + 1);
   if (!/^[a-z0-9-]{8,64}\.json$/u.test(name)) fail('RN_FRAGMENT_ID', 'path');
