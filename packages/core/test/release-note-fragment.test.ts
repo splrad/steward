@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { describe, expect, it } from 'vitest';
+import type { ClassificationDecision } from '../src/classification.js';
 import { evaluateRequirement, fragmentIdFromPath, FragmentError, parseFragment, validateFragmentProfile,
-  validateFragmentRequirement, type FragmentClassification, type FragmentErrorCode, type FragmentProfile } from '../src/release-note-fragment.js';
+  validateFragmentRequirement, toFragmentClassification, type FragmentClassification, type FragmentErrorCode, type FragmentProfile } from '../src/release-note-fragment.js';
 
 const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
 const entry = { change: 'Failed tasks preserve the original data.', userImpact: 'Later tasks continue after a failure.', actionRequired: false };
@@ -163,6 +164,37 @@ describe('T03: path requirements', () => {
 });
 
 describe('T04: classification and risk consistency', () => {
+  const coreDecision = (id: string, risks: string[] = []): ClassificationDecision => ({
+    primaryKind: { id, source: 'deterministic-fallback', reasonCode: 'test' },
+    riskFlags: risks.map((id) => ({ id, source: 'rule' })), facets: [], areas: [],
+    aiState: 'missing', runtimeRelease: false, installOrPackage: false,
+  });
+  it.each(['feature', 'bug', 'performance'])('adapts core %s decisions to path escalation', (kind) => {
+    const input = coreDecision(kind);
+    const before = structuredClone(input);
+    const adapted = toFragmentClassification(input);
+    expect(adapted).toEqual({ primaryKind: kind, riskFlags: [] });
+    expect(decision('tests/a.ts', adapted).requirement).toBe('review-required');
+    expect(input).toEqual(before);
+  });
+  it.each(['security', 'breaking-change'])('preserves core %s risk constraints', (risk) => {
+    const adapted = toFragmentClassification(coreDecision('maintenance', [risk]));
+    const result = decision('tests/a.ts', adapted);
+    expect(result.requirement).toBe('required');
+    errorCode(() => validateFragmentRequirement(parseFragment(encode(hidden)), result, adapted), 'RN_FACT_CONFLICT');
+    if (risk === 'breaking-change') {
+      errorCode(() => validateFragmentRequirement(parseFragment(encode(documented)), result, adapted), 'RN_FACT_CONFLICT');
+    }
+  });
+  it('keeps missing classification distinct and copies risk IDs', () => {
+    expect(toFragmentClassification(null)).toBeNull();
+    expect(decision('src/a.ts', toFragmentClassification(null))).toMatchObject({ requirement: 'required', classificationState: 'missing' });
+    const input = coreDecision('maintenance', ['security', 'breaking-change']);
+    const adapted = toFragmentClassification(input);
+    input.riskFlags.length = 0;
+    expect(adapted?.riskFlags).toEqual(['security', 'breaking-change']);
+    expect(decision('tests/a.ts', toFragmentClassification(coreDecision('maintenance'))).requirement).toBe('ignored');
+  });
   it.each(['feature', 'bug', 'performance'])('raises %s to review-required', (primaryKind) => {
     expect(decision('tests/a.ts', { primaryKind, riskFlags: [] }).requirement).toBe('review-required');
   });

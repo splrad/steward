@@ -1,4 +1,5 @@
 import { minimatch } from 'minimatch';
+import type { ClassificationDecision } from './classification.js';
 
 export type FragmentEntry = { change: string; userImpact: string } & (
   { actionRequired: false } | { actionRequired: true; action: string }
@@ -151,6 +152,11 @@ export interface FragmentProfile {
   ignored: readonly string[];
 }
 export interface FragmentClassification { primaryKind: string; riskFlags: readonly string[] }
+
+export function toFragmentClassification(classification: ClassificationDecision | null): FragmentClassification | null {
+  if (classification === null) return null;
+  return { primaryKind: classification.primaryKind.id, riskFlags: classification.riskFlags.map((risk) => risk.id) };
+}
 export type FragmentPathChange =
   | { status: 'added' | 'modified' | 'removed'; path: string }
   | { status: 'renamed'; path: string; previousPath: string };
