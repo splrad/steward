@@ -116,6 +116,7 @@ function text(value: unknown, min: number, field: string): string {
   const normalized = value.normalize('NFC').trim();
   const length = [...normalized].length;
   if (length < min || length > 240) fail('RN_FRAGMENT_TEXT', field);
+  if (/^(?:- *){3,}$|^(?:_ *){3,}$|^(?:\* *){3,}$/u.test(normalized)) fail('RN_FRAGMENT_TEXT', field);
   if (hasInlineFormatting(normalized)) fail('RN_FRAGMENT_TEXT', field);
   if (/`|~{3}|!?\[[^\]]*\]\s*[(:\[]|<\/?[a-z!][^>]*>|(?:[a-z][a-z\d+.-]*:\/\/|\b(?:mailto|data|javascript):|\bwww\.)|^(?:#{1,6}\s|>\s?|[-+*]\s|\d+[.)]\s)|\||\{\{|\}\}|\$\{|<%|%>|\{[a-z_][\w.-]*\}/iu.test(normalized)) {
     fail('RN_FRAGMENT_TEXT', field);

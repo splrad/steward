@@ -65,6 +65,16 @@ describe('T01: fragment bytes and JSON', () => {
 });
 
 describe('T02: text and entry boundaries', () => {
+  it.each(['change', 'userImpact', 'reason', 'action'])('rejects thematic breaks in %s', (field) => {
+    for (const content of ['----------', '__________', '**********', '-    -    -', '_    _    _', '*    *    *', '  --  ---  -----  ']) {
+      const value = field === 'reason' ? { ...hidden, reason: content }
+        : { ...documented, entries: [{ ...entry, ...(field === 'action' ? { actionRequired: true } : {}), [field]: content }] };
+      errorCode(() => parseFragment(encode(value)), 'RN_FRAGMENT_TEXT');
+    }
+  });
+  it.each(['Use ---------- as a literal separator.', 'The --dry-run option remains available.', '----------x', '____  ____x'])('preserves non-break punctuation: %s', (reason) => {
+    expect(parseFragment(encode({ ...hidden, reason }))).toEqual({ ...hidden, reason });
+  });
   it.each(['change', 'userImpact', 'reason', 'action'])('rejects inline formatting in %s', (field) => {
     for (const content of ['**breaking change**', '_important text_', '~~removed item~~',
       '*important text*', '__important text__', '***important text***', '~removed item~',
