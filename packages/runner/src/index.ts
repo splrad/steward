@@ -19,6 +19,7 @@ import {
 import { createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestError, uploadReleaseAsset, isDependabotReviewEligible } from "../../github/src/index.js";
 import { managedRepositoryIds, managedRepositoryTargets, runManagedRepositorySync, type ManagedTarget } from "./managed-repository-sync.js";
 import { runPrIssueLink } from "./pr-issue-link.js";
+import { validateRemoteFragments } from "./release-note-validation.js";
 import { targetManagedBlock, updatePullRequestBodyDurably, type DurableBodyRedrive } from "./pr-body-writer.js";
 import { minimatch } from "minimatch";
 import YAML from "yaml";
@@ -40,7 +41,7 @@ const allowedArguments: Record<string, Set<string>> = {
   "pr-issue-link": new Set(["delivery-id", "repository-id", "pull-request-number", "scan-all", "invalidate-only", "cleanup-unmanaged", "reconciliation-generation", "policy-sha"]),
   "sync-review-instructions": new Set(["repository-id", "policy-sha"]),
   "sync-managed-labels": new Set(["repository-id", "policy-sha"]),
-  validate: new Set(["workspace", "repository-id", "profile"]),
+  validate: new Set(["workspace", "repository-id", "profile", "fragments-only"]),
   "release-preflight": new Set(["workspace", "repository-id", "pull-request-number", "target-sha", "policy-sha", "trigger", "manifest"]),
   "release-notes": new Set(["repository-id", "pull-request-number", "target-sha", "policy-sha", "display-version", "output"]),
   "release-publish": new Set(["manifest", "notes", "repository"]),
@@ -1593,6 +1594,41 @@ async function validate(args: Readonly<Record<string, string>>) {
   const profileName = required(args, "profile");
   if (profileName !== configuration.validationProfile) throw new Error("验证配置与中央仓库目录不一致");
   const profile = await json<ValidationProfile>(configPath("profiles", "validation", `${profileName}.json`));
+  if (args["fragments-only"] !== undefined) {
+    if (args["fragments-only"] !== "true") throw new Error("fragments-only必须为true");
+    if (!profile.fragmentGate?.repositories.includes(repositoryId)) {
+      await summary(["片段门禁：未启用"]);
+      return;
+    }
+    const identity = { repositoryId, pullRequestNumber: integer(env("VALIDATION_PR_NUMBER"), "VALIDATION_PR_NUMBER"),
+      baseSha: sha(env("VALIDATION_BASE_SHA"), "VALIDATION_BASE_SHA"), headSha: sha(env("VALIDATION_HEAD_SHA"), "VALIDATION_HEAD_SHA"),
+      policySha: sha(env("VALIDATION_POLICY_SHA"), "VALIDATION_POLICY_SHA") };
+    const gh = new GitHubClient(env("VALIDATION_READ_TOKEN"), "https://api.github.com", fetch, identity.policySha);
+    const repository = await gh.getRepositoryById(repositoryId);
+    if (repository.id !== repositoryId) throw new Error("片段验证仓库身份不匹配");
+    const [owner, repo] = splitRepository(repository.full_name);
+    try {
+      const result = await validateRemoteFragments({ gh, owner, repo, identity, profile: profile.fragmentGate.profile,
+        classification: async () => {
+          const semantics = await semanticCatalog();
+          const classificationProfile = await json<ClassificationProfile>(configPath("profiles", "classification", `${configuration.classification.profile}.json`));
+          const policy = classificationDigests(semantics, classificationProfile, configuration.classification);
+          const checks = (await gh.listAllCheckRuns(owner, repo, identity.headSha)).filter(check => check.name === "PR Classification Gate" && check.app?.id === 4243096 && check.head_sha === identity.headSha);
+          if (checks.length !== 1 || checks[0].status !== "completed" || checks[0].conclusion !== "success") return null;
+          const state = decodeClassificationCheckState(checks[0].external_id, classificationCheckStateCodec(semantics, classificationProfile), identity);
+          return state?.policy === policy.classificationPolicyDigest && state.mode === configuration.classification.ai.mode ? { primaryKind: state.primary.id, riskFlags: state.risks } : null;
+        } });
+      await summary(["# 发布片段验证", `base：${identity.baseSha}`, `head：${identity.headSha}`, `policy：${identity.policySha}`,
+        `要求：${result.decision.requirement}`, `分类：${result.decision.classificationState}`,
+        ...result.sources.map(source => `片段：${escapeMarkdownText(source.path)}；blob：${source.blobSha}；SHA-256：${source.sha256}`),
+        ...(result.fragment?.status === "not-user-facing" ? [`无用户影响理由：${escapeMarkdownText(result.fragment.reason)}`] : [])]);
+    } catch (error) {
+      await summary(["# 发布片段验证失败", `base：${identity.baseSha}`, `head：${identity.headSha}`, `policy：${identity.policySha}`,
+        escapeMarkdownText(error instanceof Error ? error.message : String(error))]);
+      throw error;
+    }
+    return;
+  }
   const validationBaseSha = process.env.VALIDATION_BASE_SHA;
   const validationBaseRef = process.env.VALIDATION_BASE_REF;
   if (Boolean(validationBaseSha) !== Boolean(validationBaseRef)) throw new Error("基础分支验证参数不完整");

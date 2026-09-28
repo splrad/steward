@@ -23,6 +23,13 @@ afterEach(() => {
 });
 
 describe("中央命令入口", () => {
+  it("未启用片段门禁时不读取网络或令牌", async () => {
+    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
+    const transport = vi.fn(() => { throw new Error("unexpected network"); });
+    vi.stubGlobal("fetch", transport);
+    await main(["validate", "--workspace", ".", "--repository-id", "1296724484", "--profile", "steward", "--fragments-only", "true"]);
+    expect(transport).not.toHaveBeenCalled();
+  });
   it("只接受十五个命令及其已知、唯一、成对参数", () => {
     const commands = ["issue-sync", "managed-repository-ids", "reconcile-repository-lifecycle", "onboard-repository", "pr-automation", "pr-classification", "pr-issue-link", "request-copilot-review", "sync-review-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"];
     for (const command of commands) expect(parseInvocation([command]).command).toBe(command);

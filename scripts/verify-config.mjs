@@ -24,6 +24,21 @@ for (const [dataPath, schemaPath] of pairs) {
 }
 const catalog = JSON.parse(await readFile("config/repositories.json", "utf8")); const ids = Object.keys(catalog.repositories); if (new Set(ids).size !== ids.length) throw new Error("仓库编号重复");
 const repositoryValidator = validators.get("schema/repositories.schema.json");
+for (const name of ["public-basic", "layerscape", "steward"]) {
+  const profile = JSON.parse(await readFile(`config/profiles/validation/${name}.json`, "utf8"));
+  for (const id of profile.fragmentGate?.repositories ?? []) {
+    const repository = catalog.repositories[String(id)];
+    if (!repository?.managed || repository.validationProfile !== name) throw new Error(`片段门禁仓库未绑定验证配置：${id}`);
+  }
+  if (profile.fragmentGate) {
+    const { fragmentDirectory, required, reviewRequired, ignored } = profile.fragmentGate.profile;
+    const invalidPath = value => /[\\:\u0000-\u001f\u007f-\u009f]/u.test(value) || value.startsWith("/") || value.split("/").some(part => !part || part === "." || part === "..");
+    if (invalidPath(fragmentDirectory) || /[*!?{}()[\]]/u.test(fragmentDirectory)) throw new Error("片段目录不是字面相对路径");
+    for (const pattern of [...required, ...reviewRequired, ...ignored]) {
+      if (invalidPath(pattern) || /[!{}()[\]]/u.test(pattern) || pattern.split("/").some(part => part.includes("**") && part !== "**")) throw new Error("片段路径模式无效");
+    }
+  }
+}
 const sampleRepository = Object.values(catalog.repositories)[0];
 if (!repositoryValidator || !sampleRepository) throw new Error("仓库配置反例验证缺少基础数据");
 const invalidRepositoryKeyCatalog = { ...catalog, repositories: { ...catalog.repositories, invalid: sampleRepository } };

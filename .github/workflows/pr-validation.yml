@@ -10,6 +10,9 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      policy: ${{ steps.policy.outputs.sha }}
+      profile: ${{ steps.profile.outputs.name }}
     steps:
       - name: 解析中央规则提交
         id: policy
@@ -52,3 +55,28 @@ jobs:
           VALIDATION_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           VALIDATION_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: node steward-policy/packages/runner/dist/index.js validate --workspace target --repository-id "${{ github.repository_id }}" --profile "${{ steps.profile.outputs.name }}"
+  fragments:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    steps:
+      - name: 检出中央片段验证器
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: splrad/steward
+          ref: ${{ needs.validate.outputs.policy }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: .node-version }
+      - name: 验证发布片段
+        env:
+          VALIDATION_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          VALIDATION_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          VALIDATION_PR_NUMBER: ${{ github.event.pull_request.number }}
+          VALIDATION_POLICY_SHA: ${{ needs.validate.outputs.policy }}
+          VALIDATION_READ_TOKEN: ${{ github.token }}
+        run: node packages/runner/dist/index.js validate --workspace . --repository-id "${{ github.repository_id }}" --profile "${{ needs.validate.outputs.profile }}" --fragments-only true

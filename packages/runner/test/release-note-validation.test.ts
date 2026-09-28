@@ -1,0 +1,118 @@
+import { createHash } from 'node:crypto';
+import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { classificationDigests } from '../../core/src/index.js';
+import { classificationCheckStateCodec, encodeClassificationCheckState, main } from '../src/index.js';
+import { GitHubClient } from '../../github/src/index.js';
+import { readFragmentBlob, validateRemoteFragments } from '../src/release-note-validation.js';
+
+const identity = { repositoryId: 1, pullRequestNumber: 2, baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), policySha: 'c'.repeat(40) };
+const profile = { fragmentDirectory: 'fragments', required: ['src/**'], reviewRequired: [], ignored: ['tests/**'] };
+const path = 'fragments/new-fact.json';
+const bytes = Buffer.from(JSON.stringify({ schemaVersion: 1, status: 'not-user-facing', reason: 'Only internal test fixtures have changed.' }));
+const blobSha = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+const treeSha = 'd'.repeat(40);
+afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
+function fixture(options: { drift?: 'base' | 'head'; count?: number; truncated?: boolean; mode?: string; corrupt?: boolean; status?: string; pagination?: boolean; missing?: boolean; checks?: unknown[] } = {}) {
+  let pulls = 0;
+  const urls: string[] = [];
+  const transport: typeof fetch = async url => {
+    const endpoint = String(url); urls.push(endpoint);
+    let value: unknown;
+    if (endpoint.endsWith('/repositories/1')) value = { id: 1, full_name: 'o/r' };
+    else if (endpoint.includes('/check-runs?')) value = { check_runs: options.checks ?? [] };
+    else if (endpoint.endsWith('/pulls/2')) {
+      pulls++;
+      value = { number: 2, state: 'open', base: { repo: { id: 1 }, sha: options.drift === 'base' && pulls > 1 ? 'e'.repeat(40) : identity.baseSha },
+        head: { sha: options.drift === 'head' && pulls > 1 ? 'e'.repeat(40) : identity.headSha }, changed_files: options.count ?? 2 };
+    } else if (endpoint.includes('/files?')) {
+      const first = [{ status: 'modified', filename: 'tests/a.ts' }];
+      const second = [{ status: options.status ?? 'added', filename: path }];
+      if (options.pagination && !endpoint.includes('page=2')) return new Response(JSON.stringify(first), { headers: { link: '<https://api.github.com/repos/o/r/pulls/2/files?per_page=100&page=2>; rel="next"' } });
+      value = options.pagination ? second : [...first, ...second];
+    } else if (endpoint.includes('/git/commits/')) value = { sha: endpoint.split('/').at(-1), tree: { sha: endpoint.split('/').at(-1) } };
+    else if (endpoint.endsWith(`/trees/${identity.baseSha}`)) value = { sha: identity.baseSha, truncated: false, tree: [] };
+    else if (endpoint.endsWith(`/trees/${identity.headSha}`)) value = { sha: identity.headSha, truncated: options.truncated ?? false, tree: [{ path: 'fragments', type: 'tree', mode: '040000', sha: treeSha }] };
+    else if (endpoint.endsWith(`/trees/${treeSha}`)) value = { sha: treeSha, truncated: false, tree: options.missing ? [] : [{ path: 'new-fact.json', type: 'blob', mode: options.mode ?? '100644', sha: blobSha }] };
+    else if (endpoint.endsWith(`/blobs/${blobSha}`)) value = { sha: blobSha, encoding: 'base64', size: bytes.length, content: options.corrupt ? Buffer.alloc(bytes.length).toString('base64') : bytes.toString('base64') };
+    else throw Error(`Unexpected request ${endpoint}`);
+    return new Response(JSON.stringify(value));
+  };
+  const gh = new GitHubClient('test', 'https://api.github.com', transport);
+  return { gh, urls, transport, run: () => validateRemoteFragments({ gh, owner: 'o', repo: 'r', identity, profile, classification: async () => null }) };
+}
+describe('T05-T06 remote fragment validation', () => {
+  it('reads all pages, head blobs, and rechecks the PR', async () => {
+    const test = fixture({ pagination: true });
+    const result = await test.run();
+    expect(result.identity).toEqual(identity);
+    expect(result.fragment?.status).toBe('not-user-facing');
+    expect(result.sources).toEqual([{ path, blobSha, sha256: createHash('sha256').update(bytes).digest('hex') }]);
+    expect(test.urls.filter(url => url.endsWith('/pulls/2'))).toHaveLength(2);
+    expect(test.urls.some(url => url.includes('page=2'))).toBe(true);
+  });
+  it.each(['base', 'head'] as const)('rejects %s drift during reads', async drift => {
+    await expect(fixture({ drift }).run()).rejects.toThrow('RN_SOURCE_STALE');
+  });
+  it.each([{ count: 3 }, { count: 3001 }, { truncated: true }, { mode: '120000' }, { corrupt: true }, { missing: true }, { status: 'copied' }])('fails closed on incomplete sources %#', async options => {
+    await expect(fixture(options).run()).rejects.toThrow('RN_SOURCE_INCOMPLETE');
+  });
+  it('rejects historical edits before reading blobs', async () => {
+    const test = fixture({ status: 'modified' });
+    await expect(test.run()).rejects.toThrow('RN_FRAGMENT_LIFECYCLE');
+    expect(test.urls.some(url => url.includes('/git/'))).toBe(false);
+  });
+  it('returns null for a missing path', async () => {
+    const test = fixture();
+    await expect(readFragmentBlob(test.gh, 'o', 'r', identity.baseSha, path)).resolves.toBeNull();
+  });
+  it('reports pagination failures with a stable code', async () => {
+    const test = fixture();
+    vi.spyOn(test.gh, 'listPullFiles').mockRejectedValue(new Error('pagination limit'));
+    await expect(test.run()).rejects.toThrow('RN_SOURCE_INCOMPLETE');
+  });
+});
+
+describe('中央 validate 片段入口', () => {
+  it.each(['missing', 'trusted', 'wrong-head', 'wrong-app', 'wrong-policy', 'security'] as const)('处理分类来源 %s', async scenario => {
+    const root = await mkdtemp(join(tmpdir(), 'steward-fragment-gate-'));
+    try {
+      await cp(resolve('config'), join(root, 'config'), { recursive: true });
+      const catalogPath = join(root, 'config/repositories.json');
+      const catalog = JSON.parse(await readFile(catalogPath, 'utf8'));
+      const cfg = catalog.repositories['1296724484'];
+      catalog.repositories['1'] = { ...cfg, fullName: 'o/r' };
+      await writeFile(catalogPath, JSON.stringify(catalog));
+      const profilePath = join(root, 'config/profiles/validation/steward.json');
+      const validation = JSON.parse(await readFile(profilePath, 'utf8'));
+      validation.fragmentGate = { repositories: [1], profile };
+      await writeFile(profilePath, JSON.stringify(validation));
+      const semantics = JSON.parse(await readFile('config/labels/pr-semantics.json', 'utf8'));
+      const classification = JSON.parse(await readFile('config/profiles/classification/default.json', 'utf8'));
+      const encoded = encodeClassificationCheckState({ v: 3, repositoryId: 1, pullRequestNumber: 2,
+        headSha: scenario === 'wrong-head' ? 'e'.repeat(40) : identity.headSha,
+        inputDigest: 'a'.repeat(64), decisionDigest: 'b'.repeat(64),
+        policy: scenario === 'wrong-policy' ? 'c'.repeat(64) : classificationDigests(semantics, classification, cfg.classification).classificationPolicyDigest,
+        mode: 'active', primary: { id: 'bug', source: 'deterministic-fallback', reasonCode: 'primary-fallback-selected' },
+        risks: scenario === 'security' ? ['security'] : [], facets: [], areas: [],
+      }, classificationCheckStateCodec(semantics, classification));
+      const test = fixture({ checks: scenario === 'missing' ? [] : [{ name: 'PR Classification Gate', head_sha: identity.headSha,
+        app: { id: scenario === 'wrong-app' ? 99 : 4243096 }, status: 'completed', conclusion: 'success', external_id: encoded }] });
+      vi.stubGlobal('fetch', test.transport);
+      for (const [key, value] of Object.entries({ STEWARD_CONFIG_DIRECTORY: join(root, 'config'), GITHUB_STEP_SUMMARY: join(root, 'summary.md'),
+        VALIDATION_READ_TOKEN: 'test', VALIDATION_PR_NUMBER: '2', VALIDATION_BASE_SHA: identity.baseSha, VALIDATION_HEAD_SHA: identity.headSha, VALIDATION_POLICY_SHA: identity.policySha })) vi.stubEnv(key, value);
+      const run = main(['validate', '--workspace', '.', '--repository-id', '1', '--profile', 'steward', '--fragments-only', 'true']);
+      if (scenario === 'security') await expect(run).rejects.toThrow('RN_FACT_CONFLICT');
+      else {
+        await run;
+        const summary = await readFile(join(root, 'summary.md'), 'utf8');
+        expect(summary).toContain(`分类：${scenario === 'trusted' ? 'provided' : 'missing'}`);
+        expect(summary).toContain(`要求：${scenario === 'trusted' ? 'review-required' : 'ignored'}`);
+        expect(summary).toContain(identity.baseSha);
+        expect(summary).toContain(identity.policySha);
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
