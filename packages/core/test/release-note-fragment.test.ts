@@ -65,6 +65,26 @@ describe('T01: fragment bytes and JSON', () => {
 });
 
 describe('T02: text and entry boundaries', () => {
+  it.each(['change', 'userImpact', 'reason', 'action'])('rejects email autolinks in %s', (field) => {
+    for (const content of ['Contact user@example.com for assistance.', 'Contact USER+tag@EXAMPLE.COM.',
+      'Contact a.b-c_d@a.b.', 'Contact user@sub_domain.example.com.', '(user@example.com)',
+      '联系user@example.com获取帮助。', 'user@example.com', 'Contact user@example.com...',
+      'Contact user@domain.c0m', 'Contact user@example.com..extra', 'Contact user@localhost then user@example.com.']) {
+      const value = field === 'reason' ? { ...hidden, reason: content }
+        : { ...documented, entries: [{ ...entry, ...(field === 'action' ? { actionRequired: true } : {}), [field]: content }] };
+      expect(() => parseFragment(encode(value))).toThrow(expect.objectContaining({
+        code: 'RN_FRAGMENT_TEXT', field: field === 'reason' ? field : `entries[0].${field}`,
+      }));
+    }
+  });
+  it.each(['The @scope/package version remains supported.', 'The package@1.2.3 version remains supported.',
+    'Contact user@localhost for assistance.',
+    'Contact user@ for assistance.', 'Contact @example.com for assistance.',
+    'Contact user@example.com- for assistance.', 'Contact user@example.com_ for assistance.',
+    'Contact user@mail+xyz.example for assistance.', 'Contact user@example..com for assistance.',
+    'The matrix A @ B remains unchanged.'])('preserves text without email autolinks: %s', (reason) => {
+    expect(parseFragment(encode({ ...hidden, reason }))).toEqual({ ...hidden, reason });
+  });
   it.each(['change', 'userImpact', 'reason', 'action'])('rejects thematic breaks in %s', (field) => {
     for (const content of ['----------', '__________', '**********', '-    -    -', '_    _    _', '*    *    *', '  --  ---  -----  ']) {
       const value = field === 'reason' ? { ...hidden, reason: content }

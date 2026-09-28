@@ -110,6 +110,27 @@ function hasInlineFormatting(value: string): boolean {
   return false;
 }
 
+function hasEmailAutolink(value: string): boolean {
+  for (let index = 1; index < value.length; index++) {
+    if (value[index] !== '@' || !/[a-z\d._+-]/iu.test(value[index - 1]!)) continue;
+    const start = index + 1;
+    let end = start;
+    let hasDomainDot = false;
+    while (end < value.length) {
+      if (/[a-z\d_-]/i.test(value[end]!)) { end++; continue; }
+      if (value[end] === '.' && /[a-z\d]/i.test(value[end + 1] ?? '')) {
+        hasDomainDot = true;
+        end++;
+        continue;
+      }
+      break;
+    }
+    index = end - 1;
+    if (value[end] !== '@' && hasDomainDot && /[a-z]/i.test(value[end - 1] ?? '')) return true;
+  }
+  return false;
+}
+
 function text(value: unknown, min: number, field: string): string {
   if (typeof value !== 'string') fail('RN_FRAGMENT_SCHEMA', field);
   checkString(value, field);
@@ -118,6 +139,7 @@ function text(value: unknown, min: number, field: string): string {
   if (length < min || length > 240) fail('RN_FRAGMENT_TEXT', field);
   if (/^(?:- *){3,}$|^(?:_ *){3,}$|^(?:\* *){3,}$/u.test(normalized)) fail('RN_FRAGMENT_TEXT', field);
   if (hasInlineFormatting(normalized)) fail('RN_FRAGMENT_TEXT', field);
+  if (hasEmailAutolink(normalized)) fail('RN_FRAGMENT_TEXT', field);
   if (/`|~{3}|!?\[[^\]]*\]\s*[(:\[]|<\/?[a-z!][^>]*>|(?:[a-z][a-z\d+.-]*:\/\/|\b(?:mailto|data|javascript):|\bwww\.)|^(?:#{1,6}\s|>\s?|[-+*]\s|\d+[.)]\s)|\||\{\{|\}\}|\$\{|<%|%>|\{[a-z_][\w.-]*\}/iu.test(normalized)) {
     fail('RN_FRAGMENT_TEXT', field);
   }
