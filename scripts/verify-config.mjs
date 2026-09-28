@@ -32,7 +32,7 @@ for (const name of ["public-basic", "layerscape", "steward"]) {
   }
   if (profile.fragmentGate) {
     const { fragmentDirectory, required, reviewRequired, ignored } = profile.fragmentGate.profile;
-    const invalidPath = value => /[\\:\u0000-\u001f\u007f-\u009f]/u.test(value) || value.startsWith("/") || value.split("/").some(part => !part || part === "." || part === "..");
+    const invalidPath = value => /[\\:\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069\ufeff\ud800-\udfff]/u.test(value) || value.startsWith("/") || value.split("/").some(part => !part || part === "." || part === "..");
     if (invalidPath(fragmentDirectory) || /[*!?{}()[\]]/u.test(fragmentDirectory)) throw new Error("片段目录不是字面相对路径");
     for (const pattern of [...required, ...reviewRequired, ...ignored]) {
       if (invalidPath(pattern) || /[!{}()[\]]/u.test(pattern) || pattern.split("/").some(part => part.includes("**") && part !== "**")) throw new Error("片段路径模式无效");
