@@ -38,7 +38,7 @@ export async function readFragmentBlob(gh: GitHubClient, owner: string, repo: st
 
 export async function validateRemoteFragments(input: {
   gh: GitHubClient; owner: string; repo: string; identity: FragmentValidationIdentity; profile: FragmentProfile;
-  classification: () => Promise<FragmentClassification | null>;
+  classification: (pull: any, files: readonly any[]) => Promise<FragmentClassification | null>;
 }) {
   const { gh, owner, repo, identity } = input;
   const readPull = async () => {
@@ -64,7 +64,7 @@ export async function validateRemoteFragments(input: {
   const inside = (path: string) => path === input.profile.fragmentDirectory || path.startsWith(`${input.profile.fragmentDirectory}/`);
   const touched = changes.filter(change => inside(change.path) || (change.status === 'renamed' && inside(change.previousPath)));
   if (touched.length > 1 || touched.some(change => change.status !== 'added')) throw new FragmentValidationError('RN_FRAGMENT_LIFECYCLE', 'historical fragment change or multiple fragments');
-  const classification = await input.classification();
+  const classification = await input.classification(pull, files);
   const fragments = [];
   for (const change of touched) {
     fragmentIdFromPath(change.path, input.profile.fragmentDirectory);

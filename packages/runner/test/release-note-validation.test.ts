@@ -3,7 +3,8 @@ import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { classificationDigests } from '../../core/src/index.js';
+import { classificationDigests, classificationInputDigest } from '../../core/src/index.js';
+import { classificationFacts } from '../src/classification-facts.js';
 import { classificationCheckStateCodec, decodeClassificationCheckState, encodeClassificationCheckState, main } from '../src/index.js';
 import * as github from '../../github/src/index.js';
 import { GitHubClient } from '../../github/src/index.js';
@@ -15,6 +16,11 @@ const path = 'fragments/new-fact.json';
 const bytes = Buffer.from(JSON.stringify({ schemaVersion: 1, status: 'not-user-facing', reason: 'Only internal test fixtures have changed.' }));
 const blobSha = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
 const treeSha = 'd'.repeat(40);
+const pullFacts = { number: 2, state: 'open', base: { repo: { id: 1 }, sha: identity.baseSha, ref: 'main' },
+  head: { repo: { id: 1 }, sha: identity.headSha, ref: 'change' }, user: { login: 'user', type: 'User' }, changed_files: 2, commits: 1 };
+const fileFacts = [{ status: 'modified', filename: 'tests/a.ts', additions: 1, deletions: 0, patch: '+test' },
+  { status: 'added', filename: path, additions: 1, deletions: 0, patch: '+fragment' }];
+const commitFacts = [{ sha: identity.headSha, commit: { message: 'test: update fixtures' } }];
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 function fixture(options: { drift?: 'base' | 'head'; count?: number; truncated?: boolean; mode?: string; corrupt?: boolean; status?: string; pagination?: boolean; missing?: boolean; checks?: unknown[] } = {}) {
   let pulls = 0;
@@ -26,14 +32,15 @@ function fixture(options: { drift?: 'base' | 'head'; count?: number; truncated?:
     else if (endpoint.includes('/check-runs?')) value = { check_runs: options.checks ?? [] };
     else if (endpoint.endsWith('/pulls/2')) {
       pulls++;
-      value = { number: 2, state: 'open', base: { repo: { id: 1 }, sha: options.drift === 'base' && pulls > 1 ? 'e'.repeat(40) : identity.baseSha },
-        head: { sha: options.drift === 'head' && pulls > 1 ? 'e'.repeat(40) : identity.headSha }, changed_files: options.count ?? 2 };
+      value = { ...pullFacts, base: { ...pullFacts.base, sha: options.drift === 'base' && pulls > 1 ? 'e'.repeat(40) : identity.baseSha },
+        head: { ...pullFacts.head, sha: options.drift === 'head' && pulls > 1 ? 'e'.repeat(40) : identity.headSha }, changed_files: options.count ?? 2 };
     } else if (endpoint.includes('/files?')) {
-      const first = [{ status: 'modified', filename: 'tests/a.ts' }];
-      const second = [{ status: options.status ?? 'added', filename: path }];
+      const first = [fileFacts[0]];
+      const second = [{ ...fileFacts[1], status: options.status ?? 'added' }];
       if (options.pagination && !endpoint.includes('page=2')) return new Response(JSON.stringify(first), { headers: { link: '<https://api.github.com/repos/o/r/pulls/2/files?per_page=100&page=2>; rel="next"' } });
       value = options.pagination ? second : [...first, ...second];
-    } else if (endpoint.includes('/git/commits/')) value = { sha: endpoint.split('/').at(-1), tree: { sha: endpoint.split('/').at(-1) } };
+    } else if (endpoint.includes('/commits?')) value = commitFacts;
+    else if (endpoint.includes('/git/commits/')) value = { sha: endpoint.split('/').at(-1), tree: { sha: endpoint.split('/').at(-1) } };
     else if (endpoint.endsWith(`/trees/${identity.baseSha}`)) value = { sha: identity.baseSha, truncated: false, tree: [] };
     else if (endpoint.endsWith(`/trees/${identity.headSha}`)) value = { sha: identity.headSha, truncated: options.truncated ?? false, tree: [{ path: 'fragments', type: 'tree', mode: '040000', sha: treeSha }] };
     else if (endpoint.endsWith(`/trees/${treeSha}`)) value = { sha: treeSha, truncated: false, tree: options.missing ? [] : [{ path: 'new-fact.json', type: 'blob', mode: options.mode ?? '100644', sha: blobSha }] };
@@ -123,7 +130,8 @@ describe('中央 validate 片段入口', () => {
       await expect(main(['validate', '--workspace', '.', '--repository-id', '1', '--profile', 'steward', '--fragments-only', 'true'])).rejects.toThrow('RN_FACT_CONFLICT');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
-  it.each(['missing', 'trusted', 'wrong-head', 'wrong-app', 'wrong-policy', 'wrong-policy-sha', 'security', 'human-security', 'human-breaking-change'] as const)('处理分类来源 %s', async scenario => {
+  it.each(['missing', 'trusted', 'wrong-head', 'wrong-app', 'wrong-policy', 'wrong-policy-sha', 'security', 'human-security', 'human-breaking-change',
+    'stale-base', 'stale-files', 'stale-commits', 'incomplete-commits', 'commit-read-failure', 'missing-file-counts'] as const)('处理分类来源 %s', async scenario => {
     const root = await mkdtemp(join(tmpdir(), 'steward-fragment-gate-'));
     try {
       await cp(resolve('config'), join(root, 'config'), { recursive: true });
@@ -138,10 +146,15 @@ describe('中央 validate 片段入口', () => {
       await writeFile(profilePath, JSON.stringify(validation));
       const semantics = JSON.parse(await readFile('config/labels/pr-semantics.json', 'utf8'));
       const classification = JSON.parse(await readFile('config/profiles/classification/default.json', 'utf8'));
+      const policy = classificationDigests(semantics, classification, cfg.classification).classificationPolicyDigest;
+      const facts = classificationFacts(1, 2, pullFacts, fileFacts, commitFacts);
+      if (scenario === 'stale-base') facts.baseSha = 'e'.repeat(40);
+      if (scenario === 'stale-files') facts.files[0] = { ...facts.files[0]!, patch: '+old test' };
+      if (scenario === 'stale-commits') facts.commits[0] = { ...facts.commits[0]!, message: 'test: old fixtures' };
       const encoded = encodeClassificationCheckState({ v: 4, repositoryId: 1, pullRequestNumber: 2,
         headSha: scenario === 'wrong-head' ? 'e'.repeat(40) : identity.headSha,
         policySha: scenario === 'wrong-policy-sha' ? 'e'.repeat(40) : identity.policySha,
-        inputDigest: 'a'.repeat(64), decisionDigest: 'b'.repeat(64),
+        inputDigest: classificationInputDigest(facts, identity.policySha, policy), decisionDigest: 'b'.repeat(64),
         policy: scenario === 'wrong-policy' ? 'c'.repeat(64) : classificationDigests(semantics, classification, cfg.classification).classificationPolicyDigest,
         mode: 'active', primary: { id: 'bug', source: 'deterministic-fallback', reasonCode: 'primary-fallback-selected' },
         ownedRiskFlags: scenario === 'security' ? ['security'] : [],
@@ -149,7 +162,15 @@ describe('中央 validate 片段入口', () => {
       }, classificationCheckStateCodec(semantics, classification));
       const test = fixture({ checks: scenario === 'missing' ? [] : [{ name: 'PR Classification Gate', head_sha: identity.headSha,
         app: { id: scenario === 'wrong-app' ? 99 : 4243096 }, status: 'completed', conclusion: 'success', external_id: encoded }] });
-      vi.stubGlobal('fetch', test.transport);
+      vi.stubGlobal('fetch', async (url: string | URL | Request, init?: RequestInit) => {
+        const endpoint = String(url);
+        if (endpoint.includes('/commits?')) {
+          if (scenario === 'commit-read-failure') throw new Error('commit read failed');
+          if (scenario === 'incomplete-commits') return new Response('[]');
+        }
+        if (endpoint.includes('/files?') && scenario === 'missing-file-counts') return new Response(JSON.stringify(fileFacts.map(({ additions, ...file }) => file)));
+        return test.transport(url, init);
+      });
       for (const [key, value] of Object.entries({ STEWARD_CONFIG_DIRECTORY: join(root, 'config'), GITHUB_STEP_SUMMARY: join(root, 'summary.md'),
         VALIDATION_READ_TOKEN: 'test', VALIDATION_PR_NUMBER: '2', VALIDATION_BASE_SHA: identity.baseSha, VALIDATION_HEAD_SHA: identity.headSha, VALIDATION_POLICY_SHA: identity.policySha })) vi.stubEnv(key, value);
       const run = main(['validate', '--workspace', '.', '--repository-id', '1', '--profile', 'steward', '--fragments-only', 'true']);

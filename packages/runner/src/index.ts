@@ -20,6 +20,7 @@ import { createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestE
 import { managedRepositoryIds, managedRepositoryTargets, runManagedRepositorySync, type ManagedTarget } from "./managed-repository-sync.js";
 import { runPrIssueLink } from "./pr-issue-link.js";
 import { validateRemoteFragments } from "./release-note-validation.js";
+import { classificationFacts } from "./classification-facts.js";
 import { targetManagedBlock, updatePullRequestBodyDurably, type DurableBodyRedrive } from "./pr-body-writer.js";
 import { minimatch } from "minimatch";
 import YAML from "yaml";
@@ -1287,13 +1288,7 @@ async function classify(args: Readonly<Record<string, string>>) {
     ]);
     if (!files.length || !commits.length || Number(pull.changed_files) !== files.length || Number(pull.commits) !== commits.length) throw new Error("pagination-incomplete");
     const currentLabels = labels.map((value: any) => String(value.name));
-    const rawFacts = {
-      repositoryId, pullRequestNumber: number, sourceRepositoryId: Number(pull.head.repo.id), sourceRef: `refs/heads/${pull.head.ref}`,
-      targetRef: `refs/heads/${pull.base.ref}`, author: { login: String(pull.user.login), type: pull.user.type as "User" | "Bot" | "Organization" | "Mannequin" },
-      headSha: expectedHead, baseSha: String(pull.base.sha),
-      commits: commits.map((value: any) => ({ sha: String(value.sha), message: String(value.commit?.message ?? "") })),
-      files: files.map((value: any) => ({ path: String(value.filename), ...(value.previous_filename ? { previousPath: String(value.previous_filename) } : {}), status: String(value.status), additions: Number(value.additions), deletions: Number(value.deletions), patch: typeof value.patch === "string" ? value.patch : null, patchState: typeof value.patch === "string" ? "available" as const : "missing" as const })),
-    };
+    const rawFacts = classificationFacts(repositoryId, number, pull, files, commits);
     const policy = classificationDigests(semantics, profile, repositoryClassification);
     const inputDigest = classificationInputDigest(rawFacts, policySha, policy.classificationPolicyDigest);
     const reusablePreviousState = previousState?.policy === policy.classificationPolicyDigest
@@ -1622,14 +1617,20 @@ async function validate(args: Readonly<Record<string, string>>) {
     const [owner, repo] = splitRepository(repository.full_name);
     try {
       const result = await validateRemoteFragments({ gh, owner, repo, identity, profile: profile.fragmentGate.profile,
-        classification: async () => {
+        classification: async (pull, files) => {
           const semantics = await semanticCatalog();
           const classificationProfile = await json<ClassificationProfile>(configPath("profiles", "classification", `${configuration.classification.profile}.json`));
           const policy = classificationDigests(semantics, classificationProfile, configuration.classification);
           const checks = (await gh.listAllCheckRuns(owner, repo, identity.headSha)).filter(check => check.name === "PR Classification Gate" && check.app?.id === 4243096 && check.head_sha === identity.headSha);
           if (checks.length !== 1 || checks[0].status !== "completed" || checks[0].conclusion !== "success") return null;
           const state = decodeClassificationCheckState(checks[0].external_id, classificationCheckStateCodec(semantics, classificationProfile), identity);
-          return state?.policy === policy.classificationPolicyDigest && state.mode === configuration.classification.ai.mode ? { primaryKind: state.primary.id, riskFlags: state.riskFlags } : null;
+          if (state?.policy !== policy.classificationPolicyDigest || state.mode !== configuration.classification.ai.mode) return null;
+          try {
+            const commits = await gh.listPullCommits(owner, repo, identity.pullRequestNumber);
+            const facts = classificationFacts(repositoryId, identity.pullRequestNumber, pull, files, commits);
+            if (state.inputDigest !== classificationInputDigest(facts, identity.policySha, policy.classificationPolicyDigest)) return null;
+          } catch { return null; }
+          return { primaryKind: state.primary.id, riskFlags: state.riskFlags };
         } });
       await summary(["# 发布片段验证", `base：${identity.baseSha}`, `head：${identity.headSha}`, `policy：${identity.policySha}`,
         `要求：${result.decision.requirement}`, `分类：${result.decision.classificationState}`,
