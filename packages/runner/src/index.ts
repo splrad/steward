@@ -1622,15 +1622,28 @@ async function validate(args: Readonly<Record<string, string>>) {
           const semantics = await semanticCatalog();
           const classificationProfile = await json<ClassificationProfile>(configPath("profiles", "classification", `${configuration.classification.profile}.json`));
           const policy = classificationDigests(semantics, classificationProfile, configuration.classification);
-          const labels = await gh.listLabels(owner, repo, identity.pullRequestNumber);
-          if (labels.some(label => typeof label.name !== "string")) throw new Error("片段分类标签数据不完整");
-          const names = new Set(labels.map(label => label.name));
-          const humanRisks = semantics.roles.riskFlags.definitions.filter(definition => definition.githubLabel && names.has(definition.githubLabel.name)).map(definition => definition.id);
+          const readLabelNames = async () => {
+            const labels = await gh.listLabels(owner, repo, identity.pullRequestNumber);
+            if (labels.some(label => typeof label.name !== "string")) throw new Error("片段分类标签数据不完整");
+            return new Set(labels.map(label => label.name));
+          };
+          let names = await readLabelNames();
+          const humanRisks = () => semantics.roles.riskFlags.definitions.filter(definition => definition.githubLabel && names.has(definition.githubLabel.name)).map(definition => definition.id);
           const unavailable = () => {
-            if (humanRisks.length) throw new Error("风险标签需要有效的当前分类结果");
+            if (humanRisks().length) throw new Error("风险标签需要有效的当前分类结果");
             return null;
           };
-          const checks = (await gh.listAllCheckRuns(owner, repo, identity.headSha)).filter(check => check.name === "PR Classification Gate" && check.app?.id === 4243096 && check.head_sha === identity.headSha);
+          const readChecks = async () => (await gh.listAllCheckRuns(owner, repo, identity.headSha)).filter(check => check.name === "PR Classification Gate" && check.app?.id === 4243096 && check.head_sha === identity.headSha);
+          let checks = await readChecks();
+          if (classificationSourceDigest === undefined && humanRisks().length) {
+            let waited = false;
+            for (let attempt = 0; attempt < 36 && (checks.length === 0 || (checks.length === 1 && ["queued", "in_progress"].includes(checks[0].status))); attempt++) {
+              await delay(5_000);
+              waited = true;
+              checks = await readChecks();
+            }
+            if (waited) names = await readLabelNames();
+          }
           const sourceDigest = digest({ labels: [...names].sort(), checks: checks.map(check =>
             [check.id ?? null, check.head_sha ?? null, check.status ?? null, check.conclusion ?? null, check.external_id ?? null]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))) });
           if (classificationSourceDigest !== undefined && classificationSourceDigest !== sourceDigest) throw new FragmentValidationError("RN_SOURCE_STALE", "classification or labels");
@@ -1643,7 +1656,7 @@ async function validate(args: Readonly<Record<string, string>>) {
             const facts = classificationFacts(repositoryId, identity.pullRequestNumber, pull, files, commits);
             if (state.inputDigest !== classificationInputDigest(facts, identity.policySha, policy.classificationPolicyDigest)) return unavailable();
           } catch { return unavailable(); }
-          return { primaryKind: state.primary.id, riskFlags: [...new Set([...state.ownedRiskFlags, ...humanRisks])] };
+          return { primaryKind: state.primary.id, riskFlags: [...new Set([...state.ownedRiskFlags, ...humanRisks()])] };
         } });
       await summary(["# 发布片段验证", `base：${identity.baseSha}`, `head：${identity.headSha}`, `policy：${identity.policySha}`,
         `要求：${result.decision.requirement}`, `分类：${result.decision.classificationState}`,

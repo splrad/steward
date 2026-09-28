@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { classificationDigests, classificationInputDigest } from '../../core/src/index.js';
 import { classificationFacts } from '../src/classification-facts.js';
@@ -9,6 +10,8 @@ import { classificationCheckStateCodec, decodeClassificationCheckState, encodeCl
 import * as github from '../../github/src/index.js';
 import { GitHubClient } from '../../github/src/index.js';
 import { readFragmentBlob, validateRemoteFragments } from '../src/release-note-validation.js';
+
+vi.mock('node:timers/promises', () => ({ setTimeout: vi.fn(async () => undefined) }));
 
 const identity = { repositoryId: 1, pullRequestNumber: 2, baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), policySha: 'c'.repeat(40) };
 const profile = { fragmentDirectory: 'fragments', required: ['src/**'], reviewRequired: [], ignored: ['tests/**'] };
@@ -21,8 +24,10 @@ const pullFacts = { number: 2, state: 'open', base: { repo: { id: 1 }, sha: iden
 const fileFacts = [{ status: 'modified', filename: 'tests/a.ts', additions: 1, deletions: 0, patch: '+test' },
   { status: 'added', filename: path, additions: 1, deletions: 0, patch: '+fragment' }];
 const commitFacts = [{ sha: identity.headSha, commit: { message: 'test: update fixtures' } }];
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
-function fixture(options: { drift?: 'base' | 'head'; count?: number; truncated?: boolean; mode?: string; corrupt?: boolean; status?: string; fileStatus?: string; pagination?: boolean; missing?: boolean; checks?: unknown[] } = {}) {
+afterEach(() => { vi.clearAllMocks(); vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
+function fixture(options: { drift?: 'base' | 'head'; count?: number; truncated?: boolean; mode?: string; corrupt?: boolean; status?: string; fileStatus?: string; documented?: boolean; pagination?: boolean; missing?: boolean; checks?: unknown[] } = {}) {
+  const data = options.documented ? Buffer.from(JSON.stringify({ schemaVersion: 1, status: 'documented', entries: [{ change: 'Access checks reject invalid requests.', userImpact: 'Protected data stays private.', actionRequired: false }] })) : bytes;
+  const dataSha = createHash('sha1').update(`blob ${data.length}\0`).update(data).digest('hex');
   let pulls = 0;
   const urls: string[] = [];
   const transport: typeof fetch = async url => {
@@ -44,8 +49,8 @@ function fixture(options: { drift?: 'base' | 'head'; count?: number; truncated?:
     else if (endpoint.includes('/git/commits/')) value = { sha: endpoint.split('/').at(-1), tree: { sha: endpoint.split('/').at(-1) } };
     else if (endpoint.endsWith(`/trees/${identity.baseSha}`)) value = { sha: identity.baseSha, truncated: false, tree: [] };
     else if (endpoint.endsWith(`/trees/${identity.headSha}`)) value = { sha: identity.headSha, truncated: options.truncated ?? false, tree: [{ path: 'fragments', type: 'tree', mode: '040000', sha: treeSha }] };
-    else if (endpoint.endsWith(`/trees/${treeSha}`)) value = { sha: treeSha, truncated: false, tree: options.missing ? [] : [{ path: 'new-fact.json', type: 'blob', mode: options.mode ?? '100644', sha: blobSha }] };
-    else if (endpoint.endsWith(`/blobs/${blobSha}`)) value = { sha: blobSha, encoding: 'base64', size: bytes.length, content: options.corrupt ? Buffer.alloc(bytes.length).toString('base64') : bytes.toString('base64') };
+    else if (endpoint.endsWith(`/trees/${treeSha}`)) value = { sha: treeSha, truncated: false, tree: options.missing ? [] : [{ path: 'new-fact.json', type: 'blob', mode: options.mode ?? '100644', sha: dataSha }] };
+    else if (endpoint.endsWith(`/blobs/${dataSha}`)) value = { sha: dataSha, encoding: 'base64', size: data.length, content: options.corrupt ? Buffer.alloc(data.length).toString('base64') : data.toString('base64') };
     else throw Error(`Unexpected request ${endpoint}`);
     return new Response(JSON.stringify(value));
   };
@@ -142,7 +147,8 @@ describe('中央 validate 片段入口', () => {
   });
   it.each(['missing', 'trusted', 'wrong-head', 'wrong-app', 'wrong-policy', 'wrong-policy-sha', 'security', 'human-security', 'human-breaking-change',
     'stale-base', 'stale-files', 'stale-commits', 'incomplete-commits', 'commit-read-failure', 'missing-file-counts',
-    'label-added', 'label-removed', 'risk-without-state', 'label-read-failure', 'invalid-label', 'label-drift', 'check-drift', 'label-reordered'] as const)('处理分类来源 %s', async scenario => {
+    'label-added', 'label-removed', 'risk-without-state', 'label-read-failure', 'invalid-label', 'label-drift', 'check-drift', 'label-reordered',
+    'wait-success', 'wait-failure', 'wait-timeout', 'wait-drift'] as const)('处理分类来源 %s', async scenario => {
     const root = await mkdtemp(join(tmpdir(), 'steward-fragment-gate-'));
     try {
       await cp(resolve('config'), join(root, 'config'), { recursive: true });
@@ -171,7 +177,7 @@ describe('中央 validate 片段入口', () => {
         ownedRiskFlags: scenario === 'security' ? ['security'] : [],
         riskFlags: scenario === 'human-breaking-change' ? ['breaking-change'] : ['security', 'human-security', 'label-removed'].includes(scenario) ? ['security'] : [], facets: [], areas: [],
       }, classificationCheckStateCodec(semantics, classification));
-      const test = fixture({ checks: ['missing', 'risk-without-state'].includes(scenario) ? [] : [{ name: 'PR Classification Gate', head_sha: identity.headSha,
+      const test = fixture({ documented: scenario.startsWith('wait-'), checks: ['missing', 'risk-without-state'].includes(scenario) ? [] : [{ name: 'PR Classification Gate', head_sha: identity.headSha,
         app: { id: scenario === 'wrong-app' ? 99 : 4243096 }, status: 'completed', conclusion: 'success', external_id: encoded }] });
       let labelReads = 0;
       let checkReads = 0;
@@ -179,6 +185,14 @@ describe('中央 validate 片段入口', () => {
         const endpoint = String(url);
         if (endpoint.includes('/check-runs?')) {
           checkReads++;
+          if (scenario.startsWith('wait-')) {
+            const result = await (await test.transport(url, init)).json();
+            if (scenario === 'wait-timeout' || (scenario !== 'wait-failure' && checkReads === 1)) result.check_runs = [];
+            else if (scenario === 'wait-failure') result.check_runs[0].conclusion = 'failure';
+            else if (checkReads <= 3) { result.check_runs[0].status = checkReads === 2 ? 'queued' : 'in_progress'; result.check_runs[0].conclusion = null; }
+            else if (scenario === 'wait-drift' && checkReads > 4) result.check_runs[0].status = 'in_progress';
+            return new Response(JSON.stringify(result));
+          }
           if (scenario === 'check-drift' && checkReads > 1) {
             const result = await (await test.transport(url, init)).json();
             result.check_runs[0].external_id = encodeClassificationCheckState({ ...decodeClassificationCheckState(encoded, classificationCheckStateCodec(semantics, classification))!, decisionDigest: 'e'.repeat(64) }, classificationCheckStateCodec(semantics, classification));
@@ -192,7 +206,7 @@ describe('中央 validate 片段入口', () => {
           if (scenario === 'label-read-failure') throw new Error('label read failed');
           if (scenario === 'invalid-label') return new Response('[{}]');
           return new Response(JSON.stringify(scenario === 'human-breaking-change' ? [{ name: 'breaking-change' }]
-            : ['human-security', 'label-added', 'risk-without-state'].includes(scenario) ? [{ name: 'security' }] : []));
+            : scenario.startsWith('wait-') || ['human-security', 'label-added', 'risk-without-state'].includes(scenario) ? [{ name: 'security' }] : []));
         }
         if (endpoint.includes('/commits?')) {
           if (scenario === 'commit-read-failure') throw new Error('commit read failed');
@@ -205,10 +219,20 @@ describe('中央 validate 片段入口', () => {
         VALIDATION_READ_TOKEN: 'test', VALIDATION_PR_NUMBER: '2', VALIDATION_BASE_SHA: identity.baseSha, VALIDATION_HEAD_SHA: identity.headSha, VALIDATION_POLICY_SHA: identity.policySha })) vi.stubEnv(key, value);
       const run = main(['validate', '--workspace', '.', '--repository-id', '1', '--profile', 'steward', '--fragments-only', 'true']);
       if (['security', 'human-security', 'human-breaking-change', 'label-added'].includes(scenario)) await expect(run).rejects.toThrow('RN_FACT_CONFLICT');
-      else if (scenario === 'risk-without-state') await expect(run).rejects.toThrow('风险标签需要有效的当前分类结果');
+      else if (['risk-without-state', 'wait-timeout', 'wait-failure'].includes(scenario)) {
+        await expect(run).rejects.toThrow('风险标签需要有效的当前分类结果');
+        expect(delay).toHaveBeenCalledTimes(scenario === 'wait-failure' ? 0 : 36);
+      }
       else if (scenario === 'label-read-failure') await expect(run).rejects.toThrow('label read failed');
       else if (scenario === 'invalid-label') await expect(run).rejects.toThrow('片段分类标签数据不完整');
-      else if (['label-drift', 'check-drift'].includes(scenario)) await expect(run).rejects.toThrow('RN_SOURCE_STALE');
+      else if (['label-drift', 'check-drift', 'wait-drift'].includes(scenario)) await expect(run).rejects.toThrow('RN_SOURCE_STALE');
+      else if (scenario === 'wait-success') {
+        await run;
+        expect(delay).toHaveBeenCalledTimes(3);
+        expect(delay).toHaveBeenCalledWith(5_000);
+        expect(checkReads).toBe(5);
+        expect(await readFile(join(root, 'summary.md'), 'utf8')).toContain('要求：required');
+      }
       else {
         await run;
         const summary = await readFile(join(root, 'summary.md'), 'utf8');
