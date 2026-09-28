@@ -26,6 +26,7 @@ for (const file of files) {
   for (const pattern of forbidden) if (pattern.test(text)) throw new Error(`${file}包含终态禁止内容: ${pattern}`);
 }
 const validationDocument = workflowDocuments.get("pr-validation.yml");
+if (JSON.stringify(validationDocument?.on?.pull_request?.types) !== JSON.stringify(["opened", "synchronize", "reopened", "labeled", "unlabeled"])) throw new Error("PR验证必须响应标签变更");
 const validationStep = validationDocument?.jobs?.validate?.steps?.find(step => step?.name === "执行中央验证");
 if (String(validationStep?.env?.VALIDATION_BASE_SHA ?? "").replace(/\s+/gu, "") !== "${{github.event.pull_request.base.sha}}") throw new Error("中央验证没有通过环境变量接收基础分支提交");
 if (String(validationStep?.env?.VALIDATION_BASE_REF ?? "").replace(/\s+/gu, "") !== "${{github.event.pull_request.base.ref}}") throw new Error("中央验证没有通过环境变量接收基础分支引用");

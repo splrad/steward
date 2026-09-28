@@ -22,7 +22,7 @@ const fileFacts = [{ status: 'modified', filename: 'tests/a.ts', additions: 1, d
   { status: 'added', filename: path, additions: 1, deletions: 0, patch: '+fragment' }];
 const commitFacts = [{ sha: identity.headSha, commit: { message: 'test: update fixtures' } }];
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
-function fixture(options: { drift?: 'base' | 'head'; count?: number; truncated?: boolean; mode?: string; corrupt?: boolean; status?: string; pagination?: boolean; missing?: boolean; checks?: unknown[] } = {}) {
+function fixture(options: { drift?: 'base' | 'head'; count?: number; truncated?: boolean; mode?: string; corrupt?: boolean; status?: string; fileStatus?: string; pagination?: boolean; missing?: boolean; checks?: unknown[] } = {}) {
   let pulls = 0;
   const urls: string[] = [];
   const transport: typeof fetch = async url => {
@@ -30,12 +30,13 @@ function fixture(options: { drift?: 'base' | 'head'; count?: number; truncated?:
     let value: unknown;
     if (endpoint.endsWith('/repositories/1')) value = { id: 1, full_name: 'o/r' };
     else if (endpoint.includes('/check-runs?')) value = { check_runs: options.checks ?? [] };
+    else if (endpoint.includes('/issues/2/labels')) value = [];
     else if (endpoint.endsWith('/pulls/2')) {
       pulls++;
       value = { ...pullFacts, base: { ...pullFacts.base, sha: options.drift === 'base' && pulls > 1 ? 'e'.repeat(40) : identity.baseSha },
         head: { ...pullFacts.head, sha: options.drift === 'head' && pulls > 1 ? 'e'.repeat(40) : identity.headSha }, changed_files: options.count ?? 2 };
     } else if (endpoint.includes('/files?')) {
-      const first = [fileFacts[0]];
+      const first = [{ ...fileFacts[0], status: options.fileStatus ?? 'modified' }];
       const second = [{ ...fileFacts[1], status: options.status ?? 'added' }];
       if (options.pagination && !endpoint.includes('page=2')) return new Response(JSON.stringify(first), { headers: { link: '<https://api.github.com/repos/o/r/pulls/2/files?per_page=100&page=2>; rel="next"' } });
       value = options.pagination ? second : [...first, ...second];
@@ -67,10 +68,13 @@ describe('T05-T06 remote fragment validation', () => {
   it.each([{ count: 3 }, { count: 3001 }, { truncated: true }, { mode: '120000' }, { corrupt: true }, { missing: true }, { status: 'copied' }])('fails closed on incomplete sources %#', async options => {
     await expect(fixture(options).run()).rejects.toThrow('RN_SOURCE_INCOMPLETE');
   });
-  it('rejects historical edits before reading blobs', async () => {
-    const test = fixture({ status: 'modified' });
+  it.each(['modified', 'removed'])('rejects historical fragment status %s before reading blobs', async status => {
+    const test = fixture({ status });
     await expect(test.run()).rejects.toThrow('RN_FRAGMENT_LIFECYCLE');
     expect(test.urls.some(url => url.includes('/git/'))).toBe(false);
+  });
+  it('accepts removed ordinary files', async () => {
+    await expect(fixture({ fileStatus: 'removed' }).run()).resolves.toMatchObject({ fragment: { status: 'not-user-facing' } });
   });
   it('returns null for a missing path', async () => {
     const test = fixture();
@@ -131,7 +135,8 @@ describe('中央 validate 片段入口', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it.each(['missing', 'trusted', 'wrong-head', 'wrong-app', 'wrong-policy', 'wrong-policy-sha', 'security', 'human-security', 'human-breaking-change',
-    'stale-base', 'stale-files', 'stale-commits', 'incomplete-commits', 'commit-read-failure', 'missing-file-counts'] as const)('处理分类来源 %s', async scenario => {
+    'stale-base', 'stale-files', 'stale-commits', 'incomplete-commits', 'commit-read-failure', 'missing-file-counts',
+    'label-added', 'label-removed', 'risk-without-state', 'label-read-failure', 'invalid-label'] as const)('处理分类来源 %s', async scenario => {
     const root = await mkdtemp(join(tmpdir(), 'steward-fragment-gate-'));
     try {
       await cp(resolve('config'), join(root, 'config'), { recursive: true });
@@ -158,12 +163,18 @@ describe('中央 validate 片段入口', () => {
         policy: scenario === 'wrong-policy' ? 'c'.repeat(64) : classificationDigests(semantics, classification, cfg.classification).classificationPolicyDigest,
         mode: 'active', primary: { id: 'bug', source: 'deterministic-fallback', reasonCode: 'primary-fallback-selected' },
         ownedRiskFlags: scenario === 'security' ? ['security'] : [],
-        riskFlags: scenario === 'human-breaking-change' ? ['breaking-change'] : ['security', 'human-security'].includes(scenario) ? ['security'] : [], facets: [], areas: [],
+        riskFlags: scenario === 'human-breaking-change' ? ['breaking-change'] : ['security', 'human-security', 'label-removed'].includes(scenario) ? ['security'] : [], facets: [], areas: [],
       }, classificationCheckStateCodec(semantics, classification));
-      const test = fixture({ checks: scenario === 'missing' ? [] : [{ name: 'PR Classification Gate', head_sha: identity.headSha,
+      const test = fixture({ checks: ['missing', 'risk-without-state'].includes(scenario) ? [] : [{ name: 'PR Classification Gate', head_sha: identity.headSha,
         app: { id: scenario === 'wrong-app' ? 99 : 4243096 }, status: 'completed', conclusion: 'success', external_id: encoded }] });
       vi.stubGlobal('fetch', async (url: string | URL | Request, init?: RequestInit) => {
         const endpoint = String(url);
+        if (endpoint.includes('/issues/2/labels')) {
+          if (scenario === 'label-read-failure') throw new Error('label read failed');
+          if (scenario === 'invalid-label') return new Response('[{}]');
+          return new Response(JSON.stringify(scenario === 'human-breaking-change' ? [{ name: 'breaking-change' }]
+            : ['human-security', 'label-added', 'risk-without-state'].includes(scenario) ? [{ name: 'security' }] : []));
+        }
         if (endpoint.includes('/commits?')) {
           if (scenario === 'commit-read-failure') throw new Error('commit read failed');
           if (scenario === 'incomplete-commits') return new Response('[]');
@@ -174,12 +185,15 @@ describe('中央 validate 片段入口', () => {
       for (const [key, value] of Object.entries({ STEWARD_CONFIG_DIRECTORY: join(root, 'config'), GITHUB_STEP_SUMMARY: join(root, 'summary.md'),
         VALIDATION_READ_TOKEN: 'test', VALIDATION_PR_NUMBER: '2', VALIDATION_BASE_SHA: identity.baseSha, VALIDATION_HEAD_SHA: identity.headSha, VALIDATION_POLICY_SHA: identity.policySha })) vi.stubEnv(key, value);
       const run = main(['validate', '--workspace', '.', '--repository-id', '1', '--profile', 'steward', '--fragments-only', 'true']);
-      if (['security', 'human-security', 'human-breaking-change'].includes(scenario)) await expect(run).rejects.toThrow('RN_FACT_CONFLICT');
+      if (['security', 'human-security', 'human-breaking-change', 'label-added'].includes(scenario)) await expect(run).rejects.toThrow('RN_FACT_CONFLICT');
+      else if (scenario === 'risk-without-state') await expect(run).rejects.toThrow('风险标签需要有效的当前分类结果');
+      else if (scenario === 'label-read-failure') await expect(run).rejects.toThrow('label read failed');
+      else if (scenario === 'invalid-label') await expect(run).rejects.toThrow('片段分类标签数据不完整');
       else {
         await run;
         const summary = await readFile(join(root, 'summary.md'), 'utf8');
-        expect(summary).toContain(`分类：${scenario === 'trusted' ? 'provided' : 'missing'}`);
-        expect(summary).toContain(`要求：${scenario === 'trusted' ? 'review-required' : 'ignored'}`);
+        expect(summary).toContain(`分类：${['trusted', 'label-removed'].includes(scenario) ? 'provided' : 'missing'}`);
+        expect(summary).toContain(`要求：${['trusted', 'label-removed'].includes(scenario) ? 'review-required' : 'ignored'}`);
         expect(summary).toContain(identity.baseSha);
         expect(summary).toContain(identity.policySha);
       }

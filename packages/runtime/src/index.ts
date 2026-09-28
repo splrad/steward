@@ -1,6 +1,7 @@
 import { isIssueCapableRepository, isStewardOwnedPullRequest } from "../../core/src/issues.js";
 import { createAppJwt, createInstallationToken, dispatchWorkflow, GitHubClient, isDependabotReviewEligible } from "../../github/src/index.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
+import semanticCatalog from "../../../config/labels/pr-semantics.json" with { type: "json" };
 import { handleIssueSnapshotInternalRequest, IssueSnapshotStore } from "./issue-snapshots.js";
 import { confirmPullRequestBodyWriteIntent, processPullRequestBodyEditedDelivery, PullRequestBodyWriteIntentStore, type PullRequestBodyWriteIntent } from "./pr-body-write-intents.js";
 
@@ -525,6 +526,14 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       }
       const sender = payload.sender; if (!sender || sender.type !== "User" || String(sender.login).endsWith("[bot]")) return response(204);
       await send(env, "pr-automation.yml", { deliveryId, repositoryId: String(repository.id), sourceRef: payload.ref, eventAfterSha: payload.after, sourceActorId: String(sender.id), sourceActorLogin: String(sender.login), policySha: env.POLICY_SHA }); return response(202);
+    }
+    if (event === "pull_request" && ["labeled", "unlabeled"].includes(action)) {
+      const repository = payload.repository; const pull = payload.pull_request;
+      const riskLabels = semanticCatalog.roles.riskFlags.definitions.map(definition => definition.githubLabel.name);
+      if (!repository || !isManaged(repository) || !pull || pull.state !== "open" || pull.base?.ref !== repository.default_branch
+        || !riskLabels.includes(payload.label?.name)) return response(204);
+      await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), eventHeadSha: pull.head.sha, policySha: env.POLICY_SHA });
+      return response(202);
     }
     if (event === "pull_request" && ["opened", "synchronize", "reopened", "edited"].includes(action)) {
       const repository = payload.repository; const pull = payload.pull_request;
