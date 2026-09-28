@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   buildAiDiffObservation, buildCopilotRepairPrompt, buildDeterministicSummary, buildPrompt, classifyPullRequest, classificationDigests, classificationInputDigest, computePullRequestFingerprint, createAiClassificationEnvelope, digest,
   categorizeReleasePullRequests, classifyRemoteReleaseState, collectReleasePullRequests,
-  escapeMarkdownText,
+  escapeMarkdownText, FragmentValidationError,
   isHumanActor, isIssueCapableRepository, normalizeContributor,
   organizationPullRequestTemplate,
   generateReviewInstructionSet, parseVersion, planClassificationLabels, planLabelDefinitions, planRelease, planRepositorySettings, renderManagedBody,
@@ -1615,6 +1615,7 @@ async function validate(args: Readonly<Record<string, string>>) {
     const repository = await gh.getRepositoryById(repositoryId);
     if (repository.id !== repositoryId) throw new Error("片段验证仓库身份不匹配");
     const [owner, repo] = splitRepository(repository.full_name);
+    let classificationSourceDigest: string | undefined;
     try {
       const result = await validateRemoteFragments({ gh, owner, repo, identity, profile: profile.fragmentGate.profile,
         classification: async (pull, files) => {
@@ -1630,6 +1631,10 @@ async function validate(args: Readonly<Record<string, string>>) {
             return null;
           };
           const checks = (await gh.listAllCheckRuns(owner, repo, identity.headSha)).filter(check => check.name === "PR Classification Gate" && check.app?.id === 4243096 && check.head_sha === identity.headSha);
+          const sourceDigest = digest({ labels: [...names].sort(), checks: checks.map(check =>
+            [check.id ?? null, check.head_sha ?? null, check.status ?? null, check.conclusion ?? null, check.external_id ?? null]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))) });
+          if (classificationSourceDigest !== undefined && classificationSourceDigest !== sourceDigest) throw new FragmentValidationError("RN_SOURCE_STALE", "classification or labels");
+          classificationSourceDigest = sourceDigest;
           if (checks.length !== 1 || checks[0].status !== "completed" || checks[0].conclusion !== "success") return unavailable();
           const state = decodeClassificationCheckState(checks[0].external_id, classificationCheckStateCodec(semantics, classificationProfile), identity);
           if (state?.policy !== policy.classificationPolicyDigest || state.mode !== configuration.classification.ai.mode) return unavailable();

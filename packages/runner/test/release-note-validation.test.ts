@@ -65,6 +65,12 @@ describe('T05-T06 remote fragment validation', () => {
   it.each(['base', 'head'] as const)('rejects %s drift during reads', async drift => {
     await expect(fixture({ drift }).run()).rejects.toThrow('RN_SOURCE_STALE');
   });
+  it('rejects classification drift at the final read', async () => {
+    const test = fixture();
+    const classification = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({ primaryKind: 'bug', riskFlags: ['security'] });
+    await expect(validateRemoteFragments({ gh: test.gh, owner: 'o', repo: 'r', identity, profile, classification })).rejects.toThrow('RN_SOURCE_STALE');
+    expect(classification).toHaveBeenCalledTimes(2);
+  });
   it.each([{ count: 3 }, { count: 3001 }, { truncated: true }, { mode: '120000' }, { corrupt: true }, { missing: true }, { status: 'copied' }])('fails closed on incomplete sources %#', async options => {
     await expect(fixture(options).run()).rejects.toThrow('RN_SOURCE_INCOMPLETE');
   });
@@ -136,7 +142,7 @@ describe('中央 validate 片段入口', () => {
   });
   it.each(['missing', 'trusted', 'wrong-head', 'wrong-app', 'wrong-policy', 'wrong-policy-sha', 'security', 'human-security', 'human-breaking-change',
     'stale-base', 'stale-files', 'stale-commits', 'incomplete-commits', 'commit-read-failure', 'missing-file-counts',
-    'label-added', 'label-removed', 'risk-without-state', 'label-read-failure', 'invalid-label'] as const)('处理分类来源 %s', async scenario => {
+    'label-added', 'label-removed', 'risk-without-state', 'label-read-failure', 'invalid-label', 'label-drift', 'check-drift', 'label-reordered'] as const)('处理分类来源 %s', async scenario => {
     const root = await mkdtemp(join(tmpdir(), 'steward-fragment-gate-'));
     try {
       await cp(resolve('config'), join(root, 'config'), { recursive: true });
@@ -167,9 +173,22 @@ describe('中央 validate 片段入口', () => {
       }, classificationCheckStateCodec(semantics, classification));
       const test = fixture({ checks: ['missing', 'risk-without-state'].includes(scenario) ? [] : [{ name: 'PR Classification Gate', head_sha: identity.headSha,
         app: { id: scenario === 'wrong-app' ? 99 : 4243096 }, status: 'completed', conclusion: 'success', external_id: encoded }] });
+      let labelReads = 0;
+      let checkReads = 0;
       vi.stubGlobal('fetch', async (url: string | URL | Request, init?: RequestInit) => {
         const endpoint = String(url);
+        if (endpoint.includes('/check-runs?')) {
+          checkReads++;
+          if (scenario === 'check-drift' && checkReads > 1) {
+            const result = await (await test.transport(url, init)).json();
+            result.check_runs[0].external_id = encodeClassificationCheckState({ ...decodeClassificationCheckState(encoded, classificationCheckStateCodec(semantics, classification))!, decisionDigest: 'e'.repeat(64) }, classificationCheckStateCodec(semantics, classification));
+            return new Response(JSON.stringify(result));
+          }
+        }
         if (endpoint.includes('/issues/2/labels')) {
+          labelReads++;
+          if (scenario === 'label-drift' && labelReads > 1) return new Response('[{"name":"security"}]');
+          if (scenario === 'label-reordered') return new Response(JSON.stringify((labelReads === 1 ? ['one', 'two'] : ['two', 'one']).map(name => ({ name }))));
           if (scenario === 'label-read-failure') throw new Error('label read failed');
           if (scenario === 'invalid-label') return new Response('[{}]');
           return new Response(JSON.stringify(scenario === 'human-breaking-change' ? [{ name: 'breaking-change' }]
@@ -189,11 +208,12 @@ describe('中央 validate 片段入口', () => {
       else if (scenario === 'risk-without-state') await expect(run).rejects.toThrow('风险标签需要有效的当前分类结果');
       else if (scenario === 'label-read-failure') await expect(run).rejects.toThrow('label read failed');
       else if (scenario === 'invalid-label') await expect(run).rejects.toThrow('片段分类标签数据不完整');
+      else if (['label-drift', 'check-drift'].includes(scenario)) await expect(run).rejects.toThrow('RN_SOURCE_STALE');
       else {
         await run;
         const summary = await readFile(join(root, 'summary.md'), 'utf8');
-        expect(summary).toContain(`分类：${['trusted', 'label-removed'].includes(scenario) ? 'provided' : 'missing'}`);
-        expect(summary).toContain(`要求：${['trusted', 'label-removed'].includes(scenario) ? 'review-required' : 'ignored'}`);
+        expect(summary).toContain(`分类：${['trusted', 'label-removed', 'label-reordered'].includes(scenario) ? 'provided' : 'missing'}`);
+        expect(summary).toContain(`要求：${['trusted', 'label-removed', 'label-reordered'].includes(scenario) ? 'review-required' : 'ignored'}`);
         expect(summary).toContain(identity.baseSha);
         expect(summary).toContain(identity.policySha);
       }

@@ -44,6 +44,8 @@ Steward 由无状态 webhook 运行时接收组织事件，再把需要中央权
 3. 调度拉取请求自动化、分类、验证、仓库接入、说明同步或发布任务。
 4. 将结果写回目标仓库，并保留可复核的检查摘要。
 
+发布片段验证按仓库显式启用：中央验证 profile 需配置 `fragmentGate.profile` 路径规则，并在 `fragmentGate.repositories` 中绑定仓库编号。当前 `public-basic`、`layerscape` 和 `steward` profile 均处于未启用状态；`fragments` 作业会报告“片段门禁：未启用”，保留现行验证。门禁激活在目标仓库完成片段规则配置与准备后单独进行。
+
 受管仓库只保留项目自己的代码和必要配置。中央工作流、GitHub App 私钥及其他中央凭据不会复制过去。
 
 ## 目录说明

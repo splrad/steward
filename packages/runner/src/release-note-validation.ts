@@ -77,9 +77,11 @@ export async function validateRemoteFragments(input: {
     if (!bytes) return incomplete('fragment missing at PR head');
     fragments.push({ path: change.path, bytes, existsInBase });
   }
-  const result = validatePullRequestFragments({ identity, changes, expectedFileCount: pull.changed_files, profile: input.profile, classification, fragments });
   const latest = await readPull();
   if (latest.changed_files !== pull.changed_files) throw new FragmentValidationError('RN_SOURCE_STALE', 'PR file count');
+  const latestClassification = await input.classification(latest, files);
+  if (JSON.stringify(latestClassification) !== JSON.stringify(classification)) throw new FragmentValidationError('RN_SOURCE_STALE', 'classification');
+  const result = validatePullRequestFragments({ identity, changes, expectedFileCount: pull.changed_files, profile: input.profile, classification: latestClassification, fragments });
   return { ...result, sources: fragments.map(fragment => ({ path: fragment.path,
     blobSha: createHash('sha1').update(`blob ${fragment.bytes.length}\0`).update(fragment.bytes).digest('hex'),
     sha256: createHash('sha256').update(fragment.bytes).digest('hex') })) };
