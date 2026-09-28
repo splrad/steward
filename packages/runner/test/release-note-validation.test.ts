@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { classificationDigests } from '../../core/src/index.js';
-import { classificationCheckStateCodec, encodeClassificationCheckState, main } from '../src/index.js';
+import { classificationCheckStateCodec, decodeClassificationCheckState, encodeClassificationCheckState, main } from '../src/index.js';
+import * as github from '../../github/src/index.js';
 import { GitHubClient } from '../../github/src/index.js';
 import { readFragmentBlob, validateRemoteFragments } from '../src/release-note-validation.js';
 
@@ -14,7 +15,7 @@ const path = 'fragments/new-fact.json';
 const bytes = Buffer.from(JSON.stringify({ schemaVersion: 1, status: 'not-user-facing', reason: 'Only internal test fixtures have changed.' }));
 const blobSha = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
 const treeSha = 'd'.repeat(40);
-afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 function fixture(options: { drift?: 'base' | 'head'; count?: number; truncated?: boolean; mode?: string; corrupt?: boolean; status?: string; pagination?: boolean; missing?: boolean; checks?: unknown[] } = {}) {
   let pulls = 0;
   const urls: string[] = [];
@@ -76,7 +77,53 @@ describe('T05-T06 remote fragment validation', () => {
 });
 
 describe('中央 validate 片段入口', () => {
-  it.each(['missing', 'trusted', 'wrong-head', 'wrong-app', 'wrong-policy', 'security'] as const)('处理分类来源 %s', async scenario => {
+  it.each(['security', 'breaking-change'])('分类保留人工 %s 风险并传给片段门禁', async risk => {
+    const root = await mkdtemp(join(tmpdir(), 'steward-classification-fragments-'));
+    try {
+      await cp(resolve('config'), join(root, 'config'), { recursive: true });
+      const catalogPath = join(root, 'config/repositories.json');
+      const catalog = JSON.parse(await readFile(catalogPath, 'utf8'));
+      const cfg = structuredClone(catalog.repositories['1296724484']);
+      cfg.classification = { profile: 'default', labelDefinitionMode: 'observe', labelAssignmentMode: 'observe', ai: { mode: 'shadow', adoptedPrimaryKinds: [], canaries: [] } };
+      catalog.repositories['1'] = { ...cfg, fullName: 'o/r' };
+      await writeFile(catalogPath, JSON.stringify(catalog));
+      const profilePath = join(root, 'config/profiles/validation/steward.json');
+      const validation = JSON.parse(await readFile(profilePath, 'utf8'));
+      validation.fragmentGate = { repositories: [1], profile };
+      await writeFile(profilePath, JSON.stringify(validation));
+      const semantics = JSON.parse(await readFile('config/labels/pr-semantics.json', 'utf8'));
+      const classification = JSON.parse(await readFile('config/profiles/classification/default.json', 'utf8'));
+      const codec = classificationCheckStateCodec(semantics, classification);
+      let check: Record<string, unknown> | undefined;
+      const fragmentTransport = fixture().transport;
+      vi.spyOn(github, 'createInstallationToken').mockResolvedValue('test');
+      vi.stubGlobal('fetch', async (url: string | URL | Request, init?: RequestInit) => {
+        const endpoint = String(url);
+        let value: unknown;
+        if (endpoint.includes('/check-runs') && ['POST', 'PATCH'].includes(init?.method ?? '')) {
+          check = { ...check, ...JSON.parse(String(init?.body)), id: 1, head_sha: identity.headSha, app: { id: 4243096 } };
+          value = check;
+        } else if (endpoint.includes('/check-runs?')) value = { check_runs: check ? [check] : [] };
+        else if (endpoint.endsWith('/pulls/2')) value = { number: 2, state: 'open', title: 'Update tests', body: '', user: { login: 'user', type: 'User' },
+          base: { sha: identity.baseSha, ref: 'main', repo: { id: 1 } }, head: { sha: identity.headSha, ref: 'change', repo: { id: 1 } }, changed_files: 2, commits: 1 };
+        else if (endpoint.includes('/commits?')) value = [{ sha: identity.headSha, commit: { message: 'test: update fixtures' } }];
+        else if (endpoint.includes('/issues/2/labels')) value = [{ name: risk }];
+        else if (endpoint.includes('/repos/o/r/labels')) value = [];
+        else return fragmentTransport(url, init);
+        return new Response(JSON.stringify(value));
+      });
+      for (const [key, value] of Object.entries({ STEWARD_CONFIG_DIRECTORY: join(root, 'config'), GITHUB_STEP_SUMMARY: join(root, 'summary.md'),
+        APP_ID: '1', INSTALLATION_ID: '1', STEWARD_APP_PRIVATE_KEY: 'test', AI_CLASSIFICATION: '',
+        VALIDATION_READ_TOKEN: 'test', VALIDATION_PR_NUMBER: '2', VALIDATION_BASE_SHA: identity.baseSha, VALIDATION_HEAD_SHA: identity.headSha, VALIDATION_POLICY_SHA: identity.policySha })) vi.stubEnv(key, value);
+      for (let iteration = 0; iteration < 2; iteration++) {
+        await main(['pr-classification', '--repository-id', '1', '--pull-request-number', '2', '--event-head-sha', identity.headSha, '--policy-sha', identity.policySha]);
+        expect(check?.conclusion).toBe('success');
+        expect(decodeClassificationCheckState(check?.external_id, codec, identity)).toMatchObject({ policySha: identity.policySha, ownedRiskFlags: [], riskFlags: [risk] });
+      }
+      await expect(main(['validate', '--workspace', '.', '--repository-id', '1', '--profile', 'steward', '--fragments-only', 'true'])).rejects.toThrow('RN_FACT_CONFLICT');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it.each(['missing', 'trusted', 'wrong-head', 'wrong-app', 'wrong-policy', 'wrong-policy-sha', 'security', 'human-security', 'human-breaking-change'] as const)('处理分类来源 %s', async scenario => {
     const root = await mkdtemp(join(tmpdir(), 'steward-fragment-gate-'));
     try {
       await cp(resolve('config'), join(root, 'config'), { recursive: true });
@@ -91,12 +138,14 @@ describe('中央 validate 片段入口', () => {
       await writeFile(profilePath, JSON.stringify(validation));
       const semantics = JSON.parse(await readFile('config/labels/pr-semantics.json', 'utf8'));
       const classification = JSON.parse(await readFile('config/profiles/classification/default.json', 'utf8'));
-      const encoded = encodeClassificationCheckState({ v: 3, repositoryId: 1, pullRequestNumber: 2,
+      const encoded = encodeClassificationCheckState({ v: 4, repositoryId: 1, pullRequestNumber: 2,
         headSha: scenario === 'wrong-head' ? 'e'.repeat(40) : identity.headSha,
+        policySha: scenario === 'wrong-policy-sha' ? 'e'.repeat(40) : identity.policySha,
         inputDigest: 'a'.repeat(64), decisionDigest: 'b'.repeat(64),
         policy: scenario === 'wrong-policy' ? 'c'.repeat(64) : classificationDigests(semantics, classification, cfg.classification).classificationPolicyDigest,
         mode: 'active', primary: { id: 'bug', source: 'deterministic-fallback', reasonCode: 'primary-fallback-selected' },
-        risks: scenario === 'security' ? ['security'] : [], facets: [], areas: [],
+        ownedRiskFlags: scenario === 'security' ? ['security'] : [],
+        riskFlags: scenario === 'human-breaking-change' ? ['breaking-change'] : ['security', 'human-security'].includes(scenario) ? ['security'] : [], facets: [], areas: [],
       }, classificationCheckStateCodec(semantics, classification));
       const test = fixture({ checks: scenario === 'missing' ? [] : [{ name: 'PR Classification Gate', head_sha: identity.headSha,
         app: { id: scenario === 'wrong-app' ? 99 : 4243096 }, status: 'completed', conclusion: 'success', external_id: encoded }] });
@@ -104,7 +153,7 @@ describe('中央 validate 片段入口', () => {
       for (const [key, value] of Object.entries({ STEWARD_CONFIG_DIRECTORY: join(root, 'config'), GITHUB_STEP_SUMMARY: join(root, 'summary.md'),
         VALIDATION_READ_TOKEN: 'test', VALIDATION_PR_NUMBER: '2', VALIDATION_BASE_SHA: identity.baseSha, VALIDATION_HEAD_SHA: identity.headSha, VALIDATION_POLICY_SHA: identity.policySha })) vi.stubEnv(key, value);
       const run = main(['validate', '--workspace', '.', '--repository-id', '1', '--profile', 'steward', '--fragments-only', 'true']);
-      if (scenario === 'security') await expect(run).rejects.toThrow('RN_FACT_CONFLICT');
+      if (['security', 'human-security', 'human-breaking-change'].includes(scenario)) await expect(run).rejects.toThrow('RN_FACT_CONFLICT');
       else {
         await run;
         const summary = await readFile(join(root, 'summary.md'), 'utf8');

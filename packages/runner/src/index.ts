@@ -344,17 +344,19 @@ export function isTrustedAiClassificationSource(policySha: string, environment: 
     && environment.WORKFLOW_REF === `${environment.WORKFLOW_REPOSITORY}/.github/workflows/pr-classification.yml@${environment.WORKFLOW_RUN_REF}`
     && environment.WORKFLOW_SHA === policySha;
 }
-export interface ClassificationCheckStateV3 {
-  v: 3;
+export interface ClassificationCheckStateV4 {
+  v: 4;
   repositoryId: number;
   pullRequestNumber: number;
   headSha: string;
   inputDigest: string;
   policy: string;
+  policySha: string;
   mode: RepositoryClassification["ai"]["mode"];
   primary: { id: string; source: "hard-rule" | "ai" | "deterministic-fallback"; reasonCode: string };
   acceptedAiPrimaryKind?: string;
-  risks: string[];
+  ownedRiskFlags: string[];
+  riskFlags: string[];
   facets: string[];
   areas: string[];
   decisionDigest: string;
@@ -373,7 +375,7 @@ const classificationCheckReasons = [
   "primary-ai-incomplete-diff", "primary-ai-low-confidence", "primary-ai-kind-ineligible", "primary-ai-evidence-invalid",
   "primary-ai-hard-rule-conflict", "primary-ai-mode-shadow", "primary-deterministic-type-selected", "primary-fallback-selected",
 ] as const;
-const classificationCheckStateBodyBytes = 133;
+const classificationCheckStateBodyBytes = 154;
 const classificationCheckStateBytes = classificationCheckStateBodyBytes + 32;
 const classificationCheckStateEncodedLength = Math.ceil(classificationCheckStateBytes * 4 / 3);
 export function classificationCheckStateCodec(catalog: SemanticCatalog, profile: ClassificationProfile): ClassificationCheckStateCodec {
@@ -402,14 +404,15 @@ function decodeStateBits(bits: number, order: readonly string[]): string[] | nul
   if ((bits >>> order.length) !== 0) return null;
   return order.filter((_value, index) => (bits & (1 << index)) !== 0);
 }
-export function encodeClassificationCheckState(state: ClassificationCheckStateV3, codec: ClassificationCheckStateCodec): string {
+export function encodeClassificationCheckState(state: ClassificationCheckStateV4, codec: ClassificationCheckStateCodec): string {
   validateClassificationCheckCodec(codec);
   if (!Number.isSafeInteger(state.repositoryId) || state.repositoryId < 1 || state.repositoryId > 0xffff_ffff
     || !Number.isSafeInteger(state.pullRequestNumber) || state.pullRequestNumber < 1 || state.pullRequestNumber > 0xffff_ffff
+    || state.v !== 4 || !/^[0-9a-f]{40}$/u.test(state.policySha)
     || !/^[0-9a-f]{40}$/u.test(state.headSha) || !/^[0-9a-f]{64}$/u.test(state.inputDigest)
     || !/^[0-9a-f]{64}$/u.test(state.policy) || !/^[0-9a-f]{64}$/u.test(state.decisionDigest)) throw new Error("分类检查状态上下文无效");
   const buffer = Buffer.alloc(classificationCheckStateBytes);
-  buffer[0] = 3;
+  buffer[0] = 4;
   buffer.writeUInt32BE(state.repositoryId, 1);
   buffer.writeUInt32BE(state.pullRequestNumber, 5);
   Buffer.from(state.headSha, "hex").copy(buffer, 9);
@@ -420,49 +423,56 @@ export function encodeClassificationCheckState(state: ClassificationCheckStateV3
   buffer[126] = encodeStateIndex(state.primary.id, codec.primaryKinds, "主类");
   buffer[127] = encodeStateIndex(state.primary.source, classificationCheckSources, "主类来源");
   buffer[128] = encodeStateIndex(state.primary.reasonCode, classificationCheckReasons, "主类原因");
-  buffer[129] = encodeStateBits(state.risks, codec.riskFlags, "风险");
+  buffer[129] = encodeStateBits(state.ownedRiskFlags, codec.riskFlags, "风险所有权");
   buffer[130] = encodeStateBits(state.facets, codec.facets, "Facet");
   buffer[131] = encodeStateBits(state.areas, codec.areas, "区域");
   buffer[132] = state.acceptedAiPrimaryKind === undefined ? 255 : encodeStateIndex(state.acceptedAiPrimaryKind, codec.primaryKinds, "已采用AI主类");
+  Buffer.from(state.policySha, "hex").copy(buffer, 133);
+  buffer[153] = encodeStateBits(state.riskFlags, codec.riskFlags, "风险");
+  if (state.ownedRiskFlags.some(risk => !state.riskFlags.includes(risk))) throw new Error("分类检查状态的风险所有权超出风险集合");
   if (state.acceptedAiPrimaryKind !== undefined && (state.primary.source !== "ai" || state.primary.id !== state.acceptedAiPrimaryKind || !["primary-ai-accepted", "primary-ai-reused"].includes(state.primary.reasonCode))) throw new Error("分类检查状态的AI主类不一致");
   createHash("sha256").update(buffer.subarray(0, classificationCheckStateBodyBytes)).digest().copy(buffer, classificationCheckStateBodyBytes);
-  return `v3:${buffer.toString("base64url")}`;
+  return `v4:${buffer.toString("base64url")}`;
 }
-export function decodeClassificationCheckState(value: unknown, codec: ClassificationCheckStateCodec, expected?: { repositoryId: number; pullRequestNumber: number; headSha: string }): ClassificationCheckStateV3 | null {
+export function decodeClassificationCheckState(value: unknown, codec: ClassificationCheckStateCodec, expected?: { repositoryId: number; pullRequestNumber: number; headSha: string; policySha?: string }): ClassificationCheckStateV4 | null {
   try { validateClassificationCheckCodec(codec); } catch { return null; }
-  if (typeof value !== "string" || !value.startsWith("v3:")) return null;
+  if (typeof value !== "string" || !value.startsWith("v4:")) return null;
   const encoded = value.slice(3);
   if (encoded.length !== classificationCheckStateEncodedLength || !/^[A-Za-z0-9_-]+$/u.test(encoded)) return null;
   const decoded = Buffer.from(encoded, "base64url");
-  if (decoded.length !== classificationCheckStateBytes || decoded.toString("base64url") !== encoded || decoded[0] !== 3) return null;
+  if (decoded.length !== classificationCheckStateBytes || decoded.toString("base64url") !== encoded || decoded[0] !== 4) return null;
   const checksum = createHash("sha256").update(decoded.subarray(0, classificationCheckStateBodyBytes)).digest();
   if (!checksum.equals(decoded.subarray(classificationCheckStateBodyBytes))) return null;
   const repositoryId = decoded.readUInt32BE(1);
   const pullRequestNumber = decoded.readUInt32BE(5);
   const headSha = decoded.subarray(9, 29).toString("hex");
+  const policySha = decoded.subarray(133, 153).toString("hex");
+  if (expected?.policySha !== undefined && policySha !== expected.policySha) return null;
   if (!repositoryId || !pullRequestNumber || (expected && (repositoryId !== expected.repositoryId || pullRequestNumber !== expected.pullRequestNumber || headSha !== expected.headSha))) return null;
   const mode = classificationCheckModes[decoded[125]!];
   const primaryKind = codec.primaryKinds[decoded[126]!];
   const source = classificationCheckSources[decoded[127]!];
   const reasonCode = classificationCheckReasons[decoded[128]!];
-  const risks = decodeStateBits(decoded[129]!, codec.riskFlags);
+  const ownedRiskFlags = decodeStateBits(decoded[129]!, codec.riskFlags);
+  const riskFlags = decodeStateBits(decoded[153]!, codec.riskFlags);
   const facets = decodeStateBits(decoded[130]!, codec.facets);
   const areas = decodeStateBits(decoded[131]!, codec.areas);
   const acceptedAiPrimaryKind = decoded[132] === 255 ? undefined : codec.primaryKinds[decoded[132]!];
-  if (!mode || !primaryKind || !source || !reasonCode || !risks || !facets || !areas) return null;
+  if (!mode || !primaryKind || !source || !reasonCode || !ownedRiskFlags || !riskFlags || !facets || !areas) return null;
+  if (ownedRiskFlags.some(risk => !riskFlags.includes(risk))) return null;
   if (acceptedAiPrimaryKind !== undefined && (source !== "ai" || primaryKind !== acceptedAiPrimaryKind || !["primary-ai-accepted", "primary-ai-reused"].includes(reasonCode))) return null;
   return {
-    v: 3, repositoryId, pullRequestNumber, headSha,
+    v: 4, repositoryId, pullRequestNumber, headSha, policySha,
     inputDigest: decoded.subarray(29, 61).toString("hex"),
     policy: decoded.subarray(61, 93).toString("hex"),
     mode,
     primary: { id: primaryKind, source, reasonCode },
     ...(acceptedAiPrimaryKind ? { acceptedAiPrimaryKind } : {}),
-    risks, facets, areas,
+    ownedRiskFlags, riskFlags, facets, areas,
     decisionDigest: decoded.subarray(93, 125).toString("hex"),
   };
 }
-export function reusedAiClassificationAssessment(state: ClassificationCheckStateV3 | null): AiClassificationAssessment | null {
+export function reusedAiClassificationAssessment(state: ClassificationCheckStateV4 | null): AiClassificationAssessment | null {
   if (!state?.acceptedAiPrimaryKind || state.primary.source !== "ai" || state.primary.id !== state.acceptedAiPrimaryKind) return null;
   return {
     state: "valid",
@@ -1287,12 +1297,13 @@ async function classify(args: Readonly<Record<string, string>>) {
     const policy = classificationDigests(semantics, profile, repositoryClassification);
     const inputDigest = classificationInputDigest(rawFacts, policySha, policy.classificationPolicyDigest);
     const reusablePreviousState = previousState?.policy === policy.classificationPolicyDigest
+      && previousState.policySha === policySha
       && previousState.inputDigest === inputDigest
       && previousState.mode === repositoryClassification.ai.mode
       ? previousState
       : null;
     const priorOwnership = reusablePreviousState
-      ? { stewardOwnedRiskFlags: reusablePreviousState.risks, stewardOwnedFacets: reusablePreviousState.facets }
+      ? { stewardOwnedRiskFlags: reusablePreviousState.ownedRiskFlags, stewardOwnedFacets: reusablePreviousState.facets }
       : { stewardOwnedRiskFlags: [], stewardOwnedFacets: [] };
     const existing = { currentLabels, ...priorOwnership };
     let aiAssessment: AiClassificationAssessment;
@@ -1344,16 +1355,18 @@ async function classify(args: Readonly<Record<string, string>>) {
     const decisionDigest = digest(result);
     const resultAi = result.ai!;
     const state = encodeClassificationCheckState({
-      v: 3,
+      v: 4,
       repositoryId,
       pullRequestNumber: number,
       headSha: expectedHead,
       inputDigest,
       policy: policy.classificationPolicyDigest,
+      policySha,
       mode: repositoryClassification.ai.mode,
       primary: result.primaryKind,
       ...(result.primaryKind.source === "ai" ? { acceptedAiPrimaryKind: result.primaryKind.id } : {}),
-      risks: labelPlan.ownedRiskFlags,
+      ownedRiskFlags: labelPlan.ownedRiskFlags,
+      riskFlags: [...new Set(result.riskFlags.map(value => value.id))],
       facets: labelPlan.ownedFacets,
       areas: result.areas.map(value => value.id),
       decisionDigest,
@@ -1616,7 +1629,7 @@ async function validate(args: Readonly<Record<string, string>>) {
           const checks = (await gh.listAllCheckRuns(owner, repo, identity.headSha)).filter(check => check.name === "PR Classification Gate" && check.app?.id === 4243096 && check.head_sha === identity.headSha);
           if (checks.length !== 1 || checks[0].status !== "completed" || checks[0].conclusion !== "success") return null;
           const state = decodeClassificationCheckState(checks[0].external_id, classificationCheckStateCodec(semantics, classificationProfile), identity);
-          return state?.policy === policy.classificationPolicyDigest && state.mode === configuration.classification.ai.mode ? { primaryKind: state.primary.id, riskFlags: state.risks } : null;
+          return state?.policy === policy.classificationPolicyDigest && state.mode === configuration.classification.ai.mode ? { primaryKind: state.primary.id, riskFlags: state.riskFlags } : null;
         } });
       await summary(["# 发布片段验证", `base：${identity.baseSha}`, `head：${identity.headSha}`, `policy：${identity.policySha}`,
         `要求：${result.decision.requirement}`, `分类：${result.decision.classificationState}`,
