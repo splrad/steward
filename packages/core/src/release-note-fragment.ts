@@ -7,7 +7,7 @@ export type FragmentEntry = { change: string; userImpact: string } & (
 export type Fragment =
   | { schemaVersion: 1; status: 'documented'; entries: FragmentEntry[] }
   | { schemaVersion: 1; status: 'not-user-facing'; reason: string };
-export type FragmentErrorCode = 'RN_FRAGMENT_ENCODING' | 'RN_FRAGMENT_JSON' | 'RN_FRAGMENT_DUPLICATE_KEY'
+export type FragmentErrorCode = 'RN_FRAGMENT_SIZE' | 'RN_FRAGMENT_ENCODING' | 'RN_FRAGMENT_JSON' | 'RN_FRAGMENT_DUPLICATE_KEY'
   | 'RN_FRAGMENT_SCHEMA' | 'RN_FRAGMENT_TEXT' | 'RN_FRAGMENT_ID' | 'RN_PATH_INVALID'
   | 'RN_PROFILE_INVALID' | 'RN_FRAGMENT_REQUIRED' | 'RN_FACT_CONFLICT';
 
@@ -19,6 +19,7 @@ export class FragmentError extends Error {
 }
 
 function fail(code: FragmentErrorCode, field: string): never { throw new FragmentError(code, field); }
+const maximumFragmentBytes = 512 * 1024;
 const forbiddenCharacters = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069\ufeff]/u;
 
 function checkString(value: string, field: string): void {
@@ -46,6 +47,7 @@ function* jsonTokens(source: string): Generator<string> {
 }
 
 function readJson(bytes: Uint8Array): unknown {
+  if (bytes.byteLength > maximumFragmentBytes) fail('RN_FRAGMENT_SIZE', '$');
   let source: string;
   try { source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
   catch { return fail('RN_FRAGMENT_ENCODING', '$'); }
@@ -140,6 +142,7 @@ function text(value: unknown, min: number, field: string): string {
   if (/^(?:- *){3,}$|^(?:_ *){3,}$|^(?:\* *){3,}$/u.test(normalized)) fail('RN_FRAGMENT_TEXT', field);
   if (hasInlineFormatting(normalized)) fail('RN_FRAGMENT_TEXT', field);
   if (hasEmailAutolink(normalized)) fail('RN_FRAGMENT_TEXT', field);
+  if (/<\?.*?\?>/u.test(normalized)) fail('RN_FRAGMENT_TEXT', field);
   if (/`|~{3}|!?\[[^\]]*\]\s*[(:\[]|<\/?[a-z!][^>]*>|(?:[a-z][a-z\d+.-]*:\/\/|\b(?:mailto|data|javascript):|\bwww\.)|^(?:#{1,6}\s|>\s?|[-+*]\s|\d+[.)]\s)|\||\{\{|\}\}|\$\{|<%|%>|\{[a-z_][\w.-]*\}/iu.test(normalized)) {
     fail('RN_FRAGMENT_TEXT', field);
   }

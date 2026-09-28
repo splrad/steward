@@ -19,6 +19,28 @@ function errorCode(run: () => unknown, code: FragmentErrorCode): void {
 const decision = (path: string, classification: FragmentClassification | null = null) => evaluateRequirement([{ status: 'modified', path }], classification, profile);
 
 describe('T01: fragment bytes and JSON', () => {
+  it.each([512 * 1024 - 1, 512 * 1024, 512 * 1024 + 1])('checks the input byte boundary at %i bytes', (size) => {
+    const value = { ...hidden, reason: '多字节文本保持原样并通过验证。' };
+    const content = encode(value);
+    const bytes = new Uint8Array(size).fill(0x20);
+    bytes.set(content);
+    if (size <= 512 * 1024) expect(parseFragment(bytes)).toEqual(value);
+    else errorCode(() => parseFragment(bytes), 'RN_FRAGMENT_SIZE');
+  });
+  it('uses the input view length rather than its backing buffer size', () => {
+    const content = encode(hidden);
+    const backing = new Uint8Array(512 * 1024 + 1);
+    backing.set(content, 1);
+    expect(parseFragment(backing.subarray(1, content.length + 1))).toEqual(hidden);
+  });
+  it.each([
+    new Uint8Array(512 * 1024 + 1).fill(0xff),
+    new TextEncoder().encode('[' + ' '.repeat(512 * 1024)),
+    encode({ ...hidden, extra: 'x'.repeat(512 * 1024) }),
+    encode(Array(300_000).fill(0)),
+  ])('rejects oversized input before encoding, JSON or schema validation %#', (bytes) => {
+    expect(() => parseFragment(bytes)).toThrow(expect.objectContaining({ code: 'RN_FRAGMENT_SIZE', field: '$' }));
+  });
   it('preserves escaped string boundaries and decoded duplicate keys', () => {
     const reason = 'Quoted "value", braces {}, brackets [] and slash \\ remain text.';
     expect(parseFragment(encode({ ...hidden, reason }))).toEqual({ ...hidden, reason });
@@ -65,6 +87,21 @@ describe('T01: fragment bytes and JSON', () => {
 });
 
 describe('T02: text and entry boundaries', () => {
+  it.each(['change', 'userImpact', 'reason', 'action'])('rejects HTML processing instructions in %s', (field) => {
+    for (const content of ['See <?target data?> in output.', 'See <?target a > b?> in output.',
+      'See <??> in output.', '<?xml version="1.0"?>']) {
+      const value = field === 'reason' ? { ...hidden, reason: content }
+        : { ...documented, entries: [{ ...entry, ...(field === 'action' ? { actionRequired: true } : {}), [field]: content }] };
+      expect(() => parseFragment(encode(value))).toThrow(expect.objectContaining({
+        code: 'RN_FRAGMENT_TEXT', field: field === 'reason' ? field : `entries[0].${field}`,
+      }));
+    }
+  });
+  it.each(['The <? marker is incomplete.', 'The ?> marker is literal.',
+    'Contact user!@example.com for assistance.', 'Contact user%@example.com for assistance.',
+    'Contact user=@example.com for assistance.'])('preserves plain text: %s', (reason) => {
+    expect(parseFragment(encode({ ...hidden, reason }))).toEqual({ ...hidden, reason });
+  });
   it.each(['change', 'userImpact', 'reason', 'action'])('rejects email autolinks in %s', (field) => {
     for (const content of ['Contact user@example.com for assistance.', 'Contact USER+tag@EXAMPLE.COM.',
       'Contact a.b-c_d@a.b.', 'Contact user@sub_domain.example.com.', '(user@example.com)',
