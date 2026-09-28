@@ -87,6 +87,29 @@ describe('T01: fragment bytes and JSON', () => {
 });
 
 describe('T02: text and entry boundaries', () => {
+  it.each(['change', 'userImpact', 'reason', 'action'])('rejects nested link markup in %s', (field) => {
+    for (const content of ['See [outer [inner] text](/guide) for details.',
+      'See ![outer [inner] text](/image.png) for details.',
+      'See [outer [inner [deep]] text](/guide) for details.',
+      'See [outer [inner] text][guide] for details.',
+      'See [outer [inner] text][] for details.',
+      'See [outer \\[inner\\] text](/guide) for details.',
+      'See [outer [inner] text]: /guide',
+      'See [outer [inner] text]  [guide] for details.',
+      'See \\\\[outer [inner] text](/guide) for details.']) {
+      const value = field === 'reason' ? { ...hidden, reason: content }
+        : { ...documented, entries: [{ ...entry, ...(field === 'action' ? { actionRequired: true } : {}), [field]: content }] };
+      expect(() => parseFragment(encode(value))).toThrow(expect.objectContaining({
+        code: 'RN_FRAGMENT_TEXT', field: field === 'reason' ? field : `entries[0].${field}`,
+      }));
+    }
+  });
+  it.each(['See [outer [inner] text] for details.', 'See [outer [inner] text for details.',
+    'See \\[literal](/guide) for details.', 'See [literal\\](/guide) for details.',
+    'See [literal]\\(/guide) for details.', 'See [literal]\\[guide] for details.',
+    'The array[index] and (value) remain valid.'])('preserves literal brackets: %s', (reason) => {
+    expect(parseFragment(encode({ ...hidden, reason }))).toEqual({ ...hidden, reason });
+  });
   it.each(['change', 'userImpact', 'reason', 'action'])('rejects HTML processing instructions in %s', (field) => {
     for (const content of ['See <?target data?> in output.', 'See <?target a > b?> in output.',
       'See <??> in output.', '<?xml version="1.0"?>']) {

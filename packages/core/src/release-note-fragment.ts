@@ -133,6 +133,22 @@ function hasEmailAutolink(value: string): boolean {
   return false;
 }
 
+function hasLinkMarkup(value: string): boolean {
+  let depth = 0;
+  for (let index = 0; index < value.length; index++) {
+    const character = value[index];
+    if (character === '\\' && /[!-/:-@\[-`{-~]/u.test(value[index + 1] ?? '')) { index++; continue; }
+    if (character === '[') depth++;
+    else if (character === ']' && depth > 0) {
+      depth--;
+      let suffix = index + 1;
+      while (suffix < value.length && /\s/u.test(value[suffix]!)) suffix++;
+      if (value[suffix] === '(' || value[suffix] === ':' || value[suffix] === '[') return true;
+    }
+  }
+  return false;
+}
+
 function text(value: unknown, min: number, field: string): string {
   if (typeof value !== 'string') fail('RN_FRAGMENT_SCHEMA', field);
   checkString(value, field);
@@ -142,8 +158,9 @@ function text(value: unknown, min: number, field: string): string {
   if (/^(?:- *){3,}$|^(?:_ *){3,}$|^(?:\* *){3,}$/u.test(normalized)) fail('RN_FRAGMENT_TEXT', field);
   if (hasInlineFormatting(normalized)) fail('RN_FRAGMENT_TEXT', field);
   if (hasEmailAutolink(normalized)) fail('RN_FRAGMENT_TEXT', field);
+  if (hasLinkMarkup(normalized)) fail('RN_FRAGMENT_TEXT', field);
   if (/<\?.*?\?>/u.test(normalized)) fail('RN_FRAGMENT_TEXT', field);
-  if (/`|~{3}|!?\[[^\]]*\]\s*[(:\[]|<\/?[a-z!][^>]*>|(?:[a-z][a-z\d+.-]*:\/\/|\b(?:mailto|data|javascript):|\bwww\.)|^(?:#{1,6}\s|>\s?|[-+*]\s|\d+[.)]\s)|\||\{\{|\}\}|\$\{|<%|%>|\{[a-z_][\w.-]*\}/iu.test(normalized)) {
+  if (/`|~{3}|<\/?[a-z!][^>]*>|(?:[a-z][a-z\d+.-]*:\/\/|\b(?:mailto|data|javascript):|\bwww\.)|^(?:#{1,6}\s|>\s?|[-+*]\s|\d+[.)]\s)|\||\{\{|\}\}|\$\{|<%|%>|\{[a-z_][\w.-]*\}/iu.test(normalized)) {
     fail('RN_FRAGMENT_TEXT', field);
   }
   return normalized;
