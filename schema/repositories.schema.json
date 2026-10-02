@@ -1,46 +1,1149 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/splrad/steward/schema/repositories.schema.json",
-  "type": "object", "additionalProperties": false,
-  "required": ["$schema", "schemaVersion", "organization", "defaults", "repositories"],
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "organization",
+    "defaults",
+    "repositories"
+  ],
   "properties": {
-    "$schema": { "type": "string" }, "schemaVersion": { "const": 3 },
-    "organization": { "type": "object", "additionalProperties": false, "required": ["id", "login"], "properties": { "id": { "const": 302208797 }, "login": { "const": "splrad" } } },
-    "defaults": { "type": "object", "additionalProperties": false, "required": ["public", "private"], "properties": { "public": { "$ref": "#/$defs/defaultConfig" }, "private": { "$ref": "#/$defs/defaultConfig" } } },
-    "repositories": { "type": "object", "minProperties": 1, "propertyNames": { "pattern": "^[1-9][0-9]*$" }, "additionalProperties": { "$ref": "#/$defs/repositoryConfig" } }
-  },
-  "$defs": {
-    "strings": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
-    "workflowPaths": { "type": "array", "items": { "type": "string", "pattern": "^\\.github/workflows/[^/]+\\.ya?ml$" }, "uniqueItems": true },
-    "canary": { "type": "object", "additionalProperties": false, "required": ["repositoryId", "pullRequestNumber", "headSha", "sourceRepositoryId", "sourceRef"], "properties": { "repositoryId": { "type": "integer", "minimum": 1 }, "pullRequestNumber": { "type": "integer", "minimum": 1 }, "headSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }, "sourceRepositoryId": { "type": "integer", "minimum": 1 }, "sourceRef": { "type": "string", "pattern": "^refs/heads/.+" } } },
-    "classification": { "type": "object", "additionalProperties": false, "required": ["profile", "labelDefinitionMode", "labelAssignmentMode", "ai"], "properties": { "profile": { "type": "string", "minLength": 1 }, "labelDefinitionMode": { "enum": ["observe", "enforce"] }, "labelAssignmentMode": { "enum": ["observe", "enforce"] }, "ai": { "type": "object", "additionalProperties": false, "required": ["mode", "adoptedPrimaryKinds", "canaries"], "properties": { "mode": { "enum": ["shadow", "draft-canary", "active"] }, "adoptedPrimaryKinds": { "$ref": "#/$defs/strings" }, "canaries": { "type": "array", "items": { "$ref": "#/$defs/canary" } } } } } },
-    "reviewGovernance": {
-      "type": "object", "additionalProperties": false,
-      "required": ["scope", "lifecycle", "owner", "exception", "lastVerifiedAt", "nextReviewAt"],
-      "properties": {
-        "scope": { "enum": ["full", "policy-only", "excluded"] },
-        "lifecycle": { "enum": ["discovered", "repository-ready", "external-control-ready", "operational"] },
-        "owner": { "type": "string", "pattern": "^splrad/[a-z0-9-]+$" },
-        "exception": { "type": ["object", "null"], "additionalProperties": false, "required": ["reason", "approvedBy", "reviewAt"], "properties": { "reason": { "type": "string", "minLength": 1 }, "approvedBy": { "type": "string", "minLength": 1 }, "reviewAt": { "type": "string", "format": "date-time" } } },
-        "lastVerifiedAt": { "type": "string", "format": "date-time" },
-        "nextReviewAt": { "type": "string", "format": "date-time" }
-      },
-      "allOf": [
-        { "if": { "properties": { "scope": { "const": "excluded" } }, "required": ["scope"] }, "then": { "properties": { "exception": { "type": "object" } } }, "else": { "properties": { "exception": { "type": "null" } } } },
-        { "if": { "properties": { "scope": { "const": "policy-only" } }, "required": ["scope"] }, "then": { "properties": { "lifecycle": { "enum": ["discovered", "repository-ready"] } } } }
+    "$schema": {
+      "type": "string"
+    },
+    "schemaVersion": {
+      "enum": [
+        3,
+        4
       ]
     },
-    "defaultConfig": { "type": "object", "additionalProperties": false, "required": ["managed", "prAutomation", "pullRequestTemplate", "reviewInstructionsProfile", "classification", "validationProfile", "allowedWorkflowPaths", "releaseProfile"], "properties": { "managed": { "type": "boolean" }, "prAutomation": { "type": "boolean" }, "pullRequestTemplate": { "enum": ["organization-default", "organization-provider"] }, "reviewInstructionsProfile": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }, "classification": { "$ref": "#/$defs/classification" }, "validationProfile": { "type": "string" }, "allowedWorkflowPaths": { "$ref": "#/$defs/workflowPaths" }, "releaseProfile": { "type": ["string", "null"] } } },
-    "repositoryConfig": {
-      "type": "object", "additionalProperties": false,
-      "required": ["managed", "fullName", "prAutomation", "pullRequestTemplate", "reviewInstructionsProfile", "reviewGovernance", "classification", "validationProfile", "allowedWorkflowPaths", "releaseProfile"],
+    "organization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "login"
+      ],
       "properties": {
-        "managed": { "type": "boolean" }, "fullName": { "type": "string", "pattern": "^splrad/[^/]+$" },
-        "fragmentGateEnabled": { "type": "boolean" },
-        "prAutomation": { "type": "boolean" }, "pullRequestTemplate": { "enum": ["organization-default", "organization-provider"] },
-        "reviewInstructionsProfile": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }, "reviewGovernance": { "$ref": "#/$defs/reviewGovernance" }, "classification": { "$ref": "#/$defs/classification" },
-        "validationProfile": { "type": "string" }, "allowedWorkflowPaths": { "$ref": "#/$defs/workflowPaths" }, "releaseProfile": { "type": ["string", "null"] }
+        "id": {
+          "const": 302208797
+        },
+        "login": {
+          "const": "splrad"
+        }
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "public",
+        "private"
+      ],
+      "properties": {
+        "public": {},
+        "private": {}
+      }
+    },
+    "repositories": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[1-9][0-9]*$"
+      },
+      "additionalProperties": {}
+    }
+  },
+  "$defs": {
+    "strings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "workflowPaths": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^\\.github/workflows/[^/]+\\.ya?ml$"
+      },
+      "uniqueItems": true
+    },
+    "canary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repositoryId",
+        "pullRequestNumber",
+        "headSha",
+        "sourceRepositoryId",
+        "sourceRef"
+      ],
+      "properties": {
+        "repositoryId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pullRequestNumber": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "headSha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "sourceRepositoryId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sourceRef": {
+          "type": "string",
+          "pattern": "^refs/heads/.+"
+        }
+      }
+    },
+    "classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "labelDefinitionMode",
+        "labelAssignmentMode",
+        "ai"
+      ],
+      "properties": {
+        "profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "labelDefinitionMode": {
+          "enum": [
+            "observe",
+            "enforce"
+          ]
+        },
+        "labelAssignmentMode": {
+          "enum": [
+            "observe",
+            "enforce"
+          ]
+        },
+        "ai": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "adoptedPrimaryKinds",
+            "canaries"
+          ],
+          "properties": {
+            "mode": {
+              "enum": [
+                "shadow",
+                "draft-canary",
+                "active"
+              ]
+            },
+            "adoptedPrimaryKinds": {
+              "$ref": "#/$defs/strings"
+            },
+            "canaries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/canary"
+              }
+            }
+          }
+        }
+      }
+    },
+    "reviewGovernance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "lifecycle",
+        "owner",
+        "exception",
+        "lastVerifiedAt",
+        "nextReviewAt"
+      ],
+      "properties": {
+        "scope": {
+          "enum": [
+            "full",
+            "policy-only",
+            "excluded"
+          ]
+        },
+        "lifecycle": {
+          "enum": [
+            "discovered",
+            "repository-ready",
+            "external-control-ready",
+            "operational"
+          ]
+        },
+        "owner": {
+          "type": "string",
+          "pattern": "^splrad/[a-z0-9-]+$"
+        },
+        "exception": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "reason",
+            "approvedBy",
+            "reviewAt"
+          ],
+          "properties": {
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            },
+            "approvedBy": {
+              "type": "string",
+              "minLength": 1
+            },
+            "reviewAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "lastVerifiedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "nextReviewAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "scope": {
+                "const": "excluded"
+              }
+            },
+            "required": [
+              "scope"
+            ],
+            "type": "object"
+          },
+          "then": {
+            "properties": {
+              "exception": {
+                "type": "object"
+              }
+            },
+            "type": "object"
+          },
+          "else": {
+            "properties": {
+              "exception": {
+                "type": "null"
+              }
+            },
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "scope": {
+                "const": "policy-only"
+              }
+            },
+            "required": [
+              "scope"
+            ],
+            "type": "object"
+          },
+          "then": {
+            "properties": {
+              "lifecycle": {
+                "enum": [
+                  "discovered",
+                  "repository-ready"
+                ]
+              }
+            },
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "defaultConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "managed",
+        "prAutomation",
+        "pullRequestTemplate",
+        "reviewInstructionsProfile",
+        "classification",
+        "validationProfile",
+        "allowedWorkflowPaths",
+        "releaseProfile"
+      ],
+      "properties": {
+        "managed": {
+          "type": "boolean"
+        },
+        "prAutomation": {
+          "type": "boolean"
+        },
+        "pullRequestTemplate": {
+          "enum": [
+            "organization-default",
+            "organization-provider"
+          ]
+        },
+        "reviewInstructionsProfile": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "classification": {
+          "$ref": "#/$defs/classification"
+        },
+        "validationProfile": {
+          "type": "string"
+        },
+        "allowedWorkflowPaths": {
+          "$ref": "#/$defs/workflowPaths"
+        },
+        "releaseProfile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "repositoryConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "managed",
+        "fullName",
+        "prAutomation",
+        "pullRequestTemplate",
+        "reviewInstructionsProfile",
+        "reviewGovernance",
+        "classification",
+        "validationProfile",
+        "allowedWorkflowPaths",
+        "releaseProfile"
+      ],
+      "properties": {
+        "managed": {
+          "type": "boolean"
+        },
+        "fullName": {
+          "type": "string",
+          "pattern": "^splrad/[^/]+$"
+        },
+        "fragmentGateEnabled": {
+          "type": "boolean"
+        },
+        "prAutomation": {
+          "type": "boolean"
+        },
+        "pullRequestTemplate": {
+          "enum": [
+            "organization-default",
+            "organization-provider"
+          ]
+        },
+        "reviewInstructionsProfile": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "reviewGovernance": {
+          "$ref": "#/$defs/reviewGovernance"
+        },
+        "classification": {
+          "$ref": "#/$defs/classification"
+        },
+        "validationProfile": {
+          "type": "string"
+        },
+        "allowedWorkflowPaths": {
+          "$ref": "#/$defs/workflowPaths"
+        },
+        "releaseProfile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "defaultConfigV4": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "managed",
+        "prAutomation",
+        "pullRequestTemplate",
+        "reviewInstructionsProfile",
+        "classification",
+        "validationProfile",
+        "allowedWorkflowPaths",
+        "releaseProfile",
+        "builds",
+        "delivery"
+      ],
+      "properties": {
+        "managed": {
+          "type": "boolean"
+        },
+        "prAutomation": {
+          "type": "boolean"
+        },
+        "pullRequestTemplate": {
+          "enum": [
+            "organization-default",
+            "organization-provider"
+          ]
+        },
+        "reviewInstructionsProfile": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "classification": {
+          "$ref": "#/$defs/classification"
+        },
+        "validationProfile": {
+          "type": "string"
+        },
+        "allowedWorkflowPaths": {
+          "$ref": "#/$defs/workflowPaths"
+        },
+        "releaseProfile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "builds": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/buildUnit"
+          }
+        },
+        "delivery": {
+          "$ref": "#/$defs/delivery"
+        }
+      }
+    },
+    "repositoryConfigV4": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "managed",
+        "fullName",
+        "prAutomation",
+        "pullRequestTemplate",
+        "reviewInstructionsProfile",
+        "reviewGovernance",
+        "classification",
+        "validationProfile",
+        "allowedWorkflowPaths",
+        "releaseProfile",
+        "builds",
+        "delivery"
+      ],
+      "properties": {
+        "managed": {
+          "type": "boolean"
+        },
+        "fullName": {
+          "type": "string",
+          "pattern": "^splrad/[^/]+$"
+        },
+        "fragmentGateEnabled": {
+          "type": "boolean"
+        },
+        "prAutomation": {
+          "type": "boolean"
+        },
+        "pullRequestTemplate": {
+          "enum": [
+            "organization-default",
+            "organization-provider"
+          ]
+        },
+        "reviewInstructionsProfile": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "reviewGovernance": {
+          "$ref": "#/$defs/reviewGovernance"
+        },
+        "classification": {
+          "$ref": "#/$defs/classification"
+        },
+        "validationProfile": {
+          "type": "string"
+        },
+        "allowedWorkflowPaths": {
+          "$ref": "#/$defs/workflowPaths"
+        },
+        "releaseProfile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "builds": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/buildUnit"
+          }
+        },
+        "delivery": {
+          "$ref": "#/$defs/delivery"
+        }
+      }
+    },
+    "buildUnit": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile",
+            "inputs",
+            "outputs"
+          ],
+          "properties": {
+            "profile": {
+              "const": "dotnet-assets-v1"
+            },
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "project",
+                "configuration",
+                "framework",
+                "runtime"
+              ],
+              "properties": {
+                "project": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "configuration": {
+                  "enum": [
+                    "Release"
+                  ]
+                },
+                "framework": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "runtime": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "outputs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "kind",
+                  "match",
+                  "count",
+                  "mediaType"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]*$"
+                  },
+                  "kind": {
+                    "const": "file"
+                  },
+                  "match": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "count": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "mediaType": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "uniqueItems": true,
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile",
+            "inputs",
+            "outputs"
+          ],
+          "properties": {
+            "profile": {
+              "const": "node-package-v1"
+            },
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "directory",
+                "lockfile",
+                "buildTask",
+                "packageManager"
+              ],
+              "properties": {
+                "directory": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "lockfile": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "buildTask": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]*$"
+                },
+                "packageManager": {
+                  "enum": [
+                    "npm"
+                  ]
+                }
+              }
+            },
+            "outputs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "kind",
+                  "match",
+                  "count",
+                  "mediaType"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]*$"
+                  },
+                  "kind": {
+                    "const": "file"
+                  },
+                  "match": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "count": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "mediaType": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "uniqueItems": true,
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile",
+            "inputs",
+            "outputs"
+          ],
+          "properties": {
+            "profile": {
+              "const": "oci-image-v1"
+            },
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "context",
+                "dockerfile",
+                "platforms"
+              ],
+              "properties": {
+                "context": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "dockerfile": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "platforms": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true,
+                  "minItems": 1
+                }
+              }
+            },
+            "outputs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "kind",
+                  "count"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]*$"
+                  },
+                  "kind": {
+                    "const": "oci-image"
+                  },
+                  "count": {
+                    "const": 1
+                  }
+                }
+              },
+              "uniqueItems": true,
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile",
+            "inputs",
+            "outputs"
+          ],
+          "properties": {
+            "profile": {
+              "const": "custom-adapter-v1"
+            },
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "entrypoint",
+                "runtime",
+                "runnerFamily"
+              ],
+              "properties": {
+                "entrypoint": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "runtime": {
+                  "enum": [
+                    "pwsh",
+                    "node",
+                    "bash"
+                  ]
+                },
+                "runnerFamily": {
+                  "enum": [
+                    "windows",
+                    "linux"
+                  ]
+                }
+              }
+            },
+            "outputs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "kind",
+                  "match",
+                  "count",
+                  "mediaType"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]*$"
+                  },
+                  "kind": {
+                    "const": "file"
+                  },
+                  "match": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "count": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "mediaType": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "uniqueItems": true,
+              "minItems": 1
+            }
+          }
+        }
+      ]
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "githubRelease",
+        "deployments",
+        "packages"
+      ],
+      "properties": {
+        "githubRelease": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "state",
+            "profile",
+            "builds"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "state": {
+              "enum": [
+                "disabled",
+                "pending",
+                "active",
+                "suspended"
+              ]
+            },
+            "profile": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]*$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "builds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$"
+              },
+              "uniqueItems": true,
+              "minItems": 0
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "enabled": {
+                    "const": false
+                  }
+                },
+                "type": "object"
+              },
+              "then": {
+                "properties": {
+                  "profile": {
+                    "const": null
+                  },
+                  "state": {
+                    "const": "disabled"
+                  },
+                  "builds": {
+                    "maxItems": 0,
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              },
+              "else": {
+                "properties": {
+                  "profile": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]*$"
+                  },
+                  "state": {
+                    "enum": [
+                      "pending",
+                      "active",
+                      "suspended"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          ]
+        },
+        "deployments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "profile",
+              "state",
+              "builds",
+              "trigger",
+              "source"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$"
+              },
+              "profile": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$"
+              },
+              "state": {
+                "enum": [
+                  "disabled",
+                  "pending",
+                  "active",
+                  "suspended"
+                ]
+              },
+              "builds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]*$"
+                },
+                "uniqueItems": true,
+                "minItems": 1
+              },
+              "trigger": {
+                "enum": [
+                  "default-branch",
+                  "github-release-published"
+                ]
+              },
+              "source": {
+                "enum": [
+                  "commit",
+                  "github-release"
+                ]
+              }
+            },
+            "oneOf": [
+              {
+                "properties": {
+                  "source": {
+                    "const": "commit"
+                  },
+                  "trigger": {
+                    "const": "default-branch"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "source": {
+                    "const": "github-release"
+                  },
+                  "trigger": {
+                    "const": "github-release-published"
+                  }
+                },
+                "type": "object"
+              }
+            ]
+          },
+          "uniqueItems": true,
+          "minItems": 0
+        },
+        "packages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "profile",
+              "state",
+              "builds",
+              "publication",
+              "trigger"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$"
+              },
+              "profile": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$"
+              },
+              "state": {
+                "enum": [
+                  "disabled",
+                  "pending",
+                  "active",
+                  "suspended"
+                ]
+              },
+              "builds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]*$"
+                },
+                "uniqueItems": true,
+                "minItems": 1
+              },
+              "publication": {
+                "enum": [
+                  "versioned",
+                  "snapshot"
+                ]
+              },
+              "trigger": {
+                "enum": [
+                  "version-change",
+                  "default-branch"
+                ]
+              }
+            },
+            "oneOf": [
+              {
+                "properties": {
+                  "publication": {
+                    "const": "versioned"
+                  },
+                  "trigger": {
+                    "const": "version-change"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "publication": {
+                    "const": "snapshot"
+                  },
+                  "trigger": {
+                    "const": "default-branch"
+                  }
+                },
+                "type": "object"
+              }
+            ]
+          },
+          "uniqueItems": true,
+          "minItems": 0
+        }
       }
     }
-  }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "schemaVersion": {
+          "const": 3
+        },
+        "defaults": {
+          "properties": {
+            "public": {
+              "$ref": "#/$defs/defaultConfig"
+            },
+            "private": {
+              "$ref": "#/$defs/defaultConfig"
+            }
+          },
+          "type": "object"
+        },
+        "repositories": {
+          "additionalProperties": {
+            "$ref": "#/$defs/repositoryConfig"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    {
+      "properties": {
+        "schemaVersion": {
+          "const": 4
+        },
+        "defaults": {
+          "properties": {
+            "public": {
+              "$ref": "#/$defs/defaultConfigV4"
+            },
+            "private": {
+              "$ref": "#/$defs/defaultConfigV4"
+            }
+          },
+          "type": "object"
+        },
+        "repositories": {
+          "additionalProperties": {
+            "$ref": "#/$defs/repositoryConfigV4"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    }
+  ]
 }

@@ -918,7 +918,7 @@ describe("中央命令入口", () => {
 
   it("中央配置黄金事实逐字冻结", async () => {
     const repositories = JSON.parse(await readFile("config/repositories.json", "utf8"));
-    const release = JSON.parse(await readFile("config/profiles/release/layerscape.json", "utf8"));
+    const release = JSON.parse(await readFile("config/profiles/release-legacy/layerscape.json", "utf8"));
     expect(repositories.organization).toEqual({ id: 302208797, login: "splrad" });
     expect(repositories.defaults.public).toMatchObject({ managed: true, prAutomation: true, reviewInstructionsProfile: "common", validationProfile: "public-basic", releaseProfile: null });
     expect(repositories.repositories["1187527897"].reviewGovernance).toMatchObject({ scope: "full", lifecycle: "repository-ready", owner: "splrad/maintainers", exception: null });
