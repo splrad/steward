@@ -20,6 +20,8 @@ describe("代码审查说明", () => {
       const shared = generated.files[0];
       const copilot = generated.files[1];
       expect(shared.ruleIds).toContain("common.review-language-zh");
+      expect(shared.ruleIds).toContain("common.current-head-evidence");
+      expect(shared.ruleIds.includes("steward.dist-verification")).toBe(profile === "steward");
       expect(shared.content).toContain("简体中文");
       expect(copilot.ruleIds).toEqual(["copilot.inline-findings", "copilot.review-scope"]);
       expect(copilot.content).not.toContain("common.review-language-zh");
@@ -27,6 +29,19 @@ describe("代码审查说明", () => {
       expect(shared.digest).toMatch(/^[0-9a-f]{64}$/u);
       expect(copilot.digest).toMatch(/^[0-9a-f]{64}$/u);
     }
+  });
+
+  it("候选规则在受管同步中更新已采用的说明", async () => {
+    const { profiles, rules } = await registries();
+    const generated = await generateReviewInstructionSet("steward", profiles, rules);
+    const previousRules = { ...rules, rules: rules.rules.filter(rule =>
+      !["common.current-head-evidence", "steward.dist-verification"].includes(rule.id)) };
+    const previous = await generateReviewInstructionSet("steward", profiles, previousRules);
+    const current = Object.fromEntries(previous.files.map(file => [file.path, file.content]));
+    expect(planReviewInstructionSync({ current, generated, branchExists: false, branchOwnedBySteward: false, openPullRequests: 0 })).toBe("create");
+    expect(planReviewInstructionSync({ current, generated, branchExists: true, branchOwnedBySteward: true, openPullRequests: 1 })).toBe("update");
+    const adopted = Object.fromEntries(generated.files.map(file => [file.path, file.content]));
+    expect(planReviewInstructionSync({ current: adopted, generated, branchExists: true, branchOwnedBySteward: true, openPullRequests: 1 })).toBe("unchanged");
   });
 
   it("按规则编号排序且摘要可重复", async () => {
