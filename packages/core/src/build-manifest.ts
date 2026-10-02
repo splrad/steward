@@ -71,7 +71,7 @@ function exact(value: object, fields: readonly string[]): void {
   if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...fields].sort())) buildFail('RN_BUILD_INVALID');
 }
 export function assertBuildIdentity(identity: BuildIdentity): void {
-  if (!Number.isSafeInteger(identity.repositoryId) || identity.repositoryId <= 0 || !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/u.test(identity.fullName)
+  if (!Number.isSafeInteger(identity.repositoryId) || identity.repositoryId <= 0 || typeof identity.fullName !== 'string' || !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/u.test(identity.fullName)
     || typeof identity.buildId !== 'string' || !idPattern.test(identity.buildId) || !buildProfiles.includes(identity.profile) || !shaPattern.test(identity.targetSha) || identity.targetSha.length !== 40
     || !shaPattern.test(identity.policySha) || identity.policySha.length !== 40) buildFail('RN_BUILD_INVALID');
   if (identity.version !== null) parsePublicVersion(identity.version);
@@ -107,7 +107,7 @@ export async function planBuild(identity: BuildIdentity, unit: BuildUnit): Promi
   if (!unit.outputs.length || unit.outputs.length > buildLimits.maxFiles || new Set(unit.outputs.map(rule => rule.id)).size !== unit.outputs.length) buildFail('RN_BUILD_OUTPUT');
   for (const rule of unit.outputs) {
     exact(rule, unit.profile === 'oci-image-v1' ? ['id', 'kind', 'count'] : ['id', 'kind', 'match', 'count', 'mediaType']);
-    if (!idPattern.test(rule.id) || !Number.isSafeInteger(rule.count) || rule.count < 1 || rule.count > buildLimits.maxFiles) buildFail('RN_BUILD_OUTPUT');
+    if (typeof rule.id !== 'string' || !idPattern.test(rule.id) || !Number.isSafeInteger(rule.count) || rule.count < 1 || rule.count > buildLimits.maxFiles) buildFail('RN_BUILD_OUTPUT');
     if (unit.profile === 'oci-image-v1') { if (rule.kind !== 'oci-image' || rule.count !== 1) buildFail('RN_BUILD_OUTPUT'); }
     else {
       if (rule.kind !== 'file' || typeof rule.match !== 'string' || typeof rule.mediaType !== 'string' || !/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/u.test(rule.mediaType)) buildFail('RN_BUILD_OUTPUT');
@@ -115,6 +115,8 @@ export async function planBuild(identity: BuildIdentity, unit: BuildUnit): Promi
       if (identity.version === null && rule.match.includes('{version}')) buildFail('RN_BUILD_VERSION');
     }
   }
+  const expandedIds = unit.outputs.flatMap(rule => Array.from({ length: rule.count }, (_, index) => rule.count === 1 ? rule.id : `${rule.id}-${index + 1}`));
+  if (expandedIds.length > buildLimits.maxFiles || new Set(expandedIds).size !== expandedIds.length) buildFail('RN_BUILD_OUTPUT');
   const runner = unit.profile === 'dotnet-assets-v1' || (unit.profile === 'custom-adapter-v1' && inputs.runnerFamily === 'windows') ? 'windows-latest' : 'ubuntu-latest';
   return { ...identity, inputs, inputsSha256: await sha256Hex(`${JSON.stringify(inputs)}\n`), outputs: unit.outputs.map(rule => ({ ...rule })), runner,
     timeoutMinutes: 45, permissions: { contents: 'read' }, environment: null, persistCredentials: false };
@@ -155,7 +157,7 @@ export function canonicalBuildManifest(manifest: BuildManifest): string {
     ids.add(asset.id);
     if (asset.kind === 'file') {
       exact(asset, ['id', 'kind', 'file', 'mediaType', 'size', 'sha256']); assertBuildPath(asset.file);
-      if (manifest.profile === 'oci-image-v1' || filenames.has(asset.file.toLowerCase()) || !/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/u.test(asset.mediaType) || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > buildLimits.maxFileBytes || !digestPattern.test(asset.sha256) || asset.sha256.length !== 64) buildFail('RN_BUILD_OUTPUT');
+      if (manifest.profile === 'oci-image-v1' || filenames.has(asset.file.toLowerCase()) || typeof asset.mediaType !== 'string' || !/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/u.test(asset.mediaType) || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > buildLimits.maxFileBytes || !digestPattern.test(asset.sha256) || asset.sha256.length !== 64) buildFail('RN_BUILD_OUTPUT');
       filenames.add(asset.file.toLowerCase()); total += asset.size;
       return { id: asset.id, kind: asset.kind, file: asset.file, mediaType: asset.mediaType, size: asset.size, sha256: asset.sha256 };
     }

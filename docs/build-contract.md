@@ -26,6 +26,12 @@ identify the declared image rules. The image platforms must match the plan, and
 the config's `org.opencontainers.image.version` label must match the public
 version. Multi-platform images retain their image-index digest.
 
+The collectors recheck every file's identity and metadata after the whole
+collection pass, including OCI layout metadata and blobs. OCI total-size limits
+include the layout and index files. Shared layers reuse verified digest and size
+records without retaining their bytes, and leaf descriptors must agree with
+their image configs on OS and architecture.
+
 `canonicalBuildManifest` validates and serializes the standard manifest with
 fixed field order, artifacts sorted by logical ID, and a final LF.
 `parseBuildManifest` rejects duplicate keys, invalid UTF-8, unknown contract

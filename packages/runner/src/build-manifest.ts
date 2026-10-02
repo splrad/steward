@@ -10,6 +10,13 @@ export interface BuildExecutionContext { buildRunId: string; outputDirectory: st
 function unchanged(before: Stats, after: Stats): boolean {
   return before.dev === after.dev && before.ino === after.ino && before.size === after.size && before.mtimeMs === after.mtimeMs && before.ctimeMs === after.ctimeMs;
 }
+async function verifyFileStates(root: string, states: ReadonlyMap<string, Stats>): Promise<void> {
+  for (const [path, before] of states) {
+    const file = await assertBuildSourcePath(root, path);
+    const after = await lstat(file);
+    if (!after.isFile() || after.nlink !== 1 || !unchanged(before, after)) buildFail('RN_BUILD_PATH');
+  }
+}
 function within(root: string, target: string): void {
   const path = relative(root, target);
   if (path === '..' || path.startsWith(`..${sep}`) || resolve(root, path) !== target) buildFail('RN_BUILD_PATH');
@@ -69,6 +76,7 @@ export async function collectFileBuildManifest(plan: BuildPlan, outputDirectory:
   const files = await enumerate(root);
   const assignments = matchBuildFiles(plan, files);
   const artifacts: BuildArtifact[] = [];
+  const states = new Map<string, Stats>();
   let total = 0;
   for (const assignment of assignments) {
     const file = await assertBuildSourcePath(root, assignment.file);
@@ -84,8 +92,10 @@ export async function collectFileBuildManifest(plan: BuildPlan, outputDirectory:
       artifacts.push({ ...assignment, kind: 'file', size: bytes.byteLength, sha256: createHash('sha256').update(bytes).digest('hex') });
     } finally { await handle.close(); }
     if (await assertBuildSourcePath(root, assignment.file) !== file || !unchanged(before, await lstat(file))) buildFail('RN_BUILD_PATH');
+    states.set(assignment.file, before);
   }
   if (JSON.stringify(await enumerate(root)) !== JSON.stringify(files)) buildFail('RN_BUILD_OUTPUT');
+  await verifyFileStates(root, states);
   const manifest: BuildManifest = { schemaVersion: 1, repositoryId: plan.repositoryId, fullName: plan.fullName, buildId: plan.buildId,
     profile: plan.profile, targetSha: plan.targetSha, policySha: plan.policySha, version: plan.version, inputsSha256: plan.inputsSha256, artifacts };
   canonicalBuildManifest(manifest);
@@ -100,14 +110,21 @@ export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: 
   if (plan.profile !== 'oci-image-v1') buildFail('RN_BUILD_INVALID');
   const root = await assertBuildSourcePath(outputDirectory, '.', { root: true });
   const files = await enumerate(root); const consumed = new Set(['oci-layout', 'index.json']);
+  const states = new Map<string, Stats>();
+  let total = 0;
   const bytesAt = async (path: string) => {
     const file = await assertBuildSourcePath(root, path);
     const before = await lstat(file);
     if (!before.isFile() || before.nlink !== 1 || before.size <= 0 || before.size > buildLimits.maxFileBytes) buildFail('RN_BUILD_LIMIT');
+    const previous = states.get(path);
+    if (previous && !unchanged(previous, before)) buildFail('RN_BUILD_PATH');
+    if (!previous) total += before.size;
+    if (total > buildLimits.maxTotalBytes) buildFail('RN_BUILD_LIMIT');
     const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
       const bytes = await handle.readFile();
       if (!unchanged(before, await handle.stat()) || !unchanged(before, await lstat(file))) buildFail('RN_BUILD_DIGEST');
+      states.set(path, before);
       return bytes;
     } finally { await handle.close(); }
   };
@@ -117,19 +134,23 @@ export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: 
     return decodeBuildJson(bytes) as any;
   };
   if ((await jsonAt('oci-layout')).imageLayoutVersion !== '1.0.0') buildFail('RN_BUILD_INVALID');
-  let total = 0;
   const verifiedBlobs = new Map<string, Uint8Array>();
-  const blob = async (descriptor: { digest: string; size: number; mediaType: string }) => {
+  const verifiedSizes = new Map<string, number>();
+  const blob = async (descriptor: { digest: string; size: number; mediaType: string }, retainBytes = true) => {
     if (typeof descriptor?.digest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(descriptor.digest) || descriptor.digest.length !== 71 || !Number.isSafeInteger(descriptor.size) || descriptor.size <= 0 || descriptor.size > buildLimits.maxFileBytes) buildFail('RN_BUILD_INVALID');
     const cached = verifiedBlobs.get(descriptor.digest);
+    const verifiedSize = verifiedSizes.get(descriptor.digest);
+    if (verifiedSize !== undefined) {
+      if (verifiedSize !== descriptor.size) buildFail('RN_BUILD_DIGEST');
+      if (!retainBytes) return new Uint8Array();
+    }
     if (cached) { if (cached.byteLength !== descriptor.size) buildFail('RN_BUILD_DIGEST'); return cached; }
     const path = `blobs/sha256/${descriptor.digest.slice(7)}`;
     const bytes = await bytesAt(path);
     if (bytes.byteLength !== descriptor.size || `sha256:${createHash('sha256').update(bytes).digest('hex')}` !== descriptor.digest) buildFail('RN_BUILD_DIGEST');
-    if (!consumed.has(path)) total += bytes.length;
     consumed.add(path);
-    if (total > buildLimits.maxTotalBytes) buildFail('RN_BUILD_LIMIT');
-    if (!descriptor.mediaType.startsWith('application/vnd.oci.image.layer.v1.tar')) verifiedBlobs.set(descriptor.digest, bytes);
+    verifiedSizes.set(descriptor.digest, bytes.length);
+    if (retainBytes) verifiedBlobs.set(descriptor.digest, bytes);
     return bytes;
   };
   const parse = (bytes: Uint8Array) => {
@@ -155,13 +176,14 @@ export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: 
       }
       if (current.mediaType !== 'application/vnd.oci.image.manifest.v1+json' || image.config?.mediaType !== 'application/vnd.oci.image.config.v1+json' || !Array.isArray(image.layers) || image.layers.length > buildLimits.maxFiles) buildFail('RN_BUILD_INVALID');
       const config = parse(await blob(image.config));
+      if (current.platform !== undefined && (current.platform?.os !== config.os || current.platform?.architecture !== config.architecture)) buildFail('RN_BUILD_INVALID');
       const platform = `${config.os}/${config.architecture}`;
       if (!(plan.inputs.platforms as string[]).includes(platform) || platforms.has(platform)) buildFail('RN_BUILD_INVALID');
       platforms.add(platform);
       checkBuildNativeVersion(plan, config.config?.Labels?.['org.opencontainers.image.version'] ?? null);
       for (const layer of image.layers) {
         if (!['application/vnd.oci.image.layer.v1.tar', 'application/vnd.oci.image.layer.v1.tar+gzip', 'application/vnd.oci.image.layer.v1.tar+zstd'].includes(layer.mediaType)) buildFail('RN_BUILD_INVALID');
-        await blob(layer);
+        await blob(layer, false);
       }
     };
     await inspect(descriptor, 0);
@@ -169,6 +191,7 @@ export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: 
     artifacts.push({ id: rule.id, kind: 'oci-image', reference: `${plan.fullName.toLowerCase()}@${descriptor.digest}`, digest: descriptor.digest });
   }
   if (files.length !== consumed.size || files.some(file => !consumed.has(file)) || JSON.stringify(await enumerate(root)) !== JSON.stringify(files)) buildFail('RN_BUILD_OUTPUT');
+  await verifyFileStates(root, states);
   const manifest: BuildManifest = { schemaVersion: 1, repositoryId: plan.repositoryId, fullName: plan.fullName, buildId: plan.buildId,
     profile: plan.profile, targetSha: plan.targetSha, policySha: plan.policySha, version: plan.version, inputsSha256: plan.inputsSha256, artifacts };
   canonicalBuildManifest(manifest); return manifest;

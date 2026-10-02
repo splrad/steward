@@ -27,6 +27,24 @@ describe('构建合同 T09/T10', () => {
     original.outputs[0]!.id = 'changed'; original.inputs.runtime = 'bash';
     expect(plan.outputs[0]!.id).toBe('archive'); expect(plan.inputs.runtime).toBe('node');
   });
+  it.each([['example/widget'], null, true, 1])('拒绝非字符串仓库名 %j', async fullName => {
+    await expect(planBuild({ ...identity, fullName } as unknown as BuildIdentity, unit)).rejects.toThrow('RN_BUILD_INVALID');
+    const manifest = { ...identity, fullName, schemaVersion: 1, inputsSha256: 'c'.repeat(64), artifacts: [{ id: 'archive', kind: 'file', file: 'widget.zip', mediaType: 'application/zip', size: 1, sha256: 'd'.repeat(64) }] };
+    expect(() => parseBuildManifest(new TextEncoder().encode(JSON.stringify(manifest)))).toThrow('RN_BUILD_INVALID');
+  });
+  it.each([true, null, ['archive']])('规划时拒绝非字符串输出编号 %j', async id => {
+    await expect(planBuild(identity, { ...unit, outputs: [{ ...unit.outputs[0]!, id }] } as unknown as BuildUnit)).rejects.toThrow('RN_BUILD_OUTPUT');
+  });
+  it.each([['application/zip'], null, true])('清单拒绝非字符串媒体类型 %j', mediaType => {
+    const manifest = { ...identity, schemaVersion: 1, inputsSha256: 'c'.repeat(64), artifacts: [{ id: 'archive', kind: 'file', file: 'widget.zip', mediaType, size: 1, sha256: 'd'.repeat(64) }] };
+    expect(() => parseBuildManifest(new TextEncoder().encode(JSON.stringify(manifest)))).toThrow('RN_BUILD_OUTPUT');
+  });
+  it('规划时拒绝展开后的编号冲突和总数量越界', async () => {
+    for (const outputs of [
+      [{ ...unit.outputs[0]!, id: 'asset', count: 2 }, { ...unit.outputs[0]!, id: 'asset-1' }],
+      [{ ...unit.outputs[0]!, id: 'first', count: 65 }, { ...unit.outputs[0]!, id: 'second', count: 65 }],
+    ]) await expect(planBuild(identity, { ...unit, outputs })).rejects.toThrow('RN_BUILD_OUTPUT');
+  });
   it.each(['/root', '../asset', 'a/../b', 'a\\b', 'a//b', 'C:/asset', 'CON.zip', 'foo:bar', 'asset.', 'asset ', 'a\n', 'x/[ab].zip'])('拒绝非法路径 %j', path => {
     expect(() => assertBuildPath(path, { glob: true })).toThrow('RN_BUILD_PATH');
   });
