@@ -2,6 +2,8 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import Ajv from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 
+import { verifyDeliveryConfig } from "./verify-delivery-config.mjs";
+
 const pairs = [
   ["config/labels/pr-semantics.json", "schema/pr-semantics.schema.json"],
   ["config/repositories.json", "schema/repositories.schema.json"],
@@ -23,6 +25,7 @@ for (const [dataPath, schemaPath] of pairs) {
   if (!validate(data)) throw new Error(`${dataPath}不符合结构: ${ajv.errorsText(validate.errors)}`);
 }
 const catalog = JSON.parse(await readFile("config/repositories.json", "utf8")); const ids = Object.keys(catalog.repositories); if (new Set(ids).size !== ids.length) throw new Error("仓库编号重复");
+if (catalog.schemaVersion === 4) await verifyDeliveryConfig(catalog, ajv);
 const repositoryValidator = validators.get("schema/repositories.schema.json");
 for (const name of ["public-basic", "layerscape", "steward"]) {
   const profile = JSON.parse(await readFile(`config/profiles/validation/${name}.json`, "utf8"));
@@ -125,7 +128,7 @@ for (const configuration of [...Object.values(catalog.defaults), ...Object.value
   if (classification.ai.mode !== "draft-canary" && classification.ai.canaries.length) throw new Error("只有draft-canary允许canary清单");
   for (const kind of classification.ai.adoptedPrimaryKinds) if (!profile.ai.eligiblePrimaryKinds.includes(kind)) throw new Error(`仓库采用未知AI主类: ${kind}`);
 }
-const release = JSON.parse(await readFile("config/profiles/release/layerscape.json", "utf8"));
+const release = JSON.parse(await readFile("config/profiles/release-legacy/layerscape.json", "utf8"));
 if (release.build.projects.length !== 10 || new Set(release.build.projects.map(x => x.path)).size !== 10) throw new Error("LayerScape插件项目必须恰好10个且不重复");
 if (release.assets.length !== 3 || new Set(release.assets.map(x => x.nameTemplate)).size !== 3) throw new Error("发布资产必须恰好3项且不重复");
 const forbiddenRuntime = ["queues", "durable_objects", "kv_namespaces", "r2_buckets", "services"];
