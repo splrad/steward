@@ -1604,10 +1604,11 @@ async function validate(args: Readonly<Record<string, string>>) {
   const profile = await json<ValidationProfile>(configPath("profiles", "validation", `${profileName}.json`));
   if (args["fragments-only"] !== undefined) {
     if (args["fragments-only"] !== "true") throw new Error("fragments-only必须为true");
-    if (!profile.fragmentGate?.repositories.includes(repositoryId)) {
+    if (configuration.fragmentGateEnabled !== true) {
       await summary(["片段门禁：未启用"]);
       return;
     }
+    if (!profile.fragmentGate) throw new Error("已启用片段门禁的仓库缺少片段规则");
     const identity = { repositoryId, pullRequestNumber: integer(env("VALIDATION_PR_NUMBER"), "VALIDATION_PR_NUMBER"),
       baseSha: sha(env("VALIDATION_BASE_SHA"), "VALIDATION_BASE_SHA"), headSha: sha(env("VALIDATION_HEAD_SHA"), "VALIDATION_HEAD_SHA"),
       policySha: sha(env("VALIDATION_POLICY_SHA"), "VALIDATION_POLICY_SHA") };
@@ -1617,7 +1618,7 @@ async function validate(args: Readonly<Record<string, string>>) {
     const [owner, repo] = splitRepository(repository.full_name);
     let classificationSourceDigest: string | undefined;
     try {
-      const result = await validateRemoteFragments({ gh, owner, repo, identity, profile: profile.fragmentGate.profile,
+      const result = await validateRemoteFragments({ gh, owner, repo, identity, profile: profile.fragmentGate,
         classification: async (pull, files) => {
           const semantics = await semanticCatalog();
           const classificationProfile = await json<ClassificationProfile>(configPath("profiles", "classification", `${configuration.classification.profile}.json`));

@@ -26,18 +26,20 @@ const catalog = JSON.parse(await readFile("config/repositories.json", "utf8")); 
 const repositoryValidator = validators.get("schema/repositories.schema.json");
 for (const name of ["public-basic", "layerscape", "steward"]) {
   const profile = JSON.parse(await readFile(`config/profiles/validation/${name}.json`, "utf8"));
-  for (const id of profile.fragmentGate?.repositories ?? []) {
-    const repository = catalog.repositories[String(id)];
-    if (!repository?.managed || repository.validationProfile !== name) throw new Error(`片段门禁仓库未绑定验证配置：${id}`);
-  }
   if (profile.fragmentGate) {
-    const { fragmentDirectory, required, reviewRequired, ignored } = profile.fragmentGate.profile;
+    const { fragmentDirectory, required, reviewRequired, ignored } = profile.fragmentGate;
     const invalidPath = value => /[\\:\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069\ufeff\ud800-\udfff]/u.test(value) || value.startsWith("/") || value.split("/").some(part => !part || part === "." || part === "..");
     if (invalidPath(fragmentDirectory) || /[*!?{}()[\]]/u.test(fragmentDirectory)) throw new Error("片段目录不是字面相对路径");
     for (const pattern of [...required, ...reviewRequired, ...ignored]) {
       if (invalidPath(pattern) || /[!{}()[\]]/u.test(pattern) || pattern.split("/").some(part => part.includes("**") && part !== "**")) throw new Error("片段路径模式无效");
     }
   }
+}
+for (const [id, repository] of Object.entries(catalog.repositories)) {
+  if (repository.fragmentGateEnabled !== true) continue;
+  if (!repository.managed || !["public-basic", "layerscape", "steward"].includes(repository.validationProfile)) throw new Error(`片段门禁仓库未绑定验证配置：${id}`);
+  const profile = JSON.parse(await readFile(`config/profiles/validation/${repository.validationProfile}.json`, "utf8"));
+  if (!profile.fragmentGate) throw new Error(`片段门禁仓库缺少片段规则：${id}`);
 }
 const sampleRepository = Object.values(catalog.repositories)[0];
 if (!repositoryValidator || !sampleRepository) throw new Error("仓库配置反例验证缺少基础数据");

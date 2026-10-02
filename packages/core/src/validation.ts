@@ -1,5 +1,5 @@
 export type ValidationTask = 'git-diff-check' | 'parse-json' | 'parse-yaml' | 'verify-review-instructions' | 'actionlint-if-present' | 'actionlint' | 'parse-powershell' | 'parse-msbuild-xml' | 'npm-ci' | 'npm-test' | 'npm-typecheck' | 'npm-verify-dist' | 'npm-verify-workflows';
-export interface ValidationProfile { runner: 'ubuntu-latest'; timeoutMinutes: number; tasks: ValidationTask[]; powershellFiles?: string[]; msbuildFiles?: string[]; nodeVersionFile?: string; fragmentGate?: { repositories: number[]; profile: FragmentProfile }; disclosure: { productBuild: string; productTests: string } }
+export interface ValidationProfile { runner: 'ubuntu-latest'; timeoutMinutes: number; tasks: ValidationTask[]; powershellFiles?: string[]; msbuildFiles?: string[]; nodeVersionFile?: string; fragmentGate?: FragmentProfile; disclosure: { productBuild: string; productTests: string } }
 export interface ValidationResult { task: ValidationTask; state: 'success' | 'failure' | 'not-applicable'; detail: string }
 
 export function selectValidationProfile(repositoryId: number, catalog: { repositories: Record<string, { validationProfile: string }>; defaultPublicProfile: string }, isPrivate: boolean): string {

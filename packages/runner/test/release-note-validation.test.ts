@@ -107,11 +107,11 @@ describe('中央 validate 片段入口', () => {
       const catalog = JSON.parse(await readFile(catalogPath, 'utf8'));
       const cfg = structuredClone(catalog.repositories['1296724484']);
       cfg.classification = { profile: 'default', labelDefinitionMode: 'observe', labelAssignmentMode: 'observe', ai: { mode: 'shadow', adoptedPrimaryKinds: [], canaries: [] } };
-      catalog.repositories['1'] = { ...cfg, fullName: 'o/r' };
+      catalog.repositories['1'] = { ...cfg, fullName: 'o/r', fragmentGateEnabled: true };
       await writeFile(catalogPath, JSON.stringify(catalog));
       const profilePath = join(root, 'config/profiles/validation/steward.json');
       const validation = JSON.parse(await readFile(profilePath, 'utf8'));
-      validation.fragmentGate = { repositories: [1], profile };
+      validation.fragmentGate = profile;
       await writeFile(profilePath, JSON.stringify(validation));
       const semantics = JSON.parse(await readFile('config/labels/pr-semantics.json', 'utf8'));
       const classification = JSON.parse(await readFile('config/profiles/classification/default.json', 'utf8'));
@@ -145,7 +145,7 @@ describe('中央 validate 片段入口', () => {
       await expect(main(['validate', '--workspace', '.', '--repository-id', '1', '--profile', 'steward', '--fragments-only', 'true'])).rejects.toThrow('RN_FACT_CONFLICT');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
-  it.each(['missing', 'trusted', 'wrong-head', 'wrong-app', 'wrong-policy', 'wrong-policy-sha', 'security', 'human-security', 'human-breaking-change',
+  it.each(['disabled', 'missing-profile', 'missing', 'trusted', 'wrong-head', 'wrong-app', 'wrong-policy', 'wrong-policy-sha', 'security', 'human-security', 'human-breaking-change',
     'stale-base', 'stale-files', 'stale-commits', 'incomplete-commits', 'commit-read-failure', 'missing-file-counts',
     'label-added', 'label-removed', 'risk-without-state', 'label-read-failure', 'invalid-label', 'label-drift', 'check-drift', 'label-reordered',
     'wait-success', 'wait-failure', 'wait-timeout', 'wait-drift',
@@ -160,11 +160,11 @@ describe('中央 validate 片段入口', () => {
       const catalogPath = join(root, 'config/repositories.json');
       const catalog = JSON.parse(await readFile(catalogPath, 'utf8'));
       const cfg = catalog.repositories['1296724484'];
-      catalog.repositories['1'] = { ...cfg, fullName: 'o/r' };
+      catalog.repositories['1'] = { ...cfg, fullName: 'o/r', fragmentGateEnabled: scenario !== 'disabled' };
       await writeFile(catalogPath, JSON.stringify(catalog));
       const profilePath = join(root, 'config/profiles/validation/steward.json');
       const validation = JSON.parse(await readFile(profilePath, 'utf8'));
-      validation.fragmentGate = { repositories: [1], profile };
+      if (scenario !== 'missing-profile') validation.fragmentGate = profile;
       await writeFile(profilePath, JSON.stringify(validation));
       const semantics = JSON.parse(await readFile('config/labels/pr-semantics.json', 'utf8'));
       const classification = JSON.parse(await readFile('config/profiles/classification/default.json', 'utf8'));
@@ -227,7 +227,14 @@ describe('中央 validate 片段入口', () => {
       for (const [key, value] of Object.entries({ STEWARD_CONFIG_DIRECTORY: join(root, 'config'), GITHUB_STEP_SUMMARY: join(root, 'summary.md'),
         VALIDATION_READ_TOKEN: 'test', VALIDATION_PR_NUMBER: '2', VALIDATION_BASE_SHA: identity.baseSha, VALIDATION_HEAD_SHA: identity.headSha, VALIDATION_POLICY_SHA: identity.policySha })) vi.stubEnv(key, value);
       const run = main(['validate', '--workspace', '.', '--repository-id', '1', '--profile', 'steward', '--fragments-only', 'true']);
-      if (['security', 'human-security', 'human-breaking-change', 'label-added'].includes(scenario)) await expect(run).rejects.toThrow('RN_FACT_CONFLICT');
+      if (scenario === 'disabled') {
+        await run;
+        expect(checkReads).toBe(0);
+        expect(labelReads).toBe(0);
+        expect(await readFile(join(root, 'summary.md'), 'utf8')).toContain('片段门禁：未启用');
+      }
+      else if (scenario === 'missing-profile') await expect(run).rejects.toThrow('已启用片段门禁的仓库缺少片段规则');
+      else if (['security', 'human-security', 'human-breaking-change', 'label-added'].includes(scenario)) await expect(run).rejects.toThrow('RN_FACT_CONFLICT');
       else if (['risk-without-state', 'wait-timeout', 'wait-failure'].includes(scenario)) {
         await expect(run).rejects.toThrow('RN_SOURCE_INCOMPLETE');
         expect(delay).toHaveBeenCalledTimes(scenario === 'wait-failure' ? 0 : 36);

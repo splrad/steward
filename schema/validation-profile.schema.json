@@ -11,18 +11,12 @@
     "msbuildFiles": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
     "nodeVersionFile": { "type": "string" },
     "fragmentGate": {
-      "type": "object", "additionalProperties": false, "required": ["repositories", "profile"],
+      "type": "object", "additionalProperties": false, "required": ["fragmentDirectory", "required", "reviewRequired", "ignored"],
       "properties": {
-        "repositories": { "type": "array", "uniqueItems": true, "items": { "type": "integer", "minimum": 1 } },
-        "profile": {
-          "type": "object", "additionalProperties": false, "required": ["fragmentDirectory", "required", "reviewRequired", "ignored"],
-          "properties": {
-            "fragmentDirectory": { "type": "string", "minLength": 1 },
-            "required": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
-            "reviewRequired": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
-            "ignored": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
-          }
-        }
+        "fragmentDirectory": { "type": "string", "minLength": 1 },
+        "required": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "reviewRequired": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "ignored": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
       }
     },
     "disclosure": { "type": "object", "additionalProperties": false, "required": ["productBuild", "productTests"], "properties": { "productBuild": { "type": "string", "minLength": 1 }, "productTests": { "type": "string", "minLength": 1 } } }
