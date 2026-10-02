@@ -13,3 +13,4 @@ export * from './validation.js';
 export * from './release-note-validation.js';
 export * from './release-version.js';
 export * from './delivery-config.js';
+export * from './build-manifest.js';
