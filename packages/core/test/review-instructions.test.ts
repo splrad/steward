@@ -20,12 +20,22 @@ describe("代码审查说明", () => {
       const shared = generated.files[0];
       const copilot = generated.files[1];
       expect(shared.ruleIds).toContain("common.review-language-zh");
+      expect(shared.ruleIds).toContain("common.current-head-evidence");
+      expect(shared.ruleIds.includes("steward.dist-verification")).toBe(profile === "steward");
       expect(shared.content).toContain("简体中文");
       expect(copilot.ruleIds).toEqual(["copilot.inline-findings", "copilot.review-scope"]);
       expect(copilot.content).not.toContain("common.review-language-zh");
       expect(shared.content).not.toContain("copilot.inline-findings");
       expect(shared.digest).toMatch(/^[0-9a-f]{64}$/u);
       expect(copilot.digest).toMatch(/^[0-9a-f]{64}$/u);
+    }
+  });
+
+  it("仓库采用的说明与中央规则生成结果一致", async () => {
+    const { profiles, rules } = await registries();
+    const generated = await generateReviewInstructionSet("steward", profiles, rules);
+    for (const file of generated.files) {
+      expect(await readFile(file.path, "utf8")).toBe(file.content);
     }
   });
 
