@@ -1,0 +1,98 @@
+{
+  "$schema": "../../../schema/release-notes-profile.schema.json",
+  "schemaVersion": 3,
+  "name": "common-v3",
+  "producer": {
+    "type": "copilot-cli",
+    "authentication": "personal-subscription-pat",
+    "maxAttempts": 2,
+    "failureMode": "block"
+  },
+  "receipt": {
+    "persistence": "central-durable",
+    "reuse": "exact-match",
+    "corruption": "block"
+  },
+  "sectionOrder": [
+    "repositoryBeforeActions",
+    "actions",
+    "changes",
+    "repositoryAfterChanges",
+    "contributors",
+    "fullChangelog"
+  ],
+  "repositorySectionSlots": [
+    "beforeActions",
+    "afterChanges"
+  ],
+  "categoryOrder": [
+    "security",
+    "removed",
+    "deprecated",
+    "added",
+    "changed",
+    "fixed"
+  ],
+  "headings": {
+    "actions": "升级须知",
+    "changes": "更新内容",
+    "contributors": "贡献者"
+  },
+  "categoryTitles": {
+    "security": "安全",
+    "removed": "移除",
+    "deprecated": "即将停用",
+    "added": "新增",
+    "changed": "变更",
+    "fixed": "修复"
+  },
+  "categoryIcons": {
+    "security": "🔒",
+    "removed": "🗑️",
+    "deprecated": "⚠️",
+    "added": "✨",
+    "changed": "🔄",
+    "fixed": "🛠️"
+  },
+  "overview": {
+    "enabled": true,
+    "minimumEntries": 3,
+    "minimumCategories": 2,
+    "format": "category-counts"
+  },
+  "changesLayout": {
+    "empty": "changes-section-with-empty-text",
+    "singleCategory": "category-as-section",
+    "multipleCategories": "changes-section-with-category-subsections"
+  },
+  "actionsPresentation": {
+    "kind": "github-alert",
+    "severity": "IMPORTANT"
+  },
+  "contributors": {
+    "presentation": "avatar-grid",
+    "includeAccountTypes": [
+      "User"
+    ],
+    "excludeLoginSuffixes": [
+      "[bot]"
+    ],
+    "deduplicateBy": "userId",
+    "order": "firstIncludedPullRequest",
+    "avatarSize": 40
+  },
+  "entryPresentation": {
+    "lead": "bold-title",
+    "separator": "full-width-colon",
+    "pullRequestLink": "number-only"
+  },
+  "fullChangelogLabel": "完整变更：{previousTag}...{targetTag}",
+  "fullChangelogSeparator": true,
+  "emptyChangesText": "本版本没有需要用户关注的变化。",
+  "entryOrder": [
+    "categoryOrder",
+    "earliestPullRequestMergedAtAscending",
+    "lowestPullRequestNumberAscending"
+  ],
+  "maxEntriesPerFragment": 5
+}

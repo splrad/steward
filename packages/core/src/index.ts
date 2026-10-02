@@ -10,3 +10,6 @@ export * from './release-notes.js';
 export * from './release-note-fragment.js';
 export * from './release.js';
 export * from './validation.js';
+export * from './release-note-validation.js';
+export * from './release-version.js';
+export * from './delivery-config.js';
