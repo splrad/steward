@@ -1,0 +1,6 @@
+{
+  "$schema": "../../../schema/build-profile.schema.json",
+  "schemaVersion": 1,
+  "name": "oci-image-v1",
+  "kind": "oci-image"
+}

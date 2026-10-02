@@ -1,0 +1,329 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/splrad/steward/schema/release-notes-profile.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "name",
+    "producer",
+    "receipt",
+    "sectionOrder",
+    "repositorySectionSlots",
+    "categoryOrder",
+    "headings",
+    "categoryTitles",
+    "categoryIcons",
+    "overview",
+    "changesLayout",
+    "actionsPresentation",
+    "contributors",
+    "entryPresentation",
+    "fullChangelogLabel",
+    "fullChangelogSeparator",
+    "emptyChangesText",
+    "entryOrder",
+    "maxEntriesPerFragment"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "../../../schema/release-notes-profile.schema.json"
+    },
+    "schemaVersion": {
+      "const": 3
+    },
+    "name": {
+      "const": "common-v3"
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "authentication",
+        "maxAttempts",
+        "failureMode"
+      ],
+      "properties": {
+        "type": {
+          "const": "copilot-cli"
+        },
+        "authentication": {
+          "const": "personal-subscription-pat"
+        },
+        "maxAttempts": {
+          "const": 2
+        },
+        "failureMode": {
+          "const": "block"
+        }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "persistence",
+        "reuse",
+        "corruption"
+      ],
+      "properties": {
+        "persistence": {
+          "const": "central-durable"
+        },
+        "reuse": {
+          "const": "exact-match"
+        },
+        "corruption": {
+          "const": "block"
+        }
+      }
+    },
+    "sectionOrder": {
+      "const": [
+        "repositoryBeforeActions",
+        "actions",
+        "changes",
+        "repositoryAfterChanges",
+        "contributors",
+        "fullChangelog"
+      ]
+    },
+    "repositorySectionSlots": {
+      "const": [
+        "beforeActions",
+        "afterChanges"
+      ]
+    },
+    "categoryOrder": {
+      "const": [
+        "security",
+        "removed",
+        "deprecated",
+        "added",
+        "changed",
+        "fixed"
+      ]
+    },
+    "headings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actions",
+        "changes",
+        "contributors"
+      ],
+      "properties": {
+        "actions": {
+          "const": "升级须知"
+        },
+        "changes": {
+          "const": "更新内容"
+        },
+        "contributors": {
+          "const": "贡献者"
+        }
+      }
+    },
+    "categoryTitles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "security",
+        "removed",
+        "deprecated",
+        "added",
+        "changed",
+        "fixed"
+      ],
+      "properties": {
+        "security": {
+          "const": "安全"
+        },
+        "removed": {
+          "const": "移除"
+        },
+        "deprecated": {
+          "const": "即将停用"
+        },
+        "added": {
+          "const": "新增"
+        },
+        "changed": {
+          "const": "变更"
+        },
+        "fixed": {
+          "const": "修复"
+        }
+      }
+    },
+    "categoryIcons": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "security",
+        "removed",
+        "deprecated",
+        "added",
+        "changed",
+        "fixed"
+      ],
+      "properties": {
+        "security": {
+          "const": "🔒"
+        },
+        "removed": {
+          "const": "🗑️"
+        },
+        "deprecated": {
+          "const": "⚠️"
+        },
+        "added": {
+          "const": "✨"
+        },
+        "changed": {
+          "const": "🔄"
+        },
+        "fixed": {
+          "const": "🛠️"
+        }
+      }
+    },
+    "overview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "minimumEntries",
+        "minimumCategories",
+        "format"
+      ],
+      "properties": {
+        "enabled": {
+          "const": true
+        },
+        "minimumEntries": {
+          "const": 3
+        },
+        "minimumCategories": {
+          "const": 2
+        },
+        "format": {
+          "const": "category-counts"
+        }
+      }
+    },
+    "changesLayout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "empty",
+        "singleCategory",
+        "multipleCategories"
+      ],
+      "properties": {
+        "empty": {
+          "const": "changes-section-with-empty-text"
+        },
+        "singleCategory": {
+          "const": "category-as-section"
+        },
+        "multipleCategories": {
+          "const": "changes-section-with-category-subsections"
+        }
+      }
+    },
+    "actionsPresentation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "severity"
+      ],
+      "properties": {
+        "kind": {
+          "const": "github-alert"
+        },
+        "severity": {
+          "const": "IMPORTANT"
+        }
+      }
+    },
+    "contributors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "presentation",
+        "includeAccountTypes",
+        "excludeLoginSuffixes",
+        "deduplicateBy",
+        "order",
+        "avatarSize"
+      ],
+      "properties": {
+        "presentation": {
+          "const": "avatar-grid"
+        },
+        "includeAccountTypes": {
+          "const": [
+            "User"
+          ]
+        },
+        "excludeLoginSuffixes": {
+          "const": [
+            "[bot]"
+          ]
+        },
+        "deduplicateBy": {
+          "const": "userId"
+        },
+        "order": {
+          "const": "firstIncludedPullRequest"
+        },
+        "avatarSize": {
+          "const": 40
+        }
+      }
+    },
+    "entryPresentation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lead",
+        "separator",
+        "pullRequestLink"
+      ],
+      "properties": {
+        "lead": {
+          "const": "bold-title"
+        },
+        "separator": {
+          "const": "full-width-colon"
+        },
+        "pullRequestLink": {
+          "const": "number-only"
+        }
+      }
+    },
+    "fullChangelogLabel": {
+      "const": "完整变更：{previousTag}...{targetTag}"
+    },
+    "fullChangelogSeparator": {
+      "const": true
+    },
+    "emptyChangesText": {
+      "const": "本版本没有需要用户关注的变化。"
+    },
+    "entryOrder": {
+      "const": [
+        "categoryOrder",
+        "earliestPullRequestMergedAtAscending",
+        "lowestPullRequestNumberAscending"
+      ]
+    },
+    "maxEntriesPerFragment": {
+      "const": 5
+    }
+  }
+}

@@ -2,12 +2,15 @@ import { createHmac, generateKeyPairSync } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import worker, { handleWebhook, validationConclusion, verifyWebhookSignature, type Env } from "../src/index.js";
 import { IssueSnapshotStore } from "../src/issue-snapshots.js";
+import semanticCatalog from "../../../config/labels/pr-semantics.json" with { type: "json" };
+const originalRiskDefinitions = semanticCatalog.roles.riskFlags.definitions;
 
 let privateKey = "";
 beforeAll(() => {
   privateKey = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } }).privateKey;
 });
 afterEach(() => {
+  semanticCatalog.roles.riskFlags.definitions = originalRiskDefinitions;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -41,6 +44,36 @@ function installationScoped(payload: Record<string, unknown>): Record<string, un
 }
 
 describe("中央运行程序", () => {
+  it.each([
+    { action: "labeled", label: "security", state: "open", base: "main", expected: 202 },
+    { action: "unlabeled", label: "security", state: "open", base: "main", expected: 202 },
+    { action: "labeled", label: "breaking-change", state: "open", base: "main", expected: 202 },
+    { action: "unlabeled", label: "breaking-change", state: "open", base: "main", expected: 202 },
+    { action: "labeled", label: "bug", state: "open", base: "main", expected: 204 },
+    { action: "labeled", label: "security", state: "closed", base: "main", expected: 204 },
+    { action: "labeled", label: "security", state: "open", base: "release", expected: 204 },
+  ])("风险标签事件的分类调度 %#", async ({ action, label, state, base, expected }) => {
+    semanticCatalog.roles.riskFlags.definitions = [
+      ...semanticCatalog.roles.riskFlags.definitions,
+      { ...semanticCatalog.roles.riskFlags.definitions[0]!, id: "without-label", githubLabel: null } as any,
+    ];
+    const dispatched: { workflow: string; inputs: any }[] = [];
+    const headSha = "d".repeat(40);
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const endpoint = String(url);
+      if (endpoint.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+      if (endpoint.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }));
+      const match = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(endpoint);
+      if (match) { dispatched.push({ workflow: match[1]!, inputs: JSON.parse(String(init.body)).inputs }); return new Response(null, { status: 204 }); }
+      throw new Error(`Unexpected request ${endpoint}`);
+    });
+    const payload = scoped({ action, label: { name: label }, repository: repository(),
+      pull_request: { number: 8, state, head: { sha: headSha }, base: { ref: base } } });
+    expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(expected);
+    expect(dispatched).toEqual(expected === 202 ? [{ workflow: "pr-classification.yml", inputs: {
+      deliveryId: "delivery-1", repositoryId: "1296724484", pullRequestNumber: "8", eventHeadSha: headSha, policySha: baseEnv().POLICY_SHA,
+    } }] : []);
+  });
   it("Dependabot默认分支拉取请求只进入平台分类，不派发议题工作流或创建议题检查", async () => {
     const headSha = "d".repeat(40); const dispatched: string[] = []; const checks: any[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {

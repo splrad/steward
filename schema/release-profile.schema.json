@@ -1,24 +1,217 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/splrad/steward/schema/release-profile.schema.json",
-  "type": "object", "additionalProperties": false,
-  "required": ["$schema", "schemaVersion", "name", "repository", "trigger", "runner", "version", "build", "assets", "releaseNotes", "release"],
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "name",
+    "repository",
+    "release",
+    "releaseNotes"
+  ],
   "properties": {
-    "$schema": { "type": "string" }, "schemaVersion": { "const": 1 }, "name": { "type": "string" },
-    "repository": { "type": "object", "additionalProperties": false, "required": ["id", "fullName"], "properties": { "id": { "type": "integer", "minimum": 1 }, "fullName": { "type": "string" } } },
-    "trigger": { "type": "object", "additionalProperties": false, "required": ["event", "merged", "changedFiles"], "properties": { "event": { "const": "pull_request.closed" }, "merged": { "const": true }, "changedFiles": { "$ref": "#/$defs/strings" } } },
-    "runner": { "type": "object", "additionalProperties": false, "required": ["label", "timeoutMinutes"], "properties": { "label": { "const": "windows-latest" }, "timeoutMinutes": { "type": "integer", "minimum": 1, "maximum": 60 } } },
-    "version": { "type": "object", "additionalProperties": false, "required": ["file", "displayElement", "displayPattern", "buildElement", "buildPattern", "tagTemplate", "titleTemplate"], "properties": { "file": { "type": "string" }, "displayElement": { "type": "string" }, "displayPattern": { "type": "string" }, "buildElement": { "type": "string" }, "buildPattern": { "type": "string" }, "tagTemplate": { "type": "string" }, "titleTemplate": { "type": "string" } } },
-    "build": { "$ref": "#/$defs/build" },
-    "assets": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/asset" } },
-    "releaseNotes": { "type": "object", "additionalProperties": false, "required": ["excludedLabels", "previousRelease", "pullRequestOrder", "emptyRuntimeText", "downloadText", "upgradeItems"], "properties": { "excludedLabels": { "$ref": "#/$defs/strings" }, "previousRelease": { "const": "latest-published-first-parent-ancestor" }, "pullRequestOrder": { "type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [{ "const": "mergedAtAscending" }, { "const": "numberAscending" }], "items": false }, "emptyRuntimeText": { "type": "string" }, "downloadText": { "type": "string" }, "upgradeItems": { "$ref": "#/$defs/strings" } } },
-    "release": { "type": "object", "additionalProperties": false, "required": ["draftDuringUpload", "prerelease", "makeLatest", "requireImmutablePolicy"], "properties": { "draftDuringUpload": { "const": true }, "prerelease": { "const": false }, "makeLatest": { "const": true }, "requireImmutablePolicy": { "const": true } } }
-  },
-  "$defs": {
-    "strings": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
-    "project": { "type": "object", "additionalProperties": false, "required": ["path", "framework"], "properties": { "path": { "type": "string" }, "framework": { "type": "string" } } },
-    "deployer": { "type": "object", "additionalProperties": false, "required": ["path", "framework", "runtime", "selfContained", "singleFile"], "properties": { "path": { "type": "string" }, "framework": { "type": "string" }, "runtime": { "type": "string" }, "selfContained": { "const": true }, "singleFile": { "const": true } } },
-    "build": { "type": "object", "additionalProperties": false, "required": ["sdkVersion", "sdkRollForward", "shell", "command", "projects", "deployer"], "properties": { "sdkVersion": { "type": "string" }, "sdkRollForward": { "type": "string" }, "shell": { "const": "pwsh" }, "command": { "type": "string" }, "projects": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/project" } }, "deployer": { "$ref": "#/$defs/deployer" } } },
-    "asset": { "type": "object", "additionalProperties": false, "required": ["nameTemplate", "pathTemplate", "contentType"], "properties": { "nameTemplate": { "type": "string" }, "pathTemplate": { "type": "string" }, "contentType": { "enum": ["application/x-msdownload", "application/zip"] } } }
+    "$schema": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schemaVersion": {
+      "const": 2
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "fullName"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fullName": {
+          "type": "string",
+          "pattern": "^[^/]+/[^/]+$"
+        }
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "draftDuringUpload",
+        "prerelease",
+        "makeLatest",
+        "requireImmutablePolicy"
+      ],
+      "properties": {
+        "draftDuringUpload": {
+          "const": true
+        },
+        "prerelease": {
+          "const": false
+        },
+        "makeLatest": {
+          "const": true
+        },
+        "requireImmutablePolicy": {
+          "const": true
+        }
+      }
+    },
+    "releaseNotes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "fragmentDirectory",
+        "candidateChanges"
+      ],
+      "properties": {
+        "profile": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "fragmentDirectory": {
+          "type": "string",
+          "minLength": 1
+        },
+        "candidateChanges": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "required",
+            "reviewRequired",
+            "ignored",
+            "defaultDisposition"
+          ],
+          "properties": {
+            "required": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true,
+              "minItems": 0
+            },
+            "reviewRequired": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true,
+              "minItems": 0
+            },
+            "ignored": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true,
+              "minItems": 0
+            },
+            "defaultDisposition": {
+              "const": "review-required"
+            }
+          }
+        },
+        "personalization": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "sections"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "sections": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "type",
+                  "slot",
+                  "title",
+                  "items"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]*$"
+                  },
+                  "type": {
+                    "enum": [
+                      "asset-table",
+                      "bullet-list"
+                    ]
+                  },
+                  "slot": {
+                    "enum": [
+                      "beforeActions",
+                      "afterChanges"
+                    ]
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "uniqueItems": true,
+                    "minItems": 1
+                  }
+                }
+              },
+              "uniqueItems": true,
+              "minItems": 0
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "sections": {
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "sections": {
+                    "maxItems": 0,
+                    "type": "array"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
   }
 }

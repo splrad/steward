@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   buildAiDiffObservation, buildCopilotRepairPrompt, buildDeterministicSummary, buildPrompt, classifyPullRequest, classificationDigests, classificationInputDigest, computePullRequestFingerprint, createAiClassificationEnvelope, digest,
   categorizeReleasePullRequests, classifyRemoteReleaseState, collectReleasePullRequests,
-  escapeMarkdownText,
+  escapeMarkdownText, FragmentValidationError,
   isHumanActor, isIssueCapableRepository, normalizeContributor,
   organizationPullRequestTemplate,
   generateReviewInstructionSet, parseVersion, planClassificationLabels, planLabelDefinitions, planRelease, planRepositorySettings, renderManagedBody,
@@ -19,6 +19,8 @@ import {
 import { createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestError, uploadReleaseAsset, isDependabotReviewEligible } from "../../github/src/index.js";
 import { managedRepositoryIds, managedRepositoryTargets, runManagedRepositorySync, type ManagedTarget } from "./managed-repository-sync.js";
 import { runPrIssueLink } from "./pr-issue-link.js";
+import { validateRemoteFragments } from "./release-note-validation.js";
+import { classificationFacts } from "./classification-facts.js";
 import { targetManagedBlock, updatePullRequestBodyDurably, type DurableBodyRedrive } from "./pr-body-writer.js";
 import { minimatch } from "minimatch";
 import YAML from "yaml";
@@ -40,7 +42,7 @@ const allowedArguments: Record<string, Set<string>> = {
   "pr-issue-link": new Set(["delivery-id", "repository-id", "pull-request-number", "scan-all", "invalidate-only", "cleanup-unmanaged", "reconciliation-generation", "policy-sha"]),
   "sync-review-instructions": new Set(["repository-id", "policy-sha"]),
   "sync-managed-labels": new Set(["repository-id", "policy-sha"]),
-  validate: new Set(["workspace", "repository-id", "profile"]),
+  validate: new Set(["workspace", "repository-id", "profile", "fragments-only"]),
   "release-preflight": new Set(["workspace", "repository-id", "pull-request-number", "target-sha", "policy-sha", "trigger", "manifest"]),
   "release-notes": new Set(["repository-id", "pull-request-number", "target-sha", "policy-sha", "display-version", "output"]),
   "release-publish": new Set(["manifest", "notes", "repository"]),
@@ -343,17 +345,19 @@ export function isTrustedAiClassificationSource(policySha: string, environment: 
     && environment.WORKFLOW_REF === `${environment.WORKFLOW_REPOSITORY}/.github/workflows/pr-classification.yml@${environment.WORKFLOW_RUN_REF}`
     && environment.WORKFLOW_SHA === policySha;
 }
-export interface ClassificationCheckStateV3 {
-  v: 3;
+export interface ClassificationCheckStateV4 {
+  v: 4;
   repositoryId: number;
   pullRequestNumber: number;
   headSha: string;
   inputDigest: string;
   policy: string;
+  policySha: string;
   mode: RepositoryClassification["ai"]["mode"];
   primary: { id: string; source: "hard-rule" | "ai" | "deterministic-fallback"; reasonCode: string };
   acceptedAiPrimaryKind?: string;
-  risks: string[];
+  ownedRiskFlags: string[];
+  riskFlags: string[];
   facets: string[];
   areas: string[];
   decisionDigest: string;
@@ -372,7 +376,7 @@ const classificationCheckReasons = [
   "primary-ai-incomplete-diff", "primary-ai-low-confidence", "primary-ai-kind-ineligible", "primary-ai-evidence-invalid",
   "primary-ai-hard-rule-conflict", "primary-ai-mode-shadow", "primary-deterministic-type-selected", "primary-fallback-selected",
 ] as const;
-const classificationCheckStateBodyBytes = 133;
+const classificationCheckStateBodyBytes = 154;
 const classificationCheckStateBytes = classificationCheckStateBodyBytes + 32;
 const classificationCheckStateEncodedLength = Math.ceil(classificationCheckStateBytes * 4 / 3);
 export function classificationCheckStateCodec(catalog: SemanticCatalog, profile: ClassificationProfile): ClassificationCheckStateCodec {
@@ -401,14 +405,15 @@ function decodeStateBits(bits: number, order: readonly string[]): string[] | nul
   if ((bits >>> order.length) !== 0) return null;
   return order.filter((_value, index) => (bits & (1 << index)) !== 0);
 }
-export function encodeClassificationCheckState(state: ClassificationCheckStateV3, codec: ClassificationCheckStateCodec): string {
+export function encodeClassificationCheckState(state: ClassificationCheckStateV4, codec: ClassificationCheckStateCodec): string {
   validateClassificationCheckCodec(codec);
   if (!Number.isSafeInteger(state.repositoryId) || state.repositoryId < 1 || state.repositoryId > 0xffff_ffff
     || !Number.isSafeInteger(state.pullRequestNumber) || state.pullRequestNumber < 1 || state.pullRequestNumber > 0xffff_ffff
+    || state.v !== 4 || !/^[0-9a-f]{40}$/u.test(state.policySha)
     || !/^[0-9a-f]{40}$/u.test(state.headSha) || !/^[0-9a-f]{64}$/u.test(state.inputDigest)
     || !/^[0-9a-f]{64}$/u.test(state.policy) || !/^[0-9a-f]{64}$/u.test(state.decisionDigest)) throw new Error("分类检查状态上下文无效");
   const buffer = Buffer.alloc(classificationCheckStateBytes);
-  buffer[0] = 3;
+  buffer[0] = 4;
   buffer.writeUInt32BE(state.repositoryId, 1);
   buffer.writeUInt32BE(state.pullRequestNumber, 5);
   Buffer.from(state.headSha, "hex").copy(buffer, 9);
@@ -419,49 +424,56 @@ export function encodeClassificationCheckState(state: ClassificationCheckStateV3
   buffer[126] = encodeStateIndex(state.primary.id, codec.primaryKinds, "主类");
   buffer[127] = encodeStateIndex(state.primary.source, classificationCheckSources, "主类来源");
   buffer[128] = encodeStateIndex(state.primary.reasonCode, classificationCheckReasons, "主类原因");
-  buffer[129] = encodeStateBits(state.risks, codec.riskFlags, "风险");
+  buffer[129] = encodeStateBits(state.ownedRiskFlags, codec.riskFlags, "风险所有权");
   buffer[130] = encodeStateBits(state.facets, codec.facets, "Facet");
   buffer[131] = encodeStateBits(state.areas, codec.areas, "区域");
   buffer[132] = state.acceptedAiPrimaryKind === undefined ? 255 : encodeStateIndex(state.acceptedAiPrimaryKind, codec.primaryKinds, "已采用AI主类");
+  Buffer.from(state.policySha, "hex").copy(buffer, 133);
+  buffer[153] = encodeStateBits(state.riskFlags, codec.riskFlags, "风险");
+  if (state.ownedRiskFlags.some(risk => !state.riskFlags.includes(risk))) throw new Error("分类检查状态的风险所有权超出风险集合");
   if (state.acceptedAiPrimaryKind !== undefined && (state.primary.source !== "ai" || state.primary.id !== state.acceptedAiPrimaryKind || !["primary-ai-accepted", "primary-ai-reused"].includes(state.primary.reasonCode))) throw new Error("分类检查状态的AI主类不一致");
   createHash("sha256").update(buffer.subarray(0, classificationCheckStateBodyBytes)).digest().copy(buffer, classificationCheckStateBodyBytes);
-  return `v3:${buffer.toString("base64url")}`;
+  return `v4:${buffer.toString("base64url")}`;
 }
-export function decodeClassificationCheckState(value: unknown, codec: ClassificationCheckStateCodec, expected?: { repositoryId: number; pullRequestNumber: number; headSha: string }): ClassificationCheckStateV3 | null {
+export function decodeClassificationCheckState(value: unknown, codec: ClassificationCheckStateCodec, expected?: { repositoryId: number; pullRequestNumber: number; headSha: string; policySha?: string }): ClassificationCheckStateV4 | null {
   try { validateClassificationCheckCodec(codec); } catch { return null; }
-  if (typeof value !== "string" || !value.startsWith("v3:")) return null;
+  if (typeof value !== "string" || !value.startsWith("v4:")) return null;
   const encoded = value.slice(3);
   if (encoded.length !== classificationCheckStateEncodedLength || !/^[A-Za-z0-9_-]+$/u.test(encoded)) return null;
   const decoded = Buffer.from(encoded, "base64url");
-  if (decoded.length !== classificationCheckStateBytes || decoded.toString("base64url") !== encoded || decoded[0] !== 3) return null;
+  if (decoded.length !== classificationCheckStateBytes || decoded.toString("base64url") !== encoded || decoded[0] !== 4) return null;
   const checksum = createHash("sha256").update(decoded.subarray(0, classificationCheckStateBodyBytes)).digest();
   if (!checksum.equals(decoded.subarray(classificationCheckStateBodyBytes))) return null;
   const repositoryId = decoded.readUInt32BE(1);
   const pullRequestNumber = decoded.readUInt32BE(5);
   const headSha = decoded.subarray(9, 29).toString("hex");
+  const policySha = decoded.subarray(133, 153).toString("hex");
+  if (expected?.policySha !== undefined && policySha !== expected.policySha) return null;
   if (!repositoryId || !pullRequestNumber || (expected && (repositoryId !== expected.repositoryId || pullRequestNumber !== expected.pullRequestNumber || headSha !== expected.headSha))) return null;
   const mode = classificationCheckModes[decoded[125]!];
   const primaryKind = codec.primaryKinds[decoded[126]!];
   const source = classificationCheckSources[decoded[127]!];
   const reasonCode = classificationCheckReasons[decoded[128]!];
-  const risks = decodeStateBits(decoded[129]!, codec.riskFlags);
+  const ownedRiskFlags = decodeStateBits(decoded[129]!, codec.riskFlags);
+  const riskFlags = decodeStateBits(decoded[153]!, codec.riskFlags);
   const facets = decodeStateBits(decoded[130]!, codec.facets);
   const areas = decodeStateBits(decoded[131]!, codec.areas);
   const acceptedAiPrimaryKind = decoded[132] === 255 ? undefined : codec.primaryKinds[decoded[132]!];
-  if (!mode || !primaryKind || !source || !reasonCode || !risks || !facets || !areas) return null;
+  if (!mode || !primaryKind || !source || !reasonCode || !ownedRiskFlags || !riskFlags || !facets || !areas) return null;
+  if (ownedRiskFlags.some(risk => !riskFlags.includes(risk))) return null;
   if (acceptedAiPrimaryKind !== undefined && (source !== "ai" || primaryKind !== acceptedAiPrimaryKind || !["primary-ai-accepted", "primary-ai-reused"].includes(reasonCode))) return null;
   return {
-    v: 3, repositoryId, pullRequestNumber, headSha,
+    v: 4, repositoryId, pullRequestNumber, headSha, policySha,
     inputDigest: decoded.subarray(29, 61).toString("hex"),
     policy: decoded.subarray(61, 93).toString("hex"),
     mode,
     primary: { id: primaryKind, source, reasonCode },
     ...(acceptedAiPrimaryKind ? { acceptedAiPrimaryKind } : {}),
-    risks, facets, areas,
+    ownedRiskFlags, riskFlags, facets, areas,
     decisionDigest: decoded.subarray(93, 125).toString("hex"),
   };
 }
-export function reusedAiClassificationAssessment(state: ClassificationCheckStateV3 | null): AiClassificationAssessment | null {
+export function reusedAiClassificationAssessment(state: ClassificationCheckStateV4 | null): AiClassificationAssessment | null {
   if (!state?.acceptedAiPrimaryKind || state.primary.source !== "ai" || state.primary.id !== state.acceptedAiPrimaryKind) return null;
   return {
     state: "valid",
@@ -1276,22 +1288,17 @@ async function classify(args: Readonly<Record<string, string>>) {
     ]);
     if (!files.length || !commits.length || Number(pull.changed_files) !== files.length || Number(pull.commits) !== commits.length) throw new Error("pagination-incomplete");
     const currentLabels = labels.map((value: any) => String(value.name));
-    const rawFacts = {
-      repositoryId, pullRequestNumber: number, sourceRepositoryId: Number(pull.head.repo.id), sourceRef: `refs/heads/${pull.head.ref}`,
-      targetRef: `refs/heads/${pull.base.ref}`, author: { login: String(pull.user.login), type: pull.user.type as "User" | "Bot" | "Organization" | "Mannequin" },
-      headSha: expectedHead, baseSha: String(pull.base.sha),
-      commits: commits.map((value: any) => ({ sha: String(value.sha), message: String(value.commit?.message ?? "") })),
-      files: files.map((value: any) => ({ path: String(value.filename), ...(value.previous_filename ? { previousPath: String(value.previous_filename) } : {}), status: String(value.status), additions: Number(value.additions), deletions: Number(value.deletions), patch: typeof value.patch === "string" ? value.patch : null, patchState: typeof value.patch === "string" ? "available" as const : "missing" as const })),
-    };
+    const rawFacts = classificationFacts(repositoryId, number, pull, files, commits);
     const policy = classificationDigests(semantics, profile, repositoryClassification);
     const inputDigest = classificationInputDigest(rawFacts, policySha, policy.classificationPolicyDigest);
     const reusablePreviousState = previousState?.policy === policy.classificationPolicyDigest
+      && previousState.policySha === policySha
       && previousState.inputDigest === inputDigest
       && previousState.mode === repositoryClassification.ai.mode
       ? previousState
       : null;
     const priorOwnership = reusablePreviousState
-      ? { stewardOwnedRiskFlags: reusablePreviousState.risks, stewardOwnedFacets: reusablePreviousState.facets }
+      ? { stewardOwnedRiskFlags: reusablePreviousState.ownedRiskFlags, stewardOwnedFacets: reusablePreviousState.facets }
       : { stewardOwnedRiskFlags: [], stewardOwnedFacets: [] };
     const existing = { currentLabels, ...priorOwnership };
     let aiAssessment: AiClassificationAssessment;
@@ -1343,16 +1350,18 @@ async function classify(args: Readonly<Record<string, string>>) {
     const decisionDigest = digest(result);
     const resultAi = result.ai!;
     const state = encodeClassificationCheckState({
-      v: 3,
+      v: 4,
       repositoryId,
       pullRequestNumber: number,
       headSha: expectedHead,
       inputDigest,
       policy: policy.classificationPolicyDigest,
+      policySha,
       mode: repositoryClassification.ai.mode,
       primary: result.primaryKind,
       ...(result.primaryKind.source === "ai" ? { acceptedAiPrimaryKind: result.primaryKind.id } : {}),
-      risks: labelPlan.ownedRiskFlags,
+      ownedRiskFlags: labelPlan.ownedRiskFlags,
+      riskFlags: [...new Set(result.riskFlags.map(value => value.id))],
       facets: labelPlan.ownedFacets,
       areas: result.areas.map(value => value.id),
       decisionDigest,
@@ -1593,6 +1602,73 @@ async function validate(args: Readonly<Record<string, string>>) {
   const profileName = required(args, "profile");
   if (profileName !== configuration.validationProfile) throw new Error("验证配置与中央仓库目录不一致");
   const profile = await json<ValidationProfile>(configPath("profiles", "validation", `${profileName}.json`));
+  if (args["fragments-only"] !== undefined) {
+    if (args["fragments-only"] !== "true") throw new Error("fragments-only必须为true");
+    if (configuration.fragmentGateEnabled !== true) {
+      await summary(["片段门禁：未启用"]);
+      return;
+    }
+    if (!profile.fragmentGate) throw new Error("已启用片段门禁的仓库缺少片段规则");
+    const identity = { repositoryId, pullRequestNumber: integer(env("VALIDATION_PR_NUMBER"), "VALIDATION_PR_NUMBER"),
+      baseSha: sha(env("VALIDATION_BASE_SHA"), "VALIDATION_BASE_SHA"), headSha: sha(env("VALIDATION_HEAD_SHA"), "VALIDATION_HEAD_SHA"),
+      policySha: sha(env("VALIDATION_POLICY_SHA"), "VALIDATION_POLICY_SHA") };
+    const gh = new GitHubClient(env("VALIDATION_READ_TOKEN"), "https://api.github.com", fetch, identity.policySha);
+    const repository = await gh.getRepositoryById(repositoryId);
+    if (repository.id !== repositoryId) throw new Error("片段验证仓库身份不匹配");
+    const [owner, repo] = splitRepository(repository.full_name);
+    let classificationSourceDigest: string | undefined;
+    try {
+      const result = await validateRemoteFragments({ gh, owner, repo, identity, profile: profile.fragmentGate,
+        classification: async (pull, files) => {
+          const semantics = await semanticCatalog();
+          const classificationProfile = await json<ClassificationProfile>(configPath("profiles", "classification", `${configuration.classification.profile}.json`));
+          const policy = classificationDigests(semantics, classificationProfile, configuration.classification);
+          const readLabelNames = async () => {
+            const labels = await gh.listLabels(owner, repo, identity.pullRequestNumber);
+            if (labels.some(label => typeof label.name !== "string")) throw new Error("片段分类标签数据不完整");
+            return new Set(labels.map(label => label.name));
+          };
+          let names = await readLabelNames();
+          const humanRisks = () => semantics.roles.riskFlags.definitions.filter(definition => definition.githubLabel && names.has(definition.githubLabel.name)).map(definition => definition.id);
+          const unavailable = () => {
+            throw new FragmentValidationError("RN_SOURCE_INCOMPLETE", "current classification");
+          };
+          const readChecks = async () => (await gh.listAllCheckRuns(owner, repo, identity.headSha)).filter(check => check.name === "PR Classification Gate" && check.app?.id === 4243096 && check.head_sha === identity.headSha);
+          let checks = await readChecks();
+          if (classificationSourceDigest === undefined) {
+            let waited = false;
+            for (let attempt = 0; attempt < 36 && (checks.length === 0 || (checks.length === 1 && ["queued", "in_progress"].includes(checks[0].status))); attempt++) {
+              await delay(5_000);
+              waited = true;
+              checks = await readChecks();
+            }
+            if (waited) names = await readLabelNames();
+          }
+          const sourceDigest = digest({ labels: [...names].sort(), checks: checks.map(check =>
+            [check.id ?? null, check.head_sha ?? null, check.status ?? null, check.conclusion ?? null, check.external_id ?? null]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))) });
+          if (classificationSourceDigest !== undefined && classificationSourceDigest !== sourceDigest) throw new FragmentValidationError("RN_SOURCE_STALE", "classification or labels");
+          classificationSourceDigest = sourceDigest;
+          if (checks.length !== 1 || checks[0].status !== "completed" || checks[0].conclusion !== "success") return unavailable();
+          const state = decodeClassificationCheckState(checks[0].external_id, classificationCheckStateCodec(semantics, classificationProfile), identity);
+          if (state?.policy !== policy.classificationPolicyDigest || state.mode !== configuration.classification.ai.mode) return unavailable();
+          try {
+            const commits = await gh.listPullCommits(owner, repo, identity.pullRequestNumber);
+            const facts = classificationFacts(repositoryId, identity.pullRequestNumber, pull, files, commits);
+            if (state.inputDigest !== classificationInputDigest(facts, identity.policySha, policy.classificationPolicyDigest)) return unavailable();
+          } catch { return unavailable(); }
+          return { primaryKind: state.primary.id, riskFlags: [...new Set([...state.ownedRiskFlags, ...humanRisks()])] };
+        } });
+      await summary(["# 发布片段验证", `base：${identity.baseSha}`, `head：${identity.headSha}`, `policy：${identity.policySha}`,
+        `要求：${result.decision.requirement}`, `分类：${result.decision.classificationState}`,
+        ...result.sources.map(source => `片段：${escapeMarkdownText(source.path)}；blob：${source.blobSha}；SHA-256：${source.sha256}`),
+        ...(result.fragment?.status === "not-user-facing" ? [`无用户影响理由：${escapeMarkdownText(result.fragment.reason)}`] : [])]);
+    } catch (error) {
+      await summary(["# 发布片段验证失败", `base：${identity.baseSha}`, `head：${identity.headSha}`, `policy：${identity.policySha}`,
+        escapeMarkdownText(error instanceof Error ? error.message : String(error))]);
+      throw error;
+    }
+    return;
+  }
   const validationBaseSha = process.env.VALIDATION_BASE_SHA;
   const validationBaseRef = process.env.VALIDATION_BASE_REF;
   if (Boolean(validationBaseSha) !== Boolean(validationBaseRef)) throw new Error("基础分支验证参数不完整");
@@ -1706,7 +1782,7 @@ async function releasePreflight(args: Readonly<Record<string, string>>) {
   const workspace = resolve(required(args, "workspace"));
   const checkedOutSha = run("git", ["rev-parse", "HEAD"], workspace).toLowerCase();
   if (checkedOutSha !== targetSha) throw new Error("工作区检出的提交与目标提交不一致");
-  const profile = await json<any>(configPath("profiles", "release", "layerscape.json"));
+  const profile = await json<any>(configPath("profiles", "release-legacy", "layerscape.json"));
   const versionText = await runtimeReadFile(join(workspace, profile.version.file), "utf8");
   const displayMatches = [...versionText.matchAll(new RegExp(`<${profile.version.displayElement}>([^<]+)</${profile.version.displayElement}>`, "g"))];
   const buildMatches = [...versionText.matchAll(new RegExp(`<${profile.version.buildElement}>([^<]+)</${profile.version.buildElement}>`, "g"))];
@@ -1825,7 +1901,7 @@ async function releaseNotesCommand(args: Readonly<Record<string, string>>) {
     }, { currentLabels, stewardOwnedRiskFlags: [], stewardOwnedFacets: [] });
     rich.push({ number, title: pull.title, body: pull.body ?? "", labels: currentLabels, files: files.map((value: any) => value.filename), author: { login: pull.user.login, type: pull.user.type }, mergedAt: pull.merged_at, mergeSha: pull.merge_commit_sha, decision });
   }
-  const releaseProfile = await json<any>(configPath("profiles", "release", "layerscape.json"));
+  const releaseProfile = await json<any>(configPath("profiles", "release-legacy", "layerscape.json"));
   const eligible = collectReleasePullRequests(rich, releaseProfile.releaseNotes.excludedLabels);
   const categorized = categorizeReleasePullRequests(profile, eligible);
   const notes = renderReleaseNotes({ repositoryId, targetSha, policySha, displayVersion, categorized, emptyRuntimeText: releaseProfile.releaseNotes.emptyRuntimeText });
@@ -1835,7 +1911,7 @@ async function releaseNotesCommand(args: Readonly<Record<string, string>>) {
 }
 async function releasePublish(args: Readonly<Record<string, string>>) {
   const manifest = await json<ReleaseManifest>(resolve(required(args, "manifest")));
-  const profile = await json<any>(configPath("profiles", "release", "layerscape.json"));
+  const profile = await json<any>(configPath("profiles", "release-legacy", "layerscape.json"));
   verifyAssetManifest(manifest, profile.assets.map((value: any) => value.nameTemplate.replace("{displayVersion}", manifest.displayVersion)));
   const [owner, repo] = splitRepository(required(args, "repository"));
   if (manifest.repositoryId !== profile.repository.id || `${owner}/${repo}` !== profile.repository.fullName) throw new Error("发布仓库与中央配置不一致");
@@ -1888,7 +1964,7 @@ async function releasePublish(args: Readonly<Record<string, string>>) {
 }
 async function releaseVerify(args: Readonly<Record<string, string>>) {
   const manifest = await json<ReleaseManifest>(resolve(required(args, "manifest")));
-  const profile = await json<any>(configPath("profiles", "release", "layerscape.json"));
+  const profile = await json<any>(configPath("profiles", "release-legacy", "layerscape.json"));
   verifyAssetManifest(manifest, profile.assets.map((value: any) => value.nameTemplate.replace("{displayVersion}", manifest.displayVersion)));
   const [owner, repo] = splitRepository(required(args, "repository"));
   if (manifest.repositoryId !== profile.repository.id || `${owner}/${repo}` !== profile.repository.fullName) throw new Error("发布仓库与中央配置不一致");

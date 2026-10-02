@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/splrad/steward/schema/delivery-profile.schema.json",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "$schema",
+        "schemaVersion",
+        "name",
+        "capability",
+        "artifactKind"
+      ],
+      "properties": {
+        "$schema": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schemaVersion": {
+          "const": 1
+        },
+        "name": {
+          "const": "cloud-service-v1"
+        },
+        "capability": {
+          "const": "deployment"
+        },
+        "artifactKind": {
+          "const": "oci-image"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "$schema",
+        "schemaVersion",
+        "name",
+        "capability",
+        "artifactKind"
+      ],
+      "properties": {
+        "$schema": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schemaVersion": {
+          "const": 1
+        },
+        "name": {
+          "const": "ghcr-oci-v1"
+        },
+        "capability": {
+          "const": "package"
+        },
+        "artifactKind": {
+          "const": "oci-image"
+        }
+      }
+    }
+  ]
+}
