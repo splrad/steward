@@ -27,6 +27,21 @@ describe('构建合同 T09/T10', () => {
     original.outputs[0]!.id = 'changed'; original.inputs.runtime = 'bash';
     expect(plan.outputs[0]!.id).toBe('archive'); expect(plan.inputs.runtime).toBe('node');
   });
+  it('异步摘要期间原对象变更不改变已验证计划', async () => {
+    const original = structuredClone(unit);
+    const pending = planBuild(identity, original);
+    original.outputs[0]!.count = 0; original.outputs[0]!.id = 'changed'; original.outputs.length = 0;
+    const plan = await pending;
+    expect(plan.outputs).toEqual(unit.outputs);
+  });
+  it('OCI 字符策略接受转义换行，合同字符策略仍拒绝', () => {
+    const bytes = new TextEncoder().encode('{"Cmd":["line one\\nline two\\tend"]}');
+    expect(decodeBuildJson(bytes, 'oci')).toEqual({ Cmd: ['line one\nline two\tend'] });
+    expect(() => decodeBuildJson(bytes)).toThrow('RN_BUILD_INVALID');
+    for (const source of ['{"a":1,"a":2}', '{"a":"\\ud800"}', '\ufeff{}', '{"a":1e400}']) {
+      expect(() => decodeBuildJson(new TextEncoder().encode(source), 'oci')).toThrow('RN_BUILD_INVALID');
+    }
+  });
   it.each([['example/widget'], null, true, 1])('拒绝非字符串仓库名 %j', async fullName => {
     await expect(planBuild({ ...identity, fullName } as unknown as BuildIdentity, unit)).rejects.toThrow('RN_BUILD_INVALID');
     const manifest = { ...identity, fullName, schemaVersion: 1, inputsSha256: 'c'.repeat(64), artifacts: [{ id: 'archive', kind: 'file', file: 'widget.zip', mediaType: 'application/zip', size: 1, sha256: 'd'.repeat(64) }] };

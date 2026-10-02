@@ -56,6 +56,16 @@ describe('中央文件产物验证 T09', () => {
     await expect(verifyDownloadedFileBuild(plan, manifest, output, inspect)).resolves.toBeUndefined();
     await file('1.2.4'); await expect(verifyDownloadedFileBuild(plan, manifest, output, inspect)).rejects.toThrow('RN_BUILD_VERSION');
   });
+  it('检查器修改缓冲区不改变磁盘字节的摘要', async () => {
+    await file(); const plan = await planBuild(identity, unit);
+    const diskBytes = await readFile(join(output, 'widget.json'));
+    const mutatingInspector = async (bytes: Uint8Array) => { bytes.fill(0); return '1.2.3'; };
+    const manifest = await collectFileBuildManifest(plan, output, mutatingInspector);
+    expect(manifest.artifacts[0]).toMatchObject({ size: diskBytes.length, sha256: createHash('sha256').update(diskBytes).digest('hex') });
+    await verifyDownloadedFileBuild(plan, manifest, output, mutatingInspector);
+    await writeFile(join(output, 'widget.json'), '{"version":"9.9.9"}');
+    await expect(verifyDownloadedFileBuild(plan, manifest, output, mutatingInspector)).rejects.toThrow('RN_BUILD_DIGEST');
+  });
   it('摘要和仓库、提交、参数绑定分别复核', async () => {
     await file(); const plan = await planBuild(identity, unit); const manifest = await collectFileBuildManifest(plan, output, inspect);
     for (const changed of [{ targetSha: 'c'.repeat(40) }, { policySha: 'c'.repeat(40) }, { inputsSha256: 'c'.repeat(64) }, { repositoryId: 2 }]) {
@@ -122,6 +132,81 @@ describe('构建入口验证', () => {
   });
 });
 describe('OCI 摘要链验证 T09', () => {
+  it.each(['oci-layout', 'index.json'])('在打开 %s 前拒绝超大 JSON', async path => {
+    const { plan } = await oci();
+    const oversized = join(output, path);
+    await truncate(oversized, 512 * 1024 + 1);
+    await expect(collectOciBuildManifest(plan, output)).rejects.toThrow('RN_BUILD_LIMIT');
+    expect(vi.mocked(open).mock.calls.filter(([file]) => file === oversized)).toHaveLength(0);
+  });
+  it.each(['application/vnd.oci.image.manifest.v1+json', 'application/vnd.oci.image.index.v1+json'])('读取 %s 前检查描述符 JSON 上限', async mediaType => {
+    const { image, plan } = await oci();
+    await writeFile(join(output, 'index.json'), JSON.stringify({ schemaVersion: 2, manifests: [{ ...image, mediaType, size: 512 * 1024 + 1, annotations: { 'org.opencontainers.image.ref.name': 'image' } }] }));
+    await expect(collectOciBuildManifest(plan, output)).rejects.toThrow('RN_BUILD_LIMIT');
+    expect(vi.mocked(open).mock.calls.filter(([file]) => file === join(output, 'blobs', 'sha256', image.digest.slice(7)))).toHaveLength(0);
+  });
+  it('config 的实际字节数和描述符分别受 JSON 上限约束', async () => {
+    const { image, store, plan } = await oci();
+    const imagePath = join(output, 'blobs', 'sha256', image.digest.slice(7));
+    const imageManifest = JSON.parse(await readFile(imagePath, 'utf8'));
+    const configPath = join(output, 'blobs', 'sha256', imageManifest.config.digest.slice(7));
+    await truncate(configPath, 512 * 1024 + 1);
+    await expect(collectOciBuildManifest(plan, output)).rejects.toThrow('RN_BUILD_LIMIT');
+    expect(vi.mocked(open).mock.calls.filter(([file]) => file === configPath)).toHaveLength(0);
+    imageManifest.config.size = 512 * 1024 + 1;
+    const changed = await store(imageManifest, image.mediaType);
+    await writeFile(join(output, 'index.json'), JSON.stringify({ schemaVersion: 2, manifests: [{ ...changed, annotations: { 'org.opencontainers.image.ref.name': 'image' } }] }));
+    await expect(collectOciBuildManifest(plan, output)).rejects.toThrow('RN_BUILD_LIMIT');
+  });
+  it('JSON 打开后增长时读取量仍受初始大小约束', async () => {
+    const { plan } = await oci(); const indexPath = join(output, 'index.json');
+    let readBytes = 0;
+    const initialSize = (await actualFs.stat(indexPath)).size;
+    vi.mocked(open).mockImplementation(async (...args) => {
+      const handle = await actualFs.open(...args);
+      if (args[0] === indexPath) {
+        const read = handle.read.bind(handle);
+        let grown = false;
+        handle.read = (async (...readArgs: Parameters<typeof handle.read>) => {
+          if (!grown) { await truncate(indexPath, 2 * 1024 * 1024); grown = true; }
+          const result = await read(...readArgs); readBytes += result.bytesRead; return result;
+        }) as typeof handle.read;
+      }
+      return handle;
+    });
+    await expect(collectOciBuildManifest(plan, output)).rejects.toThrow('RN_BUILD_DIGEST');
+    expect(readBytes).toBeLessThanOrEqual(initialSize + 1);
+  });
+  it('合法的多行命令和 history 可收集并下载复核', async () => {
+    const { image, store, plan } = await oci();
+    const imageManifest = JSON.parse(await readFile(join(output, 'blobs', 'sha256', image.digest.slice(7)), 'utf8'));
+    const oldConfig = join(output, 'blobs', 'sha256', imageManifest.config.digest.slice(7));
+    const config = JSON.parse(await readFile(oldConfig, 'utf8'));
+    config.config.Cmd = ['sh', '-c', 'printf "hello"\nprintf "world"\t'];
+    config.config.Env = ['TEXT=line1\nline2']; config.config.Labels.description = 'multi\nline';
+    config.history = [{ created_by: 'RUN first\n\tsecond' }];
+    imageManifest.config = await store(config, imageManifest.config.mediaType);
+    const changed = await store(imageManifest, image.mediaType);
+    await writeFile(join(output, 'index.json'), JSON.stringify({ schemaVersion: 2, manifests: [{ ...changed, annotations: { 'org.opencontainers.image.ref.name': 'image' } }] }));
+    await actualFs.unlink(oldConfig); await actualFs.unlink(join(output, 'blobs', 'sha256', image.digest.slice(7)));
+    const manifest = await collectOciBuildManifest(plan, output);
+    await expect(verifyDownloadedOciBuild(plan, manifest, output)).resolves.toBeUndefined();
+  });
+  it('layer 使用独立上限并通过分块读取验证', async () => {
+    const { image, store, plan } = await oci();
+    const imageManifest = JSON.parse(await readFile(join(output, 'blobs', 'sha256', image.digest.slice(7)), 'utf8'));
+    const oldLayer = join(output, 'blobs', 'sha256', imageManifest.layers[0].digest.slice(7));
+    imageManifest.layers[0] = await store('x'.repeat(512 * 1024 + 1), imageManifest.layers[0].mediaType);
+    const changed = await store(imageManifest, image.mediaType);
+    await writeFile(join(output, 'index.json'), JSON.stringify({ schemaVersion: 2, manifests: [{ ...changed, annotations: { 'org.opencontainers.image.ref.name': 'image' } }] }));
+    await actualFs.unlink(oldLayer); await actualFs.unlink(join(output, 'blobs', 'sha256', image.digest.slice(7)));
+    vi.mocked(open).mockImplementation(async (...args) => {
+      const handle = await actualFs.open(...args);
+      handle.readFile = vi.fn(() => { throw new Error('OCI must use bounded reads'); });
+      return handle;
+    });
+    await expect(collectOciBuildManifest(plan, output)).resolves.toMatchObject({ profile: 'oci-image-v1' });
+  });
   it('元数据字节与 blob 共同计入总量', async () => {
     const { plan } = await oci();
     const allFiles = await actualFs.readdir(join(output, 'blobs', 'sha256'));

@@ -32,6 +32,14 @@ include the layout and index files. Shared layers reuse verified digest and size
 records without retaining their bytes, and leaf descriptors must agree with
 their image configs on OS and architecture.
 
+OCI JSON metadata is limited to 512 KiB before reading, both by descriptor and
+actual file size. Reads stop at the observed size plus one byte to detect growth.
+Layers use bounded chunks and retain the separate file-size limit. OCI metadata
+accepts legal JSON escape sequences in commands and history while retaining
+UTF-8, duplicate-key, and finite-number checks. Contract strings keep their
+stricter character policy. File digests are fixed before native version inspection,
+so an inspector changing its buffer cannot change the digest of the disk bytes.
+
 `canonicalBuildManifest` validates and serializes the standard manifest with
 fixed field order, artifacts sorted by logical ID, and a final LF.
 `parseBuildManifest` rejects duplicate keys, invalid UTF-8, unknown contract

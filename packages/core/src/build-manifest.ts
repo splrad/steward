@@ -12,7 +12,8 @@ export class BuildContractError extends Error {
   }
 }
 export function buildFail(code: BuildContractError['code']): never { throw new BuildContractError(code); }
-export function decodeBuildJson(bytes: Uint8Array): unknown {
+export function decodeBuildJson(bytes: Uint8Array, policy: 'contract' | 'oci' = 'contract'): unknown {
+  if (policy !== 'contract' && policy !== 'oci') buildFail('RN_BUILD_INVALID');
   if (bytes.byteLength > 512 * 1024) buildFail('RN_BUILD_LIMIT');
   let source: string;
   try { source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); } catch { return buildFail('RN_BUILD_INVALID'); }
@@ -30,7 +31,7 @@ export function decodeBuildJson(bytes: Uint8Array): unknown {
       const start = cursor - 1;
       while (cursor < source.length) { const next = source[cursor++]; if (next === '\\') cursor++; else if (next === '"') break; }
       const text = JSON.parse(source.slice(start, cursor)) as string;
-      if (/[\ud800-\udfff\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069\ufeff]/u.test(text)) buildFail('RN_BUILD_INVALID');
+      if (/[\ud800-\udfff]/u.test(text) || (policy === 'contract' && /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069\ufeff]/u.test(text))) buildFail('RN_BUILD_INVALID');
       const frame = stack.at(-1);
       if (frame?.key) { if (frame.keys.has(text)) buildFail('RN_BUILD_INVALID'); frame.keys.add(text); frame.key = false; }
     } else if (character === '-' || /[0-9]/u.test(character)) {
@@ -118,7 +119,8 @@ export async function planBuild(identity: BuildIdentity, unit: BuildUnit): Promi
   const expandedIds = unit.outputs.flatMap(rule => Array.from({ length: rule.count }, (_, index) => rule.count === 1 ? rule.id : `${rule.id}-${index + 1}`));
   if (expandedIds.length > buildLimits.maxFiles || new Set(expandedIds).size !== expandedIds.length) buildFail('RN_BUILD_OUTPUT');
   const runner = unit.profile === 'dotnet-assets-v1' || (unit.profile === 'custom-adapter-v1' && inputs.runnerFamily === 'windows') ? 'windows-latest' : 'ubuntu-latest';
-  return { ...identity, inputs, inputsSha256: await sha256Hex(`${JSON.stringify(inputs)}\n`), outputs: unit.outputs.map(rule => ({ ...rule })), runner,
+  const outputs = unit.outputs.map(rule => ({ ...rule }));
+  return { ...identity, inputs, inputsSha256: await sha256Hex(`${JSON.stringify(inputs)}\n`), outputs, runner,
     timeoutMinutes: 45, permissions: { contents: 'read' }, environment: null, persistCredentials: false };
 }
 export function matchBuildFiles(plan: BuildPlan, files: readonly string[]): { id: string; file: string; mediaType: string }[] {

@@ -1,5 +1,5 @@
 import { constants, type Stats } from 'node:fs';
-import { lstat, open, readdir, realpath } from 'node:fs/promises';
+import { lstat, open, readdir, realpath, type FileHandle } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { assertBuildPath, buildFail, buildLimits, canonicalBuildManifest, checkBuildNativeVersion, decodeBuildJson, matchBuildFiles,
@@ -9,6 +9,23 @@ export type NativeVersionInspector = (bytes: Uint8Array, file: string) => Promis
 export interface BuildExecutionContext { buildRunId: string; outputDirectory: string; sourceDirectory: string }
 function unchanged(before: Stats, after: Stats): boolean {
   return before.dev === after.dev && before.ino === after.ino && before.size === after.size && before.mtimeMs === after.mtimeMs && before.ctimeMs === after.ctimeMs;
+}
+async function readArtifactBytes(handle: FileHandle, expectedSize: number, retain: boolean): Promise<{ bytes: Uint8Array; size: number; sha256: string }> {
+  const buffer = Buffer.alloc(Math.min(64 * 1024, expectedSize + 1));
+  const chunks: Uint8Array[] = [];
+  const hash = createHash('sha256');
+  let size = 0;
+  for (;;) {
+    const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, expectedSize - size + 1), null);
+    if (!bytesRead) break;
+    size += bytesRead;
+    if (size > expectedSize) buildFail('RN_BUILD_DIGEST');
+    const chunk = buffer.subarray(0, bytesRead);
+    hash.update(chunk);
+    if (retain) chunks.push(Buffer.from(chunk));
+  }
+  if (size !== expectedSize) buildFail('RN_BUILD_DIGEST');
+  return { bytes: retain ? Buffer.concat(chunks, size) : new Uint8Array(), size, sha256: hash.digest('hex') };
 }
 async function verifyFileStates(root: string, states: ReadonlyMap<string, Stats>): Promise<void> {
   for (const [path, before] of states) {
@@ -88,8 +105,10 @@ export async function collectFileBuildManifest(plan: BuildPlan, outputDirectory:
       if (!unchanged(before, await handle.stat())) buildFail('RN_BUILD_PATH');
       const bytes = await handle.readFile();
       if (!unchanged(before, await handle.stat()) || bytes.byteLength !== before.size) buildFail('RN_BUILD_DIGEST');
+      const size = bytes.byteLength;
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
       checkBuildNativeVersion(plan, inspectNativeVersion ? await inspectNativeVersion(bytes, assignment.file) : null);
-      artifacts.push({ ...assignment, kind: 'file', size: bytes.byteLength, sha256: createHash('sha256').update(bytes).digest('hex') });
+      artifacts.push({ ...assignment, kind: 'file', size, sha256 });
     } finally { await handle.close(); }
     if (await assertBuildSourcePath(root, assignment.file) !== file || !unchanged(before, await lstat(file))) buildFail('RN_BUILD_PATH');
     states.set(assignment.file, before);
@@ -112,32 +131,33 @@ export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: 
   const files = await enumerate(root); const consumed = new Set(['oci-layout', 'index.json']);
   const states = new Map<string, Stats>();
   let total = 0;
-  const bytesAt = async (path: string) => {
+  const bytesAt = async (path: string, limit: number, retainBytes = true) => {
     const file = await assertBuildSourcePath(root, path);
     const before = await lstat(file);
-    if (!before.isFile() || before.nlink !== 1 || before.size <= 0 || before.size > buildLimits.maxFileBytes) buildFail('RN_BUILD_LIMIT');
+    if (!before.isFile() || before.nlink !== 1 || before.size <= 0 || before.size > limit) buildFail('RN_BUILD_LIMIT');
     const previous = states.get(path);
     if (previous && !unchanged(previous, before)) buildFail('RN_BUILD_PATH');
     if (!previous) total += before.size;
     if (total > buildLimits.maxTotalBytes) buildFail('RN_BUILD_LIMIT');
     const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
-      const bytes = await handle.readFile();
+      if (!unchanged(before, await handle.stat())) buildFail('RN_BUILD_PATH');
+      const result = await readArtifactBytes(handle, before.size, retainBytes);
       if (!unchanged(before, await handle.stat()) || !unchanged(before, await lstat(file))) buildFail('RN_BUILD_DIGEST');
       states.set(path, before);
-      return bytes;
+      return result;
     } finally { await handle.close(); }
   };
   const jsonAt = async (path: string) => {
-    const bytes = await bytesAt(path);
-    if (bytes.length > 512 * 1024) buildFail('RN_BUILD_LIMIT');
-    return decodeBuildJson(bytes) as any;
+    const { bytes } = await bytesAt(path, 512 * 1024);
+    return decodeBuildJson(bytes, 'oci') as any;
   };
   if ((await jsonAt('oci-layout')).imageLayoutVersion !== '1.0.0') buildFail('RN_BUILD_INVALID');
   const verifiedBlobs = new Map<string, Uint8Array>();
   const verifiedSizes = new Map<string, number>();
   const blob = async (descriptor: { digest: string; size: number; mediaType: string }, retainBytes = true) => {
     if (typeof descriptor?.digest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(descriptor.digest) || descriptor.digest.length !== 71 || !Number.isSafeInteger(descriptor.size) || descriptor.size <= 0 || descriptor.size > buildLimits.maxFileBytes) buildFail('RN_BUILD_INVALID');
+    if (retainBytes && descriptor.size > 512 * 1024) buildFail('RN_BUILD_LIMIT');
     const cached = verifiedBlobs.get(descriptor.digest);
     const verifiedSize = verifiedSizes.get(descriptor.digest);
     if (verifiedSize !== undefined) {
@@ -146,16 +166,16 @@ export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: 
     }
     if (cached) { if (cached.byteLength !== descriptor.size) buildFail('RN_BUILD_DIGEST'); return cached; }
     const path = `blobs/sha256/${descriptor.digest.slice(7)}`;
-    const bytes = await bytesAt(path);
-    if (bytes.byteLength !== descriptor.size || `sha256:${createHash('sha256').update(bytes).digest('hex')}` !== descriptor.digest) buildFail('RN_BUILD_DIGEST');
+    const { bytes, size, sha256 } = await bytesAt(path, retainBytes ? 512 * 1024 : buildLimits.maxFileBytes, retainBytes);
+    if (size !== descriptor.size || `sha256:${sha256}` !== descriptor.digest) buildFail('RN_BUILD_DIGEST');
     consumed.add(path);
-    verifiedSizes.set(descriptor.digest, bytes.length);
+    verifiedSizes.set(descriptor.digest, size);
     if (retainBytes) verifiedBlobs.set(descriptor.digest, bytes);
     return bytes;
   };
   const parse = (bytes: Uint8Array) => {
     if (bytes.length > 512 * 1024) buildFail('RN_BUILD_LIMIT');
-    return decodeBuildJson(bytes) as any;
+    return decodeBuildJson(bytes, 'oci') as any;
   };
   const index = await jsonAt('index.json');
   if (index.schemaVersion !== 2 || !Array.isArray(index.manifests) || index.manifests.length !== plan.outputs.length) buildFail('RN_BUILD_OUTPUT');
