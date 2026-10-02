@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import profile from "../../../config/profiles/release/layerscape.json" with { type: "json" };
+import profile from "../../../config/profiles/release-legacy/layerscape.json" with { type: "json" };
 import { classifyRemoteReleaseState, parseVersion, planRelease, verifyAssetManifest } from "../src/release.js";
 
 const targetSha = "a".repeat(40);

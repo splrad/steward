@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/splrad/steward/schema/release-note-fragment.schema.json",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "status", "entries"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "status": { "const": "documented" },
+        "entries": { "type": "array", "minItems": 1, "maxItems": 5, "items": { "$ref": "#/$defs/entry" } }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "status", "reason"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "status": { "const": "not-user-facing" },
+        "reason": { "$ref": "#/$defs/text" }
+      }
+    }
+  ],
+  "$defs": {
+    "text": { "type": "string", "minLength": 10, "maxLength": 240 },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["change", "userImpact", "actionRequired"],
+      "properties": {
+        "change": { "$ref": "#/$defs/text" },
+        "userImpact": { "$ref": "#/$defs/text" },
+        "actionRequired": { "type": "boolean" },
+        "action": { "type": "string", "minLength": 5, "maxLength": 240 }
+      },
+      "if": { "properties": { "actionRequired": { "const": true } }, "required": ["actionRequired"] },
+      "then": { "properties": { "action": {} }, "required": ["action"] },
+      "else": { "not": { "properties": { "action": {} }, "required": ["action"] } }
+    }
+  }
+}

@@ -2,6 +2,8 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import Ajv from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 
+import { verifyDeliveryConfig } from "./verify-delivery-config.mjs";
+
 const pairs = [
   ["config/labels/pr-semantics.json", "schema/pr-semantics.schema.json"],
   ["config/repositories.json", "schema/repositories.schema.json"],
@@ -23,7 +25,25 @@ for (const [dataPath, schemaPath] of pairs) {
   if (!validate(data)) throw new Error(`${dataPath}不符合结构: ${ajv.errorsText(validate.errors)}`);
 }
 const catalog = JSON.parse(await readFile("config/repositories.json", "utf8")); const ids = Object.keys(catalog.repositories); if (new Set(ids).size !== ids.length) throw new Error("仓库编号重复");
+if (catalog.schemaVersion === 4) await verifyDeliveryConfig(catalog, ajv);
 const repositoryValidator = validators.get("schema/repositories.schema.json");
+for (const name of ["public-basic", "layerscape", "steward"]) {
+  const profile = JSON.parse(await readFile(`config/profiles/validation/${name}.json`, "utf8"));
+  if (profile.fragmentGate) {
+    const { fragmentDirectory, required, reviewRequired, ignored } = profile.fragmentGate;
+    const invalidPath = value => /[\\:\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069\ufeff\ud800-\udfff]/u.test(value) || value.startsWith("/") || value.split("/").some(part => !part || part === "." || part === "..");
+    if (invalidPath(fragmentDirectory) || /[*!?{}()[\]]/u.test(fragmentDirectory)) throw new Error("片段目录不是字面相对路径");
+    for (const pattern of [...required, ...reviewRequired, ...ignored]) {
+      if (invalidPath(pattern) || /[!{}()[\]]/u.test(pattern) || pattern.split("/").some(part => part.includes("**") && part !== "**")) throw new Error("片段路径模式无效");
+    }
+  }
+}
+for (const [id, repository] of Object.entries(catalog.repositories)) {
+  if (repository.fragmentGateEnabled !== true) continue;
+  if (!repository.managed || !["public-basic", "layerscape", "steward"].includes(repository.validationProfile)) throw new Error(`片段门禁仓库未绑定验证配置：${id}`);
+  const profile = JSON.parse(await readFile(`config/profiles/validation/${repository.validationProfile}.json`, "utf8"));
+  if (!profile.fragmentGate) throw new Error(`片段门禁仓库缺少片段规则：${id}`);
+}
 const sampleRepository = Object.values(catalog.repositories)[0];
 if (!repositoryValidator || !sampleRepository) throw new Error("仓库配置反例验证缺少基础数据");
 const invalidRepositoryKeyCatalog = { ...catalog, repositories: { ...catalog.repositories, invalid: sampleRepository } };
@@ -108,7 +128,7 @@ for (const configuration of [...Object.values(catalog.defaults), ...Object.value
   if (classification.ai.mode !== "draft-canary" && classification.ai.canaries.length) throw new Error("只有draft-canary允许canary清单");
   for (const kind of classification.ai.adoptedPrimaryKinds) if (!profile.ai.eligiblePrimaryKinds.includes(kind)) throw new Error(`仓库采用未知AI主类: ${kind}`);
 }
-const release = JSON.parse(await readFile("config/profiles/release/layerscape.json", "utf8"));
+const release = JSON.parse(await readFile("config/profiles/release-legacy/layerscape.json", "utf8"));
 if (release.build.projects.length !== 10 || new Set(release.build.projects.map(x => x.path)).size !== 10) throw new Error("LayerScape插件项目必须恰好10个且不重复");
 if (release.assets.length !== 3 || new Set(release.assets.map(x => x.nameTemplate)).size !== 3) throw new Error("发布资产必须恰好3项且不重复");
 const forbiddenRuntime = ["queues", "durable_objects", "kv_namespaces", "r2_buckets", "services"];
