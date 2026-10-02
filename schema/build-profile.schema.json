@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/splrad/steward/schema/build-profile.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "name",
+    "kind"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "name": {
+      "enum": [
+        "dotnet-assets-v1",
+        "node-package-v1",
+        "oci-image-v1",
+        "custom-adapter-v1"
+      ]
+    },
+    "kind": {
+      "enum": [
+        "file",
+        "oci-image"
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "name": {
+          "const": "dotnet-assets-v1"
+        },
+        "kind": {
+          "const": "file"
+        }
+      }
+    },
+    {
+      "properties": {
+        "name": {
+          "const": "node-package-v1"
+        },
+        "kind": {
+          "const": "file"
+        }
+      }
+    },
+    {
+      "properties": {
+        "name": {
+          "const": "oci-image-v1"
+        },
+        "kind": {
+          "const": "oci-image"
+        }
+      }
+    },
+    {
+      "properties": {
+        "name": {
+          "const": "custom-adapter-v1"
+        },
+        "kind": {
+          "const": "file"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "$schema": "../../../schema/delivery-profile.schema.json",
+  "schemaVersion": 1,
+  "name": "cloud-service-v1",
+  "capability": "deployment",
+  "artifactKind": "oci-image"
+}

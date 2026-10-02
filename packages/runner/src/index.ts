@@ -1782,7 +1782,7 @@ async function releasePreflight(args: Readonly<Record<string, string>>) {
   const workspace = resolve(required(args, "workspace"));
   const checkedOutSha = run("git", ["rev-parse", "HEAD"], workspace).toLowerCase();
   if (checkedOutSha !== targetSha) throw new Error("工作区检出的提交与目标提交不一致");
-  const profile = await json<any>(configPath("profiles", "release", "layerscape.json"));
+  const profile = await json<any>(configPath("profiles", "release-legacy", "layerscape.json"));
   const versionText = await runtimeReadFile(join(workspace, profile.version.file), "utf8");
   const displayMatches = [...versionText.matchAll(new RegExp(`<${profile.version.displayElement}>([^<]+)</${profile.version.displayElement}>`, "g"))];
   const buildMatches = [...versionText.matchAll(new RegExp(`<${profile.version.buildElement}>([^<]+)</${profile.version.buildElement}>`, "g"))];
@@ -1901,7 +1901,7 @@ async function releaseNotesCommand(args: Readonly<Record<string, string>>) {
     }, { currentLabels, stewardOwnedRiskFlags: [], stewardOwnedFacets: [] });
     rich.push({ number, title: pull.title, body: pull.body ?? "", labels: currentLabels, files: files.map((value: any) => value.filename), author: { login: pull.user.login, type: pull.user.type }, mergedAt: pull.merged_at, mergeSha: pull.merge_commit_sha, decision });
   }
-  const releaseProfile = await json<any>(configPath("profiles", "release", "layerscape.json"));
+  const releaseProfile = await json<any>(configPath("profiles", "release-legacy", "layerscape.json"));
   const eligible = collectReleasePullRequests(rich, releaseProfile.releaseNotes.excludedLabels);
   const categorized = categorizeReleasePullRequests(profile, eligible);
   const notes = renderReleaseNotes({ repositoryId, targetSha, policySha, displayVersion, categorized, emptyRuntimeText: releaseProfile.releaseNotes.emptyRuntimeText });
@@ -1911,7 +1911,7 @@ async function releaseNotesCommand(args: Readonly<Record<string, string>>) {
 }
 async function releasePublish(args: Readonly<Record<string, string>>) {
   const manifest = await json<ReleaseManifest>(resolve(required(args, "manifest")));
-  const profile = await json<any>(configPath("profiles", "release", "layerscape.json"));
+  const profile = await json<any>(configPath("profiles", "release-legacy", "layerscape.json"));
   verifyAssetManifest(manifest, profile.assets.map((value: any) => value.nameTemplate.replace("{displayVersion}", manifest.displayVersion)));
   const [owner, repo] = splitRepository(required(args, "repository"));
   if (manifest.repositoryId !== profile.repository.id || `${owner}/${repo}` !== profile.repository.fullName) throw new Error("发布仓库与中央配置不一致");
@@ -1964,7 +1964,7 @@ async function releasePublish(args: Readonly<Record<string, string>>) {
 }
 async function releaseVerify(args: Readonly<Record<string, string>>) {
   const manifest = await json<ReleaseManifest>(resolve(required(args, "manifest")));
-  const profile = await json<any>(configPath("profiles", "release", "layerscape.json"));
+  const profile = await json<any>(configPath("profiles", "release-legacy", "layerscape.json"));
   verifyAssetManifest(manifest, profile.assets.map((value: any) => value.nameTemplate.replace("{displayVersion}", manifest.displayVersion)));
   const [owner, repo] = splitRepository(required(args, "repository"));
   if (manifest.repositoryId !== profile.repository.id || `${owner}/${repo}` !== profile.repository.fullName) throw new Error("发布仓库与中央配置不一致");

@@ -31,12 +31,17 @@ describe("代码审查说明", () => {
     }
   });
 
-  it("仓库采用的说明与中央规则生成结果一致", async () => {
+  it("候选规则在受管同步中更新已采用的说明", async () => {
     const { profiles, rules } = await registries();
     const generated = await generateReviewInstructionSet("steward", profiles, rules);
-    for (const file of generated.files) {
-      expect(await readFile(file.path, "utf8")).toBe(file.content);
-    }
+    const previousRules = { ...rules, rules: rules.rules.filter(rule =>
+      !["common.current-head-evidence", "steward.dist-verification"].includes(rule.id)) };
+    const previous = await generateReviewInstructionSet("steward", profiles, previousRules);
+    const current = Object.fromEntries(previous.files.map(file => [file.path, file.content]));
+    expect(planReviewInstructionSync({ current, generated, branchExists: false, branchOwnedBySteward: false, openPullRequests: 0 })).toBe("create");
+    expect(planReviewInstructionSync({ current, generated, branchExists: true, branchOwnedBySteward: true, openPullRequests: 1 })).toBe("update");
+    const adopted = Object.fromEntries(generated.files.map(file => [file.path, file.content]));
+    expect(planReviewInstructionSync({ current: adopted, generated, branchExists: true, branchOwnedBySteward: true, openPullRequests: 1 })).toBe("unchanged");
   });
 
   it("按规则编号排序且摘要可重复", async () => {

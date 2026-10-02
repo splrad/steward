@@ -1,0 +1,6 @@
+{
+  "$schema": "../../../schema/build-profile.schema.json",
+  "schemaVersion": 1,
+  "name": "custom-adapter-v1",
+  "kind": "file"
+}
