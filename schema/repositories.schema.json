@@ -36,6 +36,7 @@
       "required": ["managed", "fullName", "prAutomation", "pullRequestTemplate", "reviewInstructionsProfile", "reviewGovernance", "classification", "validationProfile", "allowedWorkflowPaths", "releaseProfile"],
       "properties": {
         "managed": { "type": "boolean" }, "fullName": { "type": "string", "pattern": "^splrad/[^/]+$" },
+        "fragmentGateEnabled": { "type": "boolean" },
         "prAutomation": { "type": "boolean" }, "pullRequestTemplate": { "enum": ["organization-default", "organization-provider"] },
         "reviewInstructionsProfile": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }, "reviewGovernance": { "$ref": "#/$defs/reviewGovernance" }, "classification": { "$ref": "#/$defs/classification" },
         "validationProfile": { "type": "string" }, "allowedWorkflowPaths": { "$ref": "#/$defs/workflowPaths" }, "releaseProfile": { "type": ["string", "null"] }

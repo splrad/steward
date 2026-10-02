@@ -23,6 +23,13 @@ afterEach(() => {
 });
 
 describe("中央命令入口", () => {
+  it("未启用片段门禁时不读取网络或令牌", async () => {
+    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
+    const transport = vi.fn(() => { throw new Error("unexpected network"); });
+    vi.stubGlobal("fetch", transport);
+    await main(["validate", "--workspace", ".", "--repository-id", "1296724484", "--profile", "steward", "--fragments-only", "true"]);
+    expect(transport).not.toHaveBeenCalled();
+  });
   it("只接受十五个命令及其已知、唯一、成对参数", () => {
     const commands = ["issue-sync", "managed-repository-ids", "reconcile-repository-lifecycle", "onboard-repository", "pr-automation", "pr-classification", "pr-issue-link", "request-copilot-review", "sync-review-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"];
     for (const command of commands) expect(parseInvocation([command]).command).toBe(command);
@@ -365,20 +372,24 @@ describe("中央命令入口", () => {
     for (const key of Object.keys(trusted)) expect(isTrustedAiClassificationSource(policySha, { ...trusted, [key]: "untrusted" })).toBe(false);
   });
 
-  it("只接受规范编码且字段完整的Check v3所有权状态", () => {
+  it("只接受规范编码且字段完整的Check v4分类状态", () => {
     const codec = { primaryKinds: ["feature", "bug"], riskFlags: ["breaking-change"], facets: ["javascript"], areas: ["area:source"] };
-    const state = { v: 3 as const, repositoryId: 1, pullRequestNumber: 2, headSha: "f".repeat(40), inputDigest: "a".repeat(64), policy: "b".repeat(64), mode: "shadow" as const, primary: { id: "feature", source: "deterministic-fallback" as const, reasonCode: "primary-deterministic-type-selected" }, risks: ["breaking-change"], facets: ["javascript"], areas: ["area:source"], decisionDigest: "c".repeat(64) };
+    const state = { v: 4 as const, repositoryId: 1, pullRequestNumber: 2, headSha: "f".repeat(40), inputDigest: "a".repeat(64), policy: "b".repeat(64), policySha: "d".repeat(40), mode: "shadow" as const, primary: { id: "feature", source: "deterministic-fallback" as const, reasonCode: "primary-deterministic-type-selected" }, ownedRiskFlags: [], riskFlags: ["breaking-change"], facets: ["javascript"], areas: ["area:source"], decisionDigest: "c".repeat(64) };
     const encoded = encodeClassificationCheckState(state, codec);
-    expect(encoded).toHaveLength(223);
+    expect(encoded).toHaveLength(251);
     expect(decodeClassificationCheckState(encoded, codec)).toEqual(state);
     expect(decodeClassificationCheckState(encoded, codec, { repositoryId: 1, pullRequestNumber: 2, headSha: "f".repeat(40) })).toEqual(state);
     expect(decodeClassificationCheckState(encoded, codec, { repositoryId: 1, pullRequestNumber: 3, headSha: "f".repeat(40) })).toBeNull();
-    expect(decodeClassificationCheckState(encoded.replace("v3:", "v2:"), codec)).toBeNull();
+    expect(decodeClassificationCheckState(encoded, codec, { repositoryId: 1, pullRequestNumber: 2, headSha: state.headSha, policySha: state.policySha })).toEqual(state);
+    expect(decodeClassificationCheckState(encoded, codec, { repositoryId: 1, pullRequestNumber: 2, headSha: state.headSha, policySha: "e".repeat(40) })).toBeNull();
+    expect(() => encodeClassificationCheckState({ ...state, policySha: "invalid" }, codec)).toThrow("上下文无效");
+    expect(() => encodeClassificationCheckState({ ...state, ownedRiskFlags: ["breaking-change"], riskFlags: [] }, codec)).toThrow("风险所有权");
+    expect(decodeClassificationCheckState(encoded.replace("v4:", "v3:"), codec)).toBeNull();
     expect(decodeClassificationCheckState(`${encoded}=`, codec)).toBeNull();
-    expect(decodeClassificationCheckState(`v3:${Buffer.from("{}", "utf8").toString("base64url")}`, codec)).toBeNull();
+    expect(decodeClassificationCheckState(`v4:${Buffer.from("{}", "utf8").toString("base64url")}`, codec)).toBeNull();
     const bufferFrom = vi.spyOn(Buffer, "from");
     try {
-      expect(decodeClassificationCheckState(`v3:${"A".repeat(20_000)}`, codec)).toBeNull();
+      expect(decodeClassificationCheckState(`v4:${"A".repeat(20_000)}`, codec)).toBeNull();
       expect(bufferFrom).not.toHaveBeenCalled();
     } finally {
       bufferFrom.mockRestore();
