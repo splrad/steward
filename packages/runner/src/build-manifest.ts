@@ -1,6 +1,6 @@
 import { constants, type Stats } from 'node:fs';
 import { lstat, open, readdir, realpath, type FileHandle } from 'node:fs/promises';
-import { join, relative, resolve, sep } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { assertBuildPath, buildFail, buildLimits, canonicalBuildManifest, checkBuildNativeVersion, decodeBuildJson, matchBuildFiles,
   type BuildArtifact, type BuildManifest, type BuildPlan } from '../../core/src/build-manifest.js';
@@ -50,13 +50,19 @@ export async function assertBuildSourcePath(root: string, path: string, options:
   const actual = await realpath(target); within(base, actual);
   return actual;
 }
+export function assertBuildDirectoriesSeparate(source: string, output: string, paths: { relative: typeof relative; isAbsolute: typeof isAbsolute; sep: string } = { relative, isAbsolute, sep }): void {
+  const nested = (from: string, to: string) => {
+    const path = paths.relative(from, to);
+    return !path || (!paths.isAbsolute(path) && path !== '..' && !path.startsWith(`..${paths.sep}`));
+  };
+  if (nested(source, output) || nested(output, source)) buildFail('RN_BUILD_PATH');
+}
 export async function validateBuildExecutionContext(context: BuildExecutionContext): Promise<void> {
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u.test(context.buildRunId)) buildFail('RN_BUILD_INVALID');
+  if (typeof context.buildRunId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u.test(context.buildRunId)) buildFail('RN_BUILD_INVALID');
   const source = await assertBuildSourcePath(context.sourceDirectory, '.', { root: true });
   const output = await assertBuildSourcePath(context.outputDirectory, '.', { root: true });
   if (!(await lstat(source)).isDirectory() || !(await lstat(output)).isDirectory()) buildFail('RN_BUILD_PATH');
-  const fromSource = relative(source, output); const fromOutput = relative(output, source);
-  if (!fromSource || !fromOutput || (!fromSource.startsWith(`..${sep}`) && fromSource !== '..') || (!fromOutput.startsWith(`..${sep}`) && fromOutput !== '..')) buildFail('RN_BUILD_PATH');
+  assertBuildDirectoriesSeparate(source, output);
 }
 export async function validateBuildInputs(plan: BuildPlan, context: BuildExecutionContext): Promise<void> {
   await validateBuildExecutionContext(context);
@@ -103,10 +109,8 @@ export async function collectFileBuildManifest(plan: BuildPlan, outputDirectory:
     const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
       if (!unchanged(before, await handle.stat())) buildFail('RN_BUILD_PATH');
-      const bytes = await handle.readFile();
-      if (!unchanged(before, await handle.stat()) || bytes.byteLength !== before.size) buildFail('RN_BUILD_DIGEST');
-      const size = bytes.byteLength;
-      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      const { bytes, size, sha256 } = await readArtifactBytes(handle, before.size, true);
+      if (!unchanged(before, await handle.stat())) buildFail('RN_BUILD_DIGEST');
       checkBuildNativeVersion(plan, inspectNativeVersion ? await inspectNativeVersion(bytes, assignment.file) : null);
       artifacts.push({ ...assignment, kind: 'file', size, sha256 });
     } finally { await handle.close(); }
@@ -196,6 +200,7 @@ export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: 
       }
       if (current.mediaType !== 'application/vnd.oci.image.manifest.v1+json' || image.config?.mediaType !== 'application/vnd.oci.image.config.v1+json' || !Array.isArray(image.layers) || image.layers.length > buildLimits.maxFiles) buildFail('RN_BUILD_INVALID');
       const config = parse(await blob(image.config));
+      if (typeof config.os !== 'string' || typeof config.architecture !== 'string') buildFail('RN_BUILD_INVALID');
       if (current.platform !== undefined && (current.platform?.os !== config.os || current.platform?.architecture !== config.architecture)) buildFail('RN_BUILD_INVALID');
       const platform = `${config.os}/${config.architecture}`;
       if (!(plan.inputs.platforms as string[]).includes(platform) || platforms.has(platform)) buildFail('RN_BUILD_INVALID');

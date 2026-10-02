@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { link, mkdir, mkdtemp, open, readFile, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, resolve, win32 } from 'node:path';
 import { buildLimits, planBuild, type BuildIdentity, type BuildUnit } from '../../core/src/build-manifest.js';
-import { assertBuildSourcePath, collectFileBuildManifest, collectOciBuildManifest, validateBuildExecutionContext, validateBuildInputs, verifyDownloadedFileBuild, verifyDownloadedOciBuild } from '../src/build-manifest.js';
+import { assertBuildDirectoriesSeparate, assertBuildSourcePath, collectFileBuildManifest, collectOciBuildManifest, validateBuildExecutionContext, validateBuildInputs, verifyDownloadedFileBuild, verifyDownloadedOciBuild } from '../src/build-manifest.js';
 
 const identity: BuildIdentity = { repositoryId: 1400000001, fullName: 'example/widget', buildId: 'asset', profile: 'custom-adapter-v1', targetSha: 'a'.repeat(40), policySha: 'b'.repeat(40), version: '1.2.3' };
 const unit: BuildUnit = { profile: 'custom-adapter-v1', inputs: { entrypoint: 'tools/build.mjs', runtime: 'node', runnerFamily: 'linux' }, outputs: [{ id: 'archive', kind: 'file', match: '*.json', count: 1, mediaType: 'application/json' }] };
@@ -48,6 +48,25 @@ async function oci(platforms = ['linux/amd64'], version = '1.2.3') {
   return { image, store, plan: await planBuild({ ...identity, profile: 'oci-image-v1' }, { profile: 'oci-image-v1', inputs: { context: '.', dockerfile: 'Dockerfile', platforms }, outputs: [{ id: 'image', kind: 'oci-image', count: 1 }] }) };
 }
 describe('中央文件产物验证 T09', () => {
+  it.each(['collect', 'download'])('文件增长时 %s 的读取量受初始大小约束', async mode => {
+    await file(); const plan = await planBuild(identity, unit);
+    const expected = await collectFileBuildManifest(plan, output, inspect);
+    const path = join(output, 'widget.json'); const initialSize = (await actualFs.stat(path)).size;
+    let readBytes = 0;
+    vi.mocked(open).mockImplementation(async (...args) => {
+      const handle = await actualFs.open(...args);
+      const read = handle.read.bind(handle); let grown = false;
+      handle.read = (async (...readArgs: Parameters<typeof handle.read>) => {
+        if (!grown) { await truncate(path, 2 * 1024 * 1024); grown = true; }
+        const result = await read(...readArgs); readBytes += result.bytesRead; return result;
+      }) as typeof handle.read;
+      handle.readFile = vi.fn(() => { throw new Error('file artifacts must use bounded reads'); });
+      return handle;
+    });
+    const operation = mode === 'collect' ? collectFileBuildManifest(plan, output, inspect) : verifyDownloadedFileBuild(plan, expected, output, inspect);
+    await expect(operation).rejects.toThrow('RN_BUILD_DIGEST');
+    expect(readBytes).toBeLessThanOrEqual(initialSize + 1);
+  });
   it('按实际字节生成清单并在下载后重新验证', async () => {
     await file(); const plan = await planBuild(identity, unit);
     const manifest = await collectFileBuildManifest(plan, output, inspect);
@@ -123,6 +142,15 @@ describe('中央文件产物验证 T09', () => {
   });
 });
 describe('构建入口验证', () => {
+  it('运行编号拒绝可转换为字符串的数组', async () => {
+    await expect(validateBuildExecutionContext({ buildRunId: ['run-123'] as unknown as string, sourceDirectory: source, outputDirectory: output })).rejects.toThrow('RN_BUILD_INVALID');
+  });
+  it.each([['D:\\source', 'C:\\output'], ['C:\\source', 'C:\\output'], ['\\\\server\\first\\source', '\\\\server\\second\\output']])('Windows 独立目录 %j %j 可用', (sourcePath, outputPath) => {
+    expect(() => assertBuildDirectoriesSeparate(sourcePath, outputPath, win32)).not.toThrow();
+  });
+  it.each([['D:\\source', 'd:\\SOURCE'], ['D:\\source', 'D:\\source\\output'], ['D:\\source\\nested', 'D:\\source']])('Windows 相同或嵌套目录 %j %j 失败', (sourcePath, outputPath) => {
+    expect(() => assertBuildDirectoriesSeparate(sourcePath, outputPath, win32)).toThrow('RN_BUILD_PATH');
+  });
   it('固定入口必须是目标源码树中的常规文件', async () => {
     const plan = await planBuild(identity, unit);
     const context = { buildRunId: 'run-123', sourceDirectory: source, outputDirectory: output };
@@ -132,6 +160,19 @@ describe('构建入口验证', () => {
   });
 });
 describe('OCI 摘要链验证 T09', () => {
+  it.each([[['linux'], 'amd64'], ['linux', ['amd64']], [['linux'], ['amd64']]])('无描述符 platform 时拒绝无效 config 类型 %j %j', async (os, architecture) => {
+    const { image, store, plan } = await oci();
+    const expected = await collectOciBuildManifest(plan, output);
+    const imageManifest = JSON.parse(await readFile(join(output, 'blobs', 'sha256', image.digest.slice(7)), 'utf8'));
+    const oldConfig = join(output, 'blobs', 'sha256', imageManifest.config.digest.slice(7));
+    const config = JSON.parse(await readFile(oldConfig, 'utf8')); config.os = os; config.architecture = architecture;
+    imageManifest.config = await store(config, imageManifest.config.mediaType);
+    const changed = await store(imageManifest, image.mediaType);
+    await writeFile(join(output, 'index.json'), JSON.stringify({ schemaVersion: 2, manifests: [{ ...changed, annotations: { 'org.opencontainers.image.ref.name': 'image' } }] }));
+    await actualFs.unlink(oldConfig); await actualFs.unlink(join(output, 'blobs', 'sha256', image.digest.slice(7)));
+    await expect(collectOciBuildManifest(plan, output)).rejects.toThrow('RN_BUILD_INVALID');
+    await expect(verifyDownloadedOciBuild(plan, expected, output)).rejects.toThrow('RN_BUILD_INVALID');
+  });
   it.each(['oci-layout', 'index.json'])('在打开 %s 前拒绝超大 JSON', async path => {
     const { plan } = await oci();
     const oversized = join(output, path);
