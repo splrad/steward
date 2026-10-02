@@ -1,0 +1,7 @@
+{
+  "$schema": "../../../schema/delivery-profile.schema.json",
+  "schemaVersion": 1,
+  "name": "ghcr-oci-v1",
+  "capability": "package",
+  "artifactKind": "oci-image"
+}
