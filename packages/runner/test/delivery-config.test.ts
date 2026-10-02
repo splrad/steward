@@ -90,6 +90,19 @@ describe('cross-file delivery verification', () => {
     const result = await verify(value => { value.repositories['1187527897'].delivery.githubRelease.builds = []; });
     expect(result.status, result.stderr).toBe(0);
   });
+  it.each([
+    ['package', 'deployment', 'ghcr-oci-v1'],
+    ['deployment', 'package', 'cloud-service-v1'],
+  ])('rejects a %s profile registered in the %s directory', async (source, destination, name) => {
+    const misplaced = join(fixture, `config/profiles/${destination}/${name}.json`);
+    await cp(join(fixture, `config/profiles/${source}/${name}.json`), misplaced);
+    try {
+      const result = await verify(() => {});
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('RN_CONFIG_CAPABILITY');
+    } finally { await rm(misplaced); }
+  });
   it('rejects corruption in the legacy profile used by the old runner', async () => {
     const file = join(fixture, 'config/profiles/release-legacy/layerscape.json');
     const bytes = await readFile(file);
