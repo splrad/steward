@@ -26,9 +26,22 @@ for (const file of files) {
   for (const pattern of forbidden) if (pattern.test(text)) throw new Error(`${file}包含终态禁止内容: ${pattern}`);
 }
 const validationDocument = workflowDocuments.get("pr-validation.yml");
+if (validationDocument?.concurrency?.group !== "steward-pr-validation-${{ github.repository_id }}-${{ github.event.pull_request.number }}" || validationDocument?.concurrency?.["cancel-in-progress"] !== true) throw new Error("PR验证必须按仓库和PR取消旧运行");
+if (JSON.stringify(validationDocument?.on?.pull_request?.types) !== JSON.stringify(["opened", "synchronize", "reopened", "edited", "labeled", "unlabeled"])) throw new Error("PR验证必须响应编辑和标签变更");
 const validationStep = validationDocument?.jobs?.validate?.steps?.find(step => step?.name === "执行中央验证");
 if (String(validationStep?.env?.VALIDATION_BASE_SHA ?? "").replace(/\s+/gu, "") !== "${{github.event.pull_request.base.sha}}") throw new Error("中央验证没有通过环境变量接收基础分支提交");
 if (String(validationStep?.env?.VALIDATION_BASE_REF ?? "").replace(/\s+/gu, "") !== "${{github.event.pull_request.base.ref}}") throw new Error("中央验证没有通过环境变量接收基础分支引用");
+const fragmentsJob = validationDocument?.jobs?.fragments;
+const fragmentsStep = fragmentsJob?.steps?.find(step => step?.name === "验证发布片段");
+if (fragmentsJob?.if !== "github.event.pull_request.base.ref == github.event.repository.default_branch") throw new Error("片段验证必须与中央分类的默认分支范围一致");
+if (fragmentsJob?.needs !== "validate" || JSON.stringify(fragmentsJob?.permissions) !== JSON.stringify({ contents: "read", "pull-requests": "read", checks: "read" })) throw new Error("片段验证必须在独立只读作业中执行");
+const fragmentCheckout = fragmentsJob.steps.filter(step => String(step.uses ?? "").startsWith("actions/checkout@"));
+if (fragmentCheckout.length !== 1 || fragmentCheckout[0].with?.repository !== "splrad/steward" || fragmentCheckout[0].with?.ref !== "${{ needs.validate.outputs.policy }}" || fragmentCheckout[0].with?.["persist-credentials"] !== false) throw new Error("片段验证只能检出固定中央策略");
+if (fragmentsJob.steps.filter(step => step.run).length !== 1 || fragmentsStep?.run !== 'node packages/runner/dist/index.js validate --workspace . --repository-id "${{ github.repository_id }}" --profile "${{ needs.validate.outputs.profile }}" --fragments-only true') throw new Error("片段验证作业执行入口不正确");
+for (const [key, expression] of Object.entries({ VALIDATION_BASE_SHA: "${{ github.event.pull_request.base.sha }}", VALIDATION_HEAD_SHA: "${{ github.event.pull_request.head.sha }}", VALIDATION_PR_NUMBER: "${{ github.event.pull_request.number }}", VALIDATION_POLICY_SHA: "${{ needs.validate.outputs.policy }}", VALIDATION_READ_TOKEN: "${{ github.token }}" })) {
+  if (fragmentsStep?.env?.[key] !== expression) throw new Error(`片段验证缺少绑定：${key}`);
+}
+if (Object.hasOwn(validationStep.env, "VALIDATION_READ_TOKEN")) throw new Error("产品验证不得接收片段读取令牌");
 const expectedJobEnvironments = new Map([
   ["deploy-runtime.yml:deploy", { name: "steward-deployment", deployment: true }],
   ["issue-sync.yml:synchronize", { name: "steward-automation", deployment: false }],
