@@ -1,0 +1,6 @@
+{
+  "$schema": "../../../schema/build-profile.schema.json",
+  "schemaVersion": 1,
+  "name": "node-package-v1",
+  "kind": "file"
+}
