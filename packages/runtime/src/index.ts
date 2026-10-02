@@ -529,7 +529,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
     }
     if (event === "pull_request" && ["labeled", "unlabeled"].includes(action)) {
       const repository = payload.repository; const pull = payload.pull_request;
-      const riskLabels = semanticCatalog.roles.riskFlags.definitions.map(definition => definition.githubLabel.name);
+      const riskLabels = semanticCatalog.roles.riskFlags.definitions.flatMap(definition => definition.githubLabel ? [definition.githubLabel.name] : []);
       if (!repository || !isManaged(repository) || !pull || pull.state !== "open" || pull.base?.ref !== repository.default_branch
         || !riskLabels.includes(payload.label?.name)) return response(204);
       await send(env, "pr-classification.yml", { deliveryId, repositoryId: String(repository.id), pullRequestNumber: String(pull.number), eventHeadSha: pull.head.sha, policySha: env.POLICY_SHA });

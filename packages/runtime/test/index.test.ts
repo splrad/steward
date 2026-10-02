@@ -2,12 +2,15 @@ import { createHmac, generateKeyPairSync } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import worker, { handleWebhook, validationConclusion, verifyWebhookSignature, type Env } from "../src/index.js";
 import { IssueSnapshotStore } from "../src/issue-snapshots.js";
+import semanticCatalog from "../../../config/labels/pr-semantics.json" with { type: "json" };
+const originalRiskDefinitions = semanticCatalog.roles.riskFlags.definitions;
 
 let privateKey = "";
 beforeAll(() => {
   privateKey = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } }).privateKey;
 });
 afterEach(() => {
+  semanticCatalog.roles.riskFlags.definitions = originalRiskDefinitions;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -50,6 +53,10 @@ describe("中央运行程序", () => {
     { action: "labeled", label: "security", state: "closed", base: "main", expected: 204 },
     { action: "labeled", label: "security", state: "open", base: "release", expected: 204 },
   ])("风险标签事件的分类调度 %#", async ({ action, label, state, base, expected }) => {
+    semanticCatalog.roles.riskFlags.definitions = [
+      ...semanticCatalog.roles.riskFlags.definitions,
+      { ...semanticCatalog.roles.riskFlags.definitions[0]!, id: "without-label", githubLabel: null } as any,
+    ];
     const dispatched: { workflow: string; inputs: any }[] = [];
     const headSha = "d".repeat(40);
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {

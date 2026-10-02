@@ -1630,12 +1630,11 @@ async function validate(args: Readonly<Record<string, string>>) {
           let names = await readLabelNames();
           const humanRisks = () => semantics.roles.riskFlags.definitions.filter(definition => definition.githubLabel && names.has(definition.githubLabel.name)).map(definition => definition.id);
           const unavailable = () => {
-            if (humanRisks().length) throw new Error("风险标签需要有效的当前分类结果");
-            return null;
+            throw new FragmentValidationError("RN_SOURCE_INCOMPLETE", "current classification");
           };
           const readChecks = async () => (await gh.listAllCheckRuns(owner, repo, identity.headSha)).filter(check => check.name === "PR Classification Gate" && check.app?.id === 4243096 && check.head_sha === identity.headSha);
           let checks = await readChecks();
-          if (classificationSourceDigest === undefined && humanRisks().length) {
+          if (classificationSourceDigest === undefined) {
             let waited = false;
             for (let attempt = 0; attempt < 36 && (checks.length === 0 || (checks.length === 1 && ["queued", "in_progress"].includes(checks[0].status))); attempt++) {
               await delay(5_000);

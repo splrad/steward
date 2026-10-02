@@ -148,7 +148,12 @@ describe('中央 validate 片段入口', () => {
   it.each(['missing', 'trusted', 'wrong-head', 'wrong-app', 'wrong-policy', 'wrong-policy-sha', 'security', 'human-security', 'human-breaking-change',
     'stale-base', 'stale-files', 'stale-commits', 'incomplete-commits', 'commit-read-failure', 'missing-file-counts',
     'label-added', 'label-removed', 'risk-without-state', 'label-read-failure', 'invalid-label', 'label-drift', 'check-drift', 'label-reordered',
-    'wait-success', 'wait-failure', 'wait-timeout', 'wait-drift'] as const)('处理分类来源 %s', async scenario => {
+    'wait-success', 'wait-failure', 'wait-timeout', 'wait-drift',
+    'wait-success-no-risk', 'wait-failure-no-risk', 'wait-timeout-no-risk', 'wait-drift-no-risk',
+    'wait-success-no-fragment', 'wait-timeout-no-fragment'] as const)('处理分类来源 %s', async rawScenario => {
+    const noFragment = rawScenario.endsWith('-no-fragment');
+    const noRisk = rawScenario.endsWith('-no-risk') || noFragment;
+    const scenario = rawScenario.replace(/-no-(risk|fragment)$/, '');
     const root = await mkdtemp(join(tmpdir(), 'steward-fragment-gate-'));
     try {
       await cp(resolve('config'), join(root, 'config'), { recursive: true });
@@ -164,7 +169,9 @@ describe('中央 validate 片段入口', () => {
       const semantics = JSON.parse(await readFile('config/labels/pr-semantics.json', 'utf8'));
       const classification = JSON.parse(await readFile('config/profiles/classification/default.json', 'utf8'));
       const policy = classificationDigests(semantics, classification, cfg.classification).classificationPolicyDigest;
-      const facts = classificationFacts(1, 2, pullFacts, fileFacts, commitFacts);
+      const currentPull = noFragment ? { ...pullFacts, changed_files: 1 } : pullFacts;
+      const currentFiles = noFragment ? fileFacts.slice(0, 1) : fileFacts;
+      const facts = classificationFacts(1, 2, currentPull, currentFiles, commitFacts);
       if (scenario === 'stale-base') facts.baseSha = 'e'.repeat(40);
       if (scenario === 'stale-files') facts.files[0] = { ...facts.files[0]!, patch: '+old test' };
       if (scenario === 'stale-commits') facts.commits[0] = { ...facts.commits[0]!, message: 'test: old fixtures' };
@@ -183,6 +190,8 @@ describe('中央 validate 片段入口', () => {
       let checkReads = 0;
       vi.stubGlobal('fetch', async (url: string | URL | Request, init?: RequestInit) => {
         const endpoint = String(url);
+        if (noFragment && endpoint.endsWith('/pulls/2')) return new Response(JSON.stringify(currentPull));
+        if (noFragment && endpoint.includes('/files?')) return new Response(JSON.stringify(currentFiles));
         if (endpoint.includes('/check-runs?')) {
           checkReads++;
           if (scenario.startsWith('wait-')) {
@@ -206,7 +215,7 @@ describe('中央 validate 片段入口', () => {
           if (scenario === 'label-read-failure') throw new Error('label read failed');
           if (scenario === 'invalid-label') return new Response('[{}]');
           return new Response(JSON.stringify(scenario === 'human-breaking-change' ? [{ name: 'breaking-change' }]
-            : scenario.startsWith('wait-') || ['human-security', 'label-added', 'risk-without-state'].includes(scenario) ? [{ name: 'security' }] : []));
+            : (scenario.startsWith('wait-') && !noRisk) || ['human-security', 'label-added', 'risk-without-state'].includes(scenario) ? [{ name: 'security' }] : []));
         }
         if (endpoint.includes('/commits?')) {
           if (scenario === 'commit-read-failure') throw new Error('commit read failed');
@@ -220,18 +229,23 @@ describe('中央 validate 片段入口', () => {
       const run = main(['validate', '--workspace', '.', '--repository-id', '1', '--profile', 'steward', '--fragments-only', 'true']);
       if (['security', 'human-security', 'human-breaking-change', 'label-added'].includes(scenario)) await expect(run).rejects.toThrow('RN_FACT_CONFLICT');
       else if (['risk-without-state', 'wait-timeout', 'wait-failure'].includes(scenario)) {
-        await expect(run).rejects.toThrow('风险标签需要有效的当前分类结果');
+        await expect(run).rejects.toThrow('RN_SOURCE_INCOMPLETE');
         expect(delay).toHaveBeenCalledTimes(scenario === 'wait-failure' ? 0 : 36);
       }
       else if (scenario === 'label-read-failure') await expect(run).rejects.toThrow('label read failed');
       else if (scenario === 'invalid-label') await expect(run).rejects.toThrow('片段分类标签数据不完整');
       else if (['label-drift', 'check-drift', 'wait-drift'].includes(scenario)) await expect(run).rejects.toThrow('RN_SOURCE_STALE');
       else if (scenario === 'wait-success') {
-        await run;
+        if (noFragment) await expect(run).rejects.toThrow('RN_FRAGMENT_REQUIRED');
+        else await run;
         expect(delay).toHaveBeenCalledTimes(3);
         expect(delay).toHaveBeenCalledWith(5_000);
         expect(checkReads).toBe(5);
-        expect(await readFile(join(root, 'summary.md'), 'utf8')).toContain('要求：required');
+        if (!noFragment) expect(await readFile(join(root, 'summary.md'), 'utf8')).toContain(`要求：${noRisk ? 'review-required' : 'required'}`);
+      }
+      else if (['missing', 'wrong-head', 'wrong-app', 'wrong-policy', 'wrong-policy-sha', 'stale-base', 'stale-files', 'stale-commits', 'incomplete-commits', 'commit-read-failure', 'missing-file-counts'].includes(scenario)) {
+        await expect(run).rejects.toThrow('RN_SOURCE_INCOMPLETE');
+        expect(delay).toHaveBeenCalledTimes(['missing', 'wrong-app'].includes(scenario) ? 36 : 0);
       }
       else {
         await run;
