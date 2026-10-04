@@ -77,7 +77,9 @@ export function assertBuildIdentity(identity: BuildIdentity): void {
     || typeof identity.buildId !== 'string' || !idPattern.test(identity.buildId) || !buildProfiles.includes(identity.profile) || typeof identity.targetSha !== 'string' || !shaPattern.test(identity.targetSha) || identity.targetSha.length !== 40
     || typeof identity.policySha !== 'string' || !shaPattern.test(identity.policySha) || identity.policySha.length !== 40
     || (identity.version !== null && typeof identity.version !== 'string')) buildFail('RN_BUILD_INVALID');
-  if (identity.version !== null) parsePublicVersion(identity.version);
+  if (identity.version !== null) {
+    try { parsePublicVersion(identity.version); } catch { buildFail('RN_BUILD_INVALID'); }
+  }
 }
 export function assertBuildPath(path: string, options: { glob?: boolean; root?: boolean; version?: boolean } = {}): void {
   if (typeof path !== 'string') buildFail('RN_BUILD_PATH');

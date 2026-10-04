@@ -2,12 +2,21 @@ import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import AjvModule from 'ajv/dist/2020.js';
-import { assertBuildPath, canonicalBuildManifest, checkBuildNativeVersion, decodeBuildJson, deliveryBuildReadiness, matchBuildFiles, parseBuildManifest, planBuild, selectDeliveryBuilds, type BuildIdentity, type BuildManifest, type BuildUnit } from '../src/build-manifest.js';
+import { assertBuildPath, BuildContractError, canonicalBuildManifest, checkBuildNativeVersion, decodeBuildJson, deliveryBuildReadiness, matchBuildFiles, parseBuildManifest, planBuild, selectDeliveryBuilds, type BuildIdentity, type BuildManifest, type BuildUnit } from '../src/build-manifest.js';
 import type { DeliveryConfiguration } from '../src/delivery-config.js';
 
 const identity: BuildIdentity = { repositoryId: 1400000001, fullName: 'example/widget', buildId: 'asset', profile: 'custom-adapter-v1', targetSha: 'a'.repeat(40), policySha: 'b'.repeat(40), version: '1.2.3' };
 const unit: BuildUnit = { profile: 'custom-adapter-v1', inputs: { entrypoint: 'tools/build.mjs', runtime: 'node', runnerFamily: 'linux' }, outputs: [{ id: 'archive', kind: 'file', match: 'widget-{version}.zip', count: 1, mediaType: 'application/zip' }] };
 describe('构建合同 T09/T10', () => {
+  it.each(['01.2.3', '1.2', '1.2.3.0', '1.2.3-beta', '1.2.3\n'])('规划、生成和解析统一拒绝格式错误版本 %j', async version => {
+    const manifest: BuildManifest = { ...identity, version, schemaVersion: 1, inputsSha256: 'c'.repeat(64), artifacts: [{ id: 'archive', kind: 'file', file: 'asset.zip', mediaType: 'application/zip', size: 1, sha256: 'd'.repeat(64) }] };
+    await expect(planBuild({ ...identity, version }, unit)).rejects.toBeInstanceOf(BuildContractError);
+    await expect(planBuild({ ...identity, version }, unit)).rejects.toHaveProperty('code', 'RN_BUILD_INVALID');
+    for (const operation of [() => canonicalBuildManifest(manifest), () => parseBuildManifest(new TextEncoder().encode(JSON.stringify(manifest)))]) {
+      expect(operation).toThrow(BuildContractError);
+      try { operation(); } catch (error) { expect(error).toHaveProperty('code', 'RN_BUILD_INVALID'); }
+    }
+  });
   it.each(['targetSha', 'policySha'].flatMap(field => [undefined, null, 1, new String('a'.repeat(40)), {}].map(value => ({ field, value }))))('规划阶段拒绝非字符串 SHA %j', async ({ field, value }) => {
     await expect(planBuild({ ...identity, [field]: value } as unknown as BuildIdentity, unit)).rejects.toThrow('RN_BUILD_INVALID');
   });
