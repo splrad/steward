@@ -59,6 +59,16 @@ async function oci(platforms = ['linux/amd64'], version = '1.2.3') {
   return { image, store, plan: await planBuild({ ...identity, profile: 'oci-image-v1' }, { profile: 'oci-image-v1', inputs: { context: '.', dockerfile: 'Dockerfile', platforms }, outputs: [{ id: 'image', kind: 'oci-image', count: 1 }] }) };
 }
 describe('中央文件产物验证 T09', () => {
+  it('OCI 收集和下载保持仓库映射语法并拒绝旧的非法名称', async () => {
+    const { plan } = await oci();
+    const mapped = { ...plan, fullName: 'Example/Widget__Part' };
+    const expected = await collectOciBuildManifest(mapped, output);
+    expect(expected.artifacts[0]).toMatchObject({ reference: expect.stringMatching(/^example\/widget__part@sha256:/u) });
+    await expect(verifyDownloadedOciBuild(mapped, expected, output)).resolves.toBeUndefined();
+    const invalid = { ...plan, fullName: 'example/.github' };
+    await expect(collectOciBuildManifest(invalid, output)).rejects.toThrow('RN_BUILD_INVALID');
+    await expect(verifyDownloadedOciBuild(invalid, expected, output)).rejects.toThrow('RN_BUILD_INVALID');
+  });
   it('拒绝解析后越出根目录的绝对相对路径', async () => {
     expect(win32.isAbsolute(win32.relative('D:\\source', 'C:\\outside\\build.mjs'))).toBe(true);
     await writeFile(join(source, 'build.mjs'), 'build');

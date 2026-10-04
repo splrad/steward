@@ -61,6 +61,26 @@ export const buildLimits = { maxFiles: 128, maxFileBytes: 1024 * 1024 * 1024, ma
 const idPattern = /^[a-z][a-z0-9-]*$/u;
 const shaPattern = /^[0-9a-f]{40}$/u;
 const digestPattern = /^[0-9a-f]{64}$/u;
+const ociPathComponent = '[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*';
+const ociDomainComponent = '[a-z0-9](?:[a-z0-9-]*[a-z0-9])?';
+const ociRemoteName = `${ociPathComponent}(?:/${ociPathComponent})*`;
+const ociName = `(?:${ociDomainComponent}(?:\\.${ociDomainComponent})*(?::[0-9]+)?/)?${ociRemoteName}`;
+const ociRepositoryPattern = new RegExp(`^(?:${ociDomainComponent}(?:\\.${ociDomainComponent})*(?::[0-9]+)?/)?(${ociRemoteName})$`, 'u');
+const ociReferencePattern = new RegExp(`^(${ociName})(?::[a-z0-9_][a-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$`, 'u');
+function validOciRepository(repository: string): boolean {
+  const match = ociRepositoryPattern.exec(repository);
+  return match !== null && match[1]!.length <= 255;
+}
+export function buildOciRepository(fullName: string): string {
+  if (typeof fullName !== 'string') buildFail('RN_BUILD_INVALID');
+  const repository = fullName.toLowerCase();
+  if (!validOciRepository(repository)) buildFail('RN_BUILD_INVALID');
+  return repository;
+}
+function validOciReference(reference: string, digest: string): boolean {
+  const match = ociReferencePattern.exec(reference);
+  return match !== null && validOciRepository(match[1]!) && reference.endsWith(`@${digest}`);
+}
 const inputFields: Record<BuildProfile, readonly string[]> = {
   'dotnet-assets-v1': ['project', 'configuration', 'framework', 'runtime'],
   'node-package-v1': ['directory', 'lockfile', 'buildTask', 'packageManager'],
@@ -80,6 +100,7 @@ export function assertBuildIdentity(identity: BuildIdentity): void {
   if (identity.version !== null) {
     try { parsePublicVersion(identity.version); } catch { buildFail('RN_BUILD_INVALID'); }
   }
+  if (identity.profile === 'oci-image-v1') buildOciRepository(identity.fullName);
 }
 export function assertBuildPath(path: string, options: { glob?: boolean; root?: boolean; version?: boolean } = {}): void {
   if (typeof path !== 'string') buildFail('RN_BUILD_PATH');
@@ -172,7 +193,7 @@ export function canonicalBuildManifest(manifest: BuildManifest): string {
       return { id: asset.id, kind: asset.kind, file: asset.file, mediaType: asset.mediaType, size: asset.size, sha256: asset.sha256 };
     }
     exact(asset, ['id', 'kind', 'reference', 'digest']);
-    if (asset.kind !== 'oci-image' || manifest.profile !== 'oci-image-v1' || typeof asset.digest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(asset.digest) || asset.digest.length !== 71 || typeof asset.reference !== 'string' || !/^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/u.test(asset.reference) || !asset.reference.endsWith(`@${asset.digest}`)) buildFail('RN_BUILD_OUTPUT');
+    if (asset.kind !== 'oci-image' || manifest.profile !== 'oci-image-v1' || typeof asset.digest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(asset.digest) || asset.digest.length !== 71 || typeof asset.reference !== 'string' || !validOciReference(asset.reference, asset.digest)) buildFail('RN_BUILD_OUTPUT');
     return { id: asset.id, kind: asset.kind, reference: asset.reference, digest: asset.digest };
   }).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   if (total > buildLimits.maxTotalBytes) buildFail('RN_BUILD_LIMIT');

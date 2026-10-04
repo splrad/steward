@@ -8,6 +8,32 @@ import type { DeliveryConfiguration } from '../src/delivery-config.js';
 const identity: BuildIdentity = { repositoryId: 1400000001, fullName: 'example/widget', buildId: 'asset', profile: 'custom-adapter-v1', targetSha: 'a'.repeat(40), policySha: 'b'.repeat(40), version: '1.2.3' };
 const unit: BuildUnit = { profile: 'custom-adapter-v1', inputs: { entrypoint: 'tools/build.mjs', runtime: 'node', runnerFamily: 'linux' }, outputs: [{ id: 'archive', kind: 'file', match: 'widget-{version}.zip', count: 1, mediaType: 'application/zip' }] };
 describe('构建合同 T09/T10', () => {
+  it.each(['example//widget', 'example/.github', 'example/widget.', 'example/_widget', 'example/widget___part', 'example/widget:tag:extra'])('生成和解析拒绝非法 OCI 仓库引用 %s', repository => {
+    const manifest: BuildManifest = { ...identity, profile: 'oci-image-v1', schemaVersion: 1, inputsSha256: 'c'.repeat(64), artifacts: [{ id: 'image', kind: 'oci-image', reference: `${repository}@sha256:${'d'.repeat(64)}`, digest: `sha256:${'d'.repeat(64)}` }] };
+    expect(() => canonicalBuildManifest(manifest)).toThrow('RN_BUILD_OUTPUT');
+    expect(() => parseBuildManifest(new TextEncoder().encode(JSON.stringify(manifest)))).toThrow('RN_BUILD_OUTPUT');
+  });
+  it.each(['example/.github', 'example/-widget', 'example/widget.', 'example/widget___part'])('OCI 规划提前拒绝无法映射的 GitHub 仓库名 %s', async fullName => {
+    await expect(planBuild({ ...identity, fullName, profile: 'oci-image-v1' }, { profile: 'oci-image-v1', inputs: { context: '.', dockerfile: 'Dockerfile', platforms: ['linux/amd64'] }, outputs: [{ id: 'image', kind: 'oci-image', count: 1 }] })).rejects.toThrow('RN_BUILD_INVALID');
+    await expect(planBuild({ ...identity, fullName }, unit)).resolves.toMatchObject({ fullName });
+  });
+  it.each(['example/widget', 'ghcr.io/example/widget', 'localhost:5000/example/widget:v1.2.3', 'example/widget__part', 'example/widget---part'])('保留合法 OCI 路径、registry 端口和标签 %s', repository => {
+    const manifest: BuildManifest = { ...identity, profile: 'oci-image-v1', schemaVersion: 1, inputsSha256: 'c'.repeat(64), artifacts: [{ id: 'image', kind: 'oci-image', reference: `${repository}@sha256:${'d'.repeat(64)}`, digest: `sha256:${'d'.repeat(64)}` }] };
+    expect(parseBuildManifest(new TextEncoder().encode(canonicalBuildManifest(manifest)))).toEqual(manifest);
+  });
+  it('OCI Schema 与核心对路径语法一致，摘要绑定和长度限制由核心复核', async () => {
+    const Ajv = AjvModule as unknown as typeof import('ajv').default;
+    const validate = new Ajv({ strict: false }).compile(JSON.parse(await readFile('schema/build-manifest.schema.json', 'utf8')));
+    const make = (repository: string): BuildManifest => ({ ...identity, profile: 'oci-image-v1', schemaVersion: 1, inputsSha256: 'c'.repeat(64), artifacts: [{ id: 'image', kind: 'oci-image', reference: `${repository}@sha256:${'d'.repeat(64)}`, digest: `sha256:${'d'.repeat(64)}` }] });
+    for (const repository of ['example/widget', 'ghcr.io/example/widget', 'localhost:5000/example/widget:v1.2.3']) expect(validate(make(repository))).toBe(true);
+    for (const repository of ['example//widget', 'example/.github', 'example/widget___part', 'example/widget:tag:extra']) expect(validate(make(repository))).toBe(false);
+    const manifest = make(`ghcr.io/${'x'.repeat(255)}`);
+    expect(() => canonicalBuildManifest(manifest)).not.toThrow();
+    expect(() => canonicalBuildManifest(make(`ghcr.io/${'x'.repeat(256)}`))).toThrow('RN_BUILD_OUTPUT');
+    expect(() => canonicalBuildManifest(make(`example/widget:${'x'.repeat(129)}`))).toThrow('RN_BUILD_OUTPUT');
+    const mismatch = make('example/widget'); (mismatch.artifacts[0] as import('../src/build-manifest.js').ImageArtifact).digest = `sha256:${'e'.repeat(64)}`;
+    expect(() => canonicalBuildManifest(mismatch)).toThrow('RN_BUILD_OUTPUT');
+  });
   it.each([{ platforms: new Array<string>(1) }, { platforms: ['linux/amd64', ,] }])('规划拒绝稀疏平台数组 %j', async ({ platforms }) => {
     await expect(planBuild({ ...identity, profile: 'oci-image-v1' }, { profile: 'oci-image-v1', inputs: { context: '.', dockerfile: 'Dockerfile', platforms }, outputs: [{ id: 'image', kind: 'oci-image', count: 1 }] })).rejects.toThrow('RN_BUILD_INVALID');
   });

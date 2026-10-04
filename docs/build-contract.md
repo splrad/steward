@@ -34,6 +34,14 @@ manifest, config, and layer against its declared digest and size. Output labels
 identify the declared image rules. The image platforms must match the plan, and
 the config's `org.opencontainers.image.version` label must match the public
 version. Multi-platform images retain their image-index digest.
+OCI repository mapping and manifest references share a pure data syntax check
+based on the [Distribution reference grammar](https://github.com/distribution/reference/blob/main/regexp.go).
+Repository components start and end with lowercase letters or digits, with
+supported separators between them. Empty path components and names such as
+`.github` fail validation. OCI identities with an invalid repository mapping fail
+during planning; other build profiles keep their GitHub repository names.
+References retain optional registry ports and tags, use SHA-256 digests, and must
+match the artifact digest. Remote repository names are limited to 255 characters.
 
 The collectors recheck every file's identity and metadata after the whole
 collection pass, including OCI layout metadata and blobs. OCI total-size limits

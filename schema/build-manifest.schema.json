@@ -41,7 +41,7 @@
       "required": ["id", "kind", "reference", "digest"],
       "properties": {
         "id": { "$ref": "#/$defs/id" }, "kind": { "const": "oci-image" },
-        "reference": { "type": "string", "pattern": "^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$" },
+        "reference": { "type": "string", "pattern": "^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*(?::[0-9]+)?/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::[a-z0-9_][a-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$" },
         "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "minLength": 71, "maxLength": 71 }
       }
     }

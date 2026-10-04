@@ -2,7 +2,7 @@ import { constants, type Stats } from 'node:fs';
 import { lstat, open, opendir, realpath, type FileHandle } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
-import { assertBuildPath, buildFail, buildLimits, canonicalBuildManifest, checkBuildNativeVersion, decodeBuildJson, matchBuildFiles,
+import { assertBuildPath, buildFail, buildLimits, buildOciRepository, canonicalBuildManifest, checkBuildNativeVersion, decodeBuildJson, matchBuildFiles,
   type BuildArtifact, type BuildManifest, type BuildPlan } from '../../core/src/build-manifest.js';
 
 export type NativeVersionInspector = (bytes: Uint8Array, file: string) => Promise<string | null>;
@@ -221,7 +221,7 @@ export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: 
     };
     await inspect(descriptor, 0);
     if (platforms.size !== (plan.inputs.platforms as string[]).length) buildFail('RN_BUILD_OUTPUT');
-    artifacts.push({ id: rule.id, kind: 'oci-image', reference: `${plan.fullName.toLowerCase()}@${descriptor.digest}`, digest: descriptor.digest });
+    artifacts.push({ id: rule.id, kind: 'oci-image', reference: `${buildOciRepository(plan.fullName)}@${descriptor.digest}`, digest: descriptor.digest });
   }
   if (files.length !== consumed.size || files.some(file => !consumed.has(file)) || JSON.stringify(await enumerate(root)) !== JSON.stringify(files)) buildFail('RN_BUILD_OUTPUT');
   await verifyFileStates(root, states);
