@@ -152,9 +152,14 @@ export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: 
       return result;
     } finally { await handle.close(); }
   };
+  const object = (value: unknown): Record<string, any> => {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) buildFail('RN_BUILD_INVALID');
+    return value as Record<string, any>;
+  };
+  const parse = (bytes: Uint8Array) => object(decodeBuildJson(bytes, 'oci'));
   const jsonAt = async (path: string) => {
     const { bytes } = await bytesAt(path, 512 * 1024);
-    return decodeBuildJson(bytes, 'oci') as any;
+    return parse(bytes);
   };
   if ((await jsonAt('oci-layout')).imageLayoutVersion !== '1.0.0') buildFail('RN_BUILD_INVALID');
   const verifiedBlobs = new Map<string, Uint8Array>();
@@ -177,17 +182,14 @@ export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: 
     if (retainBytes) verifiedBlobs.set(descriptor.digest, bytes);
     return bytes;
   };
-  const parse = (bytes: Uint8Array) => {
-    if (bytes.length > 512 * 1024) buildFail('RN_BUILD_LIMIT');
-    return decodeBuildJson(bytes, 'oci') as any;
-  };
   const index = await jsonAt('index.json');
   if (index.schemaVersion !== 2 || !Array.isArray(index.manifests) || index.manifests.length !== plan.outputs.length) buildFail('RN_BUILD_OUTPUT');
+  const descriptors = index.manifests.map(object);
   const artifacts: BuildArtifact[] = [];
   for (const rule of plan.outputs) {
-    const matches = index.manifests.filter((descriptor: any) => descriptor.annotations?.['org.opencontainers.image.ref.name'] === rule.id);
+    const matches = descriptors.filter((descriptor: any) => descriptor.annotations?.['org.opencontainers.image.ref.name'] === rule.id);
     if (matches.length !== 1) buildFail('RN_BUILD_OUTPUT');
-    const descriptor = matches[0];
+    const descriptor = matches[0]!;
     const platforms = new Set<string>();
     const inspect = async (current: any, depth: number): Promise<void> => {
       if (depth > 8) buildFail('RN_BUILD_LIMIT');
@@ -207,7 +209,7 @@ export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: 
       platforms.add(platform);
       checkBuildNativeVersion(plan, config.config?.Labels?.['org.opencontainers.image.version'] ?? null);
       for (const layer of image.layers) {
-        if (!['application/vnd.oci.image.layer.v1.tar', 'application/vnd.oci.image.layer.v1.tar+gzip', 'application/vnd.oci.image.layer.v1.tar+zstd'].includes(layer.mediaType)) buildFail('RN_BUILD_INVALID');
+        if (!['application/vnd.oci.image.layer.v1.tar', 'application/vnd.oci.image.layer.v1.tar+gzip', 'application/vnd.oci.image.layer.v1.tar+zstd'].includes(layer?.mediaType)) buildFail('RN_BUILD_INVALID');
         await blob(layer, false);
       }
     };

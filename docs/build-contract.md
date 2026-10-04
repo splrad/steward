@@ -37,7 +37,8 @@ OCI JSON metadata is limited to 512 KiB before reading, both by descriptor and
 actual file size. Reads stop at the observed size plus one byte to detect growth.
 Layers use bounded chunks and retain the separate file-size limit. OCI metadata
 accepts legal JSON escape sequences in commands and history while retaining
-UTF-8, duplicate-key, and finite-number checks. Contract strings keep their
+UTF-8, duplicate-key, and finite-number checks. Metadata roots must be objects;
+null, arrays, and scalar roots fail with `RN_BUILD_INVALID`. Contract strings keep their
 stricter character policy. File digests are fixed before native version inspection,
 so an inspector changing its buffer cannot change the digest of the disk bytes.
 

@@ -177,6 +177,35 @@ describe('构建入口验证', () => {
   });
 });
 describe('OCI 摘要链验证 T09', () => {
+  it.each(['oci-layout', 'index.json', 'config', 'manifest', 'image-index'].flatMap(location => ['null', '[]', '1', 'true', '"metadata"'].map(json => [location, json])))('收集和下载拒绝 %s 的非法 JSON 根值 %s', async (location, json) => {
+    const { image, store, plan } = await oci();
+    const expected = await collectOciBuildManifest(plan, output);
+    if (location === 'oci-layout' || location === 'index.json') await writeFile(join(output, location), json);
+    else {
+      let changed;
+      if (location === 'config') {
+        const imageManifest = JSON.parse(await readFile(join(output, 'blobs', 'sha256', image.digest.slice(7)), 'utf8'));
+        imageManifest.config = await store(json, imageManifest.config.mediaType);
+        changed = await store(imageManifest, image.mediaType);
+      } else changed = await store(json, location === 'manifest' ? image.mediaType : 'application/vnd.oci.image.index.v1+json');
+      await writeFile(join(output, 'index.json'), JSON.stringify({ schemaVersion: 2, manifests: [{ ...changed, annotations: { 'org.opencontainers.image.ref.name': 'image' } }] }));
+    }
+    await expect(collectOciBuildManifest(plan, output)).rejects.toThrow('RN_BUILD_INVALID');
+    await expect(verifyDownloadedOciBuild(plan, expected, output)).rejects.toThrow('RN_BUILD_INVALID');
+  });
+  it.each(['descriptor', 'layer'])('收集和下载拒绝 null %s 元素', async location => {
+    const { image, store, plan } = await oci();
+    const expected = await collectOciBuildManifest(plan, output);
+    let descriptor: unknown = null;
+    if (location === 'layer') {
+      const imageManifest = JSON.parse(await readFile(join(output, 'blobs', 'sha256', image.digest.slice(7)), 'utf8'));
+      imageManifest.layers = [null];
+      descriptor = { ...await store(imageManifest, image.mediaType), annotations: { 'org.opencontainers.image.ref.name': 'image' } };
+    }
+    await writeFile(join(output, 'index.json'), JSON.stringify({ schemaVersion: 2, manifests: [descriptor] }));
+    await expect(collectOciBuildManifest(plan, output)).rejects.toThrow('RN_BUILD_INVALID');
+    await expect(verifyDownloadedOciBuild(plan, expected, output)).rejects.toThrow('RN_BUILD_INVALID');
+  });
   it.each([[['linux'], 'amd64'], ['linux', ['amd64']], [['linux'], ['amd64']]])('无描述符 platform 时拒绝无效 config 类型 %j %j', async (os, architecture) => {
     const { image, store, plan } = await oci();
     const expected = await collectOciBuildManifest(plan, output);
