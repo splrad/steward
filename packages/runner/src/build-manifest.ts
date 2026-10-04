@@ -106,7 +106,7 @@ export async function collectFileBuildManifest(plan: BuildPlan, outputDirectory:
     const before = await lstat(file);
     if (!before.isFile() || before.nlink !== 1 || before.size <= 0 || before.size > buildLimits.maxFileBytes) buildFail('RN_BUILD_LIMIT');
     total += before.size; if (total > buildLimits.maxTotalBytes) buildFail('RN_BUILD_LIMIT');
-    const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     try {
       if (!unchanged(before, await handle.stat())) buildFail('RN_BUILD_PATH');
       const { bytes, size, sha256 } = await readArtifactBytes(handle, before.size, inspectNativeVersion !== undefined);
@@ -143,7 +143,7 @@ export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: 
     if (previous && !unchanged(previous, before)) buildFail('RN_BUILD_PATH');
     if (!previous) total += before.size;
     if (total > buildLimits.maxTotalBytes) buildFail('RN_BUILD_LIMIT');
-    const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     try {
       if (!unchanged(before, await handle.stat())) buildFail('RN_BUILD_PATH');
       const result = await readArtifactBytes(handle, before.size, retainBytes);

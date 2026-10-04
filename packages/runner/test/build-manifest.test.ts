@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
+import { constants } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { link, mkdir, mkdtemp, open, readFile, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, win32 } from 'node:path';
@@ -48,6 +51,28 @@ async function oci(platforms = ['linux/amd64'], version = '1.2.3') {
   return { image, store, plan: await planBuild({ ...identity, profile: 'oci-image-v1' }, { profile: 'oci-image-v1', inputs: { context: '.', dockerfile: 'Dockerfile', platforms }, outputs: [{ id: 'image', kind: 'oci-image', count: 1 }] }) };
 }
 describe('中央文件产物验证 T09', () => {
+  it.skipIf(process.platform === 'win32').each(['file', 'oci'])('常规 %s 文件被替换为 FIFO 时收集和下载受控失败', async kind => {
+    let plan; let expected;
+    if (kind === 'file') { await file(); plan = await planBuild(identity, unit); expected = await collectFileBuildManifest(plan, output, inspect); }
+    else { ({ plan } = await oci()); expected = await collectOciBuildManifest(plan, output); }
+    const target = join(output, kind === 'file' ? 'widget.json' : 'index.json');
+    const original = await readFile(target);
+    vi.mocked(open).mockImplementation(async (...args) => {
+      if (args[0] === target) {
+        expect((args[1] as number) & constants.O_NONBLOCK).not.toBe(0);
+        await actualFs.unlink(target);
+        await promisify(execFile)('mkfifo', [target]);
+      }
+      return actualFs.open(...args);
+    });
+    for (const mode of ['collect', 'download']) {
+      await actualFs.unlink(target); await writeFile(target, original);
+      const operation = kind === 'file'
+        ? mode === 'collect' ? collectFileBuildManifest(plan, output, inspect) : verifyDownloadedFileBuild(plan, expected, output, inspect)
+        : mode === 'collect' ? collectOciBuildManifest(plan, output) : verifyDownloadedOciBuild(plan, expected, output);
+      await expect(operation).rejects.toThrow('RN_BUILD_PATH');
+    }
+  });
   it.each(['collect', 'download'])('无版本检查器时 %s 以分块摘要验证文件', async mode => {
     const payload = Buffer.alloc(128 * 1024 + 1, 120);
     await writeFile(join(output, 'widget.json'), payload);
@@ -71,6 +96,7 @@ describe('中央文件产物验证 T09', () => {
     const path = join(output, 'widget.json'); const initialSize = (await actualFs.stat(path)).size;
     let readBytes = 0;
     vi.mocked(open).mockImplementation(async (...args) => {
+      expect(args[1]).toBe(constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
       const handle = await actualFs.open(...args);
       const read = handle.read.bind(handle); let grown = false;
       handle.read = (async (...readArgs: Parameters<typeof handle.read>) => {

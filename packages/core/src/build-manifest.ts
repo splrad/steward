@@ -74,11 +74,13 @@ function exact(value: object, fields: readonly string[]): void {
 export function assertBuildIdentity(identity: BuildIdentity): void {
   if (!identity || typeof identity !== 'object' || Array.isArray(identity)) buildFail('RN_BUILD_INVALID');
   if (!Number.isSafeInteger(identity.repositoryId) || identity.repositoryId <= 0 || typeof identity.fullName !== 'string' || !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/u.test(identity.fullName)
-    || typeof identity.buildId !== 'string' || !idPattern.test(identity.buildId) || !buildProfiles.includes(identity.profile) || !shaPattern.test(identity.targetSha) || identity.targetSha.length !== 40
-    || !shaPattern.test(identity.policySha) || identity.policySha.length !== 40) buildFail('RN_BUILD_INVALID');
+    || typeof identity.buildId !== 'string' || !idPattern.test(identity.buildId) || !buildProfiles.includes(identity.profile) || typeof identity.targetSha !== 'string' || !shaPattern.test(identity.targetSha) || identity.targetSha.length !== 40
+    || typeof identity.policySha !== 'string' || !shaPattern.test(identity.policySha) || identity.policySha.length !== 40
+    || (identity.version !== null && typeof identity.version !== 'string')) buildFail('RN_BUILD_INVALID');
   if (identity.version !== null) parsePublicVersion(identity.version);
 }
 export function assertBuildPath(path: string, options: { glob?: boolean; root?: boolean; version?: boolean } = {}): void {
+  if (typeof path !== 'string') buildFail('RN_BUILD_PATH');
   try { assertDeliveryPath(path, options); } catch { buildFail('RN_BUILD_PATH'); }
   // Windows devices and alternate streams cannot form portable artifacts.
   if (path !== '.' && path.split('/').some(part => /[<>"|]/u.test(part) || /[ .]$/u.test(part)
@@ -162,12 +164,12 @@ export function canonicalBuildManifest(manifest: BuildManifest): string {
     ids.add(asset.id);
     if (asset.kind === 'file') {
       exact(asset, ['id', 'kind', 'file', 'mediaType', 'size', 'sha256']); assertBuildPath(asset.file);
-      if (manifest.profile === 'oci-image-v1' || filenames.has(asset.file.toLowerCase()) || typeof asset.mediaType !== 'string' || !/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/u.test(asset.mediaType) || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > buildLimits.maxFileBytes || !digestPattern.test(asset.sha256) || asset.sha256.length !== 64) buildFail('RN_BUILD_OUTPUT');
+      if (manifest.profile === 'oci-image-v1' || filenames.has(asset.file.toLowerCase()) || typeof asset.mediaType !== 'string' || !/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/u.test(asset.mediaType) || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > buildLimits.maxFileBytes || typeof asset.sha256 !== 'string' || !digestPattern.test(asset.sha256) || asset.sha256.length !== 64) buildFail('RN_BUILD_OUTPUT');
       filenames.add(asset.file.toLowerCase()); total += asset.size;
       return { id: asset.id, kind: asset.kind, file: asset.file, mediaType: asset.mediaType, size: asset.size, sha256: asset.sha256 };
     }
     exact(asset, ['id', 'kind', 'reference', 'digest']);
-    if (asset.kind !== 'oci-image' || manifest.profile !== 'oci-image-v1' || !/^sha256:[0-9a-f]{64}$/u.test(asset.digest) || asset.digest.length !== 71 || !/^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/u.test(asset.reference) || !asset.reference.endsWith(`@${asset.digest}`)) buildFail('RN_BUILD_OUTPUT');
+    if (asset.kind !== 'oci-image' || manifest.profile !== 'oci-image-v1' || typeof asset.digest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(asset.digest) || asset.digest.length !== 71 || typeof asset.reference !== 'string' || !/^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$/u.test(asset.reference) || !asset.reference.endsWith(`@${asset.digest}`)) buildFail('RN_BUILD_OUTPUT');
     return { id: asset.id, kind: asset.kind, reference: asset.reference, digest: asset.digest };
   }).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   if (total > buildLimits.maxTotalBytes) buildFail('RN_BUILD_LIMIT');

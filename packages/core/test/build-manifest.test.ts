@@ -8,6 +8,24 @@ import type { DeliveryConfiguration } from '../src/delivery-config.js';
 const identity: BuildIdentity = { repositoryId: 1400000001, fullName: 'example/widget', buildId: 'asset', profile: 'custom-adapter-v1', targetSha: 'a'.repeat(40), policySha: 'b'.repeat(40), version: '1.2.3' };
 const unit: BuildUnit = { profile: 'custom-adapter-v1', inputs: { entrypoint: 'tools/build.mjs', runtime: 'node', runnerFamily: 'linux' }, outputs: [{ id: 'archive', kind: 'file', match: 'widget-{version}.zip', count: 1, mediaType: 'application/zip' }] };
 describe('构建合同 T09/T10', () => {
+  it.each(['targetSha', 'policySha'].flatMap(field => [undefined, null, 1, new String('a'.repeat(40)), {}].map(value => ({ field, value }))))('规划阶段拒绝非字符串 SHA %j', async ({ field, value }) => {
+    await expect(planBuild({ ...identity, [field]: value } as unknown as BuildIdentity, unit)).rejects.toThrow('RN_BUILD_INVALID');
+  });
+  it.each([undefined, 1, true, new String('1.2.3'), {}].map(version => ({ version })))('规划阶段拒绝非法版本类型 %j', async ({ version }) => {
+    await expect(planBuild({ ...identity, version } as unknown as BuildIdentity, unit)).rejects.toThrow('RN_BUILD_INVALID');
+  });
+  it.each([null, new String('asset.zip')].map(path => ({ path })))('拒绝非字符串路径 %j', ({ path }) => {
+    expect(() => assertBuildPath(path as unknown as string)).toThrow('RN_BUILD_PATH');
+  });
+  it.each(['sha256', 'file', 'digest', 'reference'])('清单拒绝包装字符串字段 %s', field => {
+    const image = field === 'digest' || field === 'reference';
+    const manifest: BuildManifest = { ...identity, profile: image ? 'oci-image-v1' : identity.profile, schemaVersion: 1, inputsSha256: 'c'.repeat(64), artifacts: image
+      ? [{ id: 'image', kind: 'oci-image', digest: `sha256:${'d'.repeat(64)}`, reference: `example/widget@sha256:${'d'.repeat(64)}` }]
+      : [{ id: 'archive', kind: 'file', file: 'asset.zip', mediaType: 'application/zip', size: 1, sha256: 'd'.repeat(64) }] };
+    const asset = manifest.artifacts[0] as unknown as Record<string, unknown>;
+    asset[field] = new String(asset[field]);
+    expect(() => canonicalBuildManifest(manifest)).toThrow(field === 'file' ? 'RN_BUILD_PATH' : 'RN_BUILD_OUTPUT');
+  });
   it.each([null, []].map(value => ({ value })))('规划阶段拒绝非法身份或构建单元根值 %j', async ({ value }) => {
     await expect(planBuild(value as unknown as BuildIdentity, unit)).rejects.toThrow('RN_BUILD_INVALID');
     await expect(planBuild(identity, value as unknown as BuildUnit)).rejects.toThrow('RN_BUILD_INVALID');

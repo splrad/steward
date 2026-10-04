@@ -17,8 +17,10 @@ After execution, `collectFileBuildManifest` enumerates the output directory,
 matches every file to exactly one declared rule, and computes its size and
 SHA-256 from the actual bytes. Limits are 128 files, 1 GiB per file, and 4 GiB
 in total. Empty files, extra files, conflicting names, links, and changes during
-inspection fail validation. A versioned file build requires a native version
-inspector implemented by the central adapter. The inspector reads the artifact
+inspection fail validation. The reader opens artifacts in nonblocking mode where
+the platform supports it, then verifies the opened file's identity before reading.
+A versioned file build requires a native version inspector implemented by the
+central adapter. The inspector reads the artifact
 format from the supplied bytes; producer-supplied version claims are insufficient.
 
 `collectOciBuildManifest` reads an OCI image layout and verifies every referenced
