@@ -10,7 +10,8 @@ persisted Git credentials.
 The runner adapter calls `validateBuildInputs` before execution to check source
 paths and the separate output directory. A custom entrypoint must be a regular
 file under `tools/`. Paths use portable relative syntax; traversal, links, and
-Windows device names fail validation.
+Windows device names, including COM and LPT names with superscript digits
+¹, ², and ³, fail validation.
 
 After execution, `collectFileBuildManifest` enumerates the output directory,
 matches every file to exactly one declared rule, and computes its size and
@@ -40,13 +41,15 @@ UTF-8, duplicate-key, and finite-number checks. Contract strings keep their
 stricter character policy. File digests are fixed before native version inspection,
 so an inspector changing its buffer cannot change the digest of the disk bytes.
 
-File artifacts use the same bounded reader as OCI metadata. Source and output
+File artifacts use the same bounded reader as OCI metadata. File contents are
+retained only when a native version inspector is supplied. Source and output
 directories may have different Windows drive roots; equal or nested directories
 remain invalid. OCI config OS and architecture fields must be strings even when
 the descriptor omits its optional platform field.
 
 `canonicalBuildManifest` validates and serializes the standard manifest with
-fixed field order, artifacts sorted by logical ID, and a final LF.
+fixed field order, artifacts sorted by logical ID, and a final LF. Both generation
+and parsing enforce a 512 KiB UTF-8 limit, including that final LF.
 `parseBuildManifest` rejects duplicate keys, invalid UTF-8, unknown contract
 fields, and invalid field types. The JSON Schema is
 `schema/build-manifest.schema.json`; cross-field, path, and total-size checks

@@ -48,6 +48,23 @@ async function oci(platforms = ['linux/amd64'], version = '1.2.3') {
   return { image, store, plan: await planBuild({ ...identity, profile: 'oci-image-v1' }, { profile: 'oci-image-v1', inputs: { context: '.', dockerfile: 'Dockerfile', platforms }, outputs: [{ id: 'image', kind: 'oci-image', count: 1 }] }) };
 }
 describe('中央文件产物验证 T09', () => {
+  it.each(['collect', 'download'])('无版本检查器时 %s 以分块摘要验证文件', async mode => {
+    const payload = Buffer.alloc(128 * 1024 + 1, 120);
+    await writeFile(join(output, 'widget.json'), payload);
+    const plan = await planBuild({ ...identity, version: null }, unit);
+    const expected = await collectFileBuildManifest(plan, output);
+    const concat = vi.spyOn(Buffer, 'concat');
+    try {
+      if (mode === 'collect') expect((await collectFileBuildManifest(plan, output)).artifacts[0]).toMatchObject({ size: payload.length, sha256: createHash('sha256').update(payload).digest('hex') });
+      else {
+        await expect(verifyDownloadedFileBuild(plan, expected, output)).resolves.toBeUndefined();
+        payload[0] = 121;
+        await writeFile(join(output, 'widget.json'), payload);
+        await expect(verifyDownloadedFileBuild(plan, expected, output)).rejects.toThrow('RN_BUILD_DIGEST');
+      }
+      expect(concat).not.toHaveBeenCalled();
+    } finally { concat.mockRestore(); }
+  });
   it.each(['collect', 'download'])('文件增长时 %s 的读取量受初始大小约束', async mode => {
     await file(); const plan = await planBuild(identity, unit);
     const expected = await collectFileBuildManifest(plan, output, inspect);

@@ -109,7 +109,7 @@ export async function collectFileBuildManifest(plan: BuildPlan, outputDirectory:
     const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
       if (!unchanged(before, await handle.stat())) buildFail('RN_BUILD_PATH');
-      const { bytes, size, sha256 } = await readArtifactBytes(handle, before.size, true);
+      const { bytes, size, sha256 } = await readArtifactBytes(handle, before.size, inspectNativeVersion !== undefined);
       if (!unchanged(before, await handle.stat())) buildFail('RN_BUILD_DIGEST');
       checkBuildNativeVersion(plan, inspectNativeVersion ? await inspectNativeVersion(bytes, assignment.file) : null);
       artifacts.push({ ...assignment, kind: 'file', size, sha256 });

@@ -81,7 +81,7 @@ export function assertBuildPath(path: string, options: { glob?: boolean; root?: 
   try { assertDeliveryPath(path, options); } catch { buildFail('RN_BUILD_PATH'); }
   // Windows devices and alternate streams cannot form portable artifacts.
   if (path !== '.' && path.split('/').some(part => /[<>"|]/u.test(part) || /[ .]$/u.test(part)
-    || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(part))) buildFail('RN_BUILD_PATH');
+    || /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/iu.test(part))) buildFail('RN_BUILD_PATH');
 }
 export async function planBuild(identity: BuildIdentity, unit: BuildUnit): Promise<BuildPlan> {
   assertBuildIdentity(identity);
@@ -168,8 +168,10 @@ export function canonicalBuildManifest(manifest: BuildManifest): string {
     return { id: asset.id, kind: asset.kind, reference: asset.reference, digest: asset.digest };
   }).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   if (total > buildLimits.maxTotalBytes) buildFail('RN_BUILD_LIMIT');
-  return `${JSON.stringify({ schemaVersion: 1, repositoryId: manifest.repositoryId, fullName: manifest.fullName, buildId: manifest.buildId,
+  const serialized = `${JSON.stringify({ schemaVersion: 1, repositoryId: manifest.repositoryId, fullName: manifest.fullName, buildId: manifest.buildId,
     profile: manifest.profile, targetSha: manifest.targetSha, policySha: manifest.policySha, version: manifest.version, inputsSha256: manifest.inputsSha256, artifacts })}\n`;
+  if (new TextEncoder().encode(serialized).byteLength > 512 * 1024) buildFail('RN_BUILD_LIMIT');
+  return serialized;
 }
 export function parseBuildManifest(bytes: Uint8Array): BuildManifest {
   const value = decodeBuildJson(bytes);

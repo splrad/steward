@@ -8,6 +8,27 @@ import type { DeliveryConfiguration } from '../src/delivery-config.js';
 const identity: BuildIdentity = { repositoryId: 1400000001, fullName: 'example/widget', buildId: 'asset', profile: 'custom-adapter-v1', targetSha: 'a'.repeat(40), policySha: 'b'.repeat(40), version: '1.2.3' };
 const unit: BuildUnit = { profile: 'custom-adapter-v1', inputs: { entrypoint: 'tools/build.mjs', runtime: 'node', runnerFamily: 'linux' }, outputs: [{ id: 'archive', kind: 'file', match: 'widget-{version}.zip', count: 1, mediaType: 'application/zip' }] };
 describe('构建合同 T09/T10', () => {
+  it.each(['COM¹', 'com².zip', 'folder/COM³.tar.gz', 'LPT¹', 'lpt².json', 'folder/LPT³.zip'])('拒绝 Windows 保留设备路径 %j', path => {
+    expect(() => assertBuildPath(path)).toThrow('RN_BUILD_PATH');
+    expect(() => assertBuildPath(path, { glob: true })).toThrow('RN_BUILD_PATH');
+    expect(() => assertBuildPath(path.replace(/com|lpt/iu, 'asset'))).not.toThrow();
+  });
+  it.each(['x', 'é'])('序列化清单限制包含 UTF-8 字节和末尾 LF：%s', character => {
+    const manifest: BuildManifest = { ...identity, schemaVersion: 1, inputsSha256: 'c'.repeat(64), artifacts: [{ id: 'archive', kind: 'file', file: 'asset.zip', mediaType: 'application/zip', size: 1, sha256: 'd'.repeat(64) }] };
+    const asset = manifest.artifacts[0]!;
+    if (asset.kind !== 'file') throw new Error('file fixture required');
+    const padding = 512 * 1024 - new TextEncoder().encode(canonicalBuildManifest(manifest)).byteLength;
+    const width = new TextEncoder().encode(character).byteLength;
+    asset.file = character.repeat(Math.floor(padding / width)) + 'x'.repeat(padding % width) + 'asset.zip';
+    const bytes = new TextEncoder().encode(canonicalBuildManifest(manifest));
+    expect(bytes.byteLength).toBe(512 * 1024);
+    expect(bytes.at(-1)).toBe(10);
+    expect(parseBuildManifest(bytes)).toEqual(manifest);
+    asset.file = `x${asset.file}`;
+    expect(() => canonicalBuildManifest(manifest)).toThrow('RN_BUILD_LIMIT');
+    asset.file = asset.file.slice(1, -1);
+    expect(new TextEncoder().encode(canonicalBuildManifest(manifest)).byteLength).toBe(512 * 1024 - 1);
+  });
   it.each([
     ['dotnet-assets-v1', { project: 'src/Widget.csproj', configuration: 'Release', framework: 'net8.0-windows', runtime: 'win-x64' }, 'windows-latest'],
     ['node-package-v1', { directory: '.', lockfile: 'package-lock.json', buildTask: 'build', packageManager: 'npm' }, 'ubuntu-latest'],
