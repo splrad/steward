@@ -137,7 +137,11 @@ export async function verifyDownloadedFileBuild(plan: BuildPlan, expected: Build
 
 export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: string, repository?: string): Promise<BuildManifest> {
   if (plan.profile !== 'oci-image-v1') buildFail('RN_BUILD_INVALID');
-  const mappedRepository = repository === undefined ? plan.fullName.toLowerCase() : repository;
+  let mappedRepository = repository;
+  if (mappedRepository === undefined) {
+    if (typeof plan.fullName !== 'string') buildFail('RN_BUILD_INVALID');
+    mappedRepository = plan.fullName.toLowerCase();
+  }
   assertBuildOciRepository(mappedRepository);
   const root = await assertBuildSourcePath(outputDirectory, '.', { root: true });
   const files = await enumerate(root); const consumed = new Set(['oci-layout', 'index.json']);

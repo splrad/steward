@@ -83,6 +83,10 @@ describe('中央文件产物验证 T09', () => {
     const { plan } = await oci();
     await expect(collectOciBuildManifest(plan, output, repository as string)).rejects.toThrow('RN_BUILD_INVALID');
   });
+  it.each([{ fullName: null }, { fullName: undefined }, { fullName: ['example/widget'] }])('runner 默认映射保留非字符串源身份的合同错误 %j', async ({ fullName }) => {
+    const { plan } = await oci();
+    await expect(collectOciBuildManifest({ ...plan, fullName } as unknown as typeof plan, output)).rejects.toThrow('RN_BUILD_INVALID');
+  });
   it('拒绝解析后越出根目录的绝对相对路径', async () => {
     expect(win32.isAbsolute(win32.relative('D:\\source', 'C:\\outside\\build.mjs'))).toBe(true);
     await writeFile(join(source, 'build.mjs'), 'build');
