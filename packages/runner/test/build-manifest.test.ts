@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { link, mkdir, mkdtemp, open, opendir, readFile, realpath, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, win32 } from 'node:path';
-import { buildLimits, planBuild, type BuildIdentity, type BuildUnit } from '../../core/src/build-manifest.js';
+import { BuildContractError, buildLimits, planBuild, type BuildIdentity, type BuildUnit } from '../../core/src/build-manifest.js';
 import { assertBuildDirectoriesSeparate, assertBuildSourcePath, collectFileBuildManifest, collectOciBuildManifest, validateBuildExecutionContext, validateBuildInputs, verifyDownloadedFileBuild, verifyDownloadedOciBuild } from '../src/build-manifest.js';
 
 const identity: BuildIdentity = { repositoryId: 1400000001, fullName: 'example/widget', buildId: 'asset', profile: 'custom-adapter-v1', targetSha: 'a'.repeat(40), policySha: 'b'.repeat(40), version: '1.2.3' };
@@ -59,6 +59,55 @@ async function oci(platforms = ['linux/amd64'], version = '1.2.3') {
   return { image, store, plan: await planBuild({ ...identity, profile: 'oci-image-v1' }, { profile: 'oci-image-v1', inputs: { context: '.', dockerfile: 'Dockerfile', platforms }, outputs: [{ id: 'image', kind: 'oci-image', count: 1 }] }) };
 }
 describe('中央文件产物验证 T09', () => {
+  it.each(['file', 'oci'])('非目录输出根在 %s 收集和下载中返回路径合同错误', async kind => {
+    let plan; let expected;
+    if (kind === 'file') { await file(); plan = await planBuild(identity, unit); expected = await collectFileBuildManifest(plan, output, inspect); }
+    else { ({ plan } = await oci()); expected = await collectOciBuildManifest(plan, output); }
+    const badRoot = join(root, 'not-directory'); await writeFile(badRoot, 'file');
+    for (const mode of ['collect', 'download']) {
+      const operation = kind === 'file'
+        ? mode === 'collect' ? collectFileBuildManifest(plan, badRoot, inspect) : verifyDownloadedFileBuild(plan, expected, badRoot, inspect)
+        : mode === 'collect' ? collectOciBuildManifest(plan, badRoot) : verifyDownloadedOciBuild(plan, expected, badRoot);
+      await expect(operation).rejects.toBeInstanceOf(BuildContractError);
+      await expect(operation).rejects.toMatchObject({ code: 'RN_BUILD_PATH' });
+    }
+  });
+  it.each(['file', 'oci'])('打开前删除 %s 文件时收集和下载返回路径合同错误', async kind => {
+    let plan; let expected;
+    if (kind === 'file') { await file(); plan = await planBuild(identity, unit); expected = await collectFileBuildManifest(plan, output, inspect); }
+    else { ({ plan } = await oci()); expected = await collectOciBuildManifest(plan, output); }
+    const target = join(output, kind === 'file' ? 'widget.json' : 'index.json'); const bytes = await readFile(target);
+    vi.mocked(open).mockImplementation(async (...args) => {
+      if (args[0] === target) await actualFs.unlink(target);
+      return actualFs.open(...args);
+    });
+    for (const mode of ['collect', 'download']) {
+      await writeFile(target, bytes);
+      const operation = kind === 'file'
+        ? mode === 'collect' ? collectFileBuildManifest(plan, output, inspect) : verifyDownloadedFileBuild(plan, expected, output, inspect)
+        : mode === 'collect' ? collectOciBuildManifest(plan, output) : verifyDownloadedOciBuild(plan, expected, output);
+      await expect(operation).rejects.toBeInstanceOf(BuildContractError);
+      await expect(operation).rejects.toMatchObject({ code: 'RN_BUILD_PATH' });
+    }
+  });
+  it.each(['ENOENT', 'ENOTDIR', 'ELOOP', 'EIO'])('枚举中途失败分类路径错误并保留其他异常 %s', async code => {
+    await file(); const plan = await planBuild(identity, unit);
+    const error = Object.assign(new Error(code), { code }); let closed = false;
+    const directory = await actualFs.opendir(output);
+    directory[Symbol.asyncIterator] = async function* () { try { throw error; } finally { await directory.close(); closed = true; } };
+    vi.mocked(opendir).mockResolvedValueOnce(directory);
+    const operation = collectFileBuildManifest(plan, output, inspect);
+    if (code === 'EIO') await expect(operation).rejects.toBe(error);
+    else { await expect(operation).rejects.toBeInstanceOf(BuildContractError); await expect(operation).rejects.toMatchObject({ code: 'RN_BUILD_PATH' }); }
+    expect(closed).toBe(true);
+  });
+  it.each(['ENOENT', 'ENOTDIR', 'ELOOP', 'EIO'])('打开失败分类路径错误并保留其他异常 %s', async code => {
+    await file(); const plan = await planBuild(identity, unit);
+    const error = Object.assign(new Error(code), { code }); vi.mocked(open).mockRejectedValueOnce(error);
+    const operation = collectFileBuildManifest(plan, output, inspect);
+    if (code === 'EIO') await expect(operation).rejects.toBe(error);
+    else { await expect(operation).rejects.toBeInstanceOf(BuildContractError); await expect(operation).rejects.toMatchObject({ code: 'RN_BUILD_PATH' }); }
+  });
   it('OCI 收集和下载保持仓库映射语法并拒绝旧的非法名称', async () => {
     const { plan } = await oci();
     const mapped = { ...plan, fullName: 'Example/Widget__Part' };

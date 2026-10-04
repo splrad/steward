@@ -7,6 +7,17 @@ import { assertBuildOciRepository, assertBuildPath, buildFail, buildLimits, cano
 
 export type NativeVersionInspector = (bytes: Uint8Array, file: string) => Promise<string | null>;
 export interface BuildExecutionContext { buildRunId: string; outputDirectory: string; sourceDirectory: string }
+function rethrowBuildPathError(error: unknown): never {
+  if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' && ['ENOENT', 'ENOTDIR', 'ELOOP'].includes(error.code)) buildFail('RN_BUILD_PATH');
+  throw error;
+}
+async function buildPathOperation<T>(operation: Promise<T>): Promise<T> {
+  try { return await operation; } catch (error) { rethrowBuildPathError(error); }
+}
+async function* directoryEntries(path: string) {
+  const directory = await buildPathOperation(opendir(path));
+  try { for await (const entry of directory) yield entry; } catch (error) { rethrowBuildPathError(error); }
+}
 function unchanged(before: Stats, after: Stats): boolean {
   return before.dev === after.dev && before.ino === after.ino && before.size === after.size && before.mtimeMs === after.mtimeMs && before.ctimeMs === after.ctimeMs;
 }
@@ -16,7 +27,7 @@ async function readArtifactBytes(handle: FileHandle, expectedSize: number, retai
   const hash = createHash('sha256');
   let size = 0;
   for (;;) {
-    const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, expectedSize - size + 1), null);
+    const { bytesRead } = await buildPathOperation(handle.read(buffer, 0, Math.min(buffer.length, expectedSize - size + 1), null));
     if (!bytesRead) break;
     size += bytesRead;
     if (size > expectedSize) buildFail('RN_BUILD_DIGEST');
@@ -30,7 +41,7 @@ async function readArtifactBytes(handle: FileHandle, expectedSize: number, retai
 async function verifyFileStates(root: string, states: ReadonlyMap<string, Stats>): Promise<void> {
   for (const [path, before] of states) {
     const file = await assertBuildSourcePath(root, path);
-    const after = await lstat(file);
+    const after = await buildPathOperation(lstat(file));
     if (!after.isFile() || after.nlink !== 1 || !unchanged(before, after)) buildFail('RN_BUILD_PATH');
   }
 }
@@ -42,17 +53,16 @@ export async function assertBuildSourcePath(root: string, path: string, options:
   assertBuildPath(path, options);
   try {
     const base = resolve(root);
-    if ((await lstat(base)).isSymbolicLink() || await realpath(base) !== base) buildFail('RN_BUILD_PATH');
+    if ((await buildPathOperation(lstat(base))).isSymbolicLink() || await buildPathOperation(realpath(base)) !== base) buildFail('RN_BUILD_PATH');
     let target = base;
     for (const part of path === '.' ? [] : path.split('/')) {
       target = join(target, part);
-      if ((await lstat(target)).isSymbolicLink()) buildFail('RN_BUILD_PATH');
+      if ((await buildPathOperation(lstat(target))).isSymbolicLink()) buildFail('RN_BUILD_PATH');
     }
-    const actual = await realpath(target); within(base, actual);
+    const actual = await buildPathOperation(realpath(target)); within(base, actual);
     return actual;
   } catch (error) {
-    if (error && typeof error === 'object' && 'code' in error && ['ENOENT', 'ENOTDIR', 'ELOOP'].includes(String(error.code))) buildFail('RN_BUILD_PATH');
-    throw error;
+    rethrowBuildPathError(error);
   }
 }
 export function assertBuildDirectoriesSeparate(source: string, output: string, paths: { relative: typeof relative; isAbsolute: typeof isAbsolute; sep: string } = { relative, isAbsolute, sep }): void {
@@ -66,7 +76,7 @@ export async function validateBuildExecutionContext(context: BuildExecutionConte
   if (typeof context.buildRunId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u.test(context.buildRunId)) buildFail('RN_BUILD_INVALID');
   const source = await assertBuildSourcePath(context.sourceDirectory, '.', { root: true });
   const output = await assertBuildSourcePath(context.outputDirectory, '.', { root: true });
-  if (!(await lstat(source)).isDirectory() || !(await lstat(output)).isDirectory()) buildFail('RN_BUILD_PATH');
+  if (!(await buildPathOperation(lstat(source))).isDirectory() || !(await buildPathOperation(lstat(output))).isDirectory()) buildFail('RN_BUILD_PATH');
   assertBuildDirectoriesSeparate(source, output);
 }
 export async function validateBuildInputs(plan: BuildPlan, context: BuildExecutionContext): Promise<void> {
@@ -75,7 +85,7 @@ export async function validateBuildInputs(plan: BuildPlan, context: BuildExecuti
     const value = plan.inputs[field];
     if (typeof value !== 'string') continue;
     const path = await assertBuildSourcePath(context.sourceDirectory, value, { root: ['directory', 'context'].includes(field) });
-    const stat = await lstat(path);
+    const stat = await buildPathOperation(lstat(path));
     if (['directory', 'context'].includes(field) ? !stat.isDirectory() : !stat.isFile()) buildFail('RN_BUILD_PATH');
   }
 }
@@ -84,8 +94,8 @@ async function enumerate(root: string): Promise<string[]> {
   let directories = 0;
   async function walk(path: string): Promise<void> {
     if (++directories > buildLimits.maxFiles * 4) buildFail('RN_BUILD_LIMIT');
-    for await (const entry of await opendir(path)) {
-      const file = join(path, entry.name); const stat = await lstat(file);
+    for await (const entry of directoryEntries(path)) {
+      const file = join(path, entry.name); const stat = await buildPathOperation(lstat(file));
       const name = relative(root, file).split(sep).join('/'); assertBuildPath(name);
       if (stat.isSymbolicLink()) buildFail('RN_BUILD_PATH');
       if (stat.isDirectory()) await walk(file);
@@ -108,19 +118,19 @@ export async function collectFileBuildManifest(plan: BuildPlan, outputDirectory:
   let total = 0;
   for (const assignment of assignments) {
     const file = await assertBuildSourcePath(root, assignment.file);
-    const before = await lstat(file);
+    const before = await buildPathOperation(lstat(file));
     if (!before.isFile() || before.nlink !== 1 || before.size <= 0 || before.size > buildLimits.maxFileBytes) buildFail('RN_BUILD_LIMIT');
     total += before.size; if (total > buildLimits.maxTotalBytes) buildFail('RN_BUILD_LIMIT');
-    const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    const handle = await buildPathOperation(open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)));
     try {
-      if (!unchanged(before, await handle.stat())) buildFail('RN_BUILD_PATH');
+      if (!unchanged(before, await buildPathOperation(handle.stat()))) buildFail('RN_BUILD_PATH');
       const inspect = plan.version !== null ? inspectNativeVersion : undefined;
       const { bytes, size, sha256 } = await readArtifactBytes(handle, before.size, inspect !== undefined);
-      if (!unchanged(before, await handle.stat())) buildFail('RN_BUILD_DIGEST');
+      if (!unchanged(before, await buildPathOperation(handle.stat()))) buildFail('RN_BUILD_DIGEST');
       checkBuildNativeVersion(plan, inspect ? await inspect(bytes, assignment.file) : null);
       artifacts.push({ ...assignment, kind: 'file', size, sha256 });
     } finally { await handle.close(); }
-    if (await assertBuildSourcePath(root, assignment.file) !== file || !unchanged(before, await lstat(file))) buildFail('RN_BUILD_PATH');
+    if (await assertBuildSourcePath(root, assignment.file) !== file || !unchanged(before, await buildPathOperation(lstat(file)))) buildFail('RN_BUILD_PATH');
     states.set(assignment.file, before);
   }
   if (JSON.stringify(await enumerate(root)) !== JSON.stringify(files)) buildFail('RN_BUILD_OUTPUT');
@@ -149,17 +159,17 @@ export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: 
   let total = 0;
   const bytesAt = async (path: string, limit: number, retainBytes = true) => {
     const file = await assertBuildSourcePath(root, path);
-    const before = await lstat(file);
+    const before = await buildPathOperation(lstat(file));
     if (!before.isFile() || before.nlink !== 1 || before.size <= 0 || before.size > limit) buildFail('RN_BUILD_LIMIT');
     const previous = states.get(path);
     if (previous && !unchanged(previous, before)) buildFail('RN_BUILD_PATH');
     if (!previous) total += before.size;
     if (total > buildLimits.maxTotalBytes) buildFail('RN_BUILD_LIMIT');
-    const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    const handle = await buildPathOperation(open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)));
     try {
-      if (!unchanged(before, await handle.stat())) buildFail('RN_BUILD_PATH');
+      if (!unchanged(before, await buildPathOperation(handle.stat()))) buildFail('RN_BUILD_PATH');
       const result = await readArtifactBytes(handle, before.size, retainBytes);
-      if (!unchanged(before, await handle.stat()) || !unchanged(before, await lstat(file))) buildFail('RN_BUILD_DIGEST');
+      if (!unchanged(before, await buildPathOperation(handle.stat())) || !unchanged(before, await buildPathOperation(lstat(file)))) buildFail('RN_BUILD_DIGEST');
       states.set(path, before);
       return result;
     } finally { await handle.close(); }
