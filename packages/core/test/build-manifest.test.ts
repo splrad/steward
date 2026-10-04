@@ -8,6 +8,13 @@ import type { DeliveryConfiguration } from '../src/delivery-config.js';
 const identity: BuildIdentity = { repositoryId: 1400000001, fullName: 'example/widget', buildId: 'asset', profile: 'custom-adapter-v1', targetSha: 'a'.repeat(40), policySha: 'b'.repeat(40), version: '1.2.3' };
 const unit: BuildUnit = { profile: 'custom-adapter-v1', inputs: { entrypoint: 'tools/build.mjs', runtime: 'node', runnerFamily: 'linux' }, outputs: [{ id: 'archive', kind: 'file', match: 'widget-{version}.zip', count: 1, mediaType: 'application/zip' }] };
 describe('构建合同 T09/T10', () => {
+  it.each([null, []].map(value => ({ value })))('规划阶段拒绝非法身份或构建单元根值 %j', async ({ value }) => {
+    await expect(planBuild(value as unknown as BuildIdentity, unit)).rejects.toThrow('RN_BUILD_INVALID');
+    await expect(planBuild(identity, value as unknown as BuildUnit)).rejects.toThrow('RN_BUILD_INVALID');
+  });
+  it.each([null, {}, 'outputs', 1, true, [null], [[]], [false], ['file']].map(outputs => ({ outputs })))('规划阶段拒绝非法输出结构 %j', async ({ outputs }) => {
+    await expect(planBuild(identity, { ...unit, outputs } as unknown as BuildUnit)).rejects.toThrow('RN_BUILD_OUTPUT');
+  });
   it.each(['COM¹', 'com².zip', 'folder/COM³.tar.gz', 'LPT¹', 'lpt².json', 'folder/LPT³.zip'])('拒绝 Windows 保留设备路径 %j', path => {
     expect(() => assertBuildPath(path)).toThrow('RN_BUILD_PATH');
     expect(() => assertBuildPath(path, { glob: true })).toThrow('RN_BUILD_PATH');

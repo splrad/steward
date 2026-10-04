@@ -72,6 +72,7 @@ function exact(value: object, fields: readonly string[]): void {
   if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...fields].sort())) buildFail('RN_BUILD_INVALID');
 }
 export function assertBuildIdentity(identity: BuildIdentity): void {
+  if (!identity || typeof identity !== 'object' || Array.isArray(identity)) buildFail('RN_BUILD_INVALID');
   if (!Number.isSafeInteger(identity.repositoryId) || identity.repositoryId <= 0 || typeof identity.fullName !== 'string' || !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/u.test(identity.fullName)
     || typeof identity.buildId !== 'string' || !idPattern.test(identity.buildId) || !buildProfiles.includes(identity.profile) || !shaPattern.test(identity.targetSha) || identity.targetSha.length !== 40
     || !shaPattern.test(identity.policySha) || identity.policySha.length !== 40) buildFail('RN_BUILD_INVALID');
@@ -85,8 +86,8 @@ export function assertBuildPath(path: string, options: { glob?: boolean; root?: 
 }
 export async function planBuild(identity: BuildIdentity, unit: BuildUnit): Promise<BuildPlan> {
   assertBuildIdentity(identity);
-  if (identity.profile !== unit.profile) buildFail('RN_BUILD_INVALID');
   exact(unit, ['profile', 'inputs', 'outputs']);
+  if (identity.profile !== unit.profile) buildFail('RN_BUILD_INVALID');
   exact(unit.inputs, inputFields[unit.profile]);
   const inputs: Record<string, unknown> = {};
   for (const field of inputFields[unit.profile]) {
@@ -105,7 +106,9 @@ export async function planBuild(identity: BuildIdentity, unit: BuildUnit): Promi
   if (unit.profile === 'dotnet-assets-v1' && (inputs.configuration !== 'Release' || !/^net[0-9]+(?:\.[0-9]+)?(?:-windows)?$/u.test(String(inputs.framework)) || !/^(?:win|linux|osx)-(?:x64|arm64)$/u.test(String(inputs.runtime)))) buildFail('RN_BUILD_INVALID');
   if (unit.profile === 'node-package-v1' && (inputs.packageManager !== 'npm' || !idPattern.test(String(inputs.buildTask)))) buildFail('RN_BUILD_INVALID');
   if (unit.profile === 'custom-adapter-v1' && (!String(inputs.entrypoint).startsWith('tools/') || !['pwsh', 'node', 'bash'].includes(String(inputs.runtime)) || !['windows', 'linux'].includes(String(inputs.runnerFamily)) || (inputs.runtime === 'bash' && inputs.runnerFamily !== 'linux'))) buildFail('RN_BUILD_INVALID');
-  if (!unit.outputs.length || unit.outputs.length > buildLimits.maxFiles || new Set(unit.outputs.map(rule => rule.id)).size !== unit.outputs.length) buildFail('RN_BUILD_OUTPUT');
+  if (!Array.isArray(unit.outputs) || !unit.outputs.length || unit.outputs.length > buildLimits.maxFiles
+    || unit.outputs.some(rule => !rule || typeof rule !== 'object' || Array.isArray(rule))
+    || new Set(unit.outputs.map(rule => rule.id)).size !== unit.outputs.length) buildFail('RN_BUILD_OUTPUT');
   for (const rule of unit.outputs) {
     exact(rule, unit.profile === 'oci-image-v1' ? ['id', 'kind', 'count'] : ['id', 'kind', 'match', 'count', 'mediaType']);
     if (typeof rule.id !== 'string' || !idPattern.test(rule.id) || !Number.isSafeInteger(rule.count) || rule.count < 1 || rule.count > buildLimits.maxFiles) buildFail('RN_BUILD_OUTPUT');
