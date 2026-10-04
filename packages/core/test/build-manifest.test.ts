@@ -2,12 +2,29 @@ import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import AjvModule from 'ajv/dist/2020.js';
-import { assertBuildPath, BuildContractError, canonicalBuildManifest, checkBuildNativeVersion, decodeBuildJson, deliveryBuildReadiness, matchBuildFiles, parseBuildManifest, planBuild, selectDeliveryBuilds, type BuildIdentity, type BuildManifest, type BuildUnit } from '../src/build-manifest.js';
+import { assertBuildOciRepository, assertBuildPath, BuildContractError, canonicalBuildManifest, checkBuildNativeVersion, decodeBuildJson, deliveryBuildReadiness, matchBuildFiles, parseBuildManifest, planBuild, selectDeliveryBuilds, type BuildIdentity, type BuildManifest, type BuildUnit } from '../src/build-manifest.js';
 import type { DeliveryConfiguration } from '../src/delivery-config.js';
 
 const identity: BuildIdentity = { repositoryId: 1400000001, fullName: 'example/widget', buildId: 'asset', profile: 'custom-adapter-v1', targetSha: 'a'.repeat(40), policySha: 'b'.repeat(40), version: '1.2.3' };
 const unit: BuildUnit = { profile: 'custom-adapter-v1', inputs: { entrypoint: 'tools/build.mjs', runtime: 'node', runnerFamily: 'linux' }, outputs: [{ id: 'archive', kind: 'file', match: 'widget-{version}.zip', count: 1, mediaType: 'application/zip' }] };
 describe('构建合同 T09/T10', () => {
+  it.each(['[::1]:5000/example/widget', '[2001:DB8::1]/example/widget', 'ghcr.io/example/widget:Release-1'])('Core 和 Schema 接受 IPv6 registry 与大小写敏感标签 %s', async repository => {
+    const manifest: BuildManifest = { ...identity, profile: 'oci-image-v1', schemaVersion: 1, inputsSha256: 'c'.repeat(64), artifacts: [{ id: 'image', kind: 'oci-image', reference: `${repository}@sha256:${'d'.repeat(64)}`, digest: `sha256:${'d'.repeat(64)}` }] };
+    const Ajv = AjvModule as unknown as typeof import('ajv').default;
+    const validate = new Ajv({ strict: false }).compile(JSON.parse(await readFile('schema/build-manifest.schema.json', 'utf8')));
+    expect(validate(manifest)).toBe(true);
+    expect(parseBuildManifest(new TextEncoder().encode(canonicalBuildManifest(manifest)))).toEqual(manifest);
+    if (!repository.includes('Release-1')) expect(() => assertBuildOciRepository(repository)).not.toThrow();
+  });
+  it.each(['[fe80::1%eth0]/example/widget', '[::ffff:192.0.2.1]/example/widget', '[::1]/Example/Widget', 'example/widget:-Release', `example/widget:${'R'.repeat(129)}`])('Core 和 Schema 拒绝非法 IPv6 路径或标签 %s', async repository => {
+    const manifest: BuildManifest = { ...identity, profile: 'oci-image-v1', schemaVersion: 1, inputsSha256: 'c'.repeat(64), artifacts: [{ id: 'image', kind: 'oci-image', reference: `${repository}@sha256:${'d'.repeat(64)}`, digest: `sha256:${'d'.repeat(64)}` }] };
+    const Ajv = AjvModule as unknown as typeof import('ajv').default;
+    const validate = new Ajv({ strict: false }).compile(JSON.parse(await readFile('schema/build-manifest.schema.json', 'utf8')));
+    expect(validate(manifest)).toBe(false);
+    expect(() => canonicalBuildManifest(manifest)).toThrow('RN_BUILD_OUTPUT');
+    expect(() => parseBuildManifest(new TextEncoder().encode(JSON.stringify(manifest)))).toThrow('RN_BUILD_OUTPUT');
+  });
+
   it.each(['example//widget', 'example/.github', 'example/widget.', 'example/_widget', 'example/widget___part', 'example/widget:tag:extra'])('生成和解析拒绝非法 OCI 仓库引用 %s', repository => {
     const manifest: BuildManifest = { ...identity, profile: 'oci-image-v1', schemaVersion: 1, inputsSha256: 'c'.repeat(64), artifacts: [{ id: 'image', kind: 'oci-image', reference: `${repository}@sha256:${'d'.repeat(64)}`, digest: `sha256:${'d'.repeat(64)}` }] };
     expect(() => canonicalBuildManifest(manifest)).toThrow('RN_BUILD_OUTPUT');
@@ -105,14 +122,15 @@ describe('构建合同 T09/T10', () => {
     expect(new TextEncoder().encode(canonicalBuildManifest(manifest)).byteLength).toBe(512 * 1024 - 1);
   });
   it.each([
-    ['dotnet-assets-v1', { project: 'src/Widget.csproj', configuration: 'Release', framework: 'net8.0-windows', runtime: 'win-x64' }, 'windows-latest'],
-    ['node-package-v1', { directory: '.', lockfile: 'package-lock.json', buildTask: 'build', packageManager: 'npm' }, 'ubuntu-latest'],
-    ['oci-image-v1', { context: '.', dockerfile: 'Dockerfile', platforms: ['linux/amd64'] }, 'ubuntu-latest'],
-    ['custom-adapter-v1', unit.inputs, 'ubuntu-latest'],
+    ['dotnet-assets-v1', { project: 'src/Widget.csproj', configuration: 'Release', framework: 'net8.0-windows', runtime: 'win-x64' }, 'windows'],
+    ['node-package-v1', { directory: '.', lockfile: 'package-lock.json', buildTask: 'build', packageManager: 'npm' }, 'linux'],
+    ['oci-image-v1', { context: '.', dockerfile: 'Dockerfile', platforms: ['linux/amd64'] }, 'linux'],
+    ['custom-adapter-v1', unit.inputs, 'linux'],
   ] as const)('固定 %s 的受控计划', async (profile, inputs, runner) => {
     const outputs = profile === 'oci-image-v1' ? [{ id: 'image', kind: 'oci-image' as const, count: 1 }] : unit.outputs;
     const plan = await planBuild({ ...identity, profile }, { profile, inputs, outputs });
-    expect(plan.runner).toBe(runner); expect(plan.environment).toBeNull(); expect(plan.permissions).toEqual({ contents: 'read' }); expect(plan.persistCredentials).toBe(false);
+    expect(plan.runnerFamily).toBe(runner);
+    for (const field of ['runner', 'environment', 'permissions', 'persistCredentials']) expect(plan).not.toHaveProperty(field);
     expect(plan.inputsSha256).toMatch(/^[0-9a-f]{64}$/u);
     expect(plan.timeoutMinutes).toBe(45);
   });

@@ -7,7 +7,7 @@ import { link, mkdir, mkdtemp, open, opendir, readFile, realpath, rm, symlink, t
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, win32 } from 'node:path';
 import { BuildContractError, buildLimits, planBuild, type BuildIdentity, type BuildUnit } from '../../core/src/build-manifest.js';
-import { assertBuildDirectoriesSeparate, assertBuildSourcePath, collectFileBuildManifest, collectOciBuildManifest, validateBuildExecutionContext, validateBuildInputs, verifyDownloadedFileBuild, verifyDownloadedOciBuild } from '../src/build-manifest.js';
+import { githubBuildExecutionPolicy, assertBuildDirectoriesSeparate, assertBuildSourcePath, collectFileBuildManifest, collectOciBuildManifest, validateBuildExecutionContext, validateBuildInputs, verifyDownloadedFileBuild, verifyDownloadedOciBuild } from '../src/build-manifest.js';
 
 const identity: BuildIdentity = { repositoryId: 1400000001, fullName: 'example/widget', buildId: 'asset', profile: 'custom-adapter-v1', targetSha: 'a'.repeat(40), policySha: 'b'.repeat(40), version: '1.2.3' };
 const unit: BuildUnit = { profile: 'custom-adapter-v1', inputs: { entrypoint: 'tools/build.mjs', runtime: 'node', runnerFamily: 'linux' }, outputs: [{ id: 'archive', kind: 'file', match: '*.json', count: 1, mediaType: 'application/json' }] };
@@ -59,6 +59,72 @@ async function oci(platforms = ['linux/amd64'], version = '1.2.3') {
   return { image, store, plan: await planBuild({ ...identity, profile: 'oci-image-v1' }, { profile: 'oci-image-v1', inputs: { context: '.', dockerfile: 'Dockerfile', platforms }, outputs: [{ id: 'image', kind: 'oci-image', count: 1 }] }) };
 }
 describe('中央文件产物验证 T09', () => {
+  it.each(['ENOENT', 'ENOTDIR', 'ELOOP', 'EIO'])('读取失败分类路径错误并保留其他异常 %s', async code => {
+    await file(); const plan = await planBuild(identity, unit); const error = Object.assign(new Error(code), { code });
+    vi.mocked(open).mockImplementationOnce(async (...args) => {
+      const handle = await actualFs.open(...args); vi.spyOn(handle, 'read').mockRejectedValueOnce(error); return handle;
+    });
+    const operation = collectFileBuildManifest(plan, output, inspect);
+    if (code === 'EIO') await expect(operation).rejects.toBe(error);
+    else { await expect(operation).rejects.toBeInstanceOf(BuildContractError); await expect(operation).rejects.toMatchObject({ code: 'RN_BUILD_PATH' }); }
+  });
+  it('native inspector 的同名错误保持原异常', async () => {
+    await file(); const plan = await planBuild(identity, unit); const error = Object.assign(new Error('inspector'), { code: 'ENOENT' });
+    await expect(collectFileBuildManifest(plan, output, async () => { throw error; })).rejects.toBe(error);
+  });
+  it('多平台 index 不能声明单一架构', async () => {
+    const { image, store, plan } = await oci(['linux/amd64', 'linux/arm64']);
+    const outer = { ...await store({ schemaVersion: 2, manifests: [image] }, 'application/vnd.oci.image.index.v1+json'), platform: { os: 'linux', architecture: 'amd64' }, annotations: { 'org.opencontainers.image.ref.name': 'image' } };
+    await writeFile(join(output, 'index.json'), JSON.stringify({ schemaVersion: 2, manifests: [outer] }));
+    await expect(collectOciBuildManifest(plan, output)).rejects.toThrow('RN_BUILD_INVALID');
+    await expect(verifyDownloadedOciBuild(plan, {} as never, output)).rejects.toThrow('RN_BUILD_INVALID');
+  });
+
+  it.each([
+    ['dotnet-assets-v1', { project: 'src/Widget.csproj', configuration: 'Release', framework: 'net8.0-windows', runtime: 'win-x64' }, 'windows-latest'],
+    ['node-package-v1', { directory: '.', lockfile: 'package-lock.json', buildTask: 'build', packageManager: 'npm' }, 'ubuntu-latest'],
+    ['oci-image-v1', { context: '.', dockerfile: 'Dockerfile', platforms: ['linux/amd64'] }, 'ubuntu-latest'],
+    ['custom-adapter-v1', unit.inputs, 'ubuntu-latest'],
+    ['custom-adapter-v1', { ...unit.inputs, runnerFamily: 'windows' }, 'windows-latest'],
+  ] as const)('GitHub adapter 为 %s 映射执行策略 %j', async (profile, inputs, runner) => {
+    const outputs = profile === 'oci-image-v1' ? [{ id: 'image', kind: 'oci-image' as const, count: 1 }] : unit.outputs;
+    const plan = await planBuild({ ...identity, profile }, { profile, inputs, outputs });
+    expect(githubBuildExecutionPolicy(plan)).toEqual({ runner, timeoutMinutes: 45, permissions: { contents: 'read' }, environment: null, persistCredentials: false });
+  });
+  it('GitHub adapter 拒绝未知 runner family', async () => {
+    const plan = await planBuild(identity, unit);
+    expect(() => githubBuildExecutionPolicy({ ...plan, runnerFamily: 'unknown' } as unknown as typeof plan)).toThrow('RN_BUILD_INVALID');
+  });
+  it('OCI 收集和下载接受 IPv6 registry 映射', async () => {
+    const { plan } = await oci(); const repository = '[::1]:5000/example/widget';
+    const manifest = await collectOciBuildManifest(plan, output, repository);
+    expect(manifest.artifacts[0]).toMatchObject({ reference: expect.stringContaining(`${repository}@sha256:`) });
+    await expect(verifyDownloadedOciBuild(plan, manifest, output, repository)).resolves.toBeUndefined();
+  });
+  it.each(['root', 'nested'].flatMap(location => ['matching', 'missing', 'mismatch', 'invalid-type', 'null'].map(mode => [location, mode])))('嵌套 index 平台声明在 %s 处理 %s', async (location, mode) => {
+    const { image, store, plan } = await oci(['linux/arm64']);
+    const platform = mode === 'missing' ? undefined : mode === 'matching' ? { os: 'linux', architecture: 'arm64' } : mode === 'mismatch' ? { os: 'linux', architecture: 'amd64' } : mode === 'null' ? null : { os: ['linux'], architecture: 'arm64' };
+    const child = { ...await store({ schemaVersion: 2, manifests: [image] }, 'application/vnd.oci.image.index.v1+json'), ...(location === 'nested' ? { platform } : {}) };
+    const outer = { ...await store({ schemaVersion: 2, manifests: [child] }, 'application/vnd.oci.image.index.v1+json'), ...(location === 'root' ? { platform } : {}), annotations: { 'org.opencontainers.image.ref.name': 'image' } };
+    await writeFile(join(output, 'index.json'), JSON.stringify({ schemaVersion: 2, manifests: [outer] }));
+    if (mode === 'matching' || mode === 'missing') {
+      const manifest = await collectOciBuildManifest(plan, output);
+      expect(manifest.artifacts[0]).toMatchObject({ digest: outer.digest });
+      await expect(verifyDownloadedOciBuild(plan, manifest, output)).resolves.toBeUndefined();
+    } else {
+      await expect(collectOciBuildManifest(plan, output)).rejects.toThrow('RN_BUILD_INVALID');
+      await expect(verifyDownloadedOciBuild(plan, {} as never, output)).rejects.toThrow('RN_BUILD_INVALID');
+    }
+  });
+  it('未声明平台的嵌套多平台 index 保留所有平台和外层摘要', async () => {
+    const { image, store, plan } = await oci(['linux/amd64', 'linux/arm64']);
+    const outer = { ...await store({ schemaVersion: 2, manifests: [image] }, 'application/vnd.oci.image.index.v1+json'), annotations: { 'org.opencontainers.image.ref.name': 'image' } };
+    await writeFile(join(output, 'index.json'), JSON.stringify({ schemaVersion: 2, manifests: [outer] }));
+    const manifest = await collectOciBuildManifest(plan, output);
+    expect(manifest.artifacts[0]).toMatchObject({ digest: outer.digest });
+    await expect(verifyDownloadedOciBuild(plan, manifest, output)).resolves.toBeUndefined();
+  });
+
   it.each(['file', 'oci'])('非目录输出根在 %s 收集和下载中返回路径合同错误', async kind => {
     let plan; let expected;
     if (kind === 'file') { await file(); plan = await planBuild(identity, unit); expected = await collectFileBuildManifest(plan, output, inspect); }

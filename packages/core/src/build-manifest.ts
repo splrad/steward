@@ -50,8 +50,7 @@ export interface BuildOutputRule { id: string; kind: 'file' | 'oci-image'; match
 export interface BuildUnit { profile: BuildProfile; inputs: Record<string, unknown>; outputs: BuildOutputRule[] }
 export interface BuildPlan extends BuildIdentity {
   inputs: Record<string, unknown>; inputsSha256: string; outputs: BuildOutputRule[];
-  runner: 'windows-latest' | 'ubuntu-latest'; timeoutMinutes: 45;
-  permissions: { contents: 'read' }; environment: null; persistCredentials: false;
+  runnerFamily: 'windows' | 'linux'; timeoutMinutes: 45;
 }
 export interface FileArtifact { id: string; kind: 'file'; file: string; mediaType: string; size: number; sha256: string }
 export interface ImageArtifact { id: string; kind: 'oci-image'; reference: string; digest: string }
@@ -64,9 +63,10 @@ const digestPattern = /^[0-9a-f]{64}$/u;
 const ociPathComponent = '[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*';
 const ociDomainComponent = '[a-z0-9](?:[a-z0-9-]*[a-z0-9])?';
 const ociRemoteName = `${ociPathComponent}(?:/${ociPathComponent})*`;
-const ociName = `(?:${ociDomainComponent}(?:\\.${ociDomainComponent})*(?::[0-9]+)?/)?${ociRemoteName}`;
-const ociRepositoryPattern = new RegExp(`^(?:${ociDomainComponent}(?:\\.${ociDomainComponent})*(?::[0-9]+)?/)?(${ociRemoteName})$`, 'u');
-const ociReferencePattern = new RegExp(`^(${ociName})(?::[a-z0-9_][a-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$`, 'u');
+const ociHost = `(?:${ociDomainComponent}(?:\\.${ociDomainComponent})*|\\[[a-fA-F0-9:]+\\])`;
+const ociName = `(?:${ociHost}(?::[0-9]+)?/)?${ociRemoteName}`;
+const ociRepositoryPattern = new RegExp(`^(?:${ociHost}(?::[0-9]+)?/)?(${ociRemoteName})$`, 'u');
+const ociReferencePattern = new RegExp(`^(${ociName})(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$`, 'u');
 function validOciRepository(repository: string): boolean {
   const match = ociRepositoryPattern.exec(repository);
   return match !== null && match[1]!.length <= 255;
@@ -143,10 +143,9 @@ export async function planBuild(identity: BuildIdentity, unit: BuildUnit): Promi
   }
   const expandedIds = unit.outputs.flatMap(rule => Array.from({ length: rule.count }, (_, index) => rule.count === 1 ? rule.id : `${rule.id}-${index + 1}`));
   if (expandedIds.length > buildLimits.maxFiles || new Set(expandedIds).size !== expandedIds.length) buildFail('RN_BUILD_OUTPUT');
-  const runner = unit.profile === 'dotnet-assets-v1' || (unit.profile === 'custom-adapter-v1' && inputs.runnerFamily === 'windows') ? 'windows-latest' : 'ubuntu-latest';
+  const runnerFamily = unit.profile === 'dotnet-assets-v1' || (unit.profile === 'custom-adapter-v1' && inputs.runnerFamily === 'windows') ? 'windows' : 'linux';
   const outputs = unit.outputs.map(rule => ({ ...rule }));
-  return { ...identity, inputs, inputsSha256: await sha256Hex(`${JSON.stringify(inputs)}\n`), outputs, runner,
-    timeoutMinutes: 45, permissions: { contents: 'read' }, environment: null, persistCredentials: false };
+  return { ...identity, inputs, inputsSha256: await sha256Hex(`${JSON.stringify(inputs)}\n`), outputs, runnerFamily, timeoutMinutes: 45 };
 }
 export function matchBuildFiles(plan: BuildPlan, files: readonly string[]): { id: string; file: string; mediaType: string }[] {
   if (!files.length || files.length > buildLimits.maxFiles || new Set(files.map(file => file.toLowerCase())).size !== files.length) buildFail('RN_BUILD_OUTPUT');

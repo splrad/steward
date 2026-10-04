@@ -7,6 +7,14 @@ import { assertBuildOciRepository, assertBuildPath, buildFail, buildLimits, cano
 
 export type NativeVersionInspector = (bytes: Uint8Array, file: string) => Promise<string | null>;
 export interface BuildExecutionContext { buildRunId: string; outputDirectory: string; sourceDirectory: string }
+export function githubBuildExecutionPolicy(plan: BuildPlan): {
+  runner: 'windows-latest' | 'ubuntu-latest'; timeoutMinutes: 45;
+  permissions: { contents: 'read' }; environment: null; persistCredentials: false;
+} {
+  if (!['windows', 'linux'].includes(plan.runnerFamily) || plan.timeoutMinutes !== 45) buildFail('RN_BUILD_INVALID');
+  return { runner: plan.runnerFamily === 'windows' ? 'windows-latest' : 'ubuntu-latest', timeoutMinutes: 45,
+    permissions: { contents: 'read' }, environment: null, persistCredentials: false };
+}
 function rethrowBuildPathError(error: unknown): never {
   if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' && ['ENOENT', 'ENOTDIR', 'ELOOP'].includes(error.code)) buildFail('RN_BUILD_PATH');
   throw error;
@@ -213,14 +221,17 @@ export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: 
     if (matches.length !== 1) buildFail('RN_BUILD_OUTPUT');
     const descriptor = matches[0]!;
     const platforms = new Set<string>();
-    const inspect = async (current: any, depth: number): Promise<void> => {
+    const inspect = async (current: any, depth: number): Promise<Set<string>> => {
       if (depth > 8) buildFail('RN_BUILD_LIMIT');
       const image = parse(await blob(current));
       if (image?.schemaVersion !== 2) buildFail('RN_BUILD_INVALID');
       if (current.mediaType === 'application/vnd.oci.image.index.v1+json') {
         if (!Array.isArray(image.manifests) || !image.manifests.length || image.manifests.length > buildLimits.maxFiles) buildFail('RN_BUILD_INVALID');
-        for (const child of image.manifests) await inspect(child, depth + 1);
-        return;
+        const subtree = new Set<string>();
+        for (const child of image.manifests) for (const platform of await inspect(child, depth + 1)) subtree.add(platform);
+        if (current.platform !== undefined && (typeof current.platform?.os !== 'string' || typeof current.platform?.architecture !== 'string'
+          || subtree.size !== 1 || !subtree.has(`${current.platform.os}/${current.platform.architecture}`))) buildFail('RN_BUILD_INVALID');
+        return subtree;
       }
       if (current.mediaType !== 'application/vnd.oci.image.manifest.v1+json' || image.config?.mediaType !== 'application/vnd.oci.image.config.v1+json' || !Array.isArray(image.layers) || image.layers.length > buildLimits.maxFiles) buildFail('RN_BUILD_INVALID');
       const config = parse(await blob(image.config));
@@ -234,6 +245,7 @@ export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: 
         if (!['application/vnd.oci.image.layer.v1.tar', 'application/vnd.oci.image.layer.v1.tar+gzip', 'application/vnd.oci.image.layer.v1.tar+zstd'].includes(layer?.mediaType)) buildFail('RN_BUILD_INVALID');
         await blob(layer, false);
       }
+      return new Set([platform]);
     };
     await inspect(descriptor, 0);
     if (platforms.size !== (plan.inputs.platforms as string[]).length) buildFail('RN_BUILD_OUTPUT');

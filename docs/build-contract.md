@@ -3,9 +3,11 @@
 The core build contract supports `dotnet-assets-v1`, `node-package-v1`,
 `oci-image-v1`, and `custom-adapter-v1`. `planBuild` validates each profile's
 typed inputs and output rules, freezes the repository and commit identities,
-and hashes the canonical inputs. Plans specify the runner family, a 45-minute
-timeout, read-only repository permissions, no protected environment, and no
-persisted Git credentials.
+and hashes the canonical inputs. Core plans specify a neutral `runnerFamily`
+(`windows` or `linux`) and a 45-minute timeout. The runner adapter
+`githubBuildExecutionPolicy` maps that family to `windows-latest` or
+`ubuntu-latest` and sets read-only repository permissions, no protected
+environment, and no persisted Git credentials.
 
 The runner adapter calls `validateBuildInputs` before execution to check source
 paths and the separate output directory. A custom entrypoint must be a regular
@@ -44,14 +46,17 @@ accepts an explicit normalized repository from the catalog or calling adapter,
 so a source such as `example/.github` can use an independent registry namespace.
 Collection and download verification accept the same repository mapping and
 compare the resulting manifest references.
-References retain optional registry ports and tags, use SHA-256 digests, and must
+Registry hosts support bracketed IPv6 addresses and optional ports. Tags retain
+case, including uppercase letters. References use SHA-256 digests and must
 match the artifact digest. Remote repository names are limited to 255 characters.
 
 The collectors recheck every file's identity and metadata after the whole
 collection pass, including OCI layout metadata and blobs. OCI total-size limits
 include the layout and index files. Shared layers reuse verified digest and size
-records without retaining their bytes, and leaf descriptors must agree with
-their image configs on OS and architecture.
+records without retaining their bytes. Leaf descriptors must agree with their
+image configs on OS and architecture. An index descriptor with a platform
+declaration must contain that OS and architecture throughout its subtree;
+indexes without a platform declaration may contain multiple planned platforms.
 
 OCI JSON metadata is limited to 512 KiB before reading, both by descriptor and
 actual file size. Reads stop at the observed size plus one byte to detect growth.
