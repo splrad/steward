@@ -8,6 +8,21 @@ import type { DeliveryConfiguration } from '../src/delivery-config.js';
 const identity: BuildIdentity = { repositoryId: 1400000001, fullName: 'example/widget', buildId: 'asset', profile: 'custom-adapter-v1', targetSha: 'a'.repeat(40), policySha: 'b'.repeat(40), version: '1.2.3' };
 const unit: BuildUnit = { profile: 'custom-adapter-v1', inputs: { entrypoint: 'tools/build.mjs', runtime: 'node', runnerFamily: 'linux' }, outputs: [{ id: 'archive', kind: 'file', match: 'widget-{version}.zip', count: 1, mediaType: 'application/zip' }] };
 describe('构建合同 T09/T10', () => {
+  it.each([{ platforms: new Array<string>(1) }, { platforms: ['linux/amd64', ,] }])('规划拒绝稀疏平台数组 %j', async ({ platforms }) => {
+    await expect(planBuild({ ...identity, profile: 'oci-image-v1' }, { profile: 'oci-image-v1', inputs: { context: '.', dockerfile: 'Dockerfile', platforms }, outputs: [{ id: 'image', kind: 'oci-image', count: 1 }] })).rejects.toThrow('RN_BUILD_INVALID');
+  });
+  it.each(['COM{version}.zip', 'LPT{version}.zip', 'nested/COM{version}*.zip'])('规划拒绝展开后保留设备路径 %s', async match => {
+    await expect(planBuild(identity, { ...unit, outputs: [{ ...unit.outputs[0]!, match }] })).rejects.toThrow('RN_BUILD_PATH');
+  });
+  it('展开版本后仍保留通配匹配语义', async () => {
+    const plan = await planBuild(identity, { ...unit, outputs: [{ ...unit.outputs[0]!, match: 'widget-{version}*.zip' }] });
+    expect(matchBuildFiles(plan, ['widget-1.2.3-linux.zip'])).toHaveLength(1);
+  });
+  it.each([{ artifacts: new Array<BuildManifest['artifacts'][number]>(1) }, { artifacts: [{ id: 'archive', kind: 'file', file: 'asset.zip', mediaType: 'application/zip', size: 1, sha256: 'd'.repeat(64) }, ,] }])('生成拒绝稀疏产物数组 %j', ({ artifacts }) => {
+    const manifest = { ...identity, schemaVersion: 1, inputsSha256: 'c'.repeat(64), artifacts } as BuildManifest;
+    expect(() => canonicalBuildManifest(manifest)).toThrow('RN_BUILD_INVALID');
+    expect(() => parseBuildManifest(new TextEncoder().encode(JSON.stringify(manifest)))).toThrow('RN_BUILD_INVALID');
+  });
   it.each(['01.2.3', '1.2', '1.2.3.0', '1.2.3-beta', '1.2.3\n'])('规划、生成和解析统一拒绝格式错误版本 %j', async version => {
     const manifest: BuildManifest = { ...identity, version, schemaVersion: 1, inputsSha256: 'c'.repeat(64), artifacts: [{ id: 'archive', kind: 'file', file: 'asset.zip', mediaType: 'application/zip', size: 1, sha256: 'd'.repeat(64) }] };
     await expect(planBuild({ ...identity, version }, unit)).rejects.toBeInstanceOf(BuildContractError);

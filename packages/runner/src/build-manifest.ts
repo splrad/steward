@@ -40,15 +40,20 @@ function within(root: string, target: string): void {
 }
 export async function assertBuildSourcePath(root: string, path: string, options: { root?: boolean } = {}): Promise<string> {
   assertBuildPath(path, options);
-  const base = resolve(root);
-  if ((await lstat(base)).isSymbolicLink() || await realpath(base) !== base) buildFail('RN_BUILD_PATH');
-  let target = base;
-  for (const part of path === '.' ? [] : path.split('/')) {
-    target = join(target, part);
-    if ((await lstat(target)).isSymbolicLink()) buildFail('RN_BUILD_PATH');
+  try {
+    const base = resolve(root);
+    if ((await lstat(base)).isSymbolicLink() || await realpath(base) !== base) buildFail('RN_BUILD_PATH');
+    let target = base;
+    for (const part of path === '.' ? [] : path.split('/')) {
+      target = join(target, part);
+      if ((await lstat(target)).isSymbolicLink()) buildFail('RN_BUILD_PATH');
+    }
+    const actual = await realpath(target); within(base, actual);
+    return actual;
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && ['ENOENT', 'ENOTDIR', 'ELOOP'].includes(String(error.code))) buildFail('RN_BUILD_PATH');
+    throw error;
   }
-  const actual = await realpath(target); within(base, actual);
-  return actual;
 }
 export function assertBuildDirectoriesSeparate(source: string, output: string, paths: { relative: typeof relative; isAbsolute: typeof isAbsolute; sep: string } = { relative, isAbsolute, sep }): void {
   const nested = (from: string, to: string) => {
@@ -109,9 +114,10 @@ export async function collectFileBuildManifest(plan: BuildPlan, outputDirectory:
     const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     try {
       if (!unchanged(before, await handle.stat())) buildFail('RN_BUILD_PATH');
-      const { bytes, size, sha256 } = await readArtifactBytes(handle, before.size, inspectNativeVersion !== undefined);
+      const inspect = plan.version !== null ? inspectNativeVersion : undefined;
+      const { bytes, size, sha256 } = await readArtifactBytes(handle, before.size, inspect !== undefined);
       if (!unchanged(before, await handle.stat())) buildFail('RN_BUILD_DIGEST');
-      checkBuildNativeVersion(plan, inspectNativeVersion ? await inspectNativeVersion(bytes, assignment.file) : null);
+      checkBuildNativeVersion(plan, inspect ? await inspect(bytes, assignment.file) : null);
       artifacts.push({ ...assignment, kind: 'file', size, sha256 });
     } finally { await handle.close(); }
     if (await assertBuildSourcePath(root, assignment.file) !== file || !unchanged(before, await lstat(file))) buildFail('RN_BUILD_PATH');

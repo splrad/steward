@@ -97,7 +97,7 @@ export async function planBuild(identity: BuildIdentity, unit: BuildUnit): Promi
   for (const field of inputFields[unit.profile]) {
     const value = unit.inputs[field];
     if (field === 'platforms') {
-      if (!Array.isArray(value) || !value.length || value.some(item => typeof item !== 'string' || !/^linux\/(?:amd64|arm64)$/u.test(item)) || new Set(value).size !== value.length) buildFail('RN_BUILD_INVALID');
+      if (!Array.isArray(value) || !value.length || Array.from(value).some(item => typeof item !== 'string' || !/^linux\/(?:amd64|arm64)$/u.test(item)) || new Set(value).size !== value.length) buildFail('RN_BUILD_INVALID');
       inputs[field] = [...value].sort();
     } else {
       if (typeof value !== 'string' || !value || value.trim() !== value || /[\u0000-\u001f]/u.test(value)) buildFail('RN_BUILD_INVALID');
@@ -121,6 +121,7 @@ export async function planBuild(identity: BuildIdentity, unit: BuildUnit): Promi
       if (rule.kind !== 'file' || typeof rule.match !== 'string' || typeof rule.mediaType !== 'string' || !/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/u.test(rule.mediaType)) buildFail('RN_BUILD_OUTPUT');
       assertBuildPath(rule.match, { glob: true, version: true });
       if (identity.version === null && rule.match.includes('{version}')) buildFail('RN_BUILD_VERSION');
+      assertBuildPath(rule.match.replaceAll('{version}', identity.version ?? ''), { glob: true });
     }
   }
   const expandedIds = unit.outputs.flatMap(rule => Array.from({ length: rule.count }, (_, index) => rule.count === 1 ? rule.id : `${rule.id}-${index + 1}`));
@@ -160,7 +161,7 @@ export function canonicalBuildManifest(manifest: BuildManifest): string {
   if (manifest.schemaVersion !== 1 || typeof manifest.inputsSha256 !== 'string' || !digestPattern.test(manifest.inputsSha256) || manifest.inputsSha256.length !== 64 || !Array.isArray(manifest.artifacts) || !manifest.artifacts.length || manifest.artifacts.length > buildLimits.maxFiles) buildFail('RN_BUILD_INVALID');
   const ids = new Set<string>(); const filenames = new Set<string>();
   let total = 0;
-  const artifacts = manifest.artifacts.map(asset => {
+  const artifacts = Array.from(manifest.artifacts, asset => {
     if (!asset || typeof asset !== 'object') buildFail('RN_BUILD_INVALID');
     if (typeof asset.id !== 'string' || !idPattern.test(asset.id) || ids.has(asset.id)) buildFail('RN_BUILD_OUTPUT');
     ids.add(asset.id);

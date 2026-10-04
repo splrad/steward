@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { link, mkdir, mkdtemp, open, readFile, rm, symlink, truncate, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, open, readFile, realpath, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, win32 } from 'node:path';
 import { buildLimits, planBuild, type BuildIdentity, type BuildUnit } from '../../core/src/build-manifest.js';
@@ -14,13 +14,14 @@ const unit: BuildUnit = { profile: 'custom-adapter-v1', inputs: { entrypoint: 't
 const inspect = async (bytes: Uint8Array) => JSON.parse(new TextDecoder().decode(bytes)).version ?? null;
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, open: vi.fn(actual.open) };
+  return { ...actual, open: vi.fn(actual.open), realpath: vi.fn(actual.realpath) };
 });
 const actualFs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
 const originalTotalLimit = buildLimits.maxTotalBytes;
 let root: string; let output: string; let source: string;
 beforeEach(async () => {
   vi.mocked(open).mockReset().mockImplementation(actualFs.open);
+  vi.mocked(realpath).mockReset().mockImplementation(actualFs.realpath);
   root = await mkdtemp(join(tmpdir(), 'steward-build-contract-'));
   output = join(root, 'output'); source = join(root, 'source');
   await mkdir(output); await mkdir(source);
@@ -51,6 +52,46 @@ async function oci(platforms = ['linux/amd64'], version = '1.2.3') {
   return { image, store, plan: await planBuild({ ...identity, profile: 'oci-image-v1' }, { profile: 'oci-image-v1', inputs: { context: '.', dockerfile: 'Dockerfile', platforms }, outputs: [{ id: 'image', kind: 'oci-image', count: 1 }] }) };
 }
 describe('中央文件产物验证 T09', () => {
+  it.each(['ENOENT', 'ENOTDIR', 'ELOOP', 'EIO'])('路径解析分类预期错误并保留其他异常 %s', async code => {
+    const error = Object.assign(new Error(code), { code });
+    vi.mocked(realpath).mockRejectedValueOnce(error);
+    const operation = assertBuildSourcePath(source, '.', { root: true });
+    if (code === 'EIO') await expect(operation).rejects.toBe(error);
+    else await expect(operation).rejects.toThrow('RN_BUILD_PATH');
+  });
+  it('缺失入口和非目录路径返回构建路径错误', async () => {
+    const plan = await planBuild(identity, unit);
+    await expect(validateBuildInputs(plan, { buildRunId: 'run-1', sourceDirectory: source, outputDirectory: output })).rejects.toThrow('RN_BUILD_PATH');
+    await writeFile(join(source, 'tools'), 'not a directory');
+    await expect(validateBuildInputs(plan, { buildRunId: 'run-1', sourceDirectory: source, outputDirectory: output })).rejects.toThrow('RN_BUILD_PATH');
+  });
+  it.each(['collect', 'download'])('缺失 OCI blob 在 %s 时返回构建路径错误', async mode => {
+    const { plan, image } = await oci();
+    const expected = await collectOciBuildManifest(plan, output);
+    await actualFs.unlink(join(output, 'blobs', 'sha256', image.digest.slice(7)));
+    await expect(mode === 'collect' ? collectOciBuildManifest(plan, output) : verifyDownloadedOciBuild(plan, expected, output)).rejects.toThrow('RN_BUILD_PATH');
+  });
+  it.each(['collect', 'download'])('无公共版本时 %s 忽略检查器并保持分块摘要和状态复核', async mode => {
+    await writeFile(join(output, 'widget.json'), Buffer.alloc(128 * 1024 + 1, 120));
+    const plan = await planBuild({ ...identity, version: null }, unit);
+    const expected = await collectFileBuildManifest(plan, output);
+    const inspector = vi.fn(async () => { throw new Error('unexpected native inspection'); });
+    const concat = vi.spyOn(Buffer, 'concat');
+    try {
+      if (mode === 'collect') expect(await collectFileBuildManifest(plan, output, inspector)).toEqual(expected);
+      else await expect(verifyDownloadedFileBuild(plan, expected, output, inspector)).resolves.toBeUndefined();
+      expect(inspector).not.toHaveBeenCalled(); expect(concat).not.toHaveBeenCalled();
+      vi.mocked(open).mockImplementation(async (...args) => {
+        const handle = await actualFs.open(...args); const read = handle.read.bind(handle); let changed = false;
+        handle.read = (async (...readArgs: Parameters<typeof handle.read>) => {
+          if (!changed) { changed = true; await truncate(join(output, 'widget.json'), 2 * 1024 * 1024); }
+          return read(...readArgs);
+        }) as typeof handle.read;
+        return handle;
+      });
+      await expect(mode === 'collect' ? collectFileBuildManifest(plan, output, inspector) : verifyDownloadedFileBuild(plan, expected, output, inspector)).rejects.toThrow('RN_BUILD_DIGEST');
+    } finally { concat.mockRestore(); }
+  });
   it.skipIf(process.platform === 'win32').each(['file', 'oci'])('常规 %s 文件被替换为 FIFO 时收集和下载受控失败', async kind => {
     let plan; let expected;
     if (kind === 'file') { await file(); plan = await planBuild(identity, unit); expected = await collectFileBuildManifest(plan, output, inspect); }
