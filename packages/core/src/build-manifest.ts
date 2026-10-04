@@ -71,11 +71,8 @@ function validOciRepository(repository: string): boolean {
   const match = ociRepositoryPattern.exec(repository);
   return match !== null && match[1]!.length <= 255;
 }
-export function buildOciRepository(fullName: string): string {
-  if (typeof fullName !== 'string') buildFail('RN_BUILD_INVALID');
-  const repository = fullName.toLowerCase();
-  if (!validOciRepository(repository)) buildFail('RN_BUILD_INVALID');
-  return repository;
+export function assertBuildOciRepository(repository: string): void {
+  if (typeof repository !== 'string' || !validOciRepository(repository)) buildFail('RN_BUILD_INVALID');
 }
 function validOciReference(reference: string, digest: string): boolean {
   const match = ociReferencePattern.exec(reference);
@@ -100,7 +97,6 @@ export function assertBuildIdentity(identity: BuildIdentity): void {
   if (identity.version !== null) {
     try { parsePublicVersion(identity.version); } catch { buildFail('RN_BUILD_INVALID'); }
   }
-  if (identity.profile === 'oci-image-v1') buildOciRepository(identity.fullName);
 }
 export function assertBuildPath(path: string, options: { glob?: boolean; root?: boolean; version?: boolean } = {}): void {
   if (typeof path !== 'string') buildFail('RN_BUILD_PATH');

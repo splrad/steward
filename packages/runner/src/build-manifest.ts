@@ -2,7 +2,7 @@ import { constants, type Stats } from 'node:fs';
 import { lstat, open, opendir, realpath, type FileHandle } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
-import { assertBuildPath, buildFail, buildLimits, buildOciRepository, canonicalBuildManifest, checkBuildNativeVersion, decodeBuildJson, matchBuildFiles,
+import { assertBuildOciRepository, assertBuildPath, buildFail, buildLimits, canonicalBuildManifest, checkBuildNativeVersion, decodeBuildJson, matchBuildFiles,
   type BuildArtifact, type BuildManifest, type BuildPlan } from '../../core/src/build-manifest.js';
 
 export type NativeVersionInspector = (bytes: Uint8Array, file: string) => Promise<string | null>;
@@ -135,8 +135,10 @@ export async function verifyDownloadedFileBuild(plan: BuildPlan, expected: Build
   if (canonicalBuildManifest(actual) !== canonicalBuildManifest(expected)) buildFail('RN_BUILD_DIGEST');
 }
 
-export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: string): Promise<BuildManifest> {
+export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: string, repository?: string): Promise<BuildManifest> {
   if (plan.profile !== 'oci-image-v1') buildFail('RN_BUILD_INVALID');
+  const mappedRepository = repository === undefined ? plan.fullName.toLowerCase() : repository;
+  assertBuildOciRepository(mappedRepository);
   const root = await assertBuildSourcePath(outputDirectory, '.', { root: true });
   const files = await enumerate(root); const consumed = new Set(['oci-layout', 'index.json']);
   const states = new Map<string, Stats>();
@@ -221,7 +223,7 @@ export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: 
     };
     await inspect(descriptor, 0);
     if (platforms.size !== (plan.inputs.platforms as string[]).length) buildFail('RN_BUILD_OUTPUT');
-    artifacts.push({ id: rule.id, kind: 'oci-image', reference: `${buildOciRepository(plan.fullName)}@${descriptor.digest}`, digest: descriptor.digest });
+    artifacts.push({ id: rule.id, kind: 'oci-image', reference: `${mappedRepository}@${descriptor.digest}`, digest: descriptor.digest });
   }
   if (files.length !== consumed.size || files.some(file => !consumed.has(file)) || JSON.stringify(await enumerate(root)) !== JSON.stringify(files)) buildFail('RN_BUILD_OUTPUT');
   await verifyFileStates(root, states);
@@ -229,7 +231,7 @@ export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: 
     profile: plan.profile, targetSha: plan.targetSha, policySha: plan.policySha, version: plan.version, inputsSha256: plan.inputsSha256, artifacts };
   canonicalBuildManifest(manifest); return manifest;
 }
-export async function verifyDownloadedOciBuild(plan: BuildPlan, expected: BuildManifest, directory: string): Promise<void> {
-  const actual = await collectOciBuildManifest(plan, directory);
+export async function verifyDownloadedOciBuild(plan: BuildPlan, expected: BuildManifest, directory: string, repository?: string): Promise<void> {
+  const actual = await collectOciBuildManifest(plan, directory, repository);
   if (canonicalBuildManifest(actual) !== canonicalBuildManifest(expected)) buildFail('RN_BUILD_DIGEST');
 }

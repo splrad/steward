@@ -69,6 +69,20 @@ describe('中央文件产物验证 T09', () => {
     await expect(collectOciBuildManifest(invalid, output)).rejects.toThrow('RN_BUILD_INVALID');
     await expect(verifyDownloadedOciBuild(invalid, expected, output)).rejects.toThrow('RN_BUILD_INVALID');
   });
+  it('源仓库 .github 可以通过显式 registry namespace 收集和下载', async () => {
+    const { plan } = await oci();
+    const identityPlan = { ...plan, fullName: 'example/.github' };
+    const repository = 'ghcr.io/example/organization-config';
+    const expected = await collectOciBuildManifest(identityPlan, output, repository);
+    expect(expected.fullName).toBe('example/.github');
+    expect(expected.artifacts[0]).toMatchObject({ reference: expect.stringMatching(/^ghcr\.io\/example\/organization-config@sha256:/u) });
+    await expect(verifyDownloadedOciBuild(identityPlan, expected, output, repository)).resolves.toBeUndefined();
+    await expect(verifyDownloadedOciBuild(identityPlan, expected, output, 'ghcr.io/other/config')).rejects.toThrow('RN_BUILD_DIGEST');
+  });
+  it.each([{ repository: 'example/.github' }, { repository: 'example//widget' }, { repository: 'Example/Widget' }, { repository: null }, { repository: 1 }, { repository: ['example/widget'] }, { repository: new String('example/widget') }])('runner 拒绝非法显式 OCI 名称 %j', async ({ repository }) => {
+    const { plan } = await oci();
+    await expect(collectOciBuildManifest(plan, output, repository as string)).rejects.toThrow('RN_BUILD_INVALID');
+  });
   it('拒绝解析后越出根目录的绝对相对路径', async () => {
     expect(win32.isAbsolute(win32.relative('D:\\source', 'C:\\outside\\build.mjs'))).toBe(true);
     await writeFile(join(source, 'build.mjs'), 'build');

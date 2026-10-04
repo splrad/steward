@@ -13,8 +13,8 @@ describe('构建合同 T09/T10', () => {
     expect(() => canonicalBuildManifest(manifest)).toThrow('RN_BUILD_OUTPUT');
     expect(() => parseBuildManifest(new TextEncoder().encode(JSON.stringify(manifest)))).toThrow('RN_BUILD_OUTPUT');
   });
-  it.each(['example/.github', 'example/-widget', 'example/widget.', 'example/widget___part'])('OCI 规划提前拒绝无法映射的 GitHub 仓库名 %s', async fullName => {
-    await expect(planBuild({ ...identity, fullName, profile: 'oci-image-v1' }, { profile: 'oci-image-v1', inputs: { context: '.', dockerfile: 'Dockerfile', platforms: ['linux/amd64'] }, outputs: [{ id: 'image', kind: 'oci-image', count: 1 }] })).rejects.toThrow('RN_BUILD_INVALID');
+  it.each(['example/.github', 'example/-widget', 'example/widget.', 'example/widget___part'])('OCI 规划保留源仓库身份并允许 adapter 独立映射 %s', async fullName => {
+    await expect(planBuild({ ...identity, fullName, profile: 'oci-image-v1' }, { profile: 'oci-image-v1', inputs: { context: '.', dockerfile: 'Dockerfile', platforms: ['linux/amd64'] }, outputs: [{ id: 'image', kind: 'oci-image', count: 1 }] })).resolves.toMatchObject({ fullName });
     await expect(planBuild({ ...identity, fullName }, unit)).resolves.toMatchObject({ fullName });
   });
   it.each(['example/widget', 'ghcr.io/example/widget', 'localhost:5000/example/widget:v1.2.3', 'example/widget__part', 'example/widget---part'])('保留合法 OCI 路径、registry 端口和标签 %s', repository => {
