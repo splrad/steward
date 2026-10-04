@@ -1,5 +1,5 @@
 import { constants, type Stats } from 'node:fs';
-import { lstat, open, readdir, realpath, type FileHandle } from 'node:fs/promises';
+import { lstat, open, opendir, realpath, type FileHandle } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { assertBuildPath, buildFail, buildLimits, canonicalBuildManifest, checkBuildNativeVersion, decodeBuildJson, matchBuildFiles,
@@ -36,7 +36,7 @@ async function verifyFileStates(root: string, states: ReadonlyMap<string, Stats>
 }
 function within(root: string, target: string): void {
   const path = relative(root, target);
-  if (path === '..' || path.startsWith(`..${sep}`) || resolve(root, path) !== target) buildFail('RN_BUILD_PATH');
+  if (isAbsolute(path) || path === '..' || path.startsWith(`..${sep}`) || resolve(root, path) !== target) buildFail('RN_BUILD_PATH');
 }
 export async function assertBuildSourcePath(root: string, path: string, options: { root?: boolean } = {}): Promise<string> {
   assertBuildPath(path, options);
@@ -84,8 +84,8 @@ async function enumerate(root: string): Promise<string[]> {
   let directories = 0;
   async function walk(path: string): Promise<void> {
     if (++directories > buildLimits.maxFiles * 4) buildFail('RN_BUILD_LIMIT');
-    for (const entry of await readdir(path)) {
-      const file = join(path, entry); const stat = await lstat(file);
+    for await (const entry of await opendir(path)) {
+      const file = join(path, entry.name); const stat = await lstat(file);
       const name = relative(root, file).split(sep).join('/'); assertBuildPath(name);
       if (stat.isSymbolicLink()) buildFail('RN_BUILD_PATH');
       if (stat.isDirectory()) await walk(file);

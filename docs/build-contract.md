@@ -15,6 +15,9 @@ Windows device names, including COM and LPT names with superscript digits
 expansion, with wildcard matching preserved. Missing paths, non-directory
 components, and symbolic-link loops fail with `RN_BUILD_PATH`; other filesystem
 errors propagate unchanged.
+Resolved files must remain inside their own root, including on Windows across
+drive letters. Directory enumeration streams entries and closes the handle when
+file or directory limits stop collection.
 
 After execution, `collectFileBuildManifest` enumerates the output directory,
 matches every file to exactly one declared rule, and computes its size and

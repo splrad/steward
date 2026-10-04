@@ -3,9 +3,9 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { link, mkdir, mkdtemp, open, readFile, realpath, rm, symlink, truncate, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, open, opendir, readFile, realpath, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve, win32 } from 'node:path';
+import { join, relative, resolve, win32 } from 'node:path';
 import { buildLimits, planBuild, type BuildIdentity, type BuildUnit } from '../../core/src/build-manifest.js';
 import { assertBuildDirectoriesSeparate, assertBuildSourcePath, collectFileBuildManifest, collectOciBuildManifest, validateBuildExecutionContext, validateBuildInputs, verifyDownloadedFileBuild, verifyDownloadedOciBuild } from '../src/build-manifest.js';
 
@@ -14,14 +14,21 @@ const unit: BuildUnit = { profile: 'custom-adapter-v1', inputs: { entrypoint: 't
 const inspect = async (bytes: Uint8Array) => JSON.parse(new TextDecoder().decode(bytes)).version ?? null;
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, open: vi.fn(actual.open), realpath: vi.fn(actual.realpath) };
+  return { ...actual, open: vi.fn(actual.open), opendir: vi.fn(actual.opendir), realpath: vi.fn(actual.realpath) };
+});
+vi.mock('node:path', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:path')>();
+  return { ...actual, relative: vi.fn(actual.relative) };
 });
 const actualFs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+const actualPath = await vi.importActual<typeof import('node:path')>('node:path');
 const originalTotalLimit = buildLimits.maxTotalBytes;
 let root: string; let output: string; let source: string;
 beforeEach(async () => {
   vi.mocked(open).mockReset().mockImplementation(actualFs.open);
   vi.mocked(realpath).mockReset().mockImplementation(actualFs.realpath);
+  vi.mocked(opendir).mockReset().mockImplementation(actualFs.opendir);
+  vi.mocked(relative).mockReset().mockImplementation(actualPath.relative);
   root = await mkdtemp(join(tmpdir(), 'steward-build-contract-'));
   output = join(root, 'output'); source = join(root, 'source');
   await mkdir(output); await mkdir(source);
@@ -52,6 +59,35 @@ async function oci(platforms = ['linux/amd64'], version = '1.2.3') {
   return { image, store, plan: await planBuild({ ...identity, profile: 'oci-image-v1' }, { profile: 'oci-image-v1', inputs: { context: '.', dockerfile: 'Dockerfile', platforms }, outputs: [{ id: 'image', kind: 'oci-image', count: 1 }] }) };
 }
 describe('中央文件产物验证 T09', () => {
+  it('拒绝解析后越出根目录的绝对相对路径', async () => {
+    expect(win32.isAbsolute(win32.relative('D:\\source', 'C:\\outside\\build.mjs'))).toBe(true);
+    await writeFile(join(source, 'build.mjs'), 'build');
+    const outside = join(output, 'build.mjs'); await writeFile(outside, 'outside');
+    vi.mocked(realpath).mockResolvedValueOnce(resolve(source)).mockResolvedValueOnce(outside);
+    vi.mocked(relative).mockReturnValueOnce(outside);
+    await expect(assertBuildSourcePath(source, 'build.mjs')).rejects.toThrow('RN_BUILD_PATH');
+  });
+  it.each([{ kind: 'file', entries: 'directory' }, { kind: 'oci', entries: 'directory' }, { kind: 'file', entries: 'file' }, { kind: 'oci', entries: 'file' }])('目录规模超限时收集和下载提前关闭枚举句柄 %j', async ({ kind, entries }) => {
+    await mkdir(join(output, 'empty'));
+    let plan; let expected;
+    if (kind === 'file') { await file(); plan = await planBuild(identity, unit); expected = await collectFileBuildManifest(plan, output, inspect); }
+    else { ({ plan } = await oci()); expected = await collectOciBuildManifest(plan, output); }
+    for (const mode of ['collect', 'download']) {
+      let readEntries = 0; let closed = false;
+      const directory = await actualFs.opendir(output);
+      directory[Symbol.asyncIterator] = async function* () {
+        try {
+          for (;;) { readEntries++; yield { name: entries === 'directory' ? 'empty' : kind === 'file' ? 'widget.json' : 'index.json' } as import('node:fs').Dirent; }
+        } finally { closed = true; await directory.close(); }
+      };
+      vi.mocked(opendir).mockResolvedValueOnce(directory);
+      const operation = kind === 'file'
+        ? mode === 'collect' ? collectFileBuildManifest(plan, output, inspect) : verifyDownloadedFileBuild(plan, expected, output, inspect)
+        : mode === 'collect' ? collectOciBuildManifest(plan, output) : verifyDownloadedOciBuild(plan, expected, output);
+      await expect(operation).rejects.toThrow('RN_BUILD_LIMIT');
+      expect(readEntries).toBe(entries === 'directory' ? buildLimits.maxFiles * 4 : buildLimits.maxFiles + 1); expect(closed).toBe(true);
+    }
+  });
   it.each(['ENOENT', 'ENOTDIR', 'ELOOP', 'EIO'])('路径解析分类预期错误并保留其他异常 %s', async code => {
     const error = Object.assign(new Error(code), { code });
     vi.mocked(realpath).mockRejectedValueOnce(error);
