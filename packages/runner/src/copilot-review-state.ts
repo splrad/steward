@@ -112,6 +112,7 @@ export function classifyCopilotReviewState(input: CopilotReviewInput): CopilotRe
     const priorTime = ordered[1] ? time(ordered[1].submitted_at) : -Infinity;
     const requestBoundary = Math.max(priorTime, ...requestEvents.filter(event => Number.isFinite(time(event.created_at)) && time(event.created_at) <= reviewTime).map(event => time(event.created_at)));
     if (!newestCheck || newestCheck.status !== "completed" || newestCheck.conclusion !== "success" || time(newestCheck.started_at) <= requestBoundary) return result("unknown", "review-check-attempt-unverified", evidence);
+    if (activityEvents.some(event => time(event.created_at) <= reviewTime && time(event.created_at) >= time(newestCheck.completed_at))) return result("unknown", "activity-check-attempt-unverified", evidence);
     return result("succeeded", "review-and-check-confirmed", { ...evidence, checkRunId: Number(newestCheck.id) || undefined, findings: overview.findings });
   }
   if ((input.requested.users ?? []).some(user => isCopilotIdentity(user.login))) return result("unknown", "pending-reviewer-head-unverified");

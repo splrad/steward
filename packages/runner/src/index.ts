@@ -796,7 +796,7 @@ export async function readCopilotReviewState(clientValue: GitHubClient, owner: s
       clientValue.getRequestedReviewers(owner, repo, number),
       clientValue.listPullRequestReviews(owner, repo, number),
       clientValue.listIssueEvents(owner, repo, number),
-      clientValue.listAllCheckRuns(owner, repo, headSha),
+      clientValue.listAllCheckRuns(owner, repo, headSha, "all"),
     ]);
     return classifyCopilotReviewState({ pullRequestNumber: number, headSha, requested, reviews, events, checkRuns, afterEventId });
   } catch {

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { classifyCopilotReviewState, copilotReviewTrigger, type CopilotReviewInput } from "../src/copilot-review-state.js";
-import { configurationFor, ensureCopilotReview, main, reviewSyncMatrix } from "../src/index.js";
+import { configurationFor, ensureCopilotReview, main, readCopilotReviewState, reviewSyncMatrix } from "../src/index.js";
 import { GitHubClient } from "../../github/src/index.js";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -16,6 +16,39 @@ const input = (overrides: Partial<CopilotReviewInput> = {}): CopilotReviewInput 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe("Copilot当前head审查证据", () => {
+  it.each([head, null])("活动事件后的新概要不能复用已结束Check：%s", eventHead => {
+    const event = { event: "copilot_work_started", commit_id: eventHead, created_at: "2026-10-04T05:00:00Z" };
+    const base = { reviews: [{ ...review(), submitted_at: "2026-10-04T05:01:00Z" }], checkRuns: [check()], events: [event] };
+    expect(classifyCopilotReviewState(input(base))).toMatchObject({ state: "unknown", reason: "activity-check-attempt-unverified" });
+    expect(classifyCopilotReviewState(input({ ...base, events: [{ ...event, created_at: check().completed_at }] })).state).toBe("unknown");
+    expect(classifyCopilotReviewState(input({ ...base, events: [{ ...event, created_at: "2026-10-04T04:55:00Z" }] }))).toMatchObject({ state: "succeeded", findings: 1 });
+    expect(classifyCopilotReviewState(input({ ...base, events: [{ ...event, commit_id: priorHead }] })).state).toBe("succeeded");
+    const newer = { ...check(), id: 2, started_at: "2026-10-04T05:00:10Z", completed_at: "2026-10-04T05:00:59Z" };
+    expect(classifyCopilotReviewState(input({ ...base, checkRuns: [check(), newer] }))).toMatchObject({ state: "succeeded", checkRunId: 2, findings: 1 });
+  });
+  it("Copilot读取全部Check分页并识别重叠尝试", async () => {
+    const latest = { ...check(), id: 2, started_at: "2026-10-04T04:58:00Z" };
+    const paths: URL[] = [];
+    const gh = new GitHubClient("read-only", "https://example.test", (async (url: string) => {
+      const parsed = new URL(String(url));
+      if (parsed.pathname.endsWith("/check-runs")) {
+        paths.push(parsed);
+        const second = parsed.searchParams.get("page") === "2";
+        const next = new URL(parsed); next.searchParams.set("page", "2");
+        return new Response(JSON.stringify({ check_runs: [second ? check() : latest] }), {
+          status: 200, headers: second ? {} : { link: `<${next}>; rel="next"` },
+        });
+      }
+      if (parsed.pathname.endsWith("/requested_reviewers")) return new Response(JSON.stringify({ users: [] }));
+      if (parsed.pathname.endsWith("/reviews")) return new Response(JSON.stringify([review()]));
+      if (parsed.pathname.endsWith("/events")) return new Response("[]");
+      throw new Error("unexpected endpoint");
+    }) as typeof fetch);
+    expect(classifyCopilotReviewState(input({ reviews: [review()], checkRuns: [latest] })).state).toBe("succeeded");
+    await expect(readCopilotReviewState(gh, "splrad", "steward", 209, head)).resolves.toMatchObject({ state: "unknown", reason: "overlapping-check-attempts" });
+    expect(paths).toHaveLength(2);
+    for (const path of paths) expect(path.searchParams.get("filter")).toBe("all");
+  });
   it("历史quota COMMENTED不能成为成功证据", () => {
     const failed = { ...review(), id: 5404371151, commit_id: priorHead, submitted_at: "2026-10-04T04:46:11Z", body: "Copilot was unable to review: quota limit." };
     expect(classifyCopilotReviewState(input({ headSha: priorHead, reviews: [failed] })).state).toBe("failed-quota");

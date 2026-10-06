@@ -7,6 +7,24 @@ import { dispatchWorkflow } from "../src/workflow-dispatch.js";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("代码托管平台客户端", () => {
+  it.each([undefined, "latest", "all"] as const)("Check分页保留筛选选项，默认行为不变：%s", async filter => {
+    const paths: URL[] = [];
+    const client = new GitHubClient("token", "https://example.test", (async (url: string) => {
+      const parsed = new URL(String(url)); paths.push(parsed);
+      const second = parsed.searchParams.get("page") === "2";
+      const next = new URL(parsed); next.searchParams.set("page", "2");
+      return new Response(JSON.stringify({ check_runs: [{ id: second ? 2 : 1 }] }), {
+        status: 200, headers: second ? {} : { link: `<${next}>; rel="next"` },
+      });
+    }) as typeof fetch);
+    await expect(client.listAllCheckRuns("splrad", "steward", "abc", filter)).resolves.toEqual([{ id: 1 }, { id: 2 }]);
+    expect(paths).toHaveLength(2);
+    for (const path of paths) {
+      expect(path.pathname).toBe("/repos/splrad/steward/commits/abc/check-runs");
+      expect(path.searchParams.get("filter")).toBe(filter ?? null);
+      expect(path.searchParams.get("per_page")).toBe("100");
+    }
+  });
   it("列出所有开放拉取请求时不添加基础分支过滤", async () => {
     let requested = "";
     const transport = async (url: string) => {
