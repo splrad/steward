@@ -33,6 +33,18 @@ describe("Copilot当前head审查证据", () => {
     expect(classifyCopilotReviewState(input({ reviews: [{ ...review(), body: "Copilot was unable to review this pull request because the user who requested the review has reached their quota limit." }] })).state).toBe("failed-quota");
     expect(classifyCopilotReviewState(input({ reviews: [{ ...review(), body: "This PR fixes quota limit handling." }] })).state).toBe("unknown");
   });
+  it("旧head已结束的历史请求不阻止新head审查", () => {
+    const oldReview = { ...review(), commit_id: priorHead };
+    const oldRequest = { id: 9, event: "review_requested", requested_reviewer: { login: "copilot" }, created_at: "2026-10-04T04:50:00Z", commit_id: null };
+    const base = { reviews: [oldReview], events: [oldRequest] };
+    expect(classifyCopilotReviewState(input(base)).state).toBe("none");
+    const newRequest = { ...oldRequest, id: 11, created_at: "2026-10-04T05:00:00Z" };
+    expect(classifyCopilotReviewState(input({ ...base, events: [oldRequest, { ...newRequest, commit_id: head }] })).state).toBe("queued");
+    expect(classifyCopilotReviewState(input({ ...base, afterEventId: 10, events: [oldRequest, { ...newRequest, created_at: undefined }] })).state).toBe("queued");
+    expect(classifyCopilotReviewState(input({ ...base, events: [oldRequest, newRequest] })).state).toBe("unknown");
+    expect(classifyCopilotReviewState(input({ ...base, events: [{ ...oldRequest, created_at: undefined }] })).state).toBe("unknown");
+    expect(classifyCopilotReviewState(input({ ...base, reviews: [{ ...oldReview, submitted_at: undefined }] })).state).toBe("unknown");
+  });
   it.each([false, true])("失败Check之后重新请求报告新尝试，历史Review=%s", withReview => {
     const failed = { ...check(), conclusion: "failure", started_at: "2026-10-04T04:58:00Z", completed_at: "2026-10-04T04:59:00Z" };
     const oldReview = { ...review(), submitted_at: "2026-10-04T04:57:00Z" };

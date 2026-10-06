@@ -65,8 +65,11 @@ export function classifyCopilotReviewState(input: CopilotReviewInput): CopilotRe
   const terminals = checks.filter(check => check.status === "completed");
   if (terminals.some(check => !Number.isFinite(time(check.started_at)) || !Number.isFinite(time(check.completed_at)) || time(check.completed_at) < time(check.started_at))) return result("unknown", "terminal-check-time-unverified", evidence);
   const attemptTime = Math.max(reviewTime, ...active.map(check => time(check.started_at)), ...terminals.map(check => time(check.completed_at)));
+  const latestHistoricalReview = Math.max(-Infinity, ...input.reviews.filter(review => isCopilotIdentity(review.user?.login)).map(review => time(review.submitted_at)));
   const newerRequests = input.events.filter(event => ((event.event === "review_requested" && isCopilotIdentity(event.requested_reviewer?.login)) || event.event === "copilot_work_started")
     && (!event.commit_id || String(event.commit_id).toLowerCase() === headSha)
+    && !(!event.commit_id && Number.isFinite(time(event.created_at)) && Number.isFinite(latestHistoricalReview) && time(event.created_at) <= latestHistoricalReview
+      && !(input.afterEventId !== undefined && Number(event.id) > input.afterEventId))
     && (!Number.isFinite(time(event.created_at)) || time(event.created_at) >= attemptTime));
   if (newerRequests.length) {
     const bound = (event: Evidence) => String(event.commit_id ?? "").toLowerCase() === headSha || (input.afterEventId !== undefined && Number(event.id) > input.afterEventId);
@@ -87,7 +90,6 @@ export function classifyCopilotReviewState(input: CopilotReviewInput): CopilotRe
     return result("succeeded", "review-and-check-confirmed", { ...evidence, checkRunId: Number(matches[0]!.id) || undefined, findings: overview.findings });
   }
   if ((input.requested.users ?? []).some(user => isCopilotIdentity(user.login))) return result("unknown", "pending-reviewer-head-unverified");
-  const latestHistoricalReview = Math.max(-Infinity, ...input.reviews.filter(review => isCopilotIdentity(review.user?.login)).map(review => time(review.submitted_at)));
   if (input.events.some(event => !event.commit_id && ((event.event === "review_requested" && isCopilotIdentity(event.requested_reviewer?.login)) || event.event === "copilot_work_started")
     && (!Number.isFinite(time(event.created_at)) || time(event.created_at) > latestHistoricalReview))) return result("unknown", "request-event-head-unverified");
   if (checks.length) return result("unknown", "check-without-review");
