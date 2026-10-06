@@ -24,6 +24,26 @@ describe("Copilot当前head审查证据", () => {
   it("当前head成功概要和可信Check独立于发现处理", () => {
     expect(classifyCopilotReviewState(input({ reviews: [review()], checkRuns: [check()] }))).toMatchObject({ state: "succeeded", findings: 1, reviewId: 5404406878, checkRunId: 111365108934 });
   });
+  it.each(["This PR fixes quota limit handling.", "permission denied", "review failed", "Copilot was unable to review this pull request because the user reached their quota limit.", "权限不足"])("成功概要讨论诊断文本时仍按可信完成证据判断：%s", text => {
+    for (const body of [overview, "Copilot reviewed 2 out of 2 changed files in this pull request and generated 1 comment."]) {
+      expect(classifyCopilotReviewState(input({ reviews: [{ ...review(), body: `${body}\n\n${text}` }], checkRuns: [check()] }))).toMatchObject({ state: "succeeded", findings: 1 });
+    }
+  });
+  it("真实quota诊断独立于审查发现文本", () => {
+    expect(classifyCopilotReviewState(input({ reviews: [{ ...review(), body: "Copilot was unable to review this pull request because the user who requested the review has reached their quota limit." }] })).state).toBe("failed-quota");
+    expect(classifyCopilotReviewState(input({ reviews: [{ ...review(), body: "This PR fixes quota limit handling." }] })).state).toBe("unknown");
+  });
+  it.each([false, true])("失败Check之后重新请求报告新尝试，历史Review=%s", withReview => {
+    const failed = { ...check(), conclusion: "failure", started_at: "2026-10-04T04:58:00Z", completed_at: "2026-10-04T04:59:00Z" };
+    const oldReview = { ...review(), submitted_at: "2026-10-04T04:57:00Z" };
+    const event = { id: 12, event: "review_requested", requested_reviewer: { login: "copilot" }, created_at: "2026-10-04T05:00:00Z", commit_id: head };
+    const base = { reviews: withReview ? [oldReview] : [], checkRuns: [failed] };
+    expect(classifyCopilotReviewState(input({ ...base, events: [event] })).state).toBe("queued");
+    expect(classifyCopilotReviewState(input({ ...base, events: [{ ...event, commit_id: undefined }] })).state).toBe("unknown");
+    expect(classifyCopilotReviewState(input({ ...base, events: [{ ...event, created_at: undefined }] })).state).toBe("unknown");
+    expect(classifyCopilotReviewState(input({ ...base, events: [{ ...event, created_at: failed.completed_at }] })).state).toBe("unknown");
+    expect(classifyCopilotReviewState(input({ ...base, events: [{ ...event, created_at: "2026-10-04T04:57:30Z" }] })).state).toBe("failed-other");
+  });
   it("成功后的新请求不能复用旧完成，绑定缺口保持unknown", () => {
     const event = { id: 12, event: "review_requested", requested_reviewer: { login: "copilot" }, created_at: "2026-10-04T05:00:00Z", commit_id: head };
     expect(classifyCopilotReviewState(input({ reviews: [review()], checkRuns: [check()], events: [event] })).state).toBe("queued");

@@ -31,10 +31,11 @@ function time(value: unknown): number {
   return typeof value === "string" ? Date.parse(value) : NaN;
 }
 function failure(body: string): CopilotReviewStateName | undefined {
-  if (/unable to review[\s\S]*quota|quota (?:limit|exceeded)|额度(?:耗尽|不足)/iu.test(body)) return "failed-quota";
-  if (/unable to review[\s\S]*(?:permission|access|authorization)|permission denied|权限不足/iu.test(body)) return "failed-permission";
-  if (/unable to review|review (?:failed|could not be completed)|审查失败/iu.test(body)) return "failed-other";
-  return undefined;
+  const diagnostic = body.trim();
+  if (!/^(?:(?:Copilot (?:was |is )?)?unable to review\b[^\r\n]*|permission denied[.!]?|review (?:failed|could not be completed)[.!]?|额度(?:耗尽|不足)[。！]?|权限不足[。！]?|审查失败[。！]?)$/iu.test(diagnostic)) return undefined;
+  if (/\bquota\b|额度(?:耗尽|不足)/iu.test(diagnostic)) return "failed-quota";
+  if (/\b(?:permission|access|authorization)\b|权限不足/iu.test(diagnostic)) return "failed-permission";
+  return "failed-other";
 }
 function successfulOverview(body: string): { findings: number } | undefined {
   if (body.includes("<!-- ccr-overview-v2 -->") && /^## Copilot review overview\s*$/mu.test(body)
@@ -61,17 +62,20 @@ export function classifyCopilotReviewState(input: CopilotReviewInput): CopilotRe
   const active = checks.filter(check => ["queued", "in_progress", "pending", "waiting", "requested"].includes(check.status));
   if (active.some(check => !Number.isFinite(time(check.started_at)))) return result("unknown", "check-attempt-time-unverified", evidence);
   const newestActive = [...active].sort((a, b) => time(b.started_at) - time(a.started_at))[0];
-  if (newestActive && (!latest || time(newestActive.started_at) >= reviewTime)) return result(newestActive.status === "queued" ? "queued" : "running", "bound-active-check", { checkRunId: Number(newestActive.id) || undefined });
   const terminals = checks.filter(check => check.status === "completed");
   if (terminals.some(check => !Number.isFinite(time(check.started_at)) || !Number.isFinite(time(check.completed_at)) || time(check.completed_at) < time(check.started_at))) return result("unknown", "terminal-check-time-unverified", evidence);
-  const newerFailure = terminals.find(check => check.conclusion !== "success" && time(check.started_at) > reviewTime);
-  if (newerFailure) return result("failed-other", "bound-terminal-check-failure", { checkRunId: Number(newerFailure.id) || undefined });
+  const attemptTime = Math.max(reviewTime, ...active.map(check => time(check.started_at)), ...terminals.map(check => time(check.completed_at)));
   const newerRequests = input.events.filter(event => ((event.event === "review_requested" && isCopilotIdentity(event.requested_reviewer?.login)) || event.event === "copilot_work_started")
-    && (!Number.isFinite(time(event.created_at)) || time(event.created_at) > reviewTime));
-  if (latest && newerRequests.length) {
-    if (newerRequests.every(event => Number.isFinite(time(event.created_at)) && (String(event.commit_id ?? "").toLowerCase() === headSha || (input.afterEventId !== undefined && Number(event.id) > input.afterEventId)))) return result("queued", "newer-request-event-confirmed");
+    && (!event.commit_id || String(event.commit_id).toLowerCase() === headSha)
+    && (!Number.isFinite(time(event.created_at)) || time(event.created_at) >= attemptTime));
+  if (newerRequests.length) {
+    const bound = (event: Evidence) => String(event.commit_id ?? "").toLowerCase() === headSha || (input.afterEventId !== undefined && Number(event.id) > input.afterEventId);
+    if (newerRequests.every(event => bound(event) && ((Number.isFinite(time(event.created_at)) && time(event.created_at) > attemptTime) || (attemptTime === -Infinity && input.afterEventId !== undefined && Number(event.id) > input.afterEventId)))) return result("queued", "newer-request-event-confirmed");
     return result("unknown", "newer-request-attempt-unverified", evidence);
   }
+  if (newestActive && (!latest || time(newestActive.started_at) >= reviewTime)) return result(newestActive.status === "queued" ? "queued" : "running", "bound-active-check", { checkRunId: Number(newestActive.id) || undefined });
+  const newerFailure = [...terminals].filter(check => check.conclusion !== "success" && time(check.started_at) > reviewTime).sort((a, b) => time(b.started_at) - time(a.started_at))[0];
+  if (newerFailure) return result("failed-other", "bound-terminal-check-failure", { checkRunId: Number(newerFailure.id) || undefined });
   if (latest) {
     if (failure(String(latest.body ?? ""))) return result(failure(String(latest.body ?? ""))!, "explicit-review-failure", evidence);
     if (String(latest.state).toUpperCase() === "DISMISSED") return result("unknown", "review-dismissed", evidence);
@@ -82,9 +86,6 @@ export function classifyCopilotReviewState(input: CopilotReviewInput): CopilotRe
     if (matches.length !== 1 || active.length || terminals.some(check => time(check.started_at) > reviewTime || (check.conclusion !== "success" && time(check.started_at) > priorTime))) return result("unknown", "review-check-attempt-unverified", evidence);
     return result("succeeded", "review-and-check-confirmed", { ...evidence, checkRunId: Number(matches[0]!.id) || undefined, findings: overview.findings });
   }
-  const newRequest = input.events.some(event => (event.commit_id === headSha || (input.afterEventId !== undefined && Number(event.id) > input.afterEventId))
-    && ((event.event === "review_requested" && isCopilotIdentity(event.requested_reviewer?.login)) || event.event === "copilot_work_started"));
-  if (newRequest) return result("queued", "request-event-confirmed");
   if ((input.requested.users ?? []).some(user => isCopilotIdentity(user.login))) return result("unknown", "pending-reviewer-head-unverified");
   const latestHistoricalReview = Math.max(-Infinity, ...input.reviews.filter(review => isCopilotIdentity(review.user?.login)).map(review => time(review.submitted_at)));
   if (input.events.some(event => !event.commit_id && ((event.event === "review_requested" && isCopilotIdentity(event.requested_reviewer?.login)) || event.event === "copilot_work_started")
