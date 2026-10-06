@@ -112,6 +112,8 @@ export function validateReviewRegistries(profileRegistry: ReviewProfileRegistry,
   return profiles;
 }
 
+export const maximumReviewInstructionCharacters = 4000;
+
 function renderRules(title: string, rules: readonly ReviewRule[]): string {
   const body = rules.flatMap(rule => [`### ${rule.id}`, `- ${rule.consequence}`, `  Safe path: ${rule.safePath}`, '']);
   const joined = [`# ${title}`, '', '## Code Review Rules', '', ...body].join('\n');
@@ -120,7 +122,7 @@ function renderRules(title: string, rules: readonly ReviewRule[]): string {
   const rendered = `${joined.slice(0, contentEnd)}\n`;
   if (!rendered.trim()) throw new Error('审查说明不能为空');
   if (rendered.includes('\r')) throw new Error('审查说明必须使用LF换行');
-  if ([...rendered].length > 4000) throw new Error('审查说明超过4000个字符');
+  if ([...rendered].length > maximumReviewInstructionCharacters) throw new Error('审查说明超过内部资源预算4000个字符');
   return rendered;
 }
 

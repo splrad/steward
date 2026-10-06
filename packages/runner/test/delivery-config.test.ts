@@ -29,9 +29,11 @@ describe('catalog schema migration', () => {
     expect(repositoryValidator(catalog)).toBe(true);
     const legacy = structuredClone(catalog); legacy.schemaVersion = 3;
     for (const config of [...Object.values(legacy.defaults), ...Object.values(legacy.repositories)] as any[]) {
-      delete config.builds; delete config.delivery;
+      delete config.builds; delete config.delivery; delete config.copilotReviewTrigger;
     }
     expect(repositoryValidator(legacy), ajv.errorsText(repositoryValidator.errors)).toBe(true);
+    legacy.repositories['1296724484'].copilotReviewTrigger = 'native';
+    expect(repositoryValidator(legacy)).toBe(false);
   });
   it.each(['version3-with-new-fields', 'version4-without-delivery', 'version5', 'unknown-capability', 'unknown-input', 'unknown-build-profile', 'invalid-build-output', 'disabled-profile', 'disabled-builds', 'bad-trigger', 'root-version-override'])('rejects %s', variant => {
     const value = structuredClone(catalog); const layer = value.repositories['1187527897'];

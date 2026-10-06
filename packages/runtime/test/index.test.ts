@@ -3,7 +3,9 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import worker, { handleWebhook, validationConclusion, verifyWebhookSignature, type Env } from "../src/index.js";
 import { IssueSnapshotStore } from "../src/issue-snapshots.js";
 import semanticCatalog from "../../../config/labels/pr-semantics.json" with { type: "json" };
+import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
 const originalRiskDefinitions = semanticCatalog.roles.riskFlags.definitions;
+const originalReviewTrigger = repositoryCatalog.repositories["1296724484"].copilotReviewTrigger;
 
 let privateKey = "";
 beforeAll(() => {
@@ -11,6 +13,7 @@ beforeAll(() => {
 });
 afterEach(() => {
   semanticCatalog.roles.riskFlags.definitions = originalRiskDefinitions;
+  repositoryCatalog.repositories["1296724484"].copilotReviewTrigger = originalReviewTrigger;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -1108,7 +1111,8 @@ describe("Dependabot独立审查派发", () => {
     { name: "Draft切换到默认分支", action: "edited", changes: { base: { ref: { from: "release" } } }, draft: true, workflows: ["pr-classification.yml"] },
     { name: "两个非默认分支间切换", action: "edited", changes: { base: { ref: { from: "release" } } }, base: "develop", workflows: [] },
   ];
-  it.each(reviewCases)("$name保留适用的分类与审查派发", async ({ action, changes, base = "main", draft = false, workflows }) => {
+  it.each(reviewCases.flatMap(value => ["legacy", "native"].map(trigger => ({ ...value, trigger }))))("$name/$trigger保留适用的分类与审查派发", async ({ action, changes, base = "main", draft = false, workflows, trigger }) => {
+    repositoryCatalog.repositories["1296724484"].copilotReviewTrigger = trigger;
     const headSha = "d".repeat(40); const sent: { workflow: string; body: any }[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
       const value = String(url);
