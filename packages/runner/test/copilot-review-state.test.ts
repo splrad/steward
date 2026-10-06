@@ -16,6 +16,25 @@ const input = (overrides: Partial<CopilotReviewInput> = {}): CopilotReviewInput 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe("Copilot当前head审查证据", () => {
+  it.each(["\n", "\r\n"])("无发现概要与可信Check配对后报告零发现：%j", newline => {
+    const body = ["<!-- ccr-overview-v2 -->", "", "## Copilot review overview", "", "### 🔵 Needs a closer look", "", "仍需人工结合实际运行结果复核。", "", "**Review effort:** Balanced  ", "**Findings:** None", "", "<details>", "<summary><strong>Resolved since last review (2)</strong></summary>", "</details>"].join(newline);
+    const base = { reviews: [{ ...review(), body }], checkRuns: [check()] };
+    expect(classifyCopilotReviewState(input(base))).toMatchObject({ state: "succeeded", findings: 0, reviewId: review().id, checkRunId: check().id });
+    expect(classifyCopilotReviewState(input({ ...base, checkRuns: [] })).state).toBe("unknown");
+    expect(classifyCopilotReviewState(input({ ...base, checkRuns: [{ ...check(), conclusion: "failure" }] })).state).toBe("unknown");
+    expect(classifyCopilotReviewState(input({ ...base, reviews: [{ ...base.reviews[0], state: "DISMISSED" }] })).state).toBe("unknown");
+    expect(classifyCopilotReviewState(input({ ...base, headSha: priorHead })).state).toBe("none");
+  });
+  it.each(["None reported", "None yet", "none", "None1", "", "Unknown"])("未知发现字段不按零发现处理：%s", findings => {
+    const body = overview.replace("**Findings:** 1", `**Findings:** ${findings}`);
+    expect(classifyCopilotReviewState(input({ reviews: [{ ...review(), body }], checkRuns: [check()] })).state).toBe("unknown");
+  });
+  it("无发现字段仍要求完整概要标识", () => {
+    const body = overview.replace("**Findings:** 1", "**Findings:** None");
+    for (const missing of ["<!-- ccr-overview-v2 -->", "## Copilot review overview", "**Review effort:** Balanced"]) {
+      expect(classifyCopilotReviewState(input({ reviews: [{ ...review(), body: body.replace(missing, "") }], checkRuns: [check()] })).state).toBe("unknown");
+    }
+  });
   it.each([head, null])("活动事件后的新概要不能复用已结束Check：%s", eventHead => {
     const event = { event: "copilot_work_started", commit_id: eventHead, created_at: "2026-10-04T05:00:00Z" };
     const base = { reviews: [{ ...review(), submitted_at: "2026-10-04T05:01:00Z" }], checkRuns: [check()], events: [event] };

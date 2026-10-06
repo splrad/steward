@@ -40,6 +40,7 @@ function failure(body: string): CopilotReviewStateName | undefined {
 function successfulOverview(body: string): { findings: number } | undefined {
   if (body.includes("<!-- ccr-overview-v2 -->") && /^## Copilot review overview\s*$/mu.test(body)
     && /\*\*Review effort:\*\* (?:Lite|Balanced|Max)\b/u.test(body)) {
+    if (/^\*\*Findings:\*\*[\t ]+None[\t ]*\r?$/mu.test(body)) return { findings: 0 };
     const match = /\*\*Findings:\*\* (\d+)\b/u.exec(body);
     if (match && Number.isSafeInteger(Number(match[1]))) return { findings: Number(match[1]) };
   }
