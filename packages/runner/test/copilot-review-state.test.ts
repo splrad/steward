@@ -98,6 +98,27 @@ describe("Copilot当前head审查证据", () => {
     expect(classifyCopilotReviewState(input({ reviews: [review(), { ...failed, submitted_at: "2026-10-04T05:00:00Z" }], checkRuns: [check()] })).state).toBe("failed-other");
     expect(classifyCopilotReviewState(input({ reviews: [review()], checkRuns: [check(), { ...check(), id: 2 }] })).state).toBe("unknown");
   });
+  it.each(["check", "review", "both"])("新成功Check缺少Review时不复用旧失败：%s", source => {
+    const failedCheck = { ...check(), id: 1, conclusion: "failure", started_at: "2026-10-04T04:40:00Z", completed_at: "2026-10-04T04:45:00Z" };
+    const failedReview = { ...review(), id: 2, body: "Copilot was unable to review: quota limit.", submitted_at: "2026-10-04T04:46:00Z" };
+    const reviews = source === "check" ? [] : [failedReview];
+    const checks = source === "review" ? [check()] : [failedCheck, check()];
+    for (const checkRuns of [checks, [...checks].reverse()]) expect(classifyCopilotReviewState(input({ reviews, checkRuns }))).toMatchObject({ state: "unknown", reason: "check-without-current-review", checkRunId: check().id });
+  });
+  it.each(["failure", "success"])("较新成功Review与Check排除已结束的历史Check：%s", conclusion => {
+    const prior = { ...check(), id: 1, conclusion, started_at: "2026-10-04T04:40:00Z", completed_at: "2026-10-04T04:45:00Z" };
+    for (const checkRuns of [[prior, check()], [check(), prior]]) expect(classifyCopilotReviewState(input({ reviews: [review()], checkRuns }))).toMatchObject({ state: "succeeded", findings: 1, reviewId: review().id, checkRunId: check().id });
+  });
+  it.each(["2026-10-04T04:51:03Z", "2026-10-04T04:55:00Z"])("旧失败与新尝试同时间或重叠时保留unknown：%s", completed_at => {
+    const prior = { ...check(), id: 1, conclusion: "failure", started_at: "2026-10-04T04:40:00Z", completed_at };
+    expect(classifyCopilotReviewState(input({ reviews: [review()], checkRuns: [prior, check()] })).state).toBe("unknown");
+  });
+  it.each(["queued", "in_progress", "failure"])("只采用较新的可信尝试状态：%s", outcome => {
+    const prior = { ...check(), id: 1, started_at: "2026-10-04T04:40:00Z", completed_at: "2026-10-04T04:45:00Z" };
+    const priorReview = { ...review(), submitted_at: "2026-10-04T04:46:00Z" };
+    const newer = { ...check(), status: outcome === "failure" ? "completed" : outcome, conclusion: outcome === "failure" ? "failure" : null };
+    expect(classifyCopilotReviewState(input({ reviews: [priorReview], checkRuns: [prior, newer] })).state).toBe(outcome === "failure" ? "failed-other" : outcome === "queued" ? "queued" : "running");
+  });
 });
 
 describe("触发模式和令牌隔离", () => {

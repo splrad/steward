@@ -61,9 +61,9 @@ export function classifyCopilotReviewState(input: CopilotReviewInput): CopilotRe
   if (ordered.length > 1 && time(ordered[0]!.submitted_at) === time(ordered[1]!.submitted_at)) return result("unknown", "review-attempt-order-conflict", evidence);
   const active = checks.filter(check => ["queued", "in_progress", "pending", "waiting", "requested"].includes(check.status));
   if (active.some(check => !Number.isFinite(time(check.started_at)))) return result("unknown", "check-attempt-time-unverified", evidence);
-  const newestActive = [...active].sort((a, b) => time(b.started_at) - time(a.started_at))[0];
   const terminals = checks.filter(check => check.status === "completed");
   if (terminals.some(check => !Number.isFinite(time(check.started_at)) || !Number.isFinite(time(check.completed_at)) || time(check.completed_at) < time(check.started_at))) return result("unknown", "terminal-check-time-unverified", evidence);
+  if (active.length + terminals.length !== checks.length) return result("unknown", "unsupported-check-status", evidence);
   const attemptTime = Math.max(reviewTime, ...active.map(check => time(check.started_at)), ...terminals.map(check => time(check.completed_at)));
   const latestHistoricalReview = Math.max(-Infinity, ...input.reviews.filter(review => isCopilotIdentity(review.user?.login)).map(review => time(review.submitted_at)));
   const newerRequests = input.events.filter(event => ((event.event === "review_requested" && isCopilotIdentity(event.requested_reviewer?.login)) || event.event === "copilot_work_started")
@@ -76,18 +76,28 @@ export function classifyCopilotReviewState(input: CopilotReviewInput): CopilotRe
     if (newerRequests.every(event => bound(event) && ((Number.isFinite(time(event.created_at)) && time(event.created_at) > attemptTime) || (attemptTime === -Infinity && input.afterEventId !== undefined && Number(event.id) > input.afterEventId)))) return result("queued", "newer-request-event-confirmed");
     return result("unknown", "newer-request-attempt-unverified", evidence);
   }
-  if (newestActive && (!latest || time(newestActive.started_at) >= reviewTime)) return result(newestActive.status === "queued" ? "queued" : "running", "bound-active-check", { checkRunId: Number(newestActive.id) || undefined });
-  const newerFailure = [...terminals].filter(check => check.conclusion !== "success" && time(check.started_at) > reviewTime).sort((a, b) => time(b.started_at) - time(a.started_at))[0];
-  if (newerFailure) return result("failed-other", "bound-terminal-check-failure", { checkRunId: Number(newerFailure.id) || undefined });
+  const attempts = [...checks].sort((a, b) => time(b.started_at) - time(a.started_at));
+  const newestCheck = attempts[0];
+  if (newestCheck) {
+    const checkEvidence = { checkRunId: Number(newestCheck.id) || undefined };
+    const startedAt = time(newestCheck.started_at);
+    if (attempts.slice(1).some(check => check.status !== "completed" || time(check.completed_at) >= startedAt)) return result("unknown", "overlapping-check-attempts", checkEvidence);
+    if (startedAt === reviewTime) return result("unknown", "review-check-attempt-order-conflict", checkEvidence);
+    if (startedAt > reviewTime) {
+      if (newestCheck.status !== "completed") return result(newestCheck.status === "queued" ? "queued" : "running", "bound-active-check", checkEvidence);
+      return newestCheck.conclusion === "success"
+        ? result("unknown", "check-without-current-review", checkEvidence)
+        : result("failed-other", "bound-terminal-check-failure", checkEvidence);
+    }
+  }
   if (latest) {
     if (failure(String(latest.body ?? ""))) return result(failure(String(latest.body ?? ""))!, "explicit-review-failure", evidence);
     if (String(latest.state).toUpperCase() === "DISMISSED") return result("unknown", "review-dismissed", evidence);
     const overview = successfulOverview(String(latest.body ?? ""));
     if (!overview) return result("unknown", "unsupported-review-overview", evidence);
     const priorTime = ordered[1] ? time(ordered[1].submitted_at) : -Infinity;
-    const matches = terminals.filter(check => check.conclusion === "success" && time(check.started_at) <= reviewTime && time(check.started_at) > priorTime);
-    if (matches.length !== 1 || active.length || terminals.some(check => time(check.started_at) > reviewTime || (check.conclusion !== "success" && time(check.started_at) > priorTime))) return result("unknown", "review-check-attempt-unverified", evidence);
-    return result("succeeded", "review-and-check-confirmed", { ...evidence, checkRunId: Number(matches[0]!.id) || undefined, findings: overview.findings });
+    if (!newestCheck || newestCheck.status !== "completed" || newestCheck.conclusion !== "success" || time(newestCheck.started_at) <= priorTime) return result("unknown", "review-check-attempt-unverified", evidence);
+    return result("succeeded", "review-and-check-confirmed", { ...evidence, checkRunId: Number(newestCheck.id) || undefined, findings: overview.findings });
   }
   if ((input.requested.users ?? []).some(user => isCopilotIdentity(user.login))) return result("unknown", "pending-reviewer-head-unverified");
   if (input.events.some(event => !event.commit_id && ((event.event === "review_requested" && isCopilotIdentity(event.requested_reviewer?.login)) || event.event === "copilot_work_started")
