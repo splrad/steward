@@ -147,10 +147,11 @@ for (const step of [prepareStep, repairPlanStep, reconcileStep]) {
   if (step?.run !== expectedPrAutomationCommand) throw new Error("拉取请求自动化命令没有使用固定参数数组");
   if (/\$\{\{\s*inputs\./u.test(step?.run ?? "")) throw new Error("拉取请求自动化输入不得直接拼接进shell命令");
 }
-if (repairPlanStep?.id !== "repair_plan" || repairPlanStep?.["continue-on-error"] !== true || String(repairPlanStep?.if ?? "").replace(/\s+/gu, "") !== "steps.copilot.outcome=='success'") throw new Error("Copilot修复判断没有严格绑定首次调用成功结果");
+if (prepareStep?.id !== "prepare" || String(prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.id === "copilot")?.if ?? "").replace(/\s+/gu, "") !== "steps.prepare.outputs.copilot-required=='true'") throw new Error("Copilot润色没有绑定准备阶段的执行信号");
+if (repairPlanStep?.id !== "repair_plan" || repairPlanStep?.["continue-on-error"] !== true || String(repairPlanStep?.if ?? "").replace(/\s+/gu, "") !== "steps.prepare.outputs.copilot-required=='true'&&steps.copilot.outcome=='success'") throw new Error("Copilot修复判断没有绑定准备阶段及首次调用成功结果");
 if (repairPlanStep?.env?.PREPARE_REPAIR_ONLY !== "true" || repairPlanStep?.env?.STEWARD_APP_PRIVATE_KEY?.replace(/\s+/gu, "") !== "${{secrets.STEWARD_APP_PRIVATE_KEY}}" || repairPlanStep?.run !== prepareStep?.run) throw new Error("Copilot修复判断没有重新读取并核对当前分支事实");
 const copilotRepairStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "修复Copilot业务JSON");
-if (copilotRepairStep?.id !== "copilot_repair" || copilotRepairStep?.["continue-on-error"] !== true || String(copilotRepairStep?.if ?? "").replace(/\s+/gu, "") !== "steps.repair_plan.outputs.repair-required=='true'") throw new Error("Copilot修复步骤没有限制为一次条件调用");
+if (copilotRepairStep?.id !== "copilot_repair" || copilotRepairStep?.["continue-on-error"] !== true || String(copilotRepairStep?.if ?? "").replace(/\s+/gu, "") !== "steps.prepare.outputs.copilot-required=='true'&&steps.repair_plan.outputs.repair-required=='true'") throw new Error("Copilot修复步骤没有限制为准备阶段允许的一次条件调用");
 if (copilotRepairStep?.env?.COPILOT_GITHUB_TOKEN?.replace(/\s+/gu, "") !== "${{secrets.COPILOT_CLI_TOKEN}}" || Object.hasOwn(copilotRepairStep?.env ?? {}, "GITHUB_TOKEN")) throw new Error("Copilot修复步骤没有使用隔离的个人令牌");
 const expectedCopilotRepairCommand = 'npx --no-install copilot --available-tools= --no-auto-update --output-format json --stream off --no-color --no-custom-instructions --disable-builtin-mcps --no-ask-user < "$PR_COPILOT_REPAIR_PROMPT_PATH" > "${{ runner.temp }}/copilot-repair-output.jsonl"';
 if (copilotRepairStep?.run !== expectedCopilotRepairCommand) throw new Error("Copilot修复步骤没有使用固定的无工具JSONL合同");

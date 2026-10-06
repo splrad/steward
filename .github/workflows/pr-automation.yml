@@ -37,6 +37,7 @@ jobs:
       - name: 安装依赖
         run: npm ci --ignore-scripts
       - name: 生成Copilot输入
+        id: prepare
         env:
           APP_ID: "4243096"
           INSTALLATION_ID: "145952003"
@@ -66,6 +67,7 @@ jobs:
           node packages/runner/dist/index.js pr-automation "${pr_automation_arguments[@]}"
       - name: 使用Copilot润色
         id: copilot
+        if: steps.prepare.outputs.copilot-required == 'true'
         continue-on-error: true
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_CLI_TOKEN }}
@@ -73,7 +75,7 @@ jobs:
         run: npx --no-install copilot --available-tools= --no-auto-update --output-format json --stream off --no-color --no-custom-instructions --disable-builtin-mcps --no-ask-user < "$PR_COPILOT_PROMPT_PATH" > "${{ runner.temp }}/copilot-output.jsonl"
       - name: 判断Copilot输出是否需要修复
         id: repair_plan
-        if: steps.copilot.outcome == 'success'
+        if: steps.prepare.outputs.copilot-required == 'true' && steps.copilot.outcome == 'success'
         continue-on-error: true
         env:
           APP_ID: "4243096"
@@ -103,7 +105,7 @@ jobs:
           node packages/runner/dist/index.js pr-automation "${pr_automation_arguments[@]}"
       - name: 修复Copilot业务JSON
         id: copilot_repair
-        if: steps.repair_plan.outputs.repair-required == 'true'
+        if: steps.prepare.outputs.copilot-required == 'true' && steps.repair_plan.outputs.repair-required == 'true'
         continue-on-error: true
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_CLI_TOKEN }}
