@@ -211,7 +211,7 @@
         "deployments": [],
         "packages": []
       },
-      "copilotReviewTrigger": "legacy"
+      "copilotReviewTrigger": "native"
     },
     "1296725317": {
       "managed": true,
