@@ -1039,6 +1039,7 @@ async function onboard(args: Readonly<Record<string, string>>) {
   if (labelSyncFailure) throw new Error(labelSyncFailure);
 }
 async function automate(args: Readonly<Record<string, string>>) {
+  if (process.env.PREPARE_ONLY === "true") await output({ "copilot-required": "false" });
   const repositoryId = integer(required(args, "repository-id"), "repository-id");
   const policySha = sha(required(args, "policy-sha"), "policy-sha");
   const sourceRef = required(args, "source-ref"); if (!sourceRef.startsWith("refs/heads/")) throw new Error("source-ref必须使用refs/heads/格式");
@@ -1068,6 +1069,9 @@ async function automate(args: Readonly<Record<string, string>>) {
     gh.getRef(owner, repo, `heads/${sourceBranch}`),
   ]);
   if (baseAfter.object.sha !== baseBefore.object.sha || sourceAfter.object.sha !== sourceBefore.object.sha) throw new Error("读取期间来源或目标分支已经漂移");
+  if (pulls[0]?.user?.id === 49699333 && pulls[0].user.login === "dependabot[bot]" && pulls[0].user.type === "Bot") {
+    return summary(["状态：ignored", "原因：Dependabot维护原生正文，审查使用独立请求路径"]);
+  }
   const contributorMap = new Map<number, Contributor>();
   contributorMap.set(sourceActor.id, { id: sourceActor.id, login: sourceActor.login });
   for (const commit of compare.commits) {
@@ -1128,6 +1132,7 @@ async function automate(args: Readonly<Record<string, string>>) {
     const preparedFactsPath = env("PR_PREPARED_FACTS_PATH");
     await writeFile(promptPath, buildPrompt(facts, fallback, semantics, classificationProfile, aiObservation));
     await writeFile(preparedFactsPath, JSON.stringify({ repositoryId, sourceRef, headSha: facts.headSha, baseSha: facts.baseSha, policySha }) + "\n");
+    await output({ "copilot-required": "true" });
     await summary(["状态：prepared", `来源提交：${facts.headSha}`, `提示文件：${basename(promptPath)}`]);
     return;
   }
@@ -1204,9 +1209,6 @@ async function automate(args: Readonly<Record<string, string>>) {
   if (classificationField.state === "valid") aiClassificationSummary = `${classificationField.suggestion.primaryKind}（${classificationField.suggestion.confidence}）`;
   else if (classificationField.state === "abstained") aiClassificationSummary = "弃权";
   else if (classificationField.state === "invalid") aiClassificationSummary = `无效（${classificationField.reason}）`;
-  if (pulls[0]?.user?.id === 49699333 && pulls[0].user.login === "dependabot[bot]" && pulls[0].user.type === "Bot") {
-    return summary(["状态：ignored", "原因：Dependabot维护原生正文，审查使用独立请求路径"]);
-  }
   const template = process.env.PR_TEMPLATE_PATH ? await runtimeReadFile(process.env.PR_TEMPLATE_PATH, "utf8") : organizationPullRequestTemplate;
   const title = `${generated.type}(${generated.scope}): ${generated.title}`;
   const context = await computePullRequestFingerprint({ repositoryId, pullRequestNumber: pulls[0]?.number ?? 0, headSha: facts.headSha, baseSha: facts.baseSha, commits: (compare.commits ?? []).map((c: any) => c.sha), files: (compare.files ?? []).map((f: any) => ({ path: f.filename, status: f.status, additions: f.additions, deletions: f.deletions })), title, body: "", contributors });
