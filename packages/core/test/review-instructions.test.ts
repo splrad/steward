@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { generateReviewInstructionSet, planReviewInstructionSync, validateReviewRegistries, type ReviewProfileRegistry, type ReviewRuleRegistry } from "../src/review-instructions.js";
+import { generateReviewInstructionSet, maximumReviewInstructionCharacters, planReviewInstructionSync, validateReviewRegistries, type ReviewProfileRegistry, type ReviewRuleRegistry } from "../src/review-instructions.js";
 
 async function registries(): Promise<{ profiles: ReviewProfileRegistry; rules: ReviewRuleRegistry }> {
   const profiles = JSON.parse(await readFile("config/review/profiles.json", "utf8"));
@@ -16,7 +16,7 @@ describe("代码审查说明", () => {
     for (const profile of ["steward", "layerscape", "github"]) {
       const generated = await generateReviewInstructionSet(profile, profiles, rules);
       expect(generated.files.map(file => file.path)).toEqual(["AGENTS.md", ".github/copilot-instructions.md"]);
-      expect(generated.files.every(file => file.content.endsWith("\n") && !file.content.includes("\r") && [...file.content].length <= 4000)).toBe(true);
+      expect(generated.files.every(file => file.content.endsWith("\n") && !file.content.includes("\r") && [...file.content].length <= maximumReviewInstructionCharacters)).toBe(true);
       const shared = generated.files[0];
       const copilot = generated.files[1];
       expect(shared.ruleIds).toContain("common.review-language-zh");
@@ -60,7 +60,7 @@ describe("代码审查说明", () => {
     const copilot = generated.files.find(file => file.path === ".github/copilot-instructions.md")!;
     expect(copilot.content.endsWith("\n")).toBe(true);
     expect(copilot.content.endsWith("\n\n")).toBe(false);
-    expect([...copilot.content].length).toBeLessThanOrEqual(4000);
+    expect([...copilot.content].length).toBeLessThanOrEqual(maximumReviewInstructionCharacters);
   });
 
   it("拒绝未知、退役和不完整引用", async () => {

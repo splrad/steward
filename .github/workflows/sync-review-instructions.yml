@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  synchronize:
+  resolve:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
@@ -23,6 +23,9 @@ jobs:
       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      policy_sha: ${{ steps.policy.outputs.policy_sha }}
+      matrix: ${{ steps.targets.outputs.matrix }}
     environment:
       name: steward-automation
       deployment: false
@@ -45,15 +48,56 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with: { node-version-file: .node-version, cache: npm }
       - run: npm ci --ignore-scripts
+      - name: 解析同步仓库与模式
+        id: targets
+        shell: bash
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          POLICY_SHA: ${{ steps.policy.outputs.policy_sha }}
+          SYNC_TRIGGER: ${{ github.actor_id == '301115370' && 'app-redrive' || github.event_name }}
+          TRIGGER_ACTOR_ID: ${{ github.actor_id }}
+          TRIGGER_ACTOR_LOGIN: ${{ github.actor }}
+        run: |
+          repository_arguments=()
+          if [[ -n "$REPOSITORY_ID" ]]; then
+            repository_arguments+=(--repository-id "$REPOSITORY_ID")
+          fi
+          node packages/runner/dist/index.js review-sync-targets "${repository_arguments[@]}" --policy-sha "$POLICY_SHA"
+
+  synchronize:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    concurrency:
+      group: steward-pr-body-${{ matrix.repositoryId }}
+      cancel-in-progress: false
+      queue: max
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: steward-automation
+      deployment: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: "${{ needs.resolve.outputs.policy_sha }}", persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: .node-version, cache: npm }
+      - run: npm ci --ignore-scripts
       - name: 同步代码审查说明
+        shell: bash
         env:
           APP_ID: "4243096"
           INSTALLATION_ID: "145952003"
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
           RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
-          COPILOT_REVIEW_REQUEST_TOKEN: ${{ secrets.COPILOT_REVIEW_REQUEST_TOKEN }}
-          REPOSITORY_ID: ${{ inputs.repositoryId }}
-          POLICY_SHA: ${{ steps.policy.outputs.policy_sha }}
+          COPILOT_REVIEW_REQUEST_TOKEN: ${{ matrix.trigger == 'legacy' && secrets.COPILOT_REVIEW_REQUEST_TOKEN || '' }}
+          REPOSITORY_ID: ${{ matrix.repositoryId }}
+          POLICY_SHA: ${{ needs.resolve.outputs.policy_sha }}
           SYNC_TRIGGER: ${{ github.actor_id == '301115370' && 'app-redrive' || github.event_name }}
           TRIGGER_ACTOR_ID: ${{ github.actor_id }}
           TRIGGER_ACTOR_LOGIN: ${{ github.actor }}

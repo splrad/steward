@@ -448,6 +448,13 @@
         },
         "delivery": {
           "$ref": "#/$defs/delivery"
+        },
+        "copilotReviewTrigger": {
+          "type": "string",
+          "enum": [
+            "legacy",
+            "native"
+          ]
         }
       }
     },
@@ -522,6 +529,13 @@
         },
         "delivery": {
           "$ref": "#/$defs/delivery"
+        },
+        "copilotReviewTrigger": {
+          "type": "string",
+          "enum": [
+            "legacy",
+            "native"
+          ]
         }
       }
     },
