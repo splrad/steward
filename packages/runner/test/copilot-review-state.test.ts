@@ -65,6 +65,46 @@ describe("Copilot当前head审查证据", () => {
   it("同一次尝试的终态冲突不能确认成功", () => {
     expect(classifyCopilotReviewState(input({ reviews: [review()], checkRuns: [check(), { ...check(), id: 2, conclusion: "failure" }] })).state).toBe("unknown");
   });
+  it.each([head, null])("请求撤销后不报告排队，重新请求可开始新尝试：%s", removalHead => {
+    const requested = { id: 10, event: "review_requested", requested_reviewer: { login: "copilot" }, commit_id: head, created_at: "2026-10-04T05:00:00Z" };
+    const removed = { ...requested, id: 11, event: "review_request_removed", commit_id: removalHead, created_at: "2026-10-04T05:01:00Z" };
+    const base = { reviews: [review()], checkRuns: [check()] };
+    for (const events of [[requested, removed], [removed, requested]]) expect(classifyCopilotReviewState(input({ ...base, events }))).toMatchObject({ state: "unknown", reason: "request-removed" });
+    expect(classifyCopilotReviewState(input({ events: [requested, removed] }))).toMatchObject({ state: "unknown", reason: "request-removed" });
+    const retried = { ...requested, id: 12, created_at: "2026-10-04T05:02:00Z" };
+    expect(classifyCopilotReviewState(input({ ...base, events: [removed, retried, requested] })).state).toBe("queued");
+    expect(classifyCopilotReviewState(input({ ...base, events: [requested, { ...removed, created_at: requested.created_at }] })).state).toBe("unknown");
+    expect(classifyCopilotReviewState(input({ ...base, events: [requested, { ...removed, created_at: undefined }] })).state).toBe("unknown");
+    expect(classifyCopilotReviewState(input({ ...base, events: [requested, removed, { ...retried, event: "copilot_work_started" }] })).state).toBe("unknown");
+    const laterCheck = { ...check(), id: 2, started_at: "2026-10-04T05:02:10Z", completed_at: "2026-10-04T05:03:00Z" };
+    const laterReview = { ...review(), id: 2, submitted_at: "2026-10-04T05:03:01Z" };
+    expect(classifyCopilotReviewState(input({ reviews: [review(), laterReview], checkRuns: [check(), laterCheck], events: [requested, removed, retried] }))).toMatchObject({ state: "succeeded", findings: 1 });
+  });
+  it.each(["other-reviewer", "other-head"])("无关撤销不覆盖Copilot请求：%s", kind => {
+    const requested = { id: 10, event: "review_requested", requested_reviewer: { login: "copilot" }, commit_id: head, created_at: "2026-10-04T05:00:00Z" };
+    const removed = { ...requested, id: 11, event: "review_request_removed", created_at: "2026-10-04T05:01:00Z", ...(kind === "other-reviewer" ? { requested_reviewer: { login: "other" } } : { commit_id: priorHead }) };
+    expect(classifyCopilotReviewState(input({ reviews: [review()], checkRuns: [check()], events: [requested, removed] })).state).toBe("queued");
+  });
+  it("旧Check晚完成不覆盖其启动后的新请求或撤销", () => {
+    const requested = { id: 10, event: "review_requested", requested_reviewer: { login: "copilot" }, commit_id: head, created_at: "2026-10-04T05:00:00Z" };
+    const removed = { ...requested, id: 11, event: "review_request_removed", created_at: "2026-10-04T05:01:00Z" };
+    const base = { reviews: [review()], checkRuns: [{ ...check(), completed_at: "2026-10-04T05:05:00Z" }] };
+    expect(classifyCopilotReviewState(input({ ...base, events: [requested] })).state).toBe("queued");
+    expect(classifyCopilotReviewState(input({ ...base, events: [requested, removed] }))).toMatchObject({ state: "unknown", reason: "request-removed" });
+  });
+  it("活动事件不把已知运行中的Check降为排队", () => {
+    expect(classifyCopilotReviewState(input({ checkRuns: [{ ...check(), status: "in_progress" }], events: [{ event: "copilot_work_started", commit_id: head, created_at: "2026-10-04T04:52:00Z" }] })).state).toBe("running");
+  });
+  it.each([head, null])("重新请求是概要配对边界，不能复用旧Check：%s", requestHead => {
+    const requested = { id: 10, event: "review_requested", requested_reviewer: { login: "copilot" }, commit_id: requestHead, created_at: "2026-10-04T05:00:00Z" };
+    const laterReview = { ...review(), submitted_at: "2026-10-04T05:01:00Z" };
+    const base = { reviews: [laterReview], checkRuns: [check()], events: [requested] };
+    expect(classifyCopilotReviewState(input(base))).toMatchObject({ state: "unknown", reason: "review-check-attempt-unverified" });
+    const laterCheck = { ...check(), id: 2, started_at: "2026-10-04T05:00:10Z", completed_at: "2026-10-04T05:00:59Z" };
+    expect(classifyCopilotReviewState(input({ ...base, checkRuns: [check(), laterCheck] }))).toMatchObject({ state: "succeeded", findings: 1, checkRunId: 2 });
+    expect(classifyCopilotReviewState(input({ ...base, checkRuns: [check(), { ...laterCheck, started_at: requested.created_at }] })).state).toBe("unknown");
+    expect(classifyCopilotReviewState(input({ ...base, events: [{ ...requested, event: "review_request_removed" }] })).state).toBe("unknown");
+  });
   it("成功Check缺失、未知Review格式或已撤销均保持unknown", () => {
     for (const body of [overview, "", "<!-- ccr-overview-v2 -->", "COMMENTED"]) expect(classifyCopilotReviewState(input({ reviews: [{ ...review(), body }] })).state).toBe("unknown");
     expect(classifyCopilotReviewState(input({ reviews: [{ ...review(), state: "DISMISSED" }], checkRuns: [check()] })).state).toBe("unknown");
