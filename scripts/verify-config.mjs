@@ -155,4 +155,17 @@ if (triggerStart < 0 || wranglerLines.filter(line => line === "[triggers]").leng
 const triggerEndOffset = wranglerLines.slice(triggerStart + 1).findIndex(line => /^\[\[?[^\]]+\]\]?$/u.test(line));
 const triggerEnd = triggerEndOffset < 0 ? wranglerLines.length : triggerStart + 1 + triggerEndOffset;
 if (JSON.stringify(wranglerLines.slice(triggerStart, triggerEnd).filter(Boolean)) !== JSON.stringify(["[triggers]", 'crons = ["* * * * *"]'])) throw new Error("运行配置必须每分钟触发一次正文写意图恢复");
+
+
+for (const section of ["default", "repository"]) {
+  for (const mode of [undefined, "legacy", "native", "invalid", null]) {
+    const candidate = structuredClone(catalog);
+    const configuration = section === "default" ? candidate.defaults.public : candidate.repositories[ids[0]];
+    if (mode === undefined) delete configuration.copilotReviewTrigger;
+    else configuration.copilotReviewTrigger = mode;
+    const expected = mode === undefined || mode === "legacy" || mode === "native";
+    if (Boolean(repositoryValidator(candidate)) !== expected) throw new Error("审查触发模式schema边界无效");
+  }
+}
+
 console.log("configuration verified");

@@ -289,7 +289,7 @@ export class GitHubClient {
   updateLabel(owner: string, repo: string, name: string, body: unknown) { return this.request<any>("PATCH", `/repos/${owner}/${repo}/labels/${encodeURIComponent(name)}`, body); }
   listRepositoryLabels(owner: string, repo: string) { return this.paginate<any>(`/repos/${owner}/${repo}/labels?per_page=100`); }
   listCheckRuns(owner: string, repo: string, ref: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/commits/${ref}/check-runs?per_page=100`); }
-  listAllCheckRuns(owner: string, repo: string, ref: string) { return this.paginate<any>(`/repos/${owner}/${repo}/commits/${ref}/check-runs?per_page=100`, value => (value as any).check_runs); }
+  listAllCheckRuns(owner: string, repo: string, ref: string, filter?: "latest" | "all") { return this.paginate<any>(`/repos/${owner}/${repo}/commits/${ref}/check-runs?per_page=100${filter ? `&filter=${filter}` : ""}`, value => (value as any).check_runs); }
   createCheckRun(owner: string, repo: string, body: unknown) { return this.request<any>("POST", `/repos/${owner}/${repo}/check-runs`, body); }
   updateCheckRun(owner: string, repo: string, id: number, body: unknown) { return this.request<any>("PATCH", `/repos/${owner}/${repo}/check-runs/${id}`, body); }
   getRequestedReviewers(owner: string, repo: string, number: number) { return this.request<any>("GET", `/repos/${owner}/${repo}/pulls/${number}/requested_reviewers`); }

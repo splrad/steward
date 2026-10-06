@@ -40,7 +40,8 @@
         },
         "deployments": [],
         "packages": []
-      }
+      },
+      "copilotReviewTrigger": "legacy"
     },
     "private": {
       "managed": false,
@@ -70,7 +71,8 @@
         },
         "deployments": [],
         "packages": []
-      }
+      },
+      "copilotReviewTrigger": "legacy"
     }
   },
   "repositories": {
@@ -151,7 +153,8 @@
         },
         "deployments": [],
         "packages": []
-      }
+      },
+      "copilotReviewTrigger": "legacy"
     },
     "1296724484": {
       "managed": true,
@@ -207,7 +210,8 @@
         },
         "deployments": [],
         "packages": []
-      }
+      },
+      "copilotReviewTrigger": "legacy"
     },
     "1296725317": {
       "managed": true,
@@ -252,7 +256,8 @@
         },
         "deployments": [],
         "packages": []
-      }
+      },
+      "copilotReviewTrigger": "legacy"
     }
   }
 }

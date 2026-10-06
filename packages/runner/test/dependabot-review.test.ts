@@ -44,7 +44,7 @@ describe("Dependabot审查范围", () => {
   });
 });
 
-function fixture(options: { reviews?: any[]; active?: boolean; pending?: boolean; driftAt?: number; archivedAt?: number; requestStatus?: number; noEvent?: boolean; unreadableReviews?: boolean } = {}) {
+function fixture(options: { reviews?: any[]; active?: boolean; completed?: boolean; pending?: boolean; driftAt?: number; archivedAt?: number; requestStatus?: number; noEvent?: boolean; unreadableReviews?: boolean } = {}) {
   const writes: string[] = []; let requested = false; let pullReads = 0; let repositoryReads = 0;
   vi.stubEnv("COPILOT_REVIEW_REQUEST_TOKEN", "review-token");
   vi.stubGlobal("fetch", async (input: any, init: RequestInit = {}) => {
@@ -55,14 +55,14 @@ function fixture(options: { reviews?: any[]; active?: boolean; pending?: boolean
     if (url.endsWith("/pulls/187")) { pullReads++; const p = pull(); if (options.driftAt && pullReads >= options.driftAt) p.head.sha = "c".repeat(40); return ok(p); }
     if (url.endsWith("/requested_reviewers")) {
       if (method === "POST") { requested = true; return options.requestStatus ? new Response("denied", { status: options.requestStatus }) : ok({}); }
-      return ok({ users: options.pending ? [{ login: "copilot-pull-request-reviewer[bot]" }] : [] });
+      return ok({ users: options.pending || requested ? [{ login: "copilot-pull-request-reviewer[bot]" }] : [] });
     }
-    if (url.includes("/reviews?")) return options.unreadableReviews ? new Response("unavailable", { status: 403 }) : ok(options.reviews ?? []);
+    if (url.includes("/reviews?")) return options.unreadableReviews ? new Response("unavailable", { status: 403 }) : ok((options.reviews ?? []).map(review => ({ id: 1, submitted_at: "2026-10-04T04:59:44Z", ...review })));
     if (url.includes("/events?")) return ok(requested && !options.noEvent ? [{ id: 2, event: "review_requested", requested_reviewer: { login: "copilot-pull-request-reviewer[bot]" } }] : [{ id: 1, event: "opened" }]);
-    if (url.includes("/check-runs?")) return ok({ check_runs: options.active ? [{ name: "copilot-pull-request-reviewer", app: { id: 15368 }, head_sha: head, status: "in_progress", pull_requests: [{ number: 187, head: { sha: head } }] }] : [] });
+    if (url.includes("/check-runs?")) return ok({ check_runs: options.active || options.completed ? [{ id: 1, name: "copilot-pull-request-reviewer", app: { id: 15368 }, head_sha: head, status: options.active ? "in_progress" : "completed", conclusion: "success", started_at: "2026-10-04T04:51:03Z", completed_at: "2026-10-04T04:59:42Z", pull_requests: [{ number: 187, head: { sha: head } }] }] : [] });
     throw new Error(`unexpected endpoint: ${method} ${url}`);
   });
-  return { writes, run: (managed = true) => requestDependabotCopilotReview(new GitHubClient("read-token", "https://api.github.com", fetch, policy), 1296724484, 187, head, policy, () => managed) };
+  return { writes, run: (managed = true, trigger: "legacy" | "native" = "legacy") => requestDependabotCopilotReview(new GitHubClient("read-token", "https://api.github.com", fetch, policy), 1296724484, 187, head, policy, () => managed, trigger) };
 }
 
 describe("Dependabot审查请求", () => {
@@ -71,19 +71,19 @@ describe("Dependabot审查请求", () => {
     expect(f.writes).toEqual(["POST https://api.github.com/repos/splrad/steward/pulls/187/requested_reviewers"]);
   });
   it("同head完成记录抑制重复请求", async () => {
-    const f = fixture({ reviews: [{ user: { login: "copilot-pull-request-reviewer[bot]" }, commit_id: head, state: "COMMENTED" }] });
-    expect(await f.run()).toBe("already-present"); expect(f.writes).toEqual([]);
+    const f = fixture({ completed: true, reviews: [{ user: { login: "copilot-pull-request-reviewer[bot]" }, commit_id: head, state: "COMMENTED", body: "Copilot reviewed 2 out of 2 changed files in this pull request and generated 0 comments." }] });
+    expect(await f.run()).toBe("observed-succeeded"); expect(f.writes).toEqual([]);
   });
   it("同head活动Check抑制重复请求", async () => {
-    const f = fixture({ active: true }); expect(await f.run()).toBe("already-present"); expect(f.writes).toEqual([]);
+    const f = fixture({ active: true }); expect(await f.run()).toBe("observed-running"); expect(f.writes).toEqual([]);
   });
   it("旧head和pending reviewer不冒充新head审查", async () => {
     const f = fixture({ pending: true, reviews: [{ user: { login: "copilot-pull-request-reviewer[bot]" }, commit_id: "d".repeat(40), state: "COMMENTED" }] });
-    expect(await f.run()).toBe("requested-and-confirmed"); expect(f.writes).toHaveLength(1);
+    expect(await f.run()).toBe("observed-unknown"); expect(f.writes).toHaveLength(0);
   });
-  it("已撤销Review不能抑制新请求", async () => {
+  it("已撤销Review保留unknown，不自动补发", async () => {
     const f = fixture({ reviews: [{ user: { login: "copilot-pull-request-reviewer[bot]" }, commit_id: head, state: "DISMISSED" }] });
-    expect(await f.run()).toBe("requested-and-confirmed"); expect(f.writes).toHaveLength(1);
+    expect(await f.run()).toBe("observed-unknown"); expect(f.writes).toHaveLength(0);
   });
   it("旧事件和未受管仓库没有写入", async () => {
     const f = fixture({ driftAt: 1 }); expect(await f.run()).toBe("ignored-or-stale"); expect(f.writes).toEqual([]);
@@ -102,19 +102,27 @@ describe("Dependabot审查请求", () => {
     const f = fixture({ requestStatus: 403 }); await expect(f.run()).rejects.toThrow(); expect(f.writes).toHaveLength(1);
   });
   it("Review读取失败时不发请求", async () => {
-    const f = fixture({ unreadableReviews: true }); await expect(f.run()).rejects.toThrow(); expect(f.writes).toEqual([]);
+    const f = fixture({ unreadableReviews: true }); expect(await f.run()).toBe("observed-unknown"); expect(f.writes).toEqual([]);
   });
   it("只有pending但没有新事件时保留未确认状态", async () => {
     const f = fixture({ pending: true, noEvent: true });
-    expect(await f.run()).toBe("requested-unconfirmed"); expect(f.writes).toHaveLength(1);
+    expect(await f.run()).toBe("observed-unknown"); expect(f.writes).toHaveLength(0);
   }, 15000);
   it("同head重复请求没有新增事件时不误报确认或失败", async () => {
-    const f = fixture({ pending: true });
+    const f = fixture();
     expect(await f.run()).toBe("requested-and-confirmed");
-    expect(await f.run()).toBe("requested-unconfirmed"); expect(f.writes).toHaveLength(2);
+    expect(await f.run()).toBe("observed-unknown"); expect(f.writes).toHaveLength(1);
   }, 15000);
   it("未确认请求之后head变化仍报告版本变化", async () => {
-    const f = fixture({ pending: true, noEvent: true, driftAt: 3 });
+    const f = fixture({ noEvent: true, driftAt: 3 });
     expect(await f.run()).toBe("changed-during-request");
   }, 15000);
+  it("native保持资格核验，只读观察且不依赖请求令牌", async () => {
+    const f = fixture(); vi.stubEnv("COPILOT_REVIEW_REQUEST_TOKEN", "");
+    expect(await f.run(true, "native")).toBe("observed-none"); expect(f.writes).toEqual([]);
+  });
+  it("quota失败在重复派发下不自动重试", async () => {
+    const f = fixture({ reviews: [{ user: { login: "copilot" }, commit_id: head, state: "COMMENTED", body: "unable to review: quota limit" }] });
+    expect(await f.run()).toBe("observed-failed-quota"); expect(await f.run()).toBe("observed-failed-quota"); expect(f.writes).toEqual([]);
+  });
 });
