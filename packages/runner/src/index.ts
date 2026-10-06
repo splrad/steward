@@ -1204,6 +1204,9 @@ async function automate(args: Readonly<Record<string, string>>) {
   if (classificationField.state === "valid") aiClassificationSummary = `${classificationField.suggestion.primaryKind}（${classificationField.suggestion.confidence}）`;
   else if (classificationField.state === "abstained") aiClassificationSummary = "弃权";
   else if (classificationField.state === "invalid") aiClassificationSummary = `无效（${classificationField.reason}）`;
+  if (pulls[0]?.user?.id === 49699333 && pulls[0].user.login === "dependabot[bot]" && pulls[0].user.type === "Bot") {
+    return summary(["状态：ignored", "原因：Dependabot维护原生正文，审查使用独立请求路径"]);
+  }
   const template = process.env.PR_TEMPLATE_PATH ? await runtimeReadFile(process.env.PR_TEMPLATE_PATH, "utf8") : organizationPullRequestTemplate;
   const title = `${generated.type}(${generated.scope}): ${generated.title}`;
   const context = await computePullRequestFingerprint({ repositoryId, pullRequestNumber: pulls[0]?.number ?? 0, headSha: facts.headSha, baseSha: facts.baseSha, commits: (compare.commits ?? []).map((c: any) => c.sha), files: (compare.files ?? []).map((f: any) => ({ path: f.filename, status: f.status, additions: f.additions, deletions: f.deletions })), title, body: "", contributors });
