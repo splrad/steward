@@ -15,7 +15,7 @@
       "evidence": [
         {
           "kind": "source",
-          "reference": "splrad/.github:.github/pull_request_template.md",
+          "reference": "splrad/.github@261dc538c1264a22e9734dd87518605ebdf52505:.github/pull_request_template.md",
           "confirmedAt": "2026-10-07"
         }
       ],
