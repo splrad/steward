@@ -121,6 +121,11 @@ describe("Dependabot审查请求", () => {
     const f = fixture(); vi.stubEnv("COPILOT_REVIEW_REQUEST_TOKEN", "");
     expect(await f.run(true, "native")).toBe("observed-none"); expect(f.writes).toEqual([]);
   });
+  it("省略触发模式时同样只读观察", async () => {
+    const f = fixture(); vi.stubEnv("COPILOT_REVIEW_REQUEST_TOKEN", "");
+    expect(await requestDependabotCopilotReview(new GitHubClient("read-token", "https://api.github.com", fetch, policy), 1296724484, 187, head, policy, () => true)).toBe("observed-none");
+    expect(f.writes).toEqual([]);
+  });
   it("quota失败在重复派发下不自动重试", async () => {
     const f = fixture({ reviews: [{ user: { login: "copilot" }, commit_id: head, state: "COMMENTED", body: "unable to review: quota limit" }] });
     expect(await f.run()).toBe("observed-failed-quota"); expect(await f.run()).toBe("observed-failed-quota"); expect(f.writes).toEqual([]);

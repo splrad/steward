@@ -157,10 +157,10 @@ const triggerEnd = triggerEndOffset < 0 ? wranglerLines.length : triggerStart + 
 if (JSON.stringify(wranglerLines.slice(triggerStart, triggerEnd).filter(Boolean)) !== JSON.stringify(["[triggers]", 'crons = ["* * * * *"]'])) throw new Error("运行配置必须每分钟触发一次正文写意图恢复");
 
 
-for (const section of ["default", "repository"]) {
+for (const section of ["public", "private", "repository"]) {
   for (const mode of [undefined, "legacy", "native", "invalid", null]) {
     const candidate = structuredClone(catalog);
-    const configuration = section === "default" ? candidate.defaults.public : candidate.repositories[ids[0]];
+    const configuration = section === "repository" ? candidate.repositories[ids[0]] : candidate.defaults[section];
     if (mode === undefined) delete configuration.copilotReviewTrigger;
     else configuration.copilotReviewTrigger = mode;
     const expected = mode === undefined || mode === "legacy" || mode === "native";

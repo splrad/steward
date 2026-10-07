@@ -125,7 +125,7 @@ export function classifyCopilotReviewState(input: CopilotReviewInput): CopilotRe
 
 export type CopilotReviewTrigger = "legacy" | "native";
 export function copilotReviewTrigger(value: unknown): CopilotReviewTrigger {
-  if (value === undefined || value === "legacy") return "legacy";
-  if (value === "native") return "native";
+  if (value === undefined || value === "native") return "native";
+  if (value === "legacy") return "legacy";
   throw new Error("Copilot审查触发模式无效");
 }
