@@ -3,6 +3,25 @@
   "schemaVersion": 1,
   "rules": [
     {
+      "id": "common.pr-creation",
+      "audience": "shared",
+      "profiles": [
+        "common"
+      ],
+      "scope": "repository",
+      "consequence": "向本仓库的工作分支完成获授权的推送后，检查对应 PR，默认由 SPLRAD Steward 创建或更新。尚无对应 PR 时，检查自动化状态：正在运行则等待，状态不明则如实说明。只有确认机器人故障、无法自动创建时，才可按用户授权补建。通过 fork 贡献时，从贡献者的 fork 向本仓库发起 PR，无需等待机器人创建。",
+      "safePath": "AI 代为创建或补建 PR，须有用户对该仓库和分支的明确授权。提交或推送授权不包含创建 PR；已有的有效授权无需重复询问。创建前检查是否已有对应 PR；创建时填写标题和变更说明，保留模板受管标记；创建后回读结果，核对来源分支和目标分支。此规则适用于交互式编码助手，Steward 按既有配置执行自动化。",
+      "owner": "splrad/maintainers",
+      "evidence": [
+        {
+          "kind": "source",
+          "reference": "splrad/.github@261dc538c1264a22e9734dd87518605ebdf52505:.github/pull_request_template.md",
+          "confirmedAt": "2026-10-07"
+        }
+      ],
+      "status": "active"
+    },
+    {
       "id": "common.current-head-evidence",
       "audience": "shared",
       "profiles": ["common"],
