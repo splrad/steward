@@ -804,7 +804,7 @@ export async function readCopilotReviewState(clientValue: GitHubClient, owner: s
   }
 }
 export async function ensureCopilotReview(clientValue: GitHubClient, owner: string, repo: string, number: number, headSha: string, policySha: string,
-  trigger: CopilotReviewTrigger = "legacy", beforeRequest?: () => Promise<void>): Promise<string> {
+  trigger: CopilotReviewTrigger = "native", beforeRequest?: () => Promise<void>): Promise<string> {
   trigger = copilotReviewTrigger(trigger);
   const state = await readCopilotReviewState(clientValue, owner, repo, number, headSha);
   await summary([`Copilot审查：${JSON.stringify({ repository: `${owner}/${repo}`, number, trigger, ...state })}`]);
@@ -834,7 +834,7 @@ export function isTrustedReviewRequestSource(policySha: string, environment: Nod
 }
 
 export async function requestDependabotCopilotReview(gh: GitHubClient, repositoryId: number, number: number, headSha: string, policySha: string,
-  managed: (repository: any) => boolean, trigger: CopilotReviewTrigger = "legacy"): Promise<string> {
+  managed: (repository: any) => boolean, trigger: CopilotReviewTrigger = "native"): Promise<string> {
   const repository = await gh.getRepositoryById(repositoryId);
   if (repository.id !== repositoryId || !managed(repository)) return "ignored";
   const [owner, repo] = splitRepository(repository.full_name);

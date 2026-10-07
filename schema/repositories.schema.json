@@ -454,7 +454,8 @@
           "enum": [
             "legacy",
             "native"
-          ]
+          ],
+          "default": "native"
         }
       }
     },
