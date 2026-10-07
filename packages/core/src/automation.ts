@@ -14,6 +14,8 @@ export const summaryStart = '<!-- workflow:managed-pr:start -->';
 export const summaryEnd = '<!-- workflow:managed-pr:end -->';
 const legacySummaryStart = '<!-- workflow:auto-summary:start -->';
 const legacySummaryEnd = '<!-- workflow:auto-summary:end -->';
+// 创建页面的组织模板位于 splrad/.github 的 .github/pull_request_template.md，需在该仓库更新。
+// 本常量用于正文生成的回退输入；renderManagedBody 会重建正文，不保留模板提示。
 export const organizationPullRequestTemplate = `${summaryStart}
 ## PR 创建说明
 
@@ -24,7 +26,7 @@ export const organizationPullRequestTemplate = `${summaryStart}
 
 **AI 编码助手：** 向本仓库推送后，应检查对应 PR 和自动化状态，默认等待机器人处理。故障补建或从 fork 发起 PR，均须有用户明确授权；提交或推送授权不包含创建 PR。
 
-手动创建 PR 时，请填写标题和变更说明，并保留模板中的受管注释标记。
+手动创建 PR 时，请填写标题和变更说明，并保留受管注释标记。Steward 后续更新会重新生成标题和正文；需要保留的补充信息请写在 PR 评论中。
 ${summaryEnd}
 `;
 
