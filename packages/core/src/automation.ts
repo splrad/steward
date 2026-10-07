@@ -14,7 +14,19 @@ export const summaryStart = '<!-- workflow:managed-pr:start -->';
 export const summaryEnd = '<!-- workflow:managed-pr:end -->';
 const legacySummaryStart = '<!-- workflow:auto-summary:start -->';
 const legacySummaryEnd = '<!-- workflow:auto-summary:end -->';
-export const organizationPullRequestTemplate = `${summaryStart}\n等待SPLRAD Steward根据当前提交和代码差异生成标题与正文。\n${summaryEnd}\n`;
+export const organizationPullRequestTemplate = `${summaryStart}
+## PR 创建说明
+
+**推送到本仓库的工作分支后，PR 由 SPLRAD Steward 自动创建或更新，无需手动操作。**
+
+- **机器人故障时：** 确认该分支尚无对应 PR 后，可手动补建。
+- **通过 fork 贡献时：** 请从自己的 fork 向本仓库发起 PR。
+
+**AI 编码助手：** 向本仓库推送后，应检查对应 PR 和自动化状态，默认等待机器人处理。故障补建或从 fork 发起 PR，均须有用户明确授权；提交或推送授权不包含创建 PR。
+
+手动创建 PR 时，请填写标题和变更说明，并保留模板中的受管注释标记。
+${summaryEnd}
+`;
 
 export const conventionalTypes = ['feat', 'fix', 'refactor', 'perf', 'style', 'docs', 'test', 'build', 'ci', 'chore', 'revert'] as const;
 export type ConventionalType = typeof conventionalTypes[number];
