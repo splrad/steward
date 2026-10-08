@@ -10,6 +10,7 @@ export interface ReviewProfile {
   id: string;
   owner: string;
   status: ReviewProfileStatus;
+  organizationInstructionsDigest?: string;
 }
 
 export interface ReviewProfileRegistry {
@@ -50,7 +51,9 @@ export interface GeneratedReviewInstruction {
 
 export interface GeneratedReviewInstructionSet {
   profile: string;
-  files: readonly [GeneratedReviewInstruction, GeneratedReviewInstruction];
+  files: readonly [GeneratedReviewInstruction, ...GeneratedReviewInstruction[]];
+  retiredFiles?: readonly GeneratedReviewInstruction[];
+  organization?: { content: string; ruleIds: string[]; digest: string };
 }
 
 const profileIdPattern = /^[a-z][a-z0-9-]*$/u;
@@ -76,7 +79,8 @@ export function validateReviewRegistries(profileRegistry: ReviewProfileRegistry,
   if (profileRegistry.schemaVersion !== 1 || !Array.isArray(profileRegistry.profiles) || profileRegistry.profiles.length === 0) throw new Error('审查profile注册表版本或内容无效');
   const profiles = new Map<string, ReviewProfile>();
   for (const profile of profileRegistry.profiles) {
-    assertExactKeys(profile, ['id', 'owner', 'status'], '审查profile');
+    assertExactKeys(profile, ['id', 'owner', 'status', ...(Object.hasOwn(profile, 'organizationInstructionsDigest') ? ['organizationInstructionsDigest'] : [])], '审查profile');
+    if (Object.hasOwn(profile, 'organizationInstructionsDigest') && (typeof profile.organizationInstructionsDigest !== 'string' || !/^[0-9a-f]{64}$/u.test(profile.organizationInstructionsDigest))) throw new Error('组织指令摘要必须是小写SHA-256');
     if (!profileIdPattern.test(profile.id) || !ownerPattern.test(profile.owner) || !['active', 'retired'].includes(profile.status)) throw new Error(`审查profile无效: ${profile.id}`);
     if (profiles.has(profile.id)) throw new Error(`审查profile重复: ${profile.id}`);
     profiles.set(profile.id, profile);
@@ -126,6 +130,14 @@ function renderRules(title: string, rules: readonly ReviewRule[]): string {
   return rendered;
 }
 
+export async function generateOrganizationReviewInstructions(profileRegistry: ReviewProfileRegistry, ruleRegistry: ReviewRuleRegistry): Promise<{ content: string; ruleIds: string[]; digest: string }> {
+  validateReviewRegistries(profileRegistry, ruleRegistry);
+  const rules = ruleRegistry.rules.filter(rule => rule.status === 'active' && rule.profiles.includes('common'))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const content = renderRules('SPLRAD 公共指令', rules);
+  return { content, ruleIds: rules.map(rule => rule.id), digest: await sha256Hex(content) };
+}
+
 export async function generateReviewInstructionSet(profileId: unknown, profileRegistry: ReviewProfileRegistry, ruleRegistry: ReviewRuleRegistry): Promise<GeneratedReviewInstructionSet> {
   const profiles = validateReviewRegistries(profileRegistry, ruleRegistry);
   if (typeof profileId !== 'string' || profiles.get(profileId)?.status !== 'active') throw new Error('仓库引用不存在或已退役的审查profile');
@@ -134,16 +146,46 @@ export async function generateReviewInstructionSet(profileId: unknown, profileRe
     .sort((left, right) => left.id.localeCompare(right.id));
   const shared = selected.filter(rule => rule.audience === 'shared');
   const copilot = selected.filter(rule => rule.audience === 'copilot');
-  if (!shared.length || !copilot.length) throw new Error('审查profile必须同时生成共享规则和Copilot补充规则');
+  if (!shared.length) throw new Error('审查profile必须生成共享规则');
+  const adoptedDigest = profiles.get(profileId)!.organizationInstructionsDigest;
+  const organization = adoptedDigest ? await generateOrganizationReviewInstructions(profileRegistry, ruleRegistry) : undefined;
+  if (organization && organization.digest !== adoptedDigest) throw new Error('组织指令摘要与当前中央规则不一致');
+  if (!copilot.length) throw new Error('中央规则必须保留Copilot规则及其迁移来源');
+  const repositoryCopilot = organization ? copilot.filter(rule => !rule.profiles.includes('common')) : copilot;
   const sharedContent = renderRules('SPLRAD 仓库说明', shared);
-  const copilotContent = renderRules('SPLRAD Copilot 代码审查补充说明', copilot);
-  return {
+  const result: GeneratedReviewInstructionSet = {
     profile: profileId,
     files: [
       { path: 'AGENTS.md', audience: 'shared', content: sharedContent, ruleIds: shared.map(rule => rule.id), digest: await sha256Hex(sharedContent) },
-      { path: '.github/copilot-instructions.md', audience: 'copilot', content: copilotContent, ruleIds: copilot.map(rule => rule.id), digest: await sha256Hex(copilotContent) },
     ],
   };
+  if (repositoryCopilot.length) {
+    const content = renderRules('SPLRAD Copilot 代码审查补充说明', repositoryCopilot);
+    result.files = [...result.files, { path: '.github/copilot-instructions.md', audience: 'copilot', content, ruleIds: repositoryCopilot.map(rule => rule.id), digest: await sha256Hex(content) }];
+  } else if (organization && copilot.length) {
+    const content = renderRules('SPLRAD Copilot 代码审查补充说明', copilot);
+    result.retiredFiles = [{ path: '.github/copilot-instructions.md', audience: 'copilot', content, ruleIds: copilot.map(rule => rule.id), digest: await sha256Hex(content) }];
+  }
+  if (organization) result.organization = organization;
+  return result;
+}
+
+export function assertReviewInstructionRetirements(current: Partial<Record<ReviewInstructionTargetPath, string | null>>, generated: GeneratedReviewInstructionSet): void {
+  for (const file of generated.retiredFiles ?? []) {
+    const actual = current[file.path];
+    if (actual != null && actual !== file.content) throw new Error('待退役审查说明含有未知或人工修改的内容: ' + file.path);
+  }
+}
+
+export function validateReviewInstructionContents(current: Partial<Record<ReviewInstructionTargetPath, string | null>>, generated: GeneratedReviewInstructionSet): void {
+  for (const expected of generated.files) {
+    const actual = current[expected.path];
+    if (actual == null) throw new Error('缺少中央生成的审查说明: ' + expected.path);
+    if (actual.replace(/\r\n/gu, '\n') !== expected.content) throw new Error('审查说明不等于中央生成结果: ' + expected.path);
+  }
+  for (const retired of generated.retiredFiles ?? []) {
+    if (current[retired.path] != null) throw new Error('已退役的审查说明仍然存在: ' + retired.path);
+  }
 }
 
 export interface ReviewSyncPlanInput {
@@ -155,7 +197,9 @@ export interface ReviewSyncPlanInput {
 }
 
 export function planReviewInstructionSync(input: ReviewSyncPlanInput): 'unchanged' | 'create' | 'update' {
-  if (input.generated.files.every(file => input.current[file.path] === file.content)) return 'unchanged';
+  assertReviewInstructionRetirements(input.current, input.generated);
+  if (input.generated.files.every(file => input.current[file.path] === file.content)
+    && (input.generated.retiredFiles ?? []).every(file => input.current[file.path] == null)) return 'unchanged';
   if (!input.branchExists) return 'create';
   if (!input.branchOwnedBySteward || input.openPullRequests !== 1) throw new Error('审查说明受管分支或拉取请求存在冲突');
   return 'update';
