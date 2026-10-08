@@ -4,3 +4,4 @@ export function summarizeChangedPaths(paths: readonly string[]) {
 }
 
 export const duplicatePathExample = summarizeChangedPaths(['b.ts', 'a.ts', 'b.ts']);
+export const emptyPathExample = summarizeChangedPaths([]);
