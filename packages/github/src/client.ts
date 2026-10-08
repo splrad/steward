@@ -302,6 +302,7 @@ export class GitHubClient {
   getContent(owner: string, repo: string, path: string, ref?: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/contents/${path}${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`); }
   putContent(owner: string, repo: string, path: string, body: unknown) { return this.request<any>("PUT", `/repos/${owner}/${repo}/contents/${path}`, body); }
   getGitCommit(owner: string, repo: string, sha: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/git/commits/${encodeURIComponent(sha)}`); }
+  getGitTree(owner: string, repo: string, sha: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/git/trees/${encodeURIComponent(sha)}?recursive=1`); }
   createBlob(owner: string, repo: string, content: string) { return this.request<any>("POST", `/repos/${owner}/${repo}/git/blobs`, { content, encoding: "utf-8" }); }
   createTree(owner: string, repo: string, body: unknown) { return this.request<any>("POST", `/repos/${owner}/${repo}/git/trees`, body); }
   createCommit(owner: string, repo: string, body: unknown) { return this.request<any>("POST", `/repos/${owner}/${repo}/git/commits`, body); }

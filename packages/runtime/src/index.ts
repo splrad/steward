@@ -190,14 +190,18 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
     || typeof run.head_branch !== "string" || !run.head_branch
     || !Array.isArray(run.pull_requests)) return false;
   const headSha = commitSha(run.head_sha)!;
-  const pulls = (await gh.listPullsForCommit(owner, repo, headSha)).filter((pull: any) =>
+  const matchesRun = (pull: any): boolean =>
     pull?.state === "open"
       && pull?.base?.repo?.id === repository.id
       && pull?.base?.ref === repository.default_branch
       && pull?.head?.repo?.id === run.head_repository.id
       && pull?.head?.ref === run.head_branch
       && commitSha(pull?.head?.sha) === headSha
-      && (run.pull_requests.length === 0 || run.pull_requests.some((linked: any) => linked?.number === pull.number)));
+      && (run.pull_requests.length === 0 || run.pull_requests.some((linked: any) => linked?.number === pull.number));
+  let pulls = (await gh.listPullsForCommit(owner, repo, headSha)).filter(matchesRun);
+  if (!pulls.length && run.head_repository.id !== repository.id) {
+    pulls = (await gh.listOpenPullRequests(owner, repo, repository.default_branch)).filter(matchesRun);
+  }
   if (!pulls.length) return false;
   if (pulls.length > 1) return false;
   const pull = pulls[0]!; const number = Number(pull.number);
