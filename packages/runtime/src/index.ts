@@ -185,10 +185,19 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
   const [owner, repo] = splitRepository(String(repository.full_name));
   const gh = await validationClient(env, Number(repository.id));
   const run = await gh.getWorkflowRun(owner, repo, runId);
-  if (!trustedValidationRun(run, repository)) return false;
+  if (!trustedValidationRun(run, repository) || run.id !== runId
+    || !Number.isSafeInteger(run.head_repository?.id) || run.head_repository.id <= 0
+    || typeof run.head_branch !== "string" || !run.head_branch
+    || !Array.isArray(run.pull_requests)) return false;
   const headSha = commitSha(run.head_sha)!;
   const pulls = (await gh.listPullsForCommit(owner, repo, headSha)).filter((pull: any) =>
-    pull?.state === "open" && pull?.base?.ref === repository.default_branch && commitSha(pull?.head?.sha) === headSha);
+    pull?.state === "open"
+      && pull?.base?.repo?.id === repository.id
+      && pull?.base?.ref === repository.default_branch
+      && pull?.head?.repo?.id === run.head_repository.id
+      && pull?.head?.ref === run.head_branch
+      && commitSha(pull?.head?.sha) === headSha
+      && (run.pull_requests.length === 0 || run.pull_requests.some((linked: any) => linked?.number === pull.number)));
   if (!pulls.length) return false;
   if (pulls.length > 1) return false;
   const pull = pulls[0]!; const number = Number(pull.number);
