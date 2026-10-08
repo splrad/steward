@@ -74,6 +74,32 @@ async function withoutReviewToken(run: () => Promise<void>) {
 }
 
 describe.each(["native", undefined] as const)("三入口令牌隔离：%s", mode => {
+  it.each(["directory", "undecodable", "null", "missing"])("组织同步只将404视为退役路径缺失：%s", async kind => {
+    const f = await fixture(mode, true);
+    const { $schema: _p, ...profiles } = JSON.parse(await readFile(join(f.directory, "config/review/profiles.json"), "utf8"));
+    const { $schema: _r, ...rules } = JSON.parse(await readFile(join(f.directory, "config/review/rules.json"), "utf8"));
+    profiles.profiles.find((profile: any) => profile.id === "github").organizationInstructionsDigest = (await generateOrganizationReviewInstructions(profiles, rules)).digest;
+    await writeFile(join(f.directory, "config/review/profiles.json"), JSON.stringify(profiles));
+    const instructions = await generateReviewInstructionSet("github", profiles, rules);
+    vi.spyOn(f.prototype, "listRepositoryTeams").mockResolvedValue([{ slug: "maintainers", permission: "maintain" }]);
+    vi.spyOn(f.prototype, "getRef").mockResolvedValue({ object: { sha: baseSha } });
+    vi.spyOn(f.prototype, "getContent").mockImplementation(async (_owner, _repo, path) => {
+      if (path === "AGENTS.md") return { type: "file", encoding: "base64", content: Buffer.from(instructions.files[0].content).toString("base64") };
+      if (kind === "missing") throw new github.GitHubRequestError(404, "GET", path, "missing");
+      if (kind === "directory") return [{ type: "file", name: "manual.md" }];
+      if (kind === "null") return null;
+      return { type: "file", encoding: "none", content: "" };
+    });
+    const write = vi.spyOn(f.prototype, "createBlob");
+    const run = () => main(["sync-review-instructions", "--repository-id", String(f.repository.id), "--policy-sha", policySha]);
+    if (kind === "missing") {
+      await withoutReviewToken(run);
+      expect(await readFile(join(f.directory, "summary"), "utf8")).toContain("状态：unchanged");
+    } else await expect(withoutReviewToken(run)).rejects.toThrow("审查说明同步失败");
+    expect(write).not.toHaveBeenCalled();
+    expect(f.dispatch).not.toHaveBeenCalled();
+  });
+
   it("Dependabot命令保留来源与资格核验，完成只读观察", async () => {
     const f = await fixture(mode);
     for (const [name, value] of Object.entries({ TRIGGER_ACTOR_ID: "301115370", WORKFLOW_REPOSITORY: "splrad/steward",

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { lstat, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -300,7 +300,7 @@ async function renderReviewInstructionsCommand(args: Readonly<Record<string, str
   const { $schema: _profileSchema, ...profiles } = await json<ReviewProfileRegistry & { $schema?: string }>(configPath("review", "profiles.json"));
   const { $schema: _ruleSchema, ...rules } = await json<ReviewRuleRegistry & { $schema?: string }>(configPath("review", "rules.json"));
   const organization = await generateOrganizationReviewInstructions(profiles, rules);
-  const repository = await generateReviewInstructionSet(required(args, "profile"), profiles, rules);
+  const repository = args.profile === undefined ? undefined : await generateReviewInstructionSet(required(args, "profile"), profiles, rules);
   process.stdout.write(JSON.stringify({ policySha, organization, repository }, null, 2) + "\n");
 }
 export function configurationFor(catalogValue: Catalog, repository: any): any {
@@ -970,9 +970,13 @@ async function reconcileManagedFiles(input: { repository: any; gh: GitHubClient;
   const defaultRef = await input.gh.getRef(owner, repo, `heads/${defaultBranch}`);
   const targets = [...input.instructions.files, ...(input.instructions.retiredFiles ?? [])];
   const current = Object.fromEntries(await Promise.all(targets.map(async file => {
-    const value = await optional(() => input.gh.getContent(owner, repo, file.path, defaultRef.object.sha));
-    if (value != null && value.type && value.type !== "file") throw new Error("审查说明不是普通文件: " + file.path);
-    return [file.path, value == null ? null : decodeContent(value)];
+    const content = await optional(async () => {
+      const value = await input.gh.getContent(owner, repo, file.path, defaultRef.object.sha);
+      const decoded = decodeContent(value);
+      if (value == null || Array.isArray(value) || (value.type && value.type !== "file") || decoded === null) throw new Error("审查说明不是可读取的普通文件: " + file.path);
+      return decoded;
+    });
+    return [file.path, content];
   })));
   assertReviewInstructionRetirements(current, input.instructions);
   if (input.instructions.files.every(file => current[file.path] === file.content)
@@ -1785,8 +1789,19 @@ async function validate(args: Readonly<Record<string, string>>) {
     if (task === "verify-review-instructions") {
       const instructions = await loadReviewInstructions(configuration.reviewInstructionsProfile, reviewRegistryPaths(repositoryId, workspace));
       const current = Object.fromEntries(await Promise.all([...instructions.files, ...(instructions.retiredFiles ?? [])].map(async expected => {
-        const file = join(workspace, expected.path);
-        return [expected.path, files.includes(file) ? await runtimeReadFile(file, "utf8") : null];
+        const parts = expected.path.split("/");
+        let file = workspace;
+        for (const [index, part] of parts.entries()) {
+          file = join(file, part);
+          let metadata;
+          try { metadata = await lstat(file); }
+          catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return [expected.path, null];
+            throw error;
+          }
+          if (index < parts.length - 1 ? !metadata.isDirectory() : !metadata.isFile()) throw new Error("审查说明路径类型无效: " + expected.path);
+        }
+        return [expected.path, await runtimeReadFile(file, "utf8")];
       })));
       validateReviewInstructionContents(current, instructions);
       return { state: "success" as const, detail: "审查说明载体与中央配置一致" };
