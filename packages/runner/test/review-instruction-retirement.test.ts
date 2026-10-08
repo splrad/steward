@@ -149,6 +149,32 @@ describe("审查文件受控退役", () => {
     expect(client.createCommit).not.toHaveBeenCalled();
   });
 
+  describe.each([null, head])("退役空响应不发布分支：%s", branchSha => {
+    it.each([null, undefined])("父提交读取成功却返回%s时在写入前拒绝", async response => {
+      const { client, input } = fixture("已知生成原文", branchSha);
+      const getContent = client.getContent.getMockImplementation()!;
+      client.getContent.mockImplementation(async (owner, repo, path, ref) =>
+        path === retiredPath && ref === (branchSha ?? base) ? response : getContent(owner, repo, path, ref));
+      await expect(writeManagedFilesToBranch(input)).rejects.toThrow("退役文件读取返回空响应");
+      expect(client.createBlob).not.toHaveBeenCalled();
+      expect(client.createTree).not.toHaveBeenCalled();
+      expect(client.createCommit).not.toHaveBeenCalled();
+      expect(client.createRef).not.toHaveBeenCalled();
+      expect(client.updateRef).not.toHaveBeenCalled();
+    });
+
+    it.each([null, undefined])("新提交退役读回成功却返回%s时拒绝发布", async response => {
+      const { client, input } = fixture("已知生成原文", branchSha);
+      const getContent = client.getContent.getMockImplementation()!;
+      client.getContent.mockImplementation(async (owner, repo, path, ref) =>
+        path === retiredPath && ref === committed ? response : getContent(owner, repo, path, ref));
+      await expect(writeManagedFilesToBranch(input)).rejects.toThrow("退役文件写入后仍然存在");
+      expect(client.createCommit).toHaveBeenCalledOnce();
+      expect(client.createRef).not.toHaveBeenCalled();
+      expect(client.updateRef).not.toHaveBeenCalled();
+    });
+  });
+
   it("退役范围不能扩展到AGENTS或任意路径", async () => {
     const { client, input } = fixture();
     for (const path of ["AGENTS.md", "README.md", "../outside", "/absolute"]) {

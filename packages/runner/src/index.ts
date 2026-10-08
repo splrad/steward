@@ -918,7 +918,11 @@ export async function writeManagedFilesToBranch(input: {
   }
   const parentSha = input.branchSha ?? input.defaultSha;
   const existing = await Promise.all(input.files.map(async file => ({ file, value: await optional(() => input.gh.getContent(input.owner, input.repo, file.path, parentSha)) })));
-  const retiring = await Promise.all(retiredFiles.map(async file => ({ file, value: await optional(() => input.gh.getContent(input.owner, input.repo, file.path, parentSha)) })));
+  const retiring = await Promise.all(retiredFiles.map(async file => ({ file, value: await optional(async () => {
+    const value = await input.gh.getContent(input.owner, input.repo, file.path, parentSha);
+    if (value == null) throw new Error("退役文件读取返回空响应: " + file.path);
+    return value;
+  }) })));
   for (const item of retiring) {
     if (item.value != null && (item.value.type && item.value.type !== "file" || decodeContent(item.value) !== item.file.content)) throw new Error("待退役审查说明含有未知或人工修改的内容: " + item.file.path);
   }
@@ -950,7 +954,10 @@ export async function writeManagedFilesToBranch(input: {
   const readback = await Promise.all(input.files.map(async file => ({ file, value: await input.gh.getContent(input.owner, input.repo, file.path, commitSha) })));
   if (readback.some(item => decodeContent(item.value) !== item.file.content)) throw new Error("受管资源集写入后逐字读回不一致");
   for (const file of retiredFiles) {
-    if (await optional(() => input.gh.getContent(input.owner, input.repo, file.path, commitSha)) != null) throw new Error("退役文件写入后仍然存在: " + file.path);
+    await optional(async () => {
+      await input.gh.getContent(input.owner, input.repo, file.path, commitSha);
+      throw new Error("退役文件写入后仍然存在或返回异常成功响应: " + file.path);
+    });
   }
   if (input.branchSha) await input.gh.updateRef(input.owner, input.repo, `heads/${input.branch}`, commitSha, false);
   else await input.gh.createRef(input.owner, input.repo, `refs/heads/${input.branch}`, commitSha);
