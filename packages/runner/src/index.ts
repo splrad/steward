@@ -537,6 +537,22 @@ export function reusedAiClassificationAssessment(state: ClassificationCheckState
     wouldPrimary: state.acceptedAiPrimaryKind,
   };
 }
+
+function classificationChecksForPull(checks: readonly any[], codec: ClassificationCheckStateCodec,
+  identity: { repositoryId: number; pullRequestNumber: number; headSha: string }): { matching: any[]; unbound: any[] } {
+  const matching: any[] = [];
+  const unbound: any[] = [];
+  for (const check of checks) {
+    if (check.name !== "PR Classification Gate" || check.app?.id !== 4243096 || check.head_sha !== identity.headSha) continue;
+    const state = decodeClassificationCheckState(check.external_id, codec);
+    const marker = typeof check.external_id === "string" ? /^([1-9][0-9]*):([1-9][0-9]*):([0-9a-f]{40}):(pending|failure)$/u.exec(check.external_id) : null;
+    const binding = state ?? (marker ? { repositoryId: Number(marker[1]), pullRequestNumber: Number(marker[2]), headSha: marker[3] } : null);
+    if (!binding || !Number.isSafeInteger(binding.pullRequestNumber) || binding.repositoryId !== identity.repositoryId || binding.headSha !== identity.headSha) {
+      unbound.push(check);
+    } else if (binding.pullRequestNumber === identity.pullRequestNumber) matching.push(check);
+  }
+  return { matching, unbound };
+}
 export function renderAiClassificationEvidence(value: AiClassificationSuggestion | null): string {
   return value ? value.evidence.map((item) => `${escapeMarkdownText(item.path)}：${escapeMarkdownText(item.reason)}`).join("；") : "未提供";
 }
@@ -1373,7 +1389,9 @@ async function classify(args: Readonly<Record<string, string>>) {
   const profile = await json<ClassificationProfile>(configPath("profiles", "classification", `${repositoryClassification.profile}.json`));
   const stateCodec = classificationCheckStateCodec(semantics, profile);
   const gh = await client(repositoryId, classificationInstallationPermissions(repositoryClassification.labelAssignmentMode), policySha);
-  const same = (await gh.listAllCheckRuns(owner, repo, expectedHead)).filter((value: any) => value.name === "PR Classification Gate" && value.app?.id === 4243096);
+  const { matching: same, unbound } = classificationChecksForPull(await gh.listAllCheckRuns(owner, repo, expectedHead, "all"), stateCodec,
+    { repositoryId, pullRequestNumber: number, headSha: expectedHead });
+  if (unbound.length) throw new Error("同名分类检查缺少可信归属");
   if (same.length > 1) throw new Error("同名分类检查存在歧义");
   const decodedPreviousState = same[0]?.status === "completed" && same[0]?.conclusion === "success" ? decodeClassificationCheckState(same[0]?.external_id, stateCodec) : null;
   if (decodedPreviousState && (decodedPreviousState.repositoryId !== repositoryId || decodedPreviousState.pullRequestNumber !== number || decodedPreviousState.headSha !== expectedHead)) throw new Error("同名分类检查绑定了不同拉取请求上下文");
@@ -1735,7 +1753,12 @@ async function validate(args: Readonly<Record<string, string>>) {
           const unavailable = () => {
             throw new FragmentValidationError("RN_SOURCE_INCOMPLETE", "current classification");
           };
-          const readChecks = async () => (await gh.listAllCheckRuns(owner, repo, identity.headSha)).filter(check => check.name === "PR Classification Gate" && check.app?.id === 4243096 && check.head_sha === identity.headSha);
+          const readChecks = async () => {
+            const { matching, unbound } = classificationChecksForPull(await gh.listAllCheckRuns(owner, repo, identity.headSha, "all"),
+              classificationCheckStateCodec(semantics, classificationProfile), identity);
+            if (unbound.length) return unavailable();
+            return matching;
+          };
           let checks = await readChecks();
           if (classificationSourceDigest === undefined) {
             let waited = false;

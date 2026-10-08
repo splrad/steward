@@ -146,6 +146,7 @@ describe('中央 validate 片段入口', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it.each(['disabled', 'missing-profile', 'missing', 'trusted', 'wrong-head', 'wrong-app', 'wrong-policy', 'wrong-policy-sha', 'security', 'human-security', 'human-breaking-change',
+    'shared-success', 'shared-pending', 'shared-failure', 'foreign-only', 'duplicate-current', 'unknown-binding', 'foreign-drift',
     'stale-base', 'stale-files', 'stale-commits', 'incomplete-commits', 'commit-read-failure', 'missing-file-counts',
     'label-added', 'label-removed', 'risk-without-state', 'label-read-failure', 'invalid-label', 'label-drift', 'check-drift', 'label-reordered',
     'wait-success', 'wait-failure', 'wait-timeout', 'wait-drift',
@@ -194,6 +195,24 @@ describe('中央 validate 片段入口', () => {
         if (noFragment && endpoint.includes('/files?')) return new Response(JSON.stringify(currentFiles));
         if (endpoint.includes('/check-runs?')) {
           checkReads++;
+          expect(endpoint).toContain('filter=all');
+          if (scenario.startsWith('shared-') || ['foreign-only', 'duplicate-current', 'unknown-binding', 'foreign-drift'].includes(scenario)) {
+            const result = await (await test.transport(url, init)).json();
+            const own = { ...result.check_runs[0], id: 1 };
+            const foreign = { ...own, id: 2, external_id: encodeClassificationCheckState({
+              ...decodeClassificationCheckState(encoded, classificationCheckStateCodec(semantics, classification))!, pullRequestNumber: 3,
+            }, classificationCheckStateCodec(semantics, classification)) };
+            if (scenario === 'shared-pending' || scenario === 'shared-failure' || (scenario === 'foreign-drift' && checkReads > 1)) {
+              const pending = scenario !== 'shared-failure';
+              foreign.status = pending ? 'in_progress' : 'completed';
+              foreign.conclusion = pending ? null : 'failure';
+              foreign.external_id = `1:3:${identity.headSha}:${pending ? 'pending' : 'failure'}`;
+            }
+            if (scenario === 'unknown-binding') foreign.external_id = 'unbound';
+            result.check_runs = scenario === 'foreign-only' ? [foreign]
+              : scenario === 'duplicate-current' ? [own, { ...own, id: 2 }] : [own, foreign];
+            return new Response(JSON.stringify(result));
+          }
           if (scenario.startsWith('wait-')) {
             const result = await (await test.transport(url, init)).json();
             if (scenario === 'wait-timeout' || (scenario !== 'wait-failure' && checkReads === 1)) result.check_runs = [];
@@ -234,6 +253,10 @@ describe('中央 validate 片段入口', () => {
         expect(await readFile(join(root, 'summary.md'), 'utf8')).toContain('片段门禁：未启用');
       }
       else if (scenario === 'missing-profile') await expect(run).rejects.toThrow('已启用片段门禁的仓库缺少片段规则');
+      else if (['foreign-only', 'duplicate-current', 'unknown-binding'].includes(scenario)) {
+        await expect(run).rejects.toThrow('RN_SOURCE_INCOMPLETE');
+        expect(delay).toHaveBeenCalledTimes(scenario === 'foreign-only' ? 36 : 0);
+      }
       else if (['security', 'human-security', 'human-breaking-change', 'label-added'].includes(scenario)) await expect(run).rejects.toThrow('RN_FACT_CONFLICT');
       else if (['risk-without-state', 'wait-timeout', 'wait-failure'].includes(scenario)) {
         await expect(run).rejects.toThrow('RN_SOURCE_INCOMPLETE');
@@ -257,8 +280,8 @@ describe('中央 validate 片段入口', () => {
       else {
         await run;
         const summary = await readFile(join(root, 'summary.md'), 'utf8');
-        expect(summary).toContain(`分类：${['trusted', 'label-removed', 'label-reordered'].includes(scenario) ? 'provided' : 'missing'}`);
-        expect(summary).toContain(`要求：${['trusted', 'label-removed', 'label-reordered'].includes(scenario) ? 'review-required' : 'ignored'}`);
+        expect(summary).toContain(`分类：${['trusted', 'label-removed', 'label-reordered', 'shared-success', 'shared-pending', 'shared-failure', 'foreign-drift'].includes(scenario) ? 'provided' : 'missing'}`);
+        expect(summary).toContain(`要求：${['trusted', 'label-removed', 'label-reordered', 'shared-success', 'shared-pending', 'shared-failure', 'foreign-drift'].includes(scenario) ? 'review-required' : 'ignored'}`);
         expect(summary).toContain(identity.baseSha);
         expect(summary).toContain(identity.policySha);
       }
