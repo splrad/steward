@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { lstat, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -11,7 +11,7 @@ import {
   escapeMarkdownText, FragmentValidationError,
   isHumanActor, isIssueCapableRepository, normalizeContributor,
   organizationPullRequestTemplate,
-  generateReviewInstructionSet, parseVersion, planClassificationLabels, planLabelDefinitions, planRelease, planRepositorySettings, renderManagedBody,
+  generateOrganizationReviewInstructions, generateReviewInstructionSet, assertReviewInstructionRetirements, validateReviewInstructionContents, parseVersion, planClassificationLabels, planLabelDefinitions, planRelease, planRepositorySettings, renderManagedBody,
   renderOnboardingPullRequest, renderReleaseNotes, renderValidationSummary, runValidationTasks,
   inspectAiClassificationField, validateGeneratedSummary, validateRepositoryForOnboarding, verifyAiClassificationEnvelope, verifyAssetManifest,
   type AiClassificationAssessment, type AiClassificationEnvelopeV2, type AiClassificationFieldInspection, type AiClassificationSuggestion, type AutomationFacts, type ClassificationProfile, type ClassifiedReleasePullRequest, type Contributor, type GeneratedReviewInstructionSet, type RawClassificationFacts, type ReleaseManifest, type RepositoryClassification, type ReviewProfileRegistry, type ReviewRuleRegistry, type SemanticCatalog, type ValidationProfile,
@@ -31,11 +31,13 @@ import { classifyCopilotReviewState, copilotReviewTrigger, type CopilotReviewSta
 const commands = new Set(["review-trigger-mode", "issue-sync", "managed-repository-ids", "reconcile-repository-lifecycle", "onboard-repository", "pr-automation", "pr-classification", "pr-issue-link", "request-copilot-review", "sync-review-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"]);
 const stewardRepositoryId = 1296724484;
 commands.add("review-sync-targets");
+commands.add("render-review-instructions");
 // Repository configuration and workspace files are runtime inputs, not bundle assets.
 // This wrapper keeps their paths opaque to the static asset tracer used by ncc.
 const runtimeReadFile = ((path: Parameters<typeof readFile>[0], options?: Parameters<typeof readFile>[1]) =>
   Reflect.apply(readFile, undefined, options === undefined ? [path] : [path, options])) as typeof readFile;
 const allowedArguments: Record<string, Set<string>> = {
+  "render-review-instructions": new Set(["profile", "policy-sha"]),
   "review-sync-targets": new Set(["repository-id", "policy-sha"]),
   "review-trigger-mode": new Set(["repository-id", "policy-sha"]),
   "request-copilot-review": new Set(["delivery-id", "repository-id", "pull-request-number", "event-head-sha", "policy-sha"]),
@@ -293,6 +295,14 @@ async function loadReviewInstructions(profile: unknown, paths: { profiles: strin
   const { $schema: _ruleSchema, ...ruleRegistry } = rules;
   return generateReviewInstructionSet(profile, profileRegistry, ruleRegistry);
 }
+async function renderReviewInstructionsCommand(args: Readonly<Record<string, string>>): Promise<void> {
+  const policySha = sha(required(args, "policy-sha"), "policy-sha");
+  const { $schema: _profileSchema, ...profiles } = await json<ReviewProfileRegistry & { $schema?: string }>(configPath("review", "profiles.json"));
+  const { $schema: _ruleSchema, ...rules } = await json<ReviewRuleRegistry & { $schema?: string }>(configPath("review", "rules.json"));
+  const organization = await generateOrganizationReviewInstructions(profiles, rules);
+  const repository = args.profile === undefined ? undefined : await generateReviewInstructionSet(required(args, "profile"), profiles, rules);
+  process.stdout.write(JSON.stringify({ policySha, organization, repository }, null, 2) + "\n");
+}
 export function configurationFor(catalogValue: Catalog, repository: any): any {
   const override = catalogValue.repositories[String(repository.id)];
   if (override && override.fullName !== repository.full_name) throw new Error("仓库编号与中央目录名称不一致");
@@ -478,8 +488,7 @@ export function encodeClassificationCheckState(state: ClassificationCheckStateV4
   createHash("sha256").update(buffer.subarray(0, classificationCheckStateBodyBytes)).digest().copy(buffer, classificationCheckStateBodyBytes);
   return `v4:${buffer.toString("base64url")}`;
 }
-export function decodeClassificationCheckState(value: unknown, codec: ClassificationCheckStateCodec, expected?: { repositoryId: number; pullRequestNumber: number; headSha: string; policySha?: string }): ClassificationCheckStateV4 | null {
-  try { validateClassificationCheckCodec(codec); } catch { return null; }
+function decodeClassificationCheckEnvelope(value: unknown) {
   if (typeof value !== "string" || !value.startsWith("v4:")) return null;
   const encoded = value.slice(3);
   if (encoded.length !== classificationCheckStateEncodedLength || !/^[A-Za-z0-9_-]+$/u.test(encoded)) return null;
@@ -491,8 +500,16 @@ export function decodeClassificationCheckState(value: unknown, codec: Classifica
   const pullRequestNumber = decoded.readUInt32BE(5);
   const headSha = decoded.subarray(9, 29).toString("hex");
   const policySha = decoded.subarray(133, 153).toString("hex");
+  if (!repositoryId || !pullRequestNumber) return null;
+  return { decoded, repositoryId, pullRequestNumber, headSha, policySha };
+}
+export function decodeClassificationCheckState(value: unknown, codec: ClassificationCheckStateCodec, expected?: { repositoryId: number; pullRequestNumber: number; headSha: string; policySha?: string }): ClassificationCheckStateV4 | null {
+  try { validateClassificationCheckCodec(codec); } catch { return null; }
+  const envelope = decodeClassificationCheckEnvelope(value);
+  if (!envelope) return null;
+  const { decoded, repositoryId, pullRequestNumber, headSha, policySha } = envelope;
   if (expected?.policySha !== undefined && policySha !== expected.policySha) return null;
-  if (!repositoryId || !pullRequestNumber || (expected && (repositoryId !== expected.repositoryId || pullRequestNumber !== expected.pullRequestNumber || headSha !== expected.headSha))) return null;
+  if (expected && (repositoryId !== expected.repositoryId || pullRequestNumber !== expected.pullRequestNumber || headSha !== expected.headSha)) return null;
   const mode = classificationCheckModes[decoded[125]!];
   const primaryKind = codec.primaryKinds[decoded[126]!];
   const source = classificationCheckSources[decoded[127]!];
@@ -526,6 +543,22 @@ export function reusedAiClassificationAssessment(state: ClassificationCheckState
     verifiedSuggestion: { primaryKind: state.acceptedAiPrimaryKind, adoptable: true, reused: true },
     wouldPrimary: state.acceptedAiPrimaryKind,
   };
+}
+
+function classificationChecksForPull(checks: readonly any[],
+  identity: { repositoryId: number; pullRequestNumber: number; headSha: string }): { matching: any[]; unbound: any[] } {
+  const matching: any[] = [];
+  const unbound: any[] = [];
+  for (const check of checks) {
+    if (check.name !== "PR Classification Gate" || check.app?.id !== 4243096 || check.head_sha !== identity.headSha) continue;
+    const envelope = decodeClassificationCheckEnvelope(check.external_id);
+    const marker = typeof check.external_id === "string" ? /^([1-9][0-9]*):([1-9][0-9]*):([0-9a-f]{40}):(pending|failure)$/u.exec(check.external_id) : null;
+    const binding = envelope ?? (marker ? { repositoryId: Number(marker[1]), pullRequestNumber: Number(marker[2]), headSha: marker[3] } : null);
+    if (!binding || !Number.isSafeInteger(binding.pullRequestNumber) || binding.repositoryId !== identity.repositoryId || binding.headSha !== identity.headSha) {
+      unbound.push(check);
+    } else if (binding.pullRequestNumber === identity.pullRequestNumber) matching.push(check);
+  }
+  return { matching, unbound };
 }
 export function renderAiClassificationEvidence(value: AiClassificationSuggestion | null): string {
   return value ? value.evidence.map((item) => `${escapeMarkdownText(item.path)}：${escapeMarkdownText(item.reason)}`).join("；") : "未提供";
@@ -879,14 +912,17 @@ export async function writeManagedFilesToBranch(input: {
   owner: string;
   repo: string;
   files: readonly { path: string; content: string }[];
+  retiredFiles?: readonly { path: string; content: string }[];
   branch: string;
   title: string;
   defaultSha: string;
   branchSha: string | null;
 }): Promise<{ changed: boolean; headSha: string }> {
-  const expectedPaths = input.files.map(file => file.path).sort();
+  const retiredFiles = input.retiredFiles ?? [];
+  if (retiredFiles.some(file => file.path !== ".github/copilot-instructions.md" || !file.content)) throw new Error("待退役文件范围或原文无效");
+  const expectedPaths = [...input.files, ...retiredFiles].map(file => file.path).sort();
   const expectedPathSet = new Set(expectedPaths);
-  if (input.files.length === 0 || expectedPathSet.size !== input.files.length || input.files.some(file => !file.path || !file.content)) throw new Error("受管资源集文件无效");
+  if (input.files.length === 0 || expectedPathSet.size !== expectedPaths.length || input.files.some(file => !file.path || !file.content)) throw new Error("受管资源集文件无效");
   if (input.branchSha) {
     const comparisonToDefault = await input.gh.compare(input.owner, input.repo, input.defaultSha, input.branchSha);
     const mergeBaseSha = String(comparisonToDefault.merge_base_commit?.sha ?? "");
@@ -904,25 +940,50 @@ export async function writeManagedFilesToBranch(input: {
     }
   }
   const parentSha = input.branchSha ?? input.defaultSha;
-  const existing = await Promise.all(input.files.map(async file => ({ file, value: await optional(() => input.gh.getContent(input.owner, input.repo, file.path, input.branch)) })));
-  if (existing.every(item => decodeContent(item.value) === item.file.content)) return { changed: false, headSha: parentSha };
+  const existing = await Promise.all(input.files.map(async file => ({ file, value: await optional(() => input.gh.getContent(input.owner, input.repo, file.path, parentSha)) })));
+  const retiring = await Promise.all(retiredFiles.map(async file => ({ file, value: await optional(async () => {
+    const value = await input.gh.getContent(input.owner, input.repo, file.path, parentSha);
+    if (value == null) throw new Error("退役文件读取返回空响应: " + file.path);
+    return value;
+  }) })));
+  for (const item of retiring) {
+    if (item.value != null && (item.value.type && item.value.type !== "file" || decodeContent(item.value) !== item.file.content)) throw new Error("待退役审查说明含有未知或人工修改的内容: " + item.file.path);
+  }
+  if (existing.every(item => decodeContent(item.value) === item.file.content) && retiring.every(item => item.value == null)) return { changed: false, headSha: parentSha };
   const parent = await input.gh.getGitCommit(input.owner, input.repo, parentSha);
   const treeSha = String(parent.tree?.sha ?? "");
   if (!/^[0-9a-f]{40}$/iu.test(treeSha)) throw new Error("受管资源集父提交缺少有效tree");
+  const deletions = retiring.filter(item => item.value != null);
+  if (deletions.length) {
+    const originalTree = await input.gh.getGitTree(input.owner, input.repo, treeSha);
+    if (originalTree.sha !== treeSha || originalTree.truncated !== false || !Array.isArray(originalTree.tree)) throw new Error("退役文件的Git tree证据不完整");
+    for (const item of deletions) {
+      const entries = originalTree.tree.filter((entry: any) => entry.path === item.file.path);
+      const expectedBlob = createHash("sha1").update("blob " + Buffer.byteLength(item.file.content, "utf8") + "\0" + item.file.content).digest("hex");
+      if (entries.length !== 1 || entries[0].mode !== "100644" || entries[0].type !== "blob" || entries[0].sha !== expectedBlob) throw new Error("退役文件不是已核对的普通Git文件: " + item.file.path);
+    }
+  }
   const blobs = await Promise.all(input.files.map(async file => ({ file, blob: await input.gh.createBlob(input.owner, input.repo, file.content) })));
   if (blobs.some(item => !/^[0-9a-f]{40}$/iu.test(String(item.blob?.sha ?? "")))) throw new Error("受管资源集blob写入结果无效");
   const tree = await input.gh.createTree(input.owner, input.repo, {
     base_tree: treeSha,
-    tree: blobs.map(item => ({ path: item.file.path, mode: "100644", type: "blob", sha: item.blob.sha })),
+    tree: [...blobs.map(item => ({ path: item.file.path, mode: "100644", type: "blob", sha: item.blob.sha })),
+      ...deletions.map(item => ({ path: item.file.path, mode: "100644", type: "blob", sha: null }))],
   });
   if (!/^[0-9a-f]{40}$/iu.test(String(tree?.sha ?? ""))) throw new Error("受管资源集tree写入结果无效");
   const commit = await input.gh.createCommit(input.owner, input.repo, { message: input.title, tree: tree.sha, parents: [parentSha] });
   const commitSha = String(commit?.sha ?? "");
   if (!/^[0-9a-f]{40}$/iu.test(commitSha)) throw new Error("受管资源集提交结果无效");
-  if (input.branchSha) await input.gh.updateRef(input.owner, input.repo, `heads/${input.branch}`, commitSha, false);
-  else await input.gh.createRef(input.owner, input.repo, `refs/heads/${input.branch}`, commitSha);
   const readback = await Promise.all(input.files.map(async file => ({ file, value: await input.gh.getContent(input.owner, input.repo, file.path, commitSha) })));
   if (readback.some(item => decodeContent(item.value) !== item.file.content)) throw new Error("受管资源集写入后逐字读回不一致");
+  for (const file of retiredFiles) {
+    await optional(async () => {
+      await input.gh.getContent(input.owner, input.repo, file.path, commitSha);
+      throw new Error("退役文件写入后仍然存在或返回异常成功响应: " + file.path);
+    });
+  }
+  if (input.branchSha) await input.gh.updateRef(input.owner, input.repo, `heads/${input.branch}`, commitSha, false);
+  else await input.gh.createRef(input.owner, input.repo, `refs/heads/${input.branch}`, commitSha);
   const branchReadback = await input.gh.getRef(input.owner, input.repo, `heads/${input.branch}`);
   if (String(branchReadback.object?.sha ?? "") !== commitSha) throw new Error("受管资源集写入后分支head不一致");
   return { changed: true, headSha: commitSha };
@@ -936,12 +997,24 @@ export function assertManagedBranchPull(branchExists: boolean, pull: any | undef
 
 async function reconcileManagedFiles(input: { repository: any; gh: GitHubClient; token: string; instructions: GeneratedReviewInstructionSet; branch: string; title: string; policySha: string; deliveryId: string; redrive: DurableBodyRedrive; dispatchIssueLink?: boolean }): Promise<"unchanged" | "pull-request-created" | "pull-request-updated"> {
   const [owner, repo] = splitRepository(input.repository.full_name); const defaultBranch = input.repository.default_branch;
-  const current = await Promise.all(input.instructions.files.map(file => optional(() => input.gh.getContent(owner, repo, file.path, defaultBranch))));
-  if (current.every((value, index) => decodeContent(value) === input.instructions.files[index]!.content)) return "unchanged";
+  const defaultRef = await input.gh.getRef(owner, repo, `heads/${defaultBranch}`);
+  const targets = [...input.instructions.files, ...(input.instructions.retiredFiles ?? [])];
+  const current = Object.fromEntries(await Promise.all(targets.map(async file => {
+    const content = await optional(async () => {
+      const value = await input.gh.getContent(owner, repo, file.path, defaultRef.object.sha);
+      const decoded = decodeContent(value);
+      if (value == null || Array.isArray(value) || (value.type && value.type !== "file") || decoded === null) throw new Error("审查说明不是可读取的普通文件: " + file.path);
+      return decoded;
+    });
+    return [file.path, content];
+  })));
+  assertReviewInstructionRetirements(current, input.instructions);
+  if (input.instructions.files.every(file => current[file.path] === file.content)
+    && (input.instructions.retiredFiles ?? []).every(file => current[file.path] == null)) return "unchanged";
   const pulls = await input.gh.listPullRequests(owner, repo, `${owner}:${input.branch}`); if (pulls.length > 1) throw new Error(`受管分支存在多个拉取请求: ${input.branch}`);
-  const defaultRef = await input.gh.getRef(owner, repo, `heads/${defaultBranch}`); const branchRef = await optional(() => input.gh.getRef(owner, repo, `heads/${input.branch}`));
+  const branchRef = await optional(() => input.gh.getRef(owner, repo, `heads/${input.branch}`));
   assertManagedBranchPull(Boolean(branchRef), pulls[0], input.branch);
-  const written = await writeManagedFilesToBranch({ gh: input.gh, owner, repo, files: input.instructions.files, branch: input.branch, title: input.title, defaultSha: defaultRef.object.sha, branchSha: branchRef?.object.sha ?? null });
+  const written = await writeManagedFilesToBranch({ gh: input.gh, owner, repo, files: input.instructions.files, retiredFiles: input.instructions.retiredFiles ?? [], branch: input.branch, title: input.title, defaultSha: defaultRef.object.sha, branchSha: branchRef?.object.sha ?? null });
   const generated = {
     type: "chore" as const,
     scope: "steward",
@@ -949,11 +1022,12 @@ async function reconcileManagedFiles(input: { repository: any; gh: GitHubClient;
     summary: "由SPLRAD Steward同步中央管理文件并保持仓库规则与中央配置一致。",
     motivation: "中央管理文件需要跟随当前规则更新，避免目标仓库保留已经过期的配置。",
     changes: [
-      `按${input.instructions.profile} profile同步AGENTS.md与.github/copilot-instructions.md`,
-      `共享规则：${input.instructions.files[0].ruleIds.join("、")}；摘要：${input.instructions.files[0].digest}`,
-      `Copilot补充规则：${input.instructions.files[1].ruleIds.join("、")}；摘要：${input.instructions.files[1].digest}`,
+      `按${input.instructions.profile} profile同步审查说明`,
+      ...input.instructions.files.map(file => `${file.path}：${file.ruleIds.join("、")}；摘要：${file.digest}`),
+      ...(input.instructions.retiredFiles ?? []).map(file => `退役已核对原文的受管文件：${file.path}；原文摘要：${file.digest}`),
+      ...(input.instructions.organization ? [`组织公共规则：${input.instructions.organization.ruleIds.join("、")}；采用摘要：${input.instructions.organization.digest}`] : []),
     ],
-    impact: ["目标仓库使用同一中央资源集生成的共享规则和Copilot补充规则"],
+    impact: ["目标仓库按中央配置使用共享规则和所需的Copilot指令载体"],
     releaseAndMigration: [],
   };
   const body = renderManagedBody({ generated, existingBody: pulls[0]?.body, templateBody: organizationPullRequestTemplate, actor: "splrad-steward[bot]", contributors: [], context: `${input.repository.id}:review-instructions:${input.policySha}` });
@@ -967,6 +1041,7 @@ async function reconcileManagedFiles(input: { repository: any; gh: GitHubClient;
     pullRequestNumber: Number(pulls[0].number),
     headSha: String(written.headSha),
     baseSha: String(defaultRef.object.sha),
+    expectedBaseRef: defaultBranch,
     regionKind: "managed-pr",
     targetBlock: targetManagedBlock(body, "managed-pr"),
     redrive: input.redrive,
@@ -1071,6 +1146,9 @@ async function automate(args: Readonly<Record<string, string>>) {
   if (baseAfter.object.sha !== baseBefore.object.sha || sourceAfter.object.sha !== sourceBefore.object.sha) throw new Error("读取期间来源或目标分支已经漂移");
   if (pulls[0]?.user?.id === 49699333 && pulls[0].user.login === "dependabot[bot]" && pulls[0].user.type === "Bot") {
     return summary(["状态：ignored", "原因：Dependabot维护原生正文，审查使用独立请求路径"]);
+  }
+  if (pulls[0] && pulls[0].base?.ref !== repository.default_branch) {
+    return summary(["状态：ignored", "原因：已有拉取请求的目标不是仓库默认分支"]);
   }
   const contributorMap = new Map<number, Contributor>();
   contributorMap.set(sourceActor.id, { id: sourceActor.id, login: sourceActor.login });
@@ -1227,6 +1305,7 @@ async function automate(args: Readonly<Record<string, string>>) {
         pullRequestNumber: Number(pull.number),
         headSha: facts.headSha,
         baseSha: facts.baseSha,
+        expectedBaseRef: repository.default_branch,
         regionKind: "managed-pr",
         targetBlock: targetManagedBlock(body, "managed-pr"),
         redrive: { workflow: "pr-automation.yml", inputs: {
@@ -1322,7 +1401,9 @@ async function classify(args: Readonly<Record<string, string>>) {
   const profile = await json<ClassificationProfile>(configPath("profiles", "classification", `${repositoryClassification.profile}.json`));
   const stateCodec = classificationCheckStateCodec(semantics, profile);
   const gh = await client(repositoryId, classificationInstallationPermissions(repositoryClassification.labelAssignmentMode), policySha);
-  const same = (await gh.listAllCheckRuns(owner, repo, expectedHead)).filter((value: any) => value.name === "PR Classification Gate" && value.app?.id === 4243096);
+  const { matching: same, unbound } = classificationChecksForPull(await gh.listAllCheckRuns(owner, repo, expectedHead, "all"),
+    { repositoryId, pullRequestNumber: number, headSha: expectedHead });
+  if (unbound.length) throw new Error("同名分类检查缺少可信归属");
   if (same.length > 1) throw new Error("同名分类检查存在歧义");
   const decodedPreviousState = same[0]?.status === "completed" && same[0]?.conclusion === "success" ? decodeClassificationCheckState(same[0]?.external_id, stateCodec) : null;
   if (decodedPreviousState && (decodedPreviousState.repositoryId !== repositoryId || decodedPreviousState.pullRequestNumber !== number || decodedPreviousState.headSha !== expectedHead)) throw new Error("同名分类检查绑定了不同拉取请求上下文");
@@ -1684,7 +1765,11 @@ async function validate(args: Readonly<Record<string, string>>) {
           const unavailable = () => {
             throw new FragmentValidationError("RN_SOURCE_INCOMPLETE", "current classification");
           };
-          const readChecks = async () => (await gh.listAllCheckRuns(owner, repo, identity.headSha)).filter(check => check.name === "PR Classification Gate" && check.app?.id === 4243096 && check.head_sha === identity.headSha);
+          const readChecks = async () => {
+            const { matching, unbound } = classificationChecksForPull(await gh.listAllCheckRuns(owner, repo, identity.headSha, "all"), identity);
+            if (unbound.length) return unavailable();
+            return matching;
+          };
           let checks = await readChecks();
           if (classificationSourceDigest === undefined) {
             let waited = false;
@@ -1744,12 +1829,23 @@ async function validate(args: Readonly<Record<string, string>>) {
     if (task === "parse-yaml") { for (const file of files.filter(path => /\.ya?ml$/.test(path))) YAML.parse(await runtimeReadFile(file, "utf8")); return { state: "success" as const, detail: "YAML有效" }; }
     if (task === "verify-review-instructions") {
       const instructions = await loadReviewInstructions(configuration.reviewInstructionsProfile, reviewRegistryPaths(repositoryId, workspace));
-      for (const expected of instructions.files) {
-        const file = join(workspace, expected.path);
-        if (!files.includes(file)) throw new Error(`缺少中央生成的审查说明: ${expected.path}`);
-        if (!matchesGeneratedReviewInstructions(await runtimeReadFile(file, "utf8"), expected.content)) throw new Error(`审查说明不等于中央生成结果: ${expected.path}`);
-      }
-      return { state: "success" as const, detail: "双目标审查说明与中央配置一致" };
+      const current = Object.fromEntries(await Promise.all([...instructions.files, ...(instructions.retiredFiles ?? [])].map(async expected => {
+        const parts = expected.path.split("/");
+        let file = workspace;
+        for (const [index, part] of parts.entries()) {
+          file = join(file, part);
+          let metadata;
+          try { metadata = await lstat(file); }
+          catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return [expected.path, null];
+            throw error;
+          }
+          if (index < parts.length - 1 ? !metadata.isDirectory() : !metadata.isFile()) throw new Error("审查说明路径类型无效: " + expected.path);
+        }
+        return [expected.path, await runtimeReadFile(file, "utf8")];
+      })));
+      validateReviewInstructionContents(current, instructions);
+      return { state: "success" as const, detail: "审查说明载体与中央配置一致" };
     }
     if (task === "actionlint-if-present") return { state: actualWorkflows.length ? "success" as const : "not-applicable" as const, detail: actualWorkflows.length ? "工作流属于中央允许范围" : "未配置本地工作流" };
     if (task === "actionlint") return { state: "success" as const, detail: "工作流由中央校验脚本验证" };
@@ -2035,6 +2131,7 @@ async function releaseVerify(args: Readonly<Record<string, string>>) {
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const invocation = parseInvocation(argv);
+  if (invocation.command === "render-review-instructions") return renderReviewInstructionsCommand(invocation.args);
   if (invocation.command === "request-copilot-review") return requestCopilotReviewCommand(invocation.args);
   if (invocation.command === "review-trigger-mode") return reviewTriggerModeCommand(invocation.args);
   if (invocation.command === "review-sync-targets") return reviewSyncTargetsCommand(invocation.args);

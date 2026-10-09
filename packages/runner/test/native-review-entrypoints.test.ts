@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import * as github from "../../github/src/index.js";
-import { generateReviewInstructionSet } from "../../core/src/index.js";
+import { generateOrganizationReviewInstructions, generateReviewInstructionSet } from "../../core/src/index.js";
 import { main } from "../src/index.js";
+import * as bodyWriter from "../src/pr-body-writer.js";
 
 const policySha = "a".repeat(40);
 const baseSha = "b".repeat(40);
@@ -73,6 +75,32 @@ async function withoutReviewToken(run: () => Promise<void>) {
 }
 
 describe.each(["native", undefined] as const)("三入口令牌隔离：%s", mode => {
+  it.each(["directory", "undecodable", "null", "missing"])("组织同步只将404视为退役路径缺失：%s", async kind => {
+    const f = await fixture(mode, true);
+    const { $schema: _p, ...profiles } = JSON.parse(await readFile(join(f.directory, "config/review/profiles.json"), "utf8"));
+    const { $schema: _r, ...rules } = JSON.parse(await readFile(join(f.directory, "config/review/rules.json"), "utf8"));
+    profiles.profiles.find((profile: any) => profile.id === "github").organizationInstructionsDigest = (await generateOrganizationReviewInstructions(profiles, rules)).digest;
+    await writeFile(join(f.directory, "config/review/profiles.json"), JSON.stringify(profiles));
+    const instructions = await generateReviewInstructionSet("github", profiles, rules);
+    vi.spyOn(f.prototype, "listRepositoryTeams").mockResolvedValue([{ slug: "maintainers", permission: "maintain" }]);
+    vi.spyOn(f.prototype, "getRef").mockResolvedValue({ object: { sha: baseSha } });
+    vi.spyOn(f.prototype, "getContent").mockImplementation(async (_owner, _repo, path) => {
+      if (path === "AGENTS.md") return { type: "file", encoding: "base64", content: Buffer.from(instructions.files[0].content).toString("base64") };
+      if (kind === "missing") throw new github.GitHubRequestError(404, "GET", path, "missing");
+      if (kind === "directory") return [{ type: "file", name: "manual.md" }];
+      if (kind === "null") return null;
+      return { type: "file", encoding: "none", content: "" };
+    });
+    const write = vi.spyOn(f.prototype, "createBlob");
+    const run = () => main(["sync-review-instructions", "--repository-id", String(f.repository.id), "--policy-sha", policySha]);
+    if (kind === "missing") {
+      await withoutReviewToken(run);
+      expect(await readFile(join(f.directory, "summary"), "utf8")).toContain("状态：unchanged");
+    } else await expect(withoutReviewToken(run)).rejects.toThrow("审查说明同步失败");
+    expect(write).not.toHaveBeenCalled();
+    expect(f.dispatch).not.toHaveBeenCalled();
+  });
+
   it("Dependabot命令保留来源与资格核验，完成只读观察", async () => {
     const f = await fixture(mode);
     for (const [name, value] of Object.entries({ TRIGGER_ACTOR_ID: "301115370", WORKFLOW_REPOSITORY: "splrad/steward",
@@ -89,10 +117,36 @@ describe.each(["native", undefined] as const)("三入口令牌隔离：%s", mode
     expect(f.dispatch).not.toHaveBeenCalled();
   });
 
-  it("policy-only规则同步写入两个文件、创建PR并派发分类", async () => {
+  it("已有规则同步PR的正文写入绑定默认目标分支", async () => {
+    const f = await fixture(mode, true);
+    vi.stubEnv("RUNTIME_URL", "https://runtime.test");
+    const { $schema: _profileSchema, ...profiles } = JSON.parse(await readFile(join(f.directory, "config/review/profiles.json"), "utf8"));
+    const { $schema: _ruleSchema, ...rules } = JSON.parse(await readFile(join(f.directory, "config/review/rules.json"), "utf8"));
+    const instructions = await generateReviewInstructionSet("github", profiles, rules);
+    const pull = { number: 1, user: { id: 301115370 }, merged_at: null, base: { ref: "main" } };
+    vi.spyOn(f.prototype, "listRepositoryTeams").mockResolvedValue([{ slug: "maintainers", permission: "maintain" }]);
+    vi.spyOn(f.prototype, "listPullRequests").mockResolvedValue([pull]);
+    vi.spyOn(f.prototype, "getRef").mockImplementation(async (_owner, _repo, ref) => ({ object: { sha: ref === "heads/main" ? baseSha : headSha } }));
+    vi.spyOn(f.prototype, "compare").mockResolvedValue({ merge_base_commit: { sha: baseSha }, ahead_by: 1, total_commits: 1, commits: [{ sha: headSha }], files: [{ filename: "AGENTS.md" }] });
+    vi.spyOn(f.prototype, "getContent").mockImplementation(async (_owner, _repo, path, ref) => ({
+      encoding: "base64", content: Buffer.from(ref === headSha ? instructions.files.find(file => file.path === path)!.content : "旧规则").toString("base64"),
+    }));
+    const update = vi.spyOn(bodyWriter, "updatePullRequestBodyDurably").mockResolvedValue(pull);
+    const create = vi.spyOn(f.prototype, "createPullRequest");
+    await withoutReviewToken(() => main(["sync-review-instructions", "--repository-id", String(f.repository.id), "--policy-sha", policySha]));
+    expect(update).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ expectedBaseRef: "main", headSha, baseSha, pullRequestNumber: 1 }));
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("policy-only规则同步使用实际载体并派发分类，组织模式=%s", async organizationMode => {
     const f = await fixture(mode, true);
     const { $schema: _profileSchema, ...profiles } = JSON.parse(await readFile(join(f.directory, "config/review/profiles.json"), "utf8"));
     const { $schema: _ruleSchema, ...rules } = JSON.parse(await readFile(join(f.directory, "config/review/rules.json"), "utf8"));
+    const original = await generateReviewInstructionSet("github", profiles, rules);
+    if (organizationMode) {
+      profiles.profiles.find((profile: any) => profile.id === "github").organizationInstructionsDigest = (await generateOrganizationReviewInstructions(profiles, rules)).digest;
+      await writeFile(join(f.directory, "config/review/profiles.json"), JSON.stringify(profiles));
+    }
     const instructions = await generateReviewInstructionSet("github", profiles, rules);
     vi.spyOn(f.prototype, "listRepositoryTeams").mockResolvedValue([{ slug: "maintainers", permission: "maintain" }]);
     vi.spyOn(f.prototype, "listPullRequests").mockResolvedValue([]);
@@ -102,10 +156,19 @@ describe.each(["native", undefined] as const)("三入口令牌隔离：%s", mode
       if (!branchCreated) throw new github.GitHubRequestError(404, "GET", ref, "missing");
       return { object: { sha: headSha } };
     });
-    vi.spyOn(f.prototype, "getContent").mockImplementation(async (_owner, _repo, path, ref) => ({
-      encoding: "base64", content: Buffer.from(ref === headSha ? instructions.files.find(file => file.path === path)!.content : "旧规则").toString("base64"),
-    }));
+    vi.spyOn(f.prototype, "getContent").mockImplementation(async (_owner, _repo, path, ref) => {
+      if (organizationMode && path === ".github/copilot-instructions.md") {
+        if (ref === headSha) throw new github.GitHubRequestError(404, "GET", path, "missing");
+        return { type: "file", encoding: "base64", content: Buffer.from(original.files[1]!.content).toString("base64") };
+      }
+      return { encoding: "base64", content: Buffer.from(ref === headSha ? instructions.files.find(file => file.path === path)!.content : "旧规则").toString("base64") };
+    });
     vi.spyOn(f.prototype, "getGitCommit").mockResolvedValue({ tree: { sha: "d".repeat(40) } });
+    const retiredContent = original.files[1]!.content;
+    vi.spyOn(f.prototype, "getGitTree").mockResolvedValue({ sha: "d".repeat(40), truncated: false, tree: [
+      { path: ".github/copilot-instructions.md", type: "blob", mode: "100644",
+        sha: createHash("sha1").update("blob " + Buffer.byteLength(retiredContent, "utf8") + "\0" + retiredContent).digest("hex") },
+    ] });
     const blobs = vi.spyOn(f.prototype, "createBlob").mockResolvedValue({ sha: "e".repeat(40) });
     const tree = vi.spyOn(f.prototype, "createTree").mockResolvedValue({ sha: "f".repeat(40) });
     vi.spyOn(f.prototype, "createCommit").mockResolvedValue({ sha: headSha });
@@ -114,25 +177,38 @@ describe.each(["native", undefined] as const)("三入口令牌隔离：%s", mode
     await withoutReviewToken(() => main(["sync-review-instructions", "--repository-id", String(f.repository.id), "--policy-sha", policySha]));
     expect(blobs.mock.calls.map(call => call[2])).toEqual(instructions.files.map(file => file.content));
     expect(tree.mock.calls[0]![2]).toMatchObject({ tree: [{ path: "AGENTS.md" }, { path: ".github/copilot-instructions.md" }] });
+    if (organizationMode) expect(tree.mock.calls[0]![2]).toMatchObject({ tree: [{ path: "AGENTS.md" }, { path: ".github/copilot-instructions.md", sha: null }] });
     expect(create).toHaveBeenCalledWith("splrad", ".github", expect.objectContaining({ head: "steward/review-instructions", base: "main", body: expect.stringContaining("<!-- workflow:managed-pr:start -->") }));
     expect(f.dispatch).toHaveBeenCalledExactlyOnceWith("POST", "/repos/splrad/steward/actions/workflows/pr-classification.yml/dispatches", expect.objectContaining({ inputs: expect.objectContaining({ policySha, repositoryId: String(f.repository.id), eventHeadSha: headSha }) }));
     expect(f.reviewWrite).not.toHaveBeenCalled();
+    expect(JSON.stringify(create.mock.calls)).not.toContain("undefined");
+    if (organizationMode) expect(JSON.stringify(create.mock.calls)).toContain("组织公共规则");
   });
 
-  it("真人推送创建Draft和正文，继续派发议题关联与分类", async () => {
+  it.each([false, true])("真人推送创建或更新默认目标PR，继续派发议题关联与分类：existing=%s", async existing => {
     const f = await fixture(mode);
+    vi.stubEnv("RUNTIME_URL", "https://runtime.test");
     vi.spyOn(f.prototype, "getRef").mockImplementation(async (_owner, _repo, ref) => ({ object: { sha: ref === "heads/main" ? baseSha : headSha } }));
     vi.spyOn(f.prototype, "compare").mockResolvedValue({ ahead_by: 1, total_commits: 1,
       commits: [{ sha: headSha, commit: { message: "fix: 修复规则同步" } }],
       files: [{ filename: "packages/runner/src/index.ts", status: "modified", additions: 1, deletions: 1, patch: "@@ -1 +1 @@\n-old\n+new" }],
     });
-    vi.spyOn(f.prototype, "listPullRequests").mockResolvedValue([]);
+    const pull = { number: 1, body: "<!-- workflow:managed-pr:start -->\n<!-- workflow:managed-pr:end -->",
+      head: { repo: { id: f.repository.id }, ref: "feature/test", sha: headSha }, base: { ref: "main", sha: baseSha } };
+    vi.spyOn(f.prototype, "listPullRequests").mockResolvedValue(existing ? [pull] : []);
+    const update = vi.spyOn(bodyWriter, "updatePullRequestBodyDurably").mockResolvedValue(pull);
     const create = vi.spyOn(f.prototype, "createPullRequest").mockResolvedValue({ number: 1 });
-    vi.spyOn(f.prototype, "getPullRequest").mockResolvedValue({ head: { repo: { id: f.repository.id }, ref: "feature/test", sha: headSha }, base: { ref: "main", sha: baseSha } });
+    vi.spyOn(f.prototype, "getPullRequest").mockResolvedValue(pull);
     await withoutReviewToken(() => main(["pr-automation", "--repository-id", String(f.repository.id), "--policy-sha", policySha,
       "--source-ref", "refs/heads/feature/test", "--event-after-sha", headSha, "--source-actor-id", "1234", "--source-actor-login", "fixture-user", "--delivery-id", "fixture-delivery",
     ]));
-    expect(create).toHaveBeenCalledWith("splrad", "steward", expect.objectContaining({ draft: true, head: "feature/test", base: "main", body: expect.stringContaining("<!-- workflow:managed-pr:start -->") }));
+    if (existing) {
+      expect(update).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ expectedBaseRef: "main", headSha, baseSha, pullRequestNumber: 1 }));
+      expect(create).not.toHaveBeenCalled();
+    } else {
+      expect(create).toHaveBeenCalledWith("splrad", "steward", expect.objectContaining({ draft: true, head: "feature/test", base: "main", body: expect.stringContaining("<!-- workflow:managed-pr:start -->") }));
+      expect(update).not.toHaveBeenCalled();
+    }
     expect(f.dispatch.mock.calls.map(call => call[1])).toEqual(["/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches", "/repos/splrad/steward/actions/workflows/pr-classification.yml/dispatches"]);
     for (const call of f.dispatch.mock.calls) expect(call[2]).toMatchObject({ inputs: { policySha } });
     expect(f.token.mock.calls.every(([input]) => input.policySha === policySha)).toBe(true);
