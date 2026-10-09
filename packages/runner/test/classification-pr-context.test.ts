@@ -62,10 +62,53 @@ async function fixture() {
       primary: { id: "chore", source: "deterministic-fallback", reasonCode: "primary-fallback-selected" },
       ownedRiskFlags: [], riskFlags: [], facets: [], areas: [] }, codec) : `${repositoryId}:${number}:${headSha}:${phase}` });
   const run = (number = 224) => main(["pr-classification", "--repository-id", String(repositoryId), "--pull-request-number", String(number), "--event-head-sha", headSha, "--policy-sha", policySha]);
-  return { checks, list, create, update, makeCheck, run, codec };
+  const makeLegacyCheck = (number: number, dimension: "primaryKinds" | "facets" | "areas") => {
+    const check = makeCheck(number);
+    const state = decodeClassificationCheckState(check.external_id, codec)!;
+    const oldCodec = { ...codec, [dimension]: [...codec[dimension], "retired-value"] };
+    if (dimension === "primaryKinds") state.primary = { ...state.primary, id: "retired-value" };
+    else state[dimension] = ["retired-value"];
+    check.external_id = encodeClassificationCheckState(state, oldCodec);
+    expect(decodeClassificationCheckState(check.external_id, oldCodec)).not.toBeNull();
+    expect(decodeClassificationCheckState(check.external_id, codec)).toBeNull();
+    return check;
+  };
+  return { checks, list, create, update, makeCheck, makeLegacyCheck, run, codec };
 }
 
 describe("分类检查按 PR 隔离", () => {
+  it.each(["primaryKinds", "facets", "areas"] as const)("规则移除 %s 后重算当前 PR 的旧检查", async dimension => {
+    const test = await fixture();
+    const previous = test.makeLegacyCheck(224, dimension);
+    test.checks.push(previous);
+    await test.run();
+    expect(test.create).not.toHaveBeenCalled();
+    expect(test.update.mock.calls.every(call => call[2] === previous.id)).toBe(true);
+    expect(previous.conclusion).toBe("success");
+    expect(decodeClassificationCheckState(previous.external_id, test.codec)).toMatchObject({ pullRequestNumber: 224, policySha });
+  });
+
+  it.each(["primaryKinds", "facets", "areas"] as const)("规则移除 %s 后保留另一 PR 的旧检查", async dimension => {
+    const test = await fixture();
+    const foreign = test.makeLegacyCheck(223, dimension);
+    test.checks.push(foreign);
+    const original = structuredClone(foreign);
+    await test.run();
+    expect(foreign).toEqual(original);
+    expect(test.create).toHaveBeenCalledTimes(1);
+    expect(test.update.mock.calls.every(call => call[2] !== foreign.id)).toBe(true);
+  });
+
+  it("规则调整后的全仓扫描分别刷新旧检查", async () => {
+    const test = await fixture();
+    test.checks.push(test.makeLegacyCheck(223, "areas"));
+    test.checks.push(test.makeLegacyCheck(224, "facets"));
+    await main(["pr-classification", "--repository-id", String(repositoryId), "--scan-all", "true", "--delivery-id", "scan", "--policy-sha", policySha]);
+    expect(test.create).not.toHaveBeenCalled();
+    expect(test.checks.map(check => decodeClassificationCheckState(check.external_id, test.codec)?.pullRequestNumber)).toEqual([223, 224]);
+    expect(test.checks.every(check => check.conclusion === "success")).toBe(true);
+  });
+
   it.each(["success", "pending", "failure"])("保留相同 SHA 上另一 PR 的 %s 检查", async phase => {
     const test = await fixture();
     const foreign = test.makeCheck(223, phase);

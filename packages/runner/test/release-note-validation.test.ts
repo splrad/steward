@@ -147,6 +147,7 @@ describe('中央 validate 片段入口', () => {
   });
   it.each(['disabled', 'missing-profile', 'missing', 'trusted', 'wrong-head', 'wrong-app', 'wrong-policy', 'wrong-policy-sha', 'security', 'human-security', 'human-breaking-change',
     'shared-success', 'shared-pending', 'shared-failure', 'foreign-only', 'duplicate-current', 'unknown-binding', 'foreign-drift',
+    'legacy-current', 'legacy-foreign',
     'stale-base', 'stale-files', 'stale-commits', 'incomplete-commits', 'commit-read-failure', 'missing-file-counts',
     'label-added', 'label-removed', 'risk-without-state', 'label-read-failure', 'invalid-label', 'label-drift', 'check-drift', 'label-reordered',
     'wait-success', 'wait-failure', 'wait-timeout', 'wait-drift',
@@ -176,7 +177,7 @@ describe('中央 validate 片段入口', () => {
       if (scenario === 'stale-base') facts.baseSha = 'e'.repeat(40);
       if (scenario === 'stale-files') facts.files[0] = { ...facts.files[0]!, patch: '+old test' };
       if (scenario === 'stale-commits') facts.commits[0] = { ...facts.commits[0]!, message: 'test: old fixtures' };
-      const encoded = encodeClassificationCheckState({ v: 4, repositoryId: 1, pullRequestNumber: 2,
+      let encoded = encodeClassificationCheckState({ v: 4, repositoryId: 1, pullRequestNumber: 2,
         headSha: scenario === 'wrong-head' ? 'e'.repeat(40) : identity.headSha,
         policySha: scenario === 'wrong-policy-sha' ? 'e'.repeat(40) : identity.policySha,
         inputDigest: classificationInputDigest(facts, identity.policySha, policy), decisionDigest: 'b'.repeat(64),
@@ -185,6 +186,13 @@ describe('中央 validate 片段入口', () => {
         ownedRiskFlags: scenario === 'security' ? ['security'] : [],
         riskFlags: scenario === 'human-breaking-change' ? ['breaking-change'] : ['security', 'human-security', 'label-removed'].includes(scenario) ? ['security'] : [], facets: [], areas: [],
       }, classificationCheckStateCodec(semantics, classification));
+      const codec = classificationCheckStateCodec(semantics, classification);
+      const legacyCodec = { ...codec, areas: [...codec.areas, 'retired-area'] };
+      const legacyState = { ...decodeClassificationCheckState(encoded, codec)!, areas: ['retired-area'] };
+      if (scenario === 'legacy-current') {
+        encoded = encodeClassificationCheckState(legacyState, legacyCodec);
+        expect(decodeClassificationCheckState(encoded, codec)).toBeNull();
+      }
       const test = fixture({ documented: scenario.startsWith('wait-'), checks: ['missing', 'risk-without-state'].includes(scenario) ? [] : [{ name: 'PR Classification Gate', head_sha: identity.headSha,
         app: { id: scenario === 'wrong-app' ? 99 : 4243096 }, status: 'completed', conclusion: 'success', external_id: encoded }] });
       let labelReads = 0;
@@ -196,12 +204,13 @@ describe('中央 validate 片段入口', () => {
         if (endpoint.includes('/check-runs?')) {
           checkReads++;
           expect(endpoint).toContain('filter=all');
-          if (scenario.startsWith('shared-') || ['foreign-only', 'duplicate-current', 'unknown-binding', 'foreign-drift'].includes(scenario)) {
+          if (scenario.startsWith('shared-') || ['foreign-only', 'duplicate-current', 'unknown-binding', 'foreign-drift', 'legacy-foreign'].includes(scenario)) {
             const result = await (await test.transport(url, init)).json();
             const own = { ...result.check_runs[0], id: 1 };
             const foreign = { ...own, id: 2, external_id: encodeClassificationCheckState({
               ...decodeClassificationCheckState(encoded, classificationCheckStateCodec(semantics, classification))!, pullRequestNumber: 3,
             }, classificationCheckStateCodec(semantics, classification)) };
+            if (scenario === 'legacy-foreign') foreign.external_id = encodeClassificationCheckState({ ...legacyState, pullRequestNumber: 3 }, legacyCodec);
             if (scenario === 'shared-pending' || scenario === 'shared-failure' || (scenario === 'foreign-drift' && checkReads > 1)) {
               const pending = scenario !== 'shared-failure';
               foreign.status = pending ? 'in_progress' : 'completed';
@@ -253,7 +262,7 @@ describe('中央 validate 片段入口', () => {
         expect(await readFile(join(root, 'summary.md'), 'utf8')).toContain('片段门禁：未启用');
       }
       else if (scenario === 'missing-profile') await expect(run).rejects.toThrow('已启用片段门禁的仓库缺少片段规则');
-      else if (['foreign-only', 'duplicate-current', 'unknown-binding'].includes(scenario)) {
+      else if (['foreign-only', 'duplicate-current', 'unknown-binding', 'legacy-current'].includes(scenario)) {
         await expect(run).rejects.toThrow('RN_SOURCE_INCOMPLETE');
         expect(delay).toHaveBeenCalledTimes(scenario === 'foreign-only' ? 36 : 0);
       }
@@ -280,8 +289,8 @@ describe('中央 validate 片段入口', () => {
       else {
         await run;
         const summary = await readFile(join(root, 'summary.md'), 'utf8');
-        expect(summary).toContain(`分类：${['trusted', 'label-removed', 'label-reordered', 'shared-success', 'shared-pending', 'shared-failure', 'foreign-drift'].includes(scenario) ? 'provided' : 'missing'}`);
-        expect(summary).toContain(`要求：${['trusted', 'label-removed', 'label-reordered', 'shared-success', 'shared-pending', 'shared-failure', 'foreign-drift'].includes(scenario) ? 'review-required' : 'ignored'}`);
+        expect(summary).toContain(`分类：${['trusted', 'label-removed', 'label-reordered', 'shared-success', 'shared-pending', 'shared-failure', 'foreign-drift', 'legacy-foreign'].includes(scenario) ? 'provided' : 'missing'}`);
+        expect(summary).toContain(`要求：${['trusted', 'label-removed', 'label-reordered', 'shared-success', 'shared-pending', 'shared-failure', 'foreign-drift', 'legacy-foreign'].includes(scenario) ? 'review-required' : 'ignored'}`);
         expect(summary).toContain(identity.baseSha);
         expect(summary).toContain(identity.policySha);
       }

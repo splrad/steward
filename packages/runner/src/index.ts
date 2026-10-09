@@ -488,8 +488,7 @@ export function encodeClassificationCheckState(state: ClassificationCheckStateV4
   createHash("sha256").update(buffer.subarray(0, classificationCheckStateBodyBytes)).digest().copy(buffer, classificationCheckStateBodyBytes);
   return `v4:${buffer.toString("base64url")}`;
 }
-export function decodeClassificationCheckState(value: unknown, codec: ClassificationCheckStateCodec, expected?: { repositoryId: number; pullRequestNumber: number; headSha: string; policySha?: string }): ClassificationCheckStateV4 | null {
-  try { validateClassificationCheckCodec(codec); } catch { return null; }
+function decodeClassificationCheckEnvelope(value: unknown) {
   if (typeof value !== "string" || !value.startsWith("v4:")) return null;
   const encoded = value.slice(3);
   if (encoded.length !== classificationCheckStateEncodedLength || !/^[A-Za-z0-9_-]+$/u.test(encoded)) return null;
@@ -501,8 +500,16 @@ export function decodeClassificationCheckState(value: unknown, codec: Classifica
   const pullRequestNumber = decoded.readUInt32BE(5);
   const headSha = decoded.subarray(9, 29).toString("hex");
   const policySha = decoded.subarray(133, 153).toString("hex");
+  if (!repositoryId || !pullRequestNumber) return null;
+  return { decoded, repositoryId, pullRequestNumber, headSha, policySha };
+}
+export function decodeClassificationCheckState(value: unknown, codec: ClassificationCheckStateCodec, expected?: { repositoryId: number; pullRequestNumber: number; headSha: string; policySha?: string }): ClassificationCheckStateV4 | null {
+  try { validateClassificationCheckCodec(codec); } catch { return null; }
+  const envelope = decodeClassificationCheckEnvelope(value);
+  if (!envelope) return null;
+  const { decoded, repositoryId, pullRequestNumber, headSha, policySha } = envelope;
   if (expected?.policySha !== undefined && policySha !== expected.policySha) return null;
-  if (!repositoryId || !pullRequestNumber || (expected && (repositoryId !== expected.repositoryId || pullRequestNumber !== expected.pullRequestNumber || headSha !== expected.headSha))) return null;
+  if (expected && (repositoryId !== expected.repositoryId || pullRequestNumber !== expected.pullRequestNumber || headSha !== expected.headSha)) return null;
   const mode = classificationCheckModes[decoded[125]!];
   const primaryKind = codec.primaryKinds[decoded[126]!];
   const source = classificationCheckSources[decoded[127]!];
@@ -538,15 +545,15 @@ export function reusedAiClassificationAssessment(state: ClassificationCheckState
   };
 }
 
-function classificationChecksForPull(checks: readonly any[], codec: ClassificationCheckStateCodec,
+function classificationChecksForPull(checks: readonly any[],
   identity: { repositoryId: number; pullRequestNumber: number; headSha: string }): { matching: any[]; unbound: any[] } {
   const matching: any[] = [];
   const unbound: any[] = [];
   for (const check of checks) {
     if (check.name !== "PR Classification Gate" || check.app?.id !== 4243096 || check.head_sha !== identity.headSha) continue;
-    const state = decodeClassificationCheckState(check.external_id, codec);
+    const envelope = decodeClassificationCheckEnvelope(check.external_id);
     const marker = typeof check.external_id === "string" ? /^([1-9][0-9]*):([1-9][0-9]*):([0-9a-f]{40}):(pending|failure)$/u.exec(check.external_id) : null;
-    const binding = state ?? (marker ? { repositoryId: Number(marker[1]), pullRequestNumber: Number(marker[2]), headSha: marker[3] } : null);
+    const binding = envelope ?? (marker ? { repositoryId: Number(marker[1]), pullRequestNumber: Number(marker[2]), headSha: marker[3] } : null);
     if (!binding || !Number.isSafeInteger(binding.pullRequestNumber) || binding.repositoryId !== identity.repositoryId || binding.headSha !== identity.headSha) {
       unbound.push(check);
     } else if (binding.pullRequestNumber === identity.pullRequestNumber) matching.push(check);
@@ -1389,7 +1396,7 @@ async function classify(args: Readonly<Record<string, string>>) {
   const profile = await json<ClassificationProfile>(configPath("profiles", "classification", `${repositoryClassification.profile}.json`));
   const stateCodec = classificationCheckStateCodec(semantics, profile);
   const gh = await client(repositoryId, classificationInstallationPermissions(repositoryClassification.labelAssignmentMode), policySha);
-  const { matching: same, unbound } = classificationChecksForPull(await gh.listAllCheckRuns(owner, repo, expectedHead, "all"), stateCodec,
+  const { matching: same, unbound } = classificationChecksForPull(await gh.listAllCheckRuns(owner, repo, expectedHead, "all"),
     { repositoryId, pullRequestNumber: number, headSha: expectedHead });
   if (unbound.length) throw new Error("同名分类检查缺少可信归属");
   if (same.length > 1) throw new Error("同名分类检查存在歧义");
@@ -1754,8 +1761,7 @@ async function validate(args: Readonly<Record<string, string>>) {
             throw new FragmentValidationError("RN_SOURCE_INCOMPLETE", "current classification");
           };
           const readChecks = async () => {
-            const { matching, unbound } = classificationChecksForPull(await gh.listAllCheckRuns(owner, repo, identity.headSha, "all"),
-              classificationCheckStateCodec(semantics, classificationProfile), identity);
+            const { matching, unbound } = classificationChecksForPull(await gh.listAllCheckRuns(owner, repo, identity.headSha, "all"), identity);
             if (unbound.length) return unavailable();
             return matching;
           };
