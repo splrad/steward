@@ -47,6 +47,7 @@ function binding(proof: ForkCopilotEvidence): { number: number; head: string } |
     const line = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z) (.*)$/u.exec(raw);
     if (!line) continue;
     const at = timestamp(line[1]);
+    if (!Number.isFinite(at)) return undefined;
     const message = line[2]!;
     if (at < stepStart || at > stepEnd) continue;
     if (/^(?:Analyzing |Fetching diff |Checking out )/u.test(message)) {

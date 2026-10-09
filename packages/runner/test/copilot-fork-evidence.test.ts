@@ -90,6 +90,14 @@ describe("fork Copilot运行证据", () => {
     expect(forkCheckFor(proof, 224, head)).toBeUndefined();
     expect(classify(proof).state).toBe('unknown');
   });
+  it.each([0, 1, 2, 'all'] as const)("日志第%s行时间不可解析时拒绝关联", async index => {
+    const proof = fixture();
+    proof.log = proof.log.split('\n').map((line, i) => index === 'all' || i === index ? line.replace('2026-10-', '2026-99-') : line).join('\n');
+    expect(forkCheckFor(proof, 224, head)).toBeUndefined();
+    expect(classify(proof).state).toBe('unknown');
+    const { gh } = client([proof]);
+    await expect(readCopilotReviewState(gh, 'splrad', 'steward', 224, head)).resolves.toMatchObject({ state: 'unknown' });
+  });
   it("共享base上的其他PR有独立运行", async () => {
     const other = fixture(); other.run.id++; other.job.id++; other.check.id++;
     other.job.run_id = other.run.id; other.job.check_run_url = `https://api.github.com/repos/splrad/steward/check-runs/${other.check.id}`;
