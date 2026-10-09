@@ -11,6 +11,7 @@ on:
       sourceActorLogin: { required: true, type: string }
       policySha: { required: true, type: string }
       pullRequestNumber: { required: false, type: string }
+      observeOnly: { description: 仅观察审查状态, required: false, type: boolean, default: false }
 
 permissions:
   contents: read
@@ -21,7 +22,7 @@ concurrency:
 
 jobs:
   reconcile:
-    if: inputs.pullRequestNumber == ''
+    if: inputs.pullRequestNumber == '' && inputs.observeOnly != true
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
@@ -157,7 +158,7 @@ jobs:
         run: rm -f "${{ runner.temp }}/copilot-prompt.txt" "${{ runner.temp }}/copilot-output.jsonl" "${{ runner.temp }}/copilot-repair-prompt.txt" "${{ runner.temp }}/copilot-repair-output.jsonl" "${{ runner.temp }}/pr-prepared-facts.json"
 
   request:
-    if: inputs.pullRequestNumber != '' && github.actor_id == '301115370' && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: inputs.observeOnly != true && inputs.pullRequestNumber != '' && github.actor_id == '301115370' && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment:
@@ -207,3 +208,42 @@ jobs:
             --policy-sha "$POLICY_SHA"
           )
           node packages/runner/dist/index.js request-copilot-review "${review_arguments[@]}"
+
+  observe:
+    if: inputs.observeOnly == true && github.event_name == 'workflow_dispatch' && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: steward-automation
+      deployment: false
+    outputs:
+      state: ${{ steps.observe.outputs.state }}
+      reason: ${{ steps.observe.outputs.reason }}
+      headSha: ${{ steps.observe.outputs.headSha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: 读取当前Copilot审查证据
+        id: observe
+        shell: bash
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          PULL_REQUEST_NUMBER: ${{ inputs.pullRequestNumber }}
+          HEAD_SHA: ${{ inputs.eventAfterSha }}
+          POLICY_SHA: ${{ github.workflow_sha }}
+        run: |
+          node packages/runner/dist/index.js observe-copilot-review \
+            --repository-id "$REPOSITORY_ID" \
+            --pull-request-number "$PULL_REQUEST_NUMBER" \
+            --event-head-sha "$HEAD_SHA" \
+            --policy-sha "$POLICY_SHA"

@@ -54,6 +54,8 @@ node packages/runner/dist/index.js observe-copilot-review --repository-id REPOSI
 
 命令使用中央 `APP_ID`、`INSTALLATION_ID`、`STEWARD_APP_PRIVATE_KEY` 和仓库配置，为单个目标仓库签发只读短时令牌，权限为 `contents`、`pull_requests`、`issues`、`checks`、`actions`、`metadata` 的 `read`。它仅接受受管组织内已启用 PR 自动化、未归档且未禁用的仓库，以及目标为当前默认分支的开放 PR；读取前后核对 PR head 和仓库状态。结果输出为 JSON 摘要，并在设置 `GITHUB_OUTPUT` 时写入 `state`、`reason`、`headSha`。这是显式调用的观察入口，不发送审查请求、不写入 PR，也不执行 fork 代码。
 
+默认分支上的 `PR Automation` 工作流通过 `observeOnly=true` 提供只读入口，使用 `repositoryId`、`pullRequestNumber`、`eventAfterSha` 指定目标。其余必填字段沿用该工作流输入合同，观察任务仅使用目标字段和可信工作流提交。默认 `observeOnly=false`，原有流程保持有效；观察模式与正文收敛、审查请求任务互斥。它复用 `steward-automation` 环境，仅在观察步骤注入 App 凭据。工作流执行成功表示完成读取；审查结果以 JSON 中的 `state` 为准。
+
 发布片段验证按仓库显式启用：中央验证 profile 的 `fragmentGate` 保存片段目录和路径规则，仓库目录 `config/repositories.json` 的对应仓库条目通过 `fragmentGateEnabled: true` 启用门禁。当前所有仓库均未启用片段门禁；`fragments` 作业会报告“片段门禁：未启用”，保留现行验证。门禁激活在目标仓库完成片段规则配置与准备后单独进行。
 
 受管仓库只保留项目自己的代码和必要配置。中央工作流、GitHub App 私钥及其他中央凭据不会复制过去。
