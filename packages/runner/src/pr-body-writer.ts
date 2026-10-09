@@ -72,9 +72,10 @@ async function runtimeRequest<T>(input: { runtimeUrl: string; token: string; met
   try { return JSON.parse(text) as T; } catch { throw new Error("正文写意图运行时响应无效"); }
 }
 
-function pullFacts(pull: any, repositoryId: number, pullRequestNumber: number, headSha: string, baseSha: string): string {
+function pullFacts(pull: any, repositoryId: number, pullRequestNumber: number, headSha: string, baseSha: string, expectedBaseRef: string): string {
   if (Number(pull?.number) !== pullRequestNumber || Number(pull?.base?.repo?.id) !== repositoryId || Number(pull?.head?.repo?.id) !== repositoryId
-    || pull?.head?.sha !== headSha || pull?.base?.sha !== baseSha) throw new Error("拉取请求正文写入事实已经漂移");
+    || pull?.head?.sha !== headSha || pull?.base?.sha !== baseSha
+    || pull?.base?.ref !== expectedBaseRef) throw new Error("拉取请求正文写入事实已经漂移");
   return String(pull?.body ?? "");
 }
 
@@ -166,6 +167,7 @@ export async function updatePullRequestBodyDurably(input: {
   headSha: string;
   baseSha: string;
   pullBaseSha?: string;
+  expectedBaseRef: string;
   issueGeneration?: number;
   regionKind: DurableBodyRegionKind;
   targetBlock: string | null;
@@ -173,12 +175,13 @@ export async function updatePullRequestBodyDurably(input: {
   additionalPatch?: Readonly<Record<string, unknown>>;
   confirmationAttempts?: number;
 }): Promise<any> {
+  if (typeof input.expectedBaseRef !== "string" || !input.expectedBaseRef.trim()) throw new Error("正文写入缺少预期目标分支");
   const attempts = input.confirmationAttempts ?? 60;
   if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 60) throw new Error("正文写入确认次数无效");
   if (input.additionalPatch && Object.prototype.hasOwnProperty.call(input.additionalPatch, "body")) throw new Error("附加更新不能包含正文");
   const pullBaseSha = input.pullBaseSha ?? input.baseSha;
   const current = await input.client.getPullRequest(input.owner, input.repo, input.pullRequestNumber);
-  const before = pullFacts(current, input.repositoryId, input.pullRequestNumber, input.headSha, pullBaseSha);
+  const before = pullFacts(current, input.repositoryId, input.pullRequestNumber, input.headSha, pullBaseSha, input.expectedBaseRef);
   const next = applyRegion(before, input.regionKind, input.targetBlock);
   const issueGeneration = input.issueGeneration ?? 0;
   const targetBodyDigest = digest(next);
@@ -206,9 +209,14 @@ export async function updatePullRequestBodyDurably(input: {
       }
       await waitForIntent({ runtimeUrl: input.runtimeUrl, token: input.token, path, writeId: active.writeId, attempts });
     }
-    return input.additionalPatch && Object.keys(input.additionalPatch).length
-      ? input.client.updatePullRequest(input.owner, input.repo, input.pullRequestNumber, input.additionalPatch)
-      : current;
+    if (input.additionalPatch && Object.keys(input.additionalPatch).length) {
+      const fresh = await input.client.getPullRequest(input.owner, input.repo, input.pullRequestNumber);
+      if (pullFacts(fresh, input.repositoryId, input.pullRequestNumber, input.headSha, pullBaseSha, input.expectedBaseRef) !== before) throw new Error("拉取请求正文写入前发生漂移");
+      const written = await input.client.updatePullRequest(input.owner, input.repo, input.pullRequestNumber, input.additionalPatch);
+      if (pullFacts(written, input.repositoryId, input.pullRequestNumber, input.headSha, pullBaseSha, input.expectedBaseRef) !== before) throw new Error("拉取请求正文写入响应不一致");
+      return written;
+    }
+    return current;
   }
   const prepared = await runtimeRequest<RuntimeIntent>({
     runtimeUrl: input.runtimeUrl,
@@ -233,18 +241,20 @@ export async function updatePullRequestBodyDurably(input: {
     throw new Error("正文写意图恢复状态与当前正文不一致");
   }
   const writeId = prepared.writeId;
-  const confirmedBefore = pullFacts(await input.client.getPullRequest(input.owner, input.repo, input.pullRequestNumber), input.repositoryId, input.pullRequestNumber, input.headSha, pullBaseSha);
-  if (confirmedBefore !== before) {
+  try {
+    const confirmedBefore = pullFacts(await input.client.getPullRequest(input.owner, input.repo, input.pullRequestNumber), input.repositoryId, input.pullRequestNumber, input.headSha, pullBaseSha, input.expectedBaseRef);
+    if (confirmedBefore !== before) throw new Error("拉取请求正文写入前发生漂移");
+  } catch (error) {
     await runtimeRequest({ runtimeUrl: input.runtimeUrl, token: input.token, method: "POST", path: `${path}/${writeId}/block`, body: { reason: "pre-patch-drift" } });
-    throw new Error("拉取请求正文写入前发生漂移");
+    throw error;
   }
   const written = await input.client.updatePullRequest(input.owner, input.repo, input.pullRequestNumber, { ...(input.additionalPatch ?? {}), body: next });
-  pullFacts(written, input.repositoryId, input.pullRequestNumber, input.headSha, pullBaseSha);
+  pullFacts(written, input.repositoryId, input.pullRequestNumber, input.headSha, pullBaseSha, input.expectedBaseRef);
   if (String(written?.body ?? "") !== next) throw new Error("拉取请求正文写入响应不一致");
   await runtimeRequest<RuntimeIntent>({ runtimeUrl: input.runtimeUrl, token: input.token, method: "POST", path: `${path}/${writeId}/patched` });
   await waitForIntent({ runtimeUrl: input.runtimeUrl, token: input.token, path, writeId, attempts });
   const finalPull = await input.client.getPullRequest(input.owner, input.repo, input.pullRequestNumber);
-  const finalBody = pullFacts(finalPull, input.repositoryId, input.pullRequestNumber, input.headSha, pullBaseSha);
+  const finalBody = pullFacts(finalPull, input.repositoryId, input.pullRequestNumber, input.headSha, pullBaseSha, input.expectedBaseRef);
   if (targetManagedBlock(finalBody, input.regionKind) !== input.targetBlock) throw new Error("拉取请求正文写入最终读回不一致");
   return finalPull;
 }
