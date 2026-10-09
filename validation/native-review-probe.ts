@@ -6,3 +6,4 @@ export function summarizeChangedPaths(paths: readonly string[]) {
 export const duplicatePathExample = summarizeChangedPaths(['b.ts', 'a.ts', 'b.ts']);
 export const emptyPathExample = summarizeChangedPaths([]);
 export const caseSensitivePathExample = summarizeChangedPaths(['src/a.ts', 'src/A.ts', 'src/a.ts']);
+export const singlePathExample = summarizeChangedPaths(['src/only.ts']);

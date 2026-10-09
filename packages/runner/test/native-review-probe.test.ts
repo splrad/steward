@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { caseSensitivePathExample, duplicatePathExample, emptyPathExample, summarizeChangedPaths } from "../../../validation/native-review-probe.js";
+import { caseSensitivePathExample, duplicatePathExample, emptyPathExample, singlePathExample, summarizeChangedPaths } from "../../../validation/native-review-probe.js";
 
 describe("原生审查验证样本", () => {
+  it("单路径样本保留路径并返回数量一", () => {
+    expect(singlePathExample).toEqual({ fileCount: 1, paths: ["src/only.ts"] });
+  });
   it("保留大小写不同的路径并按字符串顺序排列", () => {
     expect(caseSensitivePathExample).toEqual({ fileCount: 2, paths: ["src/A.ts", "src/a.ts"] });
   });
