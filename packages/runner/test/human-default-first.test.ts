@@ -14,4 +14,3 @@ test("uniquePaths returns sorted paths without changing input", () => {
 test("uniquePaths handles an empty list", () => {
   assert.deepEqual(uniquePaths([]), []);
 });
-
