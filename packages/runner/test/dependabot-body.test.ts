@@ -33,13 +33,33 @@ function fixture(author: { id: number; login: string; type: string }) {
   vi.spyOn(GitHubClient.prototype, "getRef").mockImplementation(async (_owner, _repo, ref) => ({ object: { sha: ref === "heads/main" ? base : head } }));
   vi.spyOn(GitHubClient.prototype, "compare").mockResolvedValue({ ahead_by: 1, total_commits: 1, commits: [{ sha: head, commit: { message: "chore(deps): update dependency" } }], files: [{ filename: "package-lock.json", status: "modified", additions: 1, deletions: 1, patch: "-old\n+new" }] });
   const body = "Bumps dependency from 1 to 2.\n<details>Native Dependabot notes</details>";
-  vi.spyOn(GitHubClient.prototype, "listPullRequests").mockResolvedValue([{ number: 196, user: author, body }]);
+  vi.spyOn(GitHubClient.prototype, "listPullRequests").mockResolvedValue([{ number: 196, user: author, body, base: { ref: "main", sha: base } }]);
   const write = vi.spyOn(GitHubClient.prototype, "updatePullRequest").mockRejectedValue(new Error("unexpected body write"));
   const create = vi.spyOn(GitHubClient.prototype, "createPullRequest").mockRejectedValue(new Error("unexpected PR creation"));
   return { transport, write, create, run: () => main(["pr-automation", "--delivery-id", "test", "--repository-id", "1296724484", "--source-ref", "refs/heads/dependabot/npm_and_yarn/yaml-2.9.1", "--event-after-sha", head, "--source-actor-id", "44151430", "--source-actor-login", "axiomoth", "--policy-sha", base]) };
 }
 
 describe("人工推送后的Dependabot正文边界", () => {
+  it.each([
+    ["PREPARE_ONLY", "b".repeat(40)], ["PREPARE_ONLY", "d".repeat(40)],
+    ["PREPARE_REPAIR_ONLY", "b".repeat(40)], ["PREPARE_REPAIR_ONLY", "d".repeat(40)],
+    ["execute", "b".repeat(40)], ["execute", "d".repeat(40)],
+  ] as const)("非默认目标在%s阶段保留原文且跳过生成，目标SHA=%s", async (mode, targetSha) => {
+    const f = fixture({ id: 44151430, login: "axiomoth", type: "User" });
+    vi.mocked(GitHubClient.prototype.listPullRequests).mockResolvedValue([{ number: 230,
+      user: { id: 44151430, login: "axiomoth", type: "User" }, body: "人工正文",
+      base: { ref: "release/test", sha: targetSha },
+    }]);
+    const directory = await preparePaths(mode === "execute" ? "PREPARE_ONLY" : mode);
+    if (mode === "execute") vi.stubEnv("PREPARE_ONLY", "");
+    await expect(f.run()).resolves.toBeUndefined();
+    expect(await readdir(directory)).toEqual(mode === "PREPARE_ONLY" ? ["output.txt"] : []);
+    if (mode === "PREPARE_ONLY") expect(await readFile(join(directory, "output.txt"), "utf8")).toBe("copilot-required=false\n");
+    expect(f.write).not.toHaveBeenCalled();
+    expect(f.create).not.toHaveBeenCalled();
+    expect(f.transport).not.toHaveBeenCalled();
+  });
+
   it("准备阶段跳过官方Dependabot，不生成模型输入", async () => {
     const f = fixture({ id: 49699333, login: "dependabot[bot]", type: "Bot" });
     const directory = await preparePaths("PREPARE_ONLY");

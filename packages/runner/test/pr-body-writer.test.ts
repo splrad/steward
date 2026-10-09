@@ -31,6 +31,30 @@ function intentFromRequest(init: RequestInit, status: "prepared" | "patched" | "
 }
 
 describe("Runner正文持久写入器", () => {
+  it.each(["initial", "pre-patch", "title-only"])("同SHA目标分支在%s阶段不匹配时阻止写入", async phase => {
+    const before = block("旧摘要");
+    let reads = 0;
+    const updatePullRequest = vi.fn();
+    const client = {
+      getPullRequest: async () => ({ ...pull(before), base: { ...pull(before).base,
+        ref: phase === "initial" || reads++ > 0 ? "release/test" : "main" } }),
+      updatePullRequest,
+    } as any;
+    const transport = vi.fn(async (url: string, init: RequestInit = {}) => {
+      if (String(url).endsWith("/active")) return new Response("null", { status: 200 });
+      return new Response(JSON.stringify(intentFromRequest(init)), { status: 200 });
+    });
+    vi.stubGlobal("fetch", transport);
+    await expect(updatePullRequestBodyDurably({ client, token: "token", runtimeUrl: "https://runtime.test",
+      owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha,
+      expectedBaseRef: "main", regionKind: "managed-pr", targetBlock: phase === "title-only" ? before : block("新摘要"),
+      redrive, additionalPatch: { title: "新标题" },
+    })).rejects.toThrow("拉取请求正文写入事实已经漂移");
+    expect(updatePullRequest).not.toHaveBeenCalled();
+    if (phase === "initial") expect(transport).not.toHaveBeenCalled();
+    if (phase === "pre-patch") expect(transport.mock.calls.some(([url]) => String(url).endsWith("/block"))).toBe(true);
+  });
+
   it("持久化成功、交付已证明且Runtime确认后才返回", async () => {
     let live = `人工前言\n${block("旧摘要")}\n`;
     const targetBlock = block("新摘要");
@@ -43,10 +67,10 @@ describe("Runner正文持久写入器", () => {
       return new Response("unexpected", { status: 500 });
     });
     const client = {
-      getPullRequest: async () => pull(live),
-      updatePullRequest: async (_owner: string, _repo: string, _number: number, patch: any) => pull(live = patch.body),
+      getPullRequest: async () => ({ ...pull(live), base: { ...pull(live).base, ref: "main" } }),
+      updatePullRequest: async (_owner: string, _repo: string, _number: number, patch: any) => ({ ...pull(live = patch.body), base: { ...pull(live).base, ref: "main" } }),
     } as any;
-    const result = await updatePullRequestBodyDurably({ client, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, regionKind: "managed-pr", targetBlock, redrive });
+    const result = await updatePullRequestBodyDurably({ client, token: "token", runtimeUrl: "https://runtime.test", owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, expectedBaseRef: "main", regionKind: "managed-pr", targetBlock, redrive });
     expect(result.body).toContain("新摘要");
     expect(calls.some((value) => value.endsWith("/prepare"))).toBe(true);
     expect(calls.some((value) => value.endsWith("/patched"))).toBe(true);

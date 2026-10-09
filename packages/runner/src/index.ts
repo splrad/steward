@@ -1146,6 +1146,9 @@ async function automate(args: Readonly<Record<string, string>>) {
   if (pulls[0]?.user?.id === 49699333 && pulls[0].user.login === "dependabot[bot]" && pulls[0].user.type === "Bot") {
     return summary(["状态：ignored", "原因：Dependabot维护原生正文，审查使用独立请求路径"]);
   }
+  if (pulls[0] && pulls[0].base?.ref !== repository.default_branch) {
+    return summary(["状态：ignored", "原因：已有拉取请求的目标不是仓库默认分支"]);
+  }
   const contributorMap = new Map<number, Contributor>();
   contributorMap.set(sourceActor.id, { id: sourceActor.id, login: sourceActor.login });
   for (const commit of compare.commits) {
@@ -1301,6 +1304,7 @@ async function automate(args: Readonly<Record<string, string>>) {
         pullRequestNumber: Number(pull.number),
         headSha: facts.headSha,
         baseSha: facts.baseSha,
+        expectedBaseRef: repository.default_branch,
         regionKind: "managed-pr",
         targetBlock: targetManagedBlock(body, "managed-pr"),
         redrive: { workflow: "pr-automation.yml", inputs: {
