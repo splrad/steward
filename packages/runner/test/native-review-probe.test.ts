@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { caseSensitivePathExample, duplicatePathExample, emptyPathExample, singlePathExample, summarizeChangedPaths } from "../../../validation/native-review-probe.js";
 
 describe("原生审查验证样本", () => {
+  it("空字符串路径作为普通字符串去重并保留", () => {
+    expect(summarizeChangedPaths(["", "a.ts", ""])).toEqual({ fileCount: 2, paths: ["", "a.ts"] });
+  });
   it("单路径样本保留路径并返回数量一", () => {
     expect(singlePathExample).toEqual({ fileCount: 1, paths: ["src/only.ts"] });
   });
