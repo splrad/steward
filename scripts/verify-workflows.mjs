@@ -10,7 +10,7 @@ function hasExactKeys(value, expectedKeys) {
   return JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...expectedKeys].sort());
 }
 
-const expected = ["deploy-runtime.yml", "issue-sync.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "pr-issue-link.yml", "pr-validation.yml", "release.yml", "sync-managed-labels.yml", "sync-review-instructions.yml"];
+const expected = ["deploy-runtime.yml", "issue-sync.yml", "observe-copilot-review.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "pr-issue-link.yml", "pr-validation.yml", "release.yml", "sync-managed-labels.yml", "sync-review-instructions.yml"];
 const files = (await readdir(".github/workflows")).sort();
 if (JSON.stringify(files) !== JSON.stringify(expected)) throw new Error(`工作流集合不正确: ${files.join(", ")}`);
 const workflowDocuments = new Map();
@@ -45,6 +45,7 @@ if (Object.hasOwn(validationStep.env, "VALIDATION_READ_TOKEN")) throw new Error(
 const expectedJobEnvironments = new Map([
   ["deploy-runtime.yml:deploy", { name: "steward-deployment", deployment: true }],
   ["issue-sync.yml:synchronize", { name: "steward-automation", deployment: false }],
+  ["observe-copilot-review.yml:observe", { name: "steward-automation", deployment: false }],
   ["onboard-repository.yml:onboard", { name: "steward-automation", deployment: false }],
   ["pr-automation.yml:reconcile", { name: "steward-automation", deployment: false }],
   ["pr-automation.yml:request", { name: "steward-automation", deployment: false }],
@@ -374,5 +375,31 @@ if (resolveCheckout?.with?.ref !== "${{ steps.policy.outputs.policy_sha }}" || r
 if (syncJob.concurrency?.group !== "steward-pr-body-${{ matrix.repositoryId }}" || syncJob.concurrency?.["cancel-in-progress"] !== false || syncJob.concurrency?.queue !== "max") throw new Error("审查同步矩阵未复用单仓并发锁");
 if (syncStep.env.COPILOT_REVIEW_REQUEST_TOKEN !== "${{ matrix.trigger == 'legacy' && secrets.COPILOT_REVIEW_REQUEST_TOKEN || '' }}") throw new Error("审查同步矩阵未按仓库隔离请求令牌");
 for (const step of [...syncResolveJob.steps, ...syncJob.steps.filter(step => step !== syncStep)]) if (Object.hasOwn(step.env ?? {}, "COPILOT_REVIEW_REQUEST_TOKEN")) throw new Error("审查同步令牌注入范围扩大");
+
+
+const observeDocument = workflowDocuments.get("observe-copilot-review.yml");
+const observeJob = observeDocument?.jobs?.observe;
+if (!hasExactKeys(observeDocument?.on, ["workflow_dispatch"]) || !hasExactKeys(observeDocument.on.workflow_dispatch?.inputs, ["repositoryId", "pullRequestNumber", "headSha"])
+  || Object.values(observeDocument.on.workflow_dispatch.inputs).some(input => input.required !== true || input.type !== "string")
+  || !hasExactKeys(observeDocument?.permissions, ["contents"]) || observeDocument.permissions.contents !== "read"
+  || observeDocument.env !== undefined || !hasExactKeys(observeDocument?.jobs, ["observe"])) throw new Error("审查观察必须为手动触发的只读单作业");
+if (observeJob.if !== "github.event_name == 'workflow_dispatch' && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
+  || observeJob["runs-on"] !== "ubuntu-latest" || observeJob["timeout-minutes"] !== 5
+  || observeJob.environment?.name !== "steward-automation" || observeJob.environment?.deployment !== false
+  || observeJob.permissions !== undefined || observeJob.env !== undefined || observeJob["continue-on-error"] !== undefined)
+  throw new Error("审查观察来源或凭据边界无效");
+const observeSteps = observeJob.steps;
+const observeCommand = observeSteps?.[3];
+if (observeSteps?.length !== 4 || observeSteps[0].uses !== "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+  || observeSteps[0].with?.ref !== "${{ github.workflow_sha }}" || observeSteps[0].with?.["persist-credentials"] !== false || observeSteps[0].with?.repository !== undefined
+  || observeSteps[1].uses !== "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020"
+  || observeSteps[1].with?.["node-version-file"] !== ".node-version" || observeSteps[2].run !== "npm ci --ignore-scripts"
+  || observeSteps.slice(0, 3).some(step => step.env !== undefined)) throw new Error("审查观察必须检出中央工作流提交并隔离安装阶段凭据");
+const observeEnvironment = { APP_ID: "4243096", INSTALLATION_ID: "145952003", STEWARD_APP_PRIVATE_KEY: "${{ secrets.STEWARD_APP_PRIVATE_KEY }}", REPOSITORY_ID: "${{ inputs.repositoryId }}", PULL_REQUEST_NUMBER: "${{ inputs.pullRequestNumber }}", HEAD_SHA: "${{ inputs.headSha }}", POLICY_SHA: "${{ github.workflow_sha }}" };
+const expectedObserveCommand = 'node packages/runner/dist/index.js observe-copilot-review --repository-id "$REPOSITORY_ID" --pull-request-number "$PULL_REQUEST_NUMBER" --event-head-sha "$HEAD_SHA" --policy-sha "$POLICY_SHA"';
+if (!hasExactKeys(observeCommand?.env, Object.keys(observeEnvironment)) || Object.entries(observeEnvironment).some(([key, value]) => observeCommand.env[key] !== value)
+  || observeCommand.id !== "observe" || observeCommand.shell !== "bash" || observeCommand.if !== undefined || observeCommand["continue-on-error"] !== undefined
+  || String(observeCommand.run).replace(/\\\r?\n/gu, " ").replace(/\s+/gu, " ").trim() !== expectedObserveCommand)
+  throw new Error("审查观察参数或命令不符合只读合同");
 
 console.log("workflows verified");
