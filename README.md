@@ -44,6 +44,16 @@ Steward 由无状态 webhook 运行时接收组织事件，再把需要中央权
 3. 调度拉取请求自动化、分类、验证、仓库接入、说明同步或发布任务。
 4. 将结果写回目标仓库，并保留可复核的检查摘要。
 
+Copilot 审查成功需要当前 PR head 的有效 Review 摘要和对应的成功 Check。摘要支持 `Findings` 与 `open findings` 格式。fork 的 Copilot Check 可能挂在目标分支提交上；此时通过 GitHub 的 Copilot 动态运行身份、同一次尝试的 job/check，以及平台处理步骤首次检出前的 PR、diff 和来源 head 日志确认归属，保留 Check 原始 SHA。拉取请求自动化的短时令牌需要 `actions:read` 读取这些证据。运行重叠、归属不明、日志不可读、查询超过上限或读取期间状态变化时返回 `unknown`。
+
+管理员可在可信中央环境中运行只读观察命令，检查同仓或 fork PR 的当前审查状态：
+
+```sh
+node packages/runner/dist/index.js observe-copilot-review --repository-id REPOSITORY_ID --pull-request-number PR_NUMBER --event-head-sha HEAD_SHA --policy-sha POLICY_SHA
+```
+
+命令使用中央 `APP_ID`、`INSTALLATION_ID`、`STEWARD_APP_PRIVATE_KEY` 和仓库配置，为单个目标仓库签发只读短时令牌，权限为 `contents`、`pull_requests`、`issues`、`checks`、`actions`、`metadata` 的 `read`。它仅接受受管组织内已启用 PR 自动化、未归档且未禁用的仓库，以及目标为当前默认分支的开放 PR；读取前后核对 PR head 和仓库状态。结果输出为 JSON 摘要，并在设置 `GITHUB_OUTPUT` 时写入 `state`、`reason`、`headSha`。这是显式调用的观察入口，不发送审查请求、不写入 PR，也不执行 fork 代码。
+
 发布片段验证按仓库显式启用：中央验证 profile 的 `fragmentGate` 保存片段目录和路径规则，仓库目录 `config/repositories.json` 的对应仓库条目通过 `fragmentGateEnabled: true` 启用门禁。当前所有仓库均未启用片段门禁；`fragments` 作业会报告“片段门禁：未启用”，保留现行验证。门禁激活在目标仓库完成片段规则配置与准备后单独进行。
 
 受管仓库只保留项目自己的代码和必要配置。中央工作流、GitHub App 私钥及其他中央凭据不会复制过去。

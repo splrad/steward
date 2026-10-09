@@ -26,17 +26,20 @@ import { minimatch } from "minimatch";
 import YAML from "yaml";
 import { Ajv2020, type AnySchemaObject } from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
-import { classifyCopilotReviewState, copilotReviewTrigger, type CopilotReviewState, type CopilotReviewTrigger } from "./copilot-review-state.js";
+import { readForkCopilotEvidence } from "./copilot-fork-evidence.js";
+import { classifyCopilotReviewState, isCopilotIdentity, copilotReviewTrigger, type CopilotReviewState, type CopilotReviewTrigger } from "./copilot-review-state.js";
 
 const commands = new Set(["review-trigger-mode", "issue-sync", "managed-repository-ids", "reconcile-repository-lifecycle", "onboard-repository", "pr-automation", "pr-classification", "pr-issue-link", "request-copilot-review", "sync-review-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"]);
 const stewardRepositoryId = 1296724484;
 commands.add("review-sync-targets");
+commands.add("observe-copilot-review");
 commands.add("render-review-instructions");
 // Repository configuration and workspace files are runtime inputs, not bundle assets.
 // This wrapper keeps their paths opaque to the static asset tracer used by ncc.
 const runtimeReadFile = ((path: Parameters<typeof readFile>[0], options?: Parameters<typeof readFile>[1]) =>
   Reflect.apply(readFile, undefined, options === undefined ? [path] : [path, options])) as typeof readFile;
 const allowedArguments: Record<string, Set<string>> = {
+  "observe-copilot-review": new Set(["repository-id", "pull-request-number", "event-head-sha", "policy-sha"]),
   "render-review-instructions": new Set(["profile", "policy-sha"]),
   "review-sync-targets": new Set(["repository-id", "policy-sha"]),
   "review-trigger-mode": new Set(["repository-id", "policy-sha"]),
@@ -815,7 +818,7 @@ export function classificationInstallationPermissions(mode: "observe" | "enforce
   return { contents: "read", pull_requests: assignmentPermission, issues: assignmentPermission, checks: "write", metadata: "read" } as const;
 }
 export function prAutomationInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
-  return { contents: "read", pull_requests: "write", issues: "read", checks: "read", metadata: "read" } as const;
+  return { contents: "read", pull_requests: "write", issues: "read", checks: "read", actions: "read", metadata: "read" } as const;
 }
 export function reviewInstructionSyncInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
   return { administration: "read", contents: "write", pull_requests: "write", issues: "read", checks: "read", metadata: "read", members: "read" } as const;
@@ -831,7 +834,25 @@ export async function readCopilotReviewState(clientValue: GitHubClient, owner: s
       clientValue.listIssueEvents(owner, repo, number),
       clientValue.listAllCheckRuns(owner, repo, headSha, "all"),
     ]);
-    return classifyCopilotReviewState({ pullRequestNumber: number, headSha, requested, reviews, events, checkRuns, afterEventId });
+    const input = { pullRequestNumber: number, headSha, requested, reviews, events, checkRuns, afterEventId };
+    const initial = classifyCopilotReviewState(input);
+    if (initial.reason !== "review-check-attempt-unverified") return initial;
+    const reviewTime = Math.max(...reviews.filter(review => isCopilotIdentity(review.user?.login) && review.commit_id === headSha).map(review => Date.parse(review.submitted_at)));
+    const requests = events.filter(event => event.event === "review_requested" && isCopilotIdentity(event.requested_reviewer?.login)
+      && (!event.commit_id || event.commit_id === headSha) && Date.parse(event.created_at) <= reviewTime);
+    const since = Math.min(...requests.map(event => Date.parse(event.created_at)));
+    const requestBoundary = Math.max(...requests.map(event => Date.parse(event.created_at)));
+    if (!Number.isFinite(since)) return initial;
+    const forkEvidence = await readForkCopilotEvidence(clientValue, owner, repo, number, headSha, new Date(since).toISOString(), requestBoundary);
+    if (!forkEvidence.length) return initial;
+    const [freshRequested, freshReviews, freshEvents, freshChecks] = await Promise.all([
+      clientValue.getRequestedReviewers(owner, repo, number), clientValue.listPullRequestReviews(owner, repo, number),
+      clientValue.listIssueEvents(owner, repo, number), clientValue.listAllCheckRuns(owner, repo, headSha, "all"),
+    ]);
+    if (JSON.stringify([requested, reviews, events, checkRuns]) !== JSON.stringify([freshRequested, freshReviews, freshEvents, freshChecks])) {
+      return { state: "unknown", headSha, reason: "review-evidence-changed" };
+    }
+    return classifyCopilotReviewState({ ...input, forkEvidence });
   } catch {
     return { state: "unknown", headSha, reason: "evidence-read-failed" };
   }
@@ -884,6 +905,32 @@ export async function requestDependabotCopilotReview(gh: GitHubClient, repositor
   if (refreshedRepository.id !== repositoryId || !managed(refreshedRepository)
     || refreshedPull.number !== number || !isDependabotReviewEligible(refreshedRepository, refreshedPull, headSha)) return "changed-during-request";
   return result;
+}
+
+async function observeCopilotReviewCommand(args: Readonly<Record<string, string>>) {
+  const policySha = sha(required(args, "policy-sha"), "policy-sha");
+  const repositoryId = integer(required(args, "repository-id"), "repository-id");
+  const number = integer(required(args, "pull-request-number"), "pull-request-number");
+  const headSha = sha(required(args, "event-head-sha"), "event-head-sha");
+  const registry = await catalog();
+  const gh = await client(repositoryId, { contents: "read", pull_requests: "read", issues: "read", checks: "read", actions: "read", metadata: "read" }, policySha);
+  const repository = await gh.getRepositoryById(repositoryId);
+  const eligibleRepository = (value: any) => {
+    const configuration = configurationFor(registry, value);
+    return value.id === repositoryId && value.owner?.id === registry.organization.id
+      && !value.archived && !value.disabled && configuration.managed === true && configuration.prAutomation === true;
+  };
+  if (!eligibleRepository(repository)) throw new Error("仓库不在审查观察范围内");
+  const [owner, repo] = splitRepository(repository.full_name);
+  const eligiblePull = (pull: any) => pull.number === number && pull.state === "open"
+    && pull.base?.repo?.id === repositoryId && pull.base?.ref === repository.default_branch && pull.head?.sha === headSha;
+  if (!eligiblePull(await gh.getPullRequest(owner, repo, number))) throw new Error("PR不在审查观察范围内或head已变化");
+  const state = await readCopilotReviewState(gh, owner, repo, number, headSha);
+  const [freshRepository, freshPull] = await Promise.all([gh.getRepositoryById(repositoryId), gh.getPullRequest(owner, repo, number)]);
+  if (!eligibleRepository(freshRepository) || freshRepository.full_name !== repository.full_name
+    || freshRepository.default_branch !== repository.default_branch || !eligiblePull(freshPull)) throw new Error("审查观察期间PR或仓库状态变化");
+  await summary([JSON.stringify({ repository: repository.full_name, number, ...state })]);
+  await output({ state: state.state, reason: state.reason, headSha });
 }
 
 async function requestCopilotReviewCommand(args: Readonly<Record<string, string>>) {
@@ -2131,6 +2178,7 @@ async function releaseVerify(args: Readonly<Record<string, string>>) {
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const invocation = parseInvocation(argv);
+  if (invocation.command === "observe-copilot-review") return observeCopilotReviewCommand(invocation.args);
   if (invocation.command === "render-review-instructions") return renderReviewInstructionsCommand(invocation.args);
   if (invocation.command === "request-copilot-review") return requestCopilotReviewCommand(invocation.args);
   if (invocation.command === "review-trigger-mode") return reviewTriggerModeCommand(invocation.args);

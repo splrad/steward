@@ -79,6 +79,51 @@ export class GitHubClient {
     return (await response.json()) as T;
   }
 
+  async getWorkflowJobLog(owner: string, repo: string, jobId: number): Promise<string> {
+    const path = `/repos/${owner}/${repo}/actions/jobs/${jobId}/logs`;
+    let response = await this.transport.call(globalThis, this.absoluteUrl(path), {
+      headers: githubHeaders(this.token, this.policySha), redirect: "manual",
+    });
+    if (response.status === 302) {
+      const location = new URL(response.headers.get("location") ?? "");
+      if (location.protocol !== "https:" || location.username || location.password || location.port || location.hash
+        || ![".blob.core.windows.net", ".actions.githubusercontent.com"].some(suffix => location.hostname.endsWith(suffix))) throw new Error("运行日志下载地址无效");
+      response = await this.transport.call(globalThis, location.href, { redirect: "error" });
+    }
+    if (!response.ok || !response.body) throw new Error("运行日志读取失败");
+    const limit = 8 * 1024 * 1024;
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      if (Number(response.headers.get("content-length")) > limit) throw new Error("运行日志超过读取上限");
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > limit) throw new Error("运行日志超过读取上限");
+        chunks.push(value);
+      }
+    } finally { await reader.cancel(); reader.releaseLock(); }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  }
+
+  listDynamicWorkflowRuns(owner: string, repo: string, createdSince: string) {
+    if (!Number.isFinite(Date.parse(createdSince))) throw new Error("动态运行查询边界无效");
+    return this.paginate<any>(`/repos/${owner}/${repo}/actions/runs?event=dynamic&created=${encodeURIComponent(`>=${createdSince}`)}&per_page=100`, value => {
+      const page = value as any;
+      if (!Number.isSafeInteger(page.total_count) || page.total_count >= 1000) throw new Error("动态运行查询范围不完整");
+      return page.workflow_runs;
+    }, { maxPages: 10, maxItems: 999 });
+  }
+  listWorkflowAttemptJobs(owner: string, repo: string, runId: number, attempt: number) {
+    return this.paginate<any>(`/repos/${owner}/${repo}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100`, value => (value as any).jobs);
+  }
+  getCheckRun(owner: string, repo: string, id: number) { return this.request<any>("GET", `/repos/${owner}/${repo}/check-runs/${id}`); }
+
   async paginate<T>(
     path: string,
     select: (value: unknown) => readonly T[] = value => value as readonly T[],

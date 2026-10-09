@@ -755,6 +755,7 @@ describe("中央命令入口", () => {
       metadata: "read",
     });
     expect(prAutomationInstallationPermissions()).toEqual({
+      actions: "read",
       contents: "read",
       pull_requests: "write",
       issues: "read",
