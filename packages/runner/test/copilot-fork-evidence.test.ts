@@ -9,7 +9,7 @@ const base = "10dee839b32d3f1d049898cf0dd5c9b883fe6221";
 const repository = { id: 1296724484, full_name: "splrad/steward" };
 const runId = 37944725166, jobId = 113867939753;
 const since = "2026-10-09T14:30:40.000Z";
-const pull = { number: 224, base: { repo: repository }, head: { sha: head, repo: { id: 1408639960 } } };
+const pull = { number: 224, created_at: "2026-10-09T14:00:00Z", base: { repo: repository }, head: { sha: head, repo: { id: 1408639960 } } };
 const review = { id: 5471447023, user: { login: "copilot-pull-request-reviewer[bot]" }, commit_id: head, state: "COMMENTED", submitted_at: "2026-10-09T14:31:45Z", body: "<!-- ccr-overview-v2 -->\n### 🟢 Approval recommended\n**0 open findings**\n🧠 **Review effort:** Balanced" };
 const event = { event: "review_requested", requested_reviewer: { login: "copilot-pull-request-reviewer[bot]" }, created_at: since };
 function fixture(): ForkCopilotEvidence {
@@ -126,6 +126,21 @@ describe("fork Copilot运行证据", () => {
     const { gh, calls } = client([old, fixture()]);
     await expect(readForkCopilotEvidence(gh, 'splrad', 'steward', 224, head, since)).resolves.toHaveLength(1);
     expect(calls.some(path => path.includes(`/runs/${old.run.id}/`))).toBe(false);
+  });
+  it("PR创建前超过1000条历史运行不影响当前审查", async () => {
+    const history = Array.from({ length: 1000 }, (_, index) => {
+      const old = fixture();
+      old.run.id = index + 1;
+      old.run.created_at = '2026-10-08T00:00:00Z';
+      old.run.updated_at = '2026-10-08T00:01:00Z';
+      return old;
+    });
+    const { gh } = client([...history, fixture()]);
+    await expect(readCopilotReviewState(gh, 'splrad', 'steward', 224, head)).resolves.toMatchObject({ state: 'succeeded' });
+  });
+  it.each([undefined, 'invalid', '2026-10-09T14:31:00Z'])("PR创建时间无效时保持unknown：%s", async created_at => {
+    const { gh } = client([fixture()], path => path.endsWith('/pulls/224') ? { ...pull, created_at } : undefined);
+    await expect(readCopilotReviewState(gh, 'splrad', 'steward', 224, head)).resolves.toMatchObject({ state: 'unknown' });
   });
   it("查询满上限不消费截断结果", async () => {
     const { gh } = client([fixture()], path => path.endsWith('/actions/runs') ? { total_count: 1000, workflow_runs: [fixture().run] } : undefined);

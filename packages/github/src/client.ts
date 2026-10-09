@@ -111,8 +111,9 @@ export class GitHubClient {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   }
 
-  listDynamicWorkflowRuns(owner: string, repo: string) {
-    return this.paginate<any>(`/repos/${owner}/${repo}/actions/runs?event=dynamic&per_page=100`, value => {
+  listDynamicWorkflowRuns(owner: string, repo: string, createdSince: string) {
+    if (!Number.isFinite(Date.parse(createdSince))) throw new Error("动态运行查询边界无效");
+    return this.paginate<any>(`/repos/${owner}/${repo}/actions/runs?event=dynamic&created=${encodeURIComponent(`>=${createdSince}`)}&per_page=100`, value => {
       const page = value as any;
       if (!Number.isSafeInteger(page.total_count) || page.total_count >= 1000) throw new Error("动态运行查询范围不完整");
       return page.workflow_runs;

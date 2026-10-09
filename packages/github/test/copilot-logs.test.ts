@@ -36,6 +36,6 @@ describe("动态审查日志读取", () => {
       const next = new URL(url); next.searchParams.set('page', '2');
       return new Response(JSON.stringify({ total_count: 2, workflow_runs: [{ id: second ? 2 : 1 }] }), { headers: second ? {} : { link: `<${next}>; rel="next"` } });
     }) as typeof fetch);
-    await expect(client.listDynamicWorkflowRuns('splrad', 'steward')).resolves.toEqual([{ id: 1 }, { id: 2 }]);
+    await expect(client.listDynamicWorkflowRuns('splrad', 'steward', '2026-10-01T00:00:00Z')).resolves.toEqual([{ id: 1 }, { id: 2 }]);
   });
 });
