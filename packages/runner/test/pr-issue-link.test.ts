@@ -723,6 +723,37 @@ describe("拉取请求议题关联运行器", () => {
     });
   });
 
+  it.each([4, 5])("正文清理第%s次读取发现同SHA目标分支漂移时阻止写入", async driftRead => {
+    await withRunnerEnvironment(async () => {
+      process.env.RUNTIME_URL = "https://runtime.test";
+      const outer = '<!-- workflow:managed-pr:start -->\n## 摘要\n\n正文\n\n<!-- workflow:source-actor:bot -->\n<!-- workflow:managed-pr:end -->\n';
+      const block = renderIssueLinksBlock({ repositoryId, pullRequestNumber: 42, baseSha, headSha, generation: 2, analysisInputDigest: "d".repeat(64) }, [{ repositoryId, number: 7 }]);
+      let currentBody = upsertIssueLinksBlock(outer, block);
+      let pullReads = 0;
+      let patches = 0;
+      vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+        const method = init.method ?? "GET"; const value = String(url); const body = init.body ? JSON.parse(String(init.body)) : null;
+        const bodyWriteResponse = bodyWriteRuntimeResponse(value, method, body); if (bodyWriteResponse) return bodyWriteResponse;
+        if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
+        if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository()), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/pulls/42") && method === "PATCH") { patches++; currentBody = body.body; return new Response(JSON.stringify(pull(currentBody, 301115370, "release")), { status: 200 }); }
+        if (value.endsWith("/repos/splrad/steward/pulls/42")) {
+          pullReads++;
+          return new Response(JSON.stringify(pull(currentBody, 301115370, pullReads >= driftRead ? "release/other" : "release")), { status: 200 });
+        }
+        if (value.endsWith("/graphql")) return new Response(JSON.stringify({ data: { repository: { databaseId: repositoryId, pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } }), { status: 200 });
+        if (value.includes(`/commits/${headSha}/check-runs`)) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
+        if (value.endsWith("/repos/splrad/steward/check-runs")) return new Response(JSON.stringify({ id: 1 }), { status: 201 });
+        return new Response("unexpected", { status: 500 });
+      });
+      process.env.ISSUE_LINK_PREPARE_ONLY = "true";
+      await expect(runPrIssueLink(invocation())).rejects.toThrow("正文写入事实已经漂移");
+      expect(currentBody).toBe(upsertIssueLinksBlock(outer, block));
+      expect(pullReads).toBe(driftRead);
+      expect(patches).toBe(0);
+    });
+  });
+
   it("正文清理在写入前观察到PR已经合并时停止删除", async () => {
     await withRunnerEnvironment(async () => {
       process.env.RUNTIME_URL = "https://runtime.test";
