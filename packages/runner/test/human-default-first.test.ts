@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 
-function uniquePaths(paths) {
+function uniquePaths(paths: readonly string[]) {
   return [...new Set(paths)].sort();
 }
 
@@ -14,3 +14,4 @@ test("uniquePaths returns sorted paths without changing input", () => {
 test("uniquePaths handles an empty list", () => {
   assert.deepEqual(uniquePaths([]), []);
 });
+
