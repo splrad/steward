@@ -83,7 +83,7 @@ export async function readForkCopilotEvidence(client: GitHubClient, owner: strin
     && positive(value.base?.repo?.id) && value.base.repo.full_name === repository
     && positive(value.head?.repo?.id) && value.head.repo.id !== value.base.repo.id;
   if (!validPull(pull)) return [];
-  const runs = await client.listDynamicWorkflowRuns(owner, repo, since);
+  const runs = await client.listDynamicWorkflowRuns(owner, repo);
   const relevant = (values: readonly RecordValue[]) => values.filter(run => run.path === path);
   const proofs: ForkCopilotEvidence[] = [];
   for (const run of relevant(runs)) {
@@ -99,7 +99,7 @@ export async function readForkCopilotEvidence(client: GitHubClient, owner: strin
     if (!target) throw new Error("动态审查证据关联不完整");
     if (target.number === number && target.head === head) proofs.push(proof);
   }
-  const [currentPull, currentRuns] = await Promise.all([client.getPullRequest(owner, repo, number), client.listDynamicWorkflowRuns(owner, repo, since)]);
+  const [currentPull, currentRuns] = await Promise.all([client.getPullRequest(owner, repo, number), client.listDynamicWorkflowRuns(owner, repo)]);
   const snapshot = (values: readonly RecordValue[]) => JSON.stringify(relevant(values).map(run => [run.id, run.run_attempt, run.status, run.conclusion, run.head_sha, run.updated_at]).sort((a, b) => Number(a[0]) - Number(b[0])));
   if (!validPull(currentPull) || currentPull.base.repo.id !== pull.base.repo.id || currentPull.head.repo.id !== pull.head.repo.id
     || snapshot(runs) !== snapshot(currentRuns)) throw new Error("动态审查证据读取期间状态变化");

@@ -40,7 +40,11 @@ function client(proofs = [fixture()], override?: (path: string, count: number) =
       else if (path.endsWith('/events')) value = [event];
       else if (path.includes('/commits/')) value = { check_runs: [] };
       else if (path.endsWith('/pulls/224')) value = pull;
-      else if (path.endsWith('/actions/runs')) { expect(parsed.searchParams.get('created')).toBe(`>=${since}`); value = { total_count: proofs.length, workflow_runs: proofs.map(proof => proof.run) }; }
+      else if (path.endsWith('/actions/runs')) {
+        const created = parsed.searchParams.get('created');
+        const runs = proofs.map(proof => proof.run).filter(run => !created || Date.parse(run.created_at) >= Date.parse(created.slice(2)));
+        value = { total_count: runs.length, workflow_runs: runs };
+      }
       else {
         const proof = proofs.find(proof => path.includes(`/runs/${proof.run.id}/`) || path.includes(`/jobs/${proof.job.id}/`) || path.endsWith(`/check-runs/${proof.check.id}`));
         if (!proof) throw new Error(`未知测试端点 ${path}`);
