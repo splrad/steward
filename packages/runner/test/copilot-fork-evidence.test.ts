@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { generateKeyPairSync } from "node:crypto";
+import { resolve } from "node:path";
 import { GitHubClient } from "../../github/src/index.js";
 import { classifyCopilotReviewState } from "../src/copilot-review-state.js";
 import { forkCheckFor, readForkCopilotEvidence, type ForkCopilotEvidence } from "../src/copilot-fork-evidence.js";
-import { readCopilotReviewState } from "../src/index.js";
+import { main, readCopilotReviewState } from "../src/index.js";
 
 const head = "671cbcf3a941303f8fcefafca138ff7f72f283c8";
 const base = "10dee839b32d3f1d049898cf0dd5c9b883fe6221";
@@ -59,6 +61,54 @@ function client(proofs = [fixture()], override?: (path: string, count: number) =
 }
 
 describe("fork Copilot运行证据", () => {
+  it.each(['success', 'stale-head', 'wrong-base', 'archived', 'wrong-owner', 'changed-head'])("只读命令入口核验fork：%s", async kind => {
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { format: 'pem', type: 'pkcs8' }, publicKeyEncoding: { format: 'pem', type: 'spki' } });
+    const repo = { ...repository, owner: { id: kind === 'wrong-owner' ? 1 : 302208797 }, default_branch: 'main', private: false, archived: kind === 'archived' };
+    const livePull = { ...pull, state: 'open', base: { ...pull.base, ref: kind === 'wrong-base' ? 'release' : 'main' } };
+    let pullReads = 0;
+    const { gh } = client([fixture()], path => {
+      if (path.endsWith('/pulls/224')) {
+        pullReads++;
+        return kind === 'stale-head' || (kind === 'changed-head' && pullReads >= 4)
+          ? { ...livePull, head: { ...livePull.head, sha: base } } : livePull;
+      }
+      return undefined;
+    });
+    const written: string[] = [];
+    const tokenBodies: any[] = [];
+    try {
+      vi.stubEnv('APP_ID', '4243096');
+      vi.stubEnv('INSTALLATION_ID', '145952003');
+      vi.stubEnv('STEWARD_APP_PRIVATE_KEY', privateKey);
+      vi.stubEnv('STEWARD_CONFIG_DIRECTORY', resolve('config'));
+      vi.stubEnv('GITHUB_STEP_SUMMARY', '');
+      vi.stubEnv('GITHUB_OUTPUT', '');
+      vi.spyOn(process.stdout, 'write').mockImplementation((value: any) => { written.push(String(value)); return true; });
+      vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+        if (String(url).endsWith('/access_tokens')) {
+          tokenBodies.push(JSON.parse(String(init.body)));
+          return new Response(JSON.stringify({ token: 'test-token' }), { status: 201 });
+        }
+        expect(init.method ?? 'GET').toBe('GET');
+        if (String(url).endsWith(`/repositories/${repository.id}`)) return new Response(JSON.stringify(repo));
+        if (String(url).endsWith('/logs')) return new Response(fixture().log);
+        return new Response(JSON.stringify(await gh.request('GET', String(url))));
+      });
+      const invocation = main(['observe-copilot-review', '--repository-id', String(repository.id), '--pull-request-number', '224', '--event-head-sha', head, '--policy-sha', 'a'.repeat(40)]);
+      if (kind === 'success') {
+        await invocation;
+        expect(written.join('')).toContain('"state":"succeeded"');
+      } else {
+        await expect(invocation).rejects.toThrow();
+        expect(written.join('')).not.toContain('"state":"succeeded"');
+      }
+      expect(tokenBodies).toHaveLength(1);
+      expect(tokenBodies[0]).toMatchObject({ repository_ids: [repository.id], permissions: { contents: 'read', pull_requests: 'read', issues: 'read', checks: 'read', actions: 'read', metadata: 'read' } });
+      expect(Object.values(tokenBodies[0].permissions).every(value => value === 'read')).toBe(true);
+    } finally {
+      vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs();
+    }
+  });
   it("使用真实运行字段关联当前head并保留原始Check SHA", async () => {
     const proof = fixture();
     expect(forkCheckFor(proof, 224, head)).toBe(proof.check);

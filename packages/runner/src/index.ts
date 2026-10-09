@@ -32,12 +32,14 @@ import { classifyCopilotReviewState, isCopilotIdentity, copilotReviewTrigger, ty
 const commands = new Set(["review-trigger-mode", "issue-sync", "managed-repository-ids", "reconcile-repository-lifecycle", "onboard-repository", "pr-automation", "pr-classification", "pr-issue-link", "request-copilot-review", "sync-review-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"]);
 const stewardRepositoryId = 1296724484;
 commands.add("review-sync-targets");
+commands.add("observe-copilot-review");
 commands.add("render-review-instructions");
 // Repository configuration and workspace files are runtime inputs, not bundle assets.
 // This wrapper keeps their paths opaque to the static asset tracer used by ncc.
 const runtimeReadFile = ((path: Parameters<typeof readFile>[0], options?: Parameters<typeof readFile>[1]) =>
   Reflect.apply(readFile, undefined, options === undefined ? [path] : [path, options])) as typeof readFile;
 const allowedArguments: Record<string, Set<string>> = {
+  "observe-copilot-review": new Set(["repository-id", "pull-request-number", "event-head-sha", "policy-sha"]),
   "render-review-instructions": new Set(["profile", "policy-sha"]),
   "review-sync-targets": new Set(["repository-id", "policy-sha"]),
   "review-trigger-mode": new Set(["repository-id", "policy-sha"]),
@@ -903,6 +905,32 @@ export async function requestDependabotCopilotReview(gh: GitHubClient, repositor
   if (refreshedRepository.id !== repositoryId || !managed(refreshedRepository)
     || refreshedPull.number !== number || !isDependabotReviewEligible(refreshedRepository, refreshedPull, headSha)) return "changed-during-request";
   return result;
+}
+
+async function observeCopilotReviewCommand(args: Readonly<Record<string, string>>) {
+  const policySha = sha(required(args, "policy-sha"), "policy-sha");
+  const repositoryId = integer(required(args, "repository-id"), "repository-id");
+  const number = integer(required(args, "pull-request-number"), "pull-request-number");
+  const headSha = sha(required(args, "event-head-sha"), "event-head-sha");
+  const registry = await catalog();
+  const gh = await client(repositoryId, { contents: "read", pull_requests: "read", issues: "read", checks: "read", actions: "read", metadata: "read" }, policySha);
+  const repository = await gh.getRepositoryById(repositoryId);
+  const eligibleRepository = (value: any) => {
+    const configuration = configurationFor(registry, value);
+    return value.id === repositoryId && value.owner?.id === registry.organization.id
+      && !value.archived && !value.disabled && configuration.managed === true && configuration.prAutomation === true;
+  };
+  if (!eligibleRepository(repository)) throw new Error("仓库不在审查观察范围内");
+  const [owner, repo] = splitRepository(repository.full_name);
+  const eligiblePull = (pull: any) => pull.number === number && pull.state === "open"
+    && pull.base?.repo?.id === repositoryId && pull.base?.ref === repository.default_branch && pull.head?.sha === headSha;
+  if (!eligiblePull(await gh.getPullRequest(owner, repo, number))) throw new Error("PR不在审查观察范围内或head已变化");
+  const state = await readCopilotReviewState(gh, owner, repo, number, headSha);
+  const [freshRepository, freshPull] = await Promise.all([gh.getRepositoryById(repositoryId), gh.getPullRequest(owner, repo, number)]);
+  if (!eligibleRepository(freshRepository) || freshRepository.full_name !== repository.full_name
+    || freshRepository.default_branch !== repository.default_branch || !eligiblePull(freshPull)) throw new Error("审查观察期间PR或仓库状态变化");
+  await summary([JSON.stringify({ repository: repository.full_name, number, ...state })]);
+  await output({ state: state.state, reason: state.reason, headSha });
 }
 
 async function requestCopilotReviewCommand(args: Readonly<Record<string, string>>) {
@@ -2150,6 +2178,7 @@ async function releaseVerify(args: Readonly<Record<string, string>>) {
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const invocation = parseInvocation(argv);
+  if (invocation.command === "observe-copilot-review") return observeCopilotReviewCommand(invocation.args);
   if (invocation.command === "render-review-instructions") return renderReviewInstructionsCommand(invocation.args);
   if (invocation.command === "request-copilot-review") return requestCopilotReviewCommand(invocation.args);
   if (invocation.command === "review-trigger-mode") return reviewTriggerModeCommand(invocation.args);
