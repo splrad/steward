@@ -142,7 +142,7 @@ async function ensureValidationPending(env: Env, repository: any, pull: any): Pr
   if (!headSha || !Number.isSafeInteger(number) || number <= 0) throw new Error("拉取请求验证输入无效");
   const [owner, repo] = splitRepository(String(repository.full_name));
   const gh = await validationClient(env, Number(repository.id));
-  const current = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, headSha), headSha, Number(env.APP_ID), Number(repository.id), number);
+  const current = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, headSha, "all"), headSha, Number(env.APP_ID), Number(repository.id), number);
   if (current.length) return;
   await gh.createCheckRun(owner, repo, {
     name: VALIDATION_CHECK_NAME,
@@ -206,7 +206,7 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
   if (pulls.length > 1) return false;
   const pull = pulls[0]!; const number = Number(pull.number);
   if (!Number.isSafeInteger(number) || number <= 0) throw new Error("拉取请求编号无效");
-  const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, headSha), headSha, Number(env.APP_ID), Number(repository.id), number);
+  const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, headSha, "all"), headSha, Number(env.APP_ID), Number(repository.id), number);
   const conclusion = validationConclusion(run.conclusion); const completed = run.status === "completed";
   const comparisons = checks.map(value => compareValidationState(value.state, run.id, run.run_attempt, completed));
   if (comparisons.includes("newer")) return false;
