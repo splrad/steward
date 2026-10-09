@@ -15,7 +15,7 @@ const positive = (value: unknown): value is number => Number.isSafeInteger(value
 const timestamp = (value: unknown) => typeof value === "string" ? Date.parse(value) : NaN;
 const bot = (value: RecordValue | undefined) => value?.id === 175728472 && value.login === "Copilot" && value.type === "Bot";
 
-function binding(proof: ForkCopilotEvidence): { number: number; head: string } | undefined {
+function binding(proof: ForkCopilotEvidence): { number: number; head: string; base?: string } | undefined {
   const { repository, repositoryId, run, job, check } = proof;
   if (!positive(repositoryId) || !positive(run.id) || !positive(run.run_attempt) || !positive(job.id)
     || !positive(run.check_suite_id) || !sha.test(run.head_sha) || run.event !== "dynamic" || run.path !== path
@@ -37,11 +37,11 @@ function binding(proof: ForkCopilotEvidence): { number: number; head: string } |
     || timestamp(check.started_at) !== start || timestamp(check.completed_at) !== end
     || !(timestamp(run.created_at) <= start && timestamp(run.updated_at) >= end)) return undefined;
   const steps = Array.isArray(job.steps) ? job.steps.filter((step: RecordValue) => /^Processing Request \((?:Linux|Windows)\)$/u.test(step.name) && step.conclusion !== "skipped") : [];
-  if (steps.length !== 1 || steps[0].status !== "completed" || steps[0].conclusion !== "success") return undefined;
+  if (steps.length !== 1 || steps[0].status !== "completed" || !["success", "failure"].includes(steps[0].conclusion)) return undefined;
   const stepStart = timestamp(steps[0].started_at), stepEnd = timestamp(steps[0].completed_at);
   if (!(start <= stepStart && stepStart <= stepEnd && stepEnd <= end)) return undefined;
   // 只读取平台处理步骤中首次检出之前的关联记录；检出后的仓库输出不提供归属证明。
-  let target: { number: number; head?: string } | undefined;
+  let target: { number: number; head?: string; base?: string } | undefined;
   let previous = stepStart;
   for (const raw of proof.log.replace(/^\uFEFF/u, "").split(/\r?\n/u)) {
     const line = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z) (.*)$/u.exec(raw);
@@ -60,12 +60,14 @@ function binding(proof: ForkCopilotEvidence): { number: number; head: string } |
       target = { number: Number(match[2]) };
     } else if (message.startsWith("Fetching diff ")) {
       const match = /^Fetching diff ([0-9a-f]{40})\.\.\.([0-9a-f]{40}) for ([\w.-]+\/[\w.-]+)$/u.exec(message);
-      if (!target || target.head || !match || match[3] !== repository || match[1] !== run.head_sha) return undefined;
-      target.head = match[2]!;
+      if (!target || target.head || !match || match[3] !== repository || (match[1] !== run.head_sha && match[2] !== run.head_sha)) return undefined;
+      target.base = match[1]!; target.head = match[2]!;
     } else if (message.startsWith("Checking out ")) {
       const match = /^Checking out ([\w.-]+\/[\w.-]+) at SHA ([0-9a-f]{40}) into \S+$/u.exec(message);
-      if (!target?.head || !match || match[1] !== repository || match[2] !== target.head) return undefined;
-      return { number: target.number, head: target.head };
+      if (!target || !match || match[1] !== repository) return undefined;
+      if (!target.head) return match[2] === run.head_sha ? { number: target.number, head: match[2]! } : undefined;
+      if (!target.base || match[2] !== target.head) return undefined;
+      return { number: target.number, head: target.head, base: target.base };
     }
   }
   return undefined;
@@ -73,7 +75,8 @@ function binding(proof: ForkCopilotEvidence): { number: number; head: string } |
 
 export function forkCheckFor(proof: ForkCopilotEvidence, number: number, head: string): RecordValue | undefined {
   const target = binding(proof);
-  return target?.number === number && target.head === head ? proof.check : undefined;
+  return target?.number === number && target.head === head && target.base === proof.run.head_sha
+    && proof.job.steps.every((step: RecordValue) => !/^Processing Request \((?:Linux|Windows)\)$/u.test(step.name) || ["success", "skipped"].includes(step.conclusion)) ? proof.check : undefined;
 }
 
 export async function readForkCopilotEvidence(client: GitHubClient, owner: string, repo: string, number: number, head: string, since: string, requestBoundary = Date.parse(since)): Promise<readonly ForkCopilotEvidence[]> {
