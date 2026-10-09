@@ -1,3 +1,4 @@
+import { forkCheckFor, type ForkCopilotEvidence } from "./copilot-fork-evidence.js";
 export type CopilotReviewStateName = "succeeded" | "queued" | "running" | "failed-quota" | "failed-permission" | "failed-other" | "none" | "unknown";
 export interface CopilotReviewState {
   state: CopilotReviewStateName;
@@ -15,6 +16,7 @@ export interface CopilotReviewInput {
   reviews: readonly Evidence[];
   events: readonly Evidence[];
   checkRuns: readonly Evidence[];
+  forkEvidence?: readonly ForkCopilotEvidence[];
   afterEventId?: number | undefined;
 }
 export function isCopilotIdentity(value: unknown): boolean {
@@ -38,11 +40,16 @@ function failure(body: string): CopilotReviewStateName | undefined {
   return "failed-other";
 }
 function successfulOverview(body: string): { findings: number } | undefined {
-  if (body.includes("<!-- ccr-overview-v2 -->") && /^## Copilot review overview\s*$/mu.test(body)
-    && /\*\*Review effort:\*\* (?:Lite|Balanced|Max)\b/u.test(body)) {
-    if (/^\*\*Findings:\*\*[\t ]+None[\t ]*\r?$/mu.test(body)) return { findings: 0 };
-    const match = /\*\*Findings:\*\* (\d+)\b/u.exec(body);
-    if (match && Number.isSafeInteger(Number(match[1]))) return { findings: Number(match[1]) };
+  if (body.includes("<!-- ccr-overview-v2 -->")) {
+    if (!/\*\*Review effort:\*\* (?:Lite|Balanced|Max)\b/u.test(body)) return undefined;
+    const counts = [...body.matchAll(/^(?:\*\*(\d+) open findings?\*\*|<summary><strong>(\d+) open findings?<\/strong><\/summary>)[\t ]*\r?$/gmu)];
+    const legacy = [...body.matchAll(/\*\*Findings:\*\* (\d+)\b/gu)];
+    const none = [...body.matchAll(/^\*\*Findings:\*\*[\t ]+None[\t ]*\r?$/gmu)];
+    if (counts.length + legacy.length + none.length !== 1) return undefined;
+    if ((legacy.length || none.length) && !/^## Copilot review overview\s*$/mu.test(body)) return undefined;
+    const raw = counts[0]?.[1] ?? counts[0]?.[2] ?? legacy[0]?.[1] ?? "0";
+    const findings = Number(raw);
+    return Number.isSafeInteger(findings) && findings >= 0 ? { findings } : undefined;
   }
   const historical = /Copilot reviewed \d+ out of \d+ changed files in this pull request and generated (\d+) comments?/u.exec(body);
   if (historical && Number.isSafeInteger(Number(historical[1]))) return { findings: Number(historical[1]) };
@@ -54,6 +61,11 @@ export function classifyCopilotReviewState(input: CopilotReviewInput): CopilotRe
   if (!/^[0-9a-f]{40}$/u.test(headSha) || !Number.isSafeInteger(input.pullRequestNumber) || input.pullRequestNumber <= 0) return result("unknown", "invalid-head-or-pr");
   const reviews = input.reviews.filter(review => isCopilotIdentity(review.user?.login) && String(review.commit_id ?? "").toLowerCase() === headSha);
   const checks = input.checkRuns.filter(check => isBoundCopilotCheck(check, input.pullRequestNumber, headSha));
+  for (const proof of input.forkEvidence ?? []) {
+    const check = forkCheckFor(proof, input.pullRequestNumber, headSha);
+    if (!check) return result("unknown", "fork-check-binding-unverified");
+    if (!checks.some(value => value.id === check.id)) checks.push(check);
+  }
   const ordered = [...reviews].sort((a, b) => time(b.submitted_at) - time(a.submitted_at));
   const latest = ordered[0];
   const reviewTime = latest ? time(latest.submitted_at) : -Infinity;

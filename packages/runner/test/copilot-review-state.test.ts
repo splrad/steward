@@ -16,6 +16,16 @@ const input = (overrides: Partial<CopilotReviewInput> = {}): CopilotReviewInput 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe("Copilot当前head审查证据", () => {
+  it.each([['**0 open findings**', 0], ['<summary><strong>1 open finding</strong></summary>', 1], ['<summary><strong>12 open findings</strong></summary>', 12]])("识别新版未解决发现统计：%s", (count, findings) => {
+    const body = `<!-- ccr-overview-v2 -->\n### 🟢 Approval recommended\n${count}\n🧠 **Review effort:** Balanced\n<details>\n<summary><strong>Resolved since last review (3)</strong></summary>\n</details>`;
+    expect(classifyCopilotReviewState(input({ reviews: [{ ...review(), body }], checkRuns: [check()] }))).toMatchObject({ state: "succeeded", findings });
+    for (const malformed of [body.replace('<!-- ccr-overview-v2 -->', ''), body.replace('**Review effort:** Balanced', ''), body + '\n**9 open findings**']) {
+      expect(classifyCopilotReviewState(input({ reviews: [{ ...review(), body: malformed }], checkRuns: [check()] })).state).toBe('unknown');
+    }
+  });
+  it("保留旧版数字字段后附说明的兼容性", () => {
+    expect(classifyCopilotReviewState(input({ reviews: [{ ...review(), body: overview + " (1 open finding)" }], checkRuns: [check()] }))).toMatchObject({ state: "succeeded", findings: 1 });
+  });
   it.each(["\n", "\r\n"])("无发现概要与可信Check配对后报告零发现：%j", newline => {
     const body = ["<!-- ccr-overview-v2 -->", "", "## Copilot review overview", "", "### 🔵 Needs a closer look", "", "仍需人工结合实际运行结果复核。", "", "**Review effort:** Balanced  ", "**Findings:** None", "", "<details>", "<summary><strong>Resolved since last review (2)</strong></summary>", "</details>"].join(newline);
     const base = { reviews: [{ ...review(), body }], checkRuns: [check()] };

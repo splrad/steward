@@ -26,7 +26,8 @@ import { minimatch } from "minimatch";
 import YAML from "yaml";
 import { Ajv2020, type AnySchemaObject } from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
-import { classifyCopilotReviewState, copilotReviewTrigger, type CopilotReviewState, type CopilotReviewTrigger } from "./copilot-review-state.js";
+import { readForkCopilotEvidence } from "./copilot-fork-evidence.js";
+import { classifyCopilotReviewState, isCopilotIdentity, copilotReviewTrigger, type CopilotReviewState, type CopilotReviewTrigger } from "./copilot-review-state.js";
 
 const commands = new Set(["review-trigger-mode", "issue-sync", "managed-repository-ids", "reconcile-repository-lifecycle", "onboard-repository", "pr-automation", "pr-classification", "pr-issue-link", "request-copilot-review", "sync-review-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"]);
 const stewardRepositoryId = 1296724484;
@@ -815,7 +816,7 @@ export function classificationInstallationPermissions(mode: "observe" | "enforce
   return { contents: "read", pull_requests: assignmentPermission, issues: assignmentPermission, checks: "write", metadata: "read" } as const;
 }
 export function prAutomationInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
-  return { contents: "read", pull_requests: "write", issues: "read", checks: "read", metadata: "read" } as const;
+  return { contents: "read", pull_requests: "write", issues: "read", checks: "read", actions: "read", metadata: "read" } as const;
 }
 export function reviewInstructionSyncInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
   return { administration: "read", contents: "write", pull_requests: "write", issues: "read", checks: "read", metadata: "read", members: "read" } as const;
@@ -831,7 +832,25 @@ export async function readCopilotReviewState(clientValue: GitHubClient, owner: s
       clientValue.listIssueEvents(owner, repo, number),
       clientValue.listAllCheckRuns(owner, repo, headSha, "all"),
     ]);
-    return classifyCopilotReviewState({ pullRequestNumber: number, headSha, requested, reviews, events, checkRuns, afterEventId });
+    const input = { pullRequestNumber: number, headSha, requested, reviews, events, checkRuns, afterEventId };
+    const initial = classifyCopilotReviewState(input);
+    if (initial.reason !== "review-check-attempt-unverified") return initial;
+    const reviewTime = Math.max(...reviews.filter(review => isCopilotIdentity(review.user?.login) && review.commit_id === headSha).map(review => Date.parse(review.submitted_at)));
+    const requests = events.filter(event => event.event === "review_requested" && isCopilotIdentity(event.requested_reviewer?.login)
+      && (!event.commit_id || event.commit_id === headSha) && Date.parse(event.created_at) <= reviewTime);
+    const since = Math.min(...requests.map(event => Date.parse(event.created_at)));
+    const requestBoundary = Math.max(...requests.map(event => Date.parse(event.created_at)));
+    if (!Number.isFinite(since)) return initial;
+    const forkEvidence = await readForkCopilotEvidence(clientValue, owner, repo, number, headSha, new Date(since).toISOString(), requestBoundary);
+    if (!forkEvidence.length) return initial;
+    const [freshRequested, freshReviews, freshEvents, freshChecks] = await Promise.all([
+      clientValue.getRequestedReviewers(owner, repo, number), clientValue.listPullRequestReviews(owner, repo, number),
+      clientValue.listIssueEvents(owner, repo, number), clientValue.listAllCheckRuns(owner, repo, headSha, "all"),
+    ]);
+    if (JSON.stringify([requested, reviews, events, checkRuns]) !== JSON.stringify([freshRequested, freshReviews, freshEvents, freshChecks])) {
+      return { state: "unknown", headSha, reason: "review-evidence-changed" };
+    }
+    return classifyCopilotReviewState({ ...input, forkEvidence });
   } catch {
     return { state: "unknown", headSha, reason: "evidence-read-failed" };
   }
