@@ -212,7 +212,9 @@ export async function updatePullRequestBodyDurably(input: {
     if (input.additionalPatch && Object.keys(input.additionalPatch).length) {
       const fresh = await input.client.getPullRequest(input.owner, input.repo, input.pullRequestNumber);
       if (pullFacts(fresh, input.repositoryId, input.pullRequestNumber, input.headSha, pullBaseSha, input.expectedBaseRef) !== before) throw new Error("拉取请求正文写入前发生漂移");
-      return input.client.updatePullRequest(input.owner, input.repo, input.pullRequestNumber, input.additionalPatch);
+      const written = await input.client.updatePullRequest(input.owner, input.repo, input.pullRequestNumber, input.additionalPatch);
+      if (pullFacts(written, input.repositoryId, input.pullRequestNumber, input.headSha, pullBaseSha, input.expectedBaseRef) !== before) throw new Error("拉取请求正文写入响应不一致");
+      return written;
     }
     return current;
   }

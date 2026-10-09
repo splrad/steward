@@ -67,6 +67,24 @@ describe("Runner正文持久写入器", () => {
     expect(updatePullRequest).not.toHaveBeenCalled();
   });
 
+  it.each(["base-ref", "head-sha", "base-sha", "body"])("仅标题更新响应出现%s漂移时报告失败", async drift => {
+    const before = block("原摘要");
+    const written = pull(before);
+    if (drift === "base-ref") written.base.ref = "release/test";
+    if (drift === "head-sha") written.head.sha = "c".repeat(40);
+    if (drift === "base-sha") written.base.sha = "c".repeat(40);
+    if (drift === "body") written.body = `${before}\n人工补充`;
+    const updatePullRequest = vi.fn(async () => written);
+    const client = { getPullRequest: async () => pull(before), updatePullRequest } as any;
+    vi.stubGlobal("fetch", async () => new Response("null", { status: 200 }));
+    await expect(updatePullRequestBodyDurably({ client, token: "token", runtimeUrl: "https://runtime.test",
+      owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha,
+      expectedBaseRef: "main", regionKind: "managed-pr", targetBlock: before,
+      redrive, additionalPatch: { title: "新标题" },
+    })).rejects.toThrow(drift === "body" ? "正文写入响应不一致" : "正文写入事实已经漂移");
+    expect(updatePullRequest).toHaveBeenCalledExactlyOnceWith("splrad", "steward", pullRequestNumber, { title: "新标题" });
+  });
+
   it("持久化成功、交付已证明且Runtime确认后才返回", async () => {
     let live = `人工前言\n${block("旧摘要")}\n`;
     const targetBlock = block("新摘要");
