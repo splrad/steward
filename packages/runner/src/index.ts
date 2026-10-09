@@ -1041,6 +1041,7 @@ async function reconcileManagedFiles(input: { repository: any; gh: GitHubClient;
     pullRequestNumber: Number(pulls[0].number),
     headSha: String(written.headSha),
     baseSha: String(defaultRef.object.sha),
+    expectedBaseRef: defaultBranch,
     regionKind: "managed-pr",
     targetBlock: targetManagedBlock(body, "managed-pr"),
     redrive: input.redrive,

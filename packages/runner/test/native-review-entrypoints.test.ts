@@ -117,6 +117,27 @@ describe.each(["native", undefined] as const)("三入口令牌隔离：%s", mode
     expect(f.dispatch).not.toHaveBeenCalled();
   });
 
+  it("已有规则同步PR的正文写入绑定默认目标分支", async () => {
+    const f = await fixture(mode, true);
+    vi.stubEnv("RUNTIME_URL", "https://runtime.test");
+    const { $schema: _profileSchema, ...profiles } = JSON.parse(await readFile(join(f.directory, "config/review/profiles.json"), "utf8"));
+    const { $schema: _ruleSchema, ...rules } = JSON.parse(await readFile(join(f.directory, "config/review/rules.json"), "utf8"));
+    const instructions = await generateReviewInstructionSet("github", profiles, rules);
+    const pull = { number: 1, user: { id: 301115370 }, merged_at: null, base: { ref: "main" } };
+    vi.spyOn(f.prototype, "listRepositoryTeams").mockResolvedValue([{ slug: "maintainers", permission: "maintain" }]);
+    vi.spyOn(f.prototype, "listPullRequests").mockResolvedValue([pull]);
+    vi.spyOn(f.prototype, "getRef").mockImplementation(async (_owner, _repo, ref) => ({ object: { sha: ref === "heads/main" ? baseSha : headSha } }));
+    vi.spyOn(f.prototype, "compare").mockResolvedValue({ merge_base_commit: { sha: baseSha }, ahead_by: 1, total_commits: 1, commits: [{ sha: headSha }], files: [{ filename: "AGENTS.md" }] });
+    vi.spyOn(f.prototype, "getContent").mockImplementation(async (_owner, _repo, path, ref) => ({
+      encoding: "base64", content: Buffer.from(ref === headSha ? instructions.files.find(file => file.path === path)!.content : "旧规则").toString("base64"),
+    }));
+    const update = vi.spyOn(bodyWriter, "updatePullRequestBodyDurably").mockResolvedValue(pull);
+    const create = vi.spyOn(f.prototype, "createPullRequest");
+    await withoutReviewToken(() => main(["sync-review-instructions", "--repository-id", String(f.repository.id), "--policy-sha", policySha]));
+    expect(update).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ expectedBaseRef: "main", headSha, baseSha, pullRequestNumber: 1 }));
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("policy-only规则同步使用实际载体并派发分类，组织模式=%s", async organizationMode => {
     const f = await fixture(mode, true);
     const { $schema: _profileSchema, ...profiles } = JSON.parse(await readFile(join(f.directory, "config/review/profiles.json"), "utf8"));

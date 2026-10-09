@@ -72,10 +72,10 @@ async function runtimeRequest<T>(input: { runtimeUrl: string; token: string; met
   try { return JSON.parse(text) as T; } catch { throw new Error("正文写意图运行时响应无效"); }
 }
 
-function pullFacts(pull: any, repositoryId: number, pullRequestNumber: number, headSha: string, baseSha: string, expectedBaseRef?: string): string {
+function pullFacts(pull: any, repositoryId: number, pullRequestNumber: number, headSha: string, baseSha: string, expectedBaseRef: string): string {
   if (Number(pull?.number) !== pullRequestNumber || Number(pull?.base?.repo?.id) !== repositoryId || Number(pull?.head?.repo?.id) !== repositoryId
     || pull?.head?.sha !== headSha || pull?.base?.sha !== baseSha
-    || (expectedBaseRef !== undefined && pull?.base?.ref !== expectedBaseRef)) throw new Error("拉取请求正文写入事实已经漂移");
+    || pull?.base?.ref !== expectedBaseRef) throw new Error("拉取请求正文写入事实已经漂移");
   return String(pull?.body ?? "");
 }
 
@@ -167,7 +167,7 @@ export async function updatePullRequestBodyDurably(input: {
   headSha: string;
   baseSha: string;
   pullBaseSha?: string;
-  expectedBaseRef?: string;
+  expectedBaseRef: string;
   issueGeneration?: number;
   regionKind: DurableBodyRegionKind;
   targetBlock: string | null;
@@ -175,6 +175,7 @@ export async function updatePullRequestBodyDurably(input: {
   additionalPatch?: Readonly<Record<string, unknown>>;
   confirmationAttempts?: number;
 }): Promise<any> {
+  if (typeof input.expectedBaseRef !== "string" || !input.expectedBaseRef.trim()) throw new Error("正文写入缺少预期目标分支");
   const attempts = input.confirmationAttempts ?? 60;
   if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 60) throw new Error("正文写入确认次数无效");
   if (input.additionalPatch && Object.prototype.hasOwnProperty.call(input.additionalPatch, "body")) throw new Error("附加更新不能包含正文");
