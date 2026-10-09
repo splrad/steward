@@ -148,6 +148,38 @@ describe("fork Copilot运行证据", () => {
     const { gh } = client([proof]);
     await expect(readCopilotReviewState(gh, 'splrad', 'steward', 224, head)).resolves.toMatchObject({ state: 'unknown' });
   });
+  it.each(['success', 'failure'])("同仓其他PR的%s运行不阻断fork证据", async conclusion => {
+    const other = fixture();
+    other.run.id++; other.job.id++; other.check.id++;
+    other.job.run_id = other.run.id;
+    other.job.check_run_url = `https://api.github.com/repos/splrad/steward/check-runs/${other.check.id}`;
+    other.run.head_sha = other.job.head_sha = other.check.head_sha = head;
+    other.run.conclusion = other.job.conclusion = other.check.conclusion = conclusion;
+    other.job.steps[0].conclusion = conclusion;
+    other.log = other.log.replace('#224', '#235');
+    const { gh } = client([other, fixture()]);
+    await expect(readCopilotReviewState(gh, 'splrad', 'steward', 224, head)).resolves.toMatchObject({ state: 'succeeded', checkRunId: jobId });
+    expect(forkCheckFor(other, 224, head)).toBeUndefined();
+    const malformed = structuredClone(other);
+    malformed.log = malformed.log.replace('Checking out', 'Missing checkout');
+    await expect(readCopilotReviewState(client([malformed, fixture()]).gh, 'splrad', 'steward', 224, head)).resolves.toMatchObject({ state: 'unknown' });
+    other.log = other.log.replace('#235', '#224');
+    expect(forkCheckFor(other, 224, head)).toBeUndefined();
+  });
+  it("同仓增量审查在检出后才输出diff时仍可排除其他PR", async () => {
+    const other = fixture(); other.run.id++; other.job.id++; other.check.id++;
+    other.job.run_id = other.run.id;
+    other.job.check_run_url = `https://api.github.com/repos/splrad/steward/check-runs/${other.check.id}`;
+    other.run.head_sha = other.job.head_sha = other.check.head_sha = head;
+    other.log = other.log.replace('#224', '#234').split('\n').filter(line => !line.includes('Fetching diff')).join('\n');
+    await expect(readCopilotReviewState(client([other, fixture()]).gh, 'splrad', 'steward', 224, head)).resolves.toMatchObject({ state: 'succeeded' });
+    other.log = other.log.replace('#234', '#224');
+    expect(forkCheckFor(other, 224, head)).toBeUndefined();
+  });
+  it("目标PR的处理步骤失败不能被整体成功状态覆盖", () => {
+    const proof = fixture(); proof.job.steps[0].conclusion = 'failure';
+    expect(classify(proof).state).toBe('unknown');
+  });
   it("共享base上的其他PR有独立运行", async () => {
     const other = fixture(); other.run.id++; other.job.id++; other.check.id++;
     other.job.run_id = other.run.id; other.job.check_run_url = `https://api.github.com/repos/splrad/steward/check-runs/${other.check.id}`;
