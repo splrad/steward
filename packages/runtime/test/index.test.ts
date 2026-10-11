@@ -1292,6 +1292,7 @@ describe("Dependabot独立审查派发", () => {
 
   const reviewCases: Array<{ name: string; action: string; changes?: object; base?: string; draft?: boolean; workflows: string[] }> = [
     ...["opened", "synchronize", "reopened"].map(action => ({ name: action, action, workflows: ["pr-classification.yml", "pr-automation.yml"] })),
+    ...["opened", "synchronize"].map(action => ({ name: `Draft ${action}`, action, draft: true, workflows: ["pr-classification.yml"] })),
     { name: "ready_for_review", action: "ready_for_review", workflows: ["pr-automation.yml"] },
     { name: "切换到默认分支", action: "edited", changes: { base: { ref: { from: "release" } } }, workflows: ["pr-classification.yml", "pr-automation.yml"] },
     { name: "仅编辑标题", action: "edited", changes: { title: { from: "old title" } }, workflows: ["pr-classification.yml"] },
@@ -1303,11 +1304,15 @@ describe("Dependabot独立审查派发", () => {
   it.each(reviewCases.flatMap(value => ["legacy", "native"].map(trigger => ({ ...value, trigger }))))("$name/$trigger保留适用的分类与审查派发", async ({ action, changes, base = "main", draft = false, workflows, trigger }) => {
     repositoryCatalog.repositories["1296724484"].copilotReviewTrigger = trigger;
     const headSha = "d".repeat(40); const sent: { workflow: string; body: any }[] = [];
+    const checks: any[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
       const value = String(url);
       if (value.includes("/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
       if (value.includes(`/commits/${headSha}/check-runs?per_page=100`)) return new Response(JSON.stringify({ check_runs: [] }), { status: 200 });
-      if (value.endsWith("/repos/splrad/steward/check-runs")) return new Response(JSON.stringify({ id: 101 }), { status: 201 });
+      if (value.endsWith("/repos/splrad/steward/check-runs")) {
+        checks.push(JSON.parse(String(init.body)));
+        return new Response(JSON.stringify({ id: 101 }), { status: 201 });
+      }
       if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
       const workflow = /\/actions\/workflows\/([^/]+)\/dispatches/u.exec(value)?.[1];
       if (workflow) { sent.push({ workflow, body: JSON.parse(String(init.body)) }); return new Response(null, { status: 204 }); }
@@ -1320,6 +1325,10 @@ describe("Dependabot独立审查派发", () => {
     } });
     expect((await handleWebhook(signedRequest("pull_request", payload), baseEnv())).status).toBe(workflows.length ? 202 : 204);
     expect(sent.map(item => item.workflow)).toEqual(workflows);
+    if (draft && ["opened", "synchronize"].includes(action)) {
+      expect(checks).toEqual([expect.objectContaining({ head_sha: headSha, status: "in_progress", external_id: `1296724484:187:${headSha}:pending` })]);
+      expect(sent[0]?.body.inputs).toMatchObject({ repositoryId: "1296724484", pullRequestNumber: "187", eventHeadSha: headSha });
+    }
     if (workflows.includes("pr-automation.yml")) expect(sent.find(item => item.workflow === "pr-automation.yml")?.body).toEqual({ ref: "main", inputs: { deliveryId: "delivery-1", repositoryId: "1296724484", pullRequestNumber: "187", sourceRef: "refs/heads/dependabot/npm", eventAfterSha: headSha, sourceActorId: "49699333", sourceActorLogin: "dependabot[bot]", policySha: "a".repeat(40) } });
   });
 
