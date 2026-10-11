@@ -886,7 +886,7 @@ export async function requestDependabotCopilotReview(gh: GitHubClient, repositor
   const refreshedRepository = await gh.getRepositoryById(repositoryId);
   const refreshedPull = await gh.getPullRequest(owner, repo, number);
   if (refreshedRepository.id !== repositoryId || !managed(refreshedRepository)
-    || refreshedPull.number !== number || !isDependabotReviewEligible(refreshedRepository, refreshedPull, headSha)) return "changed-during-request";
+    || refreshedPull.number !== number || !isDependabotReviewEligible(refreshedRepository, refreshedPull, headSha)) return "changed-during-observation";
   return result;
 }
 

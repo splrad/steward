@@ -89,10 +89,10 @@ describe("Dependabot审查观察", () => {
     const g = fixture(); expect(await g.run(false)).toBe("ignored"); expect(g.writes).toEqual([]);
   });
   it("观察期间head变化不复用旧结果", async () => {
-    const f = fixture({ driftAt: 2 }); expect(await f.run()).toBe("changed-during-request"); expect(f.writes).toHaveLength(0);
+    const f = fixture({ driftAt: 2 }); expect(await f.run()).toBe("changed-during-observation"); expect(f.writes).toHaveLength(0);
   });
   it("观察期间仓库归档时返回变化状态", async () => {
-    const f = fixture({ archivedAt: 2 }); expect(await f.run()).toBe("changed-during-request"); expect(f.writes).toEqual([]);
+    const f = fixture({ archivedAt: 2 }); expect(await f.run()).toBe("changed-during-observation"); expect(f.writes).toEqual([]);
   });
   it("Review读取失败时不发请求", async () => {
     const f = fixture({ unreadableReviews: true }); expect(await f.run()).toBe("observed-unknown"); expect(f.writes).toEqual([]);
