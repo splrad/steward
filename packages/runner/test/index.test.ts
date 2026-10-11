@@ -252,6 +252,7 @@ describe("中央命令入口", () => {
       if (value.endsWith("/repos/splrad/steward") && method === "PATCH") return new Response(JSON.stringify(repository), { status: 200 });
       if (value.endsWith("/repos/splrad/steward") && method === "GET") return new Response(JSON.stringify(repository), { status: 200 });
       for (const [path, content] of Object.entries(instructions)) if (value.includes(`/repos/splrad/steward/contents/${path}?ref=${"b".repeat(40)}`)) return new Response(JSON.stringify({ encoding: "base64", content: Buffer.from(content, "utf8").toString("base64") }), { status: 200 });
+      for (const file of generated.retiredFiles ?? []) if (value.includes(`/repos/splrad/steward/contents/${file.path}?ref=${"b".repeat(40)}`)) return new Response("Not Found", { status: 404 });
       if (value.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches")) return new Response(null, { status: 204 });
       return new Response("unexpected", { status: 500 });
     });

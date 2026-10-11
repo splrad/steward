@@ -2,15 +2,32 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { generateOrganizationReviewInstructions, generateReviewInstructionSet, maximumReviewInstructionCharacters, planReviewInstructionSync, validateReviewInstructionContents, validateReviewRegistries, type ReviewProfileRegistry, type ReviewRuleRegistry } from "../src/review-instructions.js";
 
-async function registries(): Promise<{ profiles: ReviewProfileRegistry; rules: ReviewRuleRegistry }> {
+async function registries(repositoryMode = true): Promise<{ profiles: ReviewProfileRegistry; rules: ReviewRuleRegistry }> {
   const profiles = JSON.parse(await readFile("config/review/profiles.json", "utf8"));
   const rules = JSON.parse(await readFile("config/review/rules.json", "utf8"));
   delete profiles.$schema;
   delete rules.$schema;
+  if (repositoryMode) for (const profile of profiles.profiles) delete profile.organizationInstructionsDigest;
   return { profiles, rules };
 }
 
 describe("代码审查说明", () => {
+  it("当前配置仅迁移Steward且完整保留共享规则", async () => {
+    const { profiles, rules } = await registries(false);
+    expect(profiles.profiles.filter(profile => profile.organizationInstructionsDigest).map(profile => profile.id)).toEqual(["steward"]);
+    const organization = await generateOrganizationReviewInstructions(profiles, rules);
+    expect(profiles.profiles.find(profile => profile.id === "steward")!.organizationInstructionsDigest).toBe(organization.digest);
+    const generated = await generateReviewInstructionSet("steward", profiles, rules);
+    const legacy = structuredClone(profiles);
+    delete legacy.profiles.find(profile => profile.id === "steward")!.organizationInstructionsDigest;
+    const original = await generateReviewInstructionSet("steward", legacy, rules);
+    expect(generated.files).toEqual([original.files[0]]);
+    expect(generated.retiredFiles).toEqual([original.files[1]]);
+    for (const id of ["common", "layerscape", "github"]) {
+      expect(await generateReviewInstructionSet(id, profiles, rules)).toEqual(await generateReviewInstructionSet(id, legacy, rules));
+    }
+  });
+
   it("三个仓库profile稳定生成双目标并严格分流受众", async () => {
     const { profiles, rules } = await registries();
     for (const profile of ["common", "steward", "layerscape", "github"]) {
