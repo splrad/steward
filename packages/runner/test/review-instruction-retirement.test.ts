@@ -112,7 +112,9 @@ describe("审查文件受控退役", () => {
       const { $schema: _r, ...rules } = JSON.parse(await readFile("config/review/rules.json", "utf8"));
       expect(exported.organization).toEqual(await generateOrganizationReviewInstructions(profiles, rules));
       expect(exported.policySha).toBe(base);
-      expect(exported.repository.files).toHaveLength(2);
+      expect(exported.repository).toEqual(await generateReviewInstructionSet("common", profiles, rules));
+      expect(exported.repository.files.map((file: { path: string }) => file.path)).toEqual(["AGENTS.md"]);
+      expect(exported.repository.retiredFiles.map((file: { path: string }) => file.path)).toEqual([retiredPath]);
       expect(network).not.toHaveBeenCalled();
     } finally { output.mockRestore(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); }
   });

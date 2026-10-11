@@ -12,19 +12,19 @@ async function registries(repositoryMode = true): Promise<{ profiles: ReviewProf
 }
 
 describe("代码审查说明", () => {
-  it("当前配置仅迁移Steward且完整保留共享规则", async () => {
+  it("当前四个profile采用同一组织摘要并完整保留共享规则", async () => {
     const { profiles, rules } = await registries(false);
-    expect(profiles.profiles.filter(profile => profile.organizationInstructionsDigest).map(profile => profile.id)).toEqual(["steward"]);
+    expect(profiles.profiles.filter(profile => profile.organizationInstructionsDigest).map(profile => profile.id)).toEqual(["common", "steward", "layerscape", "github"]);
     const organization = await generateOrganizationReviewInstructions(profiles, rules);
-    expect(profiles.profiles.find(profile => profile.id === "steward")!.organizationInstructionsDigest).toBe(organization.digest);
-    const generated = await generateReviewInstructionSet("steward", profiles, rules);
     const legacy = structuredClone(profiles);
-    delete legacy.profiles.find(profile => profile.id === "steward")!.organizationInstructionsDigest;
-    const original = await generateReviewInstructionSet("steward", legacy, rules);
-    expect(generated.files).toEqual([original.files[0]]);
-    expect(generated.retiredFiles).toEqual([original.files[1]]);
-    for (const id of ["common", "layerscape", "github"]) {
-      expect(await generateReviewInstructionSet(id, profiles, rules)).toEqual(await generateReviewInstructionSet(id, legacy, rules));
+    for (const profile of legacy.profiles) delete profile.organizationInstructionsDigest;
+    for (const id of ["common", "steward", "layerscape", "github"]) {
+      expect(profiles.profiles.find(profile => profile.id === id)!.organizationInstructionsDigest).toBe(organization.digest);
+      const generated = await generateReviewInstructionSet(id, profiles, rules);
+      const original = await generateReviewInstructionSet(id, legacy, rules);
+      expect(generated.files).toEqual([original.files[0]]);
+      expect(generated.retiredFiles).toEqual([original.files[1]]);
+      expect(generated.organization).toEqual(organization);
     }
   });
 

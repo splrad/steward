@@ -22,6 +22,10 @@ async function fixture(mode: "native" | undefined, policyOnly = false) {
   const directory = await mkdtemp(join(tmpdir(), "native-entrypoints-"));
   temporary.push(directory);
   await cp(resolve("config"), join(directory, "config"), { recursive: true });
+  const profilesPath = join(directory, "config/review/profiles.json");
+  const profiles = JSON.parse(await readFile(profilesPath, "utf8"));
+  for (const profile of profiles.profiles) delete profile.organizationInstructionsDigest;
+  await writeFile(profilesPath, JSON.stringify(profiles));
   const registry = JSON.parse(await readFile(join(directory, "config/repositories.json"), "utf8"));
   for (const configuration of [...Object.values(registry.defaults), ...Object.values(registry.repositories)] as any[]) {
     if (mode === undefined) delete configuration.copilotReviewTrigger;
