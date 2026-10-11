@@ -452,7 +452,6 @@
         "copilotReviewTrigger": {
           "type": "string",
           "enum": [
-            "legacy",
             "native"
           ],
           "default": "native"
@@ -534,7 +533,6 @@
         "copilotReviewTrigger": {
           "type": "string",
           "enum": [
-            "legacy",
             "native"
           ]
         }

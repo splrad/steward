@@ -87,7 +87,7 @@ if (reviewSteps[1]?.uses !== "actions/setup-node@820762786026740c76f36085b0efc47
 if (reviewSteps.slice(0, 3).some(step => step.env !== undefined) || reviewStep?.shell !== "bash" || reviewStep?.["continue-on-error"] !== undefined) throw new Error("审查请求密钥或失败处理范围无效");
 const reviewInputEnvironment = new Map([
   ["APP_ID", "4243096"], ["INSTALLATION_ID", "145952003"],
-  ["STEWARD_APP_PRIVATE_KEY", "${{ secrets.STEWARD_APP_PRIVATE_KEY }}"], ["COPILOT_REVIEW_REQUEST_TOKEN", "${{ steps.review_policy.outputs.trigger == 'legacy' && secrets.COPILOT_REVIEW_REQUEST_TOKEN || '' }}"],
+  ["STEWARD_APP_PRIVATE_KEY", "${{ secrets.STEWARD_APP_PRIVATE_KEY }}"],
   ["TRIGGER_ACTOR_ID", "${{ github.actor_id }}"], ["WORKFLOW_REPOSITORY", "${{ github.repository }}"], ["WORKFLOW_EVENT", "${{ github.event_name }}"],
   ["WORKFLOW_REF", "${{ github.workflow_ref }}"], ["WORKFLOW_RUN_REF", "${{ github.ref }}"], ["WORKFLOW_SHA", "${{ github.workflow_sha }}"], ["WORKFLOW_DEFAULT_BRANCH", "${{ github.event.repository.default_branch }}"],
   ["DELIVERY_ID", "${{ inputs.deliveryId }}"], ["REPOSITORY_ID", "${{ inputs.repositoryId }}"], ["PULL_REQUEST_NUMBER", "${{ inputs.pullRequestNumber }}"],
@@ -345,7 +345,6 @@ try {
 } finally { await rm(temporary, { recursive: true, force: true }); }
 
 
-const conditionalReviewToken = "${{ steps.review_policy.outputs.trigger == 'legacy' && secrets.COPILOT_REVIEW_REQUEST_TOKEN || '' }}";
 const modeSteps = [
   [prAutomationDocument.jobs.reconcile, "${{ inputs.policySha }}", reconcileStep],
   [prAutomationDocument.jobs.request, "${{ github.workflow_sha }}", reviewStep],
@@ -358,7 +357,7 @@ for (const [job, policy, consumer] of modeSteps) {
   const expected = { APP_ID: "4243096", INSTALLATION_ID: "145952003", STEWARD_APP_PRIVATE_KEY: "${{ secrets.STEWARD_APP_PRIVATE_KEY }}", REPOSITORY_ID: "${{ inputs.repositoryId }}", POLICY_SHA: policy };
   if (!hasExactKeys(step.env, Object.keys(expected)) || Object.entries(expected).some(([name, value]) => step.env[name] !== value)) throw new Error("审查模式解析权限或策略绑定无效");
   if (step.run !== 'node packages/runner/dist/index.js review-trigger-mode --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA"') throw new Error("审查模式解析参数无效");
-  if (consumer.env.COPILOT_REVIEW_REQUEST_TOKEN !== conditionalReviewToken) throw new Error("审查请求令牌未按模式隔离");
+  if (Object.hasOwn(consumer.env ?? {}, "COPILOT_REVIEW_REQUEST_TOKEN")) throw new Error("审查观察不得注入旧请求令牌");
   for (const candidate of job.steps) if (candidate !== consumer && Object.hasOwn(candidate.env ?? {}, "COPILOT_REVIEW_REQUEST_TOKEN")) throw new Error("审查令牌注入范围扩大");
 }
 if (!hasExactKeys(syncInstructionsDocument.jobs, ["resolve", "synchronize"]) || syncJob.needs !== "resolve" || syncJob.if !== undefined
@@ -373,7 +372,7 @@ if (resolveCheckout?.with?.ref !== "${{ steps.policy.outputs.policy_sha }}" || r
   || targetStep.env?.POLICY_SHA !== "${{ steps.policy.outputs.policy_sha }}" || targetStep.env?.REPOSITORY_ID !== "${{ inputs.repositoryId }}"
   || !targetStep.run?.includes('review-sync-targets "${repository_arguments[@]}" --policy-sha "$POLICY_SHA"') || /\$\{\{/u.test(targetStep.run)) throw new Error("审查同步目标解析权限或参数无效");
 if (syncJob.concurrency?.group !== "steward-pr-body-${{ matrix.repositoryId }}" || syncJob.concurrency?.["cancel-in-progress"] !== false || syncJob.concurrency?.queue !== "max") throw new Error("审查同步矩阵未复用单仓并发锁");
-if (syncStep.env.COPILOT_REVIEW_REQUEST_TOKEN !== "${{ matrix.trigger == 'legacy' && secrets.COPILOT_REVIEW_REQUEST_TOKEN || '' }}") throw new Error("审查同步矩阵未按仓库隔离请求令牌");
+if (Object.hasOwn(syncStep.env ?? {}, "COPILOT_REVIEW_REQUEST_TOKEN")) throw new Error("审查同步不得注入旧请求令牌");
 for (const step of [...syncResolveJob.steps, ...syncJob.steps.filter(step => step !== syncStep)]) if (Object.hasOwn(step.env ?? {}, "COPILOT_REVIEW_REQUEST_TOKEN")) throw new Error("审查同步令牌注入范围扩大");
 
 

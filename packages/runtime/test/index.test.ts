@@ -1301,7 +1301,7 @@ describe("Dependabot独立审查派发", () => {
     { name: "Draft切换到默认分支", action: "edited", changes: { base: { ref: { from: "release" } } }, draft: true, workflows: ["pr-classification.yml"] },
     { name: "两个非默认分支间切换", action: "edited", changes: { base: { ref: { from: "release" } } }, base: "develop", workflows: [] },
   ];
-  it.each(reviewCases.flatMap(value => ["legacy", "native"].map(trigger => ({ ...value, trigger }))))("$name/$trigger保留适用的分类与审查派发", async ({ action, changes, base = "main", draft = false, workflows, trigger }) => {
+  it.each(reviewCases.flatMap(value => ["native"].map(trigger => ({ ...value, trigger }))))("$name/$trigger保留适用的分类与审查派发", async ({ action, changes, base = "main", draft = false, workflows, trigger }) => {
     repositoryCatalog.repositories["1296724484"].copilotReviewTrigger = trigger;
     const headSha = "d".repeat(40); const sent: { workflow: string; body: any }[] = [];
     const checks: any[] = [];

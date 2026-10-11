@@ -227,26 +227,32 @@ describe("触发模式和令牌隔离", () => {
   it("批量规则同步按仓库拆分模式，保持默认接入和scope", () => {
     const registry = { organization: { id: 302208797, login: "splrad" }, defaults: { public: { managed: true }, private: { managed: false } }, repositories: {
       "1296724484": { fullName: "splrad/steward", managed: true, copilotReviewTrigger: "native" },
-      "1296725317": { fullName: "splrad/.github", managed: true, copilotReviewTrigger: "legacy" },
+      "1296725317": { fullName: "splrad/.github", managed: true, copilotReviewTrigger: "native" },
     } };
     const repo = (id: number, name: string, privateRepo = false) => ({ id, full_name: `splrad/${name}`, private: privateRepo, owner: { id: 302208797, login: "splrad" } });
     const repositories = [repo(1296724484, "steward"), repo(1296725317, ".github"), repo(2, "new"), repo(3, "private", true)];
-    expect(reviewSyncMatrix(registry, repositories)).toEqual({ include: [{ repositoryId: "2", trigger: "native" }, { repositoryId: "1296724484", trigger: "native" }, { repositoryId: "1296725317", trigger: "legacy" }] });
+    expect(reviewSyncMatrix(registry, repositories)).toEqual({ include: [{ repositoryId: "2", trigger: "native" }, { repositoryId: "1296724484", trigger: "native" }, { repositoryId: "1296725317", trigger: "native" }] });
     expect(reviewSyncMatrix(registry, repositories, 1296724484)).toEqual({ include: [{ repositoryId: "1296724484", trigger: "native" }] });
     expect(() => reviewSyncMatrix(registry, repositories, 8)).toThrow("当前安装");
     expect(() => reviewSyncMatrix(registry, [repo(1296724484, "wrong")])).toThrow("不一致");
   });
   it("缺省native，仓库覆盖默认，非法模式与ID/name冲突失败", () => {
-    const registry = { organization: { id: 1, login: "splrad" }, defaults: { public: { copilotReviewTrigger: "native" }, private: {} }, repositories: { "2": { fullName: "splrad/steward", copilotReviewTrigger: "legacy" } } };
+    const registry = { organization: { id: 1, login: "splrad" }, defaults: { public: { copilotReviewTrigger: "native" }, private: {} }, repositories: { "2": { fullName: "splrad/steward", copilotReviewTrigger: "native" } } };
     expect(copilotReviewTrigger(undefined)).toBe("native");
-    expect(configurationFor(registry, { id: 2, full_name: "splrad/steward" }).copilotReviewTrigger).toBe("legacy");
+    expect(configurationFor(registry, { id: 2, full_name: "splrad/steward" }).copilotReviewTrigger).toBe("native");
     expect(configurationFor(registry, { id: 3, full_name: "splrad/other" }).copilotReviewTrigger).toBe("native");
     expect(configurationFor(registry, { id: 4, full_name: "splrad/private", private: true }).copilotReviewTrigger).toBe("native");
     expect(() => configurationFor(registry, { id: 2, full_name: "wrong/steward" })).toThrow("不一致");
     expect(() => copilotReviewTrigger("invalid")).toThrow();
   });
-  it.each([null, "", "Native", false, 0, {}, []])("拒绝未知模式：%j", mode => {
+  it.each(["legacy", null, "", "Native", false, 0, {}, []])("拒绝未知模式：%j", mode => {
     expect(() => copilotReviewTrigger(mode)).toThrow("触发模式无效");
+  });
+  it("退役模式在读取远端证据前失败", async () => {
+    const fetchMock = vi.fn();
+    const gh = new GitHubClient("read-only", "https://api.github.com", fetchMock);
+    await expect(ensureCopilotReview(gh, "splrad", "steward", 209, head, "b".repeat(40), "legacy" as never)).rejects.toThrow("触发模式无效");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
   it("采用配置的三仓与未来公私仓均为native，私仓仍按原接入范围处理", async () => {
     const registry = JSON.parse(await readFile("config/repositories.json", "utf8"));
@@ -273,17 +279,17 @@ describe("触发模式和令牌隔离", () => {
     vi.spyOn(gh, "listPullRequestReviews").mockResolvedValue(state === "none" ? [] : [{ ...review(), body: state === "failed-quota" ? "unable to review: quota limit" : "unknown" }]);
     vi.spyOn(gh, "listIssueEvents").mockResolvedValue([]);
     vi.spyOn(gh, "listAllCheckRuns").mockResolvedValue([]);
-    const write = vi.spyOn(gh, "requestReviewers").mockRejectedValue(new Error("unexpected write"));
+    const write = vi.spyOn(gh, "request").mockRejectedValue(new Error("unexpected write"));
     expect(await ensureCopilotReview(gh, "splrad", "steward", 209, head, "b".repeat(40), trigger as "native" | undefined)).toBe(`observed-${state}`);
     expect(write).not.toHaveBeenCalled();
   });
-  it("legacy读取失败归unknown，不自动补发", async () => {
+  it("native读取失败归unknown，不自动补发", async () => {
     const gh = new GitHubClient("read-only");
     vi.spyOn(gh, "getRequestedReviewers").mockRejectedValue(new Error("private error"));
     vi.spyOn(gh, "listPullRequestReviews").mockResolvedValue([]);
     vi.spyOn(gh, "listIssueEvents").mockResolvedValue([]);
     vi.spyOn(gh, "listAllCheckRuns").mockResolvedValue([]);
-    expect(await ensureCopilotReview(gh, "splrad", "steward", 209, head, "b".repeat(40), "legacy")).toBe("observed-unknown");
+    expect(await ensureCopilotReview(gh, "splrad", "steward", 209, head, "b".repeat(40), "native")).toBe("observed-unknown");
   });
   it("模式解析缺少输出或非法SHA时在授权客户端前拒绝", async () => {
     vi.stubEnv("GITHUB_OUTPUT", "");
@@ -294,13 +300,13 @@ describe("触发模式和令牌隔离", () => {
 });
 
 describe("工作流只读模式预检", () => {
-  it("真实schema校验后输出单仓模式与混合矩阵，预检不请求审查", async () => {
+  it("真实schema校验后输出单仓模式与同步矩阵，预检不请求审查", async () => {
     const directory = await mkdtemp(join(tmpdir(), "copilot-mode-preflight-"));
     const savedFetch = globalThis.fetch;
     try {
       await mkdir(join(directory, "config")); await mkdir(join(directory, "schema"));
       const registry = JSON.parse(await readFile("config/repositories.json", "utf8"));
-      registry.repositories["1296725317"].copilotReviewTrigger = "legacy";
+      registry.repositories["1296725317"].copilotReviewTrigger = "native";
       await writeFile(join(directory, "config/repositories.json"), JSON.stringify(registry));
       await writeFile(join(directory, "schema/repositories.schema.json"), await readFile("schema/repositories.schema.json"));
       const target = join(directory, "output");
@@ -324,9 +330,9 @@ describe("工作流只读模式预检", () => {
       await main(["review-trigger-mode", "--repository-id", "1296724484", "--policy-sha", head]);
       expect(await readFile(target, "utf8")).toBe("trigger=native\n");
       await main(["review-sync-targets", "--policy-sha", head]);
-      expect(await readFile(target, "utf8")).toContain('matrix={"include":[{"repositoryId":"1296724484","trigger":"native"},{"repositoryId":"1296725317","trigger":"legacy"}]}');
+      expect(await readFile(target, "utf8")).toContain('matrix={"include":[{"repositoryId":"1296724484","trigger":"native"},{"repositoryId":"1296725317","trigger":"native"}]}');
       expect(writes).toHaveLength(2);
-      registry.repositories["1296724484"].copilotReviewTrigger = "invalid";
+      registry.repositories["1296724484"].copilotReviewTrigger = "legacy";
       await writeFile(join(directory, "config/repositories.json"), JSON.stringify(registry));
       await expect(main(["review-trigger-mode", "--repository-id", "1296724484", "--policy-sha", head])).rejects.toThrow("schema");
       expect(writes).toHaveLength(2);
