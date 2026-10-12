@@ -54,12 +54,11 @@ async function fixture(mode: "native" | undefined, policyOnly = false) {
   vi.spyOn(prototype, "listPullRequestReviews").mockResolvedValue([]);
   vi.spyOn(prototype, "listIssueEvents").mockResolvedValue([]);
   vi.spyOn(prototype, "listAllCheckRuns").mockResolvedValue([]);
-  const reviewWrite = vi.spyOn(prototype, "requestReviewers").mockRejectedValue(new Error("native发起了审查请求"));
   const dispatch = vi.spyOn(prototype, "request").mockImplementation(async (method, path) => {
     if (method !== "POST" || !/^\/repos\/splrad\/steward\/actions\/workflows\/(pr-classification|pr-issue-link)\.yml\/dispatches$/u.test(path)) throw new Error(`未预期的API调用: ${method} ${path}`);
     return undefined as any;
   });
-  return { directory, repository, prototype, token, reviewWrite, dispatch };
+  return { directory, repository, prototype, token, dispatch };
 }
 
 async function withoutReviewToken(run: () => Promise<void>) {
@@ -117,7 +116,7 @@ describe.each(["native", undefined] as const)("三入口令牌隔离：%s", mode
     });
     await withoutReviewToken(() => main(["request-copilot-review", "--repository-id", String(f.repository.id), "--pull-request-number", "1", "--event-head-sha", headSha, "--policy-sha", policySha, "--delivery-id", "fixture-delivery"]));
     expect(await readFile(join(f.directory, "summary"), "utf8")).toContain("observed-none");
-    expect(f.reviewWrite).not.toHaveBeenCalled();
+    expect(f.dispatch.mock.calls.some(([, path]) => path.endsWith("/requested_reviewers"))).toBe(false);
     expect(f.dispatch).not.toHaveBeenCalled();
   });
 
@@ -184,7 +183,7 @@ describe.each(["native", undefined] as const)("三入口令牌隔离：%s", mode
     if (organizationMode) expect(tree.mock.calls[0]![2]).toMatchObject({ tree: [{ path: "AGENTS.md" }, { path: ".github/copilot-instructions.md", sha: null }] });
     expect(create).toHaveBeenCalledWith("splrad", ".github", expect.objectContaining({ head: "steward/review-instructions", base: "main", body: expect.stringContaining("<!-- workflow:managed-pr:start -->") }));
     expect(f.dispatch).toHaveBeenCalledExactlyOnceWith("POST", "/repos/splrad/steward/actions/workflows/pr-classification.yml/dispatches", expect.objectContaining({ inputs: expect.objectContaining({ policySha, repositoryId: String(f.repository.id), eventHeadSha: headSha }) }));
-    expect(f.reviewWrite).not.toHaveBeenCalled();
+    expect(f.dispatch.mock.calls.some(([, path]) => path.endsWith("/requested_reviewers"))).toBe(false);
     expect(JSON.stringify(create.mock.calls)).not.toContain("undefined");
     if (organizationMode) expect(JSON.stringify(create.mock.calls)).toContain("组织公共规则");
   });
@@ -216,7 +215,7 @@ describe.each(["native", undefined] as const)("三入口令牌隔离：%s", mode
     expect(f.dispatch.mock.calls.map(call => call[1])).toEqual(["/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches", "/repos/splrad/steward/actions/workflows/pr-classification.yml/dispatches"]);
     for (const call of f.dispatch.mock.calls) expect(call[2]).toMatchObject({ inputs: { policySha } });
     expect(f.token.mock.calls.every(([input]) => input.policySha === policySha)).toBe(true);
-    expect(f.reviewWrite).not.toHaveBeenCalled();
+    expect(f.dispatch.mock.calls.some(([, path]) => path.endsWith("/requested_reviewers"))).toBe(false);
     expect(await readFile(join(f.directory, "output"), "utf8")).toContain(`headSha=${headSha}`);
   });
 });

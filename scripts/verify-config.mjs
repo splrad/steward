@@ -163,7 +163,7 @@ for (const section of ["public", "private", "repository"]) {
     const configuration = section === "repository" ? candidate.repositories[ids[0]] : candidate.defaults[section];
     if (mode === undefined) delete configuration.copilotReviewTrigger;
     else configuration.copilotReviewTrigger = mode;
-    const expected = mode === undefined || mode === "legacy" || mode === "native";
+    const expected = mode === undefined || mode === "native";
     if (Boolean(repositoryValidator(candidate)) !== expected) throw new Error("审查触发模式schema边界无效");
   }
 }

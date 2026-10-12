@@ -783,7 +783,7 @@ async function issueSync(args: Readonly<Record<string, string>>): Promise<void> 
   await summary([`仓库编号：${result.repositoryId}`, `议题编号：${result.issueNumber ?? "all"}`, `刷新数量：${result.refreshed}`, `跳过数量：${result.skipped}`, `变更数量：${result.changed}`, `仓库代次：${result.generation}`, `全拉取请求重算：${result.dispatched ? "scheduled" : "unchanged"}`]);
 }
 
-const copilotReviewer = "copilot-pull-request-reviewer[bot]";
+
 const copilotCheckName = "copilot-pull-request-reviewer";
 const githubActionsAppId = 15368;
 export function isCopilotReviewerIdentity(value: unknown): boolean {
@@ -858,23 +858,11 @@ export async function readCopilotReviewState(clientValue: GitHubClient, owner: s
   }
 }
 export async function ensureCopilotReview(clientValue: GitHubClient, owner: string, repo: string, number: number, headSha: string, policySha: string,
-  trigger: CopilotReviewTrigger = "native", beforeRequest?: () => Promise<void>): Promise<string> {
+  trigger: CopilotReviewTrigger = "native"): Promise<string> {
   trigger = copilotReviewTrigger(trigger);
   const state = await readCopilotReviewState(clientValue, owner, repo, number, headSha);
   await summary([`Copilot审查：${JSON.stringify({ repository: `${owner}/${repo}`, number, trigger, ...state })}`]);
-  if (trigger === "native" || state.state !== "none") return `observed-${state.state}`;
-  const reviewerClient = new GitHubClient(env("COPILOT_REVIEW_REQUEST_TOKEN"), "https://api.github.com", fetch, policySha);
-  const eventsBefore = await reviewerClient.listIssueEvents(owner, repo, number);
-  const eventCursor = eventsBefore.reduce((maximum: number, value: any) => Math.max(maximum, Number(value.id) || 0), 0);
-  await beforeRequest?.();
-  await reviewerClient.requestReviewers(owner, repo, number, [copilotReviewer]);
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const current = await readCopilotReviewState(clientValue, owner, repo, number, headSha, eventCursor);
-    if (["queued", "running", "succeeded"].includes(current.state)) return "requested-and-confirmed";
-    if (current.state.startsWith("failed-")) return `observed-${current.state}`;
-    if (attempt < 4) await delay(2_000);
-  }
-  return "requested-unconfirmed";
+  return `observed-${state.state}`;
 }
 
 export function isTrustedReviewRequestSource(policySha: string, environment: NodeJS.ProcessEnv = process.env): boolean {
@@ -894,16 +882,11 @@ export async function requestDependabotCopilotReview(gh: GitHubClient, repositor
   const [owner, repo] = splitRepository(repository.full_name);
   const eligible = (pull: any) => pull.number === number && isDependabotReviewEligible(repository, pull, headSha);
   if (!eligible(await gh.getPullRequest(owner, repo, number))) return "ignored-or-stale";
-  const result = await ensureCopilotReview(gh, owner, repo, number, headSha, policySha, trigger, async () => {
-    const currentRepository = await gh.getRepositoryById(repositoryId);
-    const currentPull = await gh.getPullRequest(owner, repo, number);
-    if (currentRepository.id !== repositoryId || !managed(currentRepository) || currentPull.number !== number
-      || !isDependabotReviewEligible(currentRepository, currentPull, headSha)) throw new Error("请求前PR或仓库状态已变化");
-  });
+  const result = await ensureCopilotReview(gh, owner, repo, number, headSha, policySha, trigger);
   const refreshedRepository = await gh.getRepositoryById(repositoryId);
   const refreshedPull = await gh.getPullRequest(owner, repo, number);
   if (refreshedRepository.id !== repositoryId || !managed(refreshedRepository)
-    || refreshedPull.number !== number || !isDependabotReviewEligible(refreshedRepository, refreshedPull, headSha)) return "changed-during-request";
+    || refreshedPull.number !== number || !isDependabotReviewEligible(refreshedRepository, refreshedPull, headSha)) return "changed-during-observation";
   return result;
 }
 
@@ -948,10 +931,8 @@ async function requestCopilotReviewCommand(args: Readonly<Record<string, string>
     const configuration = configurationFor(registry, repository);
     return Boolean(registry.repositories[String(repository.id)]) && configuration.managed === true && configuration.prAutomation === true;
   }, trigger);
-  await summary([`仓库编号：${repositoryId}`, `PR：${number}`, `目标提交：${headSha}`, `Copilot请求状态：${result}`]);
-  if (result === "requested-unconfirmed") {
-    console.log("::warning::Copilot请求已提交，但尚无新请求事件或当前head审查证据；请核查该PR的审查任务。");
-  }
+  await summary([`仓库编号：${repositoryId}`, `PR：${number}`, `目标提交：${headSha}`, `Copilot观察状态：${result}`]);
+
 }
 
 export async function writeManagedFilesToBranch(input: {

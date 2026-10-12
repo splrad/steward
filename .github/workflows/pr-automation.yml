@@ -134,7 +134,6 @@ jobs:
           PR_PREPARED_FACTS_PATH: ${{ runner.temp }}/pr-prepared-facts.json
           COPILOT_STEP_OUTCOME: ${{ steps.copilot.outcome }}
           COPILOT_REPAIR_STEP_OUTCOME: ${{ steps.copilot_repair.outcome }}
-          COPILOT_REVIEW_REQUEST_TOKEN: ${{ steps.review_policy.outputs.trigger == 'legacy' && secrets.COPILOT_REVIEW_REQUEST_TOKEN || '' }}
           DELIVERY_ID: ${{ inputs.deliveryId }}
           REPOSITORY_ID: ${{ inputs.repositoryId }}
           SOURCE_REF: ${{ inputs.sourceRef }}
@@ -186,7 +185,6 @@ jobs:
           APP_ID: "4243096"
           INSTALLATION_ID: "145952003"
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
-          COPILOT_REVIEW_REQUEST_TOKEN: ${{ steps.review_policy.outputs.trigger == 'legacy' && secrets.COPILOT_REVIEW_REQUEST_TOKEN || '' }}
           TRIGGER_ACTOR_ID: ${{ github.actor_id }}
           WORKFLOW_REPOSITORY: ${{ github.repository }}
           WORKFLOW_EVENT: ${{ github.event_name }}
