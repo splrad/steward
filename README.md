@@ -76,7 +76,7 @@ scripts/                构建及一致性校验脚本
 ## 修改约定
 
 - 创建 PR 页面的提示维护在 [`splrad/.github/.github/pull_request_template.md`](https://github.com/splrad/.github/blob/main/.github/pull_request_template.md)。`organizationPullRequestTemplate` 仅作为运行时正文生成的回退输入；页面文案统一在组织仓库中修改和发布。
-- 共享 AI 指引以 `config/review/rules.json` 为规则源。PR 验证将生成文件与当前生效的中央策略比较；规则变更先合并并部署，再由 `sync-review-instructions.yml` 同步生成 `AGENTS.md` 和 Copilot 补充说明。规则尚未生效时，保留当前策略生成的文件。
+- 共享 AI 指引以 `config/review/rules.json` 为规则源。公共规则变更按 [`config/review/README.md`](config/review/README.md)先更新并验证组织指令，再更新采用摘要。中央规则合并部署后，由 `sync-review-instructions.yml` 同步 `AGENTS.md` 及仍需保留的仓库专用 Copilot 说明。PR 验证使用当前生效的中央策略；规则尚未生效时，保留当前生成文件。
 - 仓库范围和项目差异写入 `config/repositories.json` 及其引用的配置档案，不在工作流中散落特殊判断。
 - 修改 `packages/runner/src/index.ts` 或相关依赖后，运行 `npm run build` 更新 `packages/runner/dist/index.js`。
 - `packages/runner/dist/index.js` 是已提交的运行文件，必须与当前源码构建结果一致；`npm run verify:dist` 会检查这一点。
