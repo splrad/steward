@@ -23,7 +23,7 @@ npm run verify
 
 有本仓库写权限时，向本仓库非默认工作分支推送后等待 Steward 自动创建或更新 PR，首次创建为草稿。没有对应 PR 时先检查自动化；仍在运行则等待，状态不明则先核查，确认机器人故障、无法自动创建且仍无对应 PR 后才手动补建。通过 fork 贡献时，从自己的 fork 向本仓库创建 PR，无需等待机器人代开。
 
-草稿准备好后，在 PR 页面点击 **Ready for review**。同仓 PR 可由拥有本仓库 Write 或更高权限的用户操作，即使作者是机器人；fork PR 可由创建者凭作者身份操作，无需上游 Write 权限。Ready 仅表示提交审查，检查、批准和人工合并仍须分别完成。
+草稿准备好后，在 PR 页面点击 **Ready for review**。PR 作者或拥有目标仓库 Write 及以上权限的用户均可操作，适用于同仓和 fork PR。机器人创建的 PR 可由具备上述仓库权限的用户操作；fork PR 作者无需上游 Write 权限。Ready 仅表示提交审查，检查、批准和人工合并仍须分别完成。
 
 组织的 [Pull Request 模板](https://github.com/splrad/.github/blob/main/.github/pull_request_template.md)由 `splrad/.github` 维护。手动创建时填写标题和变更说明，保留受管标记。Steward 后续可能重建其管理的 PR 标题和完整正文；需要保留的补充说明和验证证据请写入 PR 评论。涉及仓库治理、权限或事件处理的改动，不能只用通过的检查代替变更说明。
 

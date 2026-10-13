@@ -2,9 +2,9 @@
   "$schema": "../../schema/review-profiles.schema.json",
   "schemaVersion": 1,
   "profiles": [
-    { "id": "common", "owner": "splrad/maintainers", "status": "active", "organizationInstructionsDigest": "d5cdadde1766549521db59db4046d9dbb1fd00ab91befa3d7b1337fe2df07327" },
-    { "id": "steward", "owner": "splrad/maintainers", "status": "active", "organizationInstructionsDigest": "d5cdadde1766549521db59db4046d9dbb1fd00ab91befa3d7b1337fe2df07327" },
-    { "id": "layerscape", "owner": "splrad/maintainers", "status": "active", "organizationInstructionsDigest": "d5cdadde1766549521db59db4046d9dbb1fd00ab91befa3d7b1337fe2df07327" },
-    { "id": "github", "owner": "splrad/maintainers", "status": "active", "organizationInstructionsDigest": "d5cdadde1766549521db59db4046d9dbb1fd00ab91befa3d7b1337fe2df07327" }
+    { "id": "common", "owner": "splrad/maintainers", "status": "active", "organizationInstructionsDigest": "92960b325531c6f936132abf464d08726015aee2224f32f1badbf993f01b72c8" },
+    { "id": "steward", "owner": "splrad/maintainers", "status": "active", "organizationInstructionsDigest": "92960b325531c6f936132abf464d08726015aee2224f32f1badbf993f01b72c8" },
+    { "id": "layerscape", "owner": "splrad/maintainers", "status": "active", "organizationInstructionsDigest": "92960b325531c6f936132abf464d08726015aee2224f32f1badbf993f01b72c8" },
+    { "id": "github", "owner": "splrad/maintainers", "status": "active", "organizationInstructionsDigest": "92960b325531c6f936132abf464d08726015aee2224f32f1badbf993f01b72c8" }
   ]
 }
