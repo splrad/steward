@@ -16,8 +16,8 @@ describe("发布说明", () => {
       { tag: "v2.0.0", targetSha: "b", publishedAt: "2026-02-01T00:00:00Z", draft: false, prerelease: false },
       { tag: "v3.0.0", targetSha: "c", publishedAt: "2026-03-01T00:00:00Z", draft: true, prerelease: false },
     ];
-    expect(selectPreviousRelease(releases, new Set(["a", "b"]))?.tag).toBe("v2.0.0");
-    expect(selectPreviousRelease(releases, new Set())).toBeNull();
+    expect(selectPreviousRelease(releases, ["b", "a"])?.tag).toBe("v2.0.0");
+    expect(selectPreviousRelease(releases, [])).toBeNull();
   });
 
   it("排除四个标签、按时间和编号排序并去重", () => {
