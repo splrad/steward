@@ -53,7 +53,7 @@ export async function collectReleaseRange(gh: SourceClient, owner: string, repo:
     byCommit.set(commit, [...(byCommit.get(commit) ?? []), release]);
   }
   const commits: any[] = []; const seen = new Set<string>(); let current = targetSha;
-  for (let count = 0; count < 10_000; count++) {
+  for (let count = 0; count <= 10_000; count++) {
     if (seen.has(current)) sourceFailure('first-parent cycle');
     seen.add(current);
     const stable = byCommit.get(current);
@@ -67,6 +67,7 @@ export async function collectReleaseRange(gh: SourceClient, owner: string, repo:
       if (policy.previousStableTag) sourceFailure('selected stable tag not reached');
       return { commits, previousRelease: null, boundary: { kind: 'adoption', sha: current, reference: policy.adoption.reference } as ReleaseBoundary };
     }
+    if (count === 10_000) return sourceFailure('first-parent limit');
     const commit = await gh.getCommit(owner, repo, current);
     if (commit.sha !== current || !Array.isArray(commit.parents) || commit.parents.some((p: any) => typeof p?.sha !== 'string')) sourceFailure('commit identity or parents');
     commits.push(commit);

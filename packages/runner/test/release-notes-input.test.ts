@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { GitHubClient, GitHubRequestError } from '../../github/src/index.js';
-import { configuredReleaseSourcePolicy, collectReleaseSources, assertReleaseSourcesUnchanged } from '../src/release-notes-input.js';
+import { collectReleaseRange, configuredReleaseSourcePolicy, collectReleaseSources, assertReleaseSourcesUnchanged } from '../src/release-notes-input.js';
 import { attributeReleaseSources, type ManagedReviewRecord } from '../../core/src/release-notes-input.js';
 import { selectPreviousRelease } from '../../core/src/release-notes.js';
 
@@ -25,6 +25,21 @@ function fixture(count = 1) {
 const collect = (gh: Parameters<typeof collectReleaseSources>[0]) => collectReleaseSources(gh, 'o', 'r', identity, 'v2.0.0');
 
 describe('R02 发布来源', () => {
+  it.each(['stable', 'adoption'])('允许恰好 10000 条区间提交，超过上限时停止读取：%s', async mode => {
+    const { gh, releases } = fixture();
+    let reads = 0;
+    const original = gh.getCommit;
+    gh.getCommit = async (...args) => { reads++; return original(...args); };
+    const policy = mode === 'adoption' ? { adoption: { mode: 'start-at-adoption' as const, repositoryId: 123, policySha: sha(99), boundarySha: sha(1), reference: 'migration-limit' } } : {};
+    const listed = mode === 'adoption' ? [] : releases;
+    const result = await collectReleaseRange(gh, 'o', 'r', sha(10_001), listed, 'v2.0.0', policy);
+    expect(result.commits).toHaveLength(10_000);
+    expect(result.boundary.sha).toBe(sha(1));
+    expect(reads).toBe(10_000);
+    reads = 0;
+    await expect(collectReleaseRange(gh, 'o', 'r', sha(10_002), listed, 'v2.0.0', policy)).rejects.toMatchObject({ code: 'RN_SOURCE_INCOMPLETE', message: 'RN_SOURCE_INCOMPLETE: first-parent limit' });
+    expect(reads).toBe(10_000);
+  });
   it('中央配置绑定仓库和策略，拒绝未知字段、冲突边界和候选文件自授权', () => {
     expect(configuredReleaseSourcePolicy(undefined, identity)).toEqual({});
     expect(configuredReleaseSourcePolicy({ adoption: { mode: 'start-at-adoption', boundarySha: sha(1), reference: 'approved-migration' } }, identity).adoption).toMatchObject({ repositoryId: 123, policySha: sha(99), boundarySha: sha(1) });
