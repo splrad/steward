@@ -31,7 +31,7 @@ function unchanged(before: Stats, after: Stats): boolean {
 }
 async function readArtifactBytes(handle: FileHandle, expectedSize: number, retain: boolean): Promise<{ bytes: Uint8Array; size: number; sha256: string }> {
   const buffer = Buffer.alloc(Math.min(64 * 1024, expectedSize + 1));
-  const chunks: Uint8Array[] = [];
+  const retained = retain ? Buffer.alloc(expectedSize) : undefined;
   const hash = createHash('sha256');
   let size = 0;
   for (;;) {
@@ -41,10 +41,10 @@ async function readArtifactBytes(handle: FileHandle, expectedSize: number, retai
     if (size > expectedSize) buildFail('RN_BUILD_DIGEST');
     const chunk = buffer.subarray(0, bytesRead);
     hash.update(chunk);
-    if (retain) chunks.push(Buffer.from(chunk));
+    if (retained) retained.set(chunk, size - bytesRead);
   }
   if (size !== expectedSize) buildFail('RN_BUILD_DIGEST');
-  return { bytes: retain ? Buffer.concat(chunks, size) : new Uint8Array(), size, sha256: hash.digest('hex') };
+  return { bytes: retained ?? new Uint8Array(), size, sha256: hash.digest('hex') };
 }
 async function verifyFileStates(root: string, states: ReadonlyMap<string, Stats>): Promise<void> {
   for (const [path, before] of states) {
@@ -128,11 +128,12 @@ export async function collectFileBuildManifest(plan: BuildPlan, outputDirectory:
     const file = await assertBuildSourcePath(root, assignment.file);
     const before = await buildPathOperation(lstat(file));
     if (!before.isFile() || before.nlink !== 1 || before.size <= 0 || before.size > buildLimits.maxFileBytes) buildFail('RN_BUILD_LIMIT');
+    const inspect = plan.version !== null ? inspectNativeVersion : undefined;
+    if (inspect && before.size > buildLimits.maxNativeVersionBytes) buildFail('RN_BUILD_LIMIT');
     total += before.size; if (total > buildLimits.maxTotalBytes) buildFail('RN_BUILD_LIMIT');
     const handle = await buildPathOperation(open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)));
     try {
       if (!unchanged(before, await buildPathOperation(handle.stat()))) buildFail('RN_BUILD_PATH');
-      const inspect = plan.version !== null ? inspectNativeVersion : undefined;
       const { bytes, size, sha256 } = await readArtifactBytes(handle, before.size, inspect !== undefined);
       if (!unchanged(before, await buildPathOperation(handle.stat()))) buildFail('RN_BUILD_DIGEST');
       checkBuildNativeVersion(plan, inspect ? await inspect(bytes, assignment.file) : null);

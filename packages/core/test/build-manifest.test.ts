@@ -191,6 +191,10 @@ describe('构建合同 T09/T10', () => {
   });
   it('中央匹配覆盖恰好一个文件，拒绝额外、空、重复与大小写冲突', async () => {
     const plan = await planBuild(identity, unit);
+    for (const invalid of [null, undefined, 1, 'widget-1.2.3.zip', {}, [null], [1], [new String('widget-1.2.3.zip')], new Array(1), ['widget-1.2.3.zip', ,]]) {
+      expect(() => matchBuildFiles(plan, invalid as never)).toThrow(BuildContractError);
+      expect(() => matchBuildFiles(plan, invalid as never)).toThrow('RN_BUILD_OUTPUT');
+    }
     expect(matchBuildFiles(plan, ['widget-1.2.3.zip'])).toEqual([{ id: 'archive', file: 'widget-1.2.3.zip', mediaType: 'application/zip' }]);
     for (const files of [[], ['missing.zip'], ['widget-1.2.3.zip', 'extra.txt'], ['widget-1.2.3.zip', 'WIDGET-1.2.3.zip']]) expect(() => matchBuildFiles(plan, files)).toThrow('RN_BUILD_OUTPUT');
   });

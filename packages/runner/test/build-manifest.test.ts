@@ -59,6 +59,26 @@ async function oci(platforms = ['linux/amd64'], version = '1.2.3') {
   return { image, store, plan: await planBuild({ ...identity, profile: 'oci-image-v1' }, { profile: 'oci-image-v1', inputs: { context: '.', dockerfile: 'Dockerfile', platforms }, outputs: [{ id: 'image', kind: 'oci-image', count: 1 }] }) };
 }
 describe('中央文件产物验证 T09', () => {
+  it('版本检查超过独立内存上限时在打开产物前拒绝收集及下载复核', async () => {
+    await file(); await truncate(join(output, 'widget.json'), buildLimits.maxNativeVersionBytes + 1);
+    const plan = await planBuild(identity, unit); const inspector = vi.fn(async () => '1.2.3');
+    await expect(collectFileBuildManifest(plan, output, inspector)).rejects.toThrow('RN_BUILD_LIMIT');
+    await expect(verifyDownloadedFileBuild(plan, {} as never, output, inspector)).rejects.toThrow('RN_BUILD_LIMIT');
+    expect(open).not.toHaveBeenCalled(); expect(inspector).not.toHaveBeenCalled();
+    const unversioned = await planBuild({ ...identity, version: null }, unit);
+    const manifest = await collectFileBuildManifest(unversioned, output, inspector);
+    expect(manifest.artifacts[0]).toMatchObject({ size: buildLimits.maxNativeVersionBytes + 1 });
+    expect(inspector).not.toHaveBeenCalled();
+  });
+  it('版本检查接受独立内存上限并保持原始文件摘要', async () => {
+    await file(); await truncate(join(output, 'widget.json'), buildLimits.maxNativeVersionBytes);
+    const original = createHash('sha256').update(await readFile(join(output, 'widget.json'))).digest('hex');
+    const plan = await planBuild(identity, unit);
+    const inspector = vi.fn(async (bytes: Uint8Array) => { expect(bytes.length).toBe(buildLimits.maxNativeVersionBytes); bytes.fill(1); return '1.2.3'; });
+    const manifest = await collectFileBuildManifest(plan, output, inspector);
+    expect(manifest.artifacts[0]).toMatchObject({ size: buildLimits.maxNativeVersionBytes, sha256: original });
+    await expect(verifyDownloadedFileBuild(plan, manifest, output, inspector)).resolves.toBeUndefined();
+  });
   it.each(['ENOENT', 'ENOTDIR', 'ELOOP', 'EIO'])('读取失败分类路径错误并保留其他异常 %s', async code => {
     await file(); const plan = await planBuild(identity, unit); const error = Object.assign(new Error(code), { code });
     vi.mocked(open).mockImplementationOnce(async (...args) => {

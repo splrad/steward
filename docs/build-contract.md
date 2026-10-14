@@ -69,7 +69,9 @@ so an inspector changing its buffer cannot change the digest of the disk bytes.
 
 File artifacts use the same bounded reader as OCI metadata. File contents are
 retained only when the plan has a public version and a native version inspector
-is supplied. Builds without a public version skip the inspector and still
+is supplied. This path has a separate 32 MiB per-file limit, checked before
+opening the artifact; larger files fail with `RN_BUILD_LIMIT`. Retained bytes
+use one allocation. Unversioned hashing keeps the existing 1 GiB per-file limit. Builds without a public version skip the inspector and still
 verify file digests and metadata. Source and output
 directories may have different Windows drive roots; equal or nested directories
 remain invalid. OCI config OS and architecture fields must be strings even when

@@ -56,7 +56,7 @@ export interface FileArtifact { id: string; kind: 'file'; file: string; mediaTyp
 export interface ImageArtifact { id: string; kind: 'oci-image'; reference: string; digest: string }
 export type BuildArtifact = FileArtifact | ImageArtifact;
 export interface BuildManifest extends BuildIdentity { schemaVersion: 1; inputsSha256: string; artifacts: BuildArtifact[] }
-export const buildLimits = { maxFiles: 128, maxFileBytes: 1024 * 1024 * 1024, maxTotalBytes: 4 * 1024 * 1024 * 1024 } as const;
+export const buildLimits = { maxFiles: 128, maxNativeVersionBytes: 32 * 1024 * 1024, maxFileBytes: 1024 * 1024 * 1024, maxTotalBytes: 4 * 1024 * 1024 * 1024 } as const;
 const idPattern = /^[a-z][a-z0-9-]*$/u;
 const shaPattern = /^[0-9a-f]{40}$/u;
 const digestPattern = /^[0-9a-f]{64}$/u;
@@ -148,7 +148,9 @@ export async function planBuild(identity: BuildIdentity, unit: BuildUnit): Promi
   return { ...identity, inputs, inputsSha256: await sha256Hex(`${JSON.stringify(inputs)}\n`), outputs, runnerFamily, timeoutMinutes: 45 };
 }
 export function matchBuildFiles(plan: BuildPlan, files: readonly string[]): { id: string; file: string; mediaType: string }[] {
-  if (!files.length || files.length > buildLimits.maxFiles || new Set(files.map(file => file.toLowerCase())).size !== files.length) buildFail('RN_BUILD_OUTPUT');
+  if (!Array.isArray(files) || !files.length || files.length > buildLimits.maxFiles) buildFail('RN_BUILD_OUTPUT');
+  for (const file of files) if (typeof file !== 'string') buildFail('RN_BUILD_OUTPUT');
+  if (new Set(files.map(file => file.toLowerCase())).size !== files.length) buildFail('RN_BUILD_OUTPUT');
   files.forEach(file => assertBuildPath(file));
   const assigned = new Set<string>(); const ids = new Set<string>();
   const assets: { id: string; file: string; mediaType: string }[] = [];
