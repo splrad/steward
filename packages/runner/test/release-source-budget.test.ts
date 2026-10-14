@@ -4,6 +4,23 @@ import { GitHubClient } from '../../github/src/index.js';
 
 const limits = { ...releaseSourceBudget, intervalMs: 0, requests: 3, timeoutMs: 10_000 };
 describe('发布来源共享 API 预算', () => {
+  it.each(['POST', 'PUT', 'PATCH', 'DELETE'])('Request 内置 %s 方法在网络调用前拒绝', async method => {
+    const network = vi.fn(async () => Response.json({}));
+    const transport = budgetReleaseSourceTransport(network, limits);
+    await expect(transport(new Request('https://api.github.com/x', { method }))).rejects.toThrow('read-only');
+    expect(network).not.toHaveBeenCalled();
+  });
+  it('init 方法优先于 Request，GET 大小写均接受，写覆盖仍拒绝', async () => {
+    const network = vi.fn(async (input, init) => {
+      expect(new Request(input, init).method).toBe('GET');
+      return Response.json({});
+    });
+    const transport = budgetReleaseSourceTransport(network, limits);
+    await transport(new Request('https://api.github.com/x', { method: 'POST' }), { method: 'get' });
+    await transport(new Request('https://api.github.com/x'));
+    await expect(transport(new Request('https://api.github.com/x'), { method: 'post' })).rejects.toThrow('read-only');
+    expect(network).toHaveBeenCalledTimes(2);
+  });
   it('真实分页请求及第二轮读取共同计数，达到上限不再调用网络', async () => {
     let calls = 0;
     const transport = budgetReleaseSourceTransport(async input => {

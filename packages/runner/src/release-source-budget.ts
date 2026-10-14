@@ -14,7 +14,7 @@ export function budgetReleaseSourceTransport(transport: typeof fetch = fetch, li
     else active++;
     try {
       if (stopped) throw stopped;
-      if ((init?.method ?? 'GET') !== 'GET') return fail('read-only transport');
+      if ((init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase() !== 'GET') return fail('read-only transport');
       const wait = Math.max(0, nextStart - Date.now());
       nextStart = Math.max(Date.now(), nextStart) + limits.intervalMs;
       if (wait) await new Promise(resolve => setTimeout(resolve, wait));

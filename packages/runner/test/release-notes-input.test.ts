@@ -26,6 +26,16 @@ function fixture(count = 1) {
 const collect = (gh: Parameters<typeof collectReleaseSources>[0]) => collectReleaseSources(gh, 'o', 'r', identity, 'v2.0.0');
 
 describe('R02 发布来源', () => {
+  it.each(['User', 'Bot', 'Organization', 'Mannequin'])('作者类型 %s 保留到快照', async type => {
+    const { gh, pulls } = fixture(); pulls[0]!.user.type = type;
+    expect(JSON.parse((await collect(gh)).bytes).sourceFacts[0].author.type).toBe(type);
+  });
+  it.each(['Unknown', '', 'bot', null, undefined, 42])('非法作者类型 %s 在读取后续事实前失败关闭', async type => {
+    const { gh, pulls } = fixture(); Object.assign(pulls[0]!.user, { type });
+    gh.listPullFiles = vi.fn(gh.listPullFiles);
+    await expect(collect(gh)).rejects.toMatchObject({ code: 'RN_SOURCE_INCOMPLETE' });
+    expect(gh.listPullFiles).not.toHaveBeenCalled();
+  });
   it('120 PR 双轮真实客户端采集受同一预算约束，含分页端点共 1444 请求', async () => {
     vi.useFakeTimers();
     try {

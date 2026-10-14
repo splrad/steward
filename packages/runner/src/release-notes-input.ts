@@ -103,7 +103,7 @@ export async function collectReleaseSources(gh: SourceClient, owner: string, rep
     if (!association.merged_at || association.base?.repo?.id !== identity.repositoryId || association.base?.ref !== identity.defaultBranch || association.merge_commit_sha !== commit.sha) sourceFailure(`association identity: ${commit.sha}`);
     const pull = await gh.getPullRequest(owner, repo, association.number);
     if (pull.number !== association.number || !pull.merged || pull.merged_at !== association.merged_at || pull.base?.repo?.id !== identity.repositoryId || pull.base?.ref !== identity.defaultBranch || pull.merge_commit_sha !== commit.sha) sourceFailure(`PR identity: ${commit.sha}`);
-    if (!text(pull.title) || !(pull.body === null || text(pull.body)) || !text(pull.user?.login) || !text(pull.user?.type) || !text(pull.head?.ref) || !natural(pull.head?.repo?.id) || pull.head.repo.id === 0) sourceFailure('PR author or source identity');
+    if (!text(pull.title) || !(pull.body === null || text(pull.body)) || !text(pull.user?.login) || !['User', 'Bot', 'Organization', 'Mannequin'].includes(pull.user?.type) || !text(pull.head?.ref) || !natural(pull.head?.repo?.id) || pull.head.repo.id === 0) sourceFailure('PR author or source identity');
     sourceSha(pull.head.sha); sourceSha(pull.base.sha);
     const [rawFiles, commits, rawLabels] = await Promise.all([gh.listPullFiles(owner, repo, pull.number), gh.listPullCommits(owner, repo, pull.number), gh.listLabels(owner, repo, pull.number)]);
     const files = [...rawFiles]; const labels = [...rawLabels];
