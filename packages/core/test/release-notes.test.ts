@@ -10,6 +10,14 @@ function pull(number: number, title: string, files = ["src/a.cs"], labels: strin
 }
 
 describe("发布说明", () => {
+  it("区分显式标签未命中与多标签未选择的错误码", () => {
+    const releases = [{ tag: 'v1.0.0', targetSha: 'near', publishedAt: '2026-01-01', draft: false, prerelease: false }, { tag: 'v1.0.1', targetSha: 'near', publishedAt: '2026-01-02', draft: false, prerelease: false }, { tag: 'v0.9.0', targetSha: 'far', publishedAt: '2025-01-01', draft: false, prerelease: false }];
+    for (const ancestors of [['near', 'far'], []]) {
+      expect(() => selectPreviousRelease(releases, ancestors, 'v0.9.0')).toThrow(expect.objectContaining({ code: 'RN_SOURCE_INCOMPLETE' }));
+    }
+    expect(() => selectPreviousRelease(releases, ['near', 'far'])).toThrow(expect.objectContaining({ code: 'RN_SOURCE_AMBIGUOUS' }));
+    expect(selectPreviousRelease(releases, ['near', 'far'], 'v1.0.0')?.tag).toBe('v1.0.0');
+  });
   it("选择最新第一父祖先发布", () => {
     const releases = [
       { tag: "v1.0.0", targetSha: "a", publishedAt: "2026-01-01T00:00:00Z", draft: false, prerelease: false },

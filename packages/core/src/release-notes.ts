@@ -1,4 +1,5 @@
 import { classifyReleaseDecision, type ClassificationDecision, type ClassificationProfile } from './classification.js';
+import { ReleaseSourceError } from './release-notes-input.js';
 
 export interface PublishedRelease { tag: string; targetSha: string; publishedAt: string; draft: boolean; prerelease: boolean }
 export interface ReleasePullRequest { number: number; title: string; body: string; labels: string[]; files: string[]; author: { login: string; type: string }; mergedAt: string; mergeSha: string }
@@ -13,10 +14,10 @@ export function selectPreviousRelease(releases: readonly PublishedRelease[], fir
     const candidates = releases.filter(release => !release.draft && !release.prerelease && release.targetSha === sha);
     if (!candidates.length) continue;
     const selected = selectedTag ? candidates.find(release => release.tag === selectedTag) : candidates.length === 1 ? candidates[0] : undefined;
-    if (!selected) throw new Error('RN_SOURCE_AMBIGUOUS: select stable tag');
+    if (!selected) throw new ReleaseSourceError(selectedTag ? 'RN_SOURCE_INCOMPLETE' : 'RN_SOURCE_AMBIGUOUS', selectedTag ? 'selected stable tag not reached' : 'select stable tag');
     return selected;
   }
-  if (selectedTag) throw new Error('RN_SOURCE_INCOMPLETE: selected stable tag not reached');
+  if (selectedTag) throw new ReleaseSourceError('RN_SOURCE_INCOMPLETE', 'selected stable tag not reached');
   return null;
 }
 
