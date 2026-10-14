@@ -194,6 +194,44 @@
           "const": true
         }
       }
+    },
+    "sourcePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "previousStableTag": {
+          "type": "string",
+          "minLength": 1
+        },
+        "adoption": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "boundarySha",
+            "reference"
+          ],
+          "properties": {
+            "mode": {
+              "const": "start-at-adoption"
+            },
+            "boundarySha": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{40}$"
+            },
+            "reference": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      },
+      "not": {
+        "required": [
+          "previousStableTag",
+          "adoption"
+        ]
+      }
     }
   },
   "$defs": {

@@ -1,4 +1,5 @@
 import { classifyReleaseDecision, type ClassificationDecision, type ClassificationProfile } from './classification.js';
+import { ReleaseSourceError } from './release-notes-input.js';
 
 export interface PublishedRelease { tag: string; targetSha: string; publishedAt: string; draft: boolean; prerelease: boolean }
 export interface ReleasePullRequest { number: number; title: string; body: string; labels: string[]; files: string[]; author: { login: string; type: string }; mergedAt: string; mergeSha: string }
@@ -7,10 +8,17 @@ export interface CategorizedReleasePullRequest extends ClassifiedReleasePullRequ
 
 const categoryOrder = ["🚨 破坏性变更", "🔒 安全修复", "✨ 新增功能", "🛠 问题修复", "⚡ 性能优化", "📦 安装与发布包", "🔌 其他插件变更"] as const;
 
-export function selectPreviousRelease(releases: readonly PublishedRelease[], firstParentAncestors: ReadonlySet<string>): PublishedRelease | null {
-  return [...releases]
-    .filter((release) => !release.draft && !release.prerelease && firstParentAncestors.has(release.targetSha))
-    .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))[0] ?? null;
+/** Ancestors are ordered nearest first, excluding the target itself. */
+export function selectPreviousRelease(releases: readonly PublishedRelease[], firstParentAncestors: readonly string[], selectedTag?: string): PublishedRelease | null {
+  for (const sha of firstParentAncestors) {
+    const candidates = releases.filter(release => !release.draft && !release.prerelease && release.targetSha === sha);
+    if (!candidates.length) continue;
+    const selected = selectedTag ? candidates.find(release => release.tag === selectedTag) : candidates.length === 1 ? candidates[0] : undefined;
+    if (!selected) throw new ReleaseSourceError(selectedTag ? 'RN_SOURCE_INCOMPLETE' : 'RN_SOURCE_AMBIGUOUS', selectedTag ? 'selected stable tag not reached' : 'select stable tag');
+    return selected;
+  }
+  if (selectedTag) throw new ReleaseSourceError('RN_SOURCE_INCOMPLETE', 'selected stable tag not reached');
+  return null;
 }
 
 export function collectReleasePullRequests<T extends ReleasePullRequest>(pullRequests: readonly T[], excludedLabels: readonly string[]): T[] {
