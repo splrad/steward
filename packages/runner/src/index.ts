@@ -22,6 +22,7 @@ import { runPrIssueLink } from "./pr-issue-link.js";
 import { validateRemoteFragments } from "./release-note-validation.js";
 import { collectReleaseRange, collectReleaseSources, assertReleaseSourcesUnchanged, configuredReleaseSourcePolicy, type TrustedReleaseSourcePolicy } from "./release-notes-input.js";
 import { classificationFacts } from "./classification-facts.js";
+import { budgetReleaseSourceTransport, releaseSourceBudget } from "./release-source-budget.js";
 import { targetManagedBlock, updatePullRequestBodyDurably, type DurableBodyRedrive } from "./pr-body-writer.js";
 import { minimatch } from "minimatch";
 import YAML from "yaml";
@@ -106,12 +107,12 @@ function configPath(...segments: string[]): string {
   return join(root, ...segments);
 }
 function splitRepository(fullName: string): [string, string] { const parts = fullName.split("/"); if (parts.length !== 2 || parts.some(x => !x)) throw new Error("仓库完整名称无效"); return parts as [string, string]; }
-async function client(repositoryId: number, permissions: Parameters<typeof createInstallationToken>[0]["permissions"], policySha: string): Promise<GitHubClient> {
-  return (await clientWithToken(repositoryId, permissions, policySha)).client;
+async function client(repositoryId: number, permissions: Parameters<typeof createInstallationToken>[0]["permissions"], policySha: string, transport: typeof fetch = fetch): Promise<GitHubClient> {
+  return (await clientWithToken(repositoryId, permissions, policySha, transport)).client;
 }
-async function clientWithToken(repositoryId: number, permissions: Parameters<typeof createInstallationToken>[0]["permissions"], policySha: string): Promise<{ token: string; client: GitHubClient }> {
+async function clientWithToken(repositoryId: number, permissions: Parameters<typeof createInstallationToken>[0]["permissions"], policySha: string, transport: typeof fetch = fetch): Promise<{ token: string; client: GitHubClient }> {
   const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId, permissions, policySha });
-  return { token, client: new GitHubClient(token, "https://api.github.com", fetch, policySha) };
+  return { token, client: new GitHubClient(token, "https://api.github.com", transport, policySha) };
 }
 async function summary(lines: readonly string[]): Promise<void> {
   const target = process.env.GITHUB_STEP_SUMMARY;
@@ -1913,7 +1914,7 @@ async function resolveTagCommit(gh: GitHubClient, owner: string, repo: string, t
 }
 
 async function collectFirstParentRange(gh: GitHubClient, owner: string, repo: string, targetSha: string, releases: readonly any[], excludeTag: string, sourcePolicy: TrustedReleaseSourcePolicy = {}): Promise<{ commits: any[]; previousRelease: any | null }> {
-  return collectReleaseRange(gh, owner, repo, targetSha, releases, excludeTag, sourcePolicy);
+  return collectReleaseRange(gh, owner, repo, targetSha, releases, excludeTag, sourcePolicy, releaseSourceBudget.commits);
 }
 
 async function isFirstParentAncestor(gh: GitHubClient, owner: string, repo: string, ancestor: string, descendant: string): Promise<boolean> {
@@ -1957,7 +1958,7 @@ async function releasePreflight(args: Readonly<Record<string, string>>) {
   if (process.env.STEWARD_APP_PRIVATE_KEY) {
     const trigger = required(args, "trigger");
     if (!['app', 'manual'].includes(trigger)) throw new Error("发布触发来源无效");
-    const gh = await client(repositoryId, { contents: "read", pull_requests: "read", metadata: "read", members: "read" }, policySha);
+    const gh = await client(repositoryId, { contents: "read", pull_requests: "read", metadata: "read", members: "read" }, policySha, budgetReleaseSourceTransport());
     if (trigger === "manual") {
       integer(env("TRIGGER_ACTOR_ID"), "TRIGGER_ACTOR_ID");
       const membership = await gh.getTeamMembership("splrad", "maintainers", env("TRIGGER_ACTOR_LOGIN"));
@@ -2025,7 +2026,7 @@ async function releaseNotesCommand(args: Readonly<Record<string, string>>) {
   const policySha = sha(required(args, "policy-sha"), "policy-sha");
   const displayVersion = required(args, "display-version");
   parseVersion(displayVersion, "20000101.1");
-  const gh = await client(repositoryId, { contents: "read", pull_requests: "read", metadata: "read" }, policySha);
+  const gh = await client(repositoryId, { contents: "read", pull_requests: "read", metadata: "read" }, policySha, budgetReleaseSourceTransport());
   const repository = await gh.getRepositoryById(repositoryId); const [owner, repo] = splitRepository(repository.full_name);
   if (repositoryId !== 1187527897 || repository.full_name !== "splrad/LayerScape") throw new Error("发布说明仓库身份不匹配");
   if (typeof repository.default_branch !== "string" || !repository.default_branch.trim()) throw new Error("发布仓库没有可用的默认分支");

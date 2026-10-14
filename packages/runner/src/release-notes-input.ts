@@ -1,4 +1,5 @@
 import { selectPreviousRelease } from '../../core/src/release-notes.js';
+import { releaseSourceBudget } from './release-source-budget.js';
 import { createHash } from 'node:crypto';
 import { GitHubRequestError, type GitHubClient } from '../../github/src/index.js';
 import { attributeReleaseSources, assertSourceIdentity, ReleaseSourceError, sourceFailure, sourceSha, type ReleaseBoundary, type ReleaseSourceIdentity, type ManagedReviewRecord } from '../../core/src/release-notes-input.js';
@@ -31,8 +32,9 @@ export function configuredReleaseSourcePolicy(value: unknown, identity: ReleaseS
   if (result.adoption && result.previousStableTag) sourceFailure('conflicting source boundaries');
   return result;
 }
-export async function collectReleaseRange(gh: SourceClient, owner: string, repo: string, targetSha: string, releases: readonly any[], excludeTag: string, policy: TrustedReleaseSourcePolicy = {}) {
+export async function collectReleaseRange(gh: SourceClient, owner: string, repo: string, targetSha: string, releases: readonly any[], excludeTag: string, policy: TrustedReleaseSourcePolicy = {}, maxCommits = 10_000) {
   sourceSha(targetSha);
+  if (!Number.isSafeInteger(maxCommits) || maxCommits < 1 || maxCommits > 10_000) sourceFailure('range budget');
   const byCommit = new Map<string, any[]>(); const tags = new Set<string>();
   for (const release of releases) {
     if (typeof release.draft !== 'boolean' || typeof release.prerelease !== 'boolean' || typeof release.tag_name !== 'string') sourceFailure('release enumeration');
@@ -53,7 +55,7 @@ export async function collectReleaseRange(gh: SourceClient, owner: string, repo:
     byCommit.set(commit, [...(byCommit.get(commit) ?? []), release]);
   }
   const commits: any[] = []; const seen = new Set<string>(); let current = targetSha;
-  for (let count = 0; count <= 10_000; count++) {
+  for (let count = 0; count <= maxCommits; count++) {
     if (seen.has(current)) sourceFailure('first-parent cycle');
     seen.add(current);
     const stable = byCommit.get(current);
@@ -67,7 +69,7 @@ export async function collectReleaseRange(gh: SourceClient, owner: string, repo:
       if (policy.previousStableTag) sourceFailure('selected stable tag not reached');
       return { commits, previousRelease: null, boundary: { kind: 'adoption', sha: current, reference: policy.adoption.reference } as ReleaseBoundary };
     }
-    if (count === 10_000) return sourceFailure('first-parent limit');
+    if (count === maxCommits) return sourceFailure(`first-parent limit (${maxCommits})`);
     const commit = await gh.getCommit(owner, repo, current);
     if (commit.sha !== current || !Array.isArray(commit.parents) || commit.parents.some((p: any) => typeof p?.sha !== 'string')) sourceFailure('commit identity or parents');
     commits.push(commit);
@@ -89,7 +91,7 @@ function natural(value: unknown): value is number {
 export async function collectReleaseSources(gh: SourceClient, owner: string, repo: string, identity: ReleaseSourceIdentity, excludeTag: string, policy: TrustedReleaseSourcePolicy = {}) {
   assertSourceIdentity(identity);
   if (policy.adoption && (policy.adoption.repositoryId !== identity.repositoryId || policy.adoption.policySha !== identity.policySha)) sourceFailure('adoption policy binding');
-  const history = await collectReleaseRange(gh, owner, repo, identity.targetSha, await gh.listReleases(owner, repo), excludeTag, policy);
+  const history = await collectReleaseRange(gh, owner, repo, identity.targetSha, await gh.listReleases(owner, repo), excludeTag, policy, releaseSourceBudget.commits);
   const facts = [];
   const rows = [];
   for (const commit of history.commits) {

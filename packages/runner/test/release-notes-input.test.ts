@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { budgetReleaseSourceTransport, releaseSourceBudget } from '../src/release-source-budget.js';
 import { GitHubClient, GitHubRequestError } from '../../github/src/index.js';
 import { collectReleaseRange, configuredReleaseSourcePolicy, collectReleaseSources, assertReleaseSourcesUnchanged } from '../src/release-notes-input.js';
 import { attributeReleaseSources, type ManagedReviewRecord } from '../../core/src/release-notes-input.js';
@@ -25,6 +26,42 @@ function fixture(count = 1) {
 const collect = (gh: Parameters<typeof collectReleaseSources>[0]) => collectReleaseSources(gh, 'o', 'r', identity, 'v2.0.0');
 
 describe('R02 发布来源', () => {
+  it('120 PR 双轮真实客户端采集受同一预算约束，含分页端点共 1444 请求', async () => {
+    vi.useFakeTimers();
+    try {
+      const { gh } = fixture(120); let requests = 0;
+      const started = Date.now();
+      const transport = budgetReleaseSourceTransport(async input => {
+        requests++; const path = new URL(String(input)).pathname;
+        if (path.endsWith('/releases')) return Response.json(await gh.listReleases());
+        if (path.includes('/git/ref/')) return Response.json(await gh.getGitRef());
+        const commit = /\/commits\/([a-f0-9]{40})(\/pulls)?$/.exec(path);
+        if (commit) return Response.json(commit[2] ? await gh.listPullsForCommit('o', 'r', commit[1]!) : await gh.getCommit('o', 'r', commit[1]!));
+        const pull = /\/(pulls|issues)\/(\d+)(?:\/(files|commits|labels))?$/.exec(path);
+        if (pull) {
+          const n = Number(pull[2]);
+          return Response.json(pull[3] === 'files' ? await gh.listPullFiles() : pull[3] === 'commits' ? await gh.listPullCommits('o', 'r', n) : pull[3] === 'labels' ? await gh.listLabels() : await gh.getPullRequest('o', 'r', n));
+        }
+        throw new Error(`unexpected ${path}`);
+      });
+      const client = new GitHubClient('test', 'https://api.github.com', transport);
+      const run = async () => {
+        const before = await collectReleaseSources(client, 'o', 'r', { ...identity, targetSha: sha(121) }, 'v2.0.0');
+        const after = await collectReleaseSources(client, 'o', 'r', { ...identity, targetSha: sha(121) }, 'v2.0.0');
+        assertReleaseSourcesUnchanged(before, after);
+      };
+      const done = run(); await vi.runAllTimersAsync(); await done;
+      expect(requests).toBe(1444);
+      expect(requests).toBeLessThan(releaseSourceBudget.requests);
+      expect(Date.now() - started).toBeLessThan(releaseSourceBudget.timeoutMs);
+    } finally { vi.useRealTimers(); }
+  });
+  it('REST 入口允许 120 条，121 条在 PR 采集前失败', async () => {
+    const { gh } = fixture(120);
+    expect((await collectReleaseSources(gh, 'o', 'r', { ...identity, targetSha: sha(121) }, 'v2.0.0')).input.commits).toHaveLength(120);
+    gh.listPullsForCommit = async () => { throw new Error('must not collect PR facts'); };
+    await expect(collectReleaseSources(gh, 'o', 'r', { ...identity, targetSha: sha(122) }, 'v2.0.0')).rejects.toThrow('first-parent limit (120)');
+  });
   it.each(['stable', 'adoption'])('允许恰好 10000 条区间提交，超过上限时停止读取：%s', async mode => {
     const { gh, releases } = fixture();
     let reads = 0;
@@ -37,7 +74,7 @@ describe('R02 发布来源', () => {
     expect(result.boundary.sha).toBe(sha(1));
     expect(reads).toBe(10_000);
     reads = 0;
-    await expect(collectReleaseRange(gh, 'o', 'r', sha(10_002), listed, 'v2.0.0', policy)).rejects.toMatchObject({ code: 'RN_SOURCE_INCOMPLETE', message: 'RN_SOURCE_INCOMPLETE: first-parent limit' });
+    await expect(collectReleaseRange(gh, 'o', 'r', sha(10_002), listed, 'v2.0.0', policy)).rejects.toMatchObject({ code: 'RN_SOURCE_INCOMPLETE', message: 'RN_SOURCE_INCOMPLETE: first-parent limit (10000)' });
     expect(reads).toBe(10_000);
   });
   it('中央配置绑定仓库和策略，拒绝未知字段、冲突边界和候选文件自授权', () => {
