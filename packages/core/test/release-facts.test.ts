@@ -59,6 +59,25 @@ describe('R03 发布事实合同', () => {
     if (kind === 'blob') { fragment.blobSha = sha(8); f.history.fragments[0]!.blobSha = fragment.blobSha; }
     expect(() => assembleReleaseFacts(f)).toThrow();
   });
+  it.each([
+    null, { primaryKind: '', riskFlags: [] }, { primaryKind: '   ', riskFlags: [] }, { primaryKind: 42, riskFlags: [] },
+    { primaryKind: 'chore', riskFlags: null }, { primaryKind: 'chore', riskFlags: [''] }, { primaryKind: 'chore', riskFlags: ['  '] },
+    { primaryKind: 'chore', riskFlags: [42] }, { primaryKind: 'chore', riskFlags: ['security', 'security'] },
+  ])('普通 PR 非法分类 %j 在评估路径前拒绝', classification => {
+    const f = fixture(); Object.assign(f.pulls[1]!, { classification });
+    expect(() => assembleReleaseFacts(f)).toThrow('fact classification');
+  });
+  it.each(['', ' ', '\t', '\u00a0', '\u3000'])('root Schema 与解析器均拒绝空白分类 %j', blank => {
+    const f = migrationFixture(), data = JSON.parse(Buffer.from(f.migration.rawBase64, 'base64').toString());
+    data.previousRelease = null; data.root = { sha: sha(1), fragment: documented, classification: { primaryKind: 'feature', riskFlags: [] } };
+    const validate = new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
+    data.root.classification.primaryKind = blank;
+    expect(validate(data)).toBe(false); expect(() => parseReleaseMigration(encode(data))).toThrow();
+    data.root.classification.primaryKind = 'feature'; data.root.classification.riskFlags = [blank];
+    expect(validate(data)).toBe(false); expect(() => parseReleaseMigration(encode(data))).toThrow();
+    data.root.classification.riskFlags = ['security'];
+    expect(validate(data)).toBe(true); expect(parseReleaseMigration(encode(data)).root?.classification.riskFlags).toEqual(['security']);
+  });
   it('固定事实 ID，保留原始 CRLF 字节；ignored 与产品事实完整覆盖', () => {
     const f = fixture(), r = assembleReleaseFacts(f);
     expect(r.facts.map(v => v.factId)).toEqual(['fix-first#0']);

@@ -109,14 +109,16 @@
           "properties": {
             "primaryKind": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "pattern": "\\S"
             },
             "riskFlags": {
               "type": "array",
               "uniqueItems": true,
               "items": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "pattern": "\\S"
               }
             }
           }

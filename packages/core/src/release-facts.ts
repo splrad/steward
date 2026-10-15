@@ -36,6 +36,12 @@ function obj(value: unknown, keys: readonly string[]): Record<string, unknown> {
     || keys.some(k => !Object.hasOwn(value, k))) return sourceFailure('migration fields');
   return value as Record<string, unknown>;
 }
+function assertFactClassification(value: unknown): asserts value is FragmentClassification {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return sourceFailure('fact classification');
+  const c = value as Record<string, unknown>;
+  if (typeof c.primaryKind !== 'string' || !c.primaryKind.trim() || !Array.isArray(c.riskFlags)
+    || c.riskFlags.some(v => typeof v !== 'string' || !v.trim()) || new Set(c.riskFlags).size !== c.riskFlags.length) return sourceFailure('fact classification');
+}
 function positive(value: unknown): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) return sourceFailure('positive integer');
   return value;
@@ -83,8 +89,7 @@ export function parseReleaseMigration(bytes: Uint8Array): ReleaseMigration {
     if (!hasRoot) return sourceFailure('first release requires root provenance');
     const r = obj(v.root, ['sha', 'fragment', 'classification']);
     const c = obj(r.classification, ['primaryKind', 'riskFlags']);
-    if (typeof c.primaryKind !== 'string' || !c.primaryKind.trim() || !Array.isArray(c.riskFlags)
-      || c.riskFlags.some(v => typeof v !== 'string' || !v.trim()) || new Set(c.riskFlags).size !== c.riskFlags.length) return sourceFailure('root classification');
+    assertFactClassification(c);
     root = { sha: sourceSha(r.sha), fragment: parseFragment(new TextEncoder().encode(JSON.stringify(r.fragment))), classification: { primaryKind: c.primaryKind, riskFlags: c.riskFlags } };
   } else if (hasRoot) return sourceFailure('root only allowed for first release');
   const numbers = new Set<number>(), shas = new Set<string>();
@@ -172,7 +177,7 @@ export function assembleReleaseFacts(input: {
   for (const row of source.commits) {
     if (row.kind === 'review-record') { excluded.push({ pullNumber: row.pullNumber, mergeSha: row.sha, kind: 'review-record', reason: row.candidateId! }); coverage.push({ pullNumber: row.pullNumber, mergeSha: row.sha, source: 'excluded' }); continue; }
     const pull = input.pulls.find(p => p.pullNumber === row.pullNumber)!;
-    if (!pull.classification || typeof pull.classification.primaryKind !== 'string' || !Array.isArray(pull.classification.riskFlags)) return sourceFailure('fact classification');
+    assertFactClassification(pull.classification);
     const decision = evaluateRequirement(pull.changes, pull.classification, profile);
     const touched = pull.changes.filter(c => [c.path, c.status === 'renamed' ? c.previousPath : ''].some(p => p === profile.fragmentDirectory || p.startsWith(profile.fragmentDirectory + '/')));
     if (touched.length > 1 || touched.some(c => c.status !== 'added') || touched.length !== (pull.fragment ? 1 : 0)
