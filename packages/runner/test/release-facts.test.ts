@@ -1,3 +1,4 @@
+import { budgetReleaseSourceTransport } from '../src/release-source-budget.js';
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { GitHubClient } from '../../github/src/index.js';
@@ -33,6 +34,44 @@ function fixture() {
     readContext: vi.fn(async () => structuredClone(context)), classify: () => ({ primaryKind: 'bug', riskFlags: [] }) }, objects, context, files, pull };
 }
 describe('R03 固定树事实采集', () => {
+  it.each([50, 51])('%s PR 的完整 HTTP 预算边界包含两轮片段读取', async count => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0; const target = sha(count + 1); const retained = retainReleaseFragment(path, bytes);
+      const name = (n: number) => 'fix-' + String(n).padStart(4, '0');
+      const pull = (n: number) => ({ number: n, merged: true, merged_at: '2026-10-01T00:00:00Z', merge_commit_sha: sha(n + 1), changed_files: 1, commits: 1,
+        title: 'title', body: '', user: { id: 42, login: 'alice', type: 'User' }, head: { sha: sha(100 + n), ref: 'feature', repo: { id: 123 } }, base: { ref: 'main', sha: sha(n), repo: { id: 123 } } });
+      const transport = budgetReleaseSourceTransport(async input => {
+        calls++; const p = new URL(String(input)).pathname;
+        if (p.endsWith('/releases')) return Response.json([{ tag_name: 'v1.0.0', draft: false, prerelease: false }]);
+        if (p.includes('/git/ref/')) return Response.json({ object: { type: 'commit', sha: sha(1) } });
+        if (p.includes('/git/blobs/')) return Response.json({ sha: retained.blobSha, encoding: 'base64', content: retained.rawBase64, size: bytes.length });
+        const git = /\/git\/(commits|trees)\/([a-f0-9]{40})$/.exec(p);
+        if (git) {
+          const n = parseInt(git[2]!, 16);
+          if (git[1] === 'commits') return Response.json({ sha: sha(n), tree: { sha: sha(1000 + n) } });
+          const tree = n < 2000 ? [{ path: '.release-notes', mode: '040000', type: 'tree', sha: sha(n + 1000) }]
+            : n < 3000 ? [{ path: 'fragments', mode: '040000', type: 'tree', sha: sha(n + 1000) }]
+            : Array.from({ length: count }, (_, i) => ({ path: name(i + 1) + '.json', mode: '100644', type: 'blob', sha: retained.blobSha }));
+          return Response.json({ sha: sha(n), truncated: false, tree });
+        }
+        const commit = /\/commits\/([a-f0-9]{40})(\/pulls)?$/.exec(p);
+        if (commit) { const n = parseInt(commit[1]!, 16); return Response.json(commit[2] ? [pull(n - 1)] : { sha: sha(n), parents: [{ sha: sha(n - 1) }] }); }
+        const pr = /\/(pulls|issues)\/(\d+)(?:\/(files|commits|labels))?$/.exec(p);
+        if (pr) { const n = Number(pr[2]); return Response.json(pr[3] === 'files' ? [{ filename: '.release-notes/fragments/' + name(n) + '.json', status: 'added', additions: 1, deletions: 0 }]
+          : pr[3] === 'commits' ? [{ sha: sha(100 + n), commit: { message: 'change' } }] : pr[3] === 'labels' ? [] : pull(n)); }
+        throw Error(p);
+      });
+      const gh = new GitHubClient('test', 'https://api.github.com', transport);
+      const identity = { repositoryId: 123, defaultBranch: 'main', targetSha: target, policySha: sha(99) };
+      const history = { ...identity, complete: true as const, fragments: Array.from({ length: count }, (_, i) => ({ fragmentId: name(i + 1), pullNumber: i + 1, mergeSha: sha(i + 2), blobSha: retained.blobSha, sha256: retained.sha256, consumed: false })), migrations: [] };
+      const done = Promise.allSettled([collectReleaseFactSnapshot({ gh, owner: 'o', repo: 'r', identity, targetTag: 'v1.1.0',
+        profile: { fragmentDirectory: '.release-notes/fragments', required: [], reviewRequired: [], ignored: [] }, readContext: async () => ({ history }), classify: () => ({ primaryKind: 'bug', riskFlags: [] }) })]);
+      await vi.runAllTimersAsync(); const [result] = await done;
+      if (count === 50) { expect(result?.status).toBe('fulfilled'); expect(calls).toBe(1604); }
+      else { expect(result?.status).toBe('rejected'); expect(calls).toBe(52); }
+    } finally { vi.useRealTimers(); }
+  });
   it('真实 Git blob 路径读取，两轮来源/历史复核，输出原字节和确定性摘要', async () => {
     const f = fixture(), out = await collectReleaseFactSnapshot(f.options);
     expect(out.facts.facts[0]?.factId).toBe('fix-first#0');
@@ -59,7 +98,7 @@ describe('R03 固定树事实采集', () => {
   });
   it('二次读取的非消费历史漂移同样阻断', async () => {
     const f = fixture(); f.options.readContext.mockResolvedValueOnce(structuredClone(f.context));
-    f.context.history.migrations = [{ migrationId: 'other-id', sha256: 'a'.repeat(64), consumed: false }];
+    f.context.history.migrations = [{ migrationId: 'other-id', sha256: 'a'.repeat(64), consumed: true }];
     await expect(collectReleaseFactSnapshot(f.options)).rejects.toThrow('RN_SOURCE_STALE');
   });
   it('源 PR 内容在两次读取间改变时阻断', async () => {

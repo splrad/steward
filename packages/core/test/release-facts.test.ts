@@ -31,7 +31,34 @@ function migrationFixture() {
   f.history.migrations = [{ migrationId: migration.value.migrationId, sha256: migration.sha256, consumed: false }];
   return { ...f, migration };
 }
+function rebind(f: ReturnType<typeof migrationFixture>) {
+  const bytes = encode(f.migration.value);
+  f.migration.rawBase64 = bytes.toString('base64');
+  f.migration.sha256 = createHash('sha256').update(bytes).digest('hex');
+  f.history.migrations[0]!.sha256 = f.migration.sha256;
+}
 describe('R03 发布事实合同', () => {
+  it('未消费迁移原文缺失及多个待消费登记均失败关闭', () => {
+    const f = migrationFixture(); const { migration, ...without } = f;
+    expect(() => assembleReleaseFacts(without)).toThrow('pending migration');
+    f.history.migrations = [...f.history.migrations, { migrationId: 'second-id', sha256: 'b'.repeat(64), consumed: false }];
+    expect(() => assembleReleaseFacts(f)).toThrow('pending migration');
+  });
+  it.each(['base64', 'digest', 'value'])('迁移原文绑定拒绝 %s 不一致', kind => {
+    const f = migrationFixture();
+    if (kind === 'base64') f.migration.rawBase64 += '\n';
+    if (kind === 'digest') { f.migration.sha256 = 'b'.repeat(64); f.history.migrations[0]!.sha256 = f.migration.sha256; }
+    if (kind === 'value') f.migration.value.entries[0]!.fragment = { schemaVersion: 1, status: 'not-user-facing', reason: '更改原文之外的事实语义内容' };
+    expect(() => assembleReleaseFacts(f)).toThrow();
+  });
+  it.each(['base64', 'digest', 'value', 'blob'])('普通片段原文绑定拒绝 %s 不一致', kind => {
+    const f = fixture(), fragment = f.pulls[0]!.fragment!;
+    if (kind === 'base64') fragment.rawBase64 += '\n';
+    if (kind === 'digest') { fragment.sha256 = 'b'.repeat(64); f.history.fragments[0]!.sha256 = fragment.sha256; }
+    if (kind === 'value') fragment.fragment = { schemaVersion: 1, status: 'not-user-facing', reason: '更改原文之外的事实语义内容' };
+    if (kind === 'blob') { fragment.blobSha = sha(8); f.history.fragments[0]!.blobSha = fragment.blobSha; }
+    expect(() => assembleReleaseFacts(f)).toThrow();
+  });
   it('固定事实 ID，保留原始 CRLF 字节；ignored 与产品事实完整覆盖', () => {
     const f = fixture(), r = assembleReleaseFacts(f);
     expect(r.facts.map(v => v.factId)).toEqual(['fix-first#0']);
@@ -86,13 +113,14 @@ describe('R03 发布事实合同', () => {
     if (f.history.migrations[0]) f.history.migrations[0].rootSha = sha(1);
     expect(() => assembleReleaseFacts(f)).toThrow('root migration provenance');
     const g = migrationFixture(); g.source.boundary.kind = 'adoption'; g.migration.value.previousRelease = null;
-    expect(() => assembleReleaseFacts(g)).toThrow('verified root provenance');
+    expect(() => assembleReleaseFacts(g)).toThrow('original semantic mismatch');
   });
   it('首次根事实使用独立 ID 和 rootSha，不伪造 PR、blob 或文件删除项', () => {
     const f = migrationFixture(); f.source.boundary.kind = 'adoption';
     if (f.history.migrations[0]) f.history.migrations[0].rootSha = sha(1);
     f.migration.value.previousRelease = null;
     f.migration.value.root = { sha: sha(1), fragment: { schemaVersion: 1, status: 'documented', entries: [entry] }, classification: { primaryKind: 'feature', riskFlags: [] } };
+    rebind(f);
     const r = assembleReleaseFacts({ ...f, verifiedRoot: { sha: sha(1), parents: [] } });
     expect(r.facts.find(v => v.rootSha)).toEqual({ factId: 'migration:adopt-2026:root#0', pullNumber: null, mergeSha: null, rootSha: sha(1), entry, security: false });
     expect(r.rootRecord).toEqual({ sha: sha(1), status: 'documented', factIds: ['migration:adopt-2026:root#0'], reason: null });
@@ -110,6 +138,7 @@ describe('R03 发布事实合同', () => {
     if (kind === 'identity') verifiedRoot.sha = sha(9);
     if (kind === 'boundary') f.source.boundary.sha = sha(9);
     if (kind === 'stable') { f.source.boundary.kind = 'stable-release'; f.migration.value.previousRelease = { tag: 'v1.0.0', sha: sha(1) }; }
+    rebind(f);
     expect(() => assembleReleaseFacts({ ...f, ...(kind === 'missing' ? {} : { verifiedRoot }) })).toThrow();
   });
   it('根 not-user-facing 保留排除原因，安全和破坏性约束仍生效', () => {
@@ -117,10 +146,11 @@ describe('R03 发布事实合同', () => {
     if (f.history.migrations[0]) f.history.migrations[0].rootSha = sha(1); f.migration.value.previousRelease = null;
     const root = { sha: sha(1), fragment: { schemaVersion: 1 as const, status: 'not-user-facing' as const, reason: '根提交仅包含内部辅助配置内容' }, classification: { primaryKind: 'chore', riskFlags: [] as string[] } };
     f.migration.value.root = root;
+    rebind(f);
     const input = { ...f, verifiedRoot: { sha: sha(1), parents: [] } };
     expect(assembleReleaseFacts(input).rootRecord?.factIds).toEqual([]);
     expect(assembleReleaseFacts(input).rootRecord?.reason).toBe(root.fragment.reason);
-    root.classification.riskFlags = ['security']; expect(() => assembleReleaseFacts(input)).toThrow('RN_FACT_CONFLICT');
+    root.classification.riskFlags = ['security']; rebind(f); expect(() => assembleReleaseFacts(input)).toThrow('RN_FACT_CONFLICT');
   });
   it('根迁移严格 schema 与解析器一致，拒绝重复根/伪造 PR 和稳定版本夹带 root', () => {
     const f = migrationFixture(), data = JSON.parse(Buffer.from(f.migration.rawBase64, 'base64').toString());
@@ -150,8 +180,8 @@ describe('R03 发布事实合同', () => {
     const f = migrationFixture(); f.pulls[1]!.classification.riskFlags = ['security'];
     expect(assembleReleaseFacts(f).facts.find(v => v.pullNumber === 1)?.security).toBe(true);
     f.migration.value.entries[0]!.fragment = { schemaVersion: 1, status: 'not-user-facing', reason: '只修改了内部辅助实现细节' };
-    expect(() => assembleReleaseFacts(f)).toThrow('RN_FACT_CONFLICT');
-    f.migration.value.entries[0]!.fragment = parseReleaseMigration(Buffer.from(f.migration.rawBase64, 'base64')).entries[0]!.fragment;
+    rebind(f); expect(() => assembleReleaseFacts(f)).toThrow('RN_FACT_CONFLICT');
+    f.migration.value.entries[0]!.fragment = { schemaVersion: 1, status: 'documented', entries: [entry] }; rebind(f);
     f.pulls[1]!.classification.riskFlags = ['breaking-change']; expect(() => assembleReleaseFacts(f)).toThrow('actionRequired');
   });
   it('受管候选只排除审阅记录；不允许附加产品事实', () => {

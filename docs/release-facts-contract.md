@@ -6,11 +6,11 @@ R03 在 R02 的固定来源合同上收集事实。Core 处理纯数据；runner
 
 从每个产品 PR 的已校验文件列表确定唯一新增片段，再读取该 PR 合并提交和固定 target 的 Git blob。路径、树完整性、文件模式、base64、长度及 Git SHA-1 均校验；片段缺失、修改、重命名和删除阻断。
 
-原始字节以 rawBase64 留存，不用规范化 JSON 替代；同时保留 path、blobSha、sha256、PR 和 mergeSha。解析器产生供渲染使用的语义值，原字节中的换行和编码表示仍可还原。普通事实 ID 是 fragmentId#entryIndex，索引从 0 开始，按源 entries 顺序。not-user-facing 保留 consumedFragments 和空 factIds，其 reason 只进入排除与审计。
+公开组装接口校验规范 base64，重算 SHA-256 和普通片段 Git blob SHA-1，并从原始字节重新解析、逐字段比对语义值；任何不一致均阻断。原始字节以 rawBase64 留存，不用规范化 JSON 替代；同时保留 path、blobSha、sha256、PR 和 mergeSha。解析器产生供渲染使用的语义值，原字节中的换行和编码表示仍可还原。普通事实 ID 是 fragmentId#entryIndex，索引从 0 开始，按源 entries 顺序。not-user-facing 保留 consumedFragments 和空 factIds，其 reason 只进入排除与审计。
 
 ## 历史唯一性和消费
 
-ReleaseFactContextReader 必须来自可信中央历史/收据服务，绑定 repositoryId、targetSha、policySha，complete 必须为 true。fragment 历史记录绑定永久 ID、首次 PR、mergeSha、blobSha、sha256 和 consumed；当前来源也必须在索引中登记，不能把“未查到”解释为新 ID。重复记录、不同来源重用、摘要不同或已消费都阻断。迁移登记同样绑定 migrationId、原始字节摘要和消费状态。
+ReleaseFactContextReader 必须来自可信中央历史/收据服务，绑定 repositoryId、targetSha、policySha，complete 必须为 true。fragment 历史记录绑定永久 ID、首次 PR、mergeSha、blobSha、sha256 和 consumed；当前来源也必须在索引中登记，不能把“未查到”解释为新 ID。重复记录、不同来源重用、摘要不同或已消费都阻断。迁移登记同样绑定 migrationId、原始字节摘要和消费状态。当前合同保守要求全部未消费登记中至多存在一个，且必须提供对应原文；缺原文或多个待消费登记均阻断，不从缺失值推断“不适用”。已消费历史登记可保留。
 
 R03 定义并消费此接口，不实现 D1 持久服务，不把测试内存数据视为生产永久索引。接口缺失时失败关闭。R08 持久层须提供覆盖完整历史的索引与消费查询；R14 的 PR 门禁仍需独立接入历史查重。发布前再次检查消费及事务性登记属于 R08/R10，当前两轮只读检查不代替原子消费事务。
 
@@ -34,6 +34,6 @@ schema/release-notes-migration.schema.json 约束 schemaVersion、migrationId、
 
 ## 复核和验证
 
-runner 两次读取来源、原始片段和中央上下文，将事实与历史状态一起比较；变化返回 RN_SOURCE_STALE，缺失和不匹配返回 RN_SOURCE_INCOMPLETE，既有片段校验错误码保留。不输出半份结果。调用方必须传入共用 R02 HTTP 预算的 GitHubClient。
+runner 两次读取来源、原始片段和中央上下文，将事实与历史状态一起比较；变化返回 RN_SOURCE_STALE，缺失和不匹配返回 RN_SOURCE_INCOMPLETE，既有片段校验错误码保留。不输出半份结果。调用方必须传入共用 R02 HTTP 预算的 GitHubClient。R03 入口最多处理 50 条提交（R02 独立入口仍为 120），在 PR 事实读取前检查数量。50 个单页 PR 各有一个三级路径片段时，双轮真实客户端模拟共 1604 次 HTTP 请求；51 条提前拒绝。分页、额外发布标签和网络耗时继续受 1800 请求/8 分钟共享预算约束，超限失败关闭，该模拟不保证全部线上输入均能完成。
 
 Core 与 runner 的 release-facts.test.ts 覆盖原字节留存、ID、历史重用/消费、迁移边界/到期/重放、互斥覆盖、风险、Git blob 篡改/缺失/模式/截断及双轮漂移；现有片段测试继续覆盖文本与编码合同。

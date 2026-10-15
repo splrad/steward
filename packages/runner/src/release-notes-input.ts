@@ -88,10 +88,10 @@ function text(value: unknown): value is string {
 function natural(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
-export async function collectReleaseSources(gh: SourceClient, owner: string, repo: string, identity: ReleaseSourceIdentity, excludeTag: string, policy: TrustedReleaseSourcePolicy = {}) {
+export async function collectReleaseSources(gh: SourceClient, owner: string, repo: string, identity: ReleaseSourceIdentity, excludeTag: string, policy: TrustedReleaseSourcePolicy = {}, maxCommits = releaseSourceBudget.commits) {
   assertSourceIdentity(identity);
   if (policy.adoption && (policy.adoption.repositoryId !== identity.repositoryId || policy.adoption.policySha !== identity.policySha)) sourceFailure('adoption policy binding');
-  const history = await collectReleaseRange(gh, owner, repo, identity.targetSha, await gh.listReleases(owner, repo), excludeTag, policy, releaseSourceBudget.commits);
+  const history = await collectReleaseRange(gh, owner, repo, identity.targetSha, await gh.listReleases(owner, repo), excludeTag, policy, maxCommits);
   const facts = [];
   const rows = [];
   for (const commit of history.commits) {

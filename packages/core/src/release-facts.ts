@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { fragmentIdFromPath, parseFragment, readStrictFragmentJson, validateFragmentRequirement, evaluateRequirement,
   type Fragment, type FragmentEntry, type FragmentClassification, type FragmentPathChange, type FragmentProfile } from './release-note-fragment.js';
 import { assertSourceIdentity, sourceFailure, sourceSha, type ReleaseSourceInput } from './release-notes-input.js';
@@ -51,6 +52,23 @@ function after(left: string, right: string): boolean {
   const a = tag(left).slice(1).split('.').map(BigInt), b = tag(right).slice(1).split('.').map(BigInt);
   for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i]! > b[i]!;
   return false;
+}
+function originalBytes(raw: string): Uint8Array {
+  if (typeof raw !== 'string' || raw.length > 700_000) return sourceFailure('raw base64');
+  const bytes = Buffer.from(raw, 'base64');
+  if (bytes.toString('base64') !== raw || bytes.length > 512 * 1024) return sourceFailure('raw base64');
+  return bytes;
+}
+function bindOriginal(raw: string, expected: string): Uint8Array {
+  const bytes = originalBytes(raw);
+  if (createHash('sha256').update(bytes).digest('hex') !== expected) return sourceFailure('original digest mismatch');
+  return bytes;
+}
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
+  const x = a as Record<string, unknown>, y = b as Record<string, unknown>;
+  return Object.keys(x).length === Object.keys(y).length && Object.keys(x).every(k => Object.hasOwn(y, k) && sameValue(x[k], y[k]));
 }
 function digest(value: string): void { if (!/^[a-f0-9]{64}$/.test(value)) sourceFailure('fact digest'); }
 /** Keeps the original migration bytes in the adapter; parsing never substitutes for their digest. */
@@ -121,10 +139,15 @@ export function assembleReleaseFacts(input: {
   const product = source.commits.filter(c => c.kind === 'product');
   if (input.pulls.length !== product.length || new Set(input.pulls.map(p => p.pullNumber)).size !== product.length
     || input.pulls.some(p => !product.some(c => c.pullNumber === p.pullNumber && c.sha === p.mergeSha))) return sourceFailure('fact PR coverage');
+  // Conservative central contract: every unconsumed registration must be supplied, never silently ignored.
+  const pending = [...migrations.values()].filter(m => !m.consumed);
+  if (pending.length > 1 || (pending.length === 1 && pending[0]!.migrationId !== input.migration?.value.migrationId)) return sourceFailure('pending migration original required');
   const migrated = new Map<number, MigrationEntry>();
   if (input.migration) {
     const m = input.migration.value, prior = migrations.get(m.migrationId);
     digest(input.migration.sha256);
+    const parsed = parseReleaseMigration(bindOriginal(input.migration.rawBase64, input.migration.sha256));
+    if (!sameValue(parsed, m)) return sourceFailure('migration original semantic mismatch');
     if (!prior || prior.consumed || prior.sha256 !== input.migration.sha256 || m.repositoryId !== source.repositoryId
       || after(input.targetTag, m.expiresAfterTag)) return sourceFailure('migration identity, expiry or consumption');
     if (source.boundary.kind === 'adoption') {
@@ -160,7 +183,10 @@ export function assembleReleaseFacts(input: {
     validateFragmentRequirement(fragment, decision, pull.classification);
     let prefix: string | undefined;
     if (pull.fragment) {
-      const f = pull.fragment, id = fragmentIdFromPath(f.path, profile.fragmentDirectory), prior = fragments.get(id);
+      const f = pull.fragment;
+      const bytes = bindOriginal(f.rawBase64, f.sha256);
+      if (createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') !== f.blobSha || !sameValue(parseFragment(bytes), f.fragment)) return sourceFailure('fragment original binding');
+      const id = fragmentIdFromPath(f.path, profile.fragmentDirectory), prior = fragments.get(id);
       if (!prior || prior.consumed || prior.pullNumber !== pull.pullNumber || prior.mergeSha !== pull.mergeSha
         || prior.blobSha !== f.blobSha || prior.sha256 !== f.sha256) return sourceFailure('fragment history binding or reuse');
       prefix = id;

@@ -6,6 +6,7 @@ import type { GitHubClient } from '../../github/src/index.js';
 import { collectReleaseSources, assertReleaseSourcesUnchanged, type TrustedReleaseSourcePolicy } from './release-notes-input.js';
 import { readFragmentBlob } from './release-note-validation.js';
 
+export const releaseFactCommitLimit = 50;
 const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 export function retainReleaseFragment(path: string, bytes: Uint8Array) {
   return { path, rawBase64: Buffer.from(bytes).toString('base64'),
@@ -29,7 +30,7 @@ export async function collectReleaseFactSnapshot(input: {
   const collect = async () => {
     const context = await input.readContext(input.identity);
     if (!context?.history) return sourceFailure('central fact history unavailable');
-    const source = await collectReleaseSources(input.gh, input.owner, input.repo, input.identity, input.targetTag, input.sourcePolicy);
+    const source = await collectReleaseSources(input.gh, input.owner, input.repo, input.identity, input.targetTag, input.sourcePolicy, releaseFactCommitLimit);
     const pulls: FactPull[] = [];
     for (const row of source.input.commits.filter(c => c.kind === 'product')) {
       const fact = source.facts.find(f => f.pull.number === row.pullNumber)!;
