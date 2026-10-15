@@ -118,9 +118,12 @@ export function assembleReleaseFacts(input: {
   if (!history || history.complete !== true || history.repositoryId !== source.repositoryId || history.targetSha !== source.targetSha
     || history.policySha !== source.policySha || !Array.isArray(history.fragments) || !Array.isArray(history.migrations)) return sourceFailure('complete fact history binding');
   const fragments = new Map<string, HistoricalFragment>();
+  const fragmentPulls = new Set<number>(), fragmentMerges = new Set<string>();
   for (const row of history.fragments) {
     identifier(row.fragmentId); positive(row.pullNumber); sourceSha(row.mergeSha); sourceSha(row.blobSha); digest(row.sha256);
     if (typeof row.consumed !== 'boolean' || fragments.has(row.fragmentId)) return sourceFailure('historical fragment ID reuse');
+    if (fragmentPulls.has(row.pullNumber) || fragmentMerges.has(row.mergeSha)) return sourceFailure('historical fragment source reuse');
+    fragmentPulls.add(row.pullNumber); fragmentMerges.add(row.mergeSha);
     fragments.set(row.fragmentId, row);
   }
   const registeredRoots = new Set<string>();

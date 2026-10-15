@@ -128,6 +128,12 @@ describe('R03 发布事实合同', () => {
     if (kind === 'digest') prior.sha256 = 'a'.repeat(64);
     expect(() => assembleReleaseFacts(f)).toThrow();
   });
+  it.each(['pull-pending', 'pull-consumed', 'merge-pending', 'merge-consumed'])('不同片段 ID 的重复历史来源 %s 失败关闭', kind => {
+    const f = fixture(), prior = f.history.fragments[0]!;
+    f.history.fragments = [prior, { ...prior, fragmentId: 'other-fragment', consumed: kind.endsWith('consumed'),
+      ...(kind.startsWith('pull') ? { mergeSha: sha(66) } : { pullNumber: 66 }) }];
+    expect(() => assembleReleaseFacts(f)).toThrow('historical fragment source reuse');
+  });
   it.each(['modified', 'removed', 'renamed'])('历史片段 %s 失败', status => {
     const f = fixture(); Object.assign(f.pulls[0]!.changes[1]!, { status, previousPath: '.release-notes/fragments/previous.json' });
     expect(() => assembleReleaseFacts(f)).toThrow('lifecycle');

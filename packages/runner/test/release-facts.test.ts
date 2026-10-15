@@ -31,7 +31,7 @@ function fixture() {
     fragments: [{ fragmentId: 'fix-first', pullNumber: 1, mergeSha: sha(3), blobSha: retained.blobSha, sha256: retained.sha256, consumed: false }], migrations: [] } };
   return { options: { gh, owner: 'o', repo: 'r', identity, targetTag: 'v1.1.0',
     profile: { fragmentDirectory: '.release-notes/fragments', required: ['src/**'], reviewRequired: [], ignored: [] },
-    readContext: vi.fn(async () => structuredClone(context)), classify: () => ({ primaryKind: 'bug', riskFlags: [] }) }, objects, context, files, pull };
+    readContext: vi.fn(async () => structuredClone(context)), classify: () => ({ primaryKind: 'bug', riskFlags: [] as string[] }) }, objects, context, files, pull };
 }
 describe('R03 固定树事实采集', () => {
   it.each([50, 51])('%s PR 的完整 HTTP 预算边界包含两轮片段读取', async count => {
@@ -99,6 +99,11 @@ describe('R03 固定树事实采集', () => {
   it('二次读取的非消费历史漂移同样阻断', async () => {
     const f = fixture(); f.options.readContext.mockResolvedValueOnce(structuredClone(f.context));
     f.context.history.migrations = [{ migrationId: 'other-id', sha256: 'a'.repeat(64), consumed: true }];
+    await expect(collectReleaseFactSnapshot(f.options)).rejects.toThrow('RN_SOURCE_STALE');
+  });
+  it('R02 来源不变时分类结果漂移仍按 R03 快照阻断', async () => {
+    const f = fixture(); let calls = 0;
+    f.options.classify = () => ({ primaryKind: 'bug', riskFlags: ++calls === 1 ? [] : ['security'] });
     await expect(collectReleaseFactSnapshot(f.options)).rejects.toThrow('RN_SOURCE_STALE');
   });
   it('源 PR 内容在两次读取间改变时阻断', async () => {
