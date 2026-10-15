@@ -22,7 +22,8 @@
     },
     "repositoryId": {
       "type": "integer",
-      "minimum": 1
+      "minimum": 1,
+      "maximum": 9007199254740991
     },
     "previousRelease": {
       "oneOf": [
@@ -71,7 +72,8 @@
         "properties": {
           "pullNumber": {
             "type": "integer",
-            "minimum": 1
+            "minimum": 1,
+            "maximum": 9007199254740991
           },
           "mergeSha": {
             "type": "string",

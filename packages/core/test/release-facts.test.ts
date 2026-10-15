@@ -78,6 +78,17 @@ describe('R03 发布事实合同', () => {
     data.root.classification.riskFlags = ['security'];
     expect(validate(data)).toBe(true); expect(parseReleaseMigration(encode(data)).root?.classification.riskFlags).toEqual(['security']);
   });
+  it.each(['repositoryId', 'pullNumber'])('迁移 %s 的 Schema 与解析器安全整数边界一致', field => {
+    const validate = new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
+    for (const value of [1, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1, 0, -1, 1.5]) {
+      const data = JSON.parse(Buffer.from(migrationFixture().migration.rawBase64, 'base64').toString());
+      if (field === 'repositoryId') data.repositoryId = value; else data.entries[0].pullNumber = value;
+      const valid = Number.isSafeInteger(value) && value > 0;
+      expect(validate(data)).toBe(valid);
+      if (valid) expect(() => parseReleaseMigration(encode(data))).not.toThrow();
+      else expect(() => parseReleaseMigration(encode(data))).toThrow('positive integer');
+    }
+  });
   it.each(['change', 'userImpact', 'reason', 'action'])('迁移 root 与普通条目的 %s 拒绝纯空白文本', field => {
     const validate = new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
     for (const location of ['entry', 'root']) for (const blank of [' '.repeat(10), '\u00a0'.repeat(10), '\u3000'.repeat(10)]) {
