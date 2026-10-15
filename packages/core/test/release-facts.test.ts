@@ -134,6 +134,13 @@ describe('R03 发布事实合同', () => {
       ...(kind.startsWith('pull') ? { mergeSha: sha(66) } : { pullNumber: 66 }) }];
     expect(() => assembleReleaseFacts(f)).toThrow('historical fragment source reuse');
   });
+  it.each(['pull-pending', 'pull-consumed', 'merge-pending', 'merge-consumed'])('迁移与历史片段来源重叠 %s 失败关闭', kind => {
+    const f = migrationFixture(), row = f.migration.value.entries[0]!;
+    f.history.fragments = [...f.history.fragments, { ...f.history.fragments[0]!, fragmentId: 'migrated-history',
+      pullNumber: kind.startsWith('pull') ? row.pullNumber : 66,
+      mergeSha: kind.startsWith('merge') ? row.mergeSha : sha(66), consumed: kind.endsWith('consumed') }];
+    expect(() => assembleReleaseFacts(f)).toThrow('migration overlaps historical fragment source');
+  });
   it.each(['modified', 'removed', 'renamed'])('历史片段 %s 失败', status => {
     const f = fixture(); Object.assign(f.pulls[0]!.changes[1]!, { status, previousPath: '.release-notes/fragments/previous.json' });
     expect(() => assembleReleaseFacts(f)).toThrow('lifecycle');

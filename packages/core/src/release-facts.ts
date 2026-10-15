@@ -170,6 +170,7 @@ export function assembleReleaseFacts(input: {
     const expected = source.commits.slice(boundaryIndex).filter(c => c.kind === 'product');
     if (m.entries.length !== expected.length) return sourceFailure('migration boundary coverage');
     for (const row of m.entries) {
+      if (fragmentPulls.has(row.pullNumber) || fragmentMerges.has(row.mergeSha)) return sourceFailure('migration overlaps historical fragment source');
       if (migrated.has(row.pullNumber) || !expected.some(c => c.pullNumber === row.pullNumber && c.sha === row.mergeSha)) return sourceFailure('migration source outside boundary');
       migrated.set(row.pullNumber, row);
     }

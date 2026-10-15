@@ -90,6 +90,12 @@ describe('R03 固定树事实采集', () => {
     if (kind === 'encoding') f.objects.get(`/repos/o/r/git/blobs/${retained.blobSha}`).encoding = 'utf8';
     await expect(collectReleaseFactSnapshot(f.options)).rejects.toThrow();
   });
+  it('GitHub REST removed 普通文件仍可收集事实', async () => {
+    const f = fixture(); f.files[1]!.status = 'removed'; f.files[1]!.additions = 0;
+    const out = await collectReleaseFactSnapshot(f.options);
+    expect(out.facts.facts[0]?.factId).toBe('fix-first#0');
+    expect(f.options.gh.listPullFiles).toHaveBeenCalledTimes(2);
+  });
   it('可信历史缺失、未知状态和二次消费均失败', async () => {
     const f = fixture(); Object.assign(f.options, { readContext: undefined });
     await expect(collectReleaseFactSnapshot(f.options)).rejects.toThrow('history unavailable');
@@ -124,13 +130,18 @@ describe('R03 固定树事实采集', () => {
     });
     await expect(collectReleaseFactSnapshot(f.options)).rejects.toThrow('fragment missing or changed');
   });
-  it('中央迁移正常采集，迁移原字节及独立命名空间进入输出', async () => {
+  it.each(['valid', 'historical-overlap'])('中央迁移采集及历史交叉校验 %s', async mode => {
     const f = fixture(); f.files.splice(0, 1); f.pull.changed_files = 1;
     const migrationBytes = Buffer.from(JSON.stringify({ schemaVersion: 1, migrationId: 'adopt-2026', repositoryId: 123,
       previousRelease: { tag: 'v1.0.0', sha: sha(1) }, boundarySha: sha(3), expiresAfterTag: 'v1.1.0',
       entries: [{ pullNumber: 1, mergeSha: sha(3), fragment: JSON.parse(bytes.toString()) }] }));
     f.context.migrationBytes = migrationBytes;
     f.context.history.migrations = [{ migrationId: 'adopt-2026', sha256: createHash('sha256').update(migrationBytes).digest('hex'), consumed: false }];
+    if (mode === 'historical-overlap') {
+      await expect(collectReleaseFactSnapshot(f.options)).rejects.toThrow('migration overlaps historical fragment source');
+      return;
+    }
+    f.context.history.fragments = [];
     const result = await collectReleaseFactSnapshot(f.options);
     expect(result.facts.facts[0]?.factId).toBe('migration:adopt-2026:1#0');
     expect(result.facts.consumedFragments).toEqual([]);

@@ -18,7 +18,7 @@ R03 定义并消费此接口，不实现 D1 持久服务，不把测试内存数
 
 schema/release-notes-migration.schema.json 约束 schemaVersion、migrationId、repositoryId、previousRelease、boundarySha、expiresAfterTag 和 entries。沿用严格 UTF-8、无 BOM、重复键拒绝及 512 KiB 上限；最大 10000 条记录，实际 R02 运行预算保持独立。每项绑定 pullNumber、mergeSha 及符合普通片段语义的 fragment。
 
-迁移清单只能经中央 reader 读取，产品文件和 PR 正文不能提供授权。它必须绑定 R02 的上一稳定发布 tag/SHA；boundarySha 位于已核验区间，迁移项恰好覆盖区间中不晚于该边界的所有产品 PR。边界后的产品变更继续采用普通片段或明确 ignored 规则。普通片段与迁移覆盖重叠、遗漏、越界及错误 mergeSha 均失败。
+迁移清单只能经中央 reader 读取，产品文件和 PR 正文不能提供授权。它必须绑定 R02 的上一稳定发布 tag/SHA；boundarySha 位于已核验区间，迁移项恰好覆盖区间中不晚于该边界的所有产品 PR。边界后的产品变更继续采用普通片段或明确 ignored 规则。普通片段与迁移覆盖重叠、遗漏、越界及错误 mergeSha 均失败。迁移条目的 PR 编号或 mergeSha 命中任一历史片段登记时也拒绝，无论登记是否已消费，防止同一来源改用迁移身份再次产出。
 
 迁移事实 ID 为 migration:{migrationId}:{prNumber}#{entryIndex}。迁移原始字节单独保存，无伪造 blob，也不进入文件删除集合。targetTag 必须晚于上一稳定版本且不晚于 expiresAfterTag；已消费清单不可复用。比较使用无前导零的稳定 vMAJOR.MINOR.PATCH 和整数语义，避免字符串字典序错误。
 
