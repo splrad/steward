@@ -179,7 +179,8 @@
         "text": {
           "type": "string",
           "minLength": 10,
-          "maxLength": 240
+          "maxLength": 240,
+          "pattern": "\\S"
         },
         "entry": {
           "type": "object",
@@ -202,7 +203,8 @@
             "action": {
               "type": "string",
               "minLength": 5,
-              "maxLength": 240
+              "maxLength": 240,
+              "pattern": "\\S"
             }
           },
           "if": {

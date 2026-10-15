@@ -78,6 +78,22 @@ describe('R03 发布事实合同', () => {
     data.root.classification.riskFlags = ['security'];
     expect(validate(data)).toBe(true); expect(parseReleaseMigration(encode(data)).root?.classification.riskFlags).toEqual(['security']);
   });
+  it.each(['change', 'userImpact', 'reason', 'action'])('迁移 root 与普通条目的 %s 拒绝纯空白文本', field => {
+    const validate = new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
+    for (const location of ['entry', 'root']) for (const blank of [' '.repeat(10), '\u00a0'.repeat(10), '\u3000'.repeat(10)]) {
+      const data = JSON.parse(Buffer.from(migrationFixture().migration.rawBase64, 'base64').toString());
+      const fragment = field === 'reason' ? { schemaVersion: 1, status: 'not-user-facing', reason: blank }
+        : { ...documented, entries: [{ ...entry, ...(field === 'action' ? { actionRequired: true } : {}), [field]: blank }] };
+      if (location === 'root') {
+        data.previousRelease = null;
+        data.root = { sha: sha(1), fragment, classification: { primaryKind: 'feature', riskFlags: [] } };
+      } else data.entries[0].fragment = fragment;
+      expect(validate(data)).toBe(false); expect(() => parseReleaseMigration(encode(data))).toThrow();
+      if (field === 'reason') fragment.reason = '仅调整内部测试覆盖和开发工具';
+      else if ('entries' in fragment) Object.assign(fragment.entries[0]!, { [field]: '用户可以按照说明完成所需操作' });
+      expect(validate(data)).toBe(true); expect(() => parseReleaseMigration(encode(data))).not.toThrow();
+    }
+  });
   it('固定事实 ID，保留原始 CRLF 字节；ignored 与产品事实完整覆盖', () => {
     const f = fixture(), r = assembleReleaseFacts(f);
     expect(r.facts.map(v => v.factId)).toEqual(['fix-first#0']);
