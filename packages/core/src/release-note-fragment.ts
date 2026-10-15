@@ -46,7 +46,7 @@ function* jsonTokens(source: string): Generator<string> {
   }
 }
 
-function readJson(bytes: Uint8Array): unknown {
+export function readStrictFragmentJson(bytes: Uint8Array): unknown {
   if (bytes.byteLength > maximumFragmentBytes) fail('RN_FRAGMENT_SIZE', '$');
   let source: string;
   try { source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
@@ -167,7 +167,7 @@ function text(value: unknown, min: number, field: string): string {
 }
 
 export function parseFragment(bytes: Uint8Array): Fragment {
-  const data = object(readJson(bytes), ['schemaVersion', 'status', 'entries', 'reason'], '$');
+  const data = object(readStrictFragmentJson(bytes), ['schemaVersion', 'status', 'entries', 'reason'], '$');
   if (data.schemaVersion !== 1) fail('RN_FRAGMENT_SCHEMA', 'schemaVersion');
   if (data.status === 'not-user-facing') {
     if ('entries' in data) fail('RN_FRAGMENT_SCHEMA', 'entries');
