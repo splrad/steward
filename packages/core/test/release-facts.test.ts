@@ -40,6 +40,19 @@ function rebind(f: ReturnType<typeof migrationFixture>) {
   f.history.migrations[0]!.sources = f.migration.value.entries.map(({ pullNumber, mergeSha }) => ({ pullNumber, mergeSha }));
 }
 describe('R03 发布事实合同', () => {
+  it.each(['primaryKind', 'security', 'breaking-change'])('普通分类 %s 拒绝严格 JSON 同类禁止字符', field => {
+    const forbidden = [...Array.from({ length: 32 }, (_, i) => i), ...Array.from({ length: 33 }, (_, i) => i + 127),
+      0x061c, 0x200e, 0x200f, ...Array.from({ length: 7 }, (_, i) => i + 0x2028),
+      ...Array.from({ length: 4 }, (_, i) => i + 0x2066), 0xfeff, 0xd800, 0xdbff, 0xdc00, 0xdfff];
+    for (const point of forbidden) {
+      const f = fixture(), value = field + String.fromCharCode(point) + 'suffix';
+      f.pulls[1]!.classification = field === 'primaryKind' ? { primaryKind: value, riskFlags: [] } : { primaryKind: 'chore', riskFlags: [value] };
+      expect(() => assembleReleaseFacts(f)).toThrow('RN_FRAGMENT_TEXT');
+    }
+    const f = fixture(); f.pulls[1]!.classification = { primaryKind: '自定义😀', riskFlags: [] };
+    expect(() => assembleReleaseFacts(f)).not.toThrow();
+  });
+
   it.each(['pull-consumed', 'merge-consumed', 'pull-pending', 'merge-pending'])('迁移换 ID 重用历史来源 %s 拒绝', kind => {
     const f = migrationFixture(), source = f.migration.value.entries[0]!;
     f.history.migrations = [...f.history.migrations, { migrationId: 'older-migration', sha256: 'a'.repeat(64), consumed: kind.endsWith('consumed'),

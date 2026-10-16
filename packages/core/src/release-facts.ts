@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { fragmentIdFromPath, parseFragment, readStrictFragmentJson, validateFragmentRequirement, evaluateRequirement,
+import { assertFragmentStringCharacters, fragmentIdFromPath, parseFragment, readStrictFragmentJson, validateFragmentRequirement, evaluateRequirement,
   type Fragment, type FragmentEntry, type FragmentClassification, type FragmentPathChange, type FragmentProfile } from './release-note-fragment.js';
 import { assertSourceIdentity, sourceFailure, sourceSha, type ReleaseSourceInput } from './release-notes-input.js';
 
@@ -41,6 +41,8 @@ function assertFactClassification(value: unknown): asserts value is FragmentClas
   const c = value as Record<string, unknown>;
   if (typeof c.primaryKind !== 'string' || !c.primaryKind.trim() || c.primaryKind !== c.primaryKind.trim() || !Array.isArray(c.riskFlags)
     || c.riskFlags.some(v => typeof v !== 'string' || !v.trim() || v !== v.trim()) || new Set(c.riskFlags).size !== c.riskFlags.length) return sourceFailure('fact classification');
+  assertFragmentStringCharacters(c.primaryKind, 'classification.primaryKind');
+  for (const flag of c.riskFlags) assertFragmentStringCharacters(flag, 'classification.riskFlags');
 }
 function positive(value: unknown): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) return sourceFailure('positive integer');
