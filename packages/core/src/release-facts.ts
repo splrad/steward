@@ -17,7 +17,7 @@ export interface HistoricalFragment {
 export interface ReleaseFactHistory {
   repositoryId: number; targetSha: string; policySha: string; complete: true;
   fragments: readonly HistoricalFragment[];
-  migrations: readonly { migrationId: string; sha256: string; consumed: boolean; rootSha?: string }[];
+  migrations: readonly { migrationId: string; sha256: string; consumed: boolean; sources: readonly { pullNumber: number; mergeSha: string }[]; rootSha?: string }[];
 }
 export interface RetainedFragment {
   path: string; blobSha: string; sha256: string; rawBase64: string; fragment: Fragment;
@@ -127,9 +127,16 @@ export function assembleReleaseFacts(input: {
     fragments.set(row.fragmentId, row);
   }
   const registeredRoots = new Set<string>();
+  const migrationPulls = new Map<number, string>(), migrationMerges = new Map<string, string>();
   const migrations = new Map<string, ReleaseFactHistory['migrations'][number]>();
   for (const row of history.migrations) {
     identifier(row.migrationId); digest(row.sha256);
+    if (!Array.isArray(row.sources)) return sourceFailure('migration history sources missing');
+    for (const source of row.sources) {
+      positive(source.pullNumber); sourceSha(source.mergeSha);
+      if (migrationPulls.has(source.pullNumber) || migrationMerges.has(source.mergeSha)) return sourceFailure('historical migration source reuse');
+      migrationPulls.set(source.pullNumber, row.migrationId); migrationMerges.set(source.mergeSha, row.migrationId);
+    }
     if (row.rootSha !== undefined) {
       sourceSha(row.rootSha);
       if (registeredRoots.has(row.rootSha)) return sourceFailure('root assigned to multiple migrations');
@@ -158,6 +165,7 @@ export function assembleReleaseFacts(input: {
     if (!sameValue(parsed, m)) return sourceFailure('migration original semantic mismatch');
     if (!prior || prior.consumed || prior.sha256 !== input.migration.sha256 || m.repositoryId !== source.repositoryId
       || after(input.targetTag, m.expiresAfterTag)) return sourceFailure('migration identity, expiry or consumption');
+    if (prior.sources.length !== m.entries.length || m.entries.some(row => !prior.sources.some(p => p.pullNumber === row.pullNumber && p.mergeSha === row.mergeSha))) return sourceFailure('migration registered source mismatch');
     if (source.boundary.kind === 'adoption') {
       if (m.previousRelease !== null || !m.root || prior.rootSha !== m.root.sha || !input.verifiedRoot || input.verifiedRoot.sha !== m.root.sha
         || !Array.isArray(input.verifiedRoot.parents) || input.verifiedRoot.parents.length !== 0 || m.root.sha !== source.boundary.sha
@@ -182,6 +190,7 @@ export function assembleReleaseFacts(input: {
     if (row.kind === 'review-record') { excluded.push({ pullNumber: row.pullNumber, mergeSha: row.sha, kind: 'review-record', reason: row.candidateId! }); coverage.push({ pullNumber: row.pullNumber, mergeSha: row.sha, source: 'excluded' }); continue; }
     const pull = input.pulls.find(p => p.pullNumber === row.pullNumber)!;
     assertFactClassification(pull.classification);
+    if (pull.fragment && (migrationPulls.has(pull.pullNumber) || migrationMerges.has(pull.mergeSha))) return sourceFailure('fragment overlaps historical migration source');
     const decision = evaluateRequirement(pull.changes, pull.classification, profile);
     const touched = pull.changes.filter(c => [c.path, c.status === 'renamed' ? c.previousPath : ''].some(p => p === profile.fragmentDirectory || p.startsWith(profile.fragmentDirectory + '/')));
     if (touched.length > 1 || touched.some(c => c.status !== 'added') || touched.length !== (pull.fragment ? 1 : 0)

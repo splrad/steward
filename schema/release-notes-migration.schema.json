@@ -186,11 +186,7 @@
       "$defs": {
         "text": {
           "type": "string",
-          "minLength": 10,
-          "pattern": "^\\s*\\S[\\s\\S]{8,238}\\S\\s*$",
-          "not": {
-            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u2028-\\u202e\\u2066-\\u2069\\ufeff\\ud800-\\udfff]"
-          }
+          "format": "release-fragment-text"
         },
         "entry": {
           "type": "object",
@@ -212,11 +208,7 @@
             },
             "action": {
               "type": "string",
-              "minLength": 5,
-              "pattern": "^\\s*\\S[\\s\\S]{3,238}\\S\\s*$",
-              "not": {
-                "pattern": "[\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u2028-\\u202e\\u2066-\\u2069\\ufeff\\ud800-\\udfff]"
-              }
+              "format": "release-fragment-action"
             }
           },
           "if": {
@@ -278,5 +270,6 @@
         "root"
       ]
     }
-  }
+  },
+  "$comment": "Text formats are assertions: register releaseFragmentTextFormats from core. Unknown or disabled formats cannot establish migration validity. parseReleaseMigration remains mandatory for raw-byte validation."
 }

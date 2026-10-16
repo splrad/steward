@@ -1,3 +1,4 @@
+import { releaseFragmentTextFormats } from '../src/release-note-fragment.js';
 import { describe, expect, it } from 'vitest';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { readFileSync } from 'node:fs';
@@ -28,7 +29,7 @@ function migrationFixture() {
     previousRelease: { tag: 'v1.0.0', sha: sha(1) }, boundarySha: sha(2), expiresAfterTag: 'v1.1.0',
     entries: [{ pullNumber: 1, mergeSha: sha(2), fragment: documented }] });
   const migration = { value: parseReleaseMigration(bytes), sha256: createHash('sha256').update(bytes).digest('hex'), rawBase64: bytes.toString('base64') };
-  f.history.migrations = [{ migrationId: migration.value.migrationId, sha256: migration.sha256, consumed: false }];
+  f.history.migrations = [{ migrationId: migration.value.migrationId, sha256: migration.sha256, consumed: false, sources: migration.value.entries.map(({ pullNumber, mergeSha }) => ({ pullNumber, mergeSha })) }];
   return { ...f, migration };
 }
 function rebind(f: ReturnType<typeof migrationFixture>) {
@@ -36,12 +37,50 @@ function rebind(f: ReturnType<typeof migrationFixture>) {
   f.migration.rawBase64 = bytes.toString('base64');
   f.migration.sha256 = createHash('sha256').update(bytes).digest('hex');
   f.history.migrations[0]!.sha256 = f.migration.sha256;
+  f.history.migrations[0]!.sources = f.migration.value.entries.map(({ pullNumber, mergeSha }) => ({ pullNumber, mergeSha }));
 }
 describe('R03 发布事实合同', () => {
+  it.each(['pull-consumed', 'merge-consumed', 'pull-pending', 'merge-pending'])('迁移换 ID 重用历史来源 %s 拒绝', kind => {
+    const f = migrationFixture(), source = f.migration.value.entries[0]!;
+    f.history.migrations = [...f.history.migrations, { migrationId: 'older-migration', sha256: 'a'.repeat(64), consumed: kind.endsWith('consumed'),
+      sources: [{ pullNumber: kind.startsWith('pull') ? source.pullNumber : 99, mergeSha: kind.startsWith('merge') ? source.mergeSha : sha(99) }] }];
+    expect(() => assembleReleaseFacts(f)).toThrow('historical migration source reuse');
+  });
+  it.each(['missing', 'omitted', 'wrong-pair', 'duplicate'])('迁移历史来源登记 %s 失败关闭', mode => {
+    const f = migrationFixture(), row = f.history.migrations[0]!;
+    if (mode === 'missing') Object.assign(row, { sources: undefined });
+    if (mode === 'omitted') row.sources = [];
+    if (mode === 'wrong-pair') row.sources = [{ pullNumber: 1, mergeSha: sha(99) }];
+    if (mode === 'duplicate') row.sources = [...row.sources, ...row.sources];
+    expect(() => assembleReleaseFacts(f)).toThrow();
+  });
+  it('普通片段不能重用历史迁移来源', () => {
+    const f = fixture(); f.history.migrations = [{ migrationId: 'older-migration', sha256: 'a'.repeat(64), consumed: true,
+      sources: [{ pullNumber: 2, mergeSha: sha(3) }] }];
+    expect(() => assembleReleaseFacts(f)).toThrow('fragment overlaps historical migration source');
+  });
+  it('未注册自定义文本 assertion format 的预校验器失败关闭', () => {
+    expect(() => new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')))).toThrow('unknown format');
+  });
+  it.each(['change', 'userImpact', 'reason', 'action'])('迁移 %s 使用解析器同源文本格式校验', field => {
+    const validate = new Ajv2020({ strict: true, formats: releaseFragmentTextFormats }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
+    for (const value of ['用户请访问 https://example.com 获取信息', '用户请使用 '+String.fromCharCode(96)+'代码'+String.fromCharCode(96)+'完成操作', '用户请访问 [帮助](guide) 完成操作',
+      '用户看到 **加粗文本** 的说明内容', '用户发送到 a@example.com 获取支持', '用户看到 <b>标记</b> 的说明内容',
+      '用户使用 {placeholder} 完成操作', '用户看到合法的完整文本说明', 'e\u0301'.repeat(10), 'e\u0301'.repeat(9)]) {
+      const data = JSON.parse(Buffer.from(migrationFixture().migration.rawBase64, 'base64').toString());
+      if (field === 'reason') data.entries[0].fragment = { schemaVersion: 1, status: 'not-user-facing', reason: value };
+      else { data.entries[0].fragment.entries[0][field] = value; if (field === 'action') data.entries[0].fragment.entries[0].actionRequired = true; }
+      let accepted = true; try { parseReleaseMigration(encode(data)); } catch { accepted = false; }
+      expect(validate(data)).toBe(accepted);
+      if (value.startsWith('用户看到合法')) expect(accepted).toBe(true);
+      else if (!value.startsWith('e')) expect(accepted).toBe(false);
+    }
+  });
+
   it('未消费迁移原文缺失及多个待消费登记均失败关闭', () => {
     const f = migrationFixture(); const { migration, ...without } = f;
     expect(() => assembleReleaseFacts(without)).toThrow('pending migration');
-    f.history.migrations = [...f.history.migrations, { migrationId: 'second-id', sha256: 'b'.repeat(64), consumed: false }];
+    f.history.migrations = [...f.history.migrations, { migrationId: 'second-id', sha256: 'b'.repeat(64), consumed: false, sources: [] }];
     expect(() => assembleReleaseFacts(f)).toThrow('pending migration');
   });
   it.each(['base64', 'digest', 'value'])('迁移原文绑定拒绝 %s 不一致', kind => {
@@ -70,7 +109,7 @@ describe('R03 发布事实合同', () => {
   it.each(['', ' ', '\t', '\u00a0', '\u3000'])('root Schema 与解析器均拒绝空白分类 %j', blank => {
     const f = migrationFixture(), data = JSON.parse(Buffer.from(f.migration.rawBase64, 'base64').toString());
     data.previousRelease = null; data.root = { sha: sha(1), fragment: documented, classification: { primaryKind: 'feature', riskFlags: [] } };
-    const validate = new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
+    const validate = new Ajv2020({ strict: true, formats: releaseFragmentTextFormats }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
     data.root.classification.primaryKind = blank;
     expect(validate(data)).toBe(false); expect(() => parseReleaseMigration(encode(data))).toThrow();
     data.root.classification.primaryKind = 'feature'; data.root.classification.riskFlags = [blank];
@@ -79,7 +118,7 @@ describe('R03 发布事实合同', () => {
     expect(validate(data)).toBe(true); expect(parseReleaseMigration(encode(data)).root?.classification.riskFlags).toEqual(['security']);
   });
   it.each(['primaryKind', 'security', 'breaking-change'])('分类首尾空白 %s 在普通与 root 边界拒绝', kind => {
-    const validate = new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
+    const validate = new Ajv2020({ strict: true, formats: releaseFragmentTextFormats }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
     for (const padding of [' ', '\u00a0', '\u3000']) for (const side of ['left', 'right']) {
       const value = side === 'left' ? padding + kind : kind + padding;
       const classification = kind === 'primaryKind' ? { primaryKind: value, riskFlags: [] } : { primaryKind: 'feature', riskFlags: [value] };
@@ -92,7 +131,7 @@ describe('R03 发布事实合同', () => {
   });
   it.each(['change', 'userImpact', 'reason', 'action'])('迁移 %s 按 trim 后长度校验', field => {
     const min = field === 'action' ? 5 : 10;
-    const validate = new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
+    const validate = new Ajv2020({ strict: true, formats: releaseFragmentTextFormats }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
     for (const length of [1, min - 1, min, 240, 241]) for (const character of ['中', '😀']) {
       const data = JSON.parse(Buffer.from(migrationFixture().migration.rawBase64, 'base64').toString());
       const value = ' '.repeat(10) + character.repeat(length) + '\u3000'.repeat(10);
@@ -106,7 +145,7 @@ describe('R03 发布事实合同', () => {
     }
   });
   it.each(['primaryKind', 'riskFlag', 'change', 'userImpact', 'reason', 'action'])('迁移 %s 的禁止字符与严格解析器一致', field => {
-    const validate = new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
+    const validate = new Ajv2020({ strict: true, formats: releaseFragmentTextFormats }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
     const forbidden = [...Array.from({ length: 32 }, (_, i) => i), ...Array.from({ length: 33 }, (_, i) => i + 127),
       0x061c, 0x200e, 0x200f, ...Array.from({ length: 7 }, (_, i) => i + 0x2028),
       ...Array.from({ length: 4 }, (_, i) => i + 0x2066), 0xfeff, 0xd800, 0xdbff, 0xdc00, 0xdfff];
@@ -126,7 +165,7 @@ describe('R03 发布事实合同', () => {
     }
   });
   it.each(['repositoryId', 'pullNumber'])('迁移 %s 的 Schema 与解析器安全整数边界一致', field => {
-    const validate = new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
+    const validate = new Ajv2020({ strict: true, formats: releaseFragmentTextFormats }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
     for (const value of [1, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1, 0, -1, 1.5]) {
       const data = JSON.parse(Buffer.from(migrationFixture().migration.rawBase64, 'base64').toString());
       if (field === 'repositoryId') data.repositoryId = value; else data.entries[0].pullNumber = value;
@@ -137,7 +176,7 @@ describe('R03 发布事实合同', () => {
     }
   });
   it.each(['change', 'userImpact', 'reason', 'action'])('迁移 root 与普通条目的 %s 拒绝纯空白文本', field => {
-    const validate = new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
+    const validate = new Ajv2020({ strict: true, formats: releaseFragmentTextFormats }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
     for (const location of ['entry', 'root']) for (const blank of [' '.repeat(10), '\u00a0'.repeat(10), '\u3000'.repeat(10)]) {
       const data = JSON.parse(Buffer.from(migrationFixture().migration.rawBase64, 'base64').toString());
       const fragment = field === 'reason' ? { schemaVersion: 1, status: 'not-user-facing', reason: blank }
@@ -261,7 +300,7 @@ describe('R03 发布事实合同', () => {
   it('根迁移严格 schema 与解析器一致，拒绝重复根/伪造 PR 和稳定版本夹带 root', () => {
     const f = migrationFixture(), data = JSON.parse(Buffer.from(f.migration.rawBase64, 'base64').toString());
     data.previousRelease = null; data.root = { sha: sha(1), fragment: documented, classification: { primaryKind: 'feature', riskFlags: [] } };
-    const validate = new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
+    const validate = new Ajv2020({ strict: true, formats: releaseFragmentTextFormats }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
     expect(validate(data)).toBe(true); expect(parseReleaseMigration(encode(data)).root?.sha).toBe(sha(1));
     data.root.pullNumber = 0; expect(validate(data)).toBe(false); expect(() => parseReleaseMigration(encode(data))).toThrow(); delete data.root.pullNumber;
     data.entries[0].mergeSha = sha(1); expect(() => parseReleaseMigration(encode(data))).toThrow('duplicate migration source'); data.entries[0].mergeSha = sha(2);
@@ -298,7 +337,7 @@ describe('R03 发布事实合同', () => {
   });
   it('迁移 Schema 与解析器接受同一有效清单；未知字段、重复键、非法 UTF8 拒绝', () => {
     const f = migrationFixture(), bytes = Buffer.from(f.migration.rawBase64, 'base64');
-    const validate = new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
+    const validate = new Ajv2020({ strict: true, formats: releaseFragmentTextFormats }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
     expect(validate(JSON.parse(bytes.toString()))).toBe(true);
     const extra = { ...JSON.parse(bytes.toString()), extra: 1 }; expect(validate(extra)).toBe(false);
     expect(() => parseReleaseMigration(encode(extra))).toThrow();

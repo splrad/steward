@@ -63,7 +63,7 @@ export async function collectReleaseFactSnapshot(input: {
     }
     const facts = assembleReleaseFacts({ source: source.input, targetTag: input.targetTag, profile: input.profile, pulls, history: context.history, ...(verifiedRoot ? { verifiedRoot } : {}), ...(migration ? { migration } : {}) });
     // Preserve source bytes and trusted history so concurrent consumption invalidates this snapshot too.
-    const bytes = JSON.stringify({ source: JSON.parse(source.bytes), facts, history: context.history }) + '\n';
+    const bytes = JSON.stringify({ source: JSON.parse(source.bytes), facts, classifications: pulls.map(p => ({ pullNumber: p.pullNumber, mergeSha: p.mergeSha, classification: p.classification })), history: context.history }) + '\n';
     return { facts, bytes, inputSha256: sha256(Buffer.from(bytes)) };
   };
   const before = await collect(), after = await collect();

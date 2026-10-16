@@ -104,12 +104,12 @@ describe('R03 固定树事实采集', () => {
   });
   it('二次读取的非消费历史漂移同样阻断', async () => {
     const f = fixture(); f.options.readContext.mockResolvedValueOnce(structuredClone(f.context));
-    f.context.history.migrations = [{ migrationId: 'other-id', sha256: 'a'.repeat(64), consumed: true }];
+    f.context.history.migrations = [{ migrationId: 'other-id', sha256: 'a'.repeat(64), consumed: true, sources: [] }];
     await expect(collectReleaseFactSnapshot(f.options)).rejects.toThrow('RN_SOURCE_STALE');
   });
-  it('R02 来源不变时分类结果漂移仍按 R03 快照阻断', async () => {
+  it.each(['risk', 'primary'])('R02 来源不变时分类结果漂移 %s 仍按 R03 快照阻断', async mode => {
     const f = fixture(); let calls = 0;
-    f.options.classify = () => ({ primaryKind: 'bug', riskFlags: ++calls === 1 ? [] : ['security'] });
+    f.options.classify = () => { const second = ++calls > 1; return { primaryKind: mode === 'primary' && second ? 'chore' : 'bug', riskFlags: mode === 'risk' && second ? ['security'] : [] }; };
     await expect(collectReleaseFactSnapshot(f.options)).rejects.toThrow('RN_SOURCE_STALE');
   });
   it('源 PR 内容在两次读取间改变时阻断', async () => {
@@ -136,7 +136,7 @@ describe('R03 固定树事实采集', () => {
       previousRelease: { tag: 'v1.0.0', sha: sha(1) }, boundarySha: sha(3), expiresAfterTag: 'v1.1.0',
       entries: [{ pullNumber: 1, mergeSha: sha(3), fragment: JSON.parse(bytes.toString()) }] }));
     f.context.migrationBytes = migrationBytes;
-    f.context.history.migrations = [{ migrationId: 'adopt-2026', sha256: createHash('sha256').update(migrationBytes).digest('hex'), consumed: false }];
+    f.context.history.migrations = [{ migrationId: 'adopt-2026', sources: [{ pullNumber: 1, mergeSha: sha(3) }], sha256: createHash('sha256').update(migrationBytes).digest('hex'), consumed: false }];
     if (mode === 'historical-overlap') {
       await expect(collectReleaseFactSnapshot(f.options)).rejects.toThrow('migration overlaps historical fragment source');
       return;
@@ -157,7 +157,7 @@ describe('R03 固定树事实采集', () => {
       boundarySha: sha(1), expiresAfterTag: 'v1.1.0', entries: [],
       root: { sha: sha(1), fragment: JSON.parse(bytes.toString()), classification: { primaryKind: 'feature', riskFlags: [] } } }));
     f.context.migrationBytes = migrationBytes;
-    f.context.history.migrations = [{ migrationId: 'root-2026', rootSha: sha(1), sha256: createHash('sha256').update(migrationBytes).digest('hex'), consumed: false }];
+    f.context.history.migrations = [{ migrationId: 'root-2026', sources: [], rootSha: sha(1), sha256: createHash('sha256').update(migrationBytes).digest('hex'), consumed: false }];
     const options = { ...f.options, sourcePolicy: { adoption: { mode: 'start-at-adoption' as const, repositoryId: 123, policySha: sha(99), boundarySha: sha(1), reference: 'central-root-adoption' } } };
     if (mode === 'valid') {
       const result = await collectReleaseFactSnapshot(options);

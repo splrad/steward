@@ -166,6 +166,12 @@ function text(value: unknown, min: number, field: string): string {
   return normalized;
 }
 
+/** Register these assertion formats when compiling the migration schema. */
+export const releaseFragmentTextFormats = {
+  'release-fragment-text': (value: string): boolean => { try { text(value, 10, '$'); return true; } catch { return false; } },
+  'release-fragment-action': (value: string): boolean => { try { text(value, 5, '$'); return true; } catch { return false; } },
+};
+
 export function parseFragment(bytes: Uint8Array): Fragment {
   const data = object(readStrictFragmentJson(bytes), ['schemaVersion', 'status', 'entries', 'reason'], '$');
   if (data.schemaVersion !== 1) fail('RN_FRAGMENT_SCHEMA', 'schemaVersion');

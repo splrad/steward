@@ -37,3 +37,11 @@ schema/release-notes-migration.schema.json 约束 schemaVersion、migrationId、
 runner 两次读取来源、原始片段和中央上下文，将事实与历史状态一起比较；变化返回 RN_SOURCE_STALE，缺失和不匹配返回 RN_SOURCE_INCOMPLETE，既有片段校验错误码保留。不输出半份结果。调用方必须传入共用 R02 HTTP 预算的 GitHubClient。R03 入口最多处理 50 条提交（R02 独立入口仍为 120），在 PR 事实读取前检查数量。50 个单页 PR 各有一个三级路径片段时，双轮真实客户端模拟共 1604 次 HTTP 请求；51 条提前拒绝。分页、额外发布标签和网络耗时继续受 1800 请求/8 分钟共享预算约束，超限失败关闭，该模拟不保证全部线上输入均能完成。
 
 Core 与 runner 的 release-facts.test.ts 覆盖原字节留存、ID、历史重用/消费、迁移边界/到期/重放、互斥覆盖、风险、Git blob 篡改/缺失/模式/截断及双轮漂移；现有片段测试继续覆盖文本与编码合同。
+
+## 迁移历史来源与 Schema 文本预校验
+
+每项历史迁移登记必须提供 sources 数组，逐项绑定 pullNumber 与 mergeSha；缺失字段失败关闭，根迁移无 PR 时显式提供空数组。所有迁移登记（已消费或未消费）的 PR 与 mergeSha 分别全局唯一，当前迁移 entries 必须与自身登记完全匹配。普通片段也不得重用历史迁移来源。R08 中央持久层必须持久保存这些来源，旧登记补全前不可当作空历史继续；本轮不执行生产数据迁移。
+
+R03 快照显式纳入每个产品 PR 的完整 classification，主类变化即使不改变事实输出也触发 RN_SOURCE_STALE。
+
+迁移 Schema 的 release-fragment-text 与 release-fragment-action 是必须启用的 assertion formats，使用 Core 导出的 releaseFragmentTextFormats 注册，例如 new Ajv2020({ strict: true, formats: releaseFragmentTextFormats })。它们直接调用 parseFragment 使用的文本校验，统一 NFC、trim、长度、Markdown、链接、模板及控制字符规则。未知 format 必须报错，禁止以忽略/禁用 formats 的结构验证结果宣称清单有效。完整原始字节仍必须经过 parseReleaseMigration，JSON Schema 不代替重复键、编码和来源历史验证。
