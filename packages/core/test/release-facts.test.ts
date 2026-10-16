@@ -78,6 +78,26 @@ describe('R03 发布事实合同', () => {
     data.root.classification.riskFlags = ['security'];
     expect(validate(data)).toBe(true); expect(parseReleaseMigration(encode(data)).root?.classification.riskFlags).toEqual(['security']);
   });
+  it.each(['primaryKind', 'riskFlag', 'change', 'userImpact', 'reason', 'action'])('迁移 %s 的禁止字符与严格解析器一致', field => {
+    const validate = new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
+    const forbidden = [...Array.from({ length: 32 }, (_, i) => i), ...Array.from({ length: 33 }, (_, i) => i + 127),
+      0x061c, 0x200e, 0x200f, ...Array.from({ length: 7 }, (_, i) => i + 0x2028),
+      ...Array.from({ length: 4 }, (_, i) => i + 0x2066), 0xfeff, 0xd800, 0xdbff, 0xdc00, 0xdfff];
+    for (const character of [...forbidden.map(v => String.fromCharCode(v)), '中', '😀']) {
+      const data = JSON.parse(Buffer.from(migrationFixture().migration.rawBase64, 'base64').toString());
+      data.previousRelease = null;
+      data.root = { sha: sha(1), fragment: structuredClone(documented), classification: { primaryKind: 'feature', riskFlags: [] } };
+      const value = '足够长度的合法文本内容' + character;
+      if (field === 'primaryKind') data.root.classification.primaryKind = value;
+      else if (field === 'riskFlag') data.root.classification.riskFlags = [value];
+      else if (field === 'reason') data.root.fragment = { schemaVersion: 1, status: 'not-user-facing', reason: value };
+      else { data.root.fragment.entries[0][field] = value; if (field === 'action') data.root.fragment.entries[0].actionRequired = true; }
+      const valid = character === '中' || character === '😀';
+      expect(validate(data)).toBe(valid);
+      if (valid) expect(() => parseReleaseMigration(encode(data))).not.toThrow();
+      else expect(() => parseReleaseMigration(encode(data))).toThrow('RN_FRAGMENT_TEXT');
+    }
+  });
   it.each(['repositoryId', 'pullNumber'])('迁移 %s 的 Schema 与解析器安全整数边界一致', field => {
     const validate = new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
     for (const value of [1, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1, 0, -1, 1.5]) {
