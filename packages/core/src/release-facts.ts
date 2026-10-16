@@ -39,8 +39,8 @@ function obj(value: unknown, keys: readonly string[]): Record<string, unknown> {
 function assertFactClassification(value: unknown): asserts value is FragmentClassification {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return sourceFailure('fact classification');
   const c = value as Record<string, unknown>;
-  if (typeof c.primaryKind !== 'string' || !c.primaryKind.trim() || !Array.isArray(c.riskFlags)
-    || c.riskFlags.some(v => typeof v !== 'string' || !v.trim()) || new Set(c.riskFlags).size !== c.riskFlags.length) return sourceFailure('fact classification');
+  if (typeof c.primaryKind !== 'string' || !c.primaryKind.trim() || c.primaryKind !== c.primaryKind.trim() || !Array.isArray(c.riskFlags)
+    || c.riskFlags.some(v => typeof v !== 'string' || !v.trim() || v !== v.trim()) || new Set(c.riskFlags).size !== c.riskFlags.length) return sourceFailure('fact classification');
 }
 function positive(value: unknown): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) return sourceFailure('positive integer');

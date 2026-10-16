@@ -78,6 +78,33 @@ describe('R03 发布事实合同', () => {
     data.root.classification.riskFlags = ['security'];
     expect(validate(data)).toBe(true); expect(parseReleaseMigration(encode(data)).root?.classification.riskFlags).toEqual(['security']);
   });
+  it.each(['primaryKind', 'security', 'breaking-change'])('分类首尾空白 %s 在普通与 root 边界拒绝', kind => {
+    const validate = new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
+    for (const padding of [' ', '\u00a0', '\u3000']) for (const side of ['left', 'right']) {
+      const value = side === 'left' ? padding + kind : kind + padding;
+      const classification = kind === 'primaryKind' ? { primaryKind: value, riskFlags: [] } : { primaryKind: 'feature', riskFlags: [value] };
+      const f = fixture(); f.pulls[0]!.classification = classification;
+      expect(() => assembleReleaseFacts(f)).toThrow('fact classification');
+      const data = JSON.parse(Buffer.from(migrationFixture().migration.rawBase64, 'base64').toString());
+      data.previousRelease = null; data.root = { sha: sha(1), fragment: documented, classification };
+      expect(validate(data)).toBe(false); expect(() => parseReleaseMigration(encode(data))).toThrow('fact classification');
+    }
+  });
+  it.each(['change', 'userImpact', 'reason', 'action'])('迁移 %s 按 trim 后长度校验', field => {
+    const min = field === 'action' ? 5 : 10;
+    const validate = new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
+    for (const length of [1, min - 1, min, 240, 241]) for (const character of ['中', '😀']) {
+      const data = JSON.parse(Buffer.from(migrationFixture().migration.rawBase64, 'base64').toString());
+      const value = ' '.repeat(10) + character.repeat(length) + '\u3000'.repeat(10);
+      const fragment = data.entries[0].fragment;
+      if (field === 'reason') data.entries[0].fragment = { schemaVersion: 1, status: 'not-user-facing', reason: value };
+      else { fragment.entries[0][field] = value; if (field === 'action') fragment.entries[0].actionRequired = true; }
+      const valid = length >= min && length <= 240;
+      expect(validate(data)).toBe(valid);
+      if (valid) expect(() => parseReleaseMigration(encode(data))).not.toThrow();
+      else expect(() => parseReleaseMigration(encode(data))).toThrow('RN_FRAGMENT_TEXT');
+    }
+  });
   it.each(['primaryKind', 'riskFlag', 'change', 'userImpact', 'reason', 'action'])('迁移 %s 的禁止字符与严格解析器一致', field => {
     const validate = new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')));
     const forbidden = [...Array.from({ length: 32 }, (_, i) => i), ...Array.from({ length: 33 }, (_, i) => i + 127),

@@ -112,7 +112,7 @@
             "primaryKind": {
               "type": "string",
               "minLength": 1,
-              "pattern": "\\S",
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
               "not": {
                 "pattern": "[\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u2028-\\u202e\\u2066-\\u2069\\ufeff\\ud800-\\udfff]"
               }
@@ -123,7 +123,7 @@
               "items": {
                 "type": "string",
                 "minLength": 1,
-                "pattern": "\\S",
+                "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
                 "not": {
                   "pattern": "[\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u2028-\\u202e\\u2066-\\u2069\\ufeff\\ud800-\\udfff]"
                 }
@@ -187,8 +187,7 @@
         "text": {
           "type": "string",
           "minLength": 10,
-          "maxLength": 240,
-          "pattern": "\\S",
+          "pattern": "^\\s*\\S[\\s\\S]{8,238}\\S\\s*$",
           "not": {
             "pattern": "[\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u2028-\\u202e\\u2066-\\u2069\\ufeff\\ud800-\\udfff]"
           }
@@ -214,8 +213,7 @@
             "action": {
               "type": "string",
               "minLength": 5,
-              "maxLength": 240,
-              "pattern": "\\S",
+              "pattern": "^\\s*\\S[\\s\\S]{3,238}\\S\\s*$",
               "not": {
                 "pattern": "[\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u2028-\\u202e\\u2066-\\u2069\\ufeff\\ud800-\\udfff]"
               }
