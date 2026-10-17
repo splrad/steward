@@ -65,7 +65,7 @@ jobs:
         run: pwsh -NoProfile -NonInteractive -File ./tools/Publish-ReleaseAssets.ps1
       - name: 生成发布清单
         run: node steward-policy/packages/runner/dist/index.js release-preflight --workspace target --repository-id "${{ inputs.repositoryId }}" --target-sha "${{ inputs.targetSha }}" --policy-sha "${{ github.sha }}" --manifest "target/artifacts/ReleaseAssets/release-manifest.json"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with: { name: "layerscape-release-${{ inputs.targetSha }}", path: "target/artifacts/ReleaseAssets", retention-days: 1, if-no-files-found: error, compression-level: 0 }
 
   notes:
@@ -88,7 +88,7 @@ jobs:
           INSTALLATION_ID: "145952003"
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
         run: node packages/runner/dist/index.js release-notes --repository-id "${{ inputs.repositoryId }}" --pull-request-number "${{ inputs.pullRequestNumber }}" --target-sha "${{ inputs.targetSha }}" --policy-sha "${{ github.sha }}" --display-version "${{ needs.preflight.outputs.displayVersion }}" --output release-notes.md
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: "layerscape-notes-${{ inputs.targetSha }}"
           path: |
