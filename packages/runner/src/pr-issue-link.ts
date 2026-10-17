@@ -634,6 +634,7 @@ async function applyBodyAndVerify(input: {
     headSha: facts.headSha,
     baseSha: analysisBaseSha,
     pullBaseSha: facts.pullBaseSha,
+    expectedBaseRef: input.pull.base.ref,
     issueGeneration: input.prepared?.generation ?? 0,
     regionKind: "issue-links",
     targetBlock,

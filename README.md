@@ -44,6 +44,18 @@ Steward 由无状态 webhook 运行时接收组织事件，再把需要中央权
 3. 调度拉取请求自动化、分类、验证、仓库接入、说明同步或发布任务。
 4. 将结果写回目标仓库，并保留可复核的检查摘要。
 
+Copilot 审查成功需要当前 PR head 的有效 Review 摘要和对应的成功 Check。摘要支持 `Findings` 与 `open findings` 格式。fork 的 Copilot Check 可能挂在目标分支提交上；此时通过 GitHub 的 Copilot 动态运行身份、同一次尝试的 job/check，以及平台处理步骤首次检出前的 PR、diff 和来源 head 日志确认归属，保留 Check 原始 SHA。拉取请求自动化的短时令牌需要 `actions:read` 读取这些证据。运行重叠、归属不明、日志不可读、查询超过上限或读取期间状态变化时返回 `unknown`。
+
+管理员可在可信中央环境中运行只读观察命令，检查同仓或 fork PR 的当前审查状态：
+
+```sh
+node packages/runner/dist/index.js observe-copilot-review --repository-id REPOSITORY_ID --pull-request-number PR_NUMBER --event-head-sha HEAD_SHA --policy-sha POLICY_SHA
+```
+
+命令使用中央 `APP_ID`、`INSTALLATION_ID`、`STEWARD_APP_PRIVATE_KEY` 和仓库配置，为单个目标仓库签发只读短时令牌，权限为 `contents`、`pull_requests`、`issues`、`checks`、`actions`、`metadata` 的 `read`。它仅接受受管组织内已启用 PR 自动化、未归档且未禁用的仓库，以及目标为当前默认分支的开放 PR；读取前后核对 PR head 和仓库状态。结果输出为 JSON 摘要，并在设置 `GITHUB_OUTPUT` 时写入 `state`、`reason`、`headSha`。这是显式调用的观察入口，不发送审查请求、不写入 PR，也不执行 fork 代码。
+
+默认分支上的 `PR Automation` 工作流通过 `observeOnly=true` 提供只读入口，使用 `repositoryId`、`pullRequestNumber`、`eventAfterSha` 指定目标。其余必填字段沿用该工作流输入合同，观察任务仅使用目标字段和可信工作流提交。默认 `observeOnly=false`，原有流程保持有效；观察模式与正文收敛、审查请求任务互斥。它复用 `steward-automation` 环境，仅在观察步骤注入 App 凭据。工作流执行成功表示完成读取；审查结果以 JSON 中的 `state` 为准。
+
 发布片段验证按仓库显式启用：中央验证 profile 的 `fragmentGate` 保存片段目录和路径规则，仓库目录 `config/repositories.json` 的对应仓库条目通过 `fragmentGateEnabled: true` 启用门禁。当前所有仓库均未启用片段门禁；`fragments` 作业会报告“片段门禁：未启用”，保留现行验证。门禁激活在目标仓库完成片段规则配置与准备后单独进行。
 
 受管仓库只保留项目自己的代码和必要配置。中央工作流、GitHub App 私钥及其他中央凭据不会复制过去。
@@ -63,6 +75,8 @@ scripts/                构建及一致性校验脚本
 
 ## 修改约定
 
+- 创建 PR 页面的提示维护在 [`splrad/.github/.github/pull_request_template.md`](https://github.com/splrad/.github/blob/main/.github/pull_request_template.md)。`organizationPullRequestTemplate` 仅作为运行时正文生成的回退输入；页面文案统一在组织仓库中修改和发布。
+- 共享 AI 指引以 `config/review/rules.json` 为规则源。公共规则变更按 [`config/review/README.md`](config/review/README.md)先更新并验证组织指令，再更新采用摘要。中央规则合并部署后，由 `sync-review-instructions.yml` 同步 `AGENTS.md` 及仍需保留的仓库专用 Copilot 说明。PR 验证使用当前生效的中央策略；规则尚未生效时，保留当前生成文件。
 - 仓库范围和项目差异写入 `config/repositories.json` 及其引用的配置档案，不在工作流中散落特殊判断。
 - 修改 `packages/runner/src/index.ts` 或相关依赖后，运行 `npm run build` 更新 `packages/runner/dist/index.js`。
 - `packages/runner/dist/index.js` 是已提交的运行文件，必须与当前源码构建结果一致；`npm run verify:dist` 会检查这一点。

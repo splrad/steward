@@ -17,7 +17,8 @@
         "properties": {
           "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
           "owner": { "type": "string", "pattern": "^splrad/[a-z0-9-]+$" },
-          "status": { "enum": ["active", "retired"] }
+          "status": { "enum": ["active", "retired"] },
+          "organizationInstructionsDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
         }
       }
     }
