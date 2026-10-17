@@ -192,7 +192,9 @@ export function assembleReleaseFacts(input: {
     if (row.kind === 'review-record') { excluded.push({ pullNumber: row.pullNumber, mergeSha: row.sha, kind: 'review-record', reason: row.candidateId! }); coverage.push({ pullNumber: row.pullNumber, mergeSha: row.sha, source: 'excluded' }); continue; }
     const pull = input.pulls.find(p => p.pullNumber === row.pullNumber)!;
     assertFactClassification(pull.classification);
-    if (pull.fragment && (migrationPulls.has(pull.pullNumber) || migrationMerges.has(pull.mergeSha))) return sourceFailure('fragment overlaps historical migration source');
+    const priorPullMigration = migrationPulls.get(pull.pullNumber), priorMergeMigration = migrationMerges.get(pull.mergeSha);
+    if ((priorPullMigration || priorMergeMigration) && (pull.fragment || !migrated.has(pull.pullNumber)
+      || priorPullMigration !== input.migration?.value.migrationId || priorMergeMigration !== input.migration?.value.migrationId)) return sourceFailure('product overlaps historical migration source');
     const decision = evaluateRequirement(pull.changes, pull.classification, profile);
     const touched = pull.changes.filter(c => [c.path, c.status === 'renamed' ? c.previousPath : ''].some(p => p === profile.fragmentDirectory || p.startsWith(profile.fragmentDirectory + '/')));
     if (touched.length > 1 || touched.some(c => c.status !== 'added') || touched.length !== (pull.fragment ? 1 : 0)

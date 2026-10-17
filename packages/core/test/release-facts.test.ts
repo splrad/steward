@@ -40,6 +40,19 @@ function rebind(f: ReturnType<typeof migrationFixture>) {
   f.history.migrations[0]!.sources = f.migration.value.entries.map(({ pullNumber, mergeSha }) => ({ pullNumber, mergeSha }));
 }
 describe('R03 发布事实合同', () => {
+  it.each(['pull', 'merge', 'both'])('无片段 ignored 来源仍拒绝已消费迁移 %s 重放', kind => {
+    const f = fixture();
+    f.history.migrations = [{ migrationId: 'prior-consumed', sha256: 'a'.repeat(64), consumed: true,
+      sources: [{ pullNumber: kind === 'merge' ? 99 : 1, mergeSha: kind === 'pull' ? sha(99) : sha(2) }] }];
+    expect(f.pulls[1]!.fragment).toBeNull();
+    expect(() => assembleReleaseFacts(f)).toThrow('product overlaps historical migration source');
+  });
+  it('ignored 来源由同一待消费迁移覆盖时保留迁移事实', () => {
+    const f = migrationFixture(), out = assembleReleaseFacts(f);
+    expect(out.facts.some(v => v.factId === 'migration:adopt-2026:1#0')).toBe(true);
+    expect(out.excluded.some(v => v.pullNumber === 1)).toBe(false);
+  });
+
   it.each(['primaryKind', 'security', 'breaking-change'])('普通分类 %s 拒绝严格 JSON 同类禁止字符', field => {
     const forbidden = [...Array.from({ length: 32 }, (_, i) => i), ...Array.from({ length: 33 }, (_, i) => i + 127),
       0x061c, 0x200e, 0x200f, ...Array.from({ length: 7 }, (_, i) => i + 0x2028),
@@ -70,7 +83,7 @@ describe('R03 发布事实合同', () => {
   it('普通片段不能重用历史迁移来源', () => {
     const f = fixture(); f.history.migrations = [{ migrationId: 'older-migration', sha256: 'a'.repeat(64), consumed: true,
       sources: [{ pullNumber: 2, mergeSha: sha(3) }] }];
-    expect(() => assembleReleaseFacts(f)).toThrow('fragment overlaps historical migration source');
+    expect(() => assembleReleaseFacts(f)).toThrow('product overlaps historical migration source');
   });
   it('未注册自定义文本 assertion format 的预校验器失败关闭', () => {
     expect(() => new Ajv2020({ strict: true }).compile(JSON.parse(readFileSync('schema/release-notes-migration.schema.json', 'utf8')))).toThrow('unknown format');
