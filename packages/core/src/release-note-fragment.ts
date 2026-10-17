@@ -22,7 +22,7 @@ function fail(code: FragmentErrorCode, field: string): never { throw new Fragmen
 const maximumFragmentBytes = 512 * 1024;
 const forbiddenCharacters = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069\ufeff]/u;
 
-function checkString(value: string, field: string): void {
+export function assertFragmentStringCharacters(value: string, field: string): void {
   if (/[\ud800-\udfff]/u.test(value) || forbiddenCharacters.test(value)) fail('RN_FRAGMENT_TEXT', field);
 }
 
@@ -46,7 +46,7 @@ function* jsonTokens(source: string): Generator<string> {
   }
 }
 
-function readJson(bytes: Uint8Array): unknown {
+export function readStrictFragmentJson(bytes: Uint8Array): unknown {
   if (bytes.byteLength > maximumFragmentBytes) fail('RN_FRAGMENT_SIZE', '$');
   let source: string;
   try { source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
@@ -65,7 +65,7 @@ function readJson(bytes: Uint8Array): unknown {
     else if (token === ',') { const frame = stack.at(-1); if (frame) frame.expectingKey = true; }
     else if (token.startsWith('"')) {
       const text = JSON.parse(token) as string;
-      checkString(text, '$');
+      assertFragmentStringCharacters(text, '$');
       const frame = stack.at(-1);
       if (frame?.expectingKey) {
         if (frame.keys.has(text)) fail('RN_FRAGMENT_DUPLICATE_KEY', '$');
@@ -151,7 +151,7 @@ function hasLinkMarkup(value: string): boolean {
 
 function text(value: unknown, min: number, field: string): string {
   if (typeof value !== 'string') fail('RN_FRAGMENT_SCHEMA', field);
-  checkString(value, field);
+  assertFragmentStringCharacters(value, field);
   const normalized = value.normalize('NFC').trim();
   const length = [...normalized].length;
   if (length < min || length > 240) fail('RN_FRAGMENT_TEXT', field);
@@ -166,8 +166,14 @@ function text(value: unknown, min: number, field: string): string {
   return normalized;
 }
 
+/** Register these assertion formats when compiling the migration schema. */
+export const releaseFragmentTextFormats = {
+  'release-fragment-text': (value: string): boolean => { try { text(value, 10, '$'); return true; } catch { return false; } },
+  'release-fragment-action': (value: string): boolean => { try { text(value, 5, '$'); return true; } catch { return false; } },
+};
+
 export function parseFragment(bytes: Uint8Array): Fragment {
-  const data = object(readJson(bytes), ['schemaVersion', 'status', 'entries', 'reason'], '$');
+  const data = object(readStrictFragmentJson(bytes), ['schemaVersion', 'status', 'entries', 'reason'], '$');
   if (data.schemaVersion !== 1) fail('RN_FRAGMENT_SCHEMA', 'schemaVersion');
   if (data.status === 'not-user-facing') {
     if ('entries' in data) fail('RN_FRAGMENT_SCHEMA', 'entries');

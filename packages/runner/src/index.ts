@@ -20,7 +20,9 @@ import { createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestE
 import { managedRepositoryIds, managedRepositoryTargets, runManagedRepositorySync, type ManagedTarget } from "./managed-repository-sync.js";
 import { runPrIssueLink } from "./pr-issue-link.js";
 import { validateRemoteFragments } from "./release-note-validation.js";
+import { collectReleaseRange, collectReleaseSources, assertReleaseSourcesUnchanged, configuredReleaseSourcePolicy, type TrustedReleaseSourcePolicy } from "./release-notes-input.js";
 import { classificationFacts } from "./classification-facts.js";
+import { budgetReleaseSourceTransport, releaseSourceBudget } from "./release-source-budget.js";
 import { targetManagedBlock, updatePullRequestBodyDurably, type DurableBodyRedrive } from "./pr-body-writer.js";
 import { minimatch } from "minimatch";
 import YAML from "yaml";
@@ -105,12 +107,12 @@ function configPath(...segments: string[]): string {
   return join(root, ...segments);
 }
 function splitRepository(fullName: string): [string, string] { const parts = fullName.split("/"); if (parts.length !== 2 || parts.some(x => !x)) throw new Error("仓库完整名称无效"); return parts as [string, string]; }
-async function client(repositoryId: number, permissions: Parameters<typeof createInstallationToken>[0]["permissions"], policySha: string): Promise<GitHubClient> {
-  return (await clientWithToken(repositoryId, permissions, policySha)).client;
+async function client(repositoryId: number, permissions: Parameters<typeof createInstallationToken>[0]["permissions"], policySha: string, transport: typeof fetch = fetch): Promise<GitHubClient> {
+  return (await clientWithToken(repositoryId, permissions, policySha, transport)).client;
 }
-async function clientWithToken(repositoryId: number, permissions: Parameters<typeof createInstallationToken>[0]["permissions"], policySha: string): Promise<{ token: string; client: GitHubClient }> {
+async function clientWithToken(repositoryId: number, permissions: Parameters<typeof createInstallationToken>[0]["permissions"], policySha: string, transport: typeof fetch = fetch): Promise<{ token: string; client: GitHubClient }> {
   const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId, permissions, policySha });
-  return { token, client: new GitHubClient(token, "https://api.github.com", fetch, policySha) };
+  return { token, client: new GitHubClient(token, "https://api.github.com", transport, policySha) };
 }
 async function summary(lines: readonly string[]): Promise<void> {
   const target = process.env.GITHUB_STEP_SUMMARY;
@@ -1911,27 +1913,8 @@ async function resolveTagCommit(gh: GitHubClient, owner: string, repo: string, t
   throw new Error("标签嵌套层数超过允许上限");
 }
 
-async function collectFirstParentRange(gh: GitHubClient, owner: string, repo: string, targetSha: string, releases: readonly any[], excludeTag: string): Promise<{ commits: any[]; previousRelease: any | null }> {
-  const releaseByCommit = new Map<string, any>();
-  for (const release of releases.filter(value => !value.draft && !value.prerelease && value.tag_name !== excludeTag)) {
-    const commit = await resolveTagCommit(gh, owner, repo, release.tag_name);
-    if (commit && !releaseByCommit.has(commit)) releaseByCommit.set(commit, release);
-  }
-  const commits: any[] = [];
-  let current = targetSha;
-  const seen = new Set<string>();
-  for (let count = 0; count < 10_000; count++) {
-    if (seen.has(current)) throw new Error("第一父提交链出现循环");
-    seen.add(current);
-    if (current !== targetSha && releaseByCommit.has(current)) return { commits, previousRelease: releaseByCommit.get(current) };
-    const commit = await gh.getCommit(owner, repo, current);
-    if (commit.sha !== current) throw new Error("提交读取结果与请求编号不一致");
-    commits.push(commit);
-    const parent = commit.parents?.[0]?.sha;
-    if (!parent) return { commits, previousRelease: null };
-    current = parent;
-  }
-  throw new Error("第一父提交链超过10000条，停止发布");
+async function collectFirstParentRange(gh: GitHubClient, owner: string, repo: string, targetSha: string, releases: readonly any[], excludeTag: string, sourcePolicy: TrustedReleaseSourcePolicy = {}): Promise<{ commits: any[]; previousRelease: any | null }> {
+  return collectReleaseRange(gh, owner, repo, targetSha, releases, excludeTag, sourcePolicy, releaseSourceBudget.commits);
 }
 
 async function isFirstParentAncestor(gh: GitHubClient, owner: string, repo: string, ancestor: string, descendant: string): Promise<boolean> {
@@ -1975,7 +1958,7 @@ async function releasePreflight(args: Readonly<Record<string, string>>) {
   if (process.env.STEWARD_APP_PRIVATE_KEY) {
     const trigger = required(args, "trigger");
     if (!['app', 'manual'].includes(trigger)) throw new Error("发布触发来源无效");
-    const gh = await client(repositoryId, { contents: "read", pull_requests: "read", metadata: "read", members: "read" }, policySha);
+    const gh = await client(repositoryId, { contents: "read", pull_requests: "read", metadata: "read", members: "read" }, policySha, budgetReleaseSourceTransport());
     if (trigger === "manual") {
       integer(env("TRIGGER_ACTOR_ID"), "TRIGGER_ACTOR_ID");
       const membership = await gh.getTeamMembership("splrad", "maintainers", env("TRIGGER_ACTOR_LOGIN"));
@@ -2000,7 +1983,7 @@ async function releasePreflight(args: Readonly<Record<string, string>>) {
     const immutable = await gh.getImmutableReleaseStatus(owner, repo);
     if (immutable.enabled !== true) throw new Error("LayerScape不可变发布尚未启用");
     const releases = await gh.listReleases(owner, repo);
-    const history = await collectFirstParentRange(gh, owner, repo, targetSha, releases, plan.tag);
+    const history = await collectFirstParentRange(gh, owner, repo, targetSha, releases, plan.tag, configuredReleaseSourcePolicy(profile.sourcePolicy, { repositoryId, defaultBranch, targetSha, policySha }));
     if (history.previousRelease) {
       previousTag = history.previousRelease.tag_name;
       const version = /^v(\d+\.\d+\.\d+)$/.exec(history.previousRelease.tag_name)?.[1];
@@ -2043,30 +2026,23 @@ async function releaseNotesCommand(args: Readonly<Record<string, string>>) {
   const policySha = sha(required(args, "policy-sha"), "policy-sha");
   const displayVersion = required(args, "display-version");
   parseVersion(displayVersion, "20000101.1");
-  const gh = await client(repositoryId, { contents: "read", pull_requests: "read", metadata: "read" }, policySha);
+  const gh = await client(repositoryId, { contents: "read", pull_requests: "read", metadata: "read" }, policySha, budgetReleaseSourceTransport());
   const repository = await gh.getRepositoryById(repositoryId); const [owner, repo] = splitRepository(repository.full_name);
   if (repositoryId !== 1187527897 || repository.full_name !== "splrad/LayerScape") throw new Error("发布说明仓库身份不匹配");
   if (typeof repository.default_branch !== "string" || !repository.default_branch.trim()) throw new Error("发布仓库没有可用的默认分支");
-  const releases = await gh.listReleases(owner, repo);
-  const history = await collectFirstParentRange(gh, owner, repo, targetSha, releases, `v${displayVersion}`);
-  const range = new Set(history.commits.map(commit => commit.sha));
-  const numbers = new Set<number>();
-  for (const commit of history.commits) {
-    for (const pull of await gh.listPullsForCommit(owner, repo, commit.sha)) {
-      if (pull.merged_at && pull.base?.ref === repository.default_branch && range.has(pull.merge_commit_sha)) numbers.add(pull.number);
-    }
-  }
-  if (!numbers.has(triggerPullRequest)) throw new Error("触发发布的拉取请求不在第一父提交范围中");
+  const identity = { repositoryId, defaultBranch: repository.default_branch, targetSha, policySha };
+  const releaseProfile = await json<any>(configPath("profiles", "release-legacy", "layerscape.json"));
+  const sourcePolicy = configuredReleaseSourcePolicy(releaseProfile.sourcePolicy, identity);
+  const source = await collectReleaseSources(gh, owner, repo, identity, `v${displayVersion}`, sourcePolicy);
+  const numbers = new Set(source.input.commits.filter(row => row.kind === "product").map(row => row.pullNumber));
+  if (!numbers.has(triggerPullRequest)) throw new Error("触发发布的拉取请求不在产品提交范围中");
   const semantics = await semanticCatalog();
   const repositoryConfiguration = configurationFor(await catalog(), repository);
   const repositoryClassification = repositoryConfiguration.classification as RepositoryClassification;
   const profile = await json<ClassificationProfile>(configPath("profiles", "classification", `${repositoryClassification.profile}.json`));
   const rich: ClassifiedReleasePullRequest[] = [];
   for (const number of numbers) {
-    const pull = await gh.getPullRequest(owner, repo, number);
-    if (!pull.merged || pull.base?.ref !== repository.default_branch || !range.has(pull.merge_commit_sha)) throw new Error(`拉取请求事实与提交范围不一致: #${number}`);
-    const [files, commits, labels] = await Promise.all([gh.listPullFiles(owner, repo, number), gh.listPullCommits(owner, repo, number), gh.listLabels(owner, repo, number)]);
-    if (!files.length || !commits.length || Number(pull.changed_files) !== files.length || Number(pull.commits) !== commits.length) throw new Error(`拉取请求事实分页不完整: #${number}`);
+    const { pull, files, commits, labels } = source.facts.find(fact => fact.pull.number === number)!;
     const currentLabels = labels.map((value: any) => String(value.name));
     const decision = classifyPullRequest(semantics, profile, repositoryClassification, {
       repositoryId, pullRequestNumber: number, sourceRepositoryId: Number(pull.head.repo.id), sourceRef: `refs/heads/${pull.head.ref}`, targetRef: `refs/heads/${pull.base.ref}`,
@@ -2076,13 +2052,14 @@ async function releaseNotesCommand(args: Readonly<Record<string, string>>) {
     }, { currentLabels, stewardOwnedRiskFlags: [], stewardOwnedFacets: [] });
     rich.push({ number, title: pull.title, body: pull.body ?? "", labels: currentLabels, files: files.map((value: any) => value.filename), author: { login: pull.user.login, type: pull.user.type }, mergedAt: pull.merged_at, mergeSha: pull.merge_commit_sha, decision });
   }
-  const releaseProfile = await json<any>(configPath("profiles", "release-legacy", "layerscape.json"));
   const eligible = collectReleasePullRequests(rich, releaseProfile.releaseNotes.excludedLabels);
   const categorized = categorizeReleasePullRequests(profile, eligible);
   const notes = renderReleaseNotes({ repositoryId, targetSha, policySha, displayVersion, categorized, emptyRuntimeText: releaseProfile.releaseNotes.emptyRuntimeText });
   const outputPath = resolve(required(args, "output"));
+  assertReleaseSourcesUnchanged(source, await collectReleaseSources(gh, owner, repo, identity, `v${displayVersion}`, sourcePolicy));
+  await writeFile(`${outputPath}.sources.json`, source.bytes, "utf8");
   await writeFile(outputPath, notes, "utf8");
-  await summary([`发布说明：${outputPath}`, `第一父提交：${history.commits.length}`, `关联拉取请求：${rich.length}`, `纳入更新内容：${categorized.length}`, `字符数：${notes.length}`]);
+  await summary([`发布说明：${outputPath}`, `来源摘要：${source.inputSha256}`, `第一父提交：${source.input.commits.length}`, `关联拉取请求：${rich.length}`, `纳入更新内容：${categorized.length}`, `字符数：${notes.length}`]);
 }
 async function releasePublish(args: Readonly<Record<string, string>>) {
   const manifest = await json<ReleaseManifest>(resolve(required(args, "manifest")));
@@ -2169,3 +2146,5 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main().catch(error => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1; });
+
+export { collectReleaseFactSnapshot } from './release-facts.js';

@@ -397,4 +397,9 @@ if (!hasExactKeys(observeCommand?.env, Object.keys(observeEnvironment)) || Objec
   || String(observeCommand.run).replace(/\\\r?\n/gu, " ").replace(/\s+/gu, " ").trim() !== expectedObserveCommand)
   throw new Error("审查观察参数或命令不符合只读合同");
 
+const releaseSourceWorkflow = YAML.parse(await readFile(".github/workflows/release.yml", "utf8"));
+const notesArtifact = releaseSourceWorkflow.jobs.notes.steps.find(step => step.uses?.startsWith("actions/upload-artifact@"));
+const notesDownload = releaseSourceWorkflow.jobs.publish.steps.find(step => step.uses?.startsWith("actions/download-artifact@") && step.with?.name === notesArtifact?.with?.name);
+if (JSON.stringify(String(notesArtifact?.with?.path).trim().split(/\r?\n/).map(path => path.trim()).sort()) !== JSON.stringify(["release-notes.md", "release-notes.md.sources.json"]) || notesDownload?.with?.path !== "release-notes") throw new Error("发布说明与来源快照必须一起上传并传递至发布阶段");
+
 console.log("workflows verified");
