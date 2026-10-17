@@ -110,9 +110,9 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with: { node-version-file: .node-version, cache: npm }
       - run: npm ci --ignore-scripts
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with: { name: "layerscape-release-${{ inputs.targetSha }}", path: release }
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with: { name: "layerscape-notes-${{ inputs.targetSha }}", path: release-notes }
       - name: 发布或继续唯一匹配草稿
         env:
@@ -134,7 +134,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with: { node-version-file: .node-version, cache: npm }
       - run: npm ci --ignore-scripts
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with: { name: "layerscape-release-${{ inputs.targetSha }}", path: release }
       - name: 复核远程不可变发布
         env:
