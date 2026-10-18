@@ -2,7 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { candidatePaths, receiptDigest } from '../../core/src/release-note-receipt.js';
 import { receiptFixture, sha } from '../../core/test/release-receipt-fixture.js';
 import { GitHubRequestError } from '../../github/src/client.js';
-import { createReleaseCandidate, verifyReleaseDownloads, type LifecycleSession } from '../src/release-lifecycle.js';
+import { createReleaseCandidate, verifyReleaseDownloads, releaseAssetTransferTimeout, type LifecycleSession } from '../src/release-lifecycle.js';
+
+it('budgets a full 1 GiB transfer at 4 MiB/s plus setup and rejects out-of-contract sizes', () => {
+  expect(releaseAssetTransferTimeout(1024 ** 3)).toBe(316_000);
+  expect(releaseAssetTransferTimeout(1024)).toBe(61_000);
+  for (const size of [0, -1, NaN, 1024 ** 3 + 1]) expect(() => releaseAssetTransferTimeout(size)).toThrow('ASSET_SIZE');
+});
 
 describe('candidate creation retry', () => {
   it.each(['branch', 'pull', 'revision'])('recovers %s without duplicating a candidate', async lost => {

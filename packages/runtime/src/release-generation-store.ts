@@ -5,14 +5,15 @@ import { ReleaseReceiptStore } from './release-note-receipts.js';
 
 export class ReleaseGenerationStore {
   constructor(private readonly db: D1Database) {}
-  async ticket(repositoryId: number, tag: string, now: number): Promise<string> {
+  async ticket(repositoryId: number, tag: string, now: number, expectedDigest?: string): Promise<string> {
     const current = await this.read(repositoryId, tag);
     releaseAssert(current, 'GENERATION_NOT_FOUND');
+    releaseAssert(expectedDigest === undefined || expectedDigest === generationPlanDigest(current.ledger.plan), 'GENERATION_STALE');
     // Cover the frozen execution budget plus a bounded queue/setup allowance.
     const lifetimeMs = Math.max(60 * 60_000, current.ledger.plan.jobTimeoutMs + 30 * 60_000);
     const token = 'release-generation.' + randomBytes(32).toString('hex');
-    const result = await this.db.prepare('UPDATE release_generation SET ticket_digest=?,ticket_until=? WHERE repository_id=? AND target_tag=?')
-      .bind(receiptDigest(token), now + lifetimeMs, repositoryId, tag).run();
+    const result = await this.db.prepare('UPDATE release_generation SET ticket_digest=?,ticket_until=? WHERE repository_id=? AND target_tag=? AND version=?')
+      .bind(receiptDigest(token), now + lifetimeMs, repositoryId, tag, current.version).run();
     releaseAssert(result.meta.changes === 1, 'GENERATION_NOT_FOUND'); return token;
   }
   async authorize(repositoryId: number, tag: string, token: string, now: number, policySha: string): Promise<void> {
@@ -30,7 +31,17 @@ export class ReleaseGenerationStore {
     await this.db.prepare('INSERT OR IGNORE INTO release_generation(repository_id,target_tag,plan_digest,record_json) VALUES(?,?,?,?)')
       .bind(repositoryId, tag, generationPlanDigest(plan), canonicalReleaseJson({ plan, calls: [] })).run();
     const current = (await this.read(repositoryId, tag))!;
-    releaseAssert(generationPlanDigest(current.ledger.plan) === generationPlanDigest(plan), 'GENERATION_OCCUPIED'); return current;
+    if (generationPlanDigest(current.ledger.plan) === generationPlanDigest(plan)) return current;
+    releaseAssert(current.ledger.plan.sourceDigest !== plan.sourceDigest || current.ledger.plan.policySha !== plan.policySha, 'GENERATION_OCCUPIED');
+    const digest = generationPlanDigest(plan);
+    await this.db.batch([
+      this.db.prepare('INSERT INTO release_generation_history(repository_id,target_tag,plan_digest,version,record_json) SELECT repository_id,target_tag,plan_digest,version,record_json FROM release_generation WHERE repository_id=? AND target_tag=? AND version=? AND restart_count<3 AND NOT EXISTS(SELECT 1 FROM release_receipts WHERE repository_id=? AND target_tag=?) AND NOT EXISTS(SELECT 1 FROM release_generation_history WHERE repository_id=? AND target_tag=? AND plan_digest=?)')
+        .bind(repositoryId, tag, current.version, repositoryId, tag, repositoryId, tag, digest),
+      this.db.prepare('UPDATE release_generation SET plan_digest=?,record_json=?,version=version+1,restart_count=restart_count+1,ticket_digest=NULL,ticket_until=0 WHERE repository_id=? AND target_tag=? AND version=? AND EXISTS(SELECT 1 FROM release_generation_history h WHERE h.repository_id=release_generation.repository_id AND h.target_tag=release_generation.target_tag AND h.plan_digest=release_generation.plan_digest AND h.version=release_generation.version)')
+        .bind(digest, canonicalReleaseJson({ plan, calls: [] }), repositoryId, tag, current.version),
+    ]);
+    const next = (await this.read(repositoryId, tag))!;
+    releaseAssert(generationPlanDigest(next.ledger.plan) === digest, 'GENERATION_OCCUPIED'); return next;
   }
   async mutate(repositoryId: number, tag: string, version: number, action: 'reserve' | 'complete' | 'diagnostic', input: string, index?: number, inputDigest?: string) {
     const current = await this.read(repositoryId, tag);

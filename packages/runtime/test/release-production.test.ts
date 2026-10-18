@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { generationPlan, parseGeneratedRelease, renderGeneratedRelease } from '../../core/src/release-production.js';
+import { generationPlan, generationPlanDigest, parseGeneratedRelease, renderGeneratedRelease } from '../../core/src/release-production.js';
 import { newReleaseReceipt } from '../../core/src/release-note-receipt.js';
 import { rebindReleaseBuild, currentReleaseBuild } from '../../core/src/release-rebuild.js';
 import { frozenFixture, notesFixture, sha } from '../../core/test/release-receipt-fixture.js';
@@ -11,6 +11,38 @@ import { ReleaseTestDb } from './release-test-db.js';
 const generated = { userNotes: { upgrade: [], changes: [{ category: '修复', text: '修复导出时丢失文件的问题。' }] }, reviewEvidence: { internalChanges: ['调整导出实现。'], unknowns: [] } };
 const output = JSON.stringify(generated);
 const plan = generationPlan('a'.repeat(64), sha('c'), ['complete source']);
+
+it('archives obsolete generation plans, revokes tickets and fences late writes with a durable restart budget', async () => {
+  const db = new ReleaseTestDb(), store = new ReleaseGenerationStore(db.binding());
+  try {
+    const old = await store.prepare(9001, 'v1.2.3', plan);
+    const token = await store.ticket(9001, 'v1.2.3', 1, generationPlanDigest(plan));
+    for (const source of ['b', 'd', 'e']) {
+      const next = generationPlan(source.repeat(64), sha('c'), ['new source']);
+      const saved = await new ReleaseGenerationStore(db.binding()).prepare(9001, 'v1.2.3', next);
+      expect(saved.ledger.calls).toEqual([]);
+      expect(await store.prepare(9001, 'v1.2.3', next)).toEqual(saved);
+    }
+    await expect(store.authorize(9001, 'v1.2.3', token, 2, sha('c'))).rejects.toThrow('AUTH');
+    await expect(store.ticket(9001, 'v1.2.3', 2, generationPlanDigest(plan))).rejects.toThrow('STALE');
+    await expect(store.mutate(9001, 'v1.2.3', old.version, 'reserve', 'old')).rejects.toThrow('STALE');
+    await expect(store.prepare(9001, 'v1.2.3', plan)).rejects.toThrow('OCCUPIED');
+    await expect(store.prepare(9001, 'v1.2.3', generationPlan('f'.repeat(64), sha('c'), ['fourth']))).rejects.toThrow('OCCUPIED');
+    expect(db.database.prepare('SELECT COUNT(*) AS n FROM release_generation_history').get()?.n).toBe(3);
+  } finally { db.database.close(); }
+});
+it('allows only one competing generation replacement and blocks changes after candidate creation', async () => {
+  const db = new ReleaseTestDb(), store = new ReleaseGenerationStore(db.binding());
+  try {
+    await store.prepare(9001, 'v1.2.3', plan);
+    const outcomes = await Promise.allSettled(['b', 'd'].map(s => store.prepare(9001, 'v1.2.3', generationPlan(s.repeat(64), sha('c'), ['new']))));
+    expect(outcomes.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    await new ReleaseReceiptStore(db.binding()).prepare(newReleaseReceipt(frozenFixture(), notesFixture), 'now');
+    const before = await store.read(9001, 'v1.2.3');
+    await expect(store.prepare(9001, 'v1.2.3', generationPlan('e'.repeat(64), sha('c'), ['blocked']))).rejects.toThrow('OCCUPIED');
+    expect(await store.read(9001, 'v1.2.3')).toEqual(before);
+  } finally { db.database.close(); }
+});
 
 it('enforces the documented aggregate plan budget before persistence or model calls', () => {
   expect(() => generationPlan('a'.repeat(64), sha('c'), Array(3).fill('x'.repeat(96 * 1024)))).toThrow('GENERATION_PLAN_LIMIT');
@@ -75,7 +107,7 @@ describe('release production protocol and durable budget', () => {
     try {
       for (let i = 0; i < 3; i++) await expect(generateRelease(plan, client(store), async () => { calls++; throw new Error('lost'); })).rejects.toThrow();
       expect(calls).toBe(2); expect((await store.read(9001, 'v1.2.3'))?.ledger.calls).toHaveLength(2);
-      await expect(store.prepare(9001, 'v1.2.3', generationPlan('b'.repeat(64), sha('c'), ['different']))).rejects.toThrow('OCCUPIED');
+      await expect(store.prepare(9001, 'v1.2.3', generationPlan(plan.sourceDigest, sha('c'), ['different']))).rejects.toThrow('OCCUPIED');
     } finally { db.database.close(); }
   });
   it('persists invalid output and uses only the one remaining format attempt', async () => {

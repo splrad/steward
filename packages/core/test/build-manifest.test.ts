@@ -130,6 +130,7 @@ describe('构建合同 T09/T10', () => {
   });
   it.each([
     ['dotnet-assets-v1', { project: 'src/Widget.csproj', configuration: 'Release', framework: 'net8.0-windows', runtime: 'win-x64' }, 'windows'],
+    ['dotnet-assets-v1', { project: 'src/Widget.csproj', configuration: 'Release', framework: 'net8.0', runtime: 'linux-x64' }, 'windows'],
     ['node-package-v1', { directory: '.', lockfile: 'package-lock.json', buildTask: 'build', packageManager: 'npm' }, 'linux'],
     ['oci-image-v1', { context: '.', dockerfile: 'Dockerfile', platforms: ['linux/amd64'] }, 'linux'],
     ['custom-adapter-v1', unit.inputs, 'linux'],

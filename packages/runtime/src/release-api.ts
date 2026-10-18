@@ -81,7 +81,10 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
         releaseAssert(body.plan?.policySha === env.POLICY_SHA, 'POLICY_STALE');
         return reply(200, await generation.prepare(repositoryId, tag, body.plan));
       }
-      if (body.action === 'ticket') return reply(200, { token: await generation.ticket(repositoryId, tag, Date.now()) });
+      if (body.action === 'ticket') {
+        releaseAssert(typeof body.planDigest === 'string', 'GENERATION_PLAN');
+        return reply(200, { token: await generation.ticket(repositoryId, tag, Date.now(), body.planDigest) });
+      }
       const current = await generation.read(repositoryId, tag);
       releaseAssert(current?.ledger.plan.policySha === env.POLICY_SHA && ['reserve', 'complete', 'diagnostic'].includes(body.action) && typeof body.input === 'string', 'GENERATION_REQUEST');
       return reply(200, await generation.mutate(repositoryId, tag, body.version, body.action, body.input, body.index, body.inputDigest));

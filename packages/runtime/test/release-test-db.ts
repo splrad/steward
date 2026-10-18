@@ -16,6 +16,7 @@ export class ReleaseTestDb {
     if (!this.database.prepare("SELECT name FROM sqlite_master WHERE name='release_generation'").get()) this.database.exec(readFileSync(new URL('../migrations/0011_release_generation.sql', import.meta.url), 'utf8'));
     if (!this.database.prepare("SELECT name FROM sqlite_master WHERE name='release_build_requests'").get()) this.database.exec(readFileSync(new URL('../migrations/0012_release_build_requests.sql', import.meta.url), 'utf8'));
     if (!this.database.prepare("SELECT name FROM sqlite_master WHERE name='release_build_restart_history'").get()) this.database.exec(readFileSync(new URL('../migrations/0013_release_build_restart.sql', import.meta.url), 'utf8'));
+    if (!this.database.prepare("SELECT name FROM sqlite_master WHERE name='release_generation_history'").get()) this.database.exec(readFileSync(new URL('../migrations/0014_release_generation_restart.sql', import.meta.url), 'utf8'));
   }
   prepare(sql: string) { return new Statement(this.database, sql); }
   async batch(statements: Statement[]) {

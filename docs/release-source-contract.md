@@ -68,4 +68,8 @@ Review 事件只调用 `inspect`。`reconcile` 先核验真人手动合并证据
 
 当前 source 验证读取上限为 32 MiB，证据为 512 KiB，正文为 128 KiB；超过上限明确失败。生成最多八批，每批输入 96 KiB，整个计划 256 KiB，每批及最终汇总最多各两次调用；单次 180 秒，小输入总预算十分钟，多批预算在调用前固定。完整文本按 Unicode 字符切片，超限不截断后继续。LayerScape 仍为 pending。
 
-部署前须先应用新增迁移，再部署相同策略版本的 Worker 与工作流；随后在获准测试对象验证真实网页编辑、Review/手动合并、Actions 下载、D1 绑定及 GitHub 不可变 Release。正式产品发布另行执行对应授权阶段。
+候选创建前，生成计划的来源或策略更新可自动归档旧账本并建立新账本，每个 tag 最多三次。历史调用记录保留，旧票据撤销，版本号继续递增以拒绝迟到写入；同来源同策略的输入变动不重置预算，已归档计划不能恢复。候选收据存在时禁止替换。
+
+资产上传预算为一分钟初始化余量，加上按 4 MiB/s 计算的传输时间；1 GiB 资产预算为 316 秒。低于该基准仍可能超时，恢复时继续核验远端资产身份和摘要。
+
+部署前须依次应用新增迁移 `0010_release_receipts.sql`、`0011_release_generation.sql`、`0012_release_build_requests.sql`、`0013_release_build_restart.sql` 和 `0014_release_generation_restart.sql`，再部署相同策略版本的 Worker 与工作流；随后在获准测试对象验证真实网页编辑、Review/手动合并、Actions 下载、D1 绑定及 GitHub 不可变 Release。正式产品发布另行执行对应授权阶段。

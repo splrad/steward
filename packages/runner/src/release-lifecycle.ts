@@ -171,10 +171,14 @@ export async function verifyReleaseDownloads(receipt: ReleaseReceipt, token: str
     releaseAssert(size === asset.size && hash.digest('hex') === asset.sha256, 'DOWNLOAD_DIGEST');
   }
 }
+export function releaseAssetTransferTimeout(size: number): number {
+  releaseAssert(Number.isSafeInteger(size) && size > 0 && size <= 1024 ** 3, 'ASSET_SIZE');
+  return 60_000 + Math.ceil(size / (4 * 1024 ** 2)) * 1000;
+}
 export function releaseUploader(token: string, policySha: string, directory: string) {
   return async (release: any, asset: FrozenRelease['assets'][number]) => {
     const base = String(release.upload_url).split('{')[0]!, url = new URL(base);
     releaseAssert(url.origin === 'https://uploads.github.com' && /^\/repos\/[^/]+\/[^/]+\/releases\/\d+\/assets$/.test(url.pathname) && !url.username && !url.password && !url.search && !url.hash, 'UPLOAD_URL');
-    return uploadReleaseAsset({ token, policySha, uploadUrl: release.upload_url, filePath: join(directory, asset.name), fileName: asset.name, expectedSha256: asset.sha256, transport: (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(60_000) }) });
+    return uploadReleaseAsset({ token, policySha, uploadUrl: release.upload_url, filePath: join(directory, asset.name), fileName: asset.name, expectedSha256: asset.sha256, transport: (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(releaseAssetTransferTimeout(asset.size)) }) });
   };
 }

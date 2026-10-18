@@ -4,7 +4,7 @@ import { createInstallationToken, GitHubClient } from '../../github/src/index.js
 import { releaseAssert, releaseSha, positiveId, newReleaseReceipt, type FrozenRelease, type ReleaseReceipt } from '../../core/src/release-note-receipt.js';
 import { validateReleaseSource, validateReleaseEvidence } from '../../core/src/release-bundle.js';
 import { currentReleaseBuild } from '../../core/src/release-rebuild.js';
-import { generationInputs, generationPlan } from '../../core/src/release-production.js';
+import { generationInputs, generationPlan, generationPlanDigest } from '../../core/src/release-production.js';
 import { ReleaseReceiptClient, withReleaseClaim, writeCandidateReviewCheck, prepareReleaseCandidate, createReleaseCandidate, publishReleaseCandidate, verifyReleaseDownloads, verifyReleaseAssetFiles, releaseUploader } from './release-lifecycle.js';
 
 /** This command never runs code from the candidate or product checkout. */
@@ -23,8 +23,9 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
     const frozen = JSON.parse(await readFile(join(bundle, 'frozen.json'), 'utf8')) as FrozenRelease;
     releaseAssert(frozen.repositoryId === repositoryId && frozen.policySha === policySha && frozen.targetTag === tag, 'BUNDLE_IDENTITY');
     const source = validateReleaseSource(await readFile(join(bundle, 'source.json')), frozen);
-    await receipts.request('generation', { action: 'prepare', plan: generationPlan(frozen.sourceDigest, frozen.policySha, generationInputs(source)) });
-    await writeFile(resolve(required('output')), JSON.stringify(await receipts.request('generation', { action: 'ticket' })), { flag: 'wx', mode: 0o600 });
+    const plan = generationPlan(frozen.sourceDigest, frozen.policySha, generationInputs(source));
+    await receipts.request('generation', { action: 'prepare', plan });
+    await writeFile(resolve(required('output')), JSON.stringify(await receipts.request('generation', { action: 'ticket', planDigest: generationPlanDigest(plan) })), { flag: 'wx', mode: 0o600 });
     return;
   }
   let result: ReleaseReceipt;
