@@ -52,6 +52,9 @@ jobs:
   publish:
     needs: inspect
     if: inputs.operation == 'reconcile' && needs.inspect.outputs.shouldPublish == 'true'
+    concurrency:
+      group: steward-release-publish-${{ inputs.repositoryId }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: ${{ fromJSON(needs.inspect.outputs.publishTimeoutMinutes) }}
     environment: { name: steward-release, deployment: false }
