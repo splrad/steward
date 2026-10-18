@@ -148,7 +148,10 @@ export function freezeReleaseGitInput(options: GitReleaseInputOptions) {
     else if (bytes.subarray(0, 43).toString('ascii').startsWith('version https://git-lfs.github.com/spec/v1')) gaps.push({ path, oid: entry.oid, reason: 'lfs-pointer-only' });
     else if (objects.get(entry.oid)?.encoding === 'binary') gaps.push({ path, oid: entry.oid, reason: 'binary-semantics-unread' });
   };
-  for (const change of changes) for (const side of [change.before, change.after]) if (side) retain(change.path, side);
+  for (const change of changes) {
+    if (change.before) retain(change.previousPath ?? change.path, change.before);
+    if (change.after) retain(change.path, change.after);
+  }
   const contextPaths = sorted([...new Set(options.contextPaths ?? ['README.md'])]);
   const context = contextPaths.map(path => {
     if (!path || /[\x00\r\n]/.test(path) || path.startsWith('/') || path.split('/').some(part => !part || part === '..' || part === '.')) sourceFailure('context path');

@@ -1,6 +1,6 @@
 # 发布来源、候选和持久收据
 
-当前入口是 `release-freeze` 与 `release-candidate`，采用总基线 v1.8 的产品仓候选合同。产品提交 `productTargetSha` 与候选合并提交分别记录；Release 标签始终绑定前者。
+当前入口包括 `release-build`、`release-freeze` 与 `release-candidate`，采用总基线 v1.8 的产品仓候选合同。产品提交 `productTargetSha` 与候选合并提交分别记录；Release 标签始终绑定前者。
 
 ## 输入与候选
 
@@ -54,7 +54,11 @@ Review 事件只调用 `inspect`。`reconcile` 先核验真人手动合并证据
 
 `release.yml` 的 generate 操作依次固定生成预算、运行隔离模型作业和创建候选。模型作业只注入个人 Copilot PAT；父进程用短时凭证访问生成账本，子进程使用独立空目录和配置，不继承该凭证、App 或发布凭据。CLI 固定为 1.0.91，禁用工具、内置 MCP、自动指令和会话恢复。增量迁移 `0011_release_generation.sql` 保存计划、调用预留、原始格式失败输出和成功输出；未知结果仍计次，完成批次跨重跑复用。结构解析只接受唯一 JSON 对象或明确 json 围栏，拒绝重复键和未知字段。
 
-构建执行层已有四种 Profile 的参数编排、准确干净提交检查、独立输出目录及中央清单收集。产品原生版本检查器、实际构建作业与 seed bundle 自动生产仍待接入，因此 generate 当前需要一个已有的冻结 seed bundle。暂未注册构建适配器为可激活状态，也未接通资产下载失败后的自动重建调度。`rebind-build` 是已完成重建后的受控恢复入口：必须具有原冻结工具链摘要，同字节才可保留批准；旧收据缺少工具链摘要时拒绝推断。异字节结果要求重新建立候选并审阅。
+构建执行层已接入四种 Profile 的参数编排、准确干净提交检查、独立输出目录、原生版本检查器及中央清单收集。`release-build.yml` 固定来源、构建请求和工具链，在隔离作业执行产品构建；`release-build-complete.yml` 回读运行与 artifact 身份，独立验证下载资产，自动生成包含 `source.json`、`frozen.json` 和资产的 seed bundle，再接续 generate。首发请求在 seed 来源摘要验证及文件写入成功后才 finish；此前失败可保存为 failed 并重试。GitHub 文件发布只接受一个非 OCI 构建单元。
+
+各 Profile 共用根目录 `VERSION` 合同：冻结产品提交必须包含严格的 `X.Y.Z` 加 LF，且与目标标签及原生资产版本一致。LayerScape 的配套 [PR #168](https://github.com/splrad/LayerScape/pull/168) 增加 `VERSION`，由 `Version.props` 和发布脚本共同读取；须先将配套变更纳入所选产品提交，再运行首发构建。旧产品提交缺少文件时明确失败，不从标签推断文件内容。LayerScape 的发布能力仍为 pending，启用须另行完成部署和真实链路验收。
+
+`ensure-assets` 已接通缺失或过期资产的重建调度。`rebind-build` 必须匹配原冻结工具链、清单及资产字节，同字节更新下载来源并保留批准；异字节走 `revise-rebuild`，重新建立候选并审阅。已准备但尚未绑定 PR 的候选可经 `recover-candidate` 恢复。所有恢复仍严格绑定 `POLICY_SHA`：默认分支与收据策略不一致时明确阻断，待策略同步后重试；旧收据缺少工具链摘要时拒绝推断。
 
 当前 source 验证读取上限为 32 MiB，证据为 512 KiB，正文为 128 KiB；超过上限明确失败。生成最多八批，每批输入 96 KiB，整个计划 256 KiB，每批及最终汇总最多各两次调用；单次 180 秒，小输入总预算十分钟，多批预算在调用前固定。完整文本按 Unicode 字符切片，超限不截断后继续。LayerScape 仍为 pending。
 

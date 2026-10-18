@@ -160,21 +160,23 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
     releaseAssert(state.request.plans.length === 1, 'BUILD_SET');
     const home = await mkdtemp(join(tmpdir(), 'steward-build-verify-'));
     const manifest = await collectFileBuildManifest(state.request.plans[0]!, resolve(required('assets')), nativeReleaseInspector(resolve(required('inspector')), home));
-    let accepted: ReleaseBuildState;
-    try { accepted = await receipts.request<ReleaseBuildState>('build-request', { action: 'finish', key, runId: Number(required('run-id')), attempt: Number(required('attempt')), artifactId: Number(required('artifact-id')), manifests: [manifest], toolchainDigest: releaseToolchainDigest }); }
+    if (state.request.mode === 'initial') {
+      const directory = resolve(required('output')); await mkdir(directory, { recursive: true });
+      // Stage the complete seed before committing acceptance. The runtime independently
+      // verifies this build identity against GitHub in finish before continuation.
+      const build = { runId: Number(required('run-id')), artifactId: Number(required('artifact-id')), artifactName: `release-build-result-${required('attempt')}`, headSha: policySha };
+      const frozen: FrozenRelease = { ...state.request.frozen, build, manifests: [manifest], assets: manifest.artifacts.map(a => { releaseAssert(a.kind === 'file', 'BUILD_FILE'); return { name: a.file, size: a.size, sha256: a.sha256 }; }) };
+      const chunks: Buffer[] = []; let total = 1;
+      for (let part = 0; part < total; part++) { const row = await receipts.request<{ total: number; bytes_base64: string }>('', undefined, `objects/${frozen.sourceDigest}/${part}`); releaseAssert(row && row.total > 0 && row.total <= 2048, 'SOURCE_CHUNKS'); total = row.total; chunks.push(Buffer.from(row.bytes_base64, 'base64')); }
+      const bytes = Buffer.concat(chunks); releaseAssert(receiptDigest(bytes) === frozen.sourceDigest, 'SOURCE_DIGEST');
+      await writeFile(join(directory, 'source.json'), bytes, { flag: 'wx' }); await writeFile(join(directory, 'frozen.json'), canonicalReleaseJson(frozen), { flag: 'wx' });
+    }
+    try { await receipts.request<ReleaseBuildState>('build-request', { action: 'finish', key, runId: Number(required('run-id')), attempt: Number(required('attempt')), artifactId: Number(required('artifact-id')), manifests: [manifest], toolchainDigest: releaseToolchainDigest }); }
     catch (error) {
       if (!(error instanceof Error) || !error.message.includes('REBUILD_CHANGED_REVIEW_REQUIRED')) throw error;
       const saved = await receipts.request<ReleaseBuildState>('build-request', { action: 'get', key });
       releaseAssert(saved.error === 'rebuild-changed-review-required' && saved.artifact?.artifactId === Number(required('artifact-id')), 'REBUILD_RESULT');
       await output({ reviewRequired: 'true' }); return;
-    }
-    if (state.request.mode === 'initial') {
-      const directory = resolve(required('output')); await mkdir(directory, { recursive: true });
-      const frozen: FrozenRelease = { ...state.request.frozen, build: accepted.artifact, manifests: [manifest], assets: manifest.artifacts.map(a => { releaseAssert(a.kind === 'file', 'BUILD_FILE'); return { name: a.file, size: a.size, sha256: a.sha256 }; }) };
-      const chunks: Buffer[] = []; let total = 1;
-      for (let part = 0; part < total; part++) { const row = await receipts.request<{ total: number; bytes_base64: string }>('', undefined, `objects/${frozen.sourceDigest}/${part}`); releaseAssert(row && row.total > 0 && row.total <= 2048, 'SOURCE_CHUNKS'); total = row.total; chunks.push(Buffer.from(row.bytes_base64, 'base64')); }
-      const bytes = Buffer.concat(chunks); releaseAssert(receiptDigest(bytes) === frozen.sourceDigest, 'SOURCE_DIGEST');
-      await writeFile(join(directory, 'source.json'), bytes, { flag: 'wx' }); await writeFile(join(directory, 'frozen.json'), canonicalReleaseJson(frozen), { flag: 'wx' });
     }
     return;
   }

@@ -81,6 +81,17 @@ describe('完整 Git 发布输入', { timeout: 30_000 }, () => {
     expect(snapshot.input.gaps).toContainEqual(expect.objectContaining({ path: 'binary.dat', reason: 'binary-semantics-unread' }));
     expect(snapshot.input.gaps).toContainEqual(expect.objectContaining({ path: 'large.bin', reason: 'lfs-pointer-only' }));
   });
+  it.each([
+    ['binary-semantics-unread', Buffer.from([0, 255, 13, 10])],
+    ['lfs-pointer-only', 'version https://git-lfs.github.com/spec/v1\noid sha256:' + 'a'.repeat(64) + '\nsize 123\n'],
+  ] as const)('重命名保留前后两个路径的 %s 缺口', (reason, content) => {
+    const f = fixture(); const baseline = f.commit('old.bin', content);
+    renameSync(join(f.workspace, 'old.bin'), join(f.workspace, 'new.bin'));
+    f.git('add', '-A'); f.git('commit', '-qm', 'rename unreadable file');
+    const snapshot = freezeReleaseGitInput({ ...f.options(), boundary: { kind: 'baseline', sha: baseline, reference: 'explicit boundary' } });
+    expect(snapshot.input.changes).toContainEqual(expect.objectContaining({ status: 'R100', previousPath: 'old.bin', path: 'new.bin' }));
+    expect(snapshot.input.gaps.filter(g => g.reason === reason).map(g => g.path).sort()).toEqual(['new.bin', 'old.bin']);
+  });
   it('首次发布采用完整产品树，不伪造边界 PR', () => {
     const f = fixture(); f.commit('code.txt', 'product');
     const snapshot = freezeReleaseGitInput({ ...f.options(), boundary: { kind: 'full-tree' } });
