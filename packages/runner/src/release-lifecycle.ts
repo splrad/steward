@@ -118,6 +118,20 @@ export async function verifyReleaseAssetFiles(f: FrozenRelease, directory: strin
     const bytes = await readFile(path); releaseAssert(bytes.length === asset.size && receiptDigest(bytes) === asset.sha256, 'ASSET_BYTES');
   }
 }
+/** Expired build artifacts cannot block readback of an already published release. */
+export async function recoverReleaseAssets(gh: GitHubClient, session: LifecycleSession, verifyDownloads: (receipt: ReleaseReceipt) => Promise<void>): Promise<ReleaseReceipt> {
+  const r = session.receipt;
+  if (!r.paused && r.releaseId) {
+    const [owner, repo] = r.frozen.fullName.split('/') as [string, string];
+    const release = await gh.request<any>('GET', `/repos/${owner}/${repo}/releases/${r.releaseId}`);
+    if (release.draft === false) {
+      await verifyDownloads(r);
+      return session.act('verify', { downloaded: r.frozen.assets.map(a => a.sha256) });
+    }
+  }
+  return session.act('ensure-assets', { unavailable: true });
+}
+
 /** Publication consumes only the server-sealed exact bytes and the previously frozen asset set. */
 export async function publishReleaseCandidate(input: { gh: GitHubClient; session: LifecycleSession; assetDirectory: string; upload: (release: any, asset: FrozenRelease['assets'][number]) => Promise<unknown>; verifyDownloads: (receipt: ReleaseReceipt) => Promise<void> }): Promise<ReleaseReceipt> {
   const { gh, session } = input;

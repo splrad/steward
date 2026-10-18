@@ -5,7 +5,7 @@ import { releaseAssert, releaseSha, positiveId, newReleaseReceipt, type FrozenRe
 import { validateReleaseSource, validateReleaseEvidence } from '../../core/src/release-bundle.js';
 import { currentReleaseBuild } from '../../core/src/release-rebuild.js';
 import { generationInputs, generationPlan, generationPlanDigest } from '../../core/src/release-production.js';
-import { ReleaseReceiptClient, withReleaseClaim, writeCandidateReviewCheck, prepareReleaseCandidate, createReleaseCandidate, publishReleaseCandidate, verifyReleaseDownloads, verifyReleaseAssetFiles, releaseUploader, releasePublishTimeoutMinutes, refreshingReleaseToken } from './release-lifecycle.js';
+import { ReleaseReceiptClient, withReleaseClaim, writeCandidateReviewCheck, recoverReleaseAssets, prepareReleaseCandidate, createReleaseCandidate, publishReleaseCandidate, verifyReleaseDownloads, verifyReleaseAssetFiles, releaseUploader, releasePublishTimeoutMinutes, refreshingReleaseToken } from './release-lifecycle.js';
 
 /** This command never runs code from the candidate or product checkout. */
 export async function releaseCandidateCommand(args: Readonly<Record<string, string>>): Promise<void> {
@@ -75,7 +75,7 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
   } else {
     result = await withReleaseClaim(receipts, async session => {
       releaseAssert(session.receipt.frozen.policySha === policySha, 'POLICY_STALE');
-      if (operation === 'recover-assets') return session.act('ensure-assets', { unavailable: true });
+      if (operation === 'recover-assets') return recoverReleaseAssets(gh, session, r => verifyReleaseDownloads(r, getToken, fetch, () => session.act('renew-claim')));
       if (operation === 'rebind-build') {
         const rebuilt = JSON.parse(await readFile(resolve(required('bundle')), 'utf8'));
         await verifyReleaseAssetFiles(session.receipt.frozen, resolve(required('assets')));

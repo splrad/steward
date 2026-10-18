@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GitHubRequestError } from '../../github/src/client.js';
 import { receiptDigest, newReleaseReceipt, type ReleaseReceipt } from '../../core/src/release-note-receipt.js';
 import { factsFixture, frozenFixture, notesFixture, sha } from '../../core/test/release-receipt-fixture.js';
-import { ReleaseReceiptClient, withReleaseClaim, publishReleaseCandidate } from '../../runner/src/release-lifecycle.js';
+import { ReleaseReceiptClient, withReleaseClaim, recoverReleaseAssets, publishReleaseCandidate } from '../../runner/src/release-lifecycle.js';
 import { ReleaseReceiptStore } from '../src/release-note-receipts.js';
 import { handleReleaseRequest } from '../src/release-api.js';
 import { ReleaseTestDb } from './release-test-db.js';
@@ -56,6 +56,36 @@ it('accepts a generation-only ticket without granting receipt, object or publica
   expect((await get('v1.2.3/generation'))?.status).toBe(200);
   for (const suffix of ['v1.2.3', 'v1.2.3/permit', 'v1.2.4/generation', `objects/${'a'.repeat(64)}/0`]) expect((await get(suffix))?.status).not.toBe(200);
   expect(creates + publishes + uploads).toBe(0);
+});
+
+it('rejects installation-token generation mutations and accepts a scoped ticket', async () => {
+  const plan = generationPlan('a'.repeat(64), sha('c'), ['source']);
+  const current = await receipts.request<any>('generation', { action: 'prepare', plan });
+  for (const action of ['reserve', 'complete', 'diagnostic']) {
+    await expect(receipts.request('generation', { action, version: current.version, input: 'source' })).rejects.toThrow('GENERATION_TICKET_REQUIRED');
+  }
+  const generation = new ReleaseGenerationStore(db.binding());
+  expect(await generation.read(9001, 'v1.2.3')).toEqual(current);
+  const token = await generation.ticket(9001, 'v1.2.3', Date.now());
+  const response = await handleReleaseRequest(new Request('https://runtime.test/internal/releases/9001/v1.2.3/generation', {
+    method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ action: 'reserve', version: current.version, input: 'source' }),
+  }), env());
+  expect(response?.status).toBe(200);
+});
+
+it('recovers published assets without local artifacts after a newer stable release becomes latest', async () => {
+  await seed(true); await approveAndMerge(); lost = 'publish';
+  await expect(publish()).rejects.toThrow('response lost');
+  await rm(join(directory, 'app.zip'));
+  state.gh.getLatestRelease = async () => ({ id: 101, tag_name: 'v1.3.0', draft: false, prerelease: false });
+  const downloads = vi.fn(async () => {});
+  const result = await withReleaseClaim(receipts, s => recoverReleaseAssets(state.gh, s, downloads));
+  expect(result.phase).toBe('verified'); expect(downloads).toHaveBeenCalledOnce();
+  expect([creates, publishes, uploads]).toEqual([1, 1, 1]);
+  state.gh.getLatestRelease = async () => ({ id: 102, tag_name: 'v1.0.0', draft: false, prerelease: false });
+  await expect(publish()).rejects.toThrow('VERIFY');
+  state.gh.getLatestRelease = async () => ({ id: 103, tag_name: 'v2.0.0', draft: false, prerelease: true });
+  await expect(publish()).rejects.toThrow('VERIFY');
 });
 
 async function seed(asset = false) {

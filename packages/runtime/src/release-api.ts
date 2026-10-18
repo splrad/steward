@@ -1,4 +1,5 @@
 import { assertPersonalizationConfiguration, refreshPersonalizedSections } from '../../core/src/release-personalization.js';
+import { comparePublicVersions, parsePublicVersion } from '../../core/src/release-version.js';
 import { releaseProfiles } from '../../../config/release-profiles.js';
 import { randomUUID } from 'node:crypto';
 import { authorizeSingleRepository, type BodyWriteRuntimeEnv } from './pr-body-api.js';
@@ -85,9 +86,7 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
         releaseAssert(typeof body.planDigest === 'string', 'GENERATION_PLAN');
         return reply(200, { token: await generation.ticket(repositoryId, tag, Date.now(), body.planDigest) });
       }
-      const current = await generation.read(repositoryId, tag);
-      releaseAssert(current?.ledger.plan.policySha === env.POLICY_SHA && ['reserve', 'complete', 'diagnostic'].includes(body.action) && typeof body.input === 'string', 'GENERATION_REQUEST');
-      return reply(200, await generation.mutate(repositoryId, tag, body.version, body.action, body.input, body.index, body.inputDigest));
+      releaseAssert(false, 'GENERATION_TICKET_REQUIRED');
     }
     if (request.method === 'GET' && !action) return reply(200, await store.get(repositoryId, tag));
     releaseAssert(request.method === 'POST', 'METHOD');
@@ -347,8 +346,11 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
         releaseAssert(JSON.stringify(body.downloaded) === JSON.stringify(r.frozen.assets.map(a => a.sha256)), 'DOWNLOAD_RECEIPT');
         const ref = await gh.getGitRef(owner, repo, `tags/${tag}`);
         const latest = await gh.getLatestRelease(owner, repo);
+        const latestValid = latest.id === r.releaseId || (latest.draft === false && latest.prerelease === false
+          && /^v\d+\.\d+\.\d+$/.test(latest.tag_name)
+          && comparePublicVersions(parsePublicVersion(latest.tag_name.slice(1)), parsePublicVersion(tag.slice(1))) > 0);
         releaseAssert(release.draft === false && release.immutable === true && release.name === r.frozen.title && release.assets.length === r.frozen.assets.length
-          && ref.object?.type === 'commit' && ref.object.sha === r.frozen.productTargetSha && latest.id === r.releaseId, 'VERIFY');
+          && ref.object?.type === 'commit' && ref.object.sha === r.frozen.productTargetSha && latestValid, 'VERIFY');
       }
       return reply(200, await save({ ...r, assetIds, downloadedDigests: action === 'verify' ? body.downloaded : r.downloadedDigests, operation: null, phase: action === 'verify' ? 'verified' : r.phase, error: null }));
     }
