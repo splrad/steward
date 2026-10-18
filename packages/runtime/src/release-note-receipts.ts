@@ -10,7 +10,7 @@ export class ReleaseReceiptStore {
     return row ? this.get(repositoryId, row.target_tag) : null;
   }
   async takeRecoveryBatch(now: number): Promise<ReleaseReceipt[]> {
-    const rows = await this.db.prepare("SELECT repository_id,target_tag,version FROM release_receipts WHERE current=1 AND lease_until<=? AND dispatch_after<=? AND ((json_extract(record_json,'$.paused')=0 AND (json_extract(record_json,'$.phase') IN ('awaiting-review','approved','merged','publishing') OR (json_extract(record_json,'$.phase')='prepared' AND json_extract(record_json,'$.rebuildRequestKey') IS NOT NULL))) OR (json_extract(record_json,'$.paused')=1 AND json_extract(record_json,'$.error')='rebuild-changed-review-required' AND json_extract(record_json,'$.rebuildRequestKey') IS NOT NULL)) ORDER BY updated_at LIMIT 20")
+    const rows = await this.db.prepare("SELECT repository_id,target_tag,version FROM release_receipts WHERE current=1 AND lease_until<=? AND dispatch_after<=? AND ((json_extract(record_json,'$.paused')=0 AND (json_extract(record_json,'$.phase') IN ('awaiting-review','approved','merged','publishing') OR json_extract(record_json,'$.phase')='prepared')) OR (json_extract(record_json,'$.paused')=1 AND json_extract(record_json,'$.error')='rebuild-changed-review-required' AND json_extract(record_json,'$.rebuildRequestKey') IS NOT NULL)) ORDER BY updated_at LIMIT 20")
       .bind(now, now).all<{ repository_id: number; target_tag: string; version: number }>();
     const result: ReleaseReceipt[] = [];
     for (const row of rows.results) {

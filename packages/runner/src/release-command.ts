@@ -12,9 +12,9 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
   const required = (key: string) => { const v = args[key]; releaseAssert(v, 'ARGUMENT_' + key); return v; };
   const environment = (key: string) => { const v = process.env[key]; releaseAssert(v, 'ENV_' + key); return v; };
   const repositoryId = Number(required('repository-id')), policySha = required('policy-sha'), tag = required('target-tag'), operation = required('operation');
-  releaseAssert(positiveId(repositoryId) && releaseSha(policySha) && ['prepare', 'revise', 'inspect', 'plan', 'reconcile', 'pause', 'resume', 'retry-create', 'export', 'rebind-build', 'generator-ticket', 'recover-assets', 'revise-rebuild'].includes(operation), 'COMMAND');
+  releaseAssert(positiveId(repositoryId) && releaseSha(policySha) && ['prepare', 'revise', 'inspect', 'plan', 'reconcile', 'pause', 'resume', 'retry-create', 'export', 'rebind-build', 'generator-ticket', 'recover-assets', 'revise-rebuild', 'recover-candidate'].includes(operation), 'COMMAND');
   const token = await createInstallationToken({ appId: environment('APP_ID'), privateKey: environment('STEWARD_APP_PRIVATE_KEY'), installationId: Number(environment('INSTALLATION_ID')), repositoryId,
-    permissions: { metadata: 'read', contents: ['prepare', 'revise', 'revise-rebuild', 'reconcile'].includes(operation) ? 'write' : 'read', pull_requests: ['prepare', 'revise', 'revise-rebuild'].includes(operation) ? 'write' : 'read', checks: ['inspect', 'plan', 'reconcile'].includes(operation) ? 'write' : 'read' }, policySha });
+    permissions: { metadata: 'read', contents: ['recover-candidate', 'prepare', 'revise', 'revise-rebuild', 'reconcile'].includes(operation) ? 'write' : 'read', pull_requests: ['recover-candidate', 'prepare', 'revise', 'revise-rebuild'].includes(operation) ? 'write' : 'read', checks: ['inspect', 'plan', 'reconcile'].includes(operation) ? 'write' : 'read' }, policySha });
   const transport: typeof fetch = (input, init = {}) => fetch(input, { ...init, signal: init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000) });
   const gh = new GitHubClient(token, 'https://api.github.com', transport, policySha);
   const receipts = new ReleaseReceiptClient(environment('RUNTIME_URL'), token, repositoryId, tag);
@@ -28,7 +28,12 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
     return;
   }
   let result: ReleaseReceipt;
-  if (operation === 'revise-rebuild') {
+  if (operation === 'recover-candidate') {
+    result = await withReleaseClaim(receipts, session => {
+      releaseAssert(session.receipt.frozen.policySha === policySha, 'POLICY_STALE');
+      return createReleaseCandidate(gh, session);
+    });
+  } else if (operation === 'revise-rebuild') {
     await withReleaseClaim(receipts, s => s.act('revise-rebuild', { key: required('request-key') }));
     result = await withReleaseClaim(receipts, s => createReleaseCandidate(gh, s));
   } else if (operation === 'prepare' || operation === 'revise') {

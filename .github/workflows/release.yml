@@ -5,7 +5,7 @@ on:
     inputs:
       repositoryId: { required: true, type: string }
       targetTag: { required: true, type: string }
-      operation: { required: true, type: choice, options: [generate, prepare, inspect, reconcile, revise-rebuild] }
+      operation: { required: true, type: choice, options: [generate, prepare, inspect, reconcile, revise-rebuild, recover-candidate] }
 
       requestKey: { required: false, type: string }
       bundleArtifactId: { required: false, type: string }
@@ -250,7 +250,7 @@ jobs:
         run: node packages/runner/dist/index.js release-candidate --operation prepare --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --bundle generated --assets seed/assets
 
   revision:
-    if: inputs.operation == 'revise-rebuild' && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: (inputs.operation == 'revise-rebuild' || inputs.operation == 'recover-candidate') && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: { name: steward-release, deployment: false }
@@ -260,7 +260,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with: { node-version-file: .node-version, cache: npm }
       - run: npm ci --ignore-scripts
-      - name: 为重建变化恢复新候选
+      - name: 恢复持久收据对应的候选
         id: receipt
         shell: bash
         env:
@@ -270,6 +270,7 @@ jobs:
           RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
           REPOSITORY_ID: ${{ inputs.repositoryId }}
           TARGET_TAG: ${{ inputs.targetTag }}
+          OPERATION: ${{ inputs.operation }}
           REQUEST_KEY: ${{ inputs.requestKey }}
           POLICY_SHA: ${{ github.workflow_sha }}
-        run: node packages/runner/dist/index.js release-candidate --operation revise-rebuild --request-key "$REQUEST_KEY" --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA"
+        run: node packages/runner/dist/index.js release-candidate --operation "$OPERATION" --request-key "$REQUEST_KEY" --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA"

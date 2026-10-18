@@ -381,6 +381,8 @@ export async function recoverReleaseReceipts(env: Env, now = Date.now()): Promis
     if (receipt.frozen.policySha !== env.POLICY_SHA || capability?.enabled !== true || !["pending", "active"].includes(capability.state)) continue;
     if (receipt.rebuildRequestKey && (receipt.error === 'rebuild-changed-review-required' || receipt.phase === 'prepared')) {
       await send(env, "release.yml", { repositoryId: String(receipt.frozen.repositoryId), targetTag: receipt.frozen.targetTag, operation: 'revise-rebuild', requestKey: receipt.rebuildRequestKey });
+    } else if (receipt.phase === 'prepared') {
+      await send(env, "release.yml", { repositoryId: String(receipt.frozen.repositoryId), targetTag: receipt.frozen.targetTag, operation: 'recover-candidate' });
     } else {
       await send(env, "release.yml", { repositoryId: String(receipt.frozen.repositoryId), targetTag: receipt.frozen.targetTag, operation: capability.state === "active" ? "reconcile" : "inspect" });
     }

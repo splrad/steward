@@ -65,11 +65,12 @@ describe('D1 durable release receipts', () => {
   });
   it('recovery only takes unpaused merged/publishing receipts with no active lease, at a bounded cadence', async () => {
     const db = new ReleaseTestDb(), store = new ReleaseReceiptStore(db.binding());
-    await store.prepare(receiptFixture(), 'now'); expect(await store.takeRecoveryBatch(1)).toEqual([]);
+    await store.prepare(receiptFixture(), 'now'); expect(await store.takeRecoveryBatch(1)).toHaveLength(1);
+    expect(await store.takeRecoveryBatch(2)).toEqual([]);
     const a = await store.claim(9001, 'v1.2.3', 1000);
     await store.save(a.receipt, { ...a.receipt, phase: 'merged', pullNumber: 17 }, a.token, 1001);
     expect(await store.takeRecoveryBatch(1002)).toEqual([]); await store.release(9001, 'v1.2.3', a.token);
-    expect(await store.takeRecoveryBatch(1003)).toHaveLength(1); expect(await store.takeRecoveryBatch(1004)).toHaveLength(0);
-    expect(await store.takeRecoveryBatch(901004)).toHaveLength(1); db.database.close();
+    expect(await store.takeRecoveryBatch(900002)).toHaveLength(1); expect(await store.takeRecoveryBatch(900003)).toHaveLength(0);
+    expect(await store.takeRecoveryBatch(1800003)).toHaveLength(1); db.database.close();
   });
 });

@@ -28,6 +28,23 @@ describe('release production protocol and durable budget', () => {
     expect(renderGeneratedRelease(value, frozenFixture())).toContain('### 修复');
     for (const invalid of ['\ufeff' + output, output + output, 'preface\n' + output, output.replace('"upgrade":[]', '"upgrade":[],"upgrade":[]'), output.replace('"unknowns":[]', '"unknowns":[],"extra":true')]) expect(() => parseGeneratedRelease(Buffer.from(invalid))).toThrow();
   });
+  it.each([2, 8])('summarizes %i source batches using bounded generated summaries', async count => {
+    const db = new ReleaseTestDb();
+    const inputs = Array.from({ length: count }, (_, i) => String(i) + 'x'.repeat((count === 2 ? 96 : 24) * 1024 - 1));
+    const largePlan = generationPlan('b'.repeat(64), sha('c'), inputs);
+    const summary = { ...generated, reviewEvidence: { internalChanges: ['a'.repeat(3900), 'b'.repeat(3900)], unknowns: [] } };
+    const prompts: string[] = [];
+    try {
+      await generateRelease(largePlan, client(new ReleaseGenerationStore(db.binding())), async input => {
+        prompts.push(input); return JSON.stringify(summary);
+      });
+      expect(prompts).toHaveLength(count + 1);
+      expect(Buffer.byteLength(prompts[count]!)).toBeLessThan(128 * 1024);
+      const synthesis = JSON.parse(prompts[count]!);
+      expect(synthesis.batches).toHaveLength(count);
+      expect(synthesis.batches[0]).toEqual(summary);
+    } finally { db.database.close(); }
+  });
   it('reuses completed output after a fresh store instance without calling the producer', async () => {
     const db = new ReleaseTestDb();
     try {

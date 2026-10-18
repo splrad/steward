@@ -43,6 +43,14 @@ describe('bound-candidate release dispatch', () => {
   it('closing without merge schedules observation, not publication', async () => {
     await seed(); await handleWebhook(event('pull_request', 'closed'), env); expect(requests[0].inputs.operation).toBe('inspect');
   });
+  it('recovers an initial prepared receipt without a pull number under pending capability', async () => {
+    capability.state = 'pending';
+    const r = newReleaseReceipt({ ...frozenFixture(), repositoryId: 1187527897, fullName: 'splrad/LayerScape' }, notesFixture);
+    await store.prepare(r, 'now');
+    expect(await recoverReleaseReceipts(env, 1000)).toBe(1);
+    expect(requests[0].inputs).toEqual({ repositoryId: '1187527897', targetTag: 'v1.2.3', operation: 'recover-candidate' });
+    expect(await recoverReleaseReceipts(env, 1001)).toBe(0);
+  });
   it('existing scheduled recovery discovers missed merge events with bounded retries', async () => {
     capability.state = 'active'; await seed('approved');
     expect(await recoverReleaseReceipts(env, 1000)).toBe(1); expect(requests[0].inputs.operation).toBe('reconcile');
