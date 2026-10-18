@@ -74,7 +74,7 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
     await run('git', ['-C', source, '-c', 'core.hooksPath=', 'checkout', '--detach', plan.targetSha], { env, timeout: 300000, windowsHide: true });
     releaseAssert(process.platform === (plan.runnerFamily === 'windows' ? 'win32' : 'linux'), 'BUILD_RUNNER');
     const sdk = plan.profile === 'dotnet-assets-v1' || plan.inputs.runtime === 'pwsh' ? (await run('dotnet', ['--version'], { cwd: source, env, encoding: 'utf8' })).stdout.trim() : releaseToolchain.dotnet;
-    const powershell = plan.profile === 'oci-image-v1' || plan.profile === 'node-package-v1' ? releaseToolchain.powershell : (await run('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { env, encoding: 'utf8' })).stdout.trim();
+    const powershell = plan.profile === 'dotnet-assets-v1' || plan.inputs.runtime === 'pwsh' ? (await run('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { env, encoding: 'utf8' })).stdout.trim() : releaseToolchain.powershell;
     releaseAssert(process.version === 'v' + releaseToolchain.node && sdk === releaseToolchain.dotnet && powershell === releaseToolchain.powershell, 'BUILD_TOOLCHAIN');
     if (plan.profile === 'node-package-v1') releaseAssert((await run('npm', ['--version'], { env, encoding: 'utf8' })).stdout.trim() === releaseToolchain.npm, 'BUILD_TOOLCHAIN');
     if (plan.profile === 'oci-image-v1') {

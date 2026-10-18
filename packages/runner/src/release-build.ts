@@ -48,6 +48,10 @@ export async function buildReleaseAssets(plan: BuildPlan, context: BuildExecutio
   releaseAssert((await readdir(context.outputDirectory)).length === 0, 'BUILD_OUTPUT_OCCUPIED');
   if (plan.version !== null) releaseAssert(await readFile(join(context.sourceDirectory, 'VERSION'), 'utf8') === plan.version + '\n', 'BUILD_VERSION');
   for (const command of releaseBuildCommands(plan, context)) await execute(command);
+  // Build caches (node_modules, obj/bin) may be ignored outputs, but the frozen
+  // commit and non-ignored source tree must still be intact before collection.
+  releaseAssert(await git(['rev-parse', 'HEAD']) === plan.targetSha
+    && await git(['status', '--porcelain', '--untracked-files=all']) === '', 'BUILD_SOURCE_CHANGED');
   const manifest = plan.profile === 'oci-image-v1' ? await collectOciBuildManifest(plan, context.outputDirectory) : await collectFileBuildManifest(plan, context.outputDirectory, inspect);
   canonicalBuildManifest(manifest); return manifest;
 }

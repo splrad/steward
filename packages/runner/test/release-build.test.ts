@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, mkdir, writeFile, rm, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, resolve, dirname, delimiter } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { verifyDownloadedFileBuild, verifyDownloadedOciBuild } from '../src/build-manifest.js';
 import { releaseBuildCommand } from '../src/release-build-command.js';
@@ -36,6 +36,18 @@ it('refuses dirty sources before executing product code', async () => {
   await expect(buildReleaseAssets(plan, { sourceDirectory: source, outputDirectory: output, buildRunId: '1' }, async () => { called = true; })).rejects.toThrow('BUILD_SOURCE_DIRTY');
   expect(called).toBe(false);
 });
+it.each(['tracked', 'untracked', 'commit'])('rejects %s source changes made by the build before collecting assets', async kind => {
+  let inspected = false;
+  await expect(buildReleaseAssets(plan, { sourceDirectory: source, outputDirectory: output, buildRunId: '1' }, async () => {
+    if (kind === 'untracked') await writeFile(join(source, 'unexpected.txt'), 'new input');
+    else {
+      await writeFile(join(source, 'VERSION'), '1.2.4\n');
+      if (kind === 'commit') { await git('add', 'VERSION'); await git('commit', '-m', 'changed source'); }
+    }
+    await writeFile(join(output, 'package.json'), JSON.stringify({ version: '1.2.3' }));
+  }, async () => { inspected = true; return '1.2.3'; })).rejects.toThrow('BUILD_SOURCE_CHANGED');
+  expect(inspected).toBe(false);
+});
 it('rejects output extras and missing native version evidence', async () => {
   await expect(buildReleaseAssets(plan, { sourceDirectory: source, outputDirectory: output, buildRunId: '1' }, async () => {
     await writeFile(join(output, 'package.json'), '{}');
@@ -63,6 +75,20 @@ await writeFile(join(args['--output-directory'],'package.json'),JSON.stringify({
   expect(manifest.repositoryId).toBe(9001); expect(manifest.fullName).toBe('sample/product');
   expect(manifest.targetSha).toBe(actualPlan.targetSha); expect(manifest.artifacts[0]).toMatchObject({ file: 'package.json', size: 41 });
   expect(JSON.stringify(manifest)).not.toMatch(/LayerScape|AFR/);
+  if (process.platform === 'win32') {
+    const unit = { profile: plan.profile, inputs: { ...plan.inputs, runnerFamily: 'windows' }, outputs: plan.outputs };
+    const cliPlan = await planBuild({ ...actualPlan }, unit);
+    const bundle = join(root, 'node.bundle'), request = join(root, 'node-plan.json');
+    await git('bundle', 'create', bundle, 'HEAD'); await writeFile(request, JSON.stringify(cliPlan));
+    const locations = (await promisify(execFile)('where.exe', ['pwsh'], { encoding: 'utf8' })).stdout.trim().split(/\r?\n/).map(p => dirname(p).toLowerCase());
+    const originalPath = process.env.PATH;
+    try {
+      process.env.PATH = originalPath!.split(delimiter).filter(p => !locations.includes(resolve(p).toLowerCase())).join(delimiter);
+      await expect(promisify(execFile)('pwsh', ['--version'])).rejects.toThrow();
+      await expect(releaseBuildCommand({ operation: 'execute-product', 'policy-sha': cliPlan.policySha, request, 'source-bundle': bundle,
+        workspace: join(root, 'fresh-node'), assets: join(root, 'node-assets'), inspector: 'unused.ps1', output: join(root, 'node-manifest.json'), 'run-id': 'node-cli' })).resolves.toBeUndefined();
+    } finally { process.env.PATH = originalPath; }
+  }
 });
 
 it.runIf(process.platform === 'linux')('runs the Node package adapter using npm ci and the registered product task', async () => {
@@ -83,6 +109,7 @@ await writeFile(join(process.argv[3],'package.json'),await readFile('package.jso
   expect(manifest.artifacts[0]).toMatchObject({ file: 'package.json' });
 });
 it.runIf(process.platform === 'win32')('publishes a neutral .NET library and independently checks its native version', async () => {
+  await writeFile(join(source, '.gitignore'), 'obj/\nbin/\n');
   await writeFile(join(source, 'Neutral.csproj'), '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><Version>1.2.3</Version><GenerateDependencyFile>false</GenerateDependencyFile><DebugType>none</DebugType><SelfContained>false</SelfContained></PropertyGroup></Project>');
   await writeFile(join(source, 'Neutral.cs'), 'public class Neutral { public static string Value => "neutral"; }');
   await git('add', '.'); await git('commit', '-m', 'dotnet fixture');

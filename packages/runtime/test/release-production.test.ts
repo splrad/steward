@@ -100,6 +100,18 @@ describe('release production protocol and durable budget', () => {
       }
     } finally { db.database.close(); }
   });
+  it('covers the maximum generation budget after queue/setup delay and still expires', async () => {
+    const db = new ReleaseTestDb(); const store = new ReleaseGenerationStore(db.binding());
+    try {
+      const maximum = generationPlan(plan.sourceDigest, plan.policySha, Array.from({ length: 8 }, (_, i) => `batch-${i}`));
+      await store.prepare(9001, 'v1.2.3', maximum);
+      const issuedAt = 1000, token = await store.ticket(9001, 'v1.2.3', issuedAt);
+      await store.authorize(9001, 'v1.2.3', token, issuedAt + 10 * 60_000 + maximum.jobTimeoutMs, sha('c'));
+      const expiresAt = issuedAt + maximum.jobTimeoutMs + 30 * 60_000;
+      await store.authorize(9001, 'v1.2.3', token, expiresAt - 1, sha('c'));
+      await expect(store.authorize(9001, 'v1.2.3', token, expiresAt, sha('c'))).rejects.toThrow('GENERATION_AUTH');
+    } finally { db.database.close(); }
+  });
   it('does not pass App, runtime, BYOK, GitHub or user configuration to the model', () => {
     const env = isolatedCopilotEnvironment('/empty', 'personal', { STEWARD_APP_PRIVATE_KEY: 'secret', GITHUB_TOKEN: 'secret', COPILOT_PROVIDER_API_KEY: 'secret', NODE_OPTIONS: '--require evil', HOME: '/old' });
     expect(Object.values(env)).not.toContain('secret'); expect(env.HOME).toBe('/empty'); expect(env.COPILOT_GITHUB_TOKEN).toBe('personal');

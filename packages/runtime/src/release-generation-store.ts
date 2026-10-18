@@ -6,9 +6,13 @@ import { ReleaseReceiptStore } from './release-note-receipts.js';
 export class ReleaseGenerationStore {
   constructor(private readonly db: D1Database) {}
   async ticket(repositoryId: number, tag: string, now: number): Promise<string> {
+    const current = await this.read(repositoryId, tag);
+    releaseAssert(current, 'GENERATION_NOT_FOUND');
+    // Cover the frozen execution budget plus a bounded queue/setup allowance.
+    const lifetimeMs = Math.max(60 * 60_000, current.ledger.plan.jobTimeoutMs + 30 * 60_000);
     const token = 'release-generation.' + randomBytes(32).toString('hex');
     const result = await this.db.prepare('UPDATE release_generation SET ticket_digest=?,ticket_until=? WHERE repository_id=? AND target_tag=?')
-      .bind(receiptDigest(token), now + 60 * 60_000, repositoryId, tag).run();
+      .bind(receiptDigest(token), now + lifetimeMs, repositoryId, tag).run();
     releaseAssert(result.meta.changes === 1, 'GENERATION_NOT_FOUND'); return token;
   }
   async authorize(repositoryId: number, tag: string, token: string, now: number, policySha: string): Promise<void> {
