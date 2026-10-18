@@ -6,7 +6,7 @@ import { canonicalBuildManifest, planBuild, type BuildManifest, type BuildPlan }
 import { canonicalReleaseJson, receiptDigest, releaseAssert } from '../../core/src/release-note-receipt.js';
 import { collectFileBuildManifest, collectOciBuildManifest, validateBuildInputs, type BuildExecutionContext, type NativeVersionInspector } from './build-manifest.js';
 
-export interface BuildCommand { executable: string; args: string[]; cwd: string }
+export interface BuildCommand { executable: string; args: string[]; cwd: string; timeoutMs?: number }
 export function releaseBuildCommands(plan: BuildPlan, context: BuildExecutionContext): BuildCommand[] {
   const source = context.sourceDirectory, output = context.outputDirectory, i = plan.inputs;
   switch (plan.profile) {
@@ -30,7 +30,7 @@ export async function executeBuildCommand(command: BuildCommand, environment: No
     let size = 0;
     const consume = (chunk: Buffer) => { size += chunk.length; if (size > 8 * 1024 * 1024) child.kill(); };
     child.stdout.on('data', consume); child.stderr.on('data', consume);
-    const timer = setTimeout(() => child.kill(), 45 * 60_000);
+    const timer = setTimeout(() => child.kill(), command.timeoutMs ?? 45 * 60_000);
     child.on('error', () => { clearTimeout(timer); reject(new Error('RN_BUILD_PROCESS')); });
     child.on('close', code => { clearTimeout(timer); code === 0 && size <= 8 * 1024 * 1024 ? resolve() : reject(new Error('RN_BUILD_PROCESS')); });
   });
@@ -47,7 +47,12 @@ export async function buildReleaseAssets(plan: BuildPlan, context: BuildExecutio
     && await git(['ls-files', '--others', '--ignored', '--exclude-standard']) === '', 'BUILD_SOURCE_DIRTY');
   releaseAssert((await readdir(context.outputDirectory)).length === 0, 'BUILD_OUTPUT_OCCUPIED');
   if (plan.version !== null) releaseAssert(await readFile(join(context.sourceDirectory, 'VERSION'), 'utf8') === plan.version + '\n', 'BUILD_VERSION');
-  for (const command of releaseBuildCommands(plan, context)) await execute(command);
+  const deadline = performance.now() + plan.timeoutMinutes * 60_000;
+  for (const command of releaseBuildCommands(plan, context)) {
+    const timeoutMs = Math.ceil(deadline - performance.now());
+    releaseAssert(timeoutMs > 0, 'BUILD_TIMEOUT');
+    await execute({ ...command, timeoutMs });
+  }
   // Build caches (node_modules, obj/bin) may be ignored outputs, but the frozen
   // commit and non-ignored source tree must still be intact before collection.
   releaseAssert(await git(['rev-parse', 'HEAD']) === plan.targetSha

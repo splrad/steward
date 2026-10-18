@@ -25,7 +25,7 @@ export class ReleaseGenerationStore {
     const row = await this.db.prepare('SELECT version,record_json FROM release_generation WHERE repository_id=? AND target_tag=?').bind(repositoryId, tag).first<{ version: number; record_json: string }>();
     return row ? { version: row.version, ledger: JSON.parse(row.record_json) } : null;
   }
-  async prepare(repositoryId: number, tag: string, plan: GenerationPlan) {
+  async prepare(repositoryId: number, tag: string, plan: GenerationPlan, now = Date.now()) {
     const expected = generationPlan(plan.sourceDigest, plan.policySha, plan.inputs);
     releaseAssert(canonicalReleaseJson(expected) === canonicalReleaseJson(plan) && Buffer.byteLength(canonicalReleaseJson(plan)) <= 256 * 1024, 'GENERATION_PLAN');
     await this.db.prepare('INSERT OR IGNORE INTO release_generation(repository_id,target_tag,plan_digest,record_json) VALUES(?,?,?,?)')
@@ -35,10 +35,10 @@ export class ReleaseGenerationStore {
     releaseAssert(current.ledger.plan.sourceDigest !== plan.sourceDigest || current.ledger.plan.policySha !== plan.policySha, 'GENERATION_OCCUPIED');
     const digest = generationPlanDigest(plan);
     await this.db.batch([
-      this.db.prepare('INSERT INTO release_generation_history(repository_id,target_tag,plan_digest,version,record_json) SELECT repository_id,target_tag,plan_digest,version,record_json FROM release_generation WHERE repository_id=? AND target_tag=? AND version=? AND restart_count<3 AND NOT EXISTS(SELECT 1 FROM release_receipts WHERE repository_id=? AND target_tag=?) AND NOT EXISTS(SELECT 1 FROM release_generation_history WHERE repository_id=? AND target_tag=? AND plan_digest=?)')
-        .bind(repositoryId, tag, current.version, repositoryId, tag, repositoryId, tag, digest),
-      this.db.prepare('UPDATE release_generation SET plan_digest=?,record_json=?,version=version+1,restart_count=restart_count+1,ticket_digest=NULL,ticket_until=0 WHERE repository_id=? AND target_tag=? AND version=? AND EXISTS(SELECT 1 FROM release_generation_history h WHERE h.repository_id=release_generation.repository_id AND h.target_tag=release_generation.target_tag AND h.plan_digest=release_generation.plan_digest AND h.version=release_generation.version)')
-        .bind(digest, canonicalReleaseJson({ plan, calls: [] }), repositoryId, tag, current.version),
+      this.db.prepare('INSERT INTO release_generation_history(repository_id,target_tag,plan_digest,version,record_json) SELECT repository_id,target_tag,plan_digest,version,record_json FROM release_generation WHERE repository_id=? AND target_tag=? AND version=? AND restart_count<3 AND NOT EXISTS(SELECT 1 FROM release_receipts WHERE repository_id=? AND target_tag=?) AND NOT EXISTS(SELECT 1 FROM release_generation_history WHERE repository_id=? AND target_tag=? AND plan_digest=?) AND (ticket_digest IS NULL OR ticket_until<=?)')
+        .bind(repositoryId, tag, current.version, repositoryId, tag, repositoryId, tag, digest, now),
+      this.db.prepare('UPDATE release_generation SET plan_digest=?,record_json=?,version=version+1,restart_count=restart_count+1,ticket_digest=NULL,ticket_until=0 WHERE repository_id=? AND target_tag=? AND version=? AND EXISTS(SELECT 1 FROM release_generation_history h WHERE h.repository_id=release_generation.repository_id AND h.target_tag=release_generation.target_tag AND h.plan_digest=release_generation.plan_digest AND h.version=release_generation.version) AND (ticket_digest IS NULL OR ticket_until<=?)')
+        .bind(digest, canonicalReleaseJson({ plan, calls: [] }), repositoryId, tag, current.version, now),
     ]);
     const next = (await this.read(repositoryId, tag))!;
     releaseAssert(generationPlanDigest(next.ledger.plan) === digest, 'GENERATION_OCCUPIED'); return next;

@@ -109,7 +109,7 @@ describe('中央文件产物验证 T09', () => {
   ] as const)('GitHub adapter 为 %s 映射执行策略 %j', async (profile, inputs, runner) => {
     const outputs = profile === 'oci-image-v1' ? [{ id: 'image', kind: 'oci-image' as const, count: 1 }] : unit.outputs;
     const plan = await planBuild({ ...identity, profile }, { profile, inputs, outputs });
-    expect(githubBuildExecutionPolicy(plan)).toEqual({ runner, timeoutMinutes: 45, permissions: { contents: 'read' }, environment: null, persistCredentials: false });
+    expect(githubBuildExecutionPolicy(plan)).toEqual({ runner, timeoutMinutes: 360, permissions: { contents: 'read' }, environment: null, persistCredentials: false });
   });
   it('GitHub adapter 拒绝未知 runner family', async () => {
     const plan = await planBuild(identity, unit);

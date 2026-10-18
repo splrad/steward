@@ -17,6 +17,9 @@ it('archives obsolete generation plans, revokes tickets and fences late writes w
   try {
     const old = await store.prepare(9001, 'v1.2.3', plan);
     const token = await store.ticket(9001, 'v1.2.3', 1, generationPlanDigest(plan));
+    await expect(store.prepare(9001, 'v1.2.3', generationPlan('b'.repeat(64), sha('c'), ['new source']), 2)).rejects.toThrow('OCCUPIED');
+    await store.authorize(9001, 'v1.2.3', token, 2, sha('c'));
+    expect(db.database.prepare('SELECT COUNT(*) AS n FROM release_generation_history').get()?.n).toBe(0);
     for (const source of ['b', 'd', 'e']) {
       const next = generationPlan(source.repeat(64), sha('c'), ['new source']);
       const saved = await new ReleaseGenerationStore(db.binding()).prepare(9001, 'v1.2.3', next);

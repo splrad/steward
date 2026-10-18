@@ -10,11 +10,11 @@ export type NativeVersionResult = string | null | { resourceOnly: 'font-archive'
 export type NativeVersionInspector = ((bytes: Uint8Array, file: string) => Promise<NativeVersionResult>) & { inspectPath?: (path: string) => Promise<NativeVersionResult> };
 export interface BuildExecutionContext { buildRunId: string; outputDirectory: string; sourceDirectory: string }
 export function githubBuildExecutionPolicy(plan: BuildPlan): {
-  runner: 'windows-latest' | 'ubuntu-latest'; timeoutMinutes: 45;
+  runner: 'windows-latest' | 'ubuntu-latest'; timeoutMinutes: 360;
   permissions: { contents: 'read' }; environment: null; persistCredentials: false;
 } {
   if (!['windows', 'linux'].includes(plan.runnerFamily) || plan.timeoutMinutes !== 45) buildFail('RN_BUILD_INVALID');
-  return { runner: plan.runnerFamily === 'windows' ? 'windows-latest' : 'ubuntu-latest', timeoutMinutes: 45,
+  return { runner: plan.runnerFamily === 'windows' ? 'windows-latest' : 'ubuntu-latest', timeoutMinutes: 360,
     permissions: { contents: 'read' }, environment: null, persistCredentials: false };
 }
 function rethrowBuildPathError(error: unknown): never {

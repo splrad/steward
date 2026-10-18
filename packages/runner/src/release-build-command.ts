@@ -160,7 +160,10 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
     releaseAssert(state.request.plans.length === 1, 'BUILD_SET');
     const home = await mkdtemp(join(tmpdir(), 'steward-build-verify-'));
     let manifest: BuildManifest;
-    try { manifest = await collectFileBuildManifest(state.request.plans[0]!, resolve(required('assets')), nativeReleaseInspector(resolve(required('inspector')), home)); }
+    try {
+      manifest = await collectFileBuildManifest(state.request.plans[0]!, resolve(required('assets')), nativeReleaseInspector(resolve(required('inspector')), home));
+      if (manifest.artifacts.some(a => a.kind !== 'file' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(a.file))) throw new BuildContractError('RN_BUILD_OUTPUT');
+    }
     catch (error) {
       if (error instanceof BuildContractError) await output({ verificationFailed: 'true' });
       throw error;

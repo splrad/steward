@@ -108,7 +108,13 @@ await writeFile(join(process.argv[3],'package.json'),await readFile('package.jso
     const nested = { ...unit, outputs: [{ id: 'asset', kind: 'file' as const, match, count: 1, mediaType: 'application/json' }] };
     await expect(makeReleaseBuildRequest(f, { builds: { release: nested }, delivery: { githubRelease: { builds: ['release'] } } }, 'initial', null)).rejects.toThrow('BUILD_RELEASE_PATH');
   }
-  const manifest = await buildReleaseAssets(actual, { sourceDirectory: source, outputDirectory: output, buildRunId: 'node-package' }, c => executeBuildCommand(c, isolatedBuildEnvironment(process.env, root)), nativeReleaseInspector('unused', root));
+  const budgets: number[] = [];
+  const manifest = await buildReleaseAssets(actual, { sourceDirectory: source, outputDirectory: output, buildRunId: 'node-package' }, c => {
+    budgets.push(c.timeoutMs!); return executeBuildCommand(c, isolatedBuildEnvironment(process.env, root));
+  }, nativeReleaseInspector('unused', root));
+  expect(budgets).toHaveLength(2);
+  expect(budgets[0]).toBeLessThanOrEqual(45 * 60_000);
+  expect(budgets[1]).toBeLessThan(budgets[0]!);
   expect(manifest.profile).toBe('node-package-v1'); expect(manifest.repositoryId).toBe(9001);
   expect(manifest.artifacts[0]).toMatchObject({ file: 'package.json' });
 });

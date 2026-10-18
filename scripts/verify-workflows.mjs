@@ -261,7 +261,7 @@ if (!hasExactKeys(genericBuild.on, ['workflow_dispatch']) || !hasExactKeys(gener
 for (const step of genericBuild.jobs.build.steps) if (JSON.stringify(step).includes('secrets.') || step.env && !hasExactKeys(step.env, ['POLICY_SHA', 'RUN_ID'])) throw new Error('产品构建不得注入秘密');
 if (!hasExactKeys(productBuild.on, ['workflow_dispatch']) || !hasExactKeys(productBuild.jobs, ['plan', 'build'])
   || productBuild.jobs.build.needs !== 'plan' || productBuild.jobs.build.environment !== undefined || productBuild.jobs.build['runs-on'] !== '${{ needs.plan.outputs.runner }}' || productBuild.jobs.plan.outputs.runner !== '${{ steps.plan.outputs.runner }}'
-  || productBuild.jobs.build['timeout-minutes'] !== 45 || productBuild.permissions.contents !== 'read' || productBuild.permissions.actions !== 'read') throw new Error('产品构建权限或作业边界无效');
+  || productBuild.jobs.build['timeout-minutes'] !== 360 || genericBuild.jobs.build['timeout-minutes'] !== 360 || productBuild.permissions.contents !== 'read' || productBuild.permissions.actions !== 'read') throw new Error('产品构建权限或作业边界无效');
 for (const step of productBuild.jobs.build.steps) {
   if (JSON.stringify(step).includes('secrets.') || step.env && !hasExactKeys(step.env, ['POLICY_SHA', 'RUN_ID'])) throw new Error('产品构建不得注入秘密');
 }

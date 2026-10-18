@@ -49,6 +49,13 @@ it.each([true, false])('marks only deterministic validation failures for rejecti
   expect(content.includes('verificationFailed=true')).toBe(deterministic);
   expect(request.mock.calls.some(call => call[1]?.action === 'finish')).toBe(false);
 });
+it.each(['My App.zip', '.hidden.zip', 'a'.repeat(201)])('rejects invalid release asset name before finish: %s', async file => {
+  const result = join(directory, 'step-output'); vi.stubEnv('GITHUB_OUTPUT', result);
+  vi.mocked(collectFileBuildManifest).mockResolvedValueOnce({ artifacts: [{ kind: 'file', file }] } as any);
+  await expect(invoke()).rejects.toThrow('RN_BUILD_OUTPUT');
+  expect(await readFile(result, 'utf8')).toContain('verificationFailed=true');
+  expect(request.mock.calls.some(call => call[1]?.action === 'finish')).toBe(false);
+});
 it('recreates the seed for an accepted request when completion is rerun after delivery failure', async () => {
   await invoke();
   await rm(join(directory, 'source.json')); await rm(join(directory, 'frozen.json'));
