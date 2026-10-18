@@ -67,6 +67,51 @@ function manifest(p: any) {
     artifacts: [{ id: 'app', kind: 'file' as const, file: 'app.zip', mediaType: 'application/zip', size: 12, sha256: 'a'.repeat(64) }] };
 }
 const action = (body: any) => handleReleaseBuildAction(env(), mock.central, repository, mock.config, 'v1.2.3', body);
+async function replacement(state: Awaited<ReturnType<typeof request>>, policy: string) {
+  return makeReleaseBuildRequest({ ...state.request.frozen, policySha: sha(policy) }, mock.config, 'initial', null);
+}
+it('archives obsolete requests atomically, fences callbacks, and retains a bounded restart history', async () => {
+  let state = await store.begin(await request(), 10, 1);
+  const original = state;
+  for (const policy of ['d', 'e', 'f']) {
+    const next = await replacement(state, policy);
+    state = await new ReleaseBuildStore(db.binding()).prepare(next);
+    expect(state).toMatchObject({ status: 'requested', attempts: [], artifact: null });
+    expect(await store.prepare(next)).toEqual(state);
+  }
+  expect(state.restartCount).toBe(3);
+  await expect(store.prepare(await replacement(state, '9'))).rejects.toThrow('BUILD_RESTART_BUDGET');
+  expect(await store.find(9001, 'v1.2.3', 10, 1)).toMatchObject({ status: 'superseded' });
+  await expect(store.save(original, { ...original, status: 'accepted' })).rejects.toThrow('BUILD_REQUEST_STALE');
+  await expect(store.prepare(original.request)).rejects.toThrow('BUILD_REQUEST_OCCUPIED');
+  for (const operation of ['get', 'begin', 'finish', 'fail', 'reject']) {
+    await expect(action({ action: operation, key: original.request.key, runId: 10, attempt: 1 })).rejects.toThrow('BUILD_REQUEST');
+  }
+  expect(mock.central.request).not.toHaveBeenCalled();
+  expect(db.database.prepare("SELECT COUNT(*) AS n FROM release_build_requests WHERE json_extract(record_json,'$.status')!='superseded'").get()?.n).toBe(1);
+});
+it.each(['accepted', 'receipt'])('does not replace a request after %s', async barrier => {
+  let state = await request();
+  if (barrier === 'accepted') state = await store.save(state, { ...state, status: 'accepted' });
+  else await receipts.prepare(newReleaseReceipt(state.request.frozen, notesFixture), 'now');
+  await expect(store.prepare(await replacement(state, 'd'))).rejects.toThrow(barrier === 'accepted' ? 'BUILD_REQUEST_OCCUPIED' : 'BUILD_REQUEST_STALE');
+  expect(await store.get(state.request.key, 9001, 'v1.2.3')).toEqual(state);
+  expect(db.database.prepare('SELECT COUNT(*) AS n FROM release_build_requests').get()?.n).toBe(1);
+});
+it('serializes competing replacements without orphaning the active slot', async () => {
+  const state = await request();
+  const a = await replacement(state, 'd'), b = await replacement(state, 'e');
+  const results = await Promise.allSettled([store.prepare(a), store.prepare(b)]);
+  expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+  expect(db.database.prepare("SELECT COUNT(*) AS n FROM release_build_requests WHERE json_extract(record_json,'$.status')!='superseded'").get()?.n).toBe(1);
+  expect(db.database.prepare('SELECT COUNT(*) AS n FROM release_build_requests').get()?.n).toBe(2);
+});
+it('rolls back the archive if inserting its replacement fails', async () => {
+  const state = await request();
+  db.database.exec("CREATE TRIGGER fail_restart BEFORE INSERT ON release_build_requests BEGIN SELECT RAISE(ABORT,'test-insert-failure'); END");
+  await expect(store.prepare(await replacement(state, 'd'))).rejects.toThrow('test-insert-failure');
+  expect(await store.get(state.request.key, 9001, 'v1.2.3')).toEqual(state);
+});
 function client() { return new ReleaseReceiptClient('https://runtime.test', 'test', 9001, 'v1.2.3', (async (url: any, init: RequestInit) =>
   (await handleReleaseRequest(new Request(String(url), init), env()))!) as typeof fetch); }
 

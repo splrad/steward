@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { GitHubClient } from '../src/client.js';
-import { assertIncreasingReleaseVersion } from '../src/release-candidate.js';
+import { assertIncreasingReleaseVersion, highestStableRelease } from '../src/release-candidate.js';
 
 it('checks every page rather than the manually selected latest release', async () => {
   const calls: string[] = [];
@@ -14,6 +14,7 @@ it('checks every page rather than the manually selected latest release', async (
   await expect(assertIncreasingReleaseVersion(gh, 'sample', 'product', 'v2.0.0')).rejects.toThrow('VERSION_NOT_INCREASING');
   expect(calls).toHaveLength(2);
   expect(calls.some(url => url.endsWith('/latest'))).toBe(false);
+  expect(await highestStableRelease(gh, 'sample', 'product')).toMatchObject({ id: 2, tag_name: 'v3.0.0' });
 });
 it('ignores drafts, prereleases and the bound release but refuses equal or higher stable versions', async () => {
   const releases = [{ id: 1, tag_name: 'v9.0.0', draft: true, prerelease: false },

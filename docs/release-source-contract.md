@@ -48,6 +48,8 @@ Review 事件只调用 `inspect`。`reconcile` 先核验真人手动合并证据
 
 初始构建已 accepted、但 seed 上传或后续派发失败时，重跑 `release-build-complete.yml` 全部作业，或手动派发该工作流并传入原 `release-build.yml` 的 runId。完成入口重新定位原请求与构建 artifact，复算资产并重建 seed；同一构建的 finish 可幂等调用，随后重新上传和接续 generate。无需将 accepted 改回 failed。此恢复要求原构建 artifact 仍可用且策略同步；artifact 已过期时明确失败，须人工处理。
 
+尚未 accepted 的初始构建遇到策略或产品提交更新时，下一次通过完整来源校验的 prepare 自动归档旧请求，并为同一 tag 创建新请求。增量迁移 `0013_release_build_restart.sql` 保留历史请求及运行身份；归档和创建在同一事务内完成，版本 CAS 防止与完成回调竞争，同版本只保留一个有效请求。新请求从头构建，迟到回调不能修改已归档请求。每个 tag 最多自动替换三次，每个请求仍最多执行三次；预算随记录持久化。已有候选收据、Release/tag、accepted 请求或预算耗尽时停止并要求人工处理。替换由正常构建准备入口触发，无需另填 abandon/revision 字段；本机制不新增提交事件到发布工作流的调度。
+
 沿用现有 Worker 定时入口，每批最多二十个候选，同对象至少间隔十五分钟；覆盖已绑定待审、已批准、已合并和发布中状态，以发现漏失事件。pending 能力只观察，active 才能调度 reconcile。暂停和旧策略记录不自动恢复。
 
 ## 本地验证与尚未完成的环节
@@ -57,6 +59,8 @@ Review 事件只调用 `inspect`。`reconcile` 先核验真人手动合并证据
 `release.yml` 的 generate 操作依次固定生成预算、运行隔离模型作业和创建候选。模型作业只注入个人 Copilot PAT；父进程用短时凭证访问生成账本，子进程使用独立空目录和配置，不继承该凭证、App 或发布凭据。CLI 固定为 1.0.91，禁用工具、内置 MCP、自动指令和会话恢复。增量迁移 `0011_release_generation.sql` 保存计划、调用预留、原始格式失败输出和成功输出；未知结果仍计次，完成批次跨重跑复用。结构解析只接受唯一 JSON 对象或明确 json 围栏，拒绝重复键和未知字段。
 
 构建执行层已接入四种 Profile 的参数编排、准确干净提交检查、独立输出目录、原生版本检查器及中央清单收集。`release-build.yml` 固定来源、构建请求和工具链，在隔离作业执行产品构建；`release-build-complete.yml` 回读运行与 artifact 身份，独立验证下载资产，自动生成包含 `source.json`、`frozen.json` 和资产的 seed bundle，再接续 generate。首发请求在 seed 来源摘要验证及文件写入成功后才 finish；此前失败可保存为 failed 并重试。GitHub 文件发布只接受一个非 OCI 构建单元。
+
+有文件资产的首次发布从 `release-build.yml` 开始，构建完成后才进入 generate 和候选准备。候选准备 API 要求冻结清单与配置的 builds 完全一致，并验证中央成功运行及 artifact 身份；缺少所需构建清单会以 `BUILD_SET` 拒绝。配置无构建单元的仓库允许无资产候选。
 
 各 Profile 共用根目录 `VERSION` 合同：冻结产品提交必须包含严格的 `X.Y.Z` 加 LF，且与目标标签及原生资产版本一致。LayerScape 的配套 [PR #168](https://github.com/splrad/LayerScape/pull/168) 增加 `VERSION`，由 `Version.props` 和发布脚本共同读取；须先将配套变更纳入所选产品提交，再运行首发构建。旧产品提交缺少文件时明确失败，不从标签推断文件内容。LayerScape 的发布能力仍为 pending，启用须另行完成部署和真实链路验收。
 

@@ -51,7 +51,9 @@ export function generationPlan(sourceDigest: string, policySha: string, inputs: 
   releaseAssert(releaseDigest(sourceDigest) && /^[a-f0-9]{40}$/.test(policySha) && inputs.length > 0 && inputs.length <= 8
     && inputs.every(input => typeof input === 'string' && Buffer.byteLength(input) > 0 && Buffer.byteLength(input) <= 96 * 1024), 'GENERATION_INPUT');
   const maxCalls = 2 * (inputs.length + (inputs.length > 1 ? 1 : 0));
-  return { schemaVersion: 1, sourceDigest, policySha, producer: 'copilot-cli-1.0.91', inputs: [...inputs], maxCalls, callTimeoutMs: 180000, jobTimeoutMs: Math.max(600000, maxCalls * 180000 + 120000) };
+  const plan: GenerationPlan = { schemaVersion: 1, sourceDigest, policySha, producer: 'copilot-cli-1.0.91', inputs: [...inputs], maxCalls, callTimeoutMs: 180000, jobTimeoutMs: Math.max(600000, maxCalls * 180000 + 120000) };
+  releaseAssert(Buffer.byteLength(canonicalReleaseJson(plan)) <= 256 * 1024, 'GENERATION_PLAN_LIMIT');
+  return plan;
 }
 export const generationPlanDigest = (plan: GenerationPlan) => receiptDigest(canonicalReleaseJson(plan));
 /** Every retained text object is included, including before-images and reverted commits. */

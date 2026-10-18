@@ -6,7 +6,8 @@ export interface ReleaseBuildRequest {
   key: string; mode: 'initial' | 'rebuild'; frozen: FrozenRelease; plans: BuildPlan[]; sourceArtifactId: number | null;
 }
 export interface ReleaseBuildState {
-  request: ReleaseBuildRequest; version: number; status: 'requested' | 'running' | 'accepted' | 'failed';
+  request: ReleaseBuildRequest; version: number; status: 'requested' | 'running' | 'accepted' | 'failed' | 'superseded';
+  restartCount?: number; supersededBy?: string;
   attempts: { runId: number; attempt: number }[]; artifact: NonNullable<FrozenRelease['build']> | null; error: string | null;
   resultManifests?: BuildManifest[];
 }

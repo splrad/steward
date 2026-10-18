@@ -42,7 +42,7 @@ export async function handleReleaseBuildAction(env: BodyWriteRuntimeEnv, gh: Git
     return store.prepare(await makeReleaseBuildRequest(f, configuration, 'initial', null));
   }
   const state = await store.get(body.key, repositoryId, tag);
-  releaseAssert(state && state.request.frozen.policySha === env.POLICY_SHA, 'BUILD_REQUEST');
+  releaseAssert(state && state.status !== 'superseded' && state.request.frozen.policySha === env.POLICY_SHA, 'BUILD_REQUEST');
   if (body.action === 'get') return state;
   const central = await centralBuildClient(env);
   const run = await central.request<any>('GET', `/repos/splrad/steward/actions/runs/${body.runId}`);

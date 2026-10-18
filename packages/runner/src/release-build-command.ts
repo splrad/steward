@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, readFile, writeFile, appendFile } from 'node:fs/promise
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { GitHubClient, createInstallationToken, dispatchWorkflow } from '../../github/src/index.js';
-import { optionalReleaseRead } from '../../github/src/release-candidate.js';
+import { highestStableRelease } from '../../github/src/release-candidate.js';
 import { canonicalReleaseJson, positiveId, receiptDigest, releaseAssert, releaseSha, type FrozenRelease } from '../../core/src/release-note-receipt.js';
 import { releaseToolchain, releaseToolchainDigest, type ReleaseBuildState } from '../../core/src/release-build-request.js';
 import { parseVersionFile } from '../../core/src/release-version.js';
@@ -124,7 +124,7 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
       await checkoutSource(repository.full_name, target, source, auth.token, home);
       const versionBytes = (await run('git', ['-C', source, 'show', `${target}:VERSION`], { encoding: 'buffer', maxBuffer: 1024, env: isolatedBuildEnvironment(process.env, home) })).stdout;
       releaseAssert('v' + parseVersionFile(versionBytes).value === tag, 'BUILD_VERSION');
-      const latest = await optionalReleaseRead(() => auth.gh.getLatestRelease(owner, repo));
+      const latest = await highestStableRelease(auth.gh, owner, repo);
       let boundary: GitReleaseBoundary = { kind: 'full-tree' };
       if (latest) {
         let object = (await auth.gh.getGitRef(owner, repo, `tags/${latest.tag_name}`)).object;

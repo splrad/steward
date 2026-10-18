@@ -9,6 +9,12 @@ import { collectFileBuildManifest } from '../src/build-manifest.js';
 import { planBuild } from '../../core/src/build-manifest.js';
 import { isolatedBuildEnvironment } from '../src/release-build.js';
 
+it('rejects unsupported Linux native formats before starting any PowerShell process', async () => {
+  const inspector = nativeReleaseInspector('does-not-exist.ps1', 'unused', 'linux');
+  await expect(inspector.inspectPath!('artifact.zip')).rejects.toThrow('NATIVE_FORMAT_UNSUPPORTED');
+  await expect(inspector.inspectPath!('artifact.dll')).rejects.toThrow('NATIVE_FORMAT_UNSUPPORTED');
+});
+
 describe.skipIf(process.platform !== 'win32')('native Windows versions and bounded archive inspection', () => {
   let root: string;
   beforeAll(async () => {

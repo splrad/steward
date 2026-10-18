@@ -11,6 +11,12 @@ import { ReleaseTestDb } from './release-test-db.js';
 const generated = { userNotes: { upgrade: [], changes: [{ category: '修复', text: '修复导出时丢失文件的问题。' }] }, reviewEvidence: { internalChanges: ['调整导出实现。'], unknowns: [] } };
 const output = JSON.stringify(generated);
 const plan = generationPlan('a'.repeat(64), sha('c'), ['complete source']);
+
+it('enforces the documented aggregate plan budget before persistence or model calls', () => {
+  expect(() => generationPlan('a'.repeat(64), sha('c'), Array(3).fill('x'.repeat(96 * 1024)))).toThrow('GENERATION_PLAN_LIMIT');
+  expect(() => generationPlan('a'.repeat(64), sha('c'), Array(8).fill('x'.repeat(24 * 1024)))).not.toThrow();
+  expect(() => generationPlan('a'.repeat(64), sha('c'), ['"'.repeat(96 * 1024), '"'.repeat(96 * 1024)])).toThrow('GENERATION_PLAN_LIMIT');
+});
 function client(store: ReleaseGenerationStore) {
   return { request: async <T>(_action?: string, value?: unknown): Promise<T> => {
     const b = value as any;

@@ -13,6 +13,17 @@ export async function assertIncreasingReleaseVersion(gh: Pick<GitHubClient, 'lis
   }
 }
 
+export async function highestStableRelease(gh: Pick<GitHubClient, 'listReleases'>, owner: string, repo: string): Promise<any | null> {
+  let highest: any | null = null;
+  for (const release of await gh.listReleases(owner, repo)) {
+    if (release.draft || release.prerelease) continue;
+    releaseAssert(/^v\d+\.\d+\.\d+$/.test(release.tag_name), 'VERSION_NOT_INCREASING');
+    const version = parsePublicVersion(release.tag_name.slice(1));
+    if (!highest || comparePublicVersions(version, parsePublicVersion(highest.tag_name.slice(1))) > 0) highest = release;
+  }
+  return highest;
+}
+
 export async function optionalReleaseRead<T>(read: () => Promise<T>): Promise<T | null> {
   try { return await read(); } catch (error) { if (error instanceof GitHubRequestError && error.status === 404) return null; throw error; }
 }
