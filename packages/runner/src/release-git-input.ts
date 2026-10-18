@@ -174,5 +174,6 @@ export function freezeReleaseGitInput(options: GitReleaseInputOptions) {
     coverage: { commits: commits.length, changedFiles: changes.length, retainedObjects: objects.size, retainedBytes: totalBytes },
   };
   const bytes = JSON.stringify(input) + '\n';
+  if (Buffer.byteLength(bytes, 'utf8') > 32 * 1024 * 1024) sourceFailure('serialized source exceeds 32 MiB');
   return { input, bytes, inputSha256: hash(Buffer.from(bytes)) };
 }

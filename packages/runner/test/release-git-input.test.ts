@@ -24,6 +24,11 @@ function fixture() {
   return { workspace, git, commit, base, options };
 }
 describe('完整 Git 发布输入', { timeout: 30_000 }, () => {
+  it('在冻结时按含Base64和元数据的序列化字节拒绝超限来源', () => {
+    const f = fixture();
+    for (let i = 0; i < 3; i++) f.commit(`large-${i}.bin`, Buffer.alloc(8 * 1024 * 1024, i));
+    expect(() => freezeReleaseGitInput(f.options())).toThrow('serialized source exceeds 32 MiB');
+  });
   it('冻结输入可供持久收据验证，缺块、重复字段和不完整审阅覆盖被拒绝', () => {
     const f = fixture(); f.commit('code.txt', 'product'); const snapshot = freezeReleaseGitInput(f.options());
     const frozen = { ...frozenFixture(), repositoryId: 123, defaultBranch: 'main', productTargetSha: snapshot.input.targetSha, productTree: snapshot.input.productTree,
