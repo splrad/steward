@@ -1,0 +1,80 @@
+name: SPLRAD Steward / Product Build
+run-name: 'product-build:${{ inputs.repositoryId }}:${{ inputs.buildId }}'
+on:
+  workflow_dispatch:
+    inputs:
+      repositoryId: { required: true, type: string }
+      buildId: { required: true, type: string }
+      targetSha: { required: true, type: string }
+permissions: { contents: read, actions: read }
+concurrency:
+  group: product-build-${{ inputs.repositoryId }}-${{ inputs.buildId }}
+  cancel-in-progress: false
+jobs:
+  plan:
+    if: github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: { name: steward-release, deployment: false }
+    outputs:
+      artifactId: ${{ steps.context.outputs.artifact-id }}
+      runner: ${{ steps.plan.outputs.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: "${{ github.workflow_sha }}", persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: .node-version, cache: npm }
+      - run: npm ci --ignore-scripts
+      - name: 固定已登记产品构建来源
+        id: plan
+        shell: bash
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          BUILD_ID: ${{ inputs.buildId }}
+          TARGET_SHA: ${{ inputs.targetSha }}
+          POLICY_SHA: ${{ github.workflow_sha }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: node packages/runner/dist/index.js release-build --operation plan-product --repository-id "$REPOSITORY_ID" --build-id "$BUILD_ID" --target-sha "$TARGET_SHA" --policy-sha "$POLICY_SHA" --run-id "$RUN_ID" --attempt "$ATTEMPT" --output build-context
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        id: context
+        with:
+          name: product-build-request-${{ github.run_attempt }}
+          path: build-context
+          if-no-files-found: error
+          retention-days: 7
+  build:
+    needs: plan
+    runs-on: ${{ needs.plan.outputs.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: "${{ github.workflow_sha }}", persist-credentials: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version-file: .node-version, cache: npm }
+      - run: npm ci --ignore-scripts
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with: { dotnet-version: '10.0.402' }
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.plan.outputs.artifactId }}
+          merge-multiple: true
+          path: build-context
+      - name: 无发布凭据构建产品并校验原生版本
+        shell: pwsh
+        env:
+          POLICY_SHA: ${{ github.workflow_sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: node packages/runner/dist/index.js release-build --operation execute-product --policy-sha "$env:POLICY_SHA" --run-id "$env:RUN_ID" --request build-context/request.json --source-bundle build-context/source.bundle --workspace product-source --assets build-assets --inspector scripts/inspect-native-release.ps1 --output artifact-manifest.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: product-build-result-${{ github.run_attempt }}
+          path: |
+            build-assets
+            artifact-manifest.json*
+          if-no-files-found: error
+          retention-days: 30

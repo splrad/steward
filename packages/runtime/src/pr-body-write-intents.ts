@@ -389,10 +389,29 @@ export class PullRequestBodyWriteIntentStore {
     if (affected(result) !== 1) throw new Error("正文写交付声明已经失效");
   }
 
+  async retireUnsupportedAutomation(now: string, limit = 20): Promise<number> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new Error("退役批量无效");
+    const unsupported = "(region_kind != 'managed-pr' OR redrive_workflow IS NULL OR redrive_workflow NOT IN ('onboard-repository.yml','sync-review-instructions.yml'))";
+    const rows = await this.db.prepare(`SELECT repository_id, pull_request_number, write_id FROM pull_request_body_write_intents
+      WHERE ${unsupported} AND (status IN ('prepared','patched','compensating') OR redrive_required=1)
+      ORDER BY updated_at, repository_id, pull_request_number LIMIT ?`).bind(limit)
+      .all<{ repository_id: number; pull_request_number: number; write_id: string }>();
+    let retired = 0;
+    for (const row of rows.results) {
+      const result = await this.db.prepare(`UPDATE pull_request_body_write_intents SET status='blocked', blocked_reason='automation-retired', redrive_required=0, redrive_dispatched=0, updated_at=?
+        WHERE repository_id=? AND pull_request_number=? AND write_id=? AND ${unsupported}
+        AND (status IN ('prepared','patched','compensating') OR redrive_required=1)`)
+        .bind(now, row.repository_id, row.pull_request_number, row.write_id).run();
+      retired += affected(result);
+    }
+    return retired;
+  }
+
   async listRecoverable(now: string, limit = 20): Promise<readonly PullRequestBodyWriteIntent[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new Error("恢复批量无效");
     const rows = await this.db.prepare(`SELECT * FROM pull_request_body_write_intents
-      WHERE status IN ('prepared','patched','compensating') AND expires_at > ? ORDER BY updated_at, repository_id, pull_request_number LIMIT ?`)
+      WHERE region_kind='managed-pr' AND redrive_workflow IN ('onboard-repository.yml','sync-review-instructions.yml')
+      AND status IN ('prepared','patched','compensating') AND expires_at > ? ORDER BY updated_at, repository_id, pull_request_number LIMIT ?`)
       .bind(now, limit).all<IntentRow>();
     return rows.results.map((row) => intent(row)!);
   }
@@ -408,7 +427,8 @@ export class PullRequestBodyWriteIntentStore {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new Error("重新调度批量无效");
     if (retryBefore && !Number.isFinite(new Date(retryBefore).getTime())) throw new Error("重新调度重试时间无效");
     const rows = await this.db.prepare(`SELECT * FROM pull_request_body_write_intents
-      WHERE status IN ('confirmed','blocked') AND redrive_required=1 AND (redrive_dispatched=0 OR updated_at <= ?)
+      WHERE region_kind='managed-pr' AND redrive_workflow IN ('onboard-repository.yml','sync-review-instructions.yml')
+      AND status IN ('confirmed','blocked') AND redrive_required=1 AND (redrive_dispatched=0 OR updated_at <= ?)
       ORDER BY updated_at, repository_id, pull_request_number LIMIT ?`).bind(retryBefore, limit).all<IntentRow>();
     return rows.results.map((row) => intent(row)!);
   }

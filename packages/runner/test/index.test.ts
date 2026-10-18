@@ -7,7 +7,7 @@ import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { generateReviewInstructionSet } from "../../core/src/review-instructions.js";
-import { assertFreshValidationBase, assertManagedBranchPull, assertPreparedCopilotFacts, assertWorkflowPaths, classificationInstallationPermissions, decodeAiClassificationPayload, decodeClassificationCheckState, describeCopilotFallback, describeCopilotRepairAvailability, describeCopilotRepairOutputFailure, encodeAiClassificationPayload, encodeClassificationCheckState, env, extractCopilotAssistantContent, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, humanPushPullRequestCreateInput, inspectAutomationPullRequestBinding, inspectCopilotGeneratedSummary, isCopilotReviewerIdentity, isTrustedAiClassificationSource, issueSyncInstallationPermissions, main, matchesGeneratedReviewInstructions, normalizeCopilotJsonCandidate, parseInvocation, prAutomationInstallationPermissions, prepareAiClassificationPayload, reconcileIssueSnapshots, renderAiClassificationEvidence, resolveCopilotGeneratedSummary, reusedAiClassificationAssessment, reviewInstructionSyncInstallationPermissions, reviewRegistryPaths, throwFreshValidationBaseFailure, writeManagedFilesToBranch } from "../src/index.js";
+import { assertFreshValidationBase, assertManagedBranchPull, assertWorkflowPaths, classificationInstallationPermissions, decodeAiClassificationPayload, decodeClassificationCheckState, encodeAiClassificationPayload, encodeClassificationCheckState, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, isTrustedAiClassificationSource, main, matchesGeneratedReviewInstructions, parseInvocation, renderAiClassificationEvidence, reusedAiClassificationAssessment, reviewInstructionSyncInstallationPermissions, reviewRegistryPaths, throwFreshValidationBaseFailure, writeManagedFilesToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -24,15 +24,15 @@ afterEach(() => {
 });
 
 describe("中央命令入口", () => {
-  it("未启用片段门禁时不读取网络或令牌", async () => {
+  it("退役片段命令在读取网络或令牌前拒绝", async () => {
     process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
     const transport = vi.fn(() => { throw new Error("unexpected network"); });
     vi.stubGlobal("fetch", transport);
-    await main(["validate", "--workspace", ".", "--repository-id", "1296724484", "--profile", "steward", "--fragments-only", "true"]);
+    await expect(main(["validate", "--workspace", ".", "--repository-id", "1296724484", "--profile", "steward", "--fragments-only", "true"])).rejects.toThrow("未知参数");
     expect(transport).not.toHaveBeenCalled();
   });
-  it("只接受十五个命令及其已知、唯一、成对参数", () => {
-    const commands = ["issue-sync", "managed-repository-ids", "reconcile-repository-lifecycle", "onboard-repository", "pr-automation", "pr-classification", "pr-issue-link", "request-copilot-review", "sync-review-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"];
+  it("只接受现行命令及其已知、唯一、成对参数", () => {
+    const commands = ["managed-repository-ids", "onboard-repository", "pr-classification", "request-copilot-review", "sync-review-instructions", "sync-managed-labels", "validate", "release-candidate"];
     for (const command of commands) expect(parseInvocation([command]).command).toBe(command);
     expect(() => parseInvocation(["unknown"])).toThrow("未知命令");
     expect(() => parseInvocation(["validate", "--unknown", "x"])).toThrow("未知参数");
@@ -40,152 +40,15 @@ describe("中央命令入口", () => {
     expect(() => parseInvocation(["validate", "--workspace", "a", "--workspace", "b"])).toThrow("重复参数");
   });
 
-  it("部署生命周期收敛会墓碑当前不具备议题能力的仓库并调度全PR清理", async () => {
-    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
-    process.env.APP_ID = "4243096";
-    process.env.INSTALLATION_ID = "145952003";
-    process.env.STEWARD_APP_PRIVATE_KEY = privateKey;
-    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
-    process.env.RUNTIME_URL = "https://runtime.test";
-    const calls: Array<{ url: string; body: any }> = [];
-    vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
-      const value = String(url); const body = init?.body ? JSON.parse(String(init.body)) : null;
-      calls.push({ url: value, body });
-      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
-      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [
-        { id: 1400000001, full_name: "splrad/default-private", private: true, has_issues: false, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } },
-      ] }), { status: 200 });
-      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile")) return new Response(JSON.stringify({ repositoryId: 1296724484, removedRepositoryIds: [1296725317] }), { status: 200 });
-      if (value.endsWith("/internal/issue-snapshots/1400000001/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1400000001, managed: false, issueCapable: false }), { status: 200 });
-      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
-      if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) return new Response(null, { status: 204 });
-      return new Response("unexpected", { status: 500 });
-    });
-    await main(["reconcile-repository-lifecycle", "--delivery-id", "deploy-1-1", "--policy-sha", "a".repeat(40)]);
-    expect(calls.find(call => call.url.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile"))?.body).toEqual({ repositoryIds: [1400000001] });
-    const lifecycleIndex = calls.findIndex(call => call.url.endsWith("/internal/issue-snapshots/1400000001/lifecycle"));
-    const cleanupIndex = calls.findIndex(call => call.body?.inputs?.cleanupUnmanaged === "true");
-    expect(calls.some(call => call.body?.inputs?.invalidateOnly === "true")).toBe(false);
-    expect(lifecycleIndex).toBeGreaterThan(-1);
-    expect(cleanupIndex).toBeGreaterThan(lifecycleIndex);
-    expect(calls[cleanupIndex]!.body.inputs).toEqual({
-      deliveryId: "deploy-1-1:1400000001", repositoryId: "1400000001", scanAll: "true", invalidateOnly: "false", cleanupUnmanaged: "true", policySha: "a".repeat(40),
-    });
-  });
 
-  it("部署生命周期收敛会墓碑归档仓库但不调度只读正文清理", async () => {
-    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
-    process.env.APP_ID = "4243096";
-    process.env.INSTALLATION_ID = "145952003";
-    process.env.STEWARD_APP_PRIVATE_KEY = privateKey;
-    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
-    process.env.RUNTIME_URL = "https://runtime.test";
-    const calls: Array<{ url: string; body: any }> = [];
-    vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
-      const value = String(url); const body = init?.body ? JSON.parse(String(init.body)) : null;
-      calls.push({ url: value, body });
-      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
-      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [
-        { id: 1296724484, full_name: "splrad/steward", private: false, has_issues: true, archived: true, disabled: false, owner: { id: 302208797, login: "splrad" } },
-      ] }), { status: 200 });
-      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile")) return new Response(JSON.stringify({ repositoryId: 1296724484, removedRepositoryIds: [] }), { status: 200 });
-      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1296724484, managed: true, issueCapable: false }), { status: 200 });
-      return new Response("unexpected", { status: 500 });
-    });
-    await main(["reconcile-repository-lifecycle", "--delivery-id", "deploy-archive", "--policy-sha", "a".repeat(40)]);
-    expect(calls.some(call => call.body?.inputs?.cleanupUnmanaged === "true")).toBe(false);
-    expect(calls.some(call => call.url.endsWith("/internal/issue-snapshots/1296724484/lifecycle"))).toBe(true);
-  });
 
-  it("部署对账先失效全部仓库，并在单仓同步失败后继续调度后续仓库", async () => {
-    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
-    process.env.APP_ID = "4243096";
-    process.env.INSTALLATION_ID = "145952003";
-    process.env.STEWARD_APP_PRIVATE_KEY = privateKey;
-    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
-    process.env.RUNTIME_URL = "https://runtime.test";
-    const calls: Array<{ url: string; body: any }> = [];
-    const managedRepositories = [
-      { id: 1187527897, full_name: "splrad/LayerScape", private: false, has_issues: true, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } },
-      { id: 1296724484, full_name: "splrad/steward", private: false, has_issues: true, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } },
-    ];
-    vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
-      const value = String(url); const body = init?.body ? JSON.parse(String(init.body)) : null;
-      calls.push({ url: value, body });
-      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
-      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: managedRepositories }), { status: 200 });
-      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile")) return new Response(JSON.stringify({ repositoryId: 1296724484, removedRepositoryIds: [] }), { status: 200 });
-      if (value.endsWith("/internal/issue-snapshots/1187527897/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1187527897, managed: true, issueCapable: true }), { status: 200 });
-      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1296724484, managed: true, issueCapable: true }), { status: 200 });
-      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
-      if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) return new Response(null, { status: 204 });
-      if (value.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches")) return new Response(body.inputs.repositoryId === "1187527897" ? "failure" : null, { status: body.inputs.repositoryId === "1187527897" ? 500 : 204 });
-      return new Response("unexpected", { status: 500 });
-    });
-    await expect(main(["reconcile-repository-lifecycle", "--delivery-id", "deploy-1-2", "--policy-sha", "a".repeat(40)])).rejects.toThrow();
-    const invalidations = calls.filter(call => call.body?.inputs?.invalidateOnly === "true");
-    const lifecycleIndexes = calls.map((call, index) => /\/internal\/issue-snapshots\/\d+\/lifecycle$/u.test(call.url) ? index : -1).filter(index => index >= 0);
-    const scans = calls.filter(call => call.url.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches"));
-    expect(invalidations.map(call => call.body.inputs.repositoryId)).toEqual(["1187527897", "1296724484"]);
-    expect(Math.max(...invalidations.map(call => calls.indexOf(call)))).toBeLessThan(Math.min(...lifecycleIndexes));
-    expect(scans.map(call => call.body.inputs.repositoryId)).toEqual(["1187527897", "1296724484"]);
-    expect(Math.max(...lifecycleIndexes)).toBeLessThan(calls.indexOf(scans[0]!));
-  });
 
-  it("部署对账会尝试失效全部仓库，任一失效失败时不变更生命周期", async () => {
-    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
-    process.env.APP_ID = "4243096";
-    process.env.INSTALLATION_ID = "145952003";
-    process.env.STEWARD_APP_PRIVATE_KEY = privateKey;
-    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
-    process.env.RUNTIME_URL = "https://runtime.test";
-    const calls: Array<{ url: string; body: any }> = [];
-    vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
-      const value = String(url); const body = init?.body ? JSON.parse(String(init.body)) : null;
-      calls.push({ url: value, body });
-      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
-      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [
-        { id: 1187527897, full_name: "splrad/LayerScape", private: false, has_issues: true, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } },
-        { id: 1296724484, full_name: "splrad/steward", private: false, has_issues: true, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } },
-      ] }), { status: 200 });
-      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile")) return new Response(JSON.stringify({ repositoryId: 1296724484, removedRepositoryIds: [] }), { status: 200 });
-      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
-      if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) return new Response(body.inputs.repositoryId === "1187527897" ? "failure" : null, { status: body.inputs.repositoryId === "1187527897" ? 500 : 204 });
-      return new Response("unexpected", { status: 500 });
-    });
-    await expect(main(["reconcile-repository-lifecycle", "--delivery-id", "deploy-1-3", "--policy-sha", "a".repeat(40)])).rejects.toThrow();
-    expect(calls.filter(call => call.body?.inputs?.invalidateOnly === "true").map(call => call.body.inputs.repositoryId)).toEqual(["1187527897", "1296724484"]);
-    expect(calls.some(call => /\/internal\/issue-snapshots\/\d+\/lifecycle$/u.test(call.url))).toBe(false);
-  });
 
-  it("部署对账在单仓生命周期失败后继续收敛并同步其他仓库", async () => {
-    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
-    process.env.APP_ID = "4243096";
-    process.env.INSTALLATION_ID = "145952003";
-    process.env.STEWARD_APP_PRIVATE_KEY = privateKey;
-    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
-    process.env.RUNTIME_URL = "https://runtime.test";
-    const calls: Array<{ url: string; body: any }> = [];
-    vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
-      const value = String(url); const body = init?.body ? JSON.parse(String(init.body)) : null;
-      calls.push({ url: value, body });
-      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
-      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [
-        { id: 1187527897, full_name: "splrad/LayerScape", private: false, has_issues: true, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } },
-        { id: 1296724484, full_name: "splrad/steward", private: false, has_issues: true, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } },
-      ] }), { status: 200 });
-      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle/reconcile")) return new Response(JSON.stringify({ repositoryId: 1296724484, removedRepositoryIds: [] }), { status: 200 });
-      if (value.endsWith("/internal/issue-snapshots/1187527897/lifecycle")) return new Response("failure", { status: 500 });
-      if (value.endsWith("/internal/issue-snapshots/1296724484/lifecycle")) return new Response(JSON.stringify({ repositoryId: 1296724484, managed: true, issueCapable: true }), { status: 200 });
-      if (value.endsWith("/repos/splrad/steward")) return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
-      if (value.endsWith("/repos/splrad/steward/actions/workflows/pr-issue-link.yml/dispatches")) return new Response(null, { status: 204 });
-      if (value.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches")) return new Response(null, { status: 204 });
-      return new Response("unexpected", { status: 500 });
-    });
-    await expect(main(["reconcile-repository-lifecycle", "--delivery-id", "deploy-1-4", "--policy-sha", "a".repeat(40)])).rejects.toThrow("仓库生命周期运行时请求失败:500");
-    expect(calls.filter(call => /\/internal\/issue-snapshots\/\d+\/lifecycle$/u.test(call.url)).map(call => call.url.match(/issue-snapshots\/(\d+)/u)?.[1])).toEqual(["1187527897", "1296724484"]);
-    expect(calls.filter(call => call.url.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches")).map(call => call.body.inputs.repositoryId)).toEqual(["1296724484"]);
-  });
+
+
+
+
+
 
   it("部署初始化仓库清单包含公开默认纳管仓库并排除默认private仓库", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
@@ -216,7 +79,7 @@ describe("中央命令入口", () => {
     }
   });
 
-  it("接入成功后即使标签同步失败也先派发首次议题快照", async () => {
+  it("接入失败保留标签错误且不派发议题同步", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
     process.env.APP_ID = "4243096";
     process.env.INSTALLATION_ID = "145952003";
@@ -262,42 +125,20 @@ describe("中央命令入口", () => {
       "--trigger", "repository-visibility-changed", "--delivery-id", "onboard-label-failure", "--policy-sha", policySha,
     ])).rejects.toThrow("受管标签同步失败: splrad/steward");
     const dispatch = calls.find(call => call.url.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches"));
-    expect(dispatch?.body).toEqual({ ref: "main", inputs: { deliveryId: "onboard-label-failure", repositoryId: String(repositoryId), scanAll: "true", policySha } });
+    expect(dispatch).toBeUndefined();
   });
 
-  it("在创建安装令牌前拒绝超出安全整数范围的编号", async () => {
+  it("退役议题同步入口在处理编号前拒绝运行", async () => {
     await expect(main([
       "issue-sync",
       "--delivery-id", "delivery-unsafe-integer",
       "--repository-id", "9007199254740993",
       "--scan-all", "true",
       "--policy-sha", "a".repeat(40),
-    ])).rejects.toThrow("安全整数");
+    ])).rejects.toThrow("未知命令");
   });
 
-  it("未启用 Issues 的仓库在读取议题或 Runtime 前停止同步", async () => {
-    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
-    process.env.APP_ID = "4243096";
-    process.env.INSTALLATION_ID = "145952003";
-    process.env.STEWARD_APP_PRIVATE_KEY = privateKey;
-    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
-    process.env.RUNTIME_URL = "https://runtime.test";
-    const calls: string[] = [];
-    vi.stubGlobal("fetch", async (url: string | URL | Request) => {
-      const value = String(url); calls.push(value);
-      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
-      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [
-        { id: 1296724484, full_name: "splrad/steward", private: false, has_issues: false, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } },
-      ] }), { status: 200 });
-      return new Response("unexpected", { status: 500 });
-    });
-    await expect(main(["issue-sync", "--delivery-id", "issues-disabled", "--repository-id", "1296724484", "--scan-all", "true", "--policy-sha", "a".repeat(40)]))
-      .rejects.toThrow("仓库未启用议题同步");
-    expect(calls.some(value => {
-      const url = new URL(value);
-      return url.pathname.includes("/issues") || url.origin === "https://runtime.test";
-    })).toBe(false);
-  });
+
 
   it("缺失环境变量立即失败", () => {
     expect(() => env("TEST_REQUIRED_ENV")).toThrow("缺少环境变量");
@@ -305,15 +146,6 @@ describe("中央命令入口", () => {
     expect(env("TEST_REQUIRED_ENV")).toBe("present");
   });
 
-  it("创建拉取请求的输入显式包含draft标记", () => {
-    expect(humanPushPullRequestCreateInput({ title: "feat(pr): 草案", body: "正文", head: "feature/a", base: "main" })).toEqual({
-      title: "feat(pr): 草案",
-      body: "正文",
-      head: "feature/a",
-      base: "main",
-      draft: true,
-    });
-  });
 
   it("AI分类上下文封装使用规范、限长编码", () => {
     const envelope = {
@@ -333,41 +165,7 @@ describe("中央命令入口", () => {
     expect(() => decodeAiClassificationPayload(Buffer.from("not-json", "utf8").toString("base64url"))).toThrow("AI分类封装格式无效");
   });
 
-  it("无效AI分类只传固定占位值且封装失败时安全降级", () => {
-    const envelope = {
-      schemaVersion: 2 as const,
-      repositoryId: 1, pullRequestNumber: 2, sourceRepositoryId: 1,
-      sourceRef: "refs/heads/change", targetRef: "refs/heads/main",
-      headSha: "a".repeat(40), baseSha: "b".repeat(40), policySha: "c".repeat(40),
-      catalogDigest: "d".repeat(64), profileDigest: "e".repeat(64), repositoryClassificationDigest: "f".repeat(64), classificationPolicyDigest: "1".repeat(64), inputDigest: "2".repeat(64),
-      effectiveAiMode: "shadow" as const,
-      suggestion: null,
-    };
-    const invalid = prepareAiClassificationPayload({ state: "invalid", raw: { untrusted: "x".repeat(20_000) }, reason: "classification.primaryKind无效" }, envelope);
-    expect(invalid.state).toBe("encoded");
-    if (invalid.state === "encoded") expect(decodeAiClassificationPayload(invalid.payload)).toEqual({ ...envelope, suggestion: { invalid: true } });
 
-    const validSuggestion = { primaryKind: "feature", confidence: "high" as const, evidence: [{ path: "packages/core/src/automation.ts", reason: "新增分类建议字段" }] };
-    const valid = { state: "valid" as const, suggestion: validSuggestion, raw: validSuggestion };
-    expect(prepareAiClassificationPayload(valid, { ...envelope, sourceRef: "x".repeat(20_000) })).toEqual({ state: "encoding-failed" });
-    expect(prepareAiClassificationPayload({ state: "missing" }, envelope)).toEqual({ state: "missing" });
-  });
-
-  it("默认分支仅SHA前进时跳过AI封装，其他拉取请求绑定漂移仍失败", () => {
-    const expected = { repositoryId: 1, sourceBranch: "change", headSha: "a".repeat(40), baseBranch: "main", baseSha: "b".repeat(40) };
-    const pull = {
-      head: { repo: { id: 1 }, ref: "change", sha: "a".repeat(40) },
-      base: { ref: "main", sha: "b".repeat(40) },
-    };
-    expect(inspectAutomationPullRequestBinding(pull, expected)).toBe("matched");
-    expect(inspectAutomationPullRequestBinding({ ...pull, base: { ...pull.base, sha: "c".repeat(40) } }, expected)).toBe("base-sha-drifted");
-    for (const changed of [
-      { ...pull, head: { ...pull.head, repo: { id: 2 } } },
-      { ...pull, head: { ...pull.head, ref: "other" } },
-      { ...pull, head: { ...pull.head, sha: "d".repeat(40) } },
-      { ...pull, base: { ...pull.base, ref: "release" } },
-    ]) expect(() => inspectAutomationPullRequestBinding(changed, expected)).toThrow("AI分类封装对应的拉取请求事实已经漂移");
-  });
 
   it("AI分类来源必须绑定App触发者、Steward工作流和当前策略提交", () => {
     const policySha = "a".repeat(40);
@@ -416,187 +214,12 @@ describe("中央命令入口", () => {
     expect(renderAiClassificationEvidence(null)).toBe("未提供");
   });
 
-  it("Copilot回退原因按安全阶段记录且不输出未知异常正文", () => {
-    expect(describeCopilotFallback("copilot-step", new Error("命令输出"))).toBe("Copilot命令执行失败");
-    expect(describeCopilotFallback("prepared-facts-read", new Error("临时路径"))).toBe("人工智能输入文件无法读取");
-    expect(describeCopilotFallback("prepared-facts-parse", new Error("原始JSON"))).toBe("人工智能输入文件不是有效JSON");
-    expect(describeCopilotFallback("prepared-facts-check", new Error("人工智能输入对应的分支事实已经漂移"))).toBe("人工智能输入对应的分支事实已经漂移");
-    expect(describeCopilotFallback("copilot-output-read", new Error("临时路径"))).toBe("Copilot输出文件无法读取");
-    expect(describeCopilotFallback("copilot-output-envelope", new Error("token=secret"))).toBe("Copilot输出传输封装无效");
-    expect(describeCopilotFallback("copilot-output-parse", new Error("原始JSON"))).toBe("Copilot输出不是有效JSON");
-    expect(describeCopilotFallback("copilot-output-parse", new SyntaxError("Unexpected non-whitespace character after JSON at position 123 (line 2 column 1)"))).toBe("Copilot输出不是有效JSON（位置123）");
-    expect(describeCopilotFallback("copilot-output-validate", new Error("summary长度或格式无效"))).toBe("Copilot输出字段校验失败：summary长度或格式无效");
-    expect(describeCopilotFallback("copilot-output-validate", new Error("不可信内容\nsecret=value"))).toBe("Copilot输出字段校验失败");
-  });
 
-  it("从唯一成功结果中的最后一条根消息提取原始业务JSON", () => {
-    const generated = JSON.stringify({ type: "fix", scope: "pr", title: "使用JSONL正文" });
-    const wrapped = [
-      JSON.stringify({ type: "assistant.turn_start", data: { turnId: "0" } }),
-      JSON.stringify({ type: "assistant.message", data: { messageId: "message-1", content: "处理中", toolRequests: [] } }),
-      JSON.stringify({ type: "assistant.message", agentId: "subagent-1", data: { messageId: "message-2", content: "子代理内容", toolRequests: [] } }),
-      JSON.stringify({ type: "assistant.message", data: { messageId: "message-3", content: generated, toolRequests: [] } }),
-      JSON.stringify({ type: "assistant.turn_end", data: { turnId: "0" } }),
-      JSON.stringify({ type: "result", sessionId: "session-1", exitCode: 0, usage: {} }),
-    ].join("\n") + "\n";
-    expect(() => JSON.parse(wrapped)).toThrow();
-    expect(JSON.parse(extractCopilotAssistantContent(wrapped))).toEqual({ type: "fix", scope: "pr", title: "使用JSONL正文" });
-    expect(extractCopilotAssistantContent(wrapped.replaceAll("\n", "\r\n"))).toBe(generated);
-  });
 
-  it("拒绝缺失、重复结果、失败或带工具行为的Copilot JSONL封装", () => {
-    const message = JSON.stringify({ type: "assistant.message", data: { content: "{}", toolRequests: [] } });
-    const success = JSON.stringify({ type: "result", sessionId: "session-1", exitCode: 0, usage: {} });
-    const failure = JSON.stringify({ type: "result", sessionId: "session-1", exitCode: 1, usage: {} });
-    const toolMessage = JSON.stringify({ type: "assistant.message", data: { content: "{}", toolRequests: [{ toolCallId: "call-1", name: "bash" }] } });
-    const serverToolMessage = JSON.stringify({ type: "assistant.message", data: { content: "{}", toolRequests: [], serverTools: { provider: "test" } } });
-    const toolExecution = JSON.stringify({ type: "tool.execution_start", data: { toolCallId: "call-1" } });
-    const subagentMessage = JSON.stringify({ type: "assistant.message", agentId: "subagent-1", data: { content: "{}", toolRequests: [] } });
-    const childMessage = JSON.stringify({ type: "assistant.message", data: { content: "{}", parentToolCallId: "call-1", toolRequests: [] } });
-    expect(() => extractCopilotAssistantContent(`${success}\n`)).toThrow("Copilot JSONL消息无效");
-    expect(() => extractCopilotAssistantContent(`${message}\n`)).toThrow("Copilot JSONL结果无效");
-    expect(() => extractCopilotAssistantContent(`${message}\n${success}\n${success}\n`)).toThrow("Copilot JSONL结果无效");
-    expect(() => extractCopilotAssistantContent(`${message}\n${failure}\n`)).toThrow("Copilot JSONL结果无效");
-    expect(() => extractCopilotAssistantContent(`${message}\n${success}\n${JSON.stringify({ type: "session.end", data: {} })}\n`)).toThrow("Copilot JSONL结果无效");
-    expect(() => extractCopilotAssistantContent(`${toolMessage}\n${success}\n`)).toThrow("Copilot JSONL消息无效");
-    expect(() => extractCopilotAssistantContent(`${serverToolMessage}\n${success}\n`)).toThrow("Copilot JSONL消息无效");
-    expect(() => extractCopilotAssistantContent(`${message}\n${toolExecution}\n${success}\n`)).toThrow("Copilot JSONL消息无效");
-    expect(() => extractCopilotAssistantContent(`${subagentMessage}\n${success}\n`)).toThrow("Copilot JSONL消息无效");
-    expect(() => extractCopilotAssistantContent(`${childMessage}\n${success}\n`)).toThrow("Copilot JSONL消息无效");
-  });
 
-  it("严格限制Copilot JSONL格式和大小且不泄露原始内容", () => {
-    const secret = "COPILOT_GITHUB_TOKEN=secret-value";
-    try {
-      extractCopilotAssistantContent(`{\"type\":\"assistant.message\",\"data\":{\"content\":\"${secret}\"}\n`);
-      throw new Error("非JSON输入未被拒绝");
-    } catch (error) {
-      expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toBe("Copilot JSONL输出格式无效");
-      expect((error as Error).message).not.toContain(secret);
-    }
-    expect(() => extractCopilotAssistantContent(`${JSON.stringify(["not-an-event"])}\n`)).toThrow("Copilot JSONL输出格式无效");
-    expect(() => extractCopilotAssistantContent("x".repeat(2_097_153))).toThrow("Copilot JSONL输出大小无效");
-    const oversizedContent = JSON.stringify({ type: "assistant.message", data: { content: "文".repeat(21_846), toolRequests: [] } });
-    const success = JSON.stringify({ type: "result", sessionId: "session-1", exitCode: 0, usage: {} });
-    expect(() => extractCopilotAssistantContent(`${oversizedContent}\n${success}\n`)).toThrow("Copilot JSONL消息无效");
-    const tooManyLines = Array.from({ length: 256 }, () => JSON.stringify({ type: "assistant.turn_start", data: {} }));
-    expect(() => extractCopilotAssistantContent(`${tooManyLines.join("\n")}\n${success}\n`)).toThrow("Copilot JSONL输出格式无效");
-    expect(() => extractCopilotAssistantContent("{}\n\n")).toThrow("Copilot JSONL输出格式无效");
-  });
 
-  it("只允许业务JSON解析或字段校验失败进入一次修复", () => {
-    const wrap = (content: string, toolRequests: unknown[] = []) => [
-      JSON.stringify({ type: "assistant.message", data: { content, toolRequests } }),
-      JSON.stringify({ type: "result", sessionId: "session-1", exitCode: 0, usage: {} }),
-    ].join("\n") + "\n";
-    const valid = JSON.stringify({
-      type: "fix", scope: "pr", title: "修复正文生成",
-      summary: "本次修改为正文生成增加严格校验后的受控修复步骤。",
-      motivation: null,
-      changes: ["增加一次受控修复并保留确定性回退边界"],
-      impact: [], releaseAndMigration: [], classification: null,
-    });
-    expect(inspectCopilotGeneratedSummary(wrap(valid))).toMatchObject({ state: "valid" });
-    const { classification: _classification, ...withoutClassification } = JSON.parse(valid);
-    const missingClassification = JSON.stringify(withoutClassification);
-    expect(inspectCopilotGeneratedSummary(wrap(missingClassification))).toMatchObject({
-      state: "repairable",
-      stage: "copilot-output-validate",
-      reason: "Copilot输出字段校验失败：classification字段缺失",
-    });
-    expect(resolveCopilotGeneratedSummary(wrap(missingClassification))).toMatchObject({
-      state: "repair-required",
-      primaryFailureReason: "Copilot输出字段校验失败：classification字段缺失",
-    });
-    expect(resolveCopilotGeneratedSummary(wrap(missingClassification), wrap(valid))).toMatchObject({
-      state: "adopted",
-      mode: "copilot-repaired",
-      classification: { state: "abstained" },
-      primaryFailureReason: "Copilot输出字段校验失败：classification字段缺失",
-    });
-    expect(resolveCopilotGeneratedSummary(wrap(missingClassification), wrap(missingClassification))).toMatchObject({
-      state: "fallback",
-      fallbackReason: "Copilot输出字段校验失败：classification字段缺失",
-      repairFailureReason: "Copilot修复输出字段校验失败：classification字段缺失",
-    });
-    const invalidChanges = JSON.stringify({ ...JSON.parse(valid), changes: ["太短"] });
-    expect(resolveCopilotGeneratedSummary(wrap(invalidChanges))).toMatchObject({
-      state: "repair-required",
-      primaryFailureReason: "Copilot输出字段校验失败：changes[]长度或格式无效",
-    });
-    expect(resolveCopilotGeneratedSummary(wrap(invalidChanges), wrap(valid))).toMatchObject({
-      state: "adopted",
-      mode: "copilot-repaired",
-      primaryFailureReason: "Copilot输出字段校验失败：changes[]长度或格式无效",
-    });
-    expect(resolveCopilotGeneratedSummary(wrap(invalidChanges), wrap(invalidChanges))).toMatchObject({
-      state: "fallback",
-      fallbackReason: "Copilot输出字段校验失败：changes[]长度或格式无效",
-      repairFailureReason: "Copilot修复输出字段校验失败：changes[]长度或格式无效",
-    });
-    const invalidClassification = JSON.stringify({ ...JSON.parse(valid), classification: { primaryKind: "feature", confidence: "certain", evidence: [] } });
-    expect(inspectCopilotGeneratedSummary(wrap(invalidClassification))).toMatchObject({ state: "valid", classification: { state: "invalid" } });
-    expect(resolveCopilotGeneratedSummary(wrap(invalidClassification))).toMatchObject({ state: "adopted", mode: "copilot", classification: { state: "invalid" } });
 
-    expect(normalizeCopilotJsonCandidate(`\n\uFEFF${valid}\n`)).toEqual({ candidate: valid, normalization: "none" });
-    expect(normalizeCopilotJsonCandidate(`\n\`\`\`json\n${valid}\n\`\`\`\n`)).toEqual({ candidate: valid, normalization: "single-json-fence" });
-    expect(inspectCopilotGeneratedSummary(wrap(`\`\`\`JSON\n${valid}\n\`\`\``))).toMatchObject({ state: "valid", normalization: "single-json-fence" });
-    expect(resolveCopilotGeneratedSummary(wrap(`\`\`\`json\n${valid}\n\`\`\``))).toMatchObject({ state: "adopted", mode: "copilot", normalization: "single-json-fence" });
 
-    const unsafeWrappers = [
-      `说明\n\`\`\`json\n${valid}\n\`\`\``,
-      `\`\`\`json\n${valid}\n\`\`\`\n说明`,
-      `\`\`\`\n${valid}\n\`\`\``,
-      `\`\`\`json\n${valid}\n\`\`\`\n\`\`\`json\n${valid}\n\`\`\``,
-      `\`\`\`json\n\`\`\`json\n${valid}\n\`\`\`\n\`\`\``,
-    ];
-    for (const unsafeWrapper of unsafeWrappers) {
-      expect(inspectCopilotGeneratedSummary(wrap(unsafeWrapper))).toMatchObject({ state: "repairable", stage: "copilot-output-parse" });
-    }
-    expect(inspectCopilotGeneratedSummary(wrap(unsafeWrappers[0]!))).toMatchObject({ reason: "Copilot输出JSON代码围栏无效" });
-    expect(inspectCopilotGeneratedSummary(wrap("```json\n{\"type\":\n```"))).toMatchObject({ state: "repairable", stage: "copilot-output-parse", reason: "Copilot输出不是有效JSON", normalization: "single-json-fence" });
-
-    const malformed = inspectCopilotGeneratedSummary(wrap(`${valid}\n额外说明`));
-    expect(malformed).toMatchObject({ state: "repairable", stage: "copilot-output-parse" });
-    if (malformed.state !== "repairable") throw new Error("畸形业务JSON没有进入修复状态");
-    expect(malformed.reason).not.toContain("额外说明");
-
-    const invalidFields = inspectCopilotGeneratedSummary(wrap(JSON.stringify({ type: "fix", scope: "pr" })));
-    expect(invalidFields).toMatchObject({ state: "repairable", stage: "copilot-output-validate" });
-
-    const toolEnvelope = inspectCopilotGeneratedSummary(wrap(valid, [{ toolCallId: "call-1", name: "bash" }]));
-    expect(toolEnvelope).toEqual({ state: "rejected", stage: "copilot-output-envelope", reason: "Copilot输出传输封装无效" });
-
-    const repaired = resolveCopilotGeneratedSummary(wrap(`${valid}\n额外说明`), wrap(valid));
-    expect(repaired).toMatchObject({ state: "adopted", mode: "copilot-repaired" });
-    if (repaired.state !== "adopted") throw new Error("有效修复结果没有被采用");
-    expect(repaired.primaryFailureReason).toMatch(/^Copilot输出不是有效JSON/u);
-    expect(resolveCopilotGeneratedSummary(wrap(`${valid}\n额外说明`), wrap(`\`\`\`json\n${valid}\n\`\`\``))).toMatchObject({ state: "adopted", mode: "copilot-repaired", normalization: "single-json-fence" });
-    const repairFailed = resolveCopilotGeneratedSummary(wrap(`${valid}\n额外说明`), wrap("仍然不是JSON"));
-    expect(repairFailed).toMatchObject({ state: "fallback", repairFailureReason: "Copilot修复输出不是有效JSON" });
-    if (repairFailed.state !== "fallback") throw new Error("无效修复结果没有回退");
-    expect(repairFailed.fallbackReason).toMatch(/^Copilot输出不是有效JSON/u);
-  });
-
-  it("修复判断和最终收敛使用同一份准备事实漂移校验", () => {
-    const expected = { repositoryId: 1, sourceRef: "refs/heads/fix", headSha: "a".repeat(40), baseSha: "b".repeat(40), policySha: "c".repeat(40) };
-    expect(() => assertPreparedCopilotFacts({ ...expected }, expected)).not.toThrow();
-    expect(() => assertPreparedCopilotFacts({ ...expected, headSha: "d".repeat(40) }, expected)).toThrow("人工智能输入对应的分支事实已经漂移");
-    expect(() => assertPreparedCopilotFacts(null, expected)).toThrow("人工智能输入对应的分支事实已经漂移");
-  });
-
-  it("区分Copilot修复步骤结果和输出读取失败阶段", () => {
-    expect(describeCopilotRepairAvailability("success", "repair.jsonl")).toBeNull();
-    expect(describeCopilotRepairAvailability("success", undefined)).toBe("失败（Copilot修复输出路径缺失）");
-    expect(describeCopilotRepairAvailability(undefined, "repair.jsonl")).toBe("未运行（未收到Copilot修复步骤结果）");
-    expect(describeCopilotRepairAvailability("skipped", "repair.jsonl")).toBe("未运行（Copilot修复步骤已跳过）");
-    expect(describeCopilotRepairAvailability("cancelled", "repair.jsonl")).toBe("未完成（Copilot修复步骤已取消）");
-    expect(describeCopilotRepairAvailability("failure", "repair.jsonl")).toBe("失败（Copilot修复命令执行失败）");
-    expect(describeCopilotRepairAvailability("unexpected", "repair.jsonl")).toBe("未完成（Copilot修复步骤结果无效）");
-    expect(describeCopilotRepairOutputFailure("read")).toBe("失败（Copilot修复输出文件无法读取）");
-    expect(describeCopilotRepairOutputFailure("envelope")).toBe("失败（Copilot修复输出传输封装无效）");
-  });
 
   it("审查说明只忽略Git检出产生的CRLF差异", () => {
     const generated = "第一行\n第二行\n";
@@ -753,14 +376,6 @@ describe("中央命令入口", () => {
       pull_requests: "read",
       issues: "read",
       checks: "write",
-      metadata: "read",
-    });
-    expect(prAutomationInstallationPermissions()).toEqual({
-      actions: "read",
-      contents: "read",
-      pull_requests: "write",
-      issues: "read",
-      checks: "read",
       metadata: "read",
     });
   });
@@ -923,46 +538,27 @@ describe("中央命令入口", () => {
 
   it("中央配置黄金事实逐字冻结", async () => {
     const repositories = JSON.parse(await readFile("config/repositories.json", "utf8"));
-    const release = JSON.parse(await readFile("config/profiles/release-legacy/layerscape.json", "utf8"));
     expect(repositories.organization).toEqual({ id: 302208797, login: "splrad" });
-    expect(repositories.defaults.public).toMatchObject({ managed: true, prAutomation: true, reviewInstructionsProfile: "common", validationProfile: "public-basic", releaseProfile: null });
+    expect(repositories.defaults.public).toMatchObject({ managed: true, reviewInstructionsProfile: "common", validationProfile: "public-basic", delivery: { githubRelease: { enabled: false } } });
     expect(repositories.repositories["1187527897"].reviewGovernance).toMatchObject({ scope: "full", lifecycle: "repository-ready", owner: "splrad/maintainers", exception: null });
     expect(repositories.repositories["1296724484"].reviewGovernance).toMatchObject({ scope: "full", lifecycle: "repository-ready", owner: "splrad/maintainers", exception: null });
     expect(repositories.repositories["1296725317"].reviewGovernance).toMatchObject({ scope: "policy-only", lifecycle: "repository-ready" });
     expect(Object.keys(repositories.repositories).sort()).toEqual(["1187527897", "1296724484", "1296725317"]);
-    expect(release.build.projects.map((value: any) => value.path)).toEqual(Array.from({ length: 10 }, (_, index) => {
-      const year = 2018 + index;
-      return `src/AutoCAD/AFR-ACAD${year}/AFR-ACAD${year}.csproj`;
-    }));
-    expect(release.assets.map((value: any) => value.nameTemplate)).toEqual(["AFR-Deployer_v{displayVersion}.exe", "AFR-DLL_v{displayVersion}.zip", "Fonts.zip"]);
-    expect(release.releaseNotes.excludedLabels).toEqual(["ignore-for-release", "skip-changelog", "no-changelog", "no-release-notes"]);
+    expect(repositories.repositories["1187527897"].builds['release-assets'].outputs.map((value: any) => value.match)).toEqual(["AFR-Deployer_v{version}.exe", "AFR-DLL_v{version}.zip", "Fonts.zip"]);
+    expect(repositories.repositories["1187527897"].delivery.githubRelease.state).toBe('pending');
   });
 
   it("实现冻结完整比较、唯一拉取请求、漂移和同名检查失败保护", async () => {
     const source = await readFile("packages/runner/src/index.ts", "utf8");
     for (const fragment of [
-      "提交比较结果未完整返回",
-      "文件比较达到接口上限",
-      "同一来源分支存在多个匹配拉取请求",
-      "读取期间来源或目标分支已经漂移",
-      "人工智能输入对应的分支事实已经漂移",
-      "人工智能回退原因：",
-      "人工智能输出证据：",
       "同名分类检查存在歧义",
       "分类输入在写入期间已经漂移",
       "TRIGGER_ACTOR_ID === \"301115370\"",
       "AI处理状态：",
-      "LayerScape不可变发布尚未启用",
-      "当前默认分支第一父提交链",
     ]) expect(source).toContain(fragment);
     expect(source).not.toMatch(/heads\/main|base\.ref\s*!==\s*"main"|default_branch\s*!==\s*"main"/u);
     expect(source).toMatch(/if\s*\(labelPlan\.add\.length\)\s*await gh\.addLabels\(owner, repo, number, labelPlan\.add\);/u);
     expect(source).not.toMatch(/for\s*\([^)]*labelPlan\.add[^)]*\)\s*await gh\.addLabels/u);
-    const automateSource = source.slice(source.indexOf("async function automate"), source.indexOf("async function classify"));
-    const defaultBranchIgnore = automateSource.indexOf("sourceBranch === repository.default_branch");
-    const classificationProfileRead = automateSource.indexOf('configPath("profiles", "classification"');
-    expect(defaultBranchIgnore).toBeGreaterThanOrEqual(0);
-    expect(classificationProfileRead).toBeGreaterThan(defaultBranchIgnore);
   });
 
   it("终态没有普通评论写入、旧包或旧运行目录", async () => {
@@ -1003,141 +599,5 @@ describe("中央命令入口", () => {
     expect(summaries).not.toMatch(/STEWARD_APP_PRIVATE_KEY|COPILOT_REVIEW_REQUEST_TOKEN|installation-token|upload_url/iu);
   });
 
-  it("Runner内所有议题关联派发都显式传递未纳管清理模式", async () => {
-    const source = await readFile("packages/runner/src/index.ts", "utf8");
-    const dispatches = [...source.matchAll(/dispatchCentralWorkflow\("pr-issue-link\.yml"/gu)];
-    expect(dispatches).toHaveLength(5);
-    const modes = dispatches.map(dispatch => /cleanupUnmanaged:\s*"(true|false)"/u.exec(source.slice(dispatch.index, dispatch.index + 700))?.[1]);
-    expect(modes.sort()).toEqual(["false", "false", "false", "false", "true"]);
-  });
 
-  it("PR自动化在正文写入失败后仍先请求当前提交审查再显式重调度议题关联", async () => {
-    const source = await readFile("packages/runner/src/index.ts", "utf8");
-    const automation = source.slice(source.indexOf("async function automate("), source.indexOf("async function classify("));
-    const bodyWrite = automation.indexOf("updatePullRequestBodyDurably(");
-    const bodyWriteCapture = automation.indexOf("bodyWriteFailure = error;");
-    const binding = automation.indexOf("inspectAutomationPullRequestBinding(");
-    const dispatch = automation.indexOf('dispatchCentralWorkflow("pr-issue-link.yml"');
-    const copilot = automation.indexOf("ensureCopilotReview(");
-    const bodyWriteFailure = automation.indexOf("if (bodyWriteFailure !== null) throw bodyWriteFailure;");
-    const classification = automation.indexOf("dispatchClassification(", dispatch);
-    expect(bodyWrite).toBeGreaterThan(-1);
-    expect(bodyWriteCapture).toBeGreaterThan(bodyWrite);
-    expect(binding).toBeGreaterThan(bodyWriteCapture);
-    expect(copilot).toBeGreaterThan(binding);
-    expect(bodyWriteFailure).toBeGreaterThan(copilot);
-    expect(dispatch).toBeGreaterThan(bodyWriteFailure);
-    expect(classification).toBeGreaterThan(dispatch);
-    expect(automation.slice(dispatch, dispatch + 700)).toMatch(/pullRequestNumber:\s*String\(pull\.number\)[\s\S]*cleanupUnmanaged:\s*"false"/u);
-  });
-});
-
-describe("议题快照同步", () => {
-  it("目标仓库令牌只申请Issues和Metadata读取权限", () => {
-    expect(issueSyncInstallationPermissions()).toEqual({ issues: "read", metadata: "read" });
-  });
-
-  function dependencies(input: {
-    live?: readonly number[];
-    stored?: readonly number[];
-    refresh?: (issueNumber: number) => { changed?: boolean; deleted?: boolean; generation: number };
-    failReady?: boolean;
-    failDispatch?: boolean;
-    failDispatchOnce?: boolean;
-    initialState?: "uninitialized" | "scanning" | "ready" | "degraded";
-  } = {}) {
-    const states: string[] = [];
-    const refreshed: number[] = [];
-    let dispatched = 0;
-    let released = 0;
-    let pendingGeneration: number | null = null;
-    let pendingStateRevision: number | null = null;
-    return {
-      states, refreshed, dispatched: () => dispatched, released: () => released,
-      value: {
-        listLiveOpenIssues: async () => ({ numbers: input.live ?? [], skipped: 2 }),
-        getState: async () => ({ repositoryId: 1296724484, generation: 4, syncState: input.initialState ?? "ready", reconciliationGeneration: pendingGeneration, reconciliationStateRevision: pendingStateRevision, snapshots: (input.stored ?? []).map(issueNumber => ({ issueNumber })) }),
-        setScanState: async (state: "scanning" | "ready" | "degraded") => {
-          states.push(state);
-          if (state === "ready" && input.failReady) throw new Error("开放集合未收敛");
-          if (state === "ready") { pendingGeneration = 7; pendingStateRevision = 9; }
-          return { repositoryId: 1296724484, generation: 7, syncState: state, snapshots: [] };
-        },
-        refresh: async (issueNumber: number) => {
-          refreshed.push(issueNumber);
-          const result = input.refresh?.(issueNumber) ?? { changed: false, generation: 4 };
-          if (result.changed === true || result.deleted === true) pendingGeneration = result.generation;
-          return { repositoryId: 1296724484, issueNumber, ...result };
-        },
-        dispatchFormalReconciliation: async (generation: number) => {
-          if (pendingGeneration !== generation) throw new Error("待处理代次不一致");
-          dispatched++;
-          if (input.failDispatch || (input.failDispatchOnce && dispatched === 1)) throw new Error("工作流派发失败");
-        },
-        releaseFormalReconciliation: async (generation: number, stateRevision: number) => {
-          if (pendingGeneration !== generation || pendingStateRevision !== stateRevision) throw new Error("待释放重算请求不一致");
-          released++;
-        },
-      },
-    };
-  }
-
-  it("单议题在失效后即使内容未变也创建并调度同代次重算", async () => {
-    const changed = dependencies({ refresh: () => ({ changed: true, generation: 5 }) });
-    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, changed.value)).resolves.toEqual(expect.objectContaining({ refreshed: 1, changed: 1, generation: 7, dispatched: true }));
-    expect(changed.dispatched()).toBe(1);
-    expect(changed.states).toEqual(["scanning", "ready"]);
-    const duplicate = dependencies({ refresh: () => ({ changed: false, generation: 5 }) });
-    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, duplicate.value)).resolves.toEqual(expect.objectContaining({ changed: 0, generation: 7, dispatched: true }));
-    expect(duplicate.dispatched()).toBe(1);
-    expect(duplicate.states).toEqual(["scanning", "ready"]);
-    const uninitialized = dependencies({ initialState: "uninitialized", live: [8], refresh: () => ({ changed: true, generation: 5 }) });
-    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, uninitialized.value)).resolves.toEqual(expect.objectContaining({ issueNumber: null, dispatched: true }));
-    expect(uninitialized.states).toEqual(["scanning", "ready"]);
-  });
-
-  it("全量同步对GitHub与D1开放集合取并集并修复漏关闭或删除", async () => {
-    const fixture = dependencies({ live: [1, 2], stored: [2, 3], refresh: issueNumber => issueNumber === 3 ? { deleted: true, generation: 7 } : { changed: true, generation: 4 + issueNumber } });
-    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, scanAll: true }, fixture.value)).resolves.toEqual({ repositoryId: 1296724484, issueNumber: null, refreshed: 3, skipped: 2, changed: 3, generation: 7, dispatched: true });
-    expect(fixture.refreshed).toEqual([1, 2, 3]);
-    expect(fixture.states).toEqual(["scanning", "ready"]);
-    expect(fixture.dispatched()).toBe(1);
-  });
-
-  it("空仓也收敛为ready，失败则尽力标记degraded", async () => {
-    const empty = dependencies();
-    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, scanAll: true }, empty.value)).resolves.toEqual(expect.objectContaining({ refreshed: 0, changed: 0, generation: 7, dispatched: true }));
-    expect(empty.states).toEqual(["scanning", "ready"]);
-    const failed = dependencies({ failReady: true });
-    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, scanAll: true }, failed.value)).rejects.toThrow("开放集合未收敛");
-    expect(failed.states).toEqual(["scanning", "ready", "degraded"]);
-    expect(failed.dispatched()).toBe(0);
-    const dispatchFailed = dependencies({ failDispatch: true });
-    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, scanAll: true }, dispatchFailed.value)).rejects.toThrow("工作流派发失败");
-    expect(dispatchFailed.states).toEqual(["scanning", "ready"]);
-    expect(dispatchFailed.dispatched()).toBe(1);
-    expect(dispatchFailed.released()).toBe(1);
-  });
-
-  it("派发失败后保留D1待处理代次，重试即使内容未变也会再次派发", async () => {
-    const fixture = dependencies({ refresh: () => ({ changed: true, generation: 5 }), failDispatchOnce: true });
-    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, fixture.value)).rejects.toThrow("工作流派发失败");
-    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, fixture.value)).resolves.toEqual(expect.objectContaining({ dispatched: true }));
-    expect(fixture.dispatched()).toBe(2);
-    expect(fixture.released()).toBe(1);
-  });
-
-  it("派发成功后仍保留D1待处理代次，由正式收敛成功路径另行确认", async () => {
-    const fixture = dependencies({ refresh: () => ({ changed: true, generation: 5 }) });
-    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, fixture.value)).resolves.toEqual(expect.objectContaining({ dispatched: true }));
-    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 8, scanAll: false }, fixture.value)).resolves.toEqual(expect.objectContaining({ dispatched: true }));
-    expect(fixture.dispatched()).toBe(2);
-  });
-
-  it("拒绝重复开放编号和互相矛盾的单项参数", async () => {
-    const duplicate = dependencies({ live: [1, 1] });
-    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, scanAll: true }, duplicate.value)).rejects.toThrow("GitHub开放议题集合无效");
-    expect(duplicate.states).toEqual(["scanning", "degraded"]);
-    await expect(reconcileIssueSnapshots({ repositoryId: 1296724484, issueNumber: 1, scanAll: true }, dependencies().value)).rejects.toThrow("参数不一致");
-  });
 });

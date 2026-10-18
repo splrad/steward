@@ -1,4 +1,3 @@
-import { isIssueCapableRepository } from "../../core/src/issues.js";
 
 export interface ManagedCatalog {
   organization: { id: number; login: string };
@@ -10,7 +9,6 @@ export interface ManagedTarget {
   configuration: any;
   registration: "explicit" | "default-public" | "default-private";
   managed: boolean;
-  issueCapable: boolean;
 }
 
 export function managedRepositoryTargets(catalog: ManagedCatalog, repositories: readonly any[], repositoryId?: number): ManagedTarget[] {
@@ -27,7 +25,7 @@ export function managedRepositoryTargets(catalog: ManagedCatalog, repositories: 
     const registration = override ? "explicit" : repository.private ? "default-private" : "default-public";
     const configuration = Object.freeze({ ...(repository.private ? catalog.defaults.private : catalog.defaults.public), ...(override ?? {}) });
     const managed = configuration.managed === true;
-    targets.push({ repository, configuration, registration, managed, issueCapable: isIssueCapableRepository(repository, managed) });
+    targets.push({ repository, configuration, registration, managed });
   }
   if (repositoryId && !seen.has(repositoryId)) throw new Error("目标仓库不属于当前安装");
   return targets.sort((left, right) => Number(left.repository.id) - Number(right.repository.id));

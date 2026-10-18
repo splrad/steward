@@ -14,37 +14,6 @@
   },
   "releaseNotes": {
     "profile": "common-v3",
-    "fragmentDirectory": ".release-notes/fragments",
-    "candidateChanges": {
-      "required": [
-        "src/**",
-        "tools/Publish-ReleaseAssets.ps1",
-        "Directory.Build.props",
-        "chore/Fonts.zip",
-        "README.md",
-        "docs/user/**"
-      ],
-      "reviewRequired": [
-        ".github/workflows/release.yml",
-        ".github/workflows/publish*.yml",
-        "Directory.Packages.props",
-        "global.json",
-        "tools/build/**"
-      ],
-      "ignored": [
-        ".github/**",
-        ".local/**",
-        ".agents/**",
-        ".codex/**",
-        ".claude/**",
-        ".vscode/**",
-        "docs/internal/**",
-        "tests/**",
-        "VERSION",
-        "Version.props"
-      ],
-      "defaultDisposition": "review-required"
-    },
     "personalization": {
       "enabled": false,
       "sections": []

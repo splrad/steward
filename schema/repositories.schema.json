@@ -288,19 +288,14 @@
       "additionalProperties": false,
       "required": [
         "managed",
-        "prAutomation",
         "pullRequestTemplate",
         "reviewInstructionsProfile",
         "classification",
         "validationProfile",
-        "allowedWorkflowPaths",
-        "releaseProfile"
+        "allowedWorkflowPaths"
       ],
       "properties": {
         "managed": {
-          "type": "boolean"
-        },
-        "prAutomation": {
           "type": "boolean"
         },
         "pullRequestTemplate": {
@@ -321,12 +316,6 @@
         },
         "allowedWorkflowPaths": {
           "$ref": "#/$defs/workflowPaths"
-        },
-        "releaseProfile": {
-          "type": [
-            "string",
-            "null"
-          ]
         }
       }
     },
@@ -336,14 +325,12 @@
       "required": [
         "managed",
         "fullName",
-        "prAutomation",
         "pullRequestTemplate",
         "reviewInstructionsProfile",
         "reviewGovernance",
         "classification",
         "validationProfile",
-        "allowedWorkflowPaths",
-        "releaseProfile"
+        "allowedWorkflowPaths"
       ],
       "properties": {
         "managed": {
@@ -352,12 +339,6 @@
         "fullName": {
           "type": "string",
           "pattern": "^splrad/[^/]+$"
-        },
-        "fragmentGateEnabled": {
-          "type": "boolean"
-        },
-        "prAutomation": {
-          "type": "boolean"
         },
         "pullRequestTemplate": {
           "enum": [
@@ -380,12 +361,6 @@
         },
         "allowedWorkflowPaths": {
           "$ref": "#/$defs/workflowPaths"
-        },
-        "releaseProfile": {
-          "type": [
-            "string",
-            "null"
-          ]
         }
       }
     },
@@ -394,21 +369,16 @@
       "additionalProperties": false,
       "required": [
         "managed",
-        "prAutomation",
         "pullRequestTemplate",
         "reviewInstructionsProfile",
         "classification",
         "validationProfile",
         "allowedWorkflowPaths",
-        "releaseProfile",
         "builds",
         "delivery"
       ],
       "properties": {
         "managed": {
-          "type": "boolean"
-        },
-        "prAutomation": {
           "type": "boolean"
         },
         "pullRequestTemplate": {
@@ -429,12 +399,6 @@
         },
         "allowedWorkflowPaths": {
           "$ref": "#/$defs/workflowPaths"
-        },
-        "releaseProfile": {
-          "type": [
-            "string",
-            "null"
-          ]
         },
         "builds": {
           "type": "object",
@@ -464,14 +428,12 @@
       "required": [
         "managed",
         "fullName",
-        "prAutomation",
         "pullRequestTemplate",
         "reviewInstructionsProfile",
         "reviewGovernance",
         "classification",
         "validationProfile",
         "allowedWorkflowPaths",
-        "releaseProfile",
         "builds",
         "delivery"
       ],
@@ -482,12 +444,6 @@
         "fullName": {
           "type": "string",
           "pattern": "^splrad/[^/]+$"
-        },
-        "fragmentGateEnabled": {
-          "type": "boolean"
-        },
-        "prAutomation": {
-          "type": "boolean"
         },
         "pullRequestTemplate": {
           "enum": [
@@ -510,12 +466,6 @@
         },
         "allowedWorkflowPaths": {
           "$ref": "#/$defs/workflowPaths"
-        },
-        "releaseProfile": {
-          "type": [
-            "string",
-            "null"
-          ]
         },
         "builds": {
           "type": "object",

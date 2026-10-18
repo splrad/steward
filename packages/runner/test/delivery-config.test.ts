@@ -105,16 +105,6 @@ describe('cross-file delivery verification', () => {
       expect(result.stderr).toContain('RN_CONFIG_CAPABILITY');
     } finally { await rm(misplaced); }
   });
-  it('rejects corruption in the legacy profile used by the old runner', async () => {
-    const file = join(fixture, 'config/profiles/release-legacy/layerscape.json');
-    const bytes = await readFile(file);
-    const profile = JSON.parse(bytes.toString()); profile.repository.id = 99;
-    await writeFile(file, JSON.stringify(profile));
-    try {
-      const result = await verify(() => {});
-      expect(result.status).toBe(1); expect(result.stderr).toContain('RN_CONFIG_LEGACY_PROFILE');
-    } finally { await writeFile(file, bytes); }
-  });
   it('rejects an unknown producer in the common policy', async () => {
     const file = join(fixture, 'config/profiles/release-notes/common-v3.json');
     const bytes = await readFile(file);

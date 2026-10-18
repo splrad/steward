@@ -89,6 +89,26 @@ function payload(before: string, after: string, deliverySender = 301115370, pull
 }
 
 describe("拉取请求正文持久补偿协议", () => {
+  it("旧任务超过批量上限时不饿死保留业务，退役保留正文及身份", async () => {
+    const database = new SqliteD1();
+    const store = new PullRequestBodyWriteIntentStore(database.binding());
+    const before = body("人工前言", managedBlock("旧摘要"));
+    const { writeId } = await prepared(store, before, managedBlock("新摘要"));
+    database.database.prepare("UPDATE pull_request_body_write_intents SET redrive_workflow=?, redrive_inputs=?").run("sync-review-instructions.yml", JSON.stringify({ repositoryId: String(repositoryId) }));
+    const saved = database.database.prepare("SELECT * FROM pull_request_body_write_intents").get()!;
+    const fields = Object.keys(saved);
+    for (let index = 0; index < 25; index++) {
+      const row: Record<string, SQLInputValue> = { ...saved, write_id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, pull_request_number: 100 + index, redrive_workflow: null, redrive_inputs: null, updated_at: "2026-08-21T00:00:00.000Z" };
+      database.database.prepare(`INSERT INTO pull_request_body_write_intents (${fields.join(",")}) VALUES (${fields.map(() => "?").join(",")})`).run(...fields.map(field => row[field] as SQLInputValue));
+    }
+    expect(await store.listRecoverable(now)).toEqual([expect.objectContaining({ pullRequestNumber, writeId })]);
+    expect(await store.retireUnsupportedAutomation(now)).toBe(20);
+    expect(await store.retireUnsupportedAutomation(now)).toBe(5);
+    expect(await store.retireUnsupportedAutomation(now)).toBe(0);
+    expect(await store.get(repositoryId, 100)).toMatchObject({ writeId: "00000000-0000-4000-8000-000000000000", status: "blocked", blockedReason: "automation-retired", targetBlock: managedBlock("新摘要"), redriveRequired: false });
+    expect(await store.get(repositoryId, pullRequestNumber)).toMatchObject({ status: "prepared", writeId });
+  });
+
   it("接入重调度接受运行器支持的全部触发来源", () => {
     for (const trigger of ["installation-created", "installation-repositories-added", "repository-visibility-changed", "repository-unarchived", "default-branch-push", "manual"]) {
       expect(normalizePullRequestBodyRedrive({
@@ -647,17 +667,17 @@ describe("拉取请求正文持久补偿协议", () => {
     const database = new SqliteD1();
     const store = new PullRequestBodyWriteIntentStore(database.binding());
     const before = body("人工前言", managedBlock("旧摘要"));
-    const winnerRedrive = { workflow: "pr-automation.yml", inputs: { deliveryId: "delivery-winner", repositoryId: String(repositoryId), sourceRef: "refs/heads/feature/test", eventAfterSha: headSha, sourceActorId: "44151430", sourceActorLogin: "axiomoth", policySha: "a".repeat(40) } } as const;
+    const winnerRedrive = { workflow: "sync-review-instructions.yml", inputs: { repositoryId: String(repositoryId) } } as const;
     const winnerTargetBlock = managedBlock("新摘要");
     const winnerTarget = body("人工前言", winnerTargetBlock);
     await store.prepare({ repositoryId, pullRequestNumber, writeId: "11111111-1111-4111-8111-111111111111", regionKind: "managed-pr", baseSha, headSha, issueGeneration: 0,
       beforeBodyDigest: pullRequestBodyDigest(before), outsideBodyDigest: bodyOutsideManagedRegionDigest(before, "managed-pr"), targetBlock: winnerTargetBlock,
       targetBodyDigest: pullRequestBodyDigest(winnerTarget), now, expiresAt, redrive: winnerRedrive });
-    const loserTargetBlock = renderIssueLinksBlock({ repositoryId, pullRequestNumber, baseSha, headSha, generation: 0, analysisInputDigest: "d".repeat(64) }, []);
-    const loserTarget = upsertIssueLinksBlock(before, loserTargetBlock);
-    const loserRedrive = { workflow: "pr-issue-link.yml", inputs: { deliveryId: "delivery-loser", repositoryId: String(repositoryId), pullRequestNumber: String(pullRequestNumber), scanAll: "false", invalidateOnly: "false", cleanupUnmanaged: "false", policySha: "a".repeat(40) } } as const;
-    await expect(store.prepare({ repositoryId, pullRequestNumber, writeId: "44444444-4444-4444-8444-444444444444", regionKind: "issue-links", baseSha, headSha, issueGeneration: 0,
-      beforeBodyDigest: pullRequestBodyDigest(before), outsideBodyDigest: bodyOutsideManagedRegionDigest(before, "issue-links"), targetBlock: loserTargetBlock,
+    const loserTargetBlock = managedBlock("另一个受管摘要");
+    const loserTarget = body("人工前言", loserTargetBlock);
+    const loserRedrive = { workflow: "onboard-repository.yml", inputs: { deliveryId: "delivery-loser", repositoryId: String(repositoryId), repositoryFullName: "splrad/steward", trigger: "manual", policySha: "a".repeat(40) } } as const;
+    await expect(store.prepare({ repositoryId, pullRequestNumber, writeId: "44444444-4444-4444-8444-444444444444", regionKind: "managed-pr", baseSha, headSha, issueGeneration: 0,
+      beforeBodyDigest: pullRequestBodyDigest(before), outsideBodyDigest: bodyOutsideManagedRegionDigest(before, "managed-pr"), targetBlock: loserTargetBlock,
       targetBodyDigest: pullRequestBodyDigest(loserTarget), now, expiresAt, redrive: loserRedrive })).rejects.toThrow("body-write-intent-conflict");
     expect((await store.get(repositoryId, pullRequestNumber))?.writeId).toBe("11111111-1111-4111-8111-111111111111");
     await store.markPatched(repositoryId, pullRequestNumber, "11111111-1111-4111-8111-111111111111", now);
@@ -674,6 +694,7 @@ describe("拉取请求正文持久补偿协议", () => {
     await store.markPatched(repositoryId, pullRequestNumber, writeId, now);
     await store.proveDelivery({ repositoryId, pullRequestNumber, writeId, deliveryId: "delivery-redrive-lease", now });
     await store.confirm(repositoryId, pullRequestNumber, writeId, now);
+    database.database.prepare("UPDATE pull_request_body_write_intents SET redrive_workflow=?, redrive_inputs=?").run("sync-review-instructions.yml", JSON.stringify({ repositoryId: String(repositoryId) }));
     await store.requestRedrive(repositoryId, pullRequestNumber, writeId, now);
 
     expect(await store.claimRedrive(repositoryId, pullRequestNumber, writeId, "2026-08-22T00:01:00.000Z", "2026-08-21T22:01:00.000Z")).toBe(true);

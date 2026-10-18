@@ -3,7 +3,7 @@ import { organizationPullRequestTemplate } from "../src/automation.js";
 import { planRepositorySettings, renderOnboardingPullRequest, validateRepositoryForOnboarding, verifyOnboardingReadback } from "../src/onboarding.js";
 
 const publicRepository = { id: 1, fullName: "splrad/new", ownerId: 302208797, visibility: "public" as const, fork: false, archived: false, disabled: false, defaultBranch: "main" };
-const configured = { managed: true, reviewInstructionsProfile: "common", classification: { profile: "default" }, validationProfile: "public-basic", releaseProfile: null };
+const configured = { managed: true, reviewInstructionsProfile: "common", classification: { profile: "default" }, validationProfile: "public-basic", delivery: { githubRelease: null } };
 
 describe("新仓库接入", () => {
   it("公开组织仓库可接入并固定七项设置", () => {

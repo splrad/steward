@@ -1,39 +1,61 @@
-# 发布区间与逐提交来源合同
+# 发布来源、候选和持久收据
 
-R02 将来源选择放在确定性 Core 与远端适配器之间。`ReleaseSourceInput` 固定 repositoryId、defaultBranch、targetSha、policySha、区间边界及每条第一父提交的唯一 PR。该对象是后续事实片段、资产和生成输入的来源部分；完整发布输入及持久收据由后续阶段扩展。
+当前入口是 `release-freeze` 与 `release-candidate`，采用总基线 v1.8 的产品仓候选合同。产品提交 `productTargetSha` 与候选合并提交分别记录；Release 标签始终绑定前者。
 
-## 区间
+## 输入与候选
 
-区间为 `(boundary, target]`。从 target 沿第一父链选择最近稳定发布提交，排除草稿、预发布及本次目标标签；发布时间不参与选择。轻量和附注标签均解析到提交。已发布标签缺失、错误对象、标签循环、断链或超过 10000 条结构校验上限均失败。
+`release-freeze` 从完整本地 Git 对象库读取明确边界至目标的全部可达提交、净差异、重命名、原始 commit/blob、README 背景及读取缺口。支持明确标签、采用基线和首发完整树。无需每条提交都有 PR；浅克隆、对象缺失、漂移边界、超限均失败。来源 JSON 为 UTF-8/LF，原始源码字节以 Base64 保留。
 
-同一最近提交有多个稳定标签时，中央 `config/profiles/release-legacy/layerscape.json` 可通过可选 `sourcePolicy.previousStableTag` 显式选定；未选择或选定的标签不在最近节点时失败。首发必须由中央配置 `sourcePolicy.adoption`，字段为 `mode: start-at-adoption`、`boundarySha` 和引用已审阅迁移记录的 `reference`。边界必须位于 target 第一父链，边界本身不进入区间；根提交事实由迁移记录承接。两种配置互斥，未配置时不推断采用边界。
+`release-candidate --operation prepare` 接受一个已准备的 bundle：
 
-中央配置加载后由适配器绑定当前 repositoryId 和 policySha；产品仓库、PR 正文和命令行不能提供这些例外。本次未登记历史采用边界或标签选择。
+- `frozen.json`：`FrozenRelease` 合同，包括仓库、公共 VERSION、产品提交/树、策略、边界、模板摘要、来源/证据摘要、构建清单、资产摘要、中央构建 run/artifact ID、仓库作者及贡献者 ID、可信链接。
+- `source.json`：`release-freeze` 的原样输出。
+- `evidence.json`：`schemaVersion=1`、`sourceDigest`、`coverage.commitShas`、`coverage.paths`、`internalChanges` 和 `unknowns`；覆盖集合与来源一致。
+- `release-notes.zh-CN.md`：按升级须知、更新内容、可选贡献者头像、完整变更排列的草稿。
+- `assets/`：恰好包含冻结清单中的平面资产文件；无资产发布可以为空。
 
-## 当前 REST 运行预算
+准备器复算本地资产，保存来源与证据，再创建专用分支及 PR。产品仓只包含 `.release-notes/candidates/{tag}/candidate.json` 和 `release-notes.zh-CN.md`。前者是中央身份投影，后者支持直接编辑。分支或版本槽被不同对象占用时停止，已有文件不覆盖。PR 说明要求维护者同时确认仓库作者 ID 和贡献者集合；账号存在不等于作者身份已经被人工确认。
 
-结构校验器保留 10000 条的合同上限及边界测试；当前 preflight/notes 的 REST 运行入口最多处理 120 条区间提交，超过时在读取 PR 事实前失败。这是当前工作流的运行限制，不代表 10000 条可以在 10 分钟内完成。
+中央 API 回读 VERSION、产品树和净差异，验证原始 Git 对象、模板、构建配置/清单、中央 run/artifact 身份及贡献者提交关联。模型不能通过候选文件自报批准。当前链接合同支持冻结区间 compare 和有区间提交关联的同仓 PR；按仓个性化仍保持关闭。
 
-每次入口创建独立的只读传输预算，notes 初次采集和输出前复核共用同一个预算：最多 1800 次实际 HTTP 请求（包含每页、标签解析和复核）、并发最多 4 个、请求开始至少间隔 200 ms、总计最多 8 分钟，保留工作流其余步骤时间。响应体读取也受时间与并发限制。剩余主配额不高于 100 时停止；403/429 或网络错误后停止排队请求，不自动重试。超预算不丢弃条目，也不输出部分来源。
+## 批准和发布
 
-120 个单页 PR 的双轮基础采集为 1444 次请求；分页或标签解析可增加开销。预算是上限，不保证共享配额紧张或网络缓慢时一定完成。现有 42 条审计区间在数量范围内，仍受历史无 PR 缺口阻断。[GitHub 官方限流说明](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)说明安装令牌主配额和 REST 次级限制；扩大运行规模需要先实现更高效采集并验证预算。
+`inspect` 回读当前候选 head、两项必需检查及归属、真人 Review 权限和正文。批准绑定精确 head 与正文摘要。旧 head、撤销批准、请求修改、产品树变化、身份投影改变或额外文件都会阻断。`Release Candidate Review` 在 Checks 显示状态及正文入口，待处理项附文件行注释。
 
-## 逐提交归属
+Review 事件只调用 `inspect`。`reconcile` 先核验真人手动合并证据，再进入发布；自动合并和合并队列不能替代手动合并。中央能力必须为 active。`release.yml` 的准备、观察和发布作业仅执行固定中央策略，不执行下载 bundle 或产品代码；输入通过环境变量传入命令。发布作业按收据中的中央 artifact ID/run ID 下载资产，重新复算字节。
 
-每个区间提交必须恰有一个关联的已合并 PR，并匹配目标仓库数字 ID、默认分支和该提交的 mergeSha。零个、多重、跨仓、未合并或错误 mergeSha 均阻断；不先过滤掉异常关联。PR 详情与关联列表交叉校验，文件与提交枚举必须匹配详情计数，重复项和非法事实失败。所有列表沿 GitHub next 链分页，继承页数、项目数和循环上限。
+每次远程写入前复核批准、合并、默认分支产品树、版本顺序、旧标签边界及不可变发布策略。先持久化写入意图，再创建唯一匹配草稿、续传缺少的资产、发布并验证。已有资产 ID、名称、大小和摘要必须一致；不通过删除重传消除冲突。发布后下载资产重新计算 SHA-256，核验标签、正文、标题、immutable 和 latest，再保存 verified 收据。
 
-中央受管候选登记采用 `ManagedReviewRecord`，绑定 candidateId、仓库、策略、目标标签、PR、headSha、mergeSha 和作者 ID，且 PR 文件必须恰为对应目录的 `candidate.json` 与 `release-notes.zh-CN.md`，仅允许新增或修改。通过后记录为 `review-record`，不进入产品事实。候选路径缺少中央登记、重命名、删除或混入其他文件均失败。
+## 存储与恢复
 
-候选登记接口供后续中央持久层接入；当前 CLI 不接受候选自声明记录，也不从静态 Profile 读取候选白名单。因此在中央登记接线完成前，遇到候选文件会安全阻断。
+增量迁移 `0010_release_receipts.sql` 在现有 D1 绑定中增加 `release_receipts` 和 `release_evidence_chunks`；历史迁移及表保留。版本槽由仓库 ID/tag 唯一绑定，修订保留旧记录；更新使用版本 CAS 和十分钟有界租约。
 
-## 输出与变化复核
+操作包括：
 
-远端适配器读取完整 PR 标题、正文、身份、文件、提交及标签，按固定字段顺序投影来源快照；文件与标签集合排序。生成使用这份已读取事实。写出正文前再次读取区间与事实，字节不一致返回 `RN_SOURCE_STALE`，不写出新的正文。
+| operation | 行为 |
+| --- | --- |
+| prepare | 校验 bundle，保存输入，创建或恢复同一候选 |
+| inspect | 回读审阅状态并更新 Checks；不发布 |
+| reconcile | 回读真实合并和发布状态，继续符合条件的发布 |
+| pause / resume | 显式暂停或恢复同一收据 |
+| revise | 旧候选已关闭未合并、已暂停、未创建 Release/写入意图时，建立新修订；重新审阅 |
+| retry-create | 创建结果长期未知时的人工恢复入口；等待一小时后重新核验不存在同标签 Release/tag，再清理原创建意图；此操作本身不发布 |
+| export | 导出当前或 `--revision` 指定的收据及原始来源、证据，并校验摘要 |
+| generator-ticket | 固定生成计划和跨重跑预算，签发一小时内仅能访问该候选生成账本的凭证 |
+| rebind-build | 本地重新复算资产，并校验完整清单、工具链及中央成功运行；相同字节更新下载来源，保留原冻结身份和批准 |
 
-成功时，正文旁保存 `<output>.sources.json`，包含来源合同与被消费事实，UTF-8、LF 结尾；日志显示其 SHA-256。发布工作流将正文和来源快照一起上传至 notes artifact，并下载到 publish job 的 release-notes 目录，沿用现有 1 天保留期。它保留本轮原始来源文本，供审计和重放，不代替后续包含片段、Profile、资产等内容的完整规范化冻结对象或发布收据。
+创建、上传和发布响应丢失后先回读远程对象。创建结果仍未知且没有可绑定对象时保留意图，自动重试不会再次创建。已发布内容漂移只报告，不覆盖人工编辑。
 
-错误代码：`RN_SOURCE_INCOMPLETE` 表示缺失或不匹配；`RN_SOURCE_AMBIGUOUS` 表示来源不唯一或待显式选定；`RN_SOURCE_STALE` 表示读取期间变化。任何错误均不以跳过条目、空说明或首发回退消除。
+沿用现有 Worker 定时入口，每批最多二十个候选，同对象至少间隔十五分钟；覆盖已绑定待审、已批准、已合并和发布中状态，以发现漏失事件。pending 能力只观察，active 才能调度 reconcile。暂停和旧策略记录不自动恢复。
 
-## 验证
+## 本地验证与尚未完成的环节
 
-`packages/runner/test/release-notes-input.test.ts` 覆盖附注标签、首发采用边界、同提交多标签、第一父距离、101 个 PR、多页额外关联、缺页、跨仓、错误 mergeSha、来源变化和候选身份/文件范围。Core 选择器和 runner 共用最近第一父节点的标签选择规则。
+本批验证包含真实 SQLite 迁移/CAS/重启、Git 对象与缺口、GitHub 读取适配器、Review/合并事件分流、批准前零发布、无资产与中性仓库、三种响应丢失、资产冲突、正文漂移和下载摘要。GitHub 与远程 D1 通过夹具模拟；不等于线上流程验收。
+
+`release.yml` 的 generate 操作依次固定生成预算、运行隔离模型作业和创建候选。模型作业只注入个人 Copilot PAT；父进程用短时凭证访问生成账本，子进程使用独立空目录和配置，不继承该凭证、App 或发布凭据。CLI 固定为 1.0.91，禁用工具、内置 MCP、自动指令和会话恢复。增量迁移 `0011_release_generation.sql` 保存计划、调用预留、原始格式失败输出和成功输出；未知结果仍计次，完成批次跨重跑复用。结构解析只接受唯一 JSON 对象或明确 json 围栏，拒绝重复键和未知字段。
+
+构建执行层已有四种 Profile 的参数编排、准确干净提交检查、独立输出目录及中央清单收集。产品原生版本检查器、实际构建作业与 seed bundle 自动生产仍待接入，因此 generate 当前需要一个已有的冻结 seed bundle。暂未注册构建适配器为可激活状态，也未接通资产下载失败后的自动重建调度。`rebind-build` 是已完成重建后的受控恢复入口：必须具有原冻结工具链摘要，同字节才可保留批准；旧收据缺少工具链摘要时拒绝推断。异字节结果要求重新建立候选并审阅。
+
+当前 source 验证读取上限为 32 MiB，证据为 512 KiB，正文为 128 KiB；超过上限明确失败。生成最多八批，每批输入 96 KiB，整个计划 256 KiB，每批及最终汇总最多各两次调用；单次 180 秒，小输入总预算十分钟，多批预算在调用前固定。完整文本按 Unicode 字符切片，超限不截断后继续。LayerScape 仍为 pending。
+
+部署前须先应用新增迁移，再部署相同策略版本的 Worker 与工作流；随后在获准测试对象验证真实网页编辑、Review/手动合并、Actions 下载、D1 绑定及 GitHub 不可变 Release。正式产品发布另行执行对应授权阶段。

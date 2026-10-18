@@ -23,8 +23,7 @@
     "fullChangelogLabel",
     "fullChangelogSeparator",
     "emptyChangesText",
-    "entryOrder",
-    "maxEntriesPerFragment"
+    "entryOrder"
   ],
   "properties": {
     "$schema": {
@@ -321,9 +320,6 @@
         "earliestPullRequestMergedAtAscending",
         "lowestPullRequestNumberAscending"
       ]
-    },
-    "maxEntriesPerFragment": {
-      "const": 5
     }
   }
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { decodeClassificationCheckEnvelope } from "../../core/src/check-envelope.js";
 import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
@@ -6,23 +7,22 @@ import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import {
-  buildAiDiffObservation, buildCopilotRepairPrompt, buildDeterministicSummary, buildPrompt, classifyPullRequest, classificationDigests, classificationInputDigest, computePullRequestFingerprint, createAiClassificationEnvelope, digest,
-  categorizeReleasePullRequests, classifyRemoteReleaseState, collectReleasePullRequests,
-  escapeMarkdownText, FragmentValidationError,
-  isHumanActor, isIssueCapableRepository, normalizeContributor,
+  classifyPullRequest, classificationDigests, classificationInputDigest, digest,
+  escapeMarkdownText,
+  normalizeContributor,
   organizationPullRequestTemplate,
-  generateOrganizationReviewInstructions, generateReviewInstructionSet, assertReviewInstructionRetirements, validateReviewInstructionContents, parseVersion, planClassificationLabels, planLabelDefinitions, planRelease, planRepositorySettings, renderManagedBody,
-  renderOnboardingPullRequest, renderReleaseNotes, renderValidationSummary, runValidationTasks,
-  inspectAiClassificationField, validateGeneratedSummary, validateRepositoryForOnboarding, verifyAiClassificationEnvelope, verifyAssetManifest,
-  type AiClassificationAssessment, type AiClassificationEnvelopeV2, type AiClassificationFieldInspection, type AiClassificationSuggestion, type AutomationFacts, type ClassificationProfile, type ClassifiedReleasePullRequest, type Contributor, type GeneratedReviewInstructionSet, type RawClassificationFacts, type ReleaseManifest, type RepositoryClassification, type ReviewProfileRegistry, type ReviewRuleRegistry, type SemanticCatalog, type ValidationProfile,
+  generateOrganizationReviewInstructions, generateReviewInstructionSet, assertReviewInstructionRetirements, validateReviewInstructionContents, planClassificationLabels, planLabelDefinitions, planRepositorySettings, renderManagedBody,
+  renderOnboardingPullRequest, renderValidationSummary, runValidationTasks,
+  validateRepositoryForOnboarding, verifyAiClassificationEnvelope,
+  type AiClassificationAssessment, type AiClassificationEnvelopeV2, type AiClassificationSuggestion, type ClassificationProfile, type Contributor, type GeneratedReviewInstructionSet, type RawClassificationFacts, type RepositoryClassification, type ReviewProfileRegistry, type ReviewRuleRegistry, type SemanticCatalog, type ValidationProfile,
 } from "../../core/src/index.js";
-import { createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestError, uploadReleaseAsset, isDependabotReviewEligible } from "../../github/src/index.js";
+import { createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestError, isDependabotReviewEligible } from "../../github/src/index.js";
 import { managedRepositoryIds, managedRepositoryTargets, runManagedRepositorySync, type ManagedTarget } from "./managed-repository-sync.js";
-import { runPrIssueLink } from "./pr-issue-link.js";
-import { validateRemoteFragments } from "./release-note-validation.js";
-import { collectReleaseRange, collectReleaseSources, assertReleaseSourcesUnchanged, configuredReleaseSourcePolicy, type TrustedReleaseSourcePolicy } from "./release-notes-input.js";
+import { releaseCandidateCommand } from "./release-command.js";
+import { releaseProduceCommand } from "./release-produce-command.js";
+import { releaseBuildCommand } from "./release-build-command.js";
+import { freezeReleaseGitInput, type GitReleaseBoundary } from "./release-git-input.js";
 import { classificationFacts } from "./classification-facts.js";
-import { budgetReleaseSourceTransport, releaseSourceBudget } from "./release-source-budget.js";
 import { targetManagedBlock, updatePullRequestBodyDurably, type DurableBodyRedrive } from "./pr-body-writer.js";
 import { minimatch } from "minimatch";
 import YAML from "yaml";
@@ -31,35 +31,34 @@ import addFormatsModule from "ajv-formats";
 import { readForkCopilotEvidence } from "./copilot-fork-evidence.js";
 import { classifyCopilotReviewState, isCopilotIdentity, copilotReviewTrigger, type CopilotReviewState, type CopilotReviewTrigger } from "./copilot-review-state.js";
 
-const commands = new Set(["review-trigger-mode", "issue-sync", "managed-repository-ids", "reconcile-repository-lifecycle", "onboard-repository", "pr-automation", "pr-classification", "pr-issue-link", "request-copilot-review", "sync-review-instructions", "sync-managed-labels", "validate", "release-preflight", "release-notes", "release-publish", "release-verify"]);
+const commands = new Set(["review-trigger-mode", "managed-repository-ids", "onboard-repository", "pr-classification", "request-copilot-review", "sync-review-instructions", "sync-managed-labels", "validate", "release-candidate"]);
 const stewardRepositoryId = 1296724484;
 commands.add("review-sync-targets");
 commands.add("observe-copilot-review");
 commands.add("render-review-instructions");
+commands.add("release-freeze");
+commands.add("release-produce");
+commands.add("release-build");
 // Repository configuration and workspace files are runtime inputs, not bundle assets.
 // This wrapper keeps their paths opaque to the static asset tracer used by ncc.
 const runtimeReadFile = ((path: Parameters<typeof readFile>[0], options?: Parameters<typeof readFile>[1]) =>
   Reflect.apply(readFile, undefined, options === undefined ? [path] : [path, options])) as typeof readFile;
 const allowedArguments: Record<string, Set<string>> = {
+  "release-produce": new Set(["bundle", "ticket", "runtime-url", "copilot-loader", "output"]),
+  "release-build": new Set(["operation", "policy-sha", "repository-id", "target-tag", "target-sha", "author-ids", "request-key", "request", "source-bundle", "workspace", "assets", "inspector", "output", "run-id", "attempt", "artifact-id"]),
+  "release-freeze": new Set(["workspace", "repository-id", "default-branch", "target-sha", "policy-sha", "target-tag", "boundary-sha", "boundary-tag", "baseline-reference", "full-tree", "output"]),
   "observe-copilot-review": new Set(["repository-id", "pull-request-number", "event-head-sha", "policy-sha"]),
   "render-review-instructions": new Set(["profile", "policy-sha"]),
   "review-sync-targets": new Set(["repository-id", "policy-sha"]),
   "review-trigger-mode": new Set(["repository-id", "policy-sha"]),
   "request-copilot-review": new Set(["delivery-id", "repository-id", "pull-request-number", "event-head-sha", "policy-sha"]),
-  "issue-sync": new Set(["delivery-id", "repository-id", "issue-number", "scan-all", "policy-sha"]),
   "managed-repository-ids": new Set(["policy-sha"]),
-  "reconcile-repository-lifecycle": new Set(["delivery-id", "policy-sha"]),
   "onboard-repository": new Set(["repository-id", "repository-full-name", "trigger", "delivery-id", "policy-sha"]),
-  "pr-automation": new Set(["delivery-id", "repository-id", "source-ref", "event-after-sha", "source-actor-id", "source-actor-login", "policy-sha"]),
   "pr-classification": new Set(["delivery-id", "repository-id", "pull-request-number", "event-head-sha", "scan-all", "policy-sha"]),
-  "pr-issue-link": new Set(["delivery-id", "repository-id", "pull-request-number", "scan-all", "invalidate-only", "cleanup-unmanaged", "reconciliation-generation", "policy-sha"]),
   "sync-review-instructions": new Set(["repository-id", "policy-sha"]),
   "sync-managed-labels": new Set(["repository-id", "policy-sha"]),
-  validate: new Set(["workspace", "repository-id", "profile", "fragments-only"]),
-  "release-preflight": new Set(["workspace", "repository-id", "pull-request-number", "target-sha", "policy-sha", "trigger", "manifest"]),
-  "release-notes": new Set(["repository-id", "pull-request-number", "target-sha", "policy-sha", "display-version", "output"]),
-  "release-publish": new Set(["manifest", "notes", "repository"]),
-  "release-verify": new Set(["manifest", "repository"]),
+  validate: new Set(["workspace", "repository-id", "profile"]),
+  "release-candidate": new Set(["operation", "repository-id", "target-tag", "policy-sha", "bundle", "assets", "output", "revision", "request-key"]),
 };
 
 export interface ParsedInvocation { command: string; args: Readonly<Record<string, string>> }
@@ -119,176 +118,6 @@ async function summary(lines: readonly string[]): Promise<void> {
   if (target) await writeFile(target, `${lines.join("\n")}\n`, { flag: "a" }); else process.stdout.write(`${lines.join("\n")}\n`);
 }
 async function output(values: Record<string, string | number>): Promise<void> { const target = process.env.GITHUB_OUTPUT; if (!target) return; await writeFile(target, Object.entries(values).map(([key, value]) => `${key}=${String(value).replace(/[\r\n]/g, " ")}`).join("\n") + "\n", { flag: "a" }); }
-
-type CopilotFallbackStage = "copilot-step" | "prepared-facts-read" | "prepared-facts-parse" | "prepared-facts-check" | "copilot-output-read" | "copilot-output-envelope" | "copilot-output-parse" | "copilot-output-validate";
-const safeGeneratedSummaryValidationMessage = /^(?:Copilot结果必须是对象|Copilot结果包含额外字段|classification字段缺失|type无效|scope无效|title格式无效|changes无效|(?:title|summary|motivation|changes\[\]|impact|impact\[\]|releaseAndMigration|releaseAndMigration\[\])(?:必须是字符串|长度或格式无效|无效))$/u;
-const maximumCopilotJsonlBytes = 2_097_152;
-const maximumCopilotJsonlLines = 256;
-const maximumCopilotContentBytes = 65_536;
-// JSON mode emits transport events; the business JSON remains inside the final root message.
-export function extractCopilotAssistantContent(value: string): string {
-  const size = Buffer.byteLength(value, "utf8");
-  if (size === 0 || size > maximumCopilotJsonlBytes) throw new Error("Copilot JSONL输出大小无效");
-  const lines = value.split("\n");
-  if (lines.at(-1) === "") lines.pop();
-  if (lines.length === 0 || lines.length > maximumCopilotJsonlLines || lines.some(line => line === "" || line === "\r")) throw new Error("Copilot JSONL输出格式无效");
-  const events = lines.map(line => {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line.endsWith("\r") ? line.slice(0, -1) : line);
-    } catch {
-      throw new Error("Copilot JSONL输出格式无效");
-    }
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed) || typeof (parsed as Record<string, unknown>).type !== "string") throw new Error("Copilot JSONL输出格式无效");
-    const event = parsed as Record<string, unknown>;
-    if (event.agentId !== undefined && typeof event.agentId !== "string") throw new Error("Copilot JSONL输出格式无效");
-    return event;
-  });
-  const results = events.filter(event => event.type === "result");
-  if (results.length !== 1 || events.at(-1) !== results[0] || results[0]?.exitCode !== 0) throw new Error("Copilot JSONL结果无效");
-  if (events.some(event => event.agentId === undefined && String(event.type).startsWith("tool."))) throw new Error("Copilot JSONL消息无效");
-  const rootContents: string[] = [];
-  for (const event of events.filter(candidate => candidate.type === "assistant.message")) {
-    const data = event.data;
-    if (typeof data !== "object" || data === null || Array.isArray(data)) throw new Error("Copilot JSONL消息无效");
-    const message = data as Record<string, unknown>;
-    if (message.parentToolCallId !== undefined && typeof message.parentToolCallId !== "string") throw new Error("Copilot JSONL消息无效");
-    if (event.agentId !== undefined || message.parentToolCallId !== undefined) continue;
-    const toolRequests = message.toolRequests;
-    if ((toolRequests !== undefined && (!Array.isArray(toolRequests) || toolRequests.length !== 0)) || message.serverTools !== undefined) throw new Error("Copilot JSONL消息无效");
-    if (typeof message.content !== "string") throw new Error("Copilot JSONL消息无效");
-    if (message.content.trim()) rootContents.push(message.content);
-  }
-  const content = rootContents.at(-1);
-  if (!content || Buffer.byteLength(content, "utf8") > maximumCopilotContentBytes) throw new Error("Copilot JSONL消息无效");
-  return content;
-}
-export function describeCopilotFallback(stage: CopilotFallbackStage, error: unknown): string {
-  if (stage === "copilot-output-parse") {
-    const position = error instanceof Error ? /\bposition (\d{1,9})\b/u.exec(error.message)?.[1] : undefined;
-    return position ? `Copilot输出不是有效JSON（位置${position}）` : "Copilot输出不是有效JSON";
-  }
-  if (stage === "copilot-output-validate") {
-    const message = error instanceof Error ? error.message : "";
-    return safeGeneratedSummaryValidationMessage.test(message) ? `Copilot输出字段校验失败：${message}` : "Copilot输出字段校验失败";
-  }
-  return {
-    "copilot-step": "Copilot命令执行失败",
-    "prepared-facts-read": "人工智能输入文件无法读取",
-    "prepared-facts-parse": "人工智能输入文件不是有效JSON",
-    "prepared-facts-check": "人工智能输入对应的分支事实已经漂移",
-    "copilot-output-read": "Copilot输出文件无法读取",
-    "copilot-output-envelope": "Copilot输出传输封装无效",
-  }[stage];
-}
-
-export type CopilotJsonNormalization = "none" | "single-json-fence";
-
-export function normalizeCopilotJsonCandidate(value: string): { candidate: string; normalization: CopilotJsonNormalization } {
-  const trimmed = value.trim();
-  const lines = trimmed.split(/\r?\n/u);
-  if (lines.length >= 3 && /^```json$/iu.test(lines[0] ?? "") && lines.at(-1) === "```" && lines.slice(1, -1).every(line => !line.trimStart().startsWith("```"))) {
-    return { candidate: lines.slice(1, -1).join("\n").trim(), normalization: "single-json-fence" };
-  }
-  return { candidate: trimmed, normalization: "none" };
-}
-
-function describeCopilotJsonParseFailure(value: string, normalization: CopilotJsonNormalization, error: unknown): string {
-  return normalization === "none" && value.includes("```") ? "Copilot输出JSON代码围栏无效" : describeCopilotFallback("copilot-output-parse", error);
-}
-
-export type CopilotGeneratedSummaryInspection =
-  | { state: "valid"; generated: ReturnType<typeof validateGeneratedSummary>; classification: AiClassificationFieldInspection; normalization: CopilotJsonNormalization }
-  | { state: "repairable"; stage: "copilot-output-parse" | "copilot-output-validate"; reason: string; assistantContent: string; normalization: CopilotJsonNormalization }
-  | { state: "rejected"; stage: "copilot-output-envelope"; reason: string };
-
-export function inspectCopilotGeneratedSummary(value: string): CopilotGeneratedSummaryInspection {
-  let assistantContent: string;
-  try {
-    assistantContent = extractCopilotAssistantContent(value);
-  } catch (error) {
-    return { state: "rejected", stage: "copilot-output-envelope", reason: describeCopilotFallback("copilot-output-envelope", error) };
-  }
-  const normalized = normalizeCopilotJsonCandidate(assistantContent);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(normalized.candidate);
-  } catch (error) {
-    return { state: "repairable", stage: "copilot-output-parse", reason: describeCopilotJsonParseFailure(assistantContent, normalized.normalization, error), assistantContent: normalized.candidate, normalization: normalized.normalization };
-  }
-  try {
-    const generated = validateGeneratedSummary(parsed);
-    const classification = inspectAiClassificationField(parsed as Record<string, unknown>);
-    return { state: "valid", generated, classification, normalization: normalized.normalization };
-  } catch (error) {
-    return { state: "repairable", stage: "copilot-output-validate", reason: describeCopilotFallback("copilot-output-validate", error), assistantContent: normalized.candidate, normalization: normalized.normalization };
-  }
-}
-
-export type CopilotGeneratedSummaryResolution =
-  | { state: "adopted"; mode: "copilot" | "copilot-repaired"; generated: ReturnType<typeof validateGeneratedSummary>; classification: AiClassificationFieldInspection; normalization: CopilotJsonNormalization; primaryFailureReason?: string }
-  | { state: "repair-required"; primaryFailureReason: string; assistantContent: string }
-  | { state: "fallback"; fallbackReason: string; primaryFailureReason?: string; repairFailureReason?: string };
-
-export function resolveCopilotGeneratedSummary(primaryValue: string, repairValue?: string): CopilotGeneratedSummaryResolution {
-  const primary = inspectCopilotGeneratedSummary(primaryValue);
-  if (primary.state === "valid") return { state: "adopted", mode: "copilot", generated: primary.generated, classification: primary.classification, normalization: primary.normalization };
-  if (primary.state === "rejected") return { state: "fallback", fallbackReason: primary.reason };
-  if (repairValue === undefined) return { state: "repair-required", primaryFailureReason: primary.reason, assistantContent: primary.assistantContent };
-  const repair = inspectCopilotGeneratedSummary(repairValue);
-  if (repair.state === "valid") return { state: "adopted", mode: "copilot-repaired", generated: repair.generated, classification: repair.classification, normalization: repair.normalization, primaryFailureReason: primary.reason };
-  return {
-    state: "fallback",
-    fallbackReason: primary.reason,
-    primaryFailureReason: primary.reason,
-    repairFailureReason: repair.reason.replace(/^Copilot输出/u, "Copilot修复输出"),
-  };
-}
-
-export function assertPreparedCopilotFacts(prepared: unknown, expected: { repositoryId: number; sourceRef: string; headSha: string; baseSha: string; policySha: string }): void {
-  if (!prepared || typeof prepared !== "object" || Array.isArray(prepared)) throw new Error("人工智能输入对应的分支事实已经漂移");
-  const value = prepared as Record<string, unknown>;
-  if (value.repositoryId !== expected.repositoryId || value.sourceRef !== expected.sourceRef || value.headSha !== expected.headSha || value.baseSha !== expected.baseSha || value.policySha !== expected.policySha) throw new Error("人工智能输入对应的分支事实已经漂移");
-}
-
-export function describeCopilotRepairAvailability(outcome: string | undefined, outputPath: string | undefined): string | null {
-  if (outcome === "success") return outputPath ? null : "失败（Copilot修复输出路径缺失）";
-  if (outcome === undefined || outcome === "") return "未运行（未收到Copilot修复步骤结果）";
-  if (outcome === "skipped") return "未运行（Copilot修复步骤已跳过）";
-  if (outcome === "cancelled") return "未完成（Copilot修复步骤已取消）";
-  if (outcome === "failure") return "失败（Copilot修复命令执行失败）";
-  return "未完成（Copilot修复步骤结果无效）";
-}
-
-export function describeCopilotRepairOutputFailure(stage: "read" | "envelope"): string {
-  return stage === "read" ? "失败（Copilot修复输出文件无法读取）" : "失败（Copilot修复输出传输封装无效）";
-}
-
-async function readCopilotOutput(path: string): Promise<{ evidence: string; inspection: CopilotGeneratedSummaryInspection }> {
-  const metadata = await stat(path);
-  if (!metadata.isFile() || metadata.size === 0 || metadata.size > maximumCopilotJsonlBytes) throw new Error("Copilot JSONL输出大小无效");
-  const text = await runtimeReadFile(path, "utf8");
-  const evidence = `${Buffer.byteLength(text, "utf8")}字节，SHA-256 ${createHash("sha256").update(text, "utf8").digest("hex")}`;
-  return { evidence, inspection: inspectCopilotGeneratedSummary(text) };
-}
-
-async function prepareCopilotRepair(): Promise<void> {
-  const primary = await readCopilotOutput(env("COPILOT_OUTPUT_PATH"));
-  if (primary.inspection.state === "valid") {
-    await output({ "repair-required": "false" });
-    await summary(["人工智能修复：不需要", ...(primary.inspection.normalization === "single-json-fence" ? ["人工智能JSON规范化：首次输出已剥离单一json代码围栏"] : []), `人工智能首次输出证据：${primary.evidence}`]);
-    return;
-  }
-  if (primary.inspection.state === "rejected") {
-    await output({ "repair-required": "false" });
-    await summary(["人工智能修复：协议层失败，不允许修复", `人工智能回退原因：${primary.inspection.reason}`, `人工智能首次输出证据：${primary.evidence}`]);
-    return;
-  }
-  const promptPath = env("PR_COPILOT_REPAIR_PROMPT_PATH");
-  await writeFile(promptPath, buildCopilotRepairPrompt(primary.inspection.assistantContent, primary.inspection.reason));
-  await output({ "repair-required": "true" });
-  await summary(["人工智能修复：已准备", `人工智能首次失败原因：${primary.inspection.reason}`, `人工智能首次输出证据：${primary.evidence}`]);
-}
 
 interface Catalog { organization: { id: number; login: string }; defaults: { public: any; private: any }; repositories: Record<string, any> }
 async function catalog(): Promise<Catalog> { return json(configPath("repositories.json")); }
@@ -369,30 +198,6 @@ export function decodeAiClassificationPayload(value: string): unknown {
     throw new Error("AI分类封装格式无效");
   }
   return parsed;
-}
-export function prepareAiClassificationPayload(
-  classificationField: AiClassificationFieldInspection,
-  envelope: AiClassificationEnvelopeV2,
-): { state: "missing" } | { state: "encoded"; payload: string } | { state: "encoding-failed" } {
-  if (classificationField.state === "missing") return { state: "missing" };
-  const suggestion = classificationField.state === "valid"
-    ? classificationField.suggestion
-    : classificationField.state === "abstained"
-      ? null
-      : { invalid: true };
-  try {
-    return { state: "encoded", payload: encodeAiClassificationPayload({ ...envelope, suggestion }) };
-  } catch {
-    return { state: "encoding-failed" };
-  }
-}
-export function inspectAutomationPullRequestBinding(
-  pull: { head: { repo: { id: unknown }; ref: unknown; sha: unknown }; base: { ref: unknown; sha: unknown } },
-  expected: { repositoryId: number; sourceBranch: string; headSha: string; baseBranch: string; baseSha: string },
-): "matched" | "base-sha-drifted" {
-  if (Number(pull.head.repo.id) !== expected.repositoryId || pull.head.ref !== expected.sourceBranch || pull.head.sha !== expected.headSha
-    || pull.base.ref !== expected.baseBranch) throw new Error("AI分类封装对应的拉取请求事实已经漂移");
-  return pull.base.sha === expected.baseSha ? "matched" : "base-sha-drifted";
 }
 export function isTrustedAiClassificationSource(policySha: string, environment: NodeJS.ProcessEnv = process.env): boolean {
   return environment.TRIGGER_ACTOR_ID === "301115370"
@@ -493,21 +298,6 @@ export function encodeClassificationCheckState(state: ClassificationCheckStateV4
   createHash("sha256").update(buffer.subarray(0, classificationCheckStateBodyBytes)).digest().copy(buffer, classificationCheckStateBodyBytes);
   return `v4:${buffer.toString("base64url")}`;
 }
-function decodeClassificationCheckEnvelope(value: unknown) {
-  if (typeof value !== "string" || !value.startsWith("v4:")) return null;
-  const encoded = value.slice(3);
-  if (encoded.length !== classificationCheckStateEncodedLength || !/^[A-Za-z0-9_-]+$/u.test(encoded)) return null;
-  const decoded = Buffer.from(encoded, "base64url");
-  if (decoded.length !== classificationCheckStateBytes || decoded.toString("base64url") !== encoded || decoded[0] !== 4) return null;
-  const checksum = createHash("sha256").update(decoded.subarray(0, classificationCheckStateBodyBytes)).digest();
-  if (!checksum.equals(decoded.subarray(classificationCheckStateBodyBytes))) return null;
-  const repositoryId = decoded.readUInt32BE(1);
-  const pullRequestNumber = decoded.readUInt32BE(5);
-  const headSha = decoded.subarray(9, 29).toString("hex");
-  const policySha = decoded.subarray(133, 153).toString("hex");
-  if (!repositoryId || !pullRequestNumber) return null;
-  return { decoded, repositoryId, pullRequestNumber, headSha, policySha };
-}
 export function decodeClassificationCheckState(value: unknown, codec: ClassificationCheckStateCodec, expected?: { repositoryId: number; pullRequestNumber: number; headSha: string; policySha?: string }): ClassificationCheckStateV4 | null {
   try { validateClassificationCheckCodec(codec); } catch { return null; }
   const envelope = decodeClassificationCheckEnvelope(value);
@@ -573,219 +363,6 @@ async function dispatchClassification(input: { repositoryId: number; pullRequest
   await dispatchWorkflow(new GitHubClient(token, "https://api.github.com", fetch, input.policySha), { owner: "splrad", repo: "steward", workflow: "pr-classification.yml", policySha: input.policySha, inputs: { deliveryId: input.deliveryId, repositoryId: String(input.repositoryId), pullRequestNumber: String(input.pullRequestNumber), eventHeadSha: input.headSha, policySha: input.policySha, ...(input.aiClassification ? { aiClassification: input.aiClassification } : {}) } });
 }
 
-async function dispatchCentralWorkflow(workflow: "issue-sync.yml" | "pr-issue-link.yml", policySha: string, inputs: Record<string, string>): Promise<void> {
-  const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId: stewardRepositoryId, permissions: { actions: "write", metadata: "read" }, policySha });
-  await dispatchWorkflow(new GitHubClient(token, "https://api.github.com", fetch, policySha), { owner: "splrad", repo: "steward", workflow, policySha, inputs });
-}
-
-export function issueSyncInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
-  return { issues: "read", metadata: "read" };
-}
-
-interface IssueSyncRepositoryState {
-  repositoryId: number;
-  generation: number;
-  syncState: "uninitialized" | "scanning" | "ready" | "degraded";
-  snapshots?: readonly { issueNumber: number }[];
-  reconciliationGeneration?: number | null;
-  reconciliationStateRevision?: number | null;
-}
-
-interface IssueSyncRefreshResult {
-  repositoryId: number;
-  issueNumber: number;
-  generation: number;
-  changed?: boolean;
-  deleted?: boolean;
-}
-
-export interface IssueSyncResult {
-  repositoryId: number;
-  issueNumber: number | null;
-  refreshed: number;
-  skipped: number;
-  changed: number;
-  generation: number;
-  dispatched: boolean;
-}
-
-export interface IssueSyncDependencies {
-  listLiveOpenIssues(): Promise<{ numbers: readonly number[]; skipped: number }>;
-  getState(): Promise<IssueSyncRepositoryState>;
-  setScanState(state: "scanning" | "ready" | "degraded"): Promise<IssueSyncRepositoryState>;
-  refresh(issueNumber: number): Promise<IssueSyncRefreshResult>;
-  dispatchFormalReconciliation(generation: number): Promise<void>;
-  releaseFormalReconciliation(generation: number, stateRevision: number): Promise<void>;
-}
-
-function uniqueIssueNumbers(values: readonly number[], name: string): number[] {
-  const numbers = [...values];
-  if (numbers.some(value => !Number.isSafeInteger(value) || value <= 0) || new Set(numbers).size !== numbers.length) throw new Error(`${name}无效`);
-  return numbers.sort((left, right) => left - right);
-}
-
-function assertIssueSyncState(value: IssueSyncRepositoryState, repositoryId: number, expectedState?: IssueSyncRepositoryState["syncState"], snapshotsRequired = false): void {
-  if (value.repositoryId !== repositoryId || !Number.isSafeInteger(value.generation) || value.generation < 0
-    || !["uninitialized", "scanning", "ready", "degraded"].includes(value.syncState)
-    || (expectedState !== undefined && value.syncState !== expectedState)
-    || (value.reconciliationGeneration !== undefined && value.reconciliationGeneration !== null
-      && (!Number.isSafeInteger(value.reconciliationGeneration) || value.reconciliationGeneration < 0))
-    || (value.reconciliationStateRevision !== undefined && value.reconciliationStateRevision !== null
-      && (!Number.isSafeInteger(value.reconciliationStateRevision) || value.reconciliationStateRevision < 0))
-    || ((value.reconciliationGeneration ?? null) === null) !== ((value.reconciliationStateRevision ?? null) === null)
-    || (snapshotsRequired && !Array.isArray(value.snapshots))) throw new Error("议题同步仓库状态响应无效");
-}
-
-async function dispatchPendingReconciliation(repositoryId: number, dependencies: IssueSyncDependencies): Promise<boolean> {
-  const state = await dependencies.getState();
-  assertIssueSyncState(state, repositoryId);
-  const generation = state.reconciliationGeneration;
-  if (generation === undefined || generation === null) return false;
-  const stateRevision = state.reconciliationStateRevision!;
-  try {
-    await dependencies.dispatchFormalReconciliation(generation);
-  } catch (error) {
-    try { await dependencies.releaseFormalReconciliation(generation, stateRevision); } catch { /* preserve the dispatch failure */ }
-    throw error;
-  }
-  return true;
-}
-
-export async function reconcileIssueSnapshots(
-  input: { repositoryId: number; issueNumber?: number; scanAll: boolean },
-  dependencies: IssueSyncDependencies,
-): Promise<IssueSyncResult> {
-  if (!Number.isSafeInteger(input.repositoryId) || input.repositoryId <= 0) throw new Error("repositoryId无效");
-  if (input.scanAll === (input.issueNumber !== undefined)) throw new Error("全量同步与单议题同步参数不一致");
-  if (input.issueNumber !== undefined && (!Number.isSafeInteger(input.issueNumber) || input.issueNumber <= 0)) throw new Error("issueNumber无效");
-  if (!input.scanAll) {
-    const state = await dependencies.getState();
-    assertIssueSyncState(state, input.repositoryId);
-    if (state.syncState !== "ready") return reconcileIssueSnapshots({ repositoryId: input.repositoryId, scanAll: true }, dependencies);
-    let completed: Omit<IssueSyncResult, "dispatched">;
-    try {
-      const scanning = await dependencies.setScanState("scanning");
-      assertIssueSyncState(scanning, input.repositoryId, "scanning");
-      const refreshed = await dependencies.refresh(input.issueNumber!);
-      if (refreshed.repositoryId !== input.repositoryId || refreshed.issueNumber !== input.issueNumber || !Number.isSafeInteger(refreshed.generation) || refreshed.generation < 0) throw new Error("议题刷新响应无效");
-      const live = await dependencies.listLiveOpenIssues();
-      if (!Number.isSafeInteger(live.skipped) || live.skipped < 0) throw new Error("GitHub开放议题集合无效");
-      uniqueIssueNumbers(live.numbers, "GitHub开放议题集合");
-      const ready = await dependencies.setScanState("ready");
-      assertIssueSyncState(ready, input.repositoryId, "ready");
-      if (ready.generation < refreshed.generation) throw new Error("扫描就绪响应无效");
-      const changed = refreshed.changed === true || refreshed.deleted === true;
-      completed = { repositoryId: input.repositoryId, issueNumber: input.issueNumber!, refreshed: 1, skipped: live.skipped, changed: changed ? 1 : 0, generation: ready.generation };
-    } catch (error) {
-      try { await dependencies.setScanState("degraded"); } catch { /* preserve the original failure */ }
-      throw error;
-    }
-    const dispatched = await dispatchPendingReconciliation(input.repositoryId, dependencies);
-    return { ...completed, dispatched };
-  }
-  let completed: Omit<IssueSyncResult, "dispatched">;
-  try {
-    const scanning = await dependencies.setScanState("scanning");
-    assertIssueSyncState(scanning, input.repositoryId, "scanning");
-    const [live, stored] = await Promise.all([dependencies.listLiveOpenIssues(), dependencies.getState()]);
-    assertIssueSyncState(stored, input.repositoryId, undefined, true);
-    if (!Number.isSafeInteger(live.skipped) || live.skipped < 0) throw new Error("GitHub开放议题集合无效");
-    const liveNumbers = uniqueIssueNumbers(live.numbers, "GitHub开放议题集合");
-    const storedNumbers = uniqueIssueNumbers(stored.snapshots!.map(item => item.issueNumber), "D1开放议题集合");
-    const union = [...new Set([...liveNumbers, ...storedNumbers])].sort((left, right) => left - right);
-    let changed = 0;
-    let generation = stored.generation;
-    for (const issueNumber of union) {
-      const refreshed = await dependencies.refresh(issueNumber);
-      if (refreshed.repositoryId !== input.repositoryId || refreshed.issueNumber !== issueNumber || !Number.isSafeInteger(refreshed.generation) || refreshed.generation < generation) throw new Error("议题刷新响应无效");
-      generation = refreshed.generation;
-      if (refreshed.changed === true || refreshed.deleted === true) changed++;
-    }
-    const ready = await dependencies.setScanState("ready");
-    assertIssueSyncState(ready, input.repositoryId, "ready");
-    if (ready.generation < generation) throw new Error("扫描就绪响应无效");
-    completed = { repositoryId: input.repositoryId, issueNumber: null, refreshed: union.length, skipped: live.skipped, changed, generation: ready.generation };
-  } catch (error) {
-    try { await dependencies.setScanState("degraded"); } catch { /* preserve the original failure */ }
-    throw error;
-  }
-  const dispatched = await dispatchPendingReconciliation(input.repositoryId, dependencies);
-  return { ...completed, dispatched };
-}
-
-function runtimeBaseUrl(value: string): string {
-  const url = new URL(value);
-  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || (url.pathname !== "/" && url.pathname !== "")) throw new Error("RUNTIME_URL无效");
-  return url.origin;
-}
-
-async function issueSync(args: Readonly<Record<string, string>>): Promise<void> {
-  const repositoryId = integer(required(args, "repository-id"), "repository-id");
-  const policySha = sha(required(args, "policy-sha"), "policy-sha");
-  const deliveryId = required(args, "delivery-id");
-  if (!/^[A-Za-z0-9._:-]{1,200}$/u.test(deliveryId)) throw new Error("delivery-id无效");
-  const scanAllValue = required(args, "scan-all");
-  if (scanAllValue !== "true" && scanAllValue !== "false") throw new Error("scan-all必须是true或false");
-  const scanAll = scanAllValue === "true";
-  const issueNumber = args["issue-number"] === undefined ? undefined : integer(args["issue-number"], "issue-number");
-  if (scanAll === (issueNumber !== undefined)) throw new Error("全量同步与单议题同步参数不一致");
-  const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId, permissions: issueSyncInstallationPermissions(), policySha });
-  const gh = new GitHubClient(token, "https://api.github.com", fetch, policySha);
-  const repositories = await gh.listInstallationRepositories();
-  if (repositories.length !== 1 || Number(repositories[0]?.id) !== repositoryId || typeof repositories[0]?.full_name !== "string") throw new Error("同步令牌仓库范围无效");
-  const repository = repositories[0];
-  const issueConfiguration = configurationFor(await catalog(), repository);
-  if (!isIssueCapableRepository(repository, issueConfiguration.managed === true)) throw new Error("仓库未启用议题同步");
-  const [owner, repo] = splitRepository(repository.full_name);
-  const baseUrl = runtimeBaseUrl(env("RUNTIME_URL"));
-  const requestRuntime = async <T>(method: "GET" | "POST", path: string, headers: Record<string, string> = {}): Promise<T> => {
-    for (let attempt = 0; attempt < 4; attempt++) {
-      const response = await fetch(`${baseUrl}${path}`, { method, headers: { Authorization: `Bearer ${token}`, ...headers } });
-      if (response.status === 409 && attempt < 3) continue;
-      if (!response.ok) throw new Error(`议题同步运行时请求失败:${response.status}`);
-      const text = await response.text();
-      if (Buffer.byteLength(text, "utf8") > 8 * 1024 * 1024) throw new Error("议题同步运行时响应过大");
-      try { return JSON.parse(text) as T; } catch { throw new Error("议题同步运行时响应无效"); }
-    }
-    throw new Error("议题同步运行时冲突重试失败");
-  };
-  const result = await reconcileIssueSnapshots({ repositoryId, ...(issueNumber === undefined ? {} : { issueNumber }), scanAll }, {
-    async listLiveOpenIssues() {
-      const result = await gh.listOpenIssuesWithValidators(owner, repo);
-      const issues = result.items.filter((item: any) => !Object.hasOwn(item ?? {}, "pull_request"));
-      const numbers = issues.map((item: any) => {
-        const number = Number(item?.number);
-        let path = "";
-        try { path = new URL(String(item?.repository_url)).pathname.toLowerCase(); } catch { /* checked below */ }
-        if (!Number.isSafeInteger(number) || number <= 0 || path !== `/repos/${owner}/${repo}`.toLowerCase()) throw new Error("GitHub开放议题仓库身份无效");
-        return number;
-      });
-      return { numbers, skipped: result.items.length - issues.length };
-    },
-    getState: () => requestRuntime<IssueSyncRepositoryState>("GET", `/internal/issue-snapshots/${repositoryId}`),
-    setScanState: (state) => requestRuntime<IssueSyncRepositoryState>("POST", `/internal/issue-snapshots/${repositoryId}/scan-state`, { "x-steward-scan-state": state }),
-    refresh: (number) => requestRuntime<IssueSyncRefreshResult>("POST", `/internal/issue-snapshots/${repositoryId}/${number}/refresh`, { "x-github-delivery": deliveryId }),
-    dispatchFormalReconciliation: (generation) => dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
-      deliveryId,
-      repositoryId: String(repositoryId),
-      scanAll: "true",
-      invalidateOnly: "false",
-      cleanupUnmanaged: "false",
-      reconciliationGeneration: String(generation),
-      policySha,
-    }),
-    async releaseFormalReconciliation(generation, stateRevision) {
-      const released = await requestRuntime<{ repositoryId: number; generation: number; stateRevision: number; released: boolean }>("POST", `/internal/issue-snapshots/${repositoryId}/reconciliation/release`, {
-        "x-steward-reconciliation-generation": String(generation),
-        "x-steward-reconciliation-state-revision": String(stateRevision),
-      });
-      if (released.repositoryId !== repositoryId || released.generation !== generation || released.stateRevision !== stateRevision || typeof released.released !== "boolean") throw new Error("议题重算首次派发释放响应无效");
-    },
-  });
-  await summary([`仓库编号：${result.repositoryId}`, `议题编号：${result.issueNumber ?? "all"}`, `刷新数量：${result.refreshed}`, `跳过数量：${result.skipped}`, `变更数量：${result.changed}`, `仓库代次：${result.generation}`, `全拉取请求重算：${result.dispatched ? "scheduled" : "unchanged"}`]);
-}
-
-
 const copilotCheckName = "copilot-pull-request-reviewer";
 const githubActionsAppId = 15368;
 export function isCopilotReviewerIdentity(value: unknown): boolean {
@@ -819,14 +396,8 @@ export function classificationInstallationPermissions(mode: "observe" | "enforce
   const assignmentPermission = mode === "enforce" ? "write" : "read";
   return { contents: "read", pull_requests: assignmentPermission, issues: assignmentPermission, checks: "write", metadata: "read" } as const;
 }
-export function prAutomationInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
-  return { contents: "read", pull_requests: "write", issues: "read", checks: "read", actions: "read", metadata: "read" } as const;
-}
 export function reviewInstructionSyncInstallationPermissions(): Parameters<typeof createInstallationToken>[0]["permissions"] {
   return { administration: "read", contents: "write", pull_requests: "write", issues: "read", checks: "read", metadata: "read", members: "read" } as const;
-}
-export function humanPushPullRequestCreateInput(input: { title: string; body: string; head: string; base: string }) {
-  return { ...input, draft: true } as const;
 }
 export async function readCopilotReviewState(clientValue: GitHubClient, owner: string, repo: string, number: number, headSha: string, afterEventId?: number): Promise<CopilotReviewState> {
   try {
@@ -873,7 +444,7 @@ export function isTrustedReviewRequestSource(policySha: string, environment: Nod
     && environment.WORKFLOW_EVENT === "workflow_dispatch"
     && typeof environment.WORKFLOW_DEFAULT_BRANCH === "string" && environment.WORKFLOW_DEFAULT_BRANCH.length > 0
     && environment.WORKFLOW_RUN_REF === `refs/heads/${environment.WORKFLOW_DEFAULT_BRANCH}`
-    && environment.WORKFLOW_REF === `${environment.WORKFLOW_REPOSITORY}/.github/workflows/pr-automation.yml@${environment.WORKFLOW_RUN_REF}`
+    && environment.WORKFLOW_REF === `${environment.WORKFLOW_REPOSITORY}/.github/workflows/native-review.yml@${environment.WORKFLOW_RUN_REF}`
     && environment.WORKFLOW_SHA === policySha;
 }
 
@@ -903,7 +474,7 @@ async function observeCopilotReviewCommand(args: Readonly<Record<string, string>
   const eligibleRepository = (value: any) => {
     const configuration = configurationFor(registry, value);
     return value.id === repositoryId && value.owner?.id === registry.organization.id
-      && !value.archived && !value.disabled && configuration.managed === true && configuration.prAutomation === true;
+      && !value.archived && !value.disabled && configuration.managed === true;
   };
   if (!eligibleRepository(repository)) throw new Error("仓库不在审查观察范围内");
   const [owner, repo] = splitRepository(repository.full_name);
@@ -931,7 +502,7 @@ async function requestCopilotReviewCommand(args: Readonly<Record<string, string>
   const trigger = configurationFor(registry, reviewRepository).copilotReviewTrigger;
   const result = await requestDependabotCopilotReview(gh, repositoryId, number, headSha, policySha, repository => {
     const configuration = configurationFor(registry, repository);
-    return Boolean(registry.repositories[String(repository.id)]) && configuration.managed === true && configuration.prAutomation === true;
+    return Boolean(registry.repositories[String(repository.id)]) && configuration.managed === true;
   }, trigger);
   await summary([`仓库编号：${repositoryId}`, `PR：${number}`, `目标提交：${headSha}`, `Copilot观察状态：${result}`]);
 
@@ -1025,7 +596,7 @@ export function assertManagedBranchPull(branchExists: boolean, pull: any | undef
   }
 }
 
-async function reconcileManagedFiles(input: { repository: any; gh: GitHubClient; token: string; instructions: GeneratedReviewInstructionSet; branch: string; title: string; policySha: string; deliveryId: string; redrive: DurableBodyRedrive; dispatchIssueLink?: boolean }): Promise<"unchanged" | "pull-request-created" | "pull-request-updated"> {
+async function reconcileManagedFiles(input: { repository: any; gh: GitHubClient; token: string; instructions: GeneratedReviewInstructionSet; branch: string; title: string; policySha: string; deliveryId: string; redrive: DurableBodyRedrive }): Promise<"unchanged" | "pull-request-created" | "pull-request-updated"> {
   const [owner, repo] = splitRepository(input.repository.full_name); const defaultBranch = input.repository.default_branch;
   const defaultRef = await input.gh.getRef(owner, repo, `heads/${defaultBranch}`);
   const targets = [...input.instructions.files, ...(input.instructions.retiredFiles ?? [])];
@@ -1079,17 +650,6 @@ async function reconcileManagedFiles(input: { repository: any; gh: GitHubClient;
   }) : await input.gh.createPullRequest(owner, repo, { title: input.title, body, head: input.branch, base: defaultBranch });
   await ensureCopilotReview(input.gh, owner, repo, pull.number, written.headSha, input.policySha, configurationFor(await catalog(), input.repository).copilotReviewTrigger);
   await dispatchClassification({ repositoryId: input.repository.id, pullRequestNumber: pull.number, headSha: written.headSha, policySha: input.policySha, deliveryId: input.deliveryId });
-  if ((input.dispatchIssueLink ?? isIssueCapableRepository(input.repository, true)) === true) {
-    await dispatchCentralWorkflow("pr-issue-link.yml", input.policySha, {
-      deliveryId: input.deliveryId,
-      repositoryId: String(input.repository.id),
-      pullRequestNumber: String(pull.number),
-      scanAll: "false",
-      invalidateOnly: "false",
-      cleanupUnmanaged: "false",
-      policySha: input.policySha,
-    });
-  }
   return pulls[0] ? "pull-request-updated" : "pull-request-created";
 }
 
@@ -1135,275 +695,11 @@ async function onboard(args: Readonly<Record<string, string>>) {
   const instructions = await loadReviewInstructions(cfg.reviewInstructionsProfile, { profiles: configPath("review", "profiles.json"), rules: configPath("review", "rules.json") });
   const planned = renderOnboardingPullRequest({ template: organizationPullRequestTemplate, configuration: cfg, actor: "splrad-steward[bot]", context: `onboard:${repositoryId}` });
   const deliveryId = required(args, "delivery-id");
-  const result = await reconcileManagedFiles({ repository, gh, token, instructions, branch: planned.branch, title: planned.title, policySha, deliveryId, dispatchIssueLink: false,
+  const result = await reconcileManagedFiles({ repository, gh, token, instructions, branch: planned.branch, title: planned.title, policySha, deliveryId,
     redrive: { workflow: "onboard-repository.yml", inputs: { repositoryId: String(repositoryId), repositoryFullName: fullName, trigger, deliveryId, policySha } } });
-  await summary([`仓库：${fullName}`, `状态：${result === "unchanged" ? "onboarded" : result}`, `接入分支：${planned.branch}`, `分类配置：${cfg.classification.profile}`, `验证配置：${cfg.validationProfile}`, `审查说明配置：${cfg.reviewInstructionsProfile}`, `发布配置：${cfg.releaseProfile ?? "未启用"}`, ...instructions.files.map(file => `${file.path}：${file.ruleIds.join("、")}；${file.digest}`), `标签定义：${labelSyncFailure ? "failed" : "checked"}`]);
-  if (isIssueCapableRepository(repository, cfg.managed === true)) {
-    await dispatchCentralWorkflow("issue-sync.yml", policySha, { deliveryId, repositoryId: String(repositoryId), scanAll: "true", policySha });
-  }
+  await summary([`仓库：${fullName}`, `状态：${result === "unchanged" ? "onboarded" : result}`, `接入分支：${planned.branch}`, `分类配置：${cfg.classification.profile}`, `验证配置：${cfg.validationProfile}`, `审查说明配置：${cfg.reviewInstructionsProfile}`, `发布配置：${cfg.delivery?.githubRelease?.profile ?? "未启用"}`, ...instructions.files.map(file => `${file.path}：${file.ruleIds.join("、")}；${file.digest}`), `标签定义：${labelSyncFailure ? "failed" : "checked"}`]);
   if (labelSyncFailure) throw new Error(labelSyncFailure);
 }
-async function automate(args: Readonly<Record<string, string>>) {
-  if (process.env.PREPARE_ONLY === "true") await output({ "copilot-required": "false" });
-  const repositoryId = integer(required(args, "repository-id"), "repository-id");
-  const policySha = sha(required(args, "policy-sha"), "policy-sha");
-  const sourceRef = required(args, "source-ref"); if (!sourceRef.startsWith("refs/heads/")) throw new Error("source-ref必须使用refs/heads/格式");
-  const eventAfterSha = sha(required(args, "event-after-sha"), "event-after-sha");
-  const sourceActor = { id: integer(required(args, "source-actor-id"), "source-actor-id"), login: required(args, "source-actor-login"), type: "User" };
-  if (!isHumanActor(sourceActor)) throw new Error("来源推送者不是有效真人账号");
-  const { token, client: gh } = await clientWithToken(repositoryId, prAutomationInstallationPermissions(), policySha);
-  const repository = await gh.getRepositoryById(repositoryId); const [owner, repo] = splitRepository(repository.full_name);
-  const repositoryConfiguration = configurationFor(await catalog(), repository);
-  if (!repositoryConfiguration.managed || !repositoryConfiguration.prAutomation) return summary(["状态：ignored", "原因：仓库没有启用中央拉取请求创建"]);
-  const sourceBranch = sourceRef.slice("refs/heads/".length); if (sourceBranch === repository.default_branch) return summary(["状态：ignored", "原因：默认分支推送不创建拉取请求"]);
-  const classificationProfile = await json<ClassificationProfile>(configPath("profiles", "classification", `${repositoryConfiguration.classification.profile}.json`));
-  const semantics = await semanticCatalog();
-  const repositoryClassification = repositoryConfiguration.classification as RepositoryClassification;
-  const [baseBefore, sourceBefore] = await Promise.all([
-    gh.getRef(owner, repo, `heads/${repository.default_branch}`),
-    gh.getRef(owner, repo, `heads/${sourceBranch}`),
-  ]);
-  const compare = await gh.compare(owner, repo, baseBefore.object.sha, sourceBefore.object.sha);
-  if (!Array.isArray(compare.commits) || !Array.isArray(compare.files)) throw new Error("提交或文件比较结果不完整");
-  if (Number(compare.total_commits) !== compare.commits.length) throw new Error("提交比较结果未完整返回");
-  if (compare.files.length >= 300) throw new Error("文件比较达到接口上限，不能证明结果完整");
-  if (!compare.ahead_by) return summary(["状态：ignored", "原因：来源分支没有待合并提交"]);
-  const pulls = await gh.listPullRequests(owner, repo, `${owner}:${sourceBranch}`); if (pulls.length > 1) throw new Error("同一来源分支存在多个匹配拉取请求");
-  const [baseAfter, sourceAfter] = await Promise.all([
-    gh.getRef(owner, repo, `heads/${repository.default_branch}`),
-    gh.getRef(owner, repo, `heads/${sourceBranch}`),
-  ]);
-  if (baseAfter.object.sha !== baseBefore.object.sha || sourceAfter.object.sha !== sourceBefore.object.sha) throw new Error("读取期间来源或目标分支已经漂移");
-  if (pulls[0]?.user?.id === 49699333 && pulls[0].user.login === "dependabot[bot]" && pulls[0].user.type === "Bot") {
-    return summary(["状态：ignored", "原因：Dependabot维护原生正文，审查使用独立请求路径"]);
-  }
-  if (pulls[0] && pulls[0].base?.ref !== repository.default_branch) {
-    return summary(["状态：ignored", "原因：已有拉取请求的目标不是仓库默认分支"]);
-  }
-  const contributorMap = new Map<number, Contributor>();
-  contributorMap.set(sourceActor.id, { id: sourceActor.id, login: sourceActor.login });
-  for (const commit of compare.commits) {
-    const normalized = commit.author ? normalizeContributor({ ...commit.author, name: commit.commit?.author?.name, email: commit.commit?.author?.email, avatarUrl: commit.author.avatar_url }) : null;
-    if (normalized) contributorMap.set(normalized.id, normalized);
-  }
-  const contributors = [...contributorMap.values()];
-  const files = (compare.files ?? []).map((file: any) => file.filename);
-  const rawFactsBase: Omit<RawClassificationFacts, "pullRequestNumber"> = {
-    repositoryId,
-    sourceRepositoryId: repositoryId,
-    sourceRef,
-    targetRef: `refs/heads/${repository.default_branch}`,
-    author: { login: sourceActor.login, type: sourceActor.type as RawClassificationFacts["author"]["type"] },
-    headSha: sourceBefore.object.sha,
-    baseSha: baseBefore.object.sha,
-    commits: (compare.commits ?? []).map((commit: any) => ({ sha: String(commit.sha), message: String(commit.commit?.message ?? "") })),
-    files: (compare.files ?? []).map((file: any) => ({
-      path: String(file.filename),
-      ...(file.previous_filename ? { previousPath: String(file.previous_filename) } : {}),
-      status: String(file.status),
-      additions: Number(file.additions),
-      deletions: Number(file.deletions),
-      patch: typeof file.patch === "string" ? file.patch : null,
-      patchState: typeof file.patch === "string" ? "available" as const : "missing" as const,
-    })),
-  };
-  const aiObservation = buildAiDiffObservation(rawFactsBase.files);
-  const facts: AutomationFacts = {
-    sourceRef,
-    targetRef: rawFactsBase.targetRef,
-    headSha: rawFactsBase.headSha,
-    baseSha: rawFactsBase.baseSha,
-    commitSubjects: rawFactsBase.commits.map((commit) => commit.message.split("\n")[0]!),
-    files,
-    diffStat: `${files.length}个文件`,
-    diffExcerpt: aiObservation.excerpt,
-    areas: [],
-    contributors,
-  };
-  const fallback = buildDeterministicSummary(facts); let generated = fallback; let mode = "deterministic";
-  let fallbackReason: string | null = null;
-  let primaryFailureReason: string | null = null;
-  let repairSummary: string | null = null;
-  let copilotNormalizationSummary: string | null = null;
-  let copilotOutputEvidence: string | null = null;
-  let copilotRepairOutputEvidence: string | null = null;
-  let classificationField: AiClassificationFieldInspection = { state: "missing" };
-  if (process.env.PREPARE_REPAIR_ONLY === "true") {
-    const preparedText = await runtimeReadFile(env("PR_PREPARED_FACTS_PATH"), "utf8");
-    const prepared = JSON.parse(preparedText);
-    assertPreparedCopilotFacts(prepared, { repositoryId, sourceRef, headSha: facts.headSha, baseSha: facts.baseSha, policySha });
-    await prepareCopilotRepair();
-    return;
-  }
-  if (process.env.PREPARE_ONLY === "true") {
-    const promptPath = env("PR_COPILOT_PROMPT_PATH");
-    const preparedFactsPath = env("PR_PREPARED_FACTS_PATH");
-    await writeFile(promptPath, buildPrompt(facts, fallback, semantics, classificationProfile, aiObservation));
-    await writeFile(preparedFactsPath, JSON.stringify({ repositoryId, sourceRef, headSha: facts.headSha, baseSha: facts.baseSha, policySha }) + "\n");
-    await output({ "copilot-required": "true" });
-    await summary(["状态：prepared", `来源提交：${facts.headSha}`, `提示文件：${basename(promptPath)}`]);
-    return;
-  }
-  const copilotOutput = process.env.COPILOT_OUTPUT_PATH;
-  if (process.env.COPILOT_STEP_OUTCOME && process.env.COPILOT_STEP_OUTCOME !== "success") {
-    fallbackReason = describeCopilotFallback("copilot-step", null);
-  } else if (copilotOutput && process.env.PR_PREPARED_FACTS_PATH) {
-    let stage: CopilotFallbackStage = "prepared-facts-read";
-    try {
-      const preparedText = await runtimeReadFile(process.env.PR_PREPARED_FACTS_PATH, "utf8");
-      stage = "prepared-facts-parse";
-      const prepared = JSON.parse(preparedText);
-      stage = "prepared-facts-check";
-      assertPreparedCopilotFacts(prepared, { repositoryId, sourceRef, headSha: facts.headSha, baseSha: facts.baseSha, policySha });
-      stage = "copilot-output-read";
-      const copilotOutputMetadata = await stat(copilotOutput);
-      if (!copilotOutputMetadata.isFile() || copilotOutputMetadata.size === 0 || copilotOutputMetadata.size > maximumCopilotJsonlBytes) {
-        stage = "copilot-output-envelope";
-        throw new Error("Copilot JSONL输出大小无效");
-      }
-      const copilotOutputText = await runtimeReadFile(copilotOutput, "utf8");
-      copilotOutputEvidence = `${Buffer.byteLength(copilotOutputText, "utf8")}字节，SHA-256 ${createHash("sha256").update(copilotOutputText, "utf8").digest("hex")}`;
-      stage = "copilot-output-envelope";
-      const primaryResolution = resolveCopilotGeneratedSummary(copilotOutputText);
-      if (primaryResolution.state === "adopted") {
-        generated = primaryResolution.generated;
-        classificationField = primaryResolution.classification;
-        mode = primaryResolution.mode;
-        if (primaryResolution.normalization === "single-json-fence") copilotNormalizationSummary = "首次输出已剥离单一json代码围栏";
-      } else if (primaryResolution.state === "fallback") {
-        fallbackReason = primaryResolution.fallbackReason;
-      } else {
-        primaryFailureReason = primaryResolution.primaryFailureReason;
-        fallbackReason = primaryResolution.primaryFailureReason;
-        const repairOutput = process.env.COPILOT_REPAIR_OUTPUT_PATH;
-        const repairAvailability = describeCopilotRepairAvailability(process.env.COPILOT_REPAIR_STEP_OUTCOME, repairOutput);
-        if (repairAvailability) {
-          repairSummary = repairAvailability;
-        } else {
-          let repairStage: "read" | "envelope" = "read";
-          try {
-            const repairMetadata = await stat(repairOutput!);
-            if (!repairMetadata.isFile() || repairMetadata.size === 0 || repairMetadata.size > maximumCopilotJsonlBytes) {
-              repairStage = "envelope";
-              throw new Error("Copilot修复JSONL输出大小无效");
-            }
-            const repairText = await runtimeReadFile(repairOutput!, "utf8");
-            copilotRepairOutputEvidence = `${Buffer.byteLength(repairText, "utf8")}字节，SHA-256 ${createHash("sha256").update(repairText, "utf8").digest("hex")}`;
-            repairStage = "envelope";
-            const repairedResolution = resolveCopilotGeneratedSummary(copilotOutputText, repairText);
-            if (repairedResolution.state === "adopted" && repairedResolution.mode === "copilot-repaired") {
-              generated = repairedResolution.generated;
-              classificationField = repairedResolution.classification;
-              mode = repairedResolution.mode;
-              if (repairedResolution.normalization === "single-json-fence") copilotNormalizationSummary = "修复输出已剥离单一json代码围栏";
-              fallbackReason = null;
-              repairSummary = "已采用";
-            } else {
-              const reason = repairedResolution.state === "fallback" ? repairedResolution.repairFailureReason : undefined;
-              repairSummary = `失败（${reason ?? "Copilot修复输出无效"}）`;
-            }
-          } catch {
-            repairSummary = describeCopilotRepairOutputFailure(repairStage);
-          }
-        }
-      }
-    } catch (error) {
-      generated = fallback;
-      fallbackReason = describeCopilotFallback(stage, error);
-    }
-  }
-  let aiClassification: string | undefined;
-  let aiClassificationSummary = mode !== "deterministic" ? "未提供" : "Copilot不可用，未提供";
-  if (classificationField.state === "valid") aiClassificationSummary = `${classificationField.suggestion.primaryKind}（${classificationField.suggestion.confidence}）`;
-  else if (classificationField.state === "abstained") aiClassificationSummary = "弃权";
-  else if (classificationField.state === "invalid") aiClassificationSummary = `无效（${classificationField.reason}）`;
-  const template = process.env.PR_TEMPLATE_PATH ? await runtimeReadFile(process.env.PR_TEMPLATE_PATH, "utf8") : organizationPullRequestTemplate;
-  const title = `${generated.type}(${generated.scope}): ${generated.title}`;
-  const context = await computePullRequestFingerprint({ repositoryId, pullRequestNumber: pulls[0]?.number ?? 0, headSha: facts.headSha, baseSha: facts.baseSha, commits: (compare.commits ?? []).map((c: any) => c.sha), files: (compare.files ?? []).map((f: any) => ({ path: f.filename, status: f.status, additions: f.additions, deletions: f.deletions })), title, body: "", contributors });
-  const body = renderManagedBody({ generated, existingBody: pulls[0]?.body, templateBody: template, actor: sourceActor.login, contributors, context });
-  let bodyWriteFailure: unknown = null;
-  let pull = pulls[0];
-  if (pull) {
-    try {
-      pull = await updatePullRequestBodyDurably({
-        client: gh,
-        token,
-        runtimeUrl: env("RUNTIME_URL"),
-        owner,
-        repo,
-        repositoryId,
-        pullRequestNumber: Number(pull.number),
-        headSha: facts.headSha,
-        baseSha: facts.baseSha,
-        expectedBaseRef: repository.default_branch,
-        regionKind: "managed-pr",
-        targetBlock: targetManagedBlock(body, "managed-pr"),
-        redrive: { workflow: "pr-automation.yml", inputs: {
-          deliveryId: required(args, "delivery-id"), repositoryId: String(repositoryId), sourceRef, eventAfterSha,
-          sourceActorId: String(sourceActor.id), sourceActorLogin: sourceActor.login, policySha,
-        } },
-        additionalPatch: { title },
-      });
-    } catch (error) {
-      bodyWriteFailure = error;
-    }
-  } else {
-    pull = await gh.createPullRequest(owner, repo, humanPushPullRequestCreateInput({ title, body, head: sourceBranch, base: repository.default_branch }));
-  }
-  const boundPull = await gh.getPullRequest(owner, repo, pull.number);
-  const pullBinding = inspectAutomationPullRequestBinding(boundPull, { repositoryId, sourceBranch, headSha: facts.headSha, baseBranch: repository.default_branch, baseSha: facts.baseSha });
-  let copilot: string;
-  try {
-    copilot = await ensureCopilotReview(gh, owner, repo, pull.number, facts.headSha, policySha, repositoryConfiguration.copilotReviewTrigger);
-  } catch (error) {
-    if (bodyWriteFailure !== null) {
-      console.error(JSON.stringify({ status: "copilot-review-after-body-write-failure-failed", error: error instanceof Error ? error.message : "unknown" }));
-      throw bodyWriteFailure;
-    }
-    throw error;
-  }
-  if (bodyWriteFailure !== null) throw bodyWriteFailure;
-  if (isIssueCapableRepository(repository, repositoryConfiguration.managed === true)) {
-    await dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
-      deliveryId: required(args, "delivery-id"),
-      repositoryId: String(repositoryId),
-      pullRequestNumber: String(pull.number),
-      scanAll: "false",
-      invalidateOnly: "false",
-      cleanupUnmanaged: "false",
-      policySha,
-    });
-  }
-  if (pullBinding === "base-sha-drifted") aiClassificationSummary = `${aiClassificationSummary}；目标分支已前进，未传递`;
-  else if (classificationField.state !== "missing") {
-    const rawFacts: RawClassificationFacts = { ...rawFactsBase, pullRequestNumber: pull.number };
-    const policy = classificationDigests(semantics, classificationProfile, repositoryClassification);
-    const envelope = createAiClassificationEnvelope({ facts: rawFacts, policySha, digests: policy, effectiveAiMode: repositoryClassification.ai.mode, suggestion: null });
-    const payload = prepareAiClassificationPayload(classificationField, envelope);
-    if (payload.state === "encoded") aiClassification = payload.payload;
-    else if (payload.state === "encoding-failed") aiClassificationSummary = `${aiClassificationSummary}；封装失败，未传递`;
-  }
-  await output({ pullRequestNumber: pull.number, headSha: facts.headSha, repositoryFullName: repository.full_name });
-  await dispatchClassification({ repositoryId, pullRequestNumber: pull.number, headSha: facts.headSha, policySha, deliveryId: required(args, "delivery-id"), ...(aiClassification ? { aiClassification } : {}) });
-  await summary([
-    `状态：${pulls[0] ? "updated" : "draft-created"}`,
-    `拉取请求：#${pull.number}`,
-    `来源提交：${facts.headSha}`,
-    `事件提交：${eventAfterSha}`,
-    `标题生成：${mode}`,
-    ...(copilotNormalizationSummary ? [`人工智能JSON规范化：${copilotNormalizationSummary}`] : []),
-    ...(fallbackReason ? [`人工智能回退原因：${fallbackReason}`] : []),
-    ...(primaryFailureReason ? [`人工智能首次失败原因：${primaryFailureReason}`] : []),
-    ...(repairSummary ? [`人工智能修复：${repairSummary}`] : []),
-    ...(fallbackReason && !primaryFailureReason && copilotOutputEvidence ? [`人工智能输出证据：${copilotOutputEvidence}`] : []),
-    ...(primaryFailureReason && copilotOutputEvidence ? [`人工智能首次输出证据：${copilotOutputEvidence}`] : []),
-    ...(copilotRepairOutputEvidence ? [`人工智能修复输出证据：${copilotRepairOutputEvidence}`] : []),
-    `AI分类建议：${aiClassificationSummary}`,
-    `Copilot审查：${copilot}`,
-  ]);
-  if (process.env.PR_COPILOT_PROMPT_PATH) await writeFile(process.env.PR_COPILOT_PROMPT_PATH, buildPrompt(facts, fallback, semantics, classificationProfile, aiObservation));
-}
-
 async function classify(args: Readonly<Record<string, string>>) {
   const repositoryId = integer(required(args, "repository-id"), "repository-id");
   const policySha = sha(required(args, "policy-sha"), "policy-sha");
@@ -1548,84 +844,6 @@ async function listManagedRepositoryIds(args: Readonly<Record<string, string>>) 
   const policySha = sha(required(args, "policy-sha"), "policy-sha");
   process.stdout.write(`${managedRepositoryIds(await managedTargets(policySha)).join("\n")}\n`);
 }
-async function reconcileRepositoryLifecycle(args: Readonly<Record<string, string>>) {
-  const policySha = sha(required(args, "policy-sha"), "policy-sha");
-  const deliveryId = required(args, "delivery-id");
-  if (!/^[A-Za-z0-9._:-]{1,200}$/u.test(deliveryId)) throw new Error("delivery-id无效");
-  const targets = await managedTargets(policySha);
-  const installedRepositoryIds = targets.map(target => integer(String(target.repository.id), "repository-id")).sort((left, right) => left - right);
-  const stewardshipToken = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId: stewardRepositoryId, permissions: { metadata: "read" }, policySha });
-  const reconciliationResponse = await fetch(`${runtimeBaseUrl(env("RUNTIME_URL"))}/internal/issue-snapshots/${stewardRepositoryId}/lifecycle/reconcile`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${stewardshipToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ repositoryIds: installedRepositoryIds }),
-  });
-  if (!reconciliationResponse.ok) throw new Error(`安装仓库生命周期运行时请求失败:${reconciliationResponse.status}`);
-  const reconciliationText = await reconciliationResponse.text();
-  if (Buffer.byteLength(reconciliationText, "utf8") > 16 * 1024) throw new Error("安装仓库生命周期运行时响应过大");
-  let reconciliation: any;
-  try { reconciliation = JSON.parse(reconciliationText); } catch { throw new Error("安装仓库生命周期运行时响应无效"); }
-  if (reconciliation?.repositoryId !== stewardRepositoryId || !Array.isArray(reconciliation?.removedRepositoryIds)
-    || reconciliation.removedRepositoryIds.some((value: unknown) => typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0 || installedRepositoryIds.includes(value))
-    || new Set(reconciliation.removedRepositoryIds).size !== reconciliation.removedRepositoryIds.length) throw new Error("安装仓库生命周期运行时读回不一致");
-
-  let firstFailure: unknown = null;
-  for (const target of targets.filter(target => target.issueCapable)) {
-    const repositoryId = integer(String(target.repository.id), "repository-id");
-    try {
-      await dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
-        deliveryId: `${deliveryId}:${repositoryId}`,
-        repositoryId: String(repositoryId),
-        scanAll: "true",
-        invalidateOnly: "true",
-        cleanupUnmanaged: "false",
-        policySha,
-      });
-    } catch (error) { if (firstFailure === null) firstFailure = error; }
-  }
-  if (firstFailure !== null) throw firstFailure;
-
-  const reconciled: ManagedTarget[] = [];
-  for (const target of targets) {
-    const repositoryId = integer(String(target.repository.id), "repository-id");
-    try {
-      const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId, permissions: { metadata: "read" }, policySha });
-      const response = await fetch(`${runtimeBaseUrl(env("RUNTIME_URL"))}/internal/issue-snapshots/${repositoryId}/lifecycle`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
-      if (!response.ok) throw new Error(`仓库生命周期运行时请求失败:${response.status}`);
-      const text = await response.text();
-      if (Buffer.byteLength(text, "utf8") > 16 * 1024) throw new Error("仓库生命周期运行时响应过大");
-      let state: any;
-      try { state = JSON.parse(text); } catch { throw new Error("仓库生命周期运行时响应无效"); }
-      if (state?.repositoryId !== repositoryId || state?.managed !== target.managed || state?.issueCapable !== target.issueCapable) throw new Error("仓库生命周期运行时读回不一致");
-      reconciled.push(target);
-    } catch (error) { if (firstFailure === null) firstFailure = error; }
-  }
-
-  for (const target of reconciled) {
-    const repositoryId = integer(String(target.repository.id), "repository-id");
-    try {
-      if (target.issueCapable) {
-        await dispatchCentralWorkflow("issue-sync.yml", policySha, {
-          deliveryId: `${deliveryId}:${repositoryId}`,
-          repositoryId: String(repositoryId),
-          scanAll: "true",
-          policySha,
-        });
-      } else if (target.repository.archived !== true && target.repository.disabled !== true) {
-        await dispatchCentralWorkflow("pr-issue-link.yml", policySha, {
-          deliveryId: `${deliveryId}:${repositoryId}`,
-          repositoryId: String(repositoryId),
-          scanAll: "true",
-          invalidateOnly: "false",
-          cleanupUnmanaged: "true",
-          policySha,
-        });
-      }
-      await summary([`仓库编号：${repositoryId}`, `平台纳管：${target.managed ? "managed" : "unmanaged"}`, `议题能力：${target.issueCapable ? "enabled" : "disabled"}`, `登记来源：${target.registration}`]);
-    } catch (error) { if (firstFailure === null) firstFailure = error; }
-  }
-  if (firstFailure !== null) throw firstFailure;
-}
 async function assertManualSyncAuthorization(policySha: string): Promise<void> {
   if (process.env.SYNC_TRIGGER !== "workflow_dispatch") return;
   integer(env("TRIGGER_ACTOR_ID"), "TRIGGER_ACTOR_ID");
@@ -1764,77 +982,6 @@ async function validate(args: Readonly<Record<string, string>>) {
   const profileName = required(args, "profile");
   if (profileName !== configuration.validationProfile) throw new Error("验证配置与中央仓库目录不一致");
   const profile = await json<ValidationProfile>(configPath("profiles", "validation", `${profileName}.json`));
-  if (args["fragments-only"] !== undefined) {
-    if (args["fragments-only"] !== "true") throw new Error("fragments-only必须为true");
-    if (configuration.fragmentGateEnabled !== true) {
-      await summary(["片段门禁：未启用"]);
-      return;
-    }
-    if (!profile.fragmentGate) throw new Error("已启用片段门禁的仓库缺少片段规则");
-    const identity = { repositoryId, pullRequestNumber: integer(env("VALIDATION_PR_NUMBER"), "VALIDATION_PR_NUMBER"),
-      baseSha: sha(env("VALIDATION_BASE_SHA"), "VALIDATION_BASE_SHA"), headSha: sha(env("VALIDATION_HEAD_SHA"), "VALIDATION_HEAD_SHA"),
-      policySha: sha(env("VALIDATION_POLICY_SHA"), "VALIDATION_POLICY_SHA") };
-    const gh = new GitHubClient(env("VALIDATION_READ_TOKEN"), "https://api.github.com", fetch, identity.policySha);
-    const repository = await gh.getRepositoryById(repositoryId);
-    if (repository.id !== repositoryId) throw new Error("片段验证仓库身份不匹配");
-    const [owner, repo] = splitRepository(repository.full_name);
-    let classificationSourceDigest: string | undefined;
-    try {
-      const result = await validateRemoteFragments({ gh, owner, repo, identity, profile: profile.fragmentGate,
-        classification: async (pull, files) => {
-          const semantics = await semanticCatalog();
-          const classificationProfile = await json<ClassificationProfile>(configPath("profiles", "classification", `${configuration.classification.profile}.json`));
-          const policy = classificationDigests(semantics, classificationProfile, configuration.classification);
-          const readLabelNames = async () => {
-            const labels = await gh.listLabels(owner, repo, identity.pullRequestNumber);
-            if (labels.some(label => typeof label.name !== "string")) throw new Error("片段分类标签数据不完整");
-            return new Set(labels.map(label => label.name));
-          };
-          let names = await readLabelNames();
-          const humanRisks = () => semantics.roles.riskFlags.definitions.filter(definition => definition.githubLabel && names.has(definition.githubLabel.name)).map(definition => definition.id);
-          const unavailable = () => {
-            throw new FragmentValidationError("RN_SOURCE_INCOMPLETE", "current classification");
-          };
-          const readChecks = async () => {
-            const { matching, unbound } = classificationChecksForPull(await gh.listAllCheckRuns(owner, repo, identity.headSha, "all"), identity);
-            if (unbound.length) return unavailable();
-            return matching;
-          };
-          let checks = await readChecks();
-          if (classificationSourceDigest === undefined) {
-            let waited = false;
-            for (let attempt = 0; attempt < 36 && (checks.length === 0 || (checks.length === 1 && ["queued", "in_progress"].includes(checks[0].status))); attempt++) {
-              await delay(5_000);
-              waited = true;
-              checks = await readChecks();
-            }
-            if (waited) names = await readLabelNames();
-          }
-          const sourceDigest = digest({ labels: [...names].sort(), checks: checks.map(check =>
-            [check.id ?? null, check.head_sha ?? null, check.status ?? null, check.conclusion ?? null, check.external_id ?? null]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))) });
-          if (classificationSourceDigest !== undefined && classificationSourceDigest !== sourceDigest) throw new FragmentValidationError("RN_SOURCE_STALE", "classification or labels");
-          classificationSourceDigest = sourceDigest;
-          if (checks.length !== 1 || checks[0].status !== "completed" || checks[0].conclusion !== "success") return unavailable();
-          const state = decodeClassificationCheckState(checks[0].external_id, classificationCheckStateCodec(semantics, classificationProfile), identity);
-          if (state?.policy !== policy.classificationPolicyDigest || state.mode !== configuration.classification.ai.mode) return unavailable();
-          try {
-            const commits = await gh.listPullCommits(owner, repo, identity.pullRequestNumber);
-            const facts = classificationFacts(repositoryId, identity.pullRequestNumber, pull, files, commits);
-            if (state.inputDigest !== classificationInputDigest(facts, identity.policySha, policy.classificationPolicyDigest)) return unavailable();
-          } catch { return unavailable(); }
-          return { primaryKind: state.primary.id, riskFlags: [...new Set([...state.ownedRiskFlags, ...humanRisks()])] };
-        } });
-      await summary(["# 发布片段验证", `base：${identity.baseSha}`, `head：${identity.headSha}`, `policy：${identity.policySha}`,
-        `要求：${result.decision.requirement}`, `分类：${result.decision.classificationState}`,
-        ...result.sources.map(source => `片段：${escapeMarkdownText(source.path)}；blob：${source.blobSha}；SHA-256：${source.sha256}`),
-        ...(result.fragment?.status === "not-user-facing" ? [`无用户影响理由：${escapeMarkdownText(result.fragment.reason)}`] : [])]);
-    } catch (error) {
-      await summary(["# 发布片段验证失败", `base：${identity.baseSha}`, `head：${identity.headSha}`, `policy：${identity.policySha}`,
-        escapeMarkdownText(error instanceof Error ? error.message : String(error))]);
-      throw error;
-    }
-    return;
-  }
   const validationBaseSha = process.env.VALIDATION_BASE_SHA;
   const validationBaseRef = process.env.VALIDATION_BASE_REF;
   if (Boolean(validationBaseSha) !== Boolean(validationBaseRef)) throw new Error("基础分支验证参数不完整");
@@ -1901,250 +1048,42 @@ async function validate(args: Readonly<Record<string, string>>) {
   if (results.some(result => result.state === "failure")) throw new Error("一个或多个验证任务失败");
 }
 
-async function resolveTagCommit(gh: GitHubClient, owner: string, repo: string, tag: string): Promise<string | null> {
-  const reference = await optional(() => gh.getGitRef(owner, repo, `tags/${tag}`));
-  if (!reference) return null;
-  let object = reference.object;
-  for (let depth = 0; depth < 5; depth++) {
-    if (object.type === "commit") return sha(object.sha, "标签提交");
-    if (object.type !== "tag") throw new Error(`标签对象类型无效: ${object.type}`);
-    object = (await gh.getGitTag(owner, repo, object.sha)).object;
+async function releaseFreezeCommand(args: Readonly<Record<string, string>>): Promise<void> {
+  let boundary: GitReleaseBoundary;
+  if (args["full-tree"] !== undefined) {
+    if (args["full-tree"] !== "true" || args["boundary-sha"] || args["boundary-tag"] || args["baseline-reference"]) throw new Error("首次发布完整树与区间边界不能混用");
+    boundary = { kind: "full-tree" };
+  } else {
+    if (Boolean(args["boundary-tag"]) === Boolean(args["baseline-reference"])) throw new Error("必须选择一个已核验标签或明确基线");
+    boundary = { kind: args["boundary-tag"] ? "tag" : "baseline", sha: sha(required(args, "boundary-sha"), "boundary-sha"), reference: args["boundary-tag"] ?? args["baseline-reference"]! };
   }
-  throw new Error("标签嵌套层数超过允许上限");
-}
-
-async function collectFirstParentRange(gh: GitHubClient, owner: string, repo: string, targetSha: string, releases: readonly any[], excludeTag: string, sourcePolicy: TrustedReleaseSourcePolicy = {}): Promise<{ commits: any[]; previousRelease: any | null }> {
-  return collectReleaseRange(gh, owner, repo, targetSha, releases, excludeTag, sourcePolicy, releaseSourceBudget.commits);
-}
-
-async function isFirstParentAncestor(gh: GitHubClient, owner: string, repo: string, ancestor: string, descendant: string): Promise<boolean> {
-  let current = descendant;
-  const seen = new Set<string>();
-  for (let count = 0; count < 10_000; count++) {
-    if (current === ancestor) return true;
-    if (seen.has(current)) throw new Error("第一父提交链出现循环");
-    seen.add(current);
-    const commit = await gh.getCommit(owner, repo, current);
-    const parent = commit.parents?.[0]?.sha;
-    if (!parent) return false;
-    current = parent;
-  }
-  throw new Error("第一父提交链超过10000条，停止发布");
-}
-
-async function releasePreflight(args: Readonly<Record<string, string>>) {
-  const targetSha = sha(required(args, "target-sha"), "target-sha");
-  const policySha = sha(required(args, "policy-sha"), "policy-sha");
-  const repositoryId = integer(required(args, "repository-id"), "repository-id");
-  if (repositoryId !== 1187527897) throw new Error("中央发布只允许LayerScape仓库");
-  const workspace = resolve(required(args, "workspace"));
-  const checkedOutSha = run("git", ["rev-parse", "HEAD"], workspace).toLowerCase();
-  if (checkedOutSha !== targetSha) throw new Error("工作区检出的提交与目标提交不一致");
-  const profile = await json<any>(configPath("profiles", "release-legacy", "layerscape.json"));
-  const versionText = await runtimeReadFile(join(workspace, profile.version.file), "utf8");
-  const displayMatches = [...versionText.matchAll(new RegExp(`<${profile.version.displayElement}>([^<]+)</${profile.version.displayElement}>`, "g"))];
-  const buildMatches = [...versionText.matchAll(new RegExp(`<${profile.version.buildElement}>([^<]+)</${profile.version.buildElement}>`, "g"))];
-  if (displayMatches.length !== 1 || buildMatches.length !== 1) throw new Error("Version.props版本节点必须各出现一次");
-  const parsed = parseVersion(displayMatches[0]![1]!, buildMatches[0]![1]!);
-  const plan = planRelease({ next: parsed, targetSha });
-  const globalJson = JSON.parse(await runtimeReadFile(join(workspace, "global.json"), "utf8"));
-  if (globalJson.sdk?.version !== profile.build.sdkVersion || globalJson.sdk?.rollForward !== profile.build.sdkRollForward) throw new Error("global.json与中央发布配置不一致");
-  for (const project of [...profile.build.projects, profile.build.deployer]) {
-    try { if (!(await stat(join(workspace, project.path))).isFile()) throw new Error("不是文件"); }
-    catch { throw new Error(`发布项目不存在: ${project.path}`); }
-  }
-  let previousTag = "无";
-  let remoteState = "尚未读取";
-  if (process.env.STEWARD_APP_PRIVATE_KEY) {
-    const trigger = required(args, "trigger");
-    if (!['app', 'manual'].includes(trigger)) throw new Error("发布触发来源无效");
-    const gh = await client(repositoryId, { contents: "read", pull_requests: "read", metadata: "read", members: "read" }, policySha, budgetReleaseSourceTransport());
-    if (trigger === "manual") {
-      integer(env("TRIGGER_ACTOR_ID"), "TRIGGER_ACTOR_ID");
-      const membership = await gh.getTeamMembership("splrad", "maintainers", env("TRIGGER_ACTOR_LOGIN"));
-      if (membership.state !== "active") throw new Error("手工发布触发者不是Maintainers当前成员");
-    }
-    const repository = await gh.getRepositoryById(repositoryId);
-    if (repository.full_name !== profile.repository.fullName) throw new Error("发布仓库身份不匹配");
-    const defaultBranch = repository.default_branch;
-    if (typeof defaultBranch !== "string" || !defaultBranch.trim()) throw new Error("发布仓库没有可用的默认分支");
-    const [owner, repo] = splitRepository(repository.full_name);
-    const number = integer(required(args, "pull-request-number"), "pull-request-number");
-    const pull = await gh.getPullRequest(owner, repo, number);
-    if (!pull.merged || pull.base.ref !== defaultBranch || pull.merge_commit_sha !== targetSha) throw new Error("发布拉取请求与目标提交不一致");
-    const files = await gh.listPullFiles(owner, repo, number);
-    if (!files.some((file: any) => file.filename === profile.version.file)) {
-      await output({ shouldRelease: "false", targetSha, policySha });
-      await summary(["状态：not-applicable", "原因：本次合并没有修改Version.props", `目标提交：${targetSha}`]);
-      return;
-    }
-    const defaultRef = await gh.getRef(owner, repo, `heads/${defaultBranch}`);
-    if (!await isFirstParentAncestor(gh, owner, repo, targetSha, defaultRef.object.sha)) throw new Error("目标提交不在当前默认分支第一父提交链中");
-    const immutable = await gh.getImmutableReleaseStatus(owner, repo);
-    if (immutable.enabled !== true) throw new Error("LayerScape不可变发布尚未启用");
-    const releases = await gh.listReleases(owner, repo);
-    const history = await collectFirstParentRange(gh, owner, repo, targetSha, releases, plan.tag, configuredReleaseSourcePolicy(profile.sourcePolicy, { repositoryId, defaultBranch, targetSha, policySha }));
-    if (history.previousRelease) {
-      previousTag = history.previousRelease.tag_name;
-      const version = /^v(\d+\.\d+\.\d+)$/.exec(history.previousRelease.tag_name)?.[1];
-      const priorBuild = /\((\d{8}\.\d+)\)$/.exec(history.previousRelease.name ?? "")?.[1];
-      if (!version || !priorBuild) throw new Error("上一稳定发布的版本字段无效");
-      planRelease({ next: parsed, previous: parseVersion(version, priorBuild), targetSha });
-    }
-    const tagCommit = await resolveTagCommit(gh, owner, repo, plan.tag);
-    const release = releases.find((value: any) => value.tag_name === plan.tag) ?? null;
-    if (Boolean(tagCommit) !== Boolean(release)) throw new Error(tagCommit ? "标签存在但发布不存在" : "发布存在但标签不存在");
-    remoteState = release ? (release.draft ? "matching-state-pending-publish-check" : "published-state-pending-content-check") : "create-draft";
-  }
-  const assets: any[] = [];
-  const expectedNames = profile.assets.map((definition: any) => definition.nameTemplate.replace("{displayVersion}", parsed.displayVersion)).sort();
-  for (const definition of profile.assets) {
-    const name = definition.nameTemplate.replace("{displayVersion}", parsed.displayVersion);
-    const path = join(workspace, definition.pathTemplate.replace("{displayVersion}", parsed.displayVersion));
-    const bytes = await optional(async () => runtimeReadFile(path));
-    if (bytes) {
-      if (!bytes.byteLength) throw new Error(`发布资产为空: ${name}`);
-      assets.push({ name, size: bytes.byteLength, sha256: createHash("sha256").update(bytes).digest("hex") });
-    }
-  }
-  if (assets.length !== 0) {
-    if (assets.length !== profile.assets.length) throw new Error("发布资产只生成了部分文件");
-    const assetDirectory = join(workspace, "artifacts", "ReleaseAssets");
-    const actualNames = (await readdir(assetDirectory)).sort();
-    if (JSON.stringify(actualNames) !== JSON.stringify(expectedNames)) throw new Error("发布资产目录不是恰好三项预期文件");
-  }
-  assets.sort((left, right) => left.name.localeCompare(right.name));
-  const manifest = { schemaVersion: 1, repositoryId, targetSha, policySha, displayVersion: parsed.displayVersion, buildId: parsed.buildId, assets };
-  await writeFile(resolve(required(args, "manifest")), JSON.stringify(manifest, null, 2) + "\n");
-  await summary([`标签：${plan.tag}`, `标题：${plan.title}`, `目标提交：${targetSha}`, `上一稳定发布：${previousTag}`, `远程状态：${remoteState}`]);
-  await output({ shouldRelease: "true", displayVersion: parsed.displayVersion, buildId: parsed.buildId, tag: plan.tag, title: plan.title, targetSha, policySha });
-}
-async function releaseNotesCommand(args: Readonly<Record<string, string>>) {
-  const repositoryId = integer(required(args, "repository-id"), "repository-id");
-  const triggerPullRequest = integer(required(args, "pull-request-number"), "pull-request-number");
-  const targetSha = sha(required(args, "target-sha"), "target-sha");
-  const policySha = sha(required(args, "policy-sha"), "policy-sha");
-  const displayVersion = required(args, "display-version");
-  parseVersion(displayVersion, "20000101.1");
-  const gh = await client(repositoryId, { contents: "read", pull_requests: "read", metadata: "read" }, policySha, budgetReleaseSourceTransport());
-  const repository = await gh.getRepositoryById(repositoryId); const [owner, repo] = splitRepository(repository.full_name);
-  if (repositoryId !== 1187527897 || repository.full_name !== "splrad/LayerScape") throw new Error("发布说明仓库身份不匹配");
-  if (typeof repository.default_branch !== "string" || !repository.default_branch.trim()) throw new Error("发布仓库没有可用的默认分支");
-  const identity = { repositoryId, defaultBranch: repository.default_branch, targetSha, policySha };
-  const releaseProfile = await json<any>(configPath("profiles", "release-legacy", "layerscape.json"));
-  const sourcePolicy = configuredReleaseSourcePolicy(releaseProfile.sourcePolicy, identity);
-  const source = await collectReleaseSources(gh, owner, repo, identity, `v${displayVersion}`, sourcePolicy);
-  const numbers = new Set(source.input.commits.filter(row => row.kind === "product").map(row => row.pullNumber));
-  if (!numbers.has(triggerPullRequest)) throw new Error("触发发布的拉取请求不在产品提交范围中");
-  const semantics = await semanticCatalog();
-  const repositoryConfiguration = configurationFor(await catalog(), repository);
-  const repositoryClassification = repositoryConfiguration.classification as RepositoryClassification;
-  const profile = await json<ClassificationProfile>(configPath("profiles", "classification", `${repositoryClassification.profile}.json`));
-  const rich: ClassifiedReleasePullRequest[] = [];
-  for (const number of numbers) {
-    const { pull, files, commits, labels } = source.facts.find(fact => fact.pull.number === number)!;
-    const currentLabels = labels.map((value: any) => String(value.name));
-    const decision = classifyPullRequest(semantics, profile, repositoryClassification, {
-      repositoryId, pullRequestNumber: number, sourceRepositoryId: Number(pull.head.repo.id), sourceRef: `refs/heads/${pull.head.ref}`, targetRef: `refs/heads/${pull.base.ref}`,
-      author: { login: String(pull.user.login), type: pull.user.type as "User" | "Bot" | "Organization" | "Mannequin" }, headSha: String(pull.head.sha), baseSha: String(pull.base.sha),
-      commits: commits.map((value: any) => ({ sha: String(value.sha), message: String(value.commit?.message ?? "") })),
-      files: files.map((value: any) => ({ path: String(value.filename), ...(value.previous_filename ? { previousPath: String(value.previous_filename) } : {}), status: String(value.status), additions: Number(value.additions), deletions: Number(value.deletions) })),
-    }, { currentLabels, stewardOwnedRiskFlags: [], stewardOwnedFacets: [] });
-    rich.push({ number, title: pull.title, body: pull.body ?? "", labels: currentLabels, files: files.map((value: any) => value.filename), author: { login: pull.user.login, type: pull.user.type }, mergedAt: pull.merged_at, mergeSha: pull.merge_commit_sha, decision });
-  }
-  const eligible = collectReleasePullRequests(rich, releaseProfile.releaseNotes.excludedLabels);
-  const categorized = categorizeReleasePullRequests(profile, eligible);
-  const notes = renderReleaseNotes({ repositoryId, targetSha, policySha, displayVersion, categorized, emptyRuntimeText: releaseProfile.releaseNotes.emptyRuntimeText });
+  const source = freezeReleaseGitInput({ workspace: required(args, "workspace"),
+    identity: { repositoryId: integer(required(args, "repository-id"), "repository-id"), defaultBranch: required(args, "default-branch"),
+      targetSha: sha(required(args, "target-sha"), "target-sha"), policySha: sha(required(args, "policy-sha"), "policy-sha") },
+    targetTag: required(args, "target-tag"), boundary });
   const outputPath = resolve(required(args, "output"));
-  assertReleaseSourcesUnchanged(source, await collectReleaseSources(gh, owner, repo, identity, `v${displayVersion}`, sourcePolicy));
-  await writeFile(`${outputPath}.sources.json`, source.bytes, "utf8");
-  await writeFile(outputPath, notes, "utf8");
-  await summary([`发布说明：${outputPath}`, `来源摘要：${source.inputSha256}`, `第一父提交：${source.input.commits.length}`, `关联拉取请求：${rich.length}`, `纳入更新内容：${categorized.length}`, `字符数：${notes.length}`]);
-}
-async function releasePublish(args: Readonly<Record<string, string>>) {
-  const manifest = await json<ReleaseManifest>(resolve(required(args, "manifest")));
-  const profile = await json<any>(configPath("profiles", "release-legacy", "layerscape.json"));
-  verifyAssetManifest(manifest, profile.assets.map((value: any) => value.nameTemplate.replace("{displayVersion}", manifest.displayVersion)));
-  const [owner, repo] = splitRepository(required(args, "repository"));
-  if (manifest.repositoryId !== profile.repository.id || `${owner}/${repo}` !== profile.repository.fullName) throw new Error("发布仓库与中央配置不一致");
-  const token = await createInstallationToken({ appId: env("APP_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), repositoryId: manifest.repositoryId, permissions: { contents: "write", metadata: "read" }, policySha: manifest.policySha });
-  const gh = new GitHubClient(token, "https://api.github.com", fetch, manifest.policySha);
-  const immutable = await gh.getImmutableReleaseStatus(owner, repo);
-  if (immutable.enabled !== true) throw new Error("仓库不可变发布尚未启用");
-  const tag = `v${manifest.displayVersion}`;
-  const title = `AFR v${manifest.displayVersion} (${manifest.buildId})`;
-  const notes = await runtimeReadFile(resolve(required(args, "notes")), "utf8");
-  const marker = `<!-- steward:release-notes:v1 repository=${manifest.repositoryId} target=${manifest.targetSha} policy=${manifest.policySha} -->`;
-  if (!notes.startsWith(`${marker}\n`)) throw new Error("发布说明缺少与清单一致的首行标记");
-  const releases = await gh.listReleases(owner, repo);
-  let release = releases.find((value: any) => value.tag_name === tag) ?? null;
-  const tagCommit = await resolveTagCommit(gh, owner, repo, tag);
-  const expectedNames = new Set(manifest.assets.map(asset => asset.name));
-  const assetsMatch = (assets: readonly any[]) => assets.length === manifest.assets.length && manifest.assets.every(expected => {
-    const actual = assets.find(value => value.name === expected.name);
-    return actual?.size === expected.size && actual?.digest === `sha256:${expected.sha256}`;
-  });
-  const state = classifyRemoteReleaseState({
-    tagExists: tagCommit !== null,
-    release: release ? {
-      id: release.id,
-      draft: release.draft,
-      prerelease: release.prerelease,
-      targetMatches: tagCommit === manifest.targetSha && release.target_commitish === manifest.targetSha,
-      titleMatches: release.name === title,
-      markerMatches: release.body === notes,
-      assetsMatch: assetsMatch(release.assets ?? []),
-      hasUnexpectedAssets: (release.assets ?? []).some((asset: any) => !expectedNames.has(asset.name)),
-    } : null,
-  });
-  if (state.state === "conflict") throw new Error(state.reason);
-  if (state.state === "already-complete") {
-    await output({ releaseId: release.id, releaseUrl: release.html_url });
-    await summary([`发布：${release.html_url}`, `资产：${manifest.assets.length}`, "状态：already-complete"]);
-    return;
+  try { await writeFile(outputPath, source.bytes, { encoding: "utf8", flag: "wx" }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    if (await runtimeReadFile(outputPath, "utf8") !== source.bytes) throw new Error("输出已存在且内容不同，请指定新文件");
   }
-  if (state.state === "create-draft") release = await gh.createRelease(owner, repo, { tag_name: tag, target_commitish: manifest.targetSha, name: title, body: notes, draft: true, prerelease: false, make_latest: "true" });
-  if (!release?.draft) throw new Error("没有可写入的匹配发布草稿");
-  for (const asset of release.assets ?? []) await gh.deleteReleaseAsset(owner, repo, asset.id);
-  for (const asset of manifest.assets) await uploadReleaseAsset({ token, policySha: manifest.policySha, uploadUrl: release.upload_url, filePath: join("release", asset.name), fileName: asset.name, expectedSha256: asset.sha256 });
-  const refreshed = (await gh.listReleases(owner, repo)).find((value: any) => value.id === release.id);
-  const refreshedTag = await resolveTagCommit(gh, owner, repo, tag);
-  if (!refreshed?.draft || refreshed.prerelease || refreshedTag !== manifest.targetSha || refreshed.target_commitish !== manifest.targetSha || refreshed.name !== title || refreshed.body !== notes || !assetsMatch(refreshed.assets ?? [])) throw new Error("草稿上传后的远程读回与发布清单不一致");
-  const published = await gh.updateRelease(owner, repo, release.id, { draft: false, prerelease: false, make_latest: "true" });
-  await output({ releaseId: published.id, releaseUrl: published.html_url });
-  await summary([`发布：${published.html_url}`, `资产：${manifest.assets.length}`, "状态：published"]);
-}
-async function releaseVerify(args: Readonly<Record<string, string>>) {
-  const manifest = await json<ReleaseManifest>(resolve(required(args, "manifest")));
-  const profile = await json<any>(configPath("profiles", "release-legacy", "layerscape.json"));
-  verifyAssetManifest(manifest, profile.assets.map((value: any) => value.nameTemplate.replace("{displayVersion}", manifest.displayVersion)));
-  const [owner, repo] = splitRepository(required(args, "repository"));
-  if (manifest.repositoryId !== profile.repository.id || `${owner}/${repo}` !== profile.repository.fullName) throw new Error("发布仓库与中央配置不一致");
-  const gh = await client(manifest.repositoryId, { contents: "read", metadata: "read" }, manifest.policySha);
-  const tag = `v${manifest.displayVersion}`;
-  const [release, latest, immutable, tagCommit] = await Promise.all([gh.getReleaseByTag(owner, repo, tag), gh.getLatestRelease(owner, repo), gh.getImmutableReleaseStatus(owner, repo), resolveTagCommit(gh, owner, repo, tag)]);
-  const marker = `<!-- steward:release-notes:v1 repository=${manifest.repositoryId} target=${manifest.targetSha} policy=${manifest.policySha} -->`;
-  if (immutable.enabled !== true || release.draft || release.prerelease || release.immutable !== true || tagCommit !== manifest.targetSha || release.target_commitish !== manifest.targetSha || release.name !== `AFR v${manifest.displayVersion} (${manifest.buildId})` || !String(release.body).startsWith(`${marker}\n`) || latest.id !== release.id || release.assets?.length !== manifest.assets.length) throw new Error("远程发布复核失败");
-  const assetLines: string[] = [];
-  for (const expected of manifest.assets) {
-    const actual = release.assets.find((value: any) => value.name === expected.name);
-    if (!actual || actual.size !== expected.size || actual.digest !== `sha256:${expected.sha256}`) throw new Error(`远程资产不一致: ${expected.name}`);
-    assetLines.push(`资产：${expected.name}；${expected.size}字节；sha256:${expected.sha256}`);
-  }
-  await summary(["状态：verified", `发布：${release.html_url}`, `标签目标：${tagCommit}`, `目标提交：${manifest.targetSha}`, ...assetLines]);
+  await summary([`Git 来源：${outputPath}`, `来源摘要：${source.inputSha256}`, `完整提交：${source.input.coverage.commits}`,
+    `净差异文件：${source.input.coverage.changedFiles}`, `读取缺口：${source.input.gaps.length}`]);
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const invocation = parseInvocation(argv);
+  if (invocation.command === "release-candidate") return releaseCandidateCommand(invocation.args);
+  if (invocation.command === "release-produce") return releaseProduceCommand(invocation.args);
+  if (invocation.command === "release-build") return releaseBuildCommand(invocation.args);
+  if (invocation.command === "release-freeze") return releaseFreezeCommand(invocation.args);
   if (invocation.command === "observe-copilot-review") return observeCopilotReviewCommand(invocation.args);
   if (invocation.command === "render-review-instructions") return renderReviewInstructionsCommand(invocation.args);
   if (invocation.command === "request-copilot-review") return requestCopilotReviewCommand(invocation.args);
   if (invocation.command === "review-trigger-mode") return reviewTriggerModeCommand(invocation.args);
   if (invocation.command === "review-sync-targets") return reviewSyncTargetsCommand(invocation.args);
-  const handlers: Record<string, (args: Readonly<Record<string, string>>) => Promise<void>> = { "issue-sync": issueSync, "managed-repository-ids": listManagedRepositoryIds, "reconcile-repository-lifecycle": reconcileRepositoryLifecycle, "onboard-repository": onboard, "pr-automation": automate, "pr-classification": classify, "pr-issue-link": runPrIssueLink, "sync-review-instructions": syncReviewInstructions, "sync-managed-labels": syncManagedLabels, validate, "release-preflight": releasePreflight, "release-notes": releaseNotesCommand, "release-publish": releasePublish, "release-verify": releaseVerify };
+  const handlers: Record<string, (args: Readonly<Record<string, string>>) => Promise<void>> = { "managed-repository-ids": listManagedRepositoryIds, "onboard-repository": onboard, "pr-classification": classify, "sync-review-instructions": syncReviewInstructions, "sync-managed-labels": syncManagedLabels, validate };
   await handlers[invocation.command]!(invocation.args);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main().catch(error => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1; });
-
-export { collectReleaseFactSnapshot } from './release-facts.js';

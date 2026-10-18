@@ -5,7 +5,8 @@ import { createHash } from 'node:crypto';
 import { assertBuildOciRepository, assertBuildPath, buildFail, buildLimits, canonicalBuildManifest, checkBuildNativeVersion, decodeBuildJson, matchBuildFiles,
   type BuildArtifact, type BuildManifest, type BuildPlan } from '../../core/src/build-manifest.js';
 
-export type NativeVersionInspector = (bytes: Uint8Array, file: string) => Promise<string | null>;
+export type NativeVersionResult = string | null | { resourceOnly: 'font-archive' };
+export type NativeVersionInspector = ((bytes: Uint8Array, file: string) => Promise<NativeVersionResult>) & { inspectPath?: (path: string) => Promise<NativeVersionResult> };
 export interface BuildExecutionContext { buildRunId: string; outputDirectory: string; sourceDirectory: string }
 export function githubBuildExecutionPolicy(plan: BuildPlan): {
   runner: 'windows-latest' | 'ubuntu-latest'; timeoutMinutes: 45;
@@ -129,14 +130,17 @@ export async function collectFileBuildManifest(plan: BuildPlan, outputDirectory:
     const before = await buildPathOperation(lstat(file));
     if (!before.isFile() || before.nlink !== 1 || before.size <= 0 || before.size > buildLimits.maxFileBytes) buildFail('RN_BUILD_LIMIT');
     const inspect = plan.version !== null ? inspectNativeVersion : undefined;
-    if (inspect && before.size > buildLimits.maxNativeVersionBytes) buildFail('RN_BUILD_LIMIT');
+    if (inspect && !inspect.inspectPath && before.size > buildLimits.maxNativeVersionBytes) buildFail('RN_BUILD_LIMIT');
     total += before.size; if (total > buildLimits.maxTotalBytes) buildFail('RN_BUILD_LIMIT');
     const handle = await buildPathOperation(open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)));
     try {
       if (!unchanged(before, await buildPathOperation(handle.stat()))) buildFail('RN_BUILD_PATH');
-      const { bytes, size, sha256 } = await readArtifactBytes(handle, before.size, inspect !== undefined);
+      const { bytes, size, sha256 } = await readArtifactBytes(handle, before.size, inspect !== undefined && !inspect.inspectPath);
       if (!unchanged(before, await buildPathOperation(handle.stat()))) buildFail('RN_BUILD_DIGEST');
-      checkBuildNativeVersion(plan, inspect ? await inspect(bytes, assignment.file) : null);
+      const native = inspect ? await (inspect.inspectPath ? inspect.inspectPath(file) : inspect(bytes, assignment.file)) : null;
+      if (native && typeof native === 'object') {
+        if (native.resourceOnly !== 'font-archive' || assignment.mediaType !== 'application/zip' || !assignment.file.endsWith('.zip')) buildFail('RN_BUILD_VERSION');
+      } else checkBuildNativeVersion(plan, native);
       artifacts.push({ ...assignment, kind: 'file', size, sha256 });
     } finally { await handle.close(); }
     if (await assertBuildSourcePath(root, assignment.file) !== file || !unchanged(before, await buildPathOperation(lstat(file)))) buildFail('RN_BUILD_PATH');
