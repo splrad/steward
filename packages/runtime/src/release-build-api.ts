@@ -23,7 +23,28 @@ export async function dispatchReleaseBuild(env: BodyWriteRuntimeEnv, repositoryI
 export async function handleReleaseBuildAction(env: BodyWriteRuntimeEnv, gh: GitHubClient, repository: any, configuration: any, tag: string, body: any): Promise<unknown> {
   const repositoryId = repository.id, store = new ReleaseBuildStore(env.ISSUE_SNAPSHOTS!), receipts = new ReleaseReceiptStore(env.ISSUE_SNAPSHOTS!);
   releaseAssert(configuration.delivery.githubRelease.enabled && ['pending', 'active'].includes(configuration.delivery.githubRelease.state), 'CAPABILITY');
-  if (body.action === 'find') return store.find(repositoryId, tag, body.runId, body.attempt);
+  if (body.action === 'find') {
+    const exact = await store.find(repositoryId, tag, body.runId, body.attempt);
+    if (exact) return exact;
+    const prior = await store.find(repositoryId, tag, body.runId, null), last = prior?.attempts.at(-1);
+    if (!prior || !last || body.attempt <= last.attempt || !['running', 'failed'].includes(prior.status)) return null;
+    releaseAssert(prior.request.frozen.policySha === env.POLICY_SHA, 'BUILD_REQUEST');
+    const central = await centralBuildClient(env);
+    const currentRun = await central.request<any>('GET', `/repos/splrad/steward/actions/runs/${body.runId}`);
+    const previousRun = await central.request<any>('GET', `/repos/splrad/steward/actions/runs/${body.runId}/attempts/${last.attempt}`);
+    for (const [run, attempt] of [[currentRun, body.attempt], [previousRun, last.attempt]]) {
+      releaseAssert(run.repository?.id === 1296724484 && run.id === body.runId && run.run_attempt === attempt
+        && run.event === 'workflow_dispatch' && run.head_sha === env.POLICY_SHA
+        && run.path === '.github/workflows/release-build.yml' && run.status === 'completed', 'BUILD_RUN_PROVENANCE');
+    }
+    releaseAssert(['failure', 'cancelled', 'timed_out'].includes(previousRun.conclusion), 'BUILD_RUN_PROVENANCE');
+    if (prior.request.mode === 'rebuild') {
+      const receipt = await receipts.get(repositoryId, tag);
+      releaseAssert(receipt && !receipt.paused && receipt.frozenDigest === receiptDigest(canonicalReleaseJson(prior.request.frozen))
+        && currentReleaseBuild(receipt)?.artifactId === prior.request.sourceArtifactId, 'BUILD_REQUEST_STALE');
+    }
+    return store.begin({ ...prior, status: 'failed' }, body.runId, body.attempt);
+  }
   if (body.action === 'prepare') {
     const f = body.frozen as FrozenRelease;
     validateFrozenRelease(f);

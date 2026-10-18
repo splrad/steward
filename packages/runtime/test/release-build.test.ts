@@ -50,6 +50,29 @@ beforeEach(() => {
   }) };
 });
 afterEach(() => db.database.close());
+it('registers a completed failed-jobs rerun and ignores delayed previous attempts', async () => {
+  const state = await request();
+  await action({ action: 'begin', key: state.request.key, runId: 10, attempt: 1 });
+  const previous = { ...run, status: 'completed', conclusion: 'failure' };
+  run = { ...run, run_attempt: 2, status: 'completed', conclusion: 'success' };
+  mock.central.request.mockImplementation(async (_method: string, path: string) => path.endsWith('/attempts/1') ? previous : run);
+  const recovered = await action({ action: 'find', runId: 10, attempt: 2 });
+  expect(recovered.attempts).toEqual([{ runId: 10, attempt: 1 }, { runId: 10, attempt: 2 }]);
+  expect(await action({ action: 'find', runId: 10, attempt: 1 })).toBeNull();
+  expect(await action({ action: 'find', runId: 10, attempt: 2 })).toEqual(recovered);
+  await expect(action({ action: 'fail', key: state.request.key, runId: 10, attempt: 1 })).rejects.toThrow('BUILD_RUN_PROVENANCE');
+});
+it('rejects rerun registration when the previous run succeeded or policy differs', async () => {
+  const state = await request();
+  await action({ action: 'begin', key: state.request.key, runId: 10, attempt: 1 });
+  const previous = { ...run, status: 'completed', conclusion: 'success' };
+  run = { ...run, run_attempt: 2, status: 'completed', conclusion: 'success' };
+  mock.central.request.mockImplementation(async (_method: string, path: string) => path.endsWith('/attempts/1') ? previous : run);
+  await expect(action({ action: 'find', runId: 10, attempt: 2 })).rejects.toThrow('BUILD_RUN_PROVENANCE');
+  previous.conclusion = 'failure'; run.head_sha = sha('d');
+  await expect(action({ action: 'find', runId: 10, attempt: 2 })).rejects.toThrow('BUILD_RUN_PROVENANCE');
+  expect((await store.get(state.request.key, 9001, 'v1.2.3'))?.attempts).toHaveLength(1);
+});
 async function request(mode: 'initial' | 'rebuild' = 'initial') {
   const f = frozenFixture(); f.toolchainDigest = releaseToolchainDigest;
   if (mode === 'rebuild') f.build = { runId: 1, artifactId: 2, artifactName: 'old', headSha: sha('c') };
