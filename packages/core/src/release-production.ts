@@ -18,7 +18,11 @@ function prose(value: unknown): asserts value is string {
 export function parseGeneratedRelease(bytes: Uint8Array): GeneratedRelease {
   releaseAssert(bytes.byteLength <= 64 * 1024, 'GENERATION_LIMIT');
   let text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-  text = text.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, '');
+  const jsonWhitespace = (c: string) => c === ' ' || c === '\t' || c === '\r' || c === '\n';
+  let start = 0, end = text.length;
+  while (start < end && jsonWhitespace(text[start]!)) start++;
+  while (end > start && jsonWhitespace(text[end - 1]!)) end--;
+  text = text.slice(start, end);
   if (text.startsWith('```json\n') && text.endsWith('\n```')) text = text.slice(8, -4);
   const result = decodeBuildJson(Buffer.from(text)) as GeneratedRelease;
   exact(result, ['userNotes', 'reviewEvidence']); exact(result.userNotes, ['upgrade', 'changes']); exact(result.reviewEvidence, ['internalChanges', 'unknowns']);

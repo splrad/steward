@@ -6,7 +6,7 @@ SPLRAD Steward 是 [`splrad`](https://github.com/splrad) 组织的共享仓库�
 
 ## 项目亮点
 
-- 自动收敛拉取请求：在受管仓库中协调分支推送、拉取请求标题与正文、分类标签、Copilot 审查请求和验证结果。
+- 集中处理拉取请求：维护分类标签、Copilot 审查请求和验证结果。普通 PR 由贡献者创建，标题、正文和议题关联由作者维护。
 - 集中维护规则：仓库清单、分类、验证、发布及 Copilot 配置均有明确的结构和 Schema，项目差异保留在对应配置中。
 - 接入新的公共仓库：按组织默认策略检查并补齐受管文件，通过拉取请求交付变更。
 - 管理 LayerScape 发布：校验版本与目标提交，生成发布资产和说明，发布后再读回核对。
@@ -41,7 +41,7 @@ Steward 由无状态 webhook 运行时接收组织事件，再把需要中央权
 
 1. 接收并核对仓库、事件和策略版本。
 2. 根据 `config/repositories.json` 解析仓库是否受管，以及应使用的分类、验证、Copilot 和发布配置。
-3. 调度拉取请求自动化、分类、验证、仓库接入、说明同步或发布任务。
+3. 调度分类、原生审查、验证、仓库接入、说明同步或发布任务。
 4. 将结果写回目标仓库，并保留可复核的检查摘要。
 
 Copilot 审查成功需要当前 PR head 的有效 Review 摘要和对应的成功 Check。摘要支持 `Findings` 与 `open findings` 格式。fork 的 Copilot Check 可能挂在目标分支提交上；此时通过 GitHub 的 Copilot 动态运行身份、同一次尝试的 job/check，以及平台处理步骤首次检出前的 PR、diff 和来源 head 日志确认归属，保留 Check 原始 SHA。拉取请求自动化的短时令牌需要 `actions:read` 读取这些证据。运行重叠、归属不明、日志不可读、查询超过上限或读取期间状态变化时返回 `unknown`。
@@ -54,9 +54,9 @@ node packages/runner/dist/index.js observe-copilot-review --repository-id REPOSI
 
 命令使用中央 `APP_ID`、`INSTALLATION_ID`、`STEWARD_APP_PRIVATE_KEY` 和仓库配置，为单个目标仓库签发只读短时令牌，权限为 `contents`、`pull_requests`、`issues`、`checks`、`actions`、`metadata` 的 `read`。它仅接受受管组织内已启用 PR 自动化、未归档且未禁用的仓库，以及目标为当前默认分支的开放 PR；读取前后核对 PR head 和仓库状态。结果输出为 JSON 摘要，并在设置 `GITHUB_OUTPUT` 时写入 `state`、`reason`、`headSha`。这是显式调用的观察入口，不发送审查请求、不写入 PR，也不执行 fork 代码。
 
-默认分支上的 `PR Automation` 工作流通过 `observeOnly=true` 提供只读入口，使用 `repositoryId`、`pullRequestNumber`、`eventAfterSha` 指定目标。其余必填字段沿用该工作流输入合同，观察任务仅使用目标字段和可信工作流提交。默认 `observeOnly=false`，原有流程保持有效；观察模式与正文收敛、审查请求任务互斥。它复用 `steward-automation` 环境，仅在观察步骤注入 App 凭据。工作流执行成功表示完成读取；审查结果以 JSON 中的 `state` 为准。
+默认分支上的 `Native Review`（`native-review.yml`）工作流通过 `observeOnly=true` 提供只读入口，使用 `repositoryId`、`pullRequestNumber`、`eventAfterSha` 指定目标，并填写 `deliveryId` 和 `policySha`。它复用 `steward-automation` 环境，在观察步骤注入 App 凭据。工作流成功表示完成读取；审查结果以 JSON 中的 `state` 为准。
 
-发布片段验证按仓库显式启用：中央验证 profile 的 `fragmentGate` 保存片段目录和路径规则，仓库目录 `config/repositories.json` 的对应仓库条目通过 `fragmentGateEnabled: true` 启用门禁。当前所有仓库均未启用片段门禁；`fragments` 作业会报告“片段门禁：未启用”，保留现行验证。门禁激活在目标仓库完成片段规则配置与准备后单独进行。
+发布说明采用固定 Git 来源、生成记录和持久化发布候选收据。PR 验证不包含片段作业；构建入口见[产品构建作业](docs/product-build.md)。
 
 受管仓库只保留项目自己的代码和必要配置。中央工作流、GitHub App 私钥及其他中央凭据不会复制过去。
 

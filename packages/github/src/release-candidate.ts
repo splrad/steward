@@ -67,7 +67,8 @@ export async function readReleaseCandidateFacts(gh: GitHubClient, r: ReleaseRece
     }
     reviews.push({ id: review.id, actorId: review.user?.id, type: review.user?.type, permission, headSha: review.commit_id, state: review.state, submittedAt: review.submitted_at });
   }
-  let manualMerge = false, merge: CandidateReviewFacts['merge'] = null, productTreeUnchanged = true;
+  let manualMerge = false, merge: CandidateReviewFacts['merge'] = null;
+  let productTreeUnchanged: boolean;
   if (pull.merged === true) {
     releaseAssert(releaseSha(pull.merge_commit_sha), 'MERGE_SHA');
     const merged = await releaseTree(gh, owner, repo, pull.merge_commit_sha);

@@ -638,3 +638,16 @@ describe('OCI 摘要链验证 T09', () => {
     await expect(collectOciBuildManifest(plan, output)).rejects.toThrow('RN_BUILD_OUTPUT');
   });
 });
+
+it('rejects a shrinkwrap overriding the registered package lock', async () => {
+  await mkdir(join(source, 'app'));
+  await writeFile(join(source, 'app/package-lock.json'), '{}');
+  const inputs = { directory: 'app', lockfile: 'app/package-lock.json', buildTask: 'build', packageManager: 'npm' };
+  const plan = await planBuild({ ...identity, profile: 'node-package-v1' }, { ...unit, profile: 'node-package-v1', inputs });
+  const context = { sourceDirectory: source, outputDirectory: output, buildRunId: 'test' };
+  await expect(validateBuildInputs(plan, context)).resolves.toBeUndefined();
+  await writeFile(join(source, 'app/npm-shrinkwrap.json'), '{}');
+  await expect(validateBuildInputs(plan, context)).rejects.toThrow('RN_BUILD_INVALID');
+  const shrinkwrapPlan = await planBuild({ ...identity, profile: 'node-package-v1' }, { ...unit, profile: 'node-package-v1', inputs: { ...inputs, lockfile: 'app/npm-shrinkwrap.json' } });
+  await expect(validateBuildInputs(shrinkwrapPlan, context)).resolves.toBeUndefined();
+});

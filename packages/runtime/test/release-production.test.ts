@@ -18,6 +18,11 @@ function client(store: ReleaseGenerationStore) {
   } };
 }
 describe('release production protocol and durable budget', () => {
+  it('handles long JSON whitespace while retaining strict BOM and non-JSON whitespace rejection', () => {
+    expect(parseGeneratedRelease(Buffer.from('\t'.repeat(30000) + output + ' \r\n'))).toEqual(generated);
+    expect(() => parseGeneratedRelease(Buffer.from(output + '\t'.repeat(30000) + 'x'))).toThrow();
+    for (const prefix of ['\ufeff', '\u00a0', '\v']) expect(() => parseGeneratedRelease(Buffer.from(prefix + output))).toThrow();
+  });
   it('accepts the explicit fence and renders only trusted links/contributors', () => {
     const value = parseGeneratedRelease(Buffer.from('```json\n' + output + '\n```'));
     expect(renderGeneratedRelease(value, frozenFixture())).toContain('### 修复');

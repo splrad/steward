@@ -90,6 +90,15 @@ export async function validateBuildExecutionContext(context: BuildExecutionConte
 }
 export async function validateBuildInputs(plan: BuildPlan, context: BuildExecutionContext): Promise<void> {
   await validateBuildExecutionContext(context);
+  if (plan.profile === 'node-package-v1' && String(plan.inputs.lockfile).endsWith('package-lock.json')) {
+    const shrinkwrap = join(context.sourceDirectory, String(plan.inputs.directory), 'npm-shrinkwrap.json');
+    try {
+      await lstat(shrinkwrap);
+      buildFail('RN_BUILD_INVALID');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
   for (const field of ['project', 'directory', 'lockfile', 'context', 'dockerfile', 'entrypoint']) {
     const value = plan.inputs[field];
     if (typeof value !== 'string') continue;

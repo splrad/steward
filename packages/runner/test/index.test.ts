@@ -31,6 +31,9 @@ describe("中央命令入口", () => {
     await expect(main(["validate", "--workspace", ".", "--repository-id", "1296724484", "--profile", "steward", "--fragments-only", "true"])).rejects.toThrow("未知参数");
     expect(transport).not.toHaveBeenCalled();
   });
+  it("产品构建命令接收工作流中的 build-id", () => {
+    expect(parseInvocation(["release-build", "--operation", "plan-product", "--build-id", "release"]).args["build-id"]).toBe("release");
+  });
   it("只接受现行命令及其已知、唯一、成对参数", () => {
     const commands = ["managed-repository-ids", "onboard-repository", "pr-classification", "request-copilot-review", "sync-review-instructions", "sync-managed-labels", "validate", "release-candidate"];
     for (const command of commands) expect(parseInvocation([command]).command).toBe(command);

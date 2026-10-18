@@ -1,4 +1,6 @@
-# 发布事实与迁移合同（R03）
+# 发布事实与迁移合同（R03 历史记录）
+
+> 本文保留旧片段流程的设计记录。当前版本已退役 `collectReleaseFactSnapshot`、迁移 Schema 和片段门禁，以下接口、Schema 及测试名称不代表当前可用能力。当前发布使用固定 Git 来源与持久化候选收据，构建入口见[产品构建作业](product-build.md)。
 
 R03 在 R02 的固定来源合同上收集事实。Core 处理纯数据；runner 的 collectReleaseFactSnapshot 读取 Git 对象及中央上下文，并完成双轮一致性检查。该函数作为 runner 导出接口交付，供后续冻结与发布编排接入；现有 legacy release-notes 命令尚未切换到事实生产者，不能把本合同交付视为 Release 激活。
 

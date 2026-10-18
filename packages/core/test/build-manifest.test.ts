@@ -8,6 +8,13 @@ import type { DeliveryConfiguration } from '../src/delivery-config.js';
 const identity: BuildIdentity = { repositoryId: 1400000001, fullName: 'example/widget', buildId: 'asset', profile: 'custom-adapter-v1', targetSha: 'a'.repeat(40), policySha: 'b'.repeat(40), version: '1.2.3' };
 const unit: BuildUnit = { profile: 'custom-adapter-v1', inputs: { entrypoint: 'tools/build.mjs', runtime: 'node', runnerFamily: 'linux' }, outputs: [{ id: 'archive', kind: 'file', match: 'widget-{version}.zip', count: 1, mediaType: 'application/zip' }] };
 describe('构建合同 T09/T10', () => {
+  it.each(['package-lock.json', 'npm-shrinkwrap.json', 'app/package-lock.json', 'app/npm-shrinkwrap.json'])('Node 构建仅接受实际 npm 工作目录的锁文件 %s', async lockfile => {
+    const inputs = { directory: lockfile.startsWith('app/') ? 'app' : '.', lockfile, buildTask: 'build', packageManager: 'npm' };
+    await expect(planBuild({ ...identity, profile: 'node-package-v1' }, { ...unit, profile: 'node-package-v1', inputs })).resolves.toMatchObject({ inputs });
+    for (const invalid of ['other/package-lock.json', 'yarn.lock', 'custom.json']) {
+      await expect(planBuild({ ...identity, profile: 'node-package-v1' }, { ...unit, profile: 'node-package-v1', inputs: { ...inputs, lockfile: invalid } })).rejects.toThrow('RN_BUILD_INVALID');
+    }
+  });
   it.each(['[::1]:5000/example/widget', '[2001:DB8::1]/example/widget', 'ghcr.io/example/widget:Release-1'])('Core 和 Schema 接受 IPv6 registry 与大小写敏感标签 %s', async repository => {
     const manifest: BuildManifest = { ...identity, profile: 'oci-image-v1', schemaVersion: 1, inputsSha256: 'c'.repeat(64), artifacts: [{ id: 'image', kind: 'oci-image', reference: `${repository}@sha256:${'d'.repeat(64)}`, digest: `sha256:${'d'.repeat(64)}` }] };
     const Ajv = AjvModule as unknown as typeof import('ajv').default;

@@ -5,7 +5,7 @@
 四类 Profile 共用干净来源、空输出目录、输入路径及产物合同检查：
 
 - dotnet-assets-v1：执行 dotnet publish，原生 PE 版本由中央检查器核验。
-- node-package-v1：执行 npm ci 和登记的 npm task；产物必须符合配置和中央原生版本检查器支持的格式。package.json 由中央解析并核验版本。
+- node-package-v1：执行 npm ci 和登记的 npm task；lockfile 使用仓库相对路径，必须是 directory 下的 package-lock.json 或 npm-shrinkwrap.json。选择 package-lock.json 时，该目录不得存在优先级更高的 npm-shrinkwrap.json；产物必须符合配置和中央原生版本检查器支持的格式。package.json 由中央解析并核验版本。
 - custom-adapter-v1：执行登记的 pwsh、node 或 bash 入口；运行时与 runner 家族由可信配置确定。
 - oci-image-v1：执行 buildx 并导出本地 OCI layout，核验索引、平台、版本标签和全部 blob 摘要。本次支持每个构建单元一个镜像输出，可包含多个登记平台；多个镜像使用不同构建单元。
 

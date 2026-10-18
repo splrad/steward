@@ -13,6 +13,9 @@ function hasExactKeys(value, expectedKeys) {
 const expected = ["deploy-runtime.yml", "native-review.yml", "onboard-repository.yml", "pr-classification.yml", "pr-validation.yml", "product-build.yml", "release-build-complete.yml", "release-build.yml", "release.yml", "sync-managed-labels.yml", "sync-review-instructions.yml"];
 const files = (await readdir(".github/workflows")).sort();
 if (JSON.stringify(files) !== JSON.stringify(expected)) throw new Error(`工作流集合不正确: ${files.join(", ")}`);
+const registry = JSON.parse(await readFile("config/repositories.json", "utf8"));
+const registered = [...registry.repositories["1296724484"].allowedWorkflowPaths].sort();
+if (JSON.stringify(registered) !== JSON.stringify(files.map(file => ".github/workflows/" + file))) throw new Error("Steward 工作流允许清单与实际文件不一致");
 const workflowDocuments = new Map();
 const allowedActions = new Set([
   "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",

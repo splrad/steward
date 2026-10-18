@@ -125,7 +125,11 @@ export async function planBuild(identity: BuildIdentity, unit: BuildUnit): Promi
     if (typeof inputs[field] === 'string') assertBuildPath(inputs[field], { root: ['directory', 'context'].includes(field) });
   }
   if (unit.profile === 'dotnet-assets-v1' && (inputs.configuration !== 'Release' || !/^net[0-9]+(?:\.[0-9]+)?(?:-windows)?$/u.test(String(inputs.framework)) || !/^(?:win|linux|osx)-(?:x64|arm64)$/u.test(String(inputs.runtime)))) buildFail('RN_BUILD_INVALID');
-  if (unit.profile === 'node-package-v1' && (inputs.packageManager !== 'npm' || !idPattern.test(String(inputs.buildTask)))) buildFail('RN_BUILD_INVALID');
+  if (unit.profile === 'node-package-v1') {
+    const directory = inputs.directory === '.' ? '' : `${inputs.directory}/`;
+    if (inputs.packageManager !== 'npm' || !idPattern.test(String(inputs.buildTask))
+      || !['package-lock.json', 'npm-shrinkwrap.json'].some(name => inputs.lockfile === directory + name)) buildFail('RN_BUILD_INVALID');
+  }
   if (unit.profile === 'custom-adapter-v1' && (!String(inputs.entrypoint).startsWith('tools/') || !['pwsh', 'node', 'bash'].includes(String(inputs.runtime)) || !['windows', 'linux'].includes(String(inputs.runnerFamily)) || (inputs.runtime === 'bash' && inputs.runnerFamily !== 'linux'))) buildFail('RN_BUILD_INVALID');
   if (!Array.isArray(unit.outputs) || !unit.outputs.length || unit.outputs.length > buildLimits.maxFiles
     || unit.outputs.some(rule => !rule || typeof rule !== 'object' || Array.isArray(rule))
