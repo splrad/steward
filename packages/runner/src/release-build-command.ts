@@ -11,7 +11,7 @@ import { highestStableRelease } from '../../github/src/release-candidate.js';
 import { canonicalReleaseJson, positiveId, receiptDigest, releaseAssert, releaseSha, type FrozenRelease } from '../../core/src/release-note-receipt.js';
 import { releaseToolchain, releaseToolchainDigest, type ReleaseBuildState } from '../../core/src/release-build-request.js';
 import { parseVersionFile } from '../../core/src/release-version.js';
-import { ReleaseReceiptClient } from './release-lifecycle.js';
+import { ReleaseReceiptClient, refreshingReleaseToken } from './release-lifecycle.js';
 import { freezeReleaseGitInput, type GitReleaseBoundary } from './release-git-input.js';
 import { buildReleaseAssets, executeBuildCommand, isolatedBuildEnvironment } from './release-build.js';
 import { nativeReleaseInspector } from './release-native.js';
@@ -25,9 +25,14 @@ async function output(values: Record<string, string>) {
   if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, Object.entries(values).map(([k,v]) => `${k}=${v}\n`).join(''));
 }
 async function scoped(repositoryId: number, policySha: string, actions: false | 'read' | 'write' = false) {
-  const token = await createInstallationToken({ appId: environment('APP_ID'), privateKey: environment('STEWARD_APP_PRIVATE_KEY'), installationId: Number(environment('INSTALLATION_ID')), repositoryId,
-    permissions: actions ? { actions, metadata: 'read' } : { contents: 'read', metadata: 'read' }, policySha });
-  return { token, gh: new GitHubClient(token, 'https://api.github.com', fetch, policySha) };
+  const getToken = refreshingReleaseToken(() => createInstallationToken({ appId: environment('APP_ID'), privateKey: environment('STEWARD_APP_PRIVATE_KEY'), installationId: Number(environment('INSTALLATION_ID')), repositoryId,
+    permissions: actions ? { actions, metadata: 'read' } : { contents: 'read', metadata: 'read' }, policySha }));
+  const token = await getToken();
+  const transport: typeof fetch = async (input, init = {}) => {
+    const headers = new Headers(init.headers); headers.set('authorization', `Bearer ${await getToken()}`);
+    return fetch(input, { ...init, headers, signal: init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000) });
+  };
+  return { token, transport, gh: new GitHubClient(token, 'https://api.github.com', transport, policySha) };
 }
 async function checkoutSource(fullName: string, sha: string, destination: string, token: string, home: string): Promise<void> {
   releaseAssert(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(fullName) && releaseSha(sha), 'BUILD_SOURCE');
@@ -93,7 +98,7 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
     releaseAssert(job.id === runId && job.repository?.id === 1296724484 && job.head_sha === policySha && job.path === '.github/workflows/release-build.yml' && job.event === 'workflow_dispatch' && job.status === 'completed', 'BUILD_RUN_PROVENANCE');
     const match = /^build:(\d+):(v\d+\.\d+\.\d+):(?:[a-f0-9]{64})?$/.exec(job.display_title); releaseAssert(match, 'BUILD_RUN_NAME');
     const repositoryId = Number(match[1]), tag = match[2]!, auth = await scoped(repositoryId, policySha);
-    const receipts = new ReleaseReceiptClient(environment('RUNTIME_URL'), auth.token, repositoryId, tag);
+    const receipts = new ReleaseReceiptClient(environment('RUNTIME_URL'), auth.token, repositoryId, tag, auth.transport);
     const state = await receipts.request<ReleaseBuildState | null>('build-request', { action: 'find', runId, attempt: job.run_attempt });
     if (!state) { await output({ ready: 'false' }); return; }
     if (job.conclusion !== 'success') {
@@ -107,7 +112,7 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
   }
   const repositoryId = Number(required('repository-id')), tag = required('target-tag');
   releaseAssert(positiveId(repositoryId) && /^v\d+\.\d+\.\d+$/.test(tag), 'BUILD_IDENTITY');
-  const auth = await scoped(repositoryId, policySha), receipts = new ReleaseReceiptClient(environment('RUNTIME_URL'), auth.token, repositoryId, tag);
+  const auth = await scoped(repositoryId, policySha), receipts = new ReleaseReceiptClient(environment('RUNTIME_URL'), auth.token, repositoryId, tag, auth.transport);
   if (operation === 'reject') {
     await receipts.request('build-request', { action: 'reject', key: required('request-key'), runId: Number(required('run-id')), attempt: Number(required('attempt')) }); return;
   }
@@ -136,10 +141,13 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
         boundary = { kind: 'tag', sha: object.sha, reference: latest.tag_name };
       }
       const frozenSource = freezeReleaseGitInput({ workspace: source, identity: { repositoryId, defaultBranch: repository.default_branch, targetSha: target, policySha }, targetTag: tag, boundary });
+      releaseAssert(frozenSource.input.commits.length <= 100, 'CONTRIBUTOR_LIMIT');
       const authorIds = required('author-ids').split(',').map(Number); releaseAssert(authorIds.length > 0 && authorIds.every(positiveId), 'AUTHOR_IDENTITY');
       for (const id of authorIds) releaseAssert((await auth.gh.request<any>('GET', `/user/${id}`)).type === 'User', 'AUTHOR_IDENTITY');
+      const contributorDeadline = AbortSignal.timeout(90_000);
+      const contributorClient = new GitHubClient(auth.token, 'https://api.github.com', (input, init = {}) => auth.transport(input, { ...init, signal: contributorDeadline }), policySha);
       const people = new Map<number, string>();
-      for (const c of frozenSource.input.commits) { const commit = await auth.gh.getCommit(owner, repo, c.sha); if (commit.author?.type === 'User') people.set(commit.author.id, commit.author.login); }
+      for (const c of frozenSource.input.commits) { const commit = await contributorClient.getCommit(owner, repo, c.sha); if (commit.author?.type === 'User') people.set(commit.author.id, commit.author.login); }
       const compareUrl = boundary.kind === 'full-tree' ? null : `https://github.com/${repository.full_name}/compare/${boundary.reference}...${tag}`;
       const profileName = (catalog.repositories as Record<string, any>)[String(repositoryId)]?.delivery?.githubRelease?.profile;
       releaseAssert(!profileName || releaseProfiles[profileName], 'PERSONALIZATION_PROFILE');

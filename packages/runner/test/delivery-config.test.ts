@@ -25,13 +25,13 @@ beforeAll(async () => {
 afterAll(async () => { if (fixture) await rm(fixture, { recursive: true, force: true }); });
 
 describe('catalog schema migration', () => {
-  it('accepts current v4 and a complete v3 catalog', () => {
+  it('accepts current v4 and rejects retired v3 catalogs', () => {
     expect(repositoryValidator(catalog)).toBe(true);
     const legacy = structuredClone(catalog); legacy.schemaVersion = 3;
     for (const config of [...Object.values(legacy.defaults), ...Object.values(legacy.repositories)] as any[]) {
       delete config.builds; delete config.delivery; delete config.copilotReviewTrigger;
     }
-    expect(repositoryValidator(legacy), ajv.errorsText(repositoryValidator.errors)).toBe(true);
+    expect(repositoryValidator(legacy)).toBe(false);
     legacy.repositories['1296724484'].copilotReviewTrigger = 'native';
     expect(repositoryValidator(legacy)).toBe(false);
   });

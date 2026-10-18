@@ -15,10 +15,7 @@
       "type": "string"
     },
     "schemaVersion": {
-      "enum": [
-        3,
-        4
-      ]
+      "const": 4
     },
     "organization": {
       "type": "object",
@@ -1058,31 +1055,6 @@
     }
   },
   "oneOf": [
-    {
-      "properties": {
-        "schemaVersion": {
-          "const": 3
-        },
-        "defaults": {
-          "properties": {
-            "public": {
-              "$ref": "#/$defs/defaultConfig"
-            },
-            "private": {
-              "$ref": "#/$defs/defaultConfig"
-            }
-          },
-          "type": "object"
-        },
-        "repositories": {
-          "additionalProperties": {
-            "$ref": "#/$defs/repositoryConfig"
-          },
-          "type": "object"
-        }
-      },
-      "type": "object"
-    },
     {
       "properties": {
         "schemaVersion": {

@@ -6,12 +6,16 @@ import { frozenFixture } from '../../core/test/release-receipt-fixture.js';
 import { releaseBuildCommand } from '../src/release-build-command.js';
 import { collectFileBuildManifest } from '../src/build-manifest.js';
 import { BuildContractError } from '../../core/src/build-manifest.js';
+import { createInstallationToken } from '../../github/src/index.js';
 
-const { request } = vi.hoisted(() => ({ request: vi.fn() }));
+const { request, transports } = vi.hoisted(() => ({ request: vi.fn(), transports: [] as typeof fetch[] }));
 vi.mock('../../github/src/index.js', async importOriginal => ({
   ...await importOriginal<typeof import('../../github/src/index.js')>(), createInstallationToken: vi.fn(async () => 'fixture'),
 }));
-vi.mock('../src/release-lifecycle.js', () => ({ ReleaseReceiptClient: class { request = request; } }));
+vi.mock('../src/release-lifecycle.js', async original => ({ ...await original<typeof import('../src/release-lifecycle.js')>(), ReleaseReceiptClient: class {
+  request = request;
+  constructor(_base: string, _token: string, _repo: number, _tag: string, transport: typeof fetch) { transports.push(transport); }
+} }));
 vi.mock('../src/build-manifest.js', async importOriginal => ({
   ...await importOriginal<typeof import('../src/build-manifest.js')>(), collectFileBuildManifest: vi.fn(async () => ({ artifacts: [] })),
 }));
@@ -36,6 +40,24 @@ beforeEach(async () => {
   });
 });
 afterEach(async () => { vi.unstubAllEnvs(); await rm(directory, { recursive: true, force: true }); });
+it('refreshes the same repository credentials on the receipt transport after long validation', async () => {
+  let now = 1000;
+  const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+  const issue = vi.mocked(createInstallationToken); issue.mockClear();
+  issue.mockResolvedValueOnce('first').mockResolvedValueOnce('renewed');
+  const fetchMock = vi.fn(async () => new Response('{}'));
+  vi.stubGlobal('fetch', fetchMock);
+  try {
+    await invoke();
+    const transport = transports.at(-1)!;
+    await transport('https://runtime.example/', { headers: { authorization: 'Bearer first' } });
+    now += 61 * 60_000;
+    await transport('https://runtime.example/', { headers: { authorization: 'Bearer first' } });
+    expect(new Headers((fetchMock.mock.calls.at(-1) as any)[1].headers).get('authorization')).toBe('Bearer renewed');
+    expect(issue).toHaveBeenCalledTimes(2);
+    expect(issue.mock.calls[0]).toEqual(issue.mock.calls[1]);
+  } finally { clock.mockRestore(); vi.unstubAllGlobals(); }
+});
 it('finishes only after the complete seed has been validated and saved', async () => {
   await invoke(); expect(request.mock.calls.at(-1)?.[1].action).toBe('finish');
 });

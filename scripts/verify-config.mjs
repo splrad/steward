@@ -25,9 +25,10 @@ for (const [dataPath, schemaPath] of pairs) {
   if (!validate(data)) throw new Error(`${dataPath}不符合结构: ${ajv.errorsText(validate.errors)}`);
 }
 const catalog = JSON.parse(await readFile("config/repositories.json", "utf8")); const ids = Object.keys(catalog.repositories); if (new Set(ids).size !== ids.length) throw new Error("仓库编号重复");
-if (catalog.schemaVersion === 4) await verifyDeliveryConfig(catalog, ajv);
+await verifyDeliveryConfig(catalog, ajv);
 const repositoryValidator = validators.get("schema/repositories.schema.json");
 const sampleRepository = Object.values(catalog.repositories)[0];
+if (repositoryValidator({ ...catalog, schemaVersion: 3 })) throw new Error('退役v3目录不得通过当前schema');
 if (!repositoryValidator || !sampleRepository) throw new Error("仓库配置反例验证缺少基础数据");
 const invalidRepositoryKeyCatalog = { ...catalog, repositories: { ...catalog.repositories, invalid: sampleRepository } };
 if (repositoryValidator(invalidRepositoryKeyCatalog)) throw new Error("仓库编号schema允许非数字键");
