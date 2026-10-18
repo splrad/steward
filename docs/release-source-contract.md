@@ -79,3 +79,7 @@ Review 事件只调用 `inspect`。`reconcile` 先核验真人手动合并证据
 部署前须依次应用新增迁移 `0010_release_receipts.sql`、`0011_release_generation.sql`、`0012_release_build_requests.sql`、`0013_release_build_restart.sql` 和 `0014_release_generation_restart.sql`，再部署相同策略版本的 Worker 与工作流；随后在获准测试对象验证真实网页编辑、Review/手动合并、Actions 下载、D1 绑定及 GitHub 不可变 Release。正式产品发布另行执行对应授权阶段。
 
 原生版本检查读取独立临时快照：从已打开的产物句柄流式复制并同步计算摘要，关闭写句柄后检查快照，检查后再次核对快照身份和摘要。原始产物身份变化仍会拒绝；快照在检查结束后清理。
+
+GitHub Release 构建请求在计划阶段仅接受根目录文件匹配规则，拒绝带目录分隔符或 globstar 的规则；资产名直接使用该根目录文件名。生成凭证通过原子更新签发，已有未过期凭证时返回 GENERATION_TICKET_BUSY，过期后才可重新签发。
+
+构建完成作业预算为 360 分钟，覆盖合同最多 4 GiB、128 个文件：按 4 MiB/s 下载及上传约 35 分钟，逐文件原生检查最多 256 分钟，另留初始化及本地快照读写余量。

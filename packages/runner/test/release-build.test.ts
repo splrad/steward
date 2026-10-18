@@ -104,6 +104,10 @@ await writeFile(join(process.argv[3],'package.json'),await readFile('package.jso
   const f = frozenFixture(); f.repositoryId = actual.repositoryId; f.fullName = actual.fullName; f.productTargetSha = actual.targetSha;
   const request = await makeReleaseBuildRequest(f, { builds: { release: unit }, delivery: { githubRelease: { builds: ['release'] } } }, 'initial', null);
   expect(request.plans[0]!.runnerFamily).toBe('linux');
+  for (const match of ['dist/package.json', '**/*.json', '**']) {
+    const nested = { ...unit, outputs: [{ id: 'asset', kind: 'file' as const, match, count: 1, mediaType: 'application/json' }] };
+    await expect(makeReleaseBuildRequest(f, { builds: { release: nested }, delivery: { githubRelease: { builds: ['release'] } } }, 'initial', null)).rejects.toThrow('BUILD_RELEASE_PATH');
+  }
   const manifest = await buildReleaseAssets(actual, { sourceDirectory: source, outputDirectory: output, buildRunId: 'node-package' }, c => executeBuildCommand(c, isolatedBuildEnvironment(process.env, root)), nativeReleaseInspector('unused', root));
   expect(manifest.profile).toBe('node-package-v1'); expect(manifest.repositoryId).toBe(9001);
   expect(manifest.artifacts[0]).toMatchObject({ file: 'package.json' });

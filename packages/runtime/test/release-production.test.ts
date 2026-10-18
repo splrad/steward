@@ -131,11 +131,17 @@ describe('release production protocol and durable budget', () => {
     const db = new ReleaseTestDb(); const store = new ReleaseGenerationStore(db.binding());
     try {
       await store.prepare(9001, 'v1.2.3', plan);
-      const token = await store.ticket(9001, 'v1.2.3', 1000);
+      const issued = await Promise.allSettled([store.ticket(9001, 'v1.2.3', 1000), store.ticket(9001, 'v1.2.3', 1000)]);
+      expect(issued.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+      const token = (issued.find(result => result.status === 'fulfilled') as PromiseFulfilledResult<string>).value;
+      await expect(store.ticket(9001, 'v1.2.3', 2000)).rejects.toThrow('GENERATION_TICKET_BUSY');
       await store.authorize(9001, 'v1.2.3', token, 2000, sha('c'));
       for (const [repo, tag, time, policy] of [[9002, 'v1.2.3', 2000, sha('c')], [9001, 'v1.2.4', 2000, sha('c')], [9001, 'v1.2.3', 3601000, sha('c')], [9001, 'v1.2.3', 2000, sha('d')]] as const) {
         await expect(store.authorize(repo, tag, token, time, policy)).rejects.toThrow('GENERATION_AUTH');
       }
+      const replacement = await store.ticket(9001, 'v1.2.3', 3601000);
+      await store.authorize(9001, 'v1.2.3', replacement, 3601001, sha('c'));
+      await expect(store.authorize(9001, 'v1.2.3', token, 3601001, sha('c'))).rejects.toThrow('GENERATION_AUTH');
     } finally { db.database.close(); }
   });
   it('covers the maximum generation budget after queue/setup delay and still expires', async () => {

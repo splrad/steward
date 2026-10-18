@@ -12,9 +12,9 @@ export class ReleaseGenerationStore {
     // Cover the frozen execution budget plus a bounded queue/setup allowance.
     const lifetimeMs = Math.max(60 * 60_000, current.ledger.plan.jobTimeoutMs + 30 * 60_000);
     const token = 'release-generation.' + randomBytes(32).toString('hex');
-    const result = await this.db.prepare('UPDATE release_generation SET ticket_digest=?,ticket_until=? WHERE repository_id=? AND target_tag=? AND version=?')
-      .bind(receiptDigest(token), now + lifetimeMs, repositoryId, tag, current.version).run();
-    releaseAssert(result.meta.changes === 1, 'GENERATION_NOT_FOUND'); return token;
+    const result = await this.db.prepare('UPDATE release_generation SET ticket_digest=?,ticket_until=? WHERE repository_id=? AND target_tag=? AND version=? AND (ticket_digest IS NULL OR ticket_until<=?)')
+      .bind(receiptDigest(token), now + lifetimeMs, repositoryId, tag, current.version, now).run();
+    releaseAssert(result.meta.changes === 1, 'GENERATION_TICKET_BUSY'); return token;
   }
   async authorize(repositoryId: number, tag: string, token: string, now: number, policySha: string): Promise<void> {
     const row = await this.db.prepare('SELECT record_json FROM release_generation WHERE repository_id=? AND target_tag=? AND ticket_digest=? AND ticket_until>?')

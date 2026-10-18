@@ -266,6 +266,7 @@ for (const step of productBuild.jobs.build.steps) {
   if (JSON.stringify(step).includes('secrets.') || step.env && !hasExactKeys(step.env, ['POLICY_SHA', 'RUN_ID'])) throw new Error('产品构建不得注入秘密');
 }
 if (buildCompletion.on.workflow_run?.workflows?.[0] !== 'SPLRAD Steward / Release Build' || buildCompletion.on.workflow_run?.types?.[0] !== 'completed'
+  || buildCompletion.jobs.accept['timeout-minutes'] !== 360
   || !buildCompletion.jobs.accept.steps.some(step => step.name === '明确阻断策略漂移的完成回调' && step.env?.SOURCE_POLICY === '${{ github.event.workflow_run.head_sha }}' && step.env?.CURRENT_POLICY === '${{ github.workflow_sha }}' && step.run?.includes('RELEASE_POLICY_DRIFT'))
   || !buildCompletion.jobs.accept.if.includes("github.event.workflow_run.event == 'workflow_dispatch'")) throw new Error('构建完成回调未绑定可信运行');
 if (buildCompletion.jobs.accept.steps.find(step => step.run?.includes('--operation reject'))?.if !== "failure() && steps.accept.outputs.verificationFailed == 'true'") throw new Error('仅确定的产物验证失败可拒绝构建，基础设施故障必须可重试');

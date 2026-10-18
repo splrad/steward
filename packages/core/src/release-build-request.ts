@@ -18,6 +18,7 @@ export async function makeReleaseBuildRequest(frozen: FrozenRelease, configurati
     const plan = await planBuild({ repositoryId: frozen.repositoryId, fullName: frozen.fullName, buildId, profile: unit.profile, targetSha: frozen.productTargetSha, policySha: frozen.policySha, version: frozen.targetTag.slice(1) }, unit);
     // OCI images have their own digest contract and cannot become GitHub file assets.
     releaseAssert(plan.profile !== 'oci-image-v1', 'BUILD_EXECUTOR');
+    releaseAssert(plan.outputs.every(output => output.kind === 'file' && typeof output.match === 'string' && !/[\\/]/.test(output.match) && !output.match.includes('**')), 'BUILD_RELEASE_PATH');
     plans.push(plan);
   }
   releaseAssert(plans.length === 1, 'BUILD_SET');
