@@ -368,6 +368,25 @@ describe('中央文件产物验证 T09', () => {
     await writeFile(join(output, 'widget.json'), '{"version":"9.9.9"}');
     await expect(verifyDownloadedFileBuild(plan, manifest, output, mutatingInspector)).rejects.toThrow('RN_BUILD_DIGEST');
   });
+  it.each(['normal', 'source-change', 'snapshot-change'])('路径检查器读取摘要对应的临时快照: %s', async mode => {
+    await file(); const plan = await planBuild(identity, unit);
+    const original = await readFile(join(output, 'widget.json'));
+    let snapshot = '';
+    const inspector = Object.assign(inspect, { inspectPath: async (path: string) => {
+      snapshot = path;
+      expect(path).not.toBe(join(output, 'widget.json'));
+      expect(await readFile(path)).toEqual(original);
+      if (mode === 'source-change') await writeFile(join(output, 'widget.json'), '{"version":"9.9.9"}');
+      if (mode === 'snapshot-change') await writeFile(path, '{"version":"9.9.9"}');
+      return '1.2.3';
+    } });
+    try {
+      const result = collectFileBuildManifest(plan, output, inspector);
+      if (mode === 'normal') expect((await result).artifacts[0]).toMatchObject({ sha256: createHash('sha256').update(original).digest('hex') });
+      else await expect(result).rejects.toThrow(mode === 'source-change' ? 'RN_BUILD_PATH' : 'RN_BUILD_DIGEST');
+      await expect(readFile(snapshot)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { delete (inspector as Partial<typeof inspector>).inspectPath; }
+  });
   it('摘要和仓库、提交、参数绑定分别复核', async () => {
     await file(); const plan = await planBuild(identity, unit); const manifest = await collectFileBuildManifest(plan, output, inspect);
     for (const changed of [{ targetSha: 'c'.repeat(40) }, { policySha: 'c'.repeat(40) }, { inputsSha256: 'c'.repeat(64) }, { repositoryId: 2 }]) {

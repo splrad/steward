@@ -1,6 +1,7 @@
 import { constants, type Stats } from 'node:fs';
-import { lstat, open, opendir, realpath, type FileHandle } from 'node:fs/promises';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { lstat, open, opendir, realpath, mkdtemp, rm, type FileHandle } from 'node:fs/promises';
+import { isAbsolute, join, relative, resolve, sep, basename } from 'node:path';
+import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { assertBuildOciRepository, assertBuildPath, buildFail, buildLimits, canonicalBuildManifest, checkBuildNativeVersion, decodeBuildJson, matchBuildFiles,
   type BuildArtifact, type BuildManifest, type BuildPlan } from '../../core/src/build-manifest.js';
@@ -30,18 +31,19 @@ async function* directoryEntries(path: string) {
 function unchanged(before: Stats, after: Stats): boolean {
   return before.dev === after.dev && before.ino === after.ino && before.size === after.size && before.mtimeMs === after.mtimeMs && before.ctimeMs === after.ctimeMs;
 }
-async function readArtifactBytes(handle: FileHandle, expectedSize: number, retain: boolean): Promise<{ bytes: Uint8Array; size: number; sha256: string }> {
+async function readArtifactBytes(handle: FileHandle, expectedSize: number, retain: boolean, snapshot?: FileHandle): Promise<{ bytes: Uint8Array; size: number; sha256: string }> {
   const buffer = Buffer.alloc(Math.min(64 * 1024, expectedSize + 1));
   const retained = retain ? Buffer.alloc(expectedSize) : undefined;
   const hash = createHash('sha256');
   let size = 0;
   for (;;) {
-    const { bytesRead } = await buildPathOperation(handle.read(buffer, 0, Math.min(buffer.length, expectedSize - size + 1), null));
+    const { bytesRead } = await buildPathOperation(handle.read(buffer, 0, Math.min(buffer.length, expectedSize - size + 1), size));
     if (!bytesRead) break;
     size += bytesRead;
     if (size > expectedSize) buildFail('RN_BUILD_DIGEST');
     const chunk = buffer.subarray(0, bytesRead);
     hash.update(chunk);
+    if (snapshot) await snapshot.writeFile(chunk);
     if (retained) retained.set(chunk, size - bytesRead);
   }
   if (size !== expectedSize) buildFail('RN_BUILD_DIGEST');
@@ -144,9 +146,33 @@ export async function collectFileBuildManifest(plan: BuildPlan, outputDirectory:
     const handle = await buildPathOperation(open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)));
     try {
       if (!unchanged(before, await buildPathOperation(handle.stat()))) buildFail('RN_BUILD_PATH');
-      const { bytes, size, sha256 } = await readArtifactBytes(handle, before.size, inspect !== undefined && !inspect.inspectPath);
-      if (!unchanged(before, await buildPathOperation(handle.stat()))) buildFail('RN_BUILD_DIGEST');
-      const native = inspect ? await (inspect.inspectPath ? inspect.inspectPath(file) : inspect(bytes, assignment.file)) : null;
+      const snapshotDirectory = inspect?.inspectPath ? await mkdtemp(join(tmpdir(), 'steward-native-snapshot-')) : undefined;
+      const snapshotPath = snapshotDirectory ? join(snapshotDirectory, basename(file)) : undefined;
+      let snapshot: FileHandle | undefined;
+      let native: NativeVersionResult = null;
+      let size: number, sha256: string;
+      try {
+        if (snapshotPath) snapshot = await open(snapshotPath, 'wx+', 0o600);
+        const captured = await readArtifactBytes(handle, before.size, inspect !== undefined && !inspect.inspectPath, snapshot);
+        ({ size, sha256 } = captured);
+        if (!unchanged(before, await buildPathOperation(handle.stat()))) buildFail('RN_BUILD_DIGEST');
+        if (snapshot) await snapshot.sync();
+        const snapshotState = snapshot ? await snapshot.stat() : undefined;
+        if (snapshot && snapshotPath && snapshotState) {
+          await snapshot.close(); snapshot = undefined;
+          snapshot = await open(snapshotPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+          if (!unchanged(snapshotState, await snapshot.stat())) buildFail('RN_BUILD_DIGEST');
+        }
+        native = inspect ? await (snapshotPath ? inspect.inspectPath!(snapshotPath) : inspect(captured.bytes, assignment.file)) : null;
+        if (snapshot && snapshotPath && snapshotState) {
+          const verified = await readArtifactBytes(snapshot, size, false);
+          if (verified.sha256 !== sha256 || !unchanged(snapshotState, await snapshot.stat())
+            || !unchanged(snapshotState, await lstat(snapshotPath))) buildFail('RN_BUILD_DIGEST');
+        }
+      } finally {
+        await snapshot?.close();
+        if (snapshotDirectory) await rm(snapshotDirectory, { recursive: true, force: true });
+      }
       if (native && typeof native === 'object') {
         if (native.resourceOnly !== 'font-archive' || assignment.mediaType !== 'application/zip' || !assignment.file.endsWith('.zip')) buildFail('RN_BUILD_VERSION');
       } else checkBuildNativeVersion(plan, native);

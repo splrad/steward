@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { frozenFixture } from '../../core/test/release-receipt-fixture.js';
 import { releaseBuildCommand } from '../src/release-build-command.js';
+import { collectFileBuildManifest } from '../src/build-manifest.js';
+import { BuildContractError } from '../../core/src/build-manifest.js';
 
 const { request } = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock('../../github/src/index.js', async importOriginal => ({
@@ -36,6 +38,16 @@ beforeEach(async () => {
 afterEach(async () => { vi.unstubAllEnvs(); await rm(directory, { recursive: true, force: true }); });
 it('finishes only after the complete seed has been validated and saved', async () => {
   await invoke(); expect(request.mock.calls.at(-1)?.[1].action).toBe('finish');
+});
+it.each([true, false])('marks only deterministic validation failures for rejection: %s', async deterministic => {
+  const result = join(directory, 'step-output');
+  vi.stubEnv('GITHUB_OUTPUT', result);
+  vi.mocked(collectFileBuildManifest).mockRejectedValueOnce(deterministic
+    ? new BuildContractError('RN_BUILD_DIGEST') : new Error('temporary I/O failure'));
+  await expect(invoke()).rejects.toThrow();
+  const content = await readFile(result, 'utf8').catch(() => '');
+  expect(content.includes('verificationFailed=true')).toBe(deterministic);
+  expect(request.mock.calls.some(call => call[1]?.action === 'finish')).toBe(false);
 });
 it('recreates the seed for an accepted request when completion is rerun after delivery failure', async () => {
   await invoke();

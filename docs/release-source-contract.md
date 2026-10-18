@@ -60,7 +60,7 @@ Review 事件只调用 `inspect`。`reconcile` 先核验真人手动合并证据
 
 `release.yml` 的 generate 操作依次固定生成预算、运行隔离模型作业和创建候选。模型作业只注入个人 Copilot PAT；父进程用短时凭证访问生成账本，子进程使用独立空目录和配置，不继承该凭证、App 或发布凭据。CLI 固定为 1.0.91，禁用工具、内置 MCP、自动指令和会话恢复。增量迁移 `0011_release_generation.sql` 保存计划、调用预留、原始格式失败输出和成功输出；未知结果仍计次，完成批次跨重跑复用。结构解析只接受唯一 JSON 对象或明确 json 围栏，拒绝重复键和未知字段。
 
-构建执行层已接入四种 Profile 的参数编排、准确干净提交检查、独立输出目录、原生版本检查器及中央清单收集。`release-build.yml` 固定来源、构建请求和工具链，在隔离作业执行产品构建；`release-build-complete.yml` 回读运行与 artifact 身份，独立验证下载资产，自动生成包含 `source.json`、`frozen.json` 和资产的 seed bundle，再接续 generate。首发请求在 seed 来源摘要验证及文件写入成功后才 finish；此前失败可保存为 failed 并重试。GitHub 文件发布只接受一个非 OCI 构建单元。
+构建执行层已接入四种 Profile 的参数编排、准确干净提交检查、独立输出目录、原生版本检查器及中央清单收集。`release-build.yml` 固定来源、构建请求和工具链，在隔离作业执行产品构建；`release-build-complete.yml` 回读运行与 artifact 身份，独立验证下载资产，自动生成包含 `source.json`、`frozen.json` 和资产的 seed bundle，再接续 generate。首发请求在 seed 来源摘要验证及文件写入成功后才 finish；完成入口仅在资产验证明确报告 BuildContractError 时拒绝请求；artifact 下载、seed 写入及运行时服务故障保留为可重试状态。GitHub 文件发布只接受一个非 OCI 构建单元。
 
 有文件资产的首次发布从 `release-build.yml` 开始，构建完成后才进入 generate 和候选准备。候选准备 API 要求冻结清单与配置的 builds 完全一致，并验证中央成功运行及 artifact 身份；缺少所需构建清单会以 `BUILD_SET` 拒绝。配置无构建单元的仓库允许无资产候选。
 
@@ -77,3 +77,5 @@ Review 事件只调用 `inspect`。`reconcile` 先核验真人手动合并证据
 发布作业从可信收据计算总预算：二十分钟初始化/收尾余量，加上总资产按 4 MiB/s 下载构建 artifact 的时间，再加全部资产各自上传及回读预算。三个 1 GiB 资产为 65 分钟；128个32 MiB资产为328分钟，均覆盖既定总量并低于托管作业六小时上限。每次有效收据操作续租十分钟，下载每项资产前续租；过期租约不可恢复。安装令牌使用相同仓库和权限范围，每45分钟按需刷新。生成作业上限86分钟，覆盖最大56分钟模型预算和30分钟初始化/收尾余量。
 
 部署前须依次应用新增迁移 `0010_release_receipts.sql`、`0011_release_generation.sql`、`0012_release_build_requests.sql`、`0013_release_build_restart.sql` 和 `0014_release_generation_restart.sql`，再部署相同策略版本的 Worker 与工作流；随后在获准测试对象验证真实网页编辑、Review/手动合并、Actions 下载、D1 绑定及 GitHub 不可变 Release。正式产品发布另行执行对应授权阶段。
+
+原生版本检查读取独立临时快照：从已打开的产物句柄流式复制并同步计算摘要，关闭写句柄后检查快照，检查后再次核对快照身份和摘要。原始产物身份变化仍会拒绝；快照在检查结束后清理。

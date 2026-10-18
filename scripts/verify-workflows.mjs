@@ -268,6 +268,7 @@ for (const step of productBuild.jobs.build.steps) {
 if (buildCompletion.on.workflow_run?.workflows?.[0] !== 'SPLRAD Steward / Release Build' || buildCompletion.on.workflow_run?.types?.[0] !== 'completed'
   || !buildCompletion.jobs.accept.steps.some(step => step.name === '明确阻断策略漂移的完成回调' && step.env?.SOURCE_POLICY === '${{ github.event.workflow_run.head_sha }}' && step.env?.CURRENT_POLICY === '${{ github.workflow_sha }}' && step.run?.includes('RELEASE_POLICY_DRIFT'))
   || !buildCompletion.jobs.accept.if.includes("github.event.workflow_run.event == 'workflow_dispatch'")) throw new Error('构建完成回调未绑定可信运行');
+if (buildCompletion.jobs.accept.steps.find(step => step.run?.includes('--operation reject'))?.if !== "failure() && steps.accept.outputs.verificationFailed == 'true'") throw new Error('仅确定的产物验证失败可拒绝构建，基础设施故障必须可重试');
 for (const document of [productBuild, buildCompletion, genericBuild]) for (const job of Object.values(document.jobs)) {
   if (job.steps.find(step => step.uses?.startsWith('actions/checkout@'))?.with.ref !== '${{ github.workflow_sha }}' || job.steps.find(step => step.uses?.startsWith('actions/checkout@'))?.with['persist-credentials'] !== false) throw new Error('构建流程未固定中央策略');
   for (const step of job.steps) if (step.run && step.run.includes('${{')) throw new Error('构建输入未经环境变量隔离');

@@ -85,7 +85,7 @@ jobs:
           ATTEMPT: ${{ steps.resolved.outputs.attempt }}
         run: node packages/runner/dist/index.js release-candidate --operation revise-rebuild --policy-sha "$env:POLICY_SHA" --repository-id "$env:REPOSITORY_ID" --target-tag "$env:TARGET_TAG" --request-key "$env:REQUEST_KEY"
       - name: 保存构建验证失败并停止候选恢复
-        if: failure() && steps.resolved.outputs.ready == 'true' && steps.accept.outputs.reviewRequired != 'true'
+        if: failure() && steps.accept.outputs.verificationFailed == 'true'
         shell: pwsh
         env:
           APP_ID: "4243096"

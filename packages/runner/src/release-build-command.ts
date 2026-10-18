@@ -1,4 +1,4 @@
-import { planBuild, type BuildPlan } from '../../core/src/build-manifest.js';
+import { planBuild, BuildContractError, type BuildPlan, type BuildManifest } from '../../core/src/build-manifest.js';
 import { freezePersonalization } from '../../core/src/release-personalization.js';
 import { releaseProfiles } from '../../../config/release-profiles.js';
 import { execFile } from 'node:child_process';
@@ -159,7 +159,12 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
     const key = required('request-key'), state = await receipts.request<ReleaseBuildState>('build-request', { action: 'get', key });
     releaseAssert(state.request.plans.length === 1, 'BUILD_SET');
     const home = await mkdtemp(join(tmpdir(), 'steward-build-verify-'));
-    const manifest = await collectFileBuildManifest(state.request.plans[0]!, resolve(required('assets')), nativeReleaseInspector(resolve(required('inspector')), home));
+    let manifest: BuildManifest;
+    try { manifest = await collectFileBuildManifest(state.request.plans[0]!, resolve(required('assets')), nativeReleaseInspector(resolve(required('inspector')), home)); }
+    catch (error) {
+      if (error instanceof BuildContractError) await output({ verificationFailed: 'true' });
+      throw error;
+    }
     if (state.request.mode === 'initial') {
       const directory = resolve(required('output')); await mkdir(directory, { recursive: true });
       // Stage the complete seed before committing acceptance. The runtime independently
