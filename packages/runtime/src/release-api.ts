@@ -43,7 +43,7 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
         releaseAssert(canonicalReleaseJson(body.plan) === canonicalReleaseJson(current.ledger.plan), 'GENERATION_OCCUPIED'); return reply(200, current);
       }
       releaseAssert(['reserve', 'complete', 'diagnostic'].includes(body.action) && typeof body.input === 'string', 'GENERATION_REQUEST');
-      return reply(200, await generation.mutate(repositoryId, parts[1]!, body.version, body.action, body.input, body.index, body.inputDigest));
+      return reply(200, await generation.mutate(repositoryId, parts[1]!, body.version, body.action, body.input, body.index, body.inputDigest, { token: bearer, now: Date.now }));
     }
     const { repository, client: gh } = await authorizeSingleRepository(request, env, repositoryId);
     const store = new ReleaseReceiptStore(env.ISSUE_SNAPSHOTS);

@@ -11,6 +11,20 @@ import { ReleaseTestDb } from './release-test-db.js';
 const generated = { userNotes: { upgrade: [], changes: [{ category: '修复', text: '修复导出时丢失文件的问题。' }] }, reviewEvidence: { internalChanges: ['调整导出实现。'], unknowns: [] } };
 const output = JSON.stringify(generated);
 const plan = generationPlan('a'.repeat(64), sha('c'), ['complete source']);
+it('fences a previously authorized mutation after ticket expiry and replacement', async () => {
+  const db = new ReleaseTestDb(), store = new ReleaseGenerationStore(db.binding());
+  try {
+    await store.prepare(9001, 'v1.2.3', plan);
+    const old = await store.ticket(9001, 'v1.2.3', 1);
+    await store.authorize(9001, 'v1.2.3', old, 2, sha('c'));
+    const now = 1 + 60 * 60_000;
+    await expect(store.mutate(9001, 'v1.2.3', 0, 'reserve', 'complete source', undefined, undefined, { token: old, now: () => now })).rejects.toThrow('STALE');
+    const fresh = await store.ticket(9001, 'v1.2.3', now);
+    await expect(store.mutate(9001, 'v1.2.3', 0, 'reserve', 'complete source', undefined, undefined, { token: old, now: () => now + 1 })).rejects.toThrow('STALE');
+    expect((await store.read(9001, 'v1.2.3'))?.ledger.calls).toHaveLength(0);
+    expect((await store.mutate(9001, 'v1.2.3', 0, 'reserve', 'complete source', undefined, undefined, { token: fresh, now: () => now + 1 })).ledger.calls).toHaveLength(1);
+  } finally { db.database.close(); }
+});
 
 it('archives obsolete generation plans, revokes tickets and fences late writes with a durable restart budget', async () => {
   const db = new ReleaseTestDb(), store = new ReleaseGenerationStore(db.binding());

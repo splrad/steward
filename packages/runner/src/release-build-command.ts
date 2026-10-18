@@ -24,6 +24,14 @@ const environment = (key: string) => { releaseAssert(process.env[key], 'ENV_' + 
 async function output(values: Record<string, string>) {
   if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, Object.entries(values).map(([k,v]) => `${k}=${v}\n`).join(''));
 }
+async function writeSeed(path: string, value: string | Buffer): Promise<void> {
+  const bytes = Buffer.from(value);
+  try { await writeFile(path, bytes, { flag: 'wx' }); }
+  catch (error) {
+    if (!(error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST')) throw error;
+    releaseAssert((await readFile(path)).equals(bytes), 'SEED_CONFLICT');
+  }
+}
 async function scoped(repositoryId: number, policySha: string, actions: false | 'read' | 'write' = false) {
   const getToken = refreshingReleaseToken(() => createInstallationToken({ appId: environment('APP_ID'), privateKey: environment('STEWARD_APP_PRIVATE_KEY'), installationId: Number(environment('INSTALLATION_ID')), repositoryId,
     permissions: actions ? { actions, metadata: 'read' } : { contents: 'read', metadata: 'read' }, policySha }));
@@ -185,7 +193,7 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
       const chunks: Buffer[] = []; let total = 1;
       for (let part = 0; part < total; part++) { const row = await receipts.request<{ total: number; bytes_base64: string }>('', undefined, `objects/${frozen.sourceDigest}/${part}`); releaseAssert(row && row.total > 0 && row.total <= 2048, 'SOURCE_CHUNKS'); total = row.total; chunks.push(Buffer.from(row.bytes_base64, 'base64')); }
       const bytes = Buffer.concat(chunks); releaseAssert(receiptDigest(bytes) === frozen.sourceDigest, 'SOURCE_DIGEST');
-      await writeFile(join(directory, 'source.json'), bytes, { flag: 'wx' }); await writeFile(join(directory, 'frozen.json'), canonicalReleaseJson(frozen), { flag: 'wx' });
+      await writeSeed(join(directory, 'source.json'), bytes); await writeSeed(join(directory, 'frozen.json'), canonicalReleaseJson(frozen));
     }
     try { await receipts.request<ReleaseBuildState>('build-request', { action: 'finish', key, runId: Number(required('run-id')), attempt: Number(required('attempt')), artifactId: Number(required('artifact-id')), manifests: [manifest], toolchainDigest: releaseToolchainDigest }); }
     catch (error) {

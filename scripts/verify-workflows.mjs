@@ -275,6 +275,7 @@ for (const document of [productBuild, buildCompletion, genericBuild]) for (const
   for (const step of job.steps) if (step.run && step.run.includes('${{')) throw new Error('构建输入未经环境变量隔离');
 }
 if (generationJob.needs !== 'generation-ticket' || releaseSourceWorkflow.jobs['generated-candidate'].needs !== 'generate') throw new Error('生成预算和候选顺序无效');
+if (releaseSourceWorkflow.jobs['generation-ticket']['timeout-minutes'] !== 60 || releaseSourceWorkflow.jobs['generated-candidate']['timeout-minutes'] !== 60) throw new Error('完整seed消费作业须覆盖资产下载与校验预算');
 for (const step of generationJob.steps) {
   if (step.env && (!hasExactKeys(step.env, ['COPILOT_GITHUB_TOKEN']) || step.env.COPILOT_GITHUB_TOKEN !== '${{ secrets.COPILOT_GITHUB_TOKEN }}')) throw new Error('模型作业包含额外凭据');
   if (step.run && /release-candidate|reconcile|STEWARD_APP_PRIVATE_KEY/.test(step.run)) throw new Error('模型作业不得写候选或发布');

@@ -43,7 +43,7 @@ export class ReleaseGenerationStore {
     const next = (await this.read(repositoryId, tag))!;
     releaseAssert(generationPlanDigest(next.ledger.plan) === digest, 'GENERATION_OCCUPIED'); return next;
   }
-  async mutate(repositoryId: number, tag: string, version: number, action: 'reserve' | 'complete' | 'diagnostic', input: string, index?: number, inputDigest?: string) {
+  async mutate(repositoryId: number, tag: string, version: number, action: 'reserve' | 'complete' | 'diagnostic', input: string, index?: number, inputDigest?: string, lease?: { token: string; now: () => number }) {
     const current = await this.read(repositoryId, tag);
     releaseAssert(current && current.version === version, 'GENERATION_STALE');
     let ledger = current.ledger;
@@ -65,8 +65,8 @@ export class ReleaseGenerationStore {
       else ledger.calls[index!]!.diagnostic = input.slice(0, 1024);
     }
     const bytes = canonicalReleaseJson(ledger); releaseAssert(Buffer.byteLength(bytes) <= 512 * 1024, 'GENERATION_LIMIT');
-    const changed = await this.db.prepare('UPDATE release_generation SET record_json=?,version=version+1 WHERE repository_id=? AND target_tag=? AND version=?')
-      .bind(bytes, repositoryId, tag, version).run();
+    const changed = await this.db.prepare('UPDATE release_generation SET record_json=?,version=version+1 WHERE repository_id=? AND target_tag=? AND version=? AND (? IS NULL OR (ticket_digest=? AND ticket_until>?))')
+      .bind(bytes, repositoryId, tag, version, lease?.token ?? null, lease ? receiptDigest(lease.token) : null, lease ? lease.now() : 0).run();
     releaseAssert(changed.meta.changes === 1, 'GENERATION_STALE'); return { version: version + 1, ledger };
   }
 }

@@ -91,3 +91,5 @@ GitHub Release 构建请求在计划阶段仅接受根目录文件匹配规则�
 构建控制入口的GitHub与运行时请求共用按需刷新的单仓安装令牌，缓存45分钟，权限和POLICY_SHA保持原绑定。发布计划贡献者归属查询最多100条提交，超过时在查询前以CONTRIBUTOR_LIMIT明确拒绝；全部贡献者请求共享90秒取消预算，每次网络请求另受60秒上限约束。
 
 当前仓库目录Schema仅支持schemaVersion 4。旧v3目录须先迁移到v4再校验；退役的prAutomation/releaseProfile字段不再作为当前目录输入。
+
+验收重试复用逐字节一致的source.json/frozen.json，内容冲突明确拒绝；部分seed写入和finish临时失败可重试。生成ticket请求的账本mutation在同一UPDATE中核对token摘要及当前有效期，过期或被替换的旧请求不能提交。generation-ticket和generated-candidate消费完整seed的作业各60分钟，覆盖4GiB按4MiB/s下载约17分钟以及初始化、读取验证余量。

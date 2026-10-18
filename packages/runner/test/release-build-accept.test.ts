@@ -61,6 +61,20 @@ it('refreshes the same repository credentials on the receipt transport after lon
 it('finishes only after the complete seed has been validated and saved', async () => {
   await invoke(); expect(request.mock.calls.at(-1)?.[1].action).toBe('finish');
 });
+it.each(['source-only', 'finish-failed'])('reuses identical partial or complete seed on retry: %s', async mode => {
+  if (mode === 'source-only') await writeFile(join(directory, 'source.json'), 'source');
+  else {
+    const original = request.getMockImplementation()!;
+    request.mockImplementation(async (action, body, suffix) => {
+      if (body?.action === 'finish') throw new Error('temporary finish failure');
+      return original(action, body, suffix);
+    });
+    await expect(invoke()).rejects.toThrow('temporary finish failure');
+    request.mockImplementation(original);
+  }
+  await invoke();
+  expect(request.mock.calls.at(-1)?.[1].action).toBe('finish');
+});
 it.each([true, false])('marks only deterministic validation failures for rejection: %s', async deterministic => {
   const result = join(directory, 'step-output');
   vi.stubEnv('GITHUB_OUTPUT', result);
