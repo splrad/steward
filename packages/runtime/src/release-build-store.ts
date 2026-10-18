@@ -3,7 +3,7 @@ import { type ReleaseBuildRequest, type ReleaseBuildState } from '../../core/src
 export class ReleaseBuildStore {
   constructor(private readonly db: D1Database) {}
   async find(repositoryId: number, tag: string, runId: number, attempt: number): Promise<ReleaseBuildState | null> {
-    const rows = await this.db.prepare("SELECT record_json FROM release_build_requests WHERE repository_id=? AND target_tag=? AND EXISTS(SELECT 1 FROM json_each(json_extract(record_json,'$.attempts')) WHERE json_extract(value,'$.runId')=? AND json_extract(value,'$.attempt')=?)")
+    const rows = await this.db.prepare("SELECT record_json FROM release_build_requests WHERE repository_id=? AND target_tag=? AND json_extract(record_json,'$.status')!='superseded' AND EXISTS(SELECT 1 FROM json_each(json_extract(record_json,'$.attempts')) WHERE json_extract(value,'$.runId')=? AND json_extract(value,'$.attempt')=?)")
       .bind(repositoryId, tag, runId, attempt).all<{ record_json: string }>();
     releaseAssert(rows.results.length <= 1, 'BUILD_RUN_AMBIGUOUS'); return rows.results[0] ? JSON.parse(rows.results[0].record_json) : null;
   }

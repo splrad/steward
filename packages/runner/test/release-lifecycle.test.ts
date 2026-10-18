@@ -2,7 +2,21 @@ import { describe, expect, it, vi } from 'vitest';
 import { candidatePaths, receiptDigest } from '../../core/src/release-note-receipt.js';
 import { receiptFixture, sha } from '../../core/test/release-receipt-fixture.js';
 import { GitHubRequestError } from '../../github/src/client.js';
-import { createReleaseCandidate, verifyReleaseDownloads, releaseAssetTransferTimeout, type LifecycleSession } from '../src/release-lifecycle.js';
+import { createReleaseCandidate, verifyReleaseDownloads, releaseAssetTransferTimeout, releasePublishTimeoutMinutes, refreshingReleaseToken, type LifecycleSession } from '../src/release-lifecycle.js';
+
+it('covers aggregate upload, readback and artifact download budgets within the hosted job limit', () => {
+  const assets = Array.from({ length: 128 }, (_, i) => ({ name: String(i), size: 32 * 1024 ** 2, sha256: 'a'.repeat(64) }));
+  expect(releasePublishTimeoutMinutes(assets)).toBe(328);
+  expect(releasePublishTimeoutMinutes(assets.slice(0, 3).map(a => ({ ...a, size: 1024 ** 3 })))).toBe(65);
+  expect(() => releasePublishTimeoutMinutes([...assets, assets[0]!])).toThrow('ASSET_SIZE');
+});
+it('refreshes installation credentials before expiry and coalesces concurrent refreshes', async () => {
+  let now = 0, count = 0;
+  const get = refreshingReleaseToken(async () => `token-${++count}`, () => now);
+  expect(await Promise.all([get(), get()])).toEqual(['token-1', 'token-1']);
+  now = 44 * 60_000; expect(await get()).toBe('token-1');
+  now = 45 * 60_000; expect(await Promise.all([get(), get()])).toEqual(['token-2', 'token-2']);
+});
 
 it('budgets a full 1 GiB transfer at 4 MiB/s plus setup and rejects out-of-contract sizes', () => {
   expect(releaseAssetTransferTimeout(1024 ** 3)).toBe(316_000);
@@ -48,7 +62,10 @@ describe('published asset download verification', () => {
       requests.push({ url: String(url), headers: new Headers(init.headers) });
       return requests.length === 1 ? new Response(null, { status: 302, headers: { location: 'https://release-assets.githubusercontent.com/asset?signature=fixture' } }) : new Response('zip');
     });
-    await verifyReleaseDownloads(r(), 'private-token', transport);
+    const renew = vi.fn(async () => {}), credential = vi.fn(async () => 'private-token');
+    await verifyReleaseDownloads(r(), credential, transport, renew);
+    expect(renew).toHaveBeenCalledTimes(1); expect(credential).toHaveBeenCalledTimes(1);
+    expect(transport.mock.calls[0]![1].signal).toBe(transport.mock.calls[1]![1].signal);
     expect(requests[0]!.headers.get('authorization')).toBe('Bearer private-token'); expect(requests[1]!.headers.has('authorization')).toBe(false);
   });
   it.each(['wrong', 'zi', 'bad'])('rejects altered/truncated/oversized bytes %s', async bytes => {

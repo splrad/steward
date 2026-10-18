@@ -26,6 +26,7 @@ jobs:
     environment: { name: steward-release, deployment: false }
     outputs:
       shouldPublish: ${{ steps.receipt.outputs.shouldPublish }}
+      publishTimeoutMinutes: ${{ steps.receipt.outputs.publishTimeoutMinutes }}
       artifactId: ${{ steps.receipt.outputs.artifactId }}
       runId: ${{ steps.receipt.outputs.runId }}
     steps:
@@ -52,7 +53,7 @@ jobs:
     needs: inspect
     if: inputs.operation == 'reconcile' && needs.inspect.outputs.shouldPublish == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: ${{ fromJSON(needs.inspect.outputs.publishTimeoutMinutes) }}
     environment: { name: steward-release, deployment: false }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -176,7 +177,7 @@ jobs:
   generate:
     needs: generation-ticket
     runs-on: ubuntu-latest
-    timeout-minutes: 58
+    timeout-minutes: 86
     environment: { name: steward-release-notes, deployment: false }
     outputs:
       artifactId: ${{ steps.generated.outputs.artifact-id }}

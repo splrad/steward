@@ -164,6 +164,7 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
     releaseAssert(typeof body.token === 'string' && Number.isSafeInteger(body.version), 'CLAIM');
     const r = await store.assertClaim(repositoryId, tag, body.token, body.version, Date.now());
     releaseAssert(r.frozen.policySha === env.POLICY_SHA, 'POLICY_STALE');
+    if (action === 'renew-claim') return reply(200, r);
     const save = (next: ReleaseReceipt) => store.save(r, next, body.token, Date.now());
     if (action === 'ensure-assets') {
       canPrepare();

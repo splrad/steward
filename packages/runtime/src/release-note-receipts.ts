@@ -44,8 +44,8 @@ export class ReleaseReceiptStore {
     return { token, receipt: (await this.get(repositoryId, tag))! };
   }
   async assertClaim(repositoryId: number, tag: string, token: string, version: number, now: number): Promise<ReleaseReceipt> {
-    const row = await this.db.prepare('SELECT version FROM release_receipts WHERE repository_id=? AND target_tag=? AND current=1 AND lease_token=? AND lease_until>?')
-      .bind(repositoryId, tag, token, now).first<{ version: number }>();
+    const row = await this.db.prepare('UPDATE release_receipts SET lease_until=? WHERE repository_id=? AND target_tag=? AND current=1 AND lease_token=? AND lease_until>? AND version=? RETURNING version')
+      .bind(now + 10 * 60_000, repositoryId, tag, token, now, version).first<{ version: number }>();
     releaseAssert(row?.version === version, 'CLAIM_STALE');
     return (await this.get(repositoryId, tag))!;
   }

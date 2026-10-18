@@ -8,6 +8,15 @@ import { validateReleaseSource, validateReleaseEvidence } from '../../core/src/r
 import { GitHubClient, uploadReleaseAsset } from '../../github/src/index.js';
 import { optionalReleaseRead } from '../../github/src/release-candidate.js';
 
+export function refreshingReleaseToken(issue: () => Promise<string>, now = Date.now): () => Promise<string> {
+  let token: string | undefined, refreshAt = 0, pending: Promise<string> | undefined;
+  return async () => {
+    if (token && now() < refreshAt) return token;
+    if (!pending) pending = issue().then(value => { token = value; refreshAt = now() + 45 * 60_000; return value; }).finally(() => { pending = undefined; });
+    return pending;
+  };
+}
+
 export class ReleaseReceiptClient {
   constructor(private readonly base: string, private readonly token: string, readonly repositoryId: number, readonly tag: string, private readonly transport: typeof fetch = fetch) {
     const url = new URL(base); releaseAssert(url.protocol === 'https:' && url.pathname === '/' && !url.search && !url.hash && !url.username && !url.password, 'RUNTIME_URL');
@@ -149,8 +158,11 @@ export async function publishReleaseCandidate(input: { gh: GitHubClient; session
   await input.verifyDownloads(r);
   return session.act('verify', { downloaded: r.frozen.assets.map(a => a.sha256) });
 }
-export async function verifyReleaseDownloads(receipt: ReleaseReceipt, token: string, transport: typeof fetch = fetch): Promise<void> {
+export async function verifyReleaseDownloads(receipt: ReleaseReceipt, token: string | (() => Promise<string>), transport: typeof fetch = fetch, beforeAsset: () => Promise<unknown> = async () => {}): Promise<void> {
   for (const asset of receipt.frozen.assets) {
+    await beforeAsset();
+    const credential = typeof token === 'string' ? token : await token();
+    const signal = AbortSignal.timeout(releaseAssetTransferTimeout(asset.size));
     const id = receipt.assetIds[asset.name]; releaseAssert(id, 'DOWNLOAD_ID');
     let url = `https://api.github.com/repos/${receipt.frozen.fullName}/releases/assets/${id}`;
     let response: Response | undefined;
@@ -158,7 +170,7 @@ export async function verifyReleaseDownloads(receipt: ReleaseReceipt, token: str
       const parsed = new URL(url);
       releaseAssert(parsed.protocol === 'https:' && !parsed.username && !parsed.password && !parsed.port && !parsed.hash &&
         (hop === 0 ? parsed.hostname === 'api.github.com' : ['release-assets.githubusercontent.com', 'objects.githubusercontent.com'].includes(parsed.hostname)), 'DOWNLOAD_URL');
-      response = await transport(url, { redirect: 'manual', signal: AbortSignal.timeout(120_000), headers: hop === 0 ? { ...githubHeaders(token, receipt.frozen.policySha), Accept: 'application/octet-stream' } : {} });
+      response = await transport(url, { redirect: 'manual', signal, headers: hop === 0 ? { ...githubHeaders(credential, receipt.frozen.policySha), Accept: 'application/octet-stream' } : {} });
       if (![301, 302, 303, 307, 308].includes(response.status)) break;
       const location = response.headers.get('location'); releaseAssert(location, 'DOWNLOAD_REDIRECT'); url = new URL(location, url).href;
       await response.body?.cancel();
@@ -175,10 +187,18 @@ export function releaseAssetTransferTimeout(size: number): number {
   releaseAssert(Number.isSafeInteger(size) && size > 0 && size <= 1024 ** 3, 'ASSET_SIZE');
   return 60_000 + Math.ceil(size / (4 * 1024 ** 2)) * 1000;
 }
-export function releaseUploader(token: string, policySha: string, directory: string) {
+export function releasePublishTimeoutMinutes(assets: FrozenRelease['assets']): number {
+  const total = assets.reduce((sum, a) => sum + a.size, 0);
+  releaseAssert(assets.length <= 128 && total <= 4 * 1024 ** 3, 'ASSET_SIZE');
+  // Initial artifact download, per-file upload/readback, and setup/finalization.
+  const milliseconds = 20 * 60_000 + Math.ceil(total / (4 * 1024 ** 2)) * 1000
+    + 2 * assets.reduce((sum, a) => sum + releaseAssetTransferTimeout(a.size), 0);
+  return Math.ceil(milliseconds / 60_000);
+}
+export function releaseUploader(token: string | (() => Promise<string>), policySha: string, directory: string) {
   return async (release: any, asset: FrozenRelease['assets'][number]) => {
     const base = String(release.upload_url).split('{')[0]!, url = new URL(base);
     releaseAssert(url.origin === 'https://uploads.github.com' && /^\/repos\/[^/]+\/[^/]+\/releases\/\d+\/assets$/.test(url.pathname) && !url.username && !url.password && !url.search && !url.hash, 'UPLOAD_URL');
-    return uploadReleaseAsset({ token, policySha, uploadUrl: release.upload_url, filePath: join(directory, asset.name), fileName: asset.name, expectedSha256: asset.sha256, transport: (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(releaseAssetTransferTimeout(asset.size)) }) });
+    return uploadReleaseAsset({ token: typeof token === 'string' ? token : await token(), policySha, uploadUrl: release.upload_url, filePath: join(directory, asset.name), fileName: asset.name, expectedSha256: asset.sha256, transport: (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(releaseAssetTransferTimeout(asset.size)) }) });
   };
 }

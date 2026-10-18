@@ -5,7 +5,7 @@ import { releaseAssert, releaseSha, positiveId, newReleaseReceipt, type FrozenRe
 import { validateReleaseSource, validateReleaseEvidence } from '../../core/src/release-bundle.js';
 import { currentReleaseBuild } from '../../core/src/release-rebuild.js';
 import { generationInputs, generationPlan, generationPlanDigest } from '../../core/src/release-production.js';
-import { ReleaseReceiptClient, withReleaseClaim, writeCandidateReviewCheck, prepareReleaseCandidate, createReleaseCandidate, publishReleaseCandidate, verifyReleaseDownloads, verifyReleaseAssetFiles, releaseUploader } from './release-lifecycle.js';
+import { ReleaseReceiptClient, withReleaseClaim, writeCandidateReviewCheck, prepareReleaseCandidate, createReleaseCandidate, publishReleaseCandidate, verifyReleaseDownloads, verifyReleaseAssetFiles, releaseUploader, releasePublishTimeoutMinutes, refreshingReleaseToken } from './release-lifecycle.js';
 
 /** This command never runs code from the candidate or product checkout. */
 export async function releaseCandidateCommand(args: Readonly<Record<string, string>>): Promise<void> {
@@ -13,11 +13,15 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
   const environment = (key: string) => { const v = process.env[key]; releaseAssert(v, 'ENV_' + key); return v; };
   const repositoryId = Number(required('repository-id')), policySha = required('policy-sha'), tag = required('target-tag'), operation = required('operation');
   releaseAssert(positiveId(repositoryId) && releaseSha(policySha) && ['prepare', 'revise', 'inspect', 'plan', 'reconcile', 'pause', 'resume', 'retry-create', 'export', 'rebind-build', 'generator-ticket', 'recover-assets', 'revise-rebuild', 'recover-candidate'].includes(operation), 'COMMAND');
-  const token = await createInstallationToken({ appId: environment('APP_ID'), privateKey: environment('STEWARD_APP_PRIVATE_KEY'), installationId: Number(environment('INSTALLATION_ID')), repositoryId,
-    permissions: { metadata: 'read', contents: ['recover-candidate', 'prepare', 'revise', 'revise-rebuild', 'reconcile'].includes(operation) ? 'write' : 'read', pull_requests: ['recover-candidate', 'prepare', 'revise', 'revise-rebuild'].includes(operation) ? 'write' : 'read', checks: ['inspect', 'plan', 'reconcile'].includes(operation) ? 'write' : 'read' }, policySha });
-  const transport: typeof fetch = (input, init = {}) => fetch(input, { ...init, signal: init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000) });
+  const getToken = refreshingReleaseToken(() => createInstallationToken({ appId: environment('APP_ID'), privateKey: environment('STEWARD_APP_PRIVATE_KEY'), installationId: Number(environment('INSTALLATION_ID')), repositoryId,
+    permissions: { metadata: 'read', contents: ['recover-candidate', 'prepare', 'revise', 'revise-rebuild', 'reconcile'].includes(operation) ? 'write' : 'read', pull_requests: ['recover-candidate', 'prepare', 'revise', 'revise-rebuild'].includes(operation) ? 'write' : 'read', checks: ['inspect', 'plan', 'reconcile'].includes(operation) ? 'write' : 'read' }, policySha }));
+  const token = await getToken();
+  const transport: typeof fetch = async (input, init = {}) => {
+    const headers = new Headers(init.headers); headers.set('authorization', `Bearer ${await getToken()}`);
+    return fetch(input, { ...init, headers, signal: init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000) });
+  };
   const gh = new GitHubClient(token, 'https://api.github.com', transport, policySha);
-  const receipts = new ReleaseReceiptClient(environment('RUNTIME_URL'), token, repositoryId, tag);
+  const receipts = new ReleaseReceiptClient(environment('RUNTIME_URL'), token, repositoryId, tag, transport);
   if (operation === 'generator-ticket') {
     const bundle = resolve(required('bundle'));
     const frozen = JSON.parse(await readFile(join(bundle, 'frozen.json'), 'utf8')) as FrozenRelease;
@@ -85,13 +89,13 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
       }
       if (operation !== 'reconcile' || !['merged', 'publishing', 'verified'].includes(session.receipt.phase) || session.receipt.paused) return session.receipt;
       const directory = resolve(required('assets'));
-      return publishReleaseCandidate({ gh, session, assetDirectory: directory, upload: releaseUploader(token, policySha, directory), verifyDownloads: r => verifyReleaseDownloads(r, token) });
+      return publishReleaseCandidate({ gh, session, assetDirectory: directory, upload: releaseUploader(getToken, policySha, directory), verifyDownloads: r => verifyReleaseDownloads(r, getToken, fetch, () => session.act('renew-claim')) });
     });
   }
   if (operation === 'plan' && !result.paused && ['merged', 'publishing'].includes(result.phase)) result = await withReleaseClaim(receipts, s => s.act('ensure-assets'));
   const shouldPublish = operation === 'plan' && !result.paused && !result.assetRecoveryPending && ['merged', 'publishing'].includes(result.phase);
   const build = currentReleaseBuild(result);
-  const outputs = { phase: result.phase, shouldPublish: String(shouldPublish), artifactId: String(build?.artifactId ?? ''), runId: String(build?.runId ?? ''), artifactName: build?.artifactName ?? '' };
+  const outputs = { phase: result.phase, shouldPublish: String(shouldPublish), publishTimeoutMinutes: String(releasePublishTimeoutMinutes(result.frozen.assets)), artifactId: String(build?.artifactId ?? ''), runId: String(build?.runId ?? ''), artifactName: build?.artifactName ?? '' };
   if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, Object.entries(outputs).map(([k,v]) => `${k}=${v}\n`).join(''));
   process.stdout.write(JSON.stringify({ candidateId: result.candidateId, revision: result.revision, phase: result.phase, paused: result.paused, error: result.error }) + '\n');
 }

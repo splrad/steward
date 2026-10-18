@@ -8,6 +8,19 @@ import { ReleaseReceiptStore } from '../src/release-note-receipts.js';
 import { ReleaseTestDb } from './release-test-db.js';
 
 describe('D1 durable release receipts', () => {
+  it('renews a live matching lease during long transfers but never revives an expired lease', async () => {
+    const db = new ReleaseTestDb(), store = new ReleaseReceiptStore(db.binding());
+    try {
+      await store.prepare(receiptFixture(), 'now');
+      const a = await store.claim(9001, 'v1.2.3', 0);
+      for (const now of [300_000, 600_000, 900_000]) {
+        expect(await store.assertClaim(9001, 'v1.2.3', a.token, a.receipt.version, now)).toEqual(a.receipt);
+        await expect(store.claim(9001, 'v1.2.3', now + 1)).rejects.toThrow('CLAIM_BUSY');
+      }
+      await expect(store.assertClaim(9001, 'v1.2.3', a.token, a.receipt.version, 1_500_001)).rejects.toThrow('CLAIM_STALE');
+      await expect(store.claim(9001, 'v1.2.3', 1_500_001)).resolves.toBeDefined();
+    } finally { db.database.close(); }
+  });
   it('persists across restart; exact repeat resumes and different input cannot occupy a version', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'release-receipt-')), path = join(dir, 'receipt.sqlite');
     let db = new ReleaseTestDb(path);

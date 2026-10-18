@@ -278,6 +278,9 @@ for (const step of generationJob.steps) {
   if (step.run && /release-candidate|reconcile|STEWARD_APP_PRIVATE_KEY/.test(step.run)) throw new Error('模型作业不得写候选或发布');
 }
 if (releaseSourceWorkflow.jobs.publish.if !== "inputs.operation == 'reconcile' && needs.inspect.outputs.shouldPublish == 'true'") throw new Error("Review 观察不得直接发布");
+if (releaseSourceWorkflow.jobs.generate['timeout-minutes'] !== 86
+  || releaseSourceWorkflow.jobs.publish['timeout-minutes'] !== '${{ fromJSON(needs.inspect.outputs.publishTimeoutMinutes) }}'
+  || releaseSourceWorkflow.jobs.inspect.outputs.publishTimeoutMinutes !== '${{ steps.receipt.outputs.publishTimeoutMinutes }}') throw new Error('发布及生成作业必须覆盖冻结预算和初始化余量');
 const releaseDownload = releaseSourceWorkflow.jobs.publish.steps.find(step => step.uses?.startsWith("actions/download-artifact@"));
 const recoverAssets = releaseSourceWorkflow.jobs.publish.steps.find(step => step.run?.includes('--operation recover-assets'));
 const publishAssets = releaseSourceWorkflow.jobs.publish.steps.find(step => step.run?.includes('--operation reconcile'));

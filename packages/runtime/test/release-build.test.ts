@@ -81,7 +81,8 @@ it('archives obsolete requests atomically, fences callbacks, and retains a bound
   }
   expect(state.restartCount).toBe(3);
   await expect(store.prepare(await replacement(state, '9'))).rejects.toThrow('BUILD_RESTART_BUDGET');
-  expect(await store.find(9001, 'v1.2.3', 10, 1)).toMatchObject({ status: 'superseded' });
+  expect(await store.find(9001, 'v1.2.3', 10, 1)).toBeNull();
+  expect(await store.get(original.request.key, 9001, 'v1.2.3')).toMatchObject({ status: 'superseded' });
   await expect(store.save(original, { ...original, status: 'accepted' })).rejects.toThrow('BUILD_REQUEST_STALE');
   await expect(store.prepare(original.request)).rejects.toThrow('BUILD_REQUEST_OCCUPIED');
   for (const operation of ['get', 'begin', 'finish', 'fail', 'reject']) {
