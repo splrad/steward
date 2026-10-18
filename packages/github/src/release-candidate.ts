@@ -2,6 +2,16 @@ import { createHash } from 'node:crypto';
 import { candidatePaths, canonicalReleaseJson, candidateProjection, releaseAssert, releaseSha, type CandidateReviewFacts, type ReleaseReceipt } from '../../core/src/release-note-receipt.js';
 import { GitHubClient, GitHubRequestError } from './client.js';
 import { decodeClassificationCheckEnvelope } from '../../core/src/check-envelope.js';
+import { comparePublicVersions, parsePublicVersion } from '../../core/src/release-version.js';
+
+export async function assertIncreasingReleaseVersion(gh: Pick<GitHubClient, 'listReleases'>, owner: string, repo: string, tag: string, ownReleaseId?: number | null): Promise<void> {
+  const target = parsePublicVersion(tag.slice(1));
+  for (const release of await gh.listReleases(owner, repo)) {
+    if (release.draft || release.prerelease || release.id === ownReleaseId) continue;
+    releaseAssert(/^v\d+\.\d+\.\d+$/.test(release.tag_name)
+      && comparePublicVersions(target, parsePublicVersion(release.tag_name.slice(1))) > 0, 'VERSION_NOT_INCREASING');
+  }
+}
 
 export async function optionalReleaseRead<T>(read: () => Promise<T>): Promise<T | null> {
   try { return await read(); } catch (error) { if (error instanceof GitHubRequestError && error.status === 404) return null; throw error; }

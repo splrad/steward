@@ -46,6 +46,8 @@ Review 事件只调用 `inspect`。`reconcile` 先核验真人手动合并证据
 
 创建、上传和发布响应丢失后先回读远程对象。创建结果仍未知且没有可绑定对象时保留意图，自动重试不会再次创建。已发布内容漂移只报告，不覆盖人工编辑。
 
+初始构建已 accepted、但 seed 上传或后续派发失败时，重跑 `release-build-complete.yml` 全部作业，或手动派发该工作流并传入原 `release-build.yml` 的 runId。完成入口重新定位原请求与构建 artifact，复算资产并重建 seed；同一构建的 finish 可幂等调用，随后重新上传和接续 generate。无需将 accepted 改回 failed。此恢复要求原构建 artifact 仍可用且策略同步；artifact 已过期时明确失败，须人工处理。
+
 沿用现有 Worker 定时入口，每批最多二十个候选，同对象至少间隔十五分钟；覆盖已绑定待审、已批准、已合并和发布中状态，以发现漏失事件。pending 能力只观察，active 才能调度 reconcile。暂停和旧策略记录不自动恢复。
 
 ## 本地验证与尚未完成的环节

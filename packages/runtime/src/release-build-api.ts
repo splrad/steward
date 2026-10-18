@@ -9,7 +9,7 @@ import { ReleaseBuildStore } from './release-build-store.js';
 import { ReleaseReceiptStore } from './release-note-receipts.js';
 import { type BodyWriteRuntimeEnv } from './pr-body-api.js';
 import { releaseTree, readCandidateBlob, optionalReleaseRead } from '../../github/src/release-candidate.js';
-import { comparePublicVersions, parsePublicVersion } from '../../core/src/release-version.js';
+import { assertIncreasingReleaseVersion } from '../../github/src/release-candidate.js';
 import { matchBuildFiles } from '../../core/src/build-manifest.js';
 
 export async function centralBuildClient(env: BodyWriteRuntimeEnv, write = false): Promise<GitHubClient> {
@@ -33,9 +33,7 @@ export async function handleReleaseBuildAction(env: BodyWriteRuntimeEnv, gh: Git
     const [owner, repo] = f.fullName.split('/') as [string, string];
     releaseAssert(!await optionalReleaseRead(() => gh.getReleaseByTag(owner, repo, tag))
       && !await optionalReleaseRead(() => gh.getGitRef(owner, repo, `tags/${tag}`)), 'VERSION_OCCUPIED');
-    const latest = await optionalReleaseRead(() => gh.getLatestRelease(owner, repo));
-    if (latest) releaseAssert(/^v\d+\.\d+\.\d+$/.test(latest.tag_name)
-      && comparePublicVersions(parsePublicVersion(tag.slice(1)), parsePublicVersion(latest.tag_name.slice(1))) > 0, 'VERSION_NOT_INCREASING');
+    await assertIncreasingReleaseVersion(gh, owner, repo, tag);
     const head = await gh.getGitRef(owner, repo, `heads/${f.defaultBranch}`);
     releaseAssert(head.object.sha === f.productTargetSha, 'BUILD_TARGET_STALE');
     const tree = await releaseTree(gh, owner, repo, f.productTargetSha);

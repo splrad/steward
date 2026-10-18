@@ -6,7 +6,7 @@ import { ReleaseReceiptStore, releaseObjectLimits } from './release-note-receipt
 import { assertReleasePermit, candidatePaths, candidateProjection, canonicalReleaseJson, newReleaseReceipt, positiveId, receiptDigest, releaseAssert, releaseSha, reviewReleaseReceipt, type ReleaseReceipt } from '../../core/src/release-note-receipt.js';
 import { validateReleaseSource, validateReleaseEvidence } from '../../core/src/release-bundle.js';
 import { planBuild, matchBuildFiles } from '../../core/src/build-manifest.js';
-import { comparePublicVersions, parsePublicVersion } from '../../core/src/release-version.js';
+import { assertIncreasingReleaseVersion } from '../../github/src/release-candidate.js';
 import { readReleaseCandidateFacts, releaseTree, changedTreePaths, readCandidateBlob, optionalReleaseRead } from '../../github/src/release-candidate.js';
 import { GitHubRequestError, GitHubClient, createInstallationToken, dispatchWorkflow } from '../../github/src/index.js';
 import catalog from '../../../config/repositories.json' with { type: 'json' };
@@ -98,8 +98,7 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
       releaseAssert(commit.sha === r.frozen.productTargetSha && commit.tree?.sha === r.frozen.productTree, 'PRODUCT_TREE');
       const product = await releaseTree(gh, owner, repo, r.frozen.productTargetSha);
       releaseAssert(await readCandidateBlob(gh, owner, repo, product, 'VERSION') === r.frozen.targetTag.slice(1) + '\n', 'VERSION_BINDING');
-      const latest = await optionalReleaseRead(() => gh.getLatestRelease(owner, repo));
-      if (latest) releaseAssert(/^v\d+\.\d+\.\d+$/.test(latest.tag_name) && comparePublicVersions(parsePublicVersion(r.frozen.targetTag.slice(1)), parsePublicVersion(latest.tag_name.slice(1))) > 0, 'VERSION_NOT_INCREASING');
+      await assertIncreasingReleaseVersion(gh, owner, repo, r.frozen.targetTag);
       const source = validateReleaseSource(await store.readObject(repositoryId, r.frozen.sourceDigest), r.frozen);
       const boundaryTree = source.boundary.kind === 'full-tree' ? { entries: [], object: null } : await releaseTree(gh, owner, repo, source.boundary.sha);
       const changed = changedTreePaths(boundaryTree, product);
@@ -259,8 +258,7 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
         for (let depth = 0; object?.type === 'tag' && depth < 5; depth++) object = (await gh.request<any>('GET', `/repos/${owner}/${repo}/git/tags/${object.sha}`)).object;
         releaseAssert(object?.type === 'commit' && object.sha === boundary.sha, 'BOUNDARY_DRIFT');
       }
-      const latest = await optionalReleaseRead(() => gh.getLatestRelease(owner, repo));
-      if (latest && latest.id !== r.releaseId) releaseAssert(/^v\d+\.\d+\.\d+$/.test(latest.tag_name) && comparePublicVersions(parsePublicVersion(tag.slice(1)), parsePublicVersion(latest.tag_name.slice(1))) > 0, 'VERSION_NOT_INCREASING');
+      await assertIncreasingReleaseVersion(gh, owner, repo, tag, r.releaseId);
       const fresh = reviewReleaseReceipt({ ...r, phase: 'awaiting-review' }, await readReleaseCandidateFacts(gh, r, Number(env.APP_ID), botId));
       assertReleasePermit(fresh);
       releaseAssert(fresh.approvedNotes === r.approvedNotes && fresh.headSha === r.headSha && fresh.merge?.commitSha === r.merge?.commitSha, 'APPROVAL_DRIFT');

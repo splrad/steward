@@ -37,6 +37,16 @@ afterEach(async () => { vi.unstubAllEnvs(); await rm(directory, { recursive: tru
 it('finishes only after the complete seed has been validated and saved', async () => {
   await invoke(); expect(request.mock.calls.at(-1)?.[1].action).toBe('finish');
 });
+it('recreates the seed for an accepted request when completion is rerun after delivery failure', async () => {
+  await invoke();
+  await rm(join(directory, 'source.json')); await rm(join(directory, 'frozen.json'));
+  const original = request.getMockImplementation()!;
+  request.mockImplementation(async (action, body, suffix) => body?.action === 'get'
+    ? { ...state, status: 'accepted' } : original(action, body, suffix));
+  await invoke();
+  expect(request.mock.calls.filter(call => call[1]?.action === 'finish')).toHaveLength(2);
+  expect(await readFile(join(directory, 'source.json'), 'utf8')).toBe('source');
+});
 it.each(['download', 'digest', 'source.json', 'frozen.json'])('does not accept when seed preparation fails at %s', async failure => {
   if (failure === 'download' || failure === 'digest') {
     request.mockImplementation(async (_action, body, suffix) => {

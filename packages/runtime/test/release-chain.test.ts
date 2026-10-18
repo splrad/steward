@@ -32,6 +32,7 @@ beforeEach(async () => {
     getReleaseByTag: async () => remote ?? missing(),
     getGitRef: async () => remote?.draft === false ? { object: { type: 'commit', sha: sha('a') } } : missing(),
     getLatestRelease: async () => remote?.draft === false ? remote : missing(),
+    listReleases: async () => remote ? [remote] : [],
     request: async (_method: string, path: string) => path.endsWith('/releases/99') ? remote ?? missing() : missing(),
     createRelease: async (_owner: string, _repo: string, value: any) => {
       creates++; remote = { ...value, id: 99, author: { id: 301115370 }, html_url: 'https://github.com/sample/neutral-product/releases/tag/v1.2.3', upload_url: 'https://uploads.github.com/repos/sample/neutral-product/releases/99/assets{?name}', assets: [] };
@@ -87,6 +88,13 @@ async function publish() {
 }
 
 describe('receipt API and publisher with SQLite persistence', () => {
+  it('blocks publication when a higher stable release is not GitHub latest', async () => {
+    await seed(); await approveAndMerge();
+    state.gh.listReleases = async () => [{ id: 100, tag_name: 'v3.0.0', draft: false, prerelease: false }];
+    state.gh.getLatestRelease = async () => ({ id: 101, tag_name: 'v1.0.0' });
+    await expect(publish()).rejects.toThrow('VERSION_NOT_INCREASING');
+    expect(creates + publishes + uploads).toBe(0);
+  });
   it('prepares from content-addressed source/evidence, verifies VERSION, and resumes the same durable candidate', async () => {
     const f = frozenFixture();
     const raw = Buffer.from(`tree ${sha('b')}\nauthor Fixture <fixture@example.invalid> 0 +0000\ncommitter Fixture <fixture@example.invalid> 0 +0000\n\ninitial\n`);

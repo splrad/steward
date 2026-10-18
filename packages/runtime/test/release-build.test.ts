@@ -42,7 +42,7 @@ beforeEach(() => {
   } } };
   run = { id: 10, run_attempt: 1, repository: { id: 1296724484 }, event: 'workflow_dispatch', head_sha: sha('c'), path: '.github/workflows/release-build.yml', status: 'in_progress', conclusion: null };
   artifact = { id: 20, name: 'release-build-result-1', expired: false, workflow_run: { id: 10, head_sha: sha('c') } };
-  mock.central = { request: vi.fn(async (_method: string, path: string) => {
+  mock.central = { listReleases: async () => [], request: vi.fn(async (_method: string, path: string) => {
     if (path.includes('/actions/runs/')) return run;
     if (path.endsWith('/artifacts/2')) return { expired: true };
     if (path.includes('/actions/artifacts/')) return artifact;
@@ -91,7 +91,7 @@ it.each(['release', 'tag', 'same-version', 'older-version'])('rejects %s before 
   mock.central.getGitRef = async (_o: string, _r: string, ref: string) => {
     expect(ref).toBe('tags/v1.2.3'); return occupied === 'tag' ? { object: { sha: sha('a') } } : missing();
   };
-  mock.central.getLatestRelease = async () => ({ tag_name: occupied === 'older-version' ? 'v1.2.4' : 'v1.2.3' });
+  mock.central.listReleases = async () => [{ id: 1, draft: false, prerelease: false, tag_name: occupied === 'older-version' ? 'v1.2.4' : 'v1.2.3' }];
   const frozen = { ...frozenFixture(), toolchainDigest: releaseToolchainDigest };
   await expect(action({ action: 'prepare', frozen })).rejects.toThrow(occupied === 'release' || occupied === 'tag' ? 'VERSION_OCCUPIED' : 'VERSION_NOT_INCREASING');
   expect(db.database.prepare('SELECT COUNT(*) AS n FROM release_build_requests').get()?.n).toBe(0);
