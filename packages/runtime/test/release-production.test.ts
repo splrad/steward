@@ -14,7 +14,7 @@ const plan = generationPlan('a'.repeat(64), sha('c'), ['complete source']);
 function client(store: ReleaseGenerationStore) {
   return { request: async <T>(_action?: string, value?: unknown): Promise<T> => {
     const b = value as any;
-    return (b.action === 'prepare' ? await store.prepare(9001, 'v1.2.3', b.plan) : await store.mutate(9001, 'v1.2.3', b.version, b.action, b.input, b.index)) as T;
+    return (b.action === 'prepare' ? await store.prepare(9001, 'v1.2.3', b.plan) : await store.mutate(9001, 'v1.2.3', b.version, b.action, b.input, b.index, b.inputDigest)) as T;
   } };
 }
 describe('release production protocol and durable budget', () => {
@@ -43,6 +43,18 @@ describe('release production protocol and durable budget', () => {
       const synthesis = JSON.parse(prompts[count]!);
       expect(synthesis.batches).toHaveLength(count);
       expect(synthesis.batches[0]).toEqual(summary);
+    } finally { db.database.close(); }
+  });
+  it('rejects results and diagnostics bound to another reserved prompt', async () => {
+    const db = new ReleaseTestDb(); const store = new ReleaseGenerationStore(db.binding());
+    try {
+      await store.prepare(9001, 'v1.2.3', plan);
+      const state = await store.mutate(9001, 'v1.2.3', 0, 'reserve', 'source');
+      for (const action of ['complete', 'diagnostic'] as const) {
+        await expect(store.mutate(9001, 'v1.2.3', state.version, action, output, 0, 'f'.repeat(64))).rejects.toThrow('GENERATION_INPUT_BINDING');
+      }
+      expect((await store.read(9001, 'v1.2.3'))?.ledger.calls[0]?.output).toBeNull();
+      await expect(store.mutate(9001, 'v1.2.3', state.version, 'complete', output, 0, state.ledger.calls[0]!.inputDigest)).resolves.toBeDefined();
     } finally { db.database.close(); }
   });
   it('reuses completed output after a fresh store instance without calling the producer', async () => {

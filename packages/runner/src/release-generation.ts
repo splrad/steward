@@ -58,7 +58,7 @@ export async function generateRelease(plan: GenerationPlan, receipts: Pick<Relea
       releaseAssert(Buffer.byteLength(prompt) <= 128 * 1024, 'GENERATION_REPAIR_LIMIT');
       try { output = await invoke(prompt); }
       catch (error) {
-        await receipts.request('generation', { action: 'diagnostic', input: 'provider-outcome-unknown', index, version: state.version });
+        await receipts.request('generation', { action: 'diagnostic', input: 'provider-outcome-unknown', index, inputDigest: digest, version: state.version });
         throw error;
       }
       let value: GeneratedRelease;
@@ -67,10 +67,10 @@ export async function generateRelease(plan: GenerationPlan, receipts: Pick<Relea
         releaseAssert(plan.inputs.length === 1 || !plan.inputs.includes(input) || Buffer.byteLength(canonicalReleaseJson(value)) <= 8 * 1024, 'GENERATION_BATCH_OUTPUT');
       }
       catch {
-        state = await receipts.request('generation', { action: 'diagnostic', input: output, index, version: state.version });
+        state = await receipts.request('generation', { action: 'diagnostic', input: output, index, inputDigest: digest, version: state.version });
         continue;
       } // Same source/protocol only; the persisted two-attempt cap is authoritative.
-      state = await receipts.request('generation', { action: 'complete', input: output, index, version: state.version });
+      state = await receipts.request('generation', { action: 'complete', input: output, index, inputDigest: digest, version: state.version });
       return value;
     }
   };

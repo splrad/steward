@@ -13,7 +13,7 @@ import { comparePublicVersions, parsePublicVersion } from '../../core/src/releas
 import { matchBuildFiles } from '../../core/src/build-manifest.js';
 
 export async function centralBuildClient(env: BodyWriteRuntimeEnv, write = false): Promise<GitHubClient> {
-  const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY!, installationId: Number(env.INSTALLATION_ID), repositoryId: 1296724484, permissions: { actions: write ? 'write' : 'read', metadata: 'read' }, policySha: env.POLICY_SHA });
+  const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY!, installationId: Number(env.INSTALLATION_ID), repositoryId: 1296724484, permissions: { actions: write ? 'write' : 'read', contents: 'read', metadata: 'read' }, policySha: env.POLICY_SHA });
   return new GitHubClient(token, 'https://api.github.com', fetch, env.POLICY_SHA);
 }
 export async function dispatchReleaseBuild(env: BodyWriteRuntimeEnv, repositoryId: number, tag: string, key: string): Promise<void> {

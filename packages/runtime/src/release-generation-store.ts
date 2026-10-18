@@ -28,13 +28,14 @@ export class ReleaseGenerationStore {
     const current = (await this.read(repositoryId, tag))!;
     releaseAssert(generationPlanDigest(current.ledger.plan) === generationPlanDigest(plan), 'GENERATION_OCCUPIED'); return current;
   }
-  async mutate(repositoryId: number, tag: string, version: number, action: 'reserve' | 'complete' | 'diagnostic', input: string, index?: number) {
+  async mutate(repositoryId: number, tag: string, version: number, action: 'reserve' | 'complete' | 'diagnostic', input: string, index?: number, inputDigest?: string) {
     const current = await this.read(repositoryId, tag);
     releaseAssert(current && current.version === version, 'GENERATION_STALE');
     let ledger = current.ledger;
     if (action === 'reserve') ledger = reserveGenerationCall(ledger, input);
     else {
       releaseAssert(Number.isInteger(index) && index! >= 0 && index! < ledger.calls.length, 'GENERATION_CALL');
+      releaseAssert(typeof inputDigest === 'string' && inputDigest === ledger.calls[index!]!.inputDigest, 'GENERATION_INPUT_BINDING');
       releaseAssert(Buffer.byteLength(input) <= 64 * 1024, 'GENERATION_LIMIT');
       const normalized = action === 'complete' ? canonicalReleaseJson(parseGeneratedRelease(Buffer.from(input))) : null;
       const call = ledger.calls[index!]!;

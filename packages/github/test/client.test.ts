@@ -344,6 +344,15 @@ describe("代码托管平台客户端", () => {
     await expect(dispatchWorkflow(client, { owner: "splrad", repo: "steward", workflow: "release.yml", policySha: "short", inputs: {} })).rejects.toThrow("40位");
   });
 
+  it("发布构建在默认分支与部署策略不一致时拒绝派发，同步后允许重试", async () => {
+    let head = "b".repeat(40); const request = vi.fn();
+    const client = { getRepository: async () => ({ default_branch: "main" }), getRef: async () => ({ object: { sha: head } }), request } as unknown as GitHubClient;
+    const input = { owner: "splrad", repo: "steward", workflow: "release-build.yml", policySha: "a".repeat(40), inputs: {} };
+    await expect(dispatchWorkflow(client, input)).rejects.toThrow("RELEASE_POLICY_DRIFT");
+    expect(request).not.toHaveBeenCalled();
+    head = input.policySha; await dispatchWorkflow(client, input);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
   it("中央仓库没有默认分支时停止调度", async () => {
     const client = {
       getRepository: async () => ({ default_branch: "" }),

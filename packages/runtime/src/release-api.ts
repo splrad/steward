@@ -43,7 +43,7 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
         releaseAssert(canonicalReleaseJson(body.plan) === canonicalReleaseJson(current.ledger.plan), 'GENERATION_OCCUPIED'); return reply(200, current);
       }
       releaseAssert(['reserve', 'complete', 'diagnostic'].includes(body.action) && typeof body.input === 'string', 'GENERATION_REQUEST');
-      return reply(200, await generation.mutate(repositoryId, parts[1]!, body.version, body.action, body.input, body.index));
+      return reply(200, await generation.mutate(repositoryId, parts[1]!, body.version, body.action, body.input, body.index, body.inputDigest));
     }
     const { repository, client: gh } = await authorizeSingleRepository(request, env, repositoryId);
     const store = new ReleaseReceiptStore(env.ISSUE_SNAPSHOTS);
@@ -84,7 +84,7 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
       if (body.action === 'ticket') return reply(200, { token: await generation.ticket(repositoryId, tag, Date.now()) });
       const current = await generation.read(repositoryId, tag);
       releaseAssert(current?.ledger.plan.policySha === env.POLICY_SHA && ['reserve', 'complete', 'diagnostic'].includes(body.action) && typeof body.input === 'string', 'GENERATION_REQUEST');
-      return reply(200, await generation.mutate(repositoryId, tag, body.version, body.action, body.input, body.index));
+      return reply(200, await generation.mutate(repositoryId, tag, body.version, body.action, body.input, body.index, body.inputDigest));
     }
     if (request.method === 'GET' && !action) return reply(200, await store.get(repositoryId, tag));
     releaseAssert(request.method === 'POST', 'METHOD');
