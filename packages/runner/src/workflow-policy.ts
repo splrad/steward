@@ -2,6 +2,7 @@ import YAML from 'yaml';
 import { lstat, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
+const hostedRunners = new Set(['ubuntu-latest', 'ubuntu-24.04', 'windows-latest', 'windows-2025', 'macos-latest']);
 const actions = new Set([
  'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
  'actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68', 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
@@ -43,7 +44,7 @@ export function assertWorkflowDocument(path: string, d: any) {
   if (env!==undefined && (!object(env) || !Object.hasOwn(secretEnvironments,env.name) || env.deployment!==(env.name==='steward-deployment'))) fail(`${path}:${name}: protected environment`);
   if ((used.length || env!==undefined) && triggers.includes('pull_request')) fail(`${path}:${name}: PR jobs cannot use protected environments/secrets`);
   if (used.some(s=>!secretEnvironments[env?.name]?.includes(s))) fail(`${path}:${name}: secret/environment mismatch`);
-  if (typeof j['runs-on']!=='string' || !/^(ubuntu|windows|macos)-(latest|[0-9]+(?:\.[0-9]+)?)$/.test(j['runs-on'])) fail(`${path}:${name}: runner not permitted`);
+  if (typeof j['runs-on']!=='string' || !hostedRunners.has(j['runs-on'])) fail(`${path}:${name}: runner not permitted`);
   for(const step of j.steps) {
    if (!object(step)) fail(`${path}: invalid step`);
    if (step.uses!==undefined && !actions.has(step.uses)) fail(`${path}: unapproved/unpinned action`);
@@ -159,6 +160,7 @@ function canonical(value:any):string {
 }
 export function assertRequiredValidation(d:any) {
  if(d?.name!=="SPLRAD Steward / PR Validation") fail("required workflow name changed");
+ if(canonical(d.concurrency)!==canonical({"group":"steward-pr-validation-${{ github.repository_id }}-${{ github.event.pull_request.number }}","cancel-in-progress":true})) fail('required concurrency changed');
  const j=structuredClone(d?.jobs?.validate);
  if(!object(j) || !Array.isArray(j.steps))fail('required validate job missing');
  for(const step of j.steps)delete step.name;

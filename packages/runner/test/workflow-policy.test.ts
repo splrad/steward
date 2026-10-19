@@ -29,7 +29,16 @@ describe('trusted workflow security policy',()=>{
   d.jobs.test.needs='plan';d.jobs.test['runs-on']='${{ needs.plan.outputs.runner }}';
   expect(()=>assertWorkflowDocument('test.yml',d)).toThrow('runner not permitted');
  });
- it.each(['ubuntu-latest','windows-latest','macos-latest'])('accepts static hosted runner: %s',runner=>{const d=ordinary();d.jobs.test['runs-on']=runner;expect(()=>assertWorkflowDocument('test.yml',d)).not.toThrow();});
+ it.each(['ubuntu-latest','ubuntu-24.04','windows-latest','windows-2025','macos-latest'])('accepts static hosted runner: %s',runner=>{const d=ordinary();d.jobs.test['runs-on']=runner;expect(()=>assertWorkflowDocument('test.yml',d)).not.toThrow();});
+ it.each(['ubuntu-999','windows-123','macos-999','ubuntu-24.04-custom','self-hosted'])('rejects unapproved static runner: %s',runner=>{const d=ordinary();d.jobs.test['runs-on']=runner;expect(()=>assertWorkflowDocument('test.yml',d)).toThrow('runner not permitted');});
+ it.each(['missing','constant','cancel','extra'])('protects concurrency: %s',async kind=>{
+ const d=YAML.parse(await readFile('.github/workflows/pr-validation.yml','utf8'));
+ if(kind==='missing')delete d.concurrency;
+ if(kind==='constant')d.concurrency.group='shared';
+ if(kind==='cancel')d.concurrency['cancel-in-progress']=false;
+ if(kind==='extra')d.concurrency.queue='max';
+ expect(()=>assertRequiredValidation(d)).toThrow('required concurrency');
+ });
  it.each(['write','implicit','trigger','action','local-action','checkout','secret','dynamic-secret','inherit','runner','shell','environment','global-secret','reusable','permission-alias'])('rejects unsafe capability: %s',kind=>{
   const d:any=ordinary(),j=d.jobs.test;
   if(kind==='write')j.permissions={contents:'write'};
