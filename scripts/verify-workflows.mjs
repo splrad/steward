@@ -255,15 +255,16 @@ const releaseSourceWorkflow = YAML.parse(await readFile(".github/workflows/relea
 if (!hasExactKeys(releaseSourceWorkflow.jobs, ["prepare", "inspect", "publish", "generation-ticket", "generate", "generated-candidate", "revision"]) || !hasExactKeys(releaseSourceWorkflow.on, ["workflow_dispatch"])) throw new Error("发布工作流必须先读取持久候选收据");
 const generationJob = releaseSourceWorkflow.jobs.generate;
 const recoveryJob = releaseSourceWorkflow.jobs.revision;
-if (!releaseSourceWorkflow.on.workflow_dispatch.inputs.operation.options.includes('retry-create')
-  || recoveryJob.if !== "(inputs.operation == 'revise-rebuild' || inputs.operation == 'recover-candidate' || inputs.operation == 'retry-create') && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
+if (!releaseSourceWorkflow.on.workflow_dispatch.inputs.operation.options.includes('migrate-policy') || !releaseSourceWorkflow.on.workflow_dispatch.inputs.operation.options.includes('retry-create')
+  || recoveryJob.if !== "(inputs.operation == 'revise-rebuild' || inputs.operation == 'recover-candidate' || inputs.operation == 'retry-create' || inputs.operation == 'migrate-policy') && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
   || !recoveryJob.steps.some(step => step.env?.OPERATION === '${{ inputs.operation }}' && step.env?.POLICY_SHA === '${{ github.workflow_sha }}'
     && step.run === 'node packages/runner/dist/index.js release-candidate --operation "$OPERATION" --request-key "$REQUEST_KEY" --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA"')) throw new Error('创建结果未知的恢复入口必须连接可信策略下的受保护恢复作业');
 const productBuild = workflowDocuments.get('release-build.yml');
 const buildCompletion = workflowDocuments.get('release-build-complete.yml');
 const genericBuild = workflowDocuments.get('product-build.yml');
-// Source clone/fetch (10m), freeze (5m), contributor reads (90s), plus API/setup/upload margin.
-if (productBuild.jobs.plan['timeout-minutes'] !== 30 || genericBuild.jobs.plan['timeout-minutes'] !== 30) throw new Error('来源计划作业必须覆盖来源冻结及初始化预算');
+for (const workflow of [productBuild, genericBuild]) if (workflow.jobs.plan.steps.find(step => step.id === 'plan')?.['timeout-minutes'] !== 45) throw new Error('来源计划步骤须有45分钟整体上限');
+// Plan step shares a 45m ceiling across clone/boundary fetch, freeze, APIs, object upload and bundle creation; job adds 15m setup/artifact margin.
+if (productBuild.jobs.plan['timeout-minutes'] !== 60 || genericBuild.jobs.plan['timeout-minutes'] !== 60) throw new Error('来源计划作业必须覆盖来源冻结及初始化预算');
 if (!hasExactKeys(genericBuild.on, ['workflow_dispatch']) || !hasExactKeys(genericBuild.jobs, ['plan', 'build']) || genericBuild.jobs.build.environment !== undefined || genericBuild.jobs.build.needs !== 'plan' || genericBuild.jobs.build['runs-on'] !== '${{ needs.plan.outputs.runner }}' || genericBuild.jobs.plan.outputs.runner !== '${{ steps.plan.outputs.runner }}' || genericBuild.permissions.contents !== 'read' || genericBuild.permissions.actions !== 'read') throw new Error('通用产品构建边界无效');
 for (const step of genericBuild.jobs.build.steps) if (JSON.stringify(step).includes('secrets.') || step.env && !hasExactKeys(step.env, ['POLICY_SHA', 'RUN_ID'])) throw new Error('产品构建不得注入秘密');
 if (!hasExactKeys(productBuild.on, ['workflow_dispatch']) || !hasExactKeys(productBuild.jobs, ['plan', 'build'])
@@ -282,7 +283,7 @@ for (const document of [productBuild, buildCompletion, genericBuild]) for (const
   for (const step of job.steps) if (step.run && step.run.includes('${{')) throw new Error('构建输入未经环境变量隔离');
 }
 if (generationJob.needs !== 'generation-ticket' || releaseSourceWorkflow.jobs['generated-candidate'].needs !== 'generate') throw new Error('生成预算和候选顺序无效');
-if (releaseSourceWorkflow.jobs['generation-ticket']['timeout-minutes'] !== 60 || releaseSourceWorkflow.jobs['generated-candidate']['timeout-minutes'] !== 60) throw new Error('完整seed消费作业须覆盖资产下载与校验预算');
+if (releaseSourceWorkflow.jobs['generation-ticket']['timeout-minutes'] !== 60 || releaseSourceWorkflow.jobs['generated-candidate']['timeout-minutes'] !== 60 || releaseSourceWorkflow.jobs.prepare['timeout-minutes'] !== 60) throw new Error('完整seed消费作业须覆盖资产下载与校验预算');
 for (const step of generationJob.steps) {
   if (step.env && (!hasExactKeys(step.env, ['COPILOT_GITHUB_TOKEN']) || step.env.COPILOT_GITHUB_TOKEN !== '${{ secrets.COPILOT_GITHUB_TOKEN }}')) throw new Error('模型作业包含额外凭据');
   if (step.run && /release-candidate|reconcile|STEWARD_APP_PRIVATE_KEY/.test(step.run)) throw new Error('模型作业不得写候选或发布');

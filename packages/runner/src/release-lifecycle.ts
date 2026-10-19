@@ -40,26 +40,47 @@ export class ReleaseReceiptClient {
     }
     return JSON.parse(bytes) as T;
   }
+  private async objectTransfer<T>(operation: (controller: AbortController) => Promise<T>): Promise<T> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error('来源对象传输超时（5 分钟），请重试作业')), 5 * 60_000);
+    try { return await operation(controller); } finally { clearTimeout(timeout); }
+  }
+  private async objectParts(total: number, controller: AbortController, transfer: (part: number) => Promise<void>): Promise<void> {
+    let nextPart = 0;
+    const results = await Promise.allSettled(Array.from({ length: Math.min(8, total) }, async () => {
+      try {
+        while (nextPart < total) { controller.signal.throwIfAborted(); await transfer(nextPart++); }
+      } catch (error) { controller.abort(error); throw error; }
+    }));
+    const failure = results.find(result => result.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
+  }
   async putObject(bytes: Uint8Array): Promise<string> {
     const digest = receiptDigest(bytes), chunkSize = 48 * 1024, total = Math.ceil(bytes.length / chunkSize);
-    releaseAssert(total > 0 && total <= 2048, 'OBJECT_LIMIT');
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(new Error('来源对象上传超时（5 分钟），请重试作业')), 5 * 60_000);
-    let nextPart = 0;
-    try {
-      const results = await Promise.allSettled(Array.from({ length: Math.min(8, total) }, async () => {
-        try {
-          while (nextPart < total) {
-            controller.signal.throwIfAborted();
-            const part = nextPart++;
-            await this.request('', { total, bytesBase64: Buffer.from(bytes.subarray(part * chunkSize, (part + 1) * chunkSize)).toString('base64') }, `objects/${digest}/${part}`, controller.signal);
-          }
-        } catch (error) { controller.abort(error); throw error; }
-      }));
-      const failure = results.find(result => result.status === 'rejected');
-      if (failure?.status === 'rejected') throw failure.reason;
-    } finally { clearTimeout(timeout); }
+    releaseAssert(bytes.length > 0 && bytes.length <= 32 * 1024 * 1024, 'OBJECT_LIMIT');
+    await this.objectTransfer(controller => this.objectParts(total, controller, async part => {
+      await this.request('', { total, bytesBase64: Buffer.from(bytes.subarray(part * chunkSize, (part + 1) * chunkSize)).toString('base64') }, `objects/${digest}/${part}`, controller.signal);
+    }));
     return digest;
+  }
+  async getObject(digest: string): Promise<Buffer> {
+    releaseAssert(/^[a-f0-9]{64}$/.test(digest), 'OBJECT_ID');
+    return this.objectTransfer(async controller => {
+      type Chunk = { total: number; bytes_base64: string };
+      const read = (part: number) => this.request<Chunk>('', undefined, `objects/${digest}/${part}`, controller.signal);
+      const first = await read(0);
+      releaseAssert(first && Number.isSafeInteger(first.total) && first.total > 0 && first.total <= 2048, 'OBJECT_MISSING');
+      const chunks: Buffer[] = []; let size = 0;
+      const retain = (part: number, row: Chunk) => {
+        releaseAssert(row && row.total === first.total && typeof row.bytes_base64 === 'string', 'OBJECT_INCOMPLETE');
+        const bytes = Buffer.from(row.bytes_base64, 'base64'); size += bytes.length;
+        releaseAssert(bytes.length > 0 && bytes.length <= 48 * 1024 && bytes.toString('base64') === row.bytes_base64 && size <= 32 * 1024 * 1024, 'OBJECT_LIMIT');
+        chunks[part] = bytes;
+      };
+      retain(0, first);
+      await this.objectParts(first.total - 1, controller, async offset => retain(offset + 1, await read(offset + 1)));
+      const bytes = Buffer.concat(chunks); releaseAssert(receiptDigest(bytes) === digest, 'SOURCE_DIGEST'); return bytes;
+    });
   }
 }
 export interface LifecycleSession {

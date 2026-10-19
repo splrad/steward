@@ -190,9 +190,7 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
       // verifies this build identity against GitHub in finish before continuation.
       const build = { runId: Number(required('run-id')), artifactId: Number(required('artifact-id')), artifactName: `release-build-result-${required('attempt')}`, headSha: policySha };
       const frozen: FrozenRelease = { ...state.request.frozen, build, manifests: [manifest], assets: manifest.artifacts.map(a => { releaseAssert(a.kind === 'file', 'BUILD_FILE'); return { name: a.file, size: a.size, sha256: a.sha256 }; }) };
-      const chunks: Buffer[] = []; let total = 1;
-      for (let part = 0; part < total; part++) { const row = await receipts.request<{ total: number; bytes_base64: string }>('', undefined, `objects/${frozen.sourceDigest}/${part}`); releaseAssert(row && row.total > 0 && row.total <= 2048, 'SOURCE_CHUNKS'); total = row.total; chunks.push(Buffer.from(row.bytes_base64, 'base64')); }
-      const bytes = Buffer.concat(chunks); releaseAssert(receiptDigest(bytes) === frozen.sourceDigest, 'SOURCE_DIGEST');
+      const bytes = await receipts.getObject(frozen.sourceDigest);
       await writeSeed(join(directory, 'source.json'), bytes); await writeSeed(join(directory, 'frozen.json'), canonicalReleaseJson(frozen));
     }
     try { await receipts.request<ReleaseBuildState>('build-request', { action: 'finish', key, runId: Number(required('run-id')), attempt: Number(required('attempt')), artifactId: Number(required('artifact-id')), manifests: [manifest], toolchainDigest: releaseToolchainDigest }); }

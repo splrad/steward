@@ -16,7 +16,7 @@ jobs:
   plan:
     if: github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     environment: { name: steward-release, deployment: false }
     outputs:
       artifactId: ${{ steps.context.outputs.artifact-id }}
@@ -28,6 +28,7 @@ jobs:
         with: { node-version-file: .node-version, cache: npm }
       - run: npm ci --ignore-scripts
       - name: 固定构建来源与持久重试预算
+        timeout-minutes: 45
         id: plan
         shell: bash
         env:

@@ -8,6 +8,7 @@ function Read-PeVersion([string]$Path) {
     if ($v.ProductVersion -notmatch '^([0-9]+\.[0-9]+\.[0-9]+)(?:\+[^\s]+)?$' -or $Matches[1] -cne $public) { throw 'RN_NATIVE_PRODUCT_VERSION' }
     return $public
 }
+try {
 $extension = [IO.Path]::GetExtension($LiteralPath).ToLowerInvariant()
 if ($extension -in '.exe', '.dll') { @{version=(Read-PeVersion $LiteralPath)} | ConvertTo-Json -Compress; exit 0 }
 if ($extension -ne '.zip') { throw 'RN_NATIVE_FORMAT' }
@@ -61,4 +62,12 @@ try {
     $parent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
     if (-not $resolved.StartsWith($parent, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($resolved) -notmatch '^steward-native-[a-f0-9]{32}$') { throw 'RN_NATIVE_TEMP_PATH' }
     Remove-Item -LiteralPath $resolved -Recurse -Force
+}
+} catch {
+    $code = $_.Exception.Message
+    if ($code -match '^RN_NATIVE_[A-Z_]+$' -or $_.Exception.GetBaseException() -is [IO.InvalidDataException]) {
+        @{error='RN_NATIVE_INVALID_ASSET'} | ConvertTo-Json -Compress
+        exit 2
+    }
+    throw
 }

@@ -4,6 +4,32 @@ import { canonicalReleaseJson, receiptDigest, releaseAssert, releaseDigest, posi
 export const releaseObjectLimits = { objectBytes: 32 * 1024 * 1024, chunkBytes: 48 * 1024, maxChunks: 2048, recordBytes: 512 * 1024 } as const;
 export class ReleaseReceiptStore {
   constructor(private readonly db: D1Database) {}
+  async nextRevision(repositoryId: number, tag: string): Promise<number> {
+    const row = await this.db.prepare('SELECT COALESCE(MAX(revision),0)+1 AS revision FROM release_receipts WHERE repository_id=? AND target_tag=?').bind(repositoryId, tag).first<{ revision: number }>();
+    return row!.revision;
+  }
+  async migratedReceipt(repositoryId: number, tag: string, policySha: string): Promise<ReleaseReceipt | null> {
+    const row = await this.db.prepare('SELECT receipt_json FROM release_policy_migrations WHERE repository_id=? AND target_tag=? AND policy_sha=? ORDER BY revision DESC LIMIT 1').bind(repositoryId, tag, policySha).first<{ receipt_json: string }>();
+    return row ? JSON.parse(row.receipt_json) : null;
+  }
+  async migratePolicy(previous: ReleaseReceipt, token: string, policySha: string, now: number): Promise<void> {
+    releaseAssert(previous.frozen.policySha !== policySha && /^[a-f0-9]{40}$/.test(policySha)
+      && !previous.releaseId && !previous.operation && !['publishing', 'verified'].includes(previous.phase), 'POLICY_MIGRATION_STATE');
+    const repo = previous.frozen.repositoryId, tag = previous.frozen.targetTag;
+    // Only the holder of the current lease may create the marker. Every subsequent
+    // write in this transaction depends on that marker and exact receipt version.
+    const marker = 'EXISTS(SELECT 1 FROM release_policy_migrations m JOIN release_receipts r ON r.repository_id=m.repository_id AND r.target_tag=m.target_tag AND r.revision=m.revision WHERE m.repository_id=? AND m.target_tag=? AND m.revision=? AND m.policy_sha=? AND m.receipt_json=? AND r.current=1 AND r.version=? AND r.lease_token=? AND r.lease_until>?)';
+    const identity = [repo, tag, previous.revision, policySha, canonicalReleaseJson(previous), previous.version, token, now];
+    const results = await this.db.batch([
+      this.db.prepare('INSERT INTO release_policy_migrations SELECT repository_id,target_tag,revision,?,record_json,? FROM release_receipts WHERE repository_id=? AND target_tag=? AND revision=? AND current=1 AND version=? AND lease_token=? AND lease_until>? AND (SELECT COUNT(*) FROM release_policy_migrations WHERE repository_id=? AND target_tag=?)<3')
+        .bind(policySha, new Date(now).toISOString(), repo, tag, previous.revision, previous.version, token, now, repo, tag),
+      this.db.prepare(`UPDATE release_build_requests SET policy_archived=1 WHERE repository_id=? AND target_tag=? AND ${marker}`).bind(repo, tag, ...identity),
+      this.db.prepare(`UPDATE release_generation SET ticket_digest=NULL,ticket_until=0,version=version+1 WHERE repository_id=? AND target_tag=? AND ${marker}`).bind(repo, tag, ...identity),
+      this.db.prepare(`UPDATE release_receipts SET current=0 WHERE repository_id=? AND target_tag=? AND revision=? AND current=1 AND version=? AND lease_token=? AND lease_until>? AND ${marker}`)
+        .bind(repo, tag, previous.revision, previous.version, token, now, ...identity),
+    ]);
+    releaseAssert(results[0]!.meta.changes === 1 && results[3]!.meta.changes === 1, 'POLICY_MIGRATION_STALE');
+  }
   async findByPull(repositoryId: number, pullNumber: number): Promise<ReleaseReceipt | null> {
     const row = await this.db.prepare("SELECT target_tag FROM release_receipts WHERE repository_id=? AND current=1 AND json_extract(record_json,'$.pullNumber')=?")
       .bind(repositoryId, pullNumber).first<{ target_tag: string }>();
@@ -77,12 +103,22 @@ export class ReleaseReceiptStore {
     return next;
   }
   async readObject(repositoryId: number, digest: string): Promise<Uint8Array> {
-    const size = await this.verifyObject(repositoryId, digest);
-    releaseAssert(size <= releaseObjectLimits.objectBytes, 'OBJECT_READ_LIMIT');
-    const first = (await this.getChunk(repositoryId, digest, 0))!;
-    const chunks = [Buffer.from(first.bytes_base64, 'base64')];
-    for (let part = 1; part < first.total; part++) chunks.push(Buffer.from((await this.getChunk(repositoryId, digest, part))!.bytes_base64, 'base64'));
-    return Buffer.concat(chunks);
+    releaseAssert(releaseDigest(digest), 'OBJECT_ID');
+    const first = await this.getChunk(repositoryId, digest, 0);
+    releaseAssert(first && positiveId(first.total) && first.total <= releaseObjectLimits.maxChunks, 'OBJECT_MISSING');
+    const chunks: Buffer[] = []; let size = 0; const hash = createHash('sha256');
+    for (let start = 0; start < first.total; start += 64) {
+      const end = Math.min(start + 64, first.total);
+      const rows = await this.db.prepare('SELECT part,total,bytes_base64 FROM release_evidence_chunks WHERE repository_id=? AND digest=? AND part>=? AND part<? ORDER BY part').bind(repositoryId, digest, start, end).all<{part: number; total: number; bytes_base64: string}>();
+      releaseAssert(rows.results.length === end - start, 'OBJECT_INCOMPLETE');
+      for (const [offset, row] of rows.results.entries()) {
+        releaseAssert(row.part === start + offset && row.total === first.total, 'OBJECT_INCOMPLETE');
+        const bytes = Buffer.from(row.bytes_base64, 'base64'); size += bytes.length;
+        releaseAssert(bytes.length > 0 && bytes.length <= releaseObjectLimits.chunkBytes && bytes.toString('base64') === row.bytes_base64 && size <= releaseObjectLimits.objectBytes, 'OBJECT_READ_LIMIT');
+        hash.update(bytes); chunks.push(bytes);
+      }
+    }
+    releaseAssert(hash.digest('hex') === digest, 'OBJECT_DIGEST'); return Buffer.concat(chunks);
   }
   async putChunk(repositoryId: number, digest: string, part: number, total: number, encoded: string): Promise<void> {
     releaseAssert(positiveId(repositoryId) && releaseDigest(digest) && positiveId(total) && total <= releaseObjectLimits.maxChunks && Number.isInteger(part) && part >= 0 && part < total, 'OBJECT_ID');
@@ -99,16 +135,6 @@ export class ReleaseReceiptStore {
     return this.db.prepare('SELECT total,bytes_base64 FROM release_evidence_chunks WHERE repository_id=? AND digest=? AND part=?').bind(repositoryId, digest, part).first<{ total: number; bytes_base64: string }>();
   }
   async verifyObject(repositoryId: number, digest: string): Promise<number> {
-    releaseAssert(releaseDigest(digest), 'OBJECT_ID');
-    const first = await this.getChunk(repositoryId, digest, 0);
-    releaseAssert(first && first.total > 0 && first.total <= releaseObjectLimits.maxChunks, 'OBJECT_MISSING');
-    const hasher = createHash('sha256'); let size = 0;
-    for (let part = 0; part < first.total; part++) {
-      const chunk = part === 0 ? first : await this.getChunk(repositoryId, digest, part);
-      releaseAssert(chunk && chunk.total === first.total, 'OBJECT_INCOMPLETE');
-      const bytes = Buffer.from(chunk.bytes_base64, 'base64'); size += bytes.length; hasher.update(bytes);
-    }
-    releaseAssert(hasher.digest('hex') === digest, 'OBJECT_DIGEST');
-    return size;
+    return (await this.readObject(repositoryId, digest)).byteLength;
   }
 }

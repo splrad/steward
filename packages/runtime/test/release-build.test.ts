@@ -284,3 +284,26 @@ it('creates one durable new revision, preserves edited notes, and requires a new
   expect(approved.phase).toBe('merged'); expect(() => assertReleasePermit(approved)).not.toThrow();
   expect(approved.approvedNotes).toBe(editedNotes);
 });
+async function policyMigrationFixture() {
+ const r = newReleaseReceipt({...frozenFixture(), policySha: sha('e')}, notesFixture); await receipts.prepare(r, 'now');
+ mock.central.getGitRef = vi.fn(async (_o, _r, ref) => { if (ref.startsWith('heads/')) return {object: {sha: sha('a')}}; throw new GitHubRequestError(404, 'missing', {}); });
+ mock.central.getReleaseByTag = vi.fn(async () => { throw new GitHubRequestError(404, 'missing', {}); });
+ return r;
+}
+const migrate = () => handleReleaseRequest(new Request('https://runtime.test/internal/releases/9001/v1.2.3/migrate-policy', {method:'POST', body:'{}'}), env());
+it('validates migration before archival and safely retries a failed dispatch using the archived receipt', async () => {
+ const r = await policyMigrationFixture(); mock.dispatch.mockRejectedValueOnce(new Error('network'));
+ expect((await migrate())!.status).not.toBe(200);
+ expect(await receipts.get(9001, 'v1.2.3')).toBeNull(); expect(await receipts.get(9001, 'v1.2.3', 1)).toEqual(r);
+ expect((await migrate())!.status).toBe(200);
+ expect(mock.dispatch).toHaveBeenLastCalledWith(mock.central, expect.objectContaining({policySha: sha('c'), inputs: {repositoryId:'9001', targetTag:'v1.2.3', targetSha:sha('a'), authorIds:'1'}}));
+ expect(db.database.prepare('SELECT COUNT(*) AS count FROM release_policy_migrations').get()!.count).toBe(1);
+});
+it.each(['tag', 'release', 'configuration', 'same-policy'])('keeps the current receipt when migration preconditions fail: %s', async reason => {
+ let r = await policyMigrationFixture();
+ if (reason === 'tag') mock.central.getGitRef.mockImplementation(async () => ({object: {sha: sha('a')}}));
+ if (reason === 'release') mock.central.getReleaseByTag.mockResolvedValue({id: 1});
+ if (reason === 'configuration') mock.config.delivery.githubRelease.builds = [];
+ if (reason === 'same-policy') { r = newReleaseReceipt(frozenFixture(), notesFixture); db.database.prepare('UPDATE release_receipts SET record_json=?').run(canonicalReleaseJson(r)); }
+ expect((await migrate())!.status).not.toBe(200); expect(await receipts.get(9001, 'v1.2.3')).toEqual(r); expect(mock.dispatch).not.toHaveBeenCalled();
+});

@@ -14,6 +14,12 @@ vi.mock('../../github/src/index.js', async importOriginal => ({
 }));
 vi.mock('../src/release-lifecycle.js', async original => ({ ...await original<typeof import('../src/release-lifecycle.js')>(), ReleaseReceiptClient: class {
   request = request;
+  async getObject(digest: string) {
+    const row = await request('', undefined, 'objects/' + digest + '/0');
+    const bytes = Buffer.from(row.bytes_base64, 'base64');
+    const { receiptDigest } = await import('../../core/src/release-note-receipt.js');
+    if (receiptDigest(bytes) !== digest) throw new Error('SOURCE_DIGEST'); return bytes;
+  }
   constructor(_base: string, _token: string, _repo: number, _tag: string, transport: typeof fetch) { transports.push(transport); }
 } }));
 vi.mock('../src/build-manifest.js', async importOriginal => ({

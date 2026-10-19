@@ -105,3 +105,17 @@ describe('D1 durable release receipts', () => {
     expect(await store.takeRecoveryBatch(1800003)).toHaveLength(1); db.database.close();
   });
 });
+it('reads a complete 32 MiB object in bounded batches and rejects a missing middle chunk', async () => {
+ const db = new ReleaseTestDb();
+ try {
+  const bytes = Buffer.alloc(releaseObjectLimits.objectBytes, 23), digest = receiptDigest(bytes), chunk = releaseObjectLimits.chunkBytes, total = Math.ceil(bytes.length / chunk);
+  const insert = db.database.prepare('INSERT INTO release_evidence_chunks VALUES(?,?,?,?,?)');
+  for (let part = total - 1; part >= 0; part--) insert.run(9001,digest,part,total,bytes.subarray(part*chunk,(part+1)*chunk).toString('base64'));
+  let queries = 0;
+  const binding = {prepare(sql: string) {queries++; return db.prepare(sql);}} as unknown as D1Database;
+  const store = new ReleaseReceiptStore(binding);
+  expect(receiptDigest(await store.readObject(9001,digest))).toBe(digest); expect(queries).toBe(1 + Math.ceil(total / 64));
+  db.database.prepare('DELETE FROM release_evidence_chunks WHERE part=300').run();
+  await expect(store.readObject(9001,digest)).rejects.toThrow('OBJECT_INCOMPLETE');
+ } finally { db.database.close(); }
+});

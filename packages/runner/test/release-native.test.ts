@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { nativeReleaseInspector } from '../src/release-native.js';
 import { collectFileBuildManifest } from '../src/build-manifest.js';
-import { planBuild } from '../../core/src/build-manifest.js';
+import { BuildContractError, planBuild } from '../../core/src/build-manifest.js';
 import { isolatedBuildEnvironment } from '../src/release-build.js';
 
 it('rejects unsupported Linux native formats before starting any PowerShell process', async () => {
@@ -45,7 +45,7 @@ Archive 'script.zip' 'run.ps1' ([Text.Encoding]::ASCII.GetBytes('exit 0'))
     expect(await inspect().inspectPath!(join(root, 'fonts.zip'))).toEqual({ resourceOnly: 'font-archive' });
   }, 30000);
   it.each(['invalid-font.zip', 'traversal.zip', 'script.zip'])('rejects %s without executing archive contents', async file => {
-    await expect(inspect().inspectPath!(join(root, file))).rejects.toThrow();
+    await expect(inspect().inspectPath!(join(root, file))).rejects.toBeInstanceOf(BuildContractError);
   }, 30000);
   it('streams large PE files and rejects a source/native version mismatch', async () => {
     const output = join(root, 'large'); await mkdir(output); const file = join(output, 'app.dll'); await copyFile(join(root, 'fixture.dll'), file);
@@ -55,4 +55,23 @@ Archive 'script.zip' 'run.ps1' ([Text.Encoding]::ASCII.GetBytes('exit 0'))
     expect((await collectFileBuildManifest(await planBuild(identity, unit), output, inspect())).artifacts[0]).toMatchObject({ size: 33 * 1024 * 1024 });
     await expect(collectFileBuildManifest(await planBuild({ ...identity, version: '1.2.4' }, unit), output, inspect())).rejects.toThrow('RN_BUILD_VERSION');
   }, 30000);
+});
+it('classifies invalid package metadata as deterministic but preserves missing-file errors', async () => {
+ const root = await mkdtemp(join(tmpdir(), 'native-metadata-'));
+ try {
+  const path = join(root, 'package.json'), inspector = nativeReleaseInspector('unused', root);
+  await writeFile(path, '{"name":"pkg"}'); await expect(inspector.inspectPath!(path)).rejects.toBeInstanceOf(BuildContractError);
+  await writeFile(path, '{bad'); await expect(inspector.inspectPath!(path)).rejects.toBeInstanceOf(BuildContractError);
+  await expect(inspector.inspectPath!(join(root,'missing','package.json'))).rejects.toMatchObject({code:'ENOENT'});
+ } finally { await rm(root, {recursive:true}); }
+});
+it.skipIf(process.platform !== 'win32')('classifies successful malformed output without treating an unknown process failure as deterministic', async () => {
+ const root = await mkdtemp(join(tmpdir(), 'native-process-'));
+ try {
+  const script = join(root,'inspect.ps1'); await writeFile(script, 'Write-Output "not-json"');
+  await expect(nativeReleaseInspector(script, root).inspectPath!('fixture.zip')).rejects.toBeInstanceOf(BuildContractError);
+  await writeFile(script, 'Write-Error "infrastructure"; exit 3');
+  const error = await nativeReleaseInspector(script, root).inspectPath!('fixture.zip').catch(e => e);
+  expect(error).not.toBeInstanceOf(BuildContractError); expect(error.code).toBe(3);
+ } finally { await rm(root, {recursive:true}); }
 });

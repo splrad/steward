@@ -69,6 +69,35 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
     }
     const tag = parts[1]!; releaseAssert(/^v\d+\.\d+\.\d+$/.test(tag) && parts.length <= 3, 'ROUTE');
     const action = parts[2];
+    if (action === 'migrate-policy') {
+      canPrepare(); releaseAssert(request.method === 'POST', 'METHOD');
+      const head = await gh.getGitRef(owner, repo, `heads/${repository.default_branch}`);
+      releaseAssert(releaseSha(head.object?.sha), 'BUILD_TARGET_STALE');
+      const product = await releaseTree(gh, owner, repo, head.object.sha);
+      releaseAssert(await readCandidateBlob(gh, owner, repo, product, 'VERSION') === tag.slice(1) + '\n', 'VERSION_BINDING');
+      await assertIncreasingReleaseVersion(gh, owner, repo, tag);
+      releaseAssert(!await optionalReleaseRead(() => gh.getReleaseByTag(owner, repo, tag))
+        && !await optionalReleaseRead(() => gh.getGitRef(owner, repo, `tags/${tag}`)), 'VERSION_OCCUPIED');
+      const current = await store.get(repositoryId, tag);
+      let archived: ReleaseReceipt;
+      if (current) {
+        const claim = await store.claim(repositoryId, tag, Date.now());
+        try {
+          archived = claim.receipt;
+          releaseAssert(archived.frozen.policySha !== env.POLICY_SHA && !archived.releaseId && !archived.operation
+            && !['publishing', 'verified'].includes(archived.phase), 'POLICY_MIGRATION_STATE');
+          await makeReleaseBuildRequest({ ...archived.frozen, productTargetSha: head.object.sha, policySha: env.POLICY_SHA! }, configuration, 'initial', null);
+          await store.migratePolicy(archived, claim.token, env.POLICY_SHA!, Date.now());
+        } finally { await store.release(repositoryId, tag, claim.token); }
+      } else {
+        const saved = await store.migratedReceipt(repositoryId, tag, env.POLICY_SHA!);
+        releaseAssert(saved, 'POLICY_MIGRATION_NOT_FOUND'); archived = saved;
+      }
+      await makeReleaseBuildRequest({ ...archived.frozen, productTargetSha: head.object.sha, policySha: env.POLICY_SHA! }, configuration, 'initial', null);
+      await dispatchWorkflow(await centralBuildClient(env, true), { owner: 'splrad', repo: 'steward', workflow: 'release-build.yml', policySha: env.POLICY_SHA!,
+        inputs: { repositoryId: String(repositoryId), targetTag: tag, targetSha: head.object.sha, authorIds: archived.frozen.authorIds.join(',') } });
+      return reply(200, { migratedRevision: archived.revision, policySha: env.POLICY_SHA, rebuildDispatched: true });
+    }
     if (action === 'build-request') {
       releaseAssert(request.method === 'POST', 'METHOD');
       return reply(200, await handleReleaseBuildAction(env, gh, { ...repository, id: repositoryId }, configuration, tag, body));
@@ -150,7 +179,7 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
     };
     if (action === 'prepare') {
       const existing = await store.get(repositoryId, tag);
-      const r = newReleaseReceipt(body.frozen, body.draftNotes, existing?.revision ?? 1);
+      const r = newReleaseReceipt(body.frozen, body.draftNotes, existing?.revision ?? await store.nextRevision(repositoryId, tag));
       if (existing && existing.frozen.policySha === env.POLICY_SHA && existing.frozenDigest === r.frozenDigest && existing.draftNotes === r.draftNotes) return reply(200, existing);
       await verifyPrepared(r);
       return reply(200, await store.prepare(r, new Date().toISOString()));

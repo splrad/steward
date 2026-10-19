@@ -3,12 +3,12 @@ import { type ReleaseBuildRequest, type ReleaseBuildState } from '../../core/src
 export class ReleaseBuildStore {
   constructor(private readonly db: D1Database) {}
   async find(repositoryId: number, tag: string, runId: number, attempt: number | null): Promise<ReleaseBuildState | null> {
-    const rows = await this.db.prepare("SELECT record_json FROM release_build_requests WHERE repository_id=? AND target_tag=? AND json_extract(record_json,'$.status')!='superseded' AND json_extract(record_json,'$.attempts[#-1].runId')=? AND (? IS NULL OR json_extract(record_json,'$.attempts[#-1].attempt')=?)")
+    const rows = await this.db.prepare("SELECT record_json FROM release_build_requests WHERE policy_archived=0 AND repository_id=? AND target_tag=? AND json_extract(record_json,'$.status')!='superseded' AND json_extract(record_json,'$.attempts[#-1].runId')=? AND (? IS NULL OR json_extract(record_json,'$.attempts[#-1].attempt')=?)")
       .bind(repositoryId, tag, runId, attempt, attempt).all<{ record_json: string }>();
     releaseAssert(rows.results.length <= 1, 'BUILD_RUN_AMBIGUOUS'); return rows.results[0] ? JSON.parse(rows.results[0].record_json) : null;
   }
   async get(key: string, repositoryId: number, tag: string): Promise<ReleaseBuildState | null> {
-    const row = await this.db.prepare('SELECT record_json FROM release_build_requests WHERE request_key=? AND repository_id=? AND target_tag=?').bind(key, repositoryId, tag).first<{ record_json: string }>();
+    const row = await this.db.prepare('SELECT record_json FROM release_build_requests WHERE policy_archived=0 AND request_key=? AND repository_id=? AND target_tag=?').bind(key, repositoryId, tag).first<{ record_json: string }>();
     return row ? JSON.parse(row.record_json) : null;
   }
   async prepare(request: ReleaseBuildRequest): Promise<ReleaseBuildState> {
@@ -18,7 +18,7 @@ export class ReleaseBuildStore {
       return existing;
     }
     if (request.mode === 'initial') {
-      const row = await this.db.prepare("SELECT record_json FROM release_build_requests WHERE repository_id=? AND target_tag=? AND json_extract(record_json,'$.request.mode')='initial' AND json_extract(record_json,'$.status')!='superseded'")
+      const row = await this.db.prepare("SELECT record_json FROM release_build_requests WHERE policy_archived=0 AND repository_id=? AND target_tag=? AND json_extract(record_json,'$.request.mode')='initial' AND json_extract(record_json,'$.status')!='superseded'")
         .bind(request.frozen.repositoryId, request.frozen.targetTag).first<{ record_json: string }>();
       if (row) return this.restart(JSON.parse(row.record_json), request);
     }
@@ -41,7 +41,7 @@ export class ReleaseBuildStore {
     // D1 batch is atomic. The insert depends on the exact archived version, so a
     // competing completion/replacement cannot leave a second active request.
     await this.db.batch([
-      this.db.prepare("UPDATE release_build_requests SET record_json=?,version=? WHERE request_key=? AND version=? AND json_extract(record_json,'$.status') IN ('requested','running','failed') AND NOT EXISTS(SELECT 1 FROM release_receipts WHERE repository_id=? AND target_tag=?) AND NOT EXISTS(SELECT 1 FROM release_build_requests WHERE request_key=?)")
+      this.db.prepare("UPDATE release_build_requests SET record_json=?,version=? WHERE policy_archived=0 AND request_key=? AND version=? AND json_extract(record_json,'$.status') IN ('requested','running','failed') AND NOT EXISTS(SELECT 1 FROM release_receipts WHERE repository_id=? AND target_tag=? AND current=1) AND NOT EXISTS(SELECT 1 FROM release_build_requests WHERE request_key=?)")
         .bind(archivedText, archived.version, old.key, previous.version, f.repositoryId, f.targetTag, request.key),
       this.db.prepare("INSERT OR IGNORE INTO release_build_requests(request_key,repository_id,target_tag,record_json) SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM release_build_requests WHERE request_key=? AND version=? AND json_extract(record_json,'$.supersededBy')=?)")
         .bind(request.key, f.repositoryId, f.targetTag, nextText, old.key, archived.version, request.key),
@@ -56,7 +56,7 @@ export class ReleaseBuildStore {
     releaseAssert(canonicalReleaseJson(previous.request) === canonicalReleaseJson(next.request), 'BUILD_REQUEST_IMMUTABLE');
     const saved = { ...next, version: previous.version + 1 }, r = previous.request;
     releaseAssert(Buffer.byteLength(canonicalReleaseJson(saved)) <= 512 * 1024, 'BUILD_REQUEST_LIMIT');
-    const result = await this.db.prepare('UPDATE release_build_requests SET record_json=?,version=? WHERE request_key=? AND repository_id=? AND target_tag=? AND version=?')
+    const result = await this.db.prepare('UPDATE release_build_requests SET record_json=?,version=? WHERE policy_archived=0 AND request_key=? AND repository_id=? AND target_tag=? AND version=?')
       .bind(canonicalReleaseJson(saved), saved.version, r.key, r.frozen.repositoryId, r.frozen.targetTag, previous.version).run();
     releaseAssert(result.meta.changes === 1, 'BUILD_REQUEST_STALE'); return saved;
   }

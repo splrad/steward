@@ -12,7 +12,7 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
   const required = (key: string) => { const v = args[key]; releaseAssert(v, 'ARGUMENT_' + key); return v; };
   const environment = (key: string) => { const v = process.env[key]; releaseAssert(v, 'ENV_' + key); return v; };
   const repositoryId = Number(required('repository-id')), policySha = required('policy-sha'), tag = required('target-tag'), operation = required('operation');
-  releaseAssert(positiveId(repositoryId) && releaseSha(policySha) && ['prepare', 'revise', 'inspect', 'plan', 'reconcile', 'pause', 'resume', 'retry-create', 'export', 'rebind-build', 'generator-ticket', 'recover-assets', 'revise-rebuild', 'recover-candidate'].includes(operation), 'COMMAND');
+  releaseAssert(positiveId(repositoryId) && releaseSha(policySha) && ['prepare', 'revise', 'inspect', 'plan', 'reconcile', 'pause', 'resume', 'retry-create', 'export', 'rebind-build', 'generator-ticket', 'recover-assets', 'revise-rebuild', 'recover-candidate', 'migrate-policy'].includes(operation), 'COMMAND');
   const getToken = refreshingReleaseToken(() => createInstallationToken({ appId: environment('APP_ID'), privateKey: environment('STEWARD_APP_PRIVATE_KEY'), installationId: Number(environment('INSTALLATION_ID')), repositoryId,
     permissions: { ...(['recover-candidate', 'prepare', 'revise', 'revise-rebuild', 'inspect', 'plan', 'reconcile'].includes(operation) ? { actions: 'read' as const } : {}), metadata: 'read', contents: ['recover-candidate', 'prepare', 'revise', 'revise-rebuild', 'reconcile'].includes(operation) ? 'write' : 'read', pull_requests: ['recover-candidate', 'prepare', 'revise', 'revise-rebuild'].includes(operation) ? 'write' : 'read', checks: ['inspect', 'plan', 'reconcile'].includes(operation) ? 'write' : 'read' }, policySha }));
   const token = await getToken();
@@ -22,6 +22,10 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
   };
   const gh = new GitHubClient(token, 'https://api.github.com', transport, policySha);
   const receipts = new ReleaseReceiptClient(environment('RUNTIME_URL'), token, repositoryId, tag, transport);
+  if (operation === 'migrate-policy') {
+    const result = await receipts.request('migrate-policy', {});
+    process.stdout.write(JSON.stringify(result) + '\n'); return;
+  }
   if (operation === 'generator-ticket') {
     const bundle = resolve(required('bundle'));
     const frozen = JSON.parse(await readFile(join(bundle, 'frozen.json'), 'utf8')) as FrozenRelease;
@@ -61,15 +65,7 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
     await writeFile(resolve(required('output')), JSON.stringify(result, null, 2) + '\n', { flag: 'wx' });
     // Export the authoritative source objects, rather than candidate-provided pointers.
     for (const [name, digest] of [['source', result.frozen.sourceDigest], ['evidence', result.frozen.evidenceDigest]] as const) {
-      const chunks: Buffer[] = [];
-      let total = 1;
-      for (let part = 0; part < total; part++) {
-        const row = await receipts.request<{ total: number; bytes_base64: string }>('', undefined, `objects/${digest}/${part}`);
-        releaseAssert(row && positiveId(row.total) && row.total <= 2048 && (part === 0 || row.total === total), 'EXPORT_OBJECT');
-        total = row.total; chunks.push(Buffer.from(row.bytes_base64, 'base64'));
-      }
-      const { receiptDigest } = await import('../../core/src/release-note-receipt.js');
-      const bytes = Buffer.concat(chunks); releaseAssert(receiptDigest(bytes) === digest, 'EXPORT_DIGEST');
+      const bytes = await receipts.getObject(digest);
       await writeFile(resolve(required('output')) + '.' + name + '.json', bytes, { flag: 'wx' });
     }
   } else {
