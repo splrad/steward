@@ -60,6 +60,8 @@ Review 事件只调用 `inspect`。`reconcile` 先核验真人手动合并证据
 
 `release.yml` 的 generate 操作依次固定生成预算、运行隔离模型作业和创建候选。模型作业只注入个人 Copilot PAT；父进程用短时凭证访问生成账本，子进程使用独立空目录和配置，不继承该凭证、App 或发布凭据。CLI 固定为 1.0.91，禁用工具、内置 MCP、自动指令和会话恢复。增量迁移 `0011_release_generation.sql` 保存计划、调用预留、原始格式失败输出和成功输出；未知结果仍计次，完成批次跨重跑复用。结构解析只接受唯一 JSON 对象或明确 json 围栏，拒绝重复键和未知字段。
 
+生成失败后若凭证已过期，请在原 `release.yml` 运行中选择 **Re-run all jobs**，使 generation-ticket 作业重新签发凭证。**Re-run failed jobs** 会复用此前成功作业的旧凭证，无法恢复过期授权。重新签发仍要求策略匹配，且旧凭证已到期；若返回 GENERATION_TICKET_BUSY，应等待旧凭证到期再重跑全部作业。相同计划的已完成批次及已用调用预算保留，不因换票重置。模型作业保持凭据隔离。
+
 构建执行层已接入四种 Profile 的参数编排、准确干净提交检查、独立输出目录、原生版本检查器及中央清单收集。`release-build.yml` 固定来源、构建请求和工具链，在隔离作业执行产品构建；`release-build-complete.yml` 回读运行与 artifact 身份，独立验证下载资产，自动生成包含 `source.json`、`frozen.json` 和资产的 seed bundle，再接续 generate。首发请求在 seed 来源摘要验证及文件写入成功后才 finish；完成入口仅在资产验证明确报告 BuildContractError 时拒绝请求；artifact 下载、seed 写入及运行时服务故障保留为可重试状态。GitHub 文件发布只接受一个非 OCI 构建单元。
 
 有文件资产的首次发布从 `release-build.yml` 开始，构建完成后才进入 generate 和候选准备。候选准备 API 要求冻结清单与配置的 builds 完全一致，并验证中央成功运行及 artifact 身份；缺少所需构建清单会以 `BUILD_SET` 拒绝。配置无构建单元的仓库允许无资产候选。

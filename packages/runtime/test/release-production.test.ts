@@ -119,6 +119,25 @@ describe('release production protocol and durable budget', () => {
       expect(await generateRelease(plan, client(new ReleaseGenerationStore(db.binding())), async () => { throw new Error('must reuse'); })).toEqual(generated);
     } finally { db.database.close(); }
   });
+  it('preserves completed output and spent calls when a full rerun replaces an expired ticket', async () => {
+    const db = new ReleaseTestDb(), store = new ReleaseGenerationStore(db.binding());
+    try {
+      await store.prepare(9001, 'v1.2.3', plan);
+      const old = await store.ticket(9001, 'v1.2.3', 1000);
+      let calls = 0;
+      await generateRelease(plan, client(store), async () => ++calls === 1 ? 'invalid' : output);
+      const before = await store.read(9001, 'v1.2.3');
+      expect(before!.ledger.calls).toHaveLength(2);
+      const now = 3601000;
+      await expect(store.authorize(9001, 'v1.2.3', old, now, sha('c'))).rejects.toThrow('GENERATION_AUTH');
+      await store.prepare(9001, 'v1.2.3', plan, now);
+      const fresh = await store.ticket(9001, 'v1.2.3', now);
+      await store.authorize(9001, 'v1.2.3', fresh, now + 1, sha('c'));
+      expect(await generateRelease(plan, client(store), async () => { throw new Error('must reuse'); })).toEqual(generated);
+      expect(await store.read(9001, 'v1.2.3')).toEqual(before);
+      await expect(store.authorize(9001, 'v1.2.3', old, now + 1, sha('c'))).rejects.toThrow('GENERATION_AUTH');
+    } finally { db.database.close(); }
+  });
   it('counts unknown outcomes across reruns and rejects the third call', async () => {
     const db = new ReleaseTestDb(); const store = new ReleaseGenerationStore(db.binding()); let calls = 0;
     try {

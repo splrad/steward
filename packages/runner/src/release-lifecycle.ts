@@ -28,7 +28,16 @@ export class ReleaseReceiptClient {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(60_000),
     });
     const bytes = await response.text(); releaseAssert(Buffer.byteLength(bytes) <= 1024 * 1024, 'RUNTIME_RESPONSE');
-    if (!response.ok) throw new Error(`release-runtime-${response.status}:${bytes.slice(0, 200)}`);
+    if (!response.ok) {
+      if (action === 'generation' && this.token.startsWith('release-generation.') && response.status === 409) {
+        let error: unknown;
+        try { error = JSON.parse(bytes).error; } catch { /* Preserve the original response below. */ }
+        if (error === 'RN_RECEIPT_GENERATION_AUTH') {
+          throw new Error('RN_RECEIPT_GENERATION_AUTH: 生成凭证已过期或与当前计划不匹配。请使用 Re-run all jobs 重新签发凭证；Re-run failed jobs 会复用原凭证。相同计划的已完成批次和已用调用预算会保留。');
+        }
+      }
+      throw new Error(`release-runtime-${response.status}:${bytes.slice(0, 200)}`);
+    }
     return JSON.parse(bytes) as T;
   }
   async putObject(bytes: Uint8Array): Promise<string> {
