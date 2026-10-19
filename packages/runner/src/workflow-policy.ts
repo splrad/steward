@@ -1,8 +1,14 @@
+import { createHash } from 'node:crypto';
 import YAML from 'yaml';
 import { lstat, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const hostedRunners = new Set(['ubuntu-latest', 'ubuntu-24.04', 'windows-latest', 'windows-2025', 'macos-latest']);
+// Existing deployed-policy resolvers are allowed only as complete trusted documents.
+const deployedPolicyWorkflows: Record<string,string> = {
+  ".github/workflows/sync-review-instructions.yml": "50652cb445e0abf37d0e1adb3e95e35a8d6b4cd4f96ff6a774e8cf2da97a7ed7",
+  ".github/workflows/sync-managed-labels.yml": "7be23eb192bb3dee4d1c4ca6205778ec1ae346758f4edaecca7c78d843c9dc64"
+};
 const actions = new Set([
  'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
  'actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68', 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
@@ -15,6 +21,10 @@ const secretEnvironments: Record<string, readonly string[]> = {
 };
 const object = (v: any): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);
 const fail = (detail: string): never => { throw new Error(`WORKFLOW_POLICY: ${detail}`); };
+function concurrency(value:any) {
+ if(value===undefined)return;
+ if(!object(value) || value['cancel-in-progress']!==false)fail('ordinary concurrency must explicitly disable cancellation');
+}
 function shell(value: any) {
  if(value!==undefined && !['bash','sh','pwsh','powershell','cmd','python'].includes(value)) fail('shell must be a static approved value');
 }
@@ -42,14 +52,18 @@ export function assertWorkflowDocument(path: string, d: any) {
  if (!object(d) || !object(d.jobs) || !Object.keys(d.jobs).length) fail(`${path}: jobs missing`);
  permissions(d.permissions);
  defaults(d.defaults);
+ if(path==='.github/workflows/pr-validation.yml')assertRequiredValidation(d);
+ else concurrency(d.concurrency);
  const triggers=typeof d.on==='string'?[d.on]:Array.isArray(d.on)?d.on:object(d.on)?Object.keys(d.on):[];
  if (!triggers.length || triggers.some((v:any)=>!['push','pull_request','workflow_dispatch','workflow_run','schedule'].includes(v))) fail(`${path}: trigger not permitted`);
+ const deployedPolicyContract = Object.hasOwn(deployedPolicyWorkflows,path) && createHash('sha256').update(canonical(d)).digest('hex')===deployedPolicyWorkflows[path];
  const global={...d};delete global.jobs;
  if (secrets(global).length) fail(`${path}: workflow-level secrets`);
  for (const [name,j] of Object.entries(d.jobs) as [string,any][]) {
   if (!object(j) || j.uses || j.secrets || !Array.isArray(j.steps) || !j.steps.length) fail(`${path}:${name}: reusable jobs or missing steps`);
   if (j.container!==undefined || j.services!==undefined) fail('job/service containers not permitted');
   defaults(j.defaults);
+  concurrency(j.concurrency);
   if (j.permissions!==undefined) permissions(j.permissions);
   const used=secrets(j); const env=j.environment;
   if (env!==undefined && (!object(env) || !Object.hasOwn(secretEnvironments,env.name) || env.deployment!==(env.name==='steward-deployment'))) fail(`${path}:${name}: protected environment`);
@@ -60,6 +74,9 @@ export function assertWorkflowDocument(path: string, d: any) {
    shell(step?.shell);
    if (!object(step)) fail(`${path}: invalid step`);
    if (step.uses!==undefined && !actions.has(step.uses)) fail(`${path}: unapproved/unpinned action`);
+   if (triggers.includes('workflow_run') && (used.length || env!==undefined) && step.uses?.startsWith('actions/checkout@')) {
+    if(!deployedPolicyContract && (step.with?.ref!=='${{ github.workflow_sha }}' || (step.with?.repository!==undefined && step.with.repository!=='${{ github.repository }}')))fail('privileged workflow_run checkout must use own workflow SHA');
+   }
    if (step.uses?.startsWith('actions/checkout@') && step.with?.['persist-credentials']!==false) fail(`${path}: checkout credentials must not persist`);
    if (typeof step.run==='string') for (const expression of step.run.matchAll(/\$\{\{([\s\S]*?)\}\}/g)) {
     const body=expression[1]!.trim();

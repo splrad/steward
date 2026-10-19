@@ -53,6 +53,26 @@ describe('trusted workflow security policy',()=>{
  else expect(()=>assertWorkflowDocument('test.yml',d)).toThrow('shell must be');
  }
  });
+ it.each(['workflow','job'])('rejects cancellation at %s scope',level=>{
+ for(const cancel of [true,'true',undefined,false]){const d:any=ordinary();const c={group:'steward-release-1187527897','cancel-in-progress':cancel};if(level==='workflow')d.concurrency=c;else d.jobs.test.concurrency=c;
+ if(cancel===false)expect(()=>assertWorkflowDocument('ordinary.yml',d)).not.toThrow();else expect(()=>assertWorkflowDocument('ordinary.yml',d)).toThrow('cancellation');}
+ });
+ it.each(['untrusted','missing','other-repo','trusted'])('binds privileged workflow_run checkout: %s',kind=>{
+ const d:any=ordinary();d.on={workflow_run:{workflows:['Build'],types:['completed']}};d.jobs.test.environment={name:'steward-release',deployment:false};
+ const ref=String.fromCharCode(36)+'{{ github.workflow_sha }}';
+ const step:any={uses:'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',with:{ref,'persist-credentials':false}};
+ if(kind==='untrusted')step.with.ref=String.fromCharCode(36)+'{{ github.event.workflow_run.head_sha }}';if(kind==='missing')delete step.with.ref;if(kind==='other-repo')step.with.repository='attacker/repo';
+ d.jobs.test.steps=[step,{run:'npm test',env:{KEY:String.fromCharCode(36)+'{{ secrets.STEWARD_APP_PRIVATE_KEY }}'}}];
+ if(kind==='trusted')expect(()=>assertWorkflowDocument('test.yml',d)).not.toThrow();else expect(()=>assertWorkflowDocument('test.yml',d)).toThrow('workflow_run checkout');
+ });
+ it.each(['sync-review-instructions.yml','sync-managed-labels.yml'])('protects deployed policy exception %s',async name=>{
+ const path='.github/workflows/'+name;const d=YAML.parse(await readFile(path,'utf8'));expect(()=>assertWorkflowDocument(path,d)).not.toThrow();
+ for(const kind of ['checkout','resolver','condition']){const changed=structuredClone(d);const j=Object.values(changed.jobs)[0] as any;
+ if(kind==='checkout')j.steps.find((s:any)=>s.uses?.startsWith('actions/checkout')).with.ref='attacker';
+ if(kind==='resolver')j.steps.find((s:any)=>s.id==='policy').run='echo policy_sha=attacker';
+ if(kind==='condition')j.if='true';
+ expect(()=>assertWorkflowDocument(path,changed)).toThrow('workflow_run checkout');}
+ });
  it.each(['write','implicit','trigger','action','local-action','checkout','secret','dynamic-secret','inherit','runner','shell','environment','global-secret','reusable','permission-alias'])('rejects unsafe capability: %s',kind=>{
   const d:any=ordinary(),j=d.jobs.test;
   if(kind==='write')j.permissions={contents:'write'};

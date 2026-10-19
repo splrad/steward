@@ -33,3 +33,6 @@
 2026-10-20 回读 Steward：steward-automation、steward-release、steward-deployment 均仅允许 main 分支，仓库及组织层可用 secrets 列表为空；steward-release-notes 尚未创建，启用前同样须具备上述保护。此事实不代表其他仓库或未来配置自动满足要求。静态校验与线上环境保护共同构成边界，不能用候选作业 if 表达式替代平台限制。
 
 依据：[GitHub 环境与 deployment 行为](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/control-deployments#using-environments-without-deployments)。
+
+普通工作流的顶层和作业级 concurrency 必须显式设置 cancel-in-progress:false；只有完整固定的必需验证入口保留按 PR 取消行为。带受保护环境或密钥的 workflow_run 作业使用 checkout 时，必须检出当前仓库的 github.workflow_sha，不能检出触发方 head_sha 或其他仓库。该约束保护检出来源；任意脚本下载并执行代码仍须代码审查。
+现有 sync-review-instructions.yml 与 sync-managed-labels.yml 的已部署策略解析流程按中央固定的完整文档摘要保留；修改解析命令、上游条件或检出引用都会使该例外失效。候选文件不能自行声明例外。
