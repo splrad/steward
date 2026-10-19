@@ -9,6 +9,18 @@ const ordinary=()=>({on:{pull_request:{}},permissions:{contents:'read'},jobs:{te
 afterEach(()=>vi.unstubAllEnvs());
 describe('trusted workflow security policy',()=>{
  it('allows an ordinary workflow regardless of its name',()=>{expect(()=>assertWorkflowDocument('new-name.yml',ordinary())).not.toThrow();});
+ it.each([
+  "github.event['pull_request']['title']", "github['event'].pull_request.title", "github['event']['inputs']['value']",
+  'github.event.inputs.value', 'github.event.commits[0].message', 'github.event.workflow_run.head_branch',
+  'GITHUB.EVENT.PULL_REQUEST.TITLE', "github [ 'event' ]", 'toJSON(github.event)', 'toJSON(github)',
+ ])('rejects untrusted shell event expression: %s',expression=>{
+  const d=ordinary();d.jobs.test.steps[0]!.run='echo "${{ '+expression+' }}"';
+  expect(()=>assertWorkflowDocument('test.yml',d)).toThrow('untrusted event');
+ });
+ it('accepts event data through env and the gate boolean in shell',()=>{
+  const d:any=ordinary();d.jobs.test.steps=[{env:{TITLE:"${{ github.event['pull_request']['title'] }}"},run:'echo "$TITLE"'},{run:'echo "${{ github.event.repository.private }}"'}];
+  expect(()=>assertWorkflowDocument('test.yml',d)).not.toThrow();
+ });
  it.each(['write','implicit','trigger','action','local-action','checkout','secret','dynamic-secret','inherit','runner','shell','environment','global-secret','reusable','permission-alias'])('rejects unsafe capability: %s',kind=>{
   const d:any=ordinary(),j=d.jobs.test;
   if(kind==='write')j.permissions={contents:'write'};
@@ -42,6 +54,10 @@ describe('trusted workflow security policy',()=>{
   if(kind==='global-env')d.env={NODE_OPTIONS:'--import ./evil.mjs'};
   if(kind==='defaults')d.defaults={run:{'working-directory':'candidate'}};
   expect(()=>assertRequiredValidation(d)).toThrow();
+ });
+ it.each(['push','workflow_dispatch','workflow_run','schedule','pull_request_target'])('rejects additional required-entry trigger: %s',async trigger=>{
+  const d=YAML.parse(await readFile('.github/workflows/pr-validation.yml','utf8'));d.on[trigger]={};
+  expect(()=>assertRequiredValidation(d)).toThrow('required PR event coverage');
  });
  it('accepts the required entry with a changed display name',async()=>{const d=YAML.parse(await readFile('.github/workflows/pr-validation.yml','utf8'));d.jobs.validate.steps.at(-1).name='policy SHA evidence';expect(()=>assertRequiredValidation(d)).not.toThrow();});
  it('allows inventory additions, renames and removals but never candidate self-authorization',async()=>{

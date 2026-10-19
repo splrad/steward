@@ -97,6 +97,7 @@ describe("审查文件受控退役", () => {
       vi.stubEnv("VALIDATION_BASE_SHA", ""); vi.stubEnv("VALIDATION_BASE_REF", "");
       const validationRun = main(["validate", "--workspace", workspace, "--repository-id", "1296724484", "--profile", "steward"]);
       if (kind === "absent") await expect(validationRun).resolves.toBeUndefined();
+      else if (kind === "parent-file") await expect(validationRun).rejects.toThrow("WORKFLOW_POLICY: workflow directory type");
       else await expect(validationRun).rejects.toThrow("验证任务失败");
       if (kind === "directory") expect(await readFile(join(workspace, retiredPath, "manual.md"), "utf8")).toBe("人工内容");
     } finally { vi.unstubAllEnvs(); await rm(directory, { recursive: true, force: true }); }

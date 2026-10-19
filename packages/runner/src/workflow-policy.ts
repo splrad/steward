@@ -49,7 +49,13 @@ export function assertWorkflowDocument(path: string, d: any) {
    if (!object(step)) fail(`${path}: invalid step`);
    if (step.uses!==undefined && !actions.has(step.uses)) fail(`${path}: unapproved/unpinned action`);
    if (step.uses?.startsWith('actions/checkout@') && step.with?.['persist-credentials']!==false) fail(`${path}: checkout credentials must not persist`);
-   if (typeof step.run==='string' && /\$\{\{[^}]*github\.event\.(?:pull_request|issue|comment|head_commit)/i.test(step.run)) fail(`${path}: untrusted event interpolated into shell`);
+   if (typeof step.run==='string') for (const expression of step.run.matchAll(/\$\{\{([\s\S]*?)\}\}/g)) {
+    const body=expression[1]!.trim();
+    // The gate uses this boolean only. Other event data must pass through env,
+    // including indexed/case-insensitive access and serialization of the context.
+    if (/\bgithub\b/i.test(body) && !/^(?:github\.(?:sha|repository_id|run_id|run_attempt|actor_id)|github\.event\.repository\.private)$/i.test(body)
+      && /\bgithub\s*(?:\[|\.\s*event\b)|\bgithub\s*(?:\)|$)/i.test(body)) fail(`${path}: untrusted event interpolated into shell`);
+   }
   }
  }
 }
@@ -120,12 +126,12 @@ export function assertRequiredValidation(d:any) {
  if(!object(j) || !Array.isArray(j.steps))fail('required validate job missing');
  for(const step of j.steps)delete step.name;
  if(canonical(j)!==canonical(requiredValidationJob))fail('required trusted validation entry changed');
- if(!object(d.on?.pull_request) || JSON.stringify(d.on.pull_request.types)!==JSON.stringify(['opened','synchronize','reopened','edited','labeled','unlabeled']) || Object.keys(d.on.pull_request).some(k=>k!=='types')) fail('required PR event coverage');
+ if(!object(d.on) || Object.keys(d.on).length!==1 || !object(d.on.pull_request) || JSON.stringify(d.on.pull_request.types)!==JSON.stringify(['opened','synchronize','reopened','edited','labeled','unlabeled']) || Object.keys(d.on.pull_request).some(k=>k!=='types')) fail('required PR event coverage');
  if(d.env!==undefined || d.defaults!==undefined) fail('required entry environment/default overrides');
 }
 export async function verifyWorkflowPolicy(workspace:string, repositoryId:number, requiredPaths:readonly string[]) {
  const directory=join(workspace,'.github/workflows'); let files:string[]=[];
- try { if(!(await lstat(directory)).isDirectory() || (await lstat(join(workspace,'.github'))).isSymbolicLink()) fail('workflow directory type'); files=await readdir(directory); }
+ try { if(!(await lstat(join(workspace,'.github'))).isDirectory() || !(await lstat(directory)).isDirectory()) fail('workflow directory type'); files=await readdir(directory); }
  catch(e) {if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
  const paths=files.filter(f=>/\.ya?ml$/.test(f)).map(f=>`.github/workflows/${f}`).sort();
  for(const required of requiredPaths) if(!paths.includes(required)) fail(`missing required entry ${required}`);
