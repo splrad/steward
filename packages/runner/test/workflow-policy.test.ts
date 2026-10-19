@@ -53,6 +53,13 @@ describe('trusted workflow security policy',()=>{
  else expect(()=>assertWorkflowDocument('test.yml',d)).toThrow('shell must be');
  }
  });
+ it('allows omitted concurrency without cancellation',()=>{expect(()=>assertWorkflowDocument('ordinary.yml',ordinary())).not.toThrow();});
+ it.each(['protected','unprivileged'])('checks workflow_run artifact download: %s',kind=>{
+ const d:any=ordinary();d.on={workflow_run:{workflows:['Build'],types:['completed']}};
+ if(kind==='protected')d.jobs.test.environment={name:'steward-release',deployment:false};
+ d.jobs.test.steps=[{uses:'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c',with:{'run-id':'${{ github.event.workflow_run.id }}'}},{run:'bash downloaded.sh'}];
+ if(kind==='protected')expect(()=>assertWorkflowDocument('test.yml',d)).toThrow('artifact download');else expect(()=>assertWorkflowDocument('test.yml',d)).not.toThrow();
+ });
  it.each(['workflow','job'])('rejects cancellation at %s scope',level=>{
  for(const cancel of [true,'true',undefined,false]){const d:any=ordinary();const c={group:'steward-release-1187527897','cancel-in-progress':cancel};if(level==='workflow')d.concurrency=c;else d.jobs.test.concurrency=c;
  if(cancel===false)expect(()=>assertWorkflowDocument('ordinary.yml',d)).not.toThrow();else expect(()=>assertWorkflowDocument('ordinary.yml',d)).toThrow('cancellation');}

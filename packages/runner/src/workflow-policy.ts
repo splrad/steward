@@ -77,6 +77,7 @@ export function assertWorkflowDocument(path: string, d: any) {
    if (triggers.includes('workflow_run') && (used.length || env!==undefined) && step.uses?.startsWith('actions/checkout@')) {
     if(!deployedPolicyContract && (step.with?.ref!=='${{ github.workflow_sha }}' || (step.with?.repository!==undefined && step.with.repository!=='${{ github.repository }}')))fail('privileged workflow_run checkout must use own workflow SHA');
    }
+   if (triggers.includes('workflow_run') && (used.length || env!==undefined) && step.uses?.startsWith('actions/download-artifact@')) fail('privileged workflow_run artifact download not permitted');
    if (step.uses?.startsWith('actions/checkout@') && step.with?.['persist-credentials']!==false) fail(`${path}: checkout credentials must not persist`);
    if (typeof step.run==='string') for (const expression of step.run.matchAll(/\$\{\{([\s\S]*?)\}\}/g)) {
     const body=expression[1]!.trim();
