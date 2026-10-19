@@ -86,12 +86,22 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
           archived = claim.receipt;
           releaseAssert(archived.frozen.policySha !== env.POLICY_SHA && !archived.releaseId && !archived.operation
             && !['publishing', 'verified'].includes(archived.phase), 'POLICY_MIGRATION_STATE');
+          if (archived.pullNumber) {
+            const pull = await gh.getPullRequest(owner, repo, archived.pullNumber);
+            releaseAssert(pull.state === 'closed', 'POLICY_MIGRATION_OPEN_PR');
+          }
           await makeReleaseBuildRequest({ ...archived.frozen, productTargetSha: head.object.sha, policySha: env.POLICY_SHA! }, configuration, 'initial', null);
           await store.migratePolicy(archived, claim.token, env.POLICY_SHA!, Date.now());
         } finally { await store.release(repositoryId, tag, claim.token); }
       } else {
-        const saved = await store.migratedReceipt(repositoryId, tag, env.POLICY_SHA!);
-        releaseAssert(saved, 'POLICY_MIGRATION_NOT_FOUND'); archived = saved;
+        const pending = await store.migratedReceipt(repositoryId, tag);
+        releaseAssert(pending, 'POLICY_MIGRATION_NOT_FOUND');
+        if (pending.pullNumber) {
+          const pull = await gh.getPullRequest(owner, repo, pending.pullNumber);
+          releaseAssert(pull.state === 'closed', 'POLICY_MIGRATION_OPEN_PR');
+        }
+        await makeReleaseBuildRequest({ ...pending.frozen, productTargetSha: head.object.sha, policySha: env.POLICY_SHA! }, configuration, 'initial', null);
+        archived = await store.resumePolicy(repositoryId, tag, env.POLICY_SHA!);
       }
       await makeReleaseBuildRequest({ ...archived.frozen, productTargetSha: head.object.sha, policySha: env.POLICY_SHA! }, configuration, 'initial', null);
       await dispatchWorkflow(await centralBuildClient(env, true), { owner: 'splrad', repo: 'steward', workflow: 'release-build.yml', policySha: env.POLICY_SHA!,

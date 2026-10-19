@@ -307,3 +307,20 @@ it.each(['tag', 'release', 'configuration', 'same-policy'])('keeps the current r
  if (reason === 'same-policy') { r = newReleaseReceipt(frozenFixture(), notesFixture); db.database.prepare('UPDATE release_receipts SET record_json=?').run(canonicalReleaseJson(r)); }
  expect((await migrate())!.status).not.toBe(200); expect(await receipts.get(9001, 'v1.2.3')).toEqual(r); expect(mock.dispatch).not.toHaveBeenCalled();
 });
+it.each(['open','closed'])('requires a bound old candidate to be closed before policy migration: %s', async state => {
+ const original = await policyMigrationFixture(), r={...original,pullNumber:42};
+ db.database.prepare('UPDATE release_receipts SET record_json=?').run(canonicalReleaseJson(r));
+ mock.central.getPullRequest=vi.fn(async()=>({state,merged:false}));
+ const response=await migrate();
+ expect(response!.status===200).toBe(state==='closed');
+ if(state==='open'){expect(await receipts.get(9001,'v1.2.3')).toEqual(r);expect(mock.dispatch).not.toHaveBeenCalled();}
+});
+it('resumes an interrupted migration after another policy upgrade without reusing accepted old-policy builds', async()=>{
+ const r=await policyMigrationFixture(); await migrate();
+ const f={...r.frozen,policySha:sha('c')};
+ const build=await store.prepare(await makeReleaseBuildRequest(f,mock.config,'initial',null)); await store.save(build,{...build,status:'accepted'});
+ const response=await handleReleaseRequest(new Request('https://runtime.test/internal/releases/9001/v1.2.3/migrate-policy',{method:'POST',body:'{}'}),{...env(),POLICY_SHA:sha('d')});
+ expect(response!.status).toBe(200);expect(await store.get(build.request.key,9001,'v1.2.3')).toBeNull();
+ expect(await receipts.get(9001,'v1.2.3',1)).toEqual(r);
+ expect(mock.dispatch).toHaveBeenLastCalledWith(mock.central,expect.objectContaining({policySha:sha('d')}));
+});

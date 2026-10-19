@@ -89,3 +89,18 @@ it('limits explicit policy migrations to three without partially archiving the f
   expect(db.database.prepare('SELECT COUNT(*) AS count FROM release_policy_migrations').get()!.count).toBe(3);
  } finally { db.database.close(); }
 });
+it('retargets unfinished migrations with bounded history and fences concurrent losers and current receipts',async()=>{
+ const db=new ReleaseTestDb(),store=new ReleaseReceiptStore(db.binding()),builds=new ReleaseBuildStore(db.binding());
+ try{
+ const f=frozenFixture(),r=newReleaseReceipt(f,notesFixture),now=Date.now();await store.prepare(r,'now');const c=await store.claim(f.repositoryId,f.targetTag,now);await store.migratePolicy(r,c.token,'d'.repeat(40),now);
+ const results=await Promise.allSettled(['e','f'].map(p=>store.resumePolicy(f.repositoryId,f.targetTag,p.repeat(40))));expect(results.filter(x=>x.status==='fulfilled')).toHaveLength(1);
+ const policy=String(db.database.prepare('SELECT policy_sha FROM release_policy_retargets').get()!.policy_sha);
+ const b=await builds.prepare({key:'b'.repeat(64),mode:'initial',frozen:{...f,policySha:policy},plans:[],sourceArtifactId:null});
+ await store.resumePolicy(f.repositoryId,f.targetTag,policy);expect(await builds.get(b.request.key,f.repositoryId,f.targetTag)).toEqual(b);
+ await store.resumePolicy(f.repositoryId,f.targetTag,'a'.repeat(40));await store.resumePolicy(f.repositoryId,f.targetTag,'b'.repeat(40));
+ await expect(store.resumePolicy(f.repositoryId,f.targetTag,'1'.repeat(40))).rejects.toThrow('POLICY_MIGRATION_BUDGET');
+ await store.prepare(newReleaseReceipt({...f,policySha:'b'.repeat(40)},notesFixture,2),'now');
+ await expect(store.resumePolicy(f.repositoryId,f.targetTag,'2'.repeat(40))).rejects.toThrow('POLICY_MIGRATION_NOT_FOUND');
+ expect(db.database.prepare('SELECT COUNT(*) AS n FROM release_policy_retargets').get()!.n).toBe(3);
+ }finally{db.database.close();}
+});

@@ -8,8 +8,8 @@ export class ReleaseReceiptStore {
     const row = await this.db.prepare('SELECT COALESCE(MAX(revision),0)+1 AS revision FROM release_receipts WHERE repository_id=? AND target_tag=?').bind(repositoryId, tag).first<{ revision: number }>();
     return row!.revision;
   }
-  async migratedReceipt(repositoryId: number, tag: string, policySha: string): Promise<ReleaseReceipt | null> {
-    const row = await this.db.prepare('SELECT receipt_json FROM release_policy_migrations WHERE repository_id=? AND target_tag=? AND policy_sha=? ORDER BY revision DESC LIMIT 1').bind(repositoryId, tag, policySha).first<{ receipt_json: string }>();
+  async migratedReceipt(repositoryId: number, tag: string, policySha?: string): Promise<ReleaseReceipt | null> {
+    const row = await this.db.prepare(`SELECT receipt_json FROM release_policy_migrations WHERE repository_id=? AND target_tag=?${policySha ? ' AND policy_sha=?' : ''} ORDER BY revision DESC LIMIT 1`).bind(repositoryId, tag, ...(policySha ? [policySha] : [])).first<{ receipt_json: string }>();
     return row ? JSON.parse(row.receipt_json) : null;
   }
   async migratePolicy(previous: ReleaseReceipt, token: string, policySha: string, now: number): Promise<void> {
@@ -29,6 +29,28 @@ export class ReleaseReceiptStore {
         .bind(repo, tag, previous.revision, previous.version, token, now, ...identity),
     ]);
     releaseAssert(results[0]!.meta.changes === 1 && results[3]!.meta.changes === 1, 'POLICY_MIGRATION_STALE');
+  }
+  async resumePolicy(repositoryId: number, tag: string, policySha: string): Promise<ReleaseReceipt> {
+    releaseAssert(/^[a-f0-9]{40}$/.test(policySha), 'POLICY_MIGRATION_STATE');
+    const row = await this.db.prepare('SELECT revision,policy_sha,receipt_json FROM release_policy_migrations WHERE repository_id=? AND target_tag=? ORDER BY revision DESC LIMIT 1')
+      .bind(repositoryId, tag).first<{ revision: number; policy_sha: string; receipt_json: string }>();
+    releaseAssert(row && !await this.get(repositoryId, tag) && await this.nextRevision(repositoryId, tag) === row.revision + 1, 'POLICY_MIGRATION_NOT_FOUND');
+    const prior = await this.db.prepare('SELECT ordinal,policy_sha FROM release_policy_retargets WHERE repository_id=? AND target_tag=? AND revision=? ORDER BY ordinal DESC LIMIT 1')
+      .bind(repositoryId, tag, row.revision).first<{ordinal: number; policy_sha: string}>();
+    const receipt = JSON.parse(row.receipt_json) as ReleaseReceipt;
+    if ((prior?.policy_sha ?? row.policy_sha) === policySha) return receipt;
+    releaseAssert(policySha !== row.policy_sha && policySha !== receipt.frozen.policySha && (prior?.ordinal ?? 0) < 3, 'POLICY_MIGRATION_BUDGET');
+    const ordinal = (prior?.ordinal ?? 0) + 1, nonce = randomUUID();
+    const marker = 'EXISTS(SELECT 1 FROM release_policy_retargets WHERE repository_id=? AND target_tag=? AND revision=? AND nonce=?)';
+    const identity = [repositoryId, tag, row.revision, nonce];
+    const results = await this.db.batch([
+      this.db.prepare('INSERT INTO release_policy_retargets SELECT ?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM release_receipts WHERE repository_id=? AND target_tag=? AND (current=1 OR revision>?)) AND (SELECT COUNT(*) FROM release_policy_retargets WHERE repository_id=? AND target_tag=? AND revision=?)=?')
+        .bind(repositoryId, tag, row.revision, ordinal, policySha, nonce, repositoryId, tag, row.revision, repositoryId, tag, row.revision, ordinal - 1),
+      this.db.prepare(`UPDATE release_build_requests SET policy_archived=1 WHERE repository_id=? AND target_tag=? AND ${marker}`).bind(repositoryId, tag, ...identity),
+      this.db.prepare(`UPDATE release_generation SET ticket_digest=NULL,ticket_until=0,version=version+1 WHERE repository_id=? AND target_tag=? AND ${marker}`).bind(repositoryId, tag, ...identity),
+    ]);
+    releaseAssert(results[0]!.meta.changes === 1, 'POLICY_MIGRATION_STALE');
+    return receipt;
   }
   async findByPull(repositoryId: number, pullNumber: number): Promise<ReleaseReceipt | null> {
     const row = await this.db.prepare("SELECT target_tag FROM release_receipts WHERE repository_id=? AND current=1 AND json_extract(record_json,'$.pullNumber')=?")
