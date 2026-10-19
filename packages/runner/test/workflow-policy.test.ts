@@ -71,6 +71,19 @@ describe('trusted workflow security policy',()=>{
   expect(()=>assertRequiredValidation(d)).toThrow('required PR event coverage');
  });
  it('accepts the required entry with a changed step display name',async()=>{const d=YAML.parse(await readFile('.github/workflows/pr-validation.yml','utf8'));d.jobs.validate.steps.at(-1).name='policy SHA evidence';expect(()=>assertRequiredValidation(d)).not.toThrow();});
+ it.each(['missing','skip','needs','permission','source','command','continue','env','extra-step'])('protects fragments entry: %s',async kind=>{
+  const d=YAML.parse(await readFile('.github/workflows/pr-validation.yml','utf8'));const j=d.jobs.fragments;
+  if(kind==='missing')delete d.jobs.fragments;
+  if(kind==='skip')j.if='false';
+  if(kind==='needs')delete j.needs;
+  if(kind==='permission')j.permissions.checks='none';
+  if(kind==='source')j.steps[0].with.ref='candidate';
+  if(kind==='command')j.steps.at(-1).run='echo skipped';
+  if(kind==='continue')j['continue-on-error']=true;
+  if(kind==='env')j.env={NODE_OPTIONS:'--import ./evil.mjs'};
+  if(kind==='extra-step')j.steps.push({run:'echo extra'});
+  expect(()=>assertRequiredValidation(d)).toThrow('fragments');
+ });
  it('allows inventory additions, renames and removals but never candidate self-authorization',async()=>{
   const dir=await mkdtemp(join(tmpdir(),'workflow-policy-'));try{
    await mkdir(join(dir,'.github/workflows'),{recursive:true});await mkdir(join(dir,'config'));

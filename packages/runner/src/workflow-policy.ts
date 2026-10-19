@@ -115,6 +115,43 @@ const requiredValidationJob = {
     }
   ]
 };
+const requiredFragmentsJob = {
+  "needs": "validate",
+  "if": "github.event.pull_request.base.ref == github.event.repository.default_branch",
+  "runs-on": "ubuntu-latest",
+  "timeout-minutes": 5,
+  "permissions": {
+    "contents": "read",
+    "pull-requests": "read",
+    "checks": "read"
+  },
+  "steps": [
+    {
+      "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+      "with": {
+        "repository": "splrad/steward",
+        "ref": "${{ needs.validate.outputs.policy }}",
+        "persist-credentials": false
+      }
+    },
+    {
+      "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+      "with": {
+        "node-version-file": ".node-version"
+      }
+    },
+    {
+      "env": {
+        "VALIDATION_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+        "VALIDATION_HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
+        "VALIDATION_PR_NUMBER": "${{ github.event.pull_request.number }}",
+        "VALIDATION_POLICY_SHA": "${{ needs.validate.outputs.policy }}",
+        "VALIDATION_READ_TOKEN": "${{ github.token }}"
+      },
+      "run": "node packages/runner/dist/index.js validate --workspace . --repository-id \"${{ github.repository_id }}\" --profile \"${{ needs.validate.outputs.profile }}\" --fragments-only true"
+    }
+  ]
+};
 function canonical(value:any):string {
  if(Array.isArray(value))return '['+value.map(canonical).join(',')+']';
  if(object(value))return '{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+canonical(value[k])).join(',')+'}';
@@ -126,6 +163,10 @@ export function assertRequiredValidation(d:any) {
  if(!object(j) || !Array.isArray(j.steps))fail('required validate job missing');
  for(const step of j.steps)delete step.name;
  if(canonical(j)!==canonical(requiredValidationJob))fail('required trusted validation entry changed');
+ const f=structuredClone(d?.jobs?.fragments);
+ if(!object(f) || !Array.isArray(f.steps))fail('required fragments job missing');
+ for(const step of f.steps)delete step.name;
+ if(canonical(f)!==canonical(requiredFragmentsJob))fail('required fragments entry changed');
  if(!object(d.on) || Object.keys(d.on).length!==1 || !object(d.on.pull_request) || JSON.stringify(d.on.pull_request.types)!==JSON.stringify(['opened','synchronize','reopened','edited','labeled','unlabeled']) || Object.keys(d.on.pull_request).some(k=>k!=='types')) fail('required PR event coverage');
  if(d.env!==undefined || d.defaults!==undefined) fail('required entry environment/default overrides');
 }
