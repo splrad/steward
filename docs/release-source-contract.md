@@ -46,6 +46,8 @@ Review 事件只调用 `inspect`。`reconcile` 先核验真人手动合并证据
 | generator-ticket | 固定生成计划和跨重跑预算，签发仅能访问该候选生成账本的凭证；有效期取一小时与计划执行预算加三十分钟排队/初始化余量的较大值，最长八十六分钟 |
 | rebind-build | 本地重新复算资产，并校验完整清单、工具链及中央成功运行；相同字节更新下载来源，保留原冻结身份和批准 |
 
+创建返回 `CREATION_OUTCOME_UNKNOWN` 时，在中央 `release.yml` 的默认分支选择 `retry-create`，填写原 repositoryId 和 targetTag，经 `steward-release` 环境批准后执行。创建意图必须已持续至少一小时，且远端不存在同标签 Release/tag；恢复成功后再选择 `reconcile` 继续发布。
+
 创建、上传和发布响应丢失后先回读远程对象。创建结果仍未知且没有可绑定对象时保留意图，自动重试不会再次创建。已发布内容漂移只报告，不覆盖人工编辑。
 
 初始构建已 accepted、但 seed 上传或后续派发失败时，重跑 `release-build-complete.yml` 全部作业，或手动派发该工作流并传入原 `release-build.yml` 的 runId。完成入口重新定位原请求与构建 artifact，复算资产并重建 seed；同一构建的 finish 可幂等调用，随后重新上传和接续 generate。无需将 accepted 改回 failed。此恢复要求原构建 artifact 仍可用且策略同步；artifact 已过期时明确失败，须人工处理。

@@ -5,7 +5,7 @@ on:
     inputs:
       repositoryId: { required: true, type: string }
       targetTag: { required: true, type: string }
-      operation: { required: true, type: choice, options: [generate, prepare, inspect, reconcile, revise-rebuild, recover-candidate] }
+      operation: { required: true, type: choice, options: [generate, prepare, inspect, reconcile, revise-rebuild, recover-candidate, retry-create] }
 
       requestKey: { required: false, type: string }
       bundleArtifactId: { required: false, type: string }
@@ -254,7 +254,7 @@ jobs:
         run: node packages/runner/dist/index.js release-candidate --operation prepare --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --bundle generated --assets seed/assets
 
   revision:
-    if: (inputs.operation == 'revise-rebuild' || inputs.operation == 'recover-candidate') && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: (inputs.operation == 'revise-rebuild' || inputs.operation == 'recover-candidate' || inputs.operation == 'retry-create') && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: { name: steward-release, deployment: false }
@@ -264,7 +264,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with: { node-version-file: .node-version, cache: npm }
       - run: npm ci --ignore-scripts
-      - name: 恢复持久收据对应的候选
+      - name: 恢复持久收据对应的候选或创建意图
         id: receipt
         shell: bash
         env:

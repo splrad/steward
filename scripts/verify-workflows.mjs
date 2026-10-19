@@ -254,6 +254,11 @@ if (!hasExactKeys(observeCommand?.env, Object.keys(observeEnvironment)) || Objec
 const releaseSourceWorkflow = YAML.parse(await readFile(".github/workflows/release.yml", "utf8"));
 if (!hasExactKeys(releaseSourceWorkflow.jobs, ["prepare", "inspect", "publish", "generation-ticket", "generate", "generated-candidate", "revision"]) || !hasExactKeys(releaseSourceWorkflow.on, ["workflow_dispatch"])) throw new Error("发布工作流必须先读取持久候选收据");
 const generationJob = releaseSourceWorkflow.jobs.generate;
+const recoveryJob = releaseSourceWorkflow.jobs.revision;
+if (!releaseSourceWorkflow.on.workflow_dispatch.inputs.operation.options.includes('retry-create')
+  || recoveryJob.if !== "(inputs.operation == 'revise-rebuild' || inputs.operation == 'recover-candidate' || inputs.operation == 'retry-create') && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
+  || !recoveryJob.steps.some(step => step.env?.OPERATION === '${{ inputs.operation }}' && step.env?.POLICY_SHA === '${{ github.workflow_sha }}'
+    && step.run === 'node packages/runner/dist/index.js release-candidate --operation "$OPERATION" --request-key "$REQUEST_KEY" --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA"')) throw new Error('创建结果未知的恢复入口必须连接可信策略下的受保护恢复作业');
 const productBuild = workflowDocuments.get('release-build.yml');
 const buildCompletion = workflowDocuments.get('release-build-complete.yml');
 const genericBuild = workflowDocuments.get('product-build.yml');
