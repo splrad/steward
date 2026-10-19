@@ -1,3 +1,4 @@
+import { verifyWorkflowPolicy } from "../packages/runner/src/workflow-policy.ts";
 import { createHash } from "node:crypto";
 import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,9 +11,8 @@ function hasExactKeys(value, expectedKeys) {
   return JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...expectedKeys].sort());
 }
 
-const expected = ["deploy-runtime.yml", "issue-sync.yml", "onboard-repository.yml", "pr-automation.yml", "pr-classification.yml", "pr-issue-link.yml", "pr-validation.yml", "release.yml", "sync-managed-labels.yml", "sync-review-instructions.yml"];
 const files = (await readdir(".github/workflows")).sort();
-if (JSON.stringify(files) !== JSON.stringify(expected)) throw new Error(`工作流集合不正确: ${files.join(", ")}`);
+await verifyWorkflowPolicy(process.cwd(), 1296724484, [".github/workflows/pr-validation.yml"]);
 const workflowDocuments = new Map();
 const allowedActions = new Set([
   "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",

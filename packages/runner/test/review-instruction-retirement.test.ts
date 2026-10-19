@@ -81,6 +81,8 @@ describe("审查文件受控退役", () => {
       await writeFile(join(directory, "config/profiles/validation/steward.json"), JSON.stringify(validation));
       const workspace = join(directory, "workspace");
       await mkdir(workspace);
+      await mkdir(join(workspace, "config"));
+      await writeFile(join(workspace, "config/repositories.json"), JSON.stringify(registry));
       const instructions = await generateReviewInstructionSet("steward", profiles, rules);
       await writeFile(join(workspace, "AGENTS.md"), instructions.files[0].content);
       if (kind === "directory") {
