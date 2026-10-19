@@ -121,6 +121,7 @@ function canonical(value:any):string {
  return JSON.stringify(value);
 }
 export function assertRequiredValidation(d:any) {
+ if(d?.name!=="SPLRAD Steward / PR Validation") fail("required workflow name changed");
  const j=structuredClone(d?.jobs?.validate);
  if(!object(j) || !Array.isArray(j.steps))fail('required validate job missing');
  for(const step of j.steps)delete step.name;

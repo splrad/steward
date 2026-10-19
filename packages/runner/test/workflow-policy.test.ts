@@ -50,8 +50,10 @@ describe('trusted workflow security policy',()=>{
   expect(()=>assertWorkflowDocument('test.yml',d)).toThrow('WORKFLOW_POLICY');
  });
  it('binds release-model and App secrets to distinct environments',()=>{const d:any=ordinary();d.on={workflow_dispatch:{}};d.jobs.test.environment={name:'steward-release-notes',deployment:false};d.jobs.test.steps[0].env={TOKEN:'${{ secrets.COPILOT_GITHUB_TOKEN }}'};expect(()=>assertWorkflowDocument('notes.yml',d)).not.toThrow();d.jobs.test.steps[0].env={TOKEN:'${{ secrets.STEWARD_APP_PRIVATE_KEY }}'};expect(()=>assertWorkflowDocument('notes.yml',d)).toThrow();});
- it.each(['missing','skip','continue','source','command','checkout','extra-step','filter','global-env','defaults'])('protects required entry: %s',async kind=>{
+ it.each(['workflow-name','missing-name','missing','skip','continue','source','command','checkout','extra-step','filter','global-env','defaults'])('protects required entry: %s',async kind=>{
   const d=YAML.parse(await readFile('.github/workflows/pr-validation.yml','utf8'));const j=d.jobs.validate;
+  if(kind==='workflow-name')d.name='Renamed validation';
+  if(kind==='missing-name')delete d.name;
   if(kind==='missing')delete d.jobs.validate;
   if(kind==='skip')j.if='false';
   if(kind==='continue')j['continue-on-error']=true;
@@ -68,7 +70,7 @@ describe('trusted workflow security policy',()=>{
   const d=YAML.parse(await readFile('.github/workflows/pr-validation.yml','utf8'));d.on[trigger]={};
   expect(()=>assertRequiredValidation(d)).toThrow('required PR event coverage');
  });
- it('accepts the required entry with a changed display name',async()=>{const d=YAML.parse(await readFile('.github/workflows/pr-validation.yml','utf8'));d.jobs.validate.steps.at(-1).name='policy SHA evidence';expect(()=>assertRequiredValidation(d)).not.toThrow();});
+ it('accepts the required entry with a changed step display name',async()=>{const d=YAML.parse(await readFile('.github/workflows/pr-validation.yml','utf8'));d.jobs.validate.steps.at(-1).name='policy SHA evidence';expect(()=>assertRequiredValidation(d)).not.toThrow();});
  it('allows inventory additions, renames and removals but never candidate self-authorization',async()=>{
   const dir=await mkdtemp(join(tmpdir(),'workflow-policy-'));try{
    await mkdir(join(dir,'.github/workflows'),{recursive:true});await mkdir(join(dir,'config'));

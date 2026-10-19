@@ -4,7 +4,7 @@
 
 可信中央 runner 校验工作流安全边界。Steward 的 config/repositories.json 中 allowedWorkflowPaths 描述候选仓库的实际清单：同一个 PR 可以同步增加、删除或改名普通工作流及清单，不需要先向默认分支登记文件名。清单与实际文件必须完全一致。
 
-候选清单不能定义安全规则。必需 pr-validation.yml 由可信策略要求存在；其 validate 作业、策略来源 SHA、固定中央检出、验证命令及 PR 事件覆盖由可信 runner 的入口合同保护。显示名称可变，跳过条件、吞错、额外执行步骤和候选策略替换会被拒绝。修改这个必需安全入口仍属于中央策略变更。
+候选清单不能定义安全规则。必需 pr-validation.yml 由可信策略要求存在；其 validate 作业、策略来源 SHA、固定中央检出、验证命令及 PR 事件覆盖由可信 runner 的入口合同保护。工作流名称固定为 `SPLRAD Steward / PR Validation`，与运行时 `trustedValidationRun` 匹配；步骤显示名称可变，跳过条件、吞错、额外执行步骤和候选策略替换会被拒绝。修改这个必需安全入口仍属于中央策略变更。
 
 普通工作流统一检查：显式只读/none GITHUB_TOKEN 权限、允许的事件类型、受信且锁定提交的 Action、禁用 checkout 凭据持久化、普通文件/YAML 唯一键、禁止可复用作业和本地 Action 绕过、禁止 PR 作业获取受保护环境或密钥。密钥引用必须是显式名称，并匹配中央规定的环境。发布说明模型与 App 密钥使用不同环境。runner 必须使用静态 GitHub-hosted 标签；自托管标签、数组和动态表达式均拒绝。来源作业的环境名称不能证明输出安全，动态构建工作流须改用静态 hosted 标签后才能通过本层校验。
 
@@ -22,6 +22,14 @@
 
 ## 验收依据
 
-正向覆盖普通工作流新增、改名、删除、清单同步及必需入口显示名称变化。反向覆盖清单自授权、必需入口移除/替换/跳过/吞错、额外执行步骤、事件过滤、隐式/写权限、不固定 Action、本地 Action、凭据持久化、密钥混用、表达式密钥索引、PR环境、非许可 runner、重复 YAML 键及别名。
+正向覆盖普通工作流新增、改名、删除、清单同步及必需入口步骤显示名称变化。反向覆盖清单自授权、必需入口移除/替换/跳过/吞错、额外执行步骤、事件过滤、隐式/写权限、不固定 Action、本地 Action、凭据持久化、密钥混用、表达式密钥索引、PR环境、非许可 runner、重复 YAML 键及别名。
 
-端到端用例确认可信检查通过后仍执行下游任务，失败不会转换成成功。实际 #253 工作树的通用安全校验通过，仅证明该层兼容，不替代其未来合并候选上的完整 CI 和审查。
+端到端用例确认可信检查通过后仍执行下游任务，失败不会转换成成功。当前 #253 的 release-build.yml 和 product-build.yml 使用动态 runner，须适配为 Windows/Linux 静态 hosted 作业并同步业务合同后，再对完整候选执行本层校验与完整 CI。
+
+## 凭据环境前提
+
+受保护凭据仅存放在环境中，不能在仓库或组织层提供同名副本。持有凭据的环境须通过平台分支策略限制到默认分支；候选 YAML 的环境名称本身不能证明此限制已配置。`deployment: false` 保留环境分支策略，只取消 deployment 记录。每次启用或变更环境前须回读实际分支规则和 secret 名称元数据。
+
+2026-10-20 回读 Steward：steward-automation、steward-release、steward-deployment 均仅允许 main 分支，仓库及组织层可用 secrets 列表为空；steward-release-notes 尚未创建，启用前同样须具备上述保护。此事实不代表其他仓库或未来配置自动满足要求。静态校验与线上环境保护共同构成边界，不能用候选作业 if 表达式替代平台限制。
+
+依据：[GitHub 环境与 deployment 行为](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/control-deployments#using-environments-without-deployments)。
