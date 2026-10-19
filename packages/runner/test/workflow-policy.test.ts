@@ -13,6 +13,8 @@ describe('trusted workflow security policy',()=>{
   "github.event['pull_request']['title']", "github['event'].pull_request.title", "github['event']['inputs']['value']",
   'github.event.inputs.value', 'github.event.commits[0].message', 'github.event.workflow_run.head_branch',
   'GITHUB.EVENT.PULL_REQUEST.TITLE', "github [ 'event' ]", 'toJSON(github.event)', 'toJSON(github)',
+  'github.ref', 'github.actor', 'github.head_ref', "github.sha || github.ref", "format('{0}', github.ref)",
+  "github.actor_id == '301115370' && github.ref || 'manual'",
  ])('rejects untrusted shell event expression: %s',expression=>{
   const d=ordinary();d.jobs.test.steps[0]!.run='echo "${{ '+expression+' }}"';
   expect(()=>assertWorkflowDocument('test.yml',d)).toThrow('untrusted event');
@@ -21,6 +23,13 @@ describe('trusted workflow security policy',()=>{
   const d:any=ordinary();d.jobs.test.steps=[{env:{TITLE:"${{ github.event['pull_request']['title'] }}"},run:'echo "$TITLE"'},{run:'echo "${{ github.event.repository.private }}"'}];
   expect(()=>assertWorkflowDocument('test.yml',d)).not.toThrow();
  });
+ it.each(['self-hosted','ubuntu-latest'])('rejects unverified dynamic runner output: %s',runner=>{
+  const d:any=ordinary();d.on={workflow_dispatch:{}};
+  d.jobs.plan={'runs-on':'ubuntu-latest',environment:{name:'steward-release',deployment:false},outputs:{runner:'${{ steps.select.outputs.runner }}'},steps:[{id:'select',run:`echo "runner=${runner}" >> "$GITHUB_OUTPUT"`}]};
+  d.jobs.test.needs='plan';d.jobs.test['runs-on']='${{ needs.plan.outputs.runner }}';
+  expect(()=>assertWorkflowDocument('test.yml',d)).toThrow('runner not permitted');
+ });
+ it.each(['ubuntu-latest','windows-latest','macos-latest'])('accepts static hosted runner: %s',runner=>{const d=ordinary();d.jobs.test['runs-on']=runner;expect(()=>assertWorkflowDocument('test.yml',d)).not.toThrow();});
  it.each(['write','implicit','trigger','action','local-action','checkout','secret','dynamic-secret','inherit','runner','shell','environment','global-secret','reusable','permission-alias'])('rejects unsafe capability: %s',kind=>{
   const d:any=ordinary(),j=d.jobs.test;
   if(kind==='write')j.permissions={contents:'write'};

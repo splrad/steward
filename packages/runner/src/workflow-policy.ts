@@ -43,8 +43,7 @@ export function assertWorkflowDocument(path: string, d: any) {
   if (env!==undefined && (!object(env) || !Object.hasOwn(secretEnvironments,env.name) || env.deployment!==(env.name==='steward-deployment'))) fail(`${path}:${name}: protected environment`);
   if ((used.length || env!==undefined) && triggers.includes('pull_request')) fail(`${path}:${name}: PR jobs cannot use protected environments/secrets`);
   if (used.some(s=>!secretEnvironments[env?.name]?.includes(s))) fail(`${path}:${name}: secret/environment mismatch`);
-  if (typeof j['runs-on']!=='string' || (!/^(ubuntu|windows|macos)-(latest|[0-9]+(?:\.[0-9]+)?)$/.test(j['runs-on']) && j['runs-on']!=='${{ needs.plan.outputs.runner }}')) fail(`${path}:${name}: runner not permitted`);
-  if (j['runs-on']==='${{ needs.plan.outputs.runner }}' && (used.length || env!==undefined || !(Array.isArray(j.needs)?j.needs:[j.needs]).includes('plan') || d.jobs.plan?.environment?.name!=='steward-release')) fail(`${path}:${name}: dynamic runner must come from isolated release plan`);
+  if (typeof j['runs-on']!=='string' || !/^(ubuntu|windows|macos)-(latest|[0-9]+(?:\.[0-9]+)?)$/.test(j['runs-on'])) fail(`${path}:${name}: runner not permitted`);
   for(const step of j.steps) {
    if (!object(step)) fail(`${path}: invalid step`);
    if (step.uses!==undefined && !actions.has(step.uses)) fail(`${path}: unapproved/unpinned action`);
@@ -54,7 +53,7 @@ export function assertWorkflowDocument(path: string, d: any) {
     // The gate uses this boolean only. Other event data must pass through env,
     // including indexed/case-insensitive access and serialization of the context.
     if (/\bgithub\b/i.test(body) && !/^(?:github\.(?:sha|repository_id|run_id|run_attempt|actor_id)|github\.event\.repository\.private)$/i.test(body)
-      && /\bgithub\s*(?:\[|\.\s*event\b)|\bgithub\s*(?:\)|$)/i.test(body)) fail(`${path}: untrusted event interpolated into shell`);
+      && body!=="github.actor_id == '301115370' && 'app' || 'manual'") fail(`${path}: untrusted event interpolated into shell`);
    }
   }
  }
