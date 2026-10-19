@@ -6,7 +6,7 @@
 
 候选清单不能定义安全规则。必需 pr-validation.yml 由可信策略要求存在；其 validate 与 fragments 作业（依赖、执行条件、权限、可信检出及验证命令）、策略来源 SHA、固定中央检出、验证命令及 PR 事件覆盖由可信 runner 的入口合同保护。工作流名称固定为 `SPLRAD Steward / PR Validation`，与运行时 `trustedValidationRun` 匹配；步骤显示名称可变，跳过条件、吞错、额外执行步骤和候选策略替换会被拒绝。顶层 concurrency 固定按仓库与 PR 分组，cancel-in-progress 固定为 true。修改这个必需安全入口仍属于中央策略变更。
 
-普通工作流统一检查：显式只读/none GITHUB_TOKEN 权限、允许的事件类型、受信且锁定提交的 Action、禁用 checkout 凭据持久化、普通文件/YAML 唯一键、禁止可复用作业和本地 Action 绕过、禁止 PR 作业获取受保护环境或密钥。密钥引用必须是显式名称，并匹配中央规定的环境。发布说明模型与 App 密钥使用不同环境。runner 只允许静态标签 ubuntu-latest、ubuntu-24.04、windows-latest、windows-2025、macos-latest；自托管标签、数组和动态表达式均拒绝。来源作业的环境名称不能证明输出安全，动态构建工作流须改用静态 hosted 标签后才能通过本层校验。
+普通工作流统一检查：拒绝 job/service container；workflow/job defaults 及步骤级 shell 仅允许静态 bash、sh、pwsh、powershell、cmd、python；显式只读/none GITHUB_TOKEN 权限、允许的事件类型、受信且锁定提交的 Action、禁用 checkout 凭据持久化、普通文件/YAML 唯一键、禁止可复用作业和本地 Action 绕过、禁止 PR 作业获取受保护环境或密钥。密钥引用必须是显式名称，并匹配中央规定的环境。发布说明模型与 App 密钥使用不同环境。runner 只允许静态标签 ubuntu-latest、ubuntu-24.04、windows-latest、windows-2025、macos-latest；自托管标签、数组和动态表达式均拒绝。来源作业的环境名称不能证明输出安全，动态构建工作流须改用静态 hosted 标签后才能通过本层校验。
 
 现有 actionlint、业务工作流合同、类型、测试、配置和 dist 检查全部保留。scripts/verify-workflows.mjs 复用同一通用模块，移除重复的文件名数组；其中业务作业的专门合同仍须随业务变更同步更新。新增 Action 供应商、权限、密钥或环境属于安全能力变化，需要中央策略审查，不由候选清单放行。
 

@@ -39,6 +39,20 @@ describe('trusted workflow security policy',()=>{
  if(kind==='extra')d.concurrency.queue='max';
  expect(()=>assertRequiredValidation(d)).toThrow('required concurrency');
  });
+ it.each(['container','services'])('rejects container capability: %s',key=>{
+ const d:any=ordinary();d.jobs.test[key]=key==='container'?'attacker/image:latest':{db:{image:'attacker/image:latest'}};
+ expect(()=>assertWorkflowDocument('test.yml',d)).toThrow('containers not permitted');
+ });
+ it.each(['workflow','job','step'])('checks shell at %s level',level=>{
+ for(const value of ['bash','pwsh', 'bash -c evil', String.fromCharCode(36)+'{{ github.event.head_commit.message }}']){
+ const d:any=ordinary();
+ if(level==='workflow')d.defaults={run:{shell:value}};
+ if(level==='job')d.jobs.test.defaults={run:{shell:value}};
+ if(level==='step')d.jobs.test.steps[0].shell=value;
+ if(['bash','pwsh'].includes(value))expect(()=>assertWorkflowDocument('test.yml',d)).not.toThrow();
+ else expect(()=>assertWorkflowDocument('test.yml',d)).toThrow('shell must be');
+ }
+ });
  it.each(['write','implicit','trigger','action','local-action','checkout','secret','dynamic-secret','inherit','runner','shell','environment','global-secret','reusable','permission-alias'])('rejects unsafe capability: %s',kind=>{
   const d:any=ordinary(),j=d.jobs.test;
   if(kind==='write')j.permissions={contents:'write'};

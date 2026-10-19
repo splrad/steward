@@ -15,6 +15,14 @@ const secretEnvironments: Record<string, readonly string[]> = {
 };
 const object = (v: any): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);
 const fail = (detail: string): never => { throw new Error(`WORKFLOW_POLICY: ${detail}`); };
+function shell(value: any) {
+ if(value!==undefined && !['bash','sh','pwsh','powershell','cmd','python'].includes(value)) fail('shell must be a static approved value');
+}
+function defaults(value: any) {
+ if(value===undefined)return;
+ if(!object(value) || !object(value.run))fail('invalid run defaults');
+ shell(value.run.shell);
+}
 function permissions(p: any) {
  if (!object(p) || Object.entries(p).some(([key,v]) => !['contents','actions','checks','pull-requests','security-events','packages','statuses'].includes(key) || !['read','none'].includes(v))) fail('permissions must be explicit read/none');
 }
@@ -33,12 +41,15 @@ function secrets(value: any): string[] {
 export function assertWorkflowDocument(path: string, d: any) {
  if (!object(d) || !object(d.jobs) || !Object.keys(d.jobs).length) fail(`${path}: jobs missing`);
  permissions(d.permissions);
+ defaults(d.defaults);
  const triggers=typeof d.on==='string'?[d.on]:Array.isArray(d.on)?d.on:object(d.on)?Object.keys(d.on):[];
  if (!triggers.length || triggers.some((v:any)=>!['push','pull_request','workflow_dispatch','workflow_run','schedule'].includes(v))) fail(`${path}: trigger not permitted`);
  const global={...d};delete global.jobs;
  if (secrets(global).length) fail(`${path}: workflow-level secrets`);
  for (const [name,j] of Object.entries(d.jobs) as [string,any][]) {
   if (!object(j) || j.uses || j.secrets || !Array.isArray(j.steps) || !j.steps.length) fail(`${path}:${name}: reusable jobs or missing steps`);
+  if (j.container!==undefined || j.services!==undefined) fail('job/service containers not permitted');
+  defaults(j.defaults);
   if (j.permissions!==undefined) permissions(j.permissions);
   const used=secrets(j); const env=j.environment;
   if (env!==undefined && (!object(env) || !Object.hasOwn(secretEnvironments,env.name) || env.deployment!==(env.name==='steward-deployment'))) fail(`${path}:${name}: protected environment`);
@@ -46,6 +57,7 @@ export function assertWorkflowDocument(path: string, d: any) {
   if (used.some(s=>!secretEnvironments[env?.name]?.includes(s))) fail(`${path}:${name}: secret/environment mismatch`);
   if (typeof j['runs-on']!=='string' || !hostedRunners.has(j['runs-on'])) fail(`${path}:${name}: runner not permitted`);
   for(const step of j.steps) {
+   shell(step?.shell);
    if (!object(step)) fail(`${path}: invalid step`);
    if (step.uses!==undefined && !actions.has(step.uses)) fail(`${path}: unapproved/unpinned action`);
    if (step.uses?.startsWith('actions/checkout@') && step.with?.['persist-credentials']!==false) fail(`${path}: checkout credentials must not persist`);
