@@ -41,4 +41,16 @@ jobs:
           WORKFLOW_REF: ${{ github.workflow_ref }}
           WORKFLOW_RUN_REF: ${{ github.ref }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
-        run: node packages/runner/dist/index.js pr-classification --delivery-id "${{ inputs.deliveryId }}" --repository-id "${{ inputs.repositoryId }}" ${{ inputs.scanAll && '--scan-all true' || format('--pull-request-number "{0}" --event-head-sha "{1}" --scan-all false', inputs.pullRequestNumber, inputs.eventHeadSha) }} --policy-sha "${{ inputs.policySha }}"
+          DELIVERY_ID: ${{ inputs.deliveryId }}
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          PULL_REQUEST_NUMBER: ${{ inputs.pullRequestNumber }}
+          EVENT_HEAD_SHA: ${{ inputs.eventHeadSha }}
+          SCAN_ALL: ${{ inputs.scanAll }}
+          POLICY_SHA: ${{ inputs.policySha }}
+        run: |
+          set -euo pipefail
+          args=(--scan-all "$SCAN_ALL")
+          if [[ "$SCAN_ALL" != "true" ]]; then
+            args+=(--pull-request-number "$PULL_REQUEST_NUMBER" --event-head-sha "$EVENT_HEAD_SHA")
+          fi
+          node packages/runner/dist/index.js pr-classification --delivery-id "$DELIVERY_ID" --repository-id "$REPOSITORY_ID" "${args[@]}" --policy-sha "$POLICY_SHA"

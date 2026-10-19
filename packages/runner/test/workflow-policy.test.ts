@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -60,8 +61,18 @@ describe('trusted workflow security policy',()=>{
  d.jobs.test.steps=[{uses:'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c',with:{'run-id':'${{ github.event.workflow_run.id }}'}},{run:'bash downloaded.sh'}];
  if(kind==='protected')expect(()=>assertWorkflowDocument('test.yml',d)).toThrow('artifact download');else expect(()=>assertWorkflowDocument('test.yml',d)).not.toThrow();
  });
+ it.each(['env.COMMAND',"env['COMMAND']",'steps.build.outputs.command','needs.build.outputs.command','inputs.command','matrix.command','toJSON(env)'])('rejects indirect shell expression %s',expr=>{
+ const d:any=ordinary();d.env={COMMAND:'${{ github.event.head_commit.message }}'};d.jobs.test.steps=[{run:'npm '+ '${{ ' +expr+' }}'}];expect(()=>assertWorkflowDocument('test.yml',d)).toThrow('indirect context');
+ });
+ it.each(['workflow','job'])('isolates pending concurrency queues at %s scope',scope=>{
+ for(const group of ['steward-release-1187527897','${{ github.workflow }}','workflow-policy:${{ github.workflow_ref }}:build']){const d:any=ordinary();const c={group,'cancel-in-progress':false};if(scope==='workflow')d.concurrency=c;else d.jobs.test.concurrency=c;
+ if(group.startsWith('workflow-policy:'))expect(()=>assertWorkflowDocument('test.yml',d)).not.toThrow();else expect(()=>assertWorkflowDocument('test.yml',d)).toThrow('namespace');}
+ });
+ it('binds legacy shared queues to their whole trusted workflow',async()=>{
+ const path='.github/workflows/issue-sync.yml';const d=YAML.parse(await readFile(path,'utf8'));expect(()=>assertWorkflowDocument(path,d)).not.toThrow();d.on={pull_request:{}};expect(()=>assertWorkflowDocument(path,d)).toThrow('namespace');expect(()=>assertWorkflowDocument('copy.yml',d)).toThrow('namespace');
+ });
  it.each(['workflow','job'])('rejects cancellation at %s scope',level=>{
- for(const cancel of [true,'true',undefined,false]){const d:any=ordinary();const c={group:'steward-release-1187527897','cancel-in-progress':cancel};if(level==='workflow')d.concurrency=c;else d.jobs.test.concurrency=c;
+ for(const cancel of [true,'true',undefined,false]){const d:any=ordinary();const c={group:'workflow-policy:${{ github.workflow_ref }}:test','cancel-in-progress':cancel};if(level==='workflow')d.concurrency=c;else d.jobs.test.concurrency=c;
  if(cancel===false)expect(()=>assertWorkflowDocument('ordinary.yml',d)).not.toThrow();else expect(()=>assertWorkflowDocument('ordinary.yml',d)).toThrow('cancellation');}
  });
  it.each(['untrusted','missing','other-repo','trusted'])('binds privileged workflow_run checkout: %s',kind=>{
@@ -78,7 +89,7 @@ describe('trusted workflow security policy',()=>{
  if(kind==='checkout')j.steps.find((s:any)=>s.uses?.startsWith('actions/checkout')).with.ref='attacker';
  if(kind==='resolver')j.steps.find((s:any)=>s.id==='policy').run='echo policy_sha=attacker';
  if(kind==='condition')j.if='true';
- expect(()=>assertWorkflowDocument(path,changed)).toThrow('workflow_run checkout');}
+ expect(()=>assertWorkflowDocument(path,changed)).toThrow('WORKFLOW_POLICY');}
  });
  it.each(['write','implicit','trigger','action','local-action','checkout','secret','dynamic-secret','inherit','runner','shell','environment','global-secret','reusable','permission-alias'])('rejects unsafe capability: %s',kind=>{
   const d:any=ordinary(),j=d.jobs.test;
@@ -157,5 +168,26 @@ describe('trusted workflow security policy',()=>{
    const profilePath=join(policy,'profiles/validation/steward.json');const profile=JSON.parse(await readFile(profilePath,'utf8'));profile.tasks=['parse-json'];await writeFile(profilePath,JSON.stringify(profile));vi.stubEnv('STEWARD_CONFIG_DIRECTORY',policy);vi.stubEnv('VALIDATION_BASE_SHA','');vi.stubEnv('VALIDATION_BASE_REF','');vi.stubEnv('GITHUB_STEP_SUMMARY',join(dir,'summary'));
    const run=()=>main(['validate','--workspace',workspace,'--repository-id','1296724484','--profile','steward']);await expect(run()).resolves.toBeUndefined();await writeFile(join(workspace,'broken.json'),'{');await expect(run()).rejects.toThrow('验证任务失败');
   }finally{await rm(dir,{recursive:true,force:true});}
+ });
+});
+
+describe('workflow argument boundaries',()=>{
+ it.skipIf(process.platform==='win32')('passes dispatch and output values as literal Bash arguments',async()=>{
+ const release=YAML.parse(await readFile('.github/workflows/release.yml','utf8'));
+ const classification=YAML.parse(await readFile('.github/workflows/pr-classification.yml','utf8'));
+ const payload='value"; printf INJECTED; # $(printf SUBSTITUTED)';
+ for(const [step,scan] of [[classification.jobs.classify.steps.at(-1),'false'],[classification.jobs.classify.steps.at(-1),'true'],[release.jobs.preflight.steps.at(-1),'false'],[release.jobs.notes.steps.find((s:any)=>s.run?.includes('release-notes --')),'false']] as any[]){
+ const run=step.run.replace(/\$\{\{[\s\S]*?\}\}/g,'safe');
+ const env={...process.env};for(const k of Object.keys(step.env||{}))env[k]=payload;env.SCAN_ALL=scan;
+ const result=spawnSync('bash',['-c','node(){ printf "%s\\0" "$@"; };\n'+run],{env,encoding:'utf8'});
+ expect(result.status,result.stderr).toBe(0);const args=result.stdout.split('\0').filter(Boolean);expect(args).toContain(payload);expect(args).not.toContain('INJECTED');
+ if(run.includes('pr-classification')){expect(args[args.indexOf('--scan-all')+1]).toBe(scan);expect(args.includes('--pull-request-number')).toBe(scan==='false');}
+ }
+ });
+ it.skipIf(process.platform!=='win32')('passes build inputs as literal PowerShell arguments',async()=>{
+ const d=YAML.parse(await readFile('.github/workflows/release.yml','utf8'));const step=d.jobs.build.steps.find((s:any)=>s.run?.includes('release-preflight'));
+ const payload='value"; Write-Output INJECTED; # $(Write-Output SUBSTITUTED)';
+ const result=spawnSync('pwsh',['-NoProfile','-NonInteractive','-Command','function node { ConvertTo-Json -InputObject @($args) -Compress }; '+step.run.replace(/\$\{\{[\s\S]*?\}\}/g,'safe')],{env:{...process.env,ARG_REPOSITORY_ID:payload,ARG_TARGET_SHA:payload},encoding:'utf8'});
+ expect(result.status,result.stderr).toBe(0);const args=JSON.parse(result.stdout);expect(args[args.indexOf('--repository-id')+1]).toBe(payload);expect(args[args.indexOf('--target-sha')+1]).toBe(payload);
  });
 });

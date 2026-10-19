@@ -28,11 +28,11 @@ for (const file of files) {
 const validationDocument = workflowDocuments.get("pr-validation.yml");
 if (validationDocument?.concurrency?.group !== "steward-pr-validation-${{ github.repository_id }}-${{ github.event.pull_request.number }}" || validationDocument?.concurrency?.["cancel-in-progress"] !== true) throw new Error("PR验证必须按仓库和PR取消旧运行");
 if (JSON.stringify(validationDocument?.on?.pull_request?.types) !== JSON.stringify(["opened", "synchronize", "reopened", "edited", "labeled", "unlabeled"])) throw new Error("PR验证必须响应编辑和标签变更");
-const validationStep = validationDocument?.jobs?.validate?.steps?.find(step => step?.name === "执行中央验证");
+const validationStep = validationDocument?.jobs?.validate?.steps?.find(step => step?.env?.VALIDATION_BASE_SHA !== undefined && step?.env?.VALIDATION_READ_TOKEN === undefined && typeof step?.run === "string");
 if (String(validationStep?.env?.VALIDATION_BASE_SHA ?? "").replace(/\s+/gu, "") !== "${{github.event.pull_request.base.sha}}") throw new Error("中央验证没有通过环境变量接收基础分支提交");
 if (String(validationStep?.env?.VALIDATION_BASE_REF ?? "").replace(/\s+/gu, "") !== "${{github.event.pull_request.base.ref}}") throw new Error("中央验证没有通过环境变量接收基础分支引用");
 const fragmentsJob = validationDocument?.jobs?.fragments;
-const fragmentsStep = fragmentsJob?.steps?.find(step => step?.name === "验证发布片段");
+const fragmentsStep = fragmentsJob?.steps?.find(step => typeof step?.run === "string" && step.run.endsWith("--fragments-only true"));
 if (fragmentsJob?.if !== "github.event.pull_request.base.ref == github.event.repository.default_branch") throw new Error("片段验证必须与中央分类的默认分支范围一致");
 if (fragmentsJob?.needs !== "validate" || JSON.stringify(fragmentsJob?.permissions) !== JSON.stringify({ contents: "read", "pull-requests": "read", checks: "read" })) throw new Error("片段验证必须在独立只读作业中执行");
 const fragmentCheckout = fragmentsJob.steps.filter(step => String(step.uses ?? "").startsWith("actions/checkout@"));

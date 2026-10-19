@@ -21,9 +21,21 @@ const secretEnvironments: Record<string, readonly string[]> = {
 };
 const object = (v: any): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);
 const fail = (detail: string): never => { throw new Error(`WORKFLOW_POLICY: ${detail}`); };
-function concurrency(value:any) {
+// Existing shared queues retain their semantics only under a complete trusted document.
+const trustedQueueDocuments: Record<string,string> = {
+  ".github/workflows/issue-sync.yml": "65d86b5d4dc64b98e5c1bb2c8e0b90d382af55d58844eb99e6ec369fc5520f2c",
+  ".github/workflows/onboard-repository.yml": "a1a70c4cb97361a393f88e78a92e6782601c73eff947dc5a7440eaa7819146e9",
+  ".github/workflows/pr-automation.yml": "1e3a4ed9cf86eb4c25366b5c8f01228202c81089ff7ed4d619e93fa39b1fe2dd",
+  ".github/workflows/pr-classification.yml": "57601bb75cff27d78daea60a9681908a7fcdb62eac0dd9f40e36236a88582ab9",
+  ".github/workflows/pr-issue-link.yml": "6b31fbfd26ccf28c3357b2ccb71e0851b02fa1f8ec17125ab2af8d68d2c573cd",
+  ".github/workflows/release.yml": "210a0bb1f69d6188fef76c0b685e1fdb5b7ec96a0e231514e09e4e5ed8f567b0",
+  ".github/workflows/sync-managed-labels.yml": "7be23eb192bb3dee4d1c4ca6205778ec1ae346758f4edaecca7c78d843c9dc64",
+  ".github/workflows/sync-review-instructions.yml": "50652cb445e0abf37d0e1adb3e95e35a8d6b4cd4f96ff6a774e8cf2da97a7ed7"
+};
+function concurrency(value:any, trustedQueue=false) {
  if(value===undefined)return;
  if(!object(value) || value['cancel-in-progress']!==false)fail('ordinary concurrency must explicitly disable cancellation');
+ if(!trustedQueue && (typeof value.group!=='string' || !value.group.startsWith('workflow-policy:${{ github.workflow_ref }}:')))fail('ordinary concurrency requires isolated workflow-ref namespace');
 }
 function shell(value: any) {
  if(value!==undefined && !['bash','sh','pwsh','powershell','cmd','python'].includes(value)) fail('shell must be a static approved value');
@@ -52,8 +64,9 @@ export function assertWorkflowDocument(path: string, d: any) {
  if (!object(d) || !object(d.jobs) || !Object.keys(d.jobs).length) fail(`${path}: jobs missing`);
  permissions(d.permissions);
  defaults(d.defaults);
+ const trustedQueue = Object.hasOwn(trustedQueueDocuments,path) && createHash('sha256').update(canonical(d)).digest('hex')===trustedQueueDocuments[path];
  if(path==='.github/workflows/pr-validation.yml')assertRequiredValidation(d);
- else concurrency(d.concurrency);
+ else concurrency(d.concurrency,trustedQueue);
  const triggers=typeof d.on==='string'?[d.on]:Array.isArray(d.on)?d.on:object(d.on)?Object.keys(d.on):[];
  if (!triggers.length || triggers.some((v:any)=>!['push','pull_request','workflow_dispatch','workflow_run','schedule'].includes(v))) fail(`${path}: trigger not permitted`);
  const deployedPolicyContract = Object.hasOwn(deployedPolicyWorkflows,path) && createHash('sha256').update(canonical(d)).digest('hex')===deployedPolicyWorkflows[path];
@@ -63,7 +76,7 @@ export function assertWorkflowDocument(path: string, d: any) {
   if (!object(j) || j.uses || j.secrets || !Array.isArray(j.steps) || !j.steps.length) fail(`${path}:${name}: reusable jobs or missing steps`);
   if (j.container!==undefined || j.services!==undefined) fail('job/service containers not permitted');
   defaults(j.defaults);
-  concurrency(j.concurrency);
+  concurrency(j.concurrency,trustedQueue);
   if (j.permissions!==undefined) permissions(j.permissions);
   const used=secrets(j); const env=j.environment;
   if (env!==undefined && (!object(env) || !Object.hasOwn(secretEnvironments,env.name) || env.deployment!==(env.name==='steward-deployment'))) fail(`${path}:${name}: protected environment`);
@@ -83,8 +96,9 @@ export function assertWorkflowDocument(path: string, d: any) {
     const body=expression[1]!.trim();
     // The gate uses this boolean only. Other event data must pass through env,
     // including indexed/case-insensitive access and serialization of the context.
-    if (/\bgithub\b/i.test(body) && !/^(?:github\.(?:sha|repository_id|run_id|run_attempt|actor_id)|github\.event\.repository\.private)$/i.test(body)
-      && body!=="github.actor_id == '301115370' && 'app' || 'manual'") fail(`${path}: untrusted event interpolated into shell`);
+    const requiredCommand = path==='.github/workflows/pr-validation.yml' && ['validate','fragments'].includes(name);
+    if (!requiredCommand && !/^(?:github\.(?:sha|repository_id|run_id|run_attempt|actor_id)|github\.event\.repository\.private|runner\.temp)$/i.test(body)
+      && body!=="github.actor_id == '301115370' && 'app' || 'manual'") fail(`${path}: untrusted event or indirect context interpolated into shell`);
    }
   }
  }
