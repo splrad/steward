@@ -42,6 +42,15 @@ beforeEach(() => {
   };
 });
 describe('authoritative GitHub candidate facts', () => {
+  it('ignores comments from deleted users but rejects missing identity on approval-relevant states', async () => {
+    const approval = (await gh.listPullRequestReviews())[0];
+    gh.listPullRequestReviews = async () => [{ id: 1, state: 'COMMENTED', user: null, submitted_at: null }, approval];
+    expect((await readReleaseCandidateFacts(gh, receipt(), 42, 301115370)).reviews).toHaveLength(1);
+    for (const state of ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED']) {
+      gh.listPullRequestReviews = async () => [{ id: 1, state, user: null, submitted_at: approval.submitted_at }, approval];
+      await expect(readReleaseCandidateFacts(gh, receipt(), 42, 301115370)).rejects.toThrow('REVIEW_IDENTITY');
+    }
+  });
   it('folds historical reviews before bounded permission reads and preserves dismissals and change requests', async () => {
     const review = (id: number, actor: number, state = 'APPROVED') => ({ id, user: { id: actor, login: `actor-${actor}`, type: 'User' }, commit_id: sha('d'), state, submitted_at: '2026-10-18T00:00:00Z' });
     const history = Array.from({ length: 100 }, (_, i) => review(i + 1, 2));

@@ -98,7 +98,7 @@ export async function readReleaseCandidateFacts(gh: GitHubClient, r: ReleaseRece
   const rawReviews = await gh.listPullRequestReviews(owner, repo, pull.number);
   const latestReviews = new Map<number, (typeof rawReviews)[number]>();
   for (const review of [...rawReviews].sort((a, b) => a.id - b.id)) {
-    if (review.state === 'PENDING') continue;
+    if (!['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(review.state)) continue;
     releaseAssert(Number.isSafeInteger(review.id) && review.id > 0 && Number.isSafeInteger(review.user?.id) && review.user.id > 0 && Number.isFinite(Date.parse(review.submitted_at)), 'REVIEW_IDENTITY');
     if (['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(review.state)) latestReviews.set(review.user.id, review);
   }

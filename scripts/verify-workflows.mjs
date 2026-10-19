@@ -262,6 +262,8 @@ if (!releaseSourceWorkflow.on.workflow_dispatch.inputs.operation.options.include
 const productBuild = workflowDocuments.get('release-build.yml');
 const buildCompletion = workflowDocuments.get('release-build-complete.yml');
 const genericBuild = workflowDocuments.get('product-build.yml');
+// Source clone/fetch (10m), freeze (5m), contributor reads (90s), plus API/setup/upload margin.
+if (productBuild.jobs.plan['timeout-minutes'] !== 30 || genericBuild.jobs.plan['timeout-minutes'] !== 30) throw new Error('来源计划作业必须覆盖来源冻结及初始化预算');
 if (!hasExactKeys(genericBuild.on, ['workflow_dispatch']) || !hasExactKeys(genericBuild.jobs, ['plan', 'build']) || genericBuild.jobs.build.environment !== undefined || genericBuild.jobs.build.needs !== 'plan' || genericBuild.jobs.build['runs-on'] !== '${{ needs.plan.outputs.runner }}' || genericBuild.jobs.plan.outputs.runner !== '${{ steps.plan.outputs.runner }}' || genericBuild.permissions.contents !== 'read' || genericBuild.permissions.actions !== 'read') throw new Error('通用产品构建边界无效');
 for (const step of genericBuild.jobs.build.steps) if (JSON.stringify(step).includes('secrets.') || step.env && !hasExactKeys(step.env, ['POLICY_SHA', 'RUN_ID'])) throw new Error('产品构建不得注入秘密');
 if (!hasExactKeys(productBuild.on, ['workflow_dispatch']) || !hasExactKeys(productBuild.jobs, ['plan', 'build'])
