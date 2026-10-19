@@ -47,6 +47,7 @@ it('archives obsolete generation plans, revokes tickets and fences late writes w
     for (const source of ['b', 'd', 'e']) {
       const next = generationPlan(source.repeat(64), sha('c'), ['new source']);
       const saved = await new ReleaseGenerationStore(db.binding()).prepare(9001, 'v1.2.3', next);
+      expect(saved.ledger.plan).toEqual(next);
       expect(saved.ledger.calls).toEqual([]);
       expect(await store.prepare(9001, 'v1.2.3', next)).toEqual(saved);
     }
@@ -56,6 +57,9 @@ it('archives obsolete generation plans, revokes tickets and fences late writes w
     await expect(store.prepare(9001, 'v1.2.3', plan)).rejects.toThrow('OCCUPIED');
     await expect(store.prepare(9001, 'v1.2.3', generationPlan('f'.repeat(64), sha('c'), ['fourth']))).rejects.toThrow('OCCUPIED');
     expect(db.database.prepare('SELECT COUNT(*) AS n FROM release_generation_history').get()?.n).toBe(3);
+    const archived = db.database.prepare('SELECT plan_digest,record_json FROM release_generation_history WHERE version=?').get(old.version);
+    expect(archived?.plan_digest).toBe(generationPlanDigest(plan));
+    expect(JSON.parse(String(archived?.record_json)).plan).toEqual(plan);
   } finally { db.database.close(); }
 });
 it('allows only one competing generation replacement and blocks changes after candidate creation', async () => {

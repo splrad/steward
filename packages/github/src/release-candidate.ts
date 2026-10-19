@@ -96,15 +96,23 @@ export async function readReleaseCandidateFacts(gh: GitHubClient, r: ReleaseRece
   }
   const checksPassed = !ambiguous && ['PR Classification Gate', 'PR Validation Gate'].every(name => latestChecks.get(name)?.status === 'completed' && latestChecks.get(name)?.conclusion === 'success');
   const rawReviews = await gh.listPullRequestReviews(owner, repo, pull.number);
-  const reviews: CandidateReviewFacts['reviews'] = [];
-  for (const review of rawReviews) {
+  const latestReviews = new Map<number, (typeof rawReviews)[number]>();
+  for (const review of [...rawReviews].sort((a, b) => a.id - b.id)) {
     if (review.state === 'PENDING') continue;
-    let permission = 'none';
-    if (review.user?.type === 'User') {
-      const access = await gh.request<any>('GET', `/repos/${owner}/${repo}/collaborators/${encodeURIComponent(review.user.login)}/permission`);
-      releaseAssert(access.user?.id === review.user.id, 'REVIEWER_IDENTITY'); permission = access.permission;
-    }
-    reviews.push({ id: review.id, actorId: review.user?.id, type: review.user?.type, permission, headSha: review.commit_id, state: review.state, submittedAt: review.submitted_at });
+    releaseAssert(Number.isSafeInteger(review.id) && review.id > 0 && Number.isSafeInteger(review.user?.id) && review.user.id > 0 && Number.isFinite(Date.parse(review.submitted_at)), 'REVIEW_IDENTITY');
+    if (['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(review.state)) latestReviews.set(review.user.id, review);
+  }
+  const selected = [...latestReviews.values()];
+  const reviews: CandidateReviewFacts['reviews'] = [];
+  for (let offset = 0; offset < selected.length; offset += 4) {
+    reviews.push(...await Promise.all(selected.slice(offset, offset + 4).map(async review => {
+      let permission = 'none';
+      if (review.state === 'APPROVED' && review.commit_id === pull.head.sha && review.user?.type === 'User') {
+        const access = await gh.request<any>('GET', `/repos/${owner}/${repo}/collaborators/${encodeURIComponent(review.user.login)}/permission`);
+        releaseAssert(access.user?.id === review.user.id, 'REVIEWER_IDENTITY'); permission = access.permission;
+      }
+      return { id: review.id, actorId: review.user?.id, type: review.user?.type, permission, headSha: review.commit_id, state: review.state, submittedAt: review.submitted_at };
+    })));
   }
   let manualMerge = false, merge: CandidateReviewFacts['merge'] = null;
   let productTreeUnchanged: boolean;

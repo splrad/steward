@@ -42,6 +42,26 @@ beforeEach(() => {
   };
 });
 describe('authoritative GitHub candidate facts', () => {
+  it('folds historical reviews before bounded permission reads and preserves dismissals and change requests', async () => {
+    const review = (id: number, actor: number, state = 'APPROVED') => ({ id, user: { id: actor, login: `actor-${actor}`, type: 'User' }, commit_id: sha('d'), state, submitted_at: '2026-10-18T00:00:00Z' });
+    const history = Array.from({ length: 100 }, (_, i) => review(i + 1, 2));
+    history.push(review(101, 2, 'DISMISSED'), review(102, 3, 'CHANGES_REQUESTED'), review(103, 3, 'COMMENTED'));
+    history.push(...Array.from({ length: 100 }, (_, i) => review(200 + i, 1000 + i, 'COMMENTED')));
+    history.push(...Array.from({ length: 9 }, (_, i) => review(400 + i, 10 + i)));
+    gh.listPullRequestReviews = async () => [...history].reverse();
+    const original = gh.request, actors: number[] = []; let active = 0, peak = 0;
+    gh.request = async (method: string, path: string, body: any) => {
+      if (!path.endsWith('/permission')) return original(method, path, body);
+      const actor = Number(/actor-(\d+)/.exec(path)![1]); actors.push(actor); active++; peak = Math.max(peak, active);
+      await new Promise(resolve => setTimeout(resolve, 5)); active--;
+      return { user: { id: actor }, permission: 'write' };
+    };
+    const result = await readReleaseCandidateFacts(gh, receipt(), 42, 301115370);
+    expect(actors).toEqual(Array.from({ length: 9 }, (_, i) => 10 + i)); expect(peak).toBe(4);
+    expect(result.reviews).toHaveLength(11);
+    expect(result.reviews.find(r => r.actorId === 2)?.state).toBe('DISMISSED');
+    expect(result.reviews.find(r => r.actorId === 3)?.state).toBe('CHANGES_REQUESTED');
+  });
   it.each(['old-policy', 'missing', 'attempt', 'foreign-run'])('rejects validation without current policy provenance: %s', async kind => {
     const original = await gh.listWorkflowAttemptJobs();
     if (kind === 'old-policy') original[0].steps[0].name = `validation-policy:${sha('f')}`;
