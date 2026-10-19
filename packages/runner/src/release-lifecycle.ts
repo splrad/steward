@@ -22,10 +22,10 @@ export class ReleaseReceiptClient {
     const url = new URL(base); releaseAssert(url.protocol === 'https:' && url.pathname === '/' && !url.search && !url.hash && !url.username && !url.password, 'RUNTIME_URL');
     releaseAssert(/^v\d+\.\d+\.\d+$/.test(tag), 'TAG');
   }
-  async request<T>(action = '', body?: unknown, suffix?: string): Promise<T> {
+  async request<T>(action = '', body?: unknown, suffix?: string, signal?: AbortSignal): Promise<T> {
     const response = await this.transport(`${this.base.replace(/\/$/, '')}/internal/releases/${this.repositoryId}/${suffix ?? this.tag + (action ? '/' + action : '')}`, {
       method: body === undefined ? 'GET' : 'POST', headers: { authorization: `Bearer ${this.token}`, 'content-type': 'application/json' },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(action === 'prepare' ? 5 * 60_000 : 60_000),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(action === 'prepare' ? 5 * 60_000 : 60_000),
     });
     const bytes = await response.text(); releaseAssert(Buffer.byteLength(bytes) <= 1024 * 1024, 'RUNTIME_RESPONSE');
     if (!response.ok) {
@@ -43,7 +43,22 @@ export class ReleaseReceiptClient {
   async putObject(bytes: Uint8Array): Promise<string> {
     const digest = receiptDigest(bytes), chunkSize = 48 * 1024, total = Math.ceil(bytes.length / chunkSize);
     releaseAssert(total > 0 && total <= 2048, 'OBJECT_LIMIT');
-    for (let part = 0; part < total; part++) await this.request('', { total, bytesBase64: Buffer.from(bytes.subarray(part * chunkSize, (part + 1) * chunkSize)).toString('base64') }, `objects/${digest}/${part}`);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error('来源对象上传超时（5 分钟），请重试作业')), 5 * 60_000);
+    let nextPart = 0;
+    try {
+      const results = await Promise.allSettled(Array.from({ length: Math.min(8, total) }, async () => {
+        try {
+          while (nextPart < total) {
+            controller.signal.throwIfAborted();
+            const part = nextPart++;
+            await this.request('', { total, bytesBase64: Buffer.from(bytes.subarray(part * chunkSize, (part + 1) * chunkSize)).toString('base64') }, `objects/${digest}/${part}`, controller.signal);
+          }
+        } catch (error) { controller.abort(error); throw error; }
+      }));
+      const failure = results.find(result => result.status === 'rejected');
+      if (failure?.status === 'rejected') throw failure.reason;
+    } finally { clearTimeout(timeout); }
     return digest;
   }
 }

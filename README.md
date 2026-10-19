@@ -52,7 +52,7 @@ Copilot 审查成功需要当前 PR head 的有效 Review 摘要和对应的成�
 node packages/runner/dist/index.js observe-copilot-review --repository-id REPOSITORY_ID --pull-request-number PR_NUMBER --event-head-sha HEAD_SHA --policy-sha POLICY_SHA
 ```
 
-命令使用中央 `APP_ID`、`INSTALLATION_ID`、`STEWARD_APP_PRIVATE_KEY` 和仓库配置，为单个目标仓库签发只读短时令牌，权限为 `contents`、`pull_requests`、`issues`、`checks`、`actions`、`metadata` 的 `read`。它仅接受受管组织内已启用 PR 自动化、未归档且未禁用的仓库，以及目标为当前默认分支的开放 PR；读取前后核对 PR head 和仓库状态。结果输出为 JSON 摘要，并在设置 `GITHUB_OUTPUT` 时写入 `state`、`reason`、`headSha`。这是显式调用的观察入口，不发送审查请求、不写入 PR，也不执行 fork 代码。
+命令使用中央 `APP_ID`、`INSTALLATION_ID`、`STEWARD_APP_PRIVATE_KEY` 和仓库配置，为单个目标仓库签发只读短时令牌，权限为 `contents`、`pull_requests`、`issues`、`checks`、`actions`、`metadata` 的 `read`。它仅接受受管组织内已登记、未归档且未禁用的仓库，以及目标为当前默认分支的开放 PR；读取前后核对 PR head 和仓库状态。结果输出为 JSON 摘要，并在设置 `GITHUB_OUTPUT` 时写入 `state`、`reason`、`headSha`。这是显式调用的观察入口，不发送审查请求、不写入 PR，也不执行 fork 代码。
 
 默认分支上的 `Native Review`（`native-review.yml`）工作流通过 `observeOnly=true` 提供只读入口，使用 `repositoryId`、`pullRequestNumber`、`eventAfterSha` 指定目标，并填写 `deliveryId` 和 `policySha`。它复用 `steward-automation` 环境，在观察步骤注入 App 凭据。工作流成功表示完成读取；审查结果以 JSON 中的 `state` 为准。
 
