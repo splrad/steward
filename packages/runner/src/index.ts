@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { assertWorkflowMigration } from "./workflow-migration.js";
 import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
@@ -1849,7 +1850,12 @@ async function validate(args: Readonly<Record<string, string>>) {
   const relative = files.map(path => path.slice(workspace.length + 1).replace(/\\/g, "/"));
   const actualWorkflows = relative.filter(path => /^\.github\/workflows\/[^/]+\.ya?ml$/u.test(path)).sort();
   const allowedWorkflows = [...configuration.allowedWorkflowPaths].sort();
-  assertWorkflowPaths(actualWorkflows, allowedWorkflows);
+  try { assertWorkflowPaths(actualWorkflows, allowedWorkflows); } catch (error) {
+    try {
+      const migration = await assertWorkflowMigration(configPath("workflow-migration.json"), workspace, repositoryId, actualWorkflows, allowedWorkflows);
+      await summary([`受控工作流迁移：${migration}；继续执行全部验证任务`]);
+    } catch (migrationError) { throw new AggregateError([error, migrationError], `${(error as Error).message}; ${(migrationError as Error).message}`); }
+  }
   const results = await runValidationTasks(profile, async task => {
     if (task === "git-diff-check") {
       run("git", gitDiffCheckArguments(validationBaseSha ? sha(validationBaseSha, "VALIDATION_BASE_SHA") : undefined), workspace);

@@ -1,0 +1,33 @@
+{
+  "id": "steward-253-workflows-v1",
+  "repositoryId": 1296724484,
+  "fullName": "splrad/steward",
+  "pullNumber": 253,
+  "baseRef": "main",
+  "expiresAt": "2026-11-03T00:00:00Z",
+  "from": [
+    ".github/workflows/deploy-runtime.yml",
+    ".github/workflows/issue-sync.yml",
+    ".github/workflows/onboard-repository.yml",
+    ".github/workflows/pr-automation.yml",
+    ".github/workflows/pr-classification.yml",
+    ".github/workflows/pr-issue-link.yml",
+    ".github/workflows/pr-validation.yml",
+    ".github/workflows/release.yml",
+    ".github/workflows/sync-managed-labels.yml",
+    ".github/workflows/sync-review-instructions.yml"
+  ],
+  "workflows": {
+    ".github/workflows/deploy-runtime.yml": "53586916bb5d0dbb04a90863e17ddd09fe888e4af8972551b2d9a5a30dbe75ac",
+    ".github/workflows/native-review.yml": "9f5885abfcde5725ebd94ac92318594f45af0350072e235d1087fdf2fc372554",
+    ".github/workflows/onboard-repository.yml": "9ef09433a0fb7214c2459482c45e05a3a500102e886844e0146af0f0a5d976a2",
+    ".github/workflows/pr-classification.yml": "99008612fc25539441feb18bed84c1de3c36a04abf31b02b5f32b329c158bab5",
+    ".github/workflows/pr-validation.yml": "a11f67f306dbeb9045020f2e4d201c22d88392409a116adb45011e6c1036e6d1",
+    ".github/workflows/product-build.yml": "a441496b8b0425cc030b6d849321ed80c1d392535cfc98df3bff3fce66258985",
+    ".github/workflows/release-build-complete.yml": "7276bb4ff94ce83065c8d572abbd941aef7a750739aec3c7de617175110b0dbd",
+    ".github/workflows/release-build.yml": "a49a5db0ab07437b7d61bf4c0be5b4b48e02cc67790eae67c737314de5c017da",
+    ".github/workflows/release.yml": "eba66446a2bafc6baaee719c3b2f6fe43c661d804fb70e5899ffab2d8306725e",
+    ".github/workflows/sync-managed-labels.yml": "582bd293234a27ba753bdbbe35b13056ea00e450ae87b8afb0feb5d0d25a489d",
+    ".github/workflows/sync-review-instructions.yml": "a33a5ad0e03fc9e3720bab89a2710938d67b057dfd8bed383ecd10156a7cb954"
+  }
+}
