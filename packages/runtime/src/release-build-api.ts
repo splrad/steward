@@ -9,7 +9,7 @@ import { ReleaseBuildStore } from './release-build-store.js';
 import { ReleaseReceiptStore } from './release-note-receipts.js';
 import { type BodyWriteRuntimeEnv } from './pr-body-api.js';
 import { releaseTree, readCandidateBlob, optionalReleaseRead } from '../../github/src/release-candidate.js';
-import { assertIncreasingReleaseVersion } from '../../github/src/release-candidate.js';
+import { assertIncreasingReleaseVersion, verifyReleaseCommitRange } from '../../github/src/release-candidate.js';
 import { matchBuildFiles } from '../../core/src/build-manifest.js';
 
 export async function centralBuildClient(env: BodyWriteRuntimeEnv, write = false): Promise<GitHubClient> {
@@ -59,7 +59,8 @@ export async function handleReleaseBuildAction(env: BodyWriteRuntimeEnv, gh: Git
     releaseAssert(head.object.sha === f.productTargetSha, 'BUILD_TARGET_STALE');
     const tree = await releaseTree(gh, owner, repo, f.productTargetSha);
     releaseAssert(tree.object.tree.sha === f.productTree && await readCandidateBlob(gh, owner, repo, tree, 'VERSION') === f.targetTag.slice(1) + '\n', 'VERSION_BINDING');
-    validateReleaseSource(await receipts.readObject(repositoryId, f.sourceDigest), f);
+    const source = validateReleaseSource(await receipts.readObject(repositoryId, f.sourceDigest), f);
+    await verifyReleaseCommitRange(gh, owner, repo, source, f.productTargetSha);
     return store.prepare(await makeReleaseBuildRequest(f, configuration, 'initial', null));
   }
   const state = await store.get(body.key, repositoryId, tag);

@@ -4,10 +4,28 @@ import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { newReleaseReceipt, receiptDigest } from '../../core/src/release-note-receipt.js';
 import { receiptFixture, frozenFixture, notesFixture } from '../../core/test/release-receipt-fixture.js';
-import { ReleaseReceiptStore } from '../src/release-note-receipts.js';
+import { ReleaseReceiptStore, releaseObjectLimits } from '../src/release-note-receipts.js';
 import { ReleaseTestDb } from './release-test-db.js';
 
 describe('D1 durable release receipts', () => {
+  it('atomically caps decoded object bytes and preserves exact retries at the limit', async () => {
+    const db = new ReleaseTestDb(), store = new ReleaseReceiptStore(db.binding());
+    try {
+      const bytes = Buffer.alloc(releaseObjectLimits.objectBytes, 97), digest = receiptDigest(bytes), chunk = releaseObjectLimits.chunkBytes;
+      const insert = db.database.prepare('INSERT INTO release_evidence_chunks VALUES(?,?,?,?,?)');
+      // Seed an object with one byte of space left, including base64 padding in its final chunk.
+      let part = 0;
+      for (let offset = 0; offset < bytes.length - 1; offset += chunk) insert.run(9001, digest, part++, 686, bytes.subarray(offset, Math.min(offset + chunk, bytes.length - 1)).toString('base64'));
+      const results = await Promise.allSettled([part, part + 1].map(index => store.putChunk(9001, digest, index, 686, 'YQ==')));
+      expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+      expect(results.filter(r => r.status === 'rejected')).toHaveLength(1);
+      await store.putChunk(9001, digest, part, 686, 'YQ==');
+      await expect(store.putChunk(9001, digest, part + 2, 686, 'YQ==')).rejects.toThrow('OBJECT_WRITE_LIMIT');
+      expect(await store.getChunk(9001, digest, part + 1)).toBeNull();
+      await store.putChunk(9002, digest, 0, 1, 'YQ==');
+      expect(await store.getChunk(9002, digest, 0)).not.toBeNull();
+    } finally { db.database.close(); }
+  });
   it('renews a live matching lease during long transfers but never revives an expired lease', async () => {
     const db = new ReleaseTestDb(), store = new ReleaseReceiptStore(db.binding());
     try {

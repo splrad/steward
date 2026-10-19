@@ -11,6 +11,7 @@ import { handleReleaseRequest } from '../src/release-api.js';
 import { ReleaseReceiptClient, withReleaseClaim } from '../../runner/src/release-lifecycle.js';
 import { ReleaseTestDb } from './release-test-db.js';
 import { freezePersonalization } from '../../core/src/release-personalization.js';
+import { validateReleaseSource } from '../../core/src/release-bundle.js';
 
 const mock = vi.hoisted(() => ({ central: null as any, config: null as any, dispatch: vi.fn(), trees: {} as any, blobs: {} as any, facts: null as any }));
 vi.mock('../../github/src/release-candidate.js', async original => ({ ...await original<any>(),
@@ -174,6 +175,22 @@ it('rejects caller-supplied personalization that the repository profile did not 
   await expect(action({ action: 'prepare', frozen: { ...frozen, personalization } })).rejects.toThrow('PERSONALIZATION');
   expect(mock.central.request).not.toHaveBeenCalled();
   expect(db.database.prepare('SELECT COUNT(*) AS n FROM release_build_requests').get()?.n).toBe(0);
+});
+it('checks complete source range before persisting an initial build request', async () => {
+  const frozen = { ...frozenFixture(), toolchainDigest: releaseToolchainDigest };
+  const missing = () => { throw new GitHubRequestError(404, 'GET', '/fixture', 'missing'); };
+  mock.central.getReleaseByTag = async () => missing();
+  mock.central.getGitRef = async (_o: string, _r: string, ref: string) => ref.startsWith('tags/') ? missing() : { object: { sha: frozen.productTargetSha } };
+  mock.trees[frozen.productTargetSha] = { object: { tree: { sha: frozen.productTree } }, entries: [] };
+  mock.central.compare = async () => ({ status: 'ahead', base_commit: { sha: sha('9') }, merge_base_commit: { sha: sha('9') }, total_commits: 2 });
+  mock.central.paginate = async () => [{ sha: frozen.productTargetSha }, { sha: sha('8') }];
+  vi.mocked(validateReleaseSource).mockReturnValueOnce({ boundary: { kind: 'tag', sha: sha('9') }, commits: [{ sha: frozen.productTargetSha }] });
+  const read = vi.spyOn(ReleaseReceiptStore.prototype, 'readObject').mockResolvedValueOnce(Buffer.from('source'));
+  try {
+    await expect(action({ action: 'prepare', frozen })).rejects.toThrow('SOURCE_COMMIT_COVERAGE');
+    expect(db.database.prepare('SELECT COUNT(*) AS n FROM release_build_requests').get()?.n).toBe(0);
+    expect(mock.dispatch).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); }
 });
 it('accepts only the exact workflow run and canonical output mapping', async () => {
   const state = await request(); const body = { key: state.request.key, runId: 10, attempt: 1 };

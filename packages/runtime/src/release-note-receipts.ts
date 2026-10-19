@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { canonicalReleaseJson, receiptDigest, releaseAssert, releaseDigest, positiveId, type ReleaseReceipt } from '../../core/src/release-note-receipt.js';
 
-export const releaseObjectLimits = { chunkBytes: 48 * 1024, maxChunks: 2048, recordBytes: 512 * 1024 } as const;
+export const releaseObjectLimits = { objectBytes: 32 * 1024 * 1024, chunkBytes: 48 * 1024, maxChunks: 2048, recordBytes: 512 * 1024 } as const;
 export class ReleaseReceiptStore {
   constructor(private readonly db: D1Database) {}
   async findByPull(repositoryId: number, pullNumber: number): Promise<ReleaseReceipt | null> {
@@ -78,7 +78,7 @@ export class ReleaseReceiptStore {
   }
   async readObject(repositoryId: number, digest: string): Promise<Uint8Array> {
     const size = await this.verifyObject(repositoryId, digest);
-    releaseAssert(size <= 32 * 1024 * 1024, 'OBJECT_READ_LIMIT');
+    releaseAssert(size <= releaseObjectLimits.objectBytes, 'OBJECT_READ_LIMIT');
     const first = (await this.getChunk(repositoryId, digest, 0))!;
     const chunks = [Buffer.from(first.bytes_base64, 'base64')];
     for (let part = 1; part < first.total; part++) chunks.push(Buffer.from((await this.getChunk(repositoryId, digest, part))!.bytes_base64, 'base64'));
@@ -88,8 +88,11 @@ export class ReleaseReceiptStore {
     releaseAssert(positiveId(repositoryId) && releaseDigest(digest) && positiveId(total) && total <= releaseObjectLimits.maxChunks && Number.isInteger(part) && part >= 0 && part < total, 'OBJECT_ID');
     const bytes = Buffer.from(encoded, 'base64');
     releaseAssert(bytes.length > 0 && bytes.length <= releaseObjectLimits.chunkBytes && bytes.toString('base64') === encoded, 'OBJECT_CHUNK');
-    await this.db.prepare('INSERT OR IGNORE INTO release_evidence_chunks VALUES(?,?,?,?,?)').bind(repositoryId, digest, part, total, encoded).run();
+    // Keep the cumulative decoded size check in the insert so concurrent chunks cannot exceed the cap.
+    await this.db.prepare("INSERT OR IGNORE INTO release_evidence_chunks SELECT ?,?,?,?,? WHERE COALESCE((SELECT SUM(length(CAST(bytes_base64 AS BLOB))/4*3 - CASE WHEN substr(bytes_base64,-2)='==' THEN 2 WHEN substr(bytes_base64,-1)='=' THEN 1 ELSE 0 END) FROM release_evidence_chunks WHERE repository_id=? AND digest=?),0)+?<=?")
+      .bind(repositoryId, digest, part, total, encoded, repositoryId, digest, bytes.length, releaseObjectLimits.objectBytes).run();
     const row = await this.getChunk(repositoryId, digest, part);
+    releaseAssert(row, 'OBJECT_WRITE_LIMIT');
     releaseAssert(row?.total === total && row.bytes_base64 === encoded, 'OBJECT_CONFLICT');
   }
   getChunk(repositoryId: number, digest: string, part: number) {
