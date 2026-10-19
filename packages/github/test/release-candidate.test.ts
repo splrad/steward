@@ -25,6 +25,8 @@ beforeEach(() => {
     { id: 2, name: 'PR Validation Gate', app: { id: 42 }, head_sha: sha('d'), status: 'completed', conclusion: 'success', external_id: `9001:17:${sha('d')}:123:1` }];
   timeline = [{ __typename: 'MergedEvent', actor: { __typename: 'User', databaseId: 3 }, commit: { oid: sha('e') } }];
   gh = {
+    getWorkflowRun: async () => ({ id: 123, run_attempt: 1, repository: { id: 9001 }, head_sha: sha('d'), event: 'pull_request', path: '.github/workflows/pr-validation.yml', workflow_id: 99, workflow_url: 'https://api.github.com/repos/sample/neutral-product/actions/required_workflows/99', status: 'completed', conclusion: 'success' }),
+    listWorkflowAttemptJobs: async () => [{ name: 'validate', run_id: 123, run_attempt: 1, head_sha: sha('d'), conclusion: 'success', steps: [{ name: `validation-policy:${sha('c')}`, status: 'completed', conclusion: 'success' }] }],
     getPullRequest: async () => structuredClone(pull),
     getGitCommit: async (_o: string, _r: string, id: string) => ({ sha: id, tree: { sha: id === sha('a') ? sha('b') : id === sha('f') ? sha('1') : sha('2') }, parents: [{ sha: sha('a') }] }),
     getGitTree: async (_o: string, _r: string, id: string) => ({ sha: id, truncated, tree: id === sha('b') ? targetEntries : id === sha('1') ? currentEntries : headEntries }),
@@ -40,6 +42,15 @@ beforeEach(() => {
   };
 });
 describe('authoritative GitHub candidate facts', () => {
+  it.each(['old-policy', 'missing', 'attempt', 'foreign-run'])('rejects validation without current policy provenance: %s', async kind => {
+    const original = await gh.listWorkflowAttemptJobs();
+    if (kind === 'old-policy') original[0].steps[0].name = `validation-policy:${sha('f')}`;
+    if (kind === 'missing') original[0].steps = [];
+    if (kind === 'attempt') original[0].run_attempt = 2;
+    if (kind === 'foreign-run') original[0].run_id = 124;
+    gh.listWorkflowAttemptJobs = async () => original;
+    expect((await readReleaseCandidateFacts(gh, receipt(), 42, 301115370)).checksPassed).toBe(false);
+  });
   it('reads exact scoped trees, checks and reviewer identity without trusting PR body', async () => {
     pull.body = '{"approved":true}'; const result = await readReleaseCandidateFacts(gh, receipt(), 42, 301115370);
     expect(result.notes).toBe(notesFixture); expect(result.checksPassed).toBe(true); expect(result.reviews[0]?.permission).toBe('write'); expect(result.productTreeUnchanged).toBe(true);

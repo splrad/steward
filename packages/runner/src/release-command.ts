@@ -14,11 +14,11 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
   const repositoryId = Number(required('repository-id')), policySha = required('policy-sha'), tag = required('target-tag'), operation = required('operation');
   releaseAssert(positiveId(repositoryId) && releaseSha(policySha) && ['prepare', 'revise', 'inspect', 'plan', 'reconcile', 'pause', 'resume', 'retry-create', 'export', 'rebind-build', 'generator-ticket', 'recover-assets', 'revise-rebuild', 'recover-candidate'].includes(operation), 'COMMAND');
   const getToken = refreshingReleaseToken(() => createInstallationToken({ appId: environment('APP_ID'), privateKey: environment('STEWARD_APP_PRIVATE_KEY'), installationId: Number(environment('INSTALLATION_ID')), repositoryId,
-    permissions: { metadata: 'read', contents: ['recover-candidate', 'prepare', 'revise', 'revise-rebuild', 'reconcile'].includes(operation) ? 'write' : 'read', pull_requests: ['recover-candidate', 'prepare', 'revise', 'revise-rebuild'].includes(operation) ? 'write' : 'read', checks: ['inspect', 'plan', 'reconcile'].includes(operation) ? 'write' : 'read' }, policySha }));
+    permissions: { ...(['recover-candidate', 'prepare', 'revise', 'revise-rebuild', 'inspect', 'plan', 'reconcile'].includes(operation) ? { actions: 'read' as const } : {}), metadata: 'read', contents: ['recover-candidate', 'prepare', 'revise', 'revise-rebuild', 'reconcile'].includes(operation) ? 'write' : 'read', pull_requests: ['recover-candidate', 'prepare', 'revise', 'revise-rebuild'].includes(operation) ? 'write' : 'read', checks: ['inspect', 'plan', 'reconcile'].includes(operation) ? 'write' : 'read' }, policySha }));
   const token = await getToken();
   const transport: typeof fetch = async (input, init = {}) => {
     const headers = new Headers(init.headers); headers.set('authorization', `Bearer ${await getToken()}`);
-    return fetch(input, { ...init, headers, signal: init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000) });
+    return fetch(input, { ...init, headers, signal: init.signal ?? AbortSignal.timeout(60_000) });
   };
   const gh = new GitHubClient(token, 'https://api.github.com', transport, policySha);
   const receipts = new ReleaseReceiptClient(environment('RUNTIME_URL'), token, repositoryId, tag, transport);

@@ -76,6 +76,24 @@ export async function readReleaseCandidateFacts(gh: GitHubClient, r: ReleaseRece
     if (check.name === 'PR Classification Gate' && check.conclusion === 'success' && envelope?.policySha !== f.policySha) { ambiguous = true; continue; }
     latestChecks.set(check.name, check);
   }
+  const validation = latestChecks.get('PR Validation Gate');
+  if (validation?.conclusion === 'success') {
+    const identity = /^([1-9]\d*):([1-9]\d*):([a-f0-9]{40}):([1-9]\d*):([1-9]\d*)$/.exec(String(validation.external_id));
+    if (!identity) ambiguous = true;
+    else {
+      const runId = Number(identity[4]), attempt = Number(identity[5]);
+      const run = await gh.getWorkflowRun(owner, repo, runId);
+      const jobs = await gh.listWorkflowAttemptJobs(owner, repo, runId, attempt);
+      const validators = jobs.filter(job => job.name === 'validate');
+      if (run.id !== runId || run.run_attempt !== attempt || run.repository?.id !== f.repositoryId
+        || run.head_sha !== pull.head.sha || run.event !== 'pull_request' || run.path !== '.github/workflows/pr-validation.yml'
+        || run.workflow_url !== `https://api.github.com/repos/${owner}/${repo}/actions/required_workflows/${run.workflow_id}`
+        || run.status !== 'completed' || run.conclusion !== 'success' || validators.length !== 1
+        || validators[0].run_id !== runId || validators[0].run_attempt !== attempt || validators[0].head_sha !== pull.head.sha
+        || validators[0].conclusion !== 'success'
+        || validators[0].steps?.filter((step: any) => step.name === `validation-policy:${f.policySha}` && step.status === 'completed' && step.conclusion === 'success').length !== 1) ambiguous = true;
+    }
+  }
   const checksPassed = !ambiguous && ['PR Classification Gate', 'PR Validation Gate'].every(name => latestChecks.get(name)?.status === 'completed' && latestChecks.get(name)?.conclusion === 'success');
   const rawReviews = await gh.listPullRequestReviews(owner, repo, pull.number);
   const reviews: CandidateReviewFacts['reviews'] = [];
@@ -133,4 +151,28 @@ export async function readReleaseCandidateFacts(gh: GitHubClient, r: ReleaseRece
   releaseAssert(refreshed.head?.sha === pull.head.sha && refreshed.base?.sha === pull.base.sha && refreshed.merged === pull.merged && refreshed.state === pull.state, 'PR_READ_DRIFT');
   return { headSha: pull.head.sha, projection, notes, files, closed: pull.state === 'closed', merged: pull.merged === true, checksPassed: checksPassed && pull.draft === false,
     reviews, merge, manualMerge, productTreeUnchanged };
+}
+
+export async function verifyReleaseCommitRange(gh: GitHubClient, owner: string, repo: string, source: any, targetSha: string): Promise<void> {
+  if (source.boundary.kind !== 'full-tree') {
+    const ancestry = await gh.compare(owner, repo, source.boundary.sha, targetSha);
+    releaseAssert(['ahead', 'identical'].includes(ancestry.status) && ancestry.base_commit?.sha === source.boundary.sha
+      && ancestry.merge_base_commit?.sha === source.boundary.sha, 'SOURCE_BOUNDARY_ANCESTRY');
+    const commits = await gh.paginate<any>(`/repos/${owner}/${repo}/compare/${source.boundary.sha}...${targetSha}?per_page=100`, value => (value as any).commits, { maxItems: 10_000 });
+    const ids = commits.map(c => c.sha);
+    releaseAssert(ids.length === ancestry.total_commits && new Set(ids).size === ids.length
+      && JSON.stringify(ids.sort()) === JSON.stringify(source.commits.map((c: any) => c.sha).sort()), 'SOURCE_COMMIT_COVERAGE');
+  }
+}
+
+export async function readReleaseContributors(gh: Pick<GitHubClient, 'getCommit'>, owner: string, repo: string, commits: { sha: string }[]): Promise<Map<number, string>> {
+  releaseAssert(commits.length <= 100, 'CONTRIBUTOR_LIMIT');
+  const humans = new Map<number, string>();
+  for (let offset = 0; offset < commits.length; offset += 4) {
+    const actuals = await Promise.all(commits.slice(offset, offset + 4).map(async c => {
+      const actual = await gh.getCommit(owner, repo, c.sha); releaseAssert(actual.sha === c.sha, 'CONTRIBUTOR_SOURCE'); return actual;
+    }));
+    for (const actual of actuals) if (actual.author?.type === 'User') humans.set(actual.author.id, actual.author.login);
+  }
+  return humans;
 }

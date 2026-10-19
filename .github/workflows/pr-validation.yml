@@ -55,7 +55,7 @@ jobs:
               echo "name=public-basic" >> "$GITHUB_OUTPUT"
               ;;
           esac
-      - name: 执行中央验证
+      - name: validation-policy:${{ steps.policy.outputs.sha }}
         env:
           VALIDATION_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           VALIDATION_BASE_REF: ${{ github.event.pull_request.base.ref }}

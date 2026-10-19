@@ -52,6 +52,7 @@ export class ReleaseGenerationStore {
       releaseAssert(Number.isInteger(index) && index! >= 0 && index! < ledger.calls.length, 'GENERATION_CALL');
       releaseAssert(typeof inputDigest === 'string' && inputDigest === ledger.calls[index!]!.inputDigest, 'GENERATION_INPUT_BINDING');
       releaseAssert(Buffer.byteLength(input) <= 64 * 1024, 'GENERATION_LIMIT');
+      releaseAssert(input.length > 0, 'GENERATION_EMPTY_DIAGNOSTIC');
       const normalized = action === 'complete' ? canonicalReleaseJson(parseGeneratedRelease(Buffer.from(input))) : null;
       const call = ledger.calls[index!]!;
       releaseAssert(call.output === null || call.output === normalized, 'GENERATION_OUTPUT_IMMUTABLE');

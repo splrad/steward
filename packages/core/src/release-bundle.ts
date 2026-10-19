@@ -28,7 +28,23 @@ export function validateReleaseSource(bytes: Uint8Array, f: FrozenRelease): any 
   }
   releaseAssert(canonicalReleaseJson(s.boundary) === canonicalReleaseJson(f.boundary), 'SOURCE_BOUNDARY');
   if (s.boundary.kind === 'full-tree') releaseAssert(s.commits.some((c: any) => c.sha === f.productTargetSha), 'SOURCE_TARGET');
+  releaseSourceFrontier(s);
   return s;
+}
+
+/** Missing parents must be proven ancestors of the boundary by the provider. */
+export function releaseSourceFrontier(source: { targetSha: string; boundary: { kind: string; sha?: string }; commits: { sha: string; parents: string[] }[] }): string[] {
+  const commits = new Map(source.commits.map(c => [c.sha, c]));
+  const visited = new Set<string>(), frontier = new Set<string>(), pending = [source.targetSha];
+  while (pending.length) {
+    const sha = pending.pop()!;
+    if (visited.has(sha) || frontier.has(sha)) continue;
+    const commit = commits.get(sha);
+    if (!commit) { frontier.add(sha); continue; }
+    visited.add(sha); pending.push(...commit.parents);
+  }
+  releaseAssert(visited.size === commits.size && (source.boundary.kind !== 'full-tree' || frontier.size === 0), 'SOURCE_COMMIT_COVERAGE');
+  return [...frontier];
 }
 
 export function validateReleaseEvidence(bytes: Uint8Array, f: FrozenRelease, source: any): void {

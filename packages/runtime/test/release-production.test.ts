@@ -11,6 +11,16 @@ import { ReleaseTestDb } from './release-test-db.js';
 const generated = { userNotes: { upgrade: [], changes: [{ category: '修复', text: '修复导出时丢失文件的问题。' }] }, reviewEvidence: { internalChanges: ['调整导出实现。'], unknowns: [] } };
 const output = JSON.stringify(generated);
 const plan = generationPlan('a'.repeat(64), sha('c'), ['complete source']);
+it('rejects an empty diagnostic without creating a dangling digest or changing the ledger', async () => {
+  const db = new ReleaseTestDb(), store = new ReleaseGenerationStore(db.binding());
+  try {
+    await store.prepare(9001, 'v1.2.3', plan);
+    const reserved = await store.mutate(9001, 'v1.2.3', 0, 'reserve', 'complete source');
+    await expect(store.mutate(9001, 'v1.2.3', reserved.version, 'diagnostic', '', 0, reserved.ledger.calls[0]!.inputDigest)).rejects.toThrow('GENERATION_EMPTY_DIAGNOSTIC');
+    expect(await store.read(9001, 'v1.2.3')).toEqual(reserved);
+    expect(reserved.ledger.calls[0]!.rawDigest).toBeUndefined();
+  } finally { db.database.close(); }
+});
 it('fences a previously authorized mutation after ticket expiry and replacement', async () => {
   const db = new ReleaseTestDb(), store = new ReleaseGenerationStore(db.binding());
   try {

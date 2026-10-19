@@ -7,7 +7,7 @@ import { ReleaseReceiptStore, releaseObjectLimits } from './release-note-receipt
 import { assertReleasePermit, candidatePaths, candidateProjection, canonicalReleaseJson, newReleaseReceipt, positiveId, receiptDigest, releaseAssert, releaseSha, reviewReleaseReceipt, type ReleaseReceipt } from '../../core/src/release-note-receipt.js';
 import { validateReleaseSource, validateReleaseEvidence } from '../../core/src/release-bundle.js';
 import { planBuild, matchBuildFiles } from '../../core/src/build-manifest.js';
-import { assertIncreasingReleaseVersion } from '../../github/src/release-candidate.js';
+import { readReleaseContributors, verifyReleaseCommitRange, assertIncreasingReleaseVersion } from '../../github/src/release-candidate.js';
 import { readReleaseCandidateFacts, releaseTree, changedTreePaths, readCandidateBlob, optionalReleaseRead } from '../../github/src/release-candidate.js';
 import { GitHubRequestError, GitHubClient, createInstallationToken, dispatchWorkflow } from '../../github/src/index.js';
 import catalog from '../../../config/repositories.json' with { type: 'json' };
@@ -102,6 +102,7 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
       releaseAssert(await readCandidateBlob(gh, owner, repo, product, 'VERSION') === r.frozen.targetTag.slice(1) + '\n', 'VERSION_BINDING');
       await assertIncreasingReleaseVersion(gh, owner, repo, r.frozen.targetTag);
       const source = validateReleaseSource(await store.readObject(repositoryId, r.frozen.sourceDigest), r.frozen);
+      await verifyReleaseCommitRange(gh, owner, repo, source, r.frozen.productTargetSha);
       const boundaryTree = source.boundary.kind === 'full-tree' ? { entries: [], object: null } : await releaseTree(gh, owner, repo, source.boundary.sha);
       const changed = changedTreePaths(boundaryTree, product);
       const retainedPaths = source.changes.flatMap((c: any) => c.previousPath ? [c.previousPath, c.path] : [c.path]);
@@ -140,11 +141,7 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
           && artifact.expired === false && artifact.workflow_run?.id === b.runId && artifact.workflow_run.head_sha === b.headSha, 'BUILD_PROVENANCE');
       }
       // Stable numeric IDs and actual commit associations, never names supplied by a model.
-      const humans = new Map<number, string>();
-      if (r.frozen.contributors.length) for (const c of source.commits) {
-        const actual = await gh.getCommit(owner, repo, c.sha); releaseAssert(actual.sha === c.sha, 'CONTRIBUTOR_SOURCE');
-        if (actual.author?.type === 'User') humans.set(actual.author.id, actual.author.login);
-      }
+      const humans = r.frozen.contributors.length ? await readReleaseContributors(gh, owner, repo, source.commits) : new Map<number, string>();
       for (const person of r.frozen.contributors) releaseAssert(humans.get(person.id) === person.login, 'CONTRIBUTOR_SOURCE');
       for (const id of r.frozen.authorIds) {
         const actor = await gh.request<any>('GET', `/user/${id}`);

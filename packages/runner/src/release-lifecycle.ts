@@ -25,7 +25,7 @@ export class ReleaseReceiptClient {
   async request<T>(action = '', body?: unknown, suffix?: string): Promise<T> {
     const response = await this.transport(`${this.base.replace(/\/$/, '')}/internal/releases/${this.repositoryId}/${suffix ?? this.tag + (action ? '/' + action : '')}`, {
       method: body === undefined ? 'GET' : 'POST', headers: { authorization: `Bearer ${this.token}`, 'content-type': 'application/json' },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(60_000),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(action === 'prepare' ? 5 * 60_000 : 60_000),
     });
     const bytes = await response.text(); releaseAssert(Buffer.byteLength(bytes) <= 1024 * 1024, 'RUNTIME_RESPONSE');
     if (!response.ok) {
