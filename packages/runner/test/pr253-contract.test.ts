@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import {it,expect} from 'vitest';
 import YAML from 'yaml';
 import fixture from './fixtures/pr253-workflows.json' with {type:'json'};
@@ -15,8 +16,9 @@ it('uses an immutable real PR snapshot, not current workspace assumptions',()=>{
  expect(fixture.head).toBe('ab3cddd7727917284084899397f161c3d31a0161');
  expect(Object.keys(fixture.workflows)).toHaveLength(11);
 });
-it('allows approved fragment retirement in the actual PR entry and still rejects it without authority',()=>{
- const d=document('pr-validation.yml');
+it('requires the catalog-based entry and allows retirement only with authority',async()=>{
+ expect(()=>assertWorkflowDocument('.github/workflows/pr-validation.yml',document('pr-validation.yml'),approved)).toThrow('required trusted validation entry changed');
+ const d=YAML.parse(await readFile('.github/workflows/pr-validation.yml','utf8'));
  expect(()=>assertWorkflowDocument('.github/workflows/pr-validation.yml',d)).toThrow('fragments');
  expect(()=>assertWorkflowDocument('.github/workflows/pr-validation.yml',d,approved)).not.toThrow();
 });

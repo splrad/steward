@@ -15,7 +15,7 @@ import catalog from '../../../config/repositories.json' with { type: 'json' };
 import notesProfile from '../../../config/profiles/release-notes/common-v3.json' with { type: 'json' };
 import { ReleaseGenerationStore } from './release-generation-store.js';
 import { handleGenerationGraphTicket } from './release-generation-graph-api.js';
-import { issueGenerationGraph } from './release-generation-graph-issuer.js';
+import { issueGenerationGraph, acceptedReleaseSeed } from './release-generation-graph-issuer.js';
 import { rebindReleaseBuild } from '../../core/src/release-rebuild.js';
 import { currentReleaseBuild } from '../../core/src/release-rebuild.js';
 import { makeReleaseBuildRequest, releaseToolchainDigest } from '../../core/src/release-build-request.js';
@@ -195,8 +195,14 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
           && run.status === 'completed' && run.conclusion === 'success' && artifact.id === b.artifactId && artifact.name === b.artifactName
           && artifact.expired === false && artifact.workflow_run?.id === b.runId && artifact.workflow_run.head_sha === b.headSha, 'BUILD_PROVENANCE');
       }
+      else {
+        const seed = await acceptedReleaseSeed(env.ISSUE_SNAPSHOTS!, repositoryId, tag, env.POLICY_SHA);
+        // Generation produces evidence; every other frozen field remains seed-bound.
+        releaseAssert(canonicalReleaseJson(r.frozen) === canonicalReleaseJson({ ...seed, evidenceDigest: r.frozen.evidenceDigest }), 'PREPARE_SEED_BINDING');
+      }
       // Stable numeric IDs and actual commit associations, never names supplied by a model.
-      const humans = r.frozen.contributors.length ? await readReleaseContributors(gh, owner, repo, source.commits) : new Map<number, string>();
+      const humans = await readReleaseContributors(gh, owner, repo, source.commits);
+      releaseAssert(humans.size === r.frozen.contributors.length, 'CONTRIBUTOR_SOURCE');
       for (const person of r.frozen.contributors) releaseAssert(humans.get(person.id) === person.login, 'CONTRIBUTOR_SOURCE');
       for (const id of r.frozen.authorIds) {
         const actor = await gh.request<any>('GET', `/user/${id}`);

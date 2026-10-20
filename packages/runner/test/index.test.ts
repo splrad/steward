@@ -7,7 +7,7 @@ import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { generateReviewInstructionSet } from "../../core/src/review-instructions.js";
-import { assertFreshValidationBase, assertManagedBranchPull, assertWorkflowPaths, classificationInstallationPermissions, decodeAiClassificationPayload, decodeClassificationCheckState, encodeAiClassificationPayload, encodeClassificationCheckState, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, isTrustedAiClassificationSource, main, matchesGeneratedReviewInstructions, parseInvocation, renderAiClassificationEvidence, reusedAiClassificationAssessment, reviewInstructionSyncInstallationPermissions, reviewRegistryPaths, throwFreshValidationBaseFailure, writeManagedFilesToBranch } from "../src/index.js";
+import { assertFreshValidationBase, assertManagedBranchPull, classificationInstallationPermissions, decodeAiClassificationPayload, decodeClassificationCheckState, encodeAiClassificationPayload, encodeClassificationCheckState, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, isTrustedAiClassificationSource, main, matchesGeneratedReviewInstructions, parseInvocation, renderAiClassificationEvidence, reusedAiClassificationAssessment, reviewInstructionSyncInstallationPermissions, reviewRegistryPaths, throwFreshValidationBaseFailure, writeManagedFilesToBranch } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -342,13 +342,6 @@ describe("中央命令入口", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
-  });
-
-  it("工作流允许清单与仓库当前文件必须逐项一致", () => {
-    const allowed = [".github/workflows/current.yml"];
-    expect(() => assertWorkflowPaths(allowed, allowed)).not.toThrow();
-    expect(() => assertWorkflowPaths([], allowed)).toThrow("缺少：.github/workflows/current.yml；未允许：无");
-    expect(() => assertWorkflowPaths([...allowed, ".github/workflows/unknown.yml"], allowed)).toThrow("缺少：无；未允许：.github/workflows/unknown.yml");
   });
 
   it("识别平台实际返回的Copilot身份并给分类令牌完整的拉取请求写权限", () => {

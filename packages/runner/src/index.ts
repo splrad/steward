@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { decodeClassificationCheckEnvelope } from "../../core/src/check-envelope.js";
+import { verifyWorkflowActivation } from "./workflow-activation.js";
+import { selectValidationProfile } from "../../core/src/validation.js";
 import { verifyWorkflowPolicy } from "./workflow-policy.js";
 export { verifyWorkflowPolicy };
 import { readWorkflowContract, contractDigest } from "./workflow-contract.js";
@@ -46,12 +48,16 @@ commands.add("release-freeze");
 commands.add("release-produce");
 commands.add("release-build");
 commands.add("trusted-policy-source");
+commands.add("validation-profile");
+commands.add("verify-workflow-activation");
 // Repository configuration and workspace files are runtime inputs, not bundle assets.
 // This wrapper keeps their paths opaque to the static asset tracer used by ncc.
 const runtimeReadFile = ((path: Parameters<typeof readFile>[0], options?: Parameters<typeof readFile>[1]) =>
   Reflect.apply(readFile, undefined, options === undefined ? [path] : [path, options])) as typeof readFile;
 const allowedArguments: Record<string, Set<string>> = {
   "trusted-policy-source": new Set(),
+  "verify-workflow-activation": new Set(),
+  "validation-profile": new Set(["repository-id", "private"]),
   "release-produce": new Set(["bundle", "ticket", "runtime-url", "copilot-loader", "output"]),
   "release-build": new Set(["build-id", "operation", "policy-sha", "repository-id", "target-tag", "target-sha", "author-ids", "request-key", "request", "source-bundle", "workspace", "assets", "inspector", "output", "run-id", "attempt", "artifact-id"]),
   "release-freeze": new Set(["workspace", "repository-id", "default-branch", "target-sha", "policy-sha", "target-tag", "boundary-sha", "boundary-tag", "baseline-reference", "full-tree", "output"]),
@@ -971,14 +977,15 @@ export function reviewRegistryPaths(_repositoryId: number, _workspace: string): 
   return { profiles: join(root, "profiles.json"), rules: join(root, "rules.json") };
 }
 
-export function assertWorkflowPaths(actual: readonly string[], allowed: readonly string[]): void {
-  const allowedSet = new Set(allowed);
-  const actualSet = new Set(actual);
-  const missing = allowed.filter(path => !actualSet.has(path));
-  const unexpected = actual.filter(path => !allowedSet.has(path));
-  if (missing.length || unexpected.length) {
-    throw new Error(`仓库工作流超出中央允许范围；缺少：${missing.join(", ") || "无"}；未允许：${unexpected.join(", ") || "无"}`);
-  }
+async function validationProfileCommand(args: Readonly<Record<string, string>>) {
+  const repositoryId = integer(required(args, "repository-id"), "repository-id");
+  if (!['true', 'false'].includes(required(args, "private"))) throw new Error("仓库可见性无效");
+  const trusted = await catalog();
+  const configuration = trusted.repositories[String(repositoryId)] ?? (args.private === 'false' ? trusted.defaults.public : null);
+  if (!configuration?.managed) throw new Error("仓库没有启用中央验证");
+  const name = selectValidationProfile(repositoryId, { repositories: trusted.repositories, defaultPublicProfile: trusted.defaults.public.validationProfile }, args.private === 'true');
+  if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error("验证配置名称无效");
+  await output({ name });
 }
 
 async function validate(args: Readonly<Record<string, string>>) {
@@ -1103,6 +1110,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const invocation = parseInvocation(argv);
   if (invocation.command === "trusted-policy-source") return trustedPolicyCommand();
   if (invocation.command === "release-candidate") return releaseCandidateCommand(invocation.args);
+  if (invocation.command === "verify-workflow-activation") {
+    const evaluator = sha(env("WORKFLOW_EVALUATOR_SHA"), "WORKFLOW_EVALUATOR_SHA_REQUIRED");
+    return verifyWorkflowActivation(new GitHubClient(env("WORKFLOW_ACTIVATION_READ_TOKEN")), evaluator, await catalog());
+  }
   if (invocation.command === "release-produce") return releaseProduceCommand(invocation.args);
   if (invocation.command === "release-build") return releaseBuildCommand(invocation.args);
   if (invocation.command === "release-freeze") return releaseFreezeCommand(invocation.args);
@@ -1111,7 +1122,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (invocation.command === "request-copilot-review") return requestCopilotReviewCommand(invocation.args);
   if (invocation.command === "review-trigger-mode") return reviewTriggerModeCommand(invocation.args);
   if (invocation.command === "review-sync-targets") return reviewSyncTargetsCommand(invocation.args);
-  const handlers: Record<string, (args: Readonly<Record<string, string>>) => Promise<void>> = { "managed-repository-ids": listManagedRepositoryIds, "onboard-repository": onboard, "pr-classification": classify, "sync-review-instructions": syncReviewInstructions, "sync-managed-labels": syncManagedLabels, validate };
+  const handlers: Record<string, (args: Readonly<Record<string, string>>) => Promise<void>> = { "validation-profile": validationProfileCommand, "managed-repository-ids": listManagedRepositoryIds, "onboard-repository": onboard, "pr-classification": classify, "sync-review-instructions": syncReviewInstructions, "sync-managed-labels": syncManagedLabels, validate };
   await handlers[invocation.command]!(invocation.args);
 }
 

@@ -52,18 +52,7 @@ jobs:
       - name: 选择验证配置
         id: profile
         shell: bash
-        run: |
-          case "${{ github.repository_id }}" in
-            1187527897) echo "name=layerscape" >> "$GITHUB_OUTPUT" ;;
-            1296724484) echo "name=steward" >> "$GITHUB_OUTPUT" ;;
-            *)
-              if [[ "${{ github.event.repository.private }}" == "true" ]]; then
-                echo "私有仓库尚未纳管" >&2
-                exit 1
-              fi
-              echo "name=public-basic" >> "$GITHUB_OUTPUT"
-              ;;
-          esac
+        run: node steward-policy/packages/runner/dist/index.js validation-profile --repository-id "${{ github.repository_id }}" --private "${{ github.event.repository.private }}"
       - name: workflow-contract-policy:${{ steps.policy.outputs.sha }}
         env:
           VALIDATION_BASE_SHA: ${{ github.event.pull_request.base.sha }}

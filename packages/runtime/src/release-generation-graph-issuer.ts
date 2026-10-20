@@ -11,17 +11,7 @@ export async function issueGenerationGraph(
   body: { action: string; frozen?: FrozenRelease; offset?: number; graphDigest?: string },
   now = Date.now(),
 ): Promise<unknown> {
-  const accepted = await new ReleaseBuildStore(db).acceptedSeed(repositoryId, tag);
-  releaseAssert(accepted && ((accepted.status === 'accepted' && accepted.artifact && accepted.resultManifests)
-    || (accepted.status === 'seeded' && accepted.seedArtifact && accepted.artifact === null
-      && accepted.request.plans.length === 0 && accepted.request.frozen.assets.length === 0
-      && accepted.request.frozen.build === null)), 'GENERATION_SEED_NOT_ACCEPTED');
-  const manifests = accepted.resultManifests ?? [];
-  const expected: FrozenRelease = { ...accepted.request.frozen, build: accepted.artifact, manifests,
-    assets: manifests.flatMap(m => m.artifacts.map(a => {
-      releaseAssert(a.kind === 'file', 'GENERATION_SEED_ASSET');
-      return { name: a.file, size: a.size, sha256: a.sha256 };
-    })) };
+  const expected = await acceptedReleaseSeed(db, repositoryId, tag, policySha);
   const frozen = body.frozen ?? expected;
   validateFrozenRelease(frozen);
   releaseAssert(frozen.repositoryId === repositoryId && frozen.targetTag === tag && frozen.policySha === policySha, 'GENERATION_SEED_IDENTITY');
@@ -47,4 +37,22 @@ export async function issueGenerationGraph(
   }
   releaseAssert(body.action === 'ticket' && body.graphDigest === id.graphDigest, 'GENERATION_GRAPH_BINDING');
   return { frozen, graphDigest: id.graphDigest, token: await store.ticket(id, policySha, now) };
+}
+
+/** Reconstruct the immutable input from the independently inspected initial seed. */
+export async function acceptedReleaseSeed(db: D1Database, repositoryId: number, tag: string, policySha: string): Promise<FrozenRelease> {
+  const accepted = await new ReleaseBuildStore(db).acceptedSeed(repositoryId, tag);
+  releaseAssert(accepted && ((accepted.status === 'accepted' && accepted.artifact && accepted.resultManifests)
+    || (accepted.status === 'seeded' && accepted.seedArtifact && accepted.artifact === null
+      && accepted.request.plans.length === 0 && accepted.request.frozen.assets.length === 0
+      && accepted.request.frozen.build === null)), 'GENERATION_SEED_NOT_ACCEPTED');
+  const manifests = accepted.resultManifests ?? [];
+  const expected: FrozenRelease = { ...accepted.request.frozen, build: accepted.artifact, manifests,
+    assets: manifests.flatMap(m => m.artifacts.map(a => {
+      releaseAssert(a.kind === 'file', 'GENERATION_SEED_ASSET');
+      return { name: a.file, size: a.size, sha256: a.sha256 };
+    })) };
+  validateFrozenRelease(expected);
+  releaseAssert(expected.repositoryId === repositoryId && expected.targetTag === tag && expected.policySha === policySha, 'GENERATION_SEED_IDENTITY');
+  return expected;
 }

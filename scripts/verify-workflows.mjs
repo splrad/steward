@@ -11,12 +11,8 @@ function hasExactKeys(value, expectedKeys) {
   return JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...expectedKeys].sort());
 }
 
-const expected = ["deploy-runtime.yml", "native-review.yml", "onboard-repository.yml", "pr-classification.yml", "pr-validation.yml", "product-build.yml", "release-build-complete.yml", "release-build.yml", "release.yml", "sync-managed-labels.yml", "sync-review-instructions.yml"];
-const files = (await readdir(".github/workflows")).sort();
-if (JSON.stringify(files) !== JSON.stringify(expected)) throw new Error(`工作流集合不正确: ${files.join(", ")}`);
-const registry = JSON.parse(await readFile("config/repositories.json", "utf8"));
-const registered = [...registry.repositories["1296724484"].allowedWorkflowPaths].sort();
-if (JSON.stringify(registered) !== JSON.stringify(files.map(file => ".github/workflows/" + file))) throw new Error("Steward 工作流允许清单与实际文件不一致");
+// Ordinary workflows evolve in the same PR; required entrypoints are checked separately.
+const files = (await readdir(".github/workflows")).filter(file => /\.ya?ml$/u.test(file)).sort();
 await verifyWorkflowPolicy(process.cwd(),1296724484,[".github/workflows/pr-validation.yml"],JSON.parse(await readFile(".github/workflow-contract.json","utf8")));
 const workflowDocuments = new Map();
 const allowedActions = new Set([
@@ -175,7 +171,8 @@ if (migrationStepIndex < 0 || deployStepIndex < 0 || migrationStepIndex >= deplo
 const evaluatorGuardIndex = deploySteps.findIndex(step => step?.name === '核对固定验证器身份');
 if (deployRuntimeDocument.jobs.deploy.env?.WORKFLOW_EVALUATOR_SHA !== '${{ vars.WORKFLOW_EVALUATOR_SHA }}'
   || evaluatorGuardIndex < 0 || evaluatorGuardIndex >= migrationStepIndex
-  || !deploySteps[evaluatorGuardIndex].run?.includes('WORKFLOW_EVALUATOR_SHA_REQUIRED')
+  || deploySteps[evaluatorGuardIndex].run !== 'node packages/runner/dist/index.js verify-workflow-activation'
+  || deploySteps[evaluatorGuardIndex].env?.WORKFLOW_ACTIVATION_READ_TOKEN !== '${{ github.token }}'
   || !deploySteps[deployStepIndex].run?.includes('--var WORKFLOW_EVALUATOR_SHA:')) throw new Error('固定验证器身份必须在数据库变更前检查并独立传入部署');
 const migrationStep = deploySteps[migrationStepIndex];
 if (String(migrationStep?.env?.CLOUDFLARE_API_TOKEN ?? "").replace(/\s+/gu, "") !== "${{secrets.CLOUDFLARE_API_TOKEN}}") throw new Error("D1迁移没有使用固定Cloudflare密钥");

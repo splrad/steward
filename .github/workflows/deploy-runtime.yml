@@ -39,7 +39,9 @@ jobs:
       - run: npm run verify:workflows
       - name: 核对固定验证器身份
         shell: bash
-        run: '[[ "$WORKFLOW_EVALUATOR_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "WORKFLOW_EVALUATOR_SHA_REQUIRED" >&2; exit 1; }'
+        env:
+          WORKFLOW_ACTIVATION_READ_TOKEN: ${{ github.token }}
+        run: node packages/runner/dist/index.js verify-workflow-activation
       - name: 列出并应用D1迁移
         shell: bash
         env:

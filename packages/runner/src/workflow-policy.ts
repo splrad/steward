@@ -162,7 +162,7 @@ const requiredValidationJob = {
     {
       "id": "profile",
       "shell": "bash",
-      "run": "case \"${{ github.repository_id }}\" in\n  1187527897) echo \"name=layerscape\" >> \"$GITHUB_OUTPUT\" ;;\n  1296724484) echo \"name=steward\" >> \"$GITHUB_OUTPUT\" ;;\n  *)\n    if [[ \"${{ github.event.repository.private }}\" == \"true\" ]]; then\n      echo \"私有仓库尚未纳管\" >&2\n      exit 1\n    fi\n    echo \"name=public-basic\" >> \"$GITHUB_OUTPUT\"\n    ;;\nesac\n"
+      "run": "node steward-policy/packages/runner/dist/index.js validation-profile --repository-id \"${{ github.repository_id }}\" --private \"${{ github.event.repository.private }}\""
     },
     {
       "env": {
