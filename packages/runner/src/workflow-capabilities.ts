@@ -81,6 +81,6 @@ export function assertArtifactHandoff(d:any): void {
    {id:'inspection',shell:'pwsh',env:{POLICY_SHA:'${{ github.workflow_sha }}',ARTIFACT_READ_TOKEN:'${{ github.token }}',ARTIFACT_BINDING:'${{ needs.resolve.outputs.binding }}',BUILD_PLAN:'${{ needs.resolve.outputs.plan }}'},run:'node packages/runner/dist/index.js release-build --operation inspect-artifact --policy-sha "$env:POLICY_SHA" --inspector scripts/inspect-native-release.ps1'}
   ];
   const canonical=(v:any):string=>Array.isArray(v)?'['+v.map(canonical).join(',')+']':v&&typeof v==='object'?'{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+canonical(v[k])).join(',')+'}':JSON.stringify(v);
-  if(canonical(clean)!==canonical(expected) || inspection.needs!=='resolve' || inspection.outputs?.report!=='${{ steps.inspection.outputs.report }}')fail();
+  if(canonical(clean)!==canonical(expected) || inspection.needs!=='resolve' || inspection['timeout-minutes']!==360 || inspection.outputs?.report!=='${{ steps.inspection.outputs.report }}')fail();
  }
 }

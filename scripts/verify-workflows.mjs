@@ -285,6 +285,7 @@ for (const document of [productBuild,genericBuild]) {
 }
 if (buildCompletion.on.workflow_run?.workflows?.[0] !== 'SPLRAD Steward / Release Build' || buildCompletion.on.workflow_run?.types?.[0] !== 'completed'
   || buildCompletion.jobs.accept['timeout-minutes'] !== 360
+  || buildCompletion.jobs.inspect['timeout-minutes'] !== 360
   || !buildCompletion.jobs.accept.steps.some(step => step.name === '明确阻断策略漂移的完成回调' && step.env?.SOURCE_POLICY === '${{ github.event.workflow_run.head_sha }}' && step.env?.CURRENT_POLICY === '${{ github.workflow_sha }}' && step.run?.includes('RELEASE_POLICY_DRIFT'))
   || !buildCompletion.jobs.resolve.if.includes("github.event.workflow_run.event == 'workflow_dispatch'")) throw new Error('构建完成回调未绑定可信运行');
 if (buildCompletion.jobs.reject.if !== "always() && needs.resolve.result == 'success' && needs.inspect.outputs.verificationFailed == 'true'") throw new Error("只有确定的隔离验证失败可拒绝构建");
