@@ -22,3 +22,11 @@ ORGANIZATION_LOGIN = "splrad"
 APP_ID = "4243096"
 INSTALLATION_ID = "145952003"
 STEWARDSHIP_REPOSITORY = "splrad/steward"
+
+[[durable_objects.bindings]]
+name = "VALIDATION_COORDINATOR"
+class_name = "ValidationCoordinator"
+
+[[migrations]]
+tag = "validation-coordinator-v1"
+new_sqlite_classes = ["ValidationCoordinator"]

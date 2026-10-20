@@ -1,3 +1,4 @@
+import { SerialTaskQueue } from './serial-task-queue.js';
 import { settledPool } from "./settled-pool.js";
 import { evaluatorSha, trustedContractAuthorities } from './workflow-evaluator.js';
 import { isStewardOwnedPullRequest } from "../../core/src/issues.js";
@@ -15,6 +16,7 @@ export interface Env {
   ORGANIZATION_ID: string; ORGANIZATION_LOGIN: string; APP_ID: string; INSTALLATION_ID: string;
   STEWARDSHIP_REPOSITORY: string; POLICY_SHA: string; WORKFLOW_EVALUATOR_SHA?: string; STEWARD_APP_PRIVATE_KEY?: string; STEWARD_WEBHOOK_SECRET?: string;
   ISSUE_SNAPSHOTS?: D1Database;
+  VALIDATION_COORDINATOR?: DurableObjectNamespace;
   CF_VERSION_METADATA?: { id: string };
 }
 
@@ -107,6 +109,7 @@ async function validationClient(env: Env, repositoryId: number): Promise<GitHubC
   return new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA);
 }
 async function ensureValidationPending(env: Env, repository: any, pull: any): Promise<void> {
+  if (env.VALIDATION_COORDINATOR) { await coordinatedValidation(env, repository.id, {operation:"pending", repository, pull}); return; }
   const headSha = commitSha(pull?.head?.sha); const number = Number(pull?.number);
   if (!headSha || !Number.isSafeInteger(number) || number <= 0) throw new Error("拉取请求验证输入无效");
   const [owner, repo] = splitRepository(String(repository.full_name));
@@ -153,6 +156,7 @@ async function authoritySnapshot(env: Env): Promise<AuthoritySnapshot> {
   try { return { value: await trustedContractAuthorities(env) }; } catch (error) { return { error }; }
 }
 async function publishValidationState(env: Env, repository: any, workflowRunId: unknown, context?: { gh: GitHubClient; authority: AuthoritySnapshot }): Promise<boolean> {
+  if (env.VALIDATION_COORDINATOR) return (await coordinatedValidation(env, repository.id, {operation:"run", repository, workflowRunId})).changed;
   const runId = Number(workflowRunId);
   if (!Number.isSafeInteger(runId) || runId <= 0) throw new Error("工作流运行编号无效");
   const [owner, repo] = splitRepository(String(repository.full_name));
@@ -225,12 +229,14 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
 }
 
 export async function refreshWorkflowContractChecks(env: Env, repositoryId: number, pullNumber?: number, snapshot?: AuthoritySnapshot): Promise<void> {
+  if (env.VALIDATION_COORDINATOR) { await coordinatedValidation(env, repositoryId, {operation:"refresh", repositoryId, pullNumber}); return; }
   if (env.WORKFLOW_EVALUATOR_SHA===undefined) return;
   const gh = await validationClient(env, repositoryId);
   const repository = await gh.getRepositoryById(repositoryId);
   if (repository.id !== repositoryId || !belongsToOrganization(repository)) throw new Error("CONTRACT_REPOSITORY: identity mismatch");
   // Authority coverage includes private repositories that catalog defaults leave unmanaged.
-  if (!isManaged(repository)) return;
+  // The explicitly enabled contract gate fails closed for installed organization repositories,
+  // including private repositories outside the business-automation catalog.
   const [owner, repo] = splitRepository(repository.full_name);
   const pulls = pullNumber === undefined ? await gh.listOpenPullRequests(owner, repo, repository.default_branch)
     : [await gh.getPullRequest(owner, repo, pullNumber)];
@@ -428,9 +434,10 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
     }
     if (event === "pull_request" && ["opened", "synchronize", "reopened", "edited"].includes(action)) {
       const repository = payload.repository; const pull = payload.pull_request;
-      if (!repository || !isManaged(repository) || !pull) return response(204);
+      if (!repository || !belongsToOrganization(repository) || !pull) return response(204);
       if (Number.isSafeInteger(pull.number))
         await refreshWorkflowContractChecks(env, Number(repository.id), pull.number);
+      if (!isManaged(repository)) return response(env.WORKFLOW_EVALUATOR_SHA === undefined ? 204 : 202);
       const targetsDefault = pull.base?.ref === repository.default_branch;
       let dispatched = false;
       if (targetsDefault) {
@@ -449,14 +456,14 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
     if (event === "pull_request" && action === "closed" && payload.pull_request?.merged === false) return response(204);
     if (event === "pull_request_review" && ["submitted", "edited", "dismissed"].includes(action)) {
       const repository = payload.repository;
-      if (!repository || !isManaged(repository) || env.WORKFLOW_EVALUATOR_SHA === undefined) return response(204);
+      if (!repository || !belongsToOrganization(repository) || env.WORKFLOW_EVALUATOR_SHA === undefined) return response(204);
       const number = Number(payload.pull_request?.number);
       if (!Number.isSafeInteger(number) || number <= 0) return response(204);
       await refreshWorkflowContractChecks(env, repository.id, number);
       return response(202);
     }
     if (event === "workflow_run" && ["requested", "in_progress", "completed"].includes(action)) {
-      const repository = payload.repository; if (!repository || !isManaged(repository)) return response(204);
+      const repository = payload.repository; if (!repository || !(isManaged(repository) || (env.WORKFLOW_EVALUATOR_SHA !== undefined && belongsToOrganization(repository)))) return response(204);
       return response(await publishValidationState(env, repository, payload.workflow_run?.id) ? 202 : 204);
     }
     return response(204);
@@ -559,11 +566,53 @@ export async function recoverPullRequestBodyWriteIntents(env: Env, now = new Dat
   return recovered;
 }
 
+async function coordinatedValidation(env: Env, repositoryId: number, payload: Record<string, unknown>): Promise<{changed:boolean}> {
+  if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0) throw new Error('CONTRACT_REPOSITORY');
+  const namespace = env.VALIDATION_COORDINATOR!;
+  const result = await namespace.get(namespace.idFromName(String(repositoryId))).fetch('https://validation.internal/', {
+    method:'POST', body:JSON.stringify(payload), headers:{'content-type':'application/json'},
+  });
+  if (!result.ok) throw new Error('CONTRACT_COORDINATOR_FAILED');
+  return result.json();
+}
+
+// Queue all check writers by repository; reread authority and approval after
+// entering the queue, and retain ownership through the awaited GitHub write.
+export class ValidationCoordinator {
+  private readonly queue = new SerialTaskQueue();
+  private readonly env: Env;
+  constructor(_state: DurableObjectState, env: Env) {
+    const {VALIDATION_COORDINATOR: _binding, ...local} = env;
+    this.env = local;
+  }
+  async fetch(request: Request): Promise<Response> {
+    return this.queue.run(async () => {
+      const value = await request.json() as any;
+      if (value.operation === 'refresh') {
+        await refreshWorkflowContractChecks(this.env, value.repositoryId, value.pullNumber);
+        return response(200, {changed:true});
+      }
+      if (value.operation === 'run') return response(200, {changed:await publishValidationState(this.env, value.repository, value.workflowRunId)});
+      if (value.operation === 'pending') {
+        const [owner, repo] = splitRepository(value.repository.full_name);
+        const gh = await validationClient(this.env, value.repository.id);
+        const pull = await gh.getPullRequest(owner, repo, value.pull.number);
+        if (pull.state === 'open') await ensureValidationPending(this.env, value.repository, pull);
+        return response(200, {changed:true});
+      }
+      return response(400);
+    });
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") return response(200, { status: "ok", policySha: env.POLICY_SHA, evaluatorSha: env.WORKFLOW_EVALUATOR_SHA ?? null, version: env.CF_VERSION_METADATA?.id ?? "local", organizationId: Number(env.ORGANIZATION_ID), appId: Number(env.APP_ID), secretsReady: Boolean(env.STEWARD_APP_PRIVATE_KEY && env.STEWARD_WEBHOOK_SECRET) });
-    if (request.method === "POST" && url.pathname === "/github/webhook") return handleWebhook(request, env);
+    if (request.method === "POST" && url.pathname === "/github/webhook") {
+      if (!env.VALIDATION_COORDINATOR) return response(503, {error:"VALIDATION_COORDINATOR_REQUIRED"});
+      return handleWebhook(request, env);
+    }
     const internal = await handleBodyWriteInternalRequest(request, env);
     if (internal) return internal;
     const release = await handleReleaseRequest(request, env);
@@ -577,6 +626,7 @@ export default {
       (async () => {
         // Review webhooks recheck immediately; the full safety sweep runs every 15 minutes.
         if (env.WORKFLOW_EVALUATOR_SHA === undefined || Math.floor(controller.scheduledTime / 60_000) % 15 !== 0) return;
+        if (!env.VALIDATION_COORDINATOR) throw new Error('VALIDATION_COORDINATOR_REQUIRED');
         const snapshot = await authoritySnapshot(env);
         // The trusted catalog remains available even when evaluator contents cannot be read.
         const ids = new Set(Object.entries(repositoryCatalog.repositories).filter(([, config]) => config.managed).map(([id]) => id));
@@ -588,7 +638,7 @@ export default {
           if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
           const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY, installationId: Number(env.INSTALLATION_ID), permissions: { metadata: "read" }, policySha: env.POLICY_SHA });
           const installed = await new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA).listInstallationRepositories();
-          for (const repository of installed.filter(isManaged)) ids.add(String(repository.id));
+          for (const repository of installed.filter(belongsToOrganization)) ids.add(String(repository.id));
         } catch (error) { inventoryError = error; }
 
         const results = await settledPool([...ids], 4, id => refreshWorkflowContractChecks(env, Number(id), undefined, snapshot));

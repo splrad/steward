@@ -73,3 +73,12 @@ Steward 中央验证任务包含 `npm-verify-config`，在候选 checkout 执行
 合同文件读取返回 404 时，必须读取同一精确提交的完整 Git tree，证明声明确实缺失后才继承 baseline；提交或 tree 不可读、tree 被截断、声明实际存在而 Contents 不可读时均阻断。此校验同时覆盖当前与历史 fork 来源。
 
 复核只读取同一 head 最新的 runId，API 返回该运行当前 attempt；旧运行在合同复核之前退出。全量扫描最多并发处理四个仓库，各仓库失败独立记录，其他仓库继续处理；下一次定时扫描重新取得来源清单，重试失败仓库，已写入的 Gate 结果保留。Review 事件仍立即复核，单仓扫描复用一次 authority 快照。
+
+
+## Gate 串行协调
+
+为消除并发评估覆盖问题，运行时使用 `ValidationCoordinator` Durable Object。`VALIDATION_COORDINATOR` 按仓库数字 ID 路由，串行处理 Gate 创建、workflow_run、Review 与定时复核；authority、批准和运行状态在队列内读取，外部写入完成后才处理下一项。不同仓库可并行。生产 webhook 入口与合同定时复核缺少绑定时阻断，不回退到无协调写入。
+
+Wrangler 仅允许该固定绑定与 `validation-coordinator-v1` SQLite 类迁移；原 D1 身份继续逐项校验，其他队列、KV、R2、service binding 仍禁止。首次部署会创建对应 namespace，并可能产生 Cloudflare 请求和运行时长用量；创建和启用须纳入部署批准范围。D1 迁移与 Durable Object 类迁移分别核验。
+
+合同复核范围覆盖已安装的组织仓库，包括私有仓库；缺失 authority 时失败关闭。分类、自动审查等业务自动化仍按 catalog 的 managed 配置启用。

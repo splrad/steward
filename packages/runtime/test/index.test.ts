@@ -46,11 +46,14 @@ function installationScoped(payload: Record<string, unknown>): Record<string, un
 }
 
 describe("中央运行程序", () => {
-  it.each(['opened','synchronize','reopened','edited'])('ignores unmanaged private PR %s before contract refresh',async action=>{
+  it.each(['opened','synchronize','reopened','edited'])('refreshes private PR %s contract without business automation',async action=>{
     const fetchMock=vi.fn();vi.stubGlobal('fetch',fetchMock);
     const repo={...repository(987654321,'splrad/private-other'),private:true};
     const request=signedRequest('pull_request',scoped({action,repository:repo,pull_request:{number:7}}));
-    expect((await handleWebhook(request,{...baseEnv(),WORKFLOW_EVALUATOR_SHA:'b'.repeat(40)})).status).toBe(204);
+    const calls:any[]=[];
+    const namespace={idFromName:(id:string)=>id,get:()=>({fetch:async(_url:string,init:RequestInit)=>{calls.push(JSON.parse(String(init.body)));return new Response('{"changed":true}');}})} as unknown as DurableObjectNamespace;
+    expect((await handleWebhook(request,{...baseEnv(),WORKFLOW_EVALUATOR_SHA:'b'.repeat(40),VALIDATION_COORDINATOR:namespace})).status).toBe(202);
+    expect(calls).toEqual([{operation:'refresh',repositoryId:987654321,pullNumber:7}]);
     expect(fetchMock).not.toHaveBeenCalled();
   });
   it.each([
