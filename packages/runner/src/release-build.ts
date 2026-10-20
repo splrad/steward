@@ -4,6 +4,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { canonicalBuildManifest, planBuild, type BuildManifest, type BuildPlan } from '../../core/src/build-manifest.js';
 import { canonicalReleaseJson, receiptDigest, releaseAssert } from '../../core/src/release-note-receipt.js';
+import { parseVersionFile } from '../../core/src/release-version.js';
 import { collectFileBuildManifest, collectOciBuildManifest, validateBuildInputs, type BuildExecutionContext, type NativeVersionInspector } from './build-manifest.js';
 
 export interface BuildCommand { executable: string; args: string[]; cwd: string; timeoutMs?: number }
@@ -46,7 +47,7 @@ export async function buildReleaseAssets(plan: BuildPlan, context: BuildExecutio
   releaseAssert(await git(['rev-parse', 'HEAD']) === plan.targetSha && await git(['status', '--porcelain', '--untracked-files=all']) === ''
     && await git(['ls-files', '--others', '--ignored', '--exclude-standard']) === '', 'BUILD_SOURCE_DIRTY');
   releaseAssert((await readdir(context.outputDirectory)).length === 0, 'BUILD_OUTPUT_OCCUPIED');
-  if (plan.version !== null) releaseAssert(await readFile(join(context.sourceDirectory, 'VERSION'), 'utf8') === plan.version + '\n', 'BUILD_VERSION');
+  if (plan.version !== null) releaseAssert(parseVersionFile(await readFile(join(context.sourceDirectory, 'VERSION'))).value === plan.version, 'BUILD_VERSION');
   const deadline = performance.now() + plan.timeoutMinutes * 60_000;
   for (const command of releaseBuildCommands(plan, context)) {
     const timeoutMs = Math.ceil(deadline - performance.now());

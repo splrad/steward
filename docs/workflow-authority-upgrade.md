@@ -28,7 +28,9 @@ Steward App 安装为 all repositories，已有 `contents`、`pull_requests`、`
 
 运行时只有显式配置 `WORKFLOW_EVALUATOR_SHA` 后才启用 authority；源码中出现配置文件不代表已经启用。显式启用后，缺失仓库、读取失败或错误来源均阻断。当前 PR 中的 authority 是待人工采用的初始配置：三个仓库、批准者 `44151430`、`fragments: retired`、空共享队列。`retired` 表示新基线要求的目标状态，不能解释为线上已退役。#253 的共享队列仍须精确绑定的原生人工 APPROVED Review。
 
-受保护 base 的合同与可信初始合同不同时，验证最后一次语义变更对应的已合并 PR、合并提交祖先关系、精确 head/base/evaluator/摘要批准及当前权限。仅有预置文件不足以继承；纯格式变更继续向前查找采用依据。查询最多 100 次文件提交，无法证明则阻断。验证器版本切换时须明确采用已有合同，否则旧验证器的批准不能自动跨版本复用。
+受保护 base 的合同与可信初始合同不同时，验证最后一次语义变更对应的已合并 PR、合并提交祖先关系、精确 head/base/evaluator/摘要批准及当前权限。仅有预置文件不足以继承；纯格式变更继续向前查找采用依据。查询最多 100 次文件提交，无法证明则阻断。
+
+验证器升级时，可信 authority 可用 `adoptionPolicies` 保存“已采用合同的规范 SHA-256 摘要 → 采用时的 evaluator SHA”。升级审查须核实原合并 PR、批准及摘要后迁入该记录；不能从候选声明或任意 Review 正文自动信任旧 SHA。历史采用使用登记的原 SHA 复验，仍检查撤批、自批和当前权限。新合同差异始终绑定当前 evaluator，不能使用历史记录取得新授权。记录缺失或不匹配时保持阻断并补齐升级证据；不得让后续每个普通业务 PR 重新批准同一已采用合同。
 
 完成一次启用后，已支持范围内的工作流新增、删除、改名、拆分及声明变更在同一业务 PR 内验证。只有新增验证能力或信任边界变化需要新的正式能力审查。
 
@@ -38,8 +40,8 @@ Steward App 安装为 all repositories，已有 `contents`、`pull_requests`、`
 
 1. 确认升级 PR 的作者、独立批准者及创建方式，冻结最终提交、runner 摘要和双平台验证记录。当前推送条件要求既有 head 的 Copilot 与 Codex 审查均完成并逐项处理；创建新的升级 PR 另需授权。
 2. 人工采用完整组织范围、三个仓库初始 fragments 退役目标、批准者和不可变 evaluator 提交。#253 的共享队列批准文本须在最终 head、base 和 evaluator 确定后由可信端生成，再由独立真人提交原生 APPROVED Review。
-3. 配置部署环境的独立审批、防自批和管理员绕过限制，并核验默认分支来源；App 的 `pull_request_review` 订阅已回读确认，启用时验证事件投递。权限现状已满足本实现读取要求。
-4. 正常审查、合入并部署最小正式版本，设置已采用的 evaluator SHA，回读实际 POLICY_SHA、evaluatorSha、部署来源及健康。先盘点在途任务与存量数据库；本升级不新增 D1 migration，但原部署仍会列出和应用既有迁移，须核对待应用清单。
+3. 为 steward 的 `steward-deployment` 环境配置指定的独立真人 reviewer、启用防自批、禁止管理员绕过，并保留默认分支来源限制。需确定实际发起者与部署批准者；当前只有一名 Maintainer，不能假设该人可批准本人发起的部署。App 的 `pull_request_review` 订阅已回读确认，启用时验证事件投递。权限现状已满足本实现读取要求。
+4. 在部署环境设置 `WORKFLOW_EVALUATOR_SHA` 为人工采用的完整 40 位提交 SHA，再正常审查、合入并部署最小正式版本；回读实际 POLICY_SHA、evaluatorSha、部署来源及健康。变量值须在合入触发自动部署之前准备好。先盘点在途任务与存量数据库；本升级不新增 D1 migration，但原部署仍会列出和应用既有迁移，须核对待应用清单。
 5. 保持规则集 active、原人工审批和现有检查，将 required workflow 固定到已采用不可变来源，并加入 App `4243096` 的 `PR Validation Gate`。交接期间保持合并阻断；规则与运行时版本必须相互匹配。
 6. 对全部覆盖仓库取得真实运行证据：合法普通变更、无批准合同、旧 head 批准、撤批、权限丢失、错误 evaluator 和伪造检查；最后复核 #253 的 CI、双审查及原评论。失败保存实际到达阶段，恢复动作须另有相应授权并验证版本与数据库兼容性。
 
@@ -49,11 +51,11 @@ Steward App 安装为 all repositories，已有 `contents`、`pull_requests`、`
 
 | 工作包 | Windows | Linux |
 | --- | --- | --- |
-| #253 本地修复 | 1528 passed / 5 skipped，72 files | 1524 passed / 9 skipped，72 files |
-| 最小正式升级 | 1737 passed / 4 skipped，46 files | 1740 passed / 1 skipped，46 files |
+| #253 本地修复 | 1533 passed / 5 skipped，72 files | 1529 passed / 9 skipped，72 files |
+| 最小正式升级 | 1740 passed / 4 skipped，46 files | 1743 passed / 1 skipped，46 files |
 
 平台条件用例按各自平台跳过，不能计作双平台都运行。新增负例覆盖未批准的 base 预置、自批、撤批、权限丢失、非祖先采用和未显式启用。
 
-#253 远端 head 仍为 `535c37f78fe904a787e162dd1a320ca4cef68eee`。Codex code/security 已完成；Copilot Review `5588828163` 及 run `39463600425` / job `118769051564` 均完成，满足本轮推送前的双审查条件。VERSION 评论已在统一解析器及运行时消费者中修复，推送后按实际提交回复并解决；authority 评论须在正式采用与启用后才有完整闭环证据。
+本轮审查对象为 `9a031545947f8491d04be4c8fc426a64b1e76bce`，Copilot 与 Codex code/security 均已完成。新增 P1 与 Copilot 正文中的三类意见已逐项检查，处理记录见 [审查正文与线程核对](pr253-review-followup.md)。实际推送和评论闭环以 GitHub 回读为准。
 
-该 head 的 required-workflow run `39459321171` 仍被当前 main 验证器的共享队列限制阻断。双平台本地通过不能改写这一线上结论。
+该 head 的 required-workflow run `39465015749` 仍被当前 main 验证器的共享队列限制阻断。双平台本地通过不能改写这一线上结论。

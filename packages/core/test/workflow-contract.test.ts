@@ -44,4 +44,11 @@ describe('workflow contract authority',()=>{
   expect(()=>selectContractAuthority({version:1,repositories:{99:{baseline:contract(),approverIds:[2],bypass:true}}},99)).toThrow();
   expect(selectContractAuthority({version:1,repositories:{99:{baseline:contract(),approverIds:[2]}}},99)?.approverIds).toEqual([2]);
  });
+ it('bounds trusted historical adoption records and preserves the original policy',()=>{
+  const entry={baseline:contract(),approverIds:[2],adoptionPolicies:{['a'.repeat(64)]:'b'.repeat(40)}};
+  expect(selectContractAuthority({version:1,repositories:{99:entry}},99)?.adoptionPolicies).toEqual(entry.adoptionPolicies);
+  for(const adoptionPolicies of [{bad:'b'.repeat(40)},{['a'.repeat(64)]:'main'},[],null]){
+   expect(()=>selectContractAuthority({version:1,repositories:{99:{...entry,adoptionPolicies}}},99)).toThrow('CONTRACT_AUTHORITY');
+  }
+ });
 });

@@ -139,6 +139,7 @@ export function preflightGenerationSource(sourceDigest: string, policySha: strin
 
 /** Readiness is defined by persisted results, never by a prior runner's exit code. */
 export function readyGenerationNodes(graph: GenerationGraph, completed: ReadonlySet<string>): GenerationNode[] {
-  releaseAssert([...completed].every(id => graph.nodes.some(node => node.id === id)), 'GENERATION_NODE');
+  const ids = new Set(graph.nodes.map(node => node.id));
+  releaseAssert([...completed].every(id => ids.has(id)), 'GENERATION_NODE');
   return graph.nodes.filter(node => !completed.has(node.id) && node.children.every(id => completed.has(id)));
 }

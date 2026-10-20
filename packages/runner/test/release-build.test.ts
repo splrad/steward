@@ -36,6 +36,17 @@ it('refuses dirty sources before executing product code', async () => {
   await expect(buildReleaseAssets(plan, { sourceDirectory: source, outputDirectory: output, buildRunId: '1' }, async () => { called = true; })).rejects.toThrow('BUILD_SOURCE_DIRTY');
   expect(called).toBe(false);
 });
+it('builds a committed VERSION containing permitted comments and blank lines', async () => {
+  await writeFile(join(source, 'VERSION'), '# Public version\n\n1.2.3\n\n');
+  await git('add', 'VERSION'); await git('commit', '-m', 'version format');
+  plan={...plan,targetSha:await git('rev-parse','HEAD')};
+  // Recompute the plan identity from the new immutable source.
+  plan=await planBuild(plan,{profile:plan.profile,inputs:plan.inputs,outputs:plan.outputs});
+  const manifest=await buildReleaseAssets(plan,{sourceDirectory:source,outputDirectory:output,buildRunId:'1'},async()=>{
+    await writeFile(join(output,'package.json'),JSON.stringify({version:'1.2.3'}));
+  },async bytes=>JSON.parse(Buffer.from(bytes).toString()).version);
+  expect(manifest.version).toBe('1.2.3');
+});
 it.each(['tracked', 'untracked', 'commit'])('rejects %s source changes made by the build before collecting assets', async kind => {
   let inspected = false;
   await expect(buildReleaseAssets(plan, { sourceDirectory: source, outputDirectory: output, buildRunId: '1' }, async () => {

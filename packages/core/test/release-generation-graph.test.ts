@@ -4,6 +4,16 @@ import { createHash } from 'node:crypto';
 import { receiptDigest } from '../src/release-note-receipt.js';
 
 const plan = (inputs: string[]) => planGenerationGraph('a'.repeat(64), 'b'.repeat(40), limits.sourceBytes, inputs);
+it('checks maximum-size graph readiness in linear node visits and still rejects unknown results',()=>{
+  const graph=plan(Array(limits.leaves).fill('x'));
+  const completed=new Set(graph.nodes.map(node=>node.id));
+  let visits=0;
+  graph.nodes=graph.nodes.map(node=>new Proxy(node,{get(target,key,receiver){if(key==='id')visits++;return Reflect.get(target,key,receiver);}}));
+  expect(readyGenerationNodes(graph,completed)).toEqual([]);
+  expect(visits).toBeLessThanOrEqual(graph.nodes.length*3);
+  completed.add('unknown');
+  expect(()=>readyGenerationNodes(graph,completed)).toThrow('GENERATION_NODE');
+});
 it('retains a source at the 32 MiB boundary with a compact reference graph', () => {
   const graph = plan(Array.from({ length: 512 }, () => 'x'.repeat(64 * 1024)));
   expect(graph.nodes.filter(n => n.kind === 'source')).toHaveLength(512);

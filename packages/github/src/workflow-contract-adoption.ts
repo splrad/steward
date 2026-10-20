@@ -7,7 +7,7 @@ const digest = (value: WorkflowContract) => createHash('sha256').update(canonica
 /** Prove the last semantic base-contract change, rather than trusting a preseeded file. */
 export async function verifyBaseContractAdoption(
   gh: GitHubClient, owner: string, repo: string, baseSha: string, policySha: string,
-  authority: { repositoryId: number; approverIds: readonly number[] },
+  authority: { repositoryId: number; approverIds: readonly number[]; adoptionPolicies?: Readonly<Record<string,string>> },
   baseline: WorkflowContract, readContract: (ref: string) => Promise<WorkflowContract>,
 ): Promise<void> {
   const commits = await gh.request<any[]>('GET', `/repos/${owner}/${repo}/commits?path=.github%2Fworkflow-contract.json&sha=${baseSha}&per_page=100`);
@@ -37,7 +37,7 @@ export async function verifyBaseContractAdoption(
       try {
         requireContractApproval({
           binding: { repositoryId: authority.repositoryId, pullNumber: pull.number, headSha: pull.head.sha,
-            baseSha: pull.base.sha, policySha, contractDigest: digest(baseline) },
+            baseSha: pull.base.sha, policySha: authority.adoptionPolicies?.[digest(baseline)] ?? policySha, contractDigest: digest(baseline) },
           authorId: pull.user.id, approverIds: authority.approverIds, eligibleUserIds,
           reviews: reviews.map(r => ({ id: r.id, userId: r.user?.id, userType: r.user?.type,
             commitId: r.commit_id, state: r.state, body: r.body ?? '', submittedAt: r.submitted_at ?? '' })),

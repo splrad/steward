@@ -7,6 +7,7 @@ export interface WorkflowContractAuthority {
   repositoryId: number;
   baseline: WorkflowContract;
   approverIds: readonly number[];
+  adoptionPolicies?: Readonly<Record<string,string>>;
 }
 const path = '.github/workflow-contract.json';
 const digest = (value: WorkflowContract) => createHash('sha256').update(canonicalContract(value)).digest('hex');
@@ -19,9 +20,9 @@ export async function evaluateRemoteWorkflowContract(gh: GitHubClient, authority
   const identity = (p: any) => JSON.stringify([p.number,p.state,p.base?.repo?.id,p.base?.ref,p.base?.sha,p.head?.repo?.id,p.head?.sha,p.user?.id]);
   if (pull.number !== pullNumber || pull.state !== 'open' || pull.base?.repo?.id !== repo.id || pull.base.ref !== repo.default_branch)
     throw new Error('CONTRACT_SOURCE: invalid pull');
-  const readContract = async (ref: string): Promise<WorkflowContract> => {
+  const readContract = async (ref: string, sourceOwner = owner, sourceName = name): Promise<WorkflowContract> => {
    try {
-    const file = await gh.getContent(owner, name, path, ref);
+    const file = await gh.getContent(sourceOwner, sourceName, path, ref);
     if (file.type !== 'file' || file.encoding !== 'base64' || typeof file.content !== 'string' || file.size > 65536)
       throw new Error('CONTRACT_FILE: invalid remote file');
     const bytes = Buffer.from(file.content, 'base64');
@@ -38,7 +39,14 @@ export async function evaluateRemoteWorkflowContract(gh: GitHubClient, authority
   const baseline = await readContract(pull.base.sha);
   if (digest(baseline) !== digest(authority.baseline))
     await verifyBaseContractAdoption(gh, owner, name, pull.base.sha, policySha, authority, baseline, readContract);
-  const candidate = await readContract(pull.head.sha);
+  let candidateOwner = owner, candidateName = name;
+  if (!Number.isSafeInteger(pull.head?.repo?.id) || pull.head.repo.id <= 0) throw new Error('CONTRACT_SOURCE: missing head repository');
+  if (pull.head.repo.id !== repo.id) {
+    const headRepo = await gh.getRepositoryById(pull.head.repo.id);
+    if (headRepo.id !== pull.head.repo.id || !/^[^/]+\/[^/]+$/.test(headRepo.full_name)) throw new Error('CONTRACT_SOURCE: invalid head repository');
+    [candidateOwner, candidateName] = headRepo.full_name.split('/') as [string,string];
+  }
+  const candidate = await readContract(pull.head.sha, candidateOwner, candidateName);
   if (candidate.repositoryId !== repo.id || baseline.repositoryId !== repo.id || authority.baseline.repositoryId !== repo.id) throw new Error('CONTRACT_REPOSITORY: mismatch');
   const binding: ContractBinding = {repositoryId: repo.id,pullNumber,headSha: pull.head.sha,baseSha: pull.base.sha,policySha,contractDigest: digest(candidate)};
   const approvalText = contractApprovalText(binding); // Validate identities even without an approval requirement.
