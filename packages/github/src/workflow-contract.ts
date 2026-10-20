@@ -30,6 +30,26 @@ export async function evaluateRemoteWorkflowContract(gh: GitHubClient, authority
     return parseWorkflowContract(JSON.parse(bytes.toString('utf8')));
   } catch (e) {
     if (!(e instanceof GitHubRequestError) || e.status !== 404) throw e;
+    // A contents 404 can hide a permissions failure. Prove absence in the exact
+    // commit's readable, non-truncated trees before inheriting the baseline.
+    const commit = await gh.getCommit(sourceOwner, sourceName, ref);
+    if (commit.sha !== ref || !/^[a-f0-9]{40}$/.test(commit.commit?.tree?.sha ?? ''))
+      throw new Error('CONTRACT_FILE: unreadable source commit');
+    const readTree = async (sha: string) => {
+      const tree = await gh.request<any>('GET', `/repos/${sourceOwner}/${sourceName}/git/trees/${sha}`);
+      if (tree.sha !== sha || tree.truncated !== false || !Array.isArray(tree.tree)
+        || tree.tree.some((entry: any) => typeof entry.path !== 'string' || !entry.path || entry.path.includes('/')))
+        throw new Error('CONTRACT_FILE: incomplete source tree');
+      return tree.tree as { path: string; type: string; sha: string }[];
+    };
+    const root = await readTree(commit.commit.tree.sha);
+    const directory = root.filter(entry => entry.path === '.github');
+    if (directory.length) {
+      if (directory.length !== 1 || directory[0]!.type !== 'tree' || !/^[a-f0-9]{40}$/.test(directory[0]!.sha))
+        throw new Error('CONTRACT_FILE: invalid declaration directory');
+      if ((await readTree(directory[0]!.sha)).some(entry => entry.path === 'workflow-contract.json'))
+        throw new Error('CONTRACT_FILE: declaration exists but contents are unreadable');
+    }
     // Removing a declaration restores only the trusted baseline, never an empty policy.
     return parseWorkflowContract(authority.baseline);
    }

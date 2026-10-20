@@ -12,15 +12,18 @@ describe('runtime contract revalidation',()=>{
   await worker.scheduled({scheduledTime:60_000} as ScheduledController,{WORKFLOW_EVALUATOR_SHA:policy} as Env);
   expect(request).not.toHaveBeenCalled();
  });
- it.each(['APPROVED','DISMISSED','CHANGES_REQUESTED','PINNED','SOURCE_DENIED','WEBHOOK_APPROVED','WEBHOOK_DISMISSED','WEBHOOK_CHANGES_REQUESTED','SCHEDULED','SCHEDULED_SOURCE_DENIED'])('recomputes the same completed run when approval is %s',async state=>{
-  const pinned = true; const reviewState=['PINNED','SCHEDULED'].includes(state)?'APPROVED':state.replace('WEBHOOK_','');
+ it.each(['APPROVED','DISMISSED','CHANGES_REQUESTED','PINNED','SOURCE_DENIED','WEBHOOK_APPROVED','WEBHOOK_DISMISSED','WEBHOOK_CHANGES_REQUESTED','SCHEDULED','SCHEDULED_SOURCE_DENIED','HISTORICAL_RUNS'])('recomputes the same completed run when approval is %s',async state=>{
+  const pinned = true; const reviewState=['PINNED','SCHEDULED','HISTORICAL_RUNS'].includes(state)?'APPROVED':state.replace('WEBHOOK_','');
   const repo={id:repositoryId,full_name:'splrad/steward',default_branch:'main',owner:{id:302208797},private:false};
   const pull={number:7,state:'open',user:{id:1},head:{sha:head,ref:'feature',repo:{id:repositoryId}},base:{sha:base,ref:'main',repo:{id:repositoryId}}};
   const run={id:10,run_attempt:1,workflow_id:20,name:'SPLRAD Steward / PR Validation',path:'.github/workflows/pr-validation.yml',
    repository:repo,head_repository:repo,head_branch:'feature',head_sha:head,pull_requests:[{number:7}],event:'pull_request',status:'completed',conclusion:'success',
    workflow_url:'https://api.github.com/repos/splrad/steward/actions/required_workflows/20',html_url:'https://github.com/splrad/steward/actions/runs/10'};
   const check={id:30,name:'PR Validation Gate',head_sha:head,app:{id:4243096},external_id:`${repositoryId}:7:${head}:10:1`,status:'completed',conclusion:reviewState==='APPROVED'?'failure':'success'};
-  const updates:any[]=[]; let authorityReads=0;
+  const updates:any[]=[]; let authorityReads=0; let runReads=0;
+  const checks=state==='HISTORICAL_RUNS' ? [
+    ...[2,3,9].map((id,index)=>({...check,id:31+index,external_id:`${repositoryId}:7:${head}:${id}:1`})),check,
+  ] : [check];
   vi.stubGlobal('fetch',async(url:string,init:RequestInit)=>{
    const u=new URL(String(url));let value:any;
    if(u.pathname.endsWith('/access_tokens'))value={token:'test'};
@@ -28,9 +31,9 @@ describe('runtime contract revalidation',()=>{
    else if(u.pathname.startsWith('/repositories/'))value={...repo,id:Number(u.pathname.split('/').at(-1)),full_name:u.pathname.endsWith(String(repositoryId))?repo.full_name:u.pathname.endsWith('1187527897')?'splrad/LayerScape':'splrad/.github'};
    else if(u.pathname.endsWith('/pulls/7'))value=pull;
    else if(u.pathname.endsWith('/pulls'))value=u.pathname.includes('/steward/')?[pull]:[];
-   else if(u.pathname.endsWith('/check-runs/30')){updates.push(JSON.parse(String(init.body)));value={};}
-   else if(u.pathname.endsWith('/check-runs'))value={check_runs:[check]};
-   else if(u.pathname.endsWith('/actions/runs/10'))value=run;
+   else if(/\/check-runs\/\d+$/.test(u.pathname)){updates.push(JSON.parse(String(init.body)));value={};}
+   else if(u.pathname.endsWith('/check-runs'))value={check_runs:checks};
+   else if(u.pathname.endsWith('/actions/runs/10')){runReads++;value=run;}
    else if(u.pathname.includes('/attempts/1/jobs'))value={jobs:[{status:'completed',conclusion:'success',steps:[{name:`workflow-contract-policy:${policy}`,status:'completed',conclusion:'success'}]}]};
    else if(u.pathname.endsWith(`/commits/${head}/pulls`))value=[pull];
    else if(u.pathname.endsWith('/contents/config/workflow-contract-authority.json')){
@@ -57,7 +60,9 @@ describe('runtime contract revalidation',()=>{
    expect(response.status).toBe(202);
   } else if(state.startsWith('SCHEDULED'))await worker.scheduled({scheduledTime:0} as ScheduledController,env);
   else await refreshWorkflowContractChecks(env,repositoryId,7);
-  expect(updates).toHaveLength(1);
+  expect(updates).toHaveLength(state==='HISTORICAL_RUNS'?4:1);
+  expect(runReads).toBe(1);
+  expect(authorityReads).toBe(1);
   if(state.startsWith('SCHEDULED'))expect(authorityReads).toBe(1);
   expect(updates[0].conclusion).toBe(reviewState==='APPROVED'?'success':'failure');
  });

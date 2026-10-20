@@ -7,7 +7,7 @@ const baseline:WorkflowContract={version:1,repositoryId:99,fragments:'required',
 const candidate:WorkflowContract={...baseline,fragments:'retired'};
 const head='a'.repeat(40),base='b'.repeat(40),policy='c'.repeat(40);
 const binding={repositoryId:99,pullNumber:7,headSha:head,baseSha:base,policySha:policy,contractDigest:createHash('sha256').update(canonicalContract(candidate)).digest('hex')};
-function setup(options:{state?:string;permission?:string;mutate?:boolean;missing?:boolean;denied?:boolean;body?:string;adopted?:boolean;unreviewedBase?:boolean;priorState?:string;ancestry?:string;priorAuthor?:number;priorPolicy?:string;fork?:boolean;priorBranch?:string;priorFork?:boolean;missingPriorRepo?:boolean;priorLateState?:string;lateState?:string;latePermission?:string}={}){
+function setup(options:{state?:string;permission?:string;mutate?:boolean;missing?:boolean;denied?:boolean;body?:string;adopted?:boolean;unreviewedBase?:boolean;priorState?:string;ancestry?:string;priorAuthor?:number;priorPolicy?:string;fork?:boolean;priorBranch?:string;priorFork?:boolean;missingPriorRepo?:boolean;priorLateState?:string;lateState?:string;latePermission?:string;hiddenFork?:boolean;treeDenied?:boolean;treeTruncated?:boolean;presentTree?:boolean}={}){
  let reads=0, reviewReads=0, priorReviewReads=0, permissionReads=0;
  const transport:typeof fetch=async(input)=>{
   const u=new URL(String(input));
@@ -20,11 +20,17 @@ function setup(options:{state?:string;permission?:string;mutate?:boolean;missing
   else if(u.pathname==='/repositories/100')value={id:100,full_name:'contributor/fork'};
   else if(u.pathname==='/repositories/99')value={id:99,full_name:'test/project',default_branch:'main'};
   else if(u.pathname.endsWith('/pulls/7'))value={number:7,state:'open',user:{id:1},head:{sha:options.mutate&&++reads>1?'e'.repeat(40):head,repo:{id:options.fork?100:99}},base:{sha:base,ref:'main',repo:{id:99}}};
+  else if(/\/commits\/[a-f0-9]{40}$/.test(u.pathname)) {
+   if(options.treeDenied)return new Response('{}',{status:404});
+   value={sha:u.pathname.split('/').at(-1),commit:{tree:{sha:'1'.repeat(40)}}};
+  }
+  else if(u.pathname.includes('/git/trees/'))value={sha:u.pathname.split('/').at(-1),truncated:options.treeTruncated??false,tree:options.presentTree
+   ? (u.pathname.endsWith('1'.repeat(40))?[{path:'.github',type:'tree',sha:'2'.repeat(40)}]:[{path:'workflow-contract.json',type:'blob',sha:'3'.repeat(40)}]) : []};
   else if(u.pathname.includes('/contents/')){
    if(options.fork&&u.searchParams.get('ref')===head)expect(u.pathname).toBe('/repos/contributor/fork/contents/.github/workflow-contract.json');
    if(options.priorFork&&u.searchParams.get('ref')==='d'.repeat(40))expect(u.pathname).toBe('/repos/contributor/fork/contents/.github/workflow-contract.json');
    expect([head,base,'d'.repeat(40),'e'.repeat(40),'f'.repeat(40)]).toContain(u.searchParams.get('ref'));
-   if(options.missing||options.denied)return new Response('{}',{status:options.denied?403:404});
+   if(options.missing||options.denied||(options.hiddenFork&&u.pathname.includes('/contributor/fork/')))return new Response('{}',{status:options.denied?403:404});
    value={type:'file',encoding:'base64',size:100,content:Buffer.from(JSON.stringify((u.searchParams.get('ref')===base&&!options.adopted)||u.searchParams.get('ref')==='e'.repeat(40)?baseline:candidate)).toString('base64')};
   }else if(u.pathname.endsWith('/reviews'))value=[{id:1,user:{id:2,login:'reviewer',type:'User'},state:++reviewReads>1?(options.lateState??options.state??'APPROVED'):(options.state??'APPROVED'),commit_id:head,body:options.body??contractApprovalText(binding),submitted_at:'2026-10-20T00:00:00Z'}];
   else if(u.pathname.endsWith('/permission'))value={permission:++permissionReads>1?(options.latePermission??options.permission??'write'):(options.permission??'write'),user:{id:2}};
@@ -85,6 +91,12 @@ describe('remote workflow contract evidence',()=>{
  });
  it('missing declaration preserves trusted requirements',async()=>{
   expect((await evaluateRemoteWorkflowContract(setup({missing:true}),authority,7,policy)).contract).toEqual(baseline);
+ });
+ it.each([{treeDenied:true},{treeTruncated:true},{presentTree:true}])('rejects ambiguous fork contents 404 %j',async option=>{
+  await expect(evaluateRemoteWorkflowContract(setup({fork:true,hiddenFork:true,...option}),authority,7,policy)).rejects.toThrow();
+ });
+ it('accepts a genuinely absent fork declaration only after reading its exact commit tree',async()=>{
+  expect((await evaluateRemoteWorkflowContract(setup({fork:true,hiddenFork:true}),authority,7,policy)).contract).toEqual(baseline);
  });
  it('rereads the pull to reject a concurrent push',async()=>{
   await expect(evaluateRemoteWorkflowContract(setup({mutate:true}),authority,7,policy)).rejects.toThrow('STALE');

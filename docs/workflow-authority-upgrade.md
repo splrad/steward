@@ -75,3 +75,7 @@ GitHub API 的多次读取不是事务快照。此检查证明本次可读取的
 运行时每 15 分钟全量复核，Review 事件继续立即触发；单次扫描复用 authority 读取结果及各仓库 client。authority 读取失败会传入已知仓库的 Gate 重算，使既有成功结论转为失败。安装枚举失败时仍处理已知 catalog，随后报告枚举错误。未设置 evaluator 时不扫描，显式启用后的错误继续阻断。
 
 Steward 中央验证任务包含 `npm-verify-config`，在候选 checkout 执行 `npm run verify:config`，检查该候选的 Schema 和配置间约束。任务类型、Schema、Profile、runner 映射及生成产物同步更新；可信 evaluator 的配置选择仍使用固定来源。
+
+合同文件读取返回 404 时，必须读取同一精确提交的完整 Git tree，证明声明确实缺失后才继承 baseline；提交或 tree 不可读、tree 被截断、声明实际存在而 Contents 不可读时均阻断。此校验同时覆盖当前与历史 fork 来源。
+
+复核只读取同一 head 最新的 runId，API 返回该运行当前 attempt；旧运行在合同复核之前退出。全量扫描最多并发处理四个仓库，各仓库失败独立记录，其他仓库继续处理；下一次定时扫描重新取得来源清单，重试失败仓库，已写入的 Gate 结果保留。Review 事件仍立即复核，单仓扫描复用一次 authority 快照。
