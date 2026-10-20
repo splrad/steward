@@ -432,3 +432,17 @@ it.each([408,429,500,502])('retains an uncertain migration dispatch reservation:
  mock.central.paginate.mockImplementationOnce(async(_path,select)=>select({total_count:0,workflow_runs:[]}));
  expect((await migrate())!.status).not.toBe(200);expect(mock.dispatch).toHaveBeenCalledTimes(1);
 });
+
+it.each(['dispatch','readback'])('preserves confirmed migration evidence when reservation vanishes during %s',async phase=>{
+ const inputs={repositoryId:'9001',targetTag:'v1.2.3',targetSha:sha('a'),authorIds:'1'};
+ if(phase==='dispatch')mock.dispatch.mockImplementationOnce(async()=>{db.database.exec('DELETE FROM release_migration_dispatches');});
+ else {
+  mock.dispatch.mockRejectedValueOnce(Error('response lost'));
+  await expect(dispatchMigrationBuild(env(),inputs)).rejects.toThrow('response lost');
+  const original=mock.central.paginate.getMockImplementation();
+  mock.central.paginate.mockImplementationOnce(async(...args:any[])=>{const runs=await original(...args);db.database.exec('DELETE FROM release_migration_dispatches');return runs;});
+ }
+ await expect(dispatchMigrationBuild(env(),inputs)).rejects.toThrow('MIGRATION_DISPATCH_STATE_CONFLICT');
+ expect(db.database.prepare('SELECT confirmed FROM release_migration_dispatches').get()!.confirmed).toBe(1);
+ await dispatchMigrationBuild(env(),inputs);expect(mock.dispatch).toHaveBeenCalledTimes(1);
+});

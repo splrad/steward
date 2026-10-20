@@ -41,5 +41,11 @@ export async function dispatchMigrationBuild(env: BodyWriteRuntimeEnv, inputs: R
     // Keep the intent for readback or operator recovery; never blindly resend.
     releaseAssert(matches.length === 1, 'MIGRATION_DISPATCH_UNKNOWN');
   }
-  await db.prepare('UPDATE release_migration_dispatches SET confirmed=1 WHERE dispatch_key=?').bind(key).run();
+  const confirmed = await db.prepare('UPDATE release_migration_dispatches SET confirmed=1 WHERE dispatch_key=?').bind(key).run();
+  if (confirmed.meta.changes !== 1) {
+    // Dispatch acceptance (or matching Actions evidence) is already established.
+    // Restore its tombstone before reporting the conflict so a retry cannot POST again.
+    await db.prepare('INSERT INTO release_migration_dispatches(dispatch_key,confirmed) VALUES(?,1) ON CONFLICT(dispatch_key) DO UPDATE SET confirmed=1').bind(key).run();
+    throw new Error('MIGRATION_DISPATCH_STATE_CONFLICT');
+  }
 }
