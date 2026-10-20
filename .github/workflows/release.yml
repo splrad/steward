@@ -41,7 +41,10 @@ jobs:
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
           TRIGGER_ACTOR_ID: ${{ github.actor_id }}
           TRIGGER_ACTOR_LOGIN: ${{ github.actor }}
-        run: node steward-policy/packages/runner/dist/index.js release-preflight --workspace target --repository-id "${{ inputs.repositoryId }}" --pull-request-number "${{ inputs.pullRequestNumber }}" --target-sha "${{ inputs.targetSha }}" --policy-sha "${{ github.sha }}" --trigger "${{ github.actor_id == '301115370' && 'app' || 'manual' }}" --manifest "${{ runner.temp }}/release-manifest.json"
+          ARG_REPOSITORY_ID: ${{ inputs.repositoryId }}
+          ARG_PULL_REQUEST_NUMBER: ${{ inputs.pullRequestNumber }}
+          ARG_TARGET_SHA: ${{ inputs.targetSha }}
+        run: node steward-policy/packages/runner/dist/index.js release-preflight --workspace target --repository-id "$ARG_REPOSITORY_ID" --pull-request-number "$ARG_PULL_REQUEST_NUMBER" --target-sha "$ARG_TARGET_SHA" --policy-sha "${{ github.sha }}" --trigger "${{ github.actor_id == '301115370' && 'app' || 'manual' }}" --manifest "${{ runner.temp }}/release-manifest.json"
 
   build:
     needs: preflight
@@ -64,7 +67,10 @@ jobs:
         working-directory: target
         run: pwsh -NoProfile -NonInteractive -File ./tools/Publish-ReleaseAssets.ps1
       - name: 生成发布清单
-        run: node steward-policy/packages/runner/dist/index.js release-preflight --workspace target --repository-id "${{ inputs.repositoryId }}" --target-sha "${{ inputs.targetSha }}" --policy-sha "${{ github.sha }}" --manifest "target/artifacts/ReleaseAssets/release-manifest.json"
+        run: node steward-policy/packages/runner/dist/index.js release-preflight --workspace target --repository-id "$env:ARG_REPOSITORY_ID" --target-sha "$env:ARG_TARGET_SHA" --policy-sha "${{ github.sha }}" --manifest "target/artifacts/ReleaseAssets/release-manifest.json"
+        env:
+          ARG_REPOSITORY_ID: ${{ inputs.repositoryId }}
+          ARG_TARGET_SHA: ${{ inputs.targetSha }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with: { name: "layerscape-release-${{ inputs.targetSha }}", path: "target/artifacts/ReleaseAssets", retention-days: 1, if-no-files-found: error, compression-level: 0 }
 
@@ -87,7 +93,11 @@ jobs:
           APP_ID: "4243096"
           INSTALLATION_ID: "145952003"
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
-        run: node packages/runner/dist/index.js release-notes --repository-id "${{ inputs.repositoryId }}" --pull-request-number "${{ inputs.pullRequestNumber }}" --target-sha "${{ inputs.targetSha }}" --policy-sha "${{ github.sha }}" --display-version "${{ needs.preflight.outputs.displayVersion }}" --output release-notes.md
+          ARG_REPOSITORY_ID: ${{ inputs.repositoryId }}
+          ARG_PULL_REQUEST_NUMBER: ${{ inputs.pullRequestNumber }}
+          ARG_TARGET_SHA: ${{ inputs.targetSha }}
+          ARG_DISPLAY_VERSION: ${{ needs.preflight.outputs.displayVersion }}
+        run: node packages/runner/dist/index.js release-notes --repository-id "$ARG_REPOSITORY_ID" --pull-request-number "$ARG_PULL_REQUEST_NUMBER" --target-sha "$ARG_TARGET_SHA" --policy-sha "${{ github.sha }}" --display-version "$ARG_DISPLAY_VERSION" --output release-notes.md
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: "layerscape-notes-${{ inputs.targetSha }}"
