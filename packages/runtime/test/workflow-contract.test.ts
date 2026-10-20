@@ -26,8 +26,8 @@ describe('runtime contract revalidation',()=>{
   await worker.scheduled({scheduledTime:60_000} as ScheduledController,{WORKFLOW_EVALUATOR_SHA:policy} as Env);
   expect(request).not.toHaveBeenCalled();
  });
- it.each(['APPROVED','DISMISSED','CHANGES_REQUESTED','PINNED','SOURCE_DENIED','WEBHOOK_APPROVED','WEBHOOK_DISMISSED','WEBHOOK_CHANGES_REQUESTED','SCHEDULED','SCHEDULED_SOURCE_DENIED','HISTORICAL_RUNS','LATEST_FAILED','PENDING','PENDING_NONE','PENDING_LIMIT','PENDING_PARTIAL'])('recomputes the same completed run when approval is %s',async state=>{
-  const pinned = true; const reviewState=['PINNED','SCHEDULED','HISTORICAL_RUNS','LATEST_FAILED','PENDING','PENDING_NONE','PENDING_LIMIT'].includes(state)?'APPROVED':state.replace('WEBHOOK_','');
+ it.each(['APPROVED','DISMISSED','CHANGES_REQUESTED','PINNED','SOURCE_DENIED','WEBHOOK_APPROVED','WEBHOOK_DISMISSED','WEBHOOK_CHANGES_REQUESTED','SCHEDULED','SCHEDULED_SOURCE_DENIED','HISTORICAL_RUNS','NO_GATE','LATEST_FAILED','PENDING','PENDING_NONE','PENDING_LIMIT','PENDING_PARTIAL'])('recomputes the same completed run when approval is %s',async state=>{
+  const pinned = true; const reviewState=['PINNED','SCHEDULED','HISTORICAL_RUNS','NO_GATE','LATEST_FAILED','PENDING','PENDING_NONE','PENDING_LIMIT'].includes(state)?'APPROVED':state.replace('WEBHOOK_','');
   const repo={id:repositoryId,full_name:'splrad/steward',default_branch:'main',owner:{id:302208797},private:false};
   const pull={number:7,state:'open',user:{id:1},head:{sha:head,ref:'feature',repo:{id:repositoryId}},base:{sha:base,ref:'main',repo:{id:repositoryId}}};
   const run={id:10,run_attempt:1,workflow_id:20,name:'SPLRAD Steward / PR Validation',path:'.github/workflows/pr-validation.yml',
@@ -37,7 +37,7 @@ describe('runtime contract revalidation',()=>{
   const check={id:30,name:'PR Validation Gate',head_sha:head,app:{id:4243096},external_id:`${repositoryId}:7:${head}:10:1`,status:'completed',conclusion:reviewState==='APPROVED'?'failure':'success'};
   if(state.startsWith('PENDING')){check.external_id=`${repositoryId}:7:${head}:pending`;check.status='in_progress';}
   const updates:any[]=[]; let authorityReads=0; let runReads=0; let discoveryReads=0;
-  const checks=state==='HISTORICAL_RUNS' ? [
+  const checks=state==='NO_GATE' ? [] : state==='HISTORICAL_RUNS' ? [
     ...[2,3,9].map((id,index)=>({...check,id:31+index,external_id:`${repositoryId}:7:${head}:${id}:1`})),check,
   ] : [check];
   vi.stubGlobal('fetch',async(url:string,init:RequestInit)=>{
@@ -48,7 +48,7 @@ describe('runtime contract revalidation',()=>{
    else if(u.pathname.endsWith('/pulls/7'))value=pull;
    else if(u.pathname.endsWith('/pulls'))value=u.pathname.includes('/steward/')?[pull]:[];
    else if(/\/check-runs\/\d+$/.test(u.pathname)){updates.push(JSON.parse(String(init.body)));value={};}
-   else if(u.pathname.endsWith('/check-runs'))value={check_runs:checks};
+   else if(u.pathname.endsWith('/check-runs')){if(init.method==='POST'){updates.push(JSON.parse(String(init.body)));value={id:30};}else value={check_runs:checks};}
    else if(u.pathname.endsWith('/actions/runs')){
     discoveryReads++;expect(u.searchParams.get('head_sha')).toBe(head);expect(u.searchParams.get('event')).toBe('pull_request');
     if(state==='PENDING_LIMIT') value={total_count:1000,workflow_runs:[]};
