@@ -21,6 +21,14 @@ function registry(adapters = false): DeliveryRegistry {
 const check = (config: DeliveryConfiguration, available = registry()) => validateDeliveryConfiguration(config, available, identity);
 
 describe('delivery configuration T07', () => {
+  it.each(['dist/widget-{version}.zip','部件.zip','widget file.zip','.hidden','con.zip','widget.'])('rejects non-envelope Release output %s before building',match=>{
+    const config=fixture(1);config.delivery.githubRelease.builds=['files'];config.builds.files!.outputs[0]!.match=match;
+    expect(()=>check(config)).toThrow('RN_CONFIG_RELEASE_ASSET_NAME');
+    config.delivery.githubRelease.builds=[];expect(()=>check(config)).not.toThrow();
+  });
+  it.each(['widget-{version}.zip','widget-*.zip','*.tgz'])('accepts flat ASCII Release output %s',match=>{
+    const config=fixture(1);config.delivery.githubRelease.builds=['files'];config.builds.files!.outputs[0]!.match=match;expect(()=>check(config)).not.toThrow();
+  });
   it('rejects multi-build releases before execution while retaining independent build units',()=>{
     const config=fixture(1);
     config.builds.secondFiles=structuredClone(config.builds.files!);

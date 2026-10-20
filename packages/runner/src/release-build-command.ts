@@ -13,7 +13,7 @@ import { mkdir, mkdtemp, readFile, writeFile, appendFile, copyFile, constants } 
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { GitHubClient, createInstallationToken, dispatchWorkflow } from '../../github/src/index.js';
-import { highestStableRelease } from '../../github/src/release-candidate.js';
+import { highestStableRelease, readReleaseContributors } from '../../github/src/release-candidate.js';
 import { canonicalReleaseJson, positiveId, receiptDigest, releaseAssert, releaseSha, type FrozenRelease } from '../../core/src/release-note-receipt.js';
 import { releaseToolchain, releaseToolchainDigest, type ReleaseBuildState } from '../../core/src/release-build-request.js';
 import { parseVersionFile } from '../../core/src/release-version.js';
@@ -201,8 +201,7 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
       for (const id of authorIds) releaseAssert((await auth.gh.request<any>('GET', `/user/${id}`)).type === 'User', 'AUTHOR_IDENTITY');
       const contributorDeadline = AbortSignal.timeout(90_000);
       const contributorClient = new GitHubClient(auth.token, 'https://api.github.com', (input, init = {}) => auth.transport(input, { ...init, signal: contributorDeadline }), policySha);
-      const people = new Map<number, string>();
-      for (const c of frozenSource.input.commits) { const commit = await contributorClient.getCommit(owner, repo, c.sha); if (commit.author?.type === 'User') people.set(commit.author.id, commit.author.login); }
+      const people = await readReleaseContributors(contributorClient, owner, repo, frozenSource.input.commits);
       const compareUrl = boundary.kind === 'full-tree' ? null : `https://github.com/${repository.full_name}/compare/${boundary.reference}...${tag}`;
       const profileName = (catalog.repositories as Record<string, any>)[String(repositoryId)]?.delivery?.githubRelease?.profile;
       releaseAssert(!profileName || releaseProfiles[profileName], 'PERSONALIZATION_PROFILE');

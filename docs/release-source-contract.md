@@ -115,3 +115,5 @@ GitHub Release 构建请求在计划阶段仅接受根目录文件匹配规则�
 
 新生成的审阅证据使用schemaVersion 2：保存完整提交集合与路径集合的计数及规范摘要，验收端从冻结来源独立重算；避免大路径集合再次撑破512 KiB证据预算。既有schemaVersion 1显式覆盖列表仍可验证。
 尚无收据或历史迁移记录、但已有旧策略 accepted/seeded 初始请求时，受保护 migrate-policy 入口核验当前默认分支、VERSION、目标未占用及配置后派发新策略构建。旧 seed 保留到新 prepare 验证并原子替换，派发失败不会丢失恢复来源；结果未知时先查实际运行再决定重试。返回 migratedRevision=null 与 supersedesRequestKey，不虚构已存在的候选修订。替换沿用每个 tag 三次预算，候选收据先出现则拒绝替换。
+
+GitHub Release 所引用文件构建的 outputs.match 必须使用扁平 ASCII 文件名规则，允许现有 *、? 和 {version}；目录、非 ASCII 字符、保留设备名和尾部句点在配置阶段拒绝。其他交付消费者仍可使用原有目录路径。实际 ZIP 条目继续执行长度、大小写唯一性及文件名校验。
