@@ -2139,7 +2139,7 @@ async function releaseVerify(args: Readonly<Record<string, string>>) {
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const invocation = parseInvocation(argv);
-  if (invocation.command === "verify-workflow-activation") return verifyWorkflowActivation(new GitHubClient(env("WORKFLOW_ACTIVATION_READ_TOKEN")), sha(env("WORKFLOW_EVALUATOR_SHA"), "WORKFLOW_EVALUATOR_SHA_REQUIRED"), await catalog());
+  if (invocation.command === "verify-workflow-activation") return verifyWorkflowActivation(new GitHubClient(env("WORKFLOW_ACTIVATION_READ_TOKEN")), env("WORKFLOW_EVALUATOR_SHA"), await catalog());
   if (invocation.command === "observe-copilot-review") return observeCopilotReviewCommand(invocation.args);
   if (invocation.command === "render-review-instructions") return renderReviewInstructionsCommand(invocation.args);
   if (invocation.command === "request-copilot-review") return requestCopilotReviewCommand(invocation.args);
