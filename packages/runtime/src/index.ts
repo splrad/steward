@@ -272,7 +272,9 @@ export async function refreshWorkflowContractChecks(env: Env, repositoryId: numb
   if (env.WORKFLOW_EVALUATOR_SHA===undefined) return;
   const gh = await validationClient(env, repositoryId);
   const repository = await gh.getRepositoryById(repositoryId);
-  if (!isManaged(repository) || repository.id !== repositoryId) throw new Error("CONTRACT_REPOSITORY: not managed");
+  if (repository.id !== repositoryId || !belongsToOrganization(repository)) throw new Error("CONTRACT_REPOSITORY: identity mismatch");
+  // Authority coverage includes private repositories that catalog defaults leave unmanaged.
+  if (!isManaged(repository)) return;
   const [owner, repo] = splitRepository(repository.full_name);
   const pulls = pullNumber === undefined ? await gh.listOpenPullRequests(owner, repo, repository.default_branch)
     : [await gh.getPullRequest(owner, repo, pullNumber)];
