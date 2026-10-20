@@ -4,6 +4,14 @@ import type { GitHubClient } from './client.js';
 
 const digest = (value: WorkflowContract) => createHash('sha256').update(canonicalContract(value)).digest('hex');
 
+/** Bind the target repository's read-only pull ref to the exact reviewed head. */
+export async function verifyPullHeadReference(gh: GitHubClient, owner: string, repo: string, number: number, head: string): Promise<void> {
+  const ref = await gh.getRef(owner, repo, `pull/${number}/head`);
+  if (!/^[a-f0-9]{40}$/.test(head) || ref.ref !== `refs/pull/${number}/head`
+    || ref.object?.type !== 'commit' || ref.object.sha !== head)
+    throw new Error('CONTRACT_SOURCE_STALE: target pull ref does not match head');
+}
+
 /** Prove the last semantic base-contract change, rather than trusting a preseeded file. */
 export async function verifyBaseContractAdoption(
   gh: GitHubClient, owner: string, repo: string, defaultBranch: string, baseSha: string, policySha: string,
@@ -28,14 +36,9 @@ export async function verifyBaseContractAdoption(
       if (!['ahead', 'identical'].includes(ancestry.status)) continue;
       if (!Number.isSafeInteger(pull.head?.repo?.id) || pull.head.repo.id <= 0)
         throw new Error('CONTRACT_SOURCE: missing historical head repository');
-      let headOwner = owner, headName = repo;
-      if (pull.head.repo.id !== authority.repositoryId) {
-        const headRepo = await gh.getRepositoryById(pull.head.repo.id);
-        if (headRepo.id !== pull.head.repo.id || !/^[^/]+\/[^/]+$/.test(headRepo.full_name))
-          throw new Error('CONTRACT_SOURCE: invalid historical head repository');
-        [headOwner, headName] = headRepo.full_name.split('/') as [string, string];
-      }
-      if (digest(await readContract(pull.head.sha, headOwner, headName)) !== digest(baseline)) continue;
+      if (pull.head.repo.id !== authority.repositoryId)
+        await verifyPullHeadReference(gh, owner, repo, pull.number, pull.head.sha);
+      if (digest(await readContract(pull.head.sha)) !== digest(baseline)) continue;
       const checkApproval = async () => {
         const reviews = await gh.listPullRequestReviews(owner, repo, pull.number);
         const eligibleUserIds: number[] = [];

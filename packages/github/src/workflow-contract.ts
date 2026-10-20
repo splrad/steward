@@ -1,4 +1,4 @@
-import { verifyBaseContractAdoption } from './workflow-contract-adoption.js';
+import { verifyBaseContractAdoption, verifyPullHeadReference } from './workflow-contract-adoption.js';
 import {createHash} from 'node:crypto';
 import {canonicalContract, contractApprovalText, parseWorkflowContract, requireContractApproval, type WorkflowContract, type ContractBinding} from '../../core/src/workflow-contract.js';
 import {GitHubClient, GitHubRequestError} from './client.js';
@@ -59,14 +59,11 @@ export async function evaluateRemoteWorkflowContract(gh: GitHubClient, authority
   const baseline = await readContract(pull.base.sha);
   if (digest(baseline) !== digest(authority.baseline))
     await verifyBaseContractAdoption(gh, owner, name, repo.default_branch, pull.base.sha, policySha, authority, baseline, readContract);
-  let candidateOwner = owner, candidateName = name;
   if (!Number.isSafeInteger(pull.head?.repo?.id) || pull.head.repo.id <= 0) throw new Error('CONTRACT_SOURCE: missing head repository');
-  if (pull.head.repo.id !== repo.id) {
-    const headRepo = await gh.getRepositoryById(pull.head.repo.id);
-    if (headRepo.id !== pull.head.repo.id || !/^[^/]+\/[^/]+$/.test(headRepo.full_name)) throw new Error('CONTRACT_SOURCE: invalid head repository');
-    [candidateOwner, candidateName] = headRepo.full_name.split('/') as [string,string];
-  }
-  const candidate = await readContract(pull.head.sha, candidateOwner, candidateName);
+  if (pull.head.repo.id !== repo.id) await verifyPullHeadReference(gh, owner, name, pullNumber, pull.head.sha);
+  // GitHub retains pull objects in the target repository. Never expand the
+  // target-scoped installation token to read a contributor's private fork.
+  const candidate = await readContract(pull.head.sha);
   if (candidate.repositoryId !== repo.id || baseline.repositoryId !== repo.id || authority.baseline.repositoryId !== repo.id) throw new Error('CONTRACT_REPOSITORY: mismatch');
   const binding: ContractBinding = {repositoryId: repo.id,pullNumber,headSha: pull.head.sha,baseSha: pull.base.sha,policySha,contractDigest: digest(candidate)};
   const approvalText = contractApprovalText(binding); // Validate identities even without an approval requirement.

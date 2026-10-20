@@ -1,7 +1,7 @@
 import {dispatchReleaseContinuation} from './release-continuation.js';
 import { readFile, writeFile, appendFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { createInstallationToken, GitHubClient, dispatchWorkflow } from '../../github/src/index.js';
+import { createInstallationToken, GitHubClient } from '../../github/src/index.js';
 import { releaseAssert, releaseSha, positiveId, newReleaseReceipt, type FrozenRelease, type ReleaseReceipt } from '../../core/src/release-note-receipt.js';
 import { validateReleaseSource, validateReleaseEvidence } from '../../core/src/release-bundle.js';
 import { currentReleaseBuild } from '../../core/src/release-rebuild.js';

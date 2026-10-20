@@ -72,7 +72,7 @@ const allowedArguments: Record<string, Set<string>> = {
   "sync-review-instructions": new Set(["repository-id", "policy-sha"]),
   "sync-managed-labels": new Set(["repository-id", "policy-sha"]),
   validate: new Set(["workspace", "repository-id", "profile"]),
-  "release-candidate": new Set(["operation", "repository-id", "target-tag", "policy-sha", "bundle", "assets", "output", "revision", "request-key"]),
+  "release-candidate": new Set(["operation", "repository-id", "target-tag", "policy-sha", "bundle", "assets", "output", "revision", "request-key", "artifact-id", "run-id"]),
 };
 
 export interface ParsedInvocation { command: string; args: Readonly<Record<string, string>> }

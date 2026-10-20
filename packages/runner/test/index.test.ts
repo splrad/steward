@@ -32,6 +32,9 @@ describe("中央命令入口", () => {
     expect(transport).not.toHaveBeenCalled();
   });
   it("产品构建命令接收工作流中的 build-id", () => {
+    const continuation = parseInvocation(['release-candidate', '--operation', 'generator-continue', '--artifact-id', '123', '--run-id', '456']);
+    expect(continuation.args['artifact-id']).toBe('123');
+    expect(continuation.args['run-id']).toBe('456');
     expect(parseInvocation(["release-build", "--operation", "plan-product", "--build-id", "release"]).args["build-id"]).toBe("release");
   });
   it("只接受现行命令及其已知、唯一、成对参数", () => {

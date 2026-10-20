@@ -7,17 +7,22 @@ const baseline:WorkflowContract={version:1,repositoryId:99,fragments:'required',
 const candidate:WorkflowContract={...baseline,fragments:'retired'};
 const head='a'.repeat(40),base='b'.repeat(40),policy='c'.repeat(40);
 const binding={repositoryId:99,pullNumber:7,headSha:head,baseSha:base,policySha:policy,contractDigest:createHash('sha256').update(canonicalContract(candidate)).digest('hex')};
-function setup(options:{state?:string;permission?:string;mutate?:boolean;missing?:boolean;denied?:boolean;body?:string;adopted?:boolean;unreviewedBase?:boolean;priorState?:string;ancestry?:string;priorAuthor?:number;priorPolicy?:string;fork?:boolean;priorBranch?:string;priorFork?:boolean;missingPriorRepo?:boolean;priorLateState?:string;lateState?:string;latePermission?:string;hiddenFork?:boolean;treeDenied?:boolean;treeTruncated?:boolean;presentTree?:boolean}={}){
+function setup(options:{state?:string;permission?:string;mutate?:boolean;missing?:boolean;denied?:boolean;body?:string;adopted?:boolean;unreviewedBase?:boolean;priorState?:string;ancestry?:string;priorAuthor?:number;priorPolicy?:string;fork?:boolean;priorBranch?:string;priorFork?:boolean;missingPriorRepo?:boolean;priorLateState?:string;lateState?:string;latePermission?:string;hiddenFork?:boolean;staleRef?:boolean;deniedRef?:boolean;treeDenied?:boolean;treeTruncated?:boolean;presentTree?:boolean}={}){
  let reads=0, reviewReads=0, priorReviewReads=0, permissionReads=0;
  const transport:typeof fetch=async(input)=>{
   const u=new URL(String(input));
   let value:any;
-  if(u.pathname==='/repos/test/project/commits')value=[{sha:'f'.repeat(40),parents:[{sha:'e'.repeat(40)}]}];
+  if(u.pathname.includes('/contributor/fork/')||u.pathname==='/repositories/100')throw new Error('cross-repository token access');
+  if(u.pathname.includes('/git/ref/pull/')) {
+   if(options.deniedRef)return new Response('{}',{status:404});
+   const number=u.pathname.includes('/6/')?6:7;
+   value={ref:`refs/pull/${number}/head`,object:{type:'commit',sha:options.staleRef?'9'.repeat(40):number===6?'d'.repeat(40):head}};
+  }
+  else if(u.pathname==='/repos/test/project/commits')value=[{sha:'f'.repeat(40),parents:[{sha:'e'.repeat(40)}]}];
   else if(u.pathname.endsWith('/commits/'+ 'f'.repeat(40)+'/pulls'))value=options.unreviewedBase?[]:[{number:6}];
   else if(u.pathname.endsWith('/pulls/6'))value={number:6,merged:true,user:{id:options.priorAuthor??1},merge_commit_sha:'f'.repeat(40),head:{sha:'d'.repeat(40),repo:options.missingPriorRepo?null:{id:options.priorFork?100:99}},base:{sha:'e'.repeat(40),ref:options.priorBranch??'main',repo:{id:99}}};
   else if(u.pathname.includes('/compare/'))value={status:options.ancestry??'ahead'};
   else if(u.pathname.endsWith('/pulls/6/reviews'))value=[{id:2,user:{id:2,login:'reviewer',type:'User'},state:++priorReviewReads>1?(options.priorLateState??options.priorState??'APPROVED'):(options.priorState??'APPROVED'),commit_id:'d'.repeat(40),body:contractApprovalText({...binding,pullNumber:6,headSha:'d'.repeat(40),baseSha:'e'.repeat(40),policySha:options.priorPolicy??policy}),submitted_at:'2026-10-19T00:00:00Z'}];
-  else if(u.pathname==='/repositories/100')value={id:100,full_name:'contributor/fork'};
   else if(u.pathname==='/repositories/99')value={id:99,full_name:'test/project',default_branch:'main'};
   else if(u.pathname.endsWith('/pulls/7'))value={number:7,state:'open',user:{id:1},head:{sha:options.mutate&&++reads>1?'e'.repeat(40):head,repo:{id:options.fork?100:99}},base:{sha:base,ref:'main',repo:{id:99}}};
   else if(/\/commits\/[a-f0-9]{40}$/.test(u.pathname)) {
@@ -27,10 +32,10 @@ function setup(options:{state?:string;permission?:string;mutate?:boolean;missing
   else if(u.pathname.includes('/git/trees/'))value={sha:u.pathname.split('/').at(-1),truncated:options.treeTruncated??false,tree:options.presentTree
    ? (u.pathname.endsWith('1'.repeat(40))?[{path:'.github',type:'tree',sha:'2'.repeat(40)}]:[{path:'workflow-contract.json',type:'blob',sha:'3'.repeat(40)}]) : []};
   else if(u.pathname.includes('/contents/')){
-   if(options.fork&&u.searchParams.get('ref')===head)expect(u.pathname).toBe('/repos/contributor/fork/contents/.github/workflow-contract.json');
-   if(options.priorFork&&u.searchParams.get('ref')==='d'.repeat(40))expect(u.pathname).toBe('/repos/contributor/fork/contents/.github/workflow-contract.json');
+   if(options.fork&&u.searchParams.get('ref')===head)expect(u.pathname).toBe('/repos/test/project/contents/.github/workflow-contract.json');
+   if(options.priorFork&&u.searchParams.get('ref')==='d'.repeat(40))expect(u.pathname).toBe('/repos/test/project/contents/.github/workflow-contract.json');
    expect([head,base,'d'.repeat(40),'e'.repeat(40),'f'.repeat(40)]).toContain(u.searchParams.get('ref'));
-   if(options.missing||options.denied||(options.hiddenFork&&u.pathname.includes('/contributor/fork/')))return new Response('{}',{status:options.denied?403:404});
+   if(options.missing||options.denied||(options.hiddenFork&&u.searchParams.get('ref')===head))return new Response('{}',{status:options.denied?403:404});
    value={type:'file',encoding:'base64',size:100,content:Buffer.from(JSON.stringify((u.searchParams.get('ref')===base&&!options.adopted)||u.searchParams.get('ref')==='e'.repeat(40)?baseline:candidate)).toString('base64')};
   }else if(u.pathname.endsWith('/reviews'))value=[{id:1,user:{id:2,login:'reviewer',type:'User'},state:++reviewReads>1?(options.lateState??options.state??'APPROVED'):(options.state??'APPROVED'),commit_id:head,body:options.body??contractApprovalText(binding),submitted_at:'2026-10-20T00:00:00Z'}];
   else if(u.pathname.endsWith('/permission'))value={permission:++permissionReads>1?(options.latePermission??options.permission??'write'):(options.permission??'write'),user:{id:2}};
@@ -50,14 +55,18 @@ describe('remote workflow contract evidence',()=>{
  it.each([{lateState:'DISMISSED'},{lateState:'CHANGES_REQUESTED'},{latePermission:'read'}])('rejects approval revoked during evaluation %j',async options=>{
   await expect(evaluateRemoteWorkflowContract(setup(options),authority,7,policy)).rejects.toThrow('APPROVAL_REQUIRED');
  });
- it('reads historical fork adoption from the verified fork repository',async()=>{
+ it('reads historical private fork adoption through the target repository',async()=>{
   expect((await evaluateRemoteWorkflowContract(setup({adopted:true,priorFork:true}),authority,7,policy)).reviewId).toBeNull();
  });
  it('fails closed when historical head repository identity is unavailable',async()=>{
   await expect(evaluateRemoteWorkflowContract(setup({adopted:true,missingPriorRepo:true}),authority,7,policy)).rejects.toThrow('missing historical head repository');
  });
- it('reads a fork declaration from its API-verified repository at exact head',async()=>{
+ it('reads a private fork declaration through a verified target pull ref at exact head',async()=>{
   expect((await evaluateRemoteWorkflowContract(setup({fork:true}),authority,7,policy)).reviewId).toBe(1);
+ });
+ it.each([{staleRef:true},{deniedRef:true}])('rejects an unavailable or stale target pull ref %j',async option=>{
+  await expect(evaluateRemoteWorkflowContract(setup({fork:true,...option}),authority,7,policy)).rejects.toThrow();
+  await expect(evaluateRemoteWorkflowContract(setup({adopted:true,priorFork:true,...option}),authority,7,policy)).rejects.toThrow();
  });
  it('carries only explicitly trusted historical adoption policies across evaluator upgrades',async()=>{
   const priorPolicy='1'.repeat(40);
