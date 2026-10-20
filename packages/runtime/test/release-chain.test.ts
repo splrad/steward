@@ -145,6 +145,12 @@ describe('receipt API and publisher with SQLite persistence', () => {
     const seed = { request: { mode: 'initial', plans: [], frozen: { ...f, evidenceDigest: '0'.repeat(64) } }, status: 'seeded', seedArtifact: { runId: 10, artifactId: 20 }, artifact: null, resultManifests: [] };
     const saveSeed = () => db.database.prepare('INSERT OR REPLACE INTO release_build_requests(request_key,repository_id,target_tag,record_json) VALUES(?,?,?,?)').run('fixture', 9001, f.targetTag, JSON.stringify(seed));
     saveSeed();
+    const claimedBuild = {runId:10,artifactId:20,artifactName:'release-build-result-1',headSha:f.policySha};
+    await expect(receipts.request('prepare',{frozen:{...f,build:claimedBuild},draftNotes:notesFixture})).rejects.toThrow('PREPARE_SEED_BINDING');
+    const failed = {...seed,status:'failed',artifact:claimedBuild};
+    db.database.prepare('UPDATE release_build_requests SET record_json=?').run(JSON.stringify(failed));
+    await expect(receipts.request('prepare',{frozen:{...f,build:claimedBuild},draftNotes:notesFixture})).rejects.toThrow('GENERATION_SEED_NOT_ACCEPTED');
+    saveSeed();
     state.gh.getCommit = async () => ({ sha: id, author: { id: 2, login: 'human', type: 'User' } });
     await expect(receipts.request('prepare', { frozen: f, draftNotes: notesFixture })).rejects.toThrow('CONTRIBUTOR_SOURCE');
     seed.request.frozen.title = 'Changed'; saveSeed();

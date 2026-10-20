@@ -1111,7 +1111,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (invocation.command === "trusted-policy-source") return trustedPolicyCommand();
   if (invocation.command === "release-candidate") return releaseCandidateCommand(invocation.args);
   if (invocation.command === "verify-workflow-activation") {
-    const evaluator = sha(env("WORKFLOW_EVALUATOR_SHA"), "WORKFLOW_EVALUATOR_SHA_REQUIRED");
+    const evaluator = env("WORKFLOW_EVALUATOR_SHA");
     return verifyWorkflowActivation(new GitHubClient(env("WORKFLOW_ACTIVATION_READ_TOKEN")), evaluator, await catalog());
   }
   if (invocation.command === "release-produce") return releaseProduceCommand(invocation.args);

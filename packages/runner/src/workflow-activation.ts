@@ -1,3 +1,4 @@
+import { decodeAuthoritySource } from '../../github/src/workflow-authority-source.js';
 import { selectContractAuthority } from '../../core/src/workflow-contract-authority.js';
 import type { GitHubClient } from '../../github/src/client.js';
 
@@ -8,9 +9,7 @@ export async function verifyWorkflowActivation(
 ): Promise<void> {
   if (!/^[a-f0-9]{40}$/.test(evaluatorSha)) throw new Error('WORKFLOW_EVALUATOR_SHA_REQUIRED');
   const file = await gh.request<any>('GET', `/repos/splrad/steward/contents/config/workflow-contract-authority.json?ref=${evaluatorSha}`);
-  if (file.type !== 'file' || file.encoding !== 'base64' || typeof file.content !== 'string'
-    || file.content.length > 1024 * 1024) throw new Error('CONTRACT_AUTHORITY_SOURCE');
-  const authority = JSON.parse(Buffer.from(file.content, 'base64').toString('utf8'));
+  const authority = decodeAuthoritySource(file);
   const ids = new Set(Object.entries(catalog.repositories).filter(([, c]) => c.managed).map(([id]) => Number(id)));
   // The active organization rule covers repositories outside the explicit catalog too.
   for (let page = 1; ; page++) {

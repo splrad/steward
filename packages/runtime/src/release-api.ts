@@ -145,7 +145,7 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
     }
     if (request.method === 'GET' && !action) return reply(200, await store.get(repositoryId, tag));
     releaseAssert(request.method === 'POST', 'METHOD');
-    const verifyPrepared = async (r: ReleaseReceipt) => {
+    const verifyPrepared = async (r: ReleaseReceipt, verifiedRebuild?: ReleaseReceipt['frozen']) => {
       assertPersonalizationConfiguration(r.frozen, configuration, releaseProfiles);
       canPrepare();
       releaseAssert(r.frozen.repositoryId === repositoryId && r.frozen.fullName === repository.full_name && r.frozen.defaultBranch === repository.default_branch
@@ -178,6 +178,10 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
         releaseAssert(linked.some(c => source.commits.some((s: any) => s.sha === c.sha)), 'LINK_SOURCE');
       }
       releaseAssert(JSON.stringify([...capability.builds].sort()) === JSON.stringify(r.frozen.manifests.map(m => m.buildId).sort()), 'BUILD_SET');
+      const seed = verifiedRebuild ?? await acceptedReleaseSeed(env.ISSUE_SNAPSHOTS!, repositoryId, tag, env.POLICY_SHA);
+      // Both asset and zero-asset candidates require isolated seed acceptance.
+      // Only the generation-stage evidence digest may differ.
+      releaseAssert(canonicalReleaseJson(r.frozen) === canonicalReleaseJson({ ...seed, evidenceDigest: r.frozen.evidenceDigest }), 'PREPARE_SEED_BINDING');
       for (const manifest of r.frozen.manifests) {
         const plan = await planBuild(manifest, configuration.builds[manifest.buildId]);
         releaseAssert(plan.inputsSha256 === manifest.inputsSha256, 'BUILD_INPUTS');
@@ -194,11 +198,6 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
         releaseAssert(run.id === b.runId && run.repository?.id === 1296724484 && run.head_sha === b.headSha && run.event === 'workflow_dispatch'
           && run.status === 'completed' && run.conclusion === 'success' && artifact.id === b.artifactId && artifact.name === b.artifactName
           && artifact.expired === false && artifact.workflow_run?.id === b.runId && artifact.workflow_run.head_sha === b.headSha, 'BUILD_PROVENANCE');
-      }
-      else {
-        const seed = await acceptedReleaseSeed(env.ISSUE_SNAPSHOTS!, repositoryId, tag, env.POLICY_SHA);
-        // Generation produces evidence; every other frozen field remains seed-bound.
-        releaseAssert(canonicalReleaseJson(r.frozen) === canonicalReleaseJson({ ...seed, evidenceDigest: r.frozen.evidenceDigest }), 'PREPARE_SEED_BINDING');
       }
       // Stable numeric IDs and actual commit associations, never names supplied by a model.
       const humans = await readReleaseContributors(gh, owner, repo, source.commits);
@@ -298,7 +297,8 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
       const draftNotes = refreshPersonalizedSections(r.approvedNotes, r.frozen, frozen);
       const next = { ...newReleaseReceipt(frozen, draftNotes, r.revision + 1), rebuildRequestKey: body.key,
         candidateBase: { sha: head.object.sha, tree: base.object.tree.sha } };
-      await verifyPrepared(next);
+      // This frozen value comes from the independently inspected durable rebuild above.
+      await verifyPrepared(next, frozen);
       return reply(200, await store.revise(r, next, body.token, Date.now()));
     }
     if (action === 'revise') {
