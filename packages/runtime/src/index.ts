@@ -284,7 +284,7 @@ export async function refreshWorkflowContractChecks(env: Env, repositoryId: numb
     if (!head || pull.state !== "open" || pull.base?.ref !== repository.default_branch) continue;
     const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, head, "all"), head, Number(env.APP_ID), repositoryId, pull.number);
     let run = checks.reduce<number | null>((latest, check) => check.state.runId !== null && (latest === null || check.state.runId > latest) ? check.state.runId : latest, null);
-    if (run === null && checks.some(check => check.state.pending)) {
+    if (checks.length > 0) {
       let total: number | undefined;
       const candidates = await gh.paginate<any>(`/repos/${owner}/${repo}/actions/runs?event=pull_request&head_sha=${head}&per_page=100`, value => {
         const page = value as any;

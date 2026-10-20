@@ -26,13 +26,14 @@ describe('runtime contract revalidation',()=>{
   await worker.scheduled({scheduledTime:60_000} as ScheduledController,{WORKFLOW_EVALUATOR_SHA:policy} as Env);
   expect(request).not.toHaveBeenCalled();
  });
- it.each(['APPROVED','DISMISSED','CHANGES_REQUESTED','PINNED','SOURCE_DENIED','WEBHOOK_APPROVED','WEBHOOK_DISMISSED','WEBHOOK_CHANGES_REQUESTED','SCHEDULED','SCHEDULED_SOURCE_DENIED','HISTORICAL_RUNS','PENDING','PENDING_NONE','PENDING_LIMIT','PENDING_PARTIAL'])('recomputes the same completed run when approval is %s',async state=>{
-  const pinned = true; const reviewState=['PINNED','SCHEDULED','HISTORICAL_RUNS','PENDING','PENDING_NONE','PENDING_LIMIT'].includes(state)?'APPROVED':state.replace('WEBHOOK_','');
+ it.each(['APPROVED','DISMISSED','CHANGES_REQUESTED','PINNED','SOURCE_DENIED','WEBHOOK_APPROVED','WEBHOOK_DISMISSED','WEBHOOK_CHANGES_REQUESTED','SCHEDULED','SCHEDULED_SOURCE_DENIED','HISTORICAL_RUNS','LATEST_FAILED','PENDING','PENDING_NONE','PENDING_LIMIT','PENDING_PARTIAL'])('recomputes the same completed run when approval is %s',async state=>{
+  const pinned = true; const reviewState=['PINNED','SCHEDULED','HISTORICAL_RUNS','LATEST_FAILED','PENDING','PENDING_NONE','PENDING_LIMIT'].includes(state)?'APPROVED':state.replace('WEBHOOK_','');
   const repo={id:repositoryId,full_name:'splrad/steward',default_branch:'main',owner:{id:302208797},private:false};
   const pull={number:7,state:'open',user:{id:1},head:{sha:head,ref:'feature',repo:{id:repositoryId}},base:{sha:base,ref:'main',repo:{id:repositoryId}}};
   const run={id:10,run_attempt:1,workflow_id:20,name:'SPLRAD Steward / PR Validation',path:'.github/workflows/pr-validation.yml',
    repository:repo,head_repository:repo,head_branch:'feature',head_sha:head,pull_requests:[{number:7}],event:'pull_request',status:'completed',conclusion:'success',
    workflow_url:'https://api.github.com/repos/splrad/steward/actions/required_workflows/20',html_url:'https://github.com/splrad/steward/actions/runs/10'};
+  if(state==='LATEST_FAILED'){run.id=11;run.conclusion='failure';}
   const check={id:30,name:'PR Validation Gate',head_sha:head,app:{id:4243096},external_id:`${repositoryId}:7:${head}:10:1`,status:'completed',conclusion:reviewState==='APPROVED'?'failure':'success'};
   if(state.startsWith('PENDING')){check.external_id=`${repositoryId}:7:${head}:pending`;check.status='in_progress';}
   const updates:any[]=[]; let authorityReads=0; let runReads=0; let discoveryReads=0;
@@ -58,7 +59,7 @@ describe('runtime contract revalidation',()=>{
      return new Response(JSON.stringify({total_count:state==='PENDING_NONE'?5:7,workflow_runs:state==='PENDING_NONE'?decoys.slice(0,5):decoys}),{headers:['PENDING_NONE','PENDING_PARTIAL'].includes(state)?{}:{link:'<https://api.github.com/repos/splrad/steward/actions/runs?event=pull_request&head_sha='+head+'&per_page=100&page=2>; rel="next"'}});
     }else value={total_count:7,workflow_runs:[run]};
    }
-   else if(u.pathname.endsWith('/actions/runs/10')){runReads++;value=run;}
+   else if(u.pathname.endsWith('/actions/runs/'+run.id)){runReads++;value=run;}
    else if(u.pathname.includes('/attempts/1/jobs'))value={jobs:[{status:'completed',conclusion:'success',steps:[{name:`workflow-contract-policy:${policy}`,status:'completed',conclusion:'success'}]}]};
    else if(u.pathname.endsWith(`/commits/${head}/pulls`))value=[pull];
    else if(u.pathname.endsWith('/contents/config/workflow-contract-authority.json')){
@@ -87,11 +88,11 @@ describe('runtime contract revalidation',()=>{
   else if(['PENDING_LIMIT','PENDING_PARTIAL'].includes(state)){await expect(refreshWorkflowContractChecks(env,repositoryId,7)).rejects.toThrow('CONTRACT_RUN_DISCOVERY');expect(updates).toHaveLength(0);return;}
   else await refreshWorkflowContractChecks(env,repositoryId,7);
   if(state==='PENDING_NONE'){expect(updates).toHaveLength(0);expect(runReads).toBe(0);return;}
-  if(state==='PENDING')expect(discoveryReads).toBe(2);
+  expect(discoveryReads).toBe(2);
   expect(updates).toHaveLength(state==='HISTORICAL_RUNS'?4:1);
   expect(runReads).toBe(1);
   expect(authorityReads).toBe(1);
   if(state.startsWith('SCHEDULED'))expect(authorityReads).toBe(1);
-  expect(updates[0].conclusion).toBe(reviewState==='APPROVED'?'success':'failure');
+  expect(updates[0].conclusion).toBe(reviewState==='APPROVED' && state!=='LATEST_FAILED'?'success':'failure');
  });
 });
