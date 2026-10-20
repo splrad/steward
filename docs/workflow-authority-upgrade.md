@@ -82,3 +82,6 @@ Steward 中央验证任务包含 `npm-verify-config`，在候选 checkout 执行
 Wrangler 仅允许该固定绑定与 `validation-coordinator-v1` SQLite 类迁移；原 D1 身份继续逐项校验，其他队列、KV、R2、service binding 仍禁止。首次部署会创建对应 namespace，并可能产生 Cloudflare 请求和运行时长用量；创建和启用须纳入部署批准范围。D1 迁移与 Durable Object 类迁移分别核验。
 
 合同复核范围覆盖已安装的组织仓库，包括私有仓库；缺失 authority 时失败关闭。分类、自动审查等业务自动化仍按 catalog 的 managed 配置启用。
+
+
+部署工作流仅允许默认分支 ref，手工触发也受相同条件约束。此升级版本的正式部署必须先完成 `WORKFLOW_EVALUATOR_SHA` 能力交接：设置审查通过的完整 evaluator SHA，执行部署前 authority/安装范围校验，再申请环境批准。缺少该变量时部署按设计失败关闭；Env 的可选类型用于识别尚未启用的旧运行时，不表示新版部署可跳过交接。

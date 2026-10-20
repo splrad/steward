@@ -163,6 +163,7 @@ for (const required of [".github/workflows/deploy-runtime.yml", "scripts/verify-
   if (!deployRuntime.includes(required)) throw new Error(`部署工作流缺少固定健康复核合同: ${required}`);
 }
 const deployRuntimeDocument = YAML.parse(deployRuntime);
+if (deployRuntimeDocument?.jobs?.deploy?.if !== "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)") throw new Error('部署必须绑定实际默认分支，手工触发不得绕过');
 if (Object.hasOwn(deployRuntimeDocument?.on?.push ?? {}, "branches")) throw new Error("部署工作流仍固定默认分支名称");
 const deploySteps = deployRuntimeDocument?.jobs?.deploy?.steps ?? [];
 const migrationStepIndex = deploySteps.findIndex(step => step?.name === "列出并应用D1迁移");
@@ -259,6 +260,7 @@ if (!hasExactKeys(observeCommand?.env, Object.keys(observeEnvironment)) || Objec
   throw new Error("审查观察参数或命令不符合只读合同");
 
 const releaseSourceWorkflow = YAML.parse(await readFile(".github/workflows/release.yml", "utf8"));
+if (releaseSourceWorkflow.concurrency?.queue !== 'max' || releaseSourceWorkflow.concurrency?.['cancel-in-progress'] !== false) throw new Error('发布生命周期操作必须完整排队，不得替换待运行的生成或恢复操作');
 if (!hasExactKeys(releaseSourceWorkflow.jobs, ["prepare", "inspect", "publish", "generation-ticket", "generate", "generated-candidate", "generation-continue", "revision"]) || !hasExactKeys(releaseSourceWorkflow.on, ["workflow_dispatch"])) throw new Error("发布工作流必须先读取持久候选收据");
 const generationJob = releaseSourceWorkflow.jobs.generate;
 const recoveryJob = releaseSourceWorkflow.jobs.revision;

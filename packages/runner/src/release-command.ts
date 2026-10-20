@@ -35,10 +35,10 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
     const graph = planGenerationGraph(frozen.sourceDigest, frozen.policySha, bytes.byteLength, inputs);
     const graphDigest = generationGraphDigest(graph);
     if (operation === 'generator-continue') {
-      const allowed = await receipts.request<{ continue: boolean; graphDigest: string }>('generation-graph', { action: 'continue', frozen, graphDigest });
-      releaseAssert(allowed.continue && allowed.graphDigest === graphDigest, 'GENERATION_CONTINUATION');
       const artifactId = required('artifact-id'), runId = required('run-id');
       releaseAssert(/^[1-9]\d*$/.test(artifactId) && /^[1-9]\d*$/.test(runId), 'GENERATION_SEED_ARTIFACT');
+      const allowed = await receipts.request<{ continue: boolean; graphDigest: string }>('generation-graph', { action: 'continue', frozen, graphDigest });
+      releaseAssert(allowed.continue && allowed.graphDigest === graphDigest, 'GENERATION_CONTINUATION');
       const centralToken = await createInstallationToken({ appId: environment('APP_ID'), privateKey: environment('STEWARD_APP_PRIVATE_KEY'),
         installationId: Number(environment('INSTALLATION_ID')), repositoryId: 1296724484,
         permissions: { actions: 'write', contents: 'read', metadata: 'read' }, policySha });

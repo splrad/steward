@@ -229,8 +229,8 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
 }
 
 export async function refreshWorkflowContractChecks(env: Env, repositoryId: number, pullNumber?: number, snapshot?: AuthoritySnapshot): Promise<void> {
-  if (env.VALIDATION_COORDINATOR) { await coordinatedValidation(env, repositoryId, {operation:"refresh", repositoryId, pullNumber}); return; }
   if (env.WORKFLOW_EVALUATOR_SHA===undefined) return;
+  if (env.VALIDATION_COORDINATOR) { await coordinatedValidation(env, repositoryId, {operation:"refresh", repositoryId, pullNumber}); return; }
   const gh = await validationClient(env, repositoryId);
   const repository = await gh.getRepositoryById(repositoryId);
   if (repository.id !== repositoryId || !belongsToOrganization(repository)) throw new Error("CONTRACT_REPOSITORY: identity mismatch");

@@ -14,7 +14,7 @@ describe('durable validation coordination',()=>{
  it('routes review and sweep refreshes to the same object without stale snapshots',async()=>{
   const calls:any[]=[];const fetch=vi.fn(async(_url,init)=>{calls.push(JSON.parse(init.body));return new Response('{"changed":true}');});
   const idFromName=vi.fn(value=>value);const get=vi.fn(()=>({fetch}));
-  const env={VALIDATION_COORDINATOR:{idFromName,get}} as unknown as Env;
+  const env={WORKFLOW_EVALUATOR_SHA:'a'.repeat(40),VALIDATION_COORDINATOR:{idFromName,get}} as unknown as Env;
   await refreshWorkflowContractChecks(env,1296724484,7,{error:Error('old')});
   await refreshWorkflowContractChecks(env,1296724484);
   expect(idFromName.mock.calls).toEqual([['1296724484'],['1296724484']]);

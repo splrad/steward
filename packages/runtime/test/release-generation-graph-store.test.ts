@@ -156,3 +156,18 @@ it('rejects unreserved output before storing any new object', async () => {
     expect(count()).toEqual(before);
   } finally { f.db.database.close(); }
 });
+
+it('claims continuation once across concurrent callers and retains it until ticket issuance',async()=>{
+ const f=await fixture();
+ try {
+  f.db.database.prepare('UPDATE release_generation_graphs SET max_runs=3').run();f.advance();
+  const claims=await Promise.allSettled([f.store.continuation(f.id,policySha,f.lease.now()),f.store.continuation(f.id,policySha,f.lease.now())]);
+  expect(claims.filter(result=>result.status==='fulfilled')).toHaveLength(1);
+  const reserved=f.db.database.prepare('SELECT ticket_digest,runs FROM release_generation_graphs').get()!;
+  expect(reserved.ticket_digest).toMatch(/^continuation:/);expect(reserved.runs).toBe(1);
+  await expect(new ReleaseGenerationGraphStore(f.db.binding()).continuation(f.id,policySha,f.lease.now())).rejects.toThrow('GENERATION_CONTINUATION');
+  const token=await f.store.ticket(f.id,policySha,f.lease.now());
+  await expect(f.store.authenticate({...f.lease,token})).resolves.toBeUndefined();
+  f.advance();await expect(f.store.continuation(f.id,policySha,f.lease.now())).resolves.toBeUndefined();
+ } finally {f.db.database.close();}
+});

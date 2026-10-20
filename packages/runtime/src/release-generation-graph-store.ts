@@ -102,9 +102,16 @@ export class ReleaseGenerationGraphStore {
   async continuation(i: GraphIdentity, policySha: string, now: number): Promise<void> {
     const graph = await this.graph(i);
     releaseAssert(graph?.ready === 1 && graph.policy_sha === policySha && graph.runs > 0
-      && graph.runs < graph.max_runs && graph.ticket_until <= now, 'GENERATION_CONTINUATION');
+      && graph.runs < graph.max_runs && graph.ticket_until <= now
+      && !graph.ticket_digest?.startsWith('continuation:'), 'GENERATION_CONTINUATION');
     const root = await this.node(i, graph.root_node);
     releaseAssert(root && !root.output_digest, 'GENERATION_ALREADY_COMPLETE');
+    // Claim once before external dispatch; unknown outcomes retain the marker.
+    // Issuing the next authenticated ticket consumes the continuation marker.
+    const claimed = await this.db.prepare('UPDATE release_generation_graphs SET ticket_digest=?,version=version+1 WHERE repository_id=? AND target_tag=? AND graph_digest=? AND policy_sha=? AND version=? AND ticket_until<=?')
+      .bind(`continuation:${graph.version}`, ...this.values(i), policySha, graph.version, now).run();
+    releaseAssert(claimed.meta.changes === 1, 'GENERATION_CONTINUATION');
+
   }
   private async authorize(lease: GraphLease): Promise<GraphRow> {
     const row = await this.graph(lease);
