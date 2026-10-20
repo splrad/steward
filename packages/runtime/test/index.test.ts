@@ -167,7 +167,7 @@ describe("中央运行程序", () => {
     expect(response.status).toBe(200);
     expect(text).not.toContain(env.STEWARD_WEBHOOK_SECRET);
     expect(text).not.toContain(env.STEWARD_APP_PRIVATE_KEY);
-    expect(JSON.parse(text)).toEqual({ status: "ok", policySha: env.POLICY_SHA, version: env.CF_VERSION_METADATA!.id, organizationId: 302208797, appId: 4243096, secretsReady: true });
+    expect(JSON.parse(text)).toEqual({ status: "ok", policySha: env.POLICY_SHA, evaluatorSha: null, version: env.CF_VERSION_METADATA!.id, organizationId: 302208797, appId: 4243096, secretsReady: true });
     expect((await worker.fetch(new Request("https://example.test/unknown"), env)).status).toBe(404);
   });
 

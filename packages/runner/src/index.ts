@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { verifyWorkflowActivation } from "./workflow-activation.js";
 import { verifyWorkflowPolicy } from "./workflow-policy.js";
 import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, stat, writeFile } from "node:fs/promises";
@@ -41,7 +42,9 @@ commands.add("render-review-instructions");
 // This wrapper keeps their paths opaque to the static asset tracer used by ncc.
 const runtimeReadFile = ((path: Parameters<typeof readFile>[0], options?: Parameters<typeof readFile>[1]) =>
   Reflect.apply(readFile, undefined, options === undefined ? [path] : [path, options])) as typeof readFile;
+commands.add("verify-workflow-activation");
 const allowedArguments: Record<string, Set<string>> = {
+  "verify-workflow-activation": new Set(),
   "observe-copilot-review": new Set(["repository-id", "pull-request-number", "event-head-sha", "policy-sha"]),
   "render-review-instructions": new Set(["profile", "policy-sha"]),
   "review-sync-targets": new Set(["repository-id", "policy-sha"]),
@@ -2136,6 +2139,7 @@ async function releaseVerify(args: Readonly<Record<string, string>>) {
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const invocation = parseInvocation(argv);
+  if (invocation.command === "verify-workflow-activation") return verifyWorkflowActivation(new GitHubClient(env("WORKFLOW_ACTIVATION_READ_TOKEN")), sha(env("WORKFLOW_EVALUATOR_SHA"), "WORKFLOW_EVALUATOR_SHA_REQUIRED"), await catalog());
   if (invocation.command === "observe-copilot-review") return observeCopilotReviewCommand(invocation.args);
   if (invocation.command === "render-review-instructions") return renderReviewInstructionsCommand(invocation.args);
   if (invocation.command === "request-copilot-review") return requestCopilotReviewCommand(invocation.args);
