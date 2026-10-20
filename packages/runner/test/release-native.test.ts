@@ -23,6 +23,11 @@ describe.skipIf(process.platform !== 'win32')('native Windows versions and bound
     await writeFile(join(root, 'NativeFixture.cs'), 'public class NativeFixture {}');
     await promisify(execFile)('dotnet', ['build', join(root, 'NativeFixture.csproj'), '-o', join(root, 'compiled')], { env: isolatedBuildEnvironment(process.env, root), timeout: 60000, windowsHide: true });
     await copyFile(join(root, 'compiled/NativeFixture.dll'), join(root, 'fixture.dll'));
+    for (const revision of [0, 4]) {
+      const output = join(root, `compiled-${revision}`);
+      await promisify(execFile)('dotnet', ['build', join(root, 'NativeFixture.csproj'), `-p:InformationalVersion=1.2.3.${revision}`, '-o', output], { env: isolatedBuildEnvironment(process.env, root), timeout: 60000, windowsHide: true });
+      await copyFile(join(output, 'NativeFixture.dll'), join(root, `fixture-${revision}.dll`));
+    }
     await writeFile(join(root, 'fixture.ps1'), `param($Root)
 $ErrorActionPreference='Stop'
 function Archive($Name,$Entry,$Bytes) {
@@ -43,6 +48,10 @@ Archive 'script.zip' 'run.ps1' ([Text.Encoding]::ASCII.GetBytes('exit 0'))
     expect(await inspect().inspectPath!(join(root, 'fixture.dll'))).toBe('1.2.3');
     expect(await inspect().inspectPath!(join(root, 'plugin.zip'))).toBe('1.2.3');
     expect(await inspect().inspectPath!(join(root, 'fonts.zip'))).toEqual({ resourceOnly: 'font-archive' });
+  }, 30000);
+  it('accepts a zero product revision and rejects a nonzero revision', async () => {
+    expect(await inspect().inspectPath!(join(root, 'fixture-0.dll'))).toBe('1.2.3');
+    await expect(inspect().inspectPath!(join(root, 'fixture-4.dll'))).rejects.toBeInstanceOf(BuildContractError);
   }, 30000);
   it.each(['invalid-font.zip', 'traversal.zip', 'script.zip'])('rejects %s without executing archive contents', async file => {
     await expect(inspect().inspectPath!(join(root, file))).rejects.toBeInstanceOf(BuildContractError);

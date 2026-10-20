@@ -5,7 +5,7 @@ function Read-PeVersion([string]$Path) {
     $v = [Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
     if ($v.FileVersion -notmatch '^([0-9]+)\.([0-9]+)\.([0-9]+)(?:\.0)?$') { throw 'RN_NATIVE_FILE_VERSION' }
     $public = "$($Matches[1]).$($Matches[2]).$($Matches[3])"
-    if ($v.ProductVersion -notmatch '^([0-9]+\.[0-9]+\.[0-9]+)(?:\+[^\s]+)?$' -or $Matches[1] -cne $public) { throw 'RN_NATIVE_PRODUCT_VERSION' }
+    if ($v.ProductVersion -notmatch '^([0-9]+\.[0-9]+\.[0-9]+)(?:\.0)?(?:\+[^\s]+)?$' -or $Matches[1] -cne $public) { throw 'RN_NATIVE_PRODUCT_VERSION' }
     return $public
 }
 try {

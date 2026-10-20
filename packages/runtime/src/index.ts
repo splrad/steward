@@ -237,7 +237,27 @@ export async function refreshWorkflowContractChecks(env: Env, repositoryId: numb
     const head = commitSha(pull.head?.sha);
     if (!head || pull.state !== "open" || pull.base?.ref !== repository.default_branch) continue;
     const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, head, "all"), head, Number(env.APP_ID), repositoryId, pull.number);
-    const run = checks.reduce<number | null>((latest, check) => check.state.runId !== null && (latest === null || check.state.runId > latest) ? check.state.runId : latest, null);
+    let run = checks.reduce<number | null>((latest, check) => check.state.runId !== null && (latest === null || check.state.runId > latest) ? check.state.runId : latest, null);
+    if (run === null && checks.some(check => check.state.pending)) {
+      let total: number | undefined;
+      const candidates = await gh.paginate<any>(`/repos/${owner}/${repo}/actions/runs?event=pull_request&head_sha=${head}&per_page=100`, value => {
+        const page = value as any;
+        if (!Number.isSafeInteger(page.total_count) || page.total_count < 0 || page.total_count >= 1000
+          || (total !== undefined && total !== page.total_count))
+          throw new Error('CONTRACT_RUN_DISCOVERY: incomplete run history');
+        total = page.total_count;
+        return page.workflow_runs;
+      }, { maxPages: 10, maxItems: 999 });
+      if (candidates.length !== total || new Set(candidates.map(candidate => candidate.id)).size !== candidates.length)
+        throw new Error('CONTRACT_RUN_DISCOVERY: incomplete run history');
+      for (const candidate of candidates) {
+        if (trustedValidationRun(candidate, repository) && candidate.head_sha === head
+          && candidate.head_repository?.id === pull.head?.repo?.id && candidate.head_branch === pull.head?.ref
+          && Array.isArray(candidate.pull_requests)
+          && (candidate.pull_requests.length === 0 || candidate.pull_requests.some((linked: any) => linked?.number === pull.number))
+          && (run === null || candidate.id > run)) run = candidate.id;
+      }
+    }
     if (run !== null) {
       sharedAuthority ??= await authoritySnapshot(env);
       await publishValidationState(env, repository, run, { gh, authority: sharedAuthority });
