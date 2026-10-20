@@ -1,3 +1,4 @@
+import { settledPool } from "./settled-pool.js";
 import { evaluatorSha, trustedContractAuthorities } from './workflow-evaluator.js';
 import { isStewardOwnedPullRequest } from "../../core/src/issues.js";
 import {selectContractAuthority} from "../../core/src/workflow-contract-authority.js";
@@ -180,6 +181,8 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
   if (!Number.isSafeInteger(number) || number <= 0) throw new Error("拉取请求编号无效");
   const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, headSha, "all"), headSha, Number(env.APP_ID), Number(repository.id), number);
   let conclusion = validationConclusion(run.conclusion); const completed = run.status === "completed";
+  const comparisons = checks.map(value => compareValidationState(value.state, run.id, run.run_attempt, completed));
+  if (comparisons.includes("newer")) return false;
   let contractDetail = "";
   let authority: ReturnType<typeof selectContractAuthority> = null; let authorityError:unknown;
   try {const snapshot=context?.authority ?? await authoritySnapshot(env); if(snapshot.error)throw snapshot.error; authority=selectContractAuthority(snapshot.value!,Number(repository.id));if(env.WORKFLOW_EVALUATOR_SHA!==undefined && !authority)throw new Error('CONTRACT_AUTHORITY_REQUIRED');}
@@ -201,8 +204,7 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
       contractDetail = `\n合同验证失败：${error instanceof Error ? error.message : "unavailable"}`;
     }
   }
-  const comparisons = checks.map(value => compareValidationState(value.state, run.id, run.run_attempt, completed));
-  if (comparisons.includes("newer")) return false;
+
   const body: Record<string, unknown> = {
     name: VALIDATION_CHECK_NAME,
     head_sha: headSha,
@@ -230,12 +232,16 @@ export async function refreshWorkflowContractChecks(env: Env, repositoryId: numb
   const [owner, repo] = splitRepository(repository.full_name);
   const pulls = pullNumber === undefined ? await gh.listOpenPullRequests(owner, repo, repository.default_branch)
     : [await gh.getPullRequest(owner, repo, pullNumber)];
+  let sharedAuthority = snapshot;
   for (const pull of pulls) {
     const head = commitSha(pull.head?.sha);
     if (!head || pull.state !== "open" || pull.base?.ref !== repository.default_branch) continue;
     const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, head, "all"), head, Number(env.APP_ID), repositoryId, pull.number);
-    const runs = [...new Set(checks.map(c => c.state.runId).filter((id): id is number => id !== null))];
-    for (const run of runs) await publishValidationState(env, repository, run, { gh, authority: snapshot ?? await authoritySnapshot(env) });
+    const run = checks.reduce<number | null>((latest, check) => check.state.runId !== null && (latest === null || check.state.runId > latest) ? check.state.runId : latest, null);
+    if (run !== null) {
+      sharedAuthority ??= await authoritySnapshot(env);
+      await publishValidationState(env, repository, run, { gh, authority: sharedAuthority });
+    }
   }
 }
 
@@ -549,7 +555,7 @@ export default {
           for (const repository of installed.filter(isManaged)) ids.add(String(repository.id));
         } catch (error) { inventoryError = error; }
 
-        const results = await Promise.allSettled([...ids].map(id => refreshWorkflowContractChecks(env, Number(id), undefined, snapshot)));
+        const results = await settledPool([...ids], 4, id => refreshWorkflowContractChecks(env, Number(id), undefined, snapshot));
         const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
         if (failed) throw failed.reason;
         if (inventoryError) throw inventoryError;
