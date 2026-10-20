@@ -7,7 +7,7 @@ type Scope = { app: Pick<GitHubClient, 'request'>; installation: Pick<GitHubClie
 type Catalog = { organization: { id: number; login: string }; repositories: Record<string, { managed?: boolean }> };
 
 export async function verifyWorkflowActivationWithApp(
-  gh: Pick<GitHubClient, 'request'>, evaluatorSha: string, catalog: Catalog,
+  evaluatorSha: string, catalog: Catalog,
   credentials: { appId: string; installationId: number; privateKey: string },
 ): Promise<void> {
   if (!/^[a-f0-9]{40}$/.test(evaluatorSha)) throw new Error('WORKFLOW_EVALUATOR_SHA_REQUIRED');
@@ -18,7 +18,11 @@ export async function verifyWorkflowActivationWithApp(
   // No repository filter: this metadata-only token must cover the entire installation.
   const result = await app.request<{ token: string }>('POST', `/app/installations/${credentials.installationId}/access_tokens`, { permissions: { metadata: 'read' } });
   if (!result.token) throw new Error('CONTRACT_AUTHORITY_SCOPE');
-  await verifyWorkflowActivation(gh, evaluatorSha, catalog, { app, installation: new GitHubClient(result.token), appId, installationId: credentials.installationId });
+  const source = await app.request<{ token: string }>('POST', `/app/installations/${credentials.installationId}/access_tokens`, {
+    repository_ids:[1296724484], permissions:{contents:'read',metadata:'read'},
+  });
+  if (!source.token) throw new Error('CONTRACT_EVALUATOR_CREDENTIALS');
+  await verifyWorkflowActivation(new GitHubClient(source.token), evaluatorSha, catalog, { app, installation: new GitHubClient(result.token), appId, installationId: credentials.installationId });
 }
 
 /** Read-only deployment preflight. No migration or service write may precede it. */

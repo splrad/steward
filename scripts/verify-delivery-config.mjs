@@ -1,3 +1,4 @@
+import { verifyReleaseFormatCapabilities } from '../packages/runner/src/release-format-capabilities.ts';
 import { freezePersonalization } from '../packages/core/src/release-personalization.ts';
 import { releaseProfiles } from '../config/release-profiles.ts';
 import { readFile, readdir } from 'node:fs/promises';
@@ -36,9 +37,11 @@ export async function verifyDeliveryConfig(catalog, ajv) {
   if (Object.keys(releaseProfiles).sort().join() !== Object.keys(registry.releases).sort().join()) throw new Error('RN_CONFIG_RELEASE_REGISTRY');
   for (const configuration of Object.values(catalog.defaults)) {
     validateDeliveryConfiguration(configuration, registry);
+    verifyReleaseFormatCapabilities(configuration);
   }
   for (const [id, configuration] of Object.entries(catalog.repositories)) {
     validateDeliveryConfiguration(configuration, registry, { id: Number(id), fullName: configuration.fullName, managed: configuration.managed });
+    verifyReleaseFormatCapabilities(configuration);
 
   }
 }

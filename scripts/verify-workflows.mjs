@@ -173,7 +173,7 @@ const evaluatorGuardIndex = deploySteps.findIndex(step => step?.name === '核对
 if (deployRuntimeDocument.jobs.deploy.env?.WORKFLOW_EVALUATOR_SHA !== '${{ vars.WORKFLOW_EVALUATOR_SHA }}'
   || evaluatorGuardIndex < 0 || evaluatorGuardIndex >= migrationStepIndex
   || deploySteps[evaluatorGuardIndex].run !== 'node packages/runner/dist/index.js verify-workflow-activation'
-  || deploySteps[evaluatorGuardIndex].env?.WORKFLOW_ACTIVATION_READ_TOKEN !== '${{ github.token }}'
+  || Object.hasOwn(deploySteps[evaluatorGuardIndex].env ?? {}, 'WORKFLOW_ACTIVATION_READ_TOKEN')
   || !deploySteps[deployStepIndex].run?.includes('--var WORKFLOW_EVALUATOR_SHA:')) throw new Error('固定验证器身份必须在数据库变更前检查并独立传入部署');
 const migrationStep = deploySteps[migrationStepIndex];
 if (String(migrationStep?.env?.CLOUDFLARE_API_TOKEN ?? "").replace(/\s+/gu, "") !== "${{secrets.CLOUDFLARE_API_TOKEN}}") throw new Error("D1迁移没有使用固定Cloudflare密钥");

@@ -26,14 +26,8 @@ describe('delivery configuration T07', () => {
     expect(()=>check(config)).toThrow('RN_CONFIG_RELEASE_ASSET_NAME');
     config.delivery.githubRelease.builds=[];expect(()=>check(config)).not.toThrow();
   });
-  it.each(['widget-{version}.zip','widget-*.zip','*.dll','app.exe'])('accepts supported Windows Release output %s',match=>{
-    const config=fixture(1);config.delivery.githubRelease.builds=['files'];config.builds.files!.profile='custom-adapter-v1';config.builds.files!.inputs={entrypoint:'tools/build.ps1',runtime:'pwsh',runnerFamily:'windows'};config.builds.files!.outputs[0]!.match=match;
-    const available=registry();available.builds['custom-adapter-v1']={kind:'file'};expect(()=>check(config,available)).not.toThrow();
-  });
-  it.each(['*.tgz','widget-*.zip','app.dll','*.json','artifact.*'])('rejects Linux Release output without a supported version inspector: %s',match=>{
-    const config=fixture(1);config.delivery.githubRelease.builds=['files'];config.builds.files!.outputs[0]!.match=match;
-    expect(()=>check(config)).toThrow('RN_CONFIG_RELEASE_VERSION_INSPECTOR');
-    config.delivery.githubRelease.builds=[];expect(()=>check(config)).not.toThrow();
+  it.each(['widget-{version}.zip','widget-*.zip','*.tgz'])('accepts pure flat ASCII Release contracts independently of runner capabilities: %s',match=>{
+    const config=fixture(1);config.delivery.githubRelease.builds=['files'];config.builds.files!.outputs[0]!.match=match;expect(()=>check(config)).not.toThrow();
   });
   it('rejects multi-build releases before execution while retaining independent build units',()=>{
     const config=fixture(1);
