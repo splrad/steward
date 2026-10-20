@@ -14,19 +14,19 @@
 
 管理员可见组织清单为上述三个活跃公开仓库。在各自上述不可变提交读取 `.github/workflow-contract.json` 均返回 404，故没有可直接继承的仓库声明采用记录。
 
-当前账号 axiomoth（用户 ID `44151430`）为组织管理员，对三个仓库都有 admin 权限，也是 Maintainers 团队 `18428001` 的唯一成员。#253 作者为 Steward App，故该账号与该 PR 作者独立。若新的升级 PR 由该账号本人创建，当前团队不能提供独立批准；实际提交前须确定合规的作者与批准者安排。不得据此自动扩大权限或把机器人审查当作人工批准。
+当前账号 axiomoth（用户 ID `44151430`）为组织管理员，对三个仓库都有 admin 权限，也是 Maintainers 团队 `18428001` 的唯一成员。#253 作者为 Steward App，故该账号与该 PR 作者独立。最小升级 PR #257 也已由 Steward App 创建并 Ready for review。规则集的 `require_last_push_approval=false`，故 axiomoth 可亲自审阅并批准这两个机器人 PR；尚未提交人工批准。不得据此自动扩大权限或把机器人审查当作人工批准。
 
 Steward App 安装为 all repositories，已有 `contents`、`pull_requests`、`checks`、`actions` 等权限。2026-10-21 回读确认已订阅 `pull_request_review`；正式启用仍须验证投递、撤销重算和定时回读。部署环境 `steward-deployment` 当前只有分支策略，无人工 reviewer，且允许管理员绕过。
 
 ## 最小正式升级
 
-从上述 steward main 准备一个正式运行时能力升级：加入合同解析、独立批准及 base 采用证明、固定 evaluator 的 authority 读取、既有 Gate 重算、审查事件与定时复核、健康身份、迁移前启用预检。现有业务实现、D1 schema、必需验证入口和主线工作流安全内核保持该正式版本的原有合同。
+本 PR #257 从上述 steward main 准备正式运行时能力升级：加入合同解析、独立批准及 base 采用证明、固定 evaluator 的 authority 读取、既有 Gate 重算、审查事件与定时复核、健康身份、迁移前启用预检。现有业务实现、D1 schema、必需验证入口和主线工作流安全内核保持该正式版本的原有合同。
 
-升级工作树的全部工作流已用当前 main 的 `verifyWorkflowPolicy` 检查通过，证明本地具备通过现行安全内核的路径；这不替代未来升级 PR 的原生 CI。部署后保留原有仓库生命周期及议题快照初始化步骤。
+升级工作树的全部工作流已用当前 main 的 `verifyWorkflowPolicy` 检查通过，证明本地具备通过现行安全内核的路径；原生 PR Validation run `39468506553` 的 validate 与 fragments 已成功；该证据对应 `a8410037bcd295605ba4e4ff33b18f556f757045`，后续 head 须重新核验。部署后保留原有仓库生命周期及议题快照初始化步骤。
 
-正式部署的 `POLICY_SHA` 必须指向实际默认分支合入提交。`WORKFLOW_EVALUATOR_SHA` 独立固定已经审查、含完整验证器与 authority 的提交，随后 required workflow 来源也固定到该提交。两个 SHA 各自验证，部署前预检在 D1 迁移之前执行。
+正式部署的 `POLICY_SHA` 必须指向实际默认分支合入提交。`WORKFLOW_EVALUATOR_SHA` 独立固定已经审查、含完整验证器与 authority 的提交，随后 required workflow 来源也固定到该提交。两个 SHA 各自验证，部署前预检在 D1 迁移之前执行。本 PR #257 是运行时升级来源，其本地 authority 为空，现行必需入口保持原样；不能将本 PR head 当成已具备完整能力的 evaluator。完整 evaluator 及 authority 在 PR #253 分支中，须待该精确提交审查完成、人工采用并与 required workflow 来源一起固定；当前可供审查的来源为 ff27576b9a80ac8c54ad2145d3050476f3211985，实际启用值尚未冻结。
 
-运行时只有显式配置 `WORKFLOW_EVALUATOR_SHA` 后才启用 authority；源码中出现配置文件不代表已经启用。显式启用后，缺失仓库、读取失败或错误来源均阻断。当前 PR 中的 authority 是待人工采用的初始配置：三个仓库、批准者 `44151430`、`fragments: retired`、空共享队列。`retired` 表示新基线要求的目标状态，不能解释为线上已退役。#253 的共享队列仍须精确绑定的原生人工 APPROVED Review。
+运行时只有显式配置 `WORKFLOW_EVALUATOR_SHA` 后才启用 authority；源码中出现配置文件不代表已经启用。显式启用后，缺失仓库、读取失败或错误来源均阻断。PR #253 的 evaluator 源中的 authority 是待人工采用的初始配置：三个仓库、批准者 `44151430`、`fragments: retired`、空共享队列。`retired` 表示新基线要求的目标状态，不能解释为线上已退役。#253 的共享队列仍须精确绑定的原生人工 APPROVED Review。
 
 受保护 base 的合同与可信初始合同不同时，验证最后一次语义变更对应的已合并 PR、合并提交祖先关系、精确 head/base/evaluator/摘要批准及当前权限。仅有预置文件不足以继承；纯格式变更继续向前查找采用依据。查询最多 100 次文件提交，无法证明则阻断。
 
@@ -38,7 +38,7 @@ Steward App 安装为 all repositories，已有 `contents`、`pull_requests`、`
 
 以下交接操作集中列明；已完成的事件订阅按实际回读标注，其余线上变更仍待授权：
 
-1. 确认升级 PR 的作者、独立批准者及创建方式，冻结最终提交、runner 摘要和双平台验证记录。当前推送条件要求既有 head 的 Copilot 与 Codex 审查均完成并逐项处理；创建新的升级 PR 另需授权。
+1. #257 已创建并提交审查，作者为 Steward App，axiomoth 满足当前 PR 作者独立条件。最终提交、runner 摘要和双平台验证记录仍须冻结；各 PR 既有 head 的 Copilot 与 Codex 审查均完成且意见核清后才能推送。人工批准由本人操作。
 2. 人工采用完整组织范围、三个仓库初始 fragments 退役目标、批准者和不可变 evaluator 提交。#253 的共享队列批准文本须在最终 head、base 和 evaluator 确定后由可信端生成，再由独立真人提交原生 APPROVED Review。
 3. 为 steward 的 `steward-deployment` 环境配置指定的独立真人 reviewer、启用防自批、禁止管理员绕过，并保留默认分支来源限制。需确定实际发起者与部署批准者；当前只有一名 Maintainer，不能假设该人可批准本人发起的部署。App 的 `pull_request_review` 订阅已回读确认，启用时验证事件投递。权限现状已满足本实现读取要求。
 4. 在部署环境设置 `WORKFLOW_EVALUATOR_SHA` 为人工采用的完整 40 位提交 SHA，再正常审查、合入并部署最小正式版本；回读实际 POLICY_SHA、evaluatorSha、部署来源及健康。变量值须在合入触发自动部署之前准备好。先盘点在途任务与存量数据库；本升级不新增 D1 migration，但原部署仍会列出和应用既有迁移，须核对待应用清单。
@@ -59,3 +59,9 @@ Steward App 安装为 all repositories，已有 `contents`、`pull_requests`、`
 本轮审查对象为 `9a031545947f8491d04be4c8fc426a64b1e76bce`，Copilot 与 Codex code/security 均已完成。新增 P1 与 Copilot 正文中的三类意见已逐项检查，处理记录见 [审查正文与线程核对](pr253-review-followup.md)。实际推送和评论闭环以 GitHub 回读为准。
 
 该 head 的 required-workflow run `39465015749` 仍被当前 main 验证器的共享队列限制阻断。双平台本地通过不能改写这一线上结论。
+
+## 当前审查修正
+
+历史采用 PR 的声明按 API 核实的 head 仓库和精确提交读取；缺少仓库身份时拒绝继续。当前合同批准与历史采用批准在完成检查前重新读取 Review 和协作者权限，检查期间撤批、改为请求修改或权限丢失会阻断。GitHub 多次读取不是事务快照；后续变更仍依赖事件及定时重算。
+
+#253 仍在处理生成图逐页重复扫描 source 的文字审查意见。本升级不包含该发布链路。首次 authority 采用和 required workflow 切换仍待上述线上交接，相关线程保留开放。

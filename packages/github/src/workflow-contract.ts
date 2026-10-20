@@ -51,7 +51,7 @@ export async function evaluateRemoteWorkflowContract(gh: GitHubClient, authority
   const binding: ContractBinding = {repositoryId: repo.id,pullNumber,headSha: pull.head.sha,baseSha: pull.base.sha,policySha,contractDigest: digest(candidate)};
   const approvalText = contractApprovalText(binding); // Validate identities even without an approval requirement.
   let reviewId: number | null = null;
-  if (digest(baseline) !== binding.contractDigest) {
+  const readApproval = async (): Promise<number> => {
     const raw = await gh.listPullRequestReviews(owner, name, pullNumber);
     const reviews = raw.map(r => ({id:r.id,userId:r.user?.id,userType:r.user?.type,commitId:r.commit_id,state:r.state,body:r.body ?? '',submittedAt:r.submitted_at ?? ''}));
     const eligibleUserIds: number[] = [];
@@ -61,12 +61,17 @@ export async function evaluateRemoteWorkflowContract(gh: GitHubClient, authority
       const permission = await gh.getCollaboratorPermission(owner, name, review.user.login);
       if (permission.user?.id === userId && ['admin','write','maintain'].includes(permission.permission)) eligibleUserIds.push(userId);
     }
-    try { reviewId = requireContractApproval({binding,authorId:pull.user.id,approverIds:authority.approverIds,reviews,eligibleUserIds}); }
+    try { return requireContractApproval({binding,authorId:pull.user.id,approverIds:authority.approverIds,reviews,eligibleUserIds}); }
     catch (e) {
       if (e instanceof Error && e.message.startsWith('CONTRACT_APPROVAL_REQUIRED')) throw new Error(`${e.message}\n${approvalText}`);
       throw e;
     }
-  }
+  };
+  const changed = digest(baseline) !== binding.contractDigest;
+  if (changed) reviewId = await readApproval();
   if (identity(pull) !== identity(await readPull())) throw new Error('CONTRACT_SOURCE_STALE: pull changed during evaluation');
+  // Re-read mutable review state and collaborator permissions after the identity
+  // check; an approval dismissed while this evaluation ran must not be reused.
+  if (changed) reviewId = await readApproval();
   return {contract:candidate,binding,reviewId};
 }
