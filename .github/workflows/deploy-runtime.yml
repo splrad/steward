@@ -42,6 +42,9 @@ jobs:
         shell: bash
         env:
           WORKFLOW_ACTIVATION_READ_TOKEN: ${{ github.token }}
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
         run: node packages/runner/dist/index.js verify-workflow-activation
       - name: 列出并应用D1迁移
         shell: bash
