@@ -120,7 +120,10 @@ export class ReleaseGenerationGraphStore {
     releaseAssert(Number.isSafeInteger(version) && version >= 0, 'GENERATION_CONTINUATION');
     const result = await this.db.prepare('UPDATE release_generation_graphs SET ticket_digest=NULL,version=version+1 WHERE repository_id=? AND target_tag=? AND graph_digest=? AND policy_sha=? AND ticket_digest=? AND version=?')
       .bind(...this.values(i), policySha, reservation, version + 1).run();
-    releaseAssert(result.meta.changes === 1, 'GENERATION_CONTINUATION_STALE');
+    if(result.meta.changes !== 1) {
+      const current=await this.graph(i);
+      releaseAssert(current?.policy_sha === policySha && current.ticket_digest === null && current.version === version + 2, 'GENERATION_CONTINUATION_STALE');
+    }
   }
   private async authorize(lease: GraphLease): Promise<GraphRow> {
     const row = await this.graph(lease);

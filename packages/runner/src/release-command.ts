@@ -1,5 +1,5 @@
 import {dispatchReleaseContinuation} from './release-continuation.js';
-import { readFile, writeFile, appendFile } from 'node:fs/promises';
+import { readFile, writeFile, appendFile, unlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createInstallationToken, GitHubClient } from '../../github/src/index.js';
 import { releaseAssert, releaseSha, positiveId, newReleaseReceipt, type FrozenRelease, type ReleaseReceipt } from '../../core/src/release-note-receipt.js';
@@ -13,7 +13,7 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
   const required = (key: string) => { const v = args[key]; releaseAssert(v, 'ARGUMENT_' + key); return v; };
   const environment = (key: string) => { const v = process.env[key]; releaseAssert(v, 'ENV_' + key); return v; };
   const repositoryId = Number(required('repository-id')), policySha = required('policy-sha'), tag = required('target-tag'), operation = required('operation');
-  releaseAssert(positiveId(repositoryId) && releaseSha(policySha) && ['prepare', 'revise', 'inspect', 'plan', 'reconcile', 'pause', 'resume', 'retry-create', 'export', 'rebind-build', 'generator-ticket', 'generator-continue', 'recover-assets', 'revise-rebuild', 'recover-candidate', 'migrate-policy'].includes(operation), 'COMMAND');
+  releaseAssert(positiveId(repositoryId) && releaseSha(policySha) && ['prepare', 'revise', 'inspect', 'plan', 'reconcile', 'pause', 'resume', 'retry-create', 'export', 'rebind-build', 'generator-ticket', 'generator-continue', 'generator-release-continuation', 'recover-assets', 'revise-rebuild', 'recover-candidate', 'migrate-policy'].includes(operation), 'COMMAND');
   const getToken = refreshingReleaseToken(() => createInstallationToken({ appId: environment('APP_ID'), privateKey: environment('STEWARD_APP_PRIVATE_KEY'), installationId: Number(environment('INSTALLATION_ID')), repositoryId,
     permissions: { ...(['recover-candidate', 'prepare', 'revise', 'revise-rebuild', 'inspect', 'plan', 'reconcile'].includes(operation) ? { actions: 'read' as const } : {}), metadata: 'read', contents: ['recover-candidate', 'prepare', 'revise', 'revise-rebuild', 'reconcile'].includes(operation) ? 'write' : 'read', pull_requests: ['recover-candidate', 'prepare', 'revise', 'revise-rebuild'].includes(operation) ? 'write' : 'read', checks: ['inspect', 'plan', 'reconcile'].includes(operation) ? 'write' : 'read' }, policySha }));
   const token = await getToken();
@@ -27,6 +27,15 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
     const result = await receipts.request('migrate-policy', {});
     process.stdout.write(JSON.stringify(result) + '\n'); return;
   }
+  if (operation === 'generator-release-continuation') {
+    const recovery = JSON.parse(await readFile(resolve(required('bundle')), 'utf8'));
+    releaseAssert(recovery.version === 1 && recovery.reason === 'dispatch-not-accepted'
+      && recovery.frozen?.repositoryId === repositoryId && recovery.frozen?.targetTag === tag
+      && recovery.frozen?.policySha === policySha && releaseSha(recovery.graphDigest)
+      && /^continuation:[0-9]+$/.test(recovery.reservation), 'GENERATION_RECOVERY');
+    await receipts.request('generation-graph', {action:'release-continuation',frozen:recovery.frozen,graphDigest:recovery.graphDigest,reservation:recovery.reservation});
+    return;
+  }
   if (operation === 'generator-ticket' || operation === 'generator-continue') {
     const { frozen } = await receipts.request<{ frozen: FrozenRelease }>('generation-graph', { action: 'seed' });
     releaseAssert(frozen.repositoryId === repositoryId && frozen.policySha === policySha && frozen.targetTag === tag, 'BUNDLE_IDENTITY');
@@ -36,7 +45,7 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
     const graph = planGenerationGraph(frozen.sourceDigest, frozen.policySha, bytes.byteLength, inputs);
     const graphDigest = generationGraphDigest(graph);
     if (operation === 'generator-continue') {
-      const artifactId = required('artifact-id'), runId = required('run-id');
+      const artifactId = required('artifact-id'), runId = required('run-id'), recoveryPath = resolve(required('output'));
       releaseAssert(/^[1-9]\d*$/.test(artifactId) && /^[1-9]\d*$/.test(runId), 'GENERATION_SEED_ARTIFACT');
       const allowed = await receipts.request<{ continue: boolean; graphDigest: string; reservation: string }>('generation-graph', { action: 'continue', frozen, graphDigest });
       releaseAssert(allowed.continue && allowed.graphDigest === graphDigest && /^continuation:[0-9]+$/.test(allowed.reservation), 'GENERATION_CONTINUATION');
@@ -46,7 +55,14 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
           permissions: { actions: 'write', contents: 'read', metadata: 'read' }, policySha });
         return new GitHubClient(centralToken, 'https://api.github.com', fetch, policySha);
       },policySha,{ repositoryId:String(repositoryId),targetTag:tag,operation:'generate',bundleArtifactId:artifactId,bundleRunId:runId },
-      ()=>receipts.request('generation-graph',{action:'release-continuation',frozen,graphDigest,reservation:allowed.reservation}));
+      ()=>receipts.request('generation-graph',{action:'release-continuation',frozen,graphDigest,reservation:allowed.reservation}), {
+        persist:async()=>{
+          const recovery={version:1,reason:'dispatch-not-accepted',frozen,graphDigest,reservation:allowed.reservation};
+          process.stderr.write('GENERATION_CONTINUATION_RECOVERY '+JSON.stringify(recovery)+'\n');
+          await writeFile(recoveryPath,JSON.stringify(recovery)+'\n',{flag:'wx',mode:0o600});
+        },
+        clear:()=>unlink(recoveryPath),
+      });
       return;
     }
     let offset = 0;

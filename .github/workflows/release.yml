@@ -322,7 +322,15 @@ jobs:
           POLICY_SHA: ${{ github.workflow_sha }}
           BUNDLE_ARTIFACT_ID: ${{ inputs.bundleArtifactId }}
           BUNDLE_RUN_ID: ${{ inputs.bundleRunId }}
-        run: node packages/runner/dist/index.js release-candidate --operation generator-continue --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --artifact-id "$BUNDLE_ARTIFACT_ID" --run-id "$BUNDLE_RUN_ID"
+        run: node packages/runner/dist/index.js release-candidate --operation generator-continue --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --artifact-id "$BUNDLE_ARTIFACT_ID" --run-id "$BUNDLE_RUN_ID" --output continuation-cleanup.json
+      - name: 保存已拒绝派发的清理凭据
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: continuation-cleanup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: continuation-cleanup.json
+          if-no-files-found: ignore
+          retention-days: 30
   revision:
     if: (inputs.operation == 'revise-rebuild' || inputs.operation == 'recover-candidate' || inputs.operation == 'retry-create' || inputs.operation == 'migrate-policy') && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest

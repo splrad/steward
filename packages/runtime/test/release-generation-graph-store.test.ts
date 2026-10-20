@@ -178,6 +178,7 @@ it('releases only the exact unconsumed continuation and fences old cancellation'
   f.db.database.prepare('UPDATE release_generation_graphs SET max_runs=3').run();f.advance();
   const first=await f.store.continuation(f.id,policySha,f.lease.now());
   await f.store.releaseContinuation(f.id,policySha,first);
+  await expect(f.store.releaseContinuation(f.id,policySha,first)).resolves.toBeUndefined();
   const second=await f.store.continuation(f.id,policySha,f.lease.now());expect(second).not.toBe(first);
   await expect(f.store.releaseContinuation(f.id,policySha,first)).rejects.toThrow('GENERATION_CONTINUATION_STALE');
   await f.store.ticket(f.id,policySha,f.lease.now());

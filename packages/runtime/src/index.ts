@@ -273,10 +273,14 @@ export async function refreshWorkflowContractChecks(env: Env, repositoryId: numb
       if (current.state === 'open' && current.base?.repo?.id === repositoryId
         && current.base?.ref === repository.default_branch && current.head?.sha === head) {
         const bound = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, head, 'all'), head, Number(env.APP_ID), repositoryId, pull.number);
-        for (const {check} of bound) await gh.updateCheckRun(owner, repo, check.id, {
+        const failure = {
           name:VALIDATION_CHECK_NAME,head_sha:head,status:'completed',conclusion:'failure',
           output:{title:'中央验证运行历史不可确认',summary:`PR #${pull.number} / ${head}: CONTRACT_RUN_DISCOVERY`},
+        };
+        if (!bound.length) await gh.createCheckRun(owner, repo, {
+          ...failure, external_id:`${repositoryId}:${pull.number}:${head}:pending`,
         });
+        else for (const {check} of bound) await gh.updateCheckRun(owner, repo, check.id, failure);
       }
       throw error;
     }
