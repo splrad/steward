@@ -137,7 +137,7 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
     const central = await scoped(1296724484, policySha, 'read'), runId = Number(required('run-id'));
     const job = await central.gh.request<any>('GET', `/repos/splrad/steward/actions/runs/${runId}`);
     releaseAssert(job.id === runId && job.repository?.id === 1296724484 && job.head_sha === policySha && job.path === '.github/workflows/release-build.yml' && job.event === 'workflow_dispatch' && job.status === 'completed', 'BUILD_RUN_PROVENANCE');
-    const match = /^build:(\d+):(v\d+\.\d+\.\d+):(?:[a-f0-9]{64})?$/.exec(job.display_title); releaseAssert(match, 'BUILD_RUN_NAME');
+    const match = /^build:(\d+):(v\d+\.\d+\.\d+):([a-f0-9]{64})?:([a-f0-9]{64})?$/.exec(job.display_title); releaseAssert(match && !(match[3] && match[4]), 'BUILD_RUN_NAME');
     const repositoryId = Number(match[1]), tag = match[2]!, auth = await scoped(repositoryId, policySha);
     const receipts = new ReleaseReceiptClient(environment('RUNTIME_URL'), auth.token, repositoryId, tag, auth.transport);
     const state = await receipts.request<ReleaseBuildState | null>('build-request', { action: 'find', runId, attempt: job.run_attempt });
