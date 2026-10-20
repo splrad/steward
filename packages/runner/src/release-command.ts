@@ -4,7 +4,7 @@ import { createInstallationToken, GitHubClient, dispatchWorkflow } from '../../g
 import { releaseAssert, releaseSha, positiveId, newReleaseReceipt, type FrozenRelease, type ReleaseReceipt } from '../../core/src/release-note-receipt.js';
 import { validateReleaseSource, validateReleaseEvidence } from '../../core/src/release-bundle.js';
 import { currentReleaseBuild } from '../../core/src/release-rebuild.js';
-import { generationGraphDigest, generationSourceBatches, planGenerationGraph } from '../../core/src/release-generation-graph.js';
+import { generationGraphDigest, generationGraphLimits, generationSourceBatches, planGenerationGraph } from '../../core/src/release-generation-graph.js';
 import { ReleaseReceiptClient, withReleaseClaim, writeCandidateReviewCheck, recoverReleaseAssets, prepareReleaseCandidate, createReleaseCandidate, publishReleaseCandidate, verifyReleaseDownloads, verifyReleaseAssetFiles, releaseUploader, releasePublishTimeoutMinutes, refreshingReleaseToken } from './release-lifecycle.js';
 
 /** This command never runs code from the candidate or product checkout. */
@@ -31,7 +31,8 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
     releaseAssert(frozen.repositoryId === repositoryId && frozen.policySha === policySha && frozen.targetTag === tag, 'BUNDLE_IDENTITY');
     const bytes = await receipts.getObject(frozen.sourceDigest);
     const source = validateReleaseSource(bytes, frozen);
-    const graph = planGenerationGraph(frozen.sourceDigest, frozen.policySha, bytes.byteLength, generationSourceBatches(source));
+    const inputs = generationSourceBatches(source);
+    const graph = planGenerationGraph(frozen.sourceDigest, frozen.policySha, bytes.byteLength, inputs);
     const graphDigest = generationGraphDigest(graph);
     if (operation === 'generator-continue') {
       const allowed = await receipts.request<{ continue: boolean; graphDigest: string }>('generation-graph', { action: 'continue', frozen, graphDigest });
@@ -49,8 +50,8 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
     }
     let offset = 0;
     while (offset < graph.nodes.length) {
-      const page = await receipts.request<{ nextOffset: number; ready: boolean; graphDigest: string }>('generation-graph', { action: 'prepare', frozen, offset });
-      releaseAssert(page.graphDigest === graphDigest && page.nextOffset === Math.min(offset + 16, graph.nodes.length), 'GENERATION_PREPARE_PROGRESS');
+      const page = await receipts.request<{ nextOffset: number; ready: boolean; graphDigest: string }>('generation-graph', { action: 'prepare', offset, inputs: inputs.slice(offset, offset + generationGraphLimits.prepareNodes) });
+      releaseAssert(page.graphDigest === graphDigest && page.nextOffset === Math.min(offset + generationGraphLimits.prepareNodes, graph.nodes.length), 'GENERATION_PREPARE_PROGRESS');
       offset = page.nextOffset;
       if (offset === graph.nodes.length) releaseAssert(page.ready, 'GENERATION_GRAPH_INCOMPLETE');
     }

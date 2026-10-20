@@ -80,3 +80,10 @@ it('segments large metadata and escaped Unicode text without loss', () => {
   expect(restore('object:0:text')).toBe(text);
   expect(plan(batches).nodes.length).toBeGreaterThan(8);
 });
+
+it('keeps the maximum durable plan below its storage bound and page inputs below the request limit',()=>{
+ const graph=plan(Array(limits.leaves).fill('x'));
+ expect(Buffer.byteLength(JSON.stringify(graph))).toBeLessThan(1024*1024);
+ const inputs=Array(limits.prepareNodes).fill('"'.repeat(limits.inputBytes));
+ expect(Buffer.byteLength(JSON.stringify({action:'prepare',offset:4096,inputs}))).toBeLessThan(512*1024);
+});

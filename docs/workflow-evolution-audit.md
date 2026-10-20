@@ -18,6 +18,7 @@
 | 分类单一现行路径 | `classification.ts` 仍支持 shadow 配置和 wouldPrimary 输出 | 仍须按分类基线核对调用方、状态及持久化消费者，同次退役；不能只删字段 |
 | 发布与 VERSION 新合同 | 现行基线允许规定的注释与空行；旧 generation 入口仍有消费者与测试 | VERSION 已统一本地解析和 runtime 消费者，保留原始 blob 身份并拒绝 BOM/CR/多版本；旧 generation 入口及恢复消费者退役仍未完成 |
 | 退役与共享消费者验收 | 本地代码、线上运行时、跨仓载体处于不同阶段 | 源码删除、实际停写、运行验收分别取证。线上仍需正式交接，不能以本地删除关闭 R20 |
+| 多构建交付 | Release 执行器只消费一个构建计划，配置曾允许引用多个构建 | 本地已在 Schema 和配置验证中提前拒绝单个 GitHub Release 引用多个构建；零资产 Release 和多个独立构建单元保留。基线要求的多构建执行、汇总及故障隔离仍未完成，此保护不构成该能力验收 |
 
 ## CI 和评论状态的判定
 
@@ -30,3 +31,9 @@ Copilot run `39453711323` 已完成。完整 Review、全部线程分页及 Code
 Windows 与 Linux 使用相同最终源码和 runner 产物，分别执行 `npm run verify`，包含测试、类型、配置、dist 重建一致性、工作流合同及 actionlint。推送后的原生 CI 和审查须按新 head 单独读取。首次交接具体顺序见 [工作流合同迁移](workflow-contract-migration.md)。
 
 本轮授权包含修复、双平台验证、签署推送和有证据的原线程回复；合并、部署、线上规则及实际批准者配置未执行。
+
+## 2026-10-21 生成图准备与批准复核
+
+运行时从独立核验的 source 建立不可变图计划，并通过 migration 0018 在现有 D1 中保存仓库、tag、sourceDigest、policySha 到 graphDigest 的可信绑定。完整计划使用现有摘要对象存储，最大 1 MiB；后续 prepare 读取计划而不再扫描完整 source，每次接收至多两个输入，逐个核对摘要后写入节点。continue/ticket 同样复用计划，仍要求当前 accepted seed 与完整节点准备。该迁移属于 #253 发布链路，不属于 #257 最小运行时升级。
+
+历史合同采用还须来自默认分支 PR；fork 声明使用 API 核实的仓库和精确 head。当前和历史批准均再次读取 Review 与权限，覆盖检查期间撤批及失权；事件和定时重算仍负责后续变化。

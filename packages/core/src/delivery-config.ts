@@ -38,6 +38,10 @@ export function validateDeliveryConfiguration(
 ): void {
   const { builds, delivery } = configuration;
   const release = delivery.githubRelease;
+  if (new Set(release.builds).size !== release.builds.length) throw new Error('RN_CONFIG_DUPLICATE_REFERENCE');
+  // The current release executor consumes one file-build plan; reject unsupported
+  // combinations before any candidate or build request is persisted.
+  if (release.builds.length > 1) throw new Error('RN_CONFIG_RELEASE_BUILD_LIMIT');
   if (!release.enabled && (release.state !== 'disabled' || release.profile !== null || release.builds.length)) throw new Error('RN_CONFIG_DISABLED');
   if (release.enabled && (release.state === 'disabled' || !release.profile)) throw new Error('RN_CONFIG_STATE');
   const entries = [...delivery.deployments, ...delivery.packages];

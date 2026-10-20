@@ -1,3 +1,4 @@
+import { ReleaseGenerationGraphStore } from './release-generation-graph-store.js';
 import { parseVersionFile } from '../../core/src/release-version.js';
 import { assertPersonalizationConfiguration } from '../../core/src/release-personalization.js';
 import { releaseProfiles } from '../../../config/release-profiles.js';
@@ -64,7 +65,8 @@ export async function handleReleaseBuildAction(env: BodyWriteRuntimeEnv, gh: Git
     const sourceBytes = await receipts.readObject(repositoryId, f.sourceDigest);
     const source = validateReleaseSource(sourceBytes, f);
     await verifyReleaseCommitRange(gh, owner, repo, source, f.productTargetSha);
-    preflightGenerationSource(f.sourceDigest, f.policySha, sourceBytes.byteLength, source);
+    const graph = preflightGenerationSource(f.sourceDigest, f.policySha, sourceBytes.byteLength, source);
+    await new ReleaseGenerationGraphStore(env.ISSUE_SNAPSHOTS!).saveVerifiedPlan(repositoryId, tag, graph);
     return store.prepare(await makeReleaseBuildRequest(f, configuration, 'initial', null));
   }
   const state = await store.get(body.key, repositoryId, tag);

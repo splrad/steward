@@ -844,7 +844,8 @@
                 "pattern": "^[a-z][a-z0-9-]*$"
               },
               "uniqueItems": true,
-              "minItems": 0
+              "minItems": 0,
+              "maxItems": 1
             }
           },
           "allOf": [

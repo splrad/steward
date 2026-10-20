@@ -6,9 +6,9 @@ const digest = (value: WorkflowContract) => createHash('sha256').update(canonica
 
 /** Prove the last semantic base-contract change, rather than trusting a preseeded file. */
 export async function verifyBaseContractAdoption(
-  gh: GitHubClient, owner: string, repo: string, baseSha: string, policySha: string,
+  gh: GitHubClient, owner: string, repo: string, defaultBranch: string, baseSha: string, policySha: string,
   authority: { repositoryId: number; approverIds: readonly number[]; adoptionPolicies?: Readonly<Record<string,string>> },
-  baseline: WorkflowContract, readContract: (ref: string) => Promise<WorkflowContract>,
+  baseline: WorkflowContract, readContract: (ref: string, sourceOwner?: string, sourceName?: string) => Promise<WorkflowContract>,
 ): Promise<void> {
   const commits = await gh.request<any[]>('GET', `/repos/${owner}/${repo}/commits?path=.github%2Fworkflow-contract.json&sha=${baseSha}&per_page=100`);
   if (!Array.isArray(commits)) throw new Error('CONTRACT_BASE_UNADOPTED');
@@ -22,19 +22,29 @@ export async function verifyBaseContractAdoption(
     const pulls = await gh.listPullsForCommit(owner, repo, commit.sha);
     for (const linked of pulls) {
       const pull = await gh.getPullRequest(owner, repo, linked.number);
-      if (!pull.merged || pull.base?.repo?.id !== authority.repositoryId
+      if (!pull.merged || pull.base?.ref !== defaultBranch || pull.base?.repo?.id !== authority.repositoryId
         || !/^[a-f0-9]{40}$/.test(pull.merge_commit_sha)) continue;
       const ancestry = await gh.request<any>('GET', `/repos/${owner}/${repo}/compare/${pull.merge_commit_sha}...${baseSha}`);
-      if (!['ahead', 'identical'].includes(ancestry.status) || digest(await readContract(pull.head.sha)) !== digest(baseline)) continue;
-      const reviews = await gh.listPullRequestReviews(owner, repo, pull.number);
-      const eligibleUserIds: number[] = [];
-      for (const id of authority.approverIds) {
-        const review = reviews.find(r => r.user?.id === id && r.user.type === 'User');
-        if (!review || id === pull.user.id) continue;
-        const permission = await gh.getCollaboratorPermission(owner, repo, review.user.login);
-        if (permission.user?.id === id && ['write', 'maintain', 'admin'].includes(permission.permission)) eligibleUserIds.push(id);
+      if (!['ahead', 'identical'].includes(ancestry.status)) continue;
+      if (!Number.isSafeInteger(pull.head?.repo?.id) || pull.head.repo.id <= 0)
+        throw new Error('CONTRACT_SOURCE: missing historical head repository');
+      let headOwner = owner, headName = repo;
+      if (pull.head.repo.id !== authority.repositoryId) {
+        const headRepo = await gh.getRepositoryById(pull.head.repo.id);
+        if (headRepo.id !== pull.head.repo.id || !/^[^/]+\/[^/]+$/.test(headRepo.full_name))
+          throw new Error('CONTRACT_SOURCE: invalid historical head repository');
+        [headOwner, headName] = headRepo.full_name.split('/') as [string, string];
       }
-      try {
+      if (digest(await readContract(pull.head.sha, headOwner, headName)) !== digest(baseline)) continue;
+      const checkApproval = async () => {
+        const reviews = await gh.listPullRequestReviews(owner, repo, pull.number);
+        const eligibleUserIds: number[] = [];
+        for (const id of authority.approverIds) {
+          const review = reviews.find(r => r.user?.id === id && r.user.type === 'User');
+          if (!review || id === pull.user.id) continue;
+          const permission = await gh.getCollaboratorPermission(owner, repo, review.user.login);
+          if (permission.user?.id === id && ['write', 'maintain', 'admin'].includes(permission.permission)) eligibleUserIds.push(id);
+        }
         requireContractApproval({
           binding: { repositoryId: authority.repositoryId, pullNumber: pull.number, headSha: pull.head.sha,
             baseSha: pull.base.sha, policySha: authority.adoptionPolicies?.[digest(baseline)] ?? policySha, contractDigest: digest(baseline) },
@@ -42,6 +52,10 @@ export async function verifyBaseContractAdoption(
           reviews: reviews.map(r => ({ id: r.id, userId: r.user?.id, userType: r.user?.type,
             commitId: r.commit_id, state: r.state, body: r.body ?? '', submittedAt: r.submitted_at ?? '' })),
         });
+      };
+      try {
+        await checkApproval();
+        await checkApproval();
         return;
       } catch (error) {
         if (!(error instanceof Error) || !error.message.startsWith('CONTRACT_APPROVAL_REQUIRED')) throw error;

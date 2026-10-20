@@ -2,6 +2,7 @@ import { canonicalReleaseJson, receiptDigest, releaseAssert, releaseDigest, rele
 
 /** Durable generation protocol. Text and results live in digest-addressed objects. */
 export const generationGraphLimits = {
+  prepareNodes: 2,
   sourceBytes: 32 * 1024 * 1024,
   inputBytes: 96 * 1024,
   outputBytes: 8 * 1024,

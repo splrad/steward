@@ -21,6 +21,16 @@ function registry(adapters = false): DeliveryRegistry {
 const check = (config: DeliveryConfiguration, available = registry()) => validateDeliveryConfiguration(config, available, identity);
 
 describe('delivery configuration T07', () => {
+  it('rejects multi-build releases before execution while retaining independent build units',()=>{
+    const config=fixture(1);
+    config.builds.secondFiles=structuredClone(config.builds.files!);
+    config.delivery.githubRelease.builds=['files'];
+    expect(()=>check(config)).not.toThrow();
+    config.delivery.githubRelease.builds=['files','secondFiles'];
+    expect(()=>check(config)).toThrow('RN_CONFIG_RELEASE_BUILD_LIMIT');
+    config.delivery.githubRelease.builds=[];
+    expect(()=>check(config)).not.toThrow();
+  });
   it.each(Array.from({ length: 8 }, (_, i) => i))('accepts capability combination %i as pending', mask => {
     const config = fixture(mask);
     expect(() => check(config)).not.toThrow();

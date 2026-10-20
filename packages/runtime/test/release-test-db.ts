@@ -20,6 +20,7 @@ export class ReleaseTestDb {
     if (!this.database.prepare("SELECT name FROM sqlite_master WHERE name='release_policy_migrations'").get()) this.database.exec(readFileSync(new URL('../migrations/0015_release_policy_migration.sql', import.meta.url), 'utf8'));
     if (!this.database.prepare("SELECT name FROM sqlite_master WHERE name='release_policy_retargets'").get()) this.database.exec(readFileSync(new URL('../migrations/0016_release_policy_retargets.sql', import.meta.url), 'utf8'));
     if (!this.database.prepare("SELECT name FROM sqlite_master WHERE name='release_generation_graphs'").get()) this.database.exec(readFileSync(new URL('../migrations/0017_release_generation_graph.sql', import.meta.url), 'utf8'));
+    if (!this.database.prepare("SELECT name FROM sqlite_master WHERE name='release_generation_plans'").get()) this.database.exec(readFileSync(new URL('../migrations/0018_release_generation_plans.sql', import.meta.url), 'utf8'));
   }
   prepare(sql: string) { return new Statement(this.database, sql); }
   async batch(statements: Statement[]) {

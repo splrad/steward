@@ -1,5 +1,5 @@
 import { canonicalReleaseJson, receiptDigest, releaseAssert, validateFrozenRelease, type FrozenRelease } from '../../core/src/release-note-receipt.js';
-import { generationGraphDigest, generationSourceBatches, planGenerationGraphReferences } from '../../core/src/release-generation-graph.js';
+import { generationGraphDigest, generationGraphLimits, generationSourceBatches, planGenerationGraphReferences } from '../../core/src/release-generation-graph.js';
 import { validateReleaseSource } from '../../core/src/release-bundle.js';
 import { ReleaseBuildStore } from './release-build-store.js';
 import { ReleaseReceiptStore } from './release-note-receipts.js';
@@ -8,7 +8,7 @@ import { ReleaseGenerationGraphStore } from './release-generation-graph-store.js
 /** Called only after App authentication and repository/capability authorization. */
 export async function issueGenerationGraph(
   db: D1Database, repositoryId: number, tag: string, policySha: string,
-  body: { action: string; frozen?: FrozenRelease; offset?: number; graphDigest?: string },
+  body: { action: string; frozen?: FrozenRelease; offset?: number; graphDigest?: string; inputs?: string[] },
   now = Date.now(),
 ): Promise<unknown> {
   const expected = await acceptedReleaseSeed(db, repositoryId, tag, policySha);
@@ -17,19 +17,34 @@ export async function issueGenerationGraph(
   releaseAssert(frozen.repositoryId === repositoryId && frozen.targetTag === tag && frozen.policySha === policySha, 'GENERATION_SEED_IDENTITY');
   releaseAssert(canonicalReleaseJson(frozen) === canonicalReleaseJson(expected), 'GENERATION_SEED_BINDING');
   if (body.action === 'seed') return { frozen };
-  const bytes = await new ReleaseReceiptStore(db).readObject(repositoryId, frozen.sourceDigest);
-  const source = validateReleaseSource(bytes, frozen);
-  const offset = body.offset ?? 0;
-  releaseAssert(Number.isSafeInteger(offset) && offset >= 0, 'GENERATION_PREPARE_OFFSET');
-  const inputs: (string | undefined)[] = [], references: { digest: string; bytes: number }[] = [];
-  generationSourceBatches(source, (batch, index) => {
-    references.push({ digest: receiptDigest(batch), bytes: Buffer.byteLength(batch) });
-    if (body.action === 'prepare' && index >= offset && index < offset + 16) inputs[index] = batch;
-  });
-  const graph = planGenerationGraphReferences(frozen.sourceDigest, policySha, bytes.byteLength, references);
-  const id = { repositoryId, tag, graphDigest: generationGraphDigest(graph) };
+  releaseAssert(['prepare', 'continue', 'ticket'].includes(body.action), 'GENERATION_ACTION');
   const store = new ReleaseGenerationGraphStore(db);
-  if (body.action === 'prepare') return store.prepareVerifiedPage(repositoryId, tag, graph, inputs, offset);
+  let graph = await store.verifiedPlan(repositoryId, tag, frozen.sourceDigest, policySha);
+  if (!graph) {
+    // One authenticated source scan establishes the plan. Retries use the durable
+    // plan rather than rebuilding it for every page or ticket operation.
+    const bytes = await new ReleaseReceiptStore(db).readObject(repositoryId, frozen.sourceDigest);
+    const source = validateReleaseSource(bytes, frozen);
+    const references: { digest: string; bytes: number }[] = [];
+    generationSourceBatches(source, batch => references.push({ digest: receiptDigest(batch), bytes: Buffer.byteLength(batch) }));
+    graph = planGenerationGraphReferences(frozen.sourceDigest, policySha, bytes.byteLength, references);
+    await store.saveVerifiedPlan(repositoryId, tag, graph);
+  }
+  const id = { repositoryId, tag, graphDigest: generationGraphDigest(graph) };
+  if (body.action === 'prepare') {
+    const offset = body.offset ?? 0;
+    releaseAssert(Number.isSafeInteger(offset) && offset >= 0 && offset < graph.nodes.length, 'GENERATION_PREPARE_OFFSET');
+    const nodes = graph.nodes.slice(offset, offset + generationGraphLimits.prepareNodes);
+    const sourceNodes = nodes.filter(node => node.kind === 'source');
+    releaseAssert(Array.isArray(body.inputs) && body.inputs.length === sourceNodes.length, 'GENERATION_PAGE_INPUTS');
+    const inputs: (string | undefined)[] = [];
+    for (const [index, input] of body.inputs.entries()) {
+      releaseAssert(typeof input === 'string' && Buffer.byteLength(input) <= generationGraphLimits.inputBytes
+        && receiptDigest(input) === sourceNodes[index]!.inputDigest, 'GENERATION_INPUT_BINDING');
+      inputs[offset + index] = input;
+    }
+    return store.prepareVerifiedPage(repositoryId, tag, graph, inputs, offset, generationGraphLimits.prepareNodes);
+  }
   if (body.action === 'continue') {
     releaseAssert(body.graphDigest === id.graphDigest, 'GENERATION_GRAPH_BINDING');
     await store.continuation(id, policySha, now);

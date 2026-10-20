@@ -33,6 +33,27 @@ export class ReleaseGenerationGraphStore {
     for (let part = 0; part < total; part++) await this.objects.putChunk(repositoryId, digest, part, total, buffer.subarray(part * size, (part + 1) * size).toString('base64'));
     return digest;
   }
+  /** Only the issuer may register a plan derived from independently verified source. */
+  async saveVerifiedPlan(repositoryId: number, tag: string, graph: GenerationGraph): Promise<void> {
+    const bytes = canonicalReleaseJson(graph);
+    releaseAssert(Buffer.byteLength(bytes) <= 1024 * 1024, 'GENERATION_PLAN_LIMIT');
+    const digest = await this.object(repositoryId, bytes);
+    await this.db.prepare('INSERT OR IGNORE INTO release_generation_plans(repository_id,target_tag,source_digest,policy_sha,graph_digest) VALUES(?,?,?,?,?)')
+      .bind(repositoryId, tag, graph.sourceDigest, graph.policySha, digest).run();
+    const stored = await this.verifiedPlan(repositoryId, tag, graph.sourceDigest, graph.policySha);
+    releaseAssert(stored && generationGraphDigest(stored) === digest, 'GENERATION_PLAN_BINDING');
+  }
+  async verifiedPlan(repositoryId: number, tag: string, sourceDigest: string, policySha: string): Promise<GenerationGraph | null> {
+    const row = await this.db.prepare('SELECT graph_digest FROM release_generation_plans WHERE repository_id=? AND target_tag=? AND source_digest=? AND policy_sha=?')
+      .bind(repositoryId, tag, sourceDigest, policySha).first<{graph_digest: string}>();
+    if (!row) return null;
+    const bytes = await this.objects.readObject(repositoryId, row.graph_digest);
+    releaseAssert(bytes.byteLength <= 1024 * 1024, 'GENERATION_PLAN_LIMIT');
+    const graph = JSON.parse(Buffer.from(bytes).toString('utf8')) as GenerationGraph;
+    releaseAssert(graph.sourceDigest === sourceDigest && graph.policySha === policySha
+      && generationGraphDigest(graph) === row.graph_digest, 'GENERATION_PLAN_BINDING');
+    return graph;
+  }
   async prepare(repositoryId: number, tag: string, sourceBytes: number, graph: GenerationGraph, inputs: string[], offset = 0): Promise<GraphIdentity & { nextOffset: number; ready: boolean }> {
     releaseAssert(Number.isSafeInteger(repositoryId) && repositoryId > 0 && /^v\d+\.\d+\.\d+$/.test(tag), 'GENERATION_IDENTITY');
     const expected = planGenerationGraph(graph.sourceDigest, graph.policySha, sourceBytes, inputs);
@@ -40,14 +61,15 @@ export class ReleaseGenerationGraphStore {
     return this.prepareVerifiedPage(repositoryId, tag, graph, inputs, offset);
   }
   /** Internal issuer supplies a graph derived from verified source, with only this page's text retained. */
-  async prepareVerifiedPage(repositoryId: number, tag: string, graph: GenerationGraph, inputs: readonly (string | undefined)[], offset: number) {
+  async prepareVerifiedPage(repositoryId: number, tag: string, graph: GenerationGraph, inputs: readonly (string | undefined)[], offset: number, pageSize: number = 16) {
     const i = { repositoryId, tag, graphDigest: generationGraphDigest(graph) };
     releaseAssert(Number.isSafeInteger(offset) && offset >= 0 && offset < graph.nodes.length, 'GENERATION_PREPARE_OFFSET');
     await this.db.prepare('INSERT OR IGNORE INTO release_generation_graphs(repository_id,target_tag,graph_digest,policy_sha,source_digest,root_node,node_count,max_runs) VALUES(?,?,?,?,?,?,?,?)')
       .bind(...this.values(i), graph.policySha, graph.sourceDigest, graph.root, graph.nodes.length, graph.maxRuns + 3).run();
     // Bound each request's storage work. Partial/repeated pages never authorize a ticket.
     // The caller must derive graph and inputs from the verified immutable source.
-    const nextOffset = Math.min(offset + 16, graph.nodes.length);
+    releaseAssert(Number.isSafeInteger(pageSize) && pageSize > 0 && pageSize <= 16, 'GENERATION_PAGE_LIMIT');
+    const nextOffset = Math.min(offset + pageSize, graph.nodes.length);
     for (let index = offset; index < nextOffset; index++) {
       const node = graph.nodes[index]!;
       if (node.kind === 'source') {
