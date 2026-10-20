@@ -6,7 +6,7 @@ const digest = (value: WorkflowContract) => createHash('sha256').update(canonica
 
 /** Prove the last semantic base-contract change, rather than trusting a preseeded file. */
 export async function verifyBaseContractAdoption(
-  gh: GitHubClient, owner: string, repo: string, baseSha: string, policySha: string,
+  gh: GitHubClient, owner: string, repo: string, defaultBranch: string, baseSha: string, policySha: string,
   authority: { repositoryId: number; approverIds: readonly number[]; adoptionPolicies?: Readonly<Record<string,string>> },
   baseline: WorkflowContract, readContract: (ref: string, sourceOwner?: string, sourceName?: string) => Promise<WorkflowContract>,
 ): Promise<void> {
@@ -22,7 +22,7 @@ export async function verifyBaseContractAdoption(
     const pulls = await gh.listPullsForCommit(owner, repo, commit.sha);
     for (const linked of pulls) {
       const pull = await gh.getPullRequest(owner, repo, linked.number);
-      if (!pull.merged || pull.base?.repo?.id !== authority.repositoryId
+      if (!pull.merged || pull.base?.ref !== defaultBranch || pull.base?.repo?.id !== authority.repositoryId
         || !/^[a-f0-9]{40}$/.test(pull.merge_commit_sha)) continue;
       const ancestry = await gh.request<any>('GET', `/repos/${owner}/${repo}/compare/${pull.merge_commit_sha}...${baseSha}`);
       if (!['ahead', 'identical'].includes(ancestry.status)) continue;

@@ -7,14 +7,14 @@ const baseline:WorkflowContract={version:1,repositoryId:99,fragments:'required',
 const candidate:WorkflowContract={...baseline,fragments:'retired'};
 const head='a'.repeat(40),base='b'.repeat(40),policy='c'.repeat(40);
 const binding={repositoryId:99,pullNumber:7,headSha:head,baseSha:base,policySha:policy,contractDigest:createHash('sha256').update(canonicalContract(candidate)).digest('hex')};
-function setup(options:{state?:string;permission?:string;mutate?:boolean;missing?:boolean;denied?:boolean;body?:string;adopted?:boolean;unreviewedBase?:boolean;priorState?:string;ancestry?:string;priorAuthor?:number;priorPolicy?:string;fork?:boolean;priorFork?:boolean;missingPriorRepo?:boolean;priorLateState?:string;lateState?:string;latePermission?:string}={}){
+function setup(options:{state?:string;permission?:string;mutate?:boolean;missing?:boolean;denied?:boolean;body?:string;adopted?:boolean;unreviewedBase?:boolean;priorState?:string;ancestry?:string;priorAuthor?:number;priorPolicy?:string;fork?:boolean;priorBranch?:string;priorFork?:boolean;missingPriorRepo?:boolean;priorLateState?:string;lateState?:string;latePermission?:string}={}){
  let reads=0, reviewReads=0, priorReviewReads=0, permissionReads=0;
  const transport:typeof fetch=async(input)=>{
   const u=new URL(String(input));
   let value:any;
   if(u.pathname==='/repos/test/project/commits')value=[{sha:'f'.repeat(40),parents:[{sha:'e'.repeat(40)}]}];
   else if(u.pathname.endsWith('/commits/'+ 'f'.repeat(40)+'/pulls'))value=options.unreviewedBase?[]:[{number:6}];
-  else if(u.pathname.endsWith('/pulls/6'))value={number:6,merged:true,user:{id:options.priorAuthor??1},merge_commit_sha:'f'.repeat(40),head:{sha:'d'.repeat(40),repo:options.missingPriorRepo?null:{id:options.priorFork?100:99}},base:{sha:'e'.repeat(40),repo:{id:99}}};
+  else if(u.pathname.endsWith('/pulls/6'))value={number:6,merged:true,user:{id:options.priorAuthor??1},merge_commit_sha:'f'.repeat(40),head:{sha:'d'.repeat(40),repo:options.missingPriorRepo?null:{id:options.priorFork?100:99}},base:{sha:'e'.repeat(40),ref:options.priorBranch??'main',repo:{id:99}}};
   else if(u.pathname.includes('/compare/'))value={status:options.ancestry??'ahead'};
   else if(u.pathname.endsWith('/pulls/6/reviews'))value=[{id:2,user:{id:2,login:'reviewer',type:'User'},state:++priorReviewReads>1?(options.priorLateState??options.priorState??'APPROVED'):(options.priorState??'APPROVED'),commit_id:'d'.repeat(40),body:contractApprovalText({...binding,pullNumber:6,headSha:'d'.repeat(40),baseSha:'e'.repeat(40),policySha:options.priorPolicy??policy}),submitted_at:'2026-10-19T00:00:00Z'}];
   else if(u.pathname==='/repositories/100')value={id:100,full_name:'contributor/fork'};
@@ -35,6 +35,9 @@ function setup(options:{state?:string;permission?:string;mutate?:boolean;missing
 }
 const authority={repositoryId:99,baseline,approverIds:[2]};
 describe('remote workflow contract evidence',()=>{
+ it('rejects an approval for adoption into a non-default branch even if its merge is an ancestor',async()=>{
+  await expect(evaluateRemoteWorkflowContract(setup({adopted:true,priorBranch:'staging'}),authority,7,policy)).rejects.toThrow('CONTRACT_BASE_UNADOPTED');
+ });
  it.each([{priorLateState:'DISMISSED'},{latePermission:'read'}])('rejects historical adoption revoked during evaluation %j',async options=>{
   await expect(evaluateRemoteWorkflowContract(setup({adopted:true,...options}),authority,7,policy)).rejects.toThrow('CONTRACT_BASE_UNADOPTED');
  });

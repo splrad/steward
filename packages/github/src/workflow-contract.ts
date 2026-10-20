@@ -38,7 +38,7 @@ export async function evaluateRemoteWorkflowContract(gh: GitHubClient, authority
   // next PR. Otherwise every later business change would need reapproval.
   const baseline = await readContract(pull.base.sha);
   if (digest(baseline) !== digest(authority.baseline))
-    await verifyBaseContractAdoption(gh, owner, name, pull.base.sha, policySha, authority, baseline, readContract);
+    await verifyBaseContractAdoption(gh, owner, name, repo.default_branch, pull.base.sha, policySha, authority, baseline, readContract);
   let candidateOwner = owner, candidateName = name;
   if (!Number.isSafeInteger(pull.head?.repo?.id) || pull.head.repo.id <= 0) throw new Error('CONTRACT_SOURCE: missing head repository');
   if (pull.head.repo.id !== repo.id) {
