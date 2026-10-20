@@ -1,4 +1,5 @@
 import { type BuildPlan, type BuildManifest, planBuild } from './build-manifest.js';
+import { assertReleaseAssetName } from './release-asset-name.js';
 import { canonicalReleaseJson, receiptDigest, releaseAssert, type FrozenRelease } from './release-note-receipt.js';
 export const releaseToolchain = { node: '24.22.0', dotnet: '10.0.402', powershell: '7.6.6', runner: 'windows-2025', linuxRunner: 'ubuntu-24.04', npm: '11.19.1', docker: '29.8.2', buildx: '0.37.2' } as const;
 export const releaseToolchainDigest = receiptDigest(canonicalReleaseJson(releaseToolchain));
@@ -20,6 +21,7 @@ export async function makeReleaseBuildRequest(frozen: FrozenRelease, configurati
     // OCI images have their own digest contract and cannot become GitHub file assets.
     releaseAssert(plan.profile !== 'oci-image-v1', 'BUILD_EXECUTOR');
     releaseAssert(plan.outputs.every(output => output.kind === 'file' && typeof output.match === 'string' && !/[\\/]/.test(output.match) && !output.match.includes('**')), 'BUILD_RELEASE_PATH');
+    for (const output of plan.outputs) assertReleaseAssetName(output.match!.replaceAll('{version}', plan.version!), true);
     plans.push(plan);
   }
   releaseAssert(plans.length === 1 || (plans.length === 0 && mode === 'initial' && sourceArtifactId === null

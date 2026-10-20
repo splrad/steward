@@ -3,7 +3,7 @@ import { promisify } from 'node:util';
 import { mkdtemp, mkdir, writeFile, rm, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname, delimiter } from 'node:path';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { verifyDownloadedFileBuild, verifyDownloadedOciBuild } from '../src/build-manifest.js';
 import { releaseBuildCommand } from '../src/release-build-command.js';
 import { nativeReleaseInspector } from '../src/release-native.js';
@@ -158,3 +158,12 @@ it.runIf(process.env.STEWARD_TEST_OCI === '1')('builds a real OCI layout without
   await expect(verifyDownloadedOciBuild(actual, { ...manifest, repositoryId: 9001 }, output)).rejects.toThrow('DIGEST');
   expect(manifest.repositoryId).toBe(9003); expect(manifest.artifacts[0]).toMatchObject({ kind: 'oci-image', reference: expect.stringContaining('sample/oci-product@sha256:') });
 }, 120000);
+it('rejects an overlong actual version expansion before product execution',async()=>{
+ const version='1'.repeat(180)+'.0.0';
+ plan=await planBuild({...plan,version},{profile:plan.profile,inputs:plan.inputs,outputs:[{...plan.outputs[0]!,match:'AFR-Deployer_v{version}.exe'}]});
+ const execute=vi.fn();await expect(buildReleaseAssets(plan,{sourceDirectory:source,outputDirectory:output,buildRunId:'1'},execute)).rejects.toThrow('BUILD_RELEASE_PATH');expect(execute).not.toHaveBeenCalled();
+});
+it('rejects a non-ASCII file selected by a wildcard before artifact upload',async()=>{
+ plan=await planBuild(plan,{profile:plan.profile,inputs:plan.inputs,outputs:[{...plan.outputs[0]!,match:'*.zip',mediaType:'application/zip'}]});
+ await expect(buildReleaseAssets(plan,{sourceDirectory:source,outputDirectory:output,buildRunId:'1'},async()=>{await writeFile(join(output,'部件.zip'),'asset')},async()=> '1.2.3')).rejects.toThrow('BUILD_RELEASE_PATH');
+});
