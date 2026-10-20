@@ -273,8 +273,8 @@ async function pullRequestChangesVersion(env: Env, repository: any, pullRequestN
 }
 
 export async function refreshWorkflowContractChecks(env: Env, repositoryId: number, pullNumber?: number, snapshot?: AuthoritySnapshot): Promise<void> {
-  if (env.VALIDATION_COORDINATOR) { await coordinatedValidation(env, repositoryId, {operation:"refresh", repositoryId, pullNumber}); return; }
   if (env.WORKFLOW_EVALUATOR_SHA===undefined) return;
+  if (env.VALIDATION_COORDINATOR) { await coordinatedValidation(env, repositoryId, {operation:"refresh", repositoryId, pullNumber}); return; }
   const gh = await validationClient(env, repositoryId);
   const repository = await gh.getRepositoryById(repositoryId);
   if (repository.id !== repositoryId || !belongsToOrganization(repository)) throw new Error("CONTRACT_REPOSITORY: identity mismatch");
@@ -647,6 +647,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       const repository = payload.repository; const pull = payload.pull_request;
       if (!repository || !belongsToOrganization(repository) || !pull) return response(204);
       if (Number.isSafeInteger(pull.number)) await refreshWorkflowContractChecks(env, Number(repository.id), pull.number);
+      if (!isManaged(repository)) return response(env.WORKFLOW_EVALUATOR_SHA === undefined ? 204 : 202);
       const stewardOwned = isStewardOwnedPullRequest(pull, Number(repository.id));
       const capable = isIssueCapable(repository);
       const targetsDefault = pull.base?.ref === repository.default_branch;

@@ -303,6 +303,7 @@ for (const required of [".github/workflows/deploy-runtime.yml", "scripts/verify-
   if (!deployRuntime.includes(required)) throw new Error(`部署工作流缺少固定健康复核合同: ${required}`);
 }
 const deployRuntimeDocument = YAML.parse(deployRuntime);
+if (deployRuntimeDocument?.jobs?.deploy?.if !== "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)") throw new Error('部署必须绑定实际默认分支，手工触发不得绕过');
 if (Object.hasOwn(deployRuntimeDocument?.on?.push ?? {}, "branches")) throw new Error("部署工作流仍固定默认分支名称");
 const deploySteps = deployRuntimeDocument?.jobs?.deploy?.steps ?? [];
 const migrationStepIndex = deploySteps.findIndex(step => step?.name === "列出并应用D1迁移");

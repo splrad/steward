@@ -2,9 +2,7 @@ import {createHash,createHmac,generateKeyPairSync} from 'node:crypto';
 import {afterEach,describe,it,expect,vi} from 'vitest';
 import worker,{handleWebhook,refreshWorkflowContractChecks,ValidationCoordinator,type Env} from '../src/index.js';
 import {canonicalContract,contractApprovalText,type WorkflowContract} from '../../core/src/workflow-contract.js';
-const repositoryId=1296724484,head='a'.repeat(40),base='b'.repeat(40),policy='c'.repeat(40);
-const baseline:WorkflowContract={version:1,repositoryId,fragments:'required',sharedQueues:{}};
-const candidate:WorkflowContract={...baseline,fragments:'retired'};
+const head='a'.repeat(40),base='b'.repeat(40),policy='c'.repeat(40);
 afterEach(()=>{vi.unstubAllGlobals();});
 describe('runtime contract revalidation',()=>{
  it('includes private contract repositories after verifying metadata identity',async()=>{
