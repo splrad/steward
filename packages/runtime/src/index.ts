@@ -147,11 +147,15 @@ function compareValidationState(state: ValidationCheckState, runId: number, atte
   if (state.pending && incomingCompleted) return "older";
   return "same";
 }
-async function publishValidationState(env: Env, repository: any, workflowRunId: unknown): Promise<boolean> {
+type AuthoritySnapshot = { value?: Awaited<ReturnType<typeof trustedContractAuthorities>>; error?: unknown };
+async function authoritySnapshot(env: Env): Promise<AuthoritySnapshot> {
+  try { return { value: await trustedContractAuthorities(env) }; } catch (error) { return { error }; }
+}
+async function publishValidationState(env: Env, repository: any, workflowRunId: unknown, context?: { gh: GitHubClient; authority: AuthoritySnapshot }): Promise<boolean> {
   const runId = Number(workflowRunId);
   if (!Number.isSafeInteger(runId) || runId <= 0) throw new Error("工作流运行编号无效");
   const [owner, repo] = splitRepository(String(repository.full_name));
-  const gh = await validationClient(env, Number(repository.id));
+  const gh = context?.gh ?? await validationClient(env, Number(repository.id));
   const run = await gh.getWorkflowRun(owner, repo, runId);
   if (!trustedValidationRun(run, repository) || run.id !== runId
     || !Number.isSafeInteger(run.head_repository?.id) || run.head_repository.id <= 0
@@ -178,7 +182,7 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
   let conclusion = validationConclusion(run.conclusion); const completed = run.status === "completed";
   let contractDetail = "";
   let authority: ReturnType<typeof selectContractAuthority> = null; let authorityError:unknown;
-  try {authority=selectContractAuthority(await trustedContractAuthorities(env),Number(repository.id));if(env.WORKFLOW_EVALUATOR_SHA!==undefined && !authority)throw new Error('CONTRACT_AUTHORITY_REQUIRED');}
+  try {const snapshot=context?.authority ?? await authoritySnapshot(env); if(snapshot.error)throw snapshot.error; authority=selectContractAuthority(snapshot.value!,Number(repository.id));if(env.WORKFLOW_EVALUATOR_SHA!==undefined && !authority)throw new Error('CONTRACT_AUTHORITY_REQUIRED');}
   catch(error){authorityError=error;}
   if ((authority || authorityError) && completed) {
     try {
@@ -218,7 +222,7 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
   return true;
 }
 
-export async function refreshWorkflowContractChecks(env: Env, repositoryId: number, pullNumber?: number): Promise<void> {
+export async function refreshWorkflowContractChecks(env: Env, repositoryId: number, pullNumber?: number, snapshot?: AuthoritySnapshot): Promise<void> {
   if (env.WORKFLOW_EVALUATOR_SHA===undefined) return;
   const gh = await validationClient(env, repositoryId);
   const repository = await gh.getRepositoryById(repositoryId);
@@ -231,7 +235,7 @@ export async function refreshWorkflowContractChecks(env: Env, repositoryId: numb
     if (!head || pull.state !== "open" || pull.base?.ref !== repository.default_branch) continue;
     const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, head, "all"), head, Number(env.APP_ID), repositoryId, pull.number);
     const runs = [...new Set(checks.map(c => c.state.runId).filter((id): id is number => id !== null))];
-    for (const run of runs) await publishValidationState(env, repository, run);
+    for (const run of runs) await publishValidationState(env, repository, run, { gh, authority: snapshot ?? await authoritySnapshot(env) });
   }
 }
 
@@ -524,15 +528,31 @@ export default {
     if (release) return release;
     return response(404);
   },
-  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
     const results = await Promise.allSettled([
       recoverPullRequestBodyWriteIntents(env),
       recoverReleaseReceipts(env),
       (async () => {
-        const authorities = await trustedContractAuthorities(env);
-        const results = await Promise.allSettled(Object.keys(authorities.repositories).map(id => refreshWorkflowContractChecks(env, Number(id))));
+        // Review webhooks recheck immediately; the full safety sweep runs every 15 minutes.
+        if (env.WORKFLOW_EVALUATOR_SHA === undefined || Math.floor(controller.scheduledTime / 60_000) % 15 !== 0) return;
+        const snapshot = await authoritySnapshot(env);
+        // The trusted catalog remains available even when evaluator contents cannot be read.
+        const ids = new Set(Object.entries(repositoryCatalog.repositories).filter(([, config]) => config.managed).map(([id]) => id));
+        for (const id of Object.keys(snapshot.value?.repositories ?? {})) ids.add(id);
+        // Installation metadata also covers repositories governed by catalog defaults.
+        // A listing failure must not prevent invalidating known catalog repositories.
+        let inventoryError: unknown;
+        try {
+          if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
+          const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY, installationId: Number(env.INSTALLATION_ID), permissions: { metadata: "read" }, policySha: env.POLICY_SHA });
+          const installed = await new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA).listInstallationRepositories();
+          for (const repository of installed.filter(isManaged)) ids.add(String(repository.id));
+        } catch (error) { inventoryError = error; }
+
+        const results = await Promise.allSettled([...ids].map(id => refreshWorkflowContractChecks(env, Number(id), undefined, snapshot)));
         const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
         if (failed) throw failed.reason;
+        if (inventoryError) throw inventoryError;
       })(),
     ]);
     const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");

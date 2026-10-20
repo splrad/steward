@@ -10,7 +10,7 @@ describe("中央验证", () => {
     expect(layerScape.tasks).toEqual(["git-diff-check", "parse-json", "parse-yaml", "verify-review-instructions", "parse-powershell", "parse-msbuild-xml", "actionlint-if-present"]);
     expect(layerScape.powershellFiles).toEqual(["tools/Publish-ReleaseAssets.ps1"]);
     expect(layerScape.msbuildFiles).toContain("src/**/*.csproj");
-    expect(steward.tasks).toEqual(["git-diff-check", "parse-json", "parse-yaml", "verify-review-instructions", "actionlint", "npm-ci", "npm-test", "npm-typecheck", "npm-verify-dist", "npm-verify-workflows"]);
+    expect(steward.tasks).toEqual(["git-diff-check", "parse-json", "parse-yaml", "verify-review-instructions", "actionlint", "npm-ci", "npm-test", "npm-typecheck", "npm-verify-config", "npm-verify-dist", "npm-verify-workflows"]);
   });
 
   it("逐项执行、保留失败并诚实披露未构建", async () => {

@@ -59,3 +59,13 @@ Steward App 安装为 all repositories，已有 `contents`、`pull_requests`、`
 本轮审查对象为 `9a031545947f8491d04be4c8fc426a64b1e76bce`，Copilot 与 Codex code/security 均已完成。新增 P1 与 Copilot 正文中的三类意见已逐项检查，处理记录见 [审查正文与线程核对](pr253-review-followup.md)。实际推送和评论闭环以 GitHub 回读为准。
 
 该 head 的 required-workflow run `39465015749` 仍被当前 main 验证器的共享队列限制阻断。双平台本地通过不能改写这一线上结论。
+
+## 安装范围预检与定时复核
+
+部署预检复用既有 Steward App 私钥，以仅含 `metadata: read`、不附加仓库过滤条件的安装令牌枚举全部安装仓库。读取前后核对安装 ID、App ID、组织 ID/login、`repository_selection: all` 和未暂停状态；逐页核对 `total_count`、仓库身份和重复项。安装范围不完整、读取失败或分页不一致均阻断 D1 迁移及部署。活跃的公开、私有仓库和显式受管 catalog 条目都必须具有 authority；当前三个公开仓库的状态不能替代通用范围校验。
+
+GitHub API 的多次读取不是事务快照。此检查证明本次可读取的安装范围，后续仓库和权限变更仍由事件及定时复核处理。API 依据：[创建安装令牌](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app)、[枚举安装仓库](https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-app-installation)。
+
+运行时每 15 分钟全量复核，Review 事件继续立即触发；单次扫描复用 authority 读取结果及各仓库 client。authority 读取失败会传入已知仓库的 Gate 重算，使既有成功结论转为失败。安装枚举失败时仍处理已知 catalog，随后报告枚举错误。未设置 evaluator 时不扫描，显式启用后的错误继续阻断。
+
+Steward 中央验证任务包含 `npm-verify-config`，在候选 checkout 执行 `npm run verify:config`，检查该候选的 Schema 和配置间约束。任务类型、Schema、Profile、runner 映射及生成产物同步更新；可信 evaluator 的配置选择仍使用固定来源。

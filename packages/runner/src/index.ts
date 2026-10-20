@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { decodeClassificationCheckEnvelope } from "../../core/src/check-envelope.js";
-import { verifyWorkflowActivation } from "./workflow-activation.js";
+import { verifyWorkflowActivationWithApp } from "./workflow-activation.js";
 import { selectValidationProfile } from "../../core/src/validation.js";
 import { verifyWorkflowPolicy } from "./workflow-policy.js";
 export { verifyWorkflowPolicy };
@@ -1074,7 +1074,7 @@ async function validate(args: Readonly<Record<string, string>>) {
       for (const path of selected) { const escaped = join(workspace, path).replace(/'/g, "''"); run("pwsh", ["-NoProfile", "-NonInteractive", "-Command", `try { [xml](Get-Content -LiteralPath '${escaped}' -Raw) > $null } catch { Write-Error $_; exit 1 }`], workspace); }
       return { state: "success" as const, detail: `已解析${selected.length}个MSBuild XML文件` };
     }
-    const npmMap: Record<string, string[]> = { "npm-ci": ["ci", "--ignore-scripts"], "npm-test": ["test"], "npm-typecheck": ["run", "typecheck"], "npm-verify-dist": ["run", "verify:dist"], "npm-verify-workflows": ["run", "verify:workflows"] };
+    const npmMap: Record<string, string[]> = { "npm-ci": ["ci", "--ignore-scripts"], "npm-test": ["test"], "npm-typecheck": ["run", "typecheck"], "npm-verify-config": ["run", "verify:config"], "npm-verify-dist": ["run", "verify:dist"], "npm-verify-workflows": ["run", "verify:workflows"] };
     if (npmMap[task]) { run("npm", npmMap[task]!, workspace); return { state: "success" as const, detail: `${task}成功` }; }
     throw new Error(`未实现验证任务: ${task}`);
   });
@@ -1112,7 +1112,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (invocation.command === "release-candidate") return releaseCandidateCommand(invocation.args);
   if (invocation.command === "verify-workflow-activation") {
     const evaluator = env("WORKFLOW_EVALUATOR_SHA");
-    return verifyWorkflowActivation(new GitHubClient(env("WORKFLOW_ACTIVATION_READ_TOKEN")), evaluator, await catalog());
+    if (!/^[a-f0-9]{40}$/.test(evaluator)) throw new Error("WORKFLOW_EVALUATOR_SHA_REQUIRED");
+    return verifyWorkflowActivationWithApp(new GitHubClient(env("WORKFLOW_ACTIVATION_READ_TOKEN")), evaluator, await catalog(), {
+      appId: env("APP_ID"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"),
+    });
   }
   if (invocation.command === "release-produce") return releaseProduceCommand(invocation.args);
   if (invocation.command === "release-build") return releaseBuildCommand(invocation.args);
