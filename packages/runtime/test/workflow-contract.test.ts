@@ -25,7 +25,7 @@ describe('runtime contract revalidation',()=>{
   await worker.scheduled({scheduledTime:60_000} as ScheduledController,{WORKFLOW_EVALUATOR_SHA:policy} as Env);
   expect(request).not.toHaveBeenCalled();
  });
- it.each(['NO_GATE_LIMIT','NO_GATE_PARTIAL','SUCCESS_LIMIT','SUCCESS_PARTIAL','CONCURRENT_DISMISS','PRIVATE_APPROVED','PRIVATE_WEBHOOK_DISMISSED','PRIVATE_RUN','APPROVED','DISMISSED','CHANGES_REQUESTED','PINNED','SOURCE_DENIED','WEBHOOK_APPROVED','WEBHOOK_DISMISSED','WEBHOOK_CHANGES_REQUESTED','SCHEDULED','SCHEDULED_SOURCE_DENIED','HISTORICAL_RUNS','MISSING_RUN','NO_GATE','LATEST_FAILED','PENDING','PENDING_NONE','PENDING_LIMIT','PENDING_PARTIAL'])('recomputes the same completed run when approval is %s',async state=>{
+ it.each(['MISSING_AFTER_LIST','MISSING_LATEST','NO_GATE_MISSING','NO_GATE_LIMIT','NO_GATE_PARTIAL','SUCCESS_LIMIT','SUCCESS_PARTIAL','CONCURRENT_DISMISS','PRIVATE_APPROVED','PRIVATE_WEBHOOK_DISMISSED','PRIVATE_RUN','APPROVED','DISMISSED','CHANGES_REQUESTED','PINNED','SOURCE_DENIED','WEBHOOK_APPROVED','WEBHOOK_DISMISSED','WEBHOOK_CHANGES_REQUESTED','SCHEDULED','SCHEDULED_SOURCE_DENIED','HISTORICAL_RUNS','MISSING_RUN','NO_GATE','LATEST_FAILED','PENDING','PENDING_NONE','PENDING_LIMIT','PENDING_PARTIAL'])('recomputes the same completed run when approval is %s',async state=>{
   const repositoryId=state.startsWith('PRIVATE_')?987654321:1296724484;
   const baseline:WorkflowContract={version:1,repositoryId,fragments:'required',sharedQueues:{}};
   const candidate:WorkflowContract={...baseline,fragments:'retired'};
@@ -36,8 +36,9 @@ describe('runtime contract revalidation',()=>{
    repository:repo,head_repository:repo,head_branch:'feature',head_sha:head,pull_requests:[{number:7}],event:'pull_request',status:'completed',conclusion:'success',
    workflow_url:'https://api.github.com/repos/splrad/steward/actions/required_workflows/20',html_url:'https://github.com/splrad/steward/actions/runs/10'};
   if(state==='LATEST_FAILED'){run.id=11;run.conclusion='failure';}
+  if(state==='MISSING_LATEST')run.id=11;
   const check={id:30,name:'PR Validation Gate',head_sha:head,app:{id:4243096},external_id:`${repositoryId}:7:${head}:10:1`,status:'completed',conclusion:reviewState==='APPROVED'?'failure':'success'};
-  if(state==='MISSING_RUN' || state.startsWith('SUCCESS_'))check.conclusion='success';
+  if(state.startsWith('MISSING_') || state.startsWith('SUCCESS_'))check.conclusion='success';
   if(state.startsWith('PENDING')){check.external_id=`${repositoryId}:7:${head}:pending`;check.status='in_progress';}
   let unblock!:()=>void,started!:()=>void;const blocked=new Promise<void>(r=>{unblock=r;});const writing=new Promise<void>(r=>{started=r;});
   const updates:any[]=[]; let authorityReads=0; let runReads=0; let discoveryReads=0;
@@ -64,7 +65,7 @@ describe('runtime contract revalidation',()=>{
      return new Response(JSON.stringify({total_count:state==='PENDING_NONE'?5:7,workflow_runs:state==='PENDING_NONE'?decoys.slice(0,5):decoys}),{headers:['PENDING_NONE','PENDING_PARTIAL','SUCCESS_PARTIAL','NO_GATE_PARTIAL'].includes(state)?{}:{link:'<https://api.github.com/repos/splrad/steward/actions/runs?event=pull_request&head_sha='+head+'&per_page=100&page=2>; rel="next"'}});
     }else value={total_count:7,workflow_runs:[run]};
    }
-   else if(u.pathname.endsWith('/actions/runs/'+run.id)){runReads++;if(state==='MISSING_RUN')return new Response('{}',{status:404});value=run;}
+   else if(u.pathname.endsWith('/actions/runs/'+run.id)){runReads++;if(state.startsWith('MISSING_') || state==='NO_GATE_MISSING')return new Response('{}',{status:404});value=run;}
    else if(u.pathname.includes('/attempts/1/jobs'))value={jobs:[{status:'completed',conclusion:'success',steps:[{name:`workflow-contract-policy:${policy}`,status:'completed',conclusion:'success'}]}]};
    else if(u.pathname.endsWith(`/commits/${head}/pulls`))value=[pull];
    else if(u.pathname.endsWith('/contents/config/workflow-contract-authority.json')){
@@ -108,7 +109,7 @@ describe('runtime contract revalidation',()=>{
   else if(['PENDING_LIMIT','PENDING_PARTIAL','SUCCESS_LIMIT','SUCCESS_PARTIAL','NO_GATE_LIMIT','NO_GATE_PARTIAL'].includes(state)){await expect(refreshWorkflowContractChecks(env,repositoryId,7)).rejects.toThrow('CONTRACT_RUN_DISCOVERY');expect(updates).toHaveLength(1);expect(updates[0].conclusion).toBe('failure');expect(updates[0].output.summary).toContain('CONTRACT_RUN_DISCOVERY');if(state.startsWith('NO_GATE'))expect(updates[0].external_id).toBe(`${repositoryId}:7:${head}:pending`);return;}
   else await refreshWorkflowContractChecks(env,repositoryId,7);
   if(state==='PENDING_NONE'){expect(updates).toHaveLength(0);expect(runReads).toBe(0);return;}
-  if(state==='MISSING_RUN'){expect(updates).toHaveLength(1);expect(updates[0].conclusion).toBe('failure');expect(updates[0].output.summary).toContain('CONTRACT_RUN_MISSING');return;}
+  if(state.startsWith('MISSING_') || state==='NO_GATE_MISSING'){expect(updates).toHaveLength(1);expect(updates[0].conclusion).toBe('failure');expect(updates[0].output.summary).toContain('CONTRACT_RUN_MISSING');return;}
   expect(discoveryReads).toBe(state==='PRIVATE_RUN'?0:2);
   expect(updates).toHaveLength(state==='HISTORICAL_RUNS'?4:1);
   expect(runReads).toBe(1);
