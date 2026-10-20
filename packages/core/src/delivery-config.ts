@@ -85,6 +85,10 @@ export function validateDeliveryConfiguration(
       if (!pattern || !/^[A-Za-z0-9*?][A-Za-z0-9._*?-]{0,199}$/.test(pattern)
         || /[.]$/.test(pattern) || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(pattern))
         throw new Error('RN_CONFIG_RELEASE_ASSET_NAME');
+      const build = builds[id]!;
+      const windows = build.profile === 'dotnet-assets-v1' || (build.profile === 'custom-adapter-v1' && build.inputs.runnerFamily === 'windows');
+      if (pattern !== 'package.json' && !(windows && /\.(exe|dll|zip)$/.test(pattern)))
+        throw new Error('RN_CONFIG_RELEASE_VERSION_INSPECTOR');
     }
   }
   for (const entry of delivery.deployments) {

@@ -4,7 +4,7 @@ import { activeDelivery, assertDeliveryPath, requiresPublicVersion, validateDeli
 const identity = { id: 42, fullName: 'example/neutral', managed: true };
 function fixture(mask = 0): DeliveryConfiguration {
   return {
-    builds: { files: { profile: 'node-package-v1', inputs: { directory: '.', lockfile: 'package-lock.json' }, outputs: [{ id: 'package', kind: 'file', match: 'package-{version}.tgz' }] },
+    builds: { files: { profile: 'node-package-v1', inputs: { directory: '.', lockfile: 'package-lock.json' }, outputs: [{ id: 'package', kind: 'file', match: 'package.json' }] },
       image: { profile: 'oci-image-v1', inputs: { context: '.', dockerfile: 'Dockerfile' }, outputs: [{ id: 'image', kind: 'oci-image' }] } },
     delivery: { githubRelease: mask & 1 ? { enabled: true, state: 'pending', profile: 'neutral', builds: [] } : { enabled: false, state: 'disabled', profile: null, builds: [] },
       deployments: mask & 2 ? [{ id: 'production', state: 'pending', profile: 'cloud-service-v1', builds: ['image'], source: 'commit', trigger: 'default-branch' }] : [],
@@ -26,8 +26,14 @@ describe('delivery configuration T07', () => {
     expect(()=>check(config)).toThrow('RN_CONFIG_RELEASE_ASSET_NAME');
     config.delivery.githubRelease.builds=[];expect(()=>check(config)).not.toThrow();
   });
-  it.each(['widget-{version}.zip','widget-*.zip','*.tgz'])('accepts flat ASCII Release output %s',match=>{
-    const config=fixture(1);config.delivery.githubRelease.builds=['files'];config.builds.files!.outputs[0]!.match=match;expect(()=>check(config)).not.toThrow();
+  it.each(['widget-{version}.zip','widget-*.zip','*.dll','app.exe'])('accepts supported Windows Release output %s',match=>{
+    const config=fixture(1);config.delivery.githubRelease.builds=['files'];config.builds.files!.profile='custom-adapter-v1';config.builds.files!.inputs={entrypoint:'tools/build.ps1',runtime:'pwsh',runnerFamily:'windows'};config.builds.files!.outputs[0]!.match=match;
+    const available=registry();available.builds['custom-adapter-v1']={kind:'file'};expect(()=>check(config,available)).not.toThrow();
+  });
+  it.each(['*.tgz','widget-*.zip','app.dll','*.json','artifact.*'])('rejects Linux Release output without a supported version inspector: %s',match=>{
+    const config=fixture(1);config.delivery.githubRelease.builds=['files'];config.builds.files!.outputs[0]!.match=match;
+    expect(()=>check(config)).toThrow('RN_CONFIG_RELEASE_VERSION_INSPECTOR');
+    config.delivery.githubRelease.builds=[];expect(()=>check(config)).not.toThrow();
   });
   it('rejects multi-build releases before execution while retaining independent build units',()=>{
     const config=fixture(1);

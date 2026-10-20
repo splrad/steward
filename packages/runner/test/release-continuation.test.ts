@@ -1,6 +1,6 @@
 import {it,expect,vi,afterEach} from 'vitest';
 import {dispatchWorkflow,GitHubRequestError,type GitHubClient} from '../../github/src/index.js';
-import {dispatchReleaseContinuation} from '../src/release-continuation.js';
+import {dispatchReleaseContinuation,validateContinuationRecovery} from '../src/release-continuation.js';
 vi.mock('../../github/src/index.js',async original=>({...await original<any>(),dispatchWorkflow:vi.fn()}));
 afterEach(()=>vi.resetAllMocks());
 it.each([400,401,403,404,422,408,429,500])('releases only definitive dispatch rejection %s',async status=>{
@@ -36,4 +36,12 @@ it('never creates a release record for an unknown dispatch outcome',async()=>{
  const recovery={persist:vi.fn(),clear:vi.fn()};const release=vi.fn();
  await expect(dispatchReleaseContinuation(async()=>({} as GitHubClient),'a'.repeat(40),{},release,recovery)).rejects.toThrow('network');
  expect(recovery.persist).not.toHaveBeenCalled();expect(release).not.toHaveBeenCalled();
+});
+
+it('accepts generated SHA-256 recovery bindings and rejects commit SHAs and mismatched identities',()=>{
+ const identity={repositoryId:42,tag:'v1.2.3',policySha:'a'.repeat(40)};
+ const record={version:1,reason:'dispatch-not-accepted',frozen:{repositoryId:42,targetTag:identity.tag,policySha:identity.policySha},graphDigest:'b'.repeat(64),reservation:'continuation:7'};
+ expect(validateContinuationRecovery(record,identity)).toBe(record);
+ for(const change of [{graphDigest:'b'.repeat(40)},{graphDigest:'g'.repeat(64)},{reservation:'other:7'},{reason:'unknown'}])expect(()=>validateContinuationRecovery({...record,...change},identity)).toThrow('GENERATION_RECOVERY');
+ expect(()=>validateContinuationRecovery(record,{...identity,repositoryId:43})).toThrow('GENERATION_RECOVERY');
 });

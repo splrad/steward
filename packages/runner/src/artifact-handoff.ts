@@ -1,4 +1,4 @@
-import {open} from 'node:fs/promises';
+import {open,unlink} from 'node:fs/promises';
 import {maxArtifactArchiveBytes} from './artifact-file.js';
 import { createHash } from 'node:crypto';
 import type { GitHubClient } from '../../github/src/index.js';
@@ -23,6 +23,8 @@ export async function fetchBoundArtifactFile(gh:Pick<GitHubClient,'request'>, tr
  check(redirect.status===302);const url=new URL(redirect.headers.get('location')??'');check(url.protocol==='https:' && !url.username && !url.password && (url.hostname.endsWith('.blob.core.windows.net') || url.hostname.endsWith('.githubusercontent.com')));
  const response=await transport(url,{redirect:'error',signal:AbortSignal.timeout(artifactDownloadTimeout(a.size_in_bytes))});check(response.ok && response.body);let total=0;
  const file=await open(destination,'wx'),hash=createHash('sha256');
- const reader=response.body!.getReader();try{while(true){const {done,value}=await reader.read();if(done)break;total+=value.length;check(total<=a.size_in_bytes&&total<=maxArtifactArchiveBytes);hash.update(value);{let offset=0;while(offset<value.length){const r=await file.write(value,offset,value.length-offset);check(r.bytesWritten>0);offset+=r.bytesWritten;}}}}finally{await reader.cancel();await file?.close();}
+ try {
+ const reader=response.body!.getReader();try{while(true){const {done,value}=await reader.read();if(done)break;total+=value.length;check(total<=a.size_in_bytes&&total<=maxArtifactArchiveBytes);hash.update(value);{let offset=0;while(offset<value.length){const r=await file.write(value,offset,value.length-offset);check(r.bytesWritten>0);offset+=r.bytesWritten;}}}}finally{try{await reader.cancel();}finally{await file.close();}}
  const digest=hash.digest('hex');check(total===a.size_in_bytes && 'sha256:'+digest===a.digest);await verify();return {path:destination,digest};
+ } catch(error) { await unlink(destination); throw error; }
 }

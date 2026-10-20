@@ -127,3 +127,5 @@ GitHub Release 所引用文件构建的 outputs.match 必须使用扁平 ASCII �
 续跑取得预约后，如安装令牌获取或派发前读取失败，或 GitHub 明确以 400/401/403/404/422 拒绝 workflow POST，runner 调用已认证的 `release-continuation`，用精确预约标记及 graph version 的 CAS 释放；旧释放请求不能撤销后续预约或已发出的 ticket。超时、响应丢失、408/429/5xx 等 POST 结果未知时保留预约，不自动再次派发。
 
 已知派发未被接受时，runner 先将精确 frozen/graph/reservation 写入 continuation-cleanup.json 和 Actions 运行日志，再最多重试三次释放。释放接口接受同一已完成释放的幂等重试，仍拒绝旧标记撤销新预约或已发票据。若清理持续失败，generation-continue 作业通过 always 步骤保留清理 artifact 30 天；维护者可下载并核对该文件，使用相同 repository-id、target-tag、policy-sha 运行 `release-candidate --operation generator-release-continuation --bundle <continuation-cleanup.json>` 重试清理，然后重跑生成续跑作业。此恢复命令不重新申请预约、不派发工作流。仅使用由“派发明确未接受”分支生成的记录；未知派发结果不生成清理记录。
+
+GitHub Release 绑定的文件构建在配置阶段检查版本校验器能力：所有执行平台支持精确 package.json；Windows 构建另支持 .exe、.dll 和由原生检查脚本验证内容的 .zip。当前不接受 Linux .tgz 或任意二进制文件作为 Release 资产，返回 RN_CONFIG_RELEASE_VERSION_INSPECTOR。独立 build、package 和 deployment 消费者仍按各自合同使用这些输出；新增 Release 文件格式须先实现独立版本验证器。

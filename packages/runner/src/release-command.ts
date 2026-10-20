@@ -1,4 +1,4 @@
-import {dispatchReleaseContinuation} from './release-continuation.js';
+import {dispatchReleaseContinuation,validateContinuationRecovery} from './release-continuation.js';
 import { readFile, writeFile, appendFile, unlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createInstallationToken, GitHubClient } from '../../github/src/index.js';
@@ -28,11 +28,7 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
     process.stdout.write(JSON.stringify(result) + '\n'); return;
   }
   if (operation === 'generator-release-continuation') {
-    const recovery = JSON.parse(await readFile(resolve(required('bundle')), 'utf8'));
-    releaseAssert(recovery.version === 1 && recovery.reason === 'dispatch-not-accepted'
-      && recovery.frozen?.repositoryId === repositoryId && recovery.frozen?.targetTag === tag
-      && recovery.frozen?.policySha === policySha && releaseSha(recovery.graphDigest)
-      && /^continuation:[0-9]+$/.test(recovery.reservation), 'GENERATION_RECOVERY');
+    const recovery = validateContinuationRecovery(JSON.parse(await readFile(resolve(required('bundle')), 'utf8')), {repositoryId,tag,policySha});
     await receipts.request('generation-graph', {action:'release-continuation',frozen:recovery.frozen,graphDigest:recovery.graphDigest,reservation:recovery.reservation});
     return;
   }

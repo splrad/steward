@@ -1,5 +1,5 @@
 import {artifactDownloadTimeout} from '../src/artifact-handoff.js';
-import {mkdtemp,readFile,rm} from 'node:fs/promises';
+import {mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fetchBoundArtifactFile} from '../src/artifact-handoff.js';
@@ -23,3 +23,24 @@ it('rejects duplicate matching artifacts rather than selecting one',async()=>{co
 it('streams verified archive bytes to a fresh file',async()=>{const f=fixture(),home=await mkdtemp(join(tmpdir(),'handoff-file-'));try{const result=await fetchBoundArtifactFile(f.gh,f.transport,'secret',b,join(home,'archive'));expect(await readFile(result.path)).toEqual(f.bytes);expect(result.digest).toBe(archiveDigest(f.bytes));expect(f.transport.mock.calls[1][1].headers).toBeUndefined();}finally{await rm(home,{recursive:true,force:true});}});
 
 it('budgets the largest permitted archive at 4 MiB/s plus setup time',()=>{expect(artifactDownloadTimeout(4*1024**3+16*1024**2)).toBe(1088000);expect(artifactDownloadTimeout(1)).toBe(61000);expect(()=>artifactDownloadTimeout(4*1024**3+16*1024**2+1)).toThrow();});
+
+it.each(['digest','stream','recheck'])('cleans its own failed %s download and permits retry',async kind=>{
+ const f=fixture(),home=await mkdtemp(join(tmpdir(),'handoff-retry-')),target=join(home,'archive');
+ const original=f.transport.getMockImplementation();
+ try {
+  if(kind==='digest')f.artifact.digest='sha256:'+'0'.repeat(64);
+  else f.transport.mockImplementation(async(u:any,init:any)=>{
+   if(init.redirect==='manual')return original(u,init);
+   if(kind==='recheck'){f.run.run_attempt=3;return new Response(f.bytes);}
+   return new Response(new ReadableStream({start(controller){controller.error(Error('stream failed'));}}));
+  });
+  await expect(fetchBoundArtifactFile(f.gh,f.transport,'secret',b,target)).rejects.toThrow();
+  await expect(readFile(target)).rejects.toMatchObject({code:'ENOENT'});
+  f.artifact.digest='sha256:'+archiveDigest(f.bytes);f.run.run_attempt=2;f.transport.mockImplementation(original);
+  await fetchBoundArtifactFile(f.gh,f.transport,'secret',b,target);expect(await readFile(target)).toEqual(f.bytes);
+ }finally{await rm(home,{recursive:true,force:true});}
+});
+it('preserves a pre-existing download destination',async()=>{
+ const f=fixture(),home=await mkdtemp(join(tmpdir(),'handoff-existing-')),target=join(home,'archive');
+ try{await writeFile(target,'user data');await expect(fetchBoundArtifactFile(f.gh,f.transport,'secret',b,target)).rejects.toMatchObject({code:'EEXIST'});expect(await readFile(target,'utf8')).toBe('user data');}finally{await rm(home,{recursive:true,force:true});}
+});
