@@ -1,5 +1,5 @@
 import { canonicalReleaseJson, receiptDigest, releaseAssert } from '../../core/src/release-note-receipt.js';
-import { dispatchWorkflow } from '../../github/src/index.js';
+import { dispatchWorkflow, GitHubRequestError } from '../../github/src/index.js';
 import { centralBuildClient } from './release-build-api.js';
 import type { BodyWriteRuntimeEnv } from './pr-body-api.js';
 
@@ -12,7 +12,16 @@ export async function dispatchMigrationBuild(env: BodyWriteRuntimeEnv, inputs: R
   // turn a retry into a second dispatch, including concurrent callers.
   const reserved = await db.prepare('INSERT OR IGNORE INTO release_migration_dispatches(dispatch_key) VALUES(?)').bind(key).run();
   if (reserved.meta.changes === 1) {
-    await dispatchWorkflow(gh, { owner: 'splrad', repo: 'steward', workflow: 'release-build.yml', policySha: policy, inputs: { ...inputs, dispatchKey: key } });
+    try {
+      await dispatchWorkflow(gh, { owner: 'splrad', repo: 'steward', workflow: 'release-build.yml', policySha: policy, inputs: { ...inputs, dispatchKey: key } });
+    } catch (error) {
+      const rejected = error instanceof GitHubRequestError && (error.method === 'GET'
+        || (error.method === 'POST' && error.path === '/repos/splrad/steward/actions/workflows/release-build.yml/dispatches'
+          && [400, 401, 403, 404, 422].includes(error.status)));
+      const drift = error instanceof Error && error.message.startsWith('RELEASE_POLICY_DRIFT:');
+      if (rejected || drift) await db.prepare('DELETE FROM release_migration_dispatches WHERE dispatch_key=? AND confirmed=0').bind(key).run();
+      throw error;
+    }
   } else {
     const intent = await db.prepare('SELECT confirmed FROM release_migration_dispatches WHERE dispatch_key=?').bind(key).first<{ confirmed: number }>();
     if (intent?.confirmed === 1) return;

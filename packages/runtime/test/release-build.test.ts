@@ -420,3 +420,15 @@ it('reserves one migration dispatch across concurrent requests',async()=>{
  expect(mock.dispatch).toHaveBeenCalledTimes(1);
  await dispatchMigrationBuild(env(),inputs);expect(mock.dispatch).toHaveBeenCalledTimes(1);
 });
+it.each([400,401,403,404,422])('releases a definitely rejected migration dispatch reservation: %s',async status=>{
+ await policyMigrationFixture();mock.dispatch.mockRejectedValueOnce(new GitHubRequestError(status,'POST','/repos/splrad/steward/actions/workflows/release-build.yml/dispatches','rejected'));
+ expect((await migrate())!.status).not.toBe(200);
+ expect(db.database.prepare('SELECT COUNT(*) AS count FROM release_migration_dispatches').get()!.count).toBe(0);
+ expect((await migrate())!.status).toBe(200);expect(mock.dispatch).toHaveBeenCalledTimes(2);
+});
+it.each([408,429,500,502])('retains an uncertain migration dispatch reservation: %s',async status=>{
+ await policyMigrationFixture();mock.dispatch.mockRejectedValueOnce(new GitHubRequestError(status,'POST','/repos/splrad/steward/actions/workflows/release-build.yml/dispatches','uncertain'));
+ expect((await migrate())!.status).not.toBe(200);
+ mock.central.paginate.mockImplementationOnce(async(_path,select)=>select({total_count:0,workflow_runs:[]}));
+ expect((await migrate())!.status).not.toBe(200);expect(mock.dispatch).toHaveBeenCalledTimes(1);
+});
