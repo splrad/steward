@@ -300,7 +300,7 @@ for (const step of generationJob.steps) {
 }
 if (releaseSourceWorkflow.jobs.publish.if !== "inputs.operation == 'reconcile' && needs.inspect.outputs.shouldPublish == 'true'") throw new Error("Review 观察不得直接发布");
 if (releaseSourceWorkflow.jobs.publish.concurrency?.group !== 'workflow-policy:${{ github.workflow_ref }}:steward-release-publish-${{ inputs.repositoryId }}'
-  || releaseSourceWorkflow.jobs.publish.concurrency?.['cancel-in-progress'] !== false) throw new Error('最终发布必须按仓库串行且不得中断正在发布的版本');
+  || releaseSourceWorkflow.jobs.publish.concurrency?.['cancel-in-progress'] !== false || releaseSourceWorkflow.jobs.publish.concurrency?.queue !== 'max') throw new Error('最终发布必须按仓库串行且不得中断正在发布的版本');
 if (releaseSourceWorkflow.jobs.generate['timeout-minutes'] !== 86
   || releaseSourceWorkflow.jobs.publish['timeout-minutes'] !== '${{ fromJSON(needs.inspect.outputs.publishTimeoutMinutes) }}'
   || releaseSourceWorkflow.jobs.inspect.outputs.publishTimeoutMinutes !== '${{ steps.receipt.outputs.publishTimeoutMinutes }}') throw new Error('发布及生成作业必须覆盖冻结预算和初始化余量');

@@ -2,7 +2,7 @@ import { fetchBoundArtifactFile, type ArtifactBinding } from './artifact-handoff
 import {extractArtifactFile} from './artifact-file.js';
 import {createReadStream} from 'node:fs';
 import {createHash} from 'node:crypto';
-import { matchBuildFiles } from '../../core/src/build-manifest.js';
+import { canonicalBuildManifest, matchBuildFiles } from '../../core/src/build-manifest.js';
 import { planBuild, BuildContractError, type BuildPlan, type BuildManifest } from '../../core/src/build-manifest.js';
 import { freezePersonalization } from '../../core/src/release-personalization.js';
 import { releaseProfiles } from '../../../config/release-profiles.js';
@@ -60,6 +60,11 @@ export function hostedBuildRunner(family: string): string {
   releaseAssert(family === 'windows' || family === 'linux','BUILD_RUNNER');
   return family === 'windows' ? 'windows-2025' : 'ubuntu-24.04';
 }
+export const inspectionManifestDigest=(manifest:BuildManifest)=>createHash('sha256').update(canonicalBuildManifest(manifest)).digest('hex');
+export function encodeInspectionReport(binding:ArtifactBinding,archiveSha256:string,manifest:BuildManifest):string {
+ const report=Buffer.from(canonicalReleaseJson({binding,archiveSha256,manifestSha256:inspectionManifestDigest(manifest)})).toString('base64');
+ releaseAssert(report.length<=60000,'BUILD_REPORT_LIMIT');return report;
+}
 export async function releaseBuildCommand(args: Readonly<Record<string, string>>): Promise<void> {
   const required = (k: string) => { releaseAssert(args[k], 'ARGUMENT_' + k); return args[k]!; };
   const operation = required('operation'), policySha = required('policy-sha'); releaseAssert(releaseSha(policySha), 'POLICY');
@@ -78,8 +83,8 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
     let manifest: BuildManifest;
     try { manifest = await collectFileBuildManifest(plan, assets, nativeReleaseInspector(resolve(required('inspector')),home)); }
     catch(error) { if(error instanceof BuildContractError) await output({verificationFailed:'true'}); throw error; }
-    const report = Buffer.from(canonicalReleaseJson({binding,archiveSha256:archive.digest,manifest})).toString('base64');
-    releaseAssert(report.length <= 60000, 'BUILD_REPORT_LIMIT'); await output({report}); return;
+    const report=encodeInspectionReport(binding,archive.digest,manifest);
+    await output({report}); return;
   }
   if (operation === 'plan-product') {
     const repositoryId = Number(required('repository-id')), target = required('target-sha'), buildId = required('build-id');
@@ -206,6 +211,7 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
     releaseAssert(state.request.plans.length === 1, 'BUILD_SET');
     const encoded=environment('ARTIFACT_REPORT'); releaseAssert(encoded.length<=60000 && /^[A-Za-z0-9+/]+={0,2}$/.test(encoded),'BUILD_REPORT');
     const report=JSON.parse(Buffer.from(encoded,'base64').toString('utf8'));
+    releaseAssert(report && Object.keys(report).sort().join(',')==='archiveSha256,binding,manifestSha256','BUILD_REPORT');
     const binding:ArtifactBinding={repositoryId:1296724484,fullName:'splrad/steward',workflowPath:'.github/workflows/release-build.yml',policySha,runId:Number(required('run-id')),attempt:Number(required('attempt')),artifactId:Number(required('artifact-id')),artifactName:'release-build-result-'+required('attempt')};
     releaseAssert(canonicalReleaseJson(report.binding)===canonicalReleaseJson(binding),'BUILD_REPORT_BINDING');
     const central=await scoped(1296724484,policySha,'read');
@@ -215,7 +221,7 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
     releaseAssert(report.archiveSha256===archive.digest,'BUILD_REPORT_DIGEST');
     const plan=state.request.plans[0]!, assignments=matchBuildFiles(plan,[...files.keys()]);
     const manifest:BuildManifest={schemaVersion:1,repositoryId:plan.repositoryId,fullName:plan.fullName,buildId:plan.buildId,profile:plan.profile,targetSha:plan.targetSha,policySha:plan.policySha,version:plan.version,inputsSha256:plan.inputsSha256,artifacts:assignments.map(a=>({...a,kind:'file' as const,size:files.get(a.file)!.size,sha256:files.get(a.file)!.sha256}))};
-    releaseAssert(canonicalReleaseJson(manifest)===canonicalReleaseJson(report.manifest),'BUILD_REPORT_MANIFEST');
+    releaseAssert(inspectionManifestDigest(manifest)===report.manifestSha256,'BUILD_REPORT_MANIFEST');
     const assets=resolve(required('assets')); await mkdir(assets,{recursive:true});
     for(const [name,file] of files) {
       try{await copyFile(file.path,join(assets,name),constants.COPYFILE_EXCL);}catch(error){

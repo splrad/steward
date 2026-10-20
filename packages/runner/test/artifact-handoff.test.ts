@@ -1,3 +1,4 @@
+import {artifactDownloadTimeout} from '../src/artifact-handoff.js';
 import {mkdtemp,readFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -20,3 +21,5 @@ describe('artifact run/attempt and immutable bytes',()=>{
 it('rejects duplicate matching artifacts rather than selecting one',async()=>{const f=fixture(),original=f.gh.request.getMockImplementation();f.gh.request.mockImplementation(async(m:string,p:string)=>p.includes('/artifacts?')?{total_count:2,artifacts:[f.artifact,{...f.artifact,id:10}]}:original(m,p));await expect(fetchBoundArtifact(f.gh,f.transport,'secret',b)).rejects.toThrow()});
 
 it('streams verified archive bytes to a fresh file',async()=>{const f=fixture(),home=await mkdtemp(join(tmpdir(),'handoff-file-'));try{const result=await fetchBoundArtifactFile(f.gh,f.transport,'secret',b,join(home,'archive'));expect(await readFile(result.path)).toEqual(f.bytes);expect(result.digest).toBe(archiveDigest(f.bytes));expect(f.transport.mock.calls[1][1].headers).toBeUndefined();}finally{await rm(home,{recursive:true,force:true});}});
+
+it('budgets the largest permitted archive at 4 MiB/s plus setup time',()=>{expect(artifactDownloadTimeout(4*1024**3+16*1024**2)).toBe(1088000);expect(artifactDownloadTimeout(1)).toBe(61000);expect(()=>artifactDownloadTimeout(4*1024**3+16*1024**2+1)).toThrow();});

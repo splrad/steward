@@ -77,6 +77,7 @@ jobs:
     concurrency:
       group: workflow-policy:${{ github.workflow_ref }}:steward-release-publish-${{ inputs.repositoryId }}
       cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: ${{ fromJSON(needs.inspect.outputs.publishTimeoutMinutes) }}
     environment:

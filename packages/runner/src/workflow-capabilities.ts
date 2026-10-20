@@ -1,3 +1,52 @@
+// Fixed command capabilities; workflow names and surrounding business jobs are not identities.
+const policySourceOperations:readonly unknown[] = [
+  {
+    "env": {
+      "APP_ID": "4243096",
+      "INSTALLATION_ID": "145952003",
+      "STEWARD_APP_PRIVATE_KEY": "${{ secrets.STEWARD_APP_PRIVATE_KEY }}",
+      "REPOSITORY_ID": "${{ inputs.repositoryId }}",
+      "POLICY_SHA": "${{ steps.policy.outputs.policy_sha }}",
+      "SYNC_TRIGGER": "${{ github.event_name }}",
+      "TRIGGER_ACTOR_ID": "${{ github.actor_id }}",
+      "TRIGGER_ACTOR_LOGIN": "${{ github.actor }}"
+    },
+    "run": "repository_arguments=()\nif [[ -n \"$REPOSITORY_ID\" ]]; then\n  repository_arguments+=(--repository-id \"$REPOSITORY_ID\")\nfi\nnode packages/runner/dist/index.js sync-managed-labels \"${repository_arguments[@]}\" --policy-sha \"$POLICY_SHA\"\n",
+    "working-directory": "policy-live"
+  },
+  {
+    "id": "targets",
+    "shell": "bash",
+    "env": {
+      "APP_ID": "4243096",
+      "INSTALLATION_ID": "145952003",
+      "STEWARD_APP_PRIVATE_KEY": "${{ secrets.STEWARD_APP_PRIVATE_KEY }}",
+      "REPOSITORY_ID": "${{ inputs.repositoryId }}",
+      "POLICY_SHA": "${{ steps.policy.outputs.policy_sha }}",
+      "SYNC_TRIGGER": "${{ github.actor_id == '301115370' && 'app-redrive' || github.event_name }}",
+      "TRIGGER_ACTOR_ID": "${{ github.actor_id }}",
+      "TRIGGER_ACTOR_LOGIN": "${{ github.actor }}"
+    },
+    "run": "repository_arguments=()\nif [[ -n \"$REPOSITORY_ID\" ]]; then\n  repository_arguments+=(--repository-id \"$REPOSITORY_ID\")\nfi\nnode packages/runner/dist/index.js review-sync-targets \"${repository_arguments[@]}\" --policy-sha \"$POLICY_SHA\"\n",
+    "working-directory": "policy-live"
+  },
+  {
+    "shell": "bash",
+    "env": {
+      "APP_ID": "4243096",
+      "INSTALLATION_ID": "145952003",
+      "STEWARD_APP_PRIVATE_KEY": "${{ secrets.STEWARD_APP_PRIVATE_KEY }}",
+      "RUNTIME_URL": "https://splrad-steward-runtime.alearner-5ef.workers.dev",
+      "REPOSITORY_ID": "${{ matrix.repositoryId }}",
+      "POLICY_SHA": "${{ steps.policy.outputs.policy_sha }}",
+      "SYNC_TRIGGER": "${{ github.actor_id == '301115370' && 'app-redrive' || github.event_name }}",
+      "TRIGGER_ACTOR_ID": "${{ github.actor_id }}",
+      "TRIGGER_ACTOR_LOGIN": "${{ github.actor }}"
+    },
+    "run": "repository_arguments=()\nif [[ -n \"$REPOSITORY_ID\" ]]; then\n  repository_arguments+=(--repository-id \"$REPOSITORY_ID\")\nfi\nnode packages/runner/dist/index.js sync-review-instructions \"${repository_arguments[@]}\" --policy-sha \"$POLICY_SHA\"\n",
+    "working-directory": "policy-live"
+  }
+];
 /** This prefix executes only the workflow's immutable source, then resolves the live policy. */
 export const policySourcePrefix = [
  {uses:'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',with:{ref:'${{ github.workflow_sha }}',path:'policy-bootstrap','persist-credentials':false}},
@@ -13,7 +62,9 @@ export function hasTrustedPolicyPrefix(d: any,j:any): boolean {
  const expected:any=structuredClone(policySourcePrefix);
  if(j.needs==='resolve')expected[2].env.POLICY_SOURCE_EXPECTED_SHA='${{ needs.resolve.outputs.policy_sha }}';
  if(stable(j.steps?.slice(0,policySourcePrefix.length))!==stable(expected))return false;
- return j.steps.slice(policySourcePrefix.length).every((s:any)=> !s.uses && typeof s.run==='string' && s['working-directory']==='policy-live' && s.env?.POLICY_SHA==='${{ steps.policy.outputs.policy_sha }}');
+ if(j.steps.length!==policySourcePrefix.length+1)return false;
+ const operation=structuredClone(j.steps[policySourcePrefix.length]);delete operation.name;
+ return policySourceOperations.some(expected=>stable(operation)===stable(expected));
 }
 export function assertArtifactHandoff(d:any): void {
  const fail=()=>{throw new Error('WORKFLOW_POLICY: isolated artifact handoff changed');};
