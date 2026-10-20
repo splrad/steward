@@ -7,6 +7,20 @@ const baseline:WorkflowContract={version:1,repositoryId,fragments:'required',sha
 const candidate:WorkflowContract={...baseline,fragments:'retired'};
 afterEach(()=>{vi.unstubAllGlobals();});
 describe('runtime contract revalidation',()=>{
+ it('skips unmanaged private authority repositories after verifying metadata identity',async()=>{
+  const id=987654321;
+  const request=vi.fn(async(url:string)=>{
+   const pathname=new URL(String(url)).pathname;
+   if(pathname.endsWith('/access_tokens'))return new Response(JSON.stringify({token:'test'}));
+   if(pathname===`/repositories/${id}`)return new Response(JSON.stringify({id,full_name:'splrad/private-new',private:true,owner:{id:302208797},default_branch:'main'}));
+   throw new Error('unexpected unmanaged repository operation '+pathname);
+  });
+  vi.stubGlobal('fetch',request);
+  const env={APP_ID:'4243096',INSTALLATION_ID:'145952003',POLICY_SHA:policy,WORKFLOW_EVALUATOR_SHA:policy,
+   STEWARD_APP_PRIVATE_KEY:generateKeyPairSync('rsa',{modulusLength:2048,privateKeyEncoding:{format:'pem',type:'pkcs8'},publicKeyEncoding:{format:'pem',type:'spki'}}).privateKey} as Env;
+  await expect(refreshWorkflowContractChecks(env,id)).resolves.toBeUndefined();
+  expect(request).toHaveBeenCalledTimes(2);
+ });
  it('skips the full contract sweep between fifteen-minute slots',async()=>{
   const request=vi.fn();vi.stubGlobal('fetch',request);
   await worker.scheduled({scheduledTime:60_000} as ScheduledController,{WORKFLOW_EVALUATOR_SHA:policy} as Env);
