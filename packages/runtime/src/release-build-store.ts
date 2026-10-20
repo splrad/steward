@@ -36,7 +36,9 @@ export class ReleaseBuildStore {
   }
   private async restart(previous: ReleaseBuildState, request: ReleaseBuildRequest): Promise<ReleaseBuildState> {
     const old = previous.request, f = request.frozen;
-    releaseAssert(['requested', 'running', 'failed'].includes(previous.status)
+    const obsoleteSeed = ['accepted', 'seeded'].includes(previous.status)
+      && old.mode === 'initial' && request.mode === 'initial' && old.frozen.policySha !== f.policySha;
+    releaseAssert((['requested', 'running', 'failed'].includes(previous.status) || obsoleteSeed)
       && (old.frozen.policySha !== f.policySha || old.frozen.productTargetSha !== f.productTargetSha), 'BUILD_REQUEST_OCCUPIED');
     const restartCount = (previous.restartCount ?? 0) + 1;
     releaseAssert(restartCount <= 3, 'BUILD_RESTART_BUDGET');
@@ -47,8 +49,8 @@ export class ReleaseBuildStore {
     // D1 batch is atomic. The insert depends on the exact archived version, so a
     // competing completion/replacement cannot leave a second active request.
     await this.db.batch([
-      this.db.prepare("UPDATE release_build_requests SET record_json=?,version=? WHERE policy_archived=0 AND request_key=? AND version=? AND json_extract(record_json,'$.status') IN ('requested','running','failed') AND NOT EXISTS(SELECT 1 FROM release_receipts WHERE repository_id=? AND target_tag=? AND current=1) AND NOT EXISTS(SELECT 1 FROM release_build_requests WHERE request_key=?)")
-        .bind(archivedText, archived.version, old.key, previous.version, f.repositoryId, f.targetTag, request.key),
+      this.db.prepare("UPDATE release_build_requests SET record_json=?,version=? WHERE policy_archived=0 AND request_key=? AND version=? AND record_json=? AND NOT EXISTS(SELECT 1 FROM release_receipts WHERE repository_id=? AND target_tag=? AND current=1) AND NOT EXISTS(SELECT 1 FROM release_build_requests WHERE request_key=?)")
+        .bind(archivedText, archived.version, old.key, previous.version, canonicalReleaseJson(previous), f.repositoryId, f.targetTag, request.key),
       this.db.prepare("INSERT OR IGNORE INTO release_build_requests(request_key,repository_id,target_tag,record_json) SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM release_build_requests WHERE request_key=? AND version=? AND json_extract(record_json,'$.supersededBy')=?)")
         .bind(request.key, f.repositoryId, f.targetTag, nextText, old.key, archived.version, request.key),
     ]);

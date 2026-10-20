@@ -1,6 +1,6 @@
 import { type BuildPlan, type BuildManifest, planBuild } from './build-manifest.js';
 import { canonicalReleaseJson, receiptDigest, releaseAssert, type FrozenRelease } from './release-note-receipt.js';
-export const releaseToolchain = { node: '24.14.1', dotnet: '10.0.402', powershell: '7.6.6', runner: 'windows-2025', linuxRunner: 'ubuntu-24.04', npm: '11.11.0', docker: '29.8.2', buildx: '0.37.2' } as const;
+export const releaseToolchain = { node: '24.22.0', dotnet: '10.0.402', powershell: '7.6.6', runner: 'windows-2025', linuxRunner: 'ubuntu-24.04', npm: '11.19.1', docker: '29.8.2', buildx: '0.37.2' } as const;
 export const releaseToolchainDigest = receiptDigest(canonicalReleaseJson(releaseToolchain));
 export interface ReleaseBuildRequest {
   key: string; mode: 'initial' | 'rebuild'; frozen: FrozenRelease; plans: BuildPlan[]; sourceArtifactId: number | null;

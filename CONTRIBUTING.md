@@ -6,7 +6,7 @@ SPLRAD Steward 是组织的共享自动化服务，不是通用的 GitHub 自动
 
 ## 本地环境与检查
 
-Steward 使用 Node.js `24.14.1` 和 npm `11.11.0`。
+Steward 使用 Node.js `24.22.0` 和 npm `11.19.1`。
 
 ```powershell
 npm ci --ignore-scripts

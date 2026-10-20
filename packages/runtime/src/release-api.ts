@@ -104,6 +104,16 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
         } finally { await store.release(repositoryId, tag, claim.token); }
       } else {
         const pending = await store.migratedReceipt(repositoryId, tag);
+        if (!pending) {
+          const seed = await new ReleaseBuildStore(env.ISSUE_SNAPSHOTS).acceptedSeed(repositoryId, tag);
+          releaseAssert(seed && seed.request.frozen.policySha !== env.POLICY_SHA, 'POLICY_MIGRATION_NOT_FOUND');
+          await makeReleaseBuildRequest({ ...seed.request.frozen, productTargetSha: head.object.sha, policySha: env.POLICY_SHA! }, configuration, 'initial', null);
+          // Keep the old seed until the new-policy prepare independently validates
+          // its source and atomically replaces it. Dispatch failure is retryable.
+          await dispatchWorkflow(await centralBuildClient(env, true), { owner: 'splrad', repo: 'steward', workflow: 'release-build.yml', policySha: env.POLICY_SHA!,
+            inputs: { repositoryId: String(repositoryId), targetTag: tag, targetSha: head.object.sha, authorIds: seed.request.frozen.authorIds.join(',') } });
+          return reply(200, { migratedRevision: null, supersedesRequestKey: seed.request.key, policySha: env.POLICY_SHA, rebuildDispatched: true });
+        }
         releaseAssert(pending, 'POLICY_MIGRATION_NOT_FOUND');
         if (pending.pullNumber) {
           const pull = await gh.getPullRequest(owner, repo, pending.pullNumber);

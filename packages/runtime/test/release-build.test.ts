@@ -115,24 +115,40 @@ it('archives obsolete requests atomically, fences callbacks, and retains a bound
   expect(mock.central.request).not.toHaveBeenCalled();
   expect(db.database.prepare("SELECT COUNT(*) AS n FROM release_build_requests WHERE json_extract(record_json,'$.status')!='superseded'").get()?.n).toBe(1);
 });
-it.each(['accepted', 'receipt'])('does not replace a request after %s', async barrier => {
+it.each(['accepted', 'seeded', 'receipt'])('does not replace a same-policy accepted seed or a current receipt: %s', async barrier => {
   let state = await request();
-  if (barrier === 'accepted') state = await store.save(state, { ...state, status: 'accepted' });
+  if (barrier !== 'receipt') state = await store.save(state, { ...state, status: barrier as 'accepted' | 'seeded' });
   else await receipts.prepare(newReleaseReceipt(state.request.frozen, notesFixture), 'now');
-  await expect(store.prepare(await replacement(state, 'd'))).rejects.toThrow(barrier === 'accepted' ? 'BUILD_REQUEST_OCCUPIED' : 'BUILD_REQUEST_STALE');
+  const next = barrier === 'receipt' ? await replacement(state, 'd') : await makeReleaseBuildRequest({...state.request.frozen,productTargetSha:sha('b')},mock.config,'initial',null);
+  await expect(store.prepare(next)).rejects.toThrow(barrier !== 'receipt' ? 'BUILD_REQUEST_OCCUPIED' : 'BUILD_REQUEST_STALE');
   expect(await store.get(state.request.key, 9001, 'v1.2.3')).toEqual(state);
   expect(db.database.prepare('SELECT COUNT(*) AS n FROM release_build_requests').get()?.n).toBe(1);
 });
-it('serializes competing replacements without orphaning the active slot', async () => {
-  const state = await request();
+it.each(['accepted', 'seeded'] as const)('replaces an obsolete %s seed without a receipt and fences stale callbacks', async status => {
+  if (status === 'seeded') mock.config.delivery.githubRelease.builds = [];
+  let prior = await request();
+  prior = await store.save(prior, {...prior,status});
+  const next = await replacement(prior, 'd');
+  const fresh = await store.prepare(next);
+  expect(fresh).toMatchObject({status:'requested',attempts:[],artifact:null,restartCount:1});
+  expect(await store.prepare(next)).toEqual(fresh);
+  expect(await store.acceptedSeed(9001,'v1.2.3')).toBeNull();
+  expect(await store.get(prior.request.key,9001,'v1.2.3')).toMatchObject({status:'superseded',supersededBy:next.key});
+  await expect(store.save(prior,prior)).rejects.toThrow('BUILD_REQUEST_STALE');
+  expect(await receipts.get(9001,'v1.2.3')).toBeNull();
+});
+it.each(['requested','accepted','seeded'] as const)('serializes competing replacements of %s without orphaning the active slot', async status => {
+  let state = await request();
+  state = await store.save(state,{...state,status});
   const a = await replacement(state, 'd'), b = await replacement(state, 'e');
   const results = await Promise.allSettled([store.prepare(a), store.prepare(b)]);
   expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
   expect(db.database.prepare("SELECT COUNT(*) AS n FROM release_build_requests WHERE json_extract(record_json,'$.status')!='superseded'").get()?.n).toBe(1);
   expect(db.database.prepare('SELECT COUNT(*) AS n FROM release_build_requests').get()?.n).toBe(2);
 });
-it('rolls back the archive if inserting its replacement fails', async () => {
-  const state = await request();
+it.each(['requested','accepted','seeded'] as const)('rolls back the %s archive if inserting its replacement fails', async status => {
+  let state = await request();
+  state = await store.save(state,{...state,status});
   db.database.exec("CREATE TRIGGER fail_restart BEFORE INSERT ON release_build_requests BEGIN SELECT RAISE(ABORT,'test-insert-failure'); END");
   await expect(store.prepare(await replacement(state, 'd'))).rejects.toThrow('test-insert-failure');
   expect(await store.get(state.request.key, 9001, 'v1.2.3')).toEqual(state);
@@ -356,4 +372,27 @@ it('resumes an interrupted migration after another policy upgrade without reusin
  expect(response!.status).toBe(200);expect(await store.get(build.request.key,9001,'v1.2.3')).toBeNull();
  expect(await receipts.get(9001,'v1.2.3',1)).toEqual(r);
  expect(mock.dispatch).toHaveBeenLastCalledWith(mock.central,expect.objectContaining({policySha:sha('d')}));
+});
+
+it.each(['accepted','seeded'] as const)('dispatches receipt-free %s migration and retries failure without losing the old seed', async status => {
+ if(status==='seeded') mock.config.delivery.githubRelease.builds=[];
+ let seed=await store.prepare(await makeReleaseBuildRequest({...frozenFixture(),policySha:sha('e')},mock.config,'initial',null));
+ seed=await store.save(seed,{...seed,status});
+ mock.central.getGitRef=vi.fn(async(_o,_r,ref)=>{if(ref.startsWith('heads/'))return {object:{sha:sha('a')}};throw new GitHubRequestError(404,'missing',{});});
+ mock.central.getReleaseByTag=vi.fn(async()=>{throw new GitHubRequestError(404,'missing',{});});
+ mock.dispatch.mockRejectedValueOnce(new Error('network'));
+ expect((await migrate())!.status).not.toBe(200);
+ expect(await store.acceptedSeed(9001,'v1.2.3')).toEqual(seed);
+ const response=(await migrate())!;expect(response.status).toBe(200);
+ expect(await response.json()).toMatchObject({migratedRevision:null,supersedesRequestKey:seed.request.key,rebuildDispatched:true});
+ expect(mock.dispatch).toHaveBeenLastCalledWith(mock.central,expect.objectContaining({policySha:sha('c'),inputs:expect.objectContaining({targetSha:sha('a'),authorIds:'1'})}));
+ const next=await store.prepare(await replacement(seed,'c'));
+ expect(next.status).toBe('requested');expect(await store.acceptedSeed(9001,'v1.2.3')).toBeNull();
+ await expect(store.save(seed,seed)).rejects.toThrow('BUILD_REQUEST_STALE');
+});
+it.each(['accepted','seeded'] as const)('does not replace a %s seed if a candidate receipt wins the race',async status=>{
+ let seed=await request();seed=await store.save(seed,{...seed,status});
+ await receipts.prepare(newReleaseReceipt(seed.request.frozen,notesFixture),'now');
+ await expect(store.prepare(await replacement(seed,'d'))).rejects.toThrow('BUILD_REQUEST_STALE');
+ expect(await store.acceptedSeed(9001,'v1.2.3')).toEqual(seed);
 });
