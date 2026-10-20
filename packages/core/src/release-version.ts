@@ -18,8 +18,10 @@ export function parseVersionFile(bytes: Uint8Array): PublicVersion {
   let source: string;
   try { source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
   catch { throw new ReleaseVersionError('RN_VERSION_INVALID'); }
-  if (!source.endsWith('\n')) throw new ReleaseVersionError('RN_VERSION_INVALID');
-  return parsePublicVersion(source.slice(0, -1));
+  if (!source.endsWith('\n') || source.includes('\r') || source.includes('\ufeff') || source.includes('\0')) throw new ReleaseVersionError('RN_VERSION_INVALID');
+  const values = source.split('\n').filter(line => line !== '' && !line.startsWith('#'));
+  if (values.length !== 1) throw new ReleaseVersionError('RN_VERSION_INVALID');
+  return parsePublicVersion(values[0]!);
 }
 
 export function comparePublicVersions(left: PublicVersion, right: PublicVersion): -1 | 0 | 1 {

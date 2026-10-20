@@ -1,3 +1,4 @@
+import { parseVersionFile } from '../../core/src/release-version.js';
 import { assertPersonalizationConfiguration } from '../../core/src/release-personalization.js';
 import { releaseProfiles } from '../../../config/release-profiles.js';
 import { GitHubClient, createInstallationToken, dispatchWorkflow } from '../../github/src/index.js';
@@ -59,7 +60,7 @@ export async function handleReleaseBuildAction(env: BodyWriteRuntimeEnv, gh: Git
     const head = await gh.getGitRef(owner, repo, `heads/${f.defaultBranch}`);
     releaseAssert(head.object.sha === f.productTargetSha, 'BUILD_TARGET_STALE');
     const tree = await releaseTree(gh, owner, repo, f.productTargetSha);
-    releaseAssert(tree.object.tree.sha === f.productTree && await readCandidateBlob(gh, owner, repo, tree, 'VERSION') === f.targetTag.slice(1) + '\n', 'VERSION_BINDING');
+    releaseAssert(tree.object.tree.sha === f.productTree && parseVersionFile(new TextEncoder().encode(await readCandidateBlob(gh, owner, repo, tree, 'VERSION'))).value === f.targetTag.slice(1), 'VERSION_BINDING');
     const sourceBytes = await receipts.readObject(repositoryId, f.sourceDigest);
     const source = validateReleaseSource(sourceBytes, f);
     await verifyReleaseCommitRange(gh, owner, repo, source, f.productTargetSha);

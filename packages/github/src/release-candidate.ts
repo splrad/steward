@@ -47,7 +47,7 @@ export async function readCandidateBlob(gh: GitHubClient, owner: string, repo: s
   releaseAssert(blob.sha === entry.sha && blob.encoding === 'base64' && typeof blob.content === 'string' && blob.size <= 128 * 1024, 'BLOB');
   const bytes = Buffer.from(blob.content.replace(/\n/g, ''), 'base64');
   releaseAssert(bytes.length === blob.size && createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') === entry.sha, 'BLOB_INTEGRITY');
-  return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
 }
 /** All facts here are fetched from GitHub; candidate files never self-report approvals. */
 export async function readReleaseCandidateFacts(gh: GitHubClient, r: ReleaseReceipt, appId: number, botUserId: number, workflowEvaluatorSha?: string): Promise<CandidateReviewFacts> {

@@ -1,6 +1,6 @@
 import { evaluatorSha } from './workflow-evaluator.js';
 import { assertPersonalizationConfiguration, refreshPersonalizedSections } from '../../core/src/release-personalization.js';
-import { comparePublicVersions, parsePublicVersion } from '../../core/src/release-version.js';
+import { comparePublicVersions, parsePublicVersion, parseVersionFile } from '../../core/src/release-version.js';
 import { releaseProfiles } from '../../../config/release-profiles.js';
 import { randomUUID } from 'node:crypto';
 import { authorizeSingleRepository, type BodyWriteRuntimeEnv } from './pr-body-api.js';
@@ -83,7 +83,7 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
       const head = await gh.getGitRef(owner, repo, `heads/${repository.default_branch}`);
       releaseAssert(releaseSha(head.object?.sha), 'BUILD_TARGET_STALE');
       const product = await releaseTree(gh, owner, repo, head.object.sha);
-      releaseAssert(await readCandidateBlob(gh, owner, repo, product, 'VERSION') === tag.slice(1) + '\n', 'VERSION_BINDING');
+      releaseAssert(parseVersionFile(new TextEncoder().encode(await readCandidateBlob(gh, owner, repo, product, 'VERSION'))).value === tag.slice(1), 'VERSION_BINDING');
       await assertIncreasingReleaseVersion(gh, owner, repo, tag);
       releaseAssert(!await optionalReleaseRead(() => gh.getReleaseByTag(owner, repo, tag))
         && !await optionalReleaseRead(() => gh.getGitRef(owner, repo, `tags/${tag}`)), 'VERSION_OCCUPIED');
@@ -154,7 +154,7 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
       const commit = await gh.getGitCommit(owner, repo, r.frozen.productTargetSha);
       releaseAssert(commit.sha === r.frozen.productTargetSha && commit.tree?.sha === r.frozen.productTree, 'PRODUCT_TREE');
       const product = await releaseTree(gh, owner, repo, r.frozen.productTargetSha);
-      releaseAssert(await readCandidateBlob(gh, owner, repo, product, 'VERSION') === r.frozen.targetTag.slice(1) + '\n', 'VERSION_BINDING');
+      releaseAssert(parseVersionFile(new TextEncoder().encode(await readCandidateBlob(gh, owner, repo, product, 'VERSION'))).value === r.frozen.targetTag.slice(1), 'VERSION_BINDING');
       await assertIncreasingReleaseVersion(gh, owner, repo, r.frozen.targetTag);
       const source = validateReleaseSource(await store.readObject(repositoryId, r.frozen.sourceDigest), r.frozen);
       await verifyReleaseCommitRange(gh, owner, repo, source, r.frozen.productTargetSha);

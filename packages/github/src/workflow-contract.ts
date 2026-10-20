@@ -1,3 +1,4 @@
+import { verifyBaseContractAdoption } from './workflow-contract-adoption.js';
 import {createHash} from 'node:crypto';
 import {canonicalContract, contractApprovalText, parseWorkflowContract, requireContractApproval, type WorkflowContract, type ContractBinding} from '../../core/src/workflow-contract.js';
 import {GitHubClient, GitHubRequestError} from './client.js';
@@ -35,6 +36,8 @@ export async function evaluateRemoteWorkflowContract(gh: GitHubClient, authority
   // A contract already adopted on the protected base is the baseline for the
   // next PR. Otherwise every later business change would need reapproval.
   const baseline = await readContract(pull.base.sha);
+  if (digest(baseline) !== digest(authority.baseline))
+    await verifyBaseContractAdoption(gh, owner, name, pull.base.sha, policySha, authority, baseline, readContract);
   const candidate = await readContract(pull.head.sha);
   if (candidate.repositoryId !== repo.id || baseline.repositoryId !== repo.id || authority.baseline.repositoryId !== repo.id) throw new Error('CONTRACT_REPOSITORY: mismatch');
   const binding: ContractBinding = {repositoryId: repo.id,pullNumber,headSha: pull.head.sha,baseSha: pull.base.sha,policySha,contractDigest: digest(candidate)};

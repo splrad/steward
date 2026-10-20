@@ -7,17 +7,22 @@ const baseline:WorkflowContract={version:1,repositoryId:99,fragments:'required',
 const candidate:WorkflowContract={...baseline,fragments:'retired'};
 const head='a'.repeat(40),base='b'.repeat(40),policy='c'.repeat(40);
 const binding={repositoryId:99,pullNumber:7,headSha:head,baseSha:base,policySha:policy,contractDigest:createHash('sha256').update(canonicalContract(candidate)).digest('hex')};
-function setup(options:{state?:string;permission?:string;mutate?:boolean;missing?:boolean;denied?:boolean;body?:string;adopted?:boolean}={}){
+function setup(options:{state?:string;permission?:string;mutate?:boolean;missing?:boolean;denied?:boolean;body?:string;adopted?:boolean;unreviewedBase?:boolean;priorState?:string;ancestry?:string;priorAuthor?:number}={}){
  let reads=0;
  const transport:typeof fetch=async(input)=>{
   const u=new URL(String(input));
   let value:any;
-  if(u.pathname==='/repositories/99')value={id:99,full_name:'test/project',default_branch:'main'};
+  if(u.pathname==='/repos/test/project/commits')value=[{sha:'f'.repeat(40),parents:[{sha:'e'.repeat(40)}]}];
+  else if(u.pathname.endsWith('/commits/'+ 'f'.repeat(40)+'/pulls'))value=options.unreviewedBase?[]:[{number:6}];
+  else if(u.pathname.endsWith('/pulls/6'))value={number:6,merged:true,user:{id:options.priorAuthor??1},merge_commit_sha:'f'.repeat(40),head:{sha:'d'.repeat(40)},base:{sha:'e'.repeat(40),repo:{id:99}}};
+  else if(u.pathname.includes('/compare/'))value={status:options.ancestry??'ahead'};
+  else if(u.pathname.endsWith('/pulls/6/reviews'))value=[{id:2,user:{id:2,login:'reviewer',type:'User'},state:options.priorState??'APPROVED',commit_id:'d'.repeat(40),body:contractApprovalText({...binding,pullNumber:6,headSha:'d'.repeat(40),baseSha:'e'.repeat(40)}),submitted_at:'2026-10-19T00:00:00Z'}];
+  else if(u.pathname==='/repositories/99')value={id:99,full_name:'test/project',default_branch:'main'};
   else if(u.pathname.endsWith('/pulls/7'))value={number:7,state:'open',user:{id:1},head:{sha:options.mutate&&++reads>1?'e'.repeat(40):head,repo:{id:99}},base:{sha:base,ref:'main',repo:{id:99}}};
   else if(u.pathname.includes('/contents/')){
-   expect([head,base]).toContain(u.searchParams.get('ref'));
+   expect([head,base,'d'.repeat(40),'e'.repeat(40),'f'.repeat(40)]).toContain(u.searchParams.get('ref'));
    if(options.missing||options.denied)return new Response('{}',{status:options.denied?403:404});
-   value={type:'file',encoding:'base64',size:100,content:Buffer.from(JSON.stringify(u.searchParams.get('ref')===base&&!options.adopted?baseline:candidate)).toString('base64')};
+   value={type:'file',encoding:'base64',size:100,content:Buffer.from(JSON.stringify((u.searchParams.get('ref')===base&&!options.adopted)||u.searchParams.get('ref')==='e'.repeat(40)?baseline:candidate)).toString('base64')};
   }else if(u.pathname.endsWith('/reviews'))value=[{id:1,user:{id:2,login:'reviewer',type:'User'},state:options.state??'APPROVED',commit_id:head,body:options.body??contractApprovalText(binding),submitted_at:'2026-10-20T00:00:00Z'}];
   else if(u.pathname.endsWith('/permission'))value={permission:options.permission??'write',user:{id:2}};
   else throw new Error('unexpected '+u.pathname);
@@ -32,6 +37,12 @@ describe('remote workflow contract evidence',()=>{
  });
  it('does not require another approval for a contract already adopted on the protected base',async()=>{
   expect((await evaluateRemoteWorkflowContract(setup({adopted:true,state:'COMMENTED'}),authority,7,policy)).reviewId).toBeNull();
+ });
+ it('rejects an unreviewed contract preseeded on base',async()=>{
+  await expect(evaluateRemoteWorkflowContract(setup({adopted:true,unreviewedBase:true}),authority,7,policy)).rejects.toThrow('CONTRACT_BASE_UNADOPTED');
+ });
+ it.each([{priorState:'DISMISSED'},{priorState:'CHANGES_REQUESTED'},{permission:'read'},{ancestry:'diverged'},{priorAuthor:2}])('rejects invalid adoption evidence %j',async options=>{
+  await expect(evaluateRemoteWorkflowContract(setup({adopted:true,...options}),authority,7,policy)).rejects.toThrow('CONTRACT_BASE_UNADOPTED');
  });
  it.each(['DISMISSED','CHANGES_REQUESTED','COMMENTED'])('denies review state %s',async state=>{
   await expect(evaluateRemoteWorkflowContract(setup({state}),authority,7,policy)).rejects.toThrow('APPROVAL_REQUIRED');

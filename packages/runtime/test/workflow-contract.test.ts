@@ -1,17 +1,14 @@
 import {createHash,createHmac,generateKeyPairSync} from 'node:crypto';
 import {afterEach,describe,it,expect,vi} from 'vitest';
 import worker,{handleWebhook,refreshWorkflowContractChecks,type Env} from '../src/index.js';
-import authorities from '../../../config/workflow-contract-authority.json' with {type:'json'};
 import {canonicalContract,contractApprovalText,type WorkflowContract} from '../../core/src/workflow-contract.js';
 const repositoryId=1296724484,head='a'.repeat(40),base='b'.repeat(40),policy='c'.repeat(40);
 const baseline:WorkflowContract={version:1,repositoryId,fragments:'required',sharedQueues:{}};
 const candidate:WorkflowContract={...baseline,fragments:'retired'};
-afterEach(()=>{authorities.repositories={};vi.unstubAllGlobals();});
+afterEach(()=>{vi.unstubAllGlobals();});
 describe('runtime contract revalidation',()=>{
  it.each(['APPROVED','DISMISSED','CHANGES_REQUESTED','PINNED','SOURCE_DENIED','WEBHOOK_APPROVED','WEBHOOK_DISMISSED','WEBHOOK_CHANGES_REQUESTED','SCHEDULED'])('recomputes the same completed run when approval is %s',async state=>{
-  const pinned = ['PINNED','SOURCE_DENIED','SCHEDULED'].includes(state) || state.startsWith('WEBHOOK_'); const reviewState=['PINNED','SCHEDULED'].includes(state)?'APPROVED':state.replace('WEBHOOK_','');
-  (authorities.repositories as any)[repositoryId]={baseline,approverIds:[2]};
-    if(pinned)authorities.repositories={};
+  const pinned = true; const reviewState=['PINNED','SCHEDULED'].includes(state)?'APPROVED':state.replace('WEBHOOK_','');
   const repo={id:repositoryId,full_name:'splrad/steward',default_branch:'main',owner:{id:302208797},private:false};
   const pull={number:7,state:'open',user:{id:1},head:{sha:head,ref:'feature',repo:{id:repositoryId}},base:{sha:base,ref:'main',repo:{id:repositoryId}}};
   const run={id:10,run_attempt:1,workflow_id:20,name:'SPLRAD Steward / PR Validation',path:'.github/workflows/pr-validation.yml',

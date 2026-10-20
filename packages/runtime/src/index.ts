@@ -2,7 +2,6 @@ import { evaluatorSha, trustedContractAuthorities } from './workflow-evaluator.j
 import { isStewardOwnedPullRequest } from "../../core/src/issues.js";
 import {selectContractAuthority} from "../../core/src/workflow-contract-authority.js";
 import {evaluateRemoteWorkflowContract} from "../../github/src/workflow-contract.js";
-import contractAuthorities from "../../../config/workflow-contract-authority.json" with {type: "json"};
 import { createAppJwt, createInstallationToken, dispatchWorkflow, GitHubClient, isDependabotReviewEligible } from "../../github/src/index.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
 import semanticCatalog from "../../../config/labels/pr-semantics.json" with { type: "json" };
@@ -101,7 +100,7 @@ async function validationClient(env: Env, repositoryId: number): Promise<GitHubC
     installationId: Number(env.INSTALLATION_ID),
     repositoryId,
     permissions: { actions: "read", checks: "write", metadata: "read", pull_requests: "read",
-      ...(env.WORKFLOW_EVALUATOR_SHA !== undefined || selectContractAuthority(contractAuthorities, repositoryId) ? {contents: "read" as const} : {}) },
+      ...(env.WORKFLOW_EVALUATOR_SHA !== undefined ? {contents: "read" as const} : {}) },
     policySha: env.POLICY_SHA,
   });
   return new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA);
@@ -220,7 +219,7 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
 }
 
 export async function refreshWorkflowContractChecks(env: Env, repositoryId: number, pullNumber?: number): Promise<void> {
-  if (env.WORKFLOW_EVALUATOR_SHA===undefined && !selectContractAuthority(contractAuthorities, repositoryId)) return;
+  if (env.WORKFLOW_EVALUATOR_SHA===undefined) return;
   const gh = await validationClient(env, repositoryId);
   const repository = await gh.getRepositoryById(repositoryId);
   if (!isManaged(repository) || repository.id !== repositoryId) throw new Error("CONTRACT_REPOSITORY: not managed");
@@ -404,7 +403,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
     if (event === "pull_request" && action === "closed" && payload.pull_request?.merged === false) return response(204);
     if (event === "pull_request_review" && ["submitted", "edited", "dismissed"].includes(action)) {
       const repository = payload.repository;
-      if (!repository || !isManaged(repository) || (env.WORKFLOW_EVALUATOR_SHA === undefined && !selectContractAuthority(contractAuthorities, Number(repository.id)))) return response(204);
+      if (!repository || !isManaged(repository) || env.WORKFLOW_EVALUATOR_SHA === undefined) return response(204);
       const number = Number(payload.pull_request?.number);
       if (!Number.isSafeInteger(number) || number <= 0) return response(204);
       await refreshWorkflowContractChecks(env, repository.id, number);

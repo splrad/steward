@@ -129,7 +129,7 @@ describe('receipt API and publisher with SQLite persistence', () => {
     const f = frozenFixture();
     const raw = Buffer.from(`tree ${sha('b')}\nauthor Fixture <fixture@example.invalid> 0 +0000\ncommitter Fixture <fixture@example.invalid> 0 +0000\n\ninitial\n`);
     const id = createHash('sha1').update(`commit ${raw.length}\0`).update(raw).digest('hex'); f.productTargetSha = id;
-    const version = Buffer.from('1.2.3\n'), blobId = createHash('sha1').update(`blob ${version.length}\0`).update(version).digest('hex');
+    const version = Buffer.from('# Public version\n\n1.2.3\n'), blobId = createHash('sha1').update(`blob ${version.length}\0`).update(version).digest('hex');
     const source = Buffer.from(JSON.stringify({ schemaVersion: 2, repositoryId: 9001, defaultBranch: 'trunk', targetSha: id, productTree: sha('b'), policySha: sha('c'), targetTag: 'v1.2.3', boundary: { kind: 'full-tree' },
       commits: [{ sha: id, tree: sha('b'), parents: [], objectSha256: receiptDigest(raw) }], changes: [{ path: 'VERSION', previousPath: null, status: 'A', before: null, after: { mode: '100644', oid: blobId } }], gaps: [],
       objects: [{ oid: id, type: 'commit', size: raw.length, sha256: receiptDigest(raw), rawBase64: raw.toString('base64'), encoding: 'utf8' }, { oid: blobId, type: 'blob', size: version.length, sha256: receiptDigest(version), rawBase64: version.toString('base64'), encoding: 'utf8' }], coverage: { commits: 1, changedFiles: 1, retainedObjects: 2, retainedBytes: raw.length + version.length } }) + '\n');

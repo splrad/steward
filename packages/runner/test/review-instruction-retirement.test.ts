@@ -77,6 +77,8 @@ describe("审查文件受控退役", () => {
       registry.repositories["1296724484"].allowedWorkflowPaths = [];
       await writeFile(join(directory, "config/repositories.json"), JSON.stringify(registry));
       const validation = JSON.parse(await readFile(join(directory, "config/profiles/validation/steward.json"), "utf8"));
+      // This fixture isolates instruction retirement from remote contract authorization.
+      await writeFile(join(directory, "config/workflow-contract-authority.json"), JSON.stringify({ version: 1, repositories: {} }));
       validation.tasks = ["verify-review-instructions"];
       await writeFile(join(directory, "config/profiles/validation/steward.json"), JSON.stringify(validation));
       const workspace = join(directory, "workspace");

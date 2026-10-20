@@ -1,6 +1,5 @@
 import {GitHubClient,createInstallationToken} from '../../github/src/index.js';
 import {selectContractAuthority} from '../../core/src/workflow-contract-authority.js';
-import fallback from '../../../config/workflow-contract-authority.json' with {type:'json'};
 export interface EvaluatorEnvironment {WORKFLOW_EVALUATOR_SHA?:string;POLICY_SHA:string;APP_ID:string;INSTALLATION_ID:string;STEWARD_APP_PRIVATE_KEY?:string}
 export function evaluatorSha(env:EvaluatorEnvironment):string {
  const value=env.WORKFLOW_EVALUATOR_SHA ?? env.POLICY_SHA;
@@ -14,7 +13,7 @@ export async function readEvaluatorAuthorities(gh:Pick<GitHubClient,'getContent'
  selectContractAuthority(value,1);return value;
 }
 export async function trustedContractAuthorities(env:EvaluatorEnvironment):Promise<{version:1;repositories:Record<string,unknown>}>{
- if(env.WORKFLOW_EVALUATOR_SHA===undefined)return fallback as {version:1;repositories:Record<string,unknown>};
+ if(env.WORKFLOW_EVALUATOR_SHA===undefined)return {version:1,repositories:{}};
  const sha=evaluatorSha(env);if(!env.STEWARD_APP_PRIVATE_KEY)throw new Error('CONTRACT_EVALUATOR_CREDENTIALS');
  const token=await createInstallationToken({appId:env.APP_ID,privateKey:env.STEWARD_APP_PRIVATE_KEY,installationId:Number(env.INSTALLATION_ID),repositoryId:1296724484,permissions:{contents:'read',metadata:'read'},policySha:env.POLICY_SHA});
  return readEvaluatorAuthorities(new GitHubClient(token,'https://api.github.com',fetch,env.POLICY_SHA),sha);

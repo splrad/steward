@@ -2,7 +2,7 @@
 
 ## 当前实现边界
 
-本版本将合同解析、独立批准、可信入口校验和门禁复核接在同一条验证路径上。线上启用配置 `config/workflow-contract-authority.json` 保持空仓库表；没有新增批准者，也没有启用任何仓库。
+本版本将合同解析、独立批准、可信入口校验和门禁复核接在同一条验证路径上。`config/workflow-contract-authority.json` 已准备三个仓库的初始目标和现有批准者，仍待人工采用；运行时须显式配置不可变 `WORKFLOW_EVALUATOR_SHA` 才启用。已核实权限、最小正式升级及集中批准清单见 [首次启用方案](workflow-authority-upgrade.md)。
 
 版本 1 支持：
 
@@ -60,7 +60,7 @@ Profile 由固定执行器目录中的 catalog 选择，未知公开仓库使用
 
 ### 已核实的阻断链
 
-2026-10-20 的只读证据：required workflow 跟随 main；#256 已合入，拆开了必需入口与普通工作流检查。当前 main 的验证器仍要求普通并发使用隔离 workflow-ref 命名空间，因此拒绝 #253 的共享队列。#253 的通用合同实现已有对应能力，但授权表 repositories 为空，不能直接启用。
+2026-10-21 复核：required workflow 跟随 main；#256 已合入，拆开了必需入口与普通工作流检查。当前 main 的验证器仍要求普通并发使用隔离 workflow-ref 命名空间，因此拒绝 #253 的共享队列。本地已补齐初始 authority 和 base 采用证明，但尚未冻结并人工采用该来源，也未正式部署或切换入口。
 
 组织规则集 18883080 为 active，无 bypass，覆盖全部仓库。必需 status check 为 App 4243096 的 PR Classification Gate；PR Validation Gate 尚未加入。部署环境 steward-deployment 只有分支策略，没有人工审批，允许管理员绕过。以上是调查时状态，执行交接前必须重新读取。
 

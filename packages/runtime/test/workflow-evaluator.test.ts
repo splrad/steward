@@ -1,10 +1,14 @@
 import {describe,it,expect} from 'vitest';
-import {evaluatorSha,readEvaluatorAuthorities} from '../src/workflow-evaluator.js';
+import {evaluatorSha,readEvaluatorAuthorities,trustedContractAuthorities} from '../src/workflow-evaluator.js';
 const policy='a'.repeat(40), evaluator='b'.repeat(40);
 const source={version:1,repositories:{}};
 const text=JSON.stringify(source);
 const file={type:'file',encoding:'base64',size:Buffer.byteLength(text),content:Buffer.from(text).toString('base64')};
 describe('immutable evaluator authority',()=>{
+ it('requires explicit activation before reading authority or requesting credentials',async()=>{
+  expect(await trustedContractAuthorities({POLICY_SHA:policy,APP_ID:'1',INSTALLATION_ID:'1'})).toEqual(source);
+  await expect(trustedContractAuthorities({POLICY_SHA:policy,APP_ID:'1',INSTALLATION_ID:'1',WORKFLOW_EVALUATOR_SHA:evaluator})).rejects.toThrow('CONTRACT_EVALUATOR_CREDENTIALS');
+ });
  it('keeps deployment and evaluator versions separate',()=>{
   const env={POLICY_SHA:policy,APP_ID:'1',INSTALLATION_ID:'1'};
   expect(evaluatorSha(env)).toBe(policy);
