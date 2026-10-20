@@ -3,7 +3,7 @@ import { evaluatorSha, trustedContractAuthorities } from './workflow-evaluator.j
 import {selectContractAuthority} from "../../core/src/workflow-contract-authority.js";
 import {evaluateRemoteWorkflowContract} from "../../github/src/workflow-contract.js";
 import { isIssueCapableRepository, isStewardOwnedPullRequest } from "../../core/src/issues.js";
-import { createAppJwt, createInstallationToken, dispatchWorkflow, GitHubClient, isDependabotReviewEligible } from "../../github/src/index.js";
+import { createAppJwt, createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestError, isDependabotReviewEligible } from "../../github/src/index.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
 import semanticCatalog from "../../../config/labels/pr-semantics.json" with { type: "json" };
 import { handleIssueSnapshotInternalRequest, IssueSnapshotStore } from "./issue-snapshots.js";
@@ -284,6 +284,7 @@ export async function refreshWorkflowContractChecks(env: Env, repositoryId: numb
     if (!head || pull.state !== "open" || pull.base?.ref !== repository.default_branch) continue;
     const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, head, "all"), head, Number(env.APP_ID), repositoryId, pull.number);
     let run = checks.reduce<number | null>((latest, check) => check.state.runId !== null && (latest === null || check.state.runId > latest) ? check.state.runId : latest, null);
+    const discoveredIds = new Set<number>();
     { // Discover runs even when every webhook was lost and no Gate exists.
       let total: number | undefined;
       const candidates = await gh.paginate<any>(`/repos/${owner}/${repo}/actions/runs?event=pull_request&head_sha=${head}&per_page=100`, value => {
@@ -297,6 +298,7 @@ export async function refreshWorkflowContractChecks(env: Env, repositoryId: numb
       if (candidates.length !== total || new Set(candidates.map(candidate => candidate.id)).size !== candidates.length)
         throw new Error('CONTRACT_RUN_DISCOVERY: incomplete run history');
       for (const candidate of candidates) {
+        discoveredIds.add(candidate.id);
         if (trustedValidationRun(candidate, repository) && candidate.head_sha === head
           && candidate.head_repository?.id === pull.head?.repo?.id && candidate.head_branch === pull.head?.ref
           && Array.isArray(candidate.pull_requests)
@@ -306,7 +308,19 @@ export async function refreshWorkflowContractChecks(env: Env, repositoryId: numb
     }
     if (run !== null) {
       sharedAuthority ??= await authoritySnapshot(env);
-      await publishValidationState(env, repository, run, { gh, authority: sharedAuthority });
+      try { await publishValidationState(env, repository, run, { gh, authority: sharedAuthority }); }
+      catch (error) {
+        if (!(error instanceof GitHubRequestError) || error.status !== 404
+          || error.path !== `/repos/${owner}/${repo}/actions/runs/${run}` || discoveredIds.has(run)) throw error;
+        const current = await gh.getPullRequest(owner, repo, pull.number);
+        if (current.state !== 'open' || current.base?.repo?.id !== repositoryId
+          || current.base?.ref !== repository.default_branch || current.head?.sha !== head) continue;
+        const latestChecks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, head, 'all'), head, Number(env.APP_ID), repositoryId, pull.number);
+        for (const {check,state} of latestChecks) if (state.runId === run) await gh.updateCheckRun(owner, repo, check.id, {
+          name: VALIDATION_CHECK_NAME, head_sha: head, status: 'completed', conclusion: 'failure',
+          output: {title:'中央验证来源已不可用',summary:`PR #${pull.number} / ${head}: CONTRACT_RUN_MISSING (${run})`},
+        });
+      }
     }
   }
 }
