@@ -1,6 +1,6 @@
-import {createHash,generateKeyPairSync} from 'node:crypto';
+import {createHash,createHmac,generateKeyPairSync} from 'node:crypto';
 import {afterEach,describe,it,expect,vi} from 'vitest';
-import {refreshWorkflowContractChecks,type Env} from '../src/index.js';
+import worker,{handleWebhook,refreshWorkflowContractChecks,type Env} from '../src/index.js';
 import authorities from '../../../config/workflow-contract-authority.json' with {type:'json'};
 import {canonicalContract,contractApprovalText,type WorkflowContract} from '../../core/src/workflow-contract.js';
 const repositoryId=1296724484,head='a'.repeat(40),base='b'.repeat(40),policy='c'.repeat(40);
@@ -8,8 +8,8 @@ const baseline:WorkflowContract={version:1,repositoryId,fragments:'required',sha
 const candidate:WorkflowContract={...baseline,fragments:'retired'};
 afterEach(()=>{authorities.repositories={};vi.unstubAllGlobals();});
 describe('runtime contract revalidation',()=>{
- it.each(['APPROVED','DISMISSED','CHANGES_REQUESTED','PINNED','SOURCE_DENIED'])('recomputes the same completed run when approval is %s',async state=>{
-  const pinned = ['PINNED','SOURCE_DENIED'].includes(state); const reviewState=state==='PINNED'?'APPROVED':state;
+ it.each(['APPROVED','DISMISSED','CHANGES_REQUESTED','PINNED','SOURCE_DENIED','WEBHOOK_APPROVED','WEBHOOK_DISMISSED','WEBHOOK_CHANGES_REQUESTED','SCHEDULED'])('recomputes the same completed run when approval is %s',async state=>{
+  const pinned = ['PINNED','SOURCE_DENIED','SCHEDULED'].includes(state) || state.startsWith('WEBHOOK_'); const reviewState=['PINNED','SCHEDULED'].includes(state)?'APPROVED':state.replace('WEBHOOK_','');
   (authorities.repositories as any)[repositoryId]={baseline,approverIds:[2]};
     if(pinned)authorities.repositories={};
   const repo={id:repositoryId,full_name:'splrad/steward',default_branch:'main',owner:{id:302208797},private:false};
@@ -24,6 +24,7 @@ describe('runtime contract revalidation',()=>{
    if(u.pathname.endsWith('/access_tokens'))value={token:'test'};
    else if(u.pathname===`/repositories/${repositoryId}`)value=repo;
    else if(u.pathname.endsWith('/pulls/7'))value=pull;
+   else if(u.pathname.endsWith('/pulls'))value=[pull];
    else if(u.pathname.endsWith('/check-runs/30')){updates.push(JSON.parse(String(init.body)));value={};}
    else if(u.pathname.endsWith('/check-runs'))value={check_runs:[check]};
    else if(u.pathname.endsWith('/actions/runs/10'))value=run;
@@ -45,7 +46,14 @@ describe('runtime contract revalidation',()=>{
   });
   const env:Env={ORGANIZATION_ID:'302208797',ORGANIZATION_LOGIN:'splrad',APP_ID:'4243096',INSTALLATION_ID:'145952003',STEWARDSHIP_REPOSITORY:'splrad/steward',POLICY_SHA:pinned?'d'.repeat(40):policy,...(pinned?{WORKFLOW_EVALUATOR_SHA:policy}:{}),
    STEWARD_APP_PRIVATE_KEY:generateKeyPairSync('rsa',{modulusLength:2048,privateKeyEncoding:{format:'pem',type:'pkcs8'},publicKeyEncoding:{format:'pem',type:'spki'}}).privateKey};
-  await refreshWorkflowContractChecks(env,repositoryId,7);
+  if(state.startsWith('WEBHOOK_')) {
+   env.STEWARD_WEBHOOK_SECRET='test-secret';
+   const body=JSON.stringify({organization:{id:302208797},installation:{id:145952003},repository:repo,pull_request:pull,action:reviewState==='DISMISSED'?'dismissed':'submitted'});
+   const signature=createHmac('sha256',env.STEWARD_WEBHOOK_SECRET).update(body).digest('hex');
+   const response=await handleWebhook(new Request('https://example.test/github/webhook',{method:'POST',body,headers:{'x-github-event':'pull_request_review','x-github-delivery':'test','x-hub-signature-256':'sha256='+signature}}),env);
+   expect(response.status).toBe(202);
+  } else if(state==='SCHEDULED')await worker.scheduled({} as ScheduledController,env);
+  else await refreshWorkflowContractChecks(env,repositoryId,7);
   expect(updates).toHaveLength(1);
   expect(updates[0].conclusion).toBe(reviewState==='APPROVED'?'success':'failure');
  });

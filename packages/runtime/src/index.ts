@@ -382,10 +382,10 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       return response(202);
     }
     if (event === "pull_request" && ["opened", "synchronize", "reopened", "edited"].includes(action)) {
-      if (payload.repository && Number.isSafeInteger(payload.pull_request?.number))
-        await refreshWorkflowContractChecks(env, Number(payload.repository.id), payload.pull_request.number);
       const repository = payload.repository; const pull = payload.pull_request;
       if (!repository || !isManaged(repository) || !pull) return response(204);
+      if (Number.isSafeInteger(pull.number))
+        await refreshWorkflowContractChecks(env, Number(repository.id), pull.number);
       const targetsDefault = pull.base?.ref === repository.default_branch;
       let dispatched = false;
       if (targetsDefault) {
@@ -404,7 +404,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
     if (event === "pull_request" && action === "closed" && payload.pull_request?.merged === false) return response(204);
     if (event === "pull_request_review" && ["submitted", "edited", "dismissed"].includes(action)) {
       const repository = payload.repository;
-      if (!repository || !isManaged(repository) || !selectContractAuthority(contractAuthorities, Number(repository.id))) return response(204);
+      if (!repository || !isManaged(repository) || (env.WORKFLOW_EVALUATOR_SHA === undefined && !selectContractAuthority(contractAuthorities, Number(repository.id)))) return response(204);
       const number = Number(payload.pull_request?.number);
       if (!Number.isSafeInteger(number) || number <= 0) return response(204);
       await refreshWorkflowContractChecks(env, repository.id, number);
@@ -529,7 +529,12 @@ export default {
     const results = await Promise.allSettled([
       recoverPullRequestBodyWriteIntents(env),
       recoverReleaseReceipts(env),
-      ...Object.keys(env.WORKFLOW_EVALUATOR_SHA === undefined ? contractAuthorities.repositories : repositoryCatalog.repositories).map(id => refreshWorkflowContractChecks(env, Number(id))),
+      (async () => {
+        const authorities = await trustedContractAuthorities(env);
+        const results = await Promise.allSettled(Object.keys(authorities.repositories).map(id => refreshWorkflowContractChecks(env, Number(id))));
+        const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+        if (failed) throw failed.reason;
+      })(),
     ]);
     const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
     if (failed) throw failed.reason;

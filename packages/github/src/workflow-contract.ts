@@ -31,7 +31,7 @@ export async function evaluateRemoteWorkflowContract(gh: GitHubClient, authority
     // Removing a declaration restores only the trusted baseline, never an empty policy.
     return parseWorkflowContract(authority.baseline);
    }
-  }
+  };
   // A contract already adopted on the protected base is the baseline for the
   // next PR. Otherwise every later business change would need reapproval.
   const baseline = await readContract(pull.base.sha);

@@ -46,6 +46,13 @@ function installationScoped(payload: Record<string, unknown>): Record<string, un
 }
 
 describe("中央运行程序", () => {
+  it.each(['opened','synchronize','reopened','edited'])('ignores unmanaged private PR %s before contract refresh',async action=>{
+    const fetchMock=vi.fn();vi.stubGlobal('fetch',fetchMock);
+    const repo={...repository(987654321,'splrad/private-other'),private:true};
+    const request=signedRequest('pull_request',scoped({action,repository:repo,pull_request:{number:7}}));
+    expect((await handleWebhook(request,{...baseEnv(),WORKFLOW_EVALUATOR_SHA:'b'.repeat(40)})).status).toBe(204);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
   it.each([
     { action: "labeled", label: "security", state: "open", base: "main", expected: 202 },
     { action: "unlabeled", label: "security", state: "open", base: "main", expected: 202 },
