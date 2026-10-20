@@ -247,7 +247,7 @@ export async function refreshWorkflowContractChecks(env: Env, repositoryId: numb
     const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, head, "all"), head, Number(env.APP_ID), repositoryId, pull.number);
     let run = checks.reduce<number | null>((latest, check) => check.state.runId !== null && (latest === null || check.state.runId > latest) ? check.state.runId : latest, null);
     const discoveredIds = new Set<number>();
-    { // Discover runs even when every webhook was lost and no Gate exists.
+    try { // Discover runs even when every webhook was lost and no Gate exists.
       let total: number | undefined;
       const candidates = await gh.paginate<any>(`/repos/${owner}/${repo}/actions/runs?event=pull_request&head_sha=${head}&per_page=100`, value => {
         const page = value as any;
@@ -267,6 +267,18 @@ export async function refreshWorkflowContractChecks(env: Env, repositoryId: numb
           && (candidate.pull_requests.length === 0 || candidate.pull_requests.some((linked: any) => linked?.number === pull.number))
           && (run === null || candidate.id > run)) run = candidate.id;
       }
+    } catch (error) {
+      // Discovery failure cannot preserve a stale successful gate.
+      const current = await gh.getPullRequest(owner, repo, pull.number);
+      if (current.state === 'open' && current.base?.repo?.id === repositoryId
+        && current.base?.ref === repository.default_branch && current.head?.sha === head) {
+        const bound = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, head, 'all'), head, Number(env.APP_ID), repositoryId, pull.number);
+        for (const {check} of bound) await gh.updateCheckRun(owner, repo, check.id, {
+          name:VALIDATION_CHECK_NAME,head_sha:head,status:'completed',conclusion:'failure',
+          output:{title:'中央验证运行历史不可确认',summary:`PR #${pull.number} / ${head}: CONTRACT_RUN_DISCOVERY`},
+        });
+      }
+      throw error;
     }
     if (run !== null) {
       sharedAuthority ??= await authoritySnapshot(env);

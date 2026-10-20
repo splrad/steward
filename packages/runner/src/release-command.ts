@@ -1,3 +1,4 @@
+import {dispatchReleaseContinuation} from './release-continuation.js';
 import { readFile, writeFile, appendFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createInstallationToken, GitHubClient, dispatchWorkflow } from '../../github/src/index.js';
@@ -37,15 +38,15 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
     if (operation === 'generator-continue') {
       const artifactId = required('artifact-id'), runId = required('run-id');
       releaseAssert(/^[1-9]\d*$/.test(artifactId) && /^[1-9]\d*$/.test(runId), 'GENERATION_SEED_ARTIFACT');
-      const allowed = await receipts.request<{ continue: boolean; graphDigest: string }>('generation-graph', { action: 'continue', frozen, graphDigest });
-      releaseAssert(allowed.continue && allowed.graphDigest === graphDigest, 'GENERATION_CONTINUATION');
-      const centralToken = await createInstallationToken({ appId: environment('APP_ID'), privateKey: environment('STEWARD_APP_PRIVATE_KEY'),
-        installationId: Number(environment('INSTALLATION_ID')), repositoryId: 1296724484,
-        permissions: { actions: 'write', contents: 'read', metadata: 'read' }, policySha });
-      await dispatchWorkflow(new GitHubClient(centralToken, 'https://api.github.com', fetch, policySha), {
-        owner: 'splrad', repo: 'steward', workflow: 'release.yml', policySha,
-        inputs: { repositoryId: String(repositoryId), targetTag: tag, operation: 'generate', bundleArtifactId: artifactId, bundleRunId: runId },
-      });
+      const allowed = await receipts.request<{ continue: boolean; graphDigest: string; reservation: string }>('generation-graph', { action: 'continue', frozen, graphDigest });
+      releaseAssert(allowed.continue && allowed.graphDigest === graphDigest && /^continuation:[0-9]+$/.test(allowed.reservation), 'GENERATION_CONTINUATION');
+      await dispatchReleaseContinuation(async()=>{
+        const centralToken = await createInstallationToken({ appId: environment('APP_ID'), privateKey: environment('STEWARD_APP_PRIVATE_KEY'),
+          installationId: Number(environment('INSTALLATION_ID')), repositoryId: 1296724484,
+          permissions: { actions: 'write', contents: 'read', metadata: 'read' }, policySha });
+        return new GitHubClient(centralToken, 'https://api.github.com', fetch, policySha);
+      },policySha,{ repositoryId:String(repositoryId),targetTag:tag,operation:'generate',bundleArtifactId:artifactId,bundleRunId:runId },
+      ()=>receipts.request('generation-graph',{action:'release-continuation',frozen,graphDigest,reservation:allowed.reservation}));
       return;
     }
     let offset = 0;

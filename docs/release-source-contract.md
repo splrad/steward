@@ -122,3 +122,6 @@ GitHub Release 所引用文件构建的 outputs.match 必须使用扁平 ASCII �
 
 
 生成图续跑在外部派发前，以 graph version 的 CAS 将过期 ticket 原子替换为 `continuation:<version>` 一次性预约。并发或重复的 continue 请求只有一个能成功；后续新 ticket 消费预约。派发结果未知或调用中断时保留预约，不自动重发。恢复前须核对原调用、Actions 运行及图状态；只有证明未被接受且无运行/票据在途时，维护者才可批准对精确 repository/tag/graph/version 的预约恢复。不得因运行暂不可见就清除预约。
+
+
+续跑取得预约后，如安装令牌获取或派发前读取失败，或 GitHub 明确以 400/401/403/404/422 拒绝 workflow POST，runner 调用已认证的 `release-continuation`，用精确预约标记及 graph version 的 CAS 释放；旧释放请求不能撤销后续预约或已发出的 ticket。超时、响应丢失、408/429/5xx 等 POST 结果未知时保留预约，不自动再次派发。

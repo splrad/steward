@@ -168,6 +168,19 @@ it('claims continuation once across concurrent callers and retains it until tick
   await expect(new ReleaseGenerationGraphStore(f.db.binding()).continuation(f.id,policySha,f.lease.now())).rejects.toThrow('GENERATION_CONTINUATION');
   const token=await f.store.ticket(f.id,policySha,f.lease.now());
   await expect(f.store.authenticate({...f.lease,token})).resolves.toBeUndefined();
-  f.advance();await expect(f.store.continuation(f.id,policySha,f.lease.now())).resolves.toBeUndefined();
+  f.advance();await expect(f.store.continuation(f.id,policySha,f.lease.now())).resolves.toMatch(/^continuation:/);
  } finally {f.db.database.close();}
+});
+
+it('releases only the exact unconsumed continuation and fences old cancellation',async()=>{
+ const f=await fixture();
+ try {
+  f.db.database.prepare('UPDATE release_generation_graphs SET max_runs=3').run();f.advance();
+  const first=await f.store.continuation(f.id,policySha,f.lease.now());
+  await f.store.releaseContinuation(f.id,policySha,first);
+  const second=await f.store.continuation(f.id,policySha,f.lease.now());expect(second).not.toBe(first);
+  await expect(f.store.releaseContinuation(f.id,policySha,first)).rejects.toThrow('GENERATION_CONTINUATION_STALE');
+  await f.store.ticket(f.id,policySha,f.lease.now());
+  await expect(f.store.releaseContinuation(f.id,policySha,second)).rejects.toThrow('GENERATION_CONTINUATION_STALE');
+ }finally{f.db.database.close();}
 });

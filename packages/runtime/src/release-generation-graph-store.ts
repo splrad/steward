@@ -99,7 +99,7 @@ export class ReleaseGenerationGraphStore {
     ]);
     releaseAssert(results[0]!.meta.changes === 1, 'GENERATION_TICKET_BUSY'); return token;
   }
-  async continuation(i: GraphIdentity, policySha: string, now: number): Promise<void> {
+  async continuation(i: GraphIdentity, policySha: string, now: number): Promise<string> {
     const graph = await this.graph(i);
     releaseAssert(graph?.ready === 1 && graph.policy_sha === policySha && graph.runs > 0
       && graph.runs < graph.max_runs && graph.ticket_until <= now
@@ -111,7 +111,16 @@ export class ReleaseGenerationGraphStore {
     const claimed = await this.db.prepare('UPDATE release_generation_graphs SET ticket_digest=?,version=version+1 WHERE repository_id=? AND target_tag=? AND graph_digest=? AND policy_sha=? AND version=? AND ticket_until<=?')
       .bind(`continuation:${graph.version}`, ...this.values(i), policySha, graph.version, now).run();
     releaseAssert(claimed.meta.changes === 1, 'GENERATION_CONTINUATION');
+    return `continuation:${graph.version}`;
 
+  }
+  async releaseContinuation(i: GraphIdentity, policySha: string, reservation: string): Promise<void> {
+    releaseAssert(/^continuation:[0-9]+$/.test(reservation), 'GENERATION_CONTINUATION');
+    const version = Number(reservation.slice('continuation:'.length));
+    releaseAssert(Number.isSafeInteger(version) && version >= 0, 'GENERATION_CONTINUATION');
+    const result = await this.db.prepare('UPDATE release_generation_graphs SET ticket_digest=NULL,version=version+1 WHERE repository_id=? AND target_tag=? AND graph_digest=? AND policy_sha=? AND ticket_digest=? AND version=?')
+      .bind(...this.values(i), policySha, reservation, version + 1).run();
+    releaseAssert(result.meta.changes === 1, 'GENERATION_CONTINUATION_STALE');
   }
   private async authorize(lease: GraphLease): Promise<GraphRow> {
     const row = await this.graph(lease);

@@ -8,7 +8,7 @@ import { ReleaseGenerationGraphStore } from './release-generation-graph-store.js
 /** Called only after App authentication and repository/capability authorization. */
 export async function issueGenerationGraph(
   db: D1Database, repositoryId: number, tag: string, policySha: string,
-  body: { action: string; frozen?: FrozenRelease; offset?: number; graphDigest?: string; inputs?: string[] },
+  body: { action: string; frozen?: FrozenRelease; offset?: number; graphDigest?: string; reservation?: string; inputs?: string[] },
   now = Date.now(),
 ): Promise<unknown> {
   const expected = await acceptedReleaseSeed(db, repositoryId, tag, policySha);
@@ -17,7 +17,7 @@ export async function issueGenerationGraph(
   releaseAssert(frozen.repositoryId === repositoryId && frozen.targetTag === tag && frozen.policySha === policySha, 'GENERATION_SEED_IDENTITY');
   releaseAssert(canonicalReleaseJson(frozen) === canonicalReleaseJson(expected), 'GENERATION_SEED_BINDING');
   if (body.action === 'seed') return { frozen };
-  releaseAssert(['prepare', 'continue', 'ticket'].includes(body.action), 'GENERATION_ACTION');
+  releaseAssert(['prepare', 'continue', 'release-continuation', 'ticket'].includes(body.action), 'GENERATION_ACTION');
   const store = new ReleaseGenerationGraphStore(db);
   let graph = await store.verifiedPlan(repositoryId, tag, frozen.sourceDigest, policySha);
   if (!graph) {
@@ -47,8 +47,13 @@ export async function issueGenerationGraph(
   }
   if (body.action === 'continue') {
     releaseAssert(body.graphDigest === id.graphDigest, 'GENERATION_GRAPH_BINDING');
-    await store.continuation(id, policySha, now);
-    return { continue: true, graphDigest: id.graphDigest };
+    const reservation = await store.continuation(id, policySha, now);
+    return { continue: true, graphDigest: id.graphDigest, reservation };
+  }
+  if (body.action === 'release-continuation') {
+    releaseAssert(body.graphDigest === id.graphDigest && typeof body.reservation === 'string', 'GENERATION_GRAPH_BINDING');
+    await store.releaseContinuation(id, policySha, body.reservation!);
+    return { released: true };
   }
   releaseAssert(body.action === 'ticket' && body.graphDigest === id.graphDigest, 'GENERATION_GRAPH_BINDING');
   return { frozen, graphDigest: id.graphDigest, token: await store.ticket(id, policySha, now) };

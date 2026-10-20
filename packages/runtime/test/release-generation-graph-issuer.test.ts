@@ -31,7 +31,7 @@ it('binds issuance to the exact accepted initial seed and resumes only yielded u
     await expect(call({ action: 'continue', graphDigest: page.graphDigest })).rejects.toThrow('GENERATION_CONTINUATION');
     const store = new ReleaseGenerationGraphStore(db.binding());
     await store.yield({ repositoryId: 9001, tag: base.targetTag, graphDigest: page.graphDigest, policySha: base.policySha, token: grant.token, now: () => 1001 });
-    expect(await call({ action: 'continue', graphDigest: page.graphDigest })).toEqual({ continue: true, graphDigest: page.graphDigest });
+    expect(await call({ action: 'continue', graphDigest: page.graphDigest })).toEqual({ continue: true, graphDigest: page.graphDigest, reservation: expect.stringMatching(/^continuation:/) });
     db.database.prepare('UPDATE release_build_requests SET policy_archived=1').run();
     await expect(call({ action: 'ticket', graphDigest: page.graphDigest })).rejects.toThrow('GENERATION_SEED_NOT_ACCEPTED');
   } finally { db.database.close(); }
