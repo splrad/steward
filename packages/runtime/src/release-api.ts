@@ -1,3 +1,4 @@
+import { dispatchMigrationBuild } from './release-migration-dispatch.js';
 import { evaluatorSha } from './workflow-evaluator.js';
 import { assertPersonalizationConfiguration, refreshPersonalizedSections } from '../../core/src/release-personalization.js';
 import { comparePublicVersions, parsePublicVersion, parseVersionFile } from '../../core/src/release-version.js';
@@ -110,8 +111,7 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
           await makeReleaseBuildRequest({ ...seed.request.frozen, productTargetSha: head.object.sha, policySha: env.POLICY_SHA! }, configuration, 'initial', null);
           // Keep the old seed until the new-policy prepare independently validates
           // its source and atomically replaces it. Dispatch failure is retryable.
-          await dispatchWorkflow(await centralBuildClient(env, true), { owner: 'splrad', repo: 'steward', workflow: 'release-build.yml', policySha: env.POLICY_SHA!,
-            inputs: { repositoryId: String(repositoryId), targetTag: tag, targetSha: head.object.sha, authorIds: seed.request.frozen.authorIds.join(',') } });
+          await dispatchMigrationBuild(env, { repositoryId: String(repositoryId), targetTag: tag, targetSha: head.object.sha, authorIds: seed.request.frozen.authorIds.join(',') });
           return reply(200, { migratedRevision: null, supersedesRequestKey: seed.request.key, policySha: env.POLICY_SHA, rebuildDispatched: true });
         }
         releaseAssert(pending, 'POLICY_MIGRATION_NOT_FOUND');
@@ -123,8 +123,7 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
         archived = await store.resumePolicy(repositoryId, tag, env.POLICY_SHA!);
       }
       await makeReleaseBuildRequest({ ...archived.frozen, productTargetSha: head.object.sha, policySha: env.POLICY_SHA! }, configuration, 'initial', null);
-      await dispatchWorkflow(await centralBuildClient(env, true), { owner: 'splrad', repo: 'steward', workflow: 'release-build.yml', policySha: env.POLICY_SHA!,
-        inputs: { repositoryId: String(repositoryId), targetTag: tag, targetSha: head.object.sha, authorIds: archived.frozen.authorIds.join(',') } });
+      await dispatchMigrationBuild(env, { repositoryId: String(repositoryId), targetTag: tag, targetSha: head.object.sha, authorIds: archived.frozen.authorIds.join(',') });
       return reply(200, { migratedRevision: archived.revision, policySha: env.POLICY_SHA, rebuildDispatched: true });
     }
     if (action === 'build-request') {

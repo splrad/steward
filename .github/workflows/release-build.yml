@@ -1,5 +1,5 @@
 name: SPLRAD Steward / Release Build
-run-name: build:${{ inputs.repositoryId }}:${{ inputs.targetTag }}:${{ inputs.requestKey }}
+run-name: build:${{ inputs.repositoryId }}:${{ inputs.targetTag }}:${{ inputs.requestKey }}:${{ inputs.dispatchKey }}
 on:
   workflow_dispatch:
     inputs:
@@ -13,6 +13,9 @@ on:
         required: false
         type: string
       authorIds:
+        required: false
+        type: string
+      dispatchKey:
         required: false
         type: string
       requestKey:

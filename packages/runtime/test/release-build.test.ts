@@ -1,3 +1,4 @@
+import { dispatchMigrationBuild } from '../src/release-migration-dispatch.js';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { frozenFixture, notesFixture, sha } from '../../core/test/release-receipt-fixture.js';
 import { makeReleaseBuildRequest, releaseToolchainDigest } from '../../core/src/release-build-request.js';
@@ -43,7 +44,7 @@ beforeEach(() => {
   } } };
   run = { id: 10, run_attempt: 1, repository: { id: 1296724484 }, event: 'workflow_dispatch', head_sha: sha('c'), path: '.github/workflows/release-build.yml', status: 'in_progress', conclusion: null };
   artifact = { id: 20, name: 'release-build-result-1', expired: false, workflow_run: { id: 10, head_sha: sha('c') } };
-  mock.central = { listReleases: async () => [], request: vi.fn(async (_method: string, path: string) => {
+  mock.central = { listReleases: async () => [], paginate: vi.fn(async (_path, select) => select({total_count:1,workflow_runs:[{...run,display_title:'build:9001:v1.2.3::'+mock.dispatch.mock.calls.at(-1)?.[1].inputs.dispatchKey}]})), request: vi.fn(async (_method: string, path: string) => {
     if (path.includes('/actions/runs/')) return run;
     if (path.endsWith('/artifacts/2')) return { expired: true };
     if (path.includes('/actions/artifacts/')) return artifact;
@@ -312,7 +313,8 @@ it('validates migration before archival and safely retries a failed dispatch usi
  expect((await migrate())!.status).not.toBe(200);
  expect(await receipts.get(9001, 'v1.2.3')).toBeNull(); expect(await receipts.get(9001, 'v1.2.3', 1)).toEqual(r);
  expect((await migrate())!.status).toBe(200);
- expect(mock.dispatch).toHaveBeenLastCalledWith(mock.central, expect.objectContaining({policySha: sha('c'), inputs: {repositoryId:'9001', targetTag:'v1.2.3', targetSha:sha('a'), authorIds:'1'}}));
+ expect(mock.dispatch).toHaveBeenLastCalledWith(mock.central, expect.objectContaining({policySha: sha('c'), inputs: {repositoryId:'9001', targetTag:'v1.2.3', targetSha:sha('a'), authorIds:'1',dispatchKey:expect.any(String)}}));
+ expect(mock.dispatch).toHaveBeenCalledTimes(1);
  expect(db.database.prepare('SELECT COUNT(*) AS count FROM release_policy_migrations').get()!.count).toBe(1);
 });
 it.each(['tag', 'release', 'configuration', 'same-policy'])('keeps the current receipt when migration preconditions fail: %s', async reason => {
@@ -386,6 +388,7 @@ it.each(['accepted','seeded'] as const)('dispatches receipt-free %s migration an
  const response=(await migrate())!;expect(response.status).toBe(200);
  expect(await response.json()).toMatchObject({migratedRevision:null,supersedesRequestKey:seed.request.key,rebuildDispatched:true});
  expect(mock.dispatch).toHaveBeenLastCalledWith(mock.central,expect.objectContaining({policySha:sha('c'),inputs:expect.objectContaining({targetSha:sha('a'),authorIds:'1'})}));
+ expect(mock.dispatch).toHaveBeenCalledTimes(1);
  const next=await store.prepare(await replacement(seed,'c'));
  expect(next.status).toBe('requested');expect(await store.acceptedSeed(9001,'v1.2.3')).toBeNull();
  await expect(store.save(seed,seed)).rejects.toThrow('BUILD_REQUEST_STALE');
@@ -395,4 +398,25 @@ it.each(['accepted','seeded'] as const)('does not replace a %s seed if a candida
  await receipts.prepare(newReleaseReceipt(seed.request.frozen,notesFixture),'now');
  await expect(store.prepare(await replacement(seed,'d'))).rejects.toThrow('BUILD_REQUEST_STALE');
  expect(await store.acceptedSeed(9001,'v1.2.3')).toEqual(seed);
+});
+it('keeps an unknown migration dispatch reserved until matching Actions evidence appears',async()=>{
+ await policyMigrationFixture();mock.dispatch.mockRejectedValueOnce(new Error('response lost'));
+ expect((await migrate())!.status).not.toBe(200);
+ mock.central.paginate.mockImplementationOnce(async(_path,select)=>select({total_count:0,workflow_runs:[]}));
+ expect((await migrate())!.status).not.toBe(200);
+ expect(mock.dispatch).toHaveBeenCalledTimes(1);
+ expect((await migrate())!.status).toBe(200);
+ expect((await migrate())!.status).toBe(200);
+ expect(mock.dispatch).toHaveBeenCalledTimes(1);
+});
+it('does not accept a migration dispatch run from another policy',async()=>{
+ await policyMigrationFixture();mock.dispatch.mockRejectedValueOnce(new Error('response lost'));
+ expect((await migrate())!.status).not.toBe(200);run.head_sha=sha('e');
+ expect((await migrate())!.status).not.toBe(200);expect(mock.dispatch).toHaveBeenCalledTimes(1);
+});
+it('reserves one migration dispatch across concurrent requests',async()=>{
+ const inputs={repositoryId:'9001',targetTag:'v1.2.3',targetSha:sha('a'),authorIds:'1'};
+ await Promise.allSettled([dispatchMigrationBuild(env(),inputs),dispatchMigrationBuild(env(),inputs)]);
+ expect(mock.dispatch).toHaveBeenCalledTimes(1);
+ await dispatchMigrationBuild(env(),inputs);expect(mock.dispatch).toHaveBeenCalledTimes(1);
 });
