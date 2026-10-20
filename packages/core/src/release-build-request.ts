@@ -6,10 +6,11 @@ export interface ReleaseBuildRequest {
   key: string; mode: 'initial' | 'rebuild'; frozen: FrozenRelease; plans: BuildPlan[]; sourceArtifactId: number | null;
 }
 export interface ReleaseBuildState {
-  request: ReleaseBuildRequest; version: number; status: 'requested' | 'running' | 'accepted' | 'failed' | 'superseded';
+  request: ReleaseBuildRequest; version: number; status: 'requested' | 'running' | 'accepted' | 'seeded' | 'failed' | 'superseded';
   restartCount?: number; supersededBy?: string;
   attempts: { runId: number; attempt: number }[]; artifact: NonNullable<FrozenRelease['build']> | null; error: string | null;
   resultManifests?: BuildManifest[];
+  seedArtifact?: NonNullable<FrozenRelease['build']>;
 }
 export async function makeReleaseBuildRequest(frozen: FrozenRelease, configuration: any, mode: 'initial' | 'rebuild', sourceArtifactId: number | null): Promise<ReleaseBuildRequest> {
   const plans: BuildPlan[] = [];
@@ -21,7 +22,8 @@ export async function makeReleaseBuildRequest(frozen: FrozenRelease, configurati
     releaseAssert(plan.outputs.every(output => output.kind === 'file' && typeof output.match === 'string' && !/[\\/]/.test(output.match) && !output.match.includes('**')), 'BUILD_RELEASE_PATH');
     plans.push(plan);
   }
-  releaseAssert(plans.length === 1, 'BUILD_SET');
+  releaseAssert(plans.length === 1 || (plans.length === 0 && mode === 'initial' && sourceArtifactId === null
+    && frozen.build === null && frozen.assets.length === 0 && frozen.manifests.length === 0), 'BUILD_SET');
   const identity = { mode, frozen, plans, sourceArtifactId };
   return { ...identity, key: receiptDigest(canonicalReleaseJson(identity)) };
 }

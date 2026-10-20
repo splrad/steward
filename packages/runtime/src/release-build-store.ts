@@ -2,6 +2,12 @@ import { canonicalReleaseJson, releaseAssert, positiveId } from '../../core/src/
 import { type ReleaseBuildRequest, type ReleaseBuildState } from '../../core/src/release-build-request.js';
 export class ReleaseBuildStore {
   constructor(private readonly db: D1Database) {}
+  async acceptedSeed(repositoryId: number, tag: string): Promise<ReleaseBuildState | null> {
+    const rows = await this.db.prepare("SELECT record_json FROM release_build_requests WHERE policy_archived=0 AND repository_id=? AND target_tag=? AND json_extract(record_json,'$.request.mode')='initial' AND json_extract(record_json,'$.status') IN ('accepted','seeded')")
+      .bind(repositoryId, tag).all<{ record_json: string }>();
+    releaseAssert(rows.results.length <= 1, 'BUILD_SEED_AMBIGUOUS');
+    return rows.results[0] ? JSON.parse(rows.results[0].record_json) : null;
+  }
   async find(repositoryId: number, tag: string, runId: number, attempt: number | null): Promise<ReleaseBuildState | null> {
     const rows = await this.db.prepare("SELECT record_json FROM release_build_requests WHERE policy_archived=0 AND repository_id=? AND target_tag=? AND json_extract(record_json,'$.status')!='superseded' AND json_extract(record_json,'$.attempts[#-1].runId')=? AND (? IS NULL OR json_extract(record_json,'$.attempts[#-1].attempt')=?)")
       .bind(repositoryId, tag, runId, attempt, attempt).all<{ record_json: string }>();
@@ -64,7 +70,9 @@ export class ReleaseBuildStore {
     releaseAssert(positiveId(runId) && positiveId(attempt), 'BUILD_RUN');
     const last = current.attempts.at(-1);
     if (current.status === 'running' && last?.runId === runId && last.attempt === attempt) return current;
-    releaseAssert(['requested', 'failed'].includes(current.status) && current.attempts.length < 3
+    const seedReplay = current.status === 'seeded' && current.request.mode === 'initial' && current.request.plans.length === 0
+      && current.artifact === null && current.request.frozen.build === null && current.request.frozen.assets.length === 0;
+    releaseAssert((['requested', 'failed'].includes(current.status) || seedReplay) && current.attempts.length < 3
       && !current.attempts.some(a => a.runId === runId && a.attempt === attempt), 'BUILD_RETRY_BUDGET');
     return this.save(current, { ...current, status: 'running', attempts: [...current.attempts, { runId, attempt }], error: null });
   }

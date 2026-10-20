@@ -63,11 +63,11 @@ Review 事件只调用 `inspect`。`reconcile` 先核验真人手动合并证据
 
 本批验证包含真实 SQLite 迁移/CAS/重启、Git 对象与缺口、GitHub 读取适配器、Review/合并事件分流、批准前零发布、无资产与中性仓库、三种响应丢失、资产冲突、正文漂移和下载摘要。GitHub 与远程 D1 通过夹具模拟；不等于线上流程验收。
 
-`release.yml` 的 generate 操作依次固定生成预算、运行隔离模型作业和创建候选。模型作业只注入个人 Copilot PAT；父进程用短时凭证访问生成账本，子进程使用独立空目录和配置，不继承该凭证、App 或发布凭据。CLI 固定为 1.0.91，禁用工具、内置 MCP、自动指令和会话恢复。增量迁移 `0011_release_generation.sql` 保存计划、调用预留、原始格式失败输出和成功输出；未知结果仍计次，完成批次跨重跑复用。结构解析只接受唯一 JSON 对象或明确 json 围栏，拒绝重复键和未知字段。
+`release.yml` 的 generate 操作依次固定生成预算、运行隔离模型作业和创建候选。模型作业只注入个人 Copilot PAT；父进程用短时凭证访问生成账本，子进程使用独立空目录和配置，不继承该凭证、App 或发布凭据。CLI 固定为 1.0.91，禁用工具、内置 MCP、自动指令和会话恢复。增量迁移 `0017_release_generation_graph.sql` 保存引用图和节点进度，输入、格式诊断及结果分别复用摘要对象存储。旧 `0011` 内嵌账本保留历史；新协议签发时撤销旧凭证，不能再次签发旧协议。未知结果仍计次，完成节点跨重跑复用。结构解析只接受唯一 JSON 对象或明确 json 围栏，拒绝重复键和未知字段。
 
 生成失败后若凭证已过期，请在原 `release.yml` 运行中选择 **Re-run all jobs**，使 generation-ticket 作业重新签发凭证。**Re-run failed jobs** 会复用此前成功作业的旧凭证，无法恢复过期授权。重新签发仍要求策略匹配，且旧凭证已到期；若返回 GENERATION_TICKET_BUSY，应等待旧凭证到期再重跑全部作业。相同计划的已完成批次及已用调用预算保留，不因换票重置。模型作业保持凭据隔离。
 
-构建执行层已接入四种 Profile 的参数编排、准确干净提交检查、独立输出目录、原生版本检查器及中央清单收集。`release-build.yml` 固定来源、构建请求和工具链，在隔离作业执行产品构建；`release-build-complete.yml` 回读运行与 artifact 身份，独立验证下载资产，自动生成包含 `source.json`、`frozen.json` 和资产的 seed bundle，再接续 generate。首发请求在 seed 来源摘要验证及文件写入成功后才 finish；完成入口仅在资产验证明确报告 BuildContractError 时拒绝请求；artifact 下载、seed 写入及运行时服务故障保留为可重试状态。GitHub 文件发布只接受一个非 OCI 构建单元。
+构建执行层已接入四种 Profile 的参数编排、准确干净提交检查、独立输出目录、原生版本检查器及中央清单收集。`release-build.yml` 固定来源、构建请求和工具链，在隔离作业执行产品构建；`release-build-complete.yml` 回读运行与 artifact 身份，独立验证下载资产，自动生成包含 `source.json`、`frozen.json` 和资产的 seed bundle，再接续 generate。首发请求在 seed 来源摘要验证及文件写入成功后才 finish；完成入口仅在资产验证明确报告 BuildContractError 时拒绝请求；artifact 下载、seed 写入及运行时服务故障保留为可重试状态。GitHub 文件发布接受一个非 OCI 构建单元；零构建配置生成无资产 seed，经成功运行回读后标记为 `seeded`，保留 `build: null`，不产生 accepted 构建。无资产 seed 可在三次运行预算内重新导出，策略迁移仍保留旧收据并重新生成候选。
 
 有文件资产的首次发布从 `release-build.yml` 开始，构建完成后才进入 generate 和候选准备。候选准备 API 要求冻结清单与配置的 builds 完全一致，并验证中央成功运行及 artifact 身份；缺少所需构建清单会以 `BUILD_SET` 拒绝。配置无构建单元的仓库允许无资产候选。
 
@@ -83,7 +83,7 @@ Review 事件只调用 `inspect`。`reconcile` 先核验真人手动合并证据
 
 发布作业从可信收据计算总预算：二十分钟初始化/收尾余量，加上总资产按 4 MiB/s 下载构建 artifact 的时间，再加全部资产各自上传及回读预算。三个 1 GiB 资产为 65 分钟；128个32 MiB资产为328分钟，均覆盖既定总量并低于托管作业六小时上限。每次有效收据操作续租十分钟，下载每项资产前续租；过期租约不可恢复。安装令牌使用相同仓库和权限范围，每45分钟按需刷新。生成作业上限86分钟，覆盖最大56分钟模型预算和30分钟初始化/收尾余量。
 
-部署前须依次应用新增迁移 `0010_release_receipts.sql`、`0011_release_generation.sql`、`0012_release_build_requests.sql`、`0013_release_build_restart.sql` 、`0014_release_generation_restart.sql` 、`0015_release_policy_migration.sql` 和 `0016_release_policy_retargets.sql`，再部署相同策略版本的 Worker 与工作流；随后在获准测试对象验证真实网页编辑、Review/手动合并、Actions 下载、D1 绑定及 GitHub 不可变 Release。正式产品发布另行执行对应授权阶段。
+部署前须依次应用新增迁移 `0010_release_receipts.sql`、`0011_release_generation.sql`、`0012_release_build_requests.sql`、`0013_release_build_restart.sql` 、`0014_release_generation_restart.sql` 、`0015_release_policy_migration.sql` 、`0016_release_policy_retargets.sql` 和 `0017_release_generation_graph.sql`，再部署相同策略版本的 Worker 与工作流；随后在获准测试对象验证真实网页编辑、Review/手动合并、Actions 下载、D1 绑定及 GitHub 不可变 Release。正式产品发布另行执行对应授权阶段。
 
 原生版本检查读取独立临时快照：从已打开的产物句柄流式复制并同步计算摘要，关闭写句柄后检查快照，检查后再次核对快照身份和摘要。原始产物身份变化仍会拒绝；快照在检查结束后清理。
 
@@ -99,8 +99,18 @@ GitHub Release 构建请求在计划阶段仅接受根目录文件匹配规则�
 
 当前仓库目录Schema仅支持schemaVersion 4。旧v3目录须先迁移到v4再校验；退役的prAutomation/releaseProfile字段不再作为当前目录输入。
 
-验收重试复用逐字节一致的source.json/frozen.json，内容冲突明确拒绝；部分seed写入和finish临时失败可重试。生成ticket请求的账本mutation在同一UPDATE中核对token摘要及当前有效期，过期或被替换的旧请求不能提交。generation-ticket和generated-candidate消费完整seed的作业各60分钟，覆盖4GiB按4MiB/s下载约17分钟以及初始化、读取验证余量。
+验收重试复用逐字节一致的source.json/frozen.json，内容冲突明确拒绝；部分seed写入和finish临时失败可重试。生成ticket请求的账本mutation在同一UPDATE中核对token摘要及当前有效期，过期或被替换的旧请求不能提交。generation-ticket 从已核实 seed 的持久记录准备生成图；模型只读取绑定来源分块，不重复下载构建资产。generated-candidate 单独下载资产并验收，60分钟覆盖4GiB传输及初始化余量。
 
 来源对象上传和下载均使用最多八个并发分块及五分钟整体预算，单块请求保留一分钟上限；任何分块失败会取消其余请求。下载校验分块数量、大小、规范 Base64 和完整 SHA-256。运行时每批读取最多64块，按顺序一次完成长度及摘要校验。来源计划步骤共享45分钟上限，计划作业及候选准备作业均为60分钟，覆盖来源冻结、对象传输和初始化。
 
 原生检查器的确定性格式、归档及版本错误以专用退出码和固定 JSON 标识传回，转换为 BuildContractError，完成作业据此持久化拒绝。未知进程故障和文件访问失败仍保留重试语义；成功进程返回无效结果同样按校验失败处理。
+
+### 持久分块生成预算
+
+来源合同保持32 MiB。构建前及服务端核对同一分块计划；metadata和文本按位置完整分段，输入单块最多96 KiB、最多4096来源节点，按8路逐层汇总。中间结果最多8 KiB，最终结果保留64 KiB上限。图只保存摘要和依赖，节点结果不累积到旧512 KiB账本。每次准备最多16节点，完整准备之前不签发凭证。
+
+每节点最多两次调用，包含一次格式修复；最多4681节点、9362次调用。单段最多60次调用，每次180秒、段内210分钟，工作流作业240分钟。理论最多157段，另保留3次有界中断恢复机会；调用总额不会因换票增加。达到段预算后交还凭证，由受保护的续跑作业核对剩余预算并调度下一段。模型作业不持有App凭据，只有完整root结果才允许创建候选。网络失败且供应商结果未知时当前段停止，下一张凭证仍受节点总尝试次数约束。
+
+签发绑定已验收构建seed或已封存的无资产seed，并检查仓库、tag、POLICY_SHA、冻结数据和来源摘要。模型ticket只能读取该图来源分块、预占就绪节点、提交本次预占结果及读取最终root，不能选择其他对象摘要或自行签发。节点预占通过版本和随机标记CAS计费，旧票据、过期票据和旧预占结果不能覆盖新结果。
+
+新生成的审阅证据使用schemaVersion 2：保存完整提交集合与路径集合的计数及规范摘要，验收端从冻结来源独立重算；避免大路径集合再次撑破512 KiB证据预算。既有schemaVersion 1显式覆盖列表仍可验证。

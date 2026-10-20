@@ -2,7 +2,7 @@ import {it,expect} from 'vitest';
 import {readFile} from 'node:fs/promises';
 import YAML from 'yaml';
 import {buildLimits} from '../../core/src/build-manifest.js';
-import {generationPlan} from '../../core/src/release-production.js';
+import {generationGraphLimits} from '../../core/src/release-generation-graph.js';
 import {nativeInspectionTimeoutMs} from '../src/release-native.js';
 import {artifactDownloadTimeout} from '../src/artifact-handoff.js';
 import {maxArtifactArchiveBytes} from '../src/artifact-file.js';
@@ -39,11 +39,12 @@ it.each([undefined,30,275,361])('rejects an altered inspection job budget: %s',a
 
 it('covers seed consumers, maximum generation calls and upload/readback budgets',async()=>{
   const d=await load('release.yml');
-  for(const job of ['prepare','generation-ticket','generated-candidate']){
+  for(const job of ['prepare','generation-ticket','generated-candidate','generation-continue']){
     expect(d.jobs[job]['timeout-minutes']*minute).toBeGreaterThanOrEqual(transfer+30*minute);
   }
-  const plan=generationPlan('a'.repeat(64),'b'.repeat(40),Array.from({length:8},(_,i)=>String(i)));
-  expect(d.jobs.generate['timeout-minutes']*minute).toBeGreaterThanOrEqual(plan.jobTimeoutMs+transfer+10*minute);
+  expect(d.jobs.generate['timeout-minutes']*minute).toBeGreaterThanOrEqual(generationGraphLimits.runTimeoutMs+transfer+10*minute);
+  expect(d.jobs['generated-candidate'].if).toBe("needs.generate.outputs.complete == 'true'");
+  expect(d.jobs['generation-continue'].if).toBe("needs.generate.outputs.complete == 'false'");
   const assets=Array.from({length:buildLimits.maxFiles},(_,i)=>({name:String(i),size:buildLimits.maxTotalBytes/buildLimits.maxFiles,sha256:'a'.repeat(64)}));
   expect(releasePublishTimeoutMinutes(assets)).toBe(328);
   expect(releasePublishTimeoutMinutes(assets)).toBeLessThanOrEqual(360);

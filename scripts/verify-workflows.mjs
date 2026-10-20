@@ -50,6 +50,7 @@ const expectedJobEnvironments = new Map([
   ["release.yml:generation-ticket", { name: "steward-release", deployment: false }],
   ["release.yml:generate", { name: "steward-release-notes", deployment: false }],
   ["release.yml:generated-candidate", { name: "steward-release", deployment: false }],
+  ["release.yml:generation-continue", { name: "steward-release", deployment: false }],
   ["product-build.yml:plan", { name: "steward-release", deployment: false }],
   ["release-build.yml:plan", { name: "steward-release", deployment: false }],
   ["release-build-complete.yml:reject", { name: "steward-release", deployment: false }],
@@ -261,7 +262,7 @@ if (!hasExactKeys(observeCommand?.env, Object.keys(observeEnvironment)) || Objec
   throw new Error("审查观察参数或命令不符合只读合同");
 
 const releaseSourceWorkflow = YAML.parse(await readFile(".github/workflows/release.yml", "utf8"));
-if (!hasExactKeys(releaseSourceWorkflow.jobs, ["prepare", "inspect", "publish", "generation-ticket", "generate", "generated-candidate", "revision"]) || !hasExactKeys(releaseSourceWorkflow.on, ["workflow_dispatch"])) throw new Error("发布工作流必须先读取持久候选收据");
+if (!hasExactKeys(releaseSourceWorkflow.jobs, ["prepare", "inspect", "publish", "generation-ticket", "generate", "generated-candidate", "generation-continue", "revision"]) || !hasExactKeys(releaseSourceWorkflow.on, ["workflow_dispatch"])) throw new Error("发布工作流必须先读取持久候选收据");
 const generationJob = releaseSourceWorkflow.jobs.generate;
 const recoveryJob = releaseSourceWorkflow.jobs.revision;
 if (!releaseSourceWorkflow.on.workflow_dispatch.inputs.operation.options.includes('migrate-policy') || !releaseSourceWorkflow.on.workflow_dispatch.inputs.operation.options.includes('retry-create')
@@ -277,7 +278,8 @@ if (productBuild.jobs.plan['timeout-minutes'] !== 60 || genericBuild.jobs.plan['
 for (const document of [productBuild,genericBuild]) {
  if(!hasExactKeys(document.on,['workflow_dispatch']) || !hasExactKeys(document.jobs,['plan','build_windows','build_linux']) || document.permissions.contents!=='read' || document.permissions.actions!=='read' || document.jobs.plan.outputs.runner!=='${{ steps.plan.outputs.runner }}') throw new Error('静态构建计划边界无效');
  const guard=document.jobs.plan.steps.at(-1);
- if(guard.env?.BUILD_RUNNER!=='${{ steps.plan.outputs.runner }}' || guard.run!=='case "$BUILD_RUNNER" in windows-2025|ubuntu-24.04) ;; *) echo "BUILD_RUNNER_INVALID" >&2; exit 1 ;; esac' || guard.if!==undefined || guard['continue-on-error']!==undefined) throw new Error('未知构建平台必须失败');
+ const platforms=document===productBuild?'windows-2025|ubuntu-24.04|none':'windows-2025|ubuntu-24.04';
+ if(guard.env?.BUILD_RUNNER!=='${{ steps.plan.outputs.runner }}' || guard.run!==`case "$BUILD_RUNNER" in ${platforms}) ;; *) echo "BUILD_RUNNER_INVALID" >&2; exit 1 ;; esac` || guard.if!==undefined || guard['continue-on-error']!==undefined) throw new Error('未知构建平台必须失败');
  for(const [name,label] of [['windows','windows-2025'],['linux','ubuntu-24.04']]){
   const job=document.jobs['build_'+name];if(job.needs!=='plan' || job.environment!==undefined || job['runs-on']!==label || job.if!=="needs.plan.outputs.runner == '"+label+"'" || job['timeout-minutes']!==360) throw new Error('静态构建边界无效');
   for(const step of job.steps) if(JSON.stringify(step).includes('secrets.') || step.env && !hasExactKeys(step.env,['POLICY_SHA','RUN_ID'])) throw new Error('产品构建不得注入秘密');
@@ -294,6 +296,12 @@ for (const document of [productBuild, buildCompletion, genericBuild]) for (const
   for (const step of job.steps) if (step.run && step.run.includes('${{')) throw new Error('构建输入未经环境变量隔离');
 }
 if (generationJob.needs !== 'generation-ticket' || releaseSourceWorkflow.jobs['generated-candidate'].needs !== 'generate') throw new Error('生成预算和候选顺序无效');
+if (releaseSourceWorkflow.jobs['generated-candidate'].if !== "needs.generate.outputs.complete == 'true'"
+  || releaseSourceWorkflow.jobs['generation-continue'].needs !== 'generate'
+  || releaseSourceWorkflow.jobs['generation-continue'].if !== "needs.generate.outputs.complete == 'false'"
+  || releaseSourceWorkflow.jobs['generation-continue']['timeout-minutes'] !== 60
+  || generationJob.outputs.complete !== '${{ steps.produce.outputs.complete }}'
+  || generationJob.steps.find(s => s.id === 'generated')?.if !== "steps.produce.outputs.complete == 'true'") throw new Error('生成续跑与完成候选必须互斥');
 if (releaseSourceWorkflow.jobs['generation-ticket']['timeout-minutes'] !== 60 || releaseSourceWorkflow.jobs['generated-candidate']['timeout-minutes'] !== 60 || releaseSourceWorkflow.jobs.prepare['timeout-minutes'] !== 60) throw new Error('完整seed消费作业须覆盖资产下载与校验预算');
 for (const step of generationJob.steps) {
   if (step.env && (!hasExactKeys(step.env, ['COPILOT_GITHUB_TOKEN']) || step.env.COPILOT_GITHUB_TOKEN !== '${{ secrets.COPILOT_GITHUB_TOKEN }}')) throw new Error('模型作业包含额外凭据');
@@ -302,7 +310,7 @@ for (const step of generationJob.steps) {
 if (releaseSourceWorkflow.jobs.publish.if !== "inputs.operation == 'reconcile' && needs.inspect.outputs.shouldPublish == 'true'") throw new Error("Review 观察不得直接发布");
 if (releaseSourceWorkflow.jobs.publish.concurrency?.group !== 'workflow-policy:${{ github.workflow_ref }}:steward-release-publish-${{ inputs.repositoryId }}'
   || releaseSourceWorkflow.jobs.publish.concurrency?.['cancel-in-progress'] !== false || releaseSourceWorkflow.jobs.publish.concurrency?.queue !== 'max') throw new Error('最终发布必须按仓库串行且不得中断正在发布的版本');
-if (releaseSourceWorkflow.jobs.generate['timeout-minutes'] !== 86
+if (releaseSourceWorkflow.jobs.generate['timeout-minutes'] !== 240
   || releaseSourceWorkflow.jobs.publish['timeout-minutes'] !== '${{ fromJSON(needs.inspect.outputs.publishTimeoutMinutes) }}'
   || releaseSourceWorkflow.jobs.inspect.outputs.publishTimeoutMinutes !== '${{ steps.receipt.outputs.publishTimeoutMinutes }}') throw new Error('发布及生成作业必须覆盖冻结预算和初始化余量');
 const releaseDownload = releaseSourceWorkflow.jobs.publish.steps.find(step => step.uses?.startsWith("actions/download-artifact@"));

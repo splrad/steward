@@ -29,7 +29,8 @@ export class ReleaseReceiptClient {
     });
     const bytes = await response.text(); releaseAssert(Buffer.byteLength(bytes) <= 1024 * 1024, 'RUNTIME_RESPONSE');
     if (!response.ok) {
-      if (action === 'generation' && this.token.startsWith('release-generation.') && response.status === 409) {
+      if (((action === 'generation' && this.token.startsWith('release-generation.'))
+        || (action === 'generation-graph' && this.token.startsWith('release-generation-graph.'))) && response.status === 409) {
         let error: unknown;
         try { error = JSON.parse(bytes).error; } catch { /* Preserve the original response below. */ }
         if (error === 'RN_RECEIPT_GENERATION_AUTH') {
@@ -63,11 +64,14 @@ export class ReleaseReceiptClient {
     }));
     return digest;
   }
-  async getObject(digest: string): Promise<Buffer> {
+  async getObject(digest: string, graphDigest?: string): Promise<Buffer> {
     releaseAssert(/^[a-f0-9]{64}$/.test(digest), 'OBJECT_ID');
+    releaseAssert(graphDigest === undefined || /^[a-f0-9]{64}$/.test(graphDigest), 'GENERATION_GRAPH');
     return this.objectTransfer(async controller => {
       type Chunk = { total: number; bytes_base64: string };
-      const read = (part: number) => this.request<Chunk>('', undefined, `objects/${digest}/${part}`, controller.signal);
+      const read = (part: number) => graphDigest
+        ? this.request<Chunk>('generation-graph', { action: 'source', graphDigest, part }, undefined, controller.signal)
+        : this.request<Chunk>('', undefined, `objects/${digest}/${part}`, controller.signal);
       const first = await read(0);
       releaseAssert(first && Number.isSafeInteger(first.total) && first.total > 0 && first.total <= 2048, 'OBJECT_MISSING');
       const chunks: Buffer[] = []; let size = 0;

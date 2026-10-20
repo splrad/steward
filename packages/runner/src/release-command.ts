@@ -1,10 +1,10 @@
 import { readFile, writeFile, appendFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { createInstallationToken, GitHubClient } from '../../github/src/index.js';
+import { createInstallationToken, GitHubClient, dispatchWorkflow } from '../../github/src/index.js';
 import { releaseAssert, releaseSha, positiveId, newReleaseReceipt, type FrozenRelease, type ReleaseReceipt } from '../../core/src/release-note-receipt.js';
 import { validateReleaseSource, validateReleaseEvidence } from '../../core/src/release-bundle.js';
 import { currentReleaseBuild } from '../../core/src/release-rebuild.js';
-import { generationInputs, generationPlan, generationPlanDigest } from '../../core/src/release-production.js';
+import { generationGraphDigest, generationSourceBatches, planGenerationGraph } from '../../core/src/release-generation-graph.js';
 import { ReleaseReceiptClient, withReleaseClaim, writeCandidateReviewCheck, recoverReleaseAssets, prepareReleaseCandidate, createReleaseCandidate, publishReleaseCandidate, verifyReleaseDownloads, verifyReleaseAssetFiles, releaseUploader, releasePublishTimeoutMinutes, refreshingReleaseToken } from './release-lifecycle.js';
 
 /** This command never runs code from the candidate or product checkout. */
@@ -12,7 +12,7 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
   const required = (key: string) => { const v = args[key]; releaseAssert(v, 'ARGUMENT_' + key); return v; };
   const environment = (key: string) => { const v = process.env[key]; releaseAssert(v, 'ENV_' + key); return v; };
   const repositoryId = Number(required('repository-id')), policySha = required('policy-sha'), tag = required('target-tag'), operation = required('operation');
-  releaseAssert(positiveId(repositoryId) && releaseSha(policySha) && ['prepare', 'revise', 'inspect', 'plan', 'reconcile', 'pause', 'resume', 'retry-create', 'export', 'rebind-build', 'generator-ticket', 'recover-assets', 'revise-rebuild', 'recover-candidate', 'migrate-policy'].includes(operation), 'COMMAND');
+  releaseAssert(positiveId(repositoryId) && releaseSha(policySha) && ['prepare', 'revise', 'inspect', 'plan', 'reconcile', 'pause', 'resume', 'retry-create', 'export', 'rebind-build', 'generator-ticket', 'generator-continue', 'recover-assets', 'revise-rebuild', 'recover-candidate', 'migrate-policy'].includes(operation), 'COMMAND');
   const getToken = refreshingReleaseToken(() => createInstallationToken({ appId: environment('APP_ID'), privateKey: environment('STEWARD_APP_PRIVATE_KEY'), installationId: Number(environment('INSTALLATION_ID')), repositoryId,
     permissions: { ...(['recover-candidate', 'prepare', 'revise', 'revise-rebuild', 'inspect', 'plan', 'reconcile'].includes(operation) ? { actions: 'read' as const } : {}), metadata: 'read', contents: ['recover-candidate', 'prepare', 'revise', 'revise-rebuild', 'reconcile'].includes(operation) ? 'write' : 'read', pull_requests: ['recover-candidate', 'prepare', 'revise', 'revise-rebuild'].includes(operation) ? 'write' : 'read', checks: ['inspect', 'plan', 'reconcile'].includes(operation) ? 'write' : 'read' }, policySha }));
   const token = await getToken();
@@ -26,14 +26,35 @@ export async function releaseCandidateCommand(args: Readonly<Record<string, stri
     const result = await receipts.request('migrate-policy', {});
     process.stdout.write(JSON.stringify(result) + '\n'); return;
   }
-  if (operation === 'generator-ticket') {
-    const bundle = resolve(required('bundle'));
-    const frozen = JSON.parse(await readFile(join(bundle, 'frozen.json'), 'utf8')) as FrozenRelease;
+  if (operation === 'generator-ticket' || operation === 'generator-continue') {
+    const { frozen } = await receipts.request<{ frozen: FrozenRelease }>('generation-graph', { action: 'seed' });
     releaseAssert(frozen.repositoryId === repositoryId && frozen.policySha === policySha && frozen.targetTag === tag, 'BUNDLE_IDENTITY');
-    const source = validateReleaseSource(await readFile(join(bundle, 'source.json')), frozen);
-    const plan = generationPlan(frozen.sourceDigest, frozen.policySha, generationInputs(source));
-    await receipts.request('generation', { action: 'prepare', plan });
-    await writeFile(resolve(required('output')), JSON.stringify(await receipts.request('generation', { action: 'ticket', planDigest: generationPlanDigest(plan) })), { flag: 'wx', mode: 0o600 });
+    const bytes = await receipts.getObject(frozen.sourceDigest);
+    const source = validateReleaseSource(bytes, frozen);
+    const graph = planGenerationGraph(frozen.sourceDigest, frozen.policySha, bytes.byteLength, generationSourceBatches(source));
+    const graphDigest = generationGraphDigest(graph);
+    if (operation === 'generator-continue') {
+      const allowed = await receipts.request<{ continue: boolean; graphDigest: string }>('generation-graph', { action: 'continue', frozen, graphDigest });
+      releaseAssert(allowed.continue && allowed.graphDigest === graphDigest, 'GENERATION_CONTINUATION');
+      const artifactId = required('artifact-id'), runId = required('run-id');
+      releaseAssert(/^[1-9]\d*$/.test(artifactId) && /^[1-9]\d*$/.test(runId), 'GENERATION_SEED_ARTIFACT');
+      const centralToken = await createInstallationToken({ appId: environment('APP_ID'), privateKey: environment('STEWARD_APP_PRIVATE_KEY'),
+        installationId: Number(environment('INSTALLATION_ID')), repositoryId: 1296724484,
+        permissions: { actions: 'write', contents: 'read', metadata: 'read' }, policySha });
+      await dispatchWorkflow(new GitHubClient(centralToken, 'https://api.github.com', fetch, policySha), {
+        owner: 'splrad', repo: 'steward', workflow: 'release.yml', policySha,
+        inputs: { repositoryId: String(repositoryId), targetTag: tag, operation: 'generate', bundleArtifactId: artifactId, bundleRunId: runId },
+      });
+      return;
+    }
+    let offset = 0;
+    while (offset < graph.nodes.length) {
+      const page = await receipts.request<{ nextOffset: number; ready: boolean; graphDigest: string }>('generation-graph', { action: 'prepare', frozen, offset });
+      releaseAssert(page.graphDigest === graphDigest && page.nextOffset === Math.min(offset + 16, graph.nodes.length), 'GENERATION_PREPARE_PROGRESS');
+      offset = page.nextOffset;
+      if (offset === graph.nodes.length) releaseAssert(page.ready, 'GENERATION_GRAPH_INCOMPLETE');
+    }
+    await writeFile(resolve(required('output')), JSON.stringify(await receipts.request('generation-graph', { action: 'ticket', frozen, graphDigest })), { flag: 'wx', mode: 0o600 });
     return;
   }
   let result: ReleaseReceipt;

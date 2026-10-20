@@ -303,9 +303,42 @@ it.each(['tag', 'release', 'configuration', 'same-policy'])('keeps the current r
  let r = await policyMigrationFixture();
  if (reason === 'tag') mock.central.getGitRef.mockImplementation(async () => ({object: {sha: sha('a')}}));
  if (reason === 'release') mock.central.getReleaseByTag.mockResolvedValue({id: 1});
- if (reason === 'configuration') mock.config.delivery.githubRelease.builds = [];
+ if (reason === 'configuration') mock.config.delivery.githubRelease.builds = ['release', 'release'];
  if (reason === 'same-policy') { r = newReleaseReceipt(frozenFixture(), notesFixture); db.database.prepare('UPDATE release_receipts SET record_json=?').run(canonicalReleaseJson(r)); }
  expect((await migrate())!.status).not.toBe(200); expect(await receipts.get(9001, 'v1.2.3')).toEqual(r); expect(mock.dispatch).not.toHaveBeenCalled();
+});
+it('seals a zero-build seed without claiming an accepted build or fabricating assets', async () => {
+  mock.config.delivery.githubRelease.builds = [];
+  const state = await request();
+  expect(state.request.plans).toEqual([]);
+  await action({ action: 'begin', key: state.request.key, runId: 10, attempt: 1 });
+  const finish = { action: 'finish-seed', key: state.request.key, runId: 10, attempt: 1, artifactId: 20 };
+  await expect(action(finish)).rejects.toThrow('BUILD_RUN_PROVENANCE');
+  run.status = 'completed'; run.conclusion = 'success';
+  await expect(action(finish)).rejects.toThrow('BUILD_SEED_PROVENANCE');
+  artifact.name = 'release-build-request-1';
+  const seeded = await action(finish);
+  expect(seeded).toMatchObject({ status: 'seeded', artifact: null, resultManifests: [],
+    seedArtifact: { artifactId: 20 }, request: { frozen: { build: null, assets: [], manifests: [] } } });
+  expect(await action(finish)).toEqual(seeded);
+  await expect(action({ ...finish, action: 'reject' })).rejects.toThrow('BUILD_RUN_PROVENANCE');
+  expect(await store.acceptedSeed(9001, 'v1.2.3')).toEqual(seeded);
+  run.id = 11; run.status = 'in_progress';
+  const replay = await action({ action: 'begin', key: state.request.key, runId: 11, attempt: 1 });
+  expect(replay).toMatchObject({ status: 'running', artifact: null, request: state.request });
+  run.status = 'completed';
+  artifact.id = 21; artifact.workflow_run.id = 11;
+  expect(await action({ ...finish, runId: 11, artifactId: 21 })).toMatchObject({ status: 'seeded', artifact: null,
+    seedArtifact: { runId: 11, artifactId: 21 } });
+  await expect(request('rebuild')).rejects.toThrow('BUILD_SET');
+});
+it('migrates a zero-asset candidate under a new policy without carrying old approval', async () => {
+  const old = await policyMigrationFixture();
+  mock.config.delivery.githubRelease.builds = [];
+  expect((await migrate())!.status).toBe(200);
+  expect(await receipts.get(9001, 'v1.2.3')).toBeNull();
+  expect(await receipts.get(9001, 'v1.2.3', 1)).toEqual(old);
+  expect(mock.dispatch).toHaveBeenCalledWith(mock.central, expect.objectContaining({ workflow: 'release-build.yml', policySha: sha('c') }));
 });
 it.each(['open','closed'])('requires a bound old candidate to be closed before policy migration: %s', async state => {
  const original = await policyMigrationFixture(), r={...original,pullNumber:42};

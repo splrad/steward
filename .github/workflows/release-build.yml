@@ -69,12 +69,12 @@ jobs:
           name: release-build-request-${{ github.run_attempt }}
           path: build-context
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
       - name: 拒绝未知或缺失的构建平台
         shell: bash
         env:
           BUILD_RUNNER: ${{ steps.plan.outputs.runner }}
-        run: case "$BUILD_RUNNER" in windows-2025|ubuntu-24.04) ;; *) echo "BUILD_RUNNER_INVALID" >&2; exit 1 ;; esac
+        run: case "$BUILD_RUNNER" in windows-2025|ubuntu-24.04|none) ;; *) echo "BUILD_RUNNER_INVALID" >&2; exit 1 ;; esac
   build_windows:
     needs: plan
     runs-on: windows-2025

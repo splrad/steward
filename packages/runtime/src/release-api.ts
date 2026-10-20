@@ -14,6 +14,8 @@ import { GitHubRequestError, GitHubClient, createInstallationToken, dispatchWork
 import catalog from '../../../config/repositories.json' with { type: 'json' };
 import notesProfile from '../../../config/profiles/release-notes/common-v3.json' with { type: 'json' };
 import { ReleaseGenerationStore } from './release-generation-store.js';
+import { handleGenerationGraphTicket } from './release-generation-graph-api.js';
+import { issueGenerationGraph } from './release-generation-graph-issuer.js';
 import { rebindReleaseBuild } from '../../core/src/release-rebuild.js';
 import { currentReleaseBuild } from '../../core/src/release-rebuild.js';
 import { makeReleaseBuildRequest, releaseToolchainDigest } from '../../core/src/release-build-request.js';
@@ -30,6 +32,12 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
     const parts = url.pathname.split('/').slice(3), repositoryId = Number(parts[0]);
     releaseAssert(positiveId(repositoryId) && String(repositoryId) === parts[0] && env.ISSUE_SNAPSHOTS, 'ROUTE');
     const bearer = request.headers.get('authorization')?.replace(/^Bearer /, '') ?? '';
+    if (bearer.startsWith('release-generation-graph.')) {
+      releaseAssert(parts.length === 3 && parts[2] === 'generation-graph' && /^v\d+\.\d+\.\d+$/.test(parts[1]!), 'GENERATION_SCOPE');
+      const capability = (catalog.repositories as Record<string, any>)[String(repositoryId)]?.delivery?.githubRelease;
+      releaseAssert(capability?.enabled === true && ['pending', 'active'].includes(capability.state), 'CAPABILITY');
+      return reply(200, await handleGenerationGraphTicket(request, env.ISSUE_SNAPSHOTS, repositoryId, parts[1]!, env.POLICY_SHA!));
+    }
     if (bearer.startsWith('release-generation.')) {
       releaseAssert(parts.length === 3 && parts[2] === 'generation' && /^v\d+\.\d+\.\d+$/.test(parts[1]!), 'GENERATION_SCOPE');
       const capability = (catalog.repositories as Record<string, any>)[String(repositoryId)]?.delivery?.githubRelease;
@@ -113,8 +121,15 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
       releaseAssert(request.method === 'POST', 'METHOD');
       return reply(200, await handleReleaseBuildAction(env, gh, { ...repository, id: repositoryId }, configuration, tag, body));
     }
+    if (action === 'generation-graph') {
+      canPrepare(); releaseAssert(request.method === 'POST', 'METHOD');
+      return reply(200, await issueGenerationGraph(env.ISSUE_SNAPSHOTS, repositoryId, tag, env.POLICY_SHA!, body));
+    }
     if (action === 'generation') {
       canPrepare();
+      const durable = await env.ISSUE_SNAPSHOTS.prepare('SELECT graph_digest FROM release_generation_graphs WHERE repository_id=? AND target_tag=? AND runs>0 LIMIT 1')
+        .bind(repositoryId, tag).first();
+      releaseAssert(!durable, 'GENERATION_PROTOCOL_UPGRADED');
       const generation = new ReleaseGenerationStore(env.ISSUE_SNAPSHOTS);
       if (request.method === 'GET') return reply(200, await generation.read(repositoryId, tag));
       releaseAssert(request.method === 'POST', 'METHOD');

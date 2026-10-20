@@ -189,14 +189,6 @@ jobs:
           node-version-file: .node-version
           cache: npm
       - run: npm ci --ignore-scripts
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          repository: splrad/steward
-          artifact-ids: ${{ inputs.bundleArtifactId }}
-          run-id: ${{ inputs.bundleRunId }}
-          github-token: ${{ github.token }}
-          merge-multiple: true
-          path: seed
       - name: 固定生成预算并签发单候选短时凭证
         shell: bash
         env:
@@ -207,7 +199,7 @@ jobs:
           REPOSITORY_ID: ${{ inputs.repositoryId }}
           TARGET_TAG: ${{ inputs.targetTag }}
           POLICY_SHA: ${{ github.workflow_sha }}
-        run: node packages/runner/dist/index.js release-candidate --operation generator-ticket --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --bundle seed --output generation-ticket.json
+        run: node packages/runner/dist/index.js release-candidate --operation generator-ticket --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --output generation-ticket.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         id: ticket
         with:
@@ -218,12 +210,13 @@ jobs:
   generate:
     needs: generation-ticket
     runs-on: ubuntu-latest
-    timeout-minutes: 86
+    timeout-minutes: 240
     environment:
       name: steward-release-notes
       deployment: false
     outputs:
       artifactId: ${{ steps.generated.outputs.artifact-id }}
+      complete: ${{ steps.produce.outputs.complete }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -239,22 +232,16 @@ jobs:
           artifact-ids: ${{ needs.generation-ticket.outputs.artifactId }}
           merge-multiple: true
           path: grant
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          repository: splrad/steward
-          artifact-ids: ${{ inputs.bundleArtifactId }}
-          run-id: ${{ inputs.bundleRunId }}
-          github-token: ${{ github.token }}
-          merge-multiple: true
-          path: seed
       - name: 从冻结来源生成正文和独立审阅证据
+        id: produce
         shell: bash
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
         run: |
           mkdir generated
-          node packages/runner/dist/index.js release-produce --bundle seed --ticket grant/generation-ticket.json --runtime-url https://splrad-steward-runtime.alearner-5ef.workers.dev --copilot-loader node_modules/@github/copilot/npm-loader.js --output generated
+          node packages/runner/dist/index.js release-produce --ticket grant/generation-ticket.json --runtime-url https://splrad-steward-runtime.alearner-5ef.workers.dev --copilot-loader node_modules/@github/copilot/npm-loader.js --output generated
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: steps.produce.outputs.complete == 'true'
         id: generated
         with:
           name: generated-release-${{ github.run_attempt }}
@@ -262,6 +249,7 @@ jobs:
           if-no-files-found: error
   generated-candidate:
     needs: generate
+    if: needs.generate.outputs.complete == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment:
@@ -300,7 +288,40 @@ jobs:
           REPOSITORY_ID: ${{ inputs.repositoryId }}
           TARGET_TAG: ${{ inputs.targetTag }}
           POLICY_SHA: ${{ github.workflow_sha }}
-        run: node packages/runner/dist/index.js release-candidate --operation prepare --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --bundle generated --assets seed/assets
+        run: |
+          mkdir -p seed/assets
+          node packages/runner/dist/index.js release-candidate --operation prepare --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --bundle generated --assets seed/assets
+  generation-continue:
+    needs: generate
+    if: needs.generate.outputs.complete == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: steward-release
+      deployment: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: 核验剩余预算并调度下一段
+        shell: bash
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          TARGET_TAG: ${{ inputs.targetTag }}
+          POLICY_SHA: ${{ github.workflow_sha }}
+          BUNDLE_ARTIFACT_ID: ${{ inputs.bundleArtifactId }}
+          BUNDLE_RUN_ID: ${{ inputs.bundleRunId }}
+        run: node packages/runner/dist/index.js release-candidate --operation generator-continue --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --artifact-id "$BUNDLE_ARTIFACT_ID" --run-id "$BUNDLE_RUN_ID"
   revision:
     if: (inputs.operation == 'revise-rebuild' || inputs.operation == 'recover-candidate' || inputs.operation == 'retry-create' || inputs.operation == 'migrate-policy') && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest

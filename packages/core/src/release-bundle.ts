@@ -47,12 +47,22 @@ export function releaseSourceFrontier(source: { targetSha: string; boundary: { k
   return [...frontier];
 }
 
+export function releaseEvidenceCoverage(source: any) {
+  const commits = source.commits.map((c: any) => c.sha).sort();
+  const paths = source.changes.map((c: any) => c.path).sort();
+  return { commitCount: commits.length, commitDigest: receiptDigest(canonicalReleaseJson(commits)),
+    pathCount: paths.length, pathDigest: receiptDigest(canonicalReleaseJson(paths)) };
+}
 export function validateReleaseEvidence(bytes: Uint8Array, f: FrozenRelease, source: any): void {
   releaseAssert(bytes.length <= 512 * 1024 && receiptDigest(bytes) === f.evidenceDigest, 'EVIDENCE_DIGEST');
   const e = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-  releaseAssert(e.schemaVersion === 1 && e.sourceDigest === f.sourceDigest && Array.isArray(e.internalChanges) && Array.isArray(e.unknowns)
-    && Array.isArray(e.coverage?.commitShas) && Array.isArray(e.coverage?.paths), 'EVIDENCE');
+  releaseAssert([1, 2].includes(e.schemaVersion) && e.sourceDigest === f.sourceDigest && Array.isArray(e.internalChanges) && Array.isArray(e.unknowns), 'EVIDENCE');
   const same = (a: string[], b: string[]) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
-  releaseAssert(same(e.coverage.commitShas, source.commits.map((c: any) => c.sha)) && same(e.coverage.paths, source.changes.map((c: any) => c.path)), 'EVIDENCE_COVERAGE');
+  if (e.schemaVersion === 1) {
+    releaseAssert(Array.isArray(e.coverage?.commitShas) && Array.isArray(e.coverage?.paths), 'EVIDENCE');
+    releaseAssert(same(e.coverage.commitShas, source.commits.map((c: any) => c.sha)) && same(e.coverage.paths, source.changes.map((c: any) => c.path)), 'EVIDENCE_COVERAGE');
+  } else {
+    releaseAssert(canonicalReleaseJson(e.coverage) === canonicalReleaseJson(releaseEvidenceCoverage(source)), 'EVIDENCE_COVERAGE');
+  }
   releaseAssert([...e.internalChanges, ...e.unknowns].every(v => typeof v === 'string' && v.length <= 8000), 'EVIDENCE_TEXT');
 }

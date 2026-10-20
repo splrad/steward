@@ -11,6 +11,7 @@ import { type BodyWriteRuntimeEnv } from './pr-body-api.js';
 import { releaseTree, readCandidateBlob, optionalReleaseRead } from '../../github/src/release-candidate.js';
 import { assertIncreasingReleaseVersion, verifyReleaseCommitRange } from '../../github/src/release-candidate.js';
 import { matchBuildFiles } from '../../core/src/build-manifest.js';
+import { preflightGenerationSource } from '../../core/src/release-generation-graph.js';
 
 export async function centralBuildClient(env: BodyWriteRuntimeEnv, write = false): Promise<GitHubClient> {
   const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY!, installationId: Number(env.INSTALLATION_ID), repositoryId: 1296724484, permissions: { actions: write ? 'write' : 'read', contents: 'read', metadata: 'read' }, policySha: env.POLICY_SHA });
@@ -59,8 +60,10 @@ export async function handleReleaseBuildAction(env: BodyWriteRuntimeEnv, gh: Git
     releaseAssert(head.object.sha === f.productTargetSha, 'BUILD_TARGET_STALE');
     const tree = await releaseTree(gh, owner, repo, f.productTargetSha);
     releaseAssert(tree.object.tree.sha === f.productTree && await readCandidateBlob(gh, owner, repo, tree, 'VERSION') === f.targetTag.slice(1) + '\n', 'VERSION_BINDING');
-    const source = validateReleaseSource(await receipts.readObject(repositoryId, f.sourceDigest), f);
+    const sourceBytes = await receipts.readObject(repositoryId, f.sourceDigest);
+    const source = validateReleaseSource(sourceBytes, f);
     await verifyReleaseCommitRange(gh, owner, repo, source, f.productTargetSha);
+    preflightGenerationSource(f.sourceDigest, f.policySha, sourceBytes.byteLength, source);
     return store.prepare(await makeReleaseBuildRequest(f, configuration, 'initial', null));
   }
   const state = await store.get(body.key, repositoryId, tag);
@@ -81,12 +84,28 @@ export async function handleReleaseBuildAction(env: BodyWriteRuntimeEnv, gh: Git
   }
   const last = state.attempts.at(-1);
   releaseAssert(last && last.runId === body.runId && last.attempt === body.attempt && run.status === 'completed', 'BUILD_RUN_PROVENANCE');
+  if (body.action === 'finish-seed') {
+    releaseAssert(state.request.mode === 'initial' && state.request.plans.length === 0
+      && configuration.delivery.githubRelease.builds.length === 0 && state.artifact === null
+      && state.request.frozen.build === null && state.request.frozen.assets.length === 0
+      && run.conclusion === 'success', 'BUILD_SEED');
+    const artifact = await central.request<any>('GET', `/repos/splrad/steward/actions/artifacts/${body.artifactId}`);
+    releaseAssert(artifact.id === body.artifactId && artifact.name === `release-build-request-${body.attempt}`
+      && artifact.expired === false && artifact.workflow_run?.id === run.id
+      && artifact.workflow_run.head_sha === env.POLICY_SHA, 'BUILD_SEED_PROVENANCE');
+    const seedArtifact = { runId: run.id, artifactId: artifact.id, artifactName: artifact.name, headSha: run.head_sha };
+    if (state.status === 'seeded') {
+      releaseAssert(canonicalReleaseJson(state.seedArtifact) === canonicalReleaseJson(seedArtifact), 'BUILD_SEED_CONFLICT'); return state;
+    }
+    releaseAssert(state.status === 'running', 'BUILD_SEED_STATE');
+    return store.save(state, { ...state, status: 'seeded', seedArtifact, resultManifests: [], error: null });
+  }
   if (body.action === 'fail') {
-    releaseAssert(run.conclusion !== 'success' && state.status !== 'accepted', 'BUILD_RUN_PROVENANCE');
+    releaseAssert(run.conclusion !== 'success' && !['accepted', 'seeded'].includes(state.status), 'BUILD_RUN_PROVENANCE');
     return store.save(state, { ...state, status: 'failed', error: 'build-run-failed' });
   }
   if (body.action === 'reject') {
-    releaseAssert(state.status !== 'accepted' && run.conclusion === 'success', 'BUILD_RUN_PROVENANCE');
+    releaseAssert(!['accepted', 'seeded'].includes(state.status) && run.conclusion === 'success', 'BUILD_RUN_PROVENANCE');
     if (state.request.mode === 'rebuild') {
       const claim = await receipts.claim(repositoryId, tag, Date.now());
       try {

@@ -1,3 +1,4 @@
+import { preflightGenerationSource } from '../../core/src/release-generation-graph.js';
 import { fetchBoundArtifactFile, type ArtifactBinding } from './artifact-handoff.js';
 import {extractArtifactFile} from './artifact-file.js';
 import {createReadStream} from 'node:fs';
@@ -146,6 +147,15 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
     }
     const artifacts = await central.gh.request<any>('GET', `/repos/splrad/steward/actions/runs/${runId}/artifacts?per_page=100`);
     releaseAssert(artifacts.total_count <= 100, 'BUILD_ARTIFACT_LIMIT');
+    if (state.request.plans.length === 0) {
+      const seeds = artifacts.artifacts.filter((a: any) => a.name === `release-build-request-${job.run_attempt}` && !a.expired);
+      releaseAssert(seeds.length === 1, 'BUILD_SEED_ARTIFACT');
+      await receipts.request('build-request', { action: 'finish-seed', key: state.request.key, runId, attempt: job.run_attempt, artifactId: seeds[0].id });
+      const writer = await scoped(1296724484, policySha, 'write');
+      await dispatchWorkflow(writer.gh, { owner: 'splrad', repo: 'steward', workflow: 'release.yml', policySha,
+        inputs: { repositoryId: String(repositoryId), targetTag: tag, operation: 'generate', bundleArtifactId: String(seeds[0].id), bundleRunId: String(runId) } });
+      await output({ ready: 'false' }); return;
+    }
     const found = artifacts.artifacts.filter((a: any) => a.name === `release-build-result-${job.run_attempt}` && !a.expired);
     releaseAssert(found.length === 1, 'BUILD_ARTIFACT');
     const binding: ArtifactBinding = {repositoryId:1296724484,fullName:'splrad/steward',workflowPath:'.github/workflows/release-build.yml',policySha,runId,attempt:job.run_attempt,artifactId:found[0].id,artifactName:found[0].name};
@@ -184,6 +194,8 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
         boundary = { kind: 'tag', sha: object.sha, reference: latest.tag_name };
       }
       const frozenSource = freezeReleaseGitInput({ workspace: source, identity: { repositoryId, defaultBranch: repository.default_branch, targetSha: target, policySha }, targetTag: tag, boundary });
+      // Freeze the same bounded generation graph before spending any build budget.
+      preflightGenerationSource(frozenSource.inputSha256, policySha, Buffer.byteLength(frozenSource.bytes), frozenSource.input);
       releaseAssert(frozenSource.input.commits.length <= 100, 'CONTRIBUTOR_LIMIT');
       const authorIds = required('author-ids').split(',').map(Number); releaseAssert(authorIds.length > 0 && authorIds.every(positiveId), 'AUTHOR_IDENTITY');
       for (const id of authorIds) releaseAssert((await auth.gh.request<any>('GET', `/user/${id}`)).type === 'User', 'AUTHOR_IDENTITY');
@@ -202,6 +214,14 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
       state = await receipts.request('build-request', { action: 'prepare', frozen });
     }
     state = await receipts.request('build-request', { action: 'begin', key: state.request.key, runId: Number(required('run-id')), attempt: Number(required('attempt')) });
+    if (state.request.plans.length === 0) {
+      releaseAssert(state.request.mode === 'initial' && state.request.frozen.build === null
+        && state.request.frozen.assets.length === 0, 'BUILD_SEED');
+      await writeFile(join(directory, 'request.json'), canonicalReleaseJson(state), { flag: 'wx' });
+      await writeSeed(join(directory, 'source.json'), await receipts.getObject(state.request.frozen.sourceDigest));
+      await writeSeed(join(directory, 'frozen.json'), canonicalReleaseJson(state.request.frozen));
+      await output({ runner: 'none' }); return;
+    }
     await output({ runner: hostedBuildRunner(state.request.plans[0]!.runnerFamily) });
     await writeFile(join(directory, 'request.json'), canonicalReleaseJson(state), { flag: 'wx' });
     await run('git', ['-C', source, 'bundle', 'create', join(directory, 'source.bundle'), 'HEAD'], { env: isolatedBuildEnvironment(process.env, home), timeout: 300000, maxBuffer: 1024 * 1024, windowsHide: true }); return;
