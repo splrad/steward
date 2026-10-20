@@ -1,3 +1,4 @@
+import { evaluatorSha } from './workflow-evaluator.js';
 import { assertPersonalizationConfiguration, refreshPersonalizedSections } from '../../core/src/release-personalization.js';
 import { comparePublicVersions, parsePublicVersion } from '../../core/src/release-version.js';
 import { releaseProfiles } from '../../../config/release-profiles.js';
@@ -298,7 +299,7 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
         releaseAssert(object?.type === 'commit' && object.sha === boundary.sha, 'BOUNDARY_DRIFT');
       }
       await assertIncreasingReleaseVersion(gh, owner, repo, tag, r.releaseId);
-      const fresh = reviewReleaseReceipt({ ...r, phase: 'awaiting-review' }, await readReleaseCandidateFacts(gh, r, Number(env.APP_ID), botId));
+      const fresh = reviewReleaseReceipt({ ...r, phase: 'awaiting-review' }, await readReleaseCandidateFacts(gh, r, Number(env.APP_ID), botId, env.WORKFLOW_EVALUATOR_SHA === undefined ? undefined : evaluatorSha(env)));
       assertReleasePermit(fresh);
       releaseAssert(fresh.approvedNotes === r.approvedNotes && fresh.headSha === r.headSha && fresh.merge?.commitSha === r.merge?.commitSha, 'APPROVAL_DRIFT');
       if (r.releaseId) {
@@ -328,13 +329,13 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
     if (action === 'bind') {
       canPrepare(); releaseAssert(!r.paused && r.initialCommitSha && positiveId(body.pullNumber) && (!r.pullNumber || r.pullNumber === body.pullNumber), 'BIND');
       const candidate = { ...r, pullNumber: body.pullNumber };
-      const facts = await readReleaseCandidateFacts(gh, candidate, Number(env.APP_ID), botId);
+      const facts = await readReleaseCandidateFacts(gh, candidate, Number(env.APP_ID), botId, env.WORKFLOW_EVALUATOR_SHA === undefined ? undefined : evaluatorSha(env));
       releaseAssert(facts.headSha === r.initialCommitSha && !facts.merged && !facts.closed && facts.notes === r.draftNotes, 'BIND_HEAD');
       return reply(200, await save({ ...candidate, headSha: facts.headSha, phase: 'awaiting-review' }));
     }
     if (action === 'review') {
       releaseAssert(!['publishing', 'verified'].includes(r.phase) && !r.paused, 'SEALED');
-      try { return reply(200, await save(reviewReleaseReceipt(r, await readReleaseCandidateFacts(gh, r, Number(env.APP_ID), botId)))); }
+      try { return reply(200, await save(reviewReleaseReceipt(r, await readReleaseCandidateFacts(gh, r, Number(env.APP_ID), botId, env.WORKFLOW_EVALUATOR_SHA === undefined ? undefined : evaluatorSha(env))))); }
       catch (error) { await save({ ...r, phase: 'awaiting-review', approval: null, approvedNotes: null, merge: null, error: error instanceof Error ? error.message : 'review-failed' }); throw error; }
     }
     if (action === 'pause' || action === 'resume') {

@@ -1,29 +1,48 @@
 name: SPLRAD Steward / Release
-
 on:
   workflow_dispatch:
     inputs:
-      repositoryId: { required: true, type: string }
-      targetTag: { required: true, type: string }
-      operation: { required: true, type: choice, options: [generate, prepare, inspect, reconcile, revise-rebuild, recover-candidate, retry-create, migrate-policy] }
-
-      requestKey: { required: false, type: string }
-      bundleArtifactId: { required: false, type: string }
-      bundleRunId: { required: false, type: string }
-
+      repositoryId:
+        required: true
+        type: string
+      targetTag:
+        required: true
+        type: string
+      operation:
+        required: true
+        type: choice
+        options:
+          - generate
+          - prepare
+          - inspect
+          - reconcile
+          - revise-rebuild
+          - recover-candidate
+          - retry-create
+          - migrate-policy
+      requestKey:
+        required: false
+        type: string
+      bundleArtifactId:
+        required: false
+        type: string
+      bundleRunId:
+        required: false
+        type: string
 permissions:
   contents: read
   actions: read
 concurrency:
-  group: steward-release-${{ inputs.repositoryId }}-${{ inputs.targetTag }}
+  group: workflow-policy:${{ github.workflow_ref }}:steward-release-${{ inputs.repositoryId }}-${{ inputs.targetTag }}
   cancel-in-progress: false
-
 jobs:
   inspect:
     if: (inputs.operation == 'inspect' || inputs.operation == 'reconcile') && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: { name: steward-release, deployment: false }
+    environment:
+      name: steward-release
+      deployment: false
     outputs:
       shouldPublish: ${{ steps.receipt.outputs.shouldPublish }}
       publishTimeoutMinutes: ${{ steps.receipt.outputs.publishTimeoutMinutes }}
@@ -31,9 +50,13 @@ jobs:
       runId: ${{ steps.receipt.outputs.runId }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: { ref: "${{ github.workflow_sha }}", persist-credentials: false }
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version-file: .node-version, cache: npm }
+        with:
+          node-version-file: .node-version
+          cache: npm
       - run: npm ci --ignore-scripts
       - name: 回读候选与批准收据
         id: receipt
@@ -48,21 +71,26 @@ jobs:
           OPERATION: ${{ inputs.operation == 'reconcile' && 'plan' || 'inspect' }}
           POLICY_SHA: ${{ github.workflow_sha }}
         run: node packages/runner/dist/index.js release-candidate --operation "$OPERATION" --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA"
-
   publish:
     needs: inspect
     if: inputs.operation == 'reconcile' && needs.inspect.outputs.shouldPublish == 'true'
     concurrency:
-      group: steward-release-publish-${{ inputs.repositoryId }}
+      group: workflow-policy:${{ github.workflow_ref }}:steward-release-publish-${{ inputs.repositoryId }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: ${{ fromJSON(needs.inspect.outputs.publishTimeoutMinutes) }}
-    environment: { name: steward-release, deployment: false }
+    environment:
+      name: steward-release
+      deployment: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: { ref: "${{ github.workflow_sha }}", persist-credentials: false }
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version-file: .node-version, cache: npm }
+        with:
+          node-version-file: .node-version
+          cache: npm
       - run: npm ci --ignore-scripts
       - if: needs.inspect.outputs.artifactId != ''
         id: assets
@@ -99,17 +127,22 @@ jobs:
           TARGET_TAG: ${{ inputs.targetTag }}
           POLICY_SHA: ${{ github.workflow_sha }}
         run: node packages/runner/dist/index.js release-candidate --operation recover-assets --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA"
-
   prepare:
     if: inputs.operation == 'prepare' && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    environment: { name: steward-release, deployment: false }
+    environment:
+      name: steward-release
+      deployment: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: { ref: "${{ github.workflow_sha }}", persist-credentials: false }
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version-file: .node-version, cache: npm }
+        with:
+          node-version-file: .node-version
+          cache: npm
       - run: npm ci --ignore-scripts
       - name: 校验候选输入编号
         shell: bash
@@ -136,19 +169,24 @@ jobs:
           TARGET_TAG: ${{ inputs.targetTag }}
           POLICY_SHA: ${{ github.workflow_sha }}
         run: node packages/runner/dist/index.js release-candidate --operation prepare --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --bundle candidate-bundle --assets candidate-bundle/assets
-
   generation-ticket:
     if: inputs.operation == 'generate' && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    environment: { name: steward-release, deployment: false }
+    environment:
+      name: steward-release
+      deployment: false
     outputs:
       artifactId: ${{ steps.ticket.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: { ref: "${{ github.workflow_sha }}", persist-credentials: false }
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version-file: .node-version, cache: npm }
+        with:
+          node-version-file: .node-version
+          cache: npm
       - run: npm ci --ignore-scripts
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
@@ -176,19 +214,24 @@ jobs:
           path: generation-ticket.json
           retention-days: 1
           if-no-files-found: error
-
   generate:
     needs: generation-ticket
     runs-on: ubuntu-latest
     timeout-minutes: 86
-    environment: { name: steward-release-notes, deployment: false }
+    environment:
+      name: steward-release-notes
+      deployment: false
     outputs:
       artifactId: ${{ steps.generated.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: { ref: "${{ github.workflow_sha }}", persist-credentials: false }
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version-file: .node-version, cache: npm }
+        with:
+          node-version-file: .node-version
+          cache: npm
       - run: npm ci --ignore-scripts
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
@@ -216,17 +259,22 @@ jobs:
           name: generated-release-${{ github.run_attempt }}
           path: generated
           if-no-files-found: error
-
   generated-candidate:
     needs: generate
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    environment: { name: steward-release, deployment: false }
+    environment:
+      name: steward-release
+      deployment: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: { ref: "${{ github.workflow_sha }}", persist-credentials: false }
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version-file: .node-version, cache: npm }
+        with:
+          node-version-file: .node-version
+          cache: npm
       - run: npm ci --ignore-scripts
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
@@ -252,17 +300,22 @@ jobs:
           TARGET_TAG: ${{ inputs.targetTag }}
           POLICY_SHA: ${{ github.workflow_sha }}
         run: node packages/runner/dist/index.js release-candidate --operation prepare --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --bundle generated --assets seed/assets
-
   revision:
     if: (inputs.operation == 'revise-rebuild' || inputs.operation == 'recover-candidate' || inputs.operation == 'retry-create' || inputs.operation == 'migrate-policy') && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: { name: steward-release, deployment: false }
+    environment:
+      name: steward-release
+      deployment: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: { ref: "${{ github.workflow_sha }}", persist-credentials: false }
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version-file: .node-version, cache: npm }
+        with:
+          node-version-file: .node-version
+          cache: npm
       - run: npm ci --ignore-scripts
       - name: 恢复持久收据对应的候选或创建意图
         id: receipt

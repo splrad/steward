@@ -1,53 +1,56 @@
 name: SPLRAD Steward / Sync Managed Labels
-
 on:
   workflow_dispatch:
     inputs:
-      repositoryId: { required: false, type: string }
+      repositoryId:
+        required: false
+        type: string
   workflow_run:
-    workflows: ["SPLRAD Steward / Deploy Runtime"]
-    types: [completed]
+    workflows:
+      - SPLRAD Steward / Deploy Runtime
+    types:
+      - completed
   schedule:
-    - cron: "17 3 * * *"
-
-permissions: {}
+    - cron: 17 3 * * *
+permissions:
+  contents: read
+  actions: read
 concurrency:
-  group: steward-managed-labels-sync
+  group: workflow-policy:${{ github.workflow_ref }}:steward-managed-labels-sync
   cancel-in-progress: false
-
 jobs:
   synchronize:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'schedule' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == github.event.repository.default_branch &&
-      github.event.workflow_run.head_repository.full_name == github.repository)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == github.event.repository.default_branch && github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
       name: steward-automation
       deployment: false
     steps:
-      - name: 解析已部署规则提交
-        id: policy
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          DEPLOYED_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
-        run: |
-          if [[ "$EVENT_NAME" == "workflow_run" ]]; then
-            policy_sha="$DEPLOYED_HEAD_SHA"
-          else
-            policy_sha="$(node --input-type=module -e 'const response=await fetch(process.env.RUNTIME_URL+"/health"); if(!response.ok) process.exit(1); const body=await response.json(); if(!/^[0-9a-f]{40}$/u.test(body.policySha)) process.exit(1); process.stdout.write(body.policySha)')"
-          fi
-          printf 'policy_sha=%s\n' "$policy_sha" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: { ref: "${{ steps.policy.outputs.policy_sha }}", persist-credentials: false }
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: policy-bootstrap
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version-file: .node-version, cache: npm }
+        with:
+          node-version-file: policy-bootstrap/.node-version
+      - id: policy
+        name: 解析已部署规则提交
+        run: node policy-bootstrap/packages/runner/dist/index.js trusted-policy-source
+        env:
+          POLICY_SOURCE_READ_TOKEN: ${{ github.token }}
+          POLICY_SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ steps.policy.outputs.policy_sha }}
+          persist-credentials: false
+          path: policy-live
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: policy-live/.node-version
       - run: npm ci --ignore-scripts
+        working-directory: policy-live
       - name: 同步受管标签定义
         env:
           APP_ID: "4243096"
@@ -64,3 +67,4 @@ jobs:
             repository_arguments+=(--repository-id "$REPOSITORY_ID")
           fi
           node packages/runner/dist/index.js sync-managed-labels "${repository_arguments[@]}" --policy-sha "$POLICY_SHA"
+        working-directory: policy-live

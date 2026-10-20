@@ -1,3 +1,4 @@
+import { verifyWorkflowPolicy } from "../packages/runner/dist/index.js";
 import { createHash } from "node:crypto";
 import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -16,6 +17,7 @@ if (JSON.stringify(files) !== JSON.stringify(expected)) throw new Error(`工作�
 const registry = JSON.parse(await readFile("config/repositories.json", "utf8"));
 const registered = [...registry.repositories["1296724484"].allowedWorkflowPaths].sort();
 if (JSON.stringify(registered) !== JSON.stringify(files.map(file => ".github/workflows/" + file))) throw new Error("Steward 工作流允许清单与实际文件不一致");
+await verifyWorkflowPolicy(process.cwd(),1296724484,[".github/workflows/pr-validation.yml"],JSON.parse(await readFile(".github/workflow-contract.json","utf8")));
 const workflowDocuments = new Map();
 const allowedActions = new Set([
   "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
@@ -31,7 +33,7 @@ for (const file of files) {
 const validationDocument = workflowDocuments.get("pr-validation.yml");
 if (validationDocument?.concurrency?.group !== "steward-pr-validation-${{ github.repository_id }}-${{ github.event.pull_request.number }}" || validationDocument?.concurrency?.["cancel-in-progress"] !== true) throw new Error("PR验证必须按仓库和PR取消旧运行");
 if (JSON.stringify(validationDocument?.on?.pull_request?.types) !== JSON.stringify(["opened", "synchronize", "reopened", "edited", "labeled", "unlabeled"])) throw new Error("PR验证必须响应编辑和标签变更");
-const validationStep = validationDocument?.jobs?.validate?.steps?.find(step => step?.name === 'validation-policy:${{ steps.policy.outputs.sha }}');
+const validationStep = validationDocument?.jobs?.validate?.steps?.find(step => step?.name === 'workflow-contract-policy:${{ steps.policy.outputs.sha }}');
 if (String(validationStep?.env?.VALIDATION_BASE_SHA ?? "").replace(/\s+/gu, "") !== "${{github.event.pull_request.base.sha}}") throw new Error("中央验证没有通过环境变量接收基础分支提交");
 if (String(validationStep?.env?.VALIDATION_BASE_REF ?? "").replace(/\s+/gu, "") !== "${{github.event.pull_request.base.ref}}") throw new Error("中央验证没有通过环境变量接收基础分支引用");
 if (validationDocument?.jobs?.fragments) throw new Error("退役片段作业不得恢复");
@@ -50,6 +52,8 @@ const expectedJobEnvironments = new Map([
   ["release.yml:generated-candidate", { name: "steward-release", deployment: false }],
   ["product-build.yml:plan", { name: "steward-release", deployment: false }],
   ["release-build.yml:plan", { name: "steward-release", deployment: false }],
+  ["release-build-complete.yml:reject", { name: "steward-release", deployment: false }],
+  ["release-build-complete.yml:resolve", { name: "steward-release", deployment: false }],
   ["release-build-complete.yml:accept", { name: "steward-release", deployment: false }],
   ["sync-review-instructions.yml:synchronize", { name: "steward-automation", deployment: false }],
   ["sync-review-instructions.yml:resolve", { name: "steward-automation", deployment: false }],
@@ -99,7 +103,7 @@ const expectedReviewCommand = `review_arguments=(
 node packages/runner/dist/index.js request-copilot-review "\${review_arguments[@]}"
 `;
 if (reviewStep.run !== expectedReviewCommand) throw new Error("审查请求没有使用固定参数数组");
-if (reviewDocument.concurrency?.group !== "steward-pr-body-${{ inputs.repositoryId }}" || reviewDocument.concurrency?.["cancel-in-progress"] !== false || reviewDocument.concurrency?.queue !== "max") throw new Error("审查请求没有沿用仓库并发锁和等待队列");
+if (reviewDocument.concurrency?.group !== "workflow-resource:1296724484:pr-body" || reviewDocument.concurrency?.["cancel-in-progress"] !== false || reviewDocument.concurrency?.queue !== "max") throw new Error("审查请求没有沿用仓库并发锁和等待队列");
 const prClassificationDocument = workflowDocuments.get("pr-classification.yml");
 const aiClassificationInput = prClassificationDocument?.on?.workflow_dispatch?.inputs?.aiClassification;
 if (aiClassificationInput?.required !== false || aiClassificationInput?.type !== "string") throw new Error("分类工作流缺少可选AI影子分类输入");
@@ -123,14 +127,14 @@ for (const required of [
   "github.event.workflow_run.head_repository.full_name==github.repository",
 ]) if (!syncCondition.includes(required)) throw new Error(`审查说明自动同步缺少可信触发条件: ${required}`);
 const syncPolicyStep = syncResolveJob?.steps?.find(step => step?.name === "解析已部署规则提交");
-if (String(syncPolicyStep?.env?.EVENT_NAME ?? "").replace(/\s+/gu, "") !== "${{github.event_name}}" || String(syncPolicyStep?.env?.DEPLOYED_HEAD_SHA ?? "").replace(/\s+/gu, "") !== "${{github.event.workflow_run.head_sha}}" || !String(syncPolicyStep?.run ?? "").includes('process.env.RUNTIME_URL+"/health"')) throw new Error("审查说明同步没有从部署事件或线上健康接口解析策略提交");
-const syncCheckout = syncJob?.steps?.find(step => step?.uses?.startsWith("actions/checkout@"));
-if (String(syncCheckout?.with?.ref ?? "").replace(/\s+/gu, "") !== "${{needs.resolve.outputs.policy_sha}}" || syncCheckout?.with?.["persist-credentials"] !== false) throw new Error("审查说明同步没有检出精确中央提交或仍保留检出凭据");
+if (syncPolicyStep?.run !== "node policy-bootstrap/packages/runner/dist/index.js trusted-policy-source") throw new Error("审查说明必须使用可信策略解析入口");
+const syncCheckout = syncJob?.steps?.find(step => step?.with?.path === "policy-live");
+if (String(syncCheckout?.with?.ref ?? "").replace(/\s+/gu, "") !== "${{steps.policy.outputs.policy_sha}}" || syncCheckout?.with?.["persist-credentials"] !== false) throw new Error("审查说明同步没有检出精确中央提交或仍保留检出凭据");
 const syncStep = syncJob?.steps?.find(step => step?.name === "同步代码审查说明");
 const syncCommand = String(syncStep?.run ?? "");
 if (!syncCommand.includes('sync-review-instructions "${repository_arguments[@]}" --policy-sha "$POLICY_SHA"') || /--(?:source|target|path|content)(?:\s|=)/iu.test(syncCommand)) throw new Error("审查说明同步命令或输入合同无效");
 if (String(syncStep?.env?.REPOSITORY_ID ?? "").replace(/\s+/gu, "") !== "${{matrix.repositoryId}}" || /\$\{\{[^}]*inputs\.repositoryId/iu.test(syncCommand)) throw new Error("审查说明同步把仓库编号直接拼接进shell命令");
-if (String(syncStep?.env?.POLICY_SHA ?? "").replace(/\s+/gu, "") !== "${{needs.resolve.outputs.policy_sha}}" || String(syncStep?.env?.SYNC_TRIGGER ?? "").replace(/\s+/gu, "") !== "${{github.actor_id=='301115370'&&'app-redrive'||github.event_name}}" || String(syncStep?.env?.TRIGGER_ACTOR_ID ?? "").replace(/\s+/gu, "") !== "${{github.actor_id}}" || String(syncStep?.env?.TRIGGER_ACTOR_LOGIN ?? "").replace(/\s+/gu, "") !== "${{github.actor}}") throw new Error("审查说明同步没有绑定线上策略、可信App恢复或手工触发者身份");
+if (String(syncStep?.env?.POLICY_SHA ?? "").replace(/\s+/gu, "") !== "${{steps.policy.outputs.policy_sha}}" || String(syncStep?.env?.SYNC_TRIGGER ?? "").replace(/\s+/gu, "") !== "${{github.actor_id=='301115370'&&'app-redrive'||github.event_name}}" || String(syncStep?.env?.TRIGGER_ACTOR_ID ?? "").replace(/\s+/gu, "") !== "${{github.actor_id}}" || String(syncStep?.env?.TRIGGER_ACTOR_LOGIN ?? "").replace(/\s+/gu, "") !== "${{github.actor}}") throw new Error("审查说明同步没有绑定线上策略、可信App恢复或手工触发者身份");
 for (const required of ['repository_arguments=()', 'repository_arguments+=(--repository-id "$REPOSITORY_ID")', '"${repository_arguments[@]}"']) {
   if (!syncCommand.includes(required)) throw new Error(`审查说明同步没有安全传递可选仓库编号: ${required}`);
 }
@@ -143,8 +147,8 @@ if (!Object.hasOwn(syncLabelsDocument?.on ?? {}, "schedule")) throw new Error("�
 const labelCondition = String(syncLabelsJob?.if ?? "").replace(/\s+/gu, "");
 for (const required of ["github.event_name=='workflow_dispatch'", "github.event_name=='schedule'", "github.event.workflow_run.conclusion=='success'", "github.event.workflow_run.event=='push'", "github.event.workflow_run.head_branch==github.event.repository.default_branch", "github.event.workflow_run.head_repository.full_name==github.repository"]) if (!labelCondition.includes(required)) throw new Error(`标签同步缺少可信触发条件: ${required}`);
 const labelPolicyStep = syncLabelsJob?.steps?.find(step => step?.name === "解析已部署规则提交");
-if (String(labelPolicyStep?.env?.EVENT_NAME ?? "").replace(/\s+/gu, "") !== "${{github.event_name}}" || String(labelPolicyStep?.env?.DEPLOYED_HEAD_SHA ?? "").replace(/\s+/gu, "") !== "${{github.event.workflow_run.head_sha}}" || !String(labelPolicyStep?.run ?? "").includes('process.env.RUNTIME_URL+"/health"')) throw new Error("标签同步没有从部署事件或线上健康接口解析策略提交");
-const labelCheckout = syncLabelsJob?.steps?.find(step => step?.uses?.startsWith("actions/checkout@"));
+if (labelPolicyStep?.run !== "node policy-bootstrap/packages/runner/dist/index.js trusted-policy-source") throw new Error("标签同步必须使用可信策略解析入口");
+const labelCheckout = syncLabelsJob?.steps?.find(step => step?.with?.path === "policy-live");
 if (String(labelCheckout?.with?.ref ?? "").replace(/\s+/gu, "") !== "${{steps.policy.outputs.policy_sha}}" || labelCheckout?.with?.["persist-credentials"] !== false) throw new Error("标签同步没有检出精确已部署提交");
 const labelStep = syncLabelsJob?.steps?.find(step => step?.name === "同步受管标签定义");
 if (String(labelStep?.env?.REPOSITORY_ID ?? "").replace(/\s+/gu, "") !== "${{inputs.repositoryId}}" || /\$\{\{[^}]*inputs\.repositoryId/iu.test(String(labelStep?.run ?? ""))) throw new Error("标签同步没有安全传递仓库编号");
@@ -167,6 +171,11 @@ const deploySteps = deployRuntimeDocument?.jobs?.deploy?.steps ?? [];
 const migrationStepIndex = deploySteps.findIndex(step => step?.name === "列出并应用D1迁移");
 const deployStepIndex = deploySteps.findIndex(step => step?.id === "deploy");
 if (migrationStepIndex < 0 || deployStepIndex < 0 || migrationStepIndex >= deployStepIndex) throw new Error("D1迁移没有在运行程序部署前执行");
+const evaluatorGuardIndex = deploySteps.findIndex(step => step?.name === '核对固定验证器身份');
+if (deployRuntimeDocument.jobs.deploy.env?.WORKFLOW_EVALUATOR_SHA !== '${{ vars.WORKFLOW_EVALUATOR_SHA }}'
+  || evaluatorGuardIndex < 0 || evaluatorGuardIndex >= migrationStepIndex
+  || !deploySteps[evaluatorGuardIndex].run?.includes('WORKFLOW_EVALUATOR_SHA_REQUIRED')
+  || !deploySteps[deployStepIndex].run?.includes('--var WORKFLOW_EVALUATOR_SHA:')) throw new Error('固定验证器身份必须在数据库变更前检查并独立传入部署');
 const migrationStep = deploySteps[migrationStepIndex];
 if (String(migrationStep?.env?.CLOUDFLARE_API_TOKEN ?? "").replace(/\s+/gu, "") !== "${{secrets.CLOUDFLARE_API_TOKEN}}") throw new Error("D1迁移没有使用固定Cloudflare密钥");
 const expectedMigrationCommand = `set -euo pipefail
@@ -220,12 +229,12 @@ if (!hasExactKeys(syncInstructionsDocument.jobs, ["resolve", "synchronize"]) || 
 const targetStep = syncResolveJob.steps.find(step => step.id === "targets");
 const targetEnvironment = { APP_ID: "4243096", INSTALLATION_ID: "145952003", STEWARD_APP_PRIVATE_KEY: "${{ secrets.STEWARD_APP_PRIVATE_KEY }}", REPOSITORY_ID: "${{ inputs.repositoryId }}", POLICY_SHA: "${{ steps.policy.outputs.policy_sha }}", SYNC_TRIGGER: "${{ github.actor_id == '301115370' && 'app-redrive' || github.event_name }}", TRIGGER_ACTOR_ID: "${{ github.actor_id }}", TRIGGER_ACTOR_LOGIN: "${{ github.actor }}" };
 if (!hasExactKeys(targetStep?.env, Object.keys(targetEnvironment)) || Object.entries(targetEnvironment).some(([name, value]) => targetStep.env[name] !== value)) throw new Error("审查同步目标解析环境扩大或身份绑定无效");
-const resolveCheckout = syncResolveJob.steps.find(step => step.uses?.startsWith("actions/checkout@"));
+const resolveCheckout = syncResolveJob.steps.find(step => step.with?.path === "policy-live");
 if (resolveCheckout?.with?.ref !== "${{ steps.policy.outputs.policy_sha }}" || resolveCheckout?.with?.["persist-credentials"] !== false
   || targetStep?.shell !== "bash" || targetStep?.if !== undefined || targetStep?.["continue-on-error"] !== undefined
   || targetStep.env?.POLICY_SHA !== "${{ steps.policy.outputs.policy_sha }}" || targetStep.env?.REPOSITORY_ID !== "${{ inputs.repositoryId }}"
   || !targetStep.run?.includes('review-sync-targets "${repository_arguments[@]}" --policy-sha "$POLICY_SHA"') || /\$\{\{/u.test(targetStep.run)) throw new Error("审查同步目标解析权限或参数无效");
-if (syncJob.concurrency?.group !== "steward-pr-body-${{ matrix.repositoryId }}" || syncJob.concurrency?.["cancel-in-progress"] !== false || syncJob.concurrency?.queue !== "max") throw new Error("审查同步矩阵未复用单仓并发锁");
+if (syncJob.concurrency?.group !== "workflow-resource:1296724484:pr-body" || syncJob.concurrency?.["cancel-in-progress"] !== false || syncJob.concurrency?.queue !== "max") throw new Error("审查同步矩阵未复用单仓并发锁");
 if (Object.hasOwn(syncStep.env ?? {}, "COPILOT_REVIEW_REQUEST_TOKEN")) throw new Error("审查同步不得注入旧请求令牌");
 for (const step of [...syncResolveJob.steps, ...syncJob.steps.filter(step => step !== syncStep)]) if (Object.hasOwn(step.env ?? {}, "COPILOT_REVIEW_REQUEST_TOKEN")) throw new Error("审查同步令牌注入范围扩大");
 
@@ -265,19 +274,20 @@ const genericBuild = workflowDocuments.get('product-build.yml');
 for (const workflow of [productBuild, genericBuild]) if (workflow.jobs.plan.steps.find(step => step.id === 'plan')?.['timeout-minutes'] !== 45) throw new Error('来源计划步骤须有45分钟整体上限');
 // Plan step shares a 45m ceiling across clone/boundary fetch, freeze, APIs, object upload and bundle creation; job adds 15m setup/artifact margin.
 if (productBuild.jobs.plan['timeout-minutes'] !== 60 || genericBuild.jobs.plan['timeout-minutes'] !== 60) throw new Error('来源计划作业必须覆盖来源冻结及初始化预算');
-if (!hasExactKeys(genericBuild.on, ['workflow_dispatch']) || !hasExactKeys(genericBuild.jobs, ['plan', 'build']) || genericBuild.jobs.build.environment !== undefined || genericBuild.jobs.build.needs !== 'plan' || genericBuild.jobs.build['runs-on'] !== '${{ needs.plan.outputs.runner }}' || genericBuild.jobs.plan.outputs.runner !== '${{ steps.plan.outputs.runner }}' || genericBuild.permissions.contents !== 'read' || genericBuild.permissions.actions !== 'read') throw new Error('通用产品构建边界无效');
-for (const step of genericBuild.jobs.build.steps) if (JSON.stringify(step).includes('secrets.') || step.env && !hasExactKeys(step.env, ['POLICY_SHA', 'RUN_ID'])) throw new Error('产品构建不得注入秘密');
-if (!hasExactKeys(productBuild.on, ['workflow_dispatch']) || !hasExactKeys(productBuild.jobs, ['plan', 'build'])
-  || productBuild.jobs.build.needs !== 'plan' || productBuild.jobs.build.environment !== undefined || productBuild.jobs.build['runs-on'] !== '${{ needs.plan.outputs.runner }}' || productBuild.jobs.plan.outputs.runner !== '${{ steps.plan.outputs.runner }}'
-  || productBuild.jobs.build['timeout-minutes'] !== 360 || genericBuild.jobs.build['timeout-minutes'] !== 360 || productBuild.permissions.contents !== 'read' || productBuild.permissions.actions !== 'read') throw new Error('产品构建权限或作业边界无效');
-for (const step of productBuild.jobs.build.steps) {
-  if (JSON.stringify(step).includes('secrets.') || step.env && !hasExactKeys(step.env, ['POLICY_SHA', 'RUN_ID'])) throw new Error('产品构建不得注入秘密');
+for (const document of [productBuild,genericBuild]) {
+ if(!hasExactKeys(document.on,['workflow_dispatch']) || !hasExactKeys(document.jobs,['plan','build_windows','build_linux']) || document.permissions.contents!=='read' || document.permissions.actions!=='read' || document.jobs.plan.outputs.runner!=='${{ steps.plan.outputs.runner }}') throw new Error('静态构建计划边界无效');
+ const guard=document.jobs.plan.steps.at(-1);
+ if(guard.env?.BUILD_RUNNER!=='${{ steps.plan.outputs.runner }}' || guard.run!=='case "$BUILD_RUNNER" in windows-2025|ubuntu-24.04) ;; *) echo "BUILD_RUNNER_INVALID" >&2; exit 1 ;; esac' || guard.if!==undefined || guard['continue-on-error']!==undefined) throw new Error('未知构建平台必须失败');
+ for(const [name,label] of [['windows','windows-2025'],['linux','ubuntu-24.04']]){
+  const job=document.jobs['build_'+name];if(job.needs!=='plan' || job.environment!==undefined || job['runs-on']!==label || job.if!=="needs.plan.outputs.runner == '"+label+"'" || job['timeout-minutes']!==360) throw new Error('静态构建边界无效');
+  for(const step of job.steps) if(JSON.stringify(step).includes('secrets.') || step.env && !hasExactKeys(step.env,['POLICY_SHA','RUN_ID'])) throw new Error('产品构建不得注入秘密');
+ }
 }
 if (buildCompletion.on.workflow_run?.workflows?.[0] !== 'SPLRAD Steward / Release Build' || buildCompletion.on.workflow_run?.types?.[0] !== 'completed'
   || buildCompletion.jobs.accept['timeout-minutes'] !== 360
   || !buildCompletion.jobs.accept.steps.some(step => step.name === '明确阻断策略漂移的完成回调' && step.env?.SOURCE_POLICY === '${{ github.event.workflow_run.head_sha }}' && step.env?.CURRENT_POLICY === '${{ github.workflow_sha }}' && step.run?.includes('RELEASE_POLICY_DRIFT'))
-  || !buildCompletion.jobs.accept.if.includes("github.event.workflow_run.event == 'workflow_dispatch'")) throw new Error('构建完成回调未绑定可信运行');
-if (buildCompletion.jobs.accept.steps.find(step => step.run?.includes('--operation reject'))?.if !== "failure() && steps.accept.outputs.verificationFailed == 'true'") throw new Error('仅确定的产物验证失败可拒绝构建，基础设施故障必须可重试');
+  || !buildCompletion.jobs.resolve.if.includes("github.event.workflow_run.event == 'workflow_dispatch'")) throw new Error('构建完成回调未绑定可信运行');
+if (buildCompletion.jobs.reject.if !== "always() && needs.resolve.result == 'success' && needs.inspect.outputs.verificationFailed == 'true'") throw new Error("只有确定的隔离验证失败可拒绝构建");
 for (const document of [productBuild, buildCompletion, genericBuild]) for (const job of Object.values(document.jobs)) {
   if (job.steps.find(step => step.uses?.startsWith('actions/checkout@'))?.with.ref !== '${{ github.workflow_sha }}' || job.steps.find(step => step.uses?.startsWith('actions/checkout@'))?.with['persist-credentials'] !== false) throw new Error('构建流程未固定中央策略');
   for (const step of job.steps) if (step.run && step.run.includes('${{')) throw new Error('构建输入未经环境变量隔离');
@@ -289,7 +299,7 @@ for (const step of generationJob.steps) {
   if (step.run && /release-candidate|reconcile|STEWARD_APP_PRIVATE_KEY/.test(step.run)) throw new Error('模型作业不得写候选或发布');
 }
 if (releaseSourceWorkflow.jobs.publish.if !== "inputs.operation == 'reconcile' && needs.inspect.outputs.shouldPublish == 'true'") throw new Error("Review 观察不得直接发布");
-if (releaseSourceWorkflow.jobs.publish.concurrency?.group !== 'steward-release-publish-${{ inputs.repositoryId }}'
+if (releaseSourceWorkflow.jobs.publish.concurrency?.group !== 'workflow-policy:${{ github.workflow_ref }}:steward-release-publish-${{ inputs.repositoryId }}'
   || releaseSourceWorkflow.jobs.publish.concurrency?.['cancel-in-progress'] !== false) throw new Error('最终发布必须按仓库串行且不得中断正在发布的版本');
 if (releaseSourceWorkflow.jobs.generate['timeout-minutes'] !== 86
   || releaseSourceWorkflow.jobs.publish['timeout-minutes'] !== '${{ fromJSON(needs.inspect.outputs.publishTimeoutMinutes) }}'

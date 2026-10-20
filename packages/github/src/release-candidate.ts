@@ -50,7 +50,8 @@ export async function readCandidateBlob(gh: GitHubClient, owner: string, repo: s
   return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 }
 /** All facts here are fetched from GitHub; candidate files never self-report approvals. */
-export async function readReleaseCandidateFacts(gh: GitHubClient, r: ReleaseReceipt, appId: number, botUserId: number): Promise<CandidateReviewFacts> {
+export async function readReleaseCandidateFacts(gh: GitHubClient, r: ReleaseReceipt, appId: number, botUserId: number, workflowEvaluatorSha?: string): Promise<CandidateReviewFacts> {
+  releaseAssert(workflowEvaluatorSha === undefined || releaseSha(workflowEvaluatorSha), 'EVALUATOR_SHA');
   const f = r.frozen, [owner, repo] = f.fullName.split('/') as [string, string];
   releaseAssert(r.pullNumber, 'PR_UNBOUND');
   const pull = await gh.getPullRequest(owner, repo, r.pullNumber);
@@ -91,7 +92,7 @@ export async function readReleaseCandidateFacts(gh: GitHubClient, r: ReleaseRece
         || run.status !== 'completed' || run.conclusion !== 'success' || validators.length !== 1
         || validators[0].run_id !== runId || validators[0].run_attempt !== attempt || validators[0].head_sha !== pull.head.sha
         || validators[0].conclusion !== 'success'
-        || validators[0].steps?.filter((step: any) => step.name === `validation-policy:${f.policySha}` && step.status === 'completed' && step.conclusion === 'success').length !== 1) ambiguous = true;
+        || validators[0].steps?.filter((step: any) => (workflowEvaluatorSha === undefined ? step.name === `validation-policy:${f.policySha}` : step.name === `workflow-contract-policy:${workflowEvaluatorSha}`) && step.status === 'completed' && step.conclusion === 'success').length !== 1) ambiguous = true;
     }
   }
   const checksPassed = !ambiguous && ['PR Classification Gate', 'PR Validation Gate'].every(name => latestChecks.get(name)?.status === 'completed' && latestChecks.get(name)?.conclusion === 'success');

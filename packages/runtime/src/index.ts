@@ -1,4 +1,8 @@
+import { evaluatorSha, trustedContractAuthorities } from './workflow-evaluator.js';
 import { isStewardOwnedPullRequest } from "../../core/src/issues.js";
+import {selectContractAuthority} from "../../core/src/workflow-contract-authority.js";
+import {evaluateRemoteWorkflowContract} from "../../github/src/workflow-contract.js";
+import contractAuthorities from "../../../config/workflow-contract-authority.json" with {type: "json"};
 import { createAppJwt, createInstallationToken, dispatchWorkflow, GitHubClient, isDependabotReviewEligible } from "../../github/src/index.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
 import semanticCatalog from "../../../config/labels/pr-semantics.json" with { type: "json" };
@@ -9,7 +13,7 @@ import { confirmPullRequestBodyWriteIntent, processPullRequestBodyEditedDelivery
 
 export interface Env {
   ORGANIZATION_ID: string; ORGANIZATION_LOGIN: string; APP_ID: string; INSTALLATION_ID: string;
-  STEWARDSHIP_REPOSITORY: string; POLICY_SHA: string; STEWARD_APP_PRIVATE_KEY?: string; STEWARD_WEBHOOK_SECRET?: string;
+  STEWARDSHIP_REPOSITORY: string; POLICY_SHA: string; WORKFLOW_EVALUATOR_SHA?: string; STEWARD_APP_PRIVATE_KEY?: string; STEWARD_WEBHOOK_SECRET?: string;
   ISSUE_SNAPSHOTS?: D1Database;
   CF_VERSION_METADATA?: { id: string };
 }
@@ -96,7 +100,8 @@ async function validationClient(env: Env, repositoryId: number): Promise<GitHubC
     privateKey: env.STEWARD_APP_PRIVATE_KEY,
     installationId: Number(env.INSTALLATION_ID),
     repositoryId,
-    permissions: { actions: "read", checks: "write", metadata: "read", pull_requests: "read" },
+    permissions: { actions: "read", checks: "write", metadata: "read", pull_requests: "read",
+      ...(env.WORKFLOW_EVALUATOR_SHA !== undefined || selectContractAuthority(contractAuthorities, repositoryId) ? {contents: "read" as const} : {}) },
     policySha: env.POLICY_SHA,
   });
   return new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA);
@@ -171,7 +176,28 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
   const pull = pulls[0]!; const number = Number(pull.number);
   if (!Number.isSafeInteger(number) || number <= 0) throw new Error("拉取请求编号无效");
   const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, headSha, "all"), headSha, Number(env.APP_ID), Number(repository.id), number);
-  const conclusion = validationConclusion(run.conclusion); const completed = run.status === "completed";
+  let conclusion = validationConclusion(run.conclusion); const completed = run.status === "completed";
+  let contractDetail = "";
+  let authority: ReturnType<typeof selectContractAuthority> = null; let authorityError:unknown;
+  try {authority=selectContractAuthority(await trustedContractAuthorities(env),Number(repository.id));if(env.WORKFLOW_EVALUATOR_SHA!==undefined && !authority)throw new Error('CONTRACT_AUTHORITY_REQUIRED');}
+  catch(error){authorityError=error;}
+  if ((authority || authorityError) && completed) {
+    try {
+      if(authorityError)throw authorityError;
+      const policy=evaluatorSha(env);
+      const jobs = await gh.listWorkflowAttemptJobs(owner, repo, run.id, run.run_attempt);
+      if (!jobs.some(job => job.status === "completed" && job.conclusion === "success"
+        && job.steps?.some((step: any) => step.name === `workflow-contract-policy:${policy}`
+          && step.status === "completed" && step.conclusion === "success")))
+        throw new Error("CONTRACT_POLICY_MISMATCH: trusted evaluator version not confirmed");
+      const verified = await evaluateRemoteWorkflowContract(gh, authority!, number, policy);
+      if (verified.binding.headSha !== headSha) throw new Error("CONTRACT_SOURCE_STALE");
+      contractDetail = `\n合同：${verified.binding.contractDigest}\n批准：${verified.reviewId ?? "trusted baseline"}`;
+    } catch (error) {
+      conclusion = "failure";
+      contractDetail = `\n合同验证失败：${error instanceof Error ? error.message : "unavailable"}`;
+    }
+  }
   const comparisons = checks.map(value => compareValidationState(value.state, run.id, run.run_attempt, completed));
   if (comparisons.includes("newer")) return false;
   const body: Record<string, unknown> = {
@@ -181,15 +207,33 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
     details_url: run.html_url,
     external_id: completed ? completedValidationIdentity(Number(repository.id), number, headSha, run.id, run.run_attempt) : `${completedValidationIdentity(Number(repository.id), number, headSha, run.id, run.run_attempt)}:pending`,
     output: completed
-      ? { title: conclusion === "success" ? "中央拉取请求验证通过" : "中央拉取请求验证失败", summary: `拉取请求：#${number}\n来源提交：${headSha}\n源工作流运行：${run.id}\n源结论：${run.conclusion}` }
+      ? { title: conclusion === "success" ? "中央拉取请求验证通过" : "中央拉取请求验证失败", summary: `拉取请求：#${number}\n来源提交：${headSha}\n源工作流运行：${run.id}\n源结论：${run.conclusion}${contractDetail}` }
       : { title: "中央拉取请求验证正在运行", summary: `拉取请求：#${number}\n来源提交：${headSha}\n源工作流运行：${run.id}` },
   };
   if (completed) body.conclusion = conclusion;
-  const outdatedChecks = checks.filter((_value, index) => comparisons[index] === "older");
+  const outdatedChecks = checks.filter((value, index) => comparisons[index] === "older"
+    || ((authority || authorityError) && completed && comparisons[index] === "same" && value.check.conclusion !== conclusion));
   if (!checks.length) await gh.createCheckRun(owner, repo, body);
   else if (!outdatedChecks.length) return false;
   else for (const { check } of outdatedChecks) await gh.updateCheckRun(owner, repo, check.id, body);
   return true;
+}
+
+export async function refreshWorkflowContractChecks(env: Env, repositoryId: number, pullNumber?: number): Promise<void> {
+  if (env.WORKFLOW_EVALUATOR_SHA===undefined && !selectContractAuthority(contractAuthorities, repositoryId)) return;
+  const gh = await validationClient(env, repositoryId);
+  const repository = await gh.getRepositoryById(repositoryId);
+  if (!isManaged(repository) || repository.id !== repositoryId) throw new Error("CONTRACT_REPOSITORY: not managed");
+  const [owner, repo] = splitRepository(repository.full_name);
+  const pulls = pullNumber === undefined ? await gh.listOpenPullRequests(owner, repo, repository.default_branch)
+    : [await gh.getPullRequest(owner, repo, pullNumber)];
+  for (const pull of pulls) {
+    const head = commitSha(pull.head?.sha);
+    if (!head || pull.state !== "open" || pull.base?.ref !== repository.default_branch) continue;
+    const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, head, "all"), head, Number(env.APP_ID), repositoryId, pull.number);
+    const runs = [...new Set(checks.map(c => c.state.runId).filter((id): id is number => id !== null))];
+    for (const run of runs) await publishValidationState(env, repository, run);
+  }
 }
 
 async function requestMaintainersReview(env: Env, repository: any, pull: any): Promise<boolean> {
@@ -338,6 +382,8 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       return response(202);
     }
     if (event === "pull_request" && ["opened", "synchronize", "reopened", "edited"].includes(action)) {
+      if (payload.repository && Number.isSafeInteger(payload.pull_request?.number))
+        await refreshWorkflowContractChecks(env, Number(payload.repository.id), payload.pull_request.number);
       const repository = payload.repository; const pull = payload.pull_request;
       if (!repository || !isManaged(repository) || !pull) return response(204);
       const targetsDefault = pull.base?.ref === repository.default_branch;
@@ -356,6 +402,14 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       return response(await requestMaintainersReview(env, repository, pull) ? 202 : 204);
     }
     if (event === "pull_request" && action === "closed" && payload.pull_request?.merged === false) return response(204);
+    if (event === "pull_request_review" && ["submitted", "edited", "dismissed"].includes(action)) {
+      const repository = payload.repository;
+      if (!repository || !isManaged(repository) || !selectContractAuthority(contractAuthorities, Number(repository.id))) return response(204);
+      const number = Number(payload.pull_request?.number);
+      if (!Number.isSafeInteger(number) || number <= 0) return response(204);
+      await refreshWorkflowContractChecks(env, repository.id, number);
+      return response(202);
+    }
     if (event === "workflow_run" && ["requested", "in_progress", "completed"].includes(action)) {
       const repository = payload.repository; if (!repository || !isManaged(repository)) return response(204);
       return response(await publishValidationState(env, repository, payload.workflow_run?.id) ? 202 : 204);
@@ -463,7 +517,7 @@ export async function recoverPullRequestBodyWriteIntents(env: Env, now = new Dat
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    if (request.method === "GET" && url.pathname === "/health") return response(200, { status: "ok", policySha: env.POLICY_SHA, version: env.CF_VERSION_METADATA?.id ?? "local", organizationId: Number(env.ORGANIZATION_ID), appId: Number(env.APP_ID), secretsReady: Boolean(env.STEWARD_APP_PRIVATE_KEY && env.STEWARD_WEBHOOK_SECRET) });
+    if (request.method === "GET" && url.pathname === "/health") return response(200, { status: "ok", policySha: env.POLICY_SHA, evaluatorSha: env.WORKFLOW_EVALUATOR_SHA ?? null, version: env.CF_VERSION_METADATA?.id ?? "local", organizationId: Number(env.ORGANIZATION_ID), appId: Number(env.APP_ID), secretsReady: Boolean(env.STEWARD_APP_PRIVATE_KEY && env.STEWARD_WEBHOOK_SECRET) });
     if (request.method === "POST" && url.pathname === "/github/webhook") return handleWebhook(request, env);
     const internal = await handleBodyWriteInternalRequest(request, env);
     if (internal) return internal;
@@ -475,6 +529,7 @@ export default {
     const results = await Promise.allSettled([
       recoverPullRequestBodyWriteIntents(env),
       recoverReleaseReceipts(env),
+      ...Object.keys(env.WORKFLOW_EVALUATOR_SHA === undefined ? contractAuthorities.repositories : repositoryCatalog.repositories).map(id => refreshWorkflowContractChecks(env, Number(id))),
     ]);
     const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
     if (failed) throw failed.reason;

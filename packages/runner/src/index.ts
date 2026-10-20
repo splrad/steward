@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 import { decodeClassificationCheckEnvelope } from "../../core/src/check-envelope.js";
+import { verifyWorkflowPolicy } from "./workflow-policy.js";
+export { verifyWorkflowPolicy };
+import { readWorkflowContract, contractDigest } from "./workflow-contract.js";
+import { selectContractAuthority } from "../../core/src/workflow-contract-authority.js";
+import { evaluateRemoteWorkflowContract } from "../../github/src/workflow-contract.js";
 import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
@@ -20,6 +25,7 @@ import { createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestE
 import { managedRepositoryIds, managedRepositoryTargets, runManagedRepositorySync, type ManagedTarget } from "./managed-repository-sync.js";
 import { releaseCandidateCommand } from "./release-command.js";
 import { releaseProduceCommand } from "./release-produce-command.js";
+import { trustedPolicyCommand } from "./trusted-policy-source.js";
 import { releaseBuildCommand } from "./release-build-command.js";
 import { freezeReleaseGitInput, type GitReleaseBoundary } from "./release-git-input.js";
 import { classificationFacts } from "./classification-facts.js";
@@ -39,11 +45,13 @@ commands.add("render-review-instructions");
 commands.add("release-freeze");
 commands.add("release-produce");
 commands.add("release-build");
+commands.add("trusted-policy-source");
 // Repository configuration and workspace files are runtime inputs, not bundle assets.
 // This wrapper keeps their paths opaque to the static asset tracer used by ncc.
 const runtimeReadFile = ((path: Parameters<typeof readFile>[0], options?: Parameters<typeof readFile>[1]) =>
   Reflect.apply(readFile, undefined, options === undefined ? [path] : [path, options])) as typeof readFile;
 const allowedArguments: Record<string, Set<string>> = {
+  "trusted-policy-source": new Set(),
   "release-produce": new Set(["bundle", "ticket", "runtime-url", "copilot-loader", "output"]),
   "release-build": new Set(["build-id", "operation", "policy-sha", "repository-id", "target-tag", "target-sha", "author-ids", "request-key", "request", "source-bundle", "workspace", "assets", "inspector", "output", "run-id", "attempt", "artifact-id"]),
   "release-freeze": new Set(["workspace", "repository-id", "default-branch", "target-sha", "policy-sha", "target-tag", "boundary-sha", "boundary-tag", "baseline-reference", "full-tree", "output"]),
@@ -974,6 +982,8 @@ export function assertWorkflowPaths(actual: readonly string[], allowed: readonly
 }
 
 async function validate(args: Readonly<Record<string, string>>) {
+  const workflowContractReadToken = process.env.WORKFLOW_CONTRACT_READ_TOKEN;
+  delete process.env.WORKFLOW_CONTRACT_READ_TOKEN;
   const workspace = resolve(required(args, "workspace"));
   const repositoryId = integer(required(args, "repository-id"), "repository-id");
   const catalogValue = await catalog();
@@ -995,8 +1005,26 @@ async function validate(args: Readonly<Record<string, string>>) {
   const files = await walk(workspace);
   const relative = files.map(path => path.slice(workspace.length + 1).replace(/\\/g, "/"));
   const actualWorkflows = relative.filter(path => /^\.github\/workflows\/[^/]+\.ya?ml$/u.test(path)).sort();
-  const allowedWorkflows = [...configuration.allowedWorkflowPaths].sort();
-  assertWorkflowPaths(actualWorkflows, allowedWorkflows);
+  const localContract = await readWorkflowContract(workspace);
+  const authority = selectContractAuthority(await json(configPath("workflow-contract-authority.json")), repositoryId);
+  let approvedContract;
+  if (workflowContractReadToken && !authority && configuration.allowedWorkflowPaths.includes(".github/workflows/pr-validation.yml")) throw new Error("CONTRACT_AUTHORITY_REQUIRED: activate the reviewed repository authority before the v2 entry");
+  if (authority) {
+    if (!workflowContractReadToken) throw new Error("CONTRACT_TOKEN: trusted read token missing");
+    const contractToken = workflowContractReadToken;
+    // The read token is consumed before any candidate task starts.
+    delete process.env.WORKFLOW_CONTRACT_READ_TOKEN;
+    const policySha = sha(env("VALIDATION_POLICY_SHA"), "VALIDATION_POLICY_SHA");
+    const result = await evaluateRemoteWorkflowContract(new GitHubClient(contractToken, "https://api.github.com", fetch, policySha),
+      authority, integer(env("VALIDATION_PR_NUMBER"), "VALIDATION_PR_NUMBER"), policySha);
+    if (result.binding.headSha !== sha(env("VALIDATION_HEAD_SHA"), "VALIDATION_HEAD_SHA")
+      || result.binding.baseSha !== sha(env("VALIDATION_BASE_SHA"), "VALIDATION_BASE_SHA")
+      || contractDigest(localContract ?? authority.baseline) !== result.binding.contractDigest) throw new Error("CONTRACT_SOURCE_STALE: checkout binding mismatch");
+    if (result.contract.fragments === "required") throw new Error("CONTRACT_CAPABILITY_UNAVAILABLE: this evaluator requires explicit fragment retirement; retain the legacy evaluator until migration is approved");
+    approvedContract = result.contract;
+    await summary([`Workflow contract: ${result.binding.contractDigest}`, `Contract approval: ${result.reviewId ?? "trusted baseline"}`]);
+  } else if (localContract) throw new Error("CONTRACT_AUTHORITY_REQUIRED: repository not activated in trusted policy");
+  await verifyWorkflowPolicy(workspace, repositoryId, configuration.allowedWorkflowPaths.filter((path: string) => path === ".github/workflows/pr-validation.yml"), approvedContract);
   const results = await runValidationTasks(profile, async task => {
     if (task === "git-diff-check") {
       run("git", gitDiffCheckArguments(validationBaseSha ? sha(validationBaseSha, "VALIDATION_BASE_SHA") : undefined), workspace);
@@ -1073,6 +1101,7 @@ async function releaseFreezeCommand(args: Readonly<Record<string, string>>): Pro
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const invocation = parseInvocation(argv);
+  if (invocation.command === "trusted-policy-source") return trustedPolicyCommand();
   if (invocation.command === "release-candidate") return releaseCandidateCommand(invocation.args);
   if (invocation.command === "release-produce") return releaseProduceCommand(invocation.args);
   if (invocation.command === "release-build") return releaseBuildCommand(invocation.args);

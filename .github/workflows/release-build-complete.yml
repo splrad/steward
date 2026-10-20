@@ -2,20 +2,28 @@ name: SPLRAD Steward / Release Build Completion
 on:
   workflow_dispatch:
     inputs:
-      runId: { required: true, type: string }
+      runId:
+        required: true
+        type: string
   workflow_run:
-    workflows: ['SPLRAD Steward / Release Build']
-    types: [completed]
-permissions: { contents: read, actions: read }
+    workflows:
+      - SPLRAD Steward / Release Build
+    types:
+      - completed
+permissions:
+  contents: read
+  actions: read
 concurrency:
-  group: build-complete-${{ github.event.workflow_run.id || inputs.runId }}
+  group: workflow-policy:${{ github.workflow_ref }}:build-complete-${{ github.event.workflow_run.id || inputs.runId }}
   cancel-in-progress: false
 jobs:
-  accept:
+  resolve:
     if: github.repository_id == '1296724484' && ((github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) || (github.event.workflow_run.event == 'workflow_dispatch' && github.event.workflow_run.head_repository.id == 1296724484 && github.event.workflow_run.head_branch == github.event.repository.default_branch))
     runs-on: windows-2025
     timeout-minutes: 360
-    environment: { name: steward-release, deployment: false }
+    environment:
+      name: steward-release
+      deployment: false
     steps:
       - name: 明确阻断策略漂移的完成回调
         if: github.event_name == 'workflow_run'
@@ -26,9 +34,13 @@ jobs:
         run: |
           if ($env:SOURCE_POLICY -cne $env:CURRENT_POLICY) { throw "RELEASE_POLICY_DRIFT: synchronize deployed policy and default branch, then retry completion" }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: { ref: "${{ github.workflow_sha }}", persist-credentials: false }
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version-file: .node-version, cache: npm }
+        with:
+          node-version-file: .node-version
+          cache: npm
       - run: npm ci --ignore-scripts
       - name: 回读成功或失败的绑定构建运行
         id: resolved
@@ -41,18 +53,74 @@ jobs:
           POLICY_SHA: ${{ github.workflow_sha }}
           RUN_ID: ${{ github.event.workflow_run.id || inputs.runId }}
         run: node packages/runner/dist/index.js release-build --operation resolve --policy-sha "$env:POLICY_SHA" --run-id "$env:RUN_ID"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        if: steps.resolved.outputs.ready == 'true'
+    outputs:
+      ready: ${{ steps.resolved.outputs.ready }}
+      repositoryId: ${{ steps.resolved.outputs.repositoryId }}
+      tag: ${{ steps.resolved.outputs.tag }}
+      key: ${{ steps.resolved.outputs.key }}
+      artifactId: ${{ steps.resolved.outputs.artifactId }}
+      attempt: ${{ steps.resolved.outputs.attempt }}
+      mode: ${{ steps.resolved.outputs.mode }}
+      binding: ${{ steps.resolved.outputs.binding }}
+      plan: ${{ steps.resolved.outputs.plan }}
+  inspect:
+    needs: resolve
+    if: needs.resolve.outputs.ready == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      report: ${{ steps.inspection.outputs.report }}
+      verificationFailed: ${{ steps.inspection.outputs.verificationFailed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          repository: splrad/steward
-          artifact-ids: ${{ steps.resolved.outputs.artifactId }}
-          run-id: ${{ github.event.workflow_run.id || inputs.runId }}
-          github-token: ${{ github.token }}
-          merge-multiple: true
-          path: seed/assets
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - id: inspection
+        name: 隔离核验原生产物
+        shell: pwsh
+        env:
+          POLICY_SHA: ${{ github.workflow_sha }}
+          ARTIFACT_READ_TOKEN: ${{ github.token }}
+          ARTIFACT_BINDING: ${{ needs.resolve.outputs.binding }}
+          BUILD_PLAN: ${{ needs.resolve.outputs.plan }}
+        run: node packages/runner/dist/index.js release-build --operation inspect-artifact --policy-sha "$env:POLICY_SHA" --inspector scripts/inspect-native-release.ps1
+  accept:
+    if: needs.resolve.outputs.ready == 'true' && needs.inspect.result == 'success'
+    runs-on: windows-2025
+    timeout-minutes: 360
+    environment:
+      name: steward-release
+      deployment: false
+    steps:
+      - name: 明确阻断策略漂移的完成回调
+        if: github.event_name == 'workflow_run'
+        shell: pwsh
+        env:
+          SOURCE_POLICY: ${{ github.event.workflow_run.head_sha }}
+          CURRENT_POLICY: ${{ github.workflow_sha }}
+        run: |
+          if ($env:SOURCE_POLICY -cne $env:CURRENT_POLICY) { throw "RELEASE_POLICY_DRIFT: synchronize deployed policy and default branch, then retry completion" }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --ignore-scripts
       - name: 独立复算下载字节并接受构建
         id: accept
-        if: steps.resolved.outputs.ready == 'true'
+        if: needs.resolve.outputs.ready == 'true'
         shell: pwsh
         env:
           APP_ID: "4243096"
@@ -61,12 +129,13 @@ jobs:
           RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
           POLICY_SHA: ${{ github.workflow_sha }}
           RUN_ID: ${{ github.event.workflow_run.id || inputs.runId }}
-          REPOSITORY_ID: ${{ steps.resolved.outputs.repositoryId }}
-          TARGET_TAG: ${{ steps.resolved.outputs.tag }}
-          REQUEST_KEY: ${{ steps.resolved.outputs.key }}
-          ARTIFACT_ID: ${{ steps.resolved.outputs.artifactId }}
-          ATTEMPT: ${{ steps.resolved.outputs.attempt }}
-        run: node packages/runner/dist/index.js release-build --operation accept --policy-sha "$env:POLICY_SHA" --run-id "$env:RUN_ID" --repository-id "$env:REPOSITORY_ID" --target-tag "$env:TARGET_TAG" --request-key "$env:REQUEST_KEY" --artifact-id "$env:ARTIFACT_ID" --attempt "$env:ATTEMPT" --assets seed/assets --inspector scripts/inspect-native-release.ps1 --output seed
+          REPOSITORY_ID: ${{ needs.resolve.outputs.repositoryId }}
+          TARGET_TAG: ${{ needs.resolve.outputs.tag }}
+          REQUEST_KEY: ${{ needs.resolve.outputs.key }}
+          ARTIFACT_ID: ${{ needs.resolve.outputs.artifactId }}
+          ATTEMPT: ${{ needs.resolve.outputs.attempt }}
+          ARTIFACT_REPORT: ${{ needs.inspect.outputs.report }}
+        run: node packages/runner/dist/index.js release-build --operation accept --policy-sha "$env:POLICY_SHA" --run-id "$env:RUN_ID" --repository-id "$env:REPOSITORY_ID" --target-tag "$env:TARGET_TAG" --request-key "$env:REQUEST_KEY" --artifact-id "$env:ARTIFACT_ID" --attempt "$env:ATTEMPT" --assets seed/assets --output seed
       - name: 为变化资产创建新候选并重新审阅
         id: revision
         if: steps.accept.outputs.reviewRequired == 'true'
@@ -78,36 +147,21 @@ jobs:
           RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
           POLICY_SHA: ${{ github.workflow_sha }}
           RUN_ID: ${{ github.event.workflow_run.id || inputs.runId }}
-          REPOSITORY_ID: ${{ steps.resolved.outputs.repositoryId }}
-          TARGET_TAG: ${{ steps.resolved.outputs.tag }}
-          REQUEST_KEY: ${{ steps.resolved.outputs.key }}
-          ARTIFACT_ID: ${{ steps.resolved.outputs.artifactId }}
-          ATTEMPT: ${{ steps.resolved.outputs.attempt }}
+          REPOSITORY_ID: ${{ needs.resolve.outputs.repositoryId }}
+          TARGET_TAG: ${{ needs.resolve.outputs.tag }}
+          REQUEST_KEY: ${{ needs.resolve.outputs.key }}
+          ARTIFACT_ID: ${{ needs.resolve.outputs.artifactId }}
+          ATTEMPT: ${{ needs.resolve.outputs.attempt }}
         run: node packages/runner/dist/index.js release-candidate --operation revise-rebuild --policy-sha "$env:POLICY_SHA" --repository-id "$env:REPOSITORY_ID" --target-tag "$env:TARGET_TAG" --request-key "$env:REQUEST_KEY"
-      - name: 保存构建验证失败并停止候选恢复
-        if: failure() && steps.accept.outputs.verificationFailed == 'true'
-        shell: pwsh
-        env:
-          APP_ID: "4243096"
-          INSTALLATION_ID: "145952003"
-          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
-          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
-          POLICY_SHA: ${{ github.workflow_sha }}
-          RUN_ID: ${{ github.event.workflow_run.id || inputs.runId }}
-          REPOSITORY_ID: ${{ steps.resolved.outputs.repositoryId }}
-          TARGET_TAG: ${{ steps.resolved.outputs.tag }}
-          REQUEST_KEY: ${{ steps.resolved.outputs.key }}
-          ATTEMPT: ${{ steps.resolved.outputs.attempt }}
-        run: node packages/runner/dist/index.js release-build --operation reject --policy-sha "$env:POLICY_SHA" --run-id "$env:RUN_ID" --repository-id "$env:REPOSITORY_ID" --target-tag "$env:TARGET_TAG" --request-key "$env:REQUEST_KEY" --attempt "$env:ATTEMPT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: steps.resolved.outputs.ready == 'true' && steps.resolved.outputs.mode == 'initial'
+        if: needs.resolve.outputs.ready == 'true' && needs.resolve.outputs.mode == 'initial'
         id: seed
         with:
           name: release-seed-${{ github.run_attempt }}
           path: seed
           if-no-files-found: error
       - name: 接续候选生成或原候选发布恢复
-        if: steps.resolved.outputs.ready == 'true' && steps.accept.outputs.reviewRequired != 'true'
+        if: needs.resolve.outputs.ready == 'true' && steps.accept.outputs.reviewRequired != 'true'
         shell: pwsh
         env:
           APP_ID: "4243096"
@@ -116,8 +170,45 @@ jobs:
           RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
           POLICY_SHA: ${{ github.workflow_sha }}
           RUN_ID: ${{ github.run_id }}
-          REPOSITORY_ID: ${{ steps.resolved.outputs.repositoryId }}
-          TARGET_TAG: ${{ steps.resolved.outputs.tag }}
-          REQUEST_KEY: ${{ steps.resolved.outputs.key }}
+          REPOSITORY_ID: ${{ needs.resolve.outputs.repositoryId }}
+          TARGET_TAG: ${{ needs.resolve.outputs.tag }}
+          REQUEST_KEY: ${{ needs.resolve.outputs.key }}
           ARTIFACT_ID: ${{ steps.seed.outputs.artifact-id }}
         run: node packages/runner/dist/index.js release-build --operation continue --policy-sha "$env:POLICY_SHA" --run-id "$env:RUN_ID" --repository-id "$env:REPOSITORY_ID" --target-tag "$env:TARGET_TAG" --request-key "$env:REQUEST_KEY" --artifact-id "$env:ARTIFACT_ID"
+    needs:
+      - resolve
+      - inspect
+  reject:
+    needs:
+      - resolve
+      - inspect
+    if: always() && needs.resolve.result == 'success' && needs.inspect.outputs.verificationFailed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: steward-release
+      deployment: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: 保存构建验证失败并停止候选恢复
+        shell: pwsh
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
+          POLICY_SHA: ${{ github.workflow_sha }}
+          RUN_ID: ${{ github.event.workflow_run.id || inputs.runId }}
+          REPOSITORY_ID: ${{ needs.resolve.outputs.repositoryId }}
+          TARGET_TAG: ${{ needs.resolve.outputs.tag }}
+          REQUEST_KEY: ${{ needs.resolve.outputs.key }}
+          ATTEMPT: ${{ needs.resolve.outputs.attempt }}
+        run: node packages/runner/dist/index.js release-build --operation reject --policy-sha "$env:POLICY_SHA" --run-id "$env:RUN_ID" --repository-id "$env:REPOSITORY_ID" --target-tag "$env:TARGET_TAG" --request-key "$env:REQUEST_KEY" --attempt "$env:ATTEMPT"

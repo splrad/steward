@@ -1,21 +1,33 @@
 name: SPLRAD Steward / PR Classification
-
 on:
   workflow_dispatch:
     inputs:
-      deliveryId: { required: true, type: string }
-      repositoryId: { required: true, type: string }
-      pullRequestNumber: { required: false, type: string }
-      eventHeadSha: { required: false, type: string }
-      aiClassification: { required: false, type: string }
-      scanAll: { required: false, type: boolean, default: false }
-      policySha: { required: true, type: string }
-
+      deliveryId:
+        required: true
+        type: string
+      repositoryId:
+        required: true
+        type: string
+      pullRequestNumber:
+        required: false
+        type: string
+      eventHeadSha:
+        required: false
+        type: string
+      aiClassification:
+        required: false
+        type: string
+      scanAll:
+        required: false
+        type: boolean
+        default: false
+      policySha:
+        required: true
+        type: string
 permissions: {}
 concurrency:
-  group: steward-pr-classification-${{ inputs.repositoryId }}-${{ inputs.pullRequestNumber }}
+  group: workflow-policy:${{ github.workflow_ref }}:steward-pr-classification-${{ inputs.repositoryId }}-${{ inputs.pullRequestNumber }}
   cancel-in-progress: false
-
 jobs:
   classify:
     runs-on: ubuntu-latest
@@ -25,9 +37,13 @@ jobs:
       deployment: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: { ref: "${{ inputs.policySha }}", persist-credentials: false }
+        with:
+          ref: ${{ inputs.policySha }}
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version-file: .node-version, cache: npm }
+        with:
+          node-version-file: .node-version
+          cache: npm
       - run: npm ci --ignore-scripts
       - name: 分类并发布门禁
         env:
@@ -41,4 +57,16 @@ jobs:
           WORKFLOW_REF: ${{ github.workflow_ref }}
           WORKFLOW_RUN_REF: ${{ github.ref }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
-        run: node packages/runner/dist/index.js pr-classification --delivery-id "${{ inputs.deliveryId }}" --repository-id "${{ inputs.repositoryId }}" ${{ inputs.scanAll && '--scan-all true' || format('--pull-request-number "{0}" --event-head-sha "{1}" --scan-all false', inputs.pullRequestNumber, inputs.eventHeadSha) }} --policy-sha "${{ inputs.policySha }}"
+          DELIVERY_ID: ${{ inputs.deliveryId }}
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          PULL_REQUEST_NUMBER: ${{ inputs.pullRequestNumber }}
+          EVENT_HEAD_SHA: ${{ inputs.eventHeadSha }}
+          SCAN_ALL: ${{ inputs.scanAll }}
+          POLICY_SHA: ${{ inputs.policySha }}
+        run: |
+          set -euo pipefail
+          args=(--scan-all "$SCAN_ALL")
+          if [[ "$SCAN_ALL" != "true" ]]; then
+            args+=(--pull-request-number "$PULL_REQUEST_NUMBER" --event-head-sha "$EVENT_HEAD_SHA")
+          fi
+          node packages/runner/dist/index.js pr-classification --delivery-id "$DELIVERY_ID" --repository-id "$REPOSITORY_ID" "${args[@]}" --policy-sha "$POLICY_SHA"

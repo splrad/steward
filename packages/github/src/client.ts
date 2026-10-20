@@ -339,6 +339,7 @@ export class GitHubClient {
   updateCheckRun(owner: string, repo: string, id: number, body: unknown) { return this.request<any>("PATCH", `/repos/${owner}/${repo}/check-runs/${id}`, body); }
   getRequestedReviewers(owner: string, repo: string, number: number) { return this.request<any>("GET", `/repos/${owner}/${repo}/pulls/${number}/requested_reviewers`); }
   listPullRequestReviews(owner: string, repo: string, number: number) { return this.paginate<any>(`/repos/${owner}/${repo}/pulls/${number}/reviews?per_page=100`); }
+  getCollaboratorPermission(owner: string, repo: string, login: string) { return this.request<any>("GET", `/repos/${owner}/${repo}/collaborators/${encodeURIComponent(login)}/permission`); }
   listIssueEvents(owner: string, repo: string, number: number) { return this.paginate<any>(`/repos/${owner}/${repo}/issues/${number}/events?per_page=100`); }
   requestTeamReviewers(owner: string, repo: string, number: number, teams: readonly string[]) { return this.request<any>("POST", `/repos/${owner}/${repo}/pulls/${number}/requested_reviewers`, { team_reviewers: teams }); }
   updateRepository(owner: string, repo: string, body: unknown) { return this.request<any>("PATCH", `/repos/${owner}/${repo}`, body); }

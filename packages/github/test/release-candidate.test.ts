@@ -42,6 +42,15 @@ beforeEach(() => {
   };
 });
 describe('authoritative GitHub candidate facts', () => {
+  it('binds validation to the configured evaluator independently of release policy', async () => {
+    const original = gh.listWorkflowAttemptJobs;
+    gh.listWorkflowAttemptJobs = async () => {const jobs=await original();jobs[0].steps[0].name='workflow-contract-policy:'+sha('9');return jobs;};
+    expect((await readReleaseCandidateFacts(gh, receipt(),42,301115370,sha('9'))).checksPassed).toBe(true);
+    expect((await readReleaseCandidateFacts(gh, receipt(),42,301115370,sha('8'))).checksPassed).toBe(false);
+    expect((await readReleaseCandidateFacts(gh, receipt(),42,301115370)).checksPassed).toBe(false);
+    checks[0].external_id=classificationEnvelope(17,sha('9'));
+    expect((await readReleaseCandidateFacts(gh, receipt(),42,301115370,sha('9'))).checksPassed).toBe(false);
+  });
   it('ignores comments from deleted users but rejects missing identity on approval-relevant states', async () => {
     const approval = (await gh.listPullRequestReviews())[0];
     gh.listPullRequestReviews = async () => [{ id: 1, state: 'COMMENTED', user: null, submitted_at: null }, approval];

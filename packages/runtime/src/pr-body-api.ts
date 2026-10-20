@@ -7,6 +7,7 @@ export interface BodyWriteRuntimeEnv {
   APP_ID: string;
   INSTALLATION_ID: string;
   POLICY_SHA: string;
+  WORKFLOW_EVALUATOR_SHA?: string;
   STEWARD_APP_PRIVATE_KEY?: string;
   ISSUE_SNAPSHOTS?: D1Database;
 }

@@ -1,9 +1,14 @@
+import { fetchBoundArtifactFile, type ArtifactBinding } from './artifact-handoff.js';
+import {extractArtifactFile} from './artifact-file.js';
+import {createReadStream} from 'node:fs';
+import {createHash} from 'node:crypto';
+import { matchBuildFiles } from '../../core/src/build-manifest.js';
 import { planBuild, BuildContractError, type BuildPlan, type BuildManifest } from '../../core/src/build-manifest.js';
 import { freezePersonalization } from '../../core/src/release-personalization.js';
 import { releaseProfiles } from '../../../config/release-profiles.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, mkdtemp, readFile, writeFile, appendFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, appendFile, copyFile, constants } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { GitHubClient, createInstallationToken, dispatchWorkflow } from '../../github/src/index.js';
@@ -51,9 +56,31 @@ async function checkoutSource(fullName: string, sha: string, destination: string
     await run('git', ['-C', destination, 'update-ref', '--no-deref', 'HEAD', sha], { env, timeout: 30000, windowsHide: true });
   } catch { throw new Error('RN_BUILD_SOURCE_FETCH'); }
 }
+export function hostedBuildRunner(family: string): string {
+  releaseAssert(family === 'windows' || family === 'linux','BUILD_RUNNER');
+  return family === 'windows' ? 'windows-2025' : 'ubuntu-24.04';
+}
 export async function releaseBuildCommand(args: Readonly<Record<string, string>>): Promise<void> {
   const required = (k: string) => { releaseAssert(args[k], 'ARGUMENT_' + k); return args[k]!; };
   const operation = required('operation'), policySha = required('policy-sha'); releaseAssert(releaseSha(policySha), 'POLICY');
+  if (operation === 'inspect-artifact') {
+    releaseAssert(!process.env.STEWARD_APP_PRIVATE_KEY && !process.env.COPILOT_GITHUB_TOKEN, 'BUILD_CREDENTIALS');
+    const token = environment('ARTIFACT_READ_TOKEN'); delete process.env.ARTIFACT_READ_TOKEN;
+    const binding: ArtifactBinding = JSON.parse(Buffer.from(environment('ARTIFACT_BINDING'), 'base64').toString('utf8'));
+    const plan: BuildPlan = JSON.parse(Buffer.from(environment('BUILD_PLAN'), 'base64').toString('utf8'));
+    releaseAssert(binding.policySha === policySha && plan.policySha === policySha, 'BUILD_POLICY');
+    const home = await mkdtemp(join(tmpdir(), 'steward-artifact-isolated-')), assets = join(home, 'assets');
+    const archive = await fetchBoundArtifactFile(new GitHubClient(token), fetch, token, binding,join(home,'artifact.zip'));
+    try {await extractArtifactFile(archive.path,assets);} catch(error) {
+      if(error instanceof Error && (error.message==='ARTIFACT_HANDOFF_INVALID'||'code' in error && ['Z_DATA_ERROR','Z_BUF_ERROR'].includes(String(error.code)))) {await output({verificationFailed:'true'});throw new BuildContractError('RN_BUILD_INVALID');}
+      throw error;
+    }
+    let manifest: BuildManifest;
+    try { manifest = await collectFileBuildManifest(plan, assets, nativeReleaseInspector(resolve(required('inspector')),home)); }
+    catch(error) { if(error instanceof BuildContractError) await output({verificationFailed:'true'}); throw error; }
+    const report = Buffer.from(canonicalReleaseJson({binding,archiveSha256:archive.digest,manifest})).toString('base64');
+    releaseAssert(report.length <= 60000, 'BUILD_REPORT_LIMIT'); await output({report}); return;
+  }
   if (operation === 'plan-product') {
     const repositoryId = Number(required('repository-id')), target = required('target-sha'), buildId = required('build-id');
     releaseAssert(positiveId(repositoryId) && releaseSha(target), 'BUILD_IDENTITY');
@@ -71,7 +98,7 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
     const plan = await planBuild({ repositoryId, fullName: repository.full_name, buildId, profile: unit.profile, targetSha: target, policySha, version }, unit);
     await writeFile(join(directory, 'request.json'), canonicalReleaseJson(plan), { flag: 'wx' });
     await run('git', ['-C', source, 'bundle', 'create', join(directory, 'source.bundle'), 'HEAD'], { env, timeout: 300000, windowsHide: true });
-    await output({ runner: plan.runnerFamily === 'windows' ? 'windows-2025' : 'ubuntu-24.04' }); return;
+    await output({ runner: hostedBuildRunner(plan.runnerFamily) }); return;
   }
   if (operation === 'execute' || operation === 'execute-product') {
     releaseAssert(!process.env.STEWARD_APP_PRIVATE_KEY && !process.env.COPILOT_GITHUB_TOKEN && !process.env.GITHUB_TOKEN && !process.env.GH_TOKEN, 'BUILD_CREDENTIALS');
@@ -116,6 +143,9 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
     releaseAssert(artifacts.total_count <= 100, 'BUILD_ARTIFACT_LIMIT');
     const found = artifacts.artifacts.filter((a: any) => a.name === `release-build-result-${job.run_attempt}` && !a.expired);
     releaseAssert(found.length === 1, 'BUILD_ARTIFACT');
+    const binding: ArtifactBinding = {repositoryId:1296724484,fullName:'splrad/steward',workflowPath:'.github/workflows/release-build.yml',policySha,runId,attempt:job.run_attempt,artifactId:found[0].id,artifactName:found[0].name};
+    releaseAssert(state.request.plans.length === 1, 'BUILD_SET');
+    await output({binding:Buffer.from(canonicalReleaseJson(binding)).toString('base64'),plan:Buffer.from(canonicalReleaseJson(state.request.plans[0])).toString('base64')});
     await output({ ready: 'true', repositoryId: String(repositoryId), tag, key: state.request.key, artifactId: String(found[0].id), attempt: String(job.run_attempt), mode: state.request.mode }); return;
   }
   const repositoryId = Number(required('repository-id')), tag = required('target-tag');
@@ -167,22 +197,32 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
       state = await receipts.request('build-request', { action: 'prepare', frozen });
     }
     state = await receipts.request('build-request', { action: 'begin', key: state.request.key, runId: Number(required('run-id')), attempt: Number(required('attempt')) });
-    await output({ runner: state.request.plans[0]!.runnerFamily === 'windows' ? 'windows-2025' : 'ubuntu-24.04' });
+    await output({ runner: hostedBuildRunner(state.request.plans[0]!.runnerFamily) });
     await writeFile(join(directory, 'request.json'), canonicalReleaseJson(state), { flag: 'wx' });
     await run('git', ['-C', source, 'bundle', 'create', join(directory, 'source.bundle'), 'HEAD'], { env: isolatedBuildEnvironment(process.env, home), timeout: 300000, maxBuffer: 1024 * 1024, windowsHide: true }); return;
   }
   if (operation === 'accept') {
     const key = required('request-key'), state = await receipts.request<ReleaseBuildState>('build-request', { action: 'get', key });
     releaseAssert(state.request.plans.length === 1, 'BUILD_SET');
-    const home = await mkdtemp(join(tmpdir(), 'steward-build-verify-'));
-    let manifest: BuildManifest;
-    try {
-      manifest = await collectFileBuildManifest(state.request.plans[0]!, resolve(required('assets')), nativeReleaseInspector(resolve(required('inspector')), home));
-      if (manifest.artifacts.some(a => a.kind !== 'file' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(a.file))) throw new BuildContractError('RN_BUILD_OUTPUT');
-    }
-    catch (error) {
-      if (error instanceof BuildContractError) await output({ verificationFailed: 'true' });
-      throw error;
+    const encoded=environment('ARTIFACT_REPORT'); releaseAssert(encoded.length<=60000 && /^[A-Za-z0-9+/]+={0,2}$/.test(encoded),'BUILD_REPORT');
+    const report=JSON.parse(Buffer.from(encoded,'base64').toString('utf8'));
+    const binding:ArtifactBinding={repositoryId:1296724484,fullName:'splrad/steward',workflowPath:'.github/workflows/release-build.yml',policySha,runId:Number(required('run-id')),attempt:Number(required('attempt')),artifactId:Number(required('artifact-id')),artifactName:'release-build-result-'+required('attempt')};
+    releaseAssert(canonicalReleaseJson(report.binding)===canonicalReleaseJson(binding),'BUILD_REPORT_BINDING');
+    const central=await scoped(1296724484,policySha,'read');
+    // Only bounded archive parsing and hashing occur with credentials. No native inspection or product code runs here.
+    const intake=await mkdtemp(join(tmpdir(),'steward-artifact-accept-'));
+    const archive=await fetchBoundArtifactFile(central.gh,fetch,central.token,binding,join(intake,'artifact.zip')), files=await extractArtifactFile(archive.path,join(intake,'files'));
+    releaseAssert(report.archiveSha256===archive.digest,'BUILD_REPORT_DIGEST');
+    const plan=state.request.plans[0]!, assignments=matchBuildFiles(plan,[...files.keys()]);
+    const manifest:BuildManifest={schemaVersion:1,repositoryId:plan.repositoryId,fullName:plan.fullName,buildId:plan.buildId,profile:plan.profile,targetSha:plan.targetSha,policySha:plan.policySha,version:plan.version,inputsSha256:plan.inputsSha256,artifacts:assignments.map(a=>({...a,kind:'file' as const,size:files.get(a.file)!.size,sha256:files.get(a.file)!.sha256}))};
+    releaseAssert(canonicalReleaseJson(manifest)===canonicalReleaseJson(report.manifest),'BUILD_REPORT_MANIFEST');
+    const assets=resolve(required('assets')); await mkdir(assets,{recursive:true});
+    for(const [name,file] of files) {
+      try{await copyFile(file.path,join(assets,name),constants.COPYFILE_EXCL);}catch(error){
+        if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;
+        const hash=createHash('sha256');let size=0;for await(const chunk of createReadStream(join(assets,name))){size+=chunk.length;hash.update(chunk);}
+        releaseAssert(size===file.size&&hash.digest('hex')===file.sha256,'SEED_CONFLICT');
+      }
     }
     if (state.request.mode === 'initial') {
       const directory = resolve(required('output')); await mkdir(directory, { recursive: true });

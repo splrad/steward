@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "repositoryId": 1296724484,
+  "fragments": "retired",
+  "sharedQueues": {
+    ".github/workflows/native-review.yml": "pr-body",
+    ".github/workflows/onboard-repository.yml": "pr-body",
+    ".github/workflows/sync-review-instructions.yml:synchronize": "pr-body"
+  }
+}
