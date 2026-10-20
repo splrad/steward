@@ -2142,7 +2142,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (invocation.command === "verify-workflow-activation") {
     const evaluatorSha = env("WORKFLOW_EVALUATOR_SHA");
     if (!/^[a-f0-9]{40}$/.test(evaluatorSha)) throw new Error("WORKFLOW_EVALUATOR_SHA_REQUIRED");
-    return verifyWorkflowActivationWithApp(new GitHubClient(env("WORKFLOW_ACTIVATION_READ_TOKEN")), evaluatorSha, await catalog(), {
+    return verifyWorkflowActivationWithApp(evaluatorSha, await catalog(), {
       appId: env("APP_ID"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"),
     });
   }

@@ -54,15 +54,16 @@ it('reads every installation page and rejects changing totals',async()=>{
   proof.installation.request.mockResolvedValueOnce({total_count:101,repositories:repos.slice(0,100)}).mockResolvedValueOnce({total_count:102,repositories:repos.slice(100)});
   await expect(verify(gh,sha,catalog,proof)).rejects.toThrow('CONTRACT_AUTHORITY_SCOPE');
 });
-it('creates only an unrestricted metadata-read installation token for inventory',async()=>{
+it('uses metadata-only inventory and a separate single-repository contents-read App token',async()=>{
   const jwt=vi.spyOn(auth,'createAppJwt').mockResolvedValue('fixture-jwt');
   const request=vi.spyOn(GitHubClient.prototype,'request').mockImplementation(async(method,path,body):Promise<any>=>{
-    if(method==='POST') {expect(body).toEqual({permissions:{metadata:'read'}});return {token:'fixture-token'};}
+    if(method==='POST') {expect([{permissions:{metadata:'read'}},{repository_ids:[1296724484],permissions:{contents:'read',metadata:'read'}}]).toContainEqual(body);return {token:'fixture-token'};}
+    if(path.includes('/contents/'))return client({'1':entry(1)}).request(method,path);
     if(path==='/app/installations/8') return installation;
     if(path.startsWith('/installation/repositories')) return {total_count:1,repositories:[{id:1,owner:{id:7,login:'example'}}]};
     throw new Error('unexpected request');
   });
-  try {await expect(verifyWorkflowActivationWithApp(client({'1':entry(1)}),sha,catalog,{appId:'9',installationId:8,privateKey:'fixture'})).resolves.toBeUndefined();}
+  try {await expect(verifyWorkflowActivationWithApp(sha,catalog,{appId:'9',installationId:8,privateKey:'fixture'})).resolves.toBeUndefined();}
   finally {request.mockRestore();jwt.mockRestore();}
 });
 it('requires coverage for newly discovered repositories as well as the trusted catalog', async () => {
@@ -99,4 +100,15 @@ it('does not normalize the deployment variable only inside the preflight CLI',as
  const request=vi.spyOn(GitHubClient.prototype,'request').mockRejectedValue(new Error('unexpected API read'));
  try {await expect(main(['verify-workflow-activation'])).rejects.toThrow('WORKFLOW_EVALUATOR_SHA_REQUIRED');expect(request).not.toHaveBeenCalled();}
  finally {request.mockRestore();vi.unstubAllEnvs();}
+});
+
+it.each(['token','contents'])('blocks activation when App authority %s access is unavailable',async failure=>{
+ const jwt=vi.spyOn(auth,'createAppJwt').mockResolvedValue('fixture-jwt');
+ const request=vi.spyOn(GitHubClient.prototype,'request').mockImplementation(async(method,path,body:any):Promise<any>=>{
+  if(method==='POST'){if(body.repository_ids && failure==='token')throw Error('contents permission denied');return {token:'fixture'};}
+  if(path.includes('/contents/'))throw Error('contents unreadable');
+  throw Error('unexpected');
+ });
+ try{await expect(verifyWorkflowActivationWithApp(sha,catalog,{appId:'9',installationId:8,privateKey:'fixture'})).rejects.toThrow('contents');}
+ finally{request.mockRestore();jwt.mockRestore();}
 });
