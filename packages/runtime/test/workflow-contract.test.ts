@@ -25,7 +25,7 @@ describe('runtime contract revalidation',()=>{
   await worker.scheduled({scheduledTime:60_000} as ScheduledController,{WORKFLOW_EVALUATOR_SHA:policy} as Env);
   expect(request).not.toHaveBeenCalled();
  });
- it.each(['MISSING_AFTER_LIST','MISSING_LATEST','NO_GATE_MISSING','NO_GATE_LIMIT','NO_GATE_PARTIAL','SUCCESS_LIMIT','SUCCESS_PARTIAL','CONCURRENT_DISMISS','PRIVATE_APPROVED','PRIVATE_WEBHOOK_DISMISSED','PRIVATE_RUN','APPROVED','DISMISSED','CHANGES_REQUESTED','PINNED','SOURCE_DENIED','WEBHOOK_APPROVED','WEBHOOK_DISMISSED','WEBHOOK_CHANGES_REQUESTED','SCHEDULED','SCHEDULED_SOURCE_DENIED','HISTORICAL_RUNS','MISSING_RUN','NO_GATE','LATEST_FAILED','PENDING','PENDING_NONE','PENDING_LIMIT','PENDING_PARTIAL'])('recomputes the same completed run when approval is %s',async state=>{
+ it.each(['NO_GATE_NONE','MISSING_AFTER_LIST','MISSING_LATEST','NO_GATE_MISSING','NO_GATE_LIMIT','NO_GATE_PARTIAL','SUCCESS_LIMIT','SUCCESS_PARTIAL','CONCURRENT_DISMISS','PRIVATE_APPROVED','PRIVATE_WEBHOOK_DISMISSED','PRIVATE_RUN','APPROVED','DISMISSED','CHANGES_REQUESTED','PINNED','SOURCE_DENIED','WEBHOOK_APPROVED','WEBHOOK_DISMISSED','WEBHOOK_CHANGES_REQUESTED','SCHEDULED','SCHEDULED_SOURCE_DENIED','HISTORICAL_RUNS','MISSING_RUN','NO_GATE','LATEST_FAILED','PENDING','PENDING_NONE','PENDING_LIMIT','PENDING_PARTIAL'])('recomputes the same completed run when approval is %s',async state=>{
   const repositoryId=state.startsWith('PRIVATE_')?987654321:1296724484;
   const baseline:WorkflowContract={version:1,repositoryId,fragments:'required',sharedQueues:{}};
   const candidate:WorkflowContract={...baseline,fragments:'retired'};
@@ -56,7 +56,7 @@ describe('runtime contract revalidation',()=>{
    else if(u.pathname.endsWith('/check-runs')){if(init.method==='POST'){updates.push(JSON.parse(String(init.body)));value={id:30};}else value={check_runs:checks};}
    else if(u.pathname.endsWith('/actions/runs')){
     discoveryReads++;expect(u.searchParams.get('head_sha')).toBe(head);expect(u.searchParams.get('event')).toBe('pull_request');
-    if(state==='MISSING_RUN') value={total_count:0,workflow_runs:[]};
+    if(state==='MISSING_RUN' || state==='NO_GATE_NONE') value={total_count:0,workflow_runs:[]};
     else if(['PENDING_LIMIT','SUCCESS_LIMIT','NO_GATE_LIMIT'].includes(state)) value={total_count:1000,workflow_runs:[]};
     else if(!u.searchParams.has('page')){
      const decoys=[{...run,id:12,workflow_url:'https://api.github.com/repos/splrad/steward/actions/workflows/20'},
@@ -108,7 +108,7 @@ describe('runtime contract revalidation',()=>{
   } else if(state.startsWith('SCHEDULED'))await worker.scheduled({scheduledTime:0} as ScheduledController,env);
   else if(['PENDING_LIMIT','PENDING_PARTIAL','SUCCESS_LIMIT','SUCCESS_PARTIAL','NO_GATE_LIMIT','NO_GATE_PARTIAL'].includes(state)){await expect(refreshWorkflowContractChecks(env,repositoryId,7)).rejects.toThrow('CONTRACT_RUN_DISCOVERY');expect(updates).toHaveLength(1);expect(updates[0].conclusion).toBe('failure');expect(updates[0].output.summary).toContain('CONTRACT_RUN_DISCOVERY');if(state.startsWith('NO_GATE'))expect(updates[0].external_id).toBe(`${repositoryId}:7:${head}:pending`);return;}
   else await refreshWorkflowContractChecks(env,repositoryId,7);
-  if(state==='PENDING_NONE'){expect(updates).toHaveLength(0);expect(runReads).toBe(0);return;}
+  if(state==='PENDING_NONE' || state==='NO_GATE_NONE'){expect(updates).toHaveLength(1);expect(updates[0].conclusion).toBe('failure');expect(updates[0].output.summary).toContain('CONTRACT_RUN_ABSENT');expect(runReads).toBe(0);return;}
   if(state.startsWith('MISSING_') || state==='NO_GATE_MISSING'){expect(updates).toHaveLength(1);expect(updates[0].conclusion).toBe('failure');expect(updates[0].output.summary).toContain('CONTRACT_RUN_MISSING');return;}
   expect(discoveryReads).toBe(state==='PRIVATE_RUN'?0:2);
   expect(updates).toHaveLength(state==='HISTORICAL_RUNS'?4:1);

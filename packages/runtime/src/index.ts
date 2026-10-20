@@ -343,6 +343,15 @@ export async function refreshWorkflowContractChecks(env: Env, repositoryId: numb
         if (!latestChecks.length) await gh.createCheckRun(owner, repo, {...missing,external_id:`${repositoryId}:${pull.number}:${head}:pending`});
         else for (const {check} of latestChecks) await gh.updateCheckRun(owner, repo, check.id, missing);
       }
+    } else {
+      const current = await gh.getPullRequest(owner, repo, pull.number);
+      if (current.state !== 'open' || current.base?.repo?.id !== repositoryId
+        || current.base?.ref !== repository.default_branch || current.head?.sha !== head) continue;
+      const latestChecks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, head, 'all'), head, Number(env.APP_ID), repositoryId, pull.number);
+      const absent = {name:VALIDATION_CHECK_NAME,head_sha:head,status:'completed',conclusion:'failure',
+        output:{title:'中央验证运行尚不存在',summary:`PR #${pull.number} / ${head}: CONTRACT_RUN_ABSENT`}};
+      if (!latestChecks.length) await gh.createCheckRun(owner, repo, {...absent,external_id:`${repositoryId}:${pull.number}:${head}:pending`});
+      else for (const {check} of latestChecks) await gh.updateCheckRun(owner, repo, check.id, absent);
     }
   }
 }
