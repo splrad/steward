@@ -20,12 +20,14 @@ permissions:
 
 jobs:
   deploy:
-    if: github.event_name == 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment:
       name: steward-deployment
       deployment: true
+    env:
+      WORKFLOW_EVALUATOR_SHA: ${{ vars.WORKFLOW_EVALUATOR_SHA }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: { ref: "${{ github.sha }}", persist-credentials: false }
@@ -36,6 +38,13 @@ jobs:
       - run: npm run typecheck
       - run: npm run verify:dist
       - run: npm run verify:workflows
+      - name: 核对固定验证器身份
+        shell: bash
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+        run: node packages/runner/dist/index.js verify-workflow-activation
       - name: 列出并应用D1迁移
         shell: bash
         env:
@@ -54,7 +63,7 @@ jobs:
           deployment_log="$(mktemp)"
           trap 'rm -f "$deployment_log"' EXIT
           set +e
-          npx wrangler deploy --config packages/runtime/wrangler.toml --var POLICY_SHA:${{ github.sha }} 2>&1 | tee "$deployment_log"
+          npx wrangler deploy --config packages/runtime/wrangler.toml --var WORKFLOW_EVALUATOR_SHA:"$WORKFLOW_EVALUATOR_SHA" --var POLICY_SHA:${{ github.sha }} 2>&1 | tee "$deployment_log"
           deploy_status="${PIPESTATUS[0]}"
           set -e
           if [[ "$deploy_status" -ne 0 ]]; then
@@ -73,7 +82,7 @@ jobs:
           EXPECTED_POLICY_SHA: ${{ github.sha }}
         run: |
           node --input-type=module <<'NODE'
-          const expectedKeys = ["appId", "organizationId", "policySha", "secretsReady", "status", "version"];
+          const expectedKeys = ["appId", "evaluatorSha", "organizationId", "policySha", "secretsReady", "status", "version"];
           const deadline = Date.now() + 60_000;
           let attempt = 0;
           let verifiedBody;
@@ -95,6 +104,7 @@ jobs:
                 if (JSON.stringify(Object.keys(body).sort()) !== JSON.stringify(expectedKeys)) failures.push("字段集合尚未匹配");
                 if (body.status !== "ok") failures.push("状态尚未匹配");
                 if (body.policySha !== process.env.EXPECTED_POLICY_SHA) failures.push("规则提交尚未传播");
+                if (body.evaluatorSha !== process.env.WORKFLOW_EVALUATOR_SHA) failures.push("验证器来源尚未匹配");
                 if (body.organizationId !== 302208797) failures.push("组织编号尚未匹配");
                 if (body.appId !== 4243096) failures.push("应用编号尚未匹配");
                 if (body.secretsReady !== true) failures.push("运行时密钥尚未齐备");

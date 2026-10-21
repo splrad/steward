@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { verifyWorkflowActivationWithApp } from "./workflow-activation.js";
 import { verifyWorkflowPolicy } from "./workflow-policy.js";
 import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, stat, writeFile } from "node:fs/promises";
@@ -41,7 +42,9 @@ commands.add("render-review-instructions");
 // This wrapper keeps their paths opaque to the static asset tracer used by ncc.
 const runtimeReadFile = ((path: Parameters<typeof readFile>[0], options?: Parameters<typeof readFile>[1]) =>
   Reflect.apply(readFile, undefined, options === undefined ? [path] : [path, options])) as typeof readFile;
+commands.add("verify-workflow-activation");
 const allowedArguments: Record<string, Set<string>> = {
+  "verify-workflow-activation": new Set(),
   "observe-copilot-review": new Set(["repository-id", "pull-request-number", "event-head-sha", "policy-sha"]),
   "render-review-instructions": new Set(["profile", "policy-sha"]),
   "review-sync-targets": new Set(["repository-id", "policy-sha"]),
@@ -1892,7 +1895,7 @@ async function validate(args: Readonly<Record<string, string>>) {
       for (const path of selected) { const escaped = join(workspace, path).replace(/'/g, "''"); run("pwsh", ["-NoProfile", "-NonInteractive", "-Command", `try { [xml](Get-Content -LiteralPath '${escaped}' -Raw) > $null } catch { Write-Error $_; exit 1 }`], workspace); }
       return { state: "success" as const, detail: `已解析${selected.length}个MSBuild XML文件` };
     }
-    const npmMap: Record<string, string[]> = { "npm-ci": ["ci", "--ignore-scripts"], "npm-test": ["test"], "npm-typecheck": ["run", "typecheck"], "npm-verify-dist": ["run", "verify:dist"], "npm-verify-workflows": ["run", "verify:workflows"] };
+    const npmMap: Record<string, string[]> = { "npm-ci": ["ci", "--ignore-scripts"], "npm-test": ["test"], "npm-typecheck": ["run", "typecheck"], "npm-verify-config": ["run", "verify:config"], "npm-verify-dist": ["run", "verify:dist"], "npm-verify-workflows": ["run", "verify:workflows"] };
     if (npmMap[task]) { run("npm", npmMap[task]!, workspace); return { state: "success" as const, detail: `${task}成功` }; }
     throw new Error(`未实现验证任务: ${task}`);
   });
@@ -2136,6 +2139,13 @@ async function releaseVerify(args: Readonly<Record<string, string>>) {
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const invocation = parseInvocation(argv);
+  if (invocation.command === "verify-workflow-activation") {
+    const evaluatorSha = env("WORKFLOW_EVALUATOR_SHA");
+    if (!/^[a-f0-9]{40}$/.test(evaluatorSha)) throw new Error("WORKFLOW_EVALUATOR_SHA_REQUIRED");
+    return verifyWorkflowActivationWithApp(evaluatorSha, await catalog(), {
+      appId: env("APP_ID"), installationId: integer(env("INSTALLATION_ID"), "INSTALLATION_ID"), privateKey: env("STEWARD_APP_PRIVATE_KEY"),
+    });
+  }
   if (invocation.command === "observe-copilot-review") return observeCopilotReviewCommand(invocation.args);
   if (invocation.command === "render-review-instructions") return renderReviewInstructionsCommand(invocation.args);
   if (invocation.command === "request-copilot-review") return requestCopilotReviewCommand(invocation.args);

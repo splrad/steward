@@ -47,6 +47,17 @@ function installationScoped(payload: Record<string, unknown>): Record<string, un
 }
 
 describe("中央运行程序", () => {
+  it.each([false,true])('keeps private business automation off with evaluator enabled=%s',async enabled=>{
+    const fetchMock=vi.fn();vi.stubGlobal('fetch',fetchMock);const calls:any[]=[];
+    const namespace={idFromName:(id:string)=>id,get:()=>({fetch:async(_url:string,init:RequestInit)=>{calls.push(JSON.parse(String(init.body)));return new Response('{"changed":true}');}})} as unknown as DurableObjectNamespace;
+    const repo={...repository(987654321,'splrad/private-other'),private:true};
+    for(const action of ['opened','synchronize','reopened','edited']){
+      const request=signedRequest('pull_request',scoped({action,repository:repo,pull_request:{number:7,state:'open',base:{ref:'main'},head:{sha:'c'.repeat(40)}}}));
+      expect((await handleWebhook(request,{...baseEnv(),...(enabled?{WORKFLOW_EVALUATOR_SHA:'b'.repeat(40)}:{}),VALIDATION_COORDINATOR:namespace})).status).toBe(enabled?202:204);
+    }
+    expect(calls).toHaveLength(enabled?4:0);expect(calls.every(c=>c.operation==='refresh')).toBe(true);expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it.each([
     { action: "labeled", label: "security", state: "open", base: "main", expected: 202 },
     { action: "unlabeled", label: "security", state: "open", base: "main", expected: 202 },
@@ -167,7 +178,7 @@ describe("中央运行程序", () => {
     expect(response.status).toBe(200);
     expect(text).not.toContain(env.STEWARD_WEBHOOK_SECRET);
     expect(text).not.toContain(env.STEWARD_APP_PRIVATE_KEY);
-    expect(JSON.parse(text)).toEqual({ status: "ok", policySha: env.POLICY_SHA, version: env.CF_VERSION_METADATA!.id, organizationId: 302208797, appId: 4243096, secretsReady: true });
+    expect(JSON.parse(text)).toEqual({ status: "ok", policySha: env.POLICY_SHA, evaluatorSha: null, version: env.CF_VERSION_METADATA!.id, organizationId: 302208797, appId: 4243096, secretsReady: true });
     expect((await worker.fetch(new Request("https://example.test/unknown"), env)).status).toBe(404);
   });
 
