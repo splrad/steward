@@ -38,6 +38,10 @@ export function validateDeliveryConfiguration(
 ): void {
   const { builds, delivery } = configuration;
   const release = delivery.githubRelease;
+  if (new Set(release.builds).size !== release.builds.length) throw new Error('RN_CONFIG_DUPLICATE_REFERENCE');
+  // The current release executor consumes one file-build plan; reject unsupported
+  // combinations before any candidate or build request is persisted.
+  if (release.builds.length > 1) throw new Error('RN_CONFIG_RELEASE_BUILD_LIMIT');
   if (!release.enabled && (release.state !== 'disabled' || release.profile !== null || release.builds.length)) throw new Error('RN_CONFIG_DISABLED');
   if (release.enabled && (release.state === 'disabled' || !release.profile)) throw new Error('RN_CONFIG_STATE');
   const entries = [...delivery.deployments, ...delivery.packages];
@@ -74,6 +78,14 @@ export function validateDeliveryConfiguration(
     if (!repository || profile.repository.id !== repository.id || profile.repository.fullName !== repository.fullName) throw new Error('RN_CONFIG_REPOSITORY');
     if (release.state === 'active' && !registry.adapters.releases.includes(release.profile!)) throw new Error('RN_CONFIG_ADAPTER_UNAVAILABLE');
     checkBuilds(release.builds, release.state === 'active', 'file');
+    for (const id of release.builds) for (const output of builds[id]!.outputs) {
+      // Release artifacts are a flat ASCII envelope. Other delivery consumers
+      // may still use directories; reject incompatible Release rules up front.
+      const pattern = output.match?.replaceAll('{version}', '1.0.0');
+      if (!pattern || !/^[A-Za-z0-9*?][A-Za-z0-9._*?-]{0,199}$/.test(pattern)
+        || /[.]$/.test(pattern) || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(pattern))
+        throw new Error('RN_CONFIG_RELEASE_ASSET_NAME');
+    }
   }
   for (const entry of delivery.deployments) {
     const profile = own(registry.deployments, entry.profile);

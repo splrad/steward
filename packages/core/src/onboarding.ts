@@ -4,7 +4,7 @@ export interface RepositoryForOnboarding {
   id: number; fullName: string; ownerId: number; visibility: 'public' | 'private';
   fork: boolean; archived: boolean; disabled: boolean; defaultBranch?: string | null;
 }
-export interface OnboardingConfiguration { managed: boolean; reviewInstructionsProfile?: string; classification?: { profile: string }; validationProfile?: string; releaseProfile?: string | null }
+export interface OnboardingConfiguration { managed: boolean; reviewInstructionsProfile?: string; classification?: { profile: string }; validationProfile?: string; delivery?: { githubRelease: { profile: string; state: string; enabled: boolean } | null } }
 export interface RepositorySettings {
   allow_squash_merge: true;
   allow_merge_commit: false;
@@ -35,7 +35,7 @@ export function planRepositorySettings(): RepositorySettings {
   };
 }
 
-export function renderOnboardingPullRequest(input: { template: string; configuration: Required<Pick<OnboardingConfiguration, 'reviewInstructionsProfile' | 'classification' | 'validationProfile'>> & Pick<OnboardingConfiguration, 'releaseProfile'>; actor: string; context: string }): { title: string; body: string; branch: string } {
+export function renderOnboardingPullRequest(input: { template: string; configuration: Required<Pick<OnboardingConfiguration, 'reviewInstructionsProfile' | 'classification' | 'validationProfile'>> & Pick<OnboardingConfiguration, 'delivery'>; actor: string; context: string }): { title: string; body: string; branch: string } {
   const generated: GeneratedSummary = {
     type: 'chore', scope: 'steward', title: '接入中央仓库管理',
     summary: '将本仓库接入SPLRAD Steward中央自动化并应用统一仓库设置。',
@@ -43,10 +43,10 @@ export function renderOnboardingPullRequest(input: { template: string; configura
     changes: [
       `使用${input.configuration.classification.profile}分类配置和${input.configuration.validationProfile}验证配置`,
       `生成${input.configuration.reviewInstructionsProfile}代码审查规则集，并设置压缩合并只使用拉取请求标题且不生成扩展描述，同时清理来源分支`,
-      ...(input.configuration.releaseProfile ? [`启用${input.configuration.releaseProfile}中央发布配置`] : []),
+      ...(input.configuration.delivery?.githubRelease?.profile ? [`登记${input.configuration.delivery?.githubRelease?.profile}中央发布配置；能力状态单独核验`] : []),
     ],
     impact: ['仓库将使用中央分类、验证和代码审查说明配置，并采用统一的合并设置'],
-    releaseAndMigration: input.configuration.releaseProfile ? [`接入后由${input.configuration.releaseProfile}中央配置管理后续发布`] : [],
+    releaseAndMigration: input.configuration.delivery?.githubRelease?.profile ? [`接入后由${input.configuration.delivery?.githubRelease?.profile}中央配置管理后续发布`] : [],
   };
   return { title: 'chore(steward): 接入中央仓库管理', branch: 'steward/repository-onboarding', body: renderManagedBody({ generated, templateBody: input.template, actor: input.actor, contributors: [], context: input.context }) };
 }

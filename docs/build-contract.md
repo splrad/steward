@@ -9,6 +9,11 @@ and hashes the canonical inputs. Core plans specify a neutral `runnerFamily`
 `ubuntu-latest` and sets read-only repository permissions, no protected
 environment, and no persisted Git credentials.
 
+The .NET profile always uses the Windows runner family, including when its
+target runtime is `linux-x64`. The target RID does not select the execution OS.
+Versioned custom Linux outputs currently support `package.json`; other native
+formats fail explicitly during version inspection.
+
 The runner adapter calls `validateBuildInputs` before execution to check source
 paths and the separate output directory. A custom entrypoint must be a regular
 file under `tools/`. Paths use portable relative syntax; traversal, links, and

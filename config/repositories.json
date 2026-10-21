@@ -8,7 +8,6 @@
   "defaults": {
     "public": {
       "managed": true,
-      "prAutomation": true,
       "pullRequestTemplate": "organization-default",
       "reviewInstructionsProfile": "common",
       "classification": {
@@ -29,7 +28,6 @@
       },
       "validationProfile": "public-basic",
       "allowedWorkflowPaths": [],
-      "releaseProfile": null,
       "builds": {},
       "delivery": {
         "githubRelease": {
@@ -45,7 +43,6 @@
     },
     "private": {
       "managed": false,
-      "prAutomation": false,
       "pullRequestTemplate": "organization-default",
       "reviewInstructionsProfile": "common",
       "classification": {
@@ -60,7 +57,6 @@
       },
       "validationProfile": "public-basic",
       "allowedWorkflowPaths": [],
-      "releaseProfile": null,
       "builds": {},
       "delivery": {
         "githubRelease": {
@@ -79,7 +75,6 @@
     "1187527897": {
       "managed": true,
       "fullName": "splrad/LayerScape",
-      "prAutomation": true,
       "pullRequestTemplate": "organization-default",
       "reviewInstructionsProfile": "layerscape",
       "reviewGovernance": {
@@ -108,7 +103,6 @@
       },
       "validationProfile": "layerscape",
       "allowedWorkflowPaths": [],
-      "releaseProfile": "layerscape",
       "builds": {
         "release-assets": {
           "profile": "custom-adapter-v1",
@@ -159,7 +153,6 @@
     "1296724484": {
       "managed": true,
       "fullName": "splrad/steward",
-      "prAutomation": true,
       "pullRequestTemplate": "organization-default",
       "reviewInstructionsProfile": "steward",
       "reviewGovernance": {
@@ -189,17 +182,17 @@
       "validationProfile": "steward",
       "allowedWorkflowPaths": [
         ".github/workflows/deploy-runtime.yml",
-        ".github/workflows/issue-sync.yml",
+        ".github/workflows/native-review.yml",
         ".github/workflows/onboard-repository.yml",
-        ".github/workflows/pr-automation.yml",
         ".github/workflows/pr-classification.yml",
-        ".github/workflows/pr-issue-link.yml",
         ".github/workflows/pr-validation.yml",
+        ".github/workflows/product-build.yml",
+        ".github/workflows/release-build-complete.yml",
+        ".github/workflows/release-build.yml",
         ".github/workflows/release.yml",
         ".github/workflows/sync-managed-labels.yml",
         ".github/workflows/sync-review-instructions.yml"
       ],
-      "releaseProfile": null,
       "builds": {},
       "delivery": {
         "githubRelease": {
@@ -216,7 +209,6 @@
     "1296725317": {
       "managed": true,
       "fullName": "splrad/.github",
-      "prAutomation": true,
       "pullRequestTemplate": "organization-provider",
       "reviewInstructionsProfile": "github",
       "reviewGovernance": {
@@ -245,7 +237,6 @@
       },
       "validationProfile": "public-basic",
       "allowedWorkflowPaths": [],
-      "releaseProfile": null,
       "builds": {},
       "delivery": {
         "githubRelease": {

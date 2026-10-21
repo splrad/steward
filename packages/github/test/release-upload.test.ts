@@ -47,7 +47,7 @@ describe("发布资产上传", () => {
     }
   });
 
-  it("拒绝本地摘要、类型、上传响应、远程字节数和远程摘要错误", async () => {
+  it("校验本地与远程摘要，并支持通用二进制资产类型", async () => {
     const directory = await mkdtemp(join(tmpdir(), "steward-upload-"));
     const path = join(directory, "a.zip");
     const bytes = Buffer.from("zip");
@@ -55,7 +55,7 @@ describe("发布资产上传", () => {
     await writeFile(path, bytes);
     try {
       await expect(uploadReleaseAsset({ token: "x", policySha: "a".repeat(40), uploadUrl: "https://example.test/assets", filePath: path, fileName: "a.zip", expectedSha256: "0".repeat(64) })).rejects.toThrow("摘要");
-      await expect(uploadReleaseAsset({ token: "x", policySha: "a".repeat(40), uploadUrl: "https://example.test/assets", filePath: path, fileName: "a.txt", expectedSha256: digest })).rejects.toThrow("类型");
+      expect((await uploadReleaseAsset({ token: "x", policySha: "a".repeat(40), uploadUrl: "https://example.test/assets", filePath: path, fileName: "a.tgz", expectedSha256: digest, transport: (async () => new Response(JSON.stringify({ size: bytes.length, digest: `sha256:${digest}` }), { status: 201 })) as typeof fetch })).contentType).toBe("application/octet-stream");
       await expect(uploadReleaseAsset({ token: "x", policySha: "a".repeat(40), uploadUrl: "https://example.test/assets", filePath: path, fileName: "a.zip", expectedSha256: digest, transport: (async () => new Response("failed", { status: 500 })) as typeof fetch })).rejects.toThrow("500");
       await expect(uploadReleaseAsset({ token: "x", policySha: "a".repeat(40), uploadUrl: "https://example.test/assets", filePath: path, fileName: "a.zip", expectedSha256: digest, transport: (async () => new Response(JSON.stringify({ size: 99, digest: `sha256:${digest}` }), { status: 201 })) as typeof fetch })).rejects.toThrow("字节数");
       await expect(uploadReleaseAsset({ token: "x", policySha: "a".repeat(40), uploadUrl: "https://example.test/assets", filePath: path, fileName: "a.zip", expectedSha256: digest, transport: (async () => new Response(JSON.stringify({ size: bytes.length, digest: "sha256:wrong" }), { status: 201 })) as typeof fetch })).rejects.toThrow("远程资产摘要");

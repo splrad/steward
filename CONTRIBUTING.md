@@ -21,10 +21,12 @@ npm run verify
 
 使用短期分支，并让一个 Pull Request 只处理一个问题。不要混入无关格式化、生成文件噪声、凭据、私有路径、客户数据或运行时密钥。
 
-有本仓库写权限时，向本仓库非默认工作分支推送后等待 Steward 自动创建或更新 PR，首次创建为草稿。没有对应 PR 时先检查自动化；仍在运行则等待，状态不明则先核查，确认机器人故障、无法自动创建且仍无对应 PR 后才手动补建。通过 fork 贡献时，从自己的 fork 向本仓库创建 PR，无需等待机器人代开。
+同仓和 fork 贡献都由贡献者在准备好后显式创建 PR。推送工作分支用于保存和分享修改，不会自动创建 PR，也不会自动改写已有 PR 的标题或正文。
 
 草稿准备好后，在 PR 页面点击 **Ready for review**。PR 作者或拥有目标仓库 Write 及以上权限的用户均可操作，适用于同仓和 fork PR。机器人创建的 PR 可由具备上述仓库权限的用户操作；fork PR 作者无需上游 Write 权限。Ready 仅表示提交审查，检查、批准和人工合并仍须分别完成。
 
-组织的 [Pull Request 模板](https://github.com/splrad/.github/blob/main/.github/pull_request_template.md)由 `splrad/.github` 维护。手动创建时填写标题和变更说明，保留受管标记。Steward 后续可能重建其管理的 PR 标题和完整正文；需要保留的补充说明和验证证据请写入 PR 评论。涉及仓库治理、权限或事件处理的改动，不能只用通过的检查代替变更说明。
+组织的 [Pull Request 模板](https://github.com/splrad/.github/blob/main/.github/pull_request_template.md)由 `splrad/.github` 维护。请在 PR 正文写明修改目的及验证结果，后续直接更新正文。按需手动关联议题：确认完整解决时使用 `Closes #编号`，部分相关时使用普通编号或链接。Steward 不自动推断、增加、移除或维护议题关联。
+
+合并前需满足组织的 CI、线程解决和审批规则。普通贡献者的 PR 需要作者之外、有相应权限的真人批准；个人审批例外以线上规则为准，不能把本说明视为已生效的权限。新提交后应重新检查审批状态。
 
 发现疑似安全问题时，请遵循仓库安全政策，不要在公开 Pull Request 中报告。

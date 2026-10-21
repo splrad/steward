@@ -6,7 +6,7 @@ const head = "a".repeat(40);
 const policy = "b".repeat(40);
 const repository = () => ({ id: 1296724484, full_name: "splrad/steward", owner: { id: 302208797 }, private: false, fork: false, archived: false, disabled: false, default_branch: "main" });
 const pull = () => ({ number: 187, state: "open", draft: false, user: { id: 49699333, login: "dependabot[bot]", type: "Bot" }, base: { ref: "main", repo: { id: 1296724484 } }, head: { sha: head, repo: { id: 1296724484 } } });
-const context = () => ({ TRIGGER_ACTOR_ID: "301115370", WORKFLOW_REPOSITORY: "splrad/steward", WORKFLOW_EVENT: "workflow_dispatch", WORKFLOW_RUN_REF: "refs/heads/main", WORKFLOW_REF: "splrad/steward/.github/workflows/pr-automation.yml@refs/heads/main", WORKFLOW_DEFAULT_BRANCH: "main", WORKFLOW_SHA: policy });
+const context = () => ({ TRIGGER_ACTOR_ID: "301115370", WORKFLOW_REPOSITORY: "splrad/steward", WORKFLOW_EVENT: "workflow_dispatch", WORKFLOW_RUN_REF: "refs/heads/main", WORKFLOW_REF: "splrad/steward/.github/workflows/native-review.yml@refs/heads/main", WORKFLOW_DEFAULT_BRANCH: "main", WORKFLOW_SHA: policy });
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 

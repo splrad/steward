@@ -1,0 +1,448 @@
+import { dispatchMigrationBuild } from '../src/release-migration-dispatch.js';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { frozenFixture, notesFixture, sha } from '../../core/test/release-receipt-fixture.js';
+import { makeReleaseBuildRequest, releaseToolchainDigest } from '../../core/src/release-build-request.js';
+import { newReleaseReceipt, canonicalReleaseJson, candidateProjection, candidatePaths, assertReleasePermit } from '../../core/src/release-note-receipt.js';
+import { factsFixture } from '../../core/test/release-receipt-fixture.js';
+import { GitHubRequestError } from '../../github/src/client.js';
+import { ReleaseBuildStore } from '../src/release-build-store.js';
+import { ReleaseReceiptStore } from '../src/release-note-receipts.js';
+import { handleReleaseBuildAction } from '../src/release-build-api.js';
+import { handleReleaseRequest } from '../src/release-api.js';
+import { ReleaseReceiptClient, withReleaseClaim } from '../../runner/src/release-lifecycle.js';
+import { ReleaseTestDb } from './release-test-db.js';
+import { freezePersonalization } from '../../core/src/release-personalization.js';
+import { validateReleaseSource } from '../../core/src/release-bundle.js';
+
+const mock = vi.hoisted(() => ({ central: null as any, config: null as any, dispatch: vi.fn(), trees: {} as any, blobs: {} as any, facts: null as any }));
+vi.mock('../../github/src/release-candidate.js', async original => ({ ...await original<any>(),
+  releaseTree: vi.fn(async (_g, _o, _r, sha) => mock.trees[sha]),
+  readCandidateBlob: vi.fn(async (_g, _o, _r, tree, path) => path === 'VERSION' ? '1.2.3\n' : mock.blobs[path]),
+  readReleaseCandidateFacts: vi.fn(async () => mock.facts),
+}));
+vi.mock('../../core/src/release-bundle.js', async original => ({ ...await original<any>(),
+  validateReleaseSource: vi.fn(() => ({ boundary: { kind: 'full-tree' }, commits: [], changes: [] })),
+  validateReleaseEvidence: vi.fn(),
+}));
+vi.mock('../../github/src/index.js', async original => ({ ...await original<any>(),
+  createInstallationToken: vi.fn(async () => 'test'),
+  GitHubClient: class { constructor() { return mock.central; } }, dispatchWorkflow: mock.dispatch,
+}));
+vi.mock('../src/pr-body-api.js', async original => ({ ...await original<any>(), authorizeSingleRepository: vi.fn(async () => ({
+  repository: { id: 9001, full_name: 'sample/neutral-product', default_branch: 'trunk' }, client: mock.central, managed: true,
+})) }));
+vi.mock('../../../config/repositories.json', () => ({ default: { repositories: { get '9001'() { return mock.config; } } } }));
+let db: ReleaseTestDb, store: ReleaseBuildStore, receipts: ReleaseReceiptStore;
+let run: any, artifact: any;
+const env = () => ({ ORGANIZATION_ID: '1', ORGANIZATION_LOGIN: 'sample', APP_ID: '42', INSTALLATION_ID: '2', POLICY_SHA: sha('c'), ISSUE_SNAPSHOTS: db.binding() });
+const repository = { id: 9001, full_name: 'sample/neutral-product', default_branch: 'trunk' };
+beforeEach(() => {
+  db = new ReleaseTestDb(); store = new ReleaseBuildStore(db.binding()); receipts = new ReleaseReceiptStore(db.binding()); mock.dispatch.mockReset();
+  mock.config = { delivery: { githubRelease: { enabled: true, state: 'pending', builds: ['release'] } }, builds: { release: {
+    profile: 'custom-adapter-v1', inputs: { entrypoint: 'tools/build.ps1', runtime: 'pwsh', runnerFamily: 'windows' },
+    outputs: [{ id: 'app', kind: 'file', count: 1, match: 'app.zip', mediaType: 'application/zip' }],
+  } } };
+  run = { id: 10, run_attempt: 1, repository: { id: 1296724484 }, event: 'workflow_dispatch', head_sha: sha('c'), path: '.github/workflows/release-build.yml', status: 'in_progress', conclusion: null };
+  artifact = { id: 20, name: 'release-build-result-1', expired: false, workflow_run: { id: 10, head_sha: sha('c') } };
+  mock.central = { listReleases: async () => [], paginate: vi.fn(async (_path, select) => select({total_count:1,workflow_runs:[{...run,display_title:'build:9001:v1.2.3::'+mock.dispatch.mock.calls.at(-1)?.[1].inputs.dispatchKey}]})), request: vi.fn(async (_method: string, path: string) => {
+    if (path.includes('/actions/runs/')) return run;
+    if (path.endsWith('/artifacts/2')) return { expired: true };
+    if (path.includes('/actions/artifacts/')) return artifact;
+    throw new Error('Unexpected request: ' + path);
+  }) };
+});
+afterEach(() => db.database.close());
+it('registers a completed failed-jobs rerun and ignores delayed previous attempts', async () => {
+  const state = await request();
+  await action({ action: 'begin', key: state.request.key, runId: 10, attempt: 1 });
+  const previous = { ...run, status: 'completed', conclusion: 'failure' };
+  run = { ...run, run_attempt: 2, status: 'completed', conclusion: 'success' };
+  mock.central.request.mockImplementation(async (_method: string, path: string) => path.endsWith('/attempts/1') ? previous : run);
+  const recovered = await action({ action: 'find', runId: 10, attempt: 2 });
+  expect(recovered.attempts).toEqual([{ runId: 10, attempt: 1 }, { runId: 10, attempt: 2 }]);
+  expect(await action({ action: 'find', runId: 10, attempt: 1 })).toBeNull();
+  expect(await action({ action: 'find', runId: 10, attempt: 2 })).toEqual(recovered);
+  await expect(action({ action: 'fail', key: state.request.key, runId: 10, attempt: 1 })).rejects.toThrow('BUILD_RUN_PROVENANCE');
+});
+it('rejects rerun registration when the previous run succeeded or policy differs', async () => {
+  const state = await request();
+  await action({ action: 'begin', key: state.request.key, runId: 10, attempt: 1 });
+  const previous = { ...run, status: 'completed', conclusion: 'success' };
+  run = { ...run, run_attempt: 2, status: 'completed', conclusion: 'success' };
+  mock.central.request.mockImplementation(async (_method: string, path: string) => path.endsWith('/attempts/1') ? previous : run);
+  await expect(action({ action: 'find', runId: 10, attempt: 2 })).rejects.toThrow('BUILD_RUN_PROVENANCE');
+  previous.conclusion = 'failure'; run.head_sha = sha('d');
+  await expect(action({ action: 'find', runId: 10, attempt: 2 })).rejects.toThrow('BUILD_RUN_PROVENANCE');
+  expect((await store.get(state.request.key, 9001, 'v1.2.3'))?.attempts).toHaveLength(1);
+});
+async function request(mode: 'initial' | 'rebuild' = 'initial') {
+  const f = frozenFixture(); f.toolchainDigest = releaseToolchainDigest;
+  if (mode === 'rebuild') f.build = { runId: 1, artifactId: 2, artifactName: 'old', headSha: sha('c') };
+  let req = await makeReleaseBuildRequest(f, mock.config, mode, mode === 'rebuild' ? 2 : null);
+  if (mode === 'rebuild') {
+    f.manifests = [manifest(req.plans[0]!)];
+    f.assets = [{ name: 'app.zip', size: 12, sha256: 'a'.repeat(64) }];
+    req = await makeReleaseBuildRequest(f, mock.config, mode, 2);
+    await receipts.prepare({ ...newReleaseReceipt(f, notesFixture), phase: 'merged' }, 'now');
+  }
+  return store.prepare(req);
+}
+function manifest(p: any) {
+  return { schemaVersion: 1 as const, repositoryId: 9001, fullName: repository.full_name, buildId: p.buildId, profile: p.profile, targetSha: sha('a'), policySha: sha('c'), version: '1.2.3', inputsSha256: p.inputsSha256,
+    artifacts: [{ id: 'app', kind: 'file' as const, file: 'app.zip', mediaType: 'application/zip', size: 12, sha256: 'a'.repeat(64) }] };
+}
+const action = (body: any) => handleReleaseBuildAction(env(), mock.central, repository, mock.config, 'v1.2.3', body);
+async function replacement(state: Awaited<ReturnType<typeof request>>, policy: string) {
+  return makeReleaseBuildRequest({ ...state.request.frozen, policySha: sha(policy) }, mock.config, 'initial', null);
+}
+it('archives obsolete requests atomically, fences callbacks, and retains a bounded restart history', async () => {
+  let state = await store.begin(await request(), 10, 1);
+  const original = state;
+  for (const policy of ['d', 'e', 'f']) {
+    const next = await replacement(state, policy);
+    state = await new ReleaseBuildStore(db.binding()).prepare(next);
+    expect(state).toMatchObject({ status: 'requested', attempts: [], artifact: null });
+    expect(await store.prepare(next)).toEqual(state);
+  }
+  expect(state.restartCount).toBe(3);
+  await expect(store.prepare(await replacement(state, '9'))).rejects.toThrow('BUILD_RESTART_BUDGET');
+  expect(await store.find(9001, 'v1.2.3', 10, 1)).toBeNull();
+  expect(await store.get(original.request.key, 9001, 'v1.2.3')).toMatchObject({ status: 'superseded' });
+  await expect(store.save(original, { ...original, status: 'accepted' })).rejects.toThrow('BUILD_REQUEST_STALE');
+  await expect(store.prepare(original.request)).rejects.toThrow('BUILD_REQUEST_OCCUPIED');
+  for (const operation of ['get', 'begin', 'finish', 'fail', 'reject']) {
+    await expect(action({ action: operation, key: original.request.key, runId: 10, attempt: 1 })).rejects.toThrow('BUILD_REQUEST');
+  }
+  expect(mock.central.request).not.toHaveBeenCalled();
+  expect(db.database.prepare("SELECT COUNT(*) AS n FROM release_build_requests WHERE json_extract(record_json,'$.status')!='superseded'").get()?.n).toBe(1);
+});
+it.each(['accepted', 'seeded', 'receipt'])('does not replace a same-policy accepted seed or a current receipt: %s', async barrier => {
+  let state = await request();
+  if (barrier !== 'receipt') state = await store.save(state, { ...state, status: barrier as 'accepted' | 'seeded' });
+  else await receipts.prepare(newReleaseReceipt(state.request.frozen, notesFixture), 'now');
+  const next = barrier === 'receipt' ? await replacement(state, 'd') : await makeReleaseBuildRequest({...state.request.frozen,productTargetSha:sha('b')},mock.config,'initial',null);
+  await expect(store.prepare(next)).rejects.toThrow(barrier !== 'receipt' ? 'BUILD_REQUEST_OCCUPIED' : 'BUILD_REQUEST_STALE');
+  expect(await store.get(state.request.key, 9001, 'v1.2.3')).toEqual(state);
+  expect(db.database.prepare('SELECT COUNT(*) AS n FROM release_build_requests').get()?.n).toBe(1);
+});
+it.each(['accepted', 'seeded'] as const)('replaces an obsolete %s seed without a receipt and fences stale callbacks', async status => {
+  if (status === 'seeded') mock.config.delivery.githubRelease.builds = [];
+  let prior = await request();
+  prior = await store.save(prior, {...prior,status});
+  const next = await replacement(prior, 'd');
+  const fresh = await store.prepare(next);
+  expect(fresh).toMatchObject({status:'requested',attempts:[],artifact:null,restartCount:1});
+  expect(await store.prepare(next)).toEqual(fresh);
+  expect(await store.acceptedSeed(9001,'v1.2.3')).toBeNull();
+  expect(await store.get(prior.request.key,9001,'v1.2.3')).toMatchObject({status:'superseded',supersededBy:next.key});
+  await expect(store.save(prior,prior)).rejects.toThrow('BUILD_REQUEST_STALE');
+  expect(await receipts.get(9001,'v1.2.3')).toBeNull();
+});
+it.each(['requested','accepted','seeded'] as const)('serializes competing replacements of %s without orphaning the active slot', async status => {
+  let state = await request();
+  state = await store.save(state,{...state,status});
+  const a = await replacement(state, 'd'), b = await replacement(state, 'e');
+  const results = await Promise.allSettled([store.prepare(a), store.prepare(b)]);
+  expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+  expect(db.database.prepare("SELECT COUNT(*) AS n FROM release_build_requests WHERE json_extract(record_json,'$.status')!='superseded'").get()?.n).toBe(1);
+  expect(db.database.prepare('SELECT COUNT(*) AS n FROM release_build_requests').get()?.n).toBe(2);
+});
+it.each(['requested','accepted','seeded'] as const)('rolls back the %s archive if inserting its replacement fails', async status => {
+  let state = await request();
+  state = await store.save(state,{...state,status});
+  db.database.exec("CREATE TRIGGER fail_restart BEFORE INSERT ON release_build_requests BEGIN SELECT RAISE(ABORT,'test-insert-failure'); END");
+  await expect(store.prepare(await replacement(state, 'd'))).rejects.toThrow('test-insert-failure');
+  expect(await store.get(state.request.key, 9001, 'v1.2.3')).toEqual(state);
+});
+function client() { return new ReleaseReceiptClient('https://runtime.test', 'test', 9001, 'v1.2.3', (async (url: any, init: RequestInit) =>
+  (await handleReleaseRequest(new Request(String(url), init), env()))!) as typeof fetch); }
+
+it('allows only one racing build and retains the three-attempt budget across fresh stores', async () => {
+  let state = await request();
+  const results = await Promise.allSettled([store.begin(state, 10, 1), store.begin(state, 11, 1)]);
+  expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+  state = (await store.get(state.request.key, 9001, 'v1.2.3'))!;
+  expect(await store.begin(state, state.attempts[0]!.runId, 1)).toEqual(state);
+  for (let i = 1; i < 3; i++) {
+    state = await store.save(state, { ...state, status: 'failed' });
+    state = await new ReleaseBuildStore(db.binding()).begin(state, 20 + i, 1);
+  }
+  state = await store.save(state, { ...state, status: 'failed' });
+  await expect(new ReleaseBuildStore(db.binding()).begin(state, 30, 1)).rejects.toThrow('BUILD_RETRY_BUDGET');
+  await expect(store.prepare({ ...state.request, key: 'f'.repeat(64) })).rejects.toThrow('BUILD_REQUEST_OCCUPIED');
+  expect(await store.get(state.request.key, 9002, 'v1.2.3')).toBeNull();
+});
+it.each(['release', 'tag', 'same-version', 'older-version'])('rejects %s before source reads or build reservation', async occupied => {
+  const missing = () => { throw new GitHubRequestError(404, 'GET', '/fixture', 'missing'); };
+  mock.central.getReleaseByTag = async () => occupied === 'release' ? { id: 1 } : missing();
+  mock.central.getGitRef = async (_o: string, _r: string, ref: string) => {
+    expect(ref).toBe('tags/v1.2.3'); return occupied === 'tag' ? { object: { sha: sha('a') } } : missing();
+  };
+  mock.central.listReleases = async () => [{ id: 1, draft: false, prerelease: false, tag_name: occupied === 'older-version' ? 'v1.2.4' : 'v1.2.3' }];
+  const frozen = { ...frozenFixture(), toolchainDigest: releaseToolchainDigest };
+  await expect(action({ action: 'prepare', frozen })).rejects.toThrow(occupied === 'release' || occupied === 'tag' ? 'VERSION_OCCUPIED' : 'VERSION_NOT_INCREASING');
+  expect(db.database.prepare('SELECT COUNT(*) AS n FROM release_build_requests').get()?.n).toBe(0);
+  expect(mock.dispatch).not.toHaveBeenCalled();
+});
+it('rejects caller-supplied personalization that the repository profile did not enable', async () => {
+  const frozen = { ...frozenFixture(), toolchainDigest: releaseToolchainDigest };
+  const personalization = freezePersonalization(9001, frozen.fullName, { repository: { id: 9001, fullName: frozen.fullName }, releaseNotes: {
+    personalization: { enabled: true, sections: [{ id: 'usage', type: 'bullet-list', slot: 'beforeActions', title: '使用方式', items: ['通过命令行启动。'] }] },
+  } });
+  await expect(action({ action: 'prepare', frozen: { ...frozen, personalization } })).rejects.toThrow('PERSONALIZATION');
+  expect(mock.central.request).not.toHaveBeenCalled();
+  expect(db.database.prepare('SELECT COUNT(*) AS n FROM release_build_requests').get()?.n).toBe(0);
+});
+it('checks complete source range before persisting an initial build request', async () => {
+  const frozen = { ...frozenFixture(), toolchainDigest: releaseToolchainDigest };
+  const missing = () => { throw new GitHubRequestError(404, 'GET', '/fixture', 'missing'); };
+  mock.central.getReleaseByTag = async () => missing();
+  mock.central.getGitRef = async (_o: string, _r: string, ref: string) => ref.startsWith('tags/') ? missing() : { object: { sha: frozen.productTargetSha } };
+  mock.trees[frozen.productTargetSha] = { object: { tree: { sha: frozen.productTree } }, entries: [] };
+  mock.central.compare = async () => ({ status: 'ahead', base_commit: { sha: sha('9') }, merge_base_commit: { sha: sha('9') }, total_commits: 2 });
+  mock.central.paginate = async () => [{ sha: frozen.productTargetSha }, { sha: sha('8') }];
+  vi.mocked(validateReleaseSource).mockReturnValueOnce({ boundary: { kind: 'tag', sha: sha('9') }, commits: [{ sha: frozen.productTargetSha }] });
+  const read = vi.spyOn(ReleaseReceiptStore.prototype, 'readObject').mockResolvedValueOnce(Buffer.from('source'));
+  try {
+    await expect(action({ action: 'prepare', frozen })).rejects.toThrow('SOURCE_COMMIT_COVERAGE');
+    expect(db.database.prepare('SELECT COUNT(*) AS n FROM release_build_requests').get()?.n).toBe(0);
+    expect(mock.dispatch).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); }
+});
+it('accepts only the exact workflow run and canonical output mapping', async () => {
+  const state = await request(); const body = { key: state.request.key, runId: 10, attempt: 1 };
+  run.head_sha = sha('d'); await expect(action({ ...body, action: 'begin' })).rejects.toThrow('BUILD_RUN_PROVENANCE');
+  run.head_sha = sha('c'); await action({ ...body, action: 'begin' });
+  run.status = 'completed'; run.conclusion = 'success';
+  const m = manifest(state.request.plans[0]!);
+  const finish = { ...body, action: 'finish', artifactId: 20, toolchainDigest: releaseToolchainDigest, manifests: [m] };
+  await expect(action({ ...finish, manifests: [{ ...m, inputsSha256: 'e'.repeat(64) }] })).rejects.toThrow('BUILD_INPUTS');
+  expect(await action(finish)).toMatchObject({ status: 'accepted', artifact: { artifactId: 20 } });
+  expect(await action(finish)).toMatchObject({ status: 'accepted' });
+});
+it.each([false, true])('rebuild retains approval only for identical bytes (changed=%s)', async changed => {
+  const state = await request('rebuild'), before = (await receipts.get(9001, 'v1.2.3'))!;
+  const body = { key: state.request.key, runId: 10, attempt: 1 }; await action({ ...body, action: 'begin' });
+  run.status = 'completed'; run.conclusion = 'success';
+  const m = manifest(state.request.plans[0]!); if (changed) m.artifacts[0]!.sha256 = 'b'.repeat(64);
+  const result = action({ ...body, action: 'finish', artifactId: 20, toolchainDigest: releaseToolchainDigest, manifests: [m] });
+  if (changed) await expect(result).rejects.toThrow('REBUILD_CHANGED_REVIEW_REQUIRED'); else await result;
+  const after = (await receipts.get(9001, 'v1.2.3'))!;
+  expect(after.frozenDigest).toBe(before.frozenDigest); expect(after.approval).toEqual(before.approval);
+  expect(after.paused).toBe(changed);
+  expect(after.rebuiltAssets?.at(-1)?.build.artifactId).toBe(changed ? undefined : 20);
+  if (changed) {
+    expect(await store.get(state.request.key, 9001, 'v1.2.3')).toMatchObject({ status: 'failed', error: 'rebuild-changed-review-required', resultManifests: [m] });
+    await expect(withReleaseClaim(client(), s => s.act('review'))).rejects.toThrow('SEALED');
+    for (const operation of ['pause', 'resume']) await expect(withReleaseClaim(client(), s => s.act(operation))).rejects.toThrow('REBUILD_REVIEW_REQUIRED');
+  }
+});
+it('queues expired assets and recovers a missing completion callback without another build', async () => {
+  const state = await request('rebuild');
+  expect(await withReleaseClaim(client(), s => s.act('ensure-assets'))).toMatchObject({ assetRecoveryPending: true });
+  expect(mock.dispatch).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ workflow: 'release-build.yml' }));
+  await action({ action: 'begin', key: state.request.key, runId: 10, attempt: 1 });
+  run.status = 'completed'; run.conclusion = 'success'; mock.dispatch.mockClear();
+  await withReleaseClaim(client(), s => s.act('ensure-assets'));
+  expect(mock.dispatch).toHaveBeenCalledTimes(1);
+  expect(mock.dispatch).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ workflow: 'release-build-complete.yml', inputs: { runId: '10' } }));
+});
+it('pauses after three failed builds and does not dispatch a fourth', async () => {
+  let state = await request('rebuild');
+  for (let i = 0; i < 3; i++) { state = await store.begin(state, 10 + i, 1); state = await store.save(state, { ...state, status: 'failed' }); }
+  expect(await withReleaseClaim(client(), s => s.act('ensure-assets'))).toMatchObject({ paused: true, error: 'rebuild-budget-exhausted' });
+  expect(mock.dispatch).not.toHaveBeenCalled();
+});
+
+it('creates one durable new revision, preserves edited notes, and requires a new head approval and manual merge', async () => {
+  const state = await request('rebuild');
+  const editedNotes = notesFixture.replace('修复导入失败。', '修复导入失败，并保留原始文件。');
+  let claim = await receipts.claim(9001, 'v1.2.3', Date.now());
+  await receipts.save(claim.receipt, { ...claim.receipt, pullNumber: 17, approvedNotes: editedNotes,
+    approval: { reviewId: 1, actorId: 2, headSha: sha('d'), notesDigest: 'f'.repeat(64), submittedAt: '2026-10-18T00:00:00Z' },
+    merge: { actorId: 2, commitSha: sha('e'), mergedAt: '2026-10-18T00:01:00Z' } }, claim.token, Date.now());
+  await receipts.release(9001, 'v1.2.3', claim.token);
+  await action({ action: 'begin', key: state.request.key, runId: 10, attempt: 1 });
+  run.status = 'completed'; run.conclusion = 'success';
+  const m = manifest(state.request.plans[0]!); m.artifacts[0]!.sha256 = 'b'.repeat(64);
+  await expect(action({ action: 'finish', key: state.request.key, runId: 10, attempt: 1, artifactId: 20, manifests: [m], toolchainDigest: releaseToolchainDigest })).rejects.toThrow('REBUILD_CHANGED');
+  const old = (await receipts.get(9001, 'v1.2.3'))!;
+  const paths = candidatePaths(old);
+  mock.trees = { [sha('a')]: { object: { tree: { sha: sha('b') } }, entries: [] },
+    [sha('e')]: { object: { tree: { sha: sha('f') } }, entries: paths.map(path => ({ path, type: 'blob', mode: '100644', sha: sha('1') })) } };
+  mock.blobs = { [paths[0]]: canonicalReleaseJson(candidateProjection(old)), [paths[1]]: editedNotes };
+  const missing = () => { throw new GitHubRequestError(404, 'GET', '/fixture', 'missing'); };
+  mock.central.getPullRequest = async () => ({ state: 'closed', merged: true, merge_commit_sha: sha('e') });
+  mock.central.getGitRef = async (_o: any, _r: any, ref: string) => ref.startsWith('heads/') ? { object: { sha: sha('e') } } : missing();
+  mock.central.getReleaseByTag = missing; mock.central.getLatestRelease = missing;
+  mock.central.getGitCommit = async () => ({ sha: sha('a'), tree: { sha: sha('b') } });
+  const original = mock.central.request;
+  mock.central.request = async (method: string, path: string) => path === '/user/1' ? { id: 1, type: 'User' } : original(method, path);
+  await client().putObject(Buffer.from('source')); await client().putObject(Buffer.from('evidence'));
+  const revise = () => withReleaseClaim(client(), s => s.act('revise-rebuild', { key: state.request.key }));
+  mock.trees[sha('e')].entries.push({ path: 'product.cs', sha: sha('2'), mode: '100644', type: 'blob' });
+  await expect(revise()).rejects.toThrow('REVISION_PRODUCT_DRIFT'); mock.trees[sha('e')].entries.pop();
+  const next = await revise(); expect(await revise()).toEqual(next);
+  expect(next).toMatchObject({ revision: 2, phase: 'prepared', approval: null, merge: null, approvedNotes: null, draftNotes: editedNotes, candidateBase: { sha: sha('e'), tree: sha('f') } });
+  expect(next.frozen.assets[0]!.sha256).toBe('b'.repeat(64)); expect(next.frozen.productTargetSha).toBe(old.frozen.productTargetSha);
+  expect((await receipts.get(9001, 'v1.2.3', 1))?.approval).toEqual(old.approval);
+  expect(() => assertReleasePermit(next)).toThrow('NOT_APPROVED');
+  await expect(action({ action: 'reject', key: state.request.key, runId: 10, attempt: 1 })).rejects.toThrow('BUILD_REQUEST_STALE');
+  claim = await receipts.claim(9001, 'v1.2.3', Date.now());
+  await receipts.save(claim.receipt, { ...claim.receipt, phase: 'awaiting-review', headSha: sha('9'), pullNumber: 18 }, claim.token, Date.now());
+  await receipts.release(9001, 'v1.2.3', claim.token);
+  mock.facts = { ...factsFixture(), headSha: sha('9'), notes: editedNotes, projection: canonicalReleaseJson(candidateProjection(next)) };
+  expect(await withReleaseClaim(client(), s => s.act('review'))).toMatchObject({ phase: 'awaiting-review', approval: null });
+  mock.facts.reviews[0].headSha = sha('9');
+  expect(await withReleaseClaim(client(), s => s.act('review'))).toMatchObject({ phase: 'approved', merge: null });
+  mock.facts.closed = true; mock.facts.merged = true; mock.facts.manualMerge = true;
+  mock.facts.merge = { actorId: 3, commitSha: sha('8'), mergedAt: '2026-10-18T00:02:00Z' };
+  const approved = await withReleaseClaim(client(), s => s.act('review'));
+  expect(approved.phase).toBe('merged'); expect(() => assertReleasePermit(approved)).not.toThrow();
+  expect(approved.approvedNotes).toBe(editedNotes);
+});
+async function policyMigrationFixture() {
+ const r = newReleaseReceipt({...frozenFixture(), policySha: sha('e')}, notesFixture); await receipts.prepare(r, 'now');
+ mock.central.getGitRef = vi.fn(async (_o, _r, ref) => { if (ref.startsWith('heads/')) return {object: {sha: sha('a')}}; throw new GitHubRequestError(404, 'missing', {}); });
+ mock.central.getReleaseByTag = vi.fn(async () => { throw new GitHubRequestError(404, 'missing', {}); });
+ return r;
+}
+const migrate = () => handleReleaseRequest(new Request('https://runtime.test/internal/releases/9001/v1.2.3/migrate-policy', {method:'POST', body:'{}'}), env());
+it('validates migration before archival and safely retries a failed dispatch using the archived receipt', async () => {
+ const r = await policyMigrationFixture(); mock.dispatch.mockRejectedValueOnce(new Error('network'));
+ expect((await migrate())!.status).not.toBe(200);
+ expect(await receipts.get(9001, 'v1.2.3')).toBeNull(); expect(await receipts.get(9001, 'v1.2.3', 1)).toEqual(r);
+ expect((await migrate())!.status).toBe(200);
+ expect(mock.dispatch).toHaveBeenLastCalledWith(mock.central, expect.objectContaining({policySha: sha('c'), inputs: {repositoryId:'9001', targetTag:'v1.2.3', targetSha:sha('a'), authorIds:'1',dispatchKey:expect.any(String)}}));
+ expect(mock.dispatch).toHaveBeenCalledTimes(1);
+ expect(db.database.prepare('SELECT COUNT(*) AS count FROM release_policy_migrations').get()!.count).toBe(1);
+});
+it.each(['tag', 'release', 'configuration', 'same-policy'])('keeps the current receipt when migration preconditions fail: %s', async reason => {
+ let r = await policyMigrationFixture();
+ if (reason === 'tag') mock.central.getGitRef.mockImplementation(async () => ({object: {sha: sha('a')}}));
+ if (reason === 'release') mock.central.getReleaseByTag.mockResolvedValue({id: 1});
+ if (reason === 'configuration') mock.config.delivery.githubRelease.builds = ['release', 'release'];
+ if (reason === 'same-policy') { r = newReleaseReceipt(frozenFixture(), notesFixture); db.database.prepare('UPDATE release_receipts SET record_json=?').run(canonicalReleaseJson(r)); }
+ expect((await migrate())!.status).not.toBe(200); expect(await receipts.get(9001, 'v1.2.3')).toEqual(r); expect(mock.dispatch).not.toHaveBeenCalled();
+});
+it('seals a zero-build seed without claiming an accepted build or fabricating assets', async () => {
+  mock.config.delivery.githubRelease.builds = [];
+  const state = await request();
+  expect(state.request.plans).toEqual([]);
+  await action({ action: 'begin', key: state.request.key, runId: 10, attempt: 1 });
+  const finish = { action: 'finish-seed', key: state.request.key, runId: 10, attempt: 1, artifactId: 20 };
+  await expect(action(finish)).rejects.toThrow('BUILD_RUN_PROVENANCE');
+  run.status = 'completed'; run.conclusion = 'success';
+  await expect(action(finish)).rejects.toThrow('BUILD_SEED_PROVENANCE');
+  artifact.name = 'release-build-request-1';
+  const seeded = await action(finish);
+  expect(seeded).toMatchObject({ status: 'seeded', artifact: null, resultManifests: [],
+    seedArtifact: { artifactId: 20 }, request: { frozen: { build: null, assets: [], manifests: [] } } });
+  expect(await action(finish)).toEqual(seeded);
+  await expect(action({ ...finish, action: 'reject' })).rejects.toThrow('BUILD_RUN_PROVENANCE');
+  expect(await store.acceptedSeed(9001, 'v1.2.3')).toEqual(seeded);
+  run.id = 11; run.status = 'in_progress';
+  const replay = await action({ action: 'begin', key: state.request.key, runId: 11, attempt: 1 });
+  expect(replay).toMatchObject({ status: 'running', artifact: null, request: state.request });
+  run.status = 'completed';
+  artifact.id = 21; artifact.workflow_run.id = 11;
+  expect(await action({ ...finish, runId: 11, artifactId: 21 })).toMatchObject({ status: 'seeded', artifact: null,
+    seedArtifact: { runId: 11, artifactId: 21 } });
+  await expect(request('rebuild')).rejects.toThrow('BUILD_SET');
+});
+it('migrates a zero-asset candidate under a new policy without carrying old approval', async () => {
+  const old = await policyMigrationFixture();
+  mock.config.delivery.githubRelease.builds = [];
+  expect((await migrate())!.status).toBe(200);
+  expect(await receipts.get(9001, 'v1.2.3')).toBeNull();
+  expect(await receipts.get(9001, 'v1.2.3', 1)).toEqual(old);
+  expect(mock.dispatch).toHaveBeenCalledWith(mock.central, expect.objectContaining({ workflow: 'release-build.yml', policySha: sha('c') }));
+});
+it.each(['open','closed'])('requires a bound old candidate to be closed before policy migration: %s', async state => {
+ const original = await policyMigrationFixture(), r={...original,pullNumber:42};
+ db.database.prepare('UPDATE release_receipts SET record_json=?').run(canonicalReleaseJson(r));
+ mock.central.getPullRequest=vi.fn(async()=>({state,merged:false}));
+ const response=await migrate();
+ expect(response!.status===200).toBe(state==='closed');
+ if(state==='open'){expect(await receipts.get(9001,'v1.2.3')).toEqual(r);expect(mock.dispatch).not.toHaveBeenCalled();}
+});
+it('resumes an interrupted migration after another policy upgrade without reusing accepted old-policy builds', async()=>{
+ const r=await policyMigrationFixture(); await migrate();
+ const f={...r.frozen,policySha:sha('c')};
+ const build=await store.prepare(await makeReleaseBuildRequest(f,mock.config,'initial',null)); await store.save(build,{...build,status:'accepted'});
+ const response=await handleReleaseRequest(new Request('https://runtime.test/internal/releases/9001/v1.2.3/migrate-policy',{method:'POST',body:'{}'}),{...env(),POLICY_SHA:sha('d')});
+ expect(response!.status).toBe(200);expect(await store.get(build.request.key,9001,'v1.2.3')).toBeNull();
+ expect(await receipts.get(9001,'v1.2.3',1)).toEqual(r);
+ expect(mock.dispatch).toHaveBeenLastCalledWith(mock.central,expect.objectContaining({policySha:sha('d')}));
+});
+
+it.each(['accepted','seeded'] as const)('dispatches receipt-free %s migration and retries failure without losing the old seed', async status => {
+ if(status==='seeded') mock.config.delivery.githubRelease.builds=[];
+ let seed=await store.prepare(await makeReleaseBuildRequest({...frozenFixture(),policySha:sha('e')},mock.config,'initial',null));
+ seed=await store.save(seed,{...seed,status});
+ mock.central.getGitRef=vi.fn(async(_o,_r,ref)=>{if(ref.startsWith('heads/'))return {object:{sha:sha('a')}};throw new GitHubRequestError(404,'missing',{});});
+ mock.central.getReleaseByTag=vi.fn(async()=>{throw new GitHubRequestError(404,'missing',{});});
+ mock.dispatch.mockRejectedValueOnce(new Error('network'));
+ expect((await migrate())!.status).not.toBe(200);
+ expect(await store.acceptedSeed(9001,'v1.2.3')).toEqual(seed);
+ const response=(await migrate())!;expect(response.status).toBe(200);
+ expect(await response.json()).toMatchObject({migratedRevision:null,supersedesRequestKey:seed.request.key,rebuildDispatched:true});
+ expect(mock.dispatch).toHaveBeenLastCalledWith(mock.central,expect.objectContaining({policySha:sha('c'),inputs:expect.objectContaining({targetSha:sha('a'),authorIds:'1'})}));
+ expect(mock.dispatch).toHaveBeenCalledTimes(1);
+ const next=await store.prepare(await replacement(seed,'c'));
+ expect(next.status).toBe('requested');expect(await store.acceptedSeed(9001,'v1.2.3')).toBeNull();
+ await expect(store.save(seed,seed)).rejects.toThrow('BUILD_REQUEST_STALE');
+});
+it.each(['accepted','seeded'] as const)('does not replace a %s seed if a candidate receipt wins the race',async status=>{
+ let seed=await request();seed=await store.save(seed,{...seed,status});
+ await receipts.prepare(newReleaseReceipt(seed.request.frozen,notesFixture),'now');
+ await expect(store.prepare(await replacement(seed,'d'))).rejects.toThrow('BUILD_REQUEST_STALE');
+ expect(await store.acceptedSeed(9001,'v1.2.3')).toEqual(seed);
+});
+it('keeps an unknown migration dispatch reserved until matching Actions evidence appears',async()=>{
+ await policyMigrationFixture();mock.dispatch.mockRejectedValueOnce(new Error('response lost'));
+ expect((await migrate())!.status).not.toBe(200);
+ mock.central.paginate.mockImplementationOnce(async(_path,select)=>select({total_count:0,workflow_runs:[]}));
+ expect((await migrate())!.status).not.toBe(200);
+ expect(mock.dispatch).toHaveBeenCalledTimes(1);
+ expect((await migrate())!.status).toBe(200);
+ expect((await migrate())!.status).toBe(200);
+ expect(mock.dispatch).toHaveBeenCalledTimes(1);
+});
+it('does not accept a migration dispatch run from another policy',async()=>{
+ await policyMigrationFixture();mock.dispatch.mockRejectedValueOnce(new Error('response lost'));
+ expect((await migrate())!.status).not.toBe(200);run.head_sha=sha('e');
+ expect((await migrate())!.status).not.toBe(200);expect(mock.dispatch).toHaveBeenCalledTimes(1);
+});
+it('reserves one migration dispatch across concurrent requests',async()=>{
+ const inputs={repositoryId:'9001',targetTag:'v1.2.3',targetSha:sha('a'),authorIds:'1'};
+ await Promise.allSettled([dispatchMigrationBuild(env(),inputs),dispatchMigrationBuild(env(),inputs)]);
+ expect(mock.dispatch).toHaveBeenCalledTimes(1);
+ await dispatchMigrationBuild(env(),inputs);expect(mock.dispatch).toHaveBeenCalledTimes(1);
+});
+it.each([400,401,403,404,422])('releases a definitely rejected migration dispatch reservation: %s',async status=>{
+ await policyMigrationFixture();mock.dispatch.mockRejectedValueOnce(new GitHubRequestError(status,'POST','/repos/splrad/steward/actions/workflows/release-build.yml/dispatches','rejected'));
+ expect((await migrate())!.status).not.toBe(200);
+ expect(db.database.prepare('SELECT COUNT(*) AS count FROM release_migration_dispatches').get()!.count).toBe(0);
+ expect((await migrate())!.status).toBe(200);expect(mock.dispatch).toHaveBeenCalledTimes(2);
+});
+it.each([408,429,500,502])('retains an uncertain migration dispatch reservation: %s',async status=>{
+ await policyMigrationFixture();mock.dispatch.mockRejectedValueOnce(new GitHubRequestError(status,'POST','/repos/splrad/steward/actions/workflows/release-build.yml/dispatches','uncertain'));
+ expect((await migrate())!.status).not.toBe(200);
+ mock.central.paginate.mockImplementationOnce(async(_path,select)=>select({total_count:0,workflow_runs:[]}));
+ expect((await migrate())!.status).not.toBe(200);expect(mock.dispatch).toHaveBeenCalledTimes(1);
+});
+
+it.each(['dispatch','readback'])('preserves confirmed migration evidence when reservation vanishes during %s',async phase=>{
+ const inputs={repositoryId:'9001',targetTag:'v1.2.3',targetSha:sha('a'),authorIds:'1'};
+ if(phase==='dispatch')mock.dispatch.mockImplementationOnce(async()=>{db.database.exec('DELETE FROM release_migration_dispatches');});
+ else {
+  mock.dispatch.mockRejectedValueOnce(Error('response lost'));
+  await expect(dispatchMigrationBuild(env(),inputs)).rejects.toThrow('response lost');
+  const original=mock.central.paginate.getMockImplementation();
+  mock.central.paginate.mockImplementationOnce(async(...args:any[])=>{const runs=await original(...args);db.database.exec('DELETE FROM release_migration_dispatches');return runs;});
+ }
+ await expect(dispatchMigrationBuild(env(),inputs)).rejects.toThrow('MIGRATION_DISPATCH_STATE_CONFLICT');
+ expect(db.database.prepare('SELECT confirmed FROM release_migration_dispatches').get()!.confirmed).toBe(1);
+ await dispatchMigrationBuild(env(),inputs);expect(mock.dispatch).toHaveBeenCalledTimes(1);
+});

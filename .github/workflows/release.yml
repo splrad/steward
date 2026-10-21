@@ -1,138 +1,338 @@
 name: SPLRAD Steward / Release
-
 on:
   workflow_dispatch:
     inputs:
-      repositoryId: { required: true, type: string }
-      pullRequestNumber: { required: true, type: string }
-      targetSha: { required: true, type: string }
-
+      repositoryId:
+        required: true
+        type: string
+      targetTag:
+        required: true
+        type: string
+      operation:
+        required: true
+        type: choice
+        options:
+          - generate
+          - prepare
+          - inspect
+          - reconcile
+          - revise-rebuild
+          - recover-candidate
+          - retry-create
+          - migrate-policy
+      requestKey:
+        required: false
+        type: string
+      bundleArtifactId:
+        required: false
+        type: string
+      bundleRunId:
+        required: false
+        type: string
 permissions:
   contents: read
+  actions: read
 concurrency:
-  group: steward-release-${{ inputs.repositoryId }}
+  group: workflow-policy:${{ github.workflow_ref }}:steward-release-${{ inputs.repositoryId }}-${{ inputs.targetTag }}
   cancel-in-progress: false
-
+  queue: max
 jobs:
-  preflight:
+  inspect:
+    if: (inputs.operation == 'inspect' || inputs.operation == 'reconcile') && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
       name: steward-release
       deployment: false
     outputs:
-      shouldRelease: ${{ steps.plan.outputs.shouldRelease }}
-      displayVersion: ${{ steps.plan.outputs.displayVersion }}
-      buildId: ${{ steps.plan.outputs.buildId }}
+      shouldPublish: ${{ steps.receipt.outputs.shouldPublish }}
+      publishTimeoutMinutes: ${{ steps.receipt.outputs.publishTimeoutMinutes }}
+      artifactId: ${{ steps.receipt.outputs.artifactId }}
+      runId: ${{ steps.receipt.outputs.runId }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: { repository: splrad/LayerScape, ref: "${{ inputs.targetSha }}", path: target, fetch-depth: 0, persist-credentials: false }
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: { ref: "${{ github.sha }}", path: steward-policy, persist-credentials: false }
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version-file: steward-policy/.node-version, cache: npm, cache-dependency-path: steward-policy/package-lock.json }
+        with:
+          node-version-file: .node-version
+          cache: npm
       - run: npm ci --ignore-scripts
-        working-directory: steward-policy
-      - name: 重新读取并规划发布
-        id: plan
+      - name: 回读候选与批准收据
+        id: receipt
+        shell: bash
         env:
           APP_ID: "4243096"
           INSTALLATION_ID: "145952003"
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
-          TRIGGER_ACTOR_ID: ${{ github.actor_id }}
-          TRIGGER_ACTOR_LOGIN: ${{ github.actor }}
-          ARG_REPOSITORY_ID: ${{ inputs.repositoryId }}
-          ARG_PULL_REQUEST_NUMBER: ${{ inputs.pullRequestNumber }}
-          ARG_TARGET_SHA: ${{ inputs.targetSha }}
-        run: node steward-policy/packages/runner/dist/index.js release-preflight --workspace target --repository-id "$ARG_REPOSITORY_ID" --pull-request-number "$ARG_PULL_REQUEST_NUMBER" --target-sha "$ARG_TARGET_SHA" --policy-sha "${{ github.sha }}" --trigger "${{ github.actor_id == '301115370' && 'app' || 'manual' }}" --manifest "${{ runner.temp }}/release-manifest.json"
-
-  build:
-    needs: preflight
-    if: ${{ needs.preflight.outputs.shouldRelease == 'true' }}
-    runs-on: windows-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: { repository: splrad/LayerScape, ref: "${{ inputs.targetSha }}", path: target, fetch-depth: 0, persist-credentials: false }
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: { ref: "${{ github.sha }}", path: steward-policy, persist-credentials: false }
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version-file: steward-policy/.node-version, cache: npm, cache-dependency-path: steward-policy/package-lock.json }
-      - run: npm ci --ignore-scripts
-        working-directory: steward-policy
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
-        with: { global-json-file: target/global.json }
-      - name: 构建三项发布资产
-        shell: pwsh
-        working-directory: target
-        run: pwsh -NoProfile -NonInteractive -File ./tools/Publish-ReleaseAssets.ps1
-      - name: 生成发布清单
-        run: node steward-policy/packages/runner/dist/index.js release-preflight --workspace target --repository-id "$env:ARG_REPOSITORY_ID" --target-sha "$env:ARG_TARGET_SHA" --policy-sha "${{ github.sha }}" --manifest "target/artifacts/ReleaseAssets/release-manifest.json"
-        env:
-          ARG_REPOSITORY_ID: ${{ inputs.repositoryId }}
-          ARG_TARGET_SHA: ${{ inputs.targetSha }}
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with: { name: "layerscape-release-${{ inputs.targetSha }}", path: "target/artifacts/ReleaseAssets", retention-days: 1, if-no-files-found: error, compression-level: 0 }
-
-  notes:
-    needs: preflight
-    if: ${{ needs.preflight.outputs.shouldRelease == 'true' }}
+          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          TARGET_TAG: ${{ inputs.targetTag }}
+          OPERATION: ${{ inputs.operation == 'reconcile' && 'plan' || 'inspect' }}
+          POLICY_SHA: ${{ github.workflow_sha }}
+        run: node packages/runner/dist/index.js release-candidate --operation "$OPERATION" --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA"
+  publish:
+    needs: inspect
+    if: inputs.operation == 'reconcile' && needs.inspect.outputs.shouldPublish == 'true'
+    concurrency:
+      group: workflow-policy:${{ github.workflow_ref }}:steward-release-publish-${{ inputs.repositoryId }}
+      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: ${{ fromJSON(needs.inspect.outputs.publishTimeoutMinutes) }}
     environment:
       name: steward-release
       deployment: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: { ref: "${{ github.sha }}", persist-credentials: false }
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version-file: .node-version, cache: npm }
+        with:
+          node-version-file: .node-version
+          cache: npm
       - run: npm ci --ignore-scripts
-      - name: 生成确定性发布说明
+      - if: needs.inspect.outputs.artifactId != ''
+        id: assets
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          repository: splrad/steward
+          artifact-ids: ${{ needs.inspect.outputs.artifactId }}
+          run-id: ${{ needs.inspect.outputs.runId }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: release-assets
+      - name: 核验手动合并后发布并回读
+        if: steps.assets.outcome != 'failure'
+        shell: bash
         env:
           APP_ID: "4243096"
           INSTALLATION_ID: "145952003"
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
-          ARG_REPOSITORY_ID: ${{ inputs.repositoryId }}
-          ARG_PULL_REQUEST_NUMBER: ${{ inputs.pullRequestNumber }}
-          ARG_TARGET_SHA: ${{ inputs.targetSha }}
-          ARG_DISPLAY_VERSION: ${{ needs.preflight.outputs.displayVersion }}
-        run: node packages/runner/dist/index.js release-notes --repository-id "$ARG_REPOSITORY_ID" --pull-request-number "$ARG_PULL_REQUEST_NUMBER" --target-sha "$ARG_TARGET_SHA" --policy-sha "${{ github.sha }}" --display-version "$ARG_DISPLAY_VERSION" --output release-notes.md
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          TARGET_TAG: ${{ inputs.targetTag }}
+          POLICY_SHA: ${{ github.workflow_sha }}
+        run: node packages/runner/dist/index.js release-candidate --operation reconcile --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --assets release-assets
+      - name: 下载失效时登记资产重建
+        if: steps.assets.outcome == 'failure'
+        shell: bash
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          TARGET_TAG: ${{ inputs.targetTag }}
+          POLICY_SHA: ${{ github.workflow_sha }}
+        run: node packages/runner/dist/index.js release-candidate --operation recover-assets --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA"
+  prepare:
+    if: inputs.operation == 'prepare' && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: steward-release
+      deployment: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          name: "layerscape-notes-${{ inputs.targetSha }}"
-          path: |
-            release-notes.md
-            release-notes.md.sources.json
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: 校验候选输入编号
+        shell: bash
+        env:
+          BUNDLE_ARTIFACT_ID: ${{ inputs.bundleArtifactId }}
+          BUNDLE_RUN_ID: ${{ inputs.bundleRunId }}
+        run: '[[ "$BUNDLE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$BUNDLE_RUN_ID" =~ ^[1-9][0-9]*$ ]]'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          repository: splrad/steward
+          artifact-ids: ${{ inputs.bundleArtifactId }}
+          run-id: ${{ inputs.bundleRunId }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: candidate-bundle
+      - name: 校验并持久化候选输入
+        shell: bash
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          TARGET_TAG: ${{ inputs.targetTag }}
+          POLICY_SHA: ${{ github.workflow_sha }}
+        run: node packages/runner/dist/index.js release-candidate --operation prepare --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --bundle candidate-bundle --assets candidate-bundle/assets
+  generation-ticket:
+    if: inputs.operation == 'generate' && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: steward-release
+      deployment: false
+    outputs:
+      artifactId: ${{ steps.ticket.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: 固定生成预算并签发单候选短时凭证
+        shell: bash
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          TARGET_TAG: ${{ inputs.targetTag }}
+          POLICY_SHA: ${{ github.workflow_sha }}
+        run: node packages/runner/dist/index.js release-candidate --operation generator-ticket --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --output generation-ticket.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        id: ticket
+        with:
+          name: generation-ticket-${{ github.run_attempt }}
+          path: generation-ticket.json
           retention-days: 1
           if-no-files-found: error
-
-  publish:
-    needs: [build, notes]
+  generate:
+    needs: generation-ticket
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 240
+    environment:
+      name: steward-release-notes
+      deployment: false
+    outputs:
+      artifactId: ${{ steps.generated.outputs.artifact-id }}
+      complete: ${{ steps.produce.outputs.complete }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.generation-ticket.outputs.artifactId }}
+          merge-multiple: true
+          path: grant
+      - name: 从冻结来源生成正文和独立审阅证据
+        id: produce
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+        run: |
+          mkdir generated
+          node packages/runner/dist/index.js release-produce --ticket grant/generation-ticket.json --runtime-url https://splrad-steward-runtime.alearner-5ef.workers.dev --copilot-loader node_modules/@github/copilot/npm-loader.js --output generated
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: steps.produce.outputs.complete == 'true'
+        id: generated
+        with:
+          name: generated-release-${{ github.run_attempt }}
+          path: generated
+          if-no-files-found: error
+  generated-candidate:
+    needs: generate
+    if: needs.generate.outputs.complete == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     environment:
       name: steward-release
       deployment: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: { ref: "${{ github.sha }}", persist-credentials: false }
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version-file: .node-version, cache: npm }
+        with:
+          node-version-file: .node-version
+          cache: npm
       - run: npm ci --ignore-scripts
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with: { name: "layerscape-release-${{ inputs.targetSha }}", path: release }
+        with:
+          artifact-ids: ${{ needs.generate.outputs.artifactId }}
+          merge-multiple: true
+          path: generated
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with: { name: "layerscape-notes-${{ inputs.targetSha }}", path: release-notes }
-      - name: 发布或继续唯一匹配草稿
+        with:
+          repository: splrad/steward
+          artifact-ids: ${{ inputs.bundleArtifactId }}
+          run-id: ${{ inputs.bundleRunId }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: seed
+      - name: 校验生成结果并创建待人工审阅的候选
+        shell: bash
         env:
           APP_ID: "4243096"
           INSTALLATION_ID: "145952003"
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
-        run: node packages/runner/dist/index.js release-publish --manifest release/release-manifest.json --notes release-notes/release-notes.md --repository splrad/LayerScape
-
-  verify:
-    needs: publish
+          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          TARGET_TAG: ${{ inputs.targetTag }}
+          POLICY_SHA: ${{ github.workflow_sha }}
+        run: |
+          mkdir -p seed/assets
+          node packages/runner/dist/index.js release-candidate --operation prepare --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --bundle generated --assets seed/assets
+  generation-continue:
+    needs: generate
+    if: needs.generate.outputs.complete == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: steward-release
+      deployment: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: 核验剩余预算并调度下一段
+        shell: bash
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          TARGET_TAG: ${{ inputs.targetTag }}
+          POLICY_SHA: ${{ github.workflow_sha }}
+          BUNDLE_ARTIFACT_ID: ${{ inputs.bundleArtifactId }}
+          BUNDLE_RUN_ID: ${{ inputs.bundleRunId }}
+        run: node packages/runner/dist/index.js release-candidate --operation generator-continue --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --artifact-id "$BUNDLE_ARTIFACT_ID" --run-id "$BUNDLE_RUN_ID" --output continuation-cleanup.json
+      - name: 保存已拒绝派发的清理凭据
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: continuation-cleanup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: continuation-cleanup.json
+          if-no-files-found: ignore
+          retention-days: 30
+  revision:
+    if: (inputs.operation == 'revise-rebuild' || inputs.operation == 'recover-candidate' || inputs.operation == 'retry-create' || inputs.operation == 'migrate-policy') && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
@@ -140,15 +340,25 @@ jobs:
       deployment: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: { ref: "${{ github.sha }}", persist-credentials: false }
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version-file: .node-version, cache: npm }
+        with:
+          node-version-file: .node-version
+          cache: npm
       - run: npm ci --ignore-scripts
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with: { name: "layerscape-release-${{ inputs.targetSha }}", path: release }
-      - name: 复核远程不可变发布
+      - name: 恢复持久收据对应的候选或创建意图
+        id: receipt
+        shell: bash
         env:
           APP_ID: "4243096"
           INSTALLATION_ID: "145952003"
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
-        run: node packages/runner/dist/index.js release-verify --manifest release/release-manifest.json --repository splrad/LayerScape
+          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          TARGET_TAG: ${{ inputs.targetTag }}
+          OPERATION: ${{ inputs.operation }}
+          REQUEST_KEY: ${{ inputs.requestKey }}
+          POLICY_SHA: ${{ github.workflow_sha }}
+        run: node packages/runner/dist/index.js release-candidate --operation "$OPERATION" --request-key "$REQUEST_KEY" --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA"

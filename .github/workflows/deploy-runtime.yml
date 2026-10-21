@@ -1,23 +1,20 @@
 name: SPLRAD Steward / Deploy Runtime
-
 on:
   push:
     paths:
-      - ".github/workflows/deploy-runtime.yml"
-      - "scripts/verify-workflows.mjs"
-      - "packages/runtime/**"
-      - "packages/core/**"
-      - "packages/github/**"
-      - "packages/runner/**"
-      - "config/**"
-      - "schema/**"
-      - "package.json"
-      - "package-lock.json"
-  workflow_dispatch:
-
+      - .github/workflows/deploy-runtime.yml
+      - scripts/verify-workflows.mjs
+      - packages/runtime/**
+      - packages/core/**
+      - packages/github/**
+      - packages/runner/**
+      - config/**
+      - schema/**
+      - package.json
+      - package-lock.json
+  workflow_dispatch: null
 permissions:
   contents: read
-
 jobs:
   deploy:
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
@@ -26,13 +23,15 @@ jobs:
     environment:
       name: steward-deployment
       deployment: true
-    env:
-      WORKFLOW_EVALUATOR_SHA: ${{ vars.WORKFLOW_EVALUATOR_SHA }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: { ref: "${{ github.sha }}", persist-credentials: false }
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version-file: .node-version, cache: npm }
+        with:
+          node-version-file: .node-version
+          cache: npm
       - run: npm ci --ignore-scripts
       - run: npm test
       - run: npm run typecheck
@@ -125,15 +124,5 @@ jobs:
           if (!verifiedBody) throw new Error(`健康复核在60秒内未收敛：${lastFailure}`);
           console.log(JSON.stringify({ status: verifiedBody.status, policySha: verifiedBody.policySha, version: verifiedBody.version, organizationId: verifiedBody.organizationId, appId: verifiedBody.appId, secretsReady: verifiedBody.secretsReady }));
           NODE
-      - name: 收敛安装仓库生命周期与议题快照
-        shell: bash
-        env:
-          APP_ID: "4243096"
-          INSTALLATION_ID: "145952003"
-          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
-          RUNTIME_URL: ${{ steps.deploy.outputs.runtime_url }}
-          POLICY_SHA: ${{ github.sha }}
-          DEPLOYMENT_DELIVERY_ID: deploy-${{ github.run_id }}-${{ github.run_attempt }}
-        run: |
-          set -euo pipefail
-          node packages/runner/dist/index.js reconcile-repository-lifecycle --delivery-id "$DEPLOYMENT_DELIVERY_ID" --policy-sha "$POLICY_SHA"
+    env:
+      WORKFLOW_EVALUATOR_SHA: ${{ vars.WORKFLOW_EVALUATOR_SHA }}

@@ -1,4 +1,4 @@
-import { verifyWorkflowPolicy } from "../packages/runner/src/workflow-policy.ts";
+import { verifyWorkflowPolicy } from "../packages/runner/dist/index.js";
 import { createHash } from "node:crypto";
 import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,8 +11,9 @@ function hasExactKeys(value, expectedKeys) {
   return JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...expectedKeys].sort());
 }
 
-const files = (await readdir(".github/workflows")).sort();
-await verifyWorkflowPolicy(process.cwd(), 1296724484, [".github/workflows/pr-validation.yml"]);
+// Ordinary workflows evolve in the same PR; required entrypoints are checked separately.
+const files = (await readdir(".github/workflows")).filter(file => /\.ya?ml$/u.test(file)).sort();
+await verifyWorkflowPolicy(process.cwd(),1296724484,[".github/workflows/pr-validation.yml"],JSON.parse(await readFile(".github/workflow-contract.json","utf8")));
 const workflowDocuments = new Map();
 const allowedActions = new Set([
   "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
@@ -28,35 +29,29 @@ for (const file of files) {
 const validationDocument = workflowDocuments.get("pr-validation.yml");
 if (validationDocument?.concurrency?.group !== "steward-pr-validation-${{ github.repository_id }}-${{ github.event.pull_request.number }}" || validationDocument?.concurrency?.["cancel-in-progress"] !== true) throw new Error("PR验证必须按仓库和PR取消旧运行");
 if (JSON.stringify(validationDocument?.on?.pull_request?.types) !== JSON.stringify(["opened", "synchronize", "reopened", "edited", "labeled", "unlabeled"])) throw new Error("PR验证必须响应编辑和标签变更");
-const validationStep = validationDocument?.jobs?.validate?.steps?.find(step => step?.env?.VALIDATION_BASE_SHA !== undefined && step?.env?.VALIDATION_READ_TOKEN === undefined && typeof step?.run === "string");
+const validationStep = validationDocument?.jobs?.validate?.steps?.find(step => step?.name === 'workflow-contract-policy:${{ steps.policy.outputs.sha }}');
 if (String(validationStep?.env?.VALIDATION_BASE_SHA ?? "").replace(/\s+/gu, "") !== "${{github.event.pull_request.base.sha}}") throw new Error("中央验证没有通过环境变量接收基础分支提交");
 if (String(validationStep?.env?.VALIDATION_BASE_REF ?? "").replace(/\s+/gu, "") !== "${{github.event.pull_request.base.ref}}") throw new Error("中央验证没有通过环境变量接收基础分支引用");
-const fragmentsJob = validationDocument?.jobs?.fragments;
-const fragmentsStep = fragmentsJob?.steps?.find(step => typeof step?.run === "string" && step.run.endsWith("--fragments-only true"));
-if (fragmentsJob?.if !== "github.event.pull_request.base.ref == github.event.repository.default_branch") throw new Error("片段验证必须与中央分类的默认分支范围一致");
-if (fragmentsJob?.needs !== "validate" || JSON.stringify(fragmentsJob?.permissions) !== JSON.stringify({ contents: "read", "pull-requests": "read", checks: "read" })) throw new Error("片段验证必须在独立只读作业中执行");
-const fragmentCheckout = fragmentsJob.steps.filter(step => String(step.uses ?? "").startsWith("actions/checkout@"));
-if (fragmentCheckout.length !== 1 || fragmentCheckout[0].with?.repository !== "splrad/steward" || fragmentCheckout[0].with?.ref !== "${{ needs.validate.outputs.policy }}" || fragmentCheckout[0].with?.["persist-credentials"] !== false) throw new Error("片段验证只能检出固定中央策略");
-if (fragmentsJob.steps.filter(step => step.run).length !== 1 || fragmentsStep?.run !== 'node packages/runner/dist/index.js validate --workspace . --repository-id "${{ github.repository_id }}" --profile "${{ needs.validate.outputs.profile }}" --fragments-only true') throw new Error("片段验证作业执行入口不正确");
-for (const [key, expression] of Object.entries({ VALIDATION_BASE_SHA: "${{ github.event.pull_request.base.sha }}", VALIDATION_HEAD_SHA: "${{ github.event.pull_request.head.sha }}", VALIDATION_PR_NUMBER: "${{ github.event.pull_request.number }}", VALIDATION_POLICY_SHA: "${{ needs.validate.outputs.policy }}", VALIDATION_READ_TOKEN: "${{ github.token }}" })) {
-  if (fragmentsStep?.env?.[key] !== expression) throw new Error(`片段验证缺少绑定：${key}`);
-}
-if (Object.hasOwn(validationStep.env, "VALIDATION_READ_TOKEN")) throw new Error("产品验证不得接收片段读取令牌");
+if (validationDocument?.jobs?.fragments) throw new Error("退役片段作业不得恢复");
 const expectedJobEnvironments = new Map([
   ["deploy-runtime.yml:deploy", { name: "steward-deployment", deployment: true }],
-  ["issue-sync.yml:synchronize", { name: "steward-automation", deployment: false }],
-  ["pr-automation.yml:observe", { name: "steward-automation", deployment: false }],
+  ["native-review.yml:observe", { name: "steward-automation", deployment: false }],
   ["onboard-repository.yml:onboard", { name: "steward-automation", deployment: false }],
-  ["pr-automation.yml:reconcile", { name: "steward-automation", deployment: false }],
-  ["pr-automation.yml:request", { name: "steward-automation", deployment: false }],
+  ["native-review.yml:request", { name: "steward-automation", deployment: false }],
   ["pr-classification.yml:classify", { name: "steward-automation", deployment: false }],
-  ["pr-issue-link.yml:resolve", { name: "steward-automation", deployment: false }],
-  ["pr-issue-link.yml:analyze", { name: "steward-automation", deployment: false }],
-  ["pr-issue-link.yml:acknowledge", { name: "steward-automation", deployment: false }],
-  ["release.yml:preflight", { name: "steward-release", deployment: false }],
-  ["release.yml:notes", { name: "steward-release", deployment: false }],
+  ["release.yml:revision", { name: "steward-release", deployment: false }],
+  ["release.yml:prepare", { name: "steward-release", deployment: false }],
+  ["release.yml:inspect", { name: "steward-release", deployment: false }],
   ["release.yml:publish", { name: "steward-release", deployment: false }],
-  ["release.yml:verify", { name: "steward-release", deployment: false }],
+  ["release.yml:generation-ticket", { name: "steward-release", deployment: false }],
+  ["release.yml:generate", { name: "steward-release-notes", deployment: false }],
+  ["release.yml:generated-candidate", { name: "steward-release", deployment: false }],
+  ["release.yml:generation-continue", { name: "steward-release", deployment: false }],
+  ["product-build.yml:plan", { name: "steward-release", deployment: false }],
+  ["release-build.yml:plan", { name: "steward-release", deployment: false }],
+  ["release-build-complete.yml:reject", { name: "steward-release", deployment: false }],
+  ["release-build-complete.yml:resolve", { name: "steward-release", deployment: false }],
+  ["release-build-complete.yml:accept", { name: "steward-release", deployment: false }],
   ["sync-review-instructions.yml:synchronize", { name: "steward-automation", deployment: false }],
   ["sync-review-instructions.yml:resolve", { name: "steward-automation", deployment: false }],
   ["sync-managed-labels.yml:synchronize", { name: "steward-automation", deployment: false }],
@@ -73,14 +68,14 @@ for (const [file, document] of workflowDocuments) {
   }
 }
 if (expectedJobEnvironments.size > 0) throw new Error(`缺少固定环境作业: ${[...expectedJobEnvironments.keys()].join(", ")}`);
-const reviewDocument = workflowDocuments.get("pr-automation.yml");
+const reviewDocument = workflowDocuments.get("native-review.yml");
 const reviewJob = reviewDocument?.jobs?.request;
 const reviewSteps = reviewJob?.steps;
 const reviewStep = reviewSteps?.[4];
-if (!hasExactKeys(reviewDocument?.on, ["workflow_dispatch"]) || !hasExactKeys(reviewDocument?.on?.workflow_dispatch?.inputs, ["deliveryId", "repositoryId", "sourceRef", "eventAfterSha", "sourceActorId", "sourceActorLogin", "policySha", "pullRequestNumber", "observeOnly"])) throw new Error("审查请求触发和输入范围无效");
+if (!hasExactKeys(reviewDocument?.on, ["workflow_dispatch"]) || !hasExactKeys(reviewDocument?.on?.workflow_dispatch?.inputs, ["deliveryId", "repositoryId", "eventAfterSha", "policySha", "pullRequestNumber", "observeOnly"])) throw new Error("审查请求触发和输入范围无效");
 for (const [name, value] of Object.entries(reviewDocument.on.workflow_dispatch.inputs)) if (value.required !== (!["pullRequestNumber", "observeOnly"].includes(name)) || value.type !== (name === "observeOnly" ? "boolean" : "string") || (name === "observeOnly" && value.default !== false)) throw new Error("审查请求输入合同无效");
 if (!hasExactKeys(reviewDocument.permissions, ["contents"]) || reviewDocument.permissions.contents !== "read" || reviewJob?.permissions !== undefined || reviewDocument.env !== undefined || reviewJob?.env !== undefined) throw new Error("审查请求工作流权限或环境范围无效");
-if (!hasExactKeys(reviewDocument.jobs, ["reconcile", "request", "observe"]) || reviewDocument.jobs.reconcile.if !== "inputs.pullRequestNumber == '' && inputs.observeOnly != true" || reviewJob?.if !== "inputs.observeOnly != true && inputs.pullRequestNumber != '' && github.actor_id == '301115370' && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)") throw new Error("审查请求缺少可信工作流身份校验");
+if (!hasExactKeys(reviewDocument.jobs, ["request", "observe"]) || reviewJob?.if !== "inputs.observeOnly != true && inputs.pullRequestNumber != '' && github.actor_id == '301115370' && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)") throw new Error("审查请求缺少可信工作流身份校验");
 if (reviewJob["runs-on"] !== "ubuntu-latest" || reviewJob["timeout-minutes"] !== 5 || reviewSteps?.length !== 5) throw new Error("审查请求运行范围无效");
 if (reviewSteps[0]?.uses !== "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" || reviewSteps[0]?.with?.ref !== "${{ github.workflow_sha }}" || reviewSteps[0]?.with?.["persist-credentials"] !== false) throw new Error("审查请求没有检出可信中央提交");
 if (reviewSteps[1]?.uses !== "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020" || reviewSteps[1]?.with?.["node-version-file"] !== ".node-version" || reviewSteps[2]?.run !== "npm ci --ignore-scripts") throw new Error("审查请求准备步骤无效");
@@ -105,68 +100,7 @@ const expectedReviewCommand = `review_arguments=(
 node packages/runner/dist/index.js request-copilot-review "\${review_arguments[@]}"
 `;
 if (reviewStep.run !== expectedReviewCommand) throw new Error("审查请求没有使用固定参数数组");
-if (reviewDocument.concurrency?.group !== "steward-pr-body-${{ inputs.repositoryId }}" || reviewDocument.concurrency?.["cancel-in-progress"] !== false || reviewDocument.concurrency?.queue !== "max") throw new Error("审查请求没有沿用仓库并发锁和等待队列");
-const prAutomation = await readFile(".github/workflows/pr-automation.yml", "utf8");
-const prAutomationDocument = workflowDocuments.get("pr-automation.yml");
-const prAutomationPermissions = prAutomationDocument?.permissions ?? {};
-if (typeof prAutomationPermissions !== "object" || prAutomationPermissions === null || Array.isArray(prAutomationPermissions) || Object.keys(prAutomationPermissions).length !== 1 || prAutomationPermissions.contents !== "read") throw new Error("拉取请求自动化工作流权限必须只有contents: read");
-const copilotStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "使用Copilot润色");
-if (copilotStep?.env?.COPILOT_GITHUB_TOKEN?.replace(/\s+/gu, "") !== "${{secrets.COPILOT_CLI_TOKEN}}") throw new Error("Copilot CLI没有使用个人Copilot专用环境密钥");
-if (copilotStep?.id !== "copilot" || copilotStep?.["continue-on-error"] !== true) throw new Error("Copilot CLI步骤没有保留可读取的失败结果");
-if (Object.hasOwn(copilotStep?.env ?? {}, "GITHUB_TOKEN") || /copilot-requests/iu.test(prAutomation)) throw new Error("Copilot CLI仍引用组织内置令牌路径");
-const copilotCommand = String(copilotStep?.run ?? "");
-const expectedCopilotCommand = 'npx --no-install copilot --available-tools= --no-auto-update --output-format json --stream off --no-color --no-custom-instructions --disable-builtin-mcps --no-ask-user < "$PR_COPILOT_PROMPT_PATH" > "${{ runner.temp }}/copilot-output.jsonl"';
-if (copilotCommand !== expectedCopilotCommand) throw new Error("Copilot CLI没有使用固定JSONL输出合同");
-if (/(?:^|\s)--allow-tool(?:=|\s|$)/u.test(copilotCommand)) throw new Error("Copilot正文生成不得启用工具");
-const prepareStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "生成Copilot输入");
-const repairPlanStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "判断Copilot输出是否需要修复");
-const reconcileStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "收敛拉取请求");
-const prAutomationInputEnvironment = new Map([
-  ["DELIVERY_ID", "${{inputs.deliveryId}}"],
-  ["REPOSITORY_ID", "${{inputs.repositoryId}}"],
-  ["SOURCE_REF", "${{inputs.sourceRef}}"],
-  ["EVENT_AFTER_SHA", "${{inputs.eventAfterSha}}"],
-  ["SOURCE_ACTOR_ID", "${{inputs.sourceActorId}}"],
-  ["SOURCE_ACTOR_LOGIN", "${{inputs.sourceActorLogin}}"],
-  ["POLICY_SHA", "${{inputs.policySha}}"],
-]);
-const expectedPrAutomationCommand = `pr_automation_arguments=(
-  --delivery-id "$DELIVERY_ID"
-  --repository-id "$REPOSITORY_ID"
-  --source-ref "$SOURCE_REF"
-  --event-after-sha "$EVENT_AFTER_SHA"
-  --source-actor-id "$SOURCE_ACTOR_ID"
-  --source-actor-login "$SOURCE_ACTOR_LOGIN"
-  --policy-sha "$POLICY_SHA"
-)
-node packages/runner/dist/index.js pr-automation "\${pr_automation_arguments[@]}"
-`;
-for (const step of [prepareStep, repairPlanStep, reconcileStep]) {
-  for (const [name, expectedValue] of prAutomationInputEnvironment) {
-    if (String(step?.env?.[name] ?? "").replace(/\s+/gu, "") !== expectedValue) throw new Error(`拉取请求自动化输入没有通过环境变量安全传递: ${name}`);
-  }
-  if (step?.run !== expectedPrAutomationCommand) throw new Error("拉取请求自动化命令没有使用固定参数数组");
-  if (/\$\{\{\s*inputs\./u.test(step?.run ?? "")) throw new Error("拉取请求自动化输入不得直接拼接进shell命令");
-}
-if (prepareStep?.id !== "prepare" || String(prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.id === "copilot")?.if ?? "").replace(/\s+/gu, "") !== "steps.prepare.outputs.copilot-required=='true'") throw new Error("Copilot润色没有绑定准备阶段的执行信号");
-if (repairPlanStep?.id !== "repair_plan" || repairPlanStep?.["continue-on-error"] !== true || String(repairPlanStep?.if ?? "").replace(/\s+/gu, "") !== "steps.prepare.outputs.copilot-required=='true'&&steps.copilot.outcome=='success'") throw new Error("Copilot修复判断没有绑定准备阶段及首次调用成功结果");
-if (repairPlanStep?.env?.PREPARE_REPAIR_ONLY !== "true" || repairPlanStep?.env?.STEWARD_APP_PRIVATE_KEY?.replace(/\s+/gu, "") !== "${{secrets.STEWARD_APP_PRIVATE_KEY}}" || repairPlanStep?.run !== prepareStep?.run) throw new Error("Copilot修复判断没有重新读取并核对当前分支事实");
-const copilotRepairStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "修复Copilot业务JSON");
-if (copilotRepairStep?.id !== "copilot_repair" || copilotRepairStep?.["continue-on-error"] !== true || String(copilotRepairStep?.if ?? "").replace(/\s+/gu, "") !== "steps.prepare.outputs.copilot-required=='true'&&steps.repair_plan.outputs.repair-required=='true'") throw new Error("Copilot修复步骤没有限制为准备阶段允许的一次条件调用");
-if (copilotRepairStep?.env?.COPILOT_GITHUB_TOKEN?.replace(/\s+/gu, "") !== "${{secrets.COPILOT_CLI_TOKEN}}" || Object.hasOwn(copilotRepairStep?.env ?? {}, "GITHUB_TOKEN")) throw new Error("Copilot修复步骤没有使用隔离的个人令牌");
-const expectedCopilotRepairCommand = 'npx --no-install copilot --available-tools= --no-auto-update --output-format json --stream off --no-color --no-custom-instructions --disable-builtin-mcps --no-ask-user < "$PR_COPILOT_REPAIR_PROMPT_PATH" > "${{ runner.temp }}/copilot-repair-output.jsonl"';
-if (copilotRepairStep?.run !== expectedCopilotRepairCommand) throw new Error("Copilot修复步骤没有使用固定的无工具JSONL合同");
-if (reconcileStep?.env?.COPILOT_STEP_OUTCOME?.replace(/\s+/gu, "") !== "${{steps.copilot.outcome}}") throw new Error("收敛步骤没有接收Copilot CLI结果");
-if (reconcileStep?.env?.COPILOT_REPAIR_STEP_OUTCOME?.replace(/\s+/gu, "") !== "${{steps.copilot_repair.outcome}}") throw new Error("收敛步骤没有接收Copilot修复结果");
-const expectedCopilotOutputPath = "${{runner.temp}}/copilot-output.jsonl";
-if (String(prepareStep?.env?.COPILOT_OUTPUT_PATH ?? "").replace(/\s+/gu, "") !== expectedCopilotOutputPath || String(reconcileStep?.env?.COPILOT_OUTPUT_PATH ?? "").replace(/\s+/gu, "") !== expectedCopilotOutputPath) throw new Error("Copilot JSONL输出路径没有贯穿准备与收敛步骤");
-const expectedCopilotRepairPromptPath = "${{runner.temp}}/copilot-repair-prompt.txt";
-if (String(repairPlanStep?.env?.COPILOT_OUTPUT_PATH ?? "").replace(/\s+/gu, "") !== expectedCopilotOutputPath || String(repairPlanStep?.env?.PR_PREPARED_FACTS_PATH ?? "").replace(/\s+/gu, "") !== "${{runner.temp}}/pr-prepared-facts.json" || String(repairPlanStep?.env?.PR_COPILOT_REPAIR_PROMPT_PATH ?? "").replace(/\s+/gu, "") !== expectedCopilotRepairPromptPath || String(copilotRepairStep?.env?.PR_COPILOT_REPAIR_PROMPT_PATH ?? "").replace(/\s+/gu, "") !== expectedCopilotRepairPromptPath || String(reconcileStep?.env?.COPILOT_REPAIR_OUTPUT_PATH ?? "").replace(/\s+/gu, "") !== "${{runner.temp}}/copilot-repair-output.jsonl") throw new Error("Copilot修复路径没有贯穿事实复核、提示生成、修复调用与收敛步骤");
-const cleanupStep = prAutomationDocument?.jobs?.reconcile?.steps?.find(step => step?.name === "删除临时人工智能输入");
-const expectedCleanupCommand = 'rm -f "${{ runner.temp }}/copilot-prompt.txt" "${{ runner.temp }}/copilot-output.jsonl" "${{ runner.temp }}/copilot-repair-prompt.txt" "${{ runner.temp }}/copilot-repair-output.jsonl" "${{ runner.temp }}/pr-prepared-facts.json"';
-if (String(cleanupStep?.if ?? "").replace(/\s+/gu, "") !== "always()" || cleanupStep?.run !== expectedCleanupCommand) throw new Error("Copilot临时输入输出没有固定为始终清理");
-if (!prAutomation.includes("- name: 使用Copilot润色") || !prAutomation.includes('npx --no-install copilot --available-tools=')) throw new Error("拉取请求工作流缺少Copilot正文生成步骤");
-if (/hashFiles\([^\n]*runner\.temp/iu.test(prAutomation)) throw new Error("Copilot正文生成仍使用无法读取runner.temp的hashFiles条件");
+if (reviewDocument.concurrency?.group !== "workflow-resource:1296724484:pr-body" || reviewDocument.concurrency?.["cancel-in-progress"] !== false || reviewDocument.concurrency?.queue !== "max") throw new Error("审查请求没有沿用仓库并发锁和等待队列");
 const prClassificationDocument = workflowDocuments.get("pr-classification.yml");
 const aiClassificationInput = prClassificationDocument?.on?.workflow_dispatch?.inputs?.aiClassification;
 if (aiClassificationInput?.required !== false || aiClassificationInput?.type !== "string") throw new Error("分类工作流缺少可选AI影子分类输入");
@@ -176,80 +110,6 @@ for (const [name, expectedValue] of [["TRIGGER_ACTOR_ID", "${{github.actor_id}}"
   if (String(classificationStep?.env?.[name] ?? "").replace(/\s+/gu, "") !== expectedValue) throw new Error(`AI分类工作流没有绑定可信上下文: ${name}`);
 }
 if (/--ai-classification/iu.test(classificationStep?.run ?? "")) throw new Error("AI影子分类输入不得拼接进shell命令");
-const issueSyncDocument = workflowDocuments.get("issue-sync.yml");
-const issueSyncInputs = issueSyncDocument?.on?.workflow_dispatch?.inputs ?? {};
-if (!hasExactKeys(issueSyncInputs, ["deliveryId", "repositoryId", "issueNumber", "scanAll", "policySha"])) throw new Error("议题同步工作流输入集合不正确");
-if (issueSyncDocument?.permissions && Object.keys(issueSyncDocument.permissions).length !== 0) throw new Error("议题同步工作流不应使用GITHUB_TOKEN权限");
-const issueSyncConcurrency = String(issueSyncDocument?.concurrency?.group ?? "").replace(/\s+/gu, "");
-if (issueSyncConcurrency !== "steward-pr-body-${{inputs.repositoryId}}") throw new Error("议题同步必须与议题失效及正文写入共用仓库级并发锁");
-if (issueSyncDocument?.concurrency?.["cancel-in-progress"] !== false || issueSyncDocument?.concurrency?.queue !== "max") throw new Error("议题同步必须保留全部等待运行");
-const issueSyncStep = issueSyncDocument?.jobs?.synchronize?.steps?.find(step => step?.name === "同步议题快照");
-const issueSyncCommand = String(issueSyncStep?.run ?? "");
-for (const required of ['issue_arguments=()', 'issue_arguments+=(--issue-number "$ISSUE_NUMBER")', '"${issue_arguments[@]}"', '--scan-all "$SCAN_ALL"', '--policy-sha "$POLICY_SHA"']) if (!issueSyncCommand.includes(required)) throw new Error(`议题同步命令没有安全传递固定输入: ${required}`);
-for (const name of ["DELIVERY_ID", "REPOSITORY_ID", "ISSUE_NUMBER", "SCAN_ALL", "POLICY_SHA", "RUNTIME_URL"]) if (!Object.hasOwn(issueSyncStep?.env ?? {}, name)) throw new Error(`议题同步环境缺少${name}`);
-if (Object.hasOwn(issueSyncStep?.env ?? {}, "COPILOT_GITHUB_TOKEN") || Object.hasOwn(issueSyncStep?.env ?? {}, "COPILOT_CLI_TOKEN") || /\bcopilot\b/iu.test(issueSyncCommand)) throw new Error("议题同步路径不得调用Copilot");
-const issueLinkDocument = workflowDocuments.get("pr-issue-link.yml");
-if (String(issueLinkDocument?.["run-name"] ?? "").replace(/\s+/gu, " ") !== "PR Issue Link / repository=${{ inputs.repositoryId }} / generation=${{ inputs.reconciliationGeneration || 'none' }}") throw new Error("议题关联工作流没有暴露精确重算运行身份");
-const issueLinkInputs = issueLinkDocument?.on?.workflow_dispatch?.inputs ?? {};
-if (!hasExactKeys(issueLinkInputs, ["deliveryId", "repositoryId", "pullRequestNumber", "scanAll", "invalidateOnly", "cleanupUnmanaged", "reconciliationGeneration", "policySha"])) throw new Error("议题关联工作流输入集合不正确");
-if (issueLinkInputs.pullRequestNumber?.required !== false || issueLinkInputs.reconciliationGeneration?.required !== false || issueLinkInputs.scanAll?.type !== "boolean" || issueLinkInputs.invalidateOnly?.type !== "boolean" || issueLinkInputs.cleanupUnmanaged?.type !== "boolean") throw new Error("议题关联工作流可选编号或布尔输入契约不正确");
-const issueLinkPermissions = issueLinkDocument?.permissions ?? {};
-if (!hasExactKeys(issueLinkPermissions, ["contents"]) || issueLinkPermissions.contents !== "read") throw new Error("议题关联工作流权限必须只有contents: read");
-const issueLinkConcurrency = String(issueLinkDocument?.concurrency?.group ?? "").replace(/\s+/gu, "");
-if (issueLinkConcurrency !== "steward-pr-body-${{inputs.repositoryId}}") throw new Error("议题关联必须与正文自动化共用仓库级并发锁");
-if (issueSyncConcurrency !== issueLinkConcurrency) throw new Error("议题同步没有与失效及正式重算共用并发锁");
-if (issueLinkDocument?.concurrency?.["cancel-in-progress"] !== false) throw new Error("议题关联工作流不得取消在途运行");
-if (issueLinkDocument?.concurrency?.queue !== "max") throw new Error("议题关联必须保留全部等待运行");
-const issueLinkCleanupMatrixStep = issueLinkDocument?.jobs?.resolve?.steps?.find(step => step?.name === "解析开放拉取请求");
-const issueLinkCleanupPrepareStep = issueLinkDocument?.jobs?.analyze?.steps?.find(step => step?.name === "准备议题与差异证据");
-if (issueLinkCleanupMatrixStep?.env?.CLEANUP_UNMANAGED !== "${{ inputs.cleanupUnmanaged }}" || issueLinkCleanupPrepareStep?.run?.includes('--cleanup-unmanaged "$CLEANUP_UNMANAGED"') !== true) throw new Error("未纳管仓库清理输入没有贯穿全仓扫描与单PR清理");
-const prAutomationConcurrency = String(workflowDocuments.get("pr-automation.yml")?.concurrency?.group ?? "").replace(/\s+/gu, "");
-if (prAutomationConcurrency !== issueLinkConcurrency) throw new Error("拉取请求自动化没有与议题关联共用正文并发锁");
-if (workflowDocuments.get("pr-automation.yml")?.concurrency?.queue !== "max") throw new Error("拉取请求自动化必须保留全部等待运行");
-const onboardConcurrency = String(workflowDocuments.get("onboard-repository.yml")?.concurrency?.group ?? "").replace(/\s+/gu, "");
-if (onboardConcurrency !== "steward-pr-body-${{inputs.repositoryId}}") throw new Error("接入工作流没有使用数值仓库编号正文并发锁");
-if (workflowDocuments.get("onboard-repository.yml")?.on?.workflow_dispatch?.inputs?.repositoryId?.required !== true
-  || workflowDocuments.get("onboard-repository.yml")?.concurrency?.queue !== "max") throw new Error("接入工作流必须要求仓库编号并保留全部等待运行");
-const queuedWorkflows = [...workflowDocuments.entries()].filter(([, document]) => Object.hasOwn(document?.concurrency ?? {}, "queue")).map(([name]) => name).sort();
-if (JSON.stringify(queuedWorkflows) !== JSON.stringify(["issue-sync.yml", "onboard-repository.yml", "pr-automation.yml", "pr-issue-link.yml"])) throw new Error("工作流等待队列范围不正确");
-const issueLinkResolve = issueLinkDocument?.jobs?.resolve;
-const issueLinkMatrixStep = issueLinkResolve?.steps?.find(step => step?.name === "解析开放拉取请求");
-const issueLinkMatrixCommand = String(issueLinkMatrixStep?.run ?? "");
-for (const required of ['ISSUE_LINK_LIST_ONLY', 'pull_arguments=()', 'pull_arguments+=(--pull-request-number "$PULL_REQUEST_NUMBER")', '"${pull_arguments[@]}"', '--scan-all "$SCAN_ALL"', '--invalidate-only "$INVALIDATE_ONLY"', '--cleanup-unmanaged "$CLEANUP_UNMANAGED"']) {
-  if (!(Object.hasOwn(issueLinkMatrixStep?.env ?? {}, required) || issueLinkMatrixCommand.includes(required))) throw new Error(`议题关联矩阵解析缺少固定约束: ${required}`);
-}
-if (issueLinkDocument?.jobs?.analyze?.strategy?.["max-parallel"] !== 4 || issueLinkDocument?.jobs?.analyze?.strategy?.["fail-fast"] !== false) throw new Error("议题关联矩阵并发策略不正确");
-const issueLinkAnalyze = issueLinkDocument?.jobs?.analyze;
-for (const name of ["DELIVERY_ID", "REPOSITORY_ID", "PULL_REQUEST_NUMBER", "INVALIDATE_ONLY", "CLEANUP_UNMANAGED", "POLICY_SHA", "SNAPSHOT_VALIDATED_GENERATION", "SNAPSHOT_REVALIDATION_BUDGET"]) if (!Object.hasOwn(issueLinkAnalyze?.env ?? {}, name)) throw new Error(`议题关联分析环境缺少${name}`);
-if (String(issueLinkResolve?.outputs?.["snapshot-generation"] ?? "").replace(/\s+/gu, "") !== "${{steps.matrix.outputs['snapshot-generation']}}"
-  || String(issueLinkResolve?.outputs?.["revalidation-budget"] ?? "").replace(/\s+/gu, "") !== "${{steps.matrix.outputs['revalidation-budget']}}"
-  || String(issueLinkAnalyze?.env?.SNAPSHOT_VALIDATED_GENERATION ?? "").replace(/\s+/gu, "") !== "${{needs.resolve.outputs['snapshot-generation']}}"
-  || String(issueLinkAnalyze?.env?.SNAPSHOT_REVALIDATION_BUDGET ?? "").replace(/\s+/gu, "") !== "${{needs.resolve.outputs['revalidation-budget']}}") throw new Error("议题关联连字符输出没有使用安全属性访问");
-const issuePrepareStep = issueLinkAnalyze?.steps?.find(step => step?.name === "准备议题与差异证据");
-const issueReconcileStep = issueLinkAnalyze?.steps?.find(step => step?.name === "收敛议题关联");
-for (const step of [issuePrepareStep, issueReconcileStep]) {
-  const command = String(step?.run ?? "");
-  if (/\$\{\{/u.test(command) || !command.includes('--delivery-id "$DELIVERY_ID"') || !command.includes('--repository-id "$REPOSITORY_ID"') || !command.includes('--pull-request-number "$PULL_REQUEST_NUMBER"') || !command.includes('--policy-sha "$POLICY_SHA"')) throw new Error("议题关联运行器输入没有通过环境变量安全传递");
-}
-const issueCopilotStep = issueLinkAnalyze?.steps?.find(step => step?.name === "使用Copilot判断议题");
-const expectedIssueCopilotCommand = 'npx --no-install copilot --available-tools= --no-auto-update --output-format json --stream off --no-color --no-custom-instructions --disable-builtin-mcps --no-ask-user < "$ISSUE_COPILOT_PROMPT_PATH" > "$ISSUE_COPILOT_OUTPUT_PATH"';
-if (issueCopilotStep?.id !== "copilot" || issueCopilotStep?.["continue-on-error"] !== true || issueCopilotStep?.run !== expectedIssueCopilotCommand || issueCopilotStep?.env?.COPILOT_GITHUB_TOKEN?.replace(/\s+/gu, "") !== "${{secrets.COPILOT_CLI_TOKEN}}" || Object.hasOwn(issueCopilotStep?.env ?? {}, "GITHUB_TOKEN")) throw new Error("议题关联Copilot没有使用个人Copilot专用环境密钥");
-if (/(?:^|\s)(?:-p|--prompt|--allow-tool)(?:=|\s|$)/u.test(String(issueCopilotStep?.run ?? ""))) throw new Error("议题关联Copilot不得使用参数提示或启用工具");
-if (String(issueReconcileStep?.env?.COPILOT_STEP_OUTCOME ?? "").replace(/\s+/gu, "") !== "${{steps.copilot.outcome}}") throw new Error("议题关联收敛没有接收Copilot结果");
-if (String(issueReconcileStep?.if ?? "").replace(/\s+/gu, "") !== "steps.prepare.outputs.completed=='false'") throw new Error("议题关联收敛没有覆盖无需Copilot的候选复核");
-const issueCleanupStep = issueLinkAnalyze?.steps?.find(step => step?.name === "删除临时议题输入输出");
-if (String(issueCleanupStep?.if ?? "").replace(/\s+/gu, "") !== "always()" || issueCleanupStep?.run !== 'rm -f "$ISSUE_PREPARED_FACTS_PATH" "$ISSUE_COPILOT_PROMPT_PATH" "$ISSUE_COPILOT_OUTPUT_PATH"') throw new Error("议题关联临时输入输出没有始终清理");
-for (const [step, names] of [[issuePrepareStep, ["ISSUE_PREPARED_FACTS_PATH", "ISSUE_COPILOT_PROMPT_PATH"]], [issueCopilotStep, ["ISSUE_COPILOT_PROMPT_PATH", "ISSUE_COPILOT_OUTPUT_PATH"]], [issueReconcileStep, ["ISSUE_PREPARED_FACTS_PATH", "ISSUE_COPILOT_OUTPUT_PATH"]], [issueCleanupStep, ["ISSUE_PREPARED_FACTS_PATH", "ISSUE_COPILOT_PROMPT_PATH", "ISSUE_COPILOT_OUTPUT_PATH"]]]) {
-  for (const name of names) if (!String(step?.env?.[name] ?? "").includes("${{ runner.temp }}")) throw new Error(`议题关联临时路径缺少${name}`);
-}
-const issueLinkAcknowledge = issueLinkDocument?.jobs?.acknowledge;
-const acknowledgeCondition = String(issueLinkAcknowledge?.if ?? "").replace(/\s+/gu, "");
-for (const required of ["always()", "inputs.invalidateOnly==false", "inputs.reconciliationGeneration!=''", "needs.resolve.result=='success'", "needs.analyze.result=='success'", "needs.analyze.result=='skipped'"]) if (!acknowledgeCondition.includes(required)) throw new Error(`议题收敛确认缺少成功边界: ${required}`);
-const acknowledgementStep = issueLinkAcknowledge?.steps?.find(step => step?.name === "确认成功收敛代次");
-for (const name of ["ISSUE_LINK_ACK_ONLY", "REPOSITORY_ID", "RECONCILIATION_GENERATION", "POLICY_SHA", "RUNTIME_URL"]) if (!Object.hasOwn(acknowledgementStep?.env ?? {}, name)) throw new Error(`议题收敛确认环境缺少${name}`);
-const acknowledgementCommand = String(acknowledgementStep?.run ?? "");
-for (const required of ['--repository-id "$REPOSITORY_ID"', '--reconciliation-generation "$RECONCILIATION_GENERATION"', '--policy-sha "$POLICY_SHA"']) if (!acknowledgementCommand.includes(required)) throw new Error(`议题收敛确认命令没有安全传递固定输入: ${required}`);
-if ((await readFile(".github/workflows/pr-issue-link.yml", "utf8")).includes("actions/upload-artifact")) throw new Error("议题关联不得上传模型输入输出制品");
 const syncInstructionsDocument = workflowDocuments.get("sync-review-instructions.yml");
 const syncWorkflowRun = syncInstructionsDocument?.on?.workflow_run;
 if (JSON.stringify(syncWorkflowRun?.workflows) !== JSON.stringify(["SPLRAD Steward / Deploy Runtime"]) || JSON.stringify(syncWorkflowRun?.types) !== JSON.stringify(["completed"])) throw new Error("审查说明同步没有只绑定中央部署完成事件");
@@ -264,14 +124,14 @@ for (const required of [
   "github.event.workflow_run.head_repository.full_name==github.repository",
 ]) if (!syncCondition.includes(required)) throw new Error(`审查说明自动同步缺少可信触发条件: ${required}`);
 const syncPolicyStep = syncResolveJob?.steps?.find(step => step?.name === "解析已部署规则提交");
-if (String(syncPolicyStep?.env?.EVENT_NAME ?? "").replace(/\s+/gu, "") !== "${{github.event_name}}" || String(syncPolicyStep?.env?.DEPLOYED_HEAD_SHA ?? "").replace(/\s+/gu, "") !== "${{github.event.workflow_run.head_sha}}" || !String(syncPolicyStep?.run ?? "").includes('process.env.RUNTIME_URL+"/health"')) throw new Error("审查说明同步没有从部署事件或线上健康接口解析策略提交");
-const syncCheckout = syncJob?.steps?.find(step => step?.uses?.startsWith("actions/checkout@"));
-if (String(syncCheckout?.with?.ref ?? "").replace(/\s+/gu, "") !== "${{needs.resolve.outputs.policy_sha}}" || syncCheckout?.with?.["persist-credentials"] !== false) throw new Error("审查说明同步没有检出精确中央提交或仍保留检出凭据");
+if (syncPolicyStep?.run !== "node policy-bootstrap/packages/runner/dist/index.js trusted-policy-source") throw new Error("审查说明必须使用可信策略解析入口");
+const syncCheckout = syncJob?.steps?.find(step => step?.with?.path === "policy-live");
+if (String(syncCheckout?.with?.ref ?? "").replace(/\s+/gu, "") !== "${{steps.policy.outputs.policy_sha}}" || syncCheckout?.with?.["persist-credentials"] !== false) throw new Error("审查说明同步没有检出精确中央提交或仍保留检出凭据");
 const syncStep = syncJob?.steps?.find(step => step?.name === "同步代码审查说明");
 const syncCommand = String(syncStep?.run ?? "");
 if (!syncCommand.includes('sync-review-instructions "${repository_arguments[@]}" --policy-sha "$POLICY_SHA"') || /--(?:source|target|path|content)(?:\s|=)/iu.test(syncCommand)) throw new Error("审查说明同步命令或输入合同无效");
 if (String(syncStep?.env?.REPOSITORY_ID ?? "").replace(/\s+/gu, "") !== "${{matrix.repositoryId}}" || /\$\{\{[^}]*inputs\.repositoryId/iu.test(syncCommand)) throw new Error("审查说明同步把仓库编号直接拼接进shell命令");
-if (String(syncStep?.env?.POLICY_SHA ?? "").replace(/\s+/gu, "") !== "${{needs.resolve.outputs.policy_sha}}" || String(syncStep?.env?.SYNC_TRIGGER ?? "").replace(/\s+/gu, "") !== "${{github.actor_id=='301115370'&&'app-redrive'||github.event_name}}" || String(syncStep?.env?.TRIGGER_ACTOR_ID ?? "").replace(/\s+/gu, "") !== "${{github.actor_id}}" || String(syncStep?.env?.TRIGGER_ACTOR_LOGIN ?? "").replace(/\s+/gu, "") !== "${{github.actor}}") throw new Error("审查说明同步没有绑定线上策略、可信App恢复或手工触发者身份");
+if (String(syncStep?.env?.POLICY_SHA ?? "").replace(/\s+/gu, "") !== "${{steps.policy.outputs.policy_sha}}" || String(syncStep?.env?.SYNC_TRIGGER ?? "").replace(/\s+/gu, "") !== "${{github.actor_id=='301115370'&&'app-redrive'||github.event_name}}" || String(syncStep?.env?.TRIGGER_ACTOR_ID ?? "").replace(/\s+/gu, "") !== "${{github.actor_id}}" || String(syncStep?.env?.TRIGGER_ACTOR_LOGIN ?? "").replace(/\s+/gu, "") !== "${{github.actor}}") throw new Error("审查说明同步没有绑定线上策略、可信App恢复或手工触发者身份");
 for (const required of ['repository_arguments=()', 'repository_arguments+=(--repository-id "$REPOSITORY_ID")', '"${repository_arguments[@]}"']) {
   if (!syncCommand.includes(required)) throw new Error(`审查说明同步没有安全传递可选仓库编号: ${required}`);
 }
@@ -284,8 +144,8 @@ if (!Object.hasOwn(syncLabelsDocument?.on ?? {}, "schedule")) throw new Error("�
 const labelCondition = String(syncLabelsJob?.if ?? "").replace(/\s+/gu, "");
 for (const required of ["github.event_name=='workflow_dispatch'", "github.event_name=='schedule'", "github.event.workflow_run.conclusion=='success'", "github.event.workflow_run.event=='push'", "github.event.workflow_run.head_branch==github.event.repository.default_branch", "github.event.workflow_run.head_repository.full_name==github.repository"]) if (!labelCondition.includes(required)) throw new Error(`标签同步缺少可信触发条件: ${required}`);
 const labelPolicyStep = syncLabelsJob?.steps?.find(step => step?.name === "解析已部署规则提交");
-if (String(labelPolicyStep?.env?.EVENT_NAME ?? "").replace(/\s+/gu, "") !== "${{github.event_name}}" || String(labelPolicyStep?.env?.DEPLOYED_HEAD_SHA ?? "").replace(/\s+/gu, "") !== "${{github.event.workflow_run.head_sha}}" || !String(labelPolicyStep?.run ?? "").includes('process.env.RUNTIME_URL+"/health"')) throw new Error("标签同步没有从部署事件或线上健康接口解析策略提交");
-const labelCheckout = syncLabelsJob?.steps?.find(step => step?.uses?.startsWith("actions/checkout@"));
+if (labelPolicyStep?.run !== "node policy-bootstrap/packages/runner/dist/index.js trusted-policy-source") throw new Error("标签同步必须使用可信策略解析入口");
+const labelCheckout = syncLabelsJob?.steps?.find(step => step?.with?.path === "policy-live");
 if (String(labelCheckout?.with?.ref ?? "").replace(/\s+/gu, "") !== "${{steps.policy.outputs.policy_sha}}" || labelCheckout?.with?.["persist-credentials"] !== false) throw new Error("标签同步没有检出精确已部署提交");
 const labelStep = syncLabelsJob?.steps?.find(step => step?.name === "同步受管标签定义");
 if (String(labelStep?.env?.REPOSITORY_ID ?? "").replace(/\s+/gu, "") !== "${{inputs.repositoryId}}" || /\$\{\{[^}]*inputs\.repositoryId/iu.test(String(labelStep?.run ?? ""))) throw new Error("标签同步没有安全传递仓库编号");
@@ -297,7 +157,7 @@ const onboardStep = onboardDocument?.jobs?.onboard?.steps?.find(step => step?.na
 const onboardCommand = String(onboardStep?.run ?? "");
 for (const [name, expectedValue] of [["REPOSITORY_ID", "${{inputs.repositoryId}}"], ["REPOSITORY_FULL_NAME", "${{inputs.repositoryFullName}}"], ["TRIGGER_ACTOR_ID", "${{github.actor_id}}"], ["TRIGGER_ACTOR_LOGIN", "${{github.actor}}"]]) if (String(onboardStep?.env?.[name] ?? "").replace(/\s+/gu, "") !== expectedValue) throw new Error(`onboarding没有通过环境变量传递${name}`);
 if (/\$\{\{/u.test(onboardCommand) || !onboardCommand.includes('--repository-id "$REPOSITORY_ID"') || !onboardCommand.includes('--repository-full-name "$REPOSITORY_FULL_NAME"')) throw new Error("onboarding没有通过环境变量安全传递必填仓库身份");
-for (const step of [issuePrepareStep, issueReconcileStep, onboardStep, syncStep]) if (!Object.hasOwn(step?.env ?? {}, "RUNTIME_URL")) throw new Error("正文写入工作流缺少运行时地址");
+for (const step of [onboardStep, syncStep]) if (!Object.hasOwn(step?.env ?? {}, "RUNTIME_URL")) throw new Error("正文写入工作流缺少运行时地址");
 const deployRuntime = await readFile(".github/workflows/deploy-runtime.yml", "utf8");
 for (const required of [".github/workflows/deploy-runtime.yml", "scripts/verify-workflows.mjs", "github.event.repository.default_branch", "id: deploy", "tee \"$deployment_log\"", "PIPESTATUS[0]", "复核运行程序健康状态", "steps.deploy.outputs.runtime_url", "EXPECTED_POLICY_SHA", "Date.now() + 60_000", "AbortSignal.timeout", "await response.body?.cancel()", "status: \"waiting\"", "iu.test(body.version)", "健康复核在60秒内未收敛"]) {
   if (!deployRuntime.includes(required)) throw new Error(`部署工作流缺少固定健康复核合同: ${required}`);
@@ -309,6 +169,12 @@ const deploySteps = deployRuntimeDocument?.jobs?.deploy?.steps ?? [];
 const migrationStepIndex = deploySteps.findIndex(step => step?.name === "列出并应用D1迁移");
 const deployStepIndex = deploySteps.findIndex(step => step?.id === "deploy");
 if (migrationStepIndex < 0 || deployStepIndex < 0 || migrationStepIndex >= deployStepIndex) throw new Error("D1迁移没有在运行程序部署前执行");
+const evaluatorGuardIndex = deploySteps.findIndex(step => step?.name === '核对固定验证器身份');
+if (deployRuntimeDocument.jobs.deploy.env?.WORKFLOW_EVALUATOR_SHA !== '${{ vars.WORKFLOW_EVALUATOR_SHA }}'
+  || evaluatorGuardIndex < 0 || evaluatorGuardIndex >= migrationStepIndex
+  || deploySteps[evaluatorGuardIndex].run !== 'node packages/runner/dist/index.js verify-workflow-activation'
+  || Object.hasOwn(deploySteps[evaluatorGuardIndex].env ?? {}, 'WORKFLOW_ACTIVATION_READ_TOKEN')
+  || !deploySteps[deployStepIndex].run?.includes('--var WORKFLOW_EVALUATOR_SHA:')) throw new Error('固定验证器身份必须在数据库变更前检查并独立传入部署');
 const migrationStep = deploySteps[migrationStepIndex];
 if (String(migrationStep?.env?.CLOUDFLARE_API_TOKEN ?? "").replace(/\s+/gu, "") !== "${{secrets.CLOUDFLARE_API_TOKEN}}") throw new Error("D1迁移没有使用固定Cloudflare密钥");
 const expectedMigrationCommand = `set -euo pipefail
@@ -317,12 +183,8 @@ npx wrangler d1 migrations apply splrad-steward-issue-snapshots --remote --confi
 `;
 if (migrationStep?.shell !== "bash" || migrationStep?.run !== expectedMigrationCommand) throw new Error("D1迁移没有固定为先列出、后应用的远程命令");
 const healthStepIndex = deploySteps.findIndex(step => step?.name === "复核运行程序健康状态");
-const initializeStepIndex = deploySteps.findIndex(step => step?.name === "收敛安装仓库生命周期与议题快照");
-if (healthStepIndex < 0 || initializeStepIndex <= healthStepIndex) throw new Error("现有仓库议题快照没有在部署健康复核后初始化");
-const initializeStep = deploySteps[initializeStepIndex];
-const initializeCommand = String(initializeStep?.run ?? "");
-for (const name of ["APP_ID", "INSTALLATION_ID", "STEWARD_APP_PRIVATE_KEY", "RUNTIME_URL", "POLICY_SHA", "DEPLOYMENT_DELIVERY_ID"]) if (!Object.hasOwn(initializeStep?.env ?? {}, name)) throw new Error(`部署后议题初始化环境缺少${name}`);
-for (const required of ['reconcile-repository-lifecycle', '--delivery-id "$DEPLOYMENT_DELIVERY_ID"', '--policy-sha "$POLICY_SHA"']) if (!initializeCommand.includes(required)) throw new Error(`部署后仓库生命周期收敛缺少固定合同: ${required}`);
+if (healthStepIndex < 0) throw new Error("部署缺少健康复核");
+if (deploySteps.some(step => String(step.run ?? "").includes("reconcile-repository-lifecycle"))) throw new Error("部署仍触发议题快照同步");
 const runtimeConfiguration = await readFile("packages/runtime/wrangler.toml", "utf8");
 if (!/\[version_metadata\]\s*binding\s*=\s*"CF_VERSION_METADATA"/u.test(runtimeConfiguration)) throw new Error("运行程序未绑定Cloudflare版本元数据");
 const actionlintVersion = "1.7.12";
@@ -347,8 +209,7 @@ try {
 
 
 const modeSteps = [
-  [prAutomationDocument.jobs.reconcile, "${{ inputs.policySha }}", reconcileStep],
-  [prAutomationDocument.jobs.request, "${{ github.workflow_sha }}", reviewStep],
+  [reviewDocument.jobs.request, "${{ github.workflow_sha }}", reviewStep],
   [onboardDocument.jobs.onboard, "${{ github.actor_id == '301115370' && inputs.policySha || github.sha }}", onboardStep],
 ];
 for (const [job, policy, consumer] of modeSteps) {
@@ -367,12 +228,12 @@ if (!hasExactKeys(syncInstructionsDocument.jobs, ["resolve", "synchronize"]) || 
 const targetStep = syncResolveJob.steps.find(step => step.id === "targets");
 const targetEnvironment = { APP_ID: "4243096", INSTALLATION_ID: "145952003", STEWARD_APP_PRIVATE_KEY: "${{ secrets.STEWARD_APP_PRIVATE_KEY }}", REPOSITORY_ID: "${{ inputs.repositoryId }}", POLICY_SHA: "${{ steps.policy.outputs.policy_sha }}", SYNC_TRIGGER: "${{ github.actor_id == '301115370' && 'app-redrive' || github.event_name }}", TRIGGER_ACTOR_ID: "${{ github.actor_id }}", TRIGGER_ACTOR_LOGIN: "${{ github.actor }}" };
 if (!hasExactKeys(targetStep?.env, Object.keys(targetEnvironment)) || Object.entries(targetEnvironment).some(([name, value]) => targetStep.env[name] !== value)) throw new Error("审查同步目标解析环境扩大或身份绑定无效");
-const resolveCheckout = syncResolveJob.steps.find(step => step.uses?.startsWith("actions/checkout@"));
+const resolveCheckout = syncResolveJob.steps.find(step => step.with?.path === "policy-live");
 if (resolveCheckout?.with?.ref !== "${{ steps.policy.outputs.policy_sha }}" || resolveCheckout?.with?.["persist-credentials"] !== false
   || targetStep?.shell !== "bash" || targetStep?.if !== undefined || targetStep?.["continue-on-error"] !== undefined
   || targetStep.env?.POLICY_SHA !== "${{ steps.policy.outputs.policy_sha }}" || targetStep.env?.REPOSITORY_ID !== "${{ inputs.repositoryId }}"
   || !targetStep.run?.includes('review-sync-targets "${repository_arguments[@]}" --policy-sha "$POLICY_SHA"') || /\$\{\{/u.test(targetStep.run)) throw new Error("审查同步目标解析权限或参数无效");
-if (syncJob.concurrency?.group !== "steward-pr-body-${{ matrix.repositoryId }}" || syncJob.concurrency?.["cancel-in-progress"] !== false || syncJob.concurrency?.queue !== "max") throw new Error("审查同步矩阵未复用单仓并发锁");
+if (syncJob.concurrency?.group !== "workflow-resource:1296724484:pr-body" || syncJob.concurrency?.["cancel-in-progress"] !== false || syncJob.concurrency?.queue !== "max") throw new Error("审查同步矩阵未复用单仓并发锁");
 if (Object.hasOwn(syncStep.env ?? {}, "COPILOT_REVIEW_REQUEST_TOKEN")) throw new Error("审查同步不得注入旧请求令牌");
 for (const step of [...syncResolveJob.steps, ...syncJob.steps.filter(step => step !== syncStep)]) if (Object.hasOwn(step.env ?? {}, "COPILOT_REVIEW_REQUEST_TOKEN")) throw new Error("审查同步令牌注入范围扩大");
 
@@ -399,8 +260,70 @@ if (!hasExactKeys(observeCommand?.env, Object.keys(observeEnvironment)) || Objec
   throw new Error("审查观察参数或命令不符合只读合同");
 
 const releaseSourceWorkflow = YAML.parse(await readFile(".github/workflows/release.yml", "utf8"));
-const notesArtifact = releaseSourceWorkflow.jobs.notes.steps.find(step => step.uses?.startsWith("actions/upload-artifact@"));
-const notesDownload = releaseSourceWorkflow.jobs.publish.steps.find(step => step.uses?.startsWith("actions/download-artifact@") && step.with?.name === notesArtifact?.with?.name);
-if (JSON.stringify(String(notesArtifact?.with?.path).trim().split(/\r?\n/).map(path => path.trim()).sort()) !== JSON.stringify(["release-notes.md", "release-notes.md.sources.json"]) || notesDownload?.with?.path !== "release-notes") throw new Error("发布说明与来源快照必须一起上传并传递至发布阶段");
+if (releaseSourceWorkflow.concurrency?.queue !== 'max' || releaseSourceWorkflow.concurrency?.['cancel-in-progress'] !== false) throw new Error('发布生命周期操作必须完整排队，不得替换待运行的生成或恢复操作');
+if (!hasExactKeys(releaseSourceWorkflow.jobs, ["prepare", "inspect", "publish", "generation-ticket", "generate", "generated-candidate", "generation-continue", "revision"]) || !hasExactKeys(releaseSourceWorkflow.on, ["workflow_dispatch"])) throw new Error("发布工作流必须先读取持久候选收据");
+const generationJob = releaseSourceWorkflow.jobs.generate;
+const recoveryJob = releaseSourceWorkflow.jobs.revision;
+if (!releaseSourceWorkflow.on.workflow_dispatch.inputs.operation.options.includes('migrate-policy') || !releaseSourceWorkflow.on.workflow_dispatch.inputs.operation.options.includes('retry-create')
+  || recoveryJob.if !== "(inputs.operation == 'revise-rebuild' || inputs.operation == 'recover-candidate' || inputs.operation == 'retry-create' || inputs.operation == 'migrate-policy') && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
+  || !recoveryJob.steps.some(step => step.env?.OPERATION === '${{ inputs.operation }}' && step.env?.POLICY_SHA === '${{ github.workflow_sha }}'
+    && step.run === 'node packages/runner/dist/index.js release-candidate --operation "$OPERATION" --request-key "$REQUEST_KEY" --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA"')) throw new Error('创建结果未知的恢复入口必须连接可信策略下的受保护恢复作业');
+const productBuild = workflowDocuments.get('release-build.yml');
+const buildCompletion = workflowDocuments.get('release-build-complete.yml');
+const genericBuild = workflowDocuments.get('product-build.yml');
+for (const workflow of [productBuild, genericBuild]) if (workflow.jobs.plan.steps.find(step => step.id === 'plan')?.['timeout-minutes'] !== 45) throw new Error('来源计划步骤须有45分钟整体上限');
+// Plan step shares a 45m ceiling across clone/boundary fetch, freeze, APIs, object upload and bundle creation; job adds 15m setup/artifact margin.
+if (productBuild.jobs.plan['timeout-minutes'] !== 60 || genericBuild.jobs.plan['timeout-minutes'] !== 60) throw new Error('来源计划作业必须覆盖来源冻结及初始化预算');
+for (const document of [productBuild,genericBuild]) {
+ if(!hasExactKeys(document.on,['workflow_dispatch']) || !hasExactKeys(document.jobs,['plan','build_windows','build_linux']) || document.permissions.contents!=='read' || document.permissions.actions!=='read' || document.jobs.plan.outputs.runner!=='${{ steps.plan.outputs.runner }}') throw new Error('静态构建计划边界无效');
+ const guard=document.jobs.plan.steps.at(-1);
+ const platforms=document===productBuild?'windows-2025|ubuntu-24.04|none':'windows-2025|ubuntu-24.04';
+ if(guard.env?.BUILD_RUNNER!=='${{ steps.plan.outputs.runner }}' || guard.run!==`case "$BUILD_RUNNER" in ${platforms}) ;; *) echo "BUILD_RUNNER_INVALID" >&2; exit 1 ;; esac` || guard.if!==undefined || guard['continue-on-error']!==undefined) throw new Error('未知构建平台必须失败');
+ for(const [name,label] of [['windows','windows-2025'],['linux','ubuntu-24.04']]){
+  const job=document.jobs['build_'+name];if(job.needs!=='plan' || job.environment!==undefined || job['runs-on']!==label || job.if!=="needs.plan.outputs.runner == '"+label+"'" || job['timeout-minutes']!==360) throw new Error('静态构建边界无效');
+  for(const step of job.steps) if(JSON.stringify(step).includes('secrets.') || step.env && !hasExactKeys(step.env,['POLICY_SHA','RUN_ID'])) throw new Error('产品构建不得注入秘密');
+ }
+}
+if (buildCompletion.on.workflow_run?.workflows?.[0] !== 'SPLRAD Steward / Release Build' || buildCompletion.on.workflow_run?.types?.[0] !== 'completed'
+  || buildCompletion.jobs.accept['timeout-minutes'] !== 360
+  || buildCompletion.jobs.inspect['timeout-minutes'] !== 360
+  || !buildCompletion.jobs.accept.steps.some(step => step.name === '明确阻断策略漂移的完成回调' && step.env?.SOURCE_POLICY === '${{ github.event.workflow_run.head_sha }}' && step.env?.CURRENT_POLICY === '${{ github.workflow_sha }}' && step.run?.includes('RELEASE_POLICY_DRIFT'))
+  || !buildCompletion.jobs.resolve.if.includes("github.event.workflow_run.event == 'workflow_dispatch'")) throw new Error('构建完成回调未绑定可信运行');
+if (buildCompletion.jobs.reject.if !== "always() && needs.resolve.result == 'success' && needs.inspect.outputs.verificationFailed == 'true'") throw new Error("只有确定的隔离验证失败可拒绝构建");
+for (const document of [productBuild, buildCompletion, genericBuild]) for (const job of Object.values(document.jobs)) {
+  if (job.steps.find(step => step.uses?.startsWith('actions/checkout@'))?.with.ref !== '${{ github.workflow_sha }}' || job.steps.find(step => step.uses?.startsWith('actions/checkout@'))?.with['persist-credentials'] !== false) throw new Error('构建流程未固定中央策略');
+  for (const step of job.steps) if (step.run && step.run.includes('${{')) throw new Error('构建输入未经环境变量隔离');
+}
+if (generationJob.needs !== 'generation-ticket' || releaseSourceWorkflow.jobs['generated-candidate'].needs !== 'generate') throw new Error('生成预算和候选顺序无效');
+if (releaseSourceWorkflow.jobs['generated-candidate'].if !== "needs.generate.outputs.complete == 'true'"
+  || releaseSourceWorkflow.jobs['generation-continue'].needs !== 'generate'
+  || releaseSourceWorkflow.jobs['generation-continue'].if !== "needs.generate.outputs.complete == 'false'"
+  || releaseSourceWorkflow.jobs['generation-continue']['timeout-minutes'] !== 60
+  || generationJob.outputs.complete !== '${{ steps.produce.outputs.complete }}'
+  || generationJob.steps.find(s => s.id === 'generated')?.if !== "steps.produce.outputs.complete == 'true'") throw new Error('生成续跑与完成候选必须互斥');
+if (releaseSourceWorkflow.jobs['generation-ticket']['timeout-minutes'] !== 60 || releaseSourceWorkflow.jobs['generated-candidate']['timeout-minutes'] !== 60 || releaseSourceWorkflow.jobs.prepare['timeout-minutes'] !== 60) throw new Error('完整seed消费作业须覆盖资产下载与校验预算');
+for (const step of generationJob.steps) {
+  if (step.env && (!hasExactKeys(step.env, ['COPILOT_GITHUB_TOKEN']) || step.env.COPILOT_GITHUB_TOKEN !== '${{ secrets.COPILOT_GITHUB_TOKEN }}')) throw new Error('模型作业包含额外凭据');
+  if (step.run && /release-candidate|reconcile|STEWARD_APP_PRIVATE_KEY/.test(step.run)) throw new Error('模型作业不得写候选或发布');
+}
+if (releaseSourceWorkflow.jobs.publish.if !== "inputs.operation == 'reconcile' && needs.inspect.outputs.shouldPublish == 'true'") throw new Error("Review 观察不得直接发布");
+if (releaseSourceWorkflow.jobs.publish.concurrency?.group !== 'workflow-policy:${{ github.workflow_ref }}:steward-release-publish-${{ inputs.repositoryId }}'
+  || releaseSourceWorkflow.jobs.publish.concurrency?.['cancel-in-progress'] !== false || releaseSourceWorkflow.jobs.publish.concurrency?.queue !== 'max') throw new Error('最终发布必须按仓库串行且不得中断正在发布的版本');
+if (releaseSourceWorkflow.jobs.generate['timeout-minutes'] !== 240
+  || releaseSourceWorkflow.jobs.publish['timeout-minutes'] !== '${{ fromJSON(needs.inspect.outputs.publishTimeoutMinutes) }}'
+  || releaseSourceWorkflow.jobs.inspect.outputs.publishTimeoutMinutes !== '${{ steps.receipt.outputs.publishTimeoutMinutes }}') throw new Error('发布及生成作业必须覆盖冻结预算和初始化余量');
+const releaseDownload = releaseSourceWorkflow.jobs.publish.steps.find(step => step.uses?.startsWith("actions/download-artifact@"));
+const recoverAssets = releaseSourceWorkflow.jobs.publish.steps.find(step => step.run?.includes('--operation recover-assets'));
+const publishAssets = releaseSourceWorkflow.jobs.publish.steps.find(step => step.run?.includes('--operation reconcile'));
+if (releaseDownload.id !== 'assets' || releaseDownload['continue-on-error'] !== true || recoverAssets?.if !== "steps.assets.outcome == 'failure'" || publishAssets?.if !== "steps.assets.outcome != 'failure'") throw new Error('下载失败必须进入持久重建恢复并阻止本次发布');
+if (releaseDownload?.with?.['artifact-ids'] !== "${{ needs.inspect.outputs.artifactId }}" || releaseDownload?.with?.['run-id'] !== "${{ needs.inspect.outputs.runId }}" || releaseDownload?.with?.repository !== "splrad/steward") throw new Error("发布资产必须绑定持久收据的中央构建产物");
+for (const job of Object.values(releaseSourceWorkflow.jobs)) {
+  if (job.steps[0].with.ref !== "${{ github.workflow_sha }}" || job.steps[0].with['persist-credentials'] !== false || job.steps[0].with.repository !== undefined) throw new Error("发布只能执行可信中央策略");
+  for (const step of job.steps) if (step.run && /release-(preflight|notes|publish|verify)\b|\$\{\{ inputs\./.test(step.run)) throw new Error("旧发布入口或未隔离输入仍存在");
+}
 
 console.log("workflows verified");
+
+for (const file of ["pr-automation.yml", "issue-sync.yml", "pr-issue-link.yml"]) {
+  if (workflowDocuments.has(file)) throw new Error(`退役工作流仍存在: ${file}`);
+}

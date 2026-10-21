@@ -31,6 +31,13 @@ function intentFromRequest(init: RequestInit, status: "prepared" | "patched" | "
 }
 
 describe("Runner正文持久写入器", () => {
+  it.each(["pr-automation.yml", "pr-issue-link.yml", "missing"])("退役来源 %s 在网络读取前被拒绝", async workflow => {
+    const read = vi.fn(); const remote = vi.fn(); vi.stubGlobal("fetch", remote);
+    await expect(updatePullRequestBodyDurably({ client: { getPullRequest: read } as any, token: "token", runtimeUrl: "https://runtime.test",
+      owner: "splrad", repo: "steward", repositoryId, pullRequestNumber, headSha, baseSha, expectedBaseRef: "main",
+      regionKind: "managed-pr", targetBlock: block("new"), redrive: { workflow, inputs: {} } as any })).rejects.toThrow("来源已退役");
+    expect(read).not.toHaveBeenCalled(); expect(remote).not.toHaveBeenCalled();
+  });
   it.each(["initial", "pre-patch", "title-only"])("同SHA目标分支在%s阶段不匹配时阻止写入", async phase => {
     const before = block("旧摘要");
     let reads = 0;
@@ -267,8 +274,8 @@ describe("Runner正文持久写入器", () => {
     const targetBlock = block("新摘要");
     const targetBodyDigest = createHash("sha256").update(live, "utf8").digest("hex");
     const writeId = "77777777-7777-4777-8777-777777777777";
-    const originRedrive = { workflow: "pr-automation.yml" as const, inputs: { deliveryId: "delivery-original", repositoryId: String(repositoryId), sourceRef: "refs/heads/feature/test", eventAfterSha: headSha, sourceActorId: "44151430", sourceActorLogin: "axiomoth", policySha: "c".repeat(40) } };
-    const recoveryRedrive = { workflow: "pr-automation.yml" as const, inputs: { ...originRedrive.inputs, deliveryId: `body-write-recovery:${writeId}`, policySha: "d".repeat(40) } };
+    const originRedrive = { workflow: "onboard-repository.yml" as const, inputs: { deliveryId: "delivery-original", repositoryId: String(repositoryId), repositoryFullName: "splrad/steward", trigger: "manual", policySha: "c".repeat(40) } };
+    const recoveryRedrive = { workflow: "onboard-repository.yml" as const, inputs: { ...originRedrive.inputs, deliveryId: `body-write-recovery:${writeId}`, policySha: "d".repeat(40) } };
     const calls: string[] = [];
     vi.stubGlobal("fetch", async (url: string) => {
       const value = String(url); calls.push(value);
@@ -286,8 +293,8 @@ describe("Runner正文持久写入器", () => {
     const targetBlock = block("新摘要");
     const targetBodyDigest = createHash("sha256").update(live, "utf8").digest("hex");
     const writeId = "88888888-8888-4888-8888-888888888888";
-    const originRedrive = { workflow: "pr-automation.yml" as const, inputs: { deliveryId: "delivery-legacy-terminal", repositoryId: String(repositoryId), sourceRef: "refs/heads/feature/test", eventAfterSha: headSha, sourceActorId: "44151430", sourceActorLogin: "axiomoth", policySha: "c".repeat(40) } };
-    const recoveryRedrive = { workflow: "pr-automation.yml" as const, inputs: { ...originRedrive.inputs, deliveryId: `body-write-recovery:${writeId}`, policySha: "d".repeat(40) } };
+    const originRedrive = { workflow: "onboard-repository.yml" as const, inputs: { deliveryId: "delivery-legacy-terminal", repositoryId: String(repositoryId), repositoryFullName: "splrad/steward", trigger: "manual", policySha: "c".repeat(40) } };
+    const recoveryRedrive = { workflow: "onboard-repository.yml" as const, inputs: { ...originRedrive.inputs, deliveryId: `body-write-recovery:${writeId}`, policySha: "d".repeat(40) } };
     const calls: string[] = [];
     vi.stubGlobal("fetch", async (url: string) => {
       const value = String(url); calls.push(value);
@@ -306,8 +313,8 @@ describe("Runner正文持久写入器", () => {
     const targetBlock = block("新摘要");
     const targetBodyDigest = createHash("sha256").update(live, "utf8").digest("hex");
     const writeId = "99999999-9999-4999-8999-999999999999";
-    const originRedrive = { workflow: "pr-automation.yml" as const, inputs: { deliveryId: "delivery-explicit-terminal", repositoryId: String(repositoryId), sourceRef: "refs/heads/feature/test", eventAfterSha: headSha, sourceActorId: "44151430", sourceActorLogin: "axiomoth", policySha: "c".repeat(40) } };
-    const recoveryRedrive = { workflow: "pr-automation.yml" as const, inputs: { ...originRedrive.inputs, deliveryId: `body-write-recovery:${writeId}`, policySha: "d".repeat(40) } };
+    const originRedrive = { workflow: "onboard-repository.yml" as const, inputs: { deliveryId: "delivery-explicit-terminal", repositoryId: String(repositoryId), repositoryFullName: "splrad/steward", trigger: "manual", policySha: "c".repeat(40) } };
+    const recoveryRedrive = { workflow: "onboard-repository.yml" as const, inputs: { ...originRedrive.inputs, deliveryId: `body-write-recovery:${writeId}`, policySha: "d".repeat(40) } };
     const calls: string[] = [];
     vi.stubGlobal("fetch", async (url: string) => {
       const value = String(url); calls.push(value);
