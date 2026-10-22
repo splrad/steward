@@ -44,3 +44,10 @@ it('preserves a pre-existing download destination',async()=>{
  const f=fixture(),home=await mkdtemp(join(tmpdir(),'handoff-existing-')),target=join(home,'archive');
  try{await writeFile(target,'user data');await expect(fetchBoundArtifactFile(f.gh,f.transport,'secret',b,target)).rejects.toMatchObject({code:'EEXIST'});expect(await readFile(target,'utf8')).toBe('user data');}finally{await rm(home,{recursive:true,force:true});}
 });
+it.each([429,500,503])('keeps HTTP %s failures retryable at either download stage',async status=>{
+ for(const stage of ['redirect','body']){
+  const f=fixture(),original=f.transport.getMockImplementation();
+  f.transport.mockImplementation(async(u:any,init:any)=> (stage==='redirect'||init.redirect!=='manual')?new Response(null,{status}):original(u,init));
+  await expect(fetchBoundArtifact(f.gh,f.transport,'secret',b)).rejects.toThrow('ARTIFACT_DOWNLOAD_HTTP_'+status);
+ }
+});

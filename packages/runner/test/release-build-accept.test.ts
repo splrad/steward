@@ -57,3 +57,9 @@ it('attests all 128 long asset names without putting the manifest in the output 
  const plan=state.request.plans[0];const manifest={schemaVersion:1,repositoryId:plan.repositoryId,fullName:plan.fullName,buildId:plan.buildId,profile:plan.profile,targetSha:plan.targetSha,policySha:plan.policySha,version:plan.version,inputsSha256:plan.inputsSha256,artifacts:Array.from({length:128},(_,i)=>({id:'asset-'+i,kind:'file',file:String(i).padStart(3,'0')+'x'.repeat(191)+'.json',mediaType:'application/json',size:1,sha256:'a'.repeat(64)}))};
  const encoded=encodeInspectionReport(binding,'b'.repeat(64),manifest as any);expect(encoded.length).toBeLessThan(2000);const decoded=JSON.parse(Buffer.from(encoded,'base64').toString());expect(decoded.manifestSha256).toBe(inspectionManifestDigest(manifest as any));manifest.artifacts[127]!.sha256='c'.repeat(64);expect(decoded.manifestSha256).not.toBe(inspectionManifestDigest(manifest as any));
 });
+it.each(['ARTIFACT_HANDOFF_INVALID','network unavailable','ARTIFACT_DOWNLOAD_HTTP_503'])('isolated download reports only deterministic integrity failure: %s',async message=>{
+ vi.stubEnv('STEWARD_APP_PRIVATE_KEY','');vi.stubEnv('ARTIFACT_READ_TOKEN','read-token');vi.stubEnv('ARTIFACT_BINDING',Buffer.from(JSON.stringify(binding)).toString('base64'));vi.stubEnv('BUILD_PLAN',Buffer.from(JSON.stringify(state.request.plans[0])).toString('base64'));
+ const output=join(directory,'download-output');vi.stubEnv('GITHUB_OUTPUT',output);vi.mocked(fetchBoundArtifactFile).mockRejectedValueOnce(new Error(message));
+ await expect(releaseBuildCommand({operation:'inspect-artifact','policy-sha':frozen.policySha,inspector:'unused'})).rejects.toThrow();
+ expect((await readFile(output,'utf8').catch(()=> '')).includes('verificationFailed=true')).toBe(message==='ARTIFACT_HANDOFF_INVALID');expect(collectFileBuildManifest).not.toHaveBeenCalled();expect(request).not.toHaveBeenCalled();
+});
