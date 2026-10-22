@@ -69,60 +69,12 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "profile",
-        "fragmentDirectory",
-        "candidateChanges"
+        "profile"
       ],
       "properties": {
         "profile": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9-]*$"
-        },
-        "fragmentDirectory": {
-          "type": "string",
-          "minLength": 1
-        },
-        "candidateChanges": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "required",
-            "reviewRequired",
-            "ignored",
-            "defaultDisposition"
-          ],
-          "properties": {
-            "required": {
-              "type": "array",
-              "items": {
-                "type": "string",
-                "minLength": 1
-              },
-              "uniqueItems": true,
-              "minItems": 0
-            },
-            "reviewRequired": {
-              "type": "array",
-              "items": {
-                "type": "string",
-                "minLength": 1
-              },
-              "uniqueItems": true,
-              "minItems": 0
-            },
-            "ignored": {
-              "type": "array",
-              "items": {
-                "type": "string",
-                "minLength": 1
-              },
-              "uniqueItems": true,
-              "minItems": 0
-            },
-            "defaultDisposition": {
-              "const": "review-required"
-            }
-          }
         },
         "personalization": {
           "type": "object",
@@ -166,7 +118,8 @@
                   },
                   "title": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "maxLength": 1000
                   },
                   "items": {
                     "type": "array",
@@ -175,12 +128,40 @@
                       "minLength": 1
                     },
                     "uniqueItems": true,
-                    "minItems": 1
+                    "minItems": 1,
+                    "maxItems": 64
                   }
-                }
+                },
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "asset-table"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "slot": {
+                          "const": "beforeActions"
+                        },
+                        "items": {
+                          "items": {
+                            "type": "string",
+                            "pattern": "^[a-z][a-z0-9-]*$"
+                          },
+                          "description": "冻结构建清单的逻辑资产 ID；必须唯一对应一个文件。",
+                          "type": "array"
+                        }
+                      }
+                    }
+                  }
+                ]
               },
               "uniqueItems": true,
-              "minItems": 0
+              "minItems": 0,
+              "maxItems": 16
             }
           },
           "allOf": [

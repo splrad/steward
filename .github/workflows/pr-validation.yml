@@ -1,16 +1,19 @@
 name: SPLRAD Steward / PR Validation
-
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
-
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
+      - labeled
+      - unlabeled
 permissions:
   contents: read
-
+  pull-requests: read
 concurrency:
   group: steward-pr-validation-${{ github.repository_id }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
-
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -28,7 +31,10 @@ jobs:
           echo "sha=${value,,}" >> "$GITHUB_OUTPUT"
       - name: 检出合并候选
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: { path: target, fetch-depth: 0, persist-credentials: false }
+        with:
+          path: target
+          fetch-depth: 0
+          persist-credentials: false
       - name: 检出中央规则
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -37,52 +43,22 @@ jobs:
           path: steward-policy
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version-file: steward-policy/.node-version, cache: npm, cache-dependency-path: steward-policy/package-lock.json }
+        with:
+          node-version-file: steward-policy/.node-version
+          cache: npm
+          cache-dependency-path: steward-policy/package-lock.json
       - run: npm ci --ignore-scripts
         working-directory: steward-policy
       - name: 选择验证配置
         id: profile
         shell: bash
-        run: |
-          case "${{ github.repository_id }}" in
-            1187527897) echo "name=layerscape" >> "$GITHUB_OUTPUT" ;;
-            1296724484) echo "name=steward" >> "$GITHUB_OUTPUT" ;;
-            *)
-              if [[ "${{ github.event.repository.private }}" == "true" ]]; then
-                echo "私有仓库尚未纳管" >&2
-                exit 1
-              fi
-              echo "name=public-basic" >> "$GITHUB_OUTPUT"
-              ;;
-          esac
-      - name: 执行中央验证
+        run: node steward-policy/packages/runner/dist/index.js validation-profile --repository-id "${{ github.repository_id }}" --private "${{ github.event.repository.private }}"
+      - name: workflow-contract-policy:${{ steps.policy.outputs.sha }}
         env:
           VALIDATION_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           VALIDATION_BASE_REF: ${{ github.event.pull_request.base.ref }}
-        run: node steward-policy/packages/runner/dist/index.js validate --workspace target --repository-id "${{ github.repository_id }}" --profile "${{ steps.profile.outputs.name }}"
-  fragments:
-    needs: validate
-    if: github.event.pull_request.base.ref == github.event.repository.default_branch
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: read
-      checks: read
-    steps:
-      - name: 检出中央片段验证器
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: splrad/steward
-          ref: ${{ needs.validate.outputs.policy }}
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version-file: .node-version }
-      - name: 验证发布片段
-        env:
-          VALIDATION_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          WORKFLOW_CONTRACT_READ_TOKEN: ${{ github.token }}
           VALIDATION_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           VALIDATION_PR_NUMBER: ${{ github.event.pull_request.number }}
-          VALIDATION_POLICY_SHA: ${{ needs.validate.outputs.policy }}
-          VALIDATION_READ_TOKEN: ${{ github.token }}
-        run: node packages/runner/dist/index.js validate --workspace . --repository-id "${{ github.repository_id }}" --profile "${{ needs.validate.outputs.profile }}" --fragments-only true
+          VALIDATION_POLICY_SHA: ${{ steps.policy.outputs.sha }}
+        run: node steward-policy/packages/runner/dist/index.js validate --workspace target --repository-id "${{ github.repository_id }}" --profile "${{ steps.profile.outputs.name }}"

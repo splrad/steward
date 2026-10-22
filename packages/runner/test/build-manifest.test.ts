@@ -12,6 +12,28 @@ import { githubBuildExecutionPolicy, assertBuildDirectoriesSeparate, assertBuild
 const identity: BuildIdentity = { repositoryId: 1400000001, fullName: 'example/widget', buildId: 'asset', profile: 'custom-adapter-v1', targetSha: 'a'.repeat(40), policySha: 'b'.repeat(40), version: '1.2.3' };
 const unit: BuildUnit = { profile: 'custom-adapter-v1', inputs: { entrypoint: 'tools/build.mjs', runtime: 'node', runnerFamily: 'linux' }, outputs: [{ id: 'archive', kind: 'file', match: '*.json', count: 1, mediaType: 'application/json' }] };
 const inspect = async (bytes: Uint8Array) => JSON.parse(new TextDecoder().decode(bytes)).version ?? null;
+it.each([
+  ['Fonts.zip', 'Fonts.zip', true],
+  ['AFR-DLL_v{version}.zip', 'AFR-DLL_v1.2.3.zip', false],
+  ['*.zip', 'plugin.zip', false],
+])('binds font-only results to literal resource output %s', async (match, name, accepted) => {
+  const plan = await planBuild(identity, { ...unit, outputs: [{ id: 'archive', kind: 'file', match, count: 1, mediaType: 'application/zip', archiveType: accepted ? 'font-archive' : 'dll-archive' }] });
+  await writeFile(join(output, name), 'font archive bytes');
+  const result = collectFileBuildManifest(plan, output, async () => ({ resourceOnly: 'font-archive' as const }));
+  if (accepted) await expect(result).resolves.toMatchObject({ artifacts: [{ file: name }] });
+  else await expect(result).rejects.toThrow('RN_BUILD_VERSION');
+});
+
+it.each(['font-archive','dll-archive'] as const)('inspects declared %s without a VERSION file',async archiveType=>{
+ const plan=await planBuild({...identity,version:null},{...unit,outputs:[{id:'archive',kind:'file',match:'asset.zip',count:1,mediaType:'application/zip',archiveType}]});
+ await writeFile(join(output,'asset.zip'),'archive bytes');
+ const inspector=vi.fn(async()=>archiveType==='font-archive'?{resourceOnly:'font-archive' as const}:'1.2.3');
+ await expect(collectFileBuildManifest(plan,output,inspector)).resolves.toMatchObject({version:null});
+ expect(inspector).toHaveBeenCalledOnce();
+ await expect(collectFileBuildManifest(plan,output)).rejects.toThrow('RN_BUILD_VERSION');
+ const mismatch=async()=>archiveType==='font-archive'?'1.2.3':{resourceOnly:'font-archive' as const};
+ await expect(collectFileBuildManifest(plan,output,mismatch)).rejects.toThrow('RN_BUILD_VERSION');
+});
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return { ...actual, open: vi.fn(actual.open), opendir: vi.fn(actual.opendir), realpath: vi.fn(actual.realpath) };
@@ -109,7 +131,7 @@ describe('中央文件产物验证 T09', () => {
   ] as const)('GitHub adapter 为 %s 映射执行策略 %j', async (profile, inputs, runner) => {
     const outputs = profile === 'oci-image-v1' ? [{ id: 'image', kind: 'oci-image' as const, count: 1 }] : unit.outputs;
     const plan = await planBuild({ ...identity, profile }, { profile, inputs, outputs });
-    expect(githubBuildExecutionPolicy(plan)).toEqual({ runner, timeoutMinutes: 45, permissions: { contents: 'read' }, environment: null, persistCredentials: false });
+    expect(githubBuildExecutionPolicy(plan)).toEqual({ runner, timeoutMinutes: 360, permissions: { contents: 'read' }, environment: null, persistCredentials: false });
   });
   it('GitHub adapter 拒绝未知 runner family', async () => {
     const plan = await planBuild(identity, unit);
@@ -367,6 +389,25 @@ describe('中央文件产物验证 T09', () => {
     await verifyDownloadedFileBuild(plan, manifest, output, mutatingInspector);
     await writeFile(join(output, 'widget.json'), '{"version":"9.9.9"}');
     await expect(verifyDownloadedFileBuild(plan, manifest, output, mutatingInspector)).rejects.toThrow('RN_BUILD_DIGEST');
+  });
+  it.each(['normal', 'source-change', 'snapshot-change'])('路径检查器读取摘要对应的临时快照: %s', async mode => {
+    await file(); const plan = await planBuild(identity, unit);
+    const original = await readFile(join(output, 'widget.json'));
+    let snapshot = '';
+    const inspector = Object.assign(inspect, { inspectPath: async (path: string) => {
+      snapshot = path;
+      expect(path).not.toBe(join(output, 'widget.json'));
+      expect(await readFile(path)).toEqual(original);
+      if (mode === 'source-change') await writeFile(join(output, 'widget.json'), '{"version":"9.9.9"}');
+      if (mode === 'snapshot-change') await writeFile(path, '{"version":"9.9.9"}');
+      return '1.2.3';
+    } });
+    try {
+      const result = collectFileBuildManifest(plan, output, inspector);
+      if (mode === 'normal') expect((await result).artifacts[0]).toMatchObject({ sha256: createHash('sha256').update(original).digest('hex') });
+      else await expect(result).rejects.toThrow(mode === 'source-change' ? 'RN_BUILD_PATH' : 'RN_BUILD_DIGEST');
+      await expect(readFile(snapshot)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { delete (inspector as Partial<typeof inspector>).inspectPath; }
   });
   it('摘要和仓库、提交、参数绑定分别复核', async () => {
     await file(); const plan = await planBuild(identity, unit); const manifest = await collectFileBuildManifest(plan, output, inspect);
@@ -637,4 +678,17 @@ describe('OCI 摘要链验证 T09', () => {
     await writeFile(join(output, 'index.json'), JSON.stringify(index));
     await expect(collectOciBuildManifest(plan, output)).rejects.toThrow('RN_BUILD_OUTPUT');
   });
+});
+
+it('rejects a shrinkwrap overriding the registered package lock', async () => {
+  await mkdir(join(source, 'app'));
+  await writeFile(join(source, 'app/package-lock.json'), '{}');
+  const inputs = { directory: 'app', lockfile: 'app/package-lock.json', buildTask: 'build', packageManager: 'npm' };
+  const plan = await planBuild({ ...identity, profile: 'node-package-v1' }, { ...unit, profile: 'node-package-v1', inputs });
+  const context = { sourceDirectory: source, outputDirectory: output, buildRunId: 'test' };
+  await expect(validateBuildInputs(plan, context)).resolves.toBeUndefined();
+  await writeFile(join(source, 'app/npm-shrinkwrap.json'), '{}');
+  await expect(validateBuildInputs(plan, context)).rejects.toThrow('RN_BUILD_INVALID');
+  const shrinkwrapPlan = await planBuild({ ...identity, profile: 'node-package-v1' }, { ...unit, profile: 'node-package-v1', inputs: { ...inputs, lockfile: 'app/npm-shrinkwrap.json' } });
+  await expect(validateBuildInputs(shrinkwrapPlan, context)).resolves.toBeUndefined();
 });

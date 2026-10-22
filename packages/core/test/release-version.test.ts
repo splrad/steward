@@ -8,10 +8,13 @@ describe('root VERSION', () => {
   it.each(['0.0.0', '9.2.2', '100.20.300', '9007199254740993000000000.0.0'])('accepts %s', value => {
     expect(parseVersionFile(bytes(`${value}\n`)).value).toBe(value);
   });
-  it.each(['', '1.2.3', '1.2.3\r\n', '\ufeff1.2.3\n', '1.2.3\n\n', ' 1.2.3\n', '1.2.3 \n', 'v1.2.3\n',
+  it.each(['', '1.2.3', '1.2.3\r\n', '\ufeff1.2.3\n', ' # misplaced\n1.2.3\n', '# no value\n', '# comment\r\n1.2.3\n', ' 1.2.3\n', '1.2.3 \n', 'v1.2.3\n',
     '01.2.3\n', '1.02.3\n', '1.2.03\n', '-1.2.3\n', '1.2\n', '1.2.3.4\n', '1.2.3-beta\n', '1.2.3+build\n',
     '1.2.3 # comment\n', '1.2.3\n2.0.0\n', '１.2.3\n', '1.2.3\u0000\n'])('rejects malformed file %j', value => {
     expect(() => parseVersionFile(bytes(value))).toThrow('RN_VERSION_INVALID');
+  });
+  it.each(['# Release version\n\n1.2.3\n', '\n1.2.3\n\n', '1.2.3\n# trailing comment\n'])('accepts current VERSION layout %j', value => {
+    expect(parseVersionFile(bytes(value)).value).toBe('1.2.3');
   });
   it('rejects malformed UTF-8', () => expect(() => parseVersionFile(new Uint8Array([0xc3, 0x28, 10]))).toThrow('RN_VERSION_INVALID'));
   it.each(['1.2.3\n', '1.2.3\r', '1.2.3 '])('rejects noncanonical value %j', value => {

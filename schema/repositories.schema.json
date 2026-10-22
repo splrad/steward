@@ -15,10 +15,7 @@
       "type": "string"
     },
     "schemaVersion": {
-      "enum": [
-        3,
-        4
-      ]
+      "const": 4
     },
     "organization": {
       "type": "object",
@@ -288,19 +285,14 @@
       "additionalProperties": false,
       "required": [
         "managed",
-        "prAutomation",
         "pullRequestTemplate",
         "reviewInstructionsProfile",
         "classification",
         "validationProfile",
-        "allowedWorkflowPaths",
-        "releaseProfile"
+        "allowedWorkflowPaths"
       ],
       "properties": {
         "managed": {
-          "type": "boolean"
-        },
-        "prAutomation": {
           "type": "boolean"
         },
         "pullRequestTemplate": {
@@ -321,12 +313,6 @@
         },
         "allowedWorkflowPaths": {
           "$ref": "#/$defs/workflowPaths"
-        },
-        "releaseProfile": {
-          "type": [
-            "string",
-            "null"
-          ]
         }
       }
     },
@@ -336,14 +322,12 @@
       "required": [
         "managed",
         "fullName",
-        "prAutomation",
         "pullRequestTemplate",
         "reviewInstructionsProfile",
         "reviewGovernance",
         "classification",
         "validationProfile",
-        "allowedWorkflowPaths",
-        "releaseProfile"
+        "allowedWorkflowPaths"
       ],
       "properties": {
         "managed": {
@@ -352,12 +336,6 @@
         "fullName": {
           "type": "string",
           "pattern": "^splrad/[^/]+$"
-        },
-        "fragmentGateEnabled": {
-          "type": "boolean"
-        },
-        "prAutomation": {
-          "type": "boolean"
         },
         "pullRequestTemplate": {
           "enum": [
@@ -380,12 +358,6 @@
         },
         "allowedWorkflowPaths": {
           "$ref": "#/$defs/workflowPaths"
-        },
-        "releaseProfile": {
-          "type": [
-            "string",
-            "null"
-          ]
         }
       }
     },
@@ -394,21 +366,16 @@
       "additionalProperties": false,
       "required": [
         "managed",
-        "prAutomation",
         "pullRequestTemplate",
         "reviewInstructionsProfile",
         "classification",
         "validationProfile",
         "allowedWorkflowPaths",
-        "releaseProfile",
         "builds",
         "delivery"
       ],
       "properties": {
         "managed": {
-          "type": "boolean"
-        },
-        "prAutomation": {
           "type": "boolean"
         },
         "pullRequestTemplate": {
@@ -429,12 +396,6 @@
         },
         "allowedWorkflowPaths": {
           "$ref": "#/$defs/workflowPaths"
-        },
-        "releaseProfile": {
-          "type": [
-            "string",
-            "null"
-          ]
         },
         "builds": {
           "type": "object",
@@ -464,14 +425,12 @@
       "required": [
         "managed",
         "fullName",
-        "prAutomation",
         "pullRequestTemplate",
         "reviewInstructionsProfile",
         "reviewGovernance",
         "classification",
         "validationProfile",
         "allowedWorkflowPaths",
-        "releaseProfile",
         "builds",
         "delivery"
       ],
@@ -482,12 +441,6 @@
         "fullName": {
           "type": "string",
           "pattern": "^splrad/[^/]+$"
-        },
-        "fragmentGateEnabled": {
-          "type": "boolean"
-        },
-        "prAutomation": {
-          "type": "boolean"
         },
         "pullRequestTemplate": {
           "enum": [
@@ -510,12 +463,6 @@
         },
         "allowedWorkflowPaths": {
           "$ref": "#/$defs/workflowPaths"
-        },
-        "releaseProfile": {
-          "type": [
-            "string",
-            "null"
-          ]
         },
         "builds": {
           "type": "object",
@@ -612,6 +559,12 @@
                   "mediaType": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "archiveType": {
+                    "enum": [
+                      "dll-archive",
+                      "font-archive"
+                    ]
                   }
                 }
               },
@@ -692,6 +645,12 @@
                   "mediaType": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "archiveType": {
+                    "enum": [
+                      "dll-archive",
+                      "font-archive"
+                    ]
                   }
                 }
               },
@@ -839,6 +798,12 @@
                   "mediaType": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "archiveType": {
+                    "enum": [
+                      "dll-archive",
+                      "font-archive"
+                    ]
                   }
                 }
               },
@@ -897,7 +862,8 @@
                 "pattern": "^[a-z][a-z0-9-]*$"
               },
               "uniqueItems": true,
-              "minItems": 0
+              "minItems": 0,
+              "maxItems": 1
             }
           },
           "allOf": [
@@ -1108,31 +1074,6 @@
     }
   },
   "oneOf": [
-    {
-      "properties": {
-        "schemaVersion": {
-          "const": 3
-        },
-        "defaults": {
-          "properties": {
-            "public": {
-              "$ref": "#/$defs/defaultConfig"
-            },
-            "private": {
-              "$ref": "#/$defs/defaultConfig"
-            }
-          },
-          "type": "object"
-        },
-        "repositories": {
-          "additionalProperties": {
-            "$ref": "#/$defs/repositoryConfig"
-          },
-          "type": "object"
-        }
-      },
-      "type": "object"
-    },
     {
       "properties": {
         "schemaVersion": {

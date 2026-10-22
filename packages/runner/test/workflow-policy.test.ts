@@ -33,7 +33,7 @@ describe('trusted workflow security policy',()=>{
  it.each(['ubuntu-latest','ubuntu-24.04','windows-latest','windows-2025','macos-latest'])('accepts static hosted runner: %s',runner=>{const d=ordinary();d.jobs.test['runs-on']=runner;expect(()=>assertWorkflowDocument('test.yml',d)).not.toThrow();});
  it.each(['ubuntu-999','windows-123','macos-999','ubuntu-24.04-custom','self-hosted'])('rejects unapproved static runner: %s',runner=>{const d=ordinary();d.jobs.test['runs-on']=runner;expect(()=>assertWorkflowDocument('test.yml',d)).toThrow('runner not permitted');});
  it.each(['missing','constant','cancel','extra'])('protects concurrency: %s',async kind=>{
- const d=YAML.parse(await readFile('.github/workflows/pr-validation.yml','utf8'));
+ const d=YAML.parse(await readFile('packages/runner/test/fixtures/policy-v1/pr-validation.yml','utf8'));
  if(kind==='missing')delete d.concurrency;
  if(kind==='constant')d.concurrency.group='shared';
  if(kind==='cancel')d.concurrency['cancel-in-progress']=false;
@@ -69,7 +69,7 @@ describe('trusted workflow security policy',()=>{
  if(group.startsWith('workflow-policy:'))expect(()=>assertWorkflowDocument('test.yml',d)).not.toThrow();else expect(()=>assertWorkflowDocument('test.yml',d)).toThrow('namespace');}
  });
  it('binds legacy shared queues to their whole trusted workflow',async()=>{
- const path='.github/workflows/issue-sync.yml';const d=YAML.parse(await readFile(path,'utf8'));expect(()=>assertWorkflowDocument(path,d)).not.toThrow();d.on={pull_request:{}};expect(()=>assertWorkflowDocument(path,d)).toThrow('namespace');expect(()=>assertWorkflowDocument('copy.yml',d)).toThrow('namespace');
+ const path='.github/workflows/issue-sync.yml';const d=YAML.parse(await readFile('packages/runner/test/fixtures/policy-v1/'+path.split('/').at(-1),'utf8'));expect(()=>assertWorkflowDocument(path,d)).not.toThrow();d.on={pull_request:{}};expect(()=>assertWorkflowDocument(path,d)).toThrow('namespace');expect(()=>assertWorkflowDocument('copy.yml',d)).toThrow('namespace');
  });
  it.each(['workflow','job'])('rejects cancellation at %s scope',level=>{
  for(const cancel of [true,'true',undefined,false]){const d:any=ordinary();const c={group:'workflow-policy:${{ github.workflow_ref }}:test','cancel-in-progress':cancel};if(level==='workflow')d.concurrency=c;else d.jobs.test.concurrency=c;
@@ -84,7 +84,7 @@ describe('trusted workflow security policy',()=>{
  if(kind==='trusted')expect(()=>assertWorkflowDocument('test.yml',d)).not.toThrow();else expect(()=>assertWorkflowDocument('test.yml',d)).toThrow('workflow_run checkout');
  });
  it.each(['sync-review-instructions.yml','sync-managed-labels.yml'])('protects deployed policy exception %s',async name=>{
- const path='.github/workflows/'+name;const d=YAML.parse(await readFile(path,'utf8'));expect(()=>assertWorkflowDocument(path,d)).not.toThrow();
+ const path='.github/workflows/'+name;const d=YAML.parse(await readFile('packages/runner/test/fixtures/policy-v1/'+name,'utf8'));expect(()=>assertWorkflowDocument(path,d)).not.toThrow();
  for(const kind of ['checkout','resolver','condition']){const changed=structuredClone(d);const j=Object.values(changed.jobs)[0] as any;
  if(kind==='checkout')j.steps.find((s:any)=>s.uses?.startsWith('actions/checkout')).with.ref='attacker';
  if(kind==='resolver')j.steps.find((s:any)=>s.id==='policy').run='echo policy_sha=attacker';
@@ -112,7 +112,7 @@ describe('trusted workflow security policy',()=>{
  });
  it('binds release-model and App secrets to distinct environments',()=>{const d:any=ordinary();d.on={workflow_dispatch:{}};d.jobs.test.environment={name:'steward-release-notes',deployment:false};d.jobs.test.steps[0].env={TOKEN:'${{ secrets.COPILOT_GITHUB_TOKEN }}'};expect(()=>assertWorkflowDocument('notes.yml',d)).not.toThrow();d.jobs.test.steps[0].env={TOKEN:'${{ secrets.STEWARD_APP_PRIVATE_KEY }}'};expect(()=>assertWorkflowDocument('notes.yml',d)).toThrow();});
  it.each(['workflow-name','missing-name','missing','skip','continue','source','command','checkout','extra-step','filter','global-env','defaults'])('protects required entry: %s',async kind=>{
-  const d=YAML.parse(await readFile('.github/workflows/pr-validation.yml','utf8'));const j=d.jobs.validate;
+  const d=YAML.parse(await readFile('packages/runner/test/fixtures/policy-v1/pr-validation.yml','utf8'));const j=d.jobs.validate;
   if(kind==='workflow-name')d.name='Renamed validation';
   if(kind==='missing-name')delete d.name;
   if(kind==='missing')delete d.jobs.validate;
@@ -128,12 +128,13 @@ describe('trusted workflow security policy',()=>{
   expect(()=>assertRequiredValidation(d)).toThrow();
  });
  it.each(['push','workflow_dispatch','workflow_run','schedule','pull_request_target'])('rejects additional required-entry trigger: %s',async trigger=>{
-  const d=YAML.parse(await readFile('.github/workflows/pr-validation.yml','utf8'));d.on[trigger]={};
+  const d=YAML.parse(await readFile('packages/runner/test/fixtures/policy-v1/pr-validation.yml','utf8'));d.on[trigger]={};
   expect(()=>assertRequiredValidation(d)).toThrow('required PR event coverage');
  });
- it('accepts the required entry with a changed step display name',async()=>{const d=YAML.parse(await readFile('.github/workflows/pr-validation.yml','utf8'));d.jobs.validate.steps.at(-1).name='policy SHA evidence';expect(()=>assertRequiredValidation(d)).not.toThrow();});
+ it('accepts ordinary display name changes while preserving the versioned evidence marker',async()=>{const d=YAML.parse(await readFile('packages/runner/test/fixtures/policy-v1/pr-validation.yml','utf8'));d.jobs.validate.steps[0].name='resolve trusted source';expect(()=>assertRequiredValidation(d)).not.toThrow();});
+ it('rejects removal of the v2 policy evidence marker',async()=>{const d=YAML.parse(await readFile('packages/runner/test/fixtures/policy-v1/pr-validation.yml','utf8'));d.jobs.validate.steps.at(-1).name='policy SHA evidence';expect(()=>assertRequiredValidation(d)).toThrow('policy marker');});
  it.each(['missing','skip','needs','permission','source','command','continue','env','extra-step'])('protects fragments entry: %s',async kind=>{
-  const d=YAML.parse(await readFile('.github/workflows/pr-validation.yml','utf8'));const j=d.jobs.fragments;
+  const d=YAML.parse(await readFile('packages/runner/test/fixtures/policy-v1/pr-validation.yml','utf8'));const j=d.jobs.fragments;
   if(kind==='missing')delete d.jobs.fragments;
   if(kind==='skip')j.if='false';
   if(kind==='needs')delete j.needs;
@@ -163,7 +164,7 @@ describe('trusted workflow security policy',()=>{
  });
  it('keeps downstream task failures after the trusted security check',async()=>{
   const dir=await mkdtemp(join(tmpdir(),'workflow-chain-'));try{
-   const policy=join(dir,'policy'),workspace=join(dir,'target');await cp('config',policy,{recursive:true});await mkdir(join(workspace,'config'),{recursive:true});await mkdir(join(workspace,'.github/workflows'),{recursive:true});
+   const policy=join(dir,'policy'),workspace=join(dir,'target');await cp('config',policy,{recursive:true});await writeFile(join(policy,'workflow-contract-authority.json'),JSON.stringify({version:1,repositories:{}}));await mkdir(join(workspace,'config'),{recursive:true});await mkdir(join(workspace,'.github/workflows'),{recursive:true});
    const registry=JSON.parse(await readFile(join(policy,'repositories.json'),'utf8'));registry.repositories['1296724484'].allowedWorkflowPaths=[];await writeFile(join(policy,'repositories.json'),JSON.stringify(registry));registry.repositories['1296724484'].allowedWorkflowPaths=['.github/workflows/test.yml'];await writeFile(join(workspace,'config/repositories.json'),JSON.stringify(registry));await writeFile(join(workspace,'.github/workflows/test.yml'),YAML.stringify(ordinary()));
    const profilePath=join(policy,'profiles/validation/steward.json');const profile=JSON.parse(await readFile(profilePath,'utf8'));profile.tasks=['parse-json'];await writeFile(profilePath,JSON.stringify(profile));vi.stubEnv('STEWARD_CONFIG_DIRECTORY',policy);vi.stubEnv('VALIDATION_BASE_SHA','');vi.stubEnv('VALIDATION_BASE_REF','');vi.stubEnv('GITHUB_STEP_SUMMARY',join(dir,'summary'));
    const run=()=>main(['validate','--workspace',workspace,'--repository-id','1296724484','--profile','steward']);await expect(run()).resolves.toBeUndefined();await writeFile(join(workspace,'broken.json'),'{');await expect(run()).rejects.toThrow('验证任务失败');
@@ -176,7 +177,7 @@ describe('workflow argument boundaries',()=>{
  const release=YAML.parse(await readFile('.github/workflows/release.yml','utf8'));
  const classification=YAML.parse(await readFile('.github/workflows/pr-classification.yml','utf8'));
  const payload='value"; printf INJECTED; # $(printf SUBSTITUTED)';
- for(const [step,scan] of [[classification.jobs.classify.steps.at(-1),'false'],[classification.jobs.classify.steps.at(-1),'true'],[release.jobs.preflight.steps.at(-1),'false'],[release.jobs.notes.steps.find((s:any)=>s.run?.includes('release-notes --')),'false']] as any[]){
+ for(const [step,scan] of [[classification.jobs.classify.steps.at(-1),'false'],[classification.jobs.classify.steps.at(-1),'true'],...Object.values(release.jobs).flatMap((job:any)=>job.steps.filter((s:any)=>s.run?.includes('release-candidate --')).map((s:any)=>[s,'false']))] as any[]){
  const run=step.run.replace(/\$\{\{[\s\S]*?\}\}/g,'safe');
  const env={...process.env};for(const k of Object.keys(step.env||{}))env[k]=payload;env.SCAN_ALL=scan;
  const result=spawnSync('bash',['-c','node(){ printf "%s\\0" "$@"; };\n'+run],{env,encoding:'utf8'});
@@ -185,9 +186,9 @@ describe('workflow argument boundaries',()=>{
  }
  });
  it.skipIf(process.platform!=='win32')('passes build inputs as literal PowerShell arguments',async()=>{
- const d=YAML.parse(await readFile('.github/workflows/release.yml','utf8'));const step=d.jobs.build.steps.find((s:any)=>s.run?.includes('release-preflight'));
+ const d=YAML.parse(await readFile('.github/workflows/product-build.yml','utf8'));const step=d.jobs.build_windows.steps.find((s:any)=>s.run?.includes('release-build --operation execute-product'));
  const payload='value"; Write-Output INJECTED; # $(Write-Output SUBSTITUTED)';
- const result=spawnSync('pwsh',['-NoProfile','-NonInteractive','-Command','function node { ConvertTo-Json -InputObject @($args) -Compress }; '+step.run.replace(/\$\{\{[\s\S]*?\}\}/g,'safe')],{env:{...process.env,ARG_REPOSITORY_ID:payload,ARG_TARGET_SHA:payload},encoding:'utf8'});
- expect(result.status,result.stderr).toBe(0);const args=JSON.parse(result.stdout);expect(args[args.indexOf('--repository-id')+1]).toBe(payload);expect(args[args.indexOf('--target-sha')+1]).toBe(payload);
+ const result=spawnSync('pwsh',['-NoProfile','-NonInteractive','-Command','function node { ConvertTo-Json -InputObject @($args) -Compress }; '+step.run.replace(/\$\{\{[\s\S]*?\}\}/g,'safe')],{env:{...process.env,POLICY_SHA:payload,RUN_ID:payload},encoding:'utf8'});
+ expect(result.status,result.stderr).toBe(0);const args=JSON.parse(result.stdout);expect(args[args.indexOf('--policy-sha')+1]).toBe(payload);expect(args[args.indexOf('--run-id')+1]).toBe(payload);
  });
 });

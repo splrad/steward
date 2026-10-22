@@ -4,7 +4,7 @@ import { activeDelivery, assertDeliveryPath, requiresPublicVersion, validateDeli
 const identity = { id: 42, fullName: 'example/neutral', managed: true };
 function fixture(mask = 0): DeliveryConfiguration {
   return {
-    builds: { files: { profile: 'node-package-v1', inputs: { directory: '.', lockfile: 'package-lock.json' }, outputs: [{ id: 'package', kind: 'file', match: 'package-{version}.tgz' }] },
+    builds: { files: { profile: 'node-package-v1', inputs: { directory: '.', lockfile: 'package-lock.json' }, outputs: [{ id: 'package', kind: 'file', match: 'package.json' }] },
       image: { profile: 'oci-image-v1', inputs: { context: '.', dockerfile: 'Dockerfile' }, outputs: [{ id: 'image', kind: 'oci-image' }] } },
     delivery: { githubRelease: mask & 1 ? { enabled: true, state: 'pending', profile: 'neutral', builds: [] } : { enabled: false, state: 'disabled', profile: null, builds: [] },
       deployments: mask & 2 ? [{ id: 'production', state: 'pending', profile: 'cloud-service-v1', builds: ['image'], source: 'commit', trigger: 'default-branch' }] : [],
@@ -21,6 +21,24 @@ function registry(adapters = false): DeliveryRegistry {
 const check = (config: DeliveryConfiguration, available = registry()) => validateDeliveryConfiguration(config, available, identity);
 
 describe('delivery configuration T07', () => {
+  it.each(['dist/widget-{version}.zip','部件.zip','widget file.zip','.hidden','con.zip','widget.'])('rejects non-envelope Release output %s before building',match=>{
+    const config=fixture(1);config.delivery.githubRelease.builds=['files'];config.builds.files!.outputs[0]!.match=match;
+    expect(()=>check(config)).toThrow('RN_CONFIG_RELEASE_ASSET_NAME');
+    config.delivery.githubRelease.builds=[];expect(()=>check(config)).not.toThrow();
+  });
+  it.each(['widget-{version}.zip','widget-*.zip','*.tgz'])('accepts pure flat ASCII Release contracts independently of runner capabilities: %s',match=>{
+    const config=fixture(1);config.delivery.githubRelease.builds=['files'];config.builds.files!.outputs[0]!.match=match;expect(()=>check(config)).not.toThrow();
+  });
+  it('rejects multi-build releases before execution while retaining independent build units',()=>{
+    const config=fixture(1);
+    config.builds.secondFiles=structuredClone(config.builds.files!);
+    config.delivery.githubRelease.builds=['files'];
+    expect(()=>check(config)).not.toThrow();
+    config.delivery.githubRelease.builds=['files','secondFiles'];
+    expect(()=>check(config)).toThrow('RN_CONFIG_RELEASE_BUILD_LIMIT');
+    config.delivery.githubRelease.builds=[];
+    expect(()=>check(config)).not.toThrow();
+  });
   it.each(Array.from({ length: 8 }, (_, i) => i))('accepts capability combination %i as pending', mask => {
     const config = fixture(mask);
     expect(() => check(config)).not.toThrow();

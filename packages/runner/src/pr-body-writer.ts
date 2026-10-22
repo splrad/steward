@@ -1,17 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
-  extractIssueLinksBlock,
   extractManagedPullRequestBlock,
-  managedBodyOutsideIssueLinksDigest,
-  removeIssueLinksBlock,
   replaceManagedPullRequestBlock,
-  upsertIssueLinksBlock,
 } from "../../core/src/index.js";
 import type { GitHubClient } from "../../github/src/index.js";
 
-export type DurableBodyRegionKind = "managed-pr" | "issue-links";
+export type DurableBodyRegionKind = "managed-pr";
 export interface DurableBodyRedrive {
-  workflow: "pr-automation.yml" | "onboard-repository.yml" | "sync-review-instructions.yml" | "pr-issue-link.yml";
+  workflow: "onboard-repository.yml" | "sync-review-instructions.yml";
   inputs: Readonly<Record<string, string>>;
 }
 
@@ -37,21 +33,18 @@ function digest(body: string): string {
 }
 
 function outsideDigest(body: string, regionKind: DurableBodyRegionKind): string {
-  if (regionKind === "issue-links") return managedBodyOutsideIssueLinksDigest(body);
   const region = extractManagedPullRequestBlock(body);
   return digest(`${body.slice(0, region.start)}${body.slice(region.end)}`);
 }
 
 function applyRegion(body: string, regionKind: DurableBodyRegionKind, targetBlock: string | null): string {
-  if (regionKind === "managed-pr") {
-    if (targetBlock === null) throw new Error("拉取请求受管块不能删除");
-    return replaceManagedPullRequestBlock(body, targetBlock);
-  }
-  return targetBlock === null ? removeIssueLinksBlock(body) : upsertIssueLinksBlock(body, targetBlock);
+  if (regionKind !== "managed-pr" || targetBlock === null) throw new Error("不支持的正文写入区域");
+  return replaceManagedPullRequestBlock(body, targetBlock);
 }
 
-export function targetManagedBlock(body: string, regionKind: DurableBodyRegionKind): string | null {
-  return regionKind === "managed-pr" ? extractManagedPullRequestBlock(body).block : extractIssueLinksBlock(body)?.block ?? null;
+export function targetManagedBlock(body: string, regionKind: DurableBodyRegionKind): string {
+  if (regionKind !== "managed-pr") throw new Error("不支持的正文写入区域");
+  return extractManagedPullRequestBlock(body).block;
 }
 
 function runtimeBaseUrl(value: string): string {
@@ -175,6 +168,7 @@ export async function updatePullRequestBodyDurably(input: {
   additionalPatch?: Readonly<Record<string, unknown>>;
   confirmationAttempts?: number;
 }): Promise<any> {
+  if (input.regionKind !== "managed-pr" || !["onboard-repository.yml", "sync-review-instructions.yml"].includes(input.redrive?.workflow)) throw new Error("正文写入来源已退役");
   if (typeof input.expectedBaseRef !== "string" || !input.expectedBaseRef.trim()) throw new Error("正文写入缺少预期目标分支");
   const attempts = input.confirmationAttempts ?? 60;
   if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 60) throw new Error("正文写入确认次数无效");

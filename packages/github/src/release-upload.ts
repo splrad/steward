@@ -11,8 +11,7 @@ export async function uploadReleaseAsset(input: {
   const digest = createHash("sha256").update(bytes).digest("hex");
   if (digest !== input.expectedSha256.toLowerCase()) throw new Error(`资产摘要不匹配: ${input.fileName}`);
   const extension = input.fileName.slice(input.fileName.lastIndexOf("."));
-  const contentType = TYPES[extension];
-  if (!contentType) throw new Error(`不支持的资产类型: ${extension}`);
+  const contentType = TYPES[extension] ?? "application/octet-stream";
   const templateStart = input.uploadUrl.indexOf("{");
   const base = templateStart >= 0 ? input.uploadUrl.slice(0, templateStart) : input.uploadUrl;
   const response = await (input.transport ?? fetch)(`${base}?name=${encodeURIComponent(input.fileName)}`, {

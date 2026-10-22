@@ -1,0 +1,150 @@
+name: SPLRAD Steward / Release Build
+run-name: build:${{ inputs.repositoryId }}:${{ inputs.targetTag }}:${{ inputs.requestKey }}:${{ inputs.dispatchKey }}
+on:
+  workflow_dispatch:
+    inputs:
+      repositoryId:
+        required: true
+        type: string
+      targetTag:
+        required: true
+        type: string
+      targetSha:
+        required: false
+        type: string
+      authorIds:
+        required: false
+        type: string
+      dispatchKey:
+        required: false
+        type: string
+      requestKey:
+        required: false
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: workflow-policy:${{ github.workflow_ref }}:build-${{ inputs.repositoryId }}-${{ inputs.targetTag }}
+  cancel-in-progress: false
+jobs:
+  plan:
+    if: github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: steward-release
+      deployment: false
+    outputs:
+      artifactId: ${{ steps.context.outputs.artifact-id }}
+      runner: ${{ steps.plan.outputs.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: 固定构建来源与持久重试预算
+        timeout-minutes: 45
+        id: plan
+        shell: bash
+        env:
+          APP_ID: "4243096"
+          INSTALLATION_ID: "145952003"
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          RUNTIME_URL: https://splrad-steward-runtime.alearner-5ef.workers.dev
+          REPOSITORY_ID: ${{ inputs.repositoryId }}
+          TARGET_TAG: ${{ inputs.targetTag }}
+          TARGET_SHA: ${{ inputs.targetSha }}
+          AUTHOR_IDS: ${{ inputs.authorIds }}
+          REQUEST_KEY: ${{ inputs.requestKey }}
+          POLICY_SHA: ${{ github.workflow_sha }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: node packages/runner/dist/index.js release-build --operation plan --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --target-sha "$TARGET_SHA" --author-ids "$AUTHOR_IDS" --request-key "$REQUEST_KEY" --policy-sha "$POLICY_SHA" --run-id "$RUN_ID" --attempt "$ATTEMPT" --output build-context
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        id: context
+        with:
+          name: release-build-request-${{ github.run_attempt }}
+          path: build-context
+          if-no-files-found: error
+          retention-days: 30
+      - name: 拒绝未知或缺失的构建平台
+        shell: bash
+        env:
+          BUILD_RUNNER: ${{ steps.plan.outputs.runner }}
+        run: case "$BUILD_RUNNER" in windows-2025|ubuntu-24.04|none) ;; *) echo "BUILD_RUNNER_INVALID" >&2; exit 1 ;; esac
+  build_windows:
+    needs: plan
+    runs-on: windows-2025
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          dotnet-version: 10.0.402
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.plan.outputs.artifactId }}
+          merge-multiple: true
+          path: build-context
+      - name: 无发布凭据构建产品并校验原生版本
+        shell: pwsh
+        env:
+          POLICY_SHA: ${{ github.workflow_sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: node packages/runner/dist/index.js release-build --operation execute --policy-sha "$env:POLICY_SHA" --run-id "$env:RUN_ID" --request build-context/request.json --source-bundle build-context/source.bundle --workspace product-source --assets build-assets --inspector scripts/inspect-native-release.ps1 --output artifact-manifest.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-build-result-${{ github.run_attempt }}
+          path: build-assets
+          if-no-files-found: error
+          retention-days: 30
+    if: needs.plan.outputs.runner == 'windows-2025'
+  build_linux:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          dotnet-version: 10.0.402
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.plan.outputs.artifactId }}
+          merge-multiple: true
+          path: build-context
+      - name: 无发布凭据构建产品并校验原生版本
+        shell: pwsh
+        env:
+          POLICY_SHA: ${{ github.workflow_sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: node packages/runner/dist/index.js release-build --operation execute --policy-sha "$env:POLICY_SHA" --run-id "$env:RUN_ID" --request build-context/request.json --source-bundle build-context/source.bundle --workspace product-source --assets build-assets --inspector scripts/inspect-native-release.ps1 --output artifact-manifest.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-build-result-${{ github.run_attempt }}
+          path: build-assets
+          if-no-files-found: error
+          retention-days: 30
+    if: needs.plan.outputs.runner == 'ubuntu-24.04'

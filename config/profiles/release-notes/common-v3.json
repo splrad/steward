@@ -93,6 +93,5 @@
     "categoryOrder",
     "earliestPullRequestMergedAtAscending",
     "lowestPullRequestNumberAscending"
-  ],
-  "maxEntriesPerFragment": 5
+  ]
 }
