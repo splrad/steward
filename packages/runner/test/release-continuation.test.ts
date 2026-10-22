@@ -1,8 +1,14 @@
 import {it,expect,vi,afterEach} from 'vitest';
-import {dispatchWorkflow,GitHubRequestError,type GitHubClient} from '../../github/src/index.js';
+import {dispatchWorkflow,GitHubRequestError,ReleasePolicyDriftError,type GitHubClient} from '../../github/src/index.js';
 import {dispatchReleaseContinuation,validateContinuationRecovery} from '../src/release-continuation.js';
 vi.mock('../../github/src/index.js',async original=>({...await original<any>(),dispatchWorkflow:vi.fn()}));
 afterEach(()=>vi.resetAllMocks());
+it('releases a continuation reservation after policy drift prevents the POST',async()=>{
+ const error=new ReleasePolicyDriftError();vi.mocked(dispatchWorkflow).mockRejectedValue(error);
+ const release=vi.fn();const recovery={persist:vi.fn(),clear:vi.fn()};
+ await expect(dispatchReleaseContinuation(async()=>({} as GitHubClient),'a'.repeat(40),{},release,recovery)).rejects.toBe(error);
+ expect(recovery.persist).toHaveBeenCalledOnce();expect(release).toHaveBeenCalledOnce();expect(recovery.clear).toHaveBeenCalledOnce();
+});
 it.each([400,401,403,404,422,408,429,500])('releases only definitive dispatch rejection %s',async status=>{
  const error=new GitHubRequestError(status,'POST','/repos/splrad/steward/actions/workflows/release.yml/dispatches','failure');
  vi.mocked(dispatchWorkflow).mockRejectedValue(error);const release=vi.fn();

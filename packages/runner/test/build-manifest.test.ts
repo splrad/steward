@@ -23,6 +23,17 @@ it.each([
   if (accepted) await expect(result).resolves.toMatchObject({ artifacts: [{ file: name }] });
   else await expect(result).rejects.toThrow('RN_BUILD_VERSION');
 });
+
+it.each(['font-archive','dll-archive'] as const)('inspects declared %s without a VERSION file',async archiveType=>{
+ const plan=await planBuild({...identity,version:null},{...unit,outputs:[{id:'archive',kind:'file',match:'asset.zip',count:1,mediaType:'application/zip',archiveType}]});
+ await writeFile(join(output,'asset.zip'),'archive bytes');
+ const inspector=vi.fn(async()=>archiveType==='font-archive'?{resourceOnly:'font-archive' as const}:'1.2.3');
+ await expect(collectFileBuildManifest(plan,output,inspector)).resolves.toMatchObject({version:null});
+ expect(inspector).toHaveBeenCalledOnce();
+ await expect(collectFileBuildManifest(plan,output)).rejects.toThrow('RN_BUILD_VERSION');
+ const mismatch=async()=>archiveType==='font-archive'?'1.2.3':{resourceOnly:'font-archive' as const};
+ await expect(collectFileBuildManifest(plan,output,mismatch)).rejects.toThrow('RN_BUILD_VERSION');
+});
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return { ...actual, open: vi.fn(actual.open), opendir: vi.fn(actual.opendir), realpath: vi.fn(actual.realpath) };

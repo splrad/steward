@@ -326,6 +326,7 @@ describe("代码托管平台客户端", () => {
     const requests: unknown[] = [];
     const client = {
       getRepository: async () => ({ default_branch: "trunk" }),
+      getRef: async () => ({ object: { sha: "a".repeat(40) } }),
       request: async (...args: unknown[]) => { requests.push(args); },
     } as unknown as GitHubClient;
     const workflows = ["onboard-repository.yml", "native-review.yml", "pr-classification.yml", "release.yml", "sync-review-instructions.yml"];
@@ -344,10 +345,10 @@ describe("代码托管平台客户端", () => {
     await expect(dispatchWorkflow(client, { owner: "splrad", repo: "steward", workflow: "release.yml", policySha: "short", inputs: {} })).rejects.toThrow("40位");
   });
 
-  it("发布构建在默认分支与部署策略不一致时拒绝派发，同步后允许重试", async () => {
+  it.each(["release-build.yml", "release.yml"])("%s 在默认分支与部署策略不一致时拒绝派发，同步后允许重试", async (workflow) => {
     let head = "b".repeat(40); const request = vi.fn();
     const client = { getRepository: async () => ({ default_branch: "main" }), getRef: async () => ({ object: { sha: head } }), request } as unknown as GitHubClient;
-    const input = { owner: "splrad", repo: "steward", workflow: "release-build.yml", policySha: "a".repeat(40), inputs: {} };
+    const input = { owner: "splrad", repo: "steward", workflow, policySha: "a".repeat(40), inputs: {} };
     await expect(dispatchWorkflow(client, input)).rejects.toThrow("RELEASE_POLICY_DRIFT");
     expect(request).not.toHaveBeenCalled();
     head = input.policySha; await dispatchWorkflow(client, input);
