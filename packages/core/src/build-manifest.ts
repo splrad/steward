@@ -46,7 +46,7 @@ export interface BuildIdentity {
   repositoryId: number; fullName: string; buildId: string; profile: BuildProfile;
   targetSha: string; policySha: string; version: string | null;
 }
-export interface BuildOutputRule { id: string; kind: 'file' | 'oci-image'; match?: string; count: number; mediaType?: string }
+export interface BuildOutputRule { id: string; kind: 'file' | 'oci-image'; match?: string; count: number; mediaType?: string; archiveType?: 'dll-archive' | 'font-archive' }
 export interface BuildUnit { profile: BuildProfile; inputs: Record<string, unknown>; outputs: BuildOutputRule[] }
 export interface BuildPlan extends BuildIdentity {
   inputs: Record<string, unknown>; inputsSha256: string; outputs: BuildOutputRule[];
@@ -135,11 +135,13 @@ export async function planBuild(identity: BuildIdentity, unit: BuildUnit): Promi
     || unit.outputs.some(rule => !rule || typeof rule !== 'object' || Array.isArray(rule))
     || new Set(unit.outputs.map(rule => rule.id)).size !== unit.outputs.length) buildFail('RN_BUILD_OUTPUT');
   for (const rule of unit.outputs) {
-    exact(rule, unit.profile === 'oci-image-v1' ? ['id', 'kind', 'count'] : ['id', 'kind', 'match', 'count', 'mediaType']);
+    exact(rule, unit.profile === 'oci-image-v1' ? ['id', 'kind', 'count'] : ['id', 'kind', 'match', 'count', 'mediaType', ...(rule.archiveType === undefined ? [] : ['archiveType'])]);
     if (typeof rule.id !== 'string' || !idPattern.test(rule.id) || !Number.isSafeInteger(rule.count) || rule.count < 1 || rule.count > buildLimits.maxFiles) buildFail('RN_BUILD_OUTPUT');
     if (unit.profile === 'oci-image-v1') { if (rule.kind !== 'oci-image' || rule.count !== 1) buildFail('RN_BUILD_OUTPUT'); }
     else {
       if (rule.kind !== 'file' || typeof rule.match !== 'string' || typeof rule.mediaType !== 'string' || !/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/u.test(rule.mediaType)) buildFail('RN_BUILD_OUTPUT');
+      if (rule.archiveType !== undefined && (!['dll-archive', 'font-archive'].includes(rule.archiveType) || !rule.match.endsWith('.zip') || rule.mediaType !== 'application/zip')) buildFail('RN_BUILD_OUTPUT');
+      if (rule.archiveType === 'font-archive' && (rule.count !== 1 || /[{}*?\[\]]/u.test(rule.match))) buildFail('RN_BUILD_OUTPUT');
       assertBuildPath(rule.match, { glob: true, version: true });
       if (identity.version === null && rule.match.includes('{version}')) buildFail('RN_BUILD_VERSION');
       assertBuildPath(rule.match.replaceAll('{version}', identity.version ?? ''), { glob: true });

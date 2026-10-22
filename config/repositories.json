@@ -124,14 +124,16 @@
               "match": "AFR-DLL_v{version}.zip",
               "kind": "file",
               "count": 1,
-              "mediaType": "application/zip"
+              "mediaType": "application/zip",
+              "archiveType": "dll-archive"
             },
             {
               "id": "fonts",
               "match": "Fonts.zip",
               "kind": "file",
               "count": 1,
-              "mediaType": "application/zip"
+              "mediaType": "application/zip",
+              "archiveType": "font-archive"
             }
           ]
         }

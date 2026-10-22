@@ -37,11 +37,11 @@ export async function executeBuildCommand(command: BuildCommand, environment: No
   });
 }
 /** The executor must run in a credential-free build job; collectors remain centrally controlled. */
-export async function buildReleaseAssets(plan: BuildPlan, context: BuildExecutionContext, execute: (command: BuildCommand) => Promise<void>, inspect?: NativeVersionInspector): Promise<BuildManifest> {
+export async function buildReleaseAssets(plan: BuildPlan, context: BuildExecutionContext, execute: (command: BuildCommand) => Promise<void>, inspect?: NativeVersionInspector, purpose: 'release' | 'product' = 'release'): Promise<BuildManifest> {
   const expected = await planBuild(plan, { profile: plan.profile, inputs: plan.inputs, outputs: plan.outputs });
   releaseAssert(canonicalReleaseJson(expected) === canonicalReleaseJson(plan), 'BUILD_PLAN');
   releaseAssert(plan.profile !== 'oci-image-v1' || plan.outputs.length === 1, 'BUILD_OCI_OUTPUT');
-  if (plan.profile !== 'oci-image-v1') for (const rule of plan.outputs) assertReleaseAssetName(rule.match!.replaceAll('{version}', plan.version ?? ''), true);
+  if (purpose === 'release' && plan.profile !== 'oci-image-v1') for (const rule of plan.outputs) assertReleaseAssetName(rule.match!.replaceAll('{version}', plan.version ?? ''), true);
   await validateBuildInputs(plan, context);
   const git = async (args: string[]) => (await promisify(execFile)('git', ['--no-optional-locks', '-C', context.sourceDirectory, ...args], { encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024, windowsHide: true,
     env: { ...isolatedBuildEnvironment(process.env, context.outputDirectory), GIT_NO_LAZY_FETCH: '1' } })).stdout.trim();
@@ -60,7 +60,7 @@ export async function buildReleaseAssets(plan: BuildPlan, context: BuildExecutio
   releaseAssert(await git(['rev-parse', 'HEAD']) === plan.targetSha
     && await git(['status', '--porcelain', '--untracked-files=all']) === '', 'BUILD_SOURCE_CHANGED');
   const manifest = plan.profile === 'oci-image-v1' ? await collectOciBuildManifest(plan, context.outputDirectory) : await collectFileBuildManifest(plan, context.outputDirectory, inspect);
-  for (const artifact of manifest.artifacts) if (artifact.kind === 'file') assertReleaseAssetName(artifact.file);
+  if (purpose === 'release') for (const artifact of manifest.artifacts) if (artifact.kind === 'file') assertReleaseAssetName(artifact.file);
   canonicalBuildManifest(manifest); return manifest;
 }
 export function buildToolchainDigest(versions: Record<string, string>): string {

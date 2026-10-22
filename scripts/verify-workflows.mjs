@@ -303,7 +303,7 @@ if (releaseSourceWorkflow.jobs['generated-candidate'].if !== "needs.generate.out
   || generationJob.steps.find(s => s.id === 'generated')?.if !== "steps.produce.outputs.complete == 'true'") throw new Error('生成续跑与完成候选必须互斥');
 if (releaseSourceWorkflow.jobs['generation-ticket']['timeout-minutes'] !== 60 || releaseSourceWorkflow.jobs['generated-candidate']['timeout-minutes'] !== 60 || releaseSourceWorkflow.jobs.prepare['timeout-minutes'] !== 60) throw new Error('完整seed消费作业须覆盖资产下载与校验预算');
 for (const step of generationJob.steps) {
-  if (step.env && (!hasExactKeys(step.env, ['COPILOT_GITHUB_TOKEN']) || step.env.COPILOT_GITHUB_TOKEN !== '${{ secrets.COPILOT_GITHUB_TOKEN }}')) throw new Error('模型作业包含额外凭据');
+  if (step.env && !(hasExactKeys(step.env, ['COPILOT_GITHUB_TOKEN']) && step.env.COPILOT_GITHUB_TOKEN === '${{ secrets.COPILOT_GITHUB_TOKEN }}') && !(hasExactKeys(step.env, ['GENERATION_TICKET_KEY']) && step.env.GENERATION_TICKET_KEY === '${{ secrets.GENERATION_TICKET_KEY }}' && step.run === 'node scripts/generation-ticket-envelope.mjs open grant/generation-ticket.enc grant/generation-ticket.json')) throw new Error('模型作业包含额外凭据');
   if (step.run && /release-candidate|reconcile|STEWARD_APP_PRIVATE_KEY/.test(step.run)) throw new Error('模型作业不得写候选或发布');
 }
 if (releaseSourceWorkflow.jobs.publish.if !== "inputs.operation == 'reconcile' && needs.inspect.outputs.shouldPublish == 'true'") throw new Error("Review 观察不得直接发布");
@@ -327,3 +327,5 @@ console.log("workflows verified");
 for (const file of ["pr-automation.yml", "issue-sync.yml", "pr-issue-link.yml"]) {
   if (workflowDocuments.has(file)) throw new Error(`退役工作流仍存在: ${file}`);
 }
+
+if (releaseSourceWorkflow.jobs['generation-ticket'].steps.find(s=>s.uses?.startsWith('actions/upload-artifact@'))?.with.path !== 'generation-ticket.enc') throw Error('生成凭证仅可上传加密信封');

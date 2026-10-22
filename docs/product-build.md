@@ -16,3 +16,5 @@
 工具链目录固定于 core/release-build-request.ts。执行时检查相关工具版本，不匹配即失败；通用作业依赖 runner 已提供对应 Docker/Buildx 或 PowerShell 版本。本地执行验证不证明 GitHub 托管 runner 已具备全部相同版本，远端第一次运行须回读实际环境与作业结果。现有仓库的发布开关不因新增工作流改变。
 
 参考：[dotnet publish](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-publish)、[Docker Buildx 构建与导出参数](https://docs.docker.com/reference/cli/docker/buildx/build/)。
+
+Windows Release ZIP 输出须声明 `archiveType`：`dll-archive` 只接受版本一致的 DLL 集合；`font-archive` 只接受检查器支持的字体/SHX，且必须使用固定文件名和 `count: 1`。未声明类型的 ZIP 不通过 Release 能力检查。声明与实际内容不符时，构建验收失败。

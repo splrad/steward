@@ -12,7 +12,7 @@ it('limits a graph ticket to its own nodes and refuses preparation or ticket iss
   try {
     const graph = planGenerationGraph('a'.repeat(64), policy, 10, ['input']);
     const id = await store.prepare(9001, 'v1.2.3', 10, graph, ['input']);
-    const token = await store.ticket(id, policy, 1000);
+    let token = await store.ticket(id, policy, 1000);
     const call = (body: unknown, repo = 9001, auth = token) => handleGenerationGraphTicket(new Request('https://example.test/', {
       method: 'POST', headers: { authorization: `Bearer ${auth}` }, body: JSON.stringify({ graphDigest: id.graphDigest, ...body as object }),
     }), db.binding(), repo, 'v1.2.3', policy, () => 1001);
@@ -39,7 +39,7 @@ it('exposes only the immutable source of the authenticated graph, never a caller
     const store = new ReleaseGenerationGraphStore(db.binding());
     const graph = planGenerationGraph(receiptDigest(source), policy, source.length, [source]);
     const id = await store.prepare(9001, 'v1.2.3', source.length, graph, [source]);
-    const token = await store.ticket(id, policy, 1000);
+    let token = await store.ticket(id, policy, 1000);
     const call = (part: number) => handleGenerationGraphTicket(new Request('https://example.test/', {
       method: 'POST', headers: { authorization: `Bearer ${token}` },
       body: JSON.stringify({ action: 'source', graphDigest: id.graphDigest, part, digest: receiptDigest('other') }),
@@ -56,7 +56,7 @@ it('runs persisted leaves and hierarchical reductions through the ticket API, in
     const inputs = Array.from({ length: 9 }, (_, i) => `input-${i}`);
     const graph = planGenerationGraph('a'.repeat(64), policy, 100, inputs);
     const id = await store.prepare(9001, 'v1.2.3', 100, graph, inputs);
-    const token = await store.ticket(id, policy, 1000);
+    let token = await store.ticket(id, policy, 1000);
     const client = { async request<T>(_action: string, body: unknown): Promise<T> {
       return await handleGenerationGraphTicket(new Request('https://example.test/', {
         method: 'POST', headers: { authorization: `Bearer ${token}` },
@@ -74,6 +74,8 @@ it('runs persisted leaves and hierarchical reductions through the ticket API, in
     expect(seen).toHaveLength(graph.nodes.length + 1);
     expect(seen[1]!.diagnostic).toBe('provider returned empty output');
     expect(seen.filter(s => s.input.startsWith('input-'))).toHaveLength(10);
+    await expect(client.request('generation-graph', {action:'status'})).rejects.toThrow('GENERATION_AUTH');
+    token = await store.ticket(id, policy, 1002);
     const repeated = await runGenerationGraph(client, async () => { throw new Error('must reuse completed root'); }, () => 1001);
     expect(repeated).toEqual(result);
   } finally { db.database.close(); }

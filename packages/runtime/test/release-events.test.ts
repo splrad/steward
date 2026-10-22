@@ -17,6 +17,7 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (url: any, init: RequestInit = {}) => {
     if (init.method === 'POST' && String(url).includes('/dispatches')) { requests.push(JSON.parse(String(init.body))); return new Response(null, { status: 204 }); }
     if (String(url).endsWith('/repos/splrad/steward')) return Response.json({ default_branch: 'main' });
+    if (String(url).endsWith('/repos/splrad/steward/git/ref/heads/main')) return Response.json({ object: { sha: env.POLICY_SHA } });
     throw new Error('unexpected remote request ' + url);
   }));
 });

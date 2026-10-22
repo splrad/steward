@@ -5,12 +5,13 @@ import type { BodyWriteRuntimeEnv } from './pr-body-api.js';
 
 export async function dispatchMigrationBuild(env: BodyWriteRuntimeEnv, inputs: Record<string, string>): Promise<void> {
   const policy = env.POLICY_SHA!;
-  const key = receiptDigest(canonicalReleaseJson({ policy, inputs }));
+  const payload = canonicalReleaseJson({ policy, inputs });
+  const key = receiptDigest(payload);
   const db = env.ISSUE_SNAPSHOTS!;
   const gh = await centralBuildClient(env, true);
   // Reserve before the external POST. A lost response or process exit must never
   // turn a retry into a second dispatch, including concurrent callers.
-  const reserved = await db.prepare('INSERT OR IGNORE INTO release_migration_dispatches(dispatch_key) VALUES(?)').bind(key).run();
+  const reserved = await db.prepare('INSERT OR IGNORE INTO release_migration_dispatches(dispatch_key,payload_json) VALUES(?,?)').bind(key,payload).run();
   if (reserved.meta.changes === 1) {
     try {
       await dispatchWorkflow(gh, { owner: 'splrad', repo: 'steward', workflow: 'release-build.yml', policySha: policy, inputs: { ...inputs, dispatchKey: key } });
@@ -23,7 +24,8 @@ export async function dispatchMigrationBuild(env: BodyWriteRuntimeEnv, inputs: R
       throw error;
     }
   } else {
-    const intent = await db.prepare('SELECT confirmed FROM release_migration_dispatches WHERE dispatch_key=?').bind(key).first<{ confirmed: number }>();
+    const intent = await db.prepare('SELECT confirmed,payload_json FROM release_migration_dispatches WHERE dispatch_key=?').bind(key).first<{ confirmed: number; payload_json: string }>();
+    releaseAssert(intent?.payload_json === payload && receiptDigest(intent.payload_json) === key, 'MIGRATION_DISPATCH_BINDING');
     if (intent?.confirmed === 1) return;
     let total: number | undefined;
     const runs = await gh.paginate<any>(`/repos/splrad/steward/actions/workflows/release-build.yml/runs?event=workflow_dispatch&head_sha=${policy}&per_page=100`, value => {
@@ -41,11 +43,11 @@ export async function dispatchMigrationBuild(env: BodyWriteRuntimeEnv, inputs: R
     // Keep the intent for readback or operator recovery; never blindly resend.
     releaseAssert(matches.length === 1, 'MIGRATION_DISPATCH_UNKNOWN');
   }
-  const confirmed = await db.prepare('UPDATE release_migration_dispatches SET confirmed=1 WHERE dispatch_key=?').bind(key).run();
+  const confirmed = await db.prepare('UPDATE release_migration_dispatches SET confirmed=1 WHERE dispatch_key=? AND payload_json=?').bind(key,payload).run();
   if (confirmed.meta.changes !== 1) {
     // Dispatch acceptance (or matching Actions evidence) is already established.
     // Restore its tombstone before reporting the conflict so a retry cannot POST again.
-    await db.prepare('INSERT INTO release_migration_dispatches(dispatch_key,confirmed) VALUES(?,1) ON CONFLICT(dispatch_key) DO UPDATE SET confirmed=1').bind(key).run();
+    await db.prepare('INSERT INTO release_migration_dispatches(dispatch_key,payload_json,confirmed) VALUES(?,?,1) ON CONFLICT(dispatch_key) DO UPDATE SET confirmed=1 WHERE payload_json=excluded.payload_json').bind(key,payload).run();
     throw new Error('MIGRATION_DISPATCH_STATE_CONFLICT');
   }
 }

@@ -140,7 +140,9 @@ export async function collectFileBuildManifest(plan: BuildPlan, outputDirectory:
     const file = await assertBuildSourcePath(root, assignment.file);
     const before = await buildPathOperation(lstat(file));
     if (!before.isFile() || before.nlink !== 1 || before.size <= 0 || before.size > buildLimits.maxFileBytes) buildFail('RN_BUILD_LIMIT');
-    const inspect = plan.version !== null ? inspectNativeVersion : undefined;
+    const outputRule = plan.outputs.find(rule => rule.count === 1 ? assignment.id === rule.id
+      : Array.from({length:rule.count}, (_, i) => `${rule.id}-${i+1}`).includes(assignment.id));
+    const inspect = plan.version !== null || outputRule?.archiveType !== undefined ? inspectNativeVersion : undefined;
     if (inspect && !inspect.inspectPath && before.size > buildLimits.maxNativeVersionBytes) buildFail('RN_BUILD_LIMIT');
     total += before.size; if (total > buildLimits.maxTotalBytes) buildFail('RN_BUILD_LIMIT');
     const handle = await buildPathOperation(open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)));
@@ -174,8 +176,13 @@ export async function collectFileBuildManifest(plan: BuildPlan, outputDirectory:
         if (snapshotDirectory) await rm(snapshotDirectory, { recursive: true, force: true });
       }
       if (native && typeof native === 'object') {
-        if (native.resourceOnly !== 'font-archive' || assignment.mediaType !== 'application/zip' || !assignment.file.endsWith('.zip')) buildFail('RN_BUILD_VERSION');
-      } else checkBuildNativeVersion(plan, native);
+        const rule = plan.outputs.find(rule => rule.count === 1 && assignment.id === rule.id);
+        if (native.resourceOnly !== 'font-archive' || assignment.mediaType !== 'application/zip' || !assignment.file.endsWith('.zip')
+          || rule?.match !== assignment.file || rule.archiveType !== 'font-archive') buildFail('RN_BUILD_VERSION');
+      } else {
+        if (outputRule?.archiveType === 'font-archive' || (outputRule?.archiveType === 'dll-archive' && typeof native !== 'string')) buildFail('RN_BUILD_VERSION');
+        checkBuildNativeVersion(plan, native);
+      }
       artifacts.push({ ...assignment, kind: 'file', size, sha256 });
     } finally { await handle.close(); }
     if (await assertBuildSourcePath(root, assignment.file) !== file || !unchanged(before, await buildPathOperation(lstat(file)))) buildFail('RN_BUILD_PATH');

@@ -15,6 +15,8 @@ export async function runGenerationGraph(
 ): Promise<{ complete: true; result: GeneratedRelease } | { complete: false }> {
   const deadline = now() + limits.runTimeoutMs;
   let calls = 0;
+  let yielded = false;
+  try {
   while (true) {
     const progress = await client.request<Progress>('generation-graph', { action: 'status' });
     if (progress.complete) {
@@ -24,6 +26,7 @@ export async function runGenerationGraph(
     if (progress.callsRemaining === 0 || calls === limits.callsPerRun || now() + limits.callTimeoutMs >= deadline) {
       releaseAssert(progress.runsRemaining > 0, 'GENERATION_RUN_BUDGET');
       await client.request('generation-graph', { action: 'yield' });
+      yielded = true;
       return { complete: false };
     }
     releaseAssert(progress.ready.length > 0, 'GENERATION_NODE_EXHAUSTED');
@@ -46,5 +49,8 @@ export async function runGenerationGraph(
       continue;
     }
     await client.request('generation-graph', { action: 'complete', nodeId, reservation: reserved.reservation, output: normalized });
+  }
+  } finally {
+    if (!yielded) await client.request('generation-graph', { action: 'yield' });
   }
 }

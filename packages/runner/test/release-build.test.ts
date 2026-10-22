@@ -167,3 +167,18 @@ it('rejects a non-ASCII file selected by a wildcard before artifact upload',asyn
  plan=await planBuild(plan,{profile:plan.profile,inputs:plan.inputs,outputs:[{...plan.outputs[0]!,match:'*.zip',mediaType:'application/zip'}]});
  await expect(buildReleaseAssets(plan,{sourceDirectory:source,outputDirectory:output,buildRunId:'1'},async()=>{await writeFile(join(output,'部件.zip'),'asset')},async()=> '1.2.3')).rejects.toThrow('BUILD_RELEASE_PATH');
 });
+
+it('preserves safe nested outputs for product builds while Release remains flat', async () => {
+  const outputs = [{...plan.outputs[0]!, match:'dist/package.json'}];
+  const nested = await planBuild(plan, {profile:plan.profile, inputs:plan.inputs, outputs});
+  const context = {sourceDirectory:source, outputDirectory:output, buildRunId:'nested'};
+  const execute = vi.fn(async () => {
+    await mkdir(join(output,'dist'));
+    await writeFile(join(output,'dist/package.json'), JSON.stringify({version:'1.2.3'}));
+  });
+  const inspector = async (bytes:Uint8Array) => JSON.parse(Buffer.from(bytes).toString()).version;
+  await expect(buildReleaseAssets(nested, context, execute, inspector)).rejects.toThrow('BUILD_RELEASE_PATH');
+  expect(execute).not.toHaveBeenCalled();
+  const manifest = await buildReleaseAssets(nested, context, execute, inspector, 'product');
+  expect(manifest.artifacts[0]).toMatchObject({file:'dist/package.json'});
+});

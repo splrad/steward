@@ -1,4 +1,5 @@
 import { preflightGenerationSource } from '../../core/src/release-generation-graph.js';
+import { verifyBuildExecutionCapabilities } from './release-format-capabilities.js';
 import { fetchBoundArtifactFile, type ArtifactBinding } from './artifact-handoff.js';
 import {extractArtifactFile} from './artifact-file.js';
 import {createReadStream} from 'node:fs';
@@ -92,6 +93,7 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
     releaseAssert(positiveId(repositoryId) && releaseSha(target), 'BUILD_IDENTITY');
     const configuration = (catalog.repositories as Record<string, any>)[String(repositoryId)];
     releaseAssert(configuration?.managed && configuration.builds?.[buildId], 'BUILD_CONFIGURATION');
+    verifyBuildExecutionCapabilities(configuration.builds[buildId]);
     const auth = await scoped(repositoryId, policySha), repository = await auth.gh.request<any>('GET', `/repositories/${repositoryId}`);
     releaseAssert(repository.id === repositoryId && repository.full_name === configuration.fullName && repository.private === false, 'BUILD_SOURCE_VISIBILITY');
     const directory = resolve(required('output')), home = await mkdtemp(join(tmpdir(), 'steward-product-plan-')), source = join(home, 'source');
@@ -128,7 +130,7 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
       const buildx = (await run('docker', ['buildx', 'version'], { env, encoding: 'utf8' })).stdout.trim().split(/\s+/)[1];
       releaseAssert(docker === releaseToolchain.docker && buildx === 'v' + releaseToolchain.buildx, 'BUILD_TOOLCHAIN');
     }
-    const manifest = await buildReleaseAssets(plan, { sourceDirectory: source, outputDirectory: assets, buildRunId: required('run-id') }, c => executeBuildCommand(c, env), nativeReleaseInspector(resolve(required('inspector')), home));
+    const manifest = await buildReleaseAssets(plan, { sourceDirectory: source, outputDirectory: assets, buildRunId: required('run-id') }, c => executeBuildCommand(c, env), nativeReleaseInspector(resolve(required('inspector')), home), operation === 'execute-product' ? 'product' : 'release');
     await writeFile(resolve(required('output')), canonicalReleaseJson(manifest), { flag: 'wx' });
     if (operation === 'execute-product') await writeFile(resolve(required('output')) + '.execution.json', canonicalReleaseJson({ repositoryId: plan.repositoryId, targetSha: plan.targetSha, policySha, buildId: plan.buildId, buildRunId: required('run-id'), inputsSha256: plan.inputsSha256, toolchain: releaseToolchain, toolchainDigest: releaseToolchainDigest }), { flag: 'wx' });
     return;
