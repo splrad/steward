@@ -13,4 +13,3 @@ it('encrypts the bearer and authenticates the exact run binding and key',()=>{
  expect(()=>openTicket(JSON.stringify(changed),key,context)).toThrow();
  expect(()=>sealTicket(plain,'',context)).toThrow('TICKET_KEY');
 });
-
