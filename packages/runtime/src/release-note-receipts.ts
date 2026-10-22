@@ -57,6 +57,13 @@ export class ReleaseReceiptStore {
       .bind(repositoryId, pullNumber).first<{ target_tag: string }>();
     return row ? this.get(repositoryId, row.target_tag) : null;
   }
+  async reserveReviewInspection(receipt: ReleaseReceipt, now: number): Promise<boolean> {
+    // Share the recovery cooldown: a lost/ambiguous dispatch remains recoverable,
+    // and concurrent review deliveries cannot flood the Actions queue.
+    const result = await this.db.prepare("UPDATE release_receipts SET dispatch_after=? WHERE repository_id=? AND target_tag=? AND current=1 AND revision=? AND version=? AND json_extract(record_json,'$.headSha')=? AND dispatch_after<=?")
+      .bind(now + 15 * 60_000, receipt.frozen.repositoryId, receipt.frozen.targetTag, receipt.revision, receipt.version, receipt.headSha, now).run();
+    return result.meta.changes === 1;
+  }
   async takeRecoveryBatch(now: number): Promise<ReleaseReceipt[]> {
     const rows = await this.db.prepare("SELECT repository_id,target_tag,version FROM release_receipts WHERE current=1 AND lease_until<=? AND dispatch_after<=? AND ((json_extract(record_json,'$.paused')=0 AND (json_extract(record_json,'$.phase') IN ('awaiting-review','approved','merged','publishing') OR json_extract(record_json,'$.phase')='prepared')) OR (json_extract(record_json,'$.paused')=1 AND json_extract(record_json,'$.error')='rebuild-changed-review-required' AND json_extract(record_json,'$.rebuildRequestKey') IS NOT NULL)) ORDER BY updated_at LIMIT 20")
       .bind(now, now).all<{ repository_id: number; target_tag: string; version: number }>();

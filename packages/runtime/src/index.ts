@@ -417,6 +417,21 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       && payload.repository && isManaged(payload.repository) && payload.pull_request?.number) {
       const candidate = await new ReleaseReceiptStore(env.ISSUE_SNAPSHOTS).findByPull(Number(payload.repository.id), Number(payload.pull_request.number));
       if (candidate && candidate.frozen.policySha === env.POLICY_SHA) {
+        if (event === 'pull_request_review') {
+          const review = payload.review;
+          if (!['submitted', 'edited', 'dismissed'].includes(action) || review?.user?.type !== 'User'
+            || typeof review.user.login !== 'string' || !['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(String(review.state).toUpperCase())
+            || !candidate.headSha || review.commit_id !== candidate.headSha || payload.pull_request.head?.sha !== candidate.headSha) return response(204);
+          const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY!, installationId: Number(env.INSTALLATION_ID),
+            repositoryId: Number(payload.repository.id), permissions: { metadata: 'read' }, policySha: env.POLICY_SHA });
+          const [owner, repo] = splitRepository(payload.repository.full_name);
+          const gh = new GitHubClient(token, 'https://api.github.com', fetch, env.POLICY_SHA);
+          let permission;
+          try { permission = await gh.getCollaboratorPermission(owner, repo, review.user.login); }
+          catch (error) { if (error instanceof GitHubRequestError && error.status === 404) return response(204); throw error; }
+          if (!['write', 'maintain', 'admin'].includes(permission.permission)) return response(204);
+          if (!await new ReleaseReceiptStore(env.ISSUE_SNAPSHOTS).reserveReviewInspection(candidate, Date.now())) return response(204);
+        }
         const operation = event === "pull_request" && action === "closed" && payload.pull_request.merged === true ? "reconcile" : "inspect";
         await send(env, "release.yml", { repositoryId: String(payload.repository.id), targetTag: candidate.frozen.targetTag, operation });
         if (event === "pull_request_review" || action === "closed") return response(202);
