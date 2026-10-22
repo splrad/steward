@@ -235,6 +235,20 @@ describe('receipt API and publisher with SQLite persistence', () => {
     remote.assets[0].digest = 'sha256:' + '0'.repeat(64);
     await expect(publish()).rejects.toThrow('ASSET_CONFLICT'); expect(uploads).toBe(1); expect(publishes).toBe(0);
   });
+  it.each(['commit', 'tag'])('a changed target %s blocks recovery before publishing an existing draft', async type => {
+    await seed(true); await approveAndMerge(); lost = 'upload';
+    await expect(publish()).rejects.toThrow('response lost');
+    expect(remote.draft).toBe(true);
+    state.gh.getGitRef = async () => ({ object: { type, sha: sha('f') } });
+    await expect(publish()).rejects.toThrow('TARGET_TAG_DRIFT');
+    expect(publishes).toBe(0); expect(remote.draft).toBe(true); expect(creates).toBe(1);
+  });
+  it('allows draft recovery when the target tag still names the frozen product commit', async () => {
+    await seed(true); await approveAndMerge(); lost = 'upload';
+    await expect(publish()).rejects.toThrow('response lost');
+    state.gh.getGitRef = async () => ({ object: { type: 'commit', sha: sha('a') } });
+    expect((await publish()).phase).toBe('verified'); expect(publishes).toBe(1); expect(creates).toBe(1);
+  });
   it('published body drift is reported and never overwritten', async () => {
     await seed(); await approveAndMerge(); await publish(); remote.body = 'human later edit';
     await expect(publish()).rejects.toThrow('REMOTE_IDENTITY'); expect(remote.body).toBe('human later edit'); expect(publishes).toBe(1);
