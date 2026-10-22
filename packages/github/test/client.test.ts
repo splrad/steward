@@ -345,7 +345,7 @@ describe("代码托管平台客户端", () => {
     await expect(dispatchWorkflow(client, { owner: "splrad", repo: "steward", workflow: "release.yml", policySha: "short", inputs: {} })).rejects.toThrow("40位");
   });
 
-  it.each(["release-build.yml", "release.yml"])("%s 在默认分支与部署策略不一致时拒绝派发，同步后允许重试", async (workflow) => {
+  it.each(["release-build.yml", "release.yml", "release-build-complete.yml"])("%s 在默认分支与部署策略不一致时拒绝派发，同步后允许重试", async (workflow) => {
     let head = "b".repeat(40); const request = vi.fn();
     const client = { getRepository: async () => ({ default_branch: "main" }), getRef: async () => ({ object: { sha: head } }), request } as unknown as GitHubClient;
     const input = { owner: "splrad", repo: "steward", workflow, policySha: "a".repeat(40), inputs: {} };
