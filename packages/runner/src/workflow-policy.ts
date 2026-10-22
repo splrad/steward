@@ -18,7 +18,7 @@ const actions = new Set([
 ]);
 const secretEnvironments: Record<string, readonly string[]> = {
  'steward-automation': ['STEWARD_APP_PRIVATE_KEY', 'COPILOT_CLI_TOKEN'],
- 'steward-release': ['STEWARD_APP_PRIVATE_KEY'], 'steward-release-notes': ['COPILOT_GITHUB_TOKEN'],
+ 'steward-release': ['STEWARD_APP_PRIVATE_KEY', 'GENERATION_TICKET_KEY'], 'steward-release-notes': ['COPILOT_GITHUB_TOKEN', 'GENERATION_TICKET_KEY'],
  'steward-deployment': ['CLOUDFLARE_API_TOKEN', 'STEWARD_APP_PRIVATE_KEY'],
 };
 const object = (v: any): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);

@@ -15,7 +15,7 @@ export async function releaseProduceCommand(args: Readonly<Record<string, string
   validateFrozenRelease(frozen);
   releaseAssert(typeof grant.token === 'string' && grant.token.startsWith('release-generation-graph.')
     && /^[a-f0-9]{64}$/.test(grant.graphDigest), 'GENERATION_TICKET');
-  releaseAssert(process.env.COPILOT_GITHUB_TOKEN && !process.env.STEWARD_APP_PRIVATE_KEY && !process.env.GITHUB_TOKEN && !process.env.GH_TOKEN, 'GENERATION_ENVIRONMENT');
+  releaseAssert(process.env.COPILOT_GITHUB_TOKEN && !process.env.STEWARD_APP_PRIVATE_KEY && !process.env.GITHUB_TOKEN && !process.env.GH_TOKEN && !process.env.GENERATION_TICKET_KEY, 'GENERATION_ENVIRONMENT');
   const client = new ReleaseReceiptClient(required('runtime-url'), grant.token, frozen.repositoryId, frozen.targetTag);
   const sourceBytes = await client.getObject(frozen.sourceDigest, grant.graphDigest);
   const source = validateReleaseSource(sourceBytes, frozen);

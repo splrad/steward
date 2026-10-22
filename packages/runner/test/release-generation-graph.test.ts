@@ -19,7 +19,7 @@ it('uses persisted status and returns only a completed root result', async () =>
   const f = mock(), invoke = vi.fn(async () => output);
   expect((await runGenerationGraph(f.client, invoke)).complete).toBe(true);
   expect(invoke).toHaveBeenCalledTimes(1);
-  expect(f.bodies.map(b => b.action)).toEqual(['status', 'reserve', 'complete', 'status', 'result']);
+  expect(f.bodies.map(b => b.action)).toEqual(['status', 'reserve', 'complete', 'status', 'result', 'yield']);
 });
 it('yields before a deadline without issuing another provider request', async () => {
   const f = mock(), invoke = vi.fn(async () => output);
@@ -32,7 +32,7 @@ it('does not retry a provider call with unknown outcome in the same segment', as
   const f = mock(), invoke = vi.fn(async () => { throw new Error('network'); });
   await expect(runGenerationGraph(f.client, invoke)).rejects.toThrow('network');
   expect(invoke).toHaveBeenCalledTimes(1);
-  expect(f.bodies.map(b => b.action)).toEqual(['status', 'reserve']);
+  expect(f.bodies.map(b => b.action)).toEqual(['status', 'reserve', 'yield']);
 });
 it('records malformed output before retrying the node under its persisted attempt cap', async () => {
   const f = mock(), invoke = vi.fn().mockResolvedValueOnce('invalid').mockResolvedValueOnce(output);

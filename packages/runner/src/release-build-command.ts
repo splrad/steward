@@ -130,7 +130,7 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
       const buildx = (await run('docker', ['buildx', 'version'], { env, encoding: 'utf8' })).stdout.trim().split(/\s+/)[1];
       releaseAssert(docker === releaseToolchain.docker && buildx === 'v' + releaseToolchain.buildx, 'BUILD_TOOLCHAIN');
     }
-    const manifest = await buildReleaseAssets(plan, { sourceDirectory: source, outputDirectory: assets, buildRunId: required('run-id') }, c => executeBuildCommand(c, env), nativeReleaseInspector(resolve(required('inspector')), home));
+    const manifest = await buildReleaseAssets(plan, { sourceDirectory: source, outputDirectory: assets, buildRunId: required('run-id') }, c => executeBuildCommand(c, env), nativeReleaseInspector(resolve(required('inspector')), home), operation === 'execute-product' ? 'product' : 'release');
     await writeFile(resolve(required('output')), canonicalReleaseJson(manifest), { flag: 'wx' });
     if (operation === 'execute-product') await writeFile(resolve(required('output')) + '.execution.json', canonicalReleaseJson({ repositoryId: plan.repositoryId, targetSha: plan.targetSha, policySha, buildId: plan.buildId, buildRunId: required('run-id'), inputsSha256: plan.inputsSha256, toolchain: releaseToolchain, toolchainDigest: releaseToolchainDigest }), { flag: 'wx' });
     return;

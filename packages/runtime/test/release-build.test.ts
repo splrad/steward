@@ -446,3 +446,13 @@ it.each(['dispatch','readback'])('preserves confirmed migration evidence when re
  expect(db.database.prepare('SELECT confirmed FROM release_migration_dispatches').get()!.confirmed).toBe(1);
  await dispatchMigrationBuild(env(),inputs);expect(mock.dispatch).toHaveBeenCalledTimes(1);
 });
+
+it('persists the canonical migration binding and refuses mismatched readback',async()=>{
+ const inputs={repositoryId:'9001',targetTag:'v1.2.3',targetSha:sha('a'),authorIds:'1'};
+ await dispatchMigrationBuild(env(),inputs);
+ const row=db.database.prepare('SELECT payload_json FROM release_migration_dispatches').get()!;
+ expect(JSON.parse(String(row.payload_json))).toEqual({policy:env().POLICY_SHA,inputs});
+ db.database.prepare('UPDATE release_migration_dispatches SET payload_json=?').run('{}');
+ await expect(dispatchMigrationBuild(env(),inputs)).rejects.toThrow('MIGRATION_DISPATCH_BINDING');
+ expect(mock.dispatch).toHaveBeenCalledTimes(1);
+});

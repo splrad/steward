@@ -200,12 +200,15 @@ jobs:
           REPOSITORY_ID: ${{ inputs.repositoryId }}
           TARGET_TAG: ${{ inputs.targetTag }}
           POLICY_SHA: ${{ github.workflow_sha }}
-        run: node packages/runner/dist/index.js release-candidate --operation generator-ticket --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --output generation-ticket.json
+          GENERATION_TICKET_KEY: ${{ secrets.GENERATION_TICKET_KEY }}
+        run: |
+          node packages/runner/dist/index.js release-candidate --operation generator-ticket --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --output generation-ticket.json
+          node scripts/generation-ticket-envelope.mjs seal generation-ticket.json generation-ticket.enc
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         id: ticket
         with:
           name: generation-ticket-${{ github.run_attempt }}
-          path: generation-ticket.json
+          path: generation-ticket.enc
           retention-days: 1
           if-no-files-found: error
   generate:
@@ -233,12 +236,17 @@ jobs:
           artifact-ids: ${{ needs.generation-ticket.outputs.artifactId }}
           merge-multiple: true
           path: grant
+      - name: 解密本次运行的生成凭证
+        env:
+          GENERATION_TICKET_KEY: ${{ secrets.GENERATION_TICKET_KEY }}
+        run: node scripts/generation-ticket-envelope.mjs open grant/generation-ticket.enc grant/generation-ticket.json
       - name: 从冻结来源生成正文和独立审阅证据
         id: produce
         shell: bash
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
         run: |
+          trap 'rm -f grant/generation-ticket.json' EXIT
           mkdir generated
           node packages/runner/dist/index.js release-produce --ticket grant/generation-ticket.json --runtime-url https://splrad-steward-runtime.alearner-5ef.workers.dev --copilot-loader node_modules/@github/copilot/npm-loader.js --output generated
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
