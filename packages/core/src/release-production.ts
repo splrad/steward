@@ -12,6 +12,7 @@ function exact(value: any, keys: string[]): void {
 }
 function prose(value: unknown): asserts value is string {
   releaseAssert(typeof value === 'string' && value.length > 0 && value.length <= 4000 && value.trim() === value
+    && !/[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff]/u.test(value)
     && !/[\r\n<>\[\]`]|https?:|github\.com/i.test(value), 'GENERATION_PROSE');
 }
 /** One plain JSON object, or one explicit json fence; no surrounding commentary. */

@@ -14,7 +14,7 @@ export async function dispatchWorkflow(client: GitHubClient, input: {
   const repository = await client.getRepository(input.owner, input.repo);
   const defaultBranch = repository?.default_branch;
   if (typeof defaultBranch !== "string" || !defaultBranch.trim()) throw new Error("中央仓库没有可用的默认分支");
-  if (input.workflow === "release-build.yml" || input.workflow === "release.yml") {
+  if (["release-build.yml", "release.yml", "release-build-complete.yml"].includes(input.workflow)) {
     const head = await client.getRef(input.owner, input.repo, `heads/${defaultBranch}`);
     if (head.object?.sha !== input.policySha) throw new ReleasePolicyDriftError();
   }

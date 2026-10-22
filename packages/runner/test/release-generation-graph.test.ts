@@ -39,3 +39,23 @@ it('records malformed output before retrying the node under its persisted attemp
   expect((await runGenerationGraph(f.client, invoke)).complete).toBe(true);
   expect(f.bodies.filter(b => b.action === 'diagnostic')).toHaveLength(1);
 });
+it.each(['\x00', '\x1b', '\ud800', '\udfff'].flatMap(character =>
+  ['upgrade', 'changes', 'internalChanges', 'unknowns'].map(field => ({character, field}))))
+('repairs invalid $field text before persisting a completed node ($character)', async ({character, field}) => {
+  const value = JSON.parse(output), text = `文本${character}内容`;
+  if (field === 'changes') value.userNotes.changes[0].text = text;
+  else if (field === 'upgrade') value.userNotes.upgrade = [text];
+  else value.reviewEvidence[field] = [text];
+  const f = mock(), invoke = vi.fn().mockResolvedValueOnce(JSON.stringify(value)).mockResolvedValueOnce(output);
+  await runGenerationGraph(f.client, invoke);
+  const writes = f.bodies.filter(b => ['diagnostic', 'complete'].includes(b.action));
+  expect(writes.map(b => b.action)).toEqual(['diagnostic', 'complete']);
+  expect(JSON.parse(writes[1].output)).toEqual(JSON.parse(output));
+});
+it('accepts a valid supplementary Unicode character without repair', async () => {
+  const f = mock(), value = JSON.parse(output);
+  value.userNotes.changes[0].text = '支持中文和表情😀。';
+  await runGenerationGraph(f.client, vi.fn(async () => JSON.stringify(value)));
+  expect(f.bodies.some(b => b.action === 'diagnostic')).toBe(false);
+  expect(JSON.parse(f.bodies.find(b => b.action === 'complete').output)).toEqual(value);
+});
