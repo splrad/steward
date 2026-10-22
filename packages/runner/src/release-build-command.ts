@@ -77,8 +77,11 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
     const plan: BuildPlan = JSON.parse(Buffer.from(environment('BUILD_PLAN'), 'base64').toString('utf8'));
     releaseAssert(binding.policySha === policySha && plan.policySha === policySha, 'BUILD_POLICY');
     const home = await mkdtemp(join(tmpdir(), 'steward-artifact-isolated-')), assets = join(home, 'assets');
-    const archive = await fetchBoundArtifactFile(new GitHubClient(token), fetch, token, binding,join(home,'artifact.zip'));
-    try {await extractArtifactFile(archive.path,assets);} catch(error) {
+    let archive: {path:string;digest:string};
+    try {
+      archive = await fetchBoundArtifactFile(new GitHubClient(token), fetch, token, binding,join(home,'artifact.zip'));
+      await extractArtifactFile(archive.path,assets);
+    } catch(error) {
       if(error instanceof Error && (error.message==='ARTIFACT_HANDOFF_INVALID'||(('code' in error) && ['Z_DATA_ERROR','Z_BUF_ERROR'].includes(String(error.code))))) {await output({verificationFailed:'true'});throw new BuildContractError('RN_BUILD_INVALID');}
       throw error;
     }
