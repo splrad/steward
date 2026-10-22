@@ -8,14 +8,17 @@ import { ReleaseTestDb } from './release-test-db.js';
 import catalog from '../../../config/repositories.json' with { type: 'json' };
 
 vi.mock('../../github/src/index.js', async original => ({ ...await original<any>(), createInstallationToken: vi.fn(async () => 'test-token') }));
+let reviewerPermission = 'write';
 let db: ReleaseTestDb, store: ReleaseReceiptStore, requests: any[], env: Env;
 const capability = catalog.repositories['1187527897'].delivery.githubRelease!;
 const originalState = capability.state;
 beforeEach(() => {
+  reviewerPermission = 'write';
   db = new ReleaseTestDb(); store = new ReleaseReceiptStore(db.binding()); requests = [];
   env = { ORGANIZATION_ID: '302208797', ORGANIZATION_LOGIN: 'splrad', APP_ID: '4243096', INSTALLATION_ID: '145952003', STEWARDSHIP_REPOSITORY: 'splrad/steward', POLICY_SHA: sha('c'), STEWARD_APP_PRIVATE_KEY: 'fixture', STEWARD_WEBHOOK_SECRET: 'fixture', ISSUE_SNAPSHOTS: db.binding() };
   vi.stubGlobal('fetch', vi.fn(async (url: any, init: RequestInit = {}) => {
     if (init.method === 'POST' && String(url).includes('/dispatches')) { requests.push(JSON.parse(String(init.body))); return new Response(null, { status: 204 }); }
+    if (String(url).includes('/collaborators/maintainer/permission')) return Response.json({permission:reviewerPermission});
     if (String(url).endsWith('/repos/splrad/steward')) return Response.json({ default_branch: 'main' });
     if (String(url).endsWith('/repos/splrad/steward/git/ref/heads/main')) return Response.json({ object: { sha: env.POLICY_SHA } });
     throw new Error('unexpected remote request ' + url);
@@ -26,9 +29,10 @@ async function seed(phase: 'awaiting-review' | 'approved' | 'merged' = 'awaiting
   const r = newReleaseReceipt({ ...frozenFixture(), repositoryId: 1187527897, fullName: 'splrad/LayerScape' }, notesFixture);
   await store.prepare({ ...r, phase, pullNumber: 17, headSha: sha('d') }, 'now');
 }
-function event(type: string, action: string, number = 17, merged = false) {
+function event(type: string, action: string, number = 17, merged = false, reviewOverrides: any = {}) {
   const body = JSON.stringify({ organization: { id: 302208797 }, installation: { id: 145952003 }, action,
     repository: { id: 1187527897, full_name: 'splrad/LayerScape', default_branch: 'main', private: false, owner: { id: 302208797 } },
+    review: {user:{type:'User',login:'maintainer'},state:action==='dismissed'?'DISMISSED':'APPROVED',commit_id:sha('d'),...reviewOverrides},
     pull_request: { number, merged, head: { sha: sha('d') }, base: { ref: 'main' } } });
   return new Request('https://runtime.test/github/webhook', { method: 'POST', body, headers: { 'x-github-event': type, 'x-hub-signature-256': 'sha256=' + createHmac('sha256', 'fixture').update(body).digest('hex') } });
 }
@@ -36,6 +40,20 @@ describe('bound-candidate release dispatch', () => {
   it.each(['submitted', 'dismissed', 'edited'])('Review %s schedules observation only', async action => {
     await seed(); expect((await handleWebhook(event('pull_request_review', action), env)).status).toBe(202);
     expect(requests).toEqual([{ ref: 'main', inputs: { repositoryId: '1187527897', targetTag: 'v1.2.3', operation: 'inspect' } }]);
+  });
+  it.each(['read', 'triage', 'none'])('does not dispatch for reviewer permission %s', async permission => {
+    await seed(); reviewerPermission=permission;
+    expect((await handleWebhook(event('pull_request_review','submitted'),env)).status).toBe(204);expect(requests).toEqual([]);
+  });
+  it.each([{state:'COMMENTED'}, {commit_id:sha('e')}, {user:{type:'Bot',login:'maintainer'}}])('rejects irrelevant or stale review %j', async review => {
+    await seed();expect((await handleWebhook(event('pull_request_review','submitted',17,false,review),env)).status).toBe(204);expect(requests).toEqual([]);
+  });
+  it('coalesces concurrent reviews and lets scheduled recovery retry after the cooldown', async () => {
+    await seed();const now=Date.now();
+    const results=await Promise.all(['submitted','edited','dismissed'].map(action=>handleWebhook(event('pull_request_review',action),env)));
+    expect(results.filter(r=>r.status===202)).toHaveLength(1);expect(requests).toHaveLength(1);
+    expect(await recoverReleaseReceipts(env,now+1000)).toBe(0);
+    expect(await recoverReleaseReceipts(env,now+16*60_000)).toBe(1);
   });
   it('only a centrally bound merge schedules reconcile; ordinary merged/version PRs do nothing', async () => {
     await seed(); expect((await handleWebhook(event('pull_request', 'closed', 18, true), env)).status).toBe(204); expect(requests).toEqual([]);

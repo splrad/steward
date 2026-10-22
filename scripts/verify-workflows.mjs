@@ -265,9 +265,14 @@ if (!hasExactKeys(releaseSourceWorkflow.jobs, ["prepare", "inspect", "publish", 
 const generationJob = releaseSourceWorkflow.jobs.generate;
 const recoveryJob = releaseSourceWorkflow.jobs.revision;
 if (!releaseSourceWorkflow.on.workflow_dispatch.inputs.operation.options.includes('migrate-policy') || !releaseSourceWorkflow.on.workflow_dispatch.inputs.operation.options.includes('retry-create')
-  || recoveryJob.if !== "(inputs.operation == 'revise-rebuild' || inputs.operation == 'recover-candidate' || inputs.operation == 'retry-create' || inputs.operation == 'migrate-policy') && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
+  || recoveryJob.if !== "(inputs.operation == 'revise-rebuild' || inputs.operation == 'recover-candidate' || inputs.operation == 'retry-create' || inputs.operation == 'migrate-policy' || inputs.operation == 'generator-release-continuation') && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
   || !recoveryJob.steps.some(step => step.env?.OPERATION === '${{ inputs.operation }}' && step.env?.POLICY_SHA === '${{ github.workflow_sha }}'
-    && step.run === 'node packages/runner/dist/index.js release-candidate --operation "$OPERATION" --request-key "$REQUEST_KEY" --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA"')) throw new Error('创建结果未知的恢复入口必须连接可信策略下的受保护恢复作业');
+    && step.run === 'node packages/runner/dist/index.js release-candidate --operation "$OPERATION" --request-key "$REQUEST_KEY" --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --bundle continuation-recovery/continuation-cleanup.json')) throw new Error('创建结果未知的恢复入口必须连接可信策略下的受保护恢复作业');
+if (!releaseSourceWorkflow.on.workflow_dispatch.inputs.operation.options.includes('generator-release-continuation')
+  || !recoveryJob.steps.some(step => step.if === "inputs.operation == 'generator-release-continuation'"
+    && step.uses?.startsWith('actions/download-artifact@') && step.with?.repository === 'splrad/steward'
+    && step.with?.['artifact-ids'] === '${{ inputs.bundleArtifactId }}' && step.with?.['run-id'] === '${{ inputs.bundleRunId }}'
+    && step.with?.path === 'continuation-recovery')) throw new Error('续跑清理必须通过受保护恢复作业读取指定凭据');
 const productBuild = workflowDocuments.get('release-build.yml');
 const buildCompletion = workflowDocuments.get('release-build-complete.yml');
 const genericBuild = workflowDocuments.get('product-build.yml');

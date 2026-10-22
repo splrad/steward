@@ -20,6 +20,7 @@ on:
           - recover-candidate
           - retry-create
           - migrate-policy
+          - generator-release-continuation
       requestKey:
         required: false
         type: string
@@ -340,7 +341,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
   revision:
-    if: (inputs.operation == 'revise-rebuild' || inputs.operation == 'recover-candidate' || inputs.operation == 'retry-create' || inputs.operation == 'migrate-policy') && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: (inputs.operation == 'revise-rebuild' || inputs.operation == 'recover-candidate' || inputs.operation == 'retry-create' || inputs.operation == 'migrate-policy' || inputs.operation == 'generator-release-continuation') && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
@@ -356,6 +357,16 @@ jobs:
           node-version-file: .node-version
           cache: npm
       - run: npm ci --ignore-scripts
+      - name: 下载续跑清理凭据
+        if: inputs.operation == 'generator-release-continuation'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          repository: splrad/steward
+          artifact-ids: ${{ inputs.bundleArtifactId }}
+          run-id: ${{ inputs.bundleRunId }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: continuation-recovery
       - name: 恢复持久收据对应的候选或创建意图
         id: receipt
         shell: bash
@@ -369,4 +380,4 @@ jobs:
           OPERATION: ${{ inputs.operation }}
           REQUEST_KEY: ${{ inputs.requestKey }}
           POLICY_SHA: ${{ github.workflow_sha }}
-        run: node packages/runner/dist/index.js release-candidate --operation "$OPERATION" --request-key "$REQUEST_KEY" --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA"
+        run: node packages/runner/dist/index.js release-candidate --operation "$OPERATION" --request-key "$REQUEST_KEY" --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --bundle continuation-recovery/continuation-cleanup.json
