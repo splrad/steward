@@ -322,6 +322,9 @@ export async function handleReleaseRequest(request: Request, env: BodyWriteRunti
     const publishPermit = async () => {
       canPublish(); assertReleasePermit(r);
       releaseAssert((await gh.getImmutableReleaseStatus(owner, repo)).enabled === true, 'IMMUTABLE_POLICY');
+      const targetTag = await optionalReleaseRead(() => gh.getGitRef(owner, repo, `tags/${tag}`));
+      releaseAssert(!targetTag || (targetTag.object?.type === 'commit'
+        && targetTag.object.sha === r.frozen.productTargetSha), 'TARGET_TAG_DRIFT');
       const boundary = r.frozen.boundary;
       if (boundary.kind === 'tag') {
         let object = (await gh.getGitRef(owner, repo, `tags/${boundary.reference}`)).object;
