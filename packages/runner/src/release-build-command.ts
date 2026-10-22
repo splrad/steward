@@ -13,7 +13,7 @@ import { promisify } from 'node:util';
 import { mkdir, mkdtemp, readFile, writeFile, appendFile, copyFile, constants } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { GitHubClient, createInstallationToken, dispatchWorkflow } from '../../github/src/index.js';
+import { GitHubClient, GitHubRequestError, createInstallationToken, dispatchWorkflow } from '../../github/src/index.js';
 import { highestStableRelease, readReleaseContributors } from '../../github/src/release-candidate.js';
 import { canonicalReleaseJson, positiveId, receiptDigest, releaseAssert, releaseSha, type FrozenRelease } from '../../core/src/release-note-receipt.js';
 import { releaseToolchain, releaseToolchainDigest, type ReleaseBuildState } from '../../core/src/release-build-request.js';
@@ -82,7 +82,9 @@ export async function releaseBuildCommand(args: Readonly<Record<string, string>>
       archive = await fetchBoundArtifactFile(new GitHubClient(token), fetch, token, binding,join(home,'artifact.zip'));
       await extractArtifactFile(archive.path,assets);
     } catch(error) {
-      if(error instanceof Error && (error.message==='ARTIFACT_HANDOFF_INVALID'||(('code' in error) && ['Z_DATA_ERROR','Z_BUF_ERROR'].includes(String(error.code))))) {await output({verificationFailed:'true'});throw new BuildContractError('RN_BUILD_INVALID');}
+      if(error instanceof Error && (['ARTIFACT_HANDOFF_INVALID','ARTIFACT_DOWNLOAD_HTTP_404','ARTIFACT_DOWNLOAD_HTTP_410'].includes(error.message)
+        || (error instanceof GitHubRequestError && [404,410].includes(error.status))
+        || (('code' in error) && ['Z_DATA_ERROR','Z_BUF_ERROR'].includes(String(error.code))))) {await output({verificationFailed:'true'});throw new BuildContractError('RN_BUILD_INVALID');}
       throw error;
     }
     let manifest: BuildManifest;
