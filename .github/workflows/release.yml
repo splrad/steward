@@ -205,7 +205,7 @@ jobs:
         run: |
           node packages/runner/dist/index.js release-candidate --operation generator-ticket --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --output generation-ticket.json
           node scripts/generation-ticket-envelope.mjs seal generation-ticket.json generation-ticket.enc
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         id: ticket
         with:
           name: generation-ticket-${{ github.run_attempt }}
@@ -250,7 +250,7 @@ jobs:
           trap 'rm -f grant/generation-ticket.json' EXIT
           mkdir generated
           node packages/runner/dist/index.js release-produce --ticket grant/generation-ticket.json --runtime-url https://splrad-steward-runtime.alearner-5ef.workers.dev --copilot-loader node_modules/@github/copilot/npm-loader.js --output generated
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: steps.produce.outputs.complete == 'true'
         id: generated
         with:
@@ -334,7 +334,7 @@ jobs:
         run: node packages/runner/dist/index.js release-candidate --operation generator-continue --repository-id "$REPOSITORY_ID" --target-tag "$TARGET_TAG" --policy-sha "$POLICY_SHA" --artifact-id "$BUNDLE_ARTIFACT_ID" --run-id "$BUNDLE_RUN_ID" --output continuation-cleanup.json
       - name: 保存已拒绝派发的清理凭据
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: continuation-cleanup-${{ github.run_id }}-${{ github.run_attempt }}
           path: continuation-cleanup.json

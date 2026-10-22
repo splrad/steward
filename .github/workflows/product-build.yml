@@ -55,7 +55,7 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           ATTEMPT: ${{ github.run_attempt }}
         run: node packages/runner/dist/index.js release-build --operation plan-product --repository-id "$REPOSITORY_ID" --build-id "$BUILD_ID" --target-sha "$TARGET_SHA" --policy-sha "$POLICY_SHA" --run-id "$RUN_ID" --attempt "$ATTEMPT" --output build-context
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         id: context
         with:
           name: product-build-request-${{ github.run_attempt }}
@@ -95,7 +95,7 @@ jobs:
           POLICY_SHA: ${{ github.workflow_sha }}
           RUN_ID: ${{ github.run_id }}
         run: node packages/runner/dist/index.js release-build --operation execute-product --policy-sha "$env:POLICY_SHA" --run-id "$env:RUN_ID" --request build-context/request.json --source-bundle build-context/source.bundle --workspace product-source --assets build-assets --inspector scripts/inspect-native-release.ps1 --output artifact-manifest.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: product-build-result-${{ github.run_attempt }}
           path: |
@@ -132,7 +132,7 @@ jobs:
           POLICY_SHA: ${{ github.workflow_sha }}
           RUN_ID: ${{ github.run_id }}
         run: node packages/runner/dist/index.js release-build --operation execute-product --policy-sha "$env:POLICY_SHA" --run-id "$env:RUN_ID" --request build-context/request.json --source-bundle build-context/source.bundle --workspace product-source --assets build-assets --inspector scripts/inspect-native-release.ps1 --output artifact-manifest.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: product-build-result-${{ github.run_attempt }}
           path: |

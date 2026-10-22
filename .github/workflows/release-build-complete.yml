@@ -153,7 +153,7 @@ jobs:
           ARTIFACT_ID: ${{ needs.resolve.outputs.artifactId }}
           ATTEMPT: ${{ needs.resolve.outputs.attempt }}
         run: node packages/runner/dist/index.js release-candidate --operation revise-rebuild --policy-sha "$env:POLICY_SHA" --repository-id "$env:REPOSITORY_ID" --target-tag "$env:TARGET_TAG" --request-key "$env:REQUEST_KEY"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: needs.resolve.outputs.ready == 'true' && needs.resolve.outputs.mode == 'initial'
         id: seed
         with:
