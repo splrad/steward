@@ -12,6 +12,17 @@ import { githubBuildExecutionPolicy, assertBuildDirectoriesSeparate, assertBuild
 const identity: BuildIdentity = { repositoryId: 1400000001, fullName: 'example/widget', buildId: 'asset', profile: 'custom-adapter-v1', targetSha: 'a'.repeat(40), policySha: 'b'.repeat(40), version: '1.2.3' };
 const unit: BuildUnit = { profile: 'custom-adapter-v1', inputs: { entrypoint: 'tools/build.mjs', runtime: 'node', runnerFamily: 'linux' }, outputs: [{ id: 'archive', kind: 'file', match: '*.json', count: 1, mediaType: 'application/json' }] };
 const inspect = async (bytes: Uint8Array) => JSON.parse(new TextDecoder().decode(bytes)).version ?? null;
+it.each([
+  ['Fonts.zip', 'Fonts.zip', true],
+  ['AFR-DLL_v{version}.zip', 'AFR-DLL_v1.2.3.zip', false],
+  ['*.zip', 'plugin.zip', false],
+])('binds font-only results to literal resource output %s', async (match, name, accepted) => {
+  const plan = await planBuild(identity, { ...unit, outputs: [{ id: 'archive', kind: 'file', match, count: 1, mediaType: 'application/zip', archiveType: accepted ? 'font-archive' : 'dll-archive' }] });
+  await writeFile(join(output, name), 'font archive bytes');
+  const result = collectFileBuildManifest(plan, output, async () => ({ resourceOnly: 'font-archive' as const }));
+  if (accepted) await expect(result).resolves.toMatchObject({ artifacts: [{ file: name }] });
+  else await expect(result).rejects.toThrow('RN_BUILD_VERSION');
+});
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return { ...actual, open: vi.fn(actual.open), opendir: vi.fn(actual.opendir), realpath: vi.fn(actual.realpath) };

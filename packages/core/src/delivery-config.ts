@@ -1,7 +1,7 @@
 export type CapabilityState = 'disabled' | 'pending' | 'active' | 'suspended';
 export interface DeliveryEntry { id: string; profile: string; state: CapabilityState; builds: string[] }
 export interface DeliveryConfiguration {
-  builds: Record<string, { profile: string; inputs: Record<string, unknown>; outputs: { id: string; kind: string; match?: string }[] }>;
+  builds: Record<string, { profile: string; inputs: Record<string, unknown>; outputs: { id: string; kind: string; match?: string; archiveType?: string; count?: number; mediaType?: string }[] }>;
   delivery: {
     githubRelease: { enabled: boolean; state: CapabilityState; profile: string | null; builds: string[] };
     deployments: (DeliveryEntry & { source: 'commit' | 'github-release'; trigger: string })[];

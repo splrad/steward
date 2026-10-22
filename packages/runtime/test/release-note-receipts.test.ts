@@ -44,7 +44,9 @@ describe('D1 durable release receipts', () => {
     let db = new ReleaseTestDb(path);
     try {
       const r = receiptFixture(); await new ReleaseReceiptStore(db.binding()).prepare(r, 'now'); db.database.close();
-      db = new ReleaseTestDb(path); const store = new ReleaseReceiptStore(db.binding());
+      db = new ReleaseTestDb(path);
+      expect(db.database.prepare("SELECT type FROM sqlite_master WHERE name='release_build_restart_history'").get()).toMatchObject({type:'index'});
+      const store = new ReleaseReceiptStore(db.binding());
       expect(await store.get(9001, 'v1.2.3')).toEqual(r);
       expect(await store.prepare(r, 'later')).toEqual(r);
       await expect(store.prepare(newReleaseReceipt({ ...frozenFixture(), title: 'different' }, notesFixture.replace('Neutral 1.2.3', 'different')), 'later')).rejects.toThrow('VERSION_OCCUPIED');

@@ -559,6 +559,12 @@
                   "mediaType": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "archiveType": {
+                    "enum": [
+                      "dll-archive",
+                      "font-archive"
+                    ]
                   }
                 }
               },
@@ -639,6 +645,12 @@
                   "mediaType": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "archiveType": {
+                    "enum": [
+                      "dll-archive",
+                      "font-archive"
+                    ]
                   }
                 }
               },
@@ -786,6 +798,12 @@
                   "mediaType": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "archiveType": {
+                    "enum": [
+                      "dll-archive",
+                      "font-archive"
+                    ]
                   }
                 }
               },

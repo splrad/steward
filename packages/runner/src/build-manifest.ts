@@ -174,8 +174,13 @@ export async function collectFileBuildManifest(plan: BuildPlan, outputDirectory:
         if (snapshotDirectory) await rm(snapshotDirectory, { recursive: true, force: true });
       }
       if (native && typeof native === 'object') {
-        if (native.resourceOnly !== 'font-archive' || assignment.mediaType !== 'application/zip' || !assignment.file.endsWith('.zip')) buildFail('RN_BUILD_VERSION');
-      } else checkBuildNativeVersion(plan, native);
+        const rule = plan.outputs.find(rule => rule.count === 1 && assignment.id === rule.id);
+        if (native.resourceOnly !== 'font-archive' || assignment.mediaType !== 'application/zip' || !assignment.file.endsWith('.zip')
+          || rule?.match !== assignment.file || rule.archiveType !== 'font-archive') buildFail('RN_BUILD_VERSION');
+      } else {
+        if (plan.outputs.find(rule => rule.id === assignment.id)?.archiveType === 'font-archive') buildFail('RN_BUILD_VERSION');
+        checkBuildNativeVersion(plan, native);
+      }
       artifacts.push({ ...assignment, kind: 'file', size, sha256 });
     } finally { await handle.close(); }
     if (await assertBuildSourcePath(root, assignment.file) !== file || !unchanged(before, await buildPathOperation(lstat(file)))) buildFail('RN_BUILD_PATH');
