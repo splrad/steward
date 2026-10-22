@@ -230,7 +230,24 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
 
 export async function refreshWorkflowContractChecks(env: Env, repositoryId: number, pullNumber?: number, snapshot?: AuthoritySnapshot): Promise<void> {
   if (env.WORKFLOW_EVALUATOR_SHA===undefined) return;
-  if (env.VALIDATION_COORDINATOR) { await coordinatedValidation(env, repositoryId, {operation:"refresh", repositoryId, pullNumber}); return; }
+  if (env.VALIDATION_COORDINATOR) {
+    if (pullNumber !== undefined) {
+      await coordinatedValidation(env, repositoryId, {operation:"refresh", repositoryId, pullNumber});
+    } else {
+      // Give each PR its own invocation budget while preserving the repository's
+      // shared writer queue. A repository-wide invocation can exhaust subrequests
+      // before reaching later PRs, leaving their checks stale.
+      const gh = await validationClient(env, repositoryId);
+      const repository = await gh.getRepositoryById(repositoryId);
+      if (repository.id !== repositoryId || !belongsToOrganization(repository)) throw new Error("CONTRACT_REPOSITORY: identity mismatch");
+      const [owner, repo] = splitRepository(repository.full_name);
+      const pulls = await gh.listOpenPullRequests(owner, repo, repository.default_branch);
+      const results = await settledPool(pulls, 4, async pull => { await coordinatedValidation(env, repositoryId, {operation:"refresh", repositoryId, pullNumber:pull.number}); });
+      const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failed) throw failed.reason;
+    }
+    return;
+  }
   const gh = await validationClient(env, repositoryId);
   const repository = await gh.getRepositoryById(repositoryId);
   if (repository.id !== repositoryId || !belongsToOrganization(repository)) throw new Error("CONTRACT_REPOSITORY: identity mismatch");
