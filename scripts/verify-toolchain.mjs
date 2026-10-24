@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { resolve, relative, isAbsolute } from 'node:path';
 
 export async function verifyToolchain(root = process.cwd()) {
-  const result = spawnSync('mise', ['ls', '--json'], {
+  const result = spawnSync('mise', ['ls', '--current', '--json'], {
     cwd: root, shell: false, encoding: 'utf8', windowsHide: true, timeout: 30_000,
     env: { ...process.env, MISE_SAFE: '1', MISE_LOCKED: '1', MISE_NODE_COMPILE: 'false' },
   });

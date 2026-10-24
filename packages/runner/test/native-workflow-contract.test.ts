@@ -3,12 +3,36 @@ import { readFile } from 'node:fs/promises';
 import YAML from 'yaml';
 import { assertWorkflowDocument } from '../src/workflow-policy.js';
 const load = async (name: string) => YAML.parse(await readFile('.github/workflows/' + name, 'utf8'));
+it.each(['name', 'missing-name', 'skip-job', 'matrix', 'skip-check', 'ignore-step', 'ignore-job', 'missing-check', 'replace-check', 'extra-job'])('rejects validation gate regression: %s', async kind => {
+ const d = await load('pr-validation.yml'), job = d.jobs.validate;
+ const check = job.steps.find((step: any) => step.name === 'validation-policy:${{ steps.policy.outputs.sha }}');
+ if (kind === 'name') job.name = 'validate';
+ if (kind === 'missing-name') delete job.name;
+ if (kind === 'skip-job') job.if = 'false';
+ if (kind === 'matrix') job.strategy = { matrix: { version: [1, 2] } };
+ if (kind === 'skip-check') check.if = 'false';
+ if (kind === 'ignore-step') check['continue-on-error'] = true;
+ if (kind === 'ignore-job') job['continue-on-error'] = true;
+ if (kind === 'missing-check') job.steps = job.steps.filter((step: any) => step !== check);
+ if (kind === 'replace-check') check.run = 'echo success';
+ if (kind === 'extra-job') d.jobs.extra = structuredClone(job);
+ expect(() => assertWorkflowDocument('.github/workflows/pr-validation.yml', d)).toThrow();
+});
+it.each(['missing', 'wrong-name', 'dynamic', 'deployment', 'build', 'attest', 'verify'])('rejects release environment regression: %s', async kind => {
+ const d = await load('product-release.yml');
+ if (kind === 'missing') delete d.jobs.publish.environment;
+ else if (kind === 'wrong-name') d.jobs.publish.environment.name = 'steward-release';
+ else if (kind === 'dynamic') d.jobs.publish.environment.name = '${{ inputs.unit }}';
+ else if (kind === 'deployment') d.jobs.publish.environment.deployment = true;
+ else d.jobs[kind].environment = { name: 'release-publish', deployment: false };
+ expect(() => assertWorkflowDocument('.github/workflows/product-release.yml', d)).toThrow();
+});
 it.each([undefined,1,2])('rejects incomplete sync policy history depth %s', async depth => {
  const d=await load('sync-managed.yml');
  d.jobs.synchronize.steps.find((s:any)=>s.with?.path==='policy').with['fetch-depth']=depth;
  expect(()=>assertWorkflowDocument('.github/workflows/sync-managed.yml',d)).toThrow('sync policy history');
 });
-it.each(['release.yml', 'sync-managed.yml', 'product-release.yml', 'update-dependencies.yml'])('validates actual %s capability without scan ignores', async name => {
+it.each(['pr-validation.yml', 'release.yml', 'sync-managed.yml', 'product-release.yml', 'update-dependencies.yml'])('validates actual %s capability without scan ignores', async name => {
   const d = await load(name);
   expect(() => assertWorkflowDocument('.github/workflows/' + name, d)).not.toThrow();
 });

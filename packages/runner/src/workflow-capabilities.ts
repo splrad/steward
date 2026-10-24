@@ -1,6 +1,6 @@
 // Fixed command capabilities; workflow names and surrounding business jobs are not identities.
 export function miseSetup(directory: string) {
- return {uses:'jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550',
+ return {uses:'jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e',
   env:{MISE_SAFE:'1',MISE_NODE_COMPILE:'false'},
   with:{version:'2026.10.18',install_args:'--locked',working_directory:directory,cache:false,env:false,persist_github_token:false}};
 }

@@ -3,6 +3,16 @@ const canonical = (v: any): string => JSON.stringify(Array.isArray(v) ? v.map(x 
   ? Object.fromEntries(Object.keys(v).sort().map(k => [k, JSON.parse(canonical(v[k]))])) : v ?? null);
 function same(actual: any, expected: any, detail: string) { if (canonical(actual) !== canonical(expected)) fail(detail); }
 const read = { contents: 'read', actions: 'read' };
+export function assertValidationWorkflow(document: any) {
+  same(Object.keys(document?.jobs ?? {}), ['validate'], 'validation job set');
+  const job = document.jobs.validate;
+  same(job.name, 'SPLRAD Validation', 'validation check name');
+  if (job.if !== undefined || job.needs !== undefined || job.strategy !== undefined || job['continue-on-error'] !== undefined
+    || !Array.isArray(job.steps) || job.steps.some((step: any) => step['continue-on-error'] !== undefined)) fail('validation failure suppression');
+  const checks = job.steps.filter((step: any) => step.name === 'validation-policy:${{ steps.policy.outputs.sha }}');
+  if (checks.length !== 1 || checks[0].if !== undefined
+    || checks[0].run !== 'node steward-policy/packages/runner/dist/index.js validate --workspace target --repository-id "$REPOSITORY_ID" --profile "$VALIDATION_PROFILE"') fail('validation execution');
+}
 /** The trusted catalog supplies the adopted SHA; candidate workflow data never does. */
 export function assertProductReleaseCaller(document: any, policySha: string) {
   if (!/^[a-f0-9]{40}$/.test(policySha)) fail('caller trusted policy SHA');
@@ -42,7 +52,9 @@ export function assertNativeWorkflow(path: string, document: any, repositoryId: 
     for (const [name, job] of Object.entries(d.jobs) as [string, any][]) {
       same(job.permissions, name === 'identity' ? { ...read, 'pull-requests': 'read', 'id-token': 'write' } : name === 'attest' ? { ...read, 'id-token': 'write', attestations: 'write' }
         : name === 'publish' ? { ...read, contents: 'write', attestations: 'read' } : name === 'verify' ? { ...read, attestations: 'read' } : read, name + ' permissions');
-      if (job.environment !== undefined || /secrets\./.test(JSON.stringify(job))) fail('product secrets/environment');
+      if (name === 'publish') same(job.environment, { name: 'release-publish', deployment: false }, 'product publish environment');
+      else if (job.environment !== undefined) fail('product non-publish environment');
+      if (/secrets\./.test(JSON.stringify(job))) fail('product secrets');
       same(job['runs-on'], name === 'identity' ? 'ubuntu-24.04' : 'windows-2025', name + ' runner');
       if (name !== 'identity') same(typeof job.needs === 'string' ? [job.needs] : job.needs, dependencies[name], name + ' dependencies');
       for (const step of job.steps) {

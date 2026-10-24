@@ -25,7 +25,7 @@ jobs:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
       - id: mise
-        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
         env:
           MISE_SAFE: "1"
           MISE_NODE_COMPILE: "false"
@@ -66,7 +66,7 @@ jobs:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
       - id: mise
-        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
         env:
           MISE_SAFE: "1"
           MISE_NODE_COMPILE: "false"
@@ -110,7 +110,7 @@ jobs:
         with:
           configurationFile: config/renovate/global.cjs
           token: ${{ steps.target-token.outputs.token }}
-          renovate-image: ghcr.io/renovatebot/renovate:44.181.0@sha256:1a06e15f2d8bc08342828ec43c0a90de0ac9192900f513af90e77765e0991b6d
+          renovate-image: ghcr.io/renovatebot/renovate:44.181.3@sha256:00f4f69be3060d6ad1ff3481a0e44490aba37ab17c501cbf2de179bc3751dc78
           mount-docker-socket: false
           env-regex: ^(?:RENOVATE_REPOSITORIES|MISE_SAFE|LOG_LEVEL|LOG_FILE|LOG_FILE_LEVEL)$
         env:

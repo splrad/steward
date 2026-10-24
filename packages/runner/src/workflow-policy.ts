@@ -1,5 +1,5 @@
 import { hasTrustedPolicyPrefix, assertArtifactHandoff } from './workflow-capabilities.js';
-import { assertNativeWorkflow, assertProductReleaseCaller } from './native-workflow-contract.js';
+import { assertNativeWorkflow, assertProductReleaseCaller, assertValidationWorkflow } from './native-workflow-contract.js';
 import YAML from 'yaml';
 import { lstat, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -12,7 +12,7 @@ const actions = new Set([
  'googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7',
  'peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1',
  'actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6',
- 'jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550',
+ 'jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e',
  'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1',
  'actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68', 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9',
  'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333',
@@ -62,6 +62,7 @@ function secrets(value: any): string[] {
  return names;
 }
 export function assertWorkflowDocument(path: string, d: any, repositoryId = 1296724484, reusable: readonly ReusableWorkflow[] = approvedReusableWorkflows, releasePolicyShas: readonly string[] = []) {
+ if (repositoryId === 1296724484 && path === '.github/workflows/pr-validation.yml') assertValidationWorkflow(d);
  if (path === '.github/workflows/steward-release-publish.yml' && releasePolicyShas.length) {
   const trusted = releasePolicyShas.find(sha => d?.jobs?.publish?.uses === `splrad/steward/.github/workflows/product-release.yml@${sha}`);
   if (!trusted) fail('product caller contract: untrusted policy');
@@ -103,7 +104,8 @@ export function assertWorkflowDocument(path: string, d: any, repositoryId = 1296
   if (!native) concurrency(j.concurrency,jobResource!==undefined);
   if (j.permissions!==undefined && !native) permissions(j.permissions);
   const used=secrets(j); const env=j.environment;
-  if (env!==undefined && (!object(env) || !Object.hasOwn(secretEnvironments,env.name) || env.deployment!==(env.name==='steward-deployment'))) fail(`${path}:${name}: protected environment`);
+  const productPublish = native && path === '.github/workflows/product-release.yml' && name === 'publish';
+  if (env!==undefined && !productPublish && (!object(env) || !Object.hasOwn(secretEnvironments,env.name) || env.deployment!==(env.name==='steward-deployment'))) fail(`${path}:${name}: protected environment`);
   if ((used.length || env!==undefined) && triggers.includes('pull_request')) fail(`${path}:${name}: PR jobs cannot use protected environments/secrets`);
   if (used.some(s=>!secretEnvironments[env?.name]?.includes(s))) fail(`${path}:${name}: secret/environment mismatch`);
   if (typeof j['runs-on']!=='string' || !hostedRunners.has(j['runs-on'])) fail(`${path}:${name}: runner not permitted`);

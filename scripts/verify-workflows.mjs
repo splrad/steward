@@ -23,6 +23,7 @@ if (validationStep?.env?.VALIDATION_BASE_SHA !== '${{ github.event.pull_request.
 if (JSON.stringify(validationDocument).includes('secrets.')) throw new Error('验证不得使用secret');
 if (validationDocument?.jobs?.fragments) throw new Error("退役片段作业不得恢复");
 const expectedJobEnvironments = new Map([
+  ['product-release.yml:publish', {name:'release-publish',deployment:false}],
   ['deploy-runtime.yml:deploy', {name:'steward-deployment',deployment:true}],
   ['native-review.yml:observe', {name:'steward-automation',deployment:false}],
   ['pr-classification.yml:classify', {name:'steward-automation',deployment:false}],
