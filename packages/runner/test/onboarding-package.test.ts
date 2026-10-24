@@ -77,3 +77,14 @@ it('admits the actual rendered onboarding package through release source validat
     sourceDirectory: f.input.targetDirectory, policyDirectory: process.cwd(), centralConfig: catalog }, f.snapshot);
   expect(units.map(unit => [unit.unit.id, unit.version, unit.tag])).toEqual([['layerscape', '9.2.2', 'v9.2.2']]);
 });
+
+it('keeps onboarding payload digests stable across Git LF checkout', async () => {
+  const { createHash } = await import('node:crypto');
+  const directory = resolve('config/onboarding/1187527897');
+  const manifest: OnboardingManifest = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8'));
+  for (const file of manifest.files) {
+    const bytes = await readFile(join(directory, file.payloadPath));
+    expect(bytes.includes(Buffer.from('\r\n')), file.targetPath).toBe(false);
+    expect(createHash('sha256').update(bytes).digest('hex'), file.targetPath).toBe(file.sha256);
+  }
+});

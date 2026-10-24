@@ -207,8 +207,12 @@ export async function previewManagedSync(input: PreviewInput, snapshots: GitSnap
     if (previous) {
       const adoption = previous.files.find(file => file.path === rule.destination);
       if (!adoption || !current || adoption.sourceRepository !== rule.sourceRepository) fail('unproven base requires migration');
-      const base = await snapshots.blob(input.targetDirectory, adoption.targetBlob);
-      if (gitBlob(base) !== adoption.targetBlob || hash(base) !== adoption.targetSha256) fail('adopted base digest');
+      const adoptedTarget = await snapshots.blob(input.targetDirectory, adoption.targetBlob);
+      if (gitBlob(adoptedTarget) !== adoption.targetBlob || hash(adoptedTarget) !== adoption.targetSha256) fail('adopted base digest');
+      // The prior merged target proves integrity, but includes product edits. Only
+      // the prior rendered central source is the common ancestor for future merges.
+      const base = await renderedSource({ ...rule, sourceSha: adoption.sourceSha }, sourceDirectory, snapshots, input);
+      if (gitBlob(base) !== adoption.sourceBlob) fail('unproven source baseline requires migration');
       after = Buffer.from(await mergeManagedFile(text(current), text(base), text(next), rule, merge));
     } else {
       // Existing human content requires an explicit reviewed payload; it is never overwritten on first adoption.

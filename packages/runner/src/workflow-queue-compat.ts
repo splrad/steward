@@ -55,5 +55,5 @@ export function acceptActionlintResult(status: number | null, stdout: string, st
     const key = JSON.stringify(match);
     if (!match || seen.has(key)) return false;
     seen.add(key); return true;
-  });
+  }) && seen.size === locations.length;
 }

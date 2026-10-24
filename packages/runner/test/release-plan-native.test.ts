@@ -16,11 +16,14 @@ function fixture(enabled = true) {
     [`repos/splrad/steward/contents/config/repositories.json?ref=${Q}`]: () => blob(config), [`repos/splrad/steward/compare/${P}...${Q}`]: { status: 'ahead', merge_base_commit: { sha: P } },
     'repos/splrad/LayerScape': { id: 1187527897, full_name: 'splrad/LayerScape', default_branch: 'main' },
     'repos/splrad/LayerScape/pulls?state=all&base=main&per_page=100': [[pull]], 'repos/splrad/LayerScape/releases?per_page=100': [releases],
+    'repos/splrad/LayerScape/commits/main': { sha: S },
+    [`repos/splrad/steward/contents/config/release/defaults.json?ref=${P}`]: blob({ draft: true, 'force-tag-creation': true, 'include-component-in-tag': false }),
+    [`repos/splrad/steward/contents/config/release/bootstrap.json?ref=${P}`]: blob({ '1187527897': before }),
     'repos/splrad/LayerScape/commits/v9.2.2': { sha: before }, [`repos/splrad/LayerScape/compare/${before}...${S}`]: { status: 'ahead', merge_base_commit: { sha: before } },
     [`repos/splrad/LayerScape/commits/${S}`]: { sha: S, parents: [{ sha: before }] }, 'repos/splrad/LayerScape/commits/v9.2.3': { sha: S },
     [`repos/splrad/LayerScape/contents/.release-please-manifest.json?ref=${S}`]: blob({ '.': '9.2.3' }),
     [`repos/splrad/LayerScape/contents/.release-please-manifest.json?ref=${before}`]: blob({ '.': '9.2.2' }),
-    [`repos/splrad/LayerScape/contents/release-please-config.json?ref=${S}`]: blob({ 'include-component-in-tag': false, packages: { '.': { 'release-type': 'simple' } } }),
+    [`repos/splrad/LayerScape/contents/release-please-config.json?ref=${S}`]: blob({ draft: true, 'force-tag-creation': true, 'include-component-in-tag': false, 'bootstrap-sha': before, packages: { '.': { 'release-type': 'simple', 'version-file': 'VERSION', 'changelog-path': 'CHANGELOG.md' } } }),
     [`repos/splrad/LayerScape/contents/.github/steward-release.json?ref=${S}`]: blob(descriptor),
     'repos/splrad/LayerScape/actions/workflows/steward-release-publish.yml': { id: 10, path: '.github/workflows/steward-release-publish.yml' },
     [`repos/splrad/LayerScape/actions/workflows/10/runs?event=workflow_dispatch&head_sha=${S}&per_page=100`]: () => [{ total_count: runs.length, workflow_runs: runs }],
@@ -31,7 +34,7 @@ function fixture(enabled = true) {
     const value = routes[args.at(-1)!]; if (!value) throw new Error('unregistered read: ' + args.at(-1));
     return JSON.stringify(typeof value === 'function' ? value() : value);
   });
-  const draft = () => releases.push({ id: 50, tag_name: 'v9.2.3', draft: true, immutable: false });
+  const draft = () => releases.push({ id: 50, author: { id: 301115370 }, tag_name: 'v9.2.3', draft: true, immutable: false });
   const run = (status: string, conclusion: string | null = null) => runs.push({ id: 70, run_attempt: 1, workflow_id: 10, event: 'workflow_dispatch', head_sha: S, repository: { id: 1187527897 }, head_repository: { id: 1187527897 }, display_title: 'Publish layerscape / v9.2.3 / 50', status, conclusion });
   return { planner, config, calls, routes, pull, releases, runs, draft, run };
 }
@@ -73,4 +76,24 @@ it('requires successful exact verify job before advancing beyond a published rel
   expect((await f.planner.inspect(1187527897, P, 'after')).should_run_pr).toBe(false);
   f.routes[path][0].jobs[0].name = 'publish / verify';
   expect((await f.planner.inspect(1187527897, P, 'after')).should_run_pr).toBe(true);
+});
+
+it.each([undefined, { id: 42 }, { id: '301115370' }])('rejects a matching draft with an untrusted creator %j before recovery', async author => {
+  const f = fixture(); f.draft(); f.releases[0].author = author;
+  await expect(f.planner.dispatch(1187527897, 'layerscape', 50, 42, P)).rejects.toThrow('untrusted release creator');
+  expect(f.calls.every(args => args[0] === 'api')).toBe(true);
+});
+
+it.each(['missing-draft', 'published', 'package-override', 'plugin', 'extra-file'])('blocks unsafe native configuration before writer planning: %s', async kind => {
+  const f = fixture();
+  const path = `repos/splrad/LayerScape/contents/release-please-config.json?ref=${S}`;
+  const config = JSON.parse(Buffer.from(f.routes[path].content, 'base64').toString());
+  if (kind === 'missing-draft') delete config.draft;
+  if (kind === 'published') config.draft = false;
+  if (kind === 'package-override') config.packages['.'].draft = false;
+  if (kind === 'plugin') config.plugins = ['node-workspace'];
+  if (kind === 'extra-file') config.packages['.']['extra-files'] = ['unowned.json'];
+  f.routes[path].content = Buffer.from(JSON.stringify(config)).toString('base64');
+  await expect(f.planner.inspect(1187527897, P, 'before')).rejects.toThrow('untrusted Release Please configuration');
+  expect(f.calls.some(args => args.at(-1)!.includes('/releases?'))).toBe(false);
 });

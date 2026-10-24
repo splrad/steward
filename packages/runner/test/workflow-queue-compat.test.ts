@@ -39,3 +39,9 @@ it('rejects duplicate keys and broken YAML', () => {
   expect(() => validateQueueSyntax('/test.yml', source + '  queue: single\n')).toThrow('invalid YAML');
   expect(() => validateQueueSyntax('/test.yml', 'jobs: [')).toThrow('invalid YAML');
 });
+
+it('requires exact diagnostic coverage when compatibility filtering is used', () => {
+  const all = [...locations, { ...locations[0]!, line: 9 }];
+  expect(acceptActionlintResult(1, JSON.stringify([diagnostic]), '', all, '/')).toBe(false);
+  expect(acceptActionlintResult(1, JSON.stringify([diagnostic, { ...diagnostic, line: 9 }]), '', all, '/')).toBe(true);
+});

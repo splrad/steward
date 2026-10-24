@@ -15,7 +15,7 @@ async function fixture() {
   await writeFile(join(directory, 'release-notes.md'), `1.2.3\n${manifest.sourceSha}\n${manifest.policySha}\n`);
   const target: ReleaseTarget = { directory, releaseId: 20, manifest: await sealReleaseArtifacts(directory, manifest) };
   const remote = new Map<string, Buffer>(); const calls: string[][] = [];
-  const state = { id: 20, tag_name: 'v1.2.3', draft: true, immutable: false, body: 'native RP draft', html_url: 'https://github.com/fixture/product/releases/tag/v1.2.3', source: manifest.sourceSha,
+  const state = { id: 20, author: { id: 301115370 }, tag_name: 'v1.2.3', draft: true, immutable: false, body: 'native RP draft', html_url: 'https://github.com/fixture/product/releases/tag/v1.2.3', source: manifest.sourceSha,
     loseUpload: false, losePublish: false, loseBody: false, failUpload: false, incomplete: false, corruptDownload: false,
     invocation: 'https://github.com/fixture/product/actions/runs/10/attempts/2', certificateRepository: '1', buildTrigger: 'workflow_dispatch' };
   const gh: GhCommand = async args => {
@@ -109,5 +109,14 @@ it('detects a pause after successful upload before the next write', async () => 
 it.each(['body', 'immutable'])('reports published %s drift without modifying it', async kind => {
   const f = await fixture(); await f.preload(); f.state.draft = false; f.state.immutable = kind !== 'immutable';
   await expect(f.adapter.publish(f.target, async () => {})).rejects.toThrow();
+  expect(f.calls.some(args => ['edit', 'upload'].includes(args[1]!))).toBe(false);
+});
+
+it('rejects a foreign draft before uploads and rechecks ownership before every write', async () => {
+  const f = await fixture(); f.state.author.id = 42;
+  await expect(f.adapter.publish(f.target, async () => {})).rejects.toThrow('untrusted release creator');
+  expect(f.calls.some(args => ['edit', 'upload'].includes(args[1]!))).toBe(false);
+  f.state.author.id = 301115370;
+  await expect(f.adapter.publish(f.target, async () => { f.state.author.id = 42; })).rejects.toThrow('untrusted release creator');
   expect(f.calls.some(args => ['edit', 'upload'].includes(args[1]!))).toBe(false);
 });

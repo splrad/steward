@@ -24,11 +24,11 @@ export function assertNativeWorkflow(path: string, document: any, repositoryId: 
     same(inspect.outputs, { artifact_id: '${{ steps.recover.outputs.artifact_id || steps.artifact.outputs.artifact-id }}', digest: '${{ steps.recover.outputs.digest || steps.artifact.outputs.artifact-digest }}' }, 'frozen final outputs');
 
     same(d.on.workflow_call, { inputs: Object.fromEntries(['unit', 'tag', 'release_id', 'release_pr'].map(key => [key, { required: true, type: 'string' }])) }, 'product inputs');
-    same(d.permissions, read, 'product upper scope');
+    same(d.permissions, { ...read, 'pull-requests': 'read' }, 'product upper scope');
     same(d.concurrency, { group: 'release-publish-${{ github.repository_id }}-${{ inputs.unit }}-${{ inputs.release_id }}', 'cancel-in-progress': false, queue: 'max' }, 'release identity queue');
     const dependencies: Record<string, string[]> = { build: ['identity'], collect: ['identity', 'build'], sign: ['identity', 'collect'], inspect: ['identity', 'collect', 'sign'], attest: ['identity', 'inspect'], publish: ['identity', 'inspect', 'attest'], verify: ['identity', 'build', 'collect', 'sign', 'inspect', 'attest', 'publish'] };
     for (const [name, job] of Object.entries(d.jobs) as [string, any][]) {
-      same(job.permissions, name === 'identity' ? { ...read, 'id-token': 'write' } : name === 'attest' ? { ...read, 'id-token': 'write', attestations: 'write' }
+      same(job.permissions, name === 'identity' ? { ...read, 'pull-requests': 'read', 'id-token': 'write' } : name === 'attest' ? { ...read, 'id-token': 'write', attestations: 'write' }
         : name === 'publish' ? { ...read, contents: 'write', attestations: 'read' } : name === 'verify' ? { ...read, attestations: 'read' } : read, name + ' permissions');
       if (job.environment !== undefined || /secrets\./.test(JSON.stringify(job))) fail('product secrets/environment');
       same(job['runs-on'], name === 'identity' ? 'ubuntu-24.04' : 'windows-2025', name + ' runner');

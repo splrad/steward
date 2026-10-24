@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
 import { TagName } from 'release-please/build/src/util/tag-name.js';
 import { Version } from 'release-please/build/src/version.js';
@@ -40,6 +41,23 @@ export class NativeReleasePlanner {
     if (!['ahead', 'identical'].includes(history.status) || history.merge_base_commit?.sha !== policySha) fail('untrusted policy history');
     const actual = await this.get(`repos/${policy.fullName}`);
     if (actual.id !== repositoryId || actual.full_name !== policy.fullName || actual.default_branch !== policy.defaultBranch) fail('repository identity');
+    // Release Please consumes this branch's config with a write token. Validate it
+    // before permitting either native writer, not only in the later product job.
+    const tip = await this.get(`repos/${policy.fullName}/commits/${encodeURIComponent(policy.defaultBranch)}`);
+    if (!/^[a-f0-9]{40}$/.test(tip.sha)) fail('release configuration source');
+    const [liveConfig, rawUnits, defaults, boundaries] = await Promise.all([
+      this.file(policy.fullName, tip.sha, 'release-please-config.json'),
+      this.file(policy.fullName, tip.sha, '.github/steward-release.json'),
+      this.file('splrad/steward', policySha, 'config/release/defaults.json'),
+      this.file('splrad/steward', policySha, 'config/release/bootstrap.json'),
+    ]);
+    const { units } = parseReleaseDescriptor(rawUnits), boundary = boundaries[String(repositoryId)];
+    if (!/^[a-f0-9]{40}$/.test(boundary) || defaults.draft !== true || defaults['force-tag-creation'] !== true
+      || units.some(unit => unit.ecosystem !== 'native')
+      || !isDeepStrictEqual(units.map(unit => unit.id).sort(), Object.keys(policy.release.units).sort())) fail('release configuration policy');
+    const expectedConfig = { ...defaults, 'bootstrap-sha': boundary, packages: Object.fromEntries(units.map(unit => [unit.releasePleasePath,
+      { 'release-type': 'simple', 'version-file': unit.versionFile, 'changelog-path': unit.changelogPath }])) };
+    if (!isDeepStrictEqual(liveConfig, expectedConfig)) fail('untrusted Release Please configuration');
     const [pulls, releases] = await Promise.all([
       this.pages(`repos/${policy.fullName}/pulls?state=all&base=${encodeURIComponent(policy.defaultBranch)}&per_page=100`),
       this.pages(`repos/${policy.fullName}/releases?per_page=100`),
@@ -107,6 +125,7 @@ export class NativeReleasePlanner {
       if (matches.length !== 1 || !Number.isSafeInteger(release.id) || release.id < 1) fail('ambiguous release identity');
       const unit = matches[0]!;
       if (unit.releaseId) fail('duplicate tag release');
+      if (release.author?.id !== 301115370) fail('untrusted release creator');
       const commit = await this.get(`repos/${policy.fullName}/commits/${encodeURIComponent(unit.tag)}`);
       if (commit.sha !== unit.S) fail('tag/merged PR mismatch');
       unit.releaseId = release.id;

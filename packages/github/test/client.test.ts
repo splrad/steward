@@ -335,7 +335,7 @@ describe("代码托管平台客户端", () => {
     }
     expect(requests).toHaveLength(workflows.length);
     workflows.forEach((workflow, index) => expect(requests[index]).toEqual(["POST", `/repos/splrad/steward/actions/workflows/${workflow}/dispatches`, {
-      ref: "trunk", inputs: { value: "x", policySha: "a".repeat(40) },
+      ref: "trunk", inputs: workflow === "pr-classification.yml" ? { value: "x", policySha: "a".repeat(40) } : { value: "x" },
     }]));
     for (const workflow of ["pr-automation.yml", "issue-sync.yml", "pr-issue-link.yml"]) {
       await expect(dispatchWorkflow(client, { owner: "splrad", repo: "steward", workflow, policySha: "a".repeat(40), inputs: {} })).rejects.toThrow("不允许");
@@ -358,4 +358,24 @@ describe("代码托管平台客户端", () => {
     } as unknown as GitHubClient;
     await expect(dispatchWorkflow(client, { owner: "splrad", repo: "steward", workflow: "native-review.yml", policySha: "a".repeat(40), inputs: {} })).rejects.toThrow("没有可用的默认分支");
   });
+});
+
+it('dispatches only declared inputs in the actual workflow contracts', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const { parse } = await import('yaml');
+  const client = {
+    getRepository: async () => ({ default_branch: 'main' }),
+    request: async (_method: string, path: string, body: any) => {
+      const name = path.split('/').at(-2)!;
+      const document = parse(await readFile(`.github/workflows/${name}`, 'utf8'));
+      expect(Object.keys(body.inputs).every(key => Object.hasOwn(document.on.workflow_dispatch.inputs, key))).toBe(true);
+      for (const [key, value] of Object.entries(document.on.workflow_dispatch.inputs) as [string, any][]) {
+        if (value.required) expect(body.inputs[key]).toBeTruthy();
+      }
+    },
+  } as unknown as GitHubClient;
+  await dispatchWorkflow(client, { owner: 'splrad', repo: 'steward', workflow: 'native-review.yml', policySha: 'a'.repeat(40),
+    inputs: { repositoryId: '1', eventAfterSha: 'b'.repeat(40), pullRequestNumber: '2', policySha: 'discarded' } });
+  await dispatchWorkflow(client, { owner: 'splrad', repo: 'steward', workflow: 'pr-classification.yml', policySha: 'a'.repeat(40),
+    inputs: { deliveryId: 'delivery', repositoryId: '1' } });
 });

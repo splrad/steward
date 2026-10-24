@@ -7,8 +7,9 @@ it.each(['release.yml', 'sync-managed.yml', 'product-release.yml', 'update-depen
   const d = await load(name);
   expect(() => assertWorkflowDocument('.github/workflows/' + name, d)).not.toThrow();
 });
-it.each(['callback', 'extra-job', 'secret', 'permissions', 'source-checkout', 'policy-checkout', 'overwrite', 'failed-step', 'failed-job', 'verify-needs', 'verify-condition', 'budget', 'attestation', 'queue', 'unknown-input'])('rejects product contract mutation: %s', async variant => {
+it.each(['identity-permission', 'callback', 'extra-job', 'secret', 'permissions', 'source-checkout', 'policy-checkout', 'overwrite', 'failed-step', 'failed-job', 'verify-needs', 'verify-condition', 'budget', 'attestation', 'queue', 'unknown-input'])('rejects product contract mutation: %s', async variant => {
   const d = await load('product-release.yml');
+  if (variant === 'identity-permission') delete d.jobs.identity.permissions['pull-requests'];
   if (variant === 'callback') d.on = { workflow_run: { workflows: ['build'], types: ['completed'] } };
   if (variant === 'extra-job') d.jobs.extra = structuredClone(d.jobs.publish);
   if (variant === 'secret') d.jobs.publish.env = { TOKEN: '${{ secrets.EXTRA }}' };

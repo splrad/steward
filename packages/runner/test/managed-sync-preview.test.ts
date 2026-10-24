@@ -1,9 +1,18 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { previewManagedSync, gitBlob, safeManagedPath, type PreviewInput, type GitSnapshot } from '../src/managed-sync-preview.js';
+// Only Git's fixed merge-file invocation may run; no hooks, repository or network.
+vi.mock('node:child_process', async importOriginal => {
+  const original = await importOriginal<typeof import('node:child_process')>();
+  return { ...original, spawnSync(command: string, args: string[], options: any) {
+    if (command !== 'git' || JSON.stringify(args.slice(0, 9)) !== '["merge-file","-p","--diff3","-L","CURRENT","-L","BASE","-L","NEW"]'
+      || args.length !== 12 || options.shell !== false) throw new Error('TEST_SUBPROCESS_DENIED');
+    return original.spawnSync(command, args, options);
+  } };
+});
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function fixture() {
@@ -13,10 +22,10 @@ async function fixture() {
   const input: PreviewInput = { repositoryId: 1187527897, fullName: 'splrad/LayerScape', defaultBranch: 'main', expectedBaseSha: 'a'.repeat(40), policySha: 'b'.repeat(40), configuredPolicySha: 'b'.repeat(40), revokedPolicyShas: [], mode: 'onboard', targetDirectory: join(root, 'target'), sourceDirectories: { 'splrad/steward': join(root, 'policy') },
     rules: [{ source: 'schema/source.json', destination: 'schema/source.json', mode: 'whole', dependencyFields: [], sourceRepository: 'splrad/steward', sourceSha: 'b'.repeat(40) }],
     onboarding: { directory, manifest: { schemaVersion: 1, repositoryId: 1187527897, fullName: 'splrad/LayerScape', defaultBranch: 'main', expectedBaseSha: 'a'.repeat(40), mode: 'onboard', initializeManifest: false, files: [{ targetPath: 'VERSION', beforeBlob: null, payloadPath: 'files/VERSION', sha256: createHash('sha256').update(bytes).digest('hex') }] } }, outputDirectory: join(root, 'out') };
-  const target = new Map<string, Buffer>(), blobs = new Map<string, Buffer>(); let source = Buffer.from('schema bytes\n');
+  const target = new Map<string, Buffer>(), blobs = new Map<string, Buffer>(); const sources = new Map([[input.policySha, Buffer.from('schema bytes\n')]]);
   const snapshot: GitSnapshot = { head: async () => input.expectedBaseSha, file: async (directory, sha, path) => {
     if (directory === input.targetDirectory && sha === input.expectedBaseSha) return target.get(path) ?? null;
-    if (directory === input.sourceDirectories['splrad/steward'] && sha === input.policySha && path === 'schema/source.json') return source;
+    if (directory === input.sourceDirectories['splrad/steward'] && sources.has(sha) && path === 'schema/source.json') return sources.get(sha)!;
     throw new Error('unexpected snapshot read');
   }, blob: async (_, id) => { const value = blobs.get(id); if (!value) throw new Error('missing fixture blob'); return value; } };
   const adopt = async () => {
@@ -24,7 +33,7 @@ async function fixture() {
     for (const { path } of report.files) { const bytes = await readFile(join(input.outputDirectory, 'files', path)); target.set(path, bytes); blobs.set(gitBlob(bytes), bytes); }
     input.mode = 'sync'; delete input.onboarding; input.outputDirectory = join(root, 'next'); return report;
   };
-  return { root, input, target, blobs, snapshot, adopt, setSource: (bytes: string) => { source = Buffer.from(bytes); } };
+  return { root, input, target, blobs, snapshot, adopt, setSource: (bytes: string) => { const sha = createHash('sha1').update(bytes).digest('hex'); sources.set(sha, Buffer.from(bytes)); input.policySha = input.configuredPolicySha = input.rules[0]!.sourceSha = sha; } };
 }
 const merge = async (current: string, base: string, next: string) => { if (current !== base && current !== next) throw new Error('CONFLICT'); return next; };
 it('writes an isolated exact preview and repeat sync has no changed paths', async () => {
@@ -84,4 +93,29 @@ it.each(['reviewed', 'human-change', 'unregistered'])('first review-section migr
   expect(generated).toMatch(/^<!-- steward:review:start -->\n/);
   expect(generated).toMatch(/<!-- steward:review:end -->\n$/);
   expect(report.files.find(file => file.path === 'AGENTS.md')?.beforeBlob).toBe(gitBlob(before));
+});
+
+it('preserves product edits through consecutive syncs and later independent central changes', async () => {
+  const f = await fixture(); f.setSource('a\nb\nc\nd\ne\n'); await f.adopt();
+  f.target.set('schema/source.json', Buffer.from('human\nb\nc\nd\ne\n'));
+  f.setSource('a\nb\nc\nd\ncentral\n');
+  // Use the real Git three-way merge, then adopt its actual output as a committed snapshot.
+  const first = await previewManagedSync(f.input, f.snapshot);
+  for (const { path } of first.files) {
+    const bytes = await readFile(join(f.input.outputDirectory, 'files', path));
+    f.target.set(path, bytes); f.blobs.set(gitBlob(bytes), bytes);
+  }
+  expect(f.target.get('schema/source.json')!.toString()).toBe('human\nb\nc\nd\ncentral\n');
+  f.input.outputDirectory = join(f.root, 'third');
+  expect((await previewManagedSync(f.input, f.snapshot)).files).toEqual([]);
+  f.setSource('a\nb\nc\nd\ncentral-two\n'); f.input.outputDirectory = join(f.root, 'fourth');
+  await previewManagedSync(f.input, f.snapshot);
+  expect(await readFile(join(f.input.outputDirectory, 'files/schema/source.json'), 'utf8')).toBe('human\nb\nc\nd\ncentral-two\n');
+});
+it('fails closed when the prior rendered source cannot be proven', async () => {
+  const f = await fixture(); await f.adopt();
+  const adoption = JSON.parse(f.target.get('.github/steward-adoption.json')!.toString());
+  adoption.files[0].sourceBlob = 'f'.repeat(40);
+  f.target.set('.github/steward-adoption.json', Buffer.from(JSON.stringify(adoption)));
+  await expect(previewManagedSync(f.input, f.snapshot, merge)).rejects.toThrow('unproven source baseline');
 });

@@ -22,7 +22,7 @@ export const nativeRulesRead: RulesRead = async (repository, ruleId) => {
 export const nativeGhCommand: GhCommand = async args => (await promisify(execFile)('gh', [...args], {
   encoding: 'utf8', timeout: 120_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true,
   env: { ...process.env, RULES_READ_TOKEN: undefined, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1',
-    ...(args[0] === 'api' && args.some(arg => /^repos\/splrad\/steward(?:$|\/commits\/main$|\/compare\/|\/contents\/config\/repositories\.json\?ref=)/.test(arg)) && process.env.POLICY_READ_TOKEN ? { GH_TOKEN: process.env.POLICY_READ_TOKEN } : {}) },
+    ...(args[0] === 'api' && args.some(arg => /^repos\/splrad\/steward(?:$|\/commits\/main$|\/compare\/|\/contents\/config\/(?:repositories|release\/(?:defaults|bootstrap))\.json\?ref=)/.test(arg)) && process.env.POLICY_READ_TOKEN ? { GH_TOKEN: process.env.POLICY_READ_TOKEN } : {}) },
 })).stdout;
 export interface ReleaseObject { id: number; tag_name: string; draft: boolean; immutable: boolean; body: string; html_url: string }
 interface Asset { id: number; name: string; size: number; digest: string | null; state: string }
@@ -40,6 +40,7 @@ export class NativeGitHubRelease {
     const repository = await this.json(['api', `repos/${m.fullName}`]);
     if (repository.id !== m.repositoryId || repository.full_name !== m.fullName) reject('repository identity');
     const release = await this.json(['api', `repos/${m.fullName}/releases/${releaseId}`]);
+    if (release.author?.id !== 301115370) reject('untrusted release creator');
     if (release.id !== releaseId || release.tag_name !== m.tag || typeof release.draft !== 'boolean') reject('release identity');
     const commit = await this.json(['api', `repos/${m.fullName}/commits/${encodeURIComponent(m.tag)}`]);
     if (commit.sha !== m.sourceSha) reject('tag source changed');

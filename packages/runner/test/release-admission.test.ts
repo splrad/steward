@@ -21,7 +21,7 @@ async function fixture() {
     const value = (directory === 'source' ? source : policy)[path]; return value === undefined ? null : Buffer.from(value);
   } };
   const evidence: ReleaseIdentityObservation = { complete: true, repository: { id: 1187527897, fullName: 'splrad/LayerScape', defaultBranch: 'main' }, githubSha: S, githubRef: 'refs/tags/v9.2.3', resolvedTagSha: S, policyOnProtectedMain: true, adoptionAncestor: true,
-    release: { id: 1, tag: 'v9.2.3', draft: true }, pull: { number: 3, merged: true, mergeSha: S, baseRef: 'main', baseRepositoryId: 1187527897 },
+    release: { id: 1, tag: 'v9.2.3', draft: true, authorId: 301115370 }, pull: { number: 3, merged: true, mergeSha: S, baseRef: 'main', baseRepositoryId: 1187527897 },
     caller: (await readFile('templates/release/steward-release-publish.yml', 'utf8')).replace(/product-release\.yml@[a-f0-9]{40}/, `product-release.yml@${P}`) };
   return { input, source, policy, snapshot, evidence };
 }
@@ -48,8 +48,9 @@ it.each(['version', 'manifest', 'template', 'schema', 'changelog', 'notes', 'ent
   if (kind === 'channel') { const d = structuredClone(descriptor); d.units[0]!.channels.pop(); f.source['.github/steward-release.json'] = JSON.stringify(d); }
   await expect(validateReleaseSource(f.input, f.snapshot)).rejects.toThrow();
 });
-it.each(['head', 'tag', 'release-id', 'pr-source', 'base', 'repo', 'incomplete', 'untrusted-policy', 'adoption', 'caller', 'permission', 'secret'])('rejects %s evidence before production', async kind => {
+it.each(['creator', 'head', 'tag', 'release-id', 'pr-source', 'base', 'repo', 'incomplete', 'untrusted-policy', 'adoption', 'caller', 'permission', 'secret'])('rejects %s evidence before production', async kind => {
   const f = await fixture(), units = await validateReleaseSource(f.input, f.snapshot), e = f.evidence;
+  if (kind === 'creator') e.release.authorId = 42;
   if (kind === 'head') e.githubSha = 'c'.repeat(40);
   if (kind === 'tag') e.resolvedTagSha = 'c'.repeat(40);
   if (kind === 'release-id') e.release.id = 2;

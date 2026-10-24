@@ -10,6 +10,7 @@ export async function dispatchWorkflow(client: GitHubClient, input: {
   const repository = await client.getRepository(input.owner, input.repo);
   const defaultBranch = repository?.default_branch;
   if (typeof defaultBranch !== "string" || !defaultBranch.trim()) throw new Error("中央仓库没有可用的默认分支");
-  const inputs = { ...input.inputs, policySha: input.policySha };
+  const { policySha: _suppliedPolicy, ...dispatchInputs } = input.inputs;
+  const inputs = input.workflow === "pr-classification.yml" ? { ...dispatchInputs, policySha: input.policySha } : dispatchInputs;
   await client.request("POST", `/repos/${input.owner}/${input.repo}/actions/workflows/${input.workflow}/dispatches`, { ref: defaultBranch, inputs });
 }

@@ -86,5 +86,8 @@ const labelSteps = sync.jobs.synchronize.steps.filter(step => step.run?.includes
 if (labelSteps.length !== 2 || !labelSteps[0].run.includes('--mode preview') || !labelSteps[1].run.includes('--mode apply')) throw new Error('Label preview/apply integration');
 const templates = (await readdir('templates/release')).filter(file => /\.ya?ml$/.test(file)).map(file => 'templates/release/' + file);
 await scanWorkflows(process.cwd(), templates);
+const product = workflowDocuments.get('product-release.yml');
+const publishCaller = YAML.parse(await readFile('templates/release/steward-release-publish.yml', 'utf8'));
+if ([product.permissions, product.jobs.identity.permissions, publishCaller.permissions].some(permissions => permissions?.['pull-requests'] !== 'read')) throw new Error('Release identity requires pull-requests read throughout caller and job');
 console.log('workflows verified');
 } catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }

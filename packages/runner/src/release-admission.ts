@@ -70,7 +70,7 @@ export async function validateReleaseSource(input: AdmissionInput, snapshot: Git
 export interface ReleaseIdentityObservation {
   complete: boolean; repository: { id: number; fullName: string; defaultBranch: string };
   githubSha: string; githubRef: string; resolvedTagSha: string; policyOnProtectedMain: boolean; adoptionAncestor: boolean;
-  release: { id: number; tag: string; draft: boolean };
+  release: { id: number; tag: string; draft: boolean; authorId: number };
   pull: { number: number; merged: boolean; mergeSha: string; baseRef: string; baseRepositoryId: number };
   caller: string;
 }
@@ -81,7 +81,7 @@ export function admitReleaseIdentity(input: AdmissionInput, unit: AdmittedUnit, 
     || evidence.githubSha !== input.sourceSha || evidence.githubRef !== `refs/tags/${unit.tag}` || evidence.resolvedTagSha !== input.sourceSha
     || !evidence.policyOnProtectedMain || !evidence.adoptionAncestor || evidence.release.id !== requested.releaseId
     || !Number.isSafeInteger(requested.releaseId) || requested.releaseId < 1 || !Number.isSafeInteger(requested.releasePr) || requested.releasePr < 1
-    || evidence.release.tag !== unit.tag || evidence.pull.number !== requested.releasePr || !evidence.pull.merged
+    || evidence.release.authorId !== 301115370 || evidence.release.tag !== unit.tag || evidence.pull.number !== requested.releasePr || !evidence.pull.merged
     || evidence.pull.mergeSha !== input.sourceSha || evidence.pull.baseRef !== policy.defaultBranch || evidence.pull.baseRepositoryId !== input.repositoryId) fail('release source identity');
   const document = parseDocument(evidence.caller, { uniqueKeys: true });
   if (document.errors.length) fail('caller YAML');
@@ -97,7 +97,7 @@ export function admitReleaseIdentity(input: AdmissionInput, unit: AdmittedUnit, 
       || mapping[name] !== '${{ inputs.' + name + ' }}')
     || caller['run-name'] !== 'Publish ${{ inputs.unit }} / ${{ inputs.tag }} / ${{ inputs.release_id }}') fail('caller input contract');
   const permissions = caller.permissions;
-  const expected = { contents: 'write', actions: 'read', 'id-token': 'write', attestations: 'write' };
+  const expected = { contents: 'write', actions: 'read', 'pull-requests': 'read', 'id-token': 'write', attestations: 'write' };
   if (!permissions || Object.keys(permissions).sort().join(',') !== Object.keys(expected).sort().join(',')
     || Object.entries(expected).some(([name, value]) => permissions[name] !== value) || caller.jobs.publish.secrets !== undefined) fail('caller permissions');
   if (evidence.release.draft) { releaseWriteAuthority(catalog, input.repositoryId, input.repository, unit.unit.id, input.policySha); return 'build'; }

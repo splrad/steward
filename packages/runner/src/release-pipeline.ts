@@ -44,7 +44,7 @@ export async function pipelineIdentity(input: { unit: string; tag: string; relea
     githubSha: sourceSha, githubRef: environment.GITHUB_REF!, resolvedTagSha: tag.sha,
     policyOnProtectedMain: ['ahead', 'identical'].includes(history.status) && history.merge_base_commit?.sha === input.policySha,
     adoptionAncestor: ancestry.status === 'ahead' && ancestry.merge_base_commit?.sha === boundary,
-    release: { id: release.id, tag: release.tag_name, draft: release.draft }, pull: { number: pull.number, merged: pull.merged,
+    release: { id: release.id, tag: release.tag_name, draft: release.draft, authorId: release.author?.id }, pull: { number: pull.number, merged: pull.merged,
       mergeSha: pull.merge_commit_sha, baseRef: pull.base?.ref, baseRepositoryId: pull.base?.repo?.id }, caller: caller.toString('utf8'),
   });
   const toolLocks: Record<string, string> = {};

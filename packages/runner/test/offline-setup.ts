@@ -1,12 +1,18 @@
 import { afterAll, beforeEach, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { resetOfflineFixtures } from './offline-fixtures.js';
 
 for (const name of Object.keys(process.env)) {
   if (/(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|PRIVATE_KEY|API_KEY|ACCESS_KEY)/i.test(name)) delete process.env[name];
 }
+// Preserve only the installed tool directory before hiding the real home and credentials.
+// mise-action uses the default data directory unless explicitly overridden.
+process.env.MISE_DATA_DIR ??= process.env.XDG_DATA_HOME ? join(process.env.XDG_DATA_HOME, 'mise') : process.platform === 'win32'
+  ? join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'mise')
+  : join(process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'mise');
+if (existsSync(process.env.MISE_DATA_DIR)) process.env.MISE_DATA_DIR = realpathSync(process.env.MISE_DATA_DIR);
 const isolatedHome = mkdtempSync(join(tmpdir(), 'steward-test-home-'));
 for (const name of ['HOME', 'USERPROFILE', 'XDG_CONFIG_HOME', 'GH_CONFIG_DIR', 'AWS_SHARED_CREDENTIALS_FILE',
   'AWS_CONFIG_FILE', 'AZURE_CONFIG_DIR', 'CLOUDSDK_CONFIG', 'COPILOT_HOME']) {

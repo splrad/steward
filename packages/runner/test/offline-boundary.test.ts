@@ -27,3 +27,9 @@ it('rejects direct TCP, TLS and UDP transports while preserving pure IP parsing'
     () => udp.createSocket('udp4'),
   ]) expect(attempt).toThrow('TEST_NETWORK_DENIED');
 });
+
+it('preserves installed mise data while isolating home and credentials', () => {
+  expect(process.env.MISE_DATA_DIR).toBeTruthy();
+  expect(process.env.HOME).toContain('steward-test-home-');
+  expect(process.env.MISE_DATA_DIR).not.toContain('steward-test-home-');
+});
