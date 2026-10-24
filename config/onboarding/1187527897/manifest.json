@@ -28,7 +28,7 @@
       "targetPath": "CHANGELOG.md",
       "beforeBlob": null,
       "payloadPath": "files/CHANGELOG.md",
-      "sha256": "5cb21913fba8a694b5b01e060c4793ba3f2f4cc48d60a3441ab23e28ec3f8a3f"
+      "sha256": "8fcde325cc2c493f67872f551d5ffa9db3b4e5322d1dd628f5478497e262d93b"
     },
     {
       "targetPath": "Directory.Build.props",

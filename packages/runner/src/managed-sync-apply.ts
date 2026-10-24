@@ -32,7 +32,7 @@ export async function applyManagedPreview(previewDirectory: string, targetDirect
     let current: Buffer | null = null;
     try { current = await readFile(join(target, file.path)); } catch (error: any) { if (error.code !== 'ENOENT') throw error; }
     const committed = await localGitSnapshot.file(target, report.expectedBaseSha, file.path);
-    if ((current ? hash(current) : null) !== file.beforeSha256 || (committed ? gitBlob(committed) : null) !== file.beforeBlob) fail('target bytes changed');
+    if ((current ? hash(current) : null) !== file.beforeSha256 || (current ? gitBlob(current) : null) !== file.beforeBlob || (committed ? gitBlob(committed) : null) !== file.beforeBlob) fail('target bytes changed');
     checked.push({ path: file.path, bytes });
   }
   for (const file of checked) { const destination = join(target, file.path); await mkdir(dirname(destination), { recursive: true }); await writeFile(destination, file.bytes); }

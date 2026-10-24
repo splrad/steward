@@ -76,14 +76,14 @@ jobs:
           cache: false
           env: false
           persist_github_token: false
-      - id: before
+      - id: authorization
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY_ID: ${{ matrix.repositoryId }}
           POLICY_SHA: ${{ github.workflow_sha }}
-        run: node packages/runner/dist/index.js release-plan inspect --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA" --phase before --output before.json
+        run: node packages/runner/dist/index.js release-plan preflight --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA" --output authorization.json
       - id: target-token
-        if: steps.before.outputs.needs_write == 'true'
+        if: steps.authorization.outputs.enabled == 'true'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: '4243096'
@@ -94,10 +94,19 @@ jobs:
           permission-pull-requests: write
           permission-issues: write
           permission-actions: write
+      - id: before
+        if: steps.target-token.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ steps.target-token.outputs.token }}
+          POLICY_READ_TOKEN: ${{ github.token }}
+          REPOSITORY_ID: ${{ matrix.repositoryId }}
+          POLICY_SHA: ${{ github.workflow_sha }}
+        run: node packages/runner/dist/index.js release-plan inspect --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA" --phase before --output before.json
       - id: write-check
         if: steps.target-token.outputs.token != ''
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.target-token.outputs.token }}
+          POLICY_READ_TOKEN: ${{ github.token }}
           REPOSITORY_ID: ${{ matrix.repositoryId }}
           POLICY_SHA: ${{ github.workflow_sha }}
         run: node packages/runner/dist/index.js release-plan inspect --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA" --phase before --output write-check.json
@@ -112,8 +121,10 @@ jobs:
           manifest-file: .release-please-manifest.json
           skip-github-pull-request: true
       - id: after
+        if: steps.target-token.outputs.token != ''
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.target-token.outputs.token }}
+          POLICY_READ_TOKEN: ${{ github.token }}
           REPOSITORY_ID: ${{ matrix.repositoryId }}
           POLICY_SHA: ${{ github.workflow_sha }}
         run: node packages/runner/dist/index.js release-plan inspect --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA" --phase after --output after.json

@@ -93,8 +93,26 @@ jobs:
           cache: false
           env: false
           persist_github_token: false
-      - id: preflight
+      - id: authorization
         env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY_ID: ${{ matrix.repositoryId }}
+          POLICY_SHA: ${{ matrix.policySha }}
+        run: node bootstrap/packages/runner/dist/index.js managed-sync authorize --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA" --output authorization.json
+      - id: rules-token
+        if: steps.authorization.outputs.enabled == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: "4243096"
+          private-key: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          owner: splrad
+          repositories: ${{ steps.authorization.outputs.repository }}
+          permission-administration: write
+      - id: preflight
+        if: steps.authorization.outputs.enabled == 'true'
+        env:
+          RULES_READ_TOKEN: ${{ steps.rules-token.outputs.token }}
+          RULES_READ_REPOSITORY: ${{ steps.authorization.outputs.full_name }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY_ID: ${{ matrix.repositoryId }}
           POLICY_SHA: ${{ matrix.policySha }}
@@ -114,7 +132,7 @@ jobs:
       - if: steps.preflight.outputs.enabled == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ matrix.fullName }}
+          repository: ${{ steps.authorization.outputs.full_name }}
           ref: ${{ steps.preflight.outputs.base_sha }}
           path: target
           fetch-depth: 0
@@ -134,6 +152,8 @@ jobs:
       - id: labels
         if: steps.preflight.outputs.enabled == 'true'
         env:
+          RULES_READ_TOKEN: ${{ steps.rules-token.outputs.token }}
+          RULES_READ_REPOSITORY: ${{ steps.authorization.outputs.full_name }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY_ID: ${{ matrix.repositoryId }}
           POLICY_SHA: ${{ matrix.policySha }}
@@ -161,13 +181,15 @@ jobs:
           app-id: "4243096"
           private-key: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
           owner: splrad
-          repositories: ${{ matrix.repository }}
+          repositories: ${{ steps.authorization.outputs.repository }}
           permission-contents: write
           permission-pull-requests: write
           permission-workflows: write
       - id: write-check
         if: steps.apply.outputs.changed == 'true' || steps.labels.outputs.changed == 'true'
         env:
+          RULES_READ_TOKEN: ${{ steps.rules-token.outputs.token }}
+          RULES_READ_REPOSITORY: ${{ steps.authorization.outputs.full_name }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY_ID: ${{ matrix.repositoryId }}
           POLICY_SHA: ${{ matrix.policySha }}
@@ -175,6 +197,8 @@ jobs:
         run: node bootstrap/packages/runner/dist/index.js managed-sync preflight --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA" --expected-base-sha "$BASE_SHA" --output write-check.json
       - if: steps.labels.outputs.changed == 'true' && steps.write-check.outputs.enabled == 'true'
         env:
+          RULES_READ_TOKEN: ${{ steps.rules-token.outputs.token }}
+          RULES_READ_REPOSITORY: ${{ steps.authorization.outputs.full_name }}
           GH_TOKEN: ${{ steps.token.outputs.token }}
           POLICY_READ_TOKEN: ${{ github.token }}
           REPOSITORY_ID: ${{ matrix.repositoryId }}

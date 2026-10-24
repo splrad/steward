@@ -4,7 +4,7 @@ import { Version } from 'release-please/build/src/version.js';
 import { TagName } from 'release-please/build/src/util/tag-name.js';
 import { parseReleaseDescriptor, assertAdmittedAdapter, artifactNames, type ReleaseUnit } from '../../core/src/release-descriptor.js';
 import { parseRepositoryCatalog, releaseWriteAuthority } from '../../core/src/repository-policy.js';
-import { parseSupplementalNotes } from '../../core/src/release-template.js';
+import { committedVersionNotes, parseSupplementalNotes } from '../../core/src/release-template.js';
 import { localGitSnapshot, type GitSnapshot } from './managed-sync-preview.js';
 
 function fail(reason: string): never { throw new Error(`RELEASE_ADMISSION: ${reason}`); }
@@ -47,8 +47,6 @@ export async function validateReleaseSource(input: AdmissionInput, snapshot: Git
     if (packageConfig['release-type'] !== 'simple' || packageConfig['version-file'] !== unit.versionFile
       || (packageConfig['changelog-path'] ?? 'CHANGELOG.md') !== unit.changelogPath || rp.draft !== true || rp['force-tag-creation'] !== true) fail('native Release Please configuration');
     const changelog = (await source(unit.changelogPath)).toString('utf8');
-    const headings = changelog.split(/\r?\n/).filter(line => /^##?\s/.test(line));
-    if (headings.filter(line => new RegExp(`^##?\\s+(?:\\[)?${version.replaceAll('.', '\\.')}[\\]\\s(]`).test(line)).length !== 1) fail('missing or duplicate version changelog');
     parseSupplementalNotes((await source(unit.notesPath)).toString('utf8'));
     for (const build of unit.builds) {
       await source(build.entrypoint);
@@ -64,6 +62,7 @@ export async function validateReleaseSource(input: AdmissionInput, snapshot: Git
     if (includeComponent && component !== unit.id) fail('explicit native tag component');
     const tag = new TagName(Version.parse(version), component, packageConfig['tag-separator'] ?? rp['tag-separator'] ?? '-',
       packageConfig['include-v-in-tag'] ?? rp['include-v-in-tag'] ?? true).toString();
+    committedVersionNotes(changelog, version, input.repository, input.sourceSha, tag);
     result.push({ unit, version, packageVersion: version, tag, assets: [...names].map(([id, name]) => ({ id, name })), descriptorSha256: digest(descriptorBytes), templateSha256: digest(template) });
   }
   return result;

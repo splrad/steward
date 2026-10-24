@@ -31,10 +31,12 @@ const allowed: Record<string, string[]> = {
   'release-admission prepare': ['repository', 'source-sha', 'policy-sha', 'source-dir', 'policy-dir', 'central-config', 'unit', 'output-dir'],
   'managed-sync preview': ['repository-id', 'mode', 'policy-dir', 'target-dir', 'input-manifest', 'output-dir', 'central-config', 'organization-dir'],
   'managed-sync targets': ['repository', 'output'],
+  'managed-sync authorize': ['repository-id', 'policy-sha', 'output'],
   'managed-sync preflight': ['repository-id', 'policy-sha', 'expected-base-sha', 'output'],
   'managed-sync apply': ['repository-id', 'policy-sha', 'preview-dir', 'target-dir', 'output'],
   'managed-sync labels': ['repository-id', 'policy-sha', 'policy-dir', 'mode', 'output'],
   'release-plan targets': ['repository', 'output'],
+  'release-plan preflight': ['repository-id', 'policy-sha', 'output'],
   'release-plan inspect': ['repository-id', 'policy-sha', 'phase', 'output'],
   'release-plan dispatch': ['repository-id', 'unit', 'release-id', 'release-pr', 'policy-sha'],
 };
@@ -118,6 +120,12 @@ export async function nativeReleaseCli(argv: readonly string[]) {
     for (const key of ['repository-id', ...(command.endsWith('dispatch') ? ['release-id', 'release-pr'] : [])]) {
       if (!/^[1-9][0-9]*$/.test(required(key)) || !Number.isSafeInteger(Number(required(key)))) throw new Error(`NATIVE_CLI: invalid ${key}`);
     }
+    if (command === 'release-plan preflight') {
+      const result = await new NativeControlPlane().releasePreflight(Number(required('repository-id')), required('policy-sha'));
+      await writeFile(required('output'), JSON.stringify(result, null, 2) + '\n', { flag: 'wx' });
+      if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `enabled=${result.mode === 'enabled'}\n`);
+      return;
+    }
     const planner = new NativeReleasePlanner();
     if (command.endsWith('dispatch')) {
       const result = await planner.dispatch(Number(required('repository-id')), required('unit'), Number(required('release-id')), Number(required('release-pr')), required('policy-sha'));
@@ -127,6 +135,13 @@ export async function nativeReleaseCli(argv: readonly string[]) {
     await writeFile(required('output'), JSON.stringify(result, null, 2) + '\n', { flag: 'wx' });
     if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT,
       `should_run_release=${result.should_run_release}\nshould_run_pr=${result.should_run_pr}\nneeds_write=${result.should_run_release || result.should_run_pr || result.units.some(unit => unit.releaseId !== null)}\nunits=${JSON.stringify(result.units)}\n`);
+    return;
+  }
+  if (command === 'managed-sync authorize') {
+    if (!/^[1-9][0-9]*$/.test(required('repository-id'))) throw new Error('NATIVE_CLI: repository ID');
+    const result = await new NativeControlPlane().syncAuthorization(Number(required('repository-id')), required('policy-sha'));
+    await writeFile(required('output'), JSON.stringify(result, null, 2) + '\n', { flag: 'wx' });
+    if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `enabled=${result.mode === 'enabled'}\nrepository=${result.mode === 'enabled' ? result.repository.fullName.split('/')[1] : ''}\nfull_name=${result.mode === 'enabled' ? result.repository.fullName : ''}\n`);
     return;
   }
   if (command === 'managed-sync preflight') {

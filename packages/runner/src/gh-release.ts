@@ -6,10 +6,23 @@ import { join, resolve } from 'node:path';
 import { fileDigest, verifySealedArtifacts, validateReleaseManifest, type ReleaseManifest } from './release-artifacts.js';
 
 export type GhCommand = (args: readonly string[]) => Promise<string>;
+export type RulesRead = (repository: string, ruleId?: number) => Promise<string>;
+/** Only the control plane's verified repository and numeric rule ID reach this adapter. */
+export const nativeRulesRead: RulesRead = async (repository, ruleId) => {
+  if (!/^splrad\/(?:steward|LayerScape|\.github)$/.test(repository)
+    || ruleId !== undefined && (!Number.isSafeInteger(ruleId) || ruleId < 1)) throw new Error('RULES_READ: target');
+  if (!process.env.RULES_READ_TOKEN || process.env.RULES_READ_REPOSITORY !== repository) throw new Error('RULES_READ: scoped credential unavailable');
+  const { RULES_READ_TOKEN, POLICY_READ_TOKEN: _policy, GH_TOKEN: _target, GITHUB_TOKEN: _github, ...environment } = process.env;
+  const args = ruleId === undefined
+    ? ['api', '--paginate', '--slurp', `repos/${repository}/rulesets?includes_parents=true&per_page=100`]
+    : ['api', `repos/${repository}/rulesets/${ruleId}`];
+  return (await promisify(execFile)('gh', args, { encoding: 'utf8', timeout: 120_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true,
+    env: { ...environment, GH_TOKEN: RULES_READ_TOKEN, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1' } })).stdout;
+};
 export const nativeGhCommand: GhCommand = async args => (await promisify(execFile)('gh', [...args], {
   encoding: 'utf8', timeout: 120_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true,
-  env: { ...process.env, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1',
-    ...(args[0] === 'api' && args.some(arg => /^repos\/splrad\/steward(?:\/|$)/.test(arg)) && process.env.POLICY_READ_TOKEN ? { GH_TOKEN: process.env.POLICY_READ_TOKEN } : {}) },
+  env: { ...process.env, RULES_READ_TOKEN: undefined, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1',
+    ...(args[0] === 'api' && args.some(arg => /^repos\/splrad\/steward(?:$|\/commits\/main$|\/compare\/|\/contents\/config\/repositories\.json\?ref=)/.test(arg)) && process.env.POLICY_READ_TOKEN ? { GH_TOKEN: process.env.POLICY_READ_TOKEN } : {}) },
 })).stdout;
 export interface ReleaseObject { id: number; tag_name: string; draft: boolean; immutable: boolean; body: string; html_url: string }
 interface Asset { id: number; name: string; size: number; digest: string | null; state: string }

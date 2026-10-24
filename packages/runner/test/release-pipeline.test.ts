@@ -1,10 +1,15 @@
+import YAML from 'yaml';
+import { createHash } from 'node:crypto';
+import { localGitSnapshot } from '../src/managed-sync-preview.js';
+import { NativeControlPlane } from '../src/native-control-plane.js';
+import catalogFixture from '../../../config/repositories.json' with { type: 'json' };
 import * as downloads from '../src/native-artifact-download.js';
 import { sealReleaseArtifacts, fileDigest, type ReleaseManifest } from '../src/release-artifacts.js';
 import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, copyFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { pipelineRecoverFinal, findFrozenFinal, pipelineProducers, pipelineCollect, type PipelineRecord } from '../src/release-pipeline.js';
+import { pipelineDownloadPhase, pipelineNotes, pipelineRecoverFinal, findFrozenFinal, pipelineProducers, pipelineCollect, type PipelineRecord } from '../src/release-pipeline.js';
 import { producerArtifactName } from '../src/release-run.js';
 import type { GhCommand } from '../src/gh-release.js';
 const roots: string[] = [];
@@ -111,4 +116,58 @@ it.each(['valid', 'tampered-bytes', 'different-policy', 'different-descriptor'])
     expect(JSON.parse(await readFile(join(output, 'artifact-manifest.json'), 'utf8')).attempt).toBe(1);
   } else await expect(pipelineRecoverFinal(record, output, root, join(root, 'home'), gh)).rejects.toThrow();
   expect(download).toHaveBeenCalledOnce();
+});
+
+it.each(['valid', 'repository', 'unit', 'channel', 'kind'])('binds release notes to frozen S/P snapshots: %s', async kind => {
+  const input = structuredClone(record), catalog = structuredClone(catalogFixture);
+  input.repositoryId = 1187527897; input.fullName = 'splrad/LayerScape';
+  input.admitted.unit.id = 'layerscape';
+  input.admitted.unit.channels = [{ id: 'ghcr-assets', kind: 'oci-artifact', artifacts: ['app'], dependsOn: [] }];
+  const template = await readFile('config/templates/release.md.mustache', 'utf8');
+  input.admitted.templateSha256 = createHash('sha256').update(template).digest('hex');
+  const supplemental = await readFile('config/onboarding/1187527897/files/.release-notes/layerscape.md', 'utf8');
+  // The destination at P remains reproducible even when current main is unavailable.
+  catalog.repositories['1187527897'].release.units.layerscape.channels['ghcr-assets'].destination = 'ghcr.io/splrad/frozen-assets';
+  if (kind === 'repository') input.fullName = 'fixture/other';
+  if (kind === 'unit') input.admitted.unit.id = 'missing';
+  if (kind === 'channel') input.admitted.unit.channels[0]!.id = 'missing';
+  if (kind === 'kind') input.admitted.unit.channels[0]!.kind = 'oci-image';
+  const live = vi.spyOn(NativeControlPlane.prototype, 'catalog').mockRejectedValue(new Error('live main must not be read'));
+  const snapshot = vi.spyOn(localGitSnapshot, 'file').mockImplementation(async (directory, sha, path) => {
+    if (directory === 'policy' && sha === input.policySha) {
+      if (path === 'config/repositories.json') return Buffer.from(JSON.stringify(catalog));
+      if (path === 'config/templates/release.md.mustache') return Buffer.from(template);
+    }
+    if (directory === 'source' && sha === input.sourceSha) {
+      if (path === input.admitted.unit.notesPath) return Buffer.from(supplemental);
+      if (path === input.admitted.unit.changelogPath) return Buffer.from('# Changelog\n\n## 1.2.3\n\nFrozen version changes.\n');
+    }
+    throw new Error('unexpected snapshot input');
+  });
+  if (kind === 'valid') {
+    const notes = await pipelineNotes(input, 'source', 'policy');
+    expect(notes).toContain('ghcr.io/splrad/frozen-assets');
+    expect(notes).toContain('Frozen version changes.');
+    expect(snapshot).toHaveBeenCalledTimes(4);
+  } else await expect(pipelineNotes(input, 'source', 'policy')).rejects.toThrow('notes ' + (kind === 'kind' ? 'channel' : kind));
+  expect(live).not.toHaveBeenCalled();
+});
+
+it.each(['inspect', 'attest', 'publish'])('passes the pinned upload action hex digest across the actual %s job boundary', async jobName => {
+  const workflow = YAML.parse(await readFile('.github/workflows/product-release.yml', 'utf8'));
+  const step = workflow.jobs[jobName].steps.find((step: any) => step.run?.includes('release-pipeline download'));
+  // actions/upload-artifact cf430e0 returns uploadResult.sha256Hash (bare hex).
+  // The REST artifact metadata uses sha256:<hex>; recovery strips it for job outputs.
+  const hex = 'e'.repeat(64), expression = /--digest "([^"\n]+)"/.exec(step.run)![1]!;
+  const digest = expression.replace('$ARTIFACT_DIGEST', hex);
+  expect(digest).toBe('sha256:' + hex);
+  const artifact = { id: 101, name: `collected-1-app-${record.sourceSha}-42-2`, digest,
+    expired: false, workflow_run: { id: 42, head_sha: record.sourceSha } };
+  const gh: GhCommand = async () => JSON.stringify(artifact);
+  const download = vi.spyOn(downloads, 'downloadNativeArtifact').mockResolvedValue(undefined);
+  await pipelineDownloadPhase(record, 101, digest, 'collected', 'unused-output', 'unused-policy', 'unused-home', gh);
+  expect(download).toHaveBeenCalledWith(expect.objectContaining({ digest, artifactId: 101 }));
+  download.mockClear();
+  await expect(pipelineDownloadPhase(record, 101, 'sha256:' + digest, 'collected', 'unused-output', 'unused-policy', 'unused-home', gh)).rejects.toThrow('phase artifact source');
+  expect(download).not.toHaveBeenCalled();
 });

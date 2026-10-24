@@ -12,7 +12,7 @@ async function fixture() {
   const source: Record<string, string> = { '.github/steward-release.json': JSON.stringify(descriptor), '.github/release-template.md.mustache': template,
     'schema/steward-release.schema.json': JSON.stringify(descriptorSchema), VERSION: '9.2.3\n', '.release-please-manifest.json': '{".":"9.2.3"}',
     'release-please-config.json': JSON.stringify({ draft: true, 'force-tag-creation': true, 'include-component-in-tag': false, packages: { '.': { 'release-type': 'simple', 'version-file': 'VERSION' } } }),
-    'CHANGELOG.md': '# 更新记录\n\n## [9.2.3](https://github.com/fixture/product/compare/v9.2.2...v9.2.3)\n\n修复路径。\n',
+    'CHANGELOG.md': '# 更新记录\n\n## [9.2.3](https://github.com/splrad/LayerScape/compare/v9.2.2...v9.2.3)\n\n修复路径。\n',
     '.release-notes/layerscape.md': ['概述', '兼容性', '升级与迁移', '安装说明', '已知问题', '恢复'].map(h => `## ${h}\n\n本节是仅用于离线验证的完整夹具内容。\n`).join('\n'), 'tools/build.ps1': 'Write-Output fixture\n' };
   const policy: Record<string, string> = { 'config/templates/release.md.mustache': template, 'schema/steward-release.schema.json': JSON.stringify(descriptorSchema) };
   const input: AdmissionInput = { repository: 'splrad/LayerScape', repositoryId: 1187527897, sourceSha: S, policySha: P, sourceDirectory: 'source', policyDirectory: 'policy', centralConfig: structuredClone(catalog) };
@@ -63,4 +63,16 @@ it.each(['head', 'tag', 'release-id', 'pr-source', 'base', 'repo', 'incomplete',
   if (kind === 'permission') e.caller = e.caller.replace('actions: read', 'actions: write');
   if (kind === 'secret') e.caller += '    secrets: inherit\n';
   expect(() => admitReleaseIdentity(f.input, units[0]!, { releaseId: 1, releasePr: 3 }, e)).toThrow('RELEASE_ADMISSION');
+});
+
+it.each(['bare', 'empty', 'duplicate', 'fenced', 'wrong-depth'])('uses the same version section contract as note generation: %s', async kind => {
+  const f = await fixture();
+  const section = '## 9.2.3\n\nActual changes.\n';
+  f.source['CHANGELOG.md'] = '# Changelog\n\n' + section;
+  if (kind === 'empty') f.source['CHANGELOG.md'] = '## 9.2.3\n';
+  if (kind === 'duplicate') f.source['CHANGELOG.md'] += section;
+  if (kind === 'fenced') f.source['CHANGELOG.md'] = '```markdown\n' + section + '```\n';
+  if (kind === 'wrong-depth') f.source['CHANGELOG.md'] = section.replace('## ', '# ');
+  if (kind === 'bare') expect(await validateReleaseSource(f.input, f.snapshot)).toHaveLength(1);
+  else await expect(validateReleaseSource(f.input, f.snapshot)).rejects.toThrow();
 });

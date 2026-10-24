@@ -59,8 +59,8 @@ export function assertNativeWorkflow(path: string, document: any, repositoryId: 
     const job = d.jobs[writer];
     same(job.concurrency, { group: (sync ? 'managed-sync-' : update ? 'dependency-updates-' : 'release-plan-') + '${{ matrix.repositoryId }}', 'cancel-in-progress': false, queue: 'max' }, 'per repository queue');
     same(job.environment, { name: sync || update ? 'steward-automation' : 'steward-release', deployment: false }, 'writer environment');
-    const token = job.steps.find((s: any) => s.uses?.startsWith('actions/create-github-app-token@'));
-    same(token?.with, { 'app-id': '4243096', 'private-key': '${{ secrets.STEWARD_APP_PRIVATE_KEY }}', owner: 'splrad', repositories: '${{ matrix.repository }}',
+    const token = job.steps.find((s: any) => s.uses?.startsWith('actions/create-github-app-token@') && s.id !== 'rules-token');
+    same(token?.with, { 'app-id': '4243096', 'private-key': '${{ secrets.STEWARD_APP_PRIVATE_KEY }}', owner: 'splrad', repositories: sync ? '${{ steps.authorization.outputs.repository }}' : '${{ matrix.repository }}',
       'permission-contents': 'write', 'permission-pull-requests': 'write', ...(sync ? { 'permission-workflows': 'write' } : update ? { 'permission-issues': 'write', 'permission-workflows': 'write', 'permission-actions': 'read', 'permission-checks': 'read', 'permission-metadata': 'read' } : { 'permission-issues': 'write', 'permission-actions': 'write' }) }, 'single repository token');
     if (!token.if || !job.steps.some((s: any) => s.id === 'write-check')) fail('prewrite authority');
     if (update) {
@@ -69,10 +69,42 @@ export function assertNativeWorkflow(path: string, document: any, repositoryId: 
         || step.with.configurationFile !== 'config/renovate/global.cjs' || step.env?.MISE_SAFE !== '1' || step.env?.RENOVATE_REPOSITORIES !== '${{ matrix.fullName }}' || step.if !== "steps.write-check.outputs.enabled == 'true'") fail('Renovate execution boundary');
       if (!job.steps.some((s: any) => s.if === "always() && steps.write-check.outputs.enabled == 'true'" && s.run === 'node scripts/verify-renovate-log.mjs /tmp/steward-renovate.jsonl')) fail('Renovate skip detection');
     } else if (!sync) {
+      const ids = ['authorization', 'target-token', 'before', 'write-check', 'release', 'after', 'prepare', 'dispatch'];
+      const positions = ids.map(id => {
+        const matches = job.steps.filter((step: any) => step.id === id);
+        if (matches.length !== 1) fail('release credential sequence');
+        return job.steps.indexOf(matches[0]);
+      });
+      if (positions.some((index: number, offset: number) => offset > 0 && index <= positions[offset - 1]!)) fail('release credential sequence');
+      const authorization = job.steps[positions[0]!];
+      if (authorization.env?.GH_TOKEN !== '${{ github.token }}' || authorization.env?.POLICY_READ_TOKEN !== undefined
+        || !authorization.run?.includes('release-plan preflight ') || authorization.if !== undefined
+        || token.if !== "steps.authorization.outputs.enabled == 'true'") fail('release token authorization');
+      for (const id of ['before', 'write-check', 'after', 'dispatch']) {
+        const step = job.steps.find((step: any) => step.id === id);
+        if (step.env?.GH_TOKEN !== '${{ steps.target-token.outputs.token }}' || step.env?.POLICY_READ_TOKEN !== '${{ github.token }}'
+          || step.if !== "steps.target-token.outputs.token != ''") fail('release credential scope');
+      }
       const release = job.steps.find((s: any) => s.id === 'release'), prepare = job.steps.find((s: any) => s.id === 'prepare');
       if (release?.with?.['skip-github-pull-request'] !== true || prepare?.with?.['skip-github-release'] !== true || release.with['skip-github-release'] !== undefined || prepare.with['skip-github-pull-request'] !== undefined) fail('release and PR phases');
       if (job.steps.findIndex((s: any) => s.id === 'after') <= job.steps.indexOf(release) || job.steps.indexOf(prepare) <= job.steps.findIndex((s: any) => s.id === 'after')) fail('release readback before PR');
     } else {
+      const authorization = job.steps.find((s: any) => s.id === 'authorization');
+      const rulesToken = job.steps.find((s: any) => s.id === 'rules-token');
+      same(rulesToken?.with, { 'app-id': '4243096', 'private-key': '${{ secrets.STEWARD_APP_PRIVATE_KEY }}', owner: 'splrad',
+        repositories: '${{ steps.authorization.outputs.repository }}', 'permission-administration': 'write' }, 'rules token scope and cleanup');
+      if (!rulesToken.uses?.startsWith('actions/create-github-app-token@') || rulesToken.if !== "steps.authorization.outputs.enabled == 'true'"
+        || authorization?.if !== undefined || authorization?.env?.GH_TOKEN !== '${{ github.token }}'
+        || !authorization?.run?.includes('managed-sync authorize ') || job.steps.indexOf(authorization) >= job.steps.indexOf(rulesToken)) fail('rules token authorization');
+      const consumers = job.steps.filter((s: any) => /managed-sync (preflight|labels) /.test(s.run ?? ''));
+      if (consumers.length !== 4 || consumers.some((s: any) => job.steps.indexOf(s) <= job.steps.indexOf(rulesToken))) fail('rules reader sequence');
+      for (const step of job.steps) {
+        if (consumers.includes(step)) {
+          if (step.env?.RULES_READ_TOKEN !== '${{ steps.rules-token.outputs.token }}'
+            || step.env?.RULES_READ_REPOSITORY !== '${{ steps.authorization.outputs.full_name }}') fail('rules reader credential');
+        } else if (JSON.stringify(step).includes('steps.rules-token.outputs.token')) fail('rules token exposure');
+      }
+      if (job.steps.find((s: any) => s.id === 'preflight')?.if !== "steps.authorization.outputs.enabled == 'true'") fail('rules preflight authorization');
       const pr = job.steps.find((s: any) => s.uses?.startsWith('peter-evans/create-pull-request@'));
       if (pr?.with?.branch !== 'steward/managed-sync' || pr.with.base !== 'main' || pr.with['delete-branch'] !== false || pr.with['sign-commits'] !== true || pr.with['add-paths'] !== '${{ steps.apply.outputs.add_paths }}' || !pr.if?.includes('steps.write-check.outputs.enabled')) fail('managed branch write');
     }

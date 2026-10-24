@@ -45,3 +45,25 @@ it.each(['missing-recovery', 'overwrite-frozen', 'new-output'])('rejects %s in f
   if (kind === 'new-output') d.jobs.inspect.outputs.artifact_id = '${{ steps.artifact.outputs.artifact-id }}';
   expect(() => assertWorkflowDocument('.github/workflows/product-release.yml', d, 1296724484)).toThrow();
 });
+
+it.each(['order', 'authorization', 'token-condition', 'before', 'write-check', 'after', 'dispatch', 'policy-token'])('rejects release credential regression: %s', async kind => {
+  const d = await load('release.yml'), steps = d.jobs.plan.steps;
+  if (kind === 'order') { const index = steps.findIndex((s: any) => s.id === 'target-token'); steps.push(...steps.splice(index, 1)); }
+  else if (kind === 'authorization') steps.splice(steps.findIndex((s: any) => s.id === 'authorization'), 1);
+  else if (kind === 'token-condition') steps.find((s: any) => s.id === 'target-token').if = "steps.before.outputs.needs_write == 'true'";
+  else if (kind === 'policy-token') delete steps.find((s: any) => s.id === 'after').env.POLICY_READ_TOKEN;
+  else steps.find((s: any) => s.id === kind).env.GH_TOKEN = '${{ github.token }}';
+  expect(() => assertWorkflowDocument('.github/workflows/release.yml', d)).toThrow();
+});
+
+it.each(['scope', 'cleanup', 'order', 'missing-reader', 'exposure', 'condition'])('rejects rules token boundary regression: %s', async kind => {
+  const d = await load('sync-managed.yml'), steps = d.jobs.synchronize.steps;
+  const token = steps.find((s: any) => s.id === 'rules-token');
+  if (kind === 'scope') token.with['permission-contents'] = 'write';
+  if (kind === 'cleanup') token.with['skip-token-revoke'] = true;
+  if (kind === 'order') steps.push(...steps.splice(steps.findIndex((s: any) => s.id === 'authorization'), 1));
+  if (kind === 'missing-reader') delete steps.find((s: any) => s.id === 'labels').env.RULES_READ_TOKEN;
+  if (kind === 'exposure') steps.find((s: any) => s.id === 'apply').env.RULES_READ_TOKEN = '${{ steps.rules-token.outputs.token }}';
+  if (kind === 'condition') delete token.if;
+  expect(() => assertWorkflowDocument('.github/workflows/sync-managed.yml', d)).toThrow();
+});

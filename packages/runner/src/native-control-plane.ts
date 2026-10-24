@@ -1,10 +1,10 @@
 import { parseRepositoryCatalog, type RepositoryPolicy } from '../../core/src/repository-policy.js';
-import { nativeGhCommand, type GhCommand } from './gh-release.js';
+import { nativeGhCommand, nativeRulesRead, type GhCommand, type RulesRead } from './gh-release.js';
 
 function fail(reason: string): never { throw new Error(`CONTROL_PLANE: ${reason}`); }
 export type Capability = 'managedSync' | 'dependencyUpdates' | 'release';
 export class NativeControlPlane {
-  constructor(private readonly gh: GhCommand = nativeGhCommand) {}
+  constructor(private readonly gh: GhCommand = nativeGhCommand, private readonly readRules: RulesRead = nativeRulesRead) {}
   private async json(path: string) { return JSON.parse(await this.gh(['api', path])); }
   async catalog() {
     const repository = await this.json('repos/splrad/steward');
@@ -26,7 +26,7 @@ export class NativeControlPlane {
       policySha: item.automation.managedSync.policySha,
     })) };
   }
-  async syncPreflight(repositoryId: number, policySha: string, expectedBaseSha?: string) {
+  async syncAuthorization(repositoryId: number, policySha: string) {
     const current = await this.catalog(), repository = current.catalog.repositories[String(repositoryId)];
     if (!repository) fail('unregistered target');
     if (!repository.managed || !repository.automation.managedSync.enabled) return { mode: 'not-enabled' as const, observationSha: current.observationSha };
@@ -35,13 +35,22 @@ export class NativeControlPlane {
     if (!['ahead', 'identical'].includes(history.status) || history.merge_base_commit?.sha !== policySha) fail('policy outside protected main history');
     const actual = await this.json(`repos/${repository.fullName}`);
     if (actual.id !== repositoryId || actual.full_name !== repository.fullName || actual.default_branch !== repository.defaultBranch || actual.archived || actual.disabled) fail('target identity');
+    return { mode: 'enabled' as const, observationSha: current.observationSha, policySha, repository };
+  }
+  async syncPreflight(repositoryId: number, policySha: string, expectedBaseSha?: string) {
+    const authorization = await this.syncAuthorization(repositoryId, policySha);
+    if (authorization.mode !== 'enabled') return authorization;
+    const { repository } = authorization;
     const main = await this.json(`repos/${repository.fullName}/commits/${encodeURIComponent(repository.defaultBranch)}`);
     if (!/^[a-f0-9]{40}$/.test(main.sha) || expectedBaseSha && main.sha !== expectedBaseSha) fail('target main changed');
-    const rulesets = JSON.parse(await this.gh(['api', '--paginate', '--slurp', `repos/${repository.fullName}/rulesets?includes_parents=true&per_page=100`]));
+    const rulesets = JSON.parse(await this.readRules(repository.fullName));
     if (!Array.isArray(rulesets) || !rulesets.length || rulesets.some(page => !Array.isArray(page))) fail('ruleset inventory');
     const candidates = rulesets.flat().filter(item => item.name === 'SPLRAD Managed Branch' && item.enforcement === 'active');
-    if (candidates.length !== 1 || !Number.isSafeInteger(candidates[0].id)) fail('managed branch ruleset missing or ambiguous');
-    const rule = await this.json(`repos/${repository.fullName}/rulesets/${candidates[0].id}`);
+    if (candidates.length !== 1 || !Number.isSafeInteger(candidates[0].id) || candidates[0].id < 1
+      || candidates[0].source_type !== 'Repository' || candidates[0].source !== repository.fullName) fail('managed branch ruleset missing or ambiguous');
+    const rule = JSON.parse(await this.readRules(repository.fullName, candidates[0].id));
+    if (rule.id !== candidates[0].id || rule.source_type !== 'Repository' || rule.source !== repository.fullName) fail('managed branch ruleset identity');
+    if (!Object.hasOwn(rule, 'bypass_actors')) fail('ruleset bypass evidence unavailable: credential must read the full rule');
     assertManagedBranchRule(rule);
     // List refs rather than treating an arbitrary HTTP failure as an absent branch.
     const refs = await this.json(`repos/${repository.fullName}/git/matching-refs/heads/steward/managed-sync`);
@@ -57,7 +66,17 @@ export class NativeControlPlane {
       if (compare.commits.some((commit: any) => commit.committer?.id !== 301115370 || commit.author?.id !== 301115370
         || commit.commit?.verification?.verified !== true)) fail('human or unproven managed branch commit');
     }
-    return { mode: 'enabled' as const, observationSha: current.observationSha, policySha, expectedBaseSha: main.sha as string, repository };
+    return { ...authorization, expectedBaseSha: main.sha as string };
+  }
+  /** Check current central authorization before minting a target-scoped token. */
+  async releasePreflight(repositoryId: number, policySha: string) {
+    const current = await this.catalog(), repository = current.catalog.repositories[String(repositoryId)];
+    if (!repository) fail('unregistered target');
+    if (!repository.managed || !repository.release.enabled) return { mode: 'not-enabled' as const, observationSha: current.observationSha };
+    if (!/^[a-f0-9]{40}$/.test(policySha) || repository.revokedPolicyShas.includes(policySha)) fail('revoked release policy');
+    const history = await this.json(`repos/splrad/steward/compare/${policySha}...${current.observationSha}`);
+    if (!['ahead', 'identical'].includes(history.status) || history.merge_base_commit?.sha !== policySha) fail('release policy outside main history');
+    return { mode: 'enabled' as const, observationSha: current.observationSha, repository };
   }
   async dependencyPreflight(repositoryId: number, policySha: string) {
     const current = await this.catalog(), repository = current.catalog.repositories[String(repositoryId)];

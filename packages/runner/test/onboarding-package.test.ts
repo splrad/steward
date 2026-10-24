@@ -1,3 +1,6 @@
+import { validateReleaseSource } from '../src/release-admission.js';
+import catalog from '../../../config/repositories.json' with { type: 'json' };
+import { committedVersionNotes } from '../../core/src/release-template.js';
 import { afterEach, expect, it } from 'vitest';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
@@ -36,6 +39,7 @@ it('renders the actual reviewed product package with one writer per path and a f
   const f = await fixture(), report = await f.adopt();
   expect(report.remoteWrites).toBe(0); expect(new Set(report.files.map(file => file.path)).size).toBe(report.files.length);
   expect(f.target.get('VERSION')!.toString()).toBe('9.2.2\n');
+  expect(committedVersionNotes(f.target.get('CHANGELOG.md')!.toString(), '9.2.2', 'splrad/LayerScape', baseline.sourceCommit, 'v9.2.2').changelog).toContain('https://github.com/splrad/LayerScape/releases/tag/v9.2.2');
   const rp = JSON.parse(f.target.get('release-please-config.json')!.toString());
   expect(rp.packages['.']).toEqual({ 'release-type': 'simple', 'version-file': 'VERSION', 'changelog-path': 'CHANGELOG.md' });
   expect(rp['bootstrap-sha']).toMatch(/^[a-f0-9]{40}$/);
@@ -64,4 +68,12 @@ it.each(['human-before', 'payload-hash', 'partial', 'version-mismatch', 'differe
     if (kind.endsWith('source-blob')) { const a = JSON.parse(f.target.get('.github/steward-adoption.json')!.toString()); a.files[0].sourceBlob = kind === 'invalid-source-blob' ? 'invalid' : 'f'.repeat(40); f.target.set('.github/steward-adoption.json', Buffer.from(JSON.stringify(a))); }
   }
   await expect(previewManagedSync(f.input, f.snapshot)).rejects.toThrow();
+});
+
+it('admits the actual rendered onboarding package through release source validation', async () => {
+  const f = await fixture(); await f.adopt();
+  const units = await validateReleaseSource({ repository: f.input.fullName, repositoryId: f.input.repositoryId,
+    sourceSha: await f.snapshot.head(f.input.targetDirectory), policySha: f.input.policySha,
+    sourceDirectory: f.input.targetDirectory, policyDirectory: process.cwd(), centralConfig: catalog }, f.snapshot);
+  expect(units.map(unit => [unit.unit.id, unit.version, unit.tag])).toEqual([['layerscape', '9.2.2', 'v9.2.2']]);
 });

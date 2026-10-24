@@ -10,7 +10,7 @@ import { selectReleaseProducers, producerArtifactName } from './release-run.js';
 import { inspectReleaseArtifacts, sealReleaseArtifacts, verifySealedArtifacts, validateReleaseManifest, fileDigest, type ReleaseManifest } from './release-artifacts.js';
 import { nativeReleaseInspector } from './release-native.js';
 import { committedVersionNotes, parseSupplementalNotes, renderCommittedReleaseNotes } from '../../core/src/release-template.js';
-import { releaseWriteAuthority } from '../../core/src/repository-policy.js';
+import { parseRepositoryCatalog, releaseWriteAuthority } from '../../core/src/repository-policy.js';
 import { downloadNativeArtifact } from './native-artifact-download.js';
 
 function fail(reason: string): never { throw new Error(`RELEASE_PIPELINE: ${reason}`); }
@@ -110,9 +110,16 @@ export async function pipelineDownloadProducers(record: PipelineRecord, selectio
 }
 export async function pipelineNotes(record: PipelineRecord, sourceDirectory: string, policyDirectory: string) {
   const read = async (directory: string, sha: string, path: string) => { const bytes = await localGitSnapshot.file(directory, sha, path); if (!bytes) fail('missing notes input'); return bytes.toString('utf8'); };
-  const current = await new NativeControlPlane().catalog(), policy = current.catalog.repositories[String(record.repositoryId)];
+  const catalog = parseRepositoryCatalog(JSON.parse(await read(policyDirectory, record.policySha, 'config/repositories.json')));
+  const policy = catalog.repositories[String(record.repositoryId)];
   if (!policy || policy.fullName !== record.fullName) fail('notes repository');
-  const unit = record.admitted.unit;
+  const unit = record.admitted.unit, unitPolicy = policy.release.units[record.admitted.unit.id];
+  if (!unitPolicy) fail('notes unit');
+  const channels = unit.channels.map(channel => {
+    const configured = unitPolicy.channels[channel.id];
+    if (!configured || configured.kind !== channel.kind) fail('notes channel');
+    return { name: channel.id, status: '待分发' as const, location: configured.destination };
+  });
   const supplemental = parseSupplementalNotes(await read(sourceDirectory, record.sourceSha, unit.notesPath));
   const versionNotes = committedVersionNotes(await read(sourceDirectory, record.sourceSha, unit.changelogPath), record.admitted.version, record.fullName, record.sourceSha, record.admitted.tag);
   const template = await read(policyDirectory, record.policySha, 'config/templates/release.md.mustache');
@@ -120,7 +127,7 @@ export async function pipelineNotes(record: PipelineRecord, sourceDirectory: str
   return renderCommittedReleaseNotes(template, { ...supplemental, ...versionNotes, productName: unit.displayName, version: record.admitted.version,
     sourceSha: record.sourceSha, policySha: record.policySha,
     downloads: record.admitted.assets.map(asset => `- [${asset.name}](https://github.com/${record.fullName}/releases/download/${encodeURIComponent(record.admitted.tag)}/${asset.name})`).join('\n'),
-    channels: unit.channels.map(channel => ({ name: channel.id, status: '待分发', location: policy.release.units[unit.id]!.channels[channel.id]!.destination })) });
+    channels });
 }
 export async function pipelineInspect(record: PipelineRecord, selection: Awaited<ReturnType<typeof pipelineProducers>>, directory: string, policyDirectory: string, home: string) {
   if (record.mode !== 'build') fail('verify-only cannot inspect new assets');
