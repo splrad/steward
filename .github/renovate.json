@@ -1,0 +1,58 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":pinDigests",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "automerge": false,
+  "dependencyDashboard": true,
+  "ignoreScripts": true,
+  "timezone": "Asia/Bangkok",
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+  "rangeStrategy": "pin",
+  "ignoreUnstable": true,
+  "minimumReleaseAge": null,
+  "schedule": [
+    "at any time"
+  ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": [
+      "at any time"
+    ]
+  },
+  "github-actions": {
+    "managerFilePatterns": [
+      "/templates/release/.*\\.ya?ml$/"
+    ]
+  },
+  "packageRules": [
+    {
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "groupName": null
+    },
+    {
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchPackageNames": [
+        "splrad/steward"
+      ],
+      "enabled": false
+    },
+    {
+      "matchManagers": [
+        "mise"
+      ],
+      "matchPackageNames": [
+        "node"
+      ],
+      "versioning": "semver",
+      "ignoreUnstable": true
+    }
+  ]
+}

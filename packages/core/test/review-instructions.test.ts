@@ -72,7 +72,7 @@ describe("代码审查说明", () => {
   it("四个profile采用组织摘要后保留完整AGENTS并声明准确退役原文", async () => {
     const { profiles, rules } = await registries();
     const organization = await generateOrganizationReviewInstructions(profiles, rules);
-    expect(organization.ruleIds).toEqual(["common.current-head-evidence", "common.direct-evidence", "common.pr-creation", "common.review-language-zh", "copilot.inline-findings", "copilot.review-scope"]);
+    expect(organization.ruleIds).toEqual(["common.current-head-evidence", "common.direct-evidence", "common.review-language-zh", "copilot.inline-findings", "copilot.review-scope"]);
     expect(organization).toEqual(await generateOrganizationReviewInstructions(profiles, { ...rules, rules: [...rules.rules].reverse() }));
     for (const id of ["common", "steward", "layerscape", "github"]) {
       const original = await generateReviewInstructionSet(id, profiles, rules);

@@ -16,6 +16,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   validate:
+    name: SPLRAD Validation
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
@@ -30,35 +31,39 @@ jobs:
           [[ "$value" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "工作流来源不是完整提交编号" >&2; exit 1; }
           echo "sha=${value,,}" >> "$GITHUB_OUTPUT"
       - name: 检出合并候选
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: target
           fetch-depth: 0
           persist-credentials: false
       - name: 检出中央规则
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: splrad/steward
           ref: ${{ steps.policy.outputs.sha }}
           path: steward-policy
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        env:
+          MISE_SAFE: "1"
+          MISE_NODE_COMPILE: "false"
         with:
-          node-version-file: steward-policy/.node-version
-          cache: npm
-          cache-dependency-path: steward-policy/package-lock.json
+          version: 2026.10.18
+          install_args: --locked
+          working_directory: steward-policy
+          cache: false
+          env: false
+          persist_github_token: false
       - run: npm ci --ignore-scripts
         working-directory: steward-policy
       - name: 选择验证配置
         id: profile
         shell: bash
         run: node steward-policy/packages/runner/dist/index.js validation-profile --repository-id "${{ github.repository_id }}" --private "${{ github.event.repository.private }}"
-      - name: workflow-contract-policy:${{ steps.policy.outputs.sha }}
+      - name: validation-policy:${{ steps.policy.outputs.sha }}
         env:
           VALIDATION_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           VALIDATION_BASE_REF: ${{ github.event.pull_request.base.ref }}
-          WORKFLOW_CONTRACT_READ_TOKEN: ${{ github.token }}
-          VALIDATION_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          VALIDATION_PR_NUMBER: ${{ github.event.pull_request.number }}
-          VALIDATION_POLICY_SHA: ${{ steps.policy.outputs.sha }}
-        run: node steward-policy/packages/runner/dist/index.js validate --workspace target --repository-id "${{ github.repository_id }}" --profile "${{ steps.profile.outputs.name }}"
+          REPOSITORY_ID: ${{ github.repository_id }}
+          VALIDATION_PROFILE: ${{ steps.profile.outputs.name }}
+        run: node steward-policy/packages/runner/dist/index.js validate --workspace target --repository-id "$REPOSITORY_ID" --profile "$VALIDATION_PROFILE"

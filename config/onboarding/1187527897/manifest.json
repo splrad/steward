@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "repositoryId": 1187527897,
+  "fullName": "splrad/LayerScape",
+  "defaultBranch": "main",
+  "expectedBaseSha": "745ef2cb729642b546a30fefa6ae5a0c2bde7159",
+  "mode": "onboard",
+  "files": [
+    {
+      "targetPath": ".github/steward-release.json",
+      "beforeBlob": null,
+      "payloadPath": "files/.github/steward-release.json",
+      "sha256": "b1d9560855e736ab92a20da111be8be59eebdfc48333488c1ce18b35539c3e0b"
+    },
+    {
+      "targetPath": ".release-notes/layerscape.md",
+      "beforeBlob": null,
+      "payloadPath": "files/.release-notes/layerscape.md",
+      "sha256": "d4bbf40f20b971db082a17a13ced9ae2bd79ddb241068d95b45cdbc656f37279"
+    },
+    {
+      "targetPath": ".release-please-manifest.json",
+      "beforeBlob": null,
+      "payloadPath": "files/.release-please-manifest.json",
+      "sha256": "ae2e13de80420efd8fc53a33d09f77ee9cea42791e44891bf4b2bffee5766009"
+    },
+    {
+      "targetPath": "CHANGELOG.md",
+      "beforeBlob": null,
+      "payloadPath": "files/CHANGELOG.md",
+      "sha256": "8fcde325cc2c493f67872f551d5ffa9db3b4e5322d1dd628f5478497e262d93b"
+    },
+    {
+      "targetPath": "Directory.Build.props",
+      "beforeBlob": "ef928d5755d2af3e5bfecac71ea0a9bb34888574",
+      "payloadPath": "files/Directory.Build.props",
+      "sha256": "c3c548ea4623231622f6dbc86c226d41c69217451d84c86d7dd38658b30112ec"
+    },
+    {
+      "targetPath": "global.json",
+      "beforeBlob": "4a14fed74658a33c4d1505cf2b46a0c83a306b4b",
+      "payloadPath": "files/global.json",
+      "sha256": "81ae2087dbfb46027fd94748351fb4b1ab24145fbb52544a2822bf128e2e48f1"
+    },
+    {
+      "targetPath": "src/AFR.Deployer/packages.lock.json",
+      "beforeBlob": null,
+      "payloadPath": "files/src/AFR.Deployer/packages.lock.json",
+      "sha256": "30e0af6a288b46ce3e765decbf3c725301c576b7a002c648bf906aa70344c692"
+    },
+    {
+      "targetPath": "src/AutoCAD/AFR-ACAD2018/packages.lock.json",
+      "beforeBlob": null,
+      "payloadPath": "files/src/AutoCAD/AFR-ACAD2018/packages.lock.json",
+      "sha256": "46200d4e8d2dd1d927c30bc86539cd69fe168bd8bc4ba59423c6f059167b4133"
+    },
+    {
+      "targetPath": "src/AutoCAD/AFR-ACAD2019/packages.lock.json",
+      "beforeBlob": null,
+      "payloadPath": "files/src/AutoCAD/AFR-ACAD2019/packages.lock.json",
+      "sha256": "b014be5d7c194d2c6015cb344c79cae543d998c7221e162070f06182ec880be4"
+    },
+    {
+      "targetPath": "src/AutoCAD/AFR-ACAD2020/packages.lock.json",
+      "beforeBlob": null,
+      "payloadPath": "files/src/AutoCAD/AFR-ACAD2020/packages.lock.json",
+      "sha256": "b5824592aeb7de756d55f3f78035d9aa59e8dbc0260d714e48fe23fbbc8066ce"
+    },
+    {
+      "targetPath": "src/AutoCAD/AFR-ACAD2021/packages.lock.json",
+      "beforeBlob": null,
+      "payloadPath": "files/src/AutoCAD/AFR-ACAD2021/packages.lock.json",
+      "sha256": "0b5f89442a8fdc5619d624747daf2558d9a0180d23b28fd998e1244d05a2615f"
+    },
+    {
+      "targetPath": "src/AutoCAD/AFR-ACAD2022/packages.lock.json",
+      "beforeBlob": null,
+      "payloadPath": "files/src/AutoCAD/AFR-ACAD2022/packages.lock.json",
+      "sha256": "26729bad97bea6ff3ba9c3d028296cb7dbc563396dc139aadeb6028d0f11eb12"
+    },
+    {
+      "targetPath": "src/AutoCAD/AFR-ACAD2023/packages.lock.json",
+      "beforeBlob": null,
+      "payloadPath": "files/src/AutoCAD/AFR-ACAD2023/packages.lock.json",
+      "sha256": "00f5ea604b50e0dc13a8f15e74b12032b72872b83c4eec21e3b4e1c8eb46cef9"
+    },
+    {
+      "targetPath": "src/AutoCAD/AFR-ACAD2024/packages.lock.json",
+      "beforeBlob": null,
+      "payloadPath": "files/src/AutoCAD/AFR-ACAD2024/packages.lock.json",
+      "sha256": "a8471d900e4a218d081b6323b9fb3bb4cabf1a772a9f1eef905ee31e92e2e208"
+    },
+    {
+      "targetPath": "src/AutoCAD/AFR-ACAD2025/packages.lock.json",
+      "beforeBlob": null,
+      "payloadPath": "files/src/AutoCAD/AFR-ACAD2025/packages.lock.json",
+      "sha256": "550c8124d8d72366ba697247e0e0ed17a9ea0af31e7432f932a23d4b8ae81c62"
+    },
+    {
+      "targetPath": "src/AutoCAD/AFR-ACAD2026/packages.lock.json",
+      "beforeBlob": null,
+      "payloadPath": "files/src/AutoCAD/AFR-ACAD2026/packages.lock.json",
+      "sha256": "43bec3a1e9a0429e390b863880daa8d3d776c219ec08187dc1758dc23a3c9010"
+    },
+    {
+      "targetPath": "src/AutoCAD/AFR-ACAD2027/packages.lock.json",
+      "beforeBlob": null,
+      "payloadPath": "files/src/AutoCAD/AFR-ACAD2027/packages.lock.json",
+      "sha256": "e988fd07036be38074cd39bcf36ca66fe8e861200478bd1822c90edbc7ff54a9"
+    },
+    {
+      "targetPath": "tools/Publish-ReleaseAssets.ps1",
+      "beforeBlob": "9d8040a18625cb4f51fbef090a4fa49b974fea9b",
+      "payloadPath": "files/tools/Publish-ReleaseAssets.ps1",
+      "sha256": "26b7aadb43b2f80de0684ef8b6d55306985f5bd2ffe442ac941decc244e06849"
+    }
+  ],
+  "initializeManifest": true
+}

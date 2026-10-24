@@ -1,6 +1,6 @@
 {
   "$schema": "../schema/repositories.schema.json",
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "organization": {
     "id": 302208797,
     "login": "splrad"
@@ -13,33 +13,28 @@
       "classification": {
         "profile": "default",
         "labelDefinitionMode": "enforce",
-        "labelAssignmentMode": "enforce",
-        "ai": {
-          "mode": "active",
-          "adoptedPrimaryKinds": [
-            "feature",
-            "bug",
-            "performance",
-            "refactor",
-            "build"
-          ],
-          "canaries": []
-        }
+        "labelAssignmentMode": "enforce"
       },
       "validationProfile": "public-basic",
       "allowedWorkflowPaths": [],
-      "builds": {},
-      "delivery": {
-        "githubRelease": {
+      "copilotReviewTrigger": "native",
+      "automation": {
+        "managedSync": {
           "enabled": false,
-          "state": "disabled",
-          "profile": null,
-          "builds": []
+          "policySha": null
         },
-        "deployments": [],
-        "packages": []
+        "dependencyUpdates": {
+          "enabled": false
+        }
       },
-      "copilotReviewTrigger": "native"
+      "release": {
+        "enabled": false,
+        "units": {}
+      },
+      "pages": {
+        "enabled": false
+      },
+      "revokedPolicyShas": []
     },
     "private": {
       "managed": false,
@@ -48,27 +43,28 @@
       "classification": {
         "profile": "default",
         "labelDefinitionMode": "observe",
-        "labelAssignmentMode": "observe",
-        "ai": {
-          "mode": "shadow",
-          "adoptedPrimaryKinds": [],
-          "canaries": []
-        }
+        "labelAssignmentMode": "observe"
       },
       "validationProfile": "public-basic",
       "allowedWorkflowPaths": [],
-      "builds": {},
-      "delivery": {
-        "githubRelease": {
+      "copilotReviewTrigger": "native",
+      "automation": {
+        "managedSync": {
           "enabled": false,
-          "state": "disabled",
-          "profile": null,
-          "builds": []
+          "policySha": null
         },
-        "deployments": [],
-        "packages": []
+        "dependencyUpdates": {
+          "enabled": false
+        }
       },
-      "copilotReviewTrigger": "native"
+      "release": {
+        "enabled": false,
+        "units": {}
+      },
+      "pages": {
+        "enabled": false
+      },
+      "revokedPolicyShas": []
     }
   },
   "repositories": {
@@ -88,69 +84,59 @@
       "classification": {
         "profile": "layerscape",
         "labelDefinitionMode": "enforce",
-        "labelAssignmentMode": "enforce",
-        "ai": {
-          "mode": "active",
-          "adoptedPrimaryKinds": [
-            "feature",
-            "bug",
-            "performance",
-            "refactor",
-            "build"
-          ],
-          "canaries": []
-        }
+        "labelAssignmentMode": "enforce"
       },
       "validationProfile": "layerscape",
       "allowedWorkflowPaths": [],
-      "builds": {
-        "release-assets": {
-          "profile": "custom-adapter-v1",
-          "inputs": {
-            "entrypoint": "tools/Publish-ReleaseAssets.ps1",
-            "runtime": "pwsh",
-            "runnerFamily": "windows"
-          },
-          "outputs": [
-            {
-              "id": "installer",
-              "match": "AFR-Deployer_v{version}.exe",
-              "kind": "file",
-              "count": 1,
-              "mediaType": "application/x-msdownload"
-            },
-            {
-              "id": "plugin-archive",
-              "match": "AFR-DLL_v{version}.zip",
-              "kind": "file",
-              "count": 1,
-              "mediaType": "application/zip",
-              "archiveType": "dll-archive"
-            },
-            {
-              "id": "fonts",
-              "match": "Fonts.zip",
-              "kind": "file",
-              "count": 1,
-              "mediaType": "application/zip",
-              "archiveType": "font-archive"
-            }
-          ]
+      "copilotReviewTrigger": "native",
+      "automation": {
+        "managedSync": {
+          "enabled": false,
+          "policySha": null
+        },
+        "dependencyUpdates": {
+          "enabled": false
         }
       },
-      "delivery": {
-        "githubRelease": {
-          "enabled": true,
-          "state": "pending",
-          "profile": "layerscape",
-          "builds": [
-            "release-assets"
-          ]
-        },
-        "deployments": [],
-        "packages": []
+      "release": {
+        "enabled": false,
+        "units": {
+          "layerscape": {
+            "enabled": false,
+            "adoptedAfterTag": "v9.2.2",
+            "adoptedFromSha": null,
+            "channels": {
+              "ghcr-assets": {
+                "enabled": false,
+                "kind": "oci-artifact",
+                "destination": "ghcr.io/splrad/layerscape-assets",
+                "packageName": "layerscape-assets",
+                "visibility": "public",
+                "environment": "package-publish",
+                "authMode": "github-token",
+                "artifactType": "application/vnd.splrad.layerscape.release.v1"
+              },
+              "winget": {
+                "enabled": false,
+                "kind": "winget",
+                "destination": "microsoft/winget-pkgs",
+                "packageName": "SPLRAD.LayerScape.Deployer",
+                "visibility": "public",
+                "environment": "winget-submit",
+                "authMode": "owner-fork",
+                "packageIdentifier": "SPLRAD.LayerScape.Deployer",
+                "forkRepository": null
+              }
+            }
+          }
+        }
       },
-      "copilotReviewTrigger": "native"
+      "pages": {
+        "enabled": false
+      },
+      "revokedPolicyShas": [],
+      "repositoryId": 1187527897,
+      "defaultBranch": "main"
     },
     "1296724484": {
       "managed": true,
@@ -168,18 +154,7 @@
       "classification": {
         "profile": "default",
         "labelDefinitionMode": "enforce",
-        "labelAssignmentMode": "enforce",
-        "ai": {
-          "mode": "active",
-          "adoptedPrimaryKinds": [
-            "feature",
-            "bug",
-            "performance",
-            "refactor",
-            "build"
-          ],
-          "canaries": []
-        }
+        "labelAssignmentMode": "enforce"
       },
       "validationProfile": "steward",
       "allowedWorkflowPaths": [
@@ -195,18 +170,26 @@
         ".github/workflows/sync-managed-labels.yml",
         ".github/workflows/sync-review-instructions.yml"
       ],
-      "builds": {},
-      "delivery": {
-        "githubRelease": {
+      "copilotReviewTrigger": "native",
+      "automation": {
+        "managedSync": {
           "enabled": false,
-          "state": "disabled",
-          "profile": null,
-          "builds": []
+          "policySha": null
         },
-        "deployments": [],
-        "packages": []
+        "dependencyUpdates": {
+          "enabled": false
+        }
       },
-      "copilotReviewTrigger": "native"
+      "release": {
+        "enabled": false,
+        "units": {}
+      },
+      "pages": {
+        "enabled": false
+      },
+      "revokedPolicyShas": [],
+      "repositoryId": 1296724484,
+      "defaultBranch": "main"
     },
     "1296725317": {
       "managed": true,
@@ -224,33 +207,30 @@
       "classification": {
         "profile": "default",
         "labelDefinitionMode": "enforce",
-        "labelAssignmentMode": "enforce",
-        "ai": {
-          "mode": "active",
-          "adoptedPrimaryKinds": [
-            "feature",
-            "bug",
-            "performance",
-            "refactor",
-            "build"
-          ],
-          "canaries": []
-        }
+        "labelAssignmentMode": "enforce"
       },
       "validationProfile": "public-basic",
       "allowedWorkflowPaths": [],
-      "builds": {},
-      "delivery": {
-        "githubRelease": {
+      "copilotReviewTrigger": "native",
+      "automation": {
+        "managedSync": {
           "enabled": false,
-          "state": "disabled",
-          "profile": null,
-          "builds": []
+          "policySha": null
         },
-        "deployments": [],
-        "packages": []
+        "dependencyUpdates": {
+          "enabled": false
+        }
       },
-      "copilotReviewTrigger": "native"
+      "release": {
+        "enabled": false,
+        "units": {}
+      },
+      "pages": {
+        "enabled": false
+      },
+      "revokedPolicyShas": [],
+      "repositoryId": 1296725317,
+      "defaultBranch": "main"
     }
   }
 }

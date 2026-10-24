@@ -2,7 +2,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { BuildContractError, decodeBuildJson } from '../../core/src/build-manifest.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { isolatedBuildEnvironment } from './release-build.js';
+import { isolatedBuildEnvironment } from './build-environment.js';
 import { type NativeVersionInspector, type NativeVersionResult } from './build-manifest.js';
 import { releaseAssert } from '../../core/src/release-note-receipt.js';
 export const nativeInspectionTimeoutMs = 120000;

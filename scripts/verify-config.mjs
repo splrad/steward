@@ -1,8 +1,12 @@
 import { readFile, readdir, stat } from "node:fs/promises";
 import Ajv from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
+import { verifyToolchain } from './verify-toolchain.mjs';
 
-import { verifyDeliveryConfig } from "./verify-delivery-config.mjs";
+try {
+await verifyToolchain();
+
+
 
 const pairs = [
   ["config/labels/pr-semantics.json", "schema/pr-semantics.schema.json"],
@@ -14,7 +18,6 @@ const pairs = [
   ["config/profiles/validation/public-basic.json", "schema/validation-profile.schema.json"],
   ["config/profiles/validation/layerscape.json", "schema/validation-profile.schema.json"],
   ["config/profiles/validation/steward.json", "schema/validation-profile.schema.json"],
-  ["config/profiles/release/layerscape.json", "schema/release-profile.schema.json"],
 ];
 const ajv = new Ajv({ allErrors: true, strict: false }); addFormats(ajv);
 const validators = new Map();
@@ -25,7 +28,9 @@ for (const [dataPath, schemaPath] of pairs) {
   if (!validate(data)) throw new Error(`${dataPath}不符合结构: ${ajv.errorsText(validate.errors)}`);
 }
 const catalog = JSON.parse(await readFile("config/repositories.json", "utf8")); const ids = Object.keys(catalog.repositories); if (new Set(ids).size !== ids.length) throw new Error("仓库编号重复");
-await verifyDeliveryConfig(catalog, ajv);
+const { parseRepositoryCatalog, parseManagedFileConfig } = await import("../packages/runner/dist/index.js");
+parseRepositoryCatalog(catalog);
+parseManagedFileConfig(JSON.parse(await readFile('config/managed-files.json', 'utf8')), ids);
 const repositoryValidator = validators.get("schema/repositories.schema.json");
 const sampleRepository = Object.values(catalog.repositories)[0];
 if (repositoryValidator({ ...catalog, schemaVersion: 3 })) throw new Error('退役v3目录不得通过当前schema');
@@ -106,11 +111,7 @@ for (const configuration of [...Object.values(catalog.defaults), ...Object.value
   const profile = profiles.get(configuration.classification.profile); if (!profile) throw new Error("仓库引用未知分类profile");
   const classification = configuration.classification;
   if (classification.labelAssignmentMode === "enforce" && classification.labelDefinitionMode !== "enforce") throw new Error("PR标签enforce要求定义enforce");
-  if (classification.ai.mode === "shadow" && (classification.ai.adoptedPrimaryKinds.length || classification.ai.canaries.length)) throw new Error("shadow模式不得配置采用主类或canary");
-  if (classification.ai.mode !== "shadow" && (!classification.ai.adoptedPrimaryKinds.length || classification.labelAssignmentMode !== "enforce")) throw new Error("AI采用要求主类集合和PR标签enforce");
-  if (classification.ai.mode === "draft-canary" && !classification.ai.canaries.length) throw new Error("draft-canary必须配置精确canary");
-  if (classification.ai.mode !== "draft-canary" && classification.ai.canaries.length) throw new Error("只有draft-canary允许canary清单");
-  for (const kind of classification.ai.adoptedPrimaryKinds) if (!profile.ai.eligiblePrimaryKinds.includes(kind)) throw new Error(`仓库采用未知AI主类: ${kind}`);
+  if (Object.hasOwn(classification, "ai")) throw new Error("classification AI configuration is retired");
 }
 const forbiddenRuntime = ["queues", "kv_namespaces", "r2_buckets", "services"];
 const wrangler = await readFile("packages/runtime/wrangler.toml", "utf8");
@@ -118,9 +119,8 @@ for (const name of forbiddenRuntime) if (wrangler.includes(name)) throw new Erro
 if (!wrangler.includes('compatibility_flags = ["nodejs_compat"]')) throw new Error("运行配置必须显式启用nodejs_compat");
 const wranglerLines = wrangler.split(/\r?\n/u);
 const arrayTables = wranglerLines.filter(line => /^\[\[[^\]]+\]\]$/u.test(line));
-if (JSON.stringify(arrayTables) !== JSON.stringify(["[[d1_databases]]", "[[durable_objects.bindings]]", "[[migrations]]"])) throw new Error("运行配置必须恰好包含固定D1、验证协调绑定和迁移");
+if (JSON.stringify(arrayTables) !== JSON.stringify(["[[d1_databases]]", "[[migrations]]"])) throw new Error("运行配置只保留D1及历史迁移");
 for (const [header, expected] of [
-  ['[[durable_objects.bindings]]', ['[[durable_objects.bindings]]', 'name = "VALIDATION_COORDINATOR"', 'class_name = "ValidationCoordinator"']],
   ['[[migrations]]', ['[[migrations]]', 'tag = "validation-coordinator-v1"', 'new_sqlite_classes = ["ValidationCoordinator"]']],
 ]) {
   const start = wranglerLines.indexOf(header);
@@ -141,10 +141,7 @@ const expectedD1Block = [
 ];
 if (JSON.stringify(actualD1Block) !== JSON.stringify(expectedD1Block)) throw new Error("运行配置的D1绑定不符合固定合同");
 const triggerStart = wranglerLines.indexOf("[triggers]");
-if (triggerStart < 0 || wranglerLines.filter(line => line === "[triggers]").length !== 1) throw new Error("运行配置必须恰好包含一个Cron触发器块");
-const triggerEndOffset = wranglerLines.slice(triggerStart + 1).findIndex(line => /^\[\[?[^\]]+\]\]?$/u.test(line));
-const triggerEnd = triggerEndOffset < 0 ? wranglerLines.length : triggerStart + 1 + triggerEndOffset;
-if (JSON.stringify(wranglerLines.slice(triggerStart, triggerEnd).filter(Boolean)) !== JSON.stringify(["[triggers]", 'crons = ["* * * * *"]'])) throw new Error("运行配置必须每分钟触发一次正文写意图恢复");
+if (triggerStart >= 0 || /^\s*crons\s*=/m.test(wrangler)) throw new Error("退役正文写意图恢复不得保留Cron触发器");
 
 
 for (const section of ["public", "private", "repository"]) {
@@ -159,3 +156,4 @@ for (const section of ["public", "private", "repository"]) {
 }
 
 console.log("configuration verified");
+} catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }

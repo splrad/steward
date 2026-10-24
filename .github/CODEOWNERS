@@ -1,0 +1,14 @@
+/.github/ @axiomoth
+/.github/CODEOWNERS @axiomoth
+/config/ @axiomoth
+/schema/ @axiomoth
+/scripts/ @axiomoth
+/packages/core/ @axiomoth
+/packages/github/ @axiomoth
+/packages/runtime/ @axiomoth
+/packages/runner/ @axiomoth
+/package.json @axiomoth
+/package-lock.json @axiomoth
+/mise.toml @axiomoth
+/mise.lock @axiomoth
+/.mise/locks/ @axiomoth

@@ -3,169 +3,241 @@
   "schemaVersion": 1,
   "rules": [
     {
-      "id": "common.pr-creation",
+      "id": "common.current-head-evidence",
       "audience": "shared",
       "profiles": [
         "common"
       ],
       "scope": "repository",
-      "consequence": "同仓和 fork 的普通贡献 PR 均由贡献者显式发起；向工作分支推送不自动创建 PR，也不自动重写既有 PR 的标题和正文。PR 作者或拥有目标仓库 Write 及以上权限的用户可使用 GitHub 原生按钮调整草稿状态。关联议题由作者按需填写，Steward 不自动推断、增加、移除或维护关联。",
-      "safePath": "AI 代为创建 PR 或调整草稿状态，须有对应仓库、分支和操作的明确授权；提交或推送授权不包含创建 PR。创建前检查是否已有对应 PR，填写目的和验证情况，并回读来源、目标及草稿状态。人工关联只在确认完整解决时使用 Closes，部分相关使用普通编号或链接。审批例外由组织规则控制，不以机器人作者身份代替。",
+      "consequence": "报告文件缺失、配置不存在或生成产物未更新前，核对当前 PR head 的实际文件内容。差异未显示、平台排除、上下文截断或旧 head 的内容，都不能证明当前 head 缺失或过期。",
+      "safePath": "指出当前 head 的具体不一致，或对应一致性检查的失败证据，并核对检查的提交和覆盖范围。无法读取文件或取得证据时，不发布这类缺陷评论；其他有直接证据的问题照常报告。",
       "owner": "splrad/maintainers",
       "evidence": [
         {
-          "kind": "source",
-          "reference": "splrad/.github@96af3e8ed66b7378ad33e621561fb7aee9982c87:.github/pull_request_template.md",
-          "confirmedAt": "2026-10-13"
+          "kind": "pull-request",
+          "reference": "https://github.com/splrad/steward/pull/206#discussion_r4169225056",
+          "confirmedAt": "2026-10-03"
         },
         {
           "kind": "source",
-          "reference": "https://docs.github.com/en/pull-requests/how-tos/create-pull-requests/changing-the-stage-of-a-pull-request",
-          "confirmedAt": "2026-10-13"
-        },
-        {
-          "kind": "source",
-          "reference": "https://docs.github.com/en/pull-requests/how-tos/create-pull-requests/creating-a-pull-request-from-a-fork",
-          "confirmedAt": "2026-10-13"
-        },
-        {
-          "kind": "source",
-          "reference": "splrad/steward@e8dc7b8781ca712fd570fbf4b16270a5bd45daf2:packages/core/src/automation.ts",
-          "confirmedAt": "2026-10-13"
+          "reference": "https://docs.github.com/en/copilot/reference/review-excluded-files",
+          "confirmedAt": "2026-10-03"
         }
       ],
       "status": "active"
     },
     {
-      "id": "common.current-head-evidence",
-      "audience": "shared",
-      "profiles": ["common"],
-      "scope": "repository",
-      "consequence": "报告文件缺失、配置不存在或生成产物未更新前，核对当前 PR head 的实际文件内容。差异未显示、平台排除、上下文截断或旧 head 的内容，都不能证明当前 head 缺失或过期。",
-      "safePath": "指出当前 head 的具体不一致，或对应一致性检查的失败证据，并核对检查的提交和覆盖范围。无法读取文件或取得证据时，不发布这类缺陷评论；其他有直接证据的问题照常报告。",
-      "owner": "splrad/maintainers",
-      "evidence": [{ "kind": "pull-request", "reference": "https://github.com/splrad/steward/pull/206#discussion_r4169225056", "confirmedAt": "2026-10-03" }, { "kind": "source", "reference": "https://docs.github.com/en/copilot/reference/review-excluded-files", "confirmedAt": "2026-10-03" }],
-      "status": "active"
-    },
-    {
       "id": "common.direct-evidence",
       "audience": "shared",
-      "profiles": ["common"],
+      "profiles": [
+        "common"
+      ],
       "scope": "repository",
       "consequence": "只报告当前差异中有直接证据、会造成实际后果或违反明确仓库合同的问题。不得把人工智能审查、局部环境或未运行的测试表述为持续集成通过、批准或可以合并。",
       "safePath": "说明受影响的行为和最小安全修正路径；证据不足时不发表评论。",
       "owner": "splrad/maintainers",
-      "evidence": [{ "kind": "source", "reference": "splrad/steward@ca2118d334d0297015e8845b35fcfe9c456fa3a2:config/copilot/common.md", "confirmedAt": "2026-08-20" }],
+      "evidence": [
+        {
+          "kind": "source",
+          "reference": "splrad/steward@ca2118d334d0297015e8845b35fcfe9c456fa3a2:config/copilot/common.md",
+          "confirmedAt": "2026-08-20"
+        }
+      ],
       "status": "active"
     },
     {
       "id": "common.review-language-zh",
       "audience": "shared",
-      "profiles": ["common"],
+      "profiles": [
+        "common"
+      ],
       "scope": "repository",
       "consequence": "审查标题、摘要和行内意见以简体中文为主；技术术语、代码标识和平台固定字段保留原文，其他内容可按表达需要使用英文。",
       "safePath": "代码标识、文件路径、命令、日志原文、严重级别标签和平台固定字段保持原文；每条发现说明位置、实际影响和最小安全修正方向。",
       "owner": "splrad/maintainers",
-      "evidence": [{ "kind": "pull-request", "reference": "splrad/steward#158@2700ab7daad147e20d93973a645b47ff3b971d8d", "confirmedAt": "2026-08-23" }],
+      "evidence": [
+        {
+          "kind": "pull-request",
+          "reference": "splrad/steward#158@2700ab7daad147e20d93973a645b47ff3b971d8d",
+          "confirmedAt": "2026-08-23"
+        }
+      ],
       "status": "active"
     },
     {
       "id": "copilot.inline-findings",
       "audience": "copilot",
-      "profiles": ["common"],
+      "profiles": [
+        "common"
+      ],
       "scope": "repository",
       "consequence": "可执行问题使用 GitHub 行内评论，并保留平台需要的文件级摘要结构。",
       "safePath": "共同语言和证据要求直接继承根 AGENTS.md，补充说明只保留 Copilot 平台的评论结构。",
       "owner": "splrad/maintainers",
-      "evidence": [{ "kind": "source", "reference": "splrad/steward@ca2118d334d0297015e8845b35fcfe9c456fa3a2:config/copilot/common.md", "confirmedAt": "2026-08-20" }],
+      "evidence": [
+        {
+          "kind": "source",
+          "reference": "splrad/steward@ca2118d334d0297015e8845b35fcfe9c456fa3a2:config/copilot/common.md",
+          "confirmedAt": "2026-08-20"
+        }
+      ],
       "status": "active"
     },
     {
       "id": "copilot.review-scope",
       "audience": "copilot",
-      "profiles": ["common"],
+      "profiles": [
+        "common"
+      ],
       "scope": "repository",
       "consequence": "审查范围覆盖正确性、可维护性、测试缺口、API 使用、兼容性和路径惯例。",
       "safePath": "按当前差异和仓库事实判断，不根据另一审查平台返回的严重级别缩小覆盖范围。",
       "owner": "splrad/maintainers",
-      "evidence": [{ "kind": "commit", "reference": "splrad/steward@544ee7ec07eed9edfbf71f0ce8768109fc9725d0", "confirmedAt": "2026-08-27" }],
+      "evidence": [
+        {
+          "kind": "commit",
+          "reference": "splrad/steward@544ee7ec07eed9edfbf71f0ce8768109fc9725d0",
+          "confirmedAt": "2026-08-27"
+        }
+      ],
       "status": "active"
     },
     {
       "id": "github.platform-contract",
       "audience": "shared",
-      "profiles": ["github"],
+      "profiles": [
+        "github"
+      ],
       "scope": "repository",
       "consequence": "GitHub 原生模板和社区健康文件的字段、继承和跳转行为不得按推测扩展。",
       "safePath": "使用平台支持的格式，保留现有用户入口，并用当前平台行为或官方合同验证变化。",
       "owner": "splrad/maintainers",
-      "evidence": [{ "kind": "commit", "reference": "splrad/.github@2a8e702da0ec75b0b132128a2de5f07434748808", "confirmedAt": "2026-08-27" }],
+      "evidence": [
+        {
+          "kind": "commit",
+          "reference": "splrad/.github@2a8e702da0ec75b0b132128a2de5f07434748808",
+          "confirmedAt": "2026-08-27"
+        }
+      ],
       "status": "active"
     },
     {
       "id": "github.public-content",
       "audience": "shared",
-      "profiles": ["github"],
+      "profiles": [
+        "github"
+      ],
       "scope": "repository",
       "consequence": "组织公共模板、简介和支持入口不得暴露私有路径、内部基础设施、凭据或已经删除的内部资料。",
       "safePath": "只发布能够由公开仓库事实支持的中性内容。",
       "owner": "splrad/maintainers",
-      "evidence": [{ "kind": "commit", "reference": "splrad/.github@2a8e702da0ec75b0b132128a2de5f07434748808", "confirmedAt": "2026-08-27" }],
+      "evidence": [
+        {
+          "kind": "commit",
+          "reference": "splrad/.github@2a8e702da0ec75b0b132128a2de5f07434748808",
+          "confirmedAt": "2026-08-27"
+        }
+      ],
       "status": "active"
     },
     {
       "id": "layerscape.compatibility",
       "audience": "shared",
-      "profiles": ["layerscape"],
+      "profiles": [
+        "layerscape"
+      ],
       "scope": "repository",
       "consequence": "改动不得破坏 AutoCAD 2018 至 2027、目标 .NET 版本、Windows/WPF 或版本特定 API 的兼容边界。",
       "safePath": "保留明确的版本分支和受支持目标，并由对应 Windows 验证证明，不能用 Linux Cloud 结果代替。",
       "owner": "splrad/maintainers",
-      "evidence": [{ "kind": "source", "reference": "splrad/steward@ca2118d334d0297015e8845b35fcfe9c456fa3a2:config/copilot/layerscape.md", "confirmedAt": "2026-08-20" }],
+      "evidence": [
+        {
+          "kind": "source",
+          "reference": "splrad/steward@ca2118d334d0297015e8845b35fcfe9c456fa3a2:config/copilot/layerscape.md",
+          "confirmedAt": "2026-08-20"
+        }
+      ],
       "status": "active"
     },
     {
       "id": "layerscape.user-data",
       "audience": "shared",
-      "profiles": ["layerscape"],
+      "profiles": [
+        "layerscape"
+      ],
       "scope": "repository",
       "consequence": "字体、SHX、映射、路径或升级逻辑不得静默覆盖、丢失或错误迁移用户数据。",
       "safePath": "保留现有配置和回退语义，对迁移进行可逆处理或显式确认，并验证发布资产与版本文件一致。",
       "owner": "splrad/maintainers",
-      "evidence": [{ "kind": "source", "reference": "splrad/steward@ca2118d334d0297015e8845b35fcfe9c456fa3a2:config/copilot/layerscape.md", "confirmedAt": "2026-08-20" }],
+      "evidence": [
+        {
+          "kind": "source",
+          "reference": "splrad/steward@ca2118d334d0297015e8845b35fcfe9c456fa3a2:config/copilot/layerscape.md",
+          "confirmedAt": "2026-08-20"
+        }
+      ],
       "status": "active"
     },
     {
       "id": "steward.core-boundary",
       "audience": "shared",
-      "profiles": ["steward"],
+      "profiles": [
+        "steward"
+      ],
       "scope": "repository",
       "consequence": "Core、manifest 和 provider 边界不得把 GitHub、网络、环境变量、当前时间或供应商行为引入确定性核心。",
       "safePath": "在 adapter、catalog 或 runner 边界完成供应商集成，把纯数据合同留在核心。",
       "owner": "splrad/maintainers",
-      "evidence": [{ "kind": "commit", "reference": "splrad/steward@544ee7ec07eed9edfbf71f0ce8768109fc9725d0", "confirmedAt": "2026-08-27" }],
+      "evidence": [
+        {
+          "kind": "commit",
+          "reference": "splrad/steward@544ee7ec07eed9edfbf71f0ce8768109fc9725d0",
+          "confirmedAt": "2026-08-27"
+        }
+      ],
       "status": "active"
     },
     {
       "id": "steward.dist-verification",
       "audience": "shared",
-      "profiles": ["steward"],
+      "profiles": [
+        "steward"
+      ],
       "scope": "repository",
       "consequence": "runner 产物一致性由 npm run verify:dist 重建并逐字节比较 packages/runner/dist/index.js。报告产物过期时，提供目标提交上该检查的失败证据，或源码与产物的具体不一致；仅凭源码变化不能得出产物未更新。",
       "safePath": "读取目标提交的完整产物，并使用仓库固定工具链核验；区分 PR head、合并候选和旧提交的结果。该检查通过只证明 runner 产物与源码一致，行为、配置、测试和权限问题仍按各自证据审查。",
       "owner": "splrad/maintainers",
-      "evidence": [{ "kind": "source", "reference": "splrad/steward@dc9acd55f68f55d8395e79a2ba7118ab12e38ba8:scripts/verify-dist.mjs", "confirmedAt": "2026-10-03" }, { "kind": "pull-request", "reference": "https://github.com/splrad/steward/pull/206#discussion_r4169272868", "confirmedAt": "2026-10-03" }],
+      "evidence": [
+        {
+          "kind": "source",
+          "reference": "splrad/steward@dc9acd55f68f55d8395e79a2ba7118ab12e38ba8:scripts/verify-dist.mjs",
+          "confirmedAt": "2026-10-03"
+        },
+        {
+          "kind": "pull-request",
+          "reference": "https://github.com/splrad/steward/pull/206#discussion_r4169272868",
+          "confirmedAt": "2026-10-03"
+        }
+      ],
       "status": "active"
     },
     {
       "id": "steward.permission-boundary",
       "audience": "shared",
-      "profiles": ["steward"],
+      "profiles": [
+        "steward"
+      ],
       "scope": "repository",
       "consequence": "权限、令牌和仓库写入变化不得扩大到任务所需范围，也不得把评论、人工智能结论或检查结果变成自动批准、合并或发布授权。",
       "safePath": "使用单仓、短时和最小权限，失败时关闭执行，并保留现有人工门禁。",
       "owner": "splrad/maintainers",
-      "evidence": [{ "kind": "commit", "reference": "splrad/steward@544ee7ec07eed9edfbf71f0ce8768109fc9725d0", "confirmedAt": "2026-08-27" }],
+      "evidence": [
+        {
+          "kind": "commit",
+          "reference": "splrad/steward@544ee7ec07eed9edfbf71f0ce8768109fc9725d0",
+          "confirmedAt": "2026-08-27"
+        }
+      ],
       "status": "active"
     }
   ]

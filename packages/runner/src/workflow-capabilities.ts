@@ -1,4 +1,9 @@
 // Fixed command capabilities; workflow names and surrounding business jobs are not identities.
+export function miseSetup(directory: string) {
+ return {uses:'jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e',
+  env:{MISE_SAFE:'1',MISE_NODE_COMPILE:'false'},
+  with:{version:'2026.10.18',install_args:'--locked',working_directory:directory,cache:false,env:false,persist_github_token:false}};
+}
 const policySourceOperations:readonly unknown[] = [
   {
     "env": {
@@ -50,10 +55,10 @@ const policySourceOperations:readonly unknown[] = [
 /** This prefix executes only the workflow's immutable source, then resolves the live policy. */
 export const policySourcePrefix = [
  {uses:'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',with:{ref:'${{ github.workflow_sha }}',path:'policy-bootstrap','persist-credentials':false}},
- {uses:'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',with:{'node-version-file':'policy-bootstrap/.node-version'}},
+ miseSetup('policy-bootstrap'),
  {id:'policy',name:'解析已部署规则提交',run:'node policy-bootstrap/packages/runner/dist/index.js trusted-policy-source',env:{POLICY_SOURCE_READ_TOKEN:'${{ github.token }}',POLICY_SOURCE_RUN_ID:'${{ github.event.workflow_run.id }}'}},
  {uses:'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',with:{ref:'${{ steps.policy.outputs.policy_sha }}','persist-credentials':false,path:'policy-live'}},
- {uses:'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',with:{'node-version-file':'policy-live/.node-version'}},
+ miseSetup('policy-live'),
  {run:'npm ci --ignore-scripts','working-directory':'policy-live'},
 ];
 export function hasTrustedPolicyPrefix(d: any,j:any): boolean {
@@ -76,7 +81,7 @@ export function assertArtifactHandoff(d:any): void {
   const clean=structuredClone(inspection.steps);for(const s of clean)delete s.name;
   const expected=[
    {uses:'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',with:{ref:'${{ github.workflow_sha }}','persist-credentials':false}},
-   {uses:'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',with:{'node-version-file':'.node-version',cache:'npm'}},
+   miseSetup('.'),
    {run:'npm ci --ignore-scripts'},
    {id:'inspection',shell:'pwsh',env:{POLICY_SHA:'${{ github.workflow_sha }}',ARTIFACT_READ_TOKEN:'${{ github.token }}',ARTIFACT_BINDING:'${{ needs.resolve.outputs.binding }}',BUILD_PLAN:'${{ needs.resolve.outputs.plan }}'},run:'node packages/runner/dist/index.js release-build --operation inspect-artifact --policy-sha "$env:POLICY_SHA" --inspector scripts/inspect-native-release.ps1'}
   ];

@@ -1,0 +1,18 @@
+[tool_alias]
+node = "core:node"
+npm = "npm:npm"
+
+[tools]
+node = "latest"
+npm = "latest"
+"aqua:rhysd/actionlint" = "latest"
+"aqua:zizmorcore/zizmor" = "latest"
+"aqua:cli/cli" = "latest"
+"aqua:lycheeverse/lychee" = "latest"
+"aqua:oras-project/oras" = "latest"
+"aqua:anchore/syft" = "latest"
+
+[settings]
+lockfile = true
+lockfile_platforms = ["windows-x64", "linux-x64"]
+node.compile = false

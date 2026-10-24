@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "labels": [
+    { "name": "auto/docs", "color": "0075ca", "description": "Documentation paths changed" },
+    { "name": "auto/workflows", "color": "0e8a16", "description": "GitHub workflow paths changed" },
+    { "name": "auto/tests", "color": "5319e7", "description": "Test paths changed" }
+  ]
+}

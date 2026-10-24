@@ -254,7 +254,7 @@ export function canonicalize(value: unknown): string {
   return `{${Object.keys(object).filter((key) => key !== "$schema").sort().map((key) => `${JSON.stringify(key)}:${canonicalize(object[key])}`).join(",")}}`;
 }
 export function digest(value: unknown): string { return createHash("sha256").update(canonicalize(value), "utf8").digest("hex"); }
-export function classificationDigests(catalog: SemanticCatalog, profile: ClassificationProfile, repository: RepositoryClassification): ClassificationDigests {
+export function classificationDigests(catalog: SemanticCatalog, profile: ClassificationProfile, repository: Omit<RepositoryClassification, 'ai'>): ClassificationDigests {
   const catalogDigest = digest(catalog); const profileDigest = digest(profile); const repositoryClassificationDigest = digest(repository);
   return { catalogDigest, profileDigest, repositoryClassificationDigest, classificationPolicyDigest: digest({ catalogDigest, profileDigest, repositoryClassificationDigest }) };
 }
@@ -590,6 +590,16 @@ export function classifyPullRequest(
     : ai;
   const primary = selectPrimaryKind(catalog, profile, repository, facts, evaluation, effectiveAi.verifiedSuggestion);
   return resolveClassificationRoles(catalog, evaluation, primary, existing, effectiveAi);
+}
+/** Schema5 production classification has no model input or model adoption configuration. */
+export function classifyDeterministically(catalog: SemanticCatalog, profile: ClassificationProfile,
+  repository: Omit<RepositoryClassification, 'ai'>, facts: RawClassificationFacts, existing: ExistingClassificationState): ClassificationDecision {
+  if (Object.keys(repository).sort().join(',') !== 'labelAssignmentMode,labelDefinitionMode,profile'
+    || repository.profile !== profile.name || repository.labelAssignmentMode === 'enforce' && repository.labelDefinitionMode !== 'enforce') throw new Error('Invalid deterministic classification policy');
+  const evaluation = evaluateClassificationRules(catalog, profile, facts), hard = evaluation.primaryCandidates[0];
+  const primary: PrimaryDecision = hard ? { id: hard.id, source: 'hard-rule', reasonCode: 'primary-hard-rule-selected', hardRuleId: hard.ruleId }
+    : { ...fallbackPrimary(catalog, facts), source: 'deterministic-fallback' };
+  return resolveClassificationRoles(catalog, evaluation, primary, existing);
 }
 export function classifyReleaseDecision(profile: ClassificationProfile, decision: ClassificationDecision): ReleaseCategory | null {
   if (!decision.runtimeRelease) return null;

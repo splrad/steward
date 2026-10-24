@@ -1,0 +1,6 @@
+scheme = ["http", "https"]
+timeout = 20
+max_redirects = 5
+max_retries = 1
+cache = false
+no_progress = true

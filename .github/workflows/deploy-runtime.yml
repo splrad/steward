@@ -1,17 +1,5 @@
 name: SPLRAD Steward / Deploy Runtime
 on:
-  push:
-    paths:
-      - .github/workflows/deploy-runtime.yml
-      - scripts/verify-workflows.mjs
-      - packages/runtime/**
-      - packages/core/**
-      - packages/github/**
-      - packages/runner/**
-      - config/**
-      - schema/**
-      - package.json
-      - package-lock.json
   workflow_dispatch: null
 permissions:
   contents: read
@@ -24,26 +12,26 @@ jobs:
       name: steward-deployment
       deployment: true
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        env:
+          MISE_SAFE: "1"
+          MISE_NODE_COMPILE: "false"
         with:
-          node-version-file: .node-version
-          cache: npm
+          version: 2026.10.18
+          install_args: --locked
+          working_directory: .
+          cache: false
+          env: false
+          persist_github_token: false
       - run: npm ci --ignore-scripts
       - run: npm test
       - run: npm run typecheck
       - run: npm run verify:dist
       - run: npm run verify:workflows
-      - name: 核对固定验证器身份
-        shell: bash
-        env:
-          APP_ID: "4243096"
-          INSTALLATION_ID: "145952003"
-          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
-        run: node packages/runner/dist/index.js verify-workflow-activation
       - name: 列出并应用D1迁移
         shell: bash
         env:
@@ -62,7 +50,7 @@ jobs:
           deployment_log="$(mktemp)"
           trap 'rm -f "$deployment_log"' EXIT
           set +e
-          npx wrangler deploy --config packages/runtime/wrangler.toml --var WORKFLOW_EVALUATOR_SHA:"$WORKFLOW_EVALUATOR_SHA" --var POLICY_SHA:${{ github.sha }} 2>&1 | tee "$deployment_log"
+          npx wrangler deploy --config packages/runtime/wrangler.toml --var POLICY_SHA:${{ github.sha }} 2>&1 | tee "$deployment_log"
           deploy_status="${PIPESTATUS[0]}"
           set -e
           if [[ "$deploy_status" -ne 0 ]]; then
@@ -81,7 +69,7 @@ jobs:
           EXPECTED_POLICY_SHA: ${{ github.sha }}
         run: |
           node --input-type=module <<'NODE'
-          const expectedKeys = ["appId", "evaluatorSha", "organizationId", "policySha", "secretsReady", "status", "version"];
+          const expectedKeys = ["appId", "organizationId", "policySha", "secretsReady", "status", "version"];
           const deadline = Date.now() + 60_000;
           let attempt = 0;
           let verifiedBody;
@@ -103,7 +91,6 @@ jobs:
                 if (JSON.stringify(Object.keys(body).sort()) !== JSON.stringify(expectedKeys)) failures.push("字段集合尚未匹配");
                 if (body.status !== "ok") failures.push("状态尚未匹配");
                 if (body.policySha !== process.env.EXPECTED_POLICY_SHA) failures.push("规则提交尚未传播");
-                if (body.evaluatorSha !== process.env.WORKFLOW_EVALUATOR_SHA) failures.push("验证器来源尚未匹配");
                 if (body.organizationId !== 302208797) failures.push("组织编号尚未匹配");
                 if (body.appId !== 4243096) failures.push("应用编号尚未匹配");
                 if (body.secretsReady !== true) failures.push("运行时密钥尚未齐备");
@@ -124,5 +111,3 @@ jobs:
           if (!verifiedBody) throw new Error(`健康复核在60秒内未收敛：${lastFailure}`);
           console.log(JSON.stringify({ status: verifiedBody.status, policySha: verifiedBody.policySha, version: verifiedBody.version, organizationId: verifiedBody.organizationId, appId: verifiedBody.appId, secretsReady: verifiedBody.secretsReady }));
           NODE
-    env:
-      WORKFLOW_EVALUATOR_SHA: ${{ vars.WORKFLOW_EVALUATOR_SHA }}

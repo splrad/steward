@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { classifyCopilotReviewState, copilotReviewTrigger, type CopilotReviewInput } from "../src/copilot-review-state.js";
-import { configurationFor, ensureCopilotReview, main, readCopilotReviewState, reviewSyncMatrix } from "../src/index.js";
+import { configurationFor, observeCopilotReview, main, readCopilotReviewState, reviewSyncMatrix } from "../src/index.js";
 import { GitHubClient } from "../../github/src/index.js";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -251,13 +251,13 @@ describe("触发模式和令牌隔离", () => {
   it("退役模式在读取远端证据前失败", async () => {
     const fetchMock = vi.fn();
     const gh = new GitHubClient("read-only", "https://api.github.com", fetchMock);
-    await expect(ensureCopilotReview(gh, "splrad", "steward", 209, head, "b".repeat(40), "legacy" as never)).rejects.toThrow("触发模式无效");
+    await expect(observeCopilotReview(gh, "splrad", "steward", 209, head, "b".repeat(40), "legacy" as never)).rejects.toThrow("触发模式无效");
     expect(fetchMock).not.toHaveBeenCalled();
   });
   it("采用配置的三仓与未来公私仓均为native，私仓仍按原接入范围处理", async () => {
     const registry = JSON.parse(await readFile("config/repositories.json", "utf8"));
     const schema = JSON.parse(await readFile("schema/repositories.schema.json", "utf8"));
-    expect(schema.$defs.defaultConfigV4.properties.copilotReviewTrigger.default).toBe("native");
+    expect(schema.$defs.defaultConfig.properties.copilotReviewTrigger.default).toBe("native");
     expect(registry.defaults.public.copilotReviewTrigger).toBe("native");
     expect(registry.defaults.private.copilotReviewTrigger).toBe("native");
     for (const [id, configuration] of Object.entries(registry.repositories) as [string, any][]) {
@@ -280,7 +280,7 @@ describe("触发模式和令牌隔离", () => {
     vi.spyOn(gh, "listIssueEvents").mockResolvedValue([]);
     vi.spyOn(gh, "listAllCheckRuns").mockResolvedValue([]);
     const write = vi.spyOn(gh, "request").mockRejectedValue(new Error("unexpected write"));
-    expect(await ensureCopilotReview(gh, "splrad", "steward", 209, head, "b".repeat(40), trigger as "native" | undefined)).toBe(`observed-${state}`);
+    expect(await observeCopilotReview(gh, "splrad", "steward", 209, head, "b".repeat(40), trigger as "native" | undefined)).toBe(`observed-${state}`);
     expect(write).not.toHaveBeenCalled();
   });
   it("native读取失败归unknown，不自动补发", async () => {
@@ -289,7 +289,7 @@ describe("触发模式和令牌隔离", () => {
     vi.spyOn(gh, "listPullRequestReviews").mockResolvedValue([]);
     vi.spyOn(gh, "listIssueEvents").mockResolvedValue([]);
     vi.spyOn(gh, "listAllCheckRuns").mockResolvedValue([]);
-    expect(await ensureCopilotReview(gh, "splrad", "steward", 209, head, "b".repeat(40), "native")).toBe("observed-unknown");
+    expect(await observeCopilotReview(gh, "splrad", "steward", 209, head, "b".repeat(40), "native")).toBe("observed-unknown");
   });
   it("模式解析缺少输出或非法SHA时在授权客户端前拒绝", async () => {
     vi.stubEnv("GITHUB_OUTPUT", "");
@@ -329,13 +329,13 @@ describe("工作流只读模式预检", () => {
       });
       await main(["review-trigger-mode", "--repository-id", "1296724484", "--policy-sha", head]);
       expect(await readFile(target, "utf8")).toBe("trigger=native\n");
-      await main(["review-sync-targets", "--policy-sha", head]);
-      expect(await readFile(target, "utf8")).toContain('matrix={"include":[{"repositoryId":"1296724484","trigger":"native"},{"repositoryId":"1296725317","trigger":"native"}]}');
-      expect(writes).toHaveLength(2);
+      await expect(main(["review-sync-targets", "--policy-sha", head])).rejects.toThrow("未知命令");
+      expect(await readFile(target, "utf8")).toBe("trigger=native\n");
+      expect(writes).toHaveLength(1);
       registry.repositories["1296724484"].copilotReviewTrigger = "legacy";
       await writeFile(join(directory, "config/repositories.json"), JSON.stringify(registry));
       await expect(main(["review-trigger-mode", "--repository-id", "1296724484", "--policy-sha", head])).rejects.toThrow("schema");
-      expect(writes).toHaveLength(2);
+      expect(writes).toHaveLength(1);
     } finally { globalThis.fetch = savedFetch; await rm(directory, { recursive: true, force: true }); }
   });
 });
