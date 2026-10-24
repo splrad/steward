@@ -1,0 +1,424 @@
+name: SPLRAD Steward / Product Release
+on:
+  workflow_call:
+    inputs:
+      unit:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+      release_id:
+        required: true
+        type: string
+      release_pr:
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: release-publish-${{ github.repository_id }}-${{ inputs.unit }}-${{ inputs.release_id }}
+  cancel-in-progress: false
+  queue: max
+jobs:
+  identity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    outputs:
+      record: ${{ steps.identity.outputs.record }}
+      mode: ${{ steps.identity.outputs.mode }}
+      policy_sha: ${{ steps.identity.outputs.policy_sha }}
+      source_sha: ${{ steps.identity.outputs.source_sha }}
+      matrix: ${{ steps.identity.outputs.matrix }}
+    steps:
+      - id: policy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |-
+          set -euo pipefail
+          token=$(curl --fail --silent --show-error -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=splrad-release-identity" | jq -er '.value')
+          claims=$(printf '%s' "$token" | cut -d. -f2 | tr '_-' '/+' | awk '{ x=$0; while(length(x)%4)x=x"="; print x }' | base64 -d)
+          unset token
+          policy=$(printf '%s' "$claims" | jq -er --arg repo "$GITHUB_REPOSITORY" --arg id "$GITHUB_REPOSITORY_ID" --arg source "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" '
+            select(.iss == "https://token.actions.githubusercontent.com" and .aud == "splrad-release-identity" and .repository == $repo and .repository_id == $id and .sha == $source and .run_id == $run and .run_attempt == $attempt and .event_name == "workflow_dispatch") |
+            select(.job_workflow_sha | test("^[a-f0-9]{40}$")) |
+            select(.job_workflow_ref == ("splrad/steward/.github/workflows/product-release.yml@" + .job_workflow_sha)) | .job_workflow_sha')
+          unset claims
+          test "$(gh api repos/splrad/steward --jq .id)" = '1296724484'
+          q=$(gh api repos/splrad/steward/commits/main --jq .sha)
+          gh api "repos/splrad/steward/compare/$policy...$q" | jq -e --arg p "$policy" '(.status == "ahead" or .status == "identical") and .merge_base_commit.sha == $p' >/dev/null
+          printf 'sha=%s
+          ' "$policy" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: splrad/steward
+          ref: ${{ steps.policy.outputs.sha }}
+          path: policy
+          persist-credentials: false
+      - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        env:
+          MISE_SAFE: "1"
+          MISE_NODE_COMPILE: "false"
+        with:
+          version: 2026.10.18
+          working_directory: policy
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 0
+      - id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POLICY_SHA: ${{ steps.policy.outputs.sha }}
+          UNIT: ${{ inputs.unit }}
+          TAG: ${{ inputs.tag }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_PR: ${{ inputs.release_pr }}
+        run: node policy/packages/runner/dist/index.js release-pipeline identity --unit "$UNIT" --tag "$TAG" --release-id "$RELEASE_ID" --release-pr "$RELEASE_PR" --policy-sha "$POLICY_SHA" --source-dir source --policy-dir policy --output identity.json
+  build:
+    needs: identity
+    runs-on: windows-2025
+    timeout-minutes: 330
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: splrad/steward
+          ref: ${{ needs.identity.outputs.policy_sha }}
+          path: policy
+          persist-credentials: false
+      - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        env:
+          MISE_SAFE: "1"
+          MISE_NODE_COMPILE: "false"
+        with:
+          version: 2026.10.18
+          working_directory: policy
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.identity.outputs.source_sha }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: source/global.json
+      - env:
+          RECORD: ${{ needs.identity.outputs.record }}
+        run: node -e 'require("node:fs").writeFileSync("record.json",process.env.RECORD,{flag:"wx"})'
+      - id: build
+        env:
+          BUILD_ID: ${{ matrix.id }}
+        run: node policy/packages/runner/dist/index.js release-pipeline build --record record.json --build-id "$BUILD_ID" --source-dir source --output-dir "$RUNNER_TEMP/business" --home "$RUNNER_TEMP/build-home" --output build.json
+      - id: artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.build.outputs.artifact_name }}
+          path: ${{ runner.temp }}/business/*
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: false
+    if: needs.identity.outputs.mode == 'build'
+    name: build-${{ matrix.id }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.identity.outputs.matrix) }}
+  collect:
+    needs:
+      - identity
+      - build
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: splrad/steward
+          ref: ${{ needs.identity.outputs.policy_sha }}
+          path: policy
+          persist-credentials: false
+      - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        env:
+          MISE_SAFE: "1"
+          MISE_NODE_COMPILE: "false"
+        with:
+          version: 2026.10.18
+          working_directory: policy
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - env:
+          RECORD: ${{ needs.identity.outputs.record }}
+        run: node -e 'require("node:fs").writeFileSync("record.json",process.env.RECORD,{flag:"wx"})'
+      - id: collect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |-
+          node policy/packages/runner/dist/index.js release-pipeline collect --record record.json --raw-dir "$RUNNER_TEMP/raw" --output-dir "$RUNNER_TEMP/business" --policy-dir policy --home "$RUNNER_TEMP/collect-home" --output selection.json
+          printf 'selection=%s
+          ' "$(node -e 'process.stdout.write(JSON.stringify(JSON.parse(require("node:fs").readFileSync("selection.json","utf8"))))')" >> "$GITHUB_OUTPUT"
+      - id: artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: collected-${{ github.repository_id }}-${{ inputs.unit }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/business/*
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: false
+    if: needs.identity.outputs.mode == 'build'
+    outputs:
+      artifact_id: ${{ steps.artifact.outputs.artifact-id }}
+      digest: ${{ steps.artifact.outputs.artifact-digest }}
+      selection: ${{ steps.collect.outputs.selection }}
+  sign:
+    needs:
+      - identity
+      - collect
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - run: |-
+          echo "Signing adapter must be admitted before use" >&2
+          exit 1
+    if: needs.identity.outputs.mode == 'build' && fromJSON(needs.identity.outputs.record).admitted.unit.signingPolicy != 'none'
+  inspect:
+    needs:
+      - identity
+      - collect
+      - sign
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: splrad/steward
+          ref: ${{ needs.identity.outputs.policy_sha }}
+          path: policy
+          persist-credentials: false
+      - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        env:
+          MISE_SAFE: "1"
+          MISE_NODE_COMPILE: "false"
+        with:
+          version: 2026.10.18
+          working_directory: policy
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.identity.outputs.source_sha }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 0
+      - env:
+          RECORD: ${{ needs.identity.outputs.record }}
+        run: node -e 'require("node:fs").writeFileSync("record.json",process.env.RECORD,{flag:"wx"})'
+      - id: recover
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node policy/packages/runner/dist/index.js release-pipeline recover --record record.json --directory "$RUNNER_TEMP/assets" --policy-dir policy --home "$RUNNER_TEMP/recover-home" --output recovered.json
+      - if: steps.recover.outputs.found != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.collect.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.collect.outputs.digest }}
+        run: node policy/packages/runner/dist/index.js release-pipeline download --record record.json --artifact-id "$ARTIFACT_ID" --digest "sha256:$ARTIFACT_DIGEST" --phase collected --directory "$RUNNER_TEMP/assets" --policy-dir policy --home "$RUNNER_TEMP/download-home" --output download.json
+      - if: steps.recover.outputs.found != 'true'
+        env:
+          SELECTION: ${{ needs.collect.outputs.selection }}
+          GH_TOKEN: ${{ github.token }}
+        run: |-
+          node -e 'require("node:fs").writeFileSync("selection.json",process.env.SELECTION,{flag:"wx"})'
+          node policy/packages/runner/dist/index.js release-pipeline inspect --record record.json --selection selection.json --directory "$RUNNER_TEMP/assets" --policy-dir policy --source-dir source --home "$RUNNER_TEMP/inspect-home" --staging "$RUNNER_TEMP/sbom-staging" --sbom-home "$RUNNER_TEMP/sbom-home" --output pending.json
+          node policy/packages/runner/dist/index.js release-pipeline seal --directory "$RUNNER_TEMP/assets" --manifest pending.json --output sealed.json
+      - id: artifact
+        if: steps.recover.outputs.found != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: final-${{ github.repository_id }}-${{ inputs.unit }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/assets/*
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: false
+    if: always() && needs.identity.outputs.mode == 'build' && needs.collect.result == 'success' && needs.sign.result == 'skipped'
+    outputs:
+      artifact_id: ${{ steps.recover.outputs.artifact_id || steps.artifact.outputs.artifact-id }}
+      digest: ${{ steps.recover.outputs.digest || steps.artifact.outputs.artifact-digest }}
+  attest:
+    needs:
+      - identity
+      - inspect
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: splrad/steward
+          ref: ${{ needs.identity.outputs.policy_sha }}
+          path: policy
+          persist-credentials: false
+      - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        env:
+          MISE_SAFE: "1"
+          MISE_NODE_COMPILE: "false"
+        with:
+          version: 2026.10.18
+          working_directory: policy
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - env:
+          RECORD: ${{ needs.identity.outputs.record }}
+        run: node -e 'require("node:fs").writeFileSync("record.json",process.env.RECORD,{flag:"wx"})'
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.inspect.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.inspect.outputs.digest }}
+        run: node policy/packages/runner/dist/index.js release-pipeline download --record record.json --artifact-id "$ARTIFACT_ID" --digest "sha256:$ARTIFACT_DIGEST" --phase final --directory "$RUNNER_TEMP/assets" --policy-dir policy --home "$RUNNER_TEMP/download-home" --output download.json
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/assets/*
+          push-to-registry: false
+          create-storage-record: false
+    if: needs.identity.outputs.mode == 'build'
+  publish:
+    needs:
+      - identity
+      - inspect
+      - attest
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+      attestations: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: splrad/steward
+          ref: ${{ needs.identity.outputs.policy_sha }}
+          path: policy
+          persist-credentials: false
+      - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        env:
+          MISE_SAFE: "1"
+          MISE_NODE_COMPILE: "false"
+        with:
+          version: 2026.10.18
+          working_directory: policy
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - env:
+          RECORD: ${{ needs.identity.outputs.record }}
+        run: node -e 'require("node:fs").writeFileSync("record.json",process.env.RECORD,{flag:"wx"})'
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.inspect.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.inspect.outputs.digest }}
+        run: node policy/packages/runner/dist/index.js release-pipeline download --record record.json --artifact-id "$ARTIFACT_ID" --digest "sha256:$ARTIFACT_DIGEST" --phase final --directory "$RUNNER_TEMP/assets" --policy-dir policy --home "$RUNNER_TEMP/download-home" --output download.json
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: node policy/packages/runner/dist/index.js release-pipeline publish --record record.json --directory "$RUNNER_TEMP/assets" --output publication.json
+    if: needs.identity.outputs.mode == 'build'
+  verify:
+    needs:
+      - identity
+      - build
+      - collect
+      - sign
+      - inspect
+      - attest
+      - publish
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: splrad/steward
+          ref: ${{ needs.identity.outputs.policy_sha }}
+          path: policy
+          persist-credentials: false
+      - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        env:
+          MISE_SAFE: "1"
+          MISE_NODE_COMPILE: "false"
+        with:
+          version: 2026.10.18
+          working_directory: policy
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - env:
+          RECORD: ${{ needs.identity.outputs.record }}
+        run: node -e 'require("node:fs").writeFileSync("record.json",process.env.RECORD,{flag:"wx"})'
+      - env:
+          MODE: ${{ needs.identity.outputs.mode }}
+          RESULTS: ${{ toJSON(needs) }}
+        run: node policy/packages/runner/dist/index.js release-pipeline gates --mode "$MODE" --results "$RESULTS" --output gates.json
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: node policy/packages/runner/dist/index.js release-pipeline verify --record record.json --directory "$RUNNER_TEMP/published" --output verified.json
+    if: always()

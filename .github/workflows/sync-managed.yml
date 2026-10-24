@@ -1,0 +1,198 @@
+name: SPLRAD Steward / Sync Managed Files
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Registered repository; empty selects all enabled repositories
+        type: string
+        required: false
+      mode:
+        description: Managed synchronization or explicit first adoption
+        type: choice
+        options:
+          - sync
+          - onboard
+        default: sync
+        required: true
+  schedule:
+    - cron: 47 2 * * 1
+  push:
+    branches:
+      - main
+    paths:
+      - config/**
+      - templates/**
+      - schema/**
+      - .github/workflows/**
+      - packages/runner/dist/**
+permissions:
+  contents: read
+jobs:
+  targets:
+    if: github.repository == 'splrad/steward' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+      has_targets: ${{ steps.targets.outputs.has_targets }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        env:
+          MISE_SAFE: "1"
+          MISE_NODE_COMPILE: "false"
+        with:
+          version: 2026.10.18
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - id: targets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ inputs.repository }}
+          MODE: ${{ inputs.mode || 'sync' }}
+        run: |
+          if [[ "$MODE" == "onboard" && -z "$REPOSITORY" ]]; then echo "Onboarding requires one registered repository" >&2; exit 1; fi
+          arguments=()
+          if [[ -n "$REPOSITORY" ]]; then arguments+=(--repository "$REPOSITORY"); fi
+          node packages/runner/dist/index.js managed-sync targets "${arguments[@]}" --output targets.json
+  synchronize:
+    needs: targets
+    if: needs.targets.outputs.has_targets == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: steward-automation
+      deployment: false
+    concurrency:
+      group: managed-sync-${{ matrix.repositoryId }}
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: bootstrap
+          persist-credentials: false
+      - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        env:
+          MISE_SAFE: "1"
+          MISE_NODE_COMPILE: "false"
+        with:
+          version: 2026.10.18
+          working_directory: bootstrap
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - id: preflight
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY_ID: ${{ matrix.repositoryId }}
+          POLICY_SHA: ${{ matrix.policySha }}
+        run: node bootstrap/packages/runner/dist/index.js managed-sync preflight --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA" --output preflight.json
+      - if: steps.preflight.outputs.enabled == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.preflight.outputs.observation_sha }}
+          path: observation
+          persist-credentials: false
+      - if: steps.preflight.outputs.enabled == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.policySha }}
+          path: policy
+          persist-credentials: false
+      - if: steps.preflight.outputs.enabled == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ matrix.fullName }}
+          ref: ${{ steps.preflight.outputs.base_sha }}
+          path: target
+          fetch-depth: 0
+          persist-credentials: false
+      - if: steps.preflight.outputs.enabled == 'true'
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        env:
+          MISE_SAFE: "1"
+          MISE_NODE_COMPILE: "false"
+        with:
+          version: 2026.10.18
+          working_directory: policy
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - id: labels
+        if: steps.preflight.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY_ID: ${{ matrix.repositoryId }}
+          POLICY_SHA: ${{ matrix.policySha }}
+        run: node policy/packages/runner/dist/index.js managed-sync labels --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA" --policy-dir policy --mode preview --output labels-preview.json
+      - if: steps.preflight.outputs.enabled == 'true'
+        env:
+          REPOSITORY_ID: ${{ matrix.repositoryId }}
+          PREVIEW_DIRECTORY: ${{ runner.temp }}/managed-preview
+          MODE: ${{ inputs.mode || 'sync' }}
+        run: |
+          arguments=()
+          if [[ "$MODE" == "onboard" ]]; then arguments+=(--input-manifest "policy/config/onboarding/$REPOSITORY_ID/manifest.json"); fi
+          node policy/packages/runner/dist/index.js managed-sync preview --repository-id "$REPOSITORY_ID" --mode "$MODE" --policy-dir policy --target-dir target --central-config observation/config/repositories.json --output-dir "$PREVIEW_DIRECTORY" "${arguments[@]}"
+      - id: apply
+        if: steps.preflight.outputs.enabled == 'true'
+        env:
+          REPOSITORY_ID: ${{ matrix.repositoryId }}
+          POLICY_SHA: ${{ matrix.policySha }}
+          PREVIEW_DIRECTORY: ${{ runner.temp }}/managed-preview
+        run: node policy/packages/runner/dist/index.js managed-sync apply --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA" --preview-dir "$PREVIEW_DIRECTORY" --target-dir target --output applied.json
+      - id: token
+        if: steps.apply.outputs.changed == 'true' || steps.labels.outputs.changed == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: "4243096"
+          private-key: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          owner: splrad
+          repositories: ${{ matrix.repository }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+      - id: write-check
+        if: steps.apply.outputs.changed == 'true' || steps.labels.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY_ID: ${{ matrix.repositoryId }}
+          POLICY_SHA: ${{ matrix.policySha }}
+          BASE_SHA: ${{ steps.preflight.outputs.base_sha }}
+        run: node bootstrap/packages/runner/dist/index.js managed-sync preflight --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA" --expected-base-sha "$BASE_SHA" --output write-check.json
+      - if: steps.labels.outputs.changed == 'true' && steps.write-check.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          POLICY_READ_TOKEN: ${{ github.token }}
+          REPOSITORY_ID: ${{ matrix.repositoryId }}
+          POLICY_SHA: ${{ matrix.policySha }}
+        run: node policy/packages/runner/dist/index.js managed-sync labels --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA" --policy-dir policy --mode apply --output labels-applied.json
+      - if: steps.apply.outputs.changed == 'true' && steps.write-check.outputs.enabled == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ steps.token.outputs.token }}
+          path: target
+          base: main
+          branch: steward/managed-sync
+          delete-branch: false
+          signoff: true
+          sign-commits: true
+          author: splrad-steward[bot] <301115370+splrad-steward[bot]@users.noreply.github.com>
+          committer: splrad-steward[bot] <301115370+splrad-steward[bot]@users.noreply.github.com>
+          add-paths: ${{ steps.apply.outputs.add_paths }}
+          title: "chore: 同步中央受管文件"
+          commit-message: "chore: 同步中央受管文件"
+          body-path: ${{ runner.temp }}/managed-preview/sync-body.md

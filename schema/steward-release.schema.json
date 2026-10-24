@@ -1,0 +1,282 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/splrad/steward/schema/steward-release.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "units"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "units": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "displayName",
+          "path",
+          "releasePleasePath",
+          "ecosystem",
+          "versionFile",
+          "changelogPath",
+          "notesPath",
+          "builds",
+          "artifacts",
+          "channels"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$",
+            "maxLength": 64
+          },
+          "displayName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "releasePleasePath": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "ecosystem": {
+            "enum": [
+              "node",
+              "python",
+              "dotnet",
+              "go",
+              "rust",
+              "jvm",
+              "native",
+              "container",
+              "helm",
+              "data"
+            ]
+          },
+          "versionFile": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "changelogPath": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "notesPath": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "builds": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "os",
+                "arch",
+                "entrypoint",
+                "args",
+                "expectedArtifacts"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]*$",
+                  "maxLength": 64
+                },
+                "os": {
+                  "enum": [
+                    "ubuntu",
+                    "windows",
+                    "macos"
+                  ]
+                },
+                "arch": {
+                  "enum": [
+                    "x64",
+                    "arm64"
+                  ]
+                },
+                "entrypoint": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "args": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 4096
+                  },
+                  "minItems": 0
+                },
+                "expectedArtifacts": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]*$",
+                    "maxLength": 64
+                  },
+                  "minItems": 1,
+                  "uniqueItems": true
+                }
+              }
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "file",
+                "kind",
+                "mediaType",
+                "platform",
+                "architecture",
+                "build",
+                "required"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]*$",
+                  "maxLength": 64
+                },
+                "file": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "kind": {
+                  "enum": [
+                    "executable",
+                    "archive",
+                    "installer",
+                    "npm",
+                    "nuget",
+                    "python-wheel",
+                    "python-sdist",
+                    "jar",
+                    "crate",
+                    "oci-image",
+                    "helm",
+                    "data"
+                  ]
+                },
+                "mediaType": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9.+-]+/[a-z0-9.+-]+$"
+                },
+                "platform": {
+                  "enum": [
+                    "ubuntu",
+                    "windows",
+                    "macos",
+                    "any",
+                    "source"
+                  ]
+                },
+                "architecture": {
+                  "enum": [
+                    "x64",
+                    "arm64",
+                    "any"
+                  ]
+                },
+                "build": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]*$",
+                  "maxLength": 64
+                },
+                "required": {
+                  "const": true
+                }
+              }
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "kind",
+                "artifacts",
+                "dependsOn"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]*$",
+                  "maxLength": 64
+                },
+                "kind": {
+                  "enum": [
+                    "npm",
+                    "nuget",
+                    "pypi",
+                    "oci-image",
+                    "oci-artifact",
+                    "helm",
+                    "winget"
+                  ]
+                },
+                "artifacts": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]*$",
+                    "maxLength": 64
+                  },
+                  "minItems": 1,
+                  "uniqueItems": true
+                },
+                "dependsOn": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]*/[a-z][a-z0-9-]*$"
+                  },
+                  "minItems": 0,
+                  "uniqueItems": true
+                }
+              }
+            },
+            "minItems": 0,
+            "uniqueItems": true
+          },
+          "signingPolicy": {
+            "enum": [
+              "none",
+              "authenticode",
+              "apple-notarized"
+            ]
+          }
+        }
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    }
+  }
+}

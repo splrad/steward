@@ -1,20 +1,20 @@
 import { hasTrustedPolicyPrefix, assertArtifactHandoff } from './workflow-capabilities.js';
-import { createHash } from 'node:crypto';
+import { assertNativeWorkflow } from './native-workflow-contract.js';
 import YAML from 'yaml';
 import { lstat, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import {parseWorkflowContract, type WorkflowContract} from '../../core/src/workflow-contract.js';
 
 const hostedRunners = new Set(['ubuntu-latest', 'ubuntu-24.04', 'windows-latest', 'windows-2025', 'macos-latest']);
-// Existing deployed-policy resolvers are allowed only as complete trusted documents.
-const deployedPolicyWorkflows: Record<string,string> = {
-  ".github/workflows/sync-review-instructions.yml": "50652cb445e0abf37d0e1adb3e95e35a8d6b4cd4f96ff6a774e8cf2da97a7ed7",
-  ".github/workflows/sync-managed-labels.yml": "7be23eb192bb3dee4d1c4ca6205778ec1ae346758f4edaecca7c78d843c9dc64"
-};
 const actions = new Set([
- 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
- 'actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68', 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
- 'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c',
+ 'renovatebot/github-action@a63d9a7bc606f7336fd20b47f2f32259a35e6213',
+ 'actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510',
+ 'googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7',
+ 'peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1',
+ 'actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6',
+ 'jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550',
+ 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1',
+ 'actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68', 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9',
+ 'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333',
 ]);
 const secretEnvironments: Record<string, readonly string[]> = {
  'steward-automation': ['STEWARD_APP_PRIVATE_KEY', 'COPILOT_CLI_TOKEN'],
@@ -23,17 +23,15 @@ const secretEnvironments: Record<string, readonly string[]> = {
 };
 const object = (v: any): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);
 const fail = (detail: string): never => { throw new Error(`WORKFLOW_POLICY: ${detail}`); };
-// Existing shared queues retain their semantics only under a complete trusted document.
-const trustedQueueDocuments: Record<string,string> = {
-  ".github/workflows/issue-sync.yml": "65d86b5d4dc64b98e5c1bb2c8e0b90d382af55d58844eb99e6ec369fc5520f2c",
-  ".github/workflows/onboard-repository.yml": "a1a70c4cb97361a393f88e78a92e6782601c73eff947dc5a7440eaa7819146e9",
-  ".github/workflows/pr-automation.yml": "1e3a4ed9cf86eb4c25366b5c8f01228202c81089ff7ed4d619e93fa39b1fe2dd",
-  ".github/workflows/pr-classification.yml": "57601bb75cff27d78daea60a9681908a7fcdb62eac0dd9f40e36236a88582ab9",
-  ".github/workflows/pr-issue-link.yml": "6b31fbfd26ccf28c3357b2ccb71e0851b02fa1f8ec17125ab2af8d68d2c573cd",
-  ".github/workflows/release.yml": "210a0bb1f69d6188fef76c0b685e1fdb5b7ec96a0e231514e09e4e5ed8f567b0",
-  ".github/workflows/sync-managed-labels.yml": "7be23eb192bb3dee4d1c4ca6205778ec1ae346758f4edaecca7c78d843c9dc64",
-  ".github/workflows/sync-review-instructions.yml": "50652cb445e0abf37d0e1adb3e95e35a8d6b4cd4f96ff6a774e8cf2da97a7ed7"
+// Shared business resources are selected by the trusted policy, never candidate files.
+const sharedQueues: Record<string,string> = {
+ '.github/workflows/native-review.yml': 'pr-body',
+ '.github/workflows/onboard-repository.yml': 'pr-body',
+ '.github/workflows/sync-review-instructions.yml:synchronize': 'pr-body',
 };
+export interface ReusableWorkflow { uses: string; inputs: readonly string[]; secrets: readonly string[] }
+// Populated only when B4 adopts a reviewed central implementation.
+const approvedReusableWorkflows: readonly ReusableWorkflow[] = [];
 function concurrency(value:any, trustedQueue=false) {
  if(value===undefined)return;
  if(!object(value) || value['cancel-in-progress']!==false)fail('ordinary concurrency must explicitly disable cancellation');
@@ -62,35 +60,41 @@ function secrets(value: any): string[] {
  }
  return names;
 }
-export function assertWorkflowDocument(path: string, d: any, approvedContract?: WorkflowContract) {
- const contract = approvedContract === undefined ? undefined : parseWorkflowContract(approvedContract);
+export function assertWorkflowDocument(path: string, d: any, repositoryId = 1296724484, reusable: readonly ReusableWorkflow[] = approvedReusableWorkflows) {
+ const native = assertNativeWorkflow(path, d, repositoryId);
  if (!object(d) || !object(d.jobs) || !Object.keys(d.jobs).length) fail(`${path}: jobs missing`);
  assertArtifactHandoff(d);
  permissions(d.permissions);
  defaults(d.defaults);
- const trustedQueue = Object.hasOwn(trustedQueueDocuments,path) && createHash('sha256').update(canonical(d)).digest('hex')===trustedQueueDocuments[path];
- const resource = contract?.sharedQueues[path];
+ const resource = repositoryId === 1296724484 ? sharedQueues[path] : undefined;
  if (resource !== undefined) {
-  const expected = `workflow-resource:${contract!.repositoryId}:${resource}`;
-  if (!object(d.concurrency) || d.concurrency.group !== expected || d.concurrency['cancel-in-progress'] !== false)
-   fail('shared resource queue must match approved namespace and disable cancellation');
- }
- if(path==='.github/workflows/pr-validation.yml')assertRequiredValidation(d, contract?.fragments);
- else concurrency(d.concurrency,trustedQueue || resource !== undefined);
+  if (!object(d.concurrency) || d.concurrency.group !== `workflow-resource:${repositoryId}:${resource}` || d.concurrency['cancel-in-progress'] !== false)
+   fail('shared resource queue must match trusted namespace and disable cancellation');
+ } else if (!native && path !== '.github/workflows/pr-validation.yml') concurrency(d.concurrency);
  const triggers=typeof d.on==='string'?[d.on]:Array.isArray(d.on)?d.on:object(d.on)?Object.keys(d.on):[];
- if (!triggers.length || triggers.some((v:any)=>!['push','pull_request','workflow_dispatch','workflow_run','schedule'].includes(v))) fail(`${path}: trigger not permitted`);
- const legacyDeployedPolicyContract = Object.hasOwn(deployedPolicyWorkflows,path) && createHash('sha256').update(canonical(d)).digest('hex')===deployedPolicyWorkflows[path];
+ if (!triggers.length || triggers.some((v:any)=>![...(native ? ['workflow_call'] : []),'push','pull_request','workflow_dispatch','workflow_run','schedule'].includes(v))) fail(`${path}: trigger not permitted`);
  const global={...d};delete global.jobs;
  if (secrets(global).length) fail(`${path}: workflow-level secrets`);
  for (const [name,j] of Object.entries(d.jobs) as [string,any][]) {
-  const deployedPolicyContract = legacyDeployedPolicyContract || hasTrustedPolicyPrefix(d,j);
-  if (!object(j) || j.uses || j.secrets || !Array.isArray(j.steps) || !j.steps.length) fail(`${path}:${name}: reusable jobs or missing steps`);
+  const deployedPolicyContract = hasTrustedPolicyPrefix(d,j);
+  if (!object(j)) fail(`${path}:${name}: invalid job`);
+  if (j.uses !== undefined) {
+   const approved = reusable.find(value => value.uses === j.uses);
+   if (!/^splrad\/steward\/\.github\/workflows\/[a-z0-9-]+\.ya?ml@[a-f0-9]{40}$/.test(j.uses) || !approved) fail('untrusted reusable workflow');
+   if (!object(j.with ?? {}) || Object.keys(j.with ?? {}).some(key => !approved!.inputs.includes(key))) fail('unapproved reusable input');
+   if (!object(j.secrets ?? {}) || Object.keys(j.secrets ?? {}).some(key => !approved!.secrets.includes(key))) fail('unapproved reusable secrets');
+   if (secrets(j).length || Object.keys(j.secrets ?? {}).length) fail('reusable validation cannot receive secrets');
+   if (j.permissions !== undefined) permissions(j.permissions);
+   if (j.environment !== undefined || j.steps !== undefined) fail('reusable capability override');
+   continue;
+  }
+  if (j.secrets || !Array.isArray(j.steps) || !j.steps.length) fail(`${path}:${name}: missing steps`);
   if (j.container!==undefined || j.services!==undefined) fail('job/service containers not permitted');
   defaults(j.defaults);
-  const jobResource=contract?.sharedQueues[path+':'+name];
-  if(jobResource!==undefined && (!object(j.concurrency) || j.concurrency.group!==`workflow-resource:${contract!.repositoryId}:${jobResource}` || j.concurrency['cancel-in-progress']!==false))fail('job shared resource queue mismatch');
-  concurrency(j.concurrency,trustedQueue || jobResource!==undefined);
-  if (j.permissions!==undefined) permissions(j.permissions);
+  const jobResource=repositoryId === 1296724484 ? sharedQueues[path+':'+name] : undefined;
+  if(jobResource!==undefined && (!object(j.concurrency) || j.concurrency.group!==`workflow-resource:${repositoryId}:${jobResource}` || j.concurrency['cancel-in-progress']!==false))fail('job shared resource queue mismatch');
+  if (!native) concurrency(j.concurrency,jobResource!==undefined);
+  if (j.permissions!==undefined && !native) permissions(j.permissions);
   const used=secrets(j); const env=j.environment;
   if (env!==undefined && (!object(env) || !Object.hasOwn(secretEnvironments,env.name) || env.deployment!==(env.name==='steward-deployment'))) fail(`${path}:${name}: protected environment`);
   if ((used.length || env!==undefined) && triggers.includes('pull_request')) fail(`${path}:${name}: PR jobs cannot use protected environments/secrets`);
@@ -109,169 +113,25 @@ export function assertWorkflowDocument(path: string, d: any, approvedContract?: 
     const body=expression[1]!.trim();
     // The gate uses this boolean only. Other event data must pass through env,
     // including indexed/case-insensitive access and serialization of the context.
-    const requiredCommand = path==='.github/workflows/pr-validation.yml' && ['validate','fragments'].includes(name);
-    if (!requiredCommand && !/^(?:github\.(?:sha|repository_id|run_id|run_attempt|actor_id)|github\.event\.repository\.private|runner\.temp)$/i.test(body)
+    if (!/^(?:github\.(?:sha|repository_id|run_id|run_attempt|actor_id)|github\.event\.repository\.private|runner\.temp)$/i.test(body)
       && body!=="github.actor_id == '301115370' && 'app' || 'manual'") fail(`${path}: untrusted event or indirect context interpolated into shell`);
    }
   }
  }
 }
-// This contract protects only the trusted gate entry, not the ordinary workflow inventory.
-const requiredValidationJob = {
-  "runs-on": "ubuntu-latest",
-  "timeout-minutes": 20,
-  "outputs": {
-    "policy": "${{ steps.policy.outputs.sha }}",
-    "profile": "${{ steps.profile.outputs.name }}"
-  },
-  "steps": [
-    {
-      "id": "policy",
-      "shell": "bash",
-      "run": "value=\"${GITHUB_WORKFLOW_SHA}\"\n[[ \"$value\" =~ ^[0-9a-fA-F]{40}$ ]] || { echo \"工作流来源不是完整提交编号\" >&2; exit 1; }\necho \"sha=${value,,}\" >> \"$GITHUB_OUTPUT\"\n"
-    },
-    {
-      "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-      "with": {
-        "path": "target",
-        "fetch-depth": 0,
-        "persist-credentials": false
-      }
-    },
-    {
-      "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-      "with": {
-        "repository": "splrad/steward",
-        "ref": "${{ steps.policy.outputs.sha }}",
-        "path": "steward-policy",
-        "persist-credentials": false
-      }
-    },
-    {
-      "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
-      "with": {
-        "node-version-file": "steward-policy/.node-version",
-        "cache": "npm",
-        "cache-dependency-path": "steward-policy/package-lock.json"
-      }
-    },
-    {
-      "run": "npm ci --ignore-scripts",
-      "working-directory": "steward-policy"
-    },
-    {
-      "id": "profile",
-      "shell": "bash",
-      "run": "node steward-policy/packages/runner/dist/index.js validation-profile --repository-id \"${{ github.repository_id }}\" --private \"${{ github.event.repository.private }}\""
-    },
-    {
-      "env": {
-        "VALIDATION_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
-        "VALIDATION_BASE_REF": "${{ github.event.pull_request.base.ref }}"
-      },
-      "run": "node steward-policy/packages/runner/dist/index.js validate --workspace target --repository-id \"${{ github.repository_id }}\" --profile \"${{ steps.profile.outputs.name }}\""
-    }
-  ]
-};
-const requiredFragmentsJob = {
-  "needs": "validate",
-  "if": "github.event.pull_request.base.ref == github.event.repository.default_branch",
-  "runs-on": "ubuntu-latest",
-  "timeout-minutes": 5,
-  "permissions": {
-    "contents": "read",
-    "pull-requests": "read",
-    "checks": "read"
-  },
-  "steps": [
-    {
-      "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-      "with": {
-        "repository": "splrad/steward",
-        "ref": "${{ needs.validate.outputs.policy }}",
-        "persist-credentials": false
-      }
-    },
-    {
-      "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
-      "with": {
-        "node-version-file": ".node-version"
-      }
-    },
-    {
-      "env": {
-        "VALIDATION_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
-        "VALIDATION_HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
-        "VALIDATION_PR_NUMBER": "${{ github.event.pull_request.number }}",
-        "VALIDATION_POLICY_SHA": "${{ needs.validate.outputs.policy }}",
-        "VALIDATION_READ_TOKEN": "${{ github.token }}"
-      },
-      "run": "node packages/runner/dist/index.js validate --workspace . --repository-id \"${{ github.repository_id }}\" --profile \"${{ needs.validate.outputs.profile }}\" --fragments-only true"
-    }
-  ]
-};
-function canonical(value:any):string {
- if(Array.isArray(value))return '['+value.map(canonical).join(',')+']';
- if(object(value))return '{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+canonical(value[k])).join(',')+'}';
- return JSON.stringify(value);
-}
-export function assertRequiredValidation(d:any, fragments: 'required' | 'retired' = 'required') {
- if(d?.name!=="SPLRAD Steward / PR Validation") fail("required workflow name changed");
- if(canonical(d.concurrency)!==canonical({"group":"steward-pr-validation-${{ github.repository_id }}-${{ github.event.pull_request.number }}","cancel-in-progress":true})) fail('required concurrency changed');
- const j=structuredClone(d?.jobs?.validate);
- if(!object(j) || !Array.isArray(j.steps))fail('required validate job missing');
- if(j.steps.at(-1)?.env?.WORKFLOW_CONTRACT_READ_TOKEN!==undefined
-  && j.steps.at(-1)?.name!=='workflow-contract-policy:${{ steps.policy.outputs.sha }}')fail('required contract policy marker');
- for(const step of j.steps)delete step.name;
- // V2 entry differs only by these fixed read-only identity inputs. Candidate
- // scripts still cannot change the executable, checkout, or validation command.
- const last = j.steps.at(-1);
- if(last?.env?.WORKFLOW_CONTRACT_READ_TOKEN!==undefined) {
-  if((j.permissions ?? d.permissions)?.['pull-requests']!=='read')fail('required contract review read permission missing');
-  const identityInputs: Record<string,string> = {
-   WORKFLOW_CONTRACT_READ_TOKEN: '${{ github.token }}',
-   VALIDATION_HEAD_SHA: '${{ github.event.pull_request.head.sha }}',
-   VALIDATION_PR_NUMBER: '${{ github.event.pull_request.number }}',
-   VALIDATION_POLICY_SHA: '${{ steps.policy.outputs.sha }}'
-  };
-  for(const [key,value] of Object.entries(identityInputs)) {
-   if(last.env[key]!==value)fail('required contract identity changed');
-   delete last.env[key];
-  }
- }
- if(canonical(j)!==canonical(requiredValidationJob))fail('required trusted validation entry changed');
- const f=structuredClone(d?.jobs?.fragments);
- if(fragments==='retired') {
-  if(f!==undefined)fail('retired fragments job still present');
- } else {
- if(!object(f) || !Array.isArray(f.steps))fail('required fragments job missing');
- for(const step of f.steps)delete step.name;
- if(canonical(f)!==canonical(requiredFragmentsJob))fail('required fragments entry changed');
- }
- if(!object(d.on) || Object.keys(d.on).length!==1 || !object(d.on.pull_request) || JSON.stringify(d.on.pull_request.types)!==JSON.stringify(['opened','synchronize','reopened','edited','labeled','unlabeled']) || Object.keys(d.on.pull_request).some(k=>k!=='types')) fail('required PR event coverage');
- if(d.env!==undefined || d.defaults!==undefined) fail('required entry environment/default overrides');
-}
-export async function verifyWorkflowPolicy(workspace:string, repositoryId:number, requiredPaths:readonly string[], approvedContract?: WorkflowContract) {
- if(approvedContract && approvedContract.repositoryId!==repositoryId)fail('contract repository mismatch');
+/** All workflow documents are data. The executing verifier comes from the pinned central checkout. */
+export async function verifyWorkflowPolicy(workspace:string, repositoryId:number, requiredPaths:readonly string[]) {
  const directory=join(workspace,'.github/workflows'); let files:string[]=[];
  try { if(!(await lstat(join(workspace,'.github'))).isDirectory() || !(await lstat(directory)).isDirectory()) fail('workflow directory type'); files=await readdir(directory); }
  catch(e) {if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
  const paths=files.filter(f=>/\.ya?ml$/.test(f)).map(f=>`.github/workflows/${f}`).sort();
  for(const required of requiredPaths) if(!paths.includes(required)) fail(`missing required entry ${required}`);
- if(repositoryId===1296724484) {
-  const registry=JSON.parse(await readFile(join(workspace,'config/repositories.json'),'utf8'));
-  const declared=registry.repositories?.[String(repositoryId)]?.allowedWorkflowPaths;
-  if(!Array.isArray(declared) || JSON.stringify([...declared].sort())!==JSON.stringify(paths)) fail('candidate inventory does not match workflow files');
- }
  for(const path of paths) {
-  if(!(await lstat(join(workspace,path))).isFile() || (await lstat(join(workspace,path))).isSymbolicLink()) fail('workflow must be regular file');
+  const info=await lstat(join(workspace,path));
+  if(!info.isFile() || info.isSymbolicLink()) fail('workflow must be regular file');
   const parsed=YAML.parseDocument(await readFile(join(workspace,path),'utf8'),{uniqueKeys:true});
-  if(parsed.errors.length) fail('invalid YAML');const d=parsed.toJS({maxAliasCount:0});assertWorkflowDocument(path,d,approvedContract);
-  if(requiredPaths.includes(path) && path==='.github/workflows/pr-validation.yml') assertRequiredValidation(d,approvedContract?.fragments);
- }
- for(const declared of Object.keys(approvedContract?.sharedQueues ?? {})){
-  const [file,job]=declared.split(':');if(!paths.includes(file!))fail('contract queue references missing workflow');
-  if(job && !Object.hasOwn(YAML.parse(await readFile(join(workspace,file!),'utf8')).jobs,job))fail('contract queue references missing job');
+  if(parsed.errors.length) fail('invalid YAML');
+  assertWorkflowDocument(path,parsed.toJS({maxAliasCount:0}),repositoryId);
  }
  return paths;
 }

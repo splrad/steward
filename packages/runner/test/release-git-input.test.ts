@@ -1,3 +1,4 @@
+import { registerOfflineFixtureRoot, permitOfflineScript, permitOfflineCommand } from './offline-fixtures.js';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
@@ -12,7 +13,7 @@ import { main } from '../src/index.js';
 const folders: string[] = [];
 afterEach(() => { for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true }); });
 function fixture() {
-  const workspace = mkdtempSync(join(tmpdir(), 'steward-git-evidence-')); folders.push(workspace);
+  const workspace = mkdtempSync(join(tmpdir(), 'steward-git-evidence-')); folders.push(workspace); registerOfflineFixtureRoot(workspace);
   const git = (...args: string[]) => execFileSync('git', args, { cwd: workspace, encoding: 'utf8', windowsHide: true }).trim();
   git('init', '-b', 'main'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid');
   git('config', 'commit.gpgsign', 'false'); git('config', 'core.autocrlf', 'false');

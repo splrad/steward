@@ -15,7 +15,7 @@
       "type": "string"
     },
     "schemaVersion": {
-      "const": 4
+      "const": 5
     },
     "organization": {
       "type": "object",
@@ -41,8 +41,12 @@
         "private"
       ],
       "properties": {
-        "public": {},
-        "private": {}
+        "public": {
+          "$ref": "#/$defs/defaultConfig"
+        },
+        "private": {
+          "$ref": "#/$defs/defaultConfig"
+        }
       }
     },
     "repositories": {
@@ -51,7 +55,9 @@
       "propertyNames": {
         "pattern": "^[1-9][0-9]*$"
       },
-      "additionalProperties": {}
+      "additionalProperties": {
+        "$ref": "#/$defs/repositoryConfig"
+      }
     }
   },
   "$defs": {
@@ -69,94 +75,6 @@
         "pattern": "^\\.github/workflows/[^/]+\\.ya?ml$"
       },
       "uniqueItems": true
-    },
-    "canary": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "repositoryId",
-        "pullRequestNumber",
-        "headSha",
-        "sourceRepositoryId",
-        "sourceRef"
-      ],
-      "properties": {
-        "repositoryId": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "pullRequestNumber": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "headSha": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{40}$"
-        },
-        "sourceRepositoryId": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "sourceRef": {
-          "type": "string",
-          "pattern": "^refs/heads/.+"
-        }
-      }
-    },
-    "classification": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "profile",
-        "labelDefinitionMode",
-        "labelAssignmentMode",
-        "ai"
-      ],
-      "properties": {
-        "profile": {
-          "type": "string",
-          "minLength": 1
-        },
-        "labelDefinitionMode": {
-          "enum": [
-            "observe",
-            "enforce"
-          ]
-        },
-        "labelAssignmentMode": {
-          "enum": [
-            "observe",
-            "enforce"
-          ]
-        },
-        "ai": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "mode",
-            "adoptedPrimaryKinds",
-            "canaries"
-          ],
-          "properties": {
-            "mode": {
-              "enum": [
-                "shadow",
-                "draft-canary",
-                "active"
-              ]
-            },
-            "adoptedPrimaryKinds": {
-              "$ref": "#/$defs/strings"
-            },
-            "canaries": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/canary"
-              }
-            }
-          }
-        }
-      }
     },
     "reviewGovernance": {
       "type": "object",
@@ -280,6 +198,231 @@
         }
       ]
     },
+    "classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "labelDefinitionMode",
+        "labelAssignmentMode"
+      ],
+      "properties": {
+        "profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "labelDefinitionMode": {
+          "enum": [
+            "observe",
+            "enforce"
+          ]
+        },
+        "labelAssignmentMode": {
+          "enum": [
+            "observe",
+            "enforce"
+          ]
+        }
+      }
+    },
+    "channel": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "npm",
+            "nuget",
+            "pypi",
+            "oci-image",
+            "oci-artifact",
+            "helm",
+            "winget"
+          ]
+        },
+        "destination": {
+          "type": "string",
+          "minLength": 1
+        },
+        "packageName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "visibility": {
+          "enum": [
+            "public",
+            "private"
+          ]
+        },
+        "environment": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "authMode": {
+          "enum": [
+            "oidc",
+            "github-token",
+            "owner-fork"
+          ]
+        },
+        "distTagStable": {
+          "const": "latest"
+        },
+        "distTagPrerelease": {
+          "const": "next"
+        },
+        "nugetUser": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifactType": {
+          "type": "string",
+          "minLength": 1
+        },
+        "platforms": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^linux/(amd64|arm64)$"
+          }
+        },
+        "packageIdentifier": {
+          "type": "string",
+          "minLength": 1
+        },
+        "forkRepository": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[A-Za-z0-9_.-]+/winget-pkgs$"
+        }
+      },
+      "required": [
+        "enabled",
+        "kind",
+        "destination",
+        "packageName",
+        "visibility",
+        "environment",
+        "authMode"
+      ]
+    },
+    "releaseUnit": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "adoptedAfterTag": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "adoptedFromSha": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{40}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "channels": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9-]*$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/channel"
+          }
+        }
+      },
+      "required": [
+        "enabled",
+        "adoptedAfterTag",
+        "adoptedFromSha",
+        "channels"
+      ]
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "units": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9-]*$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/releaseUnit"
+          }
+        }
+      },
+      "required": [
+        "enabled",
+        "units"
+      ]
+    },
+    "automation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "managedSync": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "policySha": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{40}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "enabled",
+            "policySha"
+          ]
+        },
+        "dependencyUpdates": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "enabled"
+          ]
+        }
+      },
+      "required": [
+        "managedSync",
+        "dependencyUpdates"
+      ]
+    },
     "defaultConfig": {
       "type": "object",
       "additionalProperties": false,
@@ -289,7 +432,11 @@
         "reviewInstructionsProfile",
         "classification",
         "validationProfile",
-        "allowedWorkflowPaths"
+        "allowedWorkflowPaths",
+        "automation",
+        "release",
+        "pages",
+        "revokedPolicyShas"
       ],
       "properties": {
         "managed": {
@@ -313,6 +460,39 @@
         },
         "allowedWorkflowPaths": {
           "$ref": "#/$defs/workflowPaths"
+        },
+        "copilotReviewTrigger": {
+          "type": "string",
+          "enum": [
+            "native"
+          ],
+          "default": "native"
+        },
+        "automation": {
+          "$ref": "#/$defs/automation"
+        },
+        "release": {
+          "$ref": "#/$defs/release"
+        },
+        "pages": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "enabled"
+          ]
+        },
+        "revokedPolicyShas": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{40}$"
+          }
         }
       }
     },
@@ -327,112 +507,13 @@
         "reviewGovernance",
         "classification",
         "validationProfile",
-        "allowedWorkflowPaths"
-      ],
-      "properties": {
-        "managed": {
-          "type": "boolean"
-        },
-        "fullName": {
-          "type": "string",
-          "pattern": "^splrad/[^/]+$"
-        },
-        "pullRequestTemplate": {
-          "enum": [
-            "organization-default",
-            "organization-provider"
-          ]
-        },
-        "reviewInstructionsProfile": {
-          "type": "string",
-          "pattern": "^[a-z][a-z0-9-]*$"
-        },
-        "reviewGovernance": {
-          "$ref": "#/$defs/reviewGovernance"
-        },
-        "classification": {
-          "$ref": "#/$defs/classification"
-        },
-        "validationProfile": {
-          "type": "string"
-        },
-        "allowedWorkflowPaths": {
-          "$ref": "#/$defs/workflowPaths"
-        }
-      }
-    },
-    "defaultConfigV4": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "managed",
-        "pullRequestTemplate",
-        "reviewInstructionsProfile",
-        "classification",
-        "validationProfile",
         "allowedWorkflowPaths",
-        "builds",
-        "delivery"
-      ],
-      "properties": {
-        "managed": {
-          "type": "boolean"
-        },
-        "pullRequestTemplate": {
-          "enum": [
-            "organization-default",
-            "organization-provider"
-          ]
-        },
-        "reviewInstructionsProfile": {
-          "type": "string",
-          "pattern": "^[a-z][a-z0-9-]*$"
-        },
-        "classification": {
-          "$ref": "#/$defs/classification"
-        },
-        "validationProfile": {
-          "type": "string"
-        },
-        "allowedWorkflowPaths": {
-          "$ref": "#/$defs/workflowPaths"
-        },
-        "builds": {
-          "type": "object",
-          "propertyNames": {
-            "type": "string",
-            "pattern": "^[a-z][a-z0-9-]*$"
-          },
-          "additionalProperties": {
-            "$ref": "#/$defs/buildUnit"
-          }
-        },
-        "delivery": {
-          "$ref": "#/$defs/delivery"
-        },
-        "copilotReviewTrigger": {
-          "type": "string",
-          "enum": [
-            "native"
-          ],
-          "default": "native"
-        }
-      }
-    },
-    "repositoryConfigV4": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "managed",
-        "fullName",
-        "pullRequestTemplate",
-        "reviewInstructionsProfile",
-        "reviewGovernance",
-        "classification",
-        "validationProfile",
-        "allowedWorkflowPaths",
-        "builds",
-        "delivery"
+        "automation",
+        "release",
+        "pages",
+        "revokedPolicyShas",
+        "repositoryId",
+        "defaultBranch"
       ],
       "properties": {
         "managed": {
@@ -464,640 +545,46 @@
         "allowedWorkflowPaths": {
           "$ref": "#/$defs/workflowPaths"
         },
-        "builds": {
-          "type": "object",
-          "propertyNames": {
-            "type": "string",
-            "pattern": "^[a-z][a-z0-9-]*$"
-          },
-          "additionalProperties": {
-            "$ref": "#/$defs/buildUnit"
-          }
-        },
-        "delivery": {
-          "$ref": "#/$defs/delivery"
-        },
         "copilotReviewTrigger": {
           "type": "string",
           "enum": [
             "native"
           ]
-        }
-      }
-    },
-    "buildUnit": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "profile",
-            "inputs",
-            "outputs"
-          ],
-          "properties": {
-            "profile": {
-              "const": "dotnet-assets-v1"
-            },
-            "inputs": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "project",
-                "configuration",
-                "framework",
-                "runtime"
-              ],
-              "properties": {
-                "project": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "configuration": {
-                  "enum": [
-                    "Release"
-                  ]
-                },
-                "framework": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "runtime": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              }
-            },
-            "outputs": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "id",
-                  "kind",
-                  "match",
-                  "count",
-                  "mediaType"
-                ],
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "pattern": "^[a-z][a-z0-9-]*$"
-                  },
-                  "kind": {
-                    "const": "file"
-                  },
-                  "match": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "count": {
-                    "type": "integer",
-                    "minimum": 1
-                  },
-                  "mediaType": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "archiveType": {
-                    "enum": [
-                      "dll-archive",
-                      "font-archive"
-                    ]
-                  }
-                }
-              },
-              "uniqueItems": true,
-              "minItems": 1
-            }
-          }
         },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "profile",
-            "inputs",
-            "outputs"
-          ],
-          "properties": {
-            "profile": {
-              "const": "node-package-v1"
-            },
-            "inputs": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "directory",
-                "lockfile",
-                "buildTask",
-                "packageManager"
-              ],
-              "properties": {
-                "directory": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "lockfile": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "buildTask": {
-                  "type": "string",
-                  "pattern": "^[a-z][a-z0-9-]*$"
-                },
-                "packageManager": {
-                  "enum": [
-                    "npm"
-                  ]
-                }
-              }
-            },
-            "outputs": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "id",
-                  "kind",
-                  "match",
-                  "count",
-                  "mediaType"
-                ],
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "pattern": "^[a-z][a-z0-9-]*$"
-                  },
-                  "kind": {
-                    "const": "file"
-                  },
-                  "match": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "count": {
-                    "type": "integer",
-                    "minimum": 1
-                  },
-                  "mediaType": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "archiveType": {
-                    "enum": [
-                      "dll-archive",
-                      "font-archive"
-                    ]
-                  }
-                }
-              },
-              "uniqueItems": true,
-              "minItems": 1
-            }
-          }
+        "automation": {
+          "$ref": "#/$defs/automation"
         },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "profile",
-            "inputs",
-            "outputs"
-          ],
-          "properties": {
-            "profile": {
-              "const": "oci-image-v1"
-            },
-            "inputs": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "context",
-                "dockerfile",
-                "platforms"
-              ],
-              "properties": {
-                "context": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "dockerfile": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "platforms": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "uniqueItems": true,
-                  "minItems": 1
-                }
-              }
-            },
-            "outputs": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "id",
-                  "kind",
-                  "count"
-                ],
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "pattern": "^[a-z][a-z0-9-]*$"
-                  },
-                  "kind": {
-                    "const": "oci-image"
-                  },
-                  "count": {
-                    "const": 1
-                  }
-                }
-              },
-              "uniqueItems": true,
-              "minItems": 1
-            }
-          }
+        "release": {
+          "$ref": "#/$defs/release"
         },
-        {
+        "pages": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "profile",
-            "inputs",
-            "outputs"
-          ],
-          "properties": {
-            "profile": {
-              "const": "custom-adapter-v1"
-            },
-            "inputs": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "entrypoint",
-                "runtime",
-                "runnerFamily"
-              ],
-              "properties": {
-                "entrypoint": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "runtime": {
-                  "enum": [
-                    "pwsh",
-                    "node",
-                    "bash"
-                  ]
-                },
-                "runnerFamily": {
-                  "enum": [
-                    "windows",
-                    "linux"
-                  ]
-                }
-              }
-            },
-            "outputs": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "id",
-                  "kind",
-                  "match",
-                  "count",
-                  "mediaType"
-                ],
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "pattern": "^[a-z][a-z0-9-]*$"
-                  },
-                  "kind": {
-                    "const": "file"
-                  },
-                  "match": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "count": {
-                    "type": "integer",
-                    "minimum": 1
-                  },
-                  "mediaType": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "archiveType": {
-                    "enum": [
-                      "dll-archive",
-                      "font-archive"
-                    ]
-                  }
-                }
-              },
-              "uniqueItems": true,
-              "minItems": 1
-            }
-          }
-        }
-      ]
-    },
-    "delivery": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "githubRelease",
-        "deployments",
-        "packages"
-      ],
-      "properties": {
-        "githubRelease": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "enabled",
-            "state",
-            "profile",
-            "builds"
-          ],
           "properties": {
             "enabled": {
               "type": "boolean"
-            },
-            "state": {
-              "enum": [
-                "disabled",
-                "pending",
-                "active",
-                "suspended"
-              ]
-            },
-            "profile": {
-              "oneOf": [
-                {
-                  "type": "string",
-                  "pattern": "^[a-z][a-z0-9-]*$"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "builds": {
-              "type": "array",
-              "items": {
-                "type": "string",
-                "pattern": "^[a-z][a-z0-9-]*$"
-              },
-              "uniqueItems": true,
-              "minItems": 0,
-              "maxItems": 1
             }
           },
-          "allOf": [
-            {
-              "if": {
-                "properties": {
-                  "enabled": {
-                    "const": false
-                  }
-                },
-                "type": "object"
-              },
-              "then": {
-                "properties": {
-                  "profile": {
-                    "const": null
-                  },
-                  "state": {
-                    "const": "disabled"
-                  },
-                  "builds": {
-                    "maxItems": 0,
-                    "type": "array"
-                  }
-                },
-                "type": "object"
-              },
-              "else": {
-                "properties": {
-                  "profile": {
-                    "type": "string",
-                    "pattern": "^[a-z][a-z0-9-]*$"
-                  },
-                  "state": {
-                    "enum": [
-                      "pending",
-                      "active",
-                      "suspended"
-                    ]
-                  }
-                },
-                "type": "object"
-              }
-            }
+          "required": [
+            "enabled"
           ]
         },
-        "deployments": {
+        "revokedPolicyShas": {
           "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "id",
-              "profile",
-              "state",
-              "builds",
-              "trigger",
-              "source"
-            ],
-            "properties": {
-              "id": {
-                "type": "string",
-                "pattern": "^[a-z][a-z0-9-]*$"
-              },
-              "profile": {
-                "type": "string",
-                "pattern": "^[a-z][a-z0-9-]*$"
-              },
-              "state": {
-                "enum": [
-                  "disabled",
-                  "pending",
-                  "active",
-                  "suspended"
-                ]
-              },
-              "builds": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "pattern": "^[a-z][a-z0-9-]*$"
-                },
-                "uniqueItems": true,
-                "minItems": 1
-              },
-              "trigger": {
-                "enum": [
-                  "default-branch",
-                  "github-release-published"
-                ]
-              },
-              "source": {
-                "enum": [
-                  "commit",
-                  "github-release"
-                ]
-              }
-            },
-            "oneOf": [
-              {
-                "properties": {
-                  "source": {
-                    "const": "commit"
-                  },
-                  "trigger": {
-                    "const": "default-branch"
-                  }
-                },
-                "type": "object"
-              },
-              {
-                "properties": {
-                  "source": {
-                    "const": "github-release"
-                  },
-                  "trigger": {
-                    "const": "github-release-published"
-                  }
-                },
-                "type": "object"
-              }
-            ]
-          },
           "uniqueItems": true,
-          "minItems": 0
+          "items": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{40}$"
+          }
         },
-        "packages": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "id",
-              "profile",
-              "state",
-              "builds",
-              "publication",
-              "trigger"
-            ],
-            "properties": {
-              "id": {
-                "type": "string",
-                "pattern": "^[a-z][a-z0-9-]*$"
-              },
-              "profile": {
-                "type": "string",
-                "pattern": "^[a-z][a-z0-9-]*$"
-              },
-              "state": {
-                "enum": [
-                  "disabled",
-                  "pending",
-                  "active",
-                  "suspended"
-                ]
-              },
-              "builds": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "pattern": "^[a-z][a-z0-9-]*$"
-                },
-                "uniqueItems": true,
-                "minItems": 1
-              },
-              "publication": {
-                "enum": [
-                  "versioned",
-                  "snapshot"
-                ]
-              },
-              "trigger": {
-                "enum": [
-                  "version-change",
-                  "default-branch"
-                ]
-              }
-            },
-            "oneOf": [
-              {
-                "properties": {
-                  "publication": {
-                    "const": "versioned"
-                  },
-                  "trigger": {
-                    "const": "version-change"
-                  }
-                },
-                "type": "object"
-              },
-              {
-                "properties": {
-                  "publication": {
-                    "const": "snapshot"
-                  },
-                  "trigger": {
-                    "const": "default-branch"
-                  }
-                },
-                "type": "object"
-              }
-            ]
-          },
-          "uniqueItems": true,
-          "minItems": 0
+        "repositoryId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "defaultBranch": {
+          "const": "main"
         }
       }
     }
-  },
-  "oneOf": [
-    {
-      "properties": {
-        "schemaVersion": {
-          "const": 4
-        },
-        "defaults": {
-          "properties": {
-            "public": {
-              "$ref": "#/$defs/defaultConfigV4"
-            },
-            "private": {
-              "$ref": "#/$defs/defaultConfigV4"
-            }
-          },
-          "type": "object"
-        },
-        "repositories": {
-          "additionalProperties": {
-            "$ref": "#/$defs/repositoryConfigV4"
-          },
-          "type": "object"
-        }
-      },
-      "type": "object"
-    }
-  ]
+  }
 }

@@ -1,0 +1,30 @@
+name: Product Release
+run-name: Publish ${{ inputs.unit }} / ${{ inputs.tag }} / ${{ inputs.release_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      unit:
+        type: string
+        required: true
+      tag:
+        type: string
+        required: true
+      release_id:
+        type: string
+        required: true
+      release_pr:
+        type: string
+        required: true
+permissions:
+  contents: write
+  actions: read
+  id-token: write
+  attestations: write
+jobs:
+  publish:
+    uses: splrad/steward/.github/workflows/product-release.yml@e990eda24ef7099264dada118b3e7ddfad883cea
+    with:
+      unit: ${{ inputs.unit }}
+      tag: ${{ inputs.tag }}
+      release_id: ${{ inputs.release_id }}
+      release_pr: ${{ inputs.release_pr }}

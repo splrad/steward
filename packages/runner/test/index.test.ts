@@ -1,3 +1,4 @@
+import { registerOfflineFixtureRoot, permitOfflineScript, permitOfflineCommand } from './offline-fixtures.js';
 import { generateKeyPairSync } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -7,7 +8,7 @@ import AjvModule from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { generateReviewInstructionSet } from "../../core/src/review-instructions.js";
-import { assertFreshValidationBase, assertManagedBranchPull, classificationInstallationPermissions, decodeAiClassificationPayload, decodeClassificationCheckState, encodeAiClassificationPayload, encodeClassificationCheckState, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, isTrustedAiClassificationSource, main, matchesGeneratedReviewInstructions, parseInvocation, renderAiClassificationEvidence, reusedAiClassificationAssessment, reviewInstructionSyncInstallationPermissions, reviewRegistryPaths, throwFreshValidationBaseFailure, writeManagedFilesToBranch } from "../src/index.js";
+import { assertFreshValidationBase, classificationInstallationPermissions, decodeAiClassificationPayload, decodeClassificationCheckState, encodeAiClassificationPayload, encodeClassificationCheckState, env, gitDiffCheckArguments, hasActiveCopilotCheckRun, hasNewCopilotRequestEvent, hasRequestedCopilotReviewer, isCopilotReviewerIdentity, isTrustedAiClassificationSource, main, matchesGeneratedReviewInstructions, parseInvocation, renderAiClassificationEvidence, reusedAiClassificationAssessment, reviewRegistryPaths, throwFreshValidationBaseFailure } from "../src/index.js";
 
 const Ajv = AjvModule as unknown as typeof import("ajv").default;
 const addFormats = addFormatsModule as unknown as typeof import("ajv-formats").default;
@@ -31,14 +32,12 @@ describe("中央命令入口", () => {
     await expect(main(["validate", "--workspace", ".", "--repository-id", "1296724484", "--profile", "steward", "--fragments-only", "true"])).rejects.toThrow("未知参数");
     expect(transport).not.toHaveBeenCalled();
   });
-  it("产品构建命令接收工作流中的 build-id", () => {
-    const continuation = parseInvocation(['release-candidate', '--operation', 'generator-continue', '--artifact-id', '123', '--run-id', '456']);
-    expect(continuation.args['artifact-id']).toBe('123');
-    expect(continuation.args['run-id']).toBe('456');
-    expect(parseInvocation(["release-build", "--operation", "plan-product", "--build-id", "release"]).args["build-id"]).toBe("release");
+  it.each(['release-candidate', 'release-produce', 'release-build', 'sync-review-instructions', 'sync-managed-labels', 'onboard-repository'])('rejects retired %s before network or token access', async command => {
+    const transport = vi.fn(() => { throw new Error('unexpected network'); }); vi.stubGlobal('fetch', transport);
+    await expect(main([command])).rejects.toThrow('未知命令'); expect(transport).not.toHaveBeenCalled();
   });
   it("只接受现行命令及其已知、唯一、成对参数", () => {
-    const commands = ["managed-repository-ids", "onboard-repository", "pr-classification", "request-copilot-review", "sync-review-instructions", "sync-managed-labels", "validate", "release-candidate"];
+    const commands = ["managed-repository-ids", "pr-classification", "validate"];
     for (const command of commands) expect(parseInvocation([command]).command).toBe(command);
     expect(() => parseInvocation(["unknown"])).toThrow("未知命令");
     expect(() => parseInvocation(["validate", "--unknown", "x"])).toThrow("未知参数");
@@ -83,55 +82,6 @@ describe("中央命令入口", () => {
     } finally {
       output.mockRestore();
     }
-  });
-
-  it("接入失败保留标签错误且不派发议题同步", async () => {
-    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
-    process.env.APP_ID = "4243096";
-    process.env.INSTALLATION_ID = "145952003";
-    process.env.STEWARD_APP_PRIVATE_KEY = privateKey;
-    process.env.STEWARD_CONFIG_DIRECTORY = resolve("config");
-    const policySha = "a".repeat(40);
-    const repositoryId = 1296724484;
-    const desiredSettings = {
-      allow_squash_merge: true, allow_merge_commit: false, allow_rebase_merge: false, allow_auto_merge: false,
-      delete_branch_on_merge: true, squash_merge_commit_title: "PR_TITLE", squash_merge_commit_message: "BLANK",
-    };
-    const repository = {
-      id: repositoryId, full_name: "splrad/steward", private: false, owner: { id: 302208797, login: "splrad" },
-      fork: false, has_issues: true, archived: false, disabled: false, default_branch: "main", ...desiredSettings,
-    };
-    const reviewProfiles = JSON.parse(await readFile(resolve("config", "review", "profiles.json"), "utf8"));
-    const reviewRules = JSON.parse(await readFile(resolve("config", "review", "rules.json"), "utf8"));
-    delete reviewProfiles.$schema;
-    delete reviewRules.$schema;
-    const generated = await generateReviewInstructionSet("steward", reviewProfiles, reviewRules);
-    const instructions = Object.fromEntries(generated.files.map(file => [file.path, file.content]));
-    const calls: Array<{ url: string; method: string; body: any }> = [];
-    vi.stubGlobal("fetch", async (url: string | URL | Request, init: RequestInit = {}) => {
-      const value = String(url); const method = init.method ?? "GET"; const body = init.body ? JSON.parse(String(init.body)) : null;
-      calls.push({ url: value, method, body });
-      if (value.endsWith("/app/installations/145952003/access_tokens")) return new Response(JSON.stringify({ token: "installation-token" }), { status: 201 });
-      if (value.endsWith(`/repositories/${repositoryId}`)) return new Response(JSON.stringify(repository), { status: 200 });
-      if (value.endsWith("/installation/repositories?per_page=100")) return new Response(JSON.stringify({ repositories: [repository] }), { status: 200 });
-      if (value.includes("/repos/splrad/steward/labels?per_page=100")) return new Response("label failure", { status: 500 });
-      if (value.endsWith("/repos/splrad/steward/git/ref/heads/main")) return new Response(JSON.stringify({ object: { sha: "b".repeat(40) } }), { status: 200 });
-      if (value.endsWith("/repos/splrad/steward/teams?per_page=100")) return new Response(JSON.stringify([{ slug: "maintainers", permission: "maintain" }]), { status: 200 });
-      if (value.endsWith("/repos/splrad/steward/rulesets?includes_parents=true&per_page=100")) return new Response(JSON.stringify([{ id: 18883080, enforcement: "active" }]), { status: 200 });
-      if (value.endsWith("/repos/splrad/steward") && method === "PATCH") return new Response(JSON.stringify(repository), { status: 200 });
-      if (value.endsWith("/repos/splrad/steward") && method === "GET") return new Response(JSON.stringify(repository), { status: 200 });
-      for (const [path, content] of Object.entries(instructions)) if (value.includes(`/repos/splrad/steward/contents/${path}?ref=${"b".repeat(40)}`)) return new Response(JSON.stringify({ encoding: "base64", content: Buffer.from(content, "utf8").toString("base64") }), { status: 200 });
-      for (const file of generated.retiredFiles ?? []) if (value.includes(`/repos/splrad/steward/contents/${file.path}?ref=${"b".repeat(40)}`)) return new Response("Not Found", { status: 404 });
-      if (value.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches")) return new Response(null, { status: 204 });
-      return new Response("unexpected", { status: 500 });
-    });
-
-    await expect(main([
-      "onboard-repository", "--repository-id", String(repositoryId), "--repository-full-name", "splrad/steward",
-      "--trigger", "repository-visibility-changed", "--delivery-id", "onboard-label-failure", "--policy-sha", policySha,
-    ])).rejects.toThrow("受管标签同步失败: splrad/steward");
-    const dispatch = calls.find(call => call.url.endsWith("/repos/splrad/steward/actions/workflows/issue-sync.yml/dispatches"));
-    expect(dispatch).toBeUndefined();
   });
 
   it("退役议题同步入口在处理编号前拒绝运行", async () => {
@@ -254,6 +204,7 @@ describe("中央命令入口", () => {
 
   it("Git空白检查接受CRLF并继续拒绝真正的行尾空格", async () => {
     const repository = await mkdtemp(join(tmpdir(), "steward-git-diff-check-"));
+    registerOfflineFixtureRoot(repository);
     const runGit = (args: string[]) => spawnSync("git", args, { cwd: repository, encoding: "utf8" });
     const requireGit = (args: string[]) => {
       const result = runGit(args);
@@ -302,6 +253,7 @@ describe("中央命令入口", () => {
 
   it("中央验证拒绝已经落后于当前目标分支的旧合并候选", async () => {
     const repository = await mkdtemp(join(tmpdir(), "steward-validation-base-"));
+    registerOfflineFixtureRoot(repository);
     const runGit = (args: string[]) => spawnSync("git", args, { cwd: repository, encoding: "utf8" });
     const requireGit = (args: string[]) => {
       const result = runGit(args);
@@ -396,114 +348,6 @@ describe("中央命令入口", () => {
     expect(hasActiveCopilotCheckRun([{ ...activeCopilotCheck, pull_requests: [] }], 7, "a".repeat(40))).toBe(false);
   });
 
-  it("审查说明同步令牌包含仓库团队读取权限", () => {
-    expect(reviewInstructionSyncInstallationPermissions()).toEqual({
-      administration: "read",
-      contents: "write",
-      pull_requests: "write",
-      issues: "read",
-      checks: "read",
-      metadata: "read",
-      members: "read",
-    });
-  });
-
-  it("双文件内容相同时复用当前来源提交", async () => {
-    const files = [{ path: "AGENTS.md", content: "共享" }, { path: ".github/copilot-instructions.md", content: "补充" }];
-    const client = {
-      compare: async () => ({ merge_base_commit: { sha: "a".repeat(40) }, ahead_by: 1, total_commits: 1, commits: [{}], files: files.map(file => ({ filename: file.path })) }),
-      getContent: async (_owner: string, _repo: string, path: string) => ({ encoding: "base64", content: Buffer.from(files.find(file => file.path === path)!.content, "utf8").toString("base64") }),
-    } as any;
-    await expect(writeManagedFilesToBranch({ gh: client, owner: "splrad", repo: ".github", files, branch: "steward/review-instructions", title: "同步", defaultSha: "a".repeat(40), branchSha: "b".repeat(40) })).resolves.toEqual({ changed: false, headSha: "b".repeat(40) });
-  });
-
-  it("受管分支只修改一个目标时仍可继续更新", async () => {
-    const files = [{ path: "AGENTS.md", content: "新共享" }, { path: ".github/copilot-instructions.md", content: "新补充" }];
-    const client = {
-      compare: async () => ({ merge_base_commit: { sha: "a".repeat(40) }, ahead_by: 1, total_commits: 1, commits: [{}], files: [{ filename: files[1]!.path }] }),
-      getContent: async (_owner: string, _repo: string, path: string, ref: string) => ({ encoding: "base64", content: Buffer.from(ref === "c".repeat(40) ? files.find(file => file.path === path)!.content : "旧内容", "utf8").toString("base64") }),
-      getGitCommit: async () => ({ tree: { sha: "f".repeat(40) } }),
-      createBlob: async () => ({ sha: "1".repeat(40) }),
-      createTree: async () => ({ sha: "2".repeat(40) }),
-      createCommit: async () => ({ sha: "c".repeat(40) }),
-      updateRef: async () => undefined,
-      getRef: async () => ({ object: { sha: "c".repeat(40) } }),
-    } as any;
-    await expect(writeManagedFilesToBranch({ gh: client, owner: "splrad", repo: ".github", files, branch: "steward/review-instructions", title: "同步", defaultSha: "a".repeat(40), branchSha: "b".repeat(40) })).resolves.toEqual({ changed: true, headSha: "c".repeat(40) });
-  });
-
-  it("受管分支发现空差异或资源集外文件时停止更新", async () => {
-    const files = [{ path: "AGENTS.md", content: "共享" }, { path: ".github/copilot-instructions.md", content: "补充" }];
-    const input = { owner: "splrad", repo: ".github", files, branch: "steward/review-instructions", title: "同步", defaultSha: "a".repeat(40), branchSha: "b".repeat(40) };
-    const client = (changedFiles: readonly string[]) => ({
-      compare: async () => ({ merge_base_commit: { sha: "a".repeat(40) }, ahead_by: 1, total_commits: 1, commits: [{}], files: changedFiles.map(filename => ({ filename })) }),
-    }) as any;
-    await expect(writeManagedFilesToBranch({ gh: client([]), ...input })).rejects.toThrow("受管分支包含非预期改动");
-    await expect(writeManagedFilesToBranch({ gh: client(["README.md"]), ...input })).rejects.toThrow("受管分支包含非预期改动");
-  });
-
-  it("双文件通过一个tree和一个commit原子写入并逐字读回", async () => {
-    const files = [{ path: "AGENTS.md", content: "新共享" }, { path: ".github/copilot-instructions.md", content: "新补充" }];
-    const calls: string[] = [];
-    let treeBody: any;
-    const client = {
-      compare: async () => ({ merge_base_commit: { sha: "a".repeat(40) }, ahead_by: 1, total_commits: 1, commits: [{}], files: files.map(file => ({ filename: file.path })) }),
-      getContent: async (_owner: string, _repo: string, path: string, ref: string) => ({ encoding: "base64", content: Buffer.from(ref === "c".repeat(40) ? files.find(file => file.path === path)!.content : "旧内容", "utf8").toString("base64") }),
-      getGitCommit: async () => ({ tree: { sha: "f".repeat(40) } }),
-      createBlob: async (_owner: string, _repo: string, content: string) => { calls.push(`blob:${content}`); return { sha: content === "新共享" ? "1".repeat(40) : "2".repeat(40) }; },
-      createTree: async (_owner: string, _repo: string, body: any) => { calls.push("tree"); treeBody = body; return { sha: "3".repeat(40) }; },
-      createCommit: async () => { calls.push("commit"); return { sha: "c".repeat(40) }; },
-      updateRef: async () => { calls.push("updateRef"); },
-      getRef: async () => ({ object: { sha: "c".repeat(40) } }),
-    } as any;
-    await expect(writeManagedFilesToBranch({ gh: client, owner: "splrad", repo: ".github", files, branch: "steward/review-instructions", title: "同步", defaultSha: "a".repeat(40), branchSha: "b".repeat(40) })).resolves.toEqual({ changed: true, headSha: "c".repeat(40) });
-    expect(calls).toEqual(["blob:新共享", "blob:新补充", "tree", "commit", "updateRef"]);
-    expect(treeBody.tree.map((entry: any) => entry.path)).toEqual(files.map(file => file.path));
-  });
-
-  it("新分支任一blob失败时不创建tree、commit或分支", async () => {
-    const files = [{ path: "AGENTS.md", content: "新共享" }, { path: ".github/copilot-instructions.md", content: "新补充" }];
-    const calls: string[] = [];
-    const client = {
-      compare: async () => ({ merge_base_commit: { sha: "a".repeat(40) }, ahead_by: 1, total_commits: 1, commits: [{}], files: files.map(file => ({ filename: file.path })) }),
-      getContent: async () => ({ encoding: "base64", content: Buffer.from("旧内容", "utf8").toString("base64") }),
-      getGitCommit: async () => ({ tree: { sha: "f".repeat(40) } }),
-      createBlob: async (_owner: string, _repo: string, content: string) => { if (content === "新补充") throw new Error("blob失败"); return { sha: "1".repeat(40) }; },
-      createTree: async () => { calls.push("tree"); },
-      createCommit: async () => { calls.push("commit"); },
-      updateRef: async () => { calls.push("updateRef"); },
-      createRef: async () => { calls.push("createRef"); },
-    } as any;
-    await expect(writeManagedFilesToBranch({ gh: client, owner: "splrad", repo: ".github", files, branch: "steward/review-instructions", title: "同步", defaultSha: "a".repeat(40), branchSha: null })).rejects.toThrow("blob失败");
-    expect(calls).toEqual([]);
-  });
-
-  it("新分支只在资源集提交完成后指向最终提交", async () => {
-    const files = [{ path: "AGENTS.md", content: "新共享" }, { path: ".github/copilot-instructions.md", content: "新补充" }];
-    const calls: string[] = [];
-    const client = {
-      getContent: async (_owner: string, _repo: string, path: string, ref: string) => ({ encoding: "base64", content: Buffer.from(ref === "c".repeat(40) ? files.find(file => file.path === path)!.content : "旧内容", "utf8").toString("base64") }),
-      getGitCommit: async () => ({ tree: { sha: "f".repeat(40) } }),
-      createBlob: async () => ({ sha: "1".repeat(40) }),
-      createTree: async () => ({ sha: "2".repeat(40) }),
-      createCommit: async () => { calls.push("commit"); return { sha: "c".repeat(40) }; },
-      createRef: async (_owner: string, _repo: string, _ref: string, sha: string) => { calls.push(`createRef:${sha}`); },
-      getRef: async () => ({ object: { sha: "c".repeat(40) } }),
-    } as any;
-    await expect(writeManagedFilesToBranch({ gh: client, owner: "splrad", repo: ".github", files, branch: "steward/review-instructions", title: "同步", defaultSha: "a".repeat(40), branchSha: null })).resolves.toEqual({ changed: true, headSha: "c".repeat(40) });
-    expect(calls).toEqual(["commit", `createRef:${"c".repeat(40)}`]);
-  });
-
-  it("受管分支与开放拉取请求必须成对且拉取请求必须属于Steward", () => {
-    const stewardPull = { user: { id: 301115370 }, merged_at: null };
-    expect(() => assertManagedBranchPull(false, undefined, "steward/repository-onboarding")).not.toThrow();
-    expect(() => assertManagedBranchPull(false, stewardPull, "steward/repository-onboarding")).not.toThrow();
-    expect(() => assertManagedBranchPull(true, stewardPull, "steward/repository-onboarding")).not.toThrow();
-    expect(() => assertManagedBranchPull(true, undefined, "steward/repository-onboarding")).toThrow("受管分支不是Steward拥有的开放拉取请求");
-    expect(() => assertManagedBranchPull(false, { user: { id: 44151430 }, merged_at: null }, "steward/repository-onboarding")).toThrow("受管分支不是Steward拥有的开放拉取请求");
-    expect(() => assertManagedBranchPull(false, { user: { id: 301115370 }, merged_at: "2026-08-17T00:00:00Z" }, "steward/repository-onboarding")).toThrow("受管分支不是Steward拥有的开放拉取请求");
-  });
-
   it("四个结构文件接受全部中央配置并拒绝额外字段", async () => {
     const pairs = [
       ["config/repositories.json", "schema/repositories.schema.json"],
@@ -514,7 +358,6 @@ describe("中央命令入口", () => {
       ["config/profiles/validation/public-basic.json", "schema/validation-profile.schema.json"],
       ["config/profiles/validation/layerscape.json", "schema/validation-profile.schema.json"],
       ["config/profiles/validation/steward.json", "schema/validation-profile.schema.json"],
-      ["config/profiles/release/layerscape.json", "schema/release-profile.schema.json"],
     ] as const;
     for (const [dataPath, schemaPath] of pairs) {
       const ajv = new Ajv({ allErrors: true, strict: true });
@@ -538,13 +381,15 @@ describe("中央命令入口", () => {
   it("中央配置黄金事实逐字冻结", async () => {
     const repositories = JSON.parse(await readFile("config/repositories.json", "utf8"));
     expect(repositories.organization).toEqual({ id: 302208797, login: "splrad" });
-    expect(repositories.defaults.public).toMatchObject({ managed: true, reviewInstructionsProfile: "common", validationProfile: "public-basic", delivery: { githubRelease: { enabled: false } } });
+    expect(repositories.schemaVersion).toBe(5);
+    expect(repositories.defaults.public).toMatchObject({ managed: true, reviewInstructionsProfile: "common", validationProfile: "public-basic", release: { enabled: false, units: {} } });
     expect(repositories.repositories["1187527897"].reviewGovernance).toMatchObject({ scope: "full", lifecycle: "repository-ready", owner: "splrad/maintainers", exception: null });
     expect(repositories.repositories["1296724484"].reviewGovernance).toMatchObject({ scope: "full", lifecycle: "repository-ready", owner: "splrad/maintainers", exception: null });
     expect(repositories.repositories["1296725317"].reviewGovernance).toMatchObject({ scope: "policy-only", lifecycle: "repository-ready" });
     expect(Object.keys(repositories.repositories).sort()).toEqual(["1187527897", "1296724484", "1296725317"]);
-    expect(repositories.repositories["1187527897"].builds['release-assets'].outputs.map((value: any) => value.match)).toEqual(["AFR-Deployer_v{version}.exe", "AFR-DLL_v{version}.zip", "Fonts.zip"]);
-    expect(repositories.repositories["1187527897"].delivery.githubRelease.state).toBe('pending');
+    expect(repositories.repositories["1187527897"].release).toMatchObject({ enabled: false, units: { layerscape: { enabled: false, adoptedAfterTag: 'v9.2.2', adoptedFromSha: null } } });
+    expect(repositories.repositories["1187527897"].delivery).toBeUndefined();
+    expect(repositories.repositories["1187527897"].builds).toBeUndefined();
   });
 
   it("实现冻结完整比较、唯一拉取请求、漂移和同名检查失败保护", async () => {
@@ -553,7 +398,6 @@ describe("中央命令入口", () => {
       "同名分类检查存在歧义",
       "分类输入在写入期间已经漂移",
       "TRIGGER_ACTOR_ID === \"301115370\"",
-      "AI处理状态：",
     ]) expect(source).toContain(fragment);
     expect(source).not.toMatch(/heads\/main|base\.ref\s*!==\s*"main"|default_branch\s*!==\s*"main"/u);
     expect(source).toMatch(/if\s*\(labelPlan\.add\.length\)\s*await gh\.addLabels\(owner, repo, number, labelPlan\.add\);/u);
@@ -599,4 +443,9 @@ describe("中央命令入口", () => {
   });
 
 
+});
+
+it('does not export retired GitHub file writers or legacy write permissions', async () => {
+  const runner = await import('../src/index.js');
+  for (const name of ['writeManagedFilesToBranch', 'assertManagedBranchPull', 'reviewInstructionSyncInstallationPermissions']) expect(runner).not.toHaveProperty(name);
 });

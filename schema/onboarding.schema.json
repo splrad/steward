@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "repositoryId",
+    "fullName",
+    "defaultBranch",
+    "expectedBaseSha",
+    "mode",
+    "initializeManifest",
+    "files"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "repositoryId": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "fullName": {
+      "type": "string",
+      "pattern": "^splrad/[A-Za-z0-9_.-]+$"
+    },
+    "defaultBranch": {
+      "const": "main"
+    },
+    "expectedBaseSha": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "mode": {
+      "const": "onboard"
+    },
+    "initializeManifest": {
+      "type": "boolean"
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "targetPath",
+          "beforeBlob",
+          "payloadPath",
+          "sha256"
+        ],
+        "properties": {
+          "targetPath": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240,
+            "pattern": "^[A-Za-z0-9._/-]+$"
+          },
+          "beforeBlob": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{40}$"
+              }
+            ]
+          },
+          "payloadPath": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240,
+            "pattern": "^files/[A-Za-z0-9._/-]+$"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        }
+      }
+    }
+  }
+}

@@ -14,13 +14,21 @@ SPLRAD Steward 是 [`splrad`](https://github.com/splrad) 组织的共享仓库�
 
 ## 快速开始
 
-本地开发需要 Node.js `24.22.0` 和 npm `11.19.1`。
+本地工具由 `mise.toml` 声明、`mise.lock` 及 `.mise/locks/` 锁定。先安装 mise，再按锁恢复工具。
 
 ```powershell
 git clone https://github.com/splrad/steward.git
 Set-Location steward
-npm ci --ignore-scripts
-npm run verify
+$env:MISE_SAFE = '1'
+$env:MISE_NODE_COMPILE = 'false'
+mise install --locked
+if ($LASTEXITCODE -ne 0) { throw '工具安装失败' }
+mise exec -- npm ci --ignore-scripts
+if ($LASTEXITCODE -ne 0) { throw '依赖安装失败' }
+mise exec -- npm run build
+if ($LASTEXITCODE -ne 0) { throw '构建失败' }
+mise exec -- npm run verify
+if ($LASTEXITCODE -ne 0) { throw '验证失败' }
 ```
 
 `npm run verify` 会依次运行测试、TypeScript 类型检查、配置校验、生成文件校验和工作流校验。

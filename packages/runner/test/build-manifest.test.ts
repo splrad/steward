@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerOfflineFixtureRoot } from './offline-fixtures.js';
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { execFile } from 'node:child_process';
@@ -52,6 +53,7 @@ beforeEach(async () => {
   vi.mocked(opendir).mockReset().mockImplementation(actualFs.opendir);
   vi.mocked(relative).mockReset().mockImplementation(actualPath.relative);
   root = await mkdtemp(join(tmpdir(), 'steward-build-contract-'));
+  registerOfflineFixtureRoot(root);
   output = join(root, 'output'); source = join(root, 'source');
   await mkdir(output); await mkdir(source);
 });

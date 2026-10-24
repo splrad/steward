@@ -1,0 +1,123 @@
+name: SPLRAD Steward / Update Dependencies
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Registered repository; empty selects all enabled repositories
+        type: string
+        required: false
+  schedule:
+    - cron: 11 1 * * *
+permissions:
+  contents: read
+jobs:
+  targets:
+    if: github.repository == 'splrad/steward' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+      has_targets: ${{ steps.targets.outputs.has_targets }}
+    steps:
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - id: mise
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        env:
+          MISE_SAFE: "1"
+          MISE_NODE_COMPILE: "false"
+        with:
+          version: 2026.10.18
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - id: targets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ inputs.repository }}
+        run: |
+          arguments=()
+          if [[ -n "$REPOSITORY" ]]; then arguments+=(--repository "$REPOSITORY"); fi
+          node packages/runner/dist/index.js dependency-updates targets "${arguments[@]}" --output targets.json
+  update:
+    needs: targets
+    if: needs.targets.outputs.has_targets == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment:
+      name: steward-automation
+      deployment: false
+    concurrency:
+      group: dependency-updates-${{ matrix.repositoryId }}
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - id: mise
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        env:
+          MISE_SAFE: "1"
+          MISE_NODE_COMPILE: "false"
+        with:
+          version: 2026.10.18
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - id: before
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY_ID: ${{ matrix.repositoryId }}
+          POLICY_SHA: ${{ github.workflow_sha }}
+        run: node packages/runner/dist/index.js dependency-updates preflight --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA" --output before.json
+      - id: target-token
+        if: steps.before.outputs.enabled == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: "4243096"
+          private-key: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          owner: splrad
+          repositories: ${{ matrix.repository }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+          permission-actions: read
+          permission-workflows: write
+          permission-checks: read
+          permission-metadata: read
+      - id: write-check
+        if: steps.target-token.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY_ID: ${{ matrix.repositoryId }}
+          POLICY_SHA: ${{ github.workflow_sha }}
+        run: node packages/runner/dist/index.js dependency-updates preflight --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA" --output write-check.json
+      - id: renovate
+        if: steps.write-check.outputs.enabled == 'true'
+        uses: renovatebot/github-action@a63d9a7bc606f7336fd20b47f2f32259a35e6213 # v46.3.9
+        with:
+          configurationFile: config/renovate/global.cjs
+          token: ${{ steps.target-token.outputs.token }}
+          renovate-image: ghcr.io/renovatebot/renovate:44.181.0@sha256:1a06e15f2d8bc08342828ec43c0a90de0ac9192900f513af90e77765e0991b6d
+          mount-docker-socket: false
+          env-regex: ^(?:RENOVATE_REPOSITORIES|MISE_SAFE|LOG_LEVEL|LOG_FILE|LOG_FILE_LEVEL)$
+        env:
+          RENOVATE_REPOSITORIES: ${{ matrix.fullName }}
+          MISE_SAFE: "1"
+          LOG_LEVEL: debug
+          LOG_FILE: /tmp/steward-renovate.jsonl
+          LOG_FILE_LEVEL: debug
+      - if: always() && steps.write-check.outputs.enabled == 'true'
+        run: node scripts/verify-renovate-log.mjs /tmp/steward-renovate.jsonl

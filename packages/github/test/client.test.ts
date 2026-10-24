@@ -329,36 +329,33 @@ describe("代码托管平台客户端", () => {
       getRef: async () => ({ object: { sha: "a".repeat(40) } }),
       request: async (...args: unknown[]) => { requests.push(args); },
     } as unknown as GitHubClient;
-    const workflows = ["onboard-repository.yml", "native-review.yml", "pr-classification.yml", "release.yml", "sync-review-instructions.yml"];
+    const workflows = ["native-review.yml", "pr-classification.yml"];
     for (const workflow of workflows) {
       await dispatchWorkflow(client, { owner: "splrad", repo: "steward", workflow, policySha: "a".repeat(40), inputs: { value: "x" } });
     }
     expect(requests).toHaveLength(workflows.length);
     workflows.forEach((workflow, index) => expect(requests[index]).toEqual(["POST", `/repos/splrad/steward/actions/workflows/${workflow}/dispatches`, {
-      ref: "trunk", inputs: ["release.yml", "sync-review-instructions.yml"].includes(workflow) ? { value: "x" } : { value: "x", policySha: "a".repeat(40) },
+      ref: "trunk", inputs: { value: "x", policySha: "a".repeat(40) },
     }]));
     for (const workflow of ["pr-automation.yml", "issue-sync.yml", "pr-issue-link.yml"]) {
       await expect(dispatchWorkflow(client, { owner: "splrad", repo: "steward", workflow, policySha: "a".repeat(40), inputs: {} })).rejects.toThrow("不允许");
     }
     expect(requests).toHaveLength(workflows.length);
     await expect(dispatchWorkflow(client, { owner: "splrad", repo: "steward", workflow: "unknown.yml", policySha: "a".repeat(40), inputs: {} })).rejects.toThrow("不允许");
-    await expect(dispatchWorkflow(client, { owner: "splrad", repo: "steward", workflow: "release.yml", policySha: "short", inputs: {} })).rejects.toThrow("40位");
+    await expect(dispatchWorkflow(client, { owner: "splrad", repo: "steward", workflow: "native-review.yml", policySha: "short", inputs: {} })).rejects.toThrow("40位");
   });
 
-  it.each(["release-build.yml", "release.yml", "release-build-complete.yml"])("%s 在默认分支与部署策略不一致时拒绝派发，同步后允许重试", async (workflow) => {
-    let head = "b".repeat(40); const request = vi.fn();
-    const client = { getRepository: async () => ({ default_branch: "main" }), getRef: async () => ({ object: { sha: head } }), request } as unknown as GitHubClient;
-    const input = { owner: "splrad", repo: "steward", workflow, policySha: "a".repeat(40), inputs: {} };
-    await expect(dispatchWorkflow(client, input)).rejects.toThrow("RELEASE_POLICY_DRIFT");
-    expect(request).not.toHaveBeenCalled();
-    head = input.policySha; await dispatchWorkflow(client, input);
-    expect(request).toHaveBeenCalledTimes(1);
+  it.each(['release-build.yml', 'release.yml', 'release-build-complete.yml', 'sync-review-instructions.yml', 'sync-managed-labels.yml', 'onboard-repository.yml'])('rejects retired runtime dispatch %s before transport', async workflow => {
+    const request = vi.fn(), getRepository = vi.fn();
+    const client = { request, getRepository } as unknown as GitHubClient;
+    await expect(dispatchWorkflow(client, { owner: 'splrad', repo: 'steward', workflow, policySha: 'a'.repeat(40), inputs: {} })).rejects.toThrow('不允许');
+    expect(request).not.toHaveBeenCalled(); expect(getRepository).not.toHaveBeenCalled();
   });
   it("中央仓库没有默认分支时停止调度", async () => {
     const client = {
       getRepository: async () => ({ default_branch: "" }),
       request: async () => { throw new Error("不应派发"); },
     } as unknown as GitHubClient;
-    await expect(dispatchWorkflow(client, { owner: "splrad", repo: "steward", workflow: "release.yml", policySha: "a".repeat(40), inputs: {} })).rejects.toThrow("没有可用的默认分支");
+    await expect(dispatchWorkflow(client, { owner: "splrad", repo: "steward", workflow: "native-review.yml", policySha: "a".repeat(40), inputs: {} })).rejects.toThrow("没有可用的默认分支");
   });
 });

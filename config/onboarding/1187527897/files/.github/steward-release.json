@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "units": [
+    {
+      "id": "layerscape",
+      "displayName": "LayerScape",
+      "path": ".",
+      "releasePleasePath": ".",
+      "ecosystem": "native",
+      "versionFile": "VERSION",
+      "changelogPath": "CHANGELOG.md",
+      "notesPath": ".release-notes/layerscape.md",
+      "signingPolicy": "none",
+      "builds": [
+        {
+          "id": "windows-x64",
+          "os": "windows",
+          "arch": "x64",
+          "entrypoint": "tools/Publish-ReleaseAssets.ps1",
+          "args": [],
+          "expectedArtifacts": [
+            "deployer",
+            "plugins",
+            "fonts"
+          ]
+        }
+      ],
+      "artifacts": [
+        {
+          "id": "deployer",
+          "file": "AFR-Deployer_v${version}.exe",
+          "kind": "executable",
+          "mediaType": "application/vnd.microsoft.portable-executable",
+          "platform": "windows",
+          "architecture": "x64",
+          "build": "windows-x64",
+          "required": true
+        },
+        {
+          "id": "plugins",
+          "file": "AFR-DLL_v${version}.zip",
+          "kind": "archive",
+          "mediaType": "application/zip",
+          "platform": "windows",
+          "architecture": "x64",
+          "build": "windows-x64",
+          "required": true
+        },
+        {
+          "id": "fonts",
+          "file": "Fonts.zip",
+          "kind": "archive",
+          "mediaType": "application/zip",
+          "platform": "any",
+          "architecture": "any",
+          "build": "windows-x64",
+          "required": true
+        }
+      ],
+      "channels": [
+        {
+          "id": "ghcr-assets",
+          "kind": "oci-artifact",
+          "artifacts": [
+            "deployer",
+            "plugins",
+            "fonts"
+          ],
+          "dependsOn": []
+        },
+        {
+          "id": "winget",
+          "kind": "winget",
+          "artifacts": [
+            "deployer"
+          ],
+          "dependsOn": []
+        }
+      ]
+    }
+  ]
+}

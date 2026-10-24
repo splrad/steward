@@ -1,46 +1,17 @@
-# 工作流校验合同
+# 工作流验证
 
-## 普通工作流变更
+组织 required workflow 固定中央完整提交。验证入口检出合并候选与该中央提交，读取中央验证配置；候选工作流只作为扫描输入。仓库路径和任务必须与中央配置一致，候选目录不能提供自己的许可或扫描工具。
 
-可信中央 runner 校验工作流安全边界。Steward 的 config/repositories.json 中 allowedWorkflowPaths 描述候选仓库的实际清单：同一个 PR 可以同步增加、删除或改名普通工作流及清单，不需要先向默认分支登记文件名。清单与实际文件必须完全一致。
+在可信策略目录运行 `MISE_SAFE=1 MISE_NODE_COMPILE=false mise install --locked`，再用 `mise exec -- npm run verify` 验证。工具版本、双平台下载地址和完整性由 `mise.lock` 与 npm sidecar 保存。扫描入口只解析已经安装的可信工具，不在候选目录加载 mise 配置，不下载工具或读取令牌。actionlint 与 zizmor 使用独立临时目录和固定参数，候选的配置及忽略指令不能关闭检查。actionlint 的可选 shellcheck/pyflakes 未采用。
 
-候选清单不能定义安全规则。必需 pr-validation.yml 由可信策略要求存在；其 validate 与 fragments 作业（依赖、执行条件、权限、可信检出及验证命令）、策略来源 SHA、固定中央检出、验证命令及 PR 事件覆盖由可信 runner 的入口合同保护。工作流名称固定为 `SPLRAD Steward / PR Validation`，与运行时 `trustedValidationRun` 匹配；步骤显示名称可变，跳过条件、吞错、额外执行步骤和候选策略替换会被拒绝。顶层 concurrency 固定按仓库与 PR 分组，cancel-in-progress 固定为 true。修改这个必需安全入口仍属于中央策略变更。
+GitHub 原生 `concurrency.queue` 使用精确兼容校验：YAML AST 先验证 workflow/job 层的值为字面量 `single` 或 `max`；`max` 只接受缺省或字面量 false 的 `cancel-in-progress`。随后读取 actionlint JSON，只接受完整文本、syntax-check 类型、文件及行列都对应已验证 queue 键的已知解析错误。其他错误、重复诊断、异常进程状态或不可解析输出均阻断；不使用通用 `-ignore`。zizmor 继续扫描原始文件。上游支持后零诊断正常通过，升级时复验并移除不再需要的兼容分支。
 
-普通工作流统一检查：拒绝 job/service container；workflow/job defaults 及步骤级 shell 仅允许静态 bash、sh、pwsh、powershell、cmd、python；显式只读/none GITHUB_TOKEN 权限、允许的事件类型、受信且锁定提交的 Action、禁用 checkout 凭据持久化、普通文件/YAML 唯一键、禁止可复用作业和本地 Action 绕过、禁止 PR 作业获取受保护环境或密钥。密钥引用必须是显式名称，并匹配中央规定的环境。发布说明模型与 App 密钥使用不同环境。runner 只允许静态标签 ubuntu-latest、ubuntu-24.04、windows-latest、windows-2025、macos-latest；自托管标签、数组和动态表达式均拒绝。来源作业的环境名称不能证明输出安全，动态构建工作流须改用静态 hosted 标签后才能通过本层校验。
+组织特有校验只负责固定来源、最小权限、secret隔离、共享正文队列与产物交接。通用语法和安全扫描由上述组件执行。reusable workflow 必须来自已登记的中央完整 SHA，输入逐项登记，禁止继承 secrets。B4尚未采用具体实现，因此当前登记集合为空。
 
-现有 actionlint、业务工作流合同、类型、测试、配置和 dist 检查全部保留。scripts/verify-workflows.mjs 复用同一通用安全模块；仓库业务清单和作业合同随业务变更在同一 PR 中更新，不能替代中央安全授权。新增 Action 供应商、权限、密钥或环境属于安全能力变化，需要中央策略审查，不由候选清单放行。
+验证任务逐项记录成功、失败与不适用；取消或意外跳过不能变成成功。只有确实没有本地工作流时，扫描任务可标为不适用。GitHub required workflow 的实际强制、fork和base更新行为须在远端验收中取证，本地测试不替代该结论。
 
-静态校验不证明任意 shell 命令安全，也不等于线上环境已具备审批。代码审查、平台环境保护和人工发布授权继续承担各自责任。
+runtime 不再生成 Validation Gate。发布候选从GitHub有效分支规则读取固定验证来源，再核实真实 required workflow、run/attempt、PR/head/base和成功步骤。Classification Gate在标签迁移阶段前继续保留；发布内容批准独立核对。
 
-## 部署隔离的合并前置条件
+部署保留D1、正文及发布恢复。历史 Durable Object 迁移和类身份保留存量数据，类入口返回410；没有绑定、调度或Gate写入。数据退役须单独确定对象与恢复方案。
 
-检查时 steward-deployment 仅允许 main 分支，没有 required reviewers。main 上 runner/config 变更会触发部署，前置 PR 合入也不例外。
-
-合并前由另行获授权的管理员保留 main 限制，并增加独立 required reviewers、禁止自审批及管理员绕过。核对全部远程迁移和部署步骤都受该环境保护。若账户能力或维护者配置不能满足要求，保持不合并，另行制定代码级部署隔离方案。批准代码合并不等于批准等待中的部署。
-
-通用合同启用要求可信执行器与运行时版本一致，具体顺序见 [工作流合同与可信入口迁移](workflow-contract-migration.md)。当前只有本地实现；线上启用需独立授权。
-
-## 验收依据
-
-正向覆盖普通工作流新增、改名、删除、清单同步及必需入口步骤显示名称变化。反向覆盖清单自授权、必需入口移除/替换/跳过/吞错、额外执行步骤、事件过滤、隐式/写权限、不固定 Action、本地 Action、凭据持久化、密钥混用、表达式密钥索引、PR环境、非许可 runner、重复 YAML 键及别名。
-
-端到端用例确认可信检查通过后仍执行下游任务，失败不会转换成成功。本地 #253 的 release-build.yml 和 product-build.yml 已采用 Windows/Linux 静态作业，并同步业务合同。真实 CI 运行仍待推送授权。
-
-## 凭据环境前提
-
-受保护凭据仅存放在环境中，不能在仓库或组织层提供同名副本。持有凭据的环境须通过平台分支策略限制到默认分支；候选 YAML 的环境名称本身不能证明此限制已配置。`deployment: false` 保留环境分支策略，只取消 deployment 记录。每次启用或变更环境前须回读实际分支规则和 secret 名称元数据。
-
-2026-10-20 回读 Steward：steward-automation、steward-release、steward-deployment 均仅允许 main 分支，仓库及组织层可用 secrets 列表为空；steward-release-notes 尚未创建，启用前同样须具备上述保护。此事实不代表其他仓库或未来配置自动满足要求。静态校验与线上环境保护共同构成边界，不能用候选作业 if 表达式替代平台限制。
-
-依据：[GitHub 环境与 deployment 行为](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/control-deployments#using-environments-without-deployments)。
-
-普通工作流可以省略 concurrency；若在顶层或作业级配置 concurrency，必须显式设置 cancel-in-progress:false；只有完整固定的必需验证入口保留按 PR 取消行为。带受保护环境或密钥的 workflow_run 作业使用 checkout 时，必须检出当前仓库的 github.workflow_sha，不能检出触发方 head_sha 或其他仓库。该约束保护检出来源；任意脚本下载并执行代码仍须代码审查。
-现有 sync-review-instructions.yml 与 sync-managed-labels.yml 的已部署策略解析流程按中央固定的完整文档摘要保留；修改解析命令、上游条件或检出引用都会使该例外失效。候选文件不能自行声明例外。
-
-带受保护环境或密钥的 workflow_run 作业禁止使用 download-artifact，防止触发方产物进入凭据执行上下文。
-
-普通工作流配置并发组时，group 必须以 `workflow-policy:${{ github.workflow_ref }}:` 开头，并明确禁用取消进行中的运行，使不同工作流文件和引用的等待队列隔离。既有中央共享队列仅按固定路径及完整可信文档摘要保留；修改其触发器、命令或其他合同内容后不再获得共享队列例外。新增普通工作流无需加入该摘要清单。
-
-普通 run 命令中的 Actions 表达式采用完整允许清单；env、inputs、matrix、steps 和 needs 的间接插值均拒绝。动态值通过步骤环境变量传入，再由 shell 以带引号的变量参数读取。必需验证作业的固定命令由完整合同保护。下游业务校验按已验证的步骤结构定位，不依赖显示名称。
-
-可信策略解析及隔离产物交接采用固定能力协议，详情和输入限制见 [迁移设计](workflow-contract-migration.md)。旧整文档例外仅用于已有旧版本兼容；本次适配通过能力协议校验。
+2026-10-23本地扫描发现构建回调及两处同步工作流的 `workflow_run` 高危告警，仍阻断完整验证。后续须按唯一实施基线协调可复用工作流替换，不降级或忽略此结果。

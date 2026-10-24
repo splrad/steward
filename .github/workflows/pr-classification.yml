@@ -14,9 +14,6 @@ on:
       eventHeadSha:
         required: false
         type: string
-      aiClassification:
-        required: false
-        type: string
       scanAll:
         required: false
         type: boolean
@@ -36,21 +33,27 @@ jobs:
       name: steward-automation
       deployment: false
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.policySha }}
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        env:
+          MISE_SAFE: "1"
+          MISE_NODE_COMPILE: "false"
         with:
-          node-version-file: .node-version
-          cache: npm
+          version: 2026.10.18
+          install_args: --locked
+          working_directory: .
+          cache: false
+          env: false
+          persist_github_token: false
       - run: npm ci --ignore-scripts
       - name: 分类并发布门禁
         env:
           APP_ID: "4243096"
           INSTALLATION_ID: "145952003"
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
-          AI_CLASSIFICATION: ${{ inputs.aiClassification }}
           TRIGGER_ACTOR_ID: ${{ github.actor_id }}
           WORKFLOW_REPOSITORY: ${{ github.repository }}
           WORKFLOW_EVENT: ${{ github.event_name }}

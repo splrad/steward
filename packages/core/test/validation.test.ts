@@ -42,3 +42,8 @@ describe("中央验证", () => {
     expect(renderValidationSummary(layerScape as ValidationProfile, [])).toContain("产品只在版本发布时构建");
   });
 });
+
+ it.each(['cancelled','skipped','neutral','not-applicable'])('blocks incomplete mandatory task state %s',async state=>{
+  const results=await runValidationTasks({tasks:['parse-json']} as any,async()=>({state,detail:'not executed'}) as any);
+  expect(results[0]?.state).toBe('failure');
+ });

@@ -1,5 +1,5 @@
 export type ValidationTask = 'git-diff-check' | 'parse-json' | 'parse-yaml' | 'verify-review-instructions' | 'actionlint-if-present' | 'actionlint' | 'parse-powershell' | 'parse-msbuild-xml' | 'npm-ci' | 'npm-test' | 'npm-typecheck' | 'npm-verify-config' | 'npm-verify-dist' | 'npm-verify-workflows';
-export interface ValidationProfile { runner: 'ubuntu-latest'; timeoutMinutes: number; tasks: ValidationTask[]; powershellFiles?: string[]; msbuildFiles?: string[]; nodeVersionFile?: string; disclosure: { productBuild: string; productTests: string } }
+export interface ValidationProfile { runner: 'ubuntu-latest'; timeoutMinutes: number; tasks: ValidationTask[]; powershellFiles?: string[]; msbuildFiles?: string[]; disclosure: { productBuild: string; productTests: string } }
 export interface ValidationResult { task: ValidationTask; state: 'success' | 'failure' | 'not-applicable'; detail: string }
 
 export function selectValidationProfile(repositoryId: number, catalog: { repositories: Record<string, { validationProfile: string }>; defaultPublicProfile: string }, isPrivate: boolean): string {
@@ -12,7 +12,13 @@ export function selectValidationProfile(repositoryId: number, catalog: { reposit
 export async function runValidationTasks(profile: ValidationProfile, execute: (task: ValidationTask) => Promise<Omit<ValidationResult, 'task'>>): Promise<ValidationResult[]> {
   const results: ValidationResult[] = [];
   for (const task of profile.tasks) {
-    try { results.push({ task, ...await execute(task) }); }
+    try {
+      const result=await execute(task);
+      if (!['success','failure','not-applicable'].includes(result.state)
+        || (result.state==='not-applicable' && !['actionlint','actionlint-if-present'].includes(task)))
+        throw new Error(`必做任务未执行或结论无效: ${task}`);
+      results.push({task,...result});
+    }
     catch (error) { results.push({ task, state: 'failure', detail: error instanceof Error ? error.message : String(error) }); }
   }
   return results;

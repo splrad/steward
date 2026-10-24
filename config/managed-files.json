@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "repositories": {
+    "1187527897": [
+      {
+        "source": "config/review/rules.json",
+        "destination": "AGENTS.md",
+        "mode": "section",
+        "dependencyFields": [],
+        "sourceRepository": "splrad/steward",
+        "renderer": "review",
+        "profile": "layerscape",
+        "startMarker": "<!-- steward:review:start -->",
+        "endMarker": "<!-- steward:review:end -->",
+        "adoptionBeforeBlob": "80db661772ad4ab07c8197f6c21b2cd751873ef1"
+      },
+      {
+        "source": ".github/renovate.json",
+        "destination": ".github/renovate.json",
+        "mode": "whole",
+        "dependencyFields": [],
+        "sourceRepository": "splrad/steward"
+      },
+      {
+        "source": "schema/steward-release.schema.json",
+        "destination": "schema/steward-release.schema.json",
+        "mode": "whole",
+        "dependencyFields": [],
+        "sourceRepository": "splrad/steward"
+      },
+      {
+        "source": "config/templates/release.md.mustache",
+        "destination": ".github/release-template.md.mustache",
+        "mode": "whole",
+        "dependencyFields": [],
+        "sourceRepository": "splrad/steward"
+      },
+      {
+        "source": "templates/release/steward-release-publish.yml",
+        "destination": ".github/workflows/steward-release-publish.yml",
+        "mode": "whole",
+        "dependencyFields": [],
+        "sourceRepository": "splrad/steward",
+        "renderer": "policy-ref"
+      },
+      {
+        "source": "templates/release/steward-pr-title.yml",
+        "destination": ".github/workflows/steward-pr-title.yml",
+        "mode": "whole",
+        "dependencyFields": [
+          {
+            "jobId": "title",
+            "stepId": "semantic-title",
+            "path": [
+              "uses"
+            ]
+          }
+        ],
+        "sourceRepository": "splrad/steward"
+      },
+      {
+        "source": "templates/labeler.yml",
+        "destination": ".github/labeler.yml",
+        "mode": "whole",
+        "dependencyFields": [],
+        "sourceRepository": "splrad/steward"
+      },
+      {
+        "source": "config/release/defaults.json",
+        "destination": "release-please-config.json",
+        "mode": "whole",
+        "dependencyFields": [],
+        "sourceRepository": "splrad/steward",
+        "renderer": "release-please"
+      }
+    ],
+    "1296724484": [
+      {
+        "source": "config/review/rules.json",
+        "destination": "AGENTS.md",
+        "mode": "section",
+        "dependencyFields": [],
+        "sourceRepository": "splrad/steward",
+        "renderer": "review",
+        "profile": "steward",
+        "startMarker": "<!-- steward:review:start -->",
+        "endMarker": "<!-- steward:review:end -->",
+        "adoptionBeforeBlob": "1c8ab66fa639736ce836d69fe05e033a40273767"
+      },
+      {
+        "source": ".github/renovate.json",
+        "destination": ".github/renovate.json",
+        "mode": "whole",
+        "dependencyFields": [],
+        "sourceRepository": "splrad/steward"
+      },
+      {
+        "source": "templates/labeler.yml",
+        "destination": ".github/labeler.yml",
+        "mode": "whole",
+        "dependencyFields": [],
+        "sourceRepository": "splrad/steward"
+      }
+    ],
+    "1296725317": [
+      {
+        "source": "config/review/rules.json",
+        "destination": "AGENTS.md",
+        "mode": "section",
+        "dependencyFields": [],
+        "sourceRepository": "splrad/steward",
+        "renderer": "review",
+        "profile": "github",
+        "startMarker": "<!-- steward:review:start -->",
+        "endMarker": "<!-- steward:review:end -->",
+        "adoptionBeforeBlob": "943733b257b6ff6e0f8888eac611181183005f51"
+      },
+      {
+        "source": ".github/renovate.json",
+        "destination": ".github/renovate.json",
+        "mode": "whole",
+        "dependencyFields": [],
+        "sourceRepository": "splrad/steward"
+      },
+      {
+        "source": "templates/labeler.yml",
+        "destination": ".github/labeler.yml",
+        "mode": "whole",
+        "dependencyFields": [],
+        "sourceRepository": "splrad/steward"
+      }
+    ]
+  }
+}

@@ -6,11 +6,19 @@ SPLRAD Steward 是组织的共享自动化服务，不是通用的 GitHub 自动
 
 ## 本地环境与检查
 
-Steward 使用 Node.js `24.22.0` 和 npm `11.19.1`。
+Steward 使用 `mise.toml`、`mise.lock` 及 `.mise/locks/` 统一管理 Node.js、npm 和验证工具。
 
 ```powershell
-npm ci --ignore-scripts
-npm run verify
+$env:MISE_SAFE = '1'
+$env:MISE_NODE_COMPILE = 'false'
+mise install --locked
+if ($LASTEXITCODE -ne 0) { throw '工具安装失败' }
+mise exec -- npm ci --ignore-scripts
+if ($LASTEXITCODE -ne 0) { throw '依赖安装失败' }
+mise exec -- npm run build
+if ($LASTEXITCODE -ne 0) { throw '构建失败' }
+mise exec -- npm run verify
+if ($LASTEXITCODE -ne 0) { throw '验证失败' }
 ```
 
 `npm run verify` 会运行仓库测试、类型检查、配置验证、生成文件验证和工作流验证。针对性改动可以只运行相关检查，但要在 Pull Request 中说明未运行的项目。
@@ -30,3 +38,9 @@ npm run verify
 合并前需满足组织的 CI、线程解决和审批规则。普通贡献者的 PR 需要作者之外、有相应权限的真人批准；个人审批例外以线上规则为准，不能把本说明视为已生效的权限。新提交后应重新检查审批状态。
 
 发现疑似安全问题时，请遵循仓库安全政策，不要在公开 Pull Request 中报告。
+
+## 创建与维护拉取请求
+
+同仓和 fork 的普通贡献 PR 均由贡献者显式发起；向工作分支推送不自动创建 PR，也不自动重写既有 PR 的标题和正文。PR 作者或拥有目标仓库 Write 及以上权限的用户可使用 GitHub 原生按钮调整草稿状态。关联议题由作者按需填写，Steward 不自动推断、增加、移除或维护关联。
+
+AI 代为创建 PR 或调整草稿状态，须有对应仓库、分支和操作的明确授权；提交或推送授权不包含创建 PR。创建前检查是否已有对应 PR，填写目的和验证情况，并回读来源、目标及草稿状态。人工关联只在确认完整解决时使用 Closes，部分相关使用普通编号或链接。审批例外由组织规则控制，不以机器人作者身份代替。
