@@ -1,4 +1,8 @@
-import { expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
+import { pipelineIdentity, pipelineNotes } from '../src/release-pipeline.js';
+import { NativeControlPlane } from '../src/native-control-plane.js';
+import { localGitSnapshot } from '../src/managed-sync-preview.js';
+import { parseRepositoryCatalog } from '../../core/src/repository-policy.js';
 import { readFile } from 'node:fs/promises';
 import catalog from '../../../config/repositories.json' with { type: 'json' };
 import descriptorSchema from '../../../schema/steward-release.schema.json' with { type: 'json' };
@@ -6,6 +10,7 @@ import { validateReleaseSource, admitReleaseIdentity, type AdmissionInput, type 
 import type { GitSnapshot } from '../src/managed-sync-preview.js';
 import type { ReleaseDescriptor } from '../../core/src/release-descriptor.js';
 const S = 'a'.repeat(40), P = 'b'.repeat(40);
+afterEach(() => vi.restoreAllMocks());
 const descriptor: ReleaseDescriptor = { schemaVersion: 1, units: [{ id: 'layerscape', displayName: 'LayerScape', path: '.', releasePleasePath: '.', ecosystem: 'native', versionFile: 'VERSION', changelogPath: 'CHANGELOG.md', notesPath: '.release-notes/layerscape.md', signingPolicy: 'none', builds: [{ id: 'windows', os: 'windows', arch: 'x64', entrypoint: 'tools/build.ps1', args: [], expectedArtifacts: ['app'] }], artifacts: [{ id: 'app', file: 'app-${version}.exe', kind: 'executable', mediaType: 'application/octet-stream', platform: 'windows', architecture: 'x64', build: 'windows', required: true }], channels: [{ id: 'ghcr-assets', kind: 'oci-artifact', artifacts: ['app'], dependsOn: [] }, { id: 'winget', kind: 'winget', artifacts: ['app'], dependsOn: [] }] }] };
 async function fixture() {
   const template = await readFile(new URL('../../../config/templates/release.md.mustache', import.meta.url), 'utf8');
@@ -25,6 +30,38 @@ async function fixture() {
     caller: (await readFile('templates/release/steward-release-publish.yml', 'utf8')).replace(/product-release\.yml@[a-f0-9]{40}/, `product-release.yml@${P}`) };
   return { input, source, policy, snapshot, evidence };
 }
+it.each(['drift', 'disabled', 'revoked', 'missing', 'history'])('binds pipeline admission and notes to P while enforcing current authority: %s', async kind => {
+  const f = await fixture(), live = parseRepositoryCatalog(structuredClone(catalog)), Q = 'c'.repeat(40), boundary = 'd'.repeat(40);
+  const policy = live.repositories['1187527897']!;
+  policy.release.enabled = kind !== 'disabled'; policy.release.units.layerscape!.enabled = true;
+  policy.release.units.layerscape!.channels['ghcr-assets']!.destination = 'ghcr.io/splrad/new-location';
+  policy.release.units.layerscape!.adoptedAfterTag = 'v8.0.0';
+  if (kind === 'revoked') policy.revokedPolicyShas.push(P);
+  f.policy['config/repositories.json'] = JSON.stringify(catalog);
+  if (kind === 'missing') delete f.policy['config/repositories.json'];
+  f.policy['mise.lock'] = 'policy-lock'; f.source['global.json'] = '{}';
+  f.source['.github/workflows/steward-release-publish.yml'] = f.evidence.caller;
+  vi.spyOn(localGitSnapshot, 'file').mockImplementation(f.snapshot.file);
+  vi.spyOn(NativeControlPlane.prototype, 'catalog').mockResolvedValue({ observationSha: Q, catalog: live });
+  const routes: Record<string, unknown> = {
+    'repos/splrad/LayerScape': { id: 1187527897, full_name: 'splrad/LayerScape', default_branch: 'main' },
+    'repos/splrad/LayerScape/releases/1': { id: 1, tag_name: 'v9.2.3', draft: true, author: { id: 301115370 } },
+    'repos/splrad/LayerScape/pulls/3': { number: 3, merged: true, merge_commit_sha: S, base: { ref: 'main', repo: { id: 1187527897 } } },
+    'repos/splrad/LayerScape/commits/v9.2.3': { sha: S },
+    'repos/splrad/LayerScape/commits/v9.2.2': { sha: boundary },
+    [`repos/splrad/steward/compare/${P}...${Q}`]: { status: kind === 'history' ? 'diverged' : 'ahead', merge_base_commit: { sha: P } },
+    [`repos/splrad/LayerScape/compare/${boundary}...${S}`]: { status: 'ahead', merge_base_commit: { sha: boundary } },
+  };
+  const pending = pipelineIdentity({ unit: 'layerscape', tag: 'v9.2.3', releaseId: 1, releasePr: 3, policySha: P, sourceDirectory: 'source', policyDirectory: 'policy' },
+    { GITHUB_REPOSITORY_ID: '1187527897', GITHUB_REPOSITORY: 'splrad/LayerScape', GITHUB_SHA: S, GITHUB_REF: 'refs/tags/v9.2.3', GITHUB_RUN_ID: '42', GITHUB_RUN_ATTEMPT: '1' },
+    async args => { const result = routes[args.at(-1)!]; if (!result) throw new Error('unexpected API: ' + args.at(-1)); return JSON.stringify(result); });
+  if (kind !== 'drift') { await expect(pending).rejects.toThrow(); return; }
+  const record = await pending;
+  expect(record.policySha).toBe(P); expect(record.observationSha).toBe(Q);
+  const notes = await pipelineNotes(record, 'source', 'policy');
+  expect(notes).toContain(catalog.repositories['1187527897'].release.units.layerscape.channels['ghcr-assets'].destination);
+  expect(notes).not.toContain('new-location');
+});
 it('validates committed native version, manifest, template and exact asset mapping', async () => {
   const f = await fixture(); const units = await validateReleaseSource(f.input, f.snapshot);
   expect(units.map(unit => [unit.unit.id, unit.version, unit.tag, unit.assets[0]!.name])).toEqual([['layerscape', '9.2.3', 'v9.2.3', 'app-9.2.3.exe']]);

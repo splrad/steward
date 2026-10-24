@@ -1,5 +1,15 @@
-import { expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
+import { localGitSnapshot } from '../src/managed-sync-preview.js';
+import catalog from '../../../config/repositories.json' with { type: 'json' };
 import { parseNativeInvocation, nativeReleaseCli } from '../src/native-release-cli.js';
+afterEach(() => vi.restoreAllMocks());
+it.each(['missing', 'drift'])('rejects an offline central config not bound to P: %s', async kind => {
+  const pinned = structuredClone(catalog);
+  pinned.repositories['1187527897'].release.units.layerscape.channels['ghcr-assets'].destination += '-old';
+  const snapshot = vi.spyOn(localGitSnapshot, 'file').mockResolvedValue(kind === 'missing' ? null : Buffer.from(JSON.stringify(pinned)));
+  await expect(nativeReleaseCli(['release-admission', 'validate', '--repository', 'splrad/LayerScape', '--source-sha', 'a'.repeat(40), '--policy-sha', 'b'.repeat(40), '--descriptor', 'source/.github/steward-release.json', '--central-config', 'config/repositories.json', '--offline', '--output', 'unused.json'])).rejects.toThrow('central config differs from policy');
+  expect(snapshot).toHaveBeenCalledOnce();
+});
 it('requires every offline admission argument and rejects unknown commands/flags', async () => {
   const argv = ['release-admission', 'validate', '--repository', 'splrad/LayerScape', '--source-sha', 'a'.repeat(40), '--policy-sha', 'b'.repeat(40), '--descriptor', 'source/.github/steward-release.json', '--central-config', 'config/repositories.json', '--offline', '--output', 'out.json'];
   expect(parseNativeInvocation(argv).args.offline).toBe('true');

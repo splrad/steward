@@ -7,6 +7,7 @@ const S = 'a'.repeat(40), P = 'b'.repeat(40), Q = 'c'.repeat(40), before = 'd'.r
 function fixture(enabled = true) {
   const config: any = structuredClone(catalog), policy = config.repositories['1187527897'];
   policy.release.enabled = enabled; policy.release.units.layerscape.enabled = enabled;
+  const pinned = structuredClone(config);
   const descriptor = { schemaVersion: 1, units: [{ id: 'layerscape', displayName: 'LayerScape', path: '.', releasePleasePath: '.', ecosystem: 'native', versionFile: 'VERSION', changelogPath: 'CHANGELOG.md', notesPath: '.release-notes/layerscape.md', signingPolicy: 'none', builds: [{ id: 'win', os: 'windows', arch: 'x64', entrypoint: 'build.ps1', args: [], expectedArtifacts: ['app'] }], artifacts: [{ id: 'app', file: 'app-${version}.exe', kind: 'executable', mediaType: 'application/octet-stream', platform: 'windows', architecture: 'x64', build: 'win', required: true }], channels: [] }] };
   const pull = { number: 42, user: { id: 301115370 }, head: { ref: 'release-please--branches--main', sha: 'e'.repeat(40), repo: { id: 1187527897 } }, base: { ref: 'main', repo: { id: 1187527897 } }, merged_at: '2026-10-24T00:00:00Z' as string | null, merge_commit_sha: S, state: 'closed', labels: [{ name: 'autorelease: pending' }], body: new PullRequestBody([{ version: Version.parse('9.2.3'), notes: '## [9.2.3]\n\nfixture' }]).toString() };
   const releases: any[] = [], runs: any[] = [], calls: string[][] = [];
@@ -14,6 +15,7 @@ function fixture(enabled = true) {
   const routes: Record<string, any> = {
     'repos/splrad/steward': { id: 1296724484, full_name: 'splrad/steward', default_branch: 'main' }, 'repos/splrad/steward/commits/main': { sha: Q },
     [`repos/splrad/steward/contents/config/repositories.json?ref=${Q}`]: () => blob(config), [`repos/splrad/steward/compare/${P}...${Q}`]: { status: 'ahead', merge_base_commit: { sha: P } },
+    [`repos/splrad/steward/contents/config/repositories.json?ref=${P}`]: () => blob(pinned),
     'repos/splrad/LayerScape': { id: 1187527897, full_name: 'splrad/LayerScape', default_branch: 'main' },
     'repos/splrad/LayerScape/pulls?state=all&base=main&per_page=100': [[pull]], 'repos/splrad/LayerScape/releases?per_page=100': [releases],
     'repos/splrad/LayerScape/commits/main': { sha: S },
@@ -36,8 +38,22 @@ function fixture(enabled = true) {
   });
   const draft = () => releases.push({ id: 50, author: { id: 301115370 }, tag_name: 'v9.2.3', draft: true, immutable: false });
   const run = (status: string, conclusion: string | null = null) => runs.push({ id: 70, run_attempt: 1, workflow_id: 10, event: 'workflow_dispatch', head_sha: S, repository: { id: 1187527897 }, head_repository: { id: 1187527897 }, display_title: 'Publish layerscape / v9.2.3 / 50', status, conclusion });
-  return { planner, config, calls, routes, pull, releases, runs, draft, run };
+  return { planner, config, pinned, calls, routes, pull, releases, runs, draft, run };
 }
+it.each(['channel', 'boundary', 'branch', 'switch'])('separates current switches from pinned release contract: %s', async kind => {
+  const f = fixture(), policy = f.config.repositories['1187527897'];
+  if (kind === 'channel') policy.release.units.layerscape.channels['ghcr-assets'].destination += '-changed';
+  if (kind === 'boundary') policy.release.units.layerscape.adoptedAfterTag = 'v9.2.1';
+  if (kind === 'branch') policy.defaultBranch = 'other';
+  if (kind === 'switch') {
+    f.pinned.repositories['1187527897'].release.enabled = false;
+    f.pinned.repositories['1187527897'].release.units.layerscape.enabled = false;
+    expect((await f.planner.inspect(1187527897, P, 'before')).should_run_release).toBe(true);
+  } else {
+    await expect(f.planner.inspect(1187527897, P, 'before')).rejects.toThrow(kind === 'branch' ? 'REPOSITORY_POLICY' : 'release policy drift');
+    expect(f.calls.some(args => args.at(-1)!.startsWith('repos/splrad/LayerScape'))).toBe(false);
+  }
+});
 it('does not call target APIs when release capability is disabled', async () => {
   const f = fixture(false); expect((await f.planner.inspect(1187527897, P, 'before')).mode).toBe('not-enabled');
   expect(f.calls.every(args => args.at(-1)!.startsWith('repos/splrad/steward'))).toBe(true);

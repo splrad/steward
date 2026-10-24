@@ -1,4 +1,5 @@
 import { parsePipelineRecord } from './release-pipeline-record.js';
+import { isDeepStrictEqual } from 'node:util';
 import { readFile, writeFile, mkdir, appendFile } from 'node:fs/promises';
 import { dirname, join, resolve, relative, isAbsolute, sep } from 'node:path';
 import { parseRepositoryCatalog } from '../../core/src/repository-policy.js';
@@ -166,6 +167,11 @@ export async function nativeReleaseCli(argv: readonly string[]) {
     if (!repository) throw new Error('NATIVE_CLI: repository not registered');
     const sourceDirectory = command.endsWith('validate') ? dirname(dirname(resolve(required('descriptor')))) : resolve(required('source-dir'));
     const policyDirectory = command.endsWith('validate') ? dirname(dirname(configPath)) : resolve(required('policy-dir'));
+    const policySha = required('policy-sha');
+    if (!/^[a-f0-9]{40}$/.test(policySha)) throw new Error('NATIVE_CLI: invalid policy SHA');
+    const pinnedConfig = await localGitSnapshot.file(policyDirectory, policySha, 'config/repositories.json');
+    if (!pinnedConfig || !isDeepStrictEqual(config, parseRepositoryCatalog(JSON.parse(pinnedConfig.toString('utf8')))))
+      throw new Error('NATIVE_CLI: central config differs from policy');
     if (command.endsWith('validate') && resolve(required('descriptor')) !== join(sourceDirectory, '.github/steward-release.json')) throw new Error('NATIVE_CLI: descriptor path');
     const input: AdmissionInput = { repository: repository.fullName, repositoryId: repository.repositoryId,
       sourceSha: required('source-sha'), policySha: required('policy-sha'), sourceDirectory, policyDirectory, centralConfig: config };

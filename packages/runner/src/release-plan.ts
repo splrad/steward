@@ -4,7 +4,7 @@ import { TagName } from 'release-please/build/src/util/tag-name.js';
 import { Version } from 'release-please/build/src/version.js';
 import { parseReleaseDescriptor } from '../../core/src/release-descriptor.js';
 import { planNativeRelease, type NativeCandidateState, type NativeReleaseState } from '../../core/src/release-plan.js';
-import { releaseWriteAuthority } from '../../core/src/repository-policy.js';
+import { parseRepositoryCatalog, releaseWriteAuthority } from '../../core/src/repository-policy.js';
 import { NativeControlPlane } from './native-control-plane.js';
 import { nativeGhCommand, type GhCommand } from './gh-release.js';
 
@@ -39,6 +39,12 @@ export class NativeReleasePlanner {
     if (policy.revokedPolicyShas.includes(policySha)) fail('revoked policy');
     const history = await this.get(`repos/splrad/steward/compare/${policySha}...${current.observationSha}`);
     if (!['ahead', 'identical'].includes(history.status) || history.merge_base_commit?.sha !== policySha) fail('untrusted policy history');
+    const pinned = parseRepositoryCatalog(await this.file('splrad/steward', policySha, 'config/repositories.json')).repositories[String(repositoryId)];
+    // Live switches authorize writes; release semantics must still match the
+    // selected policy. Never combine old defaults with newer units/boundaries.
+    const contract = (value: typeof policy) => ({ fullName: value.fullName, defaultBranch: value.defaultBranch,
+      units: Object.fromEntries(Object.entries(value.release.units).map(([id, unit]) => [id, { ...unit, enabled: false }])) });
+    if (!pinned || !isDeepStrictEqual(contract(pinned), contract(policy))) fail('release policy drift');
     const actual = await this.get(`repos/${policy.fullName}`);
     if (actual.id !== repositoryId || actual.full_name !== policy.fullName || actual.default_branch !== policy.defaultBranch) fail('repository identity');
     // Release Please consumes this branch's config with a write token. Validate it

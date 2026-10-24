@@ -24,8 +24,12 @@ export async function pipelineIdentity(input: { unit: string; tag: string; relea
   environment: NodeJS.ProcessEnv = process.env, gh: GhCommand = nativeGhCommand): Promise<PipelineRecord> {
   const repositoryId = positive(environment.GITHUB_REPOSITORY_ID), runId = positive(environment.GITHUB_RUN_ID), attempt = positive(environment.GITHUB_RUN_ATTEMPT);
   const fullName = environment.GITHUB_REPOSITORY!, sourceSha = environment.GITHUB_SHA!;
+  if (!/^[a-f0-9]{40}$/.test(input.policySha)) fail('invalid policy SHA');
   const current = await new NativeControlPlane(gh).catalog();
-  const admission: AdmissionInput = { repository: fullName, repositoryId, sourceSha, policySha: input.policySha, sourceDirectory: input.sourceDirectory, policyDirectory: input.policyDirectory, centralConfig: current.catalog };
+  const policyBytes = await localGitSnapshot.file(input.policyDirectory, input.policySha, 'config/repositories.json');
+  if (!policyBytes) fail('missing bound catalog');
+  const catalog = parseRepositoryCatalog(JSON.parse(policyBytes.toString('utf8')));
+  const admission: AdmissionInput = { repository: fullName, repositoryId, sourceSha, policySha: input.policySha, sourceDirectory: input.sourceDirectory, policyDirectory: input.policyDirectory, centralConfig: catalog };
   const admitted = (await validateReleaseSource(admission)).find(unit => unit.unit.id === input.unit);
   if (!admitted || admitted.tag !== input.tag) fail('unit/tag mapping');
   const get = async (path: string) => JSON.parse(await gh(['api', path]));
@@ -33,7 +37,7 @@ export async function pipelineIdentity(input: { unit: string; tag: string; relea
     get(`repos/${fullName}`), get(`repos/${fullName}/releases/${input.releaseId}`), get(`repos/${fullName}/pulls/${input.releasePr}`),
     get(`repos/${fullName}/commits/${encodeURIComponent(input.tag)}`), get(`repos/splrad/steward/compare/${input.policySha}...${current.observationSha}`),
   ]);
-  const unitPolicy = current.catalog.repositories[String(repositoryId)]!.release.units[input.unit]!;
+  const unitPolicy = catalog.repositories[String(repositoryId)]!.release.units[input.unit]!;
   const boundary = unitPolicy.adoptedAfterTag ? (await get(`repos/${fullName}/commits/${encodeURIComponent(unitPolicy.adoptedAfterTag)}`)).sha : unitPolicy.adoptedFromSha;
   if (!boundary || !/^[a-f0-9]{40}$/.test(boundary)) fail('adoption commit');
   const ancestry = await get(`repos/${fullName}/compare/${boundary}...${sourceSha}`);
@@ -46,7 +50,7 @@ export async function pipelineIdentity(input: { unit: string; tag: string; relea
     adoptionAncestor: ancestry.status === 'ahead' && ancestry.merge_base_commit?.sha === boundary,
     release: { id: release.id, tag: release.tag_name, draft: release.draft, authorId: release.author?.id }, pull: { number: pull.number, merged: pull.merged,
       mergeSha: pull.merge_commit_sha, baseRef: pull.base?.ref, baseRepositoryId: pull.base?.repo?.id }, caller: caller.toString('utf8'),
-  });
+  }, current.catalog);
   const toolLocks: Record<string, string> = {};
   for (const [directory, sha, path, key] of [[input.policyDirectory, input.policySha, 'mise.lock', 'policy/mise.lock'],
     [input.sourceDirectory, sourceSha, 'global.json', 'source/global.json']] as const) {

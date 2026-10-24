@@ -74,7 +74,7 @@ export interface ReleaseIdentityObservation {
   pull: { number: number; merged: boolean; mergeSha: string; baseRef: string; baseRepositoryId: number };
   caller: string;
 }
-export function admitReleaseIdentity(input: AdmissionInput, unit: AdmittedUnit, requested: { releaseId: number; releasePr: number }, evidence: ReleaseIdentityObservation): 'build' | 'verify' {
+export function admitReleaseIdentity(input: AdmissionInput, unit: AdmittedUnit, requested: { releaseId: number; releasePr: number }, evidence: ReleaseIdentityObservation, currentConfig: unknown = input.centralConfig): 'build' | 'verify' {
   const catalog = parseRepositoryCatalog(input.centralConfig), policy = catalog.repositories[String(input.repositoryId)];
   if (!policy || policy.fullName !== input.repository || !evidence.complete || evidence.repository.id !== input.repositoryId
     || evidence.repository.fullName !== input.repository || evidence.repository.defaultBranch !== policy.defaultBranch
@@ -100,6 +100,6 @@ export function admitReleaseIdentity(input: AdmissionInput, unit: AdmittedUnit, 
   const expected = { contents: 'write', actions: 'read', 'pull-requests': 'read', 'id-token': 'write', attestations: 'write' };
   if (!permissions || Object.keys(permissions).sort().join(',') !== Object.keys(expected).sort().join(',')
     || Object.entries(expected).some(([name, value]) => permissions[name] !== value) || caller.jobs.publish.secrets !== undefined) fail('caller permissions');
-  if (evidence.release.draft) { releaseWriteAuthority(catalog, input.repositoryId, input.repository, unit.unit.id, input.policySha); return 'build'; }
+  if (evidence.release.draft) { releaseWriteAuthority(parseRepositoryCatalog(currentConfig), input.repositoryId, input.repository, unit.unit.id, input.policySha); return 'build'; }
   return 'verify';
 }
