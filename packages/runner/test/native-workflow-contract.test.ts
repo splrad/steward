@@ -3,6 +3,11 @@ import { readFile } from 'node:fs/promises';
 import YAML from 'yaml';
 import { assertWorkflowDocument } from '../src/workflow-policy.js';
 const load = async (name: string) => YAML.parse(await readFile('.github/workflows/' + name, 'utf8'));
+it.each([undefined,1,2])('rejects incomplete sync policy history depth %s', async depth => {
+ const d=await load('sync-managed.yml');
+ d.jobs.synchronize.steps.find((s:any)=>s.with?.path==='policy').with['fetch-depth']=depth;
+ expect(()=>assertWorkflowDocument('.github/workflows/sync-managed.yml',d)).toThrow('sync policy history');
+});
 it.each(['release.yml', 'sync-managed.yml', 'product-release.yml', 'update-dependencies.yml'])('validates actual %s capability without scan ignores', async name => {
   const d = await load(name);
   expect(() => assertWorkflowDocument('.github/workflows/' + name, d)).not.toThrow();

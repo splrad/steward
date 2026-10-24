@@ -14,6 +14,7 @@ import { nativeCommands, nativeReleaseCli } from './native-release-cli.js';
 import { decodeClassificationCheckEnvelope } from "../../core/src/check-envelope.js";
 import { selectValidationProfile } from "../../core/src/validation.js";
 import { verifyWorkflowPolicy } from "./workflow-policy.js";
+import { localGitSnapshot } from "./managed-sync-preview.js";
 export { verifyWorkflowPolicy };
 import { scanWorkflows } from "./workflow-tools.js";
 export { scanWorkflows };
@@ -675,7 +676,10 @@ async function validate(args: Readonly<Record<string, string>>) {
   const files = await walk(workspace);
   const relative = files.map(path => path.slice(workspace.length + 1).replace(/\\/g, "/"));
   const actualWorkflows = relative.filter(path => /^\.github\/workflows\/[^/]+\.ya?ml$/u.test(path)).sort();
-  await verifyWorkflowPolicy(workspace, repositoryId, configuration.allowedWorkflowPaths.filter((path: string) => path === ".github/workflows/pr-validation.yml"));
+  const registered = catalogValue.repositories[String(repositoryId)];
+  const releasePolicies = registered && actualWorkflows.includes('.github/workflows/steward-release-publish.yml') ? [await localGitSnapshot.head(configPath('..')), registered.automation?.managedSync?.policySha]
+    .filter((value): value is string => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value) && !registered.revokedPolicyShas.includes(value)) : [];
+  await verifyWorkflowPolicy(workspace, repositoryId, configuration.allowedWorkflowPaths.filter((path: string) => path === ".github/workflows/pr-validation.yml"), releasePolicies);
   const results = await runValidationTasks(profile, async task => {
     if (task === "git-diff-check") {
       run("git", gitDiffCheckArguments(validationBaseSha ? sha(validationBaseSha, "VALIDATION_BASE_SHA") : undefined), workspace);

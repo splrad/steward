@@ -3,6 +3,18 @@ const canonical = (v: any): string => JSON.stringify(Array.isArray(v) ? v.map(x 
   ? Object.fromEntries(Object.keys(v).sort().map(k => [k, JSON.parse(canonical(v[k]))])) : v ?? null);
 function same(actual: any, expected: any, detail: string) { if (canonical(actual) !== canonical(expected)) fail(detail); }
 const read = { contents: 'read', actions: 'read' };
+/** The trusted catalog supplies the adopted SHA; candidate workflow data never does. */
+export function assertProductReleaseCaller(document: any, policySha: string) {
+  if (!/^[a-f0-9]{40}$/.test(policySha)) fail('caller trusted policy SHA');
+  const fields = ['unit', 'tag', 'release_id', 'release_pr'];
+  same(document, {
+    name: 'Product Release', 'run-name': 'Publish ${{ inputs.unit }} / ${{ inputs.tag }} / ${{ inputs.release_id }}',
+    on: { workflow_dispatch: { inputs: Object.fromEntries(fields.map(key => [key, { type: 'string', required: true }])) } },
+    permissions: { contents: 'write', actions: 'read', 'pull-requests': 'read', 'id-token': 'write', attestations: 'write' },
+    jobs: { publish: { uses: `splrad/steward/.github/workflows/product-release.yml@${policySha}`,
+      with: Object.fromEntries(fields.map(key => [key, '${{ inputs.' + key + ' }}'])) } },
+  }, 'product caller contract');
+}
 export function assertNativeWorkflow(path: string, document: any, repositoryId: number): boolean {
   if (repositoryId !== 1296724484 || !['.github/workflows/product-release.yml', '.github/workflows/release.yml', '.github/workflows/sync-managed.yml', '.github/workflows/update-dependencies.yml'].includes(path)) return false;
   const d = document;
@@ -89,6 +101,8 @@ export function assertNativeWorkflow(path: string, document: any, repositoryId: 
       if (release?.with?.['skip-github-pull-request'] !== true || prepare?.with?.['skip-github-release'] !== true || release.with['skip-github-release'] !== undefined || prepare.with['skip-github-pull-request'] !== undefined) fail('release and PR phases');
       if (job.steps.findIndex((s: any) => s.id === 'after') <= job.steps.indexOf(release) || job.steps.indexOf(prepare) <= job.steps.findIndex((s: any) => s.id === 'after')) fail('release readback before PR');
     } else {
+      const policyCheckout = job.steps.find((s: any) => s.uses?.startsWith('actions/checkout@') && s.with?.path === 'policy');
+      if (policyCheckout?.with?.['fetch-depth'] !== 0 || policyCheckout.with.ref !== '${{ matrix.policySha }}') fail('sync policy history');
       const authorization = job.steps.find((s: any) => s.id === 'authorization');
       const rulesToken = job.steps.find((s: any) => s.id === 'rules-token');
       same(rulesToken?.with, { 'app-id': '4243096', 'private-key': '${{ secrets.STEWARD_APP_PRIVATE_KEY }}', owner: 'splrad',

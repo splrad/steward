@@ -1,11 +1,12 @@
 import { hasTrustedPolicyPrefix, assertArtifactHandoff } from './workflow-capabilities.js';
-import { assertNativeWorkflow } from './native-workflow-contract.js';
+import { assertNativeWorkflow, assertProductReleaseCaller } from './native-workflow-contract.js';
 import YAML from 'yaml';
 import { lstat, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const hostedRunners = new Set(['ubuntu-latest', 'ubuntu-24.04', 'windows-latest', 'windows-2025', 'macos-latest']);
 const actions = new Set([
+ 'amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50',
  'renovatebot/github-action@a63d9a7bc606f7336fd20b47f2f32259a35e6213',
  'actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510',
  'googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7',
@@ -60,7 +61,13 @@ function secrets(value: any): string[] {
  }
  return names;
 }
-export function assertWorkflowDocument(path: string, d: any, repositoryId = 1296724484, reusable: readonly ReusableWorkflow[] = approvedReusableWorkflows) {
+export function assertWorkflowDocument(path: string, d: any, repositoryId = 1296724484, reusable: readonly ReusableWorkflow[] = approvedReusableWorkflows, releasePolicyShas: readonly string[] = []) {
+ if (path === '.github/workflows/steward-release-publish.yml' && releasePolicyShas.length) {
+  const trusted = releasePolicyShas.find(sha => d?.jobs?.publish?.uses === `splrad/steward/.github/workflows/product-release.yml@${sha}`);
+  if (!trusted) fail('product caller contract: untrusted policy');
+  assertProductReleaseCaller(d, trusted!);
+  return;
+ }
  const native = assertNativeWorkflow(path, d, repositoryId);
  if (!object(d) || !object(d.jobs) || !Object.keys(d.jobs).length) fail(`${path}: jobs missing`);
  assertArtifactHandoff(d);
@@ -120,7 +127,7 @@ export function assertWorkflowDocument(path: string, d: any, repositoryId = 1296
  }
 }
 /** All workflow documents are data. The executing verifier comes from the pinned central checkout. */
-export async function verifyWorkflowPolicy(workspace:string, repositoryId:number, requiredPaths:readonly string[]) {
+export async function verifyWorkflowPolicy(workspace:string, repositoryId:number, requiredPaths:readonly string[], releasePolicyShas:readonly string[] = []) {
  const directory=join(workspace,'.github/workflows'); let files:string[]=[];
  try { if(!(await lstat(join(workspace,'.github'))).isDirectory() || !(await lstat(directory)).isDirectory()) fail('workflow directory type'); files=await readdir(directory); }
  catch(e) {if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
@@ -131,7 +138,7 @@ export async function verifyWorkflowPolicy(workspace:string, repositoryId:number
   if(!info.isFile() || info.isSymbolicLink()) fail('workflow must be regular file');
   const parsed=YAML.parseDocument(await readFile(join(workspace,path),'utf8'),{uniqueKeys:true});
   if(parsed.errors.length) fail('invalid YAML');
-  assertWorkflowDocument(path,parsed.toJS({maxAliasCount:0}),repositoryId);
+  assertWorkflowDocument(path,parsed.toJS({maxAliasCount:0}),repositoryId,approvedReusableWorkflows,releasePolicyShas);
  }
  return paths;
 }
