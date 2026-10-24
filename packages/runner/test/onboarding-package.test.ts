@@ -2,7 +2,7 @@ import { afterEach, expect, it } from 'vitest';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { previewManagedSync, gitBlob, type GitSnapshot, type PreviewInput, type OnboardingManifest } from '../src/managed-sync-preview.js';
+import { previewManagedSync, type GitSnapshot, type PreviewInput, type OnboardingManifest } from '../src/managed-sync-preview.js';
 import { parseManagedFileConfig } from '../src/managed-file-config.js';
 import baseline from './fixtures/layerscape-onboarding-base.json' with { type: 'json' };
 import owners from '../../../config/managed-files.json' with { type: 'json' };

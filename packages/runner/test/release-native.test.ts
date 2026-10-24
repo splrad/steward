@@ -1,4 +1,4 @@
-import { registerOfflineFixtureRoot, permitOfflineScript, permitOfflineCommand } from './offline-fixtures.js';
+import { registerOfflineFixtureRoot, permitOfflineScript } from './offline-fixtures.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, mkdir, rm, writeFile, copyFile, open } from 'node:fs/promises';

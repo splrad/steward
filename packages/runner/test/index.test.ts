@@ -1,4 +1,4 @@
-import { registerOfflineFixtureRoot, permitOfflineScript, permitOfflineCommand } from './offline-fixtures.js';
+import { registerOfflineFixtureRoot } from './offline-fixtures.js';
 import { generateKeyPairSync } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";

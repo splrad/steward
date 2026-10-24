@@ -21,6 +21,12 @@ it('parses independent Node/Python units and preserves native package versions',
   expect(artifactNames(python, '1.2.3-rc.1', '1.2.3rc1').get('npm-tarball')).toBe('python_sdk-1.2.3rc1.tar.gz');
 });
 
+it('rejects repeated unterminated placeholder prefixes through the exported renderer', () => {
+  const unit = fixture().units[0]!;
+  unit.artifacts[0]!.file = '${{|'.repeat(100_000);
+  expect(() => artifactNames(unit, '1.2.3')).toThrow('unknown artifact placeholder');
+});
+
 it('schema support does not enable an unvalidated adapter', () => {
   const unit = parseReleaseDescriptor(fixture()).units[0]!;
   expect(() => assertAdmittedAdapter(unit, [])).toThrow('not passed admission');

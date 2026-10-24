@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile, readdir, copyFile, lstat } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { mkdir, readFile, readdir, copyFile, lstat } from 'node:fs/promises';
+import { join } from 'node:path';
 import { NativeControlPlane } from './native-control-plane.js';
 import { nativeGhCommand, NativeGitHubRelease, type GhCommand } from './gh-release.js';
 import { validateReleaseSource, admitReleaseIdentity, type AdmissionInput, type AdmittedUnit } from './release-admission.js';

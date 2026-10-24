@@ -1,4 +1,4 @@
-import { registerOfflineFixtureRoot, permitOfflineScript, permitOfflineCommand } from './offline-fixtures.js';
+import { registerOfflineFixtureRoot } from './offline-fixtures.js';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, renameSync } from 'node:fs';
 import { join } from 'node:path';

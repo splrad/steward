@@ -33,7 +33,8 @@ export function artifactNames(unit: ReleaseUnit, version: string, packageVersion
   const names = new Map<string, string>();
   for (const artifact of unit.artifacts) {
     const values: Record<string, string> = { version, packageVersion, unitId: unit.id, os: artifact.platform, arch: artifact.architecture };
-    const name = artifact.file.replace(/\$\{([^}]+)\}/g, (_, key: string) => values[key] ?? fail('unknown artifact placeholder'));
+    const name = artifact.file.replace(/\$\{(version|packageVersion|unitId|os|arch)\}/g, (_, key: string) => values[key]!);
+    if (name.includes('${')) fail('unknown artifact placeholder');
     repositoryPath(name);
     if (name.includes('/') || /[ .]$/.test(name) || /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(name)
       || reservedNames.has(name.toLowerCase())) fail('unsafe or reserved artifact name');
