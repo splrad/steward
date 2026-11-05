@@ -13,7 +13,7 @@ function job(id:number,name:string,attempt=1,conclusion='failure') {
   return {id,name,run_id:12,run_attempt:attempt,head_sha:S,status:'completed',conclusion,
     started_at:new Date(Date.parse(at)+attempt*60000).toISOString(),completed_at:new Date(Date.parse(at)+attempt*60000+1000).toISOString(),steps:[] as any[]};
 }
-async function fixture(file='settings-sync.yml') {
+async function fixture(file='quality-language-summary.yml') {
   const definition=await api.maintenanceDefinition(file),workflow={id:5,path:'.github/workflows/'+file,state:'active'};
   const run:any={id:12,run_attempt:1,workflow_id:5,path:workflow.path,repository:{id:1296724484},head_repository:{id:1296724484},head_sha:S,head_branch:'main',event:'schedule',created_at:'2026-10-30T00:00:00Z',updated_at:'2026-10-30T00:01:00Z',status:'completed',conclusion:'failure'};
   const f:any={definition,workflow,run,jobs:Object.entries(definition.names).map(([key,name],i)=>job(i+1,key==='update'?'update (0)':name as string)),calls:[],records:new Map(),saves:0,mode:'accepted'};
@@ -43,7 +43,7 @@ async function fixture(file='settings-sync.yml') {
   f.posts=()=>f.calls.filter(([method]:string[])=>method==='POST');
   return f;
 }
-it.each(['sync-managed.yml','settings-sync.yml','update-dependencies.yml','quality-language-summary.yml','governance-promotion.yml'])('recovers only the exact failed native Run for fixed %s',async file=>{
+it.each(['sync-managed.yml','update-dependencies.yml','quality-language-summary.yml','governance-promotion.yml'])('recovers only the exact failed native Run for fixed %s',async file=>{
   const f=await fixture(file);expect(await f.execute()).toEqual({status:'ACCEPTED'});expect(f.posts()).toHaveLength(1);
   expect(f.records.get(12).requests).toHaveLength(1);expect(f.records.get(12).requests[0].responseStatus).toBe(201);
 });
@@ -57,9 +57,9 @@ it.each(['sync-managed.yml','update-dependencies.yml'])('reads a business Run wi
 });
 it('stops after two recoveries and three actual failed business waves',async()=>{
   const f=await fixture();expect((await f.execute()).status).toBe('ACCEPTED');
-  f.run.status='completed';f.run.conclusion='failure';f.jobs.push(job(2,'settings-sync',2));
+  f.run.status='completed';f.run.conclusion='failure';f.jobs.push(job(2,'quality-summary',2));
   expect((await f.execute()).status).toBe('ACCEPTED');
-  f.run.status='completed';f.run.conclusion='failure';f.jobs.push(job(3,'settings-sync',3));
+  f.run.status='completed';f.run.conclusion='failure';f.jobs.push(job(3,'quality-summary',3));
   expect((await f.execute()).status).toBe('EXHAUSTED');expect(f.posts()).toHaveLength(2);
   expect(f.records.get(12).jobs).toHaveLength(3);
 });
@@ -73,7 +73,7 @@ it('retains original maintenance job IDs after a health-only rerun creates new p
   expect(await f.execute()).toEqual({status:'SATISFIED'});expect(f.posts()).toHaveLength(0);
 });
 it('counts earlier manual business failures rather than resetting budget when no cache exists',async()=>{
-  const f=await fixture();f.run.run_attempt=3;f.jobs.push(job(2,'settings-sync',2),job(3,'settings-sync',3));
+  const f=await fixture();f.run.run_attempt=3;f.jobs.push(job(2,'quality-summary',2),job(3,'quality-summary',3));
   expect((await f.execute()).status).toBe('EXHAUSTED');expect(f.posts()).toHaveLength(0);
 });
 it.each(['no-targets','matrix','health-rerun'])('ignores a health-only failure after successful update business: %s',async kind=>{
@@ -98,7 +98,7 @@ it.each(['repository','fork','workflow','path','branch','pr','head','attempt','j
   await expect(f.execute()).rejects.toThrow();expect(f.posts()).toHaveLength(0);
 });
 it.each(['missing-attempt','ambiguous-targets','missing-matrix'])('preserves unknown evidence for %s without recovery',async kind=>{
-  const f=await fixture(kind==='missing-attempt'?'settings-sync.yml':'update-dependencies.yml');
+  const f=await fixture(kind==='missing-attempt'?'quality-language-summary.yml':'update-dependencies.yml');
   if(kind==='missing-attempt')f.run.run_attempt=2;
   else {f.jobs[0].conclusion='success';f.jobs[1].conclusion='success';f.jobs[0].steps=[{name:'update-targets-found',conclusion:'success'},{name:'update-targets-empty',conclusion:kind==='ambiguous-targets'?'success':'skipped'}];if(kind==='missing-matrix')f.jobs.splice(1,1);}
   expect((await f.execute()).status).toBe('UNKNOWN');expect(f.posts()).toHaveLength(0);
@@ -157,7 +157,7 @@ it('bisects a saturated native window and refuses an unsplittable or incomplete 
   const reader={json:async(p:string)=>({total_count:p.includes('00:00:01.000Z..1970-01-01T00:00:02.000Z')?1000:1}),pages:async(p:string)=>[{...first,...(p.includes('00:00:02.000Z..')?{id:2,created_at:'1970-01-01T00:00:02Z'}:{})}]};
   expect((await api.maintenanceRunWindow(reader,5,'main',1,2)).map((r:any)=>r.id)).toEqual([1,2]);
   await expect(api.maintenanceRunWindow({json:async()=>({total_count:1000})},5,'main',1,1)).rejects.toThrow('WINDOW_SATURATED');
-  const transport={request:async()=>response({total_count:2,jobs:[job(1,'settings-sync')]})};
+  const transport={request:async()=>response({total_count:2,jobs:[job(1,'quality-summary')]})};
   await expect(new NativeEvidenceReader(transport as any,'splrad/steward').pages('actions/runs/12/jobs?filter=all','jobs')).rejects.toThrow('incomplete pagination');
 });
 it('keeps the native maintenance record closed, central-only, monotonic and separate from product cycles',async()=>{
@@ -196,7 +196,7 @@ it.each(['normal','denied-list','manually-disabled','wrong-coordinator','budget'
     if(mode==='budget')clock+=6*60_000;
     if(/\/actions\/workflows\/[a-z-]+\.yml$/.test(path)) {
       const file=path.split('/').at(-1)!;
-      return response({id:file==='settings-sync.yml'?5:6,path:'.github/workflows/'+file,state:file==='settings-sync.yml'&&mode!=='manually-disabled'?'active':'disabled_manually'});
+      return response({id:file==='quality-language-summary.yml'?5:6,path:'.github/workflows/'+file,state:file==='quality-language-summary.yml'&&mode!=='manually-disabled'?'active':'disabled_manually'});
     }
     if(path.includes('/actions/workflows/5/runs?'))return mode==='denied-list'?response({},403):response({total_count:1,workflow_runs:[structuredClone(f.run)]});
     return original(method,path);
@@ -208,4 +208,8 @@ it.each(['normal','denied-list','manually-disabled','wrong-coordinator','budget'
   expect(JSON.stringify(result)).not.toMatch(/private|runId|workflowId|headSha|settings-sync/);
   if(['budget','denied-list'].includes(mode))expect(result.counts.unknown).toBeGreaterThan(0);
   if(mode==='normal')expect(result.counts.recovered).toBe(1);
+});
+
+it('excludes the retired public settings workflow from active definitions',async()=>{
+  await expect(api.maintenanceDefinition('settings-sync.yml')).rejects.toThrow('WORKFLOW');
 });

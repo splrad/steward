@@ -53,7 +53,7 @@ it('keeps raw retained job projections while counting their original business ex
   f.jobs.set(2,[{...structuredClone(f.jobs.get(1)![0]),id:2000,run_attempt:2}]);
   const result=await inspectNativeCycle(f.context,[],f.io,NOW);
   expect(result.currentFacts).toMatchObject({unknownEvidence:[],conflictEvidence:[]});
-  
+
   expect(result.archives[1]!.jobs[0]!.id).toBe(2000);expect(result.native.attempts[1]!.jobs).toEqual([]);
   expect(f.calls.some(call=>call.includes('/jobs/2000/logs'))).toBe(false);
   const history=result.archives.map(value=>({...archiveFile(value),commit:D,value}));

@@ -5,10 +5,11 @@
 | 固定入口 | 业务作业 |
 | --- | --- |
 | sync-managed.yml | bootstrap、templates |
-| settings-sync.yml | settings-sync |
 | update-dependencies.yml | targets、update 矩阵 |
 | quality-language-summary.yml | quality-summary |
 | governance-promotion.yml | promote |
+
+私有 `splrad/steward-settings` 使用官方 full-sync，由受审配置变更和原生 schedule 触发；已启用 APPLY 且后续同步成功时可补齐暂时差异，NOP 仅报告差异，不承诺精确恢复时限。settings 不接入中央逐 Run 自动维护，已有历史证据只读保留；失败由已订阅的授权维护者接收原生通知，持续错误或紧急恢复使用原生 Re-run failed jobs，配置修复通过受审提交触发新的 full-sync。
 
 工作流身份从中央仓原生 API 读取，作业名与当前执行器的固定 YAML 对照。扫描查询默认分支最近 30 天的运行，并回读已有记录中的准确 Run。达到原生过滤查询上限时拆分时间窗口；分页不全、来源变化或无法证明完整作业集合时返回 UNKNOWN。记录仅包含中央 Run、固定作业键、矩阵序号、结论和恢复请求，不保存产品名称或原始步骤文本。
 

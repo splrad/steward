@@ -18,7 +18,7 @@ const identity=r=>[r.id,r.workflow_id,r.repository?.id,r.head_repository?.id,r.p
 const observation=r=>[...identity(r),r.run_attempt,r.status,r.conclusion,r.updated_at];
 
 export async function maintenanceDefinition(file) {
-  check(maintenanceWorkflows.includes(file),'WORKFLOW');
+  check(maintenanceWorkflows.includes(file)&&file!=='settings-sync.yml','WORKFLOW');
   const parsed=YAML.parseDocument(await readFile(join(policyRoot,'.github/workflows',file),'utf8'));
   check(!parsed.errors.length,'DEFINITION');const d=parsed.toJS({maxAliasCount:100}),keys=maintenanceJobKeys(file);
   const currentKeys=keys.filter(key=>key!=='automation-health'||Object.hasOwn(d.jobs,key));
@@ -155,7 +155,7 @@ export async function serviceMaintenance({io,store,defaultBranch,coordinator},no
     &&origin.head_branch===defaultBranch&&origin.head_sha===coordinator.controllerSha&&origin.path==='.github/workflows/release.yml'
     &&['schedule','workflow_dispatch'].includes(origin.event),'COORDINATOR');
   const known=await store.list(),start=Math.floor(started/1000)-30*24*3600,end=Math.floor(started/1000),candidates=[];
-  for(const file of maintenanceWorkflows) {
+  for(const file of maintenanceWorkflows.filter(file=>file!=='settings-sync.yml')) {
     try {
       const definition=await maintenanceDefinition(file),workflow=await reader.json(`actions/workflows/${file}`);
       check(positive(workflow.id)&&workflow.path===`.github/workflows/${file}`,'WORKFLOW_ID');

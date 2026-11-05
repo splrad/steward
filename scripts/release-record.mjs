@@ -207,7 +207,7 @@ const exact = (value,keys) => {
   if(!value || typeof value!=='object' || Array.isArray(value) || Object.keys(value).sort().join(',')!==[...keys].sort().join(','))fail('closed input');
 };
 const writerRefs={release:'steward/release-state',maintenance:'steward/release-state',quality:'steward/governance-state',
-  settings:'steward/governance-state',bootstrap:'steward/governance-state',pages:'steward/governance-state',health:'steward/automation-health'};
+  bootstrap:'steward/governance-state',pages:'steward/governance-state',health:'steward/automation-health'};
 const busy=new Set();
 
 function validateWrite(request) {

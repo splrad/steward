@@ -92,7 +92,7 @@ function completion() {
 describe('four-valued completion',()=>{
   it('requires all native objects and actual consumption, independent of object key order',()=>{
     const {source,facts}=completion();expect(evaluateCompletion(source,facts,now).result).toBe('PASS');
-    facts.source=JSON.parse(JSON.stringify(facts.source).replace('"repositoryId":1,','').replace('{','{"repositoryId":1,'));
+    facts.source=JSON.parse('{"repositoryId":1,'+JSON.stringify(facts.source).replace('"repositoryId":1,','').slice(1));
     expect(evaluateCompletion(source,facts,now).result).toBe('PASS');
   });
   it.each(['source','release-read','channel-read','consumption','unknown-write'])('returns UNKNOWN for %s gaps',kind=>{

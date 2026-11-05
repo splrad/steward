@@ -89,17 +89,6 @@
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "github/gh-actions-lock",
       "versioningTemplate": "semver"
-    },
-    {
-      "customType": "regex",
-      "managerFilePatterns": [
-        "/^\\.github/workflows/settings-sync\\.ya?ml$/"
-      ],
-      "matchStrings": [
-        "# renovate: datasource=github-tags depName=(?<depName>github-community-projects/safe-settings)\\s+ref: (?<currentDigest>[a-f0-9]{40}) # (?<currentValue>[^\\s]+)"
-      ],
-      "datasourceTemplate": "github-tags",
-      "versioningTemplate": "semver"
     }
   ],
   "enabledManagers": [

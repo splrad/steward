@@ -7,7 +7,7 @@ import { githubHeaders } from '../../github/src/api-version.js';
 import { completeMergedPull } from '../../github/src/merged-pull.js';
 import { collectAllPages, nextLink } from '../../github/src/pagination.js';
 import { buildLimits, decodeBuildJson } from '../../core/src/build-manifest.js';
-import { decodeNativeArchive, decodeNativeReadObservation, decodeNativeRetryLimit, decodeNativeSourceRejection, decodeNativeChannel, parseNativeResult, type NativeChannelEvidence, type NativeSourceRejection, type NativeRetryLimit, type NativeArchive, type NativeRun, type NativeJob, type NativeResult, type NativeReadObservation } from '../../core/src/native-evidence.js';
+import { decodeNativeArchive, decodeNativeReadObservation, decodeNativeRetryLimit, decodeNativeSourceRejection, parseNativeResult, type NativeChannelEvidence, type NativeSourceRejection, type NativeRetryLimit, type NativeArchive, type NativeRun, type NativeJob, type NativeResult, type NativeReadObservation } from '../../core/src/native-evidence.js';
 import { nativeWaveKey, parseReleaseRecord, type CycleRecord, type NativeAttemptEvidence, type NativeAttemptSet, type ArchivedAttempt } from '../../core/src/release-observation.js';
 import { extractArtifactFile } from './artifact-file.js';
 import { nativeJobOrigins, withinNativeJobWindow, type NativeJobAttempt } from '../../core/src/native-job-origins.js';

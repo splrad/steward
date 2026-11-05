@@ -36,7 +36,7 @@ async function fixture(){
   await writeFile(join(seed,'README.md'),'Offline fixture\n');await git('add','--','README.md');await git('commit','--signoff','-m','Offline initial source');
   await git('init','--bare',remote);await git('push','--porcelain',remote,'HEAD:refs/heads/main');
   const request=(name:string,changes:ReturnType<typeof file>[],expectedHead:string|null=null,writer='release')=>({directory:join(root,name),remote,repositoryId:1,defaultBranch:'main',
-    targetRef:writer==='health'?'steward/automation-health':['quality','settings','bootstrap','pages'].includes(writer)?'steward/governance-state':'steward/release-state',
+    targetRef:writer==='health'?'steward/automation-health':['quality','bootstrap','pages'].includes(writer)?'steward/governance-state':'steward/release-state',
     writer,expectedHead,allowedPaths:changes.map(item=>item.path),changes,identity});
   const head=async(targetRef='steward/release-state')=>{
     const result=await git('ls-remote','--heads','--refs',remote,`refs/heads/${targetRef}`);return result?result.split('\t')[0]!:null;
@@ -82,11 +82,11 @@ it('reconciles two concurrent App-owned directories without replaying the losing
   });
   const [a,b]=await Promise.all([
     writeReleaseRecords(f.request('quality',[file(`quality/2/${S}.md`,'Chinese findings\n')],initial.head,'quality')),
-    writeReleaseRecords(f.request('settings',[file('settings/50-1.md','Native settings details\n')],initial.head,'settings')),
+    writeReleaseRecords(f.request('other-quality',[file(`quality/50/${S}.md`,'Independent findings\n')],initial.head,'quality')),
   ]);
   expect([a.status,b.status]).toEqual(['APPLIED','APPLIED']);
   const head=(await f.head('steward/governance-state'))!;
-  expect(await f.show(head,path)).toBe('Original');expect(await f.show(head,`quality/2/${S}.md`)).toBe('Chinese findings');expect(await f.show(head,'settings/50-1.md')).toBe('Native settings details');
+  expect(await f.show(head,path)).toBe('Original');expect(await f.show(head,`quality/2/${S}.md`)).toBe('Chinese findings');expect(await f.show(head,`quality/50/${S}.md`)).toBe('Independent findings');
   expect(await f.git('-C',f.remote,'rev-list','--count',head)).toBe('3');
   expect(pushes.length).toBeGreaterThanOrEqual(3);expect(pushes.every(args=>!args.some(arg=>arg.includes('force')))).toBe(true);
 });
@@ -137,14 +137,14 @@ it('requires an existing real default branch before the first state ref',async()
 });
 it.each(['wrong-owner','wrong-ref','path-escape','foreign-path','wrong-digest','wrong-base','future-field','unknown-schema','arbitrary-json'])('rejects %s before changing the remote',async kind=>{
   const f=await fixture(),request=f.request('write',[file('state.json',repository)]) as any;
-  if(kind==='wrong-owner')request.writer='settings';if(kind==='wrong-ref')request.targetRef='main';
+  if(kind==='wrong-owner'){request.writer='maintenance';}if(kind==='wrong-ref')request.targetRef='main';
   if(kind==='path-escape'){request.changes[0].path='../state.json';request.allowedPaths=['../state.json'];}
   if(kind==='foreign-path'){request.changes=[file('.github/workflows/run.yml','commands')];request.allowedPaths=request.changes.map((x:any)=>x.path);}
   if(kind==='wrong-digest')request.changes[0].sha256=H;
   if(kind==='wrong-base')request.changes[0].previousSha256=H;
   if(kind==='future-field')request.changes=[file('state.json',{...repository,allowedJobs:['publish']})];
   if(kind==='unknown-schema')request.changes=[file('state.json',{...repository,schemaVersion:4})];
-  if(kind==='arbitrary-json'){request.writer='settings';request.targetRef='steward/governance-state';request.changes=[file('settings/1-1.json',{command:'arbitrary'})];request.allowedPaths=['settings/1-1.json'];}
+  if(kind==='arbitrary-json'){request.writer='quality';request.targetRef='steward/governance-state';request.changes=[file('quality/1.json',{command:'arbitrary'})];request.allowedPaths=['quality/1.json'];}
   await expect(writeReleaseRecords(request)).rejects.toThrow();expect(await f.head()).toBeNull();expect(await f.head('steward/governance-state')).toBeNull();
 });
 it('rejects a pre-existing user checkout and a linked workspace without overwriting either',async()=>{
@@ -177,7 +177,7 @@ it('reserves CLI output before any mutation and rejects duplicate request keys',
   const f=await fixture(),request=f.request('write',[file('state.json',repository)]),input=join(f.root,'input.json'),output=join(f.root,'output.json');
   await writeFile(input,JSON.stringify(request));await writeFile(output,'Keep\n');
   await expect(main(['write','--input',input,'--output',output])).rejects.toMatchObject({code:'EEXIST'});expect(await f.head()).toBeNull();
-  await writeFile(input,JSON.stringify(request).replace('{','{"writer":"settings",'));
+  await writeFile(input,'{"writer":"settings",'+JSON.stringify(request).slice(1));
   await expect(main(['write','--input',input,'--output',join(f.root,'new.json')])).rejects.toThrow();expect(await f.head()).toBeNull();
 });
 it('limits the offline Git transport to local registered roots and ordinary explicit ref pushes',async()=>{
@@ -189,11 +189,11 @@ it('limits the offline Git transport to local registered roots and ordinary expl
 it('preserves a state branch created concurrently with the initial root proposal',async()=>{
   const f=await fixture();let raced=false;
   intercept(async(args,_options,run)=>{
-    if(args.includes('push')&&!raced){raced=true;await writeReleaseRecords(f.request('settings',[file('settings/1-1.md','Concurrent root\n')],null,'settings'));}
+    if(args.includes('push')&&!raced){raced=true;await writeReleaseRecords(f.request('other-quality',[file(`quality/2/${S}.md`,'Concurrent root\n')],null,'quality'));}
     return run();
   });
   const result=await writeReleaseRecords(f.request('quality',[file(`quality/1/${S}.md`,'Own fact\n')],null,'quality'));
-  expect(result.status).toBe('APPLIED');expect(await f.show(result.head,'settings/1-1.md')).toBe('Concurrent root');
+  expect(result.status).toBe('APPLIED');expect(await f.show(result.head,`quality/2/${S}.md`)).toBe('Concurrent root');
   expect(await f.git('-C',f.remote,'rev-list','--count',result.head)).toBe('2');
 });
 it('reports adopted bytes changed instead of replaying an already adopted proposal',async()=>{
@@ -290,3 +290,9 @@ it.runIf(process.platform !== 'win32')('archives a complete candidate document b
   const recovered=snapshot.domainRecords.filter((r:any)=>r.path.startsWith(`generated/${H}/large-`)).map((r:any)=>r.value);
   expect((await decodeCandidateDocument(recovered)).files).toHaveLength(140);
 },120_000);
+
+it('rejects the retired settings writer before remote mutation',async()=>{
+  const f=await fixture(),request={...f.request('retired',[file('settings/1-1.md','Historical format\n')]),writer:'settings',targetRef:'steward/governance-state'};
+  await expect(writeReleaseRecords(request)).rejects.toThrow('write target');
+  expect(await f.head('steward/governance-state')).toBeNull();
+});

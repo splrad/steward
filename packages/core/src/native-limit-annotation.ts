@@ -1,7 +1,7 @@
 /** GitHub's platform annotations are separate from user-controlled job annotations. */
 export function nativeRerunLimitAnnotation(html:string,repository:string,runId:number):boolean {
   if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)||!Number.isSafeInteger(runId)||runId<1||Buffer.byteLength(html)>384*1024)return false;
-  const source=html.replace(/<!--[\s\S]*?-->/g,'').replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,'');
+  const source=html.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>|<!--[\s\S]*?-->/gi,' ');
   const regions=[...source.matchAll(/<div\b([^>]*\baria-label="Annotations"[^>]*)>/g)];
   if(regions.length!==1)return false;
   const region=regions[0]!,path=`/${repository}/actions/runs/${runId}`;

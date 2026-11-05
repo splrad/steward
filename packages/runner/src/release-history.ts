@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {decodeCompletionArchive,reconcileCycleHistory,completionMatchesCycle,type CompletionArchive,type CycleCompletionFact,type CycleHistoryFact,type RepairDecisionFact} from '../../core/src/release-history.js';
+import {decodeCompletionArchive,reconcileCycleHistory,type CompletionArchive,type CycleCompletionFact,type CycleHistoryFact,type RepairDecisionFact} from '../../core/src/release-history.js';
 import {evaluateCompletion,type CycleRecord,type RepositoryRecord} from '../../core/src/release-observation.js';
 import {NativeEvidenceReader,type EvidenceTransport} from './native-release-evidence.js';
 

@@ -16,7 +16,6 @@
     "verify:dist": "node scripts/verify-dist.mjs",
     "verify:workflows": "node scripts/verify-workflows.mjs",
     "verify": "npm run test && npm run typecheck && npm run verify:config && npm run verify:dist && npm run verify:workflows",
-    "test:settings": "node --test tools/settings-sync/entry.test.cjs",
     "test:template": "uv run --project tools/template --frozen python -m unittest discover -s tools/template -p test_*.py -v"
   },
   "dependencies": {

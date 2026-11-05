@@ -14,7 +14,7 @@ import { decodeNativeDispatchObservation, decodeNativeSourceRejection, type Nati
 import { parseNativeResult, decodeNativeChannel, decodeNativeChannelRead, type NativeChannelRead, type NativeChannelEvidence, type NativeJob, type NativeResult } from '../../core/src/native-evidence.js';
 import { normalizedDeliveryFile, verifyNormalizedDelivery } from './release-pipeline.js';
 import { NativeEvidenceReader, formalReleaseReader, nativeRunFact, nativeRequestIdentity, validateEvidenceContext, EvidenceReadError, stableReleaseFacts, stableAssetFacts, sameChannelOperation,
-  verifyNativeSourceRejection, inspectNativeCycle, sourceRun, type SourceRejectionFile, type RetryLimitFile, type ArchivedFile,
+  verifyNativeSourceRejection, type SourceRejectionFile, type RetryLimitFile, type ArchivedFile,
   jobFact, type EvidenceContext, type EvidenceTransport, type ArchiveFile } from './native-release-evidence.js';
 export interface RunIdentity { repositoryId: number; unitId: string; sourceSha: string; controllerSha: string; runId: number; attempt: number }
 export interface ProducerReceipt { buildId: string; jobId: number; runId?: number; attempt: number; artifactId: number }
