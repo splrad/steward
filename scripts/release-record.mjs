@@ -11,7 +11,7 @@ import { decodeReleaseRecord, decodeStateFile, stateRecordOwner, assertRepositor
   inspectNativeCycle, recoverNativeCycle, archiveFile, nativeReadFile, nativeEvidenceTransport,
   dispatchNativeRun, prepareBuildDispatch, verifyDispatchWorkflow, inspectPublications, invokePublication, inspectCycleHistory, completionFile, decodeCompletionArchive,
   pipelinePreparePublication, readCycleDelivery, prepareNormalizedDelivery, NativeGitHubRelease, nativeGhCommand, nativeReleaseDownload, NativeEvidenceReader, nativeRunFact,
-  retainedChannelObservations, observeNativeChannels, readChannelSourceRejections, selectChannelDispatch, prepareChannelDispatch, channelTargetsDigest, verifyChannelProbe, verifyChannelResult, verifyContinuationReleases, evaluateCompletion } from '../packages/runner/dist/index.js';
+  retainedChannelObservations, observeNativeChannels, readChannelSourceRejections, selectChannelDispatch, prepareChannelDispatch, channelTargetsDigest, verifyChannelResult, verifyContinuationReleases, evaluateCompletion } from '../packages/runner/dist/index.js';
 
 import {withReleaseAdoption,recoverReleaseCaches} from './release-adoption.mjs';
 

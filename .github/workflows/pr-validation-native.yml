@@ -167,6 +167,11 @@ jobs:
           npm run typecheck
           npm run verify:config -- --toolchain-root "$GITHUB_WORKSPACE/policy"
           npm run verify:dist
+          if [ "$GITHUB_REPOSITORY_ID" = "1296724484" ]; then
+            npm ci --prefix tools/quality-language --ignore-scripts --no-audit --no-fund
+            npm test --prefix tools/quality-language
+            npm run typecheck --prefix tools/quality-language
+          fi
       - name: Python locked build and tests
         if: needs.scope.outputs.mode == 'python'
         working-directory: target
