@@ -1,4 +1,4 @@
-import {expect,it,vi} from 'vitest';
+import {expect,it} from 'vitest';
 import {pathToFileURL} from 'node:url';
 import {resolve} from 'node:path';
 import {NativeEvidenceReader} from '../src/native-release-evidence.js';
