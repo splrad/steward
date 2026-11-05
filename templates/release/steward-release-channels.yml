@@ -55,7 +55,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: d89aaffa0d0f22e1f8c4d5d160b43da4c7e3262e
+          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -109,7 +109,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: d89aaffa0d0f22e1f8c4d5d160b43da4c7e3262e
+          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -186,7 +186,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: d89aaffa0d0f22e1f8c4d5d160b43da4c7e3262e
+          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -328,7 +328,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: d89aaffa0d0f22e1f8c4d5d160b43da4c7e3262e
+          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -481,7 +481,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: d89aaffa0d0f22e1f8c4d5d160b43da4c7e3262e
+          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -648,7 +648,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: d89aaffa0d0f22e1f8c4d5d160b43da4c7e3262e
+          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -1023,7 +1023,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: d89aaffa0d0f22e1f8c4d5d160b43da4c7e3262e
+          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -1185,7 +1185,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: d89aaffa0d0f22e1f8c4d5d160b43da4c7e3262e
+          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
