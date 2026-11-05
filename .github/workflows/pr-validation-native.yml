@@ -26,28 +26,6 @@ jobs:
     env:
       VALIDATION_WORKSPACE: ${{ github.workspace }}/target
     steps:
-      - name: Validate pull request title
-        if: github.event_name == 'pull_request'
-        uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        with:
-          types: |
-            feat
-            fix
-            perf
-            revert
-            docs
-            build
-            deps
-            chore
-            ci
-            refactor
-            test
-            style
-          requireScope: 'false'
-          validateSingleCommit: 'false'
-          wip: 'false'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ job.workflow_repository }}
