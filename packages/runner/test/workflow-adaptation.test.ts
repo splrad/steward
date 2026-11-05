@@ -38,3 +38,22 @@ it('activates the trusted policy tool paths before validation outside its checko
     expect(activated).toBeLessThan(execution);
   }
 });
+
+it('binds WinGet execution to the controller tool before channel credentials are present',async()=>{
+  const d=YAML.parse(await readFile('templates/release/steward-release-channels.yml','utf8'));
+  for(const name of ['winget-submit','winget-verify']) {
+    const steps=d.jobs[name].steps;
+    const install=steps.findIndex((s:any)=>s.uses?.startsWith('jdx/mise-action@'));
+    const resolve=steps.findIndex((s:any)=>s.id==='winget-tool');
+    const business=steps.findIndex((s:any)=>s.name==='business-'+name);
+    expect(steps[install].with).toMatchObject({working_directory:'controller',install_args:'--locked',env:false,persist_github_token:false});
+    expect(resolve).toBeGreaterThan(install);expect(business).toBeGreaterThan(resolve);
+    expect(steps[resolve].env).toBeUndefined();
+    expect(steps[resolve].run).toContain('mise -C controller which wingetcreate');
+    expect(steps[resolve].run).toContain('"exe=$exe" >> $env:GITHUB_OUTPUT');
+    expect(steps[business].env.WINGETCREATE_EXE).toBe('${{ steps.winget-tool.outputs.exe }}');
+    expect(steps[business].run).toContain('& $env:WINGETCREATE_EXE update SPLRAD.LayerScape.Deployer --version $version --urls "$url|x64" --out generated --format yaml');
+    expect(steps[business].run).not.toMatch(/\bmise\b/);
+    expect(steps.filter((s:any)=>s.run).map((s:any)=>s.run).join('\n')).not.toMatch(/mise -C product/);
+  }
+});

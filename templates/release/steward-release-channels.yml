@@ -697,15 +697,18 @@ jobs:
         run: |-
           node controller/packages/runner/dist/index.js release-pipeline channel-download --inputs inputs.json --state-dir state --controller-dir controller --unit "$env:UNIT" --channel "$env:CHANNEL" --directory final --output manifest.json
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Install locked product channel tool
+      - name: Resolve locked controller channel tool
+        id: winget-tool
         shell: pwsh
         run: |-
-          mise -C product install --locked
+          $exe = mise -C controller which wingetcreate
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "exe=$exe" >> $env:GITHUB_OUTPUT
       - name: business-winget-submit
         shell: pwsh
         env:
           MODE: submit
+          WINGETCREATE_EXE: ${{ steps.winget-tool.outputs.exe }}
           GH_TOKEN: ${{ secrets.WINGET_FORK_TOKEN }}
           WINGET_FORK_REPOSITORY: ${{ vars.WINGET_FORK_REPOSITORY }}
         run: "$ErrorActionPreference='Stop'
@@ -766,7 +769,7 @@ jobs:
 
           \  if ($status -eq '200') {
 
-          \    mise -C product exec -- wingetcreate update SPLRAD.LayerScape.Deployer --version $version --urls \"$url|x64\" --out generated --format yaml
+          \    & $env:WINGETCREATE_EXE update SPLRAD.LayerScape.Deployer --version $version --urls \"$url|x64\" --out generated --format yaml
 
           \    if ($LASTEXITCODE) { throw 'WINGET_CREATE_UPDATE' }
 
@@ -1231,15 +1234,18 @@ jobs:
         run: |-
           node controller/packages/runner/dist/index.js release-pipeline channel-download --inputs inputs.json --state-dir state --controller-dir controller --unit "$env:UNIT" --channel "$env:CHANNEL" --directory final --output manifest.json
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Install locked product channel tool
+      - name: Resolve locked controller channel tool
+        id: winget-tool
         shell: pwsh
         run: |-
-          mise -C product install --locked
+          $exe = mise -C controller which wingetcreate
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "exe=$exe" >> $env:GITHUB_OUTPUT
       - name: business-winget-verify
         shell: pwsh
         env:
           MODE: verify
+          WINGETCREATE_EXE: ${{ steps.winget-tool.outputs.exe }}
           GH_TOKEN: ${{ github.token }}
           WINGET_FORK_REPOSITORY: ${{ vars.WINGET_FORK_REPOSITORY }}
         run: "$ErrorActionPreference='Stop'
@@ -1300,7 +1306,7 @@ jobs:
 
           \  if ($status -eq '200') {
 
-          \    mise -C product exec -- wingetcreate update SPLRAD.LayerScape.Deployer --version $version --urls \"$url|x64\" --out generated --format yaml
+          \    & $env:WINGETCREATE_EXE update SPLRAD.LayerScape.Deployer --version $version --urls \"$url|x64\" --out generated --format yaml
 
           \    if ($LASTEXITCODE) { throw 'WINGET_CREATE_UPDATE' }
 

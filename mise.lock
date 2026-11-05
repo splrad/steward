@@ -149,6 +149,20 @@ url = "https://github.com/jdx/jactionlint/releases/download/v2.3.0/jactionlint_2
 url_api = "https://api.github.com/repos/jdx/jactionlint/releases/assets/662210534"
 provenance = "github-attestations"
 
+[[tools."github:microsoft/winget-create"]]
+version = "1.12.13.0"
+backend = "github:microsoft/winget-create"
+specifiers = ["latest"]
+
+[tools."github:microsoft/winget-create".options]
+asset_pattern = "wingetcreate.exe"
+
+[tools."github:microsoft/winget-create"."platforms.windows-x64"]
+checksum = "sha256:24042bd37915805615e6cf969ac57c6439124c3fe85823327f5f3fb24bd9ffea"
+checksum_source = "mise-versions"
+url = "https://github.com/microsoft/winget-create/releases/download/v1.12.13.0/wingetcreate.exe"
+url_api = "https://api.github.com/repos/microsoft/winget-create/releases/assets/486815909"
+
 [[tools.node]]
 version = "26.12.1"
 backend = "core:node"

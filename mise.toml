@@ -16,6 +16,8 @@ python = "latest"
 "aqua:oras-project/oras" = "latest"
 "aqua:anchore/syft" = "latest"
 
+"github:microsoft/winget-create" = { version = "latest", asset_pattern = "wingetcreate.exe", format = "raw", bin = "wingetcreate.exe", os = ["windows"] }
+
 [settings]
 lockfile = true
 lockfile_platforms = ["windows-x64", "linux-x64"]
