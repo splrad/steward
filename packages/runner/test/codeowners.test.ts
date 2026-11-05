@@ -7,7 +7,7 @@ it("protects trusted validation and delivery inputs without requiring ownership 
   const entries = text.split(/\r?\n/).filter(line => line.trim() && !line.startsWith("#"));
   const scopes = ["/.github/", "/.github/CODEOWNERS", "/config/", "/schema/", "/scripts/",
     "/packages/core/", "/packages/github/", "/packages/runtime/", "/packages/runner/",
-    "/package.json", "/package-lock.json", "/mise.toml", "/mise.lock", "/.mise/locks/"];
+    "/package.json", "/package-lock.json", "/mise.toml", "/mise.lock", "/.mise/locks/", "/templates/", "/tools/", "/copier.yml", "/safe-settings/"];
   expect(entries.map(line => line.trim().split(/\s+/))).toEqual(scopes.map(scope => [scope, "@axiomoth"]));
   expect(new Set(entries).size).toBe(entries.length);
 });

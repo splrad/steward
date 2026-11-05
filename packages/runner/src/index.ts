@@ -88,7 +88,6 @@ async function summary(lines: readonly string[]): Promise<void> {
   const target = process.env.GITHUB_STEP_SUMMARY;
   if (target) await writeFile(target, `${lines.join("\n")}\n`, { flag: "a" }); else process.stdout.write(`${lines.join("\n")}\n`);
 }
-async function output(values: Record<string, string | number>): Promise<void> { const target = process.env.GITHUB_OUTPUT; if (!target) return; await writeFile(target, Object.entries(values).map(([key, value]) => `${key}=${String(value).replace(/[\r\n]/g, " ")}`).join("\n") + "\n", { flag: "a" }); }
 
 async function releaseFreezeCommand(args: Readonly<Record<string, string>>): Promise<void> {
   let boundary: GitReleaseBoundary;

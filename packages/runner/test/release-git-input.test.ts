@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { freezeReleaseGitInput } from '../src/release-git-input.js';
-import { collectContentInput, planContentBatches, contentWireInput } from '../src/release-content.js';
+import { collectContentInput, planContentBatches } from '../src/release-content.js';
 import { validateReleaseSource, validateReleaseSourceManifest, validateReleaseEvidence } from '../../core/src/release-bundle.js';
 import { frozenFixture } from '../../core/test/release-receipt-fixture.js';
 import { receiptDigest } from '../../core/src/release-note-receipt.js';

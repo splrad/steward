@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { resolve, join } from 'node:path';
+import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 const {coordinateReleaseWake,serviceReleaseWake,fetchState}=await import(pathToFileURL(resolve('scripts/release-coordinator.mjs')).href);
 it('reads Pages state only after validating both governance writers and an unbypassable integrity rule',async()=>{

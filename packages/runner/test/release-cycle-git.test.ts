@@ -12,7 +12,7 @@ import { evidenceFixture, digest, zipResult, C, D, NOW } from './native-evidence
 import { registerOfflineFixtureRoot } from './offline-fixtures.js';
 import { isolatedBuildEnvironment } from '../src/build-environment.js';
 import { prepareChannelDispatch, channelTargetsDigest, channelEvidenceFile, dispatchObservationFile } from '../src/release-run.js';
-import { inspectNativeCycle, nativeRunFact, jobFact } from '../src/native-release-evidence.js';
+import { nativeRunFact, jobFact } from '../src/native-release-evidence.js';
 import { evaluateCompletion } from '../../core/src/release-observation.js';
 const { writeReleaseRecords, readReleaseRecords, releaseCommand, readNativeCompletion, observeReleaseChannels, inspectRepositoryHistory, publicationAssetFacts } =
   await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);

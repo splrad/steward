@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { planContentBatches, resumeContentBatches, assembleUnitNotes, contentWireInput, type ContentSource, type ContentRuntime, type ContentCache, type ContentWork } from '../src/release-content.js';
-import { splitContentText, validateContentResult, validateContentInput, type ContentInput, type ContentItem } from '../../core/src/release-content.js';
+import { planContentBatches, resumeContentBatches, assembleUnitNotes, type ContentSource, type ContentRuntime, type ContentWork } from '../src/release-content.js';
+import { splitContentText, validateContentResult, validateContentInput, type ContentInput } from '../../core/src/release-content.js';
 
 const digest = (v: string) => createHash('sha256').update(v).digest('hex');
 const input = (): ContentInput => ({ schemaVersion: 1, repositoryId: 1, candidateId: digest('candidate'), baseSha: 'a'.repeat(40), controllerSha: 'b'.repeat(40),
@@ -11,7 +11,6 @@ function source(n: number, stage: 'CONTEXT' | 'DIFF' = 'DIFF'): ContentSource {
   return { id: digest(`${n}`), unitId: 'app', path: `${n}.ts`, previousPath: null, status: 'A:after', oid: 'c'.repeat(40), mode: '100644', byteLength: 6,
     encoding: 'utf8', sha256: digest('示例'), start: 0, end: 6, text: '示例', stage };
 }
-const item = (sourceIds: string[]): ContentItem => ({ sourceIds, visibility: 'USER', section: 'changes', statementZh: '增加使用说明，适用于当前版本。', qualification: 'SOURCE_CONFIRMED' });
 function runtime() {
   let time = Date.parse('2026-10-27T00:00:00Z'), calls = 0, editing = false;
   const saves: ContentWork[] = [], requests: string[] = [];

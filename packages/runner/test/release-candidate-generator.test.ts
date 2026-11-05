@@ -1,4 +1,4 @@
-import { expect, it, vi } from 'vitest';
+import { expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { PullRequestBody } from 'release-please/build/src/util/pull-request-body.js';
 import { GitHub } from 'release-please/build/src/github.js';

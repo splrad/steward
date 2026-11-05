@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import { generateKeyPairSync } from "node:crypto";
-import { resolve } from "node:path";
 import { GitHubClient } from "../../github/src/index.js";
 import { classifyCopilotReviewState } from "../src/copilot-review-state.js";
 import { forkCheckFor, readForkCopilotEvidence, type ForkCopilotEvidence } from "../src/copilot-fork-evidence.js";
@@ -62,7 +61,7 @@ function client(proofs = [fixture()], override?: (path: string, count: number) =
 
 describe("fork Copilot运行证据", () => {
   it.each(['success', 'stale-head', 'wrong-base', 'archived', 'wrong-owner', 'changed-head'])("只读命令入口核验fork：%s", async kind => {
-    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { format: 'pem', type: 'pkcs8' }, publicKeyEncoding: { format: 'pem', type: 'spki' } });
+    generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { format: 'pem', type: 'pkcs8' }, publicKeyEncoding: { format: 'pem', type: 'spki' } });
     const repo = { ...repository, owner: { id: kind === 'wrong-owner' ? 1 : 302208797, login: 'splrad' }, default_branch: 'main', private: false, archived: kind === 'archived' };
     const livePull = { ...pull, state: 'open', base: { ...pull.base, ref: kind === 'wrong-base' ? 'release' : 'main' } };
     let pullReads = 0;

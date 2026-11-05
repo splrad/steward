@@ -6,7 +6,7 @@ import {pathToFileURL} from 'node:url';
 import {execFileSync} from 'node:child_process';
 import {registerOfflineFixtureRoot} from './offline-fixtures.js';
 const script=(name:string)=>import(pathToFileURL(resolve('scripts/'+name+'.mjs')).href);
-const S='a'.repeat(40),H='b'.repeat(40);
+const S='a'.repeat(40);
 it('reads real complete Git base/head and detects stale base, wrong checkout and missing source',async()=>{
   const {validationInput}=await script('validation-input'),root=await mkdtemp(join(tmpdir(),'validation-git-'));registerOfflineFixtureRoot(root);
   const git=(...args:string[])=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();

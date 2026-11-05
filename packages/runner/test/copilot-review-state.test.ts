@@ -2,10 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { classifyCopilotReviewState, type CopilotReviewInput } from "../src/copilot-review-state.js";
 import { readCopilotReviewState } from "../src/index.js";
 import { GitHubClient } from "../../github/src/index.js";
-import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 const head = "aed1c639a59ab76ac32b951abecc8c0e33082c13";
 const priorHead = "c3a4c11bad79691c1a7bccb8e24376519f4c2e54";

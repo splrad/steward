@@ -1,10 +1,7 @@
-import { expect, it, vi } from 'vitest';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { nativeReleaseCli } from '../src/native-release-cli.js';
-import * as pipeline from '../src/release-pipeline.js';
-import { parseHistoricalPipelineRecord, bindPipelineRun, historicalPipelineSource, assertPipelineSource, type HistoricalPipelineRecord, type PipelineSource } from '../src/release-pipeline-record.js';
+import { expect, it } from 'vitest';
+import '../src/native-release-cli.js';
+import '../src/release-pipeline.js';
+import { parseHistoricalPipelineRecord, bindPipelineRun, historicalPipelineSource, assertPipelineSource, type HistoricalPipelineRecord } from '../src/release-pipeline-record.js';
 const record: HistoricalPipelineRecord = { repositoryId: 1, fullName: 'fixture/product', releaseId: 3, releasePr: 4, sourceSha: 'a'.repeat(40), policySha: 'b'.repeat(40), observationSha: 'c'.repeat(40), runId: 42, attempt: 2, mode: 'build', toolLocks: { mise: 'd'.repeat(64) },
   admitted: { version: '1.2.3', packageVersion: '1.2.3', tag: 'v1.2.3', descriptorSha256: 'e'.repeat(64), templateSha256: 'f'.repeat(64), assets: [{ id: 'app', name: 'app.exe' }],
     unit: { id: 'app', displayName: 'App', path: '.', releasePleasePath: '.', ecosystem: 'native', versionFile: 'VERSION', changelogPath: 'CHANGELOG.md', notesPath: '.release-notes/app.md', signingPolicy: 'none', channels: [], artifacts: [{ id: 'app', file: 'app.exe', kind: 'executable', mediaType: 'application/octet-stream', platform: 'windows', architecture: 'x64', build: 'windows', required: true }], builds: [{ id: 'windows', os: 'windows', arch: 'x64', entrypoint: 'build.ps1', args: [], expectedArtifacts: ['app'] }] } } };

@@ -12,3 +12,7 @@
 /mise.toml @axiomoth
 /mise.lock @axiomoth
 /.mise/locks/ @axiomoth
+/templates/ @axiomoth
+/tools/ @axiomoth
+/copier.yml @axiomoth
+/safe-settings/ @axiomoth
