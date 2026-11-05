@@ -1,131 +1,48 @@
-# 发布来源、候选和持久收据
+# 发布来源、GitHub Release 与历史记录
 
-当前入口包括 `release-build`、`release-freeze` 与 `release-candidate`，采用总基线 v1.8 的产品仓候选合同。产品提交 `productTargetSha` 与候选合并提交分别记录；Release 标签始终绑定前者。
+本文说明当前源码中的发布连接。入口是 [release workflow](../.github/workflows/release.yml)、[协调器](../scripts/release-coordinator.mjs)和[记录读写入口](../scripts/release-record.mjs)。实现存在、仓库已启用和实际发布验收分别判断。
 
-## 输入与候选
+## 候选与准确构建来源
 
-`release-freeze` 从完整本地 Git 对象库读取明确边界至目标的全部可达提交、净差异、重命名、原始 commit/blob、README 背景及读取缺口。支持明确标签、采用基线和首发完整树。无需每条提交都有 PR；浅克隆、对象缺失、漂移边界、超限均失败。来源 JSON 为 UTF-8/LF，原始源码字节以 Base64 保留。
+[候选入口](../scripts/release-candidate.mjs)使用 Release Please 的版本与候选结果，并接入内容收集、分批生成和人工稿保护。候选合并后读取原 PR、合并提交 S 和已审 head H，比较完整 Git 树，核对冻结作者集合及原生版本，再通过既有 Git 快进事务登记周期和 activeCycleId。构建及标签绑定准确 S，中央执行来源另存 controller SHA；不以运行时默认分支最新提交替代。
 
-`release-candidate --operation prepare` 接受一个已准备的 bundle：
+构建按 S 中的 delivery 数据和原生 YAML 生产者映射读取文件，登记实际 Run/attempt、artifact ID、摘要及来源。构建身份不取得中央发布权限；中央读取并核验冻结制品后执行发布。相关数据与检查见[发布管线](../packages/runner/src/release-pipeline.ts)。
 
-- `frozen.json`：`FrozenRelease` 合同，包括仓库、公共 VERSION、产品提交/树、策略、边界、模板摘要、来源/证据摘要、构建清单、资产摘要、中央构建 run/artifact ID、仓库作者及贡献者 ID、可信链接。
-- `source.json`：`release-freeze` 的原样输出。
-- `evidence.json`：`schemaVersion=1`、`sourceDigest`、`coverage.commitShas`、`coverage.paths`、`internalChanges` 和 `unknowns`；覆盖集合与来源一致。
-- `release-notes.zh-CN.md`：按升级须知、更新内容、可选贡献者头像、完整变更排列的草稿。
-- `assets/`：恰好包含冻结清单中的平面资产文件；无资产发布可以为空。
+单位 notes 仍须包含七节：概述、更新内容、兼容性、升级与迁移、安装说明、已知问题、恢复；[notes解析与模板映射](../packages/core/src/release-template.ts)校验完整标题集合。正式Release正文将概述置于产品/版本一级标题后、“升级须知”前；兼容性、升级与迁移、安装说明、已知问题、恢复五项映射到“升级须知”，并包含下载资产信息；更新内容映射到“更新内容”，再按冻结贡献者和作者ID生成可选“贡献者”，以CHANGELOG准确比较链接等来源组成“完整变更”。这是外层四节布局（贡献者可省略），不减少单位notes的七节要求。展示副本可调整标题层级，原notes/CHANGELOG保留原字节。作者过滤依据已确认的身份，不以账号存在代替作者确认。
 
-准备器复算本地资产，保存来源与证据，再创建专用分支及 PR。产品仓只包含 `.release-notes/candidates/{tag}/candidate.json` 和 `release-notes.zh-CN.md`。前者是中央身份投影，后者支持直接编辑。分支或版本槽被不同对象占用时停止，已有文件不覆盖。PR 说明要求维护者同时确认仓库作者 ID 和贡献者集合；账号存在不等于作者身份已经被人工确认。
+GitHub Release的外层展示标题与正文标题、单位notes标题分别处理：当前创建请求使用 `name: m.tag`，即 `Release.name` 为tag；中文正文生成不表示外层展示标题已中文化。
 
-中央 API 回读 VERSION、产品树和净差异，验证原始 Git 对象、模板、构建配置/清单、中央 run/artifact 身份及贡献者提交关联。模型不能通过候选文件自报批准。当前链接合同支持冻结区间 compare 和有区间提交关联的同仓 PR；按仓个性化仍保持关闭。
-
-## 批准和发布
-
-`inspect` 回读当前候选 head、两项必需检查及归属、真人 Review 权限和正文。批准绑定精确 head 与正文摘要。旧 head、撤销批准、请求修改、产品树变化、身份投影改变或额外文件都会阻断。`Release Candidate Review` 在 Checks 显示状态及正文入口，待处理项附文件行注释。
-
-Review 事件只调用 `inspect`。`reconcile` 先核验真人手动合并证据，再进入发布；自动合并和合并队列不能替代手动合并。中央能力必须为 active。`release.yml` 的准备、观察和发布作业仅执行固定中央策略，不执行下载 bundle 或产品代码；输入通过环境变量传入命令。发布作业按收据中的中央 artifact ID/run ID 下载资产，重新复算字节。
-
-每次远程写入前复核批准、合并、默认分支产品树、版本顺序、旧标签边界及不可变发布策略。先持久化写入意图，再创建唯一匹配草稿、续传缺少的资产、发布并验证。已有资产 ID、名称、大小和摘要必须一致；不通过删除重传消除冲突。发布后下载资产重新计算 SHA-256，核验标签、正文、标题、immutable 和 latest，再保存 verified 收据。
-
-最终 publish 作业按仓库 ID 串行，不同 tag 共用并发组，且不取消正在发布的作业。排队作业开始后仍重新核验版本顺序；若更高版本已发布，较低版本阻断，不能覆盖 latest。候选准备和审阅仍按各自版本运行。
-
-## 存储与恢复
-
-增量迁移 `0010_release_receipts.sql` 在现有 D1 绑定中增加 `release_receipts` 和 `release_evidence_chunks`；历史迁移及表保留。版本槽由仓库 ID/tag 唯一绑定，修订保留旧记录；更新使用版本 CAS 和十分钟有界租约。
-
-操作包括：
-
-| operation | 行为 |
-| --- | --- |
-| prepare | 校验 bundle，保存输入，创建或恢复同一候选 |
-| inspect | 回读审阅状态并更新 Checks；不发布 |
-| reconcile | 回读真实合并和发布状态，继续符合条件的发布 |
-| pause / resume | 显式暂停或恢复同一收据 |
-| revise | 旧候选已关闭未合并、已暂停、未创建 Release/写入意图时，建立新修订；重新审阅 |
-| retry-create | 创建结果长期未知时的人工恢复入口；等待一小时后重新核验不存在同标签 Release/tag，再清理原创建意图；此操作本身不发布 |
-| migrate-policy | 在受保护环境中归档旧策略候选，按当前策略重新构建并生成新修订；旧批准不继承，已开始发布时拒绝迁移 |
-| export | 导出当前或 `--revision` 指定的收据及原始来源、证据，并校验摘要 |
-| generator-ticket | 固定生成计划和跨重跑预算，签发仅能访问该候选生成账本的凭证；有效期取一小时与计划执行预算加三十分钟排队/初始化余量的较大值，最长八十六分钟 |
-| rebind-build | 本地重新复算资产，并校验完整清单、工具链及中央成功运行；相同字节更新下载来源，保留原冻结身份和批准 |
-
-创建返回 `CREATION_OUTCOME_UNKNOWN` 时，在中央 `release.yml` 的默认分支选择 `retry-create`，填写原 repositoryId 和 targetTag，经 `steward-release` 环境批准后执行。创建意图必须已持续至少一小时，且远端不存在同标签 Release/tag；恢复成功后再选择 `reconcile` 继续发布。
-
-创建、上传和发布响应丢失后先回读远程对象。创建结果仍未知且没有可绑定对象时保留意图，自动重试不会再次创建。已发布内容漂移只报告，不覆盖人工编辑。
-
-初始构建已 accepted、但 seed 上传或后续派发失败时，重跑 `release-build-complete.yml` 全部作业，或手动派发该工作流并传入原 `release-build.yml` 的 runId。完成入口重新定位原请求与构建 artifact，复算资产并重建 seed；同一构建的 finish 可幂等调用，随后重新上传和接续 generate。无需将 accepted 改回 failed。此恢复要求原构建 artifact 仍可用且策略同步；artifact 已过期时明确失败，须人工处理。
-
-尚未 accepted 的初始构建遇到策略或产品提交更新时，下一次通过完整来源校验的 prepare 自动归档旧请求，并为同一 tag 创建新请求。增量迁移 `0013_release_build_restart.sql` 保留历史请求及运行身份；归档和创建在同一事务内完成，版本 CAS 防止与完成回调竞争，同版本只保留一个有效请求。新请求从头构建，迟到回调不能修改已归档请求。每个 tag 最多自动替换三次，每个请求仍最多执行三次；预算随记录持久化。已有当前候选收据、Release/tag 或预算耗尽时停止。尚无收据的 accepted/seeded 初始请求仅在策略变化时允许被新策略请求替换；同策略只更新产品提交仍拒绝替换。新请求须先通过 prepare 的当前策略、来源、工具链和版本校验，事务再以完整旧记录及版本 CAS 归档并创建；旧产物不带入新请求。替换由正常构建准备入口触发，无需另填 abandon/revision 字段；本机制不新增提交事件到发布工作流的调度。
-
-策略升级后，可从默认分支运行 `release.yml` 的 `migrate-policy`。入口先检查当前能力、默认分支 VERSION、目标标签未占用及当前单个文件型构建单元配置；已绑定的旧候选 PR 必须先由维护者关闭（已合并 PR 也处于关闭状态），开放 PR 会在归档前以 POLICY_MIGRATION_OPEN_PR 拒绝，再在同一事务中归档旧收据、冻结旧构建记录并撤销旧生成凭证。旧 accepted 记录的内容保留，迟到完成回调和旧租约不能修改新状态。新策略从当前产品默认分支重新冻结来源、构建和生成候选，修订号递增，旧批准、合并及候选 PR 身份均不继承。已有 Release、tag、发布意图或 publishing/verified 状态时拒绝迁移。每个仓库/tag 最多迁移三次；生成账本及未 accepted 构建的原有预算仍保留。迁移派发由 0019_release_migration_dispatches.sql 持久记录 policy、repository/tag、targetSha 和作者输入摘要。并发请求只允许首次调用发送 POST；响应丢失后重跑只分页回读 Actions，以固定策略及含摘要的 run-name 绑定原运行，查询不到或历史不完整时保留意图并失败，不再次派发。已确认派发直接复用结果；如执行在发送前中断且始终没有运行，须维护者核对原执行与 Actions 后单独安排恢复，不自动清除未知意图。零构建配置也可通过此入口重新生成无资产 seed。迁移尚未创建新收据时若再次升级策略，恢复入口从最新未完成迁移继续；每条迁移最多追加三次策略重绑定历史，禁止回退到旧策略。重绑定在同一事务内隔离旧策略构建（包括已 accepted 但尚无候选的构建）并撤销生成票据，同策略重试不重复归档，新 current 收据出现后拒绝重绑定。
-
-沿用现有 Worker 定时入口，每批最多二十个候选，同对象至少间隔十五分钟；覆盖已绑定待审、已批准、已合并和发布中状态，以发现漏失事件。pending 能力只观察，active 才能调度 reconcile。暂停和旧策略记录不自动恢复。
-
-## 本地验证与尚未完成的环节
-
-本批验证包含真实 SQLite 迁移/CAS/重启、Git 对象与缺口、GitHub 读取适配器、Review/合并事件分流、批准前零发布、无资产与中性仓库、三种响应丢失、资产冲突、正文漂移和下载摘要。GitHub 与远程 D1 通过夹具模拟；不等于线上流程验收。
-
-`release.yml` 的 generate 操作依次固定生成预算、运行隔离模型作业和创建候选。模型调用步骤只注入个人 Copilot PAT；独立解密步骤使用环境专用 GENERATION_TICKET_KEY，AES-256-GCM 信封绑定 repository/run/attempt/workflow SHA，artifact 只保存密文。模型子进程不继承解密密钥，段完成或异常退出时回收运行时票据（进程被强制终止时由有效期兜底）；父进程用短时凭证访问生成账本，子进程使用独立空目录和配置，不继承该凭证、App 或发布凭据。CLI 固定为 1.0.91，禁用工具、内置 MCP、自动指令和会话恢复。增量迁移 `0017_release_generation_graph.sql` 保存引用图和节点进度，输入、格式诊断及结果分别复用摘要对象存储。旧 `0011` 内嵌账本保留历史；新协议签发时撤销旧凭证，不能再次签发旧协议。未知结果仍计次，完成节点跨重跑复用。结构解析只接受唯一 JSON 对象或明确 json 围栏，拒绝重复键和未知字段。
-
-生成失败后若凭证已过期，请在原 `release.yml` 运行中选择 **Re-run all jobs**，使 generation-ticket 作业重新签发凭证。**Re-run failed jobs** 会复用此前成功作业的旧凭证，无法恢复过期授权。重新签发仍要求策略匹配，且旧凭证已到期；若返回 GENERATION_TICKET_BUSY，应等待旧凭证到期再重跑全部作业。相同计划的已完成批次及已用调用预算保留，不因换票重置。模型作业保持凭据隔离。
-
-构建执行层已接入四种 Profile 的参数编排、准确干净提交检查、独立输出目录、原生版本检查器及中央清单收集。`release-build.yml` 固定来源、构建请求和工具链，在隔离作业执行产品构建；`release-build-complete.yml` 回读运行与 artifact 身份，独立验证下载资产，自动生成包含 `source.json`、`frozen.json` 和资产的 seed bundle，再接续 generate。首发请求在 seed 来源摘要验证及文件写入成功后才 finish；完成入口仅在资产验证明确报告 BuildContractError 时拒绝请求；artifact 下载、seed 写入及运行时服务故障保留为可重试状态。GitHub 文件发布接受一个非 OCI 构建单元；零构建配置生成无资产 seed，经成功运行回读后标记为 `seeded`，保留 `build: null`，不产生 accepted 构建。无资产 seed 可在三次运行预算内重新导出，策略迁移仍保留旧收据并重新生成候选。
-
-有文件资产的首次发布从 `release-build.yml` 开始，构建完成后才进入 generate 和候选准备。候选准备 API 要求冻结清单与配置的 builds 完全一致，并验证中央成功运行及 artifact 身份；缺少所需构建清单会以 `BUILD_SET` 拒绝。配置无构建单元的仓库允许无资产候选。
-
-各 Profile 共用根目录 `VERSION` 合同：冻结产品提交必须包含严格的 `X.Y.Z` 加 LF，且与目标标签及原生资产版本一致。LayerScape 的配套 [PR #168](https://github.com/splrad/LayerScape/pull/168) 增加 `VERSION`，由 `Version.props` 和发布脚本共同读取；须先将配套变更纳入所选产品提交，再运行首发构建。旧产品提交缺少文件时明确失败，不从标签推断文件内容。LayerScape 的发布能力仍为 pending，启用须另行完成部署和真实链路验收。
-
-`ensure-assets` 已接通缺失或过期资产的重建调度。`rebind-build` 必须匹配原冻结工具链、清单及资产字节，同字节更新下载来源并保留批准；异字节走 `revise-rebuild`，重新建立候选并审阅。已准备但尚未绑定 PR 的候选可经 `recover-candidate` 恢复。所有恢复仍严格绑定 `POLICY_SHA`：默认分支与收据策略不一致时明确阻断，策略升级使用上述受保护迁移入口创建新候选；旧收据缺少工具链摘要时拒绝推断。
-
-当前 source 验证读取上限为 32 MiB，证据为 512 KiB，正文为 128 KiB；超过上限明确失败。生成最多八批，每批输入 96 KiB，整个计划 256 KiB，每批及最终汇总最多各两次调用；单次 180 秒，小输入总预算十分钟，多批预算在调用前固定。完整文本按 Unicode 字符切片，超限不截断后继续。LayerScape 仍为 pending。
-
-候选创建前，生成计划的来源或策略更新可自动归档旧账本并建立新账本，每个 tag 最多三次。历史调用记录保留，旧票据撤销，版本号继续递增以拒绝迟到写入；同来源同策略的输入变动不重置预算，已归档计划不能恢复。当前候选收据存在时禁止替换；已由受保护迁移归档的历史收据保留，不占用当前候选槽。
-
-资产上传和下载校验共用按大小计算的预算：一分钟初始化余量，加上按 4 MiB/s 计算的传输时间；1 GiB 资产预算为 316 秒，下载重定向共用同一预算。低于该基准仍可能超时，恢复时继续核验远端资产身份和摘要。
-
-发布作业从可信收据计算总预算：二十分钟初始化/收尾余量，加上总资产按 4 MiB/s 下载构建 artifact 的时间，再加全部资产各自上传及回读预算。三个 1 GiB 资产为 65 分钟；128个32 MiB资产为328分钟，均覆盖既定总量并低于托管作业六小时上限。每次有效收据操作续租十分钟，下载每项资产前续租；过期租约不可恢复。安装令牌使用相同仓库和权限范围，每45分钟按需刷新。生成作业上限86分钟，覆盖最大56分钟模型预算和30分钟初始化/收尾余量。
-
-部署前须依次应用新增迁移 `0010_release_receipts.sql`、`0011_release_generation.sql`、`0012_release_build_requests.sql`、`0013_release_build_restart.sql` 、`0014_release_generation_restart.sql` 、`0015_release_policy_migration.sql` 、`0016_release_policy_retargets.sql` 和 `0017_release_generation_graph.sql`，再部署相同策略版本的 Worker 与工作流；随后在获准测试对象验证真实网页编辑、Review/手动合并、Actions 下载、D1 绑定及 GitHub 不可变 Release。正式产品发布另行执行对应授权阶段。
-
-原生版本检查读取独立临时快照：从已打开的产物句柄流式复制并同步计算摘要，关闭写句柄后检查快照，检查后再次核对快照身份和摘要。原始产物身份变化仍会拒绝；快照在检查结束后清理。
-
-GitHub Release 构建请求在计划阶段仅接受根目录文件匹配规则，拒绝带目录分隔符或 globstar 的规则；资产名直接使用该根目录文件名。生成凭证通过原子更新签发，已有未过期凭证时返回 GENERATION_TICKET_BUSY，过期后才可重新签发。
-
-构建完成作业预算为 360 分钟，覆盖合同最多 4 GiB、128 个文件：按 4 MiB/s 下载及上传约 35 分钟，逐文件原生检查最多 256 分钟，另留初始化及本地快照读写余量。
-
-构建命令共享计划的45分钟总预算，每个后续命令只获得剩余时间；产品构建和发布构建作业统一为360分钟，为初始化、清单收集、原生检查和上传保留余量。完成入口把空格、前导点、超长等非法Release资产名标记为确定性验证失败。生成计划归档及替换在同一事务内要求旧ticket已过期或为空，活动生成保持有效。
-
-仅重跑失败构建作业时，完成回调可登记同一runId的更高attempt：中央运行及前次attempt均须通过仓库、工作流、策略和完成状态核验，且前次结果必须为failure/cancelled/timed_out。登记仍受三次预算、收据状态与版本CAS约束；find只匹配最后一次attempt，迟到历史回调返回空。
-
-构建控制入口的GitHub与运行时请求共用按需刷新的单仓安装令牌，缓存45分钟，权限和POLICY_SHA保持原绑定。发布计划贡献者归属查询最多100条提交，超过时在查询前以CONTRIBUTOR_LIMIT明确拒绝；全部贡献者请求共享90秒取消预算，每次网络请求另受60秒上限约束。
-
-当前仓库目录Schema仅支持schemaVersion 4。旧v3目录须先迁移到v4再校验；退役的prAutomation/releaseProfile字段不再作为当前目录输入。
-
-验收重试复用逐字节一致的source.json/frozen.json，内容冲突明确拒绝；部分seed写入和finish临时失败可重试。生成ticket请求的账本mutation在同一UPDATE中核对token摘要及当前有效期，过期或被替换的旧请求不能提交。generation-ticket 从已核实 seed 的持久记录准备生成图；模型只读取绑定来源分块，不重复下载构建资产。generated-candidate 单独下载资产并验收，60分钟覆盖4GiB传输及初始化余量。
-
-来源对象上传和下载均使用最多八个并发分块及五分钟整体预算，单块请求保留一分钟上限；任何分块失败会取消其余请求。下载校验分块数量、大小、规范 Base64 和完整 SHA-256。运行时每批读取最多64块，按顺序一次完成长度及摘要校验。来源计划步骤共享45分钟上限，计划作业及候选准备作业均为60分钟，覆盖来源冻结、对象传输和初始化。
-
-原生检查器的确定性格式、归档及版本错误以专用退出码和固定 JSON 标识传回，转换为 BuildContractError，完成作业据此持久化拒绝。未知进程故障和文件访问失败仍保留重试语义；成功进程返回无效结果同样按校验失败处理。
-
-### 持久分块生成预算
-
-来源合同保持32 MiB。构建前及服务端核对同一分块计划；metadata和文本按位置完整分段，输入单块最多96 KiB、最多4096来源节点，按8路逐层汇总。中间结果最多8 KiB，最终结果保留64 KiB上限。图只保存摘要和依赖，节点结果不累积到旧512 KiB账本。每次准备最多16节点，完整准备之前不签发凭证。
-
-每节点最多两次调用，包含一次格式修复；最多4681节点、9362次调用。单段最多60次调用，每次180秒、段内210分钟，工作流作业240分钟。理论最多157段，另保留3次有界中断恢复机会；调用总额不会因换票增加。达到段预算后交还凭证，由受保护的续跑作业核对剩余预算并调度下一段。模型作业不持有App凭据，只有完整root结果才允许创建候选。网络失败且供应商结果未知时当前段停止，下一张凭证仍受节点总尝试次数约束。
-
-签发绑定已验收构建seed或已封存的无资产seed，并检查仓库、tag、POLICY_SHA、冻结数据和来源摘要。模型ticket只能读取该图来源分块、预占就绪节点、提交本次预占结果及读取最终root，不能选择其他对象摘要或自行签发。节点预占通过版本和随机标记CAS计费，旧票据、过期票据和旧预占结果不能覆盖新结果。
-
-新生成的审阅证据使用schemaVersion 2：保存完整提交集合与路径集合的计数及规范摘要，验收端从冻结来源独立重算；避免大路径集合再次撑破512 KiB证据预算。既有schemaVersion 1显式覆盖列表仍可验证。
-尚无收据或历史迁移记录、但已有旧策略 accepted/seeded 初始请求时，受保护 migrate-policy 入口核验当前默认分支、VERSION、目标未占用及配置后派发新策略构建。旧 seed 保留到新 prepare 验证并原子替换，派发失败不会丢失恢复来源；结果未知时先查实际运行再决定重试。返回 migratedRevision=null 与 supersedesRequestKey，不虚构已存在的候选修订。替换沿用每个 tag 三次预算，候选收据先出现则拒绝替换。
-
-GitHub Release 所引用文件构建的 outputs.match 必须使用扁平 ASCII 文件名规则，允许现有 *、? 和 {version}；目录、非 ASCII 字符、保留设备名和尾部句点在配置阶段拒绝。其他交付消费者仍可使用原有目录路径。实际 ZIP 条目继续执行长度、大小写唯一性及文件名校验。
-
-迁移派发明确收到 GitHub 拒绝（400/401/403/404/422）、派发前 GET 失败或策略漂移时，仅释放尚未确认的意图，修正原因后可重试。网络中断、408/429/5xx 和结果未知保留意图并回读。人工恢复须先保存对应 dispatch_key 记录、核对原调用日志与 Actions 历史，确认 POST 未接受且无运行；在暂停同对象操作并完成备份后，仅删除该精确 dispatch_key 且 confirmed=0 的记录，再重试原输入。不能仅凭暂时查不到运行清除意图。
+## 当前来源输入
 
 
-生成图续跑在外部派发前，以 graph version 的 CAS 将过期 ticket 原子替换为 `continuation:<version>` 一次性预约。并发或重复的 continue 请求只有一个能成功；后续新 ticket 消费预约。派发结果未知或调用中断时保留预约，不自动重发。恢复前须核对原调用、Actions 运行及图状态；只有证明未被接受且无运行/票据在途时，维护者才可批准对精确 repository/tag/graph/version 的预约恢复。不得因运行暂不可见就清除预约。
+`release-freeze` 输出 schemaVersion 3 来源清单，从完整本地 Git 对象库读取明确边界至目标的全部可达提交、净差异、重命名、README 背景及读取缺口。来源身份绑定 `repositoryId`、`defaultBranch`、`targetSha` 和 `controllerSha`，发布单元绑定 Release Please 解析后的 `id`、`path`、`version` 和 `tag`。版本解析与排序复用锁定的 Release Please，支持组件标签、子目录单元和预发布版本。
 
+命令接收 `--repository-id`、`--default-branch`、`--target-sha`、`--controller-sha`、`--unit`、`--unit-path`、`--version`、`--target-tag`，以及原有 Git 根目录和输出路径参数。来源边界选择标签、采用基线或首发完整树之一；标签边界同时提供 `--boundary-version`，用于比较同一发布单元的版本顺序。
 
-续跑取得预约后，如安装令牌获取或派发前读取失败，或 GitHub 明确以 400/401/403/404/422 拒绝 workflow POST，runner 调用已认证的 `release-continuation`，用精确预约标记及 graph version 的 CAS 释放；旧释放请求不能撤销后续预约或已发出的 ticket。超时、响应丢失、408/429/5xx 等 POST 结果未知时保留预约，不自动再次派发。
+原始 commit/blob 留在 Git 对象库。读取器通过单个 `git cat-file --batch` 进程流式读取，复核 Git 对象 ID、完整 SHA-256 和连续字节块的 SHA-256；清单保存对象类型、字节数、编码标识和块区间。默认块大小为 1 MiB。纯校验器核对清单结构、身份、提交图和引用覆盖，实际 Git 字节由读取器验证。后续内容收集须按对象 ID 和字节区间重新读取并核验摘要。
 
-已知派发未被接受时，runner 先将精确 frozen/graph/reservation 写入 continuation-cleanup.json 和 Actions 运行日志，再最多重试三次释放。释放接口接受同一已完成释放的幂等重试，仍拒绝旧标记撤销新预约或已发票据。若清理持续失败，generation-continue 作业通过 always 步骤保留清理 artifact 30 天；维护者可下载并核对该文件，使用相同 repository-id、target-tag、policy-sha 运行 `release-candidate --operation generator-release-continuation --bundle <continuation-cleanup.json>` 重试清理，然后重跑生成续跑作业。此恢复命令不重新申请预约、不派发工作流。仅使用由“派发明确未接受”分支生成的记录；未知派发结果不生成清理记录。
+来源全集由 Git 提交图确定。直接提交、一个提交关联多个 PR、同一 PR 关联多条提交均可表达；GitHub PR 元数据只补充已确认的提交范围，并验证同仓身份、提交关联、完整分页和重复项。浅克隆、缺失对象、边界漂移、不完整提交图和超过显式资源预算均失败。来源清单不携带整包 Base64；旧的 8 MiB 单对象、32 MiB JSON 和 64 MiB 总对象默认上限已从该读取器移除，提交数、路径数、进程时间及显式配置的字节预算仍受限。
 
-GitHub Release 绑定的文件构建在配置阶段检查版本校验器能力：所有执行平台支持精确 package.json；Windows 构建另支持 .exe、.dll 和由原生检查脚本验证内容的 .zip。当前不接受 Linux .tgz 或任意二进制文件作为 Release 资产，返回 RN_CONFIG_RELEASE_VERSION_INSPECTOR。独立 build、package 和 deployment 消费者仍按各自合同使用这些输出；新增 Release 文件格式须先实现独立版本验证器。
+内容收集与发布连接使用准确来源和受审输入；旧 schema 按对应历史读取器解释，不把旧格式转换为当前来源验证通过。
+
+## 中文初稿与身份
+
+[发布说明客户端](../packages/runner/src/copilot-release-client.ts)调用现有 [SDK入口](../tools/quality-language/release-notes.mjs)，使用隔离临时目录及显式传入的短时身份。当前 release job 声明 `copilot-requests: write`，将 `github.token` 作为 `STEWARD_COPILOT_TOKEN` 交给适配器。SDK与兼容runtime版本由仓库锁定配置及安装校验确定，不在本文另设CLI版本。
+
+生成按既有批次保存输入和结果，认证/额度不可用时保留待处理状态。客户端的有限超时和输出限制属于该调用边界，不形成跨构建、发布和渠道累计的统一失败预算。实际模型服务接受与用量归属须由对应环境的真实调用验证；无模型运行只证明其覆盖的身份和连接事实。
+
+## GitHub Release 与渠道
+
+[GitHub Release适配器](../packages/runner/src/gh-release.ts)复核冻结制品、准确tag/S、Release身份及资产集合；写入响应丢失后先读回同一对象，不盲目重复创建或上传。正式发布后核 immutable、正文与资产身份，实际下载比较字节，并调用 `gh release verify`、`gh release verify-asset` 及来源证明验证。已经公开的字节不覆盖为修复版本。
+
+主发行与渠道分开判定。准确S对应的公开immutable GitHub Release及必需资产、来源、摘要和实际下载验证构成主发行结果；渠道根据已配置的发行单位、准确Release ID和manifest摘要分别派发及观察。渠道等待不改写已确认的主发行结果，未验证渠道不记为通过。
+
+当前交付主线为GitHub Release。已有GHCR/WinGet实现保留，实际分发另行完成对应产品接入与验收。无当前发布消费者的npm、NuGet、PyPI、Helm、cargo和Maven发布保持未启用，不因构建工具或资产格式存在而自动启用上传。根 `package.json` 的 `private: true` 包用于构建依赖；GitHub Release上的wheel/sdist资产不表示已向PyPI发布。
+
+## 有限恢复与历史记录
+
+协调器按候选、构建、中央发布、渠道派发/观察及原生证据恢复的固定顺序工作，保存准确Run、attempt和对象身份。恢复复用平台支持的原Run失败job重跑和仍有效制品；成功job及其来源证据可按实际结果复用。未知写入先核实远端状态，缺失或冲突证据明确报告；不承诺平台窗口外无限自动重建。
+
+普通候选按当前登记及原生事实处理，不要求扫描全仓历史或清空旧恢复缓存。旧失败保留失败，修正后沿普通候选路径产生新版本；主发行验证不以旧 `lastCompleted` 非空或active记录清空为条件。
+
+旧D1/Worker收据、生成票据与图协议属于历史实现，不是当前操作步骤。其原文可从[历史版本](https://github.com/splrad/steward/blob/d89aaffa0d0f22e1f8c4d5d160b43da4c7e3262e/docs/release-source-contract.md)查阅；历史数据按原schema保留读取与恢复所需来源。本文不要求重新部署旧SQL迁移、申请生成票据或恢复跨阶段三次预算，也不因清理活动说明而删除历史数据或有效读取能力。

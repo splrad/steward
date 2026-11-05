@@ -7,7 +7,7 @@ it('checks every page rather than the manually selected latest release', async (
   const gh = new GitHubClient('fixture', 'https://api.github.com', (async url => {
     calls.push(String(url));
     const second = String(url).includes('page=2');
-    return Response.json(second ? [{ id: 2, tag_name: 'v3.0.0', draft: false, prerelease: false }]
+    return nativeResponse(url,second ? [{ id: 2, tag_name: 'v3.0.0', draft: false, prerelease: false }]
       : [{ id: 1, tag_name: 'v1.0.0', draft: false, prerelease: false }],
     { headers: second ? {} : { link: '<https://api.github.com/repos/sample/product/releases?per_page=100&page=2>; rel="next"' } });
   }) as typeof fetch);
@@ -25,3 +25,5 @@ it('ignores drafts, prereleases and the bound release but refuses equal or highe
   await expect(assertIncreasingReleaseVersion(gh, 'sample', 'product', 'v2.0.0')).rejects.toThrow('VERSION_NOT_INCREASING');
   await expect(assertIncreasingReleaseVersion(gh, 'sample', 'product', 'v3.0.0')).resolves.toBeUndefined();
 });
+
+function nativeResponse(url:unknown,value:unknown,init:ResponseInit={}){const response=Response.json(value,init);Object.defineProperty(response,'url',{value:String(url)});return response;}

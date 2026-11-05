@@ -1,159 +1,18 @@
-import { readFile, readdir, stat } from "node:fs/promises";
-import Ajv from "ajv/dist/2020.js";
-import addFormats from "ajv-formats";
-import { verifyToolchain } from './verify-toolchain.mjs';
-
-try {
-await verifyToolchain();
-
-
-
-const pairs = [
-  ["config/labels/pr-semantics.json", "schema/pr-semantics.schema.json"],
-  ["config/repositories.json", "schema/repositories.schema.json"],
-  ["config/review/profiles.json", "schema/review-profiles.schema.json"],
-  ["config/review/rules.json", "schema/review-rules.schema.json"],
-  ["config/profiles/classification/default.json", "schema/classification-profile.schema.json"],
-  ["config/profiles/classification/layerscape.json", "schema/classification-profile.schema.json"],
-  ["config/profiles/validation/public-basic.json", "schema/validation-profile.schema.json"],
-  ["config/profiles/validation/layerscape.json", "schema/validation-profile.schema.json"],
-  ["config/profiles/validation/steward.json", "schema/validation-profile.schema.json"],
-];
-const ajv = new Ajv({ allErrors: true, strict: false }); addFormats(ajv);
-const validators = new Map();
-for (const [dataPath, schemaPath] of pairs) {
-  const data = JSON.parse(await readFile(dataPath, "utf8")); const schema = JSON.parse(await readFile(schemaPath, "utf8"));
-  let validate = validators.get(schemaPath);
-  if (!validate) { validate = ajv.compile(schema); validators.set(schemaPath, validate); }
-  if (!validate(data)) throw new Error(`${dataPath}不符合结构: ${ajv.errorsText(validate.errors)}`);
-}
-const catalog = JSON.parse(await readFile("config/repositories.json", "utf8")); const ids = Object.keys(catalog.repositories); if (new Set(ids).size !== ids.length) throw new Error("仓库编号重复");
-const { parseRepositoryCatalog, parseManagedFileConfig } = await import("../packages/runner/dist/index.js");
-parseRepositoryCatalog(catalog);
-parseManagedFileConfig(JSON.parse(await readFile('config/managed-files.json', 'utf8')), ids);
-const repositoryValidator = validators.get("schema/repositories.schema.json");
-const sampleRepository = Object.values(catalog.repositories)[0];
-if (repositoryValidator({ ...catalog, schemaVersion: 3 })) throw new Error('退役v3目录不得通过当前schema');
-if (!repositoryValidator || !sampleRepository) throw new Error("仓库配置反例验证缺少基础数据");
-const invalidRepositoryKeyCatalog = { ...catalog, repositories: { ...catalog.repositories, invalid: sampleRepository } };
-if (repositoryValidator(invalidRepositoryKeyCatalog)) throw new Error("仓库编号schema允许非数字键");
-const emptyRepositoryCatalog = { ...catalog, repositories: {} };
-if (repositoryValidator(emptyRepositoryCatalog)) throw new Error("仓库目录schema允许空集合");
-const invalidDefaultWorkflowCatalog = structuredClone(catalog);
-invalidDefaultWorkflowCatalog.defaults.public.allowedWorkflowPaths = ["README.md"];
-if (repositoryValidator(invalidDefaultWorkflowCatalog)) throw new Error("默认仓库配置允许非工作流路径");
-const invalidRepositoryWorkflowCatalog = structuredClone(catalog);
-invalidRepositoryWorkflowCatalog.repositories[ids[0]].allowedWorkflowPaths = ["docs/workflow.yml"];
-if (repositoryValidator(invalidRepositoryWorkflowCatalog)) throw new Error("单仓配置允许非工作流路径");
-const reviewProfiles = JSON.parse(await readFile("config/review/profiles.json", "utf8"));
-const reviewRules = JSON.parse(await readFile("config/review/rules.json", "utf8"));
-const profileIds = reviewProfiles.profiles.map(profile => profile.id);
-if (new Set(profileIds).size !== profileIds.length || reviewProfiles.profiles.find(profile => profile.id === "common")?.status !== "active") throw new Error("审查profile注册表无效");
-const activeProfiles = new Set(reviewProfiles.profiles.filter(profile => profile.status === "active").map(profile => profile.id));
-const reviewRuleIds = reviewRules.rules.map(rule => rule.id);
-if (new Set(reviewRuleIds).size !== reviewRuleIds.length) throw new Error("审查规则编号重复");
-for (const rule of reviewRules.rules) {
-  for (const profile of rule.profiles) if (!activeProfiles.has(profile)) throw new Error(`审查规则引用不存在或已退役的profile: ${profile}`);
-}
-const languageRule = reviewRules.rules.find(rule => rule.id === "common.review-language-zh");
-if (languageRule?.status !== "active" || languageRule.audience !== "shared" || !languageRule.profiles.includes("common")) throw new Error("简体中文审查规则未固定为common shared规则");
-for (const configuration of Object.values(catalog.repositories)) {
-  if (!activeProfiles.has(configuration.reviewInstructionsProfile)) throw new Error("仓库引用不存在或已退役的审查profile");
-  if (configuration.reviewGovernance.owner !== "splrad/maintainers") throw new Error("仓库审查治理owner不一致");
-  if (configuration.reviewGovernance.scope === "policy-only" && !["discovered", "repository-ready"].includes(configuration.reviewGovernance.lifecycle)) throw new Error("policy-only仓库生命周期无效");
-}
-const expectedReviewProfiles = { "1187527897": "layerscape", "1296724484": "steward", "1296725317": "github" };
-for (const [repositoryId, profile] of Object.entries(expectedReviewProfiles)) if (catalog.repositories[repositoryId]?.reviewInstructionsProfile !== profile) throw new Error(`仓库审查profile不符合冻结合同: ${repositoryId}`);
-if (catalog.repositories["1187527897"].reviewGovernance.scope !== "full" || catalog.repositories["1296724484"].reviewGovernance.scope !== "full" || catalog.repositories["1296725317"].reviewGovernance.scope !== "policy-only") throw new Error("三仓审查治理scope不符合冻结合同");
-const semantics = JSON.parse(await readFile("config/labels/pr-semantics.json", "utf8"));
-const primaryIds = semantics.roles.primaryKind.definitions.map(x => x.id);
-const exactRoles = {
-  primaryKind: ["feature", "bug", "performance", "refactor", "test", "build", "documentation", "workflow", "chore"],
-  riskFlags: ["security", "breaking-change"],
-  areas: ["area:source", "area:test", "area:workflow", "area:automation", "area:docs", "area:config", "area:runtime", "area:release"],
-  facets: ["dependencies", "github_actions", "javascript", "config", "revert", "style", "localization"],
-};
-for (const [role, expected] of Object.entries(exactRoles)) if (JSON.stringify(semantics.roles[role].definitions.map(x => x.id)) !== JSON.stringify(expected)) throw new Error(`中央语义目录${role}不是v1固定集合`);
-const exactManagement = { primaryKind: { metadataOwner: "steward", assignmentOwner: "steward", reconcile: "exclusive-replace" }, riskFlags: { metadataOwner: "steward", assignmentOwner: "shared", reconcile: "provenance-aware-set" }, areas: { metadataOwner: "steward", assignmentOwner: "steward", reconcile: "authoritative-set" }, facets: { metadataOwner: "steward", assignmentOwner: "shared", reconcile: "provenance-aware-set" } };
-for (const [role, expected] of Object.entries(exactManagement)) for (const [name, value] of Object.entries(expected)) if (semantics.roles[role].management[name] !== value) throw new Error(`中央语义目录${role}管理合同无效`);
-if (JSON.stringify(primaryIds) !== JSON.stringify(semantics.roles.primaryKind.order)) throw new Error("主类定义顺序与order不一致");
-const roleDefinitions = Object.values(semantics.roles).flatMap(role => role.definitions);
-const definitionIds = roleDefinitions.map(x => x.id); if (new Set(definitionIds).size !== definitionIds.length) throw new Error("中央语义定义编号重复");
-const physicalNames = roleDefinitions.flatMap(x => x.githubLabel ? [x.githubLabel.name.toLowerCase()] : []);
-if (new Set(physicalNames).size !== physicalNames.length) throw new Error("中央物理标签名称跨角色重复");
-const profiles = new Map();
-for (const name of ["default", "layerscape"]) {
-  const profile = JSON.parse(await readFile(`config/profiles/classification/${name}.json`, "utf8")); profiles.set(name, profile);
-  const fileSets = new Set(Object.keys(profile.fileSets)); const textSets = new Set(Object.keys(profile.commitTextSets));
-  const allRules = [...profile.rules.primaryKind, ...profile.rules.riskFlags, ...profile.rules.facets, ...profile.areas];
-  const ruleIds = allRules.map(x => x.id); if (new Set(ruleIds).size !== ruleIds.length) throw new Error(`${name}规则编号重复`);
-  for (const rule of allRules) {
-    for (const set of rule.match.fileSets ?? []) if (!fileSets.has(set)) throw new Error(`${name}引用未知fileSet: ${set}`);
-    for (const set of rule.match.commitTextSets ?? []) if (!textSets.has(set)) throw new Error(`${name}引用未知commitTextSet: ${set}`);
-  }
-  for (const set of [...profile.runtimeRelease.includeFileSets, ...profile.runtimeRelease.excludeFileSets, ...profile.installOrPackage.fileSets]) if (!fileSets.has(set)) throw new Error(`${name}发布事实引用未知fileSet: ${set}`);
-  for (const patterns of Object.values(profile.commitTextSets)) for (const pattern of patterns) new RegExp(pattern, "iu");
-  if (profile.releaseCategories.filter(x => x.fallback).length !== (profile.releaseCategories.length ? 1 : 0)) throw new Error(`${name}发布回退类别数量无效`);
-}
-const classificationProfileValidator = validators.get("schema/classification-profile.schema.json");
-const layerscapeProfile = profiles.get("layerscape");
-if (!classificationProfileValidator || !layerscapeProfile) throw new Error("分类配置反例验证缺少基础数据");
-const nonFallbackIndex = layerscapeProfile.releaseCategories.findIndex(category => !category.fallback);
-const fallbackIndex = layerscapeProfile.releaseCategories.findIndex(category => category.fallback);
-if (nonFallbackIndex < 0 || fallbackIndex < 0) throw new Error("分类配置反例验证缺少发布类别");
-const missingMatchProfile = structuredClone(layerscapeProfile);
-delete missingMatchProfile.releaseCategories[nonFallbackIndex].matchAny;
-if (classificationProfileValidator(missingMatchProfile)) throw new Error("发布类别schema允许非回退类别缺少matchAny");
-const matchedFallbackProfile = structuredClone(layerscapeProfile);
-matchedFallbackProfile.releaseCategories[fallbackIndex].matchAny = structuredClone(layerscapeProfile.releaseCategories[nonFallbackIndex].matchAny);
-if (classificationProfileValidator(matchedFallbackProfile)) throw new Error("发布类别schema允许回退类别包含matchAny");
-for (const configuration of [...Object.values(catalog.defaults), ...Object.values(catalog.repositories)]) {
-  const profile = profiles.get(configuration.classification.profile); if (!profile) throw new Error("仓库引用未知分类profile");
-  const classification = configuration.classification;
-  if (classification.labelAssignmentMode === "enforce" && classification.labelDefinitionMode !== "enforce") throw new Error("PR标签enforce要求定义enforce");
-  if (Object.hasOwn(classification, "ai")) throw new Error("classification AI configuration is retired");
-}
-const forbiddenRuntime = ["queues", "kv_namespaces", "r2_buckets", "services"];
-const wrangler = await readFile("packages/runtime/wrangler.toml", "utf8");
-for (const name of forbiddenRuntime) if (wrangler.includes(name)) throw new Error(`运行配置包含禁止绑定: ${name}`);
-if (!wrangler.includes('compatibility_flags = ["nodejs_compat"]')) throw new Error("运行配置必须显式启用nodejs_compat");
-const wranglerLines = wrangler.split(/\r?\n/u);
-const arrayTables = wranglerLines.filter(line => /^\[\[[^\]]+\]\]$/u.test(line));
-if (JSON.stringify(arrayTables) !== JSON.stringify(["[[d1_databases]]", "[[migrations]]"])) throw new Error("运行配置只保留D1及历史迁移");
-for (const [header, expected] of [
-  ['[[migrations]]', ['[[migrations]]', 'tag = "validation-coordinator-v1"', 'new_sqlite_classes = ["ValidationCoordinator"]']],
-]) {
-  const start = wranglerLines.indexOf(header);
-  const offset = wranglerLines.slice(start + 1).findIndex(line => /^\[/.test(line));
-  const end = offset < 0 ? wranglerLines.length : start + 1 + offset;
-  if (JSON.stringify(wranglerLines.slice(start, end).filter(Boolean)) !== JSON.stringify(expected)) throw new Error('验证协调绑定或迁移不符合固定合同');
-}
-const d1Start = wranglerLines.indexOf("[[d1_databases]]");
-const d1EndOffset = wranglerLines.slice(d1Start + 1).findIndex(line => /^\[[^\]]+\]$/u.test(line));
-const d1End = d1EndOffset < 0 ? wranglerLines.length : d1Start + 1 + d1EndOffset;
-const actualD1Block = wranglerLines.slice(d1Start, d1End).filter(Boolean);
-const expectedD1Block = [
-  "[[d1_databases]]",
-  'binding = "ISSUE_SNAPSHOTS"',
-  'database_name = "splrad-steward-issue-snapshots"',
-  'database_id = "75ae2ef8-683d-4a44-b113-e58961473d03"',
-  'migrations_dir = "migrations"',
-];
-if (JSON.stringify(actualD1Block) !== JSON.stringify(expectedD1Block)) throw new Error("运行配置的D1绑定不符合固定合同");
-const triggerStart = wranglerLines.indexOf("[triggers]");
-if (triggerStart >= 0 || /^\s*crons\s*=/m.test(wrangler)) throw new Error("退役正文写意图恢复不得保留Cron触发器");
-
-
-for (const section of ["public", "private", "repository"]) {
-  for (const mode of [undefined, "legacy", "native", "invalid", null]) {
-    const candidate = structuredClone(catalog);
-    const configuration = section === "repository" ? candidate.repositories[ids[0]] : candidate.defaults[section];
-    if (mode === undefined) delete configuration.copilotReviewTrigger;
-    else configuration.copilotReviewTrigger = mode;
-    const expected = mode === undefined || mode === "native";
-    if (Boolean(repositoryValidator(candidate)) !== expected) throw new Error("审查触发模式schema边界无效");
-  }
-}
-
-console.log("configuration verified");
-} catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }
+import {readFile} from 'node:fs/promises';
+import {verifyToolchain} from './verify-toolchain.mjs';
+import {assertRepositoryInstructions} from '../packages/runner/dist/index.js';
+import YAML from 'yaml';
+const args=process.argv.slice(2);
+if(args.length && (args.length!==2||args[0]!=='--toolchain-root'||!args[1]))throw Error('CONFIG_ARGUMENTS');
+await verifyToolchain(process.cwd(),args[1]);
+const legacy=JSON.parse(await readFile('config/review/legacy-instructions.json','utf8'));
+await assertRepositoryInstructions(process.cwd(),await readFile('templates/repository/AGENTS.md'),{templateSource:true,legacy});
+const organizationInstructions=await readFile('config/review/copilot-organization.md','utf8');
+const languageBody='审查标题、摘要、行内意见和修正建议以简体中文为主，可按表达需要使用其他语言。\n\n'
+  +'审查输出中的代码标识、文件路径、命令、日志原文、严重级别标签及平台固定字段保留原文。\n';
+if(organizationInstructions!==languageBody)throw Error('ORGANIZATION_INSTRUCTIONS_FORMAT');
+const copier=YAML.parse(await readFile('copier.yml','utf8'));
+if(copier._subdirectory!=='templates/repository')throw Error('TEMPLATE_SOURCE');
+const bootstrap=JSON.parse(await readFile('config/governance/bootstrap.json','utf8'));
+if(bootstrap.schemaVersion!==1||!Array.isArray(bootstrap.rules))throw Error('BOOTSTRAP_REGISTRATION');
+console.log('native configuration verified');

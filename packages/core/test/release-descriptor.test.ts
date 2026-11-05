@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseReleaseDescriptor, artifactNames, assertAdmittedAdapter, type ReleaseDescriptor } from '../src/release-descriptor.js';
+import { parseReleaseDescriptor, artifactNames, type ReleaseDescriptor } from '../src/release-descriptor.js';
 
 const fixture = (): ReleaseDescriptor => ({ schemaVersion: 1, units: [{
   id: 'web-sdk', displayName: 'Web SDK', path: 'packages/web-sdk', releasePleasePath: 'packages/web-sdk', ecosystem: 'node',
@@ -25,12 +25,6 @@ it('rejects repeated unterminated placeholder prefixes through the exported rend
   const unit = fixture().units[0]!;
   unit.artifacts[0]!.file = '${{|'.repeat(100_000);
   expect(() => artifactNames(unit, '1.2.3')).toThrow('unknown artifact placeholder');
-});
-
-it('schema support does not enable an unvalidated adapter', () => {
-  const unit = parseReleaseDescriptor(fixture()).units[0]!;
-  expect(() => assertAdmittedAdapter(unit, [])).toThrow('not passed admission');
-  expect(() => assertAdmittedAdapter(unit, ['node'])).not.toThrow();
 });
 
 describe('reject invalid contracts', () => {

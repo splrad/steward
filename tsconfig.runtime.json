@@ -1,12 +1,21 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "lib": ["ES2023", "WebWorker"],
+    "lib": [
+      "ES2023",
+      "WebWorker"
+    ],
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "types": ["@cloudflare/workers-types", "node"],
+    "types": [
+      "node"
+    ],
     "exactOptionalPropertyTypes": false
   },
-  "include": ["packages/runtime/src/**/*.ts", "packages/github/src/app-auth.ts", "packages/github/src/workflow-dispatch.ts"],
-  "exclude": ["packages/runner/dist/**"]
+  "include": [
+    "packages/runtime/src/**/*.ts"
+  ],
+  "exclude": [
+    "packages/runner/dist/**"
+  ]
 }

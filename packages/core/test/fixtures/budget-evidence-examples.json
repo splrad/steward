@@ -1,0 +1,285 @@
+{
+  "baseline": "v1.46",
+  "kind": "normative_document_examples_not_product_test_results",
+  "limit": 3,
+  "rules": [
+    "只对完整可信且terminal、businessStartedProven的BUSINESS_FAILED按waveKey去重",
+    "UNKNOWN或历史不完整时remaining=null；已知失败仍展示但不能据此派新业务",
+    "当前wave终止前不计失败；其他业务wave在途时等待原生Run终止",
+    "成功、等待、原生来源拒绝和只读错误不扣业务次数",
+    "展示轮次为failedWaveKeys.length+1，达到3失败后不再发业务；不存可写轮次"
+  ],
+  "examples": [
+    {
+      "id": "B01",
+      "scenario": "同attempt矩阵多失败",
+      "evidenceComplete": true,
+      "evidence": [
+        {
+          "waveKey": "repo:cycle:build:100:1",
+          "classification": "BUSINESS_FAILED",
+          "businessStartedProven": true,
+          "terminal": true
+        },
+        {
+          "waveKey": "repo:cycle:build:100:1",
+          "classification": "BUSINESS_FAILED",
+          "businessStartedProven": true,
+          "terminal": true
+        }
+      ],
+      "expected": {
+        "knownFailedCount": 1,
+        "remaining": 2,
+        "unknown": false
+      }
+    },
+    {
+      "id": "B02",
+      "scenario": "同一事实重复扫描",
+      "evidenceComplete": true,
+      "evidence": [
+        {
+          "waveKey": "repo:cycle:build:100:1",
+          "classification": "BUSINESS_FAILED",
+          "businessStartedProven": true,
+          "terminal": true
+        },
+        {
+          "waveKey": "repo:cycle:build:100:1",
+          "classification": "BUSINESS_FAILED",
+          "businessStartedProven": true,
+          "terminal": true
+        },
+        {
+          "waveKey": "repo:cycle:build:100:1",
+          "classification": "BUSINESS_FAILED",
+          "businessStartedProven": true,
+          "terminal": true
+        }
+      ],
+      "expected": {
+        "knownFailedCount": 1,
+        "remaining": 2,
+        "unknown": false
+      }
+    },
+    {
+      "id": "B03",
+      "scenario": "build成功sign失败，原生重跑成功",
+      "evidenceComplete": true,
+      "evidence": [
+        {
+          "waveKey": "repo:cycle:build:100:1",
+          "classification": "BUSINESS_FAILED",
+          "businessStartedProven": true,
+          "terminal": true
+        },
+        {
+          "waveKey": "repo:cycle:build:100:2",
+          "classification": "EFFECT_CONFIRMED",
+          "businessStartedProven": true,
+          "terminal": true
+        }
+      ],
+      "expected": {
+        "knownFailedCount": 1,
+        "remaining": 2,
+        "unknown": false
+      }
+    },
+    {
+      "id": "B04",
+      "scenario": "上传丢响应但远端满足",
+      "evidenceComplete": true,
+      "evidence": [
+        {
+          "waveKey": "repo:cycle:central:200:1:publish",
+          "classification": "EFFECT_CONFIRMED",
+          "businessStartedProven": true,
+          "terminal": true
+        }
+      ],
+      "expected": {
+        "knownFailedCount": 0,
+        "remaining": 3,
+        "unknown": false
+      }
+    },
+    {
+      "id": "B05",
+      "scenario": "未绑定与前置等待",
+      "evidenceComplete": true,
+      "evidence": [
+        {
+          "waveKey": "repo:cycle:build:100:1",
+          "classification": "WAIT",
+          "businessStartedProven": false,
+          "terminal": true
+        },
+        {
+          "waveKey": "repo:cycle:channel:300:1",
+          "classification": "WAIT",
+          "businessStartedProven": false,
+          "terminal": true
+        }
+      ],
+      "expected": {
+        "knownFailedCount": 0,
+        "remaining": 3,
+        "unknown": false
+      }
+    },
+    {
+      "id": "B06",
+      "scenario": "未知写未完成读回",
+      "evidenceComplete": true,
+      "evidence": [
+        {
+          "waveKey": "repo:cycle:central:200:1:publish",
+          "classification": "UNKNOWN",
+          "businessStartedProven": true,
+          "terminal": true
+        }
+      ],
+      "expected": {
+        "knownFailedCount": 0,
+        "remaining": null,
+        "unknown": true
+      }
+    },
+    {
+      "id": "B07",
+      "scenario": "跨阶段第三个真实失败",
+      "evidenceComplete": true,
+      "evidence": [
+        {
+          "waveKey": "repo:cycle:build:100:1",
+          "classification": "BUSINESS_FAILED",
+          "businessStartedProven": true,
+          "terminal": true
+        },
+        {
+          "waveKey": "repo:cycle:central:200:1:publish",
+          "classification": "BUSINESS_FAILED",
+          "businessStartedProven": true,
+          "terminal": true
+        },
+        {
+          "waveKey": "repo:cycle:channel:300:1",
+          "classification": "BUSINESS_FAILED",
+          "businessStartedProven": true,
+          "terminal": true
+        }
+      ],
+      "expected": {
+        "knownFailedCount": 3,
+        "remaining": 0,
+        "unknown": false
+      }
+    },
+    {
+      "id": "B08",
+      "scenario": "完整归档与当前原生事实合并去重",
+      "evidenceComplete": true,
+      "evidence": [
+        {
+          "waveKey": "repo:cycle:build:100:1",
+          "classification": "BUSINESS_FAILED",
+          "businessStartedProven": true,
+          "terminal": true
+        },
+        {
+          "waveKey": "repo:cycle:build:100:1",
+          "classification": "BUSINESS_FAILED",
+          "businessStartedProven": true,
+          "terminal": true
+        },
+        {
+          "waveKey": "repo:cycle:channel:300:1",
+          "classification": "BUSINESS_FAILED",
+          "businessStartedProven": true,
+          "terminal": true
+        }
+      ],
+      "expected": {
+        "knownFailedCount": 2,
+        "remaining": 1,
+        "unknown": false
+      }
+    },
+    {
+      "id": "B09",
+      "scenario": "人工误重跑在业务前拒绝",
+      "evidenceComplete": true,
+      "evidence": [
+        {
+          "waveKey": "repo:cycle:build:100:4",
+          "classification": "REJECTED_BEFORE_BUSINESS",
+          "businessStartedProven": false,
+          "terminal": true
+        }
+      ],
+      "expected": {
+        "knownFailedCount": 0,
+        "remaining": 3,
+        "unknown": false
+      }
+    },
+    {
+      "id": "B10",
+      "scenario": "历史覆盖缺失",
+      "evidenceComplete": false,
+      "evidence": [
+        {
+          "waveKey": "repo:cycle:build:100:2",
+          "classification": "BUSINESS_FAILED",
+          "businessStartedProven": true,
+          "terminal": true
+        }
+      ],
+      "expected": {
+        "knownFailedCount": 1,
+        "remaining": null,
+        "unknown": true
+      }
+    },
+    {
+      "id": "B11",
+      "scenario": "业务开始不能证明",
+      "evidenceComplete": true,
+      "evidence": [
+        {
+          "waveKey": "repo:cycle:central:200:1:publish",
+          "classification": "BUSINESS_FAILED",
+          "businessStartedProven": false,
+          "terminal": true
+        }
+      ],
+      "expected": {
+        "knownFailedCount": 0,
+        "remaining": null,
+        "unknown": true
+      }
+    },
+    {
+      "id": "B12",
+      "scenario": "当前运行未终止",
+      "evidenceComplete": true,
+      "evidence": [
+        {
+          "waveKey": "repo:cycle:build:100:1",
+          "classification": "EFFECT_CONFIRMED",
+          "businessStartedProven": true,
+          "terminal": false
+        }
+      ],
+      "expected": {
+        "knownFailedCount": 0,
+        "remaining": 3,
+        "unknown": false
+      }
+    }
+  ],
+  "notation": "算例waveKey使用可读标签代表§5.2.2规定的完整hash；不是生产键。分类/开始标记只是文档输入，实施必须先验证真实来源再归集。"
+}

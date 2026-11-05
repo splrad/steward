@@ -1,3 +1,4 @@
+import type {HistoryDatabase} from '../src/release-history.js';
 import { createHash } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { ReleaseHistoryReader } from '../src/release-history.js';
@@ -8,7 +9,7 @@ it('exports all retained revisions and budget state with SELECT only', async () 
     for (const revision of [1, 2]) db.database.prepare('INSERT INTO release_receipts(repository_id,target_tag,revision,version,current,record_json,updated_at) VALUES(?,?,?,?,?,?,?)').run(9001, 'v1.2.3', revision, revision, revision === 2 ? 1 : 0, JSON.stringify({ historical: revision }), 'fixture');
     db.database.prepare('INSERT INTO release_generation(repository_id,target_tag,plan_digest,record_json,restart_count,ticket_digest) VALUES(?,?,?,?,?,?)').run(9001, 'v1.2.3', 'a'.repeat(64), '{"calls":15,"limit":18,"runs":2,"status":"stopped"}', 2, 'private-ticket-digest');
     const sql: string[] = [], binding = db.binding();
-    const reader = new ReleaseHistoryReader({ prepare(query: string) { expect(query.startsWith('SELECT ')).toBe(true); sql.push(query); return binding.prepare(query); } } as D1Database);
+    const reader = new ReleaseHistoryReader({ prepare(query: string) { expect(query.startsWith('SELECT ')).toBe(true); sql.push(query); return binding.prepare(query); } } as HistoryDatabase);
     const before = db.database.prepare('SELECT total_changes() AS n').get();
     const exported = await reader.exportCandidate(9001, 'v1.2.3');
     expect(exported.tables.receipts).toHaveLength(2);

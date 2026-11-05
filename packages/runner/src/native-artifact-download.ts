@@ -5,19 +5,20 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { isolatedBuildEnvironment } from './build-environment.js';
+import { isolatedBuildEnvironment, isolatedGitHubEnvironment } from './build-environment.js';
 
 /** gh follows GitHub's authenticated artifact redirect; exact zip bytes are checked
  * before extraction, independently of download-artifact's warning semantics. */
-export async function downloadNativeArtifact(input: { fullName: string; artifactId: number; digest: string; names: string[]; directory: string; policyDirectory: string; home: string }) {
+export async function downloadNativeArtifact(input: { fullName: string; artifactId: number; digest: string; names: string[]; directory: string; policyDirectory: string; home: string }, token: string | undefined = process.env.GH_TOKEN) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(input.fullName) || !Number.isSafeInteger(input.artifactId) || input.artifactId < 1 || !/^sha256:[a-f0-9]{64}$/.test(input.digest)) throw new Error('ARTIFACT_DOWNLOAD_IDENTITY');
+  const environment = isolatedGitHubEnvironment(process.env, input.home, token);
   await mkdir(input.home, { recursive: false });
   const archive = join(input.home, 'artifact.zip'), names = join(input.home, 'names.json');
   await writeFile(names, JSON.stringify(input.names), { flag: 'wx' });
   await writeFile(join(input.home, 'empty-gitconfig'), '', { flag: 'wx' });
   const child = spawn('gh', ['api', `repos/${input.fullName}/actions/artifacts/${input.artifactId}/zip`], {
     shell: false, windowsHide: true, timeout: 120_000, stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1' },
+    env: environment,
   });
   let bytes = 0; child.stderr!.resume();
   const limit = new Transform({ transform(chunk, _encoding, callback) { bytes += chunk.length; callback(bytes >= 2 ** 31 ? new Error('ARTIFACT_DOWNLOAD_SIZE') : null, chunk); } });

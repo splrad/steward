@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["items"],
+  "properties": {
+    "items": {
+      "type": "array", "minItems": 1, "maxItems": 10,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["sourceCommentId", "sourceCommit", "sourceUrl", "severity", "originalIdentifiers", "segmentIndex", "problemZh", "impactZh", "suggestionZh"],
+        "properties": {
+          "sourceCommentId": {"type": "string", "minLength": 1},
+          "sourceCommit": {"type": "string", "minLength": 1},
+          "sourceUrl": {"type": "string", "minLength": 1},
+          "severity": {"type": "string", "minLength": 1},
+          "originalIdentifiers": {"type": "array", "items": {"type": "string"}},
+          "segmentIndex": {"type": "integer", "minimum": 0},
+          "problemZh": {"type": "string", "minLength": 1},
+          "impactZh": {"type": "string", "minLength": 1},
+          "suggestionZh": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

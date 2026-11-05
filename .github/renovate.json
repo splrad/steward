@@ -2,7 +2,7 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended",
-    ":pinDigests",
+    "docker:pinDigests",
     "helpers:pinGitHubActionDigests"
   ],
   "automerge": false,
@@ -25,7 +25,7 @@
   },
   "github-actions": {
     "managerFilePatterns": [
-      "/templates/release/.*\\.ya?ml$/"
+      "/^templates/.*\\.ya?ml$/"
     ]
   },
   "packageRules": [
@@ -34,6 +34,32 @@
         "major"
       ],
       "groupName": null
+    },
+    {
+      "matchManagers": [
+        "github-actions"
+      ],
+      "enabled": false
+    },
+    {
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchFileNames": [
+        ".github/workflows/**",
+        "action.yml",
+        "action.yaml",
+        "templates/**",
+        ".github/actions/**"
+      ],
+      "matchDepTypes": [
+        "uses-with",
+        "container",
+        "service",
+        "docker",
+        "github-runner"
+      ],
+      "enabled": true
     },
     {
       "matchManagers": [
@@ -54,5 +80,51 @@
       "versioning": "semver",
       "ignoreUnstable": true
     }
-  ]
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^config/actions-lock-version\\.txt$/"],
+      "matchStrings": ["(?<currentValue>v[0-9]+\\.[0-9]+\\.[0-9]+)"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "github/gh-actions-lock",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/settings-sync\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=github-tags depName=(?<depName>github-community-projects/safe-settings)\\s+ref: (?<currentDigest>[a-f0-9]{40}) # (?<currentValue>[^\\s]+)"
+      ],
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "semver"
+    }
+  ],
+  "enabledManagers": [
+    "mise",
+    "github-actions",
+    "custom.regex"
+  ],
+  "ignorePaths": [
+    ".github/workflows/pr-title.yml",
+    ".github/workflows/pr-labeler.yml",
+    ".github/labeler.yml"
+  ],
+  "prHeader": "本 PR 包含以下依赖更新：",
+  "prBodyColumns": [
+    "Package",
+    "Type",
+    "Update",
+    "Change"
+  ],
+  "prBodyHeadingDefinitions": {
+    "Package": "组件",
+    "Type": "依赖类别",
+    "Update": "更新类型",
+    "Change": "版本变化"
+  },
+  "prBodyTemplate": "{{{header}}}{{{table}}}{{{warnings}}}{{{notes}}}{{{changelogs}}}{{{controls}}}{{{footer}}}",
+  "prFooter": "本 PR 由 [Renovate](https://github.com/renovatebot/renovate) 自动生成。"
 }

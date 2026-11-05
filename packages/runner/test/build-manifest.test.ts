@@ -7,18 +7,19 @@ import { promisify } from 'node:util';
 import { link, mkdir, mkdtemp, open, opendir, readFile, realpath, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, win32 } from 'node:path';
-import { BuildContractError, buildLimits, planBuild, type BuildIdentity, type BuildUnit } from '../../core/src/build-manifest.js';
-import { githubBuildExecutionPolicy, assertBuildDirectoriesSeparate, assertBuildSourcePath, collectFileBuildManifest, collectOciBuildManifest, validateBuildExecutionContext, validateBuildInputs, verifyDownloadedFileBuild, verifyDownloadedOciBuild } from '../src/build-manifest.js';
+import { BuildContractError, buildLimits, type BuildSource, type BuildArtifactInput } from '../../core/src/build-manifest.js';
+import { assertBuildDirectoriesSeparate, assertBuildSourcePath, collectFileBuildManifest, collectOciBuildManifest, validateBuildDirectories, validateBuildSourceFiles, verifyDownloadedFileBuild, verifyDownloadedOciBuild } from '../src/build-manifest.js';
 
-const identity: BuildIdentity = { repositoryId: 1400000001, fullName: 'example/widget', buildId: 'asset', profile: 'custom-adapter-v1', targetSha: 'a'.repeat(40), policySha: 'b'.repeat(40), version: '1.2.3' };
-const unit: BuildUnit = { profile: 'custom-adapter-v1', inputs: { entrypoint: 'tools/build.mjs', runtime: 'node', runnerFamily: 'linux' }, outputs: [{ id: 'archive', kind: 'file', match: '*.json', count: 1, mediaType: 'application/json' }] };
+const identity: BuildSource = { repositoryId: 1400000001, fullName: 'example/widget', buildId: 'asset', kind: 'file', sourceSha: 'a'.repeat(40), controllerSha: 'b'.repeat(40), version: '1.2.3', packageVersion: '1.2.3', inputsSha256: 'e'.repeat(64) };
+const unit: Pick<BuildArtifactInput, 'outputs' | 'platforms'> = { platforms: [], outputs: [{ id: 'archive', kind: 'file', match: '*.json', count: 1, mediaType: 'application/json' }] };
+function artifactInput(source: BuildSource, data: Pick<BuildArtifactInput, 'outputs' | 'platforms'>): BuildArtifactInput { return structuredClone({ ...source, ...data }); }
 const inspect = async (bytes: Uint8Array) => JSON.parse(new TextDecoder().decode(bytes)).version ?? null;
 it.each([
   ['Fonts.zip', 'Fonts.zip', true],
   ['AFR-DLL_v{version}.zip', 'AFR-DLL_v1.2.3.zip', false],
   ['*.zip', 'plugin.zip', false],
 ])('binds font-only results to literal resource output %s', async (match, name, accepted) => {
-  const plan = await planBuild(identity, { ...unit, outputs: [{ id: 'archive', kind: 'file', match, count: 1, mediaType: 'application/zip', archiveType: accepted ? 'font-archive' : 'dll-archive' }] });
+  const plan = artifactInput(identity, { ...unit, outputs: [{ id: 'archive', kind: 'file', match, count: 1, mediaType: 'application/zip', archiveType: accepted ? 'font-archive' : 'dll-archive' }] });
   await writeFile(join(output, name), 'font archive bytes');
   const result = collectFileBuildManifest(plan, output, async () => ({ resourceOnly: 'font-archive' as const }));
   if (accepted) await expect(result).resolves.toMatchObject({ artifacts: [{ file: name }] });
@@ -26,10 +27,10 @@ it.each([
 });
 
 it.each(['font-archive','dll-archive'] as const)('inspects declared %s without a VERSION file',async archiveType=>{
- const plan=await planBuild({...identity,version:null},{...unit,outputs:[{id:'archive',kind:'file',match:'asset.zip',count:1,mediaType:'application/zip',archiveType}]});
+ const plan=artifactInput({...identity,version: null, packageVersion: null},{...unit,outputs:[{id:'archive',kind:'file',match:'asset.zip',count:1,mediaType:'application/zip',archiveType}]});
  await writeFile(join(output,'asset.zip'),'archive bytes');
  const inspector=vi.fn(async()=>archiveType==='font-archive'?{resourceOnly:'font-archive' as const}:'1.2.3');
- await expect(collectFileBuildManifest(plan,output,inspector)).resolves.toMatchObject({version:null});
+ await expect(collectFileBuildManifest(plan,output,inspector)).resolves.toMatchObject({version: null, packageVersion: null});
  expect(inspector).toHaveBeenCalledOnce();
  await expect(collectFileBuildManifest(plan,output)).rejects.toThrow('RN_BUILD_VERSION');
  const mismatch=async()=>archiveType==='font-archive'?'1.2.3':{resourceOnly:'font-archive' as const};
@@ -80,16 +81,16 @@ async function oci(platforms = ['linux/amd64'], version = '1.2.3') {
   const image = manifests.length === 1 ? manifests[0]! : await store({ schemaVersion: 2, manifests }, 'application/vnd.oci.image.index.v1+json');
   await writeFile(join(output, 'oci-layout'), '{"imageLayoutVersion":"1.0.0"}');
   await writeFile(join(output, 'index.json'), JSON.stringify({ schemaVersion: 2, manifests: [{ ...image, annotations: { 'org.opencontainers.image.ref.name': 'image' } }] }));
-  return { image, store, plan: await planBuild({ ...identity, profile: 'oci-image-v1' }, { profile: 'oci-image-v1', inputs: { context: '.', dockerfile: 'Dockerfile', platforms }, outputs: [{ id: 'image', kind: 'oci-image', count: 1 }] }) };
+  return { image, store, plan: artifactInput({ ...identity, kind: 'oci-image' }, { platforms, outputs: [{ id: 'image', kind: 'oci-image', count: 1 }] }) };
 }
 describe('中央文件产物验证 T09', () => {
   it('版本检查超过独立内存上限时在打开产物前拒绝收集及下载复核', async () => {
     await file(); await truncate(join(output, 'widget.json'), buildLimits.maxNativeVersionBytes + 1);
-    const plan = await planBuild(identity, unit); const inspector = vi.fn(async () => '1.2.3');
+    const plan = artifactInput(identity, unit); const inspector = vi.fn(async () => '1.2.3');
     await expect(collectFileBuildManifest(plan, output, inspector)).rejects.toThrow('RN_BUILD_LIMIT');
     await expect(verifyDownloadedFileBuild(plan, {} as never, output, inspector)).rejects.toThrow('RN_BUILD_LIMIT');
     expect(open).not.toHaveBeenCalled(); expect(inspector).not.toHaveBeenCalled();
-    const unversioned = await planBuild({ ...identity, version: null }, unit);
+    const unversioned = artifactInput({ ...identity, version: null, packageVersion: null }, unit);
     const manifest = await collectFileBuildManifest(unversioned, output, inspector);
     expect(manifest.artifacts[0]).toMatchObject({ size: buildLimits.maxNativeVersionBytes + 1 });
     expect(inspector).not.toHaveBeenCalled();
@@ -97,14 +98,14 @@ describe('中央文件产物验证 T09', () => {
   it('版本检查接受独立内存上限并保持原始文件摘要', async () => {
     await file(); await truncate(join(output, 'widget.json'), buildLimits.maxNativeVersionBytes);
     const original = createHash('sha256').update(await readFile(join(output, 'widget.json'))).digest('hex');
-    const plan = await planBuild(identity, unit);
+    const plan = artifactInput(identity, unit);
     const inspector = vi.fn(async (bytes: Uint8Array) => { expect(bytes.length).toBe(buildLimits.maxNativeVersionBytes); bytes.fill(1); return '1.2.3'; });
     const manifest = await collectFileBuildManifest(plan, output, inspector);
     expect(manifest.artifacts[0]).toMatchObject({ size: buildLimits.maxNativeVersionBytes, sha256: original });
     await expect(verifyDownloadedFileBuild(plan, manifest, output, inspector)).resolves.toBeUndefined();
   });
   it.each(['ENOENT', 'ENOTDIR', 'ELOOP', 'EIO'])('读取失败分类路径错误并保留其他异常 %s', async code => {
-    await file(); const plan = await planBuild(identity, unit); const error = Object.assign(new Error(code), { code });
+    await file(); const plan = artifactInput(identity, unit); const error = Object.assign(new Error(code), { code });
     vi.mocked(open).mockImplementationOnce(async (...args) => {
       const handle = await actualFs.open(...args); vi.spyOn(handle, 'read').mockRejectedValueOnce(error); return handle;
     });
@@ -113,7 +114,7 @@ describe('中央文件产物验证 T09', () => {
     else { await expect(operation).rejects.toBeInstanceOf(BuildContractError); await expect(operation).rejects.toMatchObject({ code: 'RN_BUILD_PATH' }); }
   });
   it('native inspector 的同名错误保持原异常', async () => {
-    await file(); const plan = await planBuild(identity, unit); const error = Object.assign(new Error('inspector'), { code: 'ENOENT' });
+    await file(); const plan = artifactInput(identity, unit); const error = Object.assign(new Error('inspector'), { code: 'ENOENT' });
     await expect(collectFileBuildManifest(plan, output, async () => { throw error; })).rejects.toBe(error);
   });
   it('多平台 index 不能声明单一架构', async () => {
@@ -124,21 +125,6 @@ describe('中央文件产物验证 T09', () => {
     await expect(verifyDownloadedOciBuild(plan, {} as never, output)).rejects.toThrow('RN_BUILD_INVALID');
   });
 
-  it.each([
-    ['dotnet-assets-v1', { project: 'src/Widget.csproj', configuration: 'Release', framework: 'net8.0-windows', runtime: 'win-x64' }, 'windows-latest'],
-    ['node-package-v1', { directory: '.', lockfile: 'package-lock.json', buildTask: 'build', packageManager: 'npm' }, 'ubuntu-latest'],
-    ['oci-image-v1', { context: '.', dockerfile: 'Dockerfile', platforms: ['linux/amd64'] }, 'ubuntu-latest'],
-    ['custom-adapter-v1', unit.inputs, 'ubuntu-latest'],
-    ['custom-adapter-v1', { ...unit.inputs, runnerFamily: 'windows' }, 'windows-latest'],
-  ] as const)('GitHub adapter 为 %s 映射执行策略 %j', async (profile, inputs, runner) => {
-    const outputs = profile === 'oci-image-v1' ? [{ id: 'image', kind: 'oci-image' as const, count: 1 }] : unit.outputs;
-    const plan = await planBuild({ ...identity, profile }, { profile, inputs, outputs });
-    expect(githubBuildExecutionPolicy(plan)).toEqual({ runner, timeoutMinutes: 360, permissions: { contents: 'read' }, environment: null, persistCredentials: false });
-  });
-  it('GitHub adapter 拒绝未知 runner family', async () => {
-    const plan = await planBuild(identity, unit);
-    expect(() => githubBuildExecutionPolicy({ ...plan, runnerFamily: 'unknown' } as unknown as typeof plan)).toThrow('RN_BUILD_INVALID');
-  });
   it('OCI 收集和下载接受 IPv6 registry 映射', async () => {
     const { plan } = await oci(); const repository = '[::1]:5000/example/widget';
     const manifest = await collectOciBuildManifest(plan, output, repository);
@@ -171,7 +157,7 @@ describe('中央文件产物验证 T09', () => {
 
   it.each(['file', 'oci'])('非目录输出根在 %s 收集和下载中返回路径合同错误', async kind => {
     let plan; let expected;
-    if (kind === 'file') { await file(); plan = await planBuild(identity, unit); expected = await collectFileBuildManifest(plan, output, inspect); }
+    if (kind === 'file') { await file(); plan = artifactInput(identity, unit); expected = await collectFileBuildManifest(plan, output, inspect); }
     else { ({ plan } = await oci()); expected = await collectOciBuildManifest(plan, output); }
     const badRoot = join(root, 'not-directory'); await writeFile(badRoot, 'file');
     for (const mode of ['collect', 'download']) {
@@ -184,7 +170,7 @@ describe('中央文件产物验证 T09', () => {
   });
   it.each(['file', 'oci'])('打开前删除 %s 文件时收集和下载返回路径合同错误', async kind => {
     let plan; let expected;
-    if (kind === 'file') { await file(); plan = await planBuild(identity, unit); expected = await collectFileBuildManifest(plan, output, inspect); }
+    if (kind === 'file') { await file(); plan = artifactInput(identity, unit); expected = await collectFileBuildManifest(plan, output, inspect); }
     else { ({ plan } = await oci()); expected = await collectOciBuildManifest(plan, output); }
     const target = join(output, kind === 'file' ? 'widget.json' : 'index.json'); const bytes = await readFile(target);
     vi.mocked(open).mockImplementation(async (...args) => {
@@ -201,7 +187,7 @@ describe('中央文件产物验证 T09', () => {
     }
   });
   it.each(['ENOENT', 'ENOTDIR', 'ELOOP', 'EIO'])('枚举中途失败分类路径错误并保留其他异常 %s', async code => {
-    await file(); const plan = await planBuild(identity, unit);
+    await file(); const plan = artifactInput(identity, unit);
     const error = Object.assign(new Error(code), { code }); let closed = false;
     const directory = await actualFs.opendir(output);
     directory[Symbol.asyncIterator] = async function* () { try { throw error; } finally { await directory.close(); closed = true; } };
@@ -212,7 +198,7 @@ describe('中央文件产物验证 T09', () => {
     expect(closed).toBe(true);
   });
   it.each(['ENOENT', 'ENOTDIR', 'ELOOP', 'EIO'])('打开失败分类路径错误并保留其他异常 %s', async code => {
-    await file(); const plan = await planBuild(identity, unit);
+    await file(); const plan = artifactInput(identity, unit);
     const error = Object.assign(new Error(code), { code }); vi.mocked(open).mockRejectedValueOnce(error);
     const operation = collectFileBuildManifest(plan, output, inspect);
     if (code === 'EIO') await expect(operation).rejects.toBe(error);
@@ -257,7 +243,7 @@ describe('中央文件产物验证 T09', () => {
   it.each([{ kind: 'file', entries: 'directory' }, { kind: 'oci', entries: 'directory' }, { kind: 'file', entries: 'file' }, { kind: 'oci', entries: 'file' }])('目录规模超限时收集和下载提前关闭枚举句柄 %j', async ({ kind, entries }) => {
     await mkdir(join(output, 'empty'));
     let plan; let expected;
-    if (kind === 'file') { await file(); plan = await planBuild(identity, unit); expected = await collectFileBuildManifest(plan, output, inspect); }
+    if (kind === 'file') { await file(); plan = artifactInput(identity, unit); expected = await collectFileBuildManifest(plan, output, inspect); }
     else { ({ plan } = await oci()); expected = await collectOciBuildManifest(plan, output); }
     for (const mode of ['collect', 'download']) {
       let readEntries = 0; let closed = false;
@@ -283,10 +269,9 @@ describe('中央文件产物验证 T09', () => {
     else await expect(operation).rejects.toThrow('RN_BUILD_PATH');
   });
   it('缺失入口和非目录路径返回构建路径错误', async () => {
-    const plan = await planBuild(identity, unit);
-    await expect(validateBuildInputs(plan, { buildRunId: 'run-1', sourceDirectory: source, outputDirectory: output })).rejects.toThrow('RN_BUILD_PATH');
+    await expect(validateBuildSourceFiles([{ path: 'tools/build.mjs', kind: 'file' }], { sourceDirectory: source, outputDirectory: output })).rejects.toThrow('RN_BUILD_PATH');
     await writeFile(join(source, 'tools'), 'not a directory');
-    await expect(validateBuildInputs(plan, { buildRunId: 'run-1', sourceDirectory: source, outputDirectory: output })).rejects.toThrow('RN_BUILD_PATH');
+    await expect(validateBuildSourceFiles([{ path: 'tools/build.mjs', kind: 'file' }], { sourceDirectory: source, outputDirectory: output })).rejects.toThrow('RN_BUILD_PATH');
   });
   it.each(['collect', 'download'])('缺失 OCI blob 在 %s 时返回构建路径错误', async mode => {
     const { plan, image } = await oci();
@@ -296,7 +281,7 @@ describe('中央文件产物验证 T09', () => {
   });
   it.each(['collect', 'download'])('无公共版本时 %s 忽略检查器并保持分块摘要和状态复核', async mode => {
     await writeFile(join(output, 'widget.json'), Buffer.alloc(128 * 1024 + 1, 120));
-    const plan = await planBuild({ ...identity, version: null }, unit);
+    const plan = artifactInput({ ...identity, version: null, packageVersion: null }, unit);
     const expected = await collectFileBuildManifest(plan, output);
     const inspector = vi.fn(async () => { throw new Error('unexpected native inspection'); });
     const concat = vi.spyOn(Buffer, 'concat');
@@ -317,7 +302,7 @@ describe('中央文件产物验证 T09', () => {
   });
   it.skipIf(process.platform === 'win32').each(['file', 'oci'])('常规 %s 文件被替换为 FIFO 时收集和下载受控失败', async kind => {
     let plan; let expected;
-    if (kind === 'file') { await file(); plan = await planBuild(identity, unit); expected = await collectFileBuildManifest(plan, output, inspect); }
+    if (kind === 'file') { await file(); plan = artifactInput(identity, unit); expected = await collectFileBuildManifest(plan, output, inspect); }
     else { ({ plan } = await oci()); expected = await collectOciBuildManifest(plan, output); }
     const target = join(output, kind === 'file' ? 'widget.json' : 'index.json');
     const original = await readFile(target);
@@ -340,7 +325,7 @@ describe('中央文件产物验证 T09', () => {
   it.each(['collect', 'download'])('无版本检查器时 %s 以分块摘要验证文件', async mode => {
     const payload = Buffer.alloc(128 * 1024 + 1, 120);
     await writeFile(join(output, 'widget.json'), payload);
-    const plan = await planBuild({ ...identity, version: null }, unit);
+    const plan = artifactInput({ ...identity, version: null, packageVersion: null }, unit);
     const expected = await collectFileBuildManifest(plan, output);
     const concat = vi.spyOn(Buffer, 'concat');
     try {
@@ -355,7 +340,7 @@ describe('中央文件产物验证 T09', () => {
     } finally { concat.mockRestore(); }
   });
   it.each(['collect', 'download'])('文件增长时 %s 的读取量受初始大小约束', async mode => {
-    await file(); const plan = await planBuild(identity, unit);
+    await file(); const plan = artifactInput(identity, unit);
     const expected = await collectFileBuildManifest(plan, output, inspect);
     const path = join(output, 'widget.json'); const initialSize = (await actualFs.stat(path)).size;
     let readBytes = 0;
@@ -375,7 +360,7 @@ describe('中央文件产物验证 T09', () => {
     expect(readBytes).toBeLessThanOrEqual(initialSize + 1);
   });
   it('按实际字节生成清单并在下载后重新验证', async () => {
-    await file(); const plan = await planBuild(identity, unit);
+    await file(); const plan = artifactInput(identity, unit);
     const manifest = await collectFileBuildManifest(plan, output, inspect);
     const bytes = await readFile(join(output, 'widget.json'));
     expect(manifest.artifacts).toEqual([{ id: 'archive', kind: 'file', file: 'widget.json', mediaType: 'application/json', size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }]);
@@ -383,7 +368,7 @@ describe('中央文件产物验证 T09', () => {
     await file('1.2.4'); await expect(verifyDownloadedFileBuild(plan, manifest, output, inspect)).rejects.toThrow('RN_BUILD_VERSION');
   });
   it('检查器修改缓冲区不改变磁盘字节的摘要', async () => {
-    await file(); const plan = await planBuild(identity, unit);
+    await file(); const plan = artifactInput(identity, unit);
     const diskBytes = await readFile(join(output, 'widget.json'));
     const mutatingInspector = async (bytes: Uint8Array) => { bytes.fill(0); return '1.2.3'; };
     const manifest = await collectFileBuildManifest(plan, output, mutatingInspector);
@@ -393,7 +378,7 @@ describe('中央文件产物验证 T09', () => {
     await expect(verifyDownloadedFileBuild(plan, manifest, output, mutatingInspector)).rejects.toThrow('RN_BUILD_DIGEST');
   });
   it.each(['normal', 'source-change', 'snapshot-change'])('路径检查器读取摘要对应的临时快照: %s', async mode => {
-    await file(); const plan = await planBuild(identity, unit);
+    await file(); const plan = artifactInput(identity, unit);
     const original = await readFile(join(output, 'widget.json'));
     let snapshot = '';
     const inspector = Object.assign(inspect, { inspectPath: async (path: string) => {
@@ -412,21 +397,21 @@ describe('中央文件产物验证 T09', () => {
     } finally { delete (inspector as Partial<typeof inspector>).inspectPath; }
   });
   it('摘要和仓库、提交、参数绑定分别复核', async () => {
-    await file(); const plan = await planBuild(identity, unit); const manifest = await collectFileBuildManifest(plan, output, inspect);
-    for (const changed of [{ targetSha: 'c'.repeat(40) }, { policySha: 'c'.repeat(40) }, { inputsSha256: 'c'.repeat(64) }, { repositoryId: 2 }]) {
+    await file(); const plan = artifactInput(identity, unit); const manifest = await collectFileBuildManifest(plan, output, inspect);
+    for (const changed of [{ sourceSha: 'c'.repeat(40) }, { controllerSha: 'c'.repeat(40) }, { inputsSha256: 'c'.repeat(64) }, { repositoryId: 2 }]) {
       await expect(verifyDownloadedFileBuild(plan, { ...manifest, ...changed }, output, inspect)).rejects.toThrow('RN_BUILD_DIGEST');
     }
     await writeFile(join(output, 'widget.json'), '{"version":"1.2.3","extra":true}');
     await expect(verifyDownloadedFileBuild(plan, manifest, output, inspect)).rejects.toThrow('RN_BUILD_DIGEST');
   });
   it('拒绝空文件、额外文件和缺失原生版本', async () => {
-    const plan = await planBuild(identity, unit);
+    const plan = artifactInput(identity, unit);
     await writeFile(join(output, 'widget.json'), ''); await expect(collectFileBuildManifest(plan, output, inspect)).rejects.toThrow('RN_BUILD_LIMIT');
     await file(); await expect(collectFileBuildManifest(plan, output)).rejects.toThrow('RN_BUILD_VERSION');
     await writeFile(join(output, 'extra.txt'), 'extra'); await expect(collectFileBuildManifest(plan, output, inspect)).rejects.toThrow('RN_BUILD_OUTPUT');
   });
   it('拒绝单文件和文件数量越过固定上限', async () => {
-    await file(); const plan = await planBuild(identity, unit);
+    await file(); const plan = artifactInput(identity, unit);
     await truncate(join(output, 'widget.json'), buildLimits.maxFileBytes + 1);
     await expect(collectFileBuildManifest(plan, output, inspect)).rejects.toThrow('RN_BUILD_LIMIT');
     await file();
@@ -434,21 +419,21 @@ describe('中央文件产物验证 T09', () => {
     await expect(collectFileBuildManifest(plan, output, inspect)).rejects.toThrow('RN_BUILD_LIMIT');
   });
   it('拒绝外部目录链接及硬链接', async () => {
-    await file(); const plan = await planBuild(identity, unit);
+    await file(); const plan = artifactInput(identity, unit);
     await link(join(output, 'widget.json'), join(source, 'alias.json'));
     await expect(collectFileBuildManifest(plan, output, inspect)).rejects.toThrow('RN_BUILD_PATH');
     await symlink(source, join(output, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
     await expect(assertBuildSourcePath(output, 'linked')).rejects.toThrow('RN_BUILD_PATH');
   });
   it('拒绝检查过程中替换文件或增加输出', async () => {
-    await file(); const plan = await planBuild(identity, unit);
+    await file(); const plan = artifactInput(identity, unit);
     await expect(collectFileBuildManifest(plan, output, async bytes => { await writeFile(join(output, 'widget.json'), '{"version":"1.2.3","changed":true}'); return inspect(bytes); })).rejects.toThrow('RN_BUILD_PATH');
     await file();
     await expect(collectFileBuildManifest(plan, output, async bytes => { await writeFile(join(output, 'extra.json'), '{}'); return inspect(bytes); })).rejects.toThrow('RN_BUILD_OUTPUT');
   });
   it('收集和下载复核都拒绝后续检查改写先前文件', async () => {
     await file(); await writeFile(join(output, 'z.json'), '{"version":"1.2.3"}');
-    const plan = await planBuild(identity, { ...unit, outputs: [{ ...unit.outputs[0]!, count: 2 }] });
+    const plan = artifactInput(identity, { ...unit, outputs: [{ ...unit.outputs[0]!, count: 2 }] });
     const expected = await collectFileBuildManifest(plan, output, inspect);
     const changingInspector = async (bytes: Uint8Array, path: string) => {
       if (path === 'z.json') await writeFile(join(output, 'widget.json'), '{"version":"1.2.3","changed":true}');
@@ -459,18 +444,14 @@ describe('中央文件产物验证 T09', () => {
     await expect(verifyDownloadedFileBuild(plan, expected, output, changingInspector)).rejects.toThrow('RN_BUILD_PATH');
   });
   it('源码和中央输出目录必须分离，源码路径逐段检查', async () => {
-    await validateBuildExecutionContext({ buildRunId: 'run-123', sourceDirectory: source, outputDirectory: output });
-    await expect(validateBuildExecutionContext({ buildRunId: 'run-123', sourceDirectory: source, outputDirectory: source })).rejects.toThrow('RN_BUILD_PATH');
+    await validateBuildDirectories({ sourceDirectory: source, outputDirectory: output });
+    await expect(validateBuildDirectories({ sourceDirectory: source, outputDirectory: source })).rejects.toThrow('RN_BUILD_PATH');
     await mkdir(join(source, 'nested'));
-    await expect(validateBuildExecutionContext({ buildRunId: 'run-123', sourceDirectory: source, outputDirectory: join(source, 'nested') })).rejects.toThrow('RN_BUILD_PATH');
+    await expect(validateBuildDirectories({ sourceDirectory: source, outputDirectory: join(source, 'nested') })).rejects.toThrow('RN_BUILD_PATH');
     await expect(assertBuildSourcePath(source, '../output')).rejects.toThrow('RN_BUILD_PATH');
-    await expect(validateBuildExecutionContext({ buildRunId: 'bad\n', sourceDirectory: source, outputDirectory: output })).rejects.toThrow('RN_BUILD_INVALID');
   });
 });
 describe('构建入口验证', () => {
-  it('运行编号拒绝可转换为字符串的数组', async () => {
-    await expect(validateBuildExecutionContext({ buildRunId: ['run-123'] as unknown as string, sourceDirectory: source, outputDirectory: output })).rejects.toThrow('RN_BUILD_INVALID');
-  });
   it.each([['D:\\source', 'C:\\output'], ['C:\\source', 'C:\\output'], ['\\\\server\\first\\source', '\\\\server\\second\\output']])('Windows 独立目录 %j %j 可用', (sourcePath, outputPath) => {
     expect(() => assertBuildDirectoriesSeparate(sourcePath, outputPath, win32)).not.toThrow();
   });
@@ -478,11 +459,10 @@ describe('构建入口验证', () => {
     expect(() => assertBuildDirectoriesSeparate(sourcePath, outputPath, win32)).toThrow('RN_BUILD_PATH');
   });
   it('固定入口必须是目标源码树中的常规文件', async () => {
-    const plan = await planBuild(identity, unit);
-    const context = { buildRunId: 'run-123', sourceDirectory: source, outputDirectory: output };
+    const context = { sourceDirectory: source, outputDirectory: output };
     await mkdir(join(source, 'tools')); await writeFile(join(source, 'tools', 'build.mjs'), 'export {};');
-    await expect(validateBuildInputs(plan, context)).resolves.toBeUndefined();
-    await expect(validateBuildInputs({ ...plan, inputs: { ...plan.inputs, entrypoint: 'tools' } }, context)).rejects.toThrow('RN_BUILD_PATH');
+    await expect(validateBuildSourceFiles([{ path: 'tools/build.mjs', kind: 'file' }], context)).resolves.toBeUndefined();
+    await expect(validateBuildSourceFiles([{ path: 'tools', kind: 'file' }], context)).rejects.toThrow('RN_BUILD_PATH');
   });
 });
 describe('OCI 摘要链验证 T09', () => {
@@ -601,7 +581,7 @@ describe('OCI 摘要链验证 T09', () => {
       handle.readFile = vi.fn(() => { throw new Error('OCI must use bounded reads'); });
       return handle;
     });
-    await expect(collectOciBuildManifest(plan, output)).resolves.toMatchObject({ profile: 'oci-image-v1' });
+    await expect(collectOciBuildManifest(plan, output)).resolves.toMatchObject({ kind: 'oci-image' });
   });
   it('元数据字节与 blob 共同计入总量', async () => {
     const { plan } = await oci();
@@ -649,13 +629,13 @@ describe('OCI 摘要链验证 T09', () => {
     const manifest = await collectOciBuildManifest(plan, output);
     expect(manifest.artifacts).toEqual([{ id: 'image', kind: 'oci-image', reference: `example/widget@${image.digest}`, digest: image.digest }]);
     await expect(verifyDownloadedOciBuild(plan, manifest, output)).resolves.toBeUndefined();
-    await expect(verifyDownloadedOciBuild(plan, { ...manifest, targetSha: 'c'.repeat(40) }, output)).rejects.toThrow('RN_BUILD_DIGEST');
+    await expect(verifyDownloadedOciBuild(plan, { ...manifest, sourceSha: 'c'.repeat(40) }, output)).rejects.toThrow('RN_BUILD_DIGEST');
   });
   it('版本投影、未声明的平台和额外 blob 都失败', async () => {
     const { plan } = await oci(['linux/amd64'], '1.2.4');
     await expect(collectOciBuildManifest(plan, output)).rejects.toThrow('RN_BUILD_VERSION');
     const { plan: valid } = await oci();
-    await expect(collectOciBuildManifest({ ...valid, inputs: { ...valid.inputs, platforms: ['linux/arm64'] } }, output)).rejects.toThrow('RN_BUILD_INVALID');
+    await expect(collectOciBuildManifest({ ...valid, platforms: ['linux/arm64'] }, output)).rejects.toThrow('RN_BUILD_INVALID');
     await expect(collectOciBuildManifest(valid, output)).rejects.toThrow('RN_BUILD_OUTPUT');
   });
   it('下载后 blob 篡改和描述符字节数不一致均失败', async () => {
@@ -680,17 +660,4 @@ describe('OCI 摘要链验证 T09', () => {
     await writeFile(join(output, 'index.json'), JSON.stringify(index));
     await expect(collectOciBuildManifest(plan, output)).rejects.toThrow('RN_BUILD_OUTPUT');
   });
-});
-
-it('rejects a shrinkwrap overriding the registered package lock', async () => {
-  await mkdir(join(source, 'app'));
-  await writeFile(join(source, 'app/package-lock.json'), '{}');
-  const inputs = { directory: 'app', lockfile: 'app/package-lock.json', buildTask: 'build', packageManager: 'npm' };
-  const plan = await planBuild({ ...identity, profile: 'node-package-v1' }, { ...unit, profile: 'node-package-v1', inputs });
-  const context = { sourceDirectory: source, outputDirectory: output, buildRunId: 'test' };
-  await expect(validateBuildInputs(plan, context)).resolves.toBeUndefined();
-  await writeFile(join(source, 'app/npm-shrinkwrap.json'), '{}');
-  await expect(validateBuildInputs(plan, context)).rejects.toThrow('RN_BUILD_INVALID');
-  const shrinkwrapPlan = await planBuild({ ...identity, profile: 'node-package-v1' }, { ...unit, profile: 'node-package-v1', inputs: { ...inputs, lockfile: 'app/npm-shrinkwrap.json' } });
-  await expect(validateBuildInputs(shrinkwrapPlan, context)).resolves.toBeUndefined();
 });

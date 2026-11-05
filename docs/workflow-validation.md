@@ -1,17 +1,15 @@
 # 工作流验证
 
-组织 required workflow 固定中央完整提交。验证入口检出合并候选与该中央提交，读取中央验证配置；候选工作流只作为扫描输入。仓库路径和任务必须与中央配置一致，候选目录不能提供自己的许可或扫描工具。
+中央 [Native Validation](../.github/workflows/pr-validation-native.yml) 从 `job.workflow_repository`、`job.workflow_sha`、`job.workflow_file_path` 取得受信源 P，检出准确的候选 head H。PR 基点还必须与检出时的目标分支一致；main push 使用事件的 before/after。身份检查拒绝缺失对象、浅克隆和来源不符。
 
-在可信策略目录运行 `MISE_SAFE=1 MISE_NODE_COMPILE=false mise install --locked`，再用 `mise exec -- npm run verify` 验证。工具版本、双平台下载地址和完整性由 `mise.lock` 与 npm sidecar 保存。扫描入口只解析已经安装的可信工具，不在候选目录加载 mise 配置，不下载工具或读取令牌。actionlint 与 zizmor 使用独立临时目录和固定参数，候选的配置及忽略指令不能关闭检查。actionlint 的可选 shellcheck/pyflakes 未采用。
+固定完整 SHA 的 `dorny/paths-filter` 使用 Git 模式读取准确 base/head，关闭 token，不持久化检出凭据；改名按删除旧路径和新增路径检查。source、dependency、docs、governance 四类过滤器内联在 P 的 YAML 中，候选不能提供自己的过滤策略。原生输出直接驱动 job 的 `if`。普通文档变更运行链接检查；治理输入、共享依赖、构建入口和未知影响路径触发相应检查。源码 job 直接运行 npm 验证或 Windows .NET restore/build，治理 job 执行 JSON/YAML、指令载体和实际工作流扫描。Windows 还解析 PowerShell/MSBuild 文件。
 
-GitHub 原生 `concurrency.queue` 使用精确兼容校验：YAML AST 先验证 workflow/job 层的值为字面量 `single` 或 `max`；`max` 只接受缺省或字面量 false 的 `cancel-in-progress`。随后读取 actionlint JSON，只接受完整文本、syntax-check 类型、文件及行列都对应已验证 queue 键的已知解析错误。其他错误、重复诊断、异常进程状态或不可解析输出均阻断；不使用通用 `-ignore`。zizmor 继续扫描原始文件。上游支持后零诊断正常通过，升级时复验并移除不再需要的兼容分支。
+jactionlint、shellcheck、pyflakes 与 zizmor 使用中央锁定工具扫描真实 YAML。候选的忽略配置不能关闭检查。标题入口按已批准的 `E07-TITLE-METADATA-20261028` 固定元数据例外处理；原始诊断、退出码和其他失败保留。扫描工具直接支持 queue 和 `job.workflow_*`，无需旧的工作流镜像或任务解释器。
 
-组织特有校验只负责固定来源、最小权限、secret隔离、共享正文队列与产物交接。通用语法和安全扫描由上述组件执行。reusable workflow 必须来自已登记的中央完整 SHA，输入逐项登记，禁止继承 secrets。B4尚未采用具体实现，因此当前登记集合为空。
+zizmor 的两个已采用例外只匹配原生 `dangerous-triggers` 诊断的准确文件路径和事件位置：中央及模板的 `pr-title.yml` 中 `on.pull_request_target`，以及中央 `governance-promotion.yml` 中 `on.workflow_run`。后者的决策为 `E07-PROMOTION-WORKFLOW-RUN-20261031`。其他位置、其他诊断、无效输出和工具异常均失败。工作流权限和写入边界由实际入口及常规审查核验，具体见 [治理提升](governance-promotion.md)。
 
-验证任务逐项记录成功、失败与不适用；取消或意外跳过不能变成成功。只有确实没有本地工作流时，扫描任务可标为不适用。GitHub required workflow 的实际强制、fork和base更新行为须在远端验收中取证，本地测试不替代该结论。
+dependency-review 比较准确 base/head，采用 high 阈值，覆盖 runtime、development、unknown，等待原生快照告警最多 600 秒，不回写 PR。NuGet 实际直接/传递覆盖和组织 required workflow 的平台强制仍须在隔离及线上采用阶段取证。
 
-runtime 不再生成 Validation Gate。发布候选从GitHub有效分支规则读取固定验证来源，再核实真实 required workflow、run/attempt、PR/head/base和成功步骤。Classification Gate在标签迁移阶段前继续保留；发布内容批准独立核对。
+DOC-LINK 读取改变的当前文档及受影响目标的当前引用。lychee 校验本地路径、图片和可识别锚点；Linux 联网前必须通过原生 nft check/load，保留计数器并仅清理本任务的表。网络子进程使用最小环境。历史文件只检查本地引用，外部 404/410 和未知响应保留在报告中。
 
-部署保留D1、正文及发布恢复。历史 Durable Object 迁移和类身份保留存量数据，类入口返回410；没有绑定、调度或Gate写入。数据退役须单独确定对象与恢复方案。
-
-2026-10-23本地扫描发现构建回调及两处同步工作流的 `workflow_run` 高危告警，仍阻断完整验证。后续须按唯一实施基线协调可复用工作流替换，不降级或忽略此结果。
+范围证据保留身份和完整原生过滤输出。最终 `SPLRAD Validation` 要求范围 job 成功、四类布尔输出齐全；被选 job 必须成功，未选 job 必须为 skipped。失败、取消、结果缺失或异常跳过都会阻断汇总。main 成功后的治理采用由 [governance-promotion](governance-promotion.md) 独立完成。

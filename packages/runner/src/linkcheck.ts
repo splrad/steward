@@ -3,7 +3,7 @@ import { isIP } from 'node:net';
 export function renderLinkcheckFirewall(template: string, resolvConf: string): string {
   const addresses: string[] = [];
   for (const line of resolvConf.split(/\r?\n/)) {
-    const clean = line.replace(/[;#].*$/, '').trim(); if (!clean || !clean.startsWith('nameserver')) continue;
+    const clean = line.split(/[;#]/, 1)[0]!.trim(); if (!clean || !clean.startsWith('nameserver')) continue;
     const match = /^nameserver\s+([^\s]+)$/.exec(clean);
     if (!match || !isIP(match[1]!) || match[1]!.includes('%')) throw new Error('LINKCHECK: DNS must be a literal IP');
     addresses.push(match[1]!);

@@ -18,7 +18,7 @@ const selections = {
 /** Historical storage has no claim, retry, dispatch or mutation methods. SQL
  * migrations and original JSON bytes remain available for independent export. */
 export class ReleaseHistoryReader {
-  constructor(private readonly db: D1Database) {}
+  constructor(private readonly db: HistoryDatabase) {}
   async exportCandidate(repositoryId: number, tag: string) {
     assert(positive(repositoryId) && typeof tag === 'string' && tag.length > 0 && tag.length <= 256 && !/[\x00-\x1f]/.test(tag), 'candidate identity');
     const tables: Record<string, unknown[]> = {};
@@ -47,3 +47,10 @@ export class ReleaseHistoryReader {
     assert(hash.digest('hex') === digest, 'object digest'); return Buffer.concat(chunks);
   }
 }
+
+export interface HistoryStatement {
+  bind(...values:unknown[]):HistoryStatement;
+  all<T=unknown>():Promise<{success:boolean;results:T[]}>;
+  first<T=unknown>():Promise<T|null>;
+}
+export interface HistoryDatabase {prepare(sql:string):HistoryStatement}

@@ -1,11 +1,16 @@
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$AssetsDirectory, [Parameter(Mandatory)][string]$StagingDirectory)
+param([Parameter(Mandatory)][string]$AssetsDirectory, [Parameter(Mandatory)][string]$StagingDirectory,
+      [string]$PythonInterpreter, [string]$PythonInspector)
 $ErrorActionPreference = 'Stop'
 if (Test-Path -LiteralPath $StagingDirectory) { throw 'SBOM staging already exists' }
 [void][IO.Directory]::CreateDirectory($StagingDirectory)
 $root = [IO.Path]::GetFullPath($StagingDirectory).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
 foreach ($file in Get-ChildItem -LiteralPath $AssetsDirectory -File) {
-  if ($file.Extension -eq '.zip') {
+  if ($file.Name.EndsWith('.whl') -or $file.Name.EndsWith('.tar.gz')) {
+    if (-not $PythonInterpreter -or -not $PythonInspector) { throw 'Python SBOM inspector required' }
+    & $PythonInterpreter -I $PythonInspector --stage $file.FullName (Join-Path $StagingDirectory $file.Name)
+    if ($LASTEXITCODE -ne 0) { throw 'Python SBOM staging failed' }
+  } elseif ($file.Extension -eq '.zip') {
     $zip = [IO.Compression.ZipFile]::OpenRead($file.FullName)
     try {
       if ($zip.Entries.Count -eq 0 -or $zip.Entries.Count -gt 4096) { throw 'SBOM archive entry limit' }

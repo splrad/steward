@@ -3,20 +3,12 @@ import { lstat, open, opendir, realpath, mkdtemp, rm, type FileHandle } from 'no
 import { isAbsolute, join, relative, resolve, sep, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { assertBuildOciRepository, assertBuildPath, buildFail, buildLimits, canonicalBuildManifest, checkBuildNativeVersion, decodeBuildJson, matchBuildFiles,
-  type BuildArtifact, type BuildManifest, type BuildPlan } from '../../core/src/build-manifest.js';
+import { assertBuildOciRepository, assertBuildPath, buildFail, buildLimits, canonicalBuildEvidence, parseBuildArtifactInput, checkBuildNativeVersion, decodeBuildJson, matchBuildFiles,
+  type BuildArtifact, type BuildArtifactEvidence, type BuildArtifactInput } from '../../core/src/build-manifest.js';
 
 export type NativeVersionResult = string | null | { resourceOnly: 'font-archive' };
 export type NativeVersionInspector = ((bytes: Uint8Array, file: string) => Promise<NativeVersionResult>) & { inspectPath?: (path: string) => Promise<NativeVersionResult> };
-export interface BuildExecutionContext { buildRunId: string; outputDirectory: string; sourceDirectory: string }
-export function githubBuildExecutionPolicy(plan: BuildPlan): {
-  runner: 'windows-latest' | 'ubuntu-latest'; timeoutMinutes: 360;
-  permissions: { contents: 'read' }; environment: null; persistCredentials: false;
-} {
-  if (!['windows', 'linux'].includes(plan.runnerFamily) || plan.timeoutMinutes !== 45) buildFail('RN_BUILD_INVALID');
-  return { runner: plan.runnerFamily === 'windows' ? 'windows-latest' : 'ubuntu-latest', timeoutMinutes: 360,
-    permissions: { contents: 'read' }, environment: null, persistCredentials: false };
-}
+export interface BuildDirectories { outputDirectory: string; sourceDirectory: string }
 function rethrowBuildPathError(error: unknown): never {
   if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' && ['ENOENT', 'ENOTDIR', 'ELOOP'].includes(error.code)) buildFail('RN_BUILD_PATH');
   throw error;
@@ -49,7 +41,7 @@ async function readArtifactBytes(handle: FileHandle, expectedSize: number, retai
   if (size !== expectedSize) buildFail('RN_BUILD_DIGEST');
   return { bytes: retained ?? new Uint8Array(), size, sha256: hash.digest('hex') };
 }
-async function verifyFileStates(root: string, states: ReadonlyMap<string, Stats>): Promise<void> {
+export async function verifyBuildFileStates(root: string, states: ReadonlyMap<string, Stats>): Promise<void> {
   for (const [path, before] of states) {
     const file = await assertBuildSourcePath(root, path);
     const after = await buildPathOperation(lstat(file));
@@ -83,30 +75,19 @@ export function assertBuildDirectoriesSeparate(source: string, output: string, p
   };
   if (nested(source, output) || nested(output, source)) buildFail('RN_BUILD_PATH');
 }
-export async function validateBuildExecutionContext(context: BuildExecutionContext): Promise<void> {
-  if (typeof context.buildRunId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u.test(context.buildRunId)) buildFail('RN_BUILD_INVALID');
+export async function validateBuildDirectories(context: BuildDirectories): Promise<void> {
   const source = await assertBuildSourcePath(context.sourceDirectory, '.', { root: true });
   const output = await assertBuildSourcePath(context.outputDirectory, '.', { root: true });
   if (!(await buildPathOperation(lstat(source))).isDirectory() || !(await buildPathOperation(lstat(output))).isDirectory()) buildFail('RN_BUILD_PATH');
   assertBuildDirectoriesSeparate(source, output);
 }
-export async function validateBuildInputs(plan: BuildPlan, context: BuildExecutionContext): Promise<void> {
-  await validateBuildExecutionContext(context);
-  if (plan.profile === 'node-package-v1' && String(plan.inputs.lockfile).endsWith('package-lock.json')) {
-    const shrinkwrap = join(context.sourceDirectory, String(plan.inputs.directory), 'npm-shrinkwrap.json');
-    try {
-      await lstat(shrinkwrap);
-      buildFail('RN_BUILD_INVALID');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-  }
-  for (const field of ['project', 'directory', 'lockfile', 'context', 'dockerfile', 'entrypoint']) {
-    const value = plan.inputs[field];
-    if (typeof value !== 'string') continue;
-    const path = await assertBuildSourcePath(context.sourceDirectory, value, { root: ['directory', 'context'].includes(field) });
+export async function validateBuildSourceFiles(paths: readonly { path: string; kind: 'file' | 'directory' }[], context: BuildDirectories): Promise<void> {
+  await validateBuildDirectories(context);
+  if (!Array.isArray(paths) || Array.from(paths).some(item => !item || !['file', 'directory'].includes(item.kind))) buildFail('RN_BUILD_PATH');
+  for (const item of paths) {
+    const path = await assertBuildSourcePath(context.sourceDirectory, item.path, { root: item.kind === 'directory' });
     const stat = await buildPathOperation(lstat(path));
-    if (['directory', 'context'].includes(field) ? !stat.isDirectory() : !stat.isFile()) buildFail('RN_BUILD_PATH');
+    if (item.kind === 'directory' ? !stat.isDirectory() : !stat.isFile() || stat.nlink !== 1) buildFail('RN_BUILD_PATH');
   }
 }
 async function enumerate(root: string): Promise<string[]> {
@@ -128,8 +109,49 @@ async function enumerate(root: string): Promise<string[]> {
   await walk(root);
   return files.sort();
 }
-export async function collectFileBuildManifest(plan: BuildPlan, outputDirectory: string, inspectNativeVersion?: NativeVersionInspector): Promise<BuildManifest> {
-  if (plan.profile === 'oci-image-v1') buildFail('RN_BUILD_INVALID');
+/** Inspect the exact bytes hashed, and reject changes to the source or inspection snapshot. */
+export async function inspectBuildFile(root: string, path: string, inspect?: NativeVersionInspector, maxFileBytes: number = buildLimits.maxFileBytes) {
+  const file = await assertBuildSourcePath(root, path);
+  const before = await buildPathOperation(lstat(file));
+  if (!before.isFile() || before.nlink !== 1 || before.size <= 0 || before.size > maxFileBytes) buildFail('RN_BUILD_LIMIT');
+  if (inspect && !inspect.inspectPath && before.size > buildLimits.maxNativeVersionBytes) buildFail('RN_BUILD_LIMIT');
+  const handle = await buildPathOperation(open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)));
+  try {
+    if (!unchanged(before, await buildPathOperation(handle.stat()))) buildFail('RN_BUILD_PATH');
+    const snapshotDirectory = inspect?.inspectPath ? await mkdtemp(join(tmpdir(), 'steward-native-snapshot-')) : undefined;
+    const snapshotPath = snapshotDirectory ? join(snapshotDirectory, basename(file)) : undefined;
+    let snapshot: FileHandle | undefined;
+    let native: NativeVersionResult = null;
+    let size: number, sha256: string;
+    try {
+      if (snapshotPath) snapshot = await open(snapshotPath, 'wx+', 0o600);
+      const captured = await readArtifactBytes(handle, before.size, inspect !== undefined && !inspect.inspectPath, snapshot);
+      ({ size, sha256 } = captured);
+      if (!unchanged(before, await buildPathOperation(handle.stat()))) buildFail('RN_BUILD_DIGEST');
+      if (snapshot) await snapshot.sync();
+      const snapshotState = snapshot ? await snapshot.stat() : undefined;
+      if (snapshot && snapshotPath && snapshotState) {
+        await snapshot.close(); snapshot = undefined;
+        snapshot = await open(snapshotPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+        if (!unchanged(snapshotState, await snapshot.stat())) buildFail('RN_BUILD_DIGEST');
+      }
+      native = inspect ? await (snapshotPath ? inspect.inspectPath!(snapshotPath) : inspect(captured.bytes, path)) : null;
+      if (snapshot && snapshotPath && snapshotState) {
+        const verified = await readArtifactBytes(snapshot, size, false);
+        if (verified.sha256 !== sha256 || !unchanged(snapshotState, await snapshot.stat())
+          || !unchanged(snapshotState, await lstat(snapshotPath))) buildFail('RN_BUILD_DIGEST');
+      }
+    } finally {
+      await snapshot?.close();
+      if (snapshotDirectory) await rm(snapshotDirectory, { recursive: true, force: true });
+    }
+    if (await assertBuildSourcePath(root, path) !== file || !unchanged(before, await buildPathOperation(lstat(file)))) buildFail('RN_BUILD_PATH');
+    return { size, sha256, native, state: before };
+  } finally { await handle.close(); }
+}
+export async function collectFileBuildManifest(plan: BuildArtifactInput, outputDirectory: string, inspectNativeVersion?: NativeVersionInspector): Promise<BuildArtifactEvidence> {
+  plan = parseBuildArtifactInput(plan);
+  if (plan.kind !== 'file') buildFail('RN_BUILD_INVALID');
   const root = await assertBuildSourcePath(outputDirectory, '.', { root: true });
   const files = await enumerate(root);
   const assignments = matchBuildFiles(plan, files);
@@ -142,66 +164,37 @@ export async function collectFileBuildManifest(plan: BuildPlan, outputDirectory:
     if (!before.isFile() || before.nlink !== 1 || before.size <= 0 || before.size > buildLimits.maxFileBytes) buildFail('RN_BUILD_LIMIT');
     const outputRule = plan.outputs.find(rule => rule.count === 1 ? assignment.id === rule.id
       : Array.from({length:rule.count}, (_, i) => `${rule.id}-${i+1}`).includes(assignment.id));
-    const inspect = plan.version !== null || outputRule?.archiveType !== undefined ? inspectNativeVersion : undefined;
+    const inspect = plan.packageVersion !== null || outputRule?.archiveType !== undefined ? inspectNativeVersion : undefined;
     if (inspect && !inspect.inspectPath && before.size > buildLimits.maxNativeVersionBytes) buildFail('RN_BUILD_LIMIT');
     total += before.size; if (total > buildLimits.maxTotalBytes) buildFail('RN_BUILD_LIMIT');
-    const handle = await buildPathOperation(open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)));
-    try {
-      if (!unchanged(before, await buildPathOperation(handle.stat()))) buildFail('RN_BUILD_PATH');
-      const snapshotDirectory = inspect?.inspectPath ? await mkdtemp(join(tmpdir(), 'steward-native-snapshot-')) : undefined;
-      const snapshotPath = snapshotDirectory ? join(snapshotDirectory, basename(file)) : undefined;
-      let snapshot: FileHandle | undefined;
-      let native: NativeVersionResult = null;
-      let size: number, sha256: string;
-      try {
-        if (snapshotPath) snapshot = await open(snapshotPath, 'wx+', 0o600);
-        const captured = await readArtifactBytes(handle, before.size, inspect !== undefined && !inspect.inspectPath, snapshot);
-        ({ size, sha256 } = captured);
-        if (!unchanged(before, await buildPathOperation(handle.stat()))) buildFail('RN_BUILD_DIGEST');
-        if (snapshot) await snapshot.sync();
-        const snapshotState = snapshot ? await snapshot.stat() : undefined;
-        if (snapshot && snapshotPath && snapshotState) {
-          await snapshot.close(); snapshot = undefined;
-          snapshot = await open(snapshotPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-          if (!unchanged(snapshotState, await snapshot.stat())) buildFail('RN_BUILD_DIGEST');
-        }
-        native = inspect ? await (snapshotPath ? inspect.inspectPath!(snapshotPath) : inspect(captured.bytes, assignment.file)) : null;
-        if (snapshot && snapshotPath && snapshotState) {
-          const verified = await readArtifactBytes(snapshot, size, false);
-          if (verified.sha256 !== sha256 || !unchanged(snapshotState, await snapshot.stat())
-            || !unchanged(snapshotState, await lstat(snapshotPath))) buildFail('RN_BUILD_DIGEST');
-        }
-      } finally {
-        await snapshot?.close();
-        if (snapshotDirectory) await rm(snapshotDirectory, { recursive: true, force: true });
-      }
-      if (native && typeof native === 'object') {
-        const rule = plan.outputs.find(rule => rule.count === 1 && assignment.id === rule.id);
-        if (native.resourceOnly !== 'font-archive' || assignment.mediaType !== 'application/zip' || !assignment.file.endsWith('.zip')
-          || rule?.match !== assignment.file || rule.archiveType !== 'font-archive') buildFail('RN_BUILD_VERSION');
-      } else {
-        if (outputRule?.archiveType === 'font-archive' || (outputRule?.archiveType === 'dll-archive' && typeof native !== 'string')) buildFail('RN_BUILD_VERSION');
-        checkBuildNativeVersion(plan, native);
-      }
-      artifacts.push({ ...assignment, kind: 'file', size, sha256 });
-    } finally { await handle.close(); }
+    const { size, sha256, native } = await inspectBuildFile(root, assignment.file, inspect);
+    if (native && typeof native === 'object') {
+      const rule = plan.outputs.find(rule => rule.count === 1 && assignment.id === rule.id);
+      if (native.resourceOnly !== 'font-archive' || assignment.mediaType !== 'application/zip' || !assignment.file.endsWith('.zip')
+        || rule?.match !== assignment.file || rule.archiveType !== 'font-archive') buildFail('RN_BUILD_VERSION');
+    } else {
+      if (outputRule?.archiveType === 'font-archive' || (outputRule?.archiveType === 'dll-archive' && typeof native !== 'string')) buildFail('RN_BUILD_VERSION');
+      checkBuildNativeVersion(plan, native);
+    }
+    artifacts.push({ ...assignment, kind: 'file', size, sha256 });
     if (await assertBuildSourcePath(root, assignment.file) !== file || !unchanged(before, await buildPathOperation(lstat(file)))) buildFail('RN_BUILD_PATH');
     states.set(assignment.file, before);
   }
   if (JSON.stringify(await enumerate(root)) !== JSON.stringify(files)) buildFail('RN_BUILD_OUTPUT');
-  await verifyFileStates(root, states);
-  const manifest: BuildManifest = { schemaVersion: 1, repositoryId: plan.repositoryId, fullName: plan.fullName, buildId: plan.buildId,
-    profile: plan.profile, targetSha: plan.targetSha, policySha: plan.policySha, version: plan.version, inputsSha256: plan.inputsSha256, artifacts };
-  canonicalBuildManifest(manifest);
+  await verifyBuildFileStates(root, states);
+  const manifest: BuildArtifactEvidence = { repositoryId: plan.repositoryId, fullName: plan.fullName, buildId: plan.buildId,
+    kind: plan.kind, sourceSha: plan.sourceSha, controllerSha: plan.controllerSha, version: plan.version, packageVersion: plan.packageVersion, inputsSha256: plan.inputsSha256, artifacts };
+  canonicalBuildEvidence(manifest);
   return manifest;
 }
-export async function verifyDownloadedFileBuild(plan: BuildPlan, expected: BuildManifest, directory: string, inspectNativeVersion?: NativeVersionInspector): Promise<void> {
+export async function verifyDownloadedFileBuild(plan: BuildArtifactInput, expected: BuildArtifactEvidence, directory: string, inspectNativeVersion?: NativeVersionInspector): Promise<void> {
   const actual = await collectFileBuildManifest(plan, directory, inspectNativeVersion);
-  if (canonicalBuildManifest(actual) !== canonicalBuildManifest(expected)) buildFail('RN_BUILD_DIGEST');
+  if (canonicalBuildEvidence(actual) !== canonicalBuildEvidence(expected)) buildFail('RN_BUILD_DIGEST');
 }
 
-export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: string, repository?: string): Promise<BuildManifest> {
-  if (plan.profile !== 'oci-image-v1') buildFail('RN_BUILD_INVALID');
+export async function collectOciBuildManifest(plan: BuildArtifactInput, outputDirectory: string, repository?: string): Promise<BuildArtifactEvidence> {
+  plan = parseBuildArtifactInput(plan);
+  if (plan.kind !== 'oci-image') buildFail('RN_BUILD_INVALID');
   let mappedRepository = repository;
   if (mappedRepository === undefined) {
     if (typeof plan.fullName !== 'string') buildFail('RN_BUILD_INVALID');
@@ -285,7 +278,7 @@ export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: 
       if (typeof config.os !== 'string' || typeof config.architecture !== 'string') buildFail('RN_BUILD_INVALID');
       if (current.platform !== undefined && (current.platform?.os !== config.os || current.platform?.architecture !== config.architecture)) buildFail('RN_BUILD_INVALID');
       const platform = `${config.os}/${config.architecture}`;
-      if (!(plan.inputs.platforms as string[]).includes(platform) || platforms.has(platform)) buildFail('RN_BUILD_INVALID');
+      if (!plan.platforms.includes(platform) || platforms.has(platform)) buildFail('RN_BUILD_INVALID');
       platforms.add(platform);
       checkBuildNativeVersion(plan, config.config?.Labels?.['org.opencontainers.image.version'] ?? null);
       for (const layer of image.layers) {
@@ -295,16 +288,16 @@ export async function collectOciBuildManifest(plan: BuildPlan, outputDirectory: 
       return new Set([platform]);
     };
     await inspect(descriptor, 0);
-    if (platforms.size !== (plan.inputs.platforms as string[]).length) buildFail('RN_BUILD_OUTPUT');
+    if (platforms.size !== plan.platforms.length) buildFail('RN_BUILD_OUTPUT');
     artifacts.push({ id: rule.id, kind: 'oci-image', reference: `${mappedRepository}@${descriptor.digest}`, digest: descriptor.digest });
   }
   if (files.length !== consumed.size || files.some(file => !consumed.has(file)) || JSON.stringify(await enumerate(root)) !== JSON.stringify(files)) buildFail('RN_BUILD_OUTPUT');
-  await verifyFileStates(root, states);
-  const manifest: BuildManifest = { schemaVersion: 1, repositoryId: plan.repositoryId, fullName: plan.fullName, buildId: plan.buildId,
-    profile: plan.profile, targetSha: plan.targetSha, policySha: plan.policySha, version: plan.version, inputsSha256: plan.inputsSha256, artifacts };
-  canonicalBuildManifest(manifest); return manifest;
+  await verifyBuildFileStates(root, states);
+  const manifest: BuildArtifactEvidence = { repositoryId: plan.repositoryId, fullName: plan.fullName, buildId: plan.buildId,
+    kind: plan.kind, sourceSha: plan.sourceSha, controllerSha: plan.controllerSha, version: plan.version, packageVersion: plan.packageVersion, inputsSha256: plan.inputsSha256, artifacts };
+  canonicalBuildEvidence(manifest); return manifest;
 }
-export async function verifyDownloadedOciBuild(plan: BuildPlan, expected: BuildManifest, directory: string, repository?: string): Promise<void> {
+export async function verifyDownloadedOciBuild(plan: BuildArtifactInput, expected: BuildArtifactEvidence, directory: string, repository?: string): Promise<void> {
   const actual = await collectOciBuildManifest(plan, directory, repository);
-  if (canonicalBuildManifest(actual) !== canonicalBuildManifest(expected)) buildFail('RN_BUILD_DIGEST');
+  if (canonicalBuildEvidence(actual) !== canonicalBuildEvidence(expected)) buildFail('RN_BUILD_DIGEST');
 }

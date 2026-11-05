@@ -4,25 +4,30 @@ import { mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
 import { join, relative, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { isolatedBuildEnvironment } from './build-environment.js';
-import { localGitSnapshot } from './managed-sync-preview.js';
-import type { PipelineRecord } from './release-pipeline.js';
+import { localGitSnapshot } from './git-snapshot.js';
 import { resolvePolicyTool } from './workflow-tools.js';
-export async function generateReleaseSbom(record: PipelineRecord, directory: string, sourceDirectory: string, policyDirectory: string, staging: string, home: string) {
+export async function generateReleaseSbom(record: { sourceSha: string }, directory: string, sourceDirectory: string, policyDirectory: string, staging: string, home: string) {
   await mkdir(home, { recursive: false }); await writeFile(join(home, 'empty-gitconfig'), '', { flag: 'wx' });
   const env = { ...isolatedBuildEnvironment(process.env, home), SYFT_CHECK_FOR_APP_UPDATE: 'false' };
   const execute = (command: string, args: string[]) => promisify(execFile)(command, args, { env, cwd: policyDirectory, timeout: 120_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
-  await execute('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(policyDirectory, 'scripts/stage-release-sbom.ps1'), '-AssetsDirectory', directory, '-StagingDirectory', staging]);
+  const assets = await readdir(directory);
+  const pythonAssets = assets.some(path => path.endsWith('.whl') || path.endsWith('.tar.gz'));
+  const dotnetAssets = assets.some(path => /\.(?:zip|exe|dll)$/i.test(path));
+  const stageArgs = ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(policyDirectory, 'scripts/stage-release-sbom.ps1'), '-AssetsDirectory', directory, '-StagingDirectory', staging];
+  if (pythonAssets) stageArgs.push('-PythonInterpreter', join(policyDirectory, 'tools/template/.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'), '-PythonInspector', join(policyDirectory, 'scripts/inspect-python-release.py'));
+  await execute('pwsh', stageArgs);
   // Syft reads the exact committed restoration locks as build-input evidence.
-  const paths = (await execute('git', ['--no-replace-objects', '-C', sourceDirectory, 'ls-tree', '-r', '--name-only', record.sourceSha])).stdout.split(/\r?\n/).filter(path => /(?:^|\/)packages\.lock\.json$/.test(path));
-  if (!paths.length) throw new Error('SBOM_MISSING_RESTORE_LOCKS');
+  const paths = (await execute('git', ['--no-replace-objects', '-C', sourceDirectory, 'ls-tree', '-r', '--name-only', record.sourceSha])).stdout.split(/\r?\n/).filter(path => /(?:^|\/)(?:packages\.lock\.json|requirements-build\.txt)$/.test(path));
+  if (!paths.length || (pythonAssets && !paths.some(path => /(?:^|\/)requirements-build\.txt$/.test(path)))
+    || (dotnetAssets && !paths.some(path => /(?:^|\/)packages\.lock\.json$/.test(path)))) throw new Error('SBOM_MISSING_RESTORE_LOCKS');
   const locks: { path: string; sha256: string }[] = [];
   for (const path of paths) {
-    const bytes = await localGitSnapshot.file(sourceDirectory, record.sourceSha, path); if (!bytes) throw new Error('SBOM_LOCK_DISAPPEARED');
+    const bytes = await localGitSnapshot.file(sourceDirectory, record.sourceSha, path); if (!bytes?.length) throw new Error('SBOM_LOCK_DISAPPEARED');
     const target = join(staging, 'build-inputs', path); await mkdir(dirname(target), { recursive: true }); await writeFile(target, bytes, { flag: 'wx' });
     locks.push({ path, sha256: createHash('sha256').update(bytes).digest('hex') });
   }
   const output = join(directory, 'sbom.spdx.json');
-  await execute(await resolvePolicyTool('syft'), ['dir:' + staging, '-o', 'spdx-json=' + output]);
+  await execute(await resolvePolicyTool('syft', policyDirectory), ['dir:' + staging, '-o', 'spdx-json=' + output]);
   const sbom = JSON.parse(await readFile(output, 'utf8'));
   if (sbom.spdxVersion !== 'SPDX-2.3' || !Array.isArray(sbom.packages) || !sbom.packages.length) throw new Error('SBOM_INCOMPLETE_SCAN');
   sbom.annotations ??= [];

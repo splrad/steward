@@ -1,5 +1,15 @@
 # Build contract
 
+## 当前产品构建接口（E05）
+
+产品在合并源码 `S` 的 `steward-release-publish.yml` 中直接执行构建命令。入口读取受保护 Git 记录和当前原生 Run，核对 canonical Run、App bot、构建 ref、`S`、控制器 `R`、冻结候选身份和实际失败预算。未绑定或读取未知返回 75；产品命令开始前拒绝不匹配的来源。
+
+`.github/delivery.json` 只声明作者 ID、单位路径、说明路径、资产和渠道位置；命令和构建参数属于产品 YAML。`build` 记录不依赖 Release ID。各单位的原生版本、tag、资产全集、工具锁和实际 Run/attempt 分别冻结，中央共享任务负责原生元数据检查、SBOM、说明渲染与 N+4 封装。只有 freeze 作业获得 attestation/OIDC 权限。
+
+恢复按原生 artifact ID 读取完整冻结集合，检查摘要和 manifest，保留原 producer Run/attempt。同 attempt、后续 attempt 和有明确前驱的 continuation 都可读取已完成的 freeze。发现多套冻结集合、异源或缺少可读字节时停止；正式 Release 的补缺和历史读取由 E06 接入。当前 LayerScape 使用 Windows x64、PE/DLL ZIP 和真实字体 ZIP 检查；其他生态仍需对应原生包格式的接入验收。
+
+下文保留已有收集器和历史执行合同，供 E06–E13 逐项交接。当前产品入口已移除通用构建解释器及旧 `release-admission` CLI。
+
 The core build contract supports `dotnet-assets-v1`, `node-package-v1`,
 `oci-image-v1`, and `custom-adapter-v1`. `planBuild` validates each profile's
 typed inputs and output rules, freezes the repository and commit identities,
@@ -11,8 +21,29 @@ environment, and no persisted Git credentials.
 
 The .NET profile always uses the Windows runner family, including when its
 target runtime is `linux-x64`. The target RID does not select the execution OS.
-Versioned custom Linux outputs currently support `package.json`; other native
-formats fail explicitly during version inspection.
+Versioned outputs on Linux and Windows support `package.json`, Python wheels,
+and Python source distributions (`.tar.gz`). Other Linux native formats fail
+explicitly during version inspection.
+
+The Python reader runs from the reviewed controller's `tools/template/.venv`
+with Python isolated mode. The `release-inspection` dependency group shares
+the existing `tools/template/uv.lock` and installs only `packaging`. Both the
+product evidence workflow and `npm test` prepare that group with frozen uv sync.
+The test preparation uses `--inexact` to retain dependencies already installed
+for template work in the same environment.
+The reader uses `packaging` to compare the filename, wheel metadata directory,
+and embedded Name/Version. It reads the collector's private hashed snapshot
+without importing or extracting artifact code. Limits are 4,096 entries,
+512 KiB metadata, a 1 MiB ZIP read allocation, and 256 MiB expanded contents
+(including all gzip output, tar headers, and padding). Unsafe paths, links,
+duplicate entries, malformed metadata, and inconsistent names or versions fail.
+
+The returned PEP 440 version must equal the planned `packageVersion`. For an RC,
+public `1.2.4-rc.1` and native `1.2.4rc1` remain distinct fields. This reader
+validates a supplied identity; the release orchestration must first obtain the
+native package version from the merged source and project public versions
+through the product's release mechanism. Python RP/source identity and a real
+product release still need their own integration acceptance.
 
 The runner adapter calls `validateBuildInputs` before execution to check source
 paths and the separate output directory. A custom entrypoint must be a regular
@@ -93,10 +124,10 @@ also require the core validator.
 
 Consumers call `verifyDownloadedFileBuild` or `verifyDownloadedOciBuild` to
 recompute the manifest and compare all identity fields and artifacts with the
-expected manifest. `selectDeliveryBuilds` deduplicates active delivery references.
-`deliveryBuildReadiness` blocks only deliveries that depend on a failed build;
-a deployment sourced from a GitHub Release also depends on that release being
-ready. A release with no build references is ready without assets.
+expected manifest. Finite delivery data uses `assertDeliveryArtifactMapping` to
+check unique producer and asset IDs, exact per-producer asset sets, and producer
+references. `assertDeliveryPath` and `assertDeliveryAssetName` validate repository
+paths and flat portable filenames.
 
 These modules define and validate the handoff contract. Workflow execution,
 toolchain setup, artifact upload and download, and delivery activation require

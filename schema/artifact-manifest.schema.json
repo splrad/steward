@@ -118,6 +118,11 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 9007199254740991
+          },
+          "runId": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
           }
         }
       },

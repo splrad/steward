@@ -1,6 +1,6 @@
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import schema from '../../../schema/steward-release.schema.json' with { type: 'json' };
-import { assertDeliveryPath } from './delivery-config.js';
+import { assertDeliveryArtifactMapping, assertDeliveryAssetName, assertDeliveryPath } from './delivery-config.js';
 
 export interface ReleaseBuild {
   id: string; os: 'ubuntu' | 'windows' | 'macos'; arch: 'x64' | 'arm64';
@@ -28,7 +28,7 @@ function repositoryPath(value: string, root = false) {
 }
 const reservedNames = new Set(['sbom.spdx.json', 'release-notes.md', 'artifact-manifest.json', 'sha256sums']);
 
-export function artifactNames(unit: ReleaseUnit, version: string, packageVersion = version): Map<string, string> {
+export function artifactNames(unit: { id: string; artifacts: readonly Pick<ReleaseArtifact, 'id' | 'file' | 'platform' | 'architecture'>[] }, version: string, packageVersion = version): Map<string, string> {
   if (![version, packageVersion].every(value => /^[A-Za-z0-9][A-Za-z0-9.+-]*$/.test(value))) fail('unsafe version');
   const names = new Map<string, string>();
   for (const artifact of unit.artifacts) {
@@ -36,8 +36,8 @@ export function artifactNames(unit: ReleaseUnit, version: string, packageVersion
     const name = artifact.file.replace(/\$\{(version|packageVersion|unitId|os|arch)\}/g, (_, key: string) => values[key]!);
     if (name.includes('${')) fail('unknown artifact placeholder');
     repositoryPath(name);
-    if (name.includes('/') || /[ .]$/.test(name) || /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(name)
-      || reservedNames.has(name.toLowerCase())) fail('unsafe or reserved artifact name');
+    try { assertDeliveryAssetName(name); } catch { fail('unsafe or reserved artifact name'); }
+    if (reservedNames.has(name.toLowerCase())) fail('unsafe or reserved artifact name');
     names.set(artifact.id, name);
   }
   unique([...names.values()].map(name => name.toLowerCase()), 'artifact filename');
@@ -60,17 +60,11 @@ export function parseReleaseDescriptor(input: unknown): ReleaseDescriptor {
     }
     for (const path of [unit.versionFile, unit.changelogPath, unit.notesPath]) repositoryPath(path);
     if (unit.path !== '.' && [unit.versionFile, unit.changelogPath].some(path => !path.startsWith(unit.path + '/'))) fail('version or changelog outside unit');
-    unique(unit.builds.map(build => build.id), 'build id');
-    unique(unit.artifacts.map(artifact => artifact.id), 'artifact id');
+    try { assertDeliveryArtifactMapping(unit); } catch (error) { fail((error as Error).message); }
     unique(unit.channels.map(channel => channel.id), 'channel id');
     for (const build of unit.builds) {
       repositoryPath(build.entrypoint);
       if (!/\.(?:mjs|ps1|sh)$/.test(build.entrypoint) || build.args.some(arg => /[\u0000\r\n]/.test(arg))) fail('unsafe build entrypoint or arguments');
-      const expected = unit.artifacts.filter(artifact => artifact.build === build.id).map(artifact => artifact.id).sort();
-      if (JSON.stringify(expected) !== JSON.stringify([...build.expectedArtifacts].sort())) fail('build artifact set mismatch');
-    }
-    for (const artifact of unit.artifacts) {
-      if (!unit.builds.some(build => build.id === artifact.build)) fail('unknown artifact producer');
     }
     artifactNames(unit, '1.2.3');
     for (const channel of unit.channels) {
@@ -87,8 +81,4 @@ export function parseReleaseDescriptor(input: unknown): ReleaseDescriptor {
   }
   for (const key of graph.keys()) visit(key);
   return structuredClone(descriptor);
-}
-
-export function assertAdmittedAdapter(unit: ReleaseUnit, validatedAdapters: readonly string[]): void {
-  if (!validatedAdapters.includes(unit.ecosystem)) fail(`adapter has not passed admission: ${unit.ecosystem}`);
 }

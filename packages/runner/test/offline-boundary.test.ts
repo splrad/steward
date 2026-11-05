@@ -1,6 +1,25 @@
 import { it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { request } from 'node:https';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { offlineProcessArguments, registerOfflineFixtureRoot } from './offline-fixtures.js';
+
+it('limits Git symlink fixture plumbing to the registered temporary repository and literal state path', () => {
+  const root=mkdtempSync(join(tmpdir(),'offline-index-'));
+  try {
+    registerOfflineFixtureRoot(root);
+    const args=['update-index','--cacheinfo',`120000,${'a'.repeat(40)},state.json`];
+    expect(offlineProcessArguments('git',args,{cwd:root})).toContain('protocol.allow=never');
+    expect(offlineProcessArguments('git',args,{cwd:process.cwd()})).toBeNull();
+    for (const value of ['../state.json','/outside.json','https://example.invalid/state','state.json\nextra'])
+      expect(offlineProcessArguments('git',[...args.slice(0,2),`120000,${'a'.repeat(40)},${value}`],{cwd:root})).toBeNull();
+    expect(offlineProcessArguments('git',['update-index','--index-info'],{cwd:root})).toBeNull();
+    expect(offlineProcessArguments('git',[...args,'--add'],{cwd:root})).toBeNull();
+    expect(offlineProcessArguments('git',['fetch','https://example.invalid/repo'],{cwd:root})).toBeNull();
+  } finally { rmSync(root,{recursive:true,force:true}); }
+});
 
 it('rejects an unregistered HTTP request before transport', () => {
   expect(() => fetch('https://example.invalid/unregistered')).toThrow('TEST_NETWORK_DENIED');

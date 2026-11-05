@@ -4,6 +4,14 @@ import { join } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { resetOfflineFixtures } from './offline-fixtures.js';
 
+// Hosted Windows can expose the temp directory through an 8.3 alias. Fixtures
+// require a canonical parent; production path/link rejection remains unchanged.
+if (process.platform === 'win32') {
+  const temporary = realpathSync.native(tmpdir());
+  process.env.TEMP = temporary;
+  process.env.TMP = temporary;
+}
+
 for (const name of Object.keys(process.env)) {
   if (/(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|PRIVATE_KEY|API_KEY|ACCESS_KEY)/i.test(name)) delete process.env[name];
 }

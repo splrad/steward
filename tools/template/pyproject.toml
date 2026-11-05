@@ -1,0 +1,11 @@
+[project]
+name = "steward-template"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = ["copier==9.19.1"]
+
+[dependency-groups]
+release-inspection = ["packaging==26.3"]
+
+[tool.uv]
+package = false

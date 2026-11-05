@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "organization": { "login": "splrad", "id": 302208797 },
+  "repositories": [
+    { "full_name": "splrad/steward", "id": 1296724484 },
+    { "full_name": "splrad/LayerScape", "id": 1187527897 },
+    { "full_name": "splrad/.github", "id": 1296725317 }
+  ],
+  "policies": []
+}

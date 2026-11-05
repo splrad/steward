@@ -1,26 +1,21 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { localGitSnapshot } from '../src/managed-sync-preview.js';
-import catalog from '../../../config/repositories.json' with { type: 'json' };
 import { parseNativeInvocation, nativeReleaseCli } from '../src/native-release-cli.js';
 afterEach(() => vi.restoreAllMocks());
-it.each(['missing', 'drift'])('rejects an offline central config not bound to P: %s', async kind => {
-  const pinned = structuredClone(catalog);
-  pinned.repositories['1187527897'].release.units.layerscape.channels['ghcr-assets'].destination += '-old';
-  const snapshot = vi.spyOn(localGitSnapshot, 'file').mockResolvedValue(kind === 'missing' ? null : Buffer.from(JSON.stringify(pinned)));
-  await expect(nativeReleaseCli(['release-admission', 'validate', '--repository', 'splrad/LayerScape', '--source-sha', 'a'.repeat(40), '--policy-sha', 'b'.repeat(40), '--descriptor', 'source/.github/steward-release.json', '--central-config', 'config/repositories.json', '--offline', '--output', 'unused.json'])).rejects.toThrow('central config differs from policy');
-  expect(snapshot).toHaveBeenCalledOnce();
+it.each(['validate', 'prepare', 'publish'])('rejects retired release-admission %s before any API or subprocess', async operation => {
+  await expect(nativeReleaseCli(['release-admission', operation])).rejects.toThrow('unknown command');
 });
-it('requires every offline admission argument and rejects unknown commands/flags', async () => {
-  const argv = ['release-admission', 'validate', '--repository', 'splrad/LayerScape', '--source-sha', 'a'.repeat(40), '--policy-sha', 'b'.repeat(40), '--descriptor', 'source/.github/steward-release.json', '--central-config', 'config/repositories.json', '--offline', '--output', 'out.json'];
-  expect(parseNativeInvocation(argv).args.offline).toBe('true');
-  for (let i = 2; i < argv.length; i++) {
-    if (argv[i]!.startsWith('--')) expect(() => parseNativeInvocation([...argv.slice(0, i), ...argv.slice(i + (argv[i] === '--offline' ? 1 : 2))])).toThrow('missing');
-  }
+it('requires every finite build identity argument and rejects unknown commands/flags', () => {
+  const argv = ['release-pipeline', 'identity', '--cycle-id', 'pr-1-' + 'a'.repeat(40), '--operation-key', 'c'.repeat(64),
+    '--source-sha', 'a'.repeat(40), '--controller-sha', 'b'.repeat(40), '--source-dir', 'source', '--controller-dir', 'controller', '--state-dir', 'state', '--output', 'out.json'];
+  expect(parseNativeInvocation(argv).command).toBe('release-pipeline identity');
+  for (let i = 2; i < argv.length; i += 2) expect(() => parseNativeInvocation([...argv.slice(0, i), ...argv.slice(i + 2)])).toThrow('missing');
   expect(() => parseNativeInvocation([...argv, '--output', 'other'])).toThrow('duplicate');
   expect(() => parseNativeInvocation([...argv, '--token', 'fixture'])).toThrow('unknown');
-  await expect(nativeReleaseCli(['release-admission', 'publish'])).rejects.toThrow('unknown command');
+  expect(() => parseNativeInvocation(['release-pipeline', 'build'])).toThrow('unknown command');
 });
-it('requires a canonical sync mode and complete local directories', () => {
-  expect(() => parseNativeInvocation(['managed-sync', 'preview', '--repository-id', '1187527897'])).toThrow('missing');
-  expect(parseNativeInvocation(['managed-sync', 'preview', '--repository-id', '1187527897', '--mode', 'sync', '--policy-dir', 'policy', '--target-dir', 'target', '--output-dir', 'new']).command).toBe('managed-sync preview');
+it.each(['preview','targets','authorize','preflight','apply'])('rejects retired managed-sync %s at argument parsing', action=>{
+  expect(()=>parseNativeInvocation(['managed-sync',action])).toThrow('unknown command');
+});
+it.each(['targets','preflight'])('rejects retired catalog-based dependency-updates %s before any operation',async action=>{
+  await expect(nativeReleaseCli(['dependency-updates',action])).rejects.toThrow('unknown command');
 });

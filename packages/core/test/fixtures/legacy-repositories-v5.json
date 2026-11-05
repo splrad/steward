@@ -1,0 +1,185 @@
+{
+  "$schema": "../schema/repositories.schema.json",
+  "schemaVersion": 5,
+  "organization": {
+    "id": 302208797,
+    "login": "splrad"
+  },
+  "defaults": {
+    "public": {
+      "managed": true,
+      "pullRequestTemplate": "organization-default",
+      "classification": {
+        "profile": "default",
+        "labelDefinitionMode": "enforce",
+        "labelAssignmentMode": "enforce"
+      },
+      "validationProfile": "public-basic",
+      "allowedWorkflowPaths": [],
+      "copilotReviewTrigger": "native",
+      "release": {
+        "enabled": false,
+        "units": {}
+      },
+      "pages": {
+        "enabled": false
+      },
+      "revokedPolicyShas": []
+    },
+    "private": {
+      "managed": false,
+      "pullRequestTemplate": "organization-default",
+      "classification": {
+        "profile": "default",
+        "labelDefinitionMode": "observe",
+        "labelAssignmentMode": "observe"
+      },
+      "validationProfile": "public-basic",
+      "allowedWorkflowPaths": [],
+      "copilotReviewTrigger": "native",
+      "release": {
+        "enabled": false,
+        "units": {}
+      },
+      "pages": {
+        "enabled": false
+      },
+      "revokedPolicyShas": []
+    }
+  },
+  "repositories": {
+    "1187527897": {
+      "managed": true,
+      "fullName": "splrad/LayerScape",
+      "pullRequestTemplate": "organization-default",
+      "reviewGovernance": {
+        "scope": "full",
+        "lifecycle": "repository-ready",
+        "owner": "splrad/maintainers",
+        "exception": null,
+        "lastVerifiedAt": "2026-08-27T09:08:51Z",
+        "nextReviewAt": "2026-09-27T09:08:51Z"
+      },
+      "classification": {
+        "profile": "layerscape",
+        "labelDefinitionMode": "enforce",
+        "labelAssignmentMode": "enforce"
+      },
+      "validationProfile": "layerscape",
+      "allowedWorkflowPaths": [],
+      "copilotReviewTrigger": "native",
+      "release": {
+        "enabled": false,
+        "units": {
+          "layerscape": {
+            "enabled": false,
+            "adoptedAfterTag": "v9.2.2",
+            "adoptedFromSha": null,
+            "channels": {
+              "ghcr-assets": {
+                "enabled": false,
+                "kind": "oci-artifact",
+                "destination": "ghcr.io/splrad/layerscape-assets",
+                "packageName": "layerscape-assets",
+                "visibility": "public",
+                "environment": "package-publish",
+                "authMode": "github-token",
+                "artifactType": "application/vnd.splrad.layerscape.release.v1"
+              },
+              "winget": {
+                "enabled": false,
+                "kind": "winget",
+                "destination": "microsoft/winget-pkgs",
+                "packageName": "SPLRAD.LayerScape.Deployer",
+                "visibility": "public",
+                "environment": "winget-submit",
+                "authMode": "owner-fork",
+                "packageIdentifier": "SPLRAD.LayerScape.Deployer",
+                "forkRepository": null
+              }
+            }
+          }
+        }
+      },
+      "pages": {
+        "enabled": false
+      },
+      "revokedPolicyShas": [],
+      "repositoryId": 1187527897,
+      "defaultBranch": "main"
+    },
+    "1296724484": {
+      "managed": true,
+      "fullName": "splrad/steward",
+      "pullRequestTemplate": "organization-default",
+      "reviewGovernance": {
+        "scope": "full",
+        "lifecycle": "repository-ready",
+        "owner": "splrad/maintainers",
+        "exception": null,
+        "lastVerifiedAt": "2026-08-27T09:08:51Z",
+        "nextReviewAt": "2026-09-27T09:08:51Z"
+      },
+      "classification": {
+        "profile": "default",
+        "labelDefinitionMode": "enforce",
+        "labelAssignmentMode": "enforce"
+      },
+      "validationProfile": "steward",
+      "allowedWorkflowPaths": [
+        ".github/workflows/deploy-runtime.yml",
+        ".github/workflows/native-review.yml",
+        ".github/workflows/onboard-repository.yml",
+        ".github/workflows/pr-classification.yml",
+        ".github/workflows/pr-validation.yml",
+        ".github/workflows/product-build.yml",
+        ".github/workflows/release-build-complete.yml",
+        ".github/workflows/release-build.yml",
+        ".github/workflows/release.yml",
+        ".github/workflows/sync-managed-labels.yml"
+      ],
+      "copilotReviewTrigger": "native",
+      "release": {
+        "enabled": false,
+        "units": {}
+      },
+      "pages": {
+        "enabled": false
+      },
+      "revokedPolicyShas": [],
+      "repositoryId": 1296724484,
+      "defaultBranch": "main"
+    },
+    "1296725317": {
+      "managed": true,
+      "fullName": "splrad/.github",
+      "pullRequestTemplate": "organization-provider",
+      "reviewGovernance": {
+        "scope": "policy-only",
+        "lifecycle": "repository-ready",
+        "owner": "splrad/maintainers",
+        "exception": null,
+        "lastVerifiedAt": "2026-08-27T09:08:51Z",
+        "nextReviewAt": "2026-09-27T09:08:51Z"
+      },
+      "classification": {
+        "profile": "default",
+        "labelDefinitionMode": "enforce",
+        "labelAssignmentMode": "enforce"
+      },
+      "validationProfile": "public-basic",
+      "allowedWorkflowPaths": [],
+      "copilotReviewTrigger": "native",
+      "release": {
+        "enabled": false,
+        "units": {}
+      },
+      "pages": {
+        "enabled": false
+      },
+      "revokedPolicyShas": [],
+      "repositoryId": 1296725317,
+      "defaultBranch": "main"
+    }
+  }
+}

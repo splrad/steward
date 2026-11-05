@@ -1,223 +1,190 @@
 name: SPLRAD Steward / Sync Managed Files
 on:
   workflow_dispatch:
-    inputs:
-      repository:
-        description: Registered repository; empty selects all enabled repositories
-        type: string
-        required: false
-      mode:
-        description: Managed synchronization or explicit first adoption
-        type: choice
-        options:
-          - sync
-          - onboard
-        default: sync
-        required: true
   schedule:
-    - cron: 47 2 * * 1
+    - cron: '37 * * * *'
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - config/**
       - templates/**
+      - tools/template/**
+      - scripts/**
+      - copier.yml
       - schema/**
       - .github/workflows/**
       - packages/runner/dist/**
 permissions:
   contents: read
+  actions: read
 jobs:
-  targets:
-    if: github.repository == 'splrad/steward' && github.ref == 'refs/heads/main'
+  bootstrap:
+    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && vars.STEWARD_TEMPLATE_APPLY == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    outputs:
-      matrix: ${{ steps.targets.outputs.matrix }}
-      has_targets: ${{ steps.targets.outputs.has_targets }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.workflow_sha }}
-          persist-credentials: false
-      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
-        env:
-          MISE_SAFE: "1"
-          MISE_NODE_COMPILE: "false"
-        with:
-          version: 2026.10.18
-          install_args: --locked
-          cache: false
-          env: false
-          persist_github_token: false
-      - id: targets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ inputs.repository }}
-          MODE: ${{ inputs.mode || 'sync' }}
-        run: |
-          if [[ "$MODE" == "onboard" && -z "$REPOSITORY" ]]; then echo "Onboarding requires one registered repository" >&2; exit 1; fi
-          arguments=()
-          if [[ -n "$REPOSITORY" ]]; then arguments+=(--repository "$REPOSITORY"); fi
-          node packages/runner/dist/index.js managed-sync targets "${arguments[@]}" --output targets.json
-  synchronize:
-    needs: targets
-    if: needs.targets.outputs.has_targets == 'true'
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     environment:
       name: steward-automation
       deployment: false
     concurrency:
-      group: managed-sync-${{ matrix.repositoryId }}
+      group: steward-governance-mutation
       cancel-in-progress: false
       queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.workflow_sha }}
-          path: bootstrap
+          fetch-depth: 0
           persist-credentials: false
       - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
         env:
-          MISE_SAFE: "1"
-          MISE_NODE_COMPILE: "false"
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
         with:
           version: 2026.10.18
-          working_directory: bootstrap
           install_args: --locked
           cache: false
           env: false
           persist_github_token: false
-      - id: authorization
+      - name: Install locked libraries without credentials
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Restore protection and initialize empty repositories
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY_ID: ${{ matrix.repositoryId }}
-          POLICY_SHA: ${{ matrix.policySha }}
-        run: node bootstrap/packages/runner/dist/index.js managed-sync authorize --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA" --output authorization.json
-      - id: rules-token
-        if: steps.authorization.outputs.enabled == 'true'
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+          GOVERNANCE_APP_ID: ${{ vars.GOVERNANCE_APP_ID }}
+          GOVERNANCE_APP_PRIVATE_KEY: ${{ secrets.GOVERNANCE_APP_PRIVATE_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          STEWARD_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          STEWARD_CONTROLLER_SHA: ${{ github.workflow_sha }}
+        run: node scripts/repository-bootstrap.mjs
+  templates:
+    needs: bootstrap
+    if: ${{ !cancelled() && github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && vars.STEWARD_TEMPLATE_APPLY == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: steward-automation
+      deployment: false
+    concurrency:
+      group: steward-template-delivery
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          app-id: "4243096"
-          private-key: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
-          owner: splrad
-          repositories: ${{ steps.authorization.outputs.repository }}
-          permission-administration: write
-      - id: preflight
-        if: steps.authorization.outputs.enabled == 'true'
-        env:
-          RULES_READ_TOKEN: ${{ steps.rules-token.outputs.token }}
-          RULES_READ_REPOSITORY: ${{ steps.authorization.outputs.full_name }}
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY_ID: ${{ matrix.repositoryId }}
-          POLICY_SHA: ${{ matrix.policySha }}
-        run: node bootstrap/packages/runner/dist/index.js managed-sync preflight --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA" --output preflight.json
-      - if: steps.preflight.outputs.enabled == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ steps.preflight.outputs.observation_sha }}
-          path: observation
-          persist-credentials: false
-      - if: steps.preflight.outputs.enabled == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ matrix.policySha }}
-          path: policy
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
-      - if: steps.preflight.outputs.enabled == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: ${{ steps.authorization.outputs.full_name }}
-          ref: ${{ steps.preflight.outputs.base_sha }}
-          path: target
-          fetch-depth: 0
-          persist-credentials: false
-      - if: steps.preflight.outputs.enabled == 'true'
-        uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
         env:
-          MISE_SAFE: "1"
-          MISE_NODE_COMPILE: "false"
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
         with:
           version: 2026.10.18
-          working_directory: policy
           install_args: --locked
           cache: false
           env: false
           persist_github_token: false
-      - id: labels
-        if: steps.preflight.outputs.enabled == 'true'
-        env:
-          RULES_READ_TOKEN: ${{ steps.rules-token.outputs.token }}
-          RULES_READ_REPOSITORY: ${{ steps.authorization.outputs.full_name }}
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY_ID: ${{ matrix.repositoryId }}
-          POLICY_SHA: ${{ matrix.policySha }}
-        run: node policy/packages/runner/dist/index.js managed-sync labels --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA" --policy-dir policy --mode preview --output labels-preview.json
-      - if: steps.preflight.outputs.enabled == 'true'
-        env:
-          REPOSITORY_ID: ${{ matrix.repositoryId }}
-          PREVIEW_DIRECTORY: ${{ runner.temp }}/managed-preview
-          MODE: ${{ inputs.mode || 'sync' }}
+      - name: Install locked libraries without credentials
         run: |
-          arguments=()
-          if [[ "$MODE" == "onboard" ]]; then arguments+=(--input-manifest "policy/config/onboarding/$REPOSITORY_ID/manifest.json"); fi
-          node policy/packages/runner/dist/index.js managed-sync preview --repository-id "$REPOSITORY_ID" --mode "$MODE" --policy-dir policy --target-dir target --central-config observation/config/repositories.json --output-dir "$PREVIEW_DIRECTORY" "${arguments[@]}"
-      - id: apply
-        if: steps.preflight.outputs.enabled == 'true'
+          npm ci --ignore-scripts --no-audit --no-fund
+          uv sync --project tools/template --frozen --no-dev
+      - name: Discover and deliver native template pull requests
         env:
-          REPOSITORY_ID: ${{ matrix.repositoryId }}
-          POLICY_SHA: ${{ matrix.policySha }}
-          PREVIEW_DIRECTORY: ${{ runner.temp }}/managed-preview
-        run: node policy/packages/runner/dist/index.js managed-sync apply --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA" --preview-dir "$PREVIEW_DIRECTORY" --target-dir target --output applied.json
-      - id: token
-        if: steps.apply.outputs.changed == 'true' || steps.labels.outputs.changed == 'true'
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: "4243096"
-          private-key: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
-          owner: splrad
-          repositories: ${{ steps.authorization.outputs.repository }}
-          permission-contents: write
-          permission-pull-requests: write
-          permission-workflows: write
-      - id: write-check
-        if: steps.apply.outputs.changed == 'true' || steps.labels.outputs.changed == 'true'
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          STEWARD_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          STEWARD_CONTROLLER_SHA: ${{ github.workflow_sha }}
+        run: node scripts/template-delivery.mjs
+
+  automation-health:
+    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+      issues: write
+    concurrency:
+      group: steward-automation-health
+      cancel-in-progress: false
+    steps:
+      - name: automation-health-native
+        shell: bash
         env:
-          RULES_READ_TOKEN: ${{ steps.rules-token.outputs.token }}
-          RULES_READ_REPOSITORY: ${{ steps.authorization.outputs.full_name }}
           GH_TOKEN: ${{ github.token }}
-          REPOSITORY_ID: ${{ matrix.repositoryId }}
-          POLICY_SHA: ${{ matrix.policySha }}
-          BASE_SHA: ${{ steps.preflight.outputs.base_sha }}
-        run: node bootstrap/packages/runner/dist/index.js managed-sync preflight --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA" --expected-base-sha "$BASE_SHA" --output write-check.json
-      - if: steps.labels.outputs.changed == 'true' && steps.write-check.outputs.enabled == 'true'
-        env:
-          RULES_READ_TOKEN: ${{ steps.rules-token.outputs.token }}
-          RULES_READ_REPOSITORY: ${{ steps.authorization.outputs.full_name }}
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-          POLICY_READ_TOKEN: ${{ github.token }}
-          REPOSITORY_ID: ${{ matrix.repositoryId }}
-          POLICY_SHA: ${{ matrix.policySha }}
-        run: node policy/packages/runner/dist/index.js managed-sync labels --repository-id "$REPOSITORY_ID" --policy-sha "$POLICY_SHA" --policy-dir policy --mode apply --output labels-applied.json
-      - if: steps.apply.outputs.changed == 'true' && steps.write-check.outputs.enabled == 'true'
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
-        with:
-          token: ${{ steps.token.outputs.token }}
-          path: target
-          base: main
-          branch: steward/managed-sync
-          delete-branch: false
-          signoff: true
-          sign-commits: true
-          author: splrad-steward[bot] <301115370+splrad-steward[bot]@users.noreply.github.com>
-          committer: splrad-steward[bot] <301115370+splrad-steward[bot]@users.noreply.github.com>
-          add-paths: ${{ steps.apply.outputs.add_paths }}
-          title: "chore: 同步中央受管文件"
-          commit-message: "chore: 同步中央受管文件"
-          body-path: ${{ runner.temp }}/managed-preview/sync-body.md
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          CURRENT_ATTEMPT: ${{ github.run_attempt }}
+          HEALTH_ISSUE: ${{ vars.STEWARD_HEALTH_ISSUE }}
+        run: |
+          set -euo pipefail
+          shopt -s inherit_errexit
+          api() { gh api --method GET -H 'X-GitHub-Api-Version: 2026-03-10' "$1" 2>/dev/null; }
+          [[ "$HEALTH_ISSUE" =~ ^[1-9][0-9]*$ ]]
+          repo=$(api repos/splrad/steward)
+          jq -e --arg branch "$DEFAULT_BRANCH" '.id==1296724484 and .full_name=="splrad/steward" and .default_branch==$branch and .archived==false and .disabled==false' <<<"$repo" >/dev/null
+          current=$(api "repos/splrad/steward/actions/runs/$CURRENT_RUN_ID")
+          jq -e --argjson id "$CURRENT_RUN_ID" --argjson attempt "$CURRENT_ATTEMPT" --arg branch "$DEFAULT_BRANCH" '.id==$id and .run_attempt==$attempt and .repository.id==1296724484 and .head_repository.id==1296724484 and .head_branch==$branch and (.path==".github/workflows/release.yml" or .path==".github/workflows/sync-managed.yml") and (.event=="schedule" or .event=="workflow_dispatch" or .event=="push")' <<<"$current" >/dev/null
+          issue=$(api "repos/splrad/steward/issues/$HEALTH_ISSUE")
+          jq -e --argjson number "$HEALTH_ISSUE" '.number==$number and .pull_request==null' <<<"$issue" >/dev/null
+          bot=$(api 'users/github-actions%5Bbot%5D' | jq -er 'select(.type=="Bot")|.id')
+          marker='<!-- splrad-automation-health:v2 -->'
+          read_codes() {
+            gh api --method GET --paginate --slurp -H 'X-GitHub-Api-Version: 2026-03-10' "repos/splrad/steward/issues/$HEALTH_ISSUE/comments?per_page=100" 2>/dev/null |
+              jq -ce --arg marker "$marker" --argjson bot "$bot" 'if all(.[];type=="array") then add else error("comments unavailable") end | [.[]|select(.user.id==$bot and (.body//""|startswith($marker+"\n")))] | sort_by(.id)|last | if .==null then [] else .body|split("\n")[1]|fromjson end | if type=="array" and all(.[];type=="string" and test("^(release\\.yml|sync-managed\\.yml):(WORKFLOW_UNAVAILABLE|WORKFLOW_DISABLED|ENABLE_UNCONFIRMED|RUN_UNAVAILABLE|WAKE_UNKNOWN|ENTRY_OVERDUE)$")) then sort|unique else error("health state unavailable") end'
+          }
+          previous=$(read_codes)
+          codes='[]'
+          record() { codes=$(jq -cn --argjson codes "$codes" --arg code "$file:$1" '$codes+[$code]'); }
+          latest_run() {
+            gh run list --repo splrad/steward --workflow "$file" --branch "$DEFAULT_BRANCH" --limit 1 --json databaseId,createdAt,status,conclusion 2>/dev/null |
+              jq -ce 'if type=="array" and length<=1 and all(.[]; (.databaseId|type)=="number" and .databaseId>0 and (.databaseId|floor)==.databaseId and (.createdAt|type)=="string" and (.status=="completed" or .status=="in_progress" or .status=="queued" or .status=="waiting" or .status=="pending" or .status=="requested")) then . else error("recent Run unavailable") end'
+          }
+          workflow_matches() {
+            jq -e --arg path ".github/workflows/$file" --argjson id "$workflow_id" '.id==$id and .path==$path' <<<"$1" >/dev/null
+          }
+          for file in release.yml sync-managed.yml; do
+            if ! workflow=$(api "repos/splrad/steward/actions/workflows/$file") ||
+               ! workflow_id=$(jq -er --arg path ".github/workflows/$file" 'select(.path==$path and (.id|type)=="number" and .id>0 and (.id|floor)==.id)|.id' <<<"$workflow"); then
+              record WORKFLOW_UNAVAILABLE; continue
+            fi
+            state=$(jq -r '.state' <<<"$workflow")
+            if [[ "$state" == disabled_inactivity ]]; then
+              # Recheck the current state immediately before the only enable request.
+              if ! workflow=$(api "repos/splrad/steward/actions/workflows/$workflow_id") || ! workflow_matches "$workflow"; then record WORKFLOW_UNAVAILABLE; continue; fi
+              state=$(jq -r '.state' <<<"$workflow")
+              if [[ "$state" == disabled_inactivity ]]; then
+                gh api --method PUT -H 'X-GitHub-Api-Version: 2026-03-10' "repos/splrad/steward/actions/workflows/$workflow_id/enable" >/dev/null 2>&1 || true
+                if ! workflow=$(api "repos/splrad/steward/actions/workflows/$workflow_id") || ! workflow_matches "$workflow"; then record ENABLE_UNCONFIRMED; continue; fi
+                state=$(jq -r '.state' <<<"$workflow")
+                if [[ "$state" == disabled_inactivity ]]; then record ENABLE_UNCONFIRMED; continue; fi
+              fi
+            fi
+            if [[ "$state" != active ]]; then record WORKFLOW_DISABLED; continue; fi
+            if ! runs=$(latest_run); then record RUN_UNAVAILABLE; continue; fi
+            created=$(jq -r '.[0].createdAt//"1970-01-01T00:00:00Z"' <<<"$runs")
+            if ! created_epoch=$(date -u -d "$created" +%s); then record RUN_UNAVAILABLE; continue; fi
+            now=$(date -u +%s)
+            if ((created_epoch>now)); then record RUN_UNAVAILABLE; continue; fi
+            if ((now-created_epoch<=2*3600)); then continue; fi
+            # A recent Run does not prove that older Runs have finished. Native concurrency
+            # serializes this observation wake; business records retain their own budgets.
+            if ! workflow=$(api "repos/splrad/steward/actions/workflows/$workflow_id") || ! workflow_matches "$workflow"; then record WORKFLOW_UNAVAILABLE; continue; fi
+            if [[ "$(jq -r '.state' <<<"$workflow")" != active ]]; then record WORKFLOW_DISABLED; continue; fi
+            response_known=true
+            gh workflow run "$file" --repo splrad/steward --ref "$DEFAULT_BRANCH" >/dev/null 2>&1 || response_known=false
+            # Read once after the write, including a lost response. Retry only on a later
+            # fixed wake after it has read native state again.
+            if ! observed=$(latest_run); then record WAKE_UNKNOWN; continue; fi
+            observed_created=$(jq -r '.[0].createdAt//"1970-01-01T00:00:00Z"' <<<"$observed")
+            if ! observed_epoch=$(date -u -d "$observed_created" +%s); then record WAKE_UNKNOWN; continue; fi
+            if ((observed_epoch>=now && observed_epoch<=$(date -u +%s))); then continue; fi
+            if [[ "$response_known" == true ]]; then record ENTRY_OVERDUE; else record WAKE_UNKNOWN; fi
+          done
+          codes=$(jq -c 'sort|unique' <<<"$codes")
+          if [[ "$codes" != "$previous" ]]; then
+            body=$(printf '%s\n%s\n\n中央入口观察：%s\nhttps://github.com/splrad/steward/actions/runs/%s\n' "$marker" "$codes" "$codes" "$CURRENT_RUN_ID")
+            payload=$(jq -cn --arg body "$body" '{body:$body}')
+            gh api --method POST -H 'X-GitHub-Api-Version: 2026-03-10' "repos/splrad/steward/issues/$HEALTH_ISSUE/comments" --input - <<<"$payload" >/dev/null 2>&1 || true
+            [[ "$(read_codes)" == "$codes" ]]
+          fi
+          [[ "$codes" == '[]' ]]

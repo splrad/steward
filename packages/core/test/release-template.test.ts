@@ -1,19 +1,19 @@
 import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
 import { committedVersionNotes, parseSupplementalNotes, renderCommittedReleaseNotes, type ReleaseTemplateData } from '../src/release-template.js';
-const template = readFileSync('config/templates/release.md.mustache', 'utf8');
+const template = readFileSync('templates/repository/.github/release-template.md.mustache', 'utf8');
 it('extracts only the exact committed version section and tag comparison', () => {
   const input = '# Changes\n\n## [1.2.3](https://github.com/example/product/compare/v1.2.2...v1.2.3)\n\n- Fixed path.\n\n## 1.2.2\n\nOlder.\n';
-  expect(committedVersionNotes(input, '1.2.3', 'example/product', 'a'.repeat(40), 'v1.2.3')).toEqual({ changelog: '- Fixed path.', compareUrl: 'https://github.com/example/product/compare/v1.2.2...v1.2.3' });
+  expect(committedVersionNotes(input, '1.2.3', 'example/product', 'a'.repeat(40), 'v1.2.3')).toEqual({ changelog: '- Fixed path.', sourceLinkLabel: '查看比较', commitUrl: 'https://github.com/example/product/commit/'+'a'.repeat(40), sourceUrl: 'https://github.com/example/product/compare/v1.2.2...'+'a'.repeat(40) });
   for (const broken of [input.replace('...v1.2.3', '...v9.9.9'), input.replace('github.com/example', 'github.com/other'), input + '\n## 1.2.3\nDuplicate.', input.replace('- Fixed path.', '')]) {
     expect(() => committedVersionNotes(broken, '1.2.3', 'example/product', 'a'.repeat(40), 'v1.2.3')).toThrow('RELEASE_TEMPLATE');
   }
-  expect(committedVersionNotes('## 1.2.3\n\nFirst release.\n', '1.2.3', 'example/product', 'a'.repeat(40), 'v1.2.3').compareUrl).toBe('https://github.com/example/product/commit/' + 'a'.repeat(40));
+  expect(committedVersionNotes('## 1.2.3\n\nFirst release.\n', '1.2.3', 'example/product', 'a'.repeat(40), 'v1.2.3').sourceUrl).toBe('https://github.com/example/product/tree/' + 'a'.repeat(40));
 });
-const notes = '## 概述\n\n修复`字体`路径。\n\n## 兼容性\n\nWindows；宿主未覆盖。\n\n## 升级与迁移\n\n无需配置或数据迁移。\n\n## 安装说明\n\n下载并运行安装包。\n\n## 已知问题\n\n未发现已确认问题；未覆盖场景见兼容性。\n\n## 恢复\n\n停止插件，恢复上一受验安装包及备份配置。\n';
+const notes = '## 概述\n\n修复`字体`路径。\n\n## 更新内容\n\n改善已审阅的字体路径行为。\n\n## 兼容性\n\nWindows；宿主未覆盖。\n\n## 升级与迁移\n\n无需配置或数据迁移。\n\n## 安装说明\n\n下载并运行安装包。\n\n## 已知问题\n\n未发现已确认问题；未覆盖场景见兼容性。\n\n## 恢复\n\n停止插件，恢复上一受验安装包及备份配置。\n';
 const data: ReleaseTemplateData = { ...parseSupplementalNotes(notes), productName: '示例产品', version: '1.2.3',
-  changelog: '- 修复路径。', downloads: '| 文件 | 用途 |\n| --- | --- |\n| archive.zip | 手工安装 |',
-  sourceSha: 'a'.repeat(40), policySha: 'b'.repeat(40), compareUrl: 'https://github.com/example/product/compare/v1.2.2...v1.2.3',
+  hasContributors: false, contributors: [], downloads: '| 文件 | 用途 |\n| --- | --- |\n| archive.zip | 手工安装 |',
+  sourceSha: 'a'.repeat(40), controllerSha: 'b'.repeat(40), sourceLinkLabel: '查看比较', commitUrl: 'https://github.com/example/product/commit/'+'a'.repeat(40), sourceUrl: 'https://github.com/example/product/compare/v1.2.2...'+'a'.repeat(40),
   channels: [{ name: '包渠道', status: '待分发', location: '见后续渠道运行记录。' }] };
 it('renders committed Chinese Markdown deterministically', () => {
   const result = renderCommittedReleaseNotes(template, data);
@@ -34,13 +34,27 @@ it.each([
 it.each(['{{unknown}}', '{{> external}}', '{{#summary}}lambda{{/summary}}', '{{=<% %>=}}<%version%>', '{{{productName}}}'])('rejects unsafe template extension %s', extension => {
   expect(() => renderCommittedReleaseNotes(template + extension, data)).toThrow('RELEASE_TEMPLATE');
 });
-it.each(['summary', 'version', 'changelog', 'downloads', 'sourceSha', 'channels'])('requires %s', field => {
+it.each(['summary', 'version', 'userChanges', 'downloads', 'sourceSha', 'channels'])('requires %s', field => {
   const incomplete = { ...data } as any; delete incomplete[field];
   expect(() => renderCommittedReleaseNotes(template, incomplete)).toThrow('RELEASE_TEMPLATE');
 });
 it('rejects unverified channel status, unsafe identity and omitted template fields', () => {
   expect(() => renderCommittedReleaseNotes(template, { ...data, channels: [{ ...data.channels[0]!, status: '已分发' as any }] })).toThrow();
   expect(() => renderCommittedReleaseNotes(template, { ...data, productName: '<script>' })).toThrow();
-  expect(() => renderCommittedReleaseNotes(template, { ...data, compareUrl: 'javascript:alert(1)' })).toThrow();
+  expect(() => renderCommittedReleaseNotes(template, { ...data, sourceUrl: 'javascript:alert(1)' })).toThrow();
   expect(() => renderCommittedReleaseNotes(template.replace('{{{recovery}}}', ''), data)).toThrow();
+});
+it.each(['{{{profileUrl}}}', '{{{avatarUrl}}}', '{{{alt}}}', '{{#channels}}{{name}}{{/channels}}'])('rejects contributor scope or escaping changes: %s', replacement => {
+  expect(() => renderCommittedReleaseNotes(template.replace('{{profileUrl}}', replacement), data)).toThrow('RELEASE_TEMPLATE');
+});
+it.each(['根据源码证据生成此版本给使用者带来的主要变化，供原PR审阅。',
+  '按使用者可观察的行为、适用条件和必要操作列出本次变化；由§5.4.1自动生成，人工可以在同一候选编辑。',
+  '说明本版本真实支持的安装方法及必要操作；渠道尚未验收时明确标注待分发。'])('rejects unfilled adopted seed: %s', prompt => {
+  expect(() => parseSupplementalNotes(notes.replace('改善已审阅的字体路径行为。', prompt))).toThrow('unfilled');
+});
+it('requires seven sections, controller identity and contributor condition agreement', () => {
+  expect(() => parseSupplementalNotes(notes.replace('## 更新内容\n\n改善已审阅的字体路径行为。\n\n', ''))).toThrow('missing heading');
+  expect(() => renderCommittedReleaseNotes(template, { ...data, policySha: data.controllerSha } as any)).toThrow('input keys');
+  expect(() => renderCommittedReleaseNotes(template, { ...data, hasContributors: true })).toThrow('invalid contributors');
+  expect(() => renderCommittedReleaseNotes(template.replace('## 更新内容', '## 原始提交'), data)).toThrow('four section layout');
 });

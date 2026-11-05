@@ -1,7 +1,7 @@
 import {open,unlink} from 'node:fs/promises';
 import {maxArtifactArchiveBytes} from './artifact-file.js';
 import { createHash } from 'node:crypto';
-import type { GitHubClient } from '../../github/src/index.js';
+import { type GitHubClient } from '../../github/src/client.js';
 export interface ArtifactBinding { repositoryId:number; fullName:string; workflowPath:string; policySha:string; runId:number; attempt:number; artifactId:number; artifactName:string }
 const check=(v:unknown)=>{if(!v)throw new Error('ARTIFACT_HANDOFF_INVALID');};
 export function artifactDownloadTimeout(size:number):number {

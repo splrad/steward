@@ -13,6 +13,9 @@ on:
         type: string
 permissions:
   contents: read
+  pull-requests: read
+  checks: read
+  actions: read
 concurrency:
   group: workflow-resource:1296724484:pr-body
   cancel-in-progress: false
@@ -22,9 +25,6 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && github.repository == 'splrad/steward' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    environment:
-      name: steward-automation
-      deployment: false
     outputs:
       state: ${{ steps.observe.outputs.state }}
       reason: ${{ steps.observe.outputs.reason }}
@@ -50,16 +50,12 @@ jobs:
         id: observe
         shell: bash
         env:
-          APP_ID: "4243096"
-          INSTALLATION_ID: "145952003"
-          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
           REPOSITORY_ID: ${{ inputs.repositoryId }}
           PULL_REQUEST_NUMBER: ${{ inputs.pullRequestNumber }}
           HEAD_SHA: ${{ inputs.eventAfterSha }}
-          POLICY_SHA: ${{ github.workflow_sha }}
         run: |
           node packages/runner/dist/index.js observe-copilot-review \
             --repository-id "$REPOSITORY_ID" \
             --pull-request-number "$PULL_REQUEST_NUMBER" \
-            --event-head-sha "$HEAD_SHA" \
-            --policy-sha "$POLICY_SHA"
+            --event-head-sha "$HEAD_SHA"

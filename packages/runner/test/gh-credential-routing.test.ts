@@ -1,24 +1,52 @@
 import { afterEach, expect, it, vi } from 'vitest';
-const state = vi.hoisted(() => ({ calls: [] as any[][] }));
+import { access, readdir } from 'node:fs/promises';
+const state = vi.hoisted(() => ({ calls: [] as any[][], failure: false }));
 vi.mock('node:child_process', () => ({ execFile: Object.assign(vi.fn(), {
-  [Symbol.for('nodejs.util.promisify.custom')]: async (...args: any[]) => { state.calls.push(args); return { stdout: '{}' }; },
+  [Symbol.for('nodejs.util.promisify.custom')]: async (...args: any[]) => {
+    state.calls.push(args);
+    expect(await readdir(args[2].env.GH_CONFIG_DIR)).toEqual([]);
+    if (state.failure) throw new Error('fixture transport failure');
+    return { stdout: '{}' };
+  },
 }) }));
 import { nativeGhCommand } from '../src/gh-release.js';
-afterEach(() => { state.calls.length = 0; vi.unstubAllEnvs(); });
+afterEach(() => { state.calls.length = 0; state.failure = false; vi.unstubAllEnvs(); });
 it.each([
   ['repos/splrad/steward', true], ['repos/splrad/steward/commits/main', true],
   ['repos/splrad/steward/contents/config/repositories.json?ref=' + 'a'.repeat(40), true],
   ['repos/splrad/steward/contents/config/release/defaults.json?ref=' + 'a'.repeat(40), true],
-  ['repos/splrad/steward/contents/config/release/bootstrap.json?ref=' + 'a'.repeat(40), true],
   ['repos/splrad/LayerScape/contents/release-please-config.json?ref=' + 'a'.repeat(40), false],
   ['repos/splrad/steward/compare/' + 'a'.repeat(40) + '...' + 'b'.repeat(40), true],
   ['repos/splrad/steward/releases?per_page=100', false], ['repos/splrad/steward/releases/42', false],
   ['repos/splrad/LayerScape/releases?per_page=100', false], ['repos/splrad/LayerScape/rulesets/1', false],
-] as const)('routes %s without replacing target draft credentials', async (path, policy) => {
+] .map(([path]) => String(path)))('uses the selected target credential for %s regardless of the former route', async (path) => {
   vi.stubEnv('GH_TOKEN', 'fixture-target'); vi.stubEnv('POLICY_READ_TOKEN', 'fixture-policy');
   await nativeGhCommand(['api', path]);
-  expect(state.calls[0]![2].env.GH_TOKEN).toBe(policy ? 'fixture-policy' : 'fixture-target');
+  expect(state.calls[0]![2].env.GH_TOKEN).toBe('fixture-target');
   expect(state.calls[0]![1]).toEqual(['api', path]);
+  expect(state.calls[0]![2].env.POLICY_READ_TOKEN).toBeUndefined();
+  await expect(access(state.calls[0]![2].env.GH_CONFIG_DIR)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it.each([false, true])('isolates explicit credentials and removes the temporary profile on failure=%s', async failure => {
+  state.failure = failure;
+  for (const key of ['GH_TOKEN', 'POLICY_READ_TOKEN', 'RULES_READ_TOKEN', 'GITHUB_TOKEN', 'STEWARD_APP_PRIVATE_KEY',
+    'COPILOT_GITHUB_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'NODE_OPTIONS', 'GH_DEBUG', 'HTTPS_PROXY']) vi.stubEnv(key, 'sentinel-parent');
+  const result = nativeGhCommand(['api', 'repos/example/product'], 'fixture-explicit');
+  if (failure) await expect(result).rejects.toThrow('fixture transport failure');
+  else await expect(result).resolves.toBe('{}');
+  const [, args, options] = state.calls[0]!;
+  expect(options.env.GH_TOKEN).toBe('fixture-explicit');
+  expect(Object.values(options.env)).not.toContain('sentinel-parent');
+  expect(JSON.stringify(args)).not.toContain('fixture-explicit');
+  expect(options.env.HOME).toBe(options.env.GH_CONFIG_DIR);
+  await expect(access(options.env.GH_CONFIG_DIR)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('does not fall back to GITHUB_TOKEN, policy credentials, or an ambient login', async () => {
+  vi.stubEnv('GH_TOKEN', ''); vi.stubEnv('GITHUB_TOKEN', 'fixture-github'); vi.stubEnv('POLICY_READ_TOKEN', 'fixture-policy');
+  await expect(nativeGhCommand(['api', 'repos/splrad/steward'])).rejects.toThrow('GH_CREDENTIAL_REQUIRED');
+  expect(state.calls).toHaveLength(0);
 });
 
 it.each(['missing', 'foreign', 'invalid-id'])('rejects isolated rules credential: %s', async kind => {
