@@ -1,0 +1,24 @@
+[tool_alias]
+node = "core:node"
+npm = "npm:npm"
+
+[tools]
+node = "latest"
+npm = "latest"
+"github:jdx/jactionlint" = "latest"
+"aqua:koalaman/shellcheck" = "latest"
+"aqua:astral-sh/uv" = "latest"
+python = "latest"
+"aqua:astral-sh/ruff" = "latest"
+"aqua:zizmorcore/zizmor" = "latest"
+"aqua:cli/cli" = "latest"
+"aqua:lycheeverse/lychee" = "latest"
+"aqua:oras-project/oras" = "latest"
+"aqua:anchore/syft" = "latest"
+
+"github:microsoft/winget-create" = { version = "latest", asset_pattern = "wingetcreate.exe", format = "raw", bin = "wingetcreate.exe", os = ["windows"] }
+
+[settings]
+lockfile = true
+lockfile_platforms = ["windows-x64", "linux-x64"]
+node.compile = false

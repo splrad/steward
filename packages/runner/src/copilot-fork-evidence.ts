@@ -1,4 +1,4 @@
-import type { GitHubClient } from "../../github/src/index.js";
+import { type GitHubClient } from '../../github/src/client.js';
 
 type RecordValue = { [key: string]: any };
 export interface ForkCopilotEvidence {

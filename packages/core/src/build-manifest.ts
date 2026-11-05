@@ -1,7 +1,6 @@
 import { minimatch } from 'minimatch';
-import { assertDeliveryPath, type DeliveryConfiguration } from './delivery-config.js';
-import { assertNativeVersion, parsePublicVersion } from './release-version.js';
-import { sha256Hex } from './fingerprint.js';
+import { assertDeliveryPath } from './delivery-config.js';
+import { parsePublicVersion } from './release-version.js';
 
 export const buildProfiles = ['dotnet-assets-v1', 'node-package-v1', 'oci-image-v1', 'custom-adapter-v1'] as const;
 export type BuildProfile = typeof buildProfiles[number];
@@ -47,11 +46,13 @@ export interface BuildIdentity {
   targetSha: string; policySha: string; version: string | null;
 }
 export interface BuildOutputRule { id: string; kind: 'file' | 'oci-image'; match?: string; count: number; mediaType?: string; archiveType?: 'dll-archive' | 'font-archive' }
-export interface BuildUnit { profile: BuildProfile; inputs: Record<string, unknown>; outputs: BuildOutputRule[] }
-export interface BuildPlan extends BuildIdentity {
-  inputs: Record<string, unknown>; inputsSha256: string; outputs: BuildOutputRule[];
-  runnerFamily: 'windows' | 'linux'; timeoutMinutes: 45;
+/** Source and materialized artifact expectations; execution belongs to product YAML. */
+export interface BuildSource {
+  repositoryId: number; fullName: string; buildId: string; kind: 'file' | 'oci-image';
+  sourceSha: string; controllerSha: string; version: string | null; packageVersion: string | null; inputsSha256: string;
 }
+export interface BuildArtifactInput extends BuildSource { outputs: BuildOutputRule[]; platforms: string[] }
+export interface BuildArtifactEvidence extends BuildSource { artifacts: BuildArtifact[] }
 export interface FileArtifact { id: string; kind: 'file'; file: string; mediaType: string; size: number; sha256: string }
 export interface ImageArtifact { id: string; kind: 'oci-image'; reference: string; digest: string }
 export type BuildArtifact = FileArtifact | ImageArtifact;
@@ -78,12 +79,6 @@ function validOciReference(reference: string, digest: string): boolean {
   const match = ociReferencePattern.exec(reference);
   return match !== null && validOciRepository(match[1]!) && reference.endsWith(`@${digest}`);
 }
-const inputFields: Record<BuildProfile, readonly string[]> = {
-  'dotnet-assets-v1': ['project', 'configuration', 'framework', 'runtime'],
-  'node-package-v1': ['directory', 'lockfile', 'buildTask', 'packageManager'],
-  'oci-image-v1': ['context', 'dockerfile', 'platforms'],
-  'custom-adapter-v1': ['entrypoint', 'runtime', 'runnerFamily'],
-};
 function exact(value: object, fields: readonly string[]): void {
   if (!value || typeof value !== 'object' || Array.isArray(value)) buildFail('RN_BUILD_INVALID');
   if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...fields].sort())) buildFail('RN_BUILD_INVALID');
@@ -105,55 +100,47 @@ export function assertBuildPath(path: string, options: { glob?: boolean; root?: 
   if (path !== '.' && path.split('/').some(part => /[<>"|]/u.test(part) || /[ .]$/u.test(part)
     || /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/iu.test(part))) buildFail('RN_BUILD_PATH');
 }
-export async function planBuild(identity: BuildIdentity, unit: BuildUnit): Promise<BuildPlan> {
-  assertBuildIdentity(identity);
-  exact(unit, ['profile', 'inputs', 'outputs']);
-  if (identity.profile !== unit.profile) buildFail('RN_BUILD_INVALID');
-  exact(unit.inputs, inputFields[unit.profile]);
-  const inputs: Record<string, unknown> = {};
-  for (const field of inputFields[unit.profile]) {
-    const value = unit.inputs[field];
-    if (field === 'platforms') {
-      if (!Array.isArray(value) || !value.length || Array.from(value).some(item => typeof item !== 'string' || !/^linux\/(?:amd64|arm64)$/u.test(item)) || new Set(value).size !== value.length) buildFail('RN_BUILD_INVALID');
-      inputs[field] = [...value].sort();
-    } else {
-      if (typeof value !== 'string' || !value || value.trim() !== value || /[\u0000-\u001f]/u.test(value)) buildFail('RN_BUILD_INVALID');
-      inputs[field] = value;
-    }
-  }
-  for (const field of ['project', 'directory', 'lockfile', 'context', 'dockerfile', 'entrypoint']) {
-    if (typeof inputs[field] === 'string') assertBuildPath(inputs[field], { root: ['directory', 'context'].includes(field) });
-  }
-  if (unit.profile === 'dotnet-assets-v1' && (inputs.configuration !== 'Release' || !/^net[0-9]+(?:\.[0-9]+)?(?:-windows)?$/u.test(String(inputs.framework)) || !/^(?:win|linux|osx)-(?:x64|arm64)$/u.test(String(inputs.runtime)))) buildFail('RN_BUILD_INVALID');
-  if (unit.profile === 'node-package-v1') {
-    const directory = inputs.directory === '.' ? '' : `${inputs.directory}/`;
-    if (inputs.packageManager !== 'npm' || !idPattern.test(String(inputs.buildTask))
-      || !['package-lock.json', 'npm-shrinkwrap.json'].some(name => inputs.lockfile === directory + name)) buildFail('RN_BUILD_INVALID');
-  }
-  if (unit.profile === 'custom-adapter-v1' && (!String(inputs.entrypoint).startsWith('tools/') || !['pwsh', 'node', 'bash'].includes(String(inputs.runtime)) || !['windows', 'linux'].includes(String(inputs.runnerFamily)) || (inputs.runtime === 'bash' && inputs.runnerFamily !== 'linux'))) buildFail('RN_BUILD_INVALID');
-  if (!Array.isArray(unit.outputs) || !unit.outputs.length || unit.outputs.length > buildLimits.maxFiles
-    || unit.outputs.some(rule => !rule || typeof rule !== 'object' || Array.isArray(rule))
-    || new Set(unit.outputs.map(rule => rule.id)).size !== unit.outputs.length) buildFail('RN_BUILD_OUTPUT');
-  for (const rule of unit.outputs) {
-    exact(rule, unit.profile === 'oci-image-v1' ? ['id', 'kind', 'count'] : ['id', 'kind', 'match', 'count', 'mediaType', ...(rule.archiveType === undefined ? [] : ['archiveType'])]);
-    if (typeof rule.id !== 'string' || !idPattern.test(rule.id) || !Number.isSafeInteger(rule.count) || rule.count < 1 || rule.count > buildLimits.maxFiles) buildFail('RN_BUILD_OUTPUT');
-    if (unit.profile === 'oci-image-v1') { if (rule.kind !== 'oci-image' || rule.count !== 1) buildFail('RN_BUILD_OUTPUT'); }
-    else {
-      if (rule.kind !== 'file' || typeof rule.match !== 'string' || typeof rule.mediaType !== 'string' || !/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/u.test(rule.mediaType)) buildFail('RN_BUILD_OUTPUT');
-      if (rule.archiveType !== undefined && (!['dll-archive', 'font-archive'].includes(rule.archiveType) || !rule.match.endsWith('.zip') || rule.mediaType !== 'application/zip')) buildFail('RN_BUILD_OUTPUT');
-      if (rule.archiveType === 'font-archive' && (rule.count !== 1 || /[{}*?\[\]]/u.test(rule.match))) buildFail('RN_BUILD_OUTPUT');
-      assertBuildPath(rule.match, { glob: true, version: true });
-      if (identity.version === null && rule.match.includes('{version}')) buildFail('RN_BUILD_VERSION');
-      assertBuildPath(rule.match.replaceAll('{version}', identity.version ?? ''), { glob: true });
-    }
-  }
-  const expandedIds = unit.outputs.flatMap(rule => Array.from({ length: rule.count }, (_, index) => rule.count === 1 ? rule.id : `${rule.id}-${index + 1}`));
-  if (expandedIds.length > buildLimits.maxFiles || new Set(expandedIds).size !== expandedIds.length) buildFail('RN_BUILD_OUTPUT');
-  const runnerFamily = unit.profile === 'dotnet-assets-v1' || (unit.profile === 'custom-adapter-v1' && inputs.runnerFamily === 'windows') ? 'windows' : 'linux';
-  const outputs = unit.outputs.map(rule => ({ ...rule }));
-  return { ...identity, inputs, inputsSha256: await sha256Hex(`${JSON.stringify(inputs)}\n`), outputs, runnerFamily, timeoutMinutes: 45 };
+function assertBuildSource(input: BuildSource): void {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || !Number.isSafeInteger(input.repositoryId) || input.repositoryId < 1
+    || typeof input.fullName !== 'string' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$(?![\s\S])/.test(input.fullName)
+    || input.fullName.split('/').some(part => part === '.' || part === '..') || typeof input.buildId !== 'string' || !/^[a-z][a-z0-9-]*$(?![\s\S])/u.test(input.buildId)
+    || !['file', 'oci-image'].includes(input.kind) || ![input.sourceSha, input.controllerSha].every(value => typeof value === 'string' && /^[a-f0-9]{40}$(?![\s\S])/.test(value))
+    || typeof input.inputsSha256 !== 'string' || !/^[a-f0-9]{64}$(?![\s\S])/.test(input.inputsSha256)
+    || ![input.version, input.packageVersion].every(value => value === null || typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9.+-]*$(?![\s\S])/.test(value))
+    || (input.version === null) !== (input.packageVersion === null)) buildFail('RN_BUILD_INVALID');
 }
-export function matchBuildFiles(plan: BuildPlan, files: readonly string[]): { id: string; file: string; mediaType: string }[] {
+const sourceFields = ['repositoryId', 'fullName', 'buildId', 'kind', 'sourceSha', 'controllerSha', 'version', 'packageVersion', 'inputsSha256'];
+/** Validate finite data and copy it before any asynchronous file inspection. */
+export function parseBuildArtifactInput(value: unknown): BuildArtifactInput {
+  exact(value as object, [...sourceFields, 'outputs', 'platforms']);
+  const input = value as BuildArtifactInput;
+  assertBuildSource(input);
+  if (!Array.isArray(input.platforms) || (input.kind === 'file' ? input.platforms.length !== 0 : !input.platforms.length)
+    || Array.from(input.platforms).some(platform => typeof platform !== 'string' || !/^linux\/(?:amd64|arm64)$(?![\s\S])/.test(platform))
+    || new Set(input.platforms).size !== input.platforms.length) buildFail('RN_BUILD_INVALID');
+  if (!Array.isArray(input.outputs) || !input.outputs.length || input.outputs.length > buildLimits.maxFiles
+    || Array.from(input.outputs).some(rule => !rule || typeof rule !== 'object' || Array.isArray(rule))
+    || new Set(input.outputs.map(rule => rule.id)).size !== input.outputs.length) buildFail('RN_BUILD_OUTPUT');
+  for (const rule of input.outputs) {
+    exact(rule, input.kind === 'oci-image' ? ['id', 'kind', 'count'] : ['id', 'kind', 'match', 'count', 'mediaType', ...(rule.archiveType === undefined ? [] : ['archiveType'])]);
+    if (typeof rule.id !== 'string' || !/^[a-z][a-z0-9-]*$(?![\s\S])/u.test(rule.id) || rule.kind !== input.kind || !Number.isSafeInteger(rule.count)
+      || rule.count < 1 || rule.count > buildLimits.maxFiles) buildFail('RN_BUILD_OUTPUT');
+    if (input.kind === 'oci-image') { if (rule.count !== 1) buildFail('RN_BUILD_OUTPUT'); }
+    else {
+      if (typeof rule.match !== 'string' || typeof rule.mediaType !== 'string' || !/^[a-z0-9.+-]+\/[a-z0-9.+-]+$(?![\s\S])/.test(rule.mediaType)) buildFail('RN_BUILD_OUTPUT');
+      if (rule.archiveType !== undefined && (!['dll-archive', 'font-archive'].includes(rule.archiveType) || !rule.match.endsWith('.zip') || rule.mediaType !== 'application/zip')) buildFail('RN_BUILD_OUTPUT');
+      if (rule.archiveType === 'font-archive' && (rule.count !== 1 || /[{}*?\[\]]/.test(rule.match))) buildFail('RN_BUILD_OUTPUT');
+      assertBuildPath(rule.match, { glob: true, version: true });
+      if (input.version === null && rule.match.includes('{version}')) buildFail('RN_BUILD_VERSION');
+      assertBuildPath(rule.match.replaceAll('{version}', input.version ?? ''), { glob: true });
+    }
+  }
+  const ids = input.outputs.flatMap(rule => Array.from({ length: rule.count }, (_, index) => rule.count === 1 ? rule.id : `${rule.id}-${index + 1}`));
+  if (ids.length > buildLimits.maxFiles || new Set(ids).size !== ids.length) buildFail('RN_BUILD_OUTPUT');
+  return structuredClone(input);
+}
+export function matchBuildFiles(plan: BuildArtifactInput, files: readonly string[]): { id: string; file: string; mediaType: string }[] {
+  plan = parseBuildArtifactInput(plan);
   if (!Array.isArray(files) || !files.length || files.length > buildLimits.maxFiles) buildFail('RN_BUILD_OUTPUT');
   for (const file of files) if (typeof file !== 'string') buildFail('RN_BUILD_OUTPUT');
   if (new Set(files.map(file => file.toLowerCase())).size !== files.length) buildFail('RN_BUILD_OUTPUT');
@@ -174,32 +161,46 @@ export function matchBuildFiles(plan: BuildPlan, files: readonly string[]): { id
   if (assigned.size !== files.length) buildFail('RN_BUILD_OUTPUT');
   return assets.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
-export function checkBuildNativeVersion(plan: BuildPlan, native: string | null): void {
-  if (plan.version === null) return;
-  if (native === null) buildFail('RN_BUILD_VERSION');
-  try { assertNativeVersion(parsePublicVersion(plan.version), native); } catch { buildFail('RN_BUILD_VERSION'); }
+export function checkBuildNativeVersion(source: Pick<BuildSource, 'packageVersion'>, native: string | null): void {
+  if (source.packageVersion === null) return;
+  if (typeof native !== 'string' || native !== source.packageVersion) buildFail('RN_BUILD_VERSION');
 }
-export function canonicalBuildManifest(manifest: BuildManifest): string {
-  exact(manifest, ['schemaVersion', 'repositoryId', 'fullName', 'buildId', 'profile', 'targetSha', 'policySha', 'version', 'inputsSha256', 'artifacts']);
-  assertBuildIdentity(manifest);
-  if (manifest.schemaVersion !== 1 || typeof manifest.inputsSha256 !== 'string' || !digestPattern.test(manifest.inputsSha256) || manifest.inputsSha256.length !== 64 || !Array.isArray(manifest.artifacts) || !manifest.artifacts.length || manifest.artifacts.length > buildLimits.maxFiles) buildFail('RN_BUILD_INVALID');
+function canonicalArtifacts(kind: BuildSource['kind'], values: BuildArtifact[]) {
+  if (!Array.isArray(values) || !values.length || values.length > buildLimits.maxFiles) buildFail('RN_BUILD_INVALID');
   const ids = new Set<string>(); const filenames = new Set<string>();
   let total = 0;
-  const artifacts = Array.from(manifest.artifacts, asset => {
+  const artifacts = Array.from(values, asset => {
     if (!asset || typeof asset !== 'object') buildFail('RN_BUILD_INVALID');
     if (typeof asset.id !== 'string' || !idPattern.test(asset.id) || ids.has(asset.id)) buildFail('RN_BUILD_OUTPUT');
     ids.add(asset.id);
     if (asset.kind === 'file') {
       exact(asset, ['id', 'kind', 'file', 'mediaType', 'size', 'sha256']); assertBuildPath(asset.file);
-      if (manifest.profile === 'oci-image-v1' || filenames.has(asset.file.toLowerCase()) || typeof asset.mediaType !== 'string' || !/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/u.test(asset.mediaType) || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > buildLimits.maxFileBytes || typeof asset.sha256 !== 'string' || !digestPattern.test(asset.sha256) || asset.sha256.length !== 64) buildFail('RN_BUILD_OUTPUT');
+      if (kind === 'oci-image' || filenames.has(asset.file.toLowerCase()) || typeof asset.mediaType !== 'string' || !/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/u.test(asset.mediaType) || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > buildLimits.maxFileBytes || typeof asset.sha256 !== 'string' || !digestPattern.test(asset.sha256) || asset.sha256.length !== 64) buildFail('RN_BUILD_OUTPUT');
       filenames.add(asset.file.toLowerCase()); total += asset.size;
       return { id: asset.id, kind: asset.kind, file: asset.file, mediaType: asset.mediaType, size: asset.size, sha256: asset.sha256 };
     }
     exact(asset, ['id', 'kind', 'reference', 'digest']);
-    if (asset.kind !== 'oci-image' || manifest.profile !== 'oci-image-v1' || typeof asset.digest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(asset.digest) || asset.digest.length !== 71 || typeof asset.reference !== 'string' || !validOciReference(asset.reference, asset.digest)) buildFail('RN_BUILD_OUTPUT');
+    if (asset.kind !== 'oci-image' || kind !== 'oci-image' || typeof asset.digest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(asset.digest) || asset.digest.length !== 71 || typeof asset.reference !== 'string' || !validOciReference(asset.reference, asset.digest)) buildFail('RN_BUILD_OUTPUT');
     return { id: asset.id, kind: asset.kind, reference: asset.reference, digest: asset.digest };
   }).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   if (total > buildLimits.maxTotalBytes) buildFail('RN_BUILD_LIMIT');
+  return artifacts;
+}
+export function canonicalBuildEvidence(evidence: BuildArtifactEvidence): string {
+  exact(evidence, [...sourceFields, 'artifacts']); assertBuildSource(evidence);
+  const artifacts = canonicalArtifacts(evidence.kind, evidence.artifacts);
+  const serialized = `${JSON.stringify({ repositoryId: evidence.repositoryId, fullName: evidence.fullName, buildId: evidence.buildId,
+    kind: evidence.kind, sourceSha: evidence.sourceSha, controllerSha: evidence.controllerSha, version: evidence.version,
+    packageVersion: evidence.packageVersion, inputsSha256: evidence.inputsSha256, artifacts })}\n`;
+  if (new TextEncoder().encode(serialized).byteLength > 512 * 1024) buildFail('RN_BUILD_LIMIT');
+  return serialized;
+}
+/** Historical schema 1 bytes retain their original profile/policy fields and validation. */
+export function canonicalBuildManifest(manifest: BuildManifest): string {
+  exact(manifest, ['schemaVersion', 'repositoryId', 'fullName', 'buildId', 'profile', 'targetSha', 'policySha', 'version', 'inputsSha256', 'artifacts']);
+  assertBuildIdentity(manifest);
+  if (manifest.schemaVersion !== 1 || typeof manifest.inputsSha256 !== 'string' || !digestPattern.test(manifest.inputsSha256) || manifest.inputsSha256.length !== 64 || !Array.isArray(manifest.artifacts) || !manifest.artifacts.length || manifest.artifacts.length > buildLimits.maxFiles) buildFail('RN_BUILD_INVALID');
+  const artifacts = canonicalArtifacts(manifest.profile === 'oci-image-v1' ? 'oci-image' : 'file', manifest.artifacts);
   const serialized = `${JSON.stringify({ schemaVersion: 1, repositoryId: manifest.repositoryId, fullName: manifest.fullName, buildId: manifest.buildId,
     profile: manifest.profile, targetSha: manifest.targetSha, policySha: manifest.policySha, version: manifest.version, inputsSha256: manifest.inputsSha256, artifacts })}\n`;
   if (new TextEncoder().encode(serialized).byteLength > 512 * 1024) buildFail('RN_BUILD_LIMIT');
@@ -214,25 +215,4 @@ export function parseBuildManifest(bytes: Uint8Array): BuildManifest {
     if (error instanceof BuildContractError) throw error;
     return buildFail('RN_BUILD_INVALID');
   }
-}
-export function deliveryBuildReadiness(configuration: DeliveryConfiguration, successfulBuilds: readonly string[]): { githubRelease: 'disabled' | 'ready' | 'blocked'; deployments: Record<string, 'ready' | 'blocked'>; packages: Record<string, 'ready' | 'blocked'> } {
-  selectDeliveryBuilds(configuration);
-  if (new Set(successfulBuilds).size !== successfulBuilds.length || successfulBuilds.some(id => !Object.hasOwn(configuration.builds, id))) buildFail('RN_BUILD_INVALID');
-  const successful = new Set(successfulBuilds);
-  const ready = (ids: readonly string[]) => ids.every(id => successful.has(id)) ? 'ready' as const : 'blocked' as const;
-  const release = configuration.delivery.githubRelease;
-  const githubRelease = release.enabled && release.state === 'active' ? ready(release.builds) : 'disabled';
-  return { githubRelease,
-    deployments: Object.fromEntries(configuration.delivery.deployments.filter(entry => entry.state === 'active').map(entry => [entry.id, entry.source === 'github-release' && githubRelease !== 'ready' ? 'blocked' : ready(entry.builds)])),
-    packages: Object.fromEntries(configuration.delivery.packages.filter(entry => entry.state === 'active').map(entry => [entry.id, ready(entry.builds)])) };
-}
-export function selectDeliveryBuilds(configuration: DeliveryConfiguration): string[] {
-  const release = configuration.delivery.githubRelease;
-  const references = [
-    ...(release.enabled && release.state === 'active' ? release.builds : []),
-    ...configuration.delivery.deployments.filter(entry => entry.state === 'active').flatMap(entry => entry.builds),
-    ...configuration.delivery.packages.filter(entry => entry.state === 'active').flatMap(entry => entry.builds),
-  ];
-  if (references.some(id => !Object.hasOwn(configuration.builds, id))) buildFail('RN_BUILD_INVALID');
-  return [...new Set(references)];
 }

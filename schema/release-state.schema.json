@@ -1,0 +1,1551 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://splrad.dev/schema/release-state.schema.json",
+  "title": "SPLRAD factual release state, repository schema 3",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/repository"
+    },
+    {
+      "$ref": "#/$defs/cycle"
+    },
+    {
+      "$ref": "#/$defs/executionEvidence"
+    }
+  ],
+  "$defs": {
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "repositoryId",
+        "defaultBranch",
+        "revision",
+        "releaseAdoption",
+        "lastObservedDefaultSha",
+        "lastCompletedCycleId",
+        "activeCycleId",
+        "candidate",
+        "nextCheckAt",
+        "lastProgressAt",
+        "lastErrorCode"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 3
+        },
+        "repositoryId": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "defaultBranch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "lastObservedDefaultSha": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastCompletedCycleId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^pr-[1-9][0-9]*-[a-f0-9]{40}$(?![\\s\\S])"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "activeCycleId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^pr-[1-9][0-9]*-[a-f0-9]{40}$(?![\\s\\S])"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "candidate": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "prNumber",
+                "branch",
+                "baseSha",
+                "generatedSnapshotPath",
+                "publishedHead",
+                "statusCommentId",
+                "contentGenerationDigest",
+                "adoptionOverride",
+                "observedLabelEventIds",
+                "pendingWrite"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+                },
+                "prNumber": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "branch": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "baseSha": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+                },
+                "generatedSnapshotPath": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^(?:cycles|generated|content|evidence)/[A-Za-z0-9_./-]+$(?![\\s\\S])"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "publishedHead": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "editingAckHead": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "statusCommentId": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "contentGenerationDigest": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+                },
+                "adoptionOverride": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "kind",
+                        "humanHead",
+                        "generatedBase",
+                        "evidencePath"
+                      ],
+                      "properties": {
+                        "kind": {
+                          "const": "legacy-candidate"
+                        },
+                        "humanHead": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+                        },
+                        "generatedBase": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+                        },
+                        "evidencePath": {
+                          "type": "string",
+                          "pattern": "^generated/[a-f0-9]{64}/adoption.json$(?![\\s\\S])"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "eventId",
+                        "actorId",
+                        "createdAt",
+                        "sourceSha",
+                        "evidencePath"
+                      ],
+                      "properties": {
+                        "eventId": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        },
+                        "actorId": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "pattern": "Z$(?![\\s\\S])",
+                          "format": "date-time"
+                        },
+                        "sourceSha": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+                        },
+                        "evidencePath": {
+                          "type": "string",
+                          "pattern": "^(?:cycles|generated|content|evidence)/[A-Za-z0-9_./-]+$(?![\\s\\S])"
+                        }
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "observedLabelEventIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "pendingWrite": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "expectedHead",
+                        "proposedCommit",
+                        "newGeneratedSnapshotPath",
+                        "newGeneratedDigest",
+                        "operationKey",
+                        "observedAt"
+                      ],
+                      "properties": {
+                        "expectedHead": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+                        },
+                        "proposedCommit": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+                        },
+                        "newGeneratedSnapshotPath": {
+                          "type": "string",
+                          "pattern": "^(?:cycles|generated|content|evidence)/[A-Za-z0-9_./-]+$(?![\\s\\S])"
+                        },
+                        "newGeneratedDigest": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+                        },
+                        "operationKey": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+                        },
+                        "observedAt": {
+                          "type": "string",
+                          "pattern": "Z$(?![\\s\\S])",
+                          "format": "date-time"
+                        }
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nextCheckAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "Z$(?![\\s\\S])",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastProgressAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "Z$(?![\\s\\S])",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastErrorCode": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]*$(?![\\s\\S])"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "releaseAdoption": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sourceSha",
+            "prNumber"
+          ],
+          "properties": {
+            "sourceSha": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+            },
+            "prNumber": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
+        }
+      }
+    },
+    "cycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "prNumber",
+        "sourceSha",
+        "controllerSha",
+        "deliveryConfigSha",
+        "units",
+        "requiredChannels",
+        "dispatches",
+        "publications",
+        "channelFacts",
+        "executionEvidence",
+        "completionObservations",
+        "completedEvidencePath",
+        "repairOf",
+        "approvedRepairDecision"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^pr-[1-9][0-9]*-[a-f0-9]{40}$(?![\\s\\S])"
+        },
+        "prNumber": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "sourceSha": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+        },
+        "controllerSha": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+        },
+        "deliveryConfigSha": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+        },
+        "units": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "version",
+              "tag",
+              "releaseId",
+              "assets",
+              "notesDigest",
+              "manifestDigest"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$(?![\\s\\S])"
+              },
+              "version": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9.+-]*$(?![\\s\\S])"
+              },
+              "tag": {
+                "type": "string",
+                "minLength": 1
+              },
+              "releaseId": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "assets": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "id",
+                    "path",
+                    "size",
+                    "sha256"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9-]*$(?![\\s\\S])"
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "size": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+                    }
+                  }
+                }
+              },
+              "notesDigest": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "manifestDigest": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "requiredChannels": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "unitId",
+              "channelId"
+            ],
+            "properties": {
+              "unitId": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$(?![\\s\\S])"
+              },
+              "channelId": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$(?![\\s\\S])"
+              }
+            }
+          }
+        },
+        "dispatches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "requestKey",
+              "operationKey",
+              "purpose",
+              "workflowId",
+              "ref",
+              "sourceSha",
+              "targetKey",
+              "inputs",
+              "inputDigest",
+              "executionSha",
+              "sentAt",
+              "searchWindows",
+              "canonicalRunId",
+              "nativeResponseEvidencePath",
+              "continuationOfRunId",
+              "retryLimitEvidencePath"
+            ],
+            "properties": {
+              "requestKey": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+              },
+              "operationKey": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+              },
+              "purpose": {
+                "enum": [
+                  "build",
+                  "channel-submit",
+                  "channel-verify"
+                ]
+              },
+              "workflowId": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "ref": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sourceSha": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+              },
+              "targetKey": {
+                "type": "string",
+                "minLength": 1
+              },
+              "inputs": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "cycle_id",
+                      "operation_key",
+                      "source_sha",
+                      "controller_sha"
+                    ],
+                    "properties": {
+                      "cycle_id": {
+                        "type": "string",
+                        "pattern": "^pr-[1-9][0-9]*-[a-f0-9]{40}$(?![\\s\\S])"
+                      },
+                      "operation_key": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+                      },
+                      "source_sha": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+                      },
+                      "controller_sha": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "cycle_id",
+                      "operation_key",
+                      "request_key",
+                      "source_sha",
+                      "execution_sha",
+                      "controller_sha",
+                      "mode",
+                      "targets_json"
+                    ],
+                    "properties": {
+                      "cycle_id": {
+                        "type": "string",
+                        "pattern": "^pr-[1-9][0-9]*-[a-f0-9]{40}$(?![\\s\\S])"
+                      },
+                      "operation_key": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+                      },
+                      "request_key": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+                      },
+                      "source_sha": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+                      },
+                      "execution_sha": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+                      },
+                      "controller_sha": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+                      },
+                      "mode": {
+                        "enum": [
+                          "submit",
+                          "verify"
+                        ]
+                      },
+                      "targets_json": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              "inputDigest": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+              },
+              "executionSha": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+              },
+              "sentAt": {
+                "type": "string",
+                "pattern": "Z$(?![\\s\\S])",
+                "format": "date-time"
+              },
+              "searchWindows": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "start",
+                    "end",
+                    "observedAt",
+                    "complete"
+                  ],
+                  "properties": {
+                    "start": {
+                      "type": "string",
+                      "pattern": "Z$(?![\\s\\S])",
+                      "format": "date-time"
+                    },
+                    "end": {
+                      "type": "string",
+                      "pattern": "Z$(?![\\s\\S])",
+                      "format": "date-time"
+                    },
+                    "observedAt": {
+                      "type": "string",
+                      "pattern": "Z$(?![\\s\\S])",
+                      "format": "date-time"
+                    },
+                    "complete": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              },
+              "canonicalRunId": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "nativeResponseEvidencePath": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(?:cycles|generated|content|evidence)/[A-Za-z0-9_./-]+$(?![\\s\\S])"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "continuationOfRunId": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "retryLimitEvidencePath": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(?:cycles|generated|content|evidence)/[A-Za-z0-9_./-]+$(?![\\s\\S])"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "publications": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "unitId",
+              "tag",
+              "sourceSha",
+              "manifestDigest",
+              "releaseId",
+              "centralRunId",
+              "centralRunAttempt",
+              "draftBeforeIds",
+              "firstSentAt",
+              "expectedBodyDigest",
+              "observedAt"
+            ],
+            "properties": {
+              "unitId": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$(?![\\s\\S])"
+              },
+              "tag": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sourceSha": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+              },
+              "manifestDigest": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+              },
+              "releaseId": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "centralRunId": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "centralRunAttempt": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "draftBeforeIds": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "firstSentAt": {
+                "type": "string",
+                "pattern": "Z$(?![\\s\\S])",
+                "format": "date-time"
+              },
+              "expectedBodyDigest": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+              },
+              "observedAt": {
+                "type": "string",
+                "pattern": "Z$(?![\\s\\S])",
+                "format": "date-time"
+              }
+            }
+          }
+        },
+        "channelFacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "unitId",
+              "channelId",
+              "nativeObjectId",
+              "nativeUrl",
+              "inputDigest",
+              "submittedAt",
+              "acceptedAt",
+              "indexedAt",
+              "verificationRunId",
+              "verifiedEvidencePath",
+              "observedAt",
+              "nextCheckAt"
+            ],
+            "properties": {
+              "unitId": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$(?![\\s\\S])"
+              },
+              "channelId": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$(?![\\s\\S])"
+              },
+              "nativeObjectId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "nativeUrl": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "inputDigest": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+              },
+              "submittedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "Z$(?![\\s\\S])",
+                    "format": "date-time"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "acceptedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "Z$(?![\\s\\S])",
+                    "format": "date-time"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "indexedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "Z$(?![\\s\\S])",
+                    "format": "date-time"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "verificationRunId": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "verifiedEvidencePath": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(?:cycles|generated|content|evidence)/[A-Za-z0-9_./-]+$(?![\\s\\S])"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "observedAt": {
+                "type": "string",
+                "pattern": "Z$(?![\\s\\S])",
+                "format": "date-time"
+              },
+              "nextCheckAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "Z$(?![\\s\\S])",
+                    "format": "date-time"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "executionEvidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "waveKey",
+              "runId",
+              "runAttempt",
+              "workflowId",
+              "jobIds",
+              "executorControllerSha",
+              "nativeEvidencePath",
+              "outcomeEvidencePath",
+              "observedAt"
+            ],
+            "properties": {
+              "waveKey": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+              },
+              "runId": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "runAttempt": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "workflowId": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "jobIds": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "executorControllerSha": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+              },
+              "nativeEvidencePath": {
+                "type": "string",
+                "pattern": "^(?:cycles|generated|content|evidence)/[A-Za-z0-9_./-]+$(?![\\s\\S])"
+              },
+              "outcomeEvidencePath": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(?:cycles|generated|content|evidence)/[A-Za-z0-9_./-]+$(?![\\s\\S])"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "observedAt": {
+                "type": "string",
+                "pattern": "Z$(?![\\s\\S])",
+                "format": "date-time"
+              }
+            }
+          }
+        },
+        "completionObservations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "inputSetDigest",
+              "evidenceSetDigest",
+              "observedAt",
+              "evidencePath"
+            ],
+            "properties": {
+              "inputSetDigest": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+              },
+              "evidenceSetDigest": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+              },
+              "observedAt": {
+                "type": "string",
+                "pattern": "Z$(?![\\s\\S])",
+                "format": "date-time"
+              },
+              "evidencePath": {
+                "type": "string",
+                "pattern": "^(?:cycles|generated|content|evidence)/[A-Za-z0-9_./-]+$(?![\\s\\S])"
+              }
+            }
+          }
+        },
+        "completedEvidencePath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(?:cycles|generated|content|evidence)/[A-Za-z0-9_./-]+$(?![\\s\\S])"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "repairOf": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^pr-[1-9][0-9]*-[a-f0-9]{40}$(?![\\s\\S])"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "approvedRepairDecision": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "eventId",
+                "actorId",
+                "createdAt",
+                "cycleId",
+                "sourceSha",
+                "unitIds",
+                "releaseIds",
+                "tags",
+                "evidencePath"
+              ],
+              "properties": {
+                "eventId": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "actorId": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "createdAt": {
+                  "type": "string",
+                  "pattern": "Z$(?![\\s\\S])",
+                  "format": "date-time"
+                },
+                "cycleId": {
+                  "type": "string",
+                  "pattern": "^pr-[1-9][0-9]*-[a-f0-9]{40}$(?![\\s\\S])"
+                },
+                "sourceSha": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+                },
+                "unitIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]*$(?![\\s\\S])"
+                  }
+                },
+                "releaseIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "evidencePath": {
+                  "type": "string",
+                  "pattern": "^(?:cycles|generated|content|evidence)/[A-Za-z0-9_./-]+$(?![\\s\\S])"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "executionEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repositoryId",
+        "cycleId",
+        "workflowId",
+        "runId",
+        "runAttempt",
+        "entry",
+        "jobId",
+        "unitId",
+        "channelId",
+        "invocationKey",
+        "inputDigest",
+        "startedAt",
+        "businessStartedProven",
+        "nativeEvidencePath",
+        "outcome",
+        "completedAt",
+        "objectEvidencePaths",
+        "observedAt"
+      ],
+      "properties": {
+        "repositoryId": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "cycleId": {
+          "type": "string",
+          "pattern": "^pr-[1-9][0-9]*-[a-f0-9]{40}$(?![\\s\\S])"
+        },
+        "workflowId": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "runId": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "runAttempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "entry": {
+          "enum": [
+            "build",
+            "channel",
+            "publish"
+          ]
+        },
+        "jobId": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unitId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]*$(?![\\s\\S])"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "channelId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]*$(?![\\s\\S])"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "invocationKey": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+        },
+        "inputDigest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+        },
+        "startedAt": {
+          "type": "string",
+          "pattern": "Z$(?![\\s\\S])",
+          "format": "date-time"
+        },
+        "businessStartedProven": {
+          "type": "boolean"
+        },
+        "nativeEvidencePath": {
+          "type": "string",
+          "pattern": "^(?:cycles|generated|content|evidence)/[A-Za-z0-9_./-]+$(?![\\s\\S])"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "enum": [
+                "WAIT",
+                "UNKNOWN",
+                "BUSINESS_FAILED",
+                "EFFECT_CONFIRMED",
+                "REJECTED_BEFORE_BUSINESS",
+                "FACT_CONFLICT"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "completedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "Z$(?![\\s\\S])",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "objectEvidencePaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?:cycles|generated|content|evidence)/[A-Za-z0-9_./-]+$(?![\\s\\S])"
+          }
+        },
+        "observedAt": {
+          "type": "string",
+          "pattern": "Z$(?![\\s\\S])",
+          "format": "date-time"
+        }
+      }
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "workflowId",
+        "runId",
+        "runAttempt",
+        "controllerSha",
+        "observedAt",
+        "scanCompletedAt",
+        "errorCodes",
+        "counts"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "workflowId": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "runId": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "runAttempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "controllerSha": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$(?![\\s\\S])"
+        },
+        "scanCompletedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$(?![\\s\\S])"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "errorCodes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*$(?![\\s\\S])"
+          }
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scanned",
+            "completed",
+            "waiting",
+            "failed",
+            "unknown"
+          ],
+          "properties": {
+            "scanned": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "completed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "waiting": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "unknown": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        }
+      }
+    },
+    "bootstrap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "repositoryId",
+        "defaultBranch",
+        "workflowId",
+        "runId",
+        "runAttempt",
+        "controllerSha",
+        "firstCommitSha",
+        "phase",
+        "affectedRules"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "repositoryId": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "defaultBranch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workflowId": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "runId": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "runAttempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "controllerSha": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+        },
+        "firstCommitSha": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{40}$(?![\\s\\S])"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "phase": {
+          "enum": [
+            "PREPARED",
+            "TEMP_EXCLUDED",
+            "INITIALIZED",
+            "RESTORED"
+          ]
+        },
+        "firstCommitOrigin": {
+          "enum": [
+            "app",
+            "external"
+          ]
+        },
+        "affectedRules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "ruleId",
+              "excludedRepository",
+              "originalConditionsDigest",
+              "alreadyExcluded",
+              "lastWrittenConditionsDigest",
+              "observedAt"
+            ],
+            "properties": {
+              "ruleId": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "excludedRepository": {
+                "type": "string",
+                "minLength": 1
+              },
+              "originalConditionsDigest": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+              },
+              "alreadyExcluded": {
+                "type": "boolean"
+              },
+              "lastWrittenConditionsDigest": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "observedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "Z$(?![\\s\\S])"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

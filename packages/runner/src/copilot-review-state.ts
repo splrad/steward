@@ -134,9 +134,3 @@ export function classifyCopilotReviewState(input: CopilotReviewInput): CopilotRe
   if (checks.length) return result("unknown", "check-without-review");
   return result("none", "no-current-head-evidence");
 }
-
-export type CopilotReviewTrigger = "native";
-export function copilotReviewTrigger(value: unknown): CopilotReviewTrigger {
-  if (value === undefined || value === "native") return "native";
-  throw new Error("Copilot审查触发模式无效");
-}

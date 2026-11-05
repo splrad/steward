@@ -25,7 +25,8 @@ describe('发布来源共享 API 预算', () => {
     let calls = 0;
     const transport = budgetReleaseSourceTransport(async input => {
       calls++; const url = String(input);
-      return Response.json([calls], { headers: url.includes('page=2') ? {} : { link: `<https://api.github.com/repos/o/r/releases?page=2>; rel="next"` } });
+      const response=Response.json([calls], { headers: url.includes('page=2') ? {} : { link: `<https://api.github.com/repos/o/r/releases?page=2>; rel="next"` } });
+      Object.defineProperty(response,'url',{value:url});return response;
     }, limits);
     const gh = new GitHubClient('test', 'https://api.github.com', transport);
     expect(await gh.listReleases('o', 'r')).toEqual([1, 2]);

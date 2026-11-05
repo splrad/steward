@@ -1,0 +1,30 @@
+[
+  {
+    "file": "splrad_uv_fixture-1.2.3-py3-none-any.whl",
+    "version": "1.2.3",
+    "publicVersion": "1.2.3",
+    "sha256": "bb2da8f7f0361a194885703779bf934d877adbb7870b06aebfe24580ab7bce3a",
+    "bytes": 1168
+  },
+  {
+    "file": "splrad_uv_fixture-1.2.3.tar.gz",
+    "version": "1.2.3",
+    "publicVersion": "1.2.3",
+    "sha256": "88a808e8f3e11e5a25dcca8e5fe9587b18ebff912811213993904b23b49a1859",
+    "bytes": 565
+  },
+  {
+    "file": "splrad_uv_fixture-1.2.4rc1-py3-none-any.whl",
+    "version": "1.2.4rc1",
+    "publicVersion": "1.2.4-rc.1",
+    "sha256": "b2bac28cb4811f31175b4a142c3a4216f754f8d949b845a26d57804b097e6536",
+    "bytes": 1192
+  },
+  {
+    "file": "splrad_uv_fixture-1.2.4rc1.tar.gz",
+    "version": "1.2.4rc1",
+    "publicVersion": "1.2.4-rc.1",
+    "sha256": "f27c99985f8c5c4b6242ab92de368d435fc616879bcc464345fa5553874d8827",
+    "bytes": 566
+  }
+]

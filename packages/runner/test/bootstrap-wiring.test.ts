@@ -1,0 +1,150 @@
+import {expect,it,vi} from 'vitest';
+import {generateKeyPairSync} from 'node:crypto';
+import {readFile,mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join,resolve} from 'node:path';
+import {pathToFileURL} from 'node:url';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import YAML from 'yaml';
+import {decodeStateFile} from '../../core/src/release-observation.js';
+import {isolatedBuildEnvironment} from '../src/build-environment.js';
+import {registerOfflineFixtureRoot} from './offline-fixtures.js';
+
+const module=()=>import(pathToFileURL(resolve('scripts/repository-bootstrap.mjs')).href);
+it('real bootstrap entry separates public bot discovery from App and scoped installation authentication',async()=>{
+  const {main}=await module(),{privateKey}=generateKeyPairSync('rsa',{modulusLength:2048});
+  const values={GITHUB_REPOSITORY:'splrad/steward',GITHUB_REPOSITORY_ID:'1296724484',GITHUB_REF:'refs/heads/main',
+    STEWARD_DEFAULT_BRANCH:'main',GITHUB_EVENT_NAME:'workflow_dispatch',STEWARD_CONTROLLER_SHA:'a'.repeat(40),
+    GOVERNANCE_APP_ID:'88',GOVERNANCE_APP_PRIVATE_KEY:privateKey.export({type:'pkcs8',format:'pem'}).toString(),
+    GITHUB_TOKEN:'workflow-fixture',GITHUB_RUN_ID:'21',GITHUB_RUN_ATTEMPT:'1',GITHUB_STEP_SUMMARY:''};
+  for(const [key,value] of Object.entries(values))vi.stubEnv(key,value);
+  const repository={id:12,name:'fixture',full_name:'splrad/fixture',default_branch:'develop',owner:{id:302208797},archived:false,disabled:false};
+  const calls:{path:string;method:string;body:any}[]=[],requests:any[]=[],revoked:string[]=[];
+  let credential=0;
+  const transport=async(input:any,init:any)=>{
+    const url=new URL(String(input)),path=decodeURIComponent(url.pathname),method=init.method??'GET',headers=new Headers(init.headers);
+    const body=init.body?JSON.parse(init.body):undefined;calls.push({path,method,body});
+    expect(url.origin).toBe('https://api.github.com');expect(headers.get('x-github-api-version')).toBe('2026-03-10');
+    let value:any,status=200;
+    if(path==='/app')value={id:88,slug:'fixture-governance'};
+    else if(path==='/orgs/splrad/installation')value={id:8,app_id:88,account:{id:302208797},suspended_at:null};
+    else if(path==='/users/fixture-governance[bot]'){
+      expect(headers.has('authorization')).toBe(false);value={id:33,login:'fixture-governance[bot]',type:'Bot'};
+    }else if(path==='/repos/splrad/steward/actions/runs/21')value={workflow_id:42};
+    else if(path==='/app/installations/8/access_tokens'){
+      expect(headers.get('authorization')).toMatch(/^bearer /i);requests.push(body);credential++;
+      value={token:'ghs_fixture'+credential,expires_at:new Date(Date.now()+3600000).toISOString()};status=201;
+    }else if(path==='/installation/repositories')value={total_count:1,repositories:[repository]};
+    else if(path==='/installation/token'&&method==='DELETE'){revoked.push(headers.get('authorization')!);status=204;}
+    else if(path==='/repos/splrad/fixture')value=repository;
+    else if(path==='/repos/splrad/fixture/actions/variables/STEWARD_BOOTSTRAP_RECOVERY'){status=404;value={message:'Not Found'};}
+    else if(path==='/repos/splrad/fixture/git/matching-refs/')value=[{ref:'refs/heads/develop',object:{sha:'b'.repeat(40)}}];
+    else throw Error('UNEXPECTED_BOOTSTRAP_ENDPOINT');
+    return new Response(status===204?null:JSON.stringify(value),{status,headers:{'content-type':'application/json'}});
+  };
+  try{
+    expect(await main(transport)).toEqual({repositories:1,ready:0,existing:1,failed:0});
+    expect(requests).toEqual([{permissions:{metadata:'read'}},{repository_ids:[12],permissions:{metadata:'read',contents:'write',administration:'write',actions_variables:'write',organization_administration:'write'}}]);
+    expect(revoked).toHaveLength(2);expect(new Set(revoked).size).toBe(2);
+    expect(calls.filter(c=>!['GET','DELETE'].includes(c.method)).map(c=>c.path)).toEqual(['/app/installations/8/access_tokens','/app/installations/8/access_tokens']);
+  }finally{vi.unstubAllEnvs();}
+});
+const actors=[4243096,88].map(actor_id=>({actor_id,actor_type:'Integration',bypass_mode:'always'}));
+const nativeRule=(id:number)=>({id,source:'splrad',source_type:'Organization',enforcement:'active',target:'branch',
+  conditions:{ref_name:{include:['refs/heads/steward/governance-state'],exclude:[]},repository_name:{include:['~ALL'],exclude:[],protected:false}},
+  rules:id===1?[{type:'creation'},{type:'update',parameters:{update_allows_fetch_and_merge:false}}]:[{type:'non_fast_forward'},{type:'deletion'}],
+  bypass_actors:id===1?actors:[]});
+
+it('bootstrap and template jobs enumerate independently, separate keys and keep failure/cancellation semantics',async()=>{
+  const raw=await readFile('.github/workflows/sync-managed.yml','utf8'),workflow=YAML.parse(raw),{bootstrap,templates}=workflow.jobs;
+  expect(Object.keys(workflow.jobs)).toEqual(['bootstrap','templates','automation-health']);expect(workflow.permissions).toEqual({contents:'read',actions:'read'});
+  expect(bootstrap.concurrency).toEqual({group:'steward-governance-mutation','cancel-in-progress':false,queue:'max'});
+  expect(templates.needs).toBe('bootstrap');expect(templates.if).toContain('!cancelled()');expect(templates.if).not.toMatch(/success\(/);
+  expect(templates.concurrency['cancel-in-progress']).toBe(false);
+  for(const job of [bootstrap,templates]) {
+    expect(job.if).toContain("vars.STEWARD_TEMPLATE_APPLY == 'true'");expect(job.environment.name).toBe('steward-automation');
+    expect(job.steps[0].with).toEqual({ref:'${{ github.workflow_sha }}','fetch-depth':0,'persist-credentials':false});
+    expect(job.steps[2].env).toBeUndefined();expect(job.steps[2].run).toContain('npm ci --ignore-scripts');
+  }
+  expect(bootstrap.steps.at(-1).env).toHaveProperty('GOVERNANCE_APP_PRIVATE_KEY');expect(bootstrap.steps.at(-1).env).not.toHaveProperty('STEWARD_APP_PRIVATE_KEY');
+  expect(templates.steps.at(-1).env).toHaveProperty('STEWARD_APP_PRIVATE_KEY');expect(templates.steps.at(-1).env).not.toHaveProperty('GOVERNANCE_APP_PRIVATE_KEY');
+  expect(raw).not.toMatch(/matrix:|outputs:|upload-artifact|create-pull-request|managed-sync (targets|preview|apply|preflight)/);
+});
+it('a failed or pending repository does not hide failure or stop independent repositories and exposes only counts',async()=>{
+  const {bootstrapWake}=await module(),{templateWake}=await import(pathToFileURL(resolve('scripts/template-delivery.mjs')).href);
+  const repos=[{id:1,full_name:'splrad/private-canary'},{id:2,full_name:'splrad/other'}];let calls=0;
+  const b=await bootstrapWake({discover:async()=>repos,service:async(r:any)=>{calls++;if(r.id===1)throw Error('private-canary');return {status:'EXISTING'};}});
+  expect(b).toEqual({repositories:2,ready:0,existing:1,failed:1});expect(calls).toBe(2);
+  const t=await templateWake({discover:async()=>repos,deliver:async(r:any)=>{if(r.id===1)throw Error('private-canary');return {status:'NO_DIFF'};}});
+  expect(t).toEqual({repositories:2,delivered:0,unchanged:1,closed:0,failed:1,deferred:0});expect(JSON.stringify({b,t})).not.toContain('canary');
+});
+it('first governance ref requires actual organization scope and both writer/integrity roles',async()=>{
+  const {verifyGovernanceCreation}=await module();let mutate=(r:any)=>r;
+  const io={async request(_method:string,path:string){return {status:200,value:path.includes('/rulesets?')?[{id:1},{id:2}]:mutate(nativeRule(Number(path.split('/').at(-1))))};}};
+  const repo={id:12,name:'fixture',full_name:'splrad/fixture'};await verifyGovernanceCreation(io,repo,88);
+  for(const variant of [(r:any)=>({...r,source:'another'}),(r:any)=>({...r,bypass_actors:actors}),
+    (r:any)=>({...r,conditions:{...r.conditions,repository_name:{include:['~ALL'],exclude:['fix*'],protected:false}}})]) {
+    mutate=variant;await expect(verifyGovernanceCreation(io,repo,88)).rejects.toThrow();
+  }
+});
+it('reads organization scope from the organization endpoint when repository projection omits it',async()=>{
+  const {verifyGovernanceCreation}=await module(),calls:string[]=[];
+  const io={async request(_method:string,path:string){calls.push(path);
+    if(path.includes('/rulesets?'))return {status:200,value:[{id:1},{id:2}]};
+    const rule=nativeRule(Number(path.split('/').at(-1)));
+    if(path.startsWith('/repos/'))delete (rule.conditions as any).repository_name;
+    return {status:200,value:rule};
+  }};
+  await verifyGovernanceCreation(io,{id:12,name:'fixture',full_name:'splrad/fixture'},88);
+  expect(calls).toContain('/orgs/splrad/rulesets/1');expect(calls).toContain('/orgs/splrad/rulesets/2');
+});
+it('native variable absence is 404 only; 403 and transport failures remain distinct failures',async()=>{
+  const {bootstrapNativeIO}=await module();
+  for(const status of [404,403]) {
+    const io=bootstrapNativeIO('fixture-token',async(url:any,init:any)=>{
+      expect(String(url)).toBe('https://api.github.com/repos/splrad/fixture/actions/variables/STEWARD_BOOTSTRAP_RECOVERY');
+      expect(init.headers.authorization).toBe('token fixture-token');return new Response(JSON.stringify({message:'fixture'}),{status,headers:{'content-type':'application/json'}});
+    });
+    expect((await io.request('GET','/repos/splrad/fixture/actions/variables/STEWARD_BOOTSTRAP_RECOVERY')).status).toBe(status);
+  }
+});
+it('preserves the required all-refs slash after the installed Octokit template parser',async()=>{
+  const {bootstrapNativeIO}=await module(),calls:string[]=[];
+  const io=bootstrapNativeIO('fixture-token',async(url:any,init:any)=>{
+    calls.push(String(url));expect(init.headers['x-github-api-version']).toBe('2026-03-10');
+    const correct=String(url)==='https://api.github.com/repos/splrad/fixture/git/matching-refs/';
+    return new Response(JSON.stringify({message:correct?'Git Repository is empty.':'Not Found'}),{status:correct?409:404,headers:{'content-type':'application/json'}});
+  });
+  expect(await io.request('GET','/repos/splrad/fixture/git/matching-refs/')).toMatchObject({status:409,value:{message:'Git Repository is empty.'}});
+  expect(calls).toHaveLength(1);
+});
+it('actual Git bootstrap archive initializes its protected state branch, reads back origin and reconciles repeats',async()=>{
+  const {archiveBootstrap}=await module(),{writeReleaseRecords}=await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
+  const root=await mkdtemp(join(tmpdir(),'bootstrap-archive-'));registerOfflineFixtureRoot(root);
+  try {
+    const remote=join(root,'remote'),profile=join(root,'profile');await mkdir(remote);await mkdir(profile);
+    const env=isolatedBuildEnvironment(process.env,profile),execute=promisify(execFile);
+    const git=async(...args:string[])=>(await execute('git',args,{cwd:remote,env,windowsHide:true})).stdout.trim();
+    await git('init','--initial-branch=develop');await git('config','user.name','Fixture');await git('config','user.email','fixture@example.invalid');
+    await writeFile(join(remote,'README.md'),'# Repository\n');await git('add','README.md');await git('commit','--signoff','-m','Initial');const first=await git('rev-parse','HEAD');
+    const repository={id:12,name:'fixture',full_name:'splrad/fixture',default_branch:'develop'};
+    const io={async request(_method:string,path:string):Promise<any>{
+      if(path==='/repos/splrad/fixture')return {status:200,value:repository};
+      if(path.includes('/git/ref/')) {try{return {status:200,value:{ref:'refs/heads/steward/governance-state',object:{sha:await git('rev-parse','--verify','refs/heads/steward/governance-state')}}};}catch{return {status:404,value:{}};}}
+      if(path.includes('/rulesets?'))return {status:200,value:[{id:1},{id:2}]};
+      if(path.includes('/rules/branches/'))return {status:200,value:[{type:'creation',ruleset_id:1},{type:'update',ruleset_id:1},{type:'non_fast_forward',ruleset_id:2},{type:'deletion',ruleset_id:2}]};
+      if(path.includes('/rulesets/'))return {status:200,value:nativeRule(Number(path.split('/').at(-1)))};
+      throw Error(path);
+    }};
+    const record={schemaVersion:1,repositoryId:12,defaultBranch:'develop',workflowId:42,runId:21,runAttempt:1,controllerSha:'a'.repeat(40),firstCommitSha:first,phase:'RESTORED',affectedRules:[]};
+    const options={write:async(request:any,auth:any)=>{expect(request.remote).toBe('https://github.com/splrad/fixture.git');expect(request.writer).toBe('bootstrap');return writeReleaseRecords({...request,remote},auth);},
+      executeGit:async(command:string,args:string[],options:any)=>execute(command,args.map(a=>a==='https://github.com/splrad/fixture.git'?remote:a),options)};
+    const input={root,repository,token:'fixture-token',appId:88,identity:{name:'Fixture',email:'fixture@example.invalid'},record,origin:'external',io};
+    const head=await archiveBootstrap(input,options);expect(await archiveBootstrap(input,options)).toBe(head);
+    const text=await git('show',`${head}:bootstrap/21-1.json`);expect(JSON.parse(text).firstCommitOrigin).toBe('external');
+    expect(decodeStateFile('steward/governance-state','bootstrap/21-1.json',Buffer.from(text),12)).toMatchObject({firstCommitSha:first,firstCommitOrigin:'external'});
+    expect((await git('show','-s','--format=%B',head)).split('Signed-off-by:')).toHaveLength(2);
+    await expect(archiveBootstrap({...input,origin:'app'},options)).rejects.toThrow('ARCHIVE_CONFLICT');
+  }finally{await rm(root,{recursive:true,force:true});}
+},120000);

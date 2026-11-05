@@ -1,19 +1,59 @@
-import {it,expect} from 'vitest';
-import {readFile,readdir} from 'node:fs/promises';
+import {readFile} from 'node:fs/promises';
+import {expect,it} from 'vitest';
 import YAML from 'yaml';
-import {assertWorkflowDocument,verifyWorkflowPolicy,assertRequiredValidation} from '../src/workflow-policy.js';
-import {hostedBuildRunner} from '../src/release-build-command.js';
-const contract=JSON.parse(await readFile('.github/workflow-contract.json','utf8'));
-const load=async(name:string)=>YAML.parse(await readFile('.github/workflows/'+name,'utf8'));
-it('validates every actually adapted #253 workflow with an explicitly approved contract test fixture',async()=>{expect(await verifyWorkflowPolicy(process.cwd(),1296724484,['.github/workflows/pr-validation.yml'],contract)).toHaveLength((await readdir('.github/workflows')).length)});
-it('continues to reject actual fragment retirement without contract authority',async()=>{await expect(verifyWorkflowPolicy(process.cwd(),1296724484,['.github/workflows/pr-validation.yml'])).rejects.toThrow();});
-it.each(['windows','linux','','macos','self-hosted','${{ inputs.runner }}'])('maps only supported build families: %s',family=>{if(family==='windows'||family==='linux')expect(hostedBuildRunner(family)).toBe(family==='windows'?'windows-2025':'ubuntu-24.04');else expect(()=>hostedBuildRunner(family)).toThrow('BUILD_RUNNER')});
-it.each(['release-build.yml','product-build.yml'])('has exclusive static runners and a failing unknown output guard: %s',async name=>{const d=await load(name);expect(Object.keys(d.jobs)).toEqual(['plan','build_windows','build_linux']);for(const [job,runner]of [['build_windows','windows-2025'],['build_linux','ubuntu-24.04']]){expect(d.jobs[job!]['runs-on']).toBe(runner);expect(d.jobs[job!].if).toBe(`needs.plan.outputs.runner == '${runner}'`);expect(d.jobs[job!].environment).toBeUndefined()}expect(d.jobs.plan.steps.at(-1).run).toContain('exit 1')});
-it.each(['sync-managed-labels.yml','sync-review-instructions.yml'])('supports generic trusted source recipe without whole-document identity: %s',async name=>{const d=await load(name);for(const j of Object.values(d.jobs) as any[])delete j.concurrency;delete d.concurrency;expect(()=>assertWorkflowDocument('.github/workflows/renamed-example.yml',d)).not.toThrow();for(const change of ['checkout','resolver','working-directory','env','extra-step']){const copy=structuredClone(d),j=Object.values(copy.jobs)[0] as any;if(change==='checkout')j.steps[3].with.ref='${{ github.event.workflow_run.head_sha }}';if(change==='resolver')j.steps[2].run+=' || true';if(change==='working-directory')j.steps.at(-1)['working-directory']='policy-bootstrap';if(change==='env')j.env={NODE_OPTIONS:'--import /tmp/evil'};if(change==='extra-step')j.steps.splice(0,0,{run:'echo unsafe'});expect(()=>assertWorkflowDocument('.github/workflows/renamed-example.yml',copy)).toThrow();}});
-it.each(['secret','download','report','extra','source','continue','needs'])('rejects broken isolated artifact handoff: %s',async kind=>{const d=await load('release-build-complete.yml');if(kind==='secret')d.jobs.inspect.environment={name:'steward-release',deployment:false};if(kind==='download')d.jobs.accept.steps.push({uses:'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'});if(kind==='report')d.jobs.accept.steps.find((s:any)=>s.id==='accept').env.ARTIFACT_REPORT='${{ inputs.report }}';if(kind==='extra')d.jobs.inspect.steps.push({run:'echo attacker'});if(kind==='source')d.jobs.inspect.steps[0].with.ref='${{ github.event.workflow_run.head_sha }}';if(kind==='continue')d.jobs.inspect['continue-on-error']=true;if(kind==='needs')d.jobs.accept.needs=['resolve'];expect(()=>assertWorkflowDocument('.github/workflows/release-build-complete.yml',d,contract)).toThrow();});
-it('uses the same artifact capability in another workflow name',async()=>{const d=await load('release-build-complete.yml');expect(()=>assertWorkflowDocument('.github/workflows/other-product-complete.yml',d)).not.toThrow();});
-it('retains a common write lock across actual producers and matrix consumers',async()=>{const a=await load('native-review.yml'),b=await load('sync-review-instructions.yml');expect(a.concurrency.group).toBe(b.jobs.synchronize.concurrency.group);expect(a.concurrency['cancel-in-progress']).toBe(false);expect(b.jobs.synchronize.concurrency['cancel-in-progress']).toBe(false);});
+import {discoverWorkflowFiles} from '../src/workflow-tools.js';
+it('discovers current native workflows and actual product templates without a workflow mirror',async()=>{
+  const files=await discoverWorkflowFiles(process.cwd(),true);
+  expect(files).toContain('.github/workflows/pr-validation-native.yml');
+  expect(files).toContain('.github/workflows/governance-promotion.yml');
+  expect(files).toContain('templates/release/steward-release-publish.yml');
+  expect(files).not.toContain('.github/workflows/pr-validation.yml');
+});
+it('uses platform workflow provenance and readonly validation jobs',async()=>{
+  const d=YAML.parse(await readFile('.github/workflows/pr-validation-native.yml','utf8'));
+  for(const job of Object.values(d.jobs) as any[])for(const step of job.steps){
+    if(step.with?.path==='policy'){expect(step.with.repository).toBe('${{ job.workflow_repository }}');expect(step.with.ref).toBe('${{ job.workflow_sha }}');}
+    if(step.with?.path==='target'){expect(step.with.ref).toBe('${{ github.event.pull_request.head.sha || github.sha }}');expect(step.with['fetch-depth']).toBe(0);}
+    if(step.run)expect(step.run).not.toContain('${{');
+  }
+  expect(d.permissions).toEqual({contents:'read','pull-requests':'read'});
+  expect(d.jobs.summary.if).toBe('${{ always() }}');
+});
+it('executes product commands from native YAML',async()=>{
+  const d=YAML.parse(await readFile('templates/release/steward-release-publish.yml','utf8')),step=d.jobs.build.steps.find((s:any)=>s.id==='build');
+  expect(step.run).toContain('dotnet restore CADFontAutoReplace.slnx --locked-mode');
+  expect(step.run).toContain('pwsh -NoProfile -File ./tools/Publish-ReleaseAssets.ps1');
+  expect(step.run).not.toMatch(/\$\{\{|SkipPluginBuild|release-pipeline build/);expect(step.env).toBeUndefined();
+});
+it('activates the trusted policy tool paths before validation outside its checkout',async()=>{
+  const d=YAML.parse(await readFile('.github/workflows/pr-validation-native.yml','utf8'));
+  for(const job of Object.values(d.jobs) as any[]){
+    const installed=job.steps.findIndex((s:any)=>s.uses?.startsWith('jdx/mise-action@'));
+    if(installed<0)continue;
+    const activated=job.steps.findIndex((s:any)=>s.run==='mise bin-paths | tac >> "$GITHUB_PATH"');
+    expect(activated).toBeGreaterThan(installed);
+    expect(job.steps[activated]).toMatchObject({'working-directory':'policy',shell:'bash',env:{MISE_SAFE:'1',MISE_LOCKED:'1',MISE_NODE_COMPILE:'false'}});
+    expect(job.steps[installed].with.env).toBe(false);
+    const execution=job.steps.findIndex((s:any)=>/^(?:npm|node)\b/m.test(s.run??''));
+    expect(activated).toBeLessThan(execution);
+  }
+});
 
-it('requires read-only review access for the contract entry',async()=>{const d=await load('pr-validation.yml');delete d.permissions['pull-requests'];expect(()=>assertRequiredValidation(d,'retired')).toThrow('review read permission');d.permissions['pull-requests']='write';expect(()=>assertRequiredValidation(d,'retired')).toThrow('review read permission');});
-
-it.each(['command','node-options','secret','condition','additional'])('rejects trusted suffix injection: %s',async kind=>{const d=await load('sync-managed-labels.yml'),j=Object.values(d.jobs)[0] as any,step=j.steps.at(-1);delete d.concurrency;delete j.concurrency;expect(()=>assertWorkflowDocument('.github/workflows/example.yml',d)).not.toThrow();if(kind==='command')step.run+='\necho injected';if(kind==='node-options')step.env.NODE_OPTIONS='--import /tmp/inject.mjs';if(kind==='secret')step.env.EXTRA_SECRET='${{ secrets.EXTRA }}';if(kind==='condition')step.if='false';if(kind==='additional')j.steps.push(structuredClone(step));expect(()=>assertWorkflowDocument('.github/workflows/example.yml',d)).toThrow();});
+it('binds WinGet execution to the controller tool before channel credentials are present',async()=>{
+  const d=YAML.parse(await readFile('templates/release/steward-release-channels.yml','utf8'));
+  for(const name of ['winget-submit','winget-verify']) {
+    const steps=d.jobs[name].steps;
+    const install=steps.findIndex((s:any)=>s.uses?.startsWith('jdx/mise-action@'));
+    const resolve=steps.findIndex((s:any)=>s.id==='winget-tool');
+    const business=steps.findIndex((s:any)=>s.name==='business-'+name);
+    expect(steps[install].with).toMatchObject({working_directory:'controller',install_args:'--locked',env:false,persist_github_token:false});
+    expect(resolve).toBeGreaterThan(install);expect(business).toBeGreaterThan(resolve);
+    expect(steps[resolve].env).toBeUndefined();
+    expect(steps[resolve].run).toContain('mise -C controller which wingetcreate');
+    expect(steps[resolve].run).toContain('"exe=$exe" >> $env:GITHUB_OUTPUT');
+    expect(steps[business].env.WINGETCREATE_EXE).toBe('${{ steps.winget-tool.outputs.exe }}');
+    expect(steps[business].run).toContain('& $env:WINGETCREATE_EXE update SPLRAD.LayerScape.Deployer --version $version --urls "$url|x64" --out generated --format yaml');
+    expect(steps[business].run).not.toMatch(/\bmise\b/);
+    expect(steps.filter((s:any)=>s.run).map((s:any)=>s.run).join('\n')).not.toMatch(/mise -C product/);
+  }
+});

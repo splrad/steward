@@ -1,7 +1,7 @@
 import { ReleaseSourceError } from '../../core/src/release-notes-input.js';
 
-interface SourceBudget { commits: number; requests: number; concurrency: number; intervalMs: number; timeoutMs: number; reserve: number }
-export const releaseSourceBudget: Readonly<SourceBudget> = Object.freeze({ commits: 120, requests: 1800, concurrency: 4, intervalMs: 200, timeoutMs: 8 * 60_000, reserve: 100 });
+interface SourceBudget { requests: number; concurrency: number; intervalMs: number; timeoutMs: number; reserve: number }
+export const releaseSourceBudget: Readonly<SourceBudget> = Object.freeze({ requests: 1800, concurrency: 4, intervalMs: 200, timeoutMs: 8 * 60_000, reserve: 100 });
 /** One transport per invocation, shared by initial collection and final reread, including pagination. */
 export function budgetReleaseSourceTransport(transport: typeof fetch = fetch, limits = releaseSourceBudget): typeof fetch {
   const deadline = Date.now() + limits.timeoutMs;
@@ -33,7 +33,10 @@ export function budgetReleaseSourceTransport(transport: typeof fetch = fetch, li
         const value = response.headers.get('x-ratelimit-remaining');
         if (value !== null && /^\d+$/.test(value)) remaining = Math.min(remaining, Number(value));
         if (response.status === 403 || response.status === 429) return fail(`HTTP ${response.status}`);
-        return new Response(bytes, { status: response.status, statusText: response.statusText, headers: response.headers });
+        const buffered = new Response(bytes, { status: response.status, statusText: response.statusText, headers: response.headers });
+        // Native Octokit pagination uses the response URL to follow and verify each page.
+        Object.defineProperty(buffered, 'url', { value: response.url });
+        return buffered;
       } catch (error) {
         if (signal.aborted) return fail('deadline or cancellation');
         stopped ??= error instanceof Error ? error : new Error(String(error));

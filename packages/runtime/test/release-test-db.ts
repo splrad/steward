@@ -1,3 +1,4 @@
+import type {HistoryDatabase} from '../src/release-history.js';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 
@@ -29,5 +30,5 @@ export class ReleaseTestDb {
     try { const results = []; for (const s of statements) results.push(await s.run()); this.database.exec('COMMIT'); return results; }
     catch (error) { this.database.exec('ROLLBACK'); throw error; }
   }
-  binding(): D1Database { return this as unknown as D1Database; }
+  binding(): HistoryDatabase { return this as unknown as HistoryDatabase; }
 }

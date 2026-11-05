@@ -1,3 +1,6 @@
 node_modules/
 .steward-build/
 .wrangler/
+tools/upstream/
+tools/template/.venv/
+**/__pycache__/

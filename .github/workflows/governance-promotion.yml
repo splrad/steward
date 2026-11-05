@@ -1,0 +1,73 @@
+name: SPLRAD Steward / Governance Promotion
+on:
+  workflow_run:
+    workflows: [SPLRAD Steward / Native Validation]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: 37 1 * * *
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  promote:
+    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == 'refs/heads/main' && vars.STEWARD_GOVERNANCE_PROMOTION == 'true' && (github.event_name != 'workflow_run' || (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.repository.id == 1296724484 && github.event.workflow_run.head_repository.id == 1296724484))
+    name: Promote reviewed governance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: steward-automation
+      deployment: false
+    concurrency:
+      group: steward-governance-mutation
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.10.24
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - name: Install locked libraries without privileged credentials
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          uv sync --project tools/template --frozen --no-dev
+      - name: Verify native source without governance credentials
+        id: source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          STEWARD_CONTROLLER_SHA: ${{ github.workflow_sha }}
+          SOURCE_VALIDATION_RUN_ID: ${{ github.event.workflow_run.id }}
+          NATIVE_VALIDATION_WORKFLOW_ID: ${{ vars.NATIVE_VALIDATION_WORKFLOW_ID }}
+        run: node scripts/governance-promotion.mjs --check-source
+      - name: Reconcile validated source, workflow SHA and template tag
+        if: steps.source.outputs.eligible == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          STEWARD_CONTROLLER_SHA: ${{ github.workflow_sha }}
+          SOURCE_VALIDATION_RUN_ID: ${{ github.event.workflow_run.id }}
+          NATIVE_VALIDATION_WORKFLOW_ID: ${{ vars.NATIVE_VALIDATION_WORKFLOW_ID }}
+          GOVERNANCE_APP_ID: ${{ vars.GOVERNANCE_APP_ID }}
+          GOVERNANCE_APP_PRIVATE_KEY: ${{ secrets.GOVERNANCE_APP_PRIVATE_KEY }}
+        run: node scripts/governance-promotion.mjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ always() }}
+        with:
+          name: governance-promotion-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            promotion-evidence/source-preflight.json
+            promotion-evidence/observations.jsonl
+            promotion-evidence/template-plan.json
+          if-no-files-found: error
+          retention-days: 90

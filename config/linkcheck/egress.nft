@@ -1,0 +1,18 @@
+table inet splrad_linkcheck {
+  set dns4 {
+    type ipv4_addr
+    @@DNS_IPV4@@
+  }
+  set dns6 {
+    type ipv6_addr
+    @@DNS_IPV6@@
+  }
+  chain output {
+    type filter hook output priority -100; policy accept;
+    ip daddr @dns4 udp dport 53 counter accept
+    ip6 daddr @dns6 udp dport 53 counter accept
+    ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 192.0.0.0/24, 192.0.2.0/24, 198.18.0.0/15, 198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/4, 240.0.0.0/4, 168.63.129.16 } counter reject
+    ip6 daddr != 2000::/3 counter reject
+    ip6 daddr 2001:db8::/32 counter reject
+  }
+}

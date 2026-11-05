@@ -1,0 +1,114 @@
+{
+  "source": {
+    "path": ".worktrees/v146-implementation-20261026/packages/runner/dist/index.js",
+    "sha256": "69d9de6e919ca2dbd5c55029582b164750665ff29118959104e82eff63cfc0d5"
+  },
+  "context": {
+    "repository": "example/product",
+    "repositoryId": 1,
+    "appBotId": 42,
+    "cycle": {
+      "id": "pr-12-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "prNumber": 12,
+      "sourceSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "controllerSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "deliveryConfigSha": "dddddddddddddddddddddddddddddddddddddddd",
+      "units": [
+        {
+          "id": "alpha",
+          "version": "1.0.0",
+          "tag": "alpha-v1.0.0",
+          "releaseId": 20,
+          "assets": [],
+          "notesDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "manifestDigest": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        {
+          "id": "beta",
+          "version": "1.0.0",
+          "tag": "beta-v1.0.0",
+          "releaseId": 21,
+          "assets": [],
+          "notesDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "manifestDigest": "2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      ],
+      "requiredChannels": [
+        {
+          "unitId": "alpha",
+          "channelId": "npm"
+        },
+        {
+          "unitId": "alpha",
+          "channelId": "ghcr"
+        },
+        {
+          "unitId": "beta",
+          "channelId": "npm"
+        },
+        {
+          "unitId": "beta",
+          "channelId": "ghcr"
+        }
+      ],
+      "dispatches": [],
+      "publications": [],
+      "channelFacts": [],
+      "executionEvidence": [],
+      "completionObservations": [],
+      "completedEvidencePath": null,
+      "repairOf": null,
+      "approvedRepairDecision": null
+    }
+  },
+  "channel": {
+    "requestKey": "31e1b2f78cb4ed4eb5d28f0901bd2799b2c6468e306de26520452fcb9788fd24",
+    "operationKey": "66dcbd712a96a47ce09911f525462334fc5062fff7995f753c0d42a0235aacc4",
+    "purpose": "channel-submit",
+    "workflowId": 10,
+    "ref": "main",
+    "sourceSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "targetKey": "[10,\"main\",\"cccccccccccccccccccccccccccccccccccccccc\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",[\"alpha\",\"beta\"],[\"ghcr\",\"npm\"],\"submit\"]",
+    "executionSha": "cccccccccccccccccccccccccccccccccccccccc",
+    "inputs": {
+      "cycle_id": "pr-12-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "execution_sha": "cccccccccccccccccccccccccccccccccccccccc",
+      "controller_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "targets_json": "[{\"unitId\":\"alpha\",\"channelId\":\"npm\",\"version\":\"1.0.0\",\"releaseId\":20,\"manifestDigest\":\"1111111111111111111111111111111111111111111111111111111111111111\"},{\"unitId\":\"beta\",\"channelId\":\"ghcr\",\"version\":\"1.0.0\",\"releaseId\":21,\"manifestDigest\":\"2222222222222222222222222222222222222222222222222222222222222222\"}]",
+      "mode": "submit",
+      "operation_key": "66dcbd712a96a47ce09911f525462334fc5062fff7995f753c0d42a0235aacc4",
+      "request_key": "31e1b2f78cb4ed4eb5d28f0901bd2799b2c6468e306de26520452fcb9788fd24"
+    },
+    "inputDigest": "dc2259aef5dbadd725635254e96e19988acf39d6f0136cf668c35a413d5b4b22",
+    "sentAt": "2026-11-03T00:00:00.000Z",
+    "searchWindows": [],
+    "canonicalRunId": null,
+    "nativeResponseEvidencePath": null,
+    "continuationOfRunId": null,
+    "retryLimitEvidencePath": null
+  },
+  "build": {
+    "requestKey": "8bbcfcc85ca1339f8e21a29488f676bb812eadf63fae36da9c87856798afecbe",
+    "operationKey": "19e17c06620f676b93cb3e944a76916cd2153cb38e946b29505769736fbedfad",
+    "purpose": "build",
+    "workflowId": 10,
+    "ref": "steward/build/pr-12-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "targetKey": "[10,\"steward/build/pr-12-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",[\"alpha\",\"beta\"],[],\"build\"]",
+    "inputs": {
+      "cycle_id": "pr-12-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "operation_key": "19e17c06620f676b93cb3e944a76916cd2153cb38e946b29505769736fbedfad",
+      "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "controller_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "inputDigest": "088ff3382576481fea44899ab89a584cc4fe34a3cf7368f10ed86eab0ca63d94",
+    "executionSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sentAt": "2026-11-03T00:00:00.000Z",
+    "searchWindows": [],
+    "canonicalRunId": null,
+    "nativeResponseEvidencePath": null,
+    "continuationOfRunId": null,
+    "retryLimitEvidencePath": null
+  }
+}

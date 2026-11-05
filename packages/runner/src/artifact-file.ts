@@ -11,7 +11,7 @@ export const maxArtifactArchiveBytes=buildLimits.maxTotalBytes+16*1024*1024;
 const check=(v:unknown)=>{if(!v)throw new Error('ARTIFACT_HANDOFF_INVALID');};
 export interface ArtifactFile {path:string;size:number;sha256:string}
 /** Parse only a flat file envelope; stream bytes to fresh files under the release build budgets. */
-export async function extractArtifactFile(archive:string,directory:string):Promise<Map<string,ArtifactFile>>{
+export async function extractArtifactFile(archive:string,directory:string,limits: {maxFiles:number;maxFileBytes:number;maxTotalBytes:number} = buildLimits):Promise<Map<string,ArtifactFile>>{
  const handle=await open(archive,'r');
  try{
   const size=(await handle.stat()).size;check(size>=22&&size<=maxArtifactArchiveBytes);
@@ -32,7 +32,7 @@ export async function extractArtifactFile(archive:string,directory:string):Promi
    check(z.readUInt32LE(0)===0x06064b50&&integer(z,4)===44&&centralEnd+56===end-20&&z.readUInt32LE(16)===0&&z.readUInt32LE(20)===0);
    count=integer(z,32);check(integer(z,24)===count);centralSize=integer(z,40);start=integer(z,48);
   }else check(tail.readUInt16LE(e+8)===count);
-  check(count>0&&count<=buildLimits.maxFiles&&start+centralSize===centralEnd);
+  check(count>0&&count<=limits.maxFiles&&start+centralSize===centralEnd);
   const names=new Set<string>(),entries:any[]=[];let cursor=start,total=0;
   for(let i=0;i<count;i++){
    const c=await read(cursor,46);check(c.readUInt32LE(0)===0x02014b50);
@@ -44,7 +44,7 @@ export async function extractArtifactFile(archive:string,directory:string):Promi
     let z:Buffer|undefined;for(let k=0;k<extra.length;){check(k+4<=extra.length);const tag=extra.readUInt16LE(k),len=extra.readUInt16LE(k+2);check(k+4+len<=extra.length);if(tag===1){check(!z);z=extra.subarray(k+4,k+4+len);}k+=4+len;}
     check(z);let k=0;if(length===0xffffffff){length=integer(z!,k);k+=8;}if(compressed===0xffffffff){compressed=integer(z!,k);k+=8;}if(offset===0xffffffff)offset=integer(z!,k);
    }
-   total+=length;check(length>0&&length<=buildLimits.maxFileBytes&&compressed>0&&total<=buildLimits.maxTotalBytes);
+   total+=length;check(length>0&&length<=limits.maxFileBytes&&compressed>0&&total<=limits.maxTotalBytes);
    const nameBytes=await read(cursor+46,n),name=nameBytes.toString('utf8');
    check(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(name)&&!/[. ]$/.test(name)&&!/^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(name)&&!names.has(name.toLowerCase()));names.add(name.toLowerCase());
    entries.push({name,nameBytes,flags,method,crc,compressed,length,offset});cursor+=46+n+x+comment;

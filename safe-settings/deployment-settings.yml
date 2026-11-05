@@ -1,0 +1,14 @@
+restrictedRepos: []
+disable_plugins:
+  - rulesets
+  - branches
+  - collaborators
+  - teams
+  - environments
+  - custom_properties
+  - variables
+  - milestones
+  - autolinks
+  - custom_repository_roles
+  - app_installations
+  - validator

@@ -1,22 +1,3 @@
-export type CapabilityState = 'disabled' | 'pending' | 'active' | 'suspended';
-export interface DeliveryEntry { id: string; profile: string; state: CapabilityState; builds: string[] }
-export interface DeliveryConfiguration {
-  builds: Record<string, { profile: string; inputs: Record<string, unknown>; outputs: { id: string; kind: string; match?: string; archiveType?: string; count?: number; mediaType?: string }[] }>;
-  delivery: {
-    githubRelease: { enabled: boolean; state: CapabilityState; profile: string | null; builds: string[] };
-    deployments: (DeliveryEntry & { source: 'commit' | 'github-release'; trigger: string })[];
-    packages: (DeliveryEntry & { publication: 'versioned' | 'snapshot'; trigger: string })[];
-  };
-}
-export interface DeliveryRegistry {
-  builds: Record<string, { kind: string }>;
-  releases: Record<string, { repository: { id: number; fullName: string }; releaseNotes: { profile: string } }>;
-  notes: Record<string, unknown>;
-  deployments: Record<string, { artifactKind: string }>;
-  packages: Record<string, { artifactKind: string }>;
-  adapters: { builds: readonly string[]; releases: readonly string[]; deployments: readonly string[]; packages: readonly string[] };
-}
-
 export function assertDeliveryPath(value: string, options: { glob?: boolean; root?: boolean; version?: boolean } = {}): void {
   if (options.root && value === '.') return;
   const normalized = options.version ? value.replaceAll('{version}', '1.0.0') : value;
@@ -27,95 +8,77 @@ export function assertDeliveryPath(value: string, options: { glob?: boolean; roo
   }
 }
 
-function own<T>(record: Record<string, T>, key: string): T | undefined {
-  return Object.hasOwn(record, key) ? record[key] : undefined;
+/** A materialized artifact filename, suitable for both Windows and Linux. */
+export function assertDeliveryAssetName(value: string): void {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$/.test(value) || /[. ]$/.test(value)
+    || /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(value)) throw new Error('DELIVERY_ASSET_NAME');
 }
 
-export function validateDeliveryConfiguration(
-  configuration: DeliveryConfiguration,
-  registry: DeliveryRegistry,
-  repository?: { id: number; fullName: string; managed: boolean },
-): void {
-  const { builds, delivery } = configuration;
-  const release = delivery.githubRelease;
-  if (new Set(release.builds).size !== release.builds.length) throw new Error('RN_CONFIG_DUPLICATE_REFERENCE');
-  // The current release executor consumes one file-build plan; reject unsupported
-  // combinations before any candidate or build request is persisted.
-  if (release.builds.length > 1) throw new Error('RN_CONFIG_RELEASE_BUILD_LIMIT');
-  if (!release.enabled && (release.state !== 'disabled' || release.profile !== null || release.builds.length)) throw new Error('RN_CONFIG_DISABLED');
-  if (release.enabled && (release.state === 'disabled' || !release.profile)) throw new Error('RN_CONFIG_STATE');
-  const entries = [...delivery.deployments, ...delivery.packages];
-  if (new Set(entries.map(entry => entry.id)).size !== entries.length) throw new Error('RN_CONFIG_DUPLICATE_ID');
-  if (!repository && (Object.keys(builds).length || release.enabled || entries.length)) throw new Error('RN_CONFIG_DEFAULTS');
-  if (repository && !repository.managed && (release.enabled || entries.some(entry => entry.state !== 'disabled'))) throw new Error('RN_CONFIG_UNMANAGED');
-  for (const unit of Object.values(builds)) {
-    const profile = own(registry.builds, unit.profile);
-    if (!profile) throw new Error('RN_CONFIG_PROFILE');
-    const outputIds = unit.outputs.map(output => output.id);
-    if (new Set(outputIds).size !== outputIds.length) throw new Error('RN_CONFIG_DUPLICATE_ID');
-    for (const output of unit.outputs) {
-      if (output.kind !== profile.kind) throw new Error('RN_CONFIG_ARTIFACT_KIND');
-      if (output.match !== undefined) assertDeliveryPath(output.match, { glob: true, version: true });
-    }
-    for (const field of ['project', 'directory', 'lockfile', 'context', 'dockerfile', 'entrypoint']) {
-      const value = unit.inputs[field];
-      if (typeof value === 'string') assertDeliveryPath(value, { root: ['context', 'directory'].includes(field) });
-    }
-    if (unit.profile === 'custom-adapter-v1' && !String(unit.inputs.entrypoint).startsWith('tools/')) throw new Error('RN_CONFIG_ENTRYPOINT');
-  }
-  function checkBuilds(ids: string[], active: boolean, kind?: string): void {
-    if (new Set(ids).size !== ids.length) throw new Error('RN_CONFIG_DUPLICATE_REFERENCE');
-    for (const id of ids) {
-      const build = own(builds, id);
-      if (!build) throw new Error('RN_CONFIG_BUILD_REFERENCE');
-      if (kind !== undefined && own(registry.builds, build.profile)?.kind !== kind) throw new Error('RN_CONFIG_ARTIFACT_KIND');
-      if (active && !registry.adapters.builds.includes(build.profile)) throw new Error('RN_CONFIG_ADAPTER_UNAVAILABLE');
-    }
-  }
-  if (release.enabled) {
-    const profile = own(registry.releases, release.profile!);
-    if (!profile || !own(registry.notes, profile.releaseNotes.profile)) throw new Error('RN_CONFIG_PROFILE');
-    if (!repository || profile.repository.id !== repository.id || profile.repository.fullName !== repository.fullName) throw new Error('RN_CONFIG_REPOSITORY');
-    if (release.state === 'active' && !registry.adapters.releases.includes(release.profile!)) throw new Error('RN_CONFIG_ADAPTER_UNAVAILABLE');
-    checkBuilds(release.builds, release.state === 'active', 'file');
-    for (const id of release.builds) for (const output of builds[id]!.outputs) {
-      // Release artifacts are a flat ASCII envelope. Other delivery consumers
-      // may still use directories; reject incompatible Release rules up front.
-      const pattern = output.match?.replaceAll('{version}', '1.0.0');
-      if (!pattern || !/^[A-Za-z0-9*?][A-Za-z0-9._*?-]{0,199}$/.test(pattern)
-        || /[.]$/.test(pattern) || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(pattern))
-        throw new Error('RN_CONFIG_RELEASE_ASSET_NAME');
-    }
-  }
-  for (const entry of delivery.deployments) {
-    const profile = own(registry.deployments, entry.profile);
-    if (!profile) throw new Error('RN_CONFIG_PROFILE');
-    if (entry.source === 'github-release' && (!release.enabled || (entry.state === 'active' && release.state !== 'active'))) throw new Error('RN_CONFIG_RELEASE_DEPENDENCY');
-    if ((entry.source === 'commit' ? 'default-branch' : 'github-release-published') !== entry.trigger) throw new Error('RN_CONFIG_TRIGGER');
-    if (entry.state === 'active' && !registry.adapters.deployments.includes(entry.profile)) throw new Error('RN_CONFIG_ADAPTER_UNAVAILABLE');
-    checkBuilds(entry.builds, entry.state === 'active', profile.artifactKind);
-  }
-  for (const entry of delivery.packages) {
-    const profile = own(registry.packages, entry.profile);
-    if (!profile) throw new Error('RN_CONFIG_PROFILE');
-    if ((entry.publication === 'versioned' ? 'version-change' : 'default-branch') !== entry.trigger) throw new Error('RN_CONFIG_TRIGGER');
-    if (entry.state === 'active' && !registry.adapters.packages.includes(entry.profile)) throw new Error('RN_CONFIG_ADAPTER_UNAVAILABLE');
-    checkBuilds(entry.builds, entry.state === 'active', profile.artifactKind);
-  }
-}
 
-export function requiresPublicVersion(configuration: DeliveryConfiguration): boolean {
-  return configuration.delivery.githubRelease.enabled
-    || configuration.delivery.packages.some(entry => entry.state !== 'disabled' && entry.publication === 'versioned')
-    || configuration.delivery.deployments.some(entry => entry.state !== 'disabled' && entry.source === 'github-release');
+/** Finite producer/asset references shared by delivery data and historical readers. */
+export function assertDeliveryArtifactMapping(unit: {
+  builds: readonly { id: string; expectedArtifacts: readonly string[] }[];
+  artifacts: readonly { id: string; build: string }[];
+}): void {
+  if (!unit.builds.length || !unit.artifacts.length
+    || new Set(unit.builds.map(build => build.id)).size !== unit.builds.length
+    || new Set(unit.artifacts.map(asset => asset.id)).size !== unit.artifacts.length) throw new Error('DELIVERY_ARTIFACTS: duplicate or empty producer/asset set');
+  for (const build of unit.builds) {
+    const expected = unit.artifacts.filter(asset => asset.build === build.id).map(asset => asset.id).sort();
+    if (!expected.length || JSON.stringify(expected) !== JSON.stringify([...build.expectedArtifacts].sort())) throw new Error('DELIVERY_ARTIFACTS: producer mapping');
+  }
+  if (unit.artifacts.some(asset => !unit.builds.some(build => build.id === asset.build))) throw new Error('DELIVERY_ARTIFACTS: missing producer');
 }
+import { Ajv2020 } from 'ajv/dist/2020.js';
+import schema from '../../../schema/delivery.schema.json' with { type: 'json' };
 
-export function activeDelivery(configuration: DeliveryConfiguration): {
-  githubRelease: boolean; deployments: string[]; packages: string[]; requiresVersion: boolean;
-} {
-  const githubRelease = configuration.delivery.githubRelease.enabled && configuration.delivery.githubRelease.state === 'active';
-  const deployments = configuration.delivery.deployments.filter(entry => entry.state === 'active');
-  const packages = configuration.delivery.packages.filter(entry => entry.state === 'active');
-  return { githubRelease, deployments: deployments.map(entry => entry.id), packages: packages.map(entry => entry.id),
-    requiresVersion: githubRelease || deployments.some(entry => entry.source === 'github-release') || packages.some(entry => entry.publication === 'versioned') };
+export interface DeliveryConfig {
+  schemaVersion: 1;
+  repositoryAuthors: { id: number; evidence: string }[];
+  units: DeliveryUnit[];
+}
+export interface DeliveryUnit {
+  id: string; path: string; notesPath: string;
+  assets: { id: string; name: string; mediaType: string }[];
+  channels: { id: string; required: boolean; location: string }[];
+}
+const validateDelivery = new Ajv2020({ strict: true }).compile(schema);
+const reservedAssets = new Set(['sbom.spdx.json', 'release-notes.md', 'artifact-manifest.json', 'sha256sums']);
+export function deliveryAssetNames(unit: DeliveryUnit, version: string, packageVersion: string): Map<string, string> {
+  const names = new Map<string, string>(), seen = new Set<string>();
+  for (const asset of unit.assets) {
+    const name = asset.name.replaceAll('${version}', version).replaceAll('${packageVersion}', packageVersion);
+    assertDeliveryAssetName(name);
+    if (names.has(asset.id) || seen.has(name.toLowerCase()) || reservedAssets.has(name.toLowerCase())) throw new Error('DELIVERY_ASSET_SET');
+    names.set(asset.id, name); seen.add(name.toLowerCase());
+  }
+  return names;
+}
+/** Finite delivery facts at S. Commands, build recipes and publication policy are not data fields. */
+export function parseDeliveryConfig(input: unknown): DeliveryConfig {
+  if (input && typeof input === 'object' && !Array.isArray(input) && (input as { schemaVersion?: unknown }).schemaVersion === 1) {
+    const authors = (input as { repositoryAuthors?: unknown }).repositoryAuthors;
+    if (!Array.isArray(authors) || !authors.length || authors.some(author => author && typeof author === 'object'
+      && (typeof author.evidence !== 'string' || !author.evidence.trim()))) throw new Error('AUTHOR_IDENTITY_UNVERIFIED');
+  }
+  if (!validateDelivery(input)) throw new Error('DELIVERY_CONFIG_STRUCTURE');
+  const value = structuredClone(input) as unknown as DeliveryConfig;
+  const unique = (values: unknown[]) => new Set(values).size === values.length;
+  if (!unique(value.units.map(unit => unit.id)) || !unique(value.units.map(unit => unit.path.toLowerCase()))
+    || !unique(value.repositoryAuthors.map(author => author.id)) || value.repositoryAuthors.some(author => !author.evidence.trim()))
+    throw new Error('DELIVERY_DUPLICATE_IDENTITY');
+  const paths=value.units.map(unit=>unit.path.toLowerCase());
+  if(paths.some((path,i)=>paths.some((other,j)=>i!==j&&(path==='.'||other.startsWith(path+'/')))))throw new Error('DELIVERY_NESTED_UNIT_PATH');
+  for (const unit of value.units) {
+    assertDeliveryPath(unit.path, { root: true }); assertDeliveryPath(unit.notesPath);
+    if ([unit.path, unit.notesPath].some(path => path.split('/').some(part => part.toLowerCase() === '.git')))
+      throw new Error('DELIVERY_GIT_PATH');
+    if (!unique(unit.channels.map(channel => channel.id)) || !unique(unit.assets.map(asset => asset.id))) throw new Error('DELIVERY_DUPLICATE_IDENTITY');
+    for (const asset of unit.assets) {
+      const literal = asset.name.replaceAll('${version}', '1.2.3').replaceAll('${packageVersion}', '1.2.3rc1');
+      assertDeliveryAssetName(literal);
+    }
+    deliveryAssetNames(unit, '1.2.3', '1.2.3rc1');
+  }
+  return value;
 }

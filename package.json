@@ -4,32 +4,37 @@
   "description": "Central repository automation for SPLRAD projects.",
   "license": "Apache-2.0",
   "type": "module",
-  "engines": { "node": "24.22.0" },
-  "packageManager": "npm@11.19.1",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "build": "node scripts/build-runner.mjs",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.runtime.json --noEmit",
+    "test": "uv sync --project tools/template --frozen --only-group release-inspection --inexact --no-build && npm run test:pages && vitest run",
+    "test:pages": "node --test scripts/test/select-pages-source.test.mjs scripts/test/pages-wiring.test.mjs",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.runtime.json --noEmit && node scripts/verify-source-boundaries.mjs",
     "verify:config": "node scripts/verify-config.mjs",
     "verify:dist": "node scripts/verify-dist.mjs",
     "verify:workflows": "node scripts/verify-workflows.mjs",
-    "verify": "npm run test && npm run typecheck && npm run verify:config && npm run verify:dist && npm run verify:workflows"
+    "verify": "npm run test && npm run typecheck && npm run verify:config && npm run verify:dist && npm run verify:workflows",
+    "test:template": "uv run --project tools/template --frozen python -m unittest discover -s tools/template -p test_*.py -v"
   },
   "dependencies": {
-    "@github/copilot": "1.0.91",
+    "@octokit/auth-app": "8.3.1",
+    "@octokit/rest": "22.0.1",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
-    "jose": "6.2.12",
     "minimatch": "10.2.6",
+    "mustache": "4.2.0",
+    "remark-parse": "11.0.0",
+    "unified": "11.0.5",
     "yaml": "2.9.1"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20261010.1",
+    "@types/mustache": "4.2.6",
     "@types/node": "26.6.5",
     "@vercel/ncc": "0.45.0",
+    "release-please": "17.11.2",
     "typescript": "7.0.2",
-    "vitest": "5.0.3",
-    "wrangler": "4.149.0"
+    "vitest": "5.0.3"
   }
 }

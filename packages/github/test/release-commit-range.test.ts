@@ -23,7 +23,7 @@ function client() {
   return new GitHubClient('test', 'https://api.github.com', async url => {
     const page = String(url).includes('page=2');
     const paginated = String(url).includes('?');
-    return Response.json({ status: 'ahead', base_commit: { sha: base }, merge_base_commit: { sha: base }, total_commits: 2,
+    return nativeResponse(url,{ status: 'ahead', base_commit: { sha: base }, merge_base_commit: { sha: base }, total_commits: 2,
       commits: (page ? [target] : [reverted]).map(sha => ({ sha })) }, { headers: paginated && !page
       ? { link: `<https://api.github.com/repos/o/r/compare/${base}...${target}?per_page=100&page=2>; rel="next"` } : {} });
   });
@@ -40,3 +40,5 @@ it('requires complete reachable full-tree history and rejects disconnected objec
   expect(() => releaseSourceFrontier({ ...tree, commits: tree.commits.slice(0, 1) })).toThrow('SOURCE_COMMIT_COVERAGE');
   expect(() => releaseSourceFrontier({ ...tree, commits: [...tree.commits, { sha: reverted, parents: [] }] })).toThrow('SOURCE_COMMIT_COVERAGE');
 });
+
+function nativeResponse(url:unknown,value:unknown,init:ResponseInit={}){const response=Response.json({...value as any,url:String(url)},init);Object.defineProperty(response,'url',{value:String(url)});return response;}

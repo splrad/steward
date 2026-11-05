@@ -1,46 +1,15 @@
-# 工作流校验合同
+# 工作流验证
 
-## 普通工作流变更
+中央 [Native Validation](../.github/workflows/pr-validation-native.yml) 从 `job.workflow_repository`、`job.workflow_sha`、`job.workflow_file_path` 取得受信源 P，检出准确的候选 head H。PR 基点还必须与检出时的目标分支一致；main push 使用事件的 before/after。身份检查拒绝缺失对象、浅克隆和来源不符。
 
-可信中央 runner 校验工作流安全边界。Steward 的 config/repositories.json 中 allowedWorkflowPaths 描述候选仓库的实际清单：同一个 PR 可以同步增加、删除或改名普通工作流及清单，不需要先向默认分支登记文件名。清单与实际文件必须完全一致。
+固定完整 SHA 的 `dorny/paths-filter` 使用 Git 模式读取准确 base/head，关闭 token，不持久化检出凭据；改名按删除旧路径和新增路径检查。source、dependency、docs、governance 四类过滤器内联在 P 的 YAML 中，候选不能提供自己的过滤策略。原生输出直接驱动 job 的 `if`。普通文档变更运行链接检查；治理输入、共享依赖、构建入口和未知影响路径触发相应检查。源码 job 直接运行 npm 验证或 Windows .NET restore/build，治理 job 执行 JSON/YAML、指令载体和实际工作流扫描。Windows 还解析 PowerShell/MSBuild 文件。
 
-候选清单不能定义安全规则。必需 pr-validation.yml 由可信策略要求存在；其 validate 与 fragments 作业（依赖、执行条件、权限、可信检出及验证命令）、策略来源 SHA、固定中央检出、验证命令及 PR 事件覆盖由可信 runner 的入口合同保护。工作流名称固定为 `SPLRAD Steward / PR Validation`，与运行时 `trustedValidationRun` 匹配；步骤显示名称可变，跳过条件、吞错、额外执行步骤和候选策略替换会被拒绝。顶层 concurrency 固定按仓库与 PR 分组，cancel-in-progress 固定为 true。修改这个必需安全入口仍属于中央策略变更。
+jactionlint、shellcheck、pyflakes 与 zizmor 使用中央锁定工具扫描真实 YAML。候选的忽略配置不能关闭检查。标题入口按已批准的 `E07-TITLE-METADATA-20261028` 固定元数据例外处理；原始诊断、退出码和其他失败保留。扫描工具直接支持 queue 和 `job.workflow_*`，无需旧的工作流镜像或任务解释器。
 
-普通工作流统一检查：拒绝 job/service container；workflow/job defaults 及步骤级 shell 仅允许静态 bash、sh、pwsh、powershell、cmd、python；显式只读/none GITHUB_TOKEN 权限、允许的事件类型、受信且锁定提交的 Action、禁用 checkout 凭据持久化、普通文件/YAML 唯一键、禁止可复用作业和本地 Action 绕过、禁止 PR 作业获取受保护环境或密钥。密钥引用必须是显式名称，并匹配中央规定的环境。发布说明模型与 App 密钥使用不同环境。runner 只允许静态标签 ubuntu-latest、ubuntu-24.04、windows-latest、windows-2025、macos-latest；自托管标签、数组和动态表达式均拒绝。来源作业的环境名称不能证明输出安全，动态构建工作流须改用静态 hosted 标签后才能通过本层校验。
+zizmor 的两个已采用例外只匹配原生 `dangerous-triggers` 诊断的准确文件路径和事件位置：中央及模板的 `pr-title.yml` 中 `on.pull_request_target`，以及中央 `governance-promotion.yml` 中 `on.workflow_run`。后者的决策为 `E07-PROMOTION-WORKFLOW-RUN-20261031`。其他位置、其他诊断、无效输出和工具异常均失败。工作流权限和写入边界由实际入口及常规审查核验，具体见 [治理提升](governance-promotion.md)。
 
-现有 actionlint、业务工作流合同、类型、测试、配置和 dist 检查全部保留。scripts/verify-workflows.mjs 复用同一通用安全模块；仓库业务清单和作业合同随业务变更在同一 PR 中更新，不能替代中央安全授权。新增 Action 供应商、权限、密钥或环境属于安全能力变化，需要中央策略审查，不由候选清单放行。
+dependency-review 比较准确 base/head，采用 high 阈值，覆盖 runtime、development、unknown，等待原生快照告警最多 600 秒，不回写 PR。NuGet 实际直接/传递覆盖和组织 required workflow 的平台强制仍须在隔离及线上采用阶段取证。
 
-静态校验不证明任意 shell 命令安全，也不等于线上环境已具备审批。代码审查、平台环境保护和人工发布授权继续承担各自责任。
+DOC-LINK 读取改变的当前文档及受影响目标的当前引用。lychee 校验本地路径、图片和可识别锚点；Linux 联网前必须通过原生 nft check/load，保留计数器并仅清理本任务的表。网络子进程使用最小环境。历史文件只检查本地引用，外部 404/410 和未知响应保留在报告中。
 
-## 部署隔离的合并前置条件
-
-检查时 steward-deployment 仅允许 main 分支，没有 required reviewers。main 上 runner/config 变更会触发部署，前置 PR 合入也不例外。
-
-合并前由另行获授权的管理员保留 main 限制，并增加独立 required reviewers、禁止自审批及管理员绕过。核对全部远程迁移和部署步骤都受该环境保护。若账户能力或维护者配置不能满足要求，保持不合并，另行制定代码级部署隔离方案。批准代码合并不等于批准等待中的部署。
-
-通用合同启用要求可信执行器与运行时版本一致，具体顺序见 [工作流合同与可信入口迁移](workflow-contract-migration.md)。当前只有本地实现；线上启用需独立授权。
-
-## 验收依据
-
-正向覆盖普通工作流新增、改名、删除、清单同步及必需入口步骤显示名称变化。反向覆盖清单自授权、必需入口移除/替换/跳过/吞错、额外执行步骤、事件过滤、隐式/写权限、不固定 Action、本地 Action、凭据持久化、密钥混用、表达式密钥索引、PR环境、非许可 runner、重复 YAML 键及别名。
-
-端到端用例确认可信检查通过后仍执行下游任务，失败不会转换成成功。本地 #253 的 release-build.yml 和 product-build.yml 已采用 Windows/Linux 静态作业，并同步业务合同。真实 CI 运行仍待推送授权。
-
-## 凭据环境前提
-
-受保护凭据仅存放在环境中，不能在仓库或组织层提供同名副本。持有凭据的环境须通过平台分支策略限制到默认分支；候选 YAML 的环境名称本身不能证明此限制已配置。`deployment: false` 保留环境分支策略，只取消 deployment 记录。每次启用或变更环境前须回读实际分支规则和 secret 名称元数据。
-
-2026-10-20 回读 Steward：steward-automation、steward-release、steward-deployment 均仅允许 main 分支，仓库及组织层可用 secrets 列表为空；steward-release-notes 尚未创建，启用前同样须具备上述保护。此事实不代表其他仓库或未来配置自动满足要求。静态校验与线上环境保护共同构成边界，不能用候选作业 if 表达式替代平台限制。
-
-依据：[GitHub 环境与 deployment 行为](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/control-deployments#using-environments-without-deployments)。
-
-普通工作流可以省略 concurrency；若在顶层或作业级配置 concurrency，必须显式设置 cancel-in-progress:false；只有完整固定的必需验证入口保留按 PR 取消行为。带受保护环境或密钥的 workflow_run 作业使用 checkout 时，必须检出当前仓库的 github.workflow_sha，不能检出触发方 head_sha 或其他仓库。该约束保护检出来源；任意脚本下载并执行代码仍须代码审查。
-现有 sync-review-instructions.yml 与 sync-managed-labels.yml 的已部署策略解析流程按中央固定的完整文档摘要保留；修改解析命令、上游条件或检出引用都会使该例外失效。候选文件不能自行声明例外。
-
-带受保护环境或密钥的 workflow_run 作业禁止使用 download-artifact，防止触发方产物进入凭据执行上下文。
-
-普通工作流配置并发组时，group 必须以 `workflow-policy:${{ github.workflow_ref }}:` 开头，并明确禁用取消进行中的运行，使不同工作流文件和引用的等待队列隔离。既有中央共享队列仅按固定路径及完整可信文档摘要保留；修改其触发器、命令或其他合同内容后不再获得共享队列例外。新增普通工作流无需加入该摘要清单。
-
-普通 run 命令中的 Actions 表达式采用完整允许清单；env、inputs、matrix、steps 和 needs 的间接插值均拒绝。动态值通过步骤环境变量传入，再由 shell 以带引号的变量参数读取。必需验证作业的固定命令由完整合同保护。下游业务校验按已验证的步骤结构定位，不依赖显示名称。
-
-可信策略解析及隔离产物交接采用固定能力协议，详情和输入限制见 [迁移设计](workflow-contract-migration.md)。旧整文档例外仅用于已有旧版本兼容；本次适配通过能力协议校验。
+范围证据保留身份和完整原生过滤输出。最终 `SPLRAD Validation` 要求范围 job 成功、四类布尔输出齐全；被选 job 必须成功，未选 job 必须为 skipped。失败、取消、结果缺失或异常跳过都会阻断汇总。main 成功后的治理采用由 [governance-promotion](governance-promotion.md) 独立完成。

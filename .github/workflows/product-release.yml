@@ -1,0 +1,121 @@
+name: Product release evidence
+on:
+  workflow_call:
+    inputs:
+      record:
+        type: string
+        required: true
+      unit:
+        type: string
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  inspect:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: product
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: controller
+          persist-credentials: false
+      - name: Enable Git long paths
+        shell: pwsh
+        run: git config --global core.longpaths true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: steward/release-state
+          path: state
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.10.18
+          working_directory: controller
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - name: Activate trusted controller tool paths
+        working-directory: controller
+        shell: pwsh
+        env:
+          MISE_SAFE: '1'
+          MISE_LOCKED: '1'
+        run: |
+          $toolPaths = mise bin-paths
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $toolPaths | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Install locked controller dependencies
+        working-directory: controller
+        shell: pwsh
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install locked native metadata reader
+        shell: pwsh
+        run: |
+          uv sync --project controller/tools/template --frozen --only-group release-inspection --no-build
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Read build record
+        shell: pwsh
+        env:
+          BUILD_RECORD: ${{ inputs.record }}
+        run: |
+          [IO.File]::WriteAllText((Join-Path $env:GITHUB_WORKSPACE 'record.json'), $env:BUILD_RECORD, [Text.UTF8Encoding]::new($false))
+      - name: Read existing frozen bytes
+        id: recover
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UNIT: ${{ inputs.unit }}
+        run: node controller/packages/runner/dist/index.js release-pipeline recover --record record.json --unit "$env:UNIT" --source-dir product --controller-dir controller --state-dir state --directory "$env:RUNNER_TEMP/recovered" --home "$env:RUNNER_TEMP/recover-home" --output recover.json
+      - name: business-evidence
+        if: steps.recover.outputs.found != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UNIT: ${{ inputs.unit }}
+        run: |
+          node controller/packages/runner/dist/index.js release-pipeline collect --record record.json --unit "$env:UNIT" --source-dir product --controller-dir controller --state-dir state --raw-dir "$env:RUNNER_TEMP/raw" --output-dir "$env:RUNNER_TEMP/assets" --home "$env:RUNNER_TEMP/collect-home" --output selection.json
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node controller/packages/runner/dist/index.js release-pipeline inspect --record record.json --unit "$env:UNIT" --source-dir product --controller-dir controller --state-dir state --selection selection.json --directory "$env:RUNNER_TEMP/assets" --home "$env:RUNNER_TEMP/inspect-home" --staging "$env:RUNNER_TEMP/sbom-stage" --sbom-home "$env:RUNNER_TEMP/sbom-home" --output pending.json
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node controller/packages/runner/dist/index.js release-pipeline seal --record record.json --unit "$env:UNIT" --source-dir product --controller-dir controller --state-dir state --directory "$env:RUNNER_TEMP/assets" --manifest pending.json --output sealed.json
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: business-upload
+        id: upload
+        if: steps.recover.outputs.found != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: evidence-${{ github.repository_id }}-${{ inputs.unit }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/assets/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+      - name: Read native business result
+        if: ${{ always() && steps.recover.outcome == 'success' && steps.recover.outputs.found != 'true' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UNIT: ${{ inputs.unit }}
+          JOB_NAME: evidence/${{ inputs.unit }} / inspect
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          $objects = @()
+          if ($env:ARTIFACT_ID -and $env:ARTIFACT_DIGEST) {
+            $objects += @{kind='artifact'; id=[long]$env:ARTIFACT_ID; digest=$env:ARTIFACT_DIGEST}
+          }
+          $json = ConvertTo-Json -InputObject $objects -Compress
+          node controller/packages/runner/dist/index.js release-pipeline result --record record.json --unit "$env:UNIT" --controller-dir controller --state-dir state --job-name "$env:JOB_NAME" --objects "$json" --output result.json

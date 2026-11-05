@@ -1,0 +1,643 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://splrad.dev/schema/release-content.schema.json",
+  "$defs": {
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "enum": [
+            1,
+            2
+          ]
+        },
+        "repositoryId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "candidateId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "baseSha": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "controllerSha": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "units": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "version": {
+                "type": "string",
+                "minLength": 1
+              },
+              "tag": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "version",
+              "tag"
+            ]
+          },
+          "minItems": 1
+        },
+        "boundaries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "unitId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "enum": [
+                  "tag",
+                  "baseline",
+                  "full-tree"
+                ]
+              },
+              "sha": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{40}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "reference": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "unitId",
+              "kind",
+              "sha",
+              "reference"
+            ]
+          },
+          "minItems": 1
+        },
+        "sourceManifestDigest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "configDigest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "batches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "stage": {
+                "enum": [
+                  "CONTEXT",
+                  "DIFF",
+                  "COMPOSE",
+                  "DRAFT"
+                ]
+              },
+              "unitIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              },
+              "sourceIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              },
+              "inputDigest": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "status": {
+                "enum": [
+                  "PENDING",
+                  "RUNNING",
+                  "READY",
+                  "WAIT_AUTH",
+                  "WAIT_QUOTA",
+                  "RETRY_WAIT",
+                  "FAILED",
+                  "SUPERSEDED"
+                ]
+              },
+              "attempts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "ordinal": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 3
+                    },
+                    "startedAt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "status": {
+                      "enum": [
+                        "SENT",
+                        "RETURNED",
+                        "UNKNOWN",
+                        "REJECTED"
+                      ]
+                    },
+                    "model": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "usage": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "inputTokens": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "outputTokens": {
+                              "type": "integer",
+                              "minimum": 0
+                            }
+                          },
+                          "required": [
+                            "inputTokens",
+                            "outputTokens"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "errorCode": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ordinal",
+                    "startedAt",
+                    "status",
+                    "model",
+                    "usage",
+                    "errorCode"
+                  ]
+                },
+                "maxItems": 3
+              },
+              "nextCheckAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "resultPath": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "errorCode": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "parentId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "childIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "maxItems": 2,
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "id",
+              "stage",
+              "unitIds",
+              "sourceIds",
+              "inputDigest",
+              "status",
+              "attempts",
+              "nextCheckAt",
+              "resultPath",
+              "errorCode"
+            ]
+          }
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "repositoryId",
+        "candidateId",
+        "baseSha",
+        "controllerSha",
+        "units",
+        "boundaries",
+        "sourceManifestDigest",
+        "configDigest",
+        "batches"
+      ]
+    },
+    "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "sourceIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              },
+              "visibility": {
+                "enum": [
+                  "USER",
+                  "INTERNAL",
+                  "UNRESOLVED"
+                ]
+              },
+              "section": {
+                "enum": [
+                  "summary",
+                  "changes",
+                  "compatibility",
+                  "upgrade",
+                  "installation",
+                  "knownIssues",
+                  "recovery"
+                ]
+              },
+              "statementZh": {
+                "type": "string",
+                "minLength": 1
+              },
+              "qualification": {
+                "enum": [
+                  "SOURCE_CONFIRMED",
+                  "TEST_CONFIRMED",
+                  "UNVERIFIED"
+                ]
+              }
+            },
+            "required": [
+              "sourceIds",
+              "visibility",
+              "section",
+              "statementZh",
+              "qualification"
+            ]
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "items"
+      ]
+    },
+    "paragraphs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "paragraphs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "sourceIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              },
+              "section": {
+                "enum": [
+                  "summary",
+                  "changes",
+                  "compatibility",
+                  "upgrade",
+                  "installation",
+                  "knownIssues",
+                  "recovery"
+                ]
+              },
+              "textZh": {
+                "type": "string",
+                "minLength": 1
+              },
+              "qualification": {
+                "enum": [
+                  "SOURCE_CONFIRMED",
+                  "TEST_CONFIRMED",
+                  "UNVERIFIED"
+                ]
+              }
+            },
+            "required": [
+              "sourceIds",
+              "section",
+              "textZh",
+              "qualification"
+            ]
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "paragraphs"
+      ]
+    },
+    "batch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "stage": {
+          "enum": [
+            "CONTEXT",
+            "DIFF",
+            "COMPOSE"
+          ]
+        },
+        "unitIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "sourceIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "inputDigest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "status": {
+          "enum": [
+            "PENDING",
+            "RUNNING",
+            "READY",
+            "WAIT_AUTH",
+            "WAIT_QUOTA",
+            "RETRY_WAIT",
+            "FAILED",
+            "SUPERSEDED"
+          ]
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "ordinal": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3
+              },
+              "startedAt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "enum": [
+                  "SENT",
+                  "RETURNED",
+                  "UNKNOWN",
+                  "REJECTED"
+                ]
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1
+              },
+              "usage": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "inputTokens": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "outputTokens": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "inputTokens",
+                      "outputTokens"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "errorCode": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "ordinal",
+              "startedAt",
+              "status",
+              "model",
+              "usage",
+              "errorCode"
+            ]
+          },
+          "maxItems": 3
+        },
+        "nextCheckAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resultPath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "errorCode": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parentId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "childIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "maxItems": 2,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "id",
+        "stage",
+        "unitIds",
+        "sourceIds",
+        "inputDigest",
+        "status",
+        "attempts",
+        "nextCheckAt",
+        "resultPath",
+        "errorCode",
+        "parentId",
+        "childIds"
+      ]
+    }
+  }
+}

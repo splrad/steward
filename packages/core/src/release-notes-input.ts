@@ -1,4 +1,4 @@
-/** R02 source contract. Network facts and trusted policy records are supplied by the adapter. */
+/** Immutable source identity; provider calls and authorization stay outside core. */
 export class ReleaseSourceError extends Error {
   constructor(public readonly code: 'RN_SOURCE_INCOMPLETE' | 'RN_SOURCE_STALE' | 'RN_SOURCE_AMBIGUOUS', detail: string) {
     super(`${code}: ${detail}`);
@@ -9,50 +9,63 @@ export const sourceSha = (value: unknown): string => {
   if (typeof value !== 'string' || !/^[a-f0-9]{40}$/.test(value)) return sourceFailure('invalid commit SHA');
   return value;
 };
-export interface ReleaseSourceIdentity { repositoryId: number; defaultBranch: string; targetSha: string; policySha: string }
-export interface ReleaseBoundary { kind: 'stable-release' | 'adoption'; sha: string; reference: string }
+export interface ReleaseSourceIdentity { repositoryId: number; defaultBranch: string; targetSha: string; controllerSha: string }
+export type ReleaseBoundary = { kind: 'tag'; sha: string; reference: string; version: string } | { kind: 'baseline'; sha: string; reference: string } | { kind: 'full-tree' };
+export interface ReleaseSourceUnit { id: string; path: string; version: string; tag: string }
 export interface SourcePull { number: number; repositoryId: number; baseRef: string; mergeSha: string; headSha: string; mergedAt: string; authorId: number; files: readonly { path: string; status: string; previousPath?: string }[] }
-export interface ReleaseSourceRow { sha: string; firstParent: string | null; pulls: readonly SourcePull[] }
-/** These records must come from the central store at policySha, never candidate files or PR text. */
-export interface ManagedReviewRecord { candidateId: string; repositoryId: number; policySha: string; targetTag: string; pullNumber: number; headSha: string; mergeSha: string; authorId: number }
+export interface ReleaseSourceCommit { sha: string; parents: readonly string[] }
+export interface ReleaseSourceRow extends ReleaseSourceCommit { pulls: readonly SourcePull[] }
 export interface ReleaseSourceInput extends ReleaseSourceIdentity {
-  schemaVersion: 1;
+  schemaVersion: 3;
   boundary: ReleaseBoundary;
-  commits: readonly { sha: string; pullNumber: number; kind: 'product' | 'review-record'; candidateId: string | null }[];
+  commits: readonly { sha: string; parents: readonly string[]; pullNumbers: readonly number[] }[];
 }
 export function assertSourceIdentity(identity: ReleaseSourceIdentity): void {
-  if (!Number.isSafeInteger(identity.repositoryId) || identity.repositoryId <= 0 || typeof identity.defaultBranch !== 'string' || !identity.defaultBranch.trim()) sourceFailure('repository identity');
-  sourceSha(identity.targetSha); sourceSha(identity.policySha);
+  if (!Number.isSafeInteger(identity.repositoryId) || identity.repositoryId <= 0 || typeof identity.defaultBranch !== 'string' || !identity.defaultBranch.trim() || /[\x00-\x1f\x7f]/.test(identity.defaultBranch)) sourceFailure('repository identity');
+  sourceSha(identity.targetSha); sourceSha(identity.controllerSha);
 }
-export function attributeReleaseSources(identity: ReleaseSourceIdentity, boundary: ReleaseBoundary, rows: readonly ReleaseSourceRow[], reviews: readonly ManagedReviewRecord[] = []): ReleaseSourceInput {
-  assertSourceIdentity(identity); sourceSha(boundary.sha);
-  if (!['stable-release', 'adoption'].includes(boundary.kind) || !boundary.reference.trim()) sourceFailure('boundary record');
-  if (!rows.length || rows[0]?.sha !== identity.targetSha) sourceFailure('empty or incomplete range');
-  const seen = new Set<string>(); const numbers = new Set<number>(); const usedReviews = new Set<string>();
-  const commits = rows.map((row, index) => {
+/** Git determines the range. A commit can have zero or several supplementary PRs. */
+export function attributeReleaseSources(identity: ReleaseSourceIdentity, boundary: ReleaseBoundary, rows: readonly ReleaseSourceRow[]): ReleaseSourceInput {
+  assertSourceIdentity(identity);
+  if (!['tag', 'baseline', 'full-tree'].includes(boundary.kind)) sourceFailure('boundary kind');
+  if (boundary.kind !== 'full-tree') {
+    sourceSha(boundary.sha);
+    if (!boundary.reference.trim()) sourceFailure('boundary reference');
+  }
+  const seen = new Set<string>(); const pulls = new Map<number, string>();
+  const commits = rows.map(row => {
     sourceSha(row.sha);
-    if (seen.has(row.sha) || row.sha === boundary.sha) sourceFailure('duplicate or included boundary');
+    if (seen.has(row.sha) || (boundary.kind !== 'full-tree' && row.sha === boundary.sha)) sourceFailure('duplicate or included boundary');
     seen.add(row.sha);
-    if (row.firstParent !== (rows[index + 1]?.sha ?? boundary.sha)) sourceFailure(`broken first-parent range: ${row.sha}`);
-    if (row.pulls.length !== 1) throw new ReleaseSourceError(row.pulls.length ? 'RN_SOURCE_AMBIGUOUS' : 'RN_SOURCE_INCOMPLETE', `commit ${row.sha}: expected one merged PR, found ${row.pulls.length}`);
-    const pull = row.pulls[0]!;
-    if (!Number.isSafeInteger(pull.number) || pull.number <= 0 || numbers.has(pull.number) || pull.repositoryId !== identity.repositoryId || pull.baseRef !== identity.defaultBranch || pull.mergeSha !== row.sha || !Number.isFinite(Date.parse(pull.mergedAt)) || !Number.isSafeInteger(pull.authorId) || pull.authorId <= 0) sourceFailure(`PR identity: ${row.sha}`);
-    sourceSha(pull.headSha); numbers.add(pull.number);
-    const paths = pull.files.map(file => file.path);
-    if (!paths.length || new Set(paths).size !== paths.length) sourceFailure(`PR files: #${pull.number}`);
-    const matches = reviews.filter(record => record.pullNumber === pull.number || record.mergeSha === row.sha);
-    if (matches.length > 1) throw new ReleaseSourceError('RN_SOURCE_AMBIGUOUS', 'candidate records');
-    const record = matches[0];
-    const candidatePaths = pull.files.some(file => [file.path, file.previousPath ?? ''].some(path => path.startsWith('.release-notes/candidates/')));
-    if (!record && candidatePaths) sourceFailure(`unregistered candidate PR: #${pull.number}`);
-    if (record) {
-      if (!record.candidateId || usedReviews.has(record.candidateId) || record.repositoryId !== identity.repositoryId || record.policySha !== identity.policySha || record.pullNumber !== pull.number || record.mergeSha !== row.sha || record.headSha !== pull.headSha || record.authorId !== pull.authorId || !/^v\d+\.\d+\.\d+$/.test(record.targetTag)) sourceFailure('candidate identity');
-      const prefix = `.release-notes/candidates/${record.targetTag}/`;
-      const expected = [prefix + 'candidate.json', prefix + 'release-notes.zh-CN.md'].sort();
-      if (JSON.stringify([...paths].sort()) !== JSON.stringify(expected) || pull.files.some(file => !['added', 'modified'].includes(file.status) || file.previousPath !== undefined)) sourceFailure('candidate exact file scope');
-      usedReviews.add(record.candidateId);
+    if (new Set(row.parents).size !== row.parents.length) sourceFailure('duplicate parent');
+    row.parents.forEach(sourceSha);
+    const numbers = new Set<number>();
+    for (const pull of row.pulls) {
+      if (!Number.isSafeInteger(pull.number) || pull.number <= 0 || numbers.has(pull.number) || pull.repositoryId !== identity.repositoryId || !pull.baseRef.trim() || !Number.isFinite(Date.parse(pull.mergedAt)) || !Number.isSafeInteger(pull.authorId) || pull.authorId <= 0) sourceFailure(`PR identity: ${row.sha}`);
+      sourceSha(pull.headSha); sourceSha(pull.mergeSha); numbers.add(pull.number);
+      const paths = pull.files.map(file => file.path);
+      if (new Set(paths).size !== paths.length || paths.some(path => !path || /[\x00]/.test(path))) sourceFailure(`PR files: #${pull.number}`);
+      const snapshot = JSON.stringify({ ...pull, files: [...pull.files].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0) });
+      if (pulls.has(pull.number) && pulls.get(pull.number) !== snapshot) throw new ReleaseSourceError('RN_SOURCE_STALE', `PR #${pull.number} changed within collection`);
+      pulls.set(pull.number, snapshot);
     }
-    return { sha: row.sha, pullNumber: pull.number, kind: record ? 'review-record' as const : 'product' as const, candidateId: record?.candidateId ?? null };
-  });
-  return { schemaVersion: 1, repositoryId: identity.repositoryId, defaultBranch: identity.defaultBranch, targetSha: identity.targetSha, policySha: identity.policySha, boundary: { kind: boundary.kind, sha: boundary.sha, reference: boundary.reference }, commits };
+    return { sha: row.sha, parents: [...row.parents], pullNumbers: [...numbers].sort((a, b) => a - b) };
+  }).sort((a, b) => a.sha < b.sha ? -1 : a.sha > b.sha ? 1 : 0);
+  if (rows.length && !seen.has(identity.targetSha)) sourceFailure('target missing from range');
+  if (!rows.length && (boundary.kind === 'full-tree' || boundary.sha !== identity.targetSha)) sourceFailure('empty range');
+  const bySha = new Map(commits.map(commit => [commit.sha, commit]));
+  const active = new Set<string>(), visited = new Set<string>();
+  const pending: { sha: string; exit: boolean }[] = rows.length ? [{ sha: identity.targetSha, exit: false }] : [];
+  while (pending.length) {
+    const item = pending.pop()!;
+    if (item.exit) { active.delete(item.sha); visited.add(item.sha); continue; }
+    if (active.has(item.sha)) sourceFailure('commit cycle');
+    if (visited.has(item.sha)) continue;
+    const commit = bySha.get(item.sha);
+    if (!commit) { if (boundary.kind === 'full-tree') sourceFailure('incomplete full-tree range'); continue; }
+    active.add(item.sha); pending.push({ sha: item.sha, exit: true });
+    for (const parent of [...commit.parents].reverse()) pending.push({ sha: parent, exit: false });
+  }
+  if (visited.size !== rows.length) sourceFailure('unreachable commit');
+  return { schemaVersion: 3, repositoryId: identity.repositoryId, defaultBranch: identity.defaultBranch, targetSha: identity.targetSha, controllerSha: identity.controllerSha, boundary: structuredClone(boundary), commits };
 }

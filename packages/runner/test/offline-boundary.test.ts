@@ -1,0 +1,54 @@
+import { it, expect } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { request } from 'node:https';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { offlineProcessArguments, registerOfflineFixtureRoot } from './offline-fixtures.js';
+
+it('limits Git symlink fixture plumbing to the registered temporary repository and literal state path', () => {
+  const root=mkdtempSync(join(tmpdir(),'offline-index-'));
+  try {
+    registerOfflineFixtureRoot(root);
+    const args=['update-index','--cacheinfo',`120000,${'a'.repeat(40)},state.json`];
+    expect(offlineProcessArguments('git',args,{cwd:root})).toContain('protocol.allow=never');
+    expect(offlineProcessArguments('git',args,{cwd:process.cwd()})).toBeNull();
+    for (const value of ['../state.json','/outside.json','https://example.invalid/state','state.json\nextra'])
+      expect(offlineProcessArguments('git',[...args.slice(0,2),`120000,${'a'.repeat(40)},${value}`],{cwd:root})).toBeNull();
+    expect(offlineProcessArguments('git',['update-index','--index-info'],{cwd:root})).toBeNull();
+    expect(offlineProcessArguments('git',[...args,'--add'],{cwd:root})).toBeNull();
+    expect(offlineProcessArguments('git',['fetch','https://example.invalid/repo'],{cwd:root})).toBeNull();
+  } finally { rmSync(root,{recursive:true,force:true}); }
+});
+
+it('rejects an unregistered HTTP request before transport', () => {
+  expect(() => fetch('https://example.invalid/unregistered')).toThrow('TEST_NETWORK_DENIED');
+  expect(() => request('https://example.invalid/unregistered')).toThrow('TEST_NETWORK_DENIED');
+});
+it('rejects model executables and shell wrappers before subprocess creation', () => {
+  for (const [command, args] of [
+    ['copilot', ['--prompt', 'test']],
+    [process.execPath, ['node_modules/@github/copilot/index.js']],
+    ['pwsh', ['-Command', 'copilot']],
+    ['bash', ['-c', 'copilot']],
+  ] as [string, string[]][]) {
+    expect(() => spawnSync(command, args)).toThrow('TEST_SUBPROCESS_DENIED');
+  }
+});
+
+it('rejects direct TCP, TLS and UDP transports while preserving pure IP parsing', async () => {
+  const net = await import('node:net'); const tls = await import('node:tls'); const udp = await import('node:dgram');
+  expect(net.isIP('127.0.0.1')).toBe(4);
+  for (const attempt of [
+    () => net.connect(443, 'example.invalid'), () => net.createConnection(443, 'example.invalid'),
+    () => new net.Socket().connect(443, 'example.invalid'),
+    () => tls.connect(443, 'example.invalid'), () => new tls.TLSSocket(new net.Socket()).connect(443, 'example.invalid'),
+    () => udp.createSocket('udp4'),
+  ]) expect(attempt).toThrow('TEST_NETWORK_DENIED');
+});
+
+it('preserves installed mise data while isolating home and credentials', () => {
+  expect(process.env.MISE_DATA_DIR).toBeTruthy();
+  expect(process.env.HOME).toContain('steward-test-home-');
+  expect(process.env.MISE_DATA_DIR).not.toContain('steward-test-home-');
+});

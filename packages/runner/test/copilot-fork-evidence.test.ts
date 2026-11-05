@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import { generateKeyPairSync } from "node:crypto";
-import { resolve } from "node:path";
 import { GitHubClient } from "../../github/src/index.js";
 import { classifyCopilotReviewState } from "../src/copilot-review-state.js";
 import { forkCheckFor, readForkCopilotEvidence, type ForkCopilotEvidence } from "../src/copilot-fork-evidence.js";
@@ -55,15 +54,15 @@ function client(proofs = [fixture()], override?: (path: string, count: number) =
         else value = proof.check;
       }
     }
-    return new Response(JSON.stringify(value));
+    return nativeResponse(url,value);
   }) as typeof fetch);
   return { gh, calls };
 }
 
 describe("fork Copilot运行证据", () => {
   it.each(['success', 'stale-head', 'wrong-base', 'archived', 'wrong-owner', 'changed-head'])("只读命令入口核验fork：%s", async kind => {
-    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { format: 'pem', type: 'pkcs8' }, publicKeyEncoding: { format: 'pem', type: 'spki' } });
-    const repo = { ...repository, owner: { id: kind === 'wrong-owner' ? 1 : 302208797 }, default_branch: 'main', private: false, archived: kind === 'archived' };
+    generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { format: 'pem', type: 'pkcs8' }, publicKeyEncoding: { format: 'pem', type: 'spki' } });
+    const repo = { ...repository, owner: { id: kind === 'wrong-owner' ? 1 : 302208797, login: 'splrad' }, default_branch: 'main', private: false, archived: kind === 'archived' };
     const livePull = { ...pull, state: 'open', base: { ...pull.base, ref: kind === 'wrong-base' ? 'release' : 'main' } };
     let pullReads = 0;
     const { gh } = client([fixture()], path => {
@@ -77,24 +76,21 @@ describe("fork Copilot运行证据", () => {
     const written: string[] = [];
     const tokenBodies: any[] = [];
     try {
-      vi.stubEnv('APP_ID', '4243096');
-      vi.stubEnv('INSTALLATION_ID', '145952003');
-      vi.stubEnv('STEWARD_APP_PRIVATE_KEY', privateKey);
-      vi.stubEnv('STEWARD_CONFIG_DIRECTORY', resolve('config'));
+      vi.stubEnv('GITHUB_TOKEN', 'fixture-read-only');
       vi.stubEnv('GITHUB_STEP_SUMMARY', '');
       vi.stubEnv('GITHUB_OUTPUT', '');
       vi.spyOn(process.stdout, 'write').mockImplementation((value: any) => { written.push(String(value)); return true; });
       vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
         if (String(url).endsWith('/access_tokens')) {
           tokenBodies.push(JSON.parse(String(init.body)));
-          return new Response(JSON.stringify({ token: 'test-token' }), { status: 201 });
+          return nativeResponse(url,{ token: 'test-token' }, { status: 201 });
         }
         expect(init.method ?? 'GET').toBe('GET');
-        if (String(url).endsWith(`/repositories/${repository.id}`)) return new Response(JSON.stringify(repo));
+        if (String(url).endsWith(`/repositories/${repository.id}`)) return nativeResponse(url,repo);
         if (String(url).endsWith('/logs')) return new Response(fixture().log);
-        return new Response(JSON.stringify(await gh.request('GET', String(url))));
+        return nativeResponse(url,await gh.request('GET', String(url)));
       });
-      const invocation = main(['observe-copilot-review', '--repository-id', String(repository.id), '--pull-request-number', '224', '--event-head-sha', head, '--policy-sha', 'a'.repeat(40)]);
+      const invocation = main(['observe-copilot-review', '--repository-id', String(repository.id), '--pull-request-number', '224', '--event-head-sha', head]);
       if (kind === 'success') {
         await invocation;
         expect(written.join('')).toContain('"state":"succeeded"');
@@ -102,9 +98,7 @@ describe("fork Copilot运行证据", () => {
         await expect(invocation).rejects.toThrow();
         expect(written.join('')).not.toContain('"state":"succeeded"');
       }
-      expect(tokenBodies).toHaveLength(1);
-      expect(tokenBodies[0]).toMatchObject({ repository_ids: [repository.id], permissions: { contents: 'read', pull_requests: 'read', issues: 'read', checks: 'read', actions: 'read', metadata: 'read' } });
-      expect(Object.values(tokenBodies[0].permissions).every(value => value === 'read')).toBe(true);
+      expect(tokenBodies).toHaveLength(0);
     } finally {
       vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs();
     }
@@ -237,3 +231,5 @@ describe("fork Copilot运行证据", () => {
     await expect(readCopilotReviewState(gh, 'splrad', 'steward', 224, head)).resolves.toMatchObject({ state: 'unknown' });
   });
 });
+
+function nativeResponse(url:unknown,value:unknown,init:ResponseInit={}){const response=Response.json(value,init);Object.defineProperty(response,'url',{value:String(url)});return response;}
