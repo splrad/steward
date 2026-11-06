@@ -151,3 +151,22 @@ test('webhook key reuse verifies every body and immediately honors secret rotati
     assert.equal(result.status,status);assert.equal(imports,count);
   }
 });
+
+test('native JWT signer rejects weak or non-RSA keys and accepts escaped PKCS8 newlines', async () => {
+  const weak=generateKeyPairSync('rsa',{modulusLength:1024}).privateKey.export({type:'pkcs8',format:'pem'});
+  const ec=generateKeyPairSync('ec',{namedCurve:'prime256v1'}).privateKey.export({type:'pkcs8',format:'pem'});
+  const rsa=generateKeyPairSync('rsa',{modulusLength:2048});
+  const pkcs1=rsa.privateKey.export({type:'pkcs1',format:'pem'});
+  for(const badKey of [weak,ec,pkcs1]) {
+    const api=transport();
+    assert.equal((await dispatch({...env,GOVERNANCE_APP_PRIVATE_KEY:badKey},{delivery},api.fetcher)).accepted,false);
+    assert.equal(api.calls.length,0);
+  }
+  const api=transport();
+  const escaped=rsa.privateKey.export({type:'pkcs8',format:'pem'}).replace(/\n/g,'\\n');
+  assert.equal((await dispatch({...env,GOVERNANCE_APP_PRIVATE_KEY:escaped},{delivery},api.fetcher)).accepted,true);
+  const {payload:claims,protectedHeader}=await jwtVerify(api.calls[0].headers.authorization.slice(7),rsa.publicKey,{algorithms:['RS256'],issuer:POLICY.app});
+  assert.deepEqual(protectedHeader,{alg:'RS256'});
+  assert.deepEqual(Object.keys(claims).sort(),['exp','iat','iss']);
+  assert.equal(claims.exp-claims.iat,330);
+});

@@ -1,5 +1,3 @@
-import { importPKCS8, SignJWT } from 'jose';
-
 // Fixed identities cannot be selected by incoming payloads.
 export const POLICY = Object.freeze({
   app: '5639432', installation: 179184801, orgId: 302208797, org: 'splrad',
@@ -21,7 +19,16 @@ function cachedKey(importKey) {
 }
 const webhookKey = cachedKey(secret => crypto.subtle.importKey('raw', new TextEncoder().encode(secret),
   {name: 'HMAC', hash: 'SHA-256'}, false, ['verify']));
-const signingKey = cachedKey(pem => importPKCS8(pem.replace(/\\n/g, '\n'), 'RS256'));
+const signingKey = cachedKey(async pem => {
+  const normalized = pem.replace(/\\n/g, '\n').trim();
+  const match = /^-----BEGIN PRIVATE KEY-----\s+([A-Za-z0-9+/=\s]+)\s+-----END PRIVATE KEY-----$/.exec(normalized);
+  if (!match) throw new Error('key_format');
+  const der = Uint8Array.from(atob(match[1].replace(/\s/g, '')), c => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey('pkcs8', der,
+    {name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256'}, false, ['sign']);
+  if (key.algorithm.modulusLength < 2048) throw new Error('key_strength');
+  return key;
+});
 const ACTIONS = Object.freeze({
   repository: ['created', 'edited', 'unarchived'],
   label: ['created', 'edited', 'deleted'],
@@ -78,8 +85,13 @@ async function verified(bytes, header, secret) {
 async function appJwt(pem) {
   const key = await signingKey(pem);
   const now = Math.floor(Date.now() / 1000);
-  return new SignJWT({}).setProtectedHeader({alg: 'RS256'}).setIssuer(POLICY.app)
-    .setIssuedAt(now - 30).setExpirationTime(now + 300).sign(key);
+  const base64url = value => btoa(value).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+  // Both objects contain only fixed ASCII claims. Algorithms and destinations
+  // cannot be selected by the incoming event. WebCrypto performs RSA signing.
+  const input = base64url(JSON.stringify({alg: 'RS256'})) + '.' +
+    base64url(JSON.stringify({iss: POLICY.app, iat: now - 30, exp: now + 300}));
+  const signature = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(input));
+  return input + '.' + base64url(String.fromCharCode(...new Uint8Array(signature)));
 }
 
 // No retries: an unknown write response must be reconciled against private Actions runs.
