@@ -60,11 +60,11 @@ test('empty-repository bootstrap default branch is accepted even from governance
 });
 
 const scope = {total_count: 1, repositories: [{id: POLICY.repositoryId, full_name: POLICY.repository, private: true, default_branch: 'main'}]};
-function transport({badScope = false, dispatchThrows = false, revokeFails = false, broadPermission = false} = {}) {
+function transport({badScope = false, dispatchThrows = false, revokeFails = false, broadPermission = false, metadata = 'read'} = {}) {
   const calls = [];
   const fetcher = async (url, init) => {
     calls.push({url, ...init});
-    if (url.endsWith('/access_tokens')) return Response.json({token: 'fake-test-token', permissions: {contents: 'write', metadata: 'read', ...(broadPermission ? {administration:'write'} : {})}}, {status: 201});
+    if (url.endsWith('/access_tokens')) return Response.json({token: 'fake-test-token', permissions: {contents: 'write', ...(metadata === null ? {} : {metadata}), ...(broadPermission ? {administration:'write'} : {})}}, {status: 201});
     if (url.includes('/installation/repositories')) return Response.json(badScope ? {...scope, total_count:2} : scope);
     if (url.endsWith('/dispatches')) {if (dispatchThrows) throw new Error('unknown write response'); return new Response(null, {status:204});}
     if (url.endsWith('/installation/token')) return new Response(null,{status:revokeFails ? 500 : 204});
@@ -84,7 +84,7 @@ test('real ephemeral RSA signing; fixed minimal token, private destination and r
   assert.equal(t.calls[3].method, 'DELETE'); assert.equal(t.calls[2].redirect, 'error');
 });
 test('scope and permissions mismatches prevent dispatch and still revoke', async () => {
-  for (const options of [{badScope:true},{broadPermission:true}]) {
+  for (const options of [{badScope:true},{broadPermission:true},{metadata:'write'},{metadata:null}]) {
     const t = transport(options); const r = await dispatch(env, {}, t.fetcher, async () => 'fake-jwt');
     assert.equal(r.accepted, false); assert.equal(t.calls.filter(c => c.url.endsWith('/dispatches')).length, 0);
     assert.equal(t.calls.at(-1).method, 'DELETE');

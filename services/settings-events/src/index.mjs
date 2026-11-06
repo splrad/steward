@@ -90,7 +90,7 @@ export async function dispatch(env, metadata, fetcher = fetch, jwtFactory = appJ
     const auth = await mint.json();
     token = auth.token;
     if (typeof token !== 'string' || !token) throw new Error('token');
-    if (auth.permissions?.contents !== 'write' ||
+    if (auth.permissions?.contents !== 'write' || auth.permissions?.metadata !== 'read' ||
       Object.entries(auth.permissions ?? {}).some(([k, v]) => !['contents', 'metadata'].includes(k) && v !== 'none'))
       throw new Error('permissions');
     const scopeResponse = await call('/installation/repositories?per_page=100', 'GET', token);
