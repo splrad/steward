@@ -13,3 +13,11 @@ Node 使用官方发行清单/校验和及 security-wg 公告；mise 使用供�
 证据保存于私仓 `private-dependency-evidence` artifact（7天）：包含前置失败原因的摘要、供应商数据、base/head 扫描及许可证、zizmor 原始结果、原生 Reporter 新增结果和 summary。检查失败不解除规则、不改可见性或订阅。中央代码合并及 required workflow 来源提升必须分别完成；代码就绪不等于线上生效。
 
 验证：`npm run test:private-dependencies`、原 native-validation 回归、真实公开上游/npm归档检查、管理员真实首次引入负例与仅文档变化正例。官方来源：[OSV](https://google.github.io/osv-scanner/github-action/)、[zizmor](https://docs.zizmor.sh/audits/#known-vulnerable-actions)、[Node公告数据](https://github.com/nodejs/security-wg/tree/main/vuln/core)、[mise公告](https://github.com/jdx/mise/security/advisories)。
+
+## 固定临时锁例外
+
+仅 splrad/steward-settings 可采用已批准的 safe-settings 3.0.0 源码 `a9a1f366ad6a738b55682d346d94f8d6c4893b09` 临时锁修复。私仓保存单份 `safe-settings/upstream-package-lock.patch` 与 `safe-settings/upstream-lock-exception.json`，中央策略固定 manifest SHA-256。manifest 绑定官方源码、原锁、补丁及结果锁摘要，不复制完整依赖版本清单或上游源码。
+
+检查分别从 base/head Git blob 取得两文件，以原始上游锁重建有效锁，再执行同一 OSV 清单对账和风险比较。Git 原生 patch 解析只接受一个 package-lock.json 文本目标；缺失配对、错误来源/摘要、额外目标、应用失败或结果摘要不符均阻断。两文件均不存在时继续扫描官方原锁；存在补丁而没有运行入口同样阻断。安装 workflow 校验同一 manifest、原锁、补丁和结果锁后才运行 npm ci --ignore-scripts；该步骤不接收治理 App 凭据。安装行为依旧由受保护 PR 审查确认，检查器不解释候选 shell。
+
+SPLRAD 治理维护者负责跟踪上游正式修复并维护此临时例外。每次换源须重新审查，禁止静默重基；官方原锁消除对应风险且通过同等扫描和兼容测试后，在受审变更中移除补丁、安装步骤、中央专用配置及合同例外。低/中风险仍如实报告，不把 high/critical 清零称作零漏洞。

@@ -8,6 +8,7 @@ import YAML from 'yaml';
 import {validationInput,git} from './validation-input.mjs';
 import {assert,loadPolicy,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,licenseFacts} from './private-dependency-policy.mjs';
 import {scanTools,publicBytes} from './private-tool-security.mjs';
+import {effectiveLock} from './private-lock-exception.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
 export function run(command,args,cwd,env,accepted=[0]){
   const r=spawnSync(command,args,{cwd,env,encoding:'utf8',shell:false,windowsHide:true,timeout:180000,maxBuffer:64*1024*1024});
@@ -111,10 +112,15 @@ export async function main(env=process.env){
       if(!workflow){
         // An empty seed has no upstream dependency. Never substitute head for missing base.
         assert(side==='base','HEAD_RUNTIME_MISSING');
+        assert(!entries.some(e=>['safe-settings/upstream-lock-exception.json','safe-settings/upstream-package-lock.patch'].includes(e.path)),'LOCK_EXCEPTION_WITHOUT_RUNTIME');
         await writeFile(join(output,'osv.json'),JSON.stringify({results:[]}));
       }else{
         const ref=upstreamReference(workflow.toString(),item);
         snapshot.upstream=await upstreamFiles(item,ref,input,env.GH_TOKEN);
+        snapshot.upstream.lockException=await effectiveLock({item,sourceSha:ref,directory:input,
+          manifest:blob(workspace,entries,'safe-settings/upstream-lock-exception.json',true),
+          patch:blob(workspace,entries,'safe-settings/upstream-package-lock.patch',true)});
+        snapshot.upstream.effectiveLockSha256=hash(await readFile(join(input,'package-lock.json')));
         snapshot.upstream.callerWorkflowSha256=hash(workflow);
         snapshot.upstream.installationBoundary='Declared checkout and lock bytes verified; shell/install behavior remains under normal protected PR review.';
         await writeFile(join(input,'osv-scanner.toml'),'');
