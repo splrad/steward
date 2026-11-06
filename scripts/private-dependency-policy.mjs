@@ -7,6 +7,10 @@ export async function loadPolicy(){
   for(const item of policy.administrators)assert(Number.isSafeInteger(item.repositoryId)&&item.repositoryId>0
     &&/^[\w.-]+\/[\w.-]+$/.test(item.repository)&&/^[\w.-]+\/[\w.-]+$/.test(item.upstream)
     &&/^\.github\/workflows\/[\w.-]+\.yml$/.test(item.workflow),'POLICY_TARGET');
+  for(const item of policy.administrators)if(item.lockException)assert(
+    item.lockException.manifestPath==='safe-settings/upstream-lock-exception.json'
+    &&item.lockException.patchPath==='safe-settings/upstream-package-lock.patch'
+    &&/^[a-f0-9]{64}$/.test(item.lockException.manifestSha256),'LOCK_EXCEPTION_POLICY');
   return policy;
 }
 export function dependencyMode(event,policy){
@@ -90,7 +94,7 @@ export function newActions(base,head){
   const key=x=>JSON.stringify([x.repository,x.sha,x.id,x.severity]);const old=new Set(base.map(key));return head.filter(x=>!old.has(key(x)));
 }
 export function assertInputScope(paths){
-  const allowed=/^(?:AGENTS\.md|CONTRIBUTING\.md|README\.md|\.gitignore|mise\.(?:toml|lock)|\.github\/(?:dependabot\.yml|renovate\.json|release-template\.md\.mustache|workflows\/(?:actions\.lock|pr-title\.yml|settings-sync\.yml))|\.mise\/locks\/npm\/\d+\.\d+\.\d+\/(?:aube-lock\.yaml|package\.json)|safe-settings\/(?:deployment-settings\.yml|settings\.yml|repos\/[^/]+\.ya?ml))$/;
+  const allowed=/^(?:AGENTS\.md|CONTRIBUTING\.md|README\.md|\.gitignore|mise\.(?:toml|lock)|\.github\/(?:dependabot\.yml|renovate\.json|release-template\.md\.mustache|workflows\/(?:actions\.lock|pr-title\.yml|settings-sync\.yml))|\.mise\/locks\/npm\/\d+\.\d+\.\d+\/(?:aube-lock\.yaml|package\.json)|safe-settings\/(?:deployment-settings\.yml|settings\.yml|upstream-lock-exception\.json|upstream-package-lock\.patch|repos\/[^/]+\.ya?ml))$/;
   assert(paths.every(path=>allowed.test(path)),'INPUT_UNCOVERED');
 }
 

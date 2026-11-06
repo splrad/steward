@@ -5,7 +5,12 @@
       "repositoryId": 1447987054,
       "repository": "splrad/steward-settings",
       "upstream": "github-community-projects/safe-settings",
-      "workflow": ".github/workflows/settings-sync.yml"
+      "workflow": ".github/workflows/settings-sync.yml",
+      "lockException": {
+        "manifestPath": "safe-settings/upstream-lock-exception.json",
+        "manifestSha256": "bebf083589f3e965bba3f979e0b84d954619c8a7cc1c7dcdce3733307729bfa6",
+        "patchPath": "safe-settings/upstream-package-lock.patch"
+      }
     }
   ],
   "osvImage": "ghcr.io/google/osv-scanner-action:v2.7.0@sha256:9b83615736eba33d105821197ba4b4fce2cd4b53dc89e02a9c1ee6d60c36afa4"

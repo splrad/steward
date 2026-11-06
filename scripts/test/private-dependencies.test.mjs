@@ -1,9 +1,11 @@
+import {effectiveLock} from '../private-lock-exception.mjs';
+import {createHash} from 'node:crypto';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {dependencyMode,loadPolicy,inventory,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,licenseFacts} from '../private-dependency-policy.mjs';
 import {upstreamReference,run,assertVerifiedActionTag,main} from '../validation-private-dependencies.mjs';
 import {nodeFindings,miseFindings,miseVersions,archiveInventory} from '../private-tool-security.mjs';
-import {readFile,mkdtemp,rm} from 'node:fs/promises';
+import {readFile,writeFile,mkdtemp,rm} from 'node:fs/promises';
 import YAML from 'yaml';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -150,4 +152,36 @@ test('mise runtime requires the exact action identity and complete SHA',()=>{
   const docs=new Map([['runtime.yml',{jobs:{run:{steps:[{uses,with:{version:'2026.10.18'}}]}}}]]);
   assert.throws(()=>miseVersions(docs,'runtime.yml'),/MISE_RUNTIME_REQUIRED/);
  }
+});
+
+
+test('fixed lock exception reconstructs bytes and rejects missing, mismatched or extra inputs',async()=>{
+ const digest=b=>createHash('sha256').update(b).digest('hex');
+ const original=Buffer.from('{"version":1}\n'),expected=Buffer.from('{"version":2}\n');
+ const patch=Buffer.from('diff --git a/package-lock.json b/package-lock.json\n--- a/package-lock.json\n+++ b/package-lock.json\n@@ -1 +1 @@\n-{"version":1}\n+{"version":2}\n');
+ const value={schemaVersion:1,upstream:'org/source',sourceSha:SHA,originalLockSha256:digest(original),patchSha256:digest(patch),effectiveLockSha256:digest(expected)};
+ const directory=await mkdtemp(join(tmpdir(),'lock-exception-test-'));
+ const attempt=async({change={},patchBytes=patch,manifestMissing=false,patchMissing=false,sourceSha=SHA,manifestHash,originalBytes=original}={})=>{
+   await writeFile(join(directory,'package-lock.json'),originalBytes);
+   await writeFile(join(directory,'package.json'),'unchanged');
+   const manifest=Buffer.from(JSON.stringify({...value,...change}));
+   const item={upstream:value.upstream,lockException:{manifestPath:'safe-settings/upstream-lock-exception.json',patchPath:'safe-settings/upstream-package-lock.patch',manifestSha256:manifestHash??digest(manifest)}};
+   return effectiveLock({directory,item,sourceSha,manifest:manifestMissing?null:manifest,patch:patchMissing?null:patchBytes});
+ };
+ try{
+   assert.equal(await effectiveLock({manifest:null,patch:null}),null);
+   assert.equal((await attempt()).effectiveLockSha256,digest(expected));
+   assert.deepEqual(await readFile(join(directory,'package-lock.json')),expected);
+   assert.equal(await readFile(join(directory,'package.json'),'utf8'),'unchanged');
+   for(const option of [{manifestMissing:true},{patchMissing:true}])await assert.rejects(attempt(option),/FILES/);
+   await assert.rejects(attempt({manifestHash:'0'.repeat(64)}),/MANIFEST_HASH/);
+   await assert.rejects(attempt({sourceSha:OTHER}),/SOURCE/);
+   await assert.rejects(attempt({change:{upstream:'org/other'}}),/SOURCE/);
+   await assert.rejects(attempt({originalBytes:expected}),/ORIGINAL_HASH/);
+   await assert.rejects(attempt({patchBytes:Buffer.from('bad')}),/PATCH_HASH/);
+   await assert.rejects(attempt({change:{effectiveLockSha256:'0'.repeat(64)}}),/RESULT_HASH/);
+   await assert.rejects(attempt({change:{extra:true}}),/SCHEMA/);
+   const extra=Buffer.concat([patch,Buffer.from('diff --git a/extra b/extra\nnew file mode 100644\n--- /dev/null\n+++ b/extra\n@@ -0,0 +1 @@\n+unexpected\n')]);
+   await assert.rejects(attempt({patchBytes:extra,change:{patchSha256:digest(extra)}}),/TARGET/);
+ }finally{await rm(directory,{recursive:true,force:true});}
 });
