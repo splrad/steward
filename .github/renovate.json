@@ -84,11 +84,27 @@
   "customManagers": [
     {
       "customType": "regex",
-      "managerFilePatterns": ["/^config/actions-lock-version\\.txt$/"],
-      "matchStrings": ["(?<currentValue>v[0-9]+\\.[0-9]+\\.[0-9]+)"],
+      "managerFilePatterns": [
+        "/^config/actions-lock-version\\.txt$/"
+      ],
+      "matchStrings": [
+        "(?<currentValue>v[0-9]+\\.[0-9]+\\.[0-9]+)"
+      ],
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "github/gh-actions-lock",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^config/private-dependency-security\\.json$/"
+      ],
+      "matchStrings": [
+        "\"osvImage\":\\s*\"ghcr.io/google/osv-scanner-action:(?<currentValue>v\\d+\\.\\d+\\.\\d+)@(?<currentDigest>sha256:[a-f0-9]{64})\""
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "ghcr.io/google/osv-scanner-action",
+      "versioningTemplate": "docker"
     }
   ],
   "enabledManagers": [
