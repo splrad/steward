@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test test/*.test.mjs",
+    "test": "npm run build && node --test test/*.test.mjs",
     "build": "vite build",
     "deploy:check": "cf deploy --prebuilt --dry-run --provision=false"
   },
@@ -14,6 +14,7 @@
   "devDependencies": {
     "@cloudflare/vite-plugin": "2.0.0-beta.v.12",
     "cf": "1.0.0-beta.27",
+    "miniflare": "5.20261104.0-beta",
     "vite": "8.3.5"
   }
 }
