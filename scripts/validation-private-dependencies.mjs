@@ -1,4 +1,6 @@
+import {replaceScanOutput} from './private-scan-output.mjs';
 import {readFile,writeFile,mkdir,mkdtemp} from 'node:fs/promises';
+import {chmodSync,statSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import {resolve,join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -12,7 +14,15 @@ import {effectiveLock} from './private-lock-exception.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
 export function run(command,args,cwd,env,accepted=[0]){
   const r=spawnSync(command,args,{cwd,env,encoding:'utf8',shell:false,windowsHide:true,timeout:180000,maxBuffer:64*1024*1024});
-  assert(!r.error&&accepted.includes(r.status),'TOOL_FAILED_'+command.replace(/[^a-zA-Z0-9]/g,'_'));
+  if(r.error||!accepted.includes(r.status)){
+    let stderr=r.stderr??'';
+    for(const [key,value] of Object.entries({...process.env,...env})){
+      if(/TOKEN|SECRET|PASSWORD|PRIVATE_KEY|AUTHORIZATION/i.test(key)&&value)stderr=stderr.split(value).join('[REDACTED]');
+    }
+    const error=Error('PRIVATE_DEPENDENCY_TOOL_FAILED_'+command.replace(/[^a-zA-Z0-9]/g,'_'));
+    error.toolFailure={tool:command,exitStatus:r.status,signal:r.signal,errorCode:r.error?.code??null,stderr:stderr.slice(-4000)};
+    throw error;
+  }
   return r;
 }
 function cleanEnv(){
@@ -60,8 +70,20 @@ async function upstreamFiles(item,sha,directory,token){
   return evidence;
 }
 export function docker(image,entry,input,output,args,network=true){
-  return run('docker',['run','--rm','--cap-drop=ALL','--security-opt=no-new-privileges','--read-only','--tmpfs','/tmp:rw,noexec,nosuid,size=128m',
-    ...(network?[]:['--network=none']),'-v',`${input}:/input:ro`,'-v',`${output}:/out`,'--entrypoint',entry,image,...args],input,cleanEnv(),[0,1]);
+  const groups=[];
+  if(typeof process.getgid==='function'){
+    // The pinned image runs from /root. With all capabilities dropped, UID 0
+    // cannot write a runner-owned 0755 bind mount. Share only this output
+    // directory with the runner's group; retain read-only input/rootfs.
+    chmodSync(output,0o770);groups.push('--group-add',String(statSync(output).gid));
+  }
+  try{
+    return run('docker',['run','--rm','--cap-drop=ALL',...groups,'--security-opt=no-new-privileges','--read-only','--tmpfs','/tmp:rw,noexec,nosuid,size=128m',
+      ...(network?[]:['--network=none']),'-v',`${input}:/input:ro`,'-v',`${output}:/out`,'--entrypoint',entry,image,...args],input,cleanEnv(),[0,1]);
+  }catch(error){
+    if(error.toolFailure)error.toolFailure.containerEntrypoint=entry;
+    throw error;
+  }
 }
 export function assertVerifiedActionTag(ref,matching){
   assert(matching.includes(ref)&&matching.every(tag=>tag===ref||tag.length<ref.length),'ZIZMOR_TAG_AMBIGUOUS');
@@ -163,7 +185,7 @@ export async function main(env=process.env){
       const npmResult=JSON.parse(await readFile(join(output,'npm-tool.json'),'utf8'));
       upstreamResult.results.push(...npmResult.results);
       highFindings(upstreamResult);
-      await writeFile(join(output,'osv.json'),JSON.stringify(upstreamResult));
+      await replaceScanOutput(join(output,'osv.json'),upstreamResult);
     }
     const comparison=join(out,'comparison');await mkdir(comparison,{recursive:true});
     docker(policy.osvImage,'/root/osv-reporter',out,comparison,['--old=/input/base/osv.json','--new=/input/head/osv.json','--output-files=json:/out/new.json','--fail-on-vuln=false'],false);
@@ -178,7 +200,7 @@ export async function main(env=process.env){
     assert(!report.newActionVulnerabilities.some(x=>x.severity==='High'),'NEW_HIGH_ACTION');
     assert(!report.newToolFindings.some(x=>['HIGH','CRITICAL'].includes(x.severity)),'NEW_HIGH_TOOL');
     report.complete=true;return report;
-  }catch(error){report.error=error.message;throw error;}
+  }catch(error){report.error=error.message;if(error.toolFailure)report.toolFailure=error.toolFailure;throw error;}
   finally{await writeFile(join(out,'summary.json'),JSON.stringify(report,null,2)+'\n');}
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href)main().catch(e=>{console.error(e.message);process.exitCode=1;});

@@ -1,9 +1,10 @@
+import {replaceScanOutput} from '../private-scan-output.mjs';
 import {effectiveLock} from '../private-lock-exception.mjs';
 import {createHash} from 'node:crypto';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {dependencyMode,loadPolicy,inventory,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,licenseFacts} from '../private-dependency-policy.mjs';
-import {upstreamReference,run,assertVerifiedActionTag,main} from '../validation-private-dependencies.mjs';
+import {upstreamReference,run,assertVerifiedActionTag,main,docker} from '../validation-private-dependencies.mjs';
 import {nodeFindings,miseFindings,miseVersions,archiveInventory} from '../private-tool-security.mjs';
 import {readFile,writeFile,mkdtemp,rm} from 'node:fs/promises';
 import YAML from 'yaml';
@@ -184,4 +185,60 @@ test('fixed lock exception reconstructs bytes and rejects missing, mismatched or
    const extra=Buffer.concat([patch,Buffer.from('diff --git a/extra b/extra\nnew file mode 100644\n--- /dev/null\n+++ b/extra\n@@ -0,0 +1 @@\n+unexpected\n')]);
    await assert.rejects(attempt({patchBytes:extra,change:{patchSha256:digest(extra)}}),/TARGET/);
  }finally{await rm(directory,{recursive:true,force:true});}
+});
+
+
+test('failed trusted tools retain exit diagnostics without credential values',()=>{
+ const secret='fixture-token-do-not-record';
+ assert.throws(()=>run(process.execPath,['-e','console.error("scanner denied "+process.env.GH_TOKEN);process.exit(127)'],process.cwd(),{...process.env,GH_TOKEN:secret}),error=>{
+   assert.equal(error.toolFailure.exitStatus,127);
+   assert.match(error.toolFailure.stderr,/scanner denied \[REDACTED\]/);
+   assert.ok(!error.toolFailure.stderr.includes(secret));
+   return /TOOL_FAILED/.test(error.message);
+ });
+});
+
+test('scan normalization replaces existing output and leaves only the final file',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'private-output-test-'));
+ try{
+  const path=join(directory,'osv.json');await writeFile(path,'original');
+  await replaceScanOutput(path,{results:[]});
+  assert.deepEqual(JSON.parse(await readFile(path,'utf8')),{results:[]});
+  const {readdir}=await import('node:fs/promises');
+  assert.deepEqual(await readdir(directory),['osv.json']);
+ }finally{await rm(directory,{recursive:true,force:true});}
+});
+
+
+test('Docker output permissions and sandbox arguments cover POSIX and Windows branches',async()=>{
+ const fs=await import('node:fs'),child=await import('node:child_process');
+ const {syncBuiltinESMExports}=await import('node:module');
+ const originalSpawn=child.default.spawnSync,originalChmod=fs.default.chmodSync;
+ const getgidDescriptor=Object.getOwnPropertyDescriptor(process,'getgid');
+ const directory=await mkdtemp(join(tmpdir(),'private-docker-test-'));
+ const calls=[],modes=[];
+ try{
+  child.default.spawnSync=(command,args)=>{calls.push({command,args});return {status:0,stdout:'',stderr:''};};
+  fs.default.chmodSync=(path,mode)=>{modes.push({path,mode});return originalChmod(path,mode);};
+  syncBuiltinESMExports();
+  for(const posix of [true,false]){
+   Object.defineProperty(process,'getgid',{configurable:true,value:posix?()=>123:undefined});
+   docker('pinned-image','/root/osv-reporter',directory,directory,['--old=/input/osv.json'],false);
+   const {command,args}=calls.at(-1);assert.equal(command,'docker');
+   for(const flag of ['--cap-drop=ALL','--security-opt=no-new-privileges','--read-only','--network=none'])assert.ok(args.includes(flag));
+   assert.equal(args[args.indexOf('--tmpfs')+1],'/tmp:rw,noexec,nosuid,size=128m');
+   assert.ok(args.includes(directory+':/input:ro'));
+   assert.ok(args.includes(directory+':/out'));
+   if(posix){
+    assert.equal(args[args.indexOf('--group-add')+1],String(fs.statSync(directory).gid));
+    assert.deepEqual(modes,[{path:directory,mode:0o770}]);
+    if(getgidDescriptor)assert.equal(fs.statSync(directory).mode&0o777,0o770);
+   }else assert.ok(!args.includes('--group-add'));
+  }
+  assert.equal(modes.length,1);
+ }finally{
+  child.default.spawnSync=originalSpawn;fs.default.chmodSync=originalChmod;
+  if(getgidDescriptor)Object.defineProperty(process,'getgid',getgidDescriptor);else delete process.getgid;
+  syncBuiltinESMExports();await rm(directory,{recursive:true,force:true});
+ }
 });

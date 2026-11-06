@@ -1,3 +1,4 @@
+import {replaceScanOutput} from './private-scan-output.mjs';
 import {readFile,writeFile,mkdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
@@ -117,6 +118,6 @@ export async function scanTools({workspace,entries,blob,input,output,documents,r
   assert(scanned.size===actual.size&&[...actual].every(x=>scanned.has(x)),'NPM_TOOL_SCAN_INCOMPLETE');
   // Normalize ephemeral paths before the upstream reporter compares the two actual tool versions.
   for(const group of osv.results)group.source.path='/input/npm-tool/bom.cdx.json';
-  await writeFile(join(output,'npm-tool.json'),JSON.stringify(osv));
+  await replaceScanOutput(join(output,'npm-tool.json'),osv);
   return {node:{version:n.version,findings:nodeFindings(n.version,supplier.nodeVulnerabilities)},mise:{versions,findings:versions.flatMap(version=>miseFindings(version,supplier.miseAdvisories))},npm:{version:p.version,integrity,bundledPackages:actual.size,moduleScopes:archiveFacts.moduleScopes},scope:'supplier advisories for tool versions; npm release archive and bundled dependencies; not exhaustive compiled binary internals',complete:true};
 }
