@@ -75,7 +75,7 @@ export async function dispatch(env, metadata, fetcher = fetch, jwtFactory = appJ
   let accepted = false;
   async function call(path, method, credential, body) {
     return fetcher(API + path, {
-      method, redirect: 'error', signal: AbortSignal.timeout(1500),
+      method, redirect: 'manual', signal: AbortSignal.timeout(1500),
       headers: {accept: 'application/vnd.github+json', authorization: `Bearer ${credential}`,
         'user-agent': 'splrad-settings-events', 'x-github-api-version': '2026-03-10',
         'content-type': 'application/json'},

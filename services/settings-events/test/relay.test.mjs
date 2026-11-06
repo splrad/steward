@@ -81,7 +81,7 @@ test('real ephemeral RSA signing; fixed minimal token, private destination and r
   const verified = await jwtVerify(jwt, publicKey, {issuer:POLICY.app, algorithms:['RS256']}); assert.ok(verified.payload.exp);
   assert.deepEqual(JSON.parse(t.calls[0].body), {repository_ids:[POLICY.repositoryId], permissions:{contents:'write',metadata:'read'}});
   assert.equal(t.calls[2].url, 'https://api.github.com/repos/splrad/steward-settings/dispatches');
-  assert.equal(t.calls[3].method, 'DELETE'); assert.equal(t.calls[2].redirect, 'error');
+  assert.equal(t.calls[3].method, 'DELETE'); assert.equal(t.calls[2].redirect, 'manual');
 });
 test('scope and permissions mismatches prevent dispatch and still revoke', async () => {
   for (const options of [{badScope:true},{broadPermission:true},{metadata:'write'},{metadata:null}]) {
