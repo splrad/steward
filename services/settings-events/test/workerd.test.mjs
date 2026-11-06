@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import {createHmac, generateKeyPairSync} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {Miniflare, convertV4MiniflareOptions} from 'miniflare';
+import {jwtVerify} from 'jose';
 
 test('deployed bundle dispatches in workerd and never follows API redirects', async () => {
-  const key = generateKeyPairSync('rsa', {modulusLength: 2048}).privateKey.export({type: 'pkcs8', format: 'pem'});
+  const {privateKey,publicKey} = generateKeyPairSync('rsa', {modulusLength: 2048});
+  const key = privateKey.export({type: 'pkcs8', format: 'pem'});
   const secret = 'ephemeral-local-runtime-test-only';
   for (const redirectAt of [null, '/app/installations/179184801/access_tokens', '/repos/splrad/steward-settings/dispatches']) {
     const calls = [];
@@ -18,7 +20,10 @@ test('deployed bundle dispatches in workerd and never follows API redirects', as
         const url = new URL(request.url); calls.push({origin: url.origin, path: url.pathname});
         assert.equal(url.origin, 'https://api.github.com');
         if (url.pathname === redirectAt) return new Response(null, {status: 302, headers: {location: 'https://must-not-follow.invalid/'}});
-        if (url.pathname.endsWith('/access_tokens')) return Response.json({token: 'fake-test-token', permissions: {contents: 'write', metadata: 'read'}}, {status: 201});
+        if (url.pathname.endsWith('/access_tokens')) {
+          await jwtVerify(request.headers.get('authorization').slice(7),publicKey,{algorithms:['RS256'],issuer:'5639432'});
+          return Response.json({token: 'fake-test-token', permissions: {contents: 'write', metadata: 'read'}}, {status: 201});
+        }
         if (url.pathname === '/installation/repositories') return Response.json({total_count: 1, repositories: [{id: 1447987054, full_name: 'splrad/steward-settings', private: true, default_branch: 'main'}]});
         if (url.pathname.endsWith('/dispatches') || url.pathname === '/installation/token') return new Response(null, {status: 204});
         throw new Error('Unexpected outbound request');
@@ -35,6 +40,19 @@ test('deployed bundle dispatches in workerd and never follows API redirects', as
       assert.equal(calls.length, redirectAt?.endsWith('/access_tokens') ? 1 : 4);
       if (calls.length === 4) assert.equal(calls.at(-1).path, '/installation/token');
       assert.ok(calls.every(call => call.origin === 'https://api.github.com'));
+      if(redirectAt === null) {
+        // Distinct requests exercise warm isolate keys without sharing pending
+        // request-context promises. Each still makes all four API calls.
+        for(let i=0;i<2;i++) {
+          const warm=await mf.dispatchFetch('http://localhost/github/webhook',{method:'POST',body,headers:{
+            'content-type':'application/json','x-github-event':'label',
+            'x-github-delivery':'12345678-1234-4321-8123-123456789012',
+            'x-hub-signature-256':'sha256='+createHmac('sha256',secret).update(body).digest('hex'),
+          }});
+          assert.equal(warm.status,202);
+        }
+        assert.equal(calls.length,12);
+      }
     } finally { await mf.dispose(); }
   }
 });

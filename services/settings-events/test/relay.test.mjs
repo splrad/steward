@@ -11,9 +11,9 @@ const payload = () => ({action: 'edited', installation: {id: POLICY.installation
   organization: {id: POLICY.orgId, login: POLICY.org},
   repository: {id: 123, owner: {id: POLICY.orgId, login: POLICY.org}},
   sender: {type: 'User', login: 'test-user'}, label: {name: 'private-label', description: 'private-text'}});
-async function request(body = payload(), event = 'label', options = {}) {
+async function request(body = payload(), event = 'label', options = {}, secret = env.WEBHOOK_SECRET) {
   const bytes = new TextEncoder().encode(JSON.stringify(body));
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(env.WEBHOOK_SECRET), {name: 'HMAC', hash: 'SHA-256'}, false, ['sign']);
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), {name: 'HMAC', hash: 'SHA-256'}, false, ['sign']);
   const signature = Array.from(new Uint8Array(await crypto.subtle.sign('HMAC', key, bytes)), x => x.toString(16).padStart(2, '0')).join('');
   return new Request('https://unit.test/github/webhook', {method: 'POST', body: bytes, headers: {
     'content-type': 'application/json', 'x-hub-signature-256': `sha256=${signature}`,
@@ -109,4 +109,64 @@ test('offline PKCS1 conversion retains key identity without production material'
   const pkcs1=privateKey.export({type:'pkcs1',format:'pem'});
   const pkcs8=toPKCS8(pkcs1); assert.ok(pkcs8.startsWith('-----BEGIN PRIVATE KEY-----'));
   assert.deepEqual(createPrivateKey(pkcs8).export({format:'jwk'}),privateKey.export({format:'jwk'}));
+});
+
+test('warm signing reuses only the CryptoKey; rotation and failed imports cannot reuse old credentials', async t => {
+  const first = await generateKeyPair('RS256', {extractable:true});
+  const second = await generateKeyPair('RS256', {extractable:true});
+  const pem1 = await exportPKCS8(first.privateKey), pem2 = await exportPKCS8(second.privateKey);
+  const original = crypto.subtle.importKey.bind(crypto.subtle);
+  let imports = 0;
+  t.mock.method(crypto.subtle, 'importKey', async (...args) => {
+    if (args[0] === 'pkcs8') imports++;
+    return original(...args);
+  });
+  for (const [pem, publicKey, expectedImports] of [[pem1,first.publicKey,1],[pem1,first.publicKey,1],[pem2,second.publicKey,2]]) {
+    const transportResult = transport();
+    assert.equal((await dispatch({...env,GOVERNANCE_APP_PRIVATE_KEY:pem},{delivery},transportResult.fetcher)).accepted,true);
+    assert.equal(imports,expectedImports);
+    assert.equal(transportResult.calls.length,4);
+    assert.equal(transportResult.calls.at(-1).method,'DELETE');
+    const jwt=transportResult.calls[0].headers.authorization.slice(7);
+    const verified=await jwtVerify(jwt,publicKey,{issuer:POLICY.app,algorithms:['RS256']});
+    assert.equal(verified.payload.exp-verified.payload.iat,330);
+  }
+  for(let i=0;i<2;i++) {
+    const transportResult=transport();
+    assert.equal((await dispatch({...env,GOVERNANCE_APP_PRIVATE_KEY:'invalid'},{delivery},transportResult.fetcher)).accepted,false);
+    assert.equal(transportResult.calls.length,0);
+  }
+});
+
+test('webhook key reuse verifies every body and immediately honors secret rotation', async t => {
+  const secret1='ephemeral-rotation-first',secret2='ephemeral-rotation-second';
+  const original=crypto.subtle.importKey.bind(crypto.subtle);let imports=0;
+  t.mock.method(crypto.subtle,'importKey',async (...args)=>{
+    if(args[0]==='raw' && args[4]?.includes('verify'))imports++;
+    return original(...args);
+  });
+  const spy=async()=>({accepted:true});
+  for(const [binding,signature,status,count] of [[secret1,secret1,202,1],[secret1,secret1,202,1],[secret2,secret1,401,2],[secret2,secret2,202,2]]){
+    const result=await handle(await request(payload(),'label',{},signature),{...env,WEBHOOK_SECRET:binding},spy);
+    assert.equal(result.status,status);assert.equal(imports,count);
+  }
+});
+
+test('native JWT signer rejects weak or non-RSA keys and accepts escaped PKCS8 newlines', async () => {
+  const weak=generateKeyPairSync('rsa',{modulusLength:1024}).privateKey.export({type:'pkcs8',format:'pem'});
+  const ec=generateKeyPairSync('ec',{namedCurve:'prime256v1'}).privateKey.export({type:'pkcs8',format:'pem'});
+  const rsa=generateKeyPairSync('rsa',{modulusLength:2048});
+  const pkcs1=rsa.privateKey.export({type:'pkcs1',format:'pem'});
+  for(const badKey of [weak,ec,pkcs1]) {
+    const api=transport();
+    assert.equal((await dispatch({...env,GOVERNANCE_APP_PRIVATE_KEY:badKey},{delivery},api.fetcher)).accepted,false);
+    assert.equal(api.calls.length,0);
+  }
+  const api=transport();
+  const escaped=rsa.privateKey.export({type:'pkcs8',format:'pem'}).replace(/\n/g,'\\n');
+  assert.equal((await dispatch({...env,GOVERNANCE_APP_PRIVATE_KEY:escaped},{delivery},api.fetcher)).accepted,true);
+  const {payload:claims,protectedHeader}=await jwtVerify(api.calls[0].headers.authorization.slice(7),rsa.publicKey,{algorithms:['RS256'],issuer:POLICY.app});
+  assert.deepEqual(protectedHeader,{alg:'RS256'});
+  assert.deepEqual(Object.keys(claims).sort(),['exp','iat','iss']);
+  assert.equal(claims.exp-claims.iat,330);
 });
