@@ -60,7 +60,7 @@ try {
   const rootPackage = JSON.parse(readFileSync('package.json', 'utf8'));
   const rootLock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
   const sdkLock = JSON.parse(readFileSync('tools/quality-language/package-lock.json', 'utf8'));
-  if (JSON.stringify(rootPackage.workspaces) !== '["packages/*"]'
+  if (JSON.stringify(rootPackage.workspaces) !== '["packages/*","services/settings-events"]'
     || Object.keys(rootLock.packages).some(path => path.includes('@github/copilot-sdk'))
     || !sdkLock.packages['node_modules/@github/copilot-sdk']) diagnostics.push({ file: 'package.json', reason: 'SDK installation boundary changed' });
   const report = { compilerVersion: JSON.parse(readFileSync('node_modules/typescript/package.json', 'utf8')).version,
