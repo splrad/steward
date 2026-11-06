@@ -62,6 +62,9 @@ export function docker(image,entry,input,output,args,network=true){
   return run('docker',['run','--rm','--cap-drop=ALL','--security-opt=no-new-privileges','--read-only','--tmpfs','/tmp:rw,noexec,nosuid,size=128m',
     ...(network?[]:['--network=none']),'-v',`${input}:/input:ro`,'-v',`${output}:/out`,'--entrypoint',entry,image,...args],input,cleanEnv(),[0,1]);
 }
+export function assertVerifiedActionTag(ref,matching){
+  assert(matching.includes(ref)&&matching.every(tag=>tag===ref||tag.length<ref.length),'ZIZMOR_TAG_AMBIGUOUS');
+}
 const actionTags=new Map();
 export async function actionsInventory(text,token){
   const lock=YAML.parse(text);assert(['v0.0.2','v0.0.3'].includes(lock.version)&&lock.dependencies&&lock.workflows,'ACTIONS_LOCK_FORMAT');
@@ -82,24 +85,25 @@ export async function actionsInventory(text,token){
     const matching=[...new Set(actionTags.get(match[1]).filter(([sha])=>sha===commit.sha).map(([,ref])=>ref.replace(/^refs\/tags\//,'').replace(/\^\{\}$/,'')))];
     // The upstream scanner chooses a longest matching tag. Require a unique longest tag equal to the verified ref,
     // rather than silently allowing its heuristic to select another release/version on the same commit.
-    assert(matching.includes(value.ref)&&matching.every(tag=>tag===value.ref||tag.length<value.ref.length),'ZIZMOR_TAG_AMBIGUOUS');
+    assertVerifiedActionTag(value.ref,matching);
 
     entries.push({key,repo:match[1],ref:value.ref,sha:commit.sha});
   }
   assert(entries.length>0,'ACTIONS_EMPTY');return entries;
 }
 export async function main(env=process.env){
-  requireOnline(env);const workspace=resolve(env.VALIDATION_WORKSPACE??'target'),policy=await loadPolicy();
-  const value=await validationInput(workspace,env);assert(value.dependencyMode==='private-administrator','NOT_APPLICABLE');
-  const item=policy.administrators.find(x=>x.repositoryId===value.input.repositoryId);
   const out=resolve(env.PRIVATE_DEPENDENCY_EVIDENCE??'private-dependency-evidence');await mkdir(out,{recursive:true});
-  const temporary=await mkdtemp(join(tmpdir(),'steward-private-dependencies-'));
-  const supplier={nodeReleases:JSON.parse((await publicBytes('https://nodejs.org/dist/index.json')).toString()),
-    nodeVulnerabilities:JSON.parse((await publicBytes('https://raw.githubusercontent.com/nodejs/security-wg/main/vuln/core/index.json')).toString()),miseAdvisories:[]};
-  for(let page=1;page<=10;page++){const rows=await github(`/repos/jdx/mise/security-advisories?per_page=100&page=${page}`,env.GH_TOKEN);supplier.miseAdvisories.push(...rows);if(rows.length<100)break;assert(page<10,'MISE_ADVISORY_PAGINATION');}
-  await writeFile(join(out,'supplier-data.json'),JSON.stringify(supplier));
-  const report={identity:value.input,scanner:policy.osvImage,snapshots:{},newHigh:[],coverage:[],complete:false};
+  const report={identity:null,scanner:null,snapshots:{},newHigh:[],coverage:[],complete:false};
   try{
+    requireOnline(env);const workspace=resolve(env.VALIDATION_WORKSPACE??'target'),policy=await loadPolicy();
+    const value=await validationInput(workspace,env);assert(value.dependencyMode==='private-administrator','NOT_APPLICABLE');
+    report.identity=value.input;report.scanner=policy.osvImage;
+    const item=policy.administrators.find(x=>x.repositoryId===value.input.repositoryId);
+    const temporary=await mkdtemp(join(tmpdir(),'steward-private-dependencies-'));
+    const supplier={nodeReleases:JSON.parse((await publicBytes('https://nodejs.org/dist/index.json')).toString()),
+      nodeVulnerabilities:JSON.parse((await publicBytes('https://raw.githubusercontent.com/nodejs/security-wg/main/vuln/core/index.json')).toString()),miseAdvisories:[]};
+    for(let page=1;page<=10;page++){const rows=await github(`/repos/jdx/mise/security-advisories?per_page=100&page=${page}`,env.GH_TOKEN);supplier.miseAdvisories.push(...rows);if(rows.length<100)break;assert(page<10,'MISE_ADVISORY_PAGINATION');}
+    await writeFile(join(out,'supplier-data.json'),JSON.stringify(supplier));
     for(const side of ['base','head']){
       const sha=value.input[side],entries=tree(workspace,sha);assertInputScope(entries.map(e=>e.path));const snapshot={sha,upstream:null,actions:[],coverage:[]};report.snapshots[side]=snapshot;
       const input=join(temporary,side),output=join(out,side);await mkdir(input,{recursive:true});await mkdir(output,{recursive:true});
@@ -122,9 +126,9 @@ export async function main(env=process.env){
       // Existing native gh actions-lock verification remains mandatory in the governance job.
       const lock=blob(workspace,entries,'.github/workflows/actions.lock');
       snapshot.actions=await actionsInventory(lock.toString(),env.GH_TOKEN);
-      const docs=[],documents=new Map();
+      const docs=[],documents=new Map(),workflowDocuments=new Map();
       for(const e of entries.filter(e=>/^\.github\/workflows\/[^/]+\.ya?ml$/.test(e.path))){
-        const text=blob(workspace,entries,e.path).toString();const doc=YAML.parse(text);
+        const text=blob(workspace,entries,e.path).toString();const doc=YAML.parse(text);workflowDocuments.set(e.path,doc);
         for(const job of Object.values(doc.jobs??{})){
           assert(!job.uses,'REUSABLE_WORKFLOW_UNCOVERED');
           for(const step of job.steps??[])if(step.uses){
@@ -144,7 +148,7 @@ export async function main(env=process.env){
       snapshot.actionsFindings=actionFindings(findings,documents);
       await writeFile(join(output,'zizmor.json'),result.stdout);
       if(entries.some(e=>e.path==='mise.toml'||e.path==='mise.lock')){
-        snapshot.tools=await scanTools({workspace,entries,blob,input,output,workflow:workflow?.toString()??'{}',env,run,docker,image:policy.osvImage,github,supplier});
+        snapshot.tools=await scanTools({workspace,entries,blob,input,output,documents:workflowDocuments,requiredWorkflow:item.workflow,env,run,docker,image:policy.osvImage,github,supplier});
       }else{
         assert(side==='base'&&!workflow,'HEAD_TOOL_INPUT_MISSING');snapshot.tools={};
         await writeFile(join(output,'npm-tool.json'),JSON.stringify({results:[]}));

@@ -1,10 +1,12 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {dependencyMode,loadPolicy,inventory,checkInventory,highFindings,requireOnline,actionFindings,newActions,assertInputScope,licenseFacts} from '../private-dependency-policy.mjs';
-import {upstreamReference,run} from '../validation-private-dependencies.mjs';
-import {nodeFindings,miseFindings} from '../private-tool-security.mjs';
-import {readFile} from 'node:fs/promises';
+import {upstreamReference,run,assertVerifiedActionTag,main} from '../validation-private-dependencies.mjs';
+import {nodeFindings,miseFindings,miseVersions,archiveInventory} from '../private-tool-security.mjs';
+import {readFile,mkdtemp,rm} from 'node:fs/promises';
 import YAML from 'yaml';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
 const SHA='a'.repeat(40),OTHER='b'.repeat(40),policy=await loadPolicy();
 const lock={lockfileVersion:3,packages:{'':{name:'fixture'},'node_modules/demo':{version:'1.0.0',resolved:'https://registry.npmjs.org/demo/-/demo-1.0.0.tgz',dev:true}}};
 const packageResult={package:{name:'demo',version:'1.0.0',ecosystem:'npm'}};
@@ -92,4 +94,39 @@ test('existing Renovate regex manager extracts the scanner stable version and di
 test('official reporter null-results means no new findings only after complete scans and reporter mode',()=>{
  const empty={results:null,experimental_config:{licenses:{summary:false,allowlist:null}}};
  assert.deepEqual(highFindings(empty,{emptyReporter:true}),[]);assert.throws(()=>highFindings(empty),/REPORTER_JSON/);assert.throws(()=>highFindings({}, {emptyReporter:true}),/REPORTER_JSON/);
+});
+
+test('all accepted workflows contribute mise versions and the runtime entry cannot omit mise',()=>{
+ const doc=version=>({jobs:{run:{steps:[{uses:'jdx/mise-action@'+SHA,with:{version}}]}}});
+ const documents=new Map([['runtime.yml',doc('2026.10.18')],['title.yml',doc('2026.9.18')]]);
+ assert.deepEqual(miseVersions(documents,'runtime.yml'),['2026.10.18','2026.9.18']);
+ const advisory={ghsa_id:'GHSA-fixture',severity:'high',vulnerabilities:[{package:{name:'mise',ecosystem:'rust'},vulnerable_version_range:'<2026.10.0',patched_versions:'2026.10.0'}]};
+ assert.equal(miseVersions(documents,'runtime.yml').flatMap(v=>miseFindings(v,[advisory])).length,1);
+ documents.set('runtime.yml',{jobs:{run:{steps:[]}}});assert.throws(()=>miseVersions(documents,'runtime.yml'),/MISE_RUNTIME_REQUIRED/);
+ documents.set('runtime.yml',doc('2026.10.18'));documents.set('title.yml',doc('${{ inputs.version }}'));assert.throws(()=>miseVersions(documents,'runtime.yml'),/MISE_RUNTIME_VERSION/);
+});
+test('verified ref must be the unique longest matching tag, including equal length alternatives',()=>{
+ assertVerifiedActionTag('v2.7.0',['v2','2.7.0','v2.7.0']);
+ for(const tags of [['v2.7.0','x2.7.0'],['v2.7.0','v2.7.0-extra'],['v2','2.7.0']])assert.throws(()=>assertVerifiedActionTag('v2.7.0',tags),/ZIZMOR_TAG_AMBIGUOUS/);
+});
+test('real tar manifest inventory includes vendor paths and refuses unresolved manifests',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'private-archive-test-')),archive=join(directory,'npm.tgz'),python=process.env.PRIVATE_PYTHON??'python';
+ try{
+  const create=`import io,json,tarfile,sys
+with tarfile.open(sys.argv[1],'w:gz') as archive:
+ for path,data in [('package/package.json',{'name':'npm','version':'1.0.0'}),('package/dist/esm/package.json',{'type':'module'}),('package/vendor/extra/package.json',{'name':'extra','version':'2.0.0'} if sys.argv[2]=='valid' else {})]:
+  body=json.dumps(data).encode();item=tarfile.TarInfo(path);item.size=len(body);archive.addfile(item,io.BytesIO(body))`;
+  run(python,['-I','-c',create,archive,'valid'],directory,process.env);
+  assert.deepEqual(archiveInventory(python,archive,run,process.env),{packages:[['extra','2.0.0'],['npm','1.0.0']],moduleScopes:['package/dist/esm/package.json']});
+  run(python,['-I','-c',create,archive,'invalid'],directory,process.env);
+  assert.throws(()=>archiveInventory(python,archive,run,process.env),/TOOL_FAILED/);
+ }finally{await rm(directory,{recursive:true,force:true});}
+});
+test('preflight token failure still writes a failed evidence summary',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'private-preflight-test-'));
+ try{
+  await assert.rejects(main({PRIVATE_DEPENDENCY_EVIDENCE:directory}),/TOKEN_REQUIRED/);
+  const report=JSON.parse(await readFile(join(directory,'summary.json'),'utf8'));
+  assert.equal(report.complete,false);assert.equal(report.identity,null);assert.equal(report.error,'PRIVATE_DEPENDENCY_TOKEN_REQUIRED');
+ }finally{await rm(directory,{recursive:true,force:true});}
 });

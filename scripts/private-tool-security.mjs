@@ -4,7 +4,6 @@ import {createHash} from 'node:crypto';
 import semver from 'semver';
 import YAML from 'yaml';
 import {assert} from './private-dependency-policy.mjs';
-const sha=b=>createHash('sha256').update(b).digest('hex');
 export async function publicBytes(url){
   const response=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(30000)});
   assert(response.ok,'SUPPLIER_HTTP_'+response.status);const b=Buffer.from(await response.arrayBuffer());
@@ -38,7 +37,37 @@ export function miseFindings(version,advisories){
     }
   }return matches;
 }
-export async function scanTools({workspace,entries,blob,input,output,workflow,env,run,docker,image,github,supplier}){
+export function miseVersions(documents,requiredWorkflow){
+  const collect=doc=>Object.values(doc?.jobs??{}).flatMap(job=>job.steps??[]).filter(step=>step.uses?.startsWith('jdx/mise-action@'));
+  assert(collect(documents.get(requiredWorkflow)).length===1,'MISE_RUNTIME_REQUIRED');
+  const versions=new Set();
+  for(const doc of documents.values())for(const step of collect(doc)){
+    const version=step.with?.version;assert(typeof version==='string'&&semver.valid(version),'MISE_RUNTIME_VERSION');versions.add(version);
+  }
+  return [...versions].sort();
+}
+export function archiveInventory(python,archivePath,run,env){
+  return JSON.parse(run(python,['-I','-c',`import json,tarfile,sys
+manifests={}
+with tarfile.open(sys.argv[1]) as archive:
+ for item in archive:
+  if item.name=='package.json' or item.name.endswith('/package.json'):
+   if not item.isfile() or item.size>1048576: raise ValueError('unsupported manifest entry')
+   if item.name in manifests: raise ValueError('duplicate manifest')
+   manifests[item.name]=json.load(archive.extractfile(item))
+packages=set(); named=[]; scopes=[]
+for path,data in manifests.items():
+ if isinstance(data.get('name'),str) and data['name'] and isinstance(data.get('version'),str) and data['version']:
+  packages.add((data['name'],data['version']));named.append(path[:-len('package.json')])
+ else:
+  if not set(data).issubset({'type','sideEffects'}) or data.get('type') not in ('module','commonjs'): raise ValueError('unresolved manifest')
+  if 'sideEffects' in data and not isinstance(data['sideEffects'],bool): raise ValueError('unsupported module metadata')
+  scopes.append(path)
+for path in scopes:
+ if not any(path.startswith(parent) and path!=parent+'package.json' for parent in named): raise ValueError('orphan module metadata')
+print(json.dumps({'packages':sorted(packages),'moduleScopes':sorted(scopes)}))`,archivePath],join(archivePath,'..'),env).stdout);
+}
+export async function scanTools({workspace,entries,blob,input,output,documents,requiredWorkflow,env,run,docker,image,github,supplier}){
   assert(env.PRIVATE_PYTHON&&env.PRIVATE_SYFT,'TRUSTED_TOOL_PATHS');
   const parsed={};
   for(const name of ['mise.toml','mise.lock']){
@@ -63,9 +92,8 @@ export async function scanTools({workspace,entries,blob,input,output,workflow,en
     assert(asset.url===`https://nodejs.org/dist/v${n.version}/${filename}`&&sums.split('\n').some(line=>line.trim().split(/\s+/).join(' ')===(asset.checksum??'').replace('sha256:','')+' '+filename),'NODE_DISTRIBUTION');
   }
   assert(Object.keys(platforms).length===2,'NODE_PLATFORMS');
-  const miseSteps=Object.values(YAML.parse(workflow).jobs??{}).flatMap(j=>j.steps??[]).filter(s=>s.uses?.startsWith('jdx/mise-action@'));
-  assert(miseSteps.length<=1&&(!miseSteps.length||semver.valid(miseSteps[0].with?.version)),'MISE_RUNTIME_VERSION');const miseVersion=miseSteps[0]?.with.version;
-  if(miseVersion)await github(`/repos/jdx/mise/releases/tags/v${miseVersion}`,env.GH_TOKEN);
+  const versions=miseVersions(documents,requiredWorkflow);
+  for(const version of versions)await github(`/repos/jdx/mise/releases/tags/v${version}`,env.GH_TOKEN);
   const toolPath=`.mise/locks/npm/${p.version}`;assert(p.aube?.path===toolPath,'NPM_LOCK_PATH');
   const aube=YAML.parse(blob(workspace,entries,toolPath+'/aube-lock.yaml').toString());
   const pkg=JSON.parse(blob(workspace,entries,toolPath+'/package.json').toString());
@@ -80,15 +108,7 @@ export async function scanTools({workspace,entries,blob,input,output,workflow,en
   const syftConfig=join(dir,'syft.yml');await writeFile(syftConfig,'check-for-app-update: false\n');
   run(env.PRIVATE_SYFT,['scan','file:'+archivePath,'--config',syftConfig,'--override-default-catalogers','javascript-package-cataloger','-o','cyclonedx-json='+join(dir,'bom.cdx.json')],dir,env);
   const sbom=JSON.parse(await readFile(join(dir,'bom.cdx.json'),'utf8'));
-  const expected=JSON.parse(run(env.PRIVATE_PYTHON,['-I','-c',`import json,tarfile,sys
-packages=set()
-with tarfile.open(sys.argv[1]) as archive:
- for item in archive:
-  if item.isfile() and item.name.endswith('/package.json') and (item.name=='package/package.json' or '/node_modules/' in item.name):
-   if item.size>1048576: raise ValueError('manifest too large')
-   data=json.load(archive.extractfile(item))
-   if data.get('name') and data.get('version'): packages.add((data['name'],data['version']))
-print(json.dumps(sorted(packages)))`,archivePath],dir,env).stdout);
+  const archiveFacts=archiveInventory(env.PRIVATE_PYTHON,archivePath,run,env),expected=archiveFacts.packages;
   const actual=new Set(sbom.components.filter(x=>x.purl?.startsWith('pkg:npm/')).map(x=>JSON.stringify([x.name,x.version])));
   assert(expected.length>1&&expected.length===actual.size&&expected.every(x=>actual.has(JSON.stringify(x))),'NPM_BUNDLED_COVERAGE');
   const scanDir=join(input,'npm-sbom');await mkdir(scanDir);await writeFile(join(scanDir,'bom.cdx.json'),JSON.stringify(sbom));await writeFile(join(scanDir,'osv-scanner.toml'),'');
@@ -98,5 +118,5 @@ print(json.dumps(sorted(packages)))`,archivePath],dir,env).stdout);
   // Normalize ephemeral paths before the upstream reporter compares the two actual tool versions.
   for(const group of osv.results)group.source.path='/input/npm-tool/bom.cdx.json';
   await writeFile(join(output,'npm-tool.json'),JSON.stringify(osv));
-  return {node:{version:n.version,findings:nodeFindings(n.version,supplier.nodeVulnerabilities)},mise:miseVersion?{version:miseVersion,findings:miseFindings(miseVersion,supplier.miseAdvisories)}:null,npm:{version:p.version,integrity,bundledPackages:actual.size},scope:'supplier advisories for tool versions; npm release archive and bundled dependencies; not exhaustive compiled binary internals',complete:true};
+  return {node:{version:n.version,findings:nodeFindings(n.version,supplier.nodeVulnerabilities)},mise:{versions,findings:versions.flatMap(version=>miseFindings(version,supplier.miseAdvisories))},npm:{version:p.version,integrity,bundledPackages:actual.size,moduleScopes:archiveFacts.moduleScopes},scope:'supplier advisories for tool versions; npm release archive and bundled dependencies; not exhaustive compiled binary internals',complete:true};
 }
