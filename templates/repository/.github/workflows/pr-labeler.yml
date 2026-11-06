@@ -47,6 +47,7 @@ jobs:
               || run.id !== sourceId || run.workflow_id !== workflow.id
               || run.path !== workflow.path || run.event !== 'pull_request_target'
               || run.repository?.id !== repositoryId || run.repository?.full_name !== repository
+              || !positive(run.head_repository?.id)
               || !/^[a-f0-9]{40}$/.test(run.head_sha ?? '')
               || typeof run.head_branch !== 'string' || !run.head_branch) {
             throw new Error('LABELER_SOURCE_IDENTITY');
@@ -61,6 +62,7 @@ jobs:
             }
             const matches = pages.flat().filter(pr => pr.state === 'open'
               && pr.base?.repo?.id === repositoryId && pr.base?.repo?.full_name === repository
+              && pr.head?.repo?.id === run.head_repository.id
               && pr.head?.sha === run.head_sha && pr.head?.ref === run.head_branch);
             if (matches.some(pr => !positive(pr.number))) throw new Error('LABELER_PR_IDENTITY');
             const numbers = [...new Set(matches.map(pr => pr.number))];
@@ -71,7 +73,8 @@ jobs:
               const pr = api(`repos/${repository}/pulls/${numbers[0]}`);
               if (pr.number !== numbers[0] || pr.base?.repo?.id !== repositoryId
                   || pr.base?.repo?.full_name !== repository) throw new Error('LABELER_PR_IDENTITY');
-              if (pr.state === 'open' && pr.head?.sha === run.head_sha && pr.head?.ref === run.head_branch) {
+              if (pr.state === 'open' && pr.head?.repo?.id === run.head_repository.id
+                  && pr.head?.sha === run.head_sha && pr.head?.ref === run.head_branch) {
                 number = String(pr.number); reason = 'CURRENT_PR';
               }
             }
