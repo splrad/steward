@@ -21,3 +21,5 @@ Node 使用官方发行清单/校验和及 security-wg 公告；mise 使用供�
 检查分别从 base/head Git blob 取得两文件，以原始上游锁重建有效锁，再执行同一 OSV 清单对账和风险比较。Git 原生 patch 解析只接受一个 package-lock.json 文本目标；缺失配对、错误来源/摘要、额外目标、应用失败或结果摘要不符均阻断。两文件均不存在时继续扫描官方原锁；存在补丁而没有运行入口同样阻断。安装 workflow 校验同一 manifest、原锁、补丁和结果锁后才运行 npm ci --ignore-scripts；该步骤不接收治理 App 凭据。安装行为依旧由受保护 PR 审查确认，检查器不解释候选 shell。
 
 SPLRAD 治理维护者负责跟踪上游正式修复并维护此临时例外。每次换源须重新审查，禁止静默重基；官方原锁消除对应风险且通过同等扫描和兼容测试后，在受审变更中移除补丁、安装步骤、中央专用配置及合同例外。低/中风险仍如实报告，不把 high/critical 清零称作零漏洞。
+
+Linux扫描容器保留cap-drop=ALL、no-new-privileges及只读输入/rootfs；专用输出目录设为0770，仅追加runner主组使固定镜像可写该目录。Windows沿用其原生挂载权限。工具失败在私有摘要记录退出码、signal、错误码及截断且去除已知凭据值的stderr，Docker另标记scanner/reporter入口；工具错误始终失败，不作为干净扫描。

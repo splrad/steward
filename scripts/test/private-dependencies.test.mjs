@@ -185,3 +185,14 @@ test('fixed lock exception reconstructs bytes and rejects missing, mismatched or
    await assert.rejects(attempt({patchBytes:extra,change:{patchSha256:digest(extra)}}),/TARGET/);
  }finally{await rm(directory,{recursive:true,force:true});}
 });
+
+
+test('failed trusted tools retain exit diagnostics without credential values',()=>{
+ const secret='fixture-token-do-not-record';
+ assert.throws(()=>run(process.execPath,['-e','console.error("scanner denied "+process.env.GH_TOKEN);process.exit(127)'],process.cwd(),{...process.env,GH_TOKEN:secret}),error=>{
+   assert.equal(error.toolFailure.exitStatus,127);
+   assert.match(error.toolFailure.stderr,/scanner denied \[REDACTED\]/);
+   assert.ok(!error.toolFailure.stderr.includes(secret));
+   return /TOOL_FAILED/.test(error.message);
+ });
+});
