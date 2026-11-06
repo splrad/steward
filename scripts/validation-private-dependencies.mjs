@@ -1,3 +1,4 @@
+import {replaceScanOutput} from './private-scan-output.mjs';
 import {readFile,writeFile,mkdir,mkdtemp} from 'node:fs/promises';
 import {chmodSync,statSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
@@ -184,7 +185,7 @@ export async function main(env=process.env){
       const npmResult=JSON.parse(await readFile(join(output,'npm-tool.json'),'utf8'));
       upstreamResult.results.push(...npmResult.results);
       highFindings(upstreamResult);
-      await writeFile(join(output,'osv.json'),JSON.stringify(upstreamResult));
+      await replaceScanOutput(join(output,'osv.json'),upstreamResult);
     }
     const comparison=join(out,'comparison');await mkdir(comparison,{recursive:true});
     docker(policy.osvImage,'/root/osv-reporter',out,comparison,['--old=/input/base/osv.json','--new=/input/head/osv.json','--output-files=json:/out/new.json','--fail-on-vuln=false'],false);

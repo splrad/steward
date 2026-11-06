@@ -1,3 +1,4 @@
+import {replaceScanOutput} from '../private-scan-output.mjs';
 import {effectiveLock} from '../private-lock-exception.mjs';
 import {createHash} from 'node:crypto';
 import {test} from 'node:test';
@@ -195,4 +196,15 @@ test('failed trusted tools retain exit diagnostics without credential values',()
    assert.ok(!error.toolFailure.stderr.includes(secret));
    return /TOOL_FAILED/.test(error.message);
  });
+});
+
+test('scan normalization replaces existing output and leaves only the final file',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'private-output-test-'));
+ try{
+  const path=join(directory,'osv.json');await writeFile(path,'original');
+  await replaceScanOutput(path,{results:[]});
+  assert.deepEqual(JSON.parse(await readFile(path,'utf8')),{results:[]});
+  const {readdir}=await import('node:fs/promises');
+  assert.deepEqual(await readdir(directory),['osv.json']);
+ }finally{await rm(directory,{recursive:true,force:true});}
 });
