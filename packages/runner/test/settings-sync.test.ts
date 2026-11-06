@@ -14,6 +14,6 @@ it('settings evidence binds native repository/run/attempt and rejects another re
   expect(()=>decode(report(),'quality/21.json')).toThrow();
 });
 it('central file delivery does not restore retired label synchronization',async()=>{
-  const sync=await readFile('.github/workflows/sync-managed.yml','utf8');expect(sync).not.toMatch(/managed-sync labels|steps.labels/);
+  const sync=await readFile('.github/workflows/sync-managed.yml','utf8');expect(sync).not.toMatch(/sync-managed-labels|managed-sync labels|steps.labels/);
   const cli=await readFile('packages/runner/src/native-release-cli.ts','utf8');expect(cli).not.toContain('NativeLabelSync');
 });
