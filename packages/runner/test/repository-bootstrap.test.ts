@@ -51,6 +51,34 @@ it('creates durable recovery before a narrow exclusion, then Contents first comm
   expect(f.state.writes.filter((w:any)=>w.path.includes('/git/refs'))).toEqual([]);
   expect(await f.run()).toEqual({status:'EXISTING'});expect(f.state.archives).toHaveLength(1);
 });
+it('binds required workflow to the verified controller while retaining every other rule-policy field',async()=>{
+  const f=fixture(),rule=f.rules[7];
+  rule.rules.push({type:'workflows',parameters:{do_not_enforce_on_create:true,workflows:[{repository_id:1296724484,path:'.github/workflows/pr-validation-native.yml',sha:f.source.controllerSha}]}});
+  const policy=bootstrapRulePolicyDigest(rule,f.source.controllerSha);
+  Object.assign(f.bindings[0]!,{policyDigest:policy,controllerWorkflow:true});
+  expect((await f.run()).status).toBe('READY');
+  const updated=structuredClone(rule);updated.rules[1].parameters.workflows[0].sha='d'.repeat(40);
+  expect(bootstrapRulePolicyDigest(updated,'d'.repeat(40))).toBe(policy);
+  expect(()=>bootstrapRulePolicyDigest(updated,f.source.controllerSha)).toThrow('CONTROLLER_WORKFLOW');
+  updated.rules[0].type='deletion';expect(bootstrapRulePolicyDigest(updated,'d'.repeat(40))).not.toBe(policy);
+  updated.rules[1].parameters.workflows[0].repository_id=999;expect(()=>bootstrapRulePolicyDigest(updated,'d'.repeat(40))).toThrow();
+});
+it('refuses a foreign required workflow pin before recovery or rule writes',async()=>{
+  const f=fixture();f.rules[7].rules.push({type:'workflows',parameters:{workflows:[{repository_id:1296724484,path:'.github/workflows/pr-validation-native.yml',sha:f.source.controllerSha}]}});
+  Object.assign(f.bindings[0]!,{policyDigest:bootstrapRulePolicyDigest(f.rules[7],f.source.controllerSha),controllerWorkflow:true});
+  f.rules[7].rules[1].parameters.workflows[0].sha='e'.repeat(40);
+  await expect(f.run()).rejects.toThrow('CONTROLLER_WORKFLOW');expect(f.state.writes).toEqual([]);
+});
+it('resumes recorded recovery after trusted controller promotion without changing rule responsibility',async()=>{
+  const f=fixture();f.rules[7].rules.push({type:'workflows',parameters:{workflows:[{repository_id:1296724484,path:'.github/workflows/pr-validation-native.yml',sha:f.source.controllerSha}]}});
+  Object.assign(f.bindings[0]!,{policyDigest:bootstrapRulePolicyDigest(f.rules[7],f.source.controllerSha),controllerWorkflow:true});
+  f.state.badArchive=true;await expect(f.run()).rejects.toThrow();expect(f.state.variable).not.toBeNull();
+  const oldSource=JSON.parse(f.state.variable).controllerSha;
+  f.source.controllerSha='d'.repeat(40);f.rules[7].rules[1].parameters.workflows[0].sha=f.source.controllerSha;
+  f.state.badArchive=false;expect((await f.run()).status).toBe('READY');
+  expect(f.state.sourceChecks.some((s:any)=>s.controllerSha===oldSource)).toBe(true);
+  expect(f.state.variable).toBeNull();expect(f.state.commits).toHaveLength(1);
+});
 for(const lost of ['POST /repos/splrad/fixture/actions/variables','PATCH /repos/splrad/fixture/actions/variables/'+bootstrapVariable,
   'PUT /orgs/splrad/rulesets/7','PUT /repos/splrad/fixture/contents/README.md','DELETE /repos/splrad/fixture/actions/variables/'+bootstrapVariable])
   it('recovers native lost response: '+lost,async()=>{const f=fixture();f.state.lose.add(lost);expect((await f.run()).status).toBe('READY');expect(f.state.variable).toBeNull();});

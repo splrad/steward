@@ -1,6 +1,12 @@
 name: SPLRAD Steward / Sync Managed Files
 on:
   workflow_dispatch:
+    inputs:
+      bootstrap_only:
+        description: 'One-time bootstrap using the reviewed private acceptance target; no template delivery'
+        required: false
+        type: boolean
+        default: false
   schedule:
     - cron: '37 * * * *'
   push:
@@ -19,7 +25,7 @@ permissions:
   actions: read
 jobs:
   bootstrap:
-    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && vars.STEWARD_TEMPLATE_APPLY == 'true'
+    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (vars.STEWARD_TEMPLATE_APPLY == 'true' || (github.event_name == 'workflow_dispatch' && inputs.bootstrap_only))
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment:
@@ -54,10 +60,11 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           STEWARD_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           STEWARD_CONTROLLER_SHA: ${{ github.workflow_sha }}
+          STEWARD_BOOTSTRAP_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap_only && 'true' || 'false' }}
         run: node scripts/repository-bootstrap.mjs
   templates:
     needs: bootstrap
-    if: ${{ !cancelled() && github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && vars.STEWARD_TEMPLATE_APPLY == 'true' }}
+    if: ${{ !cancelled() && github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && vars.STEWARD_TEMPLATE_APPLY == 'true' && !inputs.bootstrap_only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment:
@@ -96,7 +103,7 @@ jobs:
         run: node scripts/template-delivery.mjs
 
   automation-health:
-    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !inputs.bootstrap_only
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

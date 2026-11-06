@@ -12,14 +12,31 @@ import {isolatedBuildEnvironment} from '../src/build-environment.js';
 import {registerOfflineFixtureRoot} from './offline-fixtures.js';
 
 const module=()=>import(pathToFileURL(resolve('scripts/repository-bootstrap.mjs')).href);
-it('real bootstrap entry separates public bot discovery from App and scoped installation authentication',async()=>{
+it('bootstrap-only selection validates before credentials and never services other installed repositories',async()=>{
+  const {bootstrapOnly,bootstrapWake,decodeAcceptanceTarget,parseAcceptanceTarget}=await module();
+  expect(bootstrapOnly({})).toBe(false);
+  expect(bootstrapOnly({GITHUB_EVENT_NAME:'workflow_dispatch',STEWARD_BOOTSTRAP_ONLY:'true'})).toBe(true);
+  for(const raw of ['0','12','TRUE'])expect(()=>bootstrapOnly({GITHUB_EVENT_NAME:'workflow_dispatch',STEWARD_BOOTSTRAP_ONLY:raw})).toThrow();
+  expect(()=>bootstrapOnly({GITHUB_EVENT_NAME:'push',STEWARD_BOOTSTRAP_ONLY:'true'})).toThrow();
+  const target={schemaVersion:1,repositoryId:12,purpose:'bootstrap-only'};
+  expect(decodeAcceptanceTarget(target)).toBe(12);
+  for(const bad of [{...target,repositoryId:0},{...target,extra:true},{...target,purpose:'templates'}])expect(()=>decodeAcceptanceTarget(bad)).toThrow();
+  expect(()=>parseAcceptanceTarget('{"repositoryId":private-canary}')).toThrow(/^BOOTSTRAP_ACCEPTANCE_TARGET_INVALID$/);
+  const service=vi.fn(async()=>({status:'EXISTING'})),discover=async()=>[{id:12,private:true},{id:13,private:true}];
+  expect(await bootstrapWake({discover,service,repositoryId:12})).toEqual({repositories:1,ready:0,existing:1,failed:0});
+  expect(service.mock.calls).toEqual([[{id:12,private:true}]]);
+  service.mockClear();
+  for(const list of [[{id:13}],[{id:12,private:false}],[{id:12,private:true,archived:true}],[{id:12,private:true},{id:12,private:true}]])await expect(bootstrapWake({discover:async()=>list,service,repositoryId:12})).rejects.toThrow('TARGET_NOT_INSTALLED');
+  expect(service).not.toHaveBeenCalled();
+});
+it.each([false,true])('real bootstrap entry separates scoped credentials (private acceptance %s)',async(single)=>{
   const {main}=await module(),{privateKey}=generateKeyPairSync('rsa',{modulusLength:2048});
   const values={GITHUB_REPOSITORY:'splrad/steward',GITHUB_REPOSITORY_ID:'1296724484',GITHUB_REF:'refs/heads/main',
     STEWARD_DEFAULT_BRANCH:'main',GITHUB_EVENT_NAME:'workflow_dispatch',STEWARD_CONTROLLER_SHA:'a'.repeat(40),
     GOVERNANCE_APP_ID:'88',GOVERNANCE_APP_PRIVATE_KEY:privateKey.export({type:'pkcs8',format:'pem'}).toString(),
-    GITHUB_TOKEN:'workflow-fixture',GITHUB_RUN_ID:'21',GITHUB_RUN_ATTEMPT:'1',GITHUB_STEP_SUMMARY:''};
+    GITHUB_TOKEN:'workflow-fixture',GITHUB_RUN_ID:'21',GITHUB_RUN_ATTEMPT:'1',GITHUB_STEP_SUMMARY:'',STEWARD_BOOTSTRAP_ONLY:String(single)};
   for(const [key,value] of Object.entries(values))vi.stubEnv(key,value);
-  const repository={id:12,name:'fixture',full_name:'splrad/fixture',default_branch:'develop',owner:{id:302208797},archived:false,disabled:false};
+  const repository={id:12,name:'fixture',full_name:'splrad/fixture',default_branch:'develop',owner:{id:302208797},archived:false,disabled:false,private:true};
   const calls:{path:string;method:string;body:any}[]=[],requests:any[]=[],revoked:string[]=[];
   let credential=0;
   const transport=async(input:any,init:any)=>{
@@ -32,6 +49,8 @@ it('real bootstrap entry separates public bot discovery from App and scoped inst
     else if(path==='/users/fixture-governance[bot]'){
       expect(headers.has('authorization')).toBe(false);value={id:33,login:'fixture-governance[bot]',type:'Bot'};
     }else if(path==='/repos/splrad/steward/actions/runs/21')value={workflow_id:42};
+    else if(path==='/repos/splrad/steward-settings')value={id:1447987054,private:true,default_branch:'main'};
+    else if(path==='/repos/splrad/steward-settings/contents/acceptance/bootstrap-target.json')value={type:'file',encoding:'base64',size:200,content:Buffer.from(JSON.stringify({schemaVersion:1,repositoryId:12,purpose:'bootstrap-only'})).toString('base64')};
     else if(path==='/app/installations/8/access_tokens'){
       expect(headers.get('authorization')).toMatch(/^bearer /i);requests.push(body);credential++;
       value={token:'ghs_fixture'+credential,expires_at:new Date(Date.now()+3600000).toISOString()};status=201;
@@ -45,9 +64,9 @@ it('real bootstrap entry separates public bot discovery from App and scoped inst
   };
   try{
     expect(await main(transport)).toEqual({repositories:1,ready:0,existing:1,failed:0});
-    expect(requests).toEqual([{permissions:{metadata:'read'}},{repository_ids:[12],permissions:{metadata:'read',contents:'write',administration:'write',actions_variables:'write',organization_administration:'write'}}]);
-    expect(revoked).toHaveLength(2);expect(new Set(revoked).size).toBe(2);
-    expect(calls.filter(c=>!['GET','DELETE'].includes(c.method)).map(c=>c.path)).toEqual(['/app/installations/8/access_tokens','/app/installations/8/access_tokens']);
+    expect(requests).toEqual([...(single?[{repository_ids:[1447987054],permissions:{metadata:'read',contents:'read'}}]:[]),{permissions:{metadata:'read'}},{repository_ids:[12],permissions:{metadata:'read',contents:'write',administration:'write',actions_variables:'write',organization_administration:'write'}}]);
+    expect(revoked).toHaveLength(single?3:2);expect(new Set(revoked).size).toBe(single?3:2);
+    expect(calls.filter(c=>!['GET','DELETE'].includes(c.method)).map(c=>c.path)).toEqual(Array(single?3:2).fill('/app/installations/8/access_tokens'));
   }finally{vi.unstubAllEnvs();}
 });
 const actors=[4243096,88].map(actor_id=>({actor_id,actor_type:'Integration',bypass_mode:'always'}));
@@ -62,6 +81,11 @@ it('bootstrap and template jobs enumerate independently, separate keys and keep 
   expect(bootstrap.concurrency).toEqual({group:'steward-governance-mutation','cancel-in-progress':false,queue:'max'});
   expect(templates.needs).toBe('bootstrap');expect(templates.if).toContain('!cancelled()');expect(templates.if).not.toMatch(/success\(/);
   expect(templates.concurrency['cancel-in-progress']).toBe(false);
+  expect(templates.if).toContain('!inputs.bootstrap_only');
+  expect(bootstrap.if).toContain("github.event_name == 'workflow_dispatch' && inputs.bootstrap_only");
+  expect(bootstrap.steps.at(-1).env.STEWARD_BOOTSTRAP_ONLY).toContain('inputs.bootstrap_only');
+  expect(Object.keys(workflow.on.workflow_dispatch.inputs)).toEqual(['bootstrap_only']);
+  expect(workflow.jobs['automation-health'].if).toContain('!inputs.bootstrap_only');
   for(const job of [bootstrap,templates]) {
     expect(job.if).toContain("vars.STEWARD_TEMPLATE_APPLY == 'true'");expect(job.environment.name).toBe('steward-automation');
     expect(job.steps[0].with).toEqual({ref:'${{ github.workflow_sha }}','fetch-depth':0,'persist-credentials':false});
