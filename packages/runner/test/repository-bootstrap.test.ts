@@ -79,6 +79,15 @@ it('resumes recorded recovery after trusted controller promotion without changin
   expect(f.state.sourceChecks.some((s:any)=>s.controllerSha===oldSource)).toBe(true);
   expect(f.state.variable).toBeNull();expect(f.state.commits).toHaveLength(1);
 });
+it.each(['empty','partial'])('preserves %s legacy recovery without writes when current bindings differ',async(mode)=>{
+  const old=fixture();old.state.badArchive=true;await expect(old.run()).rejects.toThrow();
+  const record=JSON.parse(old.state.variable),f=fixture();
+  if(mode==='empty')record.affectedRules=[];
+  else f.bindings.push({ruleId:8,policyDigest:'a'.repeat(64)});
+  const raw=JSON.stringify(record);f.state.variable=raw;
+  await expect(f.run()).rejects.toThrow('RECOVERY_RULE_BINDINGS_CHANGED');
+  expect(f.state.writes).toEqual([]);expect(f.state.variable).toBe(raw);expect(f.state.archives).toEqual([]);
+});
 for(const lost of ['POST /repos/splrad/fixture/actions/variables','PATCH /repos/splrad/fixture/actions/variables/'+bootstrapVariable,
   'PUT /orgs/splrad/rulesets/7','PUT /repos/splrad/fixture/contents/README.md','DELETE /repos/splrad/fixture/actions/variables/'+bootstrapVariable])
   it('recovers native lost response: '+lost,async()=>{const f=fixture();f.state.lose.add(lost);expect((await f.run()).status).toBe('READY');expect(f.state.variable).toBeNull();});

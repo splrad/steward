@@ -103,6 +103,7 @@ export async function bootstrapRepository(repository:BootstrapRepository,source:
   let recovery:BootstrapRecovery;
   if(saved!==null) {
     recovery=decodeBootstrapRecovery(saved,repository);await services.verifySource(recovery);
+    check(same(recovery.affectedRules.map(r=>r.ruleId).sort((a,b)=>a-b),bindings.map(b=>b.ruleId).sort((a,b)=>a-b)),'RECOVERY_RULE_BINDINGS_CHANGED');
     for(const affected of recovery.affectedRules)await rule(affected.ruleId);
   } else {
     const affectedRules:AffectedRule[]=[];
