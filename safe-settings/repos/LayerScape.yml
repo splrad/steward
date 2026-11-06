@@ -1,7 +1,0 @@
-labels:
-  - name: "release:abandoned:layerscape"
-    color: "fbca04"
-    description: "维护者确认放弃 LayerScape 单位的当前发行周期。"
-  - name: "release:supersede-required:layerscape"
-    color: "fbca04"
-    description: "维护者要求受审修复版替代 LayerScape 单位的当前发行周期。"
