@@ -28,8 +28,10 @@ export function bootstrapRulePolicyDigest(rule:any,controllerSha?:string):string
   const rules=structuredClone(rule.rules);
   if(controllerSha!==undefined) {
     const required=rules.filter((r:any)=>r.type==='workflows');
-    check(commit(controllerSha)&&required.length===1&&required[0].parameters?.workflows?.length===1,'CONTROLLER_WORKFLOW');
-    const workflow=required[0].parameters.workflows[0];
+    check(commit(controllerSha)&&required.length===1&&Array.isArray(required[0].parameters?.workflows),'CONTROLLER_WORKFLOW');
+    const matches=required[0].parameters.workflows.filter((w:any)=>w.repository_id===1296724484&&w.path==='.github/workflows/pr-validation-native.yml');
+    check(matches.length===1,'CONTROLLER_WORKFLOW');
+    const workflow=matches[0];
     check(workflow.repository_id===1296724484&&workflow.path==='.github/workflows/pr-validation-native.yml'&&workflow.sha===controllerSha,'CONTROLLER_WORKFLOW');
     workflow.sha='<controller-sha>';
   }
@@ -47,7 +49,7 @@ export function decodeBootstrapRecovery(raw:string,repository:BootstrapRepositor
 }
 
 export async function bootstrapRepository(repository:BootstrapRepository,source:BootstrapSource,bindings:readonly BootstrapRule[],
-  io:BootstrapIO,services:{verifySource:(source:BootstrapSource)=>Promise<void>;
+  io:BootstrapIO,services:{requirePrivate?:boolean;verifySource:(source:BootstrapSource)=>Promise<void>;
     verifyProtection:(repository:BootstrapRepository)=>Promise<void>;
     archive:(record:BootstrapRecovery,origin:'app'|'external')=>Promise<string>;
     identity:{name:string;email:string;id:number};now:()=>string}) {
@@ -63,7 +65,7 @@ export async function bootstrapRepository(repository:BootstrapRepository,source:
   };
   const current=await native('GET',prefix);
   check(current.id===repository.id&&current.full_name===repository.full_name&&current.owner?.id===302208797
-    &&current.default_branch===repository.default_branch&&!current.archived&&!current.disabled,'TARGET_CHANGED');
+    &&current.default_branch===repository.default_branch&&!current.archived&&!current.disabled&&(!services.requirePrivate||current.private===true),'TARGET_CHANGED');
   const readVariable=async()=>{
     const value=await native('GET',variable,undefined,true);
     check(value===null||value.name===bootstrapVariable&&typeof value.value==='string','VARIABLE_RESPONSE');return value?.value??null;

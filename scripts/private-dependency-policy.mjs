@@ -94,7 +94,7 @@ export function newActions(base,head){
   const key=x=>JSON.stringify([x.repository,x.sha,x.id,x.severity]);const old=new Set(base.map(key));return head.filter(x=>!old.has(key(x)));
 }
 export function assertInputScope(paths){
-  const allowed=/^(?:AGENTS\.md|CONTRIBUTING\.md|README\.md|\.gitignore|mise\.(?:toml|lock)|\.github\/(?:dependabot\.yml|renovate\.json|release-template\.md\.mustache|workflows\/(?:actions\.lock|pr-title\.yml|settings-sync\.yml))|\.mise\/locks\/npm\/\d+\.\d+\.\d+\/(?:aube-lock\.yaml|package\.json)|safe-settings\/(?:deployment-settings\.yml|settings\.yml|upstream-lock-exception\.json|upstream-package-lock\.patch|repos\/[^/]+\.ya?ml))$/;
+  const allowed=/^(?:AGENTS\.md|CONTRIBUTING\.md|README\.md|\.gitignore|mise\.(?:toml|lock)|\.github\/(?:dependabot\.yml|renovate\.json|release-template\.md\.mustache|workflows\/(?:actions\.lock|pr-title\.yml|settings-sync\.yml))|\.mise\/locks\/npm\/\d+\.\d+\.\d+\/(?:aube-lock\.yaml|package\.json)|acceptance\/bootstrap-target\.json|safe-settings\/(?:deployment-settings\.yml|settings\.yml|upstream-lock-exception\.json|upstream-package-lock\.patch|repos\/[^/]+\.ya?ml))$/;
   assert(paths.every(path=>allowed.test(path)),'INPUT_UNCOVERED');
 }
 

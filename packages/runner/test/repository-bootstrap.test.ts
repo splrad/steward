@@ -150,3 +150,16 @@ it('recovers PREPARED after a rule write but before its variable update before i
   await expect(f.run()).rejects.toThrow();f.state.hook=null;f.state.fail.clear();
   expect((await f.run()).status).toBe('READY');expect(f.rules[7].conditions.repository_name.exclude).not.toContain('fixture');
 });
+
+it('preserves unrelated required workflows in the policy digest and rejects duplicate controller bindings',()=>{
+  const f=fixture(),rule=f.rules[7];
+  const workflows=[{repository_id:1296724484,path:'.github/workflows/pr-validation-native.yml',sha:f.source.controllerSha},{repository_id:123,path:'.github/workflows/other.yml',sha:'b'.repeat(40)}];
+  rule.rules.push({type:'workflows',parameters:{workflows}});
+  const before=bootstrapRulePolicyDigest(rule,f.source.controllerSha);
+  workflows[1]!.sha='c'.repeat(40);expect(bootstrapRulePolicyDigest(rule,f.source.controllerSha)).not.toBe(before);
+  workflows.push({...workflows[0]!});expect(()=>bootstrapRulePolicyDigest(rule,f.source.controllerSha)).toThrow('CONTROLLER_WORKFLOW');
+});
+it('rejects a visibility change before any bootstrap writes',async()=>{
+  const f=fixture();Object.assign(f.services,{requirePrivate:true});
+  await expect(f.run()).rejects.toThrow('TARGET_CHANGED');expect(f.state.writes).toEqual([]);
+});

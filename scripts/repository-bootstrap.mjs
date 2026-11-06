@@ -1,3 +1,5 @@
+import {parseAcceptanceTarget} from './bootstrap-acceptance.mjs';
+export {decodeAcceptanceTarget,parseAcceptanceTarget} from './bootstrap-acceptance.mjs';
 import {createAppAuth} from '@octokit/auth-app';
 import {Octokit} from '@octokit/rest';
 import {readFile,mkdtemp,mkdir,appendFile} from 'node:fs/promises';
@@ -101,15 +103,6 @@ export function bootstrapOnly(env) {
   check(raw==='false'||raw==='true'&&env.GITHUB_EVENT_NAME==='workflow_dispatch','TARGET_INPUT');
   return raw==='true';
 }
-export function decodeAcceptanceTarget(value) {
-  check(value&&Object.keys(value).sort().join(',')==='purpose,repositoryId,schemaVersion'&&value.schemaVersion===1
-    &&value.purpose==='bootstrap-only'&&positive(value.repositoryId),'ACCEPTANCE_TARGET');
-  return value.repositoryId;
-}
-export function parseAcceptanceTarget(text) {
-  try{return decodeAcceptanceTarget(JSON.parse(text));}
-  catch{throw Error('BOOTSTRAP_ACCEPTANCE_TARGET_INVALID');}
-}
 export async function bootstrapWake({discover,service,repositoryId=null}) {
   const counts={repositories:0,ready:0,existing:0,failed:0};
   const installed=await discover();
@@ -177,10 +170,18 @@ export async function main(transport=fetch) {
       }throw Error('BOOTSTRAP_INSTALLATION_INCOMPLETE');
     }finally{await c.revoke();}
   },service:async repository=>{
+    if(single) {
+      const reader=await credential(repository.id,{metadata:'read'});
+      try {
+        const current=await get(reader.io,`/repos/${repository.full_name}`);
+        check(current.id===repository.id&&current.full_name===repository.full_name&&current.owner?.id===302208797
+          &&current.private===true&&!current.archived&&!current.disabled,'TARGET_CHANGED');
+      }finally{await reader.revoke();}
+    }
     const c=await credential(repository.id,{metadata:'read',contents:'write',administration:'write',actions_variables:'write',organization_administration:'write'});
     try {
       const scope=await get(c.io,'/installation/repositories');check(scope.total_count===1&&scope.repositories[0]?.id===repository.id,'TOKEN_SCOPE');
-      return await bootstrapRepository(repository,source,config.rules,c.io,{identity,now:()=>new Date().toISOString(),verifySource,
+      return await bootstrapRepository(repository,source,config.rules,c.io,{requirePrivate:single,identity,now:()=>new Date().toISOString(),verifySource,
         verifyProtection:async r=>{const rules=await pages(c.io,`/repos/${r.full_name}/rules/branches/${encodeURIComponent(r.default_branch)}`);
           check(rules.some(rule=>rule.type==='pull_request')&&rules.some(rule=>rule.type==='required_status_checks'),'DEFAULT_PROTECTION');},
         archive:(record,origin)=>archiveBootstrap({root,repository,token:c.token,appId,identity:{name:identity.name,email:identity.email},record,origin,io:c.io})});

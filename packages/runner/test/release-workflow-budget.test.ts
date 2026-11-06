@@ -38,5 +38,7 @@ it('connects the fixed coordinator and independent native health job within the 
   }
   expect((await load('update-dependencies.yml')).jobs['automation-health']).toBeUndefined();
   const behavior=(job:unknown)=>JSON.parse(JSON.stringify(job,(_key,value)=>typeof value==='string'?value.split('\n').filter(line=>!/^\s*#/.test(line)).join('\n'):value));
-  expect(behavior(d.jobs['automation-health'])).toEqual(behavior(managed.jobs['automation-health']));
+  const release=behavior(d.jobs['automation-health']),sync=behavior(managed.jobs['automation-health']);
+  expect(sync.if).toBe(release.if+' && !inputs.bootstrap_only');
+  delete release.if;delete sync.if;expect(release).toEqual(sync);
 });

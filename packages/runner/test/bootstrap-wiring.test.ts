@@ -29,7 +29,7 @@ it('bootstrap-only selection validates before credentials and never services oth
   for(const list of [[{id:13}],[{id:12,private:false}],[{id:12,private:true,archived:true}],[{id:12,private:true},{id:12,private:true}]])await expect(bootstrapWake({discover:async()=>list,service,repositoryId:12})).rejects.toThrow('TARGET_NOT_INSTALLED');
   expect(service).not.toHaveBeenCalled();
 });
-it.each([false,true])('real bootstrap entry separates scoped credentials (private acceptance %s)',async(single)=>{
+it.each([{single:false,changed:false},{single:true,changed:false},{single:true,changed:true}])('real bootstrap entry separates scoped credentials (%j)',async({single,changed})=>{
   const {main}=await module(),{privateKey}=generateKeyPairSync('rsa',{modulusLength:2048});
   const values={GITHUB_REPOSITORY:'splrad/steward',GITHUB_REPOSITORY_ID:'1296724484',GITHUB_REF:'refs/heads/main',
     STEWARD_DEFAULT_BRANCH:'main',GITHUB_EVENT_NAME:'workflow_dispatch',STEWARD_CONTROLLER_SHA:'a'.repeat(40),
@@ -56,18 +56,24 @@ it.each([false,true])('real bootstrap entry separates scoped credentials (privat
       value={token:'ghs_fixture'+credential,expires_at:new Date(Date.now()+3600000).toISOString()};status=201;
     }else if(path==='/installation/repositories')value={total_count:1,repositories:[repository]};
     else if(path==='/installation/token'&&method==='DELETE'){revoked.push(headers.get('authorization')!);status=204;}
-    else if(path==='/repos/splrad/fixture')value=repository;
+    else if(path==='/repos/splrad/fixture')value={...repository,private:!changed};
     else if(path==='/repos/splrad/fixture/actions/variables/STEWARD_BOOTSTRAP_RECOVERY'){status=404;value={message:'Not Found'};}
     else if(path==='/repos/splrad/fixture/git/matching-refs/')value=[{ref:'refs/heads/develop',object:{sha:'b'.repeat(40)}}];
     else throw Error('UNEXPECTED_BOOTSTRAP_ENDPOINT');
     return new Response(status===204?null:JSON.stringify(value),{status,headers:{'content-type':'application/json'}});
   };
   try{
-    expect(await main(transport)).toEqual({repositories:1,ready:0,existing:1,failed:0});
-    expect(requests).toEqual([...(single?[{repository_ids:[1447987054],permissions:{metadata:'read',contents:'read'}}]:[]),{permissions:{metadata:'read'}},{repository_ids:[12],permissions:{metadata:'read',contents:'write',administration:'write',actions_variables:'write',organization_administration:'write'}}]);
-    expect(revoked).toHaveLength(single?3:2);expect(new Set(revoked).size).toBe(single?3:2);
-    expect(calls.filter(c=>!['GET','DELETE'].includes(c.method)).map(c=>c.path)).toEqual(Array(single?3:2).fill('/app/installations/8/access_tokens'));
-  }finally{vi.unstubAllEnvs();}
+    expect(await main(transport)).toEqual({repositories:1,ready:0,existing:changed?0:1,failed:changed?1:0});
+    if(changed){
+      expect(requests).toEqual([{repository_ids:[1447987054],permissions:{metadata:'read',contents:'read'}},{permissions:{metadata:'read'}},{repository_ids:[12],permissions:{metadata:'read'}}]);
+      expect(revoked).toHaveLength(3);expect(new Set(revoked).size).toBe(3);
+      expect(calls.filter(c=>!['GET','DELETE'].includes(c.method)).map(c=>c.path)).toEqual(Array(3).fill('/app/installations/8/access_tokens'));
+      return;
+    }
+    expect(requests).toEqual([...(single?[{repository_ids:[1447987054],permissions:{metadata:'read',contents:'read'}}]:[]),{permissions:{metadata:'read'}},...(single?[{repository_ids:[12],permissions:{metadata:'read'}}]:[]),{repository_ids:[12],permissions:{metadata:'read',contents:'write',administration:'write',actions_variables:'write',organization_administration:'write'}}]);
+    expect(revoked).toHaveLength(single?4:2);expect(new Set(revoked).size).toBe(single?4:2);
+    expect(calls.filter(c=>!['GET','DELETE'].includes(c.method)).map(c=>c.path)).toEqual(Array(single?4:2).fill('/app/installations/8/access_tokens'));
+  }finally{if(changed)process.exitCode=0;vi.unstubAllEnvs();}
 });
 const actors=[4243096,88].map(actor_id=>({actor_id,actor_type:'Integration',bypass_mode:'always'}));
 const nativeRule=(id:number)=>({id,source:'splrad',source_type:'Organization',enforcement:'active',target:'branch',
