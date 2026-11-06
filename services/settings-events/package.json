@@ -1,0 +1,19 @@
+{
+  "name": "@splrad/settings-events",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "build": "vite build",
+    "deploy:check": "cf deploy --prebuilt --dry-run --provision=false"
+  },
+  "dependencies": {
+    "jose": "6.2.8"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "2.0.0-beta.v.12",
+    "cf": "1.0.0-beta.27",
+    "vite": "8.3.5"
+  }
+}

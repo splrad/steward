@@ -5,11 +5,12 @@
   "license": "Apache-2.0",
   "type": "module",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "services/settings-events"
   ],
   "scripts": {
     "build": "node scripts/build-runner.mjs",
-    "test": "uv sync --project tools/template --frozen --only-group release-inspection --inexact --no-build && npm run test:pages && npm run test:private-dependencies && vitest run",
+    "test": "uv sync --project tools/template --frozen --only-group release-inspection --inexact --no-build && npm run test:pages && npm run test:private-dependencies && npm run test:settings-events && vitest run",
     "test:pages": "node --test scripts/test/select-pages-source.test.mjs scripts/test/pages-wiring.test.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.runtime.json --noEmit && node scripts/verify-source-boundaries.mjs",
     "verify:config": "node scripts/verify-config.mjs",
@@ -17,7 +18,8 @@
     "verify:workflows": "node scripts/verify-workflows.mjs",
     "verify": "npm run test && npm run typecheck && npm run verify:config && npm run verify:dist && npm run verify:workflows",
     "test:template": "uv run --project tools/template --frozen python -m unittest discover -s tools/template -p test_*.py -v",
-    "test:private-dependencies": "node --test scripts/test/private-dependencies.test.mjs"
+    "test:private-dependencies": "node --test scripts/test/private-dependencies.test.mjs",
+    "test:settings-events": "npm run test --workspace=@splrad/settings-events && npm run build --workspace=@splrad/settings-events"
   },
   "dependencies": {
     "@octokit/auth-app": "8.3.1",
