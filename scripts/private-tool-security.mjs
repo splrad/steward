@@ -38,7 +38,7 @@ export function miseFindings(version,advisories){
   }return matches;
 }
 export function miseVersions(documents,requiredWorkflow){
-  const collect=doc=>Object.values(doc?.jobs??{}).flatMap(job=>job.steps??[]).filter(step=>step.uses?.startsWith('jdx/mise-action@'));
+  const collect=doc=>Object.values(doc?.jobs??{}).flatMap(job=>job.steps??[]).filter(step=>/^jdx\/mise-action@[a-f0-9]{40}$/.test(step.uses??''));
   assert(collect(documents.get(requiredWorkflow)).length===1,'MISE_RUNTIME_REQUIRED');
   const versions=new Set();
   for(const doc of documents.values())for(const step of collect(doc)){

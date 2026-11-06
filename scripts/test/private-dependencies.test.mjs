@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {dependencyMode,loadPolicy,inventory,checkInventory,highFindings,requireOnline,actionFindings,newActions,assertInputScope,licenseFacts} from '../private-dependency-policy.mjs';
+import {dependencyMode,loadPolicy,inventory,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,licenseFacts} from '../private-dependency-policy.mjs';
 import {upstreamReference,run,assertVerifiedActionTag,main} from '../validation-private-dependencies.mjs';
 import {nodeFindings,miseFindings,miseVersions,archiveInventory} from '../private-tool-security.mjs';
 import {readFile,mkdtemp,rm} from 'node:fs/promises';
@@ -129,4 +129,25 @@ test('preflight token failure still writes a failed evidence summary',async()=>{
   const report=JSON.parse(await readFile(join(directory,'summary.json'),'utf8'));
   assert.equal(report.complete,false);assert.equal(report.identity,null);assert.equal(report.error,'PRIVATE_DEPENDENCY_TOKEN_REQUIRED');
  }finally{await rm(directory,{recursive:true,force:true});}
+});
+
+test('package identity and severity cannot be consumed by equal native advisory counts',()=>{
+ const result=(version,name='demo',severity='HIGH',path='/input/package-lock.json')=>({results:[{source:{type:'lockfile',path},packages:[{package:{name,version,ecosystem:'npm'},vulnerabilities:[{id:'GHSA-fixture',database_specific:{severity}}]}]}]});
+ const empty={results:null,experimental_config:{licenses:{}}};
+ assert.equal(newPackageFindings(result('1.0.0'),result('1.0.0'),empty).length,0);
+ for(const head of [result('1.1.0'),result('1.0.0','other'),result('1.0.0','demo','CRITICAL'),result('1.0.0','demo','HIGH','/input/npm-tool/bom.cdx.json')])assert.equal(newPackageFindings(result('1.0.0'),head,empty).length,1);
+ assert.equal(newPackageFindings(result('1.0.0','demo','LOW'),result('1.0.0'),empty).length,1);
+ assert.equal(newPackageFindings({results:[]},result('1.0.0'),result('1.0.0')).length,1);
+});
+test('severity upgrades remain new action and tool findings',()=>{
+ const action={repository:'jdx/mise-action',sha:SHA,id:'GHSA-fixture',severity:'Low'};
+ assert.equal(newActions([action],[{...action,severity:'High'}]).length,1);assert.equal(newActions([action],[action]).length,0);
+ const tool={source:'jdx/mise',version:'2026.10.18',id:'GHSA-fixture',severity:'LOW'};
+ assert.equal(newTools([tool],[{...tool,severity:'HIGH'}]).length,1);assert.equal(newTools([tool],[tool]).length,0);
+});
+test('mise runtime requires the exact action identity and complete SHA',()=>{
+ for(const uses of ['jdx/mise-action-evil@'+SHA,'jdx/mise-action@v3','jdx/mise-action@'+SHA+'extra']){
+  const docs=new Map([['runtime.yml',{jobs:{run:{steps:[{uses,with:{version:'2026.10.18'}}]}}}]]);
+  assert.throws(()=>miseVersions(docs,'runtime.yml'),/MISE_RUNTIME_REQUIRED/);
+ }
 });

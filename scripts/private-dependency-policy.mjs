@@ -45,9 +45,21 @@ export function highFindings(result,{emptyReporter=false}={}){
     const severity=vuln.database_specific?.severity?.toUpperCase();
     // Do not implement CVSS or ecosystem matching: missing database severity is unresolved.
     assert(['LOW','MODERATE','MEDIUM','HIGH','CRITICAL'].includes(severity),'UNKNOWN_SEVERITY');
-    if(['HIGH','CRITICAL'].includes(severity))findings.push({package:item.package,id:vuln.id,severity});
+    if(['HIGH','CRITICAL'].includes(severity))findings.push({source:group.source,package:item.package,id:vuln.id,severity});
   }
   return findings;
+}
+export function newPackageFindings(base,head,reported){
+  // OSV Reporter first compares advisory occurrence counts, which can suppress a changed package version.
+  // Reconcile the scanner's facts, without implementing advisory matching or version-range evaluation.
+  const key=x=>JSON.stringify([x.source?.type,x.source?.path,x.package.ecosystem,x.package.name,x.package.version,x.id,x.severity]);
+  const previous=new Set(highFindings(base).map(key));
+  const exact=highFindings(head).filter(x=>!previous.has(key(x)));
+  return [...new Map([...highFindings(reported,{emptyReporter:true}),...exact].map(x=>[key(x),x])).values()];
+}
+export function newTools(base,head){
+  const key=x=>JSON.stringify([x.source,x.version,x.id,x.severity]);
+  const previous=new Set(base.map(key));return head.filter(x=>!previous.has(key(x)));
 }
 export function requireOnline(env){
   assert(typeof env.GH_TOKEN==='string'&&env.GH_TOKEN.trim().length>0,'TOKEN_REQUIRED');
@@ -75,7 +87,7 @@ export function actionFindings(findings,documents){
   }return [...results.values()];
 }
 export function newActions(base,head){
-  const key=x=>JSON.stringify([x.repository,x.sha,x.id]);const old=new Set(base.map(key));return head.filter(x=>!old.has(key(x)));
+  const key=x=>JSON.stringify([x.repository,x.sha,x.id,x.severity]);const old=new Set(base.map(key));return head.filter(x=>!old.has(key(x)));
 }
 export function assertInputScope(paths){
   const allowed=/^(?:AGENTS\.md|CONTRIBUTING\.md|README\.md|\.gitignore|mise\.(?:toml|lock)|\.github\/(?:dependabot\.yml|renovate\.json|release-template\.md\.mustache|workflows\/(?:actions\.lock|pr-title\.yml|settings-sync\.yml))|\.mise\/locks\/npm\/\d+\.\d+\.\d+\/(?:aube-lock\.yaml|package\.json)|safe-settings\/(?:deployment-settings\.yml|settings\.yml|repos\/[^/]+\.ya?ml))$/;

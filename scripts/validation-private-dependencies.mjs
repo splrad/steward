@@ -6,7 +6,7 @@ import {pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
 import YAML from 'yaml';
 import {validationInput,git} from './validation-input.mjs';
-import {assert,loadPolicy,checkInventory,highFindings,requireOnline,actionFindings,newActions,assertInputScope,licenseFacts} from './private-dependency-policy.mjs';
+import {assert,loadPolicy,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,licenseFacts} from './private-dependency-policy.mjs';
 import {scanTools,publicBytes} from './private-tool-security.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
 export function run(command,args,cwd,env,accepted=[0]){
@@ -161,11 +161,12 @@ export async function main(env=process.env){
     }
     const comparison=join(out,'comparison');await mkdir(comparison,{recursive:true});
     docker(policy.osvImage,'/root/osv-reporter',out,comparison,['--old=/input/base/osv.json','--new=/input/head/osv.json','--output-files=json:/out/new.json','--fail-on-vuln=false'],false);
-    const difference=JSON.parse(await readFile(join(comparison,'new.json'),'utf8'));report.newHigh=highFindings(difference,{emptyReporter:true});
-    report.licenses=licenseFacts(JSON.parse(await readFile(join(out,'base/osv.json'),'utf8')),JSON.parse(await readFile(join(out,'head/osv.json'),'utf8')));
+    const difference=JSON.parse(await readFile(join(comparison,'new.json'),'utf8'));report.reporterNewHigh=highFindings(difference,{emptyReporter:true});
+    const baseResult=JSON.parse(await readFile(join(out,'base/osv.json'),'utf8')),headResult=JSON.parse(await readFile(join(out,'head/osv.json'),'utf8'));
+    report.newHigh=newPackageFindings(baseResult,headResult,difference);
+    report.licenses=licenseFacts(baseResult,headResult);
     report.newActionVulnerabilities=newActions(report.snapshots.base.actionsFindings,report.snapshots.head.actionsFindings);
-    const previous=new Set(['node','mise'].flatMap(k=>report.snapshots.base.tools[k]?.findings??[]).map(x=>`${x.source}:${x.version}:${x.id}`));
-    report.newToolFindings=['node','mise'].flatMap(k=>report.snapshots.head.tools[k]?.findings??[]).filter(x=>!previous.has(`${x.source}:${x.version}:${x.id}`));
+    report.newToolFindings=newTools(['node','mise'].flatMap(k=>report.snapshots.base.tools[k]?.findings??[]),['node','mise'].flatMap(k=>report.snapshots.head.tools[k]?.findings??[]));
     report.coverage={node:'supplier security-wg',mise:'supplier repository advisories',npm:'verified release archive with bundled package reconciliation'};
     assert(report.newHigh.length===0,'NEW_HIGH_OR_CRITICAL');
     assert(!report.newActionVulnerabilities.some(x=>x.severity==='High'),'NEW_HIGH_ACTION');
