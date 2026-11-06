@@ -17,7 +17,8 @@ jobs:
     timeout-minutes: 15
     outputs:
       source: ${{ steps.scope.outputs.source }}
-      dependency: ${{ steps.scope.outputs.dependency }}
+      dependency: ${{ steps.identity.outputs.dependencyMode == 'private-administrator' && 'true' || steps.scope.outputs.dependency }}
+      dependency-mode: ${{ steps.identity.outputs.dependencyMode }}
       docs: ${{ steps.scope.outputs.docs }}
       governance: ${{ steps.scope.outputs.governance }}
       mode: ${{ steps.identity.outputs.mode }}
@@ -86,6 +87,7 @@ jobs:
               - '**/{AGENTS.md,AGENTS.override.md,CONTRIBUTING.md,copilot-instructions.md,*.instructions.md}'
             governance: *source
             dependency:
+              - '.mise/**'
               - '**/{package.json,package-lock.json,npm-shrinkwrap.json,mise.toml,mise.lock,pyproject.toml,requirements*.txt,*.lock,*.lock.json,global.json,Directory.Build.props,Directory.Packages.props,*.csproj,*.sln,*.slnx,go.mod,go.sum,Cargo.toml,pom.xml,CMakeLists.txt}'
               - '{.github/workflows,templates,schema,config,tools}/**'
               - '**/{AGENTS.md,AGENTS.override.md,CONTRIBUTING.md,copilot-instructions.md,*.instructions.md}'
@@ -371,9 +373,66 @@ jobs:
     if: needs.scope.outputs.dependency == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      VALIDATION_WORKSPACE: ${{ github.workspace }}/target
     steps:
+      - name: Require a supported dependency review mode
+        env:
+          DEPENDENCY_MODE: ${{ needs.scope.outputs.dependency-mode }}
+        run: |
+          case "$DEPENDENCY_MODE" in
+            native|private-administrator) ;;
+            *) echo 'Missing trusted dependency mode'; exit 1 ;;
+          esac
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        if: needs.scope.outputs.dependency-mode == 'private-administrator'
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: policy
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        if: needs.scope.outputs.dependency-mode == 'private-administrator'
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: target
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d
+        if: needs.scope.outputs.dependency-mode == 'private-administrator'
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.10.24
+          working_directory: policy
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - name: Activate trusted policy tool paths
+        if: needs.scope.outputs.dependency-mode == 'private-administrator'
+        working-directory: policy
+        shell: bash
+        env:
+          MISE_SAFE: '1'
+          MISE_LOCKED: '1'
+          MISE_NODE_COMPILE: 'false'
+        run: mise bin-paths | tac >> "$GITHUB_PATH"
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        if: needs.scope.outputs.dependency-mode == 'private-administrator'
+        working-directory: policy
+      - name: Record platform workflow provenance
+        if: needs.scope.outputs.dependency-mode == 'private-administrator'
+        shell: bash
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          WORKFLOW_PATH: ${{ job.workflow_file_path }}
+        run: |
+          printf 'WORKFLOW_REPOSITORY=%s\nWORKFLOW_SHA=%s\nWORKFLOW_PATH=%s\n' "$WORKFLOW_REPOSITORY" "$WORKFLOW_SHA" "$WORKFLOW_PATH" >> "$GITHUB_ENV"
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
-        if: needs.scope.outputs.dependency == 'true'
+        if: needs.scope.outputs.dependency-mode == 'native'
         with:
           base-ref: ${{ needs.scope.outputs.base }}
           head-ref: ${{ needs.scope.outputs.head }}
@@ -386,6 +445,29 @@ jobs:
       - name: Applicability
         if: needs.scope.outputs.dependency == 'false'
         run: echo 'dependency not-applicable; complete trusted diff contains no dependency inputs'
+      - name: Scan private administrator dependencies
+        if: needs.scope.outputs.dependency-mode == 'private-administrator'
+        working-directory: policy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIVATE_DEPENDENCY_EVIDENCE: ${{ github.workspace }}/private-dependency-evidence
+          MISE_SAFE: '1'
+          MISE_LOCKED: '1'
+        run: |
+          set -euo pipefail
+          PRIVATE_ZIZMOR="$(mise which zizmor)"
+          PRIVATE_SYFT="$(mise which syft)"
+          PRIVATE_PYTHON="$(mise which python)"
+          export PRIVATE_ZIZMOR PRIVATE_SYFT PRIVATE_PYTHON
+          node scripts/validation-private-dependencies.mjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ always() && needs.scope.outputs.dependency-mode == 'private-administrator' }}
+        with:
+          name: private-dependency-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: private-dependency-evidence/
+          if-no-files-found: error
+          retention-days: 7
   docs:
     name: Documentation links
     needs: scope

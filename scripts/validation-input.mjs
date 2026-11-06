@@ -2,6 +2,7 @@ import {execFileSync} from 'node:child_process';
 import {readFile,appendFile,writeFile,lstat,realpath} from 'node:fs/promises';
 import {resolve,join,sep} from 'node:path';
 import {pathToFileURL} from 'node:url';
+import {loadPolicy,dependencyMode} from './private-dependency-policy.mjs';
 const check=(ok,code)=>{if(!ok)throw Error('VALIDATION_'+code);};
 export function git(workspace,args) {
   return execFileSync('git',['--no-replace-objects','-c','core.hooksPath=','-c','credential.helper=',...args],
@@ -43,11 +44,11 @@ export async function validationInput(workspace,env=process.env) {
   const files=git(workspace,['ls-files','-z']).toString('utf8').split('\0').filter(Boolean);
   const mode=buildMode(files);
   if(mode==='python')for(const path of ['pyproject.toml','requirements-build.txt'])await regular(workspace,path);
-  return {input,files,mode};
+  return {input,files,mode,dependencyMode:dependencyMode(event,await loadPolicy())};
 }
 export async function main(env=process.env) {
   const workspace=resolve(env.VALIDATION_WORKSPACE??'target'),value=await validationInput(workspace,env);
-  if(env.GITHUB_OUTPUT)await appendFile(env.GITHUB_OUTPUT,Object.entries({mode:value.mode,base:value.input.base,head:value.input.head}).map(([k,v])=>`${k}=${v}\n`).join(''));
+  if(env.GITHUB_OUTPUT)await appendFile(env.GITHUB_OUTPUT,Object.entries({mode:value.mode,dependencyMode:value.dependencyMode,base:value.input.base,head:value.input.head}).map(([k,v])=>`${k}=${v}\n`).join(''));
   if(env.VALIDATION_EVIDENCE)await writeFile(env.VALIDATION_EVIDENCE,JSON.stringify(value,null,2)+'\n',{flag:'wx'});
   if(env.GITHUB_STEP_SUMMARY)await appendFile(env.GITHUB_STEP_SUMMARY,'```json\n'+JSON.stringify({identity:value.input,mode:value.mode},null,2)+'\n```\n');
   return value;
