@@ -8,6 +8,20 @@ export const POLICY = Object.freeze({
 });
 const API = 'https://api.github.com';
 const MAX_BODY = 1024 * 1024;
+// One completed CryptoKey per binding and isolate; no token, JWT or pending
+// cross-request promise is retained. A changed secret always imports a new key.
+function cachedKey(importKey) {
+  let material, key;
+  return async value => {
+    if (key && value === material) return key;
+    const imported = await importKey(value);
+    material = value; key = imported;
+    return imported;
+  };
+}
+const webhookKey = cachedKey(secret => crypto.subtle.importKey('raw', new TextEncoder().encode(secret),
+  {name: 'HMAC', hash: 'SHA-256'}, false, ['verify']));
+const signingKey = cachedKey(pem => importPKCS8(pem.replace(/\\n/g, '\n'), 'RS256'));
 const ACTIONS = Object.freeze({
   repository: ['created', 'edited', 'unarchived'],
   label: ['created', 'edited', 'deleted'],
@@ -56,14 +70,13 @@ async function boundedBody(request) {
 
 async function verified(bytes, header, secret) {
   if (!/^sha256=[a-f0-9]{64}$/.test(header ?? '') || !secret) return false;
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret),
-    {name: 'HMAC', hash: 'SHA-256'}, false, ['verify']);
+  const key = await webhookKey(secret);
   const signature = Uint8Array.from(header.slice(7).match(/../g), x => parseInt(x, 16));
   return crypto.subtle.verify('HMAC', key, signature, bytes);
 }
 
 async function appJwt(pem) {
-  const key = await importPKCS8(pem.replace(/\\n/g, '\n'), 'RS256');
+  const key = await signingKey(pem);
   const now = Math.floor(Date.now() / 1000);
   return new SignJWT({}).setProtectedHeader({alg: 'RS256'}).setIssuer(POLICY.app)
     .setIssuedAt(now - 30).setExpirationTime(now + 300).sign(key);

@@ -35,6 +35,19 @@ test('deployed bundle dispatches in workerd and never follows API redirects', as
       assert.equal(calls.length, redirectAt?.endsWith('/access_tokens') ? 1 : 4);
       if (calls.length === 4) assert.equal(calls.at(-1).path, '/installation/token');
       assert.ok(calls.every(call => call.origin === 'https://api.github.com'));
+      if(redirectAt === null) {
+        // Distinct requests exercise warm isolate keys without sharing pending
+        // request-context promises. Each still makes all four API calls.
+        for(let i=0;i<2;i++) {
+          const warm=await mf.dispatchFetch('http://localhost/github/webhook',{method:'POST',body,headers:{
+            'content-type':'application/json','x-github-event':'label',
+            'x-github-delivery':'12345678-1234-4321-8123-123456789012',
+            'x-hub-signature-256':'sha256='+createHmac('sha256',secret).update(body).digest('hex'),
+          }});
+          assert.equal(warm.status,202);
+        }
+        assert.equal(calls.length,12);
+      }
     } finally { await mf.dispose(); }
   }
 });
