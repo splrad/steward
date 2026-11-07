@@ -89,12 +89,16 @@ it('bootstrap and template jobs enumerate independently, separate keys and keep 
   expect(templates.needs).toBe('bootstrap');expect(templates.if).toContain('!cancelled()');expect(templates.if).not.toMatch(/success\(/);
   expect(templates.concurrency['cancel-in-progress']).toBe(false);
   expect(templates.if).toContain('!inputs.bootstrap_only');
+  expect(bootstrap.if).toContain("vars.STEWARD_BOOTSTRAP_APPLY == 'true'");
+  expect(bootstrap.if).not.toContain('STEWARD_TEMPLATE_APPLY');
   expect(bootstrap.if).toContain("github.event_name == 'workflow_dispatch' && inputs.bootstrap_only");
   expect(bootstrap.steps.at(-1).env.STEWARD_BOOTSTRAP_ONLY).toContain('inputs.bootstrap_only');
-  expect(Object.keys(workflow.on.workflow_dispatch.inputs)).toEqual(['bootstrap_only']);
+  expect(Object.keys(workflow.on.workflow_dispatch.inputs)).toEqual(['health_only','bootstrap_only']);
   expect(workflow.jobs['automation-health'].if).toContain('!inputs.bootstrap_only');
+  expect(templates.if).toContain("vars.STEWARD_TEMPLATE_APPLY == 'true'");
+  expect(templates.if).not.toContain('STEWARD_BOOTSTRAP_APPLY');
   for(const job of [bootstrap,templates]) {
-    expect(job.if).toContain("vars.STEWARD_TEMPLATE_APPLY == 'true'");expect(job.environment.name).toBe('steward-automation');
+    expect(job.environment.name).toBe('steward-automation');
     expect(job.steps[0].with).toEqual({ref:'${{ github.workflow_sha }}','fetch-depth':0,'persist-credentials':false});
     expect(job.steps[2].env).toBeUndefined();expect(job.steps[2].run).toContain('npm ci --ignore-scripts');
   }
@@ -234,4 +238,19 @@ it('repairs only a proven private completed archive origin and never recreates r
   privateRepo=false;await expect(invoke()).rejects.toThrow('ORIGIN_TARGET');privateRepo=true;
   recovery={name:'STEWARD_BOOTSTRAP_RECOVERY',value:'pending'};await expect(invoke()).rejects.toThrow('ORIGIN_RECOVERY_PRESENT');recovery=null;
   badSource=true;await expect(invoke()).rejects.toThrow('source');expect(writes).toHaveLength(0);
+});
+it('bootstrap native source verification accepts the fixed governance event and preserves historical recovery checks',async()=>{
+  const {verifyBootstrapSource}=await module();const sha='a'.repeat(40);
+  const source={workflowId:42,runId:21,runAttempt:1,controllerSha:sha},env={STEWARD_DEFAULT_BRANCH:'main',STEWARD_CONTROLLER_SHA:sha};
+  for(const event of ['repository_dispatch','workflow_dispatch','push','schedule']){
+    let run:any={repository:{id:1296724484},head_repository:{id:1296724484},head_sha:sha,head_branch:'main',workflow_id:42,run_attempt:1,event,actor:{id:353238212,login:'splrad-governance[bot]'}};
+    const calls:any[]=[];const io={request:async(_method:string,path:string)=>({status:200,value:path.includes('/runs/')?run:{path:'.github/workflows/sync-managed.yml',state:'active'}})};
+    const execute=async(...args:any[])=>{calls.push(args);};await verifyBootstrapSource(io,source,env,execute);
+    expect(calls[0][1]).toEqual(['--no-replace-objects','merge-base','--is-ancestor',sha,sha]);
+    if(event==='repository_dispatch'){
+      for(const patch of [{actor:{id:1,login:'splrad-governance[bot]'}},{head_sha:'b'.repeat(40)},{head_repository:{id:1}},{run_attempt:0}]){
+        const saved=run;run={...saved,...patch};await expect(verifyBootstrapSource(io,source,env,execute)).rejects.toThrow('SOURCE_RUN');run=saved;
+      }
+    }
+  }
 });

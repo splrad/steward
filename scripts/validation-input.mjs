@@ -2,7 +2,7 @@ import {execFileSync} from 'node:child_process';
 import {readFile,appendFile,writeFile,lstat,realpath} from 'node:fs/promises';
 import {resolve,join,sep} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {loadPolicy,dependencyMode} from './private-dependency-policy.mjs';
+import {loadPolicy,dependencyMode,assertGovernanceOnlyScope} from './private-dependency-policy.mjs';
 const check=(ok,code)=>{if(!ok)throw Error('VALIDATION_'+code);};
 export function git(workspace,args) {
   return execFileSync('git',['--no-replace-objects','-c','core.hooksPath=','-c','credential.helper=',...args],
@@ -42,9 +42,12 @@ export async function validationInput(workspace,env=process.env) {
   const changedPaths=new TextDecoder('utf-8',{fatal:true}).decode(git(workspace,['diff','--no-ext-diff','--no-textconv','--name-only','--no-renames','-z',base,head])).split('\0').filter(Boolean);
   const input={complete:true,repositoryId,base,head,workflowSha:env.WORKFLOW_SHA,changedPaths};
   const files=git(workspace,['ls-files','-z']).toString('utf8').split('\0').filter(Boolean);
+  const dependency=dependencyMode(event,await loadPolicy(),env.PRIVATE_GOVERNANCE_REPOSITORY_ID);
+  // Reject product inputs before scope outputs can schedule any candidate build.
+  if(dependency==='private-governance')assertGovernanceOnlyScope(files);
   const mode=buildMode(files);
   if(mode==='python')for(const path of ['pyproject.toml','requirements-build.txt'])await regular(workspace,path);
-  return {input,files,mode,dependencyMode:dependencyMode(event,await loadPolicy())};
+  return {input,files,mode,dependencyMode:dependency};
 }
 export async function main(env=process.env) {
   const workspace=resolve(env.VALIDATION_WORKSPACE??'target'),value=await validationInput(workspace,env);

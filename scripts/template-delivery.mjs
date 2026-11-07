@@ -1,3 +1,4 @@
+import {assertTemplateWake} from './template-entry.mjs';
 import { spawn, execFile } from 'node:child_process';
 import { mkdtemp, writeFile, readFile, open, appendFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
@@ -48,8 +49,9 @@ export async function templateWake({discover,deliver},clock=Date.now) {
 
 export async function main() {
   const env=process.env,runId=Number(env.GITHUB_RUN_ID);
+  assertTemplateWake(env,env.GITHUB_EVENT_PATH?JSON.parse(await readFile(env.GITHUB_EVENT_PATH,'utf8')):{});
   if(env.GITHUB_REPOSITORY!=='splrad/steward'||env.GITHUB_REPOSITORY_ID!=='1296724484'||env.GITHUB_REF!==`refs/heads/${env.STEWARD_DEFAULT_BRANCH}`
-    ||!['push','schedule','workflow_dispatch'].includes(env.GITHUB_EVENT_NAME)||!Number.isSafeInteger(runId)||runId<1
+    ||!['repository_dispatch','workflow_dispatch'].includes(env.GITHUB_EVENT_NAME)||!Number.isSafeInteger(runId)||runId<1
     ||!(/^[a-f0-9]{40}$/.test(env.STEWARD_CONTROLLER_SHA??'')))throw Error('TEMPLATE_CENTRAL_IDENTITY');
   const root=await mkdtemp(join(tmpdir(),'steward-template-wake-')),selection=join(root,'selection.json');
   const uv=await resolvePolicyTool('uv');

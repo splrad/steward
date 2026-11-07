@@ -152,3 +152,15 @@ it.each(['eligible','failed','moved','private-key','forged-preflight'])('preflig
     expect(JSON.parse(await readFile(join(directory,'source-preflight.json'),'utf8'))).toEqual(result);
   }finally{await rm(directory,{recursive:true,force:true});}
 });
+it('publishes one fixed template wake only after a new tag; unknown responses never retry',async()=>{
+  const {wakePublishedTemplate}=await module();
+  for(const status of ['UNCHANGED','ALREADY_PUBLISHED']){
+    let writes=0;await wakePublishedTemplate({request:async()=>{writes++;}},{status},async()=>{},async()=>{});expect(writes).toBe(0);
+  }
+  const calls:any[]=[],records:any[]=[];let checked=0;
+  await wakePublishedTemplate({request:async(...args:any[])=>{calls.push(args);return {status:204};}},{status:'PUBLISHED'},async()=>{checked++;},async(value:any)=>records.push(value));
+  expect(checked).toBe(1);expect(calls).toEqual([['POST','/repos/splrad/steward/dispatches',{event_type:'steward-template-event',client_payload:{schemaVersion:1}}]]);
+  expect(records).toEqual([{kind:'template-wake',status:'ACCEPTED'}]);
+  let attempts=0;await expect(wakePublishedTemplate({request:async()=>{attempts++;throw Error('lost');}},{status:'PUBLISHED'},async()=>{},async()=>{})).rejects.toThrow('lost');expect(attempts).toBe(1);
+  await expect(wakePublishedTemplate({request:async()=>{throw Error('must not write');}},{status:'PUBLISHED'},async()=>{throw Error('main moved');},async()=>{})).rejects.toThrow('main moved');
+});
