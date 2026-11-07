@@ -122,7 +122,9 @@ export function assertCopierInputs(files,resolveTemplate,paths=['.github/labeler
   const answers=YAML.parse(files.get('.copier-answers.yml').toString('utf8'));
   assert(answers&&Object.keys(answers).sort().join(',')==='_commit,_src_path'
     &&answers._src_path==='https://github.com/splrad/steward.git'
-    &&typeof answers._commit==='string'&&/^v?\d+\.\d+\.\d+$/.test(answers._commit),'COPIER_ANSWERS');
+    &&typeof answers._commit==='string'&&/^v?\d[0-9a-z.!+_-]*$/i.test(answers._commit),'COPIER_ANSWERS');
+  // This is a safe version-shaped tag name, not a second PEP 440 parser.
+  // The resolver must bind refs/tags/<name> to an ancestor in the trusted checkout.
   const templates=resolveTemplate(answers._commit);
   assert(templates instanceof Map,'COPIER_TEMPLATE_SOURCE');
   for(const path of paths){

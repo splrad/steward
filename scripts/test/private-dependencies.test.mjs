@@ -260,6 +260,15 @@ test('Copier admission requires trusted template bytes and original versioned an
  const templates=new Map(await Promise.all(paths.map(async path=>[path,await readFile(new URL('../../templates/repository/'+path,import.meta.url))])));
  const files=new Map(templates);files.set('.copier-answers.yml',Buffer.from('_src_path: https://github.com/splrad/steward.git\n_commit: v0.2.0\n'));
  assertInputScope([...files.keys()]);assertCopierInputs(files,ref=>ref==='v0.2.0'?templates:null);
+ for(const tag of ['v1!2.3.5','v1.2.3.4','v1.2.3.post1','V1.2.3+local.1']){
+  const versioned=new Map(files);versioned.set('.copier-answers.yml',Buffer.from('_src_path: https://github.com/splrad/steward.git\n_commit: '+tag+'\n'));
+  assertCopierInputs(versioned,ref=>ref===tag?templates:null);
+  assert.throws(()=>assertCopierInputs(versioned,()=>null),/COPIER_TEMPLATE_SOURCE/);
+ }
+ for(const tag of ['v1.2.3^{commit}','v1.2.3:path','v1.2.3/other','--help']){
+  const invalid=new Map(files);invalid.set('.copier-answers.yml',Buffer.from('_src_path: https://github.com/splrad/steward.git\n_commit: '+tag+'\n'));
+  assert.throws(()=>assertCopierInputs(invalid,()=>templates),/COPIER_ANSWERS/);
+ }
  assert.throws(()=>assertCopierInputs(files,()=>null),/COPIER_TEMPLATE_SOURCE/);
  for(const path of paths){const changed=new Map(files);changed.set(path,Buffer.from('unreviewed'));assert.throws(()=>assertCopierInputs(changed,()=>templates),/COPIER_TEMPLATE_BYTES/);}
  for(const text of ['_src_path: https://example.invalid/template\n_commit: v0.2.0\n','_src_path: https://github.com/splrad/steward.git\n_commit: main\n','_src_path: https://github.com/splrad/steward.git\n_commit: v0.2.0\n_tasks: bad\n']){
