@@ -43,7 +43,7 @@ it.each([
   }
 });
 
-it('only the two production and two explicitly gated acceptance jobs receive native Copilot permission', async () => {
+it('only the production and explicitly gated acceptance jobs receive native Copilot permission', async () => {
   const consumers: string[] = [];
   for (const file of await readdir('.github/workflows')) {
     if (!/\.ya?ml$/.test(file)) continue;
@@ -54,5 +54,5 @@ it('only the two production and two explicitly gated acceptance jobs receive nat
     }
   }
   expect(consumers.sort()).toEqual(['ai-identity-acceptance.yml/quality', 'ai-identity-acceptance.yml/release',
-    'quality-language-summary.yml/quality-summary', 'release.yml/release-coordinator']);
+    'business-flow-acceptance.yml/acceptance', 'quality-language-summary.yml/quality-summary', 'release.yml/release-coordinator']);
 });

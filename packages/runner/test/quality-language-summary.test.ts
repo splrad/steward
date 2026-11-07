@@ -166,7 +166,9 @@ it.each(['WAIT_AUTH','WAIT_QUOTA'])('restores persisted input after repeated exp
   };
   for(let i=0;i<4;i++) {await run();expect(calls).toBe(i+1);await run();expect(calls).toBe(i+1);now+=600000;}
   await run(f.client);expect(renderQualitySummary(cache).complete).toBe(1);expect(f.calls).toBe(1);
-  expect(Object.values(cache.entries)[0]!.attempts.map(a=>a.status)).toEqual([reason,reason,reason,reason,'COMPLETE']);
+  expect(Object.values(cache.entries)[0]!.attempts.map(a=>a.status)).toEqual([reason,'COMPLETE']);
+  const refused=new Set(f.saves.flatMap(s=>Object.values(s.entries).flatMap(e=>e.attempts.filter(a=>a.status===reason).map(a=>a.startedAt))));
+  expect(refused.size).toBe(4);expect(f.saves.every(s=>Object.values(s.entries).every(e=>e.attempts.length<=2))).toBe(true);
   await run(f.client);expect(f.calls).toBe(1);
 });
 it('observes the current bounded unknown-response policy after durable serialization',async()=>{
@@ -189,7 +191,23 @@ it('retains the three-generation bound after refusal history and rejects a fourt
     cache=decodeStateFile('steward/governance-state','quality/1.json',Buffer.from(JSON.stringify(f.saves.at(-1)!)),12) as QualityCache;
     now+=600000;
   }
-  expect(calls).toBe(5);expect(Object.values(cache.entries)[0]!.attempts).toHaveLength(5);
+  expect(calls).toBe(5);expect(Object.values(cache.entries)[0]!.attempts).toHaveLength(4);
   const entry=Object.values(cache.entries)[0]!;entry.attempts.push({...entry.attempts.at(-1)!,status:'UNKNOWN'});
   expect(()=>decodeStateFile('steward/governance-state','quality/1.json',Buffer.from(JSON.stringify(cache)),12)).toThrow('CACHE_SCHEMA');
+});
+
+it('rejects null attempt records with the closed cache error',async()=>{
+  const cache=await reconcileQualitySources(null,{...context,observedAt:new Date(clock()).toISOString()},[source(1)]);
+  (Object.values(cache.entries)[0]!.attempts as unknown[]).push(null);
+  expect(()=>decodeStateFile('steward/governance-state','quality/1.json',Buffer.from(JSON.stringify(cache)),12)).toThrow('CACHE_SCHEMA');
+});
+
+it('never removes refusal history before its durable save succeeds',async()=>{
+  const f=fixture(),cache=await reconcileQualitySources(null,{...context,observedAt:new Date(clock()).toISOString()},[source(1)]);let saves=0;
+  const entry=Object.values(cache.entries)[0]!;entry.attempts.push({startedAt:new Date(clock()-60000).toISOString(),status:'WAIT_AUTH',model:null,usage:null});
+  const store={save:async(c:QualityCache)=>{if(++saves===2)throw Error('durable save failed');return f.store.save(c);}};
+  const client={...f.client,call:async()=>{throw Error('WAIT_QUOTA');}};
+  await expect(translateQualitySources(cache,client,store,{remaining:1,deadline:clock()+1080000},clock)).rejects.toThrow('durable save failed');
+  expect(entry.attempts.map(a=>a.status)).toEqual(['WAIT_AUTH','WAIT_QUOTA']);
+  expect(f.saves[0]!.entries[entry.key]!.attempts.map(a=>a.status)).toEqual(['WAIT_AUTH','UNKNOWN']);
 });

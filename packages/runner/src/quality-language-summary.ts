@@ -137,7 +137,15 @@ export async function translateQualitySources(cache:QualityCache,client:QualityM
     }
     await store.save(cache);
     // Stop this wake after a definite refusal; the next observation checks identity again.
-    if(entries.some(entry=>entry.errorCode==='WAIT_AUTH'||entry.errorCode==='WAIT_QUOTA'))break;
+    if(entries.some(entry=>entry.errorCode==='WAIT_AUTH'||entry.errorCode==='WAIT_QUOTA')) {
+      // The preceding save durably retains every refusal in protected fast-forward Git history.
+      // Keep only the latest definite refusal in the active snapshot; possible generations remain intact.
+      for(const entry of entries) {
+        const latest=entry.attempts.findLast(a=>a.status==='WAIT_AUTH'||a.status==='WAIT_QUOTA');
+        entry.attempts=entry.attempts.filter(a=>a===latest||a.status!=='WAIT_AUTH'&&a.status!=='WAIT_QUOTA');
+      }
+      await store.save(cache);break;
+    }
   }
   return cache;
 }
