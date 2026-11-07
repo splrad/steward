@@ -252,8 +252,13 @@ def deliver(request, api, central_api, *, read_token=None, renderer=copier.rende
         require(lock_runner is not None, 'ACTION_LOCK_RUNNER_REQUIRED')
         actions_lock.prepare(work, before_copier, lock_runner)
         if string('status', '--porcelain', '--untracked-files=all'):
-            git('add', '--all'); git('commit', '--signoff', '--no-gpg-sign', '-m', 'chore: update common repository template')
-            require(string('show','-s','--format=%B').splitlines().count(signoff) == 1, 'LOCAL_SIGNOFF')
+            git('add', '--all')
+            # Git attributes can normalize worktree-only changes back to HEAD.
+            staged = git('diff', '--cached', '--quiet', '--exit-code', allow_failure=True)
+            require(staged.returncode in [0, 1], 'INDEX_DIFF_UNKNOWN')
+            if staged.returncode == 1:
+                git('commit', '--signoff', '--no-gpg-sign', '-m', 'chore: update common repository template')
+                require(string('show','-s','--format=%B').splitlines().count(signoff) == 1, 'LOCAL_SIGNOFF')
         tree = string('rev-parse', 'HEAD^{tree}')
         base_tree = string('rev-parse', base + '^{tree}')
         different = tree != base_tree
