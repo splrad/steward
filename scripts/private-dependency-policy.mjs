@@ -1,4 +1,5 @@
 import {readFile} from 'node:fs/promises';
+import YAML from 'yaml';
 export const assert=(ok,code)=>{if(!ok)throw Error('PRIVATE_DEPENDENCY_'+code);};
 export async function loadPolicy(){
   const policy=JSON.parse(await readFile(new URL('../config/private-dependency-security.json',import.meta.url),'utf8'));
@@ -13,9 +14,15 @@ export async function loadPolicy(){
     &&/^[a-f0-9]{64}$/.test(item.lockException.manifestSha256),'LOCK_EXCEPTION_POLICY');
   return policy;
 }
-export function dependencyMode(event,policy){
+export function dependencyMode(event,policy,registration){
   const item=policy.administrators.find(x=>x.repositoryId===event.repository?.id);
-  if(!item)return 'native';
+  if(!item){
+    if(registration===undefined||registration==='')return 'native';
+    assert(typeof registration==='string'&&/^[1-9][0-9]*$/.test(registration)
+      &&String(event.repository?.id)===registration&&event.repository.private===true
+      &&event.repository.owner?.id===302208797&&/^splrad\/[\w.-]+$/.test(event.repository.full_name),'GOVERNANCE_REGISTRATION');
+    return 'private-governance';
+  }
   assert(event.repository.full_name===item.repository&&event.repository.private===true,'TARGET_IDENTITY');
   return 'private-administrator';
 }
@@ -94,7 +101,7 @@ export function newActions(base,head){
   const key=x=>JSON.stringify([x.repository,x.sha,x.id,x.severity]);const old=new Set(base.map(key));return head.filter(x=>!old.has(key(x)));
 }
 export function assertInputScope(paths){
-  const allowed=/^(?:AGENTS\.md|CONTRIBUTING\.md|README\.md|\.gitignore|mise\.(?:toml|lock)|\.github\/(?:dependabot\.yml|renovate\.json|release-template\.md\.mustache|workflows\/(?:actions\.lock|pr-title\.yml|settings-sync\.yml))|\.mise\/locks\/npm\/\d+\.\d+\.\d+\/(?:aube-lock\.yaml|package\.json)|acceptance\/bootstrap-target\.json|safe-settings\/(?:deployment-settings\.yml|settings\.yml|upstream-lock-exception\.json|upstream-package-lock\.patch|repos\/[^/]+\.ya?ml))$/;
+  const allowed=/^(?:AGENTS\.md|CONTRIBUTING\.md|README\.md|\.copier-answers\.yml|\.gitignore|mise\.(?:toml|lock)|\.github\/(?:labeler\.yml|dependabot\.yml|renovate\.json|release-template\.md\.mustache|workflows\/(?:actions\.lock|pr-labeler\.yml|pr-title\.yml|settings-sync\.yml))|\.mise\/locks\/npm\/\d+\.\d+\.\d+\/(?:aube-lock\.yaml|package\.json)|acceptance\/bootstrap-target\.json|safe-settings\/(?:deployment-settings\.yml|settings\.yml|upstream-lock-exception\.json|upstream-package-lock\.patch|repos\/[^/]+\.ya?ml))$/;
   assert(paths.every(path=>allowed.test(path)),'INPUT_UNCOVERED');
 }
 
@@ -106,4 +113,25 @@ export function licenseFacts(base,head){
     if(JSON.stringify(old?.licenses)!==JSON.stringify(current?.licenses))changes.push({package:(current??old).package,before:old?.licenses??null,after:current?.licenses??null});
   }
   return {changes,unknown:[...after.values()].filter(x=>!x.licenses.length),blocking:false};
+}
+
+// Newly admitted configuration/workflow bytes must come from the adopted trusted tag.
+export function assertCopierInputs(files,resolveTemplate,paths=['.github/labeler.yml','.github/workflows/pr-labeler.yml']){
+  if(files.size===0)return;
+  assert(files.has('.copier-answers.yml'),'COPIER_ANSWERS');
+  const answers=YAML.parse(files.get('.copier-answers.yml').toString('utf8'));
+  assert(answers&&Object.keys(answers).sort().join(',')==='_commit,_src_path'
+    &&answers._src_path==='https://github.com/splrad/steward.git'
+    &&typeof answers._commit==='string'&&/^v?\d+\.\d+\.\d+$/.test(answers._commit),'COPIER_ANSWERS');
+  const templates=resolveTemplate(answers._commit);
+  assert(templates instanceof Map,'COPIER_TEMPLATE_SOURCE');
+  for(const path of paths){
+    if(files.has(path))assert(Buffer.isBuffer(templates.get(path))&&files.get(path).equals(templates.get(path)),'COPIER_TEMPLATE_BYTES');
+  }
+}
+
+export function assertGovernanceOnlyScope(paths){
+  const allowed=new Set(['README.md','AGENTS.md','CONTRIBUTING.md','.copier-answers.yml','.github/labeler.yml',
+    '.github/release-template.md.mustache','.github/workflows/pr-labeler.yml','.github/workflows/pr-title.yml','.github/workflows/actions.lock']);
+  assert(paths.every(path=>allowed.has(path)),'GOVERNANCE_INPUT_UNCOVERED');
 }

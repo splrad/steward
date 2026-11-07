@@ -5,11 +5,11 @@ import {chmodSync,statSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import {resolve,join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {pathToFileURL} from 'node:url';
+import {pathToFileURL,fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import YAML from 'yaml';
 import {validationInput,git} from './validation-input.mjs';
-import {assert,loadPolicy,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,licenseFacts} from './private-dependency-policy.mjs';
+import {assert,loadPolicy,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,assertGovernanceOnlyScope,assertCopierInputs,licenseFacts} from './private-dependency-policy.mjs';
 import {scanTools,publicBytes} from './private-tool-security.mjs';
 import {effectiveLock} from './private-lock-exception.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
@@ -120,23 +120,37 @@ export async function main(env=process.env){
   const report={identity:null,scanner:null,snapshots:{},newHigh:[],coverage:[],complete:false};
   try{
     requireOnline(env);const workspace=resolve(env.VALIDATION_WORKSPACE??'target'),policy=await loadPolicy();
-    const value=await validationInput(workspace,env);assert(value.dependencyMode==='private-administrator','NOT_APPLICABLE');
+    const value=await validationInput(workspace,env);assert(['private-administrator','private-governance'].includes(value.dependencyMode),'NOT_APPLICABLE');
+    const governanceOnly=value.dependencyMode==='private-governance';
     report.identity=value.input;report.scanner=policy.osvImage;
-    const item=policy.administrators.find(x=>x.repositoryId===value.input.repositoryId);
+    const item=governanceOnly?null:policy.administrators.find(x=>x.repositoryId===value.input.repositoryId);
     const temporary=await mkdtemp(join(tmpdir(),'steward-private-dependencies-'));
     const supplier={nodeReleases:JSON.parse((await publicBytes('https://nodejs.org/dist/index.json')).toString()),
       nodeVulnerabilities:JSON.parse((await publicBytes('https://raw.githubusercontent.com/nodejs/security-wg/main/vuln/core/index.json')).toString()),miseAdvisories:[]};
     for(let page=1;page<=10;page++){const rows=await github(`/repos/jdx/mise/security-advisories?per_page=100&page=${page}`,env.GH_TOKEN);supplier.miseAdvisories.push(...rows);if(rows.length<100)break;assert(page<10,'MISE_ADVISORY_PAGINATION');}
     await writeFile(join(out,'supplier-data.json'),JSON.stringify(supplier));
     for(const side of ['base','head']){
-      const sha=value.input[side],entries=tree(workspace,sha);assertInputScope(entries.map(e=>e.path));const snapshot={sha,upstream:null,actions:[],coverage:[]};report.snapshots[side]=snapshot;
+      const sha=value.input[side],entries=tree(workspace,sha);(governanceOnly?assertGovernanceOnlyScope:assertInputScope)(entries.map(e=>e.path));const snapshot={sha,upstream:null,actions:[],coverage:[]};report.snapshots[side]=snapshot;
+      const managedPaths=governanceOnly?['AGENTS.md','CONTRIBUTING.md','.github/labeler.yml','.github/release-template.md.mustache','.github/workflows/pr-labeler.yml','.github/workflows/pr-title.yml']:['.github/labeler.yml','.github/workflows/pr-labeler.yml'];
+      if(governanceOnly&&side==='head')assert([...managedPaths,'.copier-answers.yml'].every(path=>entries.some(e=>e.path===path)),'GOVERNANCE_HEAD_INCOMPLETE');
+      const files=new Map([...managedPaths,'.copier-answers.yml'].flatMap(path=>{
+        const bytes=blob(workspace,entries,path,true);return bytes?[[path,bytes]]:[];
+      }));
+      assertCopierInputs(files,ref=>{
+        // Resolve only a real version tag in the trusted policy checkout, never a target ref.
+        const controller=fileURLToPath(new URL('..',import.meta.url));
+        const sha=git(controller,['rev-parse','--verify','refs/tags/'+ref+'^{commit}']).toString('utf8').trim();
+        assert(/^[a-f0-9]{40}$/.test(sha),'COPIER_TEMPLATE_SOURCE');
+        git(controller,['merge-base','--is-ancestor',sha,'HEAD']);
+        return new Map(managedPaths.map(path=>[path,git(controller,['show',sha+':templates/repository/'+(path==='CONTRIBUTING.md'?'CONTRIBUTING.md.jinja':path)])]));
+      },managedPaths);
       const control=blob(workspace,entries,'acceptance/bootstrap-target.json',true);
       if(control){assert(control.length<=1024,'CONTROL_SIZE');parseAcceptanceTarget(control.toString('utf8'));}
       const input=join(temporary,side),output=join(out,side);await mkdir(input,{recursive:true});await mkdir(output,{recursive:true});
-      const workflow=blob(workspace,entries,item.workflow,true);
+      const workflow=governanceOnly?null:blob(workspace,entries,item.workflow,true);
       if(!workflow){
         // An empty seed has no upstream dependency. Never substitute head for missing base.
-        assert(side==='base','HEAD_RUNTIME_MISSING');
+        assert(governanceOnly||side==='base','HEAD_RUNTIME_MISSING');
         assert(!entries.some(e=>['safe-settings/upstream-lock-exception.json','safe-settings/upstream-package-lock.patch'].includes(e.path)),'LOCK_EXCEPTION_WITHOUT_RUNTIME');
         await writeFile(join(output,'osv.json'),JSON.stringify({results:[]}));
       }else{
@@ -155,8 +169,9 @@ export async function main(env=process.env){
         highFindings(scanned); // Unknown severity cannot disappear through a differential comparison.
       }
       // Existing native gh actions-lock verification remains mandatory in the governance job.
-      const lock=blob(workspace,entries,'.github/workflows/actions.lock');
-      snapshot.actions=await actionsInventory(lock.toString(),env.GH_TOKEN);
+      const lock=blob(workspace,entries,'.github/workflows/actions.lock',governanceOnly&&side==='base');
+      if(!lock)assert(entries.every(e=>e.path==='README.md'),'GOVERNANCE_BASE_NOT_EMPTY');
+      snapshot.actions=lock?await actionsInventory(lock.toString(),env.GH_TOKEN):[];
       const docs=[],documents=new Map(),workflowDocuments=new Map();
       for(const e of entries.filter(e=>/^\.github\/workflows\/[^/]+\.ya?ml$/.test(e.path))){
         const text=blob(workspace,entries,e.path).toString();const doc=YAML.parse(text);workflowDocuments.set(e.path,doc);
@@ -181,7 +196,7 @@ export async function main(env=process.env){
       if(entries.some(e=>e.path==='mise.toml'||e.path==='mise.lock')){
         snapshot.tools=await scanTools({workspace,entries,blob,input,output,documents:workflowDocuments,requiredWorkflow:item.workflow,env,run,docker,image:policy.osvImage,github,supplier});
       }else{
-        assert(side==='base'&&!workflow,'HEAD_TOOL_INPUT_MISSING');snapshot.tools={};
+        assert(governanceOnly||(side==='base'&&!workflow),'HEAD_TOOL_INPUT_MISSING');snapshot.tools={};
         await writeFile(join(output,'npm-tool.json'),JSON.stringify({results:[]}));
       }
       const upstreamResult=JSON.parse(await readFile(join(output,'osv.json'),'utf8'));
@@ -198,7 +213,7 @@ export async function main(env=process.env){
     report.licenses=licenseFacts(baseResult,headResult);
     report.newActionVulnerabilities=newActions(report.snapshots.base.actionsFindings,report.snapshots.head.actionsFindings);
     report.newToolFindings=newTools(['node','mise'].flatMap(k=>report.snapshots.base.tools[k]?.findings??[]),['node','mise'].flatMap(k=>report.snapshots.head.tools[k]?.findings??[]));
-    report.coverage={node:'supplier security-wg',mise:'supplier repository advisories',npm:'verified release archive with bundled package reconciliation'};
+    report.coverage=governanceOnly?{actions:'complete locked action inventory and online zizmor advisory audit',templates:'exact trusted version bytes; no product code, ecosystem manifests, administrator runtime or tool locks admitted'}:{node:'supplier security-wg',mise:'supplier repository advisories',npm:'verified release archive with bundled package reconciliation'};
     assert(report.newHigh.length===0,'NEW_HIGH_OR_CRITICAL');
     assert(!report.newActionVulnerabilities.some(x=>x.severity==='High'),'NEW_HIGH_ACTION');
     assert(!report.newToolFindings.some(x=>['HIGH','CRITICAL'].includes(x.severity)),'NEW_HIGH_TOOL');

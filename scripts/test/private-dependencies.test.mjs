@@ -4,7 +4,7 @@ import {effectiveLock} from '../private-lock-exception.mjs';
 import {createHash} from 'node:crypto';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {dependencyMode,loadPolicy,inventory,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,licenseFacts} from '../private-dependency-policy.mjs';
+import {dependencyMode,loadPolicy,inventory,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,assertGovernanceOnlyScope,assertCopierInputs,licenseFacts} from '../private-dependency-policy.mjs';
 import {upstreamReference,run,assertVerifiedActionTag,main,docker} from '../validation-private-dependencies.mjs';
 import {nodeFindings,miseFindings,miseVersions,archiveInventory} from '../private-tool-security.mjs';
 import {readFile,writeFile,mkdtemp,rm} from 'node:fs/promises';
@@ -68,9 +68,10 @@ test('workflow keeps private execution under dependency job, fixed policy source
  assert.deepEqual(Object.keys(workflow.jobs),['scope','source-linux','source-windows','governance','dependency','docs','summary']);
  const steps=workflow.jobs.dependency.steps;
  assert.equal(steps.find(s=>s.uses?.startsWith('actions/dependency-review-action@')).if,"needs.scope.outputs.dependency-mode == 'native'");
- const scan=steps.find(s=>s.name==='Scan private administrator dependencies');assert.equal(scan.if,"needs.scope.outputs.dependency-mode == 'private-administrator'");assert.equal(scan['working-directory'],'policy');
+ const scan=steps.find(s=>s.name==='Scan private administrator dependencies');assert.equal(scan.if,"startsWith(needs.scope.outputs.dependency-mode, 'private-')");assert.equal(scan['working-directory'],'policy');
  assert.equal(workflow.permissions['security-events'],undefined);
  assert.equal(steps.find(s=>s.with?.path==='policy').with.ref,'${{ job.workflow_sha }}');
+ assert.equal(steps.find(s=>s.with?.path==='policy').with['fetch-depth'],0);
 });
 
 test('licenses are factual changes and unknowns, never a new allowlist gate',()=>{
@@ -81,7 +82,7 @@ test('licenses are factual changes and unknowns, never a new allowlist gate',()=
 
 test('administrator scans cannot be skipped by paths-filter; native filters include tool lock-only changes',async()=>{
  const workflow=YAML.parse(await readFile(new URL('../../.github/workflows/pr-validation-native.yml',import.meta.url),'utf8'));
- assert.equal(workflow.jobs.scope.outputs.dependency,"${{ steps.identity.outputs.dependencyMode == 'private-administrator' && 'true' || steps.scope.outputs.dependency }}");
+ assert.equal(workflow.jobs.scope.outputs.dependency,"${{ startsWith(steps.identity.outputs.dependencyMode, 'private-') && 'true' || steps.scope.outputs.dependency }}");
  const filter=YAML.parse(workflow.jobs.scope.steps.find(s=>s.id==='scope').with.filters);assert(filter.dependency.includes('.mise/**'));
  // Every administrator PR is scanned, even an unknown manifest or a documentation-only change.
  assert.equal(workflow.jobs.dependency.if,"needs.scope.outputs.dependency == 'true'");
@@ -250,4 +251,27 @@ test('bootstrap control is exact nondependency data, with no executable or depen
  const target={schemaVersion:1,repositoryId:12,purpose:'bootstrap-only'};
  assert.equal(parseAcceptanceTarget(JSON.stringify(target)),12);
  for(const bad of [{...target,run:'execute'},{...target,dependencies:{}},{...target,repositoryId:0},null])assert.throws(()=>parseAcceptanceTarget(JSON.stringify(bad)),/^Error: BOOTSTRAP_ACCEPTANCE_TARGET_INVALID$/);
+});
+
+test('Copier admission requires trusted template bytes and original versioned answers',async()=>{
+ const paths=['.github/labeler.yml','.github/workflows/pr-labeler.yml'];
+ const templates=new Map(await Promise.all(paths.map(async path=>[path,await readFile(new URL('../../templates/repository/'+path,import.meta.url))])));
+ const files=new Map(templates);files.set('.copier-answers.yml',Buffer.from('_src_path: https://github.com/splrad/steward.git\n_commit: v0.2.0\n'));
+ assertInputScope([...files.keys()]);assertCopierInputs(files,ref=>ref==='v0.2.0'?templates:null);
+ assert.throws(()=>assertCopierInputs(files,()=>null),/COPIER_TEMPLATE_SOURCE/);
+ for(const path of paths){const changed=new Map(files);changed.set(path,Buffer.from('unreviewed'));assert.throws(()=>assertCopierInputs(changed,()=>templates),/COPIER_TEMPLATE_BYTES/);}
+ for(const text of ['_src_path: https://example.invalid/template\n_commit: v0.2.0\n','_src_path: https://github.com/splrad/steward.git\n_commit: main\n','_src_path: https://github.com/splrad/steward.git\n_commit: v0.2.0\n_tasks: bad\n']){
+  const changed=new Map(files);changed.set('.copier-answers.yml',Buffer.from(text));assert.throws(()=>assertCopierInputs(changed,()=>templates),/COPIER_ANSWERS/);
+ }
+ for(const path of ['.github/workflows/custom-labeler.yml','.copier-answers.yaml','.github/labeler.js'])assert.throws(()=>assertInputScope([path]),/INPUT_UNCOVERED/);
+});
+
+test('private governance registration binds native identity and rejects product inputs',()=>{
+ const event={repository:{id:42,full_name:'splrad/fixture',private:true,owner:{id:302208797}}};
+ assert.equal(dependencyMode(event,policy,'42'),'private-governance');
+ assert.equal(dependencyMode(event,policy),'native');
+ for(const id of ['43','true','042'])assert.throws(()=>dependencyMode(event,policy,id),/GOVERNANCE_REGISTRATION/);
+ for(const repository of [{...event.repository,private:false},{...event.repository,owner:{id:1}},{...event.repository,full_name:'fork/fixture'}])assert.throws(()=>dependencyMode({repository},policy,'42'),/GOVERNANCE_REGISTRATION/);
+ assertGovernanceOnlyScope(['README.md','.copier-answers.yml','.github/workflows/pr-labeler.yml']);
+ for(const path of ['safe-settings/settings.yml','mise.lock','package-lock.json','package.json','src/index.js','.github/workflows/build.yml'])assert.throws(()=>assertGovernanceOnlyScope([path]),/GOVERNANCE_INPUT_UNCOVERED/);
 });

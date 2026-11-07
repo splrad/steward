@@ -44,7 +44,7 @@ export async function validationInput(workspace,env=process.env) {
   const files=git(workspace,['ls-files','-z']).toString('utf8').split('\0').filter(Boolean);
   const mode=buildMode(files);
   if(mode==='python')for(const path of ['pyproject.toml','requirements-build.txt'])await regular(workspace,path);
-  return {input,files,mode,dependencyMode:dependencyMode(event,await loadPolicy())};
+  return {input,files,mode,dependencyMode:dependencyMode(event,await loadPolicy(),env.PRIVATE_GOVERNANCE_REPOSITORY_ID)};
 }
 export async function main(env=process.env) {
   const workspace=resolve(env.VALIDATION_WORKSPACE??'target'),value=await validationInput(workspace,env);

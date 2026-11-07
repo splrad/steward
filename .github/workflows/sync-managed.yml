@@ -2,11 +2,18 @@ name: SPLRAD Steward / Sync Managed Files
 on:
   workflow_dispatch:
     inputs:
+      health_only:
+        description: 'Observe entry health without repository or template writes'
+        required: false
+        type: boolean
+        default: false
       bootstrap_only:
         description: 'One-time bootstrap using the reviewed private acceptance target; no template delivery'
         required: false
         type: boolean
         default: false
+  repository_dispatch:
+    types: [steward-template-event]
   schedule:
     - cron: '37 * * * *'
   push:
@@ -25,7 +32,7 @@ permissions:
   actions: read
 jobs:
   bootstrap:
-    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (vars.STEWARD_TEMPLATE_APPLY == 'true' || (github.event_name == 'workflow_dispatch' && inputs.bootstrap_only))
+    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !inputs.health_only && (github.event_name == 'workflow_dispatch' || (github.event_name == 'repository_dispatch' && github.event.sender.id == 353238212 && github.event.sender.login == 'splrad-governance[bot]' && github.event.sender.type == 'Bot' && github.event.client_payload.schemaVersion == 1)) && (vars.STEWARD_BOOTSTRAP_APPLY == 'true' || (github.event_name == 'workflow_dispatch' && inputs.bootstrap_only))
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment:
@@ -64,7 +71,7 @@ jobs:
         run: node scripts/repository-bootstrap.mjs
   templates:
     needs: bootstrap
-    if: ${{ !cancelled() && github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && vars.STEWARD_TEMPLATE_APPLY == 'true' && !inputs.bootstrap_only }}
+    if: ${{ !cancelled() && github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !inputs.health_only && (github.event_name == 'workflow_dispatch' || (github.event_name == 'repository_dispatch' && github.event.sender.id == 353238212 && github.event.sender.login == 'splrad-governance[bot]' && github.event.sender.type == 'Bot' && github.event.client_payload.schemaVersion == 1)) && vars.STEWARD_TEMPLATE_APPLY == 'true' && !inputs.bootstrap_only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment:
@@ -103,7 +110,7 @@ jobs:
         run: node scripts/template-delivery.mjs
 
   automation-health:
-    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !inputs.bootstrap_only
+    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !inputs.bootstrap_only && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -187,7 +194,9 @@ jobs:
             state=$(jq -r '.state' <<<"$workflow")
             if [[ "$state" != active ]]; then record_disabled; continue; fi
             response_known=true
-            gh workflow run "$file" --repo splrad/steward --ref "$DEFAULT_BRANCH" >/dev/null 2>&1 || response_known=false
+            wake_args=()
+            if [[ "$file" == sync-managed.yml ]]; then wake_args+=(--field health_only=true); fi
+            gh workflow run "$file" --repo splrad/steward --ref "$DEFAULT_BRANCH" "${wake_args[@]}" >/dev/null 2>&1 || response_known=false
             # Read once after the write, including a lost response. Retry only on a later
             # fixed wake after it has read native state again.
             if ! observed=$(latest_run); then record WAKE_UNKNOWN; continue; fi

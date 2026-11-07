@@ -22,7 +22,7 @@ fs.appendFileSync('requests.jsonl',JSON.stringify({method,path,args,input})+'\n'
 const save=()=>fs.writeFileSync('state.json',JSON.stringify(state));
 const out=x=>{process.stdout.write(JSON.stringify(x));process.exit(0);};
 const lost=()=>{save();process.exit(1);};
-const workflow=id=>({id,path:'.github/workflows/'+names[id],state:id===other&&['manual-disable','expected-pause','wrong-pause-id'].includes(mode)?'disabled_manually':id===other&&mode==='unknown-state'?'unknown':id===other&&mode==='inactivity'&&!state.enabled?'disabled_inactivity':'active'});
+const workflow=id=>({id,path:'.github/workflows/'+names[id],state:((id===other&&['manual-disable','wrong-pause-id','expected-other-paused'].includes(mode))||(id===311600220&&mode==='expected-pause'))?'disabled_manually':id===other&&mode==='unknown-state'?'unknown':id===other&&mode==='inactivity'&&!state.enabled?'disabled_inactivity':'active'});
 const recent=(createdAt=now)=>({databaseId:2,createdAt,status:mode==='old-running'?'in_progress':'completed',conclusion:mode==='business-failure'?'failure':'success'});
 if(args[0]==='run') {
   const target=args[args.indexOf('--workflow')+1];
@@ -64,7 +64,7 @@ if(path.includes('/issues/7/comments')) {
 throw Error('Unregistered fixture request '+method+' '+path);
 `;
 
-const modes=['healthy','business-failure','manual-disable','expected-pause','wrong-pause-id','inactivity','authentication','workflow-unavailable','wrong-workflow',
+const modes=['healthy','business-failure','manual-disable','expected-pause','wrong-pause-id','expected-other-paused','inactivity','authentication','workflow-unavailable','wrong-workflow',
   'unknown-state','run-unavailable','missing-run-fields','future-run','invalid-time','overdue','old-running','dispatch-unknown','dispatch-lost','manual-race','comment-unknown'];
 for(const file of ['release.yml','sync-managed.yml']) {
   it.skipIf(process.platform==='win32').each(modes)(`${file}: native entry health %s`,async mode=>{
@@ -76,11 +76,11 @@ for(const file of ['release.yml','sync-managed.yml']) {
       const other=file==='release.yml'?'sync-managed.yml':'release.yml';
       const initialState={comments:[],observedAt:new Date().toISOString()};
       // Force a notification transition without causing a workflow write.
-      if(mode==='comment-unknown'||mode==='expected-pause')Object.assign(initialState,{comments:[{id:1,user:{id:41898282},body:'<!-- splrad-automation-health:v2 -->\n["'+other+':WORKFLOW_DISABLED"]'}]});
+      if(mode==='comment-unknown'||mode==='expected-pause')Object.assign(initialState,{comments:[{id:1,user:{id:41898282},body:'<!-- splrad-automation-health:v2 -->\n["'+(mode==='expected-pause'?'release.yml':other)+':WORKFLOW_DISABLED"]'}]});
       await writeFile(join(root,'state.json'),JSON.stringify(initialState));
       const args=['-c',`gh() { node service.mjs '${file}' '${mode}' "$@"; }\n`+script];permitOfflineCommand('bash',args);
-      const run=()=>spawnSync('bash',args,{cwd:root,env:{...process.env,GH_TOKEN:'offline',DEFAULT_BRANCH:'main',CURRENT_RUN_ID:'1',CURRENT_ATTEMPT:'2',HEALTH_ISSUE:'7',EXPECTED_PAUSED_RELEASE:mode==='expected-pause'?'311600220':mode==='wrong-pause-id'?'999':''},encoding:'utf8',timeout:60_000});
-      const first=run(),successful=['healthy','business-failure','inactivity','dispatch-lost'].includes(mode)||(mode==='expected-pause'&&file==='sync-managed.yml');
+      const run=()=>spawnSync('bash',args,{cwd:root,env:{...process.env,GH_TOKEN:'offline',DEFAULT_BRANCH:'main',CURRENT_RUN_ID:'1',CURRENT_ATTEMPT:'2',HEALTH_ISSUE:'7',EXPECTED_PAUSED_RELEASE:['expected-pause','expected-other-paused'].includes(mode)?'311600220':mode==='wrong-pause-id'?'999':''},encoding:'utf8',timeout:60_000});
+      const first=run(),successful=['healthy','business-failure','inactivity','dispatch-lost'].includes(mode)||(mode==='expected-pause'||(mode==='expected-other-paused'&&file==='sync-managed.yml'));
       expect(first.error).toBeUndefined();expect(first.status,first.stderr).toBe(successful?0:1);
       const requests=async()=> (await readFile(join(root,'requests.jsonl'),'utf8')).trim().split('\n').map(line=>JSON.parse(line));
       let calls=await requests();
@@ -88,10 +88,13 @@ for(const file of ['release.yml','sync-managed.yml']) {
       const dispatches=()=>calls.filter(x=>x.method==='DISPATCH');
       if(['healthy','business-failure'].includes(mode))expect(writes()).toEqual([]);
       if(mode==='inactivity')expect(calls.filter(x=>x.path?.endsWith('/enable'))).toHaveLength(1);
-      if(['manual-disable','expected-pause','wrong-pause-id','manual-race','unknown-state','workflow-unavailable','wrong-workflow','run-unavailable','missing-run-fields','future-run','invalid-time'].includes(mode)) {
+      if(['manual-disable','expected-pause','wrong-pause-id','expected-other-paused','manual-race','unknown-state','workflow-unavailable','wrong-workflow','run-unavailable','missing-run-fields','future-run','invalid-time'].includes(mode)) {
         expect(calls.some(x=>x.path?.endsWith('/enable'))).toBe(false);expect(dispatches()).toHaveLength(0);
       }
-      if(['overdue','old-running','dispatch-unknown','dispatch-lost'].includes(mode))expect(dispatches()).toHaveLength(1);
+      if(['overdue','old-running','dispatch-unknown','dispatch-lost'].includes(mode)){
+        expect(dispatches()).toHaveLength(1);
+        expect(dispatches()[0].args.includes('health_only=true')).toBe(other==='sync-managed.yml');
+      }
       if(mode==='authentication')expect(writes()).toEqual([]);
       // Fixed errors are notified once; the Run link and changing observation IDs
       // do not create a second notification. A lost accepted comment is read back.
@@ -100,7 +103,7 @@ for(const file of ['release.yml','sync-managed.yml']) {
         const saved=JSON.parse(await readFile(join(root,'state.json'),'utf8'));
         expect(saved.comments).toHaveLength(1);expect(saved.comments[0].body).toContain('https://github.com/splrad/steward/actions/runs/1');
       }
-      if(mode==='expected-pause'&&file==='sync-managed.yml') {
+      if(mode==='expected-pause'||(mode==='expected-other-paused'&&file==='sync-managed.yml')) {
         const saved=JSON.parse(await readFile(join(root,'state.json'),'utf8'));
         expect(saved.comments.at(-1).body).toContain('release.yml:WORKFLOW_PAUSED');
         const count=writes().length,second=run();expect(second.status).toBe(0);calls=await requests();

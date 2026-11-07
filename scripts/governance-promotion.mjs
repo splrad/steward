@@ -183,6 +183,16 @@ export async function preflight(env=process.env,transport=fetch) {
   return source;
 }
 
+export async function wakePublishedTemplate(io,published,assertCurrent,record) {
+  if(published.status!=='PUBLISHED')return;
+  await assertCurrent();
+  // One fixed event, no private data or caller-selected ref. Unknown responses are
+  // recorded by the existing failed run and recovered through explicit sync dispatch.
+  const response=await io.request('POST',`${repo}/dispatches`,{event_type:'steward-template-event',client_payload:{schemaVersion:1}});
+  check(response.status===204,'TEMPLATE_WAKE_UNCONFIRMED');
+  await record({kind:'template-wake',status:'ACCEPTED'});
+}
+
 export async function main(env=process.env,transport=fetch) {
   const output=resolve(env.PROMOTION_EVIDENCE_DIRECTORY??'promotion-evidence');await mkdir(output,{recursive:true});
   const record=value=>appendFile(join(output,'observations.jsonl'),JSON.stringify(value)+'\n',{mode:0o600});
@@ -204,6 +214,7 @@ export async function main(env=process.env,transport=fetch) {
   await withGovernanceCredential(env,async io=>{
     const adopted=await promoteRequiredWorkflow(io,source.sha,assertCurrent,record);await record({kind:'rules-result',...adopted});
     const published=await publishTemplateTag(io,plan,assertCurrent,record);await record({kind:'template-result',...published});
+    await wakePublishedTemplate(io,published,assertCurrent,record);
   },transport);
   process.stdout.write('Promotion: adopted and reconciled\n');
   }catch(error){

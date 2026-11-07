@@ -1,3 +1,4 @@
+import {assertTemplateWake} from './template-entry.mjs';
 import {parseAcceptanceTarget} from './bootstrap-acceptance.mjs';
 export {decodeAcceptanceTarget,parseAcceptanceTarget} from './bootstrap-acceptance.mjs';
 import {createAppAuth} from '@octokit/auth-app';
@@ -152,14 +153,23 @@ export async function bootstrapWake({discover,service,repositoryId=null}) {
   return counts;
 }
 
+export async function verifyBootstrapSource(central,s,env,execute=promisify(execFile)) {
+    const run=await get(central,`/repos/splrad/steward/actions/runs/${s.runId}`),workflow=await get(central,`/repos/splrad/steward/actions/workflows/${s.workflowId}`);
+    check(run.repository?.id===1296724484&&run.head_repository?.id===1296724484&&run.head_sha===s.controllerSha&&run.head_branch===env.STEWARD_DEFAULT_BRANCH
+      &&run.workflow_id===s.workflowId&&run.run_attempt>=s.runAttempt&&(['push','schedule','workflow_dispatch'].includes(run.event)||(run.event==='repository_dispatch'&&run.actor?.id===353238212&&run.actor?.login==='splrad-governance[bot]'))
+      &&workflow.path==='.github/workflows/sync-managed.yml'&&workflow.state==='active','SOURCE_RUN');
+    await execute('git',['--no-replace-objects','merge-base','--is-ancestor',s.controllerSha,env.STEWARD_CONTROLLER_SHA],{windowsHide:true});
+}
+
 export async function main(transport=fetch) {
   const nativeTransport=(input,init)=>{
     const headers=new Headers(init?.headers);headers.set('X-GitHub-Api-Version','2026-03-10');
     return transport(input,{...init,headers});
   };
   const env=process.env,appId=Number(env.GOVERNANCE_APP_ID),single=bootstrapOnly(env);
+  assertTemplateWake(env,env.GITHUB_EVENT_PATH?JSON.parse(await readFile(env.GITHUB_EVENT_PATH,'utf8')):{});
   check(env.GITHUB_REPOSITORY==='splrad/steward'&&env.GITHUB_REPOSITORY_ID==='1296724484'&&env.GITHUB_REF===`refs/heads/${env.STEWARD_DEFAULT_BRANCH}`
-    &&['push','schedule','workflow_dispatch'].includes(env.GITHUB_EVENT_NAME)&&/^[a-f0-9]{40}$/.test(env.STEWARD_CONTROLLER_SHA??'')&&positive(appId)&&appId!==4243096,'CENTRAL_IDENTITY');
+    &&['repository_dispatch','workflow_dispatch'].includes(env.GITHUB_EVENT_NAME)&&/^[a-f0-9]{40}$/.test(env.STEWARD_CONTROLLER_SHA??'')&&positive(appId)&&appId!==4243096,'CENTRAL_IDENTITY');
   const config=JSON.parse(await readFile('config/governance/bootstrap.json','utf8'));
   check(config.schemaVersion===1&&Object.keys(config).sort().join(',')==='rules,schemaVersion'&&Array.isArray(config.rules),'CONFIG');
   const app=new Octokit({authStrategy:createAppAuth,auth:{appId,privateKey:env.GOVERNANCE_APP_PRIVATE_KEY},log,request:{fetch:nativeTransport}});
@@ -171,13 +181,7 @@ export async function main(transport=fetch) {
   const identity={name:bot.login,email:`${bot.id}+${bot.login}@users.noreply.github.com`,id:bot.id};
   const central=bootstrapNativeIO(env.GITHUB_TOKEN,transport),controller=await get(central,`/repos/splrad/steward/actions/runs/${env.GITHUB_RUN_ID}`);
   const source={workflowId:controller.workflow_id,runId:Number(env.GITHUB_RUN_ID),runAttempt:Number(env.GITHUB_RUN_ATTEMPT),controllerSha:env.STEWARD_CONTROLLER_SHA};
-  const verifySource=async s=>{
-    const run=await get(central,`/repos/splrad/steward/actions/runs/${s.runId}`),workflow=await get(central,`/repos/splrad/steward/actions/workflows/${s.workflowId}`);
-    check(run.repository?.id===1296724484&&run.head_repository?.id===1296724484&&run.head_sha===s.controllerSha&&run.head_branch===env.STEWARD_DEFAULT_BRANCH
-      &&run.workflow_id===s.workflowId&&run.run_attempt>=s.runAttempt&&['push','schedule','workflow_dispatch'].includes(run.event)
-      &&workflow.path==='.github/workflows/sync-managed.yml'&&workflow.state==='active','SOURCE_RUN');
-    await promisify(execFile)('git',['--no-replace-objects','merge-base','--is-ancestor',s.controllerSha,env.STEWARD_CONTROLLER_SHA],{windowsHide:true});
-  };
+  const verifySource=s=>verifyBootstrapSource(central,s,env);
   const credential=async(repositoryId,permissions)=>{
     const value=await app.auth({type:'installation',installationId:installation.id,refresh:true,permissions,...(repositoryId?{repositoryIds:[repositoryId]}:{})});
     const io=bootstrapNativeIO(value.token,transport);return {token:value.token,io,revoke:async()=>{const r=await io.request('DELETE','/installation/token');check(r.status===204,'TOKEN_REVOKE');}};

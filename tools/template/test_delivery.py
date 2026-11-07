@@ -75,6 +75,18 @@ class DeliveryTests(unittest.TestCase):
                 if branch==BRANCH and pr['state']=='open':pr['head']['sha']=sha
             return sha
 
+    def test_repository_dispatch_delivers_and_resumes_only_the_native_governance_actor(self):
+        self.api.event = 'repository_dispatch'
+        result = self.run_delivery()
+        self.assertEqual(result['status'], 'DELIVERED')
+        human = self.edit(BRANCH, 'human-event.txt', 'retain event delivery human work\n')
+        self.run_delivery()
+        self.git(self.remote, 'merge-base', '--is-ancestor', human, self.head())
+        self.assertEqual(self.git(self.remote, 'show', self.head()+':human-event.txt'), 'retain event delivery human work')
+        self.api.invalid = 'event-actor'; before = self.head(); count = len(self.api.mutations)
+        with self.assertRaisesRegex(ValueError, 'SOURCE_RUN'): self.run_delivery()
+        self.assertEqual(self.head(), before); self.assertEqual(len(self.api.mutations), count)
+
     def test_native_copier_signed_tree_and_same_pr_preserve_human_code_and_metadata(self):
         first=self.run_delivery(read_token='read-fixture');self.assertEqual(first['status'],'DELIVERED');self.assertEqual(self.api.creates,1)
         signed=first['head'];self.assertEqual(self.git(self.remote,'show',signed+':VERSION'),'9.2.2')
@@ -293,7 +305,8 @@ class FixtureAPI:
                 **({} if self.invalid=='bypass-unreadable' else {'bypass_actors':[{'actor_id':4243096,'actor_type':'Integration','bypass_mode':'always'}] if i==1 else []})}
         if '/actions/runs/' in route:
             return {'id':int(route.rsplit('/',1)[1]),'repository':{'id':CENTRAL_ID},'head_repository':{'id':0 if self.invalid=='run' else CENTRAL_ID},
-                    'head_sha':t.new,'head_branch':'main','event':'workflow_dispatch','workflow_id':42}
+                    'head_sha':t.new,'head_branch':'main','event':getattr(self,'event','workflow_dispatch'),'workflow_id':42,
+                    'actor':{'id':1 if self.invalid=='event-actor' else 353238212,'login':'splrad-governance[bot]'}}
         if '/actions/workflows/' in route:return {'id':42,'path':'.github/workflows/sync-managed.yml','state':'active'}
         if '/git/ref/heads/' in route:
             branch=unquote(route.split('/git/ref/heads/')[1])

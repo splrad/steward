@@ -137,7 +137,9 @@ jobs:
             state=$(jq -r '.state' <<<"$workflow")
             if [[ "$state" != active ]]; then record_disabled; continue; fi
             response_known=true
-            gh workflow run "$file" --repo splrad/steward --ref "$DEFAULT_BRANCH" >/dev/null 2>&1 || response_known=false
+            wake_args=()
+            if [[ "$file" == sync-managed.yml ]]; then wake_args+=(--field health_only=true); fi
+            gh workflow run "$file" --repo splrad/steward --ref "$DEFAULT_BRANCH" "${wake_args[@]}" >/dev/null 2>&1 || response_known=false
             # Read once after the write, including a lost response. Retry only on a later
             # fixed wake after it has read native state again.
             if ! observed=$(latest_run); then record WAKE_UNKNOWN; continue; fi

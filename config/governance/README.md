@@ -27,3 +27,21 @@ Actions 事件策略通过 GitHub 设置页或官方 REST 在采用阶段配置�
 仅当维护决定已批准暂停中央 Release（原生 workflow ID `311600220`），才将中央仓库变量 `STEWARD_EXPECTED_PAUSED_RELEASE` 设置为 `311600220`。准确路径、ID 和实际 `disabled_manually` 状态同时匹配时，记录 `release.yml:WORKFLOW_PAUSED`。此状态在既有健康 Issue 中变化时通知一次，并保留在运行摘要；它不使健康 job 失败，也不代表发行或产品验收通过。变量为空、ID 不符、其他工作流停用、未知状态及 API/通知故障仍失败。原生状态恢复为 active 时照常检查最近运行，变量不能屏蔽失活或漏唤醒。结束维护时应清除该变量；Release 的启用需对应的发行授权。
 
 采用此行为、设置变量和实际通知需在同一部署决定中明确；代码合入本身不设置变量。
+
+## 私有仓 Copier 准入
+
+管理员仓仍运行既有 safe-settings、工具与全部 Action 扫描。新增接纳 `.copier-answers.yml`、标签规则和标签工作流时，必须来自中央受信 checkout 中可达的真实模板版本 tag；来源、键集合及模板字节不符即拒绝。受信 checkout 拉取完整历史与 tags，目标仓不能提供校验模板。
+
+私有目标仓的原生变量 `STEWARD_PRIVATE_GOVERNANCE_REPOSITORY_ID` 登记该仓准确数字 ID；受信 scope 和检查步骤同时读取并绑定原生事件中的真实 ID、SPLRAD 组织身份与 private 状态。该角色仅用于无产品代码的治理样本：只允许 README、六个准确公共模板文件、Copier answers 和派生 actions.lock；head 必须完整，bootstrap base 可仅有 README。每个模板文件逐字节核对受信 tag，全部直接与传递 Actions 使用既有在线安全扫描及原生锁验证。任何产品源码、生态依赖、工具锁、任意工作流或 safe-settings 文件都会失败，不借用管理员的上游依赖锁。
+
+准确登记保留在私有目标仓的原生变量中，不向中央公开配置添加仓名或编号。变量设置和 App 安装范围须在采用决定中明确；没有登记时继续使用原检查路径，错误 ID 或公共仓登记立即失败。该变量不能让产品代码绕过依赖检查：封闭输入范围会拒绝这类仓库。
+
+## 事件递送与独立健康入口
+
+模板业务只接受三类唤醒：Governance Promotion 实际发布新模板 tag 后发送的固定治理 App 事件、已验证仓库事件后的同类通知，以及明确的人工恢复。事件不携带目标仓、源码 SHA、私有路径或命令；消费者重新枚举自身安装范围并选择受信版本。普通 push、没有新 tag 的 Promotion 及每小时健康 schedule 不执行 bootstrap 或模板写入。模板源码变更经 Native Validation 和既有 Promotion 采用后递送。
+
+私有设置入口可在成功处理已验证的仓库事件后，以现有治理 App 的中央单仓 contents/metadata token 发送上述固定通知；它不传递原始事件元数据，标签事件不触发模板通知。对应 `STEWARD_TEMPLATE_EVENTS` 和中央 `STEWARD_TEMPLATE_APPLY` 均须按采用决定启用。设置同步自身的事件功能保持原样。
+
+每小时 schedule 仍只负责独立健康观察。健康补唤醒 Sync Managed 时显式使用 `health_only=true`，不会绕过事件限制形成周期模板写入；手动恢复才使用默认的业务入口。丢失事件保持原生失败记录，按明确的原生手动恢复处理，不新增轮询或自动重试框架。
+
+`STEWARD_TEMPLATE_APPLY` 只启用文件 App 当前 selected 安装范围内的递送。空仓首提交另由 `STEWARD_BOOTSTRAP_APPLY` 控制，默认不启用；其治理 App 为 all 安装，因此启用该开关涉及当前和未来安装空仓，必须另有明确范围授权。本批已有非空仓接入不需要开启它。`bootstrap_only` 仍只能使用既有私有精确验收对象控制。

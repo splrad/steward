@@ -207,7 +207,9 @@ def deliver(request, api, central_api, *, read_token=None, renderer=copier.rende
             run = central_api.request('GET', f'/repos/{CENTRAL}/actions/runs/{run_id}')
             require(run['id'] == run_id and run['repository']['id'] == CENTRAL_ID and run['head_repository']['id'] == CENTRAL_ID
                     and run['head_sha'] == source and run['head_branch'] == 'main'
-                    and run['event'] in ['push', 'schedule', 'workflow_dispatch'], 'SOURCE_RUN')
+                    and (run['event'] in ['push', 'schedule', 'workflow_dispatch']
+                         or (run['event'] == 'repository_dispatch' and run.get('actor', {}).get('id') == 353238212
+                             and run.get('actor', {}).get('login') == 'splrad-governance[bot]')), 'SOURCE_RUN')
             workflow = central_api.request('GET', f"/repos/{CENTRAL}/actions/workflows/{run['workflow_id']}")
             require(workflow['path'] == '.github/workflows/sync-managed.yml' and workflow['state'] == 'active', 'SOURCE_WORKFLOW')
             result = subprocess.run(['git', '--no-replace-objects', 'merge-base', '--is-ancestor', source, request['workflowSha']],
