@@ -192,7 +192,7 @@ it('actual Git bootstrap archive initializes its protected state branch, reads b
     const options={write:async(request:any,auth:any)=>{expect(request.remote).toBe('https://github.com/splrad/fixture.git');expect(request.writer).toBe('bootstrap');return writeReleaseRecords({...request,remote},auth);},
       executeGit:async(command:string,args:string[],options:any)=>execute(command,args.map(a=>a==='https://github.com/splrad/fixture.git'?remote:a),options)};
     const input={root,repository,token:'fixture-token',appId:88,identity:{name:'Fixture',email:'fixture@example.invalid'},record,origin:'external',io};
-    await expect(archiveBootstrap({...input,origin:'app',originCorrection:true},options)).rejects.toThrow('ORIGIN_ARCHIVE_MISSING');
+    await expect(archiveBootstrap({...input,origin:'app',originCorrection:true,requireExistingArchive:true},options)).rejects.toThrow('ORIGIN_ARCHIVE_MISSING');
     const head=await archiveBootstrap(input,options);expect(await archiveBootstrap(input,options)).toBe(head);
     const text=await git('show',`${head}:bootstrap/21-1.json`);expect(JSON.parse(text).firstCommitOrigin).toBe('external');
     expect(decodeStateFile('steward/governance-state','bootstrap/21-1.json',Buffer.from(text),12)).toMatchObject({firstCommitSha:first,firstCommitOrigin:'external'});
@@ -227,7 +227,7 @@ it('repairs only a proven private completed archive origin and never recreates r
     return {status:200,value};
   }};
   const invoke=()=>reconcileBootstrapOrigin({root:'unused',repository,token:'fixture',appId:88,identity,io,verifySource:async(r:any)=>{sources.push(r);if(badSource)throw Error('source');}},async(args:any)=>{writes.push(args);return 'c'.repeat(40);});
-  expect(await invoke()).toBe(true);expect(writes).toHaveLength(1);expect(writes[0]).toMatchObject({origin:'app',originCorrection:true,record});expect(sources).toEqual([record]);
+  expect(await invoke()).toBe(true);expect(writes).toHaveLength(1);expect(writes[0]).toMatchObject({origin:'app',originCorrection:true,requireExistingArchive:true,record});expect(sources).toEqual([record]);
   writes.length=0;origin='app';expect(await invoke()).toBe(false);
   origin='external';author=34;expect(await invoke()).toBe(false);author=33;
   body='# Repository';expect(await invoke()).toBe(false);body='# Repository\n';

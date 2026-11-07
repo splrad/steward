@@ -71,7 +71,7 @@ export async function verifyGovernanceCreation(io,repository,appId) {
   check(['creation','update','non_fast_forward','deletion'].every(type=>found.has(type)),'STATE_CREATION_PROTECTION');
 }
 
-export async function archiveBootstrap({root,repository,token,appId,identity,record,origin,io,originCorrection=false},
+export async function archiveBootstrap({root,repository,token,appId,identity,record,origin,io,originCorrection=false,requireExistingArchive=false},
   {read=readReleaseRecords,write=writeReleaseRecords,executeGit=promisify(execFile)}={}) {
   check(record.phase==='RESTORED'&&/^[a-f0-9]{40}$/.test(record.firstCommitSha??'')&&['app','external'].includes(origin),'ARCHIVE_FACTS');
   const prefix=`/repos/${repository.full_name}`;
@@ -92,7 +92,7 @@ export async function archiveBootstrap({root,repository,token,appId,identity,rec
   if(ref){snapshot=await refresh();check(snapshot.head===ref.object?.sha,'ARCHIVE_REF_CHANGED');}
   const path=`bootstrap/${record.runId}-${record.runAttempt}.json`,content=JSON.stringify({...record,firstCommitOrigin:origin},null,2)+'\n';
   const existing=snapshot.domainRecords.find(r=>r.path===path);
-  if(originCorrection)check(existing,'ORIGIN_ARCHIVE_MISSING');
+  if(requireExistingArchive)check(existing,'ORIGIN_ARCHIVE_MISSING');
   if(existing) {
     if(existing.content===content)return snapshot.head;
     const previous=JSON.parse(existing.content);
@@ -129,7 +129,7 @@ export async function reconcileBootstrapOrigin({root,repository,token,appId,iden
   check(current.id===repository.id&&current.full_name===repository.full_name&&current.owner?.id===302208797&&current.private===true
     &&current.default_branch===repository.default_branch&&!current.archived&&!current.disabled,'ORIGIN_TARGET');
   check(await get(io,`${prefix}/actions/variables/STEWARD_BOOTSTRAP_RECOVERY`,true)===null,'ORIGIN_RECOVERY_PRESENT');
-  await archive({root,repository,token,appId,identity:{name:identity.name,email:identity.email},record,origin:'app',io,originCorrection:true});
+  await archive({root,repository,token,appId,identity:{name:identity.name,email:identity.email},record,origin:'app',io,originCorrection:true,requireExistingArchive:true});
   return true;
 }
 
@@ -219,7 +219,7 @@ export async function main(transport=fetch) {
       const result=await bootstrapRepository(repository,source,config.rules,c.io,{requirePrivate:single,identity,now:()=>new Date().toISOString(),verifySource,
         verifyProtection:async r=>{const rules=await pages(c.io,`/repos/${r.full_name}/rules/branches/${encodeURIComponent(r.default_branch)}`);
           check(rules.some(rule=>rule.type==='pull_request')&&rules.some(rule=>rule.type==='required_status_checks'),'DEFAULT_PROTECTION');},
-        archive:(record,origin)=>archiveBootstrap({root,repository,token:c.token,appId,identity:{name:identity.name,email:identity.email},record,origin,io:c.io})});
+        archive:(record,origin)=>archiveBootstrap({root,repository,token:c.token,appId,identity:{name:identity.name,email:identity.email},record,origin,io:c.io,originCorrection:origin==='app'})});
       if(single&&result.status==='EXISTING') {
         await reconcileBootstrapOrigin({root,repository,token:c.token,appId,identity,io:c.io,verifySource:async record=>{await verifySource(source);await verifySource(record);}});
       }

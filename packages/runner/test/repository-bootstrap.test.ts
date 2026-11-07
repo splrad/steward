@@ -184,3 +184,15 @@ it('recognizes the native Contents message without its final LF and keeps all ot
   expect(bootstrapCommitOrigin({...first,author:{id:34}},content,f.source,f.services.identity)).toBe('external');
   expect(bootstrapCommitOrigin(first,{encoding:'base64',content:Buffer.from('# Repository').toString('base64')},f.source,f.services.identity)).toBe('external');
 });
+
+it('finishes a legacy archive with retained recovery after native message normalization without a second first commit',async()=>{
+  const f=fixture();let legacy=true,stored:any;
+  f.state.hook=(method:string,path:string)=>{if(method==='GET'&&path.includes('/commits/'))f.state.commits[0].commit.message=f.state.commits[0].commit.message.replace(/\n$/,'');};
+  f.services.archive=async(record:any,origin:any)=>{stored={record,origin:legacy?'external':origin};return 'c'.repeat(40);};
+  const deletion='DELETE /repos/splrad/fixture/actions/variables/'+bootstrapVariable;
+  f.state.fail.add(deletion);await expect(f.run()).rejects.toThrow('VARIABLE_DELETE_UNCONFIRMED');
+  const original=structuredClone(stored);expect(original.origin).toBe('external');expect(JSON.parse(f.state.variable).phase).toBe('RESTORED');
+  legacy=false;f.state.fail.delete(deletion);expect((await f.run()).origin).toBe('app');
+  expect(stored).toEqual({...original,origin:'app'});expect(f.state.variable).toBeNull();
+  expect(f.state.writes.filter((w:any)=>w.path.endsWith('/contents/README.md'))).toHaveLength(1);
+});
