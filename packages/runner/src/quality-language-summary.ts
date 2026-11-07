@@ -98,6 +98,17 @@ export async function translateQualitySources(cache:QualityCache,client:QualityM
   const keys=cache.heads[cache.currentHead]!.keys;
   const claimedSources=new Set<string>();
   for(const key of keys)ensure(await qualitySegmentKey(cache.entries[key]!.segment,cache.entries[key]!.configVersion)===key,'CACHE_KEY');
+  // Legacy snapshots can contain three already-durable refusals. Preserve them once more
+  // before compacting, so the next generation intent cannot exceed the closed snapshot bound.
+  const legacy=Object.values(cache.entries).filter(entry=>entry.attempts.filter(a=>a.status==='WAIT_AUTH'||a.status==='WAIT_QUOTA').length>1);
+  if(legacy.length) {
+    await store.save(cache);
+    for(const entry of legacy) {
+      const latest=entry.attempts.findLast(a=>a.status==='WAIT_AUTH'||a.status==='WAIT_QUOTA');
+      entry.attempts=entry.attempts.filter(a=>a===latest||a.status!=='WAIT_AUTH'&&a.status!=='WAIT_QUOTA');
+    }
+    await store.save(cache);
+  }
   while(budget.remaining>0&&clock()<budget.deadline) {
     const entries:QualityEntry[]=[];const start=keys.length?cache.cursor%keys.length:0;
     for(let i=0;i<keys.length;i++) {

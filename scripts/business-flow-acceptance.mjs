@@ -47,6 +47,7 @@ export async function executePlan(p,{root,controllerDirectory,app,modelToken,fet
     const approvedPr=(await io.get('/repos/'+p.repository.full_name+'/pulls/'+p.pr)).value;
     requireFact(approvedPr.number===p.pr&&approvedPr.head?.sha===p.head&&approvedPr.state==='open'&&approvedPr.base?.repo?.id===p.repository.id,'HEAD_CHANGED');
     const state=await q.openQualityStore(root,p.repository,token,io,p.governanceAppId);
+    requireFact(state.snapshot.head===p.stateSha,'STATE_CHANGED');
     const context={repository:p.repository.full_name,repositoryId:p.repository.id,pullRequestNumber:p.pr,
       head:p.head,appId:4243096,configVersion:p.configVersion};
     const sources=await lib.collectQualitySources(context,p.sources,io);
@@ -58,6 +59,8 @@ export async function executePlan(p,{root,controllerDirectory,app,modelToken,fet
     await lib.translateQualitySources(cache,client,store,{remaining:p.maxRequests,deadline:Date.now()+180000});
     const pr=(await io.get('/repos/'+p.repository.full_name+'/pulls/'+p.pr)).value;
     requireFact(pr.head?.sha===p.head&&pr.state==='open'&&pr.base?.repo?.id===p.repository.id,'HEAD_CHANGED');
+    await verifyRepository(token);
+    requireFact(digest(JSON.stringify(await lib.collectQualitySources(context,p.sources,io)))===p.sourceSetDigest,'SOURCE_CHANGED');
     const result=await lib.publishQualityCheck(context,cache,io,store);
     requireFact(result.pending===0,'QUALITY_PENDING');return {kind:p.kind,calls:client.calls,complete:result.complete};
   });
@@ -67,9 +70,10 @@ export async function executePlan(p,{root,controllerDirectory,app,modelToken,fet
     const {nativeReleaseCandidate}=await import(pathToFileURL(join(controllerDirectory,'scripts/release-candidate.mjs')).href);
     const guardedFetch=async(url,init)=>{
       const response=await fetcher(url,init);
-      if(String(url)==='https://api.github.com/repos/'+p.repository.full_name+'/git/ref/heads/main') {
-        requireFact(response.ok&&(await response.clone().json()).object?.sha===p.baseSha,'BASE_CHANGED');
-      }
+      const refs=new Map([
+        ['https://api.github.com/repos/'+p.repository.full_name+'/git/ref/heads/main',p.baseSha],
+      ]);
+      if(refs.has(String(url)))requireFact(response.ok&&(await response.clone().json()).object?.sha===refs.get(String(url)),'SOURCE_OR_STATE_CHANGED');
       return response;
     };
     const state=await fetchState(root,p.repository,token,'steward/release-state',{fetcher:guardedFetch,includeHistory:false});
@@ -78,7 +82,7 @@ export async function executePlan(p,{root,controllerDirectory,app,modelToken,fet
     const result=await nativeReleaseCandidate({directory:state.directory,writeDirectory:join(root,'writes'),remote:state.remote,
       repository:p.repository.full_name,repositoryId:p.repository.id,defaultBranch:'main',appBotId:app.appBotId,
       identity:{name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'}},
-      {token,readToken,controllerSha:p.controllerSha,controllerDirectory,temporaryRoot:root,fetcher:guardedFetch,language:client});
+      {token,readToken,controllerSha:p.controllerSha,controllerDirectory,temporaryRoot:root,fetcher:guardedFetch,language:client,expectedStateSha:p.stateSha});
     requireFact(result.status==='READY','CANDIDATE_PENDING');return {kind:p.kind,calls:client.calls,status:result.status};
   });
 }

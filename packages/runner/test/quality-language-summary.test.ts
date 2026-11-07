@@ -211,3 +211,15 @@ it('never removes refusal history before its durable save succeeds',async()=>{
   expect(entry.attempts.map(a=>a.status)).toEqual(['WAIT_AUTH','WAIT_QUOTA']);
   expect(f.saves[0]!.entries[entry.key]!.attempts.map(a=>a.status)).toEqual(['WAIT_AUTH','UNKNOWN']);
 });
+
+it('migrates three durable legacy refusals before consuming all three possible-generation attempts',async()=>{
+  const f=fixture();let cache=await reconcileQualitySources(null,{...context,observedAt:new Date(clock()).toISOString()},[source(1)]),now=clock(),calls=0;
+  Object.values(cache.entries)[0]!.attempts=[0,1,2].map(i=>({startedAt:new Date(now-i*60000).toISOString(),status:'WAIT_AUTH' as const,model:null,usage:null}));
+  const client={...f.client,call:async()=>{calls++;throw Error('RESPONSE_UNKNOWN');}};
+  for(let i=0;i<4;i++){
+    await translateQualitySources(cache,client,f.store,{remaining:1,deadline:now+1080000},()=>now);
+    cache=decodeStateFile('steward/governance-state','quality/1.json',Buffer.from(JSON.stringify(f.saves.at(-1)!)),12) as QualityCache;now+=600000;
+  }
+  expect(calls).toBe(3);expect(Object.values(f.saves[0]!.entries)[0]!.attempts).toHaveLength(3);
+  expect(Object.values(cache.entries)[0]!.attempts.map(a=>a.status)).toEqual(['WAIT_AUTH','FAILED','FAILED','FAILED']);
+});
