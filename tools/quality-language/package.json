@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test isolation.test.mjs release-notes.test.mjs run.test.mjs",
+    "test": "node --test isolation.test.mjs release-notes.test.mjs run.test.mjs identity-acceptance.test.mjs",
     "typecheck": "tsc --project tsconfig.json",
     "verify:runtime": "node verify-runtime.mjs"
   },

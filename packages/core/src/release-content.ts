@@ -21,6 +21,9 @@ export type Qualification = 'SOURCE_CONFIRMED' | 'TEST_CONFIRMED' | 'UNVERIFIED'
 export interface ContentItem { sourceIds: string[]; visibility: 'USER' | 'INTERNAL' | 'UNRESOLVED'; section: ContentSection; statementZh: string; qualification: Qualification }
 export interface ContentParagraph { sourceIds: string[]; section: ContentSection; textZh: string; qualification: Qualification }
 export interface ContentAttempt { ordinal: number; startedAt: string; status: 'SENT' | 'RETURNED' | 'UNKNOWN' | 'REJECTED'; model: string; usage: object | null; errorCode: string | null }
+/** Only an explicit pre-generation authentication/budget rejection is safe to retry. */
+export const retryableContentRejection = (attempt: ContentAttempt) => attempt.status === 'REJECTED'
+  && (attempt.errorCode === 'WAIT_AUTH' || attempt.errorCode === 'WAIT_QUOTA');
 export interface ContentBatch {
   id: string; stage: ContentStage; unitIds: string[]; sourceIds: string[]; inputDigest: string;
   status: 'PENDING' | 'RUNNING' | 'READY' | 'WAIT_AUTH' | 'WAIT_QUOTA' | 'RETRY_WAIT' | 'FAILED' | 'SUPERSEDED';
@@ -42,9 +45,9 @@ export function validateContentInput(value: unknown): ContentInput {
   const input = value as ContentInput;
   if (new Set(input.batches.map(b => b.id)).size !== input.batches.length) throw new Error('CONTENT_BATCH_DUPLICATE');
   for (const batch of input.batches) {
-    if (input.schemaVersion === 2 && (batch.stage !== 'DRAFT' || batch.parentId !== undefined || batch.childIds !== undefined || batch.attempts.length > 1))
+    if (input.schemaVersion === 2 && (batch.stage !== 'DRAFT' || batch.parentId !== undefined || batch.childIds !== undefined || batch.attempts.slice(0, -1).some(a => !retryableContentRejection(a))))
       throw new Error('CONTENT_DRAFT_INVALID');
-    if (batch.attempts.length > 3 || batch.attempts.some((a, i) => a.ordinal !== i + 1)
+    if (input.schemaVersion === 1 && batch.attempts.length > 3 || batch.attempts.some((a, i) => a.ordinal !== i + 1)
       || new Set(batch.sourceIds).size !== batch.sourceIds.length || !batch.sourceIds.length
       || batch.status === 'READY' && !batch.resultPath || batch.status === 'SUPERSEDED' && batch.childIds?.length !== 2)
       throw new Error('CONTENT_BATCH_INVALID');

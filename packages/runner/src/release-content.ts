@@ -1,3 +1,4 @@
+import { retryableContentRejection } from '../../core/src/release-content.js';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -77,7 +78,7 @@ export interface ContentRuntime {
   now(): string;
   editing(): Promise<boolean>;
   preflight(): Promise<'READY' | 'WAIT_AUTH' | 'WAIT_QUOTA'>;
-  call(input: string): Promise<{ text: string; model: string; usage: { inputTokens: number; outputTokens: number } | null }>;
+  call(input: string): Promise<{ text: string; model: string; usage: object | null }>;
   save(work: ContentWork, cache: ContentCache): Promise<void>;
 }
 /** Persist a request before sending; unknown results need native maintenance, not an automatic replay loop. */
@@ -93,15 +94,16 @@ export async function resumeContentBatches(work: ContentWork, cache: ContentCach
       work.results[batch.id] = validateContentResult('DRAFT', JSON.stringify(entry.result), batch.sourceIds);
       batch.status = 'READY'; batch.resultPath = `results/${batch.id}.json`; await runtime.save(work, cache); continue;
     }
-    if (entry.attempts.length || batch.attempts.length) {
+    if (entry.attempts.some(a => !retryableContentRejection(a)) || batch.attempts.some(a => !retryableContentRejection(a))) {
       batch.status = 'FAILED'; batch.errorCode = entry.attempts.at(-1)?.errorCode ?? 'RESPONSE_UNKNOWN';
       await runtime.save(work, cache); return { status: 'FAILED', calls };
     }
+    if (batch.nextCheckAt && Date.parse(batch.nextCheckAt) > Date.parse(runtime.now())) return { status: batch.status, calls };
     const preflight = await runtime.preflight();
     if (preflight !== 'READY') { batch.status = preflight; await runtime.save(work, cache); return { status: preflight, calls }; }
     if (await runtime.editing()) return { status: 'EDITING', calls };
-    const attempt: ContentAttempt = { ordinal: 1, startedAt: runtime.now(), status: 'SENT', model: 'server-selected', usage: null, errorCode: null };
-    batch.attempts = [attempt]; entry.attempts = batch.attempts; batch.status = 'RUNNING'; await runtime.save(work, cache); calls++;
+    const attempt: ContentAttempt = { ordinal: Math.max(entry.attempts.length, batch.attempts.length) + 1, startedAt: runtime.now(), status: 'SENT', model: 'server-selected', usage: null, errorCode: null };
+    batch.attempts = [...(entry.attempts.length >= batch.attempts.length ? entry.attempts : batch.attempts), attempt]; entry.attempts = batch.attempts; batch.nextCheckAt = null; batch.status = 'RUNNING'; await runtime.save(work, cache); calls++;
     try {
       const response = await runtime.call(contentWireInput(work.payloads[batch.id]!));
       attempt.status = 'RETURNED'; attempt.model = response.model; attempt.usage = response.usage;
@@ -111,10 +113,14 @@ export async function resumeContentBatches(work: ContentWork, cache: ContentCach
       const message = error instanceof Error ? error.message : '';
       const code = /^(?:CONTENT_[A-Z_]+|WAIT_AUTH|WAIT_QUOTA|RESPONSE_UNKNOWN)$/.test(message) ? message : 'RESPONSE_UNKNOWN';
       attempt.status = code === 'RESPONSE_UNKNOWN' ? 'UNKNOWN' : 'REJECTED'; attempt.errorCode = code;
-      batch.status = 'FAILED'; batch.errorCode = code;
+      batch.status = code === 'WAIT_AUTH' || code === 'WAIT_QUOTA' ? code : 'FAILED'; batch.errorCode = code;
+      if (batch.status !== 'FAILED') {
+        const delay = (error as { retryAfterMs?: number }).retryAfterMs;
+        batch.nextCheckAt = new Date(Date.parse(runtime.now()) + (typeof delay === 'number' && Number.isFinite(delay) ? Math.max(60_000, delay) : 60_000)).toISOString();
+      }
     }
     await runtime.save(work, cache);
-    if (batch.status !== 'READY') return { status: 'FAILED', calls };
+    if (batch.status !== 'READY') return { status: batch.status, calls };
   }
   return { status: 'READY', calls };
 }

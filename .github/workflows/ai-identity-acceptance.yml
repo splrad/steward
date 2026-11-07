@@ -1,0 +1,110 @@
+name: SPLRAD Steward / AI Identity Acceptance
+on:
+  workflow_dispatch:
+    inputs:
+      approved_sha:
+        description: 'Exact reviewed main SHA approved for this single run'
+        required: true
+        type: string
+      authorize_two_requests:
+        description: 'Authorize at most two synthetic generation requests within the existing organization budget'
+        required: true
+        default: false
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: steward-ai-identity-acceptance
+  cancel-in-progress: false
+jobs:
+  quality:
+    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == 'refs/heads/main' && github.run_attempt == 1 && inputs.authorize_two_requests && inputs.approved_sha == github.sha && github.workflow_sha == github.sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      copilot-requests: write
+    environment:
+      name: steward-release-notes
+      deployment: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.10.18
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - name: Install and verify locked runtime without model credentials
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm ci --prefix tools/quality-language --ignore-scripts --no-audit --no-fund
+          npm run verify:runtime --prefix tools/quality-language
+      - name: Execute one fixed synthetic identity sample
+        env:
+          STEWARD_COPILOT_TOKEN: ${{ github.token }}
+          APPROVED_SHA: ${{ inputs.approved_sha }}
+          ACCEPT_TWO_REQUESTS: ${{ inputs.authorize_two_requests }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: node tools/quality-language/identity-acceptance.mjs quality
+      - name: Preserve sanitized identity evidence
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: identity-quality-${{ github.run_id }}-${{ github.run_attempt }}
+          path: identity-acceptance.json
+          if-no-files-found: error
+          retention-days: 14
+  release:
+    needs: quality
+    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == 'refs/heads/main' && github.run_attempt == 1 && inputs.authorize_two_requests && inputs.approved_sha == github.sha && github.workflow_sha == github.sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      copilot-requests: write
+    environment:
+      name: steward-release
+      deployment: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.10.18
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - name: Install and verify locked runtime without model credentials
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm ci --prefix tools/quality-language --ignore-scripts --no-audit --no-fund
+          npm run verify:runtime --prefix tools/quality-language
+      - name: Execute one fixed synthetic identity sample
+        env:
+          STEWARD_COPILOT_TOKEN: ${{ github.token }}
+          APPROVED_SHA: ${{ inputs.approved_sha }}
+          ACCEPT_TWO_REQUESTS: ${{ inputs.authorize_two_requests }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: node tools/quality-language/identity-acceptance.mjs release
+      - name: Preserve sanitized identity evidence
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: identity-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: identity-acceptance.json
+          if-no-files-found: error
+          retention-days: 14
