@@ -122,6 +122,7 @@ jobs:
           CURRENT_RUN_ID: ${{ github.run_id }}
           CURRENT_ATTEMPT: ${{ github.run_attempt }}
           HEALTH_ISSUE: ${{ vars.STEWARD_HEALTH_ISSUE }}
+          EXPECTED_PAUSED_RELEASE: ${{ vars.STEWARD_EXPECTED_PAUSED_RELEASE }}
         run: |
           set -euo pipefail
           shopt -s inherit_errexit
@@ -137,11 +138,18 @@ jobs:
           marker='<!-- splrad-automation-health:v2 -->'
           read_codes() {
             gh api --method GET --paginate --slurp -H 'X-GitHub-Api-Version: 2026-03-10' "repos/splrad/steward/issues/$HEALTH_ISSUE/comments?per_page=100" 2>/dev/null |
-              jq -ce --arg marker "$marker" --argjson bot "$bot" 'if all(.[];type=="array") then add else error("comments unavailable") end | [.[]|select(.user.id==$bot and (.body//""|startswith($marker+"\n")))] | sort_by(.id)|last | if .==null then [] else .body|split("\n")[1]|fromjson end | if type=="array" and all(.[];type=="string" and test("^(release\\.yml|sync-managed\\.yml):(WORKFLOW_UNAVAILABLE|WORKFLOW_DISABLED|ENABLE_UNCONFIRMED|RUN_UNAVAILABLE|WAKE_UNKNOWN|ENTRY_OVERDUE)$")) then sort|unique else error("health state unavailable") end'
+              jq -ce --arg marker "$marker" --argjson bot "$bot" 'if all(.[];type=="array") then add else error("comments unavailable") end | [.[]|select(.user.id==$bot and (.body//""|startswith($marker+"\n")))] | sort_by(.id)|last | if .==null then [] else .body|split("\n")[1]|fromjson end | if type=="array" and all(.[];type=="string" and test("^(release\\.yml|sync-managed\\.yml):(WORKFLOW_UNAVAILABLE|WORKFLOW_DISABLED|WORKFLOW_PAUSED|ENABLE_UNCONFIRMED|RUN_UNAVAILABLE|WAKE_UNKNOWN|ENTRY_OVERDUE)$")) then sort|unique else error("health state unavailable") end'
           }
           previous=$(read_codes)
           codes='[]'
           record() { codes=$(jq -cn --argjson codes "$codes" --arg code "$file:$1" '$codes+[$code]'); }
+          record_disabled() {
+            if [[ "$file" == release.yml && "$workflow_id" == 311600220 && "$state" == disabled_manually && "${EXPECTED_PAUSED_RELEASE:-}" == 311600220 ]]; then
+              record WORKFLOW_PAUSED
+            else
+              record WORKFLOW_DISABLED
+            fi
+          }
           latest_run() {
             gh run list --repo splrad/steward --workflow "$file" --branch "$DEFAULT_BRANCH" --limit 1 --json databaseId,createdAt,status,conclusion 2>/dev/null |
               jq -ce 'if type=="array" and length<=1 and all(.[]; (.databaseId|type)=="number" and .databaseId>0 and (.databaseId|floor)==.databaseId and (.createdAt|type)=="string" and (.status=="completed" or .status=="in_progress" or .status=="queued" or .status=="waiting" or .status=="pending" or .status=="requested")) then . else error("recent Run unavailable") end'
@@ -166,7 +174,7 @@ jobs:
                 if [[ "$state" == disabled_inactivity ]]; then record ENABLE_UNCONFIRMED; continue; fi
               fi
             fi
-            if [[ "$state" != active ]]; then record WORKFLOW_DISABLED; continue; fi
+            if [[ "$state" != active ]]; then record_disabled; continue; fi
             if ! runs=$(latest_run); then record RUN_UNAVAILABLE; continue; fi
             created=$(jq -r '.[0].createdAt//"1970-01-01T00:00:00Z"' <<<"$runs")
             if ! created_epoch=$(date -u -d "$created" +%s); then record RUN_UNAVAILABLE; continue; fi
@@ -176,7 +184,8 @@ jobs:
             # A recent Run does not prove that older Runs have finished. Native concurrency
             # serializes this observation wake; business records retain their own budgets.
             if ! workflow=$(api "repos/splrad/steward/actions/workflows/$workflow_id") || ! workflow_matches "$workflow"; then record WORKFLOW_UNAVAILABLE; continue; fi
-            if [[ "$(jq -r '.state' <<<"$workflow")" != active ]]; then record WORKFLOW_DISABLED; continue; fi
+            state=$(jq -r '.state' <<<"$workflow")
+            if [[ "$state" != active ]]; then record_disabled; continue; fi
             response_known=true
             gh workflow run "$file" --repo splrad/steward --ref "$DEFAULT_BRANCH" >/dev/null 2>&1 || response_known=false
             # Read once after the write, including a lost response. Retry only on a later
@@ -194,4 +203,8 @@ jobs:
             gh api --method POST -H 'X-GitHub-Api-Version: 2026-03-10' "repos/splrad/steward/issues/$HEALTH_ISSUE/comments" --input - <<<"$payload" >/dev/null 2>&1 || true
             [[ "$(read_codes)" == "$codes" ]]
           fi
-          [[ "$codes" == '[]' ]]
+          # Expected maintenance remains visible and never enables or dispatches Release.
+          if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+            printf '入口观察：%s\n\nWORKFLOW_PAUSED 表示已批准的 Release 人工暂停，不代表发行验收通过。\n' "$codes" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          jq -e 'all(.[]; .=="release.yml:WORKFLOW_PAUSED")' <<<"$codes" >/dev/null

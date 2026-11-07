@@ -19,3 +19,11 @@ Actions 事件策略通过 GitHub 设置页或官方 REST 在采用阶段配置�
 新标题入口采用前，先保存准确对象的完整原生快照，核对全部继承策略和实际拒绝来源。按现行规范使用组织 `repository_name.include=["~ALL"]` 覆盖当前与未来仓库；标题许可仅匹配 `.github/workflows/pr-title.yml`。其他工作流保留所需事件并排除 `pull_request_target`，不得用新增宽松策略抵消未知的继承限制。扩大到未来仓库或初次创建策略使用已审原生请求；现有按仓库 ID 登记的辅助模块不转换这类作用范围。
 
 写响应未知时先 GET 准确策略，保留无关字段及后来修改，再决定后续操作。真实验收包含标题 edited/fork、其他路径拒绝，以及维护、发布和恢复所需事件；本地请求测试不替代原生事件验收。接口参见 [GitHub Actions policies](https://docs.github.com/en/rest/actions/policies)。
+
+## 已知 Release 暂停的健康观察
+
+`release.yml` 和 `sync-managed.yml` 仍独立读取两个固定入口。默认情况下，人工停用继续记录 `WORKFLOW_DISABLED` 并使健康 job 失败；不会 enable 或 dispatch 人工停用的入口。
+
+仅当维护决定已批准暂停中央 Release（原生 workflow ID `311600220`），才将中央仓库变量 `STEWARD_EXPECTED_PAUSED_RELEASE` 设置为 `311600220`。准确路径、ID 和实际 `disabled_manually` 状态同时匹配时，记录 `release.yml:WORKFLOW_PAUSED`。此状态在既有健康 Issue 中变化时通知一次，并保留在运行摘要；它不使健康 job 失败，也不代表发行或产品验收通过。变量为空、ID 不符、其他工作流停用、未知状态及 API/通知故障仍失败。原生状态恢复为 active 时照常检查最近运行，变量不能屏蔽失活或漏唤醒。结束维护时应清除该变量；Release 的启用需对应的发行授权。
+
+采用此行为、设置变量和实际通知需在同一部署决定中明确；代码合入本身不设置变量。
