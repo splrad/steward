@@ -177,8 +177,7 @@
                   "properties": {
                     "ordinal": {
                       "type": "integer",
-                      "minimum": 1,
-                      "maximum": 3
+                      "minimum": 1
                     },
                     "startedAt": {
                       "type": "string",
@@ -203,11 +202,45 @@
                           "additionalProperties": false,
                           "properties": {
                             "inputTokens": {
-                              "type": "integer",
+                              "type": [
+                                "integer",
+                                "null"
+                              ],
                               "minimum": 0
                             },
                             "outputTokens": {
-                              "type": "integer",
+                              "type": [
+                                "integer",
+                                "null"
+                              ],
+                              "minimum": 0
+                            },
+                            "totalNanoAiu": {
+                              "type": [
+                                "number",
+                                "null"
+                              ],
+                              "minimum": 0
+                            },
+                            "aiCredits": {
+                              "type": [
+                                "number",
+                                "null"
+                              ],
+                              "minimum": 0
+                            },
+                            "premiumRequests": {
+                              "type": [
+                                "number",
+                                "null"
+                              ],
+                              "minimum": 0
+                            },
+                            "requests": {
+                              "type": [
+                                "number",
+                                "null"
+                              ],
                               "minimum": 0
                             }
                           },
@@ -241,8 +274,7 @@
                     "usage",
                     "errorCode"
                   ]
-                },
-                "maxItems": 3
+                }
               },
               "nextCheckAt": {
                 "anyOf": [
@@ -503,8 +535,7 @@
             "properties": {
               "ordinal": {
                 "type": "integer",
-                "minimum": 1,
-                "maximum": 3
+                "minimum": 1
               },
               "startedAt": {
                 "type": "string",
@@ -529,11 +560,45 @@
                     "additionalProperties": false,
                     "properties": {
                       "inputTokens": {
-                        "type": "integer",
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
                         "minimum": 0
                       },
                       "outputTokens": {
-                        "type": "integer",
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "minimum": 0
+                      },
+                      "totalNanoAiu": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "minimum": 0
+                      },
+                      "aiCredits": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "minimum": 0
+                      },
+                      "premiumRequests": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "minimum": 0
+                      },
+                      "requests": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
                         "minimum": 0
                       }
                     },
@@ -567,8 +632,7 @@
               "usage",
               "errorCode"
             ]
-          },
-          "maxItems": 3
+          }
         },
         "nextCheckAt": {
           "anyOf": [

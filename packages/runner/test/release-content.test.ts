@@ -71,3 +71,39 @@ it('retains archive byte splitting without requiring model byte coverage',()=>{
   expect(parts[0]!.start).toBe(0);expect(parts.at(-1)!.end).toBe(Buffer.byteLength(text));
   expect(parts.every((p,i)=>i===0||p.start===parts[i-1]!.end)).toBe(true);
 });
+
+it('resumes explicit auth and budget rejections after backoff without discarding history or replaying success', async () => {
+  const work = await planContentBatches(input(), [source(1)]), cache = {}, r = runtime();
+  const success = r.port.call;
+  for (const reason of ['WAIT_AUTH', 'WAIT_QUOTA', 'WAIT_QUOTA', 'WAIT_AUTH']) {
+    r.port.call = async () => { throw Object.assign(new Error(reason), { retryAfterMs: 120000 }); };
+    expect(await resumeContentBatches(work, cache, r.port)).toEqual({ status: reason, calls: 1 });
+    expect(await resumeContentBatches(work, cache, r.port)).toEqual({ status: reason, calls: 0 });
+    r.advance(120000);
+  }
+  r.port.call = success;
+  expect(await resumeContentBatches(work, cache, r.port)).toEqual({ status: 'READY', calls: 1 });
+  expect(work.input.batches[0]!.attempts.map(a => a.ordinal)).toEqual([1, 2, 3, 4, 5]);
+  expect(work.input.batches[0]!.attempts.map(a => a.status)).toEqual(['REJECTED', 'REJECTED', 'REJECTED', 'REJECTED', 'RETURNED']);
+  expect(await resumeContentBatches(work, cache, r.port)).toEqual({ status: 'READY', calls: 0 });
+});
+
+it('checks restored identity before resuming and keeps unknown outcomes blocked after rejection history', async () => {
+  const work = await planContentBatches(input(), [source(1)]), cache = {}, r = runtime();
+  r.port.call = async () => { throw Error('WAIT_AUTH'); };
+  await resumeContentBatches(work, cache, r.port); r.advance(60000);
+  r.port.preflight = async () => 'WAIT_AUTH';
+  expect(await resumeContentBatches(work, cache, r.port)).toEqual({ status: 'WAIT_AUTH', calls: 0 });
+  r.port.preflight = async () => 'READY'; r.port.call = async () => { throw Error('RESPONSE_UNKNOWN'); };
+  expect(await resumeContentBatches(work, cache, r.port)).toEqual({ status: 'FAILED', calls: 1 });
+  expect(await resumeContentBatches(work, cache, r.port)).toEqual({ status: 'FAILED', calls: 0 });
+  expect(work.input.batches[0]!.attempts).toHaveLength(2);
+});
+
+it('persists measured billing units and absent token counters through the closed manifest schema', async () => {
+  const work = await planContentBatches(input(), [source(1)]), r = runtime(), call = r.port.call;
+  r.port.call = async text => ({ ...await call(text), usage: { inputTokens: null, outputTokens: null, totalNanoAiu: 1500000000, aiCredits: 1.5, premiumRequests: null, requests: 1 } });
+  expect(await resumeContentBatches(work, {}, r.port)).toEqual({ status: 'READY', calls: 1 });
+  expect(work.input.batches[0]!.attempts[0]!.usage).toMatchObject({ aiCredits: 1.5, inputTokens: null });
+  expect(() => validateContentInput(work.input)).not.toThrow();
+});

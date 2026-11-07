@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { releaseNotes } from './release-notes.mjs';
 
-function fixture({ authenticated = true, models = [{id:'native-default'}], text = '{"items":[]}', finishReason = 'stop', failure = null } = {}) {
+function fixture({ authenticated = true, models = [{id:'native-default'}], text = '{"items":[]}', finishReason = 'stop', failure = null,
+  usageModel = 'fixture', emitUsage = true, metrics = { currentModel: 'fixture', totalNanoAiu: 1500000000, totalPremiumRequestCost: 2, totalUserRequests: 1 }, metricsFailure = false, failureAfterUsage = null } = {}) {
   const events = [], handlers = new Map(); let clientOptions, sessionOptions;
   const client = { start: async () => events.push('start'), stop: async () => events.push('stop'),
     getAuthStatus: async () => ({ isAuthenticated: authenticated }),
@@ -11,9 +12,11 @@ function fixture({ authenticated = true, models = [{id:'native-default'}], text 
       events.push('session'); sessionOptions = options;
       return { on: (type, handler) => handlers.set(type, handler), sendAndWait: async input => {
         events.push('send'); if (failure) throw failure;
-        handlers.get('assistant.usage')?.({ data: { model: 'fixture', inputTokens: 10, outputTokens: 5, finishReason } });
+        if (emitUsage) handlers.get('assistant.usage')?.({ data: { model: usageModel, inputTokens: 10, outputTokens: 5, finishReason } });
+        if (failureAfterUsage) throw failureAfterUsage;
         return { data: { content: text } };
-      } };
+      }, abort: async () => events.push('abort'), disconnect: async () => events.push('disconnect'),
+      rpc: { usage: { getMetrics: async () => { if (metricsFailure) throw Object.assign(Error('raw secret'), { status: 403 }); return metrics; } } } };
     },
   };
   return { create: options => { clientOptions = options; return client; }, events, options: () => ({ clientOptions, sessionOptions }) };
@@ -31,19 +34,20 @@ test('expired tokens, organization policy and budget rejection do not retry or f
     assert.deepEqual(await releaseNotes('generate','{}','workflow-token',f.create),{
       status:status===429?'WAIT_QUOTA':'WAIT_AUTH',retryAfterMs:120000,
     });
-    assert.deepEqual(f.events,['start','session','send','stop']);
+    assert.deepEqual(f.events,['start','session','send','abort','disconnect','stop']);
     assert.equal(f.options().clientOptions.gitHubToken,'workflow-token');
     assert.equal(f.options().clientOptions.useLoggedInUser,false);
   }
 });
 test('SDK content call has no tools, agents, discovery or retained session and returns measured usage', async () => {
   const f = fixture(), result = await releaseNotes('generate', '{"prompt":"离线输入"}', 'fixture-token', f.create);
-  assert.deepEqual(result, { status: 'RETURNED', text: '{"items":[]}', model: 'fixture', usage: { inputTokens: 10, outputTokens: 5 } });
+  assert.deepEqual(result, { status: 'RETURNED', text: '{"items":[]}', model: 'fixture', usage: { inputTokens: 10, outputTokens: 5,
+    totalNanoAiu: 1500000000, aiCredits: 1.5, premiumRequests: 2, requests: 1 } });
   const { clientOptions: c, sessionOptions: s } = f.options();
   assert.equal(c.mode, 'empty'); assert.equal(c.useLoggedInUser, false); assert.equal(c.gitHubToken, 'fixture-token');
   assert.deepEqual(s.availableTools, []); assert.deepEqual(s.tools, []); assert.deepEqual(s.customAgents, []); assert.deepEqual(s.mcpServers, {});
   assert.equal(s.enableConfigDiscovery, false); assert.deepEqual(s.onPermissionRequest(), { kind: 'reject' }); assert.deepEqual(s.memory, { enabled: false });
-  assert.deepEqual(f.events, ['start', 'session', 'send', 'stop']);
+  assert.deepEqual(f.events, ['start', 'session', 'send', 'disconnect', 'stop']);
 });
 test('SDK capacity and output limits are explicit and always stop the client', async () => {
   for (const [setup, code] of [[{ finishReason: 'length' }, 'CONTENT_CAPACITY'], [{ text: '中'.repeat(5000) }, 'CONTENT_OUTPUT_LIMIT']]) {
@@ -52,5 +56,25 @@ test('SDK capacity and output limits are explicit and always stop the client', a
 });
 test('curated input above the retired byte threshold reaches the SDK and retains service capacity errors', async () => {
   const f = fixture(); const result=await releaseNotes('generate', 'x'.repeat(120 * 1024), 'fixture-token', f.create);
-  assert.equal(result.status,'RETURNED');assert.deepEqual(f.events,['start','session','send','stop']);
+  assert.equal(result.status,'RETURNED');assert.deepEqual(f.events,['start','session','send','disconnect','stop']);
+});
+
+test('model evidence and optional billing units are not fabricated', async () => {
+  const f = fixture({ metrics: {}, usageModel: 'event-model' });
+  const result = await releaseNotes('generate', '{}', 'fixture-token', f.create);
+  assert.equal(result.model, 'event-model');
+  assert.equal(result.usage.aiCredits, null);
+  assert.equal(result.usage.premiumRequests, null);
+  const missing = fixture({ metrics: {}, emitUsage: false });
+  await assert.rejects(releaseNotes('generate', '{}', 'fixture-token', missing.create), /CONTENT_MODEL_UNKNOWN/);
+  const metricsOnly = fixture({ emitUsage: false });
+  assert.equal((await releaseNotes('generate', '{}', 'fixture-token', metricsOnly.create)).usage.inputTokens, null);
+});
+
+test('timeout and metrics failure abort, disconnect and sanitize without replaying the request', async () => {
+  for (const setup of [{ failure: Error('raw token timeout') }, { metricsFailure: true }, { failureAfterUsage: { status: 429 } }]) {
+    const f = fixture(setup);
+    await assert.rejects(releaseNotes('generate', '{}', 'fixture-token', f.create), /^Error: RESPONSE_UNKNOWN$/);
+    assert.deepEqual(f.events, ['start', 'session', 'send', 'abort', 'disconnect', 'stop']);
+  }
 });
