@@ -54,12 +54,14 @@ export async function verifyGovernanceCreation(io,repository,appId) {
     // Repository projections omit organization repository-name conditions.
     const rule=projected.source_type==='Organization'&&projected.source==='splrad'
       ?await get(io,`/orgs/splrad/rulesets/${summary.id}`):projected;
-    if(rule.enforcement!=='active'||rule.target!=='branch'||JSON.stringify(rule.conditions?.ref_name?.include)!==JSON.stringify([`refs/heads/${branch}`]))continue;
+    if(rule.enforcement!=='active'||rule.target!=='branch'||!Array.isArray(rule.conditions?.ref_name?.include)
+      ||!rule.conditions.ref_name.include.includes(`refs/heads/${branch}`))continue;
     check(rule.id===summary.id&&JSON.stringify(rule.conditions.ref_name.exclude)==='[]','STATE_RULE');
     check(rule.source_type==='Organization'&&rule.source==='splrad'&&JSON.stringify(rule.conditions.repository_name?.include)==='["~ALL"]'
       &&rule.conditions.repository_name.protected===false&&rule.conditions.repository_name.exclude.every(name=>/^[A-Za-z0-9_.-]+$/.test(name)&&name!==repository.name),'STATE_RULE_SCOPE');
     const types=rule.rules.map(r=>r.type);
     if(types.includes('creation')||types.includes('update')) {
+      check(JSON.stringify(rule.conditions.ref_name.include)===JSON.stringify([`refs/heads/${branch}`]),'STATE_WRITER_SCOPE');
       check(rule.bypass_actors.length===2&&[4243096,appId].every(id=>rule.bypass_actors.some(a=>a.actor_id===id&&a.actor_type==='Integration'&&a.bypass_mode==='always'))
         &&rule.rules.every(r=>r.type!=='update'||r.parameters?.update_allows_fetch_and_merge===false),'STATE_WRITER');
     }
