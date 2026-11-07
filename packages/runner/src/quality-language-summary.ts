@@ -1,6 +1,6 @@
 import { nextLink } from '../../github/src/pagination.js';
 import { qualityCanonical, qualityDigest, qualitySegmentKey, qualityBatchInput, reconcileQualitySources, renderQualitySummary, validateQualityOutput,
-  QUALITY_CHECK_NAME, type QualityCache, type QualitySource, type QualityEntry } from '../../core/src/quality-language-summary.js';
+  QUALITY_CHECK_NAME, qualityGenerationAttempts, type QualityCache, type QualitySource, type QualityEntry } from '../../core/src/quality-language-summary.js';
 import type { QualityModelClient } from './copilot-quality-client.js';
 
 export interface QualityIdentity { kind:'review-comment'|'review'|'annotation'; id:number; login:string }
@@ -102,7 +102,7 @@ export async function translateQualitySources(cache:QualityCache,client:QualityM
     const entries:QualityEntry[]=[];const start=keys.length?cache.cursor%keys.length:0;
     for(let i=0;i<keys.length;i++) {
       const entry=cache.entries[keys[(start+i)%keys.length]!]!;
-      if(entry.result||entry.attempts.length>=3||entry.nextCheckAt&&Date.parse(entry.nextCheckAt)>clock())continue;
+      if(entry.result||qualityGenerationAttempts(entry.attempts)>=3||entry.nextCheckAt&&Date.parse(entry.nextCheckAt)>clock())continue;
       if(!claimedSources.has(entry.segment.sourceCommentId)&&claimedSources.size>=10)continue;
       try{qualityBatchInput([...entries.map(e=>e.segment),entry.segment]);}catch{if(!entries.length)throw new Error('QUALITY_INPUT_LIMIT');break;}
       entries.push(entry);claimedSources.add(entry.segment.sourceCommentId);if(entries.length===10)break;
@@ -121,7 +121,7 @@ export async function translateQualitySources(cache:QualityCache,client:QualityM
     const now=clock();budget.remaining--;
     for(const entry of entries) {
       entry.attempts.push({startedAt:new Date(now).toISOString(),status:'UNKNOWN',model:null,usage:null});
-      entry.nextCheckAt=entry.attempts.length>=3?null:new Date(now+(entry.attempts.length===1?60_000:300_000)).toISOString();entry.errorCode='RESPONSE_UNKNOWN';
+      entry.nextCheckAt=qualityGenerationAttempts(entry.attempts)>=3?null:new Date(now+(qualityGenerationAttempts(entry.attempts)<=1?60_000:300_000)).toISOString();entry.errorCode='RESPONSE_UNKNOWN';
     }
     cache.cursor=(keys.indexOf(entries.at(-1)!.key)+1)%keys.length;
     await store.save(cache); // Must succeed before any model call.
@@ -133,9 +133,11 @@ export async function translateQualitySources(cache:QualityCache,client:QualityM
     } catch(error) {
       const code=safeCode(error),retry=Number((error as any)?.retryAfterMs);
       for(const entry of entries) {entry.errorCode=code;entry.attempts.at(-1)!.status=code==='WAIT_AUTH'||code==='WAIT_QUOTA'?code:'FAILED';
-        if(entry.attempts.length<3)entry.nextCheckAt=new Date(Math.max(clock()+(entry.attempts.length===1?60_000:300_000),clock()+(Number.isFinite(retry)&&retry>0?retry:0))).toISOString();}
+        if(qualityGenerationAttempts(entry.attempts)<3)entry.nextCheckAt=new Date(Math.max(clock()+(qualityGenerationAttempts(entry.attempts)<=1?60_000:300_000),clock()+(Number.isFinite(retry)&&retry>0?retry:0))).toISOString();}
     }
     await store.save(cache);
+    // Stop this wake after a definite refusal; the next observation checks identity again.
+    if(entries.some(entry=>entry.errorCode==='WAIT_AUTH'||entry.errorCode==='WAIT_QUOTA'))break;
   }
   return cache;
 }

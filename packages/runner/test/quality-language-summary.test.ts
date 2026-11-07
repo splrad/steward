@@ -156,3 +156,40 @@ it('native wire permits only own neutral Check output, uses no third-party mutat
   await assertQualityProtection(protection,'test/product',900);integrityBypass=[{actor_id:4243096}];
   await expect(assertQualityProtection(protection,'test/product',900)).rejects.toThrow('INTEGRITY');
 });
+
+it.each(['WAIT_AUTH','WAIT_QUOTA'])('restores persisted input after repeated explicit %s refusals without exhausting generation attempts',async(reason)=>{
+  const f=fixture();let cache=await reconcileQualitySources(null,{...context,observedAt:new Date(clock()).toISOString()},[source(1)]),now=clock(),calls=0;
+  const client={...f.client,async call(){calls++;throw Object.assign(Error(reason),{retryAfterMs:120000});}};
+  const run=async(c:any=client)=>{
+    await translateQualitySources(cache,c,f.store,{remaining:10,deadline:now+1080000},()=>now);
+    cache=decodeStateFile('steward/governance-state','quality/1.json',Buffer.from(JSON.stringify(f.saves.at(-1)!)),12) as QualityCache;
+  };
+  for(let i=0;i<4;i++) {await run();expect(calls).toBe(i+1);await run();expect(calls).toBe(i+1);now+=600000;}
+  await run(f.client);expect(renderQualitySummary(cache).complete).toBe(1);expect(f.calls).toBe(1);
+  expect(Object.values(cache.entries)[0]!.attempts.map(a=>a.status)).toEqual([reason,reason,reason,reason,'COMPLETE']);
+  await run(f.client);expect(f.calls).toBe(1);
+});
+it('observes the current bounded unknown-response policy after durable serialization',async()=>{
+  const f=fixture();let cache=await reconcileQualitySources(null,{...context,observedAt:new Date(clock()).toISOString()},[source(1)]),now=clock(),calls=0;
+  const client={...f.client,async call(){calls++;throw Error('RESPONSE_UNKNOWN');}};
+  for(let i=0;i<4;i++) {
+    await translateQualitySources(cache,client,f.store,{remaining:10,deadline:now+1080000},()=>now);
+    cache=decodeStateFile('steward/governance-state','quality/1.json',Buffer.from(JSON.stringify(f.saves.at(-1)!)),12) as QualityCache;
+    now+=600000;
+  }
+  expect(calls).toBe(3);expect(renderQualitySummary(cache).pending).toBe(1);
+});
+
+it('retains the three-generation bound after refusal history and rejects a fourth unknown attempt',async()=>{
+  const f=fixture();let cache=await reconcileQualitySources(null,{...context,observedAt:new Date(clock()).toISOString()},[source(1)]),now=clock(),calls=0;
+  let reason='WAIT_QUOTA';const client={...f.client,async call(){calls++;throw Error(reason);}};
+  for(let i=0;i<7;i++) {
+    if(i===2)reason='RESPONSE_UNKNOWN';
+    await translateQualitySources(cache,client,f.store,{remaining:10,deadline:now+1080000},()=>now);
+    cache=decodeStateFile('steward/governance-state','quality/1.json',Buffer.from(JSON.stringify(f.saves.at(-1)!)),12) as QualityCache;
+    now+=600000;
+  }
+  expect(calls).toBe(5);expect(Object.values(cache.entries)[0]!.attempts).toHaveLength(5);
+  const entry=Object.values(cache.entries)[0]!;entry.attempts.push({...entry.attempts.at(-1)!,status:'UNKNOWN'});
+  expect(()=>decodeStateFile('steward/governance-state','quality/1.json',Buffer.from(JSON.stringify(cache)),12)).toThrow('CACHE_SCHEMA');
+});
