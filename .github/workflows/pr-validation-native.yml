@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
-      source: ${{ steps.scope.outputs.source }}
+      source: ${{ steps.identity.outputs.dependencyMode == 'private-governance' && 'false' || steps.scope.outputs.source }}
       dependency: ${{ startsWith(steps.identity.outputs.dependencyMode, 'private-') && 'true' || steps.scope.outputs.dependency }}
       dependency-mode: ${{ steps.identity.outputs.dependencyMode }}
       docs: ${{ steps.scope.outputs.docs }}

@@ -7,6 +7,28 @@ import {execFileSync} from 'node:child_process';
 import {registerOfflineFixtureRoot} from './offline-fixtures.js';
 const script=(name:string)=>import(pathToFileURL(resolve('scripts/'+name+'.mjs')).href);
 const S='a'.repeat(40);
+it('private governance rejects product trees before publishing any build outputs',async()=>{
+  const {main}=await script('validation-input'),root=await mkdtemp(join(tmpdir(),'governance-admission-'));registerOfflineFixtureRoot(root);
+  const git=(...args:string[])=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();
+  try{
+    git('init','--initial-branch=main');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');
+    await writeFile(join(root,'README.md'),'base\n');git('add','.');git('commit','--signoff','--no-gpg-sign','-m','base');
+    const base=git('rev-parse','HEAD');git('update-ref','refs/remotes/origin/main',base);
+    await writeFile(join(root,'README.md'),'head\n');git('add','.');git('commit','--signoff','--no-gpg-sign','-m','head');
+    const event=join(root,'event.json'),output=join(root,'output.txt');
+    const env={VALIDATION_WORKSPACE:root,GITHUB_OUTPUT:output,GITHUB_EVENT_PATH:event,GITHUB_EVENT_NAME:'pull_request',GITHUB_REPOSITORY_ID:'42',GITHUB_REPOSITORY:'splrad/fixture',WORKFLOW_REPOSITORY:'splrad/steward',WORKFLOW_PATH:'.github/workflows/pr-validation-native.yml',WORKFLOW_SHA:S,PRIVATE_GOVERNANCE_REPOSITORY_ID:'42'};
+    const payload=()=>({repository:{id:42,full_name:'splrad/fixture',private:true,owner:{id:302208797}},pull_request:{base:{repo:{id:42},ref:'main',sha:base},head:{sha:git('rev-parse','HEAD')}}});
+    await writeFile(event,JSON.stringify(payload()));expect(await main(env)).toMatchObject({mode:'none',dependencyMode:'private-governance'});
+    await rm(output);
+    for(const file of ['package.json','pyproject.toml','CADFontAutoReplace.slnx']){
+      await writeFile(join(root,file),'{}');git('add',file);git('commit','--signoff','--no-gpg-sign','-m','product input');
+      await writeFile(event,JSON.stringify(payload()));
+      await expect(main(env)).rejects.toThrow('GOVERNANCE_INPUT_UNCOVERED');
+      await expect(readFile(output)).rejects.toMatchObject({code:'ENOENT'});
+      git('rm',file);git('commit','--signoff','--no-gpg-sign','-m','remove product input');
+    }
+  }finally{await rm(root,{recursive:true,force:true});}
+},30000);
 it('reads real complete Git base/head and detects stale base, wrong checkout and missing source',async()=>{
   const {validationInput}=await script('validation-input'),root=await mkdtemp(join(tmpdir(),'validation-git-'));registerOfflineFixtureRoot(root);
   const git=(...args:string[])=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();

@@ -66,6 +66,8 @@ test('tool execution errors are not clean scan results',()=>{
 test('workflow keeps private execution under dependency job, fixed policy source and native review elsewhere',async()=>{
  const workflow=YAML.parse(await readFile(new URL('../../.github/workflows/pr-validation-native.yml',import.meta.url),'utf8'));
  assert.deepEqual(Object.keys(workflow.jobs),['scope','source-linux','source-windows','governance','dependency','docs','summary']);
+ assert.equal(workflow.jobs.scope.outputs.source,"${{ steps.identity.outputs.dependencyMode == 'private-governance' && 'false' || steps.scope.outputs.source }}");
+ for(const name of ['source-linux','source-windows'])assert.equal(workflow.jobs[name].if,"needs.scope.outputs.source == 'true'");
  const steps=workflow.jobs.dependency.steps;
  assert.equal(steps.find(s=>s.uses?.startsWith('actions/dependency-review-action@')).if,"needs.scope.outputs.dependency-mode == 'native'");
  const scan=steps.find(s=>s.name==='Scan private administrator dependencies');assert.equal(scan.if,"startsWith(needs.scope.outputs.dependency-mode, 'private-')");assert.equal(scan['working-directory'],'policy');
