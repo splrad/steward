@@ -1,4 +1,14 @@
 {
   "schemaVersion": 1,
-  "rules": []
+  "rules": [
+    {
+      "ruleId": 18883080,
+      "policyDigest": "283f0efeeec10861b89c8c3523d2eab1a12094194576708c9f4987e7731f722f",
+      "controllerWorkflow": true
+    },
+    {
+      "ruleId": 26650622,
+      "policyDigest": "b3a048b667e3ed9384609891bfc48a8b574c6cf27a2633d17eab871386f32909"
+    }
+  ]
 }

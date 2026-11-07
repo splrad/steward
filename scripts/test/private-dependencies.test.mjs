@@ -1,3 +1,4 @@
+import {parseAcceptanceTarget} from '../bootstrap-acceptance.mjs';
 import {replaceScanOutput} from '../private-scan-output.mjs';
 import {effectiveLock} from '../private-lock-exception.mjs';
 import {createHash} from 'node:crypto';
@@ -241,4 +242,12 @@ test('Docker output permissions and sandbox arguments cover POSIX and Windows br
   if(getgidDescriptor)Object.defineProperty(process,'getgid',getgidDescriptor);else delete process.getgid;
   syncBuiltinESMExports();await rm(directory,{recursive:true,force:true});
  }
+});
+
+test('bootstrap control is exact nondependency data, with no executable or dependency extensions',()=>{
+ assertInputScope(['acceptance/bootstrap-target.json']);
+ for(const path of ['acceptance/other.json','acceptance/bootstrap-target.js','acceptance/package.json'])assert.throws(()=>assertInputScope([path]),/INPUT_UNCOVERED/);
+ const target={schemaVersion:1,repositoryId:12,purpose:'bootstrap-only'};
+ assert.equal(parseAcceptanceTarget(JSON.stringify(target)),12);
+ for(const bad of [{...target,run:'execute'},{...target,dependencies:{}},{...target,repositoryId:0},null])assert.throws(()=>parseAcceptanceTarget(JSON.stringify(bad)),/^Error: BOOTSTRAP_ACCEPTANCE_TARGET_INVALID$/);
 });

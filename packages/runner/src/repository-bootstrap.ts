@@ -6,7 +6,7 @@ type Response = {status:number;value:any};
 export interface BootstrapIO {request(method:string,path:string,body?:unknown):Promise<Response>}
 export interface BootstrapRepository {id:number;full_name:string;name:string;default_branch:string;archived:boolean;disabled:boolean}
 export interface BootstrapSource {workflowId:number;runId:number;runAttempt:number;controllerSha:string}
-export interface BootstrapRule {ruleId:number;policyDigest:string}
+export interface BootstrapRule {ruleId:number;policyDigest:string;controllerWorkflow?:true}
 interface AffectedRule {ruleId:number;excludedRepository:string;originalConditionsDigest:string;alreadyExcluded:boolean;lastWrittenConditionsDigest:string|null;observedAt:string}
 export interface BootstrapRecovery extends BootstrapSource {
   schemaVersion:1;repositoryId:number;defaultBranch:string;firstCommitSha:string|null;
@@ -21,11 +21,21 @@ const commit=(value:unknown)=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(val
 const positive=(value:unknown)=>Number.isSafeInteger(value)&&Number(value)>0;
 
 /** A trusted binding covers rule responsibility, never the mutable repository exclusions. */
-export function bootstrapRulePolicyDigest(rule:any):string {
+export function bootstrapRulePolicyDigest(rule:any,controllerSha?:string):string {
   const value=structuredClone(rule.conditions);
   check(value?.repository_name&&Array.isArray(value.repository_name.exclude),'RULE_CONDITIONS');
   value.repository_name.exclude=[];
-  return digest({name:rule.name,target:rule.target,enforcement:rule.enforcement,bypass_actors:rule.bypass_actors,rules:rule.rules,conditions:value});
+  const rules=structuredClone(rule.rules);
+  if(controllerSha!==undefined) {
+    const required=rules.filter((r:any)=>r.type==='workflows');
+    check(commit(controllerSha)&&required.length===1&&Array.isArray(required[0].parameters?.workflows),'CONTROLLER_WORKFLOW');
+    const matches=required[0].parameters.workflows.filter((w:any)=>w.repository_id===1296724484&&w.path==='.github/workflows/pr-validation-native.yml');
+    check(matches.length===1,'CONTROLLER_WORKFLOW');
+    const workflow=matches[0];
+    check(workflow.repository_id===1296724484&&workflow.path==='.github/workflows/pr-validation-native.yml'&&workflow.sha===controllerSha,'CONTROLLER_WORKFLOW');
+    workflow.sha='<controller-sha>';
+  }
+  return digest({name:rule.name,target:rule.target,enforcement:rule.enforcement,bypass_actors:rule.bypass_actors,rules,conditions:value});
 }
 
 export function decodeBootstrapRecovery(raw:string,repository:BootstrapRepository):BootstrapRecovery {
@@ -39,14 +49,14 @@ export function decodeBootstrapRecovery(raw:string,repository:BootstrapRepositor
 }
 
 export async function bootstrapRepository(repository:BootstrapRepository,source:BootstrapSource,bindings:readonly BootstrapRule[],
-  io:BootstrapIO,services:{verifySource:(source:BootstrapSource)=>Promise<void>;
+  io:BootstrapIO,services:{requirePrivate?:boolean;verifySource:(source:BootstrapSource)=>Promise<void>;
     verifyProtection:(repository:BootstrapRepository)=>Promise<void>;
     archive:(record:BootstrapRecovery,origin:'app'|'external')=>Promise<string>;
     identity:{name:string;email:string;id:number};now:()=>string}) {
   check(positive(repository.id)&&repository.full_name===`splrad/${repository.name}`&&/^[A-Za-z0-9_.-]+$/.test(repository.name)
     &&repository.default_branch&&!repository.archived&&!repository.disabled,'TARGET');
   check([source.workflowId,source.runId,source.runAttempt].every(positive)&&commit(source.controllerSha),'SOURCE');
-  check(new Set(bindings.map(b=>b.ruleId)).size===bindings.length&&bindings.every(b=>positive(b.ruleId)&&/^[a-f0-9]{64}$/.test(b.policyDigest)),'RULE_BINDINGS');
+  check(new Set(bindings.map(b=>b.ruleId)).size===bindings.length&&bindings.every(b=>positive(b.ruleId)&&/^[a-f0-9]{64}$/.test(b.policyDigest)&&(b.controllerWorkflow===undefined||b.controllerWorkflow===true)),'RULE_BINDINGS');
   const prefix=`/repos/${repository.full_name}`,variable=`${prefix}/actions/variables/${bootstrapVariable}`;
   const native=async(method:string,path:string,body?:unknown,optional=false)=>{
     const response=await io.request(method,path,body);
@@ -55,7 +65,7 @@ export async function bootstrapRepository(repository:BootstrapRepository,source:
   };
   const current=await native('GET',prefix);
   check(current.id===repository.id&&current.full_name===repository.full_name&&current.owner?.id===302208797
-    &&current.default_branch===repository.default_branch&&!current.archived&&!current.disabled,'TARGET_CHANGED');
+    &&current.default_branch===repository.default_branch&&!current.archived&&!current.disabled&&(!services.requirePrivate||current.private===true),'TARGET_CHANGED');
   const readVariable=async()=>{
     const value=await native('GET',variable,undefined,true);
     check(value===null||value.name===bootstrapVariable&&typeof value.value==='string','VARIABLE_RESPONSE');return value?.value??null;
@@ -87,12 +97,13 @@ export async function bootstrapRepository(repository:BootstrapRepository,source:
     const binding=bindings.find(b=>b.ruleId===id);check(binding,'UNREGISTERED_RULE');
     const value=await native('GET',`/orgs/splrad/rulesets/${id}`);
     check(value.id===id&&value.source_type==='Organization'&&value.source==='splrad'&&value.target==='branch'&&value.enforcement==='active'
-      &&bootstrapRulePolicyDigest(value)===binding!.policyDigest,'RULE_POLICY_CHANGED');
+      &&bootstrapRulePolicyDigest(value,binding!.controllerWorkflow?source.controllerSha:undefined)===binding!.policyDigest,'RULE_POLICY_CHANGED');
     check(value.conditions.repository_name.exclude.every((name:unknown)=>typeof name==='string')&&value.conditions.ref_name,'RULE_CONDITIONS');return value;
   };
   let recovery:BootstrapRecovery;
   if(saved!==null) {
     recovery=decodeBootstrapRecovery(saved,repository);await services.verifySource(recovery);
+    check(same(recovery.affectedRules.map(r=>r.ruleId).sort((a,b)=>a-b),bindings.map(b=>b.ruleId).sort((a,b)=>a-b)),'RECOVERY_RULE_BINDINGS_CHANGED');
     for(const affected of recovery.affectedRules)await rule(affected.ruleId);
   } else {
     const affectedRules:AffectedRule[]=[];

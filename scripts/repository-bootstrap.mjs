@@ -1,3 +1,5 @@
+import {parseAcceptanceTarget} from './bootstrap-acceptance.mjs';
+export {decodeAcceptanceTarget,parseAcceptanceTarget} from './bootstrap-acceptance.mjs';
 import {createAppAuth} from '@octokit/auth-app';
 import {Octokit} from '@octokit/rest';
 import {readFile,mkdtemp,mkdir,appendFile} from 'node:fs/promises';
@@ -96,9 +98,17 @@ export async function archiveBootstrap({root,repository,token,appId,identity,rec
   await assertQualityProtection(qualityIO(io),repository.full_name,appId);return snapshot.head;
 }
 
-export async function bootstrapWake({discover,service}) {
+export function bootstrapOnly(env) {
+  const raw=env.STEWARD_BOOTSTRAP_ONLY??'false';
+  check(raw==='false'||raw==='true'&&env.GITHUB_EVENT_NAME==='workflow_dispatch','TARGET_INPUT');
+  return raw==='true';
+}
+export async function bootstrapWake({discover,service,repositoryId=null}) {
   const counts={repositories:0,ready:0,existing:0,failed:0};
-  for(const repository of await discover()) {
+  const installed=await discover();
+  check(repositoryId===null||positive(repositoryId)&&installed.filter(r=>r.id===repositoryId&&r.private===true&&!r.archived&&!r.disabled).length===1,'TARGET_NOT_INSTALLED');
+  for(const repository of installed) {
+    if(repositoryId!==null&&repository.id!==repositoryId)continue;
     if(repository.archived||repository.disabled)continue;
     counts.repositories++;
     try {const result=await service(repository);if(result.status==='EXISTING')counts.existing++;else counts.ready++;}
@@ -112,7 +122,7 @@ export async function main(transport=fetch) {
     const headers=new Headers(init?.headers);headers.set('X-GitHub-Api-Version','2026-03-10');
     return transport(input,{...init,headers});
   };
-  const env=process.env,appId=Number(env.GOVERNANCE_APP_ID);
+  const env=process.env,appId=Number(env.GOVERNANCE_APP_ID),single=bootstrapOnly(env);
   check(env.GITHUB_REPOSITORY==='splrad/steward'&&env.GITHUB_REPOSITORY_ID==='1296724484'&&env.GITHUB_REF===`refs/heads/${env.STEWARD_DEFAULT_BRANCH}`
     &&['push','schedule','workflow_dispatch'].includes(env.GITHUB_EVENT_NAME)&&/^[a-f0-9]{40}$/.test(env.STEWARD_CONTROLLER_SHA??'')&&positive(appId)&&appId!==4243096,'CENTRAL_IDENTITY');
   const config=JSON.parse(await readFile('config/governance/bootstrap.json','utf8'));
@@ -138,7 +148,18 @@ export async function main(transport=fetch) {
     const io=bootstrapNativeIO(value.token,transport);return {token:value.token,io,revoke:async()=>{const r=await io.request('DELETE','/installation/token');check(r.status===204,'TOKEN_REVOKE');}};
   };
   const root=await mkdtemp(join(tmpdir(),'steward-bootstrap-'));
-  const counts=await bootstrapWake({discover:async()=>{
+  let repositoryId=null;
+  if(single) {
+    const c=await credential(1447987054,{metadata:'read',contents:'read'});
+    try {
+      const admin=await get(c.io,'/repos/splrad/steward-settings');
+      check(admin.id===1447987054&&admin.private===true&&admin.default_branch==='main','ACCEPTANCE_ADMIN');
+      const file=await get(c.io,'/repos/splrad/steward-settings/contents/acceptance/bootstrap-target.json?ref=main');
+      check(file.type==='file'&&file.encoding==='base64'&&file.size<=1024,'ACCEPTANCE_FILE');
+      repositoryId=parseAcceptanceTarget(Buffer.from(file.content,'base64').toString('utf8'));
+    }finally{await c.revoke();}
+  }
+  const counts=await bootstrapWake({repositoryId,discover:async()=>{
     const c=await credential(null,{metadata:'read'});
     try {const result=[];let total=null;
       for(let page=1;page<=10000;page++) {
@@ -149,10 +170,18 @@ export async function main(transport=fetch) {
       }throw Error('BOOTSTRAP_INSTALLATION_INCOMPLETE');
     }finally{await c.revoke();}
   },service:async repository=>{
+    if(single) {
+      const reader=await credential(repository.id,{metadata:'read'});
+      try {
+        const current=await get(reader.io,`/repos/${repository.full_name}`);
+        check(current.id===repository.id&&current.full_name===repository.full_name&&current.owner?.id===302208797
+          &&current.private===true&&!current.archived&&!current.disabled,'TARGET_CHANGED');
+      }finally{await reader.revoke();}
+    }
     const c=await credential(repository.id,{metadata:'read',contents:'write',administration:'write',actions_variables:'write',organization_administration:'write'});
     try {
       const scope=await get(c.io,'/installation/repositories');check(scope.total_count===1&&scope.repositories[0]?.id===repository.id,'TOKEN_SCOPE');
-      return await bootstrapRepository(repository,source,config.rules,c.io,{identity,now:()=>new Date().toISOString(),verifySource,
+      return await bootstrapRepository(repository,source,config.rules,c.io,{requirePrivate:single,identity,now:()=>new Date().toISOString(),verifySource,
         verifyProtection:async r=>{const rules=await pages(c.io,`/repos/${r.full_name}/rules/branches/${encodeURIComponent(r.default_branch)}`);
           check(rules.some(rule=>rule.type==='pull_request')&&rules.some(rule=>rule.type==='required_status_checks'),'DEFAULT_PROTECTION');},
         archive:(record,origin)=>archiveBootstrap({root,repository,token:c.token,appId,identity:{name:identity.name,email:identity.email},record,origin,io:c.io})});

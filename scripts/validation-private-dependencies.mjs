@@ -1,3 +1,4 @@
+import {parseAcceptanceTarget} from './bootstrap-acceptance.mjs';
 import {replaceScanOutput} from './private-scan-output.mjs';
 import {readFile,writeFile,mkdir,mkdtemp} from 'node:fs/promises';
 import {chmodSync,statSync} from 'node:fs';
@@ -129,6 +130,8 @@ export async function main(env=process.env){
     await writeFile(join(out,'supplier-data.json'),JSON.stringify(supplier));
     for(const side of ['base','head']){
       const sha=value.input[side],entries=tree(workspace,sha);assertInputScope(entries.map(e=>e.path));const snapshot={sha,upstream:null,actions:[],coverage:[]};report.snapshots[side]=snapshot;
+      const control=blob(workspace,entries,'acceptance/bootstrap-target.json',true);
+      if(control){assert(control.length<=1024,'CONTROL_SIZE');parseAcceptanceTarget(control.toString('utf8'));}
       const input=join(temporary,side),output=join(out,side);await mkdir(input,{recursive:true});await mkdir(output,{recursive:true});
       const workflow=blob(workspace,entries,item.workflow,true);
       if(!workflow){
