@@ -64,6 +64,7 @@ test('workflow is manual only, sequential, least privilege and never invokes coo
     assert.match(job.if, /github.run_attempt == 1/);
     assert.match(job.if, /inputs.approved_sha == github.sha/);
     assert.equal(job.steps.filter(s => s.env?.STEWARD_COPILOT_TOKEN).length, 1);
+    for (const step of job.steps.filter(s => s.uses)) assert.match(step.uses, /@[a-f0-9]{40}$/);
   }
   assert.doesNotMatch(text, /secrets\.|release-coordinator|quality-language-summary\.mjs/);
 });
