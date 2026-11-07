@@ -43,3 +43,31 @@ it('actual Git persists quality intent/results, preserves another PR, rejects fo
     expect((await git(remote,'log','-1','--format=%B')).match(/Signed-off-by: Fixture <fixture@example.invalid>/g)).toHaveLength(1);
   }finally{await rm(root,{recursive:true,force:true});}
 },120000);
+
+it('compacts only durable refusals while each refusal remains readable in actual fast-forward Git history',async()=>{
+  const {translateQualitySources}=await import('../src/quality-language-summary.js');
+  const {decodeQualityCache}=await import('../../core/src/quality-language-summary.js');
+  const {writeReleaseRecords,readReleaseRecords}=await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
+  const root=await mkdtemp(join(tmpdir(),'quality-refusal-history-'));registerOfflineFixtureRoot(root);
+  try {
+    const remote=join(root,'remote'),profile=join(root,'profile');await mkdir(remote);await mkdir(profile);
+    const env=isolatedBuildEnvironment(process.env,profile),git=async(...args:string[])=>(await promisify(execFile)('git',args,{cwd:remote,env,encoding:'utf8',windowsHide:true})).stdout.trim();
+    await git('init','--initial-branch=main');await git('config','user.name','Fixture');await git('config','user.email','fixture@example.invalid');
+    await writeFile(join(remote,'README.md'),'fixture\n');await git('add','.');await git('commit','-m','fixture');
+    const head=await git('rev-parse','HEAD'),context={repositoryId:12,pullRequestNumber:1,head,configVersion:'v1',observedAt:'2026-11-07T00:00:00Z'};
+    let cache=await reconcileQualitySources(null,context,[{sourceCommentId:'review:1',sourceCommit:head,sourceUrl:'https://github.com/test/product/pull/1',severity:'P1',bodyMarkdown:'Check input.',updatedAt:context.observedAt}]);
+    let stateHead:string|null=null,previous:string|null=null,writes=0,now=Date.parse(context.observedAt);
+    const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
+    const store={async save(value:typeof cache){const content=JSON.stringify(value)+'\n';const result=await writeReleaseRecords({directory:join(root,'write-'+(++writes)),remote,repositoryId:12,defaultBranch:'main',targetRef:'steward/governance-state',writer:'quality',expectedHead:stateHead,allowedPaths:['quality/1.json'],changes:[{path:'quality/1.json',content,sha256:hash(content),previousSha256:previous}],identity:{name:'Fixture',email:'fixture@example.invalid'}});expect(['APPLIED','UNCHANGED']).toContain(result.status);stateHead=result.head;previous=hash(content);return {commit:result.head};}};
+    const client={preflight:async()=>({status:'READY' as const}),call:async()=>{throw Error('WAIT_AUTH');}};
+    for(let i=0;i<4;i++) {
+      await translateQualitySources(cache,client,store,{remaining:1,deadline:now+1080000},()=>now);now+=600000;
+      const snapshot=await readReleaseRecords({directory:remote,targetRef:'steward/governance-state',repositoryId:12});
+      cache=decodeQualityCache(snapshot.domainRecords.find((r:any)=>r.path==='quality/1.json').value,12,1);
+      expect(Object.values(cache.entries)[0]!.attempts).toHaveLength(1);
+    }
+    const commits=(await git('log','steward/governance-state','--format=%H','--','quality/1.json')).split('\n'),observed=new Set<string>();
+    for(const commit of commits){const old=JSON.parse(await git('show',commit+':quality/1.json'));for(const entry of Object.values(old.entries) as any[])for(const attempt of entry.attempts)if(attempt.status==='WAIT_AUTH')observed.add(attempt.startedAt);}
+    expect(observed.size).toBe(4);expect(commits.length).toBeGreaterThanOrEqual(8);
+  }finally{await rm(root,{recursive:true,force:true});}
+},120000);

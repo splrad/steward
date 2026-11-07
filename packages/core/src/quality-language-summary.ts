@@ -19,6 +19,8 @@ export interface QualitySegment extends Omit<QualitySource, 'updatedAt'> { origi
 export interface QualityTranslation extends Omit<QualitySegment, 'bodyMarkdown'> { problemZh: string; impactZh: string; suggestionZh: string }
 export interface QualityPrepared { source: QualitySource; segments: QualitySegment[]; preservedBlocks: string[]; chinese: boolean }
 export interface QualityAttempt { startedAt: string; status: 'UNKNOWN' | 'COMPLETE' | 'WAIT_AUTH' | 'WAIT_QUOTA' | 'FAILED'; model: string | null; usage: unknown }
+/** Explicit pre-generation refusals remain history, but do not exhaust generation retries. */
+export const qualityGenerationAttempts = (attempts: QualityAttempt[]) => attempts.filter(a => a?.status !== 'WAIT_AUTH' && a?.status !== 'WAIT_QUOTA').length;
 export interface QualityEntry { key: string; segment: QualitySegment; configVersion: string; result: QualityTranslation | null;
   attempts: QualityAttempt[]; nextCheckAt: string | null; errorCode: string | null }
 export interface QualityHead { sourceSetDigest: string; sources: QualitySource[]; keys: string[]; checkId: number | null; externalId: string; observedAt: string }
@@ -142,7 +144,7 @@ export function decodeQualityCache(value: unknown, repositoryId: number, pullReq
   }
   for (const [key, entry] of Object.entries(v.entries)) {
     requireQuality(/^[a-f0-9]{64}$/.test(key) && key === entry.key && exact(entry, 'attempts,configVersion,errorCode,key,nextCheckAt,result,segment')
-      && typeof entry.configVersion === 'string' && Array.isArray(entry.attempts) && entry.attempts.length <= 3
+      && typeof entry.configVersion === 'string' && Array.isArray(entry.attempts) && entry.attempts.length <= 5 && qualityGenerationAttempts(entry.attempts) <= 3
       && (entry.nextCheckAt === null || Number.isFinite(Date.parse(entry.nextCheckAt)))
       && (entry.errorCode === null || /^(?:QUALITY_[A-Z_]+|WAIT_AUTH|WAIT_QUOTA|RESPONSE_UNKNOWN)$/.test(entry.errorCode)), 'CACHE_SCHEMA');
     requireQuality(exact(entry.segment, 'bodyMarkdown,originalIdentifiers,segmentIndex,severity,sourceCommentId,sourceCommit,sourceUrl')
@@ -174,7 +176,7 @@ export function renderQualitySummary(cache: QualityCache) {
           const identifiers=entry.segment.originalIdentifiers.join('\n'),fence='~'.repeat(Math.max(3,...(identifiers.match(/~+/g)??[]).map(x=>x.length+1)));
           lines.push('原文标识：', '', `${fence}text\n${identifiers}\n${fence}`, '');
         }
-      } else lines.push(`分段 ${entry.segment.segmentIndex + 1} 未完成：${entry.errorCode??'PENDING'}；已记录 ${entry.attempts.length} 次调用${entry.nextCheckAt?`，下次可检查时间 ${entry.nextCheckAt}`:''}。`, '');
+      } else lines.push(`分段 ${entry.segment.segmentIndex + 1} 未完成：${entry.errorCode??'PENDING'}；当前快照保留 ${entry.attempts.length} 次调用记录（完整历史见状态分支提交）${entry.nextCheckAt?`，下次可检查时间 ${entry.nextCheckAt}`:''}。`, '');
     }
     if (covered && prepared.preservedBlocks.length) lines.push('### 原文代码与日志', '', ...prepared.preservedBlocks.flatMap(x => [x, '']));
   }
