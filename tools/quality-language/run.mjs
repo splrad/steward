@@ -29,10 +29,10 @@ export async function qualityLanguage(mode, input, token, createClient = options
     if (!models.models.length) return {status:'WAIT_QUOTA'};
     if (mode === 'preflight') return {status:'READY', models:models.models.map(m => m.id)};
     session = await client.createSession(isolatedCopilotSessionOptions(directory, prompt));
-    /** @type {{model:string|null,inputTokens:number,outputTokens:number}[]} */ const events = [];
+    /** @type {{model:string|null,inputTokens:number|null,outputTokens:number|null}[]} */ const events = [];
     let capacity = false;
     session.on('assistant.usage', event => {
-      events.push({model:event.data.model ?? null,inputTokens:event.data.inputTokens ?? 0,outputTokens:event.data.outputTokens ?? 0});
+      events.push({model:event.data.model ?? null,inputTokens:event.data.inputTokens ?? null,outputTokens:event.data.outputTokens ?? null});
       if (event.data.finishReason === 'length') capacity = true;
     });
     const response = await session.sendAndWait({prompt:input,responseSchema:schema}, 120_000);
@@ -46,7 +46,7 @@ export async function qualityLanguage(mode, input, token, createClient = options
     if (!model) throw new Error('QUALITY_MODEL_UNKNOWN');
     return {status:'RETURNED',value,model,usage:{events,totalNanoAiu:metrics.totalNanoAiu ?? null,
       aiCredits:metrics.totalNanoAiu == null ? null : metrics.totalNanoAiu / 1e9,
-      premiumRequests:metrics.totalPremiumRequestCost,requests:metrics.totalUserRequests}};
+      premiumRequests:metrics.totalPremiumRequestCost ?? null,requests:metrics.totalUserRequests ?? null}};
   } catch (error) {
     try { await session?.abort(); } catch { /* Closing the client below is mandatory. */ }
     const native = /** @type {{status?:number,response?:{status?:number,headers?:{get?:(key:string)=>string|null}}}} */ (error);

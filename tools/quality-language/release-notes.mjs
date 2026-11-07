@@ -29,10 +29,15 @@ export async function releaseNotes(mode, input, token, createClient = options =>
       session.on(type, () => { generationObserved = true; });
     }
     /** @type {string | undefined} */ let model;
-    let inputTokens = 0, outputTokens = 0, hasUsage = false, capacity = false;
+    /** @type {number | null} */ let inputTokens = 0;
+    /** @type {number | null} */ let outputTokens = 0;
+    let hasUsage = false, capacity = false;
     session.on('assistant.usage', event => {
       generationObserved = true;
-      model = event.data.model ?? model; inputTokens += event.data.inputTokens ?? 0; outputTokens += event.data.outputTokens ?? 0; hasUsage = true;
+      model = event.data.model ?? model;
+      inputTokens = inputTokens != null && event.data.inputTokens != null ? inputTokens + event.data.inputTokens : null;
+      outputTokens = outputTokens != null && event.data.outputTokens != null ? outputTokens + event.data.outputTokens : null;
+      hasUsage = true;
       if (event.data.finishReason === 'length') capacity = true;
     });
     const response = await session.sendAndWait(input, 180_000);

@@ -3,7 +3,7 @@ import test from 'node:test';
 import { releaseNotes } from './release-notes.mjs';
 
 function fixture({ authenticated = true, models = [{id:'native-default'}], text = '{"items":[]}', finishReason = 'stop', failure = null,
-  usageModel = 'fixture', emitUsage = true, responseModel = undefined, generationEvent = null,
+  usageModel = 'fixture', emitUsage = true, responseModel = undefined, generationEvent = null, tokenUsage = { inputTokens: 10, outputTokens: 5 },
   metrics = { currentModel: 'fixture', totalNanoAiu: 1500000000, totalPremiumRequestCost: 2, totalUserRequests: 1 }, metricsFailure = false, failureAfterUsage = null } = {}) {
   const events = [], handlers = new Map(); let clientOptions, sessionOptions;
   const client = { start: async () => events.push('start'), stop: async () => events.push('stop'),
@@ -15,7 +15,7 @@ function fixture({ authenticated = true, models = [{id:'native-default'}], text 
         events.push('send');
         if (generationEvent) handlers.get(generationEvent)?.({ data: { content: 'partial generation' } });
         if (failure) throw failure;
-        if (emitUsage) handlers.get('assistant.usage')?.({ data: { model: usageModel, inputTokens: 10, outputTokens: 5, finishReason } });
+        if (emitUsage) handlers.get('assistant.usage')?.({ data: { model: usageModel, ...tokenUsage, finishReason } });
         if (failureAfterUsage) throw failureAfterUsage;
         return { data: { content: text, model: responseModel } };
       }, abort: async () => events.push('abort'), disconnect: async () => events.push('disconnect'),
@@ -93,6 +93,13 @@ test('actual response or call model takes precedence over currently selected mod
   assert.equal(response.model, 'response-model'); assert.equal(response.usage.selectedModel, 'selected-model');
   const usage = await releaseNotes('generate', '{}', 'fixture-token', fixture({ usageModel: 'call-model', metrics }).create);
   assert.equal(usage.model, 'call-model');
+});
+
+test('missing token counters remain null independently while actual zero stays zero', async () => {
+  for (const [tokenUsage, expected] of [[{}, [null, null]], [{inputTokens:12}, [12,null]], [{outputTokens:0}, [null,0]], [{inputTokens:null,outputTokens:7}, [null,7]], [{inputTokens:0,outputTokens:0}, [0,0]]]) {
+    const result=await releaseNotes('generate','{}','fixture-token',fixture({tokenUsage}).create);
+    assert.deepEqual([result.usage.inputTokens,result.usage.outputTokens],expected);
+  }
 });
 
 test('timeout and metrics failure abort, disconnect and sanitize without replaying the request', async () => {
