@@ -95,8 +95,10 @@ it('bootstrap and template jobs enumerate independently, separate keys and keep 
   expect(bootstrap.steps.at(-1).env.STEWARD_BOOTSTRAP_ONLY).toContain('inputs.bootstrap_only');
   expect(Object.keys(workflow.on.workflow_dispatch.inputs)).toEqual(['health_only','bootstrap_only']);
   expect(workflow.jobs['automation-health'].if).toContain('!inputs.bootstrap_only');
+  expect(templates.if).toContain("vars.STEWARD_TEMPLATE_APPLY == 'true'");
+  expect(templates.if).not.toContain('STEWARD_BOOTSTRAP_APPLY');
   for(const job of [bootstrap,templates]) {
-    expect(job.if).toContain("vars.STEWARD_TEMPLATE_APPLY == 'true'");expect(job.environment.name).toBe('steward-automation');
+    expect(job.environment.name).toBe('steward-automation');
     expect(job.steps[0].with).toEqual({ref:'${{ github.workflow_sha }}','fetch-depth':0,'persist-credentials':false});
     expect(job.steps[2].env).toBeUndefined();expect(job.steps[2].run).toContain('npm ci --ignore-scripts');
   }
