@@ -1,5 +1,5 @@
 import {expect,it} from 'vitest';
-import {bootstrapRepository,bootstrapRulePolicyDigest,bootstrapVariable,decodeBootstrapRecovery} from '../src/repository-bootstrap.js';
+import {bootstrapCommitOrigin,bootstrapRepository,bootstrapRulePolicyDigest,bootstrapVariable,decodeBootstrapRecovery} from '../src/repository-bootstrap.js';
 
 function fixture() {
   const repository={id:12,name:'fixture',full_name:'splrad/fixture',default_branch:'develop',archived:false,disabled:false};
@@ -171,4 +171,16 @@ it('preserves unrelated required workflows in the policy digest and rejects dupl
 it('rejects a visibility change before any bootstrap writes',async()=>{
   const f=fixture();Object.assign(f.services,{requirePrivate:true});
   await expect(f.run()).rejects.toThrow('TARGET_CHANGED');expect(f.state.writes).toEqual([]);
+});
+
+it('recognizes the native Contents message without its final LF and keeps all other provenance exact',async()=>{
+  const f=fixture();
+  f.state.hook=(method:string,path:string)=>{if(method==='GET'&&path.includes('/commits/'))f.state.commits[0].commit.message=f.state.commits[0].commit.message.replace(/\n$/,'');};
+  expect((await f.run()).origin).toBe('app');
+  const first=f.state.commits[0],content=f.state.files[first.sha];
+  expect(bootstrapCommitOrigin(first,content,f.source,f.services.identity)).toBe('app');
+  for(const message of [first.commit.message+'\n\n',first.commit.message+' ',first.commit.message.replace('21/1','22/1'),first.commit.message.replace(/\n/g,'\r\n')])
+    expect(bootstrapCommitOrigin({...first,commit:{message}},content,f.source,f.services.identity)).toBe('external');
+  expect(bootstrapCommitOrigin({...first,author:{id:34}},content,f.source,f.services.identity)).toBe('external');
+  expect(bootstrapCommitOrigin(first,{encoding:'base64',content:Buffer.from('# Repository').toString('base64')},f.source,f.services.identity)).toBe('external');
 });

@@ -48,6 +48,13 @@ export function decodeBootstrapRecovery(raw:string,repository:BootstrapRepositor
   return value;
 }
 
+/** GitHub Contents commits may omit the final message LF on readback; no other whitespace is normalized. */
+export function bootstrapCommitOrigin(first:any,content:any,record:BootstrapSource,identity:{name:string;email:string;id:number}):'app'|'external' {
+  const expected=`chore: initialize repository\n\nSigned-off-by: ${identity.name} <${identity.email}>\nSteward-Bootstrap-Run: 1296724484/${record.runId}/${record.runAttempt}`;
+  return first?.author?.id===identity.id&&(first.commit?.message===expected||first.commit?.message===expected+'\n')
+    &&content?.encoding==='base64'&&Buffer.from(content.content,'base64').toString()==='# Repository\n'?'app':'external';
+}
+
 export async function bootstrapRepository(repository:BootstrapRepository,source:BootstrapSource,bindings:readonly BootstrapRule[],
   io:BootstrapIO,services:{requirePrivate?:boolean;verifySource:(source:BootstrapSource)=>Promise<void>;
     verifyProtection:(repository:BootstrapRepository)=>Promise<void>;
@@ -184,10 +191,8 @@ export async function bootstrapRepository(repository:BootstrapRepository,source:
   check(currentRefs.some((r:any)=>r.ref===`refs/heads/${repository.default_branch}`),'DEFAULT_BRANCH_MISSING');
   await services.verifyProtection(repository);
   const first=await native('GET',`${prefix}/commits/${recovery.firstCommitSha}`);
-  const expected=`chore: initialize repository\n\nSigned-off-by: ${services.identity.name} <${services.identity.email}>\nSteward-Bootstrap-Run: 1296724484/${recovery.runId}/${recovery.runAttempt}\n`;
   const content=await native('GET',`${prefix}/contents/README.md?ref=${recovery.firstCommitSha}`,undefined,true);
-  const origin=first.author?.id===services.identity.id&&first.commit?.message===expected&&content?.encoding==='base64'
-    &&Buffer.from(content.content,'base64').toString()==='# Repository\n'?'app':'external';
+  const origin=bootstrapCommitOrigin(first,content,recovery,services.identity);
   const archive=await services.archive(structuredClone(recovery),origin);check(commit(archive),'ARCHIVE_UNCONFIRMED');
   check(await readVariable()===saved,'VARIABLE_CONCURRENT_CHANGE');
   try{await native('DELETE',variable);}catch{}

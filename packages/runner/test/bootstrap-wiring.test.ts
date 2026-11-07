@@ -59,6 +59,7 @@ it.each([{single:false,changed:false},{single:true,changed:false},{single:true,c
     else if(path==='/repos/splrad/fixture')value={...repository,private:!changed};
     else if(path==='/repos/splrad/fixture/actions/variables/STEWARD_BOOTSTRAP_RECOVERY'){status=404;value={message:'Not Found'};}
     else if(path==='/repos/splrad/fixture/git/matching-refs/')value=[{ref:'refs/heads/develop',object:{sha:'b'.repeat(40)}}];
+    else if(path==='/repos/splrad/fixture/commits')value=[{sha:'b'.repeat(40),parents:[],author:{id:44},commit:{message:'Existing user commit'}}];
     else throw Error('UNEXPECTED_BOOTSTRAP_ENDPOINT');
     return new Response(status===204?null:JSON.stringify(value),{status,headers:{'content-type':'application/json'}});
   };
@@ -191,10 +192,46 @@ it('actual Git bootstrap archive initializes its protected state branch, reads b
     const options={write:async(request:any,auth:any)=>{expect(request.remote).toBe('https://github.com/splrad/fixture.git');expect(request.writer).toBe('bootstrap');return writeReleaseRecords({...request,remote},auth);},
       executeGit:async(command:string,args:string[],options:any)=>execute(command,args.map(a=>a==='https://github.com/splrad/fixture.git'?remote:a),options)};
     const input={root,repository,token:'fixture-token',appId:88,identity:{name:'Fixture',email:'fixture@example.invalid'},record,origin:'external',io};
+    await expect(archiveBootstrap({...input,origin:'app',originCorrection:true},options)).rejects.toThrow('ORIGIN_ARCHIVE_MISSING');
     const head=await archiveBootstrap(input,options);expect(await archiveBootstrap(input,options)).toBe(head);
     const text=await git('show',`${head}:bootstrap/21-1.json`);expect(JSON.parse(text).firstCommitOrigin).toBe('external');
     expect(decodeStateFile('steward/governance-state','bootstrap/21-1.json',Buffer.from(text),12)).toMatchObject({firstCommitSha:first,firstCommitOrigin:'external'});
     expect((await git('show','-s','--format=%B',head)).split('Signed-off-by:')).toHaveLength(2);
     await expect(archiveBootstrap({...input,origin:'app'},options)).rejects.toThrow('ARCHIVE_CONFLICT');
+    await expect(archiveBootstrap({...input,origin:'app',originCorrection:true,record:{...record,controllerSha:'d'.repeat(40)}},options)).rejects.toThrow('ARCHIVE_CONFLICT');
+    const corrected=await archiveBootstrap({...input,origin:'app',originCorrection:true},options);
+    expect(corrected).not.toBe(head);expect(await git('rev-parse',`${corrected}^`)).toBe(head);
+    const correctedRecord=JSON.parse(await git('show',`${corrected}:bootstrap/21-1.json`));
+    expect(correctedRecord).toEqual({...JSON.parse(text),firstCommitOrigin:'app'});
+    expect(JSON.parse(await git('show',`${head}:bootstrap/21-1.json`)).firstCommitOrigin).toBe('external');
+    expect(await archiveBootstrap({...input,origin:'app',originCorrection:true},options)).toBe(corrected);
+    expect(await git('rev-parse','refs/heads/develop')).toBe(first);
+
   }finally{await rm(root,{recursive:true,force:true});}
 },120000);
+
+it('repairs only a proven private completed archive origin and never recreates recovery or commits',async()=>{
+  const {reconcileBootstrapOrigin}=await module();
+  const repository={id:12,name:'fixture',full_name:'splrad/fixture',default_branch:'main',private:true,owner:{id:302208797},archived:false,disabled:false};
+  const identity={id:33,name:'fixture[bot]',email:'33+fixture[bot]@users.noreply.github.com'};
+  const record={schemaVersion:1,repositoryId:12,defaultBranch:'main',workflowId:42,runId:21,runAttempt:1,controllerSha:'a'.repeat(40),firstCommitSha:'b'.repeat(40),phase:'RESTORED',affectedRules:[]};
+  let origin='external',author=33,privateRepo=true,recovery:any=null,badSource=false,body='# Repository\n';
+  const calls:any[]=[],writes:any[]=[],sources:any[]=[];
+  const io={async request(method:string,path:string){expect(method).toBe('GET');calls.push(path);let value:any;
+    if(path.includes('/commits?'))value=[{sha:record.firstCommitSha,parents:[],author:{id:author},commit:{message:`chore: initialize repository\n\nSigned-off-by: ${identity.name} <${identity.email}>\nSteward-Bootstrap-Run: 1296724484/21/1`}}];
+    else if(path.includes('/contents/bootstrap/'))value={type:'file',encoding:'base64',size:500,content:Buffer.from(JSON.stringify({...record,firstCommitOrigin:origin})).toString('base64')};
+    else if(path.includes('/contents/README.md'))value={encoding:'base64',content:Buffer.from(body).toString('base64')};
+    else if(path.includes('/actions/variables/'))return {status:recovery?200:404,value:recovery??{}};
+    else if(path==='/repos/splrad/fixture')value={...repository,private:privateRepo};
+    else throw Error('unexpected '+path);
+    return {status:200,value};
+  }};
+  const invoke=()=>reconcileBootstrapOrigin({root:'unused',repository,token:'fixture',appId:88,identity,io,verifySource:async(r:any)=>{sources.push(r);if(badSource)throw Error('source');}},async(args:any)=>{writes.push(args);return 'c'.repeat(40);});
+  expect(await invoke()).toBe(true);expect(writes).toHaveLength(1);expect(writes[0]).toMatchObject({origin:'app',originCorrection:true,record});expect(sources).toEqual([record]);
+  writes.length=0;origin='app';expect(await invoke()).toBe(false);
+  origin='external';author=34;expect(await invoke()).toBe(false);author=33;
+  body='# Repository';expect(await invoke()).toBe(false);body='# Repository\n';
+  privateRepo=false;await expect(invoke()).rejects.toThrow('ORIGIN_TARGET');privateRepo=true;
+  recovery={name:'STEWARD_BOOTSTRAP_RECOVERY',value:'pending'};await expect(invoke()).rejects.toThrow('ORIGIN_RECOVERY_PRESENT');recovery=null;
+  badSource=true;await expect(invoke()).rejects.toThrow('source');expect(writes).toHaveLength(0);
+});
