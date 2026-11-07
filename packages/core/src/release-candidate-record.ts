@@ -1,7 +1,7 @@
 import { decodeBuildJson } from './build-manifest.js';
 import { sha256Hex } from './fingerprint.js';
 import { validateCandidateFiles } from './release-candidate.js';
-import { validateContentInput, validateContentResult } from './release-content.js';
+import { retryableContentRejection, validateContentInput, validateContentResult } from './release-content.js';
 
 export interface CandidateArchiveChunk {
   schemaVersion: 1; repositoryId: number; candidateId: string;
@@ -61,7 +61,9 @@ export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): 
       const entry = value;
       exact(entry, ['inputDigest', 'configDigest', 'attempts', 'result', ...('split' in entry ? ['split'] : [])]);
       if (!/^[a-f0-9]{64}$/.test(entry.inputDigest) || !/^[a-f0-9]{64}$/.test(entry.configDigest)
-        || !Array.isArray(entry.attempts) || entry.attempts.length > 3 || 'split' in entry && typeof entry.split !== 'boolean') throw new Error('CONTENT_CACHE_INVALID');
+        || !Array.isArray(entry.attempts)
+        || entry.attempts.length > 3 && entry.attempts.slice(0, -1).some((attempt: any) => !attempt || !retryableContentRejection(attempt))
+        || 'split' in entry && typeof entry.split !== 'boolean') throw new Error('CONTENT_CACHE_INVALID');
   } else if (first.documentKind === 'session') {
     exact(value, ['generated', 'pending', 'identity', 'conflict', 'preview', 'adoption']);
     if (value.generated) snapshot(value.generated);

@@ -2,6 +2,7 @@ import { expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { planContentBatches, resumeContentBatches, assembleUnitNotes, type ContentSource, type ContentRuntime, type ContentWork } from '../src/release-content.js';
 import { splitContentText, validateContentResult, validateContentInput, type ContentInput } from '../../core/src/release-content.js';
+import { decodeCandidateDocument } from '../../core/src/release-candidate-record.js';
 
 const digest = (v: string) => createHash('sha256').update(v).digest('hex');
 const input = (): ContentInput => ({ schemaVersion: 1, repositoryId: 1, candidateId: digest('candidate'), baseSha: 'a'.repeat(40), controllerSha: 'b'.repeat(40),
@@ -74,6 +75,15 @@ it('retains archive byte splitting without requiring model byte coverage',()=>{
 
 it('resumes explicit auth and budget rejections after backoff without discarding history or replaying success', async () => {
   const work = await planContentBatches(input(), [source(1)]), cache = {}, r = runtime();
+  const save = r.port.save;
+  r.port.save = async (work, cache) => {
+    await save(work, cache);
+    for (const entry of Object.values(cache)) {
+      const content = JSON.stringify(entry);
+      expect(await decodeCandidateDocument([{ schemaVersion: 1, repositoryId: 1, candidateId: work.input.candidateId,
+        documentKind: 'cache-entry', documentDigest: digest(content), index: 0, count: 1, content }])).toEqual(entry);
+    }
+  };
   const success = r.port.call;
   for (const reason of ['WAIT_AUTH', 'WAIT_QUOTA', 'WAIT_QUOTA', 'WAIT_AUTH']) {
     r.port.call = async () => { throw Object.assign(new Error(reason), { retryAfterMs: 120000 }); };
@@ -106,4 +116,16 @@ it('persists measured billing units and absent token counters through the closed
   expect(await resumeContentBatches(work, {}, r.port)).toEqual({ status: 'READY', calls: 1 });
   expect(work.input.batches[0]!.attempts[0]!.usage).toMatchObject({ aiCredits: 1.5, inputTokens: null });
   expect(() => validateContentInput(work.input)).not.toThrow();
+});
+
+it('archive compatibility keeps old bounded histories but rejects expanded histories containing unknown requests', async () => {
+  const attempt = (ordinal: number, status: string, errorCode: string | null) => ({ ordinal, startedAt: '2026-11-07T00:00:00Z', status, errorCode, model: 'unknown', usage: null });
+  const decode = (attempts: object[]) => {
+    const content = JSON.stringify({ inputDigest: digest('input'), configDigest: digest('config'), attempts, result: null });
+    return decodeCandidateDocument([{ schemaVersion: 1, repositoryId: 1, candidateId: digest('candidate'), documentKind: 'cache-entry',
+      documentDigest: digest(content), index: 0, count: 1, content }]);
+  };
+  await expect(decode([1, 2, 3].map(i => attempt(i, 'UNKNOWN', 'RESPONSE_UNKNOWN')))).resolves.toBeDefined();
+  await expect(decode([1, 2, 3, 4].map(i => attempt(i, 'UNKNOWN', 'RESPONSE_UNKNOWN')))).rejects.toThrow('CONTENT_CACHE_INVALID');
+  await expect(decode([1, 2, 3, 4].map(i => attempt(i, 'REJECTED', 'CONTENT_OUTPUT_SCHEMA')))).rejects.toThrow('CONTENT_CACHE_INVALID');
 });

@@ -242,6 +242,12 @@
                                 "null"
                               ],
                               "minimum": 0
+                            },
+                            "selectedModel": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             }
                           },
                           "required": [
@@ -600,6 +606,12 @@
                           "null"
                         ],
                         "minimum": 0
+                      },
+                      "selectedModel": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       }
                     },
                     "required": [

@@ -4,13 +4,14 @@ import { access } from 'node:fs/promises';
 import { qualityLanguage } from './run.mjs';
 const item={sourceCommentId:'review:1',sourceCommit:'a'.repeat(40),sourceUrl:'https://github.com/a/b/pull/1',severity:'P1',originalIdentifiers:['API'],segmentIndex:0,
   problemZh:'存在问题。',impactZh:'调用失败。',suggestionZh:'验证输入。'};
-function fixture({auth=true,models=[{id:'native-default'}],reply={items:[item]},failure=null,metricsFailure=false}={}) {
+function fixture({auth=true,models=[{id:'native-default'}],reply={items:[item]},failure=null,metricsFailure=false,totalNanoAiu=1500000000,
+  responseModel=undefined,currentModel='actual-model'}={}) {
   const events=[],handlers=new Map();let clientOptions,sessionOptions,sendArgs;
   const client={start:async()=>events.push('start'),stop:async()=>events.push('stop'),getAuthStatus:async()=>({isAuthenticated:auth}),
     rpc:{account:{getQuota:async()=>{throw Error('PERSONAL_QUOTA_NOT_APPLICABLE');}},models:{list:async()=>({models})}},
     createSession:async options=>{sessionOptions=options;events.push('session');return {on:(key,fn)=>handlers.set(key,fn),abort:async()=>events.push('abort'),disconnect:async()=>events.push('disconnect'),
-      sendAndWait:async(...args)=>{sendArgs=args;events.push('send');if(failure)throw failure;handlers.get('assistant.usage')({data:{model:'actual-model',inputTokens:11,outputTokens:7}});return {data:{content:JSON.stringify(reply)}};},
-      rpc:{usage:{getMetrics:async()=>{if(metricsFailure)throw Error('raw session secret');return {currentModel:'actual-model',totalNanoAiu:1500000000,totalPremiumRequestCost:2,totalUserRequests:1};}}}};}};
+      sendAndWait:async(...args)=>{sendArgs=args;events.push('send');if(failure)throw failure;handlers.get('assistant.usage')({data:{model:'actual-model',inputTokens:11,outputTokens:7}});return {data:{content:JSON.stringify(reply),model:responseModel}};},
+      rpc:{usage:{getMetrics:async()=>{if(metricsFailure)throw Error('raw session secret');return {currentModel,totalNanoAiu,totalPremiumRequestCost:2,totalUserRequests:1};}}}};}};
   return {create:options=>{clientOptions=options;return client;},events,options:()=>({clientOptions,sessionOptions,sendArgs})};
 }
 test('organization-token preflight checks auth and available models without consulting personal quotas',async()=>{
@@ -48,4 +49,17 @@ test('runtime auth/quota errors preserve Retry-After and close resources',async(
 test('oversized input or unknown mode never constructs a client',async()=>{
   const f=fixture();await assert.rejects(qualityLanguage('translate','x'.repeat(24577),'fixture',f.create),/INPUT_LIMIT/);
   await assert.rejects(qualityLanguage('other','','fixture',f.create),/INPUT_LIMIT/);assert.deepEqual(f.events,[]);
+});
+
+test('null metering is preserved as unknown rather than zero credits', async () => {
+  const f=fixture({totalNanoAiu:null});
+  const result=await qualityLanguage('translate','{"items":[{}]}','fixture',f.create);
+  assert.equal(result.usage.totalNanoAiu,null);assert.equal(result.usage.aiCredits,null);
+});
+
+test('quality records the response or call model rather than a selected-model snapshot', async () => {
+  const f=fixture({responseModel:'response-model',currentModel:'selected-model'});
+  assert.equal((await qualityLanguage('translate','{"items":[{}]}','fixture',f.create)).model,'response-model');
+  const fallback=fixture({currentModel:'selected-model'});
+  assert.equal((await qualityLanguage('translate','{"items":[{}]}','fixture',fallback.create)).model,'actual-model');
 });

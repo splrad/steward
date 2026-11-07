@@ -42,10 +42,10 @@ export async function qualityLanguage(mode, input, token, createClient = options
     const value = JSON.parse(text);
     if (!validate(value)) throw new Error('QUALITY_OUTPUT_SCHEMA');
     const metrics = await session.rpc.usage.getMetrics();
-    const model = metrics.currentModel ?? events.findLast(e => e.model)?.model;
+    const model = response?.data.model || events.findLast(e => e.model)?.model;
     if (!model) throw new Error('QUALITY_MODEL_UNKNOWN');
     return {status:'RETURNED',value,model,usage:{events,totalNanoAiu:metrics.totalNanoAiu ?? null,
-      aiCredits:metrics.totalNanoAiu === undefined ? null : metrics.totalNanoAiu / 1e9,
+      aiCredits:metrics.totalNanoAiu == null ? null : metrics.totalNanoAiu / 1e9,
       premiumRequests:metrics.totalPremiumRequestCost,requests:metrics.totalUserRequests}};
   } catch (error) {
     try { await session?.abort(); } catch { /* Closing the client below is mandatory. */ }
