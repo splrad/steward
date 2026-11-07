@@ -201,6 +201,23 @@ class DeliveryTests(unittest.TestCase):
         before=len(self.api.mutations)
         self.assertEqual(self.run_delivery()['status'],'NO_DIFF');self.assertEqual(len(self.api.mutations),before)
 
+    def test_normalized_line_endings_after_merge_do_not_create_an_empty_commit(self):
+        first = self.run_delivery()
+        self.api.prs[0]['state'] = 'closed'
+        self.api.prs[0]['merged_at'] = '2026-11-07T00:00:00Z'
+        self.git(self.remote, 'update-ref', 'refs/heads/develop', first['head'])
+        base = self.edit('develop', '.gitattributes', '* text=auto eol=crlf\n/AGENTS.md text eol=lf\n')
+        metadata = copy.deepcopy(self.api.prs)
+        result = self.run_delivery()
+        self.assertEqual(result['status'], 'NO_DIFF')
+        self.assertEqual(self.git(self.remote, 'rev-parse', result['head']+'^{tree}'),
+                         self.git(self.remote, 'rev-parse', base+'^{tree}'))
+        self.assertEqual(self.api.prs, metadata)
+        self.assertEqual(self.api.creates, 1)
+        before = len(self.api.mutations)
+        self.assertEqual(self.run_delivery()['status'], 'NO_DIFF')
+        self.assertEqual(len(self.api.mutations), before)
+
     def test_unverified_signature_or_wrong_tree_never_moves_ref(self):
         for failure in ['signature','tree','parents','identity','message']:
             with self.subTest(failure=failure):
