@@ -77,7 +77,7 @@ it.each([{single:false,changed:false},{single:true,changed:false},{single:true,c
 });
 const actors=[4243096,88].map(actor_id=>({actor_id,actor_type:'Integration',bypass_mode:'always'}));
 const nativeRule=(id:number)=>({id,source:'splrad',source_type:'Organization',enforcement:'active',target:'branch',
-  conditions:{ref_name:{include:['refs/heads/steward/governance-state'],exclude:[]},repository_name:{include:['~ALL'],exclude:[],protected:false}},
+  conditions:{ref_name:{include:['refs/heads/steward/governance-state'],exclude:[] as string[]},repository_name:{include:['~ALL'],exclude:[],protected:false}},
   rules:id===1?[{type:'creation'},{type:'update',parameters:{update_allows_fetch_and_merge:false}}]:[{type:'non_fast_forward'},{type:'deletion'}],
   bypass_actors:id===1?actors:[]});
 
@@ -128,6 +128,26 @@ it('reads organization scope from the organization endpoint when repository proj
   }};
   await verifyGovernanceCreation(io,{id:12,name:'fixture',full_name:'splrad/fixture'},88);
   expect(calls).toContain('/orgs/splrad/rulesets/1');expect(calls).toContain('/orgs/splrad/rulesets/2');
+});
+it('accepts shared integrity rules only when they explicitly cover the governance ref without exclusions',async()=>{
+  const {verifyGovernanceCreation}=await module();
+  let included=['refs/heads/steward/release-state','refs/heads/steward/governance-state','refs/heads/steward/automation-health'],excluded:string[]=[];
+  const writerIncluded=['refs/heads/steward/governance-state'];
+  const io={async request(_method:string,path:string){
+    if(path.includes('/rulesets?'))return {status:200,value:[{id:1},{id:2}]};
+    const rule=nativeRule(Number(path.split('/').at(-1)));
+    if(rule.id===2)rule.conditions.ref_name={include:included,exclude:excluded};
+    else rule.conditions.ref_name.include=writerIncluded;
+    return {status:200,value:rule};
+  }};
+  const repository={id:12,name:'fixture',full_name:'splrad/fixture'};
+  await verifyGovernanceCreation(io,repository,88);
+  included=['refs/heads/steward/release-state'];
+  await expect(verifyGovernanceCreation(io,repository,88)).rejects.toThrow('STATE_CREATION_PROTECTION');
+  included=['refs/heads/steward/governance-state','refs/heads/steward/release-state'];excluded=['refs/heads/steward/governance-state'];
+  await expect(verifyGovernanceCreation(io,repository,88)).rejects.toThrow('STATE_RULE');
+  excluded=[];writerIncluded.push('refs/heads/steward/release-state');
+  await expect(verifyGovernanceCreation(io,repository,88)).rejects.toThrow('STATE_WRITER_SCOPE');
 });
 it('native variable absence is 404 only; 403 and transport failures remain distinct failures',async()=>{
   const {bootstrapNativeIO}=await module();
