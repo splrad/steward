@@ -9,7 +9,7 @@ export { decodeCompletionArchive } from '../../core/src/release-history.js';
 export { advanceReleaseCandidate } from './release-candidate.js';
 export { candidateId } from '../../core/src/release-candidate.js';
 export { generateCandidate, pushPreparedCandidate } from './release-candidate-update.js';
-export { collectContentInput, planContentBatches, resumeContentBatches, assembleUnitNotes } from './release-content.js';
+export { collectContentInput, planContentBatches, resumeContentBatches, assembleUnitNotes, contentWireInput } from './release-content.js';
 export { copilotReleaseClient } from './copilot-release-client.js';
 export { copilotQualityClient } from './copilot-quality-client.js';
 export { collectQualitySources, qualityPages, translateQualitySources, publishQualityCheck, serviceQualityPullRequest } from './quality-language-summary.js';
