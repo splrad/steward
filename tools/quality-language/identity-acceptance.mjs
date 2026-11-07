@@ -25,7 +25,8 @@ export async function acceptIdentity(purpose, env, adapters = { qualityLanguage,
   assertAdmission(purpose, env);
   const token = env.STEWARD_COPILOT_TOKEN;
   // Preflight is read-only. Neither rejection nor unknown response is retried.
-  const preflight = await adapters.qualityLanguage('preflight', '', token);
+  const adapter = purpose === 'quality' ? adapters.qualityLanguage : adapters.releaseNotes;
+  const preflight = await adapter('preflight', '', token);
   if (preflight.status !== 'READY') throw new Error('ACCEPTANCE_PREFLIGHT_DENIED');
   const result = purpose === 'quality' ? await adapters.qualityLanguage('translate', qualityInput, token)
     : await adapters.releaseNotes('generate', releaseInput, token);

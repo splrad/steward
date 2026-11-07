@@ -20,6 +20,7 @@ export async function qualityLanguage(mode, input, token, createClient = options
   const directory = await mkdtemp(join(tmpdir(), 'steward-quality-sdk-'));
   const client = createClient(isolatedCopilotClientOptions(directory, token));
   /** @type {import('@github/copilot-sdk').CopilotSession | undefined} */ let session;
+  let generationObserved = false, responseReceived = false;
   try {
     await client.start();
     if (!(await client.getAuthStatus()).isAuthenticated) return { status:'WAIT_AUTH' };
@@ -29,13 +30,18 @@ export async function qualityLanguage(mode, input, token, createClient = options
     if (!models.models.length) return {status:'WAIT_QUOTA'};
     if (mode === 'preflight') return {status:'READY', models:models.models.map(m => m.id)};
     session = await client.createSession(isolatedCopilotSessionOptions(directory, prompt));
+    for (const type of /** @type {const} */ (['assistant.message', 'assistant.message_start', 'assistant.message_delta', 'assistant.reasoning', 'assistant.reasoning_delta'])) {
+      session.on(type, () => { generationObserved = true; });
+    }
     /** @type {{model:string|null,inputTokens:number|null,outputTokens:number|null}[]} */ const events = [];
     let capacity = false;
     session.on('assistant.usage', event => {
+      generationObserved = true;
       events.push({model:event.data.model ?? null,inputTokens:event.data.inputTokens ?? null,outputTokens:event.data.outputTokens ?? null});
       if (event.data.finishReason === 'length') capacity = true;
     });
     const response = await session.sendAndWait({prompt:input,responseSchema:schema}, 120_000);
+    responseReceived = true;
     if (capacity) throw new Error('QUALITY_OUTPUT_CAPACITY');
     const text = response?.data.content;
     if (typeof text !== 'string' || Buffer.byteLength(text) > 128 * 1024) throw new Error('QUALITY_OUTPUT_LIMIT');
@@ -46,12 +52,13 @@ export async function qualityLanguage(mode, input, token, createClient = options
     if (!model) throw new Error('QUALITY_MODEL_UNKNOWN');
     return {status:'RETURNED',value,model,usage:{events,totalNanoAiu:metrics.totalNanoAiu ?? null,
       aiCredits:metrics.totalNanoAiu == null ? null : metrics.totalNanoAiu / 1e9,
-      premiumRequests:metrics.totalPremiumRequestCost ?? null,requests:metrics.totalUserRequests ?? null}};
+      premiumRequests:metrics.totalPremiumRequestCost ?? null,requests:metrics.totalUserRequests ?? null,
+      selectedModel:metrics.currentModel ?? null}};
   } catch (error) {
     try { await session?.abort(); } catch { /* Closing the client below is mandatory. */ }
     const native = /** @type {{status?:number,response?:{status?:number,headers?:{get?:(key:string)=>string|null}}}} */ (error);
     const status = native.status ?? native.response?.status;
-    if ([401,403,429].includes(status ?? 0)) {
+    if (!generationObserved && !responseReceived && [401,403,429].includes(status ?? 0)) {
       const after = native.response?.headers?.get?.('retry-after');
       const delay = after ? (/^\d+$/.test(after) ? Number(after)*1000 : Math.max(0,Date.parse(after)-Date.now())) : 0;
       return {status:status === 429 ? 'WAIT_QUOTA':'WAIT_AUTH', retryAfterMs:Number.isFinite(delay) ? delay : 0};

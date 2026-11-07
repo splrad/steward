@@ -20,7 +20,8 @@ test('each purpose generates once with fixed inputs and preserves only identity 
       calls.push({ mode, input });
       return mode === 'preflight' ? { status: 'READY', models: ['actual'] } : { status: 'RETURNED', model: 'actual', usage: { requests: 1 }, text: 'not published' };
     };
-    const result = await acceptIdentity(purpose, env, { qualityLanguage: run, releaseNotes: run });
+    const forbidden = async () => { throw new Error('WRONG_ADAPTER'); };
+    const result = await acceptIdentity(purpose, env, { qualityLanguage: purpose === 'quality' ? run : forbidden, releaseNotes: purpose === 'release' ? run : forbidden });
     assert.equal(calls.length, 2);
     assert.equal(calls[0].mode, 'preflight');
     assert.equal(calls[1].mode, purpose === 'quality' ? 'translate' : 'generate');

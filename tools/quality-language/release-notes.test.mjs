@@ -26,7 +26,7 @@ function fixture({ authenticated = true, models = [{id:'native-default'}], text 
 }
 test('read-only organization preflight creates no session and does not consult personal-seat quotas', async () => {
   for (const [setup, status] of [[{}, 'READY'], [{ authenticated: false }, 'WAIT_AUTH'], [{ models: [] }, 'WAIT_QUOTA']]) {
-    const f = fixture(setup); assert.deepEqual(await releaseNotes('preflight', '', 'fixture-token', f.create), { status });
+    const f = fixture(setup); assert.deepEqual(await releaseNotes('preflight', '', 'fixture-token', f.create), status === 'READY' ? { status, models: ['native-default'] } : { status });
     assert.deepEqual(f.events, ['start', 'stop']);
   }
 });

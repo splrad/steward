@@ -5,12 +5,12 @@ import { qualityLanguage } from './run.mjs';
 const item={sourceCommentId:'review:1',sourceCommit:'a'.repeat(40),sourceUrl:'https://github.com/a/b/pull/1',severity:'P1',originalIdentifiers:['API'],segmentIndex:0,
   problemZh:'存在问题。',impactZh:'调用失败。',suggestionZh:'验证输入。'};
 function fixture({auth=true,models=[{id:'native-default'}],reply={items:[item]},failure=null,metricsFailure=false,totalNanoAiu=1500000000,
-  responseModel=undefined,currentModel='actual-model',tokenUsage={inputTokens:11,outputTokens:7},requestMetrics={totalPremiumRequestCost:2,totalUserRequests:1}}={}) {
+  generationEvent=null,failureAfterUsage=null,responseModel=undefined,currentModel='actual-model',tokenUsage={inputTokens:11,outputTokens:7},requestMetrics={totalPremiumRequestCost:2,totalUserRequests:1}}={}) {
   const events=[],handlers=new Map();let clientOptions,sessionOptions,sendArgs;
   const client={start:async()=>events.push('start'),stop:async()=>events.push('stop'),getAuthStatus:async()=>({isAuthenticated:auth}),
     rpc:{account:{getQuota:async()=>{throw Error('PERSONAL_QUOTA_NOT_APPLICABLE');}},models:{list:async()=>({models})}},
     createSession:async options=>{sessionOptions=options;events.push('session');return {on:(key,fn)=>handlers.set(key,fn),abort:async()=>events.push('abort'),disconnect:async()=>events.push('disconnect'),
-      sendAndWait:async(...args)=>{sendArgs=args;events.push('send');if(failure)throw failure;handlers.get('assistant.usage')({data:{model:'actual-model',...tokenUsage}});return {data:{content:JSON.stringify(reply),model:responseModel}};},
+      sendAndWait:async(...args)=>{sendArgs=args;events.push('send');if(generationEvent)handlers.get(generationEvent)?.({data:{}});if(failure)throw failure;handlers.get('assistant.usage')({data:{model:'actual-model',...tokenUsage}});if(failureAfterUsage)throw failureAfterUsage;return {data:{content:JSON.stringify(reply),model:responseModel}};},
       rpc:{usage:{getMetrics:async()=>{if(metricsFailure)throw Error('raw session secret');return {currentModel,totalNanoAiu,...requestMetrics};}}}};}};
   return {create:options=>{clientOptions=options;return client;},events,options:()=>({clientOptions,sessionOptions,sendArgs})};
 }
@@ -59,9 +59,25 @@ test('null metering is preserved as unknown rather than zero credits', async () 
 
 test('quality records the response or call model rather than a selected-model snapshot', async () => {
   const f=fixture({responseModel:'response-model',currentModel:'selected-model'});
-  assert.equal((await qualityLanguage('translate','{"items":[{}]}','fixture',f.create)).model,'response-model');
+  const result=await qualityLanguage('translate','{"items":[{}]}','fixture',f.create);
+  assert.equal(result.model,'response-model');assert.equal(result.usage.selectedModel,'selected-model');
   const fallback=fixture({currentModel:'selected-model'});
   assert.equal((await qualityLanguage('translate','{"items":[{}]}','fixture',fallback.create)).model,'actual-model');
+  const missing=fixture({currentModel:null});
+  assert.equal((await qualityLanguage('translate','{"items":[{}]}','fixture',missing.create)).usage.selectedModel,null);
+});
+
+test('quality generation signals followed by status errors remain unknown and are never retryable refusals', async () => {
+  for (const status of [401,403,429]) {
+    for (const generationEvent of ['assistant.message','assistant.message_start','assistant.message_delta','assistant.reasoning','assistant.reasoning_delta']) {
+      const f=fixture({generationEvent,failure:{status}});
+      await assert.rejects(qualityLanguage('translate','{"items":[{}]}','fixture',f.create),/RESPONSE_UNKNOWN/);
+      assert.equal(f.events.filter(e=>e==='send').length,1);
+      assert.deepEqual(f.events.slice(-3),['abort','disconnect','stop']);
+    }
+    const f=fixture({failureAfterUsage:{status}});
+    await assert.rejects(qualityLanguage('translate','{"items":[{}]}','fixture',f.create),/RESPONSE_UNKNOWN/);
+  }
 });
 
 test('absent counters and request metrics survive JSON serialization as explicit null', async () => {
