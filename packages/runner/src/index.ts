@@ -39,7 +39,7 @@ export { nativeReleaseApp } from '../../github/src/app-auth.js';
 export { completeMergedPull } from '../../github/src/merged-pull.js';
 export {maintenanceWorkflows,maintenanceJobKeys,maintenanceDisposition,maintenanceFailed,decodeMaintenanceRecord,assertMaintenanceProgress} from '../../core/src/maintenance.js';
 export {validatePagesSource,pagesRecordPath,decodePagesMaintenance,assertPagesProgress} from '../../core/src/pages-maintenance.js';
-export { bootstrapRepository, bootstrapRulePolicyDigest, decodeBootstrapRecovery } from './repository-bootstrap.js';
+export { bootstrapCommitOrigin, bootstrapRepository, bootstrapRulePolicyDigest, decodeBootstrapRecovery } from './repository-bootstrap.js';
 export {assertRepositoryInstructions} from './repository-instructions.js';
 export {discoverWorkflowFiles,scanWorkflows,resolvePolicyTool} from './workflow-tools.js';
 export {renderLinkcheckFirewall,linkcheckEnvironment} from './linkcheck.js';

@@ -9,7 +9,7 @@ import {pathToFileURL} from 'node:url';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {createHash} from 'node:crypto';
-import {bootstrapRepository,isolatedBuildEnvironment} from '../packages/runner/dist/index.js';
+import {bootstrapCommitOrigin,decodeBootstrapRecovery,bootstrapRepository,isolatedBuildEnvironment} from '../packages/runner/dist/index.js';
 import {readReleaseRecords,writeReleaseRecords} from './release-record.mjs';
 import {assertQualityProtection} from './quality-language-summary.mjs';
 import {completeNativeRuleParameters} from './native-rule-parameters.mjs';
@@ -71,7 +71,7 @@ export async function verifyGovernanceCreation(io,repository,appId) {
   check(['creation','update','non_fast_forward','deletion'].every(type=>found.has(type)),'STATE_CREATION_PROTECTION');
 }
 
-export async function archiveBootstrap({root,repository,token,appId,identity,record,origin,io},
+export async function archiveBootstrap({root,repository,token,appId,identity,record,origin,io,originCorrection=false,requireExistingArchive=false},
   {read=readReleaseRecords,write=writeReleaseRecords,executeGit=promisify(execFile)}={}) {
   check(record.phase==='RESTORED'&&/^[a-f0-9]{40}$/.test(record.firstCommitSha??'')&&['app','external'].includes(origin),'ARCHIVE_FACTS');
   const prefix=`/repos/${repository.full_name}`;
@@ -92,12 +92,45 @@ export async function archiveBootstrap({root,repository,token,appId,identity,rec
   if(ref){snapshot=await refresh();check(snapshot.head===ref.object?.sha,'ARCHIVE_REF_CHANGED');}
   const path=`bootstrap/${record.runId}-${record.runAttempt}.json`,content=JSON.stringify({...record,firstCommitOrigin:origin},null,2)+'\n';
   const existing=snapshot.domainRecords.find(r=>r.path===path);
-  if(existing) {check(existing.content===content,'ARCHIVE_CONFLICT');return snapshot.head;}
+  if(requireExistingArchive)check(existing,'ORIGIN_ARCHIVE_MISSING');
+  if(existing) {
+    if(existing.content===content)return snapshot.head;
+    const previous=JSON.parse(existing.content);
+    check(originCorrection&&origin==='app'&&previous.firstCommitOrigin==='external'
+      &&JSON.stringify({...previous,firstCommitOrigin:'app'},null,2)+'\n'===content,'ARCHIVE_CONFLICT');
+  }
   const result=await write({directory:join(directory,'write'),remote,repositoryId:repository.id,defaultBranch:repository.default_branch,targetRef:branch,
-    writer:'bootstrap',expectedHead:snapshot.head,allowedPaths:[path],changes:[{path,content,sha256:hash(content),previousSha256:null}],identity},{token});
+    writer:'bootstrap',expectedHead:snapshot.head,allowedPaths:[path],changes:[{path,content,sha256:hash(content),previousSha256:existing?hash(existing.content):null}],identity},{token});
   check(['APPLIED','UNCHANGED'].includes(result.status),'ARCHIVE_WRITE');
   snapshot=await refresh();check(snapshot.domainRecords.find(r=>r.path===path)?.content===content,'ARCHIVE_READBACK');
   await assertQualityProtection(qualityIO(io),repository.full_name,appId);return snapshot.head;
+}
+
+/** Only the explicit private acceptance entry can repair the proven historical newline misclassification. */
+export async function reconcileBootstrapOrigin({root,repository,token,appId,identity,io,verifySource},archive=archiveBootstrap) {
+  const prefix=`/repos/${repository.full_name}`;
+  const history=await pages(io,`${prefix}/commits?sha=${encodeURIComponent(repository.default_branch)}`);
+  const roots=history.filter(c=>Array.isArray(c.parents)&&c.parents.length===0);
+  check(roots.length===1,'ORIGIN_HISTORY');
+  const first=roots[0],match=/^chore: initialize repository\n\nSigned-off-by: [^\n]+\nSteward-Bootstrap-Run: 1296724484\/([1-9][0-9]*)\/([1-9][0-9]*)\n?$/.exec(first.commit?.message??'');
+  if(!match||first.author?.id!==identity.id)return false;
+  const file=await get(io,`${prefix}/contents/bootstrap/${match[1]}-${match[2]}.json?ref=${branch}`,true);
+  if(file===null)return false;
+  check(file.type==='file'&&file.encoding==='base64'&&file.size<=32*1024,'ORIGIN_ARCHIVE');
+  const value=JSON.parse(Buffer.from(file.content,'base64').toString('utf8'));
+  const {firstCommitOrigin,...raw}=value;
+  check(['app','external'].includes(firstCommitOrigin),'ORIGIN_VALUE');
+  const record=decodeBootstrapRecovery(JSON.stringify(raw),repository);
+  check(record.phase==='RESTORED'&&record.firstCommitSha===first.sha&&String(record.runId)===match[1]&&String(record.runAttempt)===match[2],'ORIGIN_BINDING');
+  await verifySource(record);
+  const content=await get(io,`${prefix}/contents/README.md?ref=${first.sha}`,true);
+  if(firstCommitOrigin==='app'||bootstrapCommitOrigin(first,content,record,identity)!=='app')return false;
+  const current=await get(io,prefix);
+  check(current.id===repository.id&&current.full_name===repository.full_name&&current.owner?.id===302208797&&current.private===true
+    &&current.default_branch===repository.default_branch&&!current.archived&&!current.disabled,'ORIGIN_TARGET');
+  check(await get(io,`${prefix}/actions/variables/STEWARD_BOOTSTRAP_RECOVERY`,true)===null,'ORIGIN_RECOVERY_PRESENT');
+  await archive({root,repository,token,appId,identity:{name:identity.name,email:identity.email},record,origin:'app',io,originCorrection:true,requireExistingArchive:true});
+  return true;
 }
 
 export function bootstrapOnly(env) {
@@ -183,10 +216,14 @@ export async function main(transport=fetch) {
     const c=await credential(repository.id,{metadata:'read',contents:'write',administration:'write',actions_variables:'write',organization_administration:'write'});
     try {
       const scope=await get(c.io,'/installation/repositories');check(scope.total_count===1&&scope.repositories[0]?.id===repository.id,'TOKEN_SCOPE');
-      return await bootstrapRepository(repository,source,config.rules,c.io,{requirePrivate:single,identity,now:()=>new Date().toISOString(),verifySource,
+      const result=await bootstrapRepository(repository,source,config.rules,c.io,{requirePrivate:single,identity,now:()=>new Date().toISOString(),verifySource,
         verifyProtection:async r=>{const rules=await pages(c.io,`/repos/${r.full_name}/rules/branches/${encodeURIComponent(r.default_branch)}`);
           check(rules.some(rule=>rule.type==='pull_request')&&rules.some(rule=>rule.type==='required_status_checks'),'DEFAULT_PROTECTION');},
-        archive:(record,origin)=>archiveBootstrap({root,repository,token:c.token,appId,identity:{name:identity.name,email:identity.email},record,origin,io:c.io})});
+        archive:(record,origin)=>archiveBootstrap({root,repository,token:c.token,appId,identity:{name:identity.name,email:identity.email},record,origin,io:c.io,originCorrection:origin==='app'})});
+      if(single&&result.status==='EXISTING') {
+        await reconcileBootstrapOrigin({root,repository,token:c.token,appId,identity,io:c.io,verifySource:async record=>{await verifySource(source);await verifySource(record);}});
+      }
+      return result;
     }finally{await c.revoke();}
   }});
   const summary=JSON.stringify(counts)+'\n';process.stdout.write(summary);if(env.GITHUB_STEP_SUMMARY)await appendFile(env.GITHUB_STEP_SUMMARY,summary);
