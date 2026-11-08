@@ -14,6 +14,7 @@ export function validatePlan(raw, expectedHash, env) {
     &&env.GITHUB_RUN_ATTEMPT==='1'&&env.GITHUB_WORKFLOW_REF==='splrad/steward/.github/workflows/business-flow-acceptance.yml@refs/heads/main'
     &&sha(p.controllerSha)&&p.controllerSha===env.GITHUB_SHA&&p.controllerSha===env.WORKFLOW_SHA,'CONTROLLER');
   requireFact(p.schemaVersion===1&&['quality','release'].includes(p.kind)&&[0,1].includes(p.maxRequests),'MODE');
+  requireFact(p.expectControlledStop===undefined||p.expectControlledStop===false||p.expectControlledStop===true&&p.kind==='quality'&&p.maxRequests===0,'CONTROLLED_STOP_PLAN');
   requireFact(p.repository&&/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(p.repository.full_name)
     &&Number.isSafeInteger(p.repository.id)&&p.repository.id>0&&p.repository.default_branch==='main'
     &&typeof p.repository.private==='boolean'&&sha(p.baseSha)&&sha(p.stateSha),'TARGET');
@@ -51,6 +52,7 @@ export async function executePlan(p,{root,controllerDirectory,app,modelToken,fet
     const context={repository:p.repository.full_name,repositoryId:p.repository.id,pullRequestNumber:p.pr,
       head:p.head,appId:4243096,configVersion:p.configVersion};
     const sources=await lib.collectQualitySources(context,p.sources,io);
+    requireFact(p.maxRequests===0||sources.length>0,'SOURCE_EMPTY');
     // Digest binds the complete read set including native IDs, commits, times and original bodies.
     requireFact(digest(JSON.stringify(sources))===p.sourceSetDigest,'SOURCE_CHANGED');
     const cache=await lib.reconcileQualitySources(state.cache(p.pr),{...context,observedAt:new Date().toISOString()},sources);
@@ -62,7 +64,11 @@ export async function executePlan(p,{root,controllerDirectory,app,modelToken,fet
     await verifyRepository(token);
     requireFact(digest(JSON.stringify(await lib.collectQualitySources(context,p.sources,io)))===p.sourceSetDigest,'SOURCE_CHANGED');
     const result=await lib.publishQualityCheck(context,cache,io,store);
-    requireFact(result.pending===0,'QUALITY_PENDING');return {kind:p.kind,calls:client.calls,complete:result.complete};
+    if(p.expectControlledStop){
+      requireFact(client.calls===0&&result.pending>0,'CONTROLLED_STOP_NOT_OBSERVED');
+      return {kind:p.kind,status:'CONTROLLED_STOP',calls:0,pending:result.pending};
+    }
+    requireFact(result.pending===0,'QUALITY_PENDING');return {kind:p.kind,status:'COMPLETE',calls:client.calls,complete:result.complete};
   });
   return app.forCandidateRepository(p.repository.id,async(token,readToken)=>{
     await verifyRepository(token);
@@ -98,4 +104,7 @@ export async function main(env=process.env) {
     process.stdout.write(JSON.stringify(result)+'\n');
   }finally{await rm(root,{recursive:true,force:true});}
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href)main().catch(()=>{process.stderr.write('BUSINESS_ACCEPTANCE_STOPPED\n');process.exitCode=75;});
+if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href)main().catch(error=>{
+  const code=/^ACCEPTANCE_[A-Z_]+$/.test(error?.message??'')?error.message:'BUSINESS_ACCEPTANCE_STOPPED';
+  process.stderr.write(JSON.stringify({status:'STOPPED',code})+'\n');process.exitCode=75;
+});

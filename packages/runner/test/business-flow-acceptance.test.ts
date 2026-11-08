@@ -64,7 +64,7 @@ test('native candidate rejects a changed actual initial Git snapshot before busi
 },120000);
 
 test('rechecks approved base and full sources after generation before publishing a Check',async()=>{
-  for(const changed of ['base','source']){
+  for(const changed of ['base','source','empty']){
     let calls=0,published=0,reads=0;
     const repository={id:1,full_name:'test/product',default_branch:'main',private:true};
     const source={sourceCommentId:'review:1',sourceCommit:sha,sourceUrl:'https://github.com/test/product/pull/1',severity:'P1',bodyMarkdown:'Check input.',updatedAt:'2026-11-07T00:00:00Z'};
@@ -74,14 +74,51 @@ test('rechecks approved base and full sources after generation before publishing
     }));
     vi.doMock('../dist/index.js',async()=>{
       const real=await vi.importActual('../dist/index.js');
-      return {...real,collectQualitySources:async()=>{reads++;return [changed==='source'&&calls>0?{...source,bodyMarkdown:'Changed input.'}:source];},
+      return {...real,collectQualitySources:async()=>{reads++;if(changed==='empty')return [];return [changed==='source'&&calls>0?{...source,bodyMarkdown:'Changed input.'}:source];},
         copilotQualityClient:()=>({preflight:async()=>({status:'READY'}),call:async segments=>{calls++;return {model:'fake',usage:null,items:segments.map(({bodyMarkdown,...item})=>({...item,problemZh:'检查输入。',impactZh:'原文未说明',suggestionZh:'原文未说明'}))};}}),
         publishQualityCheck:async()=>{published++;return {pending:0,complete:1};}};
     });
     const p={...plan,kind:'quality',repository,pr:1,head:sha,sources:[{kind:'review',id:2,login:'quality'}],governanceAppId:2,configVersion:'v1',sourceSetDigest:digest(JSON.stringify([source]))};
     const app={forQualityRepository:async(_id,callback)=>callback('fake-token')};
-    await assert.rejects(executePlan(p,{root:'.',controllerDirectory:process.cwd(),app,modelToken:''}),changed==='base'?/BASE_CHANGED/:/SOURCE_CHANGED/);
-    assert.equal(calls,1);assert.equal(published,0);if(changed==='source')assert.equal(reads,2);
+    await assert.rejects(executePlan(p,{root:'.',controllerDirectory:process.cwd(),app,modelToken:''}),changed==='empty'?/SOURCE_EMPTY/:changed==='base'?/BASE_CHANGED/:/SOURCE_CHANGED/);
+    assert.equal(calls,changed==='empty'?0:1);assert.equal(published,0);if(changed==='source')assert.equal(reads,2);
     vi.doUnmock('../../../scripts/quality-language-summary.mjs');vi.doUnmock('../dist/index.js');
   }
+});
+
+test('controlled zero-call stop persists pending input and resumes once without regenerating completed work',async()=>{
+  let cache=null,calls=0,checkWrites=0;
+  const repository={id:1,full_name:'test/product',default_branch:'main',private:true};
+  const source={sourceCommentId:'review:1',sourceCommit:sha,sourceUrl:'https://github.com/test/product/pull/1',severity:'P1',bodyMarkdown:'Check input.',updatedAt:'2026-11-07T00:00:00Z'};
+  vi.doMock('../../../scripts/quality-language-summary.mjs',()=>({
+    qualityNativeIO:()=>({get:async(path)=>({value:path.endsWith('/pulls/1')?{number:1,state:'open',head:{sha},base:{repo:{id:1}}}:path.includes('/git/ref/')?{object:{sha}}:{...repository,archived:false,disabled:false}})}),
+    openQualityStore:async()=>({snapshot:{head:sha},cache:()=>cache,forPull:()=>({save:async(value)=>{cache=JSON.parse(JSON.stringify(value));return {commit:sha};}})}),
+  }));
+  vi.doMock('../dist/index.js',async()=>{
+    const real=await vi.importActual('../dist/index.js');
+    return {...real,collectQualitySources:async()=>[source],
+      copilotQualityClient:()=>({preflight:async()=>({status:'READY'}),call:async segments=>{calls++;return {model:'fake',usage:null,items:segments.map(({bodyMarkdown,...item})=>({...item,problemZh:'检查输入。',impactZh:'原文未说明',suggestionZh:'原文未说明'}))};}}),
+      publishQualityCheck:async(_context,value)=>{checkWrites++;return real.renderQualitySummary(value);}};
+  });
+  const p={...plan,kind:'quality',maxRequests:0,expectControlledStop:true,repository,pr:1,head:sha,sources:[{kind:'review',id:2,login:'quality'}],governanceAppId:2,configVersion:'v1',sourceSetDigest:digest(JSON.stringify([source]))};
+  const app={forQualityRepository:async(_id,callback)=>callback('fake-token')},options={root:'.',controllerDirectory:process.cwd(),app,modelToken:''};
+  assert.deepEqual(await executePlan(p,options),{kind:'quality',status:'CONTROLLED_STOP',calls:0,pending:1});
+  assert.equal(calls,0);assert.equal(Object.values(cache.entries)[0].attempts.length,0);
+  assert.equal((await executePlan({...p,maxRequests:1,expectControlledStop:false},options)).status,'COMPLETE');assert.equal(calls,1);
+  assert.equal((await executePlan({...p,maxRequests:0,expectControlledStop:false},options)).calls,0);assert.equal(calls,1);assert.equal(checkWrites,3);
+  vi.doUnmock('../../../scripts/quality-language-summary.mjs');vi.doUnmock('../dist/index.js');
+});
+
+test('release local call limit preserves the first batch and stops before a second request intent',async()=>{
+  const {planContentBatches,resumeContentBatches}=await vi.importActual('../dist/index.js');
+  const input={schemaVersion:2,repositoryId:1,candidateId:digest('candidate'),baseSha:sha,controllerSha:sha,configDigest:digest('config'),sourceManifestDigest:digest('manifest'),
+    units:['app','second'].map(id=>({id,path:id,version:'1.0.0',tag:id+'/v1.0.0'})),boundaries:['app','second'].map(unitId=>({unitId,kind:'full-tree',sha:null,reference:null})),batches:[]};
+  const sources=input.units.map(({id})=>({id:digest(id),unitId:id,path:id+'/README.md',previousPath:null,status:'CURATED',oid:sha,mode:'100644',byteLength:6,encoding:'utf8',sha256:digest('示例'),start:0,end:6,text:'示例',stage:'CONTEXT'}));
+  const work=await planContentBatches(input,sources),cache={};let calls=0,preflights=0,persisted;
+  const client=boundedClient({preflight:async()=>{preflights++;return 'READY';},call:async text=>{calls++;const p=JSON.parse(text);return {model:'fake',usage:null,text:JSON.stringify({paragraphs:[{sourceIds:[p.sources[0].id],section:'changes',textZh:'增加使用说明。',qualification:'SOURCE_CONFIRMED'}]})};}},1);
+  await assert.rejects(resumeContentBatches(work,cache,{...client,now:()=>new Date().toISOString(),editing:async()=>false,save:async(w,c)=>{persisted=JSON.parse(JSON.stringify({work:w,cache:c}));}}),/ACCEPTANCE_CALL_LIMIT/);
+  assert.equal(calls,1);assert.equal(preflights,1);
+  assert.equal(persisted.work.input.batches[0].status,'READY');assert.equal(persisted.work.input.batches[0].attempts[0].status,'RETURNED');
+  assert.equal(persisted.work.input.batches[1].status,'PENDING');assert.deepEqual(persisted.work.input.batches[1].attempts,[]);
+  assert.deepEqual(work.input.batches[1].attempts,[]);assert.equal(Object.values(persisted.cache).filter(e=>e.result).length,1);
 });
