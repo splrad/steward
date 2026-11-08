@@ -67,7 +67,7 @@ export function prepareQualitySource(source: QualitySource): QualityPrepared {
   validateQualitySource(source);
   const body=source.bodyMarkdown, tree=unified().use(remarkParse).parse(body);
   const blocks:SourceRange[]=[], inline:SourceRange[]=[], links:SourceRange[]=[], htmlRanges:SourceRange[]=[],
-    markup:SourceRange[]=[], boundaries:SourceRange[]=[];
+    markup:SourceRange[]=[], htmlTags:SourceRange[]=[], boundaries:SourceRange[]=[];
   // Match the Markdown parser's complete HTML block vocabulary; include raw-text
   // containers (textarea prose) and flow separators not present in that list.
   const blockTags=new Set([...htmlBlockNames,...htmlRawNames,'br','hgroup']);
@@ -110,7 +110,7 @@ export function prepareQualitySource(source: QualitySource): QualityPrepared {
           if(node.tagName==='a')links.push(range);
         }
         for(const tag of [location.startTag,location.endTag])if(tag){
-          const range={start:tag.startOffset,end:tag.endOffset};markup.push(range);
+          const range={start:tag.startOffset,end:tag.endOffset};markup.push(range);htmlTags.push(range);
           if(blockTags.has(node.tagName))boundaries.push(range);
         }
       }
@@ -141,11 +141,16 @@ export function prepareQualitySource(source: QualitySource): QualityPrepared {
     if(utf8(chunk+text)<=6*1024){chunk+=text;return;}
     flush();
     if(utf8(text)<=6*1024){chunk=text;return;}
-    // Never split a code span or link into misleading fragments to satisfy the bound.
+    // Never split an inline atom or HTML tag into misleading fragments to satisfy the bound.
     requireQuality(!atomic,'INPUT_LIMIT');
     for(const cp of text){if(utf8(chunk+cp)>6*1024)flush();chunk+=cp;}
   };
-  const values=[...new Set(inlineValues)].sort((a,b)=>b.length-a.length);
+  // HTML tag syntax is indivisible too: punctuation in attributes is not prose.
+  // This does not add ordinary tags to code/link identity output or invent wrappers.
+  const atomValues=outerRanges([...inline,...htmlTags].filter(range=>
+    !protectedBlocks.some(block=>range.start>=block.start&&range.end<=block.end)).map(range=>({...range})))
+    .map(range=>rawRange(body,range));
+  const values=[...new Set(atomValues)].sort((a,b)=>b.length-a.length);
   const byStart=new Map<string,string[]>();
   for(const value of values)if(value){const group=byStart.get(value[0]!)??[];group.push(value);byStart.set(value[0]!,group);}
   const matchAt=(text:string,index:number)=>byStart.get(text[index]!)?.find(value=>text.startsWith(value,index));

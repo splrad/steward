@@ -118,6 +118,22 @@ it('packs complete short paragraphs and protects inline code/link atoms at long 
   expect(()=>qualityBatchInput([{...item,bodyMarkdown:'x'.repeat(24*1024)}])).toThrow('QUALITY_INPUT_LIMIT');
 });
 
+it.each(['<span data-version="1.2?x!">','<div title="🧪.v1?">','<custom-element data-url="a.b/c?x=1">'])
+  ('does not split ordinary HTML tag syntax at a UTF-8 boundary: %s',tag=>{
+    const close=`</${tag.match(/^<([^ >]+)/)![1]}>`;
+    const body='x'.repeat(6138)+tag+'The following explanation is complete. '.repeat(200)+close;
+    const p=prepareQualitySource(source(body));
+    expect(p.segments.map(s=>s.bodyMarkdown).join('')).toBe(body);
+    expect(p.segments.filter(s=>s.bodyMarkdown.includes(tag))).toHaveLength(1);
+    expect(p.segments.filter(s=>s.bodyMarkdown.includes(close))).toHaveLength(1);
+    for(const segment of p.segments)expect(Buffer.byteLength(segment.bodyMarkdown)).toBeLessThanOrEqual(6*1024);
+  });
+
+it('rejects an oversized indivisible HTML tag instead of truncating its syntax',()=>{
+  expect(()=>prepareQualitySource(source('Check <span title="'+'x'.repeat(7*1024)+'">this finding.</span>')))
+    .toThrow('QUALITY_INPUT_LIMIT');
+});
+
 it('isolates legacy keys even without a caller config bump and retains their results/attempts',async()=>{
   let cache=await reconcileQualitySources(null,context,[source('Check inputs.')]);
   const key=cache.heads[context.head]!.keys[0]!,entry=cache.entries[key]!,segment=entry.segment;
