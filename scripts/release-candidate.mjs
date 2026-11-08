@@ -11,16 +11,19 @@ import { advanceReleaseCandidate, pushPreparedCandidate, collectContentInput, pl
   resumeContentBatches, assembleUnitNotes, copilotReleaseClient, decodeCandidateDocument, splitContentText, releaseAffectedUnitIds, isolatedBuildEnvironment,
   parseDeliveryConfig, parseSupplementalNotes, assertDeliveryPath, assertProductDelivery, mergedBuildCycle, assertRepositoryWrite, completeMergedPull } from '../packages/runner/dist/index.js';
 import { readReleaseRecords, writeReleaseRecords, assertReleaseWriterProtection } from './release-record.mjs';
+import { restoreContentRecovery } from './release-content-recovery.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const validSha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const fail = code => { throw new Error(code); };
 
 /** Fixed candidate adapter. Credentials never enter archived data or model/RP payloads. */
-export async function nativeReleaseCandidate(request, { token, readToken, copilotToken, controllerSha, controllerDirectory = process.cwd(), now = () => new Date().toISOString(), fetcher = fetch, generator, language, expectedStateSha, temporaryRoot = tmpdir(),verifyHandoff } = {}) {
+export async function nativeReleaseCandidate(request, { token, readToken, copilotToken, controllerSha, controllerDirectory = process.cwd(), now = () => new Date().toISOString(), fetcher = fetch, generator, language, expectedStateSha, temporaryRoot = tmpdir(),verifyHandoff,contentRecovery } = {}) {
   if (!readToken || readToken === token) return { status: 'WAIT', reason: 'CANDIDATE_SCOPED_READ_CREDENTIAL_REQUIRED' };
   if (!validSha(controllerSha)) return { status: 'WAIT', reason: 'CANDIDATE_CONTROLLER_IDENTITY_REQUIRED' };
   if(expectedStateSha!==undefined&&!validSha(expectedStateSha))fail('CANDIDATE_EXPECTED_STATE_INVALID');
+  if (contentRecovery && (contentRecovery.archiveContentDigest!==undefined || contentRecovery.archiveProtectionDigest!==undefined)
+    && ![contentRecovery.archiveContentDigest,contentRecovery.archiveProtectionDigest].every(v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v))) fail('CONTENT_RECOVERY_ARCHIVE');
   const root = await mkdtemp(join(temporaryRoot, 'steward-candidate-native-'));
   await mkdir(request.writeDirectory, { recursive: true });
   const env = isolatedBuildEnvironment(process.env, root);
@@ -220,6 +223,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       content: async (candidate, snapshot) => {
         const path = `content/${candidate.id}/${candidate.contentGenerationDigest}/manifest.json`, cachePath = `content/${candidate.id}/cache.json`;
         const stored = await loadDocument(path), cacheIndex = await loadDocument(cachePath), cache = {};
+        if (contentRecovery?.archiveContentDigest && stored) fail('CONTENT_RECOVERY_ARCHIVE_EXISTS');
         let work = null;
         for (const entry of cacheIndex?.entries ?? []) {
           const value = await loadDocument(entry.path); if (hash(JSON.stringify(value)) !== entry.digest || hash(JSON.stringify([value.inputDigest, value.configDigest])) !== entry.key) fail('CONTENT_CACHE_DIGEST');
@@ -258,6 +262,8 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
               boundary: b.kind === 'full-tree' ? { kind: 'full-tree' } : { kind: b.kind, sha: b.sha, reference: b.reference, version: JSON.parse(lastFacts.manifest)[unit.path] } }; }) });
           work = await planContentBatches(collected.input, collected.sources, { manifests: collected.manifests, gaps: collected.gaps });
         }
+        if (contentRecovery?.archiveContentDigest) await restoreContentRecovery(work,cache,contentRecovery,
+          {loadDocument,facts:lastFacts,protections:lastProtections,authorsDigest:hash(JSON.stringify(delivery.repositoryAuthors))});
         const save = async (work, cache) => {
           const results = [], payloadPaths = {}, evidencePath = path.replace(/manifest\.json$/, 'source-manifest.json');
           for (const batch of work.input.batches) {
@@ -276,7 +282,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
           return persist([...archive('content', candidate.id, path, { input: work.input, payloadPaths, evidencePath }),
             ...archive('content-evidence', candidate.id, evidencePath, work.evidence), ...archive('cache', candidate.id, cachePath, { entries }), ...results]);
         };
-        const result = await resumeContentBatches(work, cache, { now, editing: async () => (await prs(candidate.branch)).some(p => p.number === candidate.prNumber && p.editing), ...sdk, save });
+        const result = await resumeContentBatches(work, cache, { now, recovery: contentRecovery, editing: async () => (await prs(candidate.branch)).some(p => p.number === candidate.prNumber && p.editing), ...sdk, save });
         if (result.status !== 'READY') return { status: result.status === 'EDITING' ? 'EDITING' : result.status === 'FAILED' ? 'FAILED' : 'WAIT' };
         const unitActors = Object.fromEntries(snapshot.units.map(unit => [unit.id, []]));
         if (session.identity?.sourceDigest === snapshot.sourceDigest && session.identity.authorsDigest === hash(JSON.stringify(delivery.repositoryAuthors)))
