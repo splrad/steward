@@ -3,6 +3,7 @@ import {readFile,appendFile,writeFile,lstat,realpath} from 'node:fs/promises';
 import {resolve,join,sep} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {loadPolicy,dependencyMode,assertGovernanceOnlyScope} from './private-dependency-policy.mjs';
+import {assertLifecycleScope} from './private-lifecycle-policy.mjs';
 const check=(ok,code)=>{if(!ok)throw Error('VALIDATION_'+code);};
 export function git(workspace,args) {
   return execFileSync('git',['--no-replace-objects','-c','core.hooksPath=','-c','credential.helper=',...args],
@@ -45,6 +46,7 @@ export async function validationInput(workspace,env=process.env) {
   const dependency=dependencyMode(event,await loadPolicy(),env.PRIVATE_GOVERNANCE_REPOSITORY_ID);
   // Reject product inputs before scope outputs can schedule any candidate build.
   if(dependency==='private-governance')assertGovernanceOnlyScope(files);
+  if(dependency==='private-lifecycle')assertLifecycleScope(files);
   const mode=buildMode(files);
   if(mode==='python')for(const path of ['pyproject.toml','requirements-build.txt'])await regular(workspace,path);
   return {input,files,mode,dependencyMode:dependency};

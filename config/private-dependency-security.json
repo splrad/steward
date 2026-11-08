@@ -13,5 +13,11 @@
       }
     }
   ],
-  "osvImage": "ghcr.io/google/osv-scanner-action:v2.7.0@sha256:9b83615736eba33d105821197ba4b4fce2cd4b53dc89e02a9c1ee6d60c36afa4"
+  "osvImage": "ghcr.io/google/osv-scanner-action:v2.7.0@sha256:9b83615736eba33d105821197ba4b4fce2cd4b53dc89e02a9c1ee6d60c36afa4",
+  "lifecycleSamples": [
+    {
+      "repositoryId": 1448797077,
+      "repository": "splrad/steward-e10-lifecycle-20261107"
+    }
+  ]
 }
