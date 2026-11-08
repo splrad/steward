@@ -12,9 +12,19 @@ export async function loadPolicy(){
     item.lockException.manifestPath==='safe-settings/upstream-lock-exception.json'
     &&item.lockException.patchPath==='safe-settings/upstream-package-lock.patch'
     &&/^[a-f0-9]{64}$/.test(item.lockException.manifestSha256),'LOCK_EXCEPTION_POLICY');
+  assert(Array.isArray(policy.lifecycleSamples)&&policy.lifecycleSamples.length===1
+    &&Number.isSafeInteger(policy.lifecycleSamples[0].repositoryId)&&policy.lifecycleSamples[0].repositoryId>0
+    &&/^splrad\/[\w.-]+$/.test(policy.lifecycleSamples[0].repository)
+    &&!policy.administrators.some(item=>item.repositoryId===policy.lifecycleSamples[0].repositoryId),'LIFECYCLE_POLICY');
   return policy;
 }
 export function dependencyMode(event,policy,registration){
+  const sample=policy.lifecycleSamples?.find(x=>x.repositoryId===event.repository?.id);
+  if(sample){
+    assert(event.repository.full_name===sample.repository&&event.repository.private===true
+      &&event.repository.owner?.id===302208797&&registration===String(sample.repositoryId),'LIFECYCLE_IDENTITY');
+    return 'private-lifecycle';
+  }
   const item=policy.administrators.find(x=>x.repositoryId===event.repository?.id);
   if(!item){
     if(registration===undefined||registration==='')return 'native';
