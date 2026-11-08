@@ -1,0 +1,60 @@
+name: SPLRAD Steward / LayerScape Release Initialization
+on:
+  workflow_dispatch:
+    inputs:
+      approved_controller_sha:
+        description: Exact reviewed controller main SHA
+        required: true
+        type: string
+      expected_product_head:
+        description: Exact observed LayerScape main SHA
+        required: true
+        type: string
+      authorize:
+        description: Initialize after legacy writer handover is verified
+        required: true
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: steward-release-coordinator
+  cancel-in-progress: false
+jobs:
+  initialize:
+    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == 'refs/heads/main' && github.run_attempt == 1 && inputs.authorize && inputs.approved_controller_sha == github.sha && github.workflow_sha == github.sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: steward-release
+      deployment: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.10.18
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - name: Activate locked tool paths
+        env:
+          MISE_SAFE: '1'
+          MISE_LOCKED: '1'
+        run: mise bin-paths >> "$GITHUB_PATH"
+      - name: Install locked libraries without credentials
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Initialize the adopted LayerScape release state
+        env:
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          APPROVED_CONTROLLER_SHA: ${{ inputs.approved_controller_sha }}
+          EXPECTED_PRODUCT_HEAD: ${{ inputs.expected_product_head }}
+          AUTHORIZE_INITIALIZATION: ${{ inputs.authorize }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: node scripts/layerscape-release-initialize.mjs
