@@ -69,3 +69,83 @@ describe('actual maintenance deployment success path', () => {
       .toEqual({ status: 'barrier-installed-and-probed', version: input.version });
   });
 });
+
+
+const { readAdoptionRecord, verifyAdoptionSource, verifyNativeTarget } = await import(deployModulePath);
+const adoption = () => ({
+  schemaVersion: 1, repository: 'splrad/steward', pullNumber: 400,
+  reviewedHead: 'a'.repeat(40), deploymentHead: 'a'.repeat(40), reviewedTree: 'c'.repeat(40), deploymentTree: 'c'.repeat(40),
+  bundleSha256: 'd'.repeat(64), policySha: 'e'.repeat(40), evaluatorSha: 'f'.repeat(40),
+  accountId: '5efbba9a3813a37ac45e70cfa9f01cb5', workerName: 'splrad-steward-runtime',
+  runtimeOrigin: 'https://splrad-steward-runtime.synthetic.workers.dev', expectedCurrentVersion: input.version,
+  evidence: { validationRunId: 1, copilotRunId: 2, copilotReviewId: 3, codexCommentId: 4 },
+  window: { status: 'confirmed', reference: 'SYNTHETIC TEST ONLY', expiresAt: '2099-01-01T00:00:00Z' },
+});
+function adoptionFixture() {
+  const record = adoption();
+  const pull = { number: record.pullNumber, repository: { nameWithOwner: record.repository }, state: 'OPEN', isDraft: false, headRefOid: record.reviewedHead, mergeCommit: { oid: 'b'.repeat(40) } };
+  const api = vi.fn(async (path: string): Promise<any> => {
+    if (path.startsWith('commits/')) return { sha: path.slice(8), commit: { tree: { sha: record.reviewedTree }, verification: { verified: true, reason: 'valid' } } };
+    if (path.startsWith('actions/runs/')) return { repository: { full_name: record.repository }, head_sha: record.reviewedHead, status: 'completed', conclusion: 'success', path: '.github/workflows/pr-validation.yml', name: 'Running Copilot Code Review' };
+    if (path.startsWith('pulls/')) return { commit_id: record.reviewedHead, user: { login: 'copilot-pull-request-reviewer[bot]' }, submitted_at: '2026-01-01T00:00:00Z' };
+    return { user: { login: 'chatgpt-codex-connector[bot]' }, issue_url: `https://api.github.com/repos/${record.repository}/issues/${record.pullNumber}`,
+      body: `<!-- codex-review-state:v1 ${JSON.stringify(Object.fromEntries(['code_review', 'security_review'].map(key => [key, { commit_sha: record.reviewedHead, status: 'completed', has_any_findings: null }]))) } -->` };
+  });
+  return { record, pull, api };
+}
+
+describe('central adoption record and native deployment identity', () => {
+  it('accepts a future PR reviewed head and its native merged commit only when trees match', async () => {
+    const f = adoptionFixture();
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).resolves.toBeUndefined();
+    f.record.deploymentHead = f.pull.mergeCommit.oid; f.pull.state = 'MERGED';
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).resolves.toBeUndefined();
+  });
+  it.each(['head', 'merge', 'tree', 'signature', 'ci', 'copilot', 'codex'])('rejects altered adoption evidence: %s', async mode => {
+    const f = adoptionFixture(), original = f.api.getMockImplementation()!;
+    if (mode === 'head') f.pull.headRefOid = 'b'.repeat(40);
+    if (mode === 'merge') f.record.deploymentHead = 'b'.repeat(40);
+    f.api.mockImplementation(async path => {
+      const value = await original(path);
+      if (mode === 'tree' && path.startsWith('commits/')) value.commit.tree.sha = 'b'.repeat(40);
+      if (mode === 'signature' && path.startsWith('commits/')) value.commit.verification.verified = false;
+      if (mode === 'ci' && path === 'actions/runs/1') value.conclusion = 'failure';
+      if (mode === 'copilot' && path.startsWith('pulls/')) value.commit_id = 'b'.repeat(40);
+      if (mode === 'codex' && path.startsWith('issues/')) value.body = value.body.replaceAll('completed', 'running');
+      return value;
+    });
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow();
+  });
+  it('binds the native account origin, enabled script and sole 100% active version', () => {
+    const r = adoption(), metadata = { subdomain: { subdomain: 'synthetic' }, script: { enabled: true }, deployments: { deployments: [{ versions: [{ version_id: input.version, percentage: 100 }] }] } };
+    expect(() => verifyNativeTarget(r, metadata)).not.toThrow();
+    expect(() => verifyNativeTarget({ ...r, runtimeOrigin: 'https://splrad-steward-runtime.attacker.workers.dev' }, metadata)).toThrow();
+    expect(() => verifyNativeTarget(r, { ...metadata, script: { enabled: false } })).toThrow();
+    expect(() => verifyNativeTarget(r, metadata, '22222222-2222-4222-8222-222222222222')).toThrow();
+    metadata.deployments.deployments[0]!.versions[0]!.percentage = 50;
+    expect(() => verifyNativeTarget(r, metadata)).toThrow();
+  });
+  it('requires an external record and rejects pending/expired windows or incomplete evidence', async () => {
+    const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const directory = await mkdtemp(join(tmpdir(), 'steward-adoption-test-'));
+    const checkout = join(directory, 'candidate'), file = join(directory, 'record.json');
+    await mkdir(checkout);
+    try {
+      const record = adoption(); await writeFile(file, JSON.stringify(record));
+      await expect(readAdoptionRecord(file, checkout)).resolves.toMatchObject({ pullNumber: 400 });
+      const internal = join(checkout, 'record.json'); await writeFile(internal, JSON.stringify(record));
+      await expect(readAdoptionRecord(internal, checkout)).rejects.toThrow('outside');
+      for (const invalid of [
+        { ...record, window: { ...record.window, status: 'pending' } },
+        { ...record, window: { ...record.window, expiresAt: '2020-01-01T00:00:00Z' } },
+        { ...record, deploymentTree: 'b'.repeat(40) },
+        { ...record, evidence: { ...record.evidence, validationRunId: 0 } },
+      ]) {
+        await writeFile(file, JSON.stringify(invalid));
+        await expect(readAdoptionRecord(file, checkout)).rejects.toThrow();
+      }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+});
