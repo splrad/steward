@@ -45,7 +45,8 @@ export async function executePlan(p,{root,controllerDirectory,app,modelToken,fet
   };
   if(p.kind==='release-initialize'){
     const {initializePrivateRelease}=await import('./release-state-initialize.mjs');
-    return app.forRepository(p.repository.id,token=>initializePrivateRelease(p,{root,token,appBotId:app.appBotId,fetcher}));
+    return app.forRepository(p.repository.id,token=>app.forCandidateReadRepository(p.repository.id,readToken=>
+      initializePrivateRelease(p,{root,token,readToken,appBotId:app.appBotId,fetcher})));
   }
   if(p.kind==='quality-initialize'){
     const {initializeQualityState}=await import('./quality-state-initialize.mjs');
@@ -56,7 +57,7 @@ export async function executePlan(p,{root,controllerDirectory,app,modelToken,fet
     const ref=(await io.get('/repos/'+p.repository.full_name+'/git/ref/heads/steward/governance-state')).value;
     requireFact(ref.object?.sha===p.stateSha,'STATE_CHANGED');
     const approvedPr=(await io.get('/repos/'+p.repository.full_name+'/pulls/'+p.pr)).value;
-    requireFact(approvedPr.number===p.pr&&approvedPr.head?.sha===p.head&&approvedPr.state==='open'&&approvedPr.base?.repo?.id===p.repository.id,'HEAD_CHANGED');
+    requireFact(approvedPr.number===p.pr&&approvedPr.head?.sha===p.head&&approvedPr.state==='open'&&approvedPr.base?.repo?.id===p.repository.id&&approvedPr.base?.ref==='main'&&approvedPr.base?.sha===p.baseSha,'HEAD_CHANGED');
     const state=await q.openQualityStore(root,p.repository,token,io,p.governanceAppId);
     requireFact(state.snapshot.head===p.stateSha,'STATE_CHANGED');
     const context={repository:p.repository.full_name,repositoryId:p.repository.id,pullRequestNumber:p.pr,
@@ -70,7 +71,7 @@ export async function executePlan(p,{root,controllerDirectory,app,modelToken,fet
     await store.save(cache);
     await lib.translateQualitySources(cache,client,store,{remaining:p.maxRequests,deadline:Date.now()+180000});
     const pr=(await io.get('/repos/'+p.repository.full_name+'/pulls/'+p.pr)).value;
-    requireFact(pr.head?.sha===p.head&&pr.state==='open'&&pr.base?.repo?.id===p.repository.id,'HEAD_CHANGED');
+    requireFact(pr.head?.sha===p.head&&pr.state==='open'&&pr.base?.repo?.id===p.repository.id&&pr.base?.ref==='main'&&pr.base?.sha===p.baseSha,'HEAD_CHANGED');
     await verifyRepository(token);
     requireFact(digest(JSON.stringify(await lib.collectQualitySources(context,p.sources,io)))===p.sourceSetDigest,'SOURCE_CHANGED');
     const result=await lib.publishQualityCheck(context,cache,io,store);

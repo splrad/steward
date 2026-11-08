@@ -23,22 +23,12 @@ export async function fetchAdoptionSource({root,remote,token,baseSha,governanceS
   return directory;
 }
 
-export async function initializePrivateRelease(p,{root,token,appBotId,fetcher=fetch,execute=promisify(execFile)}) {
+export async function initializePrivateRelease(p,{root,token,readToken,appBotId,fetcher=fetch,execute=promisify(execFile)}) {
   requireFact(p.kind==='release-initialize'&&p.maxRequests===0&&p.stateSha===null&&p.repository?.id===1448797077
     &&p.repository.full_name==='splrad/steward-e10-lifecycle-20261107'&&p.repository.private===true&&p.repository.default_branch==='main'
     &&/^[a-f0-9]{40}$/.test(p.baseSha)&&p.releaseAdoption?.sourceSha===p.baseSha
     &&Number.isSafeInteger(p.releaseAdoption.prNumber)&&p.releaseAdoption.prNumber>0&&appBotId===301115370,'RELEASE_INITIALIZE_PLAN');
-  const transport=nativeEvidenceTransport(token,fetcher),prefix='/repos/'+p.repository.full_name;
-  // Pin every adoption-reader observation, including its immediate pre-write check.
-  const io={...transport,request:async(method,path,...args)=>{
-    const response=await transport.request(method,path,...args);
-    if(method==='GET'&&[prefix+'/commits/main',prefix+'/git/ref/heads/main'].includes(path)) {
-      requireFact(response.status===200,'INITIALIZE_BASE_UNKNOWN');
-      const value=JSON.parse(Buffer.from(response.bytes).toString('utf8'));
-      requireFact((value.sha??value.object?.sha)===p.baseSha,'INITIALIZE_BASE_CHANGED');
-    }
-    return response;
-  }};
+  const prefix='/repos/'+p.repository.full_name,io=adoptionTransport(p,{token,readToken,fetcher});
   const read=async path=>{const r=await io.request('GET',prefix+path);requireFact(r.status===200,'INITIALIZE_READ');return JSON.parse(Buffer.from(r.bytes).toString('utf8'));};
   const repo=await read('');
   requireFact(repo.id===p.repository.id&&repo.full_name===p.repository.full_name&&repo.private===true&&repo.default_branch==='main'
@@ -59,4 +49,23 @@ export async function initializePrivateRelease(p,{root,token,appBotId,fetcher=fe
   requireFact(['APPLIED','UNCHANGED'].includes(result.status),'INITIALIZE_NOT_APPLIED');
   // Private commit/PR identifiers stay in the private repository, never public job output.
   return {kind:p.kind,status:'INITIALIZED',calls:0};
+}
+
+/** Route only target PR reads through the existing single-repository read credential. */
+export function adoptionTransport(p,{token,readToken,fetcher=fetch}) {
+  requireFact(typeof readToken==='string'&&readToken.length>0&&readToken!==token,'INITIALIZE_READ_CREDENTIAL');
+  const readerTransport=nativeEvidenceTransport(readToken,fetcher);
+  const transport=nativeEvidenceTransport(token,fetcher),prefix='/repos/'+p.repository.full_name;
+  // Pin every adoption-reader observation, including its immediate pre-write check.
+  return {...transport,request:async(method,path,...args)=>{
+    const relative=path.startsWith(prefix+'/')?path.slice(prefix.length+1):'';
+    const pullRead=method==='GET'&&(/^pulls(?:[/?]|$)/.test(relative)||/^commits\/[^/]+\/pulls(?:\?|$)/.test(relative));
+    const response=await (pullRead?readerTransport:transport).request(method,path,...args);
+    if(method==='GET'&&[prefix+'/commits/main',prefix+'/git/ref/heads/main'].includes(path)) {
+      requireFact(response.status===200,'INITIALIZE_BASE_UNKNOWN');
+      const value=JSON.parse(Buffer.from(response.bytes).toString('utf8'));
+      requireFact((value.sha??value.object?.sha)===p.baseSha,'INITIALIZE_BASE_CHANGED');
+    }
+    return response;
+  }};
 }

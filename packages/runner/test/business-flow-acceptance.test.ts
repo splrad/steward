@@ -33,7 +33,7 @@ test('changed PR or store snapshot stops the actual acceptance entry before cach
   let movedPr=false,movedState=false,saves=0,opened=0;
   const repository={id:1,full_name:'test/product',default_branch:'main',private:true};
   vi.doMock('../../../scripts/quality-language-summary.mjs',()=>({
-    qualityNativeIO:()=>({get:async(path)=>({value:path.endsWith('/pulls/1')?{number:1,state:'open',head:{sha:movedPr?'b'.repeat(40):sha},base:{repo:{id:1}}}:path.includes('/git/ref/')?{object:{sha}}:{...repository,archived:false,disabled:false}})}),
+    qualityNativeIO:()=>({get:async(path)=>({value:path.endsWith('/pulls/1')?{number:1,state:'open',head:{sha:movedPr?'b'.repeat(40):sha},base:{repo:{id:1},ref:"main",sha}}:path.includes('/git/ref/')?{object:{sha}}:{...repository,archived:false,disabled:false}})}),
     openQualityStore:async()=>{opened++;return {snapshot:{head:movedState?'b'.repeat(40):sha},cache:()=>null,forPull:()=>({save:async()=>{saves++;}})};},
   }));
   const p={...plan,kind:'quality',repository,pr:1,head:sha,sources:[],governanceAppId:2,configVersion:'v1',sourceSetDigest:'a'.repeat(64)};
@@ -64,12 +64,12 @@ test('native candidate rejects a changed actual initial Git snapshot before busi
 },120000);
 
 test('rechecks approved base and full sources after generation before publishing a Check',async()=>{
-  for(const changed of ['base','source','empty','empty-zero']){
+  for(const changed of ['base','source','empty','empty-zero','pr-base-before','pr-base-after','pr-base-sha']){
     let calls=0,published=0,reads=0;
     const repository={id:1,full_name:'test/product',default_branch:'main',private:true};
     const source={sourceCommentId:'review:1',sourceCommit:sha,sourceUrl:'https://github.com/test/product/pull/1',severity:'P1',bodyMarkdown:'Check input.',updatedAt:'2026-11-07T00:00:00Z'};
     vi.doMock('../../../scripts/quality-language-summary.mjs',()=>({
-      qualityNativeIO:()=>({get:async(path)=>({value:path.endsWith('/pulls/1')?{number:1,state:'open',head:{sha},base:{repo:{id:1}}}:path.includes('/git/ref/')?{object:{sha:changed==='base'&&calls>0&&path.endsWith('/main')?'b'.repeat(40):sha}}:{...repository,archived:false,disabled:false}})}),
+      qualityNativeIO:()=>({get:async(path)=>({value:path.endsWith('/pulls/1')?{number:1,state:'open',head:{sha},base:{repo:{id:1},ref:changed==='pr-base-before'||changed==='pr-base-after'&&calls>0?'other':'main',sha:changed==='pr-base-sha'? 'b'.repeat(40):sha}}:path.includes('/git/ref/')?{object:{sha:changed==='base'&&calls>0&&path.endsWith('/main')?'b'.repeat(40):sha}}:{...repository,archived:false,disabled:false}})}),
       openQualityStore:async()=>({snapshot:{head:sha},cache:()=>null,forPull:()=>({save:async()=>({commit:sha})})}),
     }));
     vi.doMock('../dist/index.js',async()=>{
@@ -80,8 +80,8 @@ test('rechecks approved base and full sources after generation before publishing
     });
     const p={...plan,kind:'quality',maxRequests:changed==='empty-zero'?0:1,repository,pr:1,head:sha,sources:[{kind:'review',id:2,login:'quality'}],governanceAppId:2,configVersion:'v1',sourceSetDigest:digest(JSON.stringify([source]))};
     const app={forQualityRepository:async(_id,callback)=>callback('fake-token')};
-    await assert.rejects(executePlan(p,{root:'.',controllerDirectory:process.cwd(),app,modelToken:''}),changed.startsWith('empty')?/SOURCE_EMPTY/:changed==='base'?/BASE_CHANGED/:/SOURCE_CHANGED/);
-    assert.equal(calls,changed.startsWith('empty')?0:1);assert.equal(published,0);if(changed==='source')assert.equal(reads,2);
+    await assert.rejects(executePlan(p,{root:'.',controllerDirectory:process.cwd(),app,modelToken:''}),changed.startsWith('pr-base')?/HEAD_CHANGED/:changed.startsWith('empty')?/SOURCE_EMPTY/:changed==='base'?/BASE_CHANGED/:/SOURCE_CHANGED/);
+    assert.equal(calls,changed.startsWith('empty')||changed==='pr-base-before'||changed==='pr-base-sha'?0:1);assert.equal(published,0);if(changed==='source')assert.equal(reads,2);
     vi.doUnmock('../../../scripts/quality-language-summary.mjs');vi.doUnmock('../dist/index.js');
   }
 });
@@ -91,7 +91,7 @@ test('controlled zero-call stop persists pending input and resumes once without 
   const repository={id:1,full_name:'test/product',default_branch:'main',private:true};
   const source={sourceCommentId:'review:1',sourceCommit:sha,sourceUrl:'https://github.com/test/product/pull/1',severity:'P1',bodyMarkdown:'Check input.',updatedAt:'2026-11-07T00:00:00Z'};
   vi.doMock('../../../scripts/quality-language-summary.mjs',()=>({
-    qualityNativeIO:()=>({get:async(path)=>({value:path.endsWith('/pulls/1')?{number:1,state:'open',head:{sha},base:{repo:{id:1}}}:path.includes('/git/ref/')?{object:{sha}}:{...repository,archived:false,disabled:false}})}),
+    qualityNativeIO:()=>({get:async(path)=>({value:path.endsWith('/pulls/1')?{number:1,state:'open',head:{sha},base:{repo:{id:1},ref:'main',sha}}:path.includes('/git/ref/')?{object:{sha}}:{...repository,archived:false,disabled:false}})}),
     openQualityStore:async()=>({snapshot:{head:sha},cache:()=>cache,forPull:()=>({save:async(value)=>{cache=JSON.parse(JSON.stringify(value));return {commit:sha};}})}),
   }));
   vi.doMock('../dist/index.js',async()=>{
