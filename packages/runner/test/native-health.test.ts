@@ -17,7 +17,8 @@ const now=state.observedAt, self=file==='release.yml'?311600220:311600221, other
 const names={311600220:'release.yml',311600221:'sync-managed.yml'};
 const path=args.find(x=>x.startsWith('repos/')||x.startsWith('users/'));
 const method=args.includes('--method')?args[args.indexOf('--method')+1]:args[0]==='run'?'LIST':'DISPATCH';
-if(args[0]==='api'&&!args.includes('X-GitHub-Api-Version: 2026-03-10'))throw Error('Missing reviewed API version');
+const apiVersion=JSON.parse(fs.readFileSync('api-version.json','utf8')).version;
+if(args[0]==='api'&&!args.includes('X-GitHub-Api-Version: '+apiVersion))throw Error('Missing reviewed API version');
 const input=args.includes('--input')?fs.readFileSync(0,'utf8'):'';
 fs.appendFileSync('requests.jsonl',JSON.stringify({method,path,args,input})+'\n');
 const save=()=>fs.writeFileSync('state.json',JSON.stringify(state));
