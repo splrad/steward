@@ -15,7 +15,7 @@ const adoption={prNumber:176,sourceSha:'de10de20b5405d764bfda731ed91d11ac56b5b2c
 
 export function validateInitialization(env) {
   if(env.GITHUB_REPOSITORY!=='splrad/steward'||env.GITHUB_REPOSITORY_ID!=='1296724484'
-    ||env.GITHUB_REF!=='refs/heads/main'||env.GITHUB_EVENT_NAME!=='workflow_dispatch'
+    ||env.GITHUB_REF!=='refs/heads/main'||env.GITHUB_EVENT_NAME!=='workflow_dispatch'||env.GITHUB_RUN_ATTEMPT!=='1'
     ||env.GITHUB_WORKFLOW_REF!=='splrad/steward/.github/workflows/layerscape-release-initialize.yml@refs/heads/main'
     ||!sha(env.GITHUB_SHA)||env.WORKFLOW_SHA!==env.GITHUB_SHA||env.APPROVED_CONTROLLER_SHA!==env.GITHUB_SHA
     ||env.AUTHORIZE_INITIALIZATION!=='true'||!sha(env.EXPECTED_PRODUCT_HEAD))fail('SOURCE');
@@ -39,6 +39,10 @@ export async function initializeProduct(plan,{root,app,execute=promisify(execFil
     await read('/git/ref/heads/main');
     const state=await io.request('GET','/repos/'+repository.full_name+'/git/ref/heads/steward/release-state');
     if(![200,404].includes(state.status))fail('STATE_UNKNOWN');
+    if(state.status===404) {
+      const matches=await read('/git/matching-refs/heads/steward/release-state');
+      if(!Array.isArray(matches)||matches.length!==0)fail('STATE_UNKNOWN');
+    }
     const directory=await mkdtemp(join(root,'source-')),profile=await mkdtemp(join(root,'profile-'));
     const env=isolatedBuildEnvironment(process.env,profile);
     const git=async(...args)=>(await execute('git',['--no-replace-objects','-c','core.hooksPath=','-c','core.fsmonitor=false','-c','credential.helper=',...args],

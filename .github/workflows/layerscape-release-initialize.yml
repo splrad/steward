@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   initialize:
-    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == 'refs/heads/main' && inputs.authorize && inputs.approved_controller_sha == github.sha && github.workflow_sha == github.sha
+    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == 'refs/heads/main' && github.run_attempt == 1 && inputs.authorize && inputs.approved_controller_sha == github.sha && github.workflow_sha == github.sha
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
