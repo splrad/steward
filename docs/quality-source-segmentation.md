@@ -2,7 +2,7 @@
 
 质量输入保留完整原始评论、原生 ID、提交、链接和严重级别。Markdown 与 HTML 混合评论中的普通 HTML 正文也需要转述，不能把所有 HTML 节点当作代码块跳过。
 
-`prepareQualitySource` 先识别 Markdown 代码、链接及实际 HTML 节点；仅将 Markdown AST 确认的 HTML 范围交给 parse5，其余位置等长遮蔽，防止转义标签和链接目标被误认成 HTML。Markdown 代码块、HTML `pre`、`script`、`style` 及注释按原始字节保留；普通 HTML 标记及其中的正文继续留在输入中，不重新序列化 DOM，也不按浏览器纠错后的节点顺序重排原文。行内代码与链接作为不可拆分片段处理，原始 HTML/Markdown 链接字面值加入 `originalIdentifiers`，输出必须逐字返回。未闭合或孤立的普通 HTML 标记仍保留在原文输入中。
+`prepareQualitySource` 先识别 Markdown 代码、链接及实际 HTML 节点；仅将 Markdown AST 确认的 HTML 范围交给 parse5，其余位置等长遮蔽，防止转义标签和链接目标被误认成 HTML。parse5 SAX 的词法位置覆盖 fragment DOM 会忽略的 body/html/head 和孤立表格标签，供标签原子性与语言边界使用；DOM 位置仍用于代码范围。Markdown 代码块、HTML `pre`、`script`、`style` 及注释按原始字节保留；普通 HTML 标记及其中的正文继续留在输入中，不重新序列化 DOM，也不按浏览器纠错后的节点顺序重排原文。行内代码与链接作为不可拆分片段处理，原始 HTML/Markdown 链接字面值加入 `originalIdentifiers`，输出必须逐字返回。未闭合或孤立的普通 HTML 标记仍保留在原文输入中。
 
 语言判断忽略代码、标记及链接目标，但保留链接标签及 HTML 正文，并以 micromark 同源 HTML 块级/原始文本标签清单识别段落边界，区分中文与独立英文段落（包含 form、fieldset、textarea 等容器）。短段落在一个不超过 6 KiB 的片段内组合，保留段落分隔。长正文按语句、必要时按 Unicode 码点切分；普通 HTML 标签本身也不可拆分，属性内标点不作为分句位置（外层元素可跨片段，不伪造包装标签）；超过单片段容量的不可分代码/链接不截断，停止并返回输入限制错误。纯代码或已可读的中文来源不调用模型，仍呈现完整原文。
 

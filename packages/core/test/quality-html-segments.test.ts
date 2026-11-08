@@ -83,7 +83,7 @@ it('does not mistake code-only or Chinese HTML with code for untranslated Englis
 
 it.each(['address','article','aside','blockquote','center','dd','details','dialog','dir','div','dl','dt',
   'fieldset','figcaption','figure','footer','form','h1','h2','h3','h4','h5','h6','header','hgroup',
-  'iframe','legend','li','main','menu','nav','ol','p','search','section','summary','textarea','ul'])
+  'iframe','legend','li','main','menu','nav','ol','p','search','section','summary','textarea','ul','body','html','head','tr','td','th','tbody','thead','tfoot'])
   ('keeps independent English prose visible in adjacent %s containers',tag=>{
     const body=`<${tag}>请检查。</${tag}><${tag}>This loses data.</${tag}>`;
     const p=prepareQualitySource(source(body));
@@ -118,7 +118,9 @@ it('packs complete short paragraphs and protects inline code/link atoms at long 
   expect(()=>qualityBatchInput([{...item,bodyMarkdown:'x'.repeat(24*1024)}])).toThrow('QUALITY_INPUT_LIMIT');
 });
 
-it.each(['<span data-version="1.2?x!">','<div title="🧪.v1?">','<custom-element data-url="a.b/c?x=1">'])
+it.each(['<span data-version="1.2?x!">','<div title="🧪.v1?">','<custom-element data-url="a.b/c?x=1">',
+    '<body data-version="1.2?x!">','<html title="🧪.v1?">','<head title="ignored!">',
+    '<td title="ignored.cell?">'])
   ('does not split ordinary HTML tag syntax at a UTF-8 boundary: %s',tag=>{
     const close=`</${tag.match(/^<([^ >]+)/)![1]}>`;
     const body='x'.repeat(6138)+tag+'The following explanation is complete. '.repeat(200)+close;

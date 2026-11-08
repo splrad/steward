@@ -3,6 +3,7 @@ import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import { htmlBlockNames, htmlRawNames } from 'micromark-util-html-tag-name';
 import { parseFragment, type DefaultTreeAdapterTypes } from 'parse5';
+import { SAXParser, type StartTag, type EndTag } from 'parse5-sax-parser';
 import schema from '../../../schema/quality-language-output.schema.json' with { type: 'json' };
 import { sha256Hex } from './fingerprint.js';
 
@@ -95,6 +96,20 @@ export function prepareQualitySource(source: QualitySource): QualityPrepared {
   // Markdown link targets are not HTML. Masking retains UTF-16/CRLF source offsets.
   let htmlInput=body.replace(/[^\r\n]/g,' ');
   for(const range of htmlRanges)htmlInput=htmlInput.slice(0,range.start)+rawRange(body,range)+htmlInput.slice(range.end);
+  // Lexical positions also cover tags discarded by fragment DOM construction
+  // (body/html/head and out-of-context table tags). Never split their syntax.
+  const sax=new SAXParser({sourceCodeLocationInfo:true});
+  const tag=(token:StartTag|EndTag)=>{
+    const location=token.sourceCodeLocation;
+    if(!location)return;
+    const range={start:location.startOffset,end:location.endOffset};
+    markup.push(range);htmlTags.push(range);
+    if(blockTags.has(token.tagName))boundaries.push(range);
+  };
+  sax.on('startTag',tag);sax.on('endTag',tag);
+  // The in-memory transform tokenizes complete tags synchronously. Drain its
+  // passthrough side so input length cannot defer parsing through backpressure.
+  sax.resume();sax.end(htmlInput);
   const html=parseFragment(htmlInput,{sourceCodeLocationInfo:true});
   const visit=(node:DefaultTreeAdapterTypes.Node)=>{
     const location=node.sourceCodeLocation;
@@ -108,10 +123,6 @@ export function prepareQualitySource(source: QualitySource): QualityPrepared {
         if(node.tagName==='code'||node.tagName==='a') {
           const range={start:location.startOffset,end:location.endOffset};inline.push(range);
           if(node.tagName==='a')links.push(range);
-        }
-        for(const tag of [location.startTag,location.endTag])if(tag){
-          const range={start:tag.startOffset,end:tag.endOffset};markup.push(range);htmlTags.push(range);
-          if(blockTags.has(node.tagName))boundaries.push(range);
         }
       }
       if('content' in node)visit(node.content as DefaultTreeAdapterTypes.DocumentFragment);
