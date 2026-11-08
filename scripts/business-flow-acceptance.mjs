@@ -13,15 +13,16 @@ export function validatePlan(raw, expectedHash, env) {
     &&env.GITHUB_REF==='refs/heads/main'&&env.GITHUB_EVENT_NAME==='workflow_dispatch'
     &&env.GITHUB_RUN_ATTEMPT==='1'&&env.GITHUB_WORKFLOW_REF==='splrad/steward/.github/workflows/business-flow-acceptance.yml@refs/heads/main'
     &&sha(p.controllerSha)&&p.controllerSha===env.GITHUB_SHA&&p.controllerSha===env.WORKFLOW_SHA,'CONTROLLER');
-  requireFact(p.schemaVersion===1&&['quality','release'].includes(p.kind)&&[0,1].includes(p.maxRequests),'MODE');
+  requireFact(p.schemaVersion===1&&['quality','release','quality-initialize'].includes(p.kind)&&[0,1].includes(p.maxRequests),'MODE');
   requireFact(p.expectControlledStop===undefined||p.expectControlledStop===false||p.expectControlledStop===true&&p.kind==='quality'&&p.maxRequests===0,'CONTROLLED_STOP_PLAN');
   requireFact(p.repository&&/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(p.repository.full_name)
     &&Number.isSafeInteger(p.repository.id)&&p.repository.id>0&&p.repository.default_branch==='main'
-    &&typeof p.repository.private==='boolean'&&sha(p.baseSha)&&sha(p.stateSha),'TARGET');
+    &&typeof p.repository.private==='boolean'&&sha(p.baseSha)&&(sha(p.stateSha)||p.kind==='quality-initialize'&&p.stateSha===null),'TARGET');
   requireFact(!['steward-e08-controller','steward-e08-product','steward-e08-bootstrap','steward-e08-settings'].includes(p.repository.full_name.split('/')[1]),'EXCLUDED');
   if(p.kind==='quality')requireFact(Number.isSafeInteger(p.pr)&&p.pr>0&&sha(p.head)&&Array.isArray(p.sources)&&p.sources.length>0
     &&/^[a-f0-9]{64}$/.test(p.sourceSetDigest)&&Number.isSafeInteger(p.governanceAppId)&&p.governanceAppId>0
     &&typeof p.configVersion==='string'&&p.configVersion.length>0,'QUALITY');
+  if(p.kind==='quality-initialize')requireFact(p.maxRequests===0&&p.stateSha===null&&p.repository.id===1296724484&&p.repository.full_name==='splrad/steward'&&!p.repository.private&&p.governanceAppId===5639432&&p.baseSha===p.controllerSha,'INITIALIZE_PLAN');
   return p;
 }
 export function boundedClient(client, maximum) {
@@ -41,6 +42,10 @@ export async function executePlan(p,{root,controllerDirectory,app,modelToken,fet
     const ref=(await io.get('/repos/'+p.repository.full_name+'/git/ref/heads/main')).value;
     requireFact(ref.object?.sha===p.baseSha,'BASE_CHANGED');return io;
   };
+  if(p.kind==='quality-initialize'){
+    const {initializeQualityState}=await import('./quality-state-initialize.mjs');
+    return app.forQualityRepository(p.repository.id,token=>initializeQualityState(p,{root,token,fetcher}));
+  }
   if(p.kind==='quality')return app.forQualityRepository(p.repository.id,async token=>{
     const io=await verifyRepository(token);
     const ref=(await io.get('/repos/'+p.repository.full_name+'/git/ref/heads/steward/governance-state')).value;
@@ -52,7 +57,7 @@ export async function executePlan(p,{root,controllerDirectory,app,modelToken,fet
     const context={repository:p.repository.full_name,repositoryId:p.repository.id,pullRequestNumber:p.pr,
       head:p.head,appId:4243096,configVersion:p.configVersion};
     const sources=await lib.collectQualitySources(context,p.sources,io);
-    requireFact(p.maxRequests===0||sources.length>0,'SOURCE_EMPTY');
+    requireFact(sources.length>0,'SOURCE_EMPTY');
     // Digest binds the complete read set including native IDs, commits, times and original bodies.
     requireFact(digest(JSON.stringify(sources))===p.sourceSetDigest,'SOURCE_CHANGED');
     const cache=await lib.reconcileQualitySources(state.cache(p.pr),{...context,observedAt:new Date().toISOString()},sources);

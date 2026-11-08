@@ -64,7 +64,7 @@ test('native candidate rejects a changed actual initial Git snapshot before busi
 },120000);
 
 test('rechecks approved base and full sources after generation before publishing a Check',async()=>{
-  for(const changed of ['base','source','empty']){
+  for(const changed of ['base','source','empty','empty-zero']){
     let calls=0,published=0,reads=0;
     const repository={id:1,full_name:'test/product',default_branch:'main',private:true};
     const source={sourceCommentId:'review:1',sourceCommit:sha,sourceUrl:'https://github.com/test/product/pull/1',severity:'P1',bodyMarkdown:'Check input.',updatedAt:'2026-11-07T00:00:00Z'};
@@ -74,14 +74,14 @@ test('rechecks approved base and full sources after generation before publishing
     }));
     vi.doMock('../dist/index.js',async()=>{
       const real=await vi.importActual('../dist/index.js');
-      return {...real,collectQualitySources:async()=>{reads++;if(changed==='empty')return [];return [changed==='source'&&calls>0?{...source,bodyMarkdown:'Changed input.'}:source];},
+      return {...real,collectQualitySources:async()=>{reads++;if(changed.startsWith('empty'))return [];return [changed==='source'&&calls>0?{...source,bodyMarkdown:'Changed input.'}:source];},
         copilotQualityClient:()=>({preflight:async()=>({status:'READY'}),call:async segments=>{calls++;return {model:'fake',usage:null,items:segments.map(({bodyMarkdown,...item})=>({...item,problemZh:'检查输入。',impactZh:'原文未说明',suggestionZh:'原文未说明'}))};}}),
         publishQualityCheck:async()=>{published++;return {pending:0,complete:1};}};
     });
-    const p={...plan,kind:'quality',repository,pr:1,head:sha,sources:[{kind:'review',id:2,login:'quality'}],governanceAppId:2,configVersion:'v1',sourceSetDigest:digest(JSON.stringify([source]))};
+    const p={...plan,kind:'quality',maxRequests:changed==='empty-zero'?0:1,repository,pr:1,head:sha,sources:[{kind:'review',id:2,login:'quality'}],governanceAppId:2,configVersion:'v1',sourceSetDigest:digest(JSON.stringify([source]))};
     const app={forQualityRepository:async(_id,callback)=>callback('fake-token')};
-    await assert.rejects(executePlan(p,{root:'.',controllerDirectory:process.cwd(),app,modelToken:''}),changed==='empty'?/SOURCE_EMPTY/:changed==='base'?/BASE_CHANGED/:/SOURCE_CHANGED/);
-    assert.equal(calls,changed==='empty'?0:1);assert.equal(published,0);if(changed==='source')assert.equal(reads,2);
+    await assert.rejects(executePlan(p,{root:'.',controllerDirectory:process.cwd(),app,modelToken:''}),changed.startsWith('empty')?/SOURCE_EMPTY/:changed==='base'?/BASE_CHANGED/:/SOURCE_CHANGED/);
+    assert.equal(calls,changed.startsWith('empty')?0:1);assert.equal(published,0);if(changed==='source')assert.equal(reads,2);
     vi.doUnmock('../../../scripts/quality-language-summary.mjs');vi.doUnmock('../dist/index.js');
   }
 });
