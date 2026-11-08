@@ -11,10 +11,11 @@ export function assertLifecycleScope(paths){
   for(const path of paths)if(!extra.has(path))assertGovernanceOnlyScope([path]);
 }
 // This deliberately admits only the dependency-free sample, not general private Node products.
-export async function assertLifecycleSnapshot(files,{controllerSha,verifyController,requireApplication=false}={}){
+export async function assertLifecycleSnapshot(files,{controllerSha,verifyController,side}={}){
+  assert(side==='base'||side==='head','LIFECYCLE_SIDE');
   assertLifecycleScope([...files.keys()]);
-  const hasApplication=[...files.keys()].some(path=>extra.has(path));
-  if(!hasApplication){assert(!requireApplication,'LIFECYCLE_HEAD_INCOMPLETE');return {application:false,npmPackages:0};}
+  const hasApplication=required.some(path=>files.has(path));
+  if(!hasApplication){assert(side==='base','LIFECYCLE_HEAD_INCOMPLETE');return {application:false,npmPackages:0};}
   assert(required.every(path=>files.has(path)),'LIFECYCLE_APPLICATION_INCOMPLETE');
   for(const path of lifecycleSupport){
     const expected=await readFile(new URL('../templates/lifecycle-sample/'+path,import.meta.url));
@@ -49,7 +50,8 @@ export async function assertLifecycleSnapshot(files,{controllerSha,verifyControl
 export function lifecycleMiseVersions(documents){
   const versions=new Set();
   for(const doc of documents.values())for(const job of Object.values(doc.jobs??{}))for(const step of job.steps??[]){
-    if(/^jdx\/mise-action@[a-f0-9]{40}$/.test(step.uses??'')){
+    if(/^jdx\/mise-action(?:@|\/|$)/.test(step.uses??'')){
+      assert(/^jdx\/mise-action@[a-f0-9]{40}$/.test(step.uses),'LIFECYCLE_MISE_REFERENCE');
       assert(typeof step.with?.version==='string'&&/^\d+\.\d+\.\d+$/.test(step.with.version),'LIFECYCLE_MISE_VERSION');versions.add(step.with.version);
     }
   }

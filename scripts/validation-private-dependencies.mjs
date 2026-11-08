@@ -150,7 +150,7 @@ export async function main(env=process.env){
       },managedPaths);
       const control=blob(workspace,entries,'acceptance/bootstrap-target.json',true);
       if(control){assert(control.length<=1024,'CONTROL_SIZE');parseAcceptanceTarget(control.toString('utf8'));}
-      if(lifecycle)snapshot.application=await assertLifecycleSnapshot(new Map(entries.map(e=>[e.path,blob(workspace,entries,e.path)])),{controllerSha:env.WORKFLOW_SHA,verifyController:sha=>{
+      if(lifecycle)snapshot.application=await assertLifecycleSnapshot(new Map(entries.map(e=>[e.path,blob(workspace,entries,e.path)])),{side,controllerSha:env.WORKFLOW_SHA,verifyController:sha=>{
         const controller=fileURLToPath(new URL('..',import.meta.url));
         git(controller,['merge-base','--is-ancestor',sha,env.WORKFLOW_SHA]);return true;
       }});

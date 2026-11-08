@@ -36,26 +36,26 @@ test('lifecycle mode requires exact registered private identity without changing
  for(const path of ['src/other.js','package-lock.yaml','mise.toml','.npmrc','.github/workflows/other.yml','dist/acceptance-app.js'])assert.throws(()=>assertLifecycleScope([path]),/GOVERNANCE_INPUT_UNCOVERED/);
 });
 test('empty governance base and complete dependency-free application are distinguished',async()=>{
- assert.equal((await assertLifecycleSnapshot(new Map([['README.md',Buffer.from('seed')]]))).application,false);
- await assert.rejects(assertLifecycleSnapshot(new Map(),{requireApplication:true}),/HEAD_INCOMPLETE/);
+ assert.equal((await assertLifecycleSnapshot(new Map([['README.md',Buffer.from('seed')]]),{side:'base'})).application,false);
+ await assert.rejects(assertLifecycleSnapshot(new Map(),{side:'head'}),/HEAD_INCOMPLETE/);
  const files=await sample();assert.equal(buildMode([...files.keys()]),'node');
- assert.equal((await assertLifecycleSnapshot(files,{controllerSha:SHA})).npmPackages,0);
- files.delete('acceptance-app.test.js');await assert.rejects(assertLifecycleSnapshot(files,{controllerSha:SHA}),/APPLICATION_INCOMPLETE/);
+ assert.equal((await assertLifecycleSnapshot(files,{side:'head',controllerSha:SHA})).npmPackages,0);
+ files.delete('acceptance-app.test.js');await assert.rejects(assertLifecycleSnapshot(files,{side:'head',controllerSha:SHA}),/APPLICATION_INCOMPLETE/);
 });
 test('dependency additions, lock divergence, lifecycle script changes and missing tests fail closed',async()=>{
  for(const path of lifecycleSupport){
   const files=await sample();files.set(path,Buffer.concat([files.get(path),Buffer.from(' ')]));
-  await assert.rejects(assertLifecycleSnapshot(files,{controllerSha:SHA}),/SUPPORT_BYTES/);
+  await assert.rejects(assertLifecycleSnapshot(files,{side:'head',controllerSha:SHA}),/SUPPORT_BYTES/);
  }
  const files=await sample();const pkg=JSON.parse(files.get('package.json'));pkg.dependencies={demo:'1.0.0'};files.set('package.json',Buffer.from(JSON.stringify(pkg)));
- await assert.rejects(assertLifecycleSnapshot(files,{controllerSha:SHA}),/SUPPORT_BYTES/);
+ await assert.rejects(assertLifecycleSnapshot(files,{side:'head',controllerSha:SHA}),/SUPPORT_BYTES/);
 });
 test('release workflows must match trusted templates and controller ancestry',async()=>{
  const files=await sample();
- await assert.rejects(assertLifecycleSnapshot(files,{controllerSha:OLD}),/CONTROLLER_UNTRUSTED/);
- const seen=[];await assertLifecycleSnapshot(files,{controllerSha:OLD,verifyController:ref=>{seen.push(ref);return ref===SHA;}});assert.equal(seen.length,2);
+ await assert.rejects(assertLifecycleSnapshot(files,{side:'head',controllerSha:OLD}),/CONTROLLER_UNTRUSTED/);
+ const seen=[];await assertLifecycleSnapshot(files,{side:'head',controllerSha:OLD,verifyController:ref=>{seen.push(ref);return ref===SHA;}});assert.equal(seen.length,2);
  const doc=YAML.parse(files.get(lifecycleWorkflows[0]).toString());doc.on.push={};files.set(lifecycleWorkflows[0],Buffer.from(YAML.stringify(doc)));
- await assert.rejects(assertLifecycleSnapshot(files,{controllerSha:SHA}),/WORKFLOW_TEMPLATE/);
+ await assert.rejects(assertLifecycleSnapshot(files,{side:'head',controllerSha:SHA}),/WORKFLOW_TEMPLATE/);
 });
 test('all admitted mise versions are collected; malformed versions fail',async()=>{
  const files=await sample();const docs=new Map(lifecycleWorkflows.map(p=>[p,YAML.parse(files.get(p).toString())]));
@@ -82,4 +82,26 @@ test('only the trusted release reusable workflow is expanded; nested and unknown
  await assert.rejects(lifecycleReusable('other/repo/.github/workflows/product-release.yml@'+SHA,()=>bytes),/REUSABLE_IDENTITY/);
  const doc=YAML.parse(bytes.toString());doc.jobs.inspect.uses='other/repo/.github/workflows/other.yml@'+SHA;
  await assert.rejects(lifecycleReusable('splrad/steward/.github/workflows/product-release.yml@'+SHA,()=>Buffer.from(YAML.stringify(doc))),/REUSABLE_NESTING/);
+});
+
+test('snapshot side is mandatory and generated notes alone do not imply an application',async()=>{
+ const base=new Map([['README.md',Buffer.from('base')],['CHANGELOG.md',Buffer.from('history')],['.release-notes/app.md',Buffer.from('notes')]]);
+ await assert.rejects(assertLifecycleSnapshot(base),/LIFECYCLE_SIDE/);
+ assert.equal((await assertLifecycleSnapshot(base,{side:'base'})).application,false);
+ await assert.rejects(assertLifecycleSnapshot(base,{side:'head'}),/HEAD_INCOMPLETE/);
+ base.set('acceptance-app.js',Buffer.from('export const x=1;'));
+ await assert.rejects(assertLifecycleSnapshot(base,{side:'base'}),/APPLICATION_INCOMPLETE/);
+});
+test('workflow registration reaches every identity revalidation and malformed mise refs fail closed',async()=>{
+ const workflow=YAML.parse(await readFile(new URL('../../.github/workflows/pr-validation-native.yml',import.meta.url),'utf8'));
+ assert.equal(workflow.env.PRIVATE_GOVERNANCE_REPOSITORY_ID,'${{ vars.STEWARD_PRIVATE_GOVERNANCE_REPOSITORY_ID }}');
+ for(const job of Object.values(workflow.jobs))for(const step of job.steps??[]){
+  if(/validation-(?:input|governance|docs|private-dependencies)\.mjs/.test(step.run??'')){
+   const env={...workflow.env,...job.env,...step.env};
+   assert.equal(env.PRIVATE_GOVERNANCE_REPOSITORY_ID,workflow.env.PRIVATE_GOVERNANCE_REPOSITORY_ID);
+  }
+ }
+ for(const uses of ['jdx/mise-action@latest','jdx/mise-action@abcd','jdx/mise-action/sub@'+SHA]){
+  assert.throws(()=>lifecycleMiseVersions(new Map([['bad',{jobs:{a:{steps:[{uses,with:{version:'2026.10.18'}}]}}}]])),/MISE_REFERENCE/);
+ }
 });
