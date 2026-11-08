@@ -153,6 +153,10 @@ export async function main(env=process.env){
       if(lifecycle)snapshot.application=await assertLifecycleSnapshot(new Map(entries.map(e=>[e.path,blob(workspace,entries,e.path)])),{side,controllerSha:env.WORKFLOW_SHA,verifyController:sha=>{
         const controller=fileURLToPath(new URL('..',import.meta.url));
         git(controller,['merge-base','--is-ancestor',sha,env.WORKFLOW_SHA]);return true;
+      },loadControllerTemplate:(sha,path)=>{
+        const controller=fileURLToPath(new URL('..',import.meta.url));
+        git(controller,['merge-base','--is-ancestor',sha,env.WORKFLOW_SHA]);
+        return git(controller,['show',sha+':'+path]);
       }});
       const input=join(temporary,side),output=join(out,side);await mkdir(input,{recursive:true});await mkdir(output,{recursive:true});
       const workflow=managedOnly?null:blob(workspace,entries,item.workflow,true);

@@ -12,7 +12,7 @@ export function assertLifecycleScope(paths){
   for(const path of paths)if(!extra.has(path))assertGovernanceOnlyScope([path]);
 }
 // This deliberately admits only the dependency-free sample, not general private Node products.
-export async function assertLifecycleSnapshot(files,{controllerSha,verifyController,side}={}){
+export async function assertLifecycleSnapshot(files,{controllerSha,verifyController,loadControllerTemplate,side}={}){
   assert(side==='base'||side==='head','LIFECYCLE_SIDE');
   assertLifecycleScope([...files.keys()]);
   await assertLifecycleUpdaters(files);
@@ -26,8 +26,9 @@ export async function assertLifecycleSnapshot(files,{controllerSha,verifyControl
   assert(/^[a-f0-9]{40}$/.test(controllerSha??''),'LIFECYCLE_CONTROLLER');
   let selectedController;
   for(const path of lifecycleWorkflows){
-    const expected=YAML.parse(await readFile(new URL('../templates/release/'+path.split('/').at(-1),import.meta.url),'utf8'));
-    const actual=YAML.parse(files.get(path).toString('utf8'));
+    const document=YAML.parseDocument(files.get(path).toString('utf8'));
+    assert(document.errors.length===0,'LIFECYCLE_WORKFLOW_YAML');
+    const actual=document.toJS();
     const refs=Object.values(actual?.jobs??{}).flatMap(job=>[
       ...(job.uses?[job.uses.match(/^splrad\/steward\/\.github\/workflows\/product-release\.yml@([a-f0-9]{40})$/)?.[1]]:[]),
       ...(job.steps??[]).filter(step=>step.with?.repository==='splrad/steward').map(step=>step.with.ref)]);
@@ -35,6 +36,16 @@ export async function assertLifecycleSnapshot(files,{controllerSha,verifyControl
     if(selectedController)assert(selectedController===refs[0],'LIFECYCLE_CONTROLLER_GROUP');
     selectedController=refs[0];
     assert(refs[0]===controllerSha||(verifyController&&await verifyController(refs[0])),'LIFECYCLE_CONTROLLER_UNTRUSTED');
+    const templatePath='templates/release/'+path.split('/').at(-1);
+    assert(refs[0]===controllerSha||loadControllerTemplate,'LIFECYCLE_TEMPLATE_SOURCE');
+    const template=loadControllerTemplate?await loadControllerTemplate(refs[0],templatePath)
+      :await readFile(new URL('../'+templatePath,import.meta.url));
+    const expected=YAML.parse(template.toString('utf8'));
+    if(lifecycleUpdaters.every(p=>files.has(p)))for(const [jobId,job] of Object.entries(actual.jobs??{}))if(job.uses){
+      // Renovate needs the branch comment to derive currentValue for a SHA-only
+      // reusable workflow; comments otherwise do not affect YAML equality.
+      assert(document.getIn(['jobs',jobId,'uses'],true)?.comment?.trim()==='steward/validated-controller','LIFECYCLE_CONTROLLER_BRANCH');
+    }
     for(const [jobId,job] of Object.entries(expected.jobs)){
       if(job.uses)job.uses='splrad/steward/.github/workflows/product-release.yml@'+refs[0];
       for(const [index,step] of (job.steps??[]).entries()){
