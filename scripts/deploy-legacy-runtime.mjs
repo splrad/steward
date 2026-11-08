@@ -31,6 +31,51 @@ export async function readAdoptionRecord(filename, checkout = process.cwd()) {
   return r;
 }
 
+async function evidencePages(api, path, key) {
+  const read = async () => {
+    const rows = [], ids = new Set();
+    let total;
+    for (let page = 1; page <= 11; page++) {
+      const response = await api(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`);
+      const items = key ? response?.[key] : response;
+      if (!Array.isArray(items) || items.length > 100) throw new Error('Incomplete adoption evidence page');
+      if (key) {
+        if (!Number.isSafeInteger(response.total_count) || response.total_count < 0 || response.total_count > 1000
+          || (total !== undefined && total !== response.total_count)) throw new Error('Unstable or truncated adoption evidence count');
+        total = response.total_count;
+      }
+      for (const item of items) {
+        if (!Number.isSafeInteger(item.id) || ids.has(item.id)) throw new Error('Invalid or repeated adoption evidence ID');
+        ids.add(item.id); rows.push(item);
+      }
+      if (rows.length > 1000 || (total !== undefined && rows.length > total)) throw new Error('Adoption evidence exceeds complete read range');
+      if (items.length < 100 || rows.length === total) {
+        if (total !== undefined && rows.length !== total) throw new Error('Missing adoption evidence page');
+        return rows;
+      }
+    }
+    throw new Error('Incomplete adoption evidence pagination');
+  };
+  const first = await read(), second = await read();
+  const fingerprint = rows => JSON.stringify(rows.map(v => [v.id, v.head_sha, v.commit_id, v.path, v.event, v.status, v.conclusion,
+    v.run_attempt, v.run_started_at, v.created_at, v.started_at, v.submitted_at, v.state, v.body,
+    v.repository?.full_name, v.name, v.user?.login, v.app?.id, v.check_suite_id, v.check_suite?.id,
+    v.pull_requests?.map(p => [p.number, p.head?.sha])]).sort((a, b) => a[0] - b[0]));
+  if (fingerprint(first) !== fingerprint(second)) throw new Error('Adoption evidence changed during pagination');
+  return second;
+}
+
+function latestEvidence(rows, selectedId, timestamp, submitted = false) {
+  if (!rows.length || (!submitted && rows.some(row => row.status !== 'completed'))) throw new Error('Current adoption evidence is missing or still running');
+  const dated = rows.map(row => ({ row, time: Date.parse(timestamp(row)) }));
+  if (dated.some(value => !Number.isFinite(value.time))) throw new Error('Unknown adoption evidence time');
+  dated.sort((a, b) => b.time - a.time);
+  if ((dated[1] && dated[0].time === dated[1].time) || dated[0].row.id !== selectedId) throw new Error('Newer or ambiguous evidence invalidates central adoption record');
+  const latest = dated[0].row;
+  if (!submitted && latest.conclusion !== 'success') throw new Error('Latest adoption evidence is not successful');
+  return latest;
+}
+
 export async function verifyAdoptionSource(r, api, pull) {
   if (pull.repository?.nameWithOwner !== r.repository || pull.number !== r.pullNumber || pull.isDraft || pull.headRefOid !== r.reviewedHead
     || !['OPEN', 'MERGED'].includes(pull.state) || (r.deploymentHead !== r.reviewedHead && (pull.state !== 'MERGED' || pull.mergeCommit?.oid !== r.deploymentHead))) throw new Error('Adopted PR/head or merge identity changed');
@@ -64,6 +109,19 @@ export async function verifyAdoptionSource(r, api, pull) {
   const state = match && JSON.parse(match[1]);
   if (comment.user?.login !== 'chatgpt-codex-connector[bot]' || comment.issue_url !== `https://api.github.com/repos/${r.repository}/issues/${r.pullNumber}`
     || !['code_review', 'security_review'].every(key => state?.[key]?.commit_sha === r.reviewedHead && state[key].status === 'completed')) throw new Error('Adopted Codex reviews are not terminal for reviewed head');
+  const runs = await evidencePages(api, `actions/runs?head_sha=${r.reviewedHead}`, 'workflow_runs');
+  const scopedRuns = runs.filter(value => value.head_sha === r.reviewedHead && value.repository?.full_name === r.repository && boundPull(value));
+  latestEvidence(scopedRuns.filter(value => value.path === '.github/workflows/pr-validation.yml'), r.evidence.validationRunId, value => value.run_started_at ?? value.created_at);
+  latestEvidence(scopedRuns.filter(value => value.path === 'dynamic/agents/copilot-pull-request-reviewer' && value.event === 'dynamic'), r.evidence.copilotRunId, value => value.run_started_at ?? value.created_at);
+  const checks = await evidencePages(api, `commits/${r.reviewedHead}/check-runs?filter=all`, 'check_runs');
+  const currentCheck = latestEvidence(checks.filter(value => value.name === 'copilot-pull-request-reviewer' && value.app?.id === 15368
+    && value.head_sha === r.reviewedHead && boundPull(value)), r.evidence.copilotCheckRunId, value => value.started_at);
+  if (currentCheck.check_suite?.id !== copilotRun.check_suite_id) throw new Error('Current Copilot check/run binding changed');
+  const reviews = await evidencePages(api, `pulls/${r.pullNumber}/reviews`);
+  const currentReview = latestEvidence(reviews.filter(value => value.commit_id === r.reviewedHead
+    && value.user?.login === 'copilot-pull-request-reviewer[bot]' && value.state !== 'PENDING'), r.evidence.copilotReviewId, value => value.submitted_at, true);
+  if (!['COMMENTED', 'APPROVED'].includes(currentReview.state) || typeof currentReview.body !== 'string'
+    || createHash('sha256').update(currentReview.body).digest('hex') !== r.evidence.copilotReviewBodySha256) throw new Error('Current adopted review content changed');
   // Findings/disagreements are adjudicated in the central adoption record; null never means zero.
 }
 

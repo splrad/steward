@@ -87,10 +87,13 @@ function adoptionFixture() {
   const record = adoption();
   const pull = { number: record.pullNumber, repository: { nameWithOwner: record.repository }, state: 'OPEN', isDraft: false, headRefOid: record.reviewedHead, mergeCommit: { oid: 'b'.repeat(40) } };
   const api = vi.fn(async (path: string): Promise<any> => {
+    if (path.startsWith('actions/runs?')) return { total_count: 2, workflow_runs: [await api('actions/runs/1'), await api('actions/runs/2')] };
+    if (path.includes('/check-runs?')) return { total_count: 1, check_runs: [await api('check-runs/5')] };
+    if (path.includes('/reviews?')) return [await api(`pulls/${record.pullNumber}/reviews/3`)];
     if (path.startsWith('commits/')) return { sha: path.slice(8), commit: { tree: { sha: record.reviewedTree }, verification: { verified: true, reason: 'valid' } } };
-    if (path.startsWith('actions/runs/')) return { repository: { full_name: record.repository }, head_sha: record.reviewedHead, status: 'completed', conclusion: 'success', path: path === 'actions/runs/1' ? '.github/workflows/pr-validation.yml' : 'dynamic/agents/copilot-pull-request-reviewer', event: 'dynamic', check_suite_id: 100, pull_requests: [{ number: record.pullNumber, head: { sha: record.reviewedHead } }] };
-    if (path.startsWith('check-runs/')) return { name: 'copilot-pull-request-reviewer', app: { id: 15368 }, head_sha: record.reviewedHead, status: 'completed', conclusion: 'success', check_suite: { id: 100 }, pull_requests: [{ number: record.pullNumber, head: { sha: record.reviewedHead } }] };
-    if (path.startsWith('pulls/')) return { state: 'COMMENTED', body: reviewBody, commit_id: record.reviewedHead, user: { login: 'copilot-pull-request-reviewer[bot]' }, submitted_at: '2026-01-01T00:00:00Z' };
+    if (path.startsWith('actions/runs/')) return { id: Number(path.split('/').at(-1)), created_at: '2026-01-01T00:00:00Z', run_started_at: '2026-01-01T00:00:00Z', repository: { full_name: record.repository }, head_sha: record.reviewedHead, status: 'completed', conclusion: 'success', path: path === 'actions/runs/1' ? '.github/workflows/pr-validation.yml' : 'dynamic/agents/copilot-pull-request-reviewer', event: 'dynamic', check_suite_id: 100, pull_requests: [{ number: record.pullNumber, head: { sha: record.reviewedHead } }] };
+    if (path.startsWith('check-runs/')) return { id: 5, started_at: '2026-01-01T00:00:00Z', name: 'copilot-pull-request-reviewer', app: { id: 15368 }, head_sha: record.reviewedHead, status: 'completed', conclusion: 'success', check_suite: { id: 100 }, pull_requests: [{ number: record.pullNumber, head: { sha: record.reviewedHead } }] };
+    if (path.startsWith('pulls/')) return { id: 3, state: 'COMMENTED', body: reviewBody, commit_id: record.reviewedHead, user: { login: 'copilot-pull-request-reviewer[bot]' }, submitted_at: '2026-01-01T00:00:00Z' };
     return { user: { login: 'chatgpt-codex-connector[bot]' }, issue_url: `https://api.github.com/repos/${record.repository}/issues/${record.pullNumber}`,
       body: `<!-- codex-review-state:v1 ${JSON.stringify(Object.fromEntries(['code_review', 'security_review'].map(key => [key, { commit_sha: record.reviewedHead, status: 'completed', has_any_findings: null }]))) } -->` };
   });
@@ -128,6 +131,82 @@ describe('central adoption record and native deployment identity', () => {
       return value;
     });
     await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow();
+  });
+  it.each(['copilotRunning', 'checkRunning', 'newReview', 'validationFailure', 'validationRunning', 'unknownTime', 'tiedTime'])('rejects superseded or uncertain evidence: %s', async mode => {
+    const f = adoptionFixture(), original = f.api.getMockImplementation()!;
+    f.api.mockImplementation(async path => {
+      const value = await original(path);
+      if (path.startsWith('actions/runs?') && ['copilotRunning', 'validationFailure', 'validationRunning'].includes(mode)) {
+        const newer = { ...value.workflow_runs[mode === 'copilotRunning' ? 1 : 0], id: 20, run_started_at: '2026-01-02T00:00:00Z', status: mode === 'validationFailure' ? 'completed' : 'queued', conclusion: mode === 'validationFailure' ? 'failure' : null };
+        value.workflow_runs.push(newer); value.total_count++;
+      }
+      if (path.includes('/check-runs?') && mode === 'checkRunning') {
+        value.check_runs.push({ ...value.check_runs[0], id: 21, started_at: null, status: 'queued' }); value.total_count++;
+      }
+      if (path.includes('/reviews?') && ['newReview', 'unknownTime', 'tiedTime'].includes(mode)) value.push({ ...value[0], id: 22,
+        submitted_at: mode === 'unknownTime' ? null : mode === 'tiedTime' ? value[0].submitted_at : '2026-01-02T00:00:00Z' });
+      return value;
+    });
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow();
+  });
+  it('permits earlier failed rounds replaced by the selected successful round and ignores unrelated scope', async () => {
+    const f = adoptionFixture(), original = f.api.getMockImplementation()!;
+    f.api.mockImplementation(async path => {
+      const value = await original(path);
+      if (path.startsWith('actions/runs?')) {
+        value.workflow_runs.push(...value.workflow_runs.map((v: any, i: number) => ({ ...v, id: 30 + i, run_started_at: '2025-01-01T00:00:00Z', conclusion: 'failure' })),
+          { ...value.workflow_runs[0], id: 32, status: 'queued', pull_requests: [{ number: 999, head: { sha: f.record.reviewedHead } }] });
+        value.total_count = value.workflow_runs.length;
+      }
+      if (path.includes('/check-runs?')) {
+        value.check_runs.push({ ...value.check_runs[0], id: 33, started_at: '2025-01-01T00:00:00Z', conclusion: 'failure' },
+          { ...value.check_runs[0], id: 34, status: 'queued', app: { id: 999 } }); value.total_count = value.check_runs.length;
+      }
+      if (path.includes('/reviews?')) value.push({ ...value[0], id: 35, submitted_at: '2025-01-01T00:00:00Z', state: 'DISMISSED' },
+        { ...value[0], id: 36, submitted_at: '2027-01-01T00:00:00Z', commit_id: 'b'.repeat(40) });
+      return value;
+    });
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).resolves.toBeUndefined();
+  });
+  it.each(['newRun', 'newCheck', 'newReview', 'missing', 'duplicate', 'overLimit'])('reads complete evidence pages and rejects %s', async mode => {
+    const f = adoptionFixture(), original = f.api.getMockImplementation()!;
+    f.api.mockImplementation(async path => {
+      const value = await original(path);
+      const endpoint = mode === 'newCheck' ? '/check-runs?' : mode === 'newReview' ? '/reviews?' : 'actions/runs?';
+      if (!path.includes(endpoint)) return value;
+      const key = mode === 'newCheck' ? 'check_runs' : mode === 'newReview' ? undefined : 'workflow_runs';
+      const selected = key ? value[key][key === 'workflow_runs' ? 1 : 0] : value[0];
+      const selectedRows = key ? value[key] : value;
+      const page1 = [...selectedRows, ...Array.from({ length: 100 - selectedRows.length }, (_, i) => ({ ...selected, id: 1000 + i, head_sha: 'b'.repeat(40), commit_id: 'b'.repeat(40) }))];
+      const rows = path.endsWith('page=1') ? page1 : mode === 'missing' ? [] : [{ ...selected, id: mode === 'duplicate' ? 1000 : 2000,
+        run_started_at: '2027-01-01T00:00:00Z', started_at: '2027-01-01T00:00:00Z', submitted_at: '2027-01-01T00:00:00Z' }];
+      return key ? { total_count: mode === 'overLimit' ? 1001 : 101, [key]: rows } : rows;
+    });
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow();
+    if (!['overLimit'].includes(mode)) expect(f.api.mock.calls.some(([path]) => path.endsWith('page=2'))).toBe(true);
+  });
+  it('accepts stable complete multi-page run, check and review collections', async () => {
+    const f = adoptionFixture(), original = f.api.getMockImplementation()!;
+    f.api.mockImplementation(async path => {
+      const value = await original(path);
+      const key = path.startsWith('actions/runs?') ? 'workflow_runs' : path.includes('/check-runs?') ? 'check_runs' : undefined;
+      if (!key && !path.includes('/reviews?')) return value;
+      const selected = key ? value[key] : value;
+      const other = (id: number) => ({ ...selected[0], id, head_sha: 'b'.repeat(40), commit_id: 'b'.repeat(40) });
+      const rows = path.endsWith('page=1') ? [...selected, ...Array.from({ length: 100 - selected.length }, (_, i) => other(1000 + i))] : [other(2000)];
+      return key ? { total_count: 101, [key]: rows } : rows;
+    });
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).resolves.toBeUndefined();
+    expect(f.api.mock.calls.filter(([path]) => path.endsWith('page=2'))).toHaveLength(6);
+  });
+  it('rejects a collection changing between complete reads even if its count stays equal', async () => {
+    const f = adoptionFixture(), original = f.api.getMockImplementation()!; let reads = 0;
+    f.api.mockImplementation(async path => {
+      const value = await original(path);
+      if (path.startsWith('actions/runs?') && ++reads === 2) value.workflow_runs[1].run_attempt = 2;
+      return value;
+    });
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow('changed during pagination');
   });
   it('binds the native account origin, enabled script and sole 100% active version', () => {
     const r = adoption(), metadata = { subdomain: { subdomain: 'synthetic' }, script: { enabled: true }, deployments: { deployments: [{ versions: [{ version_id: input.version, percentage: 100 }] }] } };
