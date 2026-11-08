@@ -187,6 +187,26 @@ export function prepareQualitySource(source: QualitySource): QualityPrepared {
     if(sentence)append(sentence);
   }
   flush();
+  // A whitespace-only segment violates the persisted source schema. Rebalance
+  // adjacent chunks without dropping separators or cutting code/link/tag atoms.
+  for(let i=0;i<chunks.length;i++) {
+    if(chunks[i]!.trim())continue;
+    while(i+1<chunks.length&&!chunks[i+1]!.trim())chunks.splice(i,2,chunks[i]!+chunks[i+1]!);
+    const at=i>0?i-1:i;
+    requireQuality(at+1<chunks.length,'INPUT_LIMIT');
+    const pair=chunks[at]!+chunks[at+1]!;
+    if(utf8(pair)<=6*1024){chunks.splice(at,2,pair);i=at-1;continue;}
+    let cut=-1;
+    for(let offset=0;offset<pair.length;) {
+      const atom=matchAt(pair,offset);
+      offset+=atom?.length??String.fromCodePoint(pair.codePointAt(offset)!).length;
+      const left=pair.slice(0,offset),right=pair.slice(offset);
+      if(left.trim()&&right.trim()&&utf8(left)<=6*1024&&utf8(right)<=6*1024)cut=offset;
+    }
+    // An indivisible full-size atom plus whitespace may have no legal split.
+    requireQuality(cut>0,'INPUT_LIMIT');
+    chunks.splice(at,2,pair.slice(0,cut),pair.slice(cut));i=at;
+  }
   const segments=chunks.map((bodyMarkdown,segmentIndex):QualitySegment=>({
     sourceCommentId:source.sourceCommentId,sourceCommit:source.sourceCommit,sourceUrl:source.sourceUrl,severity:source.severity,
     bodyMarkdown,segmentIndex,originalIdentifiers:[...new Set([

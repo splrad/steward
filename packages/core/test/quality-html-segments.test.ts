@@ -172,3 +172,40 @@ it.each(['First.\r\n\r\nSecond.','First.\n \t\n\nSecond.','\r\nFirst.\n\nSecond.
     expect(p.segments.map(s=>s.bodyMarkdown).join('')).toBe(body);
     for(const s of p.segments)expect(Buffer.byteLength(s.bodyMarkdown)).toBeLessThanOrEqual(6*1024);
   });
+
+
+const roundtripCases=[6138,6144,6150].flatMap(bytes=>['x'.repeat(bytes),'🧪'.repeat(Math.floor(bytes/4))+'abc'].flatMap(text=>
+  ['', '\r\n'].flatMap(prefix=>['\n\n','\r\n \t\r\n'].flatMap(separator=>['', '请检查。<span>Fix bug.</span>'].map(tail=>
+    prefix+text+separator+tail)))));
+it.each(roundtripCases)('round-trips bounded UTF-8, separators and inline HTML without empty segments %#',async body=>{
+  const src=source(body),prepared=prepareQualitySource(src);
+  expect(prepared.segments.map(s=>s.bodyMarkdown).join('')).toBe(body);
+  for(const s of prepared.segments){expect(s.bodyMarkdown.trim()).not.toBe('');expect(Buffer.byteLength(s.bodyMarkdown)).toBeLessThanOrEqual(6144);qualityBatchInput([s]);}
+  const cache=await reconcileQualitySources(null,context,[src]);
+  const decoded=decodeQualityCache(JSON.parse(JSON.stringify(cache)),1296724484,304);
+  expect(decoded).toEqual(cache);
+  expect(await reconcileQualitySources(decoded,context,[src])).toEqual(cache);
+});
+
+it('keeps a full-size prose chunk plus trailing code cache-decodable',async()=>{
+  const code='```js\nfoo();\n```',body='x'.repeat(6144)+'\n\n'+code;
+  const p=prepareQualitySource(source(body));
+  expect(p.preservedBlocks).toEqual([code]);
+  expect(p.segments.map(s=>s.bodyMarkdown).join('')).toBe('x'.repeat(6144)+'\n\n\n\n');
+  expect(p.segments.every(s=>s.bodyMarkdown.trim()&&Buffer.byteLength(s.bodyMarkdown)<=6144)).toBe(true);
+  const cache=await reconcileQualitySources(null,context,[source(body)]);
+  expect(decodeQualityCache(JSON.parse(JSON.stringify(cache)),1296724484,304)).toEqual(cache);
+});
+
+it('does not cut an indivisible tag to make a whitespace-only tail valid',()=>{
+  const tag='<span title="'+'x'.repeat(6144-17)+'">';
+  expect(Buffer.byteLength(tag)).toBeLessThanOrEqual(6144);
+  const body='English. '+tag+'\n\n';
+  const p=prepareQualitySource(source(body));
+  expect(p.segments.every(s=>s.bodyMarkdown.trim()&&Buffer.byteLength(s.bodyMarkdown)<=6144)).toBe(true);
+  expect(p.segments.map(s=>s.bodyMarkdown).join('')).toBe(body);
+  expect(p.segments.filter(s=>s.bodyMarkdown.includes(tag))).toHaveLength(1);
+  const fullTag='<span title="'+'x'.repeat(6144-15)+'">';
+  expect(Buffer.byteLength(fullTag)).toBe(6144);
+  expect(()=>prepareQualitySource(source('English. '+fullTag+'\n\n'))).toThrow('QUALITY_INPUT_LIMIT');
+});
