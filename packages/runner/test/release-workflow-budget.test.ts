@@ -36,7 +36,6 @@ it('connects the fixed coordinator and independent native health job within the 
     expect(job.concurrency).toEqual({group:'steward-automation-health','cancel-in-progress':false});
     expect(JSON.stringify(job)).not.toMatch(/secrets\.|checkout|mise|packages\/runner/);
   }
-  expect((await load('update-dependencies.yml')).jobs['automation-health']).toBeUndefined();
   const behavior=(job:unknown)=>JSON.parse(JSON.stringify(job,(_key,value)=>typeof value==='string'?value.split('\n').filter(line=>!/^\s*#/.test(line)).join('\n'):value));
   const release=behavior(d.jobs['automation-health']),sync=behavior(managed.jobs['automation-health']);
   expect(sync.if).toBe(release.if+" && !inputs.bootstrap_only && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')");
