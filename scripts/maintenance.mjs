@@ -3,7 +3,7 @@ import {join,resolve,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import YAML from 'yaml';
-import {NativeEvidenceReader,jobFact,originalJobExecutions,maintenanceWorkflows,maintenanceJobKeys,maintenanceDisposition,maintenanceFailed,decodeMaintenanceRecord,assertMaintenanceProgress} from '../packages/runner/dist/index.js';
+import {NativeEvidenceReader,jobFact,originalJobExecutions,activeMaintenanceWorkflows,maintenanceJobKeys,maintenanceDisposition,maintenanceFailed,decodeMaintenanceRecord,assertMaintenanceProgress} from '../packages/runner/dist/index.js';
 import {writeReleaseRecords} from './release-record.mjs';
 
 const repository='splrad/steward',repositoryId=1296724484;
@@ -18,7 +18,7 @@ const identity=r=>[r.id,r.workflow_id,r.repository?.id,r.head_repository?.id,r.p
 const observation=r=>[...identity(r),r.run_attempt,r.status,r.conclusion,r.updated_at];
 
 export async function maintenanceDefinition(file) {
-  check(maintenanceWorkflows.includes(file)&&file!=='settings-sync.yml','WORKFLOW');
+  check(activeMaintenanceWorkflows.includes(file),'WORKFLOW');
   const parsed=YAML.parseDocument(await readFile(join(policyRoot,'.github/workflows',file),'utf8'));
   check(!parsed.errors.length,'DEFINITION');const d=parsed.toJS({maxAliasCount:100}),keys=maintenanceJobKeys(file);
   const currentKeys=keys.filter(key=>key!=='automation-health'||Object.hasOwn(d.jobs,key));
@@ -28,7 +28,7 @@ export async function maintenanceDefinition(file) {
     const j=d.jobs[key];
     if(!j&&key==='automation-health'){names[key]=key;continue;}
     const name=j.name??key;
-    check(typeof name==='string'&&(key==='update'?name==='update (${{ strategy.job-index }})':!name.includes('${{')),'DEFINITION_NAME');
+    check(typeof name==='string'&&!name.includes('${{'),'DEFINITION_NAME');
     names[key]=name;
     // A failed health job must never drag successful business jobs into a rerun.
     const needs=Array.isArray(j.needs)?j.needs:j.needs?[j.needs]:[];
@@ -50,16 +50,9 @@ function jobsProjection(raw,run,definition) {
   return raw.filter(j=>originals.has(j.id)).map(j=>{
     check(positive(j.id)&&j.run_id===run.id&&j.head_sha===run.head_sha&&positive(j.run_attempt)&&j.run_attempt<=run.run_attempt
       &&j.status==='completed'&&Array.isArray(j.steps),'JOB_SOURCE');
-    let key=Object.keys(definition.names).find(k=>definition.names[k]===j.name),matrixIndex=null;
-    if(definition.file==='update-dependencies.yml'&&typeof j.name==='string') {
-      const match=/^update \((0|[1-9][0-9]*)\)$/.exec(j.name);
-      if(match){key='update';matrixIndex=Number(match[1]);}
-      if(j.name==='update'&&j.conclusion==='skipped')key='update';
-    }
+    const key=Object.keys(definition.names).find(k=>definition.names[k]===j.name);
     check(key,'UNREGISTERED_JOB');
-    const marker=name=>{const values=j.steps.filter(s=>s.name===name);check(values.length<=1,'MARKER_DUPLICATE');return values[0]?.conclusion??null;};
-    return {id:j.id,key,matrixIndex,attempt:j.run_attempt,conclusion:j.conclusion,
-      empty:key==='targets'?marker('update-targets-empty'):null,found:key==='targets'?marker('update-targets-found'):null};
+    return {id:j.id,key,matrixIndex:null,attempt:j.run_attempt,conclusion:j.conclusion,empty:null,found:null};
   }).sort((a,b)=>a.attempt-b.attempt||a.id-b.id);
 }
 
@@ -79,6 +72,7 @@ export async function maintenanceRunWindow(reader,workflowId,branch,start,end) {
 }
 
 export async function recoverMaintenanceRun({reader,io,workflow,definition,branch,runId,store,coordinator,now=Date.now}) {
+  check(activeMaintenanceWorkflows.includes(definition.file),'WORKFLOW');
   const run=await reader.json(`actions/runs/${runId}`);source(run,workflow,definition,branch);check(run.id===runId,'RUN_ID');
   if(run.status!=='completed')return {status:'WAIT'};
   const jobs=jobsProjection(await reader.pages(`actions/runs/${runId}/jobs?filter=all`,'jobs'),run,definition);
@@ -155,7 +149,7 @@ export async function serviceMaintenance({io,store,defaultBranch,coordinator},no
     &&origin.head_branch===defaultBranch&&origin.head_sha===coordinator.controllerSha&&origin.path==='.github/workflows/release.yml'
     &&['schedule','workflow_dispatch'].includes(origin.event),'COORDINATOR');
   const known=await store.list(),start=Math.floor(started/1000)-30*24*3600,end=Math.floor(started/1000),candidates=[];
-  for(const file of maintenanceWorkflows.filter(file=>file!=='settings-sync.yml')) {
+  for(const file of activeMaintenanceWorkflows) {
     try {
       const definition=await maintenanceDefinition(file),workflow=await reader.json(`actions/workflows/${file}`);
       check(positive(workflow.id)&&workflow.path===`.github/workflows/${file}`,'WORKFLOW_ID');

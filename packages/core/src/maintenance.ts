@@ -1,7 +1,9 @@
 import {decodeBuildJson} from './build-manifest.js';
 
-/** Fixed central consumers from E07. Product Pages has its own repository and record owner. */
+/** Historical record vocabulary. Retired workflows remain decodable, never eligible for recovery. */
 export const maintenanceWorkflows = ['sync-managed.yml','settings-sync.yml','update-dependencies.yml','quality-language-summary.yml','governance-promotion.yml'] as const;
+/** Current central recovery targets; settings and Renovate use their native providers. */
+export const activeMaintenanceWorkflows = ['sync-managed.yml','quality-language-summary.yml','governance-promotion.yml'] as const;
 export type MaintenanceWorkflow = typeof maintenanceWorkflows[number];
 export function maintenanceJobKeys(file: MaintenanceWorkflow): readonly string[] {
   switch(file) {
