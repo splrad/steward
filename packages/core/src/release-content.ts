@@ -23,7 +23,7 @@ export function releaseAffectedUnitIds(path: string, units: readonly { id: strin
 export type Qualification = 'SOURCE_CONFIRMED' | 'TEST_CONFIRMED' | 'UNVERIFIED';
 export interface ContentItem { sourceIds: string[]; visibility: 'USER' | 'INTERNAL' | 'UNRESOLVED'; section: ContentSection; statementZh: string; qualification: Qualification }
 export interface ContentParagraph { sourceIds: string[]; section: ContentSection; textZh: string; qualification: Qualification }
-export interface ContentRecoveryReceipt { previousAttemptSha256: string; authorizationId: string; outputContractSha256: string }
+export interface ContentRecoveryReceipt { previousAttemptSha256: string; authorizationId: string; outputContractSha256: string; archiveContentDigest?: string; archiveProtectionDigest?: string }
 export interface ContentDiagnostic { responseSha256: string; responseBytes: number; responseText: string; validationErrors: {instancePath:string; schemaPath:string; keyword:string}[] }
 export interface ContentAttempt { ordinal: number; startedAt: string; status: 'SENT' | 'RETURNED' | 'UNKNOWN' | 'REJECTED'; model: string; usage: object | null; errorCode: string | null; diagnostic?: ContentDiagnostic; recovery?: ContentRecoveryReceipt }
 /** Only an explicit pre-generation authentication/budget rejection is safe to retry. */

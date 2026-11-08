@@ -110,6 +110,11 @@ export async function resumeContentBatches(work: ContentWork, cache: ContentCach
         || grant.previousAttemptSha256 !== hash(prior) || grant.outputContractSha256 !== hash(CONTENT_OUTPUT_SCHEMA)
         || !/^[a-f0-9]{64}$/.test(grant.authorizationId)) throw Error('CONTENT_RECOVERY_BINDING');
       recovery = { previousAttemptSha256: grant.previousAttemptSha256, authorizationId: grant.authorizationId, outputContractSha256: grant.outputContractSha256 };
+      if (grant.archiveContentDigest !== undefined || grant.archiveProtectionDigest !== undefined) {
+        if (typeof grant.archiveContentDigest!=='string' || typeof grant.archiveProtectionDigest!=='string'
+          || ![grant.archiveContentDigest,grant.archiveProtectionDigest].every(v=>/^[a-f0-9]{64}$/.test(v))) throw Error('CONTENT_RECOVERY_BINDING');
+        recovery.archiveContentDigest=grant.archiveContentDigest;recovery.archiveProtectionDigest=grant.archiveProtectionDigest;
+      }
     }
     if (!recovery && (blocked(entry.attempts) || blocked(batch.attempts))) {
       batch.status = 'FAILED'; batch.errorCode = entry.attempts.at(-1)?.errorCode ?? 'RESPONSE_UNKNOWN';

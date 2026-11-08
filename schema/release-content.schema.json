@@ -338,13 +338,29 @@
                         "outputContractSha256": {
                           "type": "string",
                           "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "archiveContentDigest": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "archiveProtectionDigest": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
                         }
                       },
                       "required": [
                         "previousAttemptSha256",
                         "authorizationId",
                         "outputContractSha256"
-                      ]
+                      ],
+                      "dependentRequired": {
+                        "archiveContentDigest": [
+                          "archiveProtectionDigest"
+                        ],
+                        "archiveProtectionDigest": [
+                          "archiveContentDigest"
+                        ]
+                      }
                     }
                   },
                   "required": [
