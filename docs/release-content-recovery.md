@@ -10,4 +10,4 @@
 
 受信 controller 更新可能只因保护来源 pin 变化而产生新的内容归档目录。此时计划须额外成对提供 archiveContentDigest 和 archiveProtectionDigest，准确定位旧内容及保护证据；缺失旧档不得当作空历史。原生适配器仅在新归档不存在、新 batch 为无历史的 PENDING、旧新生成事实仅保护证据路径变化、保护内容仅指定 required workflow SHA 更新时承接旧失败。仓库、候选、base、单元、配置、来源、payload 和旧 manifest/cache/grant 均须一致；来源证据仅允许显式采用的新 controller 身份变化。任何其他差异均停止。旧 attempt 完整复制后仍须通过原有 batch/cache 历史相等校验；新请求收据记录两个旧归档定位摘要，旧 manifest 保持原样。已有新归档或再次使用已消费的恢复授权不能借此继续发送。
 
-隔离验收日志仅公开有限的 ACCEPTANCE_/CONTENT_ 机器错误码；其他异常统一隐藏为 BUSINESS_ACCEPTANCE_STOPPED，诊断正文仍只留在受保护状态中。
+隔离验收日志保留既有 ACCEPTANCE_ 错误码规则；内容错误仅公开 CONTENT_RECOVERY_BINDING、CONTENT_RECOVERY_ARCHIVE、CONTENT_RECOVERY_ARCHIVE_EXISTS 三个固定码。其他异常统一隐藏为 BUSINESS_ACCEPTANCE_STOPPED，诊断正文仍只留在受保护状态中。

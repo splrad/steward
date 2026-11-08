@@ -66,6 +66,7 @@ it.each(['missing-archive','missing-pair','path','facts','protection','pin','wor
 });
 it('bounds public failure diagnostics to machine codes',()=>{
   expect(acceptanceErrorCode(Error('CONTENT_RECOVERY_BINDING'))).toBe('CONTENT_RECOVERY_BINDING');
+  expect(acceptanceErrorCode(Error('CONTENT_INTERNAL_TOKEN'))).toBe('BUSINESS_ACCEPTANCE_STOPPED');
   expect(acceptanceErrorCode(Error('secret text'))).toBe('BUSINESS_ACCEPTANCE_STOPPED');
   expect(acceptanceErrorCode(Error('CONTENT_RECOVERY_BINDING\nprivate'))).toBe('BUSINESS_ACCEPTANCE_STOPPED');
 });
