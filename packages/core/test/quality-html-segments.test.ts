@@ -112,7 +112,7 @@ it('packs complete short paragraphs and protects inline code/link atoms at long 
   for(const s of p.segments){expect(Buffer.byteLength(s.bodyMarkdown)).toBeLessThanOrEqual(6*1024);expect(s.bodyMarkdown).not.toContain('\ufffd');qualityBatchInput([s]);}
   expect(()=>prepareQualitySource(source('Check this code: <code>'+'x'.repeat(7*1024)+'</code>'))).toThrow('QUALITY_INPUT_LIMIT');
   const boundary=prepareQualitySource(source('x'.repeat(6*1024)+'\n\n'+'y'.repeat(6*1024)));
-  expect(boundary.segments).toHaveLength(2);expect(boundary.segments.every(s=>s.bodyMarkdown.trim())).toBe(true);
+  expect(boundary.segments).toHaveLength(3);expect(boundary.segments.every(s=>s.bodyMarkdown.trim())).toBe(true);
   const item=prepareQualitySource(source('Check inputs.')).segments[0]!;
   expect(()=>qualityBatchInput(Array.from({length:11},()=>item))).toThrow('QUALITY_INPUT_LIMIT');
   expect(()=>qualityBatchInput([{...item,bodyMarkdown:'x'.repeat(24*1024)}])).toThrow('QUALITY_INPUT_LIMIT');
@@ -157,3 +157,18 @@ it('isolates legacy keys even without a caller config bump and retains their res
   const again=await reconcileQualitySources(cache,context,[source('Check inputs.')]);
   expect(again.entries[key]!.result).not.toBeNull();expect(again.entries[oldKey]).toEqual(before.entries[oldKey]);
 });
+
+
+it.each(['span','em','strong','a','custom-element'])('does not skip English inside inline %s markup',tag=>{
+  const body=`请检查。<${tag}>Fix bug.</${tag}>`;
+  const p=prepareQualitySource(source(body));
+  expect(p.chinese).toBe(false);expect(p.segments.map(s=>s.bodyMarkdown).join('')).toBe(body);
+});
+
+it.each(['First.\r\n\r\nSecond.','First.\n \t\n\nSecond.','\r\nFirst.\n\nSecond.\r\n',
+  'First. '.repeat(900)+'\r\n \r\nSecond. '.repeat(100)])
+  ('retains paragraph separator bytes in model input',body=>{
+    const p=prepareQualitySource(source(body));
+    expect(p.segments.map(s=>s.bodyMarkdown).join('')).toBe(body);
+    for(const s of p.segments)expect(Buffer.byteLength(s.bodyMarkdown)).toBeLessThanOrEqual(6*1024);
+  });

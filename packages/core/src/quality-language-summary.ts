@@ -1,7 +1,6 @@
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
-import { htmlBlockNames, htmlRawNames } from 'micromark-util-html-tag-name';
 import { parseFragment, type DefaultTreeAdapterTypes } from 'parse5';
 import { SAXParser, type StartTag, type EndTag } from 'parse5-sax-parser';
 import schema from '../../../schema/quality-language-output.schema.json' with { type: 'json' };
@@ -69,9 +68,6 @@ export function prepareQualitySource(source: QualitySource): QualityPrepared {
   const body=source.bodyMarkdown, tree=unified().use(remarkParse).parse(body);
   const blocks:SourceRange[]=[], inline:SourceRange[]=[], links:SourceRange[]=[], htmlRanges:SourceRange[]=[],
     markup:SourceRange[]=[], htmlTags:SourceRange[]=[], boundaries:SourceRange[]=[];
-  // Match the Markdown parser's complete HTML block vocabulary; include raw-text
-  // containers (textarea prose) and flow separators not present in that list.
-  const blockTags=new Set([...htmlBlockNames,...htmlRawNames,'br','hgroup']);
   const markdown=(node:any)=>{
     const start=node.position?.start.offset,end=node.position?.end.offset;
     if(['code','inlineCode','html','link','linkReference','definition'].includes(node.type)) {
@@ -104,7 +100,8 @@ export function prepareQualitySource(source: QualitySource): QualityPrepared {
     if(!location)return;
     const range={start:location.startOffset,end:location.endOffset};
     markup.push(range);htmlTags.push(range);
-    if(blockTags.has(token.tagName))boundaries.push(range);
+    // Inline HTML can also contain an independent English explanation.
+    boundaries.push(range);
   };
   sax.on('startTag',tag);sax.on('endTag',tag);
   // The in-memory transform tokenizes complete tags synchronously. Drain its
@@ -170,12 +167,12 @@ export function prepareQualitySource(source: QualitySource): QualityPrepared {
     const value=matchAt(prose,i);
     if(value){i+=value.length;continue;}
     const separator=/[\r\n]/.test(prose[i]!)?prose.slice(i).match(/^\r?\n\s*\n/u)?.[0]:undefined;
-    if(separator){paragraphs.push(prose.slice(start,i));i+=separator.length;start=i;}else i++;
+    if(separator){paragraphs.push(prose.slice(start,i));start=i;i+=separator.length;}else i++;
   }
   paragraphs.push(prose.slice(start));
-  for(const paragraph of paragraphs.filter(x=>x.trim())) {
+  for(const paragraph of paragraphs.filter(x=>x.length)) {
     if(utf8(paragraph)<=6*1024){
-      const combined=chunk?chunk+'\n\n'+paragraph:paragraph;
+      const combined=chunk+paragraph;
       if(utf8(combined)<=6*1024)chunk=combined;else {flush();chunk=paragraph;}
       continue;
     }
