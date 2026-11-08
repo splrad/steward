@@ -173,3 +173,13 @@ it('rejects mismatched archived contract digests and oversized UTF-8 diagnostics
   const responseText='中'.repeat(12288),diagnostic={responseText,responseSha256:digest(responseText),responseBytes:Buffer.byteLength(responseText),validationErrors:[]};
   await expect(verifyContentAttemptReceipts([{...old,diagnostic}])).rejects.toThrow('CONTENT_ATTEMPT_SCHEMA');
 });
+
+it('rejects multi-batch recovery before any request and non-schema archived predecessors',async()=>{
+  const multi={...input(),units:[...input().units,{id:'other',path:'other',version:'1.0.0',tag:'other-v1.0.0'}]};
+  const work=await planContentBatches(multi,[source(1),{...source(2),unitId:'other'}]),r=runtime();
+  r.port.recovery={candidateId:work.input.candidateId,batchId:work.input.batches[1]!.id,previousAttemptSha256:digest('old'),authorizationId:digest('approval'),outputContractSha256:digest(JSON.stringify(CONTENT_OUTPUT_SCHEMA))};
+  await expect(resumeContentBatches(work,{},r.port)).rejects.toThrow('CONTENT_RECOVERY_BINDING');expect(r.calls()).toBe(0);expect(r.saves).toHaveLength(0);
+  const old={ordinal:1,startedAt:'2026-11-08T00:00:00Z',status:'REJECTED' as const,model:'fixture',usage:null,errorCode:'WAIT_AUTH'};
+  const recovery={previousAttemptSha256:digest(JSON.stringify(old)),authorizationId:digest('approval'),outputContractSha256:digest(JSON.stringify(CONTENT_OUTPUT_SCHEMA))};
+  await expect(verifyContentAttemptReceipts([old,{...old,ordinal:2,recovery}])).rejects.toThrow('CONTENT_RECOVERY_HISTORY');
+});

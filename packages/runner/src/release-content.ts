@@ -87,6 +87,8 @@ export interface ContentRuntime {
 export async function resumeContentBatches(work: ContentWork, cache: ContentCache, runtime: ContentRuntime) {
   if (work.input.schemaVersion !== 2) throw new Error('CONTENT_LEGACY_READ_ONLY');
   validateContentInput(work.input);
+  if (runtime.recovery && (work.input.batches.length !== 1 || work.input.units.length !== 1
+    || runtime.recovery.candidateId !== work.input.candidateId || runtime.recovery.batchId !== work.input.batches[0]!.id)) throw Error('CONTENT_RECOVERY_BINDING');
   let calls = 0;
   for (const batch of work.input.batches) {
     if (batch.status === 'READY') continue;
@@ -130,8 +132,9 @@ export async function resumeContentBatches(work: ContentWork, cache: ContentCach
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
       const code = /^(?:CONTENT_[A-Z_]+|WAIT_AUTH|WAIT_QUOTA|RESPONSE_UNKNOWN)$/.test(message) ? message : 'RESPONSE_UNKNOWN';
-      if (returnedText !== undefined && utf8Length(returnedText) <= 12 * 1024) attempt.diagnostic = {
-        responseSha256: createHash('sha256').update(returnedText).digest('hex'), responseBytes: utf8Length(returnedText), responseText: returnedText,
+      const responseBytes = returnedText === undefined ? null : utf8Length(returnedText);
+      if (returnedText !== undefined && responseBytes !== null && responseBytes <= 12 * 1024) attempt.diagnostic = {
+        responseSha256: createHash('sha256').update(returnedText).digest('hex'), responseBytes, responseText: returnedText,
         validationErrors: code === 'CONTENT_OUTPUT_SCHEMA' ? (error as {validationErrors?: {instancePath:string;schemaPath:string;keyword:string}[]}).validationErrors ?? [] : [],
       };
       attempt.status = code === 'RESPONSE_UNKNOWN' ? 'UNKNOWN' : 'REJECTED'; attempt.errorCode = code;

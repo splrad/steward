@@ -35,7 +35,8 @@ export const permittedContentPredecessor = (attempt: ContentAttempt, index: numb
 export async function verifyContentAttemptReceipts(attempts: ContentAttempt[]) {
   for (const [index, attempt] of attempts.entries()) {
     if ((attempt.recovery || attempt.diagnostic) && !attemptValidator(attempt)) throw Error('CONTENT_ATTEMPT_SCHEMA');
-    if (attempt.recovery && (index !== 1 || attempts.length !== 2 || !permittedContentPredecessor(attempts[0]!,0,attempts)
+    if (attempt.recovery && (index !== 1 || attempts.length !== 2 || attempt.ordinal !== 2 || attempts[0]?.ordinal !== 1
+      || attempts[0]?.status !== 'REJECTED' || attempts[0]?.errorCode !== 'CONTENT_OUTPUT_SCHEMA'
       || attempt.recovery.previousAttemptSha256 !== await sha256Hex(JSON.stringify(attempts[0]))
       || attempt.recovery.outputContractSha256 !== await sha256Hex(JSON.stringify(CONTENT_OUTPUT_SCHEMA)))) throw Error('CONTENT_RECOVERY_HISTORY');
     if (attempt.diagnostic && (utf8Length(attempt.diagnostic.responseText) !== attempt.diagnostic.responseBytes
