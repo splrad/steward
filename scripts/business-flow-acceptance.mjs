@@ -113,6 +113,7 @@ export async function main(env=process.env) {
     const app=await lib.nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY??'');
     const result=await executePlan(plan,{root,controllerDirectory:directory,app,modelToken:env.STEWARD_COPILOT_TOKEN??''});
     process.stdout.write(JSON.stringify(result)+'\n');
+    if(result.status==='INITIALIZED_BASE_CHANGED')process.exitCode=75;
   }finally{await rm(root,{recursive:true,force:true});}
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href)main().catch(error=>{

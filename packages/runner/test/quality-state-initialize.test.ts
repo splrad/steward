@@ -1,5 +1,5 @@
 // @ts-nocheck
-import {it,expect} from 'vitest';
+import {it,expect,vi} from 'vitest';
 import {registerOfflineFixtureRoot} from './offline-fixtures.js';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
@@ -54,3 +54,41 @@ for(const mode of ['existing','inaccessible','unlisted-rules','false-404'])it(`n
   await expect(initializeQualityState(plan,{root:tmpdir(),token:'fixture',fetcher,execute:async()=>{executions++;throw Error('must not execute');}})).rejects.toThrow();
   expect(executions).toBe(0);expect(writes).toBe(0);
 });
+it('returns the verified root for read-only reconciliation when main moves between check and push',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'quality-base-race-'));registerOfflineFixtureRoot(root);
+  vi.doMock('../../../scripts/repository-bootstrap.mjs',async()=>({...await vi.importActual('../../../scripts/repository-bootstrap.mjs'),verifyGovernanceCreation:async()=>{}}));
+  vi.doMock('../../../scripts/quality-language-summary.mjs',async()=>({...await vi.importActual('../../../scripts/quality-language-summary.mjs'),assertQualityProtection:async()=>{}}));
+  vi.resetModules();
+  try {
+    const {initializeQualityState:initialize}=await import('../../../scripts/quality-state-initialize.mjs');
+    const env=isolatedBuildEnvironment(process.env,root),git=async(cwd,...args)=>(await run('git',args,{cwd,env,encoding:'utf8',windowsHide:true})).stdout.trim();
+    const remote=join(root,'remote.git'),seed=join(root,'seed');await mkdir(seed);await git(root,'init','--bare',remote);
+    await git(seed,'init','--initial-branch=main');await git(seed,'config','user.name','Fixture');await git(seed,'config','user.email','fixture@example.invalid');
+    await git(seed,'commit','--allow-empty','--no-gpg-sign','-m','Approved controller');await git(seed,'push','--porcelain',remote,'HEAD:refs/heads/main');
+    const approved=await git(seed,'rev-parse','HEAD'),p={...plan,baseSha:approved,controllerSha:approved};let pushes=0;
+    const readState=async()=>{const refs=await git(remote,'for-each-ref','--format=%(objectname)','refs/heads/steward/governance-state');return refs||null;};
+    const fetcher=async(url,init)=>{
+      expect(init.method).toBe('GET');const path=new URL(url).pathname;
+      if(path==='/repos/splrad/steward')return Response.json({...p.repository,owner:{id:302208797},archived:false,disabled:false});
+      if(path.endsWith('/git/ref/heads/main'))return Response.json({object:{sha:await git(remote,'rev-parse','main')}});
+      const current=await readState();
+      if(path.includes('matching-refs'))return Response.json(current?[{ref:'refs/heads/steward/governance-state'}]:[]);
+      if(path.endsWith('/git/ref/heads/steward/governance-state'))return new Response(JSON.stringify({ref:'refs/heads/steward/governance-state',object:{type:'commit',sha:current}}),{status:current?200:404,headers:{"content-type":"application/json"}});
+      throw Error('Unexpected read '+path);
+    };
+    const execute=async(file,args,options)=>{
+      if(args.includes('push')){
+        pushes++;await git(seed,'commit','--allow-empty','--no-gpg-sign','-m','Concurrent main update');await git(seed,'push','--porcelain',remote,'HEAD:refs/heads/main');
+      }
+      return run(file,args.map(arg=>arg==='https://github.com/splrad/steward.git'?remote:arg),options);
+    };
+    const result=await initialize(p,{root,token:'fixture',fetcher,execute});
+    expect(result).toEqual({kind:'quality-initialize',status:'INITIALIZED_BASE_CHANGED',calls:0,stateSha:await readState()});
+    expect(pushes).toBe(1);expect(await git(remote,'show','-s','--format=%P',result.stateSha)).toBe('');expect(await git(remote,'ls-tree','-r',result.stateSha)).toBe('');
+    expect(await git(remote,'rev-parse','main')).not.toBe(approved);
+    // Do not retry creation. The exact empty root is usable by the ordinary state reader after reconciliation.
+    const {readReleaseRecords}=await import('../../../scripts/release-record.mjs');
+    const snapshot=await readReleaseRecords({directory:remote,targetRef:'steward/governance-state',repositoryId:1296724484});
+    expect(snapshot.head).toBe(result.stateSha);expect(snapshot.currentPaths).toEqual([]);expect(snapshot.domainRecords).toEqual([]);
+  }finally{vi.doUnmock('../../../scripts/repository-bootstrap.mjs');vi.doUnmock('../../../scripts/quality-language-summary.mjs');vi.resetModules();await rm(root,{recursive:true,force:true});}
+},120000);

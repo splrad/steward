@@ -59,7 +59,7 @@ export function adoptionTransport(p,{token,readToken,fetcher=fetch}) {
   // Pin every adoption-reader observation, including its immediate pre-write check.
   return {...transport,request:async(method,path,...args)=>{
     const relative=path.startsWith(prefix+'/')?path.slice(prefix.length+1):'';
-    const pullRead=method==='GET'&&(/^pulls(?:[/?]|$)/.test(relative)||/^commits\/[^/]+\/pulls(?:\?|$)/.test(relative));
+    const pullRead=method==='GET'&&(/^pulls(?:[/?]|$)/.test(relative)||/^commits\/[^/]+\/pulls(?:\?|$)/.test(relative)||/^issues\/[1-9][0-9]*\/events(?:\?|$)/.test(relative));
     const response=await (pullRead?readerTransport:transport).request(method,path,...args);
     if(method==='GET'&&[prefix+'/commits/main',prefix+'/git/ref/heads/main'].includes(path)) {
       requireFact(response.status===200,'INITIALIZE_BASE_UNKNOWN');

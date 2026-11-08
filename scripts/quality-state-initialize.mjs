@@ -51,6 +51,8 @@ export async function initializeQualityState(p,{root,token,fetcher=fetch,execute
   const head=await createEmptyGovernanceRoot({directory,remote,environment,controllerSha:p.controllerSha,beforePush:verify,
     readHead:async()=>{const r=await get(prefix+'/git/ref/heads/'+branch);check(r.ref===ref&&r.object?.type==='commit','REF_READBACK');return r.object.sha;}},execute);
   await assertQualityProtection(qualityNativeIO('splrad/steward',token,fetcher),'splrad/steward',p.governanceAppId);
-  check((await get(prefix+'/git/ref/heads/main')).object?.sha===p.baseSha,'BASE');
-  return {kind:p.kind,status:'INITIALIZED',calls:0,stateSha:head};
+  // The protected empty root is fully initialized even if main moved after the final pre-push check.
+  // Preserve it and return its exact identity; continuation requires readback and a fresh approved plan.
+  const baseMatches=(await get(prefix+'/git/ref/heads/main')).object?.sha===p.baseSha;
+  return {kind:p.kind,status:baseMatches?'INITIALIZED':'INITIALIZED_BASE_CHANGED',calls:0,stateSha:head};
 }
