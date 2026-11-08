@@ -77,8 +77,11 @@ function latestEvidence(rows, selectedId, timestamp, submitted = false) {
 }
 
 export async function verifyAdoptionSource(r, api, pull) {
+  // Defense against operator mistakes, not a sandbox for candidate code. The central
+  // operator must independently approve the protected merged source before starting Node.
   if (pull.repository?.nameWithOwner !== r.repository || pull.number !== r.pullNumber || pull.isDraft || pull.headRefOid !== r.reviewedHead
-    || !['OPEN', 'MERGED'].includes(pull.state) || (r.deploymentHead !== r.reviewedHead && (pull.state !== 'MERGED' || pull.mergeCommit?.oid !== r.deploymentHead))) throw new Error('Adopted PR/head or merge identity changed');
+    || pull.headRepository?.nameWithOwner !== r.repository || pull.baseRefName !== 'maintenance/legacy-runtime-e990eda'
+    || pull.state !== 'MERGED' || pull.mergeCommit?.oid !== r.deploymentHead) throw new Error('Adopted PR/head or merge identity changed');
   for (const [commitSha, tree] of [[r.reviewedHead, r.reviewedTree], [r.deploymentHead, r.deploymentTree]]) {
     const commit = await api(`commits/${commitSha}`);
     if (commit.sha !== commitSha || commit.commit?.tree?.sha !== tree || commit.commit?.verification?.verified !== true || commit.commit.verification.reason !== 'valid') throw new Error('Adopted commit/tree/signature mismatch');
@@ -101,7 +104,7 @@ export async function verifyAdoptionSource(r, api, pull) {
   const review = await api(`pulls/${r.pullNumber}/reviews/${r.evidence.copilotReviewId}`);
   if (review.commit_id !== r.reviewedHead || review.user?.login !== 'copilot-pull-request-reviewer[bot]' || !Number.isFinite(Date.parse(review.submitted_at))
     || !['COMMENTED', 'APPROVED'].includes(review.state) || typeof review.body !== 'string'
-    || !review.body.includes('<!-- ccr-overview-v2 -->') || !/<sub>Review effort: (?:Lite|Balanced|Max)<\/sub>/.test(review.body)
+    || !review.body.includes('<!-- ccr-overview-v2 -->') || !/(?:<sub>Review effort: (?:Lite|Balanced|Max)<\/sub>|\*\*Review effort:\*\* (?:Lite|Balanced|Max)\b)/u.test(review.body)
     || /^>? ?Copilot (?:was |is )?unable to (?:run|review)\b/im.test(review.body)
     || createHash('sha256').update(review.body).digest('hex') !== r.evidence.copilotReviewBodySha256) throw new Error('Adopted Copilot review mismatch');
   const comment = await api(`issues/comments/${r.evidence.codexCommentId}`);
@@ -165,7 +168,7 @@ export async function deployLegacyRuntime(recordPath) {
   const { deploymentHead: expectedHead, bundleSha256: expectedBundleSha256, runtimeOrigin: runtimeUrl, accountId, policySha, evaluatorSha } = record;
   const api = async path => JSON.parse((await run('gh', ['api', `repos/${record.repository}/${path}`])).stdout);
   const verifySource = async () => {
-    const query = 'query($number:Int!){repository(owner:"splrad",name:"steward"){pullRequest(number:$number){number state isDraft headRefOid repository{nameWithOwner} mergeCommit{oid}}}}';
+    const query = 'query($number:Int!){repository(owner:"splrad",name:"steward"){pullRequest(number:$number){number state isDraft headRefOid baseRefName headRepository{nameWithOwner} repository{nameWithOwner} mergeCommit{oid}}}}';
     const response = JSON.parse((await run('gh', ['api', 'graphql', '-f', `query=${query}`, '-F', `number=${record.pullNumber}`])).stdout);
     await verifyAdoptionSource(record, api, response.data?.repository?.pullRequest ?? {});
   };

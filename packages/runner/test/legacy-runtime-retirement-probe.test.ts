@@ -76,7 +76,7 @@ const { readAdoptionRecord, verifyAdoptionSource, verifyNativeTarget } = await i
 const reviewBody = '<!-- ccr-overview-v2 -->\n### Changes recommended\n<sub>Review effort: Lite</sub>';
 const adoption = () => ({
   schemaVersion: 1, repository: 'splrad/steward', pullNumber: 400,
-  reviewedHead: 'a'.repeat(40), deploymentHead: 'a'.repeat(40), reviewedTree: 'c'.repeat(40), deploymentTree: 'c'.repeat(40),
+  reviewedHead: 'a'.repeat(40), deploymentHead: 'b'.repeat(40), reviewedTree: 'c'.repeat(40), deploymentTree: 'c'.repeat(40),
   bundleSha256: 'd'.repeat(64), policySha: 'e'.repeat(40), evaluatorSha: 'f'.repeat(40),
   accountId: '5efbba9a3813a37ac45e70cfa9f01cb5', workerName: 'splrad-steward-runtime',
   runtimeOrigin: 'https://splrad-steward-runtime.synthetic.workers.dev', expectedCurrentVersion: input.version,
@@ -85,7 +85,7 @@ const adoption = () => ({
 });
 function adoptionFixture() {
   const record = adoption();
-  const pull = { number: record.pullNumber, repository: { nameWithOwner: record.repository }, state: 'OPEN', isDraft: false, headRefOid: record.reviewedHead, mergeCommit: { oid: 'b'.repeat(40) } };
+  const pull = { number: record.pullNumber, repository: { nameWithOwner: record.repository }, headRepository: { nameWithOwner: record.repository }, baseRefName: 'maintenance/legacy-runtime-e990eda', state: 'MERGED', isDraft: false, headRefOid: record.reviewedHead, mergeCommit: { oid: record.deploymentHead } };
   const api = vi.fn(async (path: string): Promise<any> => {
     if (path.startsWith('actions/runs?')) return { total_count: 2, workflow_runs: [await api('actions/runs/1'), await api('actions/runs/2')] };
     if (path.includes('/check-runs?')) return { total_count: 1, check_runs: [await api('check-runs/5')] };
@@ -101,16 +101,49 @@ function adoptionFixture() {
 }
 
 describe('central adoption record and native deployment identity', () => {
-  it('accepts a future PR reviewed head and its native merged commit only when trees match', async () => {
+  it.each(['<sub>Review effort: Lite</sub>', '🧠 **Review effort:** Balanced', '**Review effort:** Max'])('accepts the bound overview format %s', async effort => {
+    const f = adoptionFixture(), original = f.api.getMockImplementation()!;
+    const body = `<!-- ccr-overview-v2 -->\n### Changes recommended\n${effort}`;
+    f.record.evidence.copilotReviewBodySha256 = createHash('sha256').update(body).digest('hex');
+    f.api.mockImplementation(async path => {
+      const value = await original(path);
+      if (/^pulls\/\d+\/reviews\/\d+$/.test(path)) value.body = body;
+      return value;
+    });
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).resolves.toBeUndefined();
+    f.record.evidence.copilotReviewBodySha256 = '0'.repeat(64);
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow('review mismatch');
+  });
+  it.each(['**Review effort:** Unknown', '**Review effort:** BalancedExtra', '<sub>Review effort: Lite', 'Review effort: Balanced', '**Review effort:** Balanced\nCopilot was unable to review this pull request.'])('rejects invalid or incomplete overview format %s', async effort => {
+    const f = adoptionFixture(), original = f.api.getMockImplementation()!;
+    const body = `<!-- ccr-overview-v2 -->\n${effort}`;
+    f.record.evidence.copilotReviewBodySha256 = createHash('sha256').update(body).digest('hex');
+    f.api.mockImplementation(async path => {
+      const value = await original(path);
+      if (/^pulls\/\d+\/reviews\/\d+$/.test(path)) value.body = body;
+      return value;
+    });
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow('review mismatch');
+  });
+  it('accepts a same-repository PR native merged commit with the reviewed tree', async () => {
     const f = adoptionFixture();
     await expect(verifyAdoptionSource(f.record, f.api, f.pull)).resolves.toBeUndefined();
-    f.record.deploymentHead = f.pull.mergeCommit.oid; f.pull.state = 'MERGED';
-    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).resolves.toBeUndefined();
+  });
+  it.each(['open', 'closed', 'fork', 'base', 'unmergedHead', 'draft'])('rejects an unadoptable source: %s', async mode => {
+    const f = adoptionFixture();
+    if (mode === 'open') f.pull.state = 'OPEN';
+    if (mode === 'closed') f.pull.state = 'CLOSED';
+    if (mode === 'fork') f.pull.headRepository.nameWithOwner = 'other/steward';
+    if (mode === 'base') f.pull.baseRefName = 'main';
+    if (mode === 'unmergedHead') f.record.deploymentHead = f.record.reviewedHead;
+    if (mode === 'draft') f.pull.isDraft = true;
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow('merge identity changed');
+    expect(f.api).not.toHaveBeenCalled();
   });
   it.each(['head', 'merge', 'tree', 'signature', 'ci', 'copilot', 'codex', 'checkApp', 'checkPR', 'checkSuite', 'runPath', 'reviewState', 'reviewBody', 'incompleteReview'])('rejects altered adoption evidence: %s', async mode => {
     const f = adoptionFixture(), original = f.api.getMockImplementation()!;
     if (mode === 'head') f.pull.headRefOid = 'b'.repeat(40);
-    if (mode === 'merge') f.record.deploymentHead = 'b'.repeat(40);
+    if (mode === 'merge') f.record.deploymentHead = 'd'.repeat(40);
     f.api.mockImplementation(async path => {
       const value = await original(path);
       if (mode === 'tree' && path.startsWith('commits/')) value.commit.tree.sha = 'b'.repeat(40);
