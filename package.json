@@ -18,7 +18,7 @@
     "verify:workflows": "node scripts/verify-workflows.mjs",
     "verify": "npm run test && npm run typecheck && npm run verify:config && npm run verify:dist && npm run verify:workflows",
     "test:template": "uv run --project tools/template --frozen python -m unittest discover -s tools/template -p test_*.py -v",
-    "test:private-dependencies": "node --test scripts/test/private-dependencies.test.mjs",
+    "test:private-dependencies": "node --test scripts/test/private-dependencies.test.mjs scripts/test/private-lifecycle.test.mjs",
     "test:settings-events": "npm run test --workspace=@splrad/settings-events"
   },
   "dependencies": {

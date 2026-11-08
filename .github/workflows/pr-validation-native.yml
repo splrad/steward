@@ -7,6 +7,8 @@ on:
 permissions:
   contents: read
   pull-requests: read
+env:
+  PRIVATE_GOVERNANCE_REPOSITORY_ID: ${{ vars.STEWARD_PRIVATE_GOVERNANCE_REPOSITORY_ID }}
 concurrency:
   group: native-validation-${{ github.repository_id }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -71,7 +73,6 @@ jobs:
       - id: identity
         run: node policy/scripts/validation-input.mjs
         env:
-          PRIVATE_GOVERNANCE_REPOSITORY_ID: ${{ vars.STEWARD_PRIVATE_GOVERNANCE_REPOSITORY_ID }}
           VALIDATION_EVIDENCE: validation-scope.json
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: scope
@@ -382,7 +383,7 @@ jobs:
           DEPENDENCY_MODE: ${{ needs.scope.outputs.dependency-mode }}
         run: |
           case "$DEPENDENCY_MODE" in
-            native|private-administrator|private-governance) ;;
+            native|private-administrator|private-governance|private-lifecycle) ;;
             *) echo 'Missing trusted dependency mode'; exit 1 ;;
           esac
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -453,7 +454,6 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          PRIVATE_GOVERNANCE_REPOSITORY_ID: ${{ vars.STEWARD_PRIVATE_GOVERNANCE_REPOSITORY_ID }}
           PRIVATE_DEPENDENCY_EVIDENCE: ${{ github.workspace }}/private-dependency-evidence
           MISE_SAFE: '1'
           MISE_LOCKED: '1'
