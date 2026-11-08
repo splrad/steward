@@ -58,17 +58,40 @@
         "originalIdentifiers": []
       },
       "configVersion": "e10-business-20261108",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "originalIdentifiers": [],
+        "segmentIndex": 0,
+        "problemZh": "原文指出存在“Duplicate 'if' condition”，即 `if` 条件重复。",
+        "impactZh": "原文未直接量化影响，但该表述指向条件分支重复带来的逻辑问题。",
+        "suggestionZh": "原文未在该片段给出具体改法。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-08T14:13:11.282Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3801,
+                "outputTokens": 1791
+              }
+            ],
+            "totalNanoAiu": 3172575000,
+            "aiCredits": 3.172575,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-08T14:14:11.282Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     },
     "10798db78791bc643bcf9e69d9de4a17fd55913a4f75b523be51ab40c1a7b069": {
       "key": "10798db78791bc643bcf9e69d9de4a17fd55913a4f75b523be51ab40c1a7b069",
@@ -82,17 +105,40 @@
         "originalIdentifiers": []
       },
       "configVersion": "e10-business-20261108",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "originalIdentifiers": [],
+        "segmentIndex": 1,
+        "problemZh": "原文表示“这个条件与另一个条件重复”，但该片段未给出完整被重复对象。",
+        "impactZh": "原文未说明。",
+        "suggestionZh": "原文未说明。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-08T14:13:11.282Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3801,
+                "outputTokens": 1791
+              }
+            ],
+            "totalNanoAiu": 3172575000,
+            "aiCredits": 3.172575,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-08T14:14:11.282Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     },
     "0c34b495733bb661983bb1d8a59b6d56ad1a6676e64ff386143966d220da09f3": {
       "key": "0c34b495733bb661983bb1d8a59b6d56ad1a6676e64ff386143966d220da09f3",
@@ -106,17 +152,40 @@
         "originalIdentifiers": []
       },
       "configVersion": "e10-business-20261108",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "originalIdentifiers": [],
+        "segmentIndex": 2,
+        "problemZh": "原文给出重复条件相关表达式为 `value === 'first'`。",
+        "impactZh": "原文未说明。",
+        "suggestionZh": "原文未说明。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-08T14:13:11.282Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3801,
+                "outputTokens": 1791
+              }
+            ],
+            "totalNanoAiu": 3172575000,
+            "aiCredits": 3.172575,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-08T14:14:11.282Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     },
     "e57ec5945e1877a7a3bf698b8388098d796f682ab980fe5f1461062dc369c9aa": {
       "key": "e57ec5945e1877a7a3bf698b8388098d796f682ab980fe5f1461062dc369c9aa",
@@ -130,17 +199,40 @@
         "originalIdentifiers": []
       },
       "configVersion": "e10-business-20261108",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "originalIdentifiers": [],
+        "segmentIndex": 3,
+        "problemZh": "该片段仅为标点符号，原文未说明具体问题。",
+        "impactZh": "原文未说明。",
+        "suggestionZh": "原文未说明。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-08T14:13:11.282Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3801,
+                "outputTokens": 1791
+              }
+            ],
+            "totalNanoAiu": 3172575000,
+            "aiCredits": 3.172575,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-08T14:14:11.282Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     },
     "ae867a6123f25990665aa0655533656c5e4a9fbd7d3540b92bb1c1bd9a2bffce": {
       "key": "ae867a6123f25990665aa0655533656c5e4a9fbd7d3540b92bb1c1bd9a2bffce",
@@ -154,17 +246,40 @@
         "originalIdentifiers": []
       },
       "configVersion": "e10-business-20261108",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "originalIdentifiers": [],
+        "segmentIndex": 4,
+        "problemZh": "该片段为分隔符 `---`，原文未说明具体问题。",
+        "impactZh": "原文未说明。",
+        "suggestionZh": "原文未说明。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-08T14:13:11.282Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3801,
+                "outputTokens": 1791
+              }
+            ],
+            "totalNanoAiu": 3172575000,
+            "aiCredits": 3.172575,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-08T14:14:11.282Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     },
     "b26ab26b46c034cba54e9087a7fe893c4b29c452dc4bf415680c62ccb329da86": {
       "key": "b26ab26b46c034cba54e9087a7fe893c4b29c452dc4bf415680c62ccb329da86",
@@ -178,17 +293,40 @@
         "originalIdentifiers": []
       },
       "configVersion": "e10-business-20261108",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "originalIdentifiers": [],
+        "segmentIndex": 5,
+        "problemZh": "原文开始说明“修复 if 条件重复”的建议背景，但该片段不完整。",
+        "impactZh": "原文未说明。",
+        "suggestionZh": "原文意图是处理重复条件，但该片段未给出完整修正句。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-08T14:13:11.282Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3801,
+                "outputTokens": 1791
+              }
+            ],
+            "totalNanoAiu": 3172575000,
+            "aiCredits": 3.172575,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-08T14:14:11.282Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     },
     "0e89e4145286c1bcd42f5f5bb236ef667c546b4a30ff99d791ff9dd098898dfa": {
       "key": "0e89e4145286c1bcd42f5f5bb236ef667c546b4a30ff99d791ff9dd098898dfa",
@@ -202,17 +340,40 @@
         "originalIdentifiers": []
       },
       "configVersion": "e10-business-20261108",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "originalIdentifiers": [],
+        "segmentIndex": 6,
+        "problemZh": "该片段仅为 `if` 关键字，单独不足以构成完整问题描述。",
+        "impactZh": "原文未说明。",
+        "suggestionZh": "原文未说明。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-08T14:13:11.282Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3801,
+                "outputTokens": 1791
+              }
+            ],
+            "totalNanoAiu": 3172575000,
+            "aiCredits": 3.172575,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-08T14:14:11.282Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     },
     "471a2a244e3e60000b8e93249647d9d0753d1c606ae040bbfaee970e34b9c5a3": {
       "key": "471a2a244e3e60000b8e93249647d9d0753d1c606ae040bbfaee970e34b9c5a3",
@@ -226,17 +387,40 @@
         "originalIdentifiers": []
       },
       "configVersion": "e10-business-20261108",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "originalIdentifiers": [],
+        "segmentIndex": 7,
+        "problemZh": "该片段仅为 `/`，原文未说明具体问题。",
+        "impactZh": "原文未说明。",
+        "suggestionZh": "原文未说明。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-08T14:13:11.282Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3801,
+                "outputTokens": 1791
+              }
+            ],
+            "totalNanoAiu": 3172575000,
+            "aiCredits": 3.172575,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-08T14:14:11.282Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     },
     "500e8d487416a7edd9bb4efba5301c7285341e803337db2a5b8cde650aec3d62": {
       "key": "500e8d487416a7edd9bb4efba5301c7285341e803337db2a5b8cde650aec3d62",
@@ -250,17 +434,40 @@
         "originalIdentifiers": []
       },
       "configVersion": "e10-business-20261108",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "originalIdentifiers": [],
+        "segmentIndex": 8,
+        "problemZh": "该片段仅为 `else if`，指向条件链语境但不含完整问题陈述。",
+        "impactZh": "原文未说明。",
+        "suggestionZh": "原文未说明。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-08T14:13:11.282Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3801,
+                "outputTokens": 1791
+              }
+            ],
+            "totalNanoAiu": 3172575000,
+            "aiCredits": 3.172575,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-08T14:14:11.282Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     },
     "44b0b46dadf21067d6d68ef78d4a81771e7799363ba463c61cea8370c368f56d": {
       "key": "44b0b46dadf21067d6d68ef78d4a81771e7799363ba463c61cea8370c368f56d",
@@ -274,17 +481,40 @@
         "originalIdentifiers": []
       },
       "configVersion": "e10-business-20261108",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "originalIdentifiers": [],
+        "segmentIndex": 9,
+        "problemZh": "原文在 `if`/`else if` 链中指出存在重复条件分支问题。",
+        "impactZh": "原文明确提到会出现“unreachable duplicate branches”（不可达的重复分支）。",
+        "suggestionZh": "原文建议确保每个条件唯一，或移除不可达的重复分支。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-08T14:13:11.282Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3801,
+                "outputTokens": 1791
+              }
+            ],
+            "totalNanoAiu": 3172575000,
+            "aiCredits": 3.172575,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-08T14:14:11.282Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     },
     "c633f99ad6d00485ad0204e1ae7d1c4001f397c4a1acd87ea7355e492edded13": {
       "key": "c633f99ad6d00485ad0204e1ae7d1c4001f397c4a1acd87ea7355e492edded13",
