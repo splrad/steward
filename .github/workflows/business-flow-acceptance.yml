@@ -6,7 +6,7 @@ on:
         description: Approved single consumer
         required: true
         type: choice
-        options: [quality, release, quality-initialize]
+        options: [quality, release, quality-initialize, release-initialize]
       approved_sha:
         description: Exact adopted controller SHA
         required: true
@@ -34,7 +34,7 @@ jobs:
       contents: read
       copilot-requests: write
     environment:
-      name: ${{ inputs.consumer == 'release' && 'steward-release' || 'steward-release-notes' }}
+      name: ${{ (inputs.consumer == 'release' || inputs.consumer == 'release-initialize') && 'steward-release' || 'steward-release-notes' }}
       deployment: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
