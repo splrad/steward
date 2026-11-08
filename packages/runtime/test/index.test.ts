@@ -6,6 +6,7 @@ import repositoryCatalog from "../../../config/repositories.json" with { type: "
 const originalRiskDefinitions = semanticCatalog.roles.riskFlags.definitions;
 const originalReviewTrigger = repositoryCatalog.repositories["1296724484"].copilotReviewTrigger;
 
+describe.each([undefined, 'true'])('shared runtime with retirement=%s', retirement => {
 let privateKey = "";
 beforeAll(() => {
   privateKey = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } }).privateKey;
@@ -18,7 +19,7 @@ afterEach(() => {
 });
 
 const baseEnv = (): Env => ({
-  LEGACY_RELEASE_RETIRED: "true",
+  LEGACY_RELEASE_RETIRED: retirement,
   ORGANIZATION_ID: "302208797",
   ORGANIZATION_LOGIN: "splrad",
   APP_ID: "4243096",
@@ -797,4 +798,6 @@ describe("人工 PR 流程与议题自动化退役", () => {
     }
     expect(fetch).not.toHaveBeenCalled();
   });
+});
+
 });

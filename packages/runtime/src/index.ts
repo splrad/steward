@@ -1,4 +1,4 @@
-import { legacyReleaseRetired, assertLegacyReleaseActive } from './release-retirement.js';
+import { legacyReleaseRetired, assertLegacyReleaseDispatchActive } from './release-retirement.js';
 import { SerialTaskQueue } from './serial-task-queue.js';
 import { settledPool } from "./settled-pool.js";
 import { evaluatorSha, trustedContractAuthorities } from './workflow-evaluator.js';
@@ -47,10 +47,10 @@ async function dispatcher(env: Env): Promise<GitHubClient> {
   return new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA);
 }
 async function sendWithClient(env: Env, client: GitHubClient, workflow: string, inputs: Record<string, string>) {
-  if (['release.yml', 'release-build.yml', 'release-build-complete.yml'].includes(workflow)) assertLegacyReleaseActive(env);
+  assertLegacyReleaseDispatchActive(env, workflow);
   const [owner, repo] = env.STEWARDSHIP_REPOSITORY.split("/") as [string, string]; await dispatchWorkflow(client, { owner, repo, workflow, policySha: env.POLICY_SHA, inputs }); }
 async function send(env: Env, workflow: string, inputs: Record<string, string>) {
-  if (['release.yml', 'release-build.yml', 'release-build-complete.yml'].includes(workflow)) assertLegacyReleaseActive(env);
+  assertLegacyReleaseDispatchActive(env, workflow);
   await sendWithClient(env, await dispatcher(env), workflow, inputs); }
 
 async function bodyWriteClient(env: Env, repositoryId: number): Promise<GitHubClient> {
