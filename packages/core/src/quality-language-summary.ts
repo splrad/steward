@@ -65,19 +65,34 @@ const outerRanges = (ranges: SourceRange[]) => {
 export function prepareQualitySource(source: QualitySource): QualityPrepared {
   validateQualitySource(source);
   const body=source.bodyMarkdown, tree=unified().use(remarkParse).parse(body);
-  const blocks:SourceRange[]=[], inline:SourceRange[]=[], markup:SourceRange[]=[], boundaries:SourceRange[]=[];
+  const blocks:SourceRange[]=[], inline:SourceRange[]=[], links:SourceRange[]=[], htmlRanges:SourceRange[]=[],
+    markup:SourceRange[]=[], boundaries:SourceRange[]=[];
   const blockTags=new Set(['address','article','aside','blockquote','br','dd','details','div','dl','dt','figcaption','figure','footer','h1','h2','h3','h4','h5','h6','header','hr','li','main','nav','ol','p','section','summary','table','tbody','td','th','thead','tr','ul']);
   const markdown=(node:any)=>{
-    if(node.type==='code'||node.type==='inlineCode') {
-      const start=node.position?.start.offset,end=node.position?.end.offset;
+    const start=node.position?.start.offset,end=node.position?.end.offset;
+    if(['code','inlineCode','html','link','linkReference','definition'].includes(node.type)) {
       requireQuality(start!==undefined&&end!==undefined,'MARKDOWN_POSITION');
-      (node.type==='code'?blocks:inline).push({start,end});
-    } else if(node.children)node.children.forEach(markdown);
+      const range={start,end};
+      if(node.type==='code')blocks.push(range);
+      else if(node.type==='html')htmlRanges.push(range);
+      else {
+        inline.push(range);
+        if(node.type==='link'||node.type==='linkReference') {
+          links.push(range);
+          const first=node.children?.[0]?.position?.start.offset,last=node.children?.at(-1)?.position?.end.offset;
+          if(first!==undefined&&last!==undefined)markup.push({start,end:first},{start:last,end});
+          else markup.push(range);
+        }
+      }
+    }
+    if(node.children)node.children.forEach(markdown);
   };
   markdown(tree);
-  // Offsets remain UTF-16 source offsets, including CRLF and supplementary characters.
-  // Markdown code is masked so literal <pre>/<code> inside it cannot become HTML.
-  const html=parseFragment(maskRange(body,[...blocks,...inline]),{sourceCodeLocationInfo:true});
+  // Only mdast HTML ranges enter the HTML parser. Escaped tags, code, autolinks and
+  // Markdown link targets are not HTML. Masking retains UTF-16/CRLF source offsets.
+  let htmlInput=body.replace(/[^\r\n]/g,' ');
+  for(const range of htmlRanges)htmlInput=htmlInput.slice(0,range.start)+rawRange(body,range)+htmlInput.slice(range.end);
+  const html=parseFragment(htmlInput,{sourceCodeLocationInfo:true});
   const visit=(node:DefaultTreeAdapterTypes.Node)=>{
     const location=node.sourceCodeLocation;
     if(node.nodeName==='#comment'&&location) {blocks.push({start:location.startOffset,end:location.endOffset});return;}
@@ -87,7 +102,10 @@ export function prepareQualitySource(source: QualitySource): QualityPrepared {
         if(['pre','script','style'].includes(node.tagName)) {
           blocks.push({start:location.startOffset,end:location.endOffset});return;
         }
-        if(node.tagName==='code'||node.tagName==='a')inline.push({start:location.startOffset,end:location.endOffset});
+        if(node.tagName==='code'||node.tagName==='a') {
+          const range={start:location.startOffset,end:location.endOffset};inline.push(range);
+          if(node.tagName==='a')links.push(range);
+        }
         for(const tag of [location.startTag,location.endTag])if(tag){
           const range={start:tag.startOffset,end:tag.endOffset};markup.push(range);
           if(blockTags.has(node.tagName))boundaries.push(range);
@@ -105,9 +123,7 @@ export function prepareQualitySource(source: QualitySource): QualityPrepared {
   for(const range of protectedBlocks) {prose+=body.slice(offset,range.start)+'\n\n';offset=range.end;}
   prose+=body.slice(offset);
   // The language decision ignores markup, code and link destinations, but never HTML prose.
-  let probe=maskRange(body,outerRanges([...protectedBlocks,...inline.filter(range=>{
-    const text=rawRange(body,range);return !/^<a(?:\s|>)/i.test(text);
-  }),...markup]));
+  let probe=maskRange(body,outerRanges([...protectedBlocks,...inline.filter(range=>!links.some(link=>link.start===range.start&&link.end===range.end)),...markup]));
   for(const range of boundaries)probe=probe.slice(0,range.start)+'\n'.repeat(Math.min(2,range.end-range.start))
     +' '.repeat(Math.max(0,range.end-range.start-2))+probe.slice(range.end);
   const chinese=probe.split(/\n\s*\n/u).filter(x=>x.trim()).every(p=>{
@@ -159,7 +175,7 @@ export function prepareQualitySource(source: QualitySource): QualityPrepared {
     sourceCommentId:source.sourceCommentId,sourceCommit:source.sourceCommit,sourceUrl:source.sourceUrl,severity:source.severity,
     bodyMarkdown,segmentIndex,originalIdentifiers:[...new Set([
       ...[...bodyMarkdown.matchAll(/`([^`\n]+)`/g)].map(m=>m[1]!),
-      ...inlineValues.filter(value=>/^</.test(value)&&bodyMarkdown.includes(value)),
+      ...inlineValues.filter(value=>/^[<[]/.test(value)&&bodyMarkdown.includes(value)),
       ...(bodyMarkdown.match(/[\w.-]+(?:\/[\w.-]+)*/g)??[]).flatMap(value=>value.includes('/')
         ?[value]:value.match(/\b[A-Z][A-Z0-9_]+(?:-[A-Z0-9]+)*\b/g)??[]),
     ])],

@@ -34,6 +34,35 @@ it.each([
   expect(result.segments.map(s=>s.bodyMarkdown).join('')).toBe(body);
 });
 
+it.each([
+  'Escape \\<pre> before rendering. This causes data loss.',
+  'Do not execute \\<script> or \\<style> here. Preserve the explanation.',
+  'See [the literal target](https://example.com/<pre>) before rendering.',
+  'Use `<pre>` literally. The following explanation must remain.',
+])('respects Markdown escapes/code/link targets before recognizing HTML: %s',body=>{
+  const p=prepareQualitySource(source(body));
+  expect(p.preservedBlocks).toEqual([]);
+  expect(p.segments.map(s=>s.bodyMarkdown).join('')).toBe(body);
+});
+
+it('protects Markdown links and reference definitions while classifying only link labels',()=>{
+  const link='[complete English label](https://example.com/path/to/file.ts "title")';
+  const body='Check inputs. '.repeat(438)+link+' Then handle errors. '.repeat(500);
+  const p=prepareQualitySource(source(body));
+  expect(p.segments.map(s=>s.bodyMarkdown).join('')).toBe(body);
+  expect(p.segments.filter(s=>s.bodyMarkdown.includes(link))).toHaveLength(1);
+  expect(p.segments.flatMap(s=>s.originalIdentifiers)).toContain(link);
+  const definition='[original]: https://example.com/path/to/file.ts "Original title"';
+  const reference=prepareQualitySource(source('Read [the explanation][original].\n\n'+definition));
+  expect(reference.segments.flatMap(s=>s.originalIdentifiers)).toContain('[the explanation][original]');
+  expect(reference.segments.flatMap(s=>s.originalIdentifiers)).toContain(definition);
+  expect(prepareQualitySource(source('[中文](english-target)')).chinese).toBe(true);
+  expect(prepareQualitySource(source('[中文][EnglishReference]\n\n[EnglishReference]: english-target')).chinese).toBe(true);
+  expect(prepareQualitySource(source('[English explanation](中文)')).chinese).toBe(false);
+  expect(prepareQualitySource(source('Read [<code>src/file.ts</code> explanation](target).')).segments[0]!.bodyMarkdown)
+    .toContain('[<code>src/file.ts</code> explanation](target)');
+});
+
 it('keeps Markdown and HTML code/log bytes and treats literal tags inside code as code',()=>{
   const md='```text\r\n<pre>EXACT $text 🧪</pre>\r\n```';
   const html='<pre class="log">\r\n<code>EXACT &lt;value&gt;\r\n\tTOKEN</code>\r\n</pre>';
