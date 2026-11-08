@@ -28,6 +28,7 @@
     "ajv-formats": "3.0.1",
     "minimatch": "10.2.6",
     "mustache": "4.2.0",
+    "parse5": "8.1.1",
     "remark-parse": "11.0.0",
     "semver": "7.8.5",
     "unified": "11.0.5",

@@ -1,6 +1,7 @@
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
+import { parseFragment, type DefaultTreeAdapterTypes } from 'parse5';
 import schema from '../../../schema/quality-language-output.schema.json' with { type: 'json' };
 import { sha256Hex } from './fingerprint.js';
 
@@ -38,55 +39,136 @@ export function validateQualitySource(source: QualitySource): void {
   requireQuality(url.origin === 'https://github.com' && !url.username && !url.password && !url.port, 'SOURCE_URL');
 }
 
-/** Preserve code/log blocks as original bytes; only prose is sent for translation. */
+/** A parser revision is part of every new key; legacy entries remain readable history. */
+export const QUALITY_SEGMENTER_VERSION = 'markdown-html-v2';
+type SourceRange = {start: number; end: number};
+const rawRange = (body: string, range: SourceRange) => body.slice(range.start, range.end);
+const maskRange = (body: string, ranges: SourceRange[]) => {
+  let masked = body;
+  for (const range of [...ranges].sort((a,b)=>b.start-a.start))
+    masked = masked.slice(0,range.start)+rawRange(body,range).replace(/[^\r\n]/g,' ')+masked.slice(range.end);
+  return masked;
+};
+const outerRanges = (ranges: SourceRange[]) => {
+  const result: SourceRange[] = [];
+  for (const range of ranges.sort((a,b)=>a.start-b.start||b.end-a.end)) {
+    if (result.length && range.start < result.at(-1)!.end) {
+      result.at(-1)!.end=Math.max(result.at(-1)!.end,range.end);
+      continue;
+    }
+    result.push(range);
+  }
+  return result;
+};
+
+/** Keep original markup in model input. HTML parsing identifies code, not text to discard. */
 export function prepareQualitySource(source: QualitySource): QualityPrepared {
   validateQualitySource(source);
-  const tree = unified().use(remarkParse).parse(source.bodyMarkdown), preservedBlocks: string[] = [];
-  const ranges: {start: number; end: number}[] = [];
-  const visit = (node: any) => {
-    if (node.type === 'code' || node.type === 'html') {
-      const start = node.position?.start.offset, end = node.position?.end.offset;
-      requireQuality(start !== undefined && end !== undefined, 'MARKDOWN_POSITION'); ranges.push({start, end});
-    } else if (node.children) node.children.forEach(visit);
+  const body=source.bodyMarkdown, tree=unified().use(remarkParse).parse(body);
+  const blocks:SourceRange[]=[], inline:SourceRange[]=[], markup:SourceRange[]=[], boundaries:SourceRange[]=[];
+  const blockTags=new Set(['address','article','aside','blockquote','br','dd','details','div','dl','dt','figcaption','figure','footer','h1','h2','h3','h4','h5','h6','header','hr','li','main','nav','ol','p','section','summary','table','tbody','td','th','thead','tr','ul']);
+  const markdown=(node:any)=>{
+    if(node.type==='code'||node.type==='inlineCode') {
+      const start=node.position?.start.offset,end=node.position?.end.offset;
+      requireQuality(start!==undefined&&end!==undefined,'MARKDOWN_POSITION');
+      (node.type==='code'?blocks:inline).push({start,end});
+    } else if(node.children)node.children.forEach(markdown);
   };
-  visit(tree); ranges.sort((a,b) => a.start-b.start);
-  let prose = '', offset = 0;
-  for (const range of ranges) {
-    prose += source.bodyMarkdown.slice(offset, range.start); preservedBlocks.push(source.bodyMarkdown.slice(range.start, range.end));
-    prose += '\n\n'; offset = range.end;
-  }
-  prose += source.bodyMarkdown.slice(offset);
-  // A Chinese explanation containing Latin identifiers is already readable. A
-  // separate English paragraph remains a translation candidate.
-  const paragraphs = prose.split(/\n\s*\n/u).filter(x => x.trim());
-  const chinese = paragraphs.every(p => {
-    const prose=p.replace(/`[^`]*`/g, '').replace(/https?:\/\/\S+|(?:[\w.-]+\/)+[\w.-]+/g, '');
-    const han=prose.match(/\p{Script=Han}/gu)?.length??0,words=prose.match(/\b[A-Za-z]+\b/g)?.length??0;
+  markdown(tree);
+  // Offsets remain UTF-16 source offsets, including CRLF and supplementary characters.
+  // Markdown code is masked so literal <pre>/<code> inside it cannot become HTML.
+  const html=parseFragment(maskRange(body,[...blocks,...inline]),{sourceCodeLocationInfo:true});
+  const visit=(node:DefaultTreeAdapterTypes.Node)=>{
+    const location=node.sourceCodeLocation;
+    if(node.nodeName==='#comment'&&location) {blocks.push({start:location.startOffset,end:location.endOffset});return;}
+    if('tagName' in node) {
+      const location=node.sourceCodeLocation;
+      if(location) {
+        if(['pre','script','style'].includes(node.tagName)) {
+          blocks.push({start:location.startOffset,end:location.endOffset});return;
+        }
+        if(node.tagName==='code'||node.tagName==='a')inline.push({start:location.startOffset,end:location.endOffset});
+        for(const tag of [location.startTag,location.endTag])if(tag){
+          const range={start:tag.startOffset,end:tag.endOffset};markup.push(range);
+          if(blockTags.has(node.tagName))boundaries.push(range);
+        }
+      }
+      if('content' in node)visit(node.content as DefaultTreeAdapterTypes.DocumentFragment);
+    }
+    if('childNodes' in node)node.childNodes.forEach(visit);
+  };
+  visit(html);
+  const protectedBlocks=outerRanges(blocks),preservedBlocks=protectedBlocks.map(range=>rawRange(body,range));
+  const inlineValues=outerRanges(inline.filter(range=>!protectedBlocks.some(block=>range.start>=block.start&&range.end<=block.end)))
+    .map(range=>rawRange(body,range));
+  let prose='',offset=0;
+  for(const range of protectedBlocks) {prose+=body.slice(offset,range.start)+'\n\n';offset=range.end;}
+  prose+=body.slice(offset);
+  // The language decision ignores markup, code and link destinations, but never HTML prose.
+  let probe=maskRange(body,outerRanges([...protectedBlocks,...inline.filter(range=>{
+    const text=rawRange(body,range);return !/^<a(?:\s|>)/i.test(text);
+  }),...markup]));
+  for(const range of boundaries)probe=probe.slice(0,range.start)+'\n'.repeat(Math.min(2,range.end-range.start))
+    +' '.repeat(Math.max(0,range.end-range.start-2))+probe.slice(range.end);
+  const chinese=probe.split(/\n\s*\n/u).filter(x=>x.trim()).every(p=>{
+    const text=p.replace(/`[^`]*`/g,'').replace(/https?:\/\/\S+|(?:[\w.-]+\/)+[\w.-]+/g,'');
+    const han=text.match(/\p{Script=Han}/gu)?.length??0,words=text.match(/\b[A-Za-z]+\b/g)?.length??0;
     return words===0||han>0&&words<=han;
   });
-  const chunks: string[] = [];
-  for (const paragraph of paragraphs) {
-    let chunk = '';
-    for (const sentence of paragraph.match(/[^。！？.!?]+[。！？.!?]*|[。！？.!?]+/gu) ?? [paragraph]) {
-      if (utf8(chunk + sentence) <= 6 * 1024) { chunk += sentence; continue; }
-      if (chunk) { chunks.push(chunk); chunk = ''; }
-      for (const cp of sentence) { if (utf8(chunk + cp) > 6 * 1024) { chunks.push(chunk); chunk = ''; } chunk += cp; }
-    }
-    if (chunk) chunks.push(chunk);
+  if(chinese)return {source,segments:[],preservedBlocks,chinese};
+  const chunks:string[]=[];let chunk='';
+  const flush=()=>{if(chunk){chunks.push(chunk);chunk='';}};
+  const append=(text:string,atomic=false)=>{
+    if(utf8(chunk+text)<=6*1024){chunk+=text;return;}
+    flush();
+    if(utf8(text)<=6*1024){chunk=text;return;}
+    // Never split a code span or link into misleading fragments to satisfy the bound.
+    requireQuality(!atomic,'INPUT_LIMIT');
+    for(const cp of text){if(utf8(chunk+cp)>6*1024)flush();chunk+=cp;}
+  };
+  const values=[...new Set(inlineValues)].sort((a,b)=>b.length-a.length);
+  const byStart=new Map<string,string[]>();
+  for(const value of values)if(value){const group=byStart.get(value[0]!)??[];group.push(value);byStart.set(value[0]!,group);}
+  const matchAt=(text:string,index:number)=>byStart.get(text[index]!)?.find(value=>text.startsWith(value,index));
+  const paragraphs:string[]=[];let start=0;
+  for(let i=0;i<prose.length;) {
+    const value=matchAt(prose,i);
+    if(value){i+=value.length;continue;}
+    const separator=/[\r\n]/.test(prose[i]!)?prose.slice(i).match(/^\r?\n\s*\n/u)?.[0]:undefined;
+    if(separator){paragraphs.push(prose.slice(start,i));i+=separator.length;start=i;}else i++;
   }
-  const segments = chinese ? [] : chunks.map((bodyMarkdown, segmentIndex): QualitySegment => ({
-    sourceCommentId: source.sourceCommentId, sourceCommit: source.sourceCommit, sourceUrl: source.sourceUrl, severity: source.severity,
-    bodyMarkdown, segmentIndex, originalIdentifiers: [...new Set([
-      ...[...bodyMarkdown.matchAll(/`([^`\n]+)`/g)].map(m => m[1]!),
-      ...(bodyMarkdown.match(/[\w.-]+(?:\/[\w.-]+)*/g) ?? []).flatMap(value => value.includes('/')
-        ? [value] : value.match(/\b[A-Z][A-Z0-9_]+(?:-[A-Z0-9]+)*\b/g) ?? []),
+  paragraphs.push(prose.slice(start));
+  for(const paragraph of paragraphs.filter(x=>x.trim())) {
+    if(utf8(paragraph)<=6*1024){
+      const combined=chunk?chunk+'\n\n'+paragraph:paragraph;
+      if(utf8(combined)<=6*1024)chunk=combined;else {flush();chunk=paragraph;}
+      continue;
+    }
+    flush();
+    let sentence='';
+    for(let i=0;i<paragraph.length;) {
+      const value=matchAt(paragraph,i);
+      if(value){if(sentence){append(sentence);sentence='';}append(value,true);i+=value.length;continue;}
+      const cp=String.fromCodePoint(paragraph.codePointAt(i)!);sentence+=cp;i+=cp.length;
+      if(/[。！？.!?]/u.test(cp)){append(sentence);sentence='';}
+    }
+    if(sentence)append(sentence);
+  }
+  flush();
+  const segments=chunks.map((bodyMarkdown,segmentIndex):QualitySegment=>({
+    sourceCommentId:source.sourceCommentId,sourceCommit:source.sourceCommit,sourceUrl:source.sourceUrl,severity:source.severity,
+    bodyMarkdown,segmentIndex,originalIdentifiers:[...new Set([
+      ...[...bodyMarkdown.matchAll(/`([^`\n]+)`/g)].map(m=>m[1]!),
+      ...inlineValues.filter(value=>/^</.test(value)&&bodyMarkdown.includes(value)),
+      ...(bodyMarkdown.match(/[\w.-]+(?:\/[\w.-]+)*/g)??[]).flatMap(value=>value.includes('/')
+        ?[value]:value.match(/\b[A-Z][A-Z0-9_]+(?:-[A-Z0-9]+)*\b/g)??[]),
     ])],
   }));
-  return { source, segments, preservedBlocks, chinese };
+  return {source,segments,preservedBlocks,chinese};
 }
 
 export async function qualitySegmentKey(segment: QualitySegment, configVersion: string) {
-  return qualityDigest([segment.sourceCommentId, segment.sourceCommit, await sha256Hex(segment.bodyMarkdown), configVersion, segment.segmentIndex,
+  return qualityDigest([QUALITY_SEGMENTER_VERSION, segment.sourceCommentId, segment.sourceCommit, await sha256Hex(segment.bodyMarkdown), configVersion, segment.segmentIndex,
     segment.sourceUrl, segment.severity, segment.originalIdentifiers]);
 }
 export function qualityBatchInput(items: QualitySegment[]) {
