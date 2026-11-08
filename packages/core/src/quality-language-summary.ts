@@ -44,12 +44,14 @@ export function validateQualitySource(source: QualitySource): void {
 export const QUALITY_SEGMENTER_VERSION = 'markdown-html-v2';
 type SourceRange = {start: number; end: number};
 const rawRange = (body: string, range: SourceRange) => body.slice(range.start, range.end);
-const maskRange = (body: string, ranges: SourceRange[]) => {
-  let masked = body;
-  for (const range of [...ranges].sort((a,b)=>b.start-a.start))
-    masked = masked.slice(0,range.start)+rawRange(body,range).replace(/[^\r\n]/g,' ')+masked.slice(range.end);
-  return masked;
+const replaceRanges = (body: string, ranges: SourceRange[], render: (text: string, range: SourceRange) => string) => {
+  const parts:string[]=[];let offset=0;
+  for(const range of outerRanges(ranges.map(range=>({...range})))) {
+    parts.push(body.slice(offset,range.start),render(rawRange(body,range),range));offset=range.end;
+  }
+  parts.push(body.slice(offset));return parts.join('');
 };
+const maskRange = (body: string, ranges: SourceRange[]) => replaceRanges(body,ranges,text=>text.replace(/[^\r\n]/g,' '));
 const outerRanges = (ranges: SourceRange[]) => {
   const result: SourceRange[] = [];
   for (const range of ranges.sort((a,b)=>a.start-b.start||b.end-a.end)) {
@@ -90,8 +92,7 @@ export function prepareQualitySource(source: QualitySource): QualityPrepared {
   markdown(tree);
   // Only mdast HTML ranges enter the HTML parser. Escaped tags, code, autolinks and
   // Markdown link targets are not HTML. Masking retains UTF-16/CRLF source offsets.
-  let htmlInput=body.replace(/[^\r\n]/g,' ');
-  for(const range of htmlRanges)htmlInput=htmlInput.slice(0,range.start)+rawRange(body,range)+htmlInput.slice(range.end);
+  const htmlInput=replaceRanges(body.replace(/[^\r\n]/g,' '),htmlRanges,(_text,range)=>rawRange(body,range));
   // Lexical positions also cover tags discarded by fragment DOM construction
   // (body/html/head and out-of-context table tags). Never split their syntax.
   const sax=new SAXParser({sourceCodeLocationInfo:true});
@@ -135,12 +136,13 @@ export function prepareQualitySource(source: QualitySource): QualityPrepared {
   prose+=body.slice(offset);
   // The language decision ignores markup, code and link destinations, but never HTML prose.
   let probe=maskRange(body,outerRanges([...protectedBlocks,...inline.filter(range=>!links.some(link=>link.start===range.start&&link.end===range.end)),...markup]));
-  for(const range of boundaries)probe=probe.slice(0,range.start)+'\n'.repeat(Math.min(2,range.end-range.start))
-    +' '.repeat(Math.max(0,range.end-range.start-2))+probe.slice(range.end);
+  probe=replaceRanges(probe,boundaries,text=>'\n'.repeat(Math.min(2,text.length))+' '.repeat(Math.max(0,text.length-2)));
   const chinese=probe.split(/\n\s*\n/u).filter(x=>x.trim()).every(p=>{
     const text=p.replace(/`[^`]*`/g,'').replace(/https?:\/\/\S+|(?:[\w.-]+\/)+[\w.-]+/g,'');
-    const han=text.match(/\p{Script=Han}/gu)?.length??0,words=text.match(/\b[A-Za-z]+\b/g)?.length??0;
-    return words===0||han>0&&words<=han;
+    // Chinese volume must never hide English prose in the same sentence or tag.
+    // Explicit code/link targets are already masked; explicit uppercase compound rule
+    // identifiers remain readable without a translation request.
+    return !/\b[A-Za-z]+\b/.test(text.replace(/\b[A-Z][A-Z0-9]*(?:[_-][A-Z0-9]+)+\b/g,''));
   });
   if(chinese)return {source,segments:[],preservedBlocks,chinese};
   const chunks:string[]=[];let chunk='';

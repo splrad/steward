@@ -209,3 +209,21 @@ it('does not cut an indivisible tag to make a whitespace-only tail valid',()=>{
   expect(Buffer.byteLength(fullTag)).toBe(6144);
   expect(()=>prepareQualitySource(source('English. '+fullTag+'\n\n'))).toThrow('QUALITY_INPUT_LIMIT');
 });
+
+
+it.each(['<p>请检查。Fix bug.</p>','<span>请检查 Fix bug</span>',
+  '<p>请检查输入以便避免后续处理过程中出现不可预期的问题。Retry.</p>',
+  '请检查 Fix bug','<p>Fix bug。请检查输入。</p>','<p>请检查。FIX BUG.</p>'])
+  ('never hides English prose behind Chinese volume in one language unit: %s',body=>{
+    const p=prepareQualitySource(source(body));
+    expect(p.chinese).toBe(false);expect(p.segments.map(s=>s.bodyMarkdown).join('')).toBe(body);
+  });
+
+it('keeps dense HTML UTF-16 positions and complete text through one-pass masks',async()=>{
+  const body='<div>'+Array.from({length:180},(_,i)=>`<span>🧪 请检查 ${i} Fix bug.</span>\r\n`).join('')+'</div>';
+  const p=prepareQualitySource(source(body));
+  expect(p.segments.map(s=>s.bodyMarkdown).join('')).toBe(body);
+  for(const s of p.segments)expect(Buffer.byteLength(s.bodyMarkdown)).toBeLessThanOrEqual(6144);
+  const cache=await reconcileQualitySources(null,context,[source(body)]);
+  expect(decodeQualityCache(JSON.parse(JSON.stringify(cache)),1296724484,304)).toEqual(cache);
+});
