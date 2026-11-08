@@ -24,7 +24,8 @@ export async function readAdoptionRecord(filename, checkout = process.cwd()) {
     || r.accountId !== '5efbba9a3813a37ac45e70cfa9f01cb5' || r.workerName !== 'splrad-steward-runtime'
     || !uuid(r.expectedCurrentVersion) || r.window?.status !== 'confirmed' || typeof r.window.reference !== 'string' || !r.window.reference.trim()
     || !Number.isFinite(Date.parse(r.window.expiresAt)) || Date.parse(r.window.expiresAt) <= Date.now()
-    || ![r.evidence?.validationRunId, r.evidence?.copilotRunId, r.evidence?.copilotReviewId, r.evidence?.codexCommentId].every(v => Number.isSafeInteger(v) && v > 0)) throw new Error('Incomplete central adoption record');
+    || ![r.evidence?.validationRunId, r.evidence?.copilotRunId, r.evidence?.copilotReviewId, r.evidence?.copilotCheckRunId, r.evidence?.codexCommentId].every(v => Number.isSafeInteger(v) && v > 0)
+    || !/^[a-f0-9]{64}$/.test(r.evidence?.copilotReviewBodySha256) || typeof r.evidence?.reviewDecisionReference !== 'string' || !r.evidence.reviewDecisionReference.trim()) throw new Error('Incomplete central adoption record');
   const origin = new URL(r.runtimeOrigin);
   if (origin.protocol !== 'https:' || origin.username || origin.password || origin.port || origin.search || origin.hash || origin.pathname !== '/' || origin.origin !== r.runtimeOrigin) throw new Error('Noncanonical adoption origin');
   return r;
@@ -37,13 +38,27 @@ export async function verifyAdoptionSource(r, api, pull) {
     const commit = await api(`commits/${commitSha}`);
     if (commit.sha !== commitSha || commit.commit?.tree?.sha !== tree || commit.commit?.verification?.verified !== true || commit.commit.verification.reason !== 'valid') throw new Error('Adopted commit/tree/signature mismatch');
   }
-  for (const [id, path] of [[r.evidence.validationRunId, '.github/workflows/pr-validation.yml'], [r.evidence.copilotRunId, null]]) {
+  let copilotRun;
+  const boundPull = value => Array.isArray(value.pull_requests) && value.pull_requests.some(p => p.number === r.pullNumber && p.head?.sha === r.reviewedHead);
+  for (const [id, path] of [[r.evidence.validationRunId, '.github/workflows/pr-validation.yml'], [r.evidence.copilotRunId, 'dynamic/agents/copilot-pull-request-reviewer']]) {
     const evidence = await api(`actions/runs/${id}`);
     if (evidence.head_sha !== r.reviewedHead || evidence.status !== 'completed' || evidence.conclusion !== 'success'
-      || evidence.repository?.full_name !== r.repository || (path ? evidence.path !== path : evidence.name !== 'Running Copilot Code Review')) throw new Error('Adopted validation/review run is not successful for reviewed head');
+      || evidence.repository?.full_name !== r.repository || evidence.path !== path || !boundPull(evidence)) throw new Error('Adopted validation/review run is not successful for reviewed head');
+    if (id === r.evidence.copilotRunId) {
+      if (evidence.event !== 'dynamic') throw new Error('Expected native dynamic Copilot review');
+      copilotRun = evidence;
+    }
   }
+  const check = await api(`check-runs/${r.evidence.copilotCheckRunId}`);
+  if (check.name !== 'copilot-pull-request-reviewer' || check.app?.id !== 15368 || check.head_sha !== r.reviewedHead
+    || check.status !== 'completed' || check.conclusion !== 'success' || !boundPull(check)
+    || !Number.isSafeInteger(copilotRun?.check_suite_id) || check.check_suite?.id !== copilotRun.check_suite_id) throw new Error('Adopted Copilot check is not bound to PR/head/run/App');
   const review = await api(`pulls/${r.pullNumber}/reviews/${r.evidence.copilotReviewId}`);
-  if (review.commit_id !== r.reviewedHead || review.user?.login !== 'copilot-pull-request-reviewer[bot]' || !review.submitted_at) throw new Error('Adopted Copilot review mismatch');
+  if (review.commit_id !== r.reviewedHead || review.user?.login !== 'copilot-pull-request-reviewer[bot]' || !Number.isFinite(Date.parse(review.submitted_at))
+    || !['COMMENTED', 'APPROVED'].includes(review.state) || typeof review.body !== 'string'
+    || !review.body.includes('<!-- ccr-overview-v2 -->') || !/<sub>Review effort: (?:Lite|Balanced|Max)<\/sub>/.test(review.body)
+    || /^>? ?Copilot (?:was |is )?unable to (?:run|review)\b/im.test(review.body)
+    || createHash('sha256').update(review.body).digest('hex') !== r.evidence.copilotReviewBodySha256) throw new Error('Adopted Copilot review mismatch');
   const comment = await api(`issues/comments/${r.evidence.codexCommentId}`);
   const match = /codex-review-state:v1 (.*?) -->/.exec(comment.body ?? '');
   const state = match && JSON.parse(match[1]);

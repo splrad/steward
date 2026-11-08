@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 const modulePath = '../../../scripts/verify-legacy-runtime-retirement.mjs';
 const { verifyLegacyRuntimeRetirement } = await import(modulePath);
@@ -72,13 +73,14 @@ describe('actual maintenance deployment success path', () => {
 
 
 const { readAdoptionRecord, verifyAdoptionSource, verifyNativeTarget } = await import(deployModulePath);
+const reviewBody = '<!-- ccr-overview-v2 -->\n### Changes recommended\n<sub>Review effort: Lite</sub>';
 const adoption = () => ({
   schemaVersion: 1, repository: 'splrad/steward', pullNumber: 400,
   reviewedHead: 'a'.repeat(40), deploymentHead: 'a'.repeat(40), reviewedTree: 'c'.repeat(40), deploymentTree: 'c'.repeat(40),
   bundleSha256: 'd'.repeat(64), policySha: 'e'.repeat(40), evaluatorSha: 'f'.repeat(40),
   accountId: '5efbba9a3813a37ac45e70cfa9f01cb5', workerName: 'splrad-steward-runtime',
   runtimeOrigin: 'https://splrad-steward-runtime.synthetic.workers.dev', expectedCurrentVersion: input.version,
-  evidence: { validationRunId: 1, copilotRunId: 2, copilotReviewId: 3, codexCommentId: 4 },
+  evidence: { validationRunId: 1, copilotRunId: 2, copilotReviewId: 3, codexCommentId: 4, copilotCheckRunId: 5, copilotReviewBodySha256: createHash('sha256').update(reviewBody).digest('hex'), reviewDecisionReference: 'SYNTHETIC CENTRAL ADJUDICATION' },
   window: { status: 'confirmed', reference: 'SYNTHETIC TEST ONLY', expiresAt: '2099-01-01T00:00:00Z' },
 });
 function adoptionFixture() {
@@ -86,8 +88,9 @@ function adoptionFixture() {
   const pull = { number: record.pullNumber, repository: { nameWithOwner: record.repository }, state: 'OPEN', isDraft: false, headRefOid: record.reviewedHead, mergeCommit: { oid: 'b'.repeat(40) } };
   const api = vi.fn(async (path: string): Promise<any> => {
     if (path.startsWith('commits/')) return { sha: path.slice(8), commit: { tree: { sha: record.reviewedTree }, verification: { verified: true, reason: 'valid' } } };
-    if (path.startsWith('actions/runs/')) return { repository: { full_name: record.repository }, head_sha: record.reviewedHead, status: 'completed', conclusion: 'success', path: '.github/workflows/pr-validation.yml', name: 'Running Copilot Code Review' };
-    if (path.startsWith('pulls/')) return { commit_id: record.reviewedHead, user: { login: 'copilot-pull-request-reviewer[bot]' }, submitted_at: '2026-01-01T00:00:00Z' };
+    if (path.startsWith('actions/runs/')) return { repository: { full_name: record.repository }, head_sha: record.reviewedHead, status: 'completed', conclusion: 'success', path: path === 'actions/runs/1' ? '.github/workflows/pr-validation.yml' : 'dynamic/agents/copilot-pull-request-reviewer', event: 'dynamic', check_suite_id: 100, pull_requests: [{ number: record.pullNumber, head: { sha: record.reviewedHead } }] };
+    if (path.startsWith('check-runs/')) return { name: 'copilot-pull-request-reviewer', app: { id: 15368 }, head_sha: record.reviewedHead, status: 'completed', conclusion: 'success', check_suite: { id: 100 }, pull_requests: [{ number: record.pullNumber, head: { sha: record.reviewedHead } }] };
+    if (path.startsWith('pulls/')) return { state: 'COMMENTED', body: reviewBody, commit_id: record.reviewedHead, user: { login: 'copilot-pull-request-reviewer[bot]' }, submitted_at: '2026-01-01T00:00:00Z' };
     return { user: { login: 'chatgpt-codex-connector[bot]' }, issue_url: `https://api.github.com/repos/${record.repository}/issues/${record.pullNumber}`,
       body: `<!-- codex-review-state:v1 ${JSON.stringify(Object.fromEntries(['code_review', 'security_review'].map(key => [key, { commit_sha: record.reviewedHead, status: 'completed', has_any_findings: null }]))) } -->` };
   });
@@ -101,7 +104,7 @@ describe('central adoption record and native deployment identity', () => {
     f.record.deploymentHead = f.pull.mergeCommit.oid; f.pull.state = 'MERGED';
     await expect(verifyAdoptionSource(f.record, f.api, f.pull)).resolves.toBeUndefined();
   });
-  it.each(['head', 'merge', 'tree', 'signature', 'ci', 'copilot', 'codex'])('rejects altered adoption evidence: %s', async mode => {
+  it.each(['head', 'merge', 'tree', 'signature', 'ci', 'copilot', 'codex', 'checkApp', 'checkPR', 'checkSuite', 'runPath', 'reviewState', 'reviewBody', 'incompleteReview'])('rejects altered adoption evidence: %s', async mode => {
     const f = adoptionFixture(), original = f.api.getMockImplementation()!;
     if (mode === 'head') f.pull.headRefOid = 'b'.repeat(40);
     if (mode === 'merge') f.record.deploymentHead = 'b'.repeat(40);
@@ -112,6 +115,16 @@ describe('central adoption record and native deployment identity', () => {
       if (mode === 'ci' && path === 'actions/runs/1') value.conclusion = 'failure';
       if (mode === 'copilot' && path.startsWith('pulls/')) value.commit_id = 'b'.repeat(40);
       if (mode === 'codex' && path.startsWith('issues/')) value.body = value.body.replaceAll('completed', 'running');
+      if (mode === 'checkApp' && path.startsWith('check-runs/')) value.app.id = 1;
+      if (mode === 'checkPR' && path.startsWith('check-runs/')) value.pull_requests[0].number++;
+      if (mode === 'checkSuite' && path.startsWith('check-runs/')) value.check_suite.id++;
+      if (mode === 'runPath' && path === 'actions/runs/2') value.path = '.github/workflows/native-review.yml';
+      if (mode === 'reviewState' && path.startsWith('pulls/')) value.state = 'DISMISSED';
+      if (mode === 'reviewBody' && path.startsWith('pulls/')) value.body = '';
+      if (mode === 'incompleteReview' && path.startsWith('pulls/')) {
+        value.body += '\nCopilot was unable to run its full agentic suite in this review.';
+        f.record.evidence.copilotReviewBodySha256 = createHash('sha256').update(value.body).digest('hex');
+      }
       return value;
     });
     await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow();
