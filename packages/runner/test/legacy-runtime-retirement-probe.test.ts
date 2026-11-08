@@ -74,13 +74,14 @@ describe('actual maintenance deployment success path', () => {
 
 const { readAdoptionRecord, verifyAdoptionSource, verifyNativeTarget } = await import(deployModulePath);
 const reviewBody = '<!-- ccr-overview-v2 -->\n### Changes recommended\n<sub>Review effort: Lite</sub>';
+const codexBody = (head: string) => `<!-- codex-review-state:v1 ${JSON.stringify(Object.fromEntries(['code_review', 'security_review'].map(key => [key, { commit_sha: head, status: 'completed', has_any_findings: null }]))) } -->`;
 const adoption = () => ({
   schemaVersion: 1, repository: 'splrad/steward', pullNumber: 400,
   reviewedHead: 'a'.repeat(40), deploymentHead: 'b'.repeat(40), reviewedTree: 'c'.repeat(40), deploymentTree: 'c'.repeat(40),
   bundleSha256: 'd'.repeat(64), policySha: 'e'.repeat(40), evaluatorSha: 'f'.repeat(40),
   accountId: '5efbba9a3813a37ac45e70cfa9f01cb5', workerName: 'splrad-steward-runtime',
   runtimeOrigin: 'https://splrad-steward-runtime.synthetic.workers.dev', expectedCurrentVersion: input.version,
-  evidence: { validationRunId: 1, validationRunAttempt: 1, copilotRunId: 2, copilotRunAttempt: 1, copilotReviewId: 3, codexCommentId: 4, copilotCheckRunId: 5, copilotReviewBodySha256: createHash('sha256').update(reviewBody).digest('hex'), reviewDecisionReference: 'SYNTHETIC CENTRAL ADJUDICATION' },
+  evidence: { validationRunId: 1, validationRunAttempt: 1, copilotRunId: 2, copilotRunAttempt: 1, copilotReviewId: 3, codexCommentId: 4, codexCommentBodySha256: createHash('sha256').update(codexBody('a'.repeat(40))).digest('hex'), copilotCheckRunId: 5, copilotReviewBodySha256: createHash('sha256').update(reviewBody).digest('hex'), reviewDecisionReference: 'SYNTHETIC CENTRAL ADJUDICATION' },
   window: { status: 'confirmed', reference: 'SYNTHETIC TEST ONLY', expiresAt: '2099-01-01T00:00:00Z' },
 });
 function adoptionFixture() {
@@ -95,7 +96,7 @@ function adoptionFixture() {
     if (path.startsWith('check-runs/')) return { id: 5, started_at: '2026-01-01T00:00:00Z', name: 'copilot-pull-request-reviewer', app: { id: 15368 }, head_sha: record.reviewedHead, status: 'completed', conclusion: 'success', check_suite: { id: 100 }, pull_requests: [{ number: record.pullNumber, head: { sha: record.reviewedHead } }] };
     if (path.startsWith('pulls/')) return { id: 3, state: 'COMMENTED', body: reviewBody, commit_id: record.reviewedHead, user: { login: 'copilot-pull-request-reviewer[bot]' }, submitted_at: '2026-01-01T00:00:00Z' };
     return { user: { login: 'chatgpt-codex-connector[bot]' }, issue_url: `https://api.github.com/repos/${record.repository}/issues/${record.pullNumber}`,
-      body: `<!-- codex-review-state:v1 ${JSON.stringify(Object.fromEntries(['code_review', 'security_review'].map(key => [key, { commit_sha: record.reviewedHead, status: 'completed', has_any_findings: null }]))) } -->` };
+      body: codexBody(record.reviewedHead) };
   });
   return { record, pull, api };
 }
@@ -127,6 +128,20 @@ describe('central adoption record and native deployment identity', () => {
   });
   it('accepts a same-repository PR native merged commit with the reviewed tree', async () => {
     const f = adoptionFixture();
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).resolves.toBeUndefined();
+  });
+  it('rejects changed Codex findings until the central record binds the exact new body', async () => {
+    const f = adoptionFixture(), original = f.api.getMockImplementation()!;
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).resolves.toBeUndefined();
+    const changed = codexBody(f.record.reviewedHead).replaceAll('"has_any_findings":null', '"has_any_findings":true');
+    f.api.mockImplementation(async path => {
+      const value = await original(path);
+      if (path.startsWith('issues/')) value.body = changed;
+      return value;
+    });
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow('Codex comment body changed');
+    f.record.evidence.codexCommentBodySha256 = createHash('sha256').update(changed).digest('hex');
+    // A changed finding requires central adjudication, not a permanent mechanical ban.
     await expect(verifyAdoptionSource(f.record, f.api, f.pull)).resolves.toBeUndefined();
   });
   it.each([1, 2])('requires the exact recorded attempt for run %s, including successful reruns', async id => {
@@ -290,6 +305,7 @@ describe('central adoption record and native deployment identity', () => {
         { ...record, window: { ...record.window, expiresAt: '2020-01-01T00:00:00Z' } },
         { ...record, deploymentTree: 'b'.repeat(40) },
         { ...record, evidence: { ...record.evidence, validationRunId: 0 } },
+        ...[undefined, '', 'invalid'].map(value => ({ ...record, evidence: { ...record.evidence, codexCommentBodySha256: value } })),
         ...['validationRunAttempt', 'copilotRunAttempt'].flatMap(key => [undefined, 0, -1, 1.5].map(value => ({ ...record, evidence: { ...record.evidence, [key]: value } }))),
       ]) {
         await writeFile(file, JSON.stringify(invalid));

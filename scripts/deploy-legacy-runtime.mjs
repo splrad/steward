@@ -25,7 +25,8 @@ export async function readAdoptionRecord(filename, checkout = process.cwd()) {
     || !uuid(r.expectedCurrentVersion) || r.window?.status !== 'confirmed' || typeof r.window.reference !== 'string' || !r.window.reference.trim()
     || !Number.isFinite(Date.parse(r.window.expiresAt)) || Date.parse(r.window.expiresAt) <= Date.now()
     || ![r.evidence?.validationRunId, r.evidence?.validationRunAttempt, r.evidence?.copilotRunId, r.evidence?.copilotRunAttempt, r.evidence?.copilotReviewId, r.evidence?.copilotCheckRunId, r.evidence?.codexCommentId].every(v => Number.isSafeInteger(v) && v > 0)
-    || !/^[a-f0-9]{64}$/.test(r.evidence?.copilotReviewBodySha256) || typeof r.evidence?.reviewDecisionReference !== 'string' || !r.evidence.reviewDecisionReference.trim()) throw new Error('Incomplete central adoption record');
+    || !/^[a-f0-9]{64}$/.test(r.evidence?.copilotReviewBodySha256) || !/^[a-f0-9]{64}$/.test(r.evidence?.codexCommentBodySha256)
+    || typeof r.evidence?.reviewDecisionReference !== 'string' || !r.evidence.reviewDecisionReference.trim()) throw new Error('Incomplete central adoption record');
   const origin = new URL(r.runtimeOrigin);
   if (origin.protocol !== 'https:' || origin.username || origin.password || origin.port || origin.search || origin.hash || origin.pathname !== '/' || origin.origin !== r.runtimeOrigin) throw new Error('Noncanonical adoption origin');
   return r;
@@ -109,6 +110,7 @@ export async function verifyAdoptionSource(r, api, pull) {
     || /^>? ?Copilot (?:was |is )?unable to (?:run|review)\b/im.test(review.body)
     || createHash('sha256').update(review.body).digest('hex') !== r.evidence.copilotReviewBodySha256) throw new Error('Adopted Copilot review mismatch');
   const comment = await api(`issues/comments/${r.evidence.codexCommentId}`);
+  if (typeof comment.body !== 'string' || createHash('sha256').update(comment.body).digest('hex') !== r.evidence.codexCommentBodySha256) throw new Error('Adopted Codex comment body changed');
   const match = /codex-review-state:v1 (.*?) -->/.exec(comment.body ?? '');
   const state = match && JSON.parse(match[1]);
   if (comment.user?.login !== 'chatgpt-codex-connector[bot]' || comment.issue_url !== `https://api.github.com/repos/${r.repository}/issues/${r.pullNumber}`
