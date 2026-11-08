@@ -1,3 +1,4 @@
+import { legacyReleaseRetired, assertLegacyReleaseActive } from './release-retirement.js';
 import { SerialTaskQueue } from './serial-task-queue.js';
 import { settledPool } from "./settled-pool.js";
 import { evaluatorSha, trustedContractAuthorities } from './workflow-evaluator.js';
@@ -13,6 +14,7 @@ import { ReleaseReceiptStore } from "./release-note-receipts.js";
 import { confirmPullRequestBodyWriteIntent, processPullRequestBodyEditedDelivery, PullRequestBodyWriteIntentStore, type PullRequestBodyWriteIntent } from "./pr-body-write-intents.js";
 
 export interface Env {
+  LEGACY_RELEASE_RETIRED?: string;
   ORGANIZATION_ID: string; ORGANIZATION_LOGIN: string; APP_ID: string; INSTALLATION_ID: string;
   STEWARDSHIP_REPOSITORY: string; POLICY_SHA: string; WORKFLOW_EVALUATOR_SHA?: string; STEWARD_APP_PRIVATE_KEY?: string; STEWARD_WEBHOOK_SECRET?: string;
   ISSUE_SNAPSHOTS?: D1Database;
@@ -44,8 +46,12 @@ async function dispatcher(env: Env): Promise<GitHubClient> {
   const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY, installationId: Number(env.INSTALLATION_ID), repositoryId: 1296724484, permissions: { actions: "write", metadata: "read" }, policySha: env.POLICY_SHA });
   return new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA);
 }
-async function sendWithClient(env: Env, client: GitHubClient, workflow: string, inputs: Record<string, string>) { const [owner, repo] = env.STEWARDSHIP_REPOSITORY.split("/") as [string, string]; await dispatchWorkflow(client, { owner, repo, workflow, policySha: env.POLICY_SHA, inputs }); }
-async function send(env: Env, workflow: string, inputs: Record<string, string>) { await sendWithClient(env, await dispatcher(env), workflow, inputs); }
+async function sendWithClient(env: Env, client: GitHubClient, workflow: string, inputs: Record<string, string>) {
+  if (['release.yml', 'release-build.yml', 'release-build-complete.yml'].includes(workflow)) assertLegacyReleaseActive(env);
+  const [owner, repo] = env.STEWARDSHIP_REPOSITORY.split("/") as [string, string]; await dispatchWorkflow(client, { owner, repo, workflow, policySha: env.POLICY_SHA, inputs }); }
+async function send(env: Env, workflow: string, inputs: Record<string, string>) {
+  if (['release.yml', 'release-build.yml', 'release-build-complete.yml'].includes(workflow)) assertLegacyReleaseActive(env);
+  await sendWithClient(env, await dispatcher(env), workflow, inputs); }
 
 async function bodyWriteClient(env: Env, repositoryId: number): Promise<GitHubClient> {
   if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
@@ -413,7 +419,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       || (event === "installation" && action === "deleted")
       || (event === "installation_repositories" && action === "removed")) return response(204);
     // Only centrally bound candidates can schedule the release lifecycle. Review is observation only.
-    if (env.ISSUE_SNAPSHOTS && ["pull_request", "pull_request_review"].includes(event)
+    if (!legacyReleaseRetired(env) && env.ISSUE_SNAPSHOTS && ["pull_request", "pull_request_review"].includes(event)
       && payload.repository && isManaged(payload.repository) && payload.pull_request?.number) {
       const candidate = await new ReleaseReceiptStore(env.ISSUE_SNAPSHOTS).findByPull(Number(payload.repository.id), Number(payload.pull_request.number));
       if (candidate && candidate.frozen.policySha === env.POLICY_SHA) {
@@ -536,6 +542,7 @@ function deliveryHeader(headers: Record<string, unknown> | undefined, name: stri
 }
 
 export async function recoverReleaseReceipts(env: Env, now = Date.now()): Promise<number> {
+  if (legacyReleaseRetired(env)) return 0;
   if (!env.ISSUE_SNAPSHOTS) return 0;
   const receipts = await new ReleaseReceiptStore(env.ISSUE_SNAPSHOTS).takeRecoveryBatch(now);
   let sent = 0;

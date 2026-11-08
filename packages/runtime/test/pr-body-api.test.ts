@@ -59,6 +59,7 @@ afterEach(() => {
 
 const repository = (id = 1296724484, fullName = "splrad/steward") => ({ id, full_name: fullName, private: false, has_issues: true, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } });
 const env = (database: SqliteD1): Env => ({
+  LEGACY_RELEASE_RETIRED: "true",
   ORGANIZATION_ID: "302208797", ORGANIZATION_LOGIN: "splrad", APP_ID: "4243096", INSTALLATION_ID: "145952003",
   STEWARDSHIP_REPOSITORY: "splrad/steward", POLICY_SHA: "a".repeat(40), STEWARD_APP_PRIVATE_KEY: privateKey,
   STEWARD_WEBHOOK_SECRET: "webhook-secret", ISSUE_SNAPSHOTS: database.binding(),

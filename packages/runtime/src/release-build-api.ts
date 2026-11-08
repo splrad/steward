@@ -1,3 +1,4 @@
+import { assertLegacyReleaseActive } from './release-retirement.js';
 import { ReleaseGenerationGraphStore } from './release-generation-graph-store.js';
 import { parseVersionFile } from '../../core/src/release-version.js';
 import { assertPersonalizationConfiguration } from '../../core/src/release-personalization.js';
@@ -16,6 +17,7 @@ import { matchBuildFiles } from '../../core/src/build-manifest.js';
 import { preflightGenerationSource } from '../../core/src/release-generation-graph.js';
 
 export async function centralBuildClient(env: BodyWriteRuntimeEnv, write = false): Promise<GitHubClient> {
+  if (write) assertLegacyReleaseActive(env);
   const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY!, installationId: Number(env.INSTALLATION_ID), repositoryId: 1296724484, permissions: { actions: write ? 'write' : 'read', contents: 'read', metadata: 'read' }, policySha: env.POLICY_SHA });
   return new GitHubClient(token, 'https://api.github.com', fetch, env.POLICY_SHA);
 }

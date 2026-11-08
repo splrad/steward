@@ -18,6 +18,7 @@ afterEach(() => {
 });
 
 const baseEnv = (): Env => ({
+  LEGACY_RELEASE_RETIRED: "true",
   ORGANIZATION_ID: "302208797",
   ORGANIZATION_LOGIN: "splrad",
   APP_ID: "4243096",
