@@ -7,6 +7,7 @@ import {Octokit} from '@octokit/rest';
 import {createAppAuth} from '@octokit/auth-app';
 import YAML from 'yaml';
 import {isolatedBuildEnvironment,resolvePolicyTool} from '../packages/runner/dist/index.js';
+import {requiredWorkflowBinding as binding} from './required-workflow-binding.mjs';
 
 const repo='/repos/splrad/steward',rulePath='/orgs/splrad/rulesets/18883080';
 const validationPath='.github/workflows/pr-validation-native.yml';
@@ -91,11 +92,6 @@ function mutable(rule) {
   check(rule.id===18883080&&rule.source==='splrad'&&rule.source_type==='Organization'&&rule.target==='branch'
     &&rule.enforcement==='active'&&Array.isArray(rule.rules)&&Array.isArray(rule.bypass_actors)&&rule.conditions,'RULE');
   return Object.fromEntries(['name','target','enforcement','bypass_actors','conditions','rules'].map(k=>[k,structuredClone(rule[k])]));
-}
-function binding(body) {
-  const rules=body.rules.filter(r=>r.type==='workflows');check(rules.length===1&&Array.isArray(rules[0].parameters?.workflows),'BINDING');
-  const rows=rules[0].parameters.workflows.filter(r=>r.repository_id===1296724484&&r.path===validationPath);
-  check(rows.length===1&&sha(rows[0].sha)&&!Object.hasOwn(rows[0],'ref'),'BINDING');return rows[0];
 }
 
 /** PUT is not a CAS. Only rules are sent; unrelated fields are compared before and after. */

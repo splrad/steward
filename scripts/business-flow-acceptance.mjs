@@ -24,6 +24,11 @@ export function validatePlan(raw, expectedHash, env) {
     &&typeof p.configVersion==='string'&&p.configVersion.length>0,'QUALITY');
   if(p.kind==='quality-initialize')requireFact(p.maxRequests===0&&p.stateSha===null&&p.repository.id===1296724484&&p.repository.full_name==='splrad/steward'&&!p.repository.private&&p.governanceAppId===5639432&&p.baseSha===p.controllerSha,'INITIALIZE_PLAN');
   if(p.kind==='release-initialize')requireFact(p.maxRequests===0&&p.stateSha===null&&p.repository.id===1448797077&&p.repository.full_name==='splrad/steward-e10-lifecycle-20261107'&&p.repository.private&&Number.isSafeInteger(p.releaseAdoption?.prNumber)&&p.releaseAdoption.prNumber>0&&p.releaseAdoption.sourceSha===p.baseSha,'RELEASE_INITIALIZE_PLAN');
+  if(p.releaseRecovery!==undefined)requireFact(p.kind==='release'&&p.maxRequests===1&&p.repository.id===1448797077
+    &&p.repository.full_name==='splrad/steward-e10-lifecycle-20261107'&&p.repository.private
+    &&p.releaseRecovery&&['authorizationId,batchId,candidateId,outputContractSha256,previousAttemptSha256',
+      'archiveContentDigest,archiveProtectionDigest,authorizationId,batchId,candidateId,outputContractSha256,previousAttemptSha256'].includes(Object.keys(p.releaseRecovery).sort().join(','))
+    &&Object.values(p.releaseRecovery).every(v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v)),'RELEASE_RECOVERY_PLAN');
   return p;
 }
 export function boundedClient(client, maximum) {
@@ -99,7 +104,7 @@ export async function executePlan(p,{root,controllerDirectory,app,modelToken,fet
     const result=await nativeReleaseCandidate({directory:state.directory,writeDirectory:join(root,'writes'),remote:state.remote,
       repository:p.repository.full_name,repositoryId:p.repository.id,defaultBranch:'main',appBotId:app.appBotId,
       identity:{name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'}},
-      {token,readToken,controllerSha:p.controllerSha,controllerDirectory,temporaryRoot:root,fetcher:guardedFetch,language:client,expectedStateSha:p.stateSha});
+      {token,readToken,controllerSha:p.controllerSha,controllerDirectory,temporaryRoot:root,fetcher:guardedFetch,language:client,expectedStateSha:p.stateSha,contentRecovery:p.releaseRecovery});
     requireFact(result.status==='READY','CANDIDATE_PENDING');return {kind:p.kind,calls:client.calls,status:result.status};
   });
 }
@@ -116,7 +121,9 @@ export async function main(env=process.env) {
     if(result.status==='INITIALIZED_BASE_CHANGED')process.exitCode=75;
   }finally{await rm(root,{recursive:true,force:true});}
 }
+const publicContentErrors=new Set(['CONTENT_RECOVERY_BINDING','CONTENT_RECOVERY_ARCHIVE','CONTENT_RECOVERY_ARCHIVE_EXISTS']);
+export const acceptanceErrorCode=error=>/^ACCEPTANCE_[A-Z_]+$/.test(error?.message??'')||publicContentErrors.has(error?.message)?error.message:'BUSINESS_ACCEPTANCE_STOPPED';
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href)main().catch(error=>{
-  const code=/^ACCEPTANCE_[A-Z_]+$/.test(error?.message??'')?error.message:'BUSINESS_ACCEPTANCE_STOPPED';
+  const code=acceptanceErrorCode(error);
   process.stderr.write(JSON.stringify({status:'STOPPED',code})+'\n');process.exitCode=75;
 });
