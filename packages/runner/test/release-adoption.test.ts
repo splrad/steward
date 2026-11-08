@@ -156,3 +156,30 @@ it.each(['terminal','missing','in-progress'])('restores original cycle cache onl
   if(kind!=='terminal'){await expect(recoverReleaseCaches(f.request,snapshot,{io:f.io,now:()=>observedAt})).rejects.toThrow('original native evidence unknown');expect(await f.stateHead()).toBe(snapshot.head);}
   else {const repaired=await recoverReleaseCaches(f.request,snapshot,{io:f.io});expect(repaired.snapshot.cycles[0].value).toEqual(cycle);expect(repaired.snapshot.repository).toEqual(snapshot.repository);expect(await f.git('show',`${repaired.snapshot.head}:${path}`)).toBe(bytes.trim());}
 });
+
+it.each(['legacy','issue-events'])('real adoption reader requires PR read scope and completes with split credentials: %s',async mode=>{
+  const f=await fixture();
+  const {adoptionTransport}=await import(pathToFileURL(resolve('scripts/release-state-initialize.mjs')).href);
+  const {nativeEvidenceTransport}=await import(pathToFileURL(resolve('packages/runner/dist/index.js')).href);
+  if(mode==='issue-events'){delete f.pull.merge_commit_sha;Object.assign(f.pull,{url:'https://api.github.com/repos/'+f.request.repository+'/pulls/7',state:'closed',merged_at:'2026-11-08T00:00:00Z'});f.pull.base.repo.full_name=f.request.repository;}
+  const requests:{path:string;credential:string|null}[]=[];
+  const fetcher:typeof fetch=async(input,init)=>{
+    const url=new URL(String(input)),path=url.pathname+url.search,credential=new Headers(init?.headers).get('authorization');
+    requests.push({path,credential});
+    if(/\/(?:pulls(?:[/?]|$)|issues\/[0-9]+\/events)/.test(path)&&credential!=='Bearer fixture-pr-read')return new Response('{}',{status:403});
+    if(url.pathname.endsWith('/issues/7/events'))return Response.json([{id:9,event:'merged',url:'https://api.github.com/repos/'+f.request.repository+'/issues/events/9',commit_id:f.A,commit_url:'https://api.github.com/repos/'+f.request.repository+'/commits/'+f.A,actor:{id:7},created_at:'2026-11-08T00:00:00Z'}]);
+    const response=await f.io.request('GET',path);
+    return new Response(response.bytes,{status:response.status,headers:response.headers});
+  };
+  await expect(initializeReleaseAdoption(f.request,{io:nativeEvidenceTransport('fixture-release-write',fetcher)})).rejects.toThrow();
+  expect(await f.stateHead()).toBeNull();
+  requests.length=0;
+  const io=adoptionTransport({repository:{full_name:f.request.repository},baseSha:f.A},{token:'fixture-release-write',readToken:'fixture-pr-read',fetcher});
+  const result=await initializeReleaseAdoption(f.request,{io});
+  expect(result.status).toBe('APPLIED');expect(await f.stateHead()).toBe(result.head);
+  const pulls=requests.filter(r=>/\/(?:pulls(?:[/?]|$)|issues\/[0-9]+\/events)/.test(r.path));
+  expect(pulls.some(r=>r.path.includes('pulls?state=closed'))).toBe(true);
+  if(mode==='issue-events')expect(pulls.some(r=>r.path.includes('/issues/7/events'))).toBe(true);
+  expect(pulls.every(r=>r.credential==='Bearer fixture-pr-read')).toBe(true);
+  expect(requests.filter(r=>!pulls.includes(r)).every(r=>r.credential==='Bearer fixture-release-write')).toBe(true);
+});

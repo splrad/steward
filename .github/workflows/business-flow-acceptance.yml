@@ -1,0 +1,68 @@
+name: SPLRAD Steward / Business Flow Acceptance
+on:
+  workflow_dispatch:
+    inputs:
+      consumer:
+        description: Approved single consumer
+        required: true
+        type: choice
+        options: [quality, release, quality-initialize, release-initialize]
+      approved_sha:
+        description: Exact adopted controller SHA
+        required: true
+        type: string
+      approved_plan_sha256:
+        description: SHA256 of the approved Environment plan secret
+        required: true
+        type: string
+      authorize:
+        description: Authorize this single bounded business invocation
+        required: true
+        default: false
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: steward-business-acceptance
+  cancel-in-progress: false
+jobs:
+  acceptance:
+    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == 'refs/heads/main' && github.run_attempt == 1 && inputs.authorize && inputs.approved_sha == github.sha && github.workflow_sha == github.sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      copilot-requests: write
+    environment:
+      name: ${{ (inputs.consumer == 'release' || inputs.consumer == 'release-initialize') && 'steward-release' || 'steward-release-notes' }}
+      deployment: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.10.18
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - name: Install locked tools without credentials
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm ci --prefix tools/quality-language --ignore-scripts --no-audit --no-fund
+          npm run verify:runtime --prefix tools/quality-language
+      - name: Execute approved single consumer
+        env:
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          STEWARD_COPILOT_TOKEN: ${{ github.token }}
+          STEWARD_ACCEPTANCE_PLAN: ${{ secrets.STEWARD_E10_ACCEPTANCE_PLAN }}
+          APPROVED_PLAN_SHA256: ${{ inputs.approved_plan_sha256 }}
+          AUTHORIZE_BUSINESS_ACCEPTANCE: ${{ inputs.authorize }}
+          ACCEPTANCE_CONSUMER: ${{ inputs.consumer }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: node scripts/business-flow-acceptance.mjs

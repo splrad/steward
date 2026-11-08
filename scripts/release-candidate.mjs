@@ -17,9 +17,10 @@ const validSha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(val
 const fail = code => { throw new Error(code); };
 
 /** Fixed candidate adapter. Credentials never enter archived data or model/RP payloads. */
-export async function nativeReleaseCandidate(request, { token, readToken, copilotToken, controllerSha, controllerDirectory = process.cwd(), now = () => new Date().toISOString(), fetcher = fetch, generator, language, temporaryRoot = tmpdir(),verifyHandoff } = {}) {
+export async function nativeReleaseCandidate(request, { token, readToken, copilotToken, controllerSha, controllerDirectory = process.cwd(), now = () => new Date().toISOString(), fetcher = fetch, generator, language, expectedStateSha, temporaryRoot = tmpdir(),verifyHandoff } = {}) {
   if (!readToken || readToken === token) return { status: 'WAIT', reason: 'CANDIDATE_SCOPED_READ_CREDENTIAL_REQUIRED' };
   if (!validSha(controllerSha)) return { status: 'WAIT', reason: 'CANDIDATE_CONTROLLER_IDENTITY_REQUIRED' };
+  if(expectedStateSha!==undefined&&!validSha(expectedStateSha))fail('CANDIDATE_EXPECTED_STATE_INVALID');
   const root = await mkdtemp(join(temporaryRoot, 'steward-candidate-native-'));
   await mkdir(request.writeDirectory, { recursive: true });
   const env = isolatedBuildEnvironment(process.env, root);
@@ -72,6 +73,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     // Load the exact native ref before opening the next candidate session.
     if(!await fetchBranch('steward/release-state'))fail('CANDIDATE_STATE_UNAVAILABLE');
     let state = await readReleaseRecords({ directory: request.directory, targetRef: 'steward/release-state', repositoryId: request.repositoryId, includeHistory: false });
+    if(expectedStateSha!==undefined&&state.head!==expectedStateSha)fail('CANDIDATE_STATE_CHANGED');
     assertRepositoryWrite(state.repository);
     const loaded = new Map(state.domainRecords.map(r => [r.path, r.content]));
     const priorState = (await git('show', `${state.head}:state.json`)).toString('utf8'); loaded.set('state.json', priorState);

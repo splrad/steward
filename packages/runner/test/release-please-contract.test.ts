@@ -44,3 +44,10 @@ it('uses native Node and Python updates in separate unit paths', async () => {
   expect(nodePr!.updates.some(update => update.path === 'packages/web/package-lock.json')).toBe(true);
   for (const pr of [nodePr!, pythonPr!]) expect(PullRequestBody.parse(pr.body.toString())).toBeDefined();
 });
+
+it('recognizes the approved E10 seed feature as a first release using the bundled simple strategy',async()=>{
+  const strategy=new Simple({github:scm() as any,targetBranch:'main',versionFile:'VERSION',includeComponentInTag:false});
+  const result=await strategy.buildReleasePullRequest(commits('feat: add E10 lifecycle test application'));
+  expect(result).toBeDefined();expect(result!.updates.map(update=>update.path)).toContain('VERSION');
+  expect(await strategy.buildReleasePullRequest(commits('chore: configure release automation'))).toBeUndefined();
+});

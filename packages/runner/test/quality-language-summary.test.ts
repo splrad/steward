@@ -156,3 +156,70 @@ it('native wire permits only own neutral Check output, uses no third-party mutat
   await assertQualityProtection(protection,'test/product',900);integrityBypass=[{actor_id:4243096}];
   await expect(assertQualityProtection(protection,'test/product',900)).rejects.toThrow('INTEGRITY');
 });
+
+it.each(['WAIT_AUTH','WAIT_QUOTA'])('restores persisted input after repeated explicit %s refusals without exhausting generation attempts',async(reason)=>{
+  const f=fixture();let cache=await reconcileQualitySources(null,{...context,observedAt:new Date(clock()).toISOString()},[source(1)]),now=clock(),calls=0;
+  const client={...f.client,async call(){calls++;throw Object.assign(Error(reason),{retryAfterMs:120000});}};
+  const run=async(c:any=client)=>{
+    await translateQualitySources(cache,c,f.store,{remaining:10,deadline:now+1080000},()=>now);
+    cache=decodeStateFile('steward/governance-state','quality/1.json',Buffer.from(JSON.stringify(f.saves.at(-1)!)),12) as QualityCache;
+  };
+  for(let i=0;i<4;i++) {await run();expect(calls).toBe(i+1);await run();expect(calls).toBe(i+1);now+=600000;}
+  await run(f.client);expect(renderQualitySummary(cache).complete).toBe(1);expect(f.calls).toBe(1);
+  expect(Object.values(cache.entries)[0]!.attempts.map(a=>a.status)).toEqual([reason,'COMPLETE']);
+  const refused=new Set(f.saves.flatMap(s=>Object.values(s.entries).flatMap(e=>e.attempts.filter(a=>a.status===reason).map(a=>a.startedAt))));
+  expect(refused.size).toBe(4);expect(f.saves.every(s=>Object.values(s.entries).every(e=>e.attempts.length<=2))).toBe(true);
+  await run(f.client);expect(f.calls).toBe(1);
+});
+it('observes the current bounded unknown-response policy after durable serialization',async()=>{
+  const f=fixture();let cache=await reconcileQualitySources(null,{...context,observedAt:new Date(clock()).toISOString()},[source(1)]),now=clock(),calls=0;
+  const client={...f.client,async call(){calls++;throw Error('RESPONSE_UNKNOWN');}};
+  for(let i=0;i<4;i++) {
+    await translateQualitySources(cache,client,f.store,{remaining:10,deadline:now+1080000},()=>now);
+    cache=decodeStateFile('steward/governance-state','quality/1.json',Buffer.from(JSON.stringify(f.saves.at(-1)!)),12) as QualityCache;
+    now+=600000;
+  }
+  expect(calls).toBe(3);expect(renderQualitySummary(cache).pending).toBe(1);
+});
+
+it('retains the three-generation bound after refusal history and rejects a fourth unknown attempt',async()=>{
+  const f=fixture();let cache=await reconcileQualitySources(null,{...context,observedAt:new Date(clock()).toISOString()},[source(1)]),now=clock(),calls=0;
+  let reason='WAIT_QUOTA';const client={...f.client,async call(){calls++;throw Error(reason);}};
+  for(let i=0;i<7;i++) {
+    if(i===2)reason='RESPONSE_UNKNOWN';
+    await translateQualitySources(cache,client,f.store,{remaining:10,deadline:now+1080000},()=>now);
+    cache=decodeStateFile('steward/governance-state','quality/1.json',Buffer.from(JSON.stringify(f.saves.at(-1)!)),12) as QualityCache;
+    now+=600000;
+  }
+  expect(calls).toBe(5);expect(Object.values(cache.entries)[0]!.attempts).toHaveLength(4);
+  const entry=Object.values(cache.entries)[0]!;entry.attempts.push({...entry.attempts.at(-1)!,status:'UNKNOWN'});
+  expect(()=>decodeStateFile('steward/governance-state','quality/1.json',Buffer.from(JSON.stringify(cache)),12)).toThrow('CACHE_SCHEMA');
+});
+
+it('rejects null attempt records with the closed cache error',async()=>{
+  const cache=await reconcileQualitySources(null,{...context,observedAt:new Date(clock()).toISOString()},[source(1)]);
+  (Object.values(cache.entries)[0]!.attempts as unknown[]).push(null);
+  expect(()=>decodeStateFile('steward/governance-state','quality/1.json',Buffer.from(JSON.stringify(cache)),12)).toThrow('CACHE_SCHEMA');
+});
+
+it('never removes refusal history before its durable save succeeds',async()=>{
+  const f=fixture(),cache=await reconcileQualitySources(null,{...context,observedAt:new Date(clock()).toISOString()},[source(1)]);let saves=0;
+  const entry=Object.values(cache.entries)[0]!;entry.attempts.push({startedAt:new Date(clock()-60000).toISOString(),status:'WAIT_AUTH',model:null,usage:null});
+  const store={save:async(c:QualityCache)=>{if(++saves===2)throw Error('durable save failed');return f.store.save(c);}};
+  const client={...f.client,call:async()=>{throw Error('WAIT_QUOTA');}};
+  await expect(translateQualitySources(cache,client,store,{remaining:1,deadline:clock()+1080000},clock)).rejects.toThrow('durable save failed');
+  expect(entry.attempts.map(a=>a.status)).toEqual(['WAIT_AUTH','WAIT_QUOTA']);
+  expect(f.saves[0]!.entries[entry.key]!.attempts.map(a=>a.status)).toEqual(['WAIT_AUTH','UNKNOWN']);
+});
+
+it('migrates three durable legacy refusals before consuming all three possible-generation attempts',async()=>{
+  const f=fixture();let cache=await reconcileQualitySources(null,{...context,observedAt:new Date(clock()).toISOString()},[source(1)]),now=clock(),calls=0;
+  Object.values(cache.entries)[0]!.attempts=[0,1,2].map(i=>({startedAt:new Date(now-i*60000).toISOString(),status:'WAIT_AUTH' as const,model:null,usage:null}));
+  const client={...f.client,call:async()=>{calls++;throw Error('RESPONSE_UNKNOWN');}};
+  for(let i=0;i<4;i++){
+    await translateQualitySources(cache,client,f.store,{remaining:1,deadline:now+1080000},()=>now);
+    cache=decodeStateFile('steward/governance-state','quality/1.json',Buffer.from(JSON.stringify(f.saves.at(-1)!)),12) as QualityCache;now+=600000;
+  }
+  expect(calls).toBe(3);expect(Object.values(f.saves[0]!.entries)[0]!.attempts).toHaveLength(3);
+  expect(Object.values(cache.entries)[0]!.attempts.map(a=>a.status)).toEqual(['WAIT_AUTH','FAILED','FAILED','FAILED']);
+});
