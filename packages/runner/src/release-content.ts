@@ -1,4 +1,4 @@
-import { retryableContentRejection } from '../../core/src/release-content.js';
+import { CONTENT_OUTPUT_SCHEMA, permittedContentPredecessor, verifyContentAttemptReceipts, retryableContentRejection, type ContentRecoveryReceipt } from '../../core/src/release-content.js';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -21,7 +21,7 @@ export interface ContentPayload { stage: ContentStage; unitIds: string[]; units:
 export interface ContentWork { input: ContentInput; payloads: Record<string, ContentPayload>; results: Record<string, { items: ContentItem[] } | { paragraphs: ContentParagraph[] }>; evidence: { manifests: unknown[]; gaps: unknown[] } }
 export interface ContentCacheEntry { inputDigest: string; configDigest: string; attempts: ContentAttempt[]; result: { items: ContentItem[] } | { paragraphs: ContentParagraph[] } | null; split?: boolean }
 export type ContentCache = Record<string, ContentCacheEntry>;
-export function contentWireInput(payload: ContentPayload) { return JSON.stringify({ prompt: CONTENT_PROMPT, ...payload }); }
+export function contentWireInput(payload: ContentPayload) { return JSON.stringify({ prompt: CONTENT_PROMPT, outputSchema: CONTENT_OUTPUT_SCHEMA, constraints: 'Return only the schema object, without Markdown fences or extra keys. Use UNVERIFIED when evidence is absent; TEST_CONFIRMED is unavailable unless tested source IDs are explicitly supplied.', ...payload }); }
 
 /** Read curated release changes and product context, not a model-coverage copy of every source blob. */
 export async function collectContentInput(options: { directory: string; candidateId: string; configDigest: string; units: (GitReleaseInputOptions & { changelogPath?: string })[];
@@ -74,7 +74,9 @@ export async function planContentBatches(input: ContentInput, sources: ContentSo
   }
   validateContentInput(work.input); return work;
 }
+export interface ContentRecovery extends ContentRecoveryReceipt { candidateId: string; batchId: string }
 export interface ContentRuntime {
+  recovery?: ContentRecovery;
   now(): string;
   editing(): Promise<boolean>;
   preflight(): Promise<'READY' | 'WAIT_AUTH' | 'WAIT_QUOTA'>;
@@ -84,17 +86,30 @@ export interface ContentRuntime {
 /** Persist a request before sending; unknown results need native maintenance, not an automatic replay loop. */
 export async function resumeContentBatches(work: ContentWork, cache: ContentCache, runtime: ContentRuntime) {
   if (work.input.schemaVersion !== 2) throw new Error('CONTENT_LEGACY_READ_ONLY');
+  validateContentInput(work.input);
   let calls = 0;
   for (const batch of work.input.batches) {
     if (batch.status === 'READY') continue;
     if (await runtime.editing()) return { status: 'EDITING', calls };
     const key = hash([batch.inputDigest, work.input.configDigest]);
     const entry = cache[key] ??= { inputDigest: batch.inputDigest, configDigest: work.input.configDigest, attempts: [], result: null };
+    await verifyContentAttemptReceipts(entry.attempts); await verifyContentAttemptReceipts(batch.attempts);
     if (entry.result) {
       work.results[batch.id] = validateContentResult('DRAFT', JSON.stringify(entry.result), batch.sourceIds);
       batch.status = 'READY'; batch.resultPath = `results/${batch.id}.json`; await runtime.save(work, cache); continue;
     }
-    if (entry.attempts.some(a => !retryableContentRejection(a)) || batch.attempts.some(a => !retryableContentRejection(a))) {
+    const blocked = (attempts: ContentAttempt[]) => attempts.some(a => !!a.recovery) || attempts.some((a,i) => i === attempts.length-1 ? !retryableContentRejection(a) : !permittedContentPredecessor(a,i,attempts));
+    let recovery: ContentRecoveryReceipt | undefined;
+    if (runtime.recovery && !blocked(entry.attempts) && !blocked(batch.attempts)) throw Error('CONTENT_RECOVERY_BINDING');
+    if (runtime.recovery && (blocked(entry.attempts) || blocked(batch.attempts))) {
+      const grant = runtime.recovery, prior = entry.attempts[0];
+      if (grant.candidateId !== work.input.candidateId || grant.batchId !== batch.id || entry.attempts.length !== 1
+        || JSON.stringify(entry.attempts) !== JSON.stringify(batch.attempts) || prior?.status !== 'REJECTED' || prior.errorCode !== 'CONTENT_OUTPUT_SCHEMA'
+        || grant.previousAttemptSha256 !== hash(prior) || grant.outputContractSha256 !== hash(CONTENT_OUTPUT_SCHEMA)
+        || !/^[a-f0-9]{64}$/.test(grant.authorizationId)) throw Error('CONTENT_RECOVERY_BINDING');
+      recovery = { previousAttemptSha256: grant.previousAttemptSha256, authorizationId: grant.authorizationId, outputContractSha256: grant.outputContractSha256 };
+    }
+    if (!recovery && (blocked(entry.attempts) || blocked(batch.attempts))) {
       batch.status = 'FAILED'; batch.errorCode = entry.attempts.at(-1)?.errorCode ?? 'RESPONSE_UNKNOWN';
       await runtime.save(work, cache); return { status: 'FAILED', calls };
     }
@@ -103,15 +118,22 @@ export async function resumeContentBatches(work: ContentWork, cache: ContentCach
     if (preflight !== 'READY') { batch.status = preflight; await runtime.save(work, cache); return { status: preflight, calls }; }
     if (await runtime.editing()) return { status: 'EDITING', calls };
     const attempt: ContentAttempt = { ordinal: Math.max(entry.attempts.length, batch.attempts.length) + 1, startedAt: runtime.now(), status: 'SENT', model: 'server-selected', usage: null, errorCode: null };
+    if (recovery) attempt.recovery = recovery;
     batch.attempts = [...(entry.attempts.length >= batch.attempts.length ? entry.attempts : batch.attempts), attempt]; entry.attempts = batch.attempts; batch.nextCheckAt = null; batch.status = 'RUNNING'; await runtime.save(work, cache); calls++;
+    let returnedText: string | undefined;
     try {
       const response = await runtime.call(contentWireInput(work.payloads[batch.id]!));
+      returnedText = response.text;
       attempt.status = 'RETURNED'; attempt.model = response.model; attempt.usage = response.usage;
       const result = validateContentResult('DRAFT', response.text, batch.sourceIds);
       work.results[batch.id] = result; entry.result = result; batch.resultPath = `results/${batch.id}.json`; batch.status = 'READY'; batch.errorCode = null;
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
       const code = /^(?:CONTENT_[A-Z_]+|WAIT_AUTH|WAIT_QUOTA|RESPONSE_UNKNOWN)$/.test(message) ? message : 'RESPONSE_UNKNOWN';
+      if (returnedText !== undefined && utf8Length(returnedText) <= 12 * 1024) attempt.diagnostic = {
+        responseSha256: createHash('sha256').update(returnedText).digest('hex'), responseBytes: utf8Length(returnedText), responseText: returnedText,
+        validationErrors: code === 'CONTENT_OUTPUT_SCHEMA' ? (error as {validationErrors?: {instancePath:string;schemaPath:string;keyword:string}[]}).validationErrors ?? [] : [],
+      };
       attempt.status = code === 'RESPONSE_UNKNOWN' ? 'UNKNOWN' : 'REJECTED'; attempt.errorCode = code;
       batch.status = code === 'WAIT_AUTH' || code === 'WAIT_QUOTA' ? code : 'FAILED'; batch.errorCode = code;
       if (batch.status !== 'FAILED') {

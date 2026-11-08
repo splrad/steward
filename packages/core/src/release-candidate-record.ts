@@ -1,7 +1,7 @@
 import { decodeBuildJson } from './build-manifest.js';
 import { sha256Hex } from './fingerprint.js';
 import { validateCandidateFiles } from './release-candidate.js';
-import { retryableContentRejection, validateContentInput, validateContentResult } from './release-content.js';
+import { verifyContentAttemptReceipts, retryableContentRejection, validateContentInput, validateContentResult } from './release-content.js';
 
 export interface CandidateArchiveChunk {
   schemaVersion: 1; repositoryId: number; candidateId: string;
@@ -41,6 +41,7 @@ export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): 
     exact(value, ['input', 'payloadPaths', 'evidencePath']); validateContentInput(value.input);
     if (value.input.repositoryId !== first.repositoryId || value.input.candidateId !== first.candidateId) throw new Error('CONTENT_ARCHIVE_IDENTITY');
     for (const batch of value.input.batches) {
+      await verifyContentAttemptReceipts(batch.attempts);
       if (typeof value.payloadPaths[batch.id] !== 'string' || !value.payloadPaths[batch.id].startsWith(`content/${first.candidateId}/`)) throw new Error('CONTENT_PAYLOAD_PATH');
     }
     if (typeof value.evidencePath !== 'string' || !value.evidencePath.startsWith(`content/${first.candidateId}/`)) throw new Error('CONTENT_EVIDENCE_PATH');
@@ -64,6 +65,7 @@ export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): 
         || !Array.isArray(entry.attempts)
         || entry.attempts.length > 3 && entry.attempts.slice(0, -1).some((attempt: any) => !attempt || !retryableContentRejection(attempt))
         || 'split' in entry && typeof entry.split !== 'boolean') throw new Error('CONTENT_CACHE_INVALID');
+    await verifyContentAttemptReceipts(entry.attempts);
   } else if (first.documentKind === 'session') {
     exact(value, ['generated', 'pending', 'identity', 'conflict', 'preview', 'adoption']);
     if (value.generated) snapshot(value.generated);

@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { planContentBatches, resumeContentBatches, assembleUnitNotes, type ContentSource, type ContentRuntime, type ContentWork } from '../src/release-content.js';
-import { splitContentText, validateContentResult, validateContentInput, type ContentInput } from '../../core/src/release-content.js';
+import { CONTENT_OUTPUT_SCHEMA, splitContentText, validateContentResult, validateContentInput, type ContentInput } from '../../core/src/release-content.js';
 import { decodeCandidateDocument } from '../../core/src/release-candidate-record.js';
 
 const digest = (v: string) => createHash('sha256').update(v).digest('hex');
@@ -128,4 +128,40 @@ it('archive compatibility keeps old bounded histories but rejects expanded histo
   await expect(decode([1, 2, 3].map(i => attempt(i, 'UNKNOWN', 'RESPONSE_UNKNOWN')))).resolves.toBeDefined();
   await expect(decode([1, 2, 3, 4].map(i => attempt(i, 'UNKNOWN', 'RESPONSE_UNKNOWN')))).rejects.toThrow('CONTENT_CACHE_INVALID');
   await expect(decode([1, 2, 3, 4].map(i => attempt(i, 'REJECTED', 'CONTENT_OUTPUT_SCHEMA')))).rejects.toThrow('CONTENT_CACHE_INVALID');
+});
+
+it('sends the validator schema, retains diagnostics and binds exactly one explicit successor', async () => {
+  const work=await planContentBatches(input(),[source(1)]),cache={},r=runtime(),success=r.port.call;
+  const invalid=JSON.stringify({paragraphs:[{sourceIds:[source(1).id],section:'changes',textZh:'整理内容。',qualification:'confirmed'}]});
+  r.port.call=async request=>{expect(JSON.parse(request).outputSchema).toEqual(CONTENT_OUTPUT_SCHEMA);return {text:invalid,model:'fixture',usage:{inputTokens:2,outputTokens:3}};};
+  expect(await resumeContentBatches(work,cache,r.port)).toEqual({status:'FAILED',calls:1});
+  const old=structuredClone(work.input.batches[0]!.attempts[0]!);
+  expect(old.diagnostic).toMatchObject({responseText:invalid,responseSha256:digest(invalid),responseBytes:Buffer.byteLength(invalid)});
+  expect(old.diagnostic!.validationErrors).toContainEqual(expect.objectContaining({instancePath:'/paragraphs/0/qualification',keyword:'enum'}));
+  expect(await resumeContentBatches(work,cache,r.port)).toEqual({status:'FAILED',calls:0});
+  const grant={candidateId:work.input.candidateId,batchId:work.input.batches[0]!.id,previousAttemptSha256:digest(JSON.stringify(old)),authorizationId:digest('decision'),outputContractSha256:digest(JSON.stringify(CONTENT_OUTPUT_SCHEMA))};
+  r.port.recovery={...grant,previousAttemptSha256:digest('wrong')};
+  await expect(resumeContentBatches(work,cache,r.port)).rejects.toThrow('CONTENT_RECOVERY_BINDING');
+  r.port.recovery=grant;r.port.call=success;
+  expect(await resumeContentBatches(work,cache,r.port)).toEqual({status:'READY',calls:1});
+  expect(work.input.batches[0]!.attempts[0]).toEqual(old);
+  expect(work.input.batches[0]!.attempts.map(a=>a.ordinal)).toEqual([1,2]);
+  expect(()=>validateContentInput(work.input)).not.toThrow();
+  const content=JSON.stringify({input:work.input,payloadPaths:{[work.input.batches[0]!.id]:`content/${work.input.candidateId}/payload.json`},evidencePath:`content/${work.input.candidateId}/evidence.json`});
+  await expect(decodeCandidateDocument([{schemaVersion:1,repositoryId:1,candidateId:work.input.candidateId,documentKind:'content',documentDigest:digest(content),index:0,count:1,content}])).resolves.toBeDefined();
+  expect(await resumeContentBatches(work,cache,r.port)).toEqual({status:'READY',calls:0});
+});
+it('does not extend explicit recovery to unknown output or a second failure',async()=>{
+  const work=await planContentBatches(input(),[source(1)]),cache={},r=runtime();
+  r.port.call=async()=>({text:JSON.stringify({bad:'字段'}),model:'fixture',usage:{inputTokens:1,outputTokens:1}});
+  await resumeContentBatches(work,cache,r.port);
+  const grant={candidateId:work.input.candidateId,batchId:work.input.batches[0]!.id,previousAttemptSha256:digest(JSON.stringify(work.input.batches[0]!.attempts[0])),authorizationId:digest('approval'),outputContractSha256:digest(JSON.stringify(CONTENT_OUTPUT_SCHEMA))};
+  const fresh=await planContentBatches(input(),[source(1)]);
+  r.port.recovery=grant;await expect(resumeContentBatches(fresh,{},r.port)).rejects.toThrow('CONTENT_RECOVERY_BINDING');
+  expect(await resumeContentBatches(work,cache,r.port)).toEqual({status:'FAILED',calls:1});
+  await expect(resumeContentBatches(work,cache,r.port)).rejects.toThrow('CONTENT_RECOVERY_BINDING');
+  delete r.port.recovery;expect(await resumeContentBatches(work,cache,r.port)).toEqual({status:'FAILED',calls:0});
+  const unknown=await planContentBatches(input(),[source(1)]),other={},q=runtime();q.port.call=async()=>{throw Error('RESPONSE_UNKNOWN');};
+  await resumeContentBatches(unknown,other,q.port);q.port.recovery={...grant,previousAttemptSha256:digest(JSON.stringify(unknown.input.batches[0]!.attempts[0]))};
+  await expect(resumeContentBatches(unknown,other,q.port)).rejects.toThrow('CONTENT_RECOVERY_BINDING');
 });
