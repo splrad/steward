@@ -122,3 +122,11 @@ test('release local call limit preserves the first batch and stops before a seco
   assert.equal(persisted.work.input.batches[1].status,'PENDING');assert.deepEqual(persisted.work.input.batches[1].attempts,[]);
   assert.deepEqual(work.input.batches[1].attempts,[]);assert.equal(Object.values(persisted.cache).filter(e=>e.result).length,1);
 });
+
+test('manual content recovery is confined to one private sample and a single approved request',()=>{
+  const grant=Object.fromEntries(['candidateId','batchId','previousAttemptSha256','authorizationId','outputContractSha256'].map(k=>[k,'a'.repeat(64)]));
+  const recovery={...plan,repository:{id:1448797077,full_name:'splrad/steward-e10-lifecycle-20261107',private:true,default_branch:'main'},releaseRecovery:grant};
+  const check=p=>{const raw=JSON.stringify(p);return validatePlan(raw,digest(raw),env);};
+  assert.deepEqual(check(recovery).releaseRecovery,grant);
+  for(const change of [{maxRequests:0},{repository:plan.repository},{repository:{...recovery.repository,private:false}},{releaseRecovery:{...grant,extra:true}},{releaseRecovery:{...grant,batchId:'invalid'}}])assert.throws(()=>check({...recovery,...change}),/RELEASE_RECOVERY_PLAN/);
+});

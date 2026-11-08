@@ -17,7 +17,7 @@ const validSha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(val
 const fail = code => { throw new Error(code); };
 
 /** Fixed candidate adapter. Credentials never enter archived data or model/RP payloads. */
-export async function nativeReleaseCandidate(request, { token, readToken, copilotToken, controllerSha, controllerDirectory = process.cwd(), now = () => new Date().toISOString(), fetcher = fetch, generator, language, expectedStateSha, temporaryRoot = tmpdir(),verifyHandoff } = {}) {
+export async function nativeReleaseCandidate(request, { token, readToken, copilotToken, controllerSha, controllerDirectory = process.cwd(), now = () => new Date().toISOString(), fetcher = fetch, generator, language, expectedStateSha, temporaryRoot = tmpdir(),verifyHandoff,contentRecovery } = {}) {
   if (!readToken || readToken === token) return { status: 'WAIT', reason: 'CANDIDATE_SCOPED_READ_CREDENTIAL_REQUIRED' };
   if (!validSha(controllerSha)) return { status: 'WAIT', reason: 'CANDIDATE_CONTROLLER_IDENTITY_REQUIRED' };
   if(expectedStateSha!==undefined&&!validSha(expectedStateSha))fail('CANDIDATE_EXPECTED_STATE_INVALID');
@@ -276,7 +276,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
           return persist([...archive('content', candidate.id, path, { input: work.input, payloadPaths, evidencePath }),
             ...archive('content-evidence', candidate.id, evidencePath, work.evidence), ...archive('cache', candidate.id, cachePath, { entries }), ...results]);
         };
-        const result = await resumeContentBatches(work, cache, { now, editing: async () => (await prs(candidate.branch)).some(p => p.number === candidate.prNumber && p.editing), ...sdk, save });
+        const result = await resumeContentBatches(work, cache, { now, recovery: contentRecovery, editing: async () => (await prs(candidate.branch)).some(p => p.number === candidate.prNumber && p.editing), ...sdk, save });
         if (result.status !== 'READY') return { status: result.status === 'EDITING' ? 'EDITING' : result.status === 'FAILED' ? 'FAILED' : 'WAIT' };
         const unitActors = Object.fromEntries(snapshot.units.map(unit => [unit.id, []]));
         if (session.identity?.sourceDigest === snapshot.sourceDigest && session.identity.authorsDigest === hash(JSON.stringify(delivery.repositoryAuthors)))
