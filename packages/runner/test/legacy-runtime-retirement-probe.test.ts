@@ -80,7 +80,7 @@ const adoption = () => ({
   bundleSha256: 'd'.repeat(64), policySha: 'e'.repeat(40), evaluatorSha: 'f'.repeat(40),
   accountId: '5efbba9a3813a37ac45e70cfa9f01cb5', workerName: 'splrad-steward-runtime',
   runtimeOrigin: 'https://splrad-steward-runtime.synthetic.workers.dev', expectedCurrentVersion: input.version,
-  evidence: { validationRunId: 1, copilotRunId: 2, copilotReviewId: 3, codexCommentId: 4, copilotCheckRunId: 5, copilotReviewBodySha256: createHash('sha256').update(reviewBody).digest('hex'), reviewDecisionReference: 'SYNTHETIC CENTRAL ADJUDICATION' },
+  evidence: { validationRunId: 1, validationRunAttempt: 1, copilotRunId: 2, copilotRunAttempt: 1, copilotReviewId: 3, codexCommentId: 4, copilotCheckRunId: 5, copilotReviewBodySha256: createHash('sha256').update(reviewBody).digest('hex'), reviewDecisionReference: 'SYNTHETIC CENTRAL ADJUDICATION' },
   window: { status: 'confirmed', reference: 'SYNTHETIC TEST ONLY', expiresAt: '2099-01-01T00:00:00Z' },
 });
 function adoptionFixture() {
@@ -91,7 +91,7 @@ function adoptionFixture() {
     if (path.includes('/check-runs?')) return { total_count: 1, check_runs: [await api('check-runs/5')] };
     if (path.includes('/reviews?')) return [await api(`pulls/${record.pullNumber}/reviews/3`)];
     if (path.startsWith('commits/')) return { sha: path.slice(8), commit: { tree: { sha: record.reviewedTree }, verification: { verified: true, reason: 'valid' } } };
-    if (path.startsWith('actions/runs/')) return { id: Number(path.split('/').at(-1)), created_at: '2026-01-01T00:00:00Z', run_started_at: '2026-01-01T00:00:00Z', repository: { full_name: record.repository }, head_sha: record.reviewedHead, status: 'completed', conclusion: 'success', path: path === 'actions/runs/1' ? '.github/workflows/pr-validation.yml' : 'dynamic/agents/copilot-pull-request-reviewer', event: 'dynamic', check_suite_id: 100, pull_requests: [{ number: record.pullNumber, head: { sha: record.reviewedHead } }] };
+    if (path.startsWith('actions/runs/')) return { id: Number(path.split('/').at(-1)), run_attempt: 1, created_at: '2026-01-01T00:00:00Z', run_started_at: '2026-01-01T00:00:00Z', repository: { full_name: record.repository }, head_sha: record.reviewedHead, status: 'completed', conclusion: 'success', path: path === 'actions/runs/1' ? '.github/workflows/pr-validation.yml' : 'dynamic/agents/copilot-pull-request-reviewer', event: 'dynamic', check_suite_id: 100, pull_requests: [{ number: record.pullNumber, head: { sha: record.reviewedHead } }] };
     if (path.startsWith('check-runs/')) return { id: 5, started_at: '2026-01-01T00:00:00Z', name: 'copilot-pull-request-reviewer', app: { id: 15368 }, head_sha: record.reviewedHead, status: 'completed', conclusion: 'success', check_suite: { id: 100 }, pull_requests: [{ number: record.pullNumber, head: { sha: record.reviewedHead } }] };
     if (path.startsWith('pulls/')) return { id: 3, state: 'COMMENTED', body: reviewBody, commit_id: record.reviewedHead, user: { login: 'copilot-pull-request-reviewer[bot]' }, submitted_at: '2026-01-01T00:00:00Z' };
     return { user: { login: 'chatgpt-codex-connector[bot]' }, issue_url: `https://api.github.com/repos/${record.repository}/issues/${record.pullNumber}`,
@@ -128,6 +128,29 @@ describe('central adoption record and native deployment identity', () => {
   it('accepts a same-repository PR native merged commit with the reviewed tree', async () => {
     const f = adoptionFixture();
     await expect(verifyAdoptionSource(f.record, f.api, f.pull)).resolves.toBeUndefined();
+  });
+  it.each([1, 2])('requires the exact recorded attempt for run %s, including successful reruns', async id => {
+    const f = adoptionFixture(), original = f.api.getMockImplementation()!;
+    const key = id === 1 ? 'validationRunAttempt' : 'copilotRunAttempt';
+    for (const attempt of [undefined, 0, 2]) {
+      f.api.mockImplementation(async path => {
+        const value = await original(path);
+        if (path === `actions/runs/${id}`) value.run_attempt = attempt;
+        return value;
+      });
+      await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow();
+    }
+    f.record.evidence[key] = 2;
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).resolves.toBeUndefined();
+  });
+  it.each([1, 2])('rejects run %s when its successful attempt changes in the latest collection', async id => {
+    const f = adoptionFixture(), original = f.api.getMockImplementation()!;
+    f.api.mockImplementation(async path => {
+      const value = await original(path);
+      if (path.startsWith('actions/runs?')) value.workflow_runs.find((run: any) => run.id === id).run_attempt = 2;
+      return value;
+    });
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow('workflow attempt differs');
   });
   it.each(['open', 'closed', 'fork', 'base', 'unmergedHead', 'draft'])('rejects an unadoptable source: %s', async mode => {
     const f = adoptionFixture();
@@ -267,6 +290,7 @@ describe('central adoption record and native deployment identity', () => {
         { ...record, window: { ...record.window, expiresAt: '2020-01-01T00:00:00Z' } },
         { ...record, deploymentTree: 'b'.repeat(40) },
         { ...record, evidence: { ...record.evidence, validationRunId: 0 } },
+        ...['validationRunAttempt', 'copilotRunAttempt'].flatMap(key => [undefined, 0, -1, 1.5].map(value => ({ ...record, evidence: { ...record.evidence, [key]: value } }))),
       ]) {
         await writeFile(file, JSON.stringify(invalid));
         await expect(readAdoptionRecord(file, checkout)).rejects.toThrow();

@@ -24,7 +24,7 @@ export async function readAdoptionRecord(filename, checkout = process.cwd()) {
     || r.accountId !== '5efbba9a3813a37ac45e70cfa9f01cb5' || r.workerName !== 'splrad-steward-runtime'
     || !uuid(r.expectedCurrentVersion) || r.window?.status !== 'confirmed' || typeof r.window.reference !== 'string' || !r.window.reference.trim()
     || !Number.isFinite(Date.parse(r.window.expiresAt)) || Date.parse(r.window.expiresAt) <= Date.now()
-    || ![r.evidence?.validationRunId, r.evidence?.copilotRunId, r.evidence?.copilotReviewId, r.evidence?.copilotCheckRunId, r.evidence?.codexCommentId].every(v => Number.isSafeInteger(v) && v > 0)
+    || ![r.evidence?.validationRunId, r.evidence?.validationRunAttempt, r.evidence?.copilotRunId, r.evidence?.copilotRunAttempt, r.evidence?.copilotReviewId, r.evidence?.copilotCheckRunId, r.evidence?.codexCommentId].every(v => Number.isSafeInteger(v) && v > 0)
     || !/^[a-f0-9]{64}$/.test(r.evidence?.copilotReviewBodySha256) || typeof r.evidence?.reviewDecisionReference !== 'string' || !r.evidence.reviewDecisionReference.trim()) throw new Error('Incomplete central adoption record');
   const origin = new URL(r.runtimeOrigin);
   if (origin.protocol !== 'https:' || origin.username || origin.password || origin.port || origin.search || origin.hash || origin.pathname !== '/' || origin.origin !== r.runtimeOrigin) throw new Error('Noncanonical adoption origin');
@@ -88,9 +88,10 @@ export async function verifyAdoptionSource(r, api, pull) {
   }
   let copilotRun;
   const boundPull = value => Array.isArray(value.pull_requests) && value.pull_requests.some(p => p.number === r.pullNumber && p.head?.sha === r.reviewedHead);
-  for (const [id, path] of [[r.evidence.validationRunId, '.github/workflows/pr-validation.yml'], [r.evidence.copilotRunId, 'dynamic/agents/copilot-pull-request-reviewer']]) {
+  for (const [id, attempt, path] of [[r.evidence.validationRunId, r.evidence.validationRunAttempt, '.github/workflows/pr-validation.yml'], [r.evidence.copilotRunId, r.evidence.copilotRunAttempt, 'dynamic/agents/copilot-pull-request-reviewer']]) {
     const evidence = await api(`actions/runs/${id}`);
-    if (evidence.head_sha !== r.reviewedHead || evidence.status !== 'completed' || evidence.conclusion !== 'success'
+    if (!Number.isSafeInteger(attempt) || attempt < 1 || evidence.run_attempt !== attempt
+      || evidence.head_sha !== r.reviewedHead || evidence.status !== 'completed' || evidence.conclusion !== 'success'
       || evidence.repository?.full_name !== r.repository || evidence.path !== path || !boundPull(evidence)) throw new Error('Adopted validation/review run is not successful for reviewed head');
     if (id === r.evidence.copilotRunId) {
       if (evidence.event !== 'dynamic') throw new Error('Expected native dynamic Copilot review');
@@ -114,8 +115,9 @@ export async function verifyAdoptionSource(r, api, pull) {
     || !['code_review', 'security_review'].every(key => state?.[key]?.commit_sha === r.reviewedHead && state[key].status === 'completed')) throw new Error('Adopted Codex reviews are not terminal for reviewed head');
   const runs = await evidencePages(api, `actions/runs?head_sha=${r.reviewedHead}`, 'workflow_runs');
   const scopedRuns = runs.filter(value => value.head_sha === r.reviewedHead && value.repository?.full_name === r.repository && boundPull(value));
-  latestEvidence(scopedRuns.filter(value => value.path === '.github/workflows/pr-validation.yml'), r.evidence.validationRunId, value => value.run_started_at ?? value.created_at);
-  latestEvidence(scopedRuns.filter(value => value.path === 'dynamic/agents/copilot-pull-request-reviewer' && value.event === 'dynamic'), r.evidence.copilotRunId, value => value.run_started_at ?? value.created_at);
+  const currentValidation = latestEvidence(scopedRuns.filter(value => value.path === '.github/workflows/pr-validation.yml'), r.evidence.validationRunId, value => value.run_started_at ?? value.created_at);
+  const currentCopilot = latestEvidence(scopedRuns.filter(value => value.path === 'dynamic/agents/copilot-pull-request-reviewer' && value.event === 'dynamic'), r.evidence.copilotRunId, value => value.run_started_at ?? value.created_at);
+  if (currentValidation.run_attempt !== r.evidence.validationRunAttempt || currentCopilot.run_attempt !== r.evidence.copilotRunAttempt) throw new Error('Current workflow attempt differs from central adoption record');
   const checks = await evidencePages(api, `commits/${r.reviewedHead}/check-runs?filter=all`, 'check_runs');
   const currentCheck = latestEvidence(checks.filter(value => value.name === 'copilot-pull-request-reviewer' && value.app?.id === 15368
     && value.head_sha === r.reviewedHead && boundPull(value)), r.evidence.copilotCheckRunId, value => value.started_at);
