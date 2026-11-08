@@ -40,7 +40,7 @@ it('rebinds only a verified archived failure after a controller pin change and p
       return {text:JSON.stringify({paragraphs:[{sourceIds:f.work.input.batches[0].sourceIds,section:'summary',textZh:'离线验证说明。',qualification:'UNVERIFIED'}]}),model:'offline',usage:null};}});
   expect(result).toEqual({status:'READY',calls:1});expect(sent).toBe(1);expect(JSON.stringify(f.manifest)).toBe(original);expect(f.work.input.batches[0].attempts[0]).toEqual(f.attempt);
 });
-it.each(['missing-archive','missing-pair','path','facts','protection','pin','source','identity','config','payload','history','unknown','other-rejection','second-failure','cache','grant'])('rejects archive transfer without mutation: %s',async kind=>{
+it.each(['missing-archive','missing-pair','path','facts','protection','pin','workflow-ref','duplicate-workflow','source','identity','config','payload','history','old-result','old-nextCheck','unknown','other-rejection','second-failure','cache','grant'])('rejects archive transfer without mutation: %s',async kind=>{
   const f=await fixture();
   if(kind==='missing-archive')delete f.docs[f.root+'manifest.json'];
   if(kind==='missing-pair')delete f.grant.archiveProtectionDigest;
@@ -48,11 +48,15 @@ it.each(['missing-archive','missing-pair','path','facts','protection','pin','sou
   if(kind==='facts')f.io.facts.baseSha='d'.repeat(40);
   if(kind==='protection')f.io.protections.tags.push({type:'update'});
   if(kind==='pin')f.io.protections.branch[1].parameters.workflows[0].sha='d'.repeat(40);
+  if(kind==='workflow-ref')f.io.protections.branch[1].parameters.workflows[0].ref='main';
+  if(kind==='duplicate-workflow')f.io.protections.branch.push({type:'workflows',parameters:{workflows:[]}});
   if(kind==='source')f.work.evidence.manifests[0].commits.push({sha:'d'.repeat(40)});
   if(kind==='identity')f.work.input.repositoryId=2;
   if(kind==='config')f.work.input.configDigest=hash('changed');
   if(kind==='payload')f.work.payloads[f.grant.batchId].sources[0].text='变化';
   if(kind==='history')f.work.input.batches[0].attempts=[structuredClone(f.attempt)];
+  if(kind==='old-result')f.manifest.input.batches[0].resultPath='results/prior.json';
+  if(kind==='old-nextCheck')f.manifest.input.batches[0].nextCheckAt='2027-01-01T00:00:00Z';
   if(kind==='unknown')f.manifest.input.batches[0].attempts[0].status='UNKNOWN';
   if(kind==='other-rejection')f.manifest.input.batches[0].attempts[0].errorCode='WAIT_AUTH';
   if(kind==='second-failure')f.manifest.input.batches[0].attempts.push({...f.attempt,ordinal:2});

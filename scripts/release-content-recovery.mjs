@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { requiredWorkflowBinding } from './required-workflow-binding.mjs';
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const same = (a,b) => JSON.stringify(a) === JSON.stringify(b);
 const check = value => { if (!value) throw Error('CONTENT_RECOVERY_ARCHIVE'); };
@@ -17,20 +18,15 @@ export async function restoreContentRecovery(work, cache, grant, { loadDocument,
   const oldFacts={...previous.facts},newFacts={...facts};delete oldFacts.protectionsEvidencePath;delete newFacts.protectionsEvidencePath;
   check(same(oldFacts,newFacts));
   const normalize=(value,controller)=>{
-    const copy=structuredClone(value);let pins=0;
-    for(const rule of copy.branch) if(rule.type==='workflows') for(const workflow of rule.parameters.workflows) {
-      if(workflow.repository_id===1296724484 && workflow.path==='.github/workflows/pr-validation-native.yml') {
-        check(sha(workflow.sha) && workflow.sha===controller);pins++;workflow.sha='approved-controller';
-      }
-    }
-    check(pins===1);return copy;
+    const copy=structuredClone(value),workflow=requiredWorkflowBinding({rules:copy.branch},'CONTENT_RECOVERY_ARCHIVE');
+    check(workflow.sha===controller);workflow.sha='approved-controller';return copy;
   };
   check(same(normalize(previous.protections,archived.input.controllerSha),normalize(protections,work.input.controllerSha)));
   check(hash([hash(previous.facts),archived.input.configDigest,authorsDigest])===grant.archiveContentDigest);
   check(archived.input.batches.length===1 && work.input.batches.length===1 && work.input.units.length===1);
   const old=archived.input.batches[0],batch=work.input.batches[0];
   check(batch.status==='PENDING' && batch.attempts.length===0 && batch.resultPath===null && batch.errorCode===null && batch.nextCheckAt===null);
-  check(old.id===grant.batchId && old.status==='FAILED' && old.errorCode==='CONTENT_OUTPUT_SCHEMA' && old.attempts.length===1
+  check(old.id===grant.batchId && old.status==='FAILED' && old.errorCode==='CONTENT_OUTPUT_SCHEMA' && old.resultPath===null && old.nextCheckAt===null && old.attempts.length===1
     && old.attempts[0].status==='REJECTED' && old.attempts[0].errorCode==='CONTENT_OUTPUT_SCHEMA' && !old.attempts[0].recovery
     && hash(old.attempts[0])===grant.previousAttemptSha256);
   const inputIdentity=value=>{const copy=structuredClone(value);delete copy.batches;delete copy.controllerSha;delete copy.sourceManifestDigest;return copy;};
