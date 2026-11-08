@@ -14,13 +14,13 @@ const allowedPaths = new Set([
   'packages/runtime/test/release-events.test.ts', 'packages/runtime/test/release-retirement.test.ts',
   'packages/runner/src/index.ts', 'packages/runner/src/legacy-runtime-maintenance.ts',
   'packages/runner/test/legacy-runtime-maintenance.test.ts', 'packages/runner/dist/index.js',
-  'scripts/verify-legacy-runtime-retirement.mjs', 'packages/runner/test/legacy-runtime-retirement-probe.test.ts',
+  'scripts/deploy-legacy-runtime.mjs', 'scripts/verify-legacy-runtime-retirement.mjs', 'packages/runner/test/legacy-runtime-retirement-probe.test.ts',
 ]);
 function requireEvidence(value: unknown, reason: string): asserts value {
   if (!value) throw new Error(`LEGACY_MAINTENANCE_SOURCE: ${reason}`);
 }
 const sha = (value: unknown) => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
-const identity = (p: any) => JSON.stringify([p.number, p.state, p.base?.repo?.id, p.base?.ref, p.base?.sha, p.head?.repo?.id, p.head?.ref, p.head?.sha, p.user?.id, p.merge_commit_sha, p.changed_files]);
+const identity = (p: any) => JSON.stringify([p.number, p.state, p.base?.repo?.id, p.base?.ref, p.base?.sha, p.head?.repo?.id, p.head?.ref, p.head?.sha, p.user?.id, p.changed_files]);
 
 /** One historical maintenance PR; the general default-branch contract is unchanged. */
 export async function evaluateLegacyRuntimeMaintenance(gh: GitHubClient, authority: WorkflowContractAuthority, pullNumber: number, policySha: string) {
@@ -32,7 +32,9 @@ export async function evaluateLegacyRuntimeMaintenance(gh: GitHubClient, authori
   requireEvidence(pull.number === 307 && pull.state === 'open' && pull.user?.id === 44151430
     && pull.base?.repo?.id === repository.id && pull.base.ref === legacyRuntimeMaintenanceBranch && pull.base.sha === base
     && pull.head?.repo?.id === repository.id && pull.head.ref === headBranch && sha(pull.head.sha)
-    && sha(policySha) && pull.merge_commit_sha === policySha, 'pull identity');
+    && sha(policySha), 'pull identity');
+  const readMerge = () => gh.getRef('splrad', 'steward', 'pull/307/merge');
+  requireEvidence((await readMerge()).object?.sha === policySha, 'merge ref');
   const readHead = () => gh.getRef('splrad', 'steward', `heads/${headBranch}`);
   requireEvidence((await readHead()).object?.sha === pull.head.sha, 'head moved');
   const readBase = () => gh.getRef('splrad', 'steward', `heads/${legacyRuntimeMaintenanceBranch}`);
@@ -61,7 +63,7 @@ export async function evaluateLegacyRuntimeMaintenance(gh: GitHubClient, authori
   requireEvidence(original.bytes.equals(candidate.bytes) && candidate.contract.repositoryId === repository.id
     && createHash('sha256').update(original.bytes).digest('hex') === '62eebf1ee8940d4491ca7cf55ba7900ea32e24da531855f4a1f120c9c64f5f0a', 'contract changed');
   requireEvidence(identity(pull) === identity(await readPull()) && (await readBase()).object?.sha === base
-    && (await readHead()).object?.sha === pull.head.sha, 'source changed during evaluation');
+    && (await readHead()).object?.sha === pull.head.sha && (await readMerge()).object?.sha === policySha, 'source changed during evaluation');
   return { contract: candidate.contract, binding: { repositoryId: repository.id, pullNumber, headSha: pull.head.sha,
     baseSha: base, policySha, contractDigest: createHash('sha256').update(canonicalContract(candidate.contract)).digest('hex') }, reviewId: null };
 }

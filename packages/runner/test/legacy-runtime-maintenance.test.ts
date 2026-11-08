@@ -7,13 +7,13 @@ const base = 'e990eda24ef7099264dada118b3e7ddfad883cea', head = 'a'.repeat(40), 
 const contract = readFileSync(new URL('../../../.github/workflow-contract.json', import.meta.url));
 const authority = { repositoryId: 1296724484, baseline: JSON.parse(contract.toString()), approverIds: [44151430] };
 function fixture() {
-  const pull = { number: 307, state: 'open', user: { id: 44151430 }, changed_files: 1, merge_commit_sha: policy,
+  const pull = { number: 307, state: 'open', user: { id: 44151430 }, changed_files: 1,
     base: { repo: { id: 1296724484 }, ref: legacyRuntimeMaintenanceBranch, sha: base },
     head: { repo: { id: 1296724484 }, ref: 'codex/legacy-runtime-retirement-20261108', sha: head } };
   const gh = {
     getRepositoryById: vi.fn(async () => ({ id: 1296724484, full_name: 'splrad/steward', default_branch: 'main' })),
     getPullRequest: vi.fn(async () => structuredClone(pull)),
-    getRef: vi.fn(async (_o: string, _r: string, ref: string) => ({ object: { sha: ref.endsWith(legacyRuntimeMaintenanceBranch) ? base : head } })),
+    getRef: vi.fn(async (_o: string, _r: string, ref: string) => ({ object: { sha: ref === 'pull/307/merge' ? policy : ref.endsWith(legacyRuntimeMaintenanceBranch) ? base : head } })),
     getCommit: vi.fn(async (_o: string, _r: string, sha: string) => ({ sha, commit: { verification: { verified: true, reason: 'valid' } }, parents: sha === policy ? [{ sha: base }, { sha: head }] : [{ sha: base }] })),
     listPullFiles: vi.fn(async () => [{ filename: 'packages/runtime/src/index.ts', status: 'modified' }]),
     getContent: vi.fn(async () => ({ type: 'file', encoding: 'base64', content: contract.toString('base64'), size: contract.length })),
@@ -24,9 +24,9 @@ describe('exact historical runtime maintenance source', () => {
   it('binds the signed same-repository head and exact original contract', async () => {
     const f = fixture(), result = await f.run();
     expect(result.binding).toMatchObject({ repositoryId: 1296724484, pullNumber: 307, headSha: head, baseSha: base, policySha: policy });
-    expect(f.gh.getPullRequest).toHaveBeenCalledTimes(2); expect(f.gh.getRef).toHaveBeenCalledTimes(4);
+    expect(f.gh.getPullRequest).toHaveBeenCalledTimes(2); expect(f.gh.getRef).toHaveBeenCalledTimes(6);
   });
-  it.each(['number', 'state', 'author', 'baseRepo', 'baseRef', 'baseSha', 'headRepo', 'headRef', 'headSha', 'policy'])('rejects wrong %s', async field => {
+  it.each(['number', 'state', 'author', 'baseRepo', 'baseRef', 'baseSha', 'headRepo', 'headRef', 'headSha'])('rejects wrong %s', async field => {
     const f = fixture();
     if (field === 'number') f.pull.number = 308;
     if (field === 'state') f.pull.state = 'closed';
@@ -37,8 +37,12 @@ describe('exact historical runtime maintenance source', () => {
     if (field === 'headRepo') f.pull.head.repo.id = 123;
     if (field === 'headRef') f.pull.head.ref = 'other';
     if (field === 'headSha') f.pull.head.sha = 'invalid';
-    if (field === 'policy') f.pull.merge_commit_sha = head;
     await expect(f.run()).rejects.toThrow('pull identity');
+  });
+  it('rejects an incorrect native merge ref without relying on a legacy PR field', async () => {
+    const f = fixture(), original = f.gh.getRef.getMockImplementation()!;
+    f.gh.getRef.mockImplementation(async (...args) => args[2] === 'pull/307/merge' ? { object: { sha: head } } : original(...args));
+    await expect(f.run()).rejects.toThrow('merge ref');
   });
   it('rejects other repository or PR before network', async () => {
     const f = fixture();
@@ -69,11 +73,11 @@ describe('exact historical runtime maintenance source', () => {
     f.gh.getContent.mockResolvedValue({ type: 'file', encoding: 'base64', content: contract.toString('base64'), size: contract.length + 1 });
     await expect(f.run()).rejects.toThrow('contract bytes');
   });
-  it.each(['pull', 'base', 'head'])('rejects %s moving during evaluation', async mode => {
+  it.each(['pull', 'base', 'head', 'merge'])('rejects %s moving during evaluation', async mode => {
     const f = fixture();
     if (mode === 'pull') f.gh.getPullRequest.mockResolvedValueOnce(structuredClone(f.pull)).mockResolvedValue({ ...f.pull, state: 'closed' });
     else { const original = f.gh.getRef.getMockImplementation()!; let count = 0;
-      f.gh.getRef.mockImplementation(async (...args) => { count++; return count > 2 && args[2].includes(mode === 'base' ? 'maintenance/' : 'codex/') ? { object: { sha: 'c'.repeat(40) } } : original(...args); }); }
+      f.gh.getRef.mockImplementation(async (...args) => { count++; return count > 3 && args[2].includes(mode === 'base' ? 'maintenance/' : mode === 'merge' ? 'pull/307/merge' : 'codex/') ? { object: { sha: 'c'.repeat(40) } } : original(...args); }); }
     await expect(f.run()).rejects.toThrow('source changed during evaluation');
   });
 });

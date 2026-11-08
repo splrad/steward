@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 const modulePath = '../../../scripts/verify-legacy-runtime-retirement.mjs';
 const { verifyLegacyRuntimeRetirement } = await import(modulePath);
 const input = { url: 'https://runtime.test/', version: '11111111-1111-4111-8111-111111111111', policySha: 'a'.repeat(40), evaluatorSha: 'b'.repeat(40) };
@@ -22,5 +22,27 @@ describe('maintenance deployment retirement probe', () => {
     await expect(verifyLegacyRuntimeRetirement(input, async (url: URL) => url.pathname !== '/health'
       ? Response.json({ error: 'LEGACY_RELEASE_RETIRED' }, { status: 410, headers: { 'cache-control': 'no-store' } })
       : Response.json(++reads === 1 ? health : { ...health, version: 'other' }))).rejects.toThrow('changed during');
+  });
+});
+
+const deployModulePath = '../../../scripts/deploy-legacy-runtime.mjs';
+const { runDeploymentTransaction } = await import(deployModulePath);
+describe('actual maintenance deployment success path', () => {
+  it('never probes or returns success after a failed deployment', async () => {
+    const probe = vi.fn();
+    await expect(runDeploymentTransaction(async () => { throw new Error('deploy failed'); }, probe)).rejects.toThrow('deploy failed');
+    expect(probe).not.toHaveBeenCalled();
+  });
+  it('does not return success after a failed retirement probe', async () => {
+    await expect(runDeploymentTransaction(async () => ({ version: input.version }), async () => { throw new Error('probe failed'); })).rejects.toThrow('probe failed');
+  });
+  it('rejects missing or mismatched probe evidence', async () => {
+    for (const evidence of [undefined, { status: 'verified', version: 'other' }]) {
+      await expect(runDeploymentTransaction(async () => ({ version: input.version }), async () => evidence)).rejects.toThrow('did not verify');
+    }
+  });
+  it('returns only a probed barrier, not an inflight handover assertion', async () => {
+    expect(await runDeploymentTransaction(async () => ({ version: input.version }), async () => ({ status: 'verified', version: input.version })))
+      .toEqual({ status: 'barrier-installed-and-probed', version: input.version });
   });
 });
