@@ -1,3 +1,4 @@
+import apiVersion from "../config/github-api.json" with { type: "json" };
 import {readFile,writeFile,appendFile,mkdir} from 'node:fs/promises';
 import {resolve,join} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -19,8 +20,8 @@ const same=(a,b)=>JSON.stringify(canonical(a))===JSON.stringify(canonical(b));
 const quiet={debug(){},info(){},warn(){},error(){}};
 
 export function promotionIO(token,transport=fetch) {
-  const client=new Octokit({auth:token,log:quiet,request:{fetch:transport,headers:{'x-github-api-version':'2026-03-10'}}});
-  client.hook.before('request',options=>{options.headers['x-github-api-version']='2026-03-10';});
+  const client=new Octokit({auth:token,log:quiet,request:{fetch:transport,headers:{'x-github-api-version':apiVersion.version}}});
+  client.hook.before('request',options=>{options.headers['x-github-api-version']=apiVersion.version;});
   return {async request(method,path,body){
     try {const r=await client.request(`${method} ${path}`,{...body,request:{signal:AbortSignal.timeout(60000)}});return {status:r.status,value:r.data};}
     catch(e){if(e.status)return {status:e.status,value:e.response?.data};throw Error('PROMOTION_TRANSPORT');}
@@ -147,8 +148,8 @@ export async function publishTemplateTag(io,plan,assertCurrent,record) {
 export async function withGovernanceCredential(env,operation,transport=fetch) {
   const appId=Number(env.GOVERNANCE_APP_ID);check(positive(appId)&&appId!==4243096,'APP_ID');
   const app=new Octokit({authStrategy:createAppAuth,auth:{appId,privateKey:env.GOVERNANCE_APP_PRIVATE_KEY},log:quiet,
-    request:{fetch:transport,headers:{'x-github-api-version':'2026-03-10'}}});
-  app.hook.before('request',options=>{options.headers['x-github-api-version']='2026-03-10';});
+    request:{fetch:transport,headers:{'x-github-api-version':apiVersion.version}}});
+  app.hook.before('request',options=>{options.headers['x-github-api-version']=apiVersion.version;});
   const fact=(await app.request('GET /app')).data,installation=(await app.request('GET /orgs/splrad/installation')).data;
   check(fact.id===appId&&fact.slug==='splrad-governance'&&installation.app_id===appId&&installation.account?.id===302208797&&!installation.suspended_at,'APP_IDENTITY');
   const permissions={organization_administration:'write',contents:'write',metadata:'read'};

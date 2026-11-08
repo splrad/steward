@@ -1,7 +1,7 @@
 import {afterEach,expect,it,vi} from 'vitest';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {mkdtemp,readFile,writeFile,rm} from 'node:fs/promises';
+import {mkdtemp,mkdir,readFile,writeFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {parse} from 'yaml';
@@ -12,7 +12,10 @@ const roots:string[]=[];
 afterEach(async()=>{for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
 async function run(script:string) {
   const root=await mkdtemp(join(tmpdir(),'ghcr-offline-'));roots.push(root);registerOfflineFixtureRoot(root);
-  const path=join(root,'fixture.ps1');await writeFile(path,script);permitOfflineScript(path);
+  const apiConfig=await readFile('config/github-api.json');
+  for(const directory of ['config','controller/config','scripts'])await mkdir(join(root,directory),{recursive:true});
+  for(const path of ['config/github-api.json','controller/config/github-api.json'])await writeFile(join(root,path),apiConfig);
+  const path=join(root,'scripts','fixture.ps1');await writeFile(path,script);permitOfflineScript(path);
   return (await promisify(execFile)('pwsh',['-NoLogo','-NoProfile','-NonInteractive','-File',path],{cwd:root,env:isolatedBuildEnvironment(process.env,root),windowsHide:true,timeout:55_000})).stdout;
 }
 const owner=`$owner=@{schemaVersion=1;ownerId=302208797;repositoryId=1187527897;packageType='container';target='layerscape-assets';packageIds=@();targetId=$null;observedAt='2026-10-01T00:00:00Z'}`;

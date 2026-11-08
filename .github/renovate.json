@@ -79,6 +79,14 @@
       ],
       "versioning": "semver",
       "ignoreUnstable": true
+    },
+    {
+      "matchDatasources": [
+        "custom.github-rest-api"
+      ],
+      "prBodyNotes": [
+        "GitHub REST API 升级须按官方 breaking changes 同步适配全部调用端、测试和构建产物；通过既有检查后再采用。"
+      ]
     }
   ],
   "customManagers": [
@@ -105,6 +113,18 @@
       "datasourceTemplate": "docker",
       "depNameTemplate": "ghcr.io/google/osv-scanner-action",
       "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^config/github-api\\.json$/"
+      ],
+      "matchStrings": [
+        "\"version\":\\s*\"(?<currentValue>\\d{4}-\\d{2}-\\d{2})\""
+      ],
+      "depNameTemplate": "github-rest-api",
+      "datasourceTemplate": "custom.github-rest-api",
+      "versioningTemplate": "regex:^(?<major>\\d{4})-(?<minor>\\d{2})-(?<patch>\\d{2})$"
     }
   ],
   "enabledManagers": [
@@ -131,5 +151,14 @@
     "Change": "版本变化"
   },
   "prBodyTemplate": "{{{header}}}{{{table}}}{{{warnings}}}{{{notes}}}{{{changelogs}}}{{{controls}}}{{{footer}}}",
-  "prFooter": "本 PR 由 [Renovate](https://github.com/renovatebot/renovate) 自动生成。"
+  "prFooter": "本 PR 由 [Renovate](https://github.com/renovatebot/renovate) 自动生成。",
+  "customDatasources": {
+    "github-rest-api": {
+      "defaultRegistryUrlTemplate": "https://api.github.com/versions",
+      "format": "json",
+      "transformTemplates": [
+        "{\"releases\": $map($, function($v) { {\"version\": $v, \"isStable\": true} }), \"homepage\": \"https://docs.github.com/en/rest/about-the-rest-api/api-versions\", \"changelogUrl\": \"https://docs.github.com/en/rest/overview/breaking-changes\"}"
+      ]
+    }
+  }
 }

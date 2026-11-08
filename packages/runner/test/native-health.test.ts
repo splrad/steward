@@ -17,6 +17,7 @@ const now=state.observedAt, self=file==='release.yml'?311600220:311600221, other
 const names={311600220:'release.yml',311600221:'sync-managed.yml'};
 const path=args.find(x=>x.startsWith('repos/')||x.startsWith('users/'));
 const method=args.includes('--method')?args[args.indexOf('--method')+1]:args[0]==='run'?'LIST':'DISPATCH';
+if(args[0]==='api'&&!args.includes('X-GitHub-Api-Version: 2026-03-10'))throw Error('Missing reviewed API version');
 const input=args.includes('--input')?fs.readFileSync(0,'utf8'):'';
 fs.appendFileSync('requests.jsonl',JSON.stringify({method,path,args,input})+'\n');
 const save=()=>fs.writeFileSync('state.json',JSON.stringify(state));
@@ -67,6 +68,18 @@ throw Error('Unregistered fixture request '+method+' '+path);
 const modes=['healthy','business-failure','manual-disable','expected-pause','wrong-pause-id','expected-other-paused','inactivity','authentication','workflow-unavailable','wrong-workflow',
   'unknown-state','run-unavailable','missing-run-fields','future-run','invalid-time','overdue','old-running','dispatch-unknown','dispatch-lost','manual-race','comment-unknown'];
 for(const file of ['release.yml','sync-managed.yml']) {
+  it.skipIf(process.platform==='win32').each(['unavailable','invalid'])(`${file}: rejects %s API version source before API writes`,async mode=>{
+    const workflow=YAML.parse(await readFile('.github/workflows/'+file,'utf8'));
+    const root=await mkdtemp(join(tmpdir(),'native-api-version-'));
+    try {
+      const curl=mode==='unavailable'?'return 22':`echo '{"version":"invalid"}'`;
+      const args=['-c',`curl() { ${curl}; }\ngh() { touch api-called; return 0; }\n`+workflow.jobs['automation-health'].steps[0].run];
+      permitOfflineCommand('bash',args);
+      const result=spawnSync('bash',args,{cwd:root,env:{...process.env,HEALTH_SOURCE_SHA:'a'.repeat(40)},encoding:'utf8',timeout:10_000});
+      expect(result.error).toBeUndefined();expect(result.status).not.toBe(0);
+      await expect(readFile(join(root,'api-called'))).rejects.toMatchObject({code:'ENOENT'});
+    } finally { await rm(root,{recursive:true,force:true}); }
+  });
   it.skipIf(process.platform==='win32').each(modes)(`${file}: native entry health %s`,async mode=>{
     const workflow=YAML.parse(await readFile('.github/workflows/'+file,'utf8'));
     const script=workflow.jobs['automation-health'].steps[0].run;
@@ -78,8 +91,10 @@ for(const file of ['release.yml','sync-managed.yml']) {
       // Force a notification transition without causing a workflow write.
       if(mode==='comment-unknown'||mode==='expected-pause')Object.assign(initialState,{comments:[{id:1,user:{id:41898282},body:'<!-- splrad-automation-health:v2 -->\n["'+(mode==='expected-pause'?'release.yml':other)+':WORKFLOW_DISABLED"]'}]});
       await writeFile(join(root,'state.json'),JSON.stringify(initialState));
-      const args=['-c',`gh() { node service.mjs '${file}' '${mode}' "$@"; }\n`+script];permitOfflineCommand('bash',args);
-      const run=()=>spawnSync('bash',args,{cwd:root,env:{...process.env,GH_TOKEN:'offline',DEFAULT_BRANCH:'main',CURRENT_RUN_ID:'1',CURRENT_ATTEMPT:'2',HEALTH_ISSUE:'7',EXPECTED_PAUSED_RELEASE:['expected-pause','expected-other-paused'].includes(mode)?'311600220':mode==='wrong-pause-id'?'999':''},encoding:'utf8',timeout:60_000});
+      const sourceSha='a'.repeat(40);
+      const args=['-c',`curl() { [[ "\${@: -1}" == 'https://raw.githubusercontent.com/splrad/steward/${sourceSha}/config/github-api.json' ]] || return 1; cat api-version.json; }\ngh() { node service.mjs '${file}' '${mode}' "$@"; }\n`+script];permitOfflineCommand('bash',args);
+      await writeFile(join(root,'api-version.json'),await readFile('config/github-api.json'));
+      const run=()=>spawnSync('bash',args,{cwd:root,env:{...process.env,GH_TOKEN:'offline',HEALTH_SOURCE_SHA:sourceSha,DEFAULT_BRANCH:'main',CURRENT_RUN_ID:'1',CURRENT_ATTEMPT:'2',HEALTH_ISSUE:'7',EXPECTED_PAUSED_RELEASE:['expected-pause','expected-other-paused'].includes(mode)?'311600220':mode==='wrong-pause-id'?'999':''},encoding:'utf8',timeout:60_000});
       const first=run(),successful=['healthy','business-failure','inactivity','dispatch-lost'].includes(mode)||(mode==='expected-pause'||(mode==='expected-other-paused'&&file==='sync-managed.yml'));
       expect(first.error).toBeUndefined();expect(first.status,first.stderr).toBe(successful?0:1);
       const requests=async()=> (await readFile(join(root,'requests.jsonl'),'utf8')).trim().split('\n').map(line=>JSON.parse(line));
