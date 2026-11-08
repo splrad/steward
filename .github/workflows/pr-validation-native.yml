@@ -39,7 +39,7 @@ jobs:
           path: target
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c
         env:
           MISE_SAFE: '1'
           MISE_NODE_COMPILE: 'false'
@@ -127,7 +127,7 @@ jobs:
           path: target
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c
         env:
           MISE_SAFE: '1'
           MISE_NODE_COMPILE: 'false'
@@ -219,7 +219,7 @@ jobs:
           path: target
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c
         env:
           MISE_SAFE: '1'
           MISE_NODE_COMPILE: 'false'
@@ -323,7 +323,7 @@ jobs:
           path: target
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c
         env:
           MISE_SAFE: '1'
           MISE_NODE_COMPILE: 'false'
@@ -400,7 +400,7 @@ jobs:
           path: target
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c
         if: startsWith(needs.scope.outputs.dependency-mode, 'private-')
         env:
           MISE_SAFE: '1'
@@ -492,7 +492,7 @@ jobs:
           path: target
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c
         env:
           MISE_SAFE: '1'
           MISE_NODE_COMPILE: 'false'
@@ -546,7 +546,7 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: policy
           persist-credentials: false
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c
         env:
           MISE_SAFE: '1'
           MISE_NODE_COMPILE: 'false'

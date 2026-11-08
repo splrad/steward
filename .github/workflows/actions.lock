@@ -3,30 +3,26 @@
 # Docs: https://gh.io/actions-lockfile
 version: 'v0.0.3'
 workflows:
-    '.github/workflows/business-flow-acceptance.yml':
-        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e'
-        - 'actions/checkout@v7.0.1'
-        - 'jdx/mise-action@v5.2.3'
     '.github/workflows/ai-identity-acceptance.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
         - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         - 'actions/upload-artifact@v7.0.2'
-        - 'jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e'
-        - 'jdx/mise-action@v5.2.3'
+        - 'jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c'
+    '.github/workflows/business-flow-acceptance.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+        - 'actions/checkout@v7.0.1'
+        - 'jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c'
     '.github/workflows/governance-promotion.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
         - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         - 'actions/upload-artifact@v7.0.2'
-        - 'jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d'
-        - 'jdx/mise-action@v5.2.4'
+        - 'jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c'
     '.github/workflows/native-review.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
-        - 'jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e'
-        - 'jdx/mise-action@v5.2.3'
+        - 'jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c'
     '.github/workflows/pr-labeler.yml':
         - 'actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13'
         - 'actions/labeler@v7.0.0'
@@ -43,30 +39,25 @@ workflows:
         - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         - 'actions/upload-artifact@v7.0.2'
         - 'dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d'
-        - 'jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d'
-        - 'jdx/mise-action@v5.2.4'
+        - 'jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c'
     '.github/workflows/product-release.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
         - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         - 'actions/upload-artifact@v7.0.2'
-        - 'jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e'
-        - 'jdx/mise-action@v5.2.3'
+        - 'jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c'
     '.github/workflows/quality-language-summary.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
-        - 'jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e'
-        - 'jdx/mise-action@v5.2.3'
+        - 'jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c'
     '.github/workflows/release.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
-        - 'jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e'
-        - 'jdx/mise-action@v5.2.3'
+        - 'jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c'
     '.github/workflows/sync-managed.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
-        - 'jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e'
-        - 'jdx/mise-action@v5.2.3'
+        - 'jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c'
 dependencies:
     'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1':
         ref: 'v7.0.1'
@@ -133,23 +124,8 @@ dependencies:
         commit: 'sha1-ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d'
         owner_id: 1588572
         repo_id: 265601040
-    'jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d':
-        ref: 'v5.2.4'
-        commit: 'sha1-6be3c7ed4c21d4f76b208d351d95aac273ebb76d'
-        owner_id: 216188
-        repo_id: 738284564
-    'jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e':
-        ref: 'v5.2.3'
-        commit: 'sha1-82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e'
-        owner_id: 216188
-        repo_id: 738284564
-    'jdx/mise-action@v5.2.3':
-        ref: 'v5.2.3'
-        commit: 'sha1-82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e'
-        owner_id: 216188
-        repo_id: 738284564
-    'jdx/mise-action@v5.2.4':
-        ref: 'v5.2.4'
-        commit: 'sha1-6be3c7ed4c21d4f76b208d351d95aac273ebb76d'
+    'jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c':
+        ref: 'v5.2.6'
+        commit: 'sha1-f5be966e4a917d54244728e6a5fdcd1d93a35e6c'
         owner_id: 216188
         repo_id: 738284564
