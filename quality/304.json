@@ -1,0 +1,410 @@
+{
+  "schemaVersion": 1,
+  "repositoryId": 1296724484,
+  "pullRequestNumber": 304,
+  "currentHead": "117c81d7a5b59f34debe97bd871697691d7259f8",
+  "configVersion": "e10-business-20261108",
+  "heads": {
+    "117c81d7a5b59f34debe97bd871697691d7259f8": {
+      "sourceSetDigest": "89ff98c0072a396492682b11b7e34c0986dadaf189b6309f04f348b657d43145",
+      "sources": [
+        {
+          "sourceCommentId": "review-comment:4505551497",
+          "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+          "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Duplicate 'if' condition\n\nThis condition is a duplicate of <a class=\"Link\" href=\"/splrad/steward/blob/234531cd838f21a18761e8ed1a00e48d4872781a/tools/quality-language/acceptance-fixture.js#L3-L3\">value === 'first'</a>.\n\n---\n\nTo fix duplicate conditions in an <code>if</code>/<code>else if</code> chain, ensure each condition is unique or remove unreachable duplicate branches.<br>\nIn this specific file (<code>tools/quality-language/acceptance-fixture.js</code>), the best non-speculative fix is to delete the duplicate <code>else if (value === 'first') return 'two';</code> line. This avoids inventing an unverified condition and preserves clear behavior: <code>'first'</code> maps to <code>'one'</code>, everything else maps to <code>'other'</code>.</p>\n<p>No new imports, methods, or definitions are needed.",
+          "updatedAt": "2026-11-08T08:22:56Z"
+        }
+      ],
+      "keys": [
+        "5b634dd03e246e6cdf1cea06c6ddfa5c487a79b49b318347aabd73fe5082b13e",
+        "10798db78791bc643bcf9e69d9de4a17fd55913a4f75b523be51ab40c1a7b069",
+        "0c34b495733bb661983bb1d8a59b6d56ad1a6676e64ff386143966d220da09f3",
+        "e57ec5945e1877a7a3bf698b8388098d796f682ab980fe5f1461062dc369c9aa",
+        "ae867a6123f25990665aa0655533656c5e4a9fbd7d3540b92bb1c1bd9a2bffce",
+        "b26ab26b46c034cba54e9087a7fe893c4b29c452dc4bf415680c62ccb329da86",
+        "0e89e4145286c1bcd42f5f5bb236ef667c546b4a30ff99d791ff9dd098898dfa",
+        "471a2a244e3e60000b8e93249647d9d0753d1c606ae040bbfaee970e34b9c5a3",
+        "500e8d487416a7edd9bb4efba5301c7285341e803337db2a5b8cde650aec3d62",
+        "44b0b46dadf21067d6d68ef78d4a81771e7799363ba463c61cea8370c368f56d",
+        "c633f99ad6d00485ad0204e1ae7d1c4001f397c4a1acd87ea7355e492edded13",
+        "0e1d8c6a93839f06aa9852e43567e4c2b7ba7dff2d91a8a61648d0a6d975cad2",
+        "85e661643117edd209dc958f80ee15142da5804c639f5f4c5bab570c1746bafd",
+        "ee83b9a8619bcc70f1b2d1de66e163a6729bb1ea178e12e16077a92431343e6c",
+        "e80d7bdcb174ffdadd0b92113c9c7cc20c4556c4cbdc1ab8b5ea50b7e7eb2285",
+        "ca83c17d6d19136f4f56d1c26e34269b511e4c3fade23a8a498d66eeac2a9ecf",
+        "e265978bdbcd3a7ea5b820e06bfe6f340a55e6a08bfca2471866af1477f8e068",
+        "96dea669ae638a6493a1978184c89167fc5ce066939fd33c96f8dc99a41b774d",
+        "49c16045247b34a77114621067f7426d72750292d0ba0cc491f5373b5ef228b7",
+        "eb82e31c2f2d29497e7a51b48d1f97a5beaba9ef257dd398977e6fee7c41870c",
+        "77a8c5459f4ec8d95b6a79551311d9a7f09beefcae243bec56b7bd678745495d"
+      ],
+      "checkId": null,
+      "externalId": "splrad-quality:1296724484:304:117c81d7a5b59f34debe97bd871697691d7259f8",
+      "observedAt": "2026-11-08T14:11:00.705Z"
+    }
+  },
+  "entries": {
+    "5b634dd03e246e6cdf1cea06c6ddfa5c487a79b49b318347aabd73fe5082b13e": {
+      "key": "5b634dd03e246e6cdf1cea06c6ddfa5c487a79b49b318347aabd73fe5082b13e",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": "## Duplicate 'if' condition",
+        "segmentIndex": 0,
+        "originalIdentifiers": []
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "10798db78791bc643bcf9e69d9de4a17fd55913a4f75b523be51ab40c1a7b069": {
+      "key": "10798db78791bc643bcf9e69d9de4a17fd55913a4f75b523be51ab40c1a7b069",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": "This condition is a duplicate of ",
+        "segmentIndex": 1,
+        "originalIdentifiers": []
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "0c34b495733bb661983bb1d8a59b6d56ad1a6676e64ff386143966d220da09f3": {
+      "key": "0c34b495733bb661983bb1d8a59b6d56ad1a6676e64ff386143966d220da09f3",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": "value === 'first'",
+        "segmentIndex": 2,
+        "originalIdentifiers": []
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "e57ec5945e1877a7a3bf698b8388098d796f682ab980fe5f1461062dc369c9aa": {
+      "key": "e57ec5945e1877a7a3bf698b8388098d796f682ab980fe5f1461062dc369c9aa",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": ".",
+        "segmentIndex": 3,
+        "originalIdentifiers": []
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "ae867a6123f25990665aa0655533656c5e4a9fbd7d3540b92bb1c1bd9a2bffce": {
+      "key": "ae867a6123f25990665aa0655533656c5e4a9fbd7d3540b92bb1c1bd9a2bffce",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": "---",
+        "segmentIndex": 4,
+        "originalIdentifiers": []
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "b26ab26b46c034cba54e9087a7fe893c4b29c452dc4bf415680c62ccb329da86": {
+      "key": "b26ab26b46c034cba54e9087a7fe893c4b29c452dc4bf415680c62ccb329da86",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": "To fix duplicate conditions in an ",
+        "segmentIndex": 5,
+        "originalIdentifiers": []
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "0e89e4145286c1bcd42f5f5bb236ef667c546b4a30ff99d791ff9dd098898dfa": {
+      "key": "0e89e4145286c1bcd42f5f5bb236ef667c546b4a30ff99d791ff9dd098898dfa",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": "if",
+        "segmentIndex": 6,
+        "originalIdentifiers": []
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "471a2a244e3e60000b8e93249647d9d0753d1c606ae040bbfaee970e34b9c5a3": {
+      "key": "471a2a244e3e60000b8e93249647d9d0753d1c606ae040bbfaee970e34b9c5a3",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": "/",
+        "segmentIndex": 7,
+        "originalIdentifiers": []
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "500e8d487416a7edd9bb4efba5301c7285341e803337db2a5b8cde650aec3d62": {
+      "key": "500e8d487416a7edd9bb4efba5301c7285341e803337db2a5b8cde650aec3d62",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": "else if",
+        "segmentIndex": 8,
+        "originalIdentifiers": []
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "44b0b46dadf21067d6d68ef78d4a81771e7799363ba463c61cea8370c368f56d": {
+      "key": "44b0b46dadf21067d6d68ef78d4a81771e7799363ba463c61cea8370c368f56d",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": " chain, ensure each condition is unique or remove unreachable duplicate branches.",
+        "segmentIndex": 9,
+        "originalIdentifiers": []
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "c633f99ad6d00485ad0204e1ae7d1c4001f397c4a1acd87ea7355e492edded13": {
+      "key": "c633f99ad6d00485ad0204e1ae7d1c4001f397c4a1acd87ea7355e492edded13",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": "In this specific file (",
+        "segmentIndex": 10,
+        "originalIdentifiers": []
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "0e1d8c6a93839f06aa9852e43567e4c2b7ba7dff2d91a8a61648d0a6d975cad2": {
+      "key": "0e1d8c6a93839f06aa9852e43567e4c2b7ba7dff2d91a8a61648d0a6d975cad2",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": "tools/quality-language/acceptance-fixture.js",
+        "segmentIndex": 11,
+        "originalIdentifiers": [
+          "tools/quality-language/acceptance-fixture.js"
+        ]
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "85e661643117edd209dc958f80ee15142da5804c639f5f4c5bab570c1746bafd": {
+      "key": "85e661643117edd209dc958f80ee15142da5804c639f5f4c5bab570c1746bafd",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": "), the best non-speculative fix is to delete the duplicate ",
+        "segmentIndex": 12,
+        "originalIdentifiers": []
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "ee83b9a8619bcc70f1b2d1de66e163a6729bb1ea178e12e16077a92431343e6c": {
+      "key": "ee83b9a8619bcc70f1b2d1de66e163a6729bb1ea178e12e16077a92431343e6c",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": "else if (value === 'first') return 'two';",
+        "segmentIndex": 13,
+        "originalIdentifiers": []
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "e80d7bdcb174ffdadd0b92113c9c7cc20c4556c4cbdc1ab8b5ea50b7e7eb2285": {
+      "key": "e80d7bdcb174ffdadd0b92113c9c7cc20c4556c4cbdc1ab8b5ea50b7e7eb2285",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": " line. This avoids inventing an unverified condition and preserves clear behavior: ",
+        "segmentIndex": 14,
+        "originalIdentifiers": []
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "ca83c17d6d19136f4f56d1c26e34269b511e4c3fade23a8a498d66eeac2a9ecf": {
+      "key": "ca83c17d6d19136f4f56d1c26e34269b511e4c3fade23a8a498d66eeac2a9ecf",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": "'first'",
+        "segmentIndex": 15,
+        "originalIdentifiers": []
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "e265978bdbcd3a7ea5b820e06bfe6f340a55e6a08bfca2471866af1477f8e068": {
+      "key": "e265978bdbcd3a7ea5b820e06bfe6f340a55e6a08bfca2471866af1477f8e068",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": " maps to ",
+        "segmentIndex": 16,
+        "originalIdentifiers": []
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "96dea669ae638a6493a1978184c89167fc5ce066939fd33c96f8dc99a41b774d": {
+      "key": "96dea669ae638a6493a1978184c89167fc5ce066939fd33c96f8dc99a41b774d",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": "'one'",
+        "segmentIndex": 17,
+        "originalIdentifiers": []
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "49c16045247b34a77114621067f7426d72750292d0ba0cc491f5373b5ef228b7": {
+      "key": "49c16045247b34a77114621067f7426d72750292d0ba0cc491f5373b5ef228b7",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": ", everything else maps to ",
+        "segmentIndex": 18,
+        "originalIdentifiers": []
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "eb82e31c2f2d29497e7a51b48d1f97a5beaba9ef257dd398977e6fee7c41870c": {
+      "key": "eb82e31c2f2d29497e7a51b48d1f97a5beaba9ef257dd398977e6fee7c41870c",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": "'other'",
+        "segmentIndex": 19,
+        "originalIdentifiers": []
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "77a8c5459f4ec8d95b6a79551311d9a7f09beefcae243bec56b7bd678745495d": {
+      "key": "77a8c5459f4ec8d95b6a79551311d9a7f09beefcae243bec56b7bd678745495d",
+      "segment": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "bodyMarkdown": ".",
+        "segmentIndex": 20,
+        "originalIdentifiers": []
+      },
+      "configVersion": "e10-business-20261108",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    }
+  },
+  "cursor": 0
+}
