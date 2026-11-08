@@ -19,6 +19,9 @@ workflows:
         - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         - 'actions/upload-artifact@v7.0.2'
         - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
+    '.github/workflows/layerscape-release-initialize.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+        - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
     '.github/workflows/native-review.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
