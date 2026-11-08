@@ -1,6 +1,6 @@
 # 私有管理员仓依赖检查
 
-当前实现仅绑定中央配置中的管理员仓 ID、名称及 private 状态。其他仓仍走原生 Dependency Review。管理员仓每次 PR/main push 执行检查，避免仅改 `.mise/locks/` 或新增未知输入绕过路径筛选；报告记录准确 base/head 和中央来源。
+管理员模式绑定中央配置中的管理员仓 ID、名称及 private 状态。已注册的治理仓和下述单个生命周期样本使用各自的有限合同；其余仓仍走原生 Dependency Review。管理员仓每次 PR/main push 执行检查，避免仅改 `.mise/locks/` 或新增未知输入绕过路径筛选；报告记录准确 base/head 和中央来源。
 
 检查只读取候选 Git blob。已有离线工作流检查和原生 `gh actions-lock --verify` 保留；独立在线 zizmor 必须有只读 token。锁定 Action 的仓 ID、tag/commit 对应和完整 SHA 均核验；仅在已验 ref 是该 commit 唯一最长 tag 时使用当前 zizmor 的原生公告匹配，歧义或无映射阻断。锁内所有 Action 另组成只供分析的输入，报告按仓库/SHA/GHSA 比较新增风险。可重用工作流或未识别路径需补充覆盖后采用。
 
@@ -25,3 +25,13 @@ SPLRAD 治理维护者负责跟踪上游正式修复并维护此临时例外。�
 Linux扫描容器保留cap-drop=ALL、no-new-privileges及只读输入/rootfs；专用输出目录设为0770，仅追加runner主组使固定镜像可写该目录。Windows沿用其原生挂载权限。工具失败在私有摘要记录退出码、signal、错误码及截断且去除已知凭据值的stderr，Docker另标记scanner/reporter入口；工具错误始终失败，不作为干净扫描。
 
 扫描器创建的结果文件可能归容器 root 所有。宿主对 upstream 结果合并及 npm 结果规范化时，先在同一输出目录写入自身所有的临时文件，再通过 rename 替换结果；不原地截断 root 文件，不放宽已有结果文件权限。
+
+## 私有生命周期样本
+
+`config/private-dependency-security.json` 的 `lifecycleSamples` 仅登记一个隔离样本。必须同时匹配准确仓 ID、名称、组织、private 状态及现有 `STEWARD_PRIVATE_GOVERNANCE_REPOSITORY_ID`；身份或注册不符立即失败。现有 governance-only 文件白名单不变，管理员模式不变。
+
+样本允许单 app JavaScript 源码/行为测试、VERSION、Release Please simple 配置与 manifest、delivery、两个正式发布模板及必要 Node 验证接口。完整 base/head 文件清单分别核对；未知源码、工作流、工具配置或依赖清单拒绝。`templates/lifecycle-sample/` 的 package/lock、验证脚本和忽略规则统一 LF 换行后必须逐字节匹配，明确证明应用没有第三方 npm 包；不能将空 OSV 结果作为未扫描依赖的替代。新增任何 npm 依赖必须另行修改受审合同。首次治理 base 可没有应用；出现任一应用输入即要求完整配套文件。生成的 CHANGELOG 和 app 发布说明允许保留。首次无应用且无 workflow 的 base 可省略 Action 锁；含应用、含 workflow 的 base 以及所有 head 仍须提供锁。
+
+Copier 文件继续匹配可信版本原文。发布 workflow 的结构必须与当前正式模板一致，中央 checkout 引用限当前可信控制器或其已验证祖先；第三方 Action 不接受替换。唯一允许的中央 product-release reusable workflow 从已验证祖先 Git 对象展开，其 Action 和 mise 声明纳入相同扫描；其他 reusable 或再次嵌套拒绝。Action 锁身份、tag/SHA、完整清单及在线 zizmor 检查保留；所有声明的 mise 版本另用供应商公告检查，缺失或不完整信息失败。源文件在原 Linux/Windows 低权限 job 中验证，不抑制 source job。样本复用中央已固定的 TypeScript 工具链编译 JS、执行编译产物行为测试、类型检查、配置一致性及重复构建产物比较；扫描 job 仍只读候选 blob、不执行样本代码。必需检查、权限和 Environment 不变。
+
+该模式只解决隔离样本的 PR 准入。正式发布模板保持原内容，本轮仅用于发行说明候选验收；模板中现有产品构建矩阵不代表这个样本已具备正式发布能力。样本发布/分发 workflow 在采用后保持停用，真实初始化与模型调用依原批次授权另行执行。回退策略为暂停样本后续写入、保留状态和证据；已有应用时不能直接回退旧 governance-only 检查并声称继续兼容。

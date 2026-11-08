@@ -1,0 +1,13 @@
+{
+  "name": "steward-lifecycle-sample",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/verify.mjs build",
+    "test": "npm run build && node --test acceptance-app.test.js",
+    "typecheck": "node scripts/verify.mjs types",
+    "verify:config": "node scripts/verify.mjs config",
+    "verify:dist": "node scripts/verify.mjs dist"
+  }
+}
