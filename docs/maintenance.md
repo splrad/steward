@@ -5,7 +5,6 @@
 | 固定入口 | 业务作业 |
 | --- | --- |
 | sync-managed.yml | bootstrap、templates |
-| update-dependencies.yml | targets、update 矩阵 |
 | quality-language-summary.yml | quality-summary |
 | governance-promotion.yml | promote |
 
@@ -21,7 +20,9 @@
 
 部署时将既有专用 Issue 编号绑定到仓库变量 `STEWARD_HEALTH_ISSUE`。固定错误码集合变化时，健康作业向该 Issue 写一条包含中央 Run 链接的评论并回读；相同错误和不同观察 Run 不重复通知。权限、真实 enable/dispatch 与订阅送达分别在原生采用阶段验证。
 
-`sync-managed.yml` 的 bootstrap 与 templates 都已成功时，仅健康作业失败不会创建业务恢复请求或占用额度；原生失败作业重跑保留已经成功的作业。业务与健康同时失败时仍沿同一 Run 的有限业务恢复预算处理。旧 `update-dependencies.yml` Run 中已有的健康 attempt 保持可读，适用范围为其原始执行记录。
+`sync-managed.yml` 的 bootstrap 与 templates 都已成功时，仅健康作业失败不会创建业务恢复请求或占用额度；原生失败作业重跑保留已经成功的作业。业务与健康同时失败时仍沿同一 Run 的有限业务恢复预算处理。旧 `update-dependencies.yml` 的维护记录（含矩阵、健康 attempt 和已有请求）保持可读；该入口已退出当前扫描和自动重跑，不再读取已删除的 YAML 或查询其 workflow API。Renovate 依赖更新由官方 Mend 托管服务执行，运行故障查看其原生记录。
+
+旧自托管入口及其目标发现、专属认证和日志校验代码已移除。历史提交及记录保留；需要恢复源码时通过受审 revert 还原同源代码与生成物，旧工作流仍须保持人工停用。重新启用旧写者需单独核定与 Mend 的交接，不能直接重跑旧 Run。共享 App 和凭据继续服务其他消费者。
 
 产品 Pages 在同一协调器中独立观察，使用产品仓自己的治理状态、准确来源和有限恢复预算，见[产品 Pages](pages.md)。中央维护本地验证覆盖 API 故障、原 Run 回读、完整分页、预算以及真实 Git 历史恢复；线上启用按当前实施阶段完成。
 

@@ -113,7 +113,6 @@
     "custom.regex"
   ],
   "ignorePaths": [
-    ".github/workflows/update-dependencies.yml",
     ".github/workflows/pr-title.yml",
     ".github/workflows/pr-labeler.yml",
     ".github/labeler.yml"

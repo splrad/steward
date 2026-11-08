@@ -28,16 +28,6 @@ function fixture() {
   }) as typeof fetch;
   return {fetcher,minted,revoked,setExtraScope:()=>extraScope=true,setWrongBot:()=>wrongBot=true};
 }
-it('scopes update discovery to one repository with read-only content and revokes on error',async()=>{
-  const f=fixture(),app=await nativeReleaseApp(key,f.fetcher);
-  await expect(app.forUpdateReadRepository(12,async()=>{throw Error('read failure');})).rejects.toThrow('read failure');
-  expect(f.minted).toEqual([{repository_ids:[12],permissions:{metadata:'read',contents:'read'}}]);expect(f.revoked).toHaveLength(1);
-});
-it('refuses widened update read credentials before repository processing',async()=>{
-  const f=fixture(),app=await nativeReleaseApp(key,f.fetcher);f.setExtraScope();let called=false;
-  await expect(app.forUpdateReadRepository(12,async()=>{called=true;})).rejects.toThrow('UPDATE_TOKEN_SCOPE');
-  expect(called).toBe(false);expect(f.revoked).toHaveLength(1);
-});
 it('scopes Pages maintenance to one product, without Pages deployment or workflow write permission',async()=>{
   const f=fixture(),app=await nativeReleaseApp(key,f.fetcher);
   await expect(app.forPagesRepository(12,async()=>{throw Error('fixture Pages failure');})).rejects.toThrow('fixture Pages failure');
