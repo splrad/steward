@@ -36,7 +36,8 @@ export async function verifyContentAttemptReceipts(attempts: ContentAttempt[]) {
   for (const [index, attempt] of attempts.entries()) {
     if ((attempt.recovery || attempt.diagnostic) && !attemptValidator(attempt)) throw Error('CONTENT_ATTEMPT_SCHEMA');
     if (attempt.recovery && (index !== 1 || attempts.length !== 2 || !permittedContentPredecessor(attempts[0]!,0,attempts)
-      || attempt.recovery.previousAttemptSha256 !== await sha256Hex(JSON.stringify(attempts[0])))) throw Error('CONTENT_RECOVERY_HISTORY');
+      || attempt.recovery.previousAttemptSha256 !== await sha256Hex(JSON.stringify(attempts[0]))
+      || attempt.recovery.outputContractSha256 !== await sha256Hex(JSON.stringify(CONTENT_OUTPUT_SCHEMA)))) throw Error('CONTENT_RECOVERY_HISTORY');
     if (attempt.diagnostic && (utf8Length(attempt.diagnostic.responseText) !== attempt.diagnostic.responseBytes
       || await sha256Hex(attempt.diagnostic.responseText) !== attempt.diagnostic.responseSha256)) throw Error('CONTENT_DIAGNOSTIC_DIGEST');
   }

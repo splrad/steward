@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { planContentBatches, resumeContentBatches, assembleUnitNotes, type ContentSource, type ContentRuntime, type ContentWork } from '../src/release-content.js';
-import { CONTENT_OUTPUT_SCHEMA, splitContentText, validateContentResult, validateContentInput, type ContentInput } from '../../core/src/release-content.js';
+import { CONTENT_OUTPUT_SCHEMA, verifyContentAttemptReceipts, splitContentText, validateContentResult, validateContentInput, type ContentInput } from '../../core/src/release-content.js';
 import { decodeCandidateDocument } from '../../core/src/release-candidate-record.js';
 
 const digest = (v: string) => createHash('sha256').update(v).digest('hex');
@@ -164,4 +164,12 @@ it('does not extend explicit recovery to unknown output or a second failure',asy
   const unknown=await planContentBatches(input(),[source(1)]),other={},q=runtime();q.port.call=async()=>{throw Error('RESPONSE_UNKNOWN');};
   await resumeContentBatches(unknown,other,q.port);q.port.recovery={...grant,previousAttemptSha256:digest(JSON.stringify(unknown.input.batches[0]!.attempts[0]))};
   await expect(resumeContentBatches(unknown,other,q.port)).rejects.toThrow('CONTENT_RECOVERY_BINDING');
+});
+
+it('rejects mismatched archived contract digests and oversized UTF-8 diagnostics',async()=>{
+  const old={ordinal:1,startedAt:'2026-11-08T00:00:00Z',status:'REJECTED' as const,model:'fixture',usage:null,errorCode:'CONTENT_OUTPUT_SCHEMA'};
+  const recovery={previousAttemptSha256:digest(JSON.stringify(old)),authorizationId:digest('approval'),outputContractSha256:digest('wrong contract')};
+  await expect(verifyContentAttemptReceipts([old,{...old,ordinal:2,recovery}])).rejects.toThrow('CONTENT_RECOVERY_HISTORY');
+  const responseText='中'.repeat(12288),diagnostic={responseText,responseSha256:digest(responseText),responseBytes:Buffer.byteLength(responseText),validationErrors:[]};
+  await expect(verifyContentAttemptReceipts([{...old,diagnostic}])).rejects.toThrow('CONTENT_ATTEMPT_SCHEMA');
 });
