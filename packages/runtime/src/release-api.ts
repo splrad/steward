@@ -1,3 +1,4 @@
+import { legacyReleaseRetired } from './release-retirement.js';
 import { dispatchMigrationBuild } from './release-migration-dispatch.js';
 import { evaluatorSha } from './workflow-evaluator.js';
 import { assertPersonalizationConfiguration, refreshPersonalizedSections } from '../../core/src/release-personalization.js';
@@ -28,6 +29,7 @@ const botId = 301115370;
 export async function handleReleaseRequest(request: Request, env: BodyWriteRuntimeEnv): Promise<Response | null> {
   const url = new URL(request.url);
   if (!url.pathname.startsWith('/internal/releases/')) return null;
+  if (legacyReleaseRetired(env)) return reply(410, { error: 'LEGACY_RELEASE_RETIRED' });
   try {
     releaseAssert(!url.search, 'QUERY');
     const parts = url.pathname.split('/').slice(3), repositoryId = Number(parts[0]);

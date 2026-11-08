@@ -17,6 +17,7 @@ database_id = "75ae2ef8-683d-4a44-b113-e58961473d03"
 migrations_dir = "migrations"
 
 [vars]
+LEGACY_RELEASE_RETIRED = "true"
 ORGANIZATION_ID = "302208797"
 ORGANIZATION_LOGIN = "splrad"
 APP_ID = "4243096"

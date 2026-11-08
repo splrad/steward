@@ -7,6 +7,7 @@ import worker, { handleWebhook, recoverPullRequestBodyWriteIntents, type Env } f
 import { bodyOutsideManagedRegionDigest, pullRequestBodyDigest, PullRequestBodyWriteIntentStore } from "../src/pr-body-write-intents.js";
 
 
+describe.each([undefined, 'true'])('shared runtime with retirement=%s', retirement => {
 class SqliteD1Statement {
   constructor(private readonly database: DatabaseSync, private readonly sql: string, private readonly values: readonly SQLInputValue[] = []) {}
   bind(...values: unknown[]): SqliteD1Statement { return new SqliteD1Statement(this.database, this.sql, values as SQLInputValue[]); }
@@ -59,6 +60,7 @@ afterEach(() => {
 
 const repository = (id = 1296724484, fullName = "splrad/steward") => ({ id, full_name: fullName, private: false, has_issues: true, archived: false, disabled: false, owner: { id: 302208797, login: "splrad" } });
 const env = (database: SqliteD1): Env => ({
+  LEGACY_RELEASE_RETIRED: retirement,
   ORGANIZATION_ID: "302208797", ORGANIZATION_LOGIN: "splrad", APP_ID: "4243096", INSTALLATION_ID: "145952003",
   STEWARDSHIP_REPOSITORY: "splrad/steward", POLICY_SHA: "a".repeat(40), STEWARD_APP_PRIVATE_KEY: privateKey,
   STEWARD_WEBHOOK_SECRET: "webhook-secret", ISSUE_SNAPSHOTS: database.binding(),
@@ -404,4 +406,6 @@ describe("共享正文接口和恢复", () => {
       .toEqual({ redrive_required: 0, redrive_dispatched: 0 });
     expect(await store.listPendingRedrives()).toEqual([]);
   });
+});
+
 });

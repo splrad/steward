@@ -95,3 +95,28 @@ describe('bound-candidate release dispatch', () => {
     expect(await recoverReleaseReceipts(env, 1000001)).toBe(0); expect(requests).toEqual([]);
   });
 });
+
+
+describe('retired release entrances', () => {
+  beforeEach(() => { env.LEGACY_RELEASE_RETIRED = 'true'; });
+  it.each(['submitted', 'dismissed', 'edited'])('does not read or reserve release review %s', async action => {
+    await seed();
+    const before = db.database.prepare('SELECT * FROM release_receipts').all();
+    const find = vi.spyOn(ReleaseReceiptStore.prototype, 'findByPull');
+    try {
+      expect((await handleWebhook(event('pull_request_review', action), env)).status).toBe(204);
+      expect(find).not.toHaveBeenCalled();
+      expect(requests).toEqual([]);
+      expect(db.database.prepare('SELECT * FROM release_receipts').all()).toEqual(before);
+    } finally { find.mockRestore(); }
+  });
+  it('does not reserve recovery cooldown or dispatch merged/prepared receipts', async () => {
+    await seed('merged');
+    const before = db.database.prepare('SELECT * FROM release_receipts').all();
+    expect(await recoverReleaseReceipts(env, Date.now() + 24 * 3600_000)).toBe(0);
+    expect(db.database.prepare('SELECT * FROM release_receipts').all()).toEqual(before);
+    expect(requests).toEqual([]);
+    expect((await handleWebhook(event('pull_request', 'closed', 17, true), env)).status).toBe(204);
+    expect(requests).toEqual([]);
+  });
+});

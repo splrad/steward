@@ -7,6 +7,7 @@ export { verifyWorkflowPolicy };
 import { readWorkflowContract, contractDigest } from "./workflow-contract.js";
 import { selectContractAuthority } from "../../core/src/workflow-contract-authority.js";
 import { evaluateRemoteWorkflowContract } from "../../github/src/workflow-contract.js";
+import { evaluateLegacyRuntimeMaintenance, legacyRuntimeMaintenanceBranch } from "./legacy-runtime-maintenance.js";
 import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
@@ -1022,7 +1023,8 @@ async function validate(args: Readonly<Record<string, string>>) {
     // The read token is consumed before any candidate task starts.
     delete process.env.WORKFLOW_CONTRACT_READ_TOKEN;
     const policySha = sha(env("VALIDATION_POLICY_SHA"), "VALIDATION_POLICY_SHA");
-    const result = await evaluateRemoteWorkflowContract(new GitHubClient(contractToken, "https://api.github.com", fetch, policySha),
+    const evaluateContract = validationBaseRef === legacyRuntimeMaintenanceBranch ? evaluateLegacyRuntimeMaintenance : evaluateRemoteWorkflowContract;
+    const result = await evaluateContract(new GitHubClient(contractToken, "https://api.github.com", fetch, policySha),
       authority, integer(env("VALIDATION_PR_NUMBER"), "VALIDATION_PR_NUMBER"), policySha);
     if (result.binding.headSha !== sha(env("VALIDATION_HEAD_SHA"), "VALIDATION_HEAD_SHA")
       || result.binding.baseSha !== sha(env("VALIDATION_BASE_SHA"), "VALIDATION_BASE_SHA")
