@@ -382,7 +382,7 @@ jobs:
           DEPENDENCY_MODE: ${{ needs.scope.outputs.dependency-mode }}
         run: |
           case "$DEPENDENCY_MODE" in
-            native|private-administrator|private-governance) ;;
+            native|private-administrator|private-governance|private-lifecycle) ;;
             *) echo 'Missing trusted dependency mode'; exit 1 ;;
           esac
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
