@@ -66,3 +66,7 @@ export async function lifecycleReusable(uses,loadTrusted){
   assert(doc?.on?.workflow_call&&doc.jobs&&Object.values(doc.jobs).every(job=>!job.uses),'LIFECYCLE_REUSABLE_NESTING');
   return {path:'.github/workflows/trusted-product-release-'+match[1]+'.yml',bytes,sha:match[1]};
 }
+
+export function assertLifecycleMissingActionLock(paths,{side,application}){
+  assert(side==='base'&&!application&&!paths.some(path=>path.startsWith('.github/workflows/')),'LIFECYCLE_ACTION_LOCK_REQUIRED');
+}

@@ -10,7 +10,7 @@ import {createHash} from 'node:crypto';
 import YAML from 'yaml';
 import {validationInput,git} from './validation-input.mjs';
 import {assert,loadPolicy,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,assertGovernanceOnlyScope,assertCopierInputs,licenseFacts} from './private-dependency-policy.mjs';
-import {assertLifecycleScope,assertLifecycleSnapshot,lifecycleMiseVersions,lifecycleReusable} from './private-lifecycle-policy.mjs';
+import {assertLifecycleScope,assertLifecycleSnapshot,lifecycleMiseVersions,lifecycleReusable,assertLifecycleMissingActionLock} from './private-lifecycle-policy.mjs';
 import {miseFindings} from './private-tool-security.mjs';
 import {scanTools,publicBytes} from './private-tool-security.mjs';
 import {effectiveLock} from './private-lock-exception.mjs';
@@ -178,7 +178,10 @@ export async function main(env=process.env){
       }
       // Existing native gh actions-lock verification remains mandatory in the governance job.
       const lock=blob(workspace,entries,'.github/workflows/actions.lock',managedOnly&&side==='base');
-      if(!lock)assert(entries.every(e=>e.path==='README.md'),'GOVERNANCE_BASE_NOT_EMPTY');
+      if(!lock){
+        if(lifecycle)assertLifecycleMissingActionLock(entries.map(e=>e.path),{side,application:snapshot.application.application});
+        else assert(entries.every(e=>e.path==='README.md'),'GOVERNANCE_BASE_NOT_EMPTY');
+      }
       snapshot.actions=lock?await actionsInventory(lock.toString(),env.GH_TOKEN):[];
       const docs=[],documents=new Map(),workflowDocuments=new Map();
       const workflowInputs=entries.filter(e=>/^\.github\/workflows\/[^/]+\.ya?ml$/.test(e.path)).map(e=>({path:e.path,bytes:blob(workspace,entries,e.path)}));

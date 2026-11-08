@@ -30,7 +30,7 @@ Linux扫描容器保留cap-drop=ALL、no-new-privileges及只读输入/rootfs；
 
 `config/private-dependency-security.json` 的 `lifecycleSamples` 仅登记一个隔离样本。必须同时匹配准确仓 ID、名称、组织、private 状态及现有 `STEWARD_PRIVATE_GOVERNANCE_REPOSITORY_ID`；身份或注册不符立即失败。现有 governance-only 文件白名单不变，管理员模式不变。
 
-样本允许单 app JavaScript 源码/行为测试、VERSION、Release Please simple 配置与 manifest、delivery、两个正式发布模板及必要 Node 验证接口。完整 base/head 文件清单分别核对；未知源码、工作流、工具配置或依赖清单拒绝。`templates/lifecycle-sample/` 的 package/lock、验证脚本和忽略规则统一 LF 换行后必须逐字节匹配，明确证明应用没有第三方 npm 包；不能将空 OSV 结果作为未扫描依赖的替代。新增任何 npm 依赖必须另行修改受审合同。首次治理 base 可没有应用；出现任一应用输入即要求完整配套文件。生成的 CHANGELOG 和 app 发布说明允许保留。
+样本允许单 app JavaScript 源码/行为测试、VERSION、Release Please simple 配置与 manifest、delivery、两个正式发布模板及必要 Node 验证接口。完整 base/head 文件清单分别核对；未知源码、工作流、工具配置或依赖清单拒绝。`templates/lifecycle-sample/` 的 package/lock、验证脚本和忽略规则统一 LF 换行后必须逐字节匹配，明确证明应用没有第三方 npm 包；不能将空 OSV 结果作为未扫描依赖的替代。新增任何 npm 依赖必须另行修改受审合同。首次治理 base 可没有应用；出现任一应用输入即要求完整配套文件。生成的 CHANGELOG 和 app 发布说明允许保留。首次无应用且无 workflow 的 base 可省略 Action 锁；含应用、含 workflow 的 base 以及所有 head 仍须提供锁。
 
 Copier 文件继续匹配可信版本原文。发布 workflow 的结构必须与当前正式模板一致，中央 checkout 引用限当前可信控制器或其已验证祖先；第三方 Action 不接受替换。唯一允许的中央 product-release reusable workflow 从已验证祖先 Git 对象展开，其 Action 和 mise 声明纳入相同扫描；其他 reusable 或再次嵌套拒绝。Action 锁身份、tag/SHA、完整清单及在线 zizmor 检查保留；所有声明的 mise 版本另用供应商公告检查，缺失或不完整信息失败。源文件在原 Linux/Windows 低权限 job 中验证，不抑制 source job。样本复用中央已固定的 TypeScript 工具链编译 JS、执行编译产物行为测试、类型检查、配置一致性及重复构建产物比较；扫描 job 仍只读候选 blob、不执行样本代码。必需检查、权限和 Environment 不变。
 

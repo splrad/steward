@@ -6,7 +6,7 @@ import {tmpdir} from 'node:os';
 import {spawnSync} from 'node:child_process';
 import YAML from 'yaml';
 import {dependencyMode,loadPolicy,assertGovernanceOnlyScope} from '../private-dependency-policy.mjs';
-import {assertLifecycleScope,assertLifecycleSnapshot,lifecycleSupport,lifecycleWorkflows,lifecycleMiseVersions,lifecycleReusable} from '../private-lifecycle-policy.mjs';
+import {assertLifecycleScope,assertLifecycleSnapshot,lifecycleSupport,lifecycleWorkflows,lifecycleMiseVersions,lifecycleReusable,assertLifecycleMissingActionLock} from '../private-lifecycle-policy.mjs';
 import {buildMode} from '../validation-input.mjs';
 const SHA='a'.repeat(40),OLD='b'.repeat(40),policy=await loadPolicy();
 const event={repository:{id:1448797077,full_name:'splrad/steward-e10-lifecycle-20261107',private:true,owner:{id:302208797}}};
@@ -104,4 +104,14 @@ test('workflow registration reaches every identity revalidation and malformed mi
  for(const uses of ['jdx/mise-action@latest','jdx/mise-action@abcd','jdx/mise-action/sub@'+SHA]){
   assert.throws(()=>lifecycleMiseVersions(new Map([['bad',{jobs:{a:{steps:[{uses,with:{version:'2026.10.18'}}]}}}]])),/MISE_REFERENCE/);
  }
+});
+
+test('action lock remains admitted; only a non-executable pre-application base may omit it',async()=>{
+ assertLifecycleScope(['.github/workflows/actions.lock']);
+ const paths=['README.md','CHANGELOG.md','.release-notes/app.md'];
+ const files=new Map(paths.map(path=>[path,Buffer.from('history')]));
+ const snapshot=await assertLifecycleSnapshot(files,{side:'base'});
+ assertLifecycleMissingActionLock(paths,{side:'base',application:snapshot.application});
+ for(const input of [{side:'head',application:false},{side:'base',application:true}])assert.throws(()=>assertLifecycleMissingActionLock(paths,input),/ACTION_LOCK_REQUIRED/);
+ assert.throws(()=>assertLifecycleMissingActionLock([...paths,'.github/workflows/pr-title.yml'],{side:'base',application:false}),/ACTION_LOCK_REQUIRED/);
 });
