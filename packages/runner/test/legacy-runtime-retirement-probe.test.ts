@@ -4,6 +4,29 @@ const { verifyLegacyRuntimeRetirement } = await import(modulePath);
 const input = { url: 'https://runtime.test/', version: '11111111-1111-4111-8111-111111111111', policySha: 'a'.repeat(40), evaluatorSha: 'b'.repeat(40) };
 const health = { status: 'ok', version: input.version, policySha: input.policySha, evaluatorSha: input.evaluatorSha, organizationId: 302208797, appId: 4243096, secretsReady: true };
 describe('maintenance deployment retirement probe', () => {
+  it.each([
+    { ...input, url: 'https://runtime.test:8443/' },
+    { ...input, version: 'a'.repeat(36) },
+    { ...input, version: '-'.repeat(36) },
+  ])('rejects malformed input before network: %j', async invalid => {
+    const transport = vi.fn();
+    await expect(verifyLegacyRuntimeRetirement(invalid, transport)).rejects.toThrow();
+    expect(transport).not.toHaveBeenCalled();
+  });
+  it('accepts reordered identity fields and unrelated health metadata', async () => {
+    let reads = 0;
+    await expect(verifyLegacyRuntimeRetirement(input, async (url: URL) => url.pathname !== '/health'
+      ? Response.json({ error: 'LEGACY_RELEASE_RETIRED' }, { status: 410, headers: { 'cache-control': 'no-store' } })
+      : Response.json(++reads === 1 ? health : { note: 'additional metadata', ...Object.fromEntries(Object.entries(health).reverse()) })))
+      .resolves.toMatchObject({ status: 'verified' });
+  });
+  it.each(['status', 'policySha', 'evaluatorSha', 'organizationId', 'appId', 'secretsReady'])('rejects changed required health field %s', async field => {
+    let reads = 0;
+    await expect(verifyLegacyRuntimeRetirement(input, async (url: URL) => url.pathname !== '/health'
+      ? Response.json({ error: 'LEGACY_RELEASE_RETIRED' }, { status: 410, headers: { 'cache-control': 'no-store' } })
+      : Response.json(++reads === 1 ? health : { ...health, [field]: null }))).rejects.toThrow('changed during');
+  });
+
   it('requires matching identity and effective unauthenticated retired route', async () => {
     const seen: string[] = [];
     const result = await verifyLegacyRuntimeRetirement(input, async (url: URL, init: RequestInit) => {
