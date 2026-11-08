@@ -81,6 +81,27 @@ it('does not mistake code-only or Chinese HTML with code for untranslated Englis
   expect(prepareQualitySource(source('<p>请检查输入。</p><p>This loses data.</p>')).chinese).toBe(false);
 });
 
+it.each(['address','article','aside','blockquote','center','dd','details','dialog','dir','div','dl','dt',
+  'fieldset','figcaption','figure','footer','form','h1','h2','h3','h4','h5','h6','header','hgroup',
+  'iframe','legend','li','main','menu','nav','ol','p','search','section','summary','textarea','ul'])
+  ('keeps independent English prose visible in adjacent %s containers',tag=>{
+    const body=`<${tag}>请检查。</${tag}><${tag}>This loses data.</${tag}>`;
+    const p=prepareQualitySource(source(body));
+    expect(p.chinese).toBe(false);
+    expect(p.segments.map(s=>s.bodyMarkdown).join('')).toBe(body);
+  });
+
+it('keeps table cell and caption language boundaries in valid table markup',()=>{
+  for(const body of [
+    '<table><caption>请检查。</caption><caption>This loses data.</caption></table>',
+    '<table><tbody><tr><td>请检查。</td><td>This loses data.</td></tr></tbody></table>',
+    '<table><tfoot><tr><th>请检查。</th><th>This loses data.</th></tr></tfoot></table>',
+  ]) {
+    const p=prepareQualitySource(source(body));
+    expect(p.chinese).toBe(false);expect(p.segments.map(s=>s.bodyMarkdown).join('')).toBe(body);
+  }
+});
+
 it('packs complete short paragraphs and protects inline code/link atoms at long UTF-8 boundaries',()=>{
   const atom='<code>src/🧪.ts</code>',body='Check inputs. '.repeat(438)+atom+' Then handle errors. '.repeat(500);
   const p=prepareQualitySource(source(body));
