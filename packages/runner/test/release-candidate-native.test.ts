@@ -13,6 +13,8 @@ import { GitHub } from 'release-please/build/src/github.js';
 import { FileNotFoundError } from 'release-please/build/src/errors/index.js';
 import { setLogger } from 'release-please/build/src/util/logger.js';
 import { releaseProtectionFixture } from './fixtures/release-protection.js';
+import { createHash } from 'node:crypto';
+import { CONTENT_OUTPUT_SCHEMA } from '../../core/src/release-content.js';
 
 // This scenario includes many durable state commits and five independent wakes, including merged-source handoff.
 // Individual production Git operations retain their existing 30/60/90 second bounds.
@@ -23,7 +25,7 @@ const { nativeReleaseCandidate } = await import(pathToFileURL(resolve('scripts/r
 const { readReleaseRecords,releaseCommand } = await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
 const roots: string[] = [];
 afterEach(async () => { vi.unstubAllGlobals();for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
-it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
+it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-recovery'])('runs the native candidate adapter through protected state, real Git, upstream generation, fake SDK and same-PR editing: %s', async pinCase => {
   const root = await mkdtemp(join(tmpdir(), 'candidate-native-test-')); roots.push(root); registerOfflineFixtureRoot(root);
   const directory = join(root, 'source'), remote = join(root, 'remote.git'); await mkdir(directory);
   const env = isolatedBuildEnvironment(process.env, root), identity = { name: 'Fixture', email: 'fixture@example.invalid' };
@@ -51,6 +53,7 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin'])('runs th
   const requests: { method: string; path: string; body: any }[] = [], comments: any[] = [], pulls: any[] = [];
   const merges=new Map<number,{sha:string;at:string}>();
   let pr: any = null, modelCalls = 0;
+  let policySha='e'.repeat(40);
   const head = async (branch: string) => { try { return await git('-C', remote, 'rev-parse', '--verify', `refs/heads/${branch}`); } catch { return null; } };
   const fetcher = (async (input, init) => {
     const url = new URL(String(input)), method = init?.method ?? 'GET', path = decodeURIComponent(url.pathname), body = init?.body ? JSON.parse(String(init.body)) : null;
@@ -62,7 +65,8 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin'])('runs th
     else if(path.endsWith('/pulls/1'))value={number:1,merged:true,merge_commit_sha:B,base:{ref:'main',repo:{id:1}},head:{repo:{id:1}}};
     else if(path.endsWith('/collaborators/axiomoth/permission'))value={user:{id:7,login:'axiomoth'}};
     else if (path.includes('/git/ref/heads/')) { const branch = path.split('/git/ref/heads/')[1]!, sha = await head(branch); if (!sha) return new Response('{}', { status: 404 }); value = { ref: `refs/heads/${branch}`, object: { sha, type: 'commit' } }; }
-    else if (path.endsWith('/rules/branches/main')) value = [{ type: 'non_fast_forward' }, { type: 'deletion' }];
+    else if (path.endsWith('/rules/branches/main')) value = [{ type: 'non_fast_forward' }, { type: 'deletion' },
+      ...(pinCase==='content-recovery'?[{type:'workflows',parameters:{workflows:[{repository_id:1296724484,path:'.github/workflows/pr-validation-native.yml',sha:policySha}]}}]:[])];
     else if (releaseProtectionFixture(path)) value = releaseProtectionFixture(path);
     else if (path.endsWith('/rulesets/6')) value = { id: 6, target: 'tag', enforcement: 'active', conditions: { ref_name: { include: ['~ALL'], exclude: [] } }, rules: [{ type: 'deletion' }, { type: 'non_fast_forward' }] };
     else if (path.endsWith('/rulesets')) value = [{ id: 6, target: 'tag', enforcement: 'active' }];
@@ -124,6 +128,27 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin'])('runs th
   await mkdir(request.writeDirectory);
   const options = { token: 'fixture-write', readToken: 'fixture-read', controllerSha: 'f'.repeat(40), fetcher, generator, language, temporaryRoot: root, now: () => '2026-10-27T00:00:00Z' };
   const refresh = async () => { await git('fetch', '--no-tags', '--no-recurse-submodules', remote, 'refs/heads/steward/release-state'); await git('update-ref', 'refs/heads/steward/release-state', await git('rev-parse', 'FETCH_HEAD')); };
+  if(pinCase==='content-recovery') {
+    const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
+    const rejected={...language,call:async()=>{modelCalls++;return {text:'{"bad":"字段"}',model:'offline',usage:null};}};
+    expect(await nativeReleaseCandidate(request,{...options,controllerSha:policySha,language:rejected})).toMatchObject({status:'WAIT',reason:'CONTENT_FAILED'});
+    await refresh();const failed=await readReleaseRecords({directory,targetRef:'steward/release-state',repositoryId:1});
+    const candidate=failed.repository.candidate,rootPath=`content/${candidate.id}/${candidate.contentGenerationDigest}/`,manifestPath=rootPath+'manifest.json';
+    const original=await git('show',`steward/release-state:${manifestPath}`),manifest=await decodeCandidateDocument([JSON.parse(original)]);
+    const protectionPath=(await git('ls-tree','-r','--name-only','steward/release-state')).split('\n').find(p=>p.startsWith('generated/protections-'))!;
+    const grant={candidateId:candidate.id,batchId:manifest.input.batches[0].id,previousAttemptSha256:hash(manifest.input.batches[0].attempts[0]),authorizationId:hash('approved'),outputContractSha256:hash(CONTENT_OUTPUT_SCHEMA),archiveContentDigest:candidate.contentGenerationDigest,archiveProtectionDigest:protectionPath.slice('generated/protections-'.length,-5)};
+    policySha=options.controllerSha;
+    expect(await nativeReleaseCandidate({...request,writeDirectory:join(root,'recovery-writes')},{...options,contentRecovery:grant})).toMatchObject({status:'READY',prNumber:9});
+    expect(modelCalls).toBe(2);await refresh();expect(await git('show',`steward/release-state:${manifestPath}`)).toBe(original);
+    const recovered=await readReleaseRecords({directory,targetRef:'steward/release-state',repositoryId:1});
+    expect(recovered.repository.candidate.contentGenerationDigest).not.toBe(candidate.contentGenerationDigest);
+    const nextPath=`content/${candidate.id}/${recovered.repository.candidate.contentGenerationDigest}/manifest.json`;
+    const next=await decodeCandidateDocument([JSON.parse(await git('show',`steward/release-state:${nextPath}`))]);
+    expect(next.input.batches[0].attempts.map((a:{ordinal:number})=>a.ordinal)).toEqual([1,2]);expect(next.input.batches[0].attempts[0]).toEqual(manifest.input.batches[0].attempts[0]);
+    expect(next.input.batches[0].attempts[1].recovery.archiveContentDigest).toBe(candidate.contentGenerationDigest);
+    await expect(nativeReleaseCandidate({...request,writeDirectory:join(root,'duplicate-recovery-writes')},{...options,contentRecovery:grant})).rejects.toThrow('CONTENT_RECOVERY_ARCHIVE_EXISTS');
+    expect(modelCalls).toBe(2);return;
+  }
   expect(await nativeReleaseCandidate(request, options)).toMatchObject({ status: 'READY', prNumber: 9 });
   const firstHead = await head('steward/release-candidate'), firstCalls = modelCalls; expect(firstCalls).toBeGreaterThan(0); await refresh();
   const identityCalls = requests.filter(r => /\/commits\/|\/users\//.test(r.path)).length;
