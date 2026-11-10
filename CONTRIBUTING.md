@@ -27,6 +27,19 @@ if ($LASTEXITCODE -ne 0) { throw '验证失败' }
 
 `verify:dist` 重建并逐字节比较 `packages/runner/dist/index.js`，结果须对应当前目标提交。产物一致性、行为、权限和配置分别验证。
 
+## GitHub Actions 锁文件
+
+修改本仓 `.github/workflows/` 的 Action 依赖后，使用 `config/actions-lock-version.txt` 指定的官方 `github/gh-actions-lock` 版本，在仓库根目录运行：
+
+```shell
+gh actions-lock --no-narrow --no-interactive
+gh actions-lock --verify --no-interactive
+```
+
+保留 workflow 的完整 SHA `uses` 及锁中对应的 SHA 键。提交前核对完整差异，包括每个 workflow 的依赖集合、Action commit、版本 ref、`owner_id` 和 `repo_id`。不要手工改锁。普通生成可能将 SHA 引用改为版本 tag，因此本仓生成使用 `--no-narrow`；只读 `--verify` 不改写文件。
+
+Dependabot 负责已有配置范围内的 Actions 版本更新，并为已纳入锁的 workflow 同步更新锁；更新 PR 仍须核对 workflow 与锁的一致性并完成实际 CI。新增 workflow 应先用上述官方命令纳入锁。工具版本更新后也应复核生成结果，不把一次验证通过视为后续格式不变的保证。
+
 ## Pull Request
 
 使用短期分支，并让一个 Pull Request 只处理一个问题。不要混入无关格式化、生成文件噪声、凭据、私有路径、客户数据或运行时密钥。
