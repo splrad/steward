@@ -153,6 +153,10 @@ export async function main(env=process.env){
       if(lifecycle)snapshot.application=await assertLifecycleSnapshot(new Map(entries.map(e=>[e.path,blob(workspace,entries,e.path)])),{side,controllerSha:env.WORKFLOW_SHA,verifyController:sha=>{
         const controller=fileURLToPath(new URL('..',import.meta.url));
         git(controller,['merge-base','--is-ancestor',sha,env.WORKFLOW_SHA]);return true;
+      },loadControllerTemplate:(sha,path)=>{
+        const controller=fileURLToPath(new URL('..',import.meta.url));
+        git(controller,['merge-base','--is-ancestor',sha,env.WORKFLOW_SHA]);
+        return git(controller,['show',sha+':'+path]);
       }});
       const input=join(temporary,side),output=join(out,side);await mkdir(input,{recursive:true});await mkdir(output,{recursive:true});
       const workflow=managedOnly?null:blob(workspace,entries,item.workflow,true);
@@ -238,7 +242,7 @@ export async function main(env=process.env){
     report.licenses=licenseFacts(baseResult,headResult);
     report.newActionVulnerabilities=newActions(report.snapshots.base.actionsFindings,report.snapshots.head.actionsFindings);
     report.newToolFindings=newTools(['node','mise'].flatMap(k=>report.snapshots.base.tools[k]?.findings??[]),['node','mise'].flatMap(k=>report.snapshots.head.tools[k]?.findings??[]));
-    report.coverage=lifecycle?{npm:'exact dependency-free package and lock; no third-party npm packages',source:'normal Linux/Windows source jobs; trusted sample validation scripts',actions:'complete locked action inventory and online zizmor advisory audit',mise:'all declared workflow versions checked against supplier advisories',templates:'exact trusted Copier and release templates'}:governanceOnly?{actions:'complete locked action inventory and online zizmor advisory audit',templates:'exact trusted version bytes; no product code, ecosystem manifests, administrator runtime or tool locks admitted'}:{node:'supplier security-wg',mise:'supplier repository advisories',npm:'verified release archive with bundled package reconciliation'};
+    report.coverage=lifecycle?{npm:'exact dependency-free package and lock; no third-party npm packages',source:'normal Linux/Windows source jobs; trusted sample validation scripts',actions:'complete locked action inventory and online zizmor advisory audit',mise:'all declared workflow versions checked against supplier advisories',templates:'exact trusted Copier and updater contracts; trusted release workflow structure with validated action/mise/controller version slots'}:governanceOnly?{actions:'complete locked action inventory and online zizmor advisory audit',templates:'exact trusted version bytes; no product code, ecosystem manifests, administrator runtime or tool locks admitted'}:{node:'supplier security-wg',mise:'supplier repository advisories',npm:'verified release archive with bundled package reconciliation'};
     assert(report.newHigh.length===0,'NEW_HIGH_OR_CRITICAL');
     assert(!report.newActionVulnerabilities.some(x=>x.severity==='High'),'NEW_HIGH_ACTION');
     assert(!report.newToolFindings.some(x=>['HIGH','CRITICAL'].includes(x.severity)),'NEW_HIGH_TOOL');
