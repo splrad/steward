@@ -20,16 +20,16 @@
       "matchDepTypes": [
         "workflow"
       ],
-      "matchPackageNames": [
-        "splrad/steward"
-      ],
       "matchFileNames": [
         ".github/workflows/steward-release-publish.yml"
       ],
       "enabled": true,
       "overrideDatasource": "git-refs",
       "overridePackageName": "https://github.com/splrad/steward.git",
-      "versioning": "exact"
+      "versioning": "exact",
+      "matchDepNames": [
+        "splrad/steward"
+      ]
     },
     {
       "matchDepNames": [
@@ -52,7 +52,8 @@
       "matchPackageNames": [
         "jdx/mise"
       ],
-      "enabled": true
+      "enabled": true,
+      "pinDigests": false
     }
   ],
   "customManagers": [

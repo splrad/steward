@@ -141,6 +141,56 @@ test('updater inputs are an exact optional pair, never a general governance admi
  assert.throws(()=>assertLifecycleScope(['.github/renovate.json5']),/GOVERNANCE_INPUT_UNCOVERED/);
 });
 
+async function sampleWithUpdaters(version){
+ const files=await sample();
+ for(const path of lifecycleUpdaters){
+  const name=version==='v1'&&path==='.github/renovate.json'?'history/renovate-v1-base.json':path.split('/').at(-1);
+  files.set(path,await readFile(new URL('../../config/private-lifecycle/'+name,import.meta.url)));
+ }
+ for(const path of lifecycleWorkflows){const doc=YAML.parseDocument(files.get(path).toString());for(const [id,job] of Object.entries(doc.toJS().jobs))if(job.uses)doc.getIn(['jobs',id,'uses'],true).comment=' steward/validated-controller';files.set(path,Buffer.from(doc.toString()));}
+ return files;
+}
+
+for(const baseVersion of ['v1','v2'])test(`updater migration accepts ${baseVersion} base and current v2 head`,async()=>{
+ const base=await sampleWithUpdaters(baseVersion),head=await sampleWithUpdaters('v2');
+ await assertLifecycleSnapshot(base,{side:'base',controllerSha:SHA});
+ await assertLifecycleSnapshot(head,{side:'head',controllerSha:SHA});
+ const current=JSON.parse(head.get('.github/renovate.json'));
+ const controller=current.packageRules.find(rule=>rule.overridePackageName);
+ assert.deepEqual(controller.matchDepNames,['splrad/steward']);assert.equal(controller.matchPackageNames,undefined);
+ assert.equal(current.packageRules.find(rule=>rule.matchDepTypes?.includes('uses-with')).pinDigests,false);
+ assert.equal(current.pinDigests,true);
+});
+
+for(const baseVersion of ['v1','v2'])test(`updater migration rejects active v1 head from ${baseVersion} base`,async()=>{
+ await assertLifecycleSnapshot(await sampleWithUpdaters(baseVersion),{side:'base',controllerSha:SHA});
+ await assert.rejects(assertLifecycleSnapshot(await sampleWithUpdaters('v1'),{side:'head',controllerSha:SHA}),/UPDATER_CONTRACT/);
+});
+
+const updaterMutations={
+ scope:doc=>{doc.customManagers[0].managerFilePatterns=['/.*/'];},
+ owner:doc=>{doc.customManagers[0].packageNameTemplate='https://github.com/other/steward.git';},
+ manager:doc=>{doc.enabledManagers.push('npm');},
+ automerge:doc=>{doc.automerge=true;},
+ workflowScope:doc=>{doc.packageRules[1].matchFileNames=['.github/workflows/*.yml'];},
+ overrideOwner:doc=>{doc.packageRules[1].overridePackageName='https://github.com/other/steward.git';},
+};
+for(const [version,side] of [['v1','base'],['v2','base'],['v2','head']])for(const [name,mutate] of Object.entries(updaterMutations)){
+ test(`updater ${version} ${side} rejects unrelated ${name} changes`,async()=>{
+  const files=await sampleWithUpdaters(version),doc=JSON.parse(files.get('.github/renovate.json'));
+  mutate(doc);files.set('.github/renovate.json',Buffer.from(JSON.stringify(doc)));
+  await assert.rejects(assertLifecycleSnapshot(files,{side,controllerSha:SHA}),/UPDATER_CONTRACT/);
+ });
+}
+
+test('historical updater base still requires the exact Dependabot contract and complete pair',async()=>{
+ const files=await sampleWithUpdaters('v1'),partial=new Map(files);partial.delete('.github/dependabot.yml');
+ await assert.rejects(assertLifecycleSnapshot(partial,{side:'base',controllerSha:SHA}),/UPDATERS_INCOMPLETE/);
+ const doc=YAML.parse(files.get('.github/dependabot.yml').toString());doc.updates[0].directory='/other';
+ files.set('.github/dependabot.yml',Buffer.from(YAML.stringify(doc)));
+ await assert.rejects(assertLifecycleSnapshot(files,{side:'base',controllerSha:SHA}),/UPDATER_CONTRACT/);
+});
+
 test('official action SHA and strict mise versions can advance without relaxing workflow structure',async()=>{
  const files=await sample();let actions=0,mise=0;
  for(const path of lifecycleWorkflows){
