@@ -808,9 +808,16 @@
       },
       "configVersion": "e10-business-html-v2-20261108",
       "result": null,
-      "attempts": [],
-      "nextCheckAt": null,
-      "errorCode": null
+      "attempts": [
+        {
+          "startedAt": "2026-11-10T17:39:22.491Z",
+          "status": "UNKNOWN",
+          "model": null,
+          "usage": null
+        }
+      ],
+      "nextCheckAt": "2026-11-10T17:40:22.491Z",
+      "errorCode": "RESPONSE_UNKNOWN"
     }
   },
   "cursor": 0
