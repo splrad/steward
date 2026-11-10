@@ -710,10 +710,17 @@
       },
       "configVersion": "e10-business-html-v2-20261108",
       "result": null,
-      "attempts": [],
-      "nextCheckAt": null,
-      "errorCode": null
+      "attempts": [
+        {
+          "startedAt": "2026-11-10T17:31:54.955Z",
+          "status": "UNKNOWN",
+          "model": null,
+          "usage": null
+        }
+      ],
+      "nextCheckAt": "2026-11-10T17:32:54.955Z",
+      "errorCode": "RESPONSE_UNKNOWN"
     }
   },
-  "cursor": 10
+  "cursor": 0
 }
