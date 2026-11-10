@@ -21,7 +21,7 @@ export async function reusableActions(uses,{loadSource,verifyLock,inventory}){
   try{
     const nested=await lifecycleReusable(uses,async(sha,path)=>{
       evidence.sha=sha;files=await loadSource(sha);
-      assert(files instanceof Map&&files.has(path),'REUSABLE_SOURCE_INCOMPLETE');
+      assert(files instanceof Map && files.has(path),'REUSABLE_SOURCE_INCOMPLETE');
       return files.get(path);
     });
     evidence.workflowSha256=digest(nested.bytes);evidence.stage='native-lock';
