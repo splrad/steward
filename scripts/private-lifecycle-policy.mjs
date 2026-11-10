@@ -15,7 +15,7 @@ export function assertLifecycleScope(paths){
 export async function assertLifecycleSnapshot(files,{controllerSha,verifyController,loadControllerTemplate,side}={}){
   assert(side==='base'||side==='head','LIFECYCLE_SIDE');
   assertLifecycleScope([...files.keys()]);
-  await assertLifecycleUpdaters(files);
+  await assertLifecycleUpdaters(files,{side});
   const hasApplication=required.some(path=>files.has(path));
   if(!hasApplication){assert(side==='base','LIFECYCLE_HEAD_INCOMPLETE');return {application:false,npmPackages:0};}
   assert(required.every(path=>files.has(path)),'LIFECYCLE_APPLICATION_INCOMPLETE');
@@ -103,12 +103,19 @@ export function assertLifecycleMissingActionLock(paths,{side,application}){
 }
 
 
-export async function assertLifecycleUpdaters(files){
+export async function assertLifecycleUpdaters(files,{side}={}){
+  assert(side==='base'||side==='head','LIFECYCLE_SIDE');
   if(!lifecycleUpdaters.some(path=>files.has(path)))return;
   assert(lifecycleUpdaters.every(path=>files.has(path)),'LIFECYCLE_UPDATERS_INCOMPLETE');
   for(const path of lifecycleUpdaters){
     const parse=text=>path.endsWith('.json')?JSON.parse(text):YAML.parse(text);
     const expected=parse(await readFile(new URL('../config/private-lifecycle/'+path.split('/').at(-1),import.meta.url),'utf8'));
-    assert(isDeepStrictEqual(parse(files.get(path).toString('utf8')),expected),'LIFECYCLE_UPDATER_CONTRACT');
+    const actual=parse(files.get(path).toString('utf8'));
+    if(isDeepStrictEqual(actual,expected))continue;
+    // Historical v1 is readable only as the trusted base snapshot. Every head
+    // that carries updater configuration must use the sole current contract.
+    const legacy=side==='base'&&path==='.github/renovate.json'
+      ?JSON.parse(await readFile(new URL('../config/private-lifecycle/history/renovate-v1-base.json',import.meta.url),'utf8')):undefined;
+    assert(legacy!==undefined&&isDeepStrictEqual(actual,legacy),'LIFECYCLE_UPDATER_CONTRACT');
   }
 }
