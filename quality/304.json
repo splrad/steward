@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "repositoryId": 1296724484,
   "pullRequestNumber": 304,
-  "currentHead": "117c81d7a5b59f34debe97bd871697691d7259f8",
+  "currentHead": "737131c5d278dd6b33c20af750a56f113089dcc7",
   "configVersion": "e10-business-html-v2-20261108",
   "heads": {
     "117c81d7a5b59f34debe97bd871697691d7259f8": {
@@ -23,6 +23,34 @@
       "checkId": 128755671283,
       "externalId": "splrad-quality:1296724484:304:117c81d7a5b59f34debe97bd871697691d7259f8",
       "observedAt": "2026-11-10T17:34:41.091Z"
+    },
+    "737131c5d278dd6b33c20af750a56f113089dcc7": {
+      "sourceSetDigest": "9b201b21d619515351851254c2dd32b0f3b87648b3f635754465193b4ce92700",
+      "sources": [
+        {
+          "sourceCommentId": "review-comment:4505551497",
+          "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+          "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Duplicate 'if' condition\n\nThis condition is a duplicate of <a class=\"Link\" href=\"/splrad/steward/blob/234531cd838f21a18761e8ed1a00e48d4872781a/tools/quality-language/acceptance-fixture.js#L3-L3\">value === 'first'</a>.\n\n---\n\nTo fix duplicate conditions in an <code>if</code>/<code>else if</code> chain, ensure each condition is unique or remove unreachable duplicate branches.<br>\nIn this specific file (<code>tools/quality-language/acceptance-fixture.js</code>), the best non-speculative fix is to delete the duplicate <code>else if (value === 'first') return 'two';</code> line. This avoids inventing an unverified condition and preserves clear behavior: <code>'first'</code> maps to <code>'one'</code>, everything else maps to <code>'other'</code>.</p>\n<p>No new imports, methods, or definitions are needed.",
+          "updatedAt": "2026-11-08T08:22:56Z"
+        },
+        {
+          "sourceCommentId": "review-comment:4528313118",
+          "sourceCommit": "737131c5d278dd6b33c20af750a56f113089dcc7",
+          "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4528313118",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Duplicate 'if' condition\n\nThis condition is a duplicate of <a class=\"Link\" href=\"/splrad/steward/blob/737131c5d278dd6b33c20af750a56f113089dcc7/tools/quality-language/acceptance-fixture.js#L3-L3\">value === 'second'</a>.\n\n---\n\nTo fix a duplicate <code>if</code> condition without changing the function’s apparent intent, make each branch condition distinct so later branches can be reached when appropriate. Here, the safest minimal fix is to change the <code>else if</code> condition to a different value check.</p>\n<p>In <code>tools/quality-language/acceptance-fixture.js</code>, update line 4 from <code>else if (value === 'second') return 'two';</code> to <code>else if (value === 'first') return 'two';</code>. This preserves structure, keeps outputs stable for non-matching values (<code>'other'</code>), and removes unreachable code caused by the duplicate condition. No imports, helper methods, or additional definitions are needed.",
+          "updatedAt": "2026-11-10T17:37:24Z"
+        }
+      ],
+      "keys": [
+        "fa15d4dea30acc4a526f6bec15708d1eaeafda3fa53c3473ec5bbba4b8827361",
+        "b809da0efd42525a3ecc3376f6d334634d203326cc32a22bd3a4a6105b64bbd6"
+      ],
+      "checkId": null,
+      "externalId": "splrad-quality:1296724484:304:737131c5d278dd6b33c20af750a56f113089dcc7",
+      "observedAt": "2026-11-10T17:39:18.557Z"
     }
   },
   "entries": {
@@ -753,6 +781,34 @@
           }
         }
       ],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "b809da0efd42525a3ecc3376f6d334634d203326cc32a22bd3a4a6105b64bbd6": {
+      "key": "b809da0efd42525a3ecc3376f6d334634d203326cc32a22bd3a4a6105b64bbd6",
+      "segment": {
+        "sourceCommentId": "review-comment:4528313118",
+        "sourceCommit": "737131c5d278dd6b33c20af750a56f113089dcc7",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4528313118",
+        "severity": "原文未说明",
+        "bodyMarkdown": "## Duplicate 'if' condition\n\nThis condition is a duplicate of <a class=\"Link\" href=\"/splrad/steward/blob/737131c5d278dd6b33c20af750a56f113089dcc7/tools/quality-language/acceptance-fixture.js#L3-L3\">value === 'second'</a>.\n\n---\n\nTo fix a duplicate <code>if</code> condition without changing the function’s apparent intent, make each branch condition distinct so later branches can be reached when appropriate. Here, the safest minimal fix is to change the <code>else if</code> condition to a different value check.</p>\n<p>In <code>tools/quality-language/acceptance-fixture.js</code>, update line 4 from <code>else if (value === 'second') return 'two';</code> to <code>else if (value === 'first') return 'two';</code>. This preserves structure, keeps outputs stable for non-matching values (<code>'other'</code>), and removes unreachable code caused by the duplicate condition. No imports, helper methods, or additional definitions are needed.",
+        "segmentIndex": 0,
+        "originalIdentifiers": [
+          "<a class=\"Link\" href=\"/splrad/steward/blob/737131c5d278dd6b33c20af750a56f113089dcc7/tools/quality-language/acceptance-fixture.js#L3-L3\">value === 'second'</a>",
+          "<code>if</code>",
+          "<code>else if</code>",
+          "<code>tools/quality-language/acceptance-fixture.js</code>",
+          "<code>else if (value === 'second') return 'two';</code>",
+          "<code>else if (value === 'first') return 'two';</code>",
+          "<code>'other'</code>",
+          "splrad/steward/blob/737131c5d278dd6b33c20af750a56f113089dcc7/tools/quality-language/acceptance-fixture.js",
+          "L3-L3",
+          "tools/quality-language/acceptance-fixture.js"
+        ]
+      },
+      "configVersion": "e10-business-html-v2-20261108",
+      "result": null,
+      "attempts": [],
       "nextCheckAt": null,
       "errorCode": null
     }
