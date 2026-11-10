@@ -99,6 +99,8 @@ test('real merge Git tree verifies both parents, inventory and immutable PR307 c
     for (const [file, content, reason] of [
       ['package.json',JSON.stringify({engines:{node:'1.2.3'},packageManager:'npm@4.5.6',scripts:{test:'echo pass'}}),/validation commands changed/],
       ['scripts/check.mjs','// bypass',/validation implementation changed/],
+      ['.npmrc','script-shell=/bin/true\n',/validation implementation changed/],
+      ['vitest.config.js','export default { test: { passWithNoTests: true, include: [] } };',/validation implementation changed/],
     ]) {
       git('checkout','--detach',head);await writeFile(join(root,file),content);git('add',file);
       git('commit','--no-gpg-sign','-m','tampered validation');const altered=git('rev-parse','HEAD');

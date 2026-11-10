@@ -102,9 +102,11 @@ export function verifyTree(workspace, identity, policy) {
   const approvedScripts = JSON.stringify(canonical(readManifest(policy.validationSource).scripts));
   const validationFiles = git(workspace,['ls-tree','-r','--name-only',policy.validationSource,'--','scripts']).trim().split('\n').filter(Boolean);
   check(validationFiles.length > 0, 'validation script inventory');
-  for (const path of ['tsconfig.json','tsconfig.runtime.json','vitest.config.ts']) {
-    if (git(workspace,['ls-tree',policy.validationSource,'--',path]).trim()) validationFiles.push(path);
-  }
+  // Compare absence too: newly added npm/Vite configuration can replace the fixed checks.
+  validationFiles.push('.npmrc','tsconfig.json','tsconfig.runtime.json');
+  for (const prefix of ['vitest.config','vitest.workspace','vite.config'])
+    for (const extension of ['js','ts','mjs','mts','cjs','cts','json'])
+      validationFiles.push(`${prefix}.${extension}`);
   // Read Git objects, never import or execute candidate modules in the trusted identity process.
   for (const ref of [identity.head, identity.merge]) {
     check(toolchainAt(ref) === approvedToolchain, 'toolchain upgrade requires central adoption');
