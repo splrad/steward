@@ -1,12 +1,12 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {controllerSource,verifySourceProtection,publishControllerSource} from './controller-source.mjs';
+import {controllerSource,verifySourceProtection,assertSourceProtection,publishControllerSource} from './controller-source.mjs';
 const old='1'.repeat(40),target='2'.repeat(40),other='3'.repeat(40),app=123;
 const ref=s=>({ref:`refs/heads/${controllerSource}`,object:{type:'commit',sha:s}});
 function protection(){return [
-  {id:1,name:'validated-controller-source',target:'branch',source:'splrad/steward',source_type:'Repository',enforcement:'active',conditions:{ref_name:{include:[`refs/heads/${controllerSource}`],exclude:[]}},bypass_actors:[{actor_id:app,actor_type:'Integration',bypass_mode:'always'}],rules:['creation','update'].map(type=>({type}))},
-  {id:2,name:'validated-controller-no-tag',target:'tag',source:'splrad/steward',source_type:'Repository',enforcement:'active',conditions:{ref_name:{include:[`refs/tags/${controllerSource}`],exclude:[]}},bypass_actors:[],rules:['creation','update','deletion'].map(type=>({type}))},
-  {id:3,name:'validated-controller-integrity',target:'branch',source:'splrad/steward',source_type:'Repository',enforcement:'active',conditions:{ref_name:{include:[`refs/heads/${controllerSource}`],exclude:[]}},bypass_actors:[],rules:['deletion','non_fast_forward'].map(type=>({type}))},
+  {id:1,name:'validated-controller-source',target:'branch',source:'splrad',source_type:'Organization',enforcement:'active',conditions:{repository_id:{repository_ids:[1296724484]},ref_name:{include:[`refs/heads/${controllerSource}`],exclude:[]}},bypass_actors:[{actor_id:app,actor_type:'Integration',bypass_mode:'always'}],rules:['creation','update'].map(type=>type==='update'?{type,parameters:{update_allows_fetch_and_merge:false}}:{type})},
+  {id:2,name:'validated-controller-no-tag',target:'tag',source:'splrad',source_type:'Organization',enforcement:'active',conditions:{repository_id:{repository_ids:[1296724484]},ref_name:{include:[`refs/tags/${controllerSource}`],exclude:[]}},bypass_actors:[],rules:['creation','update','deletion'].map(type=>type==='update'?{type,parameters:{update_allows_fetch_and_merge:false}}:{type})},
+  {id:3,name:'validated-controller-integrity',target:'branch',source:'splrad',source_type:'Organization',enforcement:'active',conditions:{repository_id:{repository_ids:[1296724484]},ref_name:{include:[`refs/heads/${controllerSource}`],exclude:[]}},bypass_actors:[],rules:['deletion','non_fast_forward'].map(type=>type==='update'?{type,parameters:{update_allows_fetch_and_merge:false}}:{type})},
 ];}
 function fixture(options={}){
   let current=options.absent?null:ref(options.initial??old),reads=0,guards=0;
@@ -59,7 +59,35 @@ test('lost write without effect stays unknown and is not blindly retried',async(
 
 test('accepts equivalent API objects regardless of JSON property order',()=>{
   const rules=protection();
-  for(const rule of rules)rule.conditions={ref_name:{exclude:[],include:rule.conditions.ref_name.include}};
+  for(const rule of rules)rule.conditions={ref_name:{exclude:[],include:rule.conditions.ref_name.include},repository_id:{repository_ids:[1296724484]}};
   rules[0].bypass_actors=[{bypass_mode:'always',actor_type:'Integration',actor_id:app}];
   verifySourceProtection(rules,app);
+});
+
+for(const value of [true,undefined])test(`rejects unsafe or missing update allowance ${value}`,()=>{
+  const rules=protection();rules[0].rules.find(r=>r.type==='update').parameters={update_allows_fetch_and_merge:value};
+  assert.throws(()=>verifySourceProtection(rules,app),/RULE_UPDATE/);
+});
+test('omitted bypass actors fail closed before writes',async()=>{
+  const rules=protection();delete rules[0].bypass_actors;const f=fixture({rules});
+  await assert.rejects(f.run(),/RULE_BYPASS/);assert.equal(f.writes.length,0);
+});
+
+test('rejects protection scoped to another repository or a wider set',()=>{
+  for(const ids of [[1],[1296724484,1]]){
+    const rules=protection();rules[0].conditions.repository_id.repository_ids=ids;
+    assert.throws(()=>verifySourceProtection(rules,app),/RULE_SCOPE/);
+  }
+});
+
+test('completes omitted REST update parameters from the same native node',async()=>{
+  const rules=protection();for(const r of rules){r.node_id=`node-${r.id}`;for(const entry of r.rules)if(entry.type==='update')delete entry.parameters;}
+  const io={async request(method,path){
+    if(path.includes('/rulesets?'))return {status:200,value:rules};
+    if(path.includes('/rulesets/'))return {status:200,value:rules.find(r=>path.endsWith(`/${r.id}`))};
+    return {status:404};
+  },async graphql(query,{id}){const r=rules.find(r=>r.node_id===id);return {node:{id,databaseId:r.id,rules:{nodes:[{type:'UPDATE',parameters:{updateAllowsFetchAndMerge:false}}],pageInfo:{hasNextPage:false}}}};}};
+  await assertSourceProtection(io,app);
+  io.graphql=async(query,{id})=>({node:{id,databaseId:Number(id.split('-')[1]),rules:{nodes:[{type:'UPDATE',parameters:{updateAllowsFetchAndMerge:true}}],pageInfo:{hasNextPage:false}}}});
+  await assert.rejects(assertSourceProtection(io,app),/RULE_UPDATE/);
 });

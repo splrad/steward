@@ -164,3 +164,14 @@ it('publishes one fixed template wake only after a new tag; unknown responses ne
   let attempts=0;await expect(wakePublishedTemplate({request:async()=>{attempts++;throw Error('lost');}},{status:'PUBLISHED'},async()=>{},async()=>{})).rejects.toThrow('lost');expect(attempts).toBe(1);
   await expect(wakePublishedTemplate({request:async()=>{throw Error('must not write');}},{status:'PUBLISHED'},async()=>{throw Error('main moved');},async()=>{})).rejects.toThrow('main moved');
 });
+
+it.each(['CONTROLLER_SOURCE_TAG_COLLISION','CONTROLLER_SOURCE_NOT_DESCENDANT','CONTROLLER_SOURCE_WRITE_UNCONFIRMED','NATIVE_RULE_PARAMETERS_VALUE'])('preserves safe promotion failure evidence: %s',async code=>{
+  const {recordPromotionFailure}=await module(),records:unknown[]=[];
+  await expect(recordPromotionFailure(Error(code),async(value:unknown)=>records.push(value))).rejects.toThrow(code);
+  expect(records).toEqual([{kind:'failure',code}]);
+});
+it('does not include arbitrary exception content in failure evidence',async()=>{
+  const {recordPromotionFailure}=await module(),records:unknown[]=[];
+  await expect(recordPromotionFailure(Error('private transport details'),async(value:unknown)=>records.push(value))).rejects.toThrow('PROMOTION_UNAVAILABLE');
+  expect(records).toEqual([{kind:'failure',code:'PROMOTION_UNAVAILABLE'}]);
+});

@@ -23,7 +23,7 @@ const quiet={debug(){},info(){},warn(){},error(){}};
 export function promotionIO(token,transport=fetch) {
   const client=new Octokit({auth:token,log:quiet,request:{fetch:transport,headers:{'x-github-api-version':apiVersion.version}}});
   client.hook.before('request',options=>{options.headers['x-github-api-version']=apiVersion.version;});
-  return {async request(method,path,body){
+  return {graphql: (...args)=>client.graphql(...args),async request(method,path,body){
     try {const r=await client.request(`${method} ${path}`,{...body,request:{signal:AbortSignal.timeout(60000)}});return {status:r.status,value:r.data};}
     catch(e){if(e.status)return {status:e.status,value:e.response?.data};throw Error('PROMOTION_TRANSPORT');}
   }};
@@ -191,6 +191,11 @@ export async function wakePublishedTemplate(io,published,assertCurrent,record) {
   await record({kind:'template-wake',status:'ACCEPTED'});
 }
 
+export async function recordPromotionFailure(error,record) {
+  const code=/^(?:PROMOTION|CONTROLLER_SOURCE|NATIVE_RULE_PARAMETERS)_[A-Z0-9_]+$/.test(error?.message??'')?error.message:'PROMOTION_UNAVAILABLE';
+  await record({kind:'failure',code});throw Error(code);
+}
+
 export async function main(env=process.env,transport=fetch) {
   const output=resolve(env.PROMOTION_EVIDENCE_DIRECTORY??'promotion-evidence');await mkdir(output,{recursive:true});
   const record=value=>appendFile(join(output,'observations.jsonl'),JSON.stringify(value)+'\n',{mode:0o600});
@@ -220,8 +225,7 @@ export async function main(env=process.env,transport=fetch) {
   },transport);
   process.stdout.write('Promotion: adopted and reconciled\n');
   }catch(error){
-    const code=/^PROMOTION_[A-Z0-9_]+$/.test(error?.message??'')?error.message:'PROMOTION_UNAVAILABLE';
-    await record({kind:'failure',code});throw Error(code);
+    await recordPromotionFailure(error,record);
   }
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
