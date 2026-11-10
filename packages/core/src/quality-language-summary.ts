@@ -1,6 +1,8 @@
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
+import { parseFragment, type DefaultTreeAdapterTypes } from 'parse5';
+import { SAXParser, type StartTag, type EndTag } from 'parse5-sax-parser';
 import schema from '../../../schema/quality-language-output.schema.json' with { type: 'json' };
 import { sha256Hex } from './fingerprint.js';
 
@@ -38,55 +40,209 @@ export function validateQualitySource(source: QualitySource): void {
   requireQuality(url.origin === 'https://github.com' && !url.username && !url.password && !url.port, 'SOURCE_URL');
 }
 
-/** Preserve code/log blocks as original bytes; only prose is sent for translation. */
+/** A parser revision is part of every new key; legacy entries remain readable history. */
+export const QUALITY_SEGMENTER_VERSION = 'markdown-html-v2';
+type SourceRange = {start: number; end: number};
+const rawRange = (body: string, range: SourceRange) => body.slice(range.start, range.end);
+const replaceRanges = (body: string, ranges: SourceRange[], render: (text: string, range: SourceRange) => string) => {
+  const parts:string[]=[];let offset=0;
+  for(const range of outerRanges(ranges.map(range=>({...range})))) {
+    parts.push(body.slice(offset,range.start),render(rawRange(body,range),range));offset=range.end;
+  }
+  parts.push(body.slice(offset));return parts.join('');
+};
+const maskRange = (body: string, ranges: SourceRange[]) => replaceRanges(body,ranges,text=>text.replace(/[^\r\n]/g,' '));
+const outerRanges = (ranges: SourceRange[]) => {
+  const result: SourceRange[] = [];
+  for (const range of ranges.sort((a,b)=>a.start-b.start||b.end-a.end)) {
+    if (result.length && range.start < result.at(-1)!.end) {
+      result.at(-1)!.end=Math.max(result.at(-1)!.end,range.end);
+      continue;
+    }
+    result.push(range);
+  }
+  return result;
+};
+
+/** Keep original markup in model input. HTML parsing identifies code, not text to discard. */
 export function prepareQualitySource(source: QualitySource): QualityPrepared {
   validateQualitySource(source);
-  const tree = unified().use(remarkParse).parse(source.bodyMarkdown), preservedBlocks: string[] = [];
-  const ranges: {start: number; end: number}[] = [];
-  const visit = (node: any) => {
-    if (node.type === 'code' || node.type === 'html') {
-      const start = node.position?.start.offset, end = node.position?.end.offset;
-      requireQuality(start !== undefined && end !== undefined, 'MARKDOWN_POSITION'); ranges.push({start, end});
-    } else if (node.children) node.children.forEach(visit);
-  };
-  visit(tree); ranges.sort((a,b) => a.start-b.start);
-  let prose = '', offset = 0;
-  for (const range of ranges) {
-    prose += source.bodyMarkdown.slice(offset, range.start); preservedBlocks.push(source.bodyMarkdown.slice(range.start, range.end));
-    prose += '\n\n'; offset = range.end;
-  }
-  prose += source.bodyMarkdown.slice(offset);
-  // A Chinese explanation containing Latin identifiers is already readable. A
-  // separate English paragraph remains a translation candidate.
-  const paragraphs = prose.split(/\n\s*\n/u).filter(x => x.trim());
-  const chinese = paragraphs.every(p => {
-    const prose=p.replace(/`[^`]*`/g, '').replace(/https?:\/\/\S+|(?:[\w.-]+\/)+[\w.-]+/g, '');
-    const han=prose.match(/\p{Script=Han}/gu)?.length??0,words=prose.match(/\b[A-Za-z]+\b/g)?.length??0;
-    return words===0||han>0&&words<=han;
-  });
-  const chunks: string[] = [];
-  for (const paragraph of paragraphs) {
-    let chunk = '';
-    for (const sentence of paragraph.match(/[^。！？.!?]+[。！？.!?]*|[。！？.!?]+/gu) ?? [paragraph]) {
-      if (utf8(chunk + sentence) <= 6 * 1024) { chunk += sentence; continue; }
-      if (chunk) { chunks.push(chunk); chunk = ''; }
-      for (const cp of sentence) { if (utf8(chunk + cp) > 6 * 1024) { chunks.push(chunk); chunk = ''; } chunk += cp; }
+  const body=source.bodyMarkdown, tree=unified().use(remarkParse).parse(body);
+  const blocks:SourceRange[]=[], inline:SourceRange[]=[], links:SourceRange[]=[], htmlRanges:SourceRange[]=[],
+    markup:SourceRange[]=[], htmlTags:SourceRange[]=[], boundaries:SourceRange[]=[];
+  const textValues=new Map<number,{end:number;value:string}>();
+  const markdown=(node:any)=>{
+    const start=node.position?.start.offset,end=node.position?.end.offset;
+    if(node.type==='text'&&start!==undefined&&end!==undefined)textValues.set(start,{end,value:node.value});
+    if(['code','inlineCode','html','link','linkReference','definition'].includes(node.type)) {
+      requireQuality(start!==undefined&&end!==undefined,'MARKDOWN_POSITION');
+      const range={start,end};
+      if(node.type==='code')blocks.push(range);
+      else if(node.type==='html')htmlRanges.push(range);
+      else {
+        inline.push(range);
+        if(node.type==='link'||node.type==='linkReference') {
+          links.push(range);
+          const first=node.children?.[0]?.position?.start.offset,last=node.children?.at(-1)?.position?.end.offset;
+          if(first!==undefined&&last!==undefined)markup.push({start,end:first},{start:last,end});
+          else markup.push(range);
+        }
+      }
     }
-    if (chunk) chunks.push(chunk);
+    if(node.children)node.children.forEach(markdown);
+  };
+  markdown(tree);
+  // Only mdast HTML ranges enter the HTML parser. Escaped tags, code, autolinks and
+  // Markdown link targets are not HTML. Masking retains UTF-16/CRLF source offsets.
+  const htmlInput=replaceRanges(body.replace(/[^\r\n]/g,' '),htmlRanges,(_text,range)=>rawRange(body,range));
+  // Lexical positions also cover tags discarded by fragment DOM construction
+  // (body/html/head and out-of-context table tags). Never split their syntax.
+  const sax=new SAXParser({sourceCodeLocationInfo:true});
+  const tag=(token:StartTag|EndTag)=>{
+    const location=token.sourceCodeLocation;
+    if(!location)return;
+    const range={start:location.startOffset,end:location.endOffset};
+    markup.push(range);htmlTags.push(range);
+    // Inline HTML can also contain an independent English explanation.
+    boundaries.push(range);
+  };
+  sax.on('startTag',tag);sax.on('endTag',tag);
+  // The in-memory transform tokenizes complete tags synchronously. Drain its
+  // passthrough side so input length cannot defer parsing through backpressure.
+  sax.resume();sax.end(htmlInput);
+  const html=parseFragment(htmlInput,{sourceCodeLocationInfo:true});
+  const visit=(node:DefaultTreeAdapterTypes.Node)=>{
+    const location=node.sourceCodeLocation;
+    if(node.nodeName==='#comment'&&location) {blocks.push({start:location.startOffset,end:location.endOffset});return;}
+    if('tagName' in node) {
+      const location=node.sourceCodeLocation;
+      if(location) {
+        if(['pre','script','style'].includes(node.tagName)) {
+          // Unclosed raw-text elements can have endOffset=0 in parse5. Their
+          // Markdown HTML node still bounds the original code/log source.
+          const end=location.endTag?location.endOffset:
+            htmlRanges.find(range=>range.start<=location.startOffset&&range.end>location.startOffset)?.end??body.length;
+          blocks.push({start:location.startOffset,end});return;
+        }
+        if(node.tagName==='code'||node.tagName==='a') {
+          const range={start:location.startOffset,end:location.endOffset};inline.push(range);
+          if(node.tagName==='a')links.push(range);
+        }
+      }
+      if('content' in node)visit(node.content as DefaultTreeAdapterTypes.DocumentFragment);
+    }
+    if('childNodes' in node)node.childNodes.forEach(visit);
+  };
+  visit(html);
+  const protectedBlocks=outerRanges(blocks),preservedBlocks=protectedBlocks.map(range=>rawRange(body,range));
+  const inlineValues=outerRanges(inline.filter(range=>!protectedBlocks.some(block=>range.start>=block.start&&range.end<=block.end)))
+    .map(range=>rawRange(body,range));
+  let prose='',offset=0;
+  for(const range of protectedBlocks) {prose+=body.slice(offset,range.start)+'\n\n';offset=range.end;}
+  prose+=body.slice(offset);
+  // The language decision ignores markup, code and link destinations, but never HTML prose.
+  let probe=maskRange(body,outerRanges([...protectedBlocks,...inline.filter(range=>!links.some(link=>link.start===range.start&&link.end===range.end)),...markup]));
+  probe=replaceRanges(probe,boundaries,text=>'\n'.repeat(Math.min(2,text.length))+' '.repeat(Math.max(0,text.length-2)));
+  // Decode only the language probe after all source-offset masks. Markdown text
+  // values already apply its entity/escape rules; HTML text uses HTML rules.
+  // Escape literal '<' so decoded entities can never introduce parsed elements.
+  probe=replaceRanges(probe,[...htmlRanges,...Array.from(textValues,([start,{end}])=>({start,end}))],(text,range)=>{
+    const markdownText=textValues.get(range.start);
+    if(markdownText)return text===rawRange(body,range)?markdownText.value:text;
+    return parseFragment(text.replace(/</g,'&lt;')).childNodes
+      .map(node=>'value' in node?node.value:'').join('');
+  });
+  const chinese=probe.split(/\n\s*\n/u).filter(x=>x.trim()).every(p=>{
+    const text=p.replace(/https?:\/\/\S+/g,'').replace(/[\w./-]+/g,token=>{
+      // Scan maximal path-like tokens once; an unanchored repeated path pattern
+      // can retry every offset in long hyphen runs without any slash.
+      const parts=token.split('/');
+      return parts.some((part,index)=>index>0&&part.length>0&&parts[index-1]!.length>0)?'':token;
+    });
+    // Chinese volume must never hide English prose in the same sentence or tag.
+    // Explicit code/link targets are already masked; explicit uppercase compound rule
+    // identifiers remain readable without a translation request.
+    return !/\b[A-Za-z]+\b/.test(text.replace(/\b[A-Z][A-Z0-9]*(?:[_-][A-Z0-9]+)+\b/g,''));
+  });
+  if(chinese)return {source,segments:[],preservedBlocks,chinese};
+  const chunks:string[]=[];let chunk='';
+  const flush=()=>{if(chunk){chunks.push(chunk);chunk='';}};
+  const append=(text:string,atomic=false)=>{
+    if(utf8(chunk+text)<=6*1024){chunk+=text;return;}
+    flush();
+    if(utf8(text)<=6*1024){chunk=text;return;}
+    // Never split an inline atom or HTML tag into misleading fragments to satisfy the bound.
+    requireQuality(!atomic,'INPUT_LIMIT');
+    for(const cp of text){if(utf8(chunk+cp)>6*1024)flush();chunk+=cp;}
+  };
+  // HTML tag syntax is indivisible too: punctuation in attributes is not prose.
+  // This does not add ordinary tags to code/link identity output or invent wrappers.
+  const atomValues=outerRanges([...inline,...htmlTags].filter(range=>
+    !protectedBlocks.some(block=>range.start>=block.start&&range.end<=block.end)).map(range=>({...range})))
+    .map(range=>rawRange(body,range));
+  const values=[...new Set(atomValues)].sort((a,b)=>b.length-a.length);
+  const byStart=new Map<string,string[]>();
+  for(const value of values)if(value){const group=byStart.get(value[0]!)??[];group.push(value);byStart.set(value[0]!,group);}
+  const matchAt=(text:string,index:number)=>byStart.get(text[index]!)?.find(value=>text.startsWith(value,index));
+  const paragraphs:string[]=[];let start=0;
+  for(let i=0;i<prose.length;) {
+    const value=matchAt(prose,i);
+    if(value){i+=value.length;continue;}
+    const separator=/[\r\n]/.test(prose[i]!)?prose.slice(i).match(/^\r?\n\s*\n/u)?.[0]:undefined;
+    if(separator){paragraphs.push(prose.slice(start,i));start=i;i+=separator.length;}else i++;
   }
-  const segments = chinese ? [] : chunks.map((bodyMarkdown, segmentIndex): QualitySegment => ({
-    sourceCommentId: source.sourceCommentId, sourceCommit: source.sourceCommit, sourceUrl: source.sourceUrl, severity: source.severity,
-    bodyMarkdown, segmentIndex, originalIdentifiers: [...new Set([
-      ...[...bodyMarkdown.matchAll(/`([^`\n]+)`/g)].map(m => m[1]!),
-      ...(bodyMarkdown.match(/[\w.-]+(?:\/[\w.-]+)*/g) ?? []).flatMap(value => value.includes('/')
-        ? [value] : value.match(/\b[A-Z][A-Z0-9_]+(?:-[A-Z0-9]+)*\b/g) ?? []),
+  paragraphs.push(prose.slice(start));
+  for(const paragraph of paragraphs.filter(x=>x.length)) {
+    if(utf8(paragraph)<=6*1024){
+      const combined=chunk+paragraph;
+      if(utf8(combined)<=6*1024)chunk=combined;else {flush();chunk=paragraph;}
+      continue;
+    }
+    flush();
+    let sentence='';
+    for(let i=0;i<paragraph.length;) {
+      const value=matchAt(paragraph,i);
+      if(value){if(sentence){append(sentence);sentence='';}append(value,true);i+=value.length;continue;}
+      const cp=String.fromCodePoint(paragraph.codePointAt(i)!);sentence+=cp;i+=cp.length;
+      if(/[。！？.!?]/u.test(cp)){append(sentence);sentence='';}
+    }
+    if(sentence)append(sentence);
+  }
+  flush();
+  // A whitespace-only segment violates the persisted source schema. Rebalance
+  // adjacent chunks without dropping separators or cutting code/link/tag atoms.
+  for(let i=0;i<chunks.length;i++) {
+    if(chunks[i]!.trim())continue;
+    while(i+1<chunks.length&&!chunks[i+1]!.trim())chunks.splice(i,2,chunks[i]!+chunks[i+1]!);
+    const at=i>0?i-1:i;
+    requireQuality(at+1<chunks.length,'INPUT_LIMIT');
+    const pair=chunks[at]!+chunks[at+1]!;
+    if(utf8(pair)<=6*1024){chunks.splice(at,2,pair);i=at-1;continue;}
+    let cut=-1;
+    for(let offset=0;offset<pair.length;) {
+      const atom=matchAt(pair,offset);
+      offset+=atom?.length??String.fromCodePoint(pair.codePointAt(offset)!).length;
+      const left=pair.slice(0,offset),right=pair.slice(offset);
+      if(left.trim()&&right.trim()&&utf8(left)<=6*1024&&utf8(right)<=6*1024)cut=offset;
+    }
+    // An indivisible full-size atom plus whitespace may have no legal split.
+    requireQuality(cut>0,'INPUT_LIMIT');
+    chunks.splice(at,2,pair.slice(0,cut),pair.slice(cut));i=at;
+  }
+  const segments=chunks.map((bodyMarkdown,segmentIndex):QualitySegment=>({
+    sourceCommentId:source.sourceCommentId,sourceCommit:source.sourceCommit,sourceUrl:source.sourceUrl,severity:source.severity,
+    bodyMarkdown,segmentIndex,originalIdentifiers:[...new Set([
+      ...[...bodyMarkdown.matchAll(/`([^`\n]+)`/g)].map(m=>m[1]!),
+      ...inlineValues.filter(value=>/^[<[]/.test(value)&&bodyMarkdown.includes(value)),
+      ...(bodyMarkdown.match(/[\w.-]+(?:\/[\w.-]+)*/g)??[]).flatMap(value=>value.includes('/')
+        ?[value]:value.match(/\b[A-Z][A-Z0-9_]+(?:-[A-Z0-9]+)*\b/g)??[]),
     ])],
   }));
-  return { source, segments, preservedBlocks, chinese };
+  return {source,segments,preservedBlocks,chinese};
 }
 
 export async function qualitySegmentKey(segment: QualitySegment, configVersion: string) {
-  return qualityDigest([segment.sourceCommentId, segment.sourceCommit, await sha256Hex(segment.bodyMarkdown), configVersion, segment.segmentIndex,
+  return qualityDigest([QUALITY_SEGMENTER_VERSION, segment.sourceCommentId, segment.sourceCommit, await sha256Hex(segment.bodyMarkdown), configVersion, segment.segmentIndex,
     segment.sourceUrl, segment.severity, segment.originalIdentifiers]);
 }
 export function qualityBatchInput(items: QualitySegment[]) {
