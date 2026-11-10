@@ -70,8 +70,10 @@ export function prepareQualitySource(source: QualitySource): QualityPrepared {
   const body=source.bodyMarkdown, tree=unified().use(remarkParse).parse(body);
   const blocks:SourceRange[]=[], inline:SourceRange[]=[], links:SourceRange[]=[], htmlRanges:SourceRange[]=[],
     markup:SourceRange[]=[], htmlTags:SourceRange[]=[], boundaries:SourceRange[]=[];
+  const textValues=new Map<number,{end:number;value:string}>();
   const markdown=(node:any)=>{
     const start=node.position?.start.offset,end=node.position?.end.offset;
+    if(node.type==='text'&&start!==undefined&&end!==undefined)textValues.set(start,{end,value:node.value});
     if(['code','inlineCode','html','link','linkReference','definition'].includes(node.type)) {
       requireQuality(start!==undefined&&end!==undefined,'MARKDOWN_POSITION');
       const range={start,end};
@@ -137,8 +139,17 @@ export function prepareQualitySource(source: QualitySource): QualityPrepared {
   // The language decision ignores markup, code and link destinations, but never HTML prose.
   let probe=maskRange(body,outerRanges([...protectedBlocks,...inline.filter(range=>!links.some(link=>link.start===range.start&&link.end===range.end)),...markup]));
   probe=replaceRanges(probe,boundaries,text=>'\n'.repeat(Math.min(2,text.length))+' '.repeat(Math.max(0,text.length-2)));
+  // Decode only the language probe after all source-offset masks. Markdown text
+  // values already apply its entity/escape rules; HTML text uses HTML rules.
+  // Escape literal '<' so decoded entities can never introduce parsed elements.
+  probe=replaceRanges(probe,[...htmlRanges,...Array.from(textValues,([start,{end}])=>({start,end}))],(text,range)=>{
+    const markdownText=textValues.get(range.start);
+    if(markdownText)return text===rawRange(body,range)?markdownText.value:text;
+    return parseFragment(text.replace(/</g,'&lt;')).childNodes
+      .map(node=>'value' in node?node.value:'').join('');
+  });
   const chinese=probe.split(/\n\s*\n/u).filter(x=>x.trim()).every(p=>{
-    const text=p.replace(/`[^`]*`/g,'').replace(/https?:\/\/\S+|(?:[\w.-]+\/)+[\w.-]+/g,'');
+    const text=p.replace(/https?:\/\/\S+|(?:[\w.-]+\/)+[\w.-]+/g,'');
     // Chinese volume must never hide English prose in the same sentence or tag.
     // Explicit code/link targets are already masked; explicit uppercase compound rule
     // identifiers remain readable without a translation request.

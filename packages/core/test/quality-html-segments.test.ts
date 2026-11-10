@@ -81,6 +81,31 @@ it('does not mistake code-only or Chinese HTML with code for untranslated Englis
   expect(prepareQualitySource(source('<p>请检查输入。</p><p>This loses data.</p>')).chinese).toBe(false);
 });
 
+it.each([
+  '<p>请检查输入&nbsp;以免数据丢失。</p>',
+  '<p>输入&amp;输出&copy;均需检查。</p>',
+  '请检查输入&nbsp;和输出&amp;。',
+  '<p>&#x8bf7;&#26816;&#26597;输入。</p>',
+  '<p>请检查\\&nbsp;输入。</p>',
+])('does not request translation for Chinese entity text: %s',body=>{
+  const p=prepareQualitySource(source(body));
+  expect(p.chinese).toBe(true);expect(p.segments).toEqual([]);
+  expect(p.source.bodyMarkdown).toBe(body);
+});
+
+it.each([
+  '<p>请检查。 &#70;&#105;&#120; this.</p>',
+  '<p>请检查。 &lt;code&gt;Fix this&lt;/code&gt;</p>',
+  '<p>&#96;&#70;&#105;&#120;&#96;</p>',
+  '&#96;&#70;&#105;&#120;&#96;',
+  '请检查\\&nbsp;输入。',
+  '<p>请检查 &amp;nbsp; 输入。</p>',
+])('keeps decoded English and literal entity names visible without changing source: %s',body=>{
+  const p=prepareQualitySource(source(body));
+  expect(p.chinese).toBe(false);
+  expect(p.segments.map(s=>s.bodyMarkdown).join('')).toBe(body);
+});
+
 it.each(['address','article','aside','blockquote','center','dd','details','dialog','dir','div','dl','dt',
   'fieldset','figcaption','figure','footer','form','h1','h2','h3','h4','h5','h6','header','hgroup',
   'iframe','legend','li','main','menu','nav','ol','p','search','section','summary','textarea','ul','body','html','head','tr','td','th','tbody','thead','tfoot'])
