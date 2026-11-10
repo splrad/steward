@@ -149,7 +149,12 @@ export function prepareQualitySource(source: QualitySource): QualityPrepared {
       .map(node=>'value' in node?node.value:'').join('');
   });
   const chinese=probe.split(/\n\s*\n/u).filter(x=>x.trim()).every(p=>{
-    const text=p.replace(/https?:\/\/\S+|(?:[\w.-]+\/)+[\w.-]+/g,'');
+    const text=p.replace(/https?:\/\/\S+/g,'').replace(/[\w./-]+/g,token=>{
+      // Scan maximal path-like tokens once; an unanchored repeated path pattern
+      // can retry every offset in long hyphen runs without any slash.
+      const parts=token.split('/');
+      return parts.some((part,index)=>index>0&&part.length>0&&parts[index-1]!.length>0)?'':token;
+    });
     // Chinese volume must never hide English prose in the same sentence or tag.
     // Explicit code/link targets are already masked; explicit uppercase compound rule
     // identifiers remain readable without a translation request.

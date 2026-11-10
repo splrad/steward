@@ -106,6 +106,24 @@ it.each([
   expect(p.segments.map(s=>s.bodyMarkdown).join('')).toBe(body);
 });
 
+it('scans long path-like runs without retrying every character',()=>{
+  expect(prepareQualitySource(source('请检查 '+ '-'.repeat(50000)+'。')).chinese).toBe(true);
+  expect(prepareQualitySource(source('请检查 src/foo.ts 和 /src/bar.ts/。')).chinese).toBe(true);
+  expect(prepareQualitySource(source('请检查 src//English。')).chinese).toBe(false);
+  expect(prepareQualitySource(source('请检查 src/foo.ts。 Fix the issue.')).chinese).toBe(false);
+});
+
+it('matches complete tag literals after removed code blocks in long prose',()=>{
+  const code='```js\n'+ 'const value = 1;\n'.repeat(100)+'```';
+  const tag='<span data-version="1.2?x">';
+  const after='Read the explanation. '.repeat(290)+tag+'More details. '.repeat(600)+'</span>';
+  const p=prepareQualitySource(source(code+'\n\n'+after));
+  expect(p.preservedBlocks).toEqual([code]);
+  expect(p.segments.map(s=>s.bodyMarkdown).join('')).toBe('\n\n\n\n'+after);
+  expect(p.segments.filter(s=>s.bodyMarkdown.includes(tag))).toHaveLength(1);
+  expect(p.segments.every(s=>Buffer.byteLength(s.bodyMarkdown)<=6144)).toBe(true);
+});
+
 it.each(['address','article','aside','blockquote','center','dd','details','dialog','dir','div','dl','dt',
   'fieldset','figcaption','figure','footer','form','h1','h2','h3','h4','h5','h6','header','hgroup',
   'iframe','legend','li','main','menu','nav','ol','p','search','section','summary','textarea','ul','body','html','head','tr','td','th','tbody','thead','tfoot'])
