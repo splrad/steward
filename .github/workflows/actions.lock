@@ -22,6 +22,11 @@ workflows:
     '.github/workflows/layerscape-release-initialize.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
+    '.github/workflows/maintenance-validation.yml':
+        - 'actions/checkout@v7.0.1'
+        - 'actions/dependency-review-action@v5.0.0'
+        - 'actions/setup-node@v7.0.0'
+        - 'jdx/mise-action@v5.2.7'
     '.github/workflows/native-review.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
@@ -102,6 +107,11 @@ dependencies:
         commit: 'sha1-a98b56852c35b8e3190ac28c8c2271da59106c68'
         owner_id: 44036562
         repo_id: 192625306
+    'actions/setup-node@v7.0.0':
+        ref: 'v7.0.0'
+        commit: 'sha1-820762786026740c76f36085b0efc47a31fe5020'
+        owner_id: 44036562
+        repo_id: 189476904
     'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9':
         ref: 'v7.0.2'
         commit: 'sha1-cf430e030ddbb5b0abf93d22962f4752f3646cd9'
@@ -128,6 +138,11 @@ dependencies:
         owner_id: 1588572
         repo_id: 265601040
     'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b':
+        ref: 'v5.2.7'
+        commit: 'sha1-b44d12e7d0d8ee7461bb893e1b1993500433185b'
+        owner_id: 216188
+        repo_id: 738284564
+    'jdx/mise-action@v5.2.7':
         ref: 'v5.2.7'
         commit: 'sha1-b44d12e7d0d8ee7461bb893e1b1993500433185b'
         owner_id: 216188
