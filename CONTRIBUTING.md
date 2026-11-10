@@ -15,6 +15,14 @@ npm run verify
 
 维护分支的工作流扫描复用已采用中央 policy 的原生工具。先在该中央 checkout 安装其 mise 锁定工具，并设置 `STEWARD_WORKFLOW_POLICY_ROOT` 为该 checkout 的绝对路径；`mise` 需在 PATH 中。本地包装入口不替代组织 required workflow。历史合同回归从本地 Git 读取准确 PR307 提交，使用完整历史 checkout。
 
+### Actions 锁文件更新
+
+GitHub 的组织 required workflow 使用本 PR 的 `.github/workflows/actions.lock`，因此锁必须同时覆盖维护树工作流和当前受信来源的 `.github/workflows/maintenance-validation.yml`。来源以组织维护 ruleset 的实际完整 SHA 为准；首次接入来源为 `ffc4e6aab395c0c5e2b4f5e859e24a6fef28db42`，后续随正常来源提升刷新。
+
+使用中央 `config/actions-lock-version.txt` 固定的官方 `gh actions-lock`。在隔离目录复制候选工作流，并将当前受信来源的上述工作流原始字节放入相同路径，仅供生成依赖锁；它不作为维护分支的第二个执行入口提交。若旧锁仍将完整 SHA 映射到 tag，先备份旧锁，再从准确 YAML 重新生成。设置 `GH_ACTIONS_LOCK_REPO_ROOT` 指向隔离目录，执行 `gh actions-lock --no-narrow --no-interactive --json`，逐字节确认所有输入 YAML 未被重写，然后只将生成的锁文件带回候选。
+
+在实际候选树执行 `gh actions-lock --verify-local` 和 `gh actions-lock --verify --no-interactive --json`，保留输出与所用来源 SHA。工具可能将外部 required workflow 根记录为 `stale-workflow` 信息项；该根仍被 GitHub 实际运行使用，不能因它不在候选目录而剪除。不要手工拼接依赖条目，也不要在生成后将 YAML 的 tag 改回 SHA 而沿用 tag-only 锁。最终以托管 required workflow 的真实运行确认覆盖完整。
+
 `npm run verify` 会运行仓库测试、类型检查、配置验证、生成文件验证和工作流验证。针对性改动可以只运行相关检查，但要在 Pull Request 中说明未运行的项目。
 
 修改 `packages/runner/src/index.ts` 或其依赖后，必须重建已提交的运行时文件。运行 `npm run build`，再确认 `npm run verify:dist` 通过。
