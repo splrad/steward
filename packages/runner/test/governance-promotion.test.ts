@@ -23,6 +23,21 @@ function source(){
   }};return fixture;
 }
 const input={workflowId:5,event:'workflow_run',sourceRunId:12,controllerSha:M,requiredJobs:['Scope','SPLRAD Validation']};
+it('bounds GraphQL protection reads and propagates cancellation to transport',async()=>{
+  const controller=new AbortController(),timeout=vi.spyOn(AbortSignal,'timeout').mockReturnValue(controller.signal);
+  let observed:AbortSignal|undefined;
+  const transport=async(_url:any,options:any)=>{
+    observed=options.signal;
+    return new Promise<Response>((_resolve,reject)=>options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true}));
+  };
+  try{
+    const io=(await module()).promotionIO('fixture-only',transport),pending=io.graphql('query { viewer { login } }');
+    const rejection=expect(pending).rejects.toThrow('fixture timeout');
+    await vi.waitFor(()=>expect(observed).toBe(controller.signal));
+    expect(timeout).toHaveBeenCalledWith(60000);
+    controller.abort(new Error('fixture timeout'));await rejection;
+  }finally{timeout.mockRestore();}
+});
 it('accepts a scope-skipped job only with the trusted aggregate successful and keeps failures blocked',async()=>{
   const {selectPromotion}=await module(),f=source();
   f.jobs.push({...f.jobs[1]!,id:10,name:'Source linux',conclusion:'skipped'});
@@ -163,4 +178,15 @@ it('publishes one fixed template wake only after a new tag; unknown responses ne
   expect(records).toEqual([{kind:'template-wake',status:'ACCEPTED'}]);
   let attempts=0;await expect(wakePublishedTemplate({request:async()=>{attempts++;throw Error('lost');}},{status:'PUBLISHED'},async()=>{},async()=>{})).rejects.toThrow('lost');expect(attempts).toBe(1);
   await expect(wakePublishedTemplate({request:async()=>{throw Error('must not write');}},{status:'PUBLISHED'},async()=>{throw Error('main moved');},async()=>{})).rejects.toThrow('main moved');
+});
+
+it.each(['CONTROLLER_SOURCE_TAG_COLLISION','CONTROLLER_SOURCE_NOT_DESCENDANT','CONTROLLER_SOURCE_WRITE_UNCONFIRMED','NATIVE_RULE_PARAMETERS_VALUE'])('preserves safe promotion failure evidence: %s',async code=>{
+  const {recordPromotionFailure}=await module(),records:unknown[]=[];
+  await expect(recordPromotionFailure(Error(code),async(value:unknown)=>records.push(value))).rejects.toThrow(code);
+  expect(records).toEqual([{kind:'failure',code}]);
+});
+it('does not include arbitrary exception content in failure evidence',async()=>{
+  const {recordPromotionFailure}=await module(),records:unknown[]=[];
+  await expect(recordPromotionFailure(Error('private transport details'),async(value:unknown)=>records.push(value))).rejects.toThrow('PROMOTION_UNAVAILABLE');
+  expect(records).toEqual([{kind:'failure',code:'PROMOTION_UNAVAILABLE'}]);
 });
