@@ -6,9 +6,10 @@ import {tmpdir} from 'node:os';
 import {spawnSync} from 'node:child_process';
 import YAML from 'yaml';
 import {dependencyMode,loadPolicy,assertGovernanceOnlyScope} from '../private-dependency-policy.mjs';
-import {assertLifecycleScope,assertLifecycleSnapshot,lifecycleSupport,lifecycleWorkflows,lifecycleMiseVersions,lifecycleReusable,assertLifecycleMissingActionLock} from '../private-lifecycle-policy.mjs';
+import {assertLifecycleScope,assertLifecycleSnapshot,lifecycleSupport,lifecycleWorkflows,lifecycleMiseVersions,lifecycleReusable,assertLifecycleMissingActionLock,lifecycleUpdaters} from '../private-lifecycle-policy.mjs';
 import {buildMode} from '../validation-input.mjs';
 const SHA='a'.repeat(40),OLD='b'.repeat(40),policy=await loadPolicy();
+const loadControllerTemplate=(_sha,path)=>readFile(new URL('../../'+path,import.meta.url));
 const event={repository:{id:1448797077,full_name:'splrad/steward-e10-lifecycle-20261107',private:true,owner:{id:302208797}}};
 async function sample(){
  const files=new Map();
@@ -53,7 +54,7 @@ test('dependency additions, lock divergence, lifecycle script changes and missin
 test('release workflows must match trusted templates and controller ancestry',async()=>{
  const files=await sample();
  await assert.rejects(assertLifecycleSnapshot(files,{side:'head',controllerSha:OLD}),/CONTROLLER_UNTRUSTED/);
- const seen=[];await assertLifecycleSnapshot(files,{side:'head',controllerSha:OLD,verifyController:ref=>{seen.push(ref);return ref===SHA;}});assert.equal(seen.length,2);
+ const seen=[];await assertLifecycleSnapshot(files,{side:'head',controllerSha:OLD,loadControllerTemplate,verifyController:ref=>{seen.push(ref);return ref===SHA;}});assert.equal(seen.length,2);
  const doc=YAML.parse(files.get(lifecycleWorkflows[0]).toString());doc.on.push={};files.set(lifecycleWorkflows[0],Buffer.from(YAML.stringify(doc)));
  await assert.rejects(assertLifecycleSnapshot(files,{side:'head',controllerSha:SHA}),/WORKFLOW_TEMPLATE/);
 });
@@ -114,4 +115,101 @@ test('action lock remains admitted; only a non-executable pre-application base m
  assertLifecycleMissingActionLock(paths,{side:'base',application:snapshot.application});
  for(const input of [{side:'head',application:false},{side:'base',application:true}])assert.throws(()=>assertLifecycleMissingActionLock(paths,input),/ACTION_LOCK_REQUIRED/);
  assert.throws(()=>assertLifecycleMissingActionLock([...paths,'.github/workflows/pr-title.yml'],{side:'base',application:false}),/ACTION_LOCK_REQUIRED/);
+});
+
+
+test('updater inputs are an exact optional pair, never a general governance admission',async()=>{
+ const files=await sample();
+ for(const path of lifecycleUpdaters){
+  assert.throws(()=>assertGovernanceOnlyScope([path]),/GOVERNANCE_INPUT_UNCOVERED/);
+  files.set(path,await readFile(new URL('../../config/private-lifecycle/'+path.split('/').at(-1),import.meta.url)));
+ }
+ for(const path of lifecycleWorkflows){const doc=YAML.parseDocument(files.get(path).toString());for(const [id,job] of Object.entries(doc.toJS().jobs))if(job.uses)doc.getIn(['jobs',id,'uses'],true).comment=' steward/validated-controller';files.set(path,Buffer.from(doc.toString()));}
+ assertLifecycleScope([...files.keys()]);
+ await assertLifecycleSnapshot(files,{side:'head',controllerSha:SHA});
+ for(const path of lifecycleUpdaters){const partial=new Map(files);partial.delete(path);await assert.rejects(assertLifecycleSnapshot(partial,{side:'head',controllerSha:SHA}),/UPDATERS_INCOMPLETE/);}
+ for(const mutate of [doc=>{doc.automerge=true;},doc=>{doc.customManagers[0].packageNameTemplate='https://github.com/other/repo.git';},
+  doc=>{doc.customManagers[0].managerFilePatterns=['/.*/'];},doc=>{doc.postUpgradeTasks={commands:['echo changed']};}]){
+  const changed=new Map(files),doc=JSON.parse(changed.get('.github/renovate.json'));
+  mutate(doc);changed.set('.github/renovate.json',Buffer.from(JSON.stringify(doc)));
+  await assert.rejects(assertLifecycleSnapshot(changed,{side:'head',controllerSha:SHA}),/UPDATER_CONTRACT/);
+ }
+ const changed=new Map(files),doc=YAML.parse(changed.get('.github/dependabot.yml').toString());
+ doc.updates.push({'package-ecosystem':'npm',directory:'/',schedule:{interval:'daily'}});
+ changed.set('.github/dependabot.yml',Buffer.from(YAML.stringify(doc)));
+ await assert.rejects(assertLifecycleSnapshot(changed,{side:'head',controllerSha:SHA}),/UPDATER_CONTRACT/);
+ assert.throws(()=>assertLifecycleScope(['.github/renovate.json5']),/GOVERNANCE_INPUT_UNCOVERED/);
+});
+
+test('official action SHA and strict mise versions can advance without relaxing workflow structure',async()=>{
+ const files=await sample();let actions=0,mise=0;
+ for(const path of lifecycleWorkflows){
+  const doc=YAML.parse(files.get(path).toString());
+  for(const job of Object.values(doc.jobs))for(const step of job.steps??[]){
+   if(step.uses){step.uses=step.uses.replace(/@[a-f0-9]{40}$/, '@'+'c'.repeat(40));actions++;}
+   if(step.uses?.startsWith('jdx/mise-action@')){step.with.version='2026.11.8';mise++;}
+  }
+  files.set(path,Buffer.from(YAML.stringify(doc)));
+ }
+ assert(actions>0);assert.equal(mise,11);
+ await assertLifecycleSnapshot(files,{side:'head',controllerSha:SHA});
+ const docs=new Map(lifecycleWorkflows.map(path=>[path,YAML.parse(files.get(path).toString())]));
+ assert.deepEqual(lifecycleMiseVersions(docs),['2026.11.8']);
+ // Snapshot validation admits only slots. Official SHA/tag identity and supplier
+ // advisory checks remain mandatory in validation-private-dependencies.mjs.
+});
+
+test('mutable slots do not permit action identity, paths, selectors, permissions or executable changes',async()=>{
+ for(const mutate of [
+  doc=>{Object.values(doc.jobs).find(j=>j.steps).steps.find(s=>s.uses).uses='other/repo@'+SHA;},
+  doc=>{Object.values(doc.jobs).find(j=>j.steps).steps.find(s=>s.uses).uses='actions/checkout/sub@'+SHA;},
+  doc=>{Object.values(doc.jobs).find(j=>j.steps).steps.find(s=>s.uses).uses='actions/checkout@main';},
+  doc=>{for(const j of Object.values(doc.jobs))for(const s of j.steps??[])if(s.uses?.startsWith('jdx/mise-action@'))s.with.version='latest';},
+  doc=>{doc.permissions={contents:'write'};},
+  doc=>{Object.values(doc.jobs).find(j=>j.steps).steps.push({run:'echo changed'});},
+ ]){
+  const files=await sample(),path=lifecycleWorkflows[0],doc=YAML.parse(files.get(path).toString());mutate(doc);files.set(path,Buffer.from(YAML.stringify(doc)));
+  await assert.rejects(assertLifecycleSnapshot(files,{side:'head',controllerSha:SHA}),/LIFECYCLE_(ACTION_REFERENCE|MISE_VERSION|WORKFLOW_TEMPLATE)/);
+ }
+});
+
+test('controller update group must cover both workflows and still bind trusted ancestry',async()=>{
+ const files=await sample();let refs=0;
+ for(const path of lifecycleWorkflows){
+  const doc=YAML.parse(files.get(path).toString());
+  for(const job of Object.values(doc.jobs)){
+   if(job.uses){job.uses=job.uses.replace(SHA,OLD);refs++;}
+   for(const step of job.steps??[])if(step.with?.repository==='splrad/steward'){step.with.ref=OLD;refs++;}
+  }
+  files.set(path,Buffer.from(YAML.stringify(doc)));
+ }
+ assert.equal(refs,12);
+ await assert.rejects(assertLifecycleSnapshot(files,{side:'head',controllerSha:SHA,verifyController:()=>false}),/CONTROLLER_UNTRUSTED/);
+ await assertLifecycleSnapshot(files,{side:'head',controllerSha:SHA,loadControllerTemplate,verifyController:sha=>sha===OLD});
+ const ungrouped=await sample();ungrouped.set(lifecycleWorkflows[0],files.get(lifecycleWorkflows[0]));
+ await assert.rejects(assertLifecycleSnapshot(ungrouped,{side:'head',controllerSha:SHA,loadControllerTemplate,verifyController:()=>true}),/CONTROLLER_GROUP/);
+});
+
+
+test('base and head use their own trusted controller templates, not the validator latest shape',async()=>{
+ const base=await sample(),head=await sample();
+ for(const path of lifecycleWorkflows){const doc=YAML.parse(base.get(path).toString());doc.name='Historical '+doc.name;for(const job of Object.values(doc.jobs)){if(job.uses)job.uses=job.uses.replace(SHA,OLD);for(const step of job.steps??[])if(step.with?.repository==='splrad/steward')step.with.ref=OLD;}base.set(path,Buffer.from(YAML.stringify(doc)));}
+ const loaded=[];
+ const load=async(sha,path)=>{loaded.push([sha,path]);const doc=YAML.parse((await loadControllerTemplate(sha,path)).toString());if(sha===OLD)doc.name='Historical '+doc.name;return Buffer.from(YAML.stringify(doc));};
+ await assertLifecycleSnapshot(base,{side:'base',controllerSha:SHA,verifyController:sha=>sha===OLD,loadControllerTemplate:load});
+ await assertLifecycleSnapshot(head,{side:'head',controllerSha:SHA,loadControllerTemplate:load});
+ assert.equal(loaded.filter(([sha])=>sha===OLD).length,2);assert.equal(loaded.filter(([sha])=>sha===SHA).length,2);
+ await assert.rejects(assertLifecycleSnapshot(base,{side:'base',controllerSha:SHA,verifyController:()=>true}),/TEMPLATE_SOURCE/);
+ await assert.rejects(assertLifecycleSnapshot(base,{side:'base',controllerSha:SHA,verifyController:()=>true,loadControllerTemplate}),/WORKFLOW_TEMPLATE/);
+ let called=false;await assert.rejects(assertLifecycleSnapshot(base,{side:'base',controllerSha:SHA,verifyController:()=>false,loadControllerTemplate:()=>{called=true;}}),/CONTROLLER_UNTRUSTED/);assert.equal(called,false);
+});
+
+test('configured updater requires the reusable controller named branch comment',async()=>{
+ const files=await sample();for(const path of lifecycleUpdaters)files.set(path,await readFile(new URL('../../config/private-lifecycle/'+path.split('/').at(-1),import.meta.url)));
+ await assert.rejects(assertLifecycleSnapshot(files,{side:'head',controllerSha:SHA}),/CONTROLLER_BRANCH/);
+ const path=lifecycleWorkflows[0],doc=YAML.parseDocument(files.get(path).toString());
+ for(const [id,job] of Object.entries(doc.toJS().jobs))if(job.uses)doc.getIn(['jobs',id,'uses'],true).comment=' main';
+ files.set(path,Buffer.from(doc.toString()));await assert.rejects(assertLifecycleSnapshot(files,{side:'head',controllerSha:SHA}),/CONTROLLER_BRANCH/);
+ for(const [id,job] of Object.entries(doc.toJS().jobs))if(job.uses)doc.getIn(['jobs',id,'uses'],true).comment=' steward/validated-controller';
+ files.set(path,Buffer.from(doc.toString()));await assertLifecycleSnapshot(files,{side:'head',controllerSha:SHA});
 });
