@@ -9,6 +9,7 @@ import {createAppAuth} from '@octokit/auth-app';
 import YAML from 'yaml';
 import {isolatedBuildEnvironment,resolvePolicyTool} from '../packages/runner/dist/index.js';
 import {requiredWorkflowBinding as binding} from './required-workflow-binding.mjs';
+import {assertSourceProtection,publishControllerSource} from './controller-source.mjs';
 
 const repo='/repos/splrad/steward',rulePath='/orgs/splrad/rulesets/18883080';
 const validationPath='.github/workflows/pr-validation-native.yml';
@@ -209,8 +210,12 @@ export async function main(env=process.env,transport=fetch) {
   const plan=JSON.parse(await readFile(planPath,'utf8'));await record({kind:'template-plan',...plan});
   await assertCurrent();
   await withGovernanceCredential(env,async io=>{
+    // The source namespace must be protected before any promotion write occurs.
+    await assertSourceProtection(io,Number(env.GOVERNANCE_APP_ID));
     const adopted=await promoteRequiredWorkflow(io,source.sha,assertCurrent,record);await record({kind:'rules-result',...adopted});
     const published=await publishTemplateTag(io,plan,assertCurrent,record);await record({kind:'template-result',...published});
+    const controller=await publishControllerSource(io,source.sha,Number(env.GOVERNANCE_APP_ID),assertCurrent,record);
+    await record({kind:'controller-source-result',...controller});
     await wakePublishedTemplate(io,published,assertCurrent,record);
   },transport);
   process.stdout.write('Promotion: adopted and reconciled\n');
