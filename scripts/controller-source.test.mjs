@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {controllerSource,verifySourceProtection,assertSourceProtection,publishControllerSource} from './controller-source.mjs';
+import {controllerSource,verifySourceProtection,assertSourceProtection,publishControllerSource,createSourceGuard} from './controller-source.mjs';
+import {publishTemplateTag,promoteRequiredWorkflow} from './governance-promotion.mjs';
 const old='1'.repeat(40),target='2'.repeat(40),other='3'.repeat(40),app=123;
 const ref=s=>({ref:`refs/heads/${controllerSource}`,object:{type:'commit',sha:s}});
 function protection(){return [
@@ -29,8 +30,45 @@ function fixture(options={}){
     if(options.lost)throw Error('response lost');
     return {status:options.absent?201:200};
   }};
-  return {writes,records,run:()=>publishControllerSource(io,target,app,async()=>{guards++;if(options.mainMoved&&guards>=2)throw Error('MAIN_MOVED');},async r=>records.push(r))};
+  return {io,writes,records,run:()=>publishControllerSource(io,target,app,async()=>{guards++;if(options.mainMoved&&guards>=2)throw Error('MAIN_MOVED');},async r=>records.push(r))};
 }
+
+test('rechecks protection when a later promotion operation invokes its guard',async()=>{
+  const rules=protection(),f=fixture({rules});let mainReads=0;
+  const guard=createSourceGuard(f.io,app,async()=>{mainReads++;});
+  await guard();rules[0].enforcement='disabled';
+  await assert.rejects(guard(),/RULE_IDENTITY/);
+  assert.equal(mainReads,2);assert.equal(f.writes.length,0);
+});
+
+test('protection removed after an unconfirmed pin write blocks its retry',async()=>{
+  const rules=protection(),f=fixture({rules});let writes=0;
+  const rule={id:18883080,source:'splrad',source_type:'Organization',target:'branch',enforcement:'active',name:'core',bypass_actors:[],conditions:{ref_name:{include:['~DEFAULT_BRANCH'],exclude:[]}},rules:[{type:'workflows',parameters:{workflows:[{repository_id:1296724484,path:'.github/workflows/pr-validation-native.yml',sha:old}]}}]};
+  const io={async request(method,path,body){
+    if(path==='/orgs/splrad/rulesets/18883080'){
+      if(method==='GET')return {status:200,value:structuredClone(rule)};
+      writes++;rules[0].enforcement='disabled';return {status:502};
+    }
+    return f.io.request(method,path,body);
+  }};
+  const guard=createSourceGuard(io,app,async()=>{}),records=[];
+  await guard();
+  await assert.rejects(promoteRequiredWorkflow(io,target,guard,async r=>records.push(r)),/RULE_IDENTITY/);
+  assert.equal(writes,1);assert.ok(records.some(r=>r.kind==='rules-after'));
+});
+
+test('protection widened after initial preflight prevents template tag creation',async()=>{
+  const rules=protection(),f=fixture({rules});let writes=0;
+  const io={async request(method,path,body){
+    if(path.endsWith('/git/matching-refs/tags/'))return {status:200,value:[]};
+    if(path.endsWith('/git/ref/tags/v1.0.0')){rules[0].conditions.repository_id.repository_ids.push(1);return {status:404};}
+    if(method==='POST'){writes++;return {status:201};}
+    return f.io.request(method,path,body);
+  }};
+  const guard=createSourceGuard(io,app,async()=>{});await guard();
+  await assert.rejects(publishTemplateTag(io,{status:'CREATE',commit:target,tag:'v1.0.0',tags:{}},guard,async()=>{}),/RULE_SCOPE/);
+  assert.equal(writes,0);
+});
 test('requires exact branch and tag protection, including exclusive App bypass',()=>{
   verifySourceProtection(protection(),app);
   for(const mutate of [r=>r[0].bypass_actors.push({actor_type:'RepositoryRole',actor_id:5}),r=>r[1].bypass_actors.push({actor_type:'Integration',actor_id:app}),r=>r[2].bypass_actors.push({actor_type:'Integration',actor_id:app}),r=>r[2].rules.pop(),r=>r[1].enforcement='evaluate',r=>r[0].conditions.ref_name.include=['~ALL'],r=>r[0].rules.pop(),r=>r[1].rules.pop(),r=>r[0].source='foreign/repo']){

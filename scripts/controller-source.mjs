@@ -46,6 +46,9 @@ export async function assertSourceProtection(io,appId){
   verifySourceProtection(rules,appId);
   check(await read(io,`${api}/git/ref/tags/${encodeURIComponent(controllerSource)}`,true)===null,'TAG_COLLISION');
 }
+export function createSourceGuard(io,appId,assertCurrent){
+  return async()=>{await assertCurrent();await assertSourceProtection(io,appId);};
+}
 /** This is a checked non-force write with readback, not a compare-and-swap. */
 export async function publishControllerSource(io,target,appId,assertCurrent,record){
   check(sha(target)&&typeof assertCurrent==='function'&&typeof record==='function','INPUT');
