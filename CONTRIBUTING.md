@@ -13,6 +13,8 @@ npm ci --ignore-scripts
 npm run verify
 ```
 
+维护分支的工作流扫描复用已采用中央 policy 的原生工具。先在该中央 checkout 安装其 mise 锁定工具，并设置 `STEWARD_WORKFLOW_POLICY_ROOT` 为该 checkout 的绝对路径；`mise` 需在 PATH 中。本地包装入口不替代组织 required workflow。历史合同回归从本地 Git 读取准确 PR307 提交，使用完整历史 checkout。
+
 `npm run verify` 会运行仓库测试、类型检查、配置验证、生成文件验证和工作流验证。针对性改动可以只运行相关检查，但要在 Pull Request 中说明未运行的项目。
 
 修改 `packages/runner/src/index.ts` 或其依赖后，必须重建已提交的运行时文件。运行 `npm run build`，再确认 `npm run verify:dist` 通过。
