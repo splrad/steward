@@ -1,5 +1,6 @@
 import {parseAcceptanceTarget} from '../bootstrap-acceptance.mjs';
 import {replaceScanOutput} from '../private-scan-output.mjs';
+import {assertActionInputs,reusableActions,verifyReusableLock} from '../private-reusable-actions.mjs';
 import {effectiveLock} from '../private-lock-exception.mjs';
 import {createHash} from 'node:crypto';
 import {test} from 'node:test';
@@ -14,6 +15,73 @@ import {tmpdir} from 'node:os';
 const SHA='a'.repeat(40),OTHER='b'.repeat(40),policy=await loadPolicy();
 const lock={lockfileVersion:3,packages:{'':{name:'fixture'},'node_modules/demo':{version:'1.0.0',resolved:'https://registry.npmjs.org/demo/-/demo-1.0.0.tgz',dev:true}}};
 const packageResult={package:{name:'demo',version:'1.0.0',ecosystem:'npm'}};
+
+const reusableUse='splrad/steward/.github/workflows/product-release.yml@'+SHA;
+const reusablePath='.github/workflows/product-release.yml',actionLockPath='.github/workflows/actions.lock';
+function reusableFiles(){return new Map([
+ [reusablePath,Buffer.from(YAML.stringify({on:{workflow_call:{}},jobs:{release:{steps:[{uses:'jdx/mise-action@'+SHA}]}}}))],
+ ['.github/workflows/other.yml',Buffer.from('on: push\njobs: {}\n')],
+ [actionLockPath,Buffer.from('complete original native lock bytes')],
+]);}
+function reusableIO(files=reusableFiles()){return {
+ loadSource:async sha=>{assert.equal(sha,SHA);return files;},
+ verifyLock:async actual=>{assert.equal(actual,files);assert.equal(actual.size,3);return {stdout:'verified',stderr:'retained warning'};},
+ inventory:async text=>{assert.equal(text,'complete original native lock bytes');return [{repo:'jdx/mise-action',sha:SHA},{repo:'transitive/action',sha:OTHER}];},
+};}
+test('reusable uses its exact source inventory; all locked transitive actions and native diagnostics survive',async()=>{
+ const nested=await reusableActions(reusableUse,reusableIO());
+ assert.equal(nested.sha,SHA);assert.equal(nested.actions.length,2);assert.equal(nested.native.stderr,'retained warning');
+ assert.match(nested.lockSha256,/^[a-f0-9]{64}$/);
+ const caller={jobs:{run:{steps:[{uses:'jdx/mise-action@'+OTHER}]}}};
+ assertActionInputs(caller,[{repo:'jdx/mise-action',sha:OTHER}]);
+ assert.throws(()=>assertActionInputs(caller,nested.actions),/ACTION_INPUT_UNCOVERED/);
+ assert.throws(()=>assertActionInputs(YAML.parse(nested.bytes.toString()),[{repo:'jdx/mise-action',sha:OTHER}]),/ACTION_INPUT_UNCOVERED/);
+});
+test('reusable cannot borrow missing coverage from the consumer or another source',async()=>{
+ await assert.rejects(reusableActions(reusableUse,{...reusableIO(),inventory:async()=>[{repo:'jdx/mise-action',sha:OTHER}]}),/ACTION_INPUT_UNCOVERED/);
+});
+test('reusable rejects a missing source lock before any inventory can be substituted',async()=>{
+ const files=reusableFiles();files.delete(actionLockPath);
+ await assert.rejects(reusableActions(reusableUse,{...reusableIO(files),inventory:async()=>{assert.fail('must not run');}}),/REUSABLE_ACTION_LOCK_REQUIRED/);
+});
+test('native lock failure and online identity/unknown failures propagate without a partial success',async()=>{
+ for(const stage of ['verifyLock','inventory'])for(const code of ['NATIVE_LOCK_INVALID','ACTION_IDENTITY','ACTION_VERSION_UNRESOLVED']){
+  await assert.rejects(reusableActions(reusableUse,{...reusableIO(),[stage]:async()=>{throw Error(code);}}),new RegExp(code));
+ }
+ await assert.rejects(reusableActions(reusableUse,{...reusableIO(),verifyLock:async()=>{throw Error('NATIVE_FAILED');}}),error=>{
+  assert.equal(error.reusableSource.sha,SHA);assert.equal(error.reusableSource.stage,'native-lock');
+  assert.match(error.reusableSource.lockSha256,/^[a-f0-9]{64}$/);return error.message==='NATIVE_FAILED';
+ });
+});
+test('reusable wrong owner, non-SHA, untrusted source and nested workflow remain rejected',async()=>{
+ for(const use of [reusableUse.replace('splrad/steward','other/steward'),reusableUse.replace(SHA,'main')]){
+  await assert.rejects(reusableActions(use,{...reusableIO(),loadSource:async()=>assert.fail('must not load')}),/LIFECYCLE_REUSABLE_IDENTITY/);
+ }
+ await assert.rejects(reusableActions(reusableUse,{...reusableIO(),loadSource:async()=>{throw Error('ANCESTRY_REJECTED');}}),/ANCESTRY_REJECTED/);
+ const files=reusableFiles();files.set(reusablePath,Buffer.from(YAML.stringify({on:{workflow_call:{}},jobs:{nested:{uses:reusableUse}}})));
+ await assert.rejects(reusableActions(reusableUse,reusableIO(files)),/LIFECYCLE_REUSABLE_NESTING/);
+});
+test('native source verification uses full unedited inputs and an isolated exact source root',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'reusable-lock-test-')),files=reusableFiles();
+ try{
+  const result=await verifyReusableLock(files,directory,{GH_REPO:'wrong/repo',GH_ACTIONS_LOCK_REPO_ROOT:'wrong',GH_CONFIG_DIR:'trusted-tool'},(command,args,cwd,env)=>{
+   assert.equal(command,'gh');assert.deepEqual(args,['actions-lock','--verify','--no-interactive']);assert.equal(cwd,directory);
+   assert.equal(env.GH_REPO,'splrad/steward');assert.equal(env.GH_ACTIONS_LOCK_REPO_ROOT,directory);assert.equal(env.GH_CONFIG_DIR,'trusted-tool');
+   return {stdout:'all workflows verified',stderr:'warning'};
+  });
+  assert.equal(result.stderr,'warning');for(const [path,bytes] of files)assert.deepEqual(await readFile(join(directory,path)),bytes);
+  await assert.rejects(verifyReusableLock(new Map([['../escape.yml',Buffer.from('x')],[actionLockPath,Buffer.from('x')]]),directory,{},()=>assert.fail()),/REUSABLE_LOCK_INPUT_PATH/);
+ }finally{await rm(directory,{recursive:true,force:true});}
+});
+test('read-only native verification cannot silently rewrite source bytes',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'reusable-lock-test-')),files=reusableFiles();
+ try{
+  await assert.rejects(verifyReusableLock(files,directory,{},()=>{
+   run(process.execPath,['-e','require("node:fs").writeFileSync(".github/workflows/actions.lock","changed")'],directory,process.env);
+   return {stdout:'',stderr:''};
+  }),/REUSABLE_LOCK_INPUT_CHANGED/);
+ }finally{await rm(directory,{recursive:true,force:true});}
+});
 test('only configured private administrator identity selects replacement; other private products remain native',()=>{
  assert.equal(dependencyMode({repository:{id:12,full_name:'org/product',private:true}},policy),'native');
  assert.equal(dependencyMode({repository:{id:1447987054,full_name:'splrad/steward-settings',private:true}},policy),'private-administrator');
@@ -71,6 +139,10 @@ test('workflow keeps private execution under dependency job, fixed policy source
  const steps=workflow.jobs.dependency.steps;
  assert.equal(steps.find(s=>s.uses?.startsWith('actions/dependency-review-action@')).if,"needs.scope.outputs.dependency-mode == 'native'");
  const scan=steps.find(s=>s.name==='Scan private administrator dependencies');assert.equal(scan.if,"startsWith(needs.scope.outputs.dependency-mode, 'private-')");assert.equal(scan['working-directory'],'policy');
+ const verifier=steps.find(s=>s.name==='Install trusted reusable workflow lock verifier');
+ assert.equal(verifier.if,"needs.scope.outputs.dependency-mode == 'private-lifecycle'");
+ assert.match(verifier.run,/cat policy\/config\/actions-lock-version\.txt/);assert.match(verifier.run,/--pin "\$ACTIONS_LOCK_VERSION"/);
+ assert.equal(verifier.env.GH_CONFIG_DIR,scan.env.GH_CONFIG_DIR);assert.ok(steps.indexOf(verifier)<steps.indexOf(scan));
  assert.equal(workflow.permissions['security-events'],undefined);
  assert.equal(steps.find(s=>s.with?.path==='policy').with.ref,'${{ job.workflow_sha }}');
  assert.equal(steps.find(s=>s.with?.path==='policy').with['fetch-depth'],0);
