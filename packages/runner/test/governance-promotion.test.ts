@@ -259,3 +259,11 @@ it('checks the source guard even when both target SHAs are already adopted',asyn
   const f=multipleRules();for(const r of f.rules.values())shaBinding(r).sha=M;
   await expect((await module()).promoteRequiredWorkflows(f,M,async()=>{throw Error('SOURCE_GUARD');},f.record,maintenanceId)).rejects.toThrow('SOURCE_GUARD');expect(f.writes).toEqual([]);
 });
+
+it.each(['sha','protection'])('rejects cross-target drift during final evidence recording: %s',async kind=>{
+  const f=multipleRules();
+  const record=async(value:any)=>{await f.record(value);if(value.kind==='workflow-target-final'&&value.rulesetId===18883080){
+    if(kind==='sha')shaBinding(f.rules.get(18883080)).sha=T;else f.rules.get(18883080).name='concurrent final edit';
+  }};
+  await expect((await module()).promoteRequiredWorkflows(f,M,async()=>{},record,maintenanceId)).rejects.toThrow(kind==='sha'?'TARGET_READBACK':'TARGET_PROTECTION_CHANGED');
+});

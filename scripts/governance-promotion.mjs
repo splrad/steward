@@ -168,13 +168,23 @@ export async function promoteRequiredWorkflows(io,target,assertCurrent,record,ma
     results.push({rulesetId:descriptor.id,...result});
     await record({kind:'workflow-target-result',rulesetId:descriptor.id,...result});
   }
+  const verifyTargets=async()=>{
+    const observed=[];
+    for(const descriptor of targets){
+      const {rule,body}=await readRule(io,descriptor);
+      check(same(withoutSha(body,descriptor),baseline.get(descriptor.id)),'TARGET_PROTECTION_CHANGED');
+      check(descriptor.binding(body).sha===target,'TARGET_READBACK');
+      observed.push({kind:'workflow-target-final',rulesetId:descriptor.id,target,observed:rule});
+    }
+    return observed;
+  };
   await guard();
-  for(const descriptor of targets){
-    const {rule,body}=await readRule(io,descriptor);
-    check(same(withoutSha(body,descriptor),baseline.get(descriptor.id)),'TARGET_PROTECTION_CHANGED');
-    check(descriptor.binding(body).sha===target,'TARGET_READBACK');
-    await record({kind:'workflow-target-final',rulesetId:descriptor.id,target,observed:rule});
-  }
+  const observed=await verifyTargets();
+  for(const event of observed)await record(event);
+  // Recheck the complete set after collecting and recording the first snapshot.
+  // Separate API reads cannot provide an atomic cross-ruleset snapshot.
+  await assertCurrent();
+  await verifyTargets();
   await assertCurrent();
   return {status:results.every(r=>r.status==='ALREADY_ADOPTED')?'ALREADY_ADOPTED':'ADOPTED',sha:target,targets:results};
 }
