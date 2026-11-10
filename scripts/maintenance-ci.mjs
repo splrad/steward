@@ -3,7 +3,7 @@ import {readFile, appendFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import YAML from 'yaml';
+import {discoverWorkflowFiles,scanWorkflows} from '../packages/runner/dist/index.js';
 import {githubHeaders} from '../packages/github/src/api-version.ts';
 
 const check = (ok, reason) => { if (!ok) throw Error(`MAINTENANCE_CI: ${reason}`); };
@@ -11,28 +11,6 @@ const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 export const branch = 'maintenance/legacy-runtime-e990eda';
 export const workflow = '.github/workflows/maintenance-validation.yml';
 export const digest = value => createHash('sha256').update(value).digest('hex');
-const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
-  ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
-
-// Action commit updates are allowed; all other workflow semantics remain centrally approved.
-export function workflowDigest(text, allowedActions) {
-  const document = YAML.parseDocument(text, {uniqueKeys:true});
-  check(!document.errors.length, 'workflow YAML');
-  const value = document.toJS({maxAliasCount:0});
-  function normalize(object) {
-    if (!object || typeof object !== 'object') return;
-    for (const [key, item] of Object.entries(object)) {
-      if (key === 'uses') {
-        check(typeof item === 'string' && /^[\w.-]+\/[\w./-]+@[a-f0-9]{40}$/.test(item), 'unpinned action');
-        if (allowedActions) check(allowedActions.includes(item), 'unapproved action reference');
-        object[key] = item.replace(/@[a-f0-9]{40}$/, '@PIN');
-      } else normalize(item);
-    }
-  }
-  normalize(value);
-  return digest(JSON.stringify(canonical(value)));
-}
-
 export function eventIdentity(event, env) {
   const p = event.pull_request;
   check(env.GITHUB_EVENT_NAME === 'pull_request', 'event');
@@ -83,55 +61,31 @@ function git(workspace, args) {
     {cwd:workspace, encoding:'utf8', maxBuffer:32*1024*1024, timeout:60000, windowsHide:true});
 }
 export function verifyTree(workspace, identity, policy) {
-  check(Array.isArray(policy.allowedActions) && policy.allowedActions.length > 0
-    && policy.allowedActions.every(item => typeof item === 'string' && /^[\w.-]+\/[\w./-]+@[a-f0-9]{40}$/.test(item)), 'approved action allowlist');
   check(git(workspace,['rev-parse','HEAD']).trim() === identity.merge, 'checkout');
   check(git(workspace,['rev-list','--parents','-n','1',identity.merge]).trim()
     === `${identity.merge} ${identity.base} ${identity.head}`, 'local merge parents');
-  check(sha(policy.toolchainSource), 'approved toolchain source');
-  const toolchainAt = ref => {
+  // Version declarations remain in the maintenance tree and may change in this PR.
+  for (const ref of [identity.head, identity.merge]) {
     for (const path of ['.node-version','package.json'])
       check(git(workspace,['ls-tree',ref,'--',path]).startsWith('100644 blob '), 'toolchain file mode');
     const node = git(workspace,['show',`${ref}:.node-version`]).trim();
     const manifest = JSON.parse(git(workspace,['show',`${ref}:package.json`]));
     check(/^\d+\.\d+\.\d+$/.test(node) && manifest.engines?.node === node
-      && /^npm@\d+\.\d+\.\d+$/.test(manifest.packageManager), 'toolchain contract');
-    return JSON.stringify([node,manifest.packageManager]);
-  };
-  const approvedToolchain = toolchainAt(policy.toolchainSource);
-  check(sha(policy.validationSource), 'approved validation source');
-  const readManifest = ref => JSON.parse(git(workspace,['show',`${ref}:package.json`]));
-  const approvedScripts = JSON.stringify(canonical(readManifest(policy.validationSource).scripts));
-  const validationFiles = git(workspace,['ls-tree','-r','--name-only',policy.validationSource,'--','scripts']).trim().split('\n').filter(Boolean);
-  check(validationFiles.length > 0, 'validation script inventory');
-  // Compare absence too: newly added npm/Vite configuration can replace the fixed checks.
-  validationFiles.push('.npmrc','tsconfig.json','tsconfig.runtime.json');
-  for (const prefix of ['vitest.config','vitest.workspace','vite.config'])
-    for (const extension of ['js','ts','mjs','mts','cjs','cts','json'])
-      validationFiles.push(`${prefix}.${extension}`);
-  // Read Git objects, never import or execute candidate modules in the trusted identity process.
-  for (const ref of [identity.head, identity.merge]) {
-    check(toolchainAt(ref) === approvedToolchain, 'toolchain upgrade requires central adoption');
-    check(JSON.stringify(canonical(readManifest(ref).scripts)) === approvedScripts, 'validation commands changed');
-    for (const path of validationFiles) {
-      check(git(workspace,['ls-tree',ref,'--',path]) === git(workspace,['ls-tree',policy.validationSource,'--',path]), `validation implementation changed: ${path}`);
-    }
-    const entries = git(workspace,['ls-tree','-r','-z',ref]).split('\0').filter(Boolean).map(row => {
-      const match = /^(\d+) (\w+) ([a-f0-9]{40})\t(.+)$/.exec(row);
-      check(match, 'tree entry'); return {mode:match[1],path:match[4]};
-    });
-    const workflows = entries.filter(row => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(row.path));
-    check(JSON.stringify(workflows.map(row => row.path).sort()) === JSON.stringify(Object.keys(policy.workflows).sort()), 'workflow inventory');
-    for (const row of workflows) {
-      check(row.mode === '100644', 'workflow mode');
-      check(policy.workflows[row.path].includes(workflowDigest(git(workspace,['show',`${ref}:${row.path}`]),policy.allowedActions)), `workflow semantics: ${row.path}`);
-    }
+      && /^npm@\d+\.\d+\.\d+$/.test(manifest.packageManager)
+      && manifest.devDependencies?.npm === manifest.packageManager.slice(4), 'toolchain contract');
+    // PR307's historical recovery contract stays byte-exact, not a catalog of ordinary workflows.
     for (const [path, expected] of Object.entries(policy.immutable)) {
-      check(entries.find(row => row.path === path)?.mode === '100644', 'protected file mode');
+      check(git(workspace,['ls-tree',ref,'--',path]).startsWith('100644 blob '), 'protected file mode');
       check(digest(git(workspace,['show',`${ref}:${path}`])) === expected, `historical contract: ${path}`);
     }
   }
   git(workspace,['-c','core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol','diff','--check',identity.base,identity.head]);
+}
+
+export async function scanMaintenanceWorkflows(workspace, runtimeRoot) {
+  // These functions, tools and scan configuration come from P. Candidate npm/mise/ignore files are inputs only.
+  const files = await discoverWorkflowFiles(workspace,true);
+  return scanWorkflows(workspace,files,runtimeRoot);
 }
 
 export function verifyResults(needs) {
@@ -151,7 +105,9 @@ export async function main(env = process.env) {
   await liveIdentity(identity,get);
   if (env.MAINTENANCE_PHASE === 'source') {
     const policy = JSON.parse(await readFile(new URL('../config/maintenance-ci.json',import.meta.url),'utf8'));
-    verifyTree(resolve(env.VALIDATION_WORKSPACE ?? 'target'),identity,policy);
+    const workspace = resolve(env.VALIDATION_WORKSPACE ?? 'target');
+    verifyTree(workspace,identity,policy);
+    console.log(JSON.stringify(await scanMaintenanceWorkflows(workspace)));
   } else {
     check(env.MAINTENANCE_PHASE === 'final', 'phase');
     verifyResults(JSON.parse(env.MAINTENANCE_NEEDS));

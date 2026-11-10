@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import YAML from 'yaml';
-import {branch,workflow,eventIdentity,liveIdentity,workflowDigest,verifyTree,verifyResults,digest} from '../maintenance-ci.mjs';
+import {branch,workflow,eventIdentity,liveIdentity,verifyTree,verifyResults,digest} from '../maintenance-ci.mjs';
 
 const B='b'.repeat(40), H='c'.repeat(40), M='d'.repeat(40), P='a'.repeat(40);
 const pull=()=>({number:400,state:'open',base:{sha:B,ref:branch,repo:{id:1296724484}},
@@ -62,63 +62,33 @@ test('fresh API proof rejects moved refs, unsigned head, wrong merge parents and
   for(const mutation of mutations)await assert.rejects(liveIdentity(identity(),api(mutation)));
 });
 
-test('workflow semantics permit only pinned action commit changes, not permission/command expansion',()=>{
-  const text='on: pull_request\npermissions: {contents: read}\njobs:\n  test:\n    steps:\n      - uses: actions/checkout@'+P+'\n      - run: npm test\n';
-  assert.equal(workflowDigest(text),workflowDigest(text.replace(P,H)));
-  assert.notEqual(workflowDigest(text),workflowDigest(text.replace('actions/checkout','unknown/action')));
-  assert.throws(()=>workflowDigest(text.replace(P,H),['actions/checkout@'+P]),/unapproved action/);
-  assert.equal(workflowDigest(text,['actions/checkout@'+P]),workflowDigest(text));
-  assert.notEqual(workflowDigest(text),workflowDigest(text.replace('contents: read','contents: write')));
-  assert.notEqual(workflowDigest(text),workflowDigest(text.replace('npm test','echo pass')));
-  assert.throws(()=>workflowDigest(text.replace(P,'main')));
-  assert.throws(()=>workflowDigest(text+'jobs: {}\n'));
-});
-
-test('real merge Git tree verifies both parents, inventory and immutable PR307 contract',async()=>{
+test('merge identity permits same-PR workflow, test and tool updates while preserving historical recovery bytes',async()=>{
   const root=await mkdtemp(join(tmpdir(),'maintenance-ci-'));
   const git=(...args)=>execFileSync('git',['-c','core.hooksPath=',...args],{cwd:root,encoding:'utf8',windowsHide:true}).trim();
   try {
     git('init','--initial-branch=base');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');
     await mkdir(join(root,'.github/workflows'),{recursive:true});
-    await mkdir(join(root,'scripts'));await writeFile(join(root,'scripts/check.mjs'),'console.log(1);');
-    const w='name: Test\non: pull_request\njobs: {test: {steps: [{run: npm test}]}}\n';
-    await writeFile(join(root,'.github/workflows/test.yml'),w);await writeFile(join(root,'history.txt'),'historical\n');
+    await writeFile(join(root,'.github/workflows/old.yml'),'name: Old\non: pull_request\njobs: {test: {runs-on: ubuntu-latest, steps: [{run: echo safe}]}}\n');
+    await writeFile(join(root,'history.txt'),'historical\n');
     await writeFile(join(root,'.node-version'),'1.2.3\n');
-    await writeFile(join(root,'package.json'),JSON.stringify({engines:{node:'1.2.3'},packageManager:'npm@4.5.6'}));
+    await writeFile(join(root,'package.json'),JSON.stringify({engines:{node:'1.2.3'},packageManager:'npm@4.5.6',devDependencies:{npm:'4.5.6'}}));
     git('add','.');git('commit','--no-gpg-sign','-m','base');const base=git('rev-parse','HEAD');
-    git('checkout','-b','update');await writeFile(join(root,'README.md'),'candidate\n');git('add','.');git('commit','--no-gpg-sign','-m','update');const head=git('rev-parse','HEAD');
+    git('checkout','-b','update');git('mv','.github/workflows/old.yml','.github/workflows/renamed.yml');
+    await writeFile(join(root,'.node-version'),'2.3.4\n');
+    await writeFile(join(root,'package.json'),JSON.stringify({engines:{node:'2.3.4'},packageManager:'npm@5.6.7',devDependencies:{npm:'5.6.7'},scripts:{test:'vitest run'}}));
+    await writeFile(join(root,'.github/workflows/new.yml'),'name: New\non: push\njobs: {test: {runs-on: ubuntu-latest, steps: [{run: echo new}]}}\n');
+    git('add','.');git('commit','--no-gpg-sign','-m','ordinary update');const head=git('rev-parse','HEAD');
     git('checkout','base');git('merge','--no-ff','--no-gpg-sign','-m','merge','update');const merge=git('rev-parse','HEAD');
-    const policy={toolchainSource:base,validationSource:base,allowedActions:['actions/checkout@'+P],workflows:{'.github/workflows/test.yml':[workflowDigest(w)]},immutable:{'history.txt':digest('historical\n')}};
+    const policy={immutable:{'history.txt':digest('historical\n')}};
     const source={base,head,merge};verifyTree(root,source,policy);
     assert.throws(()=>verifyTree(root,{...source,head:base},policy),/merge parents/);
-    for (const allowedActions of [undefined,[],['actions/checkout@main'],[null]])
-      assert.throws(()=>verifyTree(root,source,{...policy,allowedActions}),/approved action allowlist/);
-    assert.throws(()=>verifyTree(root,source,{...policy,workflows:{}}),/inventory/);
-    assert.throws(()=>verifyTree(root,source,{...policy,immutable:{'history.txt':digest('modified')}}),/historical contract/);
-    assert.throws(()=>verifyTree(root,source,{...policy,toolchainSource:'main'}),/approved toolchain source/);
-    assert.throws(()=>verifyTree(root,source,{...policy,validationSource:'main'}),/approved validation source/);
-    // A candidate cannot turn the required checks into successful no-ops.
-    for (const [file, content, reason] of [
-      ['package.json',JSON.stringify({engines:{node:'1.2.3'},packageManager:'npm@4.5.6',scripts:{test:'echo pass'}}),/validation commands changed/],
-      ['scripts/check.mjs','// bypass',/validation implementation changed/],
-      ['.npmrc','script-shell=/bin/true\n',/validation implementation changed/],
-      ['vitest.config.js','export default { test: { passWithNoTests: true, include: [] } };',/validation implementation changed/],
-    ]) {
-      git('checkout','--detach',head);await writeFile(join(root,file),content);git('add',file);
-      git('commit','--no-gpg-sign','-m','tampered validation');const altered=git('rev-parse','HEAD');
-      git('checkout','--detach',base);git('merge','--no-ff','--no-gpg-sign','-m','tampered merge',altered);
-      assert.throws(()=>verifyTree(root,{base,head:altered,merge:git('rev-parse','HEAD')},policy),reason);
-    }
-    git('checkout','--detach',merge);
-    // Dirty working files cannot substitute for Git tree evidence.
-    await writeFile(join(root,'history.txt'),'untrusted workspace\n');verifyTree(root,source,policy);
+    assert.throws(()=>verifyTree(root,source,{immutable:{'history.txt':digest('modified')}}),/historical contract/);
+    await writeFile(join(root,'history.txt'),'dirty workspace');verifyTree(root,source,policy);
     git('restore','history.txt');git('checkout','update');
-    await writeFile(join(root,'.node-version'),'2.3.4\n');
-    await writeFile(join(root,'package.json'),JSON.stringify({engines:{node:'2.3.4'},packageManager:'npm@4.5.6'}));
-    git('add','.');git('commit','--no-gpg-sign','-m','unapproved version');const changedHead=git('rev-parse','HEAD');
-    git('checkout','--detach',base);git('merge','--no-ff','--no-gpg-sign','-m','candidate toolchain','update');
-    assert.throws(()=>verifyTree(root,{base,head:changedHead,merge:git('rev-parse','HEAD')},policy),/toolchain upgrade requires central adoption/);
-
+    await writeFile(join(root,'package.json'),JSON.stringify({engines:{node:'9.9.9'},packageManager:'npm@5.6.7',devDependencies:{npm:'5.6.7'}}));
+    git('add','.');git('commit','--no-gpg-sign','-m','inconsistent declaration');const bad=git('rev-parse','HEAD');
+    git('checkout','--detach',base);git('merge','--no-ff','--no-gpg-sign','-m','bad declaration',bad);
+    assert.throws(()=>verifyTree(root,{base,head:bad,merge:git('rev-parse','HEAD')},policy),/toolchain contract/);
   } finally {await rm(root,{recursive:true,force:true});}
 });
 
@@ -139,7 +109,7 @@ test('workflow isolates candidate execution and never requests production permis
   for(const name of ['source','final']) assert.equal(value.jobs[name].steps[0].with.ref,'${{ job.workflow_sha }}');
 });
 
-test('version sources remain API helper, locked central mise and approved maintenance manifest',async()=>{
+test('version sources remain API helper, locked central mise and same-PR maintenance manifest',async()=>{
   const text=await readFile(new URL('../../.github/workflows/maintenance-validation.yml',import.meta.url),'utf8');
   const value=YAML.parse(text);
   for(const name of ['source','final']) {

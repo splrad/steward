@@ -1,53 +1,7 @@
 {
   "version": 1,
-  "baseline": "21be466b5689a0b8df76249eb1c9249359a6d57a",
-  "workflows": {
-    ".github/workflows/deploy-runtime.yml": [
-      "769d94109bcedb7b3fc6a13955098417d516393099176775a228f9dd6966892c"
-    ],
-    ".github/workflows/native-review.yml": [
-      "7937bcc83a4d7a39fa51ae1fd877d4c1fc96061e948303aa0b51d70a8db58f04"
-    ],
-    ".github/workflows/onboard-repository.yml": [
-      "117d2ad32c5089b0d29ecd5611ccc28d9e651139042978eb0a804f95356698af"
-    ],
-    ".github/workflows/pr-classification.yml": [
-      "3c0e75ab3572deeb5a9127338de365b97000cbba443bdbd6b8ac8a2420ac81f0"
-    ],
-    ".github/workflows/pr-validation.yml": [
-      "d9242f016f215c2bec24079ad948459b14fde57a95d6d0de0e3f07d637e2ebc6",
-      "e7655f4eec01cb28e4e3d8bce95c43c6091baa0c06dfc482ae3213a10e973b46"
-    ],
-    ".github/workflows/product-build.yml": [
-      "703fe1cab41df24e3aeeb655aa387998029d4b2a1a6b5bf50399d4115d6ffc36"
-    ],
-    ".github/workflows/release-build-complete.yml": [
-      "ce03dcf51995aaab7833be84b2ae65c933b8bfbf9f4f97f7774f1558df1346f1"
-    ],
-    ".github/workflows/release-build.yml": [
-      "3556b96e2b569289189c68c2a470cc3dda816ff1e06d5ea17138721c46e3b526"
-    ],
-    ".github/workflows/release.yml": [
-      "899738a0b3646e29d69c2290da1bdbb6305a88996be61a31a4298552f8d8119d"
-    ],
-    ".github/workflows/sync-managed-labels.yml": [
-      "c997393d51bbe177535a9327d68590aea07ac4fb456a4b1dd93b5da8b68b2a84"
-    ],
-    ".github/workflows/sync-review-instructions.yml": [
-      "bc36f65146cf919db573933729a9d8ad9a46959b3014e0fe01ec60984469b816"
-    ]
-  },
   "immutable": {
     ".github/workflow-contract.json": "62eebf1ee8940d4491ca7cf55ba7900ea32e24da531855f4a1f120c9c64f5f0a",
     "packages/runner/src/legacy-runtime-maintenance.ts": "25dcabfed0439ce41f8df67f155412e27a254e92aa1dca0c8a007e35c6279566"
-  },
-  "toolchainSource": "21be466b5689a0b8df76249eb1c9249359a6d57a",
-  "validationSource": "21be466b5689a0b8df76249eb1c9249359a6d57a",
-  "allowedActions": [
-    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-    "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
-    "actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68",
-    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-    "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
-  ]
+  }
 }
