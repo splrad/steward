@@ -709,17 +709,52 @@
         ]
       },
       "configVersion": "e10-business-html-v2-20261108",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4505551497",
+        "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+        "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+        "severity": "原文未说明",
+        "originalIdentifiers": [
+          "<a class=\"Link\" href=\"/splrad/steward/blob/234531cd838f21a18761e8ed1a00e48d4872781a/tools/quality-language/acceptance-fixture.js#L3-L3\">value === 'first'</a>",
+          "<code>if</code>",
+          "<code>else if</code>",
+          "<code>tools/quality-language/acceptance-fixture.js</code>",
+          "<code>else if (value === 'first') return 'two';</code>",
+          "<code>'first'</code>",
+          "<code>'one'</code>",
+          "<code>'other'</code>",
+          "splrad/steward/blob/234531cd838f21a18761e8ed1a00e48d4872781a/tools/quality-language/acceptance-fixture.js",
+          "L3-L3",
+          "tools/quality-language/acceptance-fixture.js"
+        ],
+        "segmentIndex": 0,
+        "problemZh": "原文指出存在“Duplicate 'if' condition”：该条件与 `value === 'first'` 重复，出现在 `if`/`else if` 链中。",
+        "impactZh": "原文指出重复分支会导致该 `else if` 分支不可达（unreachable duplicate branch），从而使条件链不清晰。",
+        "suggestionZh": "原文建议在 `if`/`else if` 链中保证每个条件唯一，或删除不可达的重复分支。针对 `tools/quality-language/acceptance-fixture.js`，建议删除重复行 `else if (value === 'first') return 'two';`，避免臆造未经验证的新条件，并保持行为清晰：`'first'` 映射到 `'one'`，其余映射到 `'other'`。原文同时说明不需要新增 imports、methods 或 definitions。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-10T17:31:54.955Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3432,
+                "outputTokens": 578
+              }
+            ],
+            "totalNanoAiu": 1409800000,
+            "aiCredits": 1.4098,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-10T17:32:54.955Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     }
   },
   "cursor": 0
