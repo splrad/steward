@@ -54,6 +54,21 @@ jobs:
           MAINTENANCE_READ_TOKEN: ${{ github.token }}
           MAINTENANCE_PHASE: source
           VALIDATION_WORKSPACE: target
+      - name: Verify action dependency lock with the trusted tool version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_HOST: github.com
+          GH_REPO: ${{ github.repository }}
+          GH_CONFIG_DIR: ${{ runner.temp }}/maintenance-actions-lock-config
+          GH_ACTIONS_LOCK_REPO_ROOT: ${{ github.workspace }}/target
+        run: |
+          set -euo pipefail
+          ACTIONS_LOCK_VERSION="$(cat policy/config/actions-lock-version.txt)"
+          [[ "$ACTIONS_LOCK_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh extension install github/gh-actions-lock --pin "$ACTIONS_LOCK_VERSION"
+          cd target
+          gh actions-lock --verify --no-interactive
   test:
     name: Maintenance build and tests
     needs: source
@@ -63,6 +78,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -72,13 +88,13 @@ jobs:
         run: |
           set -euo pipefail
           test "$(node --version)" = "v$(cat .node-version)"
-          test "npm@$(npm --version)" = "$(node -p 'JSON.parse(require("fs").readFileSync("package.json", "utf8")).packageManager')"
           npm ci --ignore-scripts --no-audit --no-fund
-          npm test
-          npm run typecheck
-          npm run verify:config
-          npm run verify:dist
-          npm run verify:workflows
+          NPM_CLI="$GITHUB_WORKSPACE/node_modules/npm/bin/npm-cli.js"
+          test "npm@$(node "$NPM_CLI" --version)" = "$(node -p 'JSON.parse(require("fs").readFileSync("package.json", "utf8")).packageManager')"
+          node "$NPM_CLI" test
+          node "$NPM_CLI" run typecheck
+          node "$NPM_CLI" run verify:config
+          node "$NPM_CLI" run verify:dist
   dependency:
     name: Maintenance dependency review
     needs: source
