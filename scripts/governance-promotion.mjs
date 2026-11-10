@@ -9,6 +9,7 @@ import {createAppAuth} from '@octokit/auth-app';
 import YAML from 'yaml';
 import {isolatedBuildEnvironment,resolvePolicyTool} from '../packages/runner/dist/index.js';
 import {requiredWorkflowBinding as binding} from './required-workflow-binding.mjs';
+import {createSourceGuard,publishControllerSource} from './controller-source.mjs';
 
 const repo='/repos/splrad/steward',rulePath='/orgs/splrad/rulesets/18883080';
 const validationPath='.github/workflows/pr-validation-native.yml';
@@ -22,7 +23,7 @@ const quiet={debug(){},info(){},warn(){},error(){}};
 export function promotionIO(token,transport=fetch) {
   const client=new Octokit({auth:token,log:quiet,request:{fetch:transport,headers:{'x-github-api-version':apiVersion.version}}});
   client.hook.before('request',options=>{options.headers['x-github-api-version']=apiVersion.version;});
-  return {async request(method,path,body){
+  return {graphql: (query,variables={})=>client.graphql(query,{...variables,request:{signal:AbortSignal.timeout(60000)}}),async request(method,path,body){
     try {const r=await client.request(`${method} ${path}`,{...body,request:{signal:AbortSignal.timeout(60000)}});return {status:r.status,value:r.data};}
     catch(e){if(e.status)return {status:e.status,value:e.response?.data};throw Error('PROMOTION_TRANSPORT');}
   }};
@@ -190,6 +191,11 @@ export async function wakePublishedTemplate(io,published,assertCurrent,record) {
   await record({kind:'template-wake',status:'ACCEPTED'});
 }
 
+export async function recordPromotionFailure(error,record) {
+  const code=/^(?:PROMOTION|CONTROLLER_SOURCE|NATIVE_RULE_PARAMETERS)_[A-Z0-9_]+$/.test(error?.message??'')?error.message:'PROMOTION_UNAVAILABLE';
+  await record({kind:'failure',code});throw Error(code);
+}
+
 export async function main(env=process.env,transport=fetch) {
   const output=resolve(env.PROMOTION_EVIDENCE_DIRECTORY??'promotion-evidence');await mkdir(output,{recursive:true});
   const record=value=>appendFile(join(output,'observations.jsonl'),JSON.stringify(value)+'\n',{mode:0o600});
@@ -209,14 +215,18 @@ export async function main(env=process.env,transport=fetch) {
   const plan=JSON.parse(await readFile(planPath,'utf8'));await record({kind:'template-plan',...plan});
   await assertCurrent();
   await withGovernanceCredential(env,async io=>{
-    const adopted=await promoteRequiredWorkflow(io,source.sha,assertCurrent,record);await record({kind:'rules-result',...adopted});
-    const published=await publishTemplateTag(io,plan,assertCurrent,record);await record({kind:'template-result',...published});
-    await wakePublishedTemplate(io,published,assertCurrent,record);
+    // The source namespace must be protected before any promotion write occurs.
+    const guard=createSourceGuard(io,Number(env.GOVERNANCE_APP_ID),assertCurrent);
+    await guard();
+    const adopted=await promoteRequiredWorkflow(io,source.sha,guard,record);await record({kind:'rules-result',...adopted});
+    const published=await publishTemplateTag(io,plan,guard,record);await record({kind:'template-result',...published});
+    const controller=await publishControllerSource(io,source.sha,Number(env.GOVERNANCE_APP_ID),guard,record);
+    await record({kind:'controller-source-result',...controller});
+    await wakePublishedTemplate(io,published,guard,record);
   },transport);
   process.stdout.write('Promotion: adopted and reconciled\n');
   }catch(error){
-    const code=/^PROMOTION_[A-Z0-9_]+$/.test(error?.message??'')?error.message:'PROMOTION_UNAVAILABLE';
-    await record({kind:'failure',code});throw Error(code);
+    await recordPromotionFailure(error,record);
   }
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
