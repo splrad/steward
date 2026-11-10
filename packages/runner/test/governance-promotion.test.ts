@@ -23,6 +23,21 @@ function source(){
   }};return fixture;
 }
 const input={workflowId:5,event:'workflow_run',sourceRunId:12,controllerSha:M,requiredJobs:['Scope','SPLRAD Validation']};
+it('bounds GraphQL protection reads and propagates cancellation to transport',async()=>{
+  const controller=new AbortController(),timeout=vi.spyOn(AbortSignal,'timeout').mockReturnValue(controller.signal);
+  let observed:AbortSignal|undefined;
+  const transport=async(_url:any,options:any)=>{
+    observed=options.signal;
+    return new Promise<Response>((_resolve,reject)=>options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true}));
+  };
+  try{
+    const io=(await module()).promotionIO('fixture-only',transport),pending=io.graphql('query { viewer { login } }');
+    const rejection=expect(pending).rejects.toThrow('fixture timeout');
+    await vi.waitFor(()=>expect(observed).toBe(controller.signal));
+    expect(timeout).toHaveBeenCalledWith(60000);
+    controller.abort(new Error('fixture timeout'));await rejection;
+  }finally{timeout.mockRestore();}
+});
 it('accepts a scope-skipped job only with the trusted aggregate successful and keeps failures blocked',async()=>{
   const {selectPromotion}=await module(),f=source();
   f.jobs.push({...f.jobs[1]!,id:10,name:'Source linux',conclusion:'skipped'});

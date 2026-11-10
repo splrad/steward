@@ -23,7 +23,7 @@ const quiet={debug(){},info(){},warn(){},error(){}};
 export function promotionIO(token,transport=fetch) {
   const client=new Octokit({auth:token,log:quiet,request:{fetch:transport,headers:{'x-github-api-version':apiVersion.version}}});
   client.hook.before('request',options=>{options.headers['x-github-api-version']=apiVersion.version;});
-  return {graphql: (...args)=>client.graphql(...args),async request(method,path,body){
+  return {graphql: (query,variables={})=>client.graphql(query,{...variables,request:{signal:AbortSignal.timeout(60000)}}),async request(method,path,body){
     try {const r=await client.request(`${method} ${path}`,{...body,request:{signal:AbortSignal.timeout(60000)}});return {status:r.status,value:r.data};}
     catch(e){if(e.status)return {status:e.status,value:e.response?.data};throw Error('PROMOTION_TRANSPORT');}
   }};
