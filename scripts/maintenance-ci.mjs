@@ -15,7 +15,7 @@ const canonical = value => Array.isArray(value) ? value.map(canonical) : value &
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 
 // Action commit updates are allowed; all other workflow semantics remain centrally approved.
-export function workflowDigest(text) {
+export function workflowDigest(text, allowedActions) {
   const document = YAML.parseDocument(text, {uniqueKeys:true});
   check(!document.errors.length, 'workflow YAML');
   const value = document.toJS({maxAliasCount:0});
@@ -24,6 +24,7 @@ export function workflowDigest(text) {
     for (const [key, item] of Object.entries(object)) {
       if (key === 'uses') {
         check(typeof item === 'string' && /^[\w.-]+\/[\w./-]+@[a-f0-9]{40}$/.test(item), 'unpinned action');
+        if (allowedActions) check(allowedActions.includes(item), 'unapproved action reference');
         object[key] = item.replace(/@[a-f0-9]{40}$/, '@PIN');
       } else normalize(item);
     }
@@ -96,9 +97,21 @@ export function verifyTree(workspace, identity, policy) {
     return JSON.stringify([node,manifest.packageManager]);
   };
   const approvedToolchain = toolchainAt(policy.toolchainSource);
+  check(sha(policy.validationSource), 'approved validation source');
+  const readManifest = ref => JSON.parse(git(workspace,['show',`${ref}:package.json`]));
+  const approvedScripts = JSON.stringify(canonical(readManifest(policy.validationSource).scripts));
+  const validationFiles = git(workspace,['ls-tree','-r','--name-only',policy.validationSource,'--','scripts']).trim().split('\n').filter(Boolean);
+  check(validationFiles.length > 0, 'validation script inventory');
+  for (const path of ['tsconfig.json','tsconfig.runtime.json','vitest.config.ts']) {
+    if (git(workspace,['ls-tree',policy.validationSource,'--',path]).trim()) validationFiles.push(path);
+  }
   // Read Git objects, never import or execute candidate modules in the trusted identity process.
   for (const ref of [identity.head, identity.merge]) {
     check(toolchainAt(ref) === approvedToolchain, 'toolchain upgrade requires central adoption');
+    check(JSON.stringify(canonical(readManifest(ref).scripts)) === approvedScripts, 'validation commands changed');
+    for (const path of validationFiles) {
+      check(git(workspace,['ls-tree',ref,'--',path]) === git(workspace,['ls-tree',policy.validationSource,'--',path]), `validation implementation changed: ${path}`);
+    }
     const entries = git(workspace,['ls-tree','-r','-z',ref]).split('\0').filter(Boolean).map(row => {
       const match = /^(\d+) (\w+) ([a-f0-9]{40})\t(.+)$/.exec(row);
       check(match, 'tree entry'); return {mode:match[1],path:match[4]};
@@ -107,7 +120,7 @@ export function verifyTree(workspace, identity, policy) {
     check(JSON.stringify(workflows.map(row => row.path).sort()) === JSON.stringify(Object.keys(policy.workflows).sort()), 'workflow inventory');
     for (const row of workflows) {
       check(row.mode === '100644', 'workflow mode');
-      check(policy.workflows[row.path].includes(workflowDigest(git(workspace,['show',`${ref}:${row.path}`]))), `workflow semantics: ${row.path}`);
+      check(policy.workflows[row.path].includes(workflowDigest(git(workspace,['show',`${ref}:${row.path}`]),policy.allowedActions)), `workflow semantics: ${row.path}`);
     }
     for (const [path, expected] of Object.entries(policy.immutable)) {
       check(entries.find(row => row.path === path)?.mode === '100644', 'protected file mode');

@@ -65,6 +65,9 @@ test('fresh API proof rejects moved refs, unsigned head, wrong merge parents and
 test('workflow semantics permit only pinned action commit changes, not permission/command expansion',()=>{
   const text='on: pull_request\npermissions: {contents: read}\njobs:\n  test:\n    steps:\n      - uses: actions/checkout@'+P+'\n      - run: npm test\n';
   assert.equal(workflowDigest(text),workflowDigest(text.replace(P,H)));
+  assert.notEqual(workflowDigest(text),workflowDigest(text.replace('actions/checkout','unknown/action')));
+  assert.throws(()=>workflowDigest(text.replace(P,H),['actions/checkout@'+P]),/unapproved action/);
+  assert.equal(workflowDigest(text,['actions/checkout@'+P]),workflowDigest(text));
   assert.notEqual(workflowDigest(text),workflowDigest(text.replace('contents: read','contents: write')));
   assert.notEqual(workflowDigest(text),workflowDigest(text.replace('npm test','echo pass')));
   assert.throws(()=>workflowDigest(text.replace(P,'main')));
@@ -77,6 +80,7 @@ test('real merge Git tree verifies both parents, inventory and immutable PR307 c
   try {
     git('init','--initial-branch=base');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');
     await mkdir(join(root,'.github/workflows'),{recursive:true});
+    await mkdir(join(root,'scripts'));await writeFile(join(root,'scripts/check.mjs'),'console.log(1);');
     const w='name: Test\non: pull_request\njobs: {test: {steps: [{run: npm test}]}}\n';
     await writeFile(join(root,'.github/workflows/test.yml'),w);await writeFile(join(root,'history.txt'),'historical\n');
     await writeFile(join(root,'.node-version'),'1.2.3\n');
@@ -84,12 +88,24 @@ test('real merge Git tree verifies both parents, inventory and immutable PR307 c
     git('add','.');git('commit','--no-gpg-sign','-m','base');const base=git('rev-parse','HEAD');
     git('checkout','-b','update');await writeFile(join(root,'README.md'),'candidate\n');git('add','.');git('commit','--no-gpg-sign','-m','update');const head=git('rev-parse','HEAD');
     git('checkout','base');git('merge','--no-ff','--no-gpg-sign','-m','merge','update');const merge=git('rev-parse','HEAD');
-    const policy={toolchainSource:base,workflows:{'.github/workflows/test.yml':[workflowDigest(w)]},immutable:{'history.txt':digest('historical\n')}};
+    const policy={toolchainSource:base,validationSource:base,workflows:{'.github/workflows/test.yml':[workflowDigest(w)]},immutable:{'history.txt':digest('historical\n')}};
     const source={base,head,merge};verifyTree(root,source,policy);
     assert.throws(()=>verifyTree(root,{...source,head:base},policy),/merge parents/);
     assert.throws(()=>verifyTree(root,source,{...policy,workflows:{}}),/inventory/);
     assert.throws(()=>verifyTree(root,source,{...policy,immutable:{'history.txt':digest('modified')}}),/historical contract/);
     assert.throws(()=>verifyTree(root,source,{...policy,toolchainSource:'main'}),/approved toolchain source/);
+    assert.throws(()=>verifyTree(root,source,{...policy,validationSource:'main'}),/approved validation source/);
+    // A candidate cannot turn the required checks into successful no-ops.
+    for (const [file, content, reason] of [
+      ['package.json',JSON.stringify({engines:{node:'1.2.3'},packageManager:'npm@4.5.6',scripts:{test:'echo pass'}}),/validation commands changed/],
+      ['scripts/check.mjs','// bypass',/validation implementation changed/],
+    ]) {
+      git('checkout','--detach',head);await writeFile(join(root,file),content);git('add',file);
+      git('commit','--no-gpg-sign','-m','tampered validation');const altered=git('rev-parse','HEAD');
+      git('checkout','--detach',base);git('merge','--no-ff','--no-gpg-sign','-m','tampered merge',altered);
+      assert.throws(()=>verifyTree(root,{base,head:altered,merge:git('rev-parse','HEAD')},policy),reason);
+    }
+    git('checkout','--detach',merge);
     // Dirty working files cannot substitute for Git tree evidence.
     await writeFile(join(root,'history.txt'),'untrusted workspace\n');verifyTree(root,source,policy);
     git('restore','history.txt');git('checkout','update');

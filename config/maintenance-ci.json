@@ -41,5 +41,13 @@
     ".github/workflow-contract.json": "62eebf1ee8940d4491ca7cf55ba7900ea32e24da531855f4a1f120c9c64f5f0a",
     "packages/runner/src/legacy-runtime-maintenance.ts": "25dcabfed0439ce41f8df67f155412e27a254e92aa1dca0c8a007e35c6279566"
   },
-  "toolchainSource": "21be466b5689a0b8df76249eb1c9249359a6d57a"
+  "toolchainSource": "21be466b5689a0b8df76249eb1c9249359a6d57a",
+  "validationSource": "21be466b5689a0b8df76249eb1c9249359a6d57a",
+  "allowedActions": [
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+    "actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68",
+    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+  ]
 }
