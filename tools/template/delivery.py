@@ -12,6 +12,7 @@ import yaml
 import copier_bridge as copier
 import actions_lock
 
+API_VERSION = json.loads((Path(__file__).resolve().parents[2] / 'config/github-api.json').read_text(encoding='utf-8'))['version']
 BRANCH = 'steward/managed-sync'
 CENTRAL = 'splrad/steward'
 CENTRAL_ID = 1296724484
@@ -47,7 +48,7 @@ class GitHubCLI:
 
     def request(self, method, path, body=None, optional=False):
         argv = ['api', '--method', method, '-H', 'Accept: application/vnd.github+json',
-                '-H', 'X-GitHub-Api-Version: 2026-03-10', path]
+                '-H', f'X-GitHub-Api-Version: {API_VERSION}', path]
         # --include retains the real HTTP status, including optional 404. Do not
         # infer absence from stderr, access failures, or an unreadable response.
         argv += ['--include']
