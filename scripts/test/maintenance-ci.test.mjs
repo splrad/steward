@@ -88,9 +88,11 @@ test('real merge Git tree verifies both parents, inventory and immutable PR307 c
     git('add','.');git('commit','--no-gpg-sign','-m','base');const base=git('rev-parse','HEAD');
     git('checkout','-b','update');await writeFile(join(root,'README.md'),'candidate\n');git('add','.');git('commit','--no-gpg-sign','-m','update');const head=git('rev-parse','HEAD');
     git('checkout','base');git('merge','--no-ff','--no-gpg-sign','-m','merge','update');const merge=git('rev-parse','HEAD');
-    const policy={toolchainSource:base,validationSource:base,workflows:{'.github/workflows/test.yml':[workflowDigest(w)]},immutable:{'history.txt':digest('historical\n')}};
+    const policy={toolchainSource:base,validationSource:base,allowedActions:['actions/checkout@'+P],workflows:{'.github/workflows/test.yml':[workflowDigest(w)]},immutable:{'history.txt':digest('historical\n')}};
     const source={base,head,merge};verifyTree(root,source,policy);
     assert.throws(()=>verifyTree(root,{...source,head:base},policy),/merge parents/);
+    for (const allowedActions of [undefined,[],['actions/checkout@main'],[null]])
+      assert.throws(()=>verifyTree(root,source,{...policy,allowedActions}),/approved action allowlist/);
     assert.throws(()=>verifyTree(root,source,{...policy,workflows:{}}),/inventory/);
     assert.throws(()=>verifyTree(root,source,{...policy,immutable:{'history.txt':digest('modified')}}),/historical contract/);
     assert.throws(()=>verifyTree(root,source,{...policy,toolchainSource:'main'}),/approved toolchain source/);

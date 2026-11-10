@@ -83,6 +83,8 @@ function git(workspace, args) {
     {cwd:workspace, encoding:'utf8', maxBuffer:32*1024*1024, timeout:60000, windowsHide:true});
 }
 export function verifyTree(workspace, identity, policy) {
+  check(Array.isArray(policy.allowedActions) && policy.allowedActions.length > 0
+    && policy.allowedActions.every(item => typeof item === 'string' && /^[\w.-]+\/[\w./-]+@[a-f0-9]{40}$/.test(item)), 'approved action allowlist');
   check(git(workspace,['rev-parse','HEAD']).trim() === identity.merge, 'checkout');
   check(git(workspace,['rev-list','--parents','-n','1',identity.merge]).trim()
     === `${identity.merge} ${identity.base} ${identity.head}`, 'local merge parents');
