@@ -118,7 +118,11 @@ export function prepareQualitySource(source: QualitySource): QualityPrepared {
       const location=node.sourceCodeLocation;
       if(location) {
         if(['pre','script','style'].includes(node.tagName)) {
-          blocks.push({start:location.startOffset,end:location.endOffset});return;
+          // Unclosed raw-text elements can have endOffset=0 in parse5. Their
+          // Markdown HTML node still bounds the original code/log source.
+          const end=location.endTag?location.endOffset:
+            htmlRanges.find(range=>range.start<=location.startOffset&&range.end>location.startOffset)?.end??body.length;
+          blocks.push({start:location.startOffset,end});return;
         }
         if(node.tagName==='code'||node.tagName==='a') {
           const range={start:location.startOffset,end:location.endOffset};inline.push(range);

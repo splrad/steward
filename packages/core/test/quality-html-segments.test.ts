@@ -81,6 +81,15 @@ it('does not mistake code-only or Chinese HTML with code for untranslated Englis
   expect(prepareQualitySource(source('<p>请检查输入。</p><p>This loses data.</p>')).chinese).toBe(false);
 });
 
+it.each(['pre','script','style'])('preserves the complete unclosed %s source through EOF',tag=>{
+  const raw=`<${tag}>EXACT log\r\n\r\nTOKEN &lt;value&gt; 🧪`;
+  const only=prepareQualitySource(source(raw));
+  expect(only.preservedBlocks).toEqual([raw]);expect(only.segments).toEqual([]);
+  const mixed=prepareQualitySource(source('Explain this.\r\n\r\n'+raw));
+  expect(mixed.preservedBlocks).toEqual([raw]);
+  expect(mixed.segments.map(s=>s.bodyMarkdown).join('')).toBe('Explain this.\r\n\r\n\n\n');
+});
+
 it.each([
   '<p>请检查输入&nbsp;以免数据丢失。</p>',
   '<p>输入&amp;输出&copy;均需检查。</p>',
