@@ -8,8 +8,10 @@ workflow_run 只接收 main 分支事件，job 先筛选中央仓库的成功 ma
 
 采用前设置真实 `NATIVE_VALIDATION_WORKFLOW_ID`、`GOVERNANCE_APP_ID` 和 `steward-automation/GOVERNANCE_APP_PRIVATE_KEY`，完成首次模板标签与组织规则交接，再启用 `STEWARD_GOVERNANCE_PROMOTION`。这些原生登记和部署状态需要分别回读；本地实现不等于线上启用。
 
-提升与 bootstrap 共用 `steward-governance-mutation` 原生 job 并发组。只更新 Ruleset 18883080 中中央 Native Validation 条目的 `sha`；其他规则与未知字段来自写前最新完整读取。证据保存完整写前、写后对象。原生 PUT 没有 CAS 保证：写后若出现无法合并的外部修改，任务失败并保留事实；丢失响应时先回读，已采用目标 SHA 即成功，仍为旧值才可重试，第三值重新读取后判断。
+提升与 bootstrap 共用 `steward-governance-mutation` 原生 job 并发组。同时推进 Ruleset 18883080 中中央 Native Validation 条目，以及维护 Ruleset 26975344 中 `maintenance-validation.yml` 条目的 `sha`。维护规则仅匹配仓库 1296724484 的 `refs/heads/maintenance/legacy-runtime-e990eda`，要求 active、无 bypass，来源固定为同仓不可变 SHA；每次维护运行仍绑定 `job.workflow_sha`。其他规则与未知字段来自写前最新完整读取。证据保存完整写前、写后对象。原生 PUT 没有 CAS 保证：写后若出现无法合并的外部修改，任务失败并保留事实；丢失响应时先回读，已采用目标 SHA 即成功，仍为旧值才可重试，第三值重新读取后判断。
 
 模板比较只包含 `copier.yml` 和 `templates/repository`。实际变化从最新已采用 PEP 440 稳定版本生成严格递增标签，标签固定到同一个已验证提交。SDK 单独变化不产生模板版本。标签创建前后核对全部标签快照和目标指向；同名异对象、外部标签漂移和未知响应不执行覆盖。下一次原生 Copier 递送从已发布标签继续。
 
 原生 Run 的证据产物含来源、规则前后状态和模板计划，不含令牌。故障恢复使用原 Run 重跑；旧 main 的运行只记录过期结果。每日补扫会重新查询当前 main 的原生验证结果。历史 SQL 保留在 [runtime](../packages/runtime/history/README.md)，不参与新入口的授权。
+
+两个目标先全部读取并验证，再顺序写入；每次写前复核 main、controller 来源保护及两个目标的非 SHA 字段。跨规则写入不具备原子性：一个已成功、另一个失败时保留逐目标事实并停止后续发布，下一次既有 Promotion 从真实状态重入，已采用目标不重复写入。只有两个目标最终完整读回同一合格 M 且非 SHA 字段未漂移，才记录整体采用成功。维护规则缺失、disabled、范围/来源/保护不匹配均失败，不将准备态或初始 pin 当作自动提升成功。

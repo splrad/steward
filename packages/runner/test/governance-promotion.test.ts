@@ -190,3 +190,72 @@ it('does not include arbitrary exception content in failure evidence',async()=>{
   await expect(recordPromotionFailure(Error('private transport details'),async(value:unknown)=>records.push(value))).rejects.toThrow('PROMOTION_UNAVAILABLE');
   expect(records).toEqual([{kind:'failure',code:'PROMOTION_UNAVAILABLE'}]);
 });
+
+const maintenanceId=9001; // Isolated API fixture; production binds the separately read-back rule ID.
+function maintenanceRule(){return {...rule(),id:maintenanceId,name:'maintenance',bypass_actors:[],
+  conditions:{repository_id:{repository_ids:[1296724484]},ref_name:{include:['refs/heads/maintenance/legacy-runtime-e990eda'],exclude:[]}},
+  rules:[{type:'workflows',parameters:{do_not_enforce_on_create:true,workflows:[{repository_id:1296724484,path:'.github/workflows/maintenance-validation.yml',sha:P}]}}]};}
+function multipleRules(){
+  const rules=new Map<number,any>([[18883080,rule()],[maintenanceId,maintenanceRule()]]),writes:number[]=[],records:any[]=[];
+  const fixture={rules,writes,records,failMaintenance:false,lostResponse:false,afterWrite:(_id:number)=>{},
+    record:async(value:any)=>{records.push(value);},request:async(method:string,url:string,body?:any)=>{
+      const id=Number(url.split('/').at(-1));expect(rules.has(id)).toBe(true);
+      if(method==='GET')return {status:200,value:structuredClone(rules.get(id))};
+      expect(method).toBe('PUT');expect(Object.keys(body)).toEqual(['rules']);writes.push(id);
+      if(id===maintenanceId&&fixture.failMaintenance)return {status:503};
+      rules.get(id).rules=structuredClone(body.rules);fixture.afterWrite(id);
+      if(fixture.lostResponse)throw Error('lost response');return {status:200};
+    }};
+  return fixture;
+}
+it('promotes both required sources, preserves all other fields, and re-enters without writes',async()=>{
+  const {promoteRequiredWorkflows}=await module(),f=multipleRules(),before=structuredClone(f.rules),guard=vi.fn(async()=>{});
+  const result=await promoteRequiredWorkflows(f,M,guard,f.record,maintenanceId);
+  expect(result).toMatchObject({status:'ADOPTED',sha:M,targets:[{rulesetId:18883080,status:'ADOPTED'},{rulesetId:maintenanceId,status:'ADOPTED'}]});
+  for(const [id,value] of f.rules){const expected=before.get(id);shaBinding(expected).sha=M;expect(value).toEqual(expected);}
+  expect(f.writes).toEqual([18883080,maintenanceId]);expect(guard.mock.calls.length).toBeGreaterThan(4);
+  expect(f.records.filter(r=>r.kind==='workflow-target-final')).toHaveLength(2);
+  expect(await promoteRequiredWorkflows(f,M,guard,f.record,maintenanceId)).toMatchObject({status:'ALREADY_ADOPTED'});
+  expect(f.writes).toEqual([18883080,maintenanceId]);
+});
+it.each(['disabled','repository','ref','bypass','path','source','extra-workflow','mutable-ref','id'])('rejects invalid maintenance target before any core write: %s',async kind=>{
+  const f=multipleRules(),r=f.rules.get(maintenanceId);
+  if(kind==='disabled')r.enforcement='disabled';if(kind==='repository')r.conditions.repository_id.repository_ids.push(42);
+  if(kind==='ref')r.conditions.ref_name.include=['~ALL'];if(kind==='bypass')r.bypass_actors=[{actor_id:1,actor_type:'Team',bypass_mode:'always'}];
+  if(kind==='path')shaBinding(r).path='other.yml';if(kind==='source')shaBinding(r).repository_id=42;
+  if(kind==='extra-workflow')r.rules[0].parameters.workflows.push({...shaBinding(r)});
+  if(kind==='mutable-ref')shaBinding(r).ref='main';if(kind==='id')r.id=42;
+  await expect((await module()).promoteRequiredWorkflows(f,M,async()=>{},f.record,maintenanceId)).rejects.toThrow('PROMOTION_');expect(f.writes).toEqual([]);
+});
+it('records partial success and retries only the unadopted target on re-entry',async()=>{
+  const {promoteRequiredWorkflows}=await module(),f=multipleRules();f.failMaintenance=true;
+  await expect(promoteRequiredWorkflows(f,M,async()=>{},f.record,maintenanceId)).rejects.toThrow('RECONCILIATION_LIMIT');
+  expect(shaBinding(f.rules.get(18883080)).sha).toBe(M);expect(shaBinding(f.rules.get(maintenanceId)).sha).toBe(P);
+  expect(f.records).toContainEqual({kind:'workflow-target-result',rulesetId:18883080,status:'ADOPTED',sha:M});
+  expect(f.records.filter(r=>r.kind==='workflow-target-final')).toHaveLength(0);
+  f.failMaintenance=false;expect(await promoteRequiredWorkflows(f,M,async()=>{},f.record,maintenanceId)).toMatchObject({status:'ADOPTED'});
+  expect(f.writes.filter(id=>id===18883080)).toHaveLength(1);expect(shaBinding(f.rules.get(maintenanceId)).sha).toBe(M);
+});
+it('reconciles lost responses on both targets from complete native readback',async()=>{
+  const f=multipleRules();f.lostResponse=true;
+  expect(await (await module()).promoteRequiredWorkflows(f,M,async()=>{},f.record,maintenanceId)).toMatchObject({status:'ADOPTED'});
+  expect(f.writes).toEqual([18883080,maintenanceId]);
+});
+it.each(['core-field','maintenance-scope','source-guard'])('stops after first write if protection drifts before second target: %s',async kind=>{
+  const f=multipleRules();let sourceSafe=true;
+  f.afterWrite=id=>{if(id===18883080){
+    if(kind==='core-field')f.rules.get(id).name='concurrent edit';
+    if(kind==='maintenance-scope')f.rules.get(maintenanceId).conditions.ref_name.exclude=['maintenance/legacy-runtime-e990eda'];
+    if(kind==='source-guard')sourceSafe=false;
+  }};
+  await expect((await module()).promoteRequiredWorkflows(f,M,async()=>{if(!sourceSafe)throw Error('SOURCE_GUARD');},f.record,maintenanceId)).rejects.toThrow();
+  expect(f.writes).toEqual([18883080]);expect(shaBinding(f.rules.get(maintenanceId)).sha).toBe(P);
+});
+it('does not report success when the first target moves after the second write',async()=>{
+  const f=multipleRules();f.afterWrite=id=>{if(id===maintenanceId)shaBinding(f.rules.get(18883080)).sha=T;};
+  await expect((await module()).promoteRequiredWorkflows(f,M,async()=>{},f.record,maintenanceId)).rejects.toThrow('TARGET_READBACK');
+});
+it('checks the source guard even when both target SHAs are already adopted',async()=>{
+  const f=multipleRules();for(const r of f.rules.values())shaBinding(r).sha=M;
+  await expect((await module()).promoteRequiredWorkflows(f,M,async()=>{throw Error('SOURCE_GUARD');},f.record,maintenanceId)).rejects.toThrow('SOURCE_GUARD');expect(f.writes).toEqual([]);
+});

@@ -9,9 +9,26 @@ import {createAppAuth} from '@octokit/auth-app';
 import YAML from 'yaml';
 import {isolatedBuildEnvironment,resolvePolicyTool} from '../packages/runner/dist/index.js';
 import {requiredWorkflowBinding as binding} from './required-workflow-binding.mjs';
+import {completeNativeRuleParameters} from './native-rule-parameters.mjs';
 import {createSourceGuard,publishControllerSource} from './controller-source.mjs';
 
-const repo='/repos/splrad/steward',rulePath='/orgs/splrad/rulesets/18883080';
+const repo='/repos/splrad/steward';
+const maintenanceRuleId=26975344;
+const coreTarget={id:18883080,binding};
+function maintenanceTarget(id){
+  check(positive(id)&&id!==18883080,'MAINTENANCE_RULE_ID');
+  return {id,binding(body){
+    check(same(body.conditions,{repository_id:{repository_ids:[1296724484]},ref_name:{include:['refs/heads/maintenance/legacy-runtime-e990eda'],exclude:[]}})
+      &&same(body.bypass_actors,[]),'MAINTENANCE_SCOPE');
+    const rows=body.rules.filter(r=>r.type==='workflows');
+    check(rows.length===1&&rows[0].parameters?.do_not_enforce_on_create===true,'MAINTENANCE_BINDING');
+    const workflows=rows[0].parameters.workflows;
+    check(Array.isArray(workflows)&&workflows.length===1,'MAINTENANCE_BINDING');
+    const row=workflows[0];
+    check(row.repository_id===1296724484&&row.path==='.github/workflows/maintenance-validation.yml'&&sha(row.sha)&&!Object.hasOwn(row,'ref'),'MAINTENANCE_BINDING');
+    return row;
+  }};
+}
 const validationPath='.github/workflows/pr-validation-native.yml';
 const check=(condition,code)=>{if(!condition)throw Error('PROMOTION_'+code);};
 const sha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
@@ -90,33 +107,76 @@ export async function selectPromotion(io,{workflowId,event,sourceRunId,controlle
   if((await get(io,`${repo}/commits/main`)).sha!==current.sha)return {status:'STALE'};
   return {status:'ELIGIBLE',sha:current.sha,runId:run.id,runAttempt:run.run_attempt,workflowId,jobIds:selected};
 }
-function mutable(rule) {
-  check(rule.id===18883080&&rule.source==='splrad'&&rule.source_type==='Organization'&&rule.target==='branch'
+function mutable(rule,target=coreTarget) {
+  check(rule.id===target.id&&rule.source==='splrad'&&rule.source_type==='Organization'&&rule.target==='branch'
     &&rule.enforcement==='active'&&Array.isArray(rule.rules)&&Array.isArray(rule.bypass_actors)&&rule.conditions,'RULE');
   return Object.fromEntries(['name','target','enforcement','bypass_actors','conditions','rules'].map(k=>[k,structuredClone(rule[k])]));
 }
 
 /** PUT is not a CAS. Only rules are sent; unrelated fields are compared before and after. */
 export async function promoteRequiredWorkflow(io,target,assertCurrent,record) {
+  return promoteWorkflowTarget(io,target,assertCurrent,record,coreTarget);
+}
+async function readRule(io,descriptor){
+  const rule=await completeNativeRuleParameters(io,await get(io,`/orgs/splrad/rulesets/${descriptor.id}`));
+  const body=mutable(rule,descriptor);descriptor.binding(body);return {rule,body};
+}
+async function promoteWorkflowTarget(io,target,assertCurrent,record,descriptor) {
+  const rulePath=`/orgs/splrad/rulesets/${descriptor.id}`,binding=descriptor.binding;
   check(sha(target),'TARGET');
   for(let attempt=1;attempt<=3;attempt++) {
-    const original=await get(io,rulePath),before=mutable(original),old=binding(before).sha;
+    const {rule:original,body:before}=await readRule(io,descriptor),old=binding(before).sha;
     await record({kind:'rules-before',attempt,before:original,adoptedSha:old,target});
     if(old===target)return {status:'ALREADY_ADOPTED',sha:target};
     await assertCurrent();
-    const latest=await get(io,rulePath),fresh=mutable(latest);
+    const {rule:latest,body:fresh}=await readRule(io,descriptor);
     if(!same(before,fresh)){await record({kind:'rules-changed-before-write',attempt,current:latest});continue;}
     const expected=structuredClone(fresh);binding(expected).sha=target;
     await assertCurrent();
     let response='unknown';
     try {response=(await io.request('PUT',rulePath,{rules:expected.rules})).status;}catch{}
-    const observed=await get(io,rulePath),after=mutable(observed);await record({kind:'rules-after',attempt,response,after:observed});
+    const {rule:observed,body:after}=await readRule(io,descriptor);await record({kind:'rules-after',attempt,response,after:observed});
     if(same(after,expected))return {status:'ADOPTED',sha:target};
     const actual=binding(after).sha,rest=structuredClone(after);binding(rest).sha=old;
     check(same(rest,before),'EXTERNAL_RULE_CHANGE');
     if(actual!==old&&actual!==target)await record({kind:'rules-third-value',attempt,sha:actual});
   }
   throw Error('PROMOTION_RECONCILIATION_LIMIT');
+}
+
+/** Ruleset writes are sequential, not atomic. Re-entry reconciles each target independently. */
+export async function promoteRequiredWorkflows(io,target,assertCurrent,record,maintenanceId) {
+  check(sha(target),'TARGET');
+  const targets=[coreTarget,maintenanceTarget(maintenanceId)],baseline=new Map(),results=[];
+  const withoutSha=(body,descriptor)=>{const copy=structuredClone(body);descriptor.binding(copy).sha=null;return copy;};
+  // Validate both complete rules before any write, even if the core pin already matches.
+  for(const descriptor of targets){
+    const {rule,body}=await readRule(io,descriptor);baseline.set(descriptor.id,withoutSha(body,descriptor));
+    await record({kind:'workflow-target-before',rulesetId:descriptor.id,target,before:rule});
+  }
+  const guard=async()=>{
+    await assertCurrent();
+    for(const descriptor of targets){
+      const {body}=await readRule(io,descriptor);
+      check(same(withoutSha(body,descriptor),baseline.get(descriptor.id)),'TARGET_PROTECTION_CHANGED');
+    }
+  };
+  await guard();
+  for(const descriptor of targets){
+    await guard();
+    const result=await promoteWorkflowTarget(io,target,guard,event=>record({...event,rulesetId:descriptor.id}),descriptor);
+    results.push({rulesetId:descriptor.id,...result});
+    await record({kind:'workflow-target-result',rulesetId:descriptor.id,...result});
+  }
+  await guard();
+  for(const descriptor of targets){
+    const {rule,body}=await readRule(io,descriptor);
+    check(same(withoutSha(body,descriptor),baseline.get(descriptor.id)),'TARGET_PROTECTION_CHANGED');
+    check(descriptor.binding(body).sha===target,'TARGET_READBACK');
+    await record({kind:'workflow-target-final',rulesetId:descriptor.id,target,observed:rule});
+  }
+  await assertCurrent();
+  return {status:results.every(r=>r.status==='ALREADY_ADOPTED')?'ALREADY_ADOPTED':'ADOPTED',sha:target,targets:results};
 }
 
 export async function publishTemplateTag(io,plan,assertCurrent,record) {
@@ -218,7 +278,7 @@ export async function main(env=process.env,transport=fetch) {
     // The source namespace must be protected before any promotion write occurs.
     const guard=createSourceGuard(io,Number(env.GOVERNANCE_APP_ID),assertCurrent);
     await guard();
-    const adopted=await promoteRequiredWorkflow(io,source.sha,guard,record);await record({kind:'rules-result',...adopted});
+    const adopted=await promoteRequiredWorkflows(io,source.sha,guard,record,maintenanceRuleId);await record({kind:'rules-result',...adopted});
     const published=await publishTemplateTag(io,plan,guard,record);await record({kind:'template-result',...published});
     const controller=await publishControllerSource(io,source.sha,Number(env.GOVERNANCE_APP_ID),guard,record);
     await record({kind:'controller-source-result',...controller});
