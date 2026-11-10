@@ -1,5 +1,6 @@
 import {expect,it,vi} from 'vitest';
 import {GitHubClient} from '../src/client.js';
+import {GITHUB_API_VERSION} from '../src/api-version.js';
 function response(url:string,value:unknown,headers:Record<string,string>={}){const result=Response.json(value,{headers});Object.defineProperty(result,'url',{value:url});return result;}
 it.each(['POST','PUT','PATCH','DELETE'])('cannot issue %s through retained read adapter',async method=>{
   const transport=vi.fn(),client=new GitHubClient('fixture','https://api.github.com',transport);
@@ -18,7 +19,7 @@ it('rejects native pagination cycles, item limits and unreadable evidence withou
 it('uses official JSON API headers, keeps the selected token and removes obsolete policy headers',async()=>{
   const transport=async(url:any,init:any)=>{
     expect(init.method).toBe('GET');expect(init.redirect).toBe('error');const headers=new Headers(init.headers);
-    expect(headers.get('authorization')).toContain('fixture');expect(headers.get('x-github-api-version')).toBe('2026-03-10');
+    expect(headers.get('authorization')).toContain('fixture');expect(headers.get('x-github-api-version')).toBe(GITHUB_API_VERSION);
     expect([...headers.keys()].join(' ')).not.toMatch(/policy/);return response(String(url),{id:42});
   };
   expect(await new GitHubClient('fixture','https://api.github.com',transport as any).getRepositoryById(42)).toEqual({id:42});

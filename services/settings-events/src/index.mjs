@@ -1,3 +1,4 @@
+import apiVersion from "../../../config/github-api.json" with { type: "json" };
 // Fixed identities cannot be selected by incoming payloads.
 export const POLICY = Object.freeze({
   app: '5639432', installation: 179184801, orgId: 302208797, org: 'splrad',
@@ -102,7 +103,7 @@ export async function dispatch(env, metadata, fetcher = fetch, jwtFactory = appJ
     return fetcher(API + path, {
       method, redirect: 'manual', signal: AbortSignal.timeout(1500),
       headers: {accept: 'application/vnd.github+json', authorization: `Bearer ${credential}`,
-        'user-agent': 'splrad-settings-events', 'x-github-api-version': '2026-03-10',
+        'user-agent': 'splrad-settings-events', 'x-github-api-version': apiVersion.version,
         'content-type': 'application/json'},
       ...(body === undefined ? {} : {body: JSON.stringify(body)}),
     });

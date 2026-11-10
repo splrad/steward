@@ -1,3 +1,4 @@
+import apiVersion from "../config/github-api.json" with { type: "json" };
 import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -36,7 +37,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     const workflowInventory = path.split('?')[0] === `/repos/${request.repository}/actions/workflows`;
     const credential = method === 'GET' && !workflowInventory ? readToken : token;
     const response = await fetcher('https://api.github.com' + path, { method, redirect: 'error', signal: AbortSignal.timeout(60_000),
-      headers: { authorization: 'Bearer ' + credential, accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2026-03-10', 'content-type': 'application/json' },
+      headers: { authorization: 'Bearer ' + credential, accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': apiVersion.version, 'content-type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     if (allow404 && response.status === 404) { await response.body?.cancel(); return null; }
     if (!response.ok) { await response.body?.cancel(); fail(`CANDIDATE_NATIVE_HTTP_${response.status}`); }
@@ -104,7 +105,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
       if (!changes.length) return expectedHead;
       await assertReleaseWriterProtection(request.repository, 'steward/release-state', { request: async (method, path) => {
         // Protection endpoints require the parent's administration-read credential.
-        const response = await fetcher('https://api.github.com' + path, { method, headers: { authorization: 'Bearer ' + token, accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2026-03-10' } });
+        const response = await fetcher('https://api.github.com' + path, { method, headers: { authorization: 'Bearer ' + token, accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': apiVersion.version } });
         return { status: response.status, bytes: new Uint8Array(await response.arrayBuffer()), headers: response.headers };
       } }, {token,fetcher});
       const result = await writeReleaseRecords({ directory: join(request.writeDirectory, `candidate-${++writes}`), remote: request.remote,
