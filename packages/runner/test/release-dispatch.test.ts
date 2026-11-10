@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest';
+import { GITHUB_API_VERSION } from '../../github/src/api-version.js';
 import { dispatchNativeRun, prepareBuildDispatch, verifyExecutionSource, type DispatchStore } from '../src/release-run.js';
 import { nativeEvidenceTransport, nativeRunFact, type EvidenceTransport } from '../src/native-release-evidence.js';
 import { decodeNativeDispatchObservation, type NativeDispatchObservation } from '../../core/src/native-evidence.js';
@@ -88,7 +89,7 @@ it('refuses an incomplete page even when it contains a matching Run',async()=>{
 it('pins API version and sends only ref and inputs in the dispatch body',async()=>{
   let captured:RequestInit|undefined;const transport=(async(_url,options)=>{captured=options;return new Response('{}',{status:200});}) as typeof fetch;
   await nativeEvidenceTransport('fixture-token',transport).request('POST','/repos/example/product/actions/workflows/10/dispatches',1024,{ref:'branch',inputs:{cycle_id:'cycle'}});
-  expect(new Headers(captured!.headers).get('x-github-api-version')).toBe('2026-03-10');expect(JSON.parse(String(captured!.body))).toEqual({ref:'branch',inputs:{cycle_id:'cycle'}});
+  expect(new Headers(captured!.headers).get('x-github-api-version')).toBe(GITHUB_API_VERSION);expect(JSON.parse(String(captured!.body))).toEqual({ref:'branch',inputs:{cycle_id:'cycle'}});
 });
 it('accepts only the fixed new release commands and removes the legacy write namespace',()=>{
   for(const entry of ['candidate','dispatch-build','publish','dispatch-channel','observe-channel','rerun']) {

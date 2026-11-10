@@ -1,3 +1,4 @@
+import apiVersion from "../config/github-api.json" with { type: "json" };
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, rm, writeFile, readFile, mkdir, lstat, readdir, realpath, open } from 'node:fs/promises';
@@ -671,7 +672,7 @@ export async function assertReleaseWriterProtection(repository,branch,io,{token,
       ||relevant.filter(value=>value.ruleset_id===id).some(value=>!rule.rules.some(item=>item.type===value.type)))fail('writer protection identity');
     if(rule.rules.some(value=>value.type==='update'&&value.parameters===undefined)) {
       if(!token)fail('writer update parameters unavailable');
-      client??=new Octokit({auth:token,log:{debug(){},info(){},warn(){},error(){}},request:{fetch:fetcher,timeout:60_000,headers:{'x-github-api-version':'2026-03-10'}}});
+      client??=new Octokit({auth:token,log:{debug(){},info(){},warn(){},error(){}},request:{fetch:fetcher,timeout:60_000,headers:{'x-github-api-version':apiVersion.version}}});
       rule=await completeNativeRuleParameters(client,rule);
     }
     // App creation/update authority and immutable history are separate native rulesets.

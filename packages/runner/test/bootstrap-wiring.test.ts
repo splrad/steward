@@ -1,4 +1,5 @@
 import {expect,it,vi} from 'vitest';
+import {GITHUB_API_VERSION} from '../../github/src/api-version.js';
 import {generateKeyPairSync} from 'node:crypto';
 import {readFile,mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -42,7 +43,7 @@ it.each([{single:false,changed:false},{single:true,changed:false},{single:true,c
   const transport=async(input:any,init:any)=>{
     const url=new URL(String(input)),path=decodeURIComponent(url.pathname),method=init.method??'GET',headers=new Headers(init.headers);
     const body=init.body?JSON.parse(init.body):undefined;calls.push({path,method,body});
-    expect(url.origin).toBe('https://api.github.com');expect(headers.get('x-github-api-version')).toBe('2026-03-10');
+    expect(url.origin).toBe('https://api.github.com');expect(headers.get('x-github-api-version')).toBe(GITHUB_API_VERSION);
     let value:any,status=200;
     if(path==='/app')value={id:88,slug:'fixture-governance'};
     else if(path==='/orgs/splrad/installation')value={id:8,app_id:88,account:{id:302208797},suspended_at:null};
@@ -167,7 +168,7 @@ it('native variable absence is 404 only; 403 and transport failures remain disti
 it('preserves the required all-refs slash after the installed Octokit template parser',async()=>{
   const {bootstrapNativeIO}=await module(),calls:string[]=[];
   const io=bootstrapNativeIO('fixture-token',async(url:any,init:any)=>{
-    calls.push(String(url));expect(init.headers['x-github-api-version']).toBe('2026-03-10');
+    calls.push(String(url));expect(init.headers['x-github-api-version']).toBe(GITHUB_API_VERSION);
     const correct=String(url)==='https://api.github.com/repos/splrad/fixture/git/matching-refs/';
     return new Response(JSON.stringify({message:correct?'Git Repository is empty.':'Not Found'}),{status:correct?409:404,headers:{'content-type':'application/json'}});
   });

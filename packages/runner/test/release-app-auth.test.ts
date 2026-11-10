@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest';
+import { GITHUB_API_VERSION } from '../../github/src/api-version.js';
 import { generateKeyPairSync } from 'node:crypto';
 import { nativeReleaseApp } from '../../github/src/app-auth.js';
 const key=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'}).toString();
@@ -7,14 +8,14 @@ function fixture() {
   const minted:any[]=[],revoked:string[]=[],scopes=new Map<string,any>();
   const fetcher=(async(input,init)=>{
     const url=new URL(String(input)),headers=new Headers(init?.headers),method=init?.method??'GET';
-    expect(url.origin).toBe('https://api.github.com');expect(headers.get('X-GitHub-Api-Version')).toBe('2026-03-10');
+    expect(url.origin).toBe('https://api.github.com');expect(headers.get('X-GitHub-Api-Version')).toBe(GITHUB_API_VERSION);
     let data:any;const path=decodeURIComponent(url.pathname);
     if(path==='/app')data={id:4243096,client_id:'Iv23liuSr0qd4WLJdZhH',slug:'splrad-steward'};
     else if(path==='/orgs/splrad/installation')data={id:145952003,app_id:4243096,account:{id:302208797},suspended_at:null};
     else if(path==='/users/splrad-steward[bot]')data={id:wrongBot?4243096:301115370,type:'Bot'};
     else if(path==='/app/installations/145952003/access_tokens'&&method==='POST') {
       const body=JSON.parse(String(init?.body));
-      // Native GitHub API 2026-03-10 rejects the legacy field before minting a token.
+      // The reviewed GitHub API rejects the legacy field before minting a token.
       if(Object.hasOwn(body.permissions,'variables'))return new Response(JSON.stringify({message:'The permissions requested are not granted to this installation.'}),{status:422,headers:{'content-type':'application/json'}});
       const token=`ghs_offline_${++sequence}`;minted.push(body);scopes.set(token,body);
       data={token,expires_at:new Date(Date.now()+55*60_000).toISOString(),permissions:body.permissions,repository_selection:'selected'};

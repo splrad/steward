@@ -9,7 +9,8 @@ function Get-LayerScapePackageState {
         [DateTimeOffset]::Parse($owner.observedAt) -gt [DateTimeOffset]::UtcNow) { throw 'GHCR_OWNER_INVENTORY_REQUIRED' }
     $ids=@($owner.packageIds)
     if (@($ids | Sort-Object -Unique).Count -ne $ids.Count -or @($ids | Where-Object { $_ -isnot [long] -and $_ -isnot [int] -or $_ -le 0 }).Count) { throw 'GHCR_OWNER_INVENTORY_INVALID' }
-    $headers=@{Authorization="Bearer $Token";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2026-03-10'}
+    $apiVersion=(Get-Content -LiteralPath (Join-Path $PSScriptRoot '../config/github-api.json') -Raw | ConvertFrom-Json).version
+    $headers=@{Authorization="Bearer $Token";Accept='application/vnd.github+json';'X-GitHub-Api-Version'=$apiVersion}
     $packages=@();$seen=@{};$complete=$false
     for ($page=1; $page -le 10000; $page++) {
         $response=Invoke-WebRequest -Uri "https://api.github.com/orgs/splrad/packages?package_type=container&per_page=100&page=$page" -Headers $headers -SkipHttpErrorCheck

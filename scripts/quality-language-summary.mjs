@@ -1,3 +1,4 @@
+import apiVersion from "../config/github-api.json" with { type: "json" };
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, rm, readFile, appendFile } from 'node:fs/promises';
@@ -18,8 +19,8 @@ const check=(value,code)=>{if(!value)throw new Error('QUALITY_'+code);};
 
 export function qualityNativeIO(repository,token,transport=fetch) {
   check(/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(repository)&&token,'TARGET');
-  const root=`/repos/${repository}`,client=new Octokit({auth:token,log:{debug(){},info(){},warn(){},error(){}},request:{fetch:transport,headers:{'x-github-api-version':'2026-03-10'}}});
-  client.hook.before('request',options=>{options.headers['x-github-api-version']='2026-03-10';});
+  const root=`/repos/${repository}`,client=new Octokit({auth:token,log:{debug(){},info(){},warn(){},error(){}},request:{fetch:transport,headers:{'x-github-api-version':apiVersion.version}}});
+  client.hook.before('request',options=>{options.headers['x-github-api-version']=apiVersion.version;});
   const allowed=path=>typeof path==='string'&&(path===root||path.startsWith(root+'/'))&&!path.includes('..')&&!path.includes('#')&&!path.includes('\\');
   return {async get(path){
     check(allowed(path),'READ_PATH');const response=await client.request(`GET ${path}`,{request:{signal:AbortSignal.timeout(60_000)}});
