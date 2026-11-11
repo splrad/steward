@@ -30,7 +30,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261010.1",
-    "@types/node": "26.6.5",
+    "@types/node": "26.6.6",
     "@vercel/ncc": "0.45.0",
     "npm": "11.21.2",
     "typescript": "7.0.2",
