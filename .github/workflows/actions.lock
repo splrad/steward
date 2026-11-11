@@ -5,69 +5,52 @@ version: 'v0.0.3'
 workflows:
     '.github/workflows/ai-identity-acceptance.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'actions/checkout@v7.0.1'
         - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
-        - 'actions/upload-artifact@v7.0.2'
         - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
     '.github/workflows/business-flow-acceptance.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'actions/checkout@v7.0.1'
         - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
     '.github/workflows/governance-promotion.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'actions/checkout@v7.0.1'
         - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
-        - 'actions/upload-artifact@v7.0.2'
         - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
     '.github/workflows/layerscape-release-initialize.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
+    '.github/workflows/maintenance-validation.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+        - 'actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294'
+        - 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020'
+        - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
     '.github/workflows/native-review.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'actions/checkout@v7.0.1'
         - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
     '.github/workflows/pr-labeler.yml':
         - 'actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13'
-        - 'actions/labeler@v7.0.0'
     '.github/workflows/pr-title.yml':
         - 'amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50'
-        - 'amannn/action-semantic-pull-request@v6.1.1'
     '.github/workflows/pr-validation-native.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'actions/checkout@v7.0.1'
         - 'actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294'
-        - 'actions/dependency-review-action@v5.0.0'
         - 'actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68'
-        - 'actions/setup-dotnet@v6.0.0'
         - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
-        - 'actions/upload-artifact@v7.0.2'
         - 'dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d'
         - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
     '.github/workflows/product-release.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'actions/checkout@v7.0.1'
         - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
-        - 'actions/upload-artifact@v7.0.2'
         - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
     '.github/workflows/quality-language-summary.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'actions/checkout@v7.0.1'
         - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
     '.github/workflows/release.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'actions/checkout@v7.0.1'
         - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
     '.github/workflows/sync-managed.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'actions/checkout@v7.0.1'
         - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
 dependencies:
     'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1':
-        ref: 'v7.0.1'
-        commit: 'sha1-3d3c42e5aac5ba805825da76410c181273ba90b1'
-        owner_id: 44036562
-        repo_id: 197814629
-    'actions/checkout@v7.0.1':
         ref: 'v7.0.1'
         commit: 'sha1-3d3c42e5aac5ba805825da76410c181273ba90b1'
         owner_id: 44036562
@@ -77,17 +60,7 @@ dependencies:
         commit: 'sha1-a1d282b36b6f3519aa1f3fc636f609c47dddb294'
         owner_id: 44036562
         repo_id: 476372928
-    'actions/dependency-review-action@v5.0.0':
-        ref: 'v5.0.0'
-        commit: 'sha1-a1d282b36b6f3519aa1f3fc636f609c47dddb294'
-        owner_id: 44036562
-        repo_id: 476372928
     'actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13':
-        ref: 'v7.0.0'
-        commit: 'sha1-bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13'
-        owner_id: 44036562
-        repo_id: 177139928
-    'actions/labeler@v7.0.0':
         ref: 'v7.0.0'
         commit: 'sha1-bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13'
         owner_id: 44036562
@@ -97,27 +70,17 @@ dependencies:
         commit: 'sha1-a98b56852c35b8e3190ac28c8c2271da59106c68'
         owner_id: 44036562
         repo_id: 192625306
-    'actions/setup-dotnet@v6.0.0':
-        ref: 'v6.0.0'
-        commit: 'sha1-a98b56852c35b8e3190ac28c8c2271da59106c68'
+    'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020':
+        ref: 'v7.0.0'
+        commit: 'sha1-820762786026740c76f36085b0efc47a31fe5020'
         owner_id: 44036562
-        repo_id: 192625306
+        repo_id: 189476904
     'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9':
         ref: 'v7.0.2'
         commit: 'sha1-cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         owner_id: 44036562
         repo_id: 192625955
-    'actions/upload-artifact@v7.0.2':
-        ref: 'v7.0.2'
-        commit: 'sha1-cf430e030ddbb5b0abf93d22962f4752f3646cd9'
-        owner_id: 44036562
-        repo_id: 192625955
     'amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50':
-        ref: 'v6.1.1'
-        commit: 'sha1-48f256284bd46cdaab1048c3721360e808335d50'
-        owner_id: 4038316
-        repo_id: 220418983
-    'amannn/action-semantic-pull-request@v6.1.1':
         ref: 'v6.1.1'
         commit: 'sha1-48f256284bd46cdaab1048c3721360e808335d50'
         owner_id: 4038316

@@ -10,7 +10,8 @@
   ],
   "scripts": {
     "build": "node scripts/build-runner.mjs",
-    "test": "uv sync --project tools/template --frozen --only-group release-inspection --inexact --no-build && npm run test:pages && npm run test:private-dependencies && npm run test:settings-events && vitest run",
+    "test": "uv sync --project tools/template --frozen --only-group release-inspection --inexact --no-build && npm run test:pages && npm run test:private-dependencies && npm run test:settings-events && npm run test:controller-source && vitest run",
+    "test:controller-source": "node --test scripts/controller-source.test.mjs",
     "test:pages": "node --test scripts/test/select-pages-source.test.mjs scripts/test/pages-wiring.test.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.runtime.json --noEmit && node scripts/verify-source-boundaries.mjs",
     "verify:config": "node scripts/verify-config.mjs",
@@ -28,6 +29,8 @@
     "ajv-formats": "3.0.1",
     "minimatch": "10.2.6",
     "mustache": "4.2.0",
+    "parse5": "8.1.1",
+    "parse5-sax-parser": "8.0.1",
     "remark-parse": "11.0.0",
     "semver": "7.8.5",
     "unified": "11.0.5",

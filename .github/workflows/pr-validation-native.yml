@@ -448,6 +448,18 @@ jobs:
       - name: Applicability
         if: needs.scope.outputs.dependency == 'false'
         run: echo 'dependency not-applicable; complete trusted diff contains no dependency inputs'
+      - name: Install trusted reusable workflow lock verifier
+        if: needs.scope.outputs.dependency-mode == 'private-lifecycle'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_HOST: github.com
+          GH_CONFIG_DIR: ${{ runner.temp }}/private-actions-lock-config
+        run: |
+          set -euo pipefail
+          ACTIONS_LOCK_VERSION="$(cat policy/config/actions-lock-version.txt)"
+          [[ "$ACTIONS_LOCK_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh extension install github/gh-actions-lock --pin "$ACTIONS_LOCK_VERSION"
       - name: Scan private administrator dependencies
         if: startsWith(needs.scope.outputs.dependency-mode, 'private-')
         working-directory: policy
@@ -455,6 +467,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PRIVATE_DEPENDENCY_EVIDENCE: ${{ github.workspace }}/private-dependency-evidence
+          GH_CONFIG_DIR: ${{ runner.temp }}/private-actions-lock-config
           MISE_SAFE: '1'
           MISE_LOCKED: '1'
         run: |

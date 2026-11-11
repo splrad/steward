@@ -1,0 +1,155 @@
+name: SPLRAD Maintenance Validation
+on:
+  pull_request:
+    branches: [maintenance/legacy-runtime-e990eda]
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  source:
+    name: Maintenance source identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: policy
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.10.24
+          working_directory: policy
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - name: Activate trusted policy tool paths
+        working-directory: policy
+        shell: bash
+        env:
+          MISE_SAFE: '1'
+          MISE_LOCKED: '1'
+          MISE_NODE_COMPILE: 'false'
+        run: mise bin-paths | tac >> "$GITHUB_PATH"
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: policy
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: target
+          fetch-depth: 0
+          persist-credentials: false
+      - run: node --test scripts/test/maintenance-ci.test.mjs
+        working-directory: policy
+      - run: node policy/scripts/maintenance-ci.mjs
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          WORKFLOW_PATH: ${{ job.workflow_file_path }}
+          MAINTENANCE_READ_TOKEN: ${{ github.token }}
+          MAINTENANCE_PHASE: source
+          VALIDATION_WORKSPACE: target
+      - name: Verify action dependency lock with the trusted tool version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_HOST: github.com
+          GH_REPO: ${{ github.repository }}
+          GH_CONFIG_DIR: ${{ runner.temp }}/maintenance-actions-lock-config
+          GH_ACTIONS_LOCK_REPO_ROOT: ${{ github.workspace }}/target
+        run: |
+          set -euo pipefail
+          ACTIONS_LOCK_VERSION="$(cat policy/config/actions-lock-version.txt)"
+          [[ "$ACTIONS_LOCK_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh extension install github/gh-actions-lock --pin "$ACTIONS_LOCK_VERSION"
+          cd target
+          gh actions-lock --verify --no-interactive
+  test:
+    name: Maintenance build and tests
+    needs: source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+      - name: Validate maintenance merge tree without production credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = "v$(cat .node-version)"
+          npm ci --ignore-scripts --no-audit --no-fund
+          NPM_CLI="$GITHUB_WORKSPACE/node_modules/npm/bin/npm-cli.js"
+          test "npm@$(node "$NPM_CLI" --version)" = "$(node -p 'JSON.parse(require("fs").readFileSync("package.json", "utf8")).packageManager')"
+          node "$NPM_CLI" test
+          node "$NPM_CLI" run typecheck
+          node "$NPM_CLI" run verify:config
+          node "$NPM_CLI" run verify:dist
+  dependency:
+    name: Maintenance dependency review
+    needs: source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294
+        with:
+          base-ref: ${{ github.event.pull_request.base.sha }}
+          head-ref: ${{ github.event.pull_request.head.sha }}
+          fail-on-severity: high
+          fail-on-scopes: runtime,development,unknown
+          comment-summary-in-pr: never
+          warn-only: false
+          retry-on-snapshot-warnings: true
+          retry-on-snapshot-warnings-timeout: 600
+  final:
+    name: SPLRAD Maintenance Validation
+    needs: [source, test, dependency]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: policy
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.10.24
+          working_directory: policy
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - name: Activate trusted policy tool paths
+        working-directory: policy
+        shell: bash
+        env:
+          MISE_SAFE: '1'
+          MISE_LOCKED: '1'
+          MISE_NODE_COMPILE: 'false'
+        run: mise bin-paths | tac >> "$GITHUB_PATH"
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: policy
+      - run: node policy/scripts/maintenance-ci.mjs
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          WORKFLOW_PATH: ${{ job.workflow_file_path }}
+          MAINTENANCE_READ_TOKEN: ${{ github.token }}
+          MAINTENANCE_PHASE: final
+          MAINTENANCE_NEEDS: ${{ toJSON(needs) }}
