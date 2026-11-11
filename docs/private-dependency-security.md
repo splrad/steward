@@ -28,6 +28,8 @@ Linux扫描容器保留cap-drop=ALL、no-new-privileges及只读输入/rootfs；
 
 ## 私有生命周期样本
 
+可重用工作流的 Action 锁归属于定义仓，而非调用仓，遵循 [GitHub 原生锁职责](https://docs.github.com/en/actions/concepts/security/workflow-dependency-lockfiles)。展开允许的准确 controller SHA 时，从同一已验证祖先读取完整 workflow 目录及原生锁，使用当前可信配置中的唯一工具版本执行只读完整 `gh actions-lock --verify`；不重写或裁剪锁。每个 workflow 仅由所属来源的清单证明覆盖，消费者和其他来源的库存不能补缺。来源锁的全部 Action（含传递依赖）继续在线核验仓身份、tag/SHA 和公告，并与消费者的扫描结果一起进行原有风险比较。报告记录来源 SHA、workflow/lock 摘要及原生输出；失败时保留来源和阶段，不作为扫描完成。
+
 `config/private-dependency-security.json` 的 `lifecycleSamples` 仅登记一个隔离样本。必须同时匹配准确仓 ID、名称、组织、private 状态及现有 `STEWARD_PRIVATE_GOVERNANCE_REPOSITORY_ID`；身份或注册不符立即失败。现有 governance-only 文件白名单不变，管理员模式不变。
 
 样本允许单 app JavaScript 源码/行为测试、VERSION、Release Please simple 配置与 manifest、delivery、两个正式发布模板及必要 Node 验证接口。完整 base/head 文件清单分别核对；未知源码、工作流、工具配置或依赖清单拒绝。`templates/lifecycle-sample/` 的 package/lock、验证脚本和忽略规则统一 LF 换行后必须逐字节匹配，明确证明应用没有第三方 npm 包；不能将空 OSV 结果作为未扫描依赖的替代。新增任何 npm 依赖必须另行修改受审合同。首次治理 base 可没有应用；出现任一应用输入即要求完整配套文件。生成的 CHANGELOG 和 app 发布说明允许保留。首次无应用且无 workflow 的 base 可省略 Action 锁；含应用、含 workflow 的 base 以及所有 head 仍须提供锁。

@@ -10,7 +10,8 @@ import {createHash} from 'node:crypto';
 import YAML from 'yaml';
 import {validationInput,git} from './validation-input.mjs';
 import {assert,loadPolicy,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,assertGovernanceOnlyScope,assertCopierInputs,licenseFacts} from './private-dependency-policy.mjs';
-import {assertLifecycleScope,assertLifecycleSnapshot,lifecycleMiseVersions,lifecycleReusable,assertLifecycleMissingActionLock} from './private-lifecycle-policy.mjs';
+import {assertLifecycleScope,assertLifecycleSnapshot,lifecycleMiseVersions,assertLifecycleMissingActionLock} from './private-lifecycle-policy.mjs';
+import {assertActionInputs,reusableActions,verifyReusableLock} from './private-reusable-actions.mjs';
 import {miseFindings} from './private-tool-security.mjs';
 import {scanTools,publicBytes} from './private-tool-security.mjs';
 import {effectiveLock} from './private-lock-exception.mjs';
@@ -186,26 +187,34 @@ export async function main(env=process.env){
         if(lifecycle)assertLifecycleMissingActionLock(entries.map(e=>e.path),{side,application:snapshot.application.application});
         else assert(entries.every(e=>e.path==='README.md'),'GOVERNANCE_BASE_NOT_EMPTY');
       }
-      snapshot.actions=lock?await actionsInventory(lock.toString(),env.GH_TOKEN):[];
+      const consumerActions=lock?await actionsInventory(lock.toString(),env.GH_TOKEN):[];
+      snapshot.actions=[...consumerActions];
       const docs=[],documents=new Map(),workflowDocuments=new Map();
-      const workflowInputs=entries.filter(e=>/^\.github\/workflows\/[^/]+\.ya?ml$/.test(e.path)).map(e=>({path:e.path,bytes:blob(workspace,entries,e.path)}));
+      const workflowInputs=entries.filter(e=>/^\.github\/workflows\/[^/]+\.ya?ml$/.test(e.path)).map(e=>({path:e.path,bytes:blob(workspace,entries,e.path),actions:consumerActions}));
       const reusableSeen=new Set();snapshot.reusable=[];
       for(const e of workflowInputs){
         const text=e.bytes.toString();const doc=YAML.parse(text);workflowDocuments.set(e.path,doc);
         for(const job of Object.values(doc.jobs??{})){
           if(job.uses){
             assert(lifecycle,'REUSABLE_WORKFLOW_UNCOVERED');
-            const nested=await lifecycleReusable(job.uses,(sha,path)=>{
-              const controller=fileURLToPath(new URL('..',import.meta.url));
-              git(controller,['merge-base','--is-ancestor',sha,env.WORKFLOW_SHA]);return git(controller,['show',sha+':'+path]);
-            });
-            if(!reusableSeen.has(nested.sha)){reusableSeen.add(nested.sha);workflowInputs.push(nested);snapshot.reusable.push({sha:nested.sha,sha256:hash(nested.bytes)});}
-          }
-          for(const step of job.steps??[])if(step.uses){
-            const uses=/^([\w.-]+\/[\w.-]+)(?:\/[^@]+)?@([a-f0-9]{40})$/.exec(step.uses);
-            assert(uses&&snapshot.actions.some(x=>x.repo===uses[1]&&x.sha===uses[2]),'ACTION_INPUT_UNCOVERED');
+            if(!reusableSeen.has(job.uses)){
+              const nested=await reusableActions(job.uses,{
+                loadSource:sha=>{
+                  const controller=fileURLToPath(new URL('..',import.meta.url));
+                  git(controller,['merge-base','--is-ancestor',sha,env.WORKFLOW_SHA]);
+                  const sourceEntries=tree(controller,sha);
+                  return new Map(sourceEntries.filter(e=>/^\.github\/workflows\/[^/]+\.(?:ya?ml|lock)$/.test(e.path)).map(e=>[e.path,blob(controller,sourceEntries,e.path)]));
+                },
+                verifyLock:(files,sha)=>verifyReusableLock(files,join(temporary,side+'-controller-'+sha),{
+                  ...cleanEnv(),GH_TOKEN:env.GH_TOKEN,...(env.GH_CONFIG_DIR?{GH_CONFIG_DIR:env.GH_CONFIG_DIR}:{})},run),
+                inventory:text=>actionsInventory(text,env.GH_TOKEN),
+              });
+              reusableSeen.add(job.uses);workflowInputs.push(nested);snapshot.actions.push(...nested.actions);
+              snapshot.reusable.push({sha:nested.sha,sha256:hash(nested.bytes),lockSha256:nested.lockSha256,actions:nested.actions,native:nested.native});
+            }
           }
         }
+        assertActionInputs(doc,e.actions);
         const path=join(input,e.path);await mkdir(join(input,'.github/workflows'),{recursive:true});await writeFile(path,text);docs.push(path);documents.set(path,doc);
       }
       // Include every locked action, not only the top-level workflow uses.
@@ -247,7 +256,7 @@ export async function main(env=process.env){
     assert(!report.newActionVulnerabilities.some(x=>x.severity==='High'),'NEW_HIGH_ACTION');
     assert(!report.newToolFindings.some(x=>['HIGH','CRITICAL'].includes(x.severity)),'NEW_HIGH_TOOL');
     report.complete=true;return report;
-  }catch(error){report.error=error.message;if(error.toolFailure)report.toolFailure=error.toolFailure;throw error;}
+  }catch(error){report.error=error.message;if(error.toolFailure)report.toolFailure=error.toolFailure;if(error.reusableSource)report.reusableSource=error.reusableSource;throw error;}
   finally{await writeFile(join(out,'summary.json'),JSON.stringify(report,null,2)+'\n');}
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href)main().catch(e=>{console.error(e.message);process.exitCode=1;});
