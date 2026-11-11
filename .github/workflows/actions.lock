@@ -5,7 +5,7 @@ version: 'v0.0.3'
 workflows:
     '.github/workflows/deploy-runtime.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020'
+        - 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'
     '.github/workflows/maintenance-validation.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294'
@@ -13,43 +13,43 @@ workflows:
         - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
     '.github/workflows/native-review.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020'
+        - 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'
     '.github/workflows/onboard-repository.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020'
+        - 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'
     '.github/workflows/pr-classification.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020'
+        - 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'
     '.github/workflows/pr-validation.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020'
+        - 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'
     '.github/workflows/product-build.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'
         - 'actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68'
-        - 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020'
+        - 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'
         - 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
     '.github/workflows/release-build-complete.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020'
+        - 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'
         - 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
     '.github/workflows/release-build.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'
         - 'actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68'
-        - 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020'
+        - 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'
         - 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
     '.github/workflows/release.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'
-        - 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020'
+        - 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'
         - 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
     '.github/workflows/sync-managed-labels.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020'
+        - 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'
     '.github/workflows/sync-review-instructions.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020'
+        - 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'
 dependencies:
     'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1':
         ref: 'v7.0.1'
@@ -74,6 +74,11 @@ dependencies:
     'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020':
         ref: 'v7.0.0'
         commit: 'sha1-820762786026740c76f36085b0efc47a31fe5020'
+        owner_id: 44036562
+        repo_id: 189476904
+    'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1':
+        ref: 'v7.1.0'
+        commit: 'sha1-949feb2413d6458794dcd2491c4babbbce0c15c1'
         owner_id: 44036562
         repo_id: 189476904
     'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a':
