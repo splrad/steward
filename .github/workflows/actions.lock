@@ -26,7 +26,7 @@ workflows:
     '.github/workflows/product-build.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'
-        - 'actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68'
+        - 'actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73'
         - 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020'
         - 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
     '.github/workflows/release-build-complete.yml':
@@ -36,7 +36,7 @@ workflows:
     '.github/workflows/release-build.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'
-        - 'actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68'
+        - 'actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73'
         - 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020'
         - 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
     '.github/workflows/release.yml':
@@ -66,9 +66,9 @@ dependencies:
         commit: 'sha1-3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'
         owner_id: 44036562
         repo_id: 192626254
-    'actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68':
-        ref: 'v6.0.0'
-        commit: 'sha1-a98b56852c35b8e3190ac28c8c2271da59106c68'
+    'actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73':
+        ref: 'v6.1.0'
+        commit: 'sha1-0f4a354dd5547a28c70b7853dbd95d5b67886e73'
         owner_id: 44036562
         repo_id: 192625306
     'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020':
