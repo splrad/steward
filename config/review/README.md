@@ -4,7 +4,7 @@
 
 中央维护者必须在 [AGENTS 模板](../../templates/repository/AGENTS.md) 维护完整公共审查规则。各仓根 AGENTS.md 必须与所采用模板版本的全文一致。
 
-[Copilot 组织稿](copilot-organization.md) 必须保存审查语言条款，组织 Custom instructions 与 Codex 应用 Review instructions 必须采用相同正文。保存后应分别回读，并验证下一次对应入口的消费结果。
+[Copilot 组织稿](copilot-organization.md) 必须保存审查语言条款，组织 Custom instructions 与 Codex 应用 Review instructions 必须采用相同正文。组织设置保存后回读正文和适用范围；当前应用设置及人工入口采用已记录的用户确认。
 
 项目事实和合同保留在各仓已有配置、源码、脚本、测试及有效技术文档中。公共审查模板不得固化逐仓变化的版本、模块、命令或产物数量。
 
@@ -16,11 +16,11 @@
 
 周期更新必须使用 Copier update。出现冲突时应停止受影响递送、保留现场及人工修改，并在原采用流程中解决；不得通过强制覆盖或手工改写 answers 消除冲突。
 
-## 文件与消费验证
+## 文件与配置验证
 
 校验器必须比较根 AGENTS.md 与受信模板的完整字节，并验证 UTF-8、无 BOM、LF 和末尾恰好一个换行。载体变化必须进入适用治理检查；首次迁移、新仓接入和后续载体变化应分别完成对应范围盘点。
 
-指令变更必须完成受影响的配置、构建、产物及模板检查。影响某入口适用规则或加载行为时，必须取得该入口的消费证据；Copilot GitHub review、Codex GitHub review 和 Codex 应用 review 的证据应分别记录。复用结果时必须核对对象、提交、入口及相关条件。文件保存、默认分支采用、实际加载及行为结果必须分别记录。
+指令变更必须完成受影响的配置、构建、产物及模板检查。Copilot GitHub review、Codex GitHub review 和 Codex 应用 review 分别核对对应设置、正文及目标覆盖范围；配置确认可复用仍适用的记录和用户确认。复用结果时必须核对对象、提交、入口及相关条件。实际 PR 的审查结果和必要检查按最终待合并提交另行核验。
 
 ## 恢复
 
