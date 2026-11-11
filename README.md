@@ -14,7 +14,7 @@ SPLRAD Steward 是 [`splrad`](https://github.com/splrad) 组织的共享仓库�
 
 ## 快速开始
 
-本地开发需要 Node.js `24.22.0` 和 npm `11.21.2`。
+本地开发需要 Node.js `24.22.0` 和 npm `11.21.2`。 执行完整 `npm run verify` 前，还需按 [贡献说明](CONTRIBUTING.md#本地环境与检查) 准备已采用中央 policy checkout、安装其锁定扫描工具并设置 `STEWARD_WORKFLOW_POLICY_ROOT`。
 
 ```powershell
 git clone https://github.com/splrad/steward.git
