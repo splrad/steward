@@ -40,20 +40,33 @@ export async function liveIdentity(identity, get) {
     const head = await get(`${root}/git/ref/heads/${identity.headRef}`);
     const merge = await get(`${root}/git/ref/pull/${identity.pullNumber}/merge`);
     check(base.object?.sha === identity.base && head.object?.sha === identity.head
-      && merge.object?.sha === identity.merge, 'refs moved');
+      && sha(merge.object?.sha), 'refs moved');
+    return merge.object.sha;
   };
-  await read();
+  const observedMerge = await read();
   const head = await get(`${root}/commits/${identity.head}`);
   check(head.sha === identity.head && head.commit?.verification?.verified === true
     && head.commit.verification.reason === 'valid', 'unsigned head');
   const merge = await get(`${root}/commits/${identity.merge}`);
   check(merge.sha === identity.merge && merge.parents?.length === 2
     && merge.parents[0].sha === identity.base && merge.parents[1].sha === identity.head, 'merge parents');
+  check(sha(merge.commit?.tree?.sha), 'merge tree');
+  const verifyLiveMerge = async current => {
+    if (current === identity.merge) return;
+    // GitHub can rebuild its synthetic merge without changing either input or the tested tree.
+    // Keep the immutable event checkout; accept only proven equivalent synthetic commits.
+    const rebuilt = await get(`${root}/commits/${current}`);
+    check(rebuilt.sha === current && rebuilt.parents?.length === 2
+      && rebuilt.parents[0].sha === identity.base && rebuilt.parents[1].sha === identity.head
+      && rebuilt.commit?.tree?.sha === merge.commit.tree.sha, 'merge rebuilt with different inputs or tree');
+  };
+  await verifyLiveMerge(observedMerge);
   const source = await get(`${root}/compare/${identity.policy}...main`);
   check(['ahead','identical'].includes(source.status) && source.merge_base_commit?.sha === identity.policy,
     'policy not adopted on main');
-  await read();
-  return identity;
+  const finalMerge = await read();
+  check(finalMerge === observedMerge, 'merge ref moved during validation');
+  return {...identity, liveMerge:observedMerge};
 }
 
 function git(workspace, args) {
@@ -102,7 +115,7 @@ export async function main(env = process.env) {
     const response = await fetch(`https://api.github.com${path}`, {headers:githubHeaders(token), signal:AbortSignal.timeout(30000)});
     check(response.ok, `API ${response.status}`); return response.json();
   };
-  await liveIdentity(identity,get);
+  const live = await liveIdentity(identity,get);
   if (env.MAINTENANCE_PHASE === 'source') {
     const policy = JSON.parse(await readFile(new URL('../config/maintenance-ci.json',import.meta.url),'utf8'));
     const workspace = resolve(env.VALIDATION_WORKSPACE ?? 'target');
@@ -112,7 +125,7 @@ export async function main(env = process.env) {
     check(env.MAINTENANCE_PHASE === 'final', 'phase');
     verifyResults(JSON.parse(env.MAINTENANCE_NEEDS));
   }
-  const record = {...identity, phase:env.MAINTENANCE_PHASE, runId:env.GITHUB_RUN_ID, attempt:env.GITHUB_RUN_ATTEMPT,
+  const record = {...identity, liveMerge:live.liveMerge, phase:env.MAINTENANCE_PHASE, runId:env.GITHUB_RUN_ID, attempt:env.GITHUB_RUN_ATTEMPT,
     checkedAt:new Date().toISOString(), aiReview:'REQUIRED_SEPARATELY_BEFORE_ADOPTION', deployment:'NOT_AUTHORIZED'};
   if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY,'```json\n'+JSON.stringify(record,null,2)+'\n```\n');
   console.log(JSON.stringify(record));
