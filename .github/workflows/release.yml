@@ -98,7 +98,7 @@ jobs:
       - if: needs.inspect.outputs.artifactId != ''
         id: assets
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           repository: splrad/steward
           artifact-ids: ${{ needs.inspect.outputs.artifactId }}
@@ -153,7 +153,7 @@ jobs:
           BUNDLE_ARTIFACT_ID: ${{ inputs.bundleArtifactId }}
           BUNDLE_RUN_ID: ${{ inputs.bundleRunId }}
         run: '[[ "$BUNDLE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$BUNDLE_RUN_ID" =~ ^[1-9][0-9]*$ ]]'
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           repository: splrad/steward
           artifact-ids: ${{ inputs.bundleArtifactId }}
@@ -232,7 +232,7 @@ jobs:
           node-version-file: .node-version
           cache: npm
       - run: npm ci --ignore-scripts
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           artifact-ids: ${{ needs.generation-ticket.outputs.artifactId }}
           merge-multiple: true
@@ -275,12 +275,12 @@ jobs:
           node-version-file: .node-version
           cache: npm
       - run: npm ci --ignore-scripts
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           artifact-ids: ${{ needs.generate.outputs.artifactId }}
           merge-multiple: true
           path: generated
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           repository: splrad/steward
           artifact-ids: ${{ inputs.bundleArtifactId }}
@@ -359,7 +359,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: 下载续跑清理凭据
         if: inputs.operation == 'generator-release-continuation'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           repository: splrad/steward
           artifact-ids: ${{ inputs.bundleArtifactId }}
