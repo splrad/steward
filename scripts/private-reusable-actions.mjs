@@ -43,8 +43,11 @@ export async function verifyReusableLock(files,directory,env,run){
     await mkdir(join(directory,'.github/workflows'),{recursive:true});
     await writeFile(join(directory,path),bytes);
   }
-  const result=run('gh',['actions-lock','--verify','--no-interactive'],directory,
+  const result=run('gh',['actions-lock','--verify','--no-interactive','--json'],directory,
     {...env,GH_HOST:'github.com',GH_REPO:'splrad/steward',GH_ACTIONS_LOCK_REPO_ROOT:directory});
+  let value;
+  try{value=JSON.parse(result.stdout);}catch{assert(false,'REUSABLE_LOCK_RESULT_JSON');}
+  assert(value!==null && typeof value==='object' && !Array.isArray(value) && value.valid===true,'REUSABLE_LOCK_RESULT_INVALID');
   // --verify must never rewrite any supplied source byte, even on success.
   for(const [path,bytes] of files)assert((await readFile(join(directory,path))).equals(bytes),'REUSABLE_LOCK_INPUT_CHANGED');
   return {stdout:result.stdout,stderr:result.stderr};

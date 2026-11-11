@@ -65,9 +65,9 @@ test('native source verification uses full unedited inputs and an isolated exact
  const directory=await mkdtemp(join(tmpdir(),'reusable-lock-test-')),files=reusableFiles();
  try{
   const result=await verifyReusableLock(files,directory,{GH_REPO:'wrong/repo',GH_ACTIONS_LOCK_REPO_ROOT:'wrong',GH_CONFIG_DIR:'trusted-tool'},(command,args,cwd,env)=>{
-   assert.equal(command,'gh');assert.deepEqual(args,['actions-lock','--verify','--no-interactive']);assert.equal(cwd,directory);
+   assert.equal(command,'gh');assert.deepEqual(args,['actions-lock','--verify','--no-interactive','--json']);assert.equal(cwd,directory);
    assert.equal(env.GH_REPO,'splrad/steward');assert.equal(env.GH_ACTIONS_LOCK_REPO_ROOT,directory);assert.equal(env.GH_CONFIG_DIR,'trusted-tool');
-   return {stdout:'all workflows verified',stderr:'warning'};
+   return {stdout:'{"valid":true}',stderr:'warning'};
   });
   assert.equal(result.stderr,'warning');for(const [path,bytes] of files)assert.deepEqual(await readFile(join(directory,path)),bytes);
   await assert.rejects(verifyReusableLock(new Map([['../escape.yml',Buffer.from('x')],[actionLockPath,Buffer.from('x')]]),directory,{},()=>assert.fail()),/REUSABLE_LOCK_INPUT_PATH/);
@@ -78,10 +78,19 @@ test('read-only native verification cannot silently rewrite source bytes',async(
  try{
   await assert.rejects(verifyReusableLock(files,directory,{},()=>{
    run(process.execPath,['-e','require("node:fs").writeFileSync(".github/workflows/actions.lock","changed")'],directory,process.env);
-   return {stdout:'',stderr:''};
+   return {stdout:'{"valid":true}',stderr:''};
   }),/REUSABLE_LOCK_INPUT_CHANGED/);
  }finally{await rm(directory,{recursive:true,force:true});}
 });
+
+for(const stdout of ['{"valid":false}','{}','not JSON','null','[]','true','{"valid":"true"}','{"valid":1}']){
+ test(`native verification rejects exit-zero invalid structured result: ${stdout}`,async()=>{
+  const directory=await mkdtemp(join(tmpdir(),'reusable-lock-result-'));
+  try{
+   await assert.rejects(verifyReusableLock(reusableFiles(),directory,{},()=>({stdout,stderr:''})),/REUSABLE_LOCK_RESULT_/);
+  }finally{await rm(directory,{recursive:true,force:true});}
+ });
+}
 test('only configured private administrator identity selects replacement; other private products remain native',()=>{
  assert.equal(dependencyMode({repository:{id:12,full_name:'org/product',private:true}},policy),'native');
  assert.equal(dependencyMode({repository:{id:1447987054,full_name:'splrad/steward-settings',private:true}},policy),'private-administrator');
