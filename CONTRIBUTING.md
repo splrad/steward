@@ -31,14 +31,18 @@ if ($LASTEXITCODE -ne 0) { throw '验证失败' }
 
 修改本仓 `.github/workflows/` 的 Action 依赖后，使用 `config/actions-lock-version.txt` 指定的官方 `github/gh-actions-lock` 版本，在仓库根目录运行：
 
-```shell
+```bash
+set -euo pipefail
+ACTIONS_LOCK_VERSION="$(cat config/actions-lock-version.txt)"
+[[ "$ACTIONS_LOCK_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+gh extension install github/gh-actions-lock --pin "$ACTIONS_LOCK_VERSION" --force
 gh actions-lock --no-narrow --no-interactive
 gh actions-lock --verify --no-interactive
 ```
 
 保留 workflow 的完整 SHA `uses` 及锁中对应的 SHA 键。提交前核对完整差异，包括每个 workflow 的依赖集合、Action commit、版本 ref、`owner_id` 和 `repo_id`。不要手工改锁。普通生成可能将 SHA 引用改为版本 tag，因此本仓生成使用 `--no-narrow`；只读 `--verify` 不改写文件。
 
-Dependabot 负责已有配置范围内的 Actions 版本更新，并为已纳入锁的 workflow 同步更新锁；更新 PR 仍须核对 workflow 与锁的一致性并完成实际 CI。新增 workflow 应先用上述官方命令纳入锁。工具版本更新后也应复核生成结果，不把一次验证通过视为后续格式不变的保证。
+[GitHub 官方说明](https://docs.github.com/en/actions/how-tos/secure-your-work/lock-workflow-dependencies#5-keep-the-lockfile-current)指出，Dependabot 会为已纳入锁的 workflow 在版本更新 PR 中同步更新锁。更新 PR 的维护者仍须检查实际 workflow 与锁差异；如锁未同步、缺少对应 SHA 键或验证失败，应运行上述固定版本命令重新生成并将必要的锁变更提交到同一 PR，再完成验证和实际 CI。新增 workflow 应先用上述官方命令纳入锁。工具版本更新后也应复核生成结果，不把一次验证通过视为后续格式不变的保证。
 
 ## Pull Request
 
