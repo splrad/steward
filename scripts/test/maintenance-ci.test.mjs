@@ -8,6 +8,7 @@ import YAML from 'yaml';
 import {branch,workflow,eventIdentity,liveIdentity,verifyTree,verifyResults,digest} from '../maintenance-ci.mjs';
 
 const B='b'.repeat(40), H='c'.repeat(40), M='d'.repeat(40), P='a'.repeat(40);
+const R='e'.repeat(40), S='1'.repeat(40), T='f'.repeat(40);
 const pull=()=>({number:400,state:'open',base:{sha:B,ref:branch,repo:{id:1296724484}},
   head:{sha:H,ref:'dependabot/npm_and_yarn/example',repo:{id:1296724484,full_name:'splrad/steward'}}});
 const event=()=>({number:400,repository:{id:1296724484,full_name:'splrad/steward'},pull_request:pull()});
@@ -44,22 +45,97 @@ function api(mutator=()=>{}) {
     else if(path.includes('/git/ref/heads/'))value={object:{sha:H}};
     else if(path.endsWith('/git/ref/pull/400/merge'))value={object:{sha:M}};
     else if(path.endsWith(`/commits/${H}`))value={sha:H,commit:{verification:{verified:true,reason:'valid'}}};
-    else if(path.endsWith(`/commits/${M}`))value={sha:M,parents:[{sha:B},{sha:H}]};
+    else if([M,R,S].some(ref=>path.endsWith(`/commits/${ref}`)))
+      value={sha:path.split('/').at(-1),parents:[{sha:B},{sha:H}],commit:{tree:{sha:T}}};
     else if(path.endsWith(`/compare/${P}...main`))value={status:'ahead',merge_base_commit:{sha:P}};
     else throw Error('unexpected API path');
     mutator(path,value,reads);return value;
   };
 }
 test('fresh API proof rejects moved refs, unsigned head, wrong merge parents and unadopted policy',async()=>{
-  assert.deepEqual(await liveIdentity(identity(),api()),identity());
+  assert.deepEqual(await liveIdentity(identity(),api()),{...identity(),liveMerge:M});
   const mutations=[
     (p,v,n)=>{if(p.endsWith('/pulls/400')&&n===2)v.head.sha=B;},
     (p,v)=>{if(p.includes('/git/ref/'))v.object.sha=P;},
-    (p,v)=>{if(v.commit)v.commit.verification.verified=false;},
+    (p,v)=>{if(p.endsWith(`/commits/${H}`))v.commit.verification.verified=false;},
     (p,v)=>{if(v.parents)v.parents.reverse();},
     (p,v)=>{if(v.status)v.status='diverged';},
   ];
   for(const mutation of mutations)await assert.rejects(liveIdentity(identity(),api(mutation)));
+});
+
+test('a stable equivalent synthetic merge retains the immutable event identity and records both SHAs',async()=>{
+  const checked=[];
+  const get=api((p,v,n)=>{
+    if(p.endsWith('/git/ref/pull/400/merge'))v.object.sha=R;
+    if(p.endsWith(`/commits/${R}`)||p.endsWith(`/commits/${S}`))checked.push(v.sha);
+  });
+  assert.deepEqual(await liveIdentity(identity(),get),{...identity(),liveMerge:R});
+  assert.deepEqual(checked,[R]);
+  await assert.rejects(liveIdentity(identity(),api((p,v,n)=>{
+    if(p.endsWith('/git/ref/pull/400/merge'))v.object.sha=n===1?R:S;
+  })),/merge ref moved during validation/);
+});
+
+test('rebuilt merge proof rejects changed trees, parents, missing objects and inconsistent API identity',async()=>{
+  const changes=[v=>v.commit.tree.sha=B,v=>delete v.commit.tree,
+    v=>v.parents.reverse(),v=>v.parents.push({sha:P}),v=>v.parents[0].sha=P,
+    v=>v.parents[1].sha=P,v=>v.sha=M];
+  for(const read of [1,2])for(const change of changes){
+    const get=api((p,v,n)=>{
+      if(p.endsWith('/git/ref/pull/400/merge')&&n===read)v.object.sha=R;
+      if(p.endsWith(`/commits/${R}`))change(v);
+    });
+    await assert.rejects(liveIdentity(identity(),get),/merge rebuilt|merge ref moved/);
+  }
+  const get=api((p,v)=>{if(p.endsWith('/git/ref/pull/400/merge'))v.object.sha=R;});
+  await assert.rejects(liveIdentity(identity(),p=>{
+    if(p.endsWith(`/commits/${R}`))throw Error('API 404');
+    return get(p);
+  }),/API 404/);
+  await assert.rejects(liveIdentity(identity(),api((p,v)=>{
+    if(p.endsWith(`/commits/${M}`))delete v.commit.tree;
+  })),/merge tree/);
+});
+
+test('equivalent merge proof never permits moved base/head refs or an unsigned head',async()=>{
+  for(const read of [1,2])for(const changed of ['base','head','pull']){
+    await assert.rejects(liveIdentity(identity(),api((p,v,n)=>{
+      if(p.endsWith('/git/ref/pull/400/merge'))v.object.sha=R;
+      if(n!==read)return;
+      if(changed==='base'&&p.endsWith(`/git/ref/heads/${branch}`))v.object.sha=P;
+      if(changed==='head'&&p.includes('/git/ref/heads/')&&!p.endsWith(branch))v.object.sha=P;
+      if(changed==='pull'&&p.endsWith('/pulls/400'))v.head.sha=P;
+    })),/moved/);
+  }
+  await assert.rejects(liveIdentity(identity(),api((p,v)=>{
+    if(p.endsWith('/git/ref/pull/400/merge'))v.object.sha=R;
+    if(p.endsWith(`/commits/${H}`))v.commit.verification.verified=false;
+  })),/unsigned head/);
+});
+
+test('PR321 reopen regression accepts the recorded same-parent same-tree synthetic rebuild',async()=>{
+  const input={repositoryId:1296724484,pullNumber:321,
+    base:'21be466b5689a0b8df76249eb1c9249359a6d57a',head:'8b2211bcf8711e8e0a2c8e8404eed78fe03ae03e',
+    headRef:'codex/maintenance-entry-20261111',merge:'c4f582991c5bcb2aebda9f84a54a0816f9851cc0',
+    policy:'e3417d9e8b77824c854e00edbcebd486adc8cc20'};
+  const current='6c91a0ef3977d068b01fd7a1869ff57161cecb89', tree='a9737fb41e8ed046f1eccf684d7d3411ca095e05';
+  const root='/repos/splrad/steward';
+  const rows=new Map([
+    [`${root}/pulls/321`,{number:321,state:'open',base:{sha:input.base,ref:branch,repo:{id:1296724484}},
+      head:{sha:input.head,ref:input.headRef,repo:{id:1296724484}}}],
+    [`${root}/git/ref/heads/${branch}`,{object:{sha:input.base}}],
+    [`${root}/git/ref/heads/${input.headRef}`,{object:{sha:input.head}}],
+    [`${root}/git/ref/pull/321/merge`,{object:{sha:current}}],
+    [`${root}/commits/${input.head}`,{sha:input.head,commit:{verification:{verified:true,reason:'valid'}}}],
+    [`${root}/compare/${input.policy}...main`,{status:'identical',merge_base_commit:{sha:input.policy}}],
+  ]);
+  for(const value of [input.merge,current])rows.set(`${root}/commits/${value}`,
+    {sha:value,parents:[{sha:input.base},{sha:input.head}],commit:{tree:{sha:tree}}});
+  const get=async path=>{assert.ok(rows.has(path));return structuredClone(rows.get(path));};
+  assert.deepEqual(await liveIdentity(input,get),{...input,liveMerge:current});
+  rows.get(`${root}/commits/${current}`).commit.tree.sha=B;
+  await assert.rejects(liveIdentity(input,get),/merge rebuilt/);
 });
 
 test('merge identity permits same-PR workflow, test and tool updates while preserving historical recovery bytes',async()=>{
@@ -81,6 +157,10 @@ test('merge identity permits same-PR workflow, test and tool updates while prese
     git('checkout','base');git('merge','--no-ff','--no-gpg-sign','-m','merge','update');const merge=git('rev-parse','HEAD');
     const policy={immutable:{'history.txt':digest('historical\n')}};
     const source={base,head,merge};verifyTree(root,source,policy);
+    const rebuilt=git('commit-tree','HEAD^{tree}','-p',base,'-p',head,'-m','rebuilt synthetic merge');
+    git('checkout','--detach',rebuilt);
+    assert.throws(()=>verifyTree(root,source,policy),/checkout/);
+    git('checkout','--detach',merge);
     assert.throws(()=>verifyTree(root,{...source,head:base},policy),/merge parents/);
     assert.throws(()=>verifyTree(root,source,{immutable:{'history.txt':digest('modified')}}),/historical contract/);
     await writeFile(join(root,'history.txt'),'dirty workspace');verifyTree(root,source,policy);
