@@ -160,7 +160,8 @@
       "enabled": true,
       "groupName": "maintenance npm toolchain",
       "groupSlug": "maintenance-npm-toolchain",
-      "separateMajorMinor": false
+      "separateMajorMinor": false,
+      "skipInstalls": false
     }
   ],
   "customManagers": [
