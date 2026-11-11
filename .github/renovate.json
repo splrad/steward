@@ -87,6 +87,80 @@
       "prBodyNotes": [
         "GitHub REST API 升级须按官方 breaking changes 同步适配全部调用端、测试和构建产物；通过既有检查后再采用。"
       ]
+    },
+    {
+      "matchManagers": [
+        "nodenv",
+        "npm"
+      ],
+      "enabled": false
+    },
+    {
+      "matchBaseBranches": [
+        "maintenance/legacy-runtime-e990eda"
+      ],
+      "enabled": false
+    },
+    {
+      "matchBaseBranches": [
+        "maintenance/legacy-runtime-e990eda"
+      ],
+      "matchManagers": [
+        "nodenv"
+      ],
+      "matchFileNames": [
+        ".node-version"
+      ],
+      "matchPackageNames": [
+        "node"
+      ],
+      "enabled": true,
+      "groupName": "maintenance Node toolchain",
+      "groupSlug": "maintenance-node-toolchain",
+      "separateMajorMinor": false
+    },
+    {
+      "matchBaseBranches": [
+        "maintenance/legacy-runtime-e990eda"
+      ],
+      "matchManagers": [
+        "npm"
+      ],
+      "matchFileNames": [
+        "package.json"
+      ],
+      "matchDepTypes": [
+        "engines"
+      ],
+      "matchPackageNames": [
+        "node"
+      ],
+      "enabled": true,
+      "groupName": "maintenance Node toolchain",
+      "groupSlug": "maintenance-node-toolchain",
+      "separateMajorMinor": false
+    },
+    {
+      "matchBaseBranches": [
+        "maintenance/legacy-runtime-e990eda"
+      ],
+      "matchManagers": [
+        "npm"
+      ],
+      "matchFileNames": [
+        "package.json"
+      ],
+      "matchDepTypes": [
+        "packageManager",
+        "devDependencies"
+      ],
+      "matchPackageNames": [
+        "npm"
+      ],
+      "enabled": true,
+      "groupName": "maintenance npm toolchain",
+      "groupSlug": "maintenance-npm-toolchain",
+      "separateMajorMinor": false
     }
   ],
   "customManagers": [
@@ -130,7 +204,9 @@
   "enabledManagers": [
     "mise",
     "github-actions",
-    "custom.regex"
+    "custom.regex",
+    "nodenv",
+    "npm"
   ],
   "ignorePaths": [
     ".github/workflows/pr-title.yml",
@@ -159,6 +235,15 @@
       "transformTemplates": [
         "{\"releases\": $map($, function($v) { {\"version\": $v, \"isStable\": true} }), \"homepage\": \"https://docs.github.com/en/rest/about-the-rest-api/api-versions\", \"changelogUrl\": \"https://docs.github.com/en/rest/overview/breaking-changes\"}"
       ]
+    }
+  },
+  "baseBranchPatterns": [
+    "$default",
+    "maintenance/legacy-runtime-e990eda"
+  ],
+  "npm": {
+    "lockFileMaintenance": {
+      "enabled": false
     }
   }
 }
