@@ -5,11 +5,6 @@ on:
       runId:
         required: true
         type: string
-  workflow_run:
-    workflows:
-      - SPLRAD Steward / Release Build
-    types:
-      - completed
 permissions:
   contents: read
   actions: read

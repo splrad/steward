@@ -1,6 +1,27 @@
-# 工作流校验合同
+# 维护分支工作流校验
 
-## 普通工作流变更
+## 当前维护验证
+
+普通维护 PR 使用组织固定的中央 `maintenance-validation.yml`。实际采用的 policy SHA 以组织维护规则为准；受信来源执行同仓 PR、签名、base/head、事件 merge 与 live merge 身份核对，并在 source/final 两阶段验证。PR307 的 `workflow-contract.json` 与专用恢复 evaluator 按中央记录的摘要保留。
+
+工作流安全和语法检查由中央 policy 的 `discoverWorkflowFiles`、`scanWorkflows` 调用锁定 jactionlint/zizmor 工具，扫描候选实际 YAML；Actions 依赖锁由官方工具验证。普通工作流及同项目 Action 更新可在同一 PR 中审查，不要求与历史路径清单或完整 YAML 镜像相等。平台 required workflow 来源、必需检查、签名、审批及环境保护继续独立生效。
+
+构建测试、类型、配置和 dist 检查验证候选行为；这些测试属于可受审修改的候选自检。中央通用扫描不证明任意业务行为正确，代码审查、受影响功能测试和平台执行结果仍分别提供相应证据。旧发行执行合同保留原值，维护分支不承接仅允许默认分支的发行入口。
+
+本地 `scripts/verify-workflows.mjs` 是同一中央扫描的便利入口：须先按 [贡献说明](../CONTRIBUTING.md#本地环境与检查) 准备已采用 policy checkout、其锁定工具及 `STEWARD_WORKFLOW_POLICY_ROOT`。组织 required workflow 直接调用固定 policy，不依赖候选包装器的实现。
+
+### 保留行为与证据范围
+
+- 旧 validator、workflow evaluator、authority 和发行执行实现保留；发行及产品构建工作流未在本次修改。当前业务测试继续覆盖资产、来源、隔离和恢复逻辑，历史 workflow fixture 仅证明固定旧输入上的逻辑。
+- 本次仅停止 `release-build-complete.yml`、`sync-managed-labels.yml`、`sync-review-instructions.yml` 的旧 `workflow_run` 回调，保留其 `workflow_dispatch` 及原有其他触发器。当前维护入口测试覆盖该触发变化；执行授权和平台环境限制仍须满足。
+- 旧共享服务恢复使用固定 `POLICY_SHA=e990eda24ef7099264dada118b3e7ddfad883cea` 与 `WORKFLOW_EVALUATOR_SHA=2b1f04796de0231e74d40351dc0f4c8b07afe77d`，维护提交不替换这两个来源。中央摘要保护只针对指定历史文件，不代表全部当前业务 YAML 均被固定。
+- PR307 已合并关闭。历史复现不等于能够重新运行已合并 PR 的原始在线入口，也不等于已执行部署或恢复；服务交接按独立窗口和实际恢复证据验收。
+
+## PR307 旧合同历史记录
+
+以下内容保留旧运行时及 PR307 的合同、迁移和当时线上快照，用于历史恢复与复现。其旧清单、validate/fragments 镜像、工具约束和部署状态不作为普通维护 PR 的现行门禁；当前验证以上述中央原生维护入口及实际平台配置为准。
+
+### 普通工作流变更
 
 可信中央 runner 校验工作流安全边界。Steward 的 config/repositories.json 中 allowedWorkflowPaths 描述候选仓库的实际清单：同一个 PR 可以同步增加、删除或改名普通工作流及清单，不需要先向默认分支登记文件名。清单与实际文件必须完全一致。
 
@@ -12,7 +33,7 @@
 
 静态校验不证明任意 shell 命令安全，也不等于线上环境已具备审批。代码审查、平台环境保护和人工发布授权继续承担各自责任。
 
-## 部署隔离的合并前置条件
+### 部署隔离的合并前置条件
 
 检查时 steward-deployment 仅允许 main 分支，没有 required reviewers。main 上 runner/config 变更会触发部署，前置 PR 合入也不例外。
 
@@ -20,13 +41,13 @@
 
 通用合同启用要求可信执行器与运行时版本一致，具体顺序见 [工作流合同与可信入口迁移](workflow-contract-migration.md)。当前只有本地实现；线上启用需独立授权。
 
-## 验收依据
+### 验收依据
 
 正向覆盖普通工作流新增、改名、删除、清单同步及必需入口步骤显示名称变化。反向覆盖清单自授权、必需入口移除/替换/跳过/吞错、额外执行步骤、事件过滤、隐式/写权限、不固定 Action、本地 Action、凭据持久化、密钥混用、表达式密钥索引、PR环境、非许可 runner、重复 YAML 键及别名。
 
 端到端用例确认可信检查通过后仍执行下游任务，失败不会转换成成功。本地 #253 的 release-build.yml 和 product-build.yml 已采用 Windows/Linux 静态作业，并同步业务合同。真实 CI 运行仍待推送授权。
 
-## 凭据环境前提
+### 凭据环境前提
 
 受保护凭据仅存放在环境中，不能在仓库或组织层提供同名副本。持有凭据的环境须通过平台分支策略限制到默认分支；候选 YAML 的环境名称本身不能证明此限制已配置。`deployment: false` 保留环境分支策略，只取消 deployment 记录。每次启用或变更环境前须回读实际分支规则和 secret 名称元数据。
 

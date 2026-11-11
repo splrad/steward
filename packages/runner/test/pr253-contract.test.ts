@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import {readLegacyWorkflow} from './legacy-workflow-fixture.js';
 import {it,expect} from 'vitest';
 import YAML from 'yaml';
 import fixture from './fixtures/pr253-workflows.json' with {type:'json'};
@@ -18,7 +18,7 @@ it('uses an immutable real PR snapshot, not current workspace assumptions',()=>{
 });
 it('requires the catalog-based entry and allows retirement only with authority',async()=>{
  expect(()=>assertWorkflowDocument('.github/workflows/pr-validation.yml',document('pr-validation.yml'),approved)).toThrow('required trusted validation entry changed');
- const d=YAML.parse(await readFile('.github/workflows/pr-validation.yml','utf8'));
+ const d=YAML.parse(readLegacyWorkflow('pr-validation.yml'));
  expect(()=>assertWorkflowDocument('.github/workflows/pr-validation.yml',d)).toThrow('fragments');
  expect(()=>assertWorkflowDocument('.github/workflows/pr-validation.yml',d,approved)).not.toThrow();
 });

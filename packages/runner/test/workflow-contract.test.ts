@@ -1,5 +1,6 @@
+import {readLegacyWorkflow} from './legacy-workflow-fixture.js';
 import {describe,it,expect} from 'vitest';
-import {readFile,mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import YAML from 'yaml';
@@ -34,7 +35,7 @@ describe('contract integration',()=>{
   }finally{await rm(dir,{recursive:true,force:true});}
  });
  it('retires business fragments without replacing the trusted validator',async()=>{
-  const d=YAML.parse(await readFile('.github/workflows/pr-validation.yml','utf8'));
+  const d=YAML.parse(readLegacyWorkflow('pr-validation.yml'));
   delete d.jobs.fragments;
   expect(()=>assertRequiredValidation(d)).toThrow('fragments');
   expect(()=>assertRequiredValidation(d,'retired')).not.toThrow();
