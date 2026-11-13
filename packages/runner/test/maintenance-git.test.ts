@@ -22,7 +22,7 @@ it('creates central maintenance-only state, preserves requests after cache loss 
     const source=await git('rev-parse','HEAD'),identity={name:'Fixture',email:'fixture@example.invalid'},id=1296724484;
     const file=(path:string,content:string,previousSha256:string|null=null)=>({path,content,sha256:digest(content),previousSha256});
     const request=(name:string,changes:any[],expectedHead:string|null=null,writer='maintenance')=>({directory:join(root,name),remote,repositoryId:id,defaultBranch:'main',targetRef:'steward/release-state',writer,expectedHead,allowedPaths:changes.map(c=>c.path),changes,identity});
-    const refresh=async()=>{if(!(await git('ls-remote','--heads','--refs',remote,'refs/heads/steward/release-state')))return {remote,snapshot:{repositoryId:id,targetRef:'steward/release-state',head:null,domainRecords:[],currentPaths:[]}};const snapshot=await readReleaseRecords({directory:remote,targetRef:'steward/release-state',repositoryId:id});return {remote,snapshot,readBytes:async(path:string)=>Buffer.from((await promisify(execFile)('git',['show',`${snapshot.head}:${path}`],{cwd:remote,env,encoding:'utf8',windowsHide:true})).stdout)};};
+    const refresh=async()=>{if(!(await git('ls-remote','--heads','--refs',remote,'refs/heads/steward/release-state')))return {remote,snapshot:{repositoryId:id,targetRef:'steward/release-state',head:null,domainRecords:[],currentPaths:[]}};const snapshot=await readReleaseRecords({directory:remote,targetRef:'steward/release-state',repositoryId:id,maintenanceOnly:true});return {remote,snapshot,readBytes:async(path:string)=>Buffer.from((await promisify(execFile)('git',['show',`${snapshot.head}:${path}`],{cwd:remote,env,encoding:'utf8',windowsHide:true})).stdout)};};
     const store=maintenanceGitStore({refresh,writeDirectory:join(root,'writes'),defaultBranch:'main',identity});
     const record:any={schemaVersion:1,repositoryId:id,workflowFile:'settings-sync.yml',workflowId:5,runId:12,headSha:source,headBranch:'main',event:'schedule',createdAt:'2026-10-30T00:00:00.000Z',runAttempt:1,conclusion:'failure',jobs:[{id:1,key:'settings-sync',matrixIndex:null,attempt:1,conclusion:'failure',empty:null,found:null}],observedAt:'2026-10-31T00:00:00.000Z',requests:[]};
     expect(await store.list()).toEqual([]);
@@ -48,8 +48,11 @@ it('creates central maintenance-only state, preserves requests after cache loss 
     expect((await git('show','-s','--format=%B','steward/release-state')).match(/^Signed-off-by:/gm)).toHaveLength(1);
     await git('switch','steward/release-state');await mkdir(join(remote,'generated'));await writeFile(join(remote,'generated','foreign.md'),'Foreign product history\n');
     await git('add','generated/foreign.md');await git('commit','--signoff','-m','Fixture foreign historical owner');
+    await expect(store.list()).rejects.toThrow('central maintenance history');
     await git('rm','generated/foreign.md');await git('commit','--signoff','-m','Fixture removed current clue');
     const foreignHead=await git('rev-parse','HEAD');await git('switch','main');
+    await expect(store.list()).rejects.toThrow('central maintenance history');
+    await expect(store.load(12)).rejects.toThrow('central maintenance history');
     const advanced={...claimed,observedAt:'2026-11-01T00:00:00.000Z'};
     await expect(writeReleaseRecords(request('historical-owner',[file('maintenance/12.json',JSON.stringify(advanced)+'\n',digest(JSON.stringify(claimed)+'\n'))],foreignHead))).rejects.toThrow('central maintenance history');
     expect(await git('rev-parse','steward/release-state')).toBe(foreignHead);

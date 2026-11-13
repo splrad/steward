@@ -215,7 +215,7 @@ export async function fetchState(root,repository,token,targetRef='steward/releas
       await git('update-ref','refs/heads/steward/governance-state',actual);
     }
   }
-  const snapshot=await readReleaseRecords({directory,targetRef,repositoryId:repository.id,includeHistory});
+  const snapshot=await readReleaseRecords({directory,targetRef,repositoryId:repository.id,includeHistory,maintenanceOnly:centralFirstUse&&targetRef==='steward/release-state'});
   const lastServedAt=(await git('show','-s','--format=%cI',head)).toString().trim();
   const readBytes=async path=>git('show',`${head}:${path}`);
   return {directory,remote,io,snapshot,lastServedAt,readBytes};
