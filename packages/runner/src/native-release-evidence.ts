@@ -135,14 +135,25 @@ export class NativeEvidenceReader {
     return {digest:hash(bytes),size:bytes.length};
   }
   async pages(path: string, field: string, identity: 'id' | 'name' = 'id'): Promise<any[]> {
-    let total: number | null = null;
+    let total: number | null = null, canonicalRepositoryId: number | undefined;
     const first = this.path(`${path}${path.includes('?') ? '&' : '?'}per_page=100`), endpoint = new URL(first, 'https://api.github.com');
     const values = await collectAllPages<any>(first, async next => {
       const url = new URL(next, 'https://api.github.com');
-      check(url.origin === endpoint.origin && url.pathname === endpoint.pathname && !url.username && !url.password && !url.hash, 'pagination origin');
-      for (const [key, value] of endpoint.searchParams) check(url.searchParams.get(key) === value, 'pagination query');
+      check(url.origin === endpoint.origin && !url.username && !url.password && !url.hash, 'pagination origin');
+      if (url.pathname !== endpoint.pathname) {
+        const alias = /^\/repositories\/([1-9][0-9]*)(\/.*)?$/.exec(url.pathname);
+        check(alias && (alias[2] ?? '') === endpoint.pathname.slice(this.path('').length), 'pagination origin');
+        if (canonicalRepositoryId === undefined) {
+          const repository = await this.json('');
+          check(positive(repository.id) && repository.full_name === this.repository, 'pagination repository identity');
+          canonicalRepositoryId = repository.id;
+        }
+        check(alias[1] === String(canonicalRepositoryId), 'pagination repository identity');
+      }
+      for (const key of endpoint.searchParams.keys()) check(same(url.searchParams.getAll(key), endpoint.searchParams.getAll(key)), 'pagination query');
       check([...url.searchParams.keys()].every(key => endpoint.searchParams.has(key) || key === 'page'), 'pagination query');
-      const response = await this.io.request('GET', url.pathname + url.search);
+      // Keep the named endpoint so credential-routing boundaries remain unchanged.
+      const response = await this.io.request('GET', endpoint.pathname + url.search);
       if (response.status !== 200) throw new EvidenceReadError(response.status, response.headers.get('retry-after'));
       const body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(response.bytes));
       check(field ? Number.isSafeInteger(body.total_count) && body.total_count >= 0 && Array.isArray(body[field]) : Array.isArray(body), 'pagination envelope');
