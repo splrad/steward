@@ -88,7 +88,9 @@ export async function coordinateReleaseWake({discover,observe,service,health,mai
       try {
         const result=await service(item.repository);
         if(result.status==='COMPLETE')counts.completed++;
-        else if(['WAIT','BOUND','SATISFIED','OBSERVED','ACCEPTED'].includes(result.status))counts.waiting++;
+        // A prepared candidate and a protected notes edit both await human action.
+        else if(['READY','WAIT','BOUND','SATISFIED','OBSERVED','ACCEPTED'].includes(result.status)
+          || result.status==='CONFLICT'&&result.reason==='HUMAN_EDIT_CONFLICT')counts.waiting++;
         else {counts.unknown++;scanComplete=false;errors.add('NATIVE_EVIDENCE_REQUIRED');}
       }catch(error){counts.failed++;scanComplete=false;errors.add(safeCode(error));}
     }
