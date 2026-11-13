@@ -1,0 +1,9 @@
+# LayerScape 初始化诊断
+
+初始化入口仅接受准确controller main、产品head、原PR176采用记录和显式授权，保持首attempt限制及既有state保护。诊断不改变写入合同，也不自动重派。
+
+运行逐阶段输出INITIALIZATION_DIAGNOSTIC。凭据仅以进程内credential-1/2关联；允许输出官方响应中的数值repositoryIds/totalCount、固定permissions字段的read/write值、ISO expiresAt及各次issue/scope/revoke HTTP状态。App私钥、token、请求URL/query/header、任意响应正文和异常message/stack/stdout/stderr均不输出。GraphQL HTTP200中的错误仅记录数量。缺失字段保持null/UNAVAILABLE，不能当作已验证权限或撤销成功。
+
+release与candidate-read沿用现有单仓scope校验与finally撤销。可选错误观察器在这两个用途的finally之前保存首个安全失败摘要；清理失败继续记录且不掩盖原阶段。每个凭据实际撤销HTTP结果独立留证，源码存在finally不等于真实撤销已完成。后续本地临时目录清理也不能覆盖先前诊断或提前输出APPLIED。
+
+STOPPED仅输出固定错误码及安全摘要。发生失败或响应不明后，先读取目标release-state及matching-refs/原生历史，再判定写入是否生效。原错误记录保留；仅由后续准确授权窗口决定修正后执行，不删除state、重置原A/P或盲目rerun。

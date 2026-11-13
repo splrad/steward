@@ -2,7 +2,7 @@ import { createAppAuth } from '@octokit/auth-app';
 import { Octokit } from '@octokit/rest';
 import { GITHUB_API_VERSION } from './api-version.js';
 /** Repository access is scoped per call. Organization administration remains organization-wide. */
-export async function nativeReleaseApp(privateKey: string, transport: typeof fetch = fetch) {
+export async function nativeReleaseApp(privateKey: string, transport: typeof fetch = fetch, onFailure: (error: unknown) => void = () => {}) {
   const versionedFetch:typeof fetch=(url,init)=>{
     const headers=new Headers(init?.headers);headers.set('X-GitHub-Api-Version',GITHUB_API_VERSION);
     return transport(url,{...init,headers});
@@ -68,7 +68,7 @@ export async function nativeReleaseApp(privateKey: string, transport: typeof fet
       const scope=(await credential.client.request('GET /installation/repositories',{per_page:100})).data;
       if(scope.total_count!==1||scope.repositories.length!==1||scope.repositories[0]?.id!==repositoryId)throw new Error('RELEASE_TOKEN_SCOPE');
       return await operation(credential.token);
-    }finally{await credential.revoke();}
+    }catch(error){onFailure(error);throw error;}finally{await credential.revoke();}
   },async forCandidateRepository<T>(repositoryId:number,operation:(writeToken:string,readToken:string)=>Promise<T>):Promise<T>{
     if(!Number.isSafeInteger(repositoryId)||repositoryId<1)throw new Error('RELEASE_REPOSITORY_ID');
     const write=await token(repositoryId,'candidate');
@@ -108,6 +108,6 @@ export async function nativeReleaseApp(privateKey: string, transport: typeof fet
       const scope=(await credential.client.request('GET /installation/repositories',{per_page:100})).data;
       if(scope.total_count!==1||scope.repositories.length!==1||scope.repositories[0]?.id!==repositoryId)throw new Error('RELEASE_TOKEN_SCOPE');
       return await operation(credential.token);
-    }finally {await credential.revoke();}
+    }catch(error){onFailure(error);throw error;}finally {await credential.revoke();}
   }};
 }
