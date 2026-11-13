@@ -289,7 +289,16 @@ export async function refreshWorkflowContractChecks(env: Env, repositoryId: numb
     const head = commitSha(pull.head?.sha);
     if (!head || pull.state !== "open" || pull.base?.ref !== repository.default_branch) continue;
     if (Number.isSafeInteger(pull.number) && pull.number > 0 && (pullNumber === undefined || pull.number === pullNumber)
-      && pull.base?.repo?.id === repositoryId && legacyValidationRetired(env, repository, pull.base?.ref)) continue;
+      && pull.base?.repo?.id === repositoryId && legacyValidationRetired(env, repository, pull.base?.ref)) {
+      let retired = false;
+      try {
+        const current = await gh.getPullRequest(owner, repo, pull.number);
+        retired = current.number === pull.number && current.state === 'open' && current.base?.repo?.id === repositoryId
+          && current.base?.ref === pull.base.ref && current.head?.sha === head
+          && await currentValidationRetirement(env, gh, repository, current.base.ref);
+      } catch { /* Missing fresh PR metadata does not authorize stopping the historical writer. */ }
+      if (retired) continue;
+    }
     const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, head, "all"), head, Number(env.APP_ID), repositoryId, pull.number);
     let run = checks.reduce<number | null>((latest, check) => check.state.runId !== null && (latest === null || check.state.runId > latest) ? check.state.runId : latest, null);
     try { // Discover runs even when every webhook was lost and no Gate exists.

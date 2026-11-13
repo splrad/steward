@@ -193,4 +193,27 @@ describe('exact legacy Gate consumer retirement', () => {
       expect(GitHubClient.prototype.createCheckRun).toHaveBeenCalledWith('splrad', 'steward', expect.objectContaining({ name: 'PR Validation Gate' }));
     }
   });
+
+  it.each(['renamed', 'default-changed', 'target-changed', 'head-changed', 'pr-unavailable'])('rechecks each batch PR before skipping when %s after initial reads', async kind => {
+    const repository = repositories[1]!;
+    const readRepository = vi.mocked(GitHubClient.prototype.getRepositoryById);
+    readRepository.mockResolvedValueOnce(repository).mockResolvedValue({ ...repository,
+      ...(kind === 'renamed' ? { full_name: 'splrad/renamed' } : kind === 'default-changed' ? { default_branch: 'next' } : {}),
+    });
+    const current = { ...pull(kind === 'target-changed' ? 'release' : 'main'),
+      ...(kind === 'head-changed' ? { head: { ...pull().head, sha: 'd'.repeat(40) } } : {}),
+    };
+    const readPull = vi.mocked(GitHubClient.prototype.getPullRequest).mockResolvedValue(current);
+    if (kind === 'pr-unavailable') readPull.mockRejectedValueOnce(new Error('transient metadata error'));
+    vi.spyOn(GitHubClient.prototype, 'paginate').mockImplementation(async (_path, select: any) => {
+      select({ total_count: 0, workflow_runs: [] }); return [];
+    });
+    await refreshWorkflowContractChecks(env(), repository.id);
+    // The original refresh path must run, rather than silently treating a stale
+    // batch listing/default as sufficient evidence to suppress the writer.
+    expect(GitHubClient.prototype.listAllCheckRuns).toHaveBeenCalled();
+    expect(GitHubClient.prototype.paginate).toHaveBeenCalled();
+    if (['renamed', 'default-changed', 'pr-unavailable'].includes(kind)) expect(GitHubClient.prototype.createCheckRun).toHaveBeenCalled();
+    else noGateWrites(); // The original live-target check rejects these changed PRs.
+  });
 });
