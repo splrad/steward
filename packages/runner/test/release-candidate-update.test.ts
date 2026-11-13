@@ -137,6 +137,73 @@ async function controllerFixture() {
   };
   return { ...f, io, session, pr, comments, saved, setSnapshot: (value: CandidateSnapshot) => { snapshot = value; }, pushes: () => pushes, generations: () => generations };
 }
+function staleContributors(f: Awaited<ReturnType<typeof controllerFixture>>) {
+  const actor = (id: number, login: string) => ({ id, login, type: 'User', profileUrl: `https://github.com/${login}`, avatarUrl: `https://avatars.githubusercontent.com/u/${id}` });
+  const actors = [actor(7, 'repository-author'), actor(44, 'human-committer'), actor(19864447, 'web-flow'), null];
+  const contributors = { contributors: actors.slice(1, 3).map(value => {
+    const { type, ...profile } = value!; return { ...profile, alt: profile.login };
+  }), unresolved: 1 };
+  f.session.identity = { authorsDigest: digest, sourceDigest: digest, actors, contributors,
+    units: [{ id: 'app', actors: structuredClone(actors), contributors: structuredClone(contributors) }] };
+  f.session.preview = 'Old preview with web-flow';
+  f.session.repository.candidate!.statusCommentId = 10;
+  f.comments.push({ id: 10, authorId: 42, body: `<!-- steward:candidate-status:${digest} -->\nOld preview with web-flow` });
+  f.io.content = async () => { throw Error('must not call content or its model/cache writer'); };
+}
+it.each(['editing', 'human-conflict', 'source-conflict'])(
+  'refreshes cached identity during %s without changing native actors or protected candidate files', async kind => {
+    const f = await controllerFixture(); staleContributors(f);
+    const path = kind === 'source-conflict' ? 'code.txt' : '.release-notes/app.md';
+    const human = await f.commit(path, kind === 'source-conflict' ? 'Human source\n' : f.notes.replace('原来概述', '人工概述'));
+    f.pr.head = human; f.pr.editing = kind === 'editing';
+    const before = structuredClone(f.session), blob = await f.git('rev-parse', `${human}:${path}`);
+    const result = await advanceReleaseCandidate(f.session, f.io);
+    expect(result).toMatchObject({ status: kind === 'editing' ? 'WAIT' : 'CONFLICT',
+      reason: kind === 'editing' ? 'EDITING' : kind === 'source-conflict' ? 'SOURCE_CHANGED' : 'HUMAN_EDIT_CONFLICT' });
+    expect(f.session.identity!.contributors.contributors.map(c => c.id)).toEqual([44]);
+    expect(f.session.identity!.units[0]!.contributors.contributors.map(c => c.id)).toEqual([44]);
+    expect(f.session.identity!.contributors.unresolved).toBe(1);
+    expect(f.session.identity!.actors).toEqual(before.identity!.actors);
+    expect(f.session.identity!.units[0]!.actors).toEqual(before.identity!.units[0]!.actors);
+    expect(f.session.identity!.authorsDigest).toBe(before.identity!.authorsDigest);
+    expect(f.session.identity!.sourceDigest).toBe(before.identity!.sourceDigest);
+    expect(f.session.generated).toEqual(before.generated); expect(f.session.repository.candidate).toEqual(before.repository.candidate);
+    expect(f.pr.head).toBe(human); expect(f.pr.body).toBe('Human metadata');
+    expect(await f.git('rev-parse', `${f.pr.head}:${path}`)).toBe(blob);
+    expect(f.pushes()).toBe(0); expect(f.generations()).toBe(0);
+    expect(f.comments.find(c => c.id === 10)!.body).toContain(human);
+    expect(f.comments.find(c => c.id === 10)!.body).not.toContain('web-flow');
+    expect(f.comments[0]!.body).toContain('Human comment');
+    if (kind === 'editing') expect(f.session.preview).toContain('已暂停');
+    else expect(f.session.conflict).toEqual({ head: human, generated: before.generated, paths: [path] });
+  });
+it('reconciles a stale public conflict preview after the corrected projection was already persisted', async () => {
+  const f = await controllerFixture(); staleContributors(f);
+  f.pr.head = await f.commit('.release-notes/app.md', f.notes.replace('原来概述', '人工概述'));
+  const update = f.io.updateComment; let attempts = 0;
+  f.io.updateComment = async (id, body) => { if (++attempts === 1) throw Error('comment unavailable'); await update(id, body); };
+  await expect(advanceReleaseCandidate(f.session, f.io)).rejects.toThrow('comment unavailable');
+  expect(f.saved.at(-1)!.identity!.contributors.contributors.map(c => c.id)).toEqual([44]);
+  expect(f.comments.find(c => c.id === 10)!.body).toContain('web-flow');
+  const restored = structuredClone(f.saved.at(-1)!);
+  expect(await advanceReleaseCandidate(restored, f.io)).toMatchObject({ reason: 'HUMAN_EDIT_CONFLICT' });
+  expect(f.comments.find(c => c.id === 10)!.body).not.toContain('web-flow');
+  expect(await advanceReleaseCandidate(restored, f.io)).toMatchObject({ reason: 'HUMAN_EDIT_CONFLICT' });
+  expect(attempts).toBe(2); expect(f.comments).toHaveLength(2);
+  expect(f.pushes()).toBe(0); expect(f.generations()).toBe(0);
+});
+it.each(['source', 'authors', 'units', 'base', 'closed'])(
+  'does not reinterpret frozen contributor evidence with %s mismatch or closed ownership', async kind => {
+    const f = await controllerFixture(); staleContributors(f); f.pr.editing = true;
+    if (kind === 'source') f.session.identity!.sourceDigest = 'e'.repeat(64);
+    if (kind === 'authors') f.session.identity!.authorsDigest = 'e'.repeat(64);
+    if (kind === 'units') f.session.identity!.units[0]!.id = 'other';
+    if (kind === 'base') f.session.generated!.baseSha = 'e'.repeat(40);
+    if (kind === 'closed') { f.pr.state = 'closed'; f.pr.merged = true; }
+    const frozen = structuredClone(f.session.identity);
+    expect(await advanceReleaseCandidate(f.session, f.io)).toMatchObject({ reason: kind === 'closed' ? 'MERGED_SOURCE_HANDOFF' : 'EDITING' });
+    expect(f.session.identity).toEqual(frozen); expect(f.pushes()).toBe(0); expect(f.generations()).toBe(0);
+  });
 it('a large same-PR preview links the exact archive commit and changes only the bot-owned comment', async () => {
   const f = await controllerFixture(), text = '## 更新内容\n\n' + '发布内容\n'.repeat(6000); f.setSnapshot(f.snapshot(f.B, text));
   expect(await advanceReleaseCandidate(f.session, f.io)).toMatchObject({ status: 'READY', prNumber: 9 });
