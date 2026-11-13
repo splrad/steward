@@ -25,6 +25,46 @@ it('reads Pages state only after validating both governance writers and an unbyp
   expect(reads.some(path=>path.includes('/git/ref/'))).toBe(false);
 });
 const START=Date.parse('2026-10-27T00:00:00Z');
+async function observeCandidate(candidate:any,maintenanceErrors:string[]=[],cycleUnknown=false) {
+  const calls:string[]=[],snapshot={repository:{activeCycleId:null,candidate:{prNumber:9}},
+    cycles:cycleUnknown?[{value:{id:'old',completedEvidencePath:'old.json',dispatches:[]}}]:[]};
+  const original=structuredClone(candidate);
+  const summary=await coordinateReleaseWake({discover:async()=>[{id:1},{id:2}],observe:async()=>({}),
+    maintenance:async()=>({errorCodes:maintenanceErrors}),health:async()=>{},
+    service:async(repo:any)=>{
+      calls.push(`repository:${repo.id}`);
+      if(repo.id===2)return {status:'WAIT',reason:'EDITING'};
+      return serviceReleaseWake({},async()=>snapshot,async(command:string)=>{
+        calls.push(command);return command==='candidate'?candidate:{status:'UNKNOWN',reason:'NATIVE_EVIDENCE_REQUIRED'};
+      });
+    }},()=>START);
+  expect(candidate).toEqual(original);
+  expect(calls.at(-1)).toBe('repository:2');
+  if(!cycleUnknown)expect(calls).toEqual(['repository:1','candidate','repository:2']);
+  return summary;
+}
+it.each([{status:'READY',prNumber:9},
+  {status:'CONFLICT',reason:'HUMAN_EDIT_CONFLICT',conflict:{head:'human',generated:'bot',paths:['.release-notes/app.md']}}])(
+  'counts a protected candidate as waiting without losing its result or blocking another repository: %j',async candidate=>{
+    const summary=await observeCandidate(candidate);
+    expect(summary.counts).toEqual({scanned:2,completed:0,waiting:2,failed:0,unknown:0});
+    expect(summary.errorCodes).toEqual([]);expect(summary.scanCompletedAt).toBe(new Date(START).toISOString());
+  });
+it.each([{status:'CONFLICT',reason:'SOURCE_CHANGED'},{status:'CONFLICT'},
+  {status:'UNKNOWN',reason:'HUMAN_EDIT_CONFLICT'},{status:'BLOCKED'}])(
+  'keeps unresolved candidate evidence unknown while serving another repository: %j',async candidate=>{
+    const summary=await observeCandidate(candidate);
+    expect(summary.counts).toEqual({scanned:2,completed:0,waiting:1,failed:0,unknown:1});
+    expect(summary.errorCodes).toEqual(['NATIVE_EVIDENCE_REQUIRED']);expect(summary.scanCompletedAt).toBeNull();
+  });
+it('does not let a ready candidate clear independent maintenance or cycle evidence failures',async()=>{
+  const maintenance=await observeCandidate({status:'READY'},['MAINTENANCE_EVIDENCE_REQUIRED']);
+  expect(maintenance.counts.waiting).toBe(2);expect(maintenance.counts.unknown).toBe(0);
+  expect(maintenance.errorCodes).toEqual(['MAINTENANCE_EVIDENCE_REQUIRED']);expect(maintenance.scanCompletedAt).toBeNull();
+  const cycle=await observeCandidate({status:'READY'},[],true);
+  expect(cycle.counts.unknown).toBe(1);expect(cycle.errorCodes).toEqual(['NATIVE_EVIDENCE_REQUIRED']);
+  expect(cycle.scanCompletedAt).toBeNull();
+});
 it('services the least recently served repositories first, isolates failures and emits only aggregate health',async()=>{
   const calls:number[]=[],health:any[]=[];
   const summary=await coordinateReleaseWake({discover:async()=>[{id:1,full_name:'private/secret'},{id:2},{id:3}],

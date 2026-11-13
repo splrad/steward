@@ -6,6 +6,8 @@
 
 App 安装可见性不等于发行参与资格。协调器按准确默认分支读取 `.github/delivery.json`、Release Please 配置/版本清单与既存状态；确认无上述配置且无产品状态、候选/构建 ref 或原生发行线索的仓库，发行判为 `NOT_APPLICABLE`，Pages 与维护仍独立。已有发行义务但配置删除、配置残缺、读取失败或状态漂移均保留错误；有效产品缺少初始化状态仍报 `RELEASE_BOOTSTRAP_REQUIRED`，不自动创建产品接管记录。
 
+候选 `READY` 表示已准备完成、等待人工审阅，健康摘要计入 `waiting`，不表示发行完成。仅准确的 `CONFLICT` / `HUMAN_EDIT_CONFLICT` 组合也计入 `waiting`：人工发行说明受到保护，原冲突的 head、generated 与 paths 保持。`SOURCE_CHANGED`、缺少 reason 的冲突及 `UNKNOWN` / `BLOCKED` 仍计入未知；周期或渠道聚合的未知结果不受此候选分类影响。独立维护错误仍保留，扫描仍判为不完整。
+
 | 固定入口 | 业务作业 |
 | --- | --- |
 | sync-managed.yml | bootstrap、templates |
