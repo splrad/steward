@@ -108,14 +108,18 @@ async function verifyMaintenanceJobs(r, api, readLog, headRef, baseSha) {
     if (candidates.length !== 1 || value.repositoryId !== 1296724484 || value.pullNumber !== r.pullNumber
       || value.head !== r.reviewedHead || value.headRef !== headRef || value.policy !== e.validationWorkflowSha
       || value.runId !== String(e.validationRunId) || value.attempt !== String(e.validationRunAttempt)
-      || !sha(value.base) || value.base !== baseSha || !sha(value.merge) || value.liveMerge !== value.merge
+      || !sha(value.base) || value.base !== baseSha || !sha(value.merge) || !sha(value.liveMerge)
       || value.deployment !== 'NOT_AUTHORIZED') throw new Error('Maintenance job record identity mismatch');
     records.push(value);
   }
-  if (records[0].base !== records[1].base || records[0].merge !== records[1].merge) throw new Error('Maintenance source/final merge identity changed');
-  const merge = await api(`commits/${records[0].merge}`);
-  if (merge.sha !== records[0].merge || merge.parents?.length !== 2 || merge.parents[0].sha !== baseSha
-    || merge.parents[1].sha !== r.reviewedHead || merge.commit?.tree?.sha !== r.deploymentTree) throw new Error('Maintenance event merge is not the adopted PR tree');
+  if (records[0].base !== records[1].base || records[0].merge !== records[1].merge
+    || records[0].liveMerge !== records[1].liveMerge) throw new Error('Maintenance source/final merge identity changed');
+  // Reopening a PR can regenerate the synthetic merge SHA without changing its parents/tree.
+  for (const mergeSha of new Set([records[0].merge, records[0].liveMerge])) {
+    const merge = await api(`commits/${mergeSha}`);
+    if (merge.sha !== mergeSha || merge.parents?.length !== 2 || merge.parents[0].sha !== baseSha
+      || merge.parents[1].sha !== r.reviewedHead || merge.commit?.tree?.sha !== r.deploymentTree) throw new Error('Maintenance event merge is not the adopted PR tree');
+  }
 }
 
 export async function verifyAdoptionSource(r, api, pull, readLog) {

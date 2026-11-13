@@ -134,6 +134,16 @@ describe('central adoption record and native deployment identity', () => {
     });
     await expect(verifyAdoptionSource(f.record,f.api,f.pull,f.readLog)).rejects.toThrow();
   });
+  it.each(['valid','wrongParents','wrongTree','phaseChanged'])('checks regenerated event/live merge identities: %s',async mode=>{
+    const f=adoptionFixture(),original=f.api.getMockImplementation()!;
+    const logs=Object.fromEntries(['source','final'].map(phase=>{const v=JSON.parse(jobLog(phase).split('Z ')[1]!);v.liveMerge=mode==='phaseChanged'&&phase==='final'?'4'.repeat(40):'8'.repeat(40);return [phase,'2026-01-01T00:00:00Z '+JSON.stringify(v)];})) as Record<'source'|'final',string>;
+    f.readLog.mockImplementation(async id=>logs[id===6?'source':'final']);
+    f.record.evidence.validationSourceLogSha256=createHash('sha256').update(logs.source).digest('hex');
+    f.record.evidence.validationFinalLogSha256=createHash('sha256').update(logs.final).digest('hex');
+    f.api.mockImplementation(async path=>{const v=await original(path);if(path==='commits/'+'8'.repeat(40)){if(mode==='wrongParents')v.parents[0].sha='9'.repeat(40);if(mode==='wrongTree')v.commit.tree.sha='9'.repeat(40);}return v;});
+    if(mode==='valid')await expect(verifyAdoptionSource(f.record,f.api,f.pull,f.readLog)).resolves.toBeUndefined();
+    else await expect(verifyAdoptionSource(f.record,f.api,f.pull,f.readLog)).rejects.toThrow();
+  });
   it.each(['event','workflow','repository','branch','suiteApp','jobAttempt','jobRun','jobHead','jobName','jobFailure','association','policySignature','policyAncestry','baseSha','mergeParents','mergeTree'])('rejects incorrect maintenance binding: %s',async mode=>{
     const f=adoptionFixture(), original=f.api.getMockImplementation()!;
     f.api.mockImplementation(async path=>{
@@ -174,6 +184,7 @@ describe('central adoption record and native deployment identity', () => {
         if(mode==='pullNumber') v.pullNumber++;
         else if(mode==='attempt'||mode==='runId') v[mode]='2';
         else if(mode==='phase') v.phase='unexpected';
+        else if(mode==='liveMerge') v.liveMerge='invalid';
         else if(mode!=='finalMerge') v[mode]='9'.repeat(40);
         log='2026-01-01T00:00:00Z '+JSON.stringify(v);
       }
