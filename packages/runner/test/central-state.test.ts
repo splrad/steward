@@ -91,6 +91,12 @@ it('keeps Pages independent and completes a scan of explicitly inapplicable repo
   const s=await coordinateReleaseWake({discover:async()=>[{id:1}],pages:async()=>{pages++;return {status:'DISABLED'};},observe:async()=>({status:'NOT_APPLICABLE'}),service:async()=>{service++;return {};},health:async()=>{}});
   expect(pages).toBe(1);expect(service).toBe(0);expect(s.scanCompletedAt).not.toBeNull();expect(s.counts.completed).toBe(1);
 });
+it('records service-stage participation drift as an incomplete failed scan rather than ordinary waiting',async()=>{
+  let sideEffects=0;const reports:any[]=[];
+  const s=await coordinateReleaseWake({discover:async()=>[{id:1},{id:2}],observe:async()=>({status:'APPLICABLE'}),
+    service:async(r:any)=>{if(r.id===1)throw Error('RELEASE_PARTICIPATION_CHANGED');sideEffects++;return {status:'WAIT'};},health:async(s:any)=>reports.push(s)});
+  expect(s.scanCompletedAt).toBeNull();expect(s.errorCodes).toContain('RELEASE_PARTICIPATION_CHANGED');expect(s.counts.failed).toBe(1);expect(s.counts.waiting).toBe(1);expect(sideEffects).toBe(1);expect(reports).toEqual([s]);
+});
 it.each(['release-candidate','build/','releases'])('rejects changed absence evidence for %s',async changed=>{
   const counts=new Map<string,number>();
   const io={request:async(_method:string,path:string)=>{

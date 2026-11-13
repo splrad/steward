@@ -261,7 +261,7 @@ export async function main() {
         return {lastServedAt:state.lastServedAt,nextCheckAt:null};
       }),
       service:repository=>app.forRepository(repository.id,async token=>{
-        if((await releaseParticipation(repository,nativeEvidenceTransport(token))).status!=='APPLICABLE')return {status:'WAIT',reason:'RELEASE_PARTICIPATION_CHANGED'};
+        if((await releaseParticipation(repository,nativeEvidenceTransport(token))).status!=='APPLICABLE')throw new Error('RELEASE_PARTICIPATION_CHANGED');
         const writeDirectory=await mkdtemp(join(root,'writes-'));let state;
         const request={directory:'',writeDirectory,remote:`https://github.com/${repository.full_name}.git`,repository:repository.full_name,repositoryId:repository.id,
           defaultBranch:repository.default_branch,appBotId:app.appBotId,cycleId:null,runId:null,identity};
