@@ -31,7 +31,7 @@ export function initializationDiagnostics(emit=()=>{}) {
     let response;
     try {response=await fetcher(url,init);}catch(error){record({event:'request-failed',phase,operation:mint?'issue':scope?'scope':revoke?'revoke':nativeOperation,credential:purpose??null,errorKind:kind(error)});throw error;}
     if(mint||scope||revoke) {
-      const event={event:'credential',phase,operation:mint?'issue':scope?'scope':'revoke',credential:purpose??null,httpStatus:status(response.status)};
+      const event={event:'credential',phase,operation:mint?'issue':scope?'scope':'revoke',credential:purpose??null,httpStatus:status(response.status),expiresAt:null,permissions:null,repositoryIds:null,totalCount:null};
       if(mint||scope) {
         // A diagnostic parse cannot consume or change the response seen by the official SDK.
         try {
@@ -40,9 +40,12 @@ export function initializationDiagnostics(emit=()=>{}) {
             const label='credential-'+(credentials.size+1);credentials.set(body.token,label);event.credential=label;
             event.expiresAt=typeof body.expires_at==='string'&&/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{3})?Z$/.test(body.expires_at)?body.expires_at:null;
             const allowed=['metadata','contents','actions','checks','administration','organization_administration','pull_requests','issues'];
-            event.permissions=Object.fromEntries(allowed.filter(k=>['read','write'].includes(body.permissions?.[k])).map(k=>[k,body.permissions[k]]));
+            if(body.permissions&&typeof body.permissions==='object'&&!Array.isArray(body.permissions)) {
+              const entries=allowed.filter(k=>['read','write'].includes(body.permissions[k])).map(k=>[k,body.permissions[k]]);
+              if(entries.length||Object.keys(body.permissions).length===0)event.permissions=Object.fromEntries(entries);
+            }
           }
-          if(Array.isArray(body.repositories))event.repositoryIds=body.repositories.slice(0,100).map(r=>r?.id).filter(Number.isSafeInteger);
+          if(Array.isArray(body.repositories)&&body.repositories.length<=100&&body.repositories.every(r=>Number.isSafeInteger(r?.id)&&r.id>0))event.repositoryIds=body.repositories.map(r=>r.id);
           if(scope)event.totalCount=Number.isSafeInteger(body.total_count)?body.total_count:null;
         }catch {event.metadata='UNAVAILABLE';}
       }

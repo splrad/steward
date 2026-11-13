@@ -43,7 +43,7 @@ it.each([{cleanupFails:false,scopeFails:false},{cleanupFails:true,scopeFails:fal
 it('malformed diagnostic body does not consume the SDK response or reveal untrusted data',async()=>{
   const events:any[]=[],diag=initializationDiagnostics((x:unknown)=>events.push(x));
   const response=await diag.transport(async()=>new Response(secret,{status:201}))('https://api.github.com/app/installations/145952003/access_tokens',{method:'POST'});
-  expect(await response.text()).toBe(secret);expect(events[0].metadata).toBe('UNAVAILABLE');expect(JSON.stringify(events)).not.toContain(secret);
+  expect(await response.text()).toBe(secret);expect(events[0].metadata).toBe('UNAVAILABLE');expect(events[0]).toMatchObject({expiresAt:null,permissions:null,repositoryIds:null,totalCount:null});expect(JSON.stringify(events)).not.toContain(secret);
 });
 it('safe failure codes and stages are exact allowlists, not exception prefix matching',()=>{
  const diag=initializationDiagnostics();diag.stage(secret);const e=Object.assign(new Error('LAYERSCAPE_INITIALIZE_'+secret),{stdout:secret,stderr:secret});
@@ -65,4 +65,17 @@ it('maps exact adoption and writer assertions but rejects arbitrary suffixes',()
  expect(diag.failure(new Error('RELEASE_RECORD: writer protection identity')).failureCode).toBe('WRITER_PROTECTION_05');
  expect(diag.failure(new Error('RELEASE_ADOPTION: merged adoption PR '+secret)).failureCode).toBeNull();
  expect(diag.failure(new Error('RELEASE_RECORD: '+secret)).failureCode).toBeNull();
+});
+
+it.each([{}, {token:secret}, {token:secret,permissions:null}, {token:secret,permissions:[]}, {token:secret,permissions:{contents:secret}}, {token:secret,repositories:[{id:secret}]}])('missing or invalid token metadata stays explicitly unknown %j',async body=>{
+ const events:any[]=[],diag=initializationDiagnostics((x:unknown)=>events.push(x));
+ await diag.transport(async()=>Response.json(body))('https://api.github.com/app/installations/145952003/access_tokens',{method:'POST'});
+ expect(events[0]).toMatchObject({expiresAt:null,permissions:null,repositoryIds:null,totalCount:null});
+ expect(JSON.stringify(events)).not.toContain(secret);
+});
+it('scope metadata distinguishes absent fields from an observed empty collection',async()=>{
+ const events:any[]=[],diag=initializationDiagnostics((x:unknown)=>events.push(x));
+ for(const body of [{},{total_count:0,repositories:[]}])await diag.transport(async()=>Response.json(body))('https://api.github.com/installation/repositories',{method:'GET'});
+ expect(events[0]).toMatchObject({expiresAt:null,permissions:null,repositoryIds:null,totalCount:null});
+ expect(events[1]).toMatchObject({expiresAt:null,permissions:null,repositoryIds:[],totalCount:0});
 });
