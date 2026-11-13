@@ -36,6 +36,8 @@ it.each([{cleanupFails:false,scopeFails:false},{cleanupFails:true,scopeFails:fal
   const result=diag.failure(failure);expect(result.phase).toBe(scopeFails?'candidate-read-credential':'repository-read');expect(result.httpStatus).toBe(scopeFails?null:409);
   const cleanups=events.filter(x=>x.operation==='revoke');expect(cleanups.map(x=>x.credential)).toEqual(['credential-2','credential-1']);
   expect(cleanups.every(x=>x.phase==='credential-cleanup')).toBe(true);
+  expect(cleanups.every(x=>Object.values(x.metadataApplicability).every(v=>v===false))).toBe(true);
+  expect(cleanups.every(x=>x.expiresAt===null&&x.permissions===null&&x.repositoryIds===null&&x.totalCount===null)).toBe(true);
   expect(cleanups.map(x=>x.httpStatus)).toEqual([cleanupFails?403:204,cleanupFails?403:204]);
   expect(JSON.stringify({events,result,code:initializationFailureCode(failure)})).not.toContain(secret);
   expect(events.filter(x=>x.operation==='issue').every(x=>x.expiresAt==='2026-11-13T14:00:00.000Z')).toBe(true);
@@ -70,7 +72,7 @@ it('maps exact adoption and writer assertions but rejects arbitrary suffixes',()
 it.each([{}, {token:secret}, {token:secret,permissions:null}, {token:secret,permissions:[]}, {token:secret,permissions:{contents:secret}}, {token:secret,repositories:[{id:secret}]}])('missing or invalid token metadata stays explicitly unknown %j',async body=>{
  const events:any[]=[],diag=initializationDiagnostics((x:unknown)=>events.push(x));
  await diag.transport(async()=>Response.json(body))('https://api.github.com/app/installations/145952003/access_tokens',{method:'POST'});
- expect(events[0]).toMatchObject({expiresAt:null,permissions:null,repositoryIds:null,totalCount:null});
+ expect(events[0]).toMatchObject({expiresAt:null,permissions:null,repositoryIds:null,totalCount:null,metadataApplicability:{expiresAt:true,permissions:true,repositoryIds:true,totalCount:false}});
  expect(JSON.stringify(events)).not.toContain(secret);
 });
 it('scope metadata distinguishes absent fields from an observed empty collection',async()=>{

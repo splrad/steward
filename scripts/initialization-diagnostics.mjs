@@ -31,7 +31,8 @@ export function initializationDiagnostics(emit=()=>{}) {
     let response;
     try {response=await fetcher(url,init);}catch(error){record({event:'request-failed',phase,operation:mint?'issue':scope?'scope':revoke?'revoke':nativeOperation,credential:purpose??null,errorKind:kind(error)});throw error;}
     if(mint||scope||revoke) {
-      const event={event:'credential',phase,operation:mint?'issue':scope?'scope':'revoke',credential:purpose??null,httpStatus:status(response.status),expiresAt:null,permissions:null,repositoryIds:null,totalCount:null};
+      const event={event:'credential',phase,operation:mint?'issue':scope?'scope':'revoke',credential:purpose??null,httpStatus:status(response.status),expiresAt:null,permissions:null,repositoryIds:null,totalCount:null,
+        metadataApplicability:{expiresAt:mint,permissions:mint,repositoryIds:mint||scope,totalCount:scope}};
       if(mint||scope) {
         // A diagnostic parse cannot consume or change the response seen by the official SDK.
         try {
@@ -46,7 +47,7 @@ export function initializationDiagnostics(emit=()=>{}) {
             }
           }
           if(Array.isArray(body.repositories)&&body.repositories.length<=100&&body.repositories.every(r=>Number.isSafeInteger(r?.id)&&r.id>0))event.repositoryIds=body.repositories.map(r=>r.id);
-          if(scope)event.totalCount=Number.isSafeInteger(body.total_count)?body.total_count:null;
+          if(scope)event.totalCount=Number.isSafeInteger(body.total_count)&&body.total_count>=0?body.total_count:null;
         }catch {event.metadata='UNAVAILABLE';}
       }
       record(event);
