@@ -111,6 +111,7 @@ it.each([
   [null], [{}], [{ref:'refs/heads/foreign',object:{type:'commit',sha}}],
   [{ref:'refs/heads/steward/release-state',object:{type:'tree',sha}}],
   [{ref:'refs/heads/steward/release-state',object:{type:'commit',sha:'bad'}}],
+  [{ref:'refs/heads/steward/release-state',object:{type:'commit',sha:[sha]}}],
   [1,2].map(()=>({ref:'refs/heads/steward/release-state-other',object:{type:'commit',sha}})),
 ])('refuses malformed state matching-ref evidence %#',async (...refs)=>{
   const io={request:async(_method:string,path:string)=>{
@@ -134,6 +135,7 @@ it('does not mistake a valid prefix-suffix ref for the exact state ref',async()=
 it.each([
   [null], [{}], [{path:'README',type:'blob',mode:'100644',sha:'bad'}],
   [{path:'README',type:'tree',mode:'100644',sha}],
+  [{path:'README',type:'blob',mode:'100644',sha:[sha]}],
   [{path:'../README',type:'blob',mode:'100644',sha}],
   [{path:'bad\0path',type:'blob',mode:'100644',sha}],
   [1,2].map(()=>({path:'README',type:'blob',mode:'100644',sha})),
@@ -161,6 +163,13 @@ it('accepts valid source tree kinds and rejects a malformed final default ref',a
   }};
   expect((await releaseParticipation(repository,io)).status).toBe('NOT_APPLICABLE');
   reads=0;badFinal=true;await expect(releaseParticipation(repository,io)).rejects.toThrow('RELEASE_PARTICIPATION_IDENTITY');
+});
+it('rejects an array SHA in the default ref before reading trees',async()=>{
+  const io={request:async(_method:string,path:string)=>{
+    const value=path===`/repos/${repository.full_name}`?repository:{ref:'refs/heads/main',object:{type:'commit',sha:[sha]}};
+    return {status:200,bytes:Buffer.from(JSON.stringify(value))};
+  }};
+  await expect(releaseParticipation(repository,io)).rejects.toThrow('RELEASE_PARTICIPATION_IDENTITY');
 });
 it('keeps Pages independent and completes a scan of explicitly inapplicable repositories without generation',async()=>{
   let pages=0,service=0;

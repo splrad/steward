@@ -16,8 +16,9 @@ const hash=value=>createHash('sha256').update(value).digest('hex');
 const identity={name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
 const safeCode=error=>error instanceof Error && /^RELEASE_[A-Z_]+$/.test(error.message)?error.message:'RELEASE_NATIVE_UNAVAILABLE';
 const iso=clock=>new Date(clock()).toISOString();
+const isGitSha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
 const validMatchingRefs=(refs,target)=>Array.isArray(refs)
-  &&refs.every(r=>typeof r?.ref==='string'&&r.ref.startsWith(`refs/heads/${target}`)&&r.object?.type==='commit'&&/^[a-f0-9]{40}$/.test(r.object.sha))
+  &&refs.every(r=>typeof r?.ref==='string'&&r.ref.startsWith(`refs/heads/${target}`)&&r.object?.type==='commit'&&isGitSha(r.object.sha))
   &&new Set(refs.map(r=>r.ref)).size===refs.length;
 
 /** One wake has one fixed domain sequence. A publish invocation always ends this repository's wake. */
@@ -107,7 +108,7 @@ export async function releaseParticipation(repository,io) {
     const value=await read(`git/trees/${sha}?recursive=1`);
     if(value?.truncated!==false||!Array.isArray(value.tree))throw Error('RELEASE_PARTICIPATION_INCOMPLETE');
     if(value.tree.some(x=>typeof x?.path!=='string'||!x.path||x.path.includes('\0')||x.path.split('/').some(p=>!p||p==='.'||p==='..')
-      ||!/^[a-f0-9]{40}$/.test(x.sha)||!(x.type==='tree'&&x.mode==='040000'||x.type==='blob'&&['100644','100755','120000'].includes(x.mode)||x.type==='commit'&&x.mode==='160000'))
+      ||!isGitSha(x.sha)||!(x.type==='tree'&&x.mode==='040000'||x.type==='blob'&&['100644','100755','120000'].includes(x.mode)||x.type==='commit'&&x.mode==='160000'))
       ||new Set(value.tree.map(x=>x.path)).size!==value.tree.length)throw Error('RELEASE_PARTICIPATION_IDENTITY');
     return value;
   };
@@ -115,7 +116,7 @@ export async function releaseParticipation(repository,io) {
   if(actual.id!==repository.id||actual.full_name!==repository.full_name||actual.default_branch!==repository.default_branch||actual.archived!==false||actual.disabled!==false)throw Error('RELEASE_PARTICIPATION_IDENTITY');
   const readDefaultRef=async()=>{
     const value=await read(`git/ref/heads/${encodeURIComponent(repository.default_branch)}`);
-    if(value?.ref!==`refs/heads/${repository.default_branch}`||value.object?.type!=='commit'||!/^[a-f0-9]{40}$/.test(value.object.sha))throw Error('RELEASE_PARTICIPATION_IDENTITY');
+    if(value?.ref!==`refs/heads/${repository.default_branch}`||value.object?.type!=='commit'||!isGitSha(value.object.sha))throw Error('RELEASE_PARTICIPATION_IDENTITY');
     return value;
   };
   const ref=await readDefaultRef();
@@ -128,7 +129,7 @@ export async function releaseParticipation(repository,io) {
   const stateRef=refs.find(r=>r.ref==='refs/heads/steward/release-state');
   let obligation=false;
   if(stateRef) {
-    if(stateRef.object?.type!=='commit'||!/^[a-f0-9]{40}$/.test(stateRef.object.sha))throw Error('RELEASE_PARTICIPATION_IDENTITY');
+    if(stateRef.object?.type!=='commit'||!isGitSha(stateRef.object.sha))throw Error('RELEASE_PARTICIPATION_IDENTITY');
     const state=await readTree(stateRef.object.sha);
     // Only the fixed central maintenance-only tree is not a product state.
     obligation=repository.id!==1296724484||repository.full_name!=='splrad/steward'
@@ -194,7 +195,7 @@ export async function fetchState(root,repository,token,targetRef='steward/releas
   }
   if(response.status!==200)throw new Error(response.status===404?'RELEASE_BOOTSTRAP_REQUIRED':'RELEASE_STATE_UNAVAILABLE');
   const ref=JSON.parse(Buffer.from(response.bytes).toString('utf8'));
-  if(ref.ref!==`refs/heads/${targetRef}`||ref.object?.type!=='commit'||!/^[a-f0-9]{40}$/.test(ref.object.sha))throw new Error('RELEASE_STATE_IDENTITY');
+  if(ref.ref!==`refs/heads/${targetRef}`||ref.object?.type!=='commit'||!isGitSha(ref.object.sha))throw new Error('RELEASE_STATE_IDENTITY');
   const directory=await mkdtemp(join(root,'snapshot-')),profile=await mkdtemp(join(root,'profile-'));
   const env=isolatedBuildEnvironment(process.env,profile);
   Object.assign(env,{GIT_CONFIG_COUNT:'1',GIT_CONFIG_KEY_0:`http.${remote}.extraheader`,GIT_CONFIG_VALUE_0:'AUTHORIZATION: basic '+Buffer.from('x-access-token:'+token).toString('base64')});
