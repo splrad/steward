@@ -59,3 +59,41 @@ it('rejects a run attempt change observed after the complete page traversal', as
   await expect(pipelineProducers(record, gh, async () => [])).rejects.toThrow('run changed during pagination');
   expect(reads).toBe(2);
 });
+
+function numericClient(collection:'jobs'|'artifacts',options:{next?:(url:string)=>string;metadata?:{id:number;full_name:string}}={}) {
+ const calls:string[]=[],repository='splrad/LayerScape',repositoryId=1187527897;
+ const suffix=collection==='jobs'?'actions/runs/43423990877/attempts/1/jobs':'actions/runs/43423990877/artifacts';
+ const named=`repos/${repository}/${suffix}?per_page=100`;
+ const next=options.next?.(`https://api.github.com/repositories/${repositoryId}/${suffix}?per_page=100&page=2`)
+  ??`https://api.github.com/repositories/${repositoryId}/${suffix}?per_page=100&page=2`;
+ const octokit=new Octokit({auth:'fixture-target',request:{fetch:async(input:any,init:any)=>{
+  const url=new URL(String(input));calls.push(url.href);
+  expect(new Headers(init?.headers).get('authorization')).toBe('token fixture-target');
+  let body:any,headers:Record<string,string>={'content-type':'application/json'};
+  if(url.pathname===`/repos/${repository}`)body=options.metadata??{id:repositoryId,full_name:repository};
+  else {
+   expect(url.pathname).toBe(`/repos/${repository}/${suffix}`);
+   const second=url.searchParams.get('page')==='2';body={total_count:101,[collection]:second?[{id:101}]:Array.from({length:100},(_,i)=>({id:i+1}))};
+   if(!second)headers.link=`<${next}>; rel="next"`;
+  }
+  const response=Response.json(body,{headers});Object.defineProperty(response,'url',{value:url.href});return response;
+ }},log:{debug(){},info(){},warn(){},error(){}}});
+ return {octokit,calls,named};
+}
+it.each(['jobs','artifacts'] as const)('follows the verified native Actions numeric alias for %s beyond 100 items',async collection=>{
+ const f=numericClient(collection),rows=await nativePages(f.named,collection,f.octokit);
+ expect(rows).toHaveLength(101);expect(rows.at(-1)).toEqual({id:101});expect(new Set(rows.map(r=>r.id)).size).toBe(101);
+ expect(f.calls).toEqual([`https://api.github.com/${f.named}`,'https://api.github.com/repos/splrad/LayerScape',`https://api.github.com/${f.named}&page=2`]);
+});
+it.each([
+ (u:string)=>u.replace('/1187527897/','/9/'),(u:string)=>u.replace('/attempts/1/jobs','/attempts/2/jobs'),
+ (u:string)=>u.replace('api.github.com','example.com'),(u:string)=>u.replace('https://','https://user@'),
+ (u:string)=>u+'#fragment',(u:string)=>u.replace('per_page=100','per_page=1'),(u:string)=>u+'&extra=1',
+ (u:string)=>u+'&per_page=1',
+])('rejects altered Actions numeric links before reading another page',async next=>{
+ const f=numericClient('jobs',{next});await expect(nativePages(f.named,'jobs',f.octokit)).rejects.toThrow('RELEASE_PIPELINE: pagination');
+ expect(f.calls.filter(u=>u.includes('page=2'))).toHaveLength(0);
+});
+it.each([{id:9,full_name:'splrad/LayerScape'},{id:1187527897,full_name:'other/repository'},{id:0,full_name:'splrad/LayerScape'}])('rejects unverified Actions repository identity %j',async metadata=>{
+ const f=numericClient('jobs',{metadata});await expect(nativePages(f.named,'jobs',f.octokit)).rejects.toThrow('pagination repository identity');expect(f.calls).toHaveLength(2);
+});
