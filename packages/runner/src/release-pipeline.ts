@@ -375,13 +375,30 @@ export async function nativePages(path: string, collection: 'jobs' | 'artifacts'
       log: { debug() {}, info() {}, warn() {}, error() {} } });
   }
   const result: any[] = [], ids = new Set<number>();
-  let total: number | undefined;
+  let total: number | undefined, canonicalRepositoryId: number | undefined;
+  const repository = path.split('/').slice(1, 3).join('/'), repositoryPath = `/repos/${repository}`;
   const request = client.request;
   const expectedUrl = new URL(request.endpoint(`GET /${path}`).url);
   const checkedRequest = Object.assign(async (options: Parameters<typeof request>[0]) => {
-    const url = new URL(request.endpoint(options).url);
-    if (url.origin !== expectedUrl.origin || url.pathname !== expectedUrl.pathname) fail('pagination link left collection');
-    const response = await request(options);
+    const resolved = request.endpoint(options), url = new URL(resolved.url);
+    if (url.origin !== expectedUrl.origin || url.username || url.password || url.hash) fail('pagination link left collection');
+    if (url.pathname !== expectedUrl.pathname) {
+      const alias = /^\/repositories\/([1-9][0-9]*)(\/.*)?$/.exec(url.pathname);
+      if (!alias || (alias[2] ?? '') !== expectedUrl.pathname.slice(repositoryPath.length)) fail('pagination link left collection');
+      if (canonicalRepositoryId === undefined) {
+        const metadata = (await request(`GET ${repositoryPath}`)).data;
+        if (!Number.isSafeInteger(metadata?.id) || metadata.id < 1 || metadata.full_name !== repository) fail('pagination repository identity');
+        canonicalRepositoryId = metadata.id;
+      }
+      if (alias[1] !== String(canonicalRepositoryId)) fail('pagination repository identity');
+    }
+    for (const key of expectedUrl.searchParams.keys()) {
+      if (JSON.stringify(url.searchParams.getAll(key)) !== JSON.stringify(expectedUrl.searchParams.getAll(key))) fail('pagination query');
+    }
+    if ([...url.searchParams.keys()].some(key => !expectedUrl.searchParams.has(key) && key !== 'page')) fail('pagination query');
+    // Follow only the verified collection, retaining the original named request path.
+    const normalized = new URL(expectedUrl); normalized.search = url.search;
+    const response = await request({ ...resolved, url: normalized.href });
     if (!response.data || !Array.isArray(response.data[collection])) fail('pagination collection');
     return response;
   }, request);
