@@ -75,33 +75,96 @@ describe('actual maintenance deployment success path', () => {
 const { readAdoptionRecord, verifyAdoptionSource, verifyNativeTarget } = await import(deployModulePath);
 const reviewBody = '<!-- ccr-overview-v2 -->\n### Changes recommended\n<sub>Review effort: Lite</sub>';
 const codexBody = (head: string) => `<!-- codex-review-state:v1 ${JSON.stringify(Object.fromEntries(['code_review', 'security_review'].map(key => [key, { commit_sha: head, status: 'completed', has_any_findings: null }]))) } -->`;
+const jobLog = (phase: string, attempt = 1) => '2026-01-01T00:00:00Z ' + JSON.stringify({repositoryId:1296724484,pullNumber:400,head:'a'.repeat(40),headRef:'fix/test',base:'1'.repeat(40),merge:'2'.repeat(40),liveMerge:'2'.repeat(40),policy:'3'.repeat(40),phase,runId:'1',attempt:String(attempt),deployment:'NOT_AUTHORIZED'});
 const adoption = () => ({
   schemaVersion: 1, repository: 'splrad/steward', pullNumber: 400,
   reviewedHead: 'a'.repeat(40), deploymentHead: 'b'.repeat(40), reviewedTree: 'c'.repeat(40), deploymentTree: 'c'.repeat(40),
   bundleSha256: 'd'.repeat(64), policySha: 'e'.repeat(40), evaluatorSha: 'f'.repeat(40),
   accountId: '5efbba9a3813a37ac45e70cfa9f01cb5', workerName: 'splrad-steward-runtime',
   runtimeOrigin: 'https://splrad-steward-runtime.synthetic.workers.dev', expectedCurrentVersion: input.version,
-  evidence: { validationRunId: 1, validationRunAttempt: 1, copilotRunId: 2, copilotRunAttempt: 1, copilotReviewId: 3, codexCommentId: 4, codexCommentBodySha256: createHash('sha256').update(codexBody('a'.repeat(40))).digest('hex'), copilotCheckRunId: 5, copilotReviewBodySha256: createHash('sha256').update(reviewBody).digest('hex'), reviewDecisionReference: 'SYNTHETIC CENTRAL ADJUDICATION' },
+  evidence: { validationWorkflowSha:'3'.repeat(40), validationSourceJobId:6, validationFinalJobId:7, validationSourceLogSha256:createHash('sha256').update(jobLog('source')).digest('hex'), validationFinalLogSha256:createHash('sha256').update(jobLog('final')).digest('hex'), validationRunId: 1, validationRunAttempt: 1, copilotRunId: 2, copilotRunAttempt: 1, copilotReviewId: 3, codexCommentId: 4, codexCommentBodySha256: createHash('sha256').update(codexBody('a'.repeat(40))).digest('hex'), copilotCheckRunId: 5, copilotReviewBodySha256: createHash('sha256').update(reviewBody).digest('hex'), reviewDecisionReference: 'SYNTHETIC CENTRAL ADJUDICATION' },
   window: { status: 'confirmed', reference: 'SYNTHETIC TEST ONLY', expiresAt: '2099-01-01T00:00:00Z' },
 });
 function adoptionFixture() {
   const record = adoption();
-  const pull = { number: record.pullNumber, repository: { nameWithOwner: record.repository }, headRepository: { nameWithOwner: record.repository }, baseRefName: 'maintenance/legacy-runtime-e990eda', state: 'MERGED', isDraft: false, headRefOid: record.reviewedHead, mergeCommit: { oid: record.deploymentHead } };
+  const pull = { headRefName:'fix/test', number: record.pullNumber, repository: { nameWithOwner: record.repository }, headRepository: { nameWithOwner: record.repository }, baseRefName: 'maintenance/legacy-runtime-e990eda', state: 'MERGED', isDraft: false, headRefOid: record.reviewedHead, mergeCommit: { oid: record.deploymentHead } };
   const api = vi.fn(async (path: string): Promise<any> => {
+    if (path.includes('/pulls?')) return [{id:400,number:record.pullNumber,head:{sha:record.reviewedHead,ref:pull.headRefName,repo:{full_name:record.repository}},base:{ref:pull.baseRefName,repo:{full_name:record.repository}},merge_commit_sha:record.deploymentHead}];
+    if (path.startsWith('check-suites/')) return {id:100,head_sha:record.reviewedHead,app:{id:15368}};
+    if (path.startsWith('compare/')) return {status:'ahead',merge_base_commit:{sha:record.evidence.validationWorkflowSha}};
+    if (path.includes('/jobs?')) return {total_count:2,jobs:[6,7].map(id=>({id,run_id:1,run_attempt:record.evidence.validationRunAttempt,head_sha:record.reviewedHead,name:id===6?'Maintenance source identity':'SPLRAD Maintenance Validation',status:'completed',conclusion:'success'}))};
     if (path.startsWith('actions/runs?')) return { total_count: 2, workflow_runs: [await api('actions/runs/1'), await api('actions/runs/2')] };
     if (path.includes('/check-runs?')) return { total_count: 1, check_runs: [await api('check-runs/5')] };
     if (path.includes('/reviews?')) return [await api(`pulls/${record.pullNumber}/reviews/3`)];
     if (path.startsWith('commits/')) return { sha: path.slice(8), commit: { tree: { sha: record.reviewedTree }, verification: { verified: true, reason: 'valid' } } };
-    if (path.startsWith('actions/runs/')) return { id: Number(path.split('/').at(-1)), run_attempt: 1, created_at: '2026-01-01T00:00:00Z', run_started_at: '2026-01-01T00:00:00Z', repository: { full_name: record.repository }, head_sha: record.reviewedHead, status: 'completed', conclusion: 'success', path: path === 'actions/runs/1' ? '.github/workflows/pr-validation.yml' : 'dynamic/agents/copilot-pull-request-reviewer', event: 'dynamic', check_suite_id: 100, pull_requests: [{ number: record.pullNumber, head: { sha: record.reviewedHead } }] };
+    if (path.startsWith('actions/runs/')) return { id: Number(path.split('/').at(-1)), run_attempt: 1, created_at: '2026-01-01T00:00:00Z', run_started_at: '2026-01-01T00:00:00Z', workflow_id:413829468, head_branch:pull.headRefName, head_repository:{full_name:record.repository}, repository: { full_name: record.repository }, head_sha: record.reviewedHead, status: 'completed', conclusion: 'success', path: path === 'actions/runs/1' ? '.github/workflows/maintenance-validation.yml' : 'dynamic/agents/copilot-pull-request-reviewer', event: path === 'actions/runs/1' ? 'pull_request' : 'dynamic', check_suite_id: 100, pull_requests: [{ number: record.pullNumber, head: { sha: record.reviewedHead } }] };
     if (path.startsWith('check-runs/')) return { id: 5, started_at: '2026-01-01T00:00:00Z', name: 'copilot-pull-request-reviewer', app: { id: 15368 }, head_sha: record.reviewedHead, status: 'completed', conclusion: 'success', check_suite: { id: 100 }, pull_requests: [{ number: record.pullNumber, head: { sha: record.reviewedHead } }] };
     if (path.startsWith('pulls/')) return { id: 3, state: 'COMMENTED', body: reviewBody, commit_id: record.reviewedHead, user: { login: 'copilot-pull-request-reviewer[bot]' }, submitted_at: '2026-01-01T00:00:00Z' };
     return { user: { login: 'chatgpt-codex-connector[bot]' }, issue_url: `https://api.github.com/repos/${record.repository}/issues/${record.pullNumber}`,
       body: codexBody(record.reviewedHead) };
   });
-  return { record, pull, api };
+  const readLog = vi.fn(async (id: number) => jobLog(id===6?'source':'final', record.evidence.validationRunAttempt));
+  return { record, pull, api, readLog };
 }
 
 describe('central adoption record and native deployment identity', () => {
+  it('accepts empty native PR arrays with independently bound jobs, commit association and review', async () => {
+    const f=adoptionFixture(), original=f.api.getMockImplementation()!;
+    f.api.mockImplementation(async path=>{const v=await original(path); if(Array.isArray(v.pull_requests)) v.pull_requests=[];return v;});
+    await expect(verifyAdoptionSource(f.record,f.api,f.pull,f.readLog)).resolves.toBeUndefined();
+  });
+  it.each(['event','workflow','repository','branch','suiteApp','jobAttempt','jobRun','jobHead','jobName','jobFailure','association','policySignature','policyAncestry'])('rejects incorrect maintenance binding: %s',async mode=>{
+    const f=adoptionFixture(), original=f.api.getMockImplementation()!;
+    f.api.mockImplementation(async path=>{
+      const v=await original(path);
+      if(path==='actions/runs/1') {
+        if(mode==='event') v.event='workflow_dispatch';
+        if(mode==='workflow') v.workflow_id++;
+        if(mode==='repository') v.head_repository.full_name='other/steward';
+        if(mode==='branch') v.head_branch='other';
+      }
+      if(mode==='suiteApp'&&path.startsWith('check-suites/')) v.app.id++;
+      if(path.includes('/jobs?')) {
+        if(mode==='jobAttempt') v.jobs[0].run_attempt++;
+        if(mode==='jobRun') v.jobs[0].run_id++;
+        if(mode==='jobHead') v.jobs[0].head_sha='f'.repeat(40);
+        if(mode==='jobName') v.jobs[0].name='Other';
+        if(mode==='jobFailure') v.jobs[0].conclusion='failure';
+      }
+      if(mode==='association'&&path.includes('/pulls?')) v[0].head.sha='f'.repeat(40);
+      if(mode==='policySignature'&&path==='commits/'+f.record.evidence.validationWorkflowSha) v.commit.verification.verified=false;
+      if(mode==='policyAncestry'&&path.startsWith('compare/')) v.status='diverged';
+      return v;
+    });
+    await expect(verifyAdoptionSource(f.record,f.api,f.pull,f.readLog)).rejects.toThrow();
+  });
+  it.each(['missing','digest','duplicate','head','pullNumber','policy','attempt','runId','liveMerge','phase','finalMerge'])('rejects unusable maintenance logs: %s', async mode=>{
+    const f=adoptionFixture();
+    let log=jobLog('source');
+    if(mode==='missing') f.readLog.mockRejectedValue(new Error('expired log'));
+    else {
+      if(mode==='digest') log+='changed';
+      else if(mode==='duplicate') log+='\n'+log;
+      else {
+        const v=JSON.parse(log.slice(log.indexOf('{')));
+        if(mode==='pullNumber') v.pullNumber++;
+        else if(mode==='attempt'||mode==='runId') v[mode]='2';
+        else if(mode==='phase') v.phase='unexpected';
+        else if(mode!=='finalMerge') v[mode]='9'.repeat(40);
+        log='2026-01-01T00:00:00Z '+JSON.stringify(v);
+      }
+      f.readLog.mockImplementation(async id=>id===6?log:mode==='finalMerge'?jobLog('final').replaceAll('2'.repeat(40),'9'.repeat(40)):jobLog('final'));
+      if(mode!=='digest') f.record.evidence.validationSourceLogSha256=createHash('sha256').update(log).digest('hex');
+      if(mode==='finalMerge') f.record.evidence.validationFinalLogSha256=createHash('sha256').update(await f.readLog(7)).digest('hex');
+    }
+    await expect(verifyAdoptionSource(f.record,f.api,f.pull,f.readLog)).rejects.toThrow();
+  });
+  it.each([{association:[]},{association:[{number:999,head:{sha:'a'.repeat(40)}}]}])('does not hide newer conflicting or empty native associations',async ({association})=>{
+    const f=adoptionFixture(),original=f.api.getMockImplementation()!;
+    f.api.mockImplementation(async path=>{const v=await original(path);if(path.startsWith('actions/runs?')){v.workflow_runs.push({...v.workflow_runs[0],id:99,pull_requests:association,status:'queued',run_started_at:'2027-01-01T00:00:00Z'});v.total_count++;}return v;});
+    await expect(verifyAdoptionSource(f.record,f.api,f.pull,f.readLog)).rejects.toThrow();
+  });
+
   it.each(['<sub>Review effort: Lite</sub>', '🧠 **Review effort:** Balanced', '**Review effort:** Max'])('accepts the bound overview format %s', async effort => {
     const f = adoptionFixture(), original = f.api.getMockImplementation()!;
     const body = `<!-- ccr-overview-v2 -->\n### Changes recommended\n${effort}`;
@@ -111,9 +174,9 @@ describe('central adoption record and native deployment identity', () => {
       if (/^pulls\/\d+\/reviews\/\d+$/.test(path)) value.body = body;
       return value;
     });
-    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).resolves.toBeUndefined();
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull, f.readLog)).resolves.toBeUndefined();
     f.record.evidence.copilotReviewBodySha256 = '0'.repeat(64);
-    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow('review mismatch');
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull, f.readLog)).rejects.toThrow('review mismatch');
   });
   it.each(['**Review effort:** Unknown', '**Review effort:** BalancedExtra', '<sub>Review effort: Lite', 'Review effort: Balanced', '**Review effort:** Balanced\nCopilot was unable to review this pull request.'])('rejects invalid or incomplete overview format %s', async effort => {
     const f = adoptionFixture(), original = f.api.getMockImplementation()!;
@@ -124,25 +187,25 @@ describe('central adoption record and native deployment identity', () => {
       if (/^pulls\/\d+\/reviews\/\d+$/.test(path)) value.body = body;
       return value;
     });
-    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow('review mismatch');
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull, f.readLog)).rejects.toThrow('review mismatch');
   });
   it('accepts a same-repository PR native merged commit with the reviewed tree', async () => {
     const f = adoptionFixture();
-    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).resolves.toBeUndefined();
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull, f.readLog)).resolves.toBeUndefined();
   });
   it('rejects changed Codex findings until the central record binds the exact new body', async () => {
     const f = adoptionFixture(), original = f.api.getMockImplementation()!;
-    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).resolves.toBeUndefined();
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull, f.readLog)).resolves.toBeUndefined();
     const changed = codexBody(f.record.reviewedHead).replaceAll('"has_any_findings":null', '"has_any_findings":true');
     f.api.mockImplementation(async path => {
       const value = await original(path);
       if (path.startsWith('issues/')) value.body = changed;
       return value;
     });
-    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow('Codex comment body changed');
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull, f.readLog)).rejects.toThrow('Codex comment body changed');
     f.record.evidence.codexCommentBodySha256 = createHash('sha256').update(changed).digest('hex');
     // A changed finding requires central adjudication, not a permanent mechanical ban.
-    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).resolves.toBeUndefined();
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull, f.readLog)).resolves.toBeUndefined();
   });
   it.each([1, 2])('requires the exact recorded attempt for run %s, including successful reruns', async id => {
     const f = adoptionFixture(), original = f.api.getMockImplementation()!;
@@ -153,10 +216,11 @@ describe('central adoption record and native deployment identity', () => {
         if (path === `actions/runs/${id}`) value.run_attempt = attempt;
         return value;
       });
-      await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow();
+      await expect(verifyAdoptionSource(f.record, f.api, f.pull, f.readLog)).rejects.toThrow();
     }
     f.record.evidence[key] = 2;
-    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).resolves.toBeUndefined();
+    if (id===1) { f.record.evidence.validationSourceLogSha256=createHash('sha256').update(jobLog('source',2)).digest('hex'); f.record.evidence.validationFinalLogSha256=createHash('sha256').update(jobLog('final',2)).digest('hex'); }
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull, f.readLog)).resolves.toBeUndefined();
   });
   it.each([1, 2])('rejects run %s when its successful attempt changes in the latest collection', async id => {
     const f = adoptionFixture(), original = f.api.getMockImplementation()!;
@@ -165,7 +229,7 @@ describe('central adoption record and native deployment identity', () => {
       if (path.startsWith('actions/runs?')) value.workflow_runs.find((run: any) => run.id === id).run_attempt = 2;
       return value;
     });
-    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow('workflow attempt differs');
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull, f.readLog)).rejects.toThrow('workflow attempt differs');
   });
   it.each(['open', 'closed', 'fork', 'base', 'unmergedHead', 'draft'])('rejects an unadoptable source: %s', async mode => {
     const f = adoptionFixture();
@@ -175,7 +239,7 @@ describe('central adoption record and native deployment identity', () => {
     if (mode === 'base') f.pull.baseRefName = 'main';
     if (mode === 'unmergedHead') f.record.deploymentHead = f.record.reviewedHead;
     if (mode === 'draft') f.pull.isDraft = true;
-    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow('merge identity changed');
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull, f.readLog)).rejects.toThrow('merge identity changed');
     expect(f.api).not.toHaveBeenCalled();
   });
   it.each(['head', 'merge', 'tree', 'signature', 'ci', 'copilot', 'codex', 'checkApp', 'checkPR', 'checkSuite', 'runPath', 'reviewState', 'reviewBody', 'incompleteReview'])('rejects altered adoption evidence: %s', async mode => {
@@ -184,8 +248,8 @@ describe('central adoption record and native deployment identity', () => {
     if (mode === 'merge') f.record.deploymentHead = 'd'.repeat(40);
     f.api.mockImplementation(async path => {
       const value = await original(path);
-      if (mode === 'tree' && path.startsWith('commits/')) value.commit.tree.sha = 'b'.repeat(40);
-      if (mode === 'signature' && path.startsWith('commits/')) value.commit.verification.verified = false;
+      if (mode === 'tree' && path.startsWith('commits/') && !path.includes('/pulls?')) value.commit.tree.sha = 'b'.repeat(40);
+      if (mode === 'signature' && path.startsWith('commits/') && !path.includes('/pulls?')) value.commit.verification.verified = false;
       if (mode === 'ci' && path === 'actions/runs/1') value.conclusion = 'failure';
       if (mode === 'copilot' && path.startsWith('pulls/')) value.commit_id = 'b'.repeat(40);
       if (mode === 'codex' && path.startsWith('issues/')) value.body = value.body.replaceAll('completed', 'running');
@@ -201,7 +265,7 @@ describe('central adoption record and native deployment identity', () => {
       }
       return value;
     });
-    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow();
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull, f.readLog)).rejects.toThrow();
   });
   it.each(['copilotRunning', 'checkRunning', 'newReview', 'validationFailure', 'validationRunning', 'unknownTime', 'tiedTime'])('rejects superseded or uncertain evidence: %s', async mode => {
     const f = adoptionFixture(), original = f.api.getMockImplementation()!;
@@ -218,7 +282,7 @@ describe('central adoption record and native deployment identity', () => {
         submitted_at: mode === 'unknownTime' ? null : mode === 'tiedTime' ? value[0].submitted_at : '2026-01-02T00:00:00Z' });
       return value;
     });
-    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow();
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull, f.readLog)).rejects.toThrow();
   });
   it('permits earlier failed rounds replaced by the selected successful round and ignores unrelated scope', async () => {
     const f = adoptionFixture(), original = f.api.getMockImplementation()!;
@@ -226,7 +290,7 @@ describe('central adoption record and native deployment identity', () => {
       const value = await original(path);
       if (path.startsWith('actions/runs?')) {
         value.workflow_runs.push(...value.workflow_runs.map((v: any, i: number) => ({ ...v, id: 30 + i, run_started_at: '2025-01-01T00:00:00Z', conclusion: 'failure' })),
-          { ...value.workflow_runs[0], id: 32, status: 'queued', pull_requests: [{ number: 999, head: { sha: f.record.reviewedHead } }] });
+          { ...value.workflow_runs[0], id: 32, head_sha:'b'.repeat(40), status: 'queued', pull_requests: [{ number: 999, head: { sha: f.record.reviewedHead } }] });
         value.total_count = value.workflow_runs.length;
       }
       if (path.includes('/check-runs?')) {
@@ -237,7 +301,7 @@ describe('central adoption record and native deployment identity', () => {
         { ...value[0], id: 36, submitted_at: '2027-01-01T00:00:00Z', commit_id: 'b'.repeat(40) });
       return value;
     });
-    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).resolves.toBeUndefined();
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull, f.readLog)).resolves.toBeUndefined();
   });
   it.each(['newRun', 'newCheck', 'newReview', 'missing', 'duplicate', 'overLimit'])('reads complete evidence pages and rejects %s', async mode => {
     const f = adoptionFixture(), original = f.api.getMockImplementation()!;
@@ -253,7 +317,7 @@ describe('central adoption record and native deployment identity', () => {
         run_started_at: '2027-01-01T00:00:00Z', started_at: '2027-01-01T00:00:00Z', submitted_at: '2027-01-01T00:00:00Z' }];
       return key ? { total_count: mode === 'overLimit' ? 1001 : 101, [key]: rows } : rows;
     });
-    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow();
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull, f.readLog)).rejects.toThrow();
     if (!['overLimit'].includes(mode)) expect(f.api.mock.calls.some(([path]) => path.endsWith('page=2'))).toBe(true);
   });
   it('accepts stable complete multi-page run, check and review collections', async () => {
@@ -267,7 +331,7 @@ describe('central adoption record and native deployment identity', () => {
       const rows = path.endsWith('page=1') ? [...selected, ...Array.from({ length: 100 - selected.length }, (_, i) => other(1000 + i))] : [other(2000)];
       return key ? { total_count: 101, [key]: rows } : rows;
     });
-    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).resolves.toBeUndefined();
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull, f.readLog)).resolves.toBeUndefined();
     expect(f.api.mock.calls.filter(([path]) => path.endsWith('page=2'))).toHaveLength(6);
   });
   it('rejects a collection changing between complete reads even if its count stays equal', async () => {
@@ -277,7 +341,7 @@ describe('central adoption record and native deployment identity', () => {
       if (path.startsWith('actions/runs?') && ++reads === 2) value.workflow_runs[1].run_attempt = 2;
       return value;
     });
-    await expect(verifyAdoptionSource(f.record, f.api, f.pull)).rejects.toThrow('changed during pagination');
+    await expect(verifyAdoptionSource(f.record, f.api, f.pull, f.readLog)).rejects.toThrow('changed during pagination');
   });
   it('binds the native account origin, enabled script and sole 100% active version', () => {
     const r = adoption(), metadata = { subdomain: { subdomain: 'synthetic' }, script: { enabled: true }, deployments: { deployments: [{ versions: [{ version_id: input.version, percentage: 100 }] }] } };

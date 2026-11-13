@@ -10,6 +10,7 @@ import { verifyLegacyRuntimeRetirement } from './verify-legacy-runtime-retiremen
 const execute = promisify(execFile);
 const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
+const maintenanceWorkflow = '.github/workflows/maintenance-validation.yml';
 const run = (command, args, options = {}) => execute(command, args, { windowsHide: true, maxBuffer: 8 * 1024 * 1024, ...options });
 
 // This is a central operator-selected adoption record, not a cryptographic authorization token.
@@ -24,7 +25,9 @@ export async function readAdoptionRecord(filename, checkout = process.cwd()) {
     || r.accountId !== '5efbba9a3813a37ac45e70cfa9f01cb5' || r.workerName !== 'splrad-steward-runtime'
     || !uuid(r.expectedCurrentVersion) || r.window?.status !== 'confirmed' || typeof r.window.reference !== 'string' || !r.window.reference.trim()
     || !Number.isFinite(Date.parse(r.window.expiresAt)) || Date.parse(r.window.expiresAt) <= Date.now()
-    || ![r.evidence?.validationRunId, r.evidence?.validationRunAttempt, r.evidence?.copilotRunId, r.evidence?.copilotRunAttempt, r.evidence?.copilotReviewId, r.evidence?.copilotCheckRunId, r.evidence?.codexCommentId].every(v => Number.isSafeInteger(v) && v > 0)
+    || ![r.evidence?.validationRunId, r.evidence?.validationRunAttempt, r.evidence?.validationSourceJobId, r.evidence?.validationFinalJobId, r.evidence?.copilotRunId, r.evidence?.copilotRunAttempt, r.evidence?.copilotReviewId, r.evidence?.copilotCheckRunId, r.evidence?.codexCommentId].every(v => Number.isSafeInteger(v) && v > 0)
+    || !sha(r.evidence?.validationWorkflowSha)
+    || ![r.evidence?.validationSourceLogSha256, r.evidence?.validationFinalLogSha256].every(v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v))
     || !/^[a-f0-9]{64}$/.test(r.evidence?.copilotReviewBodySha256) || !/^[a-f0-9]{64}$/.test(r.evidence?.codexCommentBodySha256)
     || typeof r.evidence?.reviewDecisionReference !== 'string' || !r.evidence.reviewDecisionReference.trim()) throw new Error('Incomplete central adoption record');
   const origin = new URL(r.runtimeOrigin);
@@ -60,7 +63,8 @@ async function evidencePages(api, path, key) {
   const first = await read(), second = await read();
   const fingerprint = rows => JSON.stringify(rows.map(v => [v.id, v.head_sha, v.commit_id, v.path, v.event, v.status, v.conclusion,
     v.run_attempt, v.run_started_at, v.created_at, v.started_at, v.submitted_at, v.state, v.body,
-    v.repository?.full_name, v.name, v.user?.login, v.app?.id, v.check_suite_id, v.check_suite?.id,
+    v.repository?.full_name, v.head_repository?.full_name, v.workflow_id, v.run_id, v.name, v.user?.login, v.app?.id, v.check_suite_id, v.check_suite?.id,
+    v.number, v.merge_commit_sha, v.head?.sha, v.head?.ref, v.head?.repo?.full_name, v.base?.ref, v.base?.repo?.full_name,
     v.pull_requests?.map(p => [p.number, p.head?.sha])]).sort((a, b) => a[0] - b[0]));
   if (fingerprint(first) !== fingerprint(second)) throw new Error('Adoption evidence changed during pagination');
   return second;
@@ -77,7 +81,41 @@ function latestEvidence(rows, selectedId, timestamp, submitted = false) {
   return latest;
 }
 
-export async function verifyAdoptionSource(r, api, pull) {
+async function verifyMaintenanceJobs(r, api, readLog, headRef) {
+  const e = r.evidence;
+  const policy = await api(`commits/${e.validationWorkflowSha}`);
+  const ancestry = await api(`compare/${e.validationWorkflowSha}...main`);
+  if (!sha(e.validationWorkflowSha) || policy.sha !== e.validationWorkflowSha
+    || policy.commit?.verification?.verified !== true || policy.commit.verification.reason !== 'valid'
+    || !['ahead', 'identical'].includes(ancestry.status) || ancestry.merge_base_commit?.sha !== e.validationWorkflowSha) throw new Error('Maintenance policy is not an adopted signed source');
+  const jobs = await evidencePages(api, `actions/runs/${e.validationRunId}/attempts/${e.validationRunAttempt}/jobs`, 'jobs');
+  const records = [];
+  for (const [phase, id, name, digest] of [
+    ['source', e.validationSourceJobId, 'Maintenance source identity', e.validationSourceLogSha256],
+    ['final', e.validationFinalJobId, 'SPLRAD Maintenance Validation', e.validationFinalLogSha256],
+  ]) {
+    const job = jobs.find(value => value.id === id);
+    if (!job || job.run_id !== e.validationRunId || job.run_attempt !== e.validationRunAttempt
+      || job.head_sha !== r.reviewedHead || job.name !== name || job.status !== 'completed' || job.conclusion !== 'success') throw new Error('Maintenance job is not bound to the selected attempt');
+    const log = await readLog(id);
+    if (typeof log !== 'string' || createHash('sha256').update(log).digest('hex') !== digest) throw new Error('Maintenance job log digest changed');
+    const candidates = log.split(/\r?\n/).flatMap(line => {
+      const match = /^\d{4}-\d\d-\d\dT\S+Z (\{.*\})$/.exec(line);
+      if (!match) return [];
+      try { const value = JSON.parse(match[1]); return value.phase === phase ? [value] : []; } catch { return []; }
+    });
+    const value = candidates[0];
+    if (candidates.length !== 1 || value.repositoryId !== 1296724484 || value.pullNumber !== r.pullNumber
+      || value.head !== r.reviewedHead || value.headRef !== headRef || value.policy !== e.validationWorkflowSha
+      || value.runId !== String(e.validationRunId) || value.attempt !== String(e.validationRunAttempt)
+      || !sha(value.base) || !sha(value.merge) || value.liveMerge !== value.merge
+      || value.deployment !== 'NOT_AUTHORIZED') throw new Error('Maintenance job record identity mismatch');
+    records.push(value);
+  }
+  if (records[0].base !== records[1].base || records[0].merge !== records[1].merge) throw new Error('Maintenance source/final merge identity changed');
+}
+
+export async function verifyAdoptionSource(r, api, pull, readLog) {
   // Defense against operator mistakes, not a sandbox for candidate code. The central
   // operator must independently approve the protected merged source before starting Node.
   if (pull.repository?.nameWithOwner !== r.repository || pull.number !== r.pullNumber || pull.isDraft || pull.headRefOid !== r.reviewedHead
@@ -87,13 +125,28 @@ export async function verifyAdoptionSource(r, api, pull) {
     const commit = await api(`commits/${commitSha}`);
     if (commit.sha !== commitSha || commit.commit?.tree?.sha !== tree || commit.commit?.verification?.verified !== true || commit.commit.verification.reason !== 'valid') throw new Error('Adopted commit/tree/signature mismatch');
   }
+  const associations = await evidencePages(api, `commits/${r.reviewedHead}/pulls`);
+  if (!associations.some(p => p.number === r.pullNumber && p.head?.sha === r.reviewedHead && p.head?.ref === pull.headRefName
+    && p.head?.repo?.full_name === r.repository && p.base?.repo?.full_name === r.repository
+    && p.base?.ref === pull.baseRefName && p.merge_commit_sha === r.deploymentHead)) throw new Error('Reviewed commit is not associated with the adopted PR');
   let copilotRun;
-  const boundPull = value => Array.isArray(value.pull_requests) && value.pull_requests.some(p => p.number === r.pullNumber && p.head?.sha === r.reviewedHead);
-  for (const [id, attempt, path] of [[r.evidence.validationRunId, r.evidence.validationRunAttempt, '.github/workflows/pr-validation.yml'], [r.evidence.copilotRunId, r.evidence.copilotRunAttempt, 'dynamic/agents/copilot-pull-request-reviewer']]) {
+  // GitHub can remove these associations after merge. Empty arrays are accepted only
+  // alongside the independently bound maintenance job records and PR-specific review.
+  const boundPull = value => Array.isArray(value.pull_requests) && (value.pull_requests.length === 0
+    || value.pull_requests.every(p => p.number === r.pullNumber && p.head?.sha === r.reviewedHead));
+  for (const [id, attempt, path] of [[r.evidence.validationRunId, r.evidence.validationRunAttempt, maintenanceWorkflow], [r.evidence.copilotRunId, r.evidence.copilotRunAttempt, 'dynamic/agents/copilot-pull-request-reviewer']]) {
     const evidence = await api(`actions/runs/${id}`);
     if (!Number.isSafeInteger(attempt) || attempt < 1 || evidence.run_attempt !== attempt
       || evidence.head_sha !== r.reviewedHead || evidence.status !== 'completed' || evidence.conclusion !== 'success'
-      || evidence.repository?.full_name !== r.repository || evidence.path !== path || !boundPull(evidence)) throw new Error('Adopted validation/review run is not successful for reviewed head');
+      || evidence.id !== id || evidence.repository?.full_name !== r.repository || evidence.head_repository?.full_name !== r.repository
+      || evidence.path !== path || !boundPull(evidence)) throw new Error('Adopted validation/review run is not successful for reviewed head');
+    if (id === r.evidence.validationRunId) {
+      if (evidence.event !== 'pull_request' || evidence.workflow_id !== 413829468) throw new Error('Unexpected maintenance validation source');
+      if (evidence.head_branch !== pull.headRefName) throw new Error('Maintenance head branch mismatch');
+      const suite = await api(`check-suites/${evidence.check_suite_id}`);
+      if (suite.id !== evidence.check_suite_id || suite.head_sha !== r.reviewedHead || suite.app?.id !== 15368) throw new Error('Maintenance validation is not a GitHub Actions check suite');
+      await verifyMaintenanceJobs(r, api, readLog, pull.headRefName);
+    }
     if (id === r.evidence.copilotRunId) {
       if (evidence.event !== 'dynamic') throw new Error('Expected native dynamic Copilot review');
       copilotRun = evidence;
@@ -116,13 +169,14 @@ export async function verifyAdoptionSource(r, api, pull) {
   if (comment.user?.login !== 'chatgpt-codex-connector[bot]' || comment.issue_url !== `https://api.github.com/repos/${r.repository}/issues/${r.pullNumber}`
     || !['code_review', 'security_review'].every(key => state?.[key]?.commit_sha === r.reviewedHead && state[key].status === 'completed')) throw new Error('Adopted Codex reviews are not terminal for reviewed head');
   const runs = await evidencePages(api, `actions/runs?head_sha=${r.reviewedHead}`, 'workflow_runs');
-  const scopedRuns = runs.filter(value => value.head_sha === r.reviewedHead && value.repository?.full_name === r.repository && boundPull(value));
-  const currentValidation = latestEvidence(scopedRuns.filter(value => value.path === '.github/workflows/pr-validation.yml'), r.evidence.validationRunId, value => value.run_started_at ?? value.created_at);
+  // Do not hide a newer same-source run merely because its PR association is absent or conflicting.
+  const scopedRuns = runs.filter(value => value.head_sha === r.reviewedHead && value.repository?.full_name === r.repository);
+  const currentValidation = latestEvidence(scopedRuns.filter(value => value.path === maintenanceWorkflow), r.evidence.validationRunId, value => value.run_started_at ?? value.created_at);
   const currentCopilot = latestEvidence(scopedRuns.filter(value => value.path === 'dynamic/agents/copilot-pull-request-reviewer' && value.event === 'dynamic'), r.evidence.copilotRunId, value => value.run_started_at ?? value.created_at);
   if (currentValidation.run_attempt !== r.evidence.validationRunAttempt || currentCopilot.run_attempt !== r.evidence.copilotRunAttempt) throw new Error('Current workflow attempt differs from central adoption record');
   const checks = await evidencePages(api, `commits/${r.reviewedHead}/check-runs?filter=all`, 'check_runs');
   const currentCheck = latestEvidence(checks.filter(value => value.name === 'copilot-pull-request-reviewer' && value.app?.id === 15368
-    && value.head_sha === r.reviewedHead && boundPull(value)), r.evidence.copilotCheckRunId, value => value.started_at);
+    && value.head_sha === r.reviewedHead), r.evidence.copilotCheckRunId, value => value.started_at);
   if (currentCheck.check_suite?.id !== copilotRun.check_suite_id) throw new Error('Current Copilot check/run binding changed');
   const reviews = await evidencePages(api, `pulls/${r.pullNumber}/reviews`);
   const currentReview = latestEvidence(reviews.filter(value => value.commit_id === r.reviewedHead
@@ -171,10 +225,11 @@ export async function deployLegacyRuntime(recordPath) {
   const record = await readAdoptionRecord(recordPath);
   const { deploymentHead: expectedHead, bundleSha256: expectedBundleSha256, runtimeOrigin: runtimeUrl, accountId, policySha, evaluatorSha } = record;
   const api = async path => JSON.parse((await run('gh', ['api', `repos/${record.repository}/${path}`])).stdout);
+  const readLog = async id => (await run('gh', ['api', '--allow-escape-sequences', `repos/${record.repository}/actions/jobs/${id}/logs`])).stdout;
   const verifySource = async () => {
-    const query = 'query($number:Int!){repository(owner:"splrad",name:"steward"){pullRequest(number:$number){number state isDraft headRefOid baseRefName headRepository{nameWithOwner} repository{nameWithOwner} mergeCommit{oid}}}}';
+    const query = 'query($number:Int!){repository(owner:"splrad",name:"steward"){pullRequest(number:$number){number state isDraft headRefOid headRefName baseRefName headRepository{nameWithOwner} repository{nameWithOwner} mergeCommit{oid}}}}';
     const response = JSON.parse((await run('gh', ['api', 'graphql', '-f', `query=${query}`, '-F', `number=${record.pullNumber}`])).stdout);
-    await verifyAdoptionSource(record, api, response.data?.repository?.pullRequest ?? {});
+    await verifyAdoptionSource(record, api, response.data?.repository?.pullRequest ?? {}, readLog);
   };
   await verifySource();
   const readCloud = await nativeCloudReader(record);
