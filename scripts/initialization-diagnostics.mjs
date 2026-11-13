@@ -1,3 +1,9 @@
+// Only exact local assertion messages map to codes; arbitrary exception text never leaves the process.
+const fixedFailures=new Map([
+  ...['input identity','repository identity','merged adoption PR','default head','full source history required','source path','source file required','adopted configuration','LayerScape first-release configuration','reachable history','original cycle required','native unit version','tag component','native tag','native VERSION','native package version','native version adapter required','adoption source moved','original native evidence unknown','closed request','state visibility unknown','state source unknown','missing adopted state requires recovery','obligation identity','original obligation outside adopted history','unrecorded release obligations','default head moved','state moved','adoption readback'].map((value,index)=>['RELEASE_ADOPTION: '+value,'ADOPTION_'+String(index+1).padStart(2,'0')]),
+  ...['writer protection target','writer protection pagination','protected writer rules','writer protection read unavailable','writer protection identity','writer update parameters unavailable','single App writer required','writer integrity bypass','writer fetch and merge exception'].map((value,index)=>['RELEASE_RECORD: '+value,'WRITER_PROTECTION_'+String(index+1).padStart(2,'0')]),
+  ...['RELEASE_APP_IDENTITY','RELEASE_INSTALLATION_IDENTITY','RELEASE_APP_BOT_IDENTITY','RELEASE_INSTALLATION_TOKEN','RELEASE_REPOSITORY_ID','RELEASE_TOKEN_SCOPE','NATIVE_RULE_PARAMETERS_NODE','NATIVE_RULE_PARAMETERS_IDENTITY','NATIVE_RULE_PARAMETERS_COMPLETE','NATIVE_RULE_PARAMETERS_COUNT','NATIVE_RULE_PARAMETERS_VALUE'].map(value=>[value,value])
+]);
 /** Initializer-only, allowlisted observations. Tokens are correlation keys in memory only. */
 export function initializationDiagnostics(emit=()=>{}) {
   let phase='source-validation',primaryFailure;
@@ -5,8 +11,8 @@ export function initializationDiagnostics(emit=()=>{}) {
   const phases=new Set(['source-validation','app-identity','release-credential','candidate-read-credential','repository-read','state-read','source-fetch','adoption-reconcile','credential-cleanup','local-cleanup','complete']);
   const record=value=>{events.push(value);emit(value);};
   const status=value=>Number.isInteger(value)&&value>=100&&value<=599?value:null;
-  const kind=error=>error?.name==='AbortError'?'ABORT':Number.isInteger(error?.status)?'HTTP':error?.code==='ENOENT'?'PROCESS_NOT_FOUND':'UNCLASSIFIED';
-  const describe=error=>({phase,errorKind:kind(error),httpStatus:status(error?.status)});
+  const kind=error=>error?.name==='AbortError'?'ABORT':Number.isInteger(error?.status)?'HTTP':error?.code==='ENOENT'?'PROCESS_NOT_FOUND':Number.isInteger(error?.code)?'PROCESS_EXIT':error?.name==='SyntaxError'?'JSON_PARSE':'UNCLASSIFIED';
+  const describe=error=>({phase,errorKind:kind(error),httpStatus:status(error?.status),failureCode:fixedFailures.get(error?.message)??null,processExitCode:Number.isInteger(error?.code)?error.code:null});
   const captureFailure=error=>{primaryFailure??=describe(error);};
   const credentialFor=init=>{
     const header=new Headers(init?.headers).get('authorization')??'';
@@ -19,6 +25,9 @@ export function initializationDiagnostics(emit=()=>{}) {
     const scope=method==='GET'&&path==='/installation/repositories';
     const revoke=method==='DELETE'&&path==='/installation/token';
     const purpose=credentialFor(init);
+    // Each actual finally request enters cleanup, including operation/scope failures.
+    // The first failure was captured before unwinding and remains unchanged.
+    if(revoke){phase='credential-cleanup';record({event:'stage',phase});}
     let response;
     try {response=await fetcher(url,init);}catch(error){record({event:'request-failed',phase,operation:mint?'issue':scope?'scope':revoke?'revoke':nativeOperation,credential:purpose??null,errorKind:kind(error)});throw error;}
     if(mint||scope||revoke) {

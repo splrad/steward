@@ -71,7 +71,7 @@ export async function initializeProduct(plan,{root,app,execute=promisify(execFil
     stage('adoption-reconcile');
     const result=await initialize({directory,writeDirectory:join(root,'writes'),remote,
       repository:repository.full_name,repositoryId:repository.id,defaultBranch:'main',appBotId:app.appBotId,
-      identity:{name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'},releaseAdoption:adoption},{token,io});
+      identity:{name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'},releaseAdoption:adoption},{token,io,fetcher});
     if(!['APPLIED','UNCHANGED'].includes(result.status))fail('NOT_APPLIED');
     stage('credential-cleanup');
     return result;

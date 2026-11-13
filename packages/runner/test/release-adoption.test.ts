@@ -183,3 +183,35 @@ it.each(['legacy','issue-events'])('real adoption reader requires PR read scope 
   expect(pulls.every(r=>r.credential==='Bearer fixture-pr-read')).toBe(true);
   expect(requests.filter(r=>!pulls.includes(r)).every(r=>r.credential==='Bearer fixture-release-write')).toBe(true);
 });
+it('initializer delegates through real adoption/protection into the observed GraphQL transport',async()=>{
+  const f=await fixture();
+  const {initializeProduct}=await import(pathToFileURL(resolve('scripts/layerscape-release-initialize.mjs')).href);
+  const {initializationDiagnostics}=await import(pathToFileURL(resolve('scripts/initialization-diagnostics.mjs')).href);
+  const events:any[]=[],diag=initializationDiagnostics((value:unknown)=>events.push(value));let graphql=0;
+  const fetcher=diag.transport(async(input:string,init:RequestInit)=>{
+    const u=new URL(input);
+    if(u.pathname==='/graphql') {
+      graphql++;expect(init.method).toBe('POST');expect(JSON.parse(String(init.body)).query).toContain('updateAllowsFetchAndMerge');
+      return Response.json({errors:[{message:'PRIVATE_GRAPHQL_DETAIL_MUST_NOT_ESCAPE'}]});
+    }
+    expect(init.method??'GET').toBe('GET');
+    if(u.pathname.endsWith('/git/ref/heads/main'))return Response.json({object:{sha:f.A}});
+    if(u.pathname.endsWith('/git/matching-refs/heads/steward/release-state'))return Response.json([]);
+    const response=await f.io.request('GET',u.pathname+u.search),data=JSON.parse(Buffer.from(response.bytes).toString());
+    if(u.pathname==='/repos/splrad/LayerScape')data.private=false;
+    if(u.pathname.endsWith('/rulesets/90')){data.node_id='fixture-rule-node';delete data.rules.find((r:any)=>r.type==='update').parameters;}
+    return Response.json(data,{status:response.status});
+  });
+  const app={appBotId:301115370,forRepository:async(_id:number,fn:any)=>fn('offline-writer'),forCandidateReadRepository:async(_id:number,fn:any)=>fn('offline-reader')};
+  const plan={repository:{id:1187527897,full_name:'splrad/LayerScape'},baseSha:f.A,releaseAdoption:{prNumber:176,sourceSha:'de10de20b5405d764bfda731ed91d11ac56b5b2c'}};
+  let failure:unknown;
+  try {await initializeProduct(plan,{root:f.root,app,fetcher,stage:diag.stage,onFailure:diag.captureFailure,
+    execute:async(_command:string,args:string[])=>({stdout:args.includes('rev-parse')?f.A:''}),
+    // Bind only immutable fixture Git objects/A/P. Adoption, writer protection and GraphQL are the production functions.
+    initialize:async(request:any,options:any)=>initializeReleaseAdoption({...request,directory:f.request.directory,remote:f.request.remote,releaseAdoption:f.request.releaseAdoption},options)});
+  }catch(error){failure=error;}
+  expect(failure).toBeDefined();expect(graphql).toBe(1);expect(await f.stateHead()).toBeNull();
+  expect(events.some(x=>x.operation==='rule-parameters'&&x.graphqlErrorCount===1)).toBe(true);
+  expect(diag.failure(failure).phase).toBe('adoption-reconcile');
+  expect(JSON.stringify({events,result:diag.failure(failure)})).not.toContain('PRIVATE_GRAPHQL_DETAIL_MUST_NOT_ESCAPE');
+});

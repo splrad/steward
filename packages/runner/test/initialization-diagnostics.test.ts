@@ -35,6 +35,7 @@ it.each([{cleanupFails:false,scopeFails:false},{cleanupFails:true,scopeFails:fal
   expect(issued[0].permissions.contents).toBe('write');expect(issued[1].permissions.contents).toBe('read');
   const result=diag.failure(failure);expect(result.phase).toBe(scopeFails?'candidate-read-credential':'repository-read');expect(result.httpStatus).toBe(scopeFails?null:409);
   const cleanups=events.filter(x=>x.operation==='revoke');expect(cleanups.map(x=>x.credential)).toEqual(['credential-2','credential-1']);
+  expect(cleanups.every(x=>x.phase==='credential-cleanup')).toBe(true);
   expect(cleanups.map(x=>x.httpStatus)).toEqual([cleanupFails?403:204,cleanupFails?403:204]);
   expect(JSON.stringify({events,result,code:initializationFailureCode(failure)})).not.toContain(secret);
   expect(events.filter(x=>x.operation==='issue').every(x=>x.expiresAt==='2026-11-13T14:00:00.000Z')).toBe(true);
@@ -56,4 +57,12 @@ it('GraphQL HTTP 200 errors are visible without printing query or response conte
  const body={errors:[{message:secret,path:[secret],extensions:{secret}}]};
  const response=await diag.transport(async()=>Response.json(body))('https://api.github.com/graphql',{method:'POST',body:JSON.stringify({query:secret})});
  expect(await response.json()).toEqual(body);expect(events[0].graphqlErrorCount).toBe(1);expect(JSON.stringify(events)).not.toContain(secret);
+});
+
+it('maps exact adoption and writer assertions but rejects arbitrary suffixes',()=>{
+ const diag=initializationDiagnostics();diag.stage('adoption-reconcile');
+ expect(diag.failure(new Error('RELEASE_ADOPTION: merged adoption PR')).failureCode).toBe('ADOPTION_03');
+ expect(diag.failure(new Error('RELEASE_RECORD: writer protection identity')).failureCode).toBe('WRITER_PROTECTION_05');
+ expect(diag.failure(new Error('RELEASE_ADOPTION: merged adoption PR '+secret)).failureCode).toBeNull();
+ expect(diag.failure(new Error('RELEASE_RECORD: '+secret)).failureCode).toBeNull();
 });
