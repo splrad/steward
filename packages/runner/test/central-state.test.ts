@@ -135,6 +135,7 @@ it.each([
   [null], [{}], [{path:'README',type:'blob',mode:'100644',sha:'bad'}],
   [{path:'README',type:'tree',mode:'100644',sha}],
   [{path:'../README',type:'blob',mode:'100644',sha}],
+  [{path:'bad\0path',type:'blob',mode:'100644',sha}],
   [1,2].map(()=>({path:'README',type:'blob',mode:'100644',sha})),
 ])('rejects malformed default tree before classifying absence %#',async (...tree)=>{
   const io={request:async(_method:string,path:string)=>{
@@ -144,6 +145,22 @@ it.each([
     return {status:200,bytes:Buffer.from(JSON.stringify(value))};
   }};
   await expect(releaseParticipation(repository,io)).rejects.toThrow('RELEASE_PARTICIPATION_IDENTITY');
+});
+it('accepts valid source tree kinds and rejects a malformed final default ref',async()=>{
+  let reads=0,badFinal=false;
+  const io={request:async(_method:string,path:string)=>{
+    let value:any;
+    if(path===`/repos/${repository.full_name}`)value=repository;
+    else if(path.includes('git/ref/heads/main'))value={ref:'refs/heads/main',object:{type:++reads>1&&badFinal?'tree':'commit',sha}};
+    else if(path.includes('git/trees/'))value={truncated:false,tree:[
+      {path:'src',type:'tree',mode:'040000',sha},{path:'src/file',type:'blob',mode:'100644',sha},
+      {path:'executable',type:'blob',mode:'100755',sha},{path:'link',type:'blob',mode:'120000',sha},
+      {path:'module',type:'commit',mode:'160000',sha}]};
+    else value=[];
+    return {status:200,bytes:Buffer.from(JSON.stringify(value))};
+  }};
+  expect((await releaseParticipation(repository,io)).status).toBe('NOT_APPLICABLE');
+  reads=0;badFinal=true;await expect(releaseParticipation(repository,io)).rejects.toThrow('RELEASE_PARTICIPATION_IDENTITY');
 });
 it('keeps Pages independent and completes a scan of explicitly inapplicable repositories without generation',async()=>{
   let pages=0,service=0;

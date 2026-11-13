@@ -106,15 +106,19 @@ export async function releaseParticipation(repository,io) {
   const readTree=async sha=>{
     const value=await read(`git/trees/${sha}?recursive=1`);
     if(value?.truncated!==false||!Array.isArray(value.tree))throw Error('RELEASE_PARTICIPATION_INCOMPLETE');
-    if(value.tree.some(x=>typeof x?.path!=='string'||!x.path||x.path.split('/').some(p=>!p||p==='.'||p==='..')
+    if(value.tree.some(x=>typeof x?.path!=='string'||!x.path||x.path.includes('\0')||x.path.split('/').some(p=>!p||p==='.'||p==='..')
       ||!/^[a-f0-9]{40}$/.test(x.sha)||!(x.type==='tree'&&x.mode==='040000'||x.type==='blob'&&['100644','100755','120000'].includes(x.mode)||x.type==='commit'&&x.mode==='160000'))
       ||new Set(value.tree.map(x=>x.path)).size!==value.tree.length)throw Error('RELEASE_PARTICIPATION_IDENTITY');
     return value;
   };
   const actual=await read('');
   if(actual.id!==repository.id||actual.full_name!==repository.full_name||actual.default_branch!==repository.default_branch||actual.archived!==false||actual.disabled!==false)throw Error('RELEASE_PARTICIPATION_IDENTITY');
-  const ref=await read(`git/ref/heads/${encodeURIComponent(repository.default_branch)}`);
-  if(ref.ref!==`refs/heads/${repository.default_branch}`||ref.object?.type!=='commit'||!/^[a-f0-9]{40}$/.test(ref.object.sha))throw Error('RELEASE_PARTICIPATION_IDENTITY');
+  const readDefaultRef=async()=>{
+    const value=await read(`git/ref/heads/${encodeURIComponent(repository.default_branch)}`);
+    if(value?.ref!==`refs/heads/${repository.default_branch}`||value.object?.type!=='commit'||!/^[a-f0-9]{40}$/.test(value.object.sha))throw Error('RELEASE_PARTICIPATION_IDENTITY');
+    return value;
+  };
+  const ref=await readDefaultRef();
   const tree=await readTree(ref.object.sha);
   const names=['.github/delivery.json','release-please-config.json','.release-please-manifest.json'];
   const files=names.map(path=>tree.tree.filter(x=>x.path===path));
@@ -159,7 +163,7 @@ export async function releaseParticipation(repository,io) {
     const after=[await read('git/matching-refs/heads/steward/release-candidate'),await read('git/matching-refs/heads/steward/build/'),await read('releases?per_page=1')];
     if(JSON.stringify(after)!==JSON.stringify(absenceFacts))throw Error('RELEASE_PARTICIPATION_CHANGED');
   }
-  const after=await read(`git/ref/heads/${encodeURIComponent(repository.default_branch)}`);
+  const after=await readDefaultRef();
   const stateAfter=await read('git/matching-refs/heads/steward/release-state');
   if(after.object?.sha!==ref.object.sha||JSON.stringify(stateAfter)!==JSON.stringify(refs))throw Error('RELEASE_PARTICIPATION_CHANGED');
   return {status,sourceSha:ref.object.sha};
