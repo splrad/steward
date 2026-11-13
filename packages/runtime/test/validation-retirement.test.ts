@@ -72,6 +72,19 @@ const noGateWrites = () => {
 };
 
 describe('exact legacy Gate consumer retirement', () => {
+  it.each(['unavailable', 'invalid'])('preserves pending check and classification when the retirement PR lookup is %s', async failure => {
+    if (failure === 'unavailable') vi.mocked(GitHubClient.prototype.getPullRequest).mockRejectedValue(new Error('lookup unavailable'));
+    else vi.mocked(GitHubClient.prototype.getPullRequest).mockResolvedValue(null as any);
+    const response = await handleWebhook(request('pull_request', {
+      action: 'opened', repository: repositories[1], pull_request: pull(),
+    }), { ...env(), WORKFLOW_EVALUATOR_SHA: undefined });
+    expect(response.status).toBe(202);
+    expect(GitHubClient.prototype.createCheckRun).toHaveBeenCalledWith('splrad', 'steward', expect.objectContaining({
+      name: 'PR Validation Gate', head_sha: 'c'.repeat(40), status: 'in_progress',
+    }));
+    expect(dispatchWorkflow).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ workflow: 'pr-classification.yml' }));
+  });
+
   it.each(repositories)('blocks queued DO producers for $full_name/$default_branch', async repository => {
     const coordinator = new ValidationCoordinator({} as DurableObjectState, env());
     for (const operation of ['pending', 'run', 'refresh']) {

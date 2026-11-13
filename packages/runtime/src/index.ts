@@ -135,10 +135,14 @@ async function ensureValidationPending(env: Env, repository: any, pull: any, all
   const [owner, repo] = splitRepository(String(repository.full_name));
   const gh = await validationClient(env, Number(repository.id));
   if (allowRetirement && pull?.base?.repo?.id === repository.id && legacyValidationRetired(env, repository, pull?.base?.ref)) {
-    const current = await gh.getPullRequest(owner, repo, number);
-    if (current.number === number && current.base?.repo?.id === repository.id
-      && current.head?.sha === headSha && current.base?.ref === pull.base.ref
-      && await currentValidationRetirement(env, gh, repository, current.base.ref)) return;
+    try {
+      const current = await gh.getPullRequest(owner, repo, number);
+      if (current.number === number && current.base?.repo?.id === repository.id
+        && current.head?.sha === headSha && current.base?.ref === pull.base.ref
+        && await currentValidationRetirement(env, gh, repository, current.base.ref)) return;
+    } catch {
+      // An unavailable retirement lookup must preserve the existing pending writer.
+    }
   }
   const current = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, headSha, "all"), headSha, Number(env.APP_ID), Number(repository.id), number);
   if (current.length) return;
