@@ -15,6 +15,22 @@ const sha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
 const digest=value=>createHash('sha256').update(value).digest('hex');
 const same=(a,b)=>a?.sourceSha===b?.sourceSha&&a?.prNumber===b?.prNumber;
 
+/** Shared adopted/current product configuration contract. */
+export function validateReleaseConfiguration(delivery,settings,versions) {
+  const object=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
+  const paths=delivery.units.map(u=>u.path).sort();
+  if(!object(settings)||settings['separate-pull-requests']!==false||!object(settings.packages)
+    ||JSON.stringify(Object.keys(settings.packages).sort())!==JSON.stringify(paths)
+    ||!object(versions)||Object.keys(versions).some(path=>!paths.includes(path)))fail('adopted configuration');
+  for(const path of paths) {
+    if(!object(settings.packages[path]))fail('adopted configuration');
+    if(Object.hasOwn(versions,path)) {
+      if(typeof versions[path]!=='string')fail('adopted configuration');
+      try {if(Version.parse(versions[path]).toString()!==versions[path])fail('adopted configuration');}catch{fail('adopted configuration');}
+    }
+  }
+}
+
 /** A/P comes only from the merged onboarding PR. The source history is never truncated at A for first-release generation. */
 export async function withReleaseAdoption(request,adoption,io,operation) {
   if(!adoption||!sha(adoption.sourceSha)||!Number.isSafeInteger(adoption.prNumber)||adoption.prNumber<1
@@ -47,7 +63,7 @@ export async function withReleaseAdoption(request,adoption,io,operation) {
     const settings=JSON.parse(await file(adoption.sourceSha,'release-please-config.json'));
     const manifest=JSON.parse(await file(adoption.sourceSha,'.release-please-manifest.json'));
     const delivery=parseDeliveryConfig(JSON.parse(await file(adoption.sourceSha,'.github/delivery.json')));
-    if(settings['separate-pull-requests']!==false||JSON.stringify(Object.keys(settings.packages??{}).sort())!==JSON.stringify(delivery.units.map(u=>u.path).sort()))fail('adopted configuration');
+    validateReleaseConfiguration(delivery,settings,manifest);
     for(const path of ['.github/workflows/steward-release-publish.yml','.github/workflows/steward-release-channels.yml','.github/release-template.md.mustache'])await file(adoption.sourceSha,path);
     if(request.repositoryId===1187527897) {
       if(request.repository!=='splrad/LayerScape'||Object.keys(manifest).length||settings.packages?.['.']?.['initial-version']!=='1.0.0'

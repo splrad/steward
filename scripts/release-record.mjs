@@ -32,8 +32,9 @@ function compatibleCycle(a,b) {
   return true;
 }
 /** Read immutable Git blobs without checkout, hooks, external diff or textconv. */
-export async function readReleaseRecords({ directory, targetRef, repositoryId, includeHistory=true }) {
+export async function readReleaseRecords({ directory, targetRef, repositoryId, includeHistory=true, maintenanceOnly=false }) {
   if (!refs.has(targetRef) || !Number.isSafeInteger(repositoryId) || repositoryId<1) throw new Error('RELEASE_RECORD: target');
+  if(maintenanceOnly&&(repositoryId!==1296724484||targetRef!=='steward/release-state'||!includeHistory))throw new Error('RELEASE_RECORD: central maintenance identity');
   const home=await mkdtemp(join(tmpdir(),'steward-record-read-'));
   const env=isolatedBuildEnvironment(process.env,home);
   // These plumbing reads never apply attributes, filters or text conversion.
@@ -71,6 +72,7 @@ export async function readReleaseRecords({ directory, targetRef, repositoryId, i
         const match=/^(\d+) (\w+) ([a-f0-9]{40})\t(.+)$/.exec(entry);
         if(!match)throw new Error('RELEASE_RECORD: tree');
         const [,mode,type,oid,path]=match;
+        if(maintenanceOnly&&stateRecordOwner(targetRef,path)!=='maintenance')throw new Error('RELEASE_RECORD: central maintenance history');
         if(targetRef!=='steward/release-state'||path==='state.json'||/^(cycles|generated|content|maintenance)\//.test(path)
           ||/^evidence\/(native|reads|dispatch|retry-limit|publication|completion|channel|channel-read|normalized-delivery|source-rejection)\//.test(path)) {
           if(mode!=='100644'||type!=='blob') {
@@ -221,6 +223,8 @@ function validateWrite(request) {
     || !/^[^\s@]+@[^\s@]+$/.test(request.identity.email))fail('Git identity');
   if(typeof request.remote!=='string' || !( /^https:\/\/github\.com\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+\.git$/.test(request.remote)
     || isAbsolute(request.remote) && !/[\r\n\0]/.test(request.remote)))fail('remote');
+  if(request.writer==='maintenance'&&(request.repositoryId!==1296724484
+    ||request.remote.startsWith('https:')&&request.remote!=='https://github.com/splrad/steward.git'))fail('central maintenance identity');
   if(!Array.isArray(request.allowedPaths) || !Array.isArray(request.changes) || !request.changes.length
     || request.allowedPaths.length!==request.changes.length || new Set(request.allowedPaths.map(path=>path.toLowerCase())).size!==request.allowedPaths.length)fail('allowed paths');
   let total=0;
@@ -397,7 +401,9 @@ export async function writeReleaseRecords(input,{token}={}) {
       const parent=await identity(commit);
       if(request.expectedHead!==null && (parent===null || !await ancestry(request.expectedHead,parent)))fail('prepared parent conflict');
       const [base,proposed]=await Promise.all([tree(parent),tree(commit)]);
-      if(request.targetRef==='steward/release-state') {
+      if(request.writer==='maintenance') {
+        if([...base.keys(),...proposed.keys()].some(path=>stateRecordOwner(request.targetRef,path)!=='maintenance'))fail('central maintenance tree');
+      } else if(request.targetRef==='steward/release-state') {
         if(!proposed.get('state.json')?.value)fail('repository record required');
         assertRepositoryWrite(proposed.get('state.json').value,base.get('state.json')?.value);
       }
@@ -423,14 +429,15 @@ export async function writeReleaseRecords(input,{token}={}) {
       } else if(!await fetchHead(head))continue;
       if(request.expectedHead!==null && !await ancestry(request.expectedHead,head))return result('CONFLICT',head,'STATE_HISTORY_CHANGED');
       const current=await tree(head);
+      if(request.writer==='maintenance'&&[...current.keys()].some(path=>stateRecordOwner(request.targetRef,path)!=='maintenance'))fail('central maintenance tree');
       const expected=await tree(request.expectedHead);validateBase(expected);
       // Unknown historical release schemas and immutable cycle conflicts stop a
       // write even when today's cache looks plausible.
       if(head!==null) {
         await required('update-ref',ref,head);
         if(request.targetRef==='steward/release-state'||request.targetRef==='steward/governance-state') {
-          const history=await readReleaseRecords({directory,targetRef:request.targetRef,repositoryId:request.repositoryId,includeHistory:request.writer!=='release'});
-          if(request.targetRef==='steward/release-state') {
+          const history=await readReleaseRecords({directory,targetRef:request.targetRef,repositoryId:request.repositoryId,includeHistory:request.writer!=='release',maintenanceOnly:request.writer==='maintenance'});
+          if(request.targetRef==='steward/release-state'&&request.writer!=='maintenance') {
             const update=request.changes.find(file=>file.path==='state.json');
             const record=update?decodeReleaseRecord('repository',Buffer.from(update.content)):current.get('state.json')?.value;
             if(!record)fail('repository record required');
