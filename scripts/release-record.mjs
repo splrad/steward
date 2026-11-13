@@ -32,8 +32,9 @@ function compatibleCycle(a,b) {
   return true;
 }
 /** Read immutable Git blobs without checkout, hooks, external diff or textconv. */
-export async function readReleaseRecords({ directory, targetRef, repositoryId, includeHistory=true }) {
+export async function readReleaseRecords({ directory, targetRef, repositoryId, includeHistory=true, maintenanceOnly=false }) {
   if (!refs.has(targetRef) || !Number.isSafeInteger(repositoryId) || repositoryId<1) throw new Error('RELEASE_RECORD: target');
+  if(maintenanceOnly&&(repositoryId!==1296724484||targetRef!=='steward/release-state'||!includeHistory))throw new Error('RELEASE_RECORD: central maintenance identity');
   const home=await mkdtemp(join(tmpdir(),'steward-record-read-'));
   const env=isolatedBuildEnvironment(process.env,home);
   // These plumbing reads never apply attributes, filters or text conversion.
@@ -71,6 +72,7 @@ export async function readReleaseRecords({ directory, targetRef, repositoryId, i
         const match=/^(\d+) (\w+) ([a-f0-9]{40})\t(.+)$/.exec(entry);
         if(!match)throw new Error('RELEASE_RECORD: tree');
         const [,mode,type,oid,path]=match;
+        if(maintenanceOnly&&stateRecordOwner(targetRef,path)!=='maintenance')throw new Error('RELEASE_RECORD: central maintenance history');
         if(targetRef!=='steward/release-state'||path==='state.json'||/^(cycles|generated|content|maintenance)\//.test(path)
           ||/^evidence\/(native|reads|dispatch|retry-limit|publication|completion|channel|channel-read|normalized-delivery|source-rejection)\//.test(path)) {
           if(mode!=='100644'||type!=='blob') {
@@ -433,13 +435,8 @@ export async function writeReleaseRecords(input,{token}={}) {
       // write even when today's cache looks plausible.
       if(head!==null) {
         await required('update-ref',ref,head);
-        if(request.writer==='maintenance') {
-          const commits=(await required('rev-list',head)).toString().trim().split('\n');
-          for(const commit of commits)if([...await tree(commit)].some(([path])=>stateRecordOwner(request.targetRef,path)!=='maintenance'))fail('central maintenance history');
-        }
         if(request.targetRef==='steward/release-state'||request.targetRef==='steward/governance-state') {
-          const history=await readReleaseRecords({directory,targetRef:request.targetRef,repositoryId:request.repositoryId,includeHistory:request.writer!=='release'});
-          if(request.writer==='maintenance'&&history.history.some(record=>stateRecordOwner(request.targetRef,record.path)!=='maintenance'))fail('central maintenance history');
+          const history=await readReleaseRecords({directory,targetRef:request.targetRef,repositoryId:request.repositoryId,includeHistory:request.writer!=='release',maintenanceOnly:request.writer==='maintenance'});
           if(request.targetRef==='steward/release-state'&&request.writer!=='maintenance') {
             const update=request.changes.find(file=>file.path==='state.json');
             const record=update?decodeReleaseRecord('repository',Buffer.from(update.content)):current.get('state.json')?.value;

@@ -10,6 +10,7 @@ import { readReleaseRecords, writeReleaseRecords, releaseCommand, assertReleaseW
 import {serviceMaintenance,maintenanceGitStore} from './maintenance.mjs';
 import {servicePages,pagesGitStore} from './pages-maintenance.mjs';
 import {assertQualityProtection,qualityNativeIO} from './quality-language-summary.mjs';
+import {validateReleaseConfiguration} from './release-adoption.mjs';
 
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const identity={name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
@@ -119,13 +120,14 @@ export async function releaseParticipation(repository,io) {
     obligation=repository.id!==1296724484||repository.full_name!=='splrad/steward'
       ||state.tree.some(x=>x.type!=='tree'&&!/^maintenance\/[1-9][0-9]*\.json$/.test(x.path));
   }
-  let status='APPLICABLE';
+  let status='APPLICABLE',absenceFacts=null;
   if(files.every(x=>x.length===0)&&!obligation) {
     const candidates=await read('git/matching-refs/heads/steward/release-candidate');
     const builds=await read('git/matching-refs/heads/steward/build/');
     const releases=await read('releases?per_page=1');
     if(!Array.isArray(candidates)||!Array.isArray(builds)||!Array.isArray(releases))throw Error('RELEASE_PARTICIPATION_INCOMPLETE');
     if(candidates.length||builds.length||releases.length)throw Error('RELEASE_CONFIGURATION_REQUIRED');
+    absenceFacts=[candidates,builds,releases];
     status='NOT_APPLICABLE';
   } else {
     if(files.some(x=>x.length!==1||x[0].type!=='blob'||x[0].mode!=='100644'))throw Error('RELEASE_CONFIGURATION_REQUIRED');
@@ -135,12 +137,16 @@ export async function releaseParticipation(repository,io) {
       if(v.type!=='file'||v.path!==names[i]||v.sha!==files[i][0].sha||v.encoding!=='base64')throw Error('RELEASE_CONFIGURATION_INVALID');
       const bytes=Buffer.from(v.content,'base64');
       if(bytes.length!==v.size||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==v.sha)throw Error('RELEASE_CONFIGURATION_INVALID');
-      contents.push(JSON.parse(bytes.toString('utf8')));
+      try{contents.push(JSON.parse(bytes.toString('utf8')));}catch{throw Error('RELEASE_CONFIGURATION_INVALID');}
     }
-    const delivery=parseDeliveryConfig(contents[0]);assertProductDelivery(delivery,repository.full_name);
-    const paths=delivery.units.map(u=>u.path).sort();
-    if(JSON.stringify(Object.keys(contents[1].packages??{}).sort())!==JSON.stringify(paths)
-      ||JSON.stringify(Object.keys(contents[2]).sort())!==JSON.stringify(paths))throw Error('RELEASE_CONFIGURATION_INVALID');
+    try {
+      const delivery=parseDeliveryConfig(contents[0]);assertProductDelivery(delivery,repository.full_name);
+      validateReleaseConfiguration(delivery,contents[1],contents[2]);
+    }catch{throw Error('RELEASE_CONFIGURATION_INVALID');}
+  }
+  if(absenceFacts) {
+    const after=[await read('git/matching-refs/heads/steward/release-candidate'),await read('git/matching-refs/heads/steward/build/'),await read('releases?per_page=1')];
+    if(JSON.stringify(after)!==JSON.stringify(absenceFacts))throw Error('RELEASE_PARTICIPATION_CHANGED');
   }
   const after=await read(`git/ref/heads/${encodeURIComponent(repository.default_branch)}`);
   const stateAfter=await read('git/matching-refs/heads/steward/release-state');
@@ -162,8 +168,15 @@ export async function fetchState(root,repository,token,targetRef='steward/releas
   const response=await io.request('GET',`/repos/${repository.full_name}/git/ref/heads/${targetRef}`);
   // Only these two fixed central consumers may start with no records. No branch
   // is seeded: the first real maintenance fact or health summary creates it.
-  if(response.status===404&&centralFirstUse)return {remote,io,snapshot:{repositoryId:repository.id,targetRef,head:null,repository:null,domainRecords:[],currentPaths:[]},
-    readBytes:async()=>{throw new Error('RELEASE_STATE_FILE_UNAVAILABLE');}};
+  if(response.status===404&&centralFirstUse) {
+    const confirmation=await io.request('GET',`/repos/${repository.full_name}/git/matching-refs/heads/${targetRef}`);
+    if(confirmation.status!==200)throw new Error('RELEASE_STATE_UNAVAILABLE');
+    const matches=JSON.parse(Buffer.from(confirmation.bytes).toString('utf8'));
+    if(!Array.isArray(matches)||matches.some(r=>typeof r.ref!=='string'||!r.ref.startsWith(`refs/heads/${targetRef}`)||r.object?.type!=='commit'||!/^[a-f0-9]{40}$/.test(r.object.sha)))throw new Error('RELEASE_STATE_IDENTITY');
+    if(matches.some(r=>r.ref===`refs/heads/${targetRef}`))throw new Error('RELEASE_STATE_MOVED');
+    return {remote,io,snapshot:{repositoryId:repository.id,targetRef,head:null,repository:null,domainRecords:[],currentPaths:[]},
+      readBytes:async()=>{throw new Error('RELEASE_STATE_FILE_UNAVAILABLE');}};
+  }
   if(response.status!==200)throw new Error(response.status===404?'RELEASE_BOOTSTRAP_REQUIRED':'RELEASE_STATE_UNAVAILABLE');
   const ref=JSON.parse(Buffer.from(response.bytes).toString('utf8'));
   if(ref.ref!==`refs/heads/${targetRef}`||ref.object?.type!=='commit'||!/^[a-f0-9]{40}$/.test(ref.object.sha))throw new Error('RELEASE_STATE_IDENTITY');

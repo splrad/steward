@@ -3,14 +3,23 @@ import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
 const {fetchState,recordCentralHealth,coordinateReleaseWake,releaseParticipation}=await import(pathToFileURL(resolve('scripts/release-coordinator.mjs')).href);
+const {validateReleaseConfiguration}=await import(pathToFileURL(resolve('scripts/release-adoption.mjs')).href);
 const repository={id:1296724484,full_name:'splrad/steward',default_branch:'main',archived:false,disabled:false};
 const sha='a'.repeat(40),head='b'.repeat(40);
 const summary={observedAt:'2026-11-13T12:00:00.000Z',scanCompletedAt:null,errorCodes:['RELEASE_BOOTSTRAP_REQUIRED'],counts:{scanned:1,completed:0,waiting:1,failed:0,unknown:1}};
+it('shares adopted config validation while retaining an empty first-release manifest',()=>{
+  const d={units:[{path:'.'}]},c={'separate-pull-requests':false,packages:{'.':{'release-type':'simple'}}};
+  expect(()=>validateReleaseConfiguration(d,c,{})).not.toThrow();
+  expect(()=>validateReleaseConfiguration(d,c,{'.':'0.0.0'})).not.toThrow();
+  expect(()=>validateReleaseConfiguration(d,{...c,'separate-pull-requests':true},{})).toThrow('adopted configuration');
+  for(const version of [null,7,{},'bad','v1.0.0',''])expect(()=>validateReleaseConfiguration(d,c,{'.':version})).toThrow('adopted configuration');
+});
 it('allows only protected fixed central missing refs, never product 404 or forbidden reads',async()=>{
-  let status=404,protectedWriter=true;
+  let status=404,protectedWriter=true,confirmationStatus=200,confirmed:any=[];
   const fetcher=async(input:any)=>{
     const path=decodeURIComponent(new URL(String(input)).pathname);
     if(path.endsWith('/splrad/steward'))return new Response(JSON.stringify(repository));
+    if(path.includes('/git/matching-refs/'))return new Response(JSON.stringify(confirmed),{status:confirmationStatus});
     if(path.includes('/git/ref/'))return new Response('{}',{status});
     const data=path.includes('/rules/branches/')?[
       {type:'creation',ruleset_id:1},{type:'update',ruleset_id:1},{type:'non_fast_forward',ruleset_id:2},{type:'deletion',ruleset_id:2}
@@ -22,6 +31,8 @@ it('allows only protected fixed central missing refs, never product 404 or forbi
   await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher})).rejects.toThrow('RELEASE_BOOTSTRAP_REQUIRED');
   await expect(fetchState('',{...repository,id:7},'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow('RELEASE_CENTRAL_STATE_IDENTITY');
   status=403;await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow('RELEASE_STATE_UNAVAILABLE');
+  status=404;confirmationStatus=403;await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow('RELEASE_STATE_UNAVAILABLE');
+  confirmationStatus=200;confirmed=[{ref:'refs/heads/steward/release-state',object:{type:'commit',sha}}];await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow('RELEASE_STATE_MOVED');confirmed=[];
   status=404;protectedWriter=false;await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow();
 });
 function fixture(){
@@ -80,11 +91,23 @@ it('keeps Pages independent and completes a scan of explicitly inapplicable repo
   const s=await coordinateReleaseWake({discover:async()=>[{id:1}],pages:async()=>{pages++;return {status:'DISABLED'};},observe:async()=>({status:'NOT_APPLICABLE'}),service:async()=>{service++;return {};},health:async()=>{}});
   expect(pages).toBe(1);expect(service).toBe(0);expect(s.scanCompletedAt).not.toBeNull();expect(s.counts.completed).toBe(1);
 });
+it.each(['release-candidate','build/','releases'])('rejects changed absence evidence for %s',async changed=>{
+  const counts=new Map<string,number>();
+  const io={request:async(_method:string,path:string)=>{
+    let v:any;
+    if(path===`/repos/${repository.full_name}`)v=repository;
+    else if(path.includes('git/ref/heads/main'))v={ref:'refs/heads/main',object:{type:'commit',sha}};
+    else if(path.includes('git/trees/'))v={truncated:false,tree:[]};
+    else {const n=(counts.get(path)??0)+1;counts.set(path,n);v=n>1&&path.includes(changed)?[{id:1}]:[];}
+    return {status:200,bytes:Buffer.from(JSON.stringify(v))};
+  }};
+  await expect(releaseParticipation(repository,io)).rejects.toThrow('RELEASE_PARTICIPATION_CHANGED');
+});
 it('validates exact product blobs, retains bootstrap requirements and rejects head/state drift',async()=>{
   const product={...repository,id:7,full_name:'test/product'};
   const values:Record<string,unknown>={
     '.github/delivery.json':{schemaVersion:1,repositoryAuthors:[{id:7,evidence:'Offline authorship'}],units:[{id:'app',path:'.',notesPath:'.release-notes/app.md',assets:[{id:'app',name:'app-${version}.zip',mediaType:'application/zip'}],channels:[]}]},
-    'release-please-config.json':{packages:{'.':{'release-type':'simple','version-file':'VERSION'}}},'.release-please-manifest.json':{'.':'0.0.0'}};
+    'release-please-config.json':{'separate-pull-requests':false,packages:{'.':{'release-type':'simple','version-file':'VERSION'}}},'.release-please-manifest.json':{'.':'0.0.0'}};
   let heads=0,states=0,moveHead=false,moveState=false,badBlob=false;
   const blobs=Object.fromEntries(Object.entries(values).map(([path,value])=>{const b=Buffer.from(JSON.stringify(value));return [path,{type:'file',path,encoding:'base64',size:b.length,sha:createHash('sha1').update(`blob ${b.length}\0`).update(b).digest('hex'),content:b.toString('base64')}];}));
   const io={request:async(_method:string,path:string)=>{
