@@ -1,7 +1,8 @@
-# Dot-sourced only by the fixed channel jobs. Both metadata and ORAS use the caller's same credential.
+# Metadata-only caller input; ORAS retains the separate repository GITHUB_TOKEN.
 function Get-LayerScapePackageState {
-    param([Parameter(Mandatory)][string]$Token, [Parameter(Mandatory)][string]$OwnerInventory)
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Token, [Parameter(Mandatory)][string]$OwnerInventory)
     $ErrorActionPreference='Stop'
+    if ([string]::IsNullOrWhiteSpace($Token)) { throw 'GHCR_METADATA_TOKEN_REQUIRED' }
     $owner=$OwnerInventory | ConvertFrom-Json -DateKind String
     if ($owner.schemaVersion -ne 1 -or $owner.ownerId -ne 302208797 -or $owner.repositoryId -ne 1187527897 -or
         $owner.packageType -cne 'container' -or $owner.target -cne 'layerscape-assets' -or
