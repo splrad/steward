@@ -1,20 +1,19 @@
 {
   "schemaVersion": 1,
   "workflowId": 311600220,
-  "runId": 43497399545,
+  "runId": 43500446376,
   "runAttempt": 1,
   "controllerSha": "bddab69c385c5cd0e58d8b11d68ed128e0515bc0",
-  "observedAt": "2026-11-13T20:08:11.741Z",
+  "observedAt": "2026-11-13T20:23:32.140Z",
   "scanCompletedAt": null,
   "errorCodes": [
-    "MAINTENANCE_EVIDENCE_REQUIRED",
-    "NATIVE_EVIDENCE_REQUIRED"
+    "MAINTENANCE_EVIDENCE_REQUIRED"
   ],
   "counts": {
     "scanned": 5,
     "completed": 3,
-    "waiting": 1,
+    "waiting": 2,
     "failed": 0,
-    "unknown": 1
+    "unknown": 0
   }
 }
