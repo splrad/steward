@@ -113,6 +113,17 @@ describe('central adoption record and native deployment identity', () => {
     f.api.mockImplementation(async path=>{const v=await original(path); if(Array.isArray(v.pull_requests)) v.pull_requests=[];return v;});
     await expect(verifyAdoptionSource(f.record,f.api,f.pull,f.readLog)).resolves.toBeUndefined();
   });
+  it.each(['copilotBranch','ambiguousPR','changingBranch'])('rejects ambiguous or changing native binding: %s', async mode=>{
+    const f=adoptionFixture(), original=f.api.getMockImplementation()!; let reads=0;
+    f.api.mockImplementation(async path=>{
+      const v=await original(path);
+      if(mode==='copilotBranch'&&path==='actions/runs/2'){v.head_branch='other';v.pull_requests=[];}
+      if(mode==='ambiguousPR'&&path.includes('/pulls?'))v.push({...v[0],id:401,number:401});
+      if(mode==='changingBranch'&&path.startsWith('actions/runs?')&&++reads===2)v.workflow_runs[1].head_branch='other';
+      return v;
+    });
+    await expect(verifyAdoptionSource(f.record,f.api,f.pull,f.readLog)).rejects.toThrow();
+  });
   it.each(['event','workflow','repository','branch','suiteApp','jobAttempt','jobRun','jobHead','jobName','jobFailure','association','policySignature','policyAncestry'])('rejects incorrect maintenance binding: %s',async mode=>{
     const f=adoptionFixture(), original=f.api.getMockImplementation()!;
     f.api.mockImplementation(async path=>{

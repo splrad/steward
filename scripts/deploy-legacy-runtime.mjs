@@ -63,7 +63,7 @@ async function evidencePages(api, path, key) {
   const first = await read(), second = await read();
   const fingerprint = rows => JSON.stringify(rows.map(v => [v.id, v.head_sha, v.commit_id, v.path, v.event, v.status, v.conclusion,
     v.run_attempt, v.run_started_at, v.created_at, v.started_at, v.submitted_at, v.state, v.body,
-    v.repository?.full_name, v.head_repository?.full_name, v.workflow_id, v.run_id, v.name, v.user?.login, v.app?.id, v.check_suite_id, v.check_suite?.id,
+    v.repository?.full_name, v.head_repository?.full_name, v.head_branch, v.workflow_id, v.run_id, v.name, v.user?.login, v.app?.id, v.check_suite_id, v.check_suite?.id,
     v.number, v.merge_commit_sha, v.head?.sha, v.head?.ref, v.head?.repo?.full_name, v.base?.ref, v.base?.repo?.full_name,
     v.pull_requests?.map(p => [p.number, p.head?.sha])]).sort((a, b) => a[0] - b[0]));
   if (fingerprint(first) !== fingerprint(second)) throw new Error('Adoption evidence changed during pagination');
@@ -126,11 +126,13 @@ export async function verifyAdoptionSource(r, api, pull, readLog) {
     if (commit.sha !== commitSha || commit.commit?.tree?.sha !== tree || commit.commit?.verification?.verified !== true || commit.commit.verification.reason !== 'valid') throw new Error('Adopted commit/tree/signature mismatch');
   }
   const associations = await evidencePages(api, `commits/${r.reviewedHead}/pulls`);
-  if (!associations.some(p => p.number === r.pullNumber && p.head?.sha === r.reviewedHead && p.head?.ref === pull.headRefName
+  const candidates = associations.filter(p => p.head?.sha === r.reviewedHead && p.head?.ref === pull.headRefName
+    && p.head?.repo?.full_name === r.repository);
+  if (candidates.length !== 1 || !candidates.some(p => p.number === r.pullNumber
     && p.head?.repo?.full_name === r.repository && p.base?.repo?.full_name === r.repository
     && p.base?.ref === pull.baseRefName && p.merge_commit_sha === r.deploymentHead)) throw new Error('Reviewed commit is not associated with the adopted PR');
   let copilotRun;
-  // GitHub can remove these associations after merge. Empty arrays are accepted only
+  // Native merged-PR evidence can have empty associations. Empty arrays are accepted only
   // alongside the independently bound maintenance job records and PR-specific review.
   const boundPull = value => Array.isArray(value.pull_requests) && (value.pull_requests.length === 0
     || value.pull_requests.every(p => p.number === r.pullNumber && p.head?.sha === r.reviewedHead));
@@ -139,10 +141,9 @@ export async function verifyAdoptionSource(r, api, pull, readLog) {
     if (!Number.isSafeInteger(attempt) || attempt < 1 || evidence.run_attempt !== attempt
       || evidence.head_sha !== r.reviewedHead || evidence.status !== 'completed' || evidence.conclusion !== 'success'
       || evidence.id !== id || evidence.repository?.full_name !== r.repository || evidence.head_repository?.full_name !== r.repository
-      || evidence.path !== path || !boundPull(evidence)) throw new Error('Adopted validation/review run is not successful for reviewed head');
+      || evidence.head_branch !== pull.headRefName || evidence.path !== path || !boundPull(evidence)) throw new Error('Adopted validation/review run is not successful for reviewed head');
     if (id === r.evidence.validationRunId) {
       if (evidence.event !== 'pull_request' || evidence.workflow_id !== 413829468) throw new Error('Unexpected maintenance validation source');
-      if (evidence.head_branch !== pull.headRefName) throw new Error('Maintenance head branch mismatch');
       const suite = await api(`check-suites/${evidence.check_suite_id}`);
       if (suite.id !== evidence.check_suite_id || suite.head_sha !== r.reviewedHead || suite.app?.id !== 15368) throw new Error('Maintenance validation is not a GitHub Actions check suite');
       await verifyMaintenanceJobs(r, api, readLog, pull.headRefName);
