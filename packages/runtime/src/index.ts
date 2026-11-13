@@ -1,4 +1,5 @@
 import { legacyReleaseRetired, assertLegacyReleaseDispatchActive } from './release-retirement.js';
+import { legacyValidationRetired } from './validation-retirement.js';
 import { SerialTaskQueue } from './serial-task-queue.js';
 import { settledPool } from "./settled-pool.js";
 import { evaluatorSha, trustedContractAuthorities } from './workflow-evaluator.js';
@@ -14,6 +15,7 @@ import { ReleaseReceiptStore } from "./release-note-receipts.js";
 import { confirmPullRequestBodyWriteIntent, processPullRequestBodyEditedDelivery, PullRequestBodyWriteIntentStore, type PullRequestBodyWriteIntent } from "./pr-body-write-intents.js";
 
 export interface Env {
+  LEGACY_VALIDATION_RETIRED?: string;
   LEGACY_RELEASE_RETIRED?: string;
   ORGANIZATION_ID: string; ORGANIZATION_LOGIN: string; APP_ID: string; INSTALLATION_ID: string;
   STEWARDSHIP_REPOSITORY: string; POLICY_SHA: string; WORKFLOW_EVALUATOR_SHA?: string; STEWARD_APP_PRIVATE_KEY?: string; STEWARD_WEBHOOK_SECRET?: string;
@@ -114,12 +116,17 @@ async function validationClient(env: Env, repositoryId: number): Promise<GitHubC
   });
   return new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA);
 }
-async function ensureValidationPending(env: Env, repository: any, pull: any): Promise<void> {
+async function ensureValidationPending(env: Env, repository: any, pull: any, allowRetirement = true): Promise<void> {
   if (env.VALIDATION_COORDINATOR) { await coordinatedValidation(env, repository.id, {operation:"pending", repository, pull}); return; }
   const headSha = commitSha(pull?.head?.sha); const number = Number(pull?.number);
   if (!headSha || !Number.isSafeInteger(number) || number <= 0) throw new Error("拉取请求验证输入无效");
   const [owner, repo] = splitRepository(String(repository.full_name));
   const gh = await validationClient(env, Number(repository.id));
+  if (allowRetirement && pull?.base?.repo?.id === repository.id && legacyValidationRetired(env, repository, pull?.base?.ref)) {
+    const current = await gh.getPullRequest(owner, repo, number);
+    if (current.number === number && current.base?.repo?.id === repository.id
+      && current.head?.sha === headSha && legacyValidationRetired(env, repository, current.base?.ref)) return;
+  }
   const current = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, headSha, "all"), headSha, Number(env.APP_ID), Number(repository.id), number);
   if (current.length) return;
   await gh.createCheckRun(owner, repo, {
@@ -189,6 +196,7 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
   if (pulls.length > 1) return false;
   const pull = pulls[0]!; const number = Number(pull.number);
   if (!Number.isSafeInteger(number) || number <= 0) throw new Error("拉取请求编号无效");
+  if (legacyValidationRetired(env, repository, pull.base?.ref)) return false;
   const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, headSha, "all"), headSha, Number(env.APP_ID), Number(repository.id), number);
   let conclusion = validationConclusion(run.conclusion); const completed = run.status === "completed";
   const comparisons = checks.map(value => compareValidationState(value.state, run.id, run.run_attempt, completed));
@@ -267,6 +275,8 @@ export async function refreshWorkflowContractChecks(env: Env, repositoryId: numb
   for (const pull of pulls) {
     const head = commitSha(pull.head?.sha);
     if (!head || pull.state !== "open" || pull.base?.ref !== repository.default_branch) continue;
+    if (Number.isSafeInteger(pull.number) && pull.number > 0 && (pullNumber === undefined || pull.number === pullNumber)
+      && pull.base?.repo?.id === repositoryId && legacyValidationRetired(env, repository, pull.base?.ref)) continue;
     const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, head, "all"), head, Number(env.APP_ID), repositoryId, pull.number);
     let run = checks.reduce<number | null>((latest, check) => check.state.runId !== null && (latest === null || check.state.runId > latest) ? check.state.runId : latest, null);
     try { // Discover runs even when every webhook was lost and no Gate exists.
@@ -661,7 +671,8 @@ export class ValidationCoordinator {
         const [owner, repo] = splitRepository(value.repository.full_name);
         const gh = await validationClient(this.env, value.repository.id);
         const pull = await gh.getPullRequest(owner, repo, value.pull.number);
-        if (pull.state === 'open') await ensureValidationPending(this.env, value.repository, pull);
+        if (pull.state === 'open') await ensureValidationPending(this.env, value.repository, pull,
+          value.pull?.base?.repo?.id === value.repository.id && value.pull?.base?.ref === pull.base?.ref);
         return response(200, {changed:true});
       }
       return response(400);
