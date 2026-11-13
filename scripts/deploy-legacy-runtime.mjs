@@ -222,11 +222,19 @@ export async function runDeploymentTransaction(deploy, verify) {
   return { status: 'barrier-installed-and-probed', ...identity };
 }
 
+export async function readGithubJobLog(repository, id, executeCommand = run) {
+  // Older gh releases emit raw API bodies without the newer terminal-safety flag.
+  // Always hash the unmodified stdout; never strip control characters or retry with altered text.
+  const help = (await executeCommand('gh', ['api', '--help'])).stdout;
+  const flags = /(?:^|\s)--allow-escape-sequences(?:\s|$)/m.test(help) ? ['--allow-escape-sequences'] : [];
+  return (await executeCommand('gh', ['api', ...flags, `repos/${repository}/actions/jobs/${id}/logs`])).stdout;
+}
+
 export async function deployLegacyRuntime(recordPath) {
   const record = await readAdoptionRecord(recordPath);
   const { deploymentHead: expectedHead, bundleSha256: expectedBundleSha256, runtimeOrigin: runtimeUrl, accountId, policySha, evaluatorSha } = record;
   const api = async path => JSON.parse((await run('gh', ['api', `repos/${record.repository}/${path}`])).stdout);
-  const readLog = async id => (await run('gh', ['api', '--allow-escape-sequences', `repos/${record.repository}/actions/jobs/${id}/logs`])).stdout;
+  const readLog = id => readGithubJobLog(record.repository, id);
   const verifySource = async () => {
     const query = 'query($number:Int!){repository(owner:"splrad",name:"steward"){pullRequest(number:$number){number state isDraft headRefOid headRefName baseRefName headRepository{nameWithOwner} repository{nameWithOwner} mergeCommit{oid}}}}';
     const response = JSON.parse((await run('gh', ['api', 'graphql', '-f', `query=${query}`, '-F', `number=${record.pullNumber}`])).stdout);

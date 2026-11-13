@@ -72,7 +72,7 @@ describe('actual maintenance deployment success path', () => {
 });
 
 
-const { readAdoptionRecord, verifyAdoptionSource, verifyNativeTarget } = await import(deployModulePath);
+const { readAdoptionRecord, verifyAdoptionSource, verifyNativeTarget, readGithubJobLog } = await import(deployModulePath);
 const reviewBody = '<!-- ccr-overview-v2 -->\n### Changes recommended\n<sub>Review effort: Lite</sub>';
 const codexBody = (head: string) => `<!-- codex-review-state:v1 ${JSON.stringify(Object.fromEntries(['code_review', 'security_review'].map(key => [key, { commit_sha: head, status: 'completed', has_any_findings: null }]))) } -->`;
 const jobLog = (phase: string, attempt = 1) => '2026-01-01T00:00:00Z ' + JSON.stringify({repositoryId:1296724484,pullNumber:400,head:'a'.repeat(40),headRef:'fix/test',base:'1'.repeat(40),merge:'2'.repeat(40),liveMerge:'2'.repeat(40),policy:'3'.repeat(40),phase,runId:'1',attempt:String(attempt),deployment:'NOT_AUTHORIZED'});
@@ -108,6 +108,16 @@ function adoptionFixture() {
 }
 
 describe('central adoption record and native deployment identity', () => {
+  it.each([true,false])('reads unchanged native log bytes with gh flag support=%s',async supported=>{
+    const body='2026-01-01T00:00:00Z \u001b[32mraw\r\n';
+    const execute=vi.fn(async (_command: string,args: string[])=>{
+      if(args.includes('--help'))return {stdout:supported?'  --allow-escape-sequences   Allow printing terminal escape sequences':'FLAGS\n --method string'};
+      expect(args).toEqual(['api',...(supported?['--allow-escape-sequences']:[]),'repos/splrad/steward/actions/jobs/6/logs']);
+      return {stdout:body};
+    });
+    expect(await readGithubJobLog('splrad/steward',6,execute)).toBe(body);
+  });
+
   it('accepts empty native PR arrays with independently bound jobs, commit association and review', async () => {
     const f=adoptionFixture(), original=f.api.getMockImplementation()!;
     f.api.mockImplementation(async path=>{const v=await original(path); if(Array.isArray(v.pull_requests)) v.pull_requests=[];return v;});
