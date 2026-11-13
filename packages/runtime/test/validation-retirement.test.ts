@@ -216,4 +216,31 @@ describe('exact legacy Gate consumer retirement', () => {
     if (['renamed', 'default-changed', 'pr-unavailable'].includes(kind)) expect(GitHubClient.prototype.createCheckRun).toHaveBeenCalled();
     else noGateWrites(); // The original live-target check rejects these changed PRs.
   });
+
+  it.each(['head-changed', 'head-missing', 'number-conflict'])('does not retire queued pending writes when original request has %s', async kind => {
+    const incoming: any = pull();
+    if (kind === 'head-changed') incoming.head.sha = 'd'.repeat(40);
+    if (kind === 'head-missing') delete incoming.head;
+    vi.mocked(GitHubClient.prototype.getPullRequest).mockResolvedValue({ ...pull(), number: kind === 'number-conflict' ? 8 : 7 });
+    const coordinator = new ValidationCoordinator({} as DurableObjectState, env());
+    await coordinator.fetch(new Request('https://validation.internal/', { method: 'POST', body: JSON.stringify({
+      operation: 'pending', repository: repositories[1], pull: incoming,
+    }) }));
+    expect(GitHubClient.prototype.createCheckRun).toHaveBeenCalled();
+  });
+
+  it.each(['target-changed', 'head-changed', 'number-conflict', 'pr-unavailable'])('does not retire publish from a stale association snapshot: %s', async kind => {
+    const current: any = pull(kind === 'target-changed' ? 'release' : 'main');
+    if (kind === 'head-changed') current.head.sha = 'd'.repeat(40);
+    if (kind === 'number-conflict') current.number = 8;
+    const readPull = vi.mocked(GitHubClient.prototype.getPullRequest);
+    if (kind === 'pr-unavailable') readPull.mockRejectedValue(new Error('PR unavailable'));
+    else readPull.mockResolvedValue(current);
+    const coordinator = new ValidationCoordinator({} as DurableObjectState, { ...env(), WORKFLOW_EVALUATOR_SHA: undefined });
+    await coordinator.fetch(new Request('https://validation.internal/', { method: 'POST', body: JSON.stringify({
+      operation: 'run', repository: repositories[1], workflowRunId: 10,
+    }) }));
+    expect(readPull).toHaveBeenCalledWith('splrad', 'steward', 7);
+    expect(GitHubClient.prototype.createCheckRun).toHaveBeenCalled();
+  });
 });

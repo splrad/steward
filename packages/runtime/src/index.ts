@@ -209,7 +209,15 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
   if (pulls.length > 1) return false;
   const pull = pulls[0]!; const number = Number(pull.number);
   if (!Number.isSafeInteger(number) || number <= 0) throw new Error("拉取请求编号无效");
-  if (await currentValidationRetirement(env, gh, repository, pull.base?.ref)) return false;
+  if (legacyValidationRetired(env, repository, pull.base?.ref)) {
+    let retired = false;
+    try {
+      const current = await gh.getPullRequest(owner, repo, number);
+      retired = current.number === number && matchesRun(current)
+        && await currentValidationRetirement(env, gh, repository, current.base.ref);
+    } catch { /* A stale or unavailable PR snapshot cannot retire the historical writer. */ }
+    if (retired) return false;
+  }
   const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, headSha, "all"), headSha, Number(env.APP_ID), Number(repository.id), number);
   let conclusion = validationConclusion(run.conclusion); const completed = run.status === "completed";
   const comparisons = checks.map(value => compareValidationState(value.state, run.id, run.run_attempt, completed));
@@ -694,7 +702,9 @@ export class ValidationCoordinator {
         const gh = await validationClient(this.env, value.repository.id);
         const pull = await gh.getPullRequest(owner, repo, value.pull.number);
         if (pull.state === 'open') await ensureValidationPending(this.env, value.repository, pull,
-          value.pull?.base?.repo?.id === value.repository.id && value.pull?.base?.ref === pull.base?.ref);
+          value.pull?.number === pull.number && commitSha(value.pull?.head?.sha) !== null
+          && value.pull.head.sha === pull.head?.sha
+          && value.pull?.base?.repo?.id === value.repository.id && value.pull?.base?.ref === pull.base?.ref);
         return response(200, {changed:true});
       }
       return response(400);
