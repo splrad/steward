@@ -83,18 +83,19 @@ export async function initializeProduct(plan,{root,app,execute=promisify(execFil
 export async function main(env=process.env) {
   const diagnostics=initializationDiagnostics(value=>process.stdout.write(JSON.stringify({status:'INITIALIZATION_DIAGNOSTIC',...value})+'\n'));
   let root,result,failure;
+  const captureFailure=error=>{failure??=error;diagnostics.captureFailure(error);};
   try {
     const plan=validateInitialization(env);root=await mkdtemp(join(tmpdir(),'layerscape-initialize-'));
     diagnostics.stage('app-identity');
     const fetcher=diagnostics.transport(fetch);
-    const app=await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY??'',fetcher,diagnostics.captureFailure);
-    result=await initializeProduct(plan,{root,app,fetcher,stage:diagnostics.stage,onFailure:diagnostics.captureFailure});
+    const app=await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY??'',fetcher,captureFailure);
+    result=await initializeProduct(plan,{root,app,fetcher,stage:diagnostics.stage,onFailure:captureFailure});
 
   } catch(error) {
-    failure=error;diagnostics.captureFailure(error);
+    captureFailure(error);
   } finally {
     if(root)try {diagnostics.stage('local-cleanup');await rm(root,{recursive:true,force:true});}
-    catch(error){failure??=error;diagnostics.captureFailure(error);}
+    catch(error){captureFailure(error);}
   }
   if(failure) {
     const code=initializationFailureCode(failure);

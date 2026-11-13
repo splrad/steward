@@ -1,10 +1,10 @@
-import {it,expect} from 'vitest';
+import {it,expect,vi} from 'vitest';
 import {generateKeyPairSync} from 'node:crypto';
 import {nativeReleaseApp} from '../../github/src/app-auth.js';
 // @ts-expect-error JavaScript CLI helper.
 import {initializationDiagnostics} from '../../../scripts/initialization-diagnostics.mjs';
 // @ts-expect-error JavaScript CLI entry.
-import {initializeProduct,initializationFailureCode} from '../../../scripts/layerscape-release-initialize.mjs';
+import {initializeProduct,initializationFailureCode,main} from '../../../scripts/layerscape-release-initialize.mjs';
 const key=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'}).toString();
 const secret='SENTINEL_PRIVATE_TOKEN_AND_RESPONSE';
 it.each([{cleanupFails:false,scopeFails:false},{cleanupFails:true,scopeFails:false},{cleanupFails:true,scopeFails:true}])('official SDK cleans up both purposes and preserves first failure %j',async({cleanupFails,scopeFails})=>{
@@ -80,4 +80,32 @@ it('scope metadata distinguishes absent fields from an observed empty collection
  for(const body of [{},{total_count:0,repositories:[]}])await diag.transport(async()=>Response.json(body))('https://api.github.com/installation/repositories',{method:'GET'});
  expect(events[0]).toMatchObject({expiresAt:null,permissions:null,repositoryIds:null,totalCount:null});
  expect(events[1]).toMatchObject({expiresAt:null,permissions:null,repositoryIds:[],totalCount:0});
+});
+
+it('main retains the original fixed code when both credential revocations fail',async()=>{
+ const events:any[]=[],revoked:string[]=[];let issued=0;
+ const transport:typeof fetch=async(input,init)=>{
+  const path=decodeURIComponent(new URL(String(input)).pathname);let body:any;
+  if(path==='/app')body={id:4243096,client_id:'Iv23liuSr0qd4WLJdZhH',slug:'splrad-steward'};
+  else if(path==='/orgs/splrad/installation')body={id:145952003,app_id:4243096,account:{id:302208797},suspended_at:null};
+  else if(path==='/users/splrad-steward[bot]')body={id:301115370,type:'Bot'};
+  else if(path.endsWith('/access_tokens'))body={token:secret+(++issued)};
+  else if(path==='/installation/repositories')body={total_count:1,repositories:[{id:1187527897}]};
+  else if(path==='/installation/token'){revoked.push(path);return Response.json({message:secret},{status:403});}
+  else if(path==='/repos/splrad/LayerScape')body={id:1187527897,full_name:'splrad/LayerScape',private:true};
+  else throw new Error('unexpected fixture route');
+  return Response.json(body);
+ };
+ const output=vi.spyOn(process.stdout,'write').mockImplementation((chunk:any)=>{events.push(JSON.parse(String(chunk)));return true;});
+ vi.stubGlobal('fetch',transport);
+ try {
+  const controller='b'.repeat(40);
+  await expect(main({GITHUB_REPOSITORY:'splrad/steward',GITHUB_REPOSITORY_ID:'1296724484',GITHUB_REF:'refs/heads/main',
+   GITHUB_EVENT_NAME:'workflow_dispatch',GITHUB_RUN_ATTEMPT:'1',GITHUB_WORKFLOW_REF:'splrad/steward/.github/workflows/layerscape-release-initialize.yml@refs/heads/main',
+   GITHUB_SHA:controller,WORKFLOW_SHA:controller,APPROVED_CONTROLLER_SHA:controller,AUTHORIZE_INITIALIZATION:'true',EXPECTED_PRODUCT_HEAD:'a'.repeat(40),STEWARD_APP_PRIVATE_KEY:key}))
+   .rejects.toMatchObject({message:'LAYERSCAPE_INITIALIZE_REPOSITORY',diagnostic:{phase:'repository-read'}});
+  expect(revoked).toHaveLength(2);
+  expect(events.filter(x=>x.operation==='revoke').map(x=>x.httpStatus)).toEqual([403,403]);
+  expect(JSON.stringify(events)).not.toContain(secret);
+ }finally{output.mockRestore();vi.unstubAllGlobals();}
 });
