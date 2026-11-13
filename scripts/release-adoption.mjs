@@ -145,7 +145,7 @@ export async function recoverReleaseCaches(request,snapshot,{token,io=nativeEvid
 }
 
 /** Explicit E10/E11 entry, never called by fetchState or the ordinary coordinator. */
-export async function initializeReleaseAdoption(request,{token,io=nativeEvidenceTransport(token),centralIo,now=()=>new Date().toISOString()}={}) {
+export async function initializeReleaseAdoption(request,{token,io=nativeEvidenceTransport(token),centralIo,fetcher=fetch,now=()=>new Date().toISOString()}={}) {
   const keys=['directory','writeDirectory','remote','repository','repositoryId','defaultBranch','appBotId','identity','releaseAdoption'];
   if(Object.keys(request).sort().join()!==keys.sort().join()||!isAbsolute(request.writeDirectory)
     ||request.remote!==`https://github.com/${request.repository}.git`&&!isAbsolute(request.remote))fail('closed request');
@@ -190,7 +190,7 @@ export async function initializeReleaseAdoption(request,{token,io=nativeEvidence
       :{schemaVersion:3,repositoryId:request.repositoryId,defaultBranch:request.defaultBranch,revision:0,releaseAdoption:request.releaseAdoption,
         lastObservedDefaultSha:request.releaseAdoption.sourceSha,lastCompletedCycleId:null,activeCycleId:null,candidate:null,nextCheckAt:null,lastProgressAt:null,lastErrorCode:null};
     const content=JSON.stringify(repository,null,2)+'\n';decodeReleaseRecord('repository',Buffer.from(content));assertRepositoryWrite(repository,previous);
-    await assertReleaseWriterProtection(request.repository,'steward/release-state',io,{token});
+    await assertReleaseWriterProtection(request.repository,'steward/release-state',io,{token,fetcher});
     if((await proof.reader.json(`commits/${encodeURIComponent(request.defaultBranch)}`)).sha!==proof.defaultHead)fail('default head moved');
     const current=await io.request('GET',`/repos/${request.repository}/git/ref/heads/steward/release-state`);
     if(current.status!==response.status||current.status===200&&JSON.parse(Buffer.from(current.bytes).toString()).object?.sha!==snapshot.head)fail('state moved');
