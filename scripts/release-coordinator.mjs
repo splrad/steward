@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { nativeReleaseApp, nativeEvidenceTransport, isolatedBuildEnvironment, evaluateCompletion } from '../packages/runner/dist/index.js';
+import { nativeReleaseApp, nativeEvidenceTransport, isolatedBuildEnvironment, evaluateCompletion,parseDeliveryConfig,assertProductDelivery } from '../packages/runner/dist/index.js';
 import { readReleaseRecords, writeReleaseRecords, releaseCommand, assertReleaseWriterProtection } from './release-record.mjs';
 import {serviceMaintenance,maintenanceGitStore} from './maintenance.mjs';
 import {servicePages,pagesGitStore} from './pages-maintenance.mjs';
@@ -71,7 +71,9 @@ export async function coordinateReleaseWake({discover,observe,service,health,mai
         const result=await pages(repository);
         if(['UNKNOWN','EXHAUSTED','EXPIRED'].includes(result.status)){scanComplete=false;errors.add('PAGES_EVIDENCE_REQUIRED');}
       }catch {scanComplete=false;errors.add('PAGES_UNAVAILABLE');}
-      try {ready.push({repository,...await observe(repository)});counts.scanned++;}
+      try {const observation=await observe(repository);counts.scanned++;
+        if(observation.status==='NOT_APPLICABLE')counts.completed++;
+        else ready.push({repository,...observation});}
       catch(error){counts.unknown++;scanComplete=false;errors.add(safeCode(error));}
     }
     ready.sort((a,b)=>Date.parse(a.lastServedAt??'1970-01-01T00:00:00Z')-Date.parse(b.lastServedAt??'1970-01-01T00:00:00Z')||a.repository.id-b.repository.id);
@@ -90,11 +92,78 @@ export async function coordinateReleaseWake({discover,observe,service,health,mai
   await health(summary);return summary;
 }
 
-export async function fetchState(root,repository,token,targetRef='steward/release-state',{governanceAppId,fetcher=fetch,includeHistory=targetRef!=='steward/release-state'}={}) {
+/** Repository visibility is not product enrollment. Only proven absent inputs and obligations are inapplicable. */
+export async function releaseParticipation(repository,io) {
+  const read=async suffix=>{
+    const r=await io.request('GET',`/repos/${repository.full_name}${suffix?'/'+suffix:''}`);
+    if(r.status!==200)throw Error('RELEASE_PARTICIPATION_UNAVAILABLE');
+    return JSON.parse(Buffer.from(r.bytes).toString('utf8'));
+  };
+  const actual=await read('');
+  if(actual.id!==repository.id||actual.full_name!==repository.full_name||actual.default_branch!==repository.default_branch||actual.archived!==false||actual.disabled!==false)throw Error('RELEASE_PARTICIPATION_IDENTITY');
+  const ref=await read(`git/ref/heads/${encodeURIComponent(repository.default_branch)}`);
+  if(ref.ref!==`refs/heads/${repository.default_branch}`||ref.object?.type!=='commit'||!/^[a-f0-9]{40}$/.test(ref.object.sha))throw Error('RELEASE_PARTICIPATION_IDENTITY');
+  const tree=await read(`git/trees/${ref.object.sha}?recursive=1`);
+  if(tree.truncated!==false||!Array.isArray(tree.tree))throw Error('RELEASE_PARTICIPATION_INCOMPLETE');
+  const names=['.github/delivery.json','release-please-config.json','.release-please-manifest.json'];
+  const files=names.map(path=>tree.tree.filter(x=>x.path===path));
+  const refs=await read('git/matching-refs/heads/steward/release-state');
+  if(!Array.isArray(refs))throw Error('RELEASE_PARTICIPATION_INCOMPLETE');
+  const stateRef=refs.find(r=>r.ref==='refs/heads/steward/release-state');
+  let obligation=false;
+  if(stateRef) {
+    if(stateRef.object?.type!=='commit'||!/^[a-f0-9]{40}$/.test(stateRef.object.sha))throw Error('RELEASE_PARTICIPATION_IDENTITY');
+    const state=await read(`git/trees/${stateRef.object.sha}?recursive=1`);
+    if(state.truncated!==false||!Array.isArray(state.tree))throw Error('RELEASE_PARTICIPATION_INCOMPLETE');
+    // Only the fixed central maintenance-only tree is not a product state.
+    obligation=repository.id!==1296724484||repository.full_name!=='splrad/steward'
+      ||state.tree.some(x=>x.type!=='tree'&&!/^maintenance\/[1-9][0-9]*\.json$/.test(x.path));
+  }
+  let status='APPLICABLE';
+  if(files.every(x=>x.length===0)&&!obligation) {
+    const candidates=await read('git/matching-refs/heads/steward/release-candidate');
+    const builds=await read('git/matching-refs/heads/steward/build/');
+    const releases=await read('releases?per_page=1');
+    if(!Array.isArray(candidates)||!Array.isArray(builds)||!Array.isArray(releases))throw Error('RELEASE_PARTICIPATION_INCOMPLETE');
+    if(candidates.length||builds.length||releases.length)throw Error('RELEASE_CONFIGURATION_REQUIRED');
+    status='NOT_APPLICABLE';
+  } else {
+    if(files.some(x=>x.length!==1||x[0].type!=='blob'||x[0].mode!=='100644'))throw Error('RELEASE_CONFIGURATION_REQUIRED');
+    const contents=[];
+    for(let i=0;i<names.length;i++) {
+      const v=await read(`contents/${names[i]}?ref=${ref.object.sha}`);
+      if(v.type!=='file'||v.path!==names[i]||v.sha!==files[i][0].sha||v.encoding!=='base64')throw Error('RELEASE_CONFIGURATION_INVALID');
+      const bytes=Buffer.from(v.content,'base64');
+      if(bytes.length!==v.size||createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')!==v.sha)throw Error('RELEASE_CONFIGURATION_INVALID');
+      contents.push(JSON.parse(bytes.toString('utf8')));
+    }
+    const delivery=parseDeliveryConfig(contents[0]);assertProductDelivery(delivery,repository.full_name);
+    const paths=delivery.units.map(u=>u.path).sort();
+    if(JSON.stringify(Object.keys(contents[1].packages??{}).sort())!==JSON.stringify(paths)
+      ||JSON.stringify(Object.keys(contents[2]).sort())!==JSON.stringify(paths))throw Error('RELEASE_CONFIGURATION_INVALID');
+  }
+  const after=await read(`git/ref/heads/${encodeURIComponent(repository.default_branch)}`);
+  const stateAfter=await read('git/matching-refs/heads/steward/release-state');
+  if(after.object?.sha!==ref.object.sha||JSON.stringify(stateAfter)!==JSON.stringify(refs))throw Error('RELEASE_PARTICIPATION_CHANGED');
+  return {status,sourceSha:ref.object.sha};
+}
+
+export async function fetchState(root,repository,token,targetRef='steward/release-state',{governanceAppId,fetcher=fetch,includeHistory=targetRef!=='steward/release-state',centralFirstUse=false}={}) {
   const io=nativeEvidenceTransport(token,fetcher),remote=`https://github.com/${repository.full_name}.git`;
+  if(centralFirstUse) {
+    if(repository.id!==1296724484||repository.full_name!=='splrad/steward'||!['steward/release-state','steward/automation-health'].includes(targetRef))throw new Error('RELEASE_CENTRAL_STATE_IDENTITY');
+    const response=await io.request('GET','/repos/splrad/steward');
+    if(response.status!==200)throw new Error('RELEASE_CENTRAL_STATE_UNAVAILABLE');
+    const actual=JSON.parse(Buffer.from(response.bytes).toString('utf8'));
+    if(actual.id!==repository.id||actual.full_name!==repository.full_name||actual.default_branch!==repository.default_branch||actual.archived!==false||actual.disabled!==false)throw new Error('RELEASE_CENTRAL_STATE_IDENTITY');
+  }
   if(targetRef==='steward/governance-state')await assertQualityProtection(qualityNativeIO(repository.full_name,token,fetcher),repository.full_name,governanceAppId);
   else await assertReleaseWriterProtection(repository.full_name,targetRef,io,{token,fetcher});
   const response=await io.request('GET',`/repos/${repository.full_name}/git/ref/heads/${targetRef}`);
+  // Only these two fixed central consumers may start with no records. No branch
+  // is seeded: the first real maintenance fact or health summary creates it.
+  if(response.status===404&&centralFirstUse)return {remote,io,snapshot:{repositoryId:repository.id,targetRef,head:null,repository:null,domainRecords:[],currentPaths:[]},
+    readBytes:async()=>{throw new Error('RELEASE_STATE_FILE_UNAVAILABLE');}};
   if(response.status!==200)throw new Error(response.status===404?'RELEASE_BOOTSTRAP_REQUIRED':'RELEASE_STATE_UNAVAILABLE');
   const ref=JSON.parse(Buffer.from(response.bytes).toString('utf8'));
   if(ref.ref!==`refs/heads/${targetRef}`||ref.object?.type!=='commit'||!/^[a-f0-9]{40}$/.test(ref.object.sha))throw new Error('RELEASE_STATE_IDENTITY');
@@ -123,6 +192,31 @@ export async function fetchState(root,repository,token,targetRef='steward/releas
   return {directory,remote,io,snapshot,lastServedAt,readBytes};
 }
 
+/** The first central health record describes this real wake, including incomplete scans. */
+export async function recordCentralHealth({refresh,summary,repository,controllerSha,runId,runAttempt,directory,token},write=writeReleaseRecords) {
+  if(repository.id!==1296724484||repository.full_name!=='splrad/steward')throw new Error('RELEASE_HEALTH_REPOSITORY');
+  const state=await refresh();
+  if(state.snapshot.repositoryId!==repository.id||state.snapshot.targetRef!=='steward/automation-health')throw new Error('RELEASE_HEALTH_STATE_IDENTITY');
+  const old=state.snapshot.head===null?null:await state.readBytes('health.json');
+  const prior=old===null?null:JSON.parse(old.toString('utf8'));
+  if(prior?.observedAt.slice(0,10)===summary.observedAt.slice(0,10)
+    &&(prior.scanCompletedAt===null)===(summary.scanCompletedAt===null)
+    &&JSON.stringify(prior.errorCodes)===JSON.stringify(summary.errorCodes)&&JSON.stringify(prior.counts)===JSON.stringify(summary.counts))return {status:'UNCHANGED'};
+  const response=await state.io.request('GET',`/repos/splrad/steward/actions/runs/${runId}`);
+  if(response.status!==200)throw new Error('RELEASE_HEALTH_RUN_UNAVAILABLE');
+  const run=JSON.parse(Buffer.from(response.bytes).toString('utf8'));
+  if(run.id!==runId||run.run_attempt!==runAttempt||run.repository?.id!==repository.id||run.head_repository?.id!==repository.id
+    ||run.path!=='.github/workflows/release.yml'||run.head_sha!==controllerSha||run.head_branch!==repository.default_branch
+    ||!['schedule','workflow_dispatch'].includes(run.event))throw new Error('RELEASE_HEALTH_RUN_IDENTITY');
+  const content=JSON.stringify({schemaVersion:1,workflowId:run.workflow_id,runId:run.id,runAttempt:run.run_attempt,controllerSha,...summary},null,2)+'\n';
+  const written=await write({directory,remote:state.remote,repositoryId:repository.id,defaultBranch:repository.default_branch,targetRef:'steward/automation-health',writer:'health',
+    expectedHead:state.snapshot.head,allowedPaths:['health.json'],changes:[{path:'health.json',content,sha256:hash(content),previousSha256:old===null?null:hash(old)}],identity},{token});
+  if(!['APPLIED','UNCHANGED'].includes(written.status))throw new Error('RELEASE_HEALTH_WRITE_UNCONFIRMED');
+  const after=await refresh();
+  if(after.snapshot.head!==written.head||!after.snapshot.currentPaths.includes('health.json')||(await after.readBytes('health.json')).toString('utf8')!==content)throw new Error('RELEASE_HEALTH_READBACK');
+  return written;
+}
+
 export async function main() {
   // Trusted central default-branch execution only. Workflow inputs cannot choose a target or credential scope.
   if(process.env.GITHUB_REPOSITORY!=='splrad/steward'||process.env.GITHUB_REPOSITORY_ID!=='1296724484'||process.env.GITHUB_REF!==`refs/heads/${process.env.STEWARD_DEFAULT_BRANCH}`
@@ -134,7 +228,7 @@ export async function main() {
       maintenance:()=>app.forRepository(1296724484,async token=>{
         const repository={id:1296724484,full_name:'splrad/steward',default_branch:process.env.STEWARD_DEFAULT_BRANCH};
         const writeDirectory=await mkdtemp(join(root,'maintenance-writes-'));
-        const store=maintenanceGitStore({refresh:()=>fetchState(root,repository,token,'steward/release-state',{includeHistory:true}),writeDirectory,defaultBranch:repository.default_branch,token,identity});
+        const store=maintenanceGitStore({refresh:()=>fetchState(root,repository,token,'steward/release-state',{includeHistory:true,centralFirstUse:true}),writeDirectory,defaultBranch:repository.default_branch,token,identity});
         return serviceMaintenance({io:nativeEvidenceTransport(token),store,defaultBranch:repository.default_branch,
           coordinator:{runId:Number(process.env.GITHUB_RUN_ID),runAttempt:Number(process.env.GITHUB_RUN_ATTEMPT),controllerSha}});
       }),discover:()=>app.discover(),
@@ -147,11 +241,14 @@ export async function main() {
           coordinator:{runId:Number(process.env.GITHUB_RUN_ID),runAttempt:Number(process.env.GITHUB_RUN_ATTEMPT),controllerSha}});
       }),
       observe:repository=>app.forRepository(repository.id,async token=>{
+        const participation=await releaseParticipation(repository,nativeEvidenceTransport(token));
+        if(participation.status==='NOT_APPLICABLE')return participation;
         const state=await fetchState(root,repository,token);
         // Per-operation read receipts retain backoff; an old channel wait must not suppress candidate preparation.
         return {lastServedAt:state.lastServedAt,nextCheckAt:null};
       }),
       service:repository=>app.forRepository(repository.id,async token=>{
+        if((await releaseParticipation(repository,nativeEvidenceTransport(token))).status!=='APPLICABLE')return {status:'WAIT',reason:'RELEASE_PARTICIPATION_CHANGED'};
         const writeDirectory=await mkdtemp(join(root,'writes-'));let state;
         const request={directory:'',writeDirectory,remote:`https://github.com/${repository.full_name}.git`,repository:repository.full_name,repositoryId:repository.id,
           defaultBranch:repository.default_branch,appBotId:app.appBotId,cycleId:null,runId:null,identity};
@@ -177,18 +274,9 @@ export async function main() {
       }),
       health:summary=>app.forRepository(1296724484,async token=>{
         const repository={id:1296724484,full_name:'splrad/steward',default_branch:process.env.STEWARD_DEFAULT_BRANCH};
-        const state=await fetchState(root,repository,token,'steward/automation-health'),old=await state.readBytes('health.json'),prior=JSON.parse(old.toString('utf8'));
-        if(prior.observedAt.slice(0,10)===summary.observedAt.slice(0,10))return;
-        const runResponse=await state.io.request('GET',`/repos/splrad/steward/actions/runs/${process.env.GITHUB_RUN_ID}`);
-        if(runResponse.status!==200)throw new Error('RELEASE_HEALTH_RUN_UNAVAILABLE');
-        const run=JSON.parse(Buffer.from(runResponse.bytes).toString('utf8'));
-        if(run.id!==Number(process.env.GITHUB_RUN_ID)||run.run_attempt!==Number(process.env.GITHUB_RUN_ATTEMPT)||run.repository?.id!==1296724484
-          ||run.path!=='.github/workflows/release.yml'||run.head_sha!==controllerSha)throw new Error('RELEASE_HEALTH_RUN_IDENTITY');
-        const content=JSON.stringify({schemaVersion:1,workflowId:run.workflow_id,runId:run.id,runAttempt:run.run_attempt,controllerSha,...summary},null,2)+'\n';
         const parent=await mkdtemp(join(root,'health-'));
-        const written=await writeReleaseRecords({directory:join(parent,'write'),remote:state.remote,repositoryId:1296724484,defaultBranch:repository.default_branch,targetRef:'steward/automation-health',writer:'health',
-          expectedHead:state.snapshot.head,allowedPaths:['health.json'],changes:[{path:'health.json',content,sha256:hash(content),previousSha256:hash(old)}],identity},{token});
-        if(!['APPLIED','UNCHANGED'].includes(written.status))throw new Error('RELEASE_HEALTH_WRITE_UNCONFIRMED');
+        return recordCentralHealth({refresh:()=>fetchState(root,repository,token,'steward/automation-health',{centralFirstUse:true}),summary,repository,controllerSha,
+          runId:Number(process.env.GITHUB_RUN_ID),runAttempt:Number(process.env.GITHUB_RUN_ATTEMPT),directory:join(parent,'write'),token});
       })});
     // Public output contains only counts and fixed codes. Private repository data remains in per-repository temporary contexts.
     process.stdout.write(JSON.stringify(summary)+'\n');

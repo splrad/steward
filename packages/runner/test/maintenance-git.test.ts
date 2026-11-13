@@ -9,7 +9,7 @@ import {createHash} from 'node:crypto';
 import {registerOfflineFixtureRoot} from './offline-fixtures.js';
 import {isolatedBuildEnvironment} from '../src/build-environment.js';
 
-it('persists maintenance alongside product state, preserves requests after cache loss and refuses budget reset or foreign ownership',async()=>{
+it('creates central maintenance-only state, preserves requests after cache loss and refuses budget reset or foreign ownership',async()=>{
   const {writeReleaseRecords,readReleaseRecords}=await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
   const {maintenanceGitStore}=await import(pathToFileURL(resolve('scripts/maintenance.mjs')).href);
   const root=await mkdtemp(join(tmpdir(),'maintenance-git-'));registerOfflineFixtureRoot(root);
@@ -20,18 +20,19 @@ it('persists maintenance alongside product state, preserves requests after cache
     await git('init','--initial-branch=main');await git('config','user.name','Fixture');await git('config','user.email','fixture@example.invalid');
     await writeFile(join(remote,'README.md'),'fixture\n');await git('add','README.md');await git('commit','--signoff','-m','Fixture source');
     const source=await git('rev-parse','HEAD'),identity={name:'Fixture',email:'fixture@example.invalid'},id=1296724484;
-    const state=JSON.stringify({schemaVersion:3,releaseAdoption:{sourceSha:'a'.repeat(40),prNumber:1},repositoryId:id,defaultBranch:'main',revision:0,lastObservedDefaultSha:null,lastCompletedCycleId:null,activeCycleId:null,candidate:null,nextCheckAt:null,lastProgressAt:null,lastErrorCode:null})+'\n';
     const file=(path:string,content:string,previousSha256:string|null=null)=>({path,content,sha256:digest(content),previousSha256});
     const request=(name:string,changes:any[],expectedHead:string|null=null,writer='maintenance')=>({directory:join(root,name),remote,repositoryId:id,defaultBranch:'main',targetRef:'steward/release-state',writer,expectedHead,allowedPaths:changes.map(c=>c.path),changes,identity});
-    await writeReleaseRecords(request('seed',[file('state.json',state),file('generated/preserved.md','Existing bytes\n')],null,'release'));
-    const refresh=async()=>{const snapshot=await readReleaseRecords({directory:remote,targetRef:'steward/release-state',repositoryId:id});return {remote,snapshot,readBytes:async(path:string)=>Buffer.from((await promisify(execFile)('git',['show',`${snapshot.head}:${path}`],{cwd:remote,env,encoding:'utf8',windowsHide:true})).stdout)};};
+    const refresh=async()=>{if(!(await git('ls-remote','--heads','--refs',remote,'refs/heads/steward/release-state')))return {remote,snapshot:{repositoryId:id,targetRef:'steward/release-state',head:null,domainRecords:[],currentPaths:[]}};const snapshot=await readReleaseRecords({directory:remote,targetRef:'steward/release-state',repositoryId:id});return {remote,snapshot,readBytes:async(path:string)=>Buffer.from((await promisify(execFile)('git',['show',`${snapshot.head}:${path}`],{cwd:remote,env,encoding:'utf8',windowsHide:true})).stdout)};};
     const store=maintenanceGitStore({refresh,writeDirectory:join(root,'writes'),defaultBranch:'main',identity});
     const record:any={schemaVersion:1,repositoryId:id,workflowFile:'settings-sync.yml',workflowId:5,runId:12,headSha:source,headBranch:'main',event:'schedule',createdAt:'2026-10-30T00:00:00.000Z',runAttempt:1,conclusion:'failure',jobs:[{id:1,key:'settings-sync',matrixIndex:null,attempt:1,conclusion:'failure',empty:null,found:null}],observedAt:'2026-10-31T00:00:00.000Z',requests:[]};
+    expect(await store.list()).toEqual([]);
     await store.save(record,null);expect(await store.load(12)).toEqual(record);
+    const initial=(await refresh()).snapshot;await store.save(record,record);expect((await refresh()).snapshot.head).toBe(initial.head);
+    await expect(writeReleaseRecords(request('product-without-state',[file('generated/test.md','Invalid product\n')],initial.head,'release'))).rejects.toThrow('repository record required');
     const claimed=structuredClone(record);claimed.requests.push({fromAttempt:1,requestedAt:record.observedAt,coordinatorRunId:900,coordinatorRunAttempt:1,responseStatus:null});
     await store.save(claimed,record);expect(await store.list()).toEqual([claimed]);
     const snap=(await refresh()).snapshot;
-    expect(await git('show',`${snap.head}:state.json`)).toBe(state.trim());expect(await git('show',`${snap.head}:generated/preserved.md`)).toBe('Existing bytes');
+    expect(snap.currentPaths).toEqual(['maintenance/12.json']);
     await expect(store.save(record,claimed)).rejects.toThrow('REQUEST_REMOVED');
     await expect(store.save(claimed,record)).rejects.toThrow('STATE_CHANGED');
     await expect(writeReleaseRecords({...request('foreign',[file('maintenance/12.json',JSON.stringify(claimed)+'\n')]),repositoryId:7})).rejects.toThrow();
@@ -39,8 +40,18 @@ it('persists maintenance alongside product state, preserves requests after cache
     expect(await store.load(12)).toEqual(claimed);
     const lost=(await refresh()).snapshot;
     await expect(writeReleaseRecords(request('reset-after-loss',[file('maintenance/12.json',JSON.stringify(record)+'\n')],lost.head))).rejects.toThrow();
+    expect(await git('rev-parse','steward/release-state')).toBe(lost.head);
+    expect((await refresh()).snapshot.currentPaths).toEqual(lost.currentPaths);
+    expect(await store.load(12)).toEqual(claimed);
     await git('switch','main');await store.save(claimed,claimed);
     expect((await refresh()).snapshot.currentPaths).toContain('maintenance/12.json');
     expect((await git('show','-s','--format=%B','steward/release-state')).match(/^Signed-off-by:/gm)).toHaveLength(1);
+    await git('switch','steward/release-state');await mkdir(join(remote,'generated'));await writeFile(join(remote,'generated','foreign.md'),'Foreign product history\n');
+    await git('add','generated/foreign.md');await git('commit','--signoff','-m','Fixture foreign historical owner');
+    await git('rm','generated/foreign.md');await git('commit','--signoff','-m','Fixture removed current clue');
+    const foreignHead=await git('rev-parse','HEAD');await git('switch','main');
+    const advanced={...claimed,observedAt:'2026-11-01T00:00:00.000Z'};
+    await expect(writeReleaseRecords(request('historical-owner',[file('maintenance/12.json',JSON.stringify(advanced)+'\n',digest(JSON.stringify(claimed)+'\n'))],foreignHead))).rejects.toThrow('central maintenance history');
+    expect(await git('rev-parse','steward/release-state')).toBe(foreignHead);
   }finally{await rm(root,{recursive:true,force:true});}
 },120000);

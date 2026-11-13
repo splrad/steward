@@ -2,6 +2,10 @@
 
 发行协调器每次唤醒先执行一次有界维护扫描，然后继续产品工作。扫描限时五分钟、最多 1000 次 API 请求；读取失败在健康结果中保留错误码。维护记录按原 Run 保存于中央仓 `steward/release-state` 的 `maintenance/<runId>.json`，复用发行状态的 Git 快进连接。
 
+中央维护分支仅保存维护记录，不需要产品 `state.json` 或 `releaseAdoption`。首次使用须确认中央仓身份、完整分支保护和原生 ref 缺失，由首条真实维护记录创建分支；无记录时不创建空分支。写入检查完整当前树和必要历史，沿原 Run 保留恢复请求。中央 `steward/automation-health` 同样由首条真实运行摘要创建；已有分支缺少 `health.json`、权限失败或未知状态均不得当作首次初始化。健康摘要保留不完整扫描及错误，同日结果改变仍归档；末尾健康失败不表示此前产品没有写入。
+
+App 安装可见性不等于发行参与资格。协调器按准确默认分支读取 `.github/delivery.json`、Release Please 配置/版本清单与既存状态；确认无上述配置且无产品状态、候选/构建 ref 或原生发行线索的仓库，发行判为 `NOT_APPLICABLE`，Pages 与维护仍独立。已有发行义务但配置删除、配置残缺、读取失败或状态漂移均保留错误；有效产品缺少初始化状态仍报 `RELEASE_BOOTSTRAP_REQUIRED`，不自动创建产品接管记录。
+
 | 固定入口 | 业务作业 |
 | --- | --- |
 | sync-managed.yml | bootstrap、templates |

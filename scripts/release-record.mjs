@@ -221,6 +221,8 @@ function validateWrite(request) {
     || !/^[^\s@]+@[^\s@]+$/.test(request.identity.email))fail('Git identity');
   if(typeof request.remote!=='string' || !( /^https:\/\/github\.com\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+\.git$/.test(request.remote)
     || isAbsolute(request.remote) && !/[\r\n\0]/.test(request.remote)))fail('remote');
+  if(request.writer==='maintenance'&&(request.repositoryId!==1296724484
+    ||request.remote.startsWith('https:')&&request.remote!=='https://github.com/splrad/steward.git'))fail('central maintenance identity');
   if(!Array.isArray(request.allowedPaths) || !Array.isArray(request.changes) || !request.changes.length
     || request.allowedPaths.length!==request.changes.length || new Set(request.allowedPaths.map(path=>path.toLowerCase())).size!==request.allowedPaths.length)fail('allowed paths');
   let total=0;
@@ -397,7 +399,9 @@ export async function writeReleaseRecords(input,{token}={}) {
       const parent=await identity(commit);
       if(request.expectedHead!==null && (parent===null || !await ancestry(request.expectedHead,parent)))fail('prepared parent conflict');
       const [base,proposed]=await Promise.all([tree(parent),tree(commit)]);
-      if(request.targetRef==='steward/release-state') {
+      if(request.writer==='maintenance') {
+        if([...base.keys(),...proposed.keys()].some(path=>stateRecordOwner(request.targetRef,path)!=='maintenance'))fail('central maintenance tree');
+      } else if(request.targetRef==='steward/release-state') {
         if(!proposed.get('state.json')?.value)fail('repository record required');
         assertRepositoryWrite(proposed.get('state.json').value,base.get('state.json')?.value);
       }
@@ -423,14 +427,20 @@ export async function writeReleaseRecords(input,{token}={}) {
       } else if(!await fetchHead(head))continue;
       if(request.expectedHead!==null && !await ancestry(request.expectedHead,head))return result('CONFLICT',head,'STATE_HISTORY_CHANGED');
       const current=await tree(head);
+      if(request.writer==='maintenance'&&[...current.keys()].some(path=>stateRecordOwner(request.targetRef,path)!=='maintenance'))fail('central maintenance tree');
       const expected=await tree(request.expectedHead);validateBase(expected);
       // Unknown historical release schemas and immutable cycle conflicts stop a
       // write even when today's cache looks plausible.
       if(head!==null) {
         await required('update-ref',ref,head);
+        if(request.writer==='maintenance') {
+          const commits=(await required('rev-list',head)).toString().trim().split('\n');
+          for(const commit of commits)if([...await tree(commit)].some(([path])=>stateRecordOwner(request.targetRef,path)!=='maintenance'))fail('central maintenance history');
+        }
         if(request.targetRef==='steward/release-state'||request.targetRef==='steward/governance-state') {
           const history=await readReleaseRecords({directory,targetRef:request.targetRef,repositoryId:request.repositoryId,includeHistory:request.writer!=='release'});
-          if(request.targetRef==='steward/release-state') {
+          if(request.writer==='maintenance'&&history.history.some(record=>stateRecordOwner(request.targetRef,record.path)!=='maintenance'))fail('central maintenance history');
+          if(request.targetRef==='steward/release-state'&&request.writer!=='maintenance') {
             const update=request.changes.find(file=>file.path==='state.json');
             const record=update?decodeReleaseRecord('repository',Buffer.from(update.content)):current.get('state.json')?.value;
             if(!record)fail('repository record required');
