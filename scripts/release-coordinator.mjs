@@ -118,7 +118,8 @@ export async function releaseParticipation(repository,io) {
     if(state.truncated!==false||!Array.isArray(state.tree))throw Error('RELEASE_PARTICIPATION_INCOMPLETE');
     // Only the fixed central maintenance-only tree is not a product state.
     obligation=repository.id!==1296724484||repository.full_name!=='splrad/steward'
-      ||state.tree.some(x=>x.type!=='tree'&&!/^maintenance\/[1-9][0-9]*\.json$/.test(x.path));
+      ||state.tree.some(x=>!(x.path==='maintenance'&&x.type==='tree'&&x.mode==='040000')
+        &&!(x.type==='blob'&&x.mode==='100644'&&/^maintenance\/[1-9][0-9]*\.json$/.test(x.path)));
   }
   let status='APPLICABLE',absenceFacts=null;
   if(files.every(x=>x.length===0)&&!obligation) {

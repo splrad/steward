@@ -71,7 +71,7 @@ it('excludes proven unconfigured governance repositories while retaining missing
     if(path===`/repos/${repository.full_name}`)value=repository;
     else if(path.includes('git/ref/heads/main'))value={ref:'refs/heads/main',object:{type:'commit',sha}};
     else if(path.includes('matching-refs/heads/steward/release-state'))value=productState||centralMaintenance?[{ref:'refs/heads/steward/release-state',object:{type:'commit',sha:head}}]:[];
-    else if(path.includes(`git/trees/${head}`))value={truncated:false,tree:[{path:centralMaintenance?'maintenance/12.json':'state.json',type:'blob',mode:'100644'}]};
+    else if(path.includes(`git/trees/${head}`))value={truncated:false,tree:[...(centralMaintenance?[{path:'maintenance',type:'tree',mode:'040000'}]:[]),{path:centralMaintenance?'maintenance/12.json':'state.json',type:'blob',mode:'100644'}]};
     else if(path.includes('git/trees/'))value={truncated,tree:partial?[{path:'release-please-config.json',type:'blob',mode:'100644'}]:[]};
     else if(path.includes('matching-refs'))value=[];
     else if(path.includes('releases?'))value=oldRelease?[{id:1}]:[];
@@ -85,6 +85,25 @@ it('excludes proven unconfigured governance repositories while retaining missing
   oldRelease=true;await expect(releaseParticipation(repository,io)).rejects.toThrow('CONFIGURATION_REQUIRED');oldRelease=false;
   truncated=true;await expect(releaseParticipation(repository,io)).rejects.toThrow('INCOMPLETE');truncated=false;
   status=403;await expect(releaseParticipation(repository,io)).rejects.toThrow('UNAVAILABLE');
+});
+it.each([
+  {path:'maintenance/12.json',type:'blob',mode:'120000'},
+  {path:'maintenance/12.json',type:'commit',mode:'160000'},
+  {path:'maintenance/12.json',type:'blob',mode:'100755'},
+  {path:'maintenance/nested',type:'tree',mode:'040000'},
+  {path:'foreign',type:'tree',mode:'040000'},
+])('retains malformed central state obligations: $path $mode',async entry=>{
+  const io={request:async(_method:string,path:string)=>{
+    let value:any;
+    if(path===`/repos/${repository.full_name}`)value=repository;
+    else if(path.includes('git/ref/heads/main'))value={ref:'refs/heads/main',object:{type:'commit',sha}};
+    else if(path.includes('matching-refs/heads/steward/release-state'))value=[{ref:'refs/heads/steward/release-state',object:{type:'commit',sha:head}}];
+    else if(path.includes(`git/trees/${head}`))value={truncated:false,tree:[{path:'maintenance',type:'tree',mode:'040000'},entry]};
+    else if(path.includes('git/trees/'))value={truncated:false,tree:[]};
+    else throw Error('unexpected read');
+    return {status:200,bytes:Buffer.from(JSON.stringify(value))};
+  }};
+  await expect(releaseParticipation(repository,io)).rejects.toThrow('RELEASE_CONFIGURATION_REQUIRED');
 });
 it('keeps Pages independent and completes a scan of explicitly inapplicable repositories without generation',async()=>{
   let pages=0,service=0;
