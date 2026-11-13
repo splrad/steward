@@ -158,4 +158,39 @@ describe('exact legacy Gate consumer retirement', () => {
     await coordinator.fetch(new Request('https://validation.internal/', { method: 'POST', body: JSON.stringify({ operation: 'pending', repository, pull: incoming }) }));
     expect(GitHubClient.prototype.createCheckRun).toHaveBeenCalledWith('splrad', 'steward', expect.objectContaining({ name: 'PR Validation Gate' }));
   });
+
+  it.each(['renamed', 'default-changed', 'metadata-missing', 'metadata-error'])('retains queued pending and run writers when current repository is %s', async kind => {
+    const repository = repositories[1]!;
+    const read = vi.mocked(GitHubClient.prototype.getRepositoryById);
+    if (kind === 'metadata-error') read.mockRejectedValue(new Error('metadata unavailable'));
+    else read.mockResolvedValue(kind === 'renamed' ? { ...repository, full_name: 'splrad/renamed' }
+      : kind === 'default-changed' ? { ...repository, default_branch: 'next' } : { id: repository.id });
+    // The queued payload and native PR still say main; only native repository
+    // metadata reveals the scope drift. Both producers must retain old behavior.
+    const coordinator = new ValidationCoordinator({} as DurableObjectState, { ...env(), WORKFLOW_EVALUATOR_SHA: undefined });
+    for (const operation of ['pending', 'run']) {
+      vi.mocked(GitHubClient.prototype.createCheckRun).mockClear();
+      await coordinator.fetch(new Request('https://validation.internal/', { method: 'POST', body: JSON.stringify({
+        operation, repository, pull: pull(), workflowRunId: 10,
+      }) }));
+      expect(GitHubClient.prototype.createCheckRun).toHaveBeenCalledWith('splrad', 'steward', expect.objectContaining({ name: 'PR Validation Gate' }));
+    }
+    expect(read).toHaveBeenCalledWith(repository.id);
+  });
+
+  it.each(['renamed', 'default-changed'])('retains event pending and workflow_run writers when native repository is %s', async kind => {
+    const repository = repositories[1]!;
+    vi.mocked(GitHubClient.prototype.getRepositoryById).mockResolvedValue({ ...repository,
+      ...(kind === 'renamed' ? { full_name: 'splrad/renamed' } : { default_branch: 'next' }),
+    });
+    const environment = { ...env(), WORKFLOW_EVALUATOR_SHA: undefined };
+    for (const [event, payload] of [
+      ['pull_request', { action: 'opened', repository, pull_request: pull() }],
+      ['workflow_run', { action: 'completed', repository, workflow_run: { id: 10 } }],
+    ] as const) {
+      vi.mocked(GitHubClient.prototype.createCheckRun).mockClear();
+      expect((await handleWebhook(request(event, payload), environment)).status).toBe(202);
+      expect(GitHubClient.prototype.createCheckRun).toHaveBeenCalledWith('splrad', 'steward', expect.objectContaining({ name: 'PR Validation Gate' }));
+    }
+  });
 });

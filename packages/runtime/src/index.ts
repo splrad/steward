@@ -116,6 +116,18 @@ async function validationClient(env: Env, repositoryId: number): Promise<GitHubC
   });
   return new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA);
 }
+async function currentValidationRetirement(env: Env, gh: GitHubClient, repository: any, targetBranch: unknown): Promise<boolean> {
+  if (!legacyValidationRetired(env, repository, targetBranch)) return false;
+  try {
+    const current = await gh.getRepositoryById(repository.id);
+    return current.id === repository.id && current.full_name === repository.full_name
+      && current.default_branch === repository.default_branch && belongsToOrganization(current)
+      && legacyValidationRetired(env, current, targetBranch);
+  } catch {
+    // Missing current metadata cannot authorize stopping an unverified consumer.
+    return false;
+  }
+}
 async function ensureValidationPending(env: Env, repository: any, pull: any, allowRetirement = true): Promise<void> {
   if (env.VALIDATION_COORDINATOR) { await coordinatedValidation(env, repository.id, {operation:"pending", repository, pull}); return; }
   const headSha = commitSha(pull?.head?.sha); const number = Number(pull?.number);
@@ -125,7 +137,8 @@ async function ensureValidationPending(env: Env, repository: any, pull: any, all
   if (allowRetirement && pull?.base?.repo?.id === repository.id && legacyValidationRetired(env, repository, pull?.base?.ref)) {
     const current = await gh.getPullRequest(owner, repo, number);
     if (current.number === number && current.base?.repo?.id === repository.id
-      && current.head?.sha === headSha && legacyValidationRetired(env, repository, current.base?.ref)) return;
+      && current.head?.sha === headSha && current.base?.ref === pull.base.ref
+      && await currentValidationRetirement(env, gh, repository, current.base.ref)) return;
   }
   const current = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, headSha, "all"), headSha, Number(env.APP_ID), Number(repository.id), number);
   if (current.length) return;
@@ -196,7 +209,7 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
   if (pulls.length > 1) return false;
   const pull = pulls[0]!; const number = Number(pull.number);
   if (!Number.isSafeInteger(number) || number <= 0) throw new Error("拉取请求编号无效");
-  if (legacyValidationRetired(env, repository, pull.base?.ref)) return false;
+  if (await currentValidationRetirement(env, gh, repository, pull.base?.ref)) return false;
   const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, headSha, "all"), headSha, Number(env.APP_ID), Number(repository.id), number);
   let conclusion = validationConclusion(run.conclusion); const completed = run.status === "completed";
   const comparisons = checks.map(value => compareValidationState(value.state, run.id, run.run_attempt, completed));
