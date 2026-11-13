@@ -32,7 +32,9 @@ it('allows only protected fixed central missing refs, never product 404 or forbi
   await expect(fetchState('',{...repository,id:7},'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow('RELEASE_CENTRAL_STATE_IDENTITY');
   status=403;await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow('RELEASE_STATE_UNAVAILABLE');
   status=404;confirmationStatus=403;await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow('RELEASE_STATE_UNAVAILABLE');
-  confirmationStatus=200;confirmed=[{ref:'refs/heads/steward/release-state',object:{type:'commit',sha}}];await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow('RELEASE_STATE_MOVED');confirmed=[];
+  confirmationStatus=200;confirmed=[null];await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow('RELEASE_STATE_IDENTITY');
+  confirmed=[{}];await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow('RELEASE_STATE_IDENTITY');
+  confirmed=[{ref:'refs/heads/steward/release-state',object:{type:'commit',sha}}];await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow('RELEASE_STATE_MOVED');confirmed=[];
   status=404;protectedWriter=false;await expect(fetchState('',repository,'fixture','steward/release-state',{fetcher,centralFirstUse:true})).rejects.toThrow();
 });
 function fixture(){
@@ -71,8 +73,8 @@ it('excludes proven unconfigured governance repositories while retaining missing
     if(path===`/repos/${repository.full_name}`)value=repository;
     else if(path.includes('git/ref/heads/main'))value={ref:'refs/heads/main',object:{type:'commit',sha}};
     else if(path.includes('matching-refs/heads/steward/release-state'))value=productState||centralMaintenance?[{ref:'refs/heads/steward/release-state',object:{type:'commit',sha:head}}]:[];
-    else if(path.includes(`git/trees/${head}`))value={truncated:false,tree:[...(centralMaintenance?[{path:'maintenance',type:'tree',mode:'040000'}]:[]),{path:centralMaintenance?'maintenance/12.json':'state.json',type:'blob',mode:'100644'}]};
-    else if(path.includes('git/trees/'))value={truncated,tree:partial?[{path:'release-please-config.json',type:'blob',mode:'100644'}]:[]};
+    else if(path.includes(`git/trees/${head}`))value={truncated:false,tree:[...(centralMaintenance?[{path:'maintenance',type:'tree',mode:'040000',sha}]:[]),{path:centralMaintenance?'maintenance/12.json':'state.json',type:'blob',mode:'100644',sha}]};
+    else if(path.includes('git/trees/'))value={truncated,tree:partial?[{path:'release-please-config.json',type:'blob',mode:'100644',sha}]:[]};
     else if(path.includes('matching-refs'))value=[];
     else if(path.includes('releases?'))value=oldRelease?[{id:1}]:[];
     else throw Error('unexpected read');
@@ -98,7 +100,7 @@ it.each([
     if(path===`/repos/${repository.full_name}`)value=repository;
     else if(path.includes('git/ref/heads/main'))value={ref:'refs/heads/main',object:{type:'commit',sha}};
     else if(path.includes('matching-refs/heads/steward/release-state'))value=[{ref:'refs/heads/steward/release-state',object:{type:'commit',sha:head}}];
-    else if(path.includes(`git/trees/${head}`))value={truncated:false,tree:[{path:'maintenance',type:'tree',mode:'040000'},entry]};
+    else if(path.includes(`git/trees/${head}`))value={truncated:false,tree:[{path:'maintenance',type:'tree',mode:'040000',sha},{...entry,sha}]};
     else if(path.includes('git/trees/'))value={truncated:false,tree:[]};
     else throw Error('unexpected read');
     return {status:200,bytes:Buffer.from(JSON.stringify(value))};
@@ -128,6 +130,20 @@ it('does not mistake a valid prefix-suffix ref for the exact state ref',async()=
     return {status:200,bytes:Buffer.from(JSON.stringify(value))};
   }};
   expect((await releaseParticipation(repository,io)).status).toBe('NOT_APPLICABLE');
+});
+it.each([
+  [null], [{}], [{path:'README',type:'blob',mode:'100644',sha:'bad'}],
+  [{path:'README',type:'tree',mode:'100644',sha}],
+  [{path:'../README',type:'blob',mode:'100644',sha}],
+  [1,2].map(()=>({path:'README',type:'blob',mode:'100644',sha})),
+])('rejects malformed default tree before classifying absence %#',async (...tree)=>{
+  const io={request:async(_method:string,path:string)=>{
+    const value=path===`/repos/${repository.full_name}`?repository
+      :path.includes('git/ref/heads/main')?{ref:'refs/heads/main',object:{type:'commit',sha}}
+      :path.includes('git/trees/')?{truncated:false,tree}:[];
+    return {status:200,bytes:Buffer.from(JSON.stringify(value))};
+  }};
+  await expect(releaseParticipation(repository,io)).rejects.toThrow('RELEASE_PARTICIPATION_IDENTITY');
 });
 it('keeps Pages independent and completes a scan of explicitly inapplicable repositories without generation',async()=>{
   let pages=0,service=0;

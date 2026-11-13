@@ -16,6 +16,9 @@ const hash=value=>createHash('sha256').update(value).digest('hex');
 const identity={name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
 const safeCode=error=>error instanceof Error && /^RELEASE_[A-Z_]+$/.test(error.message)?error.message:'RELEASE_NATIVE_UNAVAILABLE';
 const iso=clock=>new Date(clock()).toISOString();
+const validMatchingRefs=(refs,target)=>Array.isArray(refs)
+  &&refs.every(r=>typeof r?.ref==='string'&&r.ref.startsWith(`refs/heads/${target}`)&&r.object?.type==='commit'&&/^[a-f0-9]{40}$/.test(r.object.sha))
+  &&new Set(refs.map(r=>r.ref)).size===refs.length;
 
 /** One wake has one fixed domain sequence. A publish invocation always ends this repository's wake. */
 export async function serviceReleaseWake(request,refresh,invoke,clock=Date.now) {
@@ -100,24 +103,29 @@ export async function releaseParticipation(repository,io) {
     if(r.status!==200)throw Error('RELEASE_PARTICIPATION_UNAVAILABLE');
     return JSON.parse(Buffer.from(r.bytes).toString('utf8'));
   };
+  const readTree=async sha=>{
+    const value=await read(`git/trees/${sha}?recursive=1`);
+    if(value?.truncated!==false||!Array.isArray(value.tree))throw Error('RELEASE_PARTICIPATION_INCOMPLETE');
+    if(value.tree.some(x=>typeof x?.path!=='string'||!x.path||x.path.split('/').some(p=>!p||p==='.'||p==='..')
+      ||!/^[a-f0-9]{40}$/.test(x.sha)||!(x.type==='tree'&&x.mode==='040000'||x.type==='blob'&&['100644','100755','120000'].includes(x.mode)||x.type==='commit'&&x.mode==='160000'))
+      ||new Set(value.tree.map(x=>x.path)).size!==value.tree.length)throw Error('RELEASE_PARTICIPATION_IDENTITY');
+    return value;
+  };
   const actual=await read('');
   if(actual.id!==repository.id||actual.full_name!==repository.full_name||actual.default_branch!==repository.default_branch||actual.archived!==false||actual.disabled!==false)throw Error('RELEASE_PARTICIPATION_IDENTITY');
   const ref=await read(`git/ref/heads/${encodeURIComponent(repository.default_branch)}`);
   if(ref.ref!==`refs/heads/${repository.default_branch}`||ref.object?.type!=='commit'||!/^[a-f0-9]{40}$/.test(ref.object.sha))throw Error('RELEASE_PARTICIPATION_IDENTITY');
-  const tree=await read(`git/trees/${ref.object.sha}?recursive=1`);
-  if(tree.truncated!==false||!Array.isArray(tree.tree))throw Error('RELEASE_PARTICIPATION_INCOMPLETE');
+  const tree=await readTree(ref.object.sha);
   const names=['.github/delivery.json','release-please-config.json','.release-please-manifest.json'];
   const files=names.map(path=>tree.tree.filter(x=>x.path===path));
   const refs=await read('git/matching-refs/heads/steward/release-state');
   if(!Array.isArray(refs))throw Error('RELEASE_PARTICIPATION_INCOMPLETE');
-  if(refs.some(r=>typeof r?.ref!=='string'||!r.ref.startsWith('refs/heads/steward/release-state')||r.object?.type!=='commit'||!/^[a-f0-9]{40}$/.test(r.object.sha))
-    ||new Set(refs.map(r=>r.ref)).size!==refs.length)throw Error('RELEASE_PARTICIPATION_IDENTITY');
+  if(!validMatchingRefs(refs,'steward/release-state'))throw Error('RELEASE_PARTICIPATION_IDENTITY');
   const stateRef=refs.find(r=>r.ref==='refs/heads/steward/release-state');
   let obligation=false;
   if(stateRef) {
     if(stateRef.object?.type!=='commit'||!/^[a-f0-9]{40}$/.test(stateRef.object.sha))throw Error('RELEASE_PARTICIPATION_IDENTITY');
-    const state=await read(`git/trees/${stateRef.object.sha}?recursive=1`);
-    if(state.truncated!==false||!Array.isArray(state.tree))throw Error('RELEASE_PARTICIPATION_INCOMPLETE');
+    const state=await readTree(stateRef.object.sha);
     // Only the fixed central maintenance-only tree is not a product state.
     obligation=repository.id!==1296724484||repository.full_name!=='splrad/steward'
       ||state.tree.some(x=>!(x.path==='maintenance'&&x.type==='tree'&&x.mode==='040000')
@@ -175,7 +183,7 @@ export async function fetchState(root,repository,token,targetRef='steward/releas
     const confirmation=await io.request('GET',`/repos/${repository.full_name}/git/matching-refs/heads/${targetRef}`);
     if(confirmation.status!==200)throw new Error('RELEASE_STATE_UNAVAILABLE');
     const matches=JSON.parse(Buffer.from(confirmation.bytes).toString('utf8'));
-    if(!Array.isArray(matches)||matches.some(r=>typeof r.ref!=='string'||!r.ref.startsWith(`refs/heads/${targetRef}`)||r.object?.type!=='commit'||!/^[a-f0-9]{40}$/.test(r.object.sha)))throw new Error('RELEASE_STATE_IDENTITY');
+    if(!validMatchingRefs(matches,targetRef))throw new Error('RELEASE_STATE_IDENTITY');
     if(matches.some(r=>r.ref===`refs/heads/${targetRef}`))throw new Error('RELEASE_STATE_MOVED');
     return {remote,io,snapshot:{repositoryId:repository.id,targetRef,head:null,repository:null,domainRecords:[],currentPaths:[]},
       readBytes:async()=>{throw new Error('RELEASE_STATE_FILE_UNAVAILABLE');}};
