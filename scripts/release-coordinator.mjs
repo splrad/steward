@@ -110,6 +110,8 @@ export async function releaseParticipation(repository,io) {
   const files=names.map(path=>tree.tree.filter(x=>x.path===path));
   const refs=await read('git/matching-refs/heads/steward/release-state');
   if(!Array.isArray(refs))throw Error('RELEASE_PARTICIPATION_INCOMPLETE');
+  if(refs.some(r=>typeof r?.ref!=='string'||!r.ref.startsWith('refs/heads/steward/release-state')||r.object?.type!=='commit'||!/^[a-f0-9]{40}$/.test(r.object.sha))
+    ||new Set(refs.map(r=>r.ref)).size!==refs.length)throw Error('RELEASE_PARTICIPATION_IDENTITY');
   const stateRef=refs.find(r=>r.ref==='refs/heads/steward/release-state');
   let obligation=false;
   if(stateRef) {

@@ -105,6 +105,30 @@ it.each([
   }};
   await expect(releaseParticipation(repository,io)).rejects.toThrow('RELEASE_CONFIGURATION_REQUIRED');
 });
+it.each([
+  [null], [{}], [{ref:'refs/heads/foreign',object:{type:'commit',sha}}],
+  [{ref:'refs/heads/steward/release-state',object:{type:'tree',sha}}],
+  [{ref:'refs/heads/steward/release-state',object:{type:'commit',sha:'bad'}}],
+  [1,2].map(()=>({ref:'refs/heads/steward/release-state-other',object:{type:'commit',sha}})),
+])('refuses malformed state matching-ref evidence %#',async (...refs)=>{
+  const io={request:async(_method:string,path:string)=>{
+    const value=path===`/repos/${repository.full_name}`?repository
+      :path.includes('git/ref/heads/main')?{ref:'refs/heads/main',object:{type:'commit',sha}}
+      :path.includes('git/trees/')?{truncated:false,tree:[]}:refs;
+    return {status:200,bytes:Buffer.from(JSON.stringify(value))};
+  }};
+  await expect(releaseParticipation(repository,io)).rejects.toThrow('RELEASE_PARTICIPATION_IDENTITY');
+});
+it('does not mistake a valid prefix-suffix ref for the exact state ref',async()=>{
+  const io={request:async(_method:string,path:string)=>{
+    const value=path===`/repos/${repository.full_name}`?repository
+      :path.includes('git/ref/heads/main')?{ref:'refs/heads/main',object:{type:'commit',sha}}
+      :path.includes('git/trees/')?{truncated:false,tree:[]}
+      :path.includes('matching-refs/heads/steward/release-state')?[{ref:'refs/heads/steward/release-state-other',object:{type:'commit',sha}}]:[];
+    return {status:200,bytes:Buffer.from(JSON.stringify(value))};
+  }};
+  expect((await releaseParticipation(repository,io)).status).toBe('NOT_APPLICABLE');
+});
 it('keeps Pages independent and completes a scan of explicitly inapplicable repositories without generation',async()=>{
   let pages=0,service=0;
   const s=await coordinateReleaseWake({discover:async()=>[{id:1}],pages:async()=>{pages++;return {status:'DISABLED'};},observe:async()=>({status:'NOT_APPLICABLE'}),service:async()=>{service++;return {};},health:async()=>{}});
