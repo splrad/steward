@@ -9,7 +9,7 @@
     "deploy:check": "cf deploy --prebuilt --dry-run --provision=false"
   },
   "dependencies": {
-    "jose": "6.2.8"
+    "jose": "6.2.15"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "2.0.0-beta.v.12",
