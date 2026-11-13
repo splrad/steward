@@ -109,3 +109,13 @@ it('main retains the original fixed code when both credential revocations fail',
   expect(JSON.stringify(events)).not.toContain(secret);
  }finally{output.mockRestore();vi.unstubAllGlobals();}
 });
+
+it.each([
+ ['2026-02-30T12:00:00Z',null],['2026-13-01T00:00:00Z',null],['2026-11-13T24:00:00Z',null],
+ ['2026-11-13T12:60:00Z',null],['2026-11-13T12:00:00Z','2026-11-13T12:00:00Z'],
+ ['2028-02-29T12:00:00.123Z','2028-02-29T12:00:00.123Z'],
+])('expiry requires an actual calendar timestamp %s',async(expires_at,expected)=>{
+ const events:any[]=[],diag=initializationDiagnostics((x:unknown)=>events.push(x));
+ await diag.transport(async()=>Response.json({token:secret,expires_at}))('https://api.github.com/app/installations/145952003/access_tokens',{method:'POST'});
+ expect(events[0].expiresAt).toBe(expected);expect(JSON.stringify(events)).not.toContain(secret);
+});

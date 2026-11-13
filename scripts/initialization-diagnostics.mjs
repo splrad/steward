@@ -39,7 +39,11 @@ export function initializationDiagnostics(emit=()=>{}) {
           const body=await response.clone().json();
           if(mint&&response.ok&&typeof body.token==='string') {
             const label='credential-'+(credentials.size+1);credentials.set(body.token,label);event.credential=label;
-            event.expiresAt=typeof body.expires_at==='string'&&/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{3})?Z$/.test(body.expires_at)?body.expires_at:null;
+            const expiry=body.expires_at;
+            if(typeof expiry==='string'&&/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{3})?Z$/.test(expiry)) {
+              const parsed=Date.parse(expiry),canonical=expiry.includes('.')?expiry:expiry.replace('Z','.000Z');
+              if(Number.isFinite(parsed)&&new Date(parsed).toISOString()===canonical)event.expiresAt=expiry;
+            }
             const allowed=['metadata','contents','actions','checks','administration','organization_administration','pull_requests','issues'];
             if(body.permissions&&typeof body.permissions==='object'&&!Array.isArray(body.permissions)) {
               const entries=allowed.filter(k=>['read','write'].includes(body.permissions[k])).map(k=>[k,body.permissions[k]]);
