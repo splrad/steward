@@ -27,7 +27,7 @@
     "@octokit/rest": "22.0.1",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
-    "minimatch": "10.2.6",
+    "minimatch": "11.0.1",
     "mustache": "4.2.0",
     "parse5": "8.1.1",
     "parse5-sax-parser": "8.0.1",
