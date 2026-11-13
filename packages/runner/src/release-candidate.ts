@@ -100,6 +100,15 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   if (recovered && !['APPLIED', 'CANCELLED_FOR_EDITING'].includes(recovered.status)) return { status: 'WAIT', reason: recovered.status };
   let observed = await current();
   if (observed.pr?.state === 'closed') return { status: 'WAIT', reason: observed.pr.merged ? 'MERGED_SOURCE_HANDOFF' : 'CLOSED_PR' };
+  // Refresh derived identity even on protected early returns, without changing its native evidence.
+  const frozen = session.identity, generated = session.generated;
+  if (frozen && generated && generated.baseSha === source.baseSha
+    && frozen.sourceDigest === generated.sourceDigest && frozen.authorsDigest === source.authorsDigest
+    && JSON.stringify(frozen.units.map(u => u.id).sort()) === JSON.stringify(generated.units.map(u => u.id).sort())) {
+    const projected = { ...frozen, contributors: selectReleaseContributors(frozen.actors, source.authors),
+      units: frozen.units.map(unit => ({ ...unit, contributors: selectReleaseContributors(unit.actors, source.authors) })) };
+    if (JSON.stringify(projected) !== JSON.stringify(frozen)) { session.identity = projected; await save(); }
+  }
   const statusComment = async (body: string, previewHead: string, currentHead: string) => {
     if (!candidate.prNumber) return;
     const marker = `<!-- steward:candidate-status:${candidate.id} -->`;
@@ -128,7 +137,9 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   if (session.generated && observed.head) {
     const difference = await mergeCandidate(io.workspace, session.generated, observed.head, session.generated, io.temporaryRoot);
     if (difference.status === 'CONFLICT') {
-      session.conflict = { head: observed.head, generated: session.generated, paths: difference.conflictPaths }; await save();
+      session.conflict = { head: observed.head, generated: session.generated, paths: difference.conflictPaths };
+      session.preview = `检测到候选人工修改，已保留当前文件；请在原PR处理冲突。当前 head：${observed.head}。\n`;
+      const archive = await save(); await statusComment(session.preview, archive, observed.head);
       return { status: 'CONFLICT', reason: difference.conflictPaths.some(path => !path.startsWith('.release-notes/')) ? 'SOURCE_CHANGED' : 'HUMAN_EDIT_CONFLICT', paths: difference.conflictPaths };
     }
   }
