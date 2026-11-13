@@ -89,14 +89,14 @@ function adoptionFixture() {
   const record = adoption();
   const pull = { headRefName:'fix/test', number: record.pullNumber, repository: { nameWithOwner: record.repository }, headRepository: { nameWithOwner: record.repository }, baseRefName: 'maintenance/legacy-runtime-e990eda', state: 'MERGED', isDraft: false, headRefOid: record.reviewedHead, mergeCommit: { oid: record.deploymentHead } };
   const api = vi.fn(async (path: string): Promise<any> => {
-    if (path.includes('/pulls?')) return [{id:400,number:record.pullNumber,head:{sha:record.reviewedHead,ref:pull.headRefName,repo:{full_name:record.repository}},base:{ref:pull.baseRefName,repo:{full_name:record.repository}},merge_commit_sha:record.deploymentHead}];
+    if (path.includes('/pulls?')) return [{id:400,number:record.pullNumber,head:{sha:record.reviewedHead,ref:pull.headRefName,repo:{full_name:record.repository}},base:{sha:'1'.repeat(40),ref:pull.baseRefName,repo:{full_name:record.repository}},merge_commit_sha:record.deploymentHead}];
     if (path.startsWith('check-suites/')) return {id:100,head_sha:record.reviewedHead,app:{id:15368}};
     if (path.startsWith('compare/')) return {status:'ahead',merge_base_commit:{sha:record.evidence.validationWorkflowSha}};
     if (path.includes('/jobs?')) return {total_count:2,jobs:[6,7].map(id=>({id,run_id:1,run_attempt:record.evidence.validationRunAttempt,head_sha:record.reviewedHead,name:id===6?'Maintenance source identity':'SPLRAD Maintenance Validation',status:'completed',conclusion:'success'}))};
     if (path.startsWith('actions/runs?')) return { total_count: 2, workflow_runs: [await api('actions/runs/1'), await api('actions/runs/2')] };
     if (path.includes('/check-runs?')) return { total_count: 1, check_runs: [await api('check-runs/5')] };
     if (path.includes('/reviews?')) return [await api(`pulls/${record.pullNumber}/reviews/3`)];
-    if (path.startsWith('commits/')) return { sha: path.slice(8), commit: { tree: { sha: record.reviewedTree }, verification: { verified: true, reason: 'valid' } } };
+    if (path.startsWith('commits/')) return { sha: path.slice(8), parents:[{sha:'1'.repeat(40)},{sha:record.reviewedHead}], commit: { tree: { sha: record.reviewedTree }, verification: { verified: true, reason: 'valid' } } };
     if (path.startsWith('actions/runs/')) return { id: Number(path.split('/').at(-1)), run_attempt: 1, created_at: '2026-01-01T00:00:00Z', run_started_at: '2026-01-01T00:00:00Z', workflow_id:413829468, head_branch:pull.headRefName, head_repository:{full_name:record.repository}, repository: { full_name: record.repository }, head_sha: record.reviewedHead, status: 'completed', conclusion: 'success', path: path === 'actions/runs/1' ? '.github/workflows/maintenance-validation.yml' : 'dynamic/agents/copilot-pull-request-reviewer', event: path === 'actions/runs/1' ? 'pull_request' : 'dynamic', check_suite_id: 100, pull_requests: [{ number: record.pullNumber, head: { sha: record.reviewedHead } }] };
     if (path.startsWith('check-runs/')) return { id: 5, started_at: '2026-01-01T00:00:00Z', name: 'copilot-pull-request-reviewer', app: { id: 15368 }, head_sha: record.reviewedHead, status: 'completed', conclusion: 'success', check_suite: { id: 100 }, pull_requests: [{ number: record.pullNumber, head: { sha: record.reviewedHead } }] };
     if (path.startsWith('pulls/')) return { id: 3, state: 'COMMENTED', body: reviewBody, commit_id: record.reviewedHead, user: { login: 'copilot-pull-request-reviewer[bot]' }, submitted_at: '2026-01-01T00:00:00Z' };
@@ -134,7 +134,7 @@ describe('central adoption record and native deployment identity', () => {
     });
     await expect(verifyAdoptionSource(f.record,f.api,f.pull,f.readLog)).rejects.toThrow();
   });
-  it.each(['event','workflow','repository','branch','suiteApp','jobAttempt','jobRun','jobHead','jobName','jobFailure','association','policySignature','policyAncestry'])('rejects incorrect maintenance binding: %s',async mode=>{
+  it.each(['event','workflow','repository','branch','suiteApp','jobAttempt','jobRun','jobHead','jobName','jobFailure','association','policySignature','policyAncestry','baseSha','mergeParents','mergeTree'])('rejects incorrect maintenance binding: %s',async mode=>{
     const f=adoptionFixture(), original=f.api.getMockImplementation()!;
     f.api.mockImplementation(async path=>{
       const v=await original(path);
@@ -154,6 +154,9 @@ describe('central adoption record and native deployment identity', () => {
       }
       if(mode==='association'&&path.includes('/pulls?')) v[0].head.sha='f'.repeat(40);
       if(mode==='policySignature'&&path==='commits/'+f.record.evidence.validationWorkflowSha) v.commit.verification.verified=false;
+      if(mode==='baseSha'&&path.includes('/pulls?'))v[0].base.sha='9'.repeat(40);
+      if(mode==='mergeParents'&&path==='commits/'+'2'.repeat(40))v.parents[1].sha='9'.repeat(40);
+      if(mode==='mergeTree'&&path==='commits/'+'2'.repeat(40))v.commit.tree.sha='9'.repeat(40);
       if(mode==='policyAncestry'&&path.startsWith('compare/')) v.status='diverged';
       return v;
     });

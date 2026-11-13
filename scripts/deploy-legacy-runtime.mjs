@@ -64,7 +64,7 @@ async function evidencePages(api, path, key) {
   const fingerprint = rows => JSON.stringify(rows.map(v => [v.id, v.head_sha, v.commit_id, v.path, v.event, v.status, v.conclusion,
     v.run_attempt, v.run_started_at, v.created_at, v.started_at, v.submitted_at, v.state, v.body,
     v.repository?.full_name, v.head_repository?.full_name, v.head_branch, v.workflow_id, v.run_id, v.name, v.user?.login, v.app?.id, v.check_suite_id, v.check_suite?.id,
-    v.number, v.merge_commit_sha, v.head?.sha, v.head?.ref, v.head?.repo?.full_name, v.base?.ref, v.base?.repo?.full_name,
+    v.number, v.merge_commit_sha, v.head?.sha, v.head?.ref, v.head?.repo?.full_name, v.base?.sha, v.base?.ref, v.base?.repo?.full_name,
     v.pull_requests?.map(p => [p.number, p.head?.sha])]).sort((a, b) => a[0] - b[0]));
   if (fingerprint(first) !== fingerprint(second)) throw new Error('Adoption evidence changed during pagination');
   return second;
@@ -81,7 +81,7 @@ function latestEvidence(rows, selectedId, timestamp, submitted = false) {
   return latest;
 }
 
-async function verifyMaintenanceJobs(r, api, readLog, headRef) {
+async function verifyMaintenanceJobs(r, api, readLog, headRef, baseSha) {
   const e = r.evidence;
   const policy = await api(`commits/${e.validationWorkflowSha}`);
   const ancestry = await api(`compare/${e.validationWorkflowSha}...main`);
@@ -108,11 +108,14 @@ async function verifyMaintenanceJobs(r, api, readLog, headRef) {
     if (candidates.length !== 1 || value.repositoryId !== 1296724484 || value.pullNumber !== r.pullNumber
       || value.head !== r.reviewedHead || value.headRef !== headRef || value.policy !== e.validationWorkflowSha
       || value.runId !== String(e.validationRunId) || value.attempt !== String(e.validationRunAttempt)
-      || !sha(value.base) || !sha(value.merge) || value.liveMerge !== value.merge
+      || !sha(value.base) || value.base !== baseSha || !sha(value.merge) || value.liveMerge !== value.merge
       || value.deployment !== 'NOT_AUTHORIZED') throw new Error('Maintenance job record identity mismatch');
     records.push(value);
   }
   if (records[0].base !== records[1].base || records[0].merge !== records[1].merge) throw new Error('Maintenance source/final merge identity changed');
+  const merge = await api(`commits/${records[0].merge}`);
+  if (merge.sha !== records[0].merge || merge.parents?.length !== 2 || merge.parents[0].sha !== baseSha
+    || merge.parents[1].sha !== r.reviewedHead || merge.commit?.tree?.sha !== r.deploymentTree) throw new Error('Maintenance event merge is not the adopted PR tree');
 }
 
 export async function verifyAdoptionSource(r, api, pull, readLog) {
@@ -146,7 +149,7 @@ export async function verifyAdoptionSource(r, api, pull, readLog) {
       if (evidence.event !== 'pull_request' || evidence.workflow_id !== 413829468) throw new Error('Unexpected maintenance validation source');
       const suite = await api(`check-suites/${evidence.check_suite_id}`);
       if (suite.id !== evidence.check_suite_id || suite.head_sha !== r.reviewedHead || suite.app?.id !== 15368) throw new Error('Maintenance validation is not a GitHub Actions check suite');
-      await verifyMaintenanceJobs(r, api, readLog, pull.headRefName);
+      await verifyMaintenanceJobs(r, api, readLog, pull.headRefName, candidates[0].base.sha);
     }
     if (id === r.evidence.copilotRunId) {
       if (evidence.event !== 'dynamic') throw new Error('Expected native dynamic Copilot review');
