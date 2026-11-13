@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, readdir, realpath } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -32,7 +32,86 @@ export async function readAdoptionRecord(filename, checkout = process.cwd()) {
     || typeof r.evidence?.reviewDecisionReference !== 'string' || !r.evidence.reviewDecisionReference.trim()) throw new Error('Incomplete central adoption record');
   const origin = new URL(r.runtimeOrigin);
   if (origin.protocol !== 'https:' || origin.username || origin.password || origin.port || origin.search || origin.hash || origin.pathname !== '/' || origin.origin !== r.runtimeOrigin) throw new Error('Noncanonical adoption origin');
+  validationRetirementVariables(r);
   return r;
+}
+
+// Only this reviewed flag can be added; this is not an arbitrary config override.
+export function validationRetirementVariables(r) {
+  const change = r.validationRetirement;
+  if (change === undefined) return [];
+  if (!change || typeof change !== 'object' || Array.isArray(change)
+    || Object.keys(change).sort().join(',') !== 'expectedCurrentValue,targetValue'
+    || ![null, 'false', 'true'].includes(change.expectedCurrentValue) || change.targetValue !== 'true')
+    throw new Error('Invalid validation retirement config change');
+  return ['--var', 'LEGACY_VALIDATION_RETIRED:true'];
+}
+
+export function verifyValidationRetirementValue(r, metadata, phase) {
+  validationRetirementVariables(r);
+  if (r.validationRetirement === undefined) return;
+  if (!['before', 'after'].includes(phase) || !Array.isArray(metadata.validationBindings)) throw new Error('Missing validation retirement binding readback');
+  const bindings = metadata.validationBindings;
+  if (bindings.length > 1 || (bindings.length === 1 && (bindings[0].type !== 'plain_text' || typeof bindings[0].text !== 'string')))
+    throw new Error('Ambiguous validation retirement binding');
+  const value = bindings.length === 0 ? null : bindings[0].text;
+  const expected = phase === 'after' ? r.validationRetirement.targetValue : r.validationRetirement.expectedCurrentValue;
+  if (value !== expected) throw new Error('Validation retirement binding differs from adoption record');
+}
+
+const canonical = value => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
+  ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
+const digest = value => createHash('sha256').update(canonical(value)).digest('hex');
+
+export function runtimeConfiguration(settings, schedules) {
+  if (!settings || !Array.isArray(settings.bindings) || !Array.isArray(schedules?.schedules)) throw new Error('Incomplete native runtime configuration');
+  const bindings = settings.bindings.map(binding => {
+    if (!binding || typeof binding.name !== 'string' || !binding.name || typeof binding.type !== 'string' || !binding.type) throw new Error('Invalid native binding');
+    // Native APIs do not expose secret values. Preserve that evidence boundary.
+    return binding.type === 'secret_text' ? { name: binding.name, type: binding.type } : binding;
+  }).sort((a, b) => a.name.localeCompare(b.name));
+  if (new Set(bindings.map(binding => binding.name)).size !== bindings.length) throw new Error('Repeated native binding');
+  return { settings: { ...settings, bindings }, schedules };
+}
+
+function verifyPreservedRuntimeBindings(r, config) {
+  if (!Array.isArray(config?.settings?.bindings)) throw new Error('Missing runtime identity bindings');
+  for (const [name, expected] of [['LEGACY_RELEASE_RETIRED', 'true'], ['POLICY_SHA', r.policySha], ['WORKFLOW_EVALUATOR_SHA', r.evaluatorSha]]) {
+    const binding = config.settings.bindings.find(binding => binding.name === name);
+    if (binding?.type !== 'plain_text' || binding.text !== expected) throw new Error('Preserved runtime identity binding mismatch');
+  }
+}
+
+export function compareRuntimeConfiguration(r, before, after) {
+  const left = runtimeConfiguration(before.settings, before.schedules), right = runtimeConfiguration(after.settings, after.schedules);
+  const find = (config, name) => config.settings.bindings.find(binding => binding.name === name);
+  const configurationErrors = [];
+  for (const config of [left, right]) {
+    try { verifyPreservedRuntimeBindings(r, config); } catch (error) { configurationErrors.push(error.message); }
+  }
+  const flag = 'LEGACY_VALIDATION_RETIRED';
+  for (const [config, phase] of [[left, 'before'], [right, 'after']]) {
+    try { verifyValidationRetirementValue(r, { validationBindings: config.settings.bindings.filter(binding => binding.name === flag) }, phase); }
+    catch (error) { configurationErrors.push(error.message); }
+  }
+  const expected = runtimeConfiguration({ ...left.settings, bindings: [
+    ...left.settings.bindings.filter(binding => binding.name !== flag), { name: flag, type: 'plain_text', text: 'true' },
+  ] }, left.schedules);
+  const project = config => ({
+    // Every setting and binding participates in the digest comparison. Unknown
+    // binding contents remain hashed in evidence, not copied into logs/files.
+    otherSettings: Object.fromEntries(Object.entries(config.settings).filter(([key]) => key !== 'bindings').map(([key, value]) => [key, { sha256: digest(value) }])),
+    bindings: config.settings.bindings.map(binding => ({ name: binding.name, type: binding.type, sha256: digest(binding),
+      ...(['LEGACY_VALIDATION_RETIRED', 'LEGACY_RELEASE_RETIRED', 'POLICY_SHA', 'WORKFLOW_EVALUATOR_SHA'].includes(binding.name) ? { text: binding.text } : {}) })),
+    schedules: config.schedules,
+  });
+  const beforeProjection = project(left), afterProjection = project(right);
+  const names = [...new Set([...left.settings.bindings, ...right.settings.bindings].map(binding => binding.name))].sort();
+  return { verified: configurationErrors.length === 0 && canonical(expected) === canonical(right), configurationErrors, before: beforeProjection, after: afterProjection,
+    changedBindings: names.filter(name => canonical(find(left, name) ?? null) !== canonical(find(right, name) ?? null)),
+    otherSettingsUnchanged: canonical(beforeProjection.otherSettings) === canonical(afterProjection.otherSettings),
+    cronUnchanged: canonical(left.schedules) === canonical(right.schedules),
+    secretValuesVerified: false, secretBoundary: 'Native metadata confirms names/types only; secret contents are not readable or compared.' };
 }
 
 async function evidencePages(api, path, key) {
@@ -194,11 +273,13 @@ export async function verifyAdoptionSource(r, api, pull, readLog) {
   // Findings/disagreements are adjudicated in the central adoption record; null never means zero.
 }
 
-export function verifyNativeTarget(r, metadata, version = r.expectedCurrentVersion) {
+export function verifyNativeTarget(r, metadata, version = r.expectedCurrentVersion, phase = 'before') {
   const active = metadata.deployments?.deployments?.[0]?.versions;
   if (metadata.script?.enabled !== true || typeof metadata.subdomain?.subdomain !== 'string'
     || r.runtimeOrigin !== `https://${r.workerName}.${metadata.subdomain.subdomain}.workers.dev`
     || !Array.isArray(active) || active.length !== 1 || active[0].version_id !== version || active[0].percentage !== 100) throw new Error('Native Worker origin/deployment differs from adoption record');
+  verifyValidationRetirementValue(r, metadata, phase);
+  if (r.validationRetirement !== undefined) verifyPreservedRuntimeBindings(r, metadata.configuration);
 }
 
 export async function nativeCloudReader(r) {
@@ -214,10 +295,17 @@ export async function nativeCloudReader(r) {
   if (!auth) throw new Error('Native cf client unavailable');
   const client = await (await import(pathToFileURL(join(dist, auth)).href)).n({});
   const root = `/accounts/${r.accountId}/workers`;
+  const configuration = async () => {
+    const settings = await client.send({ method: 'GET', path: () => `${root}/scripts/${r.workerName}/settings` }, {});
+    const schedules = await client.send({ method: 'GET', path: () => `${root}/scripts/${r.workerName}/schedules` }, {});
+    const value = runtimeConfiguration(settings, schedules);
+    return { configuration: value, validationBindings: value.settings.bindings.filter(binding => binding.name === 'LEGACY_VALIDATION_RETIRED') };
+  };
   return async () => ({
     subdomain: await client.send({ method: 'GET', path: () => `${root}/subdomain` }, {}),
     script: await client.send({ method: 'GET', path: () => `${root}/scripts/${r.workerName}/subdomain` }, {}),
     deployments: await client.send({ method: 'GET', path: () => `${root}/scripts/${r.workerName}/deployments` }, {}),
+    ...(r.validationRetirement === undefined ? {} : await configuration()),
   });
 }
 
@@ -273,18 +361,38 @@ export async function deployLegacyRuntime(recordPath) {
   await assertSource();
   if (Date.parse(record.window.expiresAt) <= Date.now()) throw new Error('Adoption window expired');
   await verifySource();
-  verifyNativeTarget(record, await readCloud());
+  const beforeCloud = await readCloud();
+  verifyNativeTarget(record, beforeCloud);
   if (JSON.stringify(await readAdoptionRecord(recordPath)) !== JSON.stringify(record)) throw new Error('Central adoption record changed');
   // No D1 migrations command and no invocation of the historical deployment workflow.
   return runDeploymentTransaction(async () => {
     const result = await run(process.execPath, [cli, 'deploy', bundle, '--no-bundle', ...config, '--keep-vars',
-      '--var', 'LEGACY_RELEASE_RETIRED:true', '--var', `POLICY_SHA:${policySha}`, '--var', `WORKFLOW_EVALUATOR_SHA:${evaluatorSha}`], { env });
+      '--var', 'LEGACY_RELEASE_RETIRED:true', '--var', `POLICY_SHA:${policySha}`, '--var', `WORKFLOW_EVALUATOR_SHA:${evaluatorSha}`,
+      ...validationRetirementVariables(record)], { env });
     const versions = [...result.stdout.matchAll(/Current Version ID:\s*([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/g)];
     if (versions.length !== 1) throw new Error('Deployment returned no unambiguous version; reconcile before retrying');
-    return { version: versions[0][1], policySha, evaluatorSha, head: expectedHead, bundleSha256: expectedBundleSha256 };
+    return { version: versions[0][1], policySha, evaluatorSha, head: expectedHead, bundleSha256: expectedBundleSha256,
+      ...(record.validationRetirement === undefined ? {} : { validationRetired: true }) };
   }, async identity => {
-    verifyNativeTarget(record, await readCloud(), identity.version);
-    return verifyLegacyRuntimeRetirement({ url: runtimeUrl, ...identity });
+    const afterCloud = await readCloud();
+    if (record.validationRetirement !== undefined) {
+      let targetError;
+      try { verifyNativeTarget(record, afterCloud, identity.version, 'after'); } catch (error) { targetError = error; }
+      const comparison = compareRuntimeConfiguration(record, beforeCloud.configuration, afterCloud.configuration);
+      const evidencePath = join(dirname(await realpath(recordPath)), `validation-retirement-config-${identity.version}.json`);
+      await writeFile(evidencePath, JSON.stringify({ version: identity.version, head: expectedHead, bundleSha256: expectedBundleSha256,
+        observedAt: new Date().toISOString(), targetError: targetError?.message ?? null, ...comparison }, null, 2), { flag: 'wx' });
+      if (targetError) throw targetError;
+      if (!comparison.verified) throw new Error('Unexpected runtime configuration change; evidence saved, reconcile before retrying');
+      identity.configurationEvidencePath = evidencePath;
+    } else verifyNativeTarget(record, afterCloud, identity.version, 'after');
+    const evidence = await verifyLegacyRuntimeRetirement({ url: runtimeUrl, ...identity });
+    if (record.validationRetirement !== undefined) {
+      const finalCloud = await readCloud();
+      verifyNativeTarget(record, finalCloud, identity.version, 'after');
+      if (!compareRuntimeConfiguration(record, beforeCloud.configuration, finalCloud.configuration).verified) throw new Error('Runtime configuration changed during retirement verification');
+    }
+    return evidence;
   });
 }
 

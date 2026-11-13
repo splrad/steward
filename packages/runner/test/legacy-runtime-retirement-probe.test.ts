@@ -72,7 +72,8 @@ describe('actual maintenance deployment success path', () => {
 });
 
 
-const { readAdoptionRecord, verifyAdoptionSource, verifyNativeTarget, readGithubJobLog } = await import(deployModulePath);
+const { readAdoptionRecord, verifyAdoptionSource, verifyNativeTarget, readGithubJobLog,
+  validationRetirementVariables, verifyValidationRetirementValue, runtimeConfiguration, compareRuntimeConfiguration } = await import(deployModulePath);
 const reviewBody = '<!-- ccr-overview-v2 -->\n### Changes recommended\n<sub>Review effort: Lite</sub>';
 const codexBody = (head: string) => `<!-- codex-review-state:v1 ${JSON.stringify(Object.fromEntries(['code_review', 'security_review'].map(key => [key, { commit_sha: head, status: 'completed', has_any_findings: null }]))) } -->`;
 const jobLog = (phase: string, attempt = 1) => '2026-01-01T00:00:00Z ' + JSON.stringify({repositoryId:1296724484,pullNumber:400,head:'a'.repeat(40),headRef:'fix/test',base:'1'.repeat(40),merge:'2'.repeat(40),liveMerge:'2'.repeat(40),policy:'3'.repeat(40),phase,runId:'1',attempt:String(attempt),deployment:'NOT_AUTHORIZED'});
@@ -397,12 +398,16 @@ describe('central adoption record and native deployment identity', () => {
     try {
       const record = adoption(); await writeFile(file, JSON.stringify(record));
       await expect(readAdoptionRecord(file, checkout)).resolves.toMatchObject({ pullNumber: 400 });
+      await writeFile(file, JSON.stringify({ ...record, validationRetirement: { expectedCurrentValue: null, targetValue: 'true' } }));
+      await expect(readAdoptionRecord(file, checkout)).resolves.toMatchObject({ validationRetirement: { expectedCurrentValue: null, targetValue: 'true' } });
       const internal = join(checkout, 'record.json'); await writeFile(internal, JSON.stringify(record));
       await expect(readAdoptionRecord(internal, checkout)).rejects.toThrow('outside');
       for (const invalid of [
         { ...record, window: { ...record.window, status: 'pending' } },
         { ...record, window: { ...record.window, expiresAt: '2020-01-01T00:00:00Z' } },
         { ...record, deploymentTree: 'b'.repeat(40) },
+        { ...record, validationRetirement: { expectedCurrentValue: null, targetValue: 'false' } },
+        { ...record, validationRetirement: { expectedCurrentValue: null, targetValue: 'true', extra: 'override' } },
         { ...record, evidence: { ...record.evidence, validationRunId: 0 } },
         ...[undefined, '', 'invalid'].map(value => ({ ...record, evidence: { ...record.evidence, codexCommentBodySha256: value } })),
         ...['validationRunAttempt', 'copilotRunAttempt'].flatMap(key => [undefined, 0, -1, 1.5].map(value => ({ ...record, evidence: { ...record.evidence, [key]: value } }))),
@@ -411,5 +416,74 @@ describe('central adoption record and native deployment identity', () => {
         await expect(readAdoptionRecord(file, checkout)).rejects.toThrow();
       }
     } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+});
+
+describe('reviewed validation retirement deployment configuration', () => {
+  const record = () => ({ ...adoption(), validationRetirement: { expectedCurrentValue: null, targetValue: 'true' } });
+  const configuration = (retired = false) => runtimeConfiguration({ compatibility_date: '2026-08-16', bindings: [
+    { name: 'LEGACY_RELEASE_RETIRED', type: 'plain_text', text: 'true' },
+    { name: 'POLICY_SHA', type: 'plain_text', text: record().policySha },
+    { name: 'WORKFLOW_EVALUATOR_SHA', type: 'plain_text', text: record().evaluatorSha },
+    { name: 'PRIVATE_KEY', type: 'secret_text' },
+    { name: 'ISSUE_SNAPSHOTS', type: 'd1', id: 'database' },
+    ...(retired ? [{ name: 'LEGACY_VALIDATION_RETIRED', type: 'plain_text', text: 'true' }] : []),
+  ] }, { schedules: [{ cron: '* * * * *' }] });
+
+  it('keeps older records unchanged and only supplies the exact reviewed flag', () => {
+    expect(validationRetirementVariables(adoption())).toEqual([]);
+    for (const expectedCurrentValue of [null, 'false', 'true']) expect(validationRetirementVariables({
+      ...adoption(), validationRetirement: { expectedCurrentValue, targetValue: 'true' },
+    })).toEqual(['--var', 'LEGACY_VALIDATION_RETIRED:true']);
+  });
+  it.each([null, {}, [], { expectedCurrentValue: null }, { targetValue: 'true' },
+    { expectedCurrentValue: null, targetValue: true }, { expectedCurrentValue: null, targetValue: 'false' },
+    { expectedCurrentValue: 'unknown', targetValue: 'true' }, { expectedCurrentValue: null, targetValue: 'true', other: 'override' },
+  ])('rejects incomplete, disabling or arbitrary config changes: %j', validationRetirement => {
+    expect(() => validationRetirementVariables({ ...adoption(), validationRetirement })).toThrow();
+  });
+  it('distinguishes verified absence from unavailable, duplicate or secret bindings', () => {
+    expect(() => verifyValidationRetirementValue(record(), { validationBindings: [] }, 'before')).not.toThrow();
+    for (const metadata of [{}, { validationBindings: null }, { validationBindings: [{ type: 'secret_text' }] },
+      { validationBindings: [{ type: 'plain_text', text: 'false' }] },
+      { validationBindings: [{ type: 'plain_text', text: 'true' }, { type: 'plain_text', text: 'true' }] },
+    ]) expect(() => verifyValidationRetirementValue(record(), metadata, 'before')).toThrow();
+    expect(() => runtimeConfiguration({}, { schedules: [] })).toThrow();
+    expect(() => runtimeConfiguration({ bindings: [] }, {})).toThrow();
+    expect(() => verifyValidationRetirementValue(record(), { validationBindings: [] }, 'after')).toThrow();
+  });
+  it('compares all bindings/settings and cron while keeping secret values out of evidence', () => {
+    const result = compareRuntimeConfiguration(record(), configuration(), configuration(true));
+    expect(result).toMatchObject({ verified: true, changedBindings: ['LEGACY_VALIDATION_RETIRED'], otherSettingsUnchanged: true, cronUnchanged: true, secretValuesVerified: false });
+    const before = configuration();
+    before.settings.bindings.push({ name: 'UNKNOWN_VALUE', type: 'plain_text', text: 'do-not-copy-value' });
+    const after = structuredClone(before);
+    after.settings.bindings.push({ name: 'LEGACY_VALIDATION_RETIRED', type: 'plain_text', text: 'true' });
+    const evidence = compareRuntimeConfiguration(record(), before, after);
+    expect(evidence.verified).toBe(true);
+    expect(JSON.stringify(evidence)).not.toContain('do-not-copy-value');
+  });
+  it.each(['binding', 'cron', 'settings', 'release', 'policy', 'evaluator'])('rejects an unrelated %s change', kind => {
+    const after = configuration(true);
+    if (kind === 'binding') after.settings.bindings.find((binding: any) => binding.name === 'ISSUE_SNAPSHOTS').id = 'other';
+    if (kind === 'cron') after.schedules.schedules[0].cron = '0 * * * *';
+    if (kind === 'settings') after.settings.compatibility_date = '2026-11-13';
+    const name = ({ release: 'LEGACY_RELEASE_RETIRED', policy: 'POLICY_SHA', evaluator: 'WORKFLOW_EVALUATOR_SHA' } as Record<string, string>)[kind];
+    if (name) {
+      after.settings.bindings.find((binding: any) => binding.name === name).text = 'wrong';
+      expect(compareRuntimeConfiguration(record(), configuration(), after)).toMatchObject({ verified: false, configurationErrors: ['Preserved runtime identity binding mismatch'] });
+    } else expect(compareRuntimeConfiguration(record(), configuration(), after).verified).toBe(false);
+  });
+  it('binds pre-upload config and post-upload flag to the exact native version', () => {
+    const r = record();
+    const before = { subdomain: { subdomain: 'synthetic' }, script: { enabled: true },
+      deployments: { deployments: [{ versions: [{ version_id: r.expectedCurrentVersion, percentage: 100 }] }] },
+      configuration: configuration(), validationBindings: [],
+    };
+    expect(() => verifyNativeTarget(r, before)).not.toThrow();
+    const after = { ...before, configuration: configuration(true), validationBindings: [{ type: 'plain_text', text: 'true' }] };
+    expect(() => verifyNativeTarget(r, after, r.expectedCurrentVersion, 'after')).not.toThrow();
+    expect(() => verifyNativeTarget(r, after)).toThrow();
+    expect(() => verifyNativeTarget(r, after, '22222222-2222-4222-8222-222222222222', 'after')).toThrow();
   });
 });
