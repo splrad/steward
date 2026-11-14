@@ -2,7 +2,7 @@ name: SPLRAD Steward / Release
 on:
   workflow_dispatch:
   schedule:
-    - cron: '3-58/5 * * * *'
+    - cron: '4-59/5 * * * *'
 permissions:
   contents: read
   actions: read
@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   release-coordinator:
-    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && vars.STEWARD_EXPECTED_PAUSED_RELEASE != '311600220'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -96,12 +96,8 @@ jobs:
           previous=$(read_codes)
           codes='[]'
           record() { codes=$(jq -cn --argjson codes "$codes" --arg code "$file:$1" '$codes+[$code]'); }
-          record_disabled() {
-            if [[ "$file" == release.yml && "$workflow_id" == 311600220 && "$state" == disabled_manually && "${EXPECTED_PAUSED_RELEASE:-}" == 311600220 ]]; then
-              record WORKFLOW_PAUSED
-            else
-              record WORKFLOW_DISABLED
-            fi
+          expected_release_pause() {
+            [[ "$file" == release.yml && "$workflow_id" == 311600220 && "${EXPECTED_PAUSED_RELEASE:-}" == 311600220 && ( "$state" == active || "$state" == disabled_manually ) ]]
           }
           latest_run() {
             gh run list --repo splrad/steward --workflow "$file" --branch "$DEFAULT_BRANCH" --limit 1 --json databaseId,createdAt,status,conclusion 2>/dev/null |
@@ -127,7 +123,8 @@ jobs:
                 if [[ "$state" == disabled_inactivity ]]; then record ENABLE_UNCONFIRMED; continue; fi
               fi
             fi
-            if [[ "$state" != active ]]; then record_disabled; continue; fi
+            if expected_release_pause; then record WORKFLOW_PAUSED; continue; fi
+            if [[ "$state" != active ]]; then record WORKFLOW_DISABLED; continue; fi
             if ! runs=$(latest_run); then record RUN_UNAVAILABLE; continue; fi
             created=$(jq -r '.[0].createdAt//"1970-01-01T00:00:00Z"' <<<"$runs")
             if ! created_epoch=$(date -u -d "$created" +%s); then record RUN_UNAVAILABLE; continue; fi
@@ -138,7 +135,8 @@ jobs:
             # serializes this observation wake; business writes reconcile their native outcomes.
             if ! workflow=$(api "repos/splrad/steward/actions/workflows/$workflow_id") || ! workflow_matches "$workflow"; then record WORKFLOW_UNAVAILABLE; continue; fi
             state=$(jq -r '.state' <<<"$workflow")
-            if [[ "$state" != active ]]; then record_disabled; continue; fi
+            if expected_release_pause; then record WORKFLOW_PAUSED; continue; fi
+            if [[ "$state" != active ]]; then record WORKFLOW_DISABLED; continue; fi
             response_known=true
             wake_args=()
             if [[ "$file" == sync-managed.yml ]]; then wake_args+=(--field health_only=true); fi

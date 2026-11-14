@@ -24,9 +24,13 @@ Actions 事件策略通过 GitHub 设置页或官方 REST 在采用阶段配置�
 
 `release.yml` 和 `sync-managed.yml` 仍独立读取两个固定入口。默认情况下，人工停用继续记录 `WORKFLOW_DISABLED` 并使健康 job 失败；不会 enable 或 dispatch 人工停用的入口。
 
-仅当维护决定已批准暂停中央 Release（原生 workflow ID `311600220`），才将中央仓库变量 `STEWARD_EXPECTED_PAUSED_RELEASE` 设置为 `311600220`。准确路径、ID 和实际 `disabled_manually` 状态同时匹配时，记录 `release.yml:WORKFLOW_PAUSED`。此状态在既有健康 Issue 中变化时通知一次，并保留在运行摘要；它不使健康 job 失败，也不代表发行或产品验收通过。变量为空、ID 不符、其他工作流停用、未知状态及 API/通知故障仍失败。原生状态恢复为 active 时照常检查最近运行，变量不能屏蔽失活或漏唤醒。结束维护时应清除该变量；Release 的启用需对应的发行授权。
+仅当维护决定已批准暂停中央 Release（原生 workflow ID `311600220`），才将中央仓库变量 `STEWARD_EXPECTED_PAUSED_RELEASE` 设置为 `311600220`。在原仓库身份及默认分支条件之上，此准确值使新源的整个 `release-coordinator` job 跳过，覆盖 schedule 和 workflow_dispatch；它不能取消已接受的旧源运行，也不是原生 workflow 停用状态。
 
-采用此行为、设置变量和实际通知需在同一部署决定中明确；代码合入本身不设置变量。
+Release 与 Sync Managed Files 的独立健康检查使用相同规则：准确 Release 路径、ID、变量值及实际 `active` 或 `disabled_manually` 状态同时匹配时，记录 `release.yml:WORKFLOW_PAUSED`，跳过该入口最近运行检查和补唤醒。此状态在既有健康 Issue 中变化时通知一次，并保留在运行摘要；它本身不使健康 job 失败，也不代表发行或产品验收通过。变量为空或错误值时按实际状态执行正常检查；ID 不符不能取得预期暂停语义。其他入口异常、未知状态及 API/通知故障仍保留，`disabled_inactivity` 的原有恢复流程不被该变量屏蔽。
+
+Release 保留单一 schedule `4-59/5 * * * *`，每五分钟一个计划时点。改变 cron 可能重新激活工作流，采用前须原生读回准确暂停变量，分别保存并停用 Release `311600220` 和 Sync Managed Files `408662213`，核清旧源业务及健康在途。采用后应以准确新源原生运行核验协调 job 为 skipped、业务步骤未执行及独立健康行为；静态检查或整个运行成功不能替代暂停证明。恢复 `active` 而保留准确变量时，业务仍被抑制、健康仍记录暂停；健康使用 job 环境快照。只有完成采用和暂停验证、核清在途并进入获准恢复窗口后，才按原生读回顺序恢复各入口并清除变量。后续真实 schedule 的业务收敛另行验收，不由暂停证明追认。
+
+采用此行为、设置变量和实际通知需在同一部署决定中明确；代码合入本身不设置变量。回滚到不含业务启动条件的旧源前，先真实停用入口并核清在途，不能仅依赖变量维持暂停。
 
 ## 私有仓 Copier 准入
 
