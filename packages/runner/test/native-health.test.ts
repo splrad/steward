@@ -28,6 +28,7 @@ const workflow=id=>({id,path:'.github/workflows/'+names[id],state:((id===other&&
 const recent=(createdAt=now)=>({databaseId:2,createdAt,status:mode==='old-running'?'in_progress':'completed',conclusion:mode==='business-failure'?'failure':'success'});
 if(args[0]==='run') {
   const target=args[args.indexOf('--workflow')+1];
+  if(target==='release.yml'&&['active-pause','wrong-value-active','no-pause-active'].includes(mode))out([]);
   if(target===names[self])out([recent()]);
   if(mode==='run-unavailable')process.exit(1);
   if(mode==='missing-run-fields')out([{databaseId:2}]);
@@ -53,6 +54,10 @@ if(path.includes('/actions/workflows/')) {
   if(id===other&&mode==='manual-race'&&last===String(id))out({...workflow(id),state:'disabled_manually'});
   if(id===other&&mode==='manual-race')out({...workflow(id),state:'disabled_inactivity'});
   if(id===other&&mode==='wrong-workflow')out({...workflow(id),path:'.github/workflows/foreign.yml'});
+  if(id===311600220&&mode==='pause-wrong-workflow-id')out({...workflow(id),id:999,state:'disabled_manually'});
+  if(id===311600220&&mode==='pause-unknown-state')out({...workflow(id),state:'unknown'});
+  if(id===311600220&&mode==='pause-wrong-path')out({...workflow(id),path:'.github/workflows/foreign.yml'});
+  if(id===311600221&&mode==='pause-other-error')process.exit(1);
   out(workflow(id));
 }
 if(path==='repos/splrad/steward/issues/7')out({id:70,number:7,state:'open'});
@@ -66,7 +71,7 @@ if(path.includes('/issues/7/comments')) {
 throw Error('Unregistered fixture request '+method+' '+path);
 `;
 
-const modes=['healthy','business-failure','manual-disable','expected-pause','wrong-pause-id','expected-other-paused','inactivity','authentication','workflow-unavailable','wrong-workflow',
+const modes=['active-pause','wrong-value-active','no-pause-active','pause-wrong-workflow-id','pause-unknown-state','pause-wrong-path','pause-other-error','healthy','business-failure','manual-disable','expected-pause','wrong-pause-id','expected-other-paused','inactivity','authentication','workflow-unavailable','wrong-workflow',
   'unknown-state','run-unavailable','missing-run-fields','future-run','invalid-time','overdue','old-running','dispatch-unknown','dispatch-lost','manual-race','comment-unknown'];
 for(const file of ['release.yml','sync-managed.yml']) {
   it.skipIf(process.platform==='win32').each(['unavailable','invalid'])(`${file}: rejects %s API version source before API writes`,async mode=>{
@@ -95,8 +100,8 @@ for(const file of ['release.yml','sync-managed.yml']) {
       const sourceSha='a'.repeat(40);
       const args=['-c',`curl() { [[ "\${@: -1}" == 'https://raw.githubusercontent.com/splrad/steward/${sourceSha}/config/github-api.json' ]] || return 1; cat api-version.json; }\ngh() { node service.mjs '${file}' '${mode}' "$@"; }\n`+script];permitOfflineCommand('bash',args);
       await writeFile(join(root,'api-version.json'),await readFile('config/github-api.json'));
-      const run=()=>spawnSync('bash',args,{cwd:root,env:{...process.env,GH_TOKEN:'offline',HEALTH_SOURCE_SHA:sourceSha,DEFAULT_BRANCH:'main',CURRENT_RUN_ID:'1',CURRENT_ATTEMPT:'2',HEALTH_ISSUE:'7',EXPECTED_PAUSED_RELEASE:['expected-pause','expected-other-paused'].includes(mode)?'311600220':mode==='wrong-pause-id'?'999':''},encoding:'utf8',timeout:60_000});
-      const first=run(),successful=['healthy','business-failure','inactivity','dispatch-lost'].includes(mode)||(mode==='expected-pause'||(mode==='expected-other-paused'&&file==='sync-managed.yml'));
+      const run=()=>spawnSync('bash',args,{cwd:root,env:{...process.env,GH_TOKEN:'offline',HEALTH_SOURCE_SHA:sourceSha,DEFAULT_BRANCH:'main',CURRENT_RUN_ID:'1',CURRENT_ATTEMPT:'2',HEALTH_ISSUE:'7',EXPECTED_PAUSED_RELEASE:['expected-pause','expected-other-paused','active-pause','pause-wrong-workflow-id','pause-unknown-state','pause-wrong-path','pause-other-error'].includes(mode)?'311600220':['wrong-pause-id','wrong-value-active'].includes(mode)?'999':''},encoding:'utf8',timeout:60_000});
+      const first=run(),successful=['healthy','business-failure','inactivity','dispatch-lost','active-pause'].includes(mode)||(mode==='expected-pause'||(mode==='expected-other-paused'&&file==='sync-managed.yml'));
       expect(first.error).toBeUndefined();expect(first.status,first.stderr).toBe(successful?0:1);
       const requests=async()=> (await readFile(join(root,'requests.jsonl'),'utf8')).trim().split('\n').map(line=>JSON.parse(line));
       let calls=await requests();
@@ -112,6 +117,20 @@ for(const file of ['release.yml','sync-managed.yml']) {
         expect(dispatches()[0].args.includes('health_only=true')).toBe(other==='sync-managed.yml');
       }
       if(mode==='authentication')expect(writes()).toEqual([]);
+      if(['active-pause','pause-wrong-workflow-id','pause-unknown-state','pause-wrong-path','pause-other-error'].includes(mode)) {
+        expect(calls.some(x=>x.path?.endsWith('/enable'))).toBe(false);expect(dispatches()).toHaveLength(0);
+        const saved=JSON.parse(await readFile(join(root,'state.json'),'utf8'));
+        const body=saved.comments.at(-1).body;
+        const code=mode==='pause-wrong-workflow-id'||mode==='pause-unknown-state'?'release.yml:WORKFLOW_DISABLED':mode==='pause-wrong-path'?'release.yml:WORKFLOW_UNAVAILABLE':'release.yml:WORKFLOW_PAUSED';
+        expect(body).toContain(code);
+        if(mode==='pause-other-error')expect(body).toContain('sync-managed.yml:WORKFLOW_UNAVAILABLE');
+        if(mode==='active-pause')expect(calls.filter(x=>x.method==='LIST'&&x.args.includes('release.yml'))).toHaveLength(0);
+      }
+      if(['wrong-value-active','no-pause-active'].includes(mode)) {
+        expect(dispatches()).toHaveLength(1);expect(dispatches()[0].args[2]).toBe('release.yml');
+        expect(calls.some(x=>x.path?.endsWith('/enable'))).toBe(false);
+      }
+
       // Fixed errors are notified once; the Run link and changing observation IDs
       // do not create a second notification. A lost accepted comment is read back.
       if(['manual-disable','workflow-unavailable','run-unavailable'].includes(mode)) {
