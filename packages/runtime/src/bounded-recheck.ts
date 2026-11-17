@@ -73,7 +73,7 @@ export class BoundedRecheck {
       else if(action==='resume' && r.status==='PAUSED') {
         r.status='PENDING';r.generation++;
         // An in-flight/unknown POST cannot be forgotten by pause/resume.
-        if(now>r.deadline||(!r.initialClaimed&&now===r.deadline)) stop(r,'NEEDS_ATTENTION','WINDOW_EXHAUSTED');
+        if(now>r.deadline||(!r.initialClaimed&&now===r.deadline)||Math.max(r.retryAfter??0,r.intent?.retryAfter??0)>r.deadline) stop(r,'NEEDS_ATTENTION','WINDOW_EXHAUSTED');
         else if(r.intent) { r.intent.generation=r.generation;r.nextAt=Math.max(now,r.retryAfter??0,r.intent.retryAfter??0); }
         else if(!r.initialClaimed) r.nextAt=now;
         else next(r,now,r.retryAfter??now);
@@ -85,7 +85,7 @@ export class BoundedRecheck {
     const now=this.clock();
     const claim=await this.store.transaction(r=>{
       if(!r || r.status!=='PENDING'||r.nextAt===null||r.nextAt>now) return {record:r,result:null};
-      if(now>r.deadline||(!r.initialClaimed&&now===r.deadline)) {stop(r,'NEEDS_ATTENTION','WINDOW_EXHAUSTED');return {record:r,result:null};}
+      if(now>r.deadline||(!r.initialClaimed&&now===r.deadline)||Math.max(r.retryAfter??0,r.intent?.retryAfter??0)>r.deadline) {stop(r,'NEEDS_ATTENTION','WINDOW_EXHAUSTED');return {record:r,result:null};}
       if((r.retryAfter??0)>now){r.nextAt=Math.min(r.retryAfter!,r.deadline);return {record:r,result:null};}
       if(r.intent) {
         if(r.intent.confirmations>=3) {stop(r,'NEEDS_ATTENTION','UNKNOWN_DELIVERY');return {record:r,result:null};}
@@ -109,7 +109,7 @@ export class BoundedRecheck {
     try { outcome=await (claim.confirm?this.effects.confirm(claim.record,claim.intent):this.effects.observe(claim.record,claim.intent)); }
     catch (error) {
       const message=error instanceof Error?error.message:'';const retryAfter=retryAfterTime(error,this.clock(),claim.record.deadline);
-      outcome=['SOURCE_CHANGED','OBSERVATION_SOURCE_CHANGED','CHANNEL_ORIGINAL_IDENTITY'].includes(message)?{kind:'stop',reason:'SOURCE_CHANGED'}:['GENERATED_FILES_MISMATCH','MANUAL_UNMANAGED_CHANGES'].includes(message)?{kind:'stop',reason:message}:claim.record.identity.stage==='winget-pr'&&retryAfter!==undefined?{kind:'pending',retryAfter}:{kind:'unknown',...(retryAfter===undefined?{}:{retryAfter})};
+      outcome=['SOURCE_CHANGED','OBSERVATION_SOURCE_CHANGED','CHANNEL_ORIGINAL_IDENTITY'].includes(message)?{kind:'stop',reason:'SOURCE_CHANGED'}:['GENERATED_FILES_MISMATCH','MANUAL_UNMANAGED_CHANGES','MANUAL_GENERATED_FILE_TREE'].includes(message)?{kind:'stop',reason:message}:claim.record.identity.stage==='winget-pr'&&retryAfter!==undefined?{kind:'pending',retryAfter}:{kind:'unknown',...(retryAfter===undefined?{}:{retryAfter})};
     }
     await this.store.transaction(r=>{
       if(!r || !r.intent || r.intent.key!==claim.intent.key) return {record:r,result:undefined};
@@ -127,7 +127,7 @@ export class BoundedRecheck {
         r.status='PENDING';r.notificationPending=false;r.nextSlot=0;r.consumed=0;r.initialClaimed=false;r.intent=null;r.generation++;r.evidence=outcome.evidence;r.reason='MERGED_TO_INDEX';r.nextAt=now;
         if(now>r.deadline)stop(r,'NEEDS_ATTENTION','WINDOW_EXHAUSTED');
       }
-      else if(outcome.kind==='done') {r.evidence=outcome.evidence;stop(r,'DONE','VERIFIED_DONE');}
+      else if(outcome.kind==='done') {r.evidence=outcome.evidence;if(now>r.deadline)stop(r,'NEEDS_ATTENTION','WINDOW_EXHAUSTED');else stop(r,'DONE','VERIFIED_DONE');}
       else if(now>r.deadline) stop(r,'NEEDS_ATTENTION','WINDOW_EXHAUSTED');
       else if(outcome.kind==='pause') {r.intent=null;stop(r,'PAUSED',outcome.reason);}
       else if(outcome.kind==='stop') stop(r,'NEEDS_ATTENTION',outcome.reason);

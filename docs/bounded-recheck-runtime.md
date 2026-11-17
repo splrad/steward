@@ -43,3 +43,11 @@ BOUNDED_RECHECK_ENABLED=false 默认关闭。配置显式保持 LEGACY_RELEASE_R
 G 完成须独立读取实际原生 head tree，逐路径/mode/blob 验证其等于 generated.baseSha tree 应用完整 generated.files（包括删除）后的结果，再验证评论与受保护预览。手动候选读取原 source 与当前 head 的完整 tree，所有变化仅限 old G 的完整精确文件路径与当前 unit.notesPath，保留 CHANGELOG 等合法交付范围。树截断或路径证据不完整不能视为通过；未托管变更和 G 字节差异进入 NEEDS_ATTENTION。HUMAN_EDIT_CONFLICT 不属于 DONE；G 仅接受 READY/CACHED_OBSERVATION，手动仅接受 READY/MANUAL_PROJECTION，并均要求独立 projectionEvidence。
 
 microsoft/winget-pkgs 的固定公开 PR GET 复用当前 reader 的原始 30 秒 deadline、注入 transport 和 256KiB 流式响应上限；不扩大 App 安装范围或加入用户 token，处理 429/503 与耗尽公开配额的 403 等待时间。本轮验证采用本地 fixtures，不代表 E12 线上验收。维护 PR358 的签名推送及托管 CI 与实际部署分别记载；上线仍等待中央准确版本窗口。
+
+### 原生完成回执与恢复的有限差量
+
+已知Run的唯一completion从一次实际核验调整为初验加最多一次限流只读重验，receiptRetryUsed在持久预约前占用。已存在Retry-After导致首次GET前延后不占重验；重验再次限流即终止，floor>=原deadline不发新GET。原3次未知派发discovery、唯一POST、T0/deadline/pins不变。normal前置链外读处理最多4准备+3discovery+2receipt=9，较前版增加1；到期标记另1，入站/平台重投/人工redelivery另计。已登记candidate对象1初次+6槽各最多1观察+3确认=28次核验，与基线32保守口径及WinGet192分开，不能把normal前置链纳入32或将核验次数等同GET数。normal已知Run完整核验最坏545 GET，新增重验最多增加545 GET；全部native自动链静态粗上界3798 GET，30秒reader截止会提前截断，不含token POST、内部DO、下游即时wake或人工redelivery。
+
+native事件因关闭或pin变化暂停时持久保留原阶段/nextAt。仅经原HMAC验证的同hint显式redelivery，在原pins复原、enabled、原窗口内且独立原生event/控制状态仍吻合时恢复原阶段/alarm；不推断回PREPARING，不重POST，不重置预算。缺失暂停前状态证据或pins异/过期则保持停止，单独切换配置不会自动恢复。
+
+manual oldG非null路径须保持普通blob且mode匹配，正文允许人工改写；null删除路径须缺失，当前必需notesPath由存在/普通文件/五事实核查优先。迟到成功只保留evidence，超过deadline不能DONE；暂停期间迟到的超deadline限流恢复为NEEDS_ATTENTION且无alarm。
