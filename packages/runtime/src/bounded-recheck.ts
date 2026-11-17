@@ -129,7 +129,7 @@ export class BoundedRecheck {
       }
       else if(outcome.kind==='done') {r.evidence=outcome.evidence;if(now>r.deadline)stop(r,'NEEDS_ATTENTION','WINDOW_EXHAUSTED');else stop(r,'DONE','VERIFIED_DONE');}
       else if(now>r.deadline) stop(r,'NEEDS_ATTENTION','WINDOW_EXHAUSTED');
-      else if(outcome.kind==='pause') {r.intent=null;stop(r,'PAUSED',outcome.reason);}
+      else if(outcome.kind==='pause') {if(!claim.confirm)r.intent=null;stop(r,'PAUSED',outcome.reason);}
       else if(outcome.kind==='stop') stop(r,'NEEDS_ATTENTION',outcome.reason);
       else if(outcome.kind==='pending') {r.status='PENDING';r.notificationPending=false;r.intent=null;next(r,now,outcome.retryAfter??now);}
       else {

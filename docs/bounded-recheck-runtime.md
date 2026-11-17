@@ -51,3 +51,9 @@ microsoft/winget-pkgs 的固定公开 PR GET 复用当前 reader 的原始 30 �
 native事件因关闭或pin变化暂停时持久保留原阶段/nextAt。仅经原HMAC验证的同hint显式redelivery，在原pins复原、enabled、原窗口内且独立原生event/控制状态仍吻合时恢复原阶段/alarm；不推断回PREPARING，不重POST，不重置预算。缺失暂停前状态证据或pins异/过期则保持停止，单独切换配置不会自动恢复。
 
 manual oldG非null路径须保持普通blob且mode匹配，正文允许人工改写；null删除路径须缺失，当前必需notesPath由存在/普通文件/五事实核查优先。迟到成功只保留evidence，超过deadline不能DONE；暂停期间迟到的超deadline限流恢复为NEEDS_ATTENTION且无alarm。
+
+### 交接竞态与普通回执
+
+normal候选交接在source DO以同claim事务占用一次handoff reservation，保存已核Run证据、逐步控制INTENT/ACK并预置原deadline收尾alarm。占用之后该source的alarm/原生receipt不能抢占claim；占用之前已被更新claim淘汰的旧确认不会发target控制。每个跨DO操作前再次核reservation、原pins/开关/期限，target pause/resume/cancel仍使用原expectedGeneration CAS，冲突不读取新generation追写。预约不是成功，也不提供跨DO原子事务；未知控制响应、失败或进程崩溃保留逐步恢复点，原期限收尾为NEEDS_ATTENTION，不能重放未知cancel/register/resume或新开窗口。完成所有响应及源记录后才标REGISTERED。
+
+确认阶段EDITING暂停保留已派发intent和剩余3次确认预算；只有尚未派发的observe暂停可清intent。普通/receipt是匹配intent的到期wake提示，提前不读、原alarm继续，3次确认耗尽或终态不复活；它不等同已知normal Run的独立原生completion。认证和匿名读取统一识别明确429/503、403 quota remaining=0或显式有效Retry-After；普通权限403即使有reset但remaining>0也不伪装限流。上述修正没有增加业务POST或原始期限。
