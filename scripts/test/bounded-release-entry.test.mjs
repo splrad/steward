@@ -24,6 +24,12 @@ for(const mode of ['observe','event','normal'])test(`accepts exact native ${mode
 test('disabled adoption config stops before native reads',async()=>{
   const f=fixture();await assert.rejects(entryGuard(f.env,()=>assert.fail('native read'),{enabled:false}),/NOT_CONNECTED/);
 });
+for(const mode of ['observe','event','normal'])for(const drift of ['main','run'])test(`${mode} rejects ${drift} SHA differing from workflow controller`,async()=>{
+  const f=fixture(mode);
+  if(drift==='main')f.data[`${root}/git/ref/heads/main`].object.sha='b'.repeat(40);
+  else f.run.head_sha='b'.repeat(40);
+  await assert.rejects(entryGuard(f.env,f.get,{enabled:true,deploymentSha:head}),/BOUNDED_RUN_SOURCE/);
+});
 for(const drift of ['pause','source','attempt','fork','path','event','release','new-disabled','workflow-id'])test(`rejects ${drift} drift`,async()=>{
   const f=fixture();
   if(drift==='pause')f.env.STEWARD_EXPECTED_PAUSED_RELEASE='' ;
