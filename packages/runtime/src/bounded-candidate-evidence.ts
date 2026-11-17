@@ -22,7 +22,7 @@ export async function candidateFacts<T extends boolean=false>(g:GitReader,requir
  if(requireCurrentMain)ensure((await read('git/ref/heads/main')).object?.sha===(manualId?.sourceSha??c.baseSha),'SOURCE_CHANGED');
  const identity=(manualId?(!c.pendingWrite&&!session.pending?manualId:null):ready?{repositoryId:TARGET.id,cycleId:c.id,channel:'candidate',version:generated.units[0].version,artifactDigest:digest(JSON.stringify(generated)),sourceSha:c.baseSha,stage:'candidate',epoch:createHash('sha256').update(JSON.stringify([TARGET.id,c.id,c.baseSha,c.generatedSnapshotPath,c.publishedHead])).digest('hex'),upstreamPR:null}:null) as (T extends true?Identity|null:Identity);
  let pull=await read(`pulls/${c.prNumber}`);ensure(pull.number===c.prNumber&&pull.head?.repo?.id===TARGET.id&&pull.base?.repo?.id===TARGET.id&&pull.head.ref===c.branch&&pull.base.ref==='main'&&sha(pull.head.sha),'CANDIDATE_PULL');
- if(manual&&!allowPending)pull=await verifyManualHead(g,manual,pull);
+ if(manual&&!allowPending)pull=await verifyManualHead(g,manual,pull,generated.files);
  ensure((await read('git/ref/heads/steward/release-state')).object?.sha===commit,'STATE_MOVED');
  return {identity,state,pull,session,manual,evidence:{stateCommit:commit,path,documentDigest:first.documentDigest,prNumber:c.prNumber,head:pull.head.sha}};
 }

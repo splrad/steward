@@ -1,0 +1,5 @@
+import {it,expect} from 'vitest';
+import {createHash} from 'node:crypto';
+import {verifyGeneratedHead} from '../src/bounded-tree-evidence.js';
+const entry=(path:string,content:string,mode='100644')=>{const b=Buffer.from(content);return {path,type:'blob',mode,sha:createHash('sha1').update(`blob ${b.length}\0`).update(b).digest('hex')};};
+it.each([false,true])('compares full base tree including deletion and unchanged paths, drift=%s',async drift=>{const base='a'.repeat(40),head='b'.repeat(40),trees:any={[base]:[entry('remove','old'),entry('keep','unchanged'),entry('modify','old')],[head]:[entry('keep',drift?'hidden change':'unchanged'),entry('modify','new','100755')]};const g:any={json:async(_id:number,path:string)=>({truncated:false,tree:trees[path.split('/trees/')[1]!.split('?')[0]!]})};const task=verifyGeneratedHead(g,{pull:{head:{sha:head}},session:{generated:{baseSha:base,files:[{path:'remove',content:null,mode:'100644'},{path:'modify',content:'new',mode:'100755'}]}}});if(drift)await expect(task).rejects.toThrow('GENERATED_FILES_MISMATCH');else await expect(task).resolves.toBeUndefined();});

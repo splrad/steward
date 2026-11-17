@@ -17,9 +17,8 @@ export async function readCycle(g:GitReader,id:string){
  const bytes=Buffer.from(f.content,'base64');ensure(bytes.length===f.size&&createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')===f.sha,'CYCLE_BLOB');const cycle=JSON.parse(bytes.toString('utf8'));ensure(cycle.id===id,'CYCLE_ID');
  ensure((await g.json(TARGET.id,base+'git/ref/heads/steward/release-state')).object?.sha===ref.object.sha,'CYCLE_MOVED');return {cycle,commit:ref.object.sha};
 }
-export async function upstreamPull(number:number,transport:typeof fetch=fetch){
- ensure(Number.isSafeInteger(number)&&number>0,'UPSTREAM_NUMBER');const res=await transport(`https://api.github.com/repos/microsoft/winget-pkgs/pulls/${number}`,{headers:{Accept:'application/vnd.github+json','User-Agent':'splrad-bounded-recheck','X-GitHub-Api-Version':'2026-03-10'},signal:AbortSignal.timeout(30_000),redirect:'error'});
- if(res.status===429||res.status===503)throw Error('RETRY_AFTER:'+(res.headers.get('retry-after')??'unknown'));ensure(res.ok,'UPSTREAM_READ');const value=await res.json() as any;ensure(value.number===number&&typeof value.node_id==='string'&&value.base?.repo?.full_name==='microsoft/winget-pkgs'&&value.head?.repo?.full_name==='axiomoth/winget-pkgs'&&typeof value.merged==='boolean'&&['open','closed'].includes(value.state),'UPSTREAM_IDENTITY');return value;
+export async function upstreamPull(number:number,g:GitReader){
+ ensure(Number.isSafeInteger(number)&&number>0&&g.upstreamPull,'UPSTREAM_READER');const value=await g.upstreamPull(number);ensure(value.number===number&&typeof value.node_id==='string'&&value.base?.repo?.full_name==='microsoft/winget-pkgs'&&value.head?.repo?.full_name==='axiomoth/winget-pkgs'&&typeof value.merged==='boolean'&&['open','closed'].includes(value.state),'UPSTREAM_IDENTITY');return value;
 }
 export function bindPull(p:any,version:string,nodeId?:string){ensure(p.head?.ref===`steward/SPLRAD.LayerScape.Deployer/${version}`&&(!nodeId||p.node_id===nodeId),'UPSTREAM_PACKAGE');}
 export function bindChannelRun(run:any,env:BoundedEnv){ensure(run.repository?.id===TARGET.id&&run.head_repository?.id===TARGET.id&&run.path==='.github/workflows/steward-release-channels.yml'&&run.head_sha===env.BOUNDED_PRODUCT_SHA&&run.event==='workflow_dispatch'&&run.head_branch==='main'&&run.actor?.id===APP_BOT_ID&&Number.isSafeInteger(run.run_attempt)&&run.run_attempt>0,'CHANNEL_RUN');}
@@ -30,7 +29,7 @@ export function reportBinding(v:any,run:any,c:any,operationKey:string,job:any,cr
  const created=Date.parse(createdAt??''),start=Date.parse(job.started_at),end=Date.parse(job.completed_at),observed=Date.parse(v.items[0].observedAt);ensure([created,start,end,observed].every(Number.isFinite)&&created>start&&created<=end&&observed>=start&&observed<=end&&observed<=Date.now(),'CHANNEL_TIME');return v.items[0];
 }
 /** Entry only receives an HMAC-verified fixed product workflow_run; all body facts are reread. */
-export async function registerWingetRun(env:BoundedEnv,event:string,payload:any,g:GitReader,readPull=upstreamPull){
+export async function registerWingetRun(env:BoundedEnv,event:string,payload:any,g:GitReader,readPull=(number:number)=>upstreamPull(number,g)){
  if(env.BOUNDED_RECHECK_ENABLED!=='true'||event!=='workflow_run'||payload.action!=='completed'||payload.repository?.id!==TARGET.id||payload.workflow_run?.path!=='.github/workflows/steward-release-channels.yml')return;
  const id=payload.workflow_run.id,attempt=payload.workflow_run.run_attempt;ensure(Number.isSafeInteger(id)&&id>0&&Number.isSafeInteger(attempt)&&attempt>0,'CHANNEL_EVENT');
  const run=await g.json(TARGET.id,`/repos/${TARGET.name}/actions/runs/${id}/attempts/${attempt}`);bindChannelRun(run,env);ensure(run.id===id&&run.run_attempt===attempt&&run.status==='completed'&&run.conclusion==='success','CHANNEL_COMPLETED');

@@ -1,6 +1,6 @@
 # D 有界重查实现合同 v2
 
-本轮实现候选 6 次/2h、WinGet PR 31 次/14d、索引 13 次/48h；初次登记观察不计重查槽。维护基点 06a8096018721ef4e656c40c90dd92896d47f2b2。B 固定桥、观察入口和 5min WinGet observe job 独立采用；本包没有部署、推送或更改线上 cron。
+本轮实现候选 6 次/2h、WinGet PR 31 次/14d、索引 13 次/48h；初次登记观察不计重查槽。维护基点 06a8096018721ef4e656c40c90dd92896d47f2b2。B 固定桥、观察入口和 5min WinGet observe job 独立采用；维护 PR358 的推送/CI 与部署分别验收，当前没有部署或更改线上 cron。
 
 ## 来源、认证和接线
 
@@ -8,7 +8,7 @@
 
 候选真实 PR webhook 经现役 HMAC/组织验证，唯一原生 issue event 关联后，在 event:v1:<digest> 对象事务写一次桥意图并预置 alarm，再发一次 workflow_dispatch。D 是唯一完成消费者：+1/+5/+15min 最多三次 GET 核固定来源 Run attempt、App bot、policy SHA、artifact archive SHA/创建时间、原 Git session/chunk/blob 摘要和原生事件。未知 POST 不重发。B 没有 self workflow_run 或 HTTP finalizer。窗口之外的桥未完成保留 UNKNOWN_DELIVERY，不宣称业务接管完成。
 
-候选 identity 源于原 generated session；当前 main 必须仍为原 sourceSha。完成判据来自准确观察 result.json（CACHED_OBSERVATION/READY 或 HUMAN_EDIT_CONFLICT/CONFLICT），并再次核原 Git evidence、PR head、open/unmerged、完整 labels。editing 暂停；unlabeled/reopened 的真实事件恢复原 epoch、T0、deadline、剩余预算。过期及其他终态不复活。
+候选 identity 源于原 generated session；当前 main 必须仍为原 sourceSha。完成判据来自准确观察 result.json（READY/CACHED_OBSERVATION 或 READY/MANUAL_PROJECTION，并须独立核实 projectionEvidence），并再次核原 Git evidence、PR head、open/unmerged、完整 labels。editing 暂停；unlabeled/reopened 的真实事件恢复原 epoch、T0、deadline、剩余预算。过期及其他终态不复活。
 
 WinGet 初始登记来自验签后的准确产品 workflow_run 完成事件。服务端独立读取 exact submit Run/attempt/App bot、protected Git cycles/<id>.json 的 canonicalRunId/requestKey/targets 以及成功 submit/winget/layerscape job 的 report.json。upstreamPR number 由该 artifact 得出，再 GET microsoft/winget-pkgs 准确 PR 绑定 node_id/base/fork/branch；PR T0 使用原生 created_at。首次登记前若源 state 或证据暂不可读，本实现尚无持久登记意图或自动重试。GitHub 不会自动重投失败 webhook；只能由后续真实事件重新触发，或明确人工 redelivery 再尝试，并仍保留原生 created_at/merged_at，不能新开时间窗。该入口稳定性与首次事件丢失必须在生产采用前真实验收；本轮不新增全局巡检。官方说明：https://docs.github.com/en/webhooks/using-webhooks/handling-failed-webhook-deliveries。
 
@@ -30,8 +30,16 @@ BOUNDED_RECHECK_ENABLED=false 默认关闭。配置显式保持 LEGACY_RELEASE_R
 
 ## 验证边界
 
-本地 SQLite 事务/可控时钟、Git/Run/artifact 反例、精确 WinGet 输入与阶段切换、现役认证与退休回归、TypeScript 和 Wrangler dry-run。未发真实业务 Run、模型或安装测试。E 负责最终 head 独立审查，central 负责采用/推送/部署窗口。
+本地 SQLite 事务/可控时钟、Git/Run/artifact 反例、精确 WinGet 输入与阶段切换、现役认证与退休回归、TypeScript 和 Wrangler dry-run。未发真实业务 Run、模型或安装测试。D 负责已授权维护 PR 的签名推送和验证，E 负责最终 head 独立审查，central 负责采用与部署窗口。
 
 ### 端点权限依据
 
 官方 GitHub REST 2026-03-10 issue-events 文档（https://docs.github.com/en/rest/issues/events?apiVersion=2026-03-10#get-an-issue-event）允许 Issues read 或 Pull requests read；pull GET 文档（https://docs.github.com/en/rest/pulls/pulls?apiVersion=2026-03-10#get-a-pull-request）允许 Pull requests read 或 Contents read。产品只读 token 因此请求 pull_requests:read，中央只读 token不请求该权限，派发 token也不请求；均只含一个repository_id。已有本轮 D-resource-retirement/result.json 的 App4243096 安装元数据记录 Actions/Contents/Pull requests 写权限；这是缩窄既有能力，不修改 App 授权。线上准确 token/consumer 采用验证仍由中央执行，本地 mock 不替代线上权限验收。
+
+## 2026-11-17 集中审查修正
+
+原生候选事件先写 native:v1 对象，再有限准备并派发 release-candidate-event.yml。准备最多四次，确认最多三次；绑定已知 Run 后允许唯一原生完成事件预约验证。Retry-After 下限持久化，暂停/恢复和实例重构保留下限、原 deadline 及已消费次数；提前完成事件只预约限流解除后的验证，不重复 POST。尚未首次 claim 的对象在 deadline 当刻停止，已有对象仍允许最后一个既定 slot。
+
+G 完成须独立读取实际原生 head tree，逐路径/mode/blob 验证其等于 generated.baseSha tree 应用完整 generated.files（包括删除）后的结果，再验证评论与受保护预览。手动候选读取原 source 与当前 head 的完整 tree，所有变化仅限 old G 的完整精确文件路径与当前 unit.notesPath，保留 CHANGELOG 等合法交付范围。树截断或路径证据不完整不能视为通过；未托管变更和 G 字节差异进入 NEEDS_ATTENTION。HUMAN_EDIT_CONFLICT 不属于 DONE；G 仅接受 READY/CACHED_OBSERVATION，手动仅接受 READY/MANUAL_PROJECTION，并均要求独立 projectionEvidence。
+
+microsoft/winget-pkgs 的固定公开 PR GET 复用当前 reader 的原始 30 秒 deadline、注入 transport 和 256KiB 流式响应上限；不扩大 App 安装范围或加入用户 token，处理 429/503 与耗尽公开配额的 403 等待时间。本轮验证采用本地 fixtures，不代表 E12 线上验收。维护 PR358 的签名推送及托管 CI 与实际部署分别记载；上线仍等待中央准确版本窗口。

@@ -1,3 +1,4 @@
+import {retryAfterTime} from './bounded-retry-after.js';
 import {manualProjectionBefore} from './bounded-manual-evidence.js';
 import type {VerifiedWakeContext} from './bounded-initial-wake.js';
 import {BoundedGitHub,TARGET,CENTRAL,digest,ensure,type BoundedEnv,type GitReader} from './bounded-recheck-github.js';
@@ -14,7 +15,7 @@ export interface NativeEventRecord {
  schemaVersion:1;hint:NativeHint;requestKey:string;firstDeliveryId:string;policySha:string;deploymentSha:string;
  receivedAt:number;deadline:number;nextAt:number|null;preparations:number;confirmations:number;claim:number;
  status:'PREPARING'|'CONFIRMING'|'AWAITING_RECEIPT'|'REGISTERED'|'PROTECTED'|'NEEDS_ATTENTION'|'PAUSED';
- reason:string;prepared:PreparedEvent|null;dispatchedAt:number|null;knownRunId:number|null;evidence:unknown;receiptConsumed?:boolean;lateReceipt?:{runId:number;attempt:number;at:number};
+ reason:string;prepared:PreparedEvent|null;dispatchedAt:number|null;knownRunId:number|null;evidence:unknown;receiptConsumed?:boolean;receiptDeferred?:boolean;retryAfter?:number;lateReceipt?:{runId:number;attempt:number;at:number};
 }
 function exact(v:any,keys:string){ensure(v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===keys,'NATIVE_SCHEMA');}
 export function nativeHintKey(h:NativeHint){return digest(JSON.stringify([h.repositoryId,h.prNumber,h.actorId,h.action,h.updatedAt])).slice(7);}
@@ -76,20 +77,33 @@ export class NativeCandidateCoordinator {
   const now=this.clock();let claimed:NativeEventRecord|null=null;
   await this.storage.transaction(async t=>{const r=await t.get<NativeEventRecord>('nativeEvent');if(!r||!['PREPARING','CONFIRMING','AWAITING_RECEIPT'].includes(r.status)||r.nextAt===null||r.nextAt>now)return;
    if(this.env.BOUNDED_RECHECK_ENABLED!=='true'||r.policySha!==this.env.BOUNDED_CONTROLLER_SHA||r.deploymentSha!==this.env.BOUNDED_DEPLOYMENT_SHA){r.status='PAUSED';r.reason='QUIESCED_OR_PIN_CHANGED';r.nextAt=null;await this.save(t,r);return;}
-   if(now>=r.deadline||r.status==='AWAITING_RECEIPT'){r.status='NEEDS_ATTENTION';r.reason='EVENT_WINDOW_EXHAUSTED';r.nextAt=null;await this.save(t,r);return;}
+   if(now>=r.deadline){r.status='NEEDS_ATTENTION';r.reason='EVENT_WINDOW_EXHAUSTED';r.nextAt=null;await this.save(t,r);return;}
+   if(r.receiptDeferred){if((r.retryAfter??0)>now){r.nextAt=Math.min(r.retryAfter!,r.deadline);await this.save(t,r);return;}r.receiptDeferred=false;r.claim++;r.status=r.confirmations>=3?'AWAITING_RECEIPT':'CONFIRMING';r.nextAt=r.confirmations>=3?r.deadline:Math.min(Math.max(now,r.dispatchedAt!+confirmOffsets[r.confirmations]!*minute),r.deadline);await this.save(t,r);claimed=structuredClone(r);return;}
+   if(r.status==='AWAITING_RECEIPT'){r.nextAt=r.deadline;await this.save(t,r);return;}
+   if((r.retryAfter??0)>now){r.nextAt=Math.min(r.retryAfter!,r.deadline);await this.save(t,r);return;}
    r.claim++;if(r.status==='PREPARING'){r.preparations++;const offset=prepareOffsets.slice(r.preparations).find(n=>r.receivedAt+n*minute>now);r.nextAt=offset===undefined?null:Math.min(r.receivedAt+offset*minute,r.deadline);if(r.nextAt===null){r.status='NEEDS_ATTENTION';r.reason='PREPARATION_UNAVAILABLE';}}
    else {r.confirmations++;const offset=confirmOffsets[r.confirmations];r.nextAt=offset===undefined?null:Math.min(r.dispatchedAt!+offset*minute,r.deadline);if(offset===undefined){r.status=r.knownRunId===null?'NEEDS_ATTENTION':'AWAITING_RECEIPT';r.reason=r.knownRunId===null?'UNKNOWN_DELIVERY':'KNOWN_RUN_AWAITING_RECEIPT';r.nextAt=r.knownRunId===null?null:r.deadline;}}
    await this.save(t,r);claimed=structuredClone(r);});
   if(!claimed)return;const r=claimed as NativeEventRecord;
-  try{if(r.dispatchedAt===null)await this.prepare(r);else await this.confirm(r);}catch{/* The reserved finite retry/terminal state is already durable. */}
+  try{if(r.dispatchedAt===null)await this.prepare(r);else await this.confirm(r);}catch(error){await this.deferRateLimit(r,error);}
  }
  async receipt(input:{runId:number;attempt:number;policySha:string}){
   exact(input,'attempt,policySha,runId');const now=this.clock();let claimed:NativeEventRecord|null=null;
   await this.storage.transaction(async t=>{const r=await t.get<NativeEventRecord>('nativeEvent');if(!r||r.knownRunId!==input.runId||input.attempt!==1||input.policySha!==r.policySha||r.policySha!==this.env.BOUNDED_CONTROLLER_SHA||r.deploymentSha!==this.env.BOUNDED_DEPLOYMENT_SHA)return;
    if(now>=r.deadline){r.lateReceipt={runId:input.runId,attempt:input.attempt,at:now};await t.put('nativeEvent',r);return;}
    if(!['CONFIRMING','AWAITING_RECEIPT'].includes(r.status)||r.receiptConsumed||this.env.BOUNDED_RECHECK_ENABLED!=='true')return;
-   r.receiptConsumed=true;r.claim++;await this.save(t,r);claimed=structuredClone(r);});
-  if(claimed){try{await this.confirm(claimed);}catch{/* One native completion verification, no new dispatch or unbounded callback retry. */}}
+   r.receiptConsumed=true;if((r.retryAfter??0)>now){r.receiptDeferred=true;r.nextAt=Math.min(r.retryAfter!,r.deadline);await this.save(t,r);return;}r.claim++;await this.save(t,r);claimed=structuredClone(r);});
+  if(claimed){try{await this.confirm(claimed);}catch(error){await this.deferRateLimit(claimed,error);}}
+ }
+ private async deferRateLimit(r:NativeEventRecord,error:unknown){
+  const now=this.clock(),at=retryAfterTime(error,now,r.deadline);if(at===undefined)return;
+  await this.storage.transaction(async t=>{const latest=await t.get<NativeEventRecord>('nativeEvent');if(!latest||latest.claim!==r.claim||latest.status==='PAUSED'||['REGISTERED','PROTECTED'].includes(latest.status))return;latest.retryAfter=Math.max(latest.retryAfter??0,at);
+   if(latest.retryAfter>=latest.deadline){latest.status='NEEDS_ATTENTION';latest.reason='RATE_LIMIT_WINDOW_EXHAUSTED';latest.nextAt=null;}
+   else if(latest.dispatchedAt===null&&latest.preparations<prepareOffsets.length){latest.status='PREPARING';latest.nextAt=Math.max(latest.nextAt??now,latest.retryAfter);}
+   else if(latest.dispatchedAt!==null&&latest.confirmations<confirmOffsets.length){latest.status='CONFIRMING';latest.nextAt=Math.max(latest.nextAt??now,latest.retryAfter);}
+   else if(latest.knownRunId!==null){latest.status='AWAITING_RECEIPT';latest.nextAt=latest.receiptDeferred?latest.retryAfter:latest.deadline;}
+   await this.save(t,latest);
+  });
  }
  private async prepare(r:NativeEventRecord){
   const prepared=await resolveNativeEvent(this.reader(),r.hint);ensure(prepared.t0===Date.parse(r.hint.updatedAt),'NATIVE_ORIGINAL_TIME');

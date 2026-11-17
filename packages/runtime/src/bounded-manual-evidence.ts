@@ -1,3 +1,4 @@
+import {verifyManualManagedChanges} from './bounded-tree-evidence.js';
 import {createHash} from 'node:crypto';
 import {assertDeliveryPath} from '../../core/src/delivery-config.js';
 import {TARGET,CENTRAL,digest,ensure,type GitReader} from './bounded-recheck-github.js';
@@ -23,7 +24,7 @@ export function manualIdentity(m:any,state:any,session:any):Identity {
  const factDigest=digest(JSON.stringify(facts)).slice(7);
  return {repositoryId:TARGET.id,cycleId:m.candidateId,channel:'candidate',version:u.version,artifactDigest:'sha256:'+factDigest,sourceSha:m.sourceSha,stage:'candidate',epoch:digest(JSON.stringify([m.kind,m.candidateId,m.headSha,m.sourceSha,factDigest])).slice(7),upstreamPR:null};
 }
-export async function verifyManualHead(g:GitReader,m:any,pull:any){
+export async function verifyManualHead(g:GitReader,m:any,pull:any,generatedFiles:any){
  ensure(pull.head.sha===m.headSha,'SOURCE_CHANGED');
  const producer=m.producer,run=await g.json(CENTRAL.id,`/repos/${CENTRAL.name}/actions/runs/${producer.runId}/attempts/${producer.attempt}`);
  ensure(run.id===producer.runId&&run.run_attempt===producer.attempt&&run.repository?.id===CENTRAL.id&&run.head_repository?.id===CENTRAL.id&&run.path==='.github/workflows/release-candidate-event.yml'&&run.head_sha===producer.controllerSha&&run.head_branch==='main'&&run.actor?.id===APP_BOT_ID&&run.event==='workflow_dispatch'&&run.display_title===`Candidate event ${producer.requestKey}`&&run.status==='completed'&&run.conclusion==='success','MANUAL_NATIVE_PRODUCER');
@@ -31,7 +32,7 @@ export async function verifyManualHead(g:GitReader,m:any,pull:any){
  ensure((await read('git/ref/heads/main')).object?.sha===m.sourceSha,'SOURCE_CHANGED');
  const ancestry=await read(`compare/${m.sourceSha}...${m.headSha}`);
  ensure(ancestry.base_commit?.sha===m.sourceSha&&ancestry.merge_base_commit?.sha===m.sourceSha&&['ahead','identical'].includes(ancestry.status),'MANUAL_ANCESTRY');
- const tree=await read(`git/trees/${m.headSha}?recursive=1`);ensure(hex(tree.sha,40)&&tree.truncated===false&&Array.isArray(tree.tree),'MANUAL_TREE');
+ const tree=await read(`git/trees/${m.headSha}?recursive=1`);ensure(hex(tree.sha,40)&&tree.truncated===false&&Array.isArray(tree.tree),'MANUAL_TREE');await verifyManualManagedChanges(g,m,generatedFiles,tree);
  for(const f of m.files){const entry=tree.tree.filter((e:any)=>e.path===f.path);ensure(entry.length===1&&entry[0].type==='blob'&&['100644','100755'].includes(entry[0].mode),'MANUAL_REGULAR_FILE');const blob=await read(`contents/${f.path.split('/').map(encodeURIComponent).join('/')}?ref=${m.headSha}`);ensure(blob.path===f.path&&blob.sha===entry[0].sha&&blob.type==='file'&&blob.encoding==='base64'&&hex(blob.sha,40)&&blob.size<=512*1024,'MANUAL_BLOB');const b=Buffer.from(blob.content,'base64');ensure(b.length===blob.size&&createHash('sha1').update(`blob ${b.length}\0`).update(b).digest('hex')===blob.sha&&digest(b).slice(7)===f.sha256,'MANUAL_BLOB_DIGEST');if(f.path==='VERSION')ensure(b.toString('utf8').trim()===m.units[0].version,'MANUAL_VERSION');}
  const p=await read(`pulls/${m.prNumber}`);ensure(p.number===m.prNumber&&p.head?.sha===m.headSha&&p.head?.repo?.id===TARGET.id&&p.base?.repo?.id===TARGET.id&&p.head.ref===m.branch&&p.base.ref==='main'&&['open','closed'].includes(p.state)&&typeof p.merged==='boolean'&&Array.isArray(p.labels),'SOURCE_CHANGED');
  ensure((await read('git/ref/heads/main')).object?.sha===m.sourceSha,'SOURCE_CHANGED');return p;
@@ -41,7 +42,7 @@ export async function verifyManualProjection(g:GitReader,facts:any,e:any){
  const comments:any[]=[];let complete=false;for(let page=1;page<=5;page++){const batch=await g.json(TARGET.id,`/repos/${TARGET.name}/issues/${m.prNumber}/comments?per_page=100&page=${page}`);ensure(Array.isArray(batch),'MANUAL_COMMENTS');comments.push(...batch);if(batch.length<100){complete=true;break;}}
  ensure(complete,'MANUAL_COMMENTS_PAGINATION');const marker=`<!-- steward:candidate-status:${m.candidateId} -->`,own=comments.filter(c=>typeof c.body==='string'&&c.body.includes(marker));
  ensure(own.length===1&&own[0].id===e.commentId&&own[0].user?.id===APP_BOT_ID&&own[0].issue_url===`https://api.github.com/repos/${TARGET.name}/issues/${m.prNumber}`&&own[0].body===manualBody(m)&&digest(own[0].body).slice(7)===e.bodyDigest,'MANUAL_COMMENT_BINDING');
- const pull=await verifyManualHead(g,m,facts.pull);
+ const pull=await verifyManualHead(g,m,facts.pull,facts.session.generated.files);
  ensure((await g.json(TARGET.id,`/repos/${TARGET.name}/git/ref/heads/steward/release-state`)).object?.sha===facts.evidence.stateCommit,'STATE_MOVED');return pull;
 }
 

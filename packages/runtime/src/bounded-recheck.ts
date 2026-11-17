@@ -1,3 +1,4 @@
+import {retryAfterTime} from './bounded-retry-after.js';
 import { createHash } from 'node:crypto';
 /** Bounded wake intents only. Git/Run/channel facts remain authoritative. */
 export type Stage = 'candidate' | 'winget-pr' | 'winget-index';
@@ -14,11 +15,12 @@ export interface Identity {
   upstreamPR: { number: number; nodeId: string } | null;
 }
 export interface Registration { identity: Identity; t0: number; policySha: string; deploymentSha: string }
-export interface Intent { key: string; sequence: number; claimedAt: number; confirmations: number; generation: number; runId?: number }
+export interface Intent { key: string; sequence: number; claimedAt: number; confirmations: number; generation: number; runId?: number; retryAfter?:number }
 export interface RecordState extends Registration {
   schemaVersion: 1; status: Status; deadline: number; nextAt: number | null; nextSlot: number;
   consumed: number; initialClaimed: boolean; generation: number; intent: Intent | null;
   reason: string; evidence: string | null; notificationPending: boolean;
+  retryAfter?:number;
   firstImmediateWake?: {kind:'normal'|'skipped'|'already-claimed';at:number;acceptance?:Record<string,unknown>};
 }
 export interface Store { transaction<T>(fn: (current: RecordState | null) => { record: RecordState | null; result: T }): Promise<T>; read(): Promise<RecordState | null> }
@@ -59,7 +61,7 @@ export class BoundedRecheck {
     return this.store.transaction(r=>{
       if(r) { assert(identityKey(r.identity)===identityKey(input.identity) && r.t0===input.t0 && r.policySha===input.policySha && r.deploymentSha===input.deploymentSha,'REGISTRATION_CONFLICT');return {record:r,result:r}; }
       const record:RecordState={...input,schemaVersion:1,status:'PENDING',deadline:input.t0+POLICIES[input.identity.stage].duration*minute,nextAt:now,nextSlot:0,consumed:0,initialClaimed:false,generation:1,intent:null,reason:'REGISTERED',evidence:null,notificationPending:false};
-      if(now>record.deadline) stop(record,'NEEDS_ATTENTION','WINDOW_EXHAUSTED');
+      if(now>=record.deadline) stop(record,'NEEDS_ATTENTION','WINDOW_EXHAUSTED');
       return {record,result:record};
     });
   }
@@ -71,10 +73,10 @@ export class BoundedRecheck {
       else if(action==='resume' && r.status==='PAUSED') {
         r.status='PENDING';r.generation++;
         // An in-flight/unknown POST cannot be forgotten by pause/resume.
-        if(now>r.deadline) stop(r,'NEEDS_ATTENTION','WINDOW_EXHAUSTED');
-        else if(r.intent) { r.intent.generation=r.generation;r.nextAt=now; }
+        if(now>r.deadline||(!r.initialClaimed&&now===r.deadline)) stop(r,'NEEDS_ATTENTION','WINDOW_EXHAUSTED');
+        else if(r.intent) { r.intent.generation=r.generation;r.nextAt=Math.max(now,r.retryAfter??0,r.intent.retryAfter??0); }
         else if(!r.initialClaimed) r.nextAt=now;
-        else next(r,now);
+        else next(r,now,r.retryAfter??now);
       }
       return {record:r,result:r};
     });
@@ -83,7 +85,8 @@ export class BoundedRecheck {
     const now=this.clock();
     const claim=await this.store.transaction(r=>{
       if(!r || r.status!=='PENDING'||r.nextAt===null||r.nextAt>now) return {record:r,result:null};
-      if(now>r.deadline) {stop(r,'NEEDS_ATTENTION','WINDOW_EXHAUSTED');return {record:r,result:null};}
+      if(now>r.deadline||(!r.initialClaimed&&now===r.deadline)) {stop(r,'NEEDS_ATTENTION','WINDOW_EXHAUSTED');return {record:r,result:null};}
+      if((r.retryAfter??0)>now){r.nextAt=Math.min(r.retryAfter!,r.deadline);return {record:r,result:null};}
       if(r.intent) {
         if(r.intent.confirmations>=3) {stop(r,'NEEDS_ATTENTION','UNKNOWN_DELIVERY');return {record:r,result:null};}
         r.intent.confirmations++;
@@ -105,13 +108,12 @@ export class BoundedRecheck {
     let outcome:Outcome;
     try { outcome=await (claim.confirm?this.effects.confirm(claim.record,claim.intent):this.effects.observe(claim.record,claim.intent)); }
     catch (error) {
-      const message=error instanceof Error?error.message:'';const raw=message.startsWith('RETRY_AFTER:')?message.slice(12):null;
-      const retry=raw===null?undefined:/^[0-9]+$/.test(raw)?this.clock()+Number(raw)*1000:Date.parse(raw);
-      const retryAfter=retry!==undefined?(Number.isFinite(retry)?retry:claim.record.deadline+1):undefined;
-      outcome=['SOURCE_CHANGED','OBSERVATION_SOURCE_CHANGED','CHANNEL_ORIGINAL_IDENTITY'].includes(message)?{kind:'stop',reason:'SOURCE_CHANGED'}:claim.record.identity.stage==='winget-pr'&&retryAfter!==undefined?{kind:'pending',retryAfter}:{kind:'unknown',...(retryAfter===undefined?{}:{retryAfter})};
+      const message=error instanceof Error?error.message:'';const retryAfter=retryAfterTime(error,this.clock(),claim.record.deadline);
+      outcome=['SOURCE_CHANGED','OBSERVATION_SOURCE_CHANGED','CHANNEL_ORIGINAL_IDENTITY'].includes(message)?{kind:'stop',reason:'SOURCE_CHANGED'}:['GENERATED_FILES_MISMATCH','MANUAL_UNMANAGED_CHANGES'].includes(message)?{kind:'stop',reason:message}:claim.record.identity.stage==='winget-pr'&&retryAfter!==undefined?{kind:'pending',retryAfter}:{kind:'unknown',...(retryAfter===undefined?{}:{retryAfter})};
     }
     await this.store.transaction(r=>{
       if(!r || !r.intent || r.intent.key!==claim.intent.key) return {record:r,result:undefined};
+      if('retryAfter' in outcome&&outcome.retryAfter!==undefined){r.retryAfter=Math.max(r.retryAfter??0,outcome.retryAfter);r.intent.retryAfter=r.retryAfter;if(r.status==='PENDING'&&r.nextAt!==null)r.nextAt=Math.min(Math.max(r.nextAt,r.retryAfter),r.deadline);}
       if(r.intent.generation!==claim.intent.generation || r.generation!==claim.record.generation || (r.status!=='PENDING' && !(claim.confirm && claim.intent.confirmations===3 && r.reason==='UNKNOWN_DELIVERY'))) {
         // A late verified fact is retained for handoff, never a new timer or permission.
         if(outcome.kind==='done')r.evidence=outcome.evidence;

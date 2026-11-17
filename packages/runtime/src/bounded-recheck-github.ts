@@ -13,6 +13,7 @@ export interface BoundedEnv extends BodyWriteRuntimeEnv {
 }
 export interface RunLocator { repositoryId:number;runId:number;attempt:number;requestKey:string }
 export interface GitReader {
+ upstreamPull?(number:number):Promise<any>;
  json(repositoryId:number,path:string,method?:'GET'|'POST',body?:unknown):Promise<any>;
  artifact(repositoryId:number,runId:number,name:string,file:string):Promise<{value:any;artifactId:number;digest:string;createdAt?:string}>;
 }
@@ -44,6 +45,7 @@ export class BoundedGitHub implements GitReader {
  private signal(){const remaining=this.deadline-Date.now();ensure(remaining>0,'ACTION_TIMEOUT');return AbortSignal.timeout(remaining);}
  private token(id:number,write=false){const key=String(id)+String(write);let token=this.tokens.get(key);if(!token){token=this.issueToken(id,write);this.tokens.set(key,token);}return token;}
  private async issueToken(id:number,write=false){repo(id);ensure(this.env.STEWARD_APP_PRIVATE_KEY,'APP_KEY_MISSING');const jwt=await createAppJwt(this.env.APP_ID,this.env.STEWARD_APP_PRIVATE_KEY);const response=await this.transport(`https://api.github.com/app/installations/${Number(this.env.INSTALLATION_ID)}/access_tokens`,{method:'POST',headers:{Authorization:`Bearer ${jwt}`,'X-GitHub-Api-Version':GITHUB_API_VERSION,'Content-Type':'application/json','User-Agent':'splrad-bounded-recheck'},body:JSON.stringify({repository_ids:[id],permissions:{actions:write?'write':'read',contents:'read',metadata:'read',...(!write&&id===TARGET.id?{pull_requests:'read'}:{})}}),signal:this.signal(),redirect:'error'});const value=JSON.parse(new TextDecoder().decode(await limitedBytes(response,32*1024)));ensure(typeof value.token==='string','INSTALLATION_TOKEN');return value.token;}
+ async upstreamPull(number:number){ensure(Number.isSafeInteger(number)&&number>0,'UPSTREAM_NUMBER');const res=await this.transport(`https://api.github.com/repos/microsoft/winget-pkgs/pulls/${number}`,{headers:{Accept:'application/vnd.github+json','X-GitHub-Api-Version':GITHUB_API_VERSION,'User-Agent':'splrad-bounded-recheck'},signal:this.signal(),redirect:'error'});if(res.status===429||res.status===503||res.status===403&&res.headers.get('x-ratelimit-remaining')==='0'){const reset=Number(res.headers.get('x-ratelimit-reset')),retry=res.headers.get('retry-after')??(Number.isFinite(reset)&&reset>0?new Date(reset*1000).toUTCString():'unknown');throw Error('RETRY_AFTER:'+retry);}ensure(res.ok,'UPSTREAM_READ');return JSON.parse(new TextDecoder().decode(await limitedBytes(res,256*1024)));}
  async json(id:number,path:string,method:'GET'|'POST'='GET',body?:unknown){
   const r=repo(id);ensure(path.startsWith(`/repos/${r.name}/`)&&!path.split('?')[0]!.split('/').includes('..'),'API_SCOPE');
   // Only fixed observation/bridge dispatches may write. No repository mutation APIs.

@@ -18,7 +18,7 @@ export class FixedRecheckEffects implements Effects {
   if(this.env.BOUNDED_RECHECK_ENABLED!=='true')return {kind:'stop',reason:'QUIESCED'};
   const g=this.reader();
   if(r.identity.stage==='winget-pr')return this.upstream(r);
-  if(r.identity.stage==='winget-index'){const {inputs}=await currentWinget(g,r,this.env);const p=await upstreamPull(r.identity.upstreamPR!.number);bindPull(p,r.identity.version,r.identity.upstreamPR!.nodeId);ensure(p.merged===true,'INDEX_REQUIRES_MERGED');await dispatchFixed(g,TARGET.id,'steward-release-channels.yml',this.env.BOUNDED_PRODUCT_SHA!,inputs);return {kind:'unknown'};}
+  if(r.identity.stage==='winget-index'){const {inputs}=await currentWinget(g,r,this.env);const p=await upstreamPull(r.identity.upstreamPR!.number,g);bindPull(p,r.identity.version,r.identity.upstreamPR!.nodeId);ensure(p.merged===true,'INDEX_REQUIRES_MERGED');await dispatchFixed(g,TARGET.id,'steward-release-channels.yml',this.env.BOUNDED_PRODUCT_SHA!,inputs);return {kind:'unknown'};}
   const facts=await candidateFacts(g);if(identityKey(facts.identity)!==identityKey(r.identity))return {kind:'stop',reason:'SOURCE_CHANGED'};
   ensure(Array.isArray(facts.pull.labels),'CANDIDATE_LABELS_UNKNOWN');if(facts.pull.state!=='open'||facts.pull.merged)return {kind:'stop',reason:'CANDIDATE_CLOSED'};if(facts.pull.labels.some((l:any)=>l.name==='release:editing'))return {kind:'pause',reason:'EDITING_PAUSED'};
   await dispatchFixed(g,CENTRAL.id,'release-observe.yml',r.policySha,{identity_json:JSON.stringify(r.identity),request_key:intent.key,policy_sha:r.policySha});
@@ -56,13 +56,13 @@ export class FixedRecheckEffects implements Effects {
   if(run.status!=='completed')return {kind:'unknown',runId:run.id};if(run.conclusion!=='success')return {kind:'stop',reason:'INDEX_OBSERVATION_FAILED'};
   const job=await channelJob(g,run,'observe');ensure(Date.parse(job.completed_at)-Date.parse(job.started_at)<=5*60000,'INDEX_QUERY_TIMEOUT');
   const a=await g.artifact(TARGET.id,run.id,`probe-${cycle.id}-${inputs.operation_key}-${run.id}-${run.run_attempt}`,'report.json'),item=reportBinding(a.value,run,cycle,inputs.operation_key,job,a.createdAt);
-  const pull=await upstreamPull(r.identity.upstreamPR!.number);bindPull(pull,r.identity.version,r.identity.upstreamPR!.nodeId);ensure(pull.merged===true&&Date.parse(pull.merged_at)===r.t0,'INDEX_MERGE_BINDING');
+  const pull=await upstreamPull(r.identity.upstreamPR!.number,g);bindPull(pull,r.identity.version,r.identity.upstreamPR!.nodeId);ensure(pull.merged===true&&Date.parse(pull.merged_at)===r.t0,'INDEX_MERGE_BINDING');
   if(verifyIndexItem(item,r))return {kind:'done',evidence:JSON.stringify({runId:run.id,attempt:run.run_attempt,artifactId:a.artifactId,digest:a.digest,upstreamPR:r.identity.upstreamPR,observedAt:item.observedAt})};
   return ['AUTH_UNKNOWN','TRANSIENT','CONFLICT'].includes(item.readStatus)?{kind:'stop',reason:'INDEX_FACT_UNKNOWN'}:{kind:'pending'};
  }
  private async upstream(r:RecordState):Promise<Outcome>{
   ensure(r.identity.upstreamPR,'UPSTREAM_IDENTITY');const p=r.identity.upstreamPR;
-  await currentWinget(this.reader(),r,this.env);const v=await upstreamPull(p.number);bindPull(v,r.identity.version,p.nodeId);
+  const g=this.reader();await currentWinget(g,r,this.env);const v=await upstreamPull(p.number,g);bindPull(v,r.identity.version,p.nodeId);
   if(v.merged){ensure(Number.isFinite(Date.parse(v.merged_at)),'UPSTREAM_MERGE_TIME');return {kind:'index',mergedAt:Date.parse(v.merged_at),evidence:JSON.stringify({number:p.number,nodeId:p.nodeId,mergedAt:v.merged_at})};}
   return v.state==='closed'?{kind:'stop',reason:'UPSTREAM_CLOSED'}:{kind:'pending'};
  }
