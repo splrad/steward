@@ -1,3 +1,4 @@
+import { validateManualCandidateRecord } from './manual-candidate.js';
 import { decodeBuildJson } from './build-manifest.js';
 import { sha256Hex } from './fingerprint.js';
 import { validateCandidateFiles } from './release-candidate.js';
@@ -67,7 +68,13 @@ export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): 
         || 'split' in entry && typeof entry.split !== 'boolean') throw new Error('CONTENT_CACHE_INVALID');
     await verifyContentAttemptReceipts(entry.attempts);
   } else if (first.documentKind === 'session') {
-    exact(value, ['generated', 'pending', 'identity', 'conflict', 'preview', 'adoption']);
+    exact(value, ['generated', 'pending', 'identity', 'conflict', 'preview', 'adoption', ...('manualValidation' in value ? ['manualValidation'] : [])]);
+    if(value.manualValidation!==undefined&&value.manualValidation!==null) {
+      await validateManualCandidateRecord(value.manualValidation,first.repositoryId,first.candidateId);
+      const m=value.manualValidation;
+      if(!value.generated||value.generated.units?.length!==1||['id','path','version','tag'].some(key=>m.units[0][key]!==value.generated.units[0][key])
+        ||value.pending)throw Error('MANUAL_GENERATED_OWNER');
+    }
     if (value.generated) snapshot(value.generated);
     if (value.pending) {
       exact(value.pending, ['write', 'generated']); snapshot(value.pending.generated);

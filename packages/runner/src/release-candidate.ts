@@ -1,3 +1,4 @@
+import { manualCandidateFacts, type ManualCandidate } from '../../core/src/manual-candidate.js';
 import { createHash } from 'node:crypto';
 import { candidateId, candidateCreationBody, selectReleaseContributors, renderReleaseContributors, type CandidateSnapshot, type ReleaseActor, type RepositoryAuthor } from '../../core/src/release-candidate.js';
 import { assertRepositoryWrite, type RepositoryRecord } from '../../core/src/release-observation.js';
@@ -6,6 +7,7 @@ import { mergeCandidate, prepareCandidateWrite, resumeCandidateWrite, candidateT
 export interface CandidatePullRequest { number: number; head: string; branch: string; base: string; state: 'open' | 'closed'; merged: boolean; editing: boolean; body: string }
 export interface CandidateComment { id: number; authorId: number; body: string }
 export interface CandidateSession {
+  manualValidation?: ManualCandidate | null;
   repository: RepositoryRecord; generated: CandidateSnapshot | null; pending: { write: PreparedCandidateWrite; generated: CandidateSnapshot } | null;
   identity: null | { authorsDigest: string; sourceDigest: string; actors: (ReleaseActor | null)[]; contributors: ReturnType<typeof selectReleaseContributors>;
     units: { id: string; actors: (ReleaseActor | null)[]; contributors: ReturnType<typeof selectReleaseContributors> }[] };
@@ -33,12 +35,43 @@ export interface CandidateRuntime {
 }
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 /** The same PR owns every generation; metadata updates are deliberately absent from this port. */
-export async function advanceReleaseCandidate(session: CandidateSession, io: CandidateRuntime) {
+export interface CandidateObservation {
+  repositoryId: number; cycleId: string; channel: 'candidate'; version: string;
+  artifactDigest: string; sourceSha: string; stage: 'candidate'; epoch: string; upstreamPR: null;
+}
+/** Stable generation identity; human edits and derived contributor projection do not restart a window. */
+export function candidateObservationIdentity(session: CandidateSession): CandidateObservation {
+  const { repository, generated } = session, candidate = repository.candidate;
+  if(session.manualValidation) {
+    const m=session.manualValidation;
+    if(repository.repositoryId!==m.repositoryId||candidate?.id!==m.candidateId||candidate.prNumber!==m.prNumber||candidate.branch!==m.branch
+      ||repository.activeCycleId||session.pending||candidate.pendingWrite)throw Error('MANUAL_OWNER');
+    const factDigest=digest(manualCandidateFacts(m));
+    return {repositoryId:m.repositoryId,cycleId:m.candidateId,channel:'candidate',version:m.units[0]!.version,
+      artifactDigest:'sha256:'+factDigest,sourceSha:m.sourceSha,stage:'candidate',
+      epoch:digest([m.kind,m.candidateId,m.headSha,m.sourceSha,factDigest]),upstreamPR:null};
+  }
+  if (repository.repositoryId !== 1187527897 || !candidate?.prNumber || !candidate.publishedHead
+    || !candidate.generatedSnapshotPath || !generated || !session.identity || session.pending || candidate.pendingWrite
+    || generated.baseSha !== candidate.baseSha || generated.units.length !== 1 || generated.units[0]?.id !== 'layerscape')
+    throw new Error('CANDIDATE_OBSERVATION_NOT_READY');
+  return { repositoryId: repository.repositoryId, cycleId: candidate.id, channel: 'candidate',
+    version: generated.units[0].version, artifactDigest: 'sha256:' + digest(generated), sourceSha: candidate.baseSha,
+    stage: 'candidate', epoch: digest([repository.repositoryId, candidate.id, candidate.baseSha, candidate.generatedSnapshotPath, candidate.publishedHead]), upstreamPR: null };
+}
+export async function advanceReleaseCandidate(session: CandidateSession, io: CandidateRuntime, observation?: CandidateObservation) {
   const repository = session.repository;
   assertRepositoryWrite(repository);
   if (repository.defaultBranch !== io.defaultBranch) throw new Error('CANDIDATE_DEFAULT_BRANCH_DRIFT');
   const save = async () => { repository.revision++; repository.lastProgressAt = io.now(); return io.save(session); };
+  if (observation) {
+    const actual = candidateObservationIdentity(session);
+    if (JSON.stringify(Object.keys(observation).sort()) !== JSON.stringify(Object.keys(actual).sort())
+      || Object.entries(actual).some(([key, value]) => observation[key as keyof CandidateObservation] !== value))
+      throw new Error('CANDIDATE_OBSERVATION_IDENTITY');
+  }
   const source = await io.source();
+  if (observation && source.baseSha !== observation.sourceSha) return { status: 'WAIT', reason: 'SOURCE_CHANGED' };
   let candidate = repository.candidate;
   if (!candidate) {
     const old = await io.legacyCandidate(), branch = old?.branch ?? 'steward/release-candidate';
@@ -102,6 +135,10 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   if (observed.pr?.state === 'closed') return { status: 'WAIT', reason: observed.pr.merged ? 'MERGED_SOURCE_HANDOFF' : 'CLOSED_PR' };
   // Refresh derived identity even on protected early returns, without changing its native evidence.
   const frozen = session.identity, generated = session.generated;
+  if (observation && (!frozen || !generated || frozen.sourceDigest !== generated.sourceDigest
+    || frozen.authorsDigest !== source.authorsDigest
+    || JSON.stringify(frozen.units.map(u => u.id).sort()) !== JSON.stringify(generated.units.map(u => u.id).sort())))
+    throw new Error('CANDIDATE_OBSERVATION_CACHE_MISMATCH');
   if (frozen && generated && generated.baseSha === source.baseSha
     && frozen.sourceDigest === generated.sourceDigest && frozen.authorsDigest === source.authorsDigest
     && JSON.stringify(frozen.units.map(u => u.id).sort()) === JSON.stringify(generated.units.map(u => u.id).sort())) {
@@ -143,6 +180,9 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
       return { status: 'CONFLICT', reason: difference.conflictPaths.some(path => !path.startsWith('.release-notes/')) ? 'SOURCE_CHANGED' : 'HUMAN_EDIT_CONFLICT', paths: difference.conflictPaths };
     }
   }
+  // A fixed observation can only project the frozen identity and protect existing notes.
+  // It never recovers a pending write, regenerates content, or creates another PR.
+  if (observation) return { status: 'READY', reason: 'CACHED_OBSERVATION', head: observed.head };
   // Missing author facts block only this repository's new takeover, not implementation or other repositories.
   selectReleaseContributors([], source.authors);
   const generation = await io.generation(source.baseSha);

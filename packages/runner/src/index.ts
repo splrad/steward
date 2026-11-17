@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+export { manualCandidateFacts, manualCandidatePreview, manualCandidateBody, validateManualCandidateRecord } from '../../core/src/manual-candidate.js';
 export { parseDeliveryConfig, deliveryAssetNames, assertDeliveryPath } from '../../core/src/delivery-config.js';
 export { assertProductDelivery } from './release-pipeline.js';
 export { parsePipelineRecord, pipelineSource } from './release-pipeline-record.js';
@@ -6,7 +7,7 @@ export { pipelineIdentity, pipelineNotes, pipelineInspect, pipelineRecoverCycleF
 export { inspectProductArtifacts, sealProductArtifacts, validateProductManifest } from './release-artifacts.js';
 export { renderFrozenReleaseNotes } from '../../core/src/release-template.js';
 export { decodeCompletionArchive } from '../../core/src/release-history.js';
-export { advanceReleaseCandidate } from './release-candidate.js';
+export { advanceReleaseCandidate, candidateObservationIdentity } from './release-candidate.js';
 export { candidateId } from '../../core/src/release-candidate.js';
 export { generateCandidate, pushPreparedCandidate } from './release-candidate-update.js';
 export { collectContentInput, planContentBatches, resumeContentBatches, assembleUnitNotes, contentWireInput } from './release-content.js';
