@@ -397,6 +397,24 @@ it('fixed G observation cannot report done when the native comment write/readbac
   f.io.createComment=async()=>{};
   await expect(advanceReleaseCandidate(f.session,f.io,binding)).rejects.toThrow('CANDIDATE_STATUS_COMMENT_UNKNOWN');
 });
+it.each(['notes','version'])('fixed G observation preserves a human %s revert to base without false completion',async kind=>{
+  const f=await observationFixture();
+  const path=kind==='notes'?'.release-notes/app.md':'VERSION';
+  const content=kind==='notes'?f.notes.replace('原来概述','已生成的新概述'):'1.1.0\n';
+  if(kind==='notes')f.session.generated!.files[0]!.content=content;
+  else f.session.generated!.files.push({path,mode:'100644',content});
+  const generatedHead=await f.commit(path,content,'generated candidate');
+  f.session.repository.candidate!.publishedHead=generatedHead;
+  if(kind==='notes')f.pr.head=await f.commit(path,f.notes,'human reverts notes');
+  else {await f.git('rm','--',path);await f.git('commit','--signoff','-m','human removes version');f.pr.head=await f.git('rev-parse','HEAD');}
+  const binding=candidateObservationIdentity(f.session),G=structuredClone(f.session.generated),head=f.pr.head;
+  expect((await mergeCandidate(f.repo,G,head,G!,f.root)).status).toBe('READY');
+  expect(await advanceReleaseCandidate(f.session,f.io,binding)).toEqual({status:'WAIT',reason:'GENERATED_FILES_MISMATCH',head});
+  expect(f.saved).toHaveLength(0);expect(f.comments).toHaveLength(1);expect(f.session.preview).toBeNull();
+  expect(f.session.generated).toEqual(G);expect(f.pr.head).toBe(head);expect(f.pushes()).toBe(0);
+  if(kind==='notes')expect(await f.git('show',`${head}:${path}`)).toBe(f.notes.trim());
+  else expect(await f.git('ls-tree',head,'--',path)).toBe('');
+});
 it('large fixed G projection reuses its verified old archive link after the state ref advances',async()=>{
   const f=await observationFixture(),long=f.notes+'\n'+('人工发布资料。'.repeat(9000));
   f.pr.head=await f.commit('.release-notes/app.md',long);f.session.generated!.files[0]!.content=long;

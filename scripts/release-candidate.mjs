@@ -348,6 +348,11 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     const manualBlobs=new Map(),manualFetched=new Set();
     const manualIO={
       pull:()=>native(`pulls/${session.repository.candidate.prNumber}`),
+      changedPaths:async(base,head)=>{
+        if(!validSha(base)||!validSha(head))fail('MANUAL_SOURCE');
+        const bytes=await git('diff','--name-only','--no-renames','--no-ext-diff','--no-textconv','-z',base,head,'--');
+        return new TextDecoder('utf-8',{fatal:true}).decode(bytes).split('\0').filter(Boolean);
+      },
       source:async()=>{
         const ref=await native(`git/ref/heads/${request.defaultBranch}`),value=ref.object?.sha;
         if(ref.object?.type!=='commit'||!validSha(value)||expectedSourceSha!==undefined&&value!==expectedSourceSha)fail('CANDIDATE_EVENT_SOURCE_CHANGED');return value;

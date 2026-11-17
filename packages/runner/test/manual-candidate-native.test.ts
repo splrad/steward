@@ -83,6 +83,14 @@ it('native manual normal freeze and observer project use real Git, preserve G an
     const observedAgain=await nativeReleaseCandidate(request,{...options,controllerSha:newController,manualCandidateProducer:undefined,expectedStateSha:completed,observation});
     expect(observedAgain.reason).toBe('MANUAL_PROJECTION');expect(await head('steward/release-state')).toBe(completed);expect(writes).toEqual(['comment']);
     session=await read();expect(session.manualValidation.producer).toEqual(f.producer);expect(candidateObservationIdentity(session)).toEqual(observation);
+    const humanEdit=join(root,'human-edit');await mkdir(humanEdit);await git('-C',humanEdit,'init');
+    await git('-C',humanEdit,'fetch','--no-tags','--no-recurse-submodules',remote,`refs/heads/${c.branch}`);await git('-C',humanEdit,'checkout','--detach',H);
+    await git('-C',humanEdit,'config','user.name',identity.name);await git('-C',humanEdit,'config','user.email',identity.email);
+    await writeFile(join(humanEdit,'source.txt'),'unapproved manual code');
+    await git('-C',humanEdit,'add','source.txt');await git('-C',humanEdit,'commit','-m','manual code outside candidate scope');
+    const unsafeHead=await git('-C',humanEdit,'rev-parse','HEAD');await git('-C',humanEdit,'push','--porcelain',remote,`HEAD:refs/heads/${c.branch}`);f.pull.head.sha=unsafeHead;
+    await expect(nativeReleaseCandidate(request,{...options,expectedStateSha:completed})).rejects.toThrow('MANUAL_UNMANAGED_CHANGES');
+    expect(await head('steward/release-state')).toBe(completed);expect(await head(c.branch)).toBe(unsafeHead);expect(writes).toEqual(['comment']);
 
   } finally {await rm(root,{recursive:true,force:true});}
 });

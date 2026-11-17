@@ -51,7 +51,7 @@ index 复用 `probe-<cycleId>-<targetsDigest>-<runId>-<attempt>/report.json`，�
 
 正常真实事件可在原候选已纳入准确 current main、仍未合并且没有 editing/pending 时，验证现有人工稿并冻结 `session.manualValidation`。该可选字段使用 `kind: validated-manual-candidate`；旧六字段 session 保持可读。旧 generated、baseSha、publishedHead、conflict 和失败记录不改。验证不调用模型、push、build 或 mergedSnapshot/verifyHandoff。
 
-只支持固定 LayerScape `.` 单元及 `simple` / `VERSION` 适配器。真实 Git ancestry 必须证明 source 是 head 的祖先；准确 head 中的 RP config、manifest、delivery、VERSION 与七节 notes 均实际读取并校验。普通 blob 使用严格 UTF-8 解码，文件摘要取原文；VERSION 只在版本比较时 trim。读取前后核 PR/head/source/state。快照严格绑定 repository/candidate/PR/branch，未知输入失败。
+只支持固定 LayerScape `.` 单元及 `simple` / `VERSION` 适配器。真实 Git ancestry 必须证明 source 是 head 的祖先；同时枚举 source 到 head 的完整 Git 变更路径，只允许完整旧 G.files 中的受管路径及当前 notesPath，额外代码、workflow 或资产变化拒绝为 MANUAL_UNMANAGED_CHANGES；准确 head 中的 RP config、manifest、delivery、VERSION 与七节 notes 均实际读取并校验。普通 blob 使用严格 UTF-8 解码，文件摘要取原文；VERSION 只在版本比较时 trim。读取前后核 PR/head/source/state。快照严格绑定 repository/candidate/PR/branch，未知输入失败。
 
 稳定事实按 `manualCandidateFacts` 的固定字段顺序序列化：kind、repositoryId、candidateId、prNumber、branch、headSha、sourceSha、units、files、projection。units 内依次 id/path/version/tag/notesPath，files 内 path/sha256 并按 path 字典序排序，projection 内 preview/bodyDigest。`factDigest=SHA256(JSON.stringify(facts))`；九字段 candidate identity 的 artifactDigest 为 `sha256:` 加此摘要，epoch 为 `SHA256(JSON.stringify([kind,candidateId,headSha,sourceSha,factDigest]))`。producer 的 repositoryId/runId/attempt/controllerSha/requestKey 仅为证据，不入 epoch。相同事实复用原 producer；固定观察失配不得 fallback 旧G或换对象。
 
@@ -68,7 +68,7 @@ observer artifact 在原严格顶层字段之外统一增加 `projectionEvidence
 
 所有 mode 都要求 enabled=true 且 deploymentSha 为完整部署来源 SHA。generatedSnapshotPath 必须指向同一候选的 generated 归档；读取全部分块并核 owner/kind/digest、与 session.generated 内容深等，缺失或错配拒绝。人工事实同样保留并核对完整旧 G。
 
-G 缓存观察通过 candidateProjectionPreview 恢复冻结 notes 与原生贡献者的既有 preview，再通过 candidateStatusBody 恢复固定评论并回读。只有 READY/CACHED_OBSERVATION 或 READY/MANUAL_PROJECTION 且原生投影证据完整才可 done。人工冲突保护仍会维护保护评论，但 outcome 为 needs_attention，不作为候选完成。
+G 缓存观察先核对实际候选 head 的完整 tree 等于 G.baseSha 应用 G.files 的冻结结果，再通过 candidateProjectionPreview 恢复冻结 notes 与原生贡献者的既有 preview，以及 candidateStatusBody 固定评论并回读。人工将受管文件还原为 base 时，即使可合并也返回 WAIT/GENERATED_FILES_MISMATCH，保留候选文件且不写完成投影。只有 READY/CACHED_OBSERVATION 或 READY/MANUAL_PROJECTION 且原生投影证据完整才可 done。人工冲突保护仍会维护保护评论，但 outcome 为 needs_attention，不作为候选完成。
 
 超过 48KiB 的原评论合同继续使用受保护 preview 的固定 GitHub blob 链接。复用旧链接前核其完整 commit SHA、准确 repository/候选路径、state 祖先及实际 blob 原文与最终 preview 一致；记录 statusCommentId 导致 state head 前进时不改写已经正确的链接。消费者独立重算正文，并读取链接实际指向的 immutable blob，不能仅相信当前 state 或任意 URL。
 

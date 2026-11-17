@@ -6,6 +6,16 @@ import {candidateObservationIdentity,manualCandidateFacts,decodeCandidateDocumen
 const hash=v=>createHash('sha256').update(typeof v==='string'?v:JSON.stringify(v)).digest('hex');
 const H='a'.repeat(40),S='b'.repeat(40),G='c'.repeat(40),id='d'.repeat(64),repo=1187527897;
 import {fixture} from './manual-candidate-fixture.mjs';
+for(const path of ['source.ts','.github/workflows/build.yml','assets/extra.bin','release-please-config.json'])test(`manual validation rejects unapproved ${path} changes`,async()=>{
+  const f=fixture();f.io.changedPaths=async()=>['.release-notes/layerscape.md',path];
+  await assert.rejects(validateManualCandidate(f.session,f.producer,f.io),/MANUAL_UNMANAGED_CHANGES/);
+  assert.equal(f.session.manualValidation,undefined);assert.deepEqual(f.calls,[]);
+});
+test('manual validation admits exact generated managed paths alongside notes',async()=>{
+  const f=fixture();f.session.generated.files=[{path:'CHANGELOG.md',mode:'100644',content:'generated'}];
+  f.io.changedPaths=async()=>['CHANGELOG.md','.release-notes/layerscape.md'];
+  assert.equal((await validateManualCandidate(f.session,f.producer,f.io)).headSha,H);
+});
 test('unmerged manual head freezes actual inputs without changing generated facts or projecting',async()=>{
   const f=fixture(),before=JSON.stringify(f.session),files=JSON.stringify(f.files),cache=await validateManualCandidate(f.session,f.producer,f.io);
   assert.equal(JSON.stringify(f.session),before);assert.equal(JSON.stringify(f.files),files);assert.deepEqual(f.calls,[]);

@@ -206,6 +206,11 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   // A fixed observation can only project the frozen identity and protect existing notes.
   // It never recovers a pending write, regenerates content, or creates another PR.
   if (observation) {
+    // A mergeable tree can still require a write (for example a human revert to B).
+    // Observation never performs that write, so only the actual frozen tree can complete.
+    if (!observed.head || !session.generated || !await candidateTreeMatches(io.workspace, observed.head,
+      session.generated.baseSha, session.generated.files, io.temporaryRoot))
+      return { status: 'WAIT', reason: 'GENERATED_FILES_MISMATCH', head: observed.head };
     const stable=async()=>{
       const now=await current(),latest=await io.source();
       if(!now.pr||now.pr.state!=='open'||now.pr.editing||now.head!==observed.head||latest.baseSha!==source.baseSha

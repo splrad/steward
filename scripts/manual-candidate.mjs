@@ -33,6 +33,9 @@ export async function validateManualCandidate(session,producer,io) {
   if(options['include-component-in-tag']!==false&&!component)fail('MANUAL_TAG_COMPONENT');
   if(new TagName(Version.parse(generated.version),component,options['tag-separator'],options['include-v-in-tag']).toString()!==generated.tag)fail('MANUAL_TAG');
   parseSupplementalNotes(await read(unit.notesPath));
+  const allowed=new Set([...session.generated.files.map(file=>file.path),unit.notesPath]);
+  const changed=await io.changedPaths(before.sourceSha,before.headSha);
+  if(!Array.isArray(changed)||changed.some(path=>typeof path!=='string'||!allowed.has(path)))fail('MANUAL_UNMANAGED_CHANGES');
   const result={schemaVersion:1,kind:'validated-manual-candidate',repositoryId:1187527897,candidateId:c.id,prNumber:c.prNumber,
     branch:c.branch,...before,units:[{...generated,notesPath:unit.notesPath}],files:[...files].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([path,sha256])=>({path,sha256})),
     projection:{preview:manualCandidatePreview(before),bodyDigest:''},producer};
