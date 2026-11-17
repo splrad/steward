@@ -20,7 +20,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   observe:
-    if: github.repository_id == '1296724484' && github.ref == 'refs/heads/main' && vars.STEWARD_EXPECTED_PAUSED_RELEASE == '311600220'
+    if: github.repository_id == '1296724484' && github.ref == 'refs/heads/main' && vars.STEWARD_EXPECTED_PAUSED_RELEASE == '311600220' && inputs.policy_sha == github.sha && github.workflow_sha == github.sha
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment:
