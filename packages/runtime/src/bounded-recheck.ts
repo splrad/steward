@@ -21,6 +21,7 @@ export interface RecordState extends Registration {
   consumed: number; initialClaimed: boolean; generation: number; intent: Intent | null;
   reason: string; evidence: string | null; notificationPending: boolean;
   retryAfter?:number;
+  executionSha?:string;
   firstImmediateWake?: {kind:'normal'|'skipped'|'already-claimed';at:number;acceptance?:Record<string,unknown>};
 }
 export interface Store { transaction<T>(fn: (current: RecordState | null) => { record: RecordState | null; result: T }): Promise<T>; read(): Promise<RecordState | null> }
@@ -55,12 +56,12 @@ function next(r:RecordState, now:number, notBefore=now) {
   r.nextAt=r.nextSlot<p.offsets.length?r.t0+p.offsets[r.nextSlot]!*minute:r.deadline;
 }
 export class BoundedRecheck {
-  constructor(private store:Store,private effects:Effects,private clock:()=>number=Date.now) {}
+  constructor(private store:Store,private effects:Effects,private clock:()=>number=Date.now,private executionSha?:string) {}
   async register(input:Registration):Promise<RecordState> {
-    const now=this.clock(); validateRegistration(input,now);
+    const now=this.clock(); validateRegistration(input,now);if(input.identity.stage!=='candidate')assert(typeof this.executionSha==='string'&&/^[a-f0-9]{40}$/.test(this.executionSha),'EXECUTION_PIN_REQUIRED');
     return this.store.transaction(r=>{
       if(r) { assert(identityKey(r.identity)===identityKey(input.identity) && r.t0===input.t0 && r.policySha===input.policySha && r.deploymentSha===input.deploymentSha,'REGISTRATION_CONFLICT');return {record:r,result:r}; }
-      const record:RecordState={...input,schemaVersion:1,status:'PENDING',deadline:input.t0+POLICIES[input.identity.stage].duration*minute,nextAt:now,nextSlot:0,consumed:0,initialClaimed:false,generation:1,intent:null,reason:'REGISTERED',evidence:null,notificationPending:false};
+      const record:RecordState={...input,...(input.identity.stage==='candidate'?{}:{executionSha:this.executionSha!}),schemaVersion:1,status:'PENDING',deadline:input.t0+POLICIES[input.identity.stage].duration*minute,nextAt:now,nextSlot:0,consumed:0,initialClaimed:false,generation:1,intent:null,reason:'REGISTERED',evidence:null,notificationPending:false};
       if(now>=record.deadline) stop(record,'NEEDS_ATTENTION','WINDOW_EXHAUSTED');
       return {record,result:record};
     });
@@ -109,7 +110,7 @@ export class BoundedRecheck {
     try { outcome=await (claim.confirm?this.effects.confirm(claim.record,claim.intent):this.effects.observe(claim.record,claim.intent)); }
     catch (error) {
       const message=error instanceof Error?error.message:'';const retryAfter=retryAfterTime(error,this.clock(),claim.record.deadline);
-      outcome=['SOURCE_CHANGED','OBSERVATION_SOURCE_CHANGED','CHANNEL_ORIGINAL_IDENTITY'].includes(message)?{kind:'stop',reason:'SOURCE_CHANGED'}:['GENERATED_FILES_MISMATCH','MANUAL_UNMANAGED_CHANGES','MANUAL_GENERATED_FILE_TREE'].includes(message)?{kind:'stop',reason:message}:claim.record.identity.stage==='winget-pr'&&retryAfter!==undefined?{kind:'pending',retryAfter}:{kind:'unknown',...(retryAfter===undefined?{}:{retryAfter})};
+      outcome=['SOURCE_CHANGED','OBSERVATION_SOURCE_CHANGED','CHANNEL_ORIGINAL_IDENTITY'].includes(message)?{kind:'stop',reason:'SOURCE_CHANGED'}:['GENERATED_FILES_MISMATCH','MANUAL_UNMANAGED_CHANGES','MANUAL_GENERATED_FILE_TREE','CHANNEL_EXECUTION_PIN'].includes(message)?{kind:'stop',reason:message}:claim.record.identity.stage==='winget-pr'&&retryAfter!==undefined?{kind:'pending',retryAfter}:{kind:'unknown',...(retryAfter===undefined?{}:{retryAfter})};
     }
     await this.store.transaction(r=>{
       if(!r || !r.intent || r.intent.key!==claim.intent.key) return {record:r,result:undefined};

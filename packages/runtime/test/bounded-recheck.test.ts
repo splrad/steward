@@ -17,7 +17,7 @@ class SqliteStore implements Store {
 }
 const t0=1800000000000,m=60000;
 function input(stage:Registration['identity']['stage']='candidate'):Registration{return {identity:{repositoryId:1187527897,cycleId:'candidate1',channel:stage==='candidate'?'candidate':'winget',version:'1.0.0',artifactDigest:'sha256:'+'a'.repeat(64),sourceSha:'b'.repeat(40),stage,epoch:'epoch1',upstreamPR:stage==='candidate'?null:{number:123,nodeId:'PR_node'}},t0,policySha:'c'.repeat(40),deploymentSha:'d'.repeat(40)};}
-function fixture(out:Outcome={kind:'pending'}){let now=t0;const store=new SqliteStore();const effects:Effects={observe:vi.fn(async()=>out),confirm:vi.fn(async()=>out)};return {store,effects,engine:()=>new BoundedRecheck(store,effects,()=>now),time:(n:number)=>{now=n;}};}
+function fixture(out:Outcome={kind:'pending'}){let now=t0;const store=new SqliteStore();const effects:Effects={observe:vi.fn(async()=>out),confirm:vi.fn(async()=>out)};return {store,effects,engine:()=>new BoundedRecheck(store,effects,()=>now,'e'.repeat(40)),time:(n:number)=>{now=n;}};}
 describe('bounded recheck faults with actual SQLite transactions',()=>{
  it('idle never schedules or calls effects',async()=>{const f=fixture();await f.engine().wake();expect(f.store.alarm()).toBeNull();expect(f.effects.observe).not.toHaveBeenCalled();});
  it('durable registration recovers lost immediate wake across reconstruction',async()=>{const f=fixture();await f.engine().register(input());expect(f.store.alarm()).toBe(t0);await f.engine().wake();expect(f.effects.observe).toHaveBeenCalledTimes(1);expect((await f.store.read())?.consumed).toBe(0);expect(f.store.alarm()).toBe(t0+2*m);});

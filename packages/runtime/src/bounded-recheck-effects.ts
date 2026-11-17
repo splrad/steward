@@ -18,7 +18,7 @@ export class FixedRecheckEffects implements Effects {
   if(this.env.BOUNDED_RECHECK_ENABLED!=='true')return {kind:'stop',reason:'QUIESCED'};
   const g=this.reader();
   if(r.identity.stage==='winget-pr')return this.upstream(r);
-  if(r.identity.stage==='winget-index'){const {inputs}=await currentWinget(g,r,this.env);const p=await upstreamPull(r.identity.upstreamPR!.number,g);bindPull(p,r.identity.version,r.identity.upstreamPR!.nodeId);ensure(p.merged===true,'INDEX_REQUIRES_MERGED');await dispatchFixed(g,TARGET.id,'steward-release-channels.yml',this.env.BOUNDED_PRODUCT_SHA!,inputs);return {kind:'unknown'};}
+  if(r.identity.stage==='winget-index'){const {inputs}=await currentWinget(g,r,this.env);const p=await upstreamPull(r.identity.upstreamPR!.number,g);bindPull(p,r.identity.version,r.identity.upstreamPR!.nodeId);ensure(p.merged===true,'INDEX_REQUIRES_MERGED');await dispatchFixed(g,TARGET.id,'steward-release-channels.yml',r.executionSha!,inputs);return {kind:'unknown'};}
   const facts=await candidateFacts(g);if(identityKey(facts.identity)!==identityKey(r.identity))return {kind:'stop',reason:'SOURCE_CHANGED'};
   ensure(Array.isArray(facts.pull.labels),'CANDIDATE_LABELS_UNKNOWN');if(facts.pull.state!=='open'||facts.pull.merged)return {kind:'stop',reason:'CANDIDATE_CLOSED'};if(facts.pull.labels.some((l:any)=>l.name==='release:editing'))return {kind:'pause',reason:'EDITING_PAUSED'};
   await dispatchFixed(g,CENTRAL.id,'release-observe.yml',r.policySha,{identity_json:JSON.stringify(r.identity),request_key:intent.key,policy_sha:r.policySha});
@@ -50,9 +50,9 @@ export class FixedRecheckEffects implements Effects {
  }
  private async index(r:RecordState,intent:Intent):Promise<Outcome>{
   const g=this.reader(),{cycle,inputs}=await currentWinget(g,r,this.env);const window=encodeURIComponent(new Date(intent.claimedAt-1000).toISOString()+'..'+new Date(intent.claimedAt+30000).toISOString());
-  const list=await g.json(TARGET.id,`/repos/${TARGET.name}/actions/workflows/steward-release-channels.yml/runs?event=workflow_dispatch&head_sha=${this.env.BOUNDED_PRODUCT_SHA}&created=${window}&per_page=100`);ensure(Array.isArray(list.workflow_runs)&&list.total_count===list.workflow_runs.length,'INDEX_RUN_WINDOW');
+  const list=await g.json(TARGET.id,`/repos/${TARGET.name}/actions/workflows/steward-release-channels.yml/runs?event=workflow_dispatch&head_sha=${r.executionSha}&created=${window}&per_page=100`);ensure(Array.isArray(list.workflow_runs)&&list.total_count===list.workflow_runs.length,'INDEX_RUN_WINDOW');
   const hits=list.workflow_runs.filter((x:any)=>x.display_title===`Channels observe ${inputs.request_key}`&&Date.parse(x.created_at)>=Math.floor(intent.claimedAt/1000)*1000);
-  if(hits.length!==1)return {kind:'unknown'};const run=await g.json(TARGET.id,`/repos/${TARGET.name}/actions/runs/${hits[0].id}/attempts/1`);bindChannelRun(run,this.env);ensure(run.id===hits[0].id&&run.run_attempt===1&&run.display_title===`Channels observe ${inputs.request_key}`,'INDEX_RUN_BINDING');
+  if(hits.length!==1)return {kind:'unknown'};const run=await g.json(TARGET.id,`/repos/${TARGET.name}/actions/runs/${hits[0].id}/attempts/1`);bindChannelRun(run,{...this.env,BOUNDED_PRODUCT_SHA:r.executionSha!});ensure(run.id===hits[0].id&&run.run_attempt===1&&run.display_title===`Channels observe ${inputs.request_key}`,'INDEX_RUN_BINDING');
   if(run.status!=='completed')return {kind:'unknown',runId:run.id};if(run.conclusion!=='success')return {kind:'stop',reason:'INDEX_OBSERVATION_FAILED'};
   const job=await channelJob(g,run,'observe');ensure(Date.parse(job.completed_at)-Date.parse(job.started_at)<=5*60000,'INDEX_QUERY_TIMEOUT');
   const a=await g.artifact(TARGET.id,run.id,`probe-${cycle.id}-${inputs.operation_key}-${run.id}-${run.run_attempt}`,'report.json'),item=reportBinding(a.value,run,cycle,inputs.operation_key,job,a.createdAt);

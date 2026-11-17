@@ -19,7 +19,7 @@ export class DurableRecheckStore implements Store {
 /** Separate SQLite namespace; no shared ValidationCoordinator state or alarm slots. */
 export class BoundedRecheckCoordinator {
  private store:DurableRecheckStore; private engine:BoundedRecheck;
- constructor(private state:DurableObjectState,private env:BoundedEnv){this.store=new DurableRecheckStore(state.storage);this.engine=new BoundedRecheck(this.store,new FixedRecheckEffects(env));}
+ constructor(private state:DurableObjectState,private env:BoundedEnv){this.store=new DurableRecheckStore(state.storage);this.engine=new BoundedRecheck(this.store,new FixedRecheckEffects(env),Date.now,env.BOUNDED_PRODUCT_SHA);}
  async fetch(request:Request){
   ensure(request.method==='POST','INTERNAL_METHOD');const b=await request.json() as any;const action=new URL(request.url).pathname;
   let value:unknown;
