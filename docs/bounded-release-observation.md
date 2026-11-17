@@ -2,7 +2,7 @@
 
 三固定入口在 job 层提前要求 inputs.policy_sha == github.sha 且 github.workflow_sha == github.sha，使旧 policy 或不同 workflow 来源在 runner、依赖安装和秘密注入前跳过；运行时对当前 main、controller、native Run 的原生核验仍全部保留。跳过无 artifact 不表示完成，消费者按原有限确认和 deadline 收束，不重复 POST。该前置门槛不修复排队后的 main 漂移，后者仍由运行时拒绝。
 
-`config/bounded-recheck.json` 已将 `enabled` 设为 `true`，并将 `deploymentSha` 固定为已采用的维护提交 `19005c48f1654d39f5d19168cc83c267fb1635c6`。该配置允许通过既有身份与版本校验的显式调用；三个入口仍仅由 `workflow_dispatch` 触发。配置采用后，须完成该主线版本的 Native Validation 与 Governance Promotion，再依次完成产品版本绑定、Worker 部署和真实事件验收。配置采用本身不代表这些步骤已经完成。
+`config/bounded-recheck.json` 已将 `enabled` 设为 `true`，并将 `deploymentSha` 固定为已采用的维护提交 `bb9ba1c8236f1a37b10777fc189e98ba24860c45`。该配置允许通过既有身份与版本校验的显式调用；三个入口仍仅由 `workflow_dispatch` 触发。配置采用后，须完成该主线版本的 Native Validation 与 Governance Promotion，再依次完成产品版本绑定、Worker 部署和真实事件验收。配置采用本身不代表这些步骤已经完成。
 
 ## 候选链
 
