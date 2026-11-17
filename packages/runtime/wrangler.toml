@@ -17,7 +17,9 @@ database_id = "75ae2ef8-683d-4a44-b113-e58961473d03"
 migrations_dir = "migrations"
 
 [vars]
+BOUNDED_RECHECK_ENABLED = "false"
 LEGACY_RELEASE_RETIRED = "true"
+LEGACY_VALIDATION_RETIRED = "true"
 ORGANIZATION_ID = "302208797"
 ORGANIZATION_LOGIN = "splrad"
 APP_ID = "4243096"
@@ -31,3 +33,11 @@ class_name = "ValidationCoordinator"
 [[migrations]]
 tag = "validation-coordinator-v1"
 new_sqlite_classes = ["ValidationCoordinator"]
+
+[[durable_objects.bindings]]
+name = "BOUNDED_RECHECK"
+class_name = "BoundedRecheckCoordinator"
+
+[[migrations]]
+tag = "bounded-recheck-v1"
+new_sqlite_classes = ["BoundedRecheckCoordinator"]

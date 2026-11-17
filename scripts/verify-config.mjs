@@ -118,12 +118,14 @@ for (const name of forbiddenRuntime) if (wrangler.includes(name)) throw new Erro
 if (!wrangler.includes('compatibility_flags = ["nodejs_compat"]')) throw new Error("运行配置必须显式启用nodejs_compat");
 const wranglerLines = wrangler.split(/\r?\n/u);
 const arrayTables = wranglerLines.filter(line => /^\[\[[^\]]+\]\]$/u.test(line));
-if (JSON.stringify(arrayTables) !== JSON.stringify(["[[d1_databases]]", "[[durable_objects.bindings]]", "[[migrations]]"])) throw new Error("运行配置必须恰好包含固定D1、验证协调绑定和迁移");
-for (const [header, expected] of [
-  ['[[durable_objects.bindings]]', ['[[durable_objects.bindings]]', 'name = "VALIDATION_COORDINATOR"', 'class_name = "ValidationCoordinator"']],
-  ['[[migrations]]', ['[[migrations]]', 'tag = "validation-coordinator-v1"', 'new_sqlite_classes = ["ValidationCoordinator"]']],
+if (JSON.stringify(arrayTables) !== JSON.stringify(["[[d1_databases]]", "[[durable_objects.bindings]]", "[[migrations]]", "[[durable_objects.bindings]]", "[[migrations]]"])) throw new Error("运行配置必须恰好包含固定D1、验证协调绑定和迁移");
+for (const [header, occurrence, expected] of [
+  ['[[durable_objects.bindings]]', 0, ['[[durable_objects.bindings]]', 'name = "VALIDATION_COORDINATOR"', 'class_name = "ValidationCoordinator"']],
+  ['[[migrations]]', 0, ['[[migrations]]', 'tag = "validation-coordinator-v1"', 'new_sqlite_classes = ["ValidationCoordinator"]']],
+  ['[[durable_objects.bindings]]', 1, ['[[durable_objects.bindings]]', 'name = "BOUNDED_RECHECK"', 'class_name = "BoundedRecheckCoordinator"']],
+  ['[[migrations]]', 1, ['[[migrations]]', 'tag = "bounded-recheck-v1"', 'new_sqlite_classes = ["BoundedRecheckCoordinator"]']],
 ]) {
-  const start = wranglerLines.indexOf(header);
+  const start = wranglerLines.map((line,index)=>line===header?index:-1).filter(index=>index>=0)[occurrence];
   const offset = wranglerLines.slice(start + 1).findIndex(line => /^\[/.test(line));
   const end = offset < 0 ? wranglerLines.length : start + 1 + offset;
   if (JSON.stringify(wranglerLines.slice(start, end).filter(Boolean)) !== JSON.stringify(expected)) throw new Error('验证协调绑定或迁移不符合固定合同');
