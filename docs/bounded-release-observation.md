@@ -1,5 +1,7 @@
 # 固定对象发行观察
 
+三固定入口在 job 层提前要求 inputs.policy_sha == github.sha 且 github.workflow_sha == github.sha，使旧 policy 或不同 workflow 来源在 runner、依赖安装和秘密注入前跳过；运行时对当前 main、controller、native Run 的原生核验仍全部保留。跳过无 artifact 不表示完成，消费者按原有限确认和 deadline 收束，不重复 POST。该前置门槛不修复排队后的 main 漂移，后者仍由运行时拒绝。
+
 当前入口默认关闭，`config/bounded-recheck.json` 的 `enabled:false` 与 `deploymentSha:null` 表示尚未连接。代码采用、Worker 部署、产品模板采用和真实事件接管分别验收。
 
 ## 候选链

@@ -60,6 +60,17 @@ test('fixed observation workflows contain no schedule or default coordinator exe
     for(const job of Object.values(value.jobs))for(const step of job.steps)assert.ok(!step.run?.includes('node scripts/release-coordinator.mjs'));
   }
 });
+for(const name of ['release-observe','bounded-release-event','release-candidate-event'])test(`${name} rejects stale policy/workflow before any job step`,async()=>{
+  const value=YAML.parse(await readFile(new URL(`../../.github/workflows/${name}.yml`,import.meta.url),'utf8'));
+  const jobs=Object.values(value.jobs);assert.equal(jobs.length,1);const job=jobs[0];
+  assert.ok(job.if.includes('inputs.policy_sha == github.sha'));assert.ok(job.if.includes('github.workflow_sha == github.sha'));
+  const evaluate=context=>job.if.split(' && ').every(term=>{const [left,right]=term.split(' == ');return context[left]=== (right.startsWith("'")?right.slice(1,-1):context[right]);});
+  const context={'github.repository_id':'1296724484','github.ref':'refs/heads/main','vars.STEWARD_EXPECTED_PAUSED_RELEASE':'311600220',
+    'github.event_name':'workflow_dispatch','inputs.policy_sha':head,'github.sha':head,'github.workflow_sha':head};
+  assert.equal(evaluate(context),true);
+  for(const field of ['inputs.policy_sha','github.sha','github.workflow_sha'])assert.equal(evaluate({...context,[field]:'b'.repeat(40)}),false);
+  assert.equal(job.steps[0].with.ref,'${{ github.workflow_sha }}');
+});
 function candidateFixture() {
   const digest='d'.repeat(64),commit='b'.repeat(40),prefix=`/repos/${product.name}`;
   const candidate={id:digest,prNumber:192,branch:'steward/release-candidate',baseSha:head,generatedSnapshotPath:`generated/${digest}/${digest}.json`,publishedHead:head,
