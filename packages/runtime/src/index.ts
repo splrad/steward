@@ -1,3 +1,8 @@
+import {registerWingetRun} from './bounded-winget-evidence.js';
+import {BoundedGitHub} from './bounded-recheck-github.js';
+import {acceptNativeCandidateEvent,acceptNativeCandidateCompletion} from './bounded-native-event.js';
+import { handleBoundedRecheckRequest } from './bounded-recheck-api.js';
+export { BoundedRecheckCoordinator } from './bounded-recheck-do.js';
 import { legacyReleaseRetired, assertLegacyReleaseDispatchActive } from './release-retirement.js';
 import { legacyValidationRetired } from './validation-retirement.js';
 import { SerialTaskQueue } from './serial-task-queue.js';
@@ -15,6 +20,11 @@ import { ReleaseReceiptStore } from "./release-note-receipts.js";
 import { confirmPullRequestBodyWriteIntent, processPullRequestBodyEditedDelivery, PullRequestBodyWriteIntentStore, type PullRequestBodyWriteIntent } from "./pr-body-write-intents.js";
 
 export interface Env {
+  BOUNDED_RECHECK?: DurableObjectNamespace;
+  BOUNDED_RECHECK_ENABLED?: string;
+  BOUNDED_CONTROLLER_SHA?: string;
+  BOUNDED_PRODUCT_SHA?: string;
+  BOUNDED_DEPLOYMENT_SHA?: string;
   LEGACY_VALIDATION_RETIRED?: string;
   LEGACY_RELEASE_RETIRED?: string;
   ORGANIZATION_ID: string; ORGANIZATION_LOGIN: string; APP_ID: string; INSTALLATION_ID: string;
@@ -459,6 +469,9 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
   if (!validScope(payload, env)) return response(403);
   const event = request.headers.get("x-github-event") ?? ""; const deliveryId = request.headers.get("x-github-delivery") ?? ""; const action = payload.action ?? "";
   try {
+    await acceptNativeCandidateEvent(env, event, payload, deliveryId);
+    await acceptNativeCandidateCompletion(env, event, payload);
+    await registerWingetRun(env, event, payload, new BoundedGitHub(env));
     if (["issues", "issue_comment", "sub_issues", "issue_dependencies"].includes(event)
       || (event === "installation" && action === "deleted")
       || (event === "installation_repositories" && action === "removed")) return response(204);
@@ -724,6 +737,8 @@ export default {
       if (!env.VALIDATION_COORDINATOR) return response(503, {error:"VALIDATION_COORDINATOR_REQUIRED"});
       return handleWebhook(request, env);
     }
+    const bounded = await handleBoundedRecheckRequest(request, env);
+    if (bounded) return bounded;
     const internal = await handleBodyWriteInternalRequest(request, env);
     if (internal) return internal;
     const release = await handleReleaseRequest(request, env);
@@ -733,7 +748,6 @@ export default {
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {
     const results = await Promise.allSettled([
       recoverPullRequestBodyWriteIntents(env),
-      recoverReleaseReceipts(env),
       (async () => {
         // Review webhooks recheck immediately; the full safety sweep runs every 15 minutes.
         if (env.WORKFLOW_EVALUATOR_SHA === undefined || Math.floor(controller.scheduledTime / 60_000) % 15 !== 0) return;

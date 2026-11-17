@@ -10,8 +10,11 @@ beforeAll(async()=>{
  await mkdir(join(fixture,'packages/runtime'),{recursive:true});config=await readFile('packages/runtime/wrangler.toml','utf8');
 });
 afterAll(async()=>{if(fixture)await rm(fixture,{recursive:true,force:true});});
-it.each(['valid','binding','class','migration','extra','database','kv'])('enforces exact runtime binding contract: %s',async change=>{
+it.each(['valid','binding','class','migration','extra','database','kv','bounded-binding','bounded-class','bounded-migration'])('enforces exact runtime binding contract: %s',async change=>{
  let text=config;
+ if(change==='bounded-binding')text=text.replace('name = "BOUNDED_RECHECK"','name = "OTHER"');
+ if(change==='bounded-class')text=text.replace('class_name = "BoundedRecheckCoordinator"','class_name = "Other"');
+ if(change==='bounded-migration')text=text.replace('bounded-recheck-v1','arbitrary-v2');
  if(change==='binding')text=text.replace('VALIDATION_COORDINATOR','OTHER_COORDINATOR');
  if(change==='class')text=text.replace('class_name = "ValidationCoordinator"','class_name = "OtherCoordinator"');
  if(change==='migration')text=text.replace('validation-coordinator-v1','arbitrary-v2');
