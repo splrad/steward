@@ -127,6 +127,11 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   const request = { directory, writeDirectory: join(root, 'writes'), remote, repository: 'fixture/product', repositoryId: 1, defaultBranch: 'main', appBotId: 301115370, identity };
   await mkdir(request.writeDirectory);
   const options = { token: 'fixture-write', readToken: 'fixture-read', controllerSha: 'f'.repeat(40), fetcher, generator, language, temporaryRoot: root, now: () => '2026-10-27T00:00:00Z' };
+  if(pinCase==='old-source') {
+    const originalState=await head('steward/release-state');
+    await expect(nativeReleaseCandidate(request,{...options,expectedSourceSha:'0'.repeat(40)})).rejects.toThrow('CANDIDATE_EVENT_SOURCE_CHANGED');
+    expect(modelCalls).toBe(0);expect(pr).toBeNull();expect(await head('steward/release-state')).toBe(originalState);
+  }
   const refresh = async () => { await git('fetch', '--no-tags', '--no-recurse-submodules', remote, 'refs/heads/steward/release-state'); await git('update-ref', 'refs/heads/steward/release-state', await git('rev-parse', 'FETCH_HEAD')); };
   if(pinCase==='content-recovery') {
     const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');

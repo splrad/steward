@@ -4,6 +4,7 @@ import { parse } from 'yaml';
 
 it.each([
   ['release.yml', 'release-coordinator', 'steward-release'],
+  ['release-candidate-event.yml', 'event', 'steward-release'],
   ['quality-language-summary.yml', 'quality-summary', 'steward-release-notes'],
   ['ai-identity-acceptance.yml', 'quality', 'steward-release-notes'],
   ['ai-identity-acceptance.yml', 'release', 'steward-release'],
@@ -19,6 +20,12 @@ it.each([
       expect(job.if).toContain(guard);
     }
     expect(workflow.jobs.release.needs).toBe('quality');
+  } else if (file === 'release-candidate-event.yml') {
+    expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
+    for (const guard of ["github.repository_id == '1296724484'", "github.ref == 'refs/heads/main'",
+      "vars.STEWARD_EXPECTED_PAUSED_RELEASE == '311600220'", "github.event_name == 'workflow_dispatch'"]) {
+      expect(job.if).toContain(guard);
+    }
   } else {
     expect(job.if).toContain("github.ref == format('refs/heads/{0}', github.event.repository.default_branch)");
   }
@@ -54,5 +61,6 @@ it('only the production and explicitly gated acceptance jobs receive native Copi
     }
   }
   expect(consumers.sort()).toEqual(['ai-identity-acceptance.yml/quality', 'ai-identity-acceptance.yml/release',
-    'business-flow-acceptance.yml/acceptance', 'quality-language-summary.yml/quality-summary', 'release.yml/release-coordinator']);
+    'business-flow-acceptance.yml/acceptance', 'quality-language-summary.yml/quality-summary',
+    'release-candidate-event.yml/event', 'release.yml/release-coordinator']);
 });
