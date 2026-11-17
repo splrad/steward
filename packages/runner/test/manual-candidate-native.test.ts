@@ -24,9 +24,12 @@ it('native manual normal freeze and observer project use real Git, preserve G an
     const git=async(...args:string[])=>(await promisify(execFile)('git',args,{cwd:directory,env,encoding:'utf8',windowsHide:true})).stdout.trim();
     await git('init','--initial-branch=main');await git('config','user.name',identity.name);await git('config','user.email',identity.email);
     for(const [path,text] of Object.entries(f.files)){await mkdir(join(directory,path,'..'),{recursive:true});await writeFile(join(directory,path),String(text));}
+    await writeFile(join(directory,'CHANGELOG.md'),'original generated changelog\n');
+    f.session.generated.files=[{path:'CHANGELOG.md',mode:'100644',content:'original generated changelog\n'}];
     await git('add','.');await git('commit','-m','initial actual product');const G=await git('rev-parse','HEAD');
     await writeFile(join(directory,'source.txt'),'current source');await git('add','.');await git('commit','-m','current source');const S=await git('rev-parse','HEAD');
     await git('switch','-c',f.session.repository.candidate.branch);await writeFile(join(directory,'.release-notes/layerscape.md'),f.files['.release-notes/layerscape.md']+'\n人工补充。\n');
+    await writeFile(join(directory,'CHANGELOG.md'),'合法人工更新 changelog\n');
     await git('add','.');await git('commit','-m','manual candidate');const H=await git('rev-parse','HEAD');
     f.pull.head.sha=H;f.session.generated.baseSha=G;
     const c=f.session.repository.candidate;Object.assign(c,{baseSha:G,publishedHead:G,generatedSnapshotPath:`generated/${c.id}/${c.id}.json`,contentGenerationDigest:c.id,adoptionOverride:null,observedLabelEventIds:[]});
@@ -86,6 +89,11 @@ it('native manual normal freeze and observer project use real Git, preserve G an
     const humanEdit=join(root,'human-edit');await mkdir(humanEdit);await git('-C',humanEdit,'init');
     await git('-C',humanEdit,'fetch','--no-tags','--no-recurse-submodules',remote,`refs/heads/${c.branch}`);await git('-C',humanEdit,'checkout','--detach',H);
     await git('-C',humanEdit,'config','user.name',identity.name);await git('-C',humanEdit,'config','user.email',identity.email);
+    await git('-C',humanEdit,'rm','CHANGELOG.md');await git('-C',humanEdit,'commit','-m','delete required managed changelog');
+    const deletedHead=await git('-C',humanEdit,'rev-parse','HEAD');await git('-C',humanEdit,'push','--porcelain',remote,`HEAD:refs/heads/${c.branch}`);f.pull.head.sha=deletedHead;
+    await expect(nativeReleaseCandidate(request,{...options,expectedStateSha:completed})).rejects.toThrow('MANUAL_MANAGED_STRUCTURE');
+    expect(await head('steward/release-state')).toBe(completed);expect(writes).toEqual(['comment']);
+    await writeFile(join(humanEdit,'CHANGELOG.md'),'合法人工更新 changelog\n');await git('-C',humanEdit,'add','CHANGELOG.md');
     await writeFile(join(humanEdit,'source.txt'),'unapproved manual code');
     await git('-C',humanEdit,'add','source.txt');await git('-C',humanEdit,'commit','-m','manual code outside candidate scope');
     const unsafeHead=await git('-C',humanEdit,'rev-parse','HEAD');await git('-C',humanEdit,'push','--porcelain',remote,`HEAD:refs/heads/${c.branch}`);f.pull.head.sha=unsafeHead;

@@ -5,6 +5,11 @@ import {parseDeliveryConfig,assertProductDelivery,parseSupplementalNotes,manualC
   manualCandidateBody,validateManualCandidateRecord} from '../packages/runner/dist/index.js';
 const hash=v=>createHash('sha256').update(typeof v==='string'?v:JSON.stringify(v)).digest('hex');
 const fail=code=>{throw Error(code);};
+export function manualManagedEntryMatches(file,entry) {
+  if(file.content===null)return entry==='';
+  return ['100644','100755'].includes(file.mode)&&entry.startsWith(file.mode+' blob ')
+    &&/^100(?:644|755) blob [a-f0-9]{40}\t/.test(entry)&&entry.slice(entry.indexOf('\t')+1)===file.path+'\0';
+}
 /** Read-only proof of an existing manual candidate. No generation or write port is accepted. */
 export async function validateManualCandidate(session,producer,io) {
   const c=session.repository.candidate;
@@ -36,6 +41,9 @@ export async function validateManualCandidate(session,producer,io) {
   const allowed=new Set([...session.generated.files.map(file=>file.path),unit.notesPath]);
   const changed=await io.changedPaths(before.sourceSha,before.headSha);
   if(!Array.isArray(changed)||changed.some(path=>typeof path!=='string'||!allowed.has(path)))fail('MANUAL_UNMANAGED_CHANGES');
+  // The immutable head binds all bytes; human prose may differ from G, but its file role may not.
+  if(!await io.managedStructure(before.headSha,session.generated.files.filter(file=>file.path!==unit.notesPath||file.content!==null)))
+    fail('MANUAL_MANAGED_STRUCTURE');
   const result={schemaVersion:1,kind:'validated-manual-candidate',repositoryId:1187527897,candidateId:c.id,prNumber:c.prNumber,
     branch:c.branch,...before,units:[{...generated,notesPath:unit.notesPath}],files:[...files].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([path,sha256])=>({path,sha256})),
     projection:{preview:manualCandidatePreview(before),bodyDigest:''},producer};

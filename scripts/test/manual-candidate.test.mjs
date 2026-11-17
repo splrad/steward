@@ -1,11 +1,23 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {validateManualCandidate,projectManualCandidate} from '../manual-candidate.mjs';
+import {validateManualCandidate,projectManualCandidate,manualManagedEntryMatches} from '../manual-candidate.mjs';
 import {candidateObservationIdentity,manualCandidateFacts,decodeCandidateDocument} from '../../packages/runner/dist/index.js';
 const hash=v=>createHash('sha256').update(typeof v==='string'?v:JSON.stringify(v)).digest('hex');
 const H='a'.repeat(40),S='b'.repeat(40),G='c'.repeat(40),id='d'.repeat(64),repo=1187527897;
 import {fixture} from './manual-candidate-fixture.mjs';
+test('managed structure rejects deletion, symlink, changed mode and restored tombstone while permitting new prose bytes',()=>{
+  const file={path:'CHANGELOG.md',mode:'100644',content:'old'},entry=mode=>`${mode} blob ${'a'.repeat(40)}\tCHANGELOG.md\0`;
+  assert.equal(manualManagedEntryMatches(file,entry('100644')),true);
+  for(const actual of ['',entry('120000'),entry('100755'),entry('100644')+entry('100644')])assert.equal(manualManagedEntryMatches(file,actual),false);
+  assert.equal(manualManagedEntryMatches({...file,content:null},''),true);
+  assert.equal(manualManagedEntryMatches({...file,content:null},entry('100644')),false);
+});
+test('manual validation requires native managed file structure before freezing',async()=>{
+  const f=fixture();f.io.managedStructure=async()=>false;
+  await assert.rejects(validateManualCandidate(f.session,f.producer,f.io),/MANUAL_MANAGED_STRUCTURE/);
+  assert.equal(f.session.manualValidation,undefined);assert.deepEqual(f.calls,[]);
+});
 for(const path of ['source.ts','.github/workflows/build.yml','assets/extra.bin','release-please-config.json'])test(`manual validation rejects unapproved ${path} changes`,async()=>{
   const f=fixture();f.io.changedPaths=async()=>['.release-notes/layerscape.md',path];
   await assert.rejects(validateManualCandidate(f.session,f.producer,f.io),/MANUAL_UNMANAGED_CHANGES/);

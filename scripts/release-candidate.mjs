@@ -1,4 +1,4 @@
-import {validateManualCandidate,projectManualCandidate} from './manual-candidate.mjs';
+import {validateManualCandidate,projectManualCandidate,manualManagedEntryMatches} from './manual-candidate.mjs';
 import apiVersion from "../config/github-api.json" with { type: "json" };
 import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
@@ -352,6 +352,15 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         if(!validSha(base)||!validSha(head))fail('MANUAL_SOURCE');
         const bytes=await git('diff','--name-only','--no-renames','--no-ext-diff','--no-textconv','-z',base,head,'--');
         return new TextDecoder('utf-8',{fatal:true}).decode(bytes).split('\0').filter(Boolean);
+      },
+      managedStructure:async(head,files)=>{
+        if(!validSha(head))fail('MANUAL_SOURCE');
+        for(const file of files) {
+          assertDeliveryPath(file.path);
+          const entry=new TextDecoder('utf-8',{fatal:true}).decode(await git('ls-tree','-z',head,'--',file.path));
+          if(!manualManagedEntryMatches(file,entry))return false;
+        }
+        return true;
       },
       source:async()=>{
         const ref=await native(`git/ref/heads/${request.defaultBranch}`),value=ref.object?.sha;
