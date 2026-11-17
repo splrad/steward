@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {validateManualCandidate,projectManualCandidate} from '../manual-candidate.mjs';
-import {candidateObservationIdentity,manualCandidateFacts,manualCandidateBody,validateManualCandidateRecord,decodeCandidateDocument} from '../../packages/runner/dist/index.js';
+import {candidateObservationIdentity,manualCandidateFacts,decodeCandidateDocument} from '../../packages/runner/dist/index.js';
 const hash=v=>createHash('sha256').update(typeof v==='string'?v:JSON.stringify(v)).digest('hex');
 const H='a'.repeat(40),S='b'.repeat(40),G='c'.repeat(40),id='d'.repeat(64),repo=1187527897;
 import {fixture} from './manual-candidate-fixture.mjs';

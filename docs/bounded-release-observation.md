@@ -24,7 +24,7 @@ Worker 固定派发 `release-observe.yml`，仅接受 `identity_json/request_key
 
 入口原生复核固定仓、原事件、当前标签、准确 PR、源 SHA、Run/workflow 身份和当前控制器，然后只执行 `nativeReleaseCandidate` 普通候选路径；不执行全仓协调器、发布周期服务或 merged-cycle handoff。源在处理中变化即停止，原生写入仍通过既有 CAS 和人工差异保护。合法 `EDITING/HUMAN_EDIT_CONFLICT` 分别记录为暂停或人工保护，不强制生成新稿，也不等同当前源码及全部 E11 已通过。
 
-正常结果 `candidate-event-<request_key>/result.json` 严格包含 11 字段：`schemaVersion/requestKey/producer/event/sourceSha/status/reason/outcome/stateBefore/stateAfter/candidateIdentity`。producer 为 `{repositoryId,runId,attempt,controllerSha}`，event 为 `{repositoryId,prNumber,eventId}`；reason 可 null，candidateIdentity 在未具备稳定缓存时可 null。Worker 独立核可信 Run、artifact 和原生事实后处理结果；只有当前 candidate base 与当前 main 一致且缓存就绪才进入有界观察登记。不能重写旧 epoch 来绕过 `SOURCE_CHANGED`。
+正常结果 `candidate-event-<request_key>/result.json` 严格包含 11 字段：`schemaVersion/requestKey/producer/event/sourceSha/status/reason/outcome/stateBefore/stateAfter/candidateIdentity`。producer 为 `{repositoryId,runId,attempt,controllerSha}`，event 为 `{repositoryId,prNumber,eventId}`；reason 可 null，candidateIdentity 在未具备稳定缓存时可 null。Worker 独立核可信 Run、artifact 和原生事实后处理结果；只有当前生成缓存来源或已验证人工事实来源与当前 main 一致且缓存完整才进入有界观察登记。不能重写旧 epoch 来绕过 `SOURCE_CHANGED`。
 
 旧 `release.yml`（311600220）保持 `disabled_manually`，`STEWARD_EXPECTED_PAUSED_RELEASE` 继续为 `311600220`，保留健康检查的既有预期暂停语义。新入口独立受 `config.enabled`、Worker 开关和自身原生 workflow active 状态约束；缺任一项即停止。新入口不要求或允许为了接管而重启旧全仓写者。回退先关闭新入口/Worker，再保全原对象恢复记录，旧暂停标记保持。
 
@@ -59,6 +59,17 @@ normal 仍为原 11 顶层字段，人工验证成功使用 `status: READY`、`r
 
 人工观察恢复的实际待办为既有固定 candidate-status 评论及 preview。`projection.preview` 是内容部分；完整正文由 `manualCandidateBody` 确定：原 owner marker、准确候选 head、单位版本，再加 preview。只有 observer 才更新该派生结果并原生回读；相同结果无新增写入。人工完成使用 `READY / MANUAL_PROJECTION / done`。
 
-observer artifact 在原严格顶层字段之外统一增加 `projectionEvidence`：旧 G 为 null，人工完成必须为 `{commentId,bodyDigest,previewDigest}`。摘要分别对应完整评论与 preview。D 不得仅信 producer 的 outcome 或这些摘要：须独立核准确 PR、App bot、唯一 owner marker、完整正文、受保护 session.preview/statusCommentId，并重核 head/source/state。缺失、重复、API 未知或移动均不返回完成。
+observer artifact 在原严格顶层字段之外统一增加 `projectionEvidence`：G 与人工完成均必须为 `{commentId,bodyDigest,previewDigest}`。摘要分别对应完整评论与 preview。D 不得仅信 producer 的 outcome 或这些摘要：须独立核准确 PR、App bot、唯一 owner marker、完整正文、受保护 session.preview/statusCommentId，并重核 head/source/state。缺失、重复、API 未知或移动均不返回完成。
 
 真实漏立即处理样本须保留登记前自然存在的评论/preview 差异，随后由真实 alarm 在原窗口完成；已经完成的重放不算恢复正例。本地 tests 不替代真实产品窗口或 E11 签收。
+
+
+## 完整缓存、完成判据与控制器兼容
+
+所有 mode 都要求 enabled=true 且 deploymentSha 为完整部署来源 SHA。generatedSnapshotPath 必须指向同一候选的 generated 归档；读取全部分块并核 owner/kind/digest、与 session.generated 内容深等，缺失或错配拒绝。人工事实同样保留并核对完整旧 G。
+
+G 缓存观察通过 candidateProjectionPreview 恢复冻结 notes 与原生贡献者的既有 preview，再通过 candidateStatusBody 恢复固定评论并回读。只有 READY/CACHED_OBSERVATION 或 READY/MANUAL_PROJECTION 且原生投影证据完整才可 done。人工冲突保护仍会维护保护评论，但 outcome 为 needs_attention，不作为候选完成。
+
+超过 48KiB 的原评论合同继续使用受保护 preview 的固定 GitHub blob 链接。复用旧链接前核其完整 commit SHA、准确 repository/候选路径、state 祖先及实际 blob 原文与最终 preview 一致；记录 statusCommentId 导致 state head 前进时不改写已经正确的链接。消费者独立重算正文，并读取链接实际指向的 immutable blob，不能仅相信当前 state 或任意 URL。
+
+人工缓存原 producer 为历史证据，需按其准确 run/attempt/SHA 独立验证；当前执行 artifact 则绑定当前受审控制器。相同缓存可以在新控制器下真实重验并首次登记，不因历史 producer SHA 不同永久锁死。既有 DO 对象的 policySha/deploymentSha、epoch、T0、deadline 和 pending intent 仍保持原值；跨 pin 的已有对象明确停止，本变更不提供暗迁移、自动续窗或完整跨部署恢复。

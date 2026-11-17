@@ -337,6 +337,10 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         return pushPreparedCandidate(request.directory, request.remote, branch, prepared, token, root);
       },
       createPullRequest: data => api('POST', `/repos/${request.repository}/pulls`, { head: data.branch, base: data.base, title: data.title, body: data.body }),
+      readPreview:async(commit,path)=>{
+        if(await fetchBranch('steward/release-state')!==expectedHead||!await runtime.isAncestor(commit,expectedHead))fail('CANDIDATE_PREVIEW_SOURCE');
+        return fileAt(commit,path);
+      },
       comments: async pr => (await pages(`issues/${pr}/comments`)).map(c => ({ id: c.id, authorId: c.user.id, body: c.body })),
       createComment: (pr, body) => api('POST', `/repos/${request.repository}/issues/${pr}/comments`, { body }),
       updateComment: (id, body) => api('PATCH', `/repos/${request.repository}/issues/comments/${id}`, { body }),
@@ -362,8 +366,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     };
     if(observation&&session.manualValidation) {
       const actual=candidateObservationIdentity(session);
-      if(Object.keys(actual).sort().join()!==Object.keys(observation).sort().join()||Object.entries(actual).some(([key,value])=>observation[key]!==value)
-        ||session.manualValidation.producer.controllerSha!==controllerSha)fail('MANUAL_OBSERVATION_IDENTITY');
+      if(Object.keys(actual).sort().join()!==Object.keys(observation).sort().join()||Object.entries(actual).some(([key,value])=>observation[key]!==value))fail('MANUAL_OBSERVATION_IDENTITY');
       const cache=session.manualValidation,pull=await manualIO.pull();
       if(pull.number!==cache.prNumber||pull.head?.repo?.id!==cache.repositoryId||pull.base?.repo?.id!==cache.repositoryId
         ||pull.head.ref!==cache.branch||pull.base.ref!==request.defaultBranch||pull.head.sha!==cache.headSha

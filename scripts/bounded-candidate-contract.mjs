@@ -1,3 +1,4 @@
+import {isDeepStrictEqual} from 'node:util';
 import { createHash } from 'node:crypto';
 import { candidateObservationIdentity, decodeCandidateArchive, decodeCandidateDocument, decodeReleaseRecord } from '../packages/runner/dist/index.js';
 export const product = { id: 1187527897, name: 'splrad/LayerScape' };
@@ -30,6 +31,16 @@ export async function candidateEvidence(get,{requireReady=true}={}) {
   for(let i=1;i<first.count;i++)chunks.push(await chunk(path.replace('.json',`-${i}.json`)));
   if(chunks.some(c=>c.repositoryId!==product.id||c.candidateId!==state.candidate.id||c.documentKind!=='session'))throw Error('BOUNDED_SESSION');
   const session={repository:state,...await decodeCandidateDocument(chunks)};
+  if(session.generated) {
+    const generatedPath=state.candidate.generatedSnapshotPath;
+    if(typeof generatedPath!=='string'||!generatedPath.startsWith(`generated/${state.candidate.id}/`)
+      ||!/\/[a-f0-9]{64}\.json$/.test(generatedPath)||generatedPath.split('/').length!==3)throw Error('BOUNDED_GENERATED_PATH');
+    const firstGenerated=await chunk(generatedPath),generatedChunks=[firstGenerated];
+    if(!Number.isSafeInteger(firstGenerated.count)||firstGenerated.count<1||firstGenerated.count>128)throw Error('BOUNDED_GENERATED_CHUNKS');
+    for(let i=1;i<firstGenerated.count;i++)generatedChunks.push(await chunk(generatedPath.replace('.json',`-${i}.json`)));
+    if(generatedChunks.some(c=>c.repositoryId!==product.id||c.candidateId!==state.candidate.id||c.documentKind!=='generated')
+      ||!isDeepStrictEqual(await decodeCandidateDocument(generatedChunks),session.generated))throw Error('BOUNDED_GENERATED_MISMATCH');
+  }
   let identity=null;
   if(requireReady)identity=candidateObservationIdentity(session);
   else if(session.manualValidation)identity=candidateObservationIdentity(session);

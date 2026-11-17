@@ -7,7 +7,7 @@ export { pipelineIdentity, pipelineNotes, pipelineInspect, pipelineRecoverCycleF
 export { inspectProductArtifacts, sealProductArtifacts, validateProductManifest } from './release-artifacts.js';
 export { renderFrozenReleaseNotes } from '../../core/src/release-template.js';
 export { decodeCompletionArchive } from '../../core/src/release-history.js';
-export { advanceReleaseCandidate, candidateObservationIdentity } from './release-candidate.js';
+export { advanceReleaseCandidate, candidateObservationIdentity, candidateProjectionPreview, candidateStatusBody } from './release-candidate.js';
 export { candidateId } from '../../core/src/release-candidate.js';
 export { generateCandidate, pushPreparedCandidate } from './release-candidate-update.js';
 export { collectContentInput, planContentBatches, resumeContentBatches, assembleUnitNotes, contentWireInput } from './release-content.js';

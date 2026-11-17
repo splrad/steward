@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import YAML from 'yaml';
 import {createHash} from 'node:crypto';
-import {candidateEvidence,validateCandidateEvent,sha256,product} from '../bounded-candidate-contract.mjs';
+import {validateCandidateEvent,sha256,product} from '../bounded-candidate-contract.mjs';
 import {processNormalCandidateEvent} from '../release-candidate-event.mjs';
 import {entryGuard,resultOutcome,applyCandidateEvent} from '../bounded-release-entry.mjs';
 const head='a'.repeat(40),id=1296724484,root='/repos/splrad/steward';
@@ -19,7 +19,7 @@ function fixture(mode='observe') {
   return {env,run,data,get};
 }
 for(const mode of ['observe','event','normal'])test(`accepts exact native ${mode} entry`,async()=>{
-  const f=fixture(mode);assert.equal(await entryGuard(f.env,f.get,{enabled:true}),f.run);
+  const f=fixture(mode);assert.equal(await entryGuard(f.env,f.get,{enabled:true,deploymentSha:head}),f.run);
 });
 test('disabled adoption config stops before native reads',async()=>{
   const f=fixture();await assert.rejects(entryGuard(f.env,()=>assert.fail('native read'),{enabled:false}),/NOT_CONNECTED/);
@@ -35,12 +35,16 @@ for(const drift of ['pause','source','attempt','fork','path','event','release','
   if(drift==='release')f.data[`${root}/actions/workflows/311600220`].state='active';
   if(drift==='new-disabled')f.data[`${root}/actions/workflows/release-observe.yml`].state='disabled_manually';
   if(drift==='workflow-id')f.run.workflow_id=78;
-  await assert.rejects(entryGuard(f.env,f.get,{enabled:true}),/BOUNDED_/);
+  await assert.rejects(entryGuard(f.env,f.get,{enabled:true,deploymentSha:head}),/BOUNDED_/);
 });
 test('unknown or generic READY result is not done',()=>{
   assert.equal(resultOutcome({status:'READY'}),'needs_attention');
+  assert.equal(resultOutcome({status:'READY',reason:'CACHED_OBSERVATION'}),'needs_attention');
+  assert.equal(resultOutcome({status:'READY',reason:'MANUAL_PROJECTION'}),'needs_attention');
+  assert.equal(resultOutcome({status:'READY',reason:'CACHED_OBSERVATION',projectionEvidence:{commentId:1,bodyDigest:'a'.repeat(64),previewDigest:'b'.repeat(64)}}),'done');
   assert.equal(resultOutcome({reason:'SOURCE_CHANGED'}),'source_changed');
   assert.equal(resultOutcome({reason:'EDITING'}),'paused');
+  assert.equal(resultOutcome({status:'CONFLICT',reason:'HUMAN_EDIT_CONFLICT'}),'needs_attention');
 });
 test('fixed observation workflows contain no schedule or default coordinator execution',async()=>{
   for(const name of ['release-observe','bounded-release-event','release-candidate-event']) {
@@ -62,7 +66,8 @@ function candidateFixture() {
   const text=JSON.stringify(session),middle=Math.floor(text.length/2),path=`generated/${digest}/session.json`;
   const chunks=[text.slice(0,middle),text.slice(middle)].map((content,index)=>({schemaVersion:1,repositoryId:product.id,candidateId:digest,
     documentKind:'session',documentDigest:sha256(text),index,count:2,content}));
-  const files={'state.json':state,[path]:chunks[0],[path.replace('.json','-1.json')]:chunks[1]};
+  const generatedText=JSON.stringify(session.generated),generatedChunk={schemaVersion:1,repositoryId:product.id,candidateId:digest,documentKind:'generated',documentDigest:sha256(generatedText),index:0,count:1,content:generatedText};
+  const files={'state.json':state,[path]:chunks[0],[path.replace('.json','-1.json')]:chunks[1],[candidate.generatedSnapshotPath]:generatedChunk};
   const data={ [prefix]:{id:product.id,full_name:product.name,default_branch:'main'},
     [`${prefix}/git/ref/heads/steward/release-state`]:{ref:'refs/heads/steward/release-state',object:{type:'commit',sha:commit}},
     [`${prefix}/git/ref/heads/main`]:{object:{sha:head}},
@@ -79,7 +84,7 @@ function candidateFixture() {
     }
     assert.ok(url in data,url);return data[url];
   };
-  return {get,data,state,chunks,prefix,setCorrupt:()=>{corrupt=true;}};
+  return {get,data,state,chunks,files,generatedChunk,prefix,setCorrupt:()=>{corrupt=true;}};
 }
 test('native event binds exact PR and assembled immutable session',async()=>{
   const f=candidateFixture(),v=await validateCandidateEvent({repositoryId:product.id,prNumber:192,eventId:7},f.get);
@@ -170,4 +175,23 @@ test('candidate observer uses the five-minute job budget',async()=>{
   const {parse}=await import('yaml');
   const workflow=parse(await readFile(new URL('../../.github/workflows/release-observe.yml',import.meta.url),'utf8'));
   assert.equal(workflow.jobs.observe['timeout-minutes'],5);
+});
+
+for(const mode of ['normal','event','observe'])test(`unbound deployment blocks ${mode} before native reads`,async()=>{
+  const f=fixture(mode);for(const deploymentSha of [null,undefined,'bad'])await assert.rejects(entryGuard(f.env,()=>assert.fail('native read'),{enabled:true,deploymentSha}),/NOT_CONNECTED/);
+});
+for(const kind of ['missing','content','owner','kind','digest','chunk'])test(`generated archive refuses ${kind} drift`,async()=>{
+  const f=candidateFixture();
+  if(kind==='missing')delete f.files[f.state.candidate.generatedSnapshotPath];
+  if(kind==='content'){const value=JSON.parse(f.generatedChunk.content);value.sourceDigest='0'.repeat(64);f.generatedChunk.content=JSON.stringify(value);f.generatedChunk.documentDigest=sha256(f.generatedChunk.content);}
+  if(kind==='owner')f.generatedChunk.candidateId='0'.repeat(64);if(kind==='kind')f.generatedChunk.documentKind='session';
+  if(kind==='digest')f.generatedChunk.documentDigest='0'.repeat(64);if(kind==='chunk')f.generatedChunk.count=2;
+  await assert.rejects(validateCandidateEvent({repositoryId:product.id,prNumber:192,eventId:7},f.get));
+});
+
+test('complete split generated archive is bound to the session',async()=>{
+  const f=candidateFixture(),chunk=f.generatedChunk,text=chunk.content,middle=Math.floor(text.length/2);
+  chunk.count=2;chunk.content=text.slice(0,middle);
+  f.files[f.state.candidate.generatedSnapshotPath.replace('.json','-1.json')]={...chunk,index:1,content:text.slice(middle)};
+  assert.equal((await validateCandidateEvent({repositoryId:product.id,prNumber:192,eventId:7},f.get)).identity.version,'1.0.0');
 });

@@ -10,7 +10,7 @@ const central='splrad/steward',centralId=1296724484;
 const botIdentity={name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
 const fail=reason=>{throw Error(reason);};
 export async function entryGuard(env,get,config) {
-  if(config.enabled!==true)fail('BOUNDED_NOT_CONNECTED');
+  if(config.enabled!==true||!sha(config.deploymentSha))fail('BOUNDED_NOT_CONNECTED');
   if(env.GITHUB_REPOSITORY!==central||env.GITHUB_REPOSITORY_ID!==String(centralId)||env.GITHUB_REF!=='refs/heads/main'
     ||!sha(env.STEWARD_CONTROLLER_SHA)||env.STEWARD_EXPECTED_PAUSED_RELEASE!=='311600220')fail('BOUNDED_PAUSED_OR_SOURCE');
   const workflow={observe:'.github/workflows/release-observe.yml',event:'.github/workflows/bounded-release-event.yml',normal:'.github/workflows/release-candidate-event.yml'}[env.BOUNDED_MODE];
@@ -30,7 +30,10 @@ export async function entryGuard(env,get,config) {
 export function resultOutcome(result) {
   if(result.reason==='EDITING')return 'paused';
   if(result.reason==='SOURCE_CHANGED'||result.reason==='MERGED_SOURCE_HANDOFF'||result.reason==='CLOSED_PR')return 'source_changed';
-  if(result.reason==='HUMAN_EDIT_CONFLICT'||result.reason==='CACHED_OBSERVATION'||result.reason==='MANUAL_PROJECTION')return 'done';
+  const evidence=result.projectionEvidence;
+  if(result.status==='READY'&&(result.reason==='CACHED_OBSERVATION'||result.reason==='MANUAL_PROJECTION')
+    &&evidence&&Object.keys(evidence).sort().join(',')==='bodyDigest,commentId,previewDigest'
+    &&Number.isSafeInteger(evidence.commentId)&&evidence.commentId>0&&key(evidence.bodyDigest)&&key(evidence.previewDigest))return 'done';
   return 'needs_attention';
 }
 /** A real event changes control state, never the original registration window. */

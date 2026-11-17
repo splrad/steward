@@ -77,5 +77,12 @@ it('native manual normal freeze and observer project use real Git, preserve G an
     expect(JSON.stringify(session.generated)).toBe(originalGenerated);expect(session.repository.candidate.baseSha).toBe(G);expect(session.repository.candidate.publishedHead).toBe(G);
     expect(await git('show',`${H}:.release-notes/layerscape.md`)).toBe(originalNotes);expect(await head(c.branch)).toBe(H);expect(session.manualValidation.producer.runId).toBe(42);
     expect(session.preview).toBe(session.manualValidation.projection.preview);expect(session.repository.activeCycleId).toBeNull();
+    const newController='a'.repeat(40),newProducer={...f.producer,runId:44,controllerSha:newController};
+    const revalidated=await nativeReleaseCandidate(request,{...options,controllerSha:newController,manualCandidateProducer:newProducer,expectedStateSha:completed});
+    expect(revalidated.reason).toBe('MANUAL_VALIDATED');
+    const observedAgain=await nativeReleaseCandidate(request,{...options,controllerSha:newController,manualCandidateProducer:undefined,expectedStateSha:completed,observation});
+    expect(observedAgain.reason).toBe('MANUAL_PROJECTION');expect(await head('steward/release-state')).toBe(completed);expect(writes).toEqual(['comment']);
+    session=await read();expect(session.manualValidation.producer).toEqual(f.producer);expect(candidateObservationIdentity(session)).toEqual(observation);
+
   } finally {await rm(root,{recursive:true,force:true});}
 });

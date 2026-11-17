@@ -32,6 +32,7 @@ export interface CandidateRuntime {
   comments(pr: number): Promise<CandidateComment[]>;
   createComment(pr: number, body: string): Promise<void>;
   updateComment(id: number, body: string): Promise<void>;
+  readPreview?(commit: string, path: string): Promise<string>;
 }
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 /** The same PR owns every generation; metadata updates are deliberately absent from this port. */
@@ -58,6 +59,23 @@ export function candidateObservationIdentity(session: CandidateSession): Candida
   return { repositoryId: repository.repositoryId, cycleId: candidate.id, channel: 'candidate',
     version: generated.units[0].version, artifactDigest: 'sha256:' + digest(generated), sourceSha: candidate.baseSha,
     stage: 'candidate', epoch: digest([repository.repositoryId, candidate.id, candidate.baseSha, candidate.generatedSnapshotPath, candidate.publishedHead]), upstreamPR: null };
+}
+/** Exact existing generated-note projection, with frozen native contributor identities. */
+export function candidateProjectionPreview(session:CandidateSession):string {
+  if(!session.generated||!session.identity)throw Error('CANDIDATE_PROJECTION_CACHE');
+  const notes=session.generated.files.filter(f=>f.path.startsWith('.release-notes/')&&f.content!==null);
+  if(!notes.length)throw Error('CANDIDATE_PROJECTION_NOTES');
+  return notes.map(f=>{
+    const unit=session.identity!.units.find(u=>`.release-notes/${u.id}.md`===f.path)
+      ??(session.identity!.units.length===1?session.identity!.units[0]:undefined);
+    if(!unit)throw Error('CANDIDATE_PROJECTION_UNIT');
+    return `# ${f.path}\n\n${f.content}`+renderReleaseContributors(unit.contributors.contributors);
+  }).join('\n').replace(/\r\n?/g,'\n');
+}
+export function candidateStatusBody(repository:string,candidateId:string,units:{id:string;version:string}[],head:string,preview:string,previewCommit:string):string {
+  const header=`<!-- steward:candidate-status:${candidateId} -->\n候选 head: ${head}\n${units.map(u=>`${u.id}: ${u.version}`).join('\n')}\n\n`;
+  const body=header+preview;
+  return Buffer.byteLength(body)<=48*1024?body:`${header}[完整预览](https://github.com/${repository}/blob/${previewCommit}/generated/${candidateId}/preview.md)\n`;
 }
 export async function advanceReleaseCandidate(session: CandidateSession, io: CandidateRuntime, observation?: CandidateObservation) {
   const repository = session.repository;
@@ -149,14 +167,17 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   const statusComment = async (body: string, previewHead: string, currentHead: string) => {
     if (!candidate.prNumber) return;
     const marker = `<!-- steward:candidate-status:${candidate.id} -->`;
-    const units = session.generated?.units.map(u => `${u.id}: ${u.version}`).join('\n') ?? '';
-    const link = `https://github.com/${io.repository}/blob/${previewHead}/generated/${candidate.id}/preview.md`;
-    const header = `${marker}\n候选 head: ${currentHead}\n${units}\n\n`;
-    const full = `${header}${body}`;
-    const text = Buffer.byteLength(full) <= 48 * 1024 ? full : `${header}[完整预览](${link})\n`;
+    let text=candidateStatusBody(io.repository,candidate.id,session.generated?.units??[],currentHead,body,previewHead);
     const own = (await io.comments(candidate.prNumber)).filter(c => c.authorId === io.appBotId && c.body.includes(marker));
     const existing = candidate.statusCommentId === null ? own : own.filter(c => c.id === candidate.statusCommentId);
-    if (existing.length > 1 || candidate.statusCommentId !== null && existing.length !== 1) throw new Error('CANDIDATE_STATUS_COMMENT_IDENTITY');
+    if (own.length>1 || existing.length > 1 || candidate.statusCommentId !== null && existing.length !== 1) throw new Error('CANDIDATE_STATUS_COMMENT_IDENTITY');
+    // Reuse a verified immutable large-preview link; recording statusCommentId can advance the state ref.
+    if(existing[0]&&io.readPreview) {
+      const match=/\[完整预览\]\(https:\/\/github\.com\/([^/]+\/[^/]+)\/blob\/([a-f0-9]{40})\/(generated\/[a-f0-9]{64}\/preview\.md)\)\n$/.exec(existing[0].body);
+      if(match&&match[1]===io.repository&&match[3]===`generated/${candidate.id}/preview.md`
+        &&candidateStatusBody(io.repository,candidate.id,session.generated?.units??[],currentHead,body,match[2]!)===existing[0].body
+        &&await io.readPreview(match[2]!,match[3]!)===body)text=existing[0].body;
+    }
     if (existing[0]) {
       if (existing[0].body !== text) await io.updateComment(existing[0].id, text);
     } else {
@@ -165,6 +186,8 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
     const readback = (await io.comments(candidate.prNumber)).filter(c => c.authorId === io.appBotId && c.body.includes(marker));
     if (readback.length !== 1 || readback[0]!.body !== text) throw new Error('CANDIDATE_STATUS_COMMENT_UNKNOWN');
     if (candidate.statusCommentId !== readback[0]!.id) { candidate.statusCommentId = readback[0]!.id; await save(); }
+    const rawDigest=(value:string)=>createHash('sha256').update(value).digest('hex');
+    return {commentId:readback[0]!.id,bodyDigest:rawDigest(text),previewDigest:rawDigest(body)};
   };
   if (observed.pr?.editing) {
     session.preview = `已暂停候选写入；请在原PR处理人工修改。当前 head：${observed.pr.head}。\n`;
@@ -182,7 +205,19 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   }
   // A fixed observation can only project the frozen identity and protect existing notes.
   // It never recovers a pending write, regenerates content, or creates another PR.
-  if (observation) return { status: 'READY', reason: 'CACHED_OBSERVATION', head: observed.head };
+  if (observation) {
+    const stable=async()=>{
+      const now=await current(),latest=await io.source();
+      if(!now.pr||now.pr.state!=='open'||now.pr.editing||now.head!==observed.head||latest.baseSha!==source.baseSha
+        ||latest.authorsDigest!==source.authorsDigest)throw Error('CANDIDATE_OBSERVATION_MOVED');
+    };
+    await stable();const preview=candidateProjectionPreview(session);
+    const changed=session.preview!==preview;session.preview=preview;
+    const archive=changed?await save():await io.save(session);
+    await stable();const projectionEvidence=await statusComment(preview,archive,observed.head!);
+    await stable();if(!projectionEvidence)throw Error('CANDIDATE_PROJECTION_UNKNOWN');
+    return { status: 'READY', reason: 'CACHED_OBSERVATION', head: observed.head,projectionEvidence };
+  }
   // Missing author facts block only this repository's new takeover, not implementation or other repositories.
   selectReleaseContributors([], source.authors);
   const generation = await io.generation(source.baseSha);

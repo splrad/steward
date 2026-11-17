@@ -379,3 +379,33 @@ it.each(['missing','closed','merged'])('fixed observation stops on %s PR without
   }
   expect(f.saved).toHaveLength(0);
 });
+
+it('fixed G observation restores stale preview and missing comment, then keeps the same result',async()=>{
+  const f=await observationFixture(),binding=candidateObservationIdentity(f.session),G=structuredClone(f.session.generated);
+  f.session.preview='已暂停候选写入';let commentsWritten=0;
+  const create=f.io.createComment;f.io.createComment=async(pr,body)=>{commentsWritten++;await create(pr,body);};
+  const first=await advanceReleaseCandidate(f.session,f.io,binding);
+  expect(first).toMatchObject({status:'READY',reason:'CACHED_OBSERVATION',projectionEvidence:{commentId:10}});
+  expect(f.session.preview).toContain(f.notes);expect(f.session.preview).not.toContain('已暂停');
+  expect(f.comments.find(c=>c.id===10)!.body).toContain(f.session.preview!);
+  const revision=f.session.repository.revision;
+  expect(await advanceReleaseCandidate(f.session,f.io,binding)).toEqual(first);expect(commentsWritten).toBe(1);
+  expect(f.session.repository.revision).toBe(revision);expect(f.session.generated).toEqual(G);expect(f.pushes()).toBe(0);
+});
+it('fixed G observation cannot report done when the native comment write/readback fails',async()=>{
+  const f=await observationFixture(),binding=candidateObservationIdentity(f.session);
+  f.io.createComment=async()=>{};
+  await expect(advanceReleaseCandidate(f.session,f.io,binding)).rejects.toThrow('CANDIDATE_STATUS_COMMENT_UNKNOWN');
+});
+it('large fixed G projection reuses its verified old archive link after the state ref advances',async()=>{
+  const f=await observationFixture(),long=f.notes+'\n'+('人工发布资料。'.repeat(9000));
+  f.pr.head=await f.commit('.release-notes/app.md',long);f.session.generated!.files[0]!.content=long;
+  f.session.repository.candidate!.publishedHead=f.pr.head;const binding=candidateObservationIdentity(f.session);
+  let saves=0,updates=0;f.io.save=async value=>{f.saved.push(structuredClone(value));return (++saves===1?'f':'e').repeat(40);};
+  f.io.updateComment=async()=>{updates++;throw Error('must keep stable link');};
+  f.io.readPreview=async(commit,path)=>{expect(commit).toBe('f'.repeat(40));expect(path).toBe(`generated/${digest}/preview.md`);return f.session.preview!;};
+  const first=await advanceReleaseCandidate(f.session,f.io,binding),body=f.comments.find(c=>c.id===10)!.body;
+  expect(body).toContain('/blob/'+'f'.repeat(40)+'/');expect(Buffer.byteLength(body)).toBeLessThan(48*1024);
+  const revision=f.session.repository.revision;
+  expect(await advanceReleaseCandidate(f.session,f.io,binding)).toEqual(first);expect(updates).toBe(0);expect(f.session.repository.revision).toBe(revision);
+});
