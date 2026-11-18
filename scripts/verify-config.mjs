@@ -146,7 +146,7 @@ const triggerStart = wranglerLines.indexOf("[triggers]");
 if (triggerStart < 0 || wranglerLines.filter(line => line === "[triggers]").length !== 1) throw new Error("运行配置必须恰好包含一个Cron触发器块");
 const triggerEndOffset = wranglerLines.slice(triggerStart + 1).findIndex(line => /^\[\[?[^\]]+\]\]?$/u.test(line));
 const triggerEnd = triggerEndOffset < 0 ? wranglerLines.length : triggerStart + 1 + triggerEndOffset;
-if (JSON.stringify(wranglerLines.slice(triggerStart, triggerEnd).filter(Boolean)) !== JSON.stringify(["[triggers]", 'crons = ["* * * * *"]'])) throw new Error("运行配置必须每分钟触发一次正文写意图恢复");
+if (JSON.stringify(wranglerLines.slice(triggerStart, triggerEnd).filter(Boolean)) !== JSON.stringify(["[triggers]", 'crons = []'])) throw new Error("已退役周期任务不得配置 cron");
 
 
 for (const section of ["public", "private", "repository"]) {

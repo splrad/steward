@@ -130,7 +130,7 @@ describe('exact legacy Gate consumer retirement', () => {
     environment.VALIDATION_COORDINATOR = { idFromName: (id: string) => id, get: () => ({ fetch: (url: string, init: RequestInit) => coordinator.fetch(new Request(url, init)) }) } as unknown as DurableObjectNamespace;
     await worker.scheduled({ scheduledTime: 0 } as ScheduledController, environment);
     noGateWrites();
-    expect(GitHubClient.prototype.listInstallationRepositories).toHaveBeenCalled();
+    expect(GitHubClient.prototype.listInstallationRepositories).not.toHaveBeenCalled();
     expect(dispatchWorkflow).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       workflow: 'onboard-repository.yml', inputs: { deliveryId: 'body-write-recovery:intent', policySha: environment.POLICY_SHA },
     }));

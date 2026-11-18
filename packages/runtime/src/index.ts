@@ -771,34 +771,7 @@ export default {
     if (release) return release;
     return response(404);
   },
-  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
-    const results = await Promise.allSettled([
-      recoverPullRequestBodyWriteIntents(env),
-      (async () => {
-        // Review webhooks recheck immediately; the full safety sweep runs every 15 minutes.
-        if (env.WORKFLOW_EVALUATOR_SHA === undefined || Math.floor(controller.scheduledTime / 60_000) % 15 !== 0) return;
-        if (!env.VALIDATION_COORDINATOR) throw new Error('VALIDATION_COORDINATOR_REQUIRED');
-        const snapshot = await authoritySnapshot(env);
-        // The trusted catalog remains available even when evaluator contents cannot be read.
-        const ids = new Set(Object.entries(repositoryCatalog.repositories).filter(([, config]) => config.managed).map(([id]) => id));
-        for (const id of Object.keys(snapshot.value?.repositories ?? {})) ids.add(id);
-        // Installation metadata also covers repositories governed by catalog defaults.
-        // A listing failure must not prevent invalidating known catalog repositories.
-        let inventoryError: unknown;
-        try {
-          if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
-          const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY, installationId: Number(env.INSTALLATION_ID), permissions: { metadata: "read" }, policySha: env.POLICY_SHA });
-          const installed = await new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA).listInstallationRepositories();
-          for (const repository of installed.filter(belongsToOrganization)) ids.add(String(repository.id));
-        } catch (error) { inventoryError = error; }
-
-        const results = await settledPool([...ids], 4, id => refreshWorkflowContractChecks(env, Number(id), undefined, snapshot));
-        const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
-        if (failed) throw failed.reason;
-        if (inventoryError) throw inventoryError;
-      })(),
-    ]);
-    const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
-    if (failed) throw failed.reason;
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    await recoverPullRequestBodyWriteIntents(env);
   },
 };

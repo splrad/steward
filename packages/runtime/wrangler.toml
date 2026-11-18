@@ -8,7 +8,7 @@ workers_dev = true
 binding = "CF_VERSION_METADATA"
 
 [triggers]
-crons = ["* * * * *"]
+crons = []
 
 [[d1_databases]]
 binding = "ISSUE_SNAPSHOTS"
