@@ -15,7 +15,7 @@ function job(id:number,name:string,attempt=1,conclusion='failure') {
 }
 async function fixture(file='quality-language-summary.yml') {
   const definition=await api.maintenanceDefinition(file),workflow={id:5,path:'.github/workflows/'+file,state:'active'};
-  const run:any={id:12,run_attempt:1,workflow_id:5,path:workflow.path,repository:{id:1296724484},head_repository:{id:1296724484},head_sha:S,head_branch:'main',event:'schedule',created_at:'2026-10-30T00:00:00Z',updated_at:'2026-10-30T00:01:00Z',status:'completed',conclusion:'failure'};
+  const run:any={id:12,run_attempt:1,workflow_id:5,path:workflow.path,repository:{id:1296724484},head_repository:{id:1296724484},head_sha:S,head_branch:'main',event:file==='quality-language-summary.yml'?'workflow_dispatch':'schedule',created_at:'2026-10-30T00:00:00Z',updated_at:'2026-10-30T00:01:00Z',status:'completed',conclusion:'failure'};
   const f:any={definition,workflow,run,jobs:Object.entries(definition.names).map(([key,name],i)=>job(i+1,key==='update'?'update (0)':name as string)),calls:[],records:new Map(),saves:0,mode:'accepted'};
   f.io={request:async(method:string,path:string)=>{
     f.calls.push([method,path]);

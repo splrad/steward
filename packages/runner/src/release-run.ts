@@ -659,7 +659,7 @@ export async function readChannelArtifacts(context:EvidenceContext,run:NativeRun
 
 /** Short read-only probe Runs own credentials and native index tools unavailable to the central reader. */
 export async function observeNativeChannels(context:EvidenceContext,history:ChannelRecord[],
-  root:string,controllerDirectory:string,token:string,io:EvidenceTransport,now:string,oras:OrasRead=nativeOrasRead) {
+  root:string,controllerDirectory:string,token:string,io:EvidenceTransport,now:string,oras:OrasRead=nativeOrasRead, allowProbeDispatch=true) {
   const reader=new NativeEvidenceReader(io,context.repository),repository=await reader.json('');
   if(repository.id!==context.repositoryId||repository.full_name!==context.repository||repository.archived!==false||repository.disabled!==false)fail('channel repository');
   const allTargets=channelTargets(context,context.cycle.requiredChannels.map(channel=>{
@@ -740,6 +740,7 @@ export async function observeNativeChannels(context:EvidenceContext,history:Chan
     if(observed.reads.length===targets.length)return {files,results,runs,reads:[...direct.reads,...observed.reads],probe:'OBSERVED' as const,executionSha,defaultBranch:repository.default_branch,workflowId:workflow.id};
   }
   if((await reader.json(`commits/${encodeURIComponent(repository.default_branch)}`)).sha!==executionSha)fail('probe source moved');
+  if (!allowProbeDispatch) return {files,results,runs,reads:direct.reads,probe:'UNKNOWN' as const,executionSha,defaultBranch:repository.default_branch,workflowId:workflow.id};
   // No business request or budget is written for this read-only dispatch. Lost responses are found by the same semantic key on the next wake.
   try {await io.request('POST',`/repos/${context.repository}/actions/workflows/${workflow.id}/dispatches`,512*1024,{ref:repository.default_branch,inputs});}catch{/* Next wake reconciles matching native Runs. */}
   return {files,results,runs,reads:direct.reads,probe:'REQUESTED' as const,executionSha,defaultBranch:repository.default_branch,workflowId:workflow.id};

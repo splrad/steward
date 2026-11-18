@@ -120,19 +120,19 @@ it('claims at most ten findings per PR per wake and resumes the remaining findin
   await translateQualitySources(cache,f.client,f.store,{remaining:10,deadline:clock()+1080000},clock);
   expect(renderQualitySummary(cache).complete).toBe(12);expect(f.calls).toBe(2);
 });
-it('workflow uses one Environment, reviewed SHA, scheduled observer and credential-free install',async()=>{
+it('workflow uses one Environment, reviewed SHA, targeted event and credential-free install',async()=>{
   const workflow=YAML.parse(await readFile('.github/workflows/quality-language-summary.yml','utf8'));
-  expect(workflow.on.schedule[0].cron).toBe('8-58/10 * * * *');expect(workflow.concurrency).toEqual({group:'steward-quality-language','cancel-in-progress':false});
+  expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);expect(workflow.concurrency.queue).toBe('max');
   const job=workflow.jobs['quality-summary'];expect(job['timeout-minutes']).toBe(20);expect(job.environment.name).toBe('steward-release-notes');
   expect(job.steps[0].with.ref).toBe('${{ github.workflow_sha }}');expect(job.steps[2].env).toBeUndefined();
   expect(job.steps[3].env.STEWARD_COPILOT_TOKEN).toBe('${{ github.token }}');
 });
-it('wake sorts by durable observation, shares the ten batch limit, and emits no repository identifiers',async()=>{
-  const {qualityWake}=await import(pathToFileURL(resolve('scripts/quality-language-summary.mjs')).href);
-  const serviced:any[]=[];const result=await qualityWake({discover:async()=>[{id:1,full_name:'private/secret'},{id:2,full_name:'private/another'}],
-    inventory:async(r:any)=>[{pr:1,observedAt:r.id===1?'2026-10-01T00:00:00Z':null}],service:async(item:any,budget:any)=>{serviced.push(item.repository.id);budget.remaining--;return {complete:1,pending:0};}},clock);
-  expect(serviced).toEqual([2,1]);expect(result).toEqual({repositories:2,pullRequests:2,complete:2,pending:0,failed:0,batches:2});
-  expect(JSON.stringify(result)).not.toContain('private');
+it('accepts only a registered public target and exact PR/head locator',async()=>{
+  const {qualityTarget}=await import(pathToFileURL(resolve('scripts/quality-language-summary.mjs')).href);
+  const input={repository_id:'12',pull_number:'1',head_sha:context.head},registry={12:'test/product'};
+  expect(qualityTarget(input,registry)).toEqual({repository:'test/product',id:12,pr:1,head:context.head});
+  for(const bad of [{repository_id:'13'},{repository_id:'__proto__'},{pull_number:'1.5'},{head_sha:'main'}])
+    expect(()=>qualityTarget({...input,...bad},registry)).toThrow('EVENT_TARGET');
 });
 it('native wire permits only own neutral Check output, uses no third-party mutation and validates governance integrity',async()=>{
   const {qualityNativeIO,assertQualityProtection}=await import(pathToFileURL(resolve('scripts/quality-language-summary.mjs')).href);

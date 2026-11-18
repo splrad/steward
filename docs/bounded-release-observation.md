@@ -2,7 +2,7 @@
 
 三固定入口在 job 层提前要求 inputs.policy_sha == github.sha 且 github.workflow_sha == github.sha，使旧 policy 或不同 workflow 来源在 runner、依赖安装和秘密注入前跳过；运行时对当前 main、controller、native Run 的原生核验仍全部保留。跳过无 artifact 不表示完成，消费者按原有限确认和 deadline 收束，不重复 POST。该前置门槛不修复排队后的 main 漂移，后者仍由运行时拒绝。
 
-`config/bounded-recheck.json` 已将 `enabled` 设为 `true`，并将 `deploymentSha` 固定为已采用的维护提交 `24dac64757da6c4eceffed5e052c9e8c7f1723f7`。该配置允许通过既有身份与版本校验的显式调用；三个入口仍仅由 `workflow_dispatch` 触发。配置采用后，须完成该主线版本的 Native Validation 与 Governance Promotion，再依次完成产品版本绑定、Worker 部署和真实事件验收。配置采用本身不代表这些步骤已经完成。
+`config/bounded-recheck.json` 已将 `enabled` 设为 `true`，并将 `deploymentSha` 固定为已采用的维护提交 `ee5057beaf07c2c212cf846bfc37b7fa1c3f7283`。该配置允许通过既有身份与版本校验的显式调用；三个入口仍仅由 `workflow_dispatch` 触发。先部署该维护版本的 Worker，并回读确认旧候选绑定仍可用，再合入中央主线。中央主线须通过 Native Validation 与 Governance Promotion，随后完成产品版本绑定和真实事件验收。
 
 ## 候选链
 
@@ -75,3 +75,13 @@ G 缓存观察先核对实际候选 head 的完整 tree 等于 G.baseSha 应用 
 超过 48KiB 的原评论合同继续使用受保护 preview 的固定 GitHub blob 链接。复用旧链接前核其完整 commit SHA、准确 repository/候选路径、state 祖先及实际 blob 原文与最终 preview 一致；记录 statusCommentId 导致 state head 前进时不改写已经正确的链接。消费者独立重算正文，并读取链接实际指向的 immutable blob，不能仅相信当前 state 或任意 URL。
 
 人工缓存原 producer 为历史证据，需按其准确 run/attempt/SHA 独立验证；当前执行 artifact 则绑定当前受审控制器。相同缓存可以在新控制器下真实重验并首次登记，不因历史 producer SHA 不同永久锁死。既有 DO 对象的 policySha/deploymentSha、epoch、T0、deadline 和 pending intent 仍保持原值；跨 pin 的已有对象明确停止，本变更不提供暗迁移、自动续窗或完整跨部署恢复。
+
+## 固定产品发行
+
+`release-cycle-event.yml` 在受保护的中央 main 运行，执行前核原生 App Run、当前 main、已晋级的 `steward/validated-controller` 以及旧入口预期暂停状态。Worker 在产品 push 或已登记运行完成后传入 `event_json/request_key/policy_sha`。业务标识由原产品仓、事件种类和源 SHA 或 Run/attempt 派生。相同键复用同一入口。共享 concurrency 组串行处理发布、候选编辑和观察。
+
+产品默认分支推进时，候选交接从已合并的准确 PR、审定树和 Git 祖先核对得到 S。构建在 `steward/build/<cycleId>` 运行，构建完成后由中央发布器使用原冻结资产。中央发布 Run 的完成回执只处理在受保护 Git 中登记的原始发布调用。渠道 submit/verify 完成后分别按原生运行和独立渠道证据更新；成功的 observe 回执不再请求 probe。每个运行的 `release-cycle-<request_key>-<run_attempt>/result.json` 保留生产者、事件、周期及是否调用过发布器。待处理、未知或失败状态按原对象恢复。
+
+WinGet 首次提交使用 version、installer、defaultLocale 三个清单。消费步骤分别查询准确版本和默认版本，核对版本、安装器 URL 和 SHA-256，下载后核对大小与哈希。安装、安装后检查及卸载的验收分类均为 `EXCLUDED_BY_USER`。
+
+采用时先绑定已审维护来源，晋级中央控制器并对齐 Worker，再将产品工作流固定到正式控制器。产品构建工作流 410998652 和渠道工作流 410998651 由发行负责人在获准窗口启用。回退时先停止新事件受理，保存原请求及 Git 证据并核对已经发出的操作。旧全仓发行工作流 311600220 保持预期暂停。
