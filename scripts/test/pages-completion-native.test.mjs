@@ -32,7 +32,7 @@ test('registered native entry uses a single Pages token, both governance writers
     const head=()=>git('--git-dir='+remote,'rev-parse','refs/heads/'+branch);
     const original=await head();
     const read=fs.readFile.bind(fs);
-    t.mock.method(fs,'readFile',async(file,...args)=>file instanceof URL&&file.pathname.endsWith('/config/pages-completion.json')
+    t.mock.method(fs,'readFile',async (file, ...args) => (file instanceof URL) && file.pathname.endsWith('/config/pages-completion.json')
       ?JSON.stringify({publicSites:[site]}):read(file,...args));
     // Replace only the native Git transport. Git state, claims, commits, readbacks and rules all use the production entry.
     const gitArgs=(cmd,args)=>{
@@ -113,4 +113,20 @@ test('registered native entry uses a single Pages token, both governance writers
     const record=JSON.parse(await git('--git-dir='+remote,'show',branch+':maintenance/pages/12.json'));
     assert.equal(record.runId,12);assert.equal(record.requests[0].responseStatus,201);
   }finally {child.execFile=originalExec;t.mock.restoreAll();syncBuiltinESMExports();await fs.rm(root,{recursive:true,force:true});}
+});
+
+test('a Windows TEMP ancestor junction is rejected before a Pages workspace is allocated',{skip:process.platform!=='win32'},async()=>{
+  const root=await fs.mkdtemp(join(tmpdir(),'pages-temp-link-'));
+  const previous=process.env.TEMP,physical=join(root,'physical'),link=join(root,'alias');
+  try {
+    await fs.mkdir(join(physical,'nested'),{recursive:true});
+    await fs.symlink(physical,link,'junction');
+    process.env.TEMP=join(link,'nested');
+    const {main}=await import('../pages-completion-entry.mjs');
+    await assert.rejects(main({}),/PAGES_TEMP_PARENT_LINK/);
+    assert.deepEqual(await fs.readdir(join(physical,'nested')),[]);
+  }finally {
+    if(previous===undefined)delete process.env.TEMP;else process.env.TEMP=previous;
+    await fs.rm(root,{recursive:true,force:true});
+  }
 });
