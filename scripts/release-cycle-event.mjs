@@ -39,7 +39,11 @@ function probeMatches(cycle,run,botId) {
   });
 }
 
-export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invoke,botId}) {
+function publicationStarts(state,runId,attempt,sha) {
+  return state.domainRecords.filter(r=>r.path.startsWith('evidence/publication/') && r.value.startEvidencePath===null
+    && r.value.centralRun.id===runId && r.value.centralRun.runAttempt<=attempt && r.value.centralRun.headSha===sha);
+}
+export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invoke,botId,producer}) {
   const state=await snapshot(), cycles=state.cycles.map(record=>record.value);
   let cycleId=null;
   let probeReceipt=false;
@@ -72,9 +76,11 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
   if (event.kind==='publication') {
     if (run.repositoryId!==centralId || run.headRepositoryId!==centralId || run.actorId!==botId || run.headBranch!=='main'
       || run.event!=='workflow_dispatch' || run.path!=='.github/workflows/release-cycle-event.yml') fail('CYCLE_PUBLICATION_ORIGIN');
-    const ids=new Set(state.domainRecords.filter(r=>r.path.startsWith('evidence/publication/') &&
-      r.value.centralRun.id===run.id && r.value.centralRun.runAttempt===run.runAttempt && r.value.centralRun.headSha===run.headSha).map(r=>r.value.cycleId));
-    cycleId=only([...ids]);
+    const starts=publicationStarts(state,run.id,run.runAttempt,run.headSha);
+    cycleId=only([...new Set(starts.map(r=>r.value.cycleId))]);
+    // Reconciliation reads every original attempt/job and formal asset, then archives its proof.
+    const prior=await execute('reconcile-publication');
+    if(prior.status!=='OBSERVED')return {...prior,cycleId};
   } else if (run.displayTitle.startsWith('Channels observe ')) {
     cycleId=only(cycles.filter(c=>probeMatches(c,run,botId))).id;
     probeReceipt=true;
@@ -89,7 +95,17 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
       if (bound?.canonicalRunId!==run.id) return {...wait('CANONICAL_RUN_UNCONFIRMED'),cycleId};
     }
     if (run.conclusion!=='success') return {...await execute('rerun',run.id),cycleId};
-    if (request.purpose==='build') return {...await execute('publish'),cycleId};
+    if (request.purpose==='build') {
+      if (producer?.attempt>1) {
+        const starts=publicationStarts(state,producer.runId,producer.attempt-1,producer.controllerSha);
+        if (starts.length) {
+          if(starts.some(r=>r.value.cycleId!==cycleId))fail('CYCLE_PUBLICATION_ORIGIN');
+          const prior=await execute('reconcile-publication');
+          return {...prior,cycleId,publishInvoked:prior.status==='OBSERVED'};
+        }
+      }
+      return {...await execute('publish'),cycleId};
+    }
   }
   const observation=await execute('observe-channel');
   if(observation.reason==='DISTRIBUTION_VERIFIED')return {...observation,cycleId};
@@ -109,20 +125,20 @@ export async function main(env=process.env) {
   const app=await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY);
   if(run.actor?.id!==app.appBotId || run.display_title!=='Release cycle '+requestKey) fail('CYCLE_ACTOR');
   const root=await mkdtemp(join(tmpdir(),'steward-cycle-'));
+  const producer={repositoryId:centralId,runId:run.id,attempt:run.run_attempt,controllerSha:run.head_sha};
   try {
     const result=await app.forRepository(product.id,async token=>{
       const io=nativeEvidenceTransport(token),productReader=new NativeEvidenceReader(io,product.name);
       const refresh=()=>fetchState(root,repository,token);
       const request=async(cycleId,runId)=>({directory:(await refresh()).directory,writeDirectory:await mkdtemp(join(root,'write-')),
         remote:'https://github.com/'+product.name+'.git',repository:product.name,repositoryId:product.id,defaultBranch:'main',appBotId:app.appBotId,cycleId,runId,identity});
-      return advanceEvent(event,{snapshot:async()=>(await refresh()).snapshot,get:path=>productReader.json(path),centralGet,botId:app.appBotId,
+      return advanceEvent(event,{snapshot:async()=>(await refresh()).snapshot,get:path=>productReader.json(path),centralGet,botId:app.appBotId,producer,
         candidate:(expectedSourceSha,expectedStateSha)=>app.forCandidateRepository(product.id,async(writer,candidateReadToken)=>
           releaseCommand('candidate',await request(null,null),{token:writer,io,centralIo,candidateReadToken,copilotToken:env.STEWARD_COPILOT_TOKEN,
             controllerSha:run.head_sha,controllerDirectory:process.cwd(),candidateRuntime:{expectedSourceSha,expectedStateSha}})),
         invoke:async(command,cycleId,runId,allowProbeDispatch)=>releaseCommand(command,await request(cycleId,runId),{token,io,centralIo,allowProbeDispatch,controllerDirectory:process.cwd(),
           centralInvocation:{runId:run.id,runAttempt:run.run_attempt,controllerSha:run.head_sha,defaultBranch:'main'}})});
     });
-    const producer={repositoryId:centralId,runId:run.id,attempt:run.run_attempt,controllerSha:run.head_sha};
     await writeFile('result.json',JSON.stringify({schemaVersion:1,requestKey,producer,event,status:result.status,reason:result.reason??null,
       cycleId:result.cycleId??null,publishInvoked:result.publishInvoked===true})+'\n',{flag:'wx'});
   } finally {await rm(root,{recursive:true,force:true});}

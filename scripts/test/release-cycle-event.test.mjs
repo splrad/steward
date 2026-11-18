@@ -46,9 +46,12 @@ test('a publication completion requires its exact archived invocation', async()=
     invoke:async(command,id)=>{calls.push([command,id]); return {status:'OBSERVED'};}};
   const event={kind:'publication',repositoryId:1296724484,runId:52,attempt:1};
   await assert.rejects(advanceEvent(event,ports),/AMBIGUOUS/);
-  state.domainRecords.push({path:'evidence/publication/test.json',value:{centralRun:{id:52,runAttempt:1,headSha:source},cycleId:'cycle'}});
+  state.domainRecords.push({path:'evidence/publication/test.json',value:{startEvidencePath:null,centralRun:{id:52,runAttempt:1,headSha:source},cycleId:'cycle'}});
   await advanceEvent(event,ports);
-  assert.deepEqual(calls,[['observe-channel','cycle'],['dispatch-channel','cycle']]);
+  assert.deepEqual(calls,[['reconcile-publication','cycle'],['observe-channel','cycle'],['dispatch-channel','cycle']]);
+  calls.length=0; run.run_attempt=2;
+  await advanceEvent({...event,attempt:2},ports);
+  assert.deepEqual(calls,[['reconcile-publication','cycle'],['observe-channel','cycle'],['dispatch-channel','cycle']]);
 });
 test('a WinGet index receipt cannot enqueue another probe',async()=>{
   const {channelTargetsDigest}=await import('../../packages/runner/dist/index.js');
@@ -66,4 +69,21 @@ test('a WinGet index receipt cannot enqueue another probe',async()=>{
   assert.deepEqual(calls,[['observe-channel','cycle',false],['dispatch-channel','cycle',false]]);
   run.display_title='Channels observe '+'0'.repeat(64);
   await assert.rejects(advanceEvent(hint,ports),/AMBIGUOUS/);
+});
+test('a rerun after a lost publication receipt verifies the original attempt without invoking publish again',async()=>{
+  const buildKey='e'.repeat(64),request={purpose:'build',operationKey:buildKey,canonicalRunId:83,workflowId:410998652,
+    ref:'steward/build/pr-192-'+source,executionSha:source,sentAt:'2026-11-19T01:00:00Z'};
+  const run={id:83,run_attempt:1,status:'completed',conclusion:'success',repository:{id:product.id},head_repository:{id:product.id},
+    head_sha:source,head_branch:request.ref,actor:{id:301115370},triggering_actor:{id:301115370},event:'workflow_dispatch',workflow_id:410998652,
+    path:'.github/workflows/steward-release-publish.yml',created_at:'2026-11-19T01:00:00Z',updated_at:'2026-11-19T01:01:00Z',display_title:'Build '+buildKey};
+  const prior={path:'evidence/publication/start',value:{cycleId:'cycle',startEvidencePath:null,centralRun:{id:52,runAttempt:1,headSha:later}}};
+  const state={cycles:[{value:{id:'cycle',dispatches:[request]}}],domainRecords:[prior]},calls=[];
+  let status='OBSERVED';
+  const ports={get:async()=>run,snapshot:async()=>state,botId:301115370,producer:{runId:52,attempt:2,controllerSha:later},
+    invoke:async command=>{calls.push(command);return {status};}};
+  const event={repositoryId:product.id,kind:'run',runId:83,attempt:1};
+  assert.equal((await advanceEvent(event,ports)).publishInvoked,true);
+  status='UNKNOWN';
+  assert.equal((await advanceEvent(event,ports)).publishInvoked,false);
+  assert.deepEqual(calls,['reconcile-publication','reconcile-publication']);
 });

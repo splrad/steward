@@ -786,7 +786,7 @@ export async function inspectRepositoryHistory(request,{token,io=nativeEvidenceT
 
 /** Fixed release entry points share the protected Git snapshot and canonical Run binding. */
 export async function releaseCommand(command,request,{token,io=nativeEvidenceTransport(token),now=()=>new Date().toISOString(),centralIo,centralInvocation,publisher,completionReader,candidateReadToken,copilotToken,controllerSha,controllerDirectory,candidateRuntime,allowProbeDispatch=true}={}) {
-  if(!['candidate','dispatch-build','publish','dispatch-channel','observe-channel','rerun'].includes(command))fail('release command');
+  if(!['candidate','dispatch-build','publish','reconcile-publication','dispatch-channel','observe-channel','rerun'].includes(command))fail('release command');
   exact(request,['directory','writeDirectory','remote','repository','repositoryId','defaultBranch','appBotId','cycleId','runId','identity']);
   if(!isAbsolute(request.directory)||!isAbsolute(request.writeDirectory)||!Number.isSafeInteger(request.appBotId)||request.appBotId<1
     || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(request.repository)||request.repository.split('/').some(part=>part==='.'||part==='..')
@@ -816,6 +816,17 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
   }
   let cycle=snapshot.cycles.find(record=>record.value.id===request.cycleId)?.value;
   if(!cycle)fail('registered cycle required');
+  if(command==='reconcile-publication') {
+    const context={repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle};
+    const history=snapshot.domainRecords.filter(r=>r.path.startsWith('evidence/publication/') && r.value.cycleId===cycle.id);
+    const facts=await inspectPublications(context,history,io,centralIo,now());
+    if (!facts.native.complete || facts.missing.length || !facts.files.length
+      || !facts.files.every(file=>JSON.parse(file.content).objects.every(object=>object.status==='MATCH')))
+      return {status:'UNKNOWN',reason:'PUBLICATION_WRITE_UNRECONCILED'};
+    await verifyContinuationReleases(context,io);
+    await adoptReleaseCycle(request,snapshot,cycle,{token,io},facts.files);
+    return {status:'OBSERVED',reason:'FORMAL_RELEASES_VERIFIED'};
+  }
   if(command==='publish') {
     if(!centralIo||!centralInvocation)return wait('CENTRAL_PUBLICATION_CONTEXT_REQUIRED');
     // Serialize central writes across registered versions. Channel Runs do not own this gate.
