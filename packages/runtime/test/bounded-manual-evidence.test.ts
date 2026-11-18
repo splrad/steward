@@ -1,7 +1,13 @@
+import {SqliteDurableStorage} from './bounded-storage.js';
+import {handleWebhook} from '../src/index.js';
+import {NativeCandidateCoordinator,nativeHintKey} from '../src/bounded-native-event.js';
+import {applyVerifiedCandidateEvent} from '../src/bounded-release-event.js';
+import {objectKey,identityKey} from '../src/bounded-recheck.js';
+import type {VerifiedWakeContext} from '../src/bounded-initial-wake.js';
 import {FixedRecheckEffects} from '../src/bounded-recheck-effects.js';
 import {describe,it,expect} from 'vitest';
-import {createHash} from 'node:crypto';
-import {manualIdentity,manualBody,verifyManualHead,verifyManualProjection} from '../src/bounded-manual-evidence.js';
+import {createHmac,createHash} from 'node:crypto';
+import {manualIdentity,manualBody,manualProjectionBefore,verifyManualHead,verifyManualProjection} from '../src/bounded-manual-evidence.js';
 import {candidateFacts} from '../src/bounded-candidate-evidence.js';
 import {digest,TARGET,CENTRAL,type GitReader} from '../src/bounded-recheck-github.js';
 const sha=(c:string)=>c.repeat(40),key=(c:string)=>c.repeat(64);
@@ -42,3 +48,139 @@ it.each(['editing','closed'] as const)('manual %s is an explicit control outcome
 
 it.each(['source.ts','.github/workflows/release.yml','assets/new.png','rename'])('rejects unmanaged manual change %s outside exact old G paths',async path=>{const f=fixture();if(path==='rename'){delete f.blobs.VERSION;f.blobs['renamed-version']='1.2.3';}else f.blobs[path]='changed';await expect(verifyManualHead(f.g,f.m,f.pull,f.session.generated.files)).rejects.toThrow(path==='rename'?'MANUAL_GENERATED_FILE_TREE':'MANUAL_UNMANAGED_CHANGES');});
 it('allows managed old G changelog changes outside the five manual facts',async()=>{const f=fixture();f.sourceBlobs['CHANGELOG.md']='old';f.blobs['CHANGELOG.md']='new';f.session.generated.files.push({path:'CHANGELOG.md',mode:'100644',content:'old generated'});await expect(verifyManualHead(f.g,f.m,f.pull,f.session.generated.files)).resolves.toBeDefined();});
+
+describe('read-only handoff of an already completed manual candidate',()=>{
+ async function replay() {
+  const f=fixture(), facts=await candidateFacts(f.g);
+  const registration={identity:facts.identity,policySha:sha('7'),deploymentSha:sha('8'),t0:1000};
+  const projection=await manualProjectionBefore(f.g,facts);
+  const context:VerifiedWakeContext={kind:'validated-manual-candidate',repositoryId:TARGET.id,prNumber:192,
+   sourceSha:facts.identity.sourceSha,identityDigest:digest(identityKey(facts.identity)),eventId:55,normalRunId:56,
+   attempt:1,projectionPending:projection.pending,projectionBefore:projection.before};
+  const receipt={runId:42,attempt:1,artifactId:43,digest:digest('archive'),projectionEvidence:projection.before,state:facts.evidence};
+  const record={...registration,schemaVersion:1,t0:1,deadline:7200001,generation:2,policySha:sha('1'),deploymentSha:sha('2'),
+   status:'DONE',reason:'VERIFIED_DONE',nextAt:null,notificationPending:false,intent:{claimedAt:2,sequence:0,key:digest(identityKey(facts.identity)+':0').slice(7),runId:42},evidence:JSON.stringify(receipt)};
+  const actions:string[]=[];
+  const stub={async fetch(request:Request){actions.push(new URL(request.url).pathname);return Response.json(record);}};
+  const replay={priorIdentity:facts.identity,stateAfter:facts.evidence,manualProducerSha:record.policySha,eventId:55,normalRunId:56,requestKey:key('3'),producerKey:key('3'),producerRunId:56,eventT0:1000};
+  const run=()=>applyVerifiedCandidateEvent(stub as any,{registration,editing:false,wakeContext:context} as any,replay);
+  return {run,record,receipt,context,replay,actions};
+ }
+ it('links the historical receipt twice without changing the old object or consuming its window',async()=>{
+  const f=await replay(),before=structuredClone(f.record);
+  for(let n=0;n<2;n++)expect(await f.run()).toMatchObject({policySha:f.record.policySha,deploymentSha:f.record.deploymentSha,
+   t0:1,deadline:7200001,generation:2,runId:42,artifactId:43,requestKey:f.record.intent.key});
+  expect(f.actions).toEqual(['/status','/status']);expect(f.record).toEqual(before);
+ });
+ it.each(['PENDING','PAUSED','NEEDS_ATTENTION','CANCELLED'])('never takes over %s across pins',async status=>{
+  const f=await replay();f.record.status=status;await expect(f.run()).rejects.toThrow('EVENT_OBJECT_IDENTITY');
+  expect(f.actions).toEqual(['/status']);
+ });
+ it.each(['receipt','state','projection','pending','identity','alarm','notification','unknown','producer','slot'])('rejects changed %s',async kind=>{
+  const f=await replay();
+  if(kind==='receipt')f.record.intent.runId++;
+  if(kind==='state')f.replay.stateAfter={...f.replay.stateAfter,stateCommit:sha('9')};
+  if(kind==='projection')f.context.projectionBefore.commentId=99;
+  if(kind==='pending')f.context.projectionPending=true;
+  if(kind==='identity')f.replay.priorIdentity={...f.replay.priorIdentity,epoch:'other'};
+  if(kind==='alarm')Object.assign(f.record,{nextAt:1111});
+  if(kind==='notification')f.record.notificationPending=true;
+  if(kind==='producer')f.replay.manualProducerSha=sha('3');
+  if(kind==='slot')f.record.intent.sequence++;
+  if(kind==='unknown')f.record.reason='UNKNOWN_DELIVERY';
+  await expect(f.run()).rejects.toThrow();expect(f.actions).toEqual(['/status']);
+ });
+});
+
+describe('native ingress across a controller or deployment change',()=>{
+ async function scenario(mode:string){
+  const f=fixture(),current=await candidateFacts(f.g);
+  const t0=Date.now()-180000,utc=(n:number)=>new Date(n).toISOString();
+  const event={id:57,issue:{number:192,repository_url:'https://api.github.com/repos/'+TARGET.name},
+   actor:{id:7},event:'unlabeled',label:{name:'release:editing'},created_at:utc(t0)};
+  const hint={repositoryId:TARGET.id,prNumber:192,actorId:7,action:'unlabeled',updatedAt:event.created_at} as const;
+  const requestKey=nativeHintKey(hint), policySha=sha('7'),deploymentSha=sha('8'),oldKey=digest(identityKey(current.identity)+':0').slice(7);
+  const receipt={runId:42,attempt:1,artifactId:43,digest:digest('old artifact'),projectionEvidence:f.evidence,state:current.evidence};
+  const record:any={identity:current.identity,policySha:f.m.producer.controllerSha,deploymentSha:sha('2'),schemaVersion:1,
+   t0:t0-86400000,deadline:t0-79200000,generation:2,status:'DONE',reason:'VERIFIED_DONE',nextAt:null,notificationPending:false,
+   intent:{sequence:0,claimedAt:t0-86390000,key:oldKey,runId:42},evidence:JSON.stringify(receipt)};
+  if(['PENDING','PAUSED','CANCELLED','UNKNOWN_DELIVERY'].includes(mode)){record.status=mode==='UNKNOWN_DELIVERY'?'NEEDS_ATTENTION':mode;record.reason=mode;}
+  if(mode==='stale')record.t0=t0+1;
+  if(mode==='same-time')record.t0=t0;
+  const oldTarget='recheck:v1:'+digest(objectKey(current.identity)).slice(7);
+  let now=t0+1000,posts=0;const actions:string[]=[],store=new SqliteDurableStorage();
+  const repo={id:CENTRAL.id},baseRun={run_attempt:1,actor:{id:301115370},repository:repo,head_repository:repo,head_branch:'main',
+   status:'completed',conclusion:'success',event:'workflow_dispatch'};
+  const normal={...baseRun,id:101,path:'.github/workflows/release-candidate-event.yml',head_sha:policySha,
+   display_title:'Candidate event '+requestKey,created_at:utc(now),run_started_at:utc(now+1000),updated_at:utc(now+5000)};
+  const old={...baseRun,id:42,path:'.github/workflows/release-observe.yml',head_sha:record.policySha,
+   display_title:'Observe candidate '+oldKey,updated_at:utc(mode==='simultaneous-completion'?t0:t0-80000000)};
+  const g:GitReader={async json(id,path,method,body){
+   if(method==='POST'){
+    expect((body as any).inputs.request_key).toBe(requestKey);posts++;
+    if(mode==='successor'||mode==='conflict-at-confirm'){
+     f.m.headSha=sha('9');f.pull.head.sha=f.m.headSha;f.m.projection.preview=f.m.projection.preview.replace(sha('b'),sha('9'));
+     f.m.projection.bodyDigest=digest(manualBody(f.m)).slice(7);f.m.producer={...f.m.producer,runId:101,controllerSha:policySha,requestKey};
+     f.stateSha(sha('3'));
+    }
+    if(mode==='conflict-at-confirm'){record.status='PAUSED';record.reason='PAUSED';}
+    return null;
+   }
+   if(path.endsWith('/actions/runs/42/attempts/1'))return old;
+   if(path.endsWith('/actions/runs/101/attempts/1'))return normal;
+   if(path.includes('/release-candidate-event.yml/runs?'))return {total_count:1,workflow_runs:[normal]};
+   if(path.endsWith('/actions/workflows/release-candidate-event.yml'))return {path:normal.path,state:'active'};
+   if(id===CENTRAL.id&&path.endsWith('/git/ref/heads/main'))return {object:{sha:policySha}};
+   if(path.includes('/issues/192/events?'))return [event];
+   if(path.endsWith('/issues/events/57'))return event;
+   return f.g.json(id,path,method,body);
+  },async artifact(){
+    const after=await candidateFacts(g,false,true);
+    return {artifactId:99,digest:digest('new normal'),createdAt:utc(t0+4000),value:{schemaVersion:1,requestKey,
+     producer:{repositoryId:CENTRAL.id,runId:mode==='wrong-producer'?999:101,attempt:1,controllerSha:policySha},
+     event:{eventId:57,repositoryId:TARGET.id,prNumber:192},sourceSha:f.m.sourceSha,status:'READY',reason:'MANUAL_VALIDATED',
+     outcome:'manual_validated',stateBefore:current.evidence,stateAfter:after.evidence,candidateIdentity:after.identity}};
+  }};
+  let fresh:any=null;
+  const env:any={STEWARD_WEBHOOK_SECRET:'fixture-only',LEGACY_RELEASE_RETIRED:'true',LEGACY_VALIDATION_RETIRED:'true',ORGANIZATION_ID:'42',
+   INSTALLATION_ID:'41',BOUNDED_RECHECK_ENABLED:'true',BOUNDED_CONTROLLER_SHA:policySha,BOUNDED_DEPLOYMENT_SHA:deploymentSha};
+  const worker=()=>new NativeCandidateCoordinator(store as any,env,()=>g,()=>now);
+  env.BOUNDED_RECHECK={idFromName:(s:string)=>s,get:(id:string)=>({async fetch(req:Request){
+   const action=new URL(req.url).pathname,body=await req.json() as any;
+   if(action==='/native-event')return Response.json(await worker().register(body));
+   const target=id===oldTarget?'old':'new';actions.push(target+action);
+   if(action==='/status')return Response.json(target==='old'?record:fresh);
+   if(action==='/register'&&target==='new'){fresh={...body.registration,status:'PENDING',generation:1};return Response.json(fresh);}
+   throw Error('unexpected control '+action);
+  }})};
+  const payload=JSON.stringify({organization:{id:42},installation:{id:41},repository:{id:TARGET.id},action:'unlabeled',
+   label:{name:'release:editing'},sender:{id:7},pull_request:{number:192,updated_at:event.created_at}});
+  const signature=createHmac('sha256',env.STEWARD_WEBHOOK_SECRET).update(payload).digest('hex');
+  const receive=()=>handleWebhook(new Request('https://fixture.invalid/webhook',{method:'POST',headers:{
+   'x-github-event':'pull_request','x-github-delivery':'original-guid','x-hub-signature-256':'sha256='+signature},body:payload}),env);
+  await receive();await worker().alarm();now+=60000;await worker().alarm();
+  await receive();await worker().alarm();
+  return {posts,actions,source:await store.get<any>('nativeEvent'),record};
+ }
+ it.each(['stale','same-time','simultaneous-completion','PENDING','UNKNOWN_DELIVERY','PAUSED','CANCELLED'])('blocks %s before any dispatch or control',async mode=>{
+  const r=await scenario(mode);expect(r.posts).toBe(0);expect(r.actions.length).toBeGreaterThan(0);
+  expect(r.actions.every(x=>x==='old/status')).toBe(true);expect(r.source.dispatchedAt).toBeNull();expect(r.source.status).toBe('NEEDS_ATTENTION');expect(r.source.nextAt).toBeNull();
+ });
+ it('binds a new signed event and normal to the unchanged completed object',async()=>{
+  const r=await scenario('done');expect(r.posts).toBe(1);expect(r.actions).toEqual(['old/status','old/status']);
+  expect(r.source.status).toBe('PREVIOUSLY_COMPLETED');expect(r.source.evidence.previousCompletion.runId).toBe(42);
+  expect(r.source.evidence.runId).toBe(101);expect(r.record.generation).toBe(2);
+ });
+ it('does not consume a contradictory normal producer',async()=>{
+  const r=await scenario('wrong-producer');expect(r.posts).toBe(1);expect(r.actions).toEqual(['old/status']);
+  expect(r.source.status).not.toBe('PREVIOUSLY_COMPLETED');
+ });
+ it('allows a genuine successor only after the prior completion and never cancels it',async()=>{
+  const r=await scenario('successor');expect(r.posts).toBe(1);expect(r.actions).toEqual(['old/status','old/status','new/status','new/register']);
+  expect(r.source.status).toBe('REGISTERED');
+ });
+ it('rechecks the prior record before any successor cancellation or registration',async()=>{
+  const r=await scenario('conflict-at-confirm');expect(r.posts).toBe(1);expect(r.actions).toEqual(['old/status','old/status']);
+  expect(r.source.status).toBe('NEEDS_ATTENTION');
+ });
+});

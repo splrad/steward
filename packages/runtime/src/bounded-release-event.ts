@@ -1,9 +1,10 @@
 import type {VerifiedWakeContext} from './bounded-initial-wake.js';
 import {createHash} from 'node:crypto';
-import {BoundedGitHub,TARGET,CENTRAL,ensure,type BoundedEnv,type GitReader} from './bounded-recheck-github.js';
+import {isDeepStrictEqual} from 'node:util';
+import {BoundedGitHub,TARGET,CENTRAL,digest,ensure,type BoundedEnv,type GitReader} from './bounded-recheck-github.js';
 import {candidateFacts,verifiedProducer} from './bounded-candidate-evidence.js';
 import {dispatchFixed} from './bounded-recheck-effects.js';
-import {identityKey,objectKey} from './bounded-recheck.js';
+import {identityKey,objectKey,type Identity,type RecordState} from './bounded-recheck.js';
 export interface CandidateEvent {repositoryId:1187527897;prNumber:number;eventId:number}
 export interface EventIntent {schemaVersion:1;event:CandidateEvent;requestKey:string;policySha:string;createdAt:number;deadline:number;checks:number;status:'PENDING'|'REGISTERED'|'NEEDS_ATTENTION'|'PAUSED';nextAt:number|null;reason:string}
 /** Called only after the existing GitHub webhook HMAC + organization validation. */
@@ -54,10 +55,45 @@ export class CandidateEventCoordinator {
  }
 }
 
+interface CompletedManualReplay {
+ priorIdentity: Identity | null;
+ stateAfter: unknown;
+ manualProducerSha?: string;
+ eventId:number; normalRunId:number; requestKey:string; producerKey:string; producerRunId:number; eventT0:number;
+}
+function previousCompletion(record:RecordState,context:VerifiedWakeContext,replay:CompletedManualReplay) {
+ ensure(record.schemaVersion===1 && record.status==='DONE' && record.reason==='VERIFIED_DONE' &&
+   record.nextAt===null && record.notificationPending===false && record.identity.stage==='candidate' &&
+   /^[0-9a-f]{40}$/.test(record.policySha) && /^[0-9a-f]{40}$/.test(record.deploymentSha) &&
+   record.policySha===replay.manualProducerSha && replay.eventT0>record.t0 &&
+   replay.eventId===context.eventId && replay.normalRunId===context.normalRunId && context.attempt===1 &&
+   replay.producerRunId===context.normalRunId && replay.requestKey===replay.producerKey &&
+   replay.priorIdentity && identityKey(replay.priorIdentity)===identityKey(record.identity) &&
+   context.kind==='validated-manual-candidate' && !context.projectionPending &&
+   context.identityDigest===digest(identityKey(record.identity)),'EVENT_OBJECT_IDENTITY');
+ const intent=record.intent;
+ ensure(intent && replay.eventT0>intent.claimedAt && Number.isSafeInteger(intent.sequence) && intent.sequence>=0 &&
+   intent.key===digest(identityKey(record.identity)+':'+intent.sequence).slice(7) && record.evidence,'COMPLETION_RECEIPT_MISSING');
+ const receipt=JSON.parse(record.evidence);
+ ensure(Number.isSafeInteger(receipt.runId) && receipt.runId>0 && receipt.attempt===1 &&
+   (intent.runId===undefined || intent.runId===receipt.runId) &&
+   Number.isSafeInteger(receipt.artifactId) && receipt.artifactId>0 && /^sha256:[a-f0-9]{64}$/.test(receipt.digest) &&
+   isDeepStrictEqual(receipt.state,replay.stateAfter) && isDeepStrictEqual(receipt.projectionEvidence,context.projectionBefore),
+   'COMPLETION_RECEIPT_CHANGED');
+ return {policySha:record.policySha,deploymentSha:record.deploymentSha,t0:record.t0,deadline:record.deadline,
+   generation:record.generation,requestKey:intent.key,runId:receipt.runId,attempt:receipt.attempt,
+   artifactId:receipt.artifactId,digest:receipt.digest};
+}
 /** Both bootstrap and authenticated event controls preserve the original object's window. */
-export async function applyVerifiedCandidateEvent(stub:Pick<DurableObjectStub,'fetch'>,verified:Awaited<ReturnType<typeof verifiedProducer>>&{wakeContext?:VerifiedWakeContext}){
+export async function applyVerifiedCandidateEvent(stub:Pick<DurableObjectStub,'fetch'>,verified:Awaited<ReturnType<typeof verifiedProducer>>&{wakeContext?:VerifiedWakeContext},replay?:CompletedManualReplay){
  const post=async(action:string,body:unknown)=>{const response=await stub.fetch(new Request('https://bounded.internal/'+action,{method:'POST',body:JSON.stringify(body)}));ensure(response.ok,'EVENT_OBJECT_CONTROL');return response.json() as Promise<any>;};
  let record=await post('status',{});if(record===null)record=await post('register',{registration:verified.registration,...(verified.wakeContext?{wakeContext:verified.wakeContext}:{})});
+ // Only the verified native normal path supplies the protected state and projection.
+ if(replay && verified.wakeContext && !verified.editing && identityKey(record.identity)===identityKey(verified.registration.identity) &&
+    (record.policySha!==verified.registration.policySha || record.deploymentSha!==verified.registration.deploymentSha)){
+   ensure(verified.registration.t0===replay.eventT0,'REPLAY_ORIGINAL_TIME');
+   return previousCompletion(record,verified.wakeContext,replay);
+ }
  ensure(identityKey(record.identity)===identityKey(verified.registration.identity)&&record.policySha===verified.registration.policySha&&record.deploymentSha===verified.registration.deploymentSha,'EVENT_OBJECT_IDENTITY');
  const action=verified.editing&&record.status==='PENDING'?'pause':!verified.editing&&record.status==='PAUSED'?'resume':null;
  if(action)await post(action,{expectedGeneration:record.generation});

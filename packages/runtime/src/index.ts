@@ -1,3 +1,4 @@
+import {forwardPagesCompletion} from './pages-completion.js';
 import {registerWingetRun} from './bounded-winget-evidence.js';
 import {BoundedGitHub} from './bounded-recheck-github.js';
 import {acceptNativeCandidateEvent,acceptNativeCandidateCompletion} from './bounded-native-event.js';
@@ -584,7 +585,13 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
     }
     if (event === "workflow_run" && ["requested", "in_progress", "completed"].includes(action)) {
       const repository = payload.repository; if (!repository || !(isManaged(repository) || (env.WORKFLOW_EVALUATOR_SHA !== undefined && belongsToOrganization(repository)))) return response(204);
-      return response(await publishValidationState(env, repository, payload.workflow_run?.id) ? 202 : 204);
+      const [validation,pages]=await Promise.allSettled([
+        publishValidationState(env, repository, payload.workflow_run?.id),
+        forwardPagesCompletion(env,event,payload,new BoundedGitHub(env)),
+      ]);
+      if(validation.status==='rejected')throw validation.reason;
+      if(pages.status==='rejected')throw pages.reason;
+      return response(validation.value ? 202 : 204);
     }
     return response(204);
   } catch (error) {
