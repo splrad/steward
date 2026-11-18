@@ -244,7 +244,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.admit.outputs.units) }}
-    uses: splrad/steward/.github/workflows/product-release.yml@c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
+    uses: splrad/steward/.github/workflows/product-release.yml@5092302810d08791a28b290f7a9efac389429d74
     with:
       record: ${{ needs.admit.outputs.record }}
       unit: ${{ matrix.unit }}
