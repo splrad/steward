@@ -76,6 +76,7 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
   if (event.kind==='publication') {
     if (run.repositoryId!==centralId || run.headRepositoryId!==centralId || run.actorId!==botId || run.headBranch!=='main'
       || run.event!=='workflow_dispatch' || run.path!=='.github/workflows/release-cycle-event.yml') fail('CYCLE_PUBLICATION_ORIGIN');
+    if (run.conclusion!=='success') return wait('PUBLICATION_RECEIPT_UNSUCCESSFUL');
     const starts=publicationStarts(state,run.id,run.runAttempt,run.headSha);
     cycleId=only([...new Set(starts.map(r=>r.value.cycleId))]);
     // Reconciliation reads every original attempt/job and formal asset, then archives its proof.

@@ -38,7 +38,7 @@ for(const order of [[source,later],[later,source]])test('delayed merge and later
   assert.deepEqual(calls,['dispatch-build']);
 });
 test('a publication completion requires its exact archived invocation', async()=>{
-  const run={id:52,run_attempt:1,created_at:'2026-11-19T01:00:00Z',updated_at:'2026-11-19T01:01:00Z',status:'completed',
+  const run={id:52,run_attempt:1,created_at:'2026-11-19T01:00:00Z',updated_at:'2026-11-19T01:01:00Z',status:'completed',conclusion:'success',
     repository:{id:1296724484},head_repository:{id:1296724484},actor:{id:301115370},head_branch:'main',head_sha:source,
     event:'workflow_dispatch',path:'.github/workflows/release-cycle-event.yml'};
   const state={cycles:[],domainRecords:[]},calls=[];
@@ -49,7 +49,9 @@ test('a publication completion requires its exact archived invocation', async()=
   state.domainRecords.push({path:'evidence/publication/test.json',value:{startEvidencePath:null,centralRun:{id:52,runAttempt:1,headSha:source},cycleId:'cycle'}});
   await advanceEvent(event,ports);
   assert.deepEqual(calls,[['reconcile-publication','cycle'],['observe-channel','cycle'],['dispatch-channel','cycle']]);
-  calls.length=0; run.run_attempt=2;
+  calls.length=0; run.conclusion='failure';
+  assert.equal((await advanceEvent(event,ports)).reason,'PUBLICATION_RECEIPT_UNSUCCESSFUL');assert.equal(calls.length,0);
+  run.run_attempt=2;run.conclusion='success';
   await advanceEvent({...event,attempt:2},ports);
   assert.deepEqual(calls,[['reconcile-publication','cycle'],['observe-channel','cycle'],['dispatch-channel','cycle']]);
 });
