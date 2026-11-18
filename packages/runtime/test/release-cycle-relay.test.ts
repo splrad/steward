@@ -24,7 +24,7 @@ function fixture(){
  }};
  const relay=new ReleaseRelay(storage as any,env as any,()=>g as any,()=>state.now);
  const tick=async()=>{state.now=await storage.get<number>('__alarm')??state.now;await relay.alarm();};
- return {state,relay,storage,tick};
+ return {state,relay,storage,tick,env};
 }
 describe('release cycle relay',()=>{
  it('retains signed product source and excludes unrelated repos and branches and forwards successful probes',()=>{
@@ -102,4 +102,23 @@ it('verifies the original reservation before forwarding a repaired publication a
  expect(h).toEqual({repositoryId:CENTRAL.id,kind:'publication',runId:source.id,attempt:2});
  const relay=new ReleaseRelay(f.storage as any,{BOUNDED_RECHECK:ns,BOUNDED_RECHECK_ENABLED:'true',BOUNDED_DEPLOYMENT_SHA:deployment} as any,()=>g as any,()=>f.state.now);
  await relay.register(h);await relay.alarm();expect(posts).toBe(1);
+});
+it('quiesces an unconfirmed POST and resumes its existing confirmation budget on redelivery',async()=>{
+ const f=fixture();f.state.promoted=pin;await f.relay.register(hint);await f.tick();
+ const before=await f.storage.get<any>('releaseCycle');
+ f.env.BOUNDED_RECHECK_ENABLED='false';await f.tick();
+ expect(await f.storage.get('releaseCycle')).toEqual({...before,paused:true});expect(await f.storage.get('__alarm')).toBeUndefined();
+ f.env.BOUNDED_RECHECK_ENABLED='true';await f.relay.register(hint);f.state.hits=[receipt];await f.tick();
+ expect(await f.storage.get('releaseCycle')).toMatchObject({stage:'received',runId:12});expect(f.state.posts).toBe(1);
+});
+it('quiesces a pending WinGet submit without consuming its preparation budget',async()=>{
+ const {WingetSubmit}=await import('../src/bounded-winget-submit.js');
+ const storage=new SqliteDurableStorage(),env={BOUNDED_RECHECK_ENABLED:'true'},time=Date.now();
+ const submit=new WingetSubmit(storage as any,env as any,()=>{throw Error('unexpected IO')},()=>time);
+ const h={id:9,attempt:2,title:'Channels submit '+'a'.repeat(64)};
+ await submit.register(h);const before=await storage.get<any>('wingetSubmit');
+ env.BOUNDED_RECHECK_ENABLED='false';await submit.alarm();
+ expect(await storage.get('wingetSubmit')).toEqual({...before,paused:true});expect(await storage.get('__alarm')).toBeUndefined();
+ env.BOUNDED_RECHECK_ENABLED='true';await submit.register(h);
+ expect(await storage.get('wingetSubmit')).toEqual(before);expect(await storage.get('__alarm')).toBe(time);
 });

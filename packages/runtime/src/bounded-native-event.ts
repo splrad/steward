@@ -174,7 +174,7 @@ export class NativeCandidateCoordinator {
  private async prepare(r:NativeEventRecord){
   const g=this.reader(),policy=await promotedController(g,this.env.RELEASE_RELAY_DEPLOYMENT_SHA??r.deploymentSha,r.policySha);
   const prepared=await resolveNativeEvent(g,r.hint);ensure(prepared.t0===Date.parse(r.hint.updatedAt),'NATIVE_ORIGINAL_TIME');
-  if(prepared.priorIdentity){const current=await objectPost(this.env,prepared.priorIdentity,'status',{});await this.checkPrior(current,prepared.priorIdentity,r,prepared.t0);if(current?.status==='PENDING')await objectPost(this.env,prepared.priorIdentity,'pause',{expectedGeneration:current.generation});}
+  if(prepared.priorIdentity){const current=await objectPost(this.env,prepared.priorIdentity,'status',{});await this.checkPrior(current,prepared.priorIdentity,{...r,policySha:policy},prepared.t0);if(current?.status==='PENDING')await objectPost(this.env,prepared.priorIdentity,'pause',{expectedGeneration:current.generation});}
   await dispatchFixed(g,CENTRAL.id,'release-candidate-event.yml',policy,{event_json:JSON.stringify(prepared.event),source_sha:prepared.sourceSha,request_key:r.requestKey,policy_sha:policy},async()=>{
    const now=this.clock();
    return this.storage.transaction(async t=>{

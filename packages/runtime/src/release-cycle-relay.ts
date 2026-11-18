@@ -9,7 +9,7 @@ const sha = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{40}
 const positive = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
 type Hint = {repositoryId: number; kind: 'push'; sourceSha: string} | {repositoryId: number; kind: 'run' | 'publication'; runId: number; attempt: number};
 type Stage = 'prepare' | 'confirm' | 'received' | 'unknown';
-type Relay = {hint: Hint; stage: Stage; tries: number; next: number; policy: string; reserved: number; runId?: number; reason?: string; waitingFor?:string; resumedFor?:string};
+type Relay = {hint: Hint; stage: Stage; tries: number; next: number; policy: string; reserved: number; runId?: number; reason?: string; waitingFor?:string; resumedFor?:string; paused?:boolean};
 
 export function releaseHint(event: string, p: any, installation: string | undefined): Hint | undefined {
   const repo = p.repository;
@@ -52,7 +52,13 @@ export class ReleaseRelay {
       await this.wakePromoted(policy,true);return;
     }
     await this.storage.transaction(async t => {
-      if (await t.get('releaseCycle')) return;
+      const old=await t.get<Relay>('releaseCycle');
+      if(old){
+        if(old.paused && this.env.BOUNDED_RECHECK_ENABLED==='true' && relayKey(old.hint)===relayKey(hint)){
+          delete old.paused;await t.put('releaseCycle',old);await t.setAlarm(Math.max(this.now(),old.next));
+        }
+        return;
+      }
       const record: Relay = {hint,stage:'prepare',tries:0,next:this.now(),policy:'',reserved:0};
       await t.put('releaseCycle',record);
       await t.setAlarm(record.next);
@@ -61,7 +67,7 @@ export class ReleaseRelay {
   async wakePromoted(policy:string,redelivery=false){
     await this.storage.transaction(async t=>{
       const r=await t.get<Relay>('releaseCycle');
-      if(!r || r.reserved || (!redelivery && r.waitingFor!==policy) || !r.waitingFor || r.resumedFor===policy ||
+      if(!r || r.paused || r.reserved || (!redelivery && r.waitingFor!==policy) || !r.waitingFor || r.resumedFor===policy ||
          (r.stage!=='prepare' && !(r.stage==='unknown'&&r.reason==='PREPARATION_EXHAUSTED')))return;
       r.stage='prepare';r.next=this.now();r.resumedFor=policy;delete r.waitingFor;
       // One additional preflight for this newly verified promotion, retaining the prior count and business key.
@@ -76,6 +82,9 @@ export class ReleaseRelay {
     const claim = await this.storage.transaction(async t => {
       const current = await t.get<Relay>('releaseCycle');
       if (!current || current.stage !== r.stage || current.tries !== r.tries || current.next !== r.next) return false;
+      if(this.env.BOUNDED_RECHECK_ENABLED!=='true'){
+        current.paused=true;await t.put('releaseCycle',current);await t.deleteAlarm();return false;
+      }
       if (r.tries >= (r.resumedFor && r.stage==='prepare' ? 5 : 4)) {
         await t.put('releaseCycle',{...r,stage:'unknown',reason:r.stage === 'prepare' ? 'PREPARATION_EXHAUSTED' : 'DELIVERY_UNKNOWN'});
         await t.deleteAlarm();
