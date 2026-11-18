@@ -80,7 +80,7 @@ G 缓存观察先核对实际候选 head 的完整 tree 等于 G.baseSha 应用 
 
 `release-cycle-event.yml` 在受保护的中央 main 运行，执行前核原生 App Run、当前 main、已晋级的 `steward/validated-controller` 以及旧入口预期暂停状态。Worker 在产品 push 或已登记运行完成后传入 `event_json/request_key/policy_sha`。业务标识由原产品仓、事件种类和源 SHA 或 Run/attempt 派生。相同键复用同一入口。共享 concurrency 组串行处理发布、候选编辑和观察。
 
-产品默认分支推进时，候选交接从已合并的准确 PR、审定树和 Git 祖先核对得到 S。构建在 `steward/build/<cycleId>` 运行，构建完成后由中央发布器使用原冻结资产。中央发布 Run 的完成回执只处理在受保护 Git 中登记的原始发布调用。渠道 submit/verify 完成后分别按原生运行和独立渠道证据更新；成功的 observe 回执不再请求 probe。每个运行的 `release-cycle-<request_key>/result.json` 保留生产者、事件、周期及是否调用过发布器。待处理、未知或失败状态按原对象恢复。
+产品默认分支推进时，候选交接从已合并的准确 PR、审定树和 Git 祖先核对得到 S。构建在 `steward/build/<cycleId>` 运行，构建完成后由中央发布器使用原冻结资产。中央发布 Run 的完成回执只处理在受保护 Git 中登记的原始发布调用。渠道 submit/verify 完成后分别按原生运行和独立渠道证据更新；成功的 observe 回执不再请求 probe。每个运行的 `release-cycle-<request_key>-<run_attempt>/result.json` 保留生产者、事件、周期及是否调用过发布器。待处理、未知或失败状态按原对象恢复。
 
 WinGet 首次提交使用 version、installer、defaultLocale 三个清单。消费步骤分别查询准确版本和默认版本，核对版本、安装器 URL 和 SHA-256，下载后核对大小与哈希。安装、安装后检查及卸载的验收分类均为 `EXCLUDED_BY_USER`。
 

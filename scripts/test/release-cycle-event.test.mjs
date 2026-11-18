@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import Handlebars from 'handlebars';
+import YAML from 'yaml';
 import { advanceEvent, validateEvent } from '../release-cycle-event.mjs';
 import { product, sha256 } from '../bounded-candidate-contract.mjs';
 const source='a'.repeat(40), later='b'.repeat(40);
@@ -88,4 +89,11 @@ test('a rerun after a lost publication receipt verifies the original attempt wit
   status='UNKNOWN';
   assert.equal((await advanceEvent(event,ports)).publishInvoked,false);
   assert.deepEqual(calls,['reconcile-publication','reconcile-publication']);
+});
+
+test('retains each native attempt receipt even if the first upload acknowledgement was lost',async()=>{
+  const workflow=YAML.parse(await readFile(new URL('../../.github/workflows/release-cycle-event.yml',import.meta.url),'utf8'));
+  const upload=workflow.jobs['release-coordinator'].steps.find(step=>step.uses?.startsWith('actions/upload-artifact@'));
+  assert.equal(upload.with.name,'release-cycle-${{ inputs.request_key }}-${{ github.run_attempt }}');
+  assert.equal(upload.with.overwrite,undefined);
 });
