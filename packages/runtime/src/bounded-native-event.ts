@@ -5,7 +5,7 @@ import {BoundedGitHub,TARGET,CENTRAL,digest,ensure,type BoundedEnv,type GitReade
 import {candidateFacts} from './bounded-candidate-evidence.js';
 import {dispatchFixed} from './bounded-recheck-effects.js';
 import {APP_BOT_ID} from './bounded-winget-evidence.js';
-import {identityKey,objectKey,type Identity,type Registration} from './bounded-recheck.js';
+import {identityKey,objectKey,type Identity,type RecordState,type Registration} from './bounded-recheck.js';
 import {applyVerifiedCandidateEvent} from './bounded-release-event.js';
 const minute=60000,prepareOffsets=[0,1,5,15],confirmOffsets=[1,5,15];
 const sha=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{40}$/.test(v);
@@ -15,7 +15,7 @@ export interface NativeHandoff {claim:number;startedAt:number;steps:{sequence:nu
 export interface NativeEventRecord {
  schemaVersion:1;hint:NativeHint;requestKey:string;firstDeliveryId:string;policySha:string;deploymentSha:string;
  receivedAt:number;deadline:number;nextAt:number|null;preparations:number;confirmations:number;claim:number;
- status:'PREPARING'|'CONFIRMING'|'AWAITING_RECEIPT'|'REGISTERED'|'PROTECTED'|'NEEDS_ATTENTION'|'PAUSED';
+ status:'PREPARING'|'CONFIRMING'|'AWAITING_RECEIPT'|'REGISTERED'|'PREVIOUSLY_COMPLETED'|'PROTECTED'|'NEEDS_ATTENTION'|'PAUSED';
  handoff?:NativeHandoff;pausedFrom?:{status:'PREPARING'|'CONFIRMING'|'AWAITING_RECEIPT';nextAt:number};reason:string;prepared:PreparedEvent|null;dispatchedAt:number|null;knownRunId:number|null;evidence:unknown;receiptConsumed?:boolean;receiptDeferred?:boolean;receiptRetryUsed?:boolean;retryAfter?:number;lateReceipt?:{runId:number;attempt:number;at:number};
 }
 function exact(v:any,keys:string){ensure(v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===keys,'NATIVE_SCHEMA');}
@@ -58,13 +58,13 @@ export async function verifyNormalResult(g:GitReader,r:NativeEventRecord,run:any
  const current=await candidateFacts(g,false,true);ensure(Object.entries(current.evidence).every(([k,value])=>v.stateAfter[k]===value)&&current.pull.number===p.event.prNumber&&current.pull.state==='open'&&!current.pull.merged&&Array.isArray(current.pull.labels),'NORMAL_AFTER');
  const native=await g.json(TARGET.id,`/repos/${TARGET.name}/issues/events/${p.event.eventId}`);ensure(native.id===p.event.eventId&&native.issue?.number===p.event.prNumber&&native.issue?.repository_url===`https://api.github.com/repos/${TARGET.name}`&&native.actor?.id===r.hint.actorId&&native.event===r.hint.action&&native.created_at===r.hint.updatedAt&&(native.event==='reopened'||native.label?.name==='release:editing')&&Date.parse(native.created_at)===p.t0,'NORMAL_NATIVE_EVENT');
  const main=await g.json(TARGET.id,`/repos/${TARGET.name}/git/ref/heads/main`);ensure(main.object?.sha===p.sourceSha,'NORMAL_SOURCE_MOVED');const editing=current.pull.labels.some((x:any)=>x.name==='release:editing');
- const evidence={runId:run.id,attempt:1,artifactId:a.artifactId,digest:a.digest,outcome:v.outcome,reason:v.reason,stateAfter:v.stateAfter};
+ const evidence={requestKey:v.requestKey,runId:run.id,attempt:1,artifactId:a.artifactId,digest:a.digest,outcome:v.outcome,reason:v.reason,stateAfter:v.stateAfter};
  if(editing||v.outcome==='paused'||v.outcome==='protected'||v.candidateIdentity===null||!current.identity||current.identity.sourceSha!==p.sourceSha)return {kind:'protected' as const,evidence};
  if(current.manual){ensure(v.reason==='MANUAL_VALIDATED','MANUAL_PRODUCER_PIN');const checked=await candidateFacts(g);ensure(identityKey(checked.identity)===identityKey(current.identity),'SOURCE_CHANGED');}
  exact(v.candidateIdentity,'artifactDigest,channel,cycleId,epoch,repositoryId,sourceSha,stage,upstreamPR,version');
  ensure(v.outcome===(current.manual?'manual_validated':'candidate_updated')&&v.status==='READY'&&identityKey(v.candidateIdentity)===identityKey(current.identity),'NORMAL_RESULT_NOT_READY');
  const registration:Registration={identity:current.identity,t0:p.t0,policySha:r.policySha,deploymentSha:r.deploymentSha};let wakeContext:VerifiedWakeContext|undefined;if(current.manual){const snapshot=await manualProjectionBefore(g,current);wakeContext={kind:'validated-manual-candidate',repositoryId:TARGET.id,prNumber:p.event.prNumber,sourceSha:p.sourceSha,identityDigest:digest(identityKey(current.identity)),eventId:p.event.eventId,normalRunId:run.id,attempt:1,projectionPending:snapshot.pending,projectionBefore:snapshot.before};}
- return {kind:'ready' as const,registration,wakeContext,editing,event:native,evidence,artifactId:a.artifactId,artifactDigest:a.digest};
+ return {kind:'ready' as const,registration,wakeContext,manualProducerSha:current.manual?.producer.controllerSha,editing,event:native,evidence,artifactId:a.artifactId,artifactDigest:a.digest};
 }
 export class NativeCandidateCoordinator {
  constructor(private storage:DurableObjectStorage,private env:BoundedEnv,private reader:()=>GitReader=()=>new BoundedGitHub(env),private clock:()=>number=Date.now){}
@@ -89,7 +89,13 @@ export class NativeCandidateCoordinator {
    else {r.confirmations++;const offset=confirmOffsets[r.confirmations];r.nextAt=offset===undefined?null:Math.min(r.dispatchedAt!+offset*minute,r.deadline);if(offset===undefined){r.status=r.knownRunId===null?'NEEDS_ATTENTION':'AWAITING_RECEIPT';r.reason=r.knownRunId===null?'UNKNOWN_DELIVERY':'KNOWN_RUN_AWAITING_RECEIPT';r.nextAt=r.knownRunId===null?null:r.deadline;}}
    await this.save(t,r);claimed=structuredClone(r);});
   if(!claimed)return;const r=claimed as NativeEventRecord;
-  try{if(r.dispatchedAt===null)await this.prepare(r);else await this.confirm(r);}catch(error){await this.deferRateLimit(r,error,!!r.receiptDeferred);}
+  try{if(r.dispatchedAt===null)await this.prepare(r);else await this.confirm(r);}catch(error){
+   if(r.dispatchedAt===null && error instanceof Error && ['PRIOR_RECORD_IDENTITY','PRIOR_VERSION_UNRESOLVED','PRIOR_OBSERVATION_RECEIPT','PRIOR_OBSERVATION_ORDER'].includes(error.message)){
+    await this.storage.transaction(async t=>{const latest=await t.get<NativeEventRecord>('nativeEvent');
+     if(latest?.claim!==r.claim || latest.dispatchedAt!==null || latest.status==='PAUSED')return;
+     latest.status='NEEDS_ATTENTION';latest.reason=error.message;latest.nextAt=null;await this.save(t,latest);});
+   }else await this.deferRateLimit(r,error,!!r.receiptDeferred);
+  }
  }
  async receipt(input:{runId:number;attempt:number;policySha:string}){
   exact(input,'attempt,policySha,runId');const now=this.clock();let claimed:NativeEventRecord|null=null;
@@ -102,7 +108,7 @@ export class NativeCandidateCoordinator {
  }
  private async deferRateLimit(r:NativeEventRecord,error:unknown,receiptAttempt=false){
   const now=this.clock(),at=retryAfterTime(error,now,r.deadline);if(at===undefined)return;
-  await this.storage.transaction(async t=>{const latest=await t.get<NativeEventRecord>('nativeEvent');if(!latest||latest.claim!==r.claim||latest.handoff||['REGISTERED','PROTECTED'].includes(latest.status))return;latest.retryAfter=Math.max(latest.retryAfter??0,at);if(latest.status==='PAUSED'){await t.put('nativeEvent',latest);return;}
+  await this.storage.transaction(async t=>{const latest=await t.get<NativeEventRecord>('nativeEvent');if(!latest||latest.claim!==r.claim||latest.handoff||['REGISTERED','PREVIOUSLY_COMPLETED','PROTECTED'].includes(latest.status))return;latest.retryAfter=Math.max(latest.retryAfter??0,at);if(latest.status==='PAUSED'){await t.put('nativeEvent',latest);return;}
    if(latest.retryAfter>=latest.deadline){latest.status='NEEDS_ATTENTION';latest.reason='RATE_LIMIT_WINDOW_EXHAUSTED';latest.nextAt=null;}
    else if(receiptAttempt){if(latest.receiptRetryUsed){latest.status='NEEDS_ATTENTION';latest.reason='RECEIPT_RATE_LIMIT_EXHAUSTED';latest.nextAt=null;latest.receiptDeferred=false;}else{latest.receiptRetryUsed=true;latest.receiptDeferred=true;latest.status='AWAITING_RECEIPT';latest.reason='RECEIPT_RATE_LIMIT_DEFERRED';latest.nextAt=latest.retryAfter;}}
    else if(latest.dispatchedAt===null&&latest.preparations<prepareOffsets.length){latest.status='PREPARING';latest.nextAt=Math.max(latest.nextAt??now,latest.retryAfter);}
@@ -118,9 +124,30 @@ export class NativeCandidateCoordinator {
   await this.storage.transaction(async t=>{const current=await t.get<NativeEventRecord>('nativeEvent');ensure(current?.handoff?.claim===r.claim&&current.handoff.steps[sequence]?.state==='INTENT','HANDOFF_ACK_FENCE');current.handoff.steps[sequence]!.state='ACK';await t.put('nativeEvent',current);});return value;
  }
  private async failHandoff(r:NativeEventRecord){await this.storage.transaction(async t=>{const current=await t.get<NativeEventRecord>('nativeEvent');if(!current?.handoff||current.handoff.claim!==r.claim)return;current.handoff.status='INDETERMINATE';current.status='NEEDS_ATTENTION';current.reason='HANDOFF_INDETERMINATE';current.nextAt=null;await this.save(t,current);});}
+ private async checkPrior(record:RecordState|null,identity:Identity,r:NativeEventRecord,t0:number) {
+  if(!record)return;
+  ensure(identityKey(record.identity)===identityKey(identity),'PRIOR_RECORD_IDENTITY');
+  if(record.policySha===r.policySha && record.deploymentSha===r.deploymentSha)return;
+  ensure(record.schemaVersion===1 && record.status==='DONE' && record.reason==='VERIFIED_DONE' && record.nextAt===null &&
+    record.notificationPending===false && sha(record.policySha) && sha(record.deploymentSha) && record.intent &&
+    Number.isSafeInteger(record.intent.sequence) && record.intent.sequence>=0 &&
+    record.intent.key===digest(identityKey(identity)+':'+record.intent.sequence).slice(7) && record.evidence && t0>record.t0 &&
+    t0>record.intent.claimedAt,'PRIOR_VERSION_UNRESOLVED');
+  const receipt=JSON.parse(record.evidence);
+  ensure(Number.isSafeInteger(receipt.runId) && receipt.runId>0 && receipt.attempt===1 &&
+    Number.isSafeInteger(receipt.artifactId) && receipt.artifactId>0 && /^sha256:[a-f0-9]{64}$/.test(receipt.digest) &&
+    (record.intent.runId===undefined || record.intent.runId===receipt.runId),'PRIOR_OBSERVATION_RECEIPT');
+  const run=await this.reader().json(CENTRAL.id,`/repos/${CENTRAL.name}/actions/runs/${receipt.runId}/attempts/1`);
+  ensure(run.id===receipt.runId && run.run_attempt===1 && run.actor?.id===APP_BOT_ID &&
+    run.repository?.id===CENTRAL.id && run.head_repository?.id===CENTRAL.id &&
+    run.path==='.github/workflows/release-observe.yml' && run.event==='workflow_dispatch' &&
+    run.head_sha===record.policySha && run.head_branch==='main' && run.status==='completed' &&
+    run.conclusion==='success' && run.display_title===`Observe candidate ${record.intent.key}` &&
+    Date.parse(run.updated_at)>=record.t0 && Date.parse(run.updated_at)<t0,'PRIOR_OBSERVATION_ORDER');
+ }
  private async prepare(r:NativeEventRecord){
   const prepared=await resolveNativeEvent(this.reader(),r.hint);ensure(prepared.t0===Date.parse(r.hint.updatedAt),'NATIVE_ORIGINAL_TIME');
-  if(prepared.priorIdentity){const current=await objectPost(this.env,prepared.priorIdentity,'status',{});if(current?.status==='PENDING')await objectPost(this.env,prepared.priorIdentity,'pause',{expectedGeneration:current.generation});}
+  if(prepared.priorIdentity){const current=await objectPost(this.env,prepared.priorIdentity,'status',{});await this.checkPrior(current,prepared.priorIdentity,r,prepared.t0);if(current?.status==='PENDING')await objectPost(this.env,prepared.priorIdentity,'pause',{expectedGeneration:current.generation});}
   const now=this.clock();let dispatch=false;
   await this.storage.transaction(async t=>{const latest=await t.get<NativeEventRecord>('nativeEvent');if(!latest||latest.claim!==r.claim||latest.dispatchedAt!==null||latest.status==='PAUSED'||now>=latest.deadline)return;latest.prepared=prepared;latest.dispatchedAt=now;latest.status='CONFIRMING';latest.reason='NORMAL_DISPATCH_INTENT';latest.nextAt=Math.min(now+minute,latest.deadline);await this.save(t,latest);dispatch=true;});
   if(dispatch)await dispatchFixed(this.reader(),CENTRAL.id,'release-candidate-event.yml',r.policySha,{event_json:JSON.stringify(prepared.event),source_sha:prepared.sourceSha,request_key:r.requestKey,policy_sha:r.policySha});
@@ -132,12 +159,13 @@ export class NativeCandidateCoordinator {
   const run=await g.json(CENTRAL.id,`/repos/${CENTRAL.name}/actions/runs/${id}/attempts/1`);ensure(run.id===id&&run.run_attempt===1&&run.head_sha===r.policySha&&run.path==='.github/workflows/release-candidate-event.yml'&&run.display_title===`Candidate event ${r.requestKey}`&&run.actor?.id===APP_BOT_ID&&run.repository?.id===CENTRAL.id&&run.head_repository?.id===CENTRAL.id&&run.head_branch==='main'&&run.event==='workflow_dispatch','NORMAL_RUN_BINDING');
   const bound=await this.storage.transaction(async t=>{const latest=await t.get<NativeEventRecord>('nativeEvent');if(!latest||latest.claim!==r.claim||latest.status==='PAUSED')return false;latest.knownRunId=id;if(latest.confirmations>=3){latest.status='AWAITING_RECEIPT';latest.reason='KNOWN_RUN_AWAITING_RECEIPT';latest.nextAt=latest.deadline;}await this.save(t,latest);return true;});if(!bound||run.status!=='completed')return;
   const verified=await verifyNormalResult(g,r,run);const now=this.clock();if(now>=r.deadline)return;
+  let previous:Awaited<ReturnType<typeof applyVerifiedCandidateEvent>>;
   if(verified.kind==='ready'){
    if(!await this.reserveHandoff(r,verified.evidence))return;
-   try{if(r.prepared?.priorIdentity&&identityKey(r.prepared.priorIdentity)!==identityKey(verified.registration.identity)){const old=await this.handoffPost(r,r.prepared.priorIdentity,'status',{});if(old&&['PENDING','PAUSED'].includes(old.status))await this.handoffPost(r,r.prepared.priorIdentity,'cancel',{expectedGeneration:old.generation});}
-    const stub={fetch:async(request:Request)=>Response.json(await this.handoffPost(r,verified.registration.identity,new URL(request.url).pathname.slice(1),await request.json()))};await applyVerifiedCandidateEvent(stub as any,verified);
+   try{if(r.prepared?.priorIdentity&&identityKey(r.prepared.priorIdentity)!==identityKey(verified.registration.identity)){const old=await this.handoffPost(r,r.prepared.priorIdentity,'status',{});await this.checkPrior(old,r.prepared.priorIdentity,r,r.prepared.t0);if(old&&['PENDING','PAUSED'].includes(old.status))await this.handoffPost(r,r.prepared.priorIdentity,'cancel',{expectedGeneration:old.generation});}
+    const stub={fetch:async(request:Request)=>Response.json(await this.handoffPost(r,verified.registration.identity,new URL(request.url).pathname.slice(1),await request.json()))};previous=await applyVerifiedCandidateEvent(stub as any,verified,{priorIdentity:r.prepared!.priorIdentity,stateAfter:verified.evidence.stateAfter,manualProducerSha:verified.manualProducerSha,eventId:r.prepared!.event.eventId,normalRunId:run.id,requestKey:r.requestKey,producerKey:verified.evidence.requestKey,producerRunId:verified.evidence.runId,eventT0:r.prepared!.t0});
    }catch{await this.failHandoff(r);return;}
   }
-  await this.storage.transaction(async t=>{const current=await t.get<NativeEventRecord>('nativeEvent');if(!current||current.claim!==r.claim||current.status==='PAUSED')return;if(this.clock()>=current.deadline){current.status='NEEDS_ATTENTION';current.reason='EVENT_WINDOW_EXHAUSTED';if(current.handoff)current.handoff.status='INDETERMINATE';}else{current.status=verified.kind==='ready'?'REGISTERED':'PROTECTED';current.reason=verified.kind==='ready'?'VERIFIED_NORMAL_HANDOFF':'PROTECTED_NOT_READY';if(current.handoff)current.handoff.status='COMPLETE';}current.evidence=verified.evidence;current.knownRunId=id;current.nextAt=null;await this.save(t,current);});
+  await this.storage.transaction(async t=>{const current=await t.get<NativeEventRecord>('nativeEvent');if(!current||current.claim!==r.claim||current.status==='PAUSED')return;if(this.clock()>=current.deadline){current.status='NEEDS_ATTENTION';current.reason='EVENT_WINDOW_EXHAUSTED';if(current.handoff)current.handoff.status='INDETERMINATE';}else{current.status=previous?'PREVIOUSLY_COMPLETED':verified.kind==='ready'?'REGISTERED':'PROTECTED';current.reason=previous?'VERIFIED_PREVIOUS_COMPLETION':verified.kind==='ready'?'VERIFIED_NORMAL_HANDOFF':'PROTECTED_NOT_READY';if(current.handoff)current.handoff.status='COMPLETE';}current.evidence=previous?{...verified.evidence,previousCompletion:previous}:verified.evidence;current.knownRunId=id;current.nextAt=null;await this.save(t,current);});
  }
 }
