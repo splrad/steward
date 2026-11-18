@@ -39,7 +39,8 @@ export async function maintenanceDefinition(file) {
 function source(run,workflow,definition,branch) {
   check(positive(run.id)&&positive(run.run_attempt)&&run.repository?.id===repositoryId&&run.head_repository?.id===repositoryId
     &&run.workflow_id===workflow.id&&run.path===workflow.path&&run.head_branch===branch&&sha(run.head_sha)
-    &&definition.events.includes(run.event)&&['push','schedule','workflow_dispatch','workflow_run'].includes(run.event),'RUN_SOURCE');
+    &&definition.events.includes(run.event)&&(['push','schedule','workflow_dispatch','workflow_run'].includes(run.event)
+      ||definition.file==='sync-managed.yml'&&run.event==='repository_dispatch'),'RUN_SOURCE');
   utc(run.created_at);utc(run.updated_at);
 }
 function jobsProjection(raw,run,definition) {
@@ -71,9 +72,15 @@ export async function maintenanceRunWindow(reader,workflowId,branch,start,end) {
   return runs;
 }
 
-export async function recoverMaintenanceRun({reader,io,workflow,definition,branch,runId,store,coordinator,now=Date.now}) {
+export async function recoverMaintenanceRun({reader,io,workflow,definition,branch,runId,store,coordinator,expectedRun,beforePost,wait=ms=>new Promise(resolve=>setTimeout(resolve,ms)),now=Date.now}) {
   check(activeMaintenanceWorkflows.includes(definition.file),'WORKFLOW');
   const run=await reader.json(`actions/runs/${runId}`);source(run,workflow,definition,branch);check(run.id===runId,'RUN_ID');
+  if(expectedRun) {
+    check(same(identity(run),identity(expectedRun)),'EVENT_IDENTITY');
+    if(run.run_attempt>expectedRun.run_attempt)return {status:'SUPERSEDED'};
+    check(run.run_attempt===expectedRun.run_attempt,'EVENT_ATTEMPT');
+    if(run.status==='completed')check(run.conclusion===expectedRun.conclusion,'EVENT_CONCLUSION');
+  }
   if(run.status!=='completed')return {status:'WAIT'};
   const jobs=jobsProjection(await reader.pages(`actions/runs/${runId}/jobs?filter=all`,'jobs'),run,definition);
   const after=await reader.json(`actions/runs/${runId}`);source(after,workflow,definition,branch);
@@ -87,35 +94,45 @@ export async function recoverMaintenanceRun({reader,io,workflow,definition,branc
   // A health-only failure neither creates a maintenance failure record nor consumes a recovery request.
   if(disposition==='SATISFIED'&&!prior)return {status:'SATISFIED'};
   if(!prior&&disposition==='UNKNOWN')return {status:'UNKNOWN'};
-  await store.save(record,prior);
+  const unchanged=expectedRun&&prior&&same({...prior,observedAt:record.observedAt},record);
+  if(!unchanged)await store.save(record,prior);
   if(disposition!=='FAILED')return {status:disposition};
   if(now()-Date.parse(record.createdAt)>30*24*60*60_000)return {status:'EXPIRED'};
   // An accepted response waits for native visibility. An unknown/rejected send can be reconciled once
   // by a later serialized coordinator wake, using fresh complete facts and the second reserved slot.
   if(record.requests.some(r=>r.fromAttempt===run.run_attempt&&(r.responseStatus===201
-    ||r.coordinatorRunId===coordinator.runId&&r.coordinatorRunAttempt===coordinator.runAttempt)))return {status:'UNKNOWN'};
+    ||r.coordinatorRunId===coordinator.runId&&r.coordinatorRunAttempt===coordinator.runAttempt
+    ||expectedRun&&r.coordinatorRunId!==coordinator.runId)))return {status:'UNKNOWN'};
   if(!maintenanceFailed(run.conclusion))return {status:'UNKNOWN'};
+  if(beforePost)await beforePost();
   const claim=structuredClone(record);
   claim.requests.push({fromAttempt:run.run_attempt,requestedAt:new Date(now()).toISOString(),coordinatorRunId:coordinator.runId,coordinatorRunAttempt:coordinator.runAttempt,responseStatus:null});
   claim.observedAt=claim.requests.at(-1).requestedAt;
-  await store.save(claim,record);
+  await store.save(claim,unchanged?prior:record);
   // Persisted intent ownership and exact native source must both still agree before the only POST.
   check(same(await store.load(runId),claim),'CLAIM_CHANGED');
   const active=await reader.json(`actions/workflows/${workflow.id}`);
   if(active.id!==workflow.id||active.path!==workflow.path||active.state!=='active')return {status:'WAIT'};
   const fresh=await reader.json(`actions/runs/${runId}`);source(fresh,workflow,definition,branch);
   if(!same(observation(fresh),observation(run)))return {status:'WAIT'};
+  if(beforePost)await beforePost();
   let response;
   try{response=await io.request('POST',reader.path(`actions/runs/${runId}/rerun-failed-jobs`));}catch{}
   const responseRecord=structuredClone(claim);responseRecord.requests.at(-1).responseStatus=response?.status??null;responseRecord.observedAt=new Date(now()).toISOString();
   await store.save(responseRecord,claim);
-  const observed=await reader.json(`actions/runs/${runId}`);source(observed,workflow,definition,branch);
-  check(same(identity(observed),identity(run))&&observed.run_attempt>=run.run_attempt,'RERUN_SOURCE');
-  return {status:observed.run_attempt>run.run_attempt?'ACCEPTED':'UNKNOWN'};
+  // GitHub may acknowledge a rerun before the next attempt becomes visible.
+  const delays=expectedRun&&response?.status===201?[0,2000,4000,8000]:[0];
+  for(const delay of delays) {
+    if(delay)await wait(delay);
+    const observed=await reader.json(`actions/runs/${runId}`);source(observed,workflow,definition,branch);
+    check(same(identity(observed),identity(run))&&observed.run_attempt>=run.run_attempt,'RERUN_SOURCE');
+    if(observed.run_attempt>run.run_attempt)return {status:'ACCEPTED'};
+  }
+  return {status:'UNKNOWN'};
 }
 
 /** The store writes exactly one central maintenance path through the existing fast-forward connection. */
-export function maintenanceGitStore({refresh,writeDirectory,defaultBranch,token,identity},write=writeReleaseRecords) {
+export function maintenanceGitStore({refresh,writeDirectory,defaultBranch,token,identity,beforePush},write=writeReleaseRecords) {
   const current=async()=>{const state=await refresh();check(state.snapshot.repositoryId===repositoryId&&state.snapshot.targetRef==='steward/release-state','STATE_SCOPE');return state;};
   const find=(state,id)=>state.snapshot.domainRecords.find(r=>r.path===`maintenance/${id}.json`)??null;
   return {
@@ -130,7 +147,7 @@ export function maintenanceGitStore({refresh,writeDirectory,defaultBranch,token,
       const previousSha256=state.snapshot.currentPaths.includes(path)?hash(await state.readBytes(path)):null;
       const directory=join(writeDirectory,hash(JSON.stringify([state.snapshot.head,path,content])));await mkdir(writeDirectory,{recursive:true});
       const result=await write({directory,remote:state.remote,repositoryId,defaultBranch,targetRef:'steward/release-state',writer:'maintenance',
-        expectedHead:state.snapshot.head,allowedPaths:[path],changes:[{path,content,sha256:hash(content),previousSha256}],identity},{token});
+        expectedHead:state.snapshot.head,allowedPaths:[path],changes:[{path,content,sha256:hash(content),previousSha256}],identity},{token,beforePush});
       check(['APPLIED','UNCHANGED'].includes(result.status),'ARCHIVE_UNCONFIRMED');
       const readback=await current();check(readback.snapshot.currentPaths.includes(path)&&find(readback,value.runId)?.content===content,'ARCHIVE_READBACK');
     }

@@ -26,6 +26,12 @@ it('creates central maintenance-only state, preserves requests after cache loss 
     const store=maintenanceGitStore({refresh,writeDirectory:join(root,'writes'),defaultBranch:'main',identity});
     const record:any={schemaVersion:1,repositoryId:id,workflowFile:'settings-sync.yml',workflowId:5,runId:12,headSha:source,headBranch:'main',event:'schedule',createdAt:'2026-10-30T00:00:00.000Z',runAttempt:1,conclusion:'failure',jobs:[{id:1,key:'settings-sync',matrixIndex:null,attempt:1,conclusion:'failure',empty:null,found:null}],observedAt:'2026-10-31T00:00:00.000Z',requests:[]};
     expect(await store.list()).toEqual([]);
+    let beforePushCalled=false;
+    const blocked=maintenanceGitStore({refresh,writeDirectory:join(root,'blocked-writes'),defaultBranch:'main',identity,
+      beforePush:async()=>{beforePushCalled=true;throw Error('rule drift before push');}});
+    await expect(blocked.save(record,null)).rejects.toThrow('RELEASE_RECORD');
+    expect(beforePushCalled).toBe(true);
+    expect(await store.list()).toEqual([]);
     await store.save(record,null);expect(await store.load(12)).toEqual(record);
     const initial=(await refresh()).snapshot;await store.save(record,record);expect((await refresh()).snapshot.head).toBe(initial.head);
     await expect(writeReleaseRecords(request('product-without-state',[file('generated/test.md','Invalid product\n')],initial.head,'release'))).rejects.toThrow('repository record required');

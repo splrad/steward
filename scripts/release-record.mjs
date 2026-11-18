@@ -286,7 +286,7 @@ function cycleProgress(before,after) {
  * The dedicated Git directory retains the prepared commit on UNKNOWN; invoking
  * the same request again recovers it from HEAD without a second intent store.
  */
-export async function writeReleaseRecords(input,{token}={}) {
+export async function writeReleaseRecords(input,{token,beforePush}={}) {
   const request=validateWrite(structuredClone(input));
   const directory=resolve(request.directory), ref=`refs/heads/${request.targetRef}`;
   if(busy.has(directory))fail('workspace busy');
@@ -487,6 +487,7 @@ export async function writeReleaseRecords(input,{token}={}) {
       }
       // Always a plain fast-forward push. Exit status is not adoption evidence;
       // the next iteration reads the exact ref and checks reachability/bytes.
+      if(beforePush)await beforePush();
       await git('push','--porcelain',request.remote,`HEAD:${ref}`);
     }
     const observed=await remoteHead();
@@ -658,7 +659,7 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
   }finally{await rm(root,{recursive:true,force:true});}
 }
 
-export async function assertReleaseWriterProtection(repository,branch,io,{token,fetcher=fetch}={}) {
+export async function assertReleaseWriterProtection(repository,branch,io,{token,fetcher=fetch,readCentralMaintenanceRules}={}) {
   const build=/^steward\/build\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch)&&!branch.includes('..');
   if(!build&&!['steward/release-state','steward/automation-health'].includes(branch))fail('writer protection target');
   const native=async path=>{const response=await io.request('GET',`/repos/${repository}${path?'/'+path:''}`);if(response.status!==200)fail('writer protection read unavailable');return JSON.parse(Buffer.from(response.bytes).toString('utf8'));};
@@ -671,11 +672,19 @@ export async function assertReleaseWriterProtection(repository,branch,io,{token,
   const required=build?['creation','update','deletion']:['creation','update','non_fast_forward','deletion'];
   if(!required.every(type=>rules.some(rule=>rule.type===type&&Number.isSafeInteger(rule.ruleset_id))))fail('protected writer rules');
   const relevant=rules.filter(rule=>['creation','update','non_fast_forward','deletion'].includes(rule.type));
+  let fixedRules;
+  if(readCentralMaintenanceRules) {
+    if(repository!=='splrad/steward'||branch!=='steward/release-state')fail('central maintenance protection target');
+    const ids={creation:26678450,update:26678450,deletion:26678449,non_fast_forward:26678449};
+    if(!relevant.every(r=>r.ruleset_id===ids[r.type]&&r.ruleset_source_type==='Organization'))fail('central maintenance effective rules');
+    fixedRules=await readCentralMaintenanceRules();
+    if(!Array.isArray(fixedRules)||fixedRules.length!==2)fail('central maintenance rules');
+  }
   let client;
   for(const id of new Set(relevant.map(rule=>rule.ruleset_id))) {
     if(!Number.isSafeInteger(id)||id<1)fail('protected writer rules');
-    let rule=await native(`rulesets/${id}`);
-    if(rule.id!==id||rule.enforcement!=='active'||rule.target!=='branch'||!Array.isArray(rule.bypass_actors)||!Array.isArray(rule.rules)
+    let rule=fixedRules?fixedRules.find(entry=>entry.id===id):await native(`rulesets/${id}`);
+    if(rule?.id!==id||rule.enforcement!=='active'||rule.target!=='branch'||!Array.isArray(rule.bypass_actors)||!Array.isArray(rule.rules)
       ||relevant.filter(value=>value.ruleset_id===id).some(value=>!rule.rules.some(item=>item.type===value.type)))fail('writer protection identity');
     if(rule.rules.some(value=>value.type==='update'&&value.parameters===undefined)) {
       if(!token)fail('writer update parameters unavailable');

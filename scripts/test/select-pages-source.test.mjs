@@ -12,7 +12,7 @@ const S='a'.repeat(40),R='b'.repeat(40),P='c'.repeat(40),hash=b=>createHash('sha
 async function fixture(t) {
   const root=await mkdtemp(join(tmpdir(),'pages-source-test-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const state={head:R,corrupt:false,ref:S,changed:false,workflowAtSource:true};
-  const repo={id:10,full_name:'fixture/product',default_branch:'trunk',archived:false,disabled:false,private:false};
+  const repo={id:10,full_name:'fixture/product',default_branch:'trunk',archived:false,disabled:false,has_pages:true,private:false};
   const delivery=Buffer.from(JSON.stringify({schemaVersion:1,repositoryAuthors:[{id:7,evidence:'fixture author'}],units:[{id:'app',path:'.',notesPath:'.release-notes/app.md',
     assets:[{id:'app',name:'app.bin',mediaType:'application/octet-stream'}],channels:[]}]}));
   const base={schemaVersion:3,repositoryId:10,fullName:repo.full_name,cycleId:'pr-2-'+S,requestKey:'e'.repeat(64),unitId:'app',version:'1.2.3',
