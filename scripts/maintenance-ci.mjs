@@ -95,10 +95,10 @@ export function verifyTree(workspace, identity, policy) {
   git(workspace,['-c','core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol','diff','--check',identity.base,identity.head]);
 }
 
-export async function scanMaintenanceWorkflows(workspace, runtimeRoot) {
+export async function scanMaintenanceWorkflows(workspace, runtimeRoot, repositoryId) {
   // These functions, tools and scan configuration come from P. Candidate npm/mise/ignore files are inputs only.
   const files = await discoverWorkflowFiles(workspace,true);
-  return scanWorkflows(workspace,files,runtimeRoot);
+  return scanWorkflows(workspace,files,runtimeRoot,repositoryId);
 }
 
 export function verifyResults(needs) {
@@ -120,7 +120,7 @@ export async function main(env = process.env) {
     const policy = JSON.parse(await readFile(new URL('../config/maintenance-ci.json',import.meta.url),'utf8'));
     const workspace = resolve(env.VALIDATION_WORKSPACE ?? 'target');
     verifyTree(workspace,identity,policy);
-    console.log(JSON.stringify(await scanMaintenanceWorkflows(workspace)));
+    console.log(JSON.stringify(await scanMaintenanceWorkflows(workspace,undefined,identity.repositoryId)));
   } else {
     check(env.MAINTENANCE_PHASE === 'final', 'phase');
     verifyResults(JSON.parse(env.MAINTENANCE_NEEDS));
