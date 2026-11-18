@@ -75,6 +75,22 @@ describe('fixed public Pages completion bridge',()=>{
     Object.assign(f.prior,{total_count:1,workflow_runs:[f.receipt]});
     await f.forward();expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(1);
   });
+  it.each([3,4])('bounds the recovery handoff at original run attempt %i',async attempt=>{
+    const f=fixture();
+    f.payload.workflow_run.run_attempt=f.run.run_attempt=attempt;
+    f.receipt.display_title=`Pages completion ${TARGET.id} 12 ${attempt}`;
+    await f.forward();
+    const posts=f.json.mock.calls.filter(c=>c[2]==='POST');
+    const rows=f.db.database.prepare('SELECT attempt,central_run_id FROM pages_completion_dispatches').all();
+    if(attempt===3){
+      expect(posts).toHaveLength(1);
+      expect(posts[0]?.[3]).toMatchObject({inputs:{run_id:'12',attempt:'3'}});
+      expect(rows).toEqual([{attempt:3,central_run_id:f.receipt.id}]);
+    }else{
+      expect(posts).toEqual([]);
+      expect(rows).toEqual([]);
+    }
+  });
   it.each(['privatePayload','privateReadback','notInstalled','foreignFork','wrongAttempt','paused','notEnrolled','removedCentrally','expired'] as const)('suppresses %s',async why=>{
     const f=fixture();
     if(why==='privatePayload')f.payload.repository.private=true;

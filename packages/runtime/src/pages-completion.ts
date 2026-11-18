@@ -55,6 +55,8 @@ export async function forwardPagesCompletion(env:BoundedEnv,event:string,p:any,g
     ||!['push','release','workflow_dispatch'].includes(run.event)||!/^[a-f0-9]{40}$/.test(run.head_sha)||run.head_sha!==hint.head_sha)return;
   const created=Date.parse(run.created_at);
   ensure(Number.isFinite(created),'PAGES_ORIGINAL_RUN_TIME');
+  // The original run plus two recovery attempts are in scope. Forward the third
+  // completion so the central receiver can report exhaustion without a fourth run.
   if(Date.now()-created>30*86400_000||run.run_attempt>3)return;
   const pin=env.BOUNDED_CONTROLLER_SHA;
   ensure(typeof pin==='string'&&/^[a-f0-9]{40}$/.test(pin),'PAGES_CONTROLLER');
