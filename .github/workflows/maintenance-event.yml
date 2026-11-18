@@ -1,0 +1,57 @@
+name: SPLRAD Steward / Central Maintenance
+run-name: Central maintenance ${{ github.event.workflow_run.id }} attempt ${{ github.event.workflow_run.run_attempt }}
+on:
+  workflow_run:
+    workflows:
+      - SPLRAD Steward / Sync Managed Files
+      - SPLRAD Steward / Quality Chinese Summary
+      - SPLRAD Steward / Governance Promotion
+    branches: [main]
+    types: [completed]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  recover:
+    if: >-
+      github.repository == 'splrad/steward' && github.repository_id == '1296724484' &&
+      github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main' &&
+      github.workflow_sha == github.sha && github.event.workflow_run.repository.id == 1296724484 &&
+      github.event.workflow_run.head_repository.id == 1296724484 && github.event.workflow_run.head_branch == 'main' &&
+      contains(fromJSON('[408662213,408662210,408662199]'), github.event.workflow_run.workflow_id) &&
+      (contains(fromJSON('["failure","cancelled","timed_out","action_required","startup_failure"]'), github.event.workflow_run.conclusion) || github.event.workflow_run.run_attempt > 1)
+    concurrency:
+      group: steward-release-coordinator
+      queue: max
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: steward-release
+      deployment: false
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.10.18
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - name: Install locked controller dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Reconcile the completed maintenance attempt
+        env:
+          STEWARD_CONTROLLER_SHA: ${{ github.workflow_sha }}
+          STEWARD_CENTRAL_TOKEN: ${{ github.token }}
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+        run: node scripts/maintenance-event.mjs
