@@ -1,5 +1,6 @@
+import {acceptReleaseHint} from './release-cycle-relay.js';
 import {forwardPagesCompletion} from './pages-completion.js';
-import {registerWingetRun} from './bounded-winget-evidence.js';
+import {acceptWingetSubmit} from './bounded-winget-submit.js';
 import {BoundedGitHub} from './bounded-recheck-github.js';
 import {acceptNativeCandidateEvent,acceptNativeCandidateCompletion} from './bounded-native-event.js';
 import { handleBoundedRecheckRequest } from './bounded-recheck-api.js';
@@ -13,6 +14,7 @@ import { isStewardOwnedPullRequest } from "../../core/src/issues.js";
 import {selectContractAuthority} from "../../core/src/workflow-contract-authority.js";
 import {evaluateRemoteWorkflowContract} from "../../github/src/workflow-contract.js";
 import { createAppJwt, createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestError, isDependabotReviewEligible } from "../../github/src/index.js";
+import { dispatchQualityEvent } from "./quality-event.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
 import semanticCatalog from "../../../config/labels/pr-semantics.json" with { type: "json" };
 import { handleBodyWriteInternalRequest } from "./pr-body-api.js";
@@ -469,10 +471,21 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
   let payload: any; try { payload = JSON.parse(new TextDecoder().decode(bytes)); } catch { return response(400); }
   if (!validScope(payload, env)) return response(403);
   const event = request.headers.get("x-github-event") ?? ""; const deliveryId = request.headers.get("x-github-delivery") ?? ""; const action = payload.action ?? "";
+  const [quality,existing,release,winget]=await Promise.allSettled([
+    dispatchQualityEvent(env,event,payload),
+    handleExistingEvent(env,event,payload,deliveryId,action),
+    acceptReleaseHint(env,event,payload),
+    acceptWingetSubmit(env,event,payload),
+  ]);
+  if (quality.status==='rejected') console.error(JSON.stringify({deliveryId,event,status:'quality-dispatch-failed'}));
+  if (quality.status==='rejected' || existing.status==='rejected' || release.status==='rejected' || winget.status==='rejected') return response(503);
+  return existing.value;
+}
+
+async function handleExistingEvent(env:Env,event:string,payload:any,deliveryId:string,action:string):Promise<Response> {
   try {
     await acceptNativeCandidateEvent(env, event, payload, deliveryId);
     await acceptNativeCandidateCompletion(env, event, payload);
-    await registerWingetRun(env, event, payload, new BoundedGitHub(env));
     if (["issues", "issue_comment", "sub_issues", "issue_dependencies"].includes(event)
       || (event === "installation" && action === "deleted")
       || (event === "installation_repositories" && action === "removed")) return response(204);

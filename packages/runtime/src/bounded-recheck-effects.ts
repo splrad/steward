@@ -4,7 +4,7 @@ import {upstreamPull,bindPull,currentWinget,bindChannelRun,channelJob,reportBind
 import {identityKey,type Effects,type RecordState,type Intent,type Outcome} from './bounded-recheck.js';
 import {BoundedGitHub,TARGET,CENTRAL,ensure,type BoundedEnv,type GitReader} from './bounded-recheck-github.js';
 import {candidateFacts} from './bounded-candidate-evidence.js';
-export async function dispatchFixed(g:GitReader,id:number,file:'release-observe.yml'|'bounded-release-event.yml'|'release-candidate-event.yml'|'steward-release-channels.yml'|'pages-maintenance-event.yml',sha:string,inputs:Record<string,string>,claim?:()=>Promise<boolean>){
+export async function dispatchFixed(g:GitReader,id:number,file:'release-observe.yml'|'bounded-release-event.yml'|'release-candidate-event.yml'|'steward-release-channels.yml'|'pages-maintenance-event.yml'|'quality-language-summary.yml',sha:string,inputs:Record<string,string>,claim?:()=>Promise<boolean>){
  const name=id===CENTRAL.id?CENTRAL.name:TARGET.name;
  ensure(/^[a-f0-9]{40}$/.test(sha),'OBSERVATION_PIN');
  const workflow=await g.json(id,`/repos/${name}/actions/workflows/${file}`);
