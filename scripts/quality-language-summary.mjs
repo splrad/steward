@@ -72,6 +72,10 @@ export async function openQualityStore(root,repository,token,io,governanceAppId)
   return {snapshot,cache(pr){const record=snapshot.domainRecords.find(r=>r.path===`quality/${pr}.json`);return record?decodeQualityCache(record.value,repository.id,pr):null;},
     forPull(pr){return {async save(cache,markdown){
       check(cache.repositoryId===repository.id&&cache.pullRequestNumber===pr,'CACHE_IDENTITY');
+      const previous=snapshot.domainRecords.find(record=>record.path===`quality/${pr}.json`)?.value;
+      const current=cache.heads[cache.currentHead], prior=previous?.heads?.[cache.currentHead];
+      if(prior && prior.sourceSetDigest===current.sourceSetDigest && previous.configVersion===cache.configVersion)
+        current.observedAt=prior.observedAt;
       const files=[{path:`quality/${pr}.json`,content:JSON.stringify(cache,null,2)+'\n'}];
       if(markdown){check(markdown.path===`quality/${pr}/${cache.currentHead}.md`,'MARKDOWN_PATH');files.push(markdown);}
       const changes=files.map(file=>({ ...file,sha256:hash(file.content),previousSha256:snapshot.currentPaths.includes(file.path)?hash(snapshot.domainRecords.find(r=>r.path===file.path).content):null}));
@@ -83,45 +87,51 @@ export async function openQualityStore(root,repository,token,io,governanceAppId)
       const head=await git('rev-parse','FETCH_HEAD');await git('update-ref',`refs/heads/${branch}`,head);
       snapshot=await readReleaseRecords({directory,targetRef:branch,repositoryId:repository.id});
       for(const file of files)check(snapshot.currentPaths.includes(file.path)&&snapshot.domainRecords.find(r=>r.path===file.path)?.content===file.content,'STATE_WRITE_CONFLICT');
-      return {commit:head};
+      return {commit:markdown ? await git('log','-1','--format=%H',head,'--',markdown.path) : head};
     }};}};
 }
 
-export async function qualityWake({discover,inventory,service},clock=Date.now) {
-  const budget={remaining:10,deadline:clock()+18*60_000},counts={repositories:0,pullRequests:0,complete:0,pending:0,failed:0},ready=[];
-  for(const repository of await discover()) {
-    if(clock()>=budget.deadline)break;if(repository.archived||repository.disabled)continue;
-    try{for(const item of await inventory(repository))ready.push({repository,...item});counts.repositories++;}catch{counts.failed++;}
-  }
-  ready.sort((a,b)=>Date.parse(a.observedAt??'1970-01-01T00:00:00Z')-Date.parse(b.observedAt??'1970-01-01T00:00:00Z')||a.repository.id-b.repository.id||a.pr-b.pr);
-  for(const item of ready){if(clock()>=budget.deadline)break;try{const result=await service(item,budget);counts.pullRequests++;counts.complete+=result.complete;counts.pending+=result.pending;}catch{counts.failed++;}}
-  return {...counts,batches:10-budget.remaining};
+export function qualityTarget(inputs, repositories) {
+  const repository = Object.hasOwn(repositories, inputs.repository_id) && repositories[inputs.repository_id];
+  check(repository && /^[1-9][0-9]*$/.test(inputs.repository_id) &&
+    /^[1-9][0-9]*$/.test(inputs.pull_number) && Number.isSafeInteger(Number(inputs.pull_number)) &&
+    /^[a-f0-9]{40}$/.test(inputs.head_sha), 'EVENT_TARGET');
+  return {repository, id:Number(inputs.repository_id), pr:Number(inputs.pull_number), head:inputs.head_sha};
 }
 
 export async function main() {
-  check(process.env.GITHUB_REPOSITORY==='splrad/steward'&&process.env.GITHUB_REPOSITORY_ID==='1296724484'
-    &&process.env.GITHUB_REF===`refs/heads/${process.env.STEWARD_DEFAULT_BRANCH}`&&['push','schedule','workflow_dispatch'].includes(process.env.GITHUB_EVENT_NAME)
-    &&/^[a-f0-9]{40}$/.test(process.env.STEWARD_CONTROLLER_SHA??''),'CENTRAL_IDENTITY');
+  const env = process.env;
+  const {inputs, sender, repository:central} = JSON.parse(await readFile(env.GITHUB_EVENT_PATH, 'utf8'));
+  check(env.GITHUB_REPOSITORY==='splrad/steward' && env.GITHUB_REPOSITORY_ID==='1296724484' &&
+    central?.id===1296724484 && central.default_branch==='main' && env.GITHUB_REF==='refs/heads/main' &&
+    env.GITHUB_EVENT_NAME==='workflow_dispatch' && sender?.id===301115370 && env.GITHUB_ACTOR_ID==='301115370' &&
+    /^[a-f0-9]{40}$/.test(env.STEWARD_CONTROLLER_SHA) && inputs.policy_sha===env.STEWARD_CONTROLLER_SHA &&
+    inputs.policy_sha===env.GITHUB_SHA, 'CENTRAL_IDENTITY');
   const config=JSON.parse(await readFile(new URL('../config/review/quality-language.json',import.meta.url),'utf8'));
-  check(config.schemaVersion===1&&Object.keys(config).sort().join(',')==='configVersion,governanceAppId,schemaVersion,sources','CONFIG');
-  check(config.sources.length>0&&Number.isSafeInteger(config.governanceAppId)&&config.governanceAppId>0,'SOURCE_CONFIG_PENDING');
-  const root=await mkdtemp(join(tmpdir(),'steward-quality-wake-'));
+  const target=qualityTarget(inputs,config.repositories);
+  const root=await mkdtemp(join(tmpdir(),'steward-quality-event-'));
   try {
-    const app=await nativeReleaseApp(process.env.STEWARD_APP_PRIVATE_KEY??''),client=copilotQualityClient(process.cwd(),process.env.STEWARD_COPILOT_TOKEN??'');
-    const counts=await qualityWake({discover:()=>app.discover(),inventory:repository=>app.forQualityRepository(repository.id,async token=>{
-      const io=qualityNativeIO(repository.full_name,token),state=await openQualityStore(root,repository,token,io,config.governanceAppId);
-      const prs=await qualityPages(io,`/repos/${repository.full_name}/pulls?state=open`);
-      check(prs.every(pr=>Number.isSafeInteger(pr.number)&&pr.number>0&&pr.base?.repo?.id===repository.id&&/^[a-f0-9]{40}$/.test(pr.head?.sha))
-        &&new Set(prs.map(pr=>pr.number)).size===prs.length,'PR_INVENTORY');
-      return prs.map(pr=>({pr:pr.number,head:pr.head.sha,observedAt:state.cache(pr.number)?.heads[pr.head.sha]?.observedAt??null}));
-    }),service:({repository,pr,head},budget)=>app.forQualityRepository(repository.id,async token=>{
-      const io=qualityNativeIO(repository.full_name,token),state=await openQualityStore(root,repository,token,io,config.governanceAppId);
-      return serviceQualityPullRequest({repository:repository.full_name,repositoryId:repository.id,pullRequestNumber:pr,head,appId,configVersion:config.configVersion},
-        config.sources,state.cache(pr),io,state.forPull(pr),client,budget);
-    })});
-    const summary=JSON.stringify(counts)+'\n';process.stdout.write(summary);
-    if(process.env.GITHUB_STEP_SUMMARY)await appendFile(process.env.GITHUB_STEP_SUMMARY,summary);
-    if(counts.failed)process.exitCode=75;
+    const app=await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY??'');
+    const result=await app.forQualityRepository(target.id,async token=>{
+      const io=qualityNativeIO(target.repository,token);
+      const {value:repository}=await io.get('/repos/'+target.repository);
+      check(repository.id===target.id && repository.full_name===target.repository && repository.owner?.id===302208797 &&
+        repository.private===false && repository.visibility==='public' && !repository.archived && !repository.disabled, 'REPOSITORY_CHANGED');
+      const {value:pr}=await io.get('/repos/'+target.repository+'/pulls/'+target.pr);
+      check(pr.number===target.pr && pr.base?.repo?.id===target.id,'PR_IDENTITY');
+      if(pr.state!=='open'||pr.head?.sha!==target.head)return {status:'SUPERSEDED'};
+      const state=await openQualityStore(root,repository,token,io,config.governanceAppId);
+      const budget={remaining:10,deadline:Date.now()+18*60_000};
+      const client=copilotQualityClient(process.cwd(),env.STEWARD_COPILOT_TOKEN??'');
+      const {complete,pending}=await serviceQualityPullRequest({repository:target.repository,repositoryId:target.id,
+        pullRequestNumber:target.pr,head:target.head,appId,configVersion:config.configVersion},
+        config.sources,state.cache(target.pr),io,state.forPull(target.pr),client,budget);
+      return {complete,pending,batches:10-budget.remaining};
+    });
+    const summary=JSON.stringify(result)+'\n';
+    process.stdout.write(summary);
+    if(env.GITHUB_STEP_SUMMARY)await appendFile(env.GITHUB_STEP_SUMMARY,summary);
+    if(result.pending)process.exitCode=75;
   }finally{await rm(root,{recursive:true,force:true});}
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href)main().catch(()=>{process.stderr.write('QUALITY_UNAVAILABLE\n');process.exitCode=75;});

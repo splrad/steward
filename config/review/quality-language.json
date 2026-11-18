@@ -1,6 +1,22 @@
 {
   "schemaVersion": 1,
-  "configVersion": "quality-v1",
-  "governanceAppId": null,
-  "sources": []
+  "configVersion": "quality-native-comments-v1",
+  "governanceAppId": 5639432,
+  "sources": [
+    {
+      "kind": "review",
+      "id": 223894421,
+      "login": "github-code-quality[bot]"
+    },
+    {
+      "kind": "review-comment",
+      "id": 223894421,
+      "login": "github-code-quality[bot]"
+    }
+  ],
+  "repositories": {
+    "1187527897": "splrad/LayerScape",
+    "1296724484": "splrad/steward",
+    "1296725317": "splrad/.github"
+  }
 }

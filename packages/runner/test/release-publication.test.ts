@@ -175,3 +175,12 @@ it.each(['stable','run-changed','attempt-changed'] as const)('compares each nati
   expect(result.missing).toEqual(mode==='stable'?[]:['publication:900:native-evidence']);
   if(mode==='stable')expect(result.native.attempts[0]!.invocations[0]!.evidence.outcome).toBe('EFFECT_CONFIRMED');
 });
+it('binds the fixed central product event publisher to its native App and default branch',async()=>{
+  const f=fixture();
+  Object.assign(f.run,{path:'.github/workflows/release-cycle-event.yml',event:'workflow_dispatch'});
+  const publish=()=>invokePublication(f.context,f.current,[],f.store,f.productIo,f.centralIo,async()=>f.setExists(),NOW,()=>NOW);
+  await expect(publish()).rejects.toThrow('native central identity');
+  f.run.actor.id=301115370; f.run.head_branch='elsewhere';
+  await expect(publish()).rejects.toThrow('native central identity');
+  f.run.head_branch='main'; expect((await publish()).publishInvoked).toBe(true);
+});

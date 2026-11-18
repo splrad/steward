@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, readdir, copyFile, lstat } from 'node:fs/promises';
+import { mkdir, readFile, readdir, copyFile, lstat, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { nativeGhCommand, NativeGitHubRelease, nativeReleaseDownload, releaseReadIsAnonymous, type GhCommand, type ReleaseDownload } from './gh-release.js';
 import { localGitSnapshot } from './git-snapshot.js';
@@ -455,15 +455,24 @@ export async function pipelineCollect(record: PipelineSource, selection: Awaited
   }
   if (JSON.stringify((await readdir(outputDirectory)).sort()) !== JSON.stringify(names.map(asset => asset.name).sort())) fail('collected file set');
 }
-export async function pipelineDownloadProducers(record: PipelineSource, selection: Awaited<ReturnType<typeof pipelineProducers>>, rawDirectory: string, policyDirectory: string, home: string) {
+export async function pipelineDownloadProducers(record: PipelineSource, selection: Awaited<ReturnType<typeof pipelineProducers>>, rawDirectory: string, policyDirectory: string, home: string, gh: GhCommand = nativeGhCommand) {
   assertPipelineSource(record);
-  await mkdir(rawDirectory, { recursive: false }); await mkdir(home, { recursive: false });
-  for (const producer of selection.producers) {
-    const build = record.unit.builds.find(item => item.id === producer.buildId); if (!build) fail('unknown producer');
-    await downloadNativeArtifact({ fullName: record.fullName, artifactId: producer.artifactId, digest: selection.digests[String(producer.artifactId)]!,
-      names: build.expectedArtifacts.map(id => record.unit.assets.find(asset => asset.id === id)!.name),
-      directory: join(rawDirectory, producerArtifactName({ ...record, runId:producer.runId??record.runId, unitId: record.unit.id }, build.id, producer.attempt)),
-      policyDirectory, home: join(home, String(producer.artifactId)) });
+  await mkdir(home, { recursive: true });
+  await mkdir(rawDirectory, { recursive: false });
+  try {
+    for (const producer of selection.producers) {
+      const build = record.unit.builds.find(item => item.id === producer.buildId); if (!build) fail('unknown producer');
+      await downloadNativeArtifact({ fullName: record.fullName, artifactId: producer.artifactId, digest: selection.digests[String(producer.artifactId)]!,
+        names: build.expectedArtifacts.map(id => record.unit.assets.find(asset => asset.id === id)!.name),
+        directory: join(rawDirectory, producerArtifactName({ ...record, runId:producer.runId??record.runId, unitId: record.unit.id }, build.id, producer.attempt)),
+        policyDirectory, home: join(home, String(producer.artifactId)) });
+    }
+    const current = JSON.parse(await gh(['api', `repos/${record.fullName}/actions/runs/${record.runId}`]));
+    if (current.id !== record.runId || current.repository?.id !== record.repositoryId || current.head_repository?.id !== record.repositoryId
+      || current.head_sha !== record.sourceSha || current.event !== record.event || current.run_attempt !== record.attempt) fail('run changed during producer download');
+  } catch (error) {
+    await rm(rawDirectory, {recursive:true, force:true});
+    throw error;
   }
 }
 /** Validate frozen producer A/S against the retained build record; execution B/R cannot replace it. */

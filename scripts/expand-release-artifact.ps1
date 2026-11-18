@@ -25,7 +25,7 @@ try {
     if ($unixType -ne 0 -and $unixType -ne 0x8000) { throw 'Archive contains non-regular entry' }
     if ($entry.Length -le 0 -or $entry.Length -ge 2147483648) { throw 'Invalid archive entry size' }
     $total += $entry.Length
-    if ($total -ge 2147483648) { throw 'Archive size limit' }
+    if ($total -gt 4294967296) { throw 'Archive size limit' }
   }
   [void][IO.Directory]::CreateDirectory($OutputDirectory)
   foreach ($entry in $zip.Entries) {

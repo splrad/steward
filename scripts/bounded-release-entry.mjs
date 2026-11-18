@@ -13,7 +13,7 @@ export async function entryGuard(env,get,config) {
   if(config.enabled!==true||!sha(config.deploymentSha))fail('BOUNDED_NOT_CONNECTED');
   if(env.GITHUB_REPOSITORY!==central||env.GITHUB_REPOSITORY_ID!==String(centralId)||env.GITHUB_REF!=='refs/heads/main'
     ||!sha(env.STEWARD_CONTROLLER_SHA)||env.STEWARD_EXPECTED_PAUSED_RELEASE!=='311600220')fail('BOUNDED_PAUSED_OR_SOURCE');
-  const workflow={pages:'.github/workflows/pages-maintenance-event.yml',observe:'.github/workflows/release-observe.yml',event:'.github/workflows/bounded-release-event.yml',normal:'.github/workflows/release-candidate-event.yml'}[env.BOUNDED_MODE];
+  const workflow={cycle:'.github/workflows/release-cycle-event.yml',pages:'.github/workflows/pages-maintenance-event.yml',observe:'.github/workflows/release-observe.yml',event:'.github/workflows/bounded-release-event.yml',normal:'.github/workflows/release-candidate-event.yml'}[env.BOUNDED_MODE];
   if(!workflow)fail('BOUNDED_MODE');
   const repo=await get(`/repos/${central}`),head=await get(`/repos/${central}/git/ref/heads/main`);
   const run=await get(`/repos/${central}/actions/runs/${env.GITHUB_RUN_ID}/attempts/${env.GITHUB_RUN_ATTEMPT}`);

@@ -35,3 +35,35 @@ try { foreach($name in (Get-Content -LiteralPath $Entries -Raw | ConvertFrom-Jso
   if (kind === 'valid') { await invoke(); expect(await readFile(join(output, 'app.exe'), 'utf8')).toBe('fixture bytes'); await expect(invoke()).rejects.toThrow(); }
   else { await expect(invoke()).rejects.toThrow(); await expect(stat(output)).rejects.toThrow(); }
 }, 30_000);
+import { vi } from 'vitest';
+import { zip } from './fixtures/artifact-envelope.js';
+import { downloadNativeArtifact } from '../src/native-artifact-download.js';
+
+it('reuses the collect destination after a failed signed download and keeps credentials on the API host',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'native-archive-')); roots.push(root); registerOfflineFixtureRoot(root);
+  permitOfflineScript(resolve('scripts/expand-release-artifact.ps1'));
+  const bytes=zip(),digest='sha256:'+createHash('sha256').update(bytes).digest('hex');
+  const input={fullName:'fixture/product',artifactId:9,digest,names:['product.exe'],directory:join(root,'output'),policyDirectory:resolve('.'),home:join(root,'home')};
+  const storage='https://storage.blob.core.windows.net/artifact';
+  let status=503;
+  vi.stubGlobal('fetch',async(url:string|URL, options:RequestInit)=>{
+    if(String(url)===storage) {
+      expect(options.headers).toBeUndefined(); expect(options.redirect).toBe('error');
+      return status===200?new Response(bytes):new Response(null,{status});
+    }
+    expect(new Headers(options.headers).get('authorization')).toBe('Bearer fixture');
+    if(String(url).endsWith('/zip')) {
+      expect(options.redirect).toBe('manual');
+      return new Response(null,{status:302,headers:{location:storage}});
+    }
+    expect(String(url)).toBe('https://api.github.com/repos/fixture/product/actions/artifacts/9');
+    return Response.json({id:9,expired:false,size_in_bytes:bytes.length,digest});
+  });
+  try {
+    await expect(downloadNativeArtifact(input,'fixture')).rejects.toThrow('HTTP_503');
+    await expect(stat(input.directory)).rejects.toThrow();
+    status=200; await downloadNativeArtifact(input,'fixture');
+    expect(await readFile(join(input.directory,'product.exe'),'utf8')).toBe('example');
+    await expect(downloadNativeArtifact(input,'fixture')).rejects.toMatchObject({code:'EEXIST'});
+  } finally {vi.unstubAllGlobals();}
+});

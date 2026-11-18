@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, writeFile, rm } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 
@@ -13,12 +13,6 @@ try {
   child = spawn(process.execPath, ["node_modules/@vercel/ncc/dist/ncc/cli.js", "build", join(compiled, "packages/runner/src/index.js"), "-o", temporary, "--minify"], { stdio: "inherit" });
   code = await new Promise(resolve => child.on("close", resolve));
   if (code !== 0) process.exit(code ?? 1);
-  for (const name of await readdir(temporary)) {
-    if (!name.endsWith(".hbs")) continue;
-    const path = join(temporary, name);
-    const text = (await readFile(path, "utf8")).trimEnd();
-    await writeFile(path, text ? text + "\n" : "");
-  }
   const list = async (root, prefix = '') => {
     const result = [];
     for (const entry of await readdir(join(root, prefix), { withFileTypes: true })) {
