@@ -477,7 +477,7 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
   // before passing any payload to handlers that may persist, dispatch or log it.
   if (event === "pull_request_review_comment" && payload.repository?.private !== false) return response(204);
   const [quality,existing,release,winget,promotion]=await Promise.allSettled([
-    dispatchQualityEvent(env,event,payload),
+    dispatchQualityEvent(env,event,payload,deliveryId),
     handleExistingEvent(env,event,payload,deliveryId,action),
     acceptReleaseHint(env,event,payload),
     acceptWingetSubmit(env,event,payload),

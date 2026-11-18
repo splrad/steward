@@ -1,6 +1,7 @@
+import {retryAfterTime} from './bounded-retry-after.js';
 import {promotedController} from './bounded-controller.js';
-import {PendingPromotion} from './release-promotion.js';
-import { BoundedGitHub, CENTRAL, type BoundedEnv, type GitReader } from './bounded-recheck-github.js';
+import {PendingPromotion,promotionMessage} from './release-promotion.js';
+import { BoundedGitHub, CENTRAL, digest, ensure, type BoundedEnv, type GitReader } from './bounded-recheck-github.js';
 import { dispatchFixed } from './bounded-recheck-effects.js';
 
 const publicRepositories = new Set([1187527897,1296724484,1296725317]);
@@ -33,12 +34,61 @@ export function qualityLocator(event:string, payload:any, installationId:number)
   return {repository_id:String(repo.id),pull_number:String(number),head_sha:head};
 }
 
-export async function dispatchQualityEvent(env:BoundedEnv,event:string,payload:any,reader?:GitReader) {
+type Target=NonNullable<ReturnType<typeof qualityLocator>>;
+type QualityRecord={delivery:string;event:string;target:Target;phase:'pending'|'reserved'|'sent';policy?:string;retryAt?:number};
+function qualityKey(r:QualityRecord){return digest(JSON.stringify([r.delivery,r.event,r.target.repository_id,r.target.pull_number,r.target.head_sha])).slice(7);}
+export async function dispatchQualityEvent(env:BoundedEnv,event:string,payload:any,delivery:string) {
   const target=qualityLocator(event,payload,Number(env.INSTALLATION_ID));
-  if (!target || env.BOUNDED_RECHECK_ENABLED!=='true' || !env.RELEASE_RELAY_DEPLOYMENT_SHA) return;
-  const g=reader??new BoundedGitHub(env);
-  let policy:string;
-  try{policy=await promotedController(g,env.RELEASE_RELAY_DEPLOYMENT_SHA);}
-  catch(error){if(error instanceof PendingPromotion)return;throw error;}
-  await dispatchFixed(g,CENTRAL.id,'quality-language-summary.yml',policy,{...target,policy_sha:policy});
+  if(!target||env.BOUNDED_RECHECK_ENABLED!=='true')return;
+  ensure(env.BOUNDED_RECHECK&&/^[a-zA-Z0-9-]{1,128}$/.test(delivery),'QUALITY_DELIVERY');
+  const record:QualityRecord={delivery,event,target,phase:'pending'};
+  const ns=env.BOUNDED_RECHECK,stub=ns.get(ns.idFromName('quality:v1:'+qualityKey(record)));
+  const response=await stub.fetch(new Request('https://bounded.internal/quality-event',{method:'POST',body:JSON.stringify(record)}));
+  ensure(response.ok,'QUALITY_REGISTRATION');
+}
+export class QualityEvent {
+  constructor(private storage:DurableObjectStorage,private env:BoundedEnv,private reader:()=>GitReader=()=>new BoundedGitHub(env)){}
+  async register(record:QualityRecord){
+    await this.storage.transaction(async t=>{
+      if(!await t.get('qualityEvent'))await t.put('qualityEvent',{...record,phase:'pending'});
+    });
+    await this.forward();
+  }
+  async forward(){
+    const record=await this.storage.get<QualityRecord>('qualityEvent');
+    if(!record||record.phase==='sent')return;
+    ensure(record.phase==='pending','QUALITY_POST_UNCONFIRMED');
+    ensure(!record.retryAt||Date.now()>=record.retryAt,'QUALITY_RATE_LIMIT');
+    ensure(this.env.BOUNDED_RECHECK_ENABLED==='true','QUALITY_QUIESCED');
+    // The explicit release pin fences older controllers whose quality workflow lacks these inputs.
+    const deployment=this.env.RELEASE_RELAY_DEPLOYMENT_SHA;
+    ensure(deployment,'QUALITY_DEPLOYMENT');
+    const reader=this.reader();
+    let policy:string;
+    try{policy=await promotedController(reader,deployment,undefined,this.env);}
+    catch(error){
+      if(!(error instanceof PendingPromotion))throw error;
+      await promotionMessage(this.env,deployment,'wait',{policy:deployment,key:qualityKey(record),kind:'quality',generation:error.generation});
+      return;
+    }
+    let claimed=false;
+    try{
+      await dispatchFixed(reader,CENTRAL.id,'quality-language-summary.yml',policy,{...record.target,policy_sha:policy},async()=>{
+        claimed=await this.storage.transaction(async t=>{
+          const current=await t.get<QualityRecord>('qualityEvent');
+          if(current?.phase!=='pending')return false;
+          await t.put('qualityEvent',{...current,phase:'reserved',policy});return true;
+        });
+        return claimed;
+      });
+    }catch(error){
+      const message=error instanceof Error?error.message:'';
+      const retryAt=retryAfterTime(error,Date.now(),Number.MAX_SAFE_INTEGER-1);
+      if(claimed && (retryAt!==undefined || /^GITHUB_HTTP_(400|401|403|404|409|410|422|429)$/.test(message))){
+        await this.storage.put('qualityEvent',{...record,phase:'pending',retryAt:retryAt??0});
+      }
+      throw error;
+    }
+    if(claimed)await this.storage.put('qualityEvent',{...record,phase:'sent',policy});
+  }
 }

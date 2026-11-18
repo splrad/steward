@@ -48,7 +48,7 @@ export class ReleaseRelay {
   async register(hint: Hint) {
     const prior=await this.storage.get<Relay>('releaseCycle');
     if(prior?.stage==='unknown' && !prior.reserved && prior.reason==='PREPARATION_EXHAUSTED' && prior.waitingFor){
-      const policy=await promotedController(this.reader(),this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA);
+      const policy=await promotedController(this.reader(),this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA,undefined,this.env);
       await this.wakePromoted(policy,true);return;
     }
     await this.storage.transaction(async t => {
@@ -64,12 +64,12 @@ export class ReleaseRelay {
       await t.setAlarm(record.next);
     });
   }
-  async wakePromoted(policy:string,redelivery=false){
+  async wakePromoted(policy:string,redelivery=false,controller=policy){
     await this.storage.transaction(async t=>{
       const r=await t.get<Relay>('releaseCycle');
-      if(!r || r.paused || r.reserved || (!redelivery && r.waitingFor!==policy) || !r.waitingFor || r.resumedFor===policy ||
+      if(!r || r.paused || r.reserved || (!redelivery && r.waitingFor!==policy) || !r.waitingFor || r.resumedFor===controller ||
          (r.stage!=='prepare' && !(r.stage==='unknown'&&r.reason==='PREPARATION_EXHAUSTED')))return;
-      r.stage='prepare';r.next=this.now();r.resumedFor=policy;delete r.waitingFor;
+      r.stage='prepare';r.next=this.now();r.resumedFor=controller;delete r.waitingFor;
       // One additional preflight for this newly verified promotion, retaining the prior count and business key.
       await t.put('releaseCycle',r);await t.setAlarm(r.next);
     });
@@ -151,7 +151,7 @@ export class ReleaseRelay {
             typeof v.publishInvoked==='boolean','PUBLICATION_ARTIFACT');
           if(!v.publishInvoked){await save({stage:'received',reason:'NO_PUBLICATION'});return;}
         }
-        const policy=await promotedController(g,this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA);
+        const policy=await promotedController(g,this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA,undefined,this.env);
         const own = await g.json(CENTRAL.id,prefix+'/actions/workflows/'+workflow);
         ensure(own.state === 'active' && own.path === '.github/workflows/'+workflow,'RELEASE_RELAY_WORKFLOW');
         const reserved = this.now();
@@ -172,7 +172,7 @@ export class ReleaseRelay {
       if(error instanceof PendingPromotion && r.stage==='prepare'){
         const final=r.tries>=4;
         if(await save({waitingFor:error.sha,...(final?{stage:'unknown' as const,reason:'PREPARATION_EXHAUSTED'}:{})}) && this.env.BOUNDED_RECHECK)
-          await promotionMessage(this.env,error.sha,'wait',{policy:error.sha,key});
+          await promotionMessage(this.env,error.sha,'wait',{policy:error.sha,key,kind:'cycle',generation:error.generation});
         return;
       }
       if (r.tries >= 4) await save({stage:'unknown',reason:r.stage === 'prepare' ? 'PREPARATION_EXHAUSTED' : 'DELIVERY_UNKNOWN'});

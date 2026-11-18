@@ -99,7 +99,7 @@ export class NativeCandidateCoordinator {
      if(!latest||latest.claim!==r.claim||latest.dispatchedAt!==null||latest.status!=='PREPARING')return;
      latest.waitingForPromotion=error.sha;await this.save(t,latest);
     });
-    await promotionMessage(this.env,error.sha,'wait',{policy:error.sha,key:r.requestKey,kind:'native'});
+    await promotionMessage(this.env,error.sha,'wait',{policy:error.sha,key:r.requestKey,kind:'native',generation:error.generation});
     // Preserve the original slot if enrollment fails. After acknowledgement only the
     // matching promotion or the original deadline should wake this unposted request.
     await this.storage.transaction(async t=>{
@@ -172,7 +172,7 @@ export class NativeCandidateCoordinator {
     Date.parse(run.updated_at)>=record.t0 && Date.parse(run.updated_at)<t0,'PRIOR_OBSERVATION_ORDER');
  }
  private async prepare(r:NativeEventRecord){
-  const g=this.reader(),policy=await promotedController(g,this.env.RELEASE_RELAY_DEPLOYMENT_SHA??r.deploymentSha,r.policySha);
+  const g=this.reader(),policy=await promotedController(g,this.env.RELEASE_RELAY_DEPLOYMENT_SHA??r.deploymentSha,r.policySha,this.env);
   const prepared=await resolveNativeEvent(g,r.hint);ensure(prepared.t0===Date.parse(r.hint.updatedAt),'NATIVE_ORIGINAL_TIME');
   if(prepared.priorIdentity){const current=await objectPost(this.env,prepared.priorIdentity,'status',{});await this.checkPrior(current,prepared.priorIdentity,{...r,policySha:policy},prepared.t0);if(current?.status==='PENDING')await objectPost(this.env,prepared.priorIdentity,'pause',{expectedGeneration:current.generation});}
   await dispatchFixed(g,CENTRAL.id,'release-candidate-event.yml',policy,{event_json:JSON.stringify(prepared.event),source_sha:prepared.sourceSha,request_key:r.requestKey,policy_sha:policy},async()=>{

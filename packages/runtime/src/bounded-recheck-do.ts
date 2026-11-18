@@ -1,3 +1,4 @@
+import {QualityEvent} from './quality-event.js';
 import {ReleasePromotion} from './release-promotion.js';
 import {WingetSubmit} from './bounded-winget-submit.js';
 import {ReleaseRelay} from './release-cycle-relay.js';
@@ -26,8 +27,11 @@ export class BoundedRecheckCoordinator {
  async fetch(request:Request){
   ensure(request.method==='POST','INTERNAL_METHOD');const b=await request.json() as any;const action=new URL(request.url).pathname;
   let value:unknown;
+  if(action==='/quality-event'){await new QualityEvent(this.state.storage,this.env).register(b);return Response.json({accepted:true});}
+  if(action==='/quality-promoted'){await new QualityEvent(this.state.storage,this.env).forward();return Response.json({accepted:true});}
+  if(action==='/generation')return Response.json({generation:(await this.state.storage.get<number>('generation'))??0});
   if(action==='/wait'||action==='/promoted'){await new ReleasePromotion(this.state.storage,this.env).update(action,b);return Response.json({accepted:true});}
-  if(action==='/release-promoted'){await new ReleaseRelay(this.state.storage,this.env).wakePromoted(b.policy);return Response.json({accepted:true});}
+  if(action==='/release-promoted'){await new ReleaseRelay(this.state.storage,this.env).wakePromoted(b.policy,false,b.controller);return Response.json({accepted:true});}
   if(action==='/winget-register'){
    ensure(this.env.BOUNDED_RECHECK_ENABLED==='true' && b.registration?.identity?.stage==='winget-pr' &&
      typeof b.executionSha==='string' && /^[a-f0-9]{40}$/.test(b.executionSha) && b.anchorSha===this.env.BOUNDED_PRODUCT_SHA,'CHANNEL_INTERNAL_REGISTRATION');
