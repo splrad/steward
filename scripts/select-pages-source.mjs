@@ -71,7 +71,7 @@ export async function verifyPagesRelease({reader,release,bundle,appBotId,unitId}
 function releaseFacts(r){return [r.id,r.author?.id,r.tag_name,r.draft,r.prerelease,r.immutable,r.published_at,r.target_commitish];}
 
 /** Complete desired-source read. Default mode never asks for VERSION, delivery, tags or releases. */
-export async function desiredPagesSource({reader,repositoryId,mode,unitId='',controllerSha,appBotId},
+export async function desiredPagesSource({reader,repositoryId,mode,unitId='',controllerSha,appBotId,publicOnly=false},
   {readContent=pagesContent,readManifest=manifestForRelease,verifyRelease=verifyPagesRelease}={}) {
   check(positive(repositoryId)&&repositoryName(reader.repository)&&sha(controllerSha),'CONTEXT');
   if(mode==='')return {status:'DISABLED'};
@@ -80,6 +80,8 @@ export async function desiredPagesSource({reader,repositoryId,mode,unitId='',con
   const repo=json(response.bytes);
   check(repo.id===repositoryId&&repo.full_name===reader.repository&&repo.archived===false&&repo.disabled===false
     &&typeof repo.default_branch==='string'&&repo.default_branch.length>0,'REPOSITORY');
+  check(typeof repo.has_pages==='boolean','SITE_STATE');
+  if(!repo.has_pages||publicOnly&&repo.private!==false)return {status:'DISABLED'};
   const branch=await reader.json(`git/ref/heads/${encodeURIComponent(repo.default_branch)}`);
   check(branch.ref===`refs/heads/${repo.default_branch}`&&branch.object?.type==='commit'&&sha(branch.object.sha),'DEFAULT_HEAD');
   const base={schemaVersion:1,repositoryId,repository:reader.repository,mode,controllerSha,defaultBranch:repo.default_branch};

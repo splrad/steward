@@ -37,7 +37,7 @@ export function decodeMaintenanceRecord(bytes:Uint8Array,repositoryId:number,pat
   check(v.schemaVersion===1&&repositoryId===1296724484&&v.repositoryId===repositoryId&&maintenanceWorkflows.includes(v.workflowFile),'SCOPE');
   check(positive(v.workflowId)&&positive(v.runId)&&positive(v.runAttempt)&&path===`maintenance/${v.runId}.json`,'IDENTITY');
   check(/^[a-f0-9]{40}$/.test(v.headSha)&&typeof v.headBranch==='string'&&/^[A-Za-z0-9][A-Za-z0-9_./-]*$/.test(v.headBranch)
-    &&['push','schedule','workflow_dispatch',...(v.workflowFile==='governance-promotion.yml'?['workflow_run']:[])].includes(v.event),'SOURCE');
+    &&['push','schedule','workflow_dispatch',...(v.workflowFile==='sync-managed.yml'?['repository_dispatch']:[]),...(v.workflowFile==='governance-promotion.yml'?['workflow_run']:[])].includes(v.event),'SOURCE');
   check(utc(v.createdAt)&&utc(v.observedAt)&&v.createdAt<=v.observedAt&&conclusions.includes(v.conclusion),'OBSERVATION');
   check(Array.isArray(v.jobs)&&v.jobs.length>0&&new Set(v.jobs.map(j=>j.id)).size===v.jobs.length,'JOBS');
   for(const j of v.jobs) {
@@ -74,6 +74,18 @@ export function maintenanceDisposition(record:MaintenanceRecord):'FAILED'|'SATIS
       if(t.found!=='success'||t.empty!=='skipped')return 'UNKNOWN';
       if(updates.some(j=>j.matrixIndex===null)||updates.map(j=>j.matrixIndex!).sort((a,b)=>a-b).some((n,i)=>n!==i))return 'UNKNOWN';
     }
+  }
+  if(record.workflowFile==='sync-managed.yml'&&record.conclusion==='success'&&record.runAttempt>1&&failures.size) {
+    // A conditional sibling can remain skipped throughout a native failed-jobs rerun.
+    // Require the original business inventory and a later success for every previously failed job.
+    const original=record.jobs.filter(job=>job.attempt===1);
+    if(!business.every(job=>original.some(first=>first.key===job.key)))return 'UNKNOWN';
+    for(const job of business) {
+      const history=record.jobs.filter(fact=>fact.key===job.key);
+      if(job.conclusion==='skipped'&&history.every(fact=>fact.conclusion==='skipped'))continue;
+      if(job.conclusion!=='success'||history.some(fact=>maintenanceFailed(fact.conclusion)&&fact.attempt>=job.attempt))return 'UNKNOWN';
+    }
+    return 'SATISFIED';
   }
   if(business.some(j=>maintenanceFailed(j.conclusion)))return failures.size>=3||record.requests.length>=2?'EXHAUSTED':'FAILED';
   return business.every(j=>j.conclusion==='success')?'SATISFIED':'UNKNOWN';

@@ -110,3 +110,47 @@ it('revokes independent PR reader and release writer when a nested adoption read
   expect(f.minted).toHaveLength(2);expect(f.revoked).toHaveLength(2);
   expect(f.minted[0].permissions.pull_requests).toBeUndefined();expect(f.minted[1].permissions.pull_requests).toBe('read');
 });
+it.each(['valid','missing-list','wrong-node','revoke-failure','scope'])('reads two fixed central rules and revokes the rule credential: %s',async mode=>{
+  const f=fixture(),calls:string[]=[];
+  if(mode==='scope')f.setExtraScope();
+  const native=async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const path=new URL(String(input)).pathname,method=init?.method??'GET';
+    const respond=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json'}});
+    if(path==='/installation/token'&&mode==='revoke-failure')return respond({message:'revoke rejected'},403);
+    if(path.includes('/rulesets/')||path==='/graphql'){
+      const token=new Headers(init?.headers).get('authorization')?.split(' ').at(-1);
+      expect(token).toBe('ghs_offline_1');
+      calls.push(method+' '+path);
+      if(path==='/graphql'){
+        const body=JSON.parse(String(init?.body));
+        expect(body.query.trimStart()).toMatch(/^query\(/);expect(body.variables).toEqual({id:'fixed-writer'});
+        return respond({data:{node:{id:'fixed-writer',databaseId:mode==='wrong-node'?1:26678450,
+          rules:{nodes:[{type:'UPDATE',parameters:{updateAllowsFetchAndMerge:false}}],pageInfo:{hasNextPage:false}}}}});
+      }
+      expect(method).toBe('GET');
+      const id=Number(path.split('/').at(-1));
+      return respond({id,source_type:'Organization',source:'splrad',node_id:'fixed-writer',
+        bypass_actors:mode==='missing-list'?undefined:[],rules:id===26678450?[{type:'update'}]:[{type:'deletion'}]});
+    }
+    return f.fetcher(input,init);
+  };
+  const app=await nativeReleaseApp(key,native);
+  if(mode==='valid'){
+    const rules=await app.readCentralMaintenanceRules();
+    expect(calls).toEqual(['GET /repos/splrad/steward/rulesets/26678449','GET /repos/splrad/steward/rulesets/26678450','POST /graphql']);
+    expect(rules[1]?.rules?.at(-1)).toMatchObject({parameters:{update_allows_fetch_and_merge:false}});
+    expect(JSON.stringify(rules)).not.toContain('ghs_offline');
+  } else await expect(app.readCentralMaintenanceRules()).rejects.toThrow();
+  expect(f.minted).toEqual([{repository_ids:[1296724484],permissions:{metadata:'read',organization_administration:'write'}}]);
+  if(mode!=='revoke-failure')expect(f.revoked).toHaveLength(1);
+  if(mode==='scope')expect(calls).toEqual([]);
+});
+
+it('binds central maintenance to one repo with no organization or administration permission',async()=>{
+  const f=fixture(),app=await nativeReleaseApp(key,f.fetcher);
+  await expect(app.forRepository(12,async()=>{},'maintenance')).rejects.toThrow('MAINTENANCE_REPOSITORY_ID');
+  expect(f.minted).toHaveLength(0);
+  await app.forRepository(1296724484,async()=>{},'maintenance');
+  expect(f.minted).toEqual([{repository_ids:[1296724484],permissions:{metadata:'read',contents:'write',actions:'write'}}]);
+  expect(f.revoked).toHaveLength(1);
+});
