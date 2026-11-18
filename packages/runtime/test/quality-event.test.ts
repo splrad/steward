@@ -10,9 +10,13 @@ it('targets the native dynamic run even when GitHub lists no associated pulls', 
  expect(qualityLocator('workflow_run',payload,install)).toEqual(target);
  for(const change of [{conclusion:'failure'},{path:'.github/workflows/codeql.yml'},{head_branch:'main'},{event:'push'}])
    expect(qualityLocator('workflow_run',{...payload,workflow_run:{...run,...change}},install)).toBeUndefined();
- const json=vi.fn(async(_id:number,path:string)=>path.endsWith('/main')?{object:{sha}}:
+ const config=Buffer.from(JSON.stringify({schemaVersion:1,enabled:true,deploymentSha:sha}));
+ const json=vi.fn(async(_id:number,path:string)=>path.includes('/git/ref/')?{ref:'refs/'+path.split('/git/ref/')[1],object:{type:'commit',sha}}:
+   path.includes('/contents/')?{type:'file',path:'config/bounded-recheck.json',size:config.length,encoding:'base64',content:config.toString('base64')}:
    {path:'.github/workflows/quality-language-summary.yml',state:'active'});
- await dispatchQualityEvent({INSTALLATION_ID:String(install)} as any,'workflow_run',payload,{json} as any);
+ await dispatchQualityEvent({INSTALLATION_ID:String(install),BOUNDED_RECHECK_ENABLED:'true',RELEASE_RELAY_DEPLOYMENT_SHA:'c'.repeat(40)} as any,'workflow_run',payload,{json} as any);
+ expect(json.mock.calls.some(([,path])=>path.endsWith('/dispatches'))).toBe(false);
+ await dispatchQualityEvent({INSTALLATION_ID:String(install),BOUNDED_RECHECK_ENABLED:'true',RELEASE_RELAY_DEPLOYMENT_SHA:sha} as any,'workflow_run',payload,{json} as any);
  expect(json).toHaveBeenLastCalledWith(id,'/repos/splrad/steward/actions/workflows/quality-language-summary.yml/dispatches',
    'POST',{ref:'main',inputs:{...target,policy_sha:sha}});
 });

@@ -1,3 +1,5 @@
+import {promotedController} from './bounded-controller.js';
+import {PendingPromotion} from './release-promotion.js';
 import { BoundedGitHub, CENTRAL, type BoundedEnv, type GitReader } from './bounded-recheck-github.js';
 import { dispatchFixed } from './bounded-recheck-effects.js';
 
@@ -33,8 +35,10 @@ export function qualityLocator(event:string, payload:any, installationId:number)
 
 export async function dispatchQualityEvent(env:BoundedEnv,event:string,payload:any,reader?:GitReader) {
   const target=qualityLocator(event,payload,Number(env.INSTALLATION_ID));
-  if (!target) return;
+  if (!target || env.BOUNDED_RECHECK_ENABLED!=='true' || !env.RELEASE_RELAY_DEPLOYMENT_SHA) return;
   const g=reader??new BoundedGitHub(env);
-  const main=await g.json(CENTRAL.id,`/repos/${CENTRAL.name}/git/ref/heads/main`);
-  await dispatchFixed(g,CENTRAL.id,'quality-language-summary.yml',main.object?.sha,{...target,policy_sha:main.object?.sha});
+  let policy:string;
+  try{policy=await promotedController(g,env.RELEASE_RELAY_DEPLOYMENT_SHA);}
+  catch(error){if(error instanceof PendingPromotion)return;throw error;}
+  await dispatchFixed(g,CENTRAL.id,'quality-language-summary.yml',policy,{...target,policy_sha:policy});
 }

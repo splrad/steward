@@ -143,7 +143,7 @@ export class ReleaseRelay {
             first.path===run.path && first.head_branch==='main' && first.event==='workflow_dispatch' &&
             Date.parse(first.created_at)>=prior.reserved-60000 && Date.parse(first.created_at)<=prior.reserved+300000,'PUBLICATION_FIRST_ATTEMPT');
           if(prior.hint.kind==='publication'){await save({stage:'received',reason:'PUBLICATION_CONSUMED'});return;}
-          const artifact=await g.artifact(CENTRAL.id,run.id,'release-cycle-'+parentKey,'result.json');
+          const artifact=await g.artifact(CENTRAL.id,run.id,'release-cycle-'+parentKey+'-'+run.run_attempt,'result.json');
           const v=artifact.value;
           ensure(v?.schemaVersion===1 && v.requestKey===parentKey && v.producer?.repositoryId===CENTRAL.id &&
             v.producer.runId===run.id && v.producer.attempt===run.run_attempt && v.producer.controllerSha===run.head_sha &&

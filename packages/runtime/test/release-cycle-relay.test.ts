@@ -97,7 +97,7 @@ it('verifies the original reservation before forwarding a repaired publication a
    if(path.includes('/git/ref/'))return {ref:'refs/'+path.split('/git/ref/')[1],object:{type:'commit',sha:pin}};
    if(path.includes('/contents/config/')){const bytes=Buffer.from(JSON.stringify({schemaVersion:1,enabled:true,deploymentSha:deployment}));return {type:'file',path:'config/bounded-recheck.json',encoding:'base64',size:bytes.length,content:bytes.toString('base64')};}
    if(method==='POST')posts++;return {state:'active',path:receipt.path};
- },artifact:async()=>({value:{schemaVersion:1,requestKey:relayKey(hint),event:hint,producer:{repositoryId:CENTRAL.id,runId:source.id,attempt:2,controllerSha:pin},publishInvoked:true}})};
+ },artifact:async(_repo:number,id:number,name:string,file:string)=>{expect([id,name,file]).toEqual([source.id,'release-cycle-'+relayKey(hint)+'-2','result.json']);return {value:{schemaVersion:1,requestKey:relayKey(hint),event:hint,producer:{repositoryId:CENTRAL.id,runId:source.id,attempt:2,controllerSha:pin},publishInvoked:true}};}};
  const h=releaseHint('workflow_run',{installation:{id:7},repository:{id:CENTRAL.id,full_name:CENTRAL.name},action:'completed',workflow_run:second},'7')!;
  expect(h).toEqual({repositoryId:CENTRAL.id,kind:'publication',runId:source.id,attempt:2});
  const relay=new ReleaseRelay(f.storage as any,{BOUNDED_RECHECK:ns,BOUNDED_RECHECK_ENABLED:'true',BOUNDED_DEPLOYMENT_SHA:deployment} as any,()=>g as any,()=>f.state.now);
