@@ -42,8 +42,8 @@ function run(executable: string, args: string[], cwd: string, env: NodeJS.Proces
   return result.stdout;
 }
 
-/** Select only the three adopted native trigger diagnostics; workflow behavior stays under normal review. */
-function acceptedTrigger(root: string, finding: any, files: readonly string[]): string | null {
+/** Select only registered native trigger diagnostics; workflow behavior stays under normal review. */
+function acceptedTrigger(root: string, finding: any, files: readonly string[], repositoryId?: number): string | null {
   if (finding?.ident !== 'dangerous-triggers' || finding.ignored !== false || !Array.isArray(finding.locations)) return null;
   const primary = finding.locations.filter((location: any) => location?.symbolic?.kind === 'Primary');
   if (primary.length !== 1) return null;
@@ -55,6 +55,8 @@ function acceptedTrigger(root: string, finding: any, files: readonly string[]): 
     && route === JSON.stringify([{ Key: 'on' }, { Key: 'pull_request_target' }])) return 'E07-TITLE-METADATA-20261028';
   if (local === '.github/workflows/governance-promotion.yml'
     && route === JSON.stringify([{ Key: 'on' }, { Key: 'workflow_run' }])) return 'E07-PROMOTION-WORKFLOW-RUN-20261031';
+  if (repositoryId === 1296724484 && local === '.github/workflows/maintenance-event.yml'
+    && route === JSON.stringify([{ Key: 'on' }, { Key: 'workflow_run' }])) return 'E11-CENTRAL-MAINTENANCE-WORKFLOW-RUN-20261118';
   if (['.github/workflows/pr-labeler.yml', 'templates/repository/.github/workflows/pr-labeler.yml'].includes(local)
     && route === JSON.stringify([{ Key: 'on' }, { Key: 'workflow_run' }])) return 'E08-LABELER-TITLE-WORKFLOW-RUN-20261103';
   return null;
@@ -168,7 +170,7 @@ export async function discoverWorkflowFiles(workspace: string, includeTemplates 
   return [...visited].sort();
 }
 
-export async function scanWorkflows(workspace: string, paths: readonly string[], runtimeRoot = policyRoot) {
+export async function scanWorkflows(workspace: string, paths: readonly string[], runtimeRoot = policyRoot, repositoryId?: number) {
   const results: WorkflowToolResult[] = [];
   if (!paths.length) return { files: [], versions: {}, results };
   const root = await realpath(workspace);
@@ -189,7 +191,7 @@ export async function scanWorkflows(workspace: string, paths: readonly string[],
     const exceptions = [];
     if (results.at(-1)!.status !== 0) {
       for (const finding of findings) {
-        const decision = acceptedTrigger(root, finding, files);
+        const decision = acceptedTrigger(root, finding, files, repositoryId);
         if (!decision) throw new Error(`zizmor failed: ${JSON.stringify(finding)}`);
         exceptions.push({ decision, finding });
       }
