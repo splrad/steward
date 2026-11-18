@@ -1,3 +1,4 @@
+import {acceptReleasePromotion} from './release-promotion.js';
 import {acceptReleaseHint} from './release-cycle-relay.js';
 import {forwardPagesCompletion} from './pages-completion.js';
 import {acceptWingetSubmit} from './bounded-winget-submit.js';
@@ -25,6 +26,7 @@ import { confirmPullRequestBodyWriteIntent, processPullRequestBodyEditedDelivery
 export interface Env {
   BOUNDED_RECHECK?: DurableObjectNamespace;
   BOUNDED_RECHECK_ENABLED?: string;
+  RELEASE_RELAY_DEPLOYMENT_SHA?: string;
   BOUNDED_CONTROLLER_SHA?: string;
   BOUNDED_PRODUCT_SHA?: string;
   BOUNDED_DEPLOYMENT_SHA?: string;
@@ -471,14 +473,18 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
   let payload: any; try { payload = JSON.parse(new TextDecoder().decode(bytes)); } catch { return response(400); }
   if (!validScope(payload, env)) return response(403);
   const event = request.headers.get("x-github-event") ?? ""; const deliveryId = request.headers.get("x-github-delivery") ?? ""; const action = payload.action ?? "";
-  const [quality,existing,release,winget]=await Promise.allSettled([
+  // Inline quality comments have no other consumer. Discard private or unknown visibility
+  // before passing any payload to handlers that may persist, dispatch or log it.
+  if (event === "pull_request_review_comment" && payload.repository?.private !== false) return response(204);
+  const [quality,existing,release,winget,promotion]=await Promise.allSettled([
     dispatchQualityEvent(env,event,payload),
     handleExistingEvent(env,event,payload,deliveryId,action),
     acceptReleaseHint(env,event,payload),
     acceptWingetSubmit(env,event,payload),
+    acceptReleasePromotion(env,event,payload),
   ]);
   if (quality.status==='rejected') console.error(JSON.stringify({deliveryId,event,status:'quality-dispatch-failed'}));
-  if (quality.status==='rejected' || existing.status==='rejected' || release.status==='rejected' || winget.status==='rejected') return response(503);
+  if (quality.status==='rejected' || existing.status==='rejected' || release.status==='rejected' || winget.status==='rejected' || promotion.status==='rejected') return response(503);
   return existing.value;
 }
 

@@ -1,3 +1,5 @@
+import {PendingPromotion,promotionMessage} from './release-promotion.js';
+import {promotedController} from './bounded-controller.js';
 import {readCycle} from './bounded-winget-evidence.js';
 import {BoundedGitHub, CENTRAL, TARGET, digest, ensure, type BoundedEnv, type GitReader} from './bounded-recheck-github.js';
 
@@ -7,7 +9,7 @@ const sha = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{40}
 const positive = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
 type Hint = {repositoryId: number; kind: 'push'; sourceSha: string} | {repositoryId: number; kind: 'run' | 'publication'; runId: number; attempt: number};
 type Stage = 'prepare' | 'confirm' | 'received' | 'unknown';
-type Relay = {hint: Hint; stage: Stage; tries: number; next: number; policy: string; reserved: number; runId?: number; reason?: string};
+type Relay = {hint: Hint; stage: Stage; tries: number; next: number; policy: string; reserved: number; runId?: number; reason?: string; waitingFor?:string; resumedFor?:string};
 
 export function releaseHint(event: string, p: any, installation: string | undefined): Hint | undefined {
   const repo = p.repository;
@@ -15,8 +17,8 @@ export function releaseHint(event: string, p: any, installation: string | undefi
       event === 'workflow_run' && p.action === 'completed' && p.workflow_run?.path === '.github/workflows/'+workflow &&
       p.workflow_run.status === 'completed' && p.workflow_run.event === 'workflow_dispatch' && p.workflow_run.actor?.id === 301115370 &&
       p.workflow_run.head_repository?.id === CENTRAL.id && p.workflow_run.head_branch === 'main' &&
-      positive(p.workflow_run.id) && p.workflow_run.run_attempt === 1 && /^Release cycle [a-f0-9]{64}$/.test(p.workflow_run.display_title))
-    return {repositoryId:CENTRAL.id,kind:'publication',runId:p.workflow_run.id,attempt:1};
+      positive(p.workflow_run.id) && positive(p.workflow_run.run_attempt) && /^Release cycle [a-f0-9]{64}$/.test(p.workflow_run.display_title))
+    return {repositoryId:CENTRAL.id,kind:'publication',runId:p.workflow_run.id,attempt:p.workflow_run.run_attempt};
   if (!p.installation?.id || p.installation.id !== Number(installation) || repo?.id !== TARGET.id ||
       repo.full_name !== TARGET.name || repo.default_branch !== 'main' || repo.archived !== false || repo.fork !== false) return;
   if (event === 'push' && p.ref === 'refs/heads/main' && p.deleted === false && sha(p.after) && !/^0+$/.test(p.after))
@@ -44,11 +46,26 @@ export async function acceptReleaseHint(env: BoundedEnv, event: string, payload:
 export class ReleaseRelay {
   constructor(private storage: DurableObjectStorage, private env: BoundedEnv, private reader: () => GitReader = () => new BoundedGitHub(env), private now = Date.now) {}
   async register(hint: Hint) {
+    const prior=await this.storage.get<Relay>('releaseCycle');
+    if(prior?.stage==='unknown' && !prior.reserved && prior.reason==='PREPARATION_EXHAUSTED' && prior.waitingFor){
+      const policy=await promotedController(this.reader(),this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA);
+      await this.wakePromoted(policy,true);return;
+    }
     await this.storage.transaction(async t => {
       if (await t.get('releaseCycle')) return;
       const record: Relay = {hint,stage:'prepare',tries:0,next:this.now(),policy:'',reserved:0};
       await t.put('releaseCycle',record);
       await t.setAlarm(record.next);
+    });
+  }
+  async wakePromoted(policy:string,redelivery=false){
+    await this.storage.transaction(async t=>{
+      const r=await t.get<Relay>('releaseCycle');
+      if(!r || r.reserved || (!redelivery && r.waitingFor!==policy) || !r.waitingFor || r.resumedFor===policy ||
+         (r.stage!=='prepare' && !(r.stage==='unknown'&&r.reason==='PREPARATION_EXHAUSTED')))return;
+      r.stage='prepare';r.next=this.now();r.resumedFor=policy;delete r.waitingFor;
+      // One additional preflight for this newly verified promotion, retaining the prior count and business key.
+      await t.put('releaseCycle',r);await t.setAlarm(r.next);
     });
   }
   async alarm() {
@@ -59,7 +76,7 @@ export class ReleaseRelay {
     const claim = await this.storage.transaction(async t => {
       const current = await t.get<Relay>('releaseCycle');
       if (!current || current.stage !== r.stage || current.tries !== r.tries || current.next !== r.next) return false;
-      if (r.tries >= 4) {
+      if (r.tries >= (r.resumedFor && r.stage==='prepare' ? 5 : 4)) {
         await t.put('releaseCycle',{...r,stage:'unknown',reason:r.stage === 'prepare' ? 'PREPARATION_EXHAUSTED' : 'DELIVERY_UNKNOWN'});
         await t.deleteAlarm();
         return false;
@@ -100,7 +117,7 @@ export class ReleaseRelay {
         if (r.hint.kind === 'publication') {
           const run = await g.json(CENTRAL.id,prefix+'/actions/runs/'+r.hint.runId+'/attempts/'+r.hint.attempt);
           const parentKey = /^Release cycle ([a-f0-9]{64})$/.exec(run.display_title)?.[1];
-          ensure(parentKey && run.id === r.hint.runId && run.run_attempt === 1 && run.status === 'completed' &&
+          ensure(parentKey && run.id === r.hint.runId && run.run_attempt === r.hint.attempt && run.status === 'completed' &&
             run.path === '.github/workflows/'+workflow && run.head_branch === 'main' && run.event === 'workflow_dispatch' &&
             run.actor?.id === 301115370 && run.head_repository?.id === CENTRAL.id && run.repository?.id === CENTRAL.id,'PUBLICATION_RUN');
           const ns=this.env.BOUNDED_RECHECK;
@@ -110,8 +127,12 @@ export class ReleaseRelay {
           ensure(response.ok,'PUBLICATION_PARENT');
           const prior=await response.json() as Relay|null;
           ensure(prior && prior.reserved>0 && prior.policy===run.head_sha && relayKey(prior.hint)===parentKey &&
-            (prior.runId===undefined||prior.runId===run.id) && Date.parse(run.created_at)>=prior.reserved-60000 &&
-            Date.parse(run.created_at)<=prior.reserved+300000,'PUBLICATION_RESERVATION');
+            (prior.runId===undefined||prior.runId===run.id),'PUBLICATION_RESERVATION');
+          const first=run.run_attempt===1?run:await g.json(CENTRAL.id,prefix+'/actions/runs/'+run.id+'/attempts/1');
+          ensure(first.id===run.id && first.run_attempt===1 && first.head_sha===prior.policy && first.display_title===run.display_title &&
+            first.repository?.id===CENTRAL.id && first.head_repository?.id===CENTRAL.id && first.actor?.id===301115370 &&
+            first.path===run.path && first.head_branch==='main' && first.event==='workflow_dispatch' &&
+            Date.parse(first.created_at)>=prior.reserved-60000 && Date.parse(first.created_at)<=prior.reserved+300000,'PUBLICATION_FIRST_ATTEMPT');
           if(prior.hint.kind==='publication'){await save({stage:'received',reason:'PUBLICATION_CONSUMED'});return;}
           const artifact=await g.artifact(CENTRAL.id,run.id,'release-cycle-'+parentKey,'result.json');
           const v=artifact.value;
@@ -121,14 +142,7 @@ export class ReleaseRelay {
             typeof v.publishInvoked==='boolean','PUBLICATION_ARTIFACT');
           if(!v.publishInvoked){await save({stage:'received',reason:'NO_PUBLICATION'});return;}
         }
-        const main = await g.json(CENTRAL.id,prefix+'/git/ref/heads/main');
-        const promoted = await g.json(CENTRAL.id,prefix+'/git/ref/heads/steward/validated-controller');
-        const policy = main.object?.sha;
-        ensure(main.ref === 'refs/heads/main' && promoted.ref === 'refs/heads/steward/validated-controller' && sha(policy) && main.object.type === 'commit' && promoted.object?.type === 'commit' && promoted.object.sha === policy,'RELEASE_RELAY_PROMOTION');
-        const file = await g.json(CENTRAL.id,prefix+'/contents/config/bounded-recheck.json?ref='+policy);
-        ensure(file.type === 'file' && file.path === 'config/bounded-recheck.json' && file.encoding === 'base64' && file.size > 0 && file.size < 4096,'RELEASE_RELAY_CONFIG');
-        const config = JSON.parse(Buffer.from(file.content,'base64').toString('utf8'));
-        ensure(config.schemaVersion === 1 && config.enabled === true && sha(this.env.BOUNDED_DEPLOYMENT_SHA) && config.deploymentSha === this.env.BOUNDED_DEPLOYMENT_SHA,'RELEASE_RELAY_ADOPTION');
+        const policy=await promotedController(g,this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA);
         const own = await g.json(CENTRAL.id,prefix+'/actions/workflows/'+workflow);
         ensure(own.state === 'active' && own.path === '.github/workflows/'+workflow,'RELEASE_RELAY_WORKFLOW');
         const reserved = this.now();
@@ -146,6 +160,12 @@ export class ReleaseRelay {
       await save({stage:'received',runId:hits[0].id});
     } catch (error) {
       // After the reservation, only confirmation may advance. A lost POST response never authorizes another POST.
+      if(error instanceof PendingPromotion && r.stage==='prepare'){
+        const final=r.tries>=4;
+        if(await save({waitingFor:error.sha,...(final?{stage:'unknown' as const,reason:'PREPARATION_EXHAUSTED'}:{})}) && this.env.BOUNDED_RECHECK)
+          await promotionMessage(this.env,error.sha,'wait',{policy:error.sha,key});
+        return;
+      }
       if (r.tries >= 4) await save({stage:'unknown',reason:r.stage === 'prepare' ? 'PREPARATION_EXHAUSTED' : 'DELIVERY_UNKNOWN'});
     }
   }

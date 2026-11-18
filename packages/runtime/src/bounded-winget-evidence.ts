@@ -60,7 +60,7 @@ export async function registerWingetRun(env:BoundedEnv,event:string,payload:any,
   const path='config/bounded-recheck.json',f=await g.json(CENTRAL.id,`/repos/${CENTRAL.name}/contents/${path}?ref=${c.controllerSha}`);
   ensure(f.path===path&&f.type==='file'&&f.encoding==='base64'&&f.size>0&&f.size<4096,'CHANNEL_POLICY');
   const cfg=JSON.parse(Buffer.from(f.content,'base64').toString('utf8'));
-  ensure(cfg.schemaVersion===1&&cfg.enabled===true&&cfg.deploymentSha===env.BOUNDED_DEPLOYMENT_SHA,'CHANNEL_CONTROLLER');
+  ensure(cfg.schemaVersion===1&&cfg.enabled===true&&cfg.deploymentSha===(env.RELEASE_RELAY_DEPLOYMENT_SHA??env.BOUNDED_DEPLOYMENT_SHA),'CHANNEL_CONTROLLER');
  }
  const requests=c.dispatches?.filter((x:any)=>x.canonicalRunId===id&&x.requestKey===match[1]&&x.purpose==='channel-submit');ensure(requests?.length===1,'CHANNEL_DISPATCH_PROVENANCE');const request=requests[0];
  ensure(request.executionSha===run.head_sha&&request.workflowId===run.workflow_id&&request.ref==='main'&&request.inputs?.mode==='submit'&&request.inputs.cycle_id===c.id&&request.inputs.source_sha===c.sourceSha&&request.inputs.controller_sha===c.controllerSha&&request.inputs.execution_sha===run.head_sha&&request.inputs.request_key===match[1]&&Date.parse(run.created_at)>=Math.floor(Date.parse(request.sentAt)/1000)*1000,'CHANNEL_DISPATCH_BINDING');

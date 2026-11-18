@@ -9,6 +9,7 @@ export function digest(bytes:Uint8Array|string){return 'sha256:'+createHash('sha
 export function ensure(value:unknown,code:string):asserts value {if(!value)throw new Error(code);}
 export interface BoundedEnv extends BodyWriteRuntimeEnv {
  BOUNDED_ACCEPTANCE_SKIP_ONCE?:string; BOUNDED_RECHECK?:DurableObjectNamespace; BOUNDED_RECHECK_ENABLED?:string;
+ RELEASE_RELAY_DEPLOYMENT_SHA?:string;
  BOUNDED_CONTROLLER_SHA?:string; BOUNDED_PRODUCT_SHA?:string; BOUNDED_DEPLOYMENT_SHA?:string;
 }
 export interface RunLocator { repositoryId:number;runId:number;attempt:number;requestKey:string }

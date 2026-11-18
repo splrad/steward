@@ -1,3 +1,5 @@
+import {promotedController} from './bounded-controller.js';
+import {PendingPromotion} from './release-promotion.js';
 import {verifyGeneratedProjection} from './bounded-candidate-projection.js';
 import {exactManual,verifyManualProjection} from './bounded-manual-evidence.js';
 import {upstreamPull,bindPull,currentWinget,bindChannelRun,channelJob,reportBinding,verifyIndexItem,APP_BOT_ID} from './bounded-winget-evidence.js';
@@ -15,30 +17,35 @@ export async function dispatchFixed(g:GitReader,id:number,file:'release-observe.
 }
 export class FixedRecheckEffects implements Effects {
  constructor(private env:BoundedEnv,private reader:()=>GitReader=()=>new BoundedGitHub(env)){}
- async observe(r:RecordState,intent:Intent):Promise<Outcome>{
+ async observe(r:RecordState,intent:Intent,reservePolicy?:(sha:string)=>Promise<boolean>):Promise<Outcome>{
   if(this.env.BOUNDED_RECHECK_ENABLED!=='true')return {kind:'stop',reason:'QUIESCED'};
   const g=this.reader();
   if(r.identity.stage==='winget-pr')return this.upstream(r);
   if(r.identity.stage==='winget-index'){const {inputs}=await currentWinget(g,r,this.env);const p=await upstreamPull(r.identity.upstreamPR!.number,g);bindPull(p,r.identity.version,r.identity.upstreamPR!.nodeId);ensure(p.merged===true,'INDEX_REQUIRES_MERGED');await dispatchFixed(g,TARGET.id,'steward-release-channels.yml',r.executionSha!,inputs);return {kind:'unknown'};}
   const facts=await candidateFacts(g);if(identityKey(facts.identity)!==identityKey(r.identity))return {kind:'stop',reason:'SOURCE_CHANGED'};
   ensure(Array.isArray(facts.pull.labels),'CANDIDATE_LABELS_UNKNOWN');if(facts.pull.state!=='open'||facts.pull.merged)return {kind:'stop',reason:'CANDIDATE_CLOSED'};if(facts.pull.labels.some((l:any)=>l.name==='release:editing'))return {kind:'pause',reason:'EDITING_PAUSED'};
-  await dispatchFixed(g,CENTRAL.id,'release-observe.yml',r.policySha,{identity_json:JSON.stringify(r.identity),request_key:intent.key,policy_sha:r.policySha});
+  let policy:string;
+  try{policy=await promotedController(g,this.env.RELEASE_RELAY_DEPLOYMENT_SHA??r.deploymentSha,r.policySha);}
+  catch(error){if(error instanceof PendingPromotion)return {kind:'pending'};throw error;}
+  await dispatchFixed(g,CENTRAL.id,'release-observe.yml',policy,{identity_json:JSON.stringify(r.identity),request_key:intent.key,policy_sha:policy},
+    policy===r.policySha?undefined:async()=>{ensure(reservePolicy,'OBSERVE_POLICY_STORE');return reservePolicy(policy);});
   return {kind:'unknown'}; // Accepted dispatch is not observation completion.
  }
  async confirm(r:RecordState,intent:Intent):Promise<Outcome>{
   if(this.env.BOUNDED_RECHECK_ENABLED!=='true')return {kind:'stop',reason:'QUIESCED'};
   if(r.identity.stage==='winget-pr')return this.upstream(r);
   if(r.identity.stage==='winget-index')return this.index(r,intent);
-  const g=this.reader();const list=await g.json(CENTRAL.id,`/repos/${CENTRAL.name}/actions/workflows/release-observe.yml/runs?event=workflow_dispatch&head_sha=${r.policySha}&created=${encodeURIComponent(new Date(intent.claimedAt-30_000).toISOString()+'..'+new Date(intent.claimedAt+30_000).toISOString())}&per_page=100`);
+  const policy=intent.executionPolicySha??r.policySha;
+  const g=this.reader();const list=await g.json(CENTRAL.id,`/repos/${CENTRAL.name}/actions/workflows/release-observe.yml/runs?event=workflow_dispatch&head_sha=${policy}&created=${encodeURIComponent(new Date(intent.claimedAt-30_000).toISOString()+'..'+new Date(intent.claimedAt+30_000).toISOString())}&per_page=100`);
   ensure(Array.isArray(list.workflow_runs)&&list.total_count===list.workflow_runs.length,'RUN_WINDOW_INCOMPLETE');
-  const hits=list.workflow_runs.filter((x:any)=>x.repository?.id===CENTRAL.id&&x.head_repository?.id===CENTRAL.id&&x.path==='.github/workflows/release-observe.yml'&&x.head_sha===r.policySha&&x.event==='workflow_dispatch'&&x.display_title===`Observe candidate ${intent.key}`);
+  const hits=list.workflow_runs.filter((x:any)=>x.repository?.id===CENTRAL.id&&x.head_repository?.id===CENTRAL.id&&x.path==='.github/workflows/release-observe.yml'&&x.head_sha===policy&&x.event==='workflow_dispatch'&&x.display_title===`Observe candidate ${intent.key}`);
   if(hits.length!==1)return {kind:'unknown'};const run=await g.json(CENTRAL.id,`/repos/${CENTRAL.name}/actions/runs/${hits[0].id}`);
-  ensure(run.id===hits[0].id&&run.run_attempt===1&&run.repository?.id===CENTRAL.id&&run.head_repository?.id===CENTRAL.id&&run.head_sha===r.policySha&&run.path==='.github/workflows/release-observe.yml'&&run.event==='workflow_dispatch'&&run.actor?.id===APP_BOT_ID&&run.head_branch==='main'&&run.display_title===`Observe candidate ${intent.key}`,'RUN_BINDING');
+  ensure(run.id===hits[0].id&&run.run_attempt===1&&run.repository?.id===CENTRAL.id&&run.head_repository?.id===CENTRAL.id&&run.head_sha===policy&&run.path==='.github/workflows/release-observe.yml'&&run.event==='workflow_dispatch'&&run.actor?.id===APP_BOT_ID&&run.head_branch==='main'&&run.display_title===`Observe candidate ${intent.key}`,'RUN_BINDING');
   if(run.status!=='completed')return {kind:'unknown',runId:run.id};if(run.conclusion!=='success')return {kind:'stop',reason:'OBSERVATION_RUN_FAILED'};
   const a=await g.artifact(CENTRAL.id,run.id,`candidate-observation-${intent.key}`,'result.json'),v=a.value;
   exactManual(v,'controllerSha,identity,observedAt,outcome,projectionEvidence,reason,repositoryId,requestKey,runAttempt,runId,schemaVersion,sourceSha,stateAfter,stateBefore,status');
   exactManual(v.identity,'artifactDigest,channel,cycleId,epoch,repositoryId,sourceSha,stage,upstreamPR,version');exactManual(v.stateBefore,'documentDigest,head,path,prNumber,stateCommit');exactManual(v.stateAfter,'documentDigest,head,path,prNumber,stateCommit');
-  ensure(v.schemaVersion===1&&v.requestKey===intent.key&&identityKey(v.identity)===identityKey(r.identity)&&v.runId===run.id&&v.runAttempt===run.run_attempt&&v.repositoryId===CENTRAL.id&&v.controllerSha===r.policySha,'OBSERVATION_ARTIFACT_IDENTITY');
+  ensure(v.schemaVersion===1&&v.requestKey===intent.key&&identityKey(v.identity)===identityKey(r.identity)&&v.runId===run.id&&v.runAttempt===run.run_attempt&&v.repositoryId===CENTRAL.id&&v.controllerSha===policy,'OBSERVATION_ARTIFACT_IDENTITY');
   const facts=await candidateFacts(g);if(identityKey(facts.identity)!==identityKey(r.identity))return {kind:'stop',reason:'SOURCE_CHANGED'};
   ensure(Array.isArray(facts.pull.labels),'CANDIDATE_LABELS_UNKNOWN');if(facts.pull.state!=='open'||facts.pull.merged)return {kind:'stop',reason:'CANDIDATE_CLOSED'};if(facts.pull.labels.some((l:any)=>l.name==='release:editing'))return {kind:'pause',reason:'EDITING_PAUSED'};
   const observed=Date.parse(v.observedAt),start=Date.parse(run.run_started_at),end=Date.parse(run.updated_at),created=Date.parse(a.createdAt??'');

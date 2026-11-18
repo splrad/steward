@@ -54,3 +54,52 @@ describe('release cycle relay',()=>{
   expect(await f.storage.get('__alarm')).toBeUndefined();expect(f.state.posts).toBe(1);
  });
 });
+it('recovers a never-posted event after promotion without another POST for unknown delivery',async()=>{
+ const f=fixture();await f.relay.register(hint);
+ for(let i=0;i<4;i++)await f.tick();
+ expect(await f.storage.get('releaseCycle')).toMatchObject({stage:'unknown',reserved:0,waitingFor:pin,tries:4});
+ f.state.promoted=pin;await f.relay.wakePromoted(pin);await f.tick();expect(f.state.posts).toBe(1);
+ for(let i=0;i<4;i++)await f.tick();
+ expect(await f.storage.get('releaseCycle')).toMatchObject({stage:'unknown',reason:'DELIVERY_UNKNOWN'});
+ await f.relay.register(hint);await f.relay.wakePromoted(pin);await f.tick();expect(f.state.posts).toBe(1);
+});
+it('binds a protected build ref and the original operation before dispatch',async()=>{
+ const cycleId='pr-192-'+pin, op='a'.repeat(64), ref='steward/build/'+cycleId, f=fixture();
+ const created=new Date().toISOString();
+ const run={id:101,run_attempt:2,status:'completed',head_sha:pin,head_branch:ref,event:'workflow_dispatch',actor:{id:301115370},
+   repository:{id:TARGET.id},head_repository:{id:TARGET.id},workflow_id:410998652,path:'.github/workflows/steward-release-publish.yml',display_title:'Build '+op,created_at:created};
+ const cycle={id:cycleId,sourceSha:pin,dispatches:[{purpose:'build',ref,executionSha:pin,sourceSha:pin,workflowId:410998652,canonicalRunId:101,operationKey:op,sentAt:created}]};
+ const {createHash}=await import('node:crypto');
+ const bytes=Buffer.from(JSON.stringify(cycle)), blob=createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex');
+ let post:any;
+ const reader={json:async(id:number,path:string,method?:string,body?:unknown)=>{
+   if(path.endsWith('/attempts/2'))return run;
+   if(path.endsWith('/heads/steward/release-state'))return {ref:'refs/heads/steward/release-state',object:{type:'commit',sha:pin}};
+   if(path.includes('/contents/cycles/'))return {path:'cycles/'+cycleId+'.json',type:'file',encoding:'base64',size:bytes.length,sha:blob,content:bytes.toString('base64')};
+   if(path.includes('/git/ref/'))return {ref:'refs/'+path.split('/git/ref/')[1],object:{type:'commit',sha:pin}};
+   if(path.includes('/contents/config/')){const b=Buffer.from(JSON.stringify({schemaVersion:1,enabled:true,deploymentSha:deployment}));return {type:'file',path:'config/bounded-recheck.json',encoding:'base64',size:b.length,content:b.toString('base64')};}
+   if(method==='POST'){post=body;return null;}
+   return {state:'active',path:receipt.path};
+ }};
+ const relay=new ReleaseRelay(f.storage as any,{INSTALLATION_ID:'7',BOUNDED_RECHECK_ENABLED:'true',BOUNDED_DEPLOYMENT_SHA:deployment} as any,()=>reader as any,()=>f.state.now);
+ const h=releaseHint('workflow_run',{...payload,action:'completed',workflow_run:run},'7')!;
+ await relay.register(h);await relay.alarm();expect(JSON.parse(post.inputs.event_json)).toEqual({repositoryId:TARGET.id,kind:'run',runId:101,attempt:2});
+});
+it('verifies the original reservation before forwarding a repaired publication artifact from attempt two',async()=>{
+ const f=fixture(), firstTime=new Date(f.state.now).toISOString(), after=new Date(f.state.now+3600000).toISOString();
+ const source={...receipt,created_at:firstTime,status:'completed'}, second={...source,run_attempt:2,created_at:after};
+ const parent={hint,policy:pin,reserved:f.state.now,runId:source.id};
+ const ns={idFromName:(s:string)=>s,get:()=>({fetch:async()=>Response.json(parent)})};
+ let posts=0;
+ const g={json:async(_id:number,path:string,method?:string)=>{
+   if(path.endsWith('/attempts/1'))return source;
+   if(path.endsWith('/attempts/2'))return second;
+   if(path.includes('/git/ref/'))return {ref:'refs/'+path.split('/git/ref/')[1],object:{type:'commit',sha:pin}};
+   if(path.includes('/contents/config/')){const bytes=Buffer.from(JSON.stringify({schemaVersion:1,enabled:true,deploymentSha:deployment}));return {type:'file',path:'config/bounded-recheck.json',encoding:'base64',size:bytes.length,content:bytes.toString('base64')};}
+   if(method==='POST')posts++;return {state:'active',path:receipt.path};
+ },artifact:async()=>({value:{schemaVersion:1,requestKey:relayKey(hint),event:hint,producer:{repositoryId:CENTRAL.id,runId:source.id,attempt:2,controllerSha:pin},publishInvoked:true}})};
+ const h=releaseHint('workflow_run',{installation:{id:7},repository:{id:CENTRAL.id,full_name:CENTRAL.name},action:'completed',workflow_run:second},'7')!;
+ expect(h).toEqual({repositoryId:CENTRAL.id,kind:'publication',runId:source.id,attempt:2});
+ const relay=new ReleaseRelay(f.storage as any,{BOUNDED_RECHECK:ns,BOUNDED_RECHECK_ENABLED:'true',BOUNDED_DEPLOYMENT_SHA:deployment} as any,()=>g as any,()=>f.state.now);
+ await relay.register(h);await relay.alarm();expect(posts).toBe(1);
+});

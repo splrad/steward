@@ -25,3 +25,25 @@ it('forwards edits and deletions from the native author on a registered public P
    {comment:{user:{id:1,type:'Bot',login:'github-code-quality[bot]'}}},{action:'unrelated'}])
    expect(qualityLocator('pull_request_review_comment',{...payload,...change},install)).toBeUndefined();
 });
+
+it.each(['created','edited','deleted'])('discards a signed private review comment at the HTTP boundary (%s)',async action=>{
+ const {createHmac}=await import('node:crypto');
+ const {handleWebhook}=await import('../src/index.js');
+ const body=JSON.stringify({action,organization:{id:302208797},installation:{id:123},
+   repository:{id:1296724484,private:true,owner:{id:302208797}},
+   comment:{id:42,body:'private fixture text',user:{id:223894421,type:'Bot'}}});
+ const secret='test-only',signature=createHmac('sha256',secret).update(body).digest('hex');
+ const env=new Proxy({STEWARD_WEBHOOK_SECRET:secret,ORGANIZATION_ID:'302208797',INSTALLATION_ID:'123'},{
+   get(obj,key){if(!Object.hasOwn(obj,key))throw Error('Unexpected downstream binding '+String(key));return Reflect.get(obj,key);}
+ });
+ const external=vi.spyOn(globalThis,'fetch').mockImplementation(async()=>{throw Error('unexpected network')});
+ const logs=[vi.spyOn(console,'error'),vi.spyOn(console,'log'),vi.spyOn(console,'warn'),vi.spyOn(console,'info')];
+ try{
+   const request=(sig:string)=>new Request('https://example.test/github/webhook',{method:'POST',body,headers:{
+     'x-github-event':'pull_request_review_comment','x-hub-signature-256':'sha256='+sig}});
+   expect((await handleWebhook(request('00'),env as any)).status).toBe(401);
+   const result=await handleWebhook(request(signature),env as any);
+   expect(result.status).toBe(204);expect(await result.text()).toBe('');
+   expect(external).not.toHaveBeenCalled();for(const log of logs)expect(log).not.toHaveBeenCalled();
+ }finally{external.mockRestore();for(const log of logs)log.mockRestore();}
+});
