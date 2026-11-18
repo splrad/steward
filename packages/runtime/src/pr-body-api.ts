@@ -1,6 +1,6 @@
 import { createAppJwt, GitHubClient, GitHubRequestError } from "../../github/src/index.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
-import { confirmPullRequestBodyWriteIntent, normalizePullRequestBodyRedrive, PullRequestBodyWriteIntentStore, type PullRequestBodyWriteIntent } from "./pr-body-write-intents.js";
+import { confirmPullRequestBodyWriteIntent, PullRequestBodyWriteIntentStore, type PullRequestBodyWriteIntent } from "./pr-body-write-intents.js";
 export interface BodyWriteRuntimeEnv {
   ORGANIZATION_ID: string;
   ORGANIZATION_LOGIN: string;
@@ -110,27 +110,7 @@ export async function handleBodyWriteInternalRequest(request: Request, env: Body
       if (request.method === "POST" && parts.length === 4 && parts[3] === "prepare") {
         const body = await readJsonObject(request);
         if ((body.regionKind !== "managed-pr" || !["onboard-repository.yml", "sync-review-instructions.yml"].includes((body.redrive as any)?.workflow ?? ""))) return noStoreResponse(400, { error: "unsupported-body-write-origin" });
-        const regionKind = String(body.regionKind ?? "") as "managed-pr" | "issue-links";
-        const redrive = normalizePullRequestBodyRedrive(body.redrive, { repositoryId, pullRequestNumber, regionKind });
-        if (redrive.workflow === "onboard-repository.yml" && redrive.inputs.repositoryFullName !== repository.full_name) return noStoreResponse(400, { error: "invalid-internal-request" });
-        const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-        return noStoreResponse(200, await intentStore.prepare({
-          repositoryId,
-          pullRequestNumber,
-          writeId: String(body.writeId ?? ""),
-          regionKind,
-          baseSha: String(body.baseSha ?? ""),
-          pullBaseSha: String(body.pullBaseSha ?? body.baseSha ?? ""),
-          headSha: String(body.headSha ?? ""),
-          issueGeneration: Number(body.issueGeneration ?? 0),
-          beforeBodyDigest: String(body.beforeBodyDigest ?? ""),
-          outsideBodyDigest: String(body.outsideBodyDigest ?? ""),
-          targetBlock: body.targetBlock === null ? null : String(body.targetBlock ?? ""),
-          targetBodyDigest: String(body.targetBodyDigest ?? ""),
-          now,
-          expiresAt,
-          redrive,
-        }));
+        return noStoreResponse(410, { error: "body-write-origin-retired" });
       }
       if (request.method === "GET" && parts.length === 4 && parts[3] === "active") {
         return noStoreResponse(200, await requireCleanupIntent());

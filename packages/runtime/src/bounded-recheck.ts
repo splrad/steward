@@ -15,20 +15,21 @@ export interface Identity {
   upstreamPR: { number: number; nodeId: string } | null;
 }
 export interface Registration { identity: Identity; t0: number; policySha: string; deploymentSha: string }
-export interface Intent { key: string; sequence: number; claimedAt: number; confirmations: number; generation: number; runId?: number; retryAfter?:number }
+export interface Intent { key: string; sequence: number; claimedAt: number; confirmations: number; generation: number; runId?: number; retryAfter?:number; executionPolicySha?:string }
 export interface RecordState extends Registration {
   schemaVersion: 1; status: Status; deadline: number; nextAt: number | null; nextSlot: number;
   consumed: number; initialClaimed: boolean; generation: number; intent: Intent | null;
   reason: string; evidence: string | null; notificationPending: boolean;
   retryAfter?:number;
   executionSha?:string;
+  executionAnchorSha?:string;
   firstImmediateWake?: {kind:'normal'|'skipped'|'already-claimed';at:number;acceptance?:Record<string,unknown>};
 }
 export interface Store { transaction<T>(fn: (current: RecordState | null) => { record: RecordState | null; result: T }): Promise<T>; read(): Promise<RecordState | null> }
 export type Outcome = { kind: 'pending'; retryAfter?: number } | { kind: 'done'; evidence: string } |
   { kind: 'stop'; reason: string } | { kind:'pause'; reason:string } | {kind:'index';mergedAt:number;evidence:string} | { kind: 'unknown'; runId?: number;retryAfter?:number };
 /** These are fixed domain operations, never commands/URLs/workflow names from input. */
-export interface Effects { observe(r: Readonly<RecordState>, intent: Readonly<Intent>): Promise<Outcome>; confirm(r: Readonly<RecordState>, intent: Readonly<Intent>): Promise<Outcome> }
+export interface Effects { observe(r: Readonly<RecordState>, intent: Readonly<Intent>, reservePolicy?:(sha:string)=>Promise<boolean>): Promise<Outcome>; confirm(r: Readonly<RecordState>, intent: Readonly<Intent>): Promise<Outcome> }
 const confirmations = [1,5,15].map(n=>n*minute);
 function assert(v: unknown, message: string): asserts v { if(!v) throw new Error(message); }
 function exactKeys(x: object, keys: string[]) { assert(Object.keys(x).sort().join(',')===keys.sort().join(','),'CLOSED_SCHEMA'); }
@@ -56,12 +57,12 @@ function next(r:RecordState, now:number, notBefore=now) {
   r.nextAt=r.nextSlot<p.offsets.length?r.t0+p.offsets[r.nextSlot]!*minute:r.deadline;
 }
 export class BoundedRecheck {
-  constructor(private store:Store,private effects:Effects,private clock:()=>number=Date.now,private executionSha?:string) {}
+  constructor(private store:Store,private effects:Effects,private clock:()=>number=Date.now,private executionSha?:string,private executionAnchorSha?:string) {}
   async register(input:Registration):Promise<RecordState> {
     const now=this.clock(); validateRegistration(input,now);if(input.identity.stage!=='candidate')assert(typeof this.executionSha==='string'&&/^[a-f0-9]{40}$/.test(this.executionSha),'EXECUTION_PIN_REQUIRED');
     return this.store.transaction(r=>{
       if(r) { assert(identityKey(r.identity)===identityKey(input.identity) && r.t0===input.t0 && r.policySha===input.policySha && r.deploymentSha===input.deploymentSha,'REGISTRATION_CONFLICT');return {record:r,result:r}; }
-      const record:RecordState={...input,...(input.identity.stage==='candidate'?{}:{executionSha:this.executionSha!}),schemaVersion:1,status:'PENDING',deadline:input.t0+POLICIES[input.identity.stage].duration*minute,nextAt:now,nextSlot:0,consumed:0,initialClaimed:false,generation:1,intent:null,reason:'REGISTERED',evidence:null,notificationPending:false};
+      const record:RecordState={...input,...(input.identity.stage==='candidate'?{}:{executionSha:this.executionSha!,...(this.executionAnchorSha?{executionAnchorSha:this.executionAnchorSha}:{})}),schemaVersion:1,status:'PENDING',deadline:input.t0+POLICIES[input.identity.stage].duration*minute,nextAt:now,nextSlot:0,consumed:0,initialClaimed:false,generation:1,intent:null,reason:'REGISTERED',evidence:null,notificationPending:false};
       if(now>=record.deadline) stop(record,'NEEDS_ATTENTION','WINDOW_EXHAUSTED');
       return {record,result:record};
     });
@@ -107,7 +108,12 @@ export class BoundedRecheck {
     });
     if(!claim)return;
     let outcome:Outcome;
-    try { outcome=await (claim.confirm?this.effects.confirm(claim.record,claim.intent):this.effects.observe(claim.record,claim.intent)); }
+    try { outcome=await (claim.confirm?this.effects.confirm(claim.record,claim.intent):this.effects.observe(claim.record,claim.intent,policy=>this.store.transaction(r=>{
+      const active=!!r && r.status==='PENDING' && r.identity.stage==='candidate' && r.generation===claim.record.generation &&
+        r.intent?.key===claim.intent.key && r.intent.confirmations===0 && !r.intent.executionPolicySha && this.clock()<r.deadline;
+      if(active)r!.intent!.executionPolicySha=policy;
+      return {record:r,result:active};
+    }))); }
     catch (error) {
       const message=error instanceof Error?error.message:'';const retryAfter=retryAfterTime(error,this.clock(),claim.record.deadline);
       outcome=['SOURCE_CHANGED','OBSERVATION_SOURCE_CHANGED','CHANNEL_ORIGINAL_IDENTITY'].includes(message)?{kind:'stop',reason:'SOURCE_CHANGED'}:['GENERATED_FILES_MISMATCH','MANUAL_UNMANAGED_CHANGES','MANUAL_GENERATED_FILE_TREE','CHANNEL_EXECUTION_PIN'].includes(message)?{kind:'stop',reason:message}:claim.record.identity.stage==='winget-pr'&&retryAfter!==undefined?{kind:'pending',retryAfter}:{kind:'unknown',...(retryAfter===undefined?{}:{retryAfter})};

@@ -1,3 +1,5 @@
+import {PendingPromotion,promotionMessage} from './release-promotion.js';
+import {promotedController} from './bounded-controller.js';
 import {retryAfterTime} from './bounded-retry-after.js';
 import {manualProjectionBefore} from './bounded-manual-evidence.js';
 import type {VerifiedWakeContext} from './bounded-initial-wake.js';
@@ -13,6 +15,7 @@ export interface NativeHint {repositoryId:1187527897;prNumber:number;actorId:num
 export interface PreparedEvent {event:{repositoryId:1187527897;prNumber:number;eventId:number};t0:number;sourceSha:string;before:Record<string,unknown>;priorIdentity:Identity|null}
 export interface NativeHandoff {claim:number;startedAt:number;steps:{sequence:number;target:string;action:string;expectedGeneration?:number;at:number;state:'INTENT'|'ACK'}[];status:'RESERVED'|'COMPLETE'|'INDETERMINATE'}
 export interface NativeEventRecord {
+ controllerAnchorSha?:string; waitingForPromotion?:string;
  schemaVersion:1;hint:NativeHint;requestKey:string;firstDeliveryId:string;policySha:string;deploymentSha:string;
  receivedAt:number;deadline:number;nextAt:number|null;preparations:number;confirmations:number;claim:number;
  status:'PREPARING'|'CONFIRMING'|'AWAITING_RECEIPT'|'REGISTERED'|'PREVIOUSLY_COMPLETED'|'PROTECTED'|'NEEDS_ATTENTION'|'PAUSED';
@@ -72,7 +75,7 @@ export class NativeCandidateCoordinator {
  async register(input:{hint:NativeHint;deliveryId:string}){
   validateHint(input.hint);const now=this.clock(),t0=Date.parse(input.hint.updatedAt);ensure(t0<=now&&sha(this.env.BOUNDED_CONTROLLER_SHA)&&sha(this.env.BOUNDED_DEPLOYMENT_SHA),'NATIVE_TIME_OR_PIN');
   const paused=await this.storage.get<NativeEventRecord>('nativeEvent');let resumeClaim:number|undefined;
-  if(paused?.status==='PAUSED'&&paused.pausedFrom&&paused.requestKey===nativeHintKey(input.hint)&&this.env.BOUNDED_RECHECK_ENABLED==='true'&&paused.policySha===this.env.BOUNDED_CONTROLLER_SHA&&paused.deploymentSha===this.env.BOUNDED_DEPLOYMENT_SHA&&now<paused.deadline&&now>=(paused.retryAfter??0)){const proof=await resolveNativeEvent(this.reader(),input.hint);ensure(proof.t0===t0&&(!paused.prepared||proof.sourceSha===paused.prepared.sourceSha&&JSON.stringify(proof.event)===JSON.stringify(paused.prepared.event)),'NATIVE_RESUME_SOURCE');resumeClaim=paused.claim;}
+  if(paused?.status==='PAUSED'&&paused.pausedFrom&&paused.requestKey===nativeHintKey(input.hint)&&this.env.BOUNDED_RECHECK_ENABLED==='true'&&(paused.controllerAnchorSha??paused.policySha)===this.env.BOUNDED_CONTROLLER_SHA&&paused.deploymentSha===this.env.BOUNDED_DEPLOYMENT_SHA&&now<paused.deadline&&now>=(paused.retryAfter??0)){const proof=await resolveNativeEvent(this.reader(),input.hint);ensure(proof.t0===t0&&(!paused.prepared||proof.sourceSha===paused.prepared.sourceSha&&JSON.stringify(proof.event)===JSON.stringify(paused.prepared.event)),'NATIVE_RESUME_SOURCE');resumeClaim=paused.claim;}
   return this.storage.transaction(async t=>{const old=await t.get<NativeEventRecord>('nativeEvent');if(old){ensure(old.requestKey===nativeHintKey(input.hint),'NATIVE_CONFLICT');if(old.status==='PAUSED'&&old.pausedFrom&&resumeClaim===old.claim){const at=this.clock();if(at>=old.deadline||(old.retryAfter??0)>=old.deadline){old.status='NEEDS_ATTENTION';old.reason='EVENT_WINDOW_EXHAUSTED';old.nextAt=null;}else{old.status=old.pausedFrom.status;old.nextAt=Math.min(Math.max(at,old.pausedFrom.nextAt,old.retryAfter??0),old.deadline);old.reason='VERIFIED_NATIVE_REDELIVERY_RESUME';}delete old.pausedFrom;await this.save(t,old);}return old;}
    const r:NativeEventRecord={schemaVersion:1,hint:input.hint,requestKey:nativeHintKey(input.hint),firstDeliveryId:input.deliveryId,policySha:this.env.BOUNDED_CONTROLLER_SHA!,deploymentSha:this.env.BOUNDED_DEPLOYMENT_SHA!,receivedAt:now,deadline:t0+120*minute,nextAt:now,preparations:0,confirmations:0,claim:0,status:'PREPARING',reason:'SIGNED_EVENT_DURABLE',prepared:null,dispatchedAt:null,knownRunId:null,evidence:null};if(now>=r.deadline){r.status='NEEDS_ATTENTION';r.reason='EVENT_EXPIRED';r.nextAt=null;}await this.save(t,r);return r;});
  }
@@ -80,7 +83,7 @@ export class NativeCandidateCoordinator {
   const now=this.clock();let claimed:NativeEventRecord|null=null;
   await this.storage.transaction(async t=>{const r=await t.get<NativeEventRecord>('nativeEvent');if(!r||!['PREPARING','CONFIRMING','AWAITING_RECEIPT'].includes(r.status)||r.nextAt===null||r.nextAt>now)return;
    if(r.handoff){if(now>=r.deadline){r.status='NEEDS_ATTENTION';r.reason='HANDOFF_WINDOW_EXHAUSTED';r.handoff.status='INDETERMINATE';r.nextAt=null;}else r.nextAt=r.deadline;await this.save(t,r);return;}
-   if(this.env.BOUNDED_RECHECK_ENABLED!=='true'||r.policySha!==this.env.BOUNDED_CONTROLLER_SHA||r.deploymentSha!==this.env.BOUNDED_DEPLOYMENT_SHA){r.pausedFrom={status:r.status as 'PREPARING'|'CONFIRMING'|'AWAITING_RECEIPT',nextAt:r.nextAt};r.status='PAUSED';r.reason='QUIESCED_OR_PIN_CHANGED';r.nextAt=null;await this.save(t,r);return;}
+   if(this.env.BOUNDED_RECHECK_ENABLED!=='true'||(r.controllerAnchorSha??r.policySha)!==this.env.BOUNDED_CONTROLLER_SHA||r.deploymentSha!==this.env.BOUNDED_DEPLOYMENT_SHA){r.pausedFrom={status:r.status as 'PREPARING'|'CONFIRMING'|'AWAITING_RECEIPT',nextAt:r.nextAt};r.status='PAUSED';r.reason='QUIESCED_OR_PIN_CHANGED';r.nextAt=null;await this.save(t,r);return;}
    if(now>=r.deadline){r.status='NEEDS_ATTENTION';r.reason='EVENT_WINDOW_EXHAUSTED';r.nextAt=null;await this.save(t,r);return;}
    if(r.receiptDeferred){if((r.retryAfter??0)>now){r.nextAt=Math.min(r.retryAfter!,r.deadline);await this.save(t,r);return;}r.receiptDeferred=false;r.claim++;r.status=r.confirmations>=3?'AWAITING_RECEIPT':'CONFIRMING';r.nextAt=r.confirmations>=3?r.deadline:Math.min(Math.max(now,r.dispatchedAt!+confirmOffsets[r.confirmations]!*minute),r.deadline);await this.save(t,r);claimed={...structuredClone(r),receiptDeferred:true};return;}
    if(r.status==='AWAITING_RECEIPT'){r.nextAt=r.deadline;await this.save(t,r);return;}
@@ -90,6 +93,22 @@ export class NativeCandidateCoordinator {
    await this.save(t,r);claimed=structuredClone(r);});
   if(!claimed)return;const r=claimed as NativeEventRecord;
   try{if(r.dispatchedAt===null)await this.prepare(r);else await this.confirm(r);}catch(error){
+   if(error instanceof PendingPromotion && r.dispatchedAt===null && r.preparations<4 && this.env.BOUNDED_RECHECK){
+    await this.storage.transaction(async t=>{
+     const latest=await t.get<NativeEventRecord>('nativeEvent');
+     if(!latest||latest.claim!==r.claim||latest.dispatchedAt!==null||latest.status!=='PREPARING')return;
+     latest.waitingForPromotion=error.sha;await this.save(t,latest);
+    });
+    await promotionMessage(this.env,error.sha,'wait',{policy:error.sha,key:r.requestKey,kind:'native',generation:error.generation});
+    // Preserve the original slot if enrollment fails. After acknowledgement only the
+    // matching promotion or the original deadline should wake this unposted request.
+    await this.storage.transaction(async t=>{
+     const latest=await t.get<NativeEventRecord>('nativeEvent');
+     if(!latest||latest.claim!==r.claim||latest.waitingForPromotion!==error.sha||latest.status!=='PREPARING')return;
+     latest.nextAt=latest.deadline;await this.save(t,latest);
+    });
+    return;
+   }
    if(r.dispatchedAt===null && error instanceof Error && ['PRIOR_RECORD_IDENTITY','PRIOR_VERSION_UNRESOLVED','PRIOR_OBSERVATION_RECEIPT','PRIOR_OBSERVATION_ORDER'].includes(error.message)){
     await this.storage.transaction(async t=>{const latest=await t.get<NativeEventRecord>('nativeEvent');
      if(latest?.claim!==r.claim || latest.dispatchedAt!==null || latest.status==='PAUSED')return;
@@ -97,9 +116,16 @@ export class NativeCandidateCoordinator {
    }else await this.deferRateLimit(r,error,!!r.receiptDeferred);
   }
  }
+ async wakePromoted(policy:string){
+  await this.storage.transaction(async t=>{
+   const r=await t.get<NativeEventRecord>('nativeEvent');
+   if(!r||r.status!=='PREPARING'||r.dispatchedAt!==null||r.waitingForPromotion!==policy||this.clock()>=r.deadline||r.preparations>=4)return;
+   delete r.waitingForPromotion;r.nextAt=Math.min(Math.max(this.clock(),r.retryAfter??0),r.deadline);await this.save(t,r);
+  });
+ }
  async receipt(input:{runId:number;attempt:number;policySha:string}){
   exact(input,'attempt,policySha,runId');const now=this.clock();let claimed:NativeEventRecord|null=null;
-  await this.storage.transaction(async t=>{const r=await t.get<NativeEventRecord>('nativeEvent');if(!r||r.knownRunId!==input.runId||input.attempt!==1||input.policySha!==r.policySha||r.policySha!==this.env.BOUNDED_CONTROLLER_SHA||r.deploymentSha!==this.env.BOUNDED_DEPLOYMENT_SHA)return;
+  await this.storage.transaction(async t=>{const r=await t.get<NativeEventRecord>('nativeEvent');if(!r||r.knownRunId!==input.runId||input.attempt!==1||input.policySha!==r.policySha||(r.controllerAnchorSha??r.policySha)!==this.env.BOUNDED_CONTROLLER_SHA||r.deploymentSha!==this.env.BOUNDED_DEPLOYMENT_SHA)return;
    if(r.handoff)return;
    if(now>=r.deadline){r.lateReceipt={runId:input.runId,attempt:input.attempt,at:now};await t.put('nativeEvent',r);return;}
    if(!['CONFIRMING','AWAITING_RECEIPT'].includes(r.status)||r.receiptConsumed||this.env.BOUNDED_RECHECK_ENABLED!=='true')return;
@@ -117,9 +143,9 @@ export class NativeCandidateCoordinator {
    await this.save(t,latest);
   });
  }
- private async reserveHandoff(r:NativeEventRecord,evidence:unknown){return this.storage.transaction(async t=>{const current=await t.get<NativeEventRecord>('nativeEvent');if(!current||current.claim!==r.claim||current.handoff||current.status==='PAUSED'||this.clock()>=current.deadline||this.env.BOUNDED_RECHECK_ENABLED!=='true'||current.policySha!==this.env.BOUNDED_CONTROLLER_SHA||current.deploymentSha!==this.env.BOUNDED_DEPLOYMENT_SHA)return false;current.handoff={claim:r.claim,startedAt:this.clock(),steps:[],status:'RESERVED'};current.evidence=evidence;current.nextAt=current.deadline;await this.save(t,current);return true;});}
+ private async reserveHandoff(r:NativeEventRecord,evidence:unknown){return this.storage.transaction(async t=>{const current=await t.get<NativeEventRecord>('nativeEvent');if(!current||current.claim!==r.claim||current.handoff||current.status==='PAUSED'||this.clock()>=current.deadline||this.env.BOUNDED_RECHECK_ENABLED!=='true'||(current.controllerAnchorSha??current.policySha)!==this.env.BOUNDED_CONTROLLER_SHA||current.deploymentSha!==this.env.BOUNDED_DEPLOYMENT_SHA)return false;current.handoff={claim:r.claim,startedAt:this.clock(),steps:[],status:'RESERVED'};current.evidence=evidence;current.nextAt=current.deadline;await this.save(t,current);return true;});}
  private async handoffPost(r:NativeEventRecord,identity:Identity,action:string,body:any){
-  const sequence=await this.storage.transaction(async t=>{const current=await t.get<NativeEventRecord>('nativeEvent');ensure(current?.handoff?.claim===r.claim&&current.claim===r.claim&&current.handoff.status==='RESERVED'&&['CONFIRMING','AWAITING_RECEIPT'].includes(current.status),'HANDOFF_FENCE');ensure(this.clock()<current.deadline&&this.env.BOUNDED_RECHECK_ENABLED==='true'&&current.policySha===this.env.BOUNDED_CONTROLLER_SHA&&current.deploymentSha===this.env.BOUNDED_DEPLOYMENT_SHA,'HANDOFF_WINDOW_OR_PIN');const sequence=current.handoff.steps.length;current.handoff.steps.push({sequence,target:identityKey(identity),action,...(body.expectedGeneration===undefined?{}:{expectedGeneration:body.expectedGeneration}),at:this.clock(),state:'INTENT'});await this.save(t,current);return sequence;});
+  const sequence=await this.storage.transaction(async t=>{const current=await t.get<NativeEventRecord>('nativeEvent');ensure(current?.handoff?.claim===r.claim&&current.claim===r.claim&&current.handoff.status==='RESERVED'&&['CONFIRMING','AWAITING_RECEIPT'].includes(current.status),'HANDOFF_FENCE');ensure(this.clock()<current.deadline&&this.env.BOUNDED_RECHECK_ENABLED==='true'&&(current.controllerAnchorSha??current.policySha)===this.env.BOUNDED_CONTROLLER_SHA&&current.deploymentSha===this.env.BOUNDED_DEPLOYMENT_SHA,'HANDOFF_WINDOW_OR_PIN');const sequence=current.handoff.steps.length;current.handoff.steps.push({sequence,target:identityKey(identity),action,...(body.expectedGeneration===undefined?{}:{expectedGeneration:body.expectedGeneration}),at:this.clock(),state:'INTENT'});await this.save(t,current);return sequence;});
   const value=await objectPost(this.env,identity,action,body);
   await this.storage.transaction(async t=>{const current=await t.get<NativeEventRecord>('nativeEvent');ensure(current?.handoff?.claim===r.claim&&current.handoff.steps[sequence]?.state==='INTENT','HANDOFF_ACK_FENCE');current.handoff.steps[sequence]!.state='ACK';await t.put('nativeEvent',current);});return value;
  }
@@ -141,16 +167,24 @@ export class NativeCandidateCoordinator {
   ensure(run.id===receipt.runId && run.run_attempt===1 && run.actor?.id===APP_BOT_ID &&
     run.repository?.id===CENTRAL.id && run.head_repository?.id===CENTRAL.id &&
     run.path==='.github/workflows/release-observe.yml' && run.event==='workflow_dispatch' &&
-    run.head_sha===record.policySha && run.head_branch==='main' && run.status==='completed' &&
+    run.head_sha===(record.intent.executionPolicySha??record.policySha) && run.head_branch==='main' && run.status==='completed' &&
     run.conclusion==='success' && run.display_title===`Observe candidate ${record.intent.key}` &&
     Date.parse(run.updated_at)>=record.t0 && Date.parse(run.updated_at)<t0,'PRIOR_OBSERVATION_ORDER');
  }
  private async prepare(r:NativeEventRecord){
-  const prepared=await resolveNativeEvent(this.reader(),r.hint);ensure(prepared.t0===Date.parse(r.hint.updatedAt),'NATIVE_ORIGINAL_TIME');
-  if(prepared.priorIdentity){const current=await objectPost(this.env,prepared.priorIdentity,'status',{});await this.checkPrior(current,prepared.priorIdentity,r,prepared.t0);if(current?.status==='PENDING')await objectPost(this.env,prepared.priorIdentity,'pause',{expectedGeneration:current.generation});}
-  const now=this.clock();let dispatch=false;
-  await this.storage.transaction(async t=>{const latest=await t.get<NativeEventRecord>('nativeEvent');if(!latest||latest.claim!==r.claim||latest.dispatchedAt!==null||latest.status==='PAUSED'||now>=latest.deadline)return;latest.prepared=prepared;latest.dispatchedAt=now;latest.status='CONFIRMING';latest.reason='NORMAL_DISPATCH_INTENT';latest.nextAt=Math.min(now+minute,latest.deadline);await this.save(t,latest);dispatch=true;});
-  if(dispatch)await dispatchFixed(this.reader(),CENTRAL.id,'release-candidate-event.yml',r.policySha,{event_json:JSON.stringify(prepared.event),source_sha:prepared.sourceSha,request_key:r.requestKey,policy_sha:r.policySha});
+  const g=this.reader(),policy=await promotedController(g,this.env.RELEASE_RELAY_DEPLOYMENT_SHA??r.deploymentSha,r.policySha,this.env);
+  const prepared=await resolveNativeEvent(g,r.hint);ensure(prepared.t0===Date.parse(r.hint.updatedAt),'NATIVE_ORIGINAL_TIME');
+  if(prepared.priorIdentity){const current=await objectPost(this.env,prepared.priorIdentity,'status',{});await this.checkPrior(current,prepared.priorIdentity,{...r,policySha:policy},prepared.t0);if(current?.status==='PENDING')await objectPost(this.env,prepared.priorIdentity,'pause',{expectedGeneration:current.generation});}
+  await dispatchFixed(g,CENTRAL.id,'release-candidate-event.yml',policy,{event_json:JSON.stringify(prepared.event),source_sha:prepared.sourceSha,request_key:r.requestKey,policy_sha:policy},async()=>{
+   const now=this.clock();
+   return this.storage.transaction(async t=>{
+    const latest=await t.get<NativeEventRecord>('nativeEvent');
+    if(!latest||latest.claim!==r.claim||latest.dispatchedAt!==null||latest.status==='PAUSED'||now>=latest.deadline)return false;
+    if(policy!==latest.policySha){latest.controllerAnchorSha=latest.controllerAnchorSha??latest.policySha;latest.policySha=policy;}
+    latest.prepared=prepared;latest.dispatchedAt=now;latest.status='CONFIRMING';latest.reason='NORMAL_DISPATCH_INTENT';latest.nextAt=Math.min(now+minute,latest.deadline);
+    await this.save(t,latest);return true;
+   });
+  });
  }
  private async confirm(r:NativeEventRecord){
   const g=this.reader();let id=r.knownRunId;

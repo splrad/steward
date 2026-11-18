@@ -1,3 +1,7 @@
+import {QualityEvent} from './quality-event.js';
+import {ReleasePromotion} from './release-promotion.js';
+import {WingetSubmit} from './bounded-winget-submit.js';
+import {ReleaseRelay} from './release-cycle-relay.js';
 import {initialWake} from './bounded-initial-wake.js';
 import {NativeCandidateCoordinator} from './bounded-native-event.js';
 import { CandidateEventCoordinator } from './bounded-release-event.js';
@@ -23,6 +27,21 @@ export class BoundedRecheckCoordinator {
  async fetch(request:Request){
   ensure(request.method==='POST','INTERNAL_METHOD');const b=await request.json() as any;const action=new URL(request.url).pathname;
   let value:unknown;
+  if(action==='/quality-event'){await new QualityEvent(this.state.storage,this.env).register(b);return Response.json({accepted:true});}
+  if(action==='/quality-promoted'){await new QualityEvent(this.state.storage,this.env).forward();return Response.json({accepted:true});}
+  if(action==='/generation')return Response.json({generation:(await this.state.storage.get<number>('generation'))??0});
+  if(action==='/wait'||action==='/promoted'){await new ReleasePromotion(this.state.storage,this.env).update(action,b);return Response.json({accepted:true});}
+  if(action==='/release-promoted'){await new ReleaseRelay(this.state.storage,this.env).wakePromoted(b.policy,false,b.controller);return Response.json({accepted:true});}
+  if(action==='/winget-register'){
+   ensure(this.env.BOUNDED_RECHECK_ENABLED==='true' && b.registration?.identity?.stage==='winget-pr' &&
+     typeof b.executionSha==='string' && /^[a-f0-9]{40}$/.test(b.executionSha) && b.anchorSha===this.env.BOUNDED_PRODUCT_SHA,'CHANNEL_INTERNAL_REGISTRATION');
+   const engine=new BoundedRecheck(this.store,new FixedRecheckEffects(this.env),Date.now,b.executionSha,b.anchorSha);
+   return Response.json(await engine.register(b.registration));
+  }
+  if(action==='/winget-submit'){await new WingetSubmit(this.state.storage,this.env).register(b);return Response.json({accepted:true});}
+  if(action==='/release-cycle-status')return Response.json(await this.state.storage.get('releaseCycle')??null);
+  if(action==='/release-cycle'){await new ReleaseRelay(this.state.storage,this.env).register(b);return Response.json({accepted:true});}
+  if(action==='/native-promoted'){await new NativeCandidateCoordinator(this.state.storage,this.env).wakePromoted(b.policy);return Response.json({accepted:true});}
   if(action==='/native-receipt'){await new NativeCandidateCoordinator(this.state.storage,this.env).receipt(b);return Response.json({accepted:true});}
   if(action==='/native-event'){ensure(this.env.BOUNDED_RECHECK_ENABLED==='true','QUIESCED');const value=await new NativeCandidateCoordinator(this.state.storage,this.env).register(b);return Response.json(value);}
   if(action==='/event'){ensure(this.env.BOUNDED_RECHECK_ENABLED==='true','QUIESCED');await new CandidateEventCoordinator(this.state.storage,this.env).register(b);return Response.json({accepted:true});}
@@ -34,6 +53,9 @@ export class BoundedRecheckCoordinator {
   return Response.json(value,{headers:{'Cache-Control':'no-store'}});
  }
  async alarm(){
+  if(await this.state.storage.get('promotionPolicy')){await new ReleasePromotion(this.state.storage,this.env).alarm();return;}
+  if(await this.state.storage.get('wingetSubmit')){await new WingetSubmit(this.state.storage,this.env).alarm();return;}
+  if(await this.state.storage.get('releaseCycle')){await new ReleaseRelay(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('nativeEvent')){await new NativeCandidateCoordinator(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('event')){await new CandidateEventCoordinator(this.state.storage,this.env).alarm();return;}
   if(this.env.BOUNDED_RECHECK_ENABLED!=='true'){const r=await this.store.read();if(r?.status==='PENDING')await this.engine.control('pause',r.generation);return;}

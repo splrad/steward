@@ -9,6 +9,7 @@ export function digest(bytes:Uint8Array|string){return 'sha256:'+createHash('sha
 export function ensure(value:unknown,code:string):asserts value {if(!value)throw new Error(code);}
 export interface BoundedEnv extends BodyWriteRuntimeEnv {
  BOUNDED_ACCEPTANCE_SKIP_ONCE?:string; BOUNDED_RECHECK?:DurableObjectNamespace; BOUNDED_RECHECK_ENABLED?:string;
+ RELEASE_RELAY_DEPLOYMENT_SHA?:string;
  BOUNDED_CONTROLLER_SHA?:string; BOUNDED_PRODUCT_SHA?:string; BOUNDED_DEPLOYMENT_SHA?:string;
 }
 export interface RunLocator { repositoryId:number;runId:number;attempt:number;requestKey:string }
@@ -51,7 +52,7 @@ export class BoundedGitHub implements GitReader {
  async json(id:number,path:string,method:'GET'|'POST'='GET',body?:unknown){
   const r=repo(id);ensure((path.startsWith(`/repos/${r.name}/`)||method==='GET'&&id===TARGET.id&&path===`/repos/${TARGET.name}`)&&!path.split('?')[0]!.split('/').includes('..'),'API_SCOPE');
   // Only fixed observation/bridge dispatches may write. No repository mutation APIs.
-  if(method==='POST')ensure([`/repos/${CENTRAL.name}/actions/workflows/pages-maintenance-event.yml/dispatches`,`/repos/${CENTRAL.name}/actions/workflows/release-candidate-event.yml/dispatches`,`/repos/${CENTRAL.name}/actions/workflows/release-observe.yml/dispatches`,`/repos/${CENTRAL.name}/actions/workflows/bounded-release-event.yml/dispatches`,`/repos/${TARGET.name}/actions/workflows/steward-release-channels.yml/dispatches`].includes(path),'FIXED_DISPATCH');
+  if(method==='POST')ensure([`/repos/${CENTRAL.name}/actions/workflows/quality-language-summary.yml/dispatches`,`/repos/${CENTRAL.name}/actions/workflows/release-cycle-event.yml/dispatches`,`/repos/${CENTRAL.name}/actions/workflows/pages-maintenance-event.yml/dispatches`,`/repos/${CENTRAL.name}/actions/workflows/release-candidate-event.yml/dispatches`,`/repos/${CENTRAL.name}/actions/workflows/release-observe.yml/dispatches`,`/repos/${CENTRAL.name}/actions/workflows/bounded-release-event.yml/dispatches`,`/repos/${TARGET.name}/actions/workflows/steward-release-channels.yml/dispatches`].includes(path),'FIXED_DISPATCH');
   const token=await this.token(id,method==='POST');const res=await this.transport('https://api.github.com'+path,{method,headers:{Authorization:`Bearer ${token}`,Accept:'application/vnd.github+json','X-GitHub-Api-Version':GITHUB_API_VERSION,'User-Agent':'splrad-bounded-recheck','Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:this.signal(),redirect:'manual'});
   rateLimitError(res);
   ensure(res.ok,`GITHUB_HTTP_${res.status}`);if(res.status===204)return null;return JSON.parse(new TextDecoder().decode(await limitedBytes(res,2*1024*1024)));

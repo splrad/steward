@@ -42,3 +42,15 @@ it.each(['missing','changed'])('unknown index %s pin fails closed without fetchi
 it('candidate registration does not need or inherit a product execution pin',async()=>{const storage=new SqliteDurableStorage(),store=new DurableRecheckStore(storage as any),engine=new BoundedRecheck(store,{observe:async()=>({kind:'unknown'}),confirm:async()=>({kind:'unknown'})},()=>Date.now());await engine.register({identity:{...identity,channel:'candidate',stage:'candidate',upstreamPR:null},t0:Date.now()-1,policySha:'a'.repeat(40),deploymentSha:'b'.repeat(40)});expect((await store.read())?.executionSha).toBeUndefined();});
 
 it.each(['missing-trusted-pin','payload-pin'])('winget execution source cannot be supplied by %s',async kind=>{const storage=new SqliteDurableStorage(),store=new DurableRecheckStore(storage as any),engine=new BoundedRecheck(store,{observe:async()=>({kind:'unknown'}),confirm:async()=>({kind:'unknown'})},()=>Date.now(),kind==='payload-pin'?'e'.repeat(40):undefined),registration:any={identity,t0:Date.now()-1,policySha:'a'.repeat(40),deploymentSha:'b'.repeat(40)};if(kind==='payload-pin')registration.executionSha='9'.repeat(40);await expect(engine.register(registration)).rejects.toThrow(kind==='payload-pin'?'CLOSED_SCHEMA':'EXECUTION_PIN_REQUIRED');expect(await store.read()).toBeNull();});
+it('binds a combined submit receipt to the original GHCR and WinGet targets; index remains WinGet-only',async()=>{
+ const f=await submitFixture(), request=f.cycle.dispatches[0]!;
+ f.cycle.requiredChannels.push({unitId:'layerscape',channelId:'ghcr-assets'});
+ const winget=JSON.parse(request.inputs.targets_json)[0], targets=[{...winget,channelId:'ghcr-assets'},winget];
+ request.inputs.targets_json=JSON.stringify(targets);
+ const fields=targets.map(t=>[t.unitId,t.channelId,t.version,t.releaseId,t.manifestDigest]);
+ f.report.targetsDigest=digest(JSON.stringify([1,1187527897,c.id,c.sourceSha,c.deliveryConfigSha,fields])).slice(7);
+ await registerWingetRun(f.env,'workflow_run',f.payload,f.g,async()=>f.pull);
+ const record=(await f.store.read())!;
+ expect(record.identity.channel).toBe('winget');
+ expect(JSON.parse((await currentWinget(f.g,record,f.env)).inputs.targets_json)).toEqual([winget]);
+});
