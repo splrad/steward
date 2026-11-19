@@ -24,6 +24,7 @@ it.each([
   ['stations.zip', 'zip', true],
   ['large.zip', 'zip', true],
   ['comment.zip', 'zip', true],
+  ['application.zip', 'zip', false],
   ['extra.zip', 'zip', false],
   ['short-comment.zip', 'zip', false],
   ['ambiguous.zip', 'zip', false],

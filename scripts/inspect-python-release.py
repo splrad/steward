@@ -44,6 +44,8 @@ class BoundedZipReader(io.BufferedReader):
 @contextmanager
 def release_zip(path):
     with BoundedZipReader(io.FileIO(path, "r")) as bounded, zipfile.ZipFile(bounded) as archive:
+        # Central-directory order can differ from physical member order.
+        require(min((entry.header_offset for entry in archive.infolist()), default=-1) == 0)
         # A ZIP ends with its 22-byte EOCD followed by exactly its declared
         # comment. ZipFile itself tolerates both extra bytes and short comments.
         end = bounded.seek(0, io.SEEK_END)

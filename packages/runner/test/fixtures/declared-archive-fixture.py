@@ -4,6 +4,7 @@ import io
 import sys
 import sqlite3
 import tarfile
+import zipapp
 import zipfile
 from pathlib import Path
 
@@ -22,6 +23,12 @@ for name, entries in {
     with zipfile.ZipFile(root / name, "w") as archive:
         for member, data in entries:
             archive.writestr(member, data)
+# A standard Python zipapp has an interpreter line before its ZIP members.
+app = root / "example-app"
+app.mkdir()
+(app / "__main__.py").write_text("pass\n", encoding="utf-8")
+zipapp.create_archive(app, root / "application.zip", interpreter="/usr/bin/env python3")
+
 tar_bytes = gzip.decompress((root / "cli.tar.gz").read_bytes())
 for name, offset in [("buffered-tail", 2048), ("later-tail", len(tar_bytes))]:
     payload = bytearray(tar_bytes + bytes(512))
