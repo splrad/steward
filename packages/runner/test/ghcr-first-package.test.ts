@@ -108,7 +108,8 @@ $env:RUNNER_TEMP=$pwd.Path;$env:GHCR_TOKEN='offline-registry';$env:GHCR_METADATA
 New-Item -ItemType Directory -Path final,controller/scripts|Out-Null
 [IO.File]::WriteAllBytes('controller/scripts/ghcr-package-state.ps1',[Convert]::FromBase64String('${encoded}'))
 [IO.File]::WriteAllBytes('business.ps1',[Convert]::FromBase64String('${script}'))
-@{version='1.0.0';artifacts=@(@{path='AFR-Deployer_v1.0.0.exe'},@{path='AFR-DLL_v1.0.0.zip'},@{path='Fonts.zip'})}|ConvertTo-Json -Depth 8|Set-Content manifest.json
+$selected=@('AFR-DLL_v1.0.0.zip','SHA256SUMS')
+@{version='1.0.0';channelFiles=$selected;artifacts=@(@{path='AFR-Deployer_v1.0.0.exe'},@{path='AFR-DLL_v1.0.0.zip'},@{path='Fonts.zip'})}|ConvertTo-Json -Depth 8|Set-Content manifest.json
 foreach($name in @('AFR-Deployer_v1.0.0.exe','AFR-DLL_v1.0.0.zip','Fonts.zip','sbom.spdx.json','release-notes.md','artifact-manifest.json','SHA256SUMS')){Set-Content -LiteralPath "final/$name" -Value 'fixture'}
 function Invoke-WebRequest {
   param($Uri,$Headers,[switch]$SkipHttpErrorCheck)
@@ -125,7 +126,7 @@ function oras {
   if($args -contains 'oras-anonymous.json'){$global:anonymous++;throw 'anonymous visibility required during submit'}
   switch($args[0]) {
     'login' {if((@($input) -join '') -cne 'offline-registry'){throw 'wrong registry credential'};return}
-    'push' {if(@($args|Where-Object{$_ -in @('AFR-Deployer_v1.0.0.exe','AFR-DLL_v1.0.0.zip','Fonts.zip','sbom.spdx.json','release-notes.md','artifact-manifest.json','SHA256SUMS')}).Count -ne 7){throw 'seven file layout'};return}
+    'push' {$arguments=@($args);if(@($args|Where-Object{$_ -in @('AFR-Deployer_v1.0.0.exe','AFR-DLL_v1.0.0.zip','Fonts.zip','sbom.spdx.json','release-notes.md','artifact-manifest.json','SHA256SUMS')}).Count -ne $selected.Count -or @($selected|Where-Object {$_ -notin $arguments}).Count){throw 'selected file layout'};return}
     'resolve' {if($args -contains '--oci-layout' -or $global:uploaded -or $scenario -eq 'same-digest'){return 'sha256:'+('a'*64)};if($scenario -eq 'different-digest'){return 'sha256:'+('b'*64)};$global:LASTEXITCODE=1;return}
     'repo' {$global:tags++;throw 'nonexistent package tags must not be required'}
     'cp' {$global:copies++;$global:uploaded=$true;if($scenario -eq 'lost-response'){$global:LASTEXITCODE=1};return}

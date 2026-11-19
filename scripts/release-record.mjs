@@ -8,9 +8,9 @@ import { join, resolve, dirname, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Octokit } from '@octokit/rest';
 import { completeNativeRuleParameters } from './native-rule-parameters.mjs';
-import { decodeReleaseRecord, decodeStateFile, stateRecordOwner, assertRepositoryWrite, isolatedBuildEnvironment, decodeBuildJson, assertMaintenanceProgress, assertPagesProgress,
+import { githubUnits, decodeReleaseRecord, decodeStateFile, stateRecordOwner, assertRepositoryWrite, isolatedBuildEnvironment, decodeBuildJson, assertMaintenanceProgress, assertPagesProgress,
   inspectNativeCycle, recoverNativeCycle, archiveFile, nativeReadFile, nativeEvidenceTransport,
-  dispatchNativeRun, prepareBuildDispatch, verifyDispatchWorkflow, inspectPublications, invokePublication, inspectCycleHistory, completionFile, decodeCompletionArchive,
+  dispatchNativeRun, prepareBuildDispatch, verifyDispatchWorkflow, inspectPublications, invokePublication, inspectCycleHistory, verifyFrozenReceipts, completionFile, decodeCompletionArchive,
   pipelinePreparePublication, readCycleDelivery, prepareNormalizedDelivery, NativeGitHubRelease, nativeGhCommand, nativeReleaseDownload, NativeEvidenceReader, nativeRunFact,
   retainedChannelObservations, observeNativeChannels, readChannelSourceRejections, selectChannelDispatch, prepareChannelDispatch, channelTargetsDigest, verifyChannelResult, verifyContinuationReleases, evaluateCompletion } from '../packages/runner/dist/index.js';
 
@@ -259,7 +259,7 @@ function gitConfig(request) {
   return `[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = false\n\tsymlinks = false\n\tautocrlf = false\n[user]\n\tname = ${identity.name}\n\temail = ${identity.email}\n[remote "origin"]\n\turl = ${JSON.stringify(remote)}\n[branch "steward-record-write"]\n\tremote = origin\n\tmerge = refs/heads/${targetRef}\n[steward]\n\trepositoryId = ${repositoryId}\n`;
 }
 function cycleProgress(before,after) {
-  if(!compatibleCycle(before,after))fail('immutable cycle conflict');
+  if(!compatibleCycle(before,after) || before.freezeCompletedAt && before.freezeCompletedAt!==after.freezeCompletedAt || before.freezeOnly && JSON.stringify(before.freezeOnly)!==JSON.stringify(after.freezeOnly))fail('immutable cycle conflict');
   const oldDecision=before.approvedRepairDecision,newDecision=after.approvedRepairDecision;
   if(oldDecision && JSON.stringify(oldDecision)!==JSON.stringify(newDecision)) {
     if(oldDecision.cycleId===before.id || !newDecision || newDecision.cycleId!==after.id
@@ -618,6 +618,16 @@ export async function publicationAssetFacts(unit,manifest,names,directory) {
   }
   return assets;
 }
+async function confirmFrozenCycle(request,snapshot,cycle,{token,io,now}) {
+  if(!cycle.freezeCompletedAt) {
+    const context={repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle};
+    try {await verifyFrozenReceipts(context,snapshot.domainRecords,io);}
+    catch {return {status:'UNKNOWN',reason:'FROZEN_BUILD_SOURCE_UNAVAILABLE',publishInvoked:false};}
+    const confirmed={...cycle,freezeCompletedAt:now()};
+    snapshot=(await adoptReleaseCycle(request,snapshot,confirmed,{token,io})).snapshot;
+  }
+  return {status:'FROZEN',reason:'NO_PUBLICATION_CHANNELS',archiveHead:snapshot.head,publishInvoked:false};
+}
 export async function publishNativeCycle(request,{token,io=nativeEvidenceTransport(token),centralIo,centralInvocation,controllerDirectory,now=()=>new Date().toISOString()}) {
   if(!token||!centralIo||!centralInvocation||!isAbsolute(controllerDirectory))fail('central publisher identity');
   const root=await mkdtemp(join(tmpdir(),'steward-publication-'));
@@ -631,27 +641,45 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
     const records=await pipelinePreparePublication(context,root,controllerDirectory,token,undefined,io,undefined,undefined,snapshot.domainRecords);
     if(!Array.isArray(records))return records;
     const adapter=new NativeGitHubRelease(args=>nativeGhCommand(args,token),nativeReleaseDownload(token));
-    for(const item of records) {
-      const unit=cycle.units.find(value=>value.id===item.unitId),names=adapter.names({manifest:item.manifest,directory:item.directory,releaseId:unit.releaseId,appBotId:request.appBotId});
+    const publicationUnits=records.filter(item=>!item.delivery?.channels.some(channel=>channel.id==='github-release' && !channel.required));
+    const freezeRecords=records.filter(item=>!publicationUnits.includes(item));
+    if (freezeRecords.length) {
+      const receipts=[...(cycle.freezeOnly ?? [])];
+      for(const item of freezeRecords) {
+        const unit=cycle.units.find(unit=>unit.id===item.unitId);
+        if(!item.archive || !unit || unit.releaseId!==null || cycle.requiredChannels.some(channel=>channel.unitId===unit.id))
+          fail('freeze-only archive identity');
+        const names=adapter.names({manifest:item.manifest,directory:item.directory,releaseId:null,appBotId:request.appBotId});
+        unit.assets=await publicationAssetFacts(unit,item.manifest,names,item.directory);
+        unit.notesDigest=sha256(await readFile(join(item.directory,'release-notes.md')));
+        unit.manifestDigest=sha256(await readFile(join(item.directory,'artifact-manifest.json')));
+        receipts.push({unitId:item.unitId,runId:item.archive.runId,attempt:item.archive.attempt,
+          producerAttempt:item.archive.producerAttempt,artifactId:item.archive.artifactId,archiveDigest:item.archive.digest});
+      }
+      cycle.freezeOnly=receipts;
+    }
+    for(const item of publicationUnits) {
+      const unit=cycle.units.find(value=>value.id===item.unitId),names=adapter.names({delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:unit.releaseId,appBotId:request.appBotId});
       const assets=await publicationAssetFacts(unit,item.manifest,names,item.directory);
-      const frozen={assets,notesDigest:assets.find(asset=>asset.path==='release-notes.md').sha256,manifestDigest:assets.find(asset=>asset.path==='artifact-manifest.json').sha256};
+      const frozen={assets,notesDigest:sha256(await readFile(join(item.directory,'release-notes.md'))),manifestDigest:sha256(await readFile(join(item.directory,'artifact-manifest.json')))};
       if(unit.assets.length&&JSON.stringify(ordered(unit.assets))!==JSON.stringify(ordered(assets))||unit.manifestDigest!==null&&unit.manifestDigest!==frozen.manifestDigest)fail('frozen publication changed');
       Object.assign(unit,frozen);
     }
     const adopted=await adoptReleaseCycle(request,snapshot,cycle,{token,io});request={...request,directory:adopted.directory};
+    if(!publicationUnits.length)return confirmFrozenCycle(request,adopted.snapshot,cycle,{token,io,now});
     // Already-public reentry verifies bytes and does not create a new business invocation.
-    if(cycle.units.every(unit=>unit.releaseId!==null)) {
-      const releases=await Promise.all(records.map(item=>adapter.read({manifest:item.manifest,directory:item.directory,releaseId:cycle.units.find(unit=>unit.id===item.unitId).releaseId,appBotId:request.appBotId})));
+    if(githubUnits(cycle).every(unit=>unit.releaseId!==null)) {
+      const releases=await Promise.all(publicationUnits.map(item=>adapter.read({delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:cycle.units.find(unit=>unit.id===item.unitId).releaseId,appBotId:request.appBotId})));
       if(releases.every(release=>!release.draft)) {
-        for(const item of records)await adapter.verify({manifest:item.manifest,directory:item.directory,releaseId:cycle.units.find(unit=>unit.id===item.unitId).releaseId,appBotId:request.appBotId});
+        for(const item of publicationUnits)await adapter.verify({delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:cycle.units.find(unit=>unit.id===item.unitId).releaseId,appBotId:request.appBotId});
         return {status:'OBSERVED',reason:'FORMAL_RELEASES_VERIFIED',publishInvoked:false};
       }
     }
     return await inspectReleaseEvidence(request,{token,io,centralIo,centralInvocation,now,publisher:async(current,save)=>{
-      for(const item of records) {
+      for(const item of publicationUnits) {
         const unit=current.cycle.units.find(value=>value.id===item.unitId);
-        if(unit.releaseId!==null) {const existing={manifest:item.manifest,directory:item.directory,releaseId:unit.releaseId,appBotId:request.appBotId};if(!(await adapter.read(existing)).draft){await adapter.verify(existing);continue;}}
-        const target=await adapter.ensureDraft({manifest:item.manifest,directory:item.directory,releaseId:unit.releaseId,appBotId:request.appBotId});
+        if(unit.releaseId!==null) {const existing={delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:unit.releaseId,appBotId:request.appBotId};if(!(await adapter.read(existing)).draft){await adapter.verify(existing);continue;}}
+        const target=await adapter.ensureDraft({delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:unit.releaseId,appBotId:request.appBotId});
         if(unit.releaseId===null) {const next=structuredClone(current.cycle);next.units.find(value=>value.id===unit.id).releaseId=target.releaseId;await save(next);}
         await adapter.publish(target);
       }
@@ -816,6 +844,7 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
   }
   let cycle=snapshot.cycles.find(record=>record.value.id===request.cycleId)?.value;
   if(!cycle)fail('registered cycle required');
+  if(cycle.freezeOnly && !githubUnits(cycle).length)return confirmFrozenCycle(request,snapshot,cycle,{token,io,now});
   if(command==='reconcile-publication') {
     const context={repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle};
     const history=snapshot.domainRecords.filter(r=>r.path.startsWith('evidence/publication/') && r.value.cycleId===cycle.id);
@@ -847,7 +876,7 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
     if(publisher)return inspectReleaseEvidence(request,{token,io,centralIo,centralInvocation,publisher,now});
     return publishNativeCycle(request,{token,io,centralIo,centralInvocation,controllerDirectory,now});
   }
-  if(command==='dispatch-channel' && cycle.units.some(unit=>unit.releaseId===null||unit.manifestDigest===null))return wait('FROZEN_RELEASE_REQUIRED');
+  if(command==='dispatch-channel' && githubUnits(cycle).some(unit=>unit.releaseId===null||unit.manifestDigest===null))return wait('FROZEN_RELEASE_REQUIRED');
   if(command==='dispatch-channel'&&centralIo) {const normalized=await ensureCycleDelivery(request,snapshot,cycle,{token,io,centralIo,now});snapshot=normalized.snapshot;directory=normalized.directory;request={...request,directory};}
   const native=async path=>{
     const response=await io.request('GET',`/repos/${request.repository}${path?'/'+path:''}`);
@@ -1004,7 +1033,7 @@ export async function readNativeCompletion(request,cycle,{io,centralIo,now=()=>n
   const publications=snapshot.domainRecords.filter(record=>record.path.startsWith('evidence/publication/')&&record.value.cycleId===cycle.id);
   const publication=await inspectPublications(context,publications,io,centralIo,observedAt);
   const source={repositoryId:request.repositoryId,cycleId:cycle.id,sourceSha:cycle.sourceSha,deliveryConfigSha:cycle.deliveryConfigSha,
-    units:cycle.units.map(unit=>({id:unit.id,version:unit.version,tag:unit.tag,releaseId:unit.releaseId,authorId:request.appBotId,manifestDigest:unit.manifestDigest,notesDigest:unit.notesDigest,
+    units:githubUnits(cycle).map(unit=>({id:unit.id,version:unit.version,tag:unit.tag,releaseId:unit.releaseId,authorId:request.appBotId,manifestDigest:unit.manifestDigest,notesDigest:unit.notesDigest,
       assets:unit.assets.map(({path,size,sha256})=>({path,size,sha256}))})),requiredChannels:cycle.requiredChannels.map(channel=>{
       const unit=cycle.units.find(unit=>unit.id===channel.unitId),target={...channel,version:unit.version,releaseId:unit.releaseId,manifestDigest:unit.manifestDigest};
       return {...channel,version:unit.version,digest:unit.manifestDigest,inputDigest:channelTargetsDigest(context,[target]),private:false};
@@ -1053,7 +1082,8 @@ export async function observeReleaseChannels(request,{token,io,centralIo,control
     let snapshot=await readReleaseRecords({directory:request.directory,targetRef:'steward/release-state',repositoryId:request.repositoryId,includeHistory:false});
   const recovered=await recoverReleaseCaches(request,snapshot,{token,io,centralIo,now});snapshot=recovered.snapshot;request={...request,directory:recovered.directory};assertRepositoryWrite(snapshot.repository);
     const cycle=structuredClone(snapshot.cycles.find(record=>record.value.id===request.cycleId)?.value);
-    if(!cycle||cycle.units.some(unit=>unit.releaseId===null))return {status:'WAIT',reason:'FORMAL_RELEASE_REQUIRED'};
+    if(cycle?.freezeOnly && !githubUnits(cycle).length)return confirmFrozenCycle(request,snapshot,cycle,{token,io,now});
+    if(!cycle||githubUnits(cycle).some(unit=>unit.releaseId===null))return {status:'WAIT',reason:'FORMAL_RELEASE_REQUIRED'};
     const context={repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle};
     const normalized=await ensureCycleDelivery(request,snapshot,cycle,{token,io,centralIo,now});snapshot=normalized.snapshot;request={...request,directory:normalized.directory};
     await verifyContinuationReleases(context,io);

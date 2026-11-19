@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { nativeReleaseApp, nativeEvidenceTransport, isolatedBuildEnvironment, evaluateCompletion,parseDeliveryConfig,assertProductDelivery } from '../packages/runner/dist/index.js';
+import { nativeReleaseApp, nativeEvidenceTransport, isolatedBuildEnvironment, githubUnits,evaluateCompletion,parseDeliveryConfig,assertProductDelivery } from '../packages/runner/dist/index.js';
 import { readReleaseRecords, writeReleaseRecords, releaseCommand, assertReleaseWriterProtection } from './release-record.mjs';
 import {servicePages,pagesGitStore} from './pages-maintenance.mjs';
 import {assertQualityProtection,qualityNativeIO} from './quality-language-summary.mjs';
@@ -28,6 +28,10 @@ export async function serviceReleaseWake(request,refresh,invoke,clock=Date.now) 
   snapshot=await refresh();
   const results=[];
   for(const {value:registered} of snapshot.cycles) {
+    if(registered.freezeOnly && !githubUnits(registered).length) {
+      if(!registered.freezeCompletedAt)results.push(await invoke('observe-channel',{...request,cycleId:registered.id,runId:null}));
+      continue;
+    }
     const read=snapshot.domainRecords?.filter(record=>record.path.startsWith('evidence/reads/')&&record.value.cycleId===registered.id)
       .sort((a,b)=>b.value.observedAt.localeCompare(a.value.observedAt))[0]?.value;
     if(read?.nextCheckAt&&Date.parse(read.nextCheckAt)>clock()) {
@@ -41,8 +45,9 @@ export async function serviceReleaseWake(request,refresh,invoke,clock=Date.now) 
       results.push(await invoke('dispatch-build',request));await refresh();
       const publish=await invoke('publish',request);results.push(publish);
       if(publish.publishInvoked===true)return publish;
+      if(publish.status==='FROZEN')continue;
     }
-    await refresh();results.push(await invoke('dispatch-channel',request));
+    if(registered.requiredChannels?.length!==0) {await refresh();results.push(await invoke('dispatch-channel',request));}
     await refresh();results.push(await invoke('observe-channel',request));
     snapshot=await refresh();
     const cycle=snapshot.cycles.find(value=>value.value.id===registered.id)?.value;
@@ -99,7 +104,7 @@ export async function coordinateReleaseWake({discover,observe,service,health,mai
 }
 
 /** Repository visibility is not product enrollment. Only proven absent inputs and obligations are inapplicable. */
-export async function releaseParticipation(repository,io) {
+export async function releaseParticipation(repository,io,{includeUnits=false}={}) {
   const read=async suffix=>{
     const r=await io.request('GET',`/repos/${repository.full_name}${suffix?'/'+suffix:''}`);
     if(r.status!==200)throw Error('RELEASE_PARTICIPATION_UNAVAILABLE');
@@ -137,7 +142,7 @@ export async function releaseParticipation(repository,io) {
       ||state.tree.some(x=>!(x.path==='maintenance'&&x.type==='tree'&&x.mode==='040000')
         &&!(x.type==='blob'&&x.mode==='100644'&&/^maintenance\/[1-9][0-9]*\.json$/.test(x.path)));
   }
-  let status='APPLICABLE',absenceFacts=null;
+  let status='APPLICABLE',absenceFacts=null,units;
   if(files.every(x=>x.length===0)&&!obligation) {
     const candidates=await read('git/matching-refs/heads/steward/release-candidate');
     const builds=await read('git/matching-refs/heads/steward/build/');
@@ -159,6 +164,7 @@ export async function releaseParticipation(repository,io) {
     try {
       const delivery=parseDeliveryConfig(contents[0]);assertProductDelivery(delivery,repository.full_name);
       validateReleaseConfiguration(delivery,contents[1],contents[2]);
+      if(includeUnits)units=delivery.units.map(({id,path,notesPath})=>({id,path,notesPath}));
     }catch{throw Error('RELEASE_CONFIGURATION_INVALID');}
   }
   if(absenceFacts) {
@@ -168,7 +174,7 @@ export async function releaseParticipation(repository,io) {
   const after=await readDefaultRef();
   const stateAfter=await read('git/matching-refs/heads/steward/release-state');
   if(after.object?.sha!==ref.object.sha||JSON.stringify(stateAfter)!==JSON.stringify(refs))throw Error('RELEASE_PARTICIPATION_CHANGED');
-  return {status,sourceSha:ref.object.sha};
+  return {status,sourceSha:ref.object.sha,...(units?{units}:{})};
 }
 
 export async function fetchState(root,repository,token,targetRef='steward/release-state',{governanceAppId,fetcher=fetch,includeHistory=targetRef!=='steward/release-state',centralFirstUse=false,readCentralMaintenanceRules}={}) {

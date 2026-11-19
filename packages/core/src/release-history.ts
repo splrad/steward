@@ -1,5 +1,5 @@
 import {decodeBuildJson} from './build-manifest.js';
-import {evaluateCompletion,parseReleaseRecord,type CompletionSource,type CompletionEvidence,type CompletionTruth,type CycleRecord} from './release-observation.js';
+import {githubUnits,evaluateCompletion,parseReleaseRecord,type CompletionSource,type CompletionEvidence,type CompletionTruth,type CycleRecord} from './release-observation.js';
 
 export interface CompletionArchive {
   schemaVersion:1; repositoryId:number; cycleId:string; source:CompletionSource; observation:CompletionEvidence;
@@ -30,15 +30,15 @@ export interface RepairDecisionFact {
 }
 export function completionMatchesCycle(repositoryId:number,cycle:CycleRecord,source:CompletionSource) {
   const assets=(values:{path:string;size:number;sha256:string}[])=>values.map(({path,size,sha256})=>({path,size,sha256})).sort((a,b)=>a.path.localeCompare(b.path));
-  const units=source.units.map(u=>[u.id,u.version,u.tag,u.releaseId,u.manifestDigest,u.notesDigest,assets(u.assets)]).sort(),expected=cycle.units.map(u=>[u.id,u.version,u.tag,u.releaseId,u.manifestDigest,u.notesDigest,assets(u.assets)]).sort();
+  const units=source.units.map(u=>[u.id,u.version,u.tag,u.releaseId,u.manifestDigest,u.notesDigest,assets(u.assets)]).sort(),expected=githubUnits(cycle).map(u=>[u.id,u.version,u.tag,u.releaseId,u.manifestDigest,u.notesDigest,assets(u.assets)]).sort();
   const channels=(values:{unitId:string;channelId:string}[])=>values.map(v=>JSON.stringify([v.unitId,v.channelId])).sort().join(',');
   return source.repositoryId===repositoryId&&source.cycleId===cycle.id&&source.sourceSha===cycle.sourceSha&&source.deliveryConfigSha===cycle.deliveryConfigSha
     &&JSON.stringify(units)===JSON.stringify(expected)&&channels(source.requiredChannels)===channels(cycle.requiredChannels);
 }
 /** Explicit recovery only: inspect historical facts without repair ancestry or discharge decisions. */
 export function reconcileCycleHistory(input:{repositoryId:number;inventoryComplete:boolean;cycles:CycleRecord[];discovered:CycleHistoryFact[];
-  completions:CycleCompletionFact[];decisions:RepairDecisionFact[];repairActorId:number;now:string}) {
-  keys(input,['repositoryId','inventoryComplete','cycles','discovered','completions','decisions','repairActorId','now']);
+  completions:CycleCompletionFact[];decisions:RepairDecisionFact[];repairActorId:number;now:string;verifiedFreezes?:string[]}) {
+  keys(input,['repositoryId','inventoryComplete','cycles','discovered','completions','decisions','repairActorId','now',...(input.verifiedFreezes?['verifiedFreezes']:[])]);
   const cycles=input.cycles.map(cycle=>parseReleaseRecord('cycle',cycle)),reasons:{cycleId:string;result:CompletionTruth;reason:string}[]=[];
   const add=(cycleId:string,result:CompletionTruth,reason:string)=>reasons.push({cycleId,result,reason});
   if(!input.inventoryComplete)add('history','UNKNOWN','INCOMPLETE_SOURCE_HISTORY');
@@ -51,6 +51,11 @@ export function reconcileCycleHistory(input:{repositoryId:number;inventoryComple
   const states=new Map<string,CompletionTruth>();
   for(const cycle of cycles) {
     if(!discovered.some(f=>f.id===cycle.id&&f.sourceSha===cycle.sourceSha&&f.prNumber===cycle.prNumber)){add(cycle.id,'UNKNOWN','MERGED_SOURCE_UNPROVEN');states.set(cycle.id,'UNKNOWN');continue;}
+    if(cycle.freezeOnly) {
+      const result=input.verifiedFreezes?.includes(cycle.id)?'PASS':'UNKNOWN';
+      add(cycle.id,result,'NATIVE_BUILD_FREEZE');
+      if(result!=='PASS' || !githubUnits(cycle).length){states.set(cycle.id,result);continue;}
+    }
     const facts=input.completions.filter(f=>f.cycleId===cycle.id),live=facts.filter(f=>f.kind==='live').sort((a,b)=>b.observation.observedAt.localeCompare(a.observation.observedAt))[0];
     const historical=facts.filter(f=>f.kind==='historical'&&f.provenanceComplete&&evaluateCompletion(f.source,f.observation,f.observation.observedAt).result==='PASS')
       .sort((a,b)=>b.observation.observedAt.localeCompare(a.observation.observedAt))[0];

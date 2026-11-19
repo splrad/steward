@@ -2,7 +2,9 @@
 export { selectReleaseContributors } from '../../core/src/release-candidate.js';
 export { manualCandidateFacts, manualCandidatePreview, manualCandidateBody, validateManualCandidateRecord } from '../../core/src/manual-candidate.js';
 export { parseDeliveryConfig, deliveryAssetNames, assertDeliveryPath } from '../../core/src/delivery-config.js';
-export { assertProductDelivery } from './release-pipeline.js';
+export { githubUnits } from '../../core/src/release-observation.js';
+export { downloadNativeArtifact } from './native-artifact-download.js';
+export { assertProductDelivery, assertRegisteredAdapters } from './release-pipeline.js';
 export { parsePipelineRecord, pipelineSource } from './release-pipeline-record.js';
 export { pipelineIdentity, pipelineNotes, pipelineInspect, pipelineRecoverCycleFinal, mergedBuildCycle, findFrozenFinal, pipelineDownloadPhase, pipelineFrozenManifest, pipelinePublish, pipelineVerifyPublished, pipelinePreparePublication, readCycleDelivery, prepareNormalizedDelivery } from './release-pipeline.js';
 export { inspectProductArtifacts, sealProductArtifacts, validateProductManifest } from './release-artifacts.js';
@@ -18,7 +20,7 @@ export { collectQualitySources, qualityPages, translateQualitySources, publishQu
 export { decodeQualityCache, reconcileQualitySources, renderQualitySummary } from '../../core/src/quality-language-summary.js';
 export { decodeCandidateArchive, decodeCandidateDocument } from '../../core/src/release-candidate-record.js';
 export { splitContentText, releaseAffectedUnitIds } from '../../core/src/release-content.js';
-export { inspectCycleHistory, completionFile } from './release-history.js';
+export { inspectCycleHistory, verifyFrozenReceipts, completionFile } from './release-history.js';
 export { inspectPublications, invokePublication } from './release-publication.js';
 export { decodeReleaseRecord, decodeStateFile, stateRecordOwner, assertRepositoryWrite } from '../../core/src/release-observation.js';
 export { inspectNativeCycle, recoverNativeCycle, archiveFile, nativeReadFile, nativeEvidenceTransport } from './native-release-evidence.js';

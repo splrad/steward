@@ -1,6 +1,9 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {createHash} from 'node:crypto';
+import {createHash,generateKeyPairSync} from 'node:crypto';
+import {withCycleEventProduct,validateEvent} from '../release-cycle-event.mjs';
+import {withCandidateProduct} from '../bounded-candidate-contract.mjs';
+import {nativeReleaseApp} from '../../packages/runner/dist/index.js';
 import {validateManualCandidate,projectManualCandidate,manualManagedEntryMatches} from '../manual-candidate.mjs';
 import {candidateObservationIdentity,manualCandidateFacts,decodeCandidateDocument} from '../../packages/runner/dist/index.js';
 const hash=v=>createHash('sha256').update(typeof v==='string'?v:JSON.stringify(v)).digest('hex');
@@ -80,4 +83,100 @@ test('manual validation follows the template at the exact candidate head for opt
   await validateManualCandidate(f.session,f.producer,f.io);
   f.files['.github/release-template.md.mustache']='{{{compatibility}}}';
   await assert.rejects(validateManualCandidate(f.session,f.producer,f.io), /missing heading/);
+});
+
+test('two declared release units on trunk bind independent version files, notes and tags to one candidate',async()=>{
+  const f=fixture(),p={id:72,name:'splrad/second',defaultBranch:'trunk'};
+  f.session.repository.repositoryId=p.id;
+  f.pull.head.repo.id=p.id;f.pull.base.repo.id=p.id;f.pull.base.ref=p.defaultBranch;
+  f.delivery.units=['cli','ui'].map(id=>({...f.delivery.units[0],id,path:'packages/'+id,notesPath:'.release-notes/'+id+'.md'}));
+  f.session.generated.units=f.delivery.units.map(({id,path},i)=>({id,path,version:(i+1)+'.0.0',tag:id+'-v'+(i+1)+'.0.0'}));
+  f.session.identity.units=f.session.generated.units.map(({id})=>({id}));
+  f.files['.github/delivery.json']=JSON.stringify(f.delivery);
+  const packages={},manifest={};
+  for(const u of f.session.generated.units) {
+    packages[u.path]={'release-type':'simple','version-file':'version.txt',component:u.id};
+    manifest[u.path]=u.version;
+    f.files[u.path+'/version.txt']=u.version;
+    f.files['.release-notes/'+u.id+'.md']=f.files['.release-notes/layerscape.md'];
+  }
+  f.files['release-please-config.json']=JSON.stringify({packages,'separate-pull-requests':false});
+  f.files['.release-please-manifest.json']=JSON.stringify(manifest);
+  f.io.changedPaths=async()=>['.release-notes/ui.md'];
+  const repository={id:p.id,full_name:p.name,default_branch:p.defaultBranch,archived:false,disabled:false,
+    private:false,visibility:'public',fork:false,owner:{id:302208797}};
+  const key=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'});
+  const fetcher=async(url,options={})=>{
+    const path=new URL(url).pathname;
+    let body;
+    if(path==='/app')body={id:4243096,client_id:'Iv23liuSr0qd4WLJdZhH',slug:'splrad-steward'};
+    else if(path==='/orgs/splrad/installation')body={id:123,account:{id:302208797},app_id:4243096};
+    else if(path.startsWith('/users/'))body={id:301115370,type:'Bot'};
+    else if(path.endsWith('/access_tokens')){
+      const request=JSON.parse(options.body);
+      assert.ok(!request.repository_ids||JSON.stringify(request.repository_ids)===JSON.stringify([repository.id]));
+      body={token:'ghs_offline_'+Object.keys(request.permissions).join('_'),expires_at:new Date(Date.now()+3600000).toISOString(),permissions:request.permissions};
+    }else if(path==='/installation/repositories')body={total_count:1,repositories:[repository]};
+    else if(path==='/installation/token')return new Response(null,{status:204});
+    else assert.fail(path);
+    return Response.json(body,{status:path.endsWith('/access_tokens')?201:200});
+  };
+  const app=await nativeReleaseApp(key,fetcher);
+  const source='a'.repeat(40),files=['.github/delivery.json','release-please-config.json','.release-please-manifest.json'];
+  const blob=path=>{const bytes=Buffer.from(f.files[path]);return {type:'file',path,encoding:'base64',size:bytes.length,content:bytes.toString('base64'),
+    sha:createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')};};
+  const transport=()=>({request:async(method,url)=>{
+    assert.equal(method,'GET');
+    const prefix='/repos/'+repository.full_name;
+    const path=url.slice(prefix.length);
+    let result;
+    if(!path)result=repository;
+    else if(path==='/git/ref/heads/'+repository.default_branch)result={ref:'refs/heads/'+repository.default_branch,object:{type:'commit',sha:source}};
+    else if(path==='/git/trees/'+source+'?recursive=1')result={truncated:false,tree:files.map(path=>({path,type:'blob',mode:'100644',sha:blob(path).sha}))};
+    else if(path==='/git/matching-refs/heads/steward/release-state')result=[];
+    else if(path.startsWith('/contents/')&&path.endsWith('?ref='+source))result=blob(path.slice(10).split('?')[0]);
+    else assert.fail(path);
+    return {status:200,bytes:Buffer.from(JSON.stringify(result))};
+  }});
+  const recover=()=>withCandidateProduct(app,p.id,async(product)=>{
+    f.io.product=product;
+    assert.deepEqual(product.units.map(u=>u.path),['packages/cli','packages/ui']);
+    return validateManualCandidate(f.session,f.producer,f.io);
+  },transport);
+  for(const event of [
+    {kind:'run',repositoryId:p.id,runId:1234,attempt:2},
+    {kind:'publication',repositoryId:1296724484,runId:55,attempt:1,productRepositoryId:p.id}
+  ]) {
+    await withCycleEventProduct(app,event,product=>{
+      assert.equal(product.id,p.id);
+      assert.equal(product.defaultBranch,'trunk');
+      const key=hash([event.repositoryId,event.kind,event.runId,event.attempt,...(event.productRepositoryId?[p.id]:[])]);
+      validateEvent(event,key,[product]);
+    },transport);
+  }
+  await assert.rejects(withCycleEventProduct(app,{kind:'publication',repositoryId:1296724484,productRepositoryId:99},()=>assert.fail(),transport),/BOUNDED_REPOSITORY/);
+  Object.assign(repository,{id:repo,full_name:'splrad/LayerScape',default_branch:'main'});
+  const oldEvent={kind:'publication',repositoryId:1296724484,runId:55,attempt:1};
+  await withCycleEventProduct(app,oldEvent,product=>{
+    assert.equal(product.id,repo);
+    validateEvent(oldEvent,hash([oldEvent.repositoryId,'publication',55,1]),[product]);
+  },transport);
+  repository.default_branch='trunk';
+  await assert.rejects(withCycleEventProduct(app,oldEvent,()=>assert.fail(),transport),/CYCLE_EVENT_KIND/);
+  Object.assign(repository,{id:p.id,full_name:p.name,default_branch:p.defaultBranch});
+  const missing=f.session.generated.units.pop();
+  await assert.rejects(recover(),/MANUAL_UNIT_COVERAGE/);
+  f.session.generated.units.push(missing);
+  const record=await recover();
+  assert.equal(record.schemaVersion,2);
+  assert.deepEqual(record.units.map(u=>u.versionPath),['packages/cli/version.txt','packages/ui/version.txt']);
+  const identity=candidateObservationIdentity({...f.session,manualValidation:record});
+  assert.match(identity.version,/^units-[a-f0-9]{64}$/);
+  f.files['packages/ui/version.txt']='1.0.0';
+  await assert.rejects(recover(),/MANUAL_VERSION/);
+  files.pop();
+  await assert.rejects(recover(),/RELEASE_CONFIGURATION_REQUIRED/);
+  repository.private=true;
+  await assert.rejects(recover(),/BOUNDED_REPOSITORY/);
+  await assert.rejects(withCandidateProduct(app,999,()=>assert.fail(),transport),/BOUNDED_REPOSITORY/);
 });
