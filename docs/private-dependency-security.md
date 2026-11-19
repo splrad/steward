@@ -30,10 +30,10 @@ Linux扫描容器保留cap-drop=ALL、no-new-privileges及只读输入/rootfs；
 
 可重用工作流的 Action 锁归属于定义仓，而非调用仓，遵循 [GitHub 原生锁职责](https://docs.github.com/en/actions/concepts/security/workflow-dependency-lockfiles)。展开允许的准确 controller SHA 时，从同一已验证祖先读取完整 workflow 目录及原生锁，使用当前可信配置中的唯一工具版本执行只读完整 `gh actions-lock --verify`；不重写或裁剪锁。每个 workflow 仅由所属来源的清单证明覆盖，消费者和其他来源的库存不能补缺。来源锁的全部 Action（含传递依赖）继续在线核验仓身份、tag/SHA 和公告，并与消费者的扫描结果一起进行原有风险比较。报告记录来源 SHA、workflow/lock 摘要及原生输出；失败时保留来源和阶段，不作为扫描完成。
 
-`config/private-dependency-security.json` 的 `lifecycleSamples` 仅登记一个隔离样本。必须同时匹配准确仓 ID、名称、组织、private 状态及现有 `STEWARD_PRIVATE_GOVERNANCE_REPOSITORY_ID`；身份或注册不符立即失败。现有 governance-only 文件白名单不变，管理员模式不变。
+生产配置的 `lifecycleSamples` 为空。正式管理仓 steward-settings 继续按 administrators 中的仓库 ID、名称和私有可见性验证。离线复验可向测试策略传入一个显式样本，检验身份不符、组织错误或缺少注册时的拒绝行为。
 
 样本允许单 app JavaScript 源码/行为测试、VERSION、Release Please simple 配置与 manifest、delivery、两个正式发布模板及必要 Node 验证接口。完整 base/head 文件清单分别核对；未知源码、工作流、工具配置或依赖清单拒绝。`templates/lifecycle-sample/` 的 package/lock、验证脚本和忽略规则统一 LF 换行后必须逐字节匹配，明确证明应用没有第三方 npm 包；不能将空 OSV 结果作为未扫描依赖的替代。新增任何 npm 依赖必须另行修改受审合同。首次治理 base 可没有应用；出现任一应用输入即要求完整配套文件。生成的 CHANGELOG 和 app 发布说明允许保留。首次无应用且无 workflow 的 base 可省略 Action 锁；含应用、含 workflow 的 base 以及所有 head 仍须提供锁。
 
 Copier 文件继续匹配可信版本原文。发布 workflow 的结构必须与当前正式模板一致，中央 checkout 引用限当前可信控制器或其已验证祖先；第三方 Action 不接受替换。唯一允许的中央 product-release reusable workflow 从已验证祖先 Git 对象展开，其 Action 和 mise 声明纳入相同扫描；其他 reusable 或再次嵌套拒绝。Action 锁身份、tag/SHA、完整清单及在线 zizmor 检查保留；所有声明的 mise 版本另用供应商公告检查，缺失或不完整信息失败。源文件在原 Linux/Windows 低权限 job 中验证，不抑制 source job。样本复用中央已固定的 TypeScript 工具链编译 JS、执行编译产物行为测试、类型检查、配置一致性及重复构建产物比较；扫描 job 仍只读候选 blob、不执行样本代码。必需检查、权限和 Environment 不变。
 
-该模式只解决隔离样本的 PR 准入。正式发布模板保持原内容，本轮仅用于发行说明候选验收；模板中现有产品构建矩阵不代表这个样本已具备正式发布能力。样本发布/分发 workflow 在采用后保持停用，真实初始化与模型调用依原批次授权另行执行。回退策略为暂停样本后续写入、保留状态和证据；已有应用时不能直接回退旧 governance-only 检查并声称继续兼容。
+下列样本行为用于复核历史隔离证据。样本发布和分发 workflow、私有发行初始化及显式恢复均已退出线上验收。
