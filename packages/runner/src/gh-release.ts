@@ -1,3 +1,4 @@
+import { channelFiles, type DeliveryUnit } from '../../core/src/delivery-config.js';
 import { releaseBodyMatches } from './release-body.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -33,7 +34,7 @@ export async function nativeGhCommand(args: readonly string[], token: string | u
 }
 export interface ReleaseObject { id: number; tag_name: string; draft: boolean; immutable: boolean; body: string; html_url: string; upload_url: string; target_commitish: string }
 interface Asset { id: number; name: string; size: number; digest: string | null; state: string; label?: string; uploader?: { id: number } }
-export interface ReleaseTarget { manifest: ReleaseManifest | ProductReleaseManifest; releaseId: number; directory: string; appBotId: number }
+export interface ReleaseTarget { delivery?: DeliveryUnit; manifest: ReleaseManifest | ProductReleaseManifest; releaseId: number; directory: string; appBotId: number }
 export type ReleaseIntent = Omit<ReleaseTarget, 'releaseId'> & { releaseId: number | null };
 export type ReleaseDownload = (repository: string, assetId: number, destination: string, anonymous: boolean) => Promise<void>;
 export async function releaseReadIsAnonymous(gh:GhCommand,repository:string,repositoryId:number):Promise<boolean> {
@@ -91,6 +92,7 @@ export class NativeGitHubRelease {
     return object.sha;
   }
   async ensureTag(target: ReleaseIntent) {
+    if (!this.names(target).length) reject('GitHub channel disabled');
     await this.freezeProof(target); await this.repository(target);
     if (await this.tagSource(target)) return;
     let failure;
@@ -171,6 +173,7 @@ export class NativeGitHubRelease {
     } finally { await rm(directory, { recursive: true, force: true }); }
   }
   names(target: ReleaseIntent) {
+    if (target.delivery) return channelFiles(target.delivery, 'github-release', target.manifest.artifacts);
     return [...target.manifest.artifacts.map(asset => asset.path), 'sbom.spdx.json', 'release-notes.md', 'artifact-manifest.json', 'SHA256SUMS'].sort();
   }
   async verifyAttestation(target: ReleaseIntent, file: string) {
@@ -226,6 +229,7 @@ export class NativeGitHubRelease {
     return { releaseId: release.id, url: release.html_url, mode: 'verified' as const, nativeEvidence };
   }
   async publish(target: ReleaseTarget) {
+    if (!this.names(target).length) reject('GitHub channel disabled');
     await verifySealedArtifacts(target.directory, target.manifest);
     if (!(await this.read(target)).draft) return this.verify(target);
     const names = this.names(target);
