@@ -13,6 +13,7 @@ with tarfile.open(root / "cli.tar.gz", "w:gz") as archive:
     archive.addfile(entry, io.BytesIO(data))
 for name, entries in {
     "stations.zip": [("data.csv", b"id,name\n1,test\n"), ("VERSION", b"1.2.3\n")],
+    "large.zip": [("data.txt", b"x" * (2 * 1024**2))],
     "ambiguous.zip": [("DATA.csv", b"a"), ("data.csv", b"b")],
     "bad-font.zip": [("font.ttf", b"ordinary text")],
 }.items():

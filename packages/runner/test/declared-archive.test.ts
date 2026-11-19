@@ -22,6 +22,7 @@ afterAll(async () => { await rm(root, { recursive: true, force: true }); });
 it.each([
   ['cli.tar.gz', 'tar-gzip', true],
   ['stations.zip', 'zip', true],
+  ['large.zip', 'zip', true],
   ['ambiguous.zip', 'zip', false],
   ['broken.tar.gz', 'tar-gzip', false],
   ['bad-font.zip', 'font-zip', false],

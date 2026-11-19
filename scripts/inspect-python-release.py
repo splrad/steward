@@ -68,8 +68,8 @@ def member_path(name, seen):
     return parts
 
 
-def read_member(stream, size, retain=False):
-    require(size >= 0 and size <= MAX_EXPANDED and (not retain or size <= MAX_METADATA))
+def read_member(stream, size, retain=False, max_retained=MAX_METADATA):
+    require(size >= 0 and size <= MAX_EXPANDED and (not retain or size <= max_retained))
     data = bytearray()
     consumed = 0
     while chunk := stream.read(min(65536, size - consumed + 1)):
@@ -236,8 +236,7 @@ def inspect_declared(path, contract, destination=None):
         require(name not in directories and 0 < size <= 32 * 1024**2)
         expanded += size
         require(expanded <= MAX_EXPANDED)
-        data = stream.read(size + 1)
-        require(len(data) == size)
+        data = read_member(stream, size, retain=True, max_retained=32 * 1024**2)
         suffix = Path(name).suffix.lower()
         if adapter == "font-zip":
             valid = (suffix == ".ttf" and data[:4] in (b"\x00\x01\x00\x00", b"true", b"ttcf")
