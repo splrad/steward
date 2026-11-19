@@ -178,3 +178,12 @@ test('rejects edits that change the head, labels or locked controls',()=>{
   assert.match(form.body,/🔒 Windows 构建/);
   assert.throws(()=>parseForm(form.body,form.body.replace('🔒 Windows 构建','[x] Windows 构建'),form.items),/marked/);
 });
+
+test('CI-only and Pages-only settings keep release author fields out of the form',()=>{
+  const model=inspectRepository(new Map());
+  for(const values of [{'ci.example':true},{'site.build':true},{'site.deploy':true}]) {
+    const form=configurationForm(model,'a'.repeat(40),{values});
+    assert.ok(!form.items.some(item=>item.id.startsWith('author.')));
+  }
+  assert.ok(configurationForm(model,'a'.repeat(40),{values:{'s1.use':true}}).items.some(item=>item.id==='author.id'));
+});
