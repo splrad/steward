@@ -599,11 +599,13 @@ async function adoptReleaseCycle(request,snapshot,cycle,{token,io},extraFiles=[]
 /** Once-per-source historical normalization. Unknown permission never selects the legacy path. */
 async function ensureCycleDelivery(request,snapshot,cycle,{token,io,centralIo,now}) {
   const context={repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle};
-  try {await readCycleDelivery(context,snapshot.domainRecords,io);return {snapshot,directory:request.directory};}
+  try {const {delivery}=await readCycleDelivery(context,snapshot.domainRecords,io);return {snapshot,directory:request.directory,delivery};}
   catch(error) {
     if(error?.message!=='RELEASE_PIPELINE: NORMALIZED_DELIVERY_EVIDENCE_REQUIRED')throw error;
     const file=await prepareNormalizedDelivery(context,io,centralIo,now());
-    return adoptReleaseCycle(request,snapshot,cycle,{token,io},[file]);
+    const adopted=await adoptReleaseCycle(request,snapshot,cycle,{token,io},[file]);
+    const {delivery}=await readCycleDelivery(context,adopted.snapshot.domainRecords,io);
+    return {...adopted,delivery};
   }
 }
 
@@ -1076,6 +1078,17 @@ export async function readNativeCompletion(request,cycle,{io,centralIo,now=()=>n
   decodeCompletionArchive(Buffer.from(JSON.stringify(value)));return value;
 }
 
+export function channelResultUrl(repository,delivery,item) {
+  const channel=delivery.units.find(unit=>unit.id===item.unitId)?.channels.find(channel=>channel.id===item.channelId && channel.required);
+  if(!channel)fail('unregistered channel result');
+  if(channel.id==='winget' && /^[1-9][0-9]*$/.test(String(item.nativeObjectId)))
+    return 'https://github.com/microsoft/winget-pkgs/pull/'+item.nativeObjectId;
+  const ghcr=/^ghcr\.io\/([a-z0-9._-]+)\/([a-z0-9._/-]+)$/.exec(channel.location);
+  if(channel.id!=='ghcr-assets' || !ghcr || ghcr[1]!==repository.split('/')[0].toLowerCase() ||
+    ghcr[2].split('/').some(part=>!part || part==='.' || part==='..'))fail('channel result location');
+  return 'https://github.com/'+repository+'/pkgs/container/'+encodeURIComponent(ghcr[2]);
+}
+
 export async function observeReleaseChannels(request,{token,io,centralIo,controllerDirectory,oras,allowProbeDispatch=true,now=()=>new Date().toISOString()}) {
   const root=await mkdtemp(join(tmpdir(),'steward-channel-read-'));
   try {
@@ -1094,7 +1107,7 @@ export async function observeReleaseChannels(request,{token,io,centralIo,control
       if(!fact) {fact={unitId:item.unitId,channelId:item.channelId,nativeObjectId:null,nativeUrl:null,inputDigest:channelTargetsDigest(context,[{unitId:item.unitId,channelId:item.channelId,version:item.version,releaseId:item.releaseId,manifestDigest:item.manifestDigest}]),
         submittedAt:null,acceptedAt:null,indexedAt:null,verificationRunId:null,verifiedEvidencePath:null,observedAt:item.observedAt,nextCheckAt:null};cycle.channelFacts.push(fact);}
       if(fact.nativeObjectId!==null&&fact.nativeObjectId!==item.nativeObjectId)fail('channel native object changed');
-      Object.assign(fact,{nativeObjectId:item.nativeObjectId,nativeUrl:item.channelId==='winget'?`https://github.com/microsoft/winget-pkgs/pull/${item.nativeObjectId}`:'https://github.com/splrad/LayerScape/pkgs/container/layerscape-assets',
+      Object.assign(fact,{nativeObjectId:item.nativeObjectId,nativeUrl:channelResultUrl(request.repository,normalized.delivery,item),
         submittedAt:fact.submittedAt??item.observedAt,acceptedAt:item.accepted?(fact.acceptedAt??item.observedAt):fact.acceptedAt,indexedAt:item.indexed?(fact.indexedAt??item.observedAt):fact.indexedAt,
         verificationRunId:item.consumed?evidence.run.id:fact.verificationRunId,verifiedEvidencePath:item.consumed?path:fact.verifiedEvidencePath,observedAt:item.observedAt});
     }

@@ -8,7 +8,7 @@ import {pathToFileURL,fileURLToPath} from 'node:url';
 import {TagName} from 'release-please/build/src/util/tag-name.js';
 import {Version} from 'release-please/build/src/version.js';
 import {isolatedBuildEnvironment,parseDeliveryConfig,NativeEvidenceReader,nativeEvidenceTransport,
-  inspectNativeCycle,inspectPublications,decodeReleaseRecord,assertRepositoryWrite,nativePythonSourceVersion} from '../packages/runner/dist/index.js';
+  inspectNativeCycle,inspectPublications,decodeReleaseRecord,assertRepositoryWrite,readNativeUnitVersion} from '../packages/runner/dist/index.js';
 
 const fail=reason=>{throw new Error('RELEASE_ADOPTION: '+reason);};
 const sha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
@@ -29,6 +29,17 @@ export function validateReleaseConfiguration(delivery,settings,versions) {
       try {if(Version.parse(versions[path]).toString()!==versions[path])fail('adopted configuration');}catch{fail('adopted configuration');}
     }
   }
+}
+
+// The channel workflow is product-owned. This list describes files to verify or
+// materialize from reviewed product sources; it never selects a product template.
+export function releaseAdoptionPlan(delivery) {
+  const files=['.github/workflows/steward-release-publish.yml','.github/release-template.md.mustache'];
+  const externalTargets=delivery.units.flatMap(unit=>unit.channels
+    .filter(channel=>channel.required && channel.id!=='github-release')
+    .map(channel=>({unitId:unit.id,channelId:channel.id,location:channel.location})));
+  if(externalTargets.length)files.push('.github/workflows/steward-release-channels.yml');
+  return {files,externalTargets};
 }
 
 /** A/P comes only from the merged onboarding PR. The source history is never truncated at A for first-release generation. */
@@ -64,7 +75,7 @@ export async function withReleaseAdoption(request,adoption,io,operation) {
     const manifest=JSON.parse(await file(adoption.sourceSha,'.release-please-manifest.json'));
     const delivery=parseDeliveryConfig(JSON.parse(await file(adoption.sourceSha,'.github/delivery.json')));
     validateReleaseConfiguration(delivery,settings,manifest);
-    for(const path of ['.github/workflows/steward-release-publish.yml','.github/workflows/steward-release-channels.yml','.github/release-template.md.mustache'])await file(adoption.sourceSha,path);
+    for(const path of releaseAdoptionPlan(delivery).files)await file(adoption.sourceSha,path);
     if(request.repositoryId===1187527897) {
       if(request.repository!=='splrad/LayerScape'||Object.keys(manifest).length||settings.packages?.['.']?.['initial-version']!=='1.0.0'
         ||['bootstrap-sha','draft','force-tag-creation'].some(key=>Object.hasOwn(settings,key)||Object.hasOwn(settings.packages['.'],key)))fail('LayerScape first-release configuration');
@@ -84,13 +95,7 @@ export async function withReleaseAdoption(request,adoption,io,operation) {
         const options={...config,...config.packages[unit.path]},component=options['include-component-in-tag']===false?undefined:options.component;
         if(options['include-component-in-tag']!==false&&!component)fail('tag component');
         if(new TagName(Version.parse(target.version),component,options['tag-separator'],options['include-v-in-tag']).toString()!==target.tag)fail('native tag');
-        const unitPath=path=>unit.path==='.'?path:`${unit.path}/${path}`;
-        if(options['release-type']==='simple') {if(await file(S,unitPath(options['version-file']))!==target.version)fail('native VERSION');}
-        else if(options['release-type']==='node') {if(JSON.parse(await file(S,unitPath('package.json'))).version!==target.version)fail('native package version');}
-        else if(options['release-type']==='python') {
-          await nativePythonSourceVersion(fileURLToPath(new URL('..',import.meta.url)),await fileBytes(S,unitPath('pyproject.toml')),target.version);
-        }
-        else fail('native version adapter required');
+        await readNativeUnitVersion(unit.path, options, target.version, path => fileBytes(S, path), fileURLToPath(new URL('..', import.meta.url)));
       }
       return true;
     };

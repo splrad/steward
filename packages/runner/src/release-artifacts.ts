@@ -50,15 +50,15 @@ export function validateProductManifest(input: unknown): asserts input is Produc
   if (manifest.buildRef !== 'refs/heads/steward/build/' + manifest.cycleId || !manifest.cycleId.endsWith('-' + manifest.sourceSha))
     throw new Error('RELEASE_ARTIFACTS: product source');
 }
-export async function inspectProductArtifacts(unit: DeliveryUnit, directory: string, input: Omit<ProductReleaseManifest, 'schemaVersion' | 'artifacts' | 'evidence'>, inspect: NativeInspector): Promise<ProductReleaseManifest> {
+export async function inspectProductArtifacts(unit: DeliveryUnit, directory: string, input: Omit<ProductReleaseManifest, 'schemaVersion' | 'artifacts' | 'evidence'>, inspect: (file: string, asset: DeliveryUnit['assets'][number]) => ReturnType<NativeInspector>): Promise<ProductReleaseManifest> {
   unit = structuredClone(unit); input = structuredClone(input);
   if (!input.producers.length || new Set(input.producers.map(item => item.buildId)).size !== input.producers.length
     || input.producers.some(item => ![item.jobId, item.runId??input.runId, item.attempt, item.artifactId].every(value => Number.isSafeInteger(value) && value > 0) || (item.runId??input.runId)===input.runId && item.attempt > input.attempt)) fail('producer identity');
   const names = deliveryAssetNames(unit, input.version, input.packageVersion), expected = [...names.values()].sort(), states = new Map<string, Stats>();
   if (input.unitId !== unit.id || JSON.stringify((await readdir(directory)).sort()) !== JSON.stringify(expected)) fail('business asset set mismatch');
-  const inspector: NativeVersionInspector = Object.assign(async () => { throw new Error('PATH_INSPECTOR_REQUIRED'); }, { inspectPath: inspect });
   const artifacts: ProductReleaseManifest['artifacts'] = [];
   for (const asset of unit.assets) {
+  const inspector: NativeVersionInspector = Object.assign(async () => { throw new Error('PATH_INSPECTOR_REQUIRED'); }, { inspectPath: (file: string) => inspect(file, asset) });
     const name = names.get(asset.id)!, result = await inspectBuildFile(directory, name, inspector, 2 ** 31 - 1);
     if (typeof result.native === 'string' ? result.native !== input.packageVersion
       : result.native?.resourceOnly !== 'font-archive' || asset.mediaType !== 'application/zip') fail('native version or format mismatch');
