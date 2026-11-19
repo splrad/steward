@@ -19,7 +19,7 @@ it('renders committed Chinese Markdown deterministically', () => {
   const result = renderCommittedReleaseNotes(template, data);
   expect(result).toContain('# 示例产品 1.2.3');
   expect(result).toContain('修复`字体`路径。');
-  expect(result).toContain('包渠道：待分发');
+  expect(result).not.toContain('包渠道：待分发');
   expect(renderCommittedReleaseNotes(template, data)).toBe(result);
 });
 it('keeps reviewed links, code and HTML bytes in supplemental sections', () => {

@@ -132,7 +132,7 @@ export function renderCommittedReleaseNotes(template: string, data: ReleaseTempl
     }
   }
   inspect(Mustache.parse(template));
-  if ([...expected, 'channels.name', 'channels.status', 'channels.location', 'contributors.profileUrl', 'contributors.avatarUrl', 'contributors.alt']
+  if (['productName','version','sourceLinkLabel', ...[...markdownFields].filter(key => key !== 'commitUrl'), 'hasContributors','contributors', 'contributors.profileUrl', 'contributors.avatarUrl', 'contributors.alt']
     .some(key => !used.has(key))) fail('template omits required field');
   const output = Mustache.render(template, data);
   if (/\{\{|\}\}/.test(output) || !output.includes(data.version)) fail('unresolved template');
@@ -162,9 +162,9 @@ export function nestReleaseMarkdown(markdown: string, minimumDepth = 4): string 
   return markdown.trim();
 }
 export interface FrozenReleaseNotes {
-  repository: string; unitId: string; version: string; tag: string; sourceSha: string; controllerSha: string;
+  repository: string; unitId: string; displayName?: string | undefined; version: string; tag: string; sourceSha: string; controllerSha: string;
   notes: string; sourceLinkLabel: string; sourceUrl: string; commitUrl: string; contributors: ReleaseContributor[]; repositoryAuthors: RepositoryAuthor[];
-  assets: { id: string; name: string; build: string }[];
+  assets: { id: string; name: string; build: string; description?: string | undefined }[];
   channels: { id: string; location: string }[];
 }
 /** Four user-facing sections, rendered only from reviewed source and frozen native identities. */
@@ -182,13 +182,18 @@ export function renderFrozenReleaseNotes(template: string, data: FrozenReleaseNo
   });
   if (!data.assets.length || new Set(data.assets.map(asset => asset.id)).size !== data.assets.length
     || new Set(data.assets.map(asset => asset.name.toLowerCase())).size !== data.assets.length) fail('download set');
-  const downloads = ['| 用途（产物 ID，详见安装说明） | 系统/架构（构建目标） | 文件 |', '| --- | --- | --- |', ...data.assets.map(asset => {
+  const legacy = template.includes('{{controllerSha}}');
+  const downloads = [ ...(legacy ? ['| 用途（产物 ID，详见安装说明） | 系统/架构（构建目标） | 文件 |', '| --- | --- | --- |'] : []), ...data.assets.map(asset => {
+    if (asset.description !== undefined && (!asset.description.trim() || /[\p{C}\p{Zl}\p{Zp}]/u.test(asset.description))) fail('asset description');
+
     assertDeliveryAssetName(asset.name);
     if (![asset.id, asset.build].every(value => /^[a-z][a-z0-9-]*$/.test(value))) fail('download source');
-    return `| ${asset.id} | ${asset.build} | [${asset.name}](https://github.com/${data.repository}/releases/download/${encodeURIComponent(data.tag)}/${encodeURIComponent(asset.name)}) |`;
+    const link = `[${asset.name}](https://github.com/${data.repository}/releases/download/${encodeURIComponent(data.tag)}/${encodeURIComponent(asset.name)})`;
+    const description = asset.description?.replace(/[\\`*_{}\[\]()<>#!|~&]/g, char => `&#${char.codePointAt(0)};`);
+    return legacy ? `| ${asset.id} | ${asset.build} | ${link} |` : `- ${link}${description ? ' — ' + description : ''}`;
   })].join('\n');
   const values = { ...Object.fromEntries(Object.entries(sections).map(([key, value]) => [key, nestReleaseMarkdown(value, key === 'userChanges' ? 3 : 4)])),
-    productName: data.unitId, version: data.version, downloads, sourceLinkLabel: data.sourceLinkLabel, sourceUrl: data.sourceUrl, commitUrl: data.commitUrl,
+    productName: data.displayName ?? (legacy ? data.unitId : data.repository.split('/')[1]!), version: data.version, downloads, sourceLinkLabel: data.sourceLinkLabel, sourceUrl: data.sourceUrl, commitUrl: data.commitUrl,
     sourceSha: data.sourceSha, controllerSha: data.controllerSha, channels, hasContributors: contributors.length > 0, contributors } as ReleaseTemplateData;
   return renderCommittedReleaseNotes(template, values);
 }
