@@ -39,6 +39,15 @@ describe('candidate producer evidence and event controls',()=>{
    expect((await candidateFacts(f.g,false,true)).identity).toBeNull();
    await expect(candidateFacts(f.g)).rejects.toThrow('SESSION_NOT_READY');
  });
+ it('admits only recovery after the default branch moved a unit out of the old snapshot',async()=>{
+   const f=await fixture(),target={...TARGET,units:[{id:'layerscape',path:'packages/app'}]};
+   const g={...f.g,target};
+   await expect(candidateFacts(g,false,true)).rejects.toThrow('CANDIDATE_UNIT_NOT_SELECTED');
+   const moved:GitReader={...g,json:async(id,path,method,body)=>path.endsWith('/git/ref/heads/main')?
+     {object:{sha:sha('e')}}:f.g.json(id,path,method,body)};
+   expect((await candidateFacts(moved,false,true)).identity).toBeNull();
+   await expect(candidateFacts(moved)).rejects.toThrow('CANDIDATE_UNIT_NOT_SELECTED');
+ });
  it('binds a fixed successful Run to independently read Git identity and native event',async()=>{const f=await fixture();expect((await verifiedProducer(f.g,f.env,f)).registration).toEqual(f.registration);});
  it.each(['epoch','cycleId','requestKey','attempt','target'] as const)('rejects borrowing successful Run for a different %s',async kind=>{const f=await fixture();const input=structuredClone({registration:f.registration,producer:f.producer});if(kind==='epoch'||kind==='cycleId')input.registration.identity[kind]='other';else if(kind==='target')input.registration.identity.repositoryId=1 as any;else input.producer[kind]=kind==='requestKey'?key('0'):1 as never;await expect(verifiedProducer(f.g,f.env,input)).rejects.toThrow();});
  it('rejects an artifact from an older producer attempt even when Run succeeded',async()=>{const f=await fixture();f.artifact.value.producer.attempt=1;await expect(verifiedProducer(f.g,f.env,f)).rejects.toThrow('PRODUCER_ATTEMPT');});
