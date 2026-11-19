@@ -269,8 +269,8 @@ export class NativeGitHubRelease {
         if (!asset) { if (uploadError) throw uploadError; reject('upload not observed'); }
       }
       await this.compareAsset(target, asset);
-      if (asset.label && asset.label !== name) {
-        if (asset.label !== label || asset.uploader?.id !== target.appBotId) reject('unproven draft label');
+      if (asset.label !== name) {
+        if ((asset.label && asset.label !== label) || asset.uploader?.id !== target.appBotId) reject('unproven draft label');
         await guard();
         let failure;
         try { await this.mutate('PATCH', `repos/${target.manifest.fullName}/releases/assets/${asset.id}`, { name, label: name }); }
@@ -285,7 +285,7 @@ export class NativeGitHubRelease {
     const assets = await this.assets(target);
     if (JSON.stringify(assets.map(asset => asset.name).sort()) !== JSON.stringify(names)) reject('draft asset set');
     for (const asset of assets) {
-      if (asset.label && asset.label !== asset.name) reject('unexpected public asset label');
+      if (asset.label !== asset.name) reject('unexpected public asset label');
       await this.compareAsset(target, asset);
     }
     const notes = await readFile(join(target.directory, 'release-notes.md'), 'utf8');

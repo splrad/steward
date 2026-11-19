@@ -73,3 +73,11 @@ it('renders a release without upgrade notices or contributors using the reviewed
   expect(body).toContain('### 导出');
   expect(body).toContain('/releases/download/');
 });
+
+it('renders a repository name containing Markdown underscores when displayName is omitted', () => {
+  const repository = 'example/_my_app_', sourceSha = data.sourceSha;
+  const body = renderFrozenReleaseNotes(template, { ...data, repository, displayName: undefined,
+    sourceLinkLabel: '查看更新记录', sourceUrl: `https://github.com/${repository}/blob/${sourceSha}/CHANGELOG.md`,
+    commitUrl: `https://github.com/${repository}/commit/${sourceSha}` });
+  expect(body).toContain('# \\_my\\_app\\_ 9.2.2');
+});

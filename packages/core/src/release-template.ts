@@ -94,7 +94,7 @@ export function renderCommittedReleaseNotes(template: string, data: ReleaseTempl
     if (compact && optionalNotes.some(field => field === key) && value === '') continue;
     filled(value);
   }
-  if (!/^[^\r\n<>\[\]{}*_`]+$/.test(data.productName)) fail('product name must be plain text');
+  if (!/^[^\r\n<>\[\]{}*`]+$/.test(data.productName)) fail('product name must be plain text');
   if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(data.version)) fail('invalid version');
   if (![data.sourceSha, data.controllerSha].every(sha => /^[a-f0-9]{40}$/.test(sha))) fail('invalid commit identity');
   const commit = new URL(data.commitUrl), source = new URL(data.sourceUrl);
@@ -155,7 +155,7 @@ export function renderCommittedReleaseNotes(template: string, data: ReleaseTempl
     .map(([heading, key]) => `### ${heading}\n\n${data[key]}`);
   const upgradeNotices = notices.length ? `## 升级须知\n\n${notices.join('\n\n')}` : '';
   const categories = unified().use(remarkParse).parse(data.userChanges).children.some(node => node.type === 'heading');
-  const output = Mustache.render(template, compact ? { ...data, upgradeNotices,
+  const output = Mustache.render(template, compact ? { ...data, productName: data.productName.replaceAll('_', '\\_'), upgradeNotices,
     installation: data.installation === noSourceInformation ? '' : data.installation,
     userChanges: categories ? data.userChanges : '### 使用变化\n\n' + data.userChanges } : data);
   if (/\{\{|\}\}/.test(output) || !output.includes(data.version)) fail('unresolved template');
