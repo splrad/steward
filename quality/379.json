@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "repositoryId": 1296724484,
   "pullRequestNumber": 379,
-  "currentHead": "500311a4ccfed739b9ffe7e1091684943a944979",
+  "currentHead": "cbf78662755c4a5c91bea8f5984499dee0b93d49",
   "configVersion": "quality-native-comments-v1",
   "heads": {
     "7ee8f52ea57dc57ddbf27e3db6f07572d055ea91": {
@@ -55,6 +55,25 @@
       "checkId": 135803105696,
       "externalId": "splrad-quality:1296724484:379:500311a4ccfed739b9ffe7e1091684943a944979",
       "observedAt": "2026-11-19T18:54:41.804Z"
+    },
+    "cbf78662755c4a5c91bea8f5984499dee0b93d49": {
+      "sourceSetDigest": "c8728b863806ac45f529b25619f612823fb3ee16335b513efe119727fc13604a",
+      "sources": [
+        {
+          "sourceCommentId": "review-comment:4633535903",
+          "sourceCommit": "500311a4ccfed739b9ffe7e1091684943a944979",
+          "sourceUrl": "https://github.com/splrad/steward/pull/379#discussion_r4633535903",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Superfluous trailing arguments\n\nSuperfluous argument passed to <a class=\"Link\" href=\"/splrad/steward/blob/500311a4ccfed739b9ffe7e1091684943a944979/packages/runner/src/release-pipeline.ts#L258-L261\">function assertProductDelivery</a>.\n\n---\n\nTo fix this, remove the superfluous second argument from the <code>assertProductDelivery</code> call in <code>scripts/manual-candidate.mjs</code>.</p>\n<p>Best fix without changing functionality:</p>\n<ul>\n<li>In <code>validateManualCandidate</code>, keep parsing delivery as-is.</li>\n<li>Change <code>assertProductDelivery(delivery, product.name);</code> to <code>assertProductDelivery(delivery);</code>.</li>\n<li>No imports, helper methods, or additional definitions are needed.</li>\n</ul>\n<p>This aligns the call with the function’s expected parameters and eliminates the ignored argument CodeQL reported.",
+          "updatedAt": "2026-11-19T18:53:45Z"
+        }
+      ],
+      "keys": [
+        "1ccaeb33b56ad91b896ed301f95dd85754248e599e0f7f8929f916c8d683a5af"
+      ],
+      "checkId": null,
+      "externalId": "splrad-quality:1296724484:379:cbf78662755c4a5c91bea8f5984499dee0b93d49",
+      "observedAt": "2026-11-19T20:01:39.643Z"
     }
   },
   "entries": {
