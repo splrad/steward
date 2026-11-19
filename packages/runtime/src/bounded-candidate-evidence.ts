@@ -14,17 +14,23 @@ export async function candidateFacts<T extends boolean=false>(g:GitReader,requir
  for(let n=1;n<first.count;n++)parts.push(await file(`generated/${c.id}/session-${n}.json`));
  ensure(parts.every((x,n)=>x.schemaVersion===1&&x.repositoryId===(g.target??TARGET).id&&x.candidateId===c.id&&x.documentKind==='session'&&x.index===n&&x.count===first.count&&x.documentDigest===first.documentDigest&&typeof x.content==='string'&&Buffer.byteLength(x.content)<=256*1024),'CHUNK_BINDING');
  const text=parts.map(x=>x.content).join('');ensure(digest(text)==='sha256:'+first.documentDigest,'SESSION_DIGEST');const session=JSON.parse(text),generated=session.generated;
- if(generated&&g.target?.units)ensure(Array.isArray(generated.units)&&generated.units.length>0&&generated.units.every((u:any)=>
-   g.target!.units!.some(selected=>selected.id===u.id&&selected.path===u.path)),'CANDIDATE_UNIT_NOT_SELECTED');
  if(generated){const gp=c.generatedSnapshotPath;ensure(typeof gp==='string'&&new RegExp(`^generated/${c.id}/[a-f0-9]{64}\\.json$`).test(gp),'GENERATED_PATH');const firstGenerated=await file(gp),chunks=[firstGenerated];ensure(Number.isSafeInteger(firstGenerated.count)&&firstGenerated.count>0&&firstGenerated.count<=128,'GENERATED_COUNT');for(let n=1;n<firstGenerated.count;n++)chunks.push(await file(gp.replace('.json',`-${n}.json`)));ensure(chunks.every((x,n)=>x.schemaVersion===1&&x.repositoryId===(g.target??TARGET).id&&x.candidateId===c.id&&x.documentKind==='generated'&&x.index===n&&x.count===firstGenerated.count&&x.documentDigest===firstGenerated.documentDigest&&typeof x.content==='string'&&Buffer.byteLength(x.content)<=256*1024),'GENERATED_BINDING');const raw=chunks.map(x=>x.content).join('');ensure(digest(raw)==='sha256:'+firstGenerated.documentDigest&&isDeepStrictEqual(JSON.parse(raw),generated),'GENERATED_MISMATCH');}
 
  let ready=!c.pendingWrite&&generated?.baseSha===c.baseSha&&generated.units?.length>0&&!session.pending&&session.identity;
+ if(generated&&g.target?.units){
+   const selected=(session.conflict?.generated??generated).units;
+   ensure(Array.isArray(selected)&&selected.length>0&&selected.every((u:any)=>
+     g.target!.units!.some(unit=>unit.id===u.id&&unit.path===u.path)),'CANDIDATE_UNIT_NOT_SELECTED');
+ }
  if(ready&&g.target?.units){
    const ids=(units:any[])=>units.map(unit=>unit.id).sort();
    const frozen=ids((session.conflict?.generated??generated).units);
    ensure(Array.isArray(session.identity.units)&&new Set(frozen).size===frozen.length&&
      isDeepStrictEqual(frozen,ids(session.identity.units)),'CANDIDATE_FROZEN_UNIT_COVERAGE');
-   if(session.conflict&&!isDeepStrictEqual(frozen,ids(generated.units)))ready=false;
+   if(session.conflict){
+     const locations=(units:any[])=>units.map(({id,path})=>JSON.stringify([id,path])).sort();
+     if(!isDeepStrictEqual(locations(session.conflict.generated.units),locations(generated.units)))ready=false;
+   }
  }
  const manual=session.manualValidation??null;const manualId=manual?manualIdentity(manual,state,session,g.target??TARGET):null;
  if(!allowPending)ensure(manualId?(!c.pendingWrite&&!session.pending):ready,'SESSION_NOT_READY');

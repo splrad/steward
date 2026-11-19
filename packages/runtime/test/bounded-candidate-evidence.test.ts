@@ -26,14 +26,14 @@ async function fixture(){
  return {g,env,registration,producer,artifact,run,pull,event,files,state,document};
 }
 describe('candidate producer evidence and event controls',()=>{
- it('reads a protected conflict across changed unit sets without returning a ready identity',async()=>{
+ it.each(['ui','layerscape'])('reads a protected conflict for %s on a new path without returning a stale identity',async id=>{
    const f=await fixture();
    const chunk=f.files[`generated/${f.state.candidate.id}/session.json`];
    const session=JSON.parse(chunk.content);
-   session.identity.units[0].id='ui';
-   session.conflict={head:f.pull.head.sha,generated:{...session.generated,units:[{id:'ui',path:'ui',version:'2.0.0'}]},paths:['CHANGELOG.md']};
+   session.identity.units[0].id=id;
+   session.conflict={head:f.pull.head.sha,generated:{...session.generated,units:[{id,path:'ui',version:'2.0.0'}]},paths:['CHANGELOG.md']};
    chunk.content=JSON.stringify(session);chunk.documentDigest=digest(chunk.content).slice(7);
-   const g={...f.g,target:{...TARGET,units:[{id:'layerscape',path:'.'},{id:'ui',path:'ui'}]}};
+   const g={...f.g,target:{...TARGET,units:[{id,path:'ui'}]}};
    expect((await candidateFacts(g,false,true)).identity).toBeNull();
    await expect(candidateFacts(g)).rejects.toThrow('SESSION_NOT_READY');
  });
