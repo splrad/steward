@@ -10,7 +10,7 @@ import {tmpdir} from 'node:os';
 import {authorizePull,checkEvent,protectedChanges,requestPath} from '../configuration-authorization.mjs';
 import {dispatchTrial,findEvidence,requestFromRun,rerunValidation,trialInventory} from '../configuration-native.mjs';
 import {inspectRepository,versionsPath,pagesPath} from '../configuration-view.mjs';
-import {applySelection,prepareTarget,trialKey} from '../configuration-selection.mjs';
+import {applySelection,assertChannelWorkflow,prepareTarget,trialKey} from '../configuration-selection.mjs';
 import {optionState,reconcile} from '../repository-configuration.mjs';
 import YAML from 'yaml';
 const A='a'.repeat(40),B='b'.repeat(40),C='c'.repeat(40),actor={id:12,login:'maintainer',type:'User'};
@@ -173,7 +173,7 @@ test('a failed target in the same release unit cannot add its existing asset to 
   const unit={id:'cli',path:'.',notesPath:'notes.md',assets,channels:[{id:'github-release',location:'github',required:true}]};
   const files=new Map([['.github/delivery.json',JSON.stringify({schemaVersion:2,repositoryAuthors:[{id:12,evidence:'fixture'}],units:[unit]})],
     ['release-please-config.json',JSON.stringify({packages:{'.':{'version-file':'VERSION'}}})],['VERSION','1.0.0'],['notes.md','notes'],
-    ['pack.sh','true'],['.github/workflows/steward-release-channels.yml','adopted native adapter'],['.github/release-template.md.mustache','notes'],['.github/workflows/repository-configuration-trial.yml','protected']]);
+    ['pack.sh','true'],['.github/workflows/steward-release-channels.yml',await readFile('templates/release/steward-release-channels.yml','utf8')],['.github/release-template.md.mustache','notes'],['.github/workflows/repository-configuration-trial.yml','protected']]);
   const model=inspectRepository(files),state={values:{signing:true},evidence:{}};
   for(const [index,asset] of assets.entries()){
     const id='s'+(index+1),field=id+'.f'+createHash('sha256').update(asset.name).digest('hex').slice(0,16);
@@ -197,6 +197,13 @@ test('a failed target in the same release unit cannot add its existing asset to 
   assert.deepEqual(saved.channels.find(c=>c.id==='ghcr-assets').artifactIds,['linux']);
   assert.deepEqual(saved.assets.map(a=>a.id).sort(),['linux','windows']);
   assert.ok(warnings.some(m=>m.includes('windows') && m.includes('Expired artifact')));
+});
+test('both submit and verify must have a native receipt for the external target',async()=>{
+  const product=YAML.parse(await readFile('templates/release/steward-release-channels.yml','utf8'));
+  const targets=[{unitId:'layerscape',channelId:'ghcr-assets'}];
+  assert.doesNotThrow(()=>assertChannelWorkflow(product,targets));
+  for(const jobs of [{package:{steps:[{run:'python pack.py'}]}},{...product.jobs,'ghcr-assets-verify':{steps:[]}}])
+    assert.throws(()=>assertChannelWorkflow({...product,jobs},targets),/缺少渠道作业或原生回执/);
 });
 test('reviewed Pages source selects the same unit for maintenance even with legacy online settings',async()=>{
   const workflow=Buffer.from(YAML.stringify({env:{STEWARD_DOCS_SOURCE:'release',STEWARD_DOCS_UNIT:'maps'}}));

@@ -63,6 +63,21 @@ export function prepareTarget(model,target) {
   return {path,recipe:{...recipe,tools},files,bytes};
 }
 
+export function assertChannelWorkflow(workflow,targets) {
+  const dispatch=workflow?.on?.workflow_dispatch, required=['cycle_id','source_sha','execution_sha','controller_sha','targets_json','mode','operation_key','request_key'];
+  must(dispatch && Object.keys(workflow.on).length===1 && required.every(k=>dispatch.inputs?.[k]?.type==='string' && dispatch.inputs[k].required===true)
+    && workflow['run-name']==='Channels ${{ inputs.mode }} ${{ inputs.request_key }}','渠道入口必须声明原生调度输入和运行名');
+  for(const {unitId,channelId} of targets) for(const mode of ['submit','verify']) {
+    const resolve=value=>String(value??'').replace(/\$\{\{\s*(matrix\.unitId|matrix\.channelId|inputs\.mode)\s*\}\}/g,
+      (_,field)=>({'matrix.unitId':unitId,'matrix.channelId':channelId,'inputs.mode':mode})[field]);
+    const name=mode+'/'+channelId+'/'+unitId;
+    const jobs=Object.entries(workflow.jobs??{}).filter(([id,j])=>resolve(j.name??id)===name);
+    const receipt='channel-${{ inputs.request_key }}-'+unitId+'-'+channelId+'-${{ github.run_id }}-${{ github.run_attempt }}';
+    must(jobs.length===1 && jobs[0][1].steps?.some(step=>/^actions\/upload-artifact@[a-f0-9]{40}$/.test(step.uses??'')
+      && resolve(step.with?.name)===receipt && step.with?.path==='report.json'),'缺少渠道作业或原生回执 '+name);
+  }
+}
+
 export async function applySelection(model,operation,plan,context) {
   const changes=new Map(),targets=[],prepared=[],formal=[];
   const requested=plan.targets??[];
@@ -171,15 +186,12 @@ export async function applySelection(model,operation,plan,context) {
   if(changes.has(deliveryPath)) {
     const normalized=parseDeliveryConfig(delivery);
     const adoption=releaseAdoptionPlan(normalized);
-    if(adoption.externalTargets.length && !model.files.has(channelWorkflowPath)) {
-      const source=model.workflows.find(w=>w.path===plan.channelWorkflow);
-      const inputs=source?.document?.on?.workflow_dispatch?.inputs??{};
-      const required=['cycle_id','source_sha','execution_sha','controller_sha','targets_json','mode','operation_key','request_key'];
-      must(source && Object.keys(source.document.on).length===1 && Object.keys(source.document.jobs??{}).length &&
-        required.every(k=>inputs[k]?.type==='string' && inputs[k].required===true) &&
-        source.document['run-name']==='Channels ${{ inputs.mode }} ${{ inputs.request_key }}',
-        '请选择已审阅的本仓渠道工作流，须声明原生渠道调度输入和运行名：'+adoption.externalTargets.map(t=>t.unitId+'/'+t.channelId+' '+t.location).join('、'));
-      changes.set(channelWorkflowPath,model.files.get(source.path));
+    if(adoption.externalTargets.length) {
+      const existing=model.files.has(channelWorkflowPath);
+      const source=model.workflows.find(w=>w.path===(existing?channelWorkflowPath:plan.channelWorkflow));
+      must(source,'请选择已审阅的本仓渠道工作流：'+adoption.externalTargets.map(t=>t.unitId+'/'+t.channelId+' '+t.location).join('、'));
+      assertChannelWorkflow(source.document,adoption.externalTargets);
+      if(!existing) changes.set(channelWorkflowPath,model.files.get(source.path));
     }
     for(const path of adoption.files) must(changes.has(path)||model.files.has(path),'缺少本仓采用文件 '+path);
     if(context.repo) for(const target of adoption.externalTargets) {

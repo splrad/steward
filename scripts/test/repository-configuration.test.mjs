@@ -17,7 +17,9 @@ const reviewedChannel='.github/workflows/map-channel.yml';
 const channelFixture=YAML.stringify({name:'Map distribution','run-name':'Channels ${{ inputs.mode }} ${{ inputs.request_key }}',
   on:{workflow_dispatch:{inputs:Object.fromEntries(['cycle_id','source_sha','execution_sha','controller_sha','targets_json','mode','operation_key','request_key']
     .map(k=>[k,{type:'string',required:true}]))}},
-  jobs:{inspect:{'runs-on':'ubuntu-24.04',steps:[{run:'python maps/data/pack.py'}]}}});
+  jobs:Object.fromEntries(['submit','verify'].map(mode=>[mode,{name:mode+'/ghcr-assets/maps','runs-on':'ubuntu-24.04',
+    if:"inputs.mode == '"+mode+"'",steps:[{run:'python maps/data/channel.py '+mode},{uses:'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9',
+      with:{name:'channel-${{ inputs.request_key }}-maps-ghcr-assets-${{ github.run_id }}-${{ github.run_attempt }}',path:'report.json'}}]}]))});
 const fixtureWorkflow=`name: Pack CLI
 on: workflow_dispatch
 permissions: {contents: read}
