@@ -1,5 +1,5 @@
 name: Pages
-run-name: Pages ${{ inputs.source_mode || vars.STEWARD_DOCS_SOURCE }} ${{ inputs.source_sha || github.sha }} ${{ inputs.input_digest || github.event.release.id || github.run_id }}
+run-name: Pages ${{ vars.STEWARD_DOCS_SOURCE && (inputs.source_mode || vars.STEWARD_DOCS_SOURCE) || 'build-only' }} ${{ inputs.source_sha || github.sha }} ${{ inputs.input_digest || github.event.release.id || github.run_id }}
 on:
   push:
     branches: ['**']
@@ -28,7 +28,7 @@ concurrency:
   cancel-in-progress: false
 env:
   STEWARD_CONTROLLER_SHA: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
-  STEWARD_DOCS_SOURCE: ${{ vars.STEWARD_DOCS_SOURCE }}
+  STEWARD_DOCS_SOURCE: ${{ vars.STEWARD_DOCS_SOURCE || 'default-branch' }}
   STEWARD_DOCS_UNIT: ${{ vars.STEWARD_DOCS_UNIT }}
 jobs:
   select:
@@ -83,30 +83,35 @@ jobs:
         with:
           ref: ${{ needs.select.outputs.source_sha }}
           persist-credentials: false
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
-        env:
-          MISE_SAFE: '1'
-          MISE_NODE_COMPILE: 'false'
-        with:
-          version: 2026.10.24
-          install_args: --locked
-          cache: false
-          env: false
-          persist_github_token: false
-      - name: Build documentation
+      # Adopt this step and its output from the product's reviewed site build.
+      - name: Build site
+        id: site
+        uses: ./.github/actions/build-site
         env:
           DOCS_SOURCE_SHA: ${{ needs.select.outputs.source_sha }}
+      - name: Check site output
+        id: output
+        shell: bash
+        env:
+          SITE_DIRECTORY: ${{ steps.site.outputs.directory }}
         run: |
-          npm ci --prefix docs-site --ignore-scripts --no-audit --no-fund
-          npm run --prefix docs-site build
+          set -euo pipefail
+          [[ -n "$SITE_DIRECTORY" && "$SITE_DIRECTORY" != /* && "$SITE_DIRECTORY" != *$'\n'* && "$SITE_DIRECTORY" != *$'\r'* ]]
+          directory=$(realpath -e -- "$SITE_DIRECTORY")
+          [[ "$directory" == "$GITHUB_WORKSPACE/"* && -d "$directory" ]]
+          find "$directory" -type f -print -quit | grep -q .
+          [[ -z "$(find "$directory" -type l -print -quit)" ]]
+          printf 'directory=%s\n' "$directory" >> "$GITHUB_OUTPUT"
       - name: Upload Pages artifact
         id: artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           name: github-pages-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.select.outputs.input_digest }}
-          path: docs-site/dist
+          path: ${{ steps.output.outputs.directory }}
           retention-days: 1
   deploy:
+    # The deployment source variable is set only after public deployment is approved.
+    if: vars.STEWARD_DOCS_SOURCE == 'default-branch' || vars.STEWARD_DOCS_SOURCE == 'release'
     name: deploy/${{ needs.select.outputs.input_digest }}
     needs: [select, build]
     runs-on: ubuntu-24.04

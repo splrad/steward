@@ -74,6 +74,14 @@ test('native YAML separates source, secret-free build and Pages deployment with 
   assert.equal(d.jobs.deploy.steps.find(s=>s.name==='Deploy Pages').with.artifact_name,'${{ steps.guard.outputs.artifact_name }}');
   assert.doesNotMatch(bytes.toString(),/secrets\.|pull_request_target|workflow_run|deployment_id/);
 });
+test('site build takes its output from the product and public deployment requires a selected source',()=>{
+  const {build,deploy}=workflowDoc.jobs;
+  assert.equal(build.steps.find(step=>step.id==='site').uses,'./.github/actions/build-site');
+  assert.equal(build.steps.find(step=>step.id==='output').env.SITE_DIRECTORY,'${{ steps.site.outputs.directory }}');
+  assert.equal(build.steps.find(step=>step.id==='artifact').with.path,'${{ steps.output.outputs.directory }}');
+  assert.equal(deploy.if,"vars.STEWARD_DOCS_SOURCE == 'default-branch' || vars.STEWARD_DOCS_SOURCE == 'release'");
+  assert.match(workflowDoc['run-name'],/'build-only'/);
+});
 test('rejects drifted controller pins, missing build dependency and concurrent cancellation',()=>{
   for(const mutate of [d=>d.jobs.deploy.steps[0].with.ref=N,d=>d.jobs.deploy.needs=['select'],d=>d.concurrency['cancel-in-progress']=true]){
     const d=structuredClone(workflowDoc);mutate(d);assert.throws(()=>pagesDefinition(Buffer.from(YAML.stringify(d))),/PAGES_/);

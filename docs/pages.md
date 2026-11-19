@@ -1,8 +1,10 @@
 # 产品 Pages
 
-`templates/release/pages.yml` 在产品接入时生成到 `.github/workflows/pages.yml`，随后由产品维护，Action 引用由该仓 Dependabot 更新。周期 Copier 不覆盖这个文件。LayerScape 使用已有 `docs-site` 构建目录，正文来自产品 Markdown。
+首次接入由产品在配置 PR 中选择仓内已有站点构建、产物目录及内容来源。已有 `.github/workflows/pages.yml` 由产品维护，Copier 周期更新排除此文件。新接入可采用 `templates/release/pages.yml` 的三个原生 job。种子默认仅构建默认分支，仅在仓库变量 `STEWARD_DOCS_SOURCE` 明确选定部署来源时才进入部署 job。仅在产品选用构建并提供可复核入口后才交付该工作流。
 
-仓库变量 `STEWARD_DOCS_SOURCE` 采用 `default-branch` 或 `release`；为空时停止选源和维护。LayerScape 本期采用 `default-branch`。Release 模式另读 `STEWARD_DOCS_UNIT`，核对该单位的正式 Release、tag、源码、manifest、最终资产字节及原生证明。控制器完整 SHA 从该源码中的 Pages YAML 读取；中央协调器升级不会改变已发布源码使用的控制器。实施交付时必须将种子和产品 YAML 的施工 pin 一同绑定到已验证的中央提交。
+种子的 build job 检出准确的产品提交。可在该提交提供本地 composite action `.github/actions/build-site/action.yml`，由它调用仓内构建并以 `directory` 输出站点的相对目录（目录内须有文件，并采用实际文件而非符号链接）。也可在产品工作流直接采用已有构建步骤并将输出接到上传步骤。运行环境和依赖锁由产品选择。配置 PR 以这些原生步骤和输出为据。LayerScape 现用 Astro、产品 Markdown 和 `docs-site/dist`。
+
+仅构建时，`STEWARD_DOCS_SOURCE` 留空以停用中央部署维护；可在产品工作流选择构建来源。获准公开部署后，按获准来源将该变量设为 `default-branch` 或 `release`。release 模式另读 `STEWARD_DOCS_UNIT`，核对该单位的正式 Release、tag、源码、manifest、最终资产字节及原生证明。接入时采用已验证的中央提交。LayerScape 的 Renovate 分组更新工作流顶层控制器 SHA、各中央 checkout 和可复用工作流；Dependabot 负责第三方 Action。冻结读取始终按对应产品提交解析其完整 pin。
 
 `select` 只读核源；`build` checkout 准确源码，按产品锁安装并构建站点，没有部署权限。`deploy` 通过原生 needs 接收选源结果与 artifact ID，只执行固定中央控制器，使用 `github-pages` Environment、Pages/OIDC 写权限及必要读取权限。部署前后记录来源、输入摘要、artifact ID/digest、Run/attempt、原生 Environment deployment ID 和 job ID。`deploy-pages` 的 `page_url` 输出不包含 deployment ID，部署身份通过原生 deployment/status 的 job URL 回读。
 
