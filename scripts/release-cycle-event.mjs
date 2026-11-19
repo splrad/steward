@@ -3,17 +3,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { NativeEvidenceReader, nativeEvidenceTransport, nativeReleaseApp, nativeRunFact, verifyExecutionSource, channelTargetsDigest } from '../packages/runner/dist/index.js';
-import { exact, product, sha, sha256 } from './bounded-candidate-contract.mjs';
+import { exact, product as legacyProduct, withParticipatingProduct, sha, sha256 } from './bounded-candidate-contract.mjs';
 import { entryGuard } from './bounded-release-entry.mjs';
 import { fetchState } from './release-coordinator.mjs';
 import { releaseCommand } from './release-record.mjs';
 
 const centralId = 1296724484, central = 'splrad/steward';
-const repository = {id:product.id, full_name:product.name, default_branch:'main'};
 const identity = {name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
 const fail = reason => { throw Error(reason); };
 const positive = n => Number.isSafeInteger(n) && n > 0;
-export function validateEvent(event, requestKey) {
+export function validateEvent(event, requestKey, product=legacyProduct) {
   const {repositoryId,kind} = event;
   if (!['push','run','publication'].includes(kind) || repositoryId !== (kind === 'publication' ? centralId : product.id)) fail('CYCLE_EVENT_KIND');
   const push = kind === 'push';
@@ -23,7 +22,7 @@ export function validateEvent(event, requestKey) {
 }
 const wait = reason => ({status:'WAIT',reason});
 const only = items => items.length === 1 ? items[0] : fail('CYCLE_EVENT_AMBIGUOUS');
-function probeMatches(cycle,run,botId) {
+function probeMatches(cycle,run,botId,product=legacyProduct) {
   if (run.repositoryId !== product.id || run.headRepositoryId !== product.id || run.actorId !== botId
     || run.event !== 'workflow_dispatch' || run.headBranch !== 'main' || run.workflowId !== 410998651
     || run.path !== '.github/workflows/steward-release-channels.yml' || !sha(run.headSha)) return false;
@@ -43,13 +42,13 @@ function publicationStarts(state,runId,attempt,sha) {
   return state.domainRecords.filter(r=>r.path.startsWith('evidence/publication/') && r.value.startEvidencePath===null
     && r.value.centralRun.id===runId && r.value.centralRun.runAttempt<=attempt && r.value.centralRun.headSha===sha);
 }
-export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invoke,botId,producer}) {
+export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invoke,botId,producer,product=legacyProduct}) {
   const state=await snapshot(), cycles=state.cycles.map(record=>record.value);
   let cycleId=null;
   let probeReceipt=false;
   const execute=async(command,runId=null)=>invoke(command,cycleId,runId,!probeReceipt);
   if (event.kind==='push') {
-    const head=(await get('git/ref/heads/main')).object?.sha;
+    const head=(await get(`git/ref/heads/${encodeURIComponent(product.defaultBranch)}`)).object?.sha;
     if (!sha(head)) fail('CYCLE_EVENT_SOURCE');
     const prior=cycles.find(c=>c.sourceSha===event.sourceSha);
     if (prior) {
@@ -118,7 +117,7 @@ export async function main(env=process.env) {
   if (env.BOUNDED_MODE!=='cycle' || env.BOUNDED_POLICY_SHA!==env.STEWARD_CONTROLLER_SHA) fail('CYCLE_POLICY');
   const config=JSON.parse(await readFile(new URL('../config/bounded-recheck.json',import.meta.url),'utf8'));
   const event=JSON.parse(env.BOUNDED_EVENT_JSON),requestKey=env.BOUNDED_REQUEST_KEY;
-  validateEvent(event,requestKey);
+
   const centralIo=nativeEvidenceTransport(env.STEWARD_CENTRAL_TOKEN),reader=new NativeEvidenceReader(centralIo,central);
   const centralGet=path=>reader.json(path);
   const run=await entryGuard(env,path=>centralGet(path.replace('/repos/'+central,'').replace(/^\//,'')),config);
@@ -128,18 +127,25 @@ export async function main(env=process.env) {
   const root=await mkdtemp(join(tmpdir(),'steward-cycle-'));
   const producer={repositoryId:centralId,runId:run.id,attempt:run.run_attempt,controllerSha:run.head_sha};
   try {
-    const result=await app.forRepository(product.id,async token=>{
-      const io=nativeEvidenceTransport(token),productReader=new NativeEvidenceReader(io,product.name);
-      const refresh=()=>fetchState(root,repository,token);
-      const request=async(cycleId,runId)=>({directory:(await refresh()).directory,writeDirectory:await mkdtemp(join(root,'write-')),
-        remote:'https://github.com/'+product.name+'.git',repository:product.name,repositoryId:product.id,defaultBranch:'main',appBotId:app.appBotId,cycleId,runId,identity});
-      return advanceEvent(event,{snapshot:async()=>(await refresh()).snapshot,get:path=>productReader.json(path),centralGet,botId:app.appBotId,producer,
-        candidate:(expectedSourceSha,expectedStateSha)=>app.forCandidateRepository(product.id,async(writer,candidateReadToken)=>
-          releaseCommand('candidate',await request(null,null),{token:writer,io,centralIo,candidateReadToken,copilotToken:env.STEWARD_COPILOT_TOKEN,
-            controllerSha:run.head_sha,controllerDirectory:process.cwd(),candidateRuntime:{expectedSourceSha,expectedStateSha}})),
-        invoke:async(command,cycleId,runId,allowProbeDispatch)=>releaseCommand(command,await request(cycleId,runId),{token,io,centralIo,allowProbeDispatch,controllerDirectory:process.cwd(),
-          centralInvocation:{runId:run.id,runAttempt:run.run_attempt,controllerSha:run.head_sha,defaultBranch:'main'}})});
-    });
+    const processProduct=async(product)=>{
+      validateEvent(event,requestKey,product);
+      const repository={id:product.id,full_name:product.name,default_branch:product.defaultBranch};
+      return app.forRepository(product.id,async token=>{
+        const io=nativeEvidenceTransport(token),productReader=new NativeEvidenceReader(io,product.name);
+        const refresh=()=>fetchState(root,repository,token);
+        const request=async(cycleId,runId)=>({directory:(await refresh()).directory,writeDirectory:await mkdtemp(join(root,'write-')),
+          remote:'https://github.com/'+product.name+'.git',repository:product.name,repositoryId:product.id,defaultBranch:product.defaultBranch,appBotId:app.appBotId,cycleId,runId,identity});
+        return advanceEvent(event,{product,snapshot:async()=>(await refresh()).snapshot,get:path=>productReader.json(path),centralGet,botId:app.appBotId,producer,
+          candidate:(expectedSourceSha,expectedStateSha)=>app.forCandidateRepository(product.id,async(writer,candidateReadToken)=>
+            releaseCommand('candidate',await request(null,null),{token:writer,io,centralIo,candidateReadToken,copilotToken:env.STEWARD_COPILOT_TOKEN,
+              controllerSha:run.head_sha,controllerDirectory:process.cwd(),candidateRuntime:{expectedSourceSha,expectedStateSha}})),
+          invoke:async(command,cycleId,runId,allowProbeDispatch)=>releaseCommand(command,await request(cycleId,runId),{token,io,centralIo,allowProbeDispatch,controllerDirectory:process.cwd(),
+            centralInvocation:{runId:run.id,runAttempt:run.run_attempt,controllerSha:run.head_sha,defaultBranch:'main'}})});
+      });
+    };
+    const result=event.kind==='push'
+      ?await withParticipatingProduct(app,event.repositoryId,processProduct)
+      :await processProduct(legacyProduct);
     await writeFile('result.json',JSON.stringify({schemaVersion:1,requestKey,producer,event,status:result.status,reason:result.reason??null,
       cycleId:result.cycleId??null,publishInvoked:result.publishInvoked===true})+'\n',{flag:'wx'});
   } finally {await rm(root,{recursive:true,force:true});}

@@ -138,6 +138,7 @@ test('two declared release units on trunk bind independent version files, notes 
   }});
   const recover=()=>withCandidateProduct(app,p.id,async(product)=>{
     f.io.product=product;
+    assert.deepEqual(product.units.map(u=>u.path),['packages/cli','packages/ui']);
     return validateManualCandidate(f.session,f.producer,f.io);
   },transport);
   const record=await recover();

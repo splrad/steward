@@ -99,7 +99,7 @@ export async function coordinateReleaseWake({discover,observe,service,health,mai
 }
 
 /** Repository visibility is not product enrollment. Only proven absent inputs and obligations are inapplicable. */
-export async function releaseParticipation(repository,io) {
+export async function releaseParticipation(repository,io,{includeUnits=false}={}) {
   const read=async suffix=>{
     const r=await io.request('GET',`/repos/${repository.full_name}${suffix?'/'+suffix:''}`);
     if(r.status!==200)throw Error('RELEASE_PARTICIPATION_UNAVAILABLE');
@@ -137,7 +137,7 @@ export async function releaseParticipation(repository,io) {
       ||state.tree.some(x=>!(x.path==='maintenance'&&x.type==='tree'&&x.mode==='040000')
         &&!(x.type==='blob'&&x.mode==='100644'&&/^maintenance\/[1-9][0-9]*\.json$/.test(x.path)));
   }
-  let status='APPLICABLE',absenceFacts=null;
+  let status='APPLICABLE',absenceFacts=null,units;
   if(files.every(x=>x.length===0)&&!obligation) {
     const candidates=await read('git/matching-refs/heads/steward/release-candidate');
     const builds=await read('git/matching-refs/heads/steward/build/');
@@ -159,6 +159,7 @@ export async function releaseParticipation(repository,io) {
     try {
       const delivery=parseDeliveryConfig(contents[0]);assertProductDelivery(delivery,repository.full_name);
       validateReleaseConfiguration(delivery,contents[1],contents[2]);
+      if(includeUnits)units=delivery.units.map(({id,path,notesPath})=>({id,path,notesPath}));
     }catch{throw Error('RELEASE_CONFIGURATION_INVALID');}
   }
   if(absenceFacts) {
@@ -168,7 +169,7 @@ export async function releaseParticipation(repository,io) {
   const after=await readDefaultRef();
   const stateAfter=await read('git/matching-refs/heads/steward/release-state');
   if(after.object?.sha!==ref.object.sha||JSON.stringify(stateAfter)!==JSON.stringify(refs))throw Error('RELEASE_PARTICIPATION_CHANGED');
-  return {status,sourceSha:ref.object.sha};
+  return {status,sourceSha:ref.object.sha,...(units?{units}:{})};
 }
 
 export async function fetchState(root,repository,token,targetRef='steward/release-state',{governanceAppId,fetcher=fetch,includeHistory=targetRef!=='steward/release-state',centralFirstUse=false,readCentralMaintenanceRules}={}) {
