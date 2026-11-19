@@ -1,6 +1,10 @@
 import {expect,it,vi} from 'vitest';
 import {QualityEvent,qualityLocator} from '../src/quality-event.js';
 const sha='a'.repeat(40),id=1296724484,install=123;
+function qualityFile(repositories:Record<string,string>) {
+ const content=Buffer.from(JSON.stringify({schemaVersion:1,repositories}));
+ return {type:'file',path:'config/review/quality-language.json',size:content.length,encoding:'base64',content:content.toString('base64')};
+}
 const repo={id,private:false,owner:{id:302208797}};
 const base={action:'completed',installation:{id:install},repository:repo};
 const run={status:'completed',conclusion:'success',repository:repo,event:'dynamic',path:'dynamic/github-code-quality/codeql',head_branch:'refs/pull/337/head',head_sha:sha};
@@ -11,7 +15,9 @@ it('targets the native dynamic run even when GitHub lists no associated pulls', 
  for(const change of [{conclusion:'failure'},{path:'.github/workflows/codeql.yml'},{head_branch:'main'},{event:'push'}])
    expect(qualityLocator('workflow_run',{...payload,workflow_run:{...run,...change}},install)).toBeUndefined();
  let config=Buffer.from(JSON.stringify({schemaVersion:1,enabled:true,deploymentSha:sha}));
+ const repositories:Record<string,string>={[id]:'splrad/steward'};
  const json=vi.fn(async(_id:number,path:string)=>path.includes('/git/ref/')?{ref:'refs/'+path.split('/git/ref/')[1],object:{type:'commit',sha}}:
+   path.includes('quality-language.json')?qualityFile(repositories):
    path.includes('/contents/')?{type:'file',path:'config/bounded-recheck.json',size:config.length,encoding:'base64',content:config.toString('base64')}:
    {path:'.github/workflows/quality-language-summary.yml',state:'active'});
  const {SqliteDurableStorage}=await import('./bounded-storage.js');
@@ -33,6 +39,14 @@ it('targets the native dynamic run even when GitHub lists no associated pulls', 
  expect(json.mock.calls.filter(([,path])=>path.endsWith('/dispatches'))).toHaveLength(1);
  expect(json).toHaveBeenLastCalledWith(id,'/repos/splrad/steward/actions/workflows/quality-language-summary.yml/dispatches',
    'POST',{ref:'main',inputs:{...target,policy_sha:sha}});
+ const newTarget={...target,repository_id:'23456789'};
+ for(const approved of [false,true]){
+   if(approved)repositories[newTarget.repository_id]='splrad/new-public';
+   const next=new QualityEvent(new SqliteDurableStorage() as any,env as any,()=>({json} as any));
+   await next.register({...record,target:newTarget});
+   expect(json.mock.calls.filter(([,path])=>path.endsWith('/dispatches'))).toHaveLength(approved?2:1);
+ }
+
 });
 it('forwards edits and deletions from the native author on a registered public PR only',()=>{
  const payload={...base,action:'deleted',comment:{user:{id:223894421,type:'Bot'}},
@@ -73,6 +87,7 @@ it.each([['GITHUB_HTTP_422',2],['unconfirmed transport failure',1]] as const)('r
  const json=async(_id:number,path:string,method?:string)=>{
    if(method==='POST'){if(++posts===1)throw Error(message);return {};}
    if(path.includes('/git/ref/'))return {ref:'refs/'+path.split('/git/ref/')[1],object:{type:'commit',sha}};
+   if(path.includes('quality-language.json'))return qualityFile({[id]:'splrad/steward'});
    if(path.includes('/contents/'))return {type:'file',path:'config/bounded-recheck.json',encoding:'base64',size:config.length,content:config.toString('base64')};
    return {path:'.github/workflows/quality-language-summary.yml',state:'active'};
  };
