@@ -128,6 +128,18 @@ test('a conflict relocating the same unit is stale for the new product path',asy
   assert.equal((await candidateEvidence(f.get,{product:target,requireReady:false})).identity,null);
   await assert.rejects(candidateEvidence(f.get,{product:target}),/CANDIDATE_OBSERVATION_NOT_READY/);
 });
+test('unlabel recovery can regenerate an older unit path before any conflict is recorded',async()=>{
+  const f=candidateFixture(),target={...product,units:[{id:'layerscape',path:'packages/app'}]};
+  const hint={repositoryId:target.id,prNumber:192,eventId:7};
+  await assert.rejects(candidateEvidence(f.get,{product:target,requireReady:false}),/CANDIDATE_UNIT_NOT_SELECTED/);
+  const source='e'.repeat(40);
+  f.data[f.prefix+'/git/ref/heads/main'].object.sha=source;
+  const {validateNormalCandidateEvent}=await import('../bounded-candidate-contract.mjs');
+  const recovered=await validateNormalCandidateEvent(hint,source,f.get,target);
+  assert.equal(recovered.identity,null);
+  assert.equal(recovered.selectionChanged,true);
+  await assert.rejects(candidateEvidence(f.get,{product:target}),/CANDIDATE_UNIT_NOT_SELECTED/);
+});
 test('native event binds exact PR and assembled immutable session',async()=>{
   const f=candidateFixture(),v=await validateCandidateEvent({repositoryId:product.id,prNumber:192,eventId:7},f.get);
   assert.equal(v.identity.version,'1.0.0');assert.equal(v.t0,Date.parse('2026-11-16T12:00:00Z'));assert.equal(v.evidence.prNumber,192);

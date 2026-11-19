@@ -48,7 +48,7 @@ export async function main(env=process.env) {
       return nativeReleaseCandidate({directory:state.directory,writeDirectory:join(root,'writes'),remote:state.remote,repository:product.name,
         repositoryId:product.id,defaultBranch:product.defaultBranch,appBotId:app.appBotId,identity:botIdentity},{token,readToken,
         copilotToken:env.STEWARD_COPILOT_TOKEN,controllerSha:env.STEWARD_CONTROLLER_SHA,expectedStateSha:before.evidence.stateCommit,expectedSourceSha:sourceSha,
-        manualCandidateProducer:{repositoryId:centralId,runId:run.id,attempt:run.run_attempt,controllerSha:env.STEWARD_CONTROLLER_SHA,requestKey:env.BOUNDED_REQUEST_KEY}});
+        reselectUnits:before.selectionChanged,manualCandidateProducer:{repositoryId:centralId,runId:run.id,attempt:run.run_attempt,controllerSha:env.STEWARD_CONTROLLER_SHA,requestKey:env.BOUNDED_REQUEST_KEY}});
     }});
     await writeFile('result.json',JSON.stringify(result)+'\n',{flag:'wx'});return result;
   });}finally {await rm(root,{recursive:true,force:true});}

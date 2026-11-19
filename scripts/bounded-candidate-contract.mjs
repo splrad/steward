@@ -61,7 +61,7 @@ export async function candidateEvidence(get,{requireReady=true,product}) {
   for(let i=1;i<first.count;i++)chunks.push(await chunk(path.replace('.json',`-${i}.json`)));
   if(chunks.some(c=>c.repositoryId!==product.id||c.candidateId!==state.candidate.id||c.documentKind!=='session'))throw Error('BOUNDED_SESSION');
   const session={repository:state,...await decodeCandidateDocument(chunks)};
-  let staleConflict=false;
+  let staleConflict=false,selectionChanged=false;
   if(session.generated) {
     if(session.identity && !session.pending && !state.candidate.pendingWrite) {
       if(!matchesFrozenUnits(session,session.conflict?.generated??session.generated))throw Error('CANDIDATE_FROZEN_UNIT_COVERAGE');
@@ -72,7 +72,12 @@ export async function candidateEvidence(get,{requireReady=true,product}) {
     }
     const selectedSnapshot=staleConflict?session.conflict.generated:session.generated;
     if(product.units && (!selectedSnapshot.units.length||selectedSnapshot.units.some(unit=>
-      !product.units.some(selected=>selected.id===unit.id&&selected.path===unit.path))))throw Error('CANDIDATE_UNIT_NOT_SELECTED');
+      !product.units.some(selected=>selected.id===unit.id&&selected.path===unit.path)))) {
+      if(requireReady||!selectedSnapshot.units.length)throw Error('CANDIDATE_UNIT_NOT_SELECTED');
+      const current=await get(`/repos/${product.name}/git/ref/heads/${encodeURIComponent(product.defaultBranch)}`);
+      if(!sha(current.object?.sha)||current.object.sha===selectedSnapshot.baseSha)throw Error('CANDIDATE_UNIT_NOT_SELECTED');
+      selectionChanged=true;
+    }
     const generatedPath=state.candidate.generatedSnapshotPath;
     if(typeof generatedPath!=='string'||!generatedPath.startsWith(`generated/${state.candidate.id}/`)
       ||!/\/[a-f0-9]{64}\.json$/.test(generatedPath)||generatedPath.split('/').length!==3)throw Error('BOUNDED_GENERATED_PATH');
@@ -83,7 +88,7 @@ export async function candidateEvidence(get,{requireReady=true,product}) {
       ||!isDeepStrictEqual(await decodeCandidateDocument(generatedChunks),session.generated))throw Error('BOUNDED_GENERATED_MISMATCH');
   }
   let identity=null;
-  if(staleConflict) {
+  if(staleConflict||selectionChanged) {
     if(requireReady)throw Error('CANDIDATE_OBSERVATION_NOT_READY');
   } else if(requireReady)identity=candidateObservationIdentity(session);
   else if(session.manualValidation)identity=candidateObservationIdentity(session);
@@ -94,7 +99,7 @@ export async function candidateEvidence(get,{requireReady=true,product}) {
   if(session.manualValidation&&(session.manualValidation.prNumber!==pull.number||session.manualValidation.branch!==pull.head.ref))throw Error('MANUAL_OWNER');
   const after=await get(`/repos/${product.name}/git/ref/heads/steward/release-state`);
   if(after.object?.sha!==stateCommit)throw Error('BOUNDED_STATE_MOVED');
-  return {identity,state,session,pull,evidence:{stateCommit,path,documentDigest:first.documentDigest,prNumber:pull.number,head:pull.head.sha}};
+  return {identity,state,session,pull,selectionChanged,evidence:{stateCommit,path,documentDigest:first.documentDigest,prNumber:pull.number,head:pull.head.sha}};
 }
 export async function validateCandidateEvent(hint,get,target=product) {
   return validateIssueEvent(hint,get,true,undefined,target);
