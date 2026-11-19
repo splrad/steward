@@ -343,6 +343,17 @@ test('configuration callers are governance files and product CI choices match na
   }
   assert.equal(selectableProductCI({path,document:{on:['push','pull_request']}}),true);
 });
+test('selects entries covering all PR bases and files and the actual default branch push',()=>{
+  const choice=(push,pull_request={})=>selectableProductCI({path:'.github/workflows/build.yml',document:{on:{push,pull_request}}},'stable/v2');
+  assert.ok(choice({branches:['stable/**']}));
+  assert.ok(choice({branches:['**','!stable/**','stable/v2']}));
+  assert.ok(choice({'branches-ignore':['trunk']},{branches:['**']}));
+  for(const push of [{branches:['trunk']},{branches:['**','!stable/v2']},{tags:['v*']},{'branches-ignore':['stable/**']},{paths:['src/**']}])
+    assert.equal(choice(push),false);
+  for(const pr of [{branches:['trunk']},{paths:['**','!docs/**']},{'paths-ignore':['docs/**']}])
+    assert.equal(choice({},pr),false);
+});
+
 test('form archive defaults resolve the selected static matrix row and include override',()=>{
   const path='.github/workflows/product.yml',doc={jobs:{pack:{'runs-on':'ubuntu-24.04',strategy:{matrix:{
     os:['linux','macos'],include:[{os:'linux',flavor:'small'}]}},steps:[{uses:'actions/checkout@'+'a'.repeat(40),with:{'persist-credentials':false}},{run:'echo ok'},{uses:'actions/upload-artifact@'+'a'.repeat(40),with:{name:'artifact-${{ matrix.os }}',path:'out'}}]}}};

@@ -78,7 +78,7 @@ PR 说明应包含实际问题、变更、影响、验证结果及适用的恢�
 [".github/workflows/frontend.yml", ".github/workflows/server.yml"]
 ```
 
-每条路径指向本仓一个原生工作流。产品维护者在工作流中配置 runner、矩阵、工具锁、工作目录和测试命令。验证工作流应监听 `pull_request` 的 opened、synchronize、reopened，以及默认分支的 push。PR 检出准确的 head SHA，使用 GitHub 托管的隔离 runner、只读权限和 `persist-credentials: false`；运行产品代码的作业不得使用治理、部署、发布或模型凭据。每个声明的工作流均须成功且至少有一个实际运行成功的作业。产品条件可以跳过不适用的作业；运行回执列出各作业的结论。
+每条路径指向本仓一个原生工作流。产品维护者在工作流中配置 runner、矩阵、工具锁、工作目录和测试命令。验证工作流应监听 `pull_request` 的 opened、synchronize、reopened，以及默认分支的 push。PR 入口应覆盖所有目标分支，两个事件均应覆盖所有变更路径。可将平台或目录的适用条件放在作业中，并保留至少一个实际执行的验证作业。PR 检出准确的 head SHA，使用 GitHub 托管的隔离 runner、只读权限和 `persist-credentials: false`；运行产品代码的作业不得使用治理、部署、发布或模型凭据。每个声明的工作流均须成功且至少有一个实际运行成功的作业。产品条件可以跳过不适用的作业；运行回执列出各作业的结论。
 
 中央对照事件仓库、工作流路径、事件类型、head 仓库与提交；PR 还核对编号、base 仓库、引用与提交，以及 head 引用。状态必须来自匹配运行的最新 attempt。GitHub 缺少关联信息、运行未完成、全部作业跳过或某个作业失败时，所需源码证据仍不完整。对于 fork，GitHub 可能省略 PR 关联。产品工作流可在顶层设置以下原生运行名称，供中央核对 PR 编号、base 与 head。此时中央还通过 GitHub 的 WorkflowRun.file 核实运行实际使用的 YAML 路径及源码提交。
 

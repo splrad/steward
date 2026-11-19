@@ -75,7 +75,7 @@ export function configurationForm(model,head,state={}) {
   // Summarize adopted settings as values. Every editable control below has a real operation.
   lines.push(renderConfiguration(model,head).replace(/^- \[x\] /gm,'- ✓ ').replace(/^- \[ \] /gm,'- ○ '),'',
     '### 调整配置','','在本张 PR 勾选入口，编辑字段后保存。准备入口后可试跑，运行完成后选择归档文件和发布渠道。');
-  for(const workflow of model.workflows.filter(selectableProductCI)) {
+  for(const workflow of model.workflows.filter(w=>selectableProductCI(w,model.defaultBranch))) {
     field('ci.'+key(workflow.path),'PR 验证 · `'+display(workflow.path)+'`',model.ci.includes(workflow.path),'check');
   }
   const entries=candidates(model,values);
@@ -259,7 +259,7 @@ export function planFromForm(model,state,operation) {
   if(operation==='select') edits.push(...channels.values());
   if(edits.length) settings.channels=edits;
   const ci=model.workflows.filter(w=>v['ci.'+key(w.path)]).map(w=>w.path);
-  const changed=model.workflows.some(w=>selectableProductCI(w) && Object.hasOwn(v,'ci.'+key(w.path))
+  const changed=model.workflows.some(w=>selectableProductCI(w,model.defaultBranch) && Object.hasOwn(v,'ci.'+key(w.path))
     && Boolean(v['ci.'+key(w.path)])!==model.ci.includes(w.path));
   if(changed)settings.ci=ci;
   if(model.pages && ['default-branch','release'].includes(v['site.source']))

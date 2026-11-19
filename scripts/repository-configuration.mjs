@@ -145,6 +145,7 @@ export async function reconcile({repo,base,run,data,api,write,actions,readToken,
   must(!pr || head===pr.head.sha,'Open configuration branch moved');
   const replay=tip?.author?.id===301115370 && tip.commit.verification?.verified && tip.commit.message.split('\n').includes(receipt(run));
   const view=await load(api,head,{});
+  view.defaultBranch=repo.default_branch;
   view.nativeVariants=state.head===head?state.nativeVariants??[]:[];
   let changes=new Map();
   const originalBody=pr?.body;
@@ -234,6 +235,7 @@ export async function reconcile({repo,base,run,data,api,write,actions,readToken,
   state.head=head;state.last=receipt(run);
   for(const [id,evidence] of Object.entries(state.evidence)) if(evidence.head!==head) delete state.evidence[id];
   const current=await load(api,head,{});
+  current.defaultBranch=repo.default_branch;
   current.nativeVariants=await discover(api,repo,head,base,current);
   state.nativeVariants=current.nativeVariants;
   const body=configurationForm(current,head,state).body;

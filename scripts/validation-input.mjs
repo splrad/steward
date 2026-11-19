@@ -1,4 +1,5 @@
 import YAML from 'yaml';
+import {minimatch} from 'minimatch';
 import {forkRunName} from './product-ci-evidence.mjs';
 import {execFileSync} from 'node:child_process';
 import {readFile,appendFile,writeFile,lstat,realpath} from 'node:fs/promises';
@@ -46,9 +47,32 @@ export function workflowEvent(triggers,type,action) {
   const types=triggers[type]?.types;
   return !types || Array.isArray(types) && types.includes(action);
 }
-export function selectableProductCI(workflow) {
-  return workflow.path!=='.github/workflows/pr-validation-native.yml' && workflowEvent(workflow.document?.on,'push')
-    && ['opened','synchronize','reopened'].every(action=>workflowEvent(workflow.document?.on,'pull_request',action));
+// A required run must be scheduled for every changed path and every PR base.
+function coversAll(patterns) {
+  if(patterns===undefined)return true;
+  if(!Array.isArray(patterns))return false;
+  const all=patterns.findLastIndex(pattern=>pattern==='**' || pattern==='**/*');
+  return all>=0 && !patterns.slice(all+1).some(pattern=>typeof pattern!=='string' || pattern.startsWith('!'));
+}
+function coversBranch(filters,branch) {
+  if(!filters)return true;
+  if(!coversAll(filters.paths) || filters['paths-ignore']?.length)return false;
+  const {branches,'branches-ignore':ignore}=filters;
+  if(!branches && !ignore && (filters.tags || filters['tags-ignore']))return false;
+  if(!branch)return coversAll(branches) && !ignore?.length;
+  const matches=pattern=>minimatch(branch,pattern,{dot:true,nonegate:true,nocomment:true,noext:true,nobrace:true});
+  if(ignore)return Array.isArray(ignore) && !ignore.some(matches);
+  if(!branches)return true;
+  return Array.isArray(branches) && branches.reduce((included,pattern)=>{
+    const negative=pattern.startsWith('!');
+    return matches(negative?pattern.slice(1):pattern)?!negative:included;
+  },false);
+}
+export function selectableProductCI(workflow,defaultBranch) {
+  const triggers=workflow.document?.on;
+  return workflow.path!=='.github/workflows/pr-validation-native.yml' && workflowEvent(triggers,'push') &&
+    coversBranch(triggers?.push,defaultBranch) && coversBranch(triggers?.pull_request) &&
+    ['opened','synchronize','reopened'].every(action=>workflowEvent(triggers,'pull_request',action));
 }
 export async function validationInput(workspace,env=process.env) {
   const event=JSON.parse(await readFile(env.GITHUB_EVENT_PATH,'utf8'));
@@ -86,7 +110,8 @@ export async function validationInput(workspace,env=process.env) {
     const workflow=YAML.parse(await readFile(await regular(workspace,path),'utf8'));
     const triggers=workflow?.on;
     const type=env.GITHUB_EVENT_NAME;
-    check(workflowEvent(triggers,type,event.action),'PRODUCT_CI_TRIGGER '+path);
+    check(selectableProductCI({path,document:workflow},event.repository.default_branch) &&
+      workflowEvent(triggers,type,event.action),'PRODUCT_CI_TRIGGER '+path);
     if(workflow['run-name']===forkRunName)boundNames.push(path);
   }
   return {input,files,productApplicable,workflows,boundNames,dependencyMode:dependency};
