@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import YAML from 'yaml';
 import {createHash} from 'node:crypto';
-import {validateCandidateEvent,sha256,product} from '../bounded-candidate-contract.mjs';
+import {candidateEvidence,validateCandidateEvent,sha256,product} from '../bounded-candidate-contract.mjs';
 import {processNormalCandidateEvent} from '../release-candidate-event.mjs';
 import {entryGuard,resultOutcome,applyCandidateEvent} from '../bounded-release-entry.mjs';
 const head='a'.repeat(40),id=1296724484,root='/repos/splrad/steward';
@@ -85,7 +85,7 @@ function candidateFixture() {
     documentKind:'session',documentDigest:sha256(text),index,count:2,content}));
   const generatedText=JSON.stringify(session.generated),generatedChunk={schemaVersion:1,repositoryId:product.id,candidateId:digest,documentKind:'generated',documentDigest:sha256(generatedText),index:0,count:1,content:generatedText};
   const files={'state.json':state,[path]:chunks[0],[path.replace('.json','-1.json')]:chunks[1],[candidate.generatedSnapshotPath]:generatedChunk};
-  const data={ [prefix]:{id:product.id,full_name:product.name,default_branch:'main'},
+  const data={ [prefix]:{owner:{id:302208797},visibility:"public",private:false,id:product.id,full_name:product.name,default_branch:'main'},
     [`${prefix}/git/ref/heads/steward/release-state`]:{ref:'refs/heads/steward/release-state',object:{type:'commit',sha:commit}},
     [`${prefix}/git/ref/heads/main`]:{object:{sha:head}},
     [`${prefix}/pulls/192`]:{number:192,state:'open',merged:false,labels:[],head:{sha:head,ref:candidate.branch,repo:{id:product.id}},base:{ref:'main',repo:{id:product.id}}},
@@ -211,4 +211,17 @@ test('complete split generated archive is bound to the session',async()=>{
   chunk.count=2;chunk.content=text.slice(0,middle);
   f.files[f.state.candidate.generatedSnapshotPath.replace('.json','-1.json')]={...chunk,index:1,content:text.slice(middle)};
   assert.equal((await validateCandidateEvent({repositoryId:product.id,prNumber:192,eventId:7},f.get)).identity.version,'1.0.0');
+});
+
+test('reviewed registrations and native public repository facts must both match before state reads',async()=>{
+  const target={id:72,name:'splrad/second-product',defaultBranch:'trunk'};
+  const repository={id:72,full_name:target.name,default_branch:'trunk',owner:{id:302208797},private:false,visibility:'public'};
+  for(const change of [{private:true},{visibility:'internal'},{owner:{id:1}},{default_branch:'main'},{full_name:'splrad/unregistered'}]) {
+    let reads=0;
+    await assert.rejects(candidateEvidence(async()=>{reads++;return {...repository,...change};},{product:target}),/BOUNDED_REPOSITORY/);
+    assert.equal(reads,1);
+  }
+  const reads=[];
+  await assert.rejects(candidateEvidence(async path=>{reads.push(path);return reads.length===1?repository:{};},{product:target}),/BOUNDED_STATE_REF/);
+  assert.equal(reads[1],'/repos/splrad/second-product/git/ref/heads/steward/release-state');
 });
