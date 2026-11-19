@@ -123,10 +123,11 @@ test('release local call limit preserves the first batch and stops before a seco
   assert.deepEqual(work.input.batches[1].attempts,[]);assert.equal(Object.values(persisted.cache).filter(e=>e.result).length,1);
 });
 
-test('manual content recovery is confined to one private sample and a single approved request',()=>{
+test('manual acceptance rejects a retired private target and recovery grants',()=>{
   const grant=Object.fromEntries(['candidateId','batchId','previousAttemptSha256','authorizationId','outputContractSha256'].map(k=>[k,'a'.repeat(64)]));
   const recovery={...plan,repository:{id:1448797077,full_name:'splrad/steward-e10-lifecycle-20261107',private:true,default_branch:'main'},releaseRecovery:grant};
   const check=p=>{const raw=JSON.stringify(p);return validatePlan(raw,digest(raw),env);};
-  assert.deepEqual(check(recovery).releaseRecovery,grant);
-  for(const change of [{maxRequests:0},{repository:plan.repository},{repository:{...recovery.repository,private:false}},{releaseRecovery:{...grant,extra:true}},{releaseRecovery:{...grant,batchId:'invalid'}}])assert.throws(()=>check({...recovery,...change}),/RELEASE_RECOVERY_PLAN/);
+  assert.throws(()=>check(recovery),/RELEASE_RECOVERY_RETIRED/);
+  assert.throws(()=>check({...recovery,releaseRecovery:undefined}),/RETIRED_REPOSITORY/);
+  for(const change of [{maxRequests:0},{repository:plan.repository},{repository:{...recovery.repository,private:false}},{releaseRecovery:{...grant,extra:true}},{releaseRecovery:{...grant,batchId:'invalid'}}])assert.throws(()=>check({...recovery,...change}),/RELEASE_RECOVERY_RETIRED/);
 });
