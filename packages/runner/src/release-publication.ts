@@ -1,3 +1,4 @@
+import {githubUnits} from '../../core/src/release-observation.js';
 import { releaseBodyMatches } from './release-body.js';
 import { createHash } from 'node:crypto';
 import { decodeNativePublication, type NativePublication } from '../../core/src/native-evidence.js';
@@ -21,7 +22,7 @@ function centralPublicationSource(run:NativePublication['centralRun']) {
     : run.path === '.github/workflows/release.yml' && ['schedule','workflow_dispatch'].includes(run.event);
 }
 function targets(context:EvidenceContext) {
-  return context.cycle.units.map(unit=>{
+  return githubUnits(context.cycle).map(unit=>{
     check(unit.manifestDigest&&unit.notesDigest&&unit.assets.length,'frozen publication input required');
     return {unitId:unit.id,tag:unit.tag,manifestDigest:unit.manifestDigest,bodyDigest:unit.notesDigest};
   }).sort((a,b)=>a.unitId.localeCompare(b.unitId));
@@ -48,7 +49,7 @@ async function centralAttempt(io:EvidenceTransport,id:number,attempt:number,expe
 }
 async function objects(context:EvidenceContext,io:EvidenceTransport):Promise<NativePublication['objects']> {
   const reader=new NativeEvidenceReader(io,context.repository),result:NativePublication['objects']=[];
-  for(const unit of context.cycle.units) {
+  for(const unit of githubUnits(context.cycle)) {
     let path=unit.releaseId===null?`releases/tags/${encodeURIComponent(unit.tag)}`:`releases/${unit.releaseId}`;
     const proof:NativePublication['objects'][number]={unitId:unit.id,releaseId:null,status:'UNKNOWN',digest:null,sourceUrl:`https://api.github.com${reader.path(path)}`};
     try {

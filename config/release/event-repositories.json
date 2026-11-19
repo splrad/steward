@@ -1,0 +1,21 @@
+[
+  {
+    "id": 1187527897,
+    "name": "splrad/LayerScape",
+    "defaultBranch": "main",
+    "channelWorkflowId": 410998651,
+    "legacyPublicationCallback": true,
+    "externalAdapters": [
+      {
+        "unitId": "layerscape",
+        "channelId": "ghcr-assets",
+        "location": "ghcr.io/splrad/layerscape-assets"
+      },
+      {
+        "unitId": "layerscape",
+        "channelId": "winget",
+        "location": "SPLRAD.LayerScape.Deployer"
+      }
+    ]
+  }
+]

@@ -33,14 +33,14 @@ import { Ajv2020 } from 'ajv/dist/2020.js';
 import schema from '../../../schema/delivery.schema.json' with { type: 'json' };
 
 export interface DeliveryConfig {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   repositoryAuthors: { id: number; evidence: string }[];
   units: DeliveryUnit[];
 }
 export interface DeliveryUnit {
   id: string; displayName?: string; path: string; notesPath: string;
   assets: { id: string; name: string; description?: string; mediaType: string }[];
-  channels: { id: string; required: boolean; location: string }[];
+  channels: { id: string; required: boolean; location: string; artifactIds?: string[]; metadata?: string[] }[];
 }
 const validateDelivery = new Ajv2020({ strict: true }).compile(schema);
 const reservedAssets = new Set(['sbom.spdx.json', 'release-notes.md', 'artifact-manifest.json', 'sha256sums']);
@@ -54,9 +54,32 @@ export function deliveryAssetNames(unit: DeliveryUnit, version: string, packageV
   }
   return names;
 }
+export const releaseMetadataFiles = ['sbom.spdx.json', 'release-notes.md', 'artifact-manifest.json', 'SHA256SUMS'] as const;
+
+/** Resolve the channel's source-controlled selection against the full frozen inventory. */
+export function channelFiles(unit: DeliveryUnit, channelId: string, files: readonly {id: string; path: string}[]): string[] {
+  const channel = unit.channels.find(item => item.id === channelId);
+  if ((!channel && channelId !== 'github-release') || (channel && !channel.required)) return [];
+  const installerName = /\.(?:exe|msi|msix|appx|msixbundle|appxbundle)$/i;
+  let ids = channel?.artifactIds;
+  if (!ids && channelId === 'winget') {
+    const installers = files.filter(file => installerName.test(file.path));
+    if (installers.length !== 1) throw new Error('DELIVERY_WINGET_INSTALLER');
+    ids = [installers[0]!.id];
+  }
+  const artifacts = ids ? ids.map(id => {
+    const file = files.find(item => item.id === id);
+    if (!file) throw new Error('DELIVERY_UNKNOWN_CHANNEL_ARTIFACT');
+    return file.path;
+  }) : files.map(file => file.path);
+  if (channelId === 'winget' && (artifacts.length !== 1 || !installerName.test(artifacts[0]!)))
+    throw new Error('DELIVERY_WINGET_INSTALLER');
+  return [...artifacts, ...(channel?.metadata ?? (channelId === 'winget' ? [] : releaseMetadataFiles))].sort();
+}
+
 /** Finite delivery facts at S. Commands, build recipes and publication policy are not data fields. */
 export function parseDeliveryConfig(input: unknown): DeliveryConfig {
-  if (input && typeof input === 'object' && !Array.isArray(input) && (input as { schemaVersion?: unknown }).schemaVersion === 1) {
+  if (input && typeof input === 'object' && !Array.isArray(input) && [1,2].includes((input as { schemaVersion?: number }).schemaVersion ?? 0)) {
     const authors = (input as { repositoryAuthors?: unknown }).repositoryAuthors;
     if (!Array.isArray(authors) || !authors.length || authors.some(author => author && typeof author === 'object'
       && (typeof author.evidence !== 'string' || !author.evidence.trim()))) throw new Error('AUTHOR_IDENTITY_UNVERIFIED');
@@ -70,6 +93,9 @@ export function parseDeliveryConfig(input: unknown): DeliveryConfig {
   const paths=value.units.map(unit=>unit.path.toLowerCase());
   if(paths.some((path,i)=>paths.some((other,j)=>i!==j&&(path==='.'||other.startsWith(path+'/')))))throw new Error('DELIVERY_NESTED_UNIT_PATH');
   for (const unit of value.units) {
+    // Version 1 implicitly published the entire seal to GitHub. In version 2 omission disables it.
+    if (value.schemaVersion === 2 && !unit.channels.some(channel => channel.id === 'github-release'))
+      unit.channels.push({id:'github-release',required:false,location:'github'});
     assertDeliveryPath(unit.path, { root: true }); assertDeliveryPath(unit.notesPath);
     if ([unit.path, unit.notesPath].some(path => path.split('/').some(part => part.toLowerCase() === '.git')))
       throw new Error('DELIVERY_GIT_PATH');
@@ -77,6 +103,13 @@ export function parseDeliveryConfig(input: unknown): DeliveryConfig {
     for (const asset of unit.assets) {
       const literal = asset.name.replaceAll('${version}', '1.2.3').replaceAll('${packageVersion}', '1.2.3rc1');
       assertDeliveryAssetName(literal);
+    }
+    for (const channel of unit.channels) {
+      if (value.schemaVersion === 2) channel.metadata ??= [];
+      if (channel.artifactIds?.some(id => !unit.assets.some(asset => asset.id === id)))
+        throw new Error('DELIVERY_UNKNOWN_CHANNEL_ARTIFACT');
+      if (channel.id === 'winget' && (channel.artifactIds && channel.artifactIds.length !== 1 || channel.metadata?.length))
+        throw new Error('DELIVERY_WINGET_INSTALLER');
     }
     deliveryAssetNames(unit, '1.2.3', '1.2.3rc1');
   }
