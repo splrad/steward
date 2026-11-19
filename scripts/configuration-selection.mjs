@@ -1,3 +1,4 @@
+import {selectableProductCI} from './validation-input.mjs';
 import {createHash} from 'node:crypto';
 import {posix} from 'node:path';
 import YAML from 'yaml';
@@ -228,7 +229,7 @@ export async function applySelection(model,operation,plan,context) {
     }
   }
   if(plan.ci) {
-    must(Array.isArray(plan.ci) && plan.ci.every(p=>model.workflows.some(w=>w.path===p && JSON.stringify(w.document.on).includes('pull_request'))),'Choose declared PR workflows');
+    must(Array.isArray(plan.ci) && plan.ci.length>0 && plan.ci.every(p=>model.workflows.some(w=>w.path===p && selectableProductCI(w))),'请选择至少一个支持默认分支 push 及 PR opened、synchronize、reopened 的产品工作流');
     changes.set(ciPath,jsonFile(plan.ci));
   }
   if(plan.versions) {

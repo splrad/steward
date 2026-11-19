@@ -1,3 +1,4 @@
+import YAML from 'yaml';
 import {readFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -36,6 +37,27 @@ export async function authorized(api, actor, base, adminOnly=false) {
   return delegates.includes(actor.id);
 }
 
+const workflowPath=/^\.github\/workflows\/[\w.-]+\.ya?ml$/;
+async function referencedWorkflows(api,roots,ref) {
+  const seen=new Set(roots);
+  for(const path of seen) {
+    const bytes=await fileText(api,path,ref);
+    if(!bytes)continue;
+    const jobs=YAML.parse(bytes)?.jobs??{};
+    for(const job of Object.values(jobs)) {
+      if(job?.uses?.startsWith('./') && workflowPath.test(job.uses.slice(2)))seen.add(job.uses.slice(2));
+      for(const step of job?.steps??[]) {
+        if(step.run!=='node scripts/configuration-native-artifact.mjs' ||
+          !['controller','configuration-controller'].includes(step['working-directory']))continue;
+        const producer=JSON.parse(Buffer.from(step.env.PRODUCER,'base64url'));
+        if(!workflowPath.test(producer.workflow))throw Error('Invalid formal product workflow reference');
+        seen.add(producer.workflow);
+      }
+    }
+  }
+  return seen;
+}
+
 export async function protectedChanges(api,files,base,head) {
   const paths=files.flatMap(f=>[f.filename,f.previous_filename].filter(Boolean));
   const ciPath='.github/product-ci.json';
@@ -49,6 +71,13 @@ export async function protectedChanges(api,files,base,head) {
     for(const path of entries) ci.add(path);
   }
   const adopted=paths.includes(requestPath)||Boolean(await fileText(api,requestPath,base));
+  if(paths.some(path=>workflowPath.test(path))) {
+    for(const [ref,bytes] of [[base,old],[head,next]]) {
+      const roots=bytes?JSON.parse(bytes):[];
+      if(adopted)roots.push('.github/workflows/steward-release-publish.yml','.github/workflows/steward-release-channels.yml','.github/workflows/pages.yml');
+      for(const path of await referencedWorkflows(api,roots,ref)) ci.add(path);
+    }
+  }
   return new Set(paths.filter(path=>ci.has(path) || adopted && (configurationPaths.has(path)||path.startsWith('.github/actions/configuration/'))));
 }
 
@@ -111,7 +140,7 @@ export async function authorizePull(api, number, expectedHead, defaultBranch, or
     const actor=(await api.request('GET /user/{account_id}',{account_id:Number(match[2])})).data;
     if(await authorized(api,actor,base,adminOnly)) return true;
   }
-  throw Error('Configuration approval is required for '+expectedHead);
+  throw Object.assign(Error('Configuration approval is required for '+expectedHead),{code:'CONFIGURATION_APPROVAL_REQUIRED'});
 }
 
 export async function checkEvent(api,event) {

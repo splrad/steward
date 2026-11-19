@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {selectWorkflow} from '../configuration-build.mjs';
 import {candidates,planFromForm} from '../configuration-form.mjs';
+import {documentationOnly,requiresProductCI,selectableProductCI} from '../validation-input.mjs';
 import {sourceOptions} from '../pages-maintenance.mjs';
 import {mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
@@ -103,6 +104,40 @@ test('only the recorded candidate can advance the existing manifest without conf
   await assert.rejects(authorizePull(api,2,manual,'trunk'),/Configuration approval is required/);
 });
 
+test('formal workflow references retain both revisions and exclude independent product workflows',async()=>{
+  const publisher='.github/workflows/steward-release-publish.yml',prior='.github/workflows/old.yml',next='.github/workflows/new.yml';
+  const nested='.github/workflows/reusable.yml',other='.github/workflows/unselected.yml';
+  const publish=workflow=>YAML.stringify({jobs:{build:{steps:[{run:'node scripts/configuration-native-artifact.mjs','working-directory':'configuration-controller',
+    env:{PRODUCER:Buffer.from(JSON.stringify({workflow})).toString('base64url')}}]}}});
+  const contents=new Map([[B+'/'+requestPath,'on: push'],[B+'/'+publisher,publish(prior)],[A+'/'+publisher,publish(next)],
+    [A+'/'+next,YAML.stringify({jobs:{build:{uses:'./'+nested}}})]]);
+  const changes=await protectedChanges(fake(contents),[{filename:next,previous_filename:prior},{filename:nested},{filename:other}],B,A);
+  assert.deepEqual(changes,new Set([prior,next,nested]));
+});
+test('re-evaluates a passing required scope when its last authorized review is dismissed',async()=>{
+  const ci='.github/product-ci.json',api=fake(new Map([[B+'/'+ci,'[]'],[A+'/'+ci,'[]']]));
+  const review={state:'APPROVED',commit_id:A,user:actor};
+  const runs=api.rest.actions.listWorkflowRunsForRepo=Symbol();
+  let scopeConclusion='success',rechecked=0;
+  api.paginate=async method=>{
+    if(method===api.rest.pulls.listFiles)return [{filename:ci}];
+    if(method===api.rest.pulls.listReviews)return [review];
+    if(method===runs)return [{id:88,path:'.github/workflows/pr-validation-native.yml',status:'completed',run_attempt:1}];
+    if(method===api.rest.actions.listJobsForWorkflowRunAttempt)return [{id:5,name:'Validation scope',steps:[{name:'Authorize repository configuration',conclusion:scopeConclusion}]}];
+    return [];
+  };
+  const actions={rest:{actions:{reRunJobForWorkflowRun:async({job_id})=>{
+    assert.equal(job_id,5);rechecked++;
+    try {await authorizePull(api,1,A,'trunk');scopeConclusion='success';}
+    catch(error){assert.equal(error.code,'CONFIGURATION_APPROVAL_REQUIRED');scopeConclusion='failure';}
+  }}}};
+  const reconcileReview=()=>reconcile({repo,base:B,api,actions,run:{event:'pull_request_review'},data:{pull:{number:1,head:A}}});
+  await reconcileReview();assert.equal(rechecked,0);
+  review.state='DISMISSED';await reconcileReview();
+  assert.equal(rechecked,1);assert.equal(scopeConclusion,'failure');
+  review.state='APPROVED';await reconcileReview();
+  assert.equal(rechecked,2);assert.equal(scopeConclusion,'success');
+});
 test('retries only the configuration authorization step failure',async()=>{
   const api=fake(new Map()),retry=[];
   api.rest.actions.listWorkflowRunsForRepo=()=>{};
@@ -253,6 +288,20 @@ test('dynamic channel receipts require the selected job, repository, source and 
   archivePath='report.json';expectedUnit='unrelated';assert.equal((await results()).size,0);
   expectedUnit='other';repositoryId=-1;assert.equal((await results()).size,0);
   repositoryId=repo.id;head=B;assert.equal((await results()).size,0);
+});
+test('configuration callers are governance files and product CI choices match native validation events',async()=>{
+  const callers=['.github/workflows/repository-configuration.yml','.github/workflows/repository-configuration-trial.yml'];
+  assert.ok(documentationOnly(['README.md',...callers]));
+  const admin={workflow:'.github/workflows/settings-sync.yml'};
+  assert.equal(requiresProductCI([...callers,admin.workflow],'private-administrator',admin),false);
+  assert.equal(requiresProductCI([...callers,'src/product.py'],'public',undefined),true);
+  const path='.github/workflows/pr-title.yml';
+  for(const on of ['pull_request_target',['push','pull_request_target'],{push:{},pull_request:{types:['opened']}},'pull_request']) {
+    const model=inspectRepository(new Map([[path,YAML.stringify({on,jobs:{}})]]));
+    assert.equal(selectableProductCI(model.workflows[0]),false);
+    await assert.rejects(applySelection(model,'configure',{ci:[path]},{}),/产品工作流/);
+  }
+  assert.equal(selectableProductCI({path,document:{on:['push','pull_request']}}),true);
 });
 test('form archive defaults resolve the selected static matrix row and include override',()=>{
   const path='.github/workflows/product.yml',doc={jobs:{pack:{'runs-on':'ubuntu-24.04',strategy:{matrix:{

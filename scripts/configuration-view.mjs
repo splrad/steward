@@ -73,8 +73,8 @@ export function renderConfiguration(model,head,extra='') {
   body.push('','### 文档站','');
   const output=pages?.jobs?.build?.steps?.find(step=>step.uses?.startsWith('actions/upload-pages-artifact@'))?.with?.path;
   body.push(output?line(!/^\(?false\b/.test(String(pages.jobs.build.if)),'构建文档站 · '+format(output)):locked('构建文档站','待确认原生构建及上传目录'));
-  body.push(pages?.jobs?.deploy?line(!/^\(?false\b/.test(String(pages.jobs.deploy.if)),'GitHub Pages 公开部署（另需线上前提）'):locked('GitHub Pages 公开部署','缺少部署作业'));
-  if(pages) body.push('站点来源 · '+format(pages.env?.STEWARD_DOCS_SOURCE??'待配置'));
+  body.push(pages?.jobs?.deploy?line(!/^\(?false\b/.test(String(pages.jobs.deploy.if)),'仓内允许 GitHub Pages 公开部署（执行时另核对 Pages 和运维授权来源）'):locked('GitHub Pages 公开部署','缺少部署作业'));
+  if(pages) body.push('站点来源 · '+format(pages.env?.STEWARD_DOCS_SOURCE??'沿用仓库运维变量'));
   body.push('','### 原生入口','',...workflows.map(w=>'- '+format(w.path)+' · '+w.jobs.map(format).join('、')+(ci.includes(w.path)?' · 已选 PR 验证':'')));
   if(!workflows.length) body.push('待配置仓内工作流或受审打包脚本。');
   body.push('','配置变更见 **Files changed**，合并后生效。','', '当前提交 '+format(head)+'。');

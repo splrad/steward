@@ -99,7 +99,16 @@ export async function reconcile({repo,base,run,data,api,write,actions,readToken,
   sessions={read:readSession,write:writeSession},discover=dynamicBuildInputs,find=findEvidence,dispatch=dispatchTrial,inventory=trialInventory}) {
   if(run.event==='pull_request_review') {
     const pr=(await api.rest.pulls.get({...api.target,pull_number:data.pull.number})).data;
-    if(pr.head.sha===data.pull.head && await authorizePull(api,pr.number,pr.head.sha,repo.default_branch)) await rerunValidation(api,actions,pr);
+    if(pr.state!=='open' || pr.head.sha!==data.pull.head)return;
+    let granted;
+    try {
+      granted=await authorizePull(api,pr.number,pr.head.sha,repo.default_branch);
+      if(!granted)return;
+    } catch(error) {
+      if(error.code!=='CONFIGURATION_APPROVAL_REQUIRED')throw error;
+      granted=false;
+    }
+    await rerunValidation(api,actions,pr,granted);
     return;
   }
   let pr=await openPull(api,repo);

@@ -1,3 +1,4 @@
+import {selectableProductCI} from './validation-input.mjs';
 import {createHash} from 'node:crypto';
 import {posix} from 'node:path';
 import {matrixValue,staticMatrixRows} from './configuration-build.mjs';
@@ -68,7 +69,7 @@ export function configurationForm(model,head,state={}) {
   // Summarize adopted settings as values. Every editable control below has a real operation.
   lines.push(renderConfiguration(model,head).replace(/^- \[x\] /gm,'- ✓ ').replace(/^- \[ \] /gm,'- ○ '),'',
     '### 调整配置','','在本张 PR 勾选入口，编辑字段后保存。准备入口后可试跑，运行完成后选择归档文件和发布渠道。');
-  for(const workflow of model.workflows.filter(w=>JSON.stringify(w.document?.on??{}).includes('pull_request'))) {
+  for(const workflow of model.workflows.filter(selectableProductCI)) {
     field('ci.'+key(workflow.path),'PR 验证 · `'+display(workflow.path)+'`',model.ci.includes(workflow.path),'check');
   }
   const entries=candidates(model,values);
@@ -147,7 +148,8 @@ export function configurationForm(model,head,state={}) {
   if(model.pages) {
     const build=model.pages.jobs?.build, deploy=model.pages.jobs?.deploy;
     if(build) field('site.build','构建文档站',!/^\(?false\b/.test(String(build.if)),'check');
-    if(deploy) field('site.deploy','公开部署站点',!/^\(?false\b/.test(String(deploy.if)),'check');
+    if(deploy) field('site.deploy','允许公开部署（须启用 Pages，运维批准的来源模式须一致，release 模式还须匹配同一非空单元）',!/^\(?false\b/.test(String(deploy.if)),'check');
+    lines.push('仅构建可直接使用下方来源。公开部署条件未满足时，已启用的构建仍可运行。');
     field('site.source','站点来源（default-branch 或 release）',model.pages.env?.STEWARD_DOCS_SOURCE??'');
     field('site.unit','正式 Release 来源单元',model.pages.env?.STEWARD_DOCS_UNIT??'');
   }
@@ -196,9 +198,9 @@ export function planFromForm(model,state,operation) {
     const item={unit,target};
     if(entry.workflow) Object.assign(item,{workflow:entry.workflow,job:entry.job,matrix:entry.matrix,...(v[id+'.ref']?{nativeRef:v[id+'.ref']}:{}),...(entry.nativeJobName?{nativeJobName:entry.nativeJobName,uploadStep:entry.uploadStep}:{}),archive:v[id+'.archive']});
     else for(const k of ['entry','runner','shell','directory','prepare','command','output']) item[k]=v[id+'.'+k];
-    if(evidence) {
+    if(evidence && operation==='select') {
       if(item.nativeRef && evidence.binding?.observedRef && item.nativeRef!==evidence.binding.observedRef) {
-        if(operation==='select')throw Error('来源已变更，请重新核验原生运行。');
+        throw Error('来源已变更，请重新核验原生运行。');
       } else Object.assign(item,evidence.binding);
       item.files=[];
       for(const f of evidence.files) {
@@ -251,7 +253,9 @@ export function planFromForm(model,state,operation) {
   if(operation==='select') edits.push(...channels.values());
   if(edits.length) settings.channels=edits;
   const ci=model.workflows.filter(w=>v['ci.'+key(w.path)]).map(w=>w.path);
-  if(JSON.stringify(ci)!==JSON.stringify(model.ci)) settings.ci=ci;
+  const changed=model.workflows.some(w=>selectableProductCI(w) && Object.hasOwn(v,'ci.'+key(w.path))
+    && Boolean(v['ci.'+key(w.path)])!==model.ci.includes(w.path));
+  if(changed)settings.ci=ci;
   if(model.pages && ['default-branch','release'].includes(v['site.source']))
     settings.site={build:v['site.build'],deploy:v['site.deploy'],source:v['site.source'],unit:v['site.unit']};
   return settings;

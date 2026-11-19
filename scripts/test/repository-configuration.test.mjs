@@ -56,6 +56,7 @@ for(const complex of [false,true]) test('same configuration PR binds two entries
   const productWorkflow='.github/workflows/tool-archive.yml';
   if(complex) {
     const doc=YAML.parse(await readFile(join(product,productWorkflow),'utf8')),job=doc.jobs.assemble;
+    doc.on={push:{},workflow_dispatch:{}};
     doc.jobs.targets={'runs-on':'ubuntu-24.04',outputs:{matrix:'${{ steps.emit.outputs.matrix }}'},steps:[{id:'emit',run:'echo \'matrix={"os":["linux"]}\' >> "$GITHUB_OUTPUT"'}]};
     Object.assign(job,{name:'route-${{ matrix.os }}',needs:'targets',strategy:{matrix:'${{ fromJSON(needs.targets.outputs.matrix) }}'},
       container:{image:'python:3.12'},services:{db:{image:'postgres:16'}}});
@@ -118,11 +119,11 @@ for(const complex of [false,true]) test('same configuration PR binds two entries
       return [{id:901,name:'route-linux',conclusion:'success',steps:[{name:'Archive route',conclusion:'success',started_at:archivedAt,completed_at:archivedAt}]}];
     }};
   function artifact(run){return {id:882,name:'route-linux',created_at:archivedAt,workflow_run:{id:run.id,repository_id:repo.id,head_repository_id:repo.id,head_sha:run.head_sha}};}
-  function productRun(source){
+  function productRun(source,branch=repo.default_branch){
     execFileSync('python',['build.py'],{cwd:join(product,'tools/route')});
     execFileSync('python',['-c',"import sys,pathlib,zipfile; p=pathlib.Path(sys.argv[1]); z=zipfile.ZipFile(sys.argv[2],'w'); [z.write(f,f.relative_to(p)) for f in p.rglob('*') if f.is_file()]; z.close()",join(product,'tools/route/out'),nativeArchive]);
     const id=300+nativeRuns.size;
-    nativeRuns.set(id,{id,run_attempt:1,repository:repo,head_repository:repo,head_sha:source,head_branch:repo.default_branch,event:'push',path:productWorkflow,status:'completed',conclusion:'success'});
+    nativeRuns.set(id,{id,run_attempt:1,repository:repo,head_repository:repo,head_sha:source,head_branch:branch,event:'push',path:productWorkflow,status:'completed',conclusion:'success'});
   }
   async function archive(api,token,repo,run,name,request,stage){
     assert.equal(name,'route-linux');
@@ -165,7 +166,7 @@ for(const complex of [false,true]) test('same configuration PR binds two entries
     's1.prepare':'','s1.command':'python pack.py','s1.output':'out','author.id':'12','author.evidence':'Confirmed fixture maintainer','signing':true,'operation.configure':true});
   const preparedHead=ref;
   assert.match(git('diff','--name-only',base,ref),/\.github\/actions\/configuration\/maps\/hosted\/run.mjs/);
-  if(complex)productRun(preparedHead);
+  if(complex)productRun(preparedHead,pr.head.ref);
   await refresh();assert.equal(ref,preparedHead);
   await edit({'operation.trial':true});assert.equal(evidence.size,complex?1:2);
   await run('workflow_run',{trial:{id:81,attempt:1}});

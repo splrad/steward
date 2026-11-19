@@ -1,6 +1,7 @@
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {mkdtemp,readFile,rm} from 'node:fs/promises';
+import {setTimeout as delay} from 'node:timers/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Octokit} from '@octokit/rest';
@@ -299,13 +300,21 @@ export async function dispatchTrial(api,actions,repo,base,head,target,recipe) {
   await actions.rest.actions.createWorkflowDispatch({...api.target,workflow_id:trialPath.split('/').at(-1),ref:repo.default_branch,
     inputs:{head,unit:target.unit,target:target.target,key,runner:recipe.runner,output:recipe.output,tools:JSON.stringify(recipe.tools)}});
 }
-export async function rerunValidation(api,actions,pr) {
+export async function rerunValidation(api,actions,pr,granted=true,wait=delay) {
   const runs=await api.paginate(api.rest.actions.listWorkflowRunsForRepo,{...api.target,head_sha:pr.head.sha,event:'pull_request',per_page:100});
-  for(const run of runs.filter(r=>r.path.endsWith('/pr-validation-native.yml') && r.status==='completed' && r.conclusion==='failure')) {
+  for(let run of runs.filter(r=>r.path.endsWith('/pr-validation-native.yml'))) {
+    if(run.pull_requests?.length && !run.pull_requests.some(p=>p.number===pr.number))continue;
+    // A running scope may have observed the preceding approval. GitHub permits job reruns after completion.
+    while(run.status!=='completed') {
+      await wait(10000);
+      const current=(await api.rest.pulls.get({...api.target,pull_number:pr.number})).data;
+      if(current.state!=='open' || current.head.sha!==pr.head.sha)return;
+      run=(await api.rest.actions.getWorkflowRun({...api.target,run_id:run.id})).data;
+    }
     const jobs=await api.paginate(api.rest.actions.listJobsForWorkflowRunAttempt,{...api.target,run_id:run.id,attempt_number:run.run_attempt,per_page:100});
-    const failed=jobs.filter(job=>job.name==='Validation scope' && job.conclusion==='failure'
-      && job.steps?.some(step=>step.name==='Authorize repository configuration' && step.conclusion==='failure'));
-    for(const job of failed) await actions.rest.actions.reRunJobForWorkflowRun({...api.target,job_id:job.id});
+    const previous=granted?'failure':'success';
+    const scope=jobs.find(job=>job.name==='Validation scope' && job.steps?.some(step=>step.name==='Authorize repository configuration' && step.conclusion===previous));
+    if(scope)await actions.rest.actions.reRunJobForWorkflowRun({...api.target,job_id:scope.id});
   }
 }
 
