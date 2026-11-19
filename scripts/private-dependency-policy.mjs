@@ -12,10 +12,10 @@ export async function loadPolicy(){
     item.lockException.manifestPath==='safe-settings/upstream-lock-exception.json'
     &&item.lockException.patchPath==='safe-settings/upstream-package-lock.patch'
     &&/^[a-f0-9]{64}$/.test(item.lockException.manifestSha256),'LOCK_EXCEPTION_POLICY');
-  assert(Array.isArray(policy.lifecycleSamples)&&policy.lifecycleSamples.length===1
-    &&Number.isSafeInteger(policy.lifecycleSamples[0].repositoryId)&&policy.lifecycleSamples[0].repositoryId>0
-    &&/^splrad\/[\w.-]+$/.test(policy.lifecycleSamples[0].repository)
-    &&!policy.administrators.some(item=>item.repositoryId===policy.lifecycleSamples[0].repositoryId),'LIFECYCLE_POLICY');
+  assert(Array.isArray(policy.lifecycleSamples)&&policy.lifecycleSamples.length<=1
+    &&policy.lifecycleSamples.every(sample=>Number.isSafeInteger(sample.repositoryId)&&sample.repositoryId>0
+    &&/^splrad\/[\w.-]+$/.test(sample.repository)
+    &&!policy.administrators.some(item=>item.repositoryId===sample.repositoryId)),'LIFECYCLE_POLICY');
   return policy;
 }
 export function dependencyMode(event,policy,registration){

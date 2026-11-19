@@ -175,8 +175,8 @@ test('existing Renovate regex manager extracts the scanner stable version and di
  const config=JSON.parse(await readFile(new URL('../../.github/renovate.json',import.meta.url),'utf8'));
  const manager=config.customManagers.find(m=>m.depNameTemplate==='ghcr.io/google/osv-scanner-action');assert.equal(manager.datasourceTemplate,'docker');
  const text=await readFile(new URL('../../config/private-dependency-security.json',import.meta.url),'utf8');
- const match=new RegExp(manager.matchStrings[0]).exec(text);assert.equal(match.groups.currentValue,'v2.7.0');assert.match(match.groups.currentDigest,/^sha256:[a-f0-9]{64}$/);
- assert.equal(new RegExp(manager.matchStrings[0]).exec(text.replace('v2.7.0','latest')),null);
+ const match=new RegExp(manager.matchStrings[0]).exec(text);assert.match(match.groups.currentValue,/^v[0-9]+\.[0-9]+\.[0-9]+$/);assert.equal(JSON.parse(text).osvImage,`ghcr.io/google/osv-scanner-action:${match.groups.currentValue}@${match.groups.currentDigest}`);assert.match(match.groups.currentDigest,/^sha256:[a-f0-9]{64}$/);
+ assert.equal(new RegExp(manager.matchStrings[0]).exec(text.replace(match.groups.currentValue,'latest')),null);
 });
 
 test('official reporter null-results means no new findings only after complete scans and reporter mode',()=>{
