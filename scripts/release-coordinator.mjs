@@ -42,7 +42,7 @@ export async function serviceReleaseWake(request,refresh,invoke,clock=Date.now) 
       const publish=await invoke('publish',request);results.push(publish);
       if(publish.publishInvoked===true)return publish;
     }
-    await refresh();results.push(await invoke('dispatch-channel',request));
+    if(registered.requiredChannels?.length!==0) {await refresh();results.push(await invoke('dispatch-channel',request));}
     await refresh();results.push(await invoke('observe-channel',request));
     snapshot=await refresh();
     const cycle=snapshot.cycles.find(value=>value.value.id===registered.id)?.value;

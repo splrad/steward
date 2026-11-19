@@ -1,3 +1,4 @@
+import { channelFiles } from '../../core/src/delivery-config.js';
 import { bindPipelineRun, parsePipelineRecord, pipelineSource, type BuildPipelineRecord } from './release-pipeline-record.js';
 import { sealProductArtifacts, validateProductManifest } from './release-artifacts.js';
 import { isDeepStrictEqual } from 'node:util';
@@ -5,7 +6,7 @@ import { readFile, writeFile, appendFile, realpath } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { pipelineRecoverCycleFinal, pipelineIdentity, pipelineChannelIdentity, pipelineChannelDownload, pipelineProducers, pipelineDownloadProducers, pipelineCollect, pipelineInspect, pipelineNotes, pipelinePublish, pipelineVerifyPublished, pipelineDownloadPhase } from './release-pipeline.js';
+import { assertRegisteredAdapters, pipelineRecoverCycleFinal, pipelineIdentity, pipelineChannelIdentity, pipelineChannelDownload, pipelineProducers, pipelineDownloadProducers, pipelineCollect, pipelineInspect, pipelineNotes, pipelinePublish, pipelineVerifyPublished, pipelineDownloadPhase } from './release-pipeline.js';
 import { generateReleaseSbom } from './release-sbom.js';
 import { assertReleaseJobResults, productBusinessResults, channelBusinessResults, channelReadyTargets, channelPreparationResults, type ChannelProbe } from './release-run.js';
 import { nativePages, findFrozenFinal } from './release-pipeline.js';
@@ -91,17 +92,21 @@ export async function nativeReleaseCli(argv: readonly string[]) {
       '--repository-id',process.env.GITHUB_REPOSITORY_ID??'','--output',statePath],{windowsHide:true,maxBuffer:1024*1024});
     const stage=command==='release-pipeline channel-source'?required('stage'):'admit';
     if(!['source','admit'].includes(stage))throw new Error('NATIVE_CLI: channel stage');
-    const selection=await pipelineChannelIdentity(await json(required('inputs')),await json(statePath),process.env,undefined,undefined,stage as 'source'|'admit');
+    const state=await json(statePath);
+    const selection=await pipelineChannelIdentity(await json(required('inputs')),state,process.env,undefined,undefined,stage as 'source'|'admit');
     if(selection.status!=='ADMITTED'&&selection.status!=='OBSERVE'&&selection.status!=='SOURCE') {
       if(selection.status==='REJECTED'&&selection.reason==='SOURCE_REF_MOVED')process.stdout.write('STEWARD_SOURCE_REJECTED '+JSON.stringify(selection)+'\n');
       await writeFile(required('output'),JSON.stringify(selection)+'\n',{flag:'wx'});process.exitCode=['UNKNOWN','NOT_BOUND'].includes(selection.status)?75:1;return;
     }
+    assertRegisteredAdapters(selection.context.repositoryId,selection.context.repository,selection.delivery);
     const {context,targets,run}=selection;let readyTargets=targets;
     let result:unknown=selection;
     if(command==='release-pipeline channel-download') {
       const target=targets.find(value=>value.unitId===required('unit')&&value.channelId===required('channel'));
       if(selection.status!=='ADMITTED'||!target)throw new Error('NATIVE_CLI: channel business admission');
-      result=await pipelineChannelDownload(context,target,required('directory'));
+      const unit=selection.delivery.units.find(unit=>unit.id===target.unitId)!;
+      const manifest=await pipelineChannelDownload(context,target,required('directory'),undefined,undefined,{unit,controllerDirectory,history:state.domainRecords});
+      result={...manifest,channelFiles:channelFiles(unit,target.channelId,manifest.artifacts)};
     } else if(command==='release-pipeline channel-probe') {
       if(selection.status!=='OBSERVE')throw new Error('NATIVE_CLI: read-only probe mode');
       const items=await json(required('reads'));

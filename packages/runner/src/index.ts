@@ -2,7 +2,7 @@
 export { selectReleaseContributors } from '../../core/src/release-candidate.js';
 export { manualCandidateFacts, manualCandidatePreview, manualCandidateBody, validateManualCandidateRecord } from '../../core/src/manual-candidate.js';
 export { parseDeliveryConfig, deliveryAssetNames, assertDeliveryPath } from '../../core/src/delivery-config.js';
-export { assertProductDelivery } from './release-pipeline.js';
+export { assertProductDelivery, assertRegisteredAdapters } from './release-pipeline.js';
 export { parsePipelineRecord, pipelineSource } from './release-pipeline-record.js';
 export { pipelineIdentity, pipelineNotes, pipelineInspect, pipelineRecoverCycleFinal, mergedBuildCycle, findFrozenFinal, pipelineDownloadPhase, pipelineFrozenManifest, pipelinePublish, pipelineVerifyPublished, pipelinePreparePublication, readCycleDelivery, prepareNormalizedDelivery } from './release-pipeline.js';
 export { inspectProductArtifacts, sealProductArtifacts, validateProductManifest } from './release-artifacts.js';

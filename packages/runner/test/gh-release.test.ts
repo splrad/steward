@@ -99,3 +99,15 @@ it('recovers only an exact owned starter after the original upload failed', asyn
   original.bytes = Buffer.alloc(0); original.state = 'starter'; f.calls.length = 0;
   await f.adapter.publish(f.target); expect(writes(f).filter(args => args.includes('DELETE'))).toHaveLength(1);
 });
+
+it('publishes only the selected GitHub files from a fully sealed multi-channel build', async () => {
+  const f = await fixture();
+  f.target.delivery = {id:'sample',path:'.',notesPath:'notes.md',
+    assets:f.target.manifest.artifacts.map(a=>({id:a.id,name:a.path,mediaType:a.mediaType})),
+    channels:[{id:'github-release',required:true,location:'github',artifactIds:['dll'],metadata:[]},
+      {id:'ghcr-assets',required:true,location:'ghcr.io/fixture/sample',artifactIds:['fonts'],metadata:['SHA256SUMS']},
+      {id:'winget',required:true,location:'Fixture.App',artifactIds:['app']}]};
+  expect((await f.adapter.publish(f.target)).mode).toBe('verified');
+  expect([...f.remote.keys()]).toEqual(['dll.zip']);
+  expect(f.target.manifest.artifacts).toHaveLength(3);
+});

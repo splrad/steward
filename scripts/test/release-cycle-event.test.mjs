@@ -97,3 +97,27 @@ test('retains each native attempt receipt even if the first upload acknowledgeme
   assert.equal(upload.with.name,'release-cycle-${{ inputs.request_key }}-${{ github.run_attempt }}');
   assert.equal(upload.with.overwrite,undefined);
 });
+
+test('a GitHub-only publication checks its receipt and has no external work even while evidence is pending', async()=>{
+  const run={id:52,run_attempt:1,created_at:'2026-11-19T01:00:00Z',updated_at:'2026-11-19T01:01:00Z',status:'completed',conclusion:'success',
+    repository:{id:1296724484},head_repository:{id:1296724484},actor:{id:301115370},head_branch:'main',head_sha:source,
+    event:'workflow_dispatch',path:'.github/workflows/release-cycle-event.yml'};
+  const archive={path:'evidence/publication/test.json',value:{startEvidencePath:null,centralRun:{id:52,runAttempt:1,headSha:source},cycleId:'only-github'}};
+  const state={cycles:[{value:{id:'only-github',requiredChannels:[]}}],domainRecords:[archive]},calls=[];
+  const result=await advanceEvent({kind:'publication',repositoryId:1296724484,runId:52,attempt:1},{
+    snapshot:async()=>state,centralGet:async()=>run,botId:301115370,
+    invoke:async command=>{calls.push(command);return command==='reconcile-publication'?{status:'OBSERVED'}:{status:'WAIT'};}
+  });
+  assert.equal(result.status,'WAIT');
+  assert.deepEqual(calls,['reconcile-publication','observe-channel']);
+});
+test('a registered fixture repository uses its own default branch while the production pilot rejects it', async()=>{
+  const registry=[{id:41,name:'example/tools',defaultBranch:'trunk',channelWorkflowId:42}];
+  const event={kind:'push',repositoryId:41,sourceSha:source}, key=sha256([41,'push',source]);
+  assert.throws(()=>validateEvent(event,key),/CYCLE_EVENT_KIND/);
+  validateEvent(event,key,registry);
+  const paths=[];
+  const result=await advanceEvent(event,{registry,snapshot:async()=>({cycles:[]}),
+    get:async path=>{paths.push(path);return {object:{sha:source}};},candidate:async()=>({status:'WAIT'})});
+  assert.deepEqual(paths,['git/ref/heads/trunk']);assert.equal(result.status,'WAIT');
+});

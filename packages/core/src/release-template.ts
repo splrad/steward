@@ -164,6 +164,7 @@ export function nestReleaseMarkdown(markdown: string, minimumDepth = 4): string 
 export interface FrozenReleaseNotes {
   repository: string; unitId: string; version: string; tag: string; sourceSha: string; controllerSha: string;
   notes: string; sourceLinkLabel: string; sourceUrl: string; commitUrl: string; contributors: ReleaseContributor[]; repositoryAuthors: RepositoryAuthor[];
+  githubDisabled?: boolean;
   assets: { id: string; name: string; build: string }[];
   channels: { id: string; location: string }[];
 }
@@ -180,9 +181,9 @@ export function renderFrozenReleaseNotes(template: string, data: FrozenReleaseNo
     if (!/^[a-z][a-z0-9-]*$/.test(channel.id) || !channel.location.trim() || /[\r\n\0]/.test(channel.location)) fail('channel facts');
     return { name: channel.id, status: '待分发' as const, location: `目标 <code>${Mustache.escape(channel.location)}</code>。` };
   });
-  if (!data.assets.length || new Set(data.assets.map(asset => asset.id)).size !== data.assets.length
+  if ((!data.assets.length && !data.githubDisabled) || new Set(data.assets.map(asset => asset.id)).size !== data.assets.length
     || new Set(data.assets.map(asset => asset.name.toLowerCase())).size !== data.assets.length) fail('download set');
-  const downloads = ['| 用途（产物 ID，详见安装说明） | 系统/架构（构建目标） | 文件 |', '| --- | --- | --- |', ...data.assets.map(asset => {
+  const downloads = !data.assets.length ? '本次构建未配置 GitHub 下载项。' : ['| 用途（产物 ID，详见安装说明） | 系统/架构（构建目标） | 文件 |', '| --- | --- | --- |', ...data.assets.map(asset => {
     assertDeliveryAssetName(asset.name);
     if (![asset.id, asset.build].every(value => /^[a-z][a-z0-9-]*$/.test(value))) fail('download source');
     return `| ${asset.id} | ${asset.build} | [${asset.name}](https://github.com/${data.repository}/releases/download/${encodeURIComponent(data.tag)}/${encodeURIComponent(asset.name)}) |`;

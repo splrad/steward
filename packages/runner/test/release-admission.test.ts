@@ -1,18 +1,16 @@
 import {createHash} from 'node:crypto';
 import { afterEach, expect, it, vi } from 'vitest';
-import { pipelineIdentity, pipelineNotes, mergedBuildCycle, assertProductDelivery } from '../src/release-pipeline.js';
+import { pipelineIdentity, pipelineNotes, mergedBuildCycle, assertProductDelivery, assertRegisteredAdapters } from '../src/release-pipeline.js';
 import { parsePipelineRecord, pipelineSource } from '../src/release-pipeline-record.js';
 import { productPipelineFixture } from './product-pipeline-fixture.js';
 afterEach(() => vi.restoreAllMocks());
-it.each(['github-release','ghcr','unknown'])('rejects an external channel with no fixed implementation: %s',id=>{
+it.each(['ghcr','unknown'])('rejects an external channel with no fixed implementation: %s',id=>{
   expect(()=>assertProductDelivery({units:[{id:'app',path:'.',notesPath:'.release-notes/app.md',assets:[],channels:[{id,required:true,location:'fixture'}]}]})).toThrow('fixed product implementation');
 });
-it.each(['complete','deleted','optional','wrong-unit'])('LayerScape preserves its two explicit required channels: %s',kind=>{
-  const delivery={units:[{id:kind==='wrong-unit'?'other':'layerscape',path:'.',notesPath:'.release-notes/layerscape.md',assets:[],
-    channels:[{id:'ghcr-assets',required:true,location:'fixture'},{id:'winget',required:kind!=='optional',location:'fixture'}]}]};
-  if(kind==='deleted')delivery.units[0]!.channels.pop();
-  if(kind==='complete')expect(()=>assertProductDelivery(delivery,'splrad/LayerScape')).not.toThrow();
-  else expect(()=>assertProductDelivery(delivery,'splrad/LayerScape')).toThrow('required delivery obligations');
+it('admits a GitHub-only unit with its own artifact IDs', () => {
+  expect(()=>assertProductDelivery({units:[{id:'cli',path:'.',notesPath:'notes.md',
+    assets:[{id:'archive',name:'cli.tar.gz',mediaType:'application/gzip'}],
+    channels:[{id:'github-release',required:true,location:'github',artifactIds:['archive']}]}]})).not.toThrow();
 });
 it.each(['complete', 'missing-unit', 'missing-producer', 'extra-asset'])('admits native two-unit source only with its complete frozen set: %s', async kind => {
   const f = productPipelineFixture(1, true);
@@ -137,4 +135,14 @@ it('builds a registered earlier cycle from its exact merged archive after candid
     value:{...chunk,documentKind:'merged-candidate',content,documentDigest:createHash('sha256').update(content).digest('hex')}}];
   repository.candidate=null;repository.activeCycleId=`pr-13-${'d'.repeat(40)}`;
   expect((await pipelineIdentity(f.input,f.environment,f.gh,f.io)).status).toBe('ADMITTED');
+});
+
+it('prevents unregistered repositories or destinations from using an enrolled external adapter',()=>{
+  const unit={id:'layerscape',path:'.',notesPath:'notes.md',
+    assets:[{id:'installer',name:'app.exe',mediaType:'application/octet-stream'}],
+    channels:[{id:'winget',required:true,location:'SPLRAD.LayerScape.Deployer',artifactIds:['installer']}]};
+  expect(()=>assertRegisteredAdapters(41,'test/other',{units:[unit]})).toThrow('not registered');
+  expect(()=>assertRegisteredAdapters(1187527897,'splrad/LayerScape',{units:[unit]})).not.toThrow();
+  unit.channels[0]!.location='Other.Product';
+  expect(()=>assertRegisteredAdapters(1187527897,'splrad/LayerScape',{units:[unit]})).toThrow('not registered');
 });

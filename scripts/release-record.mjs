@@ -631,27 +631,32 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
     const records=await pipelinePreparePublication(context,root,controllerDirectory,token,undefined,io,undefined,undefined,snapshot.domainRecords);
     if(!Array.isArray(records))return records;
     const adapter=new NativeGitHubRelease(args=>nativeGhCommand(args,token),nativeReleaseDownload(token));
+    const publicationUnits=records.filter(item=>!item.delivery?.channels.some(channel=>channel.id==='github-release' && !channel.required));
+    if (!publicationUnits.length && !cycle.requiredChannels.length)
+      return {status:'FROZEN',reason:'NO_PUBLICATION_CHANNELS',publishInvoked:false,units:records.map(item=>({unitId:item.unitId,runId:item.manifest.runId,attempt:item.manifest.attempt}))};
+    if (publicationUnits.length !== records.length)
+      return {status:'UNSUPPORTED',reason:'REGISTERED_CHANNEL_ADAPTER_REQUIRES_RELEASE_ID',publishInvoked:false};
     for(const item of records) {
-      const unit=cycle.units.find(value=>value.id===item.unitId),names=adapter.names({manifest:item.manifest,directory:item.directory,releaseId:unit.releaseId,appBotId:request.appBotId});
+      const unit=cycle.units.find(value=>value.id===item.unitId),names=adapter.names({delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:unit.releaseId,appBotId:request.appBotId});
       const assets=await publicationAssetFacts(unit,item.manifest,names,item.directory);
-      const frozen={assets,notesDigest:assets.find(asset=>asset.path==='release-notes.md').sha256,manifestDigest:assets.find(asset=>asset.path==='artifact-manifest.json').sha256};
+      const frozen={assets,notesDigest:sha256(await readFile(join(item.directory,'release-notes.md'))),manifestDigest:sha256(await readFile(join(item.directory,'artifact-manifest.json')))};
       if(unit.assets.length&&JSON.stringify(ordered(unit.assets))!==JSON.stringify(ordered(assets))||unit.manifestDigest!==null&&unit.manifestDigest!==frozen.manifestDigest)fail('frozen publication changed');
       Object.assign(unit,frozen);
     }
     const adopted=await adoptReleaseCycle(request,snapshot,cycle,{token,io});request={...request,directory:adopted.directory};
     // Already-public reentry verifies bytes and does not create a new business invocation.
     if(cycle.units.every(unit=>unit.releaseId!==null)) {
-      const releases=await Promise.all(records.map(item=>adapter.read({manifest:item.manifest,directory:item.directory,releaseId:cycle.units.find(unit=>unit.id===item.unitId).releaseId,appBotId:request.appBotId})));
+      const releases=await Promise.all(records.map(item=>adapter.read({delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:cycle.units.find(unit=>unit.id===item.unitId).releaseId,appBotId:request.appBotId})));
       if(releases.every(release=>!release.draft)) {
-        for(const item of records)await adapter.verify({manifest:item.manifest,directory:item.directory,releaseId:cycle.units.find(unit=>unit.id===item.unitId).releaseId,appBotId:request.appBotId});
+        for(const item of records)await adapter.verify({delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:cycle.units.find(unit=>unit.id===item.unitId).releaseId,appBotId:request.appBotId});
         return {status:'OBSERVED',reason:'FORMAL_RELEASES_VERIFIED',publishInvoked:false};
       }
     }
     return await inspectReleaseEvidence(request,{token,io,centralIo,centralInvocation,now,publisher:async(current,save)=>{
       for(const item of records) {
         const unit=current.cycle.units.find(value=>value.id===item.unitId);
-        if(unit.releaseId!==null) {const existing={manifest:item.manifest,directory:item.directory,releaseId:unit.releaseId,appBotId:request.appBotId};if(!(await adapter.read(existing)).draft){await adapter.verify(existing);continue;}}
-        const target=await adapter.ensureDraft({manifest:item.manifest,directory:item.directory,releaseId:unit.releaseId,appBotId:request.appBotId});
+        if(unit.releaseId!==null) {const existing={delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:unit.releaseId,appBotId:request.appBotId};if(!(await adapter.read(existing)).draft){await adapter.verify(existing);continue;}}
+        const target=await adapter.ensureDraft({delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:unit.releaseId,appBotId:request.appBotId});
         if(unit.releaseId===null) {const next=structuredClone(current.cycle);next.units.find(value=>value.id===unit.id).releaseId=target.releaseId;await save(next);}
         await adapter.publish(target);
       }

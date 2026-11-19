@@ -3,35 +3,44 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { NativeEvidenceReader, nativeEvidenceTransport, nativeReleaseApp, nativeRunFact, verifyExecutionSource, channelTargetsDigest } from '../packages/runner/dist/index.js';
-import { exact, product, sha, sha256 } from './bounded-candidate-contract.mjs';
+import { exact, sha, sha256 } from './bounded-candidate-contract.mjs';
 import { entryGuard } from './bounded-release-entry.mjs';
 import { fetchState } from './release-coordinator.mjs';
 import { releaseCommand } from './release-record.mjs';
 
 const centralId = 1296724484, central = 'splrad/steward';
-const repository = {id:product.id, full_name:product.name, default_branch:'main'};
+// Registration belongs to the promoted controller. Product configuration cannot grant enrollment.
+const registrations=JSON.parse(await readFile(new URL('../config/release/event-repositories.json',import.meta.url),'utf8'));
+function registeredRepository(event, registry=registrations) {
+  const id=event.kind==='publication'?event.productRepositoryId:event.repositoryId;
+  // Older central callbacks carry only the controller identity. They are unambiguous for the original pilot.
+  const matches=registry.filter(repository=>id===undefined?repository.legacyPublicationCallback===true:repository.id===id);
+  if(matches.length!==1)fail('CYCLE_EVENT_KIND');
+  return matches[0];
+}
 const identity = {name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
 const fail = reason => { throw Error(reason); };
 const positive = n => Number.isSafeInteger(n) && n > 0;
-export function validateEvent(event, requestKey) {
+export function validateEvent(event, requestKey, registry=registrations) {
   const {repositoryId,kind} = event;
+  const product=registeredRepository(event,registry);
   if (!['push','run','publication'].includes(kind) || repositoryId !== (kind === 'publication' ? centralId : product.id)) fail('CYCLE_EVENT_KIND');
   const push = kind === 'push';
-  exact(event, ['repositoryId','kind',...(push ? ['sourceSha'] : ['runId','attempt'])]);
+  exact(event, ['repositoryId','kind',...(push ? ['sourceSha'] : ['runId','attempt']),...(kind==='publication' && event.productRepositoryId!==undefined?['productRepositoryId']:[])]);
   if (push ? !sha(event.sourceSha) : !positive(event.runId) || !positive(event.attempt)) fail('CYCLE_EVENT_ID');
-  if (requestKey !== sha256([repositoryId,kind,...(push ? [event.sourceSha] : [event.runId,event.attempt])])) fail('CYCLE_EVENT_KEY');
+  if (requestKey !== sha256([repositoryId,kind,...(push ? [event.sourceSha] : [event.runId,event.attempt]),...(event.productRepositoryId===undefined?[]:[event.productRepositoryId])])) fail('CYCLE_EVENT_KEY');
 }
 const wait = reason => ({status:'WAIT',reason});
 const only = items => items.length === 1 ? items[0] : fail('CYCLE_EVENT_AMBIGUOUS');
-function probeMatches(cycle,run,botId) {
+function probeMatches(cycle,run,botId,product) {
   if (run.repositoryId !== product.id || run.headRepositoryId !== product.id || run.actorId !== botId
-    || run.event !== 'workflow_dispatch' || run.headBranch !== 'main' || run.workflowId !== 410998651
+    || run.event !== 'workflow_dispatch' || run.headBranch !== product.defaultBranch || run.workflowId !== product.channelWorkflowId
     || run.path !== '.github/workflows/steward-release-channels.yml' || !sha(run.headSha)) return false;
   const targets=cycle.requiredChannels.map(channel=>{
     const unit=cycle.units.find(u=>u.id===channel.unitId);
     return {...channel,version:unit.version,releaseId:unit.releaseId,manifestDigest:unit.manifestDigest};
   });
-  if (!targets.length || targets.length>2 || targets.some(t=>!t.releaseId || !t.manifestDigest)) return false;
+  if (!targets.length || targets.some(t=>!t.releaseId || !t.manifestDigest)) return false;
   // Direct reads can cover either channel; the remaining subset is observed in the native product job.
   return [targets,...targets.map(t=>[t])].some(subset=>{
     const digest=channelTargetsDigest({repositoryId:product.id,cycle},subset);
@@ -43,13 +52,14 @@ function publicationStarts(state,runId,attempt,sha) {
   return state.domainRecords.filter(r=>r.path.startsWith('evidence/publication/') && r.value.startEvidencePath===null
     && r.value.centralRun.id===runId && r.value.centralRun.runAttempt<=attempt && r.value.centralRun.headSha===sha);
 }
-export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invoke,botId,producer}) {
+export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invoke,botId,producer,registry=registrations}) {
+  const product=registeredRepository(event,registry);
   const state=await snapshot(), cycles=state.cycles.map(record=>record.value);
   let cycleId=null;
   let probeReceipt=false;
   const execute=async(command,runId=null)=>invoke(command,cycleId,runId,!probeReceipt);
   if (event.kind==='push') {
-    const head=(await get('git/ref/heads/main')).object?.sha;
+    const head=(await get('git/ref/heads/'+encodeURIComponent(product.defaultBranch))).object?.sha;
     if (!sha(head)) fail('CYCLE_EVENT_SOURCE');
     const prior=cycles.find(c=>c.sourceSha===event.sourceSha);
     if (prior) {
@@ -83,7 +93,7 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
     const prior=await execute('reconcile-publication');
     if(prior.status!=='OBSERVED')return {...prior,cycleId};
   } else if (run.displayTitle.startsWith('Channels observe ')) {
-    cycleId=only(cycles.filter(c=>probeMatches(c,run,botId))).id;
+    cycleId=only(cycles.filter(c=>probeMatches(c,run,botId,product))).id;
     probeReceipt=true;
     if(run.conclusion!=='success')return {...wait('PROBE_UNSUCCESSFUL'),cycleId};
   } else {
@@ -109,7 +119,7 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
     }
   }
   const observation=await execute('observe-channel');
-  if(observation.reason==='DISTRIBUTION_VERIFIED')return {...observation,cycleId};
+  if(cycles.find(c=>c.id===cycleId)?.requiredChannels.length===0 || observation.reason==='DISTRIBUTION_VERIFIED')return {...observation,cycleId};
   const dispatch=await execute('dispatch-channel');
   return {...dispatch,cycleId};
 }
@@ -119,6 +129,8 @@ export async function main(env=process.env) {
   const config=JSON.parse(await readFile(new URL('../config/bounded-recheck.json',import.meta.url),'utf8'));
   const event=JSON.parse(env.BOUNDED_EVENT_JSON),requestKey=env.BOUNDED_REQUEST_KEY;
   validateEvent(event,requestKey);
+  const product=registeredRepository(event);
+  const repository={id:product.id,full_name:product.name,default_branch:product.defaultBranch};
   const centralIo=nativeEvidenceTransport(env.STEWARD_CENTRAL_TOKEN),reader=new NativeEvidenceReader(centralIo,central);
   const centralGet=path=>reader.json(path);
   const run=await entryGuard(env,path=>centralGet(path.replace('/repos/'+central,'').replace(/^\//,'')),config);
@@ -132,7 +144,7 @@ export async function main(env=process.env) {
       const io=nativeEvidenceTransport(token),productReader=new NativeEvidenceReader(io,product.name);
       const refresh=()=>fetchState(root,repository,token);
       const request=async(cycleId,runId)=>({directory:(await refresh()).directory,writeDirectory:await mkdtemp(join(root,'write-')),
-        remote:'https://github.com/'+product.name+'.git',repository:product.name,repositoryId:product.id,defaultBranch:'main',appBotId:app.appBotId,cycleId,runId,identity});
+        remote:'https://github.com/'+product.name+'.git',repository:product.name,repositoryId:product.id,defaultBranch:product.defaultBranch,appBotId:app.appBotId,cycleId,runId,identity});
       return advanceEvent(event,{snapshot:async()=>(await refresh()).snapshot,get:path=>productReader.json(path),centralGet,botId:app.appBotId,producer,
         candidate:(expectedSourceSha,expectedStateSha)=>app.forCandidateRepository(product.id,async(writer,candidateReadToken)=>
           releaseCommand('candidate',await request(null,null),{token:writer,io,centralIo,candidateReadToken,copilotToken:env.STEWARD_COPILOT_TOKEN,

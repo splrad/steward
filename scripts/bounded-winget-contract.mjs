@@ -4,7 +4,7 @@ const fail=()=>{throw Error('BOUNDED_WINGET_IDENTITY');};
 /** Input is an independently verified protected Git cycle, not a network request body. */
 export function boundedWingetInputs(value,executionSha) {
   const cycle=decodeReleaseRecord('cycle',Buffer.from(JSON.stringify(value)));
-  if(!sha(executionSha)||cycle.units.length!==1||cycle.units[0].id!=='layerscape')fail();
+  if(!sha(executionSha)||cycle.units.length!==1||!cycle.requiredChannels.some(c=>c.unitId===cycle.units[0].id && c.channelId==='winget'))fail();
   const unit=cycle.units[0],targets=[{unitId:unit.id,channelId:'winget',version:unit.version,releaseId:unit.releaseId,manifestDigest:unit.manifestDigest}];
   const digest=channelTargetsDigest({repositoryId:product.id,cycle},targets);
   return {cycle_id:cycle.id,source_sha:cycle.sourceSha,execution_sha:executionSha,controller_sha:cycle.controllerSha,
