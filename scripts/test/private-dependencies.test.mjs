@@ -341,6 +341,10 @@ test('Copier admission requires trusted template bytes and original versioned an
  const templates=new Map(await Promise.all(paths.map(async path=>[path,await readFile(new URL('../../templates/repository/'+path,import.meta.url))])));
  const files=new Map(templates);files.set('.copier-answers.yml',Buffer.from('_src_path: https://github.com/splrad/steward.git\n_commit: v0.2.0\n'));
  assertInputScope([...files.keys()]);assertCopierInputs(files,ref=>ref==='v0.2.0'?templates:null);
+ const adopted=new Map(files);
+ adopted.set('.copier-answers.yml',Buffer.concat([files.get('.copier-answers.yml'),Buffer.from('product_repository: splrad/fixture\n')]));
+ assertCopierInputs(adopted,()=>templates,paths,'splrad/fixture');
+ assert.throws(()=>assertCopierInputs(adopted,()=>templates,paths,'splrad/other'),/COPIER_ANSWERS/);
  for(const tag of ['v1!2.3.5','v1.2.3.4','v1.2.3.post1','V1.2.3+local.1']){
   const versioned=new Map(files);versioned.set('.copier-answers.yml',Buffer.from('_src_path: https://github.com/splrad/steward.git\n_commit: '+tag+'\n'));
   assertCopierInputs(versioned,ref=>ref===tag?templates:null);

@@ -64,6 +64,12 @@ jobs:
         run: mise bin-paths | tac >> "$GITHUB_PATH"
       - run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: policy
+      - name: Authorize repository configuration
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        working-directory: policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/configuration-authorization.mjs
       - name: Record platform workflow provenance
         shell: bash
         env:

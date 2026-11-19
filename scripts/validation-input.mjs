@@ -4,7 +4,7 @@ import {execFileSync} from 'node:child_process';
 import {readFile,appendFile,writeFile,lstat,realpath} from 'node:fs/promises';
 import {resolve,join,sep} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {loadPolicy,dependencyMode,assertGovernanceOnlyScope} from './private-dependency-policy.mjs';
+import {loadPolicy,dependencyMode,assertGovernanceOnlyScope,configurationCallers} from './private-dependency-policy.mjs';
 import {assertLifecycleScope} from './private-lifecycle-policy.mjs';
 const check=(ok,code)=>{if(!ok)throw Error('VALIDATION_'+code);};
 export function git(workspace,args) {
@@ -16,7 +16,7 @@ export async function regular(workspace,path) {
   check(actual.startsWith(root+sep)&&info.isFile()&&!info.isSymbolicLink(),'FILE_BOUNDARY');return file;
 }
 // Community repositories can contain governance metadata alongside documentation.
-const communityFiles=new Set(['LICENSE','.copier-answers.yml','.github/VULNERABILITY_REPORT.yml',
+const communityFiles=new Set([...configurationCallers,'LICENSE','.copier-answers.yml','.github/VULNERABILITY_REPORT.yml',
   '.github/labeler.yml','.github/release-template.md.mustache','.github/workflows/actions.lock',
   '.github/workflows/pr-labeler.yml','.github/workflows/pr-title.yml']);
 export function documentationOnly(files) {
@@ -38,6 +38,17 @@ export function productWorkflows(value,files) {
   for(const path of value)check(typeof path==='string'&&/^\.github\/workflows\/[a-zA-Z0-9_.-]+\.ya?ml$/.test(path)
     &&path!=='.github/workflows/pr-validation-native.yml'&&files.includes(path),'PRODUCT_CI_PATH');
   return value;
+}
+export function workflowEvent(triggers,type,action) {
+  if(typeof triggers==='string')return triggers===type;
+  if(Array.isArray(triggers))return triggers.includes(type);
+  if(!triggers || !Object.hasOwn(triggers,type))return false;
+  const types=triggers[type]?.types;
+  return !types || Array.isArray(types) && types.includes(action);
+}
+export function selectableProductCI(workflow) {
+  return workflow.path!=='.github/workflows/pr-validation-native.yml' && workflowEvent(workflow.document?.on,'push')
+    && ['opened','synchronize','reopened'].every(action=>workflowEvent(workflow.document?.on,'pull_request',action));
 }
 export async function validationInput(workspace,env=process.env) {
   const event=JSON.parse(await readFile(env.GITHUB_EVENT_PATH,'utf8'));
@@ -75,8 +86,7 @@ export async function validationInput(workspace,env=process.env) {
     const workflow=YAML.parse(await readFile(await regular(workspace,path),'utf8'));
     const triggers=workflow?.on;
     const type=env.GITHUB_EVENT_NAME;
-    const enabled=typeof triggers==='string'?triggers===type:Array.isArray(triggers)?triggers.includes(type):Object.hasOwn(triggers??{},type);
-    check(enabled&&(!triggers[type]?.types||triggers[type].types.includes(event.action)),'PRODUCT_CI_TRIGGER '+path);
+    check(workflowEvent(triggers,type,event.action),'PRODUCT_CI_TRIGGER '+path);
     if(workflow['run-name']===forkRunName)boundNames.push(path);
   }
   return {input,files,productApplicable,workflows,boundNames,dependencyMode:dependency};

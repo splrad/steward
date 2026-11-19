@@ -1,9 +1,10 @@
 import {mkdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
+import YAML from 'yaml';
 import {NativeEvidenceReader,decodePagesMaintenance,assertPagesProgress,pagesRecordPath,maintenanceFailed,nativeGhCommand,nativeReleaseDownload} from '../packages/runner/dist/index.js';
 import {currentPagesSource,pagesDeployment,assertPagesRun} from './pages-runtime.mjs';
-import {pagesDispatchInputs,pagesRunName,pagesWorkflow,verifyPagesRelease} from './select-pages-source.mjs';
+import {pagesContent,pagesDispatchInputs,pagesRunName,pagesWorkflow,verifyPagesRelease} from './select-pages-source.mjs';
 import {writeReleaseRecords} from './release-record.mjs';
 
 const check=(v,c)=>{if(!v)throw Error('PAGES_'+c);};
@@ -58,14 +59,28 @@ export async function pagesRunInventory(reader,workflow,source,start,end) {
     &&r.display_title===(r.event==='workflow_dispatch'?pagesRunName(source):`Pages ${source.mode} ${source.sourceSha} ${r.event==='release'?source.releaseId:r.id}`)).sort((a,b)=>a.id-b.id);
 }
 
-async function sourceOptions(reader,repository,controllerSha,appBotId) {
+export async function sourceOptions(reader,repository,controllerSha,appBotId) {
   const read=async name=>{
     const response=await reader.io.request('GET',reader.path(`actions/variables/${name}`));
     if(response.status===404)return '';
     check(response.status===200,'VARIABLE_UNAVAILABLE');const value=JSON.parse(Buffer.from(response.bytes));
     check(value.name===name&&typeof value.value==='string','VARIABLE');return value.value;
   };
-  const mode=await read('STEWARD_DOCS_SOURCE'),unitId=mode==='release'?await read('STEWARD_DOCS_UNIT'):'';
+  let mode=await read('STEWARD_DOCS_SOURCE'),unitId='';
+  if(mode) {
+    check(['default-branch','release'].includes(mode),'MODE');
+    const branch=await reader.json('git/ref/heads/'+encodeURIComponent(repository.default_branch));
+    check(branch.ref==='refs/heads/'+repository.default_branch && branch.object?.type==='commit' && /^[a-f0-9]{40}$/.test(branch.object.sha),'DEFAULT_HEAD');
+    const workflow=YAML.parse((await pagesContent(reader,pagesWorkflow,branch.object.sha)).toString('utf8'));
+    const source=workflow?.env?.STEWARD_DOCS_SOURCE;
+    if(['default-branch','release'].includes(source)) {
+      mode=source;
+      if(mode==='release') {
+        unitId=workflow.env.STEWARD_DOCS_UNIT;
+        check(typeof unitId==='string' && /^[a-z][a-z0-9-]*$/.test(unitId),'UNIT');
+      }
+    } else if(mode==='release') unitId=await read('STEWARD_DOCS_UNIT');
+  }
   return {reader,repositoryId:repository.id,mode,unitId,controllerSha,appBotId};
 }
 
