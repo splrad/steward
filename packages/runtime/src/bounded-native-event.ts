@@ -3,7 +3,7 @@ import {promotedController} from './bounded-controller.js';
 import {retryAfterTime} from './bounded-retry-after.js';
 import {manualProjectionBefore} from './bounded-manual-evidence.js';
 import type {VerifiedWakeContext} from './bounded-initial-wake.js';
-import {BoundedGitHub,TARGET,CENTRAL,digest,ensure,type BoundedEnv,type GitReader} from './bounded-recheck-github.js';
+import {BoundedGitHub,candidateReader,TARGET,CENTRAL,digest,ensure,type BoundedEnv,type GitReader} from './bounded-recheck-github.js';
 import {candidateFacts} from './bounded-candidate-evidence.js';
 import {dispatchFixed} from './bounded-recheck-effects.js';
 import {APP_BOT_ID} from './bounded-winget-evidence.js';
@@ -11,8 +11,8 @@ import {identityKey,objectKey,type Identity,type RecordState,type Registration} 
 import {applyVerifiedCandidateEvent} from './bounded-release-event.js';
 const minute=60000,prepareOffsets=[0,1,5,15],confirmOffsets=[1,5,15];
 const sha=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{40}$/.test(v);
-export interface NativeHint {repositoryId:1187527897;prNumber:number;actorId:number;action:'labeled'|'unlabeled'|'reopened';updatedAt:string}
-export interface PreparedEvent {event:{repositoryId:1187527897;prNumber:number;eventId:number};t0:number;sourceSha:string;before:Record<string,unknown>;priorIdentity:Identity|null}
+export interface NativeHint {repositoryId:number;prNumber:number;actorId:number;action:'labeled'|'unlabeled'|'reopened';updatedAt:string}
+export interface PreparedEvent {event:{repositoryId:number;prNumber:number;eventId:number};t0:number;sourceSha:string;before:Record<string,unknown>;priorIdentity:Identity|null}
 export interface NativeHandoff {claim:number;startedAt:number;steps:{sequence:number;target:string;action:string;expectedGeneration?:number;at:number;state:'INTENT'|'ACK'}[];status:'RESERVED'|'COMPLETE'|'INDETERMINATE'}
 export interface NativeEventRecord {
  controllerAnchorSha?:string; waitingForPromotion?:string;
@@ -23,13 +23,17 @@ export interface NativeEventRecord {
 }
 function exact(v:any,keys:string){ensure(v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===keys,'NATIVE_SCHEMA');}
 export function nativeHintKey(h:NativeHint){return digest(JSON.stringify([h.repositoryId,h.prNumber,h.actorId,h.action,h.updatedAt])).slice(7);}
-function validateHint(h:NativeHint){exact(h,'action,actorId,prNumber,repositoryId,updatedAt');ensure(h.repositoryId===TARGET.id&&Number.isSafeInteger(h.prNumber)&&h.prNumber>0&&Number.isSafeInteger(h.actorId)&&h.actorId>0&&['labeled','unlabeled','reopened'].includes(h.action)&&typeof h.updatedAt==='string'&&Number.isFinite(Date.parse(h.updatedAt)),'NATIVE_HINT');}
+function validateHint(h:NativeHint){exact(h,'action,actorId,prNumber,repositoryId,updatedAt');ensure(Number.isSafeInteger(h.repositoryId)&&h.repositoryId>0&&Number.isSafeInteger(h.prNumber)&&h.prNumber>0&&Number.isSafeInteger(h.actorId)&&h.actorId>0&&['labeled','unlabeled','reopened'].includes(h.action)&&typeof h.updatedAt==='string'&&Number.isFinite(Date.parse(h.updatedAt)),'NATIVE_HINT');}
 /** Only called after existing HMAC and organization checks. No Git/network read precedes durable acceptance. */
-export async function acceptNativeCandidateEvent(env:BoundedEnv,event:string,payload:any,deliveryId:string){
- if(env.BOUNDED_RECHECK_ENABLED!=='true'||event!=='pull_request'||payload.repository?.id!==TARGET.id||!['labeled','unlabeled','reopened'].includes(payload.action))return;
+export async function acceptNativeCandidateEvent(env:BoundedEnv,event:string,payload:any,deliveryId:string,g:GitReader=new BoundedGitHub(env)){
+ if(env.BOUNDED_RECHECK_ENABLED!=='true'||event!=='pull_request'||payload.repository?.private!==false||!Number.isSafeInteger(payload.repository?.id)||!payload.installation?.id||payload.installation.id!==Number(env.INSTALLATION_ID)||!['labeled','unlabeled','reopened'].includes(payload.action))return;
  if(payload.action!=='reopened'&&payload.label?.name!=='release:editing')return;
  ensure(env.BOUNDED_RECHECK&&sha(env.BOUNDED_CONTROLLER_SHA)&&sha(env.BOUNDED_DEPLOYMENT_SHA),'NATIVE_CONFIGURATION');
- const hint:NativeHint={repositoryId:TARGET.id,prNumber:payload.pull_request?.number,actorId:payload.sender?.id,action:payload.action,updatedAt:payload.pull_request?.updated_at};validateHint(hint);
+ const scoped=g.forCandidate?await g.forCandidate(payload.repository.id):g;
+ if(!scoped)return;
+ const target=scoped.target??TARGET;
+ if(payload.repository.id!==target.id||payload.repository.full_name!==target.name||payload.repository.default_branch!==target.defaultBranch)return;
+ const hint:NativeHint={repositoryId:target.id,prNumber:payload.pull_request?.number,actorId:payload.sender?.id,action:payload.action,updatedAt:payload.pull_request?.updated_at};validateHint(hint);
  ensure(/^[A-Za-z0-9-]{1,128}$/.test(deliveryId),'NATIVE_DELIVERY');const key=nativeHintKey(hint),stub=env.BOUNDED_RECHECK.get(env.BOUNDED_RECHECK.idFromName('native:v1:'+key));
  const result=await stub.fetch(new Request('https://bounded.internal/native-event',{method:'POST',body:JSON.stringify({hint,deliveryId})}));ensure(result.ok,'NATIVE_DURABLE_ACCEPTANCE');
 }
@@ -41,17 +45,19 @@ export async function acceptNativeCandidateCompletion(env:BoundedEnv,event:strin
  const stub=env.BOUNDED_RECHECK.get(env.BOUNDED_RECHECK.idFromName('native:v1:'+match[1]));const response=await stub.fetch(new Request('https://bounded.internal/native-receipt',{method:'POST',body:JSON.stringify({runId:run.id,attempt:run.run_attempt,policySha:run.head_sha})}));ensure(response.ok,'NORMAL_RECEIPT_ACCEPTANCE');
 }
 export async function resolveNativeEvent(g:GitReader,h:NativeHint):Promise<PreparedEvent>{
+ g=await candidateReader(g,h.repositoryId);const target=g.target??TARGET;
  const facts=await candidateFacts(g,false,true);ensure(facts.pull.number===h.prNumber&&facts.pull.state==='open'&&!facts.pull.merged&&Array.isArray(facts.pull.labels),'NATIVE_CANDIDATE');
  const editing=facts.pull.labels.some((x:any)=>x.name==='release:editing');ensure(!(h.action==='labeled'&&!editing)&&!(h.action==='unlabeled'&&editing),'NATIVE_EVENT_SUPERSEDED');
  const events:any[]=[];let complete=false;
- for(let page=1;page<=5;page++){const part=await g.json(TARGET.id,`/repos/${TARGET.name}/issues/${h.prNumber}/events?per_page=100&page=${page}`);ensure(Array.isArray(part),'NATIVE_EVENTS');events.push(...part);if(part.length<100){complete=true;break;}}
+ for(let page=1;page<=5;page++){const part=await g.json(target.id,`/repos/${target.name}/issues/${h.prNumber}/events?per_page=100&page=${page}`);ensure(Array.isArray(part),'NATIVE_EVENTS');events.push(...part);if(part.length<100){complete=true;break;}}
  ensure(complete,'NATIVE_EVENT_PAGINATION');const hits=events.filter(e=>e.event===h.action&&e.actor?.id===h.actorId&&e.created_at===h.updatedAt&&(h.action==='reopened'||e.label?.name==='release:editing'));ensure(hits.length===1&&Number.isSafeInteger(hits[0].id),'NATIVE_EVENT_AMBIGUOUS');
- const e=await g.json(TARGET.id,`/repos/${TARGET.name}/issues/events/${hits[0].id}`);ensure(e.id===hits[0].id&&e.issue?.number===h.prNumber&&e.issue?.repository_url===`https://api.github.com/repos/${TARGET.name}`&&e.actor?.id===h.actorId&&e.created_at===h.updatedAt&&e.event===h.action&&(h.action==='reopened'||e.label?.name==='release:editing'),'NATIVE_EVENT_BINDING');
- const main=await g.json(TARGET.id,`/repos/${TARGET.name}/git/ref/heads/main`);ensure(sha(main.object?.sha),'NATIVE_SOURCE');
- return {event:{repositoryId:TARGET.id,prNumber:h.prNumber,eventId:e.id},t0:Date.parse(e.created_at),sourceSha:main.object.sha,before:facts.evidence,priorIdentity:facts.identity};
+ const e=await g.json(target.id,`/repos/${target.name}/issues/events/${hits[0].id}`);ensure(e.id===hits[0].id&&e.issue?.number===h.prNumber&&e.issue?.repository_url===`https://api.github.com/repos/${target.name}`&&e.actor?.id===h.actorId&&e.created_at===h.updatedAt&&e.event===h.action&&(h.action==='reopened'||e.label?.name==='release:editing'),'NATIVE_EVENT_BINDING');
+ const main=await g.json(target.id,`/repos/${target.name}/git/ref/heads/${encodeURIComponent(target.defaultBranch)}`);ensure(sha(main.object?.sha),'NATIVE_SOURCE');
+ return {event:{repositoryId:target.id,prNumber:h.prNumber,eventId:e.id},t0:Date.parse(e.created_at),sourceSha:main.object.sha,before:facts.evidence,priorIdentity:facts.identity};
 }
 async function objectPost(env:BoundedEnv,identity:Identity,action:string,body:unknown){ensure(env.BOUNDED_RECHECK,'NAMESPACE');const stub=env.BOUNDED_RECHECK.get(env.BOUNDED_RECHECK.idFromName('recheck:v1:'+digest(objectKey(identity)).slice(7)));const response=await stub.fetch(new Request('https://bounded.internal/'+action,{method:'POST',body:JSON.stringify(body)}));ensure(response.ok,'NATIVE_OBJECT_CONTROL');return response.json() as Promise<any>;}
 export async function verifyNormalResult(g:GitReader,r:NativeEventRecord,run:any){
+ g=await candidateReader(g,r.hint.repositoryId);const target=g.target??TARGET;
  const p=r.prepared!;ensure(run.id===r.knownRunId&&run.run_attempt===1&&run.repository?.id===CENTRAL.id&&run.head_repository?.id===CENTRAL.id&&run.actor?.id===APP_BOT_ID&&run.path==='.github/workflows/release-candidate-event.yml'&&run.event==='workflow_dispatch'&&run.head_branch==='main'&&run.head_sha===r.policySha&&run.display_title===`Candidate event ${r.requestKey}`&&run.status==='completed'&&run.conclusion==='success','NORMAL_RUN');
  const a=await g.artifact(CENTRAL.id,run.id,`candidate-event-${r.requestKey}`,'result.json'),v=a.value;
  exact(v,'candidateIdentity,event,outcome,producer,reason,requestKey,schemaVersion,sourceSha,stateAfter,stateBefore,status');exact(v.producer,'attempt,controllerSha,repositoryId,runId');exact(v.event,'eventId,prNumber,repositoryId');
@@ -59,14 +65,14 @@ export async function verifyNormalResult(g:GitReader,r:NativeEventRecord,run:any
  const created=Date.parse(a.createdAt??''),start=Date.parse(run.run_started_at),end=Date.parse(run.updated_at),runCreated=Date.parse(run.created_at);ensure([created,start,end,runCreated].every(Number.isFinite)&&runCreated>=r.dispatchedAt!-1000&&runCreated<=r.dispatchedAt!+30000&&start>=runCreated&&created>=start&&created<=end,'NORMAL_ARTIFACT_WINDOW');
  exact(v.stateBefore,'documentDigest,head,path,prNumber,stateCommit');exact(v.stateAfter,'documentDigest,head,path,prNumber,stateCommit');ensure(Object.entries(p.before).every(([k,value])=>v.stateBefore[k]===value),'NORMAL_BEFORE');
  const current=await candidateFacts(g,false,true);ensure(Object.entries(current.evidence).every(([k,value])=>v.stateAfter[k]===value)&&current.pull.number===p.event.prNumber&&current.pull.state==='open'&&!current.pull.merged&&Array.isArray(current.pull.labels),'NORMAL_AFTER');
- const native=await g.json(TARGET.id,`/repos/${TARGET.name}/issues/events/${p.event.eventId}`);ensure(native.id===p.event.eventId&&native.issue?.number===p.event.prNumber&&native.issue?.repository_url===`https://api.github.com/repos/${TARGET.name}`&&native.actor?.id===r.hint.actorId&&native.event===r.hint.action&&native.created_at===r.hint.updatedAt&&(native.event==='reopened'||native.label?.name==='release:editing')&&Date.parse(native.created_at)===p.t0,'NORMAL_NATIVE_EVENT');
- const main=await g.json(TARGET.id,`/repos/${TARGET.name}/git/ref/heads/main`);ensure(main.object?.sha===p.sourceSha,'NORMAL_SOURCE_MOVED');const editing=current.pull.labels.some((x:any)=>x.name==='release:editing');
+ const native=await g.json(target.id,`/repos/${target.name}/issues/events/${p.event.eventId}`);ensure(native.id===p.event.eventId&&native.issue?.number===p.event.prNumber&&native.issue?.repository_url===`https://api.github.com/repos/${target.name}`&&native.actor?.id===r.hint.actorId&&native.event===r.hint.action&&native.created_at===r.hint.updatedAt&&(native.event==='reopened'||native.label?.name==='release:editing')&&Date.parse(native.created_at)===p.t0,'NORMAL_NATIVE_EVENT');
+ const main=await g.json(target.id,`/repos/${target.name}/git/ref/heads/${encodeURIComponent(target.defaultBranch)}`);ensure(main.object?.sha===p.sourceSha,'NORMAL_SOURCE_MOVED');const editing=current.pull.labels.some((x:any)=>x.name==='release:editing');
  const evidence={requestKey:v.requestKey,runId:run.id,attempt:1,artifactId:a.artifactId,digest:a.digest,outcome:v.outcome,reason:v.reason,stateAfter:v.stateAfter};
  if(editing||v.outcome==='paused'||v.outcome==='protected'||v.candidateIdentity===null||!current.identity||current.identity.sourceSha!==p.sourceSha)return {kind:'protected' as const,evidence};
  if(current.manual){ensure(v.reason==='MANUAL_VALIDATED','MANUAL_PRODUCER_PIN');const checked=await candidateFacts(g);ensure(identityKey(checked.identity)===identityKey(current.identity),'SOURCE_CHANGED');}
  exact(v.candidateIdentity,'artifactDigest,channel,cycleId,epoch,repositoryId,sourceSha,stage,upstreamPR,version');
  ensure(v.outcome===(current.manual?'manual_validated':'candidate_updated')&&v.status==='READY'&&identityKey(v.candidateIdentity)===identityKey(current.identity),'NORMAL_RESULT_NOT_READY');
- const registration:Registration={identity:current.identity,t0:p.t0,policySha:r.policySha,deploymentSha:r.deploymentSha};let wakeContext:VerifiedWakeContext|undefined;if(current.manual){const snapshot=await manualProjectionBefore(g,current);wakeContext={kind:'validated-manual-candidate',repositoryId:TARGET.id,prNumber:p.event.prNumber,sourceSha:p.sourceSha,identityDigest:digest(identityKey(current.identity)),eventId:p.event.eventId,normalRunId:run.id,attempt:1,projectionPending:snapshot.pending,projectionBefore:snapshot.before};}
+ const registration:Registration={identity:current.identity,t0:p.t0,policySha:r.policySha,deploymentSha:r.deploymentSha};let wakeContext:VerifiedWakeContext|undefined;if(current.manual){const snapshot=await manualProjectionBefore(g,current);wakeContext={kind:'validated-manual-candidate',repositoryId:target.id,prNumber:p.event.prNumber,sourceSha:p.sourceSha,identityDigest:digest(identityKey(current.identity)),eventId:p.event.eventId,normalRunId:run.id,attempt:1,projectionPending:snapshot.pending,projectionBefore:snapshot.before};}
  return {kind:'ready' as const,registration,wakeContext,manualProducerSha:current.manual?.producer.controllerSha,editing,event:native,evidence,artifactId:a.artifactId,artifactDigest:a.digest};
 }
 export class NativeCandidateCoordinator {

@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {authorizeSingleRepository} from './pr-body-api.js';
 import {identityKey,objectKey,validateRegistration,type Identity} from './bounded-recheck.js';
-import {BoundedGitHub,TARGET,CENTRAL,ensure,type BoundedEnv} from './bounded-recheck-github.js';
+import {BoundedGitHub,candidateReader,TARGET,CENTRAL,ensure,type BoundedEnv} from './bounded-recheck-github.js';
 import {verifiedProducer} from './bounded-candidate-evidence.js';
 function exact(b:any,keys:string[]){ensure(b&&typeof b==='object'&&!Array.isArray(b)&&Object.keys(b).sort().join(',')===keys.sort().join(','),'CLOSED_REQUEST');}
 export async function handleBoundedRecheckRequest(request:Request,env:BoundedEnv):Promise<Response|null>{
@@ -15,8 +15,8 @@ export async function handleBoundedRecheckRequest(request:Request,env:BoundedEnv
   ensure(Number(request.headers.get('content-length')??0)<=32*1024,'BODY_LIMIT');ensure(request.body,'BODY_REQUIRED');const reader=request.body.getReader(),chunks:Uint8Array[]=[];let length=0;try{for(;;){const part=await reader.read();if(part.done)break;length+=part.value.length;ensure(length<=32*1024,'BODY_LIMIT');chunks.push(part.value);}}finally{await reader.cancel();}const b=JSON.parse(Buffer.concat(chunks).toString('utf8'));
   const identity:Identity=action==='register'?b.registration?.identity:b.identity;
   validateRegistration({identity,t0:1,policySha:'0'.repeat(40),deploymentSha:'0'.repeat(40)},Date.now());
-  await authorizeSingleRepository(request,env,TARGET.id);
-  const github=new BoundedGitHub(env);
+  await authorizeSingleRepository(request,env,identity.repositoryId);
+  const github=identity.stage==='candidate'?await candidateReader(new BoundedGitHub(env),identity.repositoryId):new BoundedGitHub(env);
   if(action==='register'){exact(b,['registration','producer']);await verifiedProducer(github,env,b);}
   else if(action==='receipt'){
    ensure(identity.stage==='candidate','PRODUCT_RECEIPT_USES_BOUNDED_GET');exact(b,['identity','requestKey','runId','attempt']);ensure(/^[a-f0-9]{64}$/.test(b.requestKey)&&Number.isSafeInteger(b.runId)&&b.runId>0&&b.attempt===1,'RECEIPT_LOCATOR');

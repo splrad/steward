@@ -1,3 +1,4 @@
+import {BoundedGitHub} from '../src/bounded-recheck-github.js';
 import {SqliteDurableStorage} from './bounded-storage.js';
 import {handleWebhook} from '../src/index.js';
 import {NativeCandidateCoordinator,nativeHintKey} from '../src/bounded-native-event.js';
@@ -5,7 +6,7 @@ import {applyVerifiedCandidateEvent} from '../src/bounded-release-event.js';
 import {objectKey,identityKey} from '../src/bounded-recheck.js';
 import type {VerifiedWakeContext} from '../src/bounded-initial-wake.js';
 import {FixedRecheckEffects} from '../src/bounded-recheck-effects.js';
-import {describe,it,expect} from 'vitest';
+import {describe,it,expect,vi} from 'vitest';
 import {createHmac,createHash} from 'node:crypto';
 import {manualIdentity,manualBody,manualProjectionBefore,verifyManualHead,verifyManualProjection} from '../src/bounded-manual-evidence.js';
 import {candidateFacts} from '../src/bounded-candidate-evidence.js';
@@ -153,13 +154,16 @@ describe('native ingress across a controller or deployment change',()=>{
    if(action==='/register'&&target==='new'){fresh={...body.registration,status:'PENDING',generation:1};return Response.json(fresh);}
    throw Error('unexpected control '+action);
   }})};
-  const payload=JSON.stringify({organization:{id:42},installation:{id:41},repository:{id:TARGET.id},action:'unlabeled',
+  const payload=JSON.stringify({organization:{id:42},installation:{id:41},repository:{id:TARGET.id,full_name:TARGET.name,default_branch:'main',private:false},action:'unlabeled',
    label:{name:'release:editing'},sender:{id:7},pull_request:{number:192,updated_at:event.created_at}});
   const signature=createHmac('sha256',env.STEWARD_WEBHOOK_SECRET).update(payload).digest('hex');
   const receive=()=>handleWebhook(new Request('https://fixture.invalid/webhook',{method:'POST',headers:{
    'x-github-event':'pull_request','x-github-delivery':'original-guid','x-hub-signature-256':'sha256='+signature},body:payload}),env);
-  await receive();await worker().alarm();now+=60000;await worker().alarm();
-  await receive();await worker().alarm();
+  const scoped=vi.spyOn(BoundedGitHub.prototype,'forCandidate').mockResolvedValue({...g,target:TARGET});
+  try {
+    await receive();await worker().alarm();now+=60000;await worker().alarm();
+    await receive();await worker().alarm();
+  } finally {scoped.mockRestore();}
   return {posts,actions,source:await store.get<any>('nativeEvent'),record};
  }
  it.each(['stale','same-time','simultaneous-completion','PENDING','UNKNOWN_DELIVERY','PAUSED','CANCELLED'])('blocks %s before any dispatch or control',async mode=>{

@@ -11,11 +11,11 @@ export function wingetInputs(c:any,executionSha:string){
  return {cycle_id:c.id,source_sha:c.sourceSha,execution_sha:executionSha,controller_sha:c.controllerSha,targets_json:JSON.stringify(targets),mode:'observe',operation_key:operationKey,request_key:digest(JSON.stringify(['observe',operationKey,executionSha])).slice(7)};
 }
 export async function readCycle(g:GitReader,id:string){
- ensure(/^[A-Za-z0-9_.-]{1,128}$/.test(id),'CYCLE_PATH');const base=`/repos/${TARGET.name}/`;
- const ref=await g.json(TARGET.id,base+'git/ref/heads/steward/release-state');ensure(ref.ref==='refs/heads/steward/release-state'&&ref.object?.type==='commit'&&sha(ref.object.sha),'CYCLE_REF');
- const path=`cycles/${id}.json`,f=await g.json(TARGET.id,base+`contents/${path}?ref=${ref.object.sha}`);ensure(f.type==='file'&&f.path===path&&f.encoding==='base64'&&Number.isSafeInteger(f.size)&&f.size<=512*1024,'CYCLE_FILE');
+ ensure(/^[A-Za-z0-9_.-]{1,128}$/.test(id),'CYCLE_PATH');const target=g.target??TARGET,base=`/repos/${target.name}/`;
+ const ref=await g.json(target.id,base+'git/ref/heads/steward/release-state');ensure(ref.ref==='refs/heads/steward/release-state'&&ref.object?.type==='commit'&&sha(ref.object.sha),'CYCLE_REF');
+ const path=`cycles/${id}.json`,f=await g.json(target.id,base+`contents/${path}?ref=${ref.object.sha}`);ensure(f.type==='file'&&f.path===path&&f.encoding==='base64'&&Number.isSafeInteger(f.size)&&f.size<=512*1024,'CYCLE_FILE');
  const bytes=Buffer.from(f.content,'base64');ensure(bytes.length===f.size&&createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')===f.sha,'CYCLE_BLOB');const cycle=JSON.parse(bytes.toString('utf8'));ensure(cycle.id===id,'CYCLE_ID');
- ensure((await g.json(TARGET.id,base+'git/ref/heads/steward/release-state')).object?.sha===ref.object.sha,'CYCLE_MOVED');return {cycle,commit:ref.object.sha};
+ ensure((await g.json(target.id,base+'git/ref/heads/steward/release-state')).object?.sha===ref.object.sha,'CYCLE_MOVED');return {cycle,commit:ref.object.sha};
 }
 export async function upstreamPull(number:number,g:GitReader){
  ensure(Number.isSafeInteger(number)&&number>0&&g.upstreamPull,'UPSTREAM_READER');const value=await g.upstreamPull(number);ensure(value.number===number&&typeof value.node_id==='string'&&value.base?.repo?.full_name==='microsoft/winget-pkgs'&&value.head?.repo?.full_name==='axiomoth/winget-pkgs'&&typeof value.merged==='boolean'&&['open','closed'].includes(value.state),'UPSTREAM_IDENTITY');return value;
