@@ -85,11 +85,17 @@ test('manual validation follows the template at the exact candidate head for opt
   await assert.rejects(validateManualCandidate(f.session,f.producer,f.io), /missing heading/);
 });
 
-test('two declared release units on trunk bind independent version files, notes and tags to one candidate',async()=>{
+for(const schemaVersion of [1,2])test('two declared release units on trunk bind independent inputs for schema '+schemaVersion,async()=>{
   const f=fixture(),p={id:72,name:'splrad/second',defaultBranch:'trunk'};
   f.session.repository.repositoryId=p.id;
   f.pull.head.repo.id=p.id;f.pull.base.repo.id=p.id;f.pull.base.ref=p.defaultBranch;
   f.delivery.units=['cli','ui'].map(id=>({...f.delivery.units[0],id,path:'packages/'+id,notesPath:'.release-notes/'+id+'.md'}));
+  f.delivery.schemaVersion=schemaVersion;
+  if(schemaVersion===2)for(const unit of f.delivery.units){
+    unit.assets=[{id:'archive',name:unit.id+'-${version}.zip',mediaType:'application/zip',inspection:'zip'}];
+    unit.channels=[{id:'github-release',required:true,location:'github',artifactIds:['archive']}];
+    unit.buildLocks=[unit.path+'/package-lock.json'];
+  }
   f.session.generated.units=f.delivery.units.map(({id,path},i)=>({id,path,version:(i+1)+'.0.0',tag:id+'-v'+(i+1)+'.0.0'}));
   f.session.identity.units=f.session.generated.units.map(({id})=>({id}));
   f.files['.github/delivery.json']=JSON.stringify(f.delivery);
