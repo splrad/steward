@@ -1,3 +1,4 @@
+import { releaseBodyMatches } from './release-body.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { readFile, mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
@@ -400,7 +401,8 @@ export async function verifyContinuationReleases(context:EvidenceContext,io:Evid
     if(unit.releaseId===null||!unit.assets.length||unit.manifestDigest===null||unit.notesDigest===null)fail('frozen release required');
     const release=await reader.json(`releases/${unit.releaseId}`),assets=await reader.pages(`releases/${unit.releaseId}/assets`,'');
     if(release.id!==unit.releaseId||release.tag_name!==unit.tag||release.author?.id!==context.appBotId||release.draft!==false||release.immutable!==true
-      ||typeof release.body!=='string'||sha256(release.body)!==unit.notesDigest||(await reader.json(`commits/${encodeURIComponent(unit.tag)}`)).sha!==context.cycle.sourceSha
+      ||!await releaseBodyMatches({ repository: context.repository, repositoryId: context.repositoryId, releaseId: release.id,
+          sourceSha: context.cycle.sourceSha, tag: unit.tag, frozenDigest: unit.notesDigest }, release.body, path => reader.json(path))||(await reader.json(`commits/${encodeURIComponent(unit.tag)}`)).sha!==context.cycle.sourceSha
       ||assets.length!==unit.assets.length||new Set(assets.map(asset=>asset.name)).size!==assets.length)fail('formal release identity');
     for(const asset of assets) {
       const actual=await reader.downloadDigest(`releases/assets/${asset.id}`);

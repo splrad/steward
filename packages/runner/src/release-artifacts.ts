@@ -127,7 +127,7 @@ async function sealFiles<T extends ReleaseManifest | ProductReleaseManifest>(dir
   const sbom = JSON.parse(await readFile(join(directory, names[0]!), 'utf8'));
   if (!/^SPDX-2\.[0-9]+$/.test(sbom.spdxVersion) || sbom.SPDXID !== 'SPDXRef-DOCUMENT' || !Array.isArray(sbom.packages)) fail('invalid SBOM');
   const notes = await readFile(join(directory, names[1]!), 'utf8');
-  if (!notes.includes(manifest.version) || !notes.includes(manifest.sourceSha) || !notes.includes(manifest.schemaVersion === 3 ? manifest.controllerSha : manifest.policySha)) fail('notes identity');
+  if (!notes.includes(manifest.version) || !notes.includes(manifest.sourceSha) || manifest.schemaVersion === 2 && !notes.includes(manifest.policySha)) fail('notes identity');
   const sealed = { ...manifest, evidence: await Promise.all(names.map(name => fileDigest(directory, name))) };
   await writeFile(join(directory, 'artifact-manifest.json'), JSON.stringify(sealed, null, 2) + '\n', { flag: 'wx' });
   const checksums = [...sealed.artifacts, ...sealed.evidence, await fileDigest(directory, 'artifact-manifest.json')]
