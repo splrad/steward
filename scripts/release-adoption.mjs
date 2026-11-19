@@ -31,6 +31,17 @@ export function validateReleaseConfiguration(delivery,settings,versions) {
   }
 }
 
+// The channel workflow is product-owned. This list describes files to verify or
+// materialize from reviewed product sources; it never selects a product template.
+export function releaseAdoptionPlan(delivery) {
+  const files=['.github/workflows/steward-release-publish.yml','.github/release-template.md.mustache'];
+  const externalTargets=delivery.units.flatMap(unit=>unit.channels
+    .filter(channel=>channel.required && channel.id!=='github-release')
+    .map(channel=>({unitId:unit.id,channelId:channel.id,location:channel.location})));
+  if(externalTargets.length)files.push('.github/workflows/steward-release-channels.yml');
+  return {files,externalTargets};
+}
+
 /** A/P comes only from the merged onboarding PR. The source history is never truncated at A for first-release generation. */
 export async function withReleaseAdoption(request,adoption,io,operation) {
   if(!adoption||!sha(adoption.sourceSha)||!Number.isSafeInteger(adoption.prNumber)||adoption.prNumber<1
@@ -64,7 +75,7 @@ export async function withReleaseAdoption(request,adoption,io,operation) {
     const manifest=JSON.parse(await file(adoption.sourceSha,'.release-please-manifest.json'));
     const delivery=parseDeliveryConfig(JSON.parse(await file(adoption.sourceSha,'.github/delivery.json')));
     validateReleaseConfiguration(delivery,settings,manifest);
-    for(const path of ['.github/workflows/steward-release-publish.yml','.github/workflows/steward-release-channels.yml','.github/release-template.md.mustache'])await file(adoption.sourceSha,path);
+    for(const path of releaseAdoptionPlan(delivery).files)await file(adoption.sourceSha,path);
     if(request.repositoryId===1187527897) {
       if(request.repository!=='splrad/LayerScape'||Object.keys(manifest).length||settings.packages?.['.']?.['initial-version']!=='1.0.0'
         ||['bootstrap-sha','draft','force-tag-creation'].some(key=>Object.hasOwn(settings,key)||Object.hasOwn(settings.packages['.'],key)))fail('LayerScape first-release configuration');
