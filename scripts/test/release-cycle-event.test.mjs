@@ -68,12 +68,18 @@ test('a WinGet index receipt cannot enqueue another probe',async()=>{
   const calls=[],ports={get:async()=>run,snapshot:async()=>({cycles:[{value:cycle}]}),botId:301115370,
     invoke:async(command,id,runId,allowProbeDispatch)=>{calls.push([command,id,allowProbeDispatch]);return {status:'OBSERVED'};}};
   const digest=channelTargetsDigest({repositoryId:product.id,cycle},[target]);
-  ports.probeArtifacts=async()=>[{name:'probe-'+cycle.id+'-'+digest+'-'+run.id+'-1',workflow_run:{id:run.id,head_sha:run.head_sha}}];
+  ports.probeArtifacts=async()=>[{expired:false,name:'probe-'+cycle.id+'-'+digest+'-'+run.id+'-1',workflow_run:{id:run.id,head_sha:run.head_sha}}];
   const hint={repositoryId:product.id,kind:'run',runId:83,attempt:1};
   await advanceEvent(hint,ports);
   assert.deepEqual(calls,[['observe-channel','cycle',false],['dispatch-channel','cycle',false]]);
   run.display_title='Channels observe '+'0'.repeat(64);
   await assert.rejects(advanceEvent(hint,ports),/AMBIGUOUS/);
+  run.display_title='Channels observe '+key;
+  const before=calls.length;
+  ports.probeArtifacts=async()=>[{expired:true,name:'probe-'+cycle.id+'-'+digest+'-'+run.id+'-1',workflow_run:{id:run.id,head_sha:run.head_sha}}];
+  assert.equal((await advanceEvent(hint,ports)).reason,'PROBE_RECEIPT_UNCONFIRMED');
+  assert.equal(calls.length,before);
+
 });
 test('a rerun after a lost publication receipt verifies the original attempt without invoking publish again',async()=>{
   const buildKey='e'.repeat(64),request={purpose:'build',operationKey:buildKey,canonicalRunId:83,workflowId:410998652,
@@ -122,4 +128,26 @@ test('a registered fixture repository uses its own default branch while the prod
   const result=await advanceEvent(event,{registry,snapshot:async()=>({cycles:[]}),
     get:async path=>{paths.push(path);return {object:{sha:source}};},candidate:async()=>({status:'WAIT'})});
   assert.deepEqual(paths,['git/ref/heads/trunk']);assert.equal(result.status,'WAIT');
+});
+
+test('routes a multi-unit probe only when the report subset belongs to the frozen cycle',async()=>{
+  const {channelTargetsDigest}=await import('../../packages/runner/dist/index.js');
+  const units=['one','two','three'].map((id,i)=>({id,version:'2.0.0',releaseId:i+11,manifestDigest:String(i+1).repeat(64)}));
+  const cycle={id:'cycle',sourceSha:source,deliveryConfigSha:later,units,
+    requiredChannels:units.map(unit=>({unitId:unit.id,channelId:'ghcr-assets'}))};
+  const targets=units.slice(1).map(unit=>({unitId:unit.id,channelId:'ghcr-assets',version:unit.version,releaseId:unit.releaseId,manifestDigest:unit.manifestDigest}));
+  const digest=channelTargetsDigest({repositoryId:product.id,cycle},targets);
+  const run={id:83,run_attempt:1,status:'completed',conclusion:'success',repository:{id:product.id},head_repository:{id:product.id},
+    head_sha:later,head_branch:'main',actor:{id:301115370},event:'workflow_dispatch',workflow_id:410998651,
+    path:'.github/workflows/steward-release-channels.yml',created_at:'2026-11-19T01:00:00Z',updated_at:'2026-11-19T01:01:00Z',
+    display_title:'Channels observe '+sha256(['observe',digest,later])};
+  const report={cycleId:cycle.id,targetsDigest:digest,items:targets.map(({unitId,channelId,version})=>({unitId,channelId,version}))};
+  const calls=[],ports={snapshot:async()=>({cycles:[{value:cycle}]}),get:async()=>run,botId:301115370,
+    probeArtifacts:async()=>[{id:12,name:'probe-cycle-'+digest+'-83-1',expired:false,workflow_run:{id:83,head_sha:later}}],
+    probeReport:async()=>report,invoke:async command=>{calls.push(command);return {reason:'DISTRIBUTION_VERIFIED'};}};
+  const event={repositoryId:product.id,kind:'run',runId:83,attempt:1};
+  assert.equal((await advanceEvent(event,ports)).cycleId,'cycle');
+  report.items[0].unitId='foreign';
+  await assert.rejects(advanceEvent(event,ports),/AMBIGUOUS/);
+  assert.deepEqual(calls,['observe-channel']);
 });

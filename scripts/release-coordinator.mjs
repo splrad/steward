@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { nativeReleaseApp, nativeEvidenceTransport, isolatedBuildEnvironment, evaluateCompletion,parseDeliveryConfig,assertProductDelivery } from '../packages/runner/dist/index.js';
+import { nativeReleaseApp, nativeEvidenceTransport, isolatedBuildEnvironment, githubUnits,evaluateCompletion,parseDeliveryConfig,assertProductDelivery } from '../packages/runner/dist/index.js';
 import { readReleaseRecords, writeReleaseRecords, releaseCommand, assertReleaseWriterProtection } from './release-record.mjs';
 import {servicePages,pagesGitStore} from './pages-maintenance.mjs';
 import {assertQualityProtection,qualityNativeIO} from './quality-language-summary.mjs';
@@ -28,6 +28,7 @@ export async function serviceReleaseWake(request,refresh,invoke,clock=Date.now) 
   snapshot=await refresh();
   const results=[];
   for(const {value:registered} of snapshot.cycles) {
+    if(registered.freezeOnly && !githubUnits(registered).length)continue;
     const read=snapshot.domainRecords?.filter(record=>record.path.startsWith('evidence/reads/')&&record.value.cycleId===registered.id)
       .sort((a,b)=>b.value.observedAt.localeCompare(a.value.observedAt))[0]?.value;
     if(read?.nextCheckAt&&Date.parse(read.nextCheckAt)>clock()) {
@@ -41,6 +42,7 @@ export async function serviceReleaseWake(request,refresh,invoke,clock=Date.now) 
       results.push(await invoke('dispatch-build',request));await refresh();
       const publish=await invoke('publish',request);results.push(publish);
       if(publish.publishInvoked===true)return publish;
+      if(publish.status==='FROZEN')continue;
     }
     if(registered.requiredChannels?.length!==0) {await refresh();results.push(await invoke('dispatch-channel',request));}
     await refresh();results.push(await invoke('observe-channel',request));

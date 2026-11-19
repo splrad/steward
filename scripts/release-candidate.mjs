@@ -454,8 +454,9 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         const reviewedTree = (await git('rev-parse', `${pull.head.sha}^{tree}`)).toString().trim();
         const delivery = parseDeliveryConfig(JSON.parse(await fileAt(sourceSha, '.github/delivery.json')));
         const versions = JSON.parse(await fileAt(sourceSha, '.release-please-manifest.json'));
+        const template = await fileAt(sourceSha, '.github/release-template.md.mustache');
         for (const unit of delivery.units.filter(unit => data.generated.units.some(generated => generated.id === unit.id)))
-          parseSupplementalNotes(await fileAt(sourceSha, unit.notesPath));
+          parseSupplementalNotes(await fileAt(sourceSha, unit.notesPath), template);
         if (data.identity.authorsDigest !== hash(JSON.stringify(delivery.repositoryAuthors))
           || data.generated.units.some(unit => versions[unit.path] !== unit.version)) fail('MERGED_CANDIDATE_INPUT_DRIFT');
         // The merged source fixes its execution controller, independently of this wake.

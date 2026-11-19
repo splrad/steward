@@ -63,4 +63,6 @@ it('keeps legacy GitHub selection while honoring independent version 2 destinati
   expect(channelFiles(configured,'ghcr-assets',files)).toEqual(['SHA256SUMS','cli.tar.gz']);
   expect(channelFiles(configured,'winget',files)).toEqual(['Tool.msi']);
   expect(configured.assets).toEqual(assets);
+  configured.channels.find(channel=>channel.id==='winget')!.artifactIds=['portable'];
+  expect(()=>channelFiles(configured,'winget',files)).toThrow('DELIVERY_WINGET_INSTALLER');
 });

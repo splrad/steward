@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { NativeEvidenceReader, nativeEvidenceTransport, nativeReleaseApp, nativeRunFact, verifyExecutionSource, channelTargetsDigest } from '../packages/runner/dist/index.js';
+import { NativeEvidenceReader, nativeEvidenceTransport, nativeReleaseApp, nativeRunFact, verifyExecutionSource, githubUnits, channelTargetsDigest, downloadNativeArtifact } from '../packages/runner/dist/index.js';
 import { exact, sha, sha256 } from './bounded-candidate-contract.mjs';
 import { entryGuard } from './bounded-release-entry.mjs';
 import { fetchState } from './release-coordinator.mjs';
@@ -32,29 +32,34 @@ export function validateEvent(event, requestKey, registry=registrations) {
 }
 const wait = reason => ({status:'WAIT',reason});
 const only = items => items.length === 1 ? items[0] : fail('CYCLE_EVENT_AMBIGUOUS');
-function probeMatches(cycle,run,botId,product,artifacts) {
-  if (run.repositoryId !== product.id || run.headRepositoryId !== product.id || run.actorId !== botId
+function registeredProbe(run,botId,product) {
+  return !(run.repositoryId !== product.id || run.headRepositoryId !== product.id || run.actorId !== botId
     || run.event !== 'workflow_dispatch' || run.headBranch !== product.defaultBranch || run.workflowId !== product.channelWorkflowId
-    || run.path !== '.github/workflows/steward-release-channels.yml' || !sha(run.headSha)) return false;
+    || run.path !== '.github/workflows/steward-release-channels.yml' || !sha(run.headSha));
+}
+function probeMatches(cycle,run,botId,product,artifacts) {
+  if (!registeredProbe(run,botId,product)) return false;
   const targets=cycle.requiredChannels.map(channel=>{
     const unit=cycle.units.find(u=>u.id===channel.unitId);
     return {...channel,version:unit.version,releaseId:unit.releaseId,manifestDigest:unit.manifestDigest};
   });
   if (!targets.length || targets.some(t=>!t.releaseId || !t.manifestDigest)) return false;
-  if (artifacts) {
-    const prefix='probe-'+cycle.id+'-';
-    return artifacts.some(artifact=>{
-      if (typeof artifact.name!=='string' || !artifact.name.startsWith(prefix)
-          || artifact.workflow_run?.id!==run.id || artifact.workflow_run?.head_sha!==run.headSha) return false;
-      const match=/^([a-f0-9]{64})-([1-9][0-9]*)-([1-9][0-9]*)$/.exec(artifact.name.slice(prefix.length));
-      return match && match[2]===String(run.id) && Number(match[3])<=run.runAttempt
-        && run.displayTitle==='Channels observe '+sha256(['observe',match[1],run.headSha]);
-    });
-  }
-  // Direct reads can cover either channel; the remaining subset is observed in the native product job.
-  return [targets,...targets.map(t=>[t])].some(subset=>{
-    const digest=channelTargetsDigest({repositoryId:product.id,cycle},subset);
-    return run.displayTitle==='Channels observe '+sha256(['observe',digest,run.headSha]);
+  const keyFor=subset=>channelTargetsDigest({repositoryId:product.id,cycle},subset);
+  const direct=[targets,...targets.map(target=>[target])].map(keyFor);
+  if (!artifacts) return direct.some(digest=>run.displayTitle==='Channels observe '+sha256(['observe',digest,run.headSha]));
+  const prefix='probe-'+cycle.id+'-';
+  return artifacts.some(artifact=>{
+    if (artifact.expired!==false || typeof artifact.name!=='string' || !artifact.name.startsWith(prefix)
+        || artifact.workflow_run?.id!==run.id || artifact.workflow_run?.head_sha!==run.headSha) return false;
+    const match=/^([a-f0-9]{64})-([1-9][0-9]*)-([1-9][0-9]*)$/.exec(artifact.name.slice(prefix.length));
+    if (!match || match[2]!==String(run.id) || Number(match[3])>run.runAttempt
+        || run.displayTitle!=='Channels observe '+sha256(['observe',match[1],run.headSha]))return false;
+    if (direct.includes(match[1]))return true;
+    const report=artifact.report;
+    if(!report || report.cycleId!==cycle.id || report.targetsDigest!==match[1] || !Array.isArray(report.items)
+        || !report.items.length || report.items.length>targets.length)return false;
+    const subset=report.items.map(item=>targets.find(t=>t.unitId===item.unitId && t.channelId===item.channelId && t.version===item.version));
+    return subset.every(Boolean) && new Set(subset).size===subset.length && keyFor(subset)===match[1];
   });
 }
 
@@ -62,7 +67,7 @@ function publicationStarts(state,runId,attempt,sha) {
   return state.domainRecords.filter(r=>r.path.startsWith('evidence/publication/') && r.value.startEvidencePath===null
     && r.value.centralRun.id===runId && r.value.centralRun.runAttempt<=attempt && r.value.centralRun.headSha===sha);
 }
-export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invoke,botId,producer,probeArtifacts,registry=registrations}) {
+export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invoke,botId,producer,probeArtifacts,probeReport,registry=registrations}) {
   const product=registeredRepository(event,registry);
   const state=await snapshot(), cycles=state.cycles.map(record=>record.value);
   let cycleId=null;
@@ -72,6 +77,7 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
     const head=(await get('git/ref/heads/'+encodeURIComponent(product.defaultBranch))).object?.sha;
     if (!sha(head)) fail('CYCLE_EVENT_SOURCE');
     const prior=cycles.find(c=>c.sourceSha===event.sourceSha);
+    if (prior?.freezeOnly && !githubUnits(prior).length)return {status:'FROZEN',reason:'NO_PUBLICATION_CHANNELS',cycleId:prior.id};
     if (prior) {
       cycleId=prior.id;
       if (!prior.dispatches.some(d=>d.purpose==='build' && d.canonicalRunId!==null) && !prior.completedEvidencePath)
@@ -103,9 +109,17 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
     const prior=await execute('reconcile-publication');
     if(prior.status!=='OBSERVED')return {...prior,cycleId};
   } else if (run.displayTitle.startsWith('Channels observe ')) {
+    if (!registeredProbe(run,botId,product)) fail('CYCLE_PROBE_ORIGIN');
     if (run.conclusion!=='success')return wait('PROBE_UNSUCCESSFUL');
     const artifacts=probeArtifacts?await probeArtifacts(run):null;
-    cycleId=only(cycles.filter(c=>probeMatches(c,run,botId,product,artifacts))).id;
+    let candidates=cycles.filter(c=>probeMatches(c,run,botId,product,artifacts));
+    if (!candidates.length && artifacts && probeReport) {
+      for(const artifact of artifacts.filter(a=>a.expired===false && a.workflow_run?.id===run.id && a.workflow_run?.head_sha===run.headSha
+        && typeof a.name==='string' && cycles.some(c=>a.name.startsWith('probe-'+c.id+'-')))) artifact.report=await probeReport(artifact);
+      candidates=cycles.filter(c=>probeMatches(c,run,botId,product,artifacts));
+    }
+    if(!candidates.length && artifacts && !artifacts.some(artifact=>artifact.expired===false))return wait('PROBE_RECEIPT_UNCONFIRMED');
+    cycleId=only(candidates).id;
     probeReceipt=true;
 
   } else {
@@ -157,7 +171,13 @@ export async function main(env=process.env) {
       const refresh=()=>fetchState(root,repository,token);
       const request=async(cycleId,runId)=>({directory:(await refresh()).directory,writeDirectory:await mkdtemp(join(root,'write-')),
         remote:'https://github.com/'+product.name+'.git',repository:product.name,repositoryId:product.id,defaultBranch:product.defaultBranch,appBotId:app.appBotId,cycleId,runId,identity});
-      return advanceEvent(event,{snapshot:async()=>(await refresh()).snapshot,get:path=>productReader.json(path),probeArtifacts:run=>productReader.pages('actions/runs/'+run.id+'/artifacts','artifacts'),centralGet,botId:app.appBotId,producer,
+      return advanceEvent(event,{snapshot:async()=>(await refresh()).snapshot,get:path=>productReader.json(path),probeArtifacts:run=>productReader.pages('actions/runs/'+run.id+'/artifacts','artifacts'),
+        probeReport:async artifact=>{
+          const directory=join(root,'probe-'+artifact.id);
+          await downloadNativeArtifact({fullName:product.name,artifactId:artifact.id,digest:artifact.digest,names:['report.json'],
+            directory,policyDirectory:process.cwd(),home:join(root,'download-'+artifact.id)},token);
+          return JSON.parse(await readFile(join(directory,'report.json'),'utf8'));
+        },centralGet,botId:app.appBotId,producer,
         candidate:(expectedSourceSha,expectedStateSha)=>app.forCandidateRepository(product.id,async(writer,candidateReadToken)=>
           releaseCommand('candidate',await request(null,null),{token:writer,io,centralIo,candidateReadToken,copilotToken:env.STEWARD_COPILOT_TOKEN,
             controllerSha:run.head_sha,controllerDirectory:process.cwd(),candidateRuntime:{expectedSourceSha,expectedStateSha}})),

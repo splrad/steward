@@ -1,8 +1,6 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, copyFile, lstat, rm } from 'node:fs/promises';
+import { mkdir, readFile, readdir, copyFile, lstat, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import registrations from '../../../config/release/event-repositories.json' with { type: 'json' };
 import { nativeGhCommand, NativeGitHubRelease, nativeReleaseDownload, releaseReadIsAnonymous, type GhCommand, type ReleaseDownload } from './gh-release.js';
 import { localGitSnapshot } from './git-snapshot.js';
 import { selectReleaseProducers, producerArtifactName } from './release-run.js';
@@ -15,7 +13,7 @@ import { downloadNativeArtifact } from './native-artifact-download.js';
 import { Octokit } from '@octokit/rest';
 import { assertPipelineSource, type PipelineSource, type PublishPipelineRecord } from './release-pipeline-record.js';
 import { parsePipelineRecord, pipelineSource, type BuildPipelineRecord } from './release-pipeline-record.js';
-import { channelFiles, parseDeliveryConfig, deliveryAssetNames, assertDeliveryPath, type DeliveryUnit, type DeliveryConfig } from '../../core/src/delivery-config.js';
+import { parseDeliveryConfig, deliveryAssetNames, assertDeliveryPath, type DeliveryUnit, type DeliveryConfig } from '../../core/src/delivery-config.js';
 import { parseReleaseDescriptor,artifactNames } from '../../core/src/release-descriptor.js';
 import { parseLegacyRepositoryCatalog } from '../../core/src/legacy-repository-policy.js';
 import { decodeNormalizedDelivery,type NormalizedDeliveryEvidence } from '../../core/src/native-evidence.js';
@@ -23,7 +21,7 @@ import { parseReleaseRecord, type CycleRecord, type RepositoryRecord } from '../
 import { decodeCandidateDocument, type CandidateArchiveChunk } from '../../core/src/release-candidate-record.js';
 import { selectReleaseContributors } from '../../core/src/release-candidate.js';
 import { nativeRunFact, NativeEvidenceReader, EvidenceReadError, type EvidenceContext, type EvidenceTransport, nativeEvidenceTransport } from './native-release-evidence.js';
-import { verifyExecutionSource, verifyDispatchWorkflow, channelTargets, channelTargetsDigest, verifyContinuationReleases, type ChannelTarget } from './release-run.js';
+import { verifyExecutionSource, verifyDispatchWorkflow, channelTargets, channelTargetsDigest, type ChannelTarget } from './release-run.js';
 import { parseDocument } from 'yaml';
 import { Version } from 'release-please/build/src/version.js';
 import { TagName } from 'release-please/build/src/util/tag-name.js';
@@ -168,29 +166,8 @@ export async function pipelineChannelIdentity(inputs:ProductChannelInputs,state:
 }
 
 export async function pipelineChannelDownload(context:EvidenceContext,target:ChannelTarget,directory:string,gh:GhCommand=nativeGhCommand,
-  download:ReleaseDownload=nativeReleaseDownload(process.env.GH_TOKEN),
-  source?:{unit:DeliveryUnit;controllerDirectory:string;history:{path:string;commit:string;value:unknown}[]}) {
-  channelTargets(context,[target]);
-  const github=source?.unit.channels.find(channel=>channel.id==='github-release');
-  if (source && github && (github.artifactIds?.length !== undefined && github.artifactIds.length !== source.unit.assets.length
-    || github.metadata?.length !== undefined && github.metadata.length !== 4)) {
-    const token=process.env.GH_TOKEN;
-    if (!token) return fail('channel source authentication');
-    const root=await mkdtemp(join(tmpdir(),'steward-channel-freeze-'));
-    try {
-      await verifyContinuationReleases(context,nativeEvidenceTransport(token));
-      const records=await pipelinePreparePublication(context,root,source.controllerDirectory,token,gh,undefined,undefined,download,source.history);
-      if (!Array.isArray(records)) return fail('channel freeze unavailable');
-      const record=records.find(record=>record.unitId===target.unitId);
-      if (!record || (await fileDigest(record.directory,'artifact-manifest.json')).sha256!==target.manifestDigest) return fail('channel freeze identity');
-      await new NativeGitHubRelease(gh,download).verify({manifest:record.manifest,delivery:source.unit,directory:record.directory,releaseId:target.releaseId,appBotId:context.appBotId});
-      await mkdir(directory);
-      for (const name of channelFiles(source.unit,target.channelId,record.manifest.artifacts))
-        await copyFile(join(record.directory,name),join(directory,name));
-      return record.manifest;
-    } finally {await rm(root,{recursive:true,force:true});}
-  }
- const unit=context.cycle.units.find(unit=>unit.id===target.unitId)!;
+  download:ReleaseDownload=nativeReleaseDownload(process.env.GH_TOKEN)) {
+  channelTargets(context,[target]);const unit=context.cycle.units.find(unit=>unit.id===target.unitId)!;
   const anonymous=await releaseReadIsAnonymous(gh,context.repository,context.repositoryId);
   const pages=JSON.parse(await gh(['api','--paginate','--slurp',`repos/${context.repository}/releases/${target.releaseId}/assets?per_page=100`]));
   if(!Array.isArray(pages)||!pages.length||pages.some(page=>!Array.isArray(page)))fail('formal asset pages');
@@ -212,42 +189,27 @@ export async function pipelineChannelDownload(context:EvidenceContext,target:Cha
   await new NativeGitHubRelease(gh,download).verify({manifest:m,directory,releaseId:target.releaseId,appBotId:context.appBotId});
   return m;
 }
-/** Only registered product workflows may consume the corresponding channel credential. */
-export function assertRegisteredAdapters(repositoryId: number, repository: string, delivery: Pick<DeliveryConfig,'units'>) {
-  const registration = registrations.find(item => item.id === repositoryId && item.name === repository);
-  for (const unit of delivery.units) for (const channel of unit.channels) {
-    if (channel.id === 'github-release' || !channel.required) continue;
-    if (!registration?.externalAdapters.some(adapter => adapter.unitId === unit.id
-      && adapter.channelId === channel.id && adapter.location === channel.location))
-      fail('external adapter is not registered for this repository, unit and destination');
-    if (unit.channels.some(item=>item.id==='github-release' && !item.required)) fail('registered external adapter requires a published Release ID');
-    if (channel.id === 'winget') {
-      const inventory = [...deliveryAssetNames(unit,'1.0.0','1.0.0')].map(([id,path])=>({id,path}));
-      const publicFiles = channelFiles(unit,'github-release',inventory);
-      const [installer] = channelFiles(unit,'winget',inventory);
-      if (!installer || !publicFiles.includes(installer)) fail('WinGet requires a published installer URL');
-    }
-  }
-}
 /** These are the external channels implemented by the fixed product workflow and native CLI. */
-export function assertProductDelivery(delivery:Pick<DeliveryConfig,'units'>) {
+export function assertProductDelivery(delivery:Pick<DeliveryConfig,'units'>,repository?:string) {
   for(const unit of delivery.units)for(const channel of unit.channels)
-    if(channel.id!=='github-release'&&channel.id!=='ghcr-assets'&&channel.id!=='winget')fail('channel has no fixed product implementation');
+    if(channel.id!=='ghcr-assets'&&channel.id!=='winget')fail('channel has no fixed product implementation');
+  if(repository==='splrad/LayerScape'&&(delivery.units.length!==1||delivery.units[0]!.id!=='layerscape'
+    ||delivery.units[0]!.channels.length!==2||!['ghcr-assets','winget'].every(id=>delivery.units[0]!.channels.some(channel=>channel.id===id&&channel.required))))
+    fail('LayerScape required delivery obligations');
 }
 /** The merged source is eligible only when its full Git tree matches the reviewed candidate. */
 export function mergedBuildCycle(input: { prNumber: number; sourceSha: string; controllerSha: string; sourceTree: string; reviewedTree: string;
-  deliveryBlobSha: string; delivery: unknown; units: { id: string; path: string; version: string; tag: string }[]; repository?:string; repositoryId?:number }): CycleRecord {
+  deliveryBlobSha: string; delivery: unknown; units: { id: string; path: string; version: string; tag: string }[]; repository?:string }): CycleRecord {
   if (![input.sourceSha, input.controllerSha, input.sourceTree, input.reviewedTree, input.deliveryBlobSha].every(sha => /^[a-f0-9]{40}$/.test(sha))
     || input.sourceTree !== input.reviewedTree || !input.units.length) fail('merged product tree differs from reviewed source');
   const delivery = parseDeliveryConfig(input.delivery);
-  assertProductDelivery(delivery);
-  if(input.repository && input.repositoryId) assertRegisteredAdapters(input.repositoryId,input.repository,delivery);
+  assertProductDelivery(delivery,input.repository);
   if(new Set(input.units.map(unit=>unit.id)).size!==input.units.length||new Set(input.units.map(unit=>unit.path)).size!==input.units.length)fail('merged duplicate unit mapping');
   for (const unit of input.units) if (!delivery.units.some(value => value.id === unit.id && value.path === unit.path)) fail('merged unit source');
   return parseReleaseRecord('cycle', { id: `pr-${input.prNumber}-${input.sourceSha}`, prNumber: input.prNumber, sourceSha: input.sourceSha,
     controllerSha: input.controllerSha, deliveryConfigSha: input.deliveryBlobSha,
     units: input.units.map(unit => ({ id: unit.id, version: unit.version, tag: unit.tag, releaseId: null, assets: [], notesDigest: null, manifestDigest: null })),
-    requiredChannels: delivery.units.filter(unit => input.units.some(value => value.id === unit.id)).flatMap(unit => unit.channels.filter(channel => channel.required && channel.id !== 'github-release').map(channel => ({ unitId: unit.id, channelId: channel.id }))),
+    requiredChannels: delivery.units.filter(unit => input.units.some(value => value.id === unit.id)).flatMap(unit => unit.channels.filter(channel => channel.required).map(channel => ({ unitId: unit.id, channelId: channel.id }))),
     dispatches: [], publications: [], channelFacts: [], executionEvidence: [], completionObservations: [], completedEvidencePath: null, repairOf: null, approvedRepairDecision: null });
 }
 /** The build admission and central freeze recovery derive the same native versions and source locks from S. */
@@ -319,7 +281,7 @@ export async function pipelineIdentity(input: ProductBuildInput, environment: No
   };
   const source = (path: string) => file(input.sourceDirectory, cycle.sourceSha, path);
   const deliveryBytes = await source('.github/delivery.json'), delivery = parseDeliveryConfig(JSON.parse(deliveryBytes.toString('utf8')));
-  assertProductDelivery(delivery);
+  assertProductDelivery(delivery,fullName);
   if (createHash('sha1').update(`blob ${deliveryBytes.length}\0`).update(deliveryBytes).digest('hex') !== cycle.deliveryConfigSha) fail('delivery source blob');
   const workflowBytes = await source('.github/workflows/steward-release-publish.yml'); verifyDispatchWorkflow(workflowBytes, request);
   const document = parseDocument(workflowBytes.toString('utf8'), { uniqueKeys: true });
@@ -377,14 +339,14 @@ export async function pipelineNotes(record: BuildPipelineRecord, unitId: string,
   const read = async (path: string) => { const bytes = await localGitSnapshot.file(sourceDirectory, record.sourceSha, path); if (!bytes) fail('missing notes source'); return bytes.toString('utf8'); };
   const settings = JSON.parse(await read('release-please-config.json')), options = { ...settings, ...settings.packages[delivery.path] };
   const changelogPath = options['changelog-path'] ?? 'CHANGELOG.md'; assertDeliveryPath(changelogPath);
-  const changelog = await read(delivery.path === '.' ? changelogPath : `${delivery.path}/${changelogPath}`);
-  const { sourceLinkLabel, sourceUrl, commitUrl } = committedVersionNotes(changelog, unit.version, record.fullName, record.sourceSha, unit.tag);
+  const changelogFile = delivery.path === '.' ? changelogPath : `${delivery.path}/${changelogPath}`;
+  const changelog = await read(changelogFile);
   const template = await read('.github/release-template.md.mustache'); if (hash(Buffer.from(template)) !== record.templateSha256) fail('notes template source');
-  const publicNames=new Set(channelFiles(delivery,'github-release',unit.assets.map(asset=>({id:asset.id,path:asset.name}))));
+  const { sourceLinkLabel, sourceUrl, commitUrl } = committedVersionNotes(changelog, unit.version, record.fullName, record.sourceSha, unit.tag,
+    template.includes('{{controllerSha}}') ? undefined : changelogFile);
   return renderFrozenReleaseNotes(template, { repository: record.fullName, unitId, version: unit.version, tag: unit.tag, sourceSha: record.sourceSha,
-    controllerSha: record.controllerSha, notes: await read(delivery.notesPath), sourceLinkLabel, sourceUrl, commitUrl, contributors: unit.contributors,
-    githubDisabled:delivery.channels.some(channel=>channel.id==='github-release' && !channel.required),
-    repositoryAuthors: record.delivery.repositoryAuthors, assets: unit.assets.filter(asset=>publicNames.has(asset.name)), channels: delivery.channels.filter(channel=>channel.required && channel.id !== 'github-release') });
+    displayName: delivery.displayName, controllerSha: record.controllerSha, notes: await read(delivery.notesPath), sourceLinkLabel, sourceUrl, commitUrl, contributors: unit.contributors,
+    repositoryAuthors: record.delivery.repositoryAuthors, assets: unit.assets.map(asset => ({ ...asset, description: delivery.assets.find(item => item.id === asset.id)?.description })), channels: delivery.channels });
 }
 export async function pipelineInspect(record: BuildPipelineRecord, unitId: string, selection: Awaited<ReturnType<typeof pipelineProducers>>,
   directory: string, controllerDirectory: string, home: string) {
@@ -537,7 +499,7 @@ async function publicationTarget(record: PublishPipelineRecord, unitId: string, 
   const release = record.releases.find(item => item.unitId === unitId); if (!release) return fail('release identity');
   const manifest = await pipelineFrozenManifest(record.build, unitId, directory);
   if ((await fileDigest(directory, 'artifact-manifest.json')).sha256 !== release.manifestDigest) fail('frozen manifest digest');
-  return { manifest, directory, releaseId: release.releaseId, appBotId, delivery:record.build.delivery.units.find(unit=>unit.id===unitId)! };
+  return { manifest, directory, releaseId: release.releaseId, appBotId };
 }
 export async function pipelinePublish(record: PublishPipelineRecord, unitId: string, directory: string, appBotId: number,
   gh: GhCommand = nativeGhCommand, download: ReleaseDownload = nativeReleaseDownload(process.env.GH_TOKEN)) {
@@ -554,18 +516,9 @@ export async function pipelineVerifyPublished(record: PublishPipelineRecord, uni
     || release.draft !== false || release.immutable !== true) fail('published release identity');
   const pages = JSON.parse(await gh(['api', '--paginate', '--slurp', `repos/${fullName}/releases/${binding.releaseId}/assets?per_page=100`]));
   if (!Array.isArray(pages) || !pages.length || pages.some(page => !Array.isArray(page))) fail('release asset inventory');
-  const delivery=record.build.delivery.units.find(candidate=>candidate.id===unitId)!;
-  const assets=pages.flat(), names=channelFiles(delivery,'github-release',unit.assets.map(asset=>({id:asset.id,path:asset.name})));
+  const assets = pages.flat(), names = [...unit.assets.map(asset => asset.name), 'sbom.spdx.json', 'release-notes.md', 'artifact-manifest.json', 'SHA256SUMS'].sort();
   if (JSON.stringify(assets.map(asset => asset.name).sort()) !== JSON.stringify(names) || new Set(assets.map(asset => asset.id)).size !== assets.length
     || assets.some(asset => !Number.isSafeInteger(asset.id) || asset.id < 1 || asset.state !== 'uploaded')) fail('release asset set');
-  if (names.length !== unit.assets.length + 4) {
-    const home=await mkdtemp(join(tmpdir(),'steward-verify-freeze-'));
-    try {
-      const freeze=await pipelineRecoverFinal(pipelineSource(record.build,unitId),directory,process.cwd(),home,gh);
-      if(!freeze.found) return fail('original full freeze unavailable for partial publication');
-      return await new NativeGitHubRelease(gh,download).verify(await publicationTarget(record,unitId,directory,appBotId));
-    } finally {await rm(home,{recursive:true,force:true});}
-  }
   const anonymous=await releaseReadIsAnonymous(gh,fullName,record.build.repositoryId);
   await mkdir(directory, { recursive: false });
   for (const asset of assets) await download(fullName, asset.id, join(directory, asset.name), anonymous);
@@ -606,7 +559,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
   const deliverySource = await source(context.repository, cycle.sourceSha, '.github/delivery.json');
   if (deliverySource.sha !== cycle.deliveryConfigSha) fail('frozen delivery source');
   const delivery = parseDeliveryConfig(JSON.parse(deliverySource.bytes.toString('utf8')));
-  assertProductDelivery(delivery);
+  assertProductDelivery(delivery,context.repository);
   const template = await source(context.repository, cycle.sourceSha, '.github/release-template.md.mustache');
   const workflow = await source(context.repository, cycle.sourceSha, '.github/workflows/steward-release-publish.yml');
   const document = parseDocument(workflow.bytes.toString('utf8'), { uniqueKeys: true }); if (document.errors.length) fail('source workflow');
@@ -614,7 +567,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
   if (!Array.isArray(matrix) || !matrix.length) fail('native producer matrix');
   const projection=await nativeDeliveryProjection(delivery,cycle.units,async path=>(await source(context.repository,cycle.sourceSha,path)).bytes,controllerDirectory);
   const toolLocks = { 'controller/mise.lock': hash((await source('splrad/steward', cycle.controllerSha, 'mise.lock')).bytes),...projection.toolLocks };
-  const records: { build: BuildPipelineRecord; unitId: string; directory: string; manifest: ProductReleaseManifest; delivery: DeliveryUnit }[] = [];
+  const records: { build: BuildPipelineRecord; unitId: string; directory: string; manifest: ProductReleaseManifest }[] = [];
   const pages: NativePages = async (path, field) => {
     const prefix = `repos/${context.repository}/`; if (!path.startsWith(prefix)) fail('native page target');
     return reader.pages(path.slice(prefix.length).replace('?per_page=100', ''), field);
@@ -633,10 +586,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
     if (unit.releaseId !== null) {
       const release = await reader.json(`releases/${unit.releaseId}`), remote = await reader.pages(`releases/${unit.releaseId}/assets`, '');
       if (release.id !== unit.releaseId || release.tag_name !== unit.tag || release.author?.id !== context.appBotId) fail('bound release identity');
-      const selected = channelFiles(declared, 'github-release', assets.map(asset => ({id:asset.id, path:asset.name})));
-      if (JSON.stringify(remote.map(asset => asset.name).sort()) === JSON.stringify(selected) && remote.every(asset => asset.state === 'uploaded')) {
-        if (selected.length === names.length) formal = remote;
-      }
+      if (JSON.stringify(remote.map(asset => asset.name).sort()) === JSON.stringify([...names].sort()) && remote.every(asset => asset.state === 'uploaded')) formal = remote;
       else if (!release.draft) fail('formal frozen bytes missing');
       if(formal!==null&&release.draft===false)anonymous=await releaseReadIsAnonymous(gh,context.repository,context.repositoryId);
     }
@@ -671,7 +621,7 @@ export async function pipelinePreparePublication(context: EvidenceContext, root:
       units: [{ id: unit.id, version: unit.version, packageVersion, tag: unit.tag, builds, assets, contributors: [] }] }) as BuildPipelineRecord;
     await pipelineFrozenManifest(build, unit.id, directory);
     if (unit.manifestDigest !== null && unit.manifestDigest !== (await fileDigest(directory, 'artifact-manifest.json')).sha256) fail('frozen manifest changed');
-    records.push({ build, unitId: unit.id, directory, manifest: m, delivery: declared });
+    records.push({ build, unitId: unit.id, directory, manifest: m });
   }
   return records;
 }
