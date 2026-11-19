@@ -33,3 +33,12 @@ it.each(['wrong-pr','not-indexed','old-observation','failed-job'])('never treats
   const check=()=> (contract()).then(m=>m.verifyBoundedWingetProbe(f.context,f.identity,f.payload,f.run,f.job,f.pull,kind==='old-observation'?'2026-10-26T01:00:00Z':NOW));
   if(kind==='failed-job')await expect(check()).rejects.toThrow();else expect((await check()).done).toBe(false);
 });
+
+it('requires an enrolled WinGet unit and a frozen obligation before polling',async()=>{
+  const f=await fixture();
+  f.context.cycle.requiredChannels=[];
+  await expect(contract().then(c=>c.boundedWingetInputs(f.context.cycle,D))).rejects.toThrow('BOUNDED_WINGET_IDENTITY');
+  f.context.cycle.units[0]!.id='unregistered';
+  f.context.cycle.requiredChannels=[{unitId:'unregistered',channelId:'winget'}];
+  await expect(contract().then(c=>c.boundedWingetInputs(f.context.cycle,D))).rejects.toThrow('BOUNDED_WINGET_IDENTITY');
+});

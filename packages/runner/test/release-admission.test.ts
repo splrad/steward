@@ -1,18 +1,18 @@
+import {evidenceFixture} from './native-evidence-fixture.js';
+import {reconcileCycleHistory} from '../../core/src/release-history.js';
 import {createHash} from 'node:crypto';
 import { afterEach, expect, it, vi } from 'vitest';
-import { pipelineIdentity, pipelineNotes, mergedBuildCycle, assertProductDelivery } from '../src/release-pipeline.js';
+import { pipelineIdentity, pipelineNotes, mergedBuildCycle, assertProductDelivery, assertRegisteredAdapters } from '../src/release-pipeline.js';
 import { parsePipelineRecord, pipelineSource } from '../src/release-pipeline-record.js';
 import { productPipelineFixture } from './product-pipeline-fixture.js';
 afterEach(() => vi.restoreAllMocks());
-it.each(['github-release','ghcr','unknown'])('rejects an external channel with no fixed implementation: %s',id=>{
+it.each(['ghcr','unknown'])('rejects an external channel with no fixed implementation: %s',id=>{
   expect(()=>assertProductDelivery({units:[{id:'app',path:'.',notesPath:'.release-notes/app.md',assets:[],channels:[{id,required:true,location:'fixture'}]}]})).toThrow('fixed product implementation');
 });
-it.each(['complete','deleted','optional','wrong-unit'])('LayerScape preserves its two explicit required channels: %s',kind=>{
-  const delivery={units:[{id:kind==='wrong-unit'?'other':'layerscape',path:'.',notesPath:'.release-notes/layerscape.md',assets:[],
-    channels:[{id:'ghcr-assets',required:true,location:'fixture'},{id:'winget',required:kind!=='optional',location:'fixture'}]}]};
-  if(kind==='deleted')delivery.units[0]!.channels.pop();
-  if(kind==='complete')expect(()=>assertProductDelivery(delivery,'splrad/LayerScape')).not.toThrow();
-  else expect(()=>assertProductDelivery(delivery,'splrad/LayerScape')).toThrow('required delivery obligations');
+it('admits a GitHub-only unit with its own artifact IDs', () => {
+  expect(()=>assertProductDelivery({units:[{id:'cli',path:'.',notesPath:'notes.md',
+    assets:[{id:'archive',name:'cli.tar.gz',mediaType:'application/gzip'}],
+    channels:[{id:'github-release',required:true,location:'github',artifactIds:['archive']}]}]})).not.toThrow();
 });
 it.each(['complete', 'missing-unit', 'missing-producer', 'extra-asset'])('admits native two-unit source only with its complete frozen set: %s', async kind => {
   const f = productPipelineFixture(1, true);
@@ -137,4 +137,42 @@ it('builds a registered earlier cycle from its exact merged archive after candid
     value:{...chunk,documentKind:'merged-candidate',content,documentDigest:createHash('sha256').update(content).digest('hex')}}];
   repository.candidate=null;repository.activeCycleId=`pr-13-${'d'.repeat(40)}`;
   expect((await pipelineIdentity(f.input,f.environment,f.gh,f.io)).status).toBe('ADMITTED');
+});
+
+it('prevents unregistered repositories or destinations from using an enrolled external adapter',()=>{
+  const unit={id:'layerscape',path:'.',notesPath:'notes.md',
+    assets:[{id:'installer',name:'app.exe',mediaType:'application/octet-stream'}],
+    channels:[{id:'winget',required:true,location:'SPLRAD.LayerScape.Deployer',artifactIds:['installer']}]};
+  expect(()=>assertRegisteredAdapters(41,'test/other',{units:[unit]})).toThrow('not registered');
+  expect(()=>assertRegisteredAdapters(1187527897,'splrad/LayerScape',{units:[unit]})).not.toThrow();
+  unit.assets.push({id:'plugins',name:'AFR-DLL.zip',mediaType:'application/zip'});
+  unit.channels[0]!.artifactIds=['plugins'];
+  expect(()=>assertRegisteredAdapters(1187527897,'splrad/LayerScape',{units:[unit]})).toThrow('DELIVERY_WINGET_INSTALLER');
+  unit.channels[0]!.location='Other.Product';
+  expect(()=>assertRegisteredAdapters(1187527897,'splrad/LayerScape',{units:[unit]})).toThrow('not registered');
+});
+
+it('closes a frozen-only cycle from its native build receipt without inventing a Release',()=>{
+  const {context}=evidenceFixture(), cycle=context.cycle, unit=cycle.units[0]!;
+  const digest='d'.repeat(64);
+  Object.assign(unit,{notesDigest:digest,manifestDigest:digest,assets:[{id:'archive',path:'cli.tar.gz',size:10,sha256:digest}]});
+  cycle.freezeOnly=[{unitId:unit.id,runId:100,attempt:2,producerAttempt:1,artifactId:45,archiveDigest:'sha256:'+digest}];
+  const input={repositoryId:context.repositoryId,inventoryComplete:true,cycles:[cycle],
+    discovered:[{id:cycle.id,prNumber:cycle.prNumber,sourceSha:cycle.sourceSha,mergedAt:'2026-11-19T00:00:00Z'}],
+    completions:[],decisions:[],repairActorId:1,now:'2026-11-19T01:00:00Z'};
+  expect(reconcileCycleHistory(input).result).toBe('UNKNOWN');
+  expect(reconcileCycleHistory({...input,verifiedFreezes:[cycle.id]})).toMatchObject({result:'PASS',lastCompletedCycleId:cycle.id});
+  expect(unit.releaseId).toBeNull();
+  const published={...unit,id:'public',tag:'public-v1.0.0',releaseId:20};
+  cycle.units.push(published);
+  expect(reconcileCycleHistory({...input,verifiedFreezes:[cycle.id]}).result).toBe('UNKNOWN');
+  const assets=published.assets.map(({path,size,sha256})=>({path,size,sha256}));
+  const source={repositoryId:context.repositoryId,cycleId:cycle.id,sourceSha:cycle.sourceSha,
+    deliveryConfigSha:cycle.deliveryConfigSha,units:[{...published,releaseId:20,manifestDigest:digest,notesDigest:digest,assets,authorId:42}],requiredChannels:[]};
+  const {id:unitId,...release}=source.units[0]!;
+  const observation={source,sourceComplete:true,observedAt:input.now,releasesComplete:true,channelsComplete:true,
+    releases:[{...release,unitId,sourceSha:cycle.sourceSha,draft:false,immutable:true,evidenceDigest:digest}],
+    channels:[],consumptions:[],inFlightWaveKeys:[],unknownWriteKeys:[]};
+  const fact={cycleId:cycle.id,source,observation,kind:'live' as const,provenanceComplete:true};
+  expect(reconcileCycleHistory({...input,verifiedFreezes:[cycle.id],completions:[fact]}).result).toBe('PASS');
 });
