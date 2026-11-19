@@ -75,12 +75,12 @@
       "attempts": [
         {
           "startedAt": "2026-11-19T21:36:14.999Z",
-          "status": "UNKNOWN",
+          "status": "FAILED",
           "model": null,
           "usage": null
         }
       ],
-      "nextCheckAt": "2026-11-19T21:37:14.999Z",
+      "nextCheckAt": "2026-11-19T21:37:21.801Z",
       "errorCode": "RESPONSE_UNKNOWN"
     },
     "c7fd2b3b24654bb5434cbdeed56b09ad7e9b1a2cc8be20da8029e4283f8e89e5": {
@@ -99,12 +99,12 @@
       "attempts": [
         {
           "startedAt": "2026-11-19T21:36:14.999Z",
-          "status": "UNKNOWN",
+          "status": "FAILED",
           "model": null,
           "usage": null
         }
       ],
-      "nextCheckAt": "2026-11-19T21:37:14.999Z",
+      "nextCheckAt": "2026-11-19T21:37:21.801Z",
       "errorCode": "RESPONSE_UNKNOWN"
     }
   },
