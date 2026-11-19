@@ -103,6 +103,7 @@ export function parseDeliveryConfig(input: unknown): DeliveryConfig {
     if ([unit.path, unit.notesPath].some(path => path.split('/').some(part => part.toLowerCase() === '.git')))
       throw new Error('DELIVERY_GIT_PATH');
     if (!unique(unit.channels.map(channel => channel.id)) || !unique(unit.assets.map(asset => asset.id))) throw new Error('DELIVERY_DUPLICATE_IDENTITY');
+    if (unit.buildLocks && !unique(unit.buildLocks.map(path => path.toLowerCase()))) throw new Error('DELIVERY_DUPLICATE_LOCK');
     for (const path of unit.buildLocks ?? []) assertDeliveryPath(path);
     for (const asset of unit.assets) {
       if (asset.rightsSource) assertDeliveryPath(asset.rightsSource);

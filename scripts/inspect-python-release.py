@@ -47,6 +47,8 @@ class ExpandedReader:
     def __init__(self, source):
         self.source = source
         self.remaining = MAX_EXPANDED
+        self.total = 0
+        self.last_nonzero_end = 0
 
     def read(self, size):
         require(size >= 0)
@@ -54,7 +56,19 @@ class ExpandedReader:
         if len(data) > self.remaining:
             raise ValueError("archive read budget exceeded")
         self.remaining -= len(data)
+        used = len(data.rstrip(b"\0"))
+        if used:
+            self.last_nonzero_end = self.total + used
+        self.total += len(data)
         return data
+
+    def finish_tar(self, end_of_members):
+        # tarfile may already have read past the first end block into its own
+        # buffer. Account for those bytes as well as any unread gzip data.
+        while self.read(65536):
+            pass
+        require(self.last_nonzero_end <= end_of_members)
+        require(self.total >= end_of_members + 2 * tarfile.BLOCKSIZE and self.total % tarfile.BLOCKSIZE == 0)
 
 
 def member_path(name, seen):
@@ -133,8 +147,7 @@ def inspect(path):
             with archive:
                 metadata = inspect_sdist_members(archive, root, seen, files)
             # Finish gzip validation, including padding, trailing streams and CRC.
-            while bounded.read(65536):
-                pass
+            bounded.finish_tar(archive.offset)
         require(root + "/pyproject.toml" in files)
     else:
         raise ValueError("unsupported distribution")
@@ -285,8 +298,7 @@ def inspect_declared(path, contract, destination=None):
                     else:
                         with archive.extractfile(entry) as stream:
                             consume(entry.name, False, entry.size, stream)
-            while bounded.read(65536):
-                pass
+            bounded.finish_tar(archive.offset)
     require(found and (not members or members.keys() <= found))
     return contract["version"]
 

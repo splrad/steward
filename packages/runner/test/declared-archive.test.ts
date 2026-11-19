@@ -24,6 +24,8 @@ it.each([
   ['stations.zip', 'zip', true],
   ['large.zip', 'zip', true],
   ['ambiguous.zip', 'zip', false],
+  ['buffered-tail.tar.gz', 'tar-gzip', false],
+  ['later-tail.tar.gz', 'tar-gzip', false],
   ['broken.tar.gz', 'tar-gzip', false],
   ['bad-font.zip', 'font-zip', false],
 ] as const)('checks the actual bytes of %s', async (name, inspection, ok) => {
@@ -50,6 +52,9 @@ it('keeps historical schema closed and requires version evidence for generic arc
   expect(() => parseDeliveryConfig(data)).toThrow('DELIVERY_CONFIG_STRUCTURE');
   data.schemaVersion = 2;
   expect(() => parseDeliveryConfig(data)).toThrow('DELIVERY_ARCHIVE_VERSION');
+  data.units[0]!.assets[0]!.name = 'stations-${version}.zip';
+  data.units[0]!.buildLocks.push('tools/PACKAGE-LOCK.json');
+  expect(() => parseDeliveryConfig(data)).toThrow('DELIVERY_DUPLICATE_LOCK');
 });
 
 it('preserves an ordinary binary SQLite resource without a member format declaration', async () => {
