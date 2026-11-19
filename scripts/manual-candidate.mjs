@@ -37,7 +37,9 @@ export async function validateManualCandidate(session,producer,io) {
   const component=options['include-component-in-tag']===false?undefined:options.component;
   if(options['include-component-in-tag']!==false&&!component)fail('MANUAL_TAG_COMPONENT');
   if(new TagName(Version.parse(generated.version),component,options['tag-separator'],options['include-v-in-tag']).toString()!==generated.tag)fail('MANUAL_TAG');
-  parseSupplementalNotes(await read(unit.notesPath));
+  // The existing native head identity binds the template; keep the historical five-file record stable.
+  const template = await io.read(before.headSha, '.github/release-template.md.mustache');
+  parseSupplementalNotes(await read(unit.notesPath), template);
   const allowed=new Set([...session.generated.files.map(file=>file.path),unit.notesPath]);
   const changed=await io.changedPaths(before.sourceSha,before.headSha);
   if(!Array.isArray(changed)||changed.some(path=>typeof path!=='string'||!allowed.has(path)))fail('MANUAL_UNMANAGED_CHANGES');

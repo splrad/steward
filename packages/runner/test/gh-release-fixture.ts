@@ -25,7 +25,7 @@ export async function ghReleaseFixture(sourceShaOverride?:string) {
     html_url: 'https://github.com/fixture/product/releases/tag/v1.2.3', upload_url: 'https://uploads.github.com/repos/fixture/product/releases/20/assets{?name,label}' };
   const releases = new Map<number, typeof release>([[20, release]]);
   const state = { source: sourceSha, tag: true, annotated: false, loseUpload: false, losePublish: false, loseBody: false, loseDraft: false, loseTag: false,
-    failUpload: false, incomplete: false, corruptDownload: false, disabled: false, private: false, disableAfterUpload: false, runStatus: 'completed', runConclusion: 'success',
+    blockLabel: false, loseLabel: false, failUpload: false, incomplete: false, corruptDownload: false, disabled: false, private: false, disableAfterUpload: false, runStatus: 'completed', runConclusion: 'success',
     invocation: 'https://github.com/fixture/product/actions/runs/10/attempts/2', certificateRepository: '1', buildTrigger: 'workflow_dispatch' };
   let nextAsset = 100;
   const put = (name: string, bytes: Buffer, extra = {}) => remote.set(name, { bytes, id: nextAsset++, state: 'uploaded', label: '', uploader: { id: 42 }, ...extra });
@@ -62,6 +62,14 @@ export async function ghReleaseFixture(sourceShaOverride?:string) {
         put(name, await readFile(args[args.indexOf('--input') + 1]!), { label: url.searchParams.get('label')! });
         if (state.disableAfterUpload) state.disabled = true;
         if (state.loseUpload) throw new Error('lost upload response'); return '{}';
+      }
+      if (method === 'PATCH' && endpoint.includes('/releases/assets/')) {
+        const asset = remote.get(body.name);
+        if (!asset || asset.id !== Number(endpoint.split('/').at(-1))) throw new Error('wrong asset ID');
+        if (state.blockLabel) throw new Error('label interrupted');
+        asset.label = body.label;
+        if (state.loseLabel) throw new Error('lost label response');
+        return '{}';
       }
       if (method === 'PATCH') {
         // Match GitHub REST: omitting tag_name removes the draft's current tag association.
