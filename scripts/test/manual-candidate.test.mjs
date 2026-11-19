@@ -81,3 +81,29 @@ test('manual validation follows the template at the exact candidate head for opt
   f.files['.github/release-template.md.mustache']='{{{compatibility}}}';
   await assert.rejects(validateManualCandidate(f.session,f.producer,f.io), /missing heading/);
 });
+
+test('two declared release units on trunk bind independent version files, notes and tags to one candidate',async()=>{
+  const f=fixture(),p={id:72,name:'splrad/second',defaultBranch:'trunk'};
+  f.session.repository.repositoryId=p.id;
+  f.pull.head.repo.id=p.id;f.pull.base.repo.id=p.id;f.pull.base.ref=p.defaultBranch;
+  f.delivery.units=['cli','ui'].map(id=>({...f.delivery.units[0],id,path:'packages/'+id,notesPath:'.release-notes/'+id+'.md'}));
+  f.session.generated.units=f.delivery.units.map(({id,path},i)=>({id,path,version:(i+1)+'.0.0',tag:id+'-v'+(i+1)+'.0.0'}));
+  f.files['.github/delivery.json']=JSON.stringify(f.delivery);
+  const packages={},manifest={};
+  for(const u of f.session.generated.units) {
+    packages[u.path]={'release-type':'simple','version-file':'version.txt',component:u.id};
+    manifest[u.path]=u.version;
+    f.files[u.path+'/version.txt']=u.version;
+    f.files['.release-notes/'+u.id+'.md']=f.files['.release-notes/layerscape.md'];
+  }
+  f.files['release-please-config.json']=JSON.stringify({packages});
+  f.files['.release-please-manifest.json']=JSON.stringify(manifest);
+  f.io.changedPaths=async()=>['.release-notes/ui.md'];
+  const record=await validateManualCandidate(f.session,f.producer,f.io,[p]);
+  assert.equal(record.schemaVersion,2);
+  assert.deepEqual(record.units.map(u=>u.versionPath),['packages/cli/version.txt','packages/ui/version.txt']);
+  const identity=candidateObservationIdentity({...f.session,manualValidation:record});
+  assert.match(identity.version,/^units-[a-f0-9]{64}$/);
+  f.files['packages/ui/version.txt']='1.0.0';
+  await assert.rejects(validateManualCandidate(f.session,f.producer,f.io,[p]),/MANUAL_VERSION/);
+});

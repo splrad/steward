@@ -40,6 +40,14 @@ export interface CandidateObservation {
   repositoryId: number; cycleId: string; channel: 'candidate'; version: string;
   artifactDigest: string; sourceSha: string; stage: 'candidate'; epoch: string; upstreamPR: null;
 }
+function candidateVersion(units:{id:string;path:string;version:string;tag:string}[]) {
+  if(!units.length || new Set(units.map(unit=>unit.id)).size!==units.length ||
+      new Set(units.map(unit=>unit.path)).size!==units.length)throw Error('CANDIDATE_UNIT_COVERAGE');
+  if(units.length===1)return units[0]!.version;
+  const ordered=[...units].sort((a,b)=>a.id<b.id?-1:1);
+  const identities=ordered.map(({id,path,version,tag})=>[id,path,version,tag]);
+  return 'units-'+digest(identities);
+}
 /** Stable generation identity; human edits and derived contributor projection do not restart a window. */
 export function candidateObservationIdentity(session: CandidateSession): CandidateObservation {
   const { repository, generated } = session, candidate = repository.candidate;
@@ -48,16 +56,16 @@ export function candidateObservationIdentity(session: CandidateSession): Candida
     if(repository.repositoryId!==m.repositoryId||candidate?.id!==m.candidateId||candidate.prNumber!==m.prNumber||candidate.branch!==m.branch
       ||repository.activeCycleId||session.pending||candidate.pendingWrite)throw Error('MANUAL_OWNER');
     const factDigest=digest(manualCandidateFacts(m));
-    return {repositoryId:m.repositoryId,cycleId:m.candidateId,channel:'candidate',version:m.units[0]!.version,
+    return {repositoryId:m.repositoryId,cycleId:m.candidateId,channel:'candidate',version:candidateVersion(m.units),
       artifactDigest:'sha256:'+factDigest,sourceSha:m.sourceSha,stage:'candidate',
       epoch:digest([m.kind,m.candidateId,m.headSha,m.sourceSha,factDigest]),upstreamPR:null};
   }
-  if (repository.repositoryId !== 1187527897 || !candidate?.prNumber || !candidate.publishedHead
+  if (!Number.isSafeInteger(repository.repositoryId) || repository.repositoryId<1 || !candidate?.prNumber || !candidate.publishedHead
     || !candidate.generatedSnapshotPath || !generated || !session.identity || session.pending || candidate.pendingWrite
-    || generated.baseSha !== candidate.baseSha || generated.units.length !== 1 || generated.units[0]?.id !== 'layerscape')
+    || generated.baseSha !== candidate.baseSha)
     throw new Error('CANDIDATE_OBSERVATION_NOT_READY');
   return { repositoryId: repository.repositoryId, cycleId: candidate.id, channel: 'candidate',
-    version: generated.units[0].version, artifactDigest: 'sha256:' + digest(generated), sourceSha: candidate.baseSha,
+    version: candidateVersion(generated.units), artifactDigest: 'sha256:' + digest(generated), sourceSha: candidate.baseSha,
     stage: 'candidate', epoch: digest([repository.repositoryId, candidate.id, candidate.baseSha, candidate.generatedSnapshotPath, candidate.publishedHead]), upstreamPR: null };
 }
 /** Exact existing generated-note projection, with frozen native contributor identities. */

@@ -72,7 +72,8 @@ export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): 
     if(value.manualValidation!==undefined&&value.manualValidation!==null) {
       await validateManualCandidateRecord(value.manualValidation,first.repositoryId,first.candidateId);
       const m=value.manualValidation;
-      if(!value.generated||value.generated.units?.length!==1||['id','path','version','tag'].some(key=>m.units[0][key]!==value.generated.units[0][key])
+      if(!value.generated||value.generated.units?.length!==m.units.length||m.units.some((unit:any,index:number)=>
+        ['id','path','version','tag'].some(key=>unit[key]!==value.generated.units[index][key]))
         ||value.pending)throw Error('MANUAL_GENERATED_OWNER');
     }
     if (value.generated) snapshot(value.generated);
