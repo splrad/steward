@@ -14,7 +14,7 @@ export function fixture() {
   const files={'.github/release-template.md.mustache':'{{{upgradeNotices}}}', 'release-please-config.json':JSON.stringify({'include-component-in-tag':false,packages:{'.':{'release-type':'simple','version-file':'VERSION'}}}),
     '.release-please-manifest.json':'{".":"1.0.0"}', '.github/delivery.json':JSON.stringify(delivery),VERSION:'1.0.0\n',
     '.release-notes/layerscape.md':['概述','更新内容','兼容性','升级与迁移','安装说明','已知问题','恢复'].map(h=>`## ${h}\n\n已核对的人工说明。\n`).join('\n')};
-  const io={pull:async()=>pull,source:async()=>S,state:async()=>true,isAncestor:async(a,b)=>a===S&&b===H,
+  const io={product:{id:repo,name:'splrad/LayerScape',defaultBranch:'main'},pull:async()=>pull,source:async()=>S,state:async()=>true,isAncestor:async(a,b)=>a===S&&b===H,
     changedPaths:async()=>['.release-notes/layerscape.md'],managedStructure:async()=>true,
     read:async(head,path)=>{assert.equal(head,H);assert.ok(path in files);return files[path];}};
   const comments=[{id:11,authorId:99,body:`<!-- steward:candidate-status:${id} -->\n旧冲突提示`}],calls=[];

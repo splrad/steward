@@ -2,12 +2,27 @@ import {isDeepStrictEqual} from 'node:util';
 import { createHash } from 'node:crypto';
 import { candidateObservationIdentity, decodeCandidateArchive, decodeCandidateDocument, decodeReleaseRecord } from '../packages/runner/dist/index.js';
 import registrations from '../config/release/event-repositories.json' with {type:'json'};
-export function candidateProduct(repositoryId, registry=registrations) {
-  const matches=registry.filter(record=>record.id===repositoryId);
-  if(!Number.isSafeInteger(repositoryId)||repositoryId<1||matches.length!==1)throw Error('BOUNDED_EVENT_HINT');
-  const target=matches[0];
-  if(!/^splrad\/[A-Za-z0-9_.-]+$/.test(target.name)||!target.defaultBranch)throw Error('BOUNDED_PRODUCT');
-  return target;
+import {releaseParticipation} from './release-coordinator.mjs';
+import {nativeEvidenceTransport} from '../packages/runner/dist/index.js';
+
+export async function withCandidateProduct(app,id,operation,transport=nativeEvidenceTransport) {
+  if(!Number.isSafeInteger(id)||id<1)throw Error('BOUNDED_EVENT_HINT');
+  const matches=(await app.discover()).filter(repo=>repo.id===id);
+  if(matches.length!==1)throw Error('BOUNDED_REPOSITORY');
+  const repository=matches[0];
+  if(repository.archived||repository.disabled||!/^splrad\/[A-Za-z0-9_.-]+$/.test(repository.full_name)||!repository.default_branch)throw Error('BOUNDED_REPOSITORY');
+  return app.forCandidateRepository(id,async(token,readToken)=>{
+    const io=transport(readToken),path='/repos/'+repository.full_name;
+    const response=await io.request('GET',path);
+    if(response.status!==200)throw Error('BOUNDED_REPOSITORY');
+    const actual=JSON.parse(Buffer.from(response.bytes).toString('utf8'));
+    if(actual.id!==id||actual.full_name!==repository.full_name||actual.owner?.id!==302208797||actual.private!==false||actual.visibility!=='public'||
+       actual.archived!==false||actual.disabled!==false||actual.fork!==false||actual.default_branch!==repository.default_branch)throw Error('BOUNDED_REPOSITORY');
+    const participation=await releaseParticipation(repository,io);
+    if(participation.status!=='APPLICABLE')throw Error('CANDIDATE_NOT_ENABLED');
+    const product={id,name:actual.full_name,defaultBranch:actual.default_branch};
+    return operation(product,token,readToken,participation);
+  });
 }
 // Legacy publication consumers identify their single approved callback by its reviewed registration.
 const legacy=registrations.filter(record=>record.legacyPublicationCallback===true);
@@ -63,17 +78,16 @@ export async function candidateEvidence(get,{requireReady=true,product}) {
   if(after.object?.sha!==stateCommit)throw Error('BOUNDED_STATE_MOVED');
   return {identity,state,session,pull,evidence:{stateCommit,path,documentDigest:first.documentDigest,prNumber:pull.number,head:pull.head.sha}};
 }
-export async function validateCandidateEvent(hint,get) {
-  return validateIssueEvent(hint,get,true);
+export async function validateCandidateEvent(hint,get,target=product) {
+  return validateIssueEvent(hint,get,true,undefined,target);
 }
-export async function validateNormalCandidateEvent(hint,sourceSha,get) {
+export async function validateNormalCandidateEvent(hint,sourceSha,get,target=product) {
   if(!sha(sourceSha))throw Error('CANDIDATE_EVENT_SOURCE');
-  return validateIssueEvent(hint,get,false,sourceSha);
+  return validateIssueEvent(hint,get,false,sourceSha,target);
 }
-async function validateIssueEvent(hint,get,requireReady,sourceSha) {
+async function validateIssueEvent(hint,get,requireReady,sourceSha,product) {
   exact(hint,['repositoryId','prNumber','eventId']);
-  const product=candidateProduct(hint.repositoryId);
-  if(!Number.isSafeInteger(hint.prNumber)||hint.prNumber<1||!Number.isSafeInteger(hint.eventId)||hint.eventId<1)throw Error('BOUNDED_EVENT_HINT');
+  if(hint.repositoryId!==product.id||!Number.isSafeInteger(hint.prNumber)||hint.prNumber<1||!Number.isSafeInteger(hint.eventId)||hint.eventId<1)throw Error('BOUNDED_EVENT_HINT');
   const current=await candidateEvidence(get,{requireReady,product});
   if(current.pull.number!==hint.prNumber||current.pull.state!=='open'||current.pull.merged)throw Error('BOUNDED_EVENT_OBJECT');
   const main=await get(`/repos/${product.name}/git/ref/heads/${encodeURIComponent(product.defaultBranch)}`);

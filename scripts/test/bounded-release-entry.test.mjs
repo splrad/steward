@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import YAML from 'yaml';
 import {createHash} from 'node:crypto';
-import {candidateProduct,candidateEvidence,validateCandidateEvent,sha256,product} from '../bounded-candidate-contract.mjs';
+import {candidateEvidence,validateCandidateEvent,sha256,product} from '../bounded-candidate-contract.mjs';
 import {processNormalCandidateEvent} from '../release-candidate-event.mjs';
 import {entryGuard,resultOutcome,applyCandidateEvent} from '../bounded-release-entry.mjs';
 const head='a'.repeat(40),id=1296724484,root='/repos/splrad/steward';
@@ -215,8 +215,6 @@ test('complete split generated archive is bound to the session',async()=>{
 
 test('reviewed registrations and native public repository facts must both match before state reads',async()=>{
   const target={id:72,name:'splrad/second-product',defaultBranch:'trunk'};
-  assert.equal(candidateProduct(72,[target]),target);
-  for(const registry of [[],[target,target]]) assert.throws(()=>candidateProduct(72,registry));
   const repository={id:72,full_name:target.name,default_branch:'trunk',owner:{id:302208797},private:false,visibility:'public'};
   for(const change of [{private:true},{visibility:'internal'},{owner:{id:1}},{default_branch:'main'},{full_name:'splrad/unregistered'}]) {
     let reads=0;

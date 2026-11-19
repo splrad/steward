@@ -1,6 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {createHash} from 'node:crypto';
+import {createHash,generateKeyPairSync} from 'node:crypto';
+import {withCandidateProduct} from '../bounded-candidate-contract.mjs';
+import {nativeReleaseApp} from '../../packages/runner/dist/index.js';
 import {validateManualCandidate,projectManualCandidate,manualManagedEntryMatches} from '../manual-candidate.mjs';
 import {candidateObservationIdentity,manualCandidateFacts,decodeCandidateDocument} from '../../packages/runner/dist/index.js';
 const hash=v=>createHash('sha256').update(typeof v==='string'?v:JSON.stringify(v)).digest('hex');
@@ -96,14 +98,58 @@ test('two declared release units on trunk bind independent version files, notes 
     f.files[u.path+'/version.txt']=u.version;
     f.files['.release-notes/'+u.id+'.md']=f.files['.release-notes/layerscape.md'];
   }
-  f.files['release-please-config.json']=JSON.stringify({packages});
+  f.files['release-please-config.json']=JSON.stringify({packages,'separate-pull-requests':false});
   f.files['.release-please-manifest.json']=JSON.stringify(manifest);
   f.io.changedPaths=async()=>['.release-notes/ui.md'];
-  const record=await validateManualCandidate(f.session,f.producer,f.io,[p]);
+  const repository={id:p.id,full_name:p.name,default_branch:p.defaultBranch,archived:false,disabled:false,
+    private:false,visibility:'public',fork:false,owner:{id:302208797}};
+  const key=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'});
+  const fetcher=async(url,options={})=>{
+    const path=new URL(url).pathname;
+    let body;
+    if(path==='/app')body={id:4243096,client_id:'Iv23liuSr0qd4WLJdZhH',slug:'splrad-steward'};
+    else if(path==='/orgs/splrad/installation')body={id:123,account:{id:302208797},app_id:4243096};
+    else if(path.startsWith('/users/'))body={id:301115370,type:'Bot'};
+    else if(path.endsWith('/access_tokens')){
+      const request=JSON.parse(options.body);
+      assert.ok(!request.repository_ids||JSON.stringify(request.repository_ids)===JSON.stringify([p.id]));
+      body={token:'ghs_offline_'+Object.keys(request.permissions).join('_'),expires_at:new Date(Date.now()+3600000).toISOString(),permissions:request.permissions};
+    }else if(path==='/installation/repositories')body={total_count:1,repositories:[repository]};
+    else if(path==='/installation/token')return new Response(null,{status:204});
+    else assert.fail(path);
+    return Response.json(body,{status:path.endsWith('/access_tokens')?201:200});
+  };
+  const app=await nativeReleaseApp(key,fetcher);
+  const source='a'.repeat(40),files=['.github/delivery.json','release-please-config.json','.release-please-manifest.json'];
+  const blob=path=>{const bytes=Buffer.from(f.files[path]);return {type:'file',path,encoding:'base64',size:bytes.length,content:bytes.toString('base64'),
+    sha:createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')};};
+  const transport=()=>({request:async(method,url)=>{
+    assert.equal(method,'GET');
+    const prefix='/repos/'+repository.full_name;
+    const path=url.slice(prefix.length);
+    let result;
+    if(!path)result=repository;
+    else if(path==='/git/ref/heads/trunk')result={ref:'refs/heads/trunk',object:{type:'commit',sha:source}};
+    else if(path==='/git/trees/'+source+'?recursive=1')result={truncated:false,tree:files.map(path=>({path,type:'blob',mode:'100644',sha:blob(path).sha}))};
+    else if(path==='/git/matching-refs/heads/steward/release-state')result=[];
+    else if(path.startsWith('/contents/')&&path.endsWith('?ref='+source))result=blob(path.slice(10).split('?')[0]);
+    else assert.fail(path);
+    return {status:200,bytes:Buffer.from(JSON.stringify(result))};
+  }});
+  const recover=()=>withCandidateProduct(app,p.id,async(product)=>{
+    f.io.product=product;
+    return validateManualCandidate(f.session,f.producer,f.io);
+  },transport);
+  const record=await recover();
   assert.equal(record.schemaVersion,2);
   assert.deepEqual(record.units.map(u=>u.versionPath),['packages/cli/version.txt','packages/ui/version.txt']);
   const identity=candidateObservationIdentity({...f.session,manualValidation:record});
   assert.match(identity.version,/^units-[a-f0-9]{64}$/);
   f.files['packages/ui/version.txt']='1.0.0';
-  await assert.rejects(validateManualCandidate(f.session,f.producer,f.io,[p]),/MANUAL_VERSION/);
+  await assert.rejects(recover(),/MANUAL_VERSION/);
+  files.pop();
+  await assert.rejects(recover(),/RELEASE_CONFIGURATION_REQUIRED/);
+  repository.private=true;
+  await assert.rejects(recover(),/BOUNDED_REPOSITORY/);
+  await assert.rejects(withCandidateProduct(app,999,()=>assert.fail(),transport),/BOUNDED_REPOSITORY/);
 });

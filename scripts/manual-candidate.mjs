@@ -1,4 +1,3 @@
-import {candidateProduct} from './bounded-candidate-contract.mjs';
 import {createHash} from 'node:crypto';
 import {TagName} from 'release-please/build/src/util/tag-name.js';
 import {Version} from 'release-please/build/src/version.js';
@@ -12,9 +11,10 @@ export function manualManagedEntryMatches(file,entry) {
     &&/^100(?:644|755) blob [a-f0-9]{40}\t/.test(entry)&&entry.slice(entry.indexOf('\t')+1)===file.path+'\0';
 }
 /** Read-only proof of an existing manual candidate. No generation or write port is accepted. */
-export async function validateManualCandidate(session,producer,io,registry) {
+export async function validateManualCandidate(session,producer,io) {
   const c=session.repository.candidate;
-  const product=candidateProduct(session.repository.repositoryId,registry);
+  const product=io.product;
+  if(!product||product.id!==session.repository.repositoryId)fail('MANUAL_OWNER');
   if(session.repository.activeCycleId||!c?.prNumber||!session.generated||!session.identity
     ||session.pending||c.pendingWrite||!session.generated.units.length)fail('MANUAL_NOT_READY');
   const inspect=async()=>{
@@ -50,7 +50,7 @@ export async function validateManualCandidate(session,producer,io,registry) {
     notes.add(unit.notesPath);
     units.push({...generated,notesPath:unit.notesPath,versionPath});
   }
-  const legacy=product.legacyPublicationCallback===true&&units.length===1&&units[0].id==='layerscape'&&units[0].path==='.'&&units[0].versionPath==='VERSION';
+  const legacy=product.id===1187527897&&units.length===1&&units[0].id==='layerscape'&&units[0].path==='.'&&units[0].versionPath==='VERSION';
   if(legacy)delete units[0].versionPath;
   const allowed=new Set([...session.generated.files.map(file=>file.path),...notes]);
   const changed=await io.changedPaths(before.sourceSha,before.headSha);

@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { nativeReleaseApp, NativeEvidenceReader, nativeEvidenceTransport } from '../packages/runner/dist/index.js';
 import { fetchState } from './release-coordinator.mjs';
 import { nativeReleaseCandidate } from './release-candidate.mjs';
-import { candidateEvidence, validateCandidateEvent, sameIdentity, sha, key, candidateProduct } from './bounded-candidate-contract.mjs';
+import { candidateEvidence, validateCandidateEvent, sameIdentity, sha, key, withCandidateProduct } from './bounded-candidate-contract.mjs';
 const central='splrad/steward',centralId=1296724484;
 const botIdentity={name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
 const fail=reason=>{throw Error(reason);};
@@ -64,9 +64,8 @@ export async function main(env=process.env) {
   const app=await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY??'');
   if(run.actor?.id!==app.appBotId)fail('BOUNDED_DISPATCH_ACTOR');
   const locator=JSON.parse((mode==='observe'?env.BOUNDED_IDENTITY_JSON:env.BOUNDED_EVENT_JSON)??'null');
-  const product=candidateProduct(locator?.repositoryId);
   const root=await mkdtemp(join(tmpdir(),'bounded-release-'));
-  try {return await app.forCandidateRepository(product.id,async(token,readToken)=>{
+  try {return await withCandidateProduct(app,locator?.repositoryId,async(product,token,readToken)=>{
     const productReader=new NativeEvidenceReader(nativeEvidenceTransport(token),product.name);
     const get=path=>productReader.json(path===`/repos/${product.name}`?'':path.replace(`/repos/${product.name}/`,''));
     if(mode==='observe') {
@@ -89,7 +88,7 @@ export async function main(env=process.env) {
     }
     if(mode==='event') {
       const requestKey=env.BOUNDED_REQUEST_KEY;if(!key(requestKey)||!sha(config.deploymentSha))fail('BOUNDED_EVENT_CONFIG');
-      const value=await validateCandidateEvent(JSON.parse(env.BOUNDED_EVENT_JSON??'null'),get);
+      const value=await validateCandidateEvent(JSON.parse(env.BOUNDED_EVENT_JSON??'null'),get,product);
       const registration={identity:value.identity,t0:value.t0,policySha:env.STEWARD_CONTROLLER_SHA,deploymentSha:config.deploymentSha};
       const output={schemaVersion:1,requestKey,registration,producer:{repositoryId:centralId,runId:run.id,attempt:run.run_attempt,controllerSha:env.STEWARD_CONTROLLER_SHA},
         sourceEvidence:{...value.evidence,eventId:value.event.id,eventCreatedAt:value.event.created_at}};

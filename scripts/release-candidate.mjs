@@ -363,6 +363,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
     };
     const manualBlobs=new Map(),manualFetched=new Set();
     const manualIO={
+      product:{id:request.repositoryId,name:request.repository,defaultBranch:request.defaultBranch},
       pull:()=>native(`pulls/${session.repository.candidate.prNumber}`),
       changedPaths:async(base,head)=>{
         if(!validSha(base)||!validSha(head))fail('MANUAL_SOURCE');
