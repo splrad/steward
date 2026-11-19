@@ -5,6 +5,10 @@ import {parseDeliveryConfig,assertProductDelivery,parseSupplementalNotes,assertD
   manualCandidateBody,validateManualCandidateRecord} from '../packages/runner/dist/index.js';
 const hash=v=>createHash('sha256').update(typeof v==='string'?v:JSON.stringify(v)).digest('hex');
 const fail=code=>{throw Error(code);};
+export function matchesFrozenUnits(session) {
+  const ids=session.generated.units.map(unit=>unit.id).sort();
+  return new Set(ids).size===ids.length&&JSON.stringify(ids)===JSON.stringify(session.identity.units.map(unit=>unit.id).sort());
+}
 export function manualManagedEntryMatches(file,entry) {
   if(file.content===null)return entry==='';
   return ['100644','100755'].includes(file.mode)&&entry.startsWith(file.mode+' blob ')
@@ -33,8 +37,7 @@ export async function validateManualCandidate(session,producer,io) {
   const delivery=parseDeliveryConfig(JSON.parse(await read('.github/delivery.json')));assertProductDelivery(delivery);
   const paths=delivery.units.map(unit=>unit.path).sort();
   if([settings.packages,manifest].some(entries=>JSON.stringify(Object.keys(entries??{}).sort())!==JSON.stringify(paths)))fail('MANUAL_UNIT_COVERAGE');
-  const ids=session.generated.units.map(unit=>unit.id).sort();
-  if(new Set(ids).size!==ids.length||JSON.stringify(ids)!==JSON.stringify(session.identity.units.map(unit=>unit.id).sort()))fail('MANUAL_UNIT_COVERAGE');
+  if(!matchesFrozenUnits(session))fail('MANUAL_UNIT_COVERAGE');
   const template=await io.read(before.headSha,'.github/release-template.md.mustache');
   const units=[],notes=new Set();
   for(const generated of session.generated.units) {

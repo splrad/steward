@@ -71,7 +71,7 @@ for(const name of ['release-observe','bounded-release-event','release-candidate-
   for(const field of ['inputs.policy_sha','github.sha','github.workflow_sha'])assert.equal(evaluate({...context,[field]:'b'.repeat(40)}),false);
   assert.equal(job.steps[0].with.ref,'${{ github.workflow_sha }}');
 });
-function candidateFixture() {
+function candidateFixture(changeSession=()=>{}) {
   const digest='d'.repeat(64),commit='b'.repeat(40),prefix=`/repos/${product.name}`;
   const candidate={id:digest,prNumber:192,branch:'steward/release-candidate',baseSha:head,generatedSnapshotPath:`generated/${digest}/${digest}.json`,publishedHead:head,
     editingAckHead:null,statusCommentId:null,contentGenerationDigest:digest,adoptionOverride:null,observedLabelEventIds:[],pendingWrite:null};
@@ -80,6 +80,7 @@ function candidateFixture() {
   const contributors={contributors:[],unresolved:0};
   const session={generated:{schemaVersion:1,baseSha:head,files:[],units:[{id:'layerscape',path:'.',version:'1.0.0',tag:'v1.0.0'}],configDigest:digest,sourceDigest:digest},
     identity:{authorsDigest:digest,sourceDigest:digest,actors:[],contributors,units:[{id:'layerscape',actors:[],contributors}]},pending:null,conflict:null,preview:null,adoption:null};
+  changeSession(session);
   const text=JSON.stringify(session),middle=Math.floor(text.length/2),path=`generated/${digest}/session.json`;
   const chunks=[text.slice(0,middle),text.slice(middle)].map((content,index)=>({schemaVersion:1,repositoryId:product.id,candidateId:digest,
     documentKind:'session',documentDigest:sha256(text),index,count:2,content}));
@@ -103,6 +104,12 @@ function candidateFixture() {
   };
   return {get,data,state,chunks,files,generatedChunk,prefix,setCorrupt:()=>{corrupt=true;}};
 }
+test('candidate evidence permits unaffected units but rejects losing a frozen unit',async()=>{
+  const target={...product,units:[{id:'layerscape',path:'.'},{id:'ui',path:'ui'}]};
+  assert.equal((await candidateEvidence(candidateFixture().get,{product:target})).identity.version,'1.0.0');
+  const missing=candidateFixture(s=>s.identity.units.push({...s.identity.units[0],id:'ui'}));
+  await assert.rejects(candidateEvidence(missing.get,{product:target}),/CANDIDATE_FROZEN_UNIT_COVERAGE/);
+});
 test('native event binds exact PR and assembled immutable session',async()=>{
   const f=candidateFixture(),v=await validateCandidateEvent({repositoryId:product.id,prNumber:192,eventId:7},f.get);
   assert.equal(v.identity.version,'1.0.0');assert.equal(v.t0,Date.parse('2026-11-16T12:00:00Z'));assert.equal(v.evidence.prNumber,192);

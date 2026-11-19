@@ -1,3 +1,4 @@
+import {matchesFrozenUnits} from './manual-candidate.mjs';
 import {isDeepStrictEqual} from 'node:util';
 import { createHash } from 'node:crypto';
 import { candidateObservationIdentity, decodeCandidateArchive, decodeCandidateDocument, decodeReleaseRecord } from '../packages/runner/dist/index.js';
@@ -61,6 +62,7 @@ export async function candidateEvidence(get,{requireReady=true,product}) {
   if(chunks.some(c=>c.repositoryId!==product.id||c.candidateId!==state.candidate.id||c.documentKind!=='session'))throw Error('BOUNDED_SESSION');
   const session={repository:state,...await decodeCandidateDocument(chunks)};
   if(session.generated) {
+    if(session.identity && !session.pending && !state.candidate.pendingWrite && !matchesFrozenUnits(session))throw Error('CANDIDATE_FROZEN_UNIT_COVERAGE');
     if(product.units && (!session.generated.units.length||session.generated.units.some(unit=>
       !product.units.some(selected=>selected.id===unit.id&&selected.path===unit.path))))throw Error('CANDIDATE_UNIT_NOT_SELECTED');
     const generatedPath=state.candidate.generatedSnapshotPath;
