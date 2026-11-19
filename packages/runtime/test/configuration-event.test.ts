@@ -5,7 +5,7 @@ it('forwards only the locator of a successful same-repository default branch con
   const sha='a'.repeat(40),org=302208797;
   const env={ORGANIZATION_ID:String(org),INSTALLATION_ID:'123',BOUNDED_RECHECK_ENABLED:'true',RELEASE_RELAY_DEPLOYMENT_SHA:sha};
   const repository={id:42,full_name:'splrad/new-product',private:false,owner:{id:org},archived:false,disabled:false,fork:false,default_branch:'trunk'};
-  const run={id:334,run_attempt:2,repository,head_repository:repository,head_branch:'trunk',path:'.github/workflows/repository-configuration.yml',status:'completed',conclusion:'success'};
+  const run={event:'workflow_dispatch',id:334,run_attempt:2,repository,head_repository:repository,head_branch:'trunk',path:'.github/workflows/repository-configuration.yml',status:'completed',conclusion:'success'};
   const payload={action:'completed',installation:{id:123},organization:{id:org},repository,workflow_run:run};
   const config=Buffer.from(JSON.stringify({schemaVersion:1,enabled:true,deploymentSha:sha}));
   const json=vi.fn(async(_id:number,path:string,method?:string)=>{
@@ -21,6 +21,8 @@ it('forwards only the locator of a successful same-repository default branch con
   }
   expect(json).not.toHaveBeenCalled();
   await forwardConfigurationCompletion(env as any,payload,{json} as any);
+  await forwardConfigurationCompletion(env as any,{...payload,workflow_run:{...run,event:'pull_request',head_branch:'steward/repository-configuration'}},{json} as any);
+  expect(json.mock.calls.filter(([,path])=>path.endsWith('/dispatches'))).toHaveLength(2);
   expect(json).toHaveBeenLastCalledWith(1296724484,'/repos/splrad/steward/actions/workflows/repository-configuration-event.yml/dispatches','POST',
     {ref:'main',inputs:{repository_id:'42',run_id:'334',attempt:'2'}});
 });

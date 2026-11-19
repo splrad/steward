@@ -436,10 +436,12 @@ export async function forwardConfigurationCompletion(env:Env,payload:any,reader:
   if(payload.action!=='completed' || run?.path!=='.github/workflows/repository-configuration.yml' ||
       run.status!=='completed' || run.conclusion!=='success' || !payload.installation?.id ||
       payload.installation.id!==Number(env.INSTALLATION_ID) || payload.organization?.id!==Number(env.ORGANIZATION_ID) ||
-      repository?.owner?.id!==Number(env.ORGANIZATION_ID) || typeof repository.private!=='boolean' ||
+      repository?.owner?.id!==Number(env.ORGANIZATION_ID) || repository.private!==false ||
       repository.archived!==false || repository.disabled!==false || repository.fork!==false || !isManaged(repository) ||
       run.repository?.id!==repository.id || run.head_repository?.id!==repository.id ||
-      typeof repository.default_branch!=='string' || !repository.default_branch || run.head_branch!==repository.default_branch ||
+      typeof repository.default_branch!=='string' || !repository.default_branch ||
+      !(['workflow_dispatch','push','workflow_run'].includes(run.event) && run.head_branch===repository.default_branch ||
+        ['pull_request','pull_request_review'].includes(run.event) && run.head_branch==='steward/repository-configuration') ||
       !Number.isSafeInteger(run.id) || run.id<1 || !Number.isSafeInteger(run.run_attempt) || run.run_attempt<1 ||
       env.BOUNDED_RECHECK_ENABLED!=='true') return;
   const policy=await promotedController(reader,env.RELEASE_RELAY_DEPLOYMENT_SHA);

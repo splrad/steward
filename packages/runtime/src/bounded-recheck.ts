@@ -10,7 +10,7 @@ export const POLICIES = {
   'winget-index': { offsets: [5,15,30,60,120,240,...Array.from({length:7},(_,i)=>600+i*360)], duration: 48*60 },
 } as const;
 export interface Identity {
-  repositoryId: 1187527897; cycleId: string; channel: 'candidate' | 'winget'; version: string;
+  repositoryId: number; cycleId: string; channel: 'candidate' | 'winget'; version: string;
   artifactDigest: string; sourceSha: string; stage: Stage; epoch: string;
   upstreamPR: { number: number; nodeId: string } | null;
 }
@@ -37,7 +37,7 @@ export function validateRegistration(v: Registration, now: number): void {
   assert(v && typeof v==='object','REGISTRATION'); exactKeys(v,['identity','t0','policySha','deploymentSha']);
   const i=v.identity; assert(i && typeof i==='object','IDENTITY');
   exactKeys(i,['repositoryId','cycleId','channel','version','artifactDigest','sourceSha','stage','epoch','upstreamPR']);
-  assert(i.repositoryId===1187527897 && Object.hasOwn(POLICIES,i.stage),'FIXED_TARGET');
+  assert((i.stage==='candidate'?Number.isSafeInteger(i.repositoryId)&&i.repositoryId>0:i.repositoryId===1187527897) && Object.hasOwn(POLICIES,i.stage),'FIXED_TARGET');
   assert(i.channel===(i.stage==='candidate'?'candidate':'winget'),'STAGE_CHANNEL');
   for(const s of [i.cycleId,i.version,i.epoch]) assert(typeof s==='string' && /^[A-Za-z0-9_.-]{1,128}$/.test(s),'IDENTITY_STRING');
   assert(/^sha256:[a-f0-9]{64}$/.test(i.artifactDigest),'DIGEST');

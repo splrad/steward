@@ -5,7 +5,7 @@ import {BoundedGitHub,TARGET,CENTRAL,digest,ensure,type BoundedEnv,type GitReade
 import {candidateFacts,verifiedProducer} from './bounded-candidate-evidence.js';
 import {dispatchFixed} from './bounded-recheck-effects.js';
 import {identityKey,objectKey,type Identity,type RecordState} from './bounded-recheck.js';
-export interface CandidateEvent {repositoryId:1187527897;prNumber:number;eventId:number}
+export interface CandidateEvent {repositoryId:number;prNumber:number;eventId:number}
 export interface EventIntent {schemaVersion:1;event:CandidateEvent;requestKey:string;policySha:string;createdAt:number;deadline:number;checks:number;status:'PENDING'|'REGISTERED'|'NEEDS_ATTENTION'|'PAUSED';nextAt:number|null;reason:string}
 /** Called only after the existing GitHub webhook HMAC + organization validation. */
 export async function acceptBoundedCandidateEvent(env:BoundedEnv,event:string,payload:any,g:GitReader=new BoundedGitHub(env)){

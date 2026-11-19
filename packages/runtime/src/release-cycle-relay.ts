@@ -1,7 +1,7 @@
 import {PendingPromotion,promotionMessage} from './release-promotion.js';
 import {promotedController} from './bounded-controller.js';
 import {readCycle} from './bounded-winget-evidence.js';
-import {BoundedGitHub, CENTRAL, TARGET, digest, ensure, type BoundedEnv, type GitReader} from './bounded-recheck-github.js';
+import {BoundedGitHub, CENTRAL, TARGET, digest, ensure, type ProductTarget, type BoundedEnv, type GitReader} from './bounded-recheck-github.js';
 
 const workflow = 'release-cycle-event.yml';
 const prefix = '/repos/' + CENTRAL.name;
@@ -11,7 +11,7 @@ type Hint = {repositoryId: number; kind: 'push'; sourceSha: string} | {repositor
 type Stage = 'prepare' | 'confirm' | 'received' | 'unknown';
 type Relay = {hint: Hint; stage: Stage; tries: number; next: number; policy: string; reserved: number; runId?: number; reason?: string; waitingFor?:string; resumedFor?:string; paused?:boolean};
 
-export function releaseHint(event: string, p: any, installation: string | undefined): Hint | undefined {
+export function releaseHint(event: string, p: any, installation: string | undefined,product:ProductTarget=TARGET): Hint | undefined {
   const repo = p.repository;
   if (p.installation?.id === Number(installation) && repo?.id === CENTRAL.id && repo.full_name === CENTRAL.name &&
       event === 'workflow_run' && p.action === 'completed' && p.workflow_run?.path === '.github/workflows/'+workflow &&
@@ -19,10 +19,10 @@ export function releaseHint(event: string, p: any, installation: string | undefi
       p.workflow_run.head_repository?.id === CENTRAL.id && p.workflow_run.head_branch === 'main' &&
       positive(p.workflow_run.id) && positive(p.workflow_run.run_attempt) && /^Release cycle [a-f0-9]{64}$/.test(p.workflow_run.display_title))
     return {repositoryId:CENTRAL.id,kind:'publication',runId:p.workflow_run.id,attempt:p.workflow_run.run_attempt};
-  if (!p.installation?.id || p.installation.id !== Number(installation) || repo?.id !== TARGET.id ||
-      repo.full_name !== TARGET.name || repo.default_branch !== 'main' || repo.archived !== false || repo.fork !== false) return;
-  if (event === 'push' && p.ref === 'refs/heads/main' && p.deleted === false && sha(p.after) && !/^0+$/.test(p.after))
-    return {repositoryId: TARGET.id, kind: 'push', sourceSha: p.after};
+  if (!p.installation?.id || p.installation.id !== Number(installation) || repo?.id !== product.id ||
+      repo.full_name !== product.name || repo.default_branch !== product.defaultBranch || repo.archived !== false || repo.fork !== false) return;
+  if (event === 'push' && p.ref === 'refs/heads/'+product.defaultBranch && p.deleted === false && sha(p.after) && !/^0+$/.test(p.after))
+    return {repositoryId: product.id, kind: 'push', sourceSha: p.after};
   if (event !== 'workflow_run' || p.action !== 'completed') return;
   const run = p.workflow_run;
   if (run?.head_repository?.id !== TARGET.id || run.status !== 'completed' || run.event !== 'workflow_dispatch' ||
@@ -34,9 +34,19 @@ export function releaseHint(event: string, p: any, installation: string | undefi
 export function relayKey(h: Hint) {
   return digest(JSON.stringify(h.kind === 'push' ? [h.repositoryId,h.kind,h.sourceSha] : [h.repositoryId,h.kind,h.runId,h.attempt])).slice(7);
 }
-export async function acceptReleaseHint(env: BoundedEnv, event: string, payload: unknown) {
+export async function acceptReleaseHint(env: BoundedEnv, event: string, payload: any,reader:GitReader=new BoundedGitHub(env)) {
   if (env.BOUNDED_RECHECK_ENABLED !== 'true') return;
-  const hint = releaseHint(event,payload,env.INSTALLATION_ID);
+  let product:ProductTarget=TARGET;
+  if(event==='push'){
+    const repo=payload.repository;
+    if(!repo||repo.private!==false||repo.archived!==false||repo.fork!==false||repo.owner?.id!==302208797||
+       !Number.isSafeInteger(repo.id)||repo.id<1||!payload.installation?.id||payload.installation.id!==Number(env.INSTALLATION_ID)||
+       payload.ref!=='refs/heads/'+repo.default_branch||payload.deleted!==false||!sha(payload.after)||/^0+$/.test(payload.after))return;
+    const scope=await reader.forCandidate?.(repo.id);
+    if(!scope?.target)return;
+    product=scope.target;
+  }
+  const hint = releaseHint(event,payload,env.INSTALLATION_ID,product);
   if (!hint) return;
   ensure(env.BOUNDED_RECHECK,'RELEASE_RELAY_NAMESPACE');
   const stub = env.BOUNDED_RECHECK.get(env.BOUNDED_RECHECK.idFromName('cycle:v1:' + relayKey(hint)));

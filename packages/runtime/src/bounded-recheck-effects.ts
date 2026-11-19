@@ -4,7 +4,7 @@ import {verifyGeneratedProjection} from './bounded-candidate-projection.js';
 import {exactManual,verifyManualProjection} from './bounded-manual-evidence.js';
 import {upstreamPull,bindPull,currentWinget,bindChannelRun,channelJob,reportBinding,verifyIndexItem,APP_BOT_ID} from './bounded-winget-evidence.js';
 import {identityKey,type Effects,type RecordState,type Intent,type Outcome} from './bounded-recheck.js';
-import {BoundedGitHub,TARGET,CENTRAL,ensure,type BoundedEnv,type GitReader} from './bounded-recheck-github.js';
+import {BoundedGitHub,candidateReader,TARGET,CENTRAL,ensure,type BoundedEnv,type GitReader} from './bounded-recheck-github.js';
 import {candidateFacts} from './bounded-candidate-evidence.js';
 export async function dispatchFixed(g:GitReader,id:number,file:'release-observe.yml'|'bounded-release-event.yml'|'release-candidate-event.yml'|'steward-release-channels.yml'|'pages-maintenance-event.yml'|'quality-language-summary.yml'|'repository-configuration-event.yml',sha:string,inputs:Record<string,string>,claim?:()=>Promise<boolean>){
  const name=id===CENTRAL.id?CENTRAL.name:TARGET.name;
@@ -19,7 +19,7 @@ export class FixedRecheckEffects implements Effects {
  constructor(private env:BoundedEnv,private reader:()=>GitReader=()=>new BoundedGitHub(env)){}
  async observe(r:RecordState,intent:Intent,reservePolicy?:(sha:string)=>Promise<boolean>):Promise<Outcome>{
   if(this.env.BOUNDED_RECHECK_ENABLED!=='true')return {kind:'stop',reason:'QUIESCED'};
-  const g=this.reader();
+  const g=r.identity.stage==='candidate'?await candidateReader(this.reader(),r.identity.repositoryId):this.reader();
   if(r.identity.stage==='winget-pr')return this.upstream(r);
   if(r.identity.stage==='winget-index'){const {inputs}=await currentWinget(g,r,this.env);const p=await upstreamPull(r.identity.upstreamPR!.number,g);bindPull(p,r.identity.version,r.identity.upstreamPR!.nodeId);ensure(p.merged===true,'INDEX_REQUIRES_MERGED');await dispatchFixed(g,TARGET.id,'steward-release-channels.yml',r.executionSha!,inputs);return {kind:'unknown'};}
   const facts=await candidateFacts(g);if(identityKey(facts.identity)!==identityKey(r.identity))return {kind:'stop',reason:'SOURCE_CHANGED'};
@@ -36,7 +36,7 @@ export class FixedRecheckEffects implements Effects {
   if(r.identity.stage==='winget-pr')return this.upstream(r);
   if(r.identity.stage==='winget-index')return this.index(r,intent);
   const policy=intent.executionPolicySha??r.policySha;
-  const g=this.reader();const list=await g.json(CENTRAL.id,`/repos/${CENTRAL.name}/actions/workflows/release-observe.yml/runs?event=workflow_dispatch&head_sha=${policy}&created=${encodeURIComponent(new Date(intent.claimedAt-30_000).toISOString()+'..'+new Date(intent.claimedAt+30_000).toISOString())}&per_page=100`);
+  const g=await candidateReader(this.reader(),r.identity.repositoryId);const list=await g.json(CENTRAL.id,`/repos/${CENTRAL.name}/actions/workflows/release-observe.yml/runs?event=workflow_dispatch&head_sha=${policy}&created=${encodeURIComponent(new Date(intent.claimedAt-30_000).toISOString()+'..'+new Date(intent.claimedAt+30_000).toISOString())}&per_page=100`);
   ensure(Array.isArray(list.workflow_runs)&&list.total_count===list.workflow_runs.length,'RUN_WINDOW_INCOMPLETE');
   const hits=list.workflow_runs.filter((x:any)=>x.repository?.id===CENTRAL.id&&x.head_repository?.id===CENTRAL.id&&x.path==='.github/workflows/release-observe.yml'&&x.head_sha===policy&&x.event==='workflow_dispatch'&&x.display_title===`Observe candidate ${intent.key}`);
   if(hits.length!==1)return {kind:'unknown'};const run=await g.json(CENTRAL.id,`/repos/${CENTRAL.name}/actions/runs/${hits[0].id}`);
