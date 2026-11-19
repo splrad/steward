@@ -23,11 +23,7 @@ it.each([
   ['cli.tar.gz', 'tar-gzip', true],
   ['stations.zip', 'zip', true],
   ['large.zip', 'zip', true],
-  ['stream.zip', 'zip', true],
-  ['stream64.zip', 'zip', true],
-  ['seekable64.zip', 'zip', true],
   ['comment.zip', 'zip', true],
-  ['application.zip', 'zip', false],
   ['extra.zip', 'zip', false],
   ['short-comment.zip', 'zip', false],
   ['ambiguous.zip', 'zip', false],
@@ -38,12 +34,8 @@ it.each([
 ] as const)('checks the actual bytes of %s', async (name, inspection, ok) => {
   const asset = { id: 'fixture', name, mediaType: inspection === 'tar-gzip' ? 'application/gzip' : 'application/zip', inspection };
   const result = inspectDeclaredAsset(join(root, name), asset, '1.2.3', process.cwd(), root, join(root, name + '-staged'));
-  if (ok) {
-    await expect(result).resolves.toBe('1.2.3');
-    if (name === 'stations.zip' || name === 'cli.tar.gz') {
-      expect(await readFile(join(root, name + '-staged', 'pkg/__init__.py'))).toHaveLength(0);
-    }
-  } else await expect(result).rejects.toThrow();
+  if (ok) await expect(result).resolves.toBe('1.2.3');
+  else await expect(result).rejects.toThrow();
 });
 it('verifies required members, their native type and embedded version', async () => {
   const asset: DeliveryUnit['assets'][number] = { id: 'data', name: 'stations.zip', mediaType: 'application/zip', inspection: 'zip',

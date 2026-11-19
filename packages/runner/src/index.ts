@@ -126,3 +126,4 @@ export async function main(argv=process.argv.slice(2)):Promise<void>{
   return observeCopilotReviewCommand(invocation.args);
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href)main().catch(()=>{process.stderr.write('STEWARD_COMMAND_FAILED\n');process.exitCode=1;});
+export { downloadArtifactArchive } from './artifact-handoff.js';
