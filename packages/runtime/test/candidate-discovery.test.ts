@@ -1,6 +1,7 @@
 import {createHash,generateKeyPairSync} from 'node:crypto';
 import {expect,it} from 'vitest';
-import {BoundedGitHub} from '../src/bounded-recheck-github.js';
+import {acceptReleaseHint,relayKey} from '../src/release-cycle-relay.js';
+import {BoundedGitHub,CENTRAL} from '../src/bounded-recheck-github.js';
 import {acceptNativeCandidateEvent} from '../src/bounded-native-event.js';
 
 it('resolves the installed public product and two selected units at trunk without a repository registry',async()=>{
@@ -22,6 +23,7 @@ it('resolves the installed public product and two selected units at trunk withou
     const prefix='/repos/'+repo.full_name+'/';
     expect(u.pathname.startsWith(prefix)).toBe(true);
     const path=u.pathname.slice(prefix.length);
+    if(path==='actions/workflows/steward-release-channels.yml')return Response.json({id:998,state:'active',path:'.github/workflows/steward-release-channels.yml'});
     if(path==='git/ref/heads/trunk')return Response.json({ref:'refs/heads/trunk',object:{type:'commit',sha}});
     if(path==='git/trees/'+sha) {
       const tree=Object.entries(files).map(([path,content])=>{
@@ -43,8 +45,24 @@ it('resolves the installed public product and two selected units at trunk withou
   const receive=()=>acceptNativeCandidateEvent(env,'pull_request',payload,'delivery-1',new BoundedGitHub(env,transport));
   await receive();expect(records[0].hint.repositoryId).toBe(id);
   expect(minted.every(grant=>Object.values(grant.permissions).every(p=>p==='read'))).toBe(true);
+  const run={id:1234,run_attempt:1,status:'completed',conclusion:'success',event:'workflow_dispatch',actor:{id:301115370},
+    repository:{id},head_repository:{id},head_branch:'trunk',workflow_id:998,path:'.github/workflows/steward-release-channels.yml',display_title:'Channels observe '+'f'.repeat(64)};
+  const forward=(payload:any)=>acceptReleaseHint(env,'workflow_run',payload,new BoundedGitHub(env,transport));
+  await forward({repository:repo,installation:{id:123},action:'completed',workflow_run:{...run,workflow_id:997}});
+  expect(records).toHaveLength(1);
+  await forward({repository:repo,installation:{id:123},action:'completed',workflow_run:run});
+  const parent=records[1];expect(parent).toEqual({repositoryId:id,kind:'run',runId:1234,attempt:1});
+  const parentKey=relayKey(parent),relay=env.BOUNDED_RECHECK;
+  relay.get=(key:string)=>({fetch:async(req:Request)=>{
+    if(key==='cycle:v1:'+parentKey)return Response.json({hint:parent,reserved:1,runId:55,policy:sha});
+    records.push(await req.json());return Response.json({});
+  }});
+  const central={id:CENTRAL.id,full_name:CENTRAL.name};
+  await forward({repository:central,installation:{id:123},action:'completed',workflow_run:{...run,id:55,repository:central,head_repository:central,head_branch:'main',head_sha:sha,
+    path:'.github/workflows/release-cycle-event.yml',display_title:'Release cycle '+parentKey}});
+  expect(records[2]).toEqual({repositoryId:CENTRAL.id,kind:'publication',runId:55,attempt:1,productRepositoryId:id});
   authorized=false;await expect(receive()).rejects.toThrow('CANDIDATE_TOKEN_SCOPE');authorized=true;
   delete files['release-please-config.json'];await receive();
   repo.private=true;await receive();
-  expect(records).toHaveLength(1);
+  expect(records).toHaveLength(3);
 });
