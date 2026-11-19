@@ -115,7 +115,7 @@
         },
         {
           "startedAt": "2026-11-19T21:43:27.961Z",
-          "status": "UNKNOWN",
+          "status": "FAILED",
           "model": null,
           "usage": null
         }
@@ -151,7 +151,7 @@
         },
         {
           "startedAt": "2026-11-19T21:43:27.961Z",
-          "status": "UNKNOWN",
+          "status": "FAILED",
           "model": null,
           "usage": null
         }
