@@ -63,7 +63,7 @@ export function prepareTarget(model,target) {
 }
 
 export async function applySelection(model,operation,plan,context) {
-  const changes=new Map(),targets=[],prepared=[],selectedUnits=new Set();
+  const changes=new Map(),targets=[],prepared=[],formal=[];
   const requested=plan.targets??[];
   must(Array.isArray(requested),'Expected a list of build targets');
   for(const target of requested) {
@@ -90,7 +90,8 @@ export async function applySelection(model,operation,plan,context) {
   }
   let delivery=model.delivery;
   if(operation==='select') {
-    const formal=[];
+    const declaredChannels=(unit,facts)=>(facts?.channels??[]).filter(c=>
+      !(plan.channels??[]).some(edit=>edit.unit===unit && edit.id===c.id && edit.sources));
     delivery=explicitDelivery(delivery??{schemaVersion:2,repositoryAuthors:plan.repositoryAuthors,units:[]});
     const allAssets=new Map();
     for(let i=0;i<targets.length;i++) {
@@ -104,14 +105,14 @@ export async function applySelection(model,operation,plan,context) {
           const facts=plan.units?.find(u=>u.id===target.unit);
           must(facts && model.files.has(repositoryPath(facts.notesPath)),'Missing declared unit and notes');
           const {notesBody,...definition}=facts;
-          unit={...definition,path:repositoryPath(facts.path,true),assets:[],channels:facts.channels??[]};
+          unit={...definition,path:repositoryPath(facts.path,true),assets:[],channels:declaredChannels(target.unit,facts)};
         }
         const facts=plan.units?.find(u=>u.id===unit.id);
         if(facts?.buildLocks) {
           must(facts.buildLocks.every(p=>model.files.has(repositoryPath(p))),'Missing declared build lock');
           unit.buildLocks=facts.buildLocks;
         }
-        for(const c of facts?.channels??[]) if(!unit.channels.some(old=>old.id===c.id)) unit.channels.push(c);
+        for(const c of declaredChannels(unit.id,facts)) if(!unit.channels.some(old=>old.id===c.id)) unit.channels.push(c);
         const cfg=model.versions?.packages?.[unit.path];
         must(cfg,'Missing Release Please package '+unit.path);
         const versionFile=cfg['version-file']??model.versions['version-file'];
@@ -131,7 +132,6 @@ export async function applySelection(model,operation,plan,context) {
         if(existingUnit) delivery.units[delivery.units.indexOf(existingUnit)]=unit;
         else delivery.units.push(unit);
         allAssets.set(unit.id,[...(allAssets.get(unit.id)??[]),...assets]);
-        selectedUnits.add(unit.id);
         formal.push({unit:target.unit,target:target.target,recipe:{...recipe,steps:[...recipe.steps.filter(step=>step.uses),{name:'Run reviewed packaging entry',shell:'pwsh',run:'node product/'+prepared[i].path}]},files});
       } catch(error) {
         if(!context.describe || error.status && ![404,410].includes(error.status) || error.code) throw error;
@@ -152,10 +152,15 @@ export async function applySelection(model,operation,plan,context) {
     changes.set(deliveryPath,jsonFile(delivery));
   }
   const channelEdits=(plan.channels??[]).flatMap(edit=>{
-    if(operation==='select' && requested.some(t=>t.unit===edit.unit) && !selectedUnits.has(edit.unit)) return [];
+    if(operation==='select' && requested.some(t=>t.unit===edit.unit) && !formal.some(t=>t.unit===edit.unit)) return [];
     if(operation!=='select' || !edit.artifactIds) return [edit];
     const unit=delivery?.units.find(u=>u.id===edit.unit);
-    const artifactIds=edit.artifactIds.filter(id=>unit?.assets.some(a=>a.id===id));
+    const accepted=edit.sources?.filter(s=>formal.some(t=>t.unit===edit.unit && t.target===s.target && t.files.some(f=>f.id===s.assetId)));
+    if(accepted && !accepted.length) return [];
+    const chosen=accepted?[...new Set([...(edit.existingIds??[]),...accepted.map(s=>s.assetId)])]:edit.artifactIds;
+    const artifactIds=chosen.filter(id=>unit?.assets.some(a=>a.id===id));
+    if(accepted && unit && !unit.channels.some(c=>c.id===edit.id))
+      unit.channels.push({id:edit.id,location:edit.location,required:false});
     return artifactIds.length?[{...edit,artifactIds}]:[];
   });
   if(channelEdits.length) {

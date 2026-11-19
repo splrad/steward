@@ -205,8 +205,9 @@ export function planFromForm(model,state,operation) {
         item.files.push(declaration);
         for(const channel of ['github-release','ghcr-assets','winget']) if(v[asset+'.'+channel]) {
           const k=unit+'/'+channel;
-          if(!channels.has(k)) channels.set(k,{unit,id:channel,required:true,location:v[id+'.dest.'+channel],metadata:metadataFiles.filter(name=>v[id+'.metadata.'+channel+'.'+key(name)]),artifactIds:[]});
+          if(!channels.has(k)) channels.set(k,{unit,id:channel,required:true,sources:[],location:v[id+'.dest.'+channel],metadata:metadataFiles.filter(name=>v[id+'.metadata.'+channel+'.'+key(name)]),artifactIds:[]});
           channels.get(k).artifactIds.push(v[asset+'.id']);
+          channels.get(k).sources.push({target,assetId:v[asset+'.id']});
         }
       }
     }
@@ -232,6 +233,7 @@ export function planFromForm(model,state,operation) {
     if(JSON.stringify([...metadata].sort())!==JSON.stringify([...prior.metadata].sort())) edit.metadata=metadata;
     const addition=operation==='select'?channels.get(unit.id+'/'+c.id):undefined;
     if(addition) {
+      addition.existingIds=ids;
       addition.artifactIds=[...new Set([...ids,...addition.artifactIds])];
       addition.metadata=metadata;
       if(enabled!==c.required) addition.required=edit.required;

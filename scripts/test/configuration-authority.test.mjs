@@ -10,7 +10,7 @@ import {tmpdir} from 'node:os';
 import {authorizePull,checkEvent,protectedChanges,requestPath} from '../configuration-authorization.mjs';
 import {dispatchTrial,findEvidence,requestFromRun,rerunValidation,trialInventory} from '../configuration-native.mjs';
 import {inspectRepository,versionsPath,pagesPath} from '../configuration-view.mjs';
-import {applySelection,trialKey} from '../configuration-selection.mjs';
+import {applySelection,prepareTarget,trialKey} from '../configuration-selection.mjs';
 import {optionState,reconcile} from '../repository-configuration.mjs';
 import YAML from 'yaml';
 const A='a'.repeat(40),B='b'.repeat(40),C='c'.repeat(40),actor={id:12,login:'maintainer',type:'User'};
@@ -157,6 +157,36 @@ test('adding a Windows asset preserves selected Linux files and channel metadata
     'channel.cli.github-release.asset.symbols':false}};
   const [edit]=planFromForm(model,state,'select').channels;
   assert.deepEqual(edit.artifactIds,['linux','win']);assert.deepEqual(edit.metadata,['SHA256SUMS']);
+});
+test('a failed target in the same release unit cannot add its existing asset to another channel',async()=>{
+  const assets=['linux','windows'].map(id=>({id,name:id+'.zip',mediaType:'application/zip'}));
+  const unit={id:'cli',path:'.',notesPath:'notes.md',assets,channels:[{id:'github-release',location:'github',required:true}]};
+  const files=new Map([['.github/delivery.json',JSON.stringify({schemaVersion:2,repositoryAuthors:[{id:12,evidence:'fixture'}],units:[unit]})],
+    ['release-please-config.json',JSON.stringify({packages:{'.':{'version-file':'VERSION'}}})],['VERSION','1.0.0'],['notes.md','notes'],
+    ['pack.sh','true'],['.github/workflows/repository-configuration-trial.yml','protected']]);
+  const model=inspectRepository(files),state={values:{signing:true},evidence:{}};
+  for(const [index,asset] of assets.entries()){
+    const id='s'+(index+1),field=id+'.f'+createHash('sha256').update(asset.name).digest('hex').slice(0,16);
+    for(const [k,v] of Object.entries({use:true,unit:'cli',target:asset.id,path:'.',entry:'pack.sh',directory:'.',runner:'ubuntu-24.04',shell:'bash',
+      command:'sh pack.sh',output:'out',notes:'notes.md','dest.ghcr-assets':'ghcr.io/splrad/fixture'}))state.values[id+'.'+k]=v;
+    Object.assign(state.values,{[field+'.use']:true,[field+'.ghcr-assets']:true,[field+'.id']:asset.id,[field+'.name']:asset.name,[field+'.type']:asset.mediaType});
+    state.evidence[id]={files:[{path:asset.name}],binding:{}};
+  }
+  const plan=planFromForm(model,state,'select');
+  for(const t of plan.targets) for(const [path,bytes] of prepareTarget(model,t).files)files.set(path,bytes);
+  const seed=await readFile('templates/release/steward-release-publish.yml','utf8');
+  const {renderBuild}=await import('../configuration-build.mjs');
+  const adopted=renderBuild(seed,plan.targets.map(t=>({unit:'cli',target:t.target,recipe:{runner:t.runner,steps:[{shell:'pwsh',
+    name:'Run reviewed packaging entry',run:'node product/'+prepareTarget(model,t).path}],output:'out'},files:[{id:t.target,path:t.target+'.zip',pattern:t.target+'.zip'}]})),{signing:'not-applicable'});
+  files.set('.github/workflows/steward-release-publish.yml',adopted);
+  const warnings=[];
+  const changes=await applySelection(inspectRepository(files),'select',plan,{seed,describe:m=>warnings.push(m),inventory:async t=>{
+    if(t.target==='windows')throw Error('Expired artifact');return [{path:'linux.zip'}];
+  }});
+  const saved=JSON.parse(changes.get('.github/delivery.json')).units[0];
+  assert.deepEqual(saved.channels.find(c=>c.id==='ghcr-assets').artifactIds,['linux']);
+  assert.deepEqual(saved.assets.map(a=>a.id).sort(),['linux','windows']);
+  assert.ok(warnings.some(m=>m.includes('windows') && m.includes('Expired artifact')));
 });
 test('reviewed Pages source selects the same unit for maintenance even with legacy online settings',async()=>{
   const workflow=Buffer.from(YAML.stringify({env:{STEWARD_DOCS_SOURCE:'release',STEWARD_DOCS_UNIT:'maps'}}));
