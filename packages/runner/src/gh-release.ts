@@ -1,3 +1,4 @@
+import { releaseBodyMatches } from './release-body.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
@@ -206,7 +207,10 @@ export class NativeGitHubRelease {
     await verifySealedArtifacts(target.directory, target.manifest);
     const release = await this.read(target);
     if (release.draft || release.immutable !== true) reject('release not immutable and published');
-    if (release.body !== await readFile(join(target.directory, 'release-notes.md'), 'utf8')) reject('published body drift');
+    const m = target.manifest;
+    if (!await releaseBodyMatches({ repository: m.fullName, repositoryId: m.repositoryId, releaseId: release.id, sourceSha: m.sourceSha,
+      tag: release.tag_name, frozenDigest: (await fileDigest(target.directory, 'release-notes.md')).sha256 }, release.body,
+      path => this.json(['api', `repos/${m.fullName}${path ? '/' + path : ''}`]))) reject('published body drift');
     const assets = await this.assets(target);
     if (JSON.stringify(assets.map(asset => asset.name).sort()) !== JSON.stringify(this.names(target))) reject('published asset set');
     const nativeEvidence: unknown[] = [];
@@ -265,10 +269,25 @@ export class NativeGitHubRelease {
         if (!asset) { if (uploadError) throw uploadError; reject('upload not observed'); }
       }
       await this.compareAsset(target, asset);
+      if (asset.label !== name) {
+        if ((asset.label && asset.label !== label) || asset.uploader?.id !== target.appBotId) reject('unproven draft label');
+        await guard();
+        let failure;
+        try { await this.mutate('PATCH', `repos/${target.manifest.fullName}/releases/assets/${asset.id}`, { name, label: name }); }
+        catch (error) { failure = error; }
+        const observed = (await this.assets(target)).find(item => item.id === asset.id);
+        if (observed?.name !== name || observed.label !== name) {
+          if (failure) throw failure;
+          reject('asset label edit not observed');
+        }
+      }
     }
     const assets = await this.assets(target);
     if (JSON.stringify(assets.map(asset => asset.name).sort()) !== JSON.stringify(names)) reject('draft asset set');
-    for (const asset of assets) await this.compareAsset(target, asset);
+    for (const asset of assets) {
+      if (asset.label !== asset.name) reject('unexpected public asset label');
+      await this.compareAsset(target, asset);
+    }
     const notes = await readFile(join(target.directory, 'release-notes.md'), 'utf8');
     if ((await this.read(target)).body !== notes) {
       await guard();

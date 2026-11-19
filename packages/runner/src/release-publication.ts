@@ -1,3 +1,4 @@
+import { releaseBodyMatches } from './release-body.js';
 import { createHash } from 'node:crypto';
 import { decodeNativePublication, type NativePublication } from '../../core/src/native-evidence.js';
 import { type NativeAttemptSet, type NativeAttemptEvidence, type ArchivedAttempt } from '../../core/src/release-observation.js';
@@ -14,6 +15,11 @@ export function publicationFile(value:NativePublication):ArchiveFile {
   const content=JSON.stringify(value)+'\n',sha256=hash(content);decodeNativePublication(Buffer.from(content));
   return {path:`evidence/publication/${sha256}.json`,content,sha256};
 }
+function centralPublicationSource(run:NativePublication['centralRun']) {
+  return run.path === '.github/workflows/release-cycle-event.yml'
+    ? run.event === 'workflow_dispatch' && run.actorId === 301115370 && run.headBranch === 'main'
+    : run.path === '.github/workflows/release.yml' && ['schedule','workflow_dispatch'].includes(run.event);
+}
 function targets(context:EvidenceContext) {
   return context.cycle.units.map(unit=>{
     check(unit.manifestDigest&&unit.notesDigest&&unit.assets.length,'frozen publication input required');
@@ -26,7 +32,7 @@ function validate(context:EvidenceContext,file:PublicationFile) {
     &&value.cycleId===context.cycle.id&&value.sourceSha===context.cycle.sourceSha&&same(value.targets,targets(context))
     &&value.targetsDigest===hash(JSON.stringify(value.targets)),'protected publication provenance');
   check(value.centralRun.repositoryId===centralId&&value.centralRun.headRepositoryId===centralId
-    &&value.centralRun.path==='.github/workflows/release.yml'&&['schedule','workflow_dispatch'].includes(value.centralRun.event),'central source');
+    &&centralPublicationSource(value.centralRun),'central source');
   return value;
 }
 async function centralAttempt(io:EvidenceTransport,id:number,attempt:number,expected?:CentralInvocation) {
@@ -34,8 +40,7 @@ async function centralAttempt(io:EvidenceTransport,id:number,attempt:number,expe
   const repository=await reader.json(''),workflow=await reader.json(`actions/workflows/${run.workflowId}`);
   check(repository.id===centralId&&repository.full_name===central&&repository.archived===false&&repository.disabled===false
     &&run.id===id&&run.runAttempt===attempt&&run.repositoryId===centralId&&run.headRepositoryId===centralId
-    &&run.path==='.github/workflows/release.yml'&&workflow.id===run.workflowId&&workflow.path===run.path
-    &&['schedule','workflow_dispatch'].includes(run.event),'native central identity');
+    &&centralPublicationSource(run)&&workflow.id===run.workflowId&&workflow.path===run.path,'native central identity');
   if(expected)check(run.headSha===expected.controllerSha&&run.headBranch===expected.defaultBranch&&repository.default_branch===expected.defaultBranch,'current central source');
   const jobs=(await reader.pages(`actions/runs/${id}/attempts/${attempt}/jobs`,'jobs')).map(jobFact);
   check(jobs.every(job=>job.runId===id&&job.runAttempt===attempt&&job.headSha===run.headSha),'central jobs');
@@ -61,7 +66,9 @@ async function objects(context:EvidenceContext,io:EvidenceTransport):Promise<Nat
       const marker=`<!-- steward-release:${hash(JSON.stringify([context.repositoryId,unit.id,unit.tag,context.cycle.sourceSha,unit.manifestDigest]))} -->`;
       check(Number.isSafeInteger(release.id)&&release.id>0&&release.tag_name===unit.tag&&release.author?.id===context.appBotId
         &&(unit.releaseId===null||release.id===unit.releaseId)&&typeof release.draft==='boolean'&&typeof release.body==='string'
-        &&(hash(release.body)===unit.notesDigest||release.draft&&release.body===marker)
+        &&((release.draft ? hash(release.body)===unit.notesDigest || release.body===marker
+          : await releaseBodyMatches({ repository: context.repository, repositoryId: context.repositoryId, releaseId: release.id,
+          sourceSha: context.cycle.sourceSha, tag: unit.tag, frozenDigest: unit.notesDigest }, release.body, path => reader.json(path))))
         &&(!release.draft||release.target_commitish===context.cycle.sourceSha),'release identity');
       check((await reader.json(`commits/${encodeURIComponent(unit.tag)}`)).sha===context.cycle.sourceSha,'tag source');
       const assetReader=release.draft===false?await formalReleaseReader(context,io):reader;

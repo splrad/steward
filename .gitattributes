@@ -5,3 +5,5 @@
 *.jpeg binary
 *.gif binary
 *.webp binary
+# Packaged Handlebars partials use trailing blank lines to separate rendered Markdown items.
+packages/runner/dist/*.hbs whitespace=-blank-at-eof

@@ -112,10 +112,15 @@ export async function assertLifecycleUpdaters(files,{side}={}){
     const expected=parse(await readFile(new URL('../config/private-lifecycle/'+path.split('/').at(-1),import.meta.url),'utf8'));
     const actual=parse(files.get(path).toString('utf8'));
     if(isDeepStrictEqual(actual,expected))continue;
-    // Historical v1 is readable only as the trusted base snapshot. Every head
+    // Historical v1/v2/v3 are readable only as trusted base snapshots. Every head
     // that carries updater configuration must use the sole current contract.
-    const legacy=side==='base'&&path==='.github/renovate.json'
-      ?JSON.parse(await readFile(new URL('../config/private-lifecycle/history/renovate-v1-base.json',import.meta.url),'utf8')):undefined;
-    assert(legacy!==undefined&&isDeepStrictEqual(actual,legacy),'LIFECYCLE_UPDATER_CONTRACT');
+    let historicalBase=false;
+    if(side==='base'&&path==='.github/renovate.json'){
+      for(const version of ['v1','v2','v3']){
+        const legacy=JSON.parse(await readFile(new URL(`../config/private-lifecycle/history/renovate-${version}-base.json`,import.meta.url),'utf8'));
+        if(isDeepStrictEqual(actual,legacy)){historicalBase=true;break;}
+      }
+    }
+    assert(historicalBase,'LIFECYCLE_UPDATER_CONTRACT');
   }
 }

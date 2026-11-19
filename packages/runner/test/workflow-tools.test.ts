@@ -288,3 +288,30 @@ it.each(['other-path','pull_request_target','other-finding'])('retains native la
   if(kind==='other-finding')await writeFile(join(root,'.github/workflows/unsafe.yml'),clean.replace('echo safe','echo "${{ github.head_ref }}"'));
   await expect(scanWorkflows(root,await discoverWorkflowFiles(root))).rejects.toThrow(/zizmor.*failed|jactionlint.*failed/);
 },120000);
+
+it.each(['registered','template-copy','other-trigger','additional-finding','other-repository','no-identity','other-position'])('limits the central maintenance decision to the exact native finding: %s',async kind=>{
+  const path=(kind==='template-copy'?'templates/repository/':'')+'.github/workflows/maintenance-event.yml';
+  const trigger=kind==='other-trigger'?'pull_request_target: {}':'workflow_run:\n    workflows: [Registered producer]\n    types: [completed]';
+  const root=await fixture(clean.replace('on: pull_request','on:\n  '+trigger));
+  await mkdir(join(root,path,'..'),{recursive:true});
+  await rename(join(root,'.github/workflows/test.yml'),join(root,path));
+  const files=[path];
+  if(kind==='additional-finding'){
+    const extra='.github/workflows/unsafe.yml';
+    await writeFile(join(root,extra),clean.replace('on: pull_request','on: pull_request_target'));
+    files.push(extra);
+  }
+  if(kind==='other-position')state.diagnostic={status:14,stdout:JSON.stringify([{ident:'dangerous-triggers',ignored:false,locations:[{
+    symbolic:{kind:'Primary',key:{Local:{verbatim_path:resolve(root,path)}},route:{route:[{Key:'on'},{Key:'workflow_run'},{Key:'types'}]}}
+  }]}])};
+  const repositoryId=kind==='no-identity'?undefined:kind==='other-repository'?7:1296724484;
+  const scan=scanWithPolicyTools(root,files,runtimeRoot,repositoryId);
+  if(kind!=='registered')await expect(scan).rejects.toThrow(/zizmor.*failed/);
+  else {
+    const result=await scan;
+    expect(result.results.at(-1)?.status).toBe(14);
+    expect(result.exceptions).toHaveLength(1);
+    expect(result.exceptions![0]).toMatchObject({decision:'E11-CENTRAL-MAINTENANCE-WORKFLOW-RUN-20261118',finding:{ident:'dangerous-triggers',ignored:false}});
+    expect(result.results.at(-1)?.stdout).toContain('workflow_run');
+  }
+},120000);

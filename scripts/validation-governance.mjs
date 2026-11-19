@@ -14,5 +14,5 @@ const {input,files}=await validationInput(workspace);
   const legacy=JSON.parse(await readFile(new URL('../config/review/legacy-instructions.json',import.meta.url),'utf8'));
   await assertRepositoryInstructions(workspace,await readFile(new URL('../templates/repository/AGENTS.md',import.meta.url)),
     {repositoryId:input.repositoryId,legacy,templateSource:process.env.GITHUB_REPOSITORY===process.env.WORKFLOW_REPOSITORY});
-  console.log(JSON.stringify(await scanWorkflows(workspace,await discoverWorkflowFiles(workspace,true)),null,2));
+  console.log(JSON.stringify(await scanWorkflows(workspace,await discoverWorkflowFiles(workspace,true),undefined,input.repositoryId),null,2));
 }catch(error){console.error(error.message);process.exitCode=1;}

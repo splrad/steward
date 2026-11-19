@@ -7,7 +7,6 @@ import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { nativeReleaseApp, nativeEvidenceTransport, isolatedBuildEnvironment, evaluateCompletion,parseDeliveryConfig,assertProductDelivery } from '../packages/runner/dist/index.js';
 import { readReleaseRecords, writeReleaseRecords, releaseCommand, assertReleaseWriterProtection } from './release-record.mjs';
-import {serviceMaintenance,maintenanceGitStore} from './maintenance.mjs';
 import {servicePages,pagesGitStore} from './pages-maintenance.mjs';
 import {assertQualityProtection,qualityNativeIO} from './quality-language-summary.mjs';
 import {validateReleaseConfiguration} from './release-adoption.mjs';
@@ -172,7 +171,7 @@ export async function releaseParticipation(repository,io) {
   return {status,sourceSha:ref.object.sha};
 }
 
-export async function fetchState(root,repository,token,targetRef='steward/release-state',{governanceAppId,fetcher=fetch,includeHistory=targetRef!=='steward/release-state',centralFirstUse=false}={}) {
+export async function fetchState(root,repository,token,targetRef='steward/release-state',{governanceAppId,fetcher=fetch,includeHistory=targetRef!=='steward/release-state',centralFirstUse=false,readCentralMaintenanceRules}={}) {
   const io=nativeEvidenceTransport(token,fetcher),remote=`https://github.com/${repository.full_name}.git`;
   if(centralFirstUse) {
     if(repository.id!==1296724484||repository.full_name!=='splrad/steward'||!['steward/release-state','steward/automation-health'].includes(targetRef))throw new Error('RELEASE_CENTRAL_STATE_IDENTITY');
@@ -182,7 +181,7 @@ export async function fetchState(root,repository,token,targetRef='steward/releas
     if(actual.id!==repository.id||actual.full_name!==repository.full_name||actual.default_branch!==repository.default_branch||actual.archived!==false||actual.disabled!==false)throw new Error('RELEASE_CENTRAL_STATE_IDENTITY');
   }
   if(targetRef==='steward/governance-state')await assertQualityProtection(qualityNativeIO(repository.full_name,token,fetcher),repository.full_name,governanceAppId);
-  else await assertReleaseWriterProtection(repository.full_name,targetRef,io,{token,fetcher});
+  else await assertReleaseWriterProtection(repository.full_name,targetRef,io,{token,fetcher,readCentralMaintenanceRules});
   const response=await io.request('GET',`/repos/${repository.full_name}/git/ref/heads/${targetRef}`);
   // Only these two fixed central consumers may start with no records. No branch
   // is seeded: the first real maintenance fact or health summary creates it.
@@ -248,6 +247,27 @@ export async function recordCentralHealth({refresh,summary,repository,controller
   return written;
 }
 
+export async function serviceRepositoryPages({app,root,repository,coordinator,completion,site}) {
+  return app.forPagesRepository(repository.id,async token=>{
+    const io=nativeEvidenceTransport(token);
+    if(completion) {
+      const response=await io.request('GET','/repos/'+site.repository);
+      if(response.status!==200)throw Error('PAGES_PRODUCT_READ');
+      const actual=JSON.parse(Buffer.from(response.bytes));
+      if(actual.id!==site.repositoryId||actual.full_name!==site.repository||typeof actual.default_branch!=='string'||!actual.default_branch
+        ||['private','fork','archived','disabled','has_pages'].some(field=>typeof actual[field]!=='boolean'))throw Error('PAGES_PRODUCT_IDENTITY');
+      if(actual.private||actual.fork||actual.archived||actual.disabled||!actual.has_pages)return {status:'DISABLED'};
+      repository=actual;
+    }
+    // Organization governance writer identity, as bound by quality-state-initialize and the live branch rules.
+    const governanceAppId=5639432;
+    const writeDirectory=await mkdtemp(join(root,'pages-writes-'));
+    const store=pagesGitStore({repositoryId:repository.id,refresh:()=>fetchState(root,repository,token,'steward/governance-state',{governanceAppId}),
+      writeDirectory,defaultBranch:repository.default_branch,token,identity});
+    return servicePages({io,repository,store,completion,appBotId:app.appBotId,token,coordinator});
+  });
+}
+
 export async function main() {
   // Trusted central default-branch execution only. Workflow inputs cannot choose a target or credential scope.
   if(process.env.GITHUB_REPOSITORY!=='splrad/steward'||process.env.GITHUB_REPOSITORY_ID!=='1296724484'||process.env.GITHUB_REF!==`refs/heads/${process.env.STEWARD_DEFAULT_BRANCH}`
@@ -256,21 +276,9 @@ export async function main() {
   try {
     const app=await nativeReleaseApp(process.env.STEWARD_APP_PRIVATE_KEY??''),controllerSha=process.env.STEWARD_CONTROLLER_SHA;
     const summary=await coordinateReleaseWake({
-      maintenance:()=>app.forRepository(1296724484,async token=>{
-        const repository={id:1296724484,full_name:'splrad/steward',default_branch:process.env.STEWARD_DEFAULT_BRANCH};
-        const writeDirectory=await mkdtemp(join(root,'maintenance-writes-'));
-        const store=maintenanceGitStore({refresh:()=>fetchState(root,repository,token,'steward/release-state',{includeHistory:true,centralFirstUse:true}),writeDirectory,defaultBranch:repository.default_branch,token,identity});
-        return serviceMaintenance({io:nativeEvidenceTransport(token),store,defaultBranch:repository.default_branch,
-          coordinator:{runId:Number(process.env.GITHUB_RUN_ID),runAttempt:Number(process.env.GITHUB_RUN_ATTEMPT),controllerSha}});
-      }),discover:()=>app.discover(),
-      pages:repository=>app.forPagesRepository(repository.id,async token=>{
-        const {governanceAppId}=JSON.parse(await readFile(new URL('../config/review/quality-language.json',import.meta.url),'utf8'));
-        const writeDirectory=await mkdtemp(join(root,'pages-writes-'));
-        const store=pagesGitStore({repositoryId:repository.id,refresh:()=>fetchState(root,repository,token,'steward/governance-state',{governanceAppId}),
-          writeDirectory,defaultBranch:repository.default_branch,token,identity});
-        return servicePages({io:nativeEvidenceTransport(token),repository,store,appBotId:app.appBotId,token,
-          coordinator:{runId:Number(process.env.GITHUB_RUN_ID),runAttempt:Number(process.env.GITHUB_RUN_ATTEMPT),controllerSha}});
-      }),
+      discover:()=>app.discover(),
+      pages:repository=>serviceRepositoryPages({app,root,repository,coordinator:{runId:Number(process.env.GITHUB_RUN_ID),
+        runAttempt:Number(process.env.GITHUB_RUN_ATTEMPT),controllerSha}}),
       observe:repository=>app.forRepository(repository.id,async token=>{
         const participation=await releaseParticipation(repository,nativeEvidenceTransport(token));
         if(participation.status==='NOT_APPLICABLE')return participation;

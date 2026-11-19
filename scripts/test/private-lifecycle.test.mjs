@@ -144,15 +144,15 @@ test('updater inputs are an exact optional pair, never a general governance admi
 async function sampleWithUpdaters(version){
  const files=await sample();
  for(const path of lifecycleUpdaters){
-  const name=version==='v1'&&path==='.github/renovate.json'?'history/renovate-v1-base.json':path.split('/').at(-1);
+  const name=['v1','v2','v3'].includes(version)&&path==='.github/renovate.json'?`history/renovate-${version}-base.json`:path.split('/').at(-1);
   files.set(path,await readFile(new URL('../../config/private-lifecycle/'+name,import.meta.url)));
  }
  for(const path of lifecycleWorkflows){const doc=YAML.parseDocument(files.get(path).toString());for(const [id,job] of Object.entries(doc.toJS().jobs))if(job.uses)doc.getIn(['jobs',id,'uses'],true).comment=' steward/validated-controller';files.set(path,Buffer.from(doc.toString()));}
  return files;
 }
 
-for(const baseVersion of ['v1','v2'])test(`updater migration accepts ${baseVersion} base and current v2 head`,async()=>{
- const base=await sampleWithUpdaters(baseVersion),head=await sampleWithUpdaters('v2');
+for(const baseVersion of ['v1','v2','v3'])test(`updater migration accepts ${baseVersion} base and current v4 head`,async()=>{
+ const base=await sampleWithUpdaters(baseVersion),head=await sampleWithUpdaters('v4');
  await assertLifecycleSnapshot(base,{side:'base',controllerSha:SHA});
  await assertLifecycleSnapshot(head,{side:'head',controllerSha:SHA});
  const current=JSON.parse(head.get('.github/renovate.json'));
@@ -162,9 +162,9 @@ for(const baseVersion of ['v1','v2'])test(`updater migration accepts ${baseVersi
  assert.equal(current.pinDigests,true);
 });
 
-for(const baseVersion of ['v1','v2'])test(`updater migration rejects active v1 head from ${baseVersion} base`,async()=>{
+for(const baseVersion of ['v1','v2','v3'])for(const headVersion of ['v1','v2','v3'])test(`updater migration rejects active ${headVersion} head from ${baseVersion} base`,async()=>{
  await assertLifecycleSnapshot(await sampleWithUpdaters(baseVersion),{side:'base',controllerSha:SHA});
- await assert.rejects(assertLifecycleSnapshot(await sampleWithUpdaters('v1'),{side:'head',controllerSha:SHA}),/UPDATER_CONTRACT/);
+ await assert.rejects(assertLifecycleSnapshot(await sampleWithUpdaters(headVersion),{side:'head',controllerSha:SHA}),/UPDATER_CONTRACT/);
 });
 
 const updaterMutations={
@@ -175,7 +175,7 @@ const updaterMutations={
  workflowScope:doc=>{doc.packageRules[1].matchFileNames=['.github/workflows/*.yml'];},
  overrideOwner:doc=>{doc.packageRules[1].overridePackageName='https://github.com/other/steward.git';},
 };
-for(const [version,side] of [['v1','base'],['v2','base'],['v2','head']])for(const [name,mutate] of Object.entries(updaterMutations)){
+for(const [version,side] of [['v1','base'],['v2','base'],['v3','base'],['v4','base'],['v4','head']])for(const [name,mutate] of Object.entries(updaterMutations)){
  test(`updater ${version} ${side} rejects unrelated ${name} changes`,async()=>{
   const files=await sampleWithUpdaters(version),doc=JSON.parse(files.get('.github/renovate.json'));
   mutate(doc);files.set('.github/renovate.json',Buffer.from(JSON.stringify(doc)));
@@ -263,3 +263,22 @@ test('configured updater requires the reusable controller named branch comment',
  for(const [id,job] of Object.entries(doc.toJS().jobs))if(job.uses)doc.getIn(['jobs',id,'uses'],true).comment=' steward/validated-controller';
  files.set(path,Buffer.from(doc.toString()));await assertLifecycleSnapshot(files,{side:'head',controllerSha:SHA});
 });
+
+ test('native Chinese presentation is exact and preserves all non-presentation v2 fields',async()=>{
+ const keys=['prHeader','prBodyColumns','prBodyHeadingDefinitions','prFooter'];
+ const old=JSON.parse((await sampleWithUpdaters('v2')).get('.github/renovate.json'));
+ const files=await sampleWithUpdaters('v4'),current=JSON.parse(files.get('.github/renovate.json'));
+ const central=JSON.parse(await readFile(new URL('../../.github/renovate.json',import.meta.url),'utf8'));
+ assert.deepEqual(Object.fromEntries(Object.entries(current).filter(([key])=>!keys.includes(key))),old);
+ for(const key of keys)assert.deepEqual(current[key],central[key]);
+ assert.equal(Object.hasOwn(current,'prBodyTemplate'),false);
+ assert.equal(Object.hasOwn(central,'prBodyTemplate'),false);
+ for(const side of ['base','head'])for(const version of side==='base'?['v1','v2','v3','v4']:['v4']){
+  const changed=await sampleWithUpdaters(version),doc=JSON.parse(changed.get('.github/renovate.json'));
+  doc.unknownPresentationOption=true;changed.set('.github/renovate.json',Buffer.from(JSON.stringify(doc)));
+  await assert.rejects(assertLifecycleSnapshot(changed,{side,controllerSha:SHA}),/UPDATER_CONTRACT/);
+ }
+ const changed=new Map(files),doc=JSON.parse(files.get('.github/renovate.json'));
+ doc.prBodyTemplate='{{{header}}}{{{table}}}';changed.set('.github/renovate.json',Buffer.from(JSON.stringify(doc)));
+ await assert.rejects(assertLifecycleSnapshot(changed,{side:'head',controllerSha:SHA}),/UPDATER_CONTRACT/);
+ });

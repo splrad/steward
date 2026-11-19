@@ -15,7 +15,7 @@ function job(id:number,name:string,attempt=1,conclusion='failure') {
 }
 async function fixture(file='quality-language-summary.yml') {
   const definition=await api.maintenanceDefinition(file),workflow={id:5,path:'.github/workflows/'+file,state:'active'};
-  const run:any={id:12,run_attempt:1,workflow_id:5,path:workflow.path,repository:{id:1296724484},head_repository:{id:1296724484},head_sha:S,head_branch:'main',event:'schedule',created_at:'2026-10-30T00:00:00Z',updated_at:'2026-10-30T00:01:00Z',status:'completed',conclusion:'failure'};
+  const run:any={id:12,run_attempt:1,workflow_id:5,path:workflow.path,repository:{id:1296724484},head_repository:{id:1296724484},head_sha:S,head_branch:'main',event:file==='quality-language-summary.yml'?'workflow_dispatch':'schedule',created_at:'2026-10-30T00:00:00Z',updated_at:'2026-10-30T00:01:00Z',status:'completed',conclusion:'failure'};
   const f:any={definition,workflow,run,jobs:Object.entries(definition.names).map(([key,name],i)=>job(i+1,key==='update'?'update (0)':name as string)),calls:[],records:new Map(),saves:0,mode:'accepted'};
   f.io={request:async(method:string,path:string)=>{
     f.calls.push([method,path]);
@@ -200,3 +200,68 @@ it.each(['settings-sync.yml','update-dependencies.yml'])('excludes retired %s fr
   const f=await fixture();f.definition.file=file;
   await expect(f.execute()).rejects.toThrow('WORKFLOW');expect(f.calls).toEqual([]);expect(f.saves).toBe(0);
 });
+it('reconciles only the event attempt; replayed unknowns cannot spend a second slot',async()=>{
+  const f=await fixture();f.mode='unknown';
+  const expectedRun=structuredClone(f.run);
+  const event=(receiver=coordinator)=>api.recoverMaintenanceRun({...f, reader:new NativeEvidenceReader(f.io,'splrad/steward'),
+    branch:'main', runId:12, coordinator:receiver, now, expectedRun});
+  expect((await event()).status).toBe('UNKNOWN');
+  const saves=f.saves;
+  expect((await event({...coordinator,runId:901})).status).toBe('UNKNOWN');
+  expect(f.posts()).toHaveLength(1);expect(f.saves).toBe(saves);
+  f.mode='accepted';
+  expect((await event({...coordinator,runAttempt:2})).status).toBe('ACCEPTED');
+  expect((await event()).status).toBe('SUPERSEDED');
+  expect(f.posts()).toHaveLength(2);
+});
+it('binds the native event identity and closes a successful recovery once',async()=>{
+  const f=await fixture('sync-managed.yml');f.run.event='repository_dispatch';
+  const execute=(expectedRun:any)=>api.recoverMaintenanceRun({...f,reader:new NativeEvidenceReader(f.io,'splrad/steward'),
+    branch:'main',runId:12,coordinator,now,expectedRun});
+  await expect(execute({...f.run,head_sha:T})).rejects.toThrow('EVENT_IDENTITY');
+  expect((await execute(structuredClone(f.run))).status).toBe('ACCEPTED');
+  f.run.status='completed';f.run.conclusion='success';
+  f.jobs.push(...f.jobs.map((j:any)=>job(j.id+100,j.name,2,'success')));
+  expect((await execute(structuredClone(f.run))).status).toBe('SATISFIED');
+  const saves=f.saves;
+  expect((await execute(structuredClone(f.run))).status).toBe('SATISFIED');
+  expect(f.saves).toBe(saves);expect(f.posts()).toHaveLength(1);
+});
+it.each([true,false])('reads back delayed 201 without another POST (visible=%s)',async visible=>{
+  const f=await fixture();f.mode='delayed';
+  const expectedRun=structuredClone(f.run),delays:number[]=[];
+  const execute=()=>api.recoverMaintenanceRun({...f,reader:new NativeEvidenceReader(f.io,'splrad/steward'),branch:'main',
+    runId:12,coordinator,now,expectedRun,wait:async(ms:number)=>{
+      delays.push(ms);
+      if(visible&&delays.length===2){f.run.run_attempt++;f.run.status='queued';f.run.conclusion=null;}
+    }});
+  expect((await execute()).status).toBe(visible?'ACCEPTED':'UNKNOWN');
+  expect(delays).toEqual(visible?[2000,4000]:[2000,4000,8000]);
+  expect((await execute()).status).toBe(visible?'SUPERSEDED':'UNKNOWN');
+  expect(f.posts()).toHaveLength(1);
+});
+
+it.each(['recovered','missing-template','all-skipped','failed-now-skipped','original-incomplete','non-success-run','identity-drift'])(
+  'reconciles the Sync bootstrap-only recovery shape: %s',async mode=>{
+    const f=await fixture('sync-managed.yml');
+    f.run.event='workflow_dispatch';
+    f.jobs=[job(1,'bootstrap'),job(2,'templates',1,'skipped'),job(3,'automation-health',1,'skipped')];
+    if(mode==='recovered'||mode==='identity-drift')expect((await f.execute()).status).toBe('ACCEPTED');
+    f.run.run_attempt=2;f.run.status='completed';f.run.conclusion=mode==='non-success-run'?'failure':'success';
+    f.jobs.push(job(4,'bootstrap',2,'success'));
+    if(mode==='missing-template')f.jobs=f.jobs.filter((j:any)=>j.name!=='templates');
+    if(mode==='all-skipped')for(const j of f.jobs)j.conclusion='skipped';
+    if(mode==='failed-now-skipped')f.jobs.at(-1).conclusion='skipped';
+    if(mode==='original-incomplete')f.jobs.find((j:any)=>j.name==='templates').run_attempt=2;
+    const expectedRun=structuredClone(f.run);
+    if(mode==='identity-drift')expectedRun.head_sha=T;
+    const execute=()=>api.recoverMaintenanceRun({...f,reader:new NativeEvidenceReader(f.io,'splrad/steward'),branch:'main',
+      coordinator,runId:12,expectedRun,now});
+    if(mode==='identity-drift')await expect(execute()).rejects.toThrow('EVENT_IDENTITY');
+    else expect((await execute()).status).toBe(mode==='recovered'?'SATISFIED':'UNKNOWN');
+    if(mode==='recovered'){
+      expect(f.records.get(12)).toMatchObject({runAttempt:2,conclusion:'success'});
+      expect(f.records.get(12).requests).toHaveLength(1);
+    }
+    expect(f.posts()).toHaveLength(mode==='recovered'||mode==='identity-drift'?1:0);
+  });

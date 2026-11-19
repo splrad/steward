@@ -57,3 +57,13 @@ it('binds WinGet execution to the controller tool before channel credentials are
     expect(steps.filter((s:any)=>s.run).map((s:any)=>s.run).join('\n')).not.toMatch(/mise -C product/);
   }
 });
+it('verifies exact and default WinGet downloads without executing the installer',async()=>{
+  const workflow=YAML.parse(await readFile('templates/release/steward-release-channels.yml','utf8'));
+  for(const job of ['winget-submit','winget-verify']){
+    const script=workflow.jobs[job].steps.find((s:any)=>s.name==='business-'+job).run;
+    expect(script).toContain('Invoke-WebRequest -Uri $urls[0] -OutFile');
+    expect(script).toContain("foreach ($selection in @('exact','default'))");
+    expect(script).toContain('WINGET_DOWNLOAD_BYTES');
+    expect(script).not.toMatch(/winget uninstall|@\('install'|WINGET_INSTALLED_BYTES/);
+  }
+});

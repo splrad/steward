@@ -7,10 +7,10 @@ import { ghReleaseFixture as fixture } from './gh-release-fixture.js';
 
 const writes = (f: Awaited<ReturnType<typeof fixture>>) => f.calls.filter(args => args.includes('--method'));
 it('recovers half-uploaded seven-file release and lost upload/body/publication responses using exact IDs', async () => {
-  const f = await fixture(); f.put('app.exe', Buffer.from('app')); f.state.loseUpload = f.state.loseBody = f.state.losePublish = true;
+  const f = await fixture(); f.put('app.exe', Buffer.from('app')); f.state.loseLabel = f.state.loseUpload = f.state.loseBody = f.state.losePublish = true;
   expect((await f.adapter.publish(f.target)).mode).toBe('verified');
   expect(f.remote.size).toBe(7); expect(writes(f).filter(args => args.includes('POST'))).toHaveLength(6);
-  expect(writes(f).filter(args => args.includes('PATCH'))).toHaveLength(2);
+  expect([...f.remote].every(([name, asset]) => asset.label === name)).toBe(true);
   expect(f.downloads.filter(value => value.anonymous)).toHaveLength(7);
   expect(f.calls.some(args => args.includes('--clobber') || ['upload','edit','download'].includes(args[1]!))).toBe(false);
   expect(f.calls.find(args => args[0] === 'attestation')).toEqual(expect.arrayContaining(['--source-ref', (f.target.manifest as ProductReleaseManifest).buildRef,
@@ -94,8 +94,18 @@ it('retains an unknown zero-byte starter', async () => {
   await expect(f.adapter.publish(f.target)).rejects.toThrow('unproven starter'); expect(writes(f)).toHaveLength(0);
 });
 it('recovers only an exact owned starter after the original upload failed', async () => {
-  const f = await fixture(); await f.adapter.publish(f.target);
-  const original = f.remote.get('app.exe')!; Object.assign(f.release, { draft: true, immutable: false });
+  const f = await fixture(); f.state.blockLabel = true;
+  await expect(f.adapter.publish(f.target)).rejects.toThrow('label interrupted');
+  f.state.blockLabel = false;
+  const original = [...f.remote.values()][0]!; Object.assign(f.release, { draft: true, immutable: false });
   original.bytes = Buffer.alloc(0); original.state = 'starter'; f.calls.length = 0;
   await f.adapter.publish(f.target); expect(writes(f).filter(args => args.includes('DELETE'))).toHaveLength(1);
+});
+
+it('leaves an unowned blank draft label untouched', async () => {
+  const f = await fixture();
+  f.put('app.exe', Buffer.from('app'), { label: '', uploader: { id: 99 } });
+  await expect(f.adapter.publish(f.target)).rejects.toThrow('unproven draft label');
+  expect(f.remote.get('app.exe')!.label).toBe('');
+  expect(f.release.draft).toBe(true);
 });

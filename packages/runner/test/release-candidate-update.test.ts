@@ -8,7 +8,7 @@ import { registerOfflineFixtureRoot } from './offline-fixtures.js';
 import { isolatedBuildEnvironment } from '../src/build-environment.js';
 import { mergeCandidate, prepareCandidateWrite, resumeCandidateWrite, pushPreparedCandidate, type CandidateWritePort, type PreparedCandidateWrite } from '../src/release-candidate-update.js';
 import type { CandidateSnapshot } from '../../core/src/release-candidate.js';
-import { advanceReleaseCandidate, type CandidateSession, type CandidateRuntime, type CandidatePullRequest } from '../src/release-candidate.js';
+import { advanceReleaseCandidate, candidateObservationIdentity, type CandidateSession, type CandidateRuntime, type CandidatePullRequest } from '../src/release-candidate.js';
 
 vi.setConfig({ testTimeout: 60_000 });
 const roots: string[] = [], digest = 'd'.repeat(64), identity = { name: 'Candidate Fixture', email: 'candidate@example.invalid' };
@@ -319,4 +319,111 @@ it('keeps the reviewed candidate bytes when automatic draft generation fails',as
   f.io.content=async()=>({status:'FAILED'});
   expect(await advanceReleaseCandidate(f.session,f.io)).toMatchObject({status:'WAIT',reason:'CONTENT_FAILED'});
   expect(f.session.generated).toEqual(previous);expect(f.pr.head).toBe(head);expect(f.pushes()).toBe(0);
+});
+
+async function observationFixture() {
+  const f=await controllerFixture();
+  f.session.repository.repositoryId=1187527897;
+  f.session.generated!.units[0]!.id='layerscape';
+  f.session.identity={authorsDigest:digest,sourceDigest:digest,actors:[],contributors:{contributors:[],unresolved:0},
+    units:[{id:'layerscape',actors:[],contributors:{contributors:[],unresolved:0}}]};
+  f.io.generation=async()=>{throw Error('GENERATION_MUST_NOT_RUN');};
+  f.io.content=async()=>{throw Error('CONTENT_MUST_NOT_RUN');};
+  f.io.push=async()=>{throw Error('PUSH_MUST_NOT_RUN');};
+  f.io.createPullRequest=async()=>{throw Error('CREATE_PR_MUST_NOT_RUN');};
+  return f;
+}
+it.each(['unchanged','editing','human'])( 'fixed observation protects %s without generation or branch writes',async kind=>{
+  const f=await observationFixture(), binding=candidateObservationIdentity(f.session), frozen=structuredClone(f.session.generated);
+  if(kind==='editing')f.pr.editing=true;
+  if(kind==='human')f.pr.head=await f.commit('.release-notes/app.md',f.notes.replace('原来概述','人工保留'));
+  const head=f.pr.head, result=await advanceReleaseCandidate(f.session,f.io,binding);
+  expect(result).toMatchObject(kind==='unchanged'?{reason:'CACHED_OBSERVATION'}:kind==='editing'?{reason:'EDITING'}:{reason:'HUMAN_EDIT_CONFLICT'});
+  expect(f.session.generated).toEqual(frozen);expect(f.pr.head).toBe(head);
+  expect(candidateObservationIdentity(f.session)).toEqual(binding);
+});
+it.each(['epoch','sourceSha','cycleId','artifactDigest','version'])( 'rejects stale or cross-object %s before effects',async field=>{
+  const f=await observationFixture(), binding=candidateObservationIdentity(f.session);
+  await expect(advanceReleaseCandidate(f.session,f.io,{...binding,[field]:'wrong'})).rejects.toThrow('CANDIDATE_OBSERVATION_IDENTITY');
+  expect(f.saved).toHaveLength(0);
+});
+it.each(['pending','generated','identity'])( 'fixed observation refuses %s gap without fallback',async kind=>{
+  const f=await observationFixture(), binding=candidateObservationIdentity(f.session);
+  if(kind==='pending')f.session.repository.candidate!.pendingWrite={} as any;
+  else (f.session as any)[kind]=null;
+  await expect(advanceReleaseCandidate(f.session,f.io,binding)).rejects.toThrow('CANDIDATE_OBSERVATION_NOT_READY');
+  expect(f.saved).toHaveLength(0);
+});
+it('fixed observation rejects changed default source and does not hand off a merged cycle',async()=>{
+  const f=await observationFixture(), binding=candidateObservationIdentity(f.session);
+  f.io.source=async()=>({baseSha:'e'.repeat(40),authors:[],authorsDigest:digest});
+  expect(await advanceReleaseCandidate(f.session,f.io,binding)).toMatchObject({reason:'SOURCE_CHANGED'});
+  expect(f.saved).toHaveLength(0);
+});
+it.each(['source','authors','units'])('fixed observation refuses mismatched cached %s evidence',async kind=>{
+  const f=await observationFixture(), binding=candidateObservationIdentity(f.session);
+  if(kind==='source')f.session.identity!.sourceDigest='e'.repeat(64);
+  if(kind==='authors')f.session.identity!.authorsDigest='e'.repeat(64);
+  if(kind==='units')f.session.identity!.units[0]!.id='other';
+  await expect(advanceReleaseCandidate(f.session,f.io,binding)).rejects.toThrow('CANDIDATE_OBSERVATION_CACHE_MISMATCH');
+  expect(f.saved).toHaveLength(0);
+});
+it.each(['missing','closed','merged'])('fixed observation stops on %s PR without effects',async kind=>{
+  const f=await observationFixture(), binding=candidateObservationIdentity(f.session);
+  if(kind==='missing') {
+    f.io.pullRequests=async()=>[];
+    await expect(advanceReleaseCandidate(f.session,f.io,binding)).rejects.toThrow('CANDIDATE_PR_UNAVAILABLE');
+  } else {
+    f.pr.state='closed';f.pr.merged=kind==='merged';
+    expect(await advanceReleaseCandidate(f.session,f.io,binding)).toMatchObject({reason:kind==='merged'?'MERGED_SOURCE_HANDOFF':'CLOSED_PR'});
+  }
+  expect(f.saved).toHaveLength(0);
+});
+
+it('fixed G observation restores stale preview and missing comment, then keeps the same result',async()=>{
+  const f=await observationFixture(),binding=candidateObservationIdentity(f.session),G=structuredClone(f.session.generated);
+  f.session.preview='已暂停候选写入';let commentsWritten=0;
+  const create=f.io.createComment;f.io.createComment=async(pr,body)=>{commentsWritten++;await create(pr,body);};
+  const first=await advanceReleaseCandidate(f.session,f.io,binding);
+  expect(first).toMatchObject({status:'READY',reason:'CACHED_OBSERVATION',projectionEvidence:{commentId:10}});
+  expect(f.session.preview).toContain(f.notes);expect(f.session.preview).not.toContain('已暂停');
+  expect(f.comments.find(c=>c.id===10)!.body).toContain(f.session.preview!);
+  const revision=f.session.repository.revision;
+  expect(await advanceReleaseCandidate(f.session,f.io,binding)).toEqual(first);expect(commentsWritten).toBe(1);
+  expect(f.session.repository.revision).toBe(revision);expect(f.session.generated).toEqual(G);expect(f.pushes()).toBe(0);
+});
+it('fixed G observation cannot report done when the native comment write/readback fails',async()=>{
+  const f=await observationFixture(),binding=candidateObservationIdentity(f.session);
+  f.io.createComment=async()=>{};
+  await expect(advanceReleaseCandidate(f.session,f.io,binding)).rejects.toThrow('CANDIDATE_STATUS_COMMENT_UNKNOWN');
+});
+it.each(['notes','version'])('fixed G observation preserves a human %s revert to base without false completion',async kind=>{
+  const f=await observationFixture();
+  const path=kind==='notes'?'.release-notes/app.md':'VERSION';
+  const content=kind==='notes'?f.notes.replace('原来概述','已生成的新概述'):'1.1.0\n';
+  if(kind==='notes')f.session.generated!.files[0]!.content=content;
+  else f.session.generated!.files.push({path,mode:'100644',content});
+  const generatedHead=await f.commit(path,content,'generated candidate');
+  f.session.repository.candidate!.publishedHead=generatedHead;
+  if(kind==='notes')f.pr.head=await f.commit(path,f.notes,'human reverts notes');
+  else {await f.git('rm','--',path);await f.git('commit','--signoff','-m','human removes version');f.pr.head=await f.git('rev-parse','HEAD');}
+  const binding=candidateObservationIdentity(f.session),G=structuredClone(f.session.generated),head=f.pr.head;
+  expect((await mergeCandidate(f.repo,G,head,G!,f.root)).status).toBe('READY');
+  expect(await advanceReleaseCandidate(f.session,f.io,binding)).toEqual({status:'WAIT',reason:'GENERATED_FILES_MISMATCH',head});
+  expect(f.saved).toHaveLength(0);expect(f.comments).toHaveLength(1);expect(f.session.preview).toBeNull();
+  expect(f.session.generated).toEqual(G);expect(f.pr.head).toBe(head);expect(f.pushes()).toBe(0);
+  if(kind==='notes')expect(await f.git('show',`${head}:${path}`)).toBe(f.notes.trim());
+  else expect(await f.git('ls-tree',head,'--',path)).toBe('');
+});
+it('large fixed G projection reuses its verified old archive link after the state ref advances',async()=>{
+  const f=await observationFixture(),long=f.notes+'\n'+('人工发布资料。'.repeat(9000));
+  f.pr.head=await f.commit('.release-notes/app.md',long);f.session.generated!.files[0]!.content=long;
+  f.session.repository.candidate!.publishedHead=f.pr.head;const binding=candidateObservationIdentity(f.session);
+  let saves=0,updates=0;f.io.save=async value=>{f.saved.push(structuredClone(value));return (++saves===1?'f':'e').repeat(40);};
+  f.io.updateComment=async()=>{updates++;throw Error('must keep stable link');};
+  f.io.readPreview=async(commit,path)=>{expect(commit).toBe('f'.repeat(40));expect(path).toBe(`generated/${digest}/preview.md`);return f.session.preview!;};
+  const first=await advanceReleaseCandidate(f.session,f.io,binding),body=f.comments.find(c=>c.id===10)!.body;
+  expect(body).toContain('/blob/'+'f'.repeat(40)+'/');expect(Buffer.byteLength(body)).toBeLessThan(48*1024);
+  const revision=f.session.repository.revision;
+  expect(await advanceReleaseCandidate(f.session,f.io,binding)).toEqual(first);expect(updates).toBe(0);expect(f.session.repository.revision).toBe(revision);
 });

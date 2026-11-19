@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, readdir, copyFile, lstat } from 'node:fs/promises';
+import { mkdir, readFile, readdir, copyFile, lstat, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { nativeGhCommand, NativeGitHubRelease, nativeReleaseDownload, releaseReadIsAnonymous, type GhCommand, type ReleaseDownload } from './gh-release.js';
 import { localGitSnapshot } from './git-snapshot.js';
@@ -339,12 +339,14 @@ export async function pipelineNotes(record: BuildPipelineRecord, unitId: string,
   const read = async (path: string) => { const bytes = await localGitSnapshot.file(sourceDirectory, record.sourceSha, path); if (!bytes) fail('missing notes source'); return bytes.toString('utf8'); };
   const settings = JSON.parse(await read('release-please-config.json')), options = { ...settings, ...settings.packages[delivery.path] };
   const changelogPath = options['changelog-path'] ?? 'CHANGELOG.md'; assertDeliveryPath(changelogPath);
-  const changelog = await read(delivery.path === '.' ? changelogPath : `${delivery.path}/${changelogPath}`);
-  const { sourceLinkLabel, sourceUrl, commitUrl } = committedVersionNotes(changelog, unit.version, record.fullName, record.sourceSha, unit.tag);
+  const changelogFile = delivery.path === '.' ? changelogPath : `${delivery.path}/${changelogPath}`;
+  const changelog = await read(changelogFile);
   const template = await read('.github/release-template.md.mustache'); if (hash(Buffer.from(template)) !== record.templateSha256) fail('notes template source');
+  const { sourceLinkLabel, sourceUrl, commitUrl } = committedVersionNotes(changelog, unit.version, record.fullName, record.sourceSha, unit.tag,
+    template.includes('{{controllerSha}}') ? undefined : changelogFile);
   return renderFrozenReleaseNotes(template, { repository: record.fullName, unitId, version: unit.version, tag: unit.tag, sourceSha: record.sourceSha,
-    controllerSha: record.controllerSha, notes: await read(delivery.notesPath), sourceLinkLabel, sourceUrl, commitUrl, contributors: unit.contributors,
-    repositoryAuthors: record.delivery.repositoryAuthors, assets: unit.assets, channels: delivery.channels });
+    displayName: delivery.displayName, controllerSha: record.controllerSha, notes: await read(delivery.notesPath), sourceLinkLabel, sourceUrl, commitUrl, contributors: unit.contributors,
+    repositoryAuthors: record.delivery.repositoryAuthors, assets: unit.assets.map(asset => ({ ...asset, description: delivery.assets.find(item => item.id === asset.id)?.description })), channels: delivery.channels });
 }
 export async function pipelineInspect(record: BuildPipelineRecord, unitId: string, selection: Awaited<ReturnType<typeof pipelineProducers>>,
   directory: string, controllerDirectory: string, home: string) {
@@ -455,15 +457,24 @@ export async function pipelineCollect(record: PipelineSource, selection: Awaited
   }
   if (JSON.stringify((await readdir(outputDirectory)).sort()) !== JSON.stringify(names.map(asset => asset.name).sort())) fail('collected file set');
 }
-export async function pipelineDownloadProducers(record: PipelineSource, selection: Awaited<ReturnType<typeof pipelineProducers>>, rawDirectory: string, policyDirectory: string, home: string) {
+export async function pipelineDownloadProducers(record: PipelineSource, selection: Awaited<ReturnType<typeof pipelineProducers>>, rawDirectory: string, policyDirectory: string, home: string, gh: GhCommand = nativeGhCommand) {
   assertPipelineSource(record);
-  await mkdir(rawDirectory, { recursive: false }); await mkdir(home, { recursive: false });
-  for (const producer of selection.producers) {
-    const build = record.unit.builds.find(item => item.id === producer.buildId); if (!build) fail('unknown producer');
-    await downloadNativeArtifact({ fullName: record.fullName, artifactId: producer.artifactId, digest: selection.digests[String(producer.artifactId)]!,
-      names: build.expectedArtifacts.map(id => record.unit.assets.find(asset => asset.id === id)!.name),
-      directory: join(rawDirectory, producerArtifactName({ ...record, runId:producer.runId??record.runId, unitId: record.unit.id }, build.id, producer.attempt)),
-      policyDirectory, home: join(home, String(producer.artifactId)) });
+  await mkdir(home, { recursive: true });
+  await mkdir(rawDirectory, { recursive: false });
+  try {
+    for (const producer of selection.producers) {
+      const build = record.unit.builds.find(item => item.id === producer.buildId); if (!build) fail('unknown producer');
+      await downloadNativeArtifact({ fullName: record.fullName, artifactId: producer.artifactId, digest: selection.digests[String(producer.artifactId)]!,
+        names: build.expectedArtifacts.map(id => record.unit.assets.find(asset => asset.id === id)!.name),
+        directory: join(rawDirectory, producerArtifactName({ ...record, runId:producer.runId??record.runId, unitId: record.unit.id }, build.id, producer.attempt)),
+        policyDirectory, home: join(home, String(producer.artifactId)) });
+    }
+    const current = JSON.parse(await gh(['api', `repos/${record.fullName}/actions/runs/${record.runId}`]));
+    if (current.id !== record.runId || current.repository?.id !== record.repositoryId || current.head_repository?.id !== record.repositoryId
+      || current.head_sha !== record.sourceSha || current.event !== record.event || current.run_attempt !== record.attempt) fail('run changed during producer download');
+  } catch (error) {
+    await rm(rawDirectory, {recursive:true, force:true});
+    throw error;
   }
 }
 /** Validate frozen producer A/S against the retained build record; execution B/R cannot replace it. */

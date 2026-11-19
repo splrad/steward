@@ -1,5 +1,6 @@
 import { createAppAuth } from '@octokit/auth-app';
 import { Octokit } from '@octokit/rest';
+import { completeNativeRuleParameters } from './native-rule-parameters.js';
 import { GITHUB_API_VERSION } from './api-version.js';
 /** Repository access is scoped per call. Organization administration remains organization-wide. */
 export async function nativeReleaseApp(privateKey: string, transport: typeof fetch = fetch, onFailure: (error: unknown) => void = () => {}) {
@@ -16,10 +17,12 @@ export async function nativeReleaseApp(privateKey: string, transport: typeof fet
   if(installation.account?.id!==302208797 || installation.app_id!==4243096 || installation.suspended_at)throw new Error('RELEASE_INSTALLATION_IDENTITY');
   const bot=(await new Octokit(options).request('GET /users/{username}',{username:`${appFact.slug}[bot]`})).data;
   if(bot.id!==301115370 || bot.type!=='Bot')throw new Error('RELEASE_APP_BOT_IDENTITY');
-  const token=async(repositoryId?:number,kind:'release'|'candidate'|'candidate-read'|'quality'|'template'|'template-read'|'pages'='release')=>{
+  const token=async(repositoryId?:number,kind:'release'|'candidate'|'candidate-read'|'quality'|'template'|'template-read'|'pages'|'maintenance'|'maintenance-rules'='release')=>{
     // GitHub exposes organization ruleset bypass actors only to organization rule managers.
     // Trusted rule readers request that capability explicitly; discovery and generation do not.
-    const permissions=kind==='pages'?{metadata:'read',contents:'write',actions:'write',administration:'read',actions_variables:'read',deployments:'read',attestations:'read',organization_administration:'write'}
+    const permissions=kind==='maintenance-rules'?{metadata:'read',organization_administration:'write'}
+      :kind==='maintenance'?{metadata:'read',contents:'write',actions:'write'}
+      :kind==='pages'?{metadata:'read',contents:'write',actions:'write',administration:'read',actions_variables:'read',deployments:'read',attestations:'read',organization_administration:'write'}
       :kind==='quality'?{metadata:'read',contents:'write',checks:'write',pull_requests:'read',actions:'read',organization_administration:'write'}
       :kind==='template'?{metadata:'read',contents:'write',pull_requests:'write',workflows:'write'}
       :kind==='template-read'?{metadata:'read',contents:'read',pull_requests:'read',actions_variables:'read',actions:'read',organization_administration:'write'}
@@ -32,7 +35,22 @@ export async function nativeReleaseApp(privateKey: string, transport: typeof fet
     const client=new Octokit({...options,auth:value.token,request:{...options.request,headers:{'x-github-api-version':GITHUB_API_VERSION}}});
     return {token:value.token,client,revoke:async()=>{await client.request('DELETE /installation/token');}};
   };
-  return {appBotId:bot.id,appBotLogin:`${appFact.slug}[bot]`,async forPagesRepository<T>(repositoryId:number,operation:(token:string)=>Promise<T>):Promise<T>{
+  return {appBotId:bot.id,appBotLogin:`${appFact.slug}[bot]`,async readCentralMaintenanceRules(){
+    const credential=await token(1296724484,'maintenance-rules');
+    try {
+      const scope=(await credential.client.request('GET /installation/repositories',{per_page:100})).data;
+      if(scope.total_count!==1||scope.repositories.length!==1||scope.repositories[0]?.id!==1296724484)throw Error('MAINTENANCE_RULE_SCOPE');
+      const rules=[];
+      for(const id of [26678449,26678450]){
+        const {data}=await credential.client.request('GET /repos/{owner}/{repo}/rulesets/{ruleset_id}',{
+          owner:'splrad',repo:'steward',ruleset_id:id});
+        if(data.id!==id||data.source_type!=='Organization'||data.source!=='splrad'||!Array.isArray(data.bypass_actors))
+          throw Error('MAINTENANCE_RULE_IDENTITY');
+        rules.push(await completeNativeRuleParameters(credential.client,data));
+      }
+      return rules;
+    } finally {await credential.revoke();}
+  },async forPagesRepository<T>(repositoryId:number,operation:(token:string)=>Promise<T>):Promise<T>{
     if(!Number.isSafeInteger(repositoryId)||repositoryId<1)throw new Error('PAGES_REPOSITORY_ID');
     const credential=await token(repositoryId,'pages');
     try {
@@ -101,9 +119,10 @@ export async function nativeReleaseApp(privateKey: string, transport: typeof fet
       }
       throw new Error('RELEASE_INSTALLATION_INCOMPLETE');
     }finally {await credential.revoke();}
-  },async forRepository<T>(repositoryId:number,operation:(token:string)=>Promise<T>):Promise<T>{
+  },async forRepository<T>(repositoryId:number,operation:(token:string)=>Promise<T>,purpose:'release'|'maintenance'|'maintenance-rules'='release'):Promise<T>{
     if(!Number.isSafeInteger(repositoryId)||repositoryId<1)throw new Error('RELEASE_REPOSITORY_ID');
-    const credential=await token(repositoryId);
+    if(purpose==='maintenance'&&repositoryId!==1296724484)throw new Error('MAINTENANCE_REPOSITORY_ID');
+    const credential=await token(repositoryId,purpose);
     try {
       const scope=(await credential.client.request('GET /installation/repositories',{per_page:100})).data;
       if(scope.total_count!==1||scope.repositories.length!==1||scope.repositories[0]?.id!==repositoryId)throw new Error('RELEASE_TOKEN_SCOPE');

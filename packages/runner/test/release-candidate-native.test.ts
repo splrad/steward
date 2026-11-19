@@ -21,7 +21,25 @@ import { CONTENT_OUTPUT_SCHEMA } from '../../core/src/release-content.js';
 vi.setConfig({ testTimeout: process.platform === 'win32' ? 1_200_000 : 360_000 });
 setLogger({ debug() {}, info() {}, warn() {}, error() {}, trace() {} });
 vi.mock('../dist/index.js', async () => import('../src/index.js'));
-const { nativeReleaseCandidate } = await import(pathToFileURL(resolve('scripts/release-candidate.mjs')).href);
+const { nativeReleaseCandidate, mergedContributorIdentity } = await import(pathToFileURL(resolve('scripts/release-candidate.mjs')).href);
+
+it('projects legacy web-flow cache at merge while preserving original actors and rejecting other drift', () => {
+  const bot = {id:19864447, login:'web-flow', type:'User', profileUrl:'https://github.com/web-flow', avatarUrl:'https://avatars.githubusercontent.com/u/19864447?v=4'};
+  const person = {id:45, login:'human', type:'User', profileUrl:'https://github.com/human', avatarUrl:'https://avatars.githubusercontent.com/u/45'};
+  const contributor = ({id, login, profileUrl, avatarUrl}:typeof bot) => ({id, login, profileUrl, avatarUrl, alt:login});
+  const scope = {actors:[bot, person, null], contributors:{contributors:[contributor(person),contributor(bot)], unresolved:1}};
+  const frozen = {...scope, units:[{...scope, id:'app'}]};
+  const authors = [{id:7, evidence:'verified repository author'}];
+  const projected = mergedContributorIdentity(frozen,authors);
+  expect(projected.contributors).toEqual({contributors:[contributor(person)], unresolved:1});
+  expect(projected.units[0].contributors).toEqual(projected.contributors);
+  expect(projected.actors).toBe(frozen.actors);
+  expect(frozen.contributors.contributors).toHaveLength(2);
+  expect(mergedContributorIdentity(projected,authors)).toEqual(projected);
+  const corrupt = structuredClone(frozen);
+  corrupt.units[0]!.contributors.unresolved++;
+  expect(()=>mergedContributorIdentity(corrupt,authors)).toThrow('MERGED_CANDIDATE_CONTRIBUTOR_DRIFT');
+});
 const { readReleaseRecords,releaseCommand } = await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
 const roots: string[] = [];
 afterEach(async () => { vi.unstubAllGlobals();for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -127,6 +145,11 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
   const request = { directory, writeDirectory: join(root, 'writes'), remote, repository: 'fixture/product', repositoryId: 1, defaultBranch: 'main', appBotId: 301115370, identity };
   await mkdir(request.writeDirectory);
   const options = { token: 'fixture-write', readToken: 'fixture-read', controllerSha: 'f'.repeat(40), fetcher, generator, language, temporaryRoot: root, now: () => '2026-10-27T00:00:00Z' };
+  if(pinCase==='old-source') {
+    const originalState=await head('steward/release-state');
+    await expect(nativeReleaseCandidate(request,{...options,expectedSourceSha:'0'.repeat(40)})).rejects.toThrow('CANDIDATE_EVENT_SOURCE_CHANGED');
+    expect(modelCalls).toBe(0);expect(pr).toBeNull();expect(await head('steward/release-state')).toBe(originalState);
+  }
   const refresh = async () => { await git('fetch', '--no-tags', '--no-recurse-submodules', remote, 'refs/heads/steward/release-state'); await git('update-ref', 'refs/heads/steward/release-state', await git('rev-parse', 'FETCH_HEAD')); };
   if(pinCase==='content-recovery') {
     const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
