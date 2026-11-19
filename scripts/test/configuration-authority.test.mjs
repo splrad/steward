@@ -5,7 +5,7 @@ import {execFileSync} from 'node:child_process';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {authorizePull,checkEvent,protectedChanges,requestPath} from '../configuration-authorization.mjs';
-import {findEvidence,requestFromRun,rerunValidation,trialInventory} from '../configuration-native.mjs';
+import {dispatchTrial,findEvidence,requestFromRun,rerunValidation,trialInventory} from '../configuration-native.mjs';
 import {inspectRepository,versionsPath,pagesPath} from '../configuration-view.mjs';
 import {applySelection,trialKey} from '../configuration-selection.mjs';
 import {optionState,reconcile} from '../repository-configuration.mjs';
@@ -111,6 +111,23 @@ test('an existing container job with a service can provide bound native evidence
   const result=await findEvidence(api,'',repo,B,A,{unit:'x',target:'one',workflow:path,job:'pack',matrix:{},archive:'bin'},model,undefined,
     (...args)=>trialInventory(...args,async()=>({asset:{created_at:'2026-11-17T10:00:01Z'},data:[{path:'app.zip',size:100}]})));
   assert.equal(result.binding.sourceSha,B);assert.equal(result.head,A);assert.equal(result.files[0].size,100);
+});
+test('a successful trial with an expired artifact can be requested again',async()=>{
+  const path='.github/workflows/repository-configuration-trial.yml';
+  const source=await readFile('templates/repository/'+path,'utf8'), api=fake(new Map([[B+'/'+path,source]]));
+  const target={unit:'route',target:'hosted'},recipe={runner:'ubuntu-24.04',output:'out',tools:{},steps:[]};
+  const key=trialKey(A,target.unit,target.target,recipe);
+  const run={id:11,run_attempt:1,actor:{id:301115370},display_title:'Configuration trial '+A+' route/hosted '+key,status:'completed',conclusion:'success'};
+  const asset={name:'trial-'+key+'-11-1',expired:true,expires_at:new Date(Date.now()+60000).toISOString()};
+  api.rest.actions.listWorkflowRunArtifacts=()=>{};
+  api.paginate=async method=>method===api.rest.actions.listWorkflowRuns?[run]:[asset];
+  const requests=[];
+  const actions={rest:{actions:{createWorkflowDispatch:async input=>requests.push(input)}}};
+  await dispatchTrial(api,actions,repo,B,A,target,recipe);
+  assert.equal(requests.length,1);
+  asset.expired=false;
+  await dispatchTrial(api,actions,repo,B,A,target,recipe);
+  assert.equal(requests.length,1);
 });
 test('trial approvals bind output and tools as well as source, and preserve native Pages and version policies',async()=>{
   const recipe={runner:'ubuntu-24.04',output:'out',steps:[],tools:{}};

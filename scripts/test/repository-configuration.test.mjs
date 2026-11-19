@@ -46,6 +46,7 @@ test('same configuration PR prepares two native entries, binds trials to their h
   git('config','user.name','Configuration fixture');git('config','user.email','config@example.invalid');git('config','core.autocrlf','false');
   for(const path of [requestPath,trialPath]) await put(path,await readFile('templates/repository/'+path));
   for(const path of ['tools/route/CHANGELOG.md','maps/data/CHANGELOG.md','.release-notes/route.md','.release-notes/maps.md']) await put(path,['概述','更新内容','兼容性','升级与迁移','安装说明','已知问题','恢复'].map(h=>'## '+h+'\n\nFixture notes.\n').join('\n'));
+  await put('.github/workflows/steward-release-publish.yml',await readFile('templates/release/steward-release-publish.yml'));
   await put('.github/release-template.md.mustache','{{{upgradeNotices}}}');
   git('add','-A');git('-c','commit.gpgsign=false','commit','-m','Adopt protected trial and declare product documentation');
   const base=git('rev-parse','HEAD'),repo={id:15,name:'map-tools',full_name:'splrad/map-tools',owner:{login:'splrad'},default_branch:'trunk'};

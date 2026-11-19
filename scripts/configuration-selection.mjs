@@ -92,7 +92,6 @@ export async function applySelection(model,operation,plan,context) {
   if(operation==='select') {
     const formal=[];
     delivery=explicitDelivery(delivery??{schemaVersion:2,repositoryAuthors:plan.repositoryAuthors,units:[]});
-    const selectedUnits=new Set(targets.map(t=>t.unit));
     const allAssets=new Map();
     for(let i=0;i<targets.length;i++) {
       const target=targets[i], recipe=prepared[i].recipe;
@@ -137,12 +136,14 @@ export async function applySelection(model,operation,plan,context) {
     }
     if(!formal.length) return changes;
 
-    for(const unit of delivery.units.filter(u=>selectedUnits.has(u.id))) {
+    for(const unit of delivery.units.filter(u=>formal.some(t=>t.unit===u.id))) {
       const retained=new Set((model.publish?.jobs?.build?.strategy?.matrix?.include??[])
-        .filter(r=>r.unit===unit.id && !targets.some(t=>t.unit===r.unit && t.target===r.target)).flatMap(r=>r.assets));
+        .filter(r=>r.unit===unit.id && !formal.some(t=>t.unit===r.unit && t.target===r.target)).flatMap(r=>r.assets));
       unit.assets=[...unit.assets.filter(a=>retained.has(a.id)),...allAssets.get(unit.id)];
     }
-    changes.set(publishPath,model.files.has(publishPath)?adaptBuild(model.files.get(publishPath),context.seed,formal):
+    const existing=model.files.get(publishPath);
+    const pristine=existing?.replaceAll('\r\n','\n')===context.seed.replaceAll('\r\n','\n');
+    changes.set(publishPath,existing && !pristine?adaptBuild(existing,context.seed,formal):
       renderBuild(context.seed,formal,{signing:plan.signing,controllerSha:context.controllerSha}));
     changes.set(deliveryPath,jsonFile(delivery));
   }

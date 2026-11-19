@@ -163,7 +163,12 @@ export async function dispatchTrial(api,actions,repo,base,head,target,recipe) {
   const title='Configuration trial '+head+' '+target.unit+'/'+target.target+' '+key;
   const runs=await api.paginate(api.rest.actions.listWorkflowRuns,{...api.target,workflow_id:trialPath.split('/').at(-1),branch:repo.default_branch,event:'workflow_dispatch',per_page:100});
   const prior=runs.filter(r=>r.display_title===title && r.actor.id===bot);
-  if(prior.some(r=>r.status!=='completed' || r.conclusion==='success')) return;
+  if(prior.some(r=>r.status!=='completed')) return;
+  for(const run of prior.filter(r=>r.conclusion==='success')) {
+    const name='trial-'+key+'-'+run.id+'-'+run.run_attempt;
+    const assets=await api.paginate(api.rest.actions.listWorkflowRunArtifacts,{...api.target,run_id:run.id,per_page:100});
+    if(assets.some(a=>a.name===name && !a.expired && Date.parse(a.expires_at)>Date.now())) return;
+  }
   await actions.rest.actions.createWorkflowDispatch({...api.target,workflow_id:trialPath.split('/').at(-1),ref:repo.default_branch,
     inputs:{head,unit:target.unit,target:target.target,key,runner:recipe.runner,output:recipe.output,tools:JSON.stringify(recipe.tools)}});
 }

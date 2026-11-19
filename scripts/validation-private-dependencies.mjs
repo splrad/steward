@@ -9,7 +9,7 @@ import {pathToFileURL,fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import YAML from 'yaml';
 import {validationInput,git} from './validation-input.mjs';
-import {assert,loadPolicy,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,assertGovernanceOnlyScope,assertCopierInputs,licenseFacts} from './private-dependency-policy.mjs';
+import {assert,loadPolicy,checkInventory,highFindings,requireOnline,actionFindings,newActions,newPackageFindings,newTools,assertInputScope,assertGovernanceOnlyScope,assertCopierInputs,configurationCallers,licenseFacts} from './private-dependency-policy.mjs';
 import {assertLifecycleScope,assertLifecycleSnapshot,lifecycleMiseVersions,assertLifecycleMissingActionLock} from './private-lifecycle-policy.mjs';
 import {assertActionInputs,reusableActions,verifyReusableLock} from './private-reusable-actions.mjs';
 import {miseFindings} from './private-tool-security.mjs';
@@ -138,6 +138,7 @@ export async function main(env=process.env){
       const sha=value.input[side],entries=tree(workspace,sha);(lifecycle?assertLifecycleScope:governanceOnly?assertGovernanceOnlyScope:assertInputScope)(entries.map(e=>e.path));const snapshot={sha,upstream:null,actions:[],coverage:[]};report.snapshots[side]=snapshot;
       const managedPaths=managedOnly?['AGENTS.md','CONTRIBUTING.md','.github/labeler.yml','.github/release-template.md.mustache','.github/workflows/pr-labeler.yml','.github/workflows/pr-title.yml']:['.github/labeler.yml','.github/workflows/pr-labeler.yml'];
       if(managedOnly&&side==='head')assert([...managedPaths,'.copier-answers.yml'].every(path=>entries.some(e=>e.path===path)),'GOVERNANCE_HEAD_INCOMPLETE');
+      managedPaths.push(...configurationCallers.filter(path=>entries.some(e=>e.path===path)));
       const files=new Map([...managedPaths,'.copier-answers.yml'].flatMap(path=>{
         const bytes=blob(workspace,entries,path,true);return bytes?[[path,bytes]]:[];
       }));
@@ -148,7 +149,7 @@ export async function main(env=process.env){
         assert(/^[a-f0-9]{40}$/.test(sha),'COPIER_TEMPLATE_SOURCE');
         git(controller,['merge-base','--is-ancestor',sha,'HEAD']);
         return new Map(managedPaths.map(path=>[path,git(controller,['show',sha+':templates/repository/'+(path==='CONTRIBUTING.md'?'CONTRIBUTING.md.jinja':path)])]));
-      },managedPaths);
+      },managedPaths,env.GITHUB_REPOSITORY);
       const control=blob(workspace,entries,'acceptance/bootstrap-target.json',true);
       if(control){assert(control.length<=1024,'CONTROL_SIZE');parseAcceptanceTarget(control.toString('utf8'));}
       if(lifecycle)snapshot.application=await assertLifecycleSnapshot(new Map(entries.map(e=>[e.path,blob(workspace,entries,e.path)])),{side,controllerSha:env.WORKFLOW_SHA,verifyController:sha=>{
