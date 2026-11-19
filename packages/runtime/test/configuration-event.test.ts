@@ -14,16 +14,18 @@ it('forwards only the locator of a successful same-repository default branch con
     if(path.includes('/contents/'))return {type:'file',path:'config/bounded-recheck.json',size:config.length,encoding:'base64',content:config.toString('base64')};
     return {state:'active',path:'.github/workflows/repository-configuration-event.yml'};
   });
+  const trialPath='.github/workflows/repository-configuration-trial.yml';
   for(const delta of [{installation:{id:999}},{repository:{...repository,private:true}},{repository:{...repository,archived:true}},
     {repository:{...repository,fork:true}},{organization:{id:999}},{repository:{...repository,disabled:true}},
-    ...[{head_branch:'feature'},{path:'.github/workflows/other.yml'},{conclusion:'failure'},{head_repository:{id:456}},{run_attempt:0}].map(change=>({workflow_run:{...run,...change}}))]){
+    ...[{event:'workflow_run'},{path:trialPath,event:'push'},{path:trialPath,head_branch:'other'},{path:trialPath,head_repository:{id:456}},{head_branch:'feature'},{path:'.github/workflows/other.yml'},{conclusion:'failure'},{head_repository:{id:456}},{run_attempt:0}].map(change=>({workflow_run:{...run,...change}}))]){
     await forwardConfigurationCompletion(env as any,{...payload,...delta},{json} as any);
   }
   expect(json).not.toHaveBeenCalled();
   await forwardConfigurationCompletion(env as any,payload,{json} as any);
   await forwardConfigurationCompletion(env as any,{...payload,workflow_run:{...run,event:'pull_request',head_branch:'steward/repository-configuration-42'}},{json} as any);
   await forwardConfigurationCompletion(env as any,{...payload,workflow_run:{...run,event:'pull_request_review',head_branch:'other-reviewed-config'}},{json} as any);
-  expect(json.mock.calls.filter(([,path])=>path.endsWith('/dispatches'))).toHaveLength(3);
+  await forwardConfigurationCompletion(env as any,{...payload,workflow_run:{...run,path:trialPath}},{json} as any);
+  expect(json.mock.calls.filter(([,path])=>path.endsWith('/dispatches'))).toHaveLength(4);
   expect(json).toHaveBeenLastCalledWith(1296724484,'/repos/splrad/steward/actions/workflows/repository-configuration-event.yml/dispatches','POST',
     {ref:'main',inputs:{repository_id:'42',run_id:'334',attempt:'2'}});
 });

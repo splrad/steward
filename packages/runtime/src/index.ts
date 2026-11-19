@@ -433,14 +433,16 @@ function isManaged(repository: any): boolean { return belongsToOrganization(repo
 /** The receiver re-reads this exact attempt and authorizes the actor before processing its request. */
 export async function forwardConfigurationCompletion(env:Env,payload:any,reader:GitReader) {
   const repository=payload.repository, run=payload.workflow_run;
-  if(payload.action!=='completed' || run?.path!=='.github/workflows/repository-configuration.yml' ||
+  const trial=run?.path==='.github/workflows/repository-configuration-trial.yml';
+  if(payload.action!=='completed' || (!trial && run?.path!=='.github/workflows/repository-configuration.yml') ||
       run.status!=='completed' || run.conclusion!=='success' || !payload.installation?.id ||
       payload.installation.id!==Number(env.INSTALLATION_ID) || payload.organization?.id!==Number(env.ORGANIZATION_ID) ||
       repository?.owner?.id!==Number(env.ORGANIZATION_ID) || repository.private!==false ||
       repository.archived!==false || repository.disabled!==false || repository.fork!==false || !isManaged(repository) ||
       run.repository?.id!==repository.id || run.head_repository?.id!==repository.id ||
       typeof repository.default_branch!=='string' || !repository.default_branch ||
-      !(['workflow_dispatch','push','workflow_run'].includes(run.event) && run.head_branch===repository.default_branch ||
+      !(trial ? run.event==='workflow_dispatch' && run.head_branch===repository.default_branch :
+        ['workflow_dispatch','push'].includes(run.event) && run.head_branch===repository.default_branch ||
         run.event==='pull_request' && typeof run.head_branch==='string' && run.head_branch.startsWith('steward/repository-configuration-') ||
         run.event==='pull_request_review' && typeof run.head_branch==='string' && run.head_branch.length>0) ||
       !Number.isSafeInteger(run.id) || run.id<1 || !Number.isSafeInteger(run.run_attempt) || run.run_attempt<1 ||
