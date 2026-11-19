@@ -29,7 +29,7 @@ export { decodeBuildJson } from '../../core/src/build-manifest.js';
 export { inspectReleaseArtifacts, sealReleaseArtifacts, verifySealedArtifacts } from './release-artifacts.js';
 export { parseReleaseDescriptor } from '../../core/src/release-descriptor.js';
 export { parseSupplementalNotes, renderCommittedReleaseNotes } from '../../core/src/release-template.js';
-export { nativeReleaseInspector, nativePythonSourceVersion } from './release-native.js';
+export { nativeReleaseInspector, nativePythonSourceVersion, readNativeUnitVersion } from './release-native.js';
 export { generateReleaseSbom } from './release-sbom.js';
 export { parseLegacyRepositoryCatalog } from '../../core/src/legacy-repository-policy.js';
 export { selectReleaseProducers, assertReleaseJobResults } from './release-run.js';
