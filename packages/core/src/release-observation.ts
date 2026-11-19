@@ -62,7 +62,7 @@ export interface CycleRecord {
   channelFacts: { unitId: string; channelId: string; [key: string]: unknown }[];
   executionEvidence: { waveKey: string; runId: number; runAttempt: number; workflowId: number; jobIds: number[]; executorControllerSha: string; nativeEvidencePath: string; outcomeEvidencePath: string | null; observedAt: string }[];
   completionObservations: { inputSetDigest: string; evidenceSetDigest: string; observedAt: string; evidencePath: string }[];
-  freezeOnly?: {unitId:string; runId:number; attempt:number; artifactId:number; archiveDigest:string}[];
+  freezeOnly?: {unitId:string; runId:number; attempt:number; producerAttempt:number; artifactId:number; archiveDigest:string}[];
   completedEvidencePath: string | null; repairOf: string | null; approvedRepairDecision: { cycleId: string; sourceSha: string; [key: string]: unknown } | null;
 }
 export type BusinessOutcome = 'WAIT' | 'UNKNOWN' | 'BUSINESS_FAILED' | 'EFFECT_CONFIRMED' | 'REJECTED_BEFORE_BUSINESS' | 'FACT_CONFLICT';
@@ -97,7 +97,7 @@ export function parseReleaseRecord<K extends keyof RecordKinds>(kind: K, value: 
     for (const unit of record.units) if (!unique(unit.assets.map(asset => asset.id)) || !unique(unit.assets.map(asset => asset.path.toLowerCase()))) fail('duplicate asset');
     if (record.freezeOnly && (record.requiredChannels.some(channel=>record.freezeOnly!.some(receipt=>receipt.unitId===channel.unitId))
       ||  !unique(record.freezeOnly.map(item=>item.unitId))
-      || record.freezeOnly.some(receipt=>!record.dispatches.some(request=>request.purpose==='build' && request.canonicalRunId===receipt.runId)
+      || record.freezeOnly.some(receipt=>receipt.producerAttempt>receipt.attempt || !record.dispatches.some(request=>request.purpose==='build' && request.canonicalRunId===receipt.runId)
         || !record.units.some(unit=>unit.id===receipt.unitId && unit.releaseId===null && unit.manifestDigest && unit.notesDigest && unit.assets.length))))
       fail('freeze-only receipt');
     if (!unique(record.dispatches.map(item => item.requestKey))) fail('duplicate request');

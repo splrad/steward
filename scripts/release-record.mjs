@@ -644,7 +644,7 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
         unit.notesDigest=sha256(await readFile(join(item.directory,'release-notes.md')));
         unit.manifestDigest=sha256(await readFile(join(item.directory,'artifact-manifest.json')));
         receipts.push({unitId:item.unitId,runId:item.archive.runId,attempt:item.archive.attempt,
-          artifactId:item.archive.artifactId,archiveDigest:item.archive.digest});
+          producerAttempt:item.archive.producerAttempt,artifactId:item.archive.artifactId,archiveDigest:item.archive.digest});
       }
       cycle.freezeOnly=receipts;
     }

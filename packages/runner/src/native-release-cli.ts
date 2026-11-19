@@ -106,7 +106,7 @@ export async function nativeReleaseCli(argv: readonly string[]) {
       if(selection.status!=='ADMITTED'||!target)throw new Error('NATIVE_CLI: channel business admission');
       const unit=selection.delivery.units.find(unit=>unit.id===target.unitId)!;
       const manifest=await pipelineChannelDownload(context,target,required('directory'),undefined,undefined,{unit,controllerDirectory,history:state.domainRecords});
-      result={...manifest,channelFiles:channelFiles(unit,target.channelId,manifest.artifacts)};
+      result='channelFiles' in manifest ? manifest : {...manifest,channelFiles:channelFiles(unit,target.channelId,manifest.artifacts)};
     } else if(command==='release-pipeline channel-probe') {
       if(selection.status!=='OBSERVE')throw new Error('NATIVE_CLI: read-only probe mode');
       const items=await json(required('reads'));

@@ -156,7 +156,7 @@ it('closes a frozen-only cycle from its native build receipt without inventing a
   const {context}=evidenceFixture(), cycle=context.cycle, unit=cycle.units[0]!;
   const digest='d'.repeat(64);
   Object.assign(unit,{notesDigest:digest,manifestDigest:digest,assets:[{id:'archive',path:'cli.tar.gz',size:10,sha256:digest}]});
-  cycle.freezeOnly=[{unitId:unit.id,runId:100,attempt:1,artifactId:45,archiveDigest:'sha256:'+digest}];
+  cycle.freezeOnly=[{unitId:unit.id,runId:100,attempt:2,producerAttempt:1,artifactId:45,archiveDigest:'sha256:'+digest}];
   const input={repositoryId:context.repositoryId,inventoryComplete:true,cycles:[cycle],
     discovered:[{id:cycle.id,prNumber:cycle.prNumber,sourceSha:cycle.sourceSha,mergedAt:'2026-11-19T00:00:00Z'}],
     completions:[],decisions:[],repairActorId:1,now:'2026-11-19T01:00:00Z'};

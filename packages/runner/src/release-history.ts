@@ -3,7 +3,7 @@ import {decodeCompletionArchive,reconcileCycleHistory,type CompletionArchive,typ
 import {githubUnits,evaluateCompletion,type CycleRecord,type RepositoryRecord} from '../../core/src/release-observation.js';
 import {readCycleDelivery} from './release-pipeline.js';
 import {verifyExecutionSource} from './release-run.js';
-import {NativeEvidenceReader,nativeRunFact,type EvidenceTransport} from './native-release-evidence.js';
+import {NativeEvidenceReader,EvidenceReadError,nativeRunFact,type EvidenceTransport} from './native-release-evidence.js';
 
 interface ProtectedRecord {path:string;commit:string;value:any;content?:string}
 export interface HistorySnapshot {
@@ -84,6 +84,16 @@ export async function inspectCycleHistory(snapshot:HistorySnapshot,io:EvidenceTr
         verifyExecutionSource(run,{...context,request});
         if(run.id!==receipt.runId || run.runAttempt!==receipt.attempt || run.conclusion!=='success' || run.status!=='completed')
           throw Error('freeze-only native run');
+        const alreadyCompleted=snapshot.repositoryHistory.some(entry=>entry.value.lastCompletedCycleId===cycle.id);
+        try {
+          const artifact=await reader.json(`actions/artifacts/${receipt.artifactId}`);
+          const name=`final-${snapshot.repositoryId}-${receipt.unitId}-${cycle.sourceSha}-${receipt.runId}-${receipt.producerAttempt}`;
+          if(artifact.id!==receipt.artifactId || artifact.name!==name || artifact.digest!==receipt.archiveDigest
+            || artifact.workflow_run?.id!==receipt.runId || artifact.workflow_run?.head_sha!==cycle.sourceSha
+            || !(artifact.expired===false || (artifact.expired===true && alreadyCompleted)))throw Error('freeze-only native archive');
+        } catch(error) {
+          if(!(alreadyCompleted && error instanceof EvidenceReadError && error.status===404))throw error;
+        }
       }
       verifiedFreezes.push(cycle.id);
     } catch {reasons.push('FROZEN_BUILD_SOURCE_UNAVAILABLE');}

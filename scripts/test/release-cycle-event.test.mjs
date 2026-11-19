@@ -133,7 +133,7 @@ test('a registered fixture repository uses its own default branch while the prod
 test('routes a multi-unit probe only when the report subset belongs to the frozen cycle',async()=>{
   const {channelTargetsDigest}=await import('../../packages/runner/dist/index.js');
   const units=['one','two','three'].map((id,i)=>({id,version:'2.0.0',releaseId:i+11,manifestDigest:String(i+1).repeat(64)}));
-  const cycle={id:'cycle',sourceSha:source,deliveryConfigSha:later,units,
+  const cycle={id:'cycle',sourceSha:source,controllerSha:source,deliveryConfigSha:later,units,
     requiredChannels:units.map(unit=>({unitId:unit.id,channelId:'ghcr-assets'}))};
   const targets=units.slice(1).map(unit=>({unitId:unit.id,channelId:'ghcr-assets',version:unit.version,releaseId:unit.releaseId,manifestDigest:unit.manifestDigest}));
   const digest=channelTargetsDigest({repositoryId:product.id,cycle},targets);
@@ -141,7 +141,7 @@ test('routes a multi-unit probe only when the report subset belongs to the froze
     head_sha:later,head_branch:'main',actor:{id:301115370},event:'workflow_dispatch',workflow_id:410998651,
     path:'.github/workflows/steward-release-channels.yml',created_at:'2026-11-19T01:00:00Z',updated_at:'2026-11-19T01:01:00Z',
     display_title:'Channels observe '+sha256(['observe',digest,later])};
-  const report={cycleId:cycle.id,targetsDigest:digest,items:targets.map(({unitId,channelId,version})=>({unitId,channelId,version}))};
+  const report={schemaVersion:1,sourceSha:source,executionSha:later,controllerSha:source,nativeRunId:83,runAttempt:1,cycleId:cycle.id,targetsDigest:digest,items:targets.map(({unitId,channelId,version})=>({unitId,channelId,version}))};
   const calls=[],ports={snapshot:async()=>({cycles:[{value:cycle}]}),get:async()=>run,botId:301115370,
     probeArtifacts:async()=>[{id:12,name:'probe-cycle-'+digest+'-83-1',expired:false,workflow_run:{id:83,head_sha:later}}],
     probeReport:async()=>report,invoke:async command=>{calls.push(command);return {reason:'DISTRIBUTION_VERIFIED'};}};

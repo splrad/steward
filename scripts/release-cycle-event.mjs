@@ -56,7 +56,8 @@ function probeMatches(cycle,run,botId,product,artifacts) {
         || run.displayTitle!=='Channels observe '+sha256(['observe',match[1],run.headSha]))return false;
     if (direct.includes(match[1]))return true;
     const report=artifact.report;
-    if(!report || report.cycleId!==cycle.id || report.targetsDigest!==match[1] || !Array.isArray(report.items)
+    if(!report || report.schemaVersion!==1 || report.sourceSha!==cycle.sourceSha || report.executionSha!==run.headSha
+        || report.controllerSha!==cycle.controllerSha || report.nativeRunId!==run.id || report.runAttempt!==Number(match[3]) || report.cycleId!==cycle.id || report.targetsDigest!==match[1] || !Array.isArray(report.items)
         || !report.items.length || report.items.length>targets.length)return false;
     const subset=report.items.map(item=>targets.find(t=>t.unitId===item.unitId && t.channelId===item.channelId && t.version===item.version));
     return subset.every(Boolean) && new Set(subset).size===subset.length && keyFor(subset)===match[1];
