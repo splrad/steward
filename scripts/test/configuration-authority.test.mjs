@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
+import {mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
+import {execFileSync} from 'node:child_process';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
 import {authorizePull,checkEvent,protectedChanges,requestPath} from '../configuration-authorization.mjs';
 import {findEvidence,requestFromRun,rerunValidation,trialInventory} from '../configuration-native.mjs';
 import {inspectRepository,versionsPath,pagesPath} from '../configuration-view.mjs';
@@ -58,6 +61,34 @@ test('delegate renames and adopted configuration manifest or entry page require 
   const adopted=fake(new Map([[B+'/'+requestPath,'adopted']]));
   for(const path of paths) assert.ok((await protectedChanges(adopted,[{filename:path}],B,A)).has(path));
 });
+test('only the recorded candidate can advance the existing manifest without configuration approval',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'candidate-manifest-'));
+  t.after(()=>rm(dir,{force:true,recursive:true}));
+  const git=(...args)=>execFileSync('git',['-C',dir,...args],{encoding:'utf8'}).trim();
+  git('init','--quiet');git('config','user.name','Candidate fixture');git('config','user.email','candidate@example.invalid');
+  const path='.release-please-manifest.json';
+  const commit=async version=>{
+    const manifest=JSON.stringify({'tools/route':version})+'\n';
+    await writeFile(join(dir,path),manifest);git('add',path);
+    git('-c','commit.gpgsign=false','commit','--quiet','-m','Release '+version);
+    return [git('rev-parse','HEAD'),manifest];
+  };
+  const [base,old]=await commit('2.4.1'),[published,generated]=await commit('2.4.2'),[manual,changed]=await commit('3.0.0');
+  const contents=new Map([[base+'/'+requestPath,'adopted'],[base+'/'+path,old],[published+'/'+path,generated],
+    [manual+'/'+path,changed],[C+'/state.json',JSON.stringify({repositoryId:repo.id,candidate:{prNumber:2,branch:'steward/release-candidate',
+      publishedHead:published,generatedSnapshotPath:'generated/fixture.json',pendingWrite:null}})]]);
+  const api=fake(contents);
+  let head=published;
+  api.rest.git={getRef:async()=>response({object:{sha:C}})};
+  api.rest.repos.getBranch=async()=>response({commit:{sha:base}});
+  api.rest.pulls.get=async()=>response({number:2,state:'open',changed_files:1,user:{id:301115370},
+    head:{repo,sha:head,ref:'steward/release-candidate'},base:{repo,ref:'trunk'}});
+  api.paginate=async method=>method===api.rest.pulls.listFiles?git('diff','--name-only',base,head).split('\n').map(filename=>({filename})):[];
+  assert.equal(await authorizePull(api,2,published,'trunk'),true);
+  head=manual;
+  await assert.rejects(authorizePull(api,2,manual,'trunk'),/Configuration approval is required/);
+});
+
 test('retries only the configuration authorization step failure',async()=>{
   const api=fake(new Map()),retry=[];
   api.rest.actions.listWorkflowRunsForRepo=()=>{};

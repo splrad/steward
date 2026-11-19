@@ -52,6 +52,24 @@ export async function protectedChanges(api,files,base,head) {
   return new Set(paths.filter(path=>ci.has(path) || adopted && (configurationPaths.has(path)||path.startsWith('.github/actions/configuration/'))));
 }
 
+const manifestPath='.release-please-manifest.json';
+
+async function generatedCandidateManifest(api,pr,base,head) {
+  if(pr.head.repo?.id!==pr.base.repo?.id || !pr.base.repo?.id || pr.user?.id!==301115370) return false;
+  const stateHead=(await api.rest.git.getRef({...api.target,ref:'heads/steward/release-state'}).catch(error=>{
+    if(error.status===404) return {data:null};
+    throw error;
+  })).data?.object?.sha;
+  if(!sha.test(stateHead)) return false;
+  const state=JSON.parse(await fileText(api,'state.json',stateHead));
+  const candidate=state?.candidate;
+  if(state?.repositoryId!==pr.base.repo.id || candidate?.prNumber!==pr.number || candidate.branch!==pr.head.ref ||
+    !sha.test(candidate.publishedHead) || !candidate.generatedSnapshotPath || candidate.pendingWrite) return false;
+  const [prior,generated,current]=await Promise.all([base,candidate.publishedHead,head].map(ref=>fileText(api,manifestPath,ref)));
+  if(!prior || !current || generated!==current) return false;
+  return JSON.stringify(Object.keys(JSON.parse(prior)).sort())===JSON.stringify(Object.keys(JSON.parse(current)).sort());
+}
+
 export async function authorizePull(api, number, expectedHead, defaultBranch, origin) {
   const {data:pr} = await api.rest.pulls.get({...api.target,pull_number:number});
   if(!sha.test(expectedHead) || pr.head.sha!==expectedHead || pr.state!=='open' || pr.base.ref!==defaultBranch)
@@ -61,6 +79,10 @@ export async function authorizePull(api, number, expectedHead, defaultBranch, or
   const base = (await api.rest.repos.getBranch({...api.target,branch:defaultBranch})).data.commit.sha;
   const protectedPaths=await protectedChanges(api,files,base,expectedHead);
   if(!protectedPaths.size) return false;
+  if(protectedPaths.has(manifestPath) && await generatedCandidateManifest(api,pr,base,expectedHead)) {
+    protectedPaths.delete(manifestPath);
+    if(!protectedPaths.size) return true;
+  }
   const paths=[...protectedPaths];
   const adminOnly = paths.includes(delegatesPath) || paths.includes(requestPath) && !await fileText(api,requestPath,base)
     || paths.includes('.github/product-ci.json') && !await fileText(api,'.github/product-ci.json',base);
@@ -72,6 +94,11 @@ export async function authorizePull(api, number, expectedHead, defaultBranch, or
       decisions.set(review.user?.id,review);
   }
   for(const review of decisions.values()) {
+    if(review.state==='COMMENTED') {
+      const {node}=await api.graphql('query($id:ID!){node(id:$id){... on PullRequestReview{body lastEditedAt editor{login} author{login}}}}',{id:review.node_id});
+      if(node?.author?.login!==review.user?.login || node.body.trim()!=='/steward approve-configuration' ||
+        node.lastEditedAt && node.editor?.login!==node.author.login) continue;
+    }
     if((review.state==='APPROVED' || review.state==='COMMENTED') && review.commit_id===expectedHead && await authorized(api,review.user,base,adminOnly)) return true;
   }
   const comments = await api.paginate(api.rest.issues.listComments,{...api.target,issue_number:number,per_page:100});
