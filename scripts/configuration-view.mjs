@@ -81,22 +81,27 @@ export function renderConfiguration(model,head,extra='') {
   return body.join('\n');
 }
 
-export function changeChannels(input, edits) {
+export function explicitDelivery(input) {
   const delivery=structuredClone(input);
   if(!delivery || ![1,2].includes(delivery.schemaVersion)) throw Error('Missing supported delivery configuration');
   // Preserve version-1 defaults for *every* unit when the first explicit subset upgrades the document.
-  if(delivery.schemaVersion===1 && edits.some(e=>e.artifactIds || e.metadata || e.id==='github-release')) {
+  if(delivery.schemaVersion===1) {
     for(const unit of delivery.units) {
       unit.channels=effectiveChannels(delivery,unit);
       for(const channel of unit.channels) channel.metadata??=channel.id==='winget'?[]:['sbom.spdx.json','release-notes.md','artifact-manifest.json','SHA256SUMS'];
     }
     delivery.schemaVersion=2;
   }
+  return delivery;
+}
+export function changeChannels(input, edits) {
+  const delivery=edits.some(e=>e.artifactIds || e.metadata || e.id==='github-release')?explicitDelivery(input):structuredClone(input);
   for(const edit of edits) {
     const unit=delivery.units.find(u=>u.id===edit.unit);
     const channel=unit?.channels.find(c=>c.id===edit.id);
     if(!channel || typeof edit.required!=='boolean') throw Error('Select a declared channel and enablement');
     channel.required=edit.required;
+    if(edit.location) channel.location=edit.location;
     if(edit.artifactIds) {
       if(!Array.isArray(edit.artifactIds)||!edit.artifactIds.length||new Set(edit.artifactIds).size!==edit.artifactIds.length
         ||edit.artifactIds.some(id=>!unit.assets.some(a=>a.id===id))) throw Error('Unknown or duplicate channel artifact');

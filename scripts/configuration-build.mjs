@@ -161,7 +161,7 @@ export function renderBuild(seed, targets, {signing,controllerSha}) {
         '  Copy-Item -LiteralPath $file.FullName -Destination $target',
         '}'].join('\n')});
   }
-  build.strategy.matrix.include = rows;
+  build.strategy.matrix = {include:rows};
   build['runs-on'] = targets.every(t=>t.recipe.runner===targets[0].recipe.runner)?targets[0].recipe.runner
     : '${{ '+conditions.join(' || ')+' }}';
   const slot = build.steps.findIndex(s=>s.id==='build');

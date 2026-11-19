@@ -52,6 +52,12 @@ test('first CI adoption, prior and proposed inputs, renames, exact heads and mer
   const first=fake(new Map([[A+'/'+ci,JSON.stringify([next])]]));
   assert.ok((await protectedChanges(first,[{filename:ci}],B,A)).has(ci));
 });
+test('delegate renames and adopted configuration manifest or entry page require authorization',async()=>{
+  const delegates='.github/configuration-delegates.json', paths=['.release-please-manifest.json','.github/repository-configuration.md'];
+  assert.ok((await protectedChanges(fake(new Map()),[{filename:'moved.json',previous_filename:delegates}],B,A)).has(delegates));
+  const adopted=fake(new Map([[B+'/'+requestPath,'adopted']]));
+  for(const path of paths) assert.ok((await protectedChanges(adopted,[{filename:path}],B,A)).has(path));
+});
 test('retries only the configuration authorization step failure',async()=>{
   const api=fake(new Map()),retry=[];
   api.rest.actions.listWorkflowRunsForRepo=()=>{};

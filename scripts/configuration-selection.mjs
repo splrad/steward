@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import {posix} from 'node:path';
 import YAML from 'yaml';
 import {adaptBuild,renderBuild,repositoryPath,scriptBuild,selectWorkflow} from './configuration-build.mjs';
-import {changeChannels,ciPath,deliveryPath,jsonFile,pagesPath,publishPath,versionsPath} from './configuration-view.mjs';
+import {changeChannels,ciPath,deliveryPath,explicitDelivery,jsonFile,pagesPath,publishPath,versionsPath} from './configuration-view.mjs';
 import {parseDeliveryConfig,parseSupplementalNotes} from '../packages/runner/dist/index.js';
 
 const key=/^[a-z][a-z0-9-]{0,63}$/;
@@ -91,7 +91,7 @@ export async function applySelection(model,operation,plan,context) {
   let delivery=model.delivery;
   if(operation==='select') {
     const formal=[];
-    delivery=structuredClone(delivery??{schemaVersion:2,repositoryAuthors:plan.repositoryAuthors,units:[]});
+    delivery=explicitDelivery(delivery??{schemaVersion:2,repositoryAuthors:plan.repositoryAuthors,units:[]});
     const selectedUnits=new Set(targets.map(t=>t.unit));
     const allAssets=new Map();
     for(let i=0;i<targets.length;i++) {
@@ -181,7 +181,12 @@ export async function applySelection(model,operation,plan,context) {
         manifest[path]=current;
         changes.set(manifestPath,jsonFile(manifest));
       }
-      config.packages[path]={...config.packages[path],'release-type':unit.releaseType??config.packages[path]?.['release-type']??config['release-type']??'simple','version-file':version,'changelog-path':log};
+      const tagPolicy={};
+      if(!config.packages[path] && unit.component && !config.component && config['include-component-in-tag']!==false) {
+        if(unit.noComponent) tagPolicy['include-component-in-tag']=false;
+        else tagPolicy.component=unit.component;
+      }
+      config.packages[path]={...tagPolicy,...config.packages[path],'release-type':unit.releaseType??config.packages[path]?.['release-type']??config['release-type']??'simple','version-file':version,'changelog-path':log};
     }
     changes.set(versionsPath,jsonFile(config));
   }

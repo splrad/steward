@@ -21,7 +21,7 @@ it('uses platform workflow provenance and readonly validation jobs',async()=>{
 });
 it('requires product selections before building or claiming signing is inapplicable',async()=>{
   const workflow=YAML.parse(await readFile('templates/release/steward-release-publish.yml','utf8'));
-  expect(workflow.jobs.build.strategy.matrix.include).toEqual([]);
+  expect(workflow.jobs.build.strategy.matrix).toEqual({unit:"${{ fromJSON('[]') }}",target:"${{ fromJSON('[]') }}"});
   expect(workflow.jobs.build.steps.find((step:any)=>step.id==='build').run).toMatch(/^throw /);
   expect(workflow.jobs.sign.steps.find((step:any)=>step.id==='signing').run).toBe('exit 1');
 });

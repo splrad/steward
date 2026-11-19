@@ -7,7 +7,7 @@ import {Octokit} from '@octokit/rest';
 export const delegatesPath = '.github/configuration-delegates.json';
 export const requestPath = '.github/workflows/repository-configuration.yml';
 const configurationPaths = new Set([delegatesPath,requestPath,'.github/product-ci.json','.github/delivery.json',
-  'release-please-config.json','.github/workflows/steward-release-publish.yml','.github/workflows/steward-release-channels.yml',
+  '.github/repository-configuration.md','.release-please-manifest.json','release-please-config.json','.github/workflows/steward-release-publish.yml','.github/workflows/steward-release-channels.yml',
   '.github/workflows/pages.yml','.github/workflows/repository-configuration-trial.yml']);
 const sha = /^[a-f0-9]{40}$/;
 

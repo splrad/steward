@@ -148,8 +148,12 @@ export async function findEvidence(api,token,repo,base,head,target,model,callbac
       binding.nativeJobName=jobName;
       binding.uploadStep=upload[0].name??'Run '+upload[0].uses;
     }
-    const files=await inspect(api,token,repo,base,head,{...target,...binding},recipe);
-    return {head,binding,files,url:run.html_url};
+    try {
+      const files=await inspect(api,token,repo,base,head,{...target,...binding},recipe);
+      return {head,binding,files,url:run.html_url};
+    } catch(error) {
+      if(!/^(Expired artifact|Missing or ambiguous artifact|Could not bind the archive|Concurrent jobs prevent|Stale, foreign, or unsuccessful workflow run)/.test(error.message)) throw error;
+    }
   }
 }
 

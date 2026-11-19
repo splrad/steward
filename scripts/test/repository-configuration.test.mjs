@@ -9,8 +9,6 @@ import YAML from 'yaml';
 import {candidates,configurationForm,parseForm} from '../configuration-form.mjs';
 import {inspectRepository} from '../configuration-view.mjs';
 import {reconcile} from '../repository-configuration.mjs';
-import {requestFromRun} from '../configuration-native.mjs';
-import {authorizePull} from '../configuration-authorization.mjs';
 import {parseDeliveryConfig} from '../../packages/runner/dist/index.js';
 
 const root=process.cwd();
@@ -47,7 +45,8 @@ test('same configuration PR prepares two native entries, binds trials to their h
   }
   git('config','user.name','Configuration fixture');git('config','user.email','config@example.invalid');git('config','core.autocrlf','false');
   for(const path of [requestPath,trialPath]) await put(path,await readFile('templates/repository/'+path));
-  for(const path of ['tools/route/CHANGELOG.md','maps/data/CHANGELOG.md','.release-notes/route.md','.release-notes/maps.md']) await put(path,'# Product notes\n');
+  for(const path of ['tools/route/CHANGELOG.md','maps/data/CHANGELOG.md','.release-notes/route.md','.release-notes/maps.md']) await put(path,['概述','更新内容','兼容性','升级与迁移','安装说明','已知问题','恢复'].map(h=>'## '+h+'\n\nFixture notes.\n').join('\n'));
+  await put('.github/release-template.md.mustache','{{{upgradeNotices}}}');
   git('add','-A');git('-c','commit.gpgsign=false','commit','-m','Adopt protected trial and declare product documentation');
   const base=git('rev-parse','HEAD'),repo={id:15,name:'map-tools',full_name:'splrad/map-tools',owner:{login:'splrad'},default_branch:'trunk'};
   const load=async(api,ref)=>{
@@ -77,7 +76,7 @@ test('same configuration PR prepares two native entries, binds trials to their h
   if(!hasV2 && !integrationRunner && process.env.GITHUB_ACTIONS==='true') {
     // Test the full save against the pinned upstream implementation until v2 lands.
     const upstream=join(dir,'schema-runner');
-    const revision='eab8e144f46f6441d226a9e4691920c6500864c7';
+    const revision='8f39099ce6e83ff4af5b68c99c6d0103ee9f2a70';
     execFileSync('git',['init','--quiet',upstream]);
     execFileSync('git',['-C',upstream,'fetch','--quiet','--depth=1','https://github.com/splrad/steward.git',revision]);
     execFileSync('git',['-C',upstream,'checkout','--quiet',revision,'--','packages/runner/dist']);
@@ -145,6 +144,29 @@ test('same configuration PR prepares two native entries, binds trials to their h
   assert.equal(selected.units[0].channels.find(c=>c.id==='github-release').required,true);
   const workflow=YAML.parse(git('show',ref+':.github/workflows/steward-release-publish.yml'));
   assert.deepEqual(workflow.jobs.build.strategy.matrix.include.map(r=>r.unit),['route','maps']);
+  if(process.env.CONFIGURATION_CANDIDATE_MODULE) {
+    const {validateManualCandidate}=await import(pathToFileURL(resolve(process.env.CONFIGURATION_CANDIDATE_MODULE)));
+    const {fixture}=await import(new URL('./test/manual-candidate-fixture.mjs',pathToFileURL(resolve(process.env.CONFIGURATION_CANDIDATE_MODULE))));
+    const {session,producer,pull,io}=fixture();
+    io.product={id:repo.id,name:repo.full_name,defaultBranch:repo.default_branch};
+    session.repository.repositoryId=repo.id;
+    pull.head.repo.id=repo.id;pull.base.repo.id=repo.id;pull.base.ref=repo.default_branch;
+    session.generated.units=selected.units.map(u=>{
+      const version=git('show',ref+':'+u.path+'/VERSION');
+      return {id:u.id,path:u.path,version,tag:u.id+'-v'+version};
+    });
+    session.identity.units=session.generated.units.map(u=>({id:u.id,actors:[],contributors:{contributors:[],unresolved:0}}));
+    const source=ref;
+    await put('.release-notes/maps.md',git('show',source+':.release-notes/maps.md')+'\nReviewed prose.\n');
+    git('add','.release-notes/maps.md');git('-c','commit.gpgsign=false','commit','-m','Adjust candidate release notes');
+    const h=git('rev-parse','HEAD');
+    io.source=async()=>source;pull.head.sha=h;
+    io.isAncestor=async(a,b)=>{git('merge-base','--is-ancestor',a,b);return true;};
+    io.read=async(sha,path)=>git('show',sha+':'+path);
+    io.changedPaths=async(a,b)=>git('diff','--name-only',a,b).split('\n');
+    const record=await validateManualCandidate(session,producer,io);
+    assert.deepEqual(record.units.map(u=>u.versionPath),['tools/route/VERSION','maps/data/VERSION']);
+  }
   const finalHead=ref;await refresh();assert.equal(ref,finalHead);
   assert.doesNotMatch(git('diff','--name-only',base,ref),/build\.log/);
 });

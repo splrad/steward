@@ -17,7 +17,7 @@ const receipt=(run)=>'Configuration request: '+run.id+'/'+run.run_attempt;
 const page='.github/repository-configuration.md';
 const pathsForModel=/^\.github\/(workflows\/[^/]+\.ya?ml|actions\/.+\/action\.ya?ml)$/;
 
-async function snapshot(api,ref,plan) {
+async function snapshot(api,ref) {
   const tree=(await api.rest.git.getTree({...api.target,tree_sha:ref,recursive:'1'})).data;
   must(!tree.truncated,'Incomplete product tree');
   const files=new Map(tree.tree.filter(x=>x.type==='blob' && ['100644','100755'].includes(x.mode)).map(x=>[x.path,null]));
@@ -89,7 +89,9 @@ async function operatorApproval(api,write,actions,repo,base,head,number,actor) {
   must(await authorized(api,actor,base,adminOnly),'Administrator authorization required');
   const body='<!-- steward-config-approval '+head+' '+actor.id+' -->';
   const comments=await api.paginate(api.rest.issues.listComments,{...api.target,issue_number:number,per_page:100});
-  if(!comments.some(c=>c.user.id===301115370 && c.body===body)) await write.rest.issues.createComment({...api.target,issue_number:number,body});
+  let found=false;
+  for(const comment of comments.filter(c=>c.body===body)) if(await readBotComment(api,comment)===body){found=true;break;}
+  if(!found) await write.rest.issues.createComment({...api.target,issue_number:number,body});
   await rerunValidation(api,actions,pr);
 }
 
@@ -134,7 +136,7 @@ export async function reconcile({repo,base,run,data,api,write,actions,readToken,
   must(!pr || head===pr.head.sha,'Open configuration branch moved');
   const replay=tip?.author?.id===301115370 && tip.commit.verification?.verified && tip.commit.message.split('\n').includes(receipt(run));
   const view=await load(api,head,{});
-  let op='review', plan={}, changes=new Map();
+  let changes=new Map();
   const originalBody=pr?.body;
   if(data.pull && state.last!==receipt(run) && !replay) {
     must(pr?.number===data.pull.number && head===data.pull.head && originalBody===data.pull.body && state.head===head,'PR head or body moved');
@@ -145,14 +147,14 @@ export async function reconcile({repo,base,run,data,api,write,actions,readToken,
     const operations=Object.entries(values).filter(([k,v])=>k.startsWith('operation.') && v);
     must(operations.length<=1,'Select one operation per edit');
     const changedChannel=Object.entries(values).some(([id,value])=>id.startsWith('channel.') && previous.items.find(i=>i.id===id)?.value!==value);
-    op=operations[0]?.[0].slice('operation.'.length)??(changedChannel?'configure':'draft');
+    const op=operations[0]?.[0].slice('operation.'.length)??(changedChannel?'configure':'draft');
     for(const [k] of operations) delete values[k];
     state={...state,values,notice:''};
     if(op==='approve') {
       await operatorApproval(api,write,actions,repo,base,head,pr.number,run.triggering_actor);
       state.notice='已核验当前提交的配置授权。';
     } else if(op!=='draft') {
-      plan=planFromForm(view,state,op);
+      const plan=planFromForm(view,state,op);
       if(op==='trial') {
         const selected=candidates(view,state.values).filter(c=>state.values[c.id+'.use']);
         const notices=[];

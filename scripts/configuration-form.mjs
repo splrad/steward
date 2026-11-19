@@ -83,6 +83,9 @@ export function configurationForm(model,head,state={}) {
     if(values[id+'.changelog'] && !model.files.has(posix.join(defaults.path,values[id+'.changelog']))) field(id+'.logBody','新变更日志的起始正文');
     const existingUnit=model.delivery?.units.find(u=>u.id===defaults.raw);
     field(id+'.locks','构建锁文件（每行一个仓根相对路径；无锁时输入 []）',existingUnit?.buildLocks?.join('\n')??'');
+    const versionPolicy=model.versions?.packages?.[defaults.path];
+    if(!versionPolicy) field(id+'.component','新单元的标签组件（勾选使用无组件标签时可留空）',defaults.raw);
+    if(!versionPolicy) field(id+'.noComponent','新单元使用无组件前缀的版本标签',false,'check');
     field(id+'.version','版本文件（相对于单元目录）',defaults.version);
     field(id+'.changelog','变更日志（相对于单元目录）',defaults.changelog);
     if(entry.workflow) {
@@ -120,6 +123,8 @@ export function configurationForm(model,head,state={}) {
         if(evidence.files.some(f=>values[id+'.f'+key(f.path)+'.'+channel])) {
           const known=model.delivery?.units.find(u=>u.id===defaults.raw)?.channels.find(c=>c.id===channel);
           field(id+'.dest.'+channel,channel+' 目的地',known?.location??(channel==='github-release'?'github':''));
+          if(channel!=='winget') for(const name of metadataFiles)
+            field(id+'.metadata.'+channel+'.'+key(name),channel+' · '+name,known?.metadata?.includes(name)??false,'check');
         }
     }
   }
@@ -198,7 +203,7 @@ export function planFromForm(model,state,operation) {
         item.files.push(declaration);
         for(const channel of ['github-release','ghcr-assets','winget']) if(v[asset+'.'+channel]) {
           const k=unit+'/'+channel;
-          if(!channels.has(k)) channels.set(k,{unit,id:channel,required:true,location:v[id+'.dest.'+channel],artifactIds:[]});
+          if(!channels.has(k)) channels.set(k,{unit,id:channel,required:true,location:v[id+'.dest.'+channel],metadata:metadataFiles.filter(name=>v[id+'.metadata.'+channel+'.'+key(name)]),artifactIds:[]});
           channels.get(k).artifactIds.push(v[asset+'.id']);
         }
       }
@@ -208,7 +213,7 @@ export function planFromForm(model,state,operation) {
     if(v[id+'.locks']) facts.buildLocks=v[id+'.locks']==='[]'?[]:v[id+'.locks'].split('\n');
     if(v[id+'.notesBody']) facts.notesBody=v[id+'.notesBody'];
     units.set(unit,facts);
-    versions.set(unit,{path:v[id+'.path'],versionFile:v[id+'.version'],changelog:v[id+'.changelog'],logBody:v[id+'.logBody']});
+    versions.set(unit,{path:v[id+'.path'],component:v[id+'.component']||unit,noComponent:v[id+'.noComponent'],versionFile:v[id+'.version'],changelog:v[id+'.changelog'],logBody:v[id+'.logBody']});
   }
   for(const c of channels.values()) units.get(c.unit).channels.push({id:c.id,location:c.location,required:false});
   const settings={targets,units:[...units.values()],signing:v.signing?'not-applicable':null};
