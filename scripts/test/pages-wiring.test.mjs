@@ -84,7 +84,7 @@ test('public maintenance requires the approved mode and release unit before disp
     assert.equal(f.calls.filter(c=>c.method==='POST').length,0);assert.equal(f.records.size,0);
   }
   const f=fixture();f.state.mode='release';f.state.unit='maps';
-  for(const workflow of [workflowDoc,{env:{STEWARD_DOCS_SOURCE:'release',STEWARD_DOCS_UNIT:'maps'}}]) {
+  for(const workflow of [workflowDoc,{env:{STEWARD_DOCS_SOURCE:'${{ vars.STEWARD_DOCS_SOURCE }}'}},{env:{STEWARD_DOCS_SOURCE:'release',STEWARD_DOCS_UNIT:'maps'}}]) {
     f.state.workflowBytes=Buffer.from(YAML.stringify(workflow));
     const options=await sourceOptions(f.reader,f.repo,pin,301115370);
     assert.equal(options.mode,'release');assert.equal(options.unitId,'maps');
