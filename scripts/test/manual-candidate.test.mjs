@@ -106,6 +106,7 @@ test('two declared release units on trunk bind independent version files, notes 
   const repository={id:p.id,full_name:p.name,default_branch:p.defaultBranch,archived:false,disabled:false,
     private:false,visibility:'public',fork:false,owner:{id:302208797}};
   const key=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'});
+  let scopedTokens=0;
   const fetcher=async(url,options={})=>{
     const path=new URL(url).pathname;
     let body;
@@ -114,6 +115,7 @@ test('two declared release units on trunk bind independent version files, notes 
     else if(path.startsWith('/users/'))body={id:301115370,type:'Bot'};
     else if(path.endsWith('/access_tokens')){
       const request=JSON.parse(options.body);
+      if(request.repository_ids)scopedTokens++;
       assert.ok(!request.repository_ids||JSON.stringify(request.repository_ids)===JSON.stringify([repository.id]));
       body={token:'ghs_offline_'+Object.keys(request.permissions).join('_'),expires_at:new Date(Date.now()+3600000).toISOString(),permissions:request.permissions};
     }else if(path==='/installation/repositories')body={total_count:1,repositories:[repository]};
@@ -185,7 +187,12 @@ test('two declared release units on trunk bind independent version files, notes 
   await assert.rejects(recover(),/MANUAL_VERSION/);
   files.pop();
   await assert.rejects(recover(),/RELEASE_CONFIGURATION_REQUIRED/);
-  repository.private=true;
-  await assert.rejects(recover(),/BOUNDED_REPOSITORY/);
+  const issued=scopedTokens;
+  for(const change of [{private:true},{visibility:'internal'},{fork:true},{owner:{id:1}}]){
+    const saved={...repository};Object.assign(repository,change);
+    await assert.rejects(recover(),/BOUNDED_REPOSITORY/);
+    assert.equal(scopedTokens,issued);
+    Object.assign(repository,saved);
+  }
   await assert.rejects(withCandidateProduct(app,999,()=>assert.fail(),transport),/BOUNDED_REPOSITORY/);
 });

@@ -8,7 +8,7 @@ import {nativeEvidenceTransport} from '../packages/runner/dist/index.js';
 
 export async function withParticipatingProduct(app,id,operation,transport=nativeEvidenceTransport) {
   if(!Number.isSafeInteger(id)||id<1)throw Error('BOUNDED_EVENT_HINT');
-  const matches=(await app.discover()).filter(repo=>repo.id===id);
+  const matches=(await app.discover({publicCandidatesOnly:true})).filter(repo=>repo.id===id);
   if(matches.length!==1)throw Error('BOUNDED_REPOSITORY');
   const repository=matches[0];
   if(repository.archived||repository.disabled||!/^splrad\/[A-Za-z0-9_.-]+$/.test(repository.full_name)||!repository.default_branch)throw Error('BOUNDED_REPOSITORY');
@@ -65,9 +65,13 @@ export async function candidateEvidence(get,{requireReady=true,product}) {
   if(session.generated) {
     if(session.identity && !session.pending && !state.candidate.pendingWrite) {
       if(!matchesFrozenUnits(session,session.conflict?.generated??session.generated))throw Error('CANDIDATE_FROZEN_UNIT_COVERAGE');
-      staleConflict=Boolean(session.conflict)&&!matchesFrozenUnits(session);
+      if(session.conflict) {
+        const locations=snapshot=>snapshot.units.map(({id,path})=>JSON.stringify([id,path])).sort();
+        staleConflict=!isDeepStrictEqual(locations(session.conflict.generated),locations(session.generated));
+      }
     }
-    if(product.units && (!session.generated.units.length||session.generated.units.some(unit=>
+    const selectedSnapshot=staleConflict?session.conflict.generated:session.generated;
+    if(product.units && (!selectedSnapshot.units.length||selectedSnapshot.units.some(unit=>
       !product.units.some(selected=>selected.id===unit.id&&selected.path===unit.path))))throw Error('CANDIDATE_UNIT_NOT_SELECTED');
     const generatedPath=state.candidate.generatedSnapshotPath;
     if(typeof generatedPath!=='string'||!generatedPath.startsWith(`generated/${state.candidate.id}/`)

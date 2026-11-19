@@ -38,6 +38,7 @@ export async function validateManualCandidateRecord(v:any,repositoryId:number,ca
     ids.add(u.id);roots.add(u.path.toLowerCase());
     if(v.schemaVersion===1 && (repositoryId!==1187527897||v.units.length!==1||u.id!=='layerscape'||u.path!=='.'))throw Error('MANUAL_UNIT');
     const versionPath=v.schemaVersion===1?'VERSION':u.versionPath;
+    if(typeof versionPath!=='string')throw Error('MANUAL_VERSION_PATH');
     assertDeliveryPath(versionPath);
     if(u.path!=='.'&&!versionPath.startsWith(u.path+'/'))throw Error('MANUAL_VERSION_PATH');
     paths.push(versionPath,u.notesPath);

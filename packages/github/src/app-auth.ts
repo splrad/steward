@@ -100,20 +100,21 @@ export async function nativeReleaseApp(privateKey: string, transport: typeof fet
         return await operation(write.token,read.token);
       } finally {await read.revoke();}
     } finally {await write.revoke();}
-  },async discover(){
+  },async discover({publicCandidatesOnly=false}={}){
     const credential=await token();
     try {
-      const repositories: {id:number;full_name:string;default_branch:string;archived:boolean;disabled:boolean}[]=[];let total:number|null=null;
+      const repositories: {id:number;full_name:string;default_branch:string;archived:boolean;disabled:boolean;publicCandidate:boolean}[]=[];let total:number|null=null;
       for(let page=1;page<=100;page++) {
         const response=await credential.client.request('GET /installation/repositories',{per_page:100,page});
         if(total!==null && total!==response.data.total_count)throw new Error('RELEASE_INSTALLATION_CHANGED');total=response.data.total_count;
         for(const repo of response.data.repositories) {
           if(!Number.isSafeInteger(Number(repo.id)) || Number(repo.id)<1)throw new Error('RELEASE_REPOSITORY_ID');
-          repositories.push({id:Number(repo.id),full_name:repo.full_name,default_branch:repo.default_branch,archived:repo.archived,disabled:repo.disabled??false});
+          repositories.push({id:Number(repo.id),full_name:repo.full_name,default_branch:repo.default_branch,archived:repo.archived,disabled:repo.disabled??false,
+            publicCandidate:repo.owner?.id===302208797&&repo.private===false&&repo.visibility==='public'&&repo.fork===false});
         }
         if(repositories.length===total) {
           if(new Set(repositories.map(repo=>repo.id)).size!==repositories.length)throw new Error('RELEASE_INSTALLATION_DUPLICATE');
-          return repositories;
+          return repositories.filter(repo=>!publicCandidatesOnly||repo.publicCandidate).map(({publicCandidate,...repository})=>repository);
         }
         if(response.data.repositories.length<100)break;
       }
