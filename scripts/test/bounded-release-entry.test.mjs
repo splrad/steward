@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import YAML from 'yaml';
 import {createHash} from 'node:crypto';
-import {validateCandidateEvent,sha256,product} from '../bounded-candidate-contract.mjs';
+import {candidateEvidence,validateCandidateEvent,sha256,product} from '../bounded-candidate-contract.mjs';
 import {processNormalCandidateEvent} from '../release-candidate-event.mjs';
 import {entryGuard,resultOutcome,applyCandidateEvent} from '../bounded-release-entry.mjs';
 const head='a'.repeat(40),id=1296724484,root='/repos/splrad/steward';
@@ -71,7 +71,7 @@ for(const name of ['release-observe','bounded-release-event','release-candidate-
   for(const field of ['inputs.policy_sha','github.sha','github.workflow_sha'])assert.equal(evaluate({...context,[field]:'b'.repeat(40)}),false);
   assert.equal(job.steps[0].with.ref,'${{ github.workflow_sha }}');
 });
-function candidateFixture() {
+function candidateFixture(changeSession=()=>{}) {
   const digest='d'.repeat(64),commit='b'.repeat(40),prefix=`/repos/${product.name}`;
   const candidate={id:digest,prNumber:192,branch:'steward/release-candidate',baseSha:head,generatedSnapshotPath:`generated/${digest}/${digest}.json`,publishedHead:head,
     editingAckHead:null,statusCommentId:null,contentGenerationDigest:digest,adoptionOverride:null,observedLabelEventIds:[],pendingWrite:null};
@@ -80,12 +80,13 @@ function candidateFixture() {
   const contributors={contributors:[],unresolved:0};
   const session={generated:{schemaVersion:1,baseSha:head,files:[],units:[{id:'layerscape',path:'.',version:'1.0.0',tag:'v1.0.0'}],configDigest:digest,sourceDigest:digest},
     identity:{authorsDigest:digest,sourceDigest:digest,actors:[],contributors,units:[{id:'layerscape',actors:[],contributors}]},pending:null,conflict:null,preview:null,adoption:null};
+  changeSession(session);
   const text=JSON.stringify(session),middle=Math.floor(text.length/2),path=`generated/${digest}/session.json`;
   const chunks=[text.slice(0,middle),text.slice(middle)].map((content,index)=>({schemaVersion:1,repositoryId:product.id,candidateId:digest,
     documentKind:'session',documentDigest:sha256(text),index,count:2,content}));
   const generatedText=JSON.stringify(session.generated),generatedChunk={schemaVersion:1,repositoryId:product.id,candidateId:digest,documentKind:'generated',documentDigest:sha256(generatedText),index:0,count:1,content:generatedText};
   const files={'state.json':state,[path]:chunks[0],[path.replace('.json','-1.json')]:chunks[1],[candidate.generatedSnapshotPath]:generatedChunk};
-  const data={ [prefix]:{id:product.id,full_name:product.name,default_branch:'main'},
+  const data={ [prefix]:{owner:{id:302208797},visibility:"public",private:false,id:product.id,full_name:product.name,default_branch:'main'},
     [`${prefix}/git/ref/heads/steward/release-state`]:{ref:'refs/heads/steward/release-state',object:{type:'commit',sha:commit}},
     [`${prefix}/git/ref/heads/main`]:{object:{sha:head}},
     [`${prefix}/pulls/192`]:{number:192,state:'open',merged:false,labels:[],head:{sha:head,ref:candidate.branch,repo:{id:product.id}},base:{ref:'main',repo:{id:product.id}}},
@@ -103,6 +104,56 @@ function candidateFixture() {
   };
   return {get,data,state,chunks,files,generatedChunk,prefix,setCorrupt:()=>{corrupt=true;}};
 }
+test('candidate evidence permits unaffected units but rejects losing a frozen unit',async()=>{
+  const target={...product,units:[{id:'layerscape',path:'.'},{id:'ui',path:'ui'}]};
+  assert.equal((await candidateEvidence(candidateFixture().get,{product:target})).identity.version,'1.0.0');
+  const missing=candidateFixture(s=>s.identity.units.push({...s.identity.units[0],id:'ui'}));
+  await assert.rejects(candidateEvidence(missing.get,{product:target}),/CANDIDATE_FROZEN_UNIT_COVERAGE/);
+  const recovered=await candidateEvidence(missing.get,{product:target,requireReady:false});
+  assert.equal(recovered.identity,null);
+  assert.equal(recovered.selectionChanged,true);
+});
+test('normal recovery regenerates a published snapshot after cancellation without a former identity',async()=>{
+  const f=candidateFixture(s=>{s.identity=null;});
+  const recovered=await candidateEvidence(f.get,{product,requireReady:false});
+  assert.equal(recovered.identity,null);
+  assert.equal(recovered.selectionChanged,true);
+  await assert.rejects(candidateEvidence(f.get,{product}),/CANDIDATE_OBSERVATION_NOT_READY/);
+});
+test('normal recovery reads a conflict with a new frozen unit set without claiming the old identity',async()=>{
+  const f=candidateFixture(s=>{
+    const next={...s.generated,units:[{...s.generated.units[0],id:'ui',path:'ui'}]};
+    s.identity.units[0].id='ui';
+    s.conflict={head,generated:next,paths:['CHANGELOG.md']};
+  });
+  const target={...product,units:[{id:'layerscape',path:'.'},{id:'ui',path:'ui'}]};
+  const recovered=await candidateEvidence(f.get,{product:target,requireReady:false});
+  assert.equal(recovered.identity,null);
+  assert.equal(recovered.selectionChanged,true);
+  await assert.rejects(candidateEvidence(f.get,{product:target}),/CANDIDATE_OBSERVATION_NOT_READY/);
+});
+test('a conflict relocating the same unit is stale for the new product path',async()=>{
+  const f=candidateFixture(s=>{
+    s.conflict={head,generated:{...s.generated,units:[{...s.generated.units[0],path:'packages/cli'}]},paths:['CHANGELOG.md']};
+  });
+  const target={...product,units:[{id:'layerscape',path:'packages/cli'}]};
+  const recovered=await candidateEvidence(f.get,{product:target,requireReady:false});
+  assert.equal(recovered.identity,null);
+  assert.equal(recovered.selectionChanged,true);
+  await assert.rejects(candidateEvidence(f.get,{product:target}),/CANDIDATE_OBSERVATION_NOT_READY/);
+});
+test('unlabel recovery can regenerate an older unit path before any conflict is recorded',async()=>{
+  const f=candidateFixture(),target={...product,units:[{id:'layerscape',path:'packages/app'}]};
+  const hint={repositoryId:target.id,prNumber:192,eventId:7};
+  await assert.rejects(candidateEvidence(f.get,{product:target,requireReady:false}),/CANDIDATE_UNIT_NOT_SELECTED/);
+  const source='e'.repeat(40);
+  f.data[f.prefix+'/git/ref/heads/main'].object.sha=source;
+  const {validateNormalCandidateEvent}=await import('../bounded-candidate-contract.mjs');
+  const recovered=await validateNormalCandidateEvent(hint,source,f.get,target);
+  assert.equal(recovered.identity,null);
+  assert.equal(recovered.selectionChanged,true);
+  await assert.rejects(candidateEvidence(f.get,{product:target}),/CANDIDATE_UNIT_NOT_SELECTED/);
+});
 test('native event binds exact PR and assembled immutable session',async()=>{
   const f=candidateFixture(),v=await validateCandidateEvent({repositoryId:product.id,prNumber:192,eventId:7},f.get);
   assert.equal(v.identity.version,'1.0.0');assert.equal(v.t0,Date.parse('2026-11-16T12:00:00Z'));assert.equal(v.evidence.prNumber,192);
@@ -211,4 +262,17 @@ test('complete split generated archive is bound to the session',async()=>{
   chunk.count=2;chunk.content=text.slice(0,middle);
   f.files[f.state.candidate.generatedSnapshotPath.replace('.json','-1.json')]={...chunk,index:1,content:text.slice(middle)};
   assert.equal((await validateCandidateEvent({repositoryId:product.id,prNumber:192,eventId:7},f.get)).identity.version,'1.0.0');
+});
+
+test('reviewed registrations and native public repository facts must both match before state reads',async()=>{
+  const target={id:72,name:'splrad/second-product',defaultBranch:'trunk'};
+  const repository={id:72,full_name:target.name,default_branch:'trunk',owner:{id:302208797},private:false,visibility:'public'};
+  for(const change of [{private:true},{visibility:'internal'},{owner:{id:1}},{default_branch:'main'},{full_name:'splrad/unregistered'}]) {
+    let reads=0;
+    await assert.rejects(candidateEvidence(async()=>{reads++;return {...repository,...change};},{product:target}),/BOUNDED_REPOSITORY/);
+    assert.equal(reads,1);
+  }
+  const reads=[];
+  await assert.rejects(candidateEvidence(async path=>{reads.push(path);return reads.length===1?repository:{};},{product:target}),/BOUNDED_STATE_REF/);
+  assert.equal(reads[1],'/repos/splrad/second-product/git/ref/heads/steward/release-state');
 });
