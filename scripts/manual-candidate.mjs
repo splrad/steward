@@ -5,8 +5,8 @@ import {parseDeliveryConfig,assertProductDelivery,parseSupplementalNotes,assertD
   manualCandidateBody,validateManualCandidateRecord} from '../packages/runner/dist/index.js';
 const hash=v=>createHash('sha256').update(typeof v==='string'?v:JSON.stringify(v)).digest('hex');
 const fail=code=>{throw Error(code);};
-export function matchesFrozenUnits(session) {
-  const ids=session.generated.units.map(unit=>unit.id).sort();
+export function matchesFrozenUnits(session,snapshot=session.generated) {
+  const ids=snapshot.units.map(unit=>unit.id).sort();
   return new Set(ids).size===ids.length&&JSON.stringify(ids)===JSON.stringify(session.identity.units.map(unit=>unit.id).sort());
 }
 export function manualManagedEntryMatches(file,entry) {

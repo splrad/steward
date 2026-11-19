@@ -61,8 +61,12 @@ export async function candidateEvidence(get,{requireReady=true,product}) {
   for(let i=1;i<first.count;i++)chunks.push(await chunk(path.replace('.json',`-${i}.json`)));
   if(chunks.some(c=>c.repositoryId!==product.id||c.candidateId!==state.candidate.id||c.documentKind!=='session'))throw Error('BOUNDED_SESSION');
   const session={repository:state,...await decodeCandidateDocument(chunks)};
+  let staleConflict=false;
   if(session.generated) {
-    if(session.identity && !session.pending && !state.candidate.pendingWrite && !matchesFrozenUnits(session))throw Error('CANDIDATE_FROZEN_UNIT_COVERAGE');
+    if(session.identity && !session.pending && !state.candidate.pendingWrite) {
+      if(!matchesFrozenUnits(session,session.conflict?.generated??session.generated))throw Error('CANDIDATE_FROZEN_UNIT_COVERAGE');
+      staleConflict=Boolean(session.conflict)&&!matchesFrozenUnits(session);
+    }
     if(product.units && (!session.generated.units.length||session.generated.units.some(unit=>
       !product.units.some(selected=>selected.id===unit.id&&selected.path===unit.path))))throw Error('CANDIDATE_UNIT_NOT_SELECTED');
     const generatedPath=state.candidate.generatedSnapshotPath;
@@ -75,7 +79,9 @@ export async function candidateEvidence(get,{requireReady=true,product}) {
       ||!isDeepStrictEqual(await decodeCandidateDocument(generatedChunks),session.generated))throw Error('BOUNDED_GENERATED_MISMATCH');
   }
   let identity=null;
-  if(requireReady)identity=candidateObservationIdentity(session);
+  if(staleConflict) {
+    if(requireReady)throw Error('CANDIDATE_OBSERVATION_NOT_READY');
+  } else if(requireReady)identity=candidateObservationIdentity(session);
   else if(session.manualValidation)identity=candidateObservationIdentity(session);
   else {try {identity=candidateObservationIdentity(session);}catch { /* A normal event may recover the existing pending candidate. */ }}
   const pull=await get(`/repos/${product.name}/pulls/${state.candidate.prNumber}`);

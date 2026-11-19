@@ -110,6 +110,16 @@ test('candidate evidence permits unaffected units but rejects losing a frozen un
   const missing=candidateFixture(s=>s.identity.units.push({...s.identity.units[0],id:'ui'}));
   await assert.rejects(candidateEvidence(missing.get,{product:target}),/CANDIDATE_FROZEN_UNIT_COVERAGE/);
 });
+test('normal recovery reads a conflict with a new frozen unit set without claiming the old identity',async()=>{
+  const f=candidateFixture(s=>{
+    const next={...s.generated,units:[{...s.generated.units[0],id:'ui',path:'ui'}]};
+    s.identity.units[0].id='ui';
+    s.conflict={head,generated:next,paths:['CHANGELOG.md']};
+  });
+  const target={...product,units:[{id:'layerscape',path:'.'},{id:'ui',path:'ui'}]};
+  assert.equal((await candidateEvidence(f.get,{product:target,requireReady:false})).identity,null);
+  await assert.rejects(candidateEvidence(f.get,{product:target}),/CANDIDATE_OBSERVATION_NOT_READY/);
+});
 test('native event binds exact PR and assembled immutable session',async()=>{
   const f=candidateFixture(),v=await validateCandidateEvent({repositoryId:product.id,prNumber:192,eventId:7},f.get);
   assert.equal(v.identity.version,'1.0.0');assert.equal(v.t0,Date.parse('2026-11-16T12:00:00Z'));assert.equal(v.evidence.prNumber,192);
