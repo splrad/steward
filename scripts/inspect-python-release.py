@@ -151,6 +151,17 @@ def release_zip(path):
         yield archive
 
 
+def zip_members(archive):
+    # ZipFile.open compares the local and central names, including for
+    # directories that do not need to be extracted into staging.
+    for entry in archive.infolist():
+        require(entry.orig_filename == entry.filename and not entry.flag_bits & 1)
+        with archive.open(entry) as stream:
+            if entry.is_dir():
+                require(entry.file_size == 0 and not stream.read(1))
+            yield entry, stream
+
+
 class ExpandedReader:
     """Count gzip output, including tar headers that tarfile consumes internally."""
 
@@ -217,26 +228,23 @@ def inspect(path):
     if path.name.endswith(".whl"):
         name, version, _, _ = parse_wheel_filename(path.name)
         with release_zip(path) as archive:
-            entries = archive.infolist()
-            require(0 < len(entries) <= MAX_ENTRIES)
             info_roots = set()
             files = set()
-            for entry in entries:
+            for entry, stream in zip_members(archive):
                 parts = member_path(entry.filename, seen)
                 file_type = stat.S_IFMT(entry.external_attr >> 16)
-                require(file_type in (0, stat.S_IFREG, stat.S_IFDIR) and not entry.flag_bits & 1)
+                require(file_type in (0, stat.S_IFREG, stat.S_IFDIR))
                 if parts[0].endswith(".dist-info"):
                     info_roots.add(parts[0])
                 if entry.is_dir():
-                    require(entry.file_size == 0 and file_type != stat.S_IFREG)
+                    require(file_type != stat.S_IFREG)
                     continue
                 require(file_type != stat.S_IFDIR)
                 expanded += entry.file_size
                 require(expanded <= MAX_EXPANDED)
                 files.add(entry.filename)
                 is_metadata = len(parts) == 2 and parts[0].endswith(".dist-info") and parts[1] == "METADATA"
-                with archive.open(entry) as stream:
-                    data = read_member(stream, entry.file_size, is_metadata)
+                data = read_member(stream, entry.file_size, is_metadata)
                 if is_metadata:
                     require(metadata is None)
                     metadata = data
@@ -389,13 +397,10 @@ def inspect_declared(path, contract, destination=None):
 
     if adapter in ("zip", "dll-zip", "font-zip"):
         with release_zip(path) as archive:
-            require(0 < len(archive.infolist()) <= MAX_ENTRIES)
-            for entry in archive.infolist():
+            for entry, stream in zip_members(archive):
                 directory = entry.is_dir()
                 require(stat.S_IFMT(entry.external_attr >> 16) in (0, stat.S_IFDIR if directory else stat.S_IFREG))
-                require(not entry.flag_bits & 1 and entry.orig_filename == entry.filename)
-                with archive.open(entry) as stream:
-                    consume(entry.filename, directory, entry.file_size, stream)
+                consume(entry.filename, directory, entry.file_size, stream)
     else:
         require(adapter == "tar-gzip")
         with gzip.open(path, "rb") as compressed:

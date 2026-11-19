@@ -52,3 +52,14 @@ class ZipLayoutTests(unittest.TestCase):
         footer_offset = len(source.getvalue()) - 22
         with zipfile.ZipFile(source) as archive:
             PARSER["check_zip_directory"](source, archive, source.getvalue()[footer_offset:], footer_offset)
+
+    def test_directory_local_name_must_match_the_central_name(self):
+        source = io.BytesIO()
+        with zipfile.ZipFile(source, "w") as writer:
+            writer.writestr("资料/", b"")
+        with zipfile.ZipFile(source) as archive:
+            self.assertEqual([entry.filename for entry, _ in PARSER["zip_members"](archive)], ["资料/"])
+            record = archive.infolist()[0]
+            record.filename = record.orig_filename = "other/"
+            with self.assertRaises(zipfile.BadZipFile):
+                list(PARSER["zip_members"](archive))
