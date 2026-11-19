@@ -149,3 +149,29 @@ it('matches push evidence only for the named branch, repository and commit',asyn
   for(const change of [{head_branch:'main'},{head_sha:'a different commit'},{repository:{id:6}},{head_repository:{id:6}},{event:'pull_request'}])
     expect(matchesRun({...run,...change},path,event,'push')).toBe(false);
 });
+
+it('retries transient evidence reads without accepting unsuccessful responses or exceeding the poll deadline',async()=>{
+  const {readEvidenceResponse}=await script('product-ci-evidence');
+  const deadline=Date.now()+60_000,wait=vi.fn(async()=>{});
+  const read=vi.fn().mockResolvedValueOnce(new Response(null,{status:500})).mockResolvedValueOnce(new Response(null,{status:200}));
+  expect((await readEvidenceResponse(read,deadline,wait)).status).toBe(200);
+  expect(wait).toHaveBeenCalledWith(1000);
+  const reset=new TypeError('fetch failed',{cause:{code:'ECONNRESET'}});
+  const reconnect=vi.fn().mockRejectedValueOnce(reset).mockResolvedValueOnce(new Response(null));
+  expect((await readEvidenceResponse(reconnect,deadline,wait)).status).toBe(200);
+  const offline=vi.fn().mockRejectedValue(reset);
+  await expect(readEvidenceResponse(offline,Date.now(),wait)).rejects.toBe(reset);
+  expect(offline).toHaveBeenCalledOnce();
+  const throttle=vi.fn().mockResolvedValueOnce(new Response(null,{status:429,headers:{'retry-after':'7'}})).mockResolvedValueOnce(new Response(null));
+  await readEvidenceResponse(throttle,deadline,wait);
+  expect(wait).toHaveBeenCalledWith(7000);
+  for(const response of [new Response(null,{status:403}),new Response(null,{status:404}),
+    new Response(null,{status:503,headers:{'retry-after':'300'}})]) {
+    const once=vi.fn(async()=>response);
+    expect(await readEvidenceResponse(once,deadline,wait)).toBe(response);
+    expect(once).toHaveBeenCalledTimes(1);
+  }
+  const down=vi.fn(async()=>new Response(null,{status:502}));
+  expect((await readEvidenceResponse(down,deadline,wait)).status).toBe(502);
+  expect(down).toHaveBeenCalledTimes(3);
+});
