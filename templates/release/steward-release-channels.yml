@@ -36,6 +36,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   source-check:
+    # This native adapter owns the enrolled LayerScape package and personal WinGet fork.
+    if: github.repository == 'splrad/LayerScape' && github.repository_id == '1187527897'
     runs-on: windows-2025
     timeout-minutes: 10
     outputs:
