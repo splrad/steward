@@ -16,8 +16,10 @@ export function candidates(model,values) {
       const matrix=spec.strategy?.matrix;
       const rows=staticMatrixRows(matrix);
       const uploads=(spec.steps??[]).filter(s=>s.uses?.startsWith('actions/upload-artifact@'));
-      for(const step of uploads.filter(s=>!supportedArchiveName(s.with?.name??'artifact')))
-        entries.push({locked:true,label:workflow.path+' · '+job+' · 归档名需要固定文本、矩阵字段或 GitHub 的 run_id、run_number、run_attempt。'});
+      for(const [index,step] of uploads.entries()) {
+        if(!supportedArchiveName(step.with?.name??'artifact'))
+          entries.push({locked:true,label:workflow.path+' · '+job+' · 第 '+(index+1)+' 个上传步骤的归档名需要固定文本、矩阵字段或 GitHub 的 run_id、run_number、run_attempt。'});
+      }
 
       if(!rows) {
         const variants=(model.nativeVariants??[]).filter(v=>v.workflow===workflow.path && v.job===job);
