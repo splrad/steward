@@ -16,7 +16,7 @@ it.each(['[project]\nversion="1.0.1"','[project]\nversion="1.0.0rc1"','[project]
   await expect(nativePythonSourceVersion(process.cwd(),Buffer.from(content),'1.0.0')).rejects.toBeInstanceOf(BuildContractError);
 });
 it.each(['python-stable','python-rc','python-no-lock','node','node-no-lock'])('build identity derives exact S versions and enabled-ecosystem locks: %s',async kind=>{
-  const f=productPipelineFixture(),python=kind.startsWith('python'),version=kind==='python-rc'?'1.0.0-rc.1':'1.0.0',native=kind==='python-rc'?'1.0.0rc1':version;
+  const python=kind.startsWith('python'), f=productPipelineFixture(1,false,python?'requirements-build.txt':'package-lock.json'),version=kind==='python-rc'?'1.0.0-rc.1':'1.0.0',native=kind==='python-rc'?'1.0.0rc1':version;
   f.input.controllerDirectory=process.cwd();delete f.source['global.json'];delete f.source.VERSION;
   f.source['release-please-config.json']=JSON.stringify({'include-component-in-tag':false,'include-v-in-tag':true,packages:{'.':{'release-type':python?'python':'node'}}});
   f.source['.release-please-manifest.json']=JSON.stringify({'.':version});
@@ -43,4 +43,23 @@ it.each(['1','true','"version"','[1]','["name", false]'])('classifies malformed 
 });
 it.each(['tool = 1','[tool]\npoetry = 1','project = 1'])('classifies malformed Python metadata tables as source contract errors: %s',async content=>{
   await expect(nativePythonSourceVersion(process.cwd(),Buffer.from(content),'1.0.0')).rejects.toBeInstanceOf(BuildContractError);
+});
+
+it('admits a simple unit from VERSION and a separately located native npm lock', async () => {
+  const lock = 'tools/cli/package-lock.json', f = productPipelineFixture(1, false, lock);
+  delete f.source['global.json'];
+  f.source[lock] = JSON.stringify({name:'cli',lockfileVersion:3,packages:{'':{name:'cli',version:'1.0.0'}}});
+  const result = await pipelineIdentity(f.input, f.environment, f.gh, f.io);
+  expect(result.status).toBe('ADMITTED');
+  if (result.status === 'ADMITTED') expect(result.record.toolLocks['source/' + lock]).toBe(digest(f.source[lock]));
+});
+
+it('distinguishes a reviewed lock-free build from missing input declarations', async () => {
+  const missing = productPipelineFixture(1, false, null);
+  await expect(pipelineIdentity(missing.input, missing.environment, missing.gh, missing.io)).rejects.toThrow('missing product inspection or build locks');
+  const empty = productPipelineFixture(1, false, []);
+  delete empty.source['global.json'];
+  const result = await pipelineIdentity(empty.input, empty.environment, empty.gh, empty.io);
+  expect(result.status).toBe('ADMITTED');
+  if (result.status === 'ADMITTED') expect(Object.keys(result.record.toolLocks)).toEqual(['controller/mise.lock']);
 });
