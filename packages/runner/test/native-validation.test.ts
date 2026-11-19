@@ -105,6 +105,10 @@ it('binds all workflow and matrix results to this repository, PR pair, commit an
   await expect(check([run],[job],S)).rejects.toThrow('workflow source');
   expect(await check([run])).toHaveLength(1);
   expect(await check([run],[job,{...job,conclusion:'skipped'}])).toHaveLength(1);
+  const caller={...job,name:'call product CI',steps:[]};
+  const called={...job,name:'call product CI / build'};
+  expect(await check([run],[caller,called])).toHaveLength(1);
+  await expect(check([run],[caller,{...called,run_id:52}])).rejects.toThrow('incomplete job evidence');
   expect(await check([run,{...run,path:paths[1]}])).toHaveLength(2);
   for(const altered of [{event:'pull_request_target'},{head_sha:S},{repository:{id:9}},{head_repository:{id:9}},
     {pull_requests:[]},{pull_requests:[{...pr,number:8}]},{pull_requests:[{...pr,base:{...pr.base,sha:pr.head.sha}}]}])

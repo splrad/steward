@@ -48,9 +48,10 @@ export async function evidence(paths,runs,event,type,loadJobs,boundNames=[],load
     if(!workflowSource(await loadFile(run.node_id),path,event,run.head_sha))
       throw Error(path+' run '+run.id+' workflow source does not match the declared commit');
     const jobs=await loadJobs(run);
-    if(!jobs.some(job=>job.conclusion==='success')||jobs.some(job=>job.run_id!==run.id||job.head_sha!==run.head_sha||job.run_attempt!==run.run_attempt
-      ||job.status!=='completed'||!['skipped','success'].includes(job.conclusion)
-      ||(job.conclusion==='success'&&!job.steps?.some(step=>step.status==='completed'&&step.conclusion==='success'))))
+    const ranSteps=jobs.some(job=>job.conclusion==='success' &&
+      job.steps?.some(step=>step.status==='completed' && step.conclusion==='success'));
+    if(!ranSteps || jobs.some(job=>job.run_id!==run.id || job.head_sha!==run.head_sha || job.run_attempt!==run.run_attempt ||
+      job.status!=='completed' || !['skipped','success'].includes(job.conclusion)))
       throw Error(path+' run '+run.id+' attempt '+run.run_attempt+' has incomplete job evidence');
     receipts.push({workflow:path,id:run.id,attempt:run.run_attempt,jobs:jobs.map(job=>({id:job.id,name:job.name,conclusion:job.conclusion}))});
   }
