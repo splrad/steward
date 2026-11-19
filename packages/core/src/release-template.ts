@@ -29,7 +29,7 @@ function filled(value: unknown): asserts value is string {
 }
 
 /** Keep the committed Markdown bytes between unique level-two headings. */
-export function parseSupplementalNotes(markdown: string, optional = false): Record<NotesField, string> {
+export function parseSupplementalNotes(markdown: string, template = ''): Record<NotesField, string> {
   const nodes = unified().use(remarkParse).parse(markdown).children;
   const result: Partial<Record<NotesField, string>> = {};
   const headings = nodes.filter(node => node.type === 'heading' && node.depth === 2);
@@ -42,7 +42,7 @@ export function parseSupplementalNotes(markdown: string, optional = false): Reco
     if (start === undefined) fail('missing Markdown position');
     const value = markdown.slice(start, end).trim(); filled(value); result[field] = value;
   }
-  if (optional) for (const key of optionalNotes) result[key] ??= '';
+  if (template.includes('{{{upgradeNotices}}}')) for (const key of optionalNotes) result[key] ??= '';
   if (Object.keys(result).length !== Object.keys(headingFields).length) fail('missing heading');
   return result as Record<NotesField, string>;
 }
@@ -195,7 +195,7 @@ export function renderFrozenReleaseNotes(template: string, data: FrozenReleaseNo
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(data.repository) || data.repository.split('/').some(part => part === '.' || part === '..')
     || ![data.sourceSha, data.controllerSha].every(sha => /^[a-f0-9]{40}$/.test(sha)) || !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(data.version)) fail('frozen identity');
   if (!/^[a-z][a-z0-9-]*$/.test(data.unitId) || !data.tag || /[\s\0]/.test(data.tag)) fail('unit or tag');
-  const sections = parseSupplementalNotes(data.notes, template.includes('{{{upgradeNotices}}}'));
+  const sections = parseSupplementalNotes(data.notes, template);
   const contributors = selectReleaseContributors(data.contributors.map(person => ({ ...person, type: 'User' })), data.repositoryAuthors).contributors;
   if (JSON.stringify(contributors) !== JSON.stringify(data.contributors)) fail('frozen contributors');
   if (data.commitUrl !== `https://github.com/${data.repository}/commit/${data.sourceSha}`) fail('commit URL');
