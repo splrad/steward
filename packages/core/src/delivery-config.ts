@@ -39,7 +39,10 @@ export interface DeliveryConfig {
 }
 export interface DeliveryUnit {
   id: string; displayName?: string; path: string; notesPath: string;
-  assets: { id: string; name: string; description?: string; mediaType: string }[];
+  buildLocks?: string[];
+  assets: { id: string; name: string; description?: string; mediaType: string;
+    inspection?: 'pe' | 'dll-zip' | 'font-zip' | 'wheel' | 'sdist' | 'zip' | 'tar-gzip' | 'node-package';
+    members?: { path: string; format: 'elf' | 'text' | 'version' }[]; rightsSource?: string }[];
   channels: { id: string; required: boolean; location: string; artifactIds?: string[]; metadata?: string[] }[];
 }
 const validateDelivery = new Ajv2020({ strict: true }).compile(schema);
@@ -100,7 +103,28 @@ export function parseDeliveryConfig(input: unknown): DeliveryConfig {
     if ([unit.path, unit.notesPath].some(path => path.split('/').some(part => part.toLowerCase() === '.git')))
       throw new Error('DELIVERY_GIT_PATH');
     if (!unique(unit.channels.map(channel => channel.id)) || !unique(unit.assets.map(asset => asset.id))) throw new Error('DELIVERY_DUPLICATE_IDENTITY');
+    for (const path of unit.buildLocks ?? []) assertDeliveryPath(path);
     for (const asset of unit.assets) {
+      if (asset.rightsSource) assertDeliveryPath(asset.rightsSource);
+      const generic = asset.inspection === 'zip' || asset.inspection === 'tar-gzip';
+      if (!generic && asset.members) throw new Error('DELIVERY_ARCHIVE_MEMBERS');
+      if (asset.members) {
+        if (!unique(asset.members.map(member => member.path.toLowerCase()))) throw new Error('DELIVERY_ARCHIVE_MEMBERS');
+        for (const member of asset.members) assertDeliveryPath(member.path);
+      }
+      if (generic && !asset.members?.some(member => member.format === 'version') && !/\$\{(?:packageVersion|version)\}/.test(asset.name))
+        throw new Error('DELIVERY_ARCHIVE_VERSION');
+      if (asset.inspection) {
+        const formats = {
+          pe: [/\.(?:dll|exe)$/i, ['application/octet-stream', 'application/vnd.microsoft.portable-executable']],
+          'dll-zip': [/\.zip$/i, ['application/zip']], 'font-zip': [/\.zip$/i, ['application/zip']],
+          zip: [/\.zip$/i, ['application/zip']], wheel: [/\.whl$/, ['application/zip']],
+          sdist: [/\.tar\.gz$/, ['application/gzip']], 'tar-gzip': [/\.tar\.gz$/, ['application/gzip']],
+          'node-package': [/^package\.json$/, ['application/json']],
+        } as const;
+        const [name, types] = formats[asset.inspection];
+        if (!name.test(asset.name) || !(types as readonly string[]).includes(asset.mediaType)) throw new Error('DELIVERY_INSPECTION_FORMAT');
+      }
       const literal = asset.name.replaceAll('${version}', '1.2.3').replaceAll('${packageVersion}', '1.2.3rc1');
       assertDeliveryAssetName(literal);
     }

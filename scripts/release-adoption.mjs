@@ -8,7 +8,7 @@ import {pathToFileURL,fileURLToPath} from 'node:url';
 import {TagName} from 'release-please/build/src/util/tag-name.js';
 import {Version} from 'release-please/build/src/version.js';
 import {isolatedBuildEnvironment,parseDeliveryConfig,NativeEvidenceReader,nativeEvidenceTransport,
-  inspectNativeCycle,inspectPublications,decodeReleaseRecord,assertRepositoryWrite,nativePythonSourceVersion} from '../packages/runner/dist/index.js';
+  inspectNativeCycle,inspectPublications,decodeReleaseRecord,assertRepositoryWrite,readNativeUnitVersion} from '../packages/runner/dist/index.js';
 
 const fail=reason=>{throw new Error('RELEASE_ADOPTION: '+reason);};
 const sha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
@@ -84,13 +84,7 @@ export async function withReleaseAdoption(request,adoption,io,operation) {
         const options={...config,...config.packages[unit.path]},component=options['include-component-in-tag']===false?undefined:options.component;
         if(options['include-component-in-tag']!==false&&!component)fail('tag component');
         if(new TagName(Version.parse(target.version),component,options['tag-separator'],options['include-v-in-tag']).toString()!==target.tag)fail('native tag');
-        const unitPath=path=>unit.path==='.'?path:`${unit.path}/${path}`;
-        if(options['release-type']==='simple') {if(await file(S,unitPath(options['version-file']))!==target.version)fail('native VERSION');}
-        else if(options['release-type']==='node') {if(JSON.parse(await file(S,unitPath('package.json'))).version!==target.version)fail('native package version');}
-        else if(options['release-type']==='python') {
-          await nativePythonSourceVersion(fileURLToPath(new URL('..',import.meta.url)),await fileBytes(S,unitPath('pyproject.toml')),target.version);
-        }
-        else fail('native version adapter required');
+        await readNativeUnitVersion(unit.path, options, target.version, path => fileBytes(S, path), fileURLToPath(new URL('..', import.meta.url)));
       }
       return true;
     };

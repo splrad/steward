@@ -6,10 +6,10 @@ import { evidenceFixture, S, C, D, digest } from './native-evidence-fixture.js';
 import { localGitSnapshot } from '../src/git-snapshot.js';
 import { nativeRequestIdentity } from '../src/native-release-evidence.js';
 import type { ProductBuildInput } from '../src/release-pipeline.js';
-export function productPipelineFixture(attempts = 1, twoUnits = false) {
+export function productPipelineFixture(attempts = 1, twoUnits = false, buildLock = 'global.json') {
   const f = evidenceFixture(attempts), candidateId = 'd'.repeat(64);
-  const delivery = { schemaVersion: 1, repositoryAuthors: [{ id: 44151430, evidence: 'User confirmed axiomoth; native ID verified.' }],
-    units: [{ id: 'app', path: '.', notesPath: '.release-notes/app.md', assets: [{ id: 'app', name: 'app-${version}.exe', mediaType: 'application/octet-stream' }], channels: [] }] };
+  const delivery = { schemaVersion: 2, repositoryAuthors: [{ id: 44151430, evidence: 'User confirmed axiomoth; native ID verified.' }],
+    units: [{ id: 'app', path: '.', buildLocks: [buildLock], notesPath: '.release-notes/app.md', assets: [{ id: 'app', name: 'app-${version}.exe', inspection: 'pe', mediaType: 'application/octet-stream' }], channels: [{ id: 'github-release', required: true, location: 'github', metadata: ['sbom.spdx.json','release-notes.md','artifact-manifest.json','SHA256SUMS'] }] }] };
   const workflow = { 'run-name': 'Build ${{ inputs.operation_key }}', on: { workflow_dispatch: { inputs: Object.fromEntries(['cycle_id', 'operation_key', 'source_sha', 'controller_sha'].map(key => [key, { type: 'string', required: true }])) } },
     jobs: { build: { strategy: { matrix: { include: [{ unit: 'app', target: 'windows-x64', assets: ['app'] }] } } } } };
   const source: Record<string, string> = { '.github/delivery.json': JSON.stringify(delivery), '.github/workflows/steward-release-publish.yml': YAML.stringify(workflow),
