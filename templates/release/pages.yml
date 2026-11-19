@@ -41,6 +41,7 @@ jobs:
       attestations: read
     outputs:
       ready: ${{ steps.source.outputs.ready }}
+      public_source: ${{ steps.authorization.outputs.matches }}
       source: ${{ steps.source.outputs.source }}
       source_sha: ${{ steps.source.outputs.source_sha }}
       input_digest: ${{ steps.source.outputs.input_digest }}
@@ -64,10 +65,26 @@ jobs:
           persist_github_token: false
       - name: Install selector libraries
         run: npm ci --prefix controller --ignore-scripts --no-audit --no-fund
+      - name: Check approved public source
+        id: authorization
+        shell: python
+        env:
+          APPROVED_SOURCE: ${{ vars.STEWARD_DOCS_SOURCE }}
+          APPROVED_UNIT: ${{ vars.STEWARD_DOCS_UNIT }}
+        run: |
+          import os
+
+          mode = os.environ["STEWARD_DOCS_SOURCE"]
+          unit = os.environ.get("STEWARD_DOCS_UNIT", "")
+          matches = mode in ("default-branch", "release") and mode == os.environ["APPROVED_SOURCE"]
+          if mode == "release":
+              matches = matches and bool(unit) and unit == os.environ["APPROVED_UNIT"]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"matches={str(matches).lower()}", file=output)
       - name: Select current Pages source
         id: source
         env:
-          STEWARD_PAGES_BUILD_ONLY: ${{ vars.STEWARD_DOCS_SOURCE == '' }}
+          STEWARD_PAGES_BUILD_ONLY: ${{ steps.authorization.outputs.matches != 'true' }}
           GH_TOKEN: ${{ github.token }}
         run: node controller/scripts/select-pages-source.mjs
   build:
@@ -134,7 +151,7 @@ jobs:
           retention-days: 1
   deploy:
     # The deployment source variable is set only after public deployment is approved.
-    if: vars.STEWARD_DOCS_SOURCE == 'default-branch' || vars.STEWARD_DOCS_SOURCE == 'release'
+    if: needs.select.outputs.ready == 'true' && needs.select.outputs.public_source == 'true'
     name: deploy/${{ needs.select.outputs.input_digest }}
     needs: [select, build]
     runs-on: ubuntu-24.04

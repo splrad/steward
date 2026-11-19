@@ -82,14 +82,36 @@ test('site build takes its output from the product and public deployment require
   assert.equal(build.steps.find(step=>step.id==='site').run,'bash .github/scripts/build-site.sh');
   assert.equal(build.steps.find(step=>step.id==='output').env.SITE_DIRECTORY,'${{ steps.site.outputs.directory }}');
   assert.equal(build.steps.find(step=>step.id==='artifact').with.path,'${{ steps.output.outputs.directory }}');
-  assert.equal(deploy.if,"vars.STEWARD_DOCS_SOURCE == 'default-branch' || vars.STEWARD_DOCS_SOURCE == 'release'");
+  assert.equal(deploy.if,"needs.select.outputs.ready == 'true' && needs.select.outputs.public_source == 'true'");
   assert.equal(workflowDoc.jobs.select.if,undefined);
+  assert.equal(workflowDoc.jobs.select.outputs.public_source,'${{ steps.authorization.outputs.matches }}');
   assert.equal(workflowDoc.jobs.select.steps.find(step=>step.id==='source').env.STEWARD_PAGES_BUILD_ONLY,
-    "${{ vars.STEWARD_DOCS_SOURCE == '' }}");
+    "${{ steps.authorization.outputs.matches != 'true' }}");
   assert.equal(build.if,"needs.select.outputs.ready == 'true'");
   assert.equal(build.steps[0].with.ref,'${{ needs.select.outputs.source_sha }}');
   assert.match(workflowDoc['run-name'],/'build-only '/);
   assert.ok(workflowDoc['run-name'].includes("inputs.source_mode || vars.STEWARD_DOCS_SOURCE || 'default-branch'"));
+});
+test('public deployment matches the authorized source and exact release unit',async t=>{
+  const root=await mkdtemp(join(tmpdir(),'pages-authorization-'));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const step=workflowDoc.jobs.select.steps.find(step=>step.id==='authorization');
+  assert.deepEqual(step.env,{APPROVED_SOURCE:'${{ vars.STEWARD_DOCS_SOURCE }}',APPROVED_UNIT:'${{ vars.STEWARD_DOCS_UNIT }}'});
+  const cases=[
+    ['default-branch','','default-branch','',true],['release','app','release','app',true],
+    ['default-branch','','release','app',false],['release','app','default-branch','',false],
+    ['release','app','release','other',false],['release','app','release','APP',false],
+    ['release','app','release','',false],['release','app','','',false],['release','','release','',false],
+    ['default-branch','','','',false],['default-branch','','DEFAULT-BRANCH','',false]
+  ];
+  for(const [index,[mode,unit,approvedMode,approvedUnit,expected]] of cases.entries()){
+    const output=join(root,String(index));
+    const result=spawnSync(process.platform==='win32'?'python':'python3',['-c',step.run],{encoding:'utf8',
+      env:{...process.env,STEWARD_DOCS_SOURCE:mode,STEWARD_DOCS_UNIT:unit,APPROVED_SOURCE:approvedMode,
+        APPROVED_UNIT:approvedUnit,GITHUB_OUTPUT:output}});
+    assert.equal(result.status,0,result.error?.message??result.stderr);
+    assert.equal((await readFile(output,'utf8')).trim(),'matches='+expected);
+  }
 });
 test('only a nonempty site directory inside the checkout reaches the upload step', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'pages-output-')));
