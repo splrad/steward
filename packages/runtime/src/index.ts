@@ -1,4 +1,13 @@
+import {acceptReleasePromotion} from './release-promotion.js';
+import {acceptReleaseHint} from './release-cycle-relay.js';
+import {forwardPagesCompletion} from './pages-completion.js';
+import {acceptWingetSubmit} from './bounded-winget-submit.js';
+import {BoundedGitHub} from './bounded-recheck-github.js';
+import {acceptNativeCandidateEvent,acceptNativeCandidateCompletion} from './bounded-native-event.js';
+import { handleBoundedRecheckRequest } from './bounded-recheck-api.js';
+export { BoundedRecheckCoordinator } from './bounded-recheck-do.js';
 import { legacyReleaseRetired, assertLegacyReleaseDispatchActive } from './release-retirement.js';
+import { legacyValidationRetired } from './validation-retirement.js';
 import { SerialTaskQueue } from './serial-task-queue.js';
 import { settledPool } from "./settled-pool.js";
 import { evaluatorSha, trustedContractAuthorities } from './workflow-evaluator.js';
@@ -6,6 +15,7 @@ import { isStewardOwnedPullRequest } from "../../core/src/issues.js";
 import {selectContractAuthority} from "../../core/src/workflow-contract-authority.js";
 import {evaluateRemoteWorkflowContract} from "../../github/src/workflow-contract.js";
 import { createAppJwt, createInstallationToken, dispatchWorkflow, GitHubClient, GitHubRequestError, isDependabotReviewEligible } from "../../github/src/index.js";
+import { dispatchQualityEvent } from "./quality-event.js";
 import repositoryCatalog from "../../../config/repositories.json" with { type: "json" };
 import semanticCatalog from "../../../config/labels/pr-semantics.json" with { type: "json" };
 import { handleBodyWriteInternalRequest } from "./pr-body-api.js";
@@ -14,6 +24,13 @@ import { ReleaseReceiptStore } from "./release-note-receipts.js";
 import { confirmPullRequestBodyWriteIntent, processPullRequestBodyEditedDelivery, PullRequestBodyWriteIntentStore, type PullRequestBodyWriteIntent } from "./pr-body-write-intents.js";
 
 export interface Env {
+  BOUNDED_RECHECK?: DurableObjectNamespace;
+  BOUNDED_RECHECK_ENABLED?: string;
+  RELEASE_RELAY_DEPLOYMENT_SHA?: string;
+  BOUNDED_CONTROLLER_SHA?: string;
+  BOUNDED_PRODUCT_SHA?: string;
+  BOUNDED_DEPLOYMENT_SHA?: string;
+  LEGACY_VALIDATION_RETIRED?: string;
   LEGACY_RELEASE_RETIRED?: string;
   ORGANIZATION_ID: string; ORGANIZATION_LOGIN: string; APP_ID: string; INSTALLATION_ID: string;
   STEWARDSHIP_REPOSITORY: string; POLICY_SHA: string; WORKFLOW_EVALUATOR_SHA?: string; STEWARD_APP_PRIVATE_KEY?: string; STEWARD_WEBHOOK_SECRET?: string;
@@ -114,12 +131,34 @@ async function validationClient(env: Env, repositoryId: number): Promise<GitHubC
   });
   return new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA);
 }
-async function ensureValidationPending(env: Env, repository: any, pull: any): Promise<void> {
+async function currentValidationRetirement(env: Env, gh: GitHubClient, repository: any, targetBranch: unknown): Promise<boolean> {
+  if (!legacyValidationRetired(env, repository, targetBranch)) return false;
+  try {
+    const current = await gh.getRepositoryById(repository.id);
+    return current.id === repository.id && current.full_name === repository.full_name
+      && current.default_branch === repository.default_branch && belongsToOrganization(current)
+      && legacyValidationRetired(env, current, targetBranch);
+  } catch {
+    // Missing current metadata cannot authorize stopping an unverified consumer.
+    return false;
+  }
+}
+async function ensureValidationPending(env: Env, repository: any, pull: any, allowRetirement = true): Promise<void> {
   if (env.VALIDATION_COORDINATOR) { await coordinatedValidation(env, repository.id, {operation:"pending", repository, pull}); return; }
   const headSha = commitSha(pull?.head?.sha); const number = Number(pull?.number);
   if (!headSha || !Number.isSafeInteger(number) || number <= 0) throw new Error("拉取请求验证输入无效");
   const [owner, repo] = splitRepository(String(repository.full_name));
   const gh = await validationClient(env, Number(repository.id));
+  if (allowRetirement && pull?.base?.repo?.id === repository.id && legacyValidationRetired(env, repository, pull?.base?.ref)) {
+    try {
+      const current = await gh.getPullRequest(owner, repo, number);
+      if (current.number === number && current.base?.repo?.id === repository.id
+        && current.head?.sha === headSha && current.base?.ref === pull.base.ref
+        && await currentValidationRetirement(env, gh, repository, current.base.ref)) return;
+    } catch {
+      // An unavailable retirement lookup must preserve the existing pending writer.
+    }
+  }
   const current = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, headSha, "all"), headSha, Number(env.APP_ID), Number(repository.id), number);
   if (current.length) return;
   await gh.createCheckRun(owner, repo, {
@@ -189,6 +228,15 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
   if (pulls.length > 1) return false;
   const pull = pulls[0]!; const number = Number(pull.number);
   if (!Number.isSafeInteger(number) || number <= 0) throw new Error("拉取请求编号无效");
+  if (legacyValidationRetired(env, repository, pull.base?.ref)) {
+    let retired = false;
+    try {
+      const current = await gh.getPullRequest(owner, repo, number);
+      retired = current.number === number && matchesRun(current)
+        && await currentValidationRetirement(env, gh, repository, current.base.ref);
+    } catch { /* A stale or unavailable PR snapshot cannot retire the historical writer. */ }
+    if (retired) return false;
+  }
   const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, headSha, "all"), headSha, Number(env.APP_ID), Number(repository.id), number);
   let conclusion = validationConclusion(run.conclusion); const completed = run.status === "completed";
   const comparisons = checks.map(value => compareValidationState(value.state, run.id, run.run_attempt, completed));
@@ -267,6 +315,17 @@ export async function refreshWorkflowContractChecks(env: Env, repositoryId: numb
   for (const pull of pulls) {
     const head = commitSha(pull.head?.sha);
     if (!head || pull.state !== "open" || pull.base?.ref !== repository.default_branch) continue;
+    if (Number.isSafeInteger(pull.number) && pull.number > 0 && (pullNumber === undefined || pull.number === pullNumber)
+      && pull.base?.repo?.id === repositoryId && legacyValidationRetired(env, repository, pull.base?.ref)) {
+      let retired = false;
+      try {
+        const current = await gh.getPullRequest(owner, repo, pull.number);
+        retired = current.number === pull.number && current.state === 'open' && current.base?.repo?.id === repositoryId
+          && current.base?.ref === pull.base.ref && current.head?.sha === head
+          && await currentValidationRetirement(env, gh, repository, current.base.ref);
+      } catch { /* Missing fresh PR metadata does not authorize stopping the historical writer. */ }
+      if (retired) continue;
+    }
     const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, head, "all"), head, Number(env.APP_ID), repositoryId, pull.number);
     let run = checks.reduce<number | null>((latest, check) => check.state.runId !== null && (latest === null || check.state.runId > latest) ? check.state.runId : latest, null);
     try { // Discover runs even when every webhook was lost and no Gate exists.
@@ -414,7 +473,25 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
   let payload: any; try { payload = JSON.parse(new TextDecoder().decode(bytes)); } catch { return response(400); }
   if (!validScope(payload, env)) return response(403);
   const event = request.headers.get("x-github-event") ?? ""; const deliveryId = request.headers.get("x-github-delivery") ?? ""; const action = payload.action ?? "";
+  // Inline quality comments have no other consumer. Discard private or unknown visibility
+  // before passing any payload to handlers that may persist, dispatch or log it.
+  if (event === "pull_request_review_comment" && payload.repository?.private !== false) return response(204);
+  const [quality,existing,release,winget,promotion]=await Promise.allSettled([
+    dispatchQualityEvent(env,event,payload,deliveryId),
+    handleExistingEvent(env,event,payload,deliveryId,action),
+    acceptReleaseHint(env,event,payload),
+    acceptWingetSubmit(env,event,payload),
+    acceptReleasePromotion(env,event,payload),
+  ]);
+  if (quality.status==='rejected') console.error(JSON.stringify({deliveryId,event,status:'quality-dispatch-failed'}));
+  if (quality.status==='rejected' || existing.status==='rejected' || release.status==='rejected' || winget.status==='rejected' || promotion.status==='rejected') return response(503);
+  return existing.value;
+}
+
+async function handleExistingEvent(env:Env,event:string,payload:any,deliveryId:string,action:string):Promise<Response> {
   try {
+    await acceptNativeCandidateEvent(env, event, payload, deliveryId);
+    await acceptNativeCandidateCompletion(env, event, payload);
     if (["issues", "issue_comment", "sub_issues", "issue_dependencies"].includes(event)
       || (event === "installation" && action === "deleted")
       || (event === "installation_repositories" && action === "removed")) return response(204);
@@ -527,7 +604,13 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
     }
     if (event === "workflow_run" && ["requested", "in_progress", "completed"].includes(action)) {
       const repository = payload.repository; if (!repository || !(isManaged(repository) || (env.WORKFLOW_EVALUATOR_SHA !== undefined && belongsToOrganization(repository)))) return response(204);
-      return response(await publishValidationState(env, repository, payload.workflow_run?.id) ? 202 : 204);
+      const [validation,pages]=await Promise.allSettled([
+        publishValidationState(env, repository, payload.workflow_run?.id),
+        forwardPagesCompletion(env,event,payload,new BoundedGitHub(env)),
+      ]);
+      if(validation.status==='rejected')throw validation.reason;
+      if(pages.status==='rejected')throw pages.reason;
+      return response(validation.value ? 202 : 204);
     }
     return response(204);
   } catch (error) {
@@ -661,7 +744,10 @@ export class ValidationCoordinator {
         const [owner, repo] = splitRepository(value.repository.full_name);
         const gh = await validationClient(this.env, value.repository.id);
         const pull = await gh.getPullRequest(owner, repo, value.pull.number);
-        if (pull.state === 'open') await ensureValidationPending(this.env, value.repository, pull);
+        if (pull.state === 'open') await ensureValidationPending(this.env, value.repository, pull,
+          value.pull?.number === pull.number && commitSha(value.pull?.head?.sha) !== null
+          && value.pull.head.sha === pull.head?.sha
+          && value.pull?.base?.repo?.id === value.repository.id && value.pull?.base?.ref === pull.base?.ref);
         return response(200, {changed:true});
       }
       return response(400);
@@ -677,41 +763,15 @@ export default {
       if (!env.VALIDATION_COORDINATOR) return response(503, {error:"VALIDATION_COORDINATOR_REQUIRED"});
       return handleWebhook(request, env);
     }
+    const bounded = await handleBoundedRecheckRequest(request, env);
+    if (bounded) return bounded;
     const internal = await handleBodyWriteInternalRequest(request, env);
     if (internal) return internal;
     const release = await handleReleaseRequest(request, env);
     if (release) return release;
     return response(404);
   },
-  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
-    const results = await Promise.allSettled([
-      recoverPullRequestBodyWriteIntents(env),
-      recoverReleaseReceipts(env),
-      (async () => {
-        // Review webhooks recheck immediately; the full safety sweep runs every 15 minutes.
-        if (env.WORKFLOW_EVALUATOR_SHA === undefined || Math.floor(controller.scheduledTime / 60_000) % 15 !== 0) return;
-        if (!env.VALIDATION_COORDINATOR) throw new Error('VALIDATION_COORDINATOR_REQUIRED');
-        const snapshot = await authoritySnapshot(env);
-        // The trusted catalog remains available even when evaluator contents cannot be read.
-        const ids = new Set(Object.entries(repositoryCatalog.repositories).filter(([, config]) => config.managed).map(([id]) => id));
-        for (const id of Object.keys(snapshot.value?.repositories ?? {})) ids.add(id);
-        // Installation metadata also covers repositories governed by catalog defaults.
-        // A listing failure must not prevent invalidating known catalog repositories.
-        let inventoryError: unknown;
-        try {
-          if (!env.STEWARD_APP_PRIVATE_KEY) throw new Error("缺少应用私钥");
-          const token = await createInstallationToken({ appId: env.APP_ID, privateKey: env.STEWARD_APP_PRIVATE_KEY, installationId: Number(env.INSTALLATION_ID), permissions: { metadata: "read" }, policySha: env.POLICY_SHA });
-          const installed = await new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA).listInstallationRepositories();
-          for (const repository of installed.filter(belongsToOrganization)) ids.add(String(repository.id));
-        } catch (error) { inventoryError = error; }
-
-        const results = await settledPool([...ids], 4, id => refreshWorkflowContractChecks(env, Number(id), undefined, snapshot));
-        const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
-        if (failed) throw failed.reason;
-        if (inventoryError) throw inventoryError;
-      })(),
-    ]);
-    const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
-    if (failed) throw failed.reason;
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    await recoverPullRequestBodyWriteIntents(env);
   },
 };

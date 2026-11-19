@@ -10,7 +10,7 @@ import {zip} from './fixtures/artifact-envelope.js';
 async function checkArchive(bytes:Buffer,verify:(files:Awaited<ReturnType<typeof extractArtifactFile>>)=>Promise<void>|void){
  const home=await mkdtemp(join(tmpdir(),'artifact-disk-test-'));
  try{const path=join(home,'archive');await writeFile(path,bytes);await verify(await extractArtifactFile(path,join(home,'out')));}
- finally{await rm(home,{recursive:true,force:true});}
+ finally{await rm(home,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 }
 it.each([0,8])('streams ordinary ZIP method %s with exact hashes',async method=>{
  await checkArchive(zip('asset.bin',Buffer.from('abc'),0,method),async files=>{

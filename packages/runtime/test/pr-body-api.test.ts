@@ -144,15 +144,13 @@ describe("共享正文接口和恢复", () => {
     const targetBlock = extractManagedPullRequestBlock(renderManagedBody({ generated: { type: "chore", scope: "test", title: "测试", summary: "摘要", motivation: "原因", changes: ["改动"], impact: [], releaseAndMigration: [] }, templateBody: `<!-- workflow:managed-pr:start -->
 <!-- workflow:managed-pr:end -->
 `, actor: "splrad-steward[bot]", contributors: [], context: "test" })).block;
-    const prepare = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/prepare", {
-      method: "POST",
-      headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" },
-      body: JSON.stringify({ writeId, regionKind: "managed-pr", baseSha: "b".repeat(40), pullBaseSha: "e".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
+    const historic = await new PullRequestBodyWriteIntentStore(database.binding()).prepare({
+      repositoryId:1296724484,pullRequestNumber:42,now:new Date().toISOString(),expiresAt:new Date(Date.now()+600000).toISOString(),
+      writeId, regionKind: "managed-pr", baseSha: "b".repeat(40), pullBaseSha: "e".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
         beforeBodyDigest: pullRequestBodyDigest("before"), outsideBodyDigest: pullRequestBodyDigest("outside"), targetBlock, targetBodyDigest: pullRequestBodyDigest("after"),
-        redrive: { workflow: "sync-review-instructions.yml", inputs: { repositoryId: "1296724484" } } }),
-    }), env(database));
-    expect(prepare.status).toBe(200);
-    expect(await prepare.json()).toEqual(expect.objectContaining({ writeId, baseSha: "b".repeat(40), pullBaseSha: "e".repeat(40), status: "prepared", deliveryProven: false }));
+        redrive: { workflow: "sync-review-instructions.yml", inputs: { repositoryId: "1296724484" } } });
+
+    expect(historic).toEqual(expect.objectContaining({ writeId, baseSha: "b".repeat(40), pullBaseSha: "e".repeat(40), status: "prepared", deliveryProven: false }));
     database.database.prepare("UPDATE pull_request_body_write_intents SET pull_base_sha = NULL").run();
     const pullBase = await worker.fetch(new Request(`https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/${writeId}/pull-base`, {
       method: "POST", headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" }, body: JSON.stringify({ pullBaseSha: "e".repeat(40) }),
@@ -201,13 +199,12 @@ describe("共享正文接口和恢复", () => {
     const targetBlock = extractManagedPullRequestBlock(renderManagedBody({ generated: { type: "chore", scope: "test", title: "测试", summary: "摘要", motivation: "原因", changes: ["改动"], impact: [], releaseAndMigration: [] }, templateBody: `<!-- workflow:managed-pr:start -->
 <!-- workflow:managed-pr:end -->
 `, actor: "splrad-steward[bot]", contributors: [], context: "test" })).block;
-    const prepare = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/prepare", {
-      method: "POST", headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" },
-      body: JSON.stringify({ writeId, regionKind: "managed-pr", baseSha: "b".repeat(40), pullBaseSha: "e".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
+    await new PullRequestBodyWriteIntentStore(database.binding()).prepare({
+      repositoryId:1296724484,pullRequestNumber:42,now:new Date().toISOString(),expiresAt:new Date(Date.now()+600000).toISOString(),
+      writeId, regionKind: "managed-pr", baseSha: "b".repeat(40), pullBaseSha: "e".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
         beforeBodyDigest: pullRequestBodyDigest("before"), outsideBodyDigest: pullRequestBodyDigest("outside"), targetBlock, targetBodyDigest: pullRequestBodyDigest("after"),
-        redrive: { workflow: "sync-review-instructions.yml", inputs: { repositoryId: "1296724484" } } }),
-    }), env(database));
-    expect(prepare.status).toBe(200);
+        redrive: { workflow: "sync-review-instructions.yml", inputs: { repositoryId: "1296724484" } } });
+
     database.database.prepare("UPDATE pull_request_body_write_intents SET pull_base_sha = NULL").run();
 
     for (const body of [{ pullBaseSha: "invalid" }, { pullBaseSha: "A".repeat(40) }, { pullBaseSha: 42 }, {}]) {
@@ -234,14 +231,12 @@ describe("共享正文接口和恢复", () => {
     const targetBlock = extractManagedPullRequestBlock(renderManagedBody({ generated: { type: "chore", scope: "test", title: "测试", summary: "摘要", motivation: "原因", changes: ["改动"], impact: [], releaseAndMigration: [] }, templateBody: `<!-- workflow:managed-pr:start -->
 <!-- workflow:managed-pr:end -->
 `, actor: "splrad-steward[bot]", contributors: [], context: "test" })).block;
-    const prepare = await worker.fetch(new Request("https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/prepare", {
-      method: "POST",
-      headers: { authorization: "Bearer one-repository-token", "content-type": "application/json" },
-      body: JSON.stringify({ writeId, regionKind: "managed-pr", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
+    await new PullRequestBodyWriteIntentStore(database.binding()).prepare({
+      repositoryId:1296724484,pullRequestNumber:42,now:new Date().toISOString(),expiresAt:new Date(Date.now()+600000).toISOString(),
+      writeId, regionKind: "managed-pr", baseSha: "b".repeat(40), headSha: "c".repeat(40), issueGeneration: 0,
         beforeBodyDigest: pullRequestBodyDigest("before"), outsideBodyDigest: pullRequestBodyDigest("outside"), targetBlock, targetBodyDigest: pullRequestBodyDigest("after"),
-        redrive: { workflow: "sync-review-instructions.yml", inputs: { repositoryId: "1296724484" } } }),
-    }), env(database));
-    expect(prepare.status).toBe(200);
+        redrive: { workflow: "sync-review-instructions.yml", inputs: { repositoryId: "1296724484" } } });
+
     const originalGet = PullRequestBodyWriteIntentStore.prototype.get;
     let reads = 0;
     const get = vi.spyOn(PullRequestBodyWriteIntentStore.prototype, "get").mockImplementation(async function (...args) {
@@ -259,6 +254,15 @@ describe("共享正文接口和恢复", () => {
     } finally {
       get.mockRestore();
     }
+  });
+
+  it.each(['onboard-repository.yml','sync-review-instructions.yml'])('拒绝已退役来源 %s 的新正文意图',async workflow=>{
+    const database=new SqliteD1();installAuthorization();
+    const r=await worker.fetch(new Request('https://example.test/internal/issue-snapshots/1296724484/body-write-intents/42/prepare',{
+      method:'POST',headers:{authorization:'Bearer one-repository-token','content-type':'application/json'},body:JSON.stringify({regionKind:'managed-pr',redrive:{workflow}})
+    }),env(database));
+    expect(r.status).toBe(410);
+    expect(await new PullRequestBodyWriteIntentStore(database.binding()).get(1296724484,42)).toBeNull();
   });
 
   it("正文写意图接口把无效JSON和非对象正文映射为400", async () => {

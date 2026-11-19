@@ -66,7 +66,7 @@ Steward App 安装为 all repositories，已有 `contents`、`pull_requests`、`
 
 GitHub API 的多次读取不是事务快照。此检查证明本次可读取的安装范围，后续仓库和权限变更仍由事件及定时复核处理。API 依据：[创建安装令牌](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app)、[枚举安装仓库](https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-app-installation)。
 
-运行时每 15 分钟全量复核，Review 事件继续立即触发；单次扫描复用 authority 读取结果及各仓库 client。authority 读取失败会传入已知仓库的 Gate 重算，使既有成功结论转为失败。安装枚举失败时仍处理已知 catalog，随后报告枚举错误。未设置 evaluator 时不扫描，显式启用后的错误继续阻断。
+PR、审查和 workflow_run 事件按原对象复核。组织原生保护覆盖适用仓库的默认分支。新增仓库、重命名和默认分支变更继续按实际仓身份核对旧写者退役条件。旧正文写入接口保留历史状态读取与收尾；两个已删除工作流的新 prepare 返回 410。Worker 的事件入口及逐对象 alarm 继续处理相应对象。
 
 Steward 中央验证任务包含 `npm-verify-config`，在候选 checkout 执行 `npm run verify:config`，检查该候选的 Schema 和配置间约束。任务类型、Schema、Profile、runner 映射及生成产物同步更新；可信 evaluator 的配置选择仍使用固定来源。
 
