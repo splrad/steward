@@ -58,6 +58,16 @@ test('first CI adoption, prior and proposed inputs, renames, exact heads and mer
   const first=fake(new Map([[A+'/'+ci,JSON.stringify([next])]]));
   assert.ok((await protectedChanges(first,[{filename:ci}],B,A)).has(ci));
 });
+test('stacked pull requests compare their native base and retain the default branch authorization source',async()=>{
+  const path='.github/product-ci.json',api=fake(new Map([[C+'/'+path,'[]'],[A+'/'+path,'[]']]));
+  api.rest.pulls.get=async()=>response({number:1,state:'open',changed_files:1,head:{sha:A},base:{ref:'feature',sha:C}});
+  const review={state:'APPROVED',commit_id:A,user:actor};
+  let file='docs/intro.md';
+  api.paginate=async method=>method===api.rest.pulls.listFiles?[{filename:file}]:method===api.rest.pulls.listReviews?[review]:[];
+  assert.equal(await authorizePull(api,1,A,'trunk'),false);
+  file=path;assert.equal(await authorizePull(api,1,A,'trunk'),true);
+  review.commit_id=B;await assert.rejects(authorizePull(api,1,A,'trunk'),/approval is required/);
+});
 test('delegate renames and adopted configuration manifest or entry page require authorization',async()=>{
   const delegates='.github/configuration-delegates.json', paths=['.release-please-manifest.json','.github/repository-configuration.md'];
   assert.ok((await protectedChanges(fake(new Map()),[{filename:'moved.json',previous_filename:delegates}],B,A)).has(delegates));

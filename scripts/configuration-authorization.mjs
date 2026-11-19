@@ -72,14 +72,16 @@ async function generatedCandidateManifest(api,pr,base,head) {
 
 export async function authorizePull(api, number, expectedHead, defaultBranch, origin) {
   const {data:pr} = await api.rest.pulls.get({...api.target,pull_number:number});
-  if(!sha.test(expectedHead) || pr.head.sha!==expectedHead || pr.state!=='open' || pr.base.ref!==defaultBranch)
+  if(!sha.test(expectedHead) || pr.head.sha!==expectedHead || pr.state!=='open' || !pr.base.ref)
     throw Error('Configuration approval must match the current open pull request');
   const files = await api.paginate(api.rest.pulls.listFiles,{...api.target,pull_number:number,per_page:100});
   if(files.length!==pr.changed_files) throw Error('Incomplete pull request file inventory');
   const base = (await api.rest.repos.getBranch({...api.target,branch:defaultBranch})).data.commit.sha;
-  const protectedPaths=await protectedChanges(api,files,base,expectedHead);
+  const comparisonBase=pr.base.ref===defaultBranch?base:pr.base.sha;
+  if(!sha.test(comparisonBase)) throw Error('Missing native pull request base commit');
+  const protectedPaths=await protectedChanges(api,files,comparisonBase,expectedHead);
   if(!protectedPaths.size) return false;
-  if(protectedPaths.has(manifestPath) && await generatedCandidateManifest(api,pr,base,expectedHead)) {
+  if(pr.base.ref===defaultBranch && protectedPaths.has(manifestPath) && await generatedCandidateManifest(api,pr,base,expectedHead)) {
     protectedPaths.delete(manifestPath);
     if(!protectedPaths.size) return true;
   }
