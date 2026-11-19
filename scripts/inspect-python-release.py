@@ -41,9 +41,103 @@ class BoundedZipReader(io.BufferedReader):
         return super().read(size)
 
 
+def zip_local_sizes(extra, expanded, compressed):
+    # ZIP64 replaces sentinel values in uncompressed-then-compressed order.
+    sizes = [expanded, compressed]
+    offset = 0
+    while offset < len(extra):
+        require(offset + 4 <= len(extra))
+        tag, length = struct.unpack_from("<HH", extra, offset)
+        offset += 4
+        require(offset + length <= len(extra))
+        if tag == 1:
+            values = extra[offset:offset + length]
+            for index, size in enumerate(sizes):
+                if size == 0xffffffff:
+                    require(len(values) >= 8)
+                    sizes[index] = int.from_bytes(values[:8], "little")
+                    values = values[8:]
+        offset += length
+    require(0xffffffff not in sizes)
+    return sizes
+
+
+def check_zip_records(source, entries, central_start):
+    """Account for each physical local header, compressed payload and descriptor."""
+    require(0 < len(entries) <= MAX_ENTRIES)
+    ordered = sorted(entries, key=lambda item: item.header_offset)
+    require(ordered[0].header_offset == 0)
+    for index, entry in enumerate(ordered):
+        boundary = ordered[index + 1].header_offset if index + 1 < len(ordered) else central_start
+        source.seek(entry.header_offset)
+        header = source.read(30)
+        require(len(header) == 30 and header[:4] == b"PK\x03\x04")
+        flags, method = struct.unpack_from("<HH", header, 6)
+        require(flags == entry.flag_bits and method == entry.compress_type)
+        name_size, extra_size = struct.unpack_from("<HH", header, 26)
+        crc, compressed, expanded = struct.unpack_from("<III", header, 14)
+        source.seek(name_size, io.SEEK_CUR)
+        extra = source.read(extra_size)
+        require(len(extra) == extra_size)
+        expanded, compressed = zip_local_sizes(extra, expanded, compressed)
+        for local, central in ((crc, entry.CRC), (compressed, entry.compress_size), (expanded, entry.file_size)):
+            require(local == central or (flags & 8 and local == 0))
+        payload_end = source.tell() + entry.compress_size
+        if not flags & 8:
+            require(payload_end == boundary)
+            continue
+        # Streaming writers use a descriptor, with optional signature and
+        # 32- or 64-bit sizes. Only its exact fields may follow the payload.
+        size = boundary - payload_end
+        require(size in (12, 16, 20, 24))
+        source.seek(payload_end)
+        descriptor = source.read(size)
+        require(len(descriptor) == size)
+        if size in (16, 24):
+            require(descriptor[:4] == b"PK\x07\x08")
+            descriptor = descriptor[4:]
+        fields = struct.unpack("<III" if len(descriptor) == 12 else "<IQQ", descriptor)
+        require(fields == (entry.CRC, entry.compress_size, entry.file_size))
+
+
+def check_zip_directory(source, archive, footer, footer_offset):
+    """Match decoded entries to their exact on-disk extent and end records."""
+    disk, directory_disk, disk_count, count, size, start = struct.unpack_from("<4H2I", footer, 4)
+    require(disk == directory_disk == 0)
+    source.seek(archive.start_dir)
+    entries = archive.infolist()
+    for entry in entries:
+        header = source.read(46)
+        require(len(header) == 46 and header[:4] == b"PK\x01\x02")
+        name_len, extra_len, comment_len = struct.unpack_from("<3H", header, 28)
+        require(extra_len == len(entry.extra) and comment_len == len(entry.comment))
+        source.seek(name_len + extra_len + comment_len, io.SEEK_CUR)
+        require(source.tell() <= footer_offset)
+    end = source.tell()
+    actual_size = end - archive.start_dir
+    expected = (len(entries), len(entries), actual_size, archive.start_dir)
+    legacy = (disk_count, count, size, start)
+    if end == footer_offset:
+        require(legacy == expected)
+        return
+    # A ZIP64 end record and locator may follow the directory even in a
+    # small archive. Compare both generations of addresses and counts.
+    record = source.read(56)
+    require(len(record) == 56 and record[:4] == b"PK\x06\x06")
+    record_size = struct.unpack_from("<Q", record, 4)[0]
+    require(record_size >= 44 and end + 12 + record_size + 20 == footer_offset)
+    require(struct.unpack_from("<II", record, 16) == (0, 0))
+    require(struct.unpack_from("<4Q", record, 24) == expected)
+    require(all(value in (actual, sentinel) for value, actual, sentinel
+                in zip(legacy, expected, (0xffff, 0xffff, 0xffffffff, 0xffffffff))))
+    source.seek(footer_offset - 20)
+    require(source.read(20) == struct.pack("<4sIQI", b"PK\x06\x07", 0, end, 1))
+
+
 @contextmanager
 def release_zip(path):
     with BoundedZipReader(io.FileIO(path, "r")) as bounded, zipfile.ZipFile(bounded) as archive:
+        check_zip_records(bounded, archive.infolist(), archive.start_dir)
         # A ZIP ends with its 22-byte EOCD followed by exactly its declared
         # comment. ZipFile itself tolerates both extra bytes and short comments.
         end = bounded.seek(0, io.SEEK_END)
@@ -53,7 +147,19 @@ def release_zip(path):
         footer = bounded.read(22)
         require(footer[:4] == b"PK\x05\x06" and int.from_bytes(footer[20:22], "little") == len(archive.comment))
         require(bounded.read(len(archive.comment)) == archive.comment)
+        check_zip_directory(bounded, archive, footer, offset)
         yield archive
+
+
+def zip_members(archive):
+    # ZipFile.open compares the local and central names, including for
+    # directories that do not need to be extracted into staging.
+    for entry in archive.infolist():
+        require(entry.orig_filename == entry.filename and not entry.flag_bits & 1)
+        with archive.open(entry) as stream:
+            if entry.is_dir():
+                require(entry.file_size == 0 and not stream.read(1))
+            yield entry, stream
 
 
 class ExpandedReader:
@@ -122,26 +228,23 @@ def inspect(path):
     if path.name.endswith(".whl"):
         name, version, _, _ = parse_wheel_filename(path.name)
         with release_zip(path) as archive:
-            entries = archive.infolist()
-            require(0 < len(entries) <= MAX_ENTRIES)
             info_roots = set()
             files = set()
-            for entry in entries:
+            for entry, stream in zip_members(archive):
                 parts = member_path(entry.filename, seen)
                 file_type = stat.S_IFMT(entry.external_attr >> 16)
-                require(file_type in (0, stat.S_IFREG, stat.S_IFDIR) and not entry.flag_bits & 1)
+                require(file_type in (0, stat.S_IFREG, stat.S_IFDIR))
                 if parts[0].endswith(".dist-info"):
                     info_roots.add(parts[0])
                 if entry.is_dir():
-                    require(entry.file_size == 0 and file_type != stat.S_IFREG)
+                    require(file_type != stat.S_IFREG)
                     continue
                 require(file_type != stat.S_IFDIR)
                 expanded += entry.file_size
                 require(expanded <= MAX_EXPANDED)
                 files.add(entry.filename)
                 is_metadata = len(parts) == 2 and parts[0].endswith(".dist-info") and parts[1] == "METADATA"
-                with archive.open(entry) as stream:
-                    data = read_member(stream, entry.file_size, is_metadata)
+                data = read_member(stream, entry.file_size, is_metadata)
                 if is_metadata:
                     require(metadata is None)
                     metadata = data
@@ -264,7 +367,7 @@ def inspect_declared(path, contract, destination=None):
         if directory:
             require(size == 0)
             return
-        require(name not in directories and 0 < size <= 32 * 1024**2)
+        require(name not in directories and 0 <= size <= 32 * 1024**2)
         expanded += size
         require(expanded <= MAX_EXPANDED)
         fmt = members.get(name)
@@ -294,13 +397,10 @@ def inspect_declared(path, contract, destination=None):
 
     if adapter in ("zip", "dll-zip", "font-zip"):
         with release_zip(path) as archive:
-            require(0 < len(archive.infolist()) <= MAX_ENTRIES)
-            for entry in archive.infolist():
+            for entry, stream in zip_members(archive):
                 directory = entry.is_dir()
                 require(stat.S_IFMT(entry.external_attr >> 16) in (0, stat.S_IFDIR if directory else stat.S_IFREG))
-                require(not entry.flag_bits & 1 and entry.orig_filename == entry.filename)
-                with archive.open(entry) as stream:
-                    consume(entry.filename, directory, entry.file_size, stream)
+                consume(entry.filename, directory, entry.file_size, stream)
     else:
         require(adapter == "tar-gzip")
         with gzip.open(path, "rb") as compressed:

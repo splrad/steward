@@ -4,6 +4,7 @@ import io
 import sys
 import sqlite3
 import tarfile
+import zipapp
 import zipfile
 from pathlib import Path
 
@@ -13,8 +14,9 @@ with tarfile.open(root / "cli.tar.gz", "w:gz") as archive:
     entry = tarfile.TarInfo("bin/cli")
     entry.size = len(data)
     archive.addfile(entry, io.BytesIO(data))
+    archive.addfile(tarfile.TarInfo("pkg/__init__.py"), io.BytesIO())
 for name, entries in {
-    "stations.zip": [("data.csv", b"id,name\n1,test\n"), ("VERSION", b"1.2.3\n")],
+    "stations.zip": [("data.csv", b"id,name\n1,test\n"), ("VERSION", b"1.2.3\n"), ("pkg/__init__.py", b"")],
     "large.zip": [("data.txt", b"x" * (2 * 1024**2))],
     "ambiguous.zip": [("DATA.csv", b"a"), ("data.csv", b"b")],
     "bad-font.zip": [("font.ttf", b"ordinary text")],
@@ -22,6 +24,28 @@ for name, entries in {
     with zipfile.ZipFile(root / name, "w") as archive:
         for member, data in entries:
             archive.writestr(member, data)
+class StreamingOutput(io.BytesIO):
+    def seek(self, *args):
+        raise io.UnsupportedOperation("streaming writer")
+
+
+for zip64 in (False, True):
+    output = StreamingOutput()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        with archive.open("items.txt", "w", force_zip64=zip64) as member:
+            member.write(b"alpha")
+    (root / ("stream64.zip" if zip64 else "stream.zip")).write_bytes(output.getvalue())
+
+with zipfile.ZipFile(root / "seekable64.zip", "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    with archive.open("items.txt", "w", force_zip64=True) as member:
+        member.write(b"alpha")
+
+# A standard Python zipapp has an interpreter line before its ZIP members.
+app = root / "example-app"
+app.mkdir()
+(app / "__main__.py").write_text("pass\n", encoding="utf-8")
+zipapp.create_archive(app, root / "application.zip", interpreter="/usr/bin/env python3")
+
 tar_bytes = gzip.decompress((root / "cli.tar.gz").read_bytes())
 for name, offset in [("buffered-tail", 2048), ("later-tail", len(tar_bytes))]:
     payload = bytearray(tar_bytes + bytes(512))
