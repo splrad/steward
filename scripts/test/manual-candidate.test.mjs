@@ -172,6 +172,15 @@ test('two declared release units on trunk bind independent version files, notes 
   assert.deepEqual(record.units.map(u=>u.versionPath),['packages/cli/version.txt','packages/ui/version.txt']);
   const identity=candidateObservationIdentity({...f.session,manualValidation:record});
   assert.match(identity.version,/^units-[a-f0-9]{64}$/);
+  const ui=f.session.generated.units.pop(),uiIdentity=f.session.identity.units.pop();
+  delete manifest[ui.path];
+  f.files['.release-please-manifest.json']=JSON.stringify(manifest);
+  f.io.changedPaths=async()=>['.release-notes/cli.md'];
+  assert.deepEqual((await recover()).units.map(unit=>unit.id),['cli']);
+  f.session.generated.units.push(ui);f.session.identity.units.push(uiIdentity);
+  await assert.rejects(recover(),/MANUAL_UNIT_COVERAGE/);
+  manifest[ui.path]=ui.version;
+  f.files['.release-please-manifest.json']=JSON.stringify(manifest);
   f.files['packages/ui/version.txt']='1.0.0';
   await assert.rejects(recover(),/MANUAL_VERSION/);
   files.pop();
