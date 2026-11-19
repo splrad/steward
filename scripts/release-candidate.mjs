@@ -2,7 +2,7 @@ import {validateManualCandidate,projectManualCandidate,manualManagedEntryMatches
 import apiVersion from "../config/github-api.json" with { type: "json" };
 import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
-import { promisify } from 'node:util';
+import { isDeepStrictEqual, promisify } from 'node:util';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -10,7 +10,7 @@ import { TagName } from 'release-please/build/src/util/tag-name.js';
 import { Version } from 'release-please/build/src/version.js';
 import { parseDocument } from 'yaml';
 import { advanceReleaseCandidate, pushPreparedCandidate, collectContentInput, planContentBatches,
-  resumeContentBatches, assembleUnitNotes, copilotReleaseClient, decodeCandidateDocument, splitContentText, releaseAffectedUnitIds, isolatedBuildEnvironment,
+  resumeContentBatches, assembleUnitNotes, copilotReleaseClient, decodeCandidateDocument, splitContentText, selectReleaseContributors, releaseAffectedUnitIds, isolatedBuildEnvironment,
   candidateObservationIdentity, parseDeliveryConfig, parseSupplementalNotes, assertDeliveryPath, assertProductDelivery, mergedBuildCycle, assertRepositoryWrite, completeMergedPull } from '../packages/runner/dist/index.js';
 import { readReleaseRecords, writeReleaseRecords, assertReleaseWriterProtection } from './release-record.mjs';
 import { restoreContentRecovery } from './release-content-recovery.mjs';
@@ -18,6 +18,22 @@ import { restoreContentRecovery } from './release-content-recovery.mjs';
 const hash = value => createHash('sha256').update(value).digest('hex');
 const validSha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const fail = code => { throw new Error(code); };
+
+// Older sessions counted GitHub's web-flow service committer as a contributor.
+// The merged archive keeps the original actor evidence and source-document hashes.
+export function mergedContributorIdentity(identity, authors) {
+  const project = record => {
+    const current = selectReleaseContributors(record.actors, authors);
+    if (isDeepStrictEqual(record.contributors, current)) return record;
+    const cached = record.contributors;
+    const service = cached.contributors.filter(person => person.id === 19864447);
+    if (service.length !== 1 || !record.actors.some(actor => actor?.id === 19864447)
+      || !isDeepStrictEqual({...cached, contributors:cached.contributors.filter(person => person.id !== 19864447)}, current))
+      fail('MERGED_CANDIDATE_CONTRIBUTOR_DRIFT');
+    return {...record, contributors:current};
+  };
+  return {...project(identity), units:identity.units.map(project)};
+}
 
 /** Fixed candidate adapter. Credentials never enter archived data or model/RP payloads. */
 export async function nativeReleaseCandidate(request, { token, readToken, copilotToken, controllerSha, controllerDirectory = process.cwd(), now = () => new Date().toISOString(), fetcher = fetch, generator, language, expectedStateSha, expectedSourceSha, temporaryRoot = tmpdir(),verifyHandoff,contentRecovery,observation,manualCandidateProducer } = {}) {
@@ -464,7 +480,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         const documents=await candidateDocumentsAt(stateCommit,candidate.id);
         const mergedArchive = archive('merged-candidate', candidate.id, `generated/${candidate.id}/cycles/${cycle.id}.json`, {
           schemaVersion: 1, cycleId: cycle.id, sourceSha, stateCommit, candidate,
-          session: archivedSession, pull: { number: pull.number, head: pull.head.sha, branch: pull.head.ref,
+          session: {...archivedSession, identity:mergedContributorIdentity(archivedSession.identity,delivery.repositoryAuthors)}, pull: { number: pull.number, head: pull.head.sha, branch: pull.head.ref,
             base: pull.base.ref, repositoryId: request.repositoryId, mergedAt: pull.merged_at, mergeCommitSha: sourceSha }, documents,
         });
         // Validate the assembled snapshot before the atomic cycle handoff.
