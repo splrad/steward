@@ -1,3 +1,4 @@
+import {channelResultUrl} from '../release-record.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -150,4 +151,15 @@ test('routes a multi-unit probe only when the report subset belongs to the froze
   report.items[0].unitId='foreign';
   await assert.rejects(advanceEvent(event,ports),/AMBIGUOUS/);
   assert.deepEqual(calls,['observe-channel']);
+});
+
+test('channel results link the frozen product and package',()=>{
+  const item={unitId:'cli',channelId:'ghcr-assets',nativeObjectId:'sha256:fixture'};
+  const delivery={units:[{id:'cli',channels:[{id:'ghcr-assets',required:true,location:'ghcr.io/example/cli-assets'}]}]};
+  assert.equal(channelResultUrl('Example/CLI',delivery,item),'https://github.com/Example/CLI/pkgs/container/cli-assets');
+  assert.throws(()=>channelResultUrl('splrad/LayerScape',delivery,item));
+  delivery.units[0].channels[0].location='ghcr.io/example/tools/cli';
+  assert.equal(channelResultUrl('Example/CLI',delivery,item),'https://github.com/Example/CLI/pkgs/container/tools%2Fcli');
+  delivery.units[0].channels[0].required=false;
+  assert.throws(()=>channelResultUrl('Example/CLI',delivery,item));
 });

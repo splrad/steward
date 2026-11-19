@@ -248,8 +248,9 @@ export async function nativeReleaseCli(argv: readonly string[]) {
           await pipelineDownloadProducers(source, selection, required('raw-dir'), controllerDirectory, required('home'));
           await pipelineCollect(source, selection, required('raw-dir'), required('output-dir')); result = selection;
         } else if (command === 'release-pipeline inspect') {
-          result = await pipelineInspect(record, required('unit'), await json(required('selection')), required('directory'), controllerDirectory, required('home'));
-          await generateReleaseSbom(record, resolve(required('directory')), resolve(required('source-dir')), controllerDirectory, resolve(required('staging')), resolve(required('sbom-home')));
+          const inspected = await pipelineInspect(record, required('unit'), await json(required('selection')), required('directory'), controllerDirectory, required('home'));
+          result = inspected;
+          await generateReleaseSbom(inspected, record.delivery.units.find(unit => unit.id === inspected.unitId)!, resolve(required('directory')), resolve(required('source-dir')), controllerDirectory, resolve(required('staging')), resolve(required('sbom-home')));
           await writeFile(join(required('directory'), 'release-notes.md'), await pipelineNotes(record, required('unit'), required('source-dir')), { flag: 'wx' });
         } else if (command === 'release-pipeline download') {
           result = await pipelineDownloadPhase(source, Number(required('artifact-id')), required('digest'), required('phase') as 'collected' | 'final',
