@@ -1,8 +1,10 @@
+import {promotedController} from './bounded-controller.js';
+import {dispatchFixed} from './bounded-recheck-effects.js';
 import {acceptReleasePromotion} from './release-promotion.js';
 import {acceptReleaseHint} from './release-cycle-relay.js';
 import {forwardPagesCompletion} from './pages-completion.js';
 import {acceptWingetSubmit} from './bounded-winget-submit.js';
-import {BoundedGitHub} from './bounded-recheck-github.js';
+import {BoundedGitHub,CENTRAL,type GitReader} from './bounded-recheck-github.js';
 import {acceptNativeCandidateEvent,acceptNativeCandidateCompletion} from './bounded-native-event.js';
 import { handleBoundedRecheckRequest } from './bounded-recheck-api.js';
 export { BoundedRecheckCoordinator } from './bounded-recheck-do.js';
@@ -428,6 +430,23 @@ function belongsToOrganization(repository: any): boolean {
   return true;
 }
 function isManaged(repository: any): boolean { return belongsToOrganization(repository) && repositoryConfiguration(repository).managed === true; }
+/** The receiver re-reads this exact attempt and authorizes the actor before processing its request. */
+export async function forwardConfigurationCompletion(env:Env,payload:any,reader:GitReader) {
+  const repository=payload.repository, run=payload.workflow_run;
+  if(payload.action!=='completed' || run?.path!=='.github/workflows/repository-configuration.yml' ||
+      run.status!=='completed' || run.conclusion!=='success' || !payload.installation?.id ||
+      payload.installation.id!==Number(env.INSTALLATION_ID) || payload.organization?.id!==Number(env.ORGANIZATION_ID) ||
+      repository?.owner?.id!==Number(env.ORGANIZATION_ID) || typeof repository.private!=='boolean' ||
+      repository.archived!==false || repository.disabled!==false || repository.fork!==false || !isManaged(repository) ||
+      run.repository?.id!==repository.id || run.head_repository?.id!==repository.id ||
+      typeof repository.default_branch!=='string' || !repository.default_branch || run.head_branch!==repository.default_branch ||
+      !Number.isSafeInteger(run.id) || run.id<1 || !Number.isSafeInteger(run.run_attempt) || run.run_attempt<1 ||
+      env.BOUNDED_RECHECK_ENABLED!=='true') return;
+  const policy=await promotedController(reader,env.RELEASE_RELAY_DEPLOYMENT_SHA);
+  await dispatchFixed(reader,CENTRAL.id,'repository-configuration-event.yml',policy,{
+    repository_id:String(repository.id),run_id:String(run.id),attempt:String(run.run_attempt)
+  });
+}
 async function dispatchDependabotReview(env: Env, repository: any, pull: any, action: string, deliveryId: string, previousBaseRef?: unknown): Promise<boolean> {
   const enteredDefault = action === "edited" && typeof previousBaseRef === "string" && previousBaseRef.length > 0
     && previousBaseRef !== repository?.default_branch && pull?.base?.ref === repository?.default_branch;
@@ -604,12 +623,14 @@ async function handleExistingEvent(env:Env,event:string,payload:any,deliveryId:s
     }
     if (event === "workflow_run" && ["requested", "in_progress", "completed"].includes(action)) {
       const repository = payload.repository; if (!repository || !(isManaged(repository) || (env.WORKFLOW_EVALUATOR_SHA !== undefined && belongsToOrganization(repository)))) return response(204);
-      const [validation,pages]=await Promise.allSettled([
+      const [validation,pages,configuration]=await Promise.allSettled([
         publishValidationState(env, repository, payload.workflow_run?.id),
         forwardPagesCompletion(env,event,payload,new BoundedGitHub(env)),
+        forwardConfigurationCompletion(env,payload,new BoundedGitHub(env)),
       ]);
       if(validation.status==='rejected')throw validation.reason;
       if(pages.status==='rejected')throw pages.reason;
+      if(configuration.status==='rejected')throw configuration.reason;
       return response(validation.value ? 202 : 204);
     }
     return response(204);
