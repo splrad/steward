@@ -41,31 +41,47 @@ export function prepareTarget(model,target) {
     }
     const ext={bash:'sh',sh:'sh',pwsh:'ps1',powershell:'ps1',cmd:'cmd'}[step.shell];
     const script=directory+'/'+(index+1)+'-'+step.shell+'.'+ext;
-    files.set(script,step.run+'\n');
+    const powershell=step.shell==='pwsh' || step.shell==='powershell';
+    files.set(script,powershell?"$ErrorActionPreference = 'Stop'\n"+step.run+"\nif (Test-Path variable:global:LASTEXITCODE) { exit $global:LASTEXITCODE }\n":step.run+'\n');
     commands.push({shell:step.shell,script:'product/'+script,directory:step['working-directory']});
   }
   const bytes=[
-    "import {spawnSync} from 'node:child_process';","import {resolve} from 'node:path';",
+    "import {spawnSync} from 'node:child_process';","import {resolve} from 'node:path';","import {readFileSync} from 'node:fs';",
     'const steps = '+JSON.stringify(commands,null,2)+';',
-    'for (const step of steps) {','  const file = resolve(step.script);',
+    "const commands = ['GITHUB_ENV','GITHUB_PATH'].map(key=>process.env[key]).filter(Boolean);",
+    "const reads = () => commands.map(path=>readFileSync(path));",
+    'for (const [index,step] of steps.entries()) {','  const before = reads();','  const file = resolve(step.script);',
     "  const args = {bash:['--noprofile','--norc','-eo','pipefail',file], sh:['-e',file],",
     "    pwsh:['-NoLogo','-NoProfile','-NonInteractive','-File',file], powershell:['-NoProfile','-NonInteractive','-File',file],",
     "    cmd:['/d','/c','call',file]}[step.shell];",
     "  const result = spawnSync(step.shell,args,{cwd:resolve(step.directory),stdio:'inherit'});",
-    '  if (result.error) throw result.error;','  if (result.status !== 0) process.exit(result.status ?? 1);','}',''
+    '  if (result.error) throw result.error;','  if (result.status !== 0) process.exit(result.status ?? 1);',
+    "  if(index+1<steps.length && reads().some((after,i)=>!before[i].equals(after))) throw Error('Cross-step environment changes require a native product workflow');",'}',''
   ].join('\n');
   files.set(path,bytes);
   return {path,recipe:{...recipe,tools},files,bytes};
 }
 
 export async function applySelection(model,operation,plan,context) {
-  const changes=new Map(),targets=plan.targets??[];
-  must(Array.isArray(targets),'Expected a list of build targets');
-  const prepared=targets.map(target=>prepareTarget(model,target));
+  const changes=new Map(),targets=[],prepared=[];
+  const requested=plan.targets??[];
+  must(Array.isArray(requested),'Expected a list of build targets');
+  for(const target of requested) {
+    try {
+      if(operation==='select' && !target.files?.length) throw Error('Select files from a verified archive');
+      const item=prepareTarget(model,target);
+      if(operation==='select' || operation==='trial') for(const [path,bytes] of item.files)
+        must(model.files.get(path)===bytes,'Prepare and review the product entry at this head first');
+      prepared.push(item);targets.push(target);
+    } catch(error) {
+      if(!context.describe) throw error;
+      context.describe(target.unit+'/'+target.target+' · '+error.message);
+    }
+  }
   must(new Set(prepared.map(item=>item.path)).size===prepared.length,'Duplicate build target');
   if(operation==='configure') for(const item of prepared) for(const [path,bytes] of item.files) changes.set(path,bytes);
   if(operation==='trial' || operation==='select') {
-    must(targets.length && model.files.has(caller),'Missing protected build trial entry or target');
+    must(model.files.has(caller),'Missing protected build trial entry or target');
     for(const item of prepared) for(const [path,bytes] of item.files) must(model.files.get(path)===bytes,'Build command changed. Review the prepared entry at this head first.');
   }
   if(operation==='trial') {
@@ -120,7 +136,7 @@ export async function applySelection(model,operation,plan,context) {
       formal.push({unit:target.unit,target:target.target,recipe:{...recipe,steps:[...recipe.steps.filter(step=>step.uses),{name:'Run reviewed packaging entry',shell:'pwsh',run:'node product/'+prepared[i].path}]},files});
     }
     if(!formal.length) return changes;
-    must(formal.length===targets.length,'Complete file choices for each target before applying formal configuration');
+
     for(const unit of delivery.units.filter(u=>selectedUnits.has(u.id))) {
       const retained=new Set((model.publish?.jobs?.build?.strategy?.matrix?.include??[])
         .filter(r=>r.unit===unit.id && !targets.some(t=>t.unit===r.unit && t.target===r.target)).flatMap(r=>r.assets));
@@ -130,8 +146,10 @@ export async function applySelection(model,operation,plan,context) {
       renderBuild(context.seed,formal,{signing:plan.signing,controllerSha:context.controllerSha}));
     changes.set(deliveryPath,jsonFile(delivery));
   }
-  if(plan.channels?.length) {
-    delivery=changeChannels(delivery,plan.channels);
+  const channelEdits=(plan.channels??[]).filter(edit=>operation!=='select' || !edit.artifactIds ||
+    edit.artifactIds.every(id=>delivery?.units.find(u=>u.id===edit.unit)?.assets.some(a=>a.id===id)));
+  if(channelEdits.length) {
+    delivery=changeChannels(delivery,channelEdits);
     changes.set(deliveryPath,jsonFile(delivery));
   }
   if(changes.has(deliveryPath)) (context.validateDelivery??parseDeliveryConfig)(structuredClone(delivery));

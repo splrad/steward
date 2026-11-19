@@ -155,7 +155,9 @@ export async function reconcile({repo,base,run,data,api,write,actions,readToken,
       plan=planFromForm(view,state,op);
       if(op==='trial') {
         const selected=candidates(view,state.values).filter(c=>state.values[c.id+'.use']);
+        const notices=[];
         for(const [index,target] of plan.targets.entries()) {
+          try {
           const entry=selected[index];
           const known=await find(api,readToken,repo,base,head,target,view);
           if(known) state.evidence[entry.id]=known;
@@ -164,11 +166,15 @@ export async function reconcile({repo,base,run,data,api,write,actions,readToken,
             must([...prepared.files].every(([path,bytes])=>view.files.get(path)===bytes),'Prepare and review the product scripts before requesting a trial');
             await dispatch(api,actions,repo,base,head,target,prepared.recipe);
           }
+          } catch(error) {
+            if(error.status || error.code) throw error;
+            notices.push(target.unit+'/'+target.target+' · '+error.message);
+          }
         }
-        state.notice='已核对构建请求。完成的归档在对应目标下列出。';
+        state.notice=['已核对构建请求。完成的归档在对应目标下列出。',...notices].join('\n');
       } else {
         changes=await applySelection(view,op,plan,{validateDelivery,readSource:path=>fileText(api,path,head),controllerSha:process.env.GITHUB_SHA,seed:await readFile('templates/release/steward-release-publish.yml','utf8'),
-          inventory:(target,recipe)=>inventory(api,readToken,repo,base,head,target,recipe),describe:line=>{state.notice=line;}});
+          inventory:(target,recipe)=>inventory(api,readToken,repo,base,head,target,recipe),describe:line=>{state.notice=[state.notice,line].filter(Boolean).join('\n');}});
         await lock(view.files,changes,repo,readToken);
       }
     }

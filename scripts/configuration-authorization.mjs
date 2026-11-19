@@ -40,7 +40,7 @@ export async function protectedChanges(api,files,base,head) {
   const paths=files.flatMap(f=>[f.filename,f.previous_filename].filter(Boolean));
   const ciPath='.github/product-ci.json';
   const old=await fileText(api,ciPath,base),next=await fileText(api,ciPath,head);
-  const ci=new Set([ciPath]);
+  const ci=new Set([ciPath,delegatesPath]);
   for(const bytes of [old,next]) {
     if(bytes===null) continue;
     const entries=JSON.parse(bytes);
@@ -62,7 +62,8 @@ export async function authorizePull(api, number, expectedHead, defaultBranch, or
   const protectedPaths=await protectedChanges(api,files,base,expectedHead);
   if(!protectedPaths.size) return false;
   const paths=[...protectedPaths];
-  const adminOnly = paths.includes(delegatesPath);
+  const adminOnly = paths.includes(delegatesPath) || paths.includes(requestPath) && !await fileText(api,requestPath,base)
+    || paths.includes('.github/product-ci.json') && !await fileText(api,'.github/product-ci.json',base);
   if(origin?.number===number && origin.head===expectedHead && await authorized(api,origin.actor,base,adminOnly)) return true;
   const reviews = await api.paginate(api.rest.pulls.listReviews,{...api.target,pull_number:number,per_page:100});
   const decisions = new Map();

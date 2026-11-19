@@ -60,12 +60,14 @@ export function selectWorkflow(bytes, selection) {
     const included = matrix.include?.some(item=>matches(item,row) && matches(row,item));
     requireValue((base || included) && !matrix.exclude?.some(item=>matches(item,row)), 'Matrix target is not declared');
   } else requireValue(!Object.keys(row).length, 'Unexpected matrix target');
+  requireValue(!(matrix?.include?.length && Object.keys(matrix).some(k=>k!=='include' && k!=='exclude')), 'A mixed include matrix requires a reviewed product entry');
   const label = runner(matrixValue(job['runs-on'],row));
   requireValue(!job.if && !job.needs && !job.environment && !job.permissions?.['id-token'], 'An existing native run or a reviewed product entry is required for this job');
   const defaults = {...workflow.defaults?.run,...job.defaults?.run};
   const archives = job.steps.filter(step=>upload.test(step.uses));
   const selected = archives.filter(step=>matrixValue(step.with?.name,row) === selection.archive);
   requireValue(selected.length === 1, 'Select one declared archive');
+  requireValue(Object.keys(selected[0].with??{}).every(k=>['name','path','retention-days','if-no-files-found','compression-level'].includes(k)), 'Archive options require a reviewed product entry');
   const output = repositoryPath(matrixValue(selected[0].with.path,row).replace(/\/$/,''));
   const steps = [];
   for (const step of job.steps) {
@@ -95,6 +97,8 @@ export function selectWorkflow(bytes, selection) {
         'working-directory':posix.join('product',directory),run:code});
     }
   }
+  requireValue(job.steps.filter(s=>checkout.test(s.uses)).length===1 && checkout.test(job.steps[0].uses)
+    && job.steps.indexOf(selected[0])>job.steps.findLastIndex(s=>s.run), 'Checkout and archive must bracket the packaging command');
   requireValue(steps.some(step=>step.run),'Missing build command');
   return {runner:label,steps,output};
 }

@@ -72,8 +72,19 @@ test('same configuration PR prepares two native entries, binds trials to their h
     ref=git('rev-parse','HEAD');if(pr)pr.head.sha=ref;return {createCommitOnBranch:{commit:{oid:ref}}};
   }};
   const evidence=new Map();
-  const validator=process.env.CONFIGURATION_INTEGRATION_RUNNER?
-    (await import(pathToFileURL(resolve(process.env.CONFIGURATION_INTEGRATION_RUNNER)))).parseDeliveryConfig:parseDeliveryConfig;
+  const hasV2=(await readFile('schema/delivery.schema.json','utf8')).includes('"inspection"');
+  let integrationRunner=process.env.CONFIGURATION_INTEGRATION_RUNNER;
+  if(!hasV2 && !integrationRunner && process.env.GITHUB_ACTIONS==='true') {
+    // Test the full save against the pinned upstream implementation until v2 lands.
+    const upstream=join(dir,'schema-runner');
+    const revision='eab8e144f46f6441d226a9e4691920c6500864c7';
+    execFileSync('git',['init','--quiet',upstream]);
+    execFileSync('git',['-C',upstream,'fetch','--quiet','--depth=1','https://github.com/splrad/steward.git',revision]);
+    execFileSync('git',['-C',upstream,'checkout','--quiet',revision,'--','packages/runner/dist']);
+    integrationRunner=join(upstream,'packages/runner/dist/index.js');
+  }
+  const validator=integrationRunner?
+    (await import(pathToFileURL(resolve(integrationRunner)))).parseDeliveryConfig:parseDeliveryConfig;
   const ctx={repo,base,api,write:api,actions:api,load,lock:async()=>{},validateDelivery:validator,sessions:{
     read:async()=>structuredClone(state),write:async(api,n,s)=>{assert.equal(n,9);state=structuredClone(s);}
   },find:async(api,token,repo,base,head,target)=>evidence.get(head+'/'+target.unit),
@@ -123,8 +134,7 @@ test('same configuration PR prepares two native entries, binds trials to their h
     [a+'.members']:'text bin/route',[a+'.github-release']:true,[b+'.id']:'stations',[b+'.name']:'stations-${version}.zip',
     [b+'.type']:'application/zip',[b+'.inspection']:'zip',[b+'.members']:'text tiles.csv',[b+'.ghcr-assets']:true});
   const final={[native+'.dest.github-release']:'github','s1.dest.ghcr-assets':'ghcr.io/splrad/map-tools','operation.select':true};
-  const hasV2=JSON.parse(await readFile('schema/delivery.schema.json','utf8')).properties.schemaVersion.enum?.includes(2);
-  if(!hasV2 && !process.env.CONFIGURATION_INTEGRATION_RUNNER) {
+  if(!hasV2 && !integrationRunner) {
     await edit(final);assert.match(pr.body,/待调整：.*DELIVERY/);
     assert.equal(ref,preparedHead);return;
   }
