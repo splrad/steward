@@ -19,11 +19,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
-      source: ${{ steps.identity.outputs.productApplicable == 'false' && 'false' || steps.scope.outputs.source }}
+      source: ${{ steps.identity.outputs.productApplicable == 'false' && 'false' || steps.identity.outputs.workflows != '[]' && 'true' || steps.scope.outputs.source }}
       dependency: ${{ startsWith(steps.identity.outputs.dependencyMode, 'private-') && 'true' || steps.scope.outputs.dependency }}
       dependency-mode: ${{ steps.identity.outputs.dependencyMode }}
       docs: ${{ steps.scope.outputs.docs }}
       governance: ${{ steps.scope.outputs.governance }}
+      bound-names: ${{ steps.identity.outputs.boundNames }}
       workflows: ${{ steps.identity.outputs.workflows }}
       base: ${{ steps.identity.outputs.base }}
       head: ${{ steps.identity.outputs.head }}
@@ -128,6 +129,7 @@ jobs:
         run: node policy/scripts/product-ci-evidence.mjs
         env:
           GH_TOKEN: ${{ github.token }}
+          BOUND_NAMES: ${{ needs.scope.outputs.bound-names }}
           PRODUCT_WORKFLOWS: ${{ needs.scope.outputs.workflows }}
   governance:
     name: Governance scans

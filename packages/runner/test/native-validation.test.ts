@@ -100,13 +100,14 @@ it('binds all workflow and matrix results to this repository, PR pair, commit an
   const job={run_id:51,run_attempt:2,head_sha:run.head_sha,status:'completed',conclusion:'success',steps:[{status:'completed',conclusion:'success'}]};
   const check=(runs:any[],jobs:any[]=[job])=>evidence(paths,runs,event,'pull_request',async()=>jobs);
   expect(await check([run])).toHaveLength(1);
+  expect(await check([run],[job,{...job,conclusion:'skipped'}])).toHaveLength(1);
   expect(await check([run,{...run,path:paths[1]}])).toHaveLength(2);
   for(const altered of [{event:'pull_request_target'},{head_sha:S},{repository:{id:9}},{head_repository:{id:9}},
     {pull_requests:[]},{pull_requests:[{...pr,number:8}]},{pull_requests:[{...pr,base:{...pr.base,sha:pr.head.sha}}]}])
     expect(await check([{...run,...altered}])).toEqual([]);
   expect(await check([run,{...run,id:52,status:'queued'}])).toEqual([]);
   await expect(check([{...run,conclusion:'failure'}])).rejects.toThrow('failure');
-  for(const jobs of [[],[{...job,run_attempt:1}],[{...job,head_sha:S}],[job,{...job,conclusion:'skipped'}],[{...job,steps:[]}]])
+  for(const jobs of [[],[{...job,run_attempt:1}],[{...job,head_sha:S}],[{...job,conclusion:'skipped'}],[{...job,steps:[]}]])
     await expect(check([run],jobs)).rejects.toThrow('incomplete job evidence');
   await expect(evidence([],[],event,'pull_request',async()=>[])).rejects.toThrow('NOT_CONFIGURED');
 });
@@ -116,4 +117,19 @@ it('keeps registered settings and supplier lock metadata in organizational check
   const files=[admin.workflow,'safe-settings/settings.yml','.mise/locks/npm/12.2.3/package.json'];
   expect(requiresProductCI(files,'private-administrator',admin)).toBe(false);
   expect(requiresProductCI([...files,'server/main.go'],'private-administrator',admin)).toBe(true);
+});
+it('accepts fork fallback only with the reviewed native run name and workflow source',async()=>{
+  const {boundForkRun}=await script('product-ci-evidence');
+  const path='.github/workflows/test.yml';
+  const event={repository:{id:1,full_name:'org/tool'},pull_request:{number:7,base:{sha:S},
+    head:{sha:'c'.repeat(40),ref:'topic',repo:{id:2,full_name:'contributor/tool'}}}};
+  const head=event.pull_request.head.sha;
+  const run={event:'pull_request',repository:{id:1},head_repository:{id:2},path,head_branch:'topic',
+    head_sha:head,pull_requests:[],display_title:`Product CI 7 ${S} ${head}`};
+  const file={path,repositoryFileUrl:`https://github.com/org/tool/blob/${head}/${path}`};
+  const accepts=(r:any,paths:string[],f:any)=>boundForkRun(r,path,event,'pull_request',paths,async()=>f);
+  expect(await accepts(run,[path],file)).toBe(true);
+  expect(await accepts(run,[],file)).toBe(false);
+  expect(await accepts({...run,display_title:run.display_title.replace('7','8')},[path],file)).toBe(false);
+  expect(await accepts(run,[path],{...file,repositoryFileUrl:file.repositoryFileUrl.replace(head,S)})).toBe(false);
 });

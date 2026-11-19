@@ -1,3 +1,5 @@
+import YAML from 'yaml';
+import {forkRunName} from './product-ci-evidence.mjs';
 import {execFileSync} from 'node:child_process';
 import {readFile,appendFile,writeFile,lstat,realpath} from 'node:fs/promises';
 import {resolve,join,sep} from 'node:path';
@@ -67,11 +69,20 @@ export async function validationInput(workspace,env=process.env) {
   const productApplicable=requiresProductCI(files,dependency,policy.administrators.find(item=>item.repositoryId===repositoryId));
   const workflows=files.includes(declaration)
     ? productWorkflows(JSON.parse(await readFile(await regular(workspace,declaration),'utf8')),files) : [];
-  return {input,files,productApplicable,workflows,dependencyMode:dependency};
+  const boundNames=[];
+  for(const path of workflows){
+    const workflow=YAML.parse(await readFile(await regular(workspace,path),'utf8'));
+    const triggers=workflow?.on;
+    const type=env.GITHUB_EVENT_NAME;
+    const enabled=typeof triggers==='string'?triggers===type:Array.isArray(triggers)?triggers.includes(type):Object.hasOwn(triggers??{},type);
+    check(enabled&&(!triggers[type]?.types||triggers[type].types.includes(event.action)),'PRODUCT_CI_TRIGGER '+path);
+    if(workflow['run-name']===forkRunName)boundNames.push(path);
+  }
+  return {input,files,productApplicable,workflows,boundNames,dependencyMode:dependency};
 }
 export async function main(env=process.env) {
   const workspace=resolve(env.VALIDATION_WORKSPACE??'target'),value=await validationInput(workspace,env);
-  if(env.GITHUB_OUTPUT)await appendFile(env.GITHUB_OUTPUT,Object.entries({productApplicable:value.productApplicable,workflows:JSON.stringify(value.workflows),dependencyMode:value.dependencyMode,base:value.input.base,head:value.input.head}).map(([k,v])=>`${k}=${v}\n`).join(''));
+  if(env.GITHUB_OUTPUT)await appendFile(env.GITHUB_OUTPUT,Object.entries({productApplicable:value.productApplicable,workflows:JSON.stringify(value.workflows),boundNames:JSON.stringify(value.boundNames),dependencyMode:value.dependencyMode,base:value.input.base,head:value.input.head}).map(([k,v])=>`${k}=${v}\n`).join(''));
   if(env.VALIDATION_EVIDENCE)await writeFile(env.VALIDATION_EVIDENCE,JSON.stringify(value,null,2)+'\n',{flag:'wx'});
   if(env.GITHUB_STEP_SUMMARY)await appendFile(env.GITHUB_STEP_SUMMARY,'```json\n'+JSON.stringify({identity:value.input,workflows:value.workflows},null,2)+'\n```\n');
   return value;

@@ -3,6 +3,8 @@ import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
 
+export const forkRunName='Product CI ${{ github.event.pull_request.number }} ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }}';
+
 export function matchesRun(run,path,event,type) {
   const pr=event.pull_request;
   if(run.repository?.id!==event.repository.id||run.path!==path||run.event!==type)return false;
@@ -14,19 +16,38 @@ export function matchesRun(run,path,event,type) {
       &&item.head?.sha===pr.head.sha&&item.head?.ref===pr.head.ref);
 }
 
-export async function evidence(paths,runs,event,type,loadJobs) {
+// GitHub may omit PR associations on forks. Its run title is useful only if the
+// platform attributes the actual workflow definition to our exact checked blob.
+export async function boundForkRun(run,path,event,type,boundNames,loadFile){
+  const pr=event.pull_request;
+  if(type!=='pull_request'||!pr||pr.head.repo.id===event.repository.id||run.pull_requests?.length!==0
+    ||!boundNames.includes(path)||run.path!==path||run.event!==type||run.repository?.id!==event.repository.id
+    ||run.head_repository?.id!==pr.head.repo.id||run.head_branch!==pr.head.ref||run.head_sha!==pr.head.sha
+    ||run.display_title!==`Product CI ${pr.number} ${pr.base.sha} ${pr.head.sha}`)return false;
+  const file=await loadFile(run.node_id);
+  return file?.path===path&&[event.repository.full_name,pr.head.repo.full_name].some(repo=>
+    file.repositoryFileUrl===`https://github.com/${repo}/blob/${pr.head.sha}/${path}`);
+}
+
+export async function evidence(paths,runs,event,type,loadJobs,boundNames=[],loadFile=async()=>null,pending=new Set()) {
   if(!Array.isArray(paths)||!paths.length)throw Error('VALIDATION_PRODUCT_CI_NOT_CONFIGURED: .github/product-ci.json');
   const receipts=[];
   for(const path of paths){
-    const run=runs.filter(item=>matchesRun(item,path,event,type)).sort((a,b)=>b.id-a.id)[0];
+    let run;
+    for(const candidate of runs.filter(item=>item.path===path).sort((a,b)=>b.id-a.id)){
+      if(matchesRun(candidate,path,event,type)||await boundForkRun(candidate,path,event,type,boundNames,loadFile)){
+        run=candidate;break;
+      }
+    }
+    if(run&&run.status!=='completed')pending.add(path);
     if(!run||run.status!=='completed')continue;
     if(run.conclusion!=='success')throw Error(path+' run '+run.id+' concluded '+run.conclusion);
     const jobs=await loadJobs(run);
-    if(!jobs.length||jobs.some(job=>job.run_id!==run.id||job.head_sha!==run.head_sha||job.run_attempt!==run.run_attempt
-      ||job.status!=='completed'||job.conclusion!=='success'
-      ||!job.steps?.some(step=>step.status==='completed'&&step.conclusion==='success')))
+    if(!jobs.some(job=>job.conclusion==='success')||jobs.some(job=>job.run_id!==run.id||job.head_sha!==run.head_sha||job.run_attempt!==run.run_attempt
+      ||job.status!=='completed'||!['skipped','success'].includes(job.conclusion)
+      ||(job.conclusion==='success'&&!job.steps?.some(step=>step.status==='completed'&&step.conclusion==='success'))))
       throw Error(path+' run '+run.id+' attempt '+run.run_attempt+' has incomplete job evidence');
-    receipts.push({workflow:path,id:run.id,attempt:run.run_attempt,jobs:jobs.map(job=>({id:job.id,name:job.name}))});
+    receipts.push({workflow:path,id:run.id,attempt:run.run_attempt,jobs:jobs.map(job=>({id:job.id,name:job.name,conclusion:job.conclusion}))});
   }
   return receipts;
 }
@@ -51,15 +72,31 @@ async function main(){
       if(data[key].length<100||rows.length>data.total_count)throw Error('Product CI incomplete '+key);
     }
   }
-  const deadline=Date.now()+60*60*1000;
+  const boundNames=JSON.parse(process.env.BOUND_NAMES);
+  const fileCache=new Map();
+  async function loadFile(id){
+    if(!fileCache.has(id)){
+      const response=await fetch(process.env.GITHUB_GRAPHQL_URL,{method:'POST',redirect:'error',
+        headers:{Authorization:'Bearer '+process.env.GH_TOKEN,'Content-Type':'application/json'},
+        body:JSON.stringify({query:'query($id:ID!){node(id:$id){... on WorkflowRun{file{path repositoryFileUrl}}}}',variables:{id}})});
+      if(!response.ok)throw Error('Workflow file provenance HTTP '+response.status);
+      const data=await response.json();
+      if(data.errors)throw Error('Workflow file provenance unavailable');
+      fileCache.set(id,data.data?.node?.file);
+    }
+    return fileCache.get(id);
+  }
+  const start=Date.now(),deadline=start+60*60*1000;
   for(;;){
     const runs=await list('runs?event='+type+'&head_sha='+head,'workflow_runs');
-    const results=await evidence(paths,runs,event,type,run=>list('runs/'+run.id+'/attempts/'+run.run_attempt+'/jobs','jobs'));
+    const pending=new Set();
+    const results=await evidence(paths,runs,event,type,run=>list('runs/'+run.id+'/attempts/'+run.run_attempt+'/jobs','jobs'),boundNames,loadFile,pending);
     if(results.length===paths.length){
       const report=JSON.stringify(results,null,2);
       console.log(report);await appendFile(process.env.GITHUB_STEP_SUMMARY,'```json\n'+report+'\n```\n');return;
     }
     const missing=paths.filter(path=>!results.some(item=>item.workflow===path));
+    if(Date.now()-start>=3*60*1000&&missing.some(path=>!pending.has(path)))throw Error('No matching Actions run: '+missing.filter(path=>!pending.has(path)).join(', '));
     if(Date.now()>=deadline)throw Error('Missing completed product CI for '+missing.join(', '));
     console.log('Awaiting '+missing.join(', '));await delay(30000);
   }
