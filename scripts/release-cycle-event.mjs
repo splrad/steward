@@ -32,7 +32,7 @@ export function validateEvent(event, requestKey, registry=registrations) {
 }
 const wait = reason => ({status:'WAIT',reason});
 const only = items => items.length === 1 ? items[0] : fail('CYCLE_EVENT_AMBIGUOUS');
-function probeMatches(cycle,run,botId,product) {
+function probeMatches(cycle,run,botId,product,artifacts) {
   if (run.repositoryId !== product.id || run.headRepositoryId !== product.id || run.actorId !== botId
     || run.event !== 'workflow_dispatch' || run.headBranch !== product.defaultBranch || run.workflowId !== product.channelWorkflowId
     || run.path !== '.github/workflows/steward-release-channels.yml' || !sha(run.headSha)) return false;
@@ -41,6 +41,16 @@ function probeMatches(cycle,run,botId,product) {
     return {...channel,version:unit.version,releaseId:unit.releaseId,manifestDigest:unit.manifestDigest};
   });
   if (!targets.length || targets.some(t=>!t.releaseId || !t.manifestDigest)) return false;
+  if (artifacts) {
+    const prefix='probe-'+cycle.id+'-';
+    return artifacts.some(artifact=>{
+      if (typeof artifact.name!=='string' || !artifact.name.startsWith(prefix)
+          || artifact.workflow_run?.id!==run.id || artifact.workflow_run?.head_sha!==run.headSha) return false;
+      const match=/^([a-f0-9]{64})-([1-9][0-9]*)-([1-9][0-9]*)$/.exec(artifact.name.slice(prefix.length));
+      return match && match[2]===String(run.id) && Number(match[3])<=run.runAttempt
+        && run.displayTitle==='Channels observe '+sha256(['observe',match[1],run.headSha]);
+    });
+  }
   // Direct reads can cover either channel; the remaining subset is observed in the native product job.
   return [targets,...targets.map(t=>[t])].some(subset=>{
     const digest=channelTargetsDigest({repositoryId:product.id,cycle},subset);
@@ -52,7 +62,7 @@ function publicationStarts(state,runId,attempt,sha) {
   return state.domainRecords.filter(r=>r.path.startsWith('evidence/publication/') && r.value.startEvidencePath===null
     && r.value.centralRun.id===runId && r.value.centralRun.runAttempt<=attempt && r.value.centralRun.headSha===sha);
 }
-export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invoke,botId,producer,registry=registrations}) {
+export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invoke,botId,producer,probeArtifacts,registry=registrations}) {
   const product=registeredRepository(event,registry);
   const state=await snapshot(), cycles=state.cycles.map(record=>record.value);
   let cycleId=null;
@@ -93,9 +103,11 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
     const prior=await execute('reconcile-publication');
     if(prior.status!=='OBSERVED')return {...prior,cycleId};
   } else if (run.displayTitle.startsWith('Channels observe ')) {
-    cycleId=only(cycles.filter(c=>probeMatches(c,run,botId,product))).id;
+    if (run.conclusion!=='success')return wait('PROBE_UNSUCCESSFUL');
+    const artifacts=probeArtifacts?await probeArtifacts(run):null;
+    cycleId=only(cycles.filter(c=>probeMatches(c,run,botId,product,artifacts))).id;
     probeReceipt=true;
-    if(run.conclusion!=='success')return {...wait('PROBE_UNSUCCESSFUL'),cycleId};
+
   } else {
     const {cycle,request}=only(cycles.flatMap(cycle=>cycle.dispatches.filter(d=>run.displayTitle===(d.purpose==='build'?'Build '+d.operationKey:'Channels '+d.inputs.mode+' '+d.requestKey)).map(request=>({cycle,request}))));
     verifyExecutionSource(run,{repositoryId:product.id,appBotId:botId,cycle,request});
@@ -145,7 +157,7 @@ export async function main(env=process.env) {
       const refresh=()=>fetchState(root,repository,token);
       const request=async(cycleId,runId)=>({directory:(await refresh()).directory,writeDirectory:await mkdtemp(join(root,'write-')),
         remote:'https://github.com/'+product.name+'.git',repository:product.name,repositoryId:product.id,defaultBranch:product.defaultBranch,appBotId:app.appBotId,cycleId,runId,identity});
-      return advanceEvent(event,{snapshot:async()=>(await refresh()).snapshot,get:path=>productReader.json(path),centralGet,botId:app.appBotId,producer,
+      return advanceEvent(event,{snapshot:async()=>(await refresh()).snapshot,get:path=>productReader.json(path),probeArtifacts:run=>productReader.pages('actions/runs/'+run.id+'/artifacts','artifacts'),centralGet,botId:app.appBotId,producer,
         candidate:(expectedSourceSha,expectedStateSha)=>app.forCandidateRepository(product.id,async(writer,candidateReadToken)=>
           releaseCommand('candidate',await request(null,null),{token:writer,io,centralIo,candidateReadToken,copilotToken:env.STEWARD_COPILOT_TOKEN,
             controllerSha:run.head_sha,controllerDirectory:process.cwd(),candidateRuntime:{expectedSourceSha,expectedStateSha}})),

@@ -67,6 +67,8 @@ test('a WinGet index receipt cannot enqueue another probe',async()=>{
     path:'.github/workflows/steward-release-channels.yml',created_at:'2026-11-19T01:00:00Z',updated_at:'2026-11-19T01:01:00Z',display_title:'Channels observe '+key};
   const calls=[],ports={get:async()=>run,snapshot:async()=>({cycles:[{value:cycle}]}),botId:301115370,
     invoke:async(command,id,runId,allowProbeDispatch)=>{calls.push([command,id,allowProbeDispatch]);return {status:'OBSERVED'};}};
+  const digest=channelTargetsDigest({repositoryId:product.id,cycle},[target]);
+  ports.probeArtifacts=async()=>[{name:'probe-'+cycle.id+'-'+digest+'-'+run.id+'-1',workflow_run:{id:run.id,head_sha:run.head_sha}}];
   const hint={repositoryId:product.id,kind:'run',runId:83,attempt:1};
   await advanceEvent(hint,ports);
   assert.deepEqual(calls,[['observe-channel','cycle',false],['dispatch-channel','cycle',false]]);
