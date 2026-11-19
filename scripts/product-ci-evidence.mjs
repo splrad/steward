@@ -18,15 +18,18 @@ export function matchesRun(run,path,event,type) {
 
 // GitHub may omit PR associations on forks. Its run title is useful only if the
 // platform attributes the actual workflow definition to our exact checked blob.
-export async function boundForkRun(run,path,event,type,boundNames,loadFile){
+export function boundForkRun(run,path,event,type,boundNames){
   const pr=event.pull_request;
   if(type!=='pull_request'||!pr||pr.head.repo.id===event.repository.id||run.pull_requests?.length!==0
     ||!boundNames.includes(path)||run.path!==path||run.event!==type||run.repository?.id!==event.repository.id
     ||run.head_repository?.id!==pr.head.repo.id||run.head_branch!==pr.head.ref||run.head_sha!==pr.head.sha
     ||run.display_title!==`Product CI ${pr.number} ${pr.base.sha} ${pr.head.sha}`)return false;
-  const file=await loadFile(run.node_id);
-  return file?.path===path&&[event.repository.full_name,pr.head.repo.full_name].some(repo=>
-    file.repositoryFileUrl===`https://github.com/${repo}/blob/${pr.head.sha}/${path}`);
+  return true;
+}
+
+export function workflowSource(file,path,event,head){
+  const sources=[event.repository.full_name,event.pull_request?.head.repo.full_name].filter(Boolean);
+  return file?.path===path&&sources.some(repo=>file.repositoryFileUrl===`https://github.com/${repo}/blob/${head}/${path}`);
 }
 
 export async function evidence(paths,runs,event,type,loadJobs,boundNames=[],loadFile=async()=>null,pending=new Set()) {
@@ -35,13 +38,15 @@ export async function evidence(paths,runs,event,type,loadJobs,boundNames=[],load
   for(const path of paths){
     let run;
     for(const candidate of runs.filter(item=>item.path===path).sort((a,b)=>b.id-a.id)){
-      if(matchesRun(candidate,path,event,type)||await boundForkRun(candidate,path,event,type,boundNames,loadFile)){
+      if(matchesRun(candidate,path,event,type)||boundForkRun(candidate,path,event,type,boundNames)){
         run=candidate;break;
       }
     }
     if(run&&run.status!=='completed')pending.add(path);
     if(!run||run.status!=='completed')continue;
     if(run.conclusion!=='success')throw Error(path+' run '+run.id+' concluded '+run.conclusion);
+    if(!workflowSource(await loadFile(run.node_id),path,event,run.head_sha))
+      throw Error(path+' run '+run.id+' workflow source does not match the declared commit');
     const jobs=await loadJobs(run);
     if(!jobs.some(job=>job.conclusion==='success')||jobs.some(job=>job.run_id!==run.id||job.head_sha!==run.head_sha||job.run_attempt!==run.run_attempt
       ||job.status!=='completed'||!['skipped','success'].includes(job.conclusion)

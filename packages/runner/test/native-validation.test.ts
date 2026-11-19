@@ -96,11 +96,13 @@ it('binds all workflow and matrix results to this repository, PR pair, commit an
   const {evidence}=await script('product-ci-evidence');
   const paths=['.github/workflows/one.yml','.github/workflows/two.yml'];
   const pr={number:4,base:{repo:{id:1},ref:'trunk',sha:S},head:{repo:{id:2},ref:'topic',sha:'b'.repeat(40)}};
-  const event={repository:{id:1},pull_request:pr};
+  const event={repository:{id:1,full_name:'org/product'},pull_request:pr};
   const run={id:51,run_attempt:2,path:paths[0],repository:{id:1},head_repository:{id:2},head_sha:pr.head.sha,
     event:'pull_request',pull_requests:[pr],status:'completed',conclusion:'success'};
   const job={run_id:51,run_attempt:2,head_sha:run.head_sha,status:'completed',conclusion:'success',steps:[{status:'completed',conclusion:'success'}]};
-  const check=(runs:any[],jobs:any[]=[job])=>evidence(paths,runs,event,'pull_request',async()=>jobs);
+  const check=(runs:any[],jobs:any[]=[job],source=run.head_sha)=>evidence(paths,runs.map(r=>({...r,node_id:r.path})),event,'pull_request',async()=>jobs,[],
+    async(path:string)=>({path,repositoryFileUrl:`https://github.com/org/product/blob/${source}/${path}`}));
+  await expect(check([run],[job],S)).rejects.toThrow('workflow source');
   expect(await check([run])).toHaveLength(1);
   expect(await check([run],[job,{...job,conclusion:'skipped'}])).toHaveLength(1);
   expect(await check([run,{...run,path:paths[1]}])).toHaveLength(2);
@@ -121,7 +123,7 @@ it('keeps registered settings and supplier lock metadata in organizational check
   expect(requiresProductCI([...files,'server/main.go'],'private-administrator',admin)).toBe(true);
 });
 it('accepts fork fallback only with the reviewed native run name and workflow source',async()=>{
-  const {boundForkRun}=await script('product-ci-evidence');
+  const {boundForkRun,workflowSource}=await script('product-ci-evidence');
   const path='.github/workflows/test.yml';
   const event={repository:{id:1,full_name:'org/tool'},pull_request:{number:7,base:{sha:S},
     head:{sha:'c'.repeat(40),ref:'topic',repo:{id:2,full_name:'contributor/tool'}}}};
@@ -129,7 +131,7 @@ it('accepts fork fallback only with the reviewed native run name and workflow so
   const run={event:'pull_request',repository:{id:1},head_repository:{id:2},path,head_branch:'topic',
     head_sha:head,pull_requests:[],display_title:`Product CI 7 ${S} ${head}`};
   const file={path,repositoryFileUrl:`https://github.com/org/tool/blob/${head}/${path}`};
-  const accepts=(r:any,paths:string[],f:any)=>boundForkRun(r,path,event,'pull_request',paths,async()=>f);
+  const accepts=(r:any,paths:string[],f:any)=>boundForkRun(r,path,event,'pull_request',paths)&&workflowSource(f,path,event,head);
   expect(await accepts(run,[path],file)).toBe(true);
   expect(await accepts(run,[],file)).toBe(false);
   expect(await accepts({...run,display_title:run.display_title.replace('7','8')},[path],file)).toBe(false);
