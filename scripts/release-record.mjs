@@ -10,7 +10,7 @@ import { Octokit } from '@octokit/rest';
 import { completeNativeRuleParameters } from './native-rule-parameters.mjs';
 import { githubUnits, decodeReleaseRecord, decodeStateFile, stateRecordOwner, assertRepositoryWrite, isolatedBuildEnvironment, decodeBuildJson, assertMaintenanceProgress, assertPagesProgress,
   inspectNativeCycle, recoverNativeCycle, archiveFile, nativeReadFile, nativeEvidenceTransport,
-  dispatchNativeRun, prepareBuildDispatch, verifyDispatchWorkflow, inspectPublications, invokePublication, inspectCycleHistory, completionFile, decodeCompletionArchive,
+  dispatchNativeRun, prepareBuildDispatch, verifyDispatchWorkflow, inspectPublications, invokePublication, inspectCycleHistory, verifyFrozenReceipts, completionFile, decodeCompletionArchive,
   pipelinePreparePublication, readCycleDelivery, prepareNormalizedDelivery, NativeGitHubRelease, nativeGhCommand, nativeReleaseDownload, NativeEvidenceReader, nativeRunFact,
   retainedChannelObservations, observeNativeChannels, readChannelSourceRejections, selectChannelDispatch, prepareChannelDispatch, channelTargetsDigest, verifyChannelResult, verifyContinuationReleases, evaluateCompletion } from '../packages/runner/dist/index.js';
 
@@ -259,7 +259,7 @@ function gitConfig(request) {
   return `[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = false\n\tsymlinks = false\n\tautocrlf = false\n[user]\n\tname = ${identity.name}\n\temail = ${identity.email}\n[remote "origin"]\n\turl = ${JSON.stringify(remote)}\n[branch "steward-record-write"]\n\tremote = origin\n\tmerge = refs/heads/${targetRef}\n[steward]\n\trepositoryId = ${repositoryId}\n`;
 }
 function cycleProgress(before,after) {
-  if(!compatibleCycle(before,after) || before.freezeOnly && JSON.stringify(before.freezeOnly)!==JSON.stringify(after.freezeOnly))fail('immutable cycle conflict');
+  if(!compatibleCycle(before,after) || before.freezeCompletedAt && before.freezeCompletedAt!==after.freezeCompletedAt || before.freezeOnly && JSON.stringify(before.freezeOnly)!==JSON.stringify(after.freezeOnly))fail('immutable cycle conflict');
   const oldDecision=before.approvedRepairDecision,newDecision=after.approvedRepairDecision;
   if(oldDecision && JSON.stringify(oldDecision)!==JSON.stringify(newDecision)) {
     if(oldDecision.cycleId===before.id || !newDecision || newDecision.cycleId!==after.id
@@ -618,6 +618,16 @@ export async function publicationAssetFacts(unit,manifest,names,directory) {
   }
   return assets;
 }
+async function confirmFrozenCycle(request,snapshot,cycle,{token,io,now}) {
+  if(!cycle.freezeCompletedAt) {
+    const context={repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle};
+    try {await verifyFrozenReceipts(context,snapshot.domainRecords,io);}
+    catch {return {status:'UNKNOWN',reason:'FROZEN_BUILD_SOURCE_UNAVAILABLE',publishInvoked:false};}
+    const confirmed={...cycle,freezeCompletedAt:now()};
+    snapshot=(await adoptReleaseCycle(request,snapshot,confirmed,{token,io})).snapshot;
+  }
+  return {status:'FROZEN',reason:'NO_PUBLICATION_CHANNELS',archiveHead:snapshot.head,publishInvoked:false};
+}
 export async function publishNativeCycle(request,{token,io=nativeEvidenceTransport(token),centralIo,centralInvocation,controllerDirectory,now=()=>new Date().toISOString()}) {
   if(!token||!centralIo||!centralInvocation||!isAbsolute(controllerDirectory))fail('central publisher identity');
   const root=await mkdtemp(join(tmpdir(),'steward-publication-'));
@@ -656,7 +666,7 @@ export async function publishNativeCycle(request,{token,io=nativeEvidenceTranspo
       Object.assign(unit,frozen);
     }
     const adopted=await adoptReleaseCycle(request,snapshot,cycle,{token,io});request={...request,directory:adopted.directory};
-    if(!publicationUnits.length)return {status:'FROZEN',reason:'NO_PUBLICATION_CHANNELS',archiveHead:adopted.snapshot.head,publishInvoked:false};
+    if(!publicationUnits.length)return confirmFrozenCycle(request,adopted.snapshot,cycle,{token,io,now});
     // Already-public reentry verifies bytes and does not create a new business invocation.
     if(githubUnits(cycle).every(unit=>unit.releaseId!==null)) {
       const releases=await Promise.all(publicationUnits.map(item=>adapter.read({delivery:item.delivery,manifest:item.manifest,directory:item.directory,releaseId:cycle.units.find(unit=>unit.id===item.unitId).releaseId,appBotId:request.appBotId})));
@@ -834,7 +844,7 @@ export async function releaseCommand(command,request,{token,io=nativeEvidenceTra
   }
   let cycle=snapshot.cycles.find(record=>record.value.id===request.cycleId)?.value;
   if(!cycle)fail('registered cycle required');
-  if(cycle.freezeOnly && !githubUnits(cycle).length)return {status:'FROZEN',reason:'NO_PUBLICATION_CHANNELS',publishInvoked:false};
+  if(cycle.freezeOnly && !githubUnits(cycle).length)return confirmFrozenCycle(request,snapshot,cycle,{token,io,now});
   if(command==='reconcile-publication') {
     const context={repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle};
     const history=snapshot.domainRecords.filter(r=>r.path.startsWith('evidence/publication/') && r.value.cycleId===cycle.id);
@@ -1072,7 +1082,7 @@ export async function observeReleaseChannels(request,{token,io,centralIo,control
     let snapshot=await readReleaseRecords({directory:request.directory,targetRef:'steward/release-state',repositoryId:request.repositoryId,includeHistory:false});
   const recovered=await recoverReleaseCaches(request,snapshot,{token,io,centralIo,now});snapshot=recovered.snapshot;request={...request,directory:recovered.directory};assertRepositoryWrite(snapshot.repository);
     const cycle=structuredClone(snapshot.cycles.find(record=>record.value.id===request.cycleId)?.value);
-    if(cycle?.freezeOnly && !githubUnits(cycle).length)return {status:'FROZEN',reason:'NO_PUBLICATION_CHANNELS'};
+    if(cycle?.freezeOnly && !githubUnits(cycle).length)return confirmFrozenCycle(request,snapshot,cycle,{token,io,now});
     if(!cycle||githubUnits(cycle).some(unit=>unit.releaseId===null))return {status:'WAIT',reason:'FORMAL_RELEASE_REQUIRED'};
     const context={repository:request.repository,repositoryId:request.repositoryId,appBotId:request.appBotId,cycle};
     const normalized=await ensureCycleDelivery(request,snapshot,cycle,{token,io,centralIo,now});snapshot=normalized.snapshot;request={...request,directory:normalized.directory};

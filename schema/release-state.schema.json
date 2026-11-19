@@ -1074,6 +1074,7 @@
             }
           }
         },
+        "freezeCompletedAt": {"type":"string","format":"date-time"},
         "freezeOnly": {
           "type": "array", "minItems": 1,
           "items": {

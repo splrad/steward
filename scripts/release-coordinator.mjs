@@ -28,7 +28,10 @@ export async function serviceReleaseWake(request,refresh,invoke,clock=Date.now) 
   snapshot=await refresh();
   const results=[];
   for(const {value:registered} of snapshot.cycles) {
-    if(registered.freezeOnly && !githubUnits(registered).length)continue;
+    if(registered.freezeOnly && !githubUnits(registered).length) {
+      if(!registered.freezeCompletedAt)results.push(await invoke('observe-channel',{...request,cycleId:registered.id,runId:null}));
+      continue;
+    }
     const read=snapshot.domainRecords?.filter(record=>record.path.startsWith('evidence/reads/')&&record.value.cycleId===registered.id)
       .sort((a,b)=>b.value.observedAt.localeCompare(a.value.observedAt))[0]?.value;
     if(read?.nextCheckAt&&Date.parse(read.nextCheckAt)>clock()) {

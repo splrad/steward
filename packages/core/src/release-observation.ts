@@ -62,6 +62,7 @@ export interface CycleRecord {
   channelFacts: { unitId: string; channelId: string; [key: string]: unknown }[];
   executionEvidence: { waveKey: string; runId: number; runAttempt: number; workflowId: number; jobIds: number[]; executorControllerSha: string; nativeEvidencePath: string; outcomeEvidencePath: string | null; observedAt: string }[];
   completionObservations: { inputSetDigest: string; evidenceSetDigest: string; observedAt: string; evidencePath: string }[];
+  freezeCompletedAt?: string;
   freezeOnly?: {unitId:string; runId:number; attempt:number; producerAttempt:number; artifactId:number; archiveDigest:string}[];
   completedEvidencePath: string | null; repairOf: string | null; approvedRepairDecision: { cycleId: string; sourceSha: string; [key: string]: unknown } | null;
 }
@@ -95,6 +96,7 @@ export function parseReleaseRecord<K extends keyof RecordKinds>(kind: K, value: 
     const pair = (value: { unitId: string; channelId: string }) => JSON.stringify([value.unitId, value.channelId]);
     if (!unique(record.requiredChannels.map(pair)) || record.requiredChannels.some(item => !record.units.some(unit => unit.id === item.unitId))) fail('required channels');
     for (const unit of record.units) if (!unique(unit.assets.map(asset => asset.id)) || !unique(unit.assets.map(asset => asset.path.toLowerCase()))) fail('duplicate asset');
+    if (record.freezeCompletedAt && (!record.freezeOnly || githubUnits(record).length || !Number.isFinite(Date.parse(record.freezeCompletedAt)))) fail('freeze-only completion');
     if (record.freezeOnly && (record.requiredChannels.some(channel=>record.freezeOnly!.some(receipt=>receipt.unitId===channel.unitId))
       ||  !unique(record.freezeOnly.map(item=>item.unitId))
       || record.freezeOnly.some(receipt=>receipt.producerAttempt>receipt.attempt || !record.dispatches.some(request=>request.purpose==='build' && request.canonicalRunId===receipt.runId)

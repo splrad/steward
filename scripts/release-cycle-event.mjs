@@ -78,7 +78,10 @@ export async function advanceEvent(event,{snapshot,get,centralGet,candidate,invo
     const head=(await get('git/ref/heads/'+encodeURIComponent(product.defaultBranch))).object?.sha;
     if (!sha(head)) fail('CYCLE_EVENT_SOURCE');
     const prior=cycles.find(c=>c.sourceSha===event.sourceSha);
-    if (prior?.freezeOnly && !githubUnits(prior).length)return {status:'FROZEN',reason:'NO_PUBLICATION_CHANNELS',cycleId:prior.id};
+    if (prior?.freezeOnly && !githubUnits(prior).length) {
+      cycleId=prior.id;
+      return prior.freezeCompletedAt?{status:'FROZEN',reason:'NO_PUBLICATION_CHANNELS',cycleId}:{...await execute('observe-channel'),cycleId};
+    }
     if (prior) {
       cycleId=prior.id;
       if (!prior.dispatches.some(d=>d.purpose==='build' && d.canonicalRunId!==null) && !prior.completedEvidencePath)

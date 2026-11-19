@@ -3,7 +3,7 @@ import {decodeCompletionArchive,reconcileCycleHistory,type CompletionArchive,typ
 import {githubUnits,evaluateCompletion,type CycleRecord,type RepositoryRecord} from '../../core/src/release-observation.js';
 import {readCycleDelivery} from './release-pipeline.js';
 import {verifyExecutionSource} from './release-run.js';
-import {NativeEvidenceReader,EvidenceReadError,nativeRunFact,type EvidenceTransport} from './native-release-evidence.js';
+import {NativeEvidenceReader,EvidenceReadError,nativeRunFact,type EvidenceContext,type EvidenceTransport} from './native-release-evidence.js';
 
 interface ProtectedRecord {path:string;commit:string;value:any;content?:string}
 export interface HistorySnapshot {
@@ -15,6 +15,30 @@ export interface HistorySnapshot {
 export function completionFile(value:CompletionArchive) {
   const content=JSON.stringify(value)+'\n',sha256=createHash('sha256').update(content).digest('hex');decodeCompletionArchive(Buffer.from(content));
   return {path:`evidence/completion/${sha256}.json`,content,sha256};
+}
+export async function verifyFrozenReceipts(context:EvidenceContext,records:ProtectedRecord[],io:EvidenceTransport,alreadyCompleted=false) {
+  const {cycle}=context,reader=new NativeEvidenceReader(io,context.repository);
+  if (!cycle.freezeOnly?.length) throw Error('missing freeze receipts');
+  const {delivery}=await readCycleDelivery(context,records,io);
+  if(cycle.freezeOnly.some(receipt=>!delivery.units.some(declared=>declared.id===receipt.unitId &&
+      declared.channels.some(channel=>channel.id==='github-release'&&!channel.required) && !declared.channels.some(channel=>channel.required))))
+    throw Error('freeze-only configuration');
+  for(const receipt of cycle.freezeOnly) {
+    const request=cycle.dispatches.find(request=>request.purpose==='build' && request.canonicalRunId===receipt.runId)!;
+    const run=nativeRunFact(await reader.json(`actions/runs/${receipt.runId}/attempts/${receipt.attempt}`));
+    verifyExecutionSource(run,{...context,request});
+    if(run.id!==receipt.runId || run.runAttempt!==receipt.attempt || run.conclusion!=='success' || run.status!=='completed')
+      throw Error('freeze-only native run');
+    try {
+      const artifact=await reader.json(`actions/artifacts/${receipt.artifactId}`);
+      const name=`final-${context.repositoryId}-${receipt.unitId}-${cycle.sourceSha}-${receipt.runId}-${receipt.producerAttempt}`;
+      if(artifact.id!==receipt.artifactId || artifact.name!==name || artifact.digest!==receipt.archiveDigest
+        || artifact.workflow_run?.id!==receipt.runId || artifact.workflow_run?.head_sha!==cycle.sourceSha
+        || !(artifact.expired===false || (artifact.expired===true && alreadyCompleted)))throw Error('freeze-only native archive');
+    } catch(error) {
+      if(!(alreadyCompleted && error instanceof EvidenceReadError && error.status===404))throw error;
+    }
+  }
 }
 /** Full native PR enumeration is cross-checked with actual Git reachability and retained candidate identities. */
 export async function inspectCycleHistory(snapshot:HistorySnapshot,io:EvidenceTransport,now:string,
@@ -74,27 +98,8 @@ export async function inspectCycleHistory(snapshot:HistorySnapshot,io:EvidenceTr
     if(!cycle.freezeOnly)continue;
     try {
       const context={repository:snapshot.repository,repositoryId:snapshot.repositoryId,appBotId:snapshot.appBotId,cycle};
-      const {delivery}=await readCycleDelivery(context,snapshot.domainRecords,io);
-      if(cycle.freezeOnly.some(receipt=>!delivery.units.some(declared=>declared.id===receipt.unitId &&
-          declared.channels.some(channel=>channel.id==='github-release'&&!channel.required) && !declared.channels.some(channel=>channel.required))))
-        throw Error('freeze-only configuration');
-      for(const receipt of cycle.freezeOnly) {
-        const request=cycle.dispatches.find(request=>request.purpose==='build' && request.canonicalRunId===receipt.runId)!;
-        const run=nativeRunFact(await reader.json(`actions/runs/${receipt.runId}/attempts/${receipt.attempt}`));
-        verifyExecutionSource(run,{...context,request});
-        if(run.id!==receipt.runId || run.runAttempt!==receipt.attempt || run.conclusion!=='success' || run.status!=='completed')
-          throw Error('freeze-only native run');
-        const alreadyCompleted=snapshot.repositoryHistory.some(entry=>entry.value.lastCompletedCycleId===cycle.id);
-        try {
-          const artifact=await reader.json(`actions/artifacts/${receipt.artifactId}`);
-          const name=`final-${snapshot.repositoryId}-${receipt.unitId}-${cycle.sourceSha}-${receipt.runId}-${receipt.producerAttempt}`;
-          if(artifact.id!==receipt.artifactId || artifact.name!==name || artifact.digest!==receipt.archiveDigest
-            || artifact.workflow_run?.id!==receipt.runId || artifact.workflow_run?.head_sha!==cycle.sourceSha
-            || !(artifact.expired===false || (artifact.expired===true && alreadyCompleted)))throw Error('freeze-only native archive');
-        } catch(error) {
-          if(!(alreadyCompleted && error instanceof EvidenceReadError && error.status===404))throw error;
-        }
-      }
+      await verifyFrozenReceipts(context,snapshot.domainRecords,io,Boolean(cycle.freezeCompletedAt) ||
+        snapshot.repositoryHistory.some(entry=>entry.value.lastCompletedCycleId===cycle.id));
       verifiedFreezes.push(cycle.id);
     } catch {reasons.push('FROZEN_BUILD_SOURCE_UNAVAILABLE');}
   }
