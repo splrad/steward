@@ -1,0 +1,72 @@
+name: Steward source tests
+run-name: Product CI ${{ github.event.pull_request.number }} ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }}
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: ['**']
+permissions:
+  contents: read
+jobs:
+  test:
+    if: github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.event.repository.full_name }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: policy
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: target
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.10.24
+          working_directory: policy
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - name: Activate trusted policy tool paths
+        working-directory: policy
+        shell: bash
+        env:
+          MISE_SAFE: '1'
+          MISE_LOCKED: '1'
+          MISE_NODE_COMPILE: 'false'
+        run: mise bin-paths | tac >> "$GITHUB_PATH"
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: policy
+      - name: Node tests and configuration
+        env:
+          STEWARD_TEST_TOOLCHAIN_ROOT: ${{ github.workspace }}/policy
+        working-directory: target
+        shell: bash
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm test
+          npm run typecheck
+          npm run verify:config -- --toolchain-root "$GITHUB_WORKSPACE/policy"
+          npm run verify:dist
+      - name: Quality language tests
+        if: runner.os == 'Linux'
+        working-directory: target
+        shell: bash
+        run: |
+          npm ci --prefix tools/quality-language --ignore-scripts --no-audit --no-fund
+          npm test --prefix tools/quality-language
+          npm run typecheck --prefix tools/quality-language

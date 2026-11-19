@@ -17,7 +17,7 @@ it('uses platform workflow provenance and readonly validation jobs',async()=>{
     if(step.run)expect(step.run).not.toContain('${{');
   }
   expect(d.permissions).toEqual({contents:'read','pull-requests':'read'});
-  expect(d.jobs.summary.if).toBe('${{ always() }}');
+  expect(d.jobs.summary.if).toBe("${{ always() && (github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch) }}");
 });
 it('requires product selections before building or claiming signing is inapplicable',async()=>{
   const workflow=YAML.parse(await readFile('templates/release/steward-release-publish.yml','utf8'));
