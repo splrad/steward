@@ -65,3 +65,11 @@ it('labels first release and binds a multi-unit asset URL to the encoded exact t
   expect(body).toContain('/download/other%2Fv9.2.2/AFR-DLL_v9.2.2.zip');
   expect(body).not.toContain('/download/v9.2.2/');
 });
+
+it('renders a release without upgrade notices or contributors using the reviewed update category', () => {
+  const notes = '## 概述\n\n导出工具。\n\n## 更新内容\n\n### 导出\n\n支持 CSV。';
+  const body = renderFrozenReleaseNotes(template, { ...data, notes, contributors: [] });
+  expect([...body.matchAll(/^## (.+)$/gm)].map(match => match[1])).toEqual(['更新内容','完整变更']);
+  expect(body).toContain('### 导出');
+  expect(body).toContain('/releases/download/');
+});

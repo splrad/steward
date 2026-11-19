@@ -22,6 +22,12 @@ it('renders committed Chinese Markdown deterministically', () => {
   expect(result).not.toContain('包渠道：待分发');
   expect(renderCommittedReleaseNotes(template, data)).toBe(result);
 });
+it('links the first release to the changelog read from the same source, including nested product paths', () => {
+  const { sourceLinkLabel, sourceUrl } = committedVersionNotes('## 1.2.3\n\n- First.', data.version, 'example/product', data.sourceSha, 'v1.2.3', 'tools/Desk App/CHANGES.md');
+  expect(sourceLinkLabel).toBe('查看更新记录');
+  expect(renderCommittedReleaseNotes(template, { ...data, sourceLinkLabel, sourceUrl })).toContain(
+    `[查看更新记录](https://github.com/example/product/blob/${data.sourceSha}/tools/Desk%20App/CHANGES.md)`);
+});
 it('keeps reviewed links, code and HTML bytes in supplemental sections', () => {
   const input = notes.replace('修复`字体`路径。', '[链接](https://example.com)\n\n<details>中文</details>\n\n```text\n## 概述\n```');
   expect(parseSupplementalNotes(input).summary).toContain('<details>中文</details>');
@@ -42,7 +48,7 @@ it('rejects unverified channel status, unsafe identity and omitted template fiel
   expect(() => renderCommittedReleaseNotes(template, { ...data, channels: [{ ...data.channels[0]!, status: '已分发' as any }] })).toThrow();
   expect(() => renderCommittedReleaseNotes(template, { ...data, productName: '<script>' })).toThrow();
   expect(() => renderCommittedReleaseNotes(template, { ...data, sourceUrl: 'javascript:alert(1)' })).toThrow();
-  expect(() => renderCommittedReleaseNotes(template.replace('{{{recovery}}}', ''), data)).toThrow();
+  expect(() => renderCommittedReleaseNotes(template.replace('{{{userChanges}}}', ''), data)).toThrow();
 });
 it.each(['{{{profileUrl}}}', '{{{avatarUrl}}}', '{{{alt}}}', '{{#channels}}{{name}}{{/channels}}'])('rejects contributor scope or escaping changes: %s', replacement => {
   expect(() => renderCommittedReleaseNotes(template.replace('{{profileUrl}}', replacement), data)).toThrow('RELEASE_TEMPLATE');

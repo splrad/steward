@@ -369,7 +369,8 @@ async function objectRead(reader: NativeEvidenceReader, object: NativeResult['ob
       const unit=context.cycle.units.find(unit=>unit.releaseId===object.id);
       check(unit && native.tag_name===unit.tag && native.author?.id===context.appBotId,'release source');
       if(!unit.assets.length || unit.manifestDigest===null || unit.notesDigest===null)return proof;
-      check(native.draft===false && native.immutable===true && releaseBodyMatches(context.repositoryId, native.id, context.cycle.sourceSha, unit.tag, native.body, unit.notesDigest),'release frozen facts');
+      check(native.draft===false && native.immutable===true && await releaseBodyMatches({ repository: context.repository, repositoryId: context.repositoryId, releaseId: native.id,
+          sourceSha: context.cycle.sourceSha, tag: unit.tag, frozenDigest: unit.notesDigest }, native.body, path => reader.json(path)),'release frozen facts');
       check((await reader.json(`commits/${encodeURIComponent(unit.tag)}`)).sha===context.cycle.sourceSha,'release tag source');
       // Match the frozen cycle byte set as well as the producer's object digest.
       const assets = await reader.pages(`releases/${object.id}/assets`, '');
