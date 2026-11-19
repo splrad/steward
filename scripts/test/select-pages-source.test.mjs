@@ -103,6 +103,25 @@ test('wired release mode uses the workflow pin at S even when main and coordinat
   assert.equal(admitPagesEvent(result.source,{...f.event,name:'workflow_dispatch',payload:{inputs:pagesDispatchInputs(result.source)}}).status,'READY');
   assert.ok(f.calls.some(c=>c[0]==='gh'&&c[1]==='attestation'));
 });
+test('build-only can select a verified release unit or default branch before enabling Pages',async t=>{
+  const f=await fixture(t);
+  f.repo.has_pages=false;
+  const yaml=await readFile(new URL('../../templates/release/pages.yml',import.meta.url));
+  const ports={...f.ports,readContent:(reader,path,ref)=>path==='.github/workflows/pages.yml'?yaml:f.ports.readContent(reader,path,ref)};
+  for(const mode of ['default-branch','release']){
+    const options={...f.options,mode};
+    assert.equal((await currentPagesSource(options,ports)).status,'DISABLED');
+    const preview=await currentPagesSource({...options,buildOnly:true},ports);
+    const push={...f.event,name:'push',sha:R,ref:'refs/heads/trunk',payload:{after:R}};
+    assert.equal(admitPagesEvent(preview.source,mode==='release'?f.event:push).status,'READY');
+    assert.equal(preview.source.sourceSha,mode==='release'?S:R);
+    assert.equal(preview.source.unitId,mode==='release'?'app':null);
+    assert.equal(admitPagesEvent(preview.source,mode==='release'?push:f.event).status,'STALE');
+  }
+  assert.ok(f.calls.some(call=>call[0]==='gh'&&call[1]==='attestation'));
+  f.state.corrupt=true;
+  await assert.rejects(currentPagesSource({...f.options,buildOnly:true},ports),/RELEASE_ARTIFACTS|GH_RELEASE/);
+});
 test('release selection uses published_at then native ID, never list order or main head',async t=>{
   const f=await fixture(t);f.releases.unshift({...f.release,id:19});f.releases.push({...f.release,id:21});
   assert.equal((await desiredPagesSource(f.options,f.ports)).source.releaseId,21);

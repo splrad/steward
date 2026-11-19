@@ -73,7 +73,7 @@ test('native YAML separates source, secret-free build and Pages deployment with 
   assert.deepEqual(d.jobs.deploy.permissions,{contents:'read',actions:'read',attestations:'read',deployments:'read',pages:'write','id-token':'write'});
   assert.equal(d.concurrency.queue,'max');assert.equal(d.concurrency['cancel-in-progress'],false);
   assert.equal(d.on.push.paths,undefined);assert.deepEqual(d.on.push.branches,['**']);assert.equal(d.jobs.deploy.steps.filter(s=>s.uses?.startsWith('actions/checkout@')).length,1);
-  assert.equal(d.jobs.build.steps.find(s=>s.name==='Upload Pages artifact').with.name,'github-pages-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.select.outputs.input_digest || github.sha }}');
+  assert.equal(d.jobs.build.steps.find(s=>s.name==='Upload Pages artifact').with.name,'github-pages-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.select.outputs.input_digest }}');
   assert.equal(d.jobs.deploy.steps.find(s=>s.name==='Deploy Pages').with.artifact_name,'${{ steps.guard.outputs.artifact_name }}');
   assert.doesNotMatch(bytes.toString(),/secrets\.|pull_request_target|workflow_run|deployment_id/);
 });
@@ -83,7 +83,13 @@ test('site build takes its output from the product and public deployment require
   assert.equal(build.steps.find(step=>step.id==='output').env.SITE_DIRECTORY,'${{ steps.site.outputs.directory }}');
   assert.equal(build.steps.find(step=>step.id==='artifact').with.path,'${{ steps.output.outputs.directory }}');
   assert.equal(deploy.if,"vars.STEWARD_DOCS_SOURCE == 'default-branch' || vars.STEWARD_DOCS_SOURCE == 'release'");
-  assert.match(workflowDoc['run-name'],/'build-only'/);
+  assert.equal(workflowDoc.jobs.select.if,undefined);
+  assert.equal(workflowDoc.jobs.select.steps.find(step=>step.id==='source').env.STEWARD_PAGES_BUILD_ONLY,
+    "${{ vars.STEWARD_DOCS_SOURCE == '' }}");
+  assert.equal(build.if,"needs.select.outputs.ready == 'true'");
+  assert.equal(build.steps[0].with.ref,'${{ needs.select.outputs.source_sha }}');
+  assert.match(workflowDoc['run-name'],/'build-only '/);
+  assert.ok(workflowDoc['run-name'].includes("inputs.source_mode || vars.STEWARD_DOCS_SOURCE || 'default-branch'"));
 });
 test('only a nonempty site directory inside the checkout reaches the upload step', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'pages-output-')));

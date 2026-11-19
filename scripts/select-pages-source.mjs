@@ -71,7 +71,7 @@ export async function verifyPagesRelease({reader,release,bundle,appBotId,unitId}
 function releaseFacts(r){return [r.id,r.author?.id,r.tag_name,r.draft,r.prerelease,r.immutable,r.published_at,r.target_commitish];}
 
 /** Complete desired-source read. Default mode never asks for VERSION, delivery, tags or releases. */
-export async function desiredPagesSource({reader,repositoryId,mode,unitId='',controllerSha,appBotId,publicOnly=false},
+export async function desiredPagesSource({reader,repositoryId,mode,unitId='',controllerSha,appBotId,publicOnly=false,buildOnly=false},
   {readContent=pagesContent,readManifest=manifestForRelease,verifyRelease=verifyPagesRelease}={}) {
   check(positive(repositoryId)&&repositoryName(reader.repository)&&sha(controllerSha),'CONTEXT');
   if(mode==='')return {status:'DISABLED'};
@@ -81,7 +81,7 @@ export async function desiredPagesSource({reader,repositoryId,mode,unitId='',con
   check(repo.id===repositoryId&&repo.full_name===reader.repository&&repo.archived===false&&repo.disabled===false
     &&typeof repo.default_branch==='string'&&repo.default_branch.length>0,'REPOSITORY');
   check(typeof repo.has_pages==='boolean','SITE_STATE');
-  if(!repo.has_pages||publicOnly&&repo.private!==false)return {status:'DISABLED'};
+  if((!repo.has_pages && !buildOnly) || (publicOnly && repo.private!==false))return {status:'DISABLED'};
   const branch=await reader.json(`git/ref/heads/${encodeURIComponent(repo.default_branch)}`);
   check(branch.ref===`refs/heads/${repo.default_branch}`&&branch.object?.type==='commit'&&sha(branch.object.sha),'DEFAULT_HEAD');
   const base={schemaVersion:1,repositoryId,repository:reader.repository,mode,controllerSha,defaultBranch:repo.default_branch};
@@ -157,7 +157,8 @@ async function main() {
   const reader=new NativeEvidenceReader(nativeEvidenceTransport(process.env.GH_TOKEN),process.env.GITHUB_REPOSITORY);
   const payload=json(await readFile(process.env.GITHUB_EVENT_PATH));
   const options={reader,repositoryId:Number(process.env.GITHUB_REPOSITORY_ID),mode:process.env.STEWARD_DOCS_SOURCE??'',
-    unitId:process.env.STEWARD_DOCS_UNIT??'',controllerSha:process.env.STEWARD_CONTROLLER_SHA};
+    unitId:process.env.STEWARD_DOCS_UNIT??'',controllerSha:process.env.STEWARD_CONTROLLER_SHA,
+    buildOnly:process.env.STEWARD_PAGES_BUILD_ONLY==='true'};
   if(options.mode==='release') {
     // Same confirmed App bot identity as nativeReleaseApp; the repository transport is deliberately repo-scoped.
     options.appBotId=301115370;

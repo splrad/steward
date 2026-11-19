@@ -4,7 +4,7 @@
 
 种子的 build job 检出准确的产品提交。可在该提交提供受审脚本 `.github/scripts/build-site.sh`，由它调用仓内构建，并向 `$GITHUB_OUTPUT` 写入 `directory=<目录>` 以返回站点的相对目录（目录内须有文件，并采用实际文件而非符号链接）。也可在产品工作流直接采用已有构建步骤并将输出接到上传步骤。运行环境和依赖锁由产品选择。配置 PR 以这些原生步骤和输出为据。LayerScape 现用 Astro、产品 Markdown 和 `docs-site/dist`。
 
-仅构建时，`STEWARD_DOCS_SOURCE` 留空以停用中央部署维护。默认分支 push 直接从事件 SHA 构建，无需开通 Pages。获准公开部署后，按获准来源将该变量设为 `default-branch` 或 `release`。release 模式另读 `STEWARD_DOCS_UNIT`，核对该单位的正式 Release、tag、源码、manifest、最终资产字节及原生证明。接入时采用已验证的中央提交。LayerScape 的 Renovate 分组更新工作流顶层控制器 SHA、各中央 checkout 和可复用工作流；Dependabot 负责第三方 Action。冻结读取始终按对应产品提交解析其完整 pin。
+仅构建时，`STEWARD_DOCS_SOURCE` 留空以停用中央部署维护。选源作业读取工作流顶层的 `STEWARD_DOCS_SOURCE` 和 `STEWARD_DOCS_UNIT`。配置 PR 把选定值写入这两个字段，并同步运行名称中的来源。默认分支 push 按当前分支 SHA 构建；选择发行单元时，由已发布事件或匹配的补接事件触发，核对正式 Release、冻结源码和产物证明后构建。两种仅构建模式均可在开通 Pages 前运行。获准公开部署后，按批准的运维设置将仓库变量设为 `default-branch` 或 `release`，并在原生工作流中选用公开部署。历史工作流仍可读取仓库变量作为来源；配置 PR 写入的来源及发行单元用于此后的选源。release 模式另读 `STEWARD_DOCS_UNIT`，核对该单位的正式 Release、tag、源码、manifest、最终资产字节及原生证明。接入时采用已验证的中央提交。LayerScape 的 Renovate 分组更新工作流顶层控制器 SHA、各中央 checkout 和可复用工作流；Dependabot 负责第三方 Action。冻结读取始终按对应产品提交解析其完整 pin。
 
 `select` 只读核源；`build` checkout 准确源码，按产品锁安装并构建站点，没有部署权限。`deploy` 通过原生 needs 接收选源结果与 artifact ID，只执行固定中央控制器，使用 `github-pages` Environment、Pages/OIDC 写权限及必要读取权限。部署前后记录来源、输入摘要、artifact ID/digest、Run/attempt、原生 Environment deployment ID 和 job ID。`deploy-pages` 的 `page_url` 输出不包含 deployment ID，部署身份通过原生 deployment/status 的 job URL 回读。
 
