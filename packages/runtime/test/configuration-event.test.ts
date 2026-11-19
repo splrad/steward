@@ -15,6 +15,7 @@ it('forwards only the locator of a successful same-repository default branch con
     return {state:'active',path:'.github/workflows/repository-configuration-event.yml'};
   });
   for(const delta of [{installation:{id:999}},{repository:{...repository,private:true}},{repository:{...repository,archived:true}},
+    {repository:{...repository,fork:true}},{organization:{id:999}},{repository:{...repository,disabled:true}},
     ...[{head_branch:'feature'},{path:'.github/workflows/other.yml'},{conclusion:'failure'},{head_repository:{id:456}},{run_attempt:0}].map(change=>({workflow_run:{...run,...change}}))]){
     await forwardConfigurationCompletion(env as any,{...payload,...delta},{json} as any);
   }
