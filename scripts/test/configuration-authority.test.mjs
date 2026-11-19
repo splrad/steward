@@ -163,7 +163,7 @@ test('a failed target in the same release unit cannot add its existing asset to 
   const unit={id:'cli',path:'.',notesPath:'notes.md',assets,channels:[{id:'github-release',location:'github',required:true}]};
   const files=new Map([['.github/delivery.json',JSON.stringify({schemaVersion:2,repositoryAuthors:[{id:12,evidence:'fixture'}],units:[unit]})],
     ['release-please-config.json',JSON.stringify({packages:{'.':{'version-file':'VERSION'}}})],['VERSION','1.0.0'],['notes.md','notes'],
-    ['pack.sh','true'],['.github/workflows/repository-configuration-trial.yml','protected']]);
+    ['pack.sh','true'],['.github/workflows/steward-release-channels.yml','adopted native adapter'],['.github/release-template.md.mustache','notes'],['.github/workflows/repository-configuration-trial.yml','protected']]);
   const model=inspectRepository(files),state={values:{signing:true},evidence:{}};
   for(const [index,asset] of assets.entries()){
     const id='s'+(index+1),field=id+'.f'+createHash('sha256').update(asset.name).digest('hex').slice(0,16);

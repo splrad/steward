@@ -3,6 +3,7 @@ import {posix} from 'node:path';
 
 export const deliveryPath='.github/delivery.json', versionsPath='release-please-config.json';
 export const publishPath='.github/workflows/steward-release-publish.yml', pagesPath='.github/workflows/pages.yml';
+export const channelWorkflowPath='.github/workflows/steward-release-channels.yml';
 export const ciPath='.github/product-ci.json';
 export const jsonFile=value=>JSON.stringify(value,null,2)+'\n';
 const format=value=>'`'+String(value).replace(/[`\r\n<>]/g,'')+'`';

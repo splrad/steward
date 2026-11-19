@@ -96,7 +96,7 @@ async function operatorApproval(api,write,actions,repo,base,head,number,actor) {
 }
 
 export async function reconcile({repo,base,run,data,api,write,actions,readToken,load=snapshot,lock=generateLock,
-  sessions={read:readSession,write:writeSession},find=findEvidence,dispatch=dispatchTrial,inventory=trialInventory,validateDelivery}) {
+  sessions={read:readSession,write:writeSession},find=findEvidence,dispatch=dispatchTrial,inventory=trialInventory}) {
   if(run.event==='pull_request_review') {
     const pr=(await api.rest.pulls.get({...api.target,pull_number:data.pull.number})).data;
     if(pr.head.sha===data.pull.head && await authorizePull(api,pr.number,pr.head.sha,repo.default_branch)) await rerunValidation(api,actions,pr);
@@ -175,7 +175,7 @@ export async function reconcile({repo,base,run,data,api,write,actions,readToken,
         }
         state.notice=['已核对构建请求。完成的归档在对应目标下列出。',...notices].join('\n');
       } else {
-        changes=await applySelection(view,op,plan,{validateDelivery,readSource:path=>fileText(api,path,head),controllerSha:process.env.GITHUB_SHA,seed:await readFile('templates/release/steward-release-publish.yml','utf8'),
+        changes=await applySelection(view,op,plan,{repo,readSource:path=>fileText(api,path,head),controllerSha:process.env.GITHUB_SHA,seed:await readFile('templates/release/steward-release-publish.yml','utf8'),
           inventory:(target,recipe)=>inventory(api,readToken,repo,base,head,target,recipe),describe:line=>{state.notice=[state.notice,line].filter(Boolean).join('\n');}});
         await lock(view.files,changes,repo,readToken);
       }

@@ -2,8 +2,9 @@ import {createHash} from 'node:crypto';
 import {posix} from 'node:path';
 import YAML from 'yaml';
 import {adaptBuild,renderBuild,repositoryPath,scriptBuild,selectWorkflow} from './configuration-build.mjs';
-import {changeChannels,ciPath,deliveryPath,explicitDelivery,jsonFile,pagesPath,publishPath,versionsPath} from './configuration-view.mjs';
-import {parseDeliveryConfig,parseSupplementalNotes} from '../packages/runner/dist/index.js';
+import {changeChannels,channelWorkflowPath,ciPath,deliveryPath,explicitDelivery,jsonFile,pagesPath,publishPath,versionsPath} from './configuration-view.mjs';
+import {releaseAdoptionPlan} from './release-adoption.mjs';
+import {assertRegisteredAdapters,parseDeliveryConfig,parseSupplementalNotes} from '../packages/runner/dist/index.js';
 
 const key=/^[a-z][a-z0-9-]{0,63}$/;
 const caller='.github/workflows/repository-configuration-trial.yml';
@@ -167,7 +168,29 @@ export async function applySelection(model,operation,plan,context) {
     delivery=changeChannels(delivery,channelEdits);
     changes.set(deliveryPath,jsonFile(delivery));
   }
-  if(changes.has(deliveryPath)) (context.validateDelivery??parseDeliveryConfig)(structuredClone(delivery));
+  if(changes.has(deliveryPath)) {
+    const normalized=parseDeliveryConfig(delivery);
+    const adoption=releaseAdoptionPlan(normalized);
+    if(adoption.externalTargets.length && !model.files.has(channelWorkflowPath)) {
+      const source=model.workflows.find(w=>w.path===plan.channelWorkflow);
+      const inputs=source?.document?.on?.workflow_dispatch?.inputs??{};
+      const required=['cycle_id','source_sha','execution_sha','controller_sha','targets_json','mode','operation_key','request_key'];
+      must(source && Object.keys(source.document.on).length===1 && Object.keys(source.document.jobs??{}).length &&
+        required.every(k=>inputs[k]?.type==='string' && inputs[k].required===true) &&
+        source.document['run-name']==='Channels ${{ inputs.mode }} ${{ inputs.request_key }}',
+        '请选择已审阅的本仓渠道工作流，须声明原生渠道调度输入和运行名：'+adoption.externalTargets.map(t=>t.unitId+'/'+t.channelId+' '+t.location).join('、'));
+      changes.set(channelWorkflowPath,model.files.get(source.path));
+    }
+    for(const path of adoption.files) must(changes.has(path)||model.files.has(path),'缺少本仓采用文件 '+path);
+    if(context.repo) for(const target of adoption.externalTargets) {
+      const unit=normalized.units.find(u=>u.id===target.unitId);
+      try {
+        assertRegisteredAdapters(context.repo.id,context.repo.full_name,{units:[{...unit,channels:unit.channels.filter(c=>c.id==='github-release'||c.id===target.channelId)}]});
+      } catch(error) {
+        context.describe?.(target.unitId+'/'+target.channelId+' · '+target.location+' · 待满足发布前提：'+error.message);
+      }
+    }
+  }
   if(plan.ci) {
     must(Array.isArray(plan.ci) && plan.ci.every(p=>model.workflows.some(w=>w.path===p && JSON.stringify(w.document.on).includes('pull_request'))),'Choose declared PR workflows');
     changes.set(ciPath,jsonFile(plan.ci));

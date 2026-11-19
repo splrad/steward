@@ -13,6 +13,11 @@ import {reconcile} from '../repository-configuration.mjs';
 import {parseDeliveryConfig} from '../../packages/runner/dist/index.js';
 
 const root=process.cwd();
+const reviewedChannel='.github/workflows/map-channel.yml';
+const channelFixture=YAML.stringify({name:'Map distribution','run-name':'Channels ${{ inputs.mode }} ${{ inputs.request_key }}',
+  on:{workflow_dispatch:{inputs:Object.fromEntries(['cycle_id','source_sha','execution_sha','controller_sha','targets_json','mode','operation_key','request_key']
+    .map(k=>[k,{type:'string',required:true}]))}},
+  jobs:{inspect:{'runs-on':'ubuntu-24.04',steps:[{run:'python maps/data/pack.py'}]}}});
 const fixtureWorkflow=`name: Pack CLI
 on: workflow_dispatch
 permissions: {contents: read}
@@ -48,6 +53,7 @@ test('same configuration PR prepares two native entries, binds trials to their h
   for(const path of [requestPath,trialPath]) await put(path,await readFile('templates/repository/'+path));
   for(const path of ['tools/route/CHANGELOG.md','maps/data/CHANGELOG.md','.release-notes/route.md','.release-notes/maps.md']) await put(path,['概述','更新内容','兼容性','升级与迁移','安装说明','已知问题','恢复'].map(h=>'## '+h+'\n\nFixture notes.\n').join('\n'));
   await put('.github/workflows/steward-release-publish.yml',await readFile('templates/release/steward-release-publish.yml'));
+  await put(reviewedChannel,channelFixture);
   await put('.github/release-template.md.mustache','{{{upgradeNotices}}}');
   git('add','-A');git('-c','commit.gpgsign=false','commit','-m','Adopt protected trial and declare product documentation');
   const base=git('rev-parse','HEAD'),repo={id:15,name:'map-tools',full_name:'splrad/map-tools',owner:{login:'splrad'},default_branch:'trunk'};
@@ -73,20 +79,7 @@ test('same configuration PR prepares two native entries, binds trials to their h
     ref=git('rev-parse','HEAD');if(pr)pr.head.sha=ref;return {createCommitOnBranch:{commit:{oid:ref}}};
   }};
   const evidence=new Map();
-  const hasV2=(await readFile('schema/delivery.schema.json','utf8')).includes('"inspection"');
-  let integrationRunner=process.env.CONFIGURATION_INTEGRATION_RUNNER;
-  if(!hasV2 && !integrationRunner && process.env.GITHUB_ACTIONS==='true') {
-    // Test the full save against the pinned upstream implementation until v2 lands.
-    const upstream=join(dir,'schema-runner');
-    const revision='8f39099ce6e83ff4af5b68c99c6d0103ee9f2a70';
-    execFileSync('git',['init','--quiet',upstream]);
-    execFileSync('git',['-C',upstream,'fetch','--quiet','--depth=1','https://github.com/splrad/steward.git',revision]);
-    execFileSync('git',['-C',upstream,'checkout','--quiet',revision,'--','packages/runner/dist']);
-    integrationRunner=join(upstream,'packages/runner/dist/index.js');
-  }
-  const validator=integrationRunner?
-    (await import(pathToFileURL(resolve(integrationRunner)))).parseDeliveryConfig:parseDeliveryConfig;
-  const ctx={repo,base,api,write:api,actions:api,load,lock:async()=>{},validateDelivery:validator,sessions:{
+  const ctx={repo,base,api,write:api,actions:api,load,lock:async()=>{},sessions:{
     read:async()=>structuredClone(state),write:async(api,n,s)=>{assert.equal(n,9);state=structuredClone(s);}
   },find:async(api,token,repo,base,head,target)=>evidence.get(head+'/'+target.unit),
   dispatch:async(api,actions,repo,base,head,target,recipe)=>{
@@ -134,15 +127,15 @@ test('same configuration PR prepares two native entries, binds trials to their h
   await edit({[a+'.id']:'cli',[a+'.name']:'route-${version}.tar.gz',[a+'.type']:'application/gzip',[a+'.inspection']:'tar-gzip',
     [a+'.members']:'text bin/route',[a+'.github-release']:true,[b+'.id']:'stations',[b+'.name']:'stations-${version}.zip',
     [b+'.type']:'application/zip',[b+'.inspection']:'zip',[b+'.members']:'text tiles.csv',[b+'.ghcr-assets']:true});
-  const final={[native+'.dest.github-release']:'github','s1.dest.ghcr-assets':'ghcr.io/splrad/map-tools','operation.select':true};
-  if(!hasV2 && !integrationRunner) {
-    await edit(final);assert.match(pr.body,/待调整：.*DELIVERY/);
-    assert.equal(ref,preparedHead);return;
-  }
+  const final={'channel.workflow':reviewedChannel,[native+'.dest.github-release']:'github','s1.dest.ghcr-assets':'ghcr.io/splrad/map-tools','operation.select':true};
+  await edit({...final,'channel.workflow':''});
+  assert.equal(ref,preparedHead);
+  assert.match(pr.body,/请选择已审阅的本仓渠道工作流/);
   const savedPlan=planFromForm(await load(api,ref),{...state,values:{...state.values,...final}},'select');
   await edit(final);
   assert.equal(pr.number,9);assert.notEqual(ref,preparedHead);
-  const selected=validator(JSON.parse(git('show',ref+':.github/delivery.json')));
+  assert.equal(git('show',ref+':.github/workflows/steward-release-channels.yml'),channelFixture.trim());
+  const selected=parseDeliveryConfig(JSON.parse(git('show',ref+':.github/delivery.json')));
   assert.deepEqual(selected.units.map(u=>u.assets.map(a=>a.id)),[['cli'],['stations']]);
   assert.equal(selected.units[0].channels.find(c=>c.id==='github-release').required,true);
   const workflow=YAML.parse(git('show',ref+':.github/workflows/steward-release-publish.yml'));
@@ -150,7 +143,7 @@ test('same configuration PR prepares two native entries, binds trials to their h
   const adopted=await load(api,ref), warnings=[];
   const scenario=structuredClone(savedPlan);
   scenario.targets[0].files[0].description='Reviewed CLI package';
-  const options={seed:await readFile('templates/release/steward-release-publish.yml','utf8'),validateDelivery:validator,
+  const options={seed:await readFile('templates/release/steward-release-publish.yml','utf8'),
     describe:message=>warnings.push(message),inventory:async target=>{
       if(target.unit==='maps') throw Error('Expired artifact');
       return evidence.get(preparedHead+'/'+target.unit).files;

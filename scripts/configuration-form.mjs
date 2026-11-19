@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {posix} from 'node:path';
-import {effectiveChannels,renderConfiguration} from './configuration-view.mjs';
+import {channelWorkflowPath,effectiveChannels,renderConfiguration} from './configuration-view.mjs';
 const key=text=>createHash('sha256').update(text).digest('hex').slice(0,16);
 const display=text=>String(text??'').replace(/[\r\n<>`]/g,' ');
 const token=field=>'<!-- cfg '+field+' -->';
@@ -137,6 +137,10 @@ export function configurationForm(model,head,state={}) {
     if(c.id!=='winget') for(const name of metadataFiles)
       field(id+'.meta.'+key(name),display(c.id)+' · '+display(name),resolved.metadata.includes(name),'check');
   }
+  if(!model.files.has(channelWorkflowPath) && Object.entries(values).some(([k,v])=>v===true && /\.(?:ghcr-assets|winget)$/.test(k))) {
+    const sources=model.workflows.filter(w=>w.document?.on?.workflow_dispatch?.inputs?.targets_json).map(w=>w.path);
+    field('channel.workflow','本仓已审的渠道工作流路径'+(sources.length?'（'+sources.join('、')+'）':'（待提供支持 targets_json 的原生渠道入口）'),sources.length===1?sources[0]:'');
+  }
   if(model.pages) {
     const build=model.pages.jobs?.build, deploy=model.pages.jobs?.deploy;
     if(build) field('site.build','构建文档站',!/^\(?false\b/.test(String(build.if)),'check');
@@ -219,7 +223,7 @@ export function planFromForm(model,state,operation) {
     versions.set(unit,{path:v[id+'.path'],component:v[id+'.component']||unit,noComponent:v[id+'.noComponent'],versionFile:v[id+'.version'],changelog:v[id+'.changelog'],logBody:v[id+'.logBody']});
   }
   for(const c of channels.values()) units.get(c.unit).channels.push({id:c.id,location:c.location,required:false});
-  const settings={targets,units:[...units.values()],signing:v.signing?'not-applicable':null};
+  const settings={targets,channelWorkflow:v['channel.workflow'],units:[...units.values()],signing:v.signing?'not-applicable':null};
   if(operation==='configure' && versions.size) settings.versions=[...versions.values()];
   if(!model.delivery && entries.length) settings.repositoryAuthors=[{id:Number(v['author.id']),evidence:v['author.evidence']}];
   const edits=[];
