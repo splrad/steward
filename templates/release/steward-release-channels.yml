@@ -559,7 +559,7 @@ jobs:
           $version=$manifest.version
           $auth=Join-Path $env:RUNNER_TEMP 'oras-business.json'
           [IO.File]::WriteAllText($auth,'{"auths":{}}')
-          $names=@($manifest.channelFiles)
+          $names=@($manifest.channelFiles | Sort-Object)
           $expected=@{};foreach($name in $names) {$expected[$name]=(Get-FileHash -LiteralPath "final/$name" -Algorithm SHA256).Hash.ToLowerInvariant()}
           if ($env:MODE -eq 'submit') {
             $env:GHCR_TOKEN | oras login ghcr.io --username $env:GITHUB_ACTOR --password-stdin --registry-config $auth
@@ -1097,7 +1097,7 @@ jobs:
           $version=$manifest.version
           $auth=Join-Path $env:RUNNER_TEMP 'oras-business.json'
           [IO.File]::WriteAllText($auth,'{"auths":{}}')
-          $names=@($manifest.channelFiles)
+          $names=@($manifest.channelFiles | Sort-Object)
           $expected=@{};foreach($name in $names) {$expected[$name]=(Get-FileHash -LiteralPath "final/$name" -Algorithm SHA256).Hash.ToLowerInvariant()}
           if ($env:MODE -eq 'submit') {
             $env:GHCR_TOKEN | oras login ghcr.io --username $env:GITHUB_ACTOR --password-stdin --registry-config $auth

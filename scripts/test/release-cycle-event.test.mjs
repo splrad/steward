@@ -158,6 +158,8 @@ test('channel results link the frozen product and package',()=>{
   const delivery={units:[{id:'cli',channels:[{id:'ghcr-assets',required:true,location:'ghcr.io/example/cli-assets'}]}]};
   assert.equal(channelResultUrl('Example/CLI',delivery,item),'https://github.com/Example/CLI/pkgs/container/cli-assets');
   assert.throws(()=>channelResultUrl('splrad/LayerScape',delivery,item));
+  delivery.units[0].channels[0].location='ghcr.io/example/tools/cli';
+  assert.equal(channelResultUrl('Example/CLI',delivery,item),'https://github.com/Example/CLI/pkgs/container/tools%2Fcli');
   delivery.units[0].channels[0].required=false;
   assert.throws(()=>channelResultUrl('Example/CLI',delivery,item));
 });
