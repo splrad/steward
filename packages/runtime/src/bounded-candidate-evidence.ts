@@ -19,6 +19,11 @@ export async function candidateFacts<T extends boolean=false>(g:GitReader,requir
  if(generated){const gp=c.generatedSnapshotPath;ensure(typeof gp==='string'&&new RegExp(`^generated/${c.id}/[a-f0-9]{64}\\.json$`).test(gp),'GENERATED_PATH');const firstGenerated=await file(gp),chunks=[firstGenerated];ensure(Number.isSafeInteger(firstGenerated.count)&&firstGenerated.count>0&&firstGenerated.count<=128,'GENERATED_COUNT');for(let n=1;n<firstGenerated.count;n++)chunks.push(await file(gp.replace('.json',`-${n}.json`)));ensure(chunks.every((x,n)=>x.schemaVersion===1&&x.repositoryId===(g.target??TARGET).id&&x.candidateId===c.id&&x.documentKind==='generated'&&x.index===n&&x.count===firstGenerated.count&&x.documentDigest===firstGenerated.documentDigest&&typeof x.content==='string'&&Buffer.byteLength(x.content)<=256*1024),'GENERATED_BINDING');const raw=chunks.map(x=>x.content).join('');ensure(digest(raw)==='sha256:'+firstGenerated.documentDigest&&isDeepStrictEqual(JSON.parse(raw),generated),'GENERATED_MISMATCH');}
 
  const ready=!c.pendingWrite&&generated?.baseSha===c.baseSha&&generated.units?.length>0&&!session.pending&&session.identity;
+ if(ready&&g.target?.units){
+   const ids=generated.units.map((unit:any)=>unit.id).sort();
+   ensure(Array.isArray(session.identity.units)&&new Set(ids).size===ids.length&&
+     isDeepStrictEqual(ids,session.identity.units.map((unit:any)=>unit.id).sort()),'CANDIDATE_FROZEN_UNIT_COVERAGE');
+ }
  const manual=session.manualValidation??null;const manualId=manual?manualIdentity(manual,state,session,g.target??TARGET):null;
  if(!allowPending)ensure(manualId?(!c.pendingWrite&&!session.pending):ready,'SESSION_NOT_READY');
  if(requireCurrentMain)ensure((await read(`git/ref/heads/${encodeURIComponent((g.target??TARGET).defaultBranch)}`)).object?.sha===(manualId?.sourceSha??c.baseSha),'SOURCE_CHANGED');
