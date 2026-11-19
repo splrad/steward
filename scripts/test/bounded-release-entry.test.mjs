@@ -109,6 +109,9 @@ test('candidate evidence permits unaffected units but rejects losing a frozen un
   assert.equal((await candidateEvidence(candidateFixture().get,{product:target})).identity.version,'1.0.0');
   const missing=candidateFixture(s=>s.identity.units.push({...s.identity.units[0],id:'ui'}));
   await assert.rejects(candidateEvidence(missing.get,{product:target}),/CANDIDATE_FROZEN_UNIT_COVERAGE/);
+  const recovered=await candidateEvidence(missing.get,{product:target,requireReady:false});
+  assert.equal(recovered.identity,null);
+  assert.equal(recovered.selectionChanged,true);
 });
 test('normal recovery reads a conflict with a new frozen unit set without claiming the old identity',async()=>{
   const f=candidateFixture(s=>{
@@ -117,7 +120,9 @@ test('normal recovery reads a conflict with a new frozen unit set without claimi
     s.conflict={head,generated:next,paths:['CHANGELOG.md']};
   });
   const target={...product,units:[{id:'layerscape',path:'.'},{id:'ui',path:'ui'}]};
-  assert.equal((await candidateEvidence(f.get,{product:target,requireReady:false})).identity,null);
+  const recovered=await candidateEvidence(f.get,{product:target,requireReady:false});
+  assert.equal(recovered.identity,null);
+  assert.equal(recovered.selectionChanged,true);
   await assert.rejects(candidateEvidence(f.get,{product:target}),/CANDIDATE_OBSERVATION_NOT_READY/);
 });
 test('a conflict relocating the same unit is stale for the new product path',async()=>{
@@ -125,7 +130,9 @@ test('a conflict relocating the same unit is stale for the new product path',asy
     s.conflict={head,generated:{...s.generated,units:[{...s.generated.units[0],path:'packages/cli'}]},paths:['CHANGELOG.md']};
   });
   const target={...product,units:[{id:'layerscape',path:'packages/cli'}]};
-  assert.equal((await candidateEvidence(f.get,{product:target,requireReady:false})).identity,null);
+  const recovered=await candidateEvidence(f.get,{product:target,requireReady:false});
+  assert.equal(recovered.identity,null);
+  assert.equal(recovered.selectionChanged,true);
   await assert.rejects(candidateEvidence(f.get,{product:target}),/CANDIDATE_OBSERVATION_NOT_READY/);
 });
 test('unlabel recovery can regenerate an older unit path before any conflict is recorded',async()=>{

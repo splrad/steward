@@ -64,7 +64,11 @@ export async function candidateEvidence(get,{requireReady=true,product}) {
   let staleConflict=false,selectionChanged=false;
   if(session.generated) {
     if(session.identity && !session.pending && !state.candidate.pendingWrite) {
-      if(!matchesFrozenUnits(session,session.conflict?.generated??session.generated))throw Error('CANDIDATE_FROZEN_UNIT_COVERAGE');
+      if(!matchesFrozenUnits(session,session.conflict?.generated??session.generated)) {
+        if(requireReady||session.conflict)throw Error('CANDIDATE_FROZEN_UNIT_COVERAGE');
+        // A cancelled write can retain the proposed contributors alongside the published snapshot.
+        selectionChanged=true;
+      }
       if(session.conflict) {
         const locations=snapshot=>snapshot.units.map(({id,path})=>JSON.stringify([id,path])).sort();
         staleConflict=!isDeepStrictEqual(locations(session.conflict.generated),locations(session.generated));
@@ -99,7 +103,7 @@ export async function candidateEvidence(get,{requireReady=true,product}) {
   if(session.manualValidation&&(session.manualValidation.prNumber!==pull.number||session.manualValidation.branch!==pull.head.ref))throw Error('MANUAL_OWNER');
   const after=await get(`/repos/${product.name}/git/ref/heads/steward/release-state`);
   if(after.object?.sha!==stateCommit)throw Error('BOUNDED_STATE_MOVED');
-  return {identity,state,session,pull,selectionChanged,evidence:{stateCommit,path,documentDigest:first.documentDigest,prNumber:pull.number,head:pull.head.sha}};
+  return {identity,state,session,pull,selectionChanged:selectionChanged||staleConflict,evidence:{stateCommit,path,documentDigest:first.documentDigest,prNumber:pull.number,head:pull.head.sha}};
 }
 export async function validateCandidateEvent(hint,get,target=product) {
   return validateIssueEvent(hint,get,true,undefined,target);

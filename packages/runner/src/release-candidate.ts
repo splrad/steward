@@ -8,7 +8,7 @@ export interface CandidatePullRequest { number: number; head: string; branch: st
 export interface CandidateComment { id: number; authorId: number; body: string }
 export interface CandidateSession {
   manualValidation?: ManualCandidate | null;
-  repository: RepositoryRecord; generated: CandidateSnapshot | null; pending: { write: PreparedCandidateWrite; generated: CandidateSnapshot } | null;
+  repository: RepositoryRecord; generated: CandidateSnapshot | null; pending: { write: PreparedCandidateWrite; generated: CandidateSnapshot; previousIdentity?: CandidateSession['identity'] } | null;
   identity: null | { authorsDigest: string; sourceDigest: string; actors: (ReleaseActor | null)[]; contributors: ReturnType<typeof selectReleaseContributors>;
     units: { id: string; actors: (ReleaseActor | null)[]; contributors: ReturnType<typeof selectReleaseContributors> }[] };
   conflict: null | { head: string; generated: CandidateSnapshot; paths: string[] };
@@ -148,6 +148,7 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
       if (value.pr?.editing || value.head !== pending.write.expectedHead || (await io.source()).baseSha !== pending.write.baseSha) {
         // The original proposal remains in protected state history. Keep the previous generated snapshot
         // so the next wake can detect and preserve human differences.
+        if ('previousIdentity' in pending) session.identity = pending.previousIdentity ?? null;
         candidate.pendingWrite = null; session.pending = null; await save();
         return { status: value.pr?.editing ? 'CANCELLED_FOR_EDITING' as const : 'REPLAN' as const };
       }
@@ -240,6 +241,7 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   if (content.status !== 'READY') return { status: 'WAIT', reason: `CONTENT_${content.status}` };
   const N: CandidateSnapshot = { ...generation.snapshot, files: [...generation.snapshot.files, ...content.files] };
   if (JSON.stringify(Object.keys(content.unitActors).sort()) !== JSON.stringify(N.units.map(unit => unit.id).sort())) throw new Error('CANDIDATE_CONTRIBUTOR_UNIT_COVERAGE');
+  const previousIdentity = session.identity;
   session.identity = { authorsDigest: source.authorsDigest, sourceDigest: N.sourceDigest, actors: content.actors, contributors: selectReleaseContributors(content.actors, source.authors),
     units: N.units.map(unit => ({ id: unit.id, actors: content.unitActors[unit.id]!, contributors: selectReleaseContributors(content.unitActors[unit.id]!, source.authors) })) };
   const latestSource = await io.source();
@@ -255,7 +257,7 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
   const unchanged = H !== null && await candidateTreeMatches(io.workspace, H, N.baseSha, merged.files, io.temporaryRoot);
   if (!unchanged) {
   const prepared = await prepareCandidateWrite(io.workspace, H, N, merged, io.identity, io.temporaryRoot);
-  session.pending = { write: prepared, generated: N };
+  session.pending = { write: prepared, generated: N, previousIdentity };
   candidate.pendingWrite = { expectedHead: H, proposedCommit: prepared.proposedCommit,
     newGeneratedSnapshotPath: `generated/${candidate.id}/${prepared.generatedDigest}.json`, newGeneratedDigest: prepared.generatedDigest,
     operationKey: digest([candidate.id, prepared.proposedCommit]), observedAt: io.now() };
