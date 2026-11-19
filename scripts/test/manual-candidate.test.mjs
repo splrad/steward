@@ -73,3 +73,11 @@ test('canonical facts ignore object key order but not file bytes',async()=>{
   assert.equal(hash(manualCandidateFacts(cache)),hash(manualCandidateFacts(other)));
   other.files[0].sha256='0'.repeat(64);assert.notEqual(hash(manualCandidateFacts(cache)),hash(manualCandidateFacts(other)));
 });
+
+test('manual validation follows the template at the exact candidate head for optional notices', async () => {
+  const f=fixture();
+  f.files['.release-notes/layerscape.md']='## 概述\n\n新版。\n\n## 更新内容\n\n### 工具\n\n增加导出。';
+  await validateManualCandidate(f.session,f.producer,f.io);
+  f.files['.github/release-template.md.mustache']='{{{compatibility}}}';
+  await assert.rejects(validateManualCandidate(f.session,f.producer,f.io), /missing heading/);
+});

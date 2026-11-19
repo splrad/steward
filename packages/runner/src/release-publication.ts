@@ -1,3 +1,4 @@
+import { releaseBodyMatches } from './release-body.js';
 import { createHash } from 'node:crypto';
 import { decodeNativePublication, type NativePublication } from '../../core/src/native-evidence.js';
 import { type NativeAttemptSet, type NativeAttemptEvidence, type ArchivedAttempt } from '../../core/src/release-observation.js';
@@ -65,7 +66,9 @@ async function objects(context:EvidenceContext,io:EvidenceTransport):Promise<Nat
       const marker=`<!-- steward-release:${hash(JSON.stringify([context.repositoryId,unit.id,unit.tag,context.cycle.sourceSha,unit.manifestDigest]))} -->`;
       check(Number.isSafeInteger(release.id)&&release.id>0&&release.tag_name===unit.tag&&release.author?.id===context.appBotId
         &&(unit.releaseId===null||release.id===unit.releaseId)&&typeof release.draft==='boolean'&&typeof release.body==='string'
-        &&(hash(release.body)===unit.notesDigest||release.draft&&release.body===marker)
+        &&((release.draft ? hash(release.body)===unit.notesDigest || release.body===marker
+          : await releaseBodyMatches({ repository: context.repository, repositoryId: context.repositoryId, releaseId: release.id,
+          sourceSha: context.cycle.sourceSha, tag: unit.tag, frozenDigest: unit.notesDigest }, release.body, path => reader.json(path))))
         &&(!release.draft||release.target_commitish===context.cycle.sourceSha),'release identity');
       check((await reader.json(`commits/${encodeURIComponent(unit.tag)}`)).sha===context.cycle.sourceSha,'tag source');
       const assetReader=release.draft===false?await formalReleaseReader(context,io):reader;

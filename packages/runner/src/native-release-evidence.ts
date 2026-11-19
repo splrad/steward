@@ -1,3 +1,4 @@
+import { releaseBodyMatches } from './release-body.js';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -368,12 +369,13 @@ async function objectRead(reader: NativeEvidenceReader, object: NativeResult['ob
       const unit=context.cycle.units.find(unit=>unit.releaseId===object.id);
       check(unit && native.tag_name===unit.tag && native.author?.id===context.appBotId,'release source');
       if(!unit.assets.length || unit.manifestDigest===null || unit.notesDigest===null)return proof;
-      check(native.draft===false && native.immutable===true && hash(native.body)===unit.notesDigest,'release frozen facts');
+      check(native.draft===false && native.immutable===true && await releaseBodyMatches({ repository: context.repository, repositoryId: context.repositoryId, releaseId: native.id,
+          sourceSha: context.cycle.sourceSha, tag: unit.tag, frozenDigest: unit.notesDigest }, native.body, path => reader.json(path)),'release frozen facts');
       check((await reader.json(`commits/${encodeURIComponent(unit.tag)}`)).sha===context.cycle.sourceSha,'release tag source');
       // Match the frozen cycle byte set as well as the producer's object digest.
       const assets = await reader.pages(`releases/${object.id}/assets`, '');
       check(assets.length===unit.assets.length && new Set(assets.map(asset=>asset.name)).size===assets.length,'release asset set');
-      const hashes = [];
+      const hashes: [number, string, number, string][] = [];
       for (const asset of assets) {
         const downloaded = await reader.downloadDigest(`releases/assets/${asset.id}`);
         check(downloaded.size===asset.size,'asset size');
@@ -381,7 +383,17 @@ async function objectRead(reader: NativeEvidenceReader, object: NativeResult['ob
         hashes.push([asset.id, asset.name, asset.size, downloaded.digest]);
       }
       check(same(stableReleaseFacts(native),stableReleaseFacts(await reader.json(path))) && same(stableAssetFacts(assets),stableAssetFacts(await reader.pages(`releases/${object.id}/assets`,''))),'release changed');
-      proof.actualDigest = hash(JSON.stringify([native.id,native.tag_name,native.target_commitish,native.draft,native.immutable,native.body,hashes.sort((a,b)=>Number(a[0])-Number(b[0]))]));
+      hashes.sort((a,b)=>Number(a[0])-Number(b[0]));
+      const objectDigest = (body: string) => hash(JSON.stringify([native.id,native.tag_name,native.target_commitish,native.draft,native.immutable,body,hashes]));
+      proof.actualDigest = objectDigest(native.body);
+      if (proof.actualDigest !== object.digest && hash(native.body) !== unit.notesDigest) {
+        // Older producer receipts serialized the original Markdown inline.
+        const notes = assets.find(asset => asset.name === 'release-notes.md');
+        check(notes, 'missing frozen notes');
+        const { bytes } = await reader.response(`releases/assets/${notes.id}`, notes.size);
+        check(hash(bytes) === unit.notesDigest, 'original release notes');
+        proof.actualDigest = objectDigest(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+      }
     }
     proof.status = proof.actualDigest === object.digest ? 'MATCH' : 'CONFLICT';
   } catch (error) {

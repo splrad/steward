@@ -4,11 +4,11 @@ import { renderFrozenReleaseNotes, nestReleaseMarkdown, type FrozenReleaseNotes 
 import { renderReleaseContributors } from '../src/release-candidate.js';
 const template = readFileSync('templates/repository/.github/release-template.md.mustache', 'utf8');
 const data: FrozenReleaseNotes = {
-  repository: 'splrad/LayerScape', unitId: 'layerscape', version: '9.2.2', tag: 'v9.2.2', sourceSha: 'a'.repeat(40), controllerSha: 'b'.repeat(40),
+  repository: 'splrad/LayerScape', unitId: 'layerscape', displayName: 'LayerScape', version: '9.2.2', tag: 'v9.2.2', sourceSha: 'a'.repeat(40), controllerSha: 'b'.repeat(40),
   notes: ['概述', '更新内容', '兼容性', '升级与迁移', '安装说明', '已知问题', '恢复'].map((label, i) => `## ${label}\n\n保留事实 ${i}。\n\n### 子标题 ${i}\n\n细节。\n\n#### 更深 ${i}\n\n更多细节。`).join('\n\n'),
   sourceLinkLabel: '查看比较', commitUrl: 'https://github.com/splrad/LayerScape/commit/'+'a'.repeat(40), sourceUrl: 'https://github.com/splrad/LayerScape/compare/v9.2.1...'+'a'.repeat(40),
   contributors: [{ id: 123, login: 'contributor', profileUrl: 'https://github.com/contributor', avatarUrl: 'https://avatars.githubusercontent.com/u/123?v=4', alt: 'contributor' }],
-  repositoryAuthors: [{ id: 44151430, evidence: 'User confirmed axiomoth and verified native GitHub ID.' }], assets: [{ id: 'plugins', name: 'AFR-DLL_v9.2.2.zip', build: 'windows-x64' }],
+  repositoryAuthors: [{ id: 44151430, evidence: 'User confirmed axiomoth and verified native GitHub ID.' }], assets: [{ id: 'plugins', name: 'AFR-DLL_v9.2.2.zip', build: 'windows-x64', description: '手动加载插件' }],
   channels: [{ id: 'ghcr-assets', location: 'ghcr.io/splrad/layerscape-assets' }],
 };
 it.each([true, false])('RN01/RN03 preserves all reviewed facts with contributor section present=%s', present => {
@@ -18,11 +18,11 @@ it.each([true, false])('RN01/RN03 preserves all reviewed facts with contributor 
   for (let i = 0; i < 7; i++) expect(body).toContain(`保留事实 ${i}。`);
   expect(body).toContain('#### 子标题 0'); expect(body).toContain('##### 更深 0');
   expect(body).toContain('### 子标题 1'); expect(body).toContain(data.sourceUrl);
-  expect(body).toContain('# layerscape 9.2.2'); expect(body).toContain('| plugins | windows-x64 |');
-  expect(body).toContain('源码提交：[' + data.sourceSha + '](' + data.commitUrl + ')'); expect(body).toContain('执行器提交：' + data.controllerSha);
+  expect(body).toContain('# LayerScape 9.2.2'); expect(body).toContain(' — 手动加载插件');
+  expect(body).not.toContain(data.controllerSha); expect(body).not.toContain('windows-x64');
   if (present) expect(body).toContain('width="48" height="48"');
   expect(body).toContain('/releases/download/v9.2.2/AFR-DLL_v9.2.2.zip');
-  expect(body).toContain('ghcr-assets：待分发'); expect(body).toContain('layerscape-assets');
+  expect(body).not.toContain('ghcr-assets');
   expect(body).not.toContain('axiomoth'); expect(JSON.stringify(input)).toBe(before);
   expect(renderFrozenReleaseNotes(template, input)).toBe(body);
 });
@@ -59,9 +59,25 @@ it.each(['filename', 'asset-id', 'target', 'duplicate', 'empty', 'tag', 'unit'])
   expect(() => renderFrozenReleaseNotes(template, input)).toThrow();
 });
 it('labels first release and binds a multi-unit asset URL to the encoded exact tag', () => {
-  const input = { ...structuredClone(data), unitId: 'other', tag: 'other/v9.2.2', sourceLinkLabel: '查看源码', sourceUrl: `https://github.com/${data.repository}/tree/${data.sourceSha}` };
+  const input = { ...structuredClone(data), unitId: 'other', displayName: 'Other Product', tag: 'other/v9.2.2', sourceLinkLabel: '查看源码', sourceUrl: `https://github.com/${data.repository}/tree/${data.sourceSha}` };
   const body = renderFrozenReleaseNotes(template, input);
-  expect(body).toContain('# other 9.2.2'); expect(body).toContain('[查看源码](https://github.com/'+data.repository+'/tree/'+data.sourceSha+')');
+  expect(body).toContain('# Other Product 9.2.2'); expect(body).toContain('[查看源码](https://github.com/'+data.repository+'/tree/'+data.sourceSha+')');
   expect(body).toContain('/download/other%2Fv9.2.2/AFR-DLL_v9.2.2.zip');
   expect(body).not.toContain('/download/v9.2.2/');
+});
+
+it('renders a release without upgrade notices or contributors using the reviewed update category', () => {
+  const notes = '## 概述\n\n导出工具。\n\n## 更新内容\n\n### 导出\n\n支持 CSV。';
+  const body = renderFrozenReleaseNotes(template, { ...data, notes, contributors: [] });
+  expect([...body.matchAll(/^## (.+)$/gm)].map(match => match[1])).toEqual(['更新内容','完整变更']);
+  expect(body).toContain('### 导出');
+  expect(body).toContain('/releases/download/');
+});
+
+it('renders a repository name containing Markdown underscores when displayName is omitted', () => {
+  const repository = 'example/_my_app_', sourceSha = data.sourceSha;
+  const body = renderFrozenReleaseNotes(template, { ...data, repository, displayName: undefined,
+    sourceLinkLabel: '查看更新记录', sourceUrl: `https://github.com/${repository}/blob/${sourceSha}/CHANGELOG.md`,
+    commitUrl: `https://github.com/${repository}/commit/${sourceSha}` });
+  expect(body).toContain('# \\_my\\_app\\_ 9.2.2');
 });
