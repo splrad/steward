@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { nativeReleaseApp, NativeEvidenceReader, nativeEvidenceTransport } from '../packages/runner/dist/index.js';
 import { fetchState } from './release-coordinator.mjs';
 import { nativeReleaseCandidate } from './release-candidate.mjs';
-import { candidateEvidence, validateCandidateEvent, sameIdentity, sha, key, product } from './bounded-candidate-contract.mjs';
+import { candidateEvidence, validateCandidateEvent, sameIdentity, sha, key, candidateProduct } from './bounded-candidate-contract.mjs';
 const central='splrad/steward',centralId=1296724484;
 const botIdentity={name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
 const fail=reason=>{throw Error(reason);};
@@ -63,6 +63,8 @@ export async function main(env=process.env) {
   const run=await entryGuard(env,centralGet,config);
   const app=await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY??'');
   if(run.actor?.id!==app.appBotId)fail('BOUNDED_DISPATCH_ACTOR');
+  const locator=JSON.parse((mode==='observe'?env.BOUNDED_IDENTITY_JSON:env.BOUNDED_EVENT_JSON)??'null');
+  const product=candidateProduct(locator?.repositoryId);
   const root=await mkdtemp(join(tmpdir(),'bounded-release-'));
   try {return await app.forCandidateRepository(product.id,async(token,readToken)=>{
     const productReader=new NativeEvidenceReader(nativeEvidenceTransport(token),product.name);
@@ -70,14 +72,14 @@ export async function main(env=process.env) {
     if(mode==='observe') {
       const identity=JSON.parse(env.BOUNDED_IDENTITY_JSON??'null'),requestKey=env.BOUNDED_REQUEST_KEY;
       if(!key(requestKey)||env.BOUNDED_POLICY_SHA!==env.STEWARD_CONTROLLER_SHA)fail('BOUNDED_OBSERVE_INPUT');
-      const before=await candidateEvidence(get);if(!sameIdentity(identity,before.identity))fail('BOUNDED_EPOCH');
-      const repository={id:product.id,full_name:product.name,default_branch:'main'};
+      const before=await candidateEvidence(get,{product});if(!sameIdentity(identity,before.identity))fail('BOUNDED_EPOCH');
+      const repository={id:product.id,full_name:product.name,default_branch:product.defaultBranch};
       const state=await fetchState(root,repository,token);
       if(state.snapshot.head!==before.evidence.stateCommit)fail('BOUNDED_STATE_MOVED');
       const result=await nativeReleaseCandidate({directory:state.directory,writeDirectory:join(root,'writes'),remote:state.remote,repository:product.name,
-        repositoryId:product.id,defaultBranch:'main',appBotId:app.appBotId,identity:botIdentity},{token,readToken,controllerSha:env.STEWARD_CONTROLLER_SHA,
+        repositoryId:product.id,defaultBranch:product.defaultBranch,appBotId:app.appBotId,identity:botIdentity},{token,readToken,controllerSha:env.STEWARD_CONTROLLER_SHA,
         expectedStateSha:before.evidence.stateCommit,observation:identity});
-      const after=await candidateEvidence(get);if(!sameIdentity(identity,after.identity))fail('BOUNDED_EPOCH_MOVED');
+      const after=await candidateEvidence(get,{product});if(!sameIdentity(identity,after.identity))fail('BOUNDED_EPOCH_MOVED');
       if(after.pull.head.sha!==before.pull.head.sha)fail('BOUNDED_HUMAN_HEAD_MOVED');
       const output={schemaVersion:1,requestKey,identity,repositoryId:centralId,runId:run.id,runAttempt:run.run_attempt,
         controllerSha:env.STEWARD_CONTROLLER_SHA,sourceSha:identity.sourceSha,observedAt:new Date().toISOString(),

@@ -1,7 +1,17 @@
 import {isDeepStrictEqual} from 'node:util';
 import { createHash } from 'node:crypto';
 import { candidateObservationIdentity, decodeCandidateArchive, decodeCandidateDocument, decodeReleaseRecord } from '../packages/runner/dist/index.js';
-export const product = { id: 1187527897, name: 'splrad/LayerScape' };
+import registrations from '../config/release/event-repositories.json' with {type:'json'};
+export function candidateProduct(repositoryId, registry=registrations) {
+  const matches=registry.filter(record=>record.id===repositoryId);
+  if(!Number.isSafeInteger(repositoryId)||repositoryId<1||matches.length!==1)throw Error('BOUNDED_EVENT_HINT');
+  const target=matches[0];
+  if(!/^splrad\/[A-Za-z0-9_.-]+$/.test(target.name)||!target.defaultBranch)throw Error('BOUNDED_PRODUCT');
+  return target;
+}
+// Legacy publication consumers identify their single approved callback by its reviewed registration.
+const legacy=registrations.filter(record=>record.legacyPublicationCallback===true);
+export const product = legacy.length===1 ? legacy[0] : undefined;
 export const sha256 = value => createHash('sha256').update(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value)).digest('hex');
 export const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 export const key = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -10,9 +20,9 @@ export function exact(value, fields) {
 }
 export function sameIdentity(a,b) { exact(a,Object.keys(b)); return Object.keys(b).every(k=>a[k]===b[k]); }
 /** Only immutable Git data supplies the generation/epoch; transport hints never do. */
-export async function candidateEvidence(get,{requireReady=true}={}) {
+export async function candidateEvidence(get,{requireReady=true,product}) {
   const repository=await get(`/repos/${product.name}`);
-  if(repository.id!==product.id||repository.full_name!==product.name||repository.archived||repository.disabled||repository.default_branch!=='main')throw Error('BOUNDED_REPOSITORY');
+  if(repository.id!==product.id||repository.full_name!==product.name||repository.archived||repository.disabled||repository.default_branch!==product.defaultBranch||repository.private!==false||repository.visibility!=='public'||repository.owner?.id!==302208797)throw Error('BOUNDED_REPOSITORY');
   const ref=await get(`/repos/${product.name}/git/ref/heads/steward/release-state`);
   if(ref.ref!=='refs/heads/steward/release-state'||ref.object?.type!=='commit'||!sha(ref.object.sha))throw Error('BOUNDED_STATE_REF');
   const stateCommit=ref.object.sha;
@@ -24,7 +34,7 @@ export async function candidateEvidence(get,{requireReady=true}={}) {
     return JSON.parse(bytes.toString('utf8'));
   };
   const state=decodeReleaseRecord('repository',Buffer.from(JSON.stringify(await file('state.json'))));
-  if(state.repositoryId!==product.id||state.activeCycleId||!key(state.candidate?.id))throw Error('BOUNDED_CANDIDATE_REQUIRED');
+  if(state.defaultBranch!==product.defaultBranch||state.repositoryId!==product.id||state.activeCycleId||!key(state.candidate?.id))throw Error('BOUNDED_CANDIDATE_REQUIRED');
   const chunk=async path=>decodeCandidateArchive(Buffer.from(JSON.stringify(await file(path))),product.id);
   const path=`generated/${state.candidate.id}/session.json`,first=await chunk(path),chunks=[first];
   if(!Number.isSafeInteger(first.count)||first.count<1||first.count>128)throw Error('BOUNDED_CHUNKS');
@@ -47,7 +57,7 @@ export async function candidateEvidence(get,{requireReady=true}={}) {
   else {try {identity=candidateObservationIdentity(session);}catch { /* A normal event may recover the existing pending candidate. */ }}
   const pull=await get(`/repos/${product.name}/pulls/${state.candidate.prNumber}`);
   if(pull.number!==state.candidate.prNumber||pull.head?.repo?.id!==product.id||pull.base?.repo?.id!==product.id
-    ||pull.head.ref!==state.candidate.branch||pull.base.ref!=='main'||!sha(pull.head.sha))throw Error('BOUNDED_PULL');
+    ||pull.head.ref!==state.candidate.branch||pull.base.ref!==product.defaultBranch||!sha(pull.head.sha))throw Error('BOUNDED_PULL');
   if(session.manualValidation&&(session.manualValidation.prNumber!==pull.number||session.manualValidation.branch!==pull.head.ref))throw Error('MANUAL_OWNER');
   const after=await get(`/repos/${product.name}/git/ref/heads/steward/release-state`);
   if(after.object?.sha!==stateCommit)throw Error('BOUNDED_STATE_MOVED');
@@ -62,10 +72,11 @@ export async function validateNormalCandidateEvent(hint,sourceSha,get) {
 }
 async function validateIssueEvent(hint,get,requireReady,sourceSha) {
   exact(hint,['repositoryId','prNumber','eventId']);
-  if(hint.repositoryId!==product.id||!Number.isSafeInteger(hint.prNumber)||hint.prNumber<1||!Number.isSafeInteger(hint.eventId)||hint.eventId<1)throw Error('BOUNDED_EVENT_HINT');
-  const current=await candidateEvidence(get,{requireReady});
+  const product=candidateProduct(hint.repositoryId);
+  if(!Number.isSafeInteger(hint.prNumber)||hint.prNumber<1||!Number.isSafeInteger(hint.eventId)||hint.eventId<1)throw Error('BOUNDED_EVENT_HINT');
+  const current=await candidateEvidence(get,{requireReady,product});
   if(current.pull.number!==hint.prNumber||current.pull.state!=='open'||current.pull.merged)throw Error('BOUNDED_EVENT_OBJECT');
-  const main=await get(`/repos/${product.name}/git/ref/heads/main`);
+  const main=await get(`/repos/${product.name}/git/ref/heads/${encodeURIComponent(product.defaultBranch)}`);
   if(main.object?.sha!==(requireReady?current.identity.sourceSha:sourceSha))throw Error('BOUNDED_SOURCE_CHANGED');
   const event=await get(`/repos/${product.name}/issues/events/${hint.eventId}`);
   if(event.id!==hint.eventId||event.issue?.number!==hint.prNumber||event.issue?.repository_url!==`https://api.github.com/repos/${product.name}`
