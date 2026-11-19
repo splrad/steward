@@ -20,9 +20,14 @@ function registeredRepository(event, registry=registrations) {
 }
 export function withCycleEventProduct(app,event,operation,transport=nativeEvidenceTransport) {
   const oldCallback=event.kind==='publication'&&!Object.hasOwn(event,'productRepositoryId');
-  const id=oldCallback?registeredRepository(event).id:event.kind==='publication'?event.productRepositoryId:event.repositoryId;
+  const legacy=oldCallback?registeredRepository(event):undefined;
+  const id=legacy?legacy.id:event.kind==='publication'?event.productRepositoryId:event.repositoryId;
   if(!['push','run','publication'].includes(event.kind)||!Number.isSafeInteger(id)||id<1)fail('CYCLE_EVENT_KIND');
-  return withParticipatingProduct(app,id,operation,transport);
+  return withParticipatingProduct(app,id,product=>{
+    if(!legacy)return operation(product);
+    if(product.name!==legacy.name||product.defaultBranch!==legacy.defaultBranch)fail('CYCLE_EVENT_KIND');
+    return operation({...product,legacyPublicationCallback:true});
+  },transport);
 }
 const identity = {name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
 const fail = reason => { throw Error(reason); };

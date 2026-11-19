@@ -91,6 +91,7 @@ test('two declared release units on trunk bind independent version files, notes 
   f.pull.head.repo.id=p.id;f.pull.base.repo.id=p.id;f.pull.base.ref=p.defaultBranch;
   f.delivery.units=['cli','ui'].map(id=>({...f.delivery.units[0],id,path:'packages/'+id,notesPath:'.release-notes/'+id+'.md'}));
   f.session.generated.units=f.delivery.units.map(({id,path},i)=>({id,path,version:(i+1)+'.0.0',tag:id+'-v'+(i+1)+'.0.0'}));
+  f.session.identity.units=f.session.generated.units.map(({id})=>({id}));
   f.files['.github/delivery.json']=JSON.stringify(f.delivery);
   const packages={},manifest={};
   for(const u of f.session.generated.units) {
@@ -113,7 +114,7 @@ test('two declared release units on trunk bind independent version files, notes 
     else if(path.startsWith('/users/'))body={id:301115370,type:'Bot'};
     else if(path.endsWith('/access_tokens')){
       const request=JSON.parse(options.body);
-      assert.ok(!request.repository_ids||JSON.stringify(request.repository_ids)===JSON.stringify([p.id]));
+      assert.ok(!request.repository_ids||JSON.stringify(request.repository_ids)===JSON.stringify([repository.id]));
       body={token:'ghs_offline_'+Object.keys(request.permissions).join('_'),expires_at:new Date(Date.now()+3600000).toISOString(),permissions:request.permissions};
     }else if(path==='/installation/repositories')body={total_count:1,repositories:[repository]};
     else if(path==='/installation/token')return new Response(null,{status:204});
@@ -130,7 +131,7 @@ test('two declared release units on trunk bind independent version files, notes 
     const path=url.slice(prefix.length);
     let result;
     if(!path)result=repository;
-    else if(path==='/git/ref/heads/trunk')result={ref:'refs/heads/trunk',object:{type:'commit',sha:source}};
+    else if(path==='/git/ref/heads/'+repository.default_branch)result={ref:'refs/heads/'+repository.default_branch,object:{type:'commit',sha:source}};
     else if(path==='/git/trees/'+source+'?recursive=1')result={truncated:false,tree:files.map(path=>({path,type:'blob',mode:'100644',sha:blob(path).sha}))};
     else if(path==='/git/matching-refs/heads/steward/release-state')result=[];
     else if(path.startsWith('/contents/')&&path.endsWith('?ref='+source))result=blob(path.slice(10).split('?')[0]);
@@ -154,6 +155,18 @@ test('two declared release units on trunk bind independent version files, notes 
     },transport);
   }
   await assert.rejects(withCycleEventProduct(app,{kind:'publication',repositoryId:1296724484,productRepositoryId:99},()=>assert.fail(),transport),/BOUNDED_REPOSITORY/);
+  Object.assign(repository,{id:repo,full_name:'splrad/LayerScape',default_branch:'main'});
+  const oldEvent={kind:'publication',repositoryId:1296724484,runId:55,attempt:1};
+  await withCycleEventProduct(app,oldEvent,product=>{
+    assert.equal(product.id,repo);
+    validateEvent(oldEvent,hash([oldEvent.repositoryId,'publication',55,1]),[product]);
+  },transport);
+  repository.default_branch='trunk';
+  await assert.rejects(withCycleEventProduct(app,oldEvent,()=>assert.fail(),transport),/CYCLE_EVENT_KIND/);
+  Object.assign(repository,{id:p.id,full_name:p.name,default_branch:p.defaultBranch});
+  const missing=f.session.generated.units.pop();
+  await assert.rejects(recover(),/MANUAL_UNIT_COVERAGE/);
+  f.session.generated.units.push(missing);
   const record=await recover();
   assert.equal(record.schemaVersion,2);
   assert.deepEqual(record.units.map(u=>u.versionPath),['packages/cli/version.txt','packages/ui/version.txt']);

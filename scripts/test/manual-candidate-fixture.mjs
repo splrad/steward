@@ -6,7 +6,7 @@ export function fixture() {
   const unit={id:'layerscape',path:'.',version:'1.0.0',tag:'v1.0.0'};
   const session={repository:{repositoryId:repo,activeCycleId:null,revision:0,candidate:{id,prNumber:192,branch:'steward/release-candidate',
     baseSha:G,publishedHead:G,generatedSnapshotPath:'generated/original.json',pendingWrite:null,statusCommentId:11}},
-    generated:{schemaVersion:1,baseSha:G,files:[],units:[unit],configDigest:id,sourceDigest:id},pending:null,identity:{authorsDigest:id,sourceDigest:id,actors:[],contributors:{contributors:[],unresolved:0},units:[]},
+    generated:{schemaVersion:1,baseSha:G,files:[],units:[unit],configDigest:id,sourceDigest:id},pending:null,identity:{authorsDigest:id,sourceDigest:id,actors:[],contributors:{contributors:[],unresolved:0},units:[{id:unit.id,actors:[],contributors:{contributors:[],unresolved:0}}]},
     conflict:null,preview:'旧冲突提示',adoption:null};
   const pull={number:192,state:'open',merged:false,labels:[],head:{sha:H,ref:session.repository.candidate.branch,repo:{id:repo}},base:{ref:'main',repo:{id:repo}}};
   const delivery={schemaVersion:1,repositoryAuthors:[{id:7,evidence:'fixture'}],units:[{id:'layerscape',path:'.',notesPath:'.release-notes/layerscape.md',
