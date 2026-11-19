@@ -80,17 +80,50 @@
         ]
       },
       "configVersion": "quality-native-comments-v1",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4633535903",
+        "sourceCommit": "500311a4ccfed739b9ffe7e1091684943a944979",
+        "sourceUrl": "https://github.com/splrad/steward/pull/379#discussion_r4633535903",
+        "severity": "原文未说明",
+        "originalIdentifiers": [
+          "<a class=\"Link\" href=\"/splrad/steward/blob/500311a4ccfed739b9ffe7e1091684943a944979/packages/runner/src/release-pipeline.ts#L258-L261\">function assertProductDelivery</a>",
+          "<code>assertProductDelivery</code>",
+          "<code>scripts/manual-candidate.mjs</code>",
+          "<code>validateManualCandidate</code>",
+          "<code>assertProductDelivery(delivery, product.name);</code>",
+          "<code>assertProductDelivery(delivery);</code>",
+          "splrad/steward/blob/500311a4ccfed739b9ffe7e1091684943a944979/packages/runner/src/release-pipeline.ts",
+          "L258-L261",
+          "scripts/manual-candidate.mjs"
+        ],
+        "segmentIndex": 0,
+        "problemZh": "原文指出存在“多余的尾随参数”：在 scripts/manual-candidate.mjs 中调用 assertProductDelivery 时传入了多余的第二个参数，与函数 assertProductDelivery 的预期参数不一致。",
+        "impactZh": "原文说明该第二个参数会被忽略，并触发 CodeQL 报告；这会造成调用与函数签名不对齐的代码质量问题。",
+        "suggestionZh": "按原文建议，在 validateManualCandidate 中保持 delivery 的解析逻辑不变，仅将 assertProductDelivery(delivery, product.name); 改为 assertProductDelivery(delivery);，且不需要新增 imports、helper methods 或其他定义。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-19T18:54:45.737Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3403,
+                "outputTokens": 570
+              }
+            ],
+            "totalNanoAiu": 1393525000,
+            "aiCredits": 1.393525,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-19T18:55:45.737Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     }
   },
   "cursor": 0
