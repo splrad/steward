@@ -23,6 +23,18 @@ for name, entries in {
     with zipfile.ZipFile(root / name, "w") as archive:
         for member, data in entries:
             archive.writestr(member, data)
+class StreamingOutput(io.BytesIO):
+    def seek(self, *args):
+        raise io.UnsupportedOperation("streaming writer")
+
+
+for zip64 in (False, True):
+    output = StreamingOutput()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        with archive.open("items.txt", "w", force_zip64=zip64) as member:
+            member.write(b"alpha")
+    (root / ("stream64.zip" if zip64 else "stream.zip")).write_bytes(output.getvalue())
+
 # A standard Python zipapp has an interpreter line before its ZIP members.
 app = root / "example-app"
 app.mkdir()

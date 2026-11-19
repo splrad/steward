@@ -124,13 +124,12 @@ export async function inspectDeclaredAsset(path: string, asset: DeliveryUnit['as
     const inspector = nativeReleaseInspector(resolve(controller, 'scripts/inspect-native-release.ps1'), home, process.platform, adapter);
     const metadata = await inspector.inspectPath!(path);
     if (metadata !== version) throw new BuildContractError('RN_BUILD_VERSION');
-    if (!destination) return version;
     if (adapter === 'wheel' || adapter === 'sdist') {
-      await execute(['--stage', path, destination]);
+      if (destination) await execute(['--stage', path, destination]);
       return version;
     }
     if (adapter === 'pe' || adapter === 'node-package') {
-      await copyFile(path, destination, constants.COPYFILE_EXCL);
+      if (destination) await copyFile(path, destination, constants.COPYFILE_EXCL);
       return version;
     }
   }

@@ -23,6 +23,8 @@ it.each([
   ['cli.tar.gz', 'tar-gzip', true],
   ['stations.zip', 'zip', true],
   ['large.zip', 'zip', true],
+  ['stream.zip', 'zip', true],
+  ['stream64.zip', 'zip', true],
   ['comment.zip', 'zip', true],
   ['application.zip', 'zip', false],
   ['extra.zip', 'zip', false],

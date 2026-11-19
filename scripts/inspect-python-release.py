@@ -41,11 +41,41 @@ class BoundedZipReader(io.BufferedReader):
         return super().read(size)
 
 
+def check_zip_records(source, entries, central_start):
+    """Account for each physical local header, compressed payload and descriptor."""
+    require(0 < len(entries) <= MAX_ENTRIES)
+    ordered = sorted(entries, key=lambda item: item.header_offset)
+    require(ordered[0].header_offset == 0)
+    for index, entry in enumerate(ordered):
+        boundary = ordered[index + 1].header_offset if index + 1 < len(ordered) else central_start
+        source.seek(entry.header_offset)
+        header = source.read(30)
+        require(len(header) == 30 and header[:4] == b"PK\x03\x04")
+        flags, method = struct.unpack_from("<HH", header, 6)
+        require(flags == entry.flag_bits and method == entry.compress_type)
+        name_size, extra_size = struct.unpack_from("<HH", header, 26)
+        payload_end = source.tell() + name_size + extra_size + entry.compress_size
+        if not flags & 8:
+            require(payload_end == boundary)
+            continue
+        # Streaming writers use a descriptor, with optional signature and
+        # 32- or 64-bit sizes. Only its exact fields may follow the payload.
+        size = boundary - payload_end
+        require(size in (12, 16, 20, 24))
+        source.seek(payload_end)
+        descriptor = source.read(size)
+        require(len(descriptor) == size)
+        if size in (16, 24):
+            require(descriptor[:4] == b"PK\x07\x08")
+            descriptor = descriptor[4:]
+        fields = struct.unpack("<III" if len(descriptor) == 12 else "<IQQ", descriptor)
+        require(fields == (entry.CRC, entry.compress_size, entry.file_size))
+
+
 @contextmanager
 def release_zip(path):
     with BoundedZipReader(io.FileIO(path, "r")) as bounded, zipfile.ZipFile(bounded) as archive:
-        # Central-directory order can differ from physical member order.
-        require(min((entry.header_offset for entry in archive.infolist()), default=-1) == 0)
+        check_zip_records(bounded, archive.infolist(), archive.start_dir)
         # A ZIP ends with its 22-byte EOCD followed by exactly its declared
         # comment. ZipFile itself tolerates both extra bytes and short comments.
         end = bounded.seek(0, io.SEEK_END)
