@@ -46,7 +46,8 @@ async function approvedQualityRepository(reader:GitReader,policy:string,id:strin
   const config=JSON.parse(bytes.toString('utf8'));
   ensure(config.schemaVersion===1 && config.repositories && typeof config.repositories==='object' &&
     !Array.isArray(config.repositories),'QUALITY_POLICY_SCHEMA');
-  return Object.hasOwn(config.repositories,id) ? config.repositories[id] : undefined;
+  const name=Object.hasOwn(config.repositories,id) ? config.repositories[id] : undefined;
+  return typeof name==='string' && /^splrad\/[A-Za-z0-9_.-]+$/.test(name) ? name : undefined;
 }
 export async function dispatchQualityEvent(env:BoundedEnv,event:string,payload:any,delivery:string) {
   const target=qualityLocator(event,payload,Number(env.INSTALLATION_ID));

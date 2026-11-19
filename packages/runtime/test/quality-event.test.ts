@@ -1,7 +1,7 @@
 import {expect,it,vi} from 'vitest';
 import {QualityEvent,qualityLocator} from '../src/quality-event.js';
 const sha='a'.repeat(40),id=1296724484,install=123;
-function qualityFile(repositories:Record<string,string>) {
+function qualityFile(repositories:Record<string,unknown>) {
  const content=Buffer.from(JSON.stringify({schemaVersion:1,repositories}));
  return {type:'file',path:'config/review/quality-language.json',size:content.length,encoding:'base64',content:content.toString('base64')};
 }
@@ -15,7 +15,7 @@ it('targets the native dynamic run even when GitHub lists no associated pulls', 
  for(const change of [{conclusion:'failure'},{path:'.github/workflows/codeql.yml'},{head_branch:'main'},{event:'push'}])
    expect(qualityLocator('workflow_run',{...payload,workflow_run:{...run,...change}},install)).toBeUndefined();
  let config=Buffer.from(JSON.stringify({schemaVersion:1,enabled:true,deploymentSha:sha}));
- const repositories:Record<string,string>={[id]:'splrad/steward'};
+ const repositories:Record<string,unknown>={[id]:'splrad/steward'};
  const json=vi.fn(async(_id:number,path:string)=>path.includes('/git/ref/')?{ref:'refs/'+path.split('/git/ref/')[1],object:{type:'commit',sha}}:
    path.includes('quality-language.json')?qualityFile(repositories):
    path.includes('/contents/')?{type:'file',path:'config/bounded-recheck.json',size:config.length,encoding:'base64',content:config.toString('base64')}:
@@ -40,11 +40,11 @@ it('targets the native dynamic run even when GitHub lists no associated pulls', 
  expect(json).toHaveBeenLastCalledWith(id,'/repos/splrad/steward/actions/workflows/quality-language-summary.yml/dispatches',
    'POST',{ref:'main',inputs:{...target,policy_sha:sha}});
  const newTarget={...target,repository_id:'23456789'};
- for(const approved of [false,true]){
-   if(approved)repositories[newTarget.repository_id]='splrad/new-public';
+ for(const entry of [undefined,true,{},'', 'splrad/new-public']){
+   repositories[newTarget.repository_id]=entry;
    const next=new QualityEvent(new SqliteDurableStorage() as any,env as any,()=>({json} as any));
    await next.register({...record,target:newTarget});
-   expect(json.mock.calls.filter(([,path])=>path.endsWith('/dispatches'))).toHaveLength(approved?2:1);
+   expect(json.mock.calls.filter(([,path])=>path.endsWith('/dispatches'))).toHaveLength(entry==='splrad/new-public'?2:1);
  }
 
 });
