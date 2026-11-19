@@ -22,7 +22,7 @@ export async function candidateFacts<T extends boolean=false>(g:GitReader,requir
    ensure(Array.isArray(selected)&&selected.length>0&&selected.every((u:any)=>
      g.target!.units!.some(unit=>unit.id===u.id&&unit.path===u.path)),'CANDIDATE_UNIT_NOT_SELECTED');
  }
- if(ready&&g.target?.units){
+ if(ready&&(g.target?.units||session.conflict)){
    const ids=(units:any[])=>units.map(unit=>unit.id).sort();
    const frozen=ids((session.conflict?.generated??generated).units);
    ensure(Array.isArray(session.identity.units)&&new Set(frozen).size===frozen.length&&
