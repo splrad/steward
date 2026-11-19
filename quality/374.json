@@ -112,9 +112,15 @@
           "status": "FAILED",
           "model": null,
           "usage": null
+        },
+        {
+          "startedAt": "2026-11-19T21:43:27.961Z",
+          "status": "UNKNOWN",
+          "model": null,
+          "usage": null
         }
       ],
-      "nextCheckAt": "2026-11-19T21:43:07.681Z",
+      "nextCheckAt": null,
       "errorCode": "RESPONSE_UNKNOWN"
     },
     "c7fd2b3b24654bb5434cbdeed56b09ad7e9b1a2cc8be20da8029e4283f8e89e5": {
@@ -142,9 +148,15 @@
           "status": "FAILED",
           "model": null,
           "usage": null
+        },
+        {
+          "startedAt": "2026-11-19T21:43:27.961Z",
+          "status": "UNKNOWN",
+          "model": null,
+          "usage": null
         }
       ],
-      "nextCheckAt": "2026-11-19T21:43:07.681Z",
+      "nextCheckAt": null,
       "errorCode": "RESPONSE_UNKNOWN"
     }
   },
