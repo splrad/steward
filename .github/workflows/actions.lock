@@ -42,7 +42,6 @@ workflows:
     '.github/workflows/pr-validation-native.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294'
-        - 'actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68'
         - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         - 'dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d'
         - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
@@ -68,6 +67,9 @@ workflows:
     '.github/workflows/release.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
+    '.github/workflows/steward-source.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+        - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
     '.github/workflows/sync-managed.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
@@ -87,11 +89,6 @@ dependencies:
         commit: 'sha1-bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13'
         owner_id: 44036562
         repo_id: 177139928
-    'actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68':
-        ref: 'v6.0.0'
-        commit: 'sha1-a98b56852c35b8e3190ac28c8c2271da59106c68'
-        owner_id: 44036562
-        repo_id: 192625306
     'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020':
         ref: 'v7.0.0'
         commit: 'sha1-820762786026740c76f36085b0efc47a31fe5020'
