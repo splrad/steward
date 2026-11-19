@@ -1,3 +1,4 @@
+import { channelFiles } from '../src/delivery-config.js';
 import { expect, it } from 'vitest';
 import { parseDeliveryConfig, deliveryAssetNames } from '../src/delivery-config.js';
 const config = { schemaVersion: 1, repositoryAuthors: [{ id: 7, evidence: 'Test fixture: confirmed repository author; not a production identity.' }], units: [
@@ -42,4 +43,26 @@ it.each(['recipe', 'command', 'author-duplicate', 'unit-duplicate', 'path', 'git
   if (kind === 'unknown-placeholder') unit.assets[0].name = 'app-${command}.zip';
   if (kind === 'case-collision') unit.assets.push({ ...unit.assets[0], id: 'other', name: 'APP-${packageVersion}.zip' });
   expect(() => parseDeliveryConfig(input)).toThrow();
+});
+
+it('keeps legacy GitHub selection while honoring independent version 2 destinations', () => {
+  const assets = [{id:'installer',name:'Tool.msi',mediaType:'application/octet-stream'},
+    {id:'portable',name:'cli.tar.gz',mediaType:'application/gzip'}];
+  const unit = {id:'cli',path:'.',notesPath:'notes.md',assets,channels:[]};
+  const source = {schemaVersion:1,repositoryAuthors:[{id:1,evidence:'test'}],units:[unit]};
+  const files=assets.map(asset=>({id:asset.id,path:asset.name}));
+  expect(channelFiles(parseDeliveryConfig(source).units[0]!, 'github-release', files)).toHaveLength(6);
+  expect(channelFiles(parseDeliveryConfig({...source,schemaVersion:2}).units[0]!, 'github-release', files)).toEqual([]);
+  const channels=[
+    {id:'github-release',required:true,location:'github',artifactIds:['installer']},
+    {id:'ghcr-assets',required:true,location:'ghcr.io/example/tools',artifactIds:['portable'],metadata:['SHA256SUMS']},
+    {id:'winget',required:true,location:'Example.Tools',artifactIds:['installer']}
+  ];
+  const configured=parseDeliveryConfig({...source,schemaVersion:2,units:[{...unit,channels}]}).units[0]!;
+  expect(channelFiles(configured,'github-release',files)).toEqual(['Tool.msi']);
+  expect(channelFiles(configured,'ghcr-assets',files)).toEqual(['SHA256SUMS','cli.tar.gz']);
+  expect(channelFiles(configured,'winget',files)).toEqual(['Tool.msi']);
+  expect(configured.assets).toEqual(assets);
+  configured.channels.find(channel=>channel.id==='winget')!.artifactIds=['portable'];
+  expect(()=>channelFiles(configured,'winget',files)).toThrow('DELIVERY_WINGET_INSTALLER');
 });

@@ -1,3 +1,4 @@
+import {githubUnits} from '../../core/src/release-observation.js';
 import { releaseBodyMatches } from './release-body.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { readFile, mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
@@ -397,7 +398,7 @@ export interface DispatchHistory { complete: boolean; observations:NativeDispatc
 /** Download and verify the original formal bytes; continuation never selects a build. */
 export async function verifyContinuationReleases(context:EvidenceContext,io:EvidenceTransport) {
   const reader=await formalReleaseReader(context,io);
-  for(const unit of context.cycle.units) {
+  for(const unit of githubUnits(context.cycle)) {
     if(unit.releaseId===null||!unit.assets.length||unit.manifestDigest===null||unit.notesDigest===null)fail('frozen release required');
     const release=await reader.json(`releases/${unit.releaseId}`),assets=await reader.pages(`releases/${unit.releaseId}/assets`,'');
     if(release.id!==unit.releaseId||release.tag_name!==unit.tag||release.author?.id!==context.appBotId||release.draft!==false||release.immutable!==true

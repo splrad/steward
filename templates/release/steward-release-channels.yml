@@ -36,6 +36,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   source-check:
+    # This native adapter owns the enrolled LayerScape package and personal WinGet fork.
+    if: github.repository == 'splrad/LayerScape' && github.repository_id == '1187527897'
     runs-on: windows-2025
     timeout-minutes: 10
     outputs:
@@ -55,7 +57,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
+          ref: dd793183eafe69de51d64db182edbbf3f438bdaa
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -109,7 +111,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
+          ref: dd793183eafe69de51d64db182edbbf3f438bdaa
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -186,7 +188,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
+          ref: dd793183eafe69de51d64db182edbbf3f438bdaa
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -243,8 +245,10 @@ jobs:
           $items=@()
           $auth=Join-Path $env:RUNNER_TEMP 'oras-read.json'
           [IO.File]::WriteAllText($auth,'{"auths":{}}')
-          $env:GHCR_TOKEN | oras login ghcr.io --username $env:GITHUB_ACTOR --password-stdin --registry-config $auth
-          if ($LASTEXITCODE) { throw 'CHANNEL_READ_AUTH_UNKNOWN' }
+          if ($selection.targets.channelId -contains 'ghcr-assets') {
+            $env:GHCR_TOKEN | oras login ghcr.io --username $env:GITHUB_ACTOR --password-stdin --registry-config $auth
+            if ($LASTEXITCODE) { throw 'CHANNEL_READ_AUTH_UNKNOWN' }
+          }
           foreach ($target in $selection.targets) {
             $item=[ordered]@{unitId=$target.unitId;channelId=$target.channelId;version=$target.version;readStatus='AUTH_UNKNOWN';exists=$null;digest=$null;accepted=$null;indexed=$null;observedAt=[DateTime]::UtcNow.ToString('o');evidenceKind=$target.channelId}
             if ($target.channelId -eq 'ghcr-assets') {
@@ -331,7 +335,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
+          ref: dd793183eafe69de51d64db182edbbf3f438bdaa
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -489,7 +493,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
+          ref: dd793183eafe69de51d64db182edbbf3f438bdaa
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -555,7 +559,7 @@ jobs:
           $version=$manifest.version
           $auth=Join-Path $env:RUNNER_TEMP 'oras-business.json'
           [IO.File]::WriteAllText($auth,'{"auths":{}}')
-          $names=@($manifest.artifacts|ForEach-Object {$_.path})+@('sbom.spdx.json','release-notes.md','artifact-manifest.json','SHA256SUMS')|Sort-Object
+          $names=@($manifest.channelFiles | Sort-Object)
           $expected=@{};foreach($name in $names) {$expected[$name]=(Get-FileHash -LiteralPath "final/$name" -Algorithm SHA256).Hash.ToLowerInvariant()}
           if ($env:MODE -eq 'submit') {
             $env:GHCR_TOKEN | oras login ghcr.io --username $env:GITHUB_ACTOR --password-stdin --registry-config $auth
@@ -660,7 +664,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
+          ref: dd793183eafe69de51d64db182edbbf3f438bdaa
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -731,7 +735,7 @@ jobs:
 
           if ($version -notmatch '^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.-]+)?$') { throw 'WINGET_VERSION' }
 
-          $installer=@($manifest.artifacts|Where-Object {$_.id -eq 'deployer'})
+          $installer=@($manifest.artifacts|Where-Object {$manifest.channelFiles -ccontains $_.path})
 
           if ($installer.Count -ne 1) { throw 'WINGET_INSTALLER' }
 
@@ -1033,7 +1037,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
+          ref: dd793183eafe69de51d64db182edbbf3f438bdaa
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -1093,7 +1097,7 @@ jobs:
           $version=$manifest.version
           $auth=Join-Path $env:RUNNER_TEMP 'oras-business.json'
           [IO.File]::WriteAllText($auth,'{"auths":{}}')
-          $names=@($manifest.artifacts|ForEach-Object {$_.path})+@('sbom.spdx.json','release-notes.md','artifact-manifest.json','SHA256SUMS')|Sort-Object
+          $names=@($manifest.channelFiles | Sort-Object)
           $expected=@{};foreach($name in $names) {$expected[$name]=(Get-FileHash -LiteralPath "final/$name" -Algorithm SHA256).Hash.ToLowerInvariant()}
           if ($env:MODE -eq 'submit') {
             $env:GHCR_TOKEN | oras login ghcr.io --username $env:GITHUB_ACTOR --password-stdin --registry-config $auth
@@ -1195,7 +1199,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
+          ref: dd793183eafe69de51d64db182edbbf3f438bdaa
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -1266,7 +1270,7 @@ jobs:
 
           if ($version -notmatch '^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.-]+)?$') { throw 'WINGET_VERSION' }
 
-          $installer=@($manifest.artifacts|Where-Object {$_.id -eq 'deployer'})
+          $installer=@($manifest.artifacts|Where-Object {$manifest.channelFiles -ccontains $_.path})
 
           if ($installer.Count -ne 1) { throw 'WINGET_INSTALLER' }
 
