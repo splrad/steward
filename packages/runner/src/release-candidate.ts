@@ -148,7 +148,7 @@ export async function advanceReleaseCandidate(session: CandidateSession, io: Can
       if (value.pr?.editing || value.head !== pending.write.expectedHead || (await io.source()).baseSha !== pending.write.baseSha) {
         // The original proposal remains in protected state history. Keep the previous generated snapshot
         // so the next wake can detect and preserve human differences.
-        if ('previousIdentity' in pending) session.identity = pending.previousIdentity ?? null;
+        session.identity = pending.previousIdentity ?? null;
         candidate.pendingWrite = null; session.pending = null; await save();
         return { status: value.pr?.editing ? 'CANCELLED_FOR_EDITING' as const : 'REPLAN' as const };
       }

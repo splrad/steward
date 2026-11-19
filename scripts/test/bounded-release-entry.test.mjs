@@ -113,6 +113,13 @@ test('candidate evidence permits unaffected units but rejects losing a frozen un
   assert.equal(recovered.identity,null);
   assert.equal(recovered.selectionChanged,true);
 });
+test('normal recovery regenerates a published snapshot after cancellation without a former identity',async()=>{
+  const f=candidateFixture(s=>{s.identity=null;});
+  const recovered=await candidateEvidence(f.get,{product,requireReady:false});
+  assert.equal(recovered.identity,null);
+  assert.equal(recovered.selectionChanged,true);
+  await assert.rejects(candidateEvidence(f.get,{product}),/CANDIDATE_OBSERVATION_NOT_READY/);
+});
 test('normal recovery reads a conflict with a new frozen unit set without claiming the old identity',async()=>{
   const f=candidateFixture(s=>{
     const next={...s.generated,units:[{...s.generated.units[0],id:'ui',path:'ui'}]};

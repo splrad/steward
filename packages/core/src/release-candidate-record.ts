@@ -29,6 +29,12 @@ function snapshot(value: any) {
   for (const file of value.files) exact(file, ['path', 'mode', 'content']);
   for (const unit of value.units) { exact(unit, ['id', 'path', 'version', 'tag']); if (Object.values(unit).some(v => typeof v !== 'string' || !v)) throw new Error('CANDIDATE_UNIT_INVALID'); }
 }
+function candidateIdentity(identity: any) {
+  exact(identity, ['authorsDigest', 'sourceDigest', 'actors', 'contributors', 'units']);
+  if (!/^[a-f0-9]{64}$/.test(identity.authorsDigest) || !/^[a-f0-9]{64}$/.test(identity.sourceDigest)
+    || !Array.isArray(identity.actors) || !Array.isArray(identity.units)) throw new Error('CANDIDATE_IDENTITY_INVALID');
+  for (const unit of identity.units) { exact(unit, ['id', 'actors', 'contributors']); if (!Array.isArray(unit.actors)) throw new Error('CANDIDATE_IDENTITY_INVALID'); }
+}
 export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): Promise<any> {
   if (!chunks.length) throw new Error('CANDIDATE_ARCHIVE_MISSING');
   const first = chunks[0]!, ordered = [...chunks].sort((a, b) => a.index - b.index);
@@ -78,19 +84,17 @@ export async function decodeCandidateDocument(chunks: CandidateArchiveChunk[]): 
     }
     if (value.generated) snapshot(value.generated);
     if (value.pending) {
-      exact(value.pending, ['write', 'generated']); snapshot(value.pending.generated);
+      const hasPrevious = Object.hasOwn(value.pending, 'previousIdentity');
+      exact(value.pending, hasPrevious ? ['write', 'generated', 'previousIdentity'] : ['write', 'generated']);
+      if (hasPrevious && value.pending.previousIdentity !== null) candidateIdentity(value.pending.previousIdentity);
+      snapshot(value.pending.generated);
       const write = value.pending.write; exact(write, ['expectedHead', 'baseSha', 'proposedCommit', 'generatedDigest', 'objects']);
       if (write.expectedHead !== null && !/^[a-f0-9]{40}$/.test(write.expectedHead) || !/^[a-f0-9]{40}$/.test(write.baseSha)
         || !/^[a-f0-9]{40}$/.test(write.proposedCommit) || !/^[a-f0-9]{64}$/.test(write.generatedDigest) || !Array.isArray(write.objects)) throw new Error('CANDIDATE_PENDING_INVALID');
       for (const object of write.objects) { exact(object, ['oid', 'type', 'bytes']); if (!/^[a-f0-9]{40}$/.test(object.oid) || !['blob', 'tree', 'commit'].includes(object.type) || typeof object.bytes !== 'string') throw new Error('CANDIDATE_OBJECT_INVALID'); }
     }
     if (value.conflict) { exact(value.conflict, ['head', 'generated', 'paths']); snapshot(value.conflict.generated); }
-    if (value.identity) {
-      exact(value.identity, ['authorsDigest', 'sourceDigest', 'actors', 'contributors', 'units']);
-      if (!/^[a-f0-9]{64}$/.test(value.identity.authorsDigest) || !/^[a-f0-9]{64}$/.test(value.identity.sourceDigest)
-        || !Array.isArray(value.identity.actors) || !Array.isArray(value.identity.units)) throw new Error('CANDIDATE_IDENTITY_INVALID');
-      for (const unit of value.identity.units) { exact(unit, ['id', 'actors', 'contributors']); if (!Array.isArray(unit.actors)) throw new Error('CANDIDATE_IDENTITY_INVALID'); }
-    }
+    if (value.identity) candidateIdentity(value.identity);
     if (value.preview !== null && typeof value.preview !== 'string') throw new Error('CANDIDATE_PREVIEW_INVALID');
     if (value.adoption) exact(value.adoption, ['humanHead', 'generatedBase', 'differences']);
   } else if (first.documentKind === 'content-result') {

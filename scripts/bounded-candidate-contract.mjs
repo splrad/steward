@@ -61,7 +61,7 @@ export async function candidateEvidence(get,{requireReady=true,product}) {
   for(let i=1;i<first.count;i++)chunks.push(await chunk(path.replace('.json',`-${i}.json`)));
   if(chunks.some(c=>c.repositoryId!==product.id||c.candidateId!==state.candidate.id||c.documentKind!=='session'))throw Error('BOUNDED_SESSION');
   const session={repository:state,...await decodeCandidateDocument(chunks)};
-  let staleConflict=false,selectionChanged=false;
+  let staleConflict=false,selectionChanged=Boolean(session.generated&&!session.identity&&!session.pending&&!state.candidate.pendingWrite);
   if(session.generated) {
     if(session.identity && !session.pending && !state.candidate.pendingWrite) {
       if(!matchesFrozenUnits(session,session.conflict?.generated??session.generated)) {
