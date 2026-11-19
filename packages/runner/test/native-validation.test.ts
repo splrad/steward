@@ -133,3 +133,11 @@ it('accepts fork fallback only with the reviewed native run name and workflow so
   expect(await accepts({...run,display_title:run.display_title.replace('7','8')},[path],file)).toBe(false);
   expect(await accepts(run,[path],{...file,repositoryFileUrl:file.repositoryFileUrl.replace(head,S)})).toBe(false);
 });
+it('matches push evidence only for the named branch, repository and commit',async()=>{
+  const {matchesRun}=await script('product-ci-evidence');
+  const path='.github/workflows/server.yml',event={repository:{id:5},ref:'refs/heads/trunk',after:S};
+  const run={repository:{id:5},head_repository:{id:5},event:'push',path,head_sha:S,head_branch:'trunk'};
+  expect(matchesRun(run,path,event,'push')).toBe(true);
+  for(const change of [{head_branch:'main'},{head_sha:'a different commit'},{repository:{id:6}},{head_repository:{id:6}},{event:'pull_request'}])
+    expect(matchesRun({...run,...change},path,event,'push')).toBe(false);
+});
