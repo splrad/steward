@@ -1,3 +1,7 @@
 _min_copier_version: '9.19.1'
 _subdirectory: templates/repository
 _answers_file: .copier-answers.yml
+product_repository:
+  type: str
+  default: ''
+  help: GitHub owner/repository for repository-specific navigation
