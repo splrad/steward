@@ -45,6 +45,26 @@ function matrixValue(value, row) {
   });
 }
 
+export function staticMatrixRows(matrix) {
+  if(!matrix) return [{}];
+  if(typeof matrix!=='object') return null;
+  const axes=Object.entries(matrix).filter(([k])=>k!=='include' && k!=='exclude');
+  if(axes.some(([,options])=>!Array.isArray(options)) || !Array.isArray(matrix.include??[]) || !Array.isArray(matrix.exclude??[])) return null;
+  const combinations=axes.reduce((rows,[k,options])=>rows.flatMap(row=>options.map(v=>({...row,[k]:v}))),axes.length?[{}]:[]);
+  const base=combinations.filter(row=>!(matrix.exclude??[]).some(ex=>Object.entries(ex).every(([k,v])=>row[k]===v)));
+  const rows=base.map(row=>({...row}));
+  for(const extra of matrix.include??[]) {
+    let merged=false;
+    base.forEach((row,i)=>{
+      if(axes.every(([k])=>!Object.hasOwn(extra,k) || extra[k]===row[k])) {
+        Object.assign(rows[i],extra);merged=true;
+      }
+    });
+    if(!merged) rows.push({...extra});
+  }
+  return rows;
+}
+
 // Static matching identifies an existing target. A native run supplies the artifact evidence separately.
 export function selectWorkflow(bytes, selection) {
   const workflow = parseWorkflow(bytes);

@@ -202,8 +202,10 @@ test('both submit and verify must have a native receipt for the external target'
   const product=YAML.parse(await readFile('templates/release/steward-release-channels.yml','utf8'));
   const targets=[{unitId:'layerscape',channelId:'ghcr-assets'}];
   assert.doesNotThrow(()=>assertChannelWorkflow(product,targets));
+  const wrongUnit=structuredClone(product);wrongUnit.jobs['ghcr-assets-submit'].strategy.matrix={include:[{unitId:'other',channelId:'ghcr-assets'}]};
+  assert.throws(()=>assertChannelWorkflow(wrongUnit,targets),/submit\/ghcr-assets\/layerscape/);
   for(const jobs of [{package:{steps:[{run:'python pack.py'}]}},{...product.jobs,'ghcr-assets-verify':{steps:[]}}])
-    assert.throws(()=>assertChannelWorkflow({...product,jobs},targets),/缺少渠道作业或原生回执/);
+    assert.throws(()=>assertChannelWorkflow({...product,jobs},targets),/缺少唯一的渠道作业或原生回执/);
 });
 test('reviewed Pages source selects the same unit for maintenance even with legacy online settings',async()=>{
   const workflow=Buffer.from(YAML.stringify({env:{STEWARD_DOCS_SOURCE:'release',STEWARD_DOCS_UNIT:'maps'}}));

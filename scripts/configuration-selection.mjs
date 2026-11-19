@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {posix} from 'node:path';
 import YAML from 'yaml';
-import {adaptBuild,renderBuild,repositoryPath,scriptBuild,selectWorkflow} from './configuration-build.mjs';
+import {adaptBuild,renderBuild,repositoryPath,scriptBuild,selectWorkflow,staticMatrixRows} from './configuration-build.mjs';
 import {changeChannels,channelWorkflowPath,ciPath,deliveryPath,explicitDelivery,jsonFile,pagesPath,publishPath,versionsPath} from './configuration-view.mjs';
 import {releaseAdoptionPlan} from './release-adoption.mjs';
 import {assertRegisteredAdapters,parseDeliveryConfig,parseSupplementalNotes} from '../packages/runner/dist/index.js';
@@ -68,13 +68,19 @@ export function assertChannelWorkflow(workflow,targets) {
   must(dispatch && Object.keys(workflow.on).length===1 && required.every(k=>dispatch.inputs?.[k]?.type==='string' && dispatch.inputs[k].required===true)
     && workflow['run-name']==='Channels ${{ inputs.mode }} ${{ inputs.request_key }}','渠道入口必须声明原生调度输入和运行名');
   for(const {unitId,channelId} of targets) for(const mode of ['submit','verify']) {
-    const resolve=value=>String(value??'').replace(/\$\{\{\s*(matrix\.unitId|matrix\.channelId|inputs\.mode)\s*\}\}/g,
-      (_,field)=>({'matrix.unitId':unitId,'matrix.channelId':channelId,'inputs.mode':mode})[field]);
     const name=mode+'/'+channelId+'/'+unitId;
-    const jobs=Object.entries(workflow.jobs??{}).filter(([id,j])=>resolve(j.name??id)===name);
     const receipt='channel-${{ inputs.request_key }}-'+unitId+'-'+channelId+'-${{ github.run_id }}-${{ github.run_attempt }}';
-    must(jobs.length===1 && jobs[0][1].steps?.some(step=>/^actions\/upload-artifact@[a-f0-9]{40}$/.test(step.uses??'')
-      && resolve(step.with?.name)===receipt && step.with?.path==='report.json'),'缺少渠道作业或原生回执 '+name);
+    const matches=Object.entries(workflow.jobs??{}).flatMap(([id,job])=>{
+      // Dynamic matrices are supplied by the product's runtime. Static ones must actually contain the target.
+      const rows=staticMatrixRows(job.strategy?.matrix)??[{unitId,channelId}];
+      return rows.filter(row=>{
+        const resolve=value=>String(value??'').replace(/\$\{\{\s*(matrix\.unitId|matrix\.channelId|inputs\.mode)\s*\}\}/g,
+          (_,field)=>field==='inputs.mode'?mode:String(row[field.slice(7)]??''));
+        return resolve(job.name??id)===name && job.steps?.some(step=>/^actions\/upload-artifact@[a-f0-9]{40}$/.test(step.uses??'')
+          && resolve(step.with?.name)===receipt && step.with?.path==='report.json');
+      });
+    });
+    must(matches.length===1,'缺少唯一的渠道作业或原生回执 '+name);
   }
 }
 

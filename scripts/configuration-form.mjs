@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 import {posix} from 'node:path';
+import {staticMatrixRows} from './configuration-build.mjs';
 import {channelWorkflowPath,effectiveChannels,renderConfiguration} from './configuration-view.mjs';
 const key=text=>createHash('sha256').update(text).digest('hex').slice(0,16);
 const display=text=>String(text??'').replace(/[\r\n<>`]/g,' ');
@@ -12,16 +13,7 @@ export function candidates(model,values) {
     if(!workflow.document?.jobs || /\/steward-release-|\/pages\.ya?ml$/.test(workflow.path))continue;
     for(const [job,spec] of Object.entries(workflow.document.jobs)) {
       const matrix=spec.strategy?.matrix;
-      let rows=[{}];
-      if(matrix && typeof matrix==='object') {
-        for(const [name,options] of Object.entries(matrix).filter(([k])=>!['include','exclude'].includes(k))) {
-          if(!Array.isArray(options)){rows=[];break;}
-          rows=rows.flatMap(row=>options.map(v=>({...row,[name]:v})));
-        }
-        if(!Object.keys(matrix).some(k=>!['include','exclude'].includes(k))) rows=[];
-        rows=rows.filter(row=>!matrix.exclude?.some(ex=>Object.entries(ex).every(([k,v])=>row[k]===v)));
-        for(const row of matrix.include??[]) if(!rows.some(r=>JSON.stringify(r)===JSON.stringify(row))) rows.push(row);
-      }
+      const rows=staticMatrixRows(matrix)??[];
       for(const row of rows) {
         const id='w'+key(workflow.path+' '+job+' '+JSON.stringify(row));
         const uploads=(spec.steps??[]).filter(s=>s.uses?.startsWith('actions/upload-artifact@'));
