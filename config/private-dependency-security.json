@@ -13,7 +13,7 @@
       }
     }
   ],
-  "osvImage": "ghcr.io/google/osv-scanner-action:v2.7.0@sha256:9b83615736eba33d105821197ba4b4fce2cd4b53dc89e02a9c1ee6d60c36afa4",
+  "osvImage": "ghcr.io/google/osv-scanner-action:v2.7.1@sha256:46564b2ffec78c2c668afbbb09ff1b6ed4605caeb27d02df9894809cb5b02653",
   "lifecycleSamples": [
     {
       "repositoryId": 1448797077,
