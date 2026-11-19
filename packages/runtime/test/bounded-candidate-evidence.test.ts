@@ -11,7 +11,7 @@ import {applyVerifiedCandidateEvent,CandidateEventCoordinator} from '../src/boun
 import {digest,TARGET,CENTRAL,type GitReader} from '../src/bounded-recheck-github.js';
 const sha=(c:string)=>c.repeat(40),key=(c:string)=>c.repeat(64),t0=Date.now()-60000;
 async function fixture(){
- const generated={baseSha:sha('a'),units:[{id:'layerscape',version:'1.0.0'}],files:[{path:'.release-notes/layerscape.md',mode:'100644',content:'Notes\n'}]},document:any={generated,pending:null,identity:{id:'existing',units:[{id:'layerscape',contributors:{contributors:[]}}]},conflict:null,preview:'# .release-notes/layerscape.md\n\nNotes\n'},session=JSON.stringify(document);
+ const generated={baseSha:sha('a'),units:[{id:'layerscape',path:'.',version:'1.0.0'}],files:[{path:'.release-notes/layerscape.md',mode:'100644',content:'Notes\n'}]},document:any={generated,pending:null,identity:{id:'existing',units:[{id:'layerscape',contributors:{contributors:[]}}]},conflict:null,preview:'# .release-notes/layerscape.md\n\nNotes\n'},session=JSON.stringify(document);
  const state={schemaVersion:3,repositoryId:TARGET.id,activeCycleId:null,candidate:{id:key('b'),pendingWrite:null,baseSha:sha('a'),publishedHead:sha('c'),generatedSnapshotPath:`generated/${key('b')}/${key('a')}.json`,statusCommentId:7,prNumber:192,branch:'steward/candidate'}};
  const path=`generated/${key('b')}/session.json`,files:any={'state.json':state,[path]:{schemaVersion:1,repositoryId:TARGET.id,candidateId:key('b'),documentKind:'session',index:0,count:1,documentDigest:digest(session).slice(7),content:session}};
  files[state.candidate.generatedSnapshotPath]={schemaVersion:1,repositoryId:TARGET.id,candidateId:key('b'),documentKind:'generated',index:0,count:1,documentDigest:digest(JSON.stringify(generated)).slice(7),content:JSON.stringify(generated)};
@@ -26,6 +26,17 @@ async function fixture(){
  return {g,env,registration,producer,artifact,run,pull,event,files,state,document};
 }
 describe('candidate producer evidence and event controls',()=>{
+ it('reads a protected conflict across changed unit sets without returning a ready identity',async()=>{
+   const f=await fixture();
+   const chunk=f.files[`generated/${f.state.candidate.id}/session.json`];
+   const session=JSON.parse(chunk.content);
+   session.identity.units[0].id='ui';
+   session.conflict={head:f.pull.head.sha,generated:{...session.generated,units:[{id:'ui',path:'ui',version:'2.0.0'}]},paths:['CHANGELOG.md']};
+   chunk.content=JSON.stringify(session);chunk.documentDigest=digest(chunk.content).slice(7);
+   const g={...f.g,target:{...TARGET,units:[{id:'layerscape',path:'.'},{id:'ui',path:'ui'}]}};
+   expect((await candidateFacts(g,false,true)).identity).toBeNull();
+   await expect(candidateFacts(g)).rejects.toThrow('SESSION_NOT_READY');
+ });
  it('binds a fixed successful Run to independently read Git identity and native event',async()=>{const f=await fixture();expect((await verifiedProducer(f.g,f.env,f)).registration).toEqual(f.registration);});
  it.each(['epoch','cycleId','requestKey','attempt','target'] as const)('rejects borrowing successful Run for a different %s',async kind=>{const f=await fixture();const input=structuredClone({registration:f.registration,producer:f.producer});if(kind==='epoch'||kind==='cycleId')input.registration.identity[kind]='other';else if(kind==='target')input.registration.identity.repositoryId=1 as any;else input.producer[kind]=kind==='requestKey'?key('0'):1 as never;await expect(verifiedProducer(f.g,f.env,input)).rejects.toThrow();});
  it('rejects an artifact from an older producer attempt even when Run succeeded',async()=>{const f=await fixture();f.artifact.value.producer.attempt=1;await expect(verifiedProducer(f.g,f.env,f)).rejects.toThrow('PRODUCER_ATTEMPT');});
