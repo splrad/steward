@@ -28,6 +28,7 @@ concurrency:
   cancel-in-progress: false
 env:
   STEWARD_CONTROLLER_SHA: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
+  # The configuration PR writes the selected source and release unit to these fields.
   STEWARD_DOCS_SOURCE: ${{ vars.STEWARD_DOCS_SOURCE || 'default-branch' }}
   STEWARD_DOCS_UNIT: ${{ vars.STEWARD_DOCS_UNIT }}
 jobs:
