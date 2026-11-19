@@ -19,11 +19,11 @@ it('uses platform workflow provenance and readonly validation jobs',async()=>{
   expect(d.permissions).toEqual({contents:'read','pull-requests':'read'});
   expect(d.jobs.summary.if).toBe('${{ always() }}');
 });
-it('executes product commands from native YAML',async()=>{
-  const d=YAML.parse(await readFile('templates/release/steward-release-publish.yml','utf8')),step=d.jobs.build.steps.find((s:any)=>s.id==='build');
-  expect(step.run).toContain('dotnet restore CADFontAutoReplace.slnx --locked-mode');
-  expect(step.run).toContain('pwsh -NoProfile -File ./tools/Publish-ReleaseAssets.ps1');
-  expect(step.run).not.toMatch(/\$\{\{|SkipPluginBuild|release-pipeline build/);expect(step.env).toBeUndefined();
+it('requires product selections before building or claiming signing is inapplicable',async()=>{
+  const workflow=YAML.parse(await readFile('templates/release/steward-release-publish.yml','utf8'));
+  expect(workflow.jobs.build.strategy.matrix.include).toEqual([]);
+  expect(workflow.jobs.build.steps.find((step:any)=>step.id==='build').run).toMatch(/^throw /);
+  expect(workflow.jobs.sign.steps.find((step:any)=>step.id==='signing').run).toBe('exit 1');
 });
 it('activates the trusted policy tool paths before validation outside its checkout',async()=>{
   const d=YAML.parse(await readFile('.github/workflows/pr-validation-native.yml','utf8'));

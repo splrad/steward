@@ -68,6 +68,9 @@ workflows:
     '.github/workflows/release.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
+    '.github/workflows/repository-configuration-event.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+        - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'
     '.github/workflows/sync-managed.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b'

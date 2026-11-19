@@ -38,7 +38,7 @@ class DeliveryTests(unittest.TestCase):
                        GIT_CONFIG_KEY_5='url.'+self.remote.as_posix()+'.insteadOf', GIT_CONFIG_VALUE_5='https://github.com/splrad/fixture.git')
             return env
         self.transport = patch.object(bridge,'environment',transport);self.transport.start();self.addCleanup(self.transport.stop)
-        bridge.render(self.central,self.product,self.old,'copy')
+        bridge.render(self.central,self.product,self.old,'copy',{'product_repository':'splrad/fixture'})
         self.git(self.product,'init','--initial-branch=develop');self.configure(self.product)
         (self.product/'VERSION').write_text('9.2.2\n');(self.product/'manual.txt').write_text('keep product\n')
         self.base = self.commit(self.product,'Adopt reviewed native Copier output')

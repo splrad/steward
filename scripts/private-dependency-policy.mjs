@@ -144,6 +144,7 @@ export function assertCopierInputs(files,resolveTemplate,paths=['.github/labeler
 
 export function assertGovernanceOnlyScope(paths){
   const allowed=new Set(['README.md','AGENTS.md','CONTRIBUTING.md','.copier-answers.yml','.github/labeler.yml',
-    '.github/release-template.md.mustache','.github/workflows/pr-labeler.yml','.github/workflows/pr-title.yml','.github/workflows/actions.lock']);
+    '.github/workflows/repository-configuration-trial.yml','.github/repository-configuration.md','.github/ISSUE_TEMPLATE/config.yml','.github/workflows/repository-configuration.yml',
+      '.github/release-template.md.mustache','.github/workflows/pr-labeler.yml','.github/workflows/pr-title.yml','.github/workflows/actions.lock']);
   assert(paths.every(path=>allowed.has(path)),'GOVERNANCE_INPUT_UNCOVERED');
 }
