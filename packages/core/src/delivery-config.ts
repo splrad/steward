@@ -38,8 +38,8 @@ export interface DeliveryConfig {
   units: DeliveryUnit[];
 }
 export interface DeliveryUnit {
-  id: string; path: string; notesPath: string;
-  assets: { id: string; name: string; mediaType: string }[];
+  id: string; displayName?: string; path: string; notesPath: string;
+  assets: { id: string; name: string; description?: string; mediaType: string }[];
   channels: { id: string; required: boolean; location: string }[];
 }
 const validateDelivery = new Ajv2020({ strict: true }).compile(schema);
