@@ -147,8 +147,12 @@ export async function applySelection(model,operation,plan,context) {
       renderBuild(context.seed,formal,{signing:plan.signing,controllerSha:context.controllerSha}));
     changes.set(deliveryPath,jsonFile(delivery));
   }
-  const channelEdits=(plan.channels??[]).filter(edit=>operation!=='select' || !edit.artifactIds ||
-    edit.artifactIds.every(id=>delivery?.units.find(u=>u.id===edit.unit)?.assets.some(a=>a.id===id)));
+  const channelEdits=(plan.channels??[]).flatMap(edit=>{
+    if(operation!=='select' || !edit.artifactIds) return [edit];
+    const unit=delivery?.units.find(u=>u.id===edit.unit);
+    const artifactIds=edit.artifactIds.filter(id=>unit?.assets.some(a=>a.id===id));
+    return artifactIds.length?[{...edit,artifactIds}]:[];
+  });
   if(channelEdits.length) {
     delivery=changeChannels(delivery,channelEdits);
     changes.set(deliveryPath,jsonFile(delivery));
@@ -199,6 +203,10 @@ export async function applySelection(model,operation,plan,context) {
     if(plan.site.source==='release') must(delivery?.units.some(u=>u.id===plan.site.unit),'Unknown site release unit');
     doc.setIn(['env','STEWARD_DOCS_SOURCE'],plan.site.source);
     if(plan.site.source==='release') doc.setIn(['env','STEWARD_DOCS_UNIT'],plan.site.unit);
+    const title=doc.get('run-name');
+    if(typeof title==='string') doc.set('run-name',title.replace(
+      /inputs\.source_mode \|\| (?:vars\.STEWARD_DOCS_SOURCE|'default-branch'|'release')/,
+      "inputs.source_mode || '"+plan.site.source+"'"));
     // Wrap the product's native condition. On re-edit remove only this generated outer condition.
     for(const [job,on] of [['build',plan.site.build],['deploy',plan.site.deploy]]) {
       if(!doc.hasIn(['jobs',job])) {must(!on,'Missing site job '+job);continue;}
@@ -207,8 +215,7 @@ export async function applySelection(model,operation,plan,context) {
       const prior=/^\((true|false) && (?:true|needs\.select\.outputs\.ready == 'true'|vars\.STEWARD_DOCS_SOURCE == '(?:default-branch|release)'(?: && vars\.STEWARD_DOCS_UNIT == '[a-z][a-z0-9-]*')?)\) && \(([\s\S]*)\)$/.exec(condition);
       if(prior) condition=prior[2];
       if(condition.startsWith('${{') && condition.endsWith('}}'))condition=condition.slice(3,-2).trim();
-      const gate=job==='build'?(plan.site.source==='release'?"needs.select.outputs.ready == 'true'":'true'):
-        "vars.STEWARD_DOCS_SOURCE == '"+plan.site.source+"'"+(plan.site.source==='release'?" && vars.STEWARD_DOCS_UNIT == '"+plan.site.unit+"'":'');
+      const gate=job==='build' && plan.site.source==='release'?"needs.select.outputs.ready == 'true'":'true';
       doc.setIn(path,'('+on+' && '+gate+') && ('+condition+')');
     }
     changes.set(pagesPath,doc.toString({lineWidth:0}));

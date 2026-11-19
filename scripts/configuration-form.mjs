@@ -123,7 +123,7 @@ export function configurationForm(model,head,state={}) {
         if(evidence.files.some(f=>values[id+'.f'+key(f.path)+'.'+channel])) {
           const known=model.delivery?.units.find(u=>u.id===defaults.raw)?.channels.find(c=>c.id===channel);
           field(id+'.dest.'+channel,channel+' 目的地',known?.location??(channel==='github-release'?'github':''));
-          if(channel!=='winget') for(const name of metadataFiles)
+          if(channel!=='winget' && !known) for(const name of metadataFiles)
             field(id+'.metadata.'+channel+'.'+key(name),channel+' · '+name,known?.metadata?.includes(name)??false,'check');
         }
     }
@@ -228,7 +228,12 @@ export function planFromForm(model,state,operation) {
     const edit={unit:unit.id,id:c.id,required:enabled??c.required};
     if(JSON.stringify([...ids].sort())!==JSON.stringify([...prior.ids].sort())) edit.artifactIds=ids;
     if(JSON.stringify([...metadata].sort())!==JSON.stringify([...prior.metadata].sort())) edit.metadata=metadata;
-    if(edit.required!==c.required || edit.artifactIds || edit.metadata) edits.push(edit);
+    const addition=operation==='select'?channels.get(unit.id+'/'+c.id):undefined;
+    if(addition) {
+      addition.artifactIds=[...new Set([...ids,...addition.artifactIds])];
+      addition.metadata=metadata;
+      if(enabled!==c.required) addition.required=edit.required;
+    } else if(edit.required!==c.required || edit.artifactIds || edit.metadata) edits.push(edit);
   }
   if(operation==='select') edits.push(...channels.values());
   if(edits.length) settings.channels=edits;

@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
+import {planFromForm} from '../configuration-form.mjs';
+import {sourceOptions} from '../pages-maintenance.mjs';
 import {mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
 import {join} from 'node:path';
@@ -143,6 +146,29 @@ test('trial approvals bind output and tools as well as source, and preserve nati
   assert.equal((await applySelection(inspectRepository(files),'configure',plan,{})).size,0);
   plan.site.deploy=true;
   assert.match(YAML.parse((await applySelection(inspectRepository(files),'configure',plan,{})).get(pagesPath)).jobs.deploy.if,/^\(true .*vars\.STEWARD_DOCS_SOURCE/);
+});
+test('adding a Windows asset preserves selected Linux files and channel metadata',()=>{
+  const model=inspectRepository(new Map([['.github/delivery.json',JSON.stringify({schemaVersion:2,units:[{id:'cli',path:'.',
+    assets:[{id:'linux',name:'cli.zip'},{id:'symbols',name:'symbols.zip'}],
+    channels:[{id:'github-release',location:'github',required:true,artifactIds:['linux','symbols'],metadata:['SHA256SUMS']}]}]})]]));
+  const file='win.zip',asset='s1.f'+createHash('sha256').update(file).digest('hex').slice(0,16);
+  const state={evidence:{s1:{files:[{path:file}],binding:{}}},values:{'s1.use':true,'s1.unit':'cli','s1.target':'windows',
+    's1.dest.github-release':'github',[asset+'.use']:true,[asset+'.id']:'win',[asset+'.github-release']:true,
+    'channel.cli.github-release.asset.symbols':false}};
+  const [edit]=planFromForm(model,state,'select').channels;
+  assert.deepEqual(edit.artifactIds,['linux','win']);assert.deepEqual(edit.metadata,['SHA256SUMS']);
+});
+test('reviewed Pages source selects the same unit for maintenance even with legacy online settings',async()=>{
+  const workflow=Buffer.from(YAML.stringify({env:{STEWARD_DOCS_SOURCE:'release',STEWARD_DOCS_UNIT:'maps'}}));
+  const path='.github/workflows/pages.yml',read=[];
+  const reader={path:p=>p,io:{request:async(_,name)=>{
+    read.push(name);return {status:200,bytes:Buffer.from(JSON.stringify({name:'STEWARD_DOCS_SOURCE',value:'default-branch'}))};
+  }},json:async p=>p.startsWith('git/')?{ref:'refs/heads/trunk',object:{type:'commit',sha:B}}:
+    {type:'file',path,encoding:'base64',content:workflow.toString('base64'),size:workflow.length,
+      sha:createHash('sha1').update('blob '+workflow.length+'\0').update(workflow).digest('hex')}};
+  const options=await sourceOptions(reader,repo,C,301115370);
+  assert.equal(options.mode,'release');assert.equal(options.unitId,'maps');
+  assert.deepEqual(read,['actions/variables/STEWARD_DOCS_SOURCE']);
 });
 test('a README-only push or completed configuration merge cannot create another PR',async()=>{
   const before=inspectRepository(new Map([['README.md','first']]));
