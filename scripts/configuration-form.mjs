@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {posix} from 'node:path';
-import {staticMatrixRows} from './configuration-build.mjs';
+import {matrixValue,staticMatrixRows} from './configuration-build.mjs';
 import {channelWorkflowPath,effectiveChannels,renderConfiguration} from './configuration-view.mjs';
 const key=text=>createHash('sha256').update(text).digest('hex').slice(0,16);
 const display=text=>String(text??'').replace(/[\r\n<>`]/g,' ');
@@ -13,12 +13,20 @@ export function candidates(model,values) {
     if(!workflow.document?.jobs || /\/steward-release-|\/pages\.ya?ml$/.test(workflow.path))continue;
     for(const [job,spec] of Object.entries(workflow.document.jobs)) {
       const matrix=spec.strategy?.matrix;
-      const rows=staticMatrixRows(matrix)??[];
+      const rows=staticMatrixRows(matrix);
+      if(!rows) {
+        const variants=(model.nativeVariants??[]).filter(v=>v.workflow===workflow.path && v.job===job);
+        for(const v of variants) entries.push({...v,id:'d'+key(JSON.stringify(v)),matrix:{},label:workflow.path+' · '+v.nativeJobName+' · '+v.archive});
+        if(!variants.length) entries.push({locked:true,label:workflow.path+' · '+job+' · 请先在当前源提交完成动态矩阵作业并上传可核验的归档。'});
+        continue;
+      }
       for(const row of rows) {
         const id='w'+key(workflow.path+' '+job+' '+JSON.stringify(row));
         const uploads=(spec.steps??[]).filter(s=>s.uses?.startsWith('actions/upload-artifact@'));
         for(const [index,step] of (uploads.length?uploads:[null]).entries()) {
-          const archive=step?.with?.name??'';
+          const declared=step?.with?.name??'';
+          let archive=declared;
+          try {archive=matrixValue(declared,row);} catch { /* An unresolved input remains editable for native evidence. */ }
           entries.push({id:id+'a'+index,workflow:workflow.path,job,matrix:row,archive,step,
             label:workflow.path+' · '+job+(Object.keys(row).length?' · '+Object.entries(row).map(([k,v])=>k+'='+v).join(' '):'')});
         }
@@ -65,6 +73,7 @@ export function configurationForm(model,head,state={}) {
   }
   const entries=candidates(model,values);
   for(const entry of entries) {
+    if(entry.locked){lines.push('- 🔒 '+display(entry.label));continue;}
     const id=entry.id,defaults=unitDefaults(model,entry,values);
     field(id+'.use',display(entry.label),false,'check');
     if(!values[id+'.use']) continue;
@@ -83,6 +92,7 @@ export function configurationForm(model,head,state={}) {
     field(id+'.changelog','变更日志（相对于单元目录）',defaults.changelog);
     if(entry.workflow) {
       field(id+'.archive','该作业上传的归档名',entry.archive);
+      field(id+'.ref','原生运行的分支或标签（同一提交有多个来源时填写）');
       const spec=model.workflows.find(w=>w.path===entry.workflow).document.jobs[entry.job];
       lines.push('已声明 runner · `'+display(spec['runs-on']??spec.uses)+'`');
       for(const step of spec.steps??[]) lines.push('- `'+display(step['working-directory']??spec.defaults?.run?.['working-directory']??'.')+'` · `'+display(step.run??step.uses)+'`');
@@ -98,6 +108,7 @@ export function configurationForm(model,head,state={}) {
     const evidence=state.evidence?.[id];
     if(evidence?.head===head) {
       lines.push('归档 · [查看原生运行]('+evidence.url+')');
+      if(evidence.binding?.nativeEvent) lines.push('正式构建在发行源提交重新核验 `'+display(evidence.binding.nativeEvent)+'` 运行（`'+display(evidence.binding.nativeRef)+'`）、`'+display(evidence.binding.nativeJobName)+'` 作业及 `'+display(evidence.binding.evidenceArchive)+'` 归档。');
       for(const file of evidence.files) {
         const asset=id+'.f'+key(file.path);
         field(asset+'.use','`'+display(file.path)+'` · '+file.size+' B',false,'check');
@@ -183,10 +194,12 @@ export function planFromForm(model,state,operation) {
   for(const entry of entries) {
     const id=entry.id, unit=v[id+'.unit'],target=v[id+'.target'],evidence=state.evidence?.[id];
     const item={unit,target};
-    if(entry.workflow) Object.assign(item,{workflow:entry.workflow,job:entry.job,matrix:entry.matrix,archive:v[id+'.archive']});
+    if(entry.workflow) Object.assign(item,{workflow:entry.workflow,job:entry.job,matrix:entry.matrix,...(v[id+'.ref']?{nativeRef:v[id+'.ref']}:{}),...(entry.nativeJobName?{nativeJobName:entry.nativeJobName,uploadStep:entry.uploadStep}:{}),archive:v[id+'.archive']});
     else for(const k of ['entry','runner','shell','directory','prepare','command','output']) item[k]=v[id+'.'+k];
     if(evidence) {
-      Object.assign(item,evidence.binding);
+      if(item.nativeRef && evidence.binding?.observedRef && item.nativeRef!==evidence.binding.observedRef) {
+        if(operation==='select')throw Error('来源已变更，请重新核验原生运行。');
+      } else Object.assign(item,evidence.binding);
       item.files=[];
       for(const f of evidence.files) {
         const asset=id+'.f'+key(f.path);

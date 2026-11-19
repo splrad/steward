@@ -18,15 +18,26 @@ export const actionPath=(unit,target)=>{
 
 export function prepareTarget(model,target) {
   const path=actionPath(target.unit,target.target);
-  let recipe;
   if(target.workflow) {
     must(/^\.github\/workflows\/[\w.-]+\.ya?ml$/.test(target.workflow) && model.files.has(target.workflow),'Missing declared source workflow');
-    recipe=selectWorkflow(model.files.get(target.workflow),target);
-  } else {
-    const entry=repositoryPath(target.entry);
-    must(model.files.has(posix.join(repositoryPath(target.directory,true),entry)), 'Missing declared packaging script '+entry);
-    recipe=scriptBuild(target);
+    try {return prepareScripts(path,selectWorkflow(model.files.get(target.workflow),target));}
+    catch(error) {
+      const job=model.workflows.find(w=>w.path===target.workflow)?.document?.jobs?.[target.job];
+      must(job && target.archive && job.steps?.some(s=>/^actions\/upload-artifact@[0-9a-f]{40}$/.test(s.uses??'')),error.message);
+      const native={workflow:target.workflow,job:target.job,matrix:target.matrix??{},archive:target.archive};
+      if(target.nativeJobName) native.nativeJobName=target.nativeJobName;
+      if(target.uploadStep) native.uploadStep=target.uploadStep;
+      if(target.nativeEvent) native.nativeEvent=target.nativeEvent;
+      if(target.nativeRef) native.nativeRef=target.nativeRef;
+      return {path,files:new Map(),recipe:{native,runner:'ubuntu-24.04',steps:[]}};
+    }
   }
+  const entry=repositoryPath(target.entry);
+  must(model.files.has(posix.join(repositoryPath(target.directory,true),entry)), 'Missing declared packaging script '+entry);
+  return prepareScripts(path,scriptBuild(target));
+}
+
+function prepareScripts(path,recipe) {
   const directory=posix.dirname(path), files=new Map(), commands=[], tools={};
   const allowed={
     'actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68':['dotnet','dotnet-version','global-json-file'],
@@ -63,22 +74,27 @@ export function prepareTarget(model,target) {
   return {path,recipe:{...recipe,tools},files,bytes};
 }
 
-export function assertChannelWorkflow(workflow,targets) {
+export function channelUploadSteps(job,id,mode,unitId,channelId,row) {
+  const resolve=value=>String(value??'').replace(/\$\{\{\s*(matrix\.unitId|matrix\.channelId|inputs\.mode)\s*\}\}/g,
+    (_,field)=>field==='inputs.mode'?mode:String(row[field.slice(7)]??''));
+  if(resolve(job.name??id)!==mode+'/'+channelId+'/'+unitId)return [];
+  const receipt='channel-${{ inputs.request_key }}-'+unitId+'-'+channelId+'-${{ github.run_id }}-${{ github.run_attempt }}';
+  return (job.steps??[]).filter(step=>/^actions\/upload-artifact@[a-f0-9]{40}$/.test(step.uses??'')
+    && resolve(step.with?.name)===receipt && step.with?.path==='report.json');
+}
+
+export function assertChannelWorkflow(workflow,targets,nativeJobs=new Set()) {
   const dispatch=workflow?.on?.workflow_dispatch, required=['cycle_id','source_sha','execution_sha','controller_sha','targets_json','mode','operation_key','request_key'];
   must(dispatch && Object.keys(workflow.on).length===1 && required.every(k=>dispatch.inputs?.[k]?.type==='string' && dispatch.inputs[k].required===true)
     && workflow['run-name']==='Channels ${{ inputs.mode }} ${{ inputs.request_key }}','渠道入口必须声明原生调度输入和运行名');
   for(const {unitId,channelId} of targets) for(const mode of ['submit','verify']) {
     const name=mode+'/'+channelId+'/'+unitId;
-    const receipt='channel-${{ inputs.request_key }}-'+unitId+'-'+channelId+'-${{ github.run_id }}-${{ github.run_attempt }}';
     const matches=Object.entries(workflow.jobs??{}).flatMap(([id,job])=>{
       // Dynamic matrices are supplied by the product's runtime. Static ones must actually contain the target.
-      const rows=staticMatrixRows(job.strategy?.matrix)??[{unitId,channelId}];
-      return rows.filter(row=>{
-        const resolve=value=>String(value??'').replace(/\$\{\{\s*(matrix\.unitId|matrix\.channelId|inputs\.mode)\s*\}\}/g,
-          (_,field)=>field==='inputs.mode'?mode:String(row[field.slice(7)]??''));
-        return resolve(job.name??id)===name && job.steps?.some(step=>/^actions\/upload-artifact@[a-f0-9]{40}$/.test(step.uses??'')
-          && resolve(step.with?.name)===receipt && step.with?.path==='report.json');
-      });
+      const declared=staticMatrixRows(job.strategy?.matrix);
+      if(!declared && !nativeJobs.has(name)) return [];
+      const rows=declared??[{unitId,channelId}];
+      return rows.flatMap(row=>channelUploadSteps(job,id,mode,unitId,channelId,row));
     });
     must(matches.length===1,'缺少唯一的渠道作业或原生回执 '+name);
   }
@@ -103,7 +119,7 @@ export async function applySelection(model,operation,plan,context) {
   must(new Set(prepared.map(item=>item.path)).size===prepared.length,'Duplicate build target');
   if(operation==='configure') for(const item of prepared) for(const [path,bytes] of item.files) changes.set(path,bytes);
   if(operation==='trial' || operation==='select') {
-    must(model.files.has(caller),'Missing protected build trial entry or target');
+    if(prepared.some(item=>!item.recipe.native)) must(model.files.has(caller),'Missing protected build trial entry or target');
     for(const item of prepared) for(const [path,bytes] of item.files) must(model.files.get(path)===bytes,'Build command changed. Review the prepared entry at this head first.');
   }
   if(operation==='trial') {
@@ -154,7 +170,7 @@ export async function applySelection(model,operation,plan,context) {
         if(existingUnit) delivery.units[delivery.units.indexOf(existingUnit)]=unit;
         else delivery.units.push(unit);
         allAssets.set(unit.id,[...(allAssets.get(unit.id)??[]),...assets]);
-        formal.push({unit:target.unit,target:target.target,recipe:{...recipe,steps:[...recipe.steps.filter(step=>step.uses),{name:'Run reviewed packaging entry',shell:'pwsh',run:'node product/'+prepared[i].path}]},files});
+        formal.push({unit:target.unit,target:target.target,recipe:recipe.native?recipe:{...recipe,steps:[...recipe.steps.filter(step=>step.uses),{name:'Run reviewed packaging entry',shell:'pwsh',run:'node product/'+prepared[i].path}]},files});
       } catch(error) {
         if(!context.describe || error.status && ![404,410].includes(error.status) || error.code) throw error;
         context.describe(target.unit+'/'+target.target+' · '+error.message);
@@ -169,7 +185,7 @@ export async function applySelection(model,operation,plan,context) {
     }
     const existing=model.files.get(publishPath);
     const pristine=existing?.replaceAll('\r\n','\n')===context.seed.replaceAll('\r\n','\n');
-    changes.set(publishPath,existing && !pristine?adaptBuild(existing,context.seed,formal):
+    changes.set(publishPath,existing && !pristine?adaptBuild(existing,context.seed,formal,context.controllerSha):
       renderBuild(context.seed,formal,{signing:plan.signing,controllerSha:context.controllerSha}));
     changes.set(deliveryPath,jsonFile(delivery));
   }
@@ -196,7 +212,9 @@ export async function applySelection(model,operation,plan,context) {
       const existing=model.files.has(channelWorkflowPath);
       const source=model.workflows.find(w=>w.path===(existing?channelWorkflowPath:plan.channelWorkflow));
       must(source,'请选择已审阅的本仓渠道工作流：'+adoption.externalTargets.map(t=>t.unitId+'/'+t.channelId+' '+t.location).join('、'));
-      assertChannelWorkflow(source.document,adoption.externalTargets);
+      const dynamic=Object.values(source.document?.jobs??{}).some(job=>staticMatrixRows(job.strategy?.matrix)===null);
+      const nativeJobs=dynamic?await context.channelEvidence?.(source,adoption.externalTargets):undefined;
+      assertChannelWorkflow(source.document,adoption.externalTargets,nativeJobs);
       if(!existing) changes.set(channelWorkflowPath,model.files.get(source.path));
     }
     for(const path of adoption.files) must(changes.has(path)||model.files.has(path),'缺少本仓采用文件 '+path);
@@ -255,9 +273,10 @@ export async function applySelection(model,operation,plan,context) {
     if(plan.site.source==='release') must(delivery?.units.some(u=>u.id===plan.site.unit),'Unknown site release unit');
     doc.setIn(['env','STEWARD_DOCS_SOURCE'],plan.site.source);
     if(plan.site.source==='release') doc.setIn(['env','STEWARD_DOCS_UNIT'],plan.site.unit);
+    else doc.deleteIn(['env','STEWARD_DOCS_UNIT']);
     const title=doc.get('run-name');
     if(typeof title==='string') doc.set('run-name',title.replace(
-      /inputs\.source_mode \|\| (?:vars\.STEWARD_DOCS_SOURCE|'default-branch'|'release')/,
+      /inputs\.source_mode \|\| (?:vars\.STEWARD_DOCS_SOURCE|'default-branch'|'release')(?: \|\| 'default-branch')?/g,
       "inputs.source_mode || '"+plan.site.source+"'"));
     // Wrap the product's native condition. On re-edit remove only this generated outer condition.
     for(const [job,on] of [['build',plan.site.build],['deploy',plan.site.deploy]]) {

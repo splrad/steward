@@ -1,14 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {planFromForm} from '../configuration-form.mjs';
+import {selectWorkflow} from '../configuration-build.mjs';
+import {candidates,planFromForm} from '../configuration-form.mjs';
 import {sourceOptions} from '../pages-maintenance.mjs';
 import {mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {authorizePull,checkEvent,protectedChanges,requestPath} from '../configuration-authorization.mjs';
-import {dispatchTrial,findEvidence,requestFromRun,rerunValidation,trialInventory} from '../configuration-native.mjs';
+import {dispatchTrial,findEvidence,nativeChannelJobs,requestFromRun,rerunValidation,trialInventory} from '../configuration-native.mjs';
 import {inspectRepository,versionsPath,pagesPath} from '../configuration-view.mjs';
 import {applySelection,assertChannelWorkflow,prepareTarget,trialKey} from '../configuration-selection.mjs';
 import {optionState,reconcile} from '../repository-configuration.mjs';
@@ -115,7 +116,7 @@ test('an existing container job with a service can provide bound native evidence
   const path='.github/workflows/build.yml',doc={on:'workflow_dispatch',jobs:{pack:{'runs-on':'ubuntu-24.04',container:'example',
     services:{db:{image:'postgres'}},steps:[{uses:'./reviewed-custom-action'},{name:'Upload release files',uses:'actions/upload-artifact@'+'a'.repeat(40),with:{name:'bin',path:'out'}}]}}};
   const model=inspectRepository(new Map([[path,YAML.stringify(doc)]]));
-  const api=fake(new Map()), native={id:2,run_attempt:1,repository:repo,head_repository:repo,head_sha:B,path,status:'completed',conclusion:'success',html_url:'https://github.com/splrad/sample/actions/runs/2'};
+  const api=fake(new Map()), native={id:2,run_attempt:1,repository:repo,head_repository:repo,head_sha:B,head_branch:'trunk',event:'workflow_dispatch',path,status:'completed',conclusion:'success',html_url:'https://github.com/splrad/sample/actions/runs/2'};
   api.rest.repos.getCommit=async()=>response({commit:{tree:{sha:C}}});
   api.rest.actions.getWorkflowRun=async()=>response(native);
   api.paginate=async(method,args)=>method===api.rest.actions.listJobsForWorkflowRunAttempt?
@@ -124,6 +125,23 @@ test('an existing container job with a service can provide bound native evidence
   const result=await findEvidence(api,'',repo,B,A,{unit:'x',target:'one',workflow:path,job:'pack',matrix:{},archive:'bin'},model,undefined,
     (...args)=>trialInventory(...args,async()=>({asset:{created_at:'2026-11-17T10:00:01Z'},data:[{path:'app.zip',size:100}]})));
   assert.equal(result.binding.sourceSha,B);assert.equal(result.head,A);assert.equal(result.files[0].size,100);
+  assert.equal(result.binding.nativeEvent,'workflow_dispatch');
+  const list=api.paginate;
+  api.paginate=async(method,args)=>args.workflow_id==='build.yml' && args.head_sha===B?[native,{...native,id:3,head_branch:'v1'}]:list(method,args);
+  await assert.rejects(findEvidence(api,'',repo,B,A,{unit:'x',target:'one',workflow:path,job:'pack',archive:'bin'},model),/多个分支或标签/);
+  api.paginate=async(method,args)=>{
+    const rows=await list(method,args);
+    return method===api.rest.actions.listJobsForWorkflowRunAttempt?[...rows,{id:14,started_at:'2026-11-17T10:00:00Z',completed_at:'2026-11-17T10:00:05Z'}]:rows;
+  };
+  let logged=101;
+  api.rest.actions.downloadJobLogsForWorkflowRun=async()=>response('2026-11-17T10:00:02.000Z Artifact bin has been successfully uploaded! Final size is 100 bytes. Artifact ID is '+logged);
+  const concurrent=()=>trialInventory(api,'',repo,B,A,{workflow:path,archive:'bin',...result.binding},undefined,async()=>({
+    asset:{id:101,name:'bin',size_in_bytes:100,created_at:'2026-11-17T10:00:02Z'},data:result.files}));
+  assert.deepEqual(await concurrent(),result.files);
+  logged=999;await assert.rejects(concurrent(),/bind the archive/);
+  doc.on={workflow_dispatch:{inputs:{flavor:{type:'choice',options:['debug','release']}}}};
+  const inputsModel=inspectRepository(new Map([[path,YAML.stringify(doc)]]));
+  assert.equal(await findEvidence(api,'',repo,B,A,{unit:'x',target:'one',workflow:path,job:'pack',matrix:{},archive:'bin'},inputsModel),undefined);
 });
 test('a successful trial with an expired artifact can be requested again',async()=>{
   const path='.github/workflows/repository-configuration-trial.yml';
@@ -145,11 +163,12 @@ test('a successful trial with an expired artifact can be requested again',async(
 test('trial approvals bind output and tools as well as source, and preserve native Pages and version policies',async()=>{
   const recipe={runner:'ubuntu-24.04',output:'out',steps:[],tools:{}};
   assert.notEqual(trialKey(A,'app','linux',recipe),trialKey(A,'app','linux',{...recipe,output:'debug'}));
-  const pages={jobs:{select:{if:"vars.STEWARD_DOCS_SOURCE != ''"},build:{if:"!cancelled() && needs.select.outputs.ready == 'true'",steps:[]},
+  const pages={'run-name':"Pages build-only · ${{ inputs.source_mode || vars.STEWARD_DOCS_SOURCE || 'default-branch' }}",jobs:{select:{if:"vars.STEWARD_DOCS_SOURCE != ''"},build:{if:"!cancelled() && needs.select.outputs.ready == 'true'",steps:[]},
     deploy:{if:"vars.STEWARD_DOCS_SOURCE == 'default-branch' || vars.STEWARD_DOCS_SOURCE == 'release'"}}};
   const files=new Map([[versionsPath,JSON.stringify({packages:{'.':{'release-type':'node'}}})],['VERSION','1.2.3'],['CHANGELOG.md','notes'],[pagesPath,YAML.stringify(pages)]]);
   const plan={site:{source:'default-branch',build:true,deploy:false},versions:[{path:'.',versionFile:'VERSION',changelog:'CHANGELOG.md'}]};
   const first=await applySelection(inspectRepository(files),'configure',plan,{});
+  assert.match(YAML.parse(first.get(pagesPath))['run-name'],/Pages build-only .*inputs\.source_mode \|\| 'default-branch'/);
   assert.equal(JSON.parse(first.get(versionsPath)).packages['.']['release-type'],'node');
   assert.match(YAML.parse(first.get(pagesPath)).jobs.deploy.if,/^\(false .*vars\.STEWARD_DOCS_SOURCE/);
   for(const [p,b] of first)files.set(p,b);
@@ -190,7 +209,7 @@ test('a failed target in the same release unit cannot add its existing asset to 
     name:'Run reviewed packaging entry',run:'node product/'+prepareTarget(model,t).path}],output:'out'},files:[{id:t.target,path:t.target+'.zip',pattern:t.target+'.zip'}]})),{signing:'not-applicable'});
   files.set('.github/workflows/steward-release-publish.yml',adopted);
   const warnings=[];
-  const changes=await applySelection(inspectRepository(files),'select',plan,{seed,describe:m=>warnings.push(m),inventory:async t=>{
+  const changes=await applySelection(inspectRepository(files),'select',plan,{seed,channelEvidence:async()=>new Set(['submit/ghcr-assets/cli','verify/ghcr-assets/cli']),describe:m=>warnings.push(m),inventory:async t=>{
     if(t.target==='windows')throw Error('Expired artifact');return [{path:'linux.zip'}];
   }});
   const saved=JSON.parse(changes.get('.github/delivery.json')).units[0];
@@ -201,11 +220,47 @@ test('a failed target in the same release unit cannot add its existing asset to 
 test('both submit and verify must have a native receipt for the external target',async()=>{
   const product=YAML.parse(await readFile('templates/release/steward-release-channels.yml','utf8'));
   const targets=[{unitId:'layerscape',channelId:'ghcr-assets'}];
-  assert.doesNotThrow(()=>assertChannelWorkflow(product,targets));
+  const native=new Set(['submit/ghcr-assets/layerscape','verify/ghcr-assets/layerscape']);
+  assert.doesNotThrow(()=>assertChannelWorkflow(product,targets,native));
+  assert.throws(()=>assertChannelWorkflow(product,targets),/submit/);
   const wrongUnit=structuredClone(product);wrongUnit.jobs['ghcr-assets-submit'].strategy.matrix={include:[{unitId:'other',channelId:'ghcr-assets'}]};
-  assert.throws(()=>assertChannelWorkflow(wrongUnit,targets),/submit\/ghcr-assets\/layerscape/);
+  assert.throws(()=>assertChannelWorkflow(wrongUnit,targets,native),/submit\/ghcr-assets\/layerscape/);
   for(const jobs of [{package:{steps:[{run:'python pack.py'}]}},{...product.jobs,'ghcr-assets-verify':{steps:[]}}])
-    assert.throws(()=>assertChannelWorkflow({...product,jobs},targets),/缺少唯一的渠道作业或原生回执/);
+    assert.throws(()=>assertChannelWorkflow({...product,jobs},targets,native),/缺少唯一的渠道作业或原生回执/);
+});
+test('dynamic channel receipts require the selected job, repository, source and uploaded report',async()=>{
+  const document=YAML.parse(await readFile('templates/release/steward-release-channels.yml','utf8'));
+  const source={document,path:'.github/workflows/channels.yml'},key='d'.repeat(64),time='2026-11-17T10:00:00Z';
+  const api=fake(new Map()),modes=['submit','verify'],targets=[{unitId:'other',channelId:'ghcr-assets'}];
+  const listRuns=api.rest.actions.listWorkflowRuns=Symbol(),listJobs=api.rest.actions.listJobsForWorkflowRunAttempt=Symbol();
+  let expectedUnit='other',archivePath='report.json',repositoryId=repo.id,head=A;
+  const run=id=>({id,run_attempt:1,repository:repo,head_repository:repo,head_sha:head,event:'workflow_dispatch',path:source.path,
+    display_title:'Channels '+modes[id-1]+' '+key,conclusion:'success'});
+  const artifact=id=>({id:70+id,name:'channel-'+key+'-other-ghcr-assets-'+id+'-1',created_at:time,digest:'sha256:'+key,
+    workflow_run:{id,head_sha:A,repository_id:repositoryId,head_repository_id:repo.id}});
+  api.paginate=async(method,args)=>{
+    if(method===listRuns)return [run(1),run(2)];
+    const id=args.run_id,mode=modes[id-1];
+    if(method!==listJobs)return [artifact(id)];
+    const upload=document.jobs['ghcr-assets-'+mode].steps.find(s=>s.with?.path==='report.json' && s.with?.name?.startsWith('channel-'));
+    return [{id:111+id,run_id:id,run_attempt:1,head_sha:A,conclusion:'success',name:mode+'/ghcr-assets/'+expectedUnit,
+      steps:[{name:upload.name??'Run '+upload.uses,started_at:time,completed_at:time,conclusion:'success'}]}];
+  };
+  const inspect=async(api,token,repo,run)=>({asset:artifact(run.id),data:[{path:archivePath}]});
+  const results=()=>nativeChannelJobs(api,repo,A,A,source,targets,'',inspect);
+  assert.deepEqual(await results(),new Set(modes.map(m=>m+'/ghcr-assets/other')));
+  archivePath='debug.txt';assert.equal((await results()).size,0);
+  archivePath='report.json';expectedUnit='unrelated';assert.equal((await results()).size,0);
+  expectedUnit='other';repositoryId=-1;assert.equal((await results()).size,0);
+  repositoryId=repo.id;head=B;assert.equal((await results()).size,0);
+});
+test('form archive defaults resolve the selected static matrix row and include override',()=>{
+  const path='.github/workflows/product.yml',doc={jobs:{pack:{'runs-on':'ubuntu-24.04',strategy:{matrix:{
+    os:['linux','macos'],include:[{os:'linux',flavor:'small'}]}},steps:[{uses:'actions/checkout@'+'a'.repeat(40),with:{'persist-credentials':false}},{run:'echo ok'},{uses:'actions/upload-artifact@'+'a'.repeat(40),with:{name:'artifact-${{ matrix.os }}',path:'out'}}]}}};
+  const bytes=YAML.stringify(doc),model=inspectRepository(new Map([[path,bytes]]));
+  const entries=candidates(model,{}).filter(e=>e.workflow);
+  assert.deepEqual(entries.map(e=>e.archive),['artifact-linux','artifact-macos']);
+  for(const e of entries)assert.equal(selectWorkflow(bytes,e).output,'out');
 });
 test('reviewed Pages source selects the same unit for maintenance even with legacy online settings',async()=>{
   const workflow=Buffer.from(YAML.stringify({env:{STEWARD_DOCS_SOURCE:'release',STEWARD_DOCS_UNIT:'maps'}}));
@@ -246,6 +301,11 @@ test('retains the product signing job and untouched release units when changing 
   const next=YAML.parse(adaptBuild(YAML.stringify(adopted),seed,[{...one,files:[{id:'revised',path:'release.zip'}]}]));
   assert.deepEqual(next.jobs.sign,adopted.jobs.sign);assert.deepEqual(next.jobs['custom-check'],adopted.jobs['custom-check']);
   assert.deepEqual(next.jobs.build.steps.filter(s=>s.if?.includes("matrix.unit == 'two'")),previous);
+  const native={...one,recipe:{runner:'ubuntu-24.04',native:{workflow:'.github/workflows/product.yml',job:'pack',archive:'dist'}}};
+  const upgraded=YAML.parse(adaptBuild(YAML.stringify(adopted),seed,[native],A));
+  assert.equal(upgraded.jobs.build.steps.find(s=>s.name==='Check out native archive reader').with.ref,A);
+  assert.equal(upgraded.jobs.build.steps.find(s=>s.name==='Collect verified product workflow archive')['working-directory'],'configuration-controller');
+  assert.deepEqual(upgraded.jobs.sign,adopted.jobs.sign);
   adopted.jobs.build.steps.find(s=>s.name==='Collect selected files').run+='\n./custom-inspection';
   assert.throws(()=>adaptBuild(YAML.stringify(adopted),seed,[one]),/jobs.build/);
 });

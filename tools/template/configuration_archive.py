@@ -1,4 +1,6 @@
 """Inspect native Actions ZIP entries and stage only explicitly selected delivery files."""
+from pathlib import Path
+import shutil
 import re
 import stat
 from zipfile import ZipFile
@@ -45,8 +47,20 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('archive')
     parser.add_argument('--request', action='store_true')
+    parser.add_argument('--stage')
+    parser.add_argument('--files')
     args = parser.parse_args()
-    if args.request:
+    if args.stage:
+        directory = Path(args.stage)
+        directory.mkdir(exist_ok=False)
+        with ZipFile(args.archive) as source:
+            entries = inventory(source)
+            for path in json.loads(args.files):
+                safe = relative_name(path)
+                with source.open(entries[safe]) as stream, (directory / safe.split('/')[-1]).open('xb') as output:
+                    shutil.copyfileobj(stream, output)
+        print(json.dumps(inspect_archive(args.archive)))
+    elif args.request:
         with ZipFile(args.archive) as source:
             entries = inventory(source)
             if list(entries) != ['configuration-request.json'] or next(iter(entries.values())).file_size > 1024 * 1024:

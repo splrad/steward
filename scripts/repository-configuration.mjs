@@ -6,7 +6,7 @@ import {dirname,join,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {nativeReleaseApp} from '../packages/runner/dist/index.js';
 import {authorized,authorizePull,delegatesPath,fileText} from './configuration-authorization.mjs';
-import {client,commitFiles,dispatchTrial,findEvidence,must,openPull,positive,requestFromRun,rerunValidation,sha,trialInventory} from './configuration-native.mjs';
+import {client,commitFiles,dispatchTrial,dynamicBuildInputs,findEvidence,must,nativeChannelJobs,openPull,positive,requestFromRun,rerunValidation,sha,trialInventory} from './configuration-native.mjs';
 import {applySelection,digest,prepareTarget} from './configuration-selection.mjs';
 import {ciPath,deliveryPath,inspectRepository,versionsPath} from './configuration-view.mjs';
 
@@ -96,7 +96,7 @@ async function operatorApproval(api,write,actions,repo,base,head,number,actor) {
 }
 
 export async function reconcile({repo,base,run,data,api,write,actions,readToken,load=snapshot,lock=generateLock,
-  sessions={read:readSession,write:writeSession},find=findEvidence,dispatch=dispatchTrial,inventory=trialInventory}) {
+  sessions={read:readSession,write:writeSession},discover=dynamicBuildInputs,find=findEvidence,dispatch=dispatchTrial,inventory=trialInventory}) {
   if(run.event==='pull_request_review') {
     const pr=(await api.rest.pulls.get({...api.target,pull_number:data.pull.number})).data;
     if(pr.head.sha===data.pull.head && await authorizePull(api,pr.number,pr.head.sha,repo.default_branch)) await rerunValidation(api,actions,pr);
@@ -136,6 +136,7 @@ export async function reconcile({repo,base,run,data,api,write,actions,readToken,
   must(!pr || head===pr.head.sha,'Open configuration branch moved');
   const replay=tip?.author?.id===301115370 && tip.commit.verification?.verified && tip.commit.message.split('\n').includes(receipt(run));
   const view=await load(api,head,{});
+  view.nativeVariants=state.head===head?state.nativeVariants??[]:[];
   let changes=new Map();
   const originalBody=pr?.body;
   if(data.pull && state.last!==receipt(run) && !replay) {
@@ -175,7 +176,7 @@ export async function reconcile({repo,base,run,data,api,write,actions,readToken,
         }
         state.notice=['已核对构建请求。完成的归档在对应目标下列出。',...notices].join('\n');
       } else {
-        changes=await applySelection(view,op,plan,{repo,readSource:path=>fileText(api,path,head),controllerSha:process.env.GITHUB_SHA,seed:await readFile('templates/release/steward-release-publish.yml','utf8'),
+        changes=await applySelection(view,op,plan,{repo,channelEvidence:(source,targets)=>nativeChannelJobs(api,repo,head,base,source,targets,readToken),readSource:path=>fileText(api,path,head),controllerSha:process.env.GITHUB_SHA,seed:await readFile('templates/release/steward-release-publish.yml','utf8'),
           inventory:(target,recipe)=>inventory(api,readToken,repo,base,head,target,recipe),describe:line=>{state.notice=[state.notice,line].filter(Boolean).join('\n');}});
         await lock(view.files,changes,repo,readToken);
       }
@@ -224,6 +225,8 @@ export async function reconcile({repo,base,run,data,api,write,actions,readToken,
   state.head=head;state.last=receipt(run);
   for(const [id,evidence] of Object.entries(state.evidence)) if(evidence.head!==head) delete state.evidence[id];
   const current=await load(api,head,{});
+  current.nativeVariants=await discover(api,repo,head,base,current);
+  state.nativeVariants=current.nativeVariants;
   const body=configurationForm(current,head,state).body;
   if(!pr) {
     try {await write.rest.pulls.create({...api.target,base:repo.default_branch,head:branch,title:'chore: 配置 '+repo.name+' 仓库功能',body});}

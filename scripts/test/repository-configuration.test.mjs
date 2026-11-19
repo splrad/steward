@@ -9,6 +9,8 @@ import YAML from 'yaml';
 import {candidates,configurationForm,parseForm,planFromForm} from '../configuration-form.mjs';
 import {applySelection} from '../configuration-selection.mjs';
 import {inspectRepository} from '../configuration-view.mjs';
+import {dynamicBuildInputs,findEvidence,trialInventory} from '../configuration-native.mjs';
+import {stageNativeProducer} from '../configuration-native-artifact.mjs';
 import {reconcile} from '../repository-configuration.mjs';
 import {parseDeliveryConfig} from '../../packages/runner/dist/index.js';
 
@@ -41,7 +43,7 @@ const scripts={
 };
 const requestPath='.github/workflows/repository-configuration.yml',trialPath='.github/workflows/repository-configuration-trial.yml';
 
-test('same configuration PR prepares two native entries, binds trials to their head and selects individual files',async t=>{
+for(const complex of [false,true]) test('same configuration PR binds two entries and selects individual files · '+(complex?'native container, service and dynamic matrix':'reviewed scripts'),async t=>{
   const dir=await mkdtemp(join(tmpdir(),'steward-config-test-')), product=join(dir,'product');
   t.after(()=>rm(dir,{recursive:true,force:true}));
   const git=(...args)=>execFileSync('git',['-c','core.hooksPath=','-C',product,...args],{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
@@ -50,6 +52,15 @@ test('same configuration PR prepares two native entries, binds trials to their h
   else {
     await mkdir(product);git('init','-b','trunk');
     for(const [path,bytes] of Object.entries(scripts)) await put(path,bytes);
+  }
+  const productWorkflow='.github/workflows/tool-archive.yml';
+  if(complex) {
+    const doc=YAML.parse(await readFile(join(product,productWorkflow),'utf8')),job=doc.jobs.assemble;
+    doc.jobs.targets={'runs-on':'ubuntu-24.04',outputs:{matrix:'${{ steps.emit.outputs.matrix }}'},steps:[{id:'emit',run:'echo \'matrix={"os":["linux"]}\' >> "$GITHUB_OUTPUT"'}]};
+    Object.assign(job,{name:'route-${{ matrix.os }}',needs:'targets',strategy:{matrix:'${{ fromJSON(needs.targets.outputs.matrix) }}'},
+      container:{image:'python:3.12'},services:{db:{image:'postgres:16'}}});
+    job.steps.at(-1).name='Archive route';job.steps.at(-1).with.name='route-${{ matrix.os }}';
+    await put(productWorkflow,YAML.stringify(doc));
   }
   git('config','user.name','Configuration fixture');git('config','user.email','config@example.invalid');git('config','core.autocrlf','false');
   for(const path of [requestPath,trialPath]) await put(path,await readFile('templates/repository/'+path));
@@ -93,6 +104,42 @@ test('same configuration PR prepares two native entries, binds trials to their h
     const files=JSON.parse(execFileSync('python',[resolve(root,'tools/template/configuration_archive.py'),archive],{env,encoding:'utf8'}));
     evidence.set(head+'/'+target.unit,{head,files,binding:{run:target.unit==='route'?81:82,attempt:1},url:'https://github.com/splrad/map-tools/actions/runs/81'});
   },inventory:async(api,token,repo,base,head,target)=>evidence.get(head+'/'+target.unit).files};
+  const nativeRuns=new Map(),nativeArchive=join(dir,'product-native.zip');
+  const archivedAt='2026-01-01T00:00:10Z';
+  const actionNames=['listWorkflowRuns','listWorkflowRunArtifacts','listJobsForWorkflowRunAttempt'];
+  const actionsApi=Object.fromEntries(actionNames.map(k=>[k,k]));
+  const actionsRead={target:{},rest:{actions:{...actionsApi,getWorkflowRun:async({run_id})=>response(nativeRuns.get(run_id))},
+    repos:{getCommit:async({ref})=>response({commit:{tree:{sha:git('rev-parse',ref+'^{tree}')}}}),
+      getContent:async({path,ref})=>response({type:'file',encoding:'base64',content:Buffer.from(git('show',ref+':'+path)).toString('base64')})}},
+    paginate:async(method,params)=>{
+      if(method==='listWorkflowRuns')return [...nativeRuns.values()].filter(r=>r.head_sha===params.head_sha && params.workflow_id===r.path.split('/').at(-1));
+      const run=nativeRuns.get(params.run_id);
+      if(method==='listWorkflowRunArtifacts')return [artifact(run)];
+      return [{id:901,name:'route-linux',conclusion:'success',steps:[{name:'Archive route',conclusion:'success',started_at:archivedAt,completed_at:archivedAt}]}];
+    }};
+  function artifact(run){return {id:882,name:'route-linux',created_at:archivedAt,workflow_run:{id:run.id,repository_id:repo.id,head_repository_id:repo.id,head_sha:run.head_sha}};}
+  function productRun(source){
+    execFileSync('python',['build.py'],{cwd:join(product,'tools/route')});
+    execFileSync('python',['-c',"import sys,pathlib,zipfile; p=pathlib.Path(sys.argv[1]); z=zipfile.ZipFile(sys.argv[2],'w'); [z.write(f,f.relative_to(p)) for f in p.rglob('*') if f.is_file()]; z.close()",join(product,'tools/route/out'),nativeArchive]);
+    const id=300+nativeRuns.size;
+    nativeRuns.set(id,{id,run_attempt:1,repository:repo,head_repository:repo,head_sha:source,head_branch:repo.default_branch,event:'push',path:productWorkflow,status:'completed',conclusion:'success'});
+  }
+  async function archive(api,token,repo,run,name,request,stage){
+    assert.equal(name,'route-linux');
+    const args=stage?['--stage',stage.directory,'--files',JSON.stringify(stage.paths)]:[];
+    return {asset:artifact(run),data:JSON.parse(execFileSync('python',['tools/template/configuration_archive.py',nativeArchive,...args],{encoding:'utf8'}))};
+  }
+  if(complex){
+    productRun(base);
+    ctx.discover=(api,repo,head,base,model)=>dynamicBuildInputs(actionsRead,repo,head,base,model);
+    const priorFind=ctx.find,priorInventory=ctx.inventory;
+    ctx.find=(api,token,repo,base,head,target,model,callback)=>target.unit==='route'?
+      findEvidence(actionsRead,token,repo,base,head,target,model,undefined,(...args)=>trialInventory(...args,archive)):
+      priorFind(api,token,repo,base,head,target);
+    ctx.inventory=(api,token,repo,base,head,target,recipe)=>target.unit==='route'?
+      trialInventory(actionsRead,token,repo,base,head,target,recipe,archive):priorInventory(api,token,repo,base,head,target);
+  } else ctx.discover=async()=>[];
+  const formModel=async()=>Object.assign(await load(api,ref),{nativeVariants:state.nativeVariants});
   const run=(event,data)=>reconcile({...ctx,run:{id:sequence++,run_attempt:1,event,triggering_actor:actor},data});
   await run('workflow_dispatch',{});
   assert.equal(pr.number,9);
@@ -108,7 +155,7 @@ test('same configuration PR prepares two native entries, binds trials to their h
     }
     return run('pull_request',{pull:{number:9,head:ref,previous,body:pr.body}});
   };
-  const native=candidates(await load(api,ref),{}).find(e=>e.job==='assemble').id;
+  const native=candidates(await formModel(),{}).find(e=>e.job==='assemble').id;
   await edit({[native+'.use']:true,'s1.use':true});
   const first={};
   for(const [id,unit,path] of [[native,'route','tools/route'],['s1','maps','maps/data']]) {
@@ -118,10 +165,11 @@ test('same configuration PR prepares two native entries, binds trials to their h
     's1.prepare':'','s1.command':'python pack.py','s1.output':'out','author.id':'12','author.evidence':'Confirmed fixture maintainer','signing':true,'operation.configure':true});
   const preparedHead=ref;
   assert.match(git('diff','--name-only',base,ref),/\.github\/actions\/configuration\/maps\/hosted\/run.mjs/);
+  if(complex)productRun(preparedHead);
   await refresh();assert.equal(ref,preparedHead);
-  await edit({'operation.trial':true});assert.equal(evidence.size,2);
+  await edit({'operation.trial':true});assert.equal(evidence.size,complex?1:2);
   await run('workflow_run',{trial:{id:81,attempt:1}});
-  const items=configurationForm(await load(api,ref),ref,state).items;
+  const items=configurationForm(await formModel(),ref,state).items;
   const asset=(id,name)=>items.find(i=>i.id.startsWith(id+'.f') && i.id.endsWith('.use') && pr.body.split('\n').some(l=>l.includes(name) && l.includes('cfg '+i.id+' '))).id.slice(0,-4);
   const a=asset(native,'route-2.4.1.tar.gz'),b=asset('s1','stations-1.6.0.zip');
   assert.match(pr.body,/build.log/);
@@ -133,7 +181,7 @@ test('same configuration PR prepares two native entries, binds trials to their h
   await edit({...final,'channel.workflow':''});
   assert.equal(ref,preparedHead);
   assert.match(pr.body,/请选择已审阅的本仓渠道工作流/);
-  const savedPlan=planFromForm(await load(api,ref),{...state,values:{...state.values,...final}},'select');
+  const savedPlan=planFromForm(await formModel(),{...state,values:{...state.values,...final}},'select');
   await edit(final);
   assert.equal(pr.number,9);assert.notEqual(ref,preparedHead);
   assert.equal(git('show',ref+':.github/workflows/steward-release-channels.yml'),channelFixture.trim());
@@ -142,6 +190,20 @@ test('same configuration PR prepares two native entries, binds trials to their h
   assert.equal(selected.units[0].channels.find(c=>c.id==='github-release').required,true);
   const workflow=YAML.parse(git('show',ref+':.github/workflows/steward-release-publish.yml'));
   assert.deepEqual(workflow.jobs.build.strategy.matrix.include.map(r=>r.unit),['route','maps']);
+  if(complex) {
+    assert.equal(git('show',ref+':'+productWorkflow),git('show',base+':'+productWorkflow));
+    const collect=workflow.jobs.build.steps.find(s=>s.name==='Collect verified product workflow archive');
+    const producer=JSON.parse(Buffer.from(collect.env.PRODUCER,'base64url'));
+    assert.equal(producer.nativeJobName,'route-linux');
+    assert.equal(producer.archive,'route-linux');
+    const args={api:actionsRead,repo,source:ref,producer,unit:'route',target:'hosted',directory:dir,
+      selected:JSON.parse(collect.env.SELECTED_FILES),record:{sourceSha:ref,repositoryId:repo.id,units:[{id:'route',assets:[{id:'cli',name:'route-2.4.1.tar.gz'}]}]}};
+    await assert.rejects(stageNativeProducer(args,archive),/Complete .*route-linux/);
+    productRun(ref);
+    await stageNativeProducer(args,archive);
+    assert.deepEqual(await readFile(join(dir,'delivery-files','route-2.4.1.tar.gz')),await readFile(join(product,'tools/route/out/route-2.4.1.tar.gz')));
+    return;
+  }
   const adopted=await load(api,ref), warnings=[];
   const scenario=structuredClone(savedPlan);
   scenario.targets[0].files[0].description='Reviewed CLI package';

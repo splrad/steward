@@ -37,7 +37,7 @@ function parseWorkflow(bytes) {
   return doc.toJS({maxAliasCount:0});
 }
 
-function matrixValue(value, row) {
+export function matrixValue(value, row) {
   if (typeof value !== 'string') return value;
   return value.replace(/\$\{\{\s*matrix\.([A-Za-z_][\w-]*)\s*\}\}/g, (_, field) => {
     requireValue(Object.hasOwn(row,field) && ['string','number','boolean'].includes(typeof row[field]), 'Unknown matrix value');
@@ -71,17 +71,8 @@ export function selectWorkflow(bytes, selection) {
   const job = workflow.jobs?.[selection.job];
   requireValue(job?.steps && !job.uses && !job.environment && !job.container && !job.services, 'Select a native build job');
   const row = selection.matrix ?? {};
-  const matrix = job.strategy?.matrix;
-  if (matrix) {
-    requireValue(typeof matrix === 'object', 'A dynamic matrix requires resolved native run evidence');
-    const dimensions = Object.keys(matrix).filter(k => !['include','exclude'].includes(k));
-    const matches = (a,b) => Object.entries(a).every(([k,v])=>Object.hasOwn(b,k) && b[k] === v);
-    const base = dimensions.length && Object.keys(row).length === dimensions.length
-      && dimensions.every(k => Array.isArray(matrix[k]) && matrix[k].includes(row[k]));
-    const included = matrix.include?.some(item=>matches(item,row) && matches(row,item));
-    requireValue((base || included) && !matrix.exclude?.some(item=>matches(item,row)), 'Matrix target is not declared');
-  } else requireValue(!Object.keys(row).length, 'Unexpected matrix target');
-  requireValue(!(matrix?.include?.length && Object.keys(matrix).some(k=>k!=='include' && k!=='exclude')), 'A mixed include matrix requires a reviewed product entry');
+  const rows=staticMatrixRows(job.strategy?.matrix);
+  requireValue(rows && rows.some(r=>isDeepStrictEqual(r,row)), 'Matrix target requires a declared static row or native run evidence');
   const label = runner(matrixValue(job['runs-on'],row));
   requireValue(!job.if && !job.needs && !job.environment && !job.permissions?.['id-token'], 'An existing native run or a reviewed product entry is required for this job');
   const defaults = {...workflow.defaults?.run,...job.defaults?.run};
@@ -137,6 +128,23 @@ export function scriptBuild(selection) {
   return {runner:label,steps,output};
 }
 
+const collectFilesCommand=[
+        "$ErrorActionPreference = 'Stop'",
+        "$stage = Join-Path $env:RUNNER_TEMP 'delivery-files'",
+        'New-Item -ItemType Directory -Path $stage -ErrorAction Stop | Out-Null',
+        '$unit = @(($env:BUILD_RECORD | ConvertFrom-Json).units | Where-Object { $_.id -ceq $env:UNIT })',
+        "if ($unit.Count -ne 1) { throw 'Unknown release unit' }",
+        'foreach ($selected in ($env:SELECTED_PATHS | ConvertFrom-Json)) {',
+        '  $asset = @($unit[0].assets | Where-Object { $_.id -ceq $selected.id })',
+        "  if ($asset.Count -ne 1) { throw 'Unknown selected asset' }",
+        '  $relative = Join-Path $selected.directory $asset[0].name',
+        '  $file = Get-Item -LiteralPath $relative -ErrorAction Stop',
+        "  if ($file.PSIsContainer -or $file.LinkType) { throw 'Expected a regular delivery file' }",
+        '  $target = Join-Path $stage $file.Name',
+        "  if (Test-Path -LiteralPath $target) { throw 'Duplicate delivery filename' }",
+        '  Copy-Item -LiteralPath $file.FullName -Destination $target',
+        '}'].join('\n');
+
 // Each source is an exact relative path observed within its archive. Keep debug files out of formal uploads.
 export function renderBuild(seed, targets, {signing,controllerSha}) {
   requireValue(signing === 'not-applicable', 'A reviewed signing job or an explicit not-applicable decision is required');
@@ -159,28 +167,20 @@ export function renderBuild(seed, targets, {signing,controllerSha}) {
     for (const file of files) {
       requireValue(key.test(file.id) && !seenAssets.has(unit+'/'+file.id),'Duplicate or invalid asset');
       seenAssets.add(unit+'/'+file.id);
-      paths.push({id:file.id,directory:posix.dirname(posix.join('product',recipe.output,repositoryPath(file.path)))});
+      paths.push({id:file.id,directory:posix.dirname(posix.join('product',recipe.output??'.',repositoryPath(file.path)))});
     }
     rows.push({unit,target,assets:files.map(file=>file.id)});
     const guard = active + ' && ' + condition;
+    if(recipe.native) {
+      inserted.push({name:'Collect verified product workflow archive',if:guard,'working-directory':'controller',
+        env:{GH_TOKEN:'${{ github.token }}',SOURCE_SHA:'${{ github.sha }}',BUILD_RECORD:'${{ needs.admit.outputs.record }}',
+          UNIT:unit,TARGET:target,PRODUCER:Buffer.from(JSON.stringify(recipe.native)).toString('base64url'),SELECTED_FILES:JSON.stringify(files.map(f=>({id:f.id,directory:posix.dirname(f.path)})))},
+        run:'node scripts/configuration-native-artifact.mjs'});
+      continue;
+    }
     for (const step of recipe.steps) inserted.push({...step,if:guard});
     inserted.push({name:'Collect selected files',shell:'pwsh',if:guard,
-      env:{SELECTED_PATHS:JSON.stringify(paths),BUILD_RECORD:'${{ needs.admit.outputs.record }}',UNIT:unit},run:[
-        "$ErrorActionPreference = 'Stop'",
-        "$stage = Join-Path $env:RUNNER_TEMP 'delivery-files'",
-        'New-Item -ItemType Directory -Path $stage -ErrorAction Stop | Out-Null',
-        '$unit = @(($env:BUILD_RECORD | ConvertFrom-Json).units | Where-Object { $_.id -ceq $env:UNIT })',
-        "if ($unit.Count -ne 1) { throw 'Unknown release unit' }",
-        'foreach ($selected in ($env:SELECTED_PATHS | ConvertFrom-Json)) {',
-        '  $asset = @($unit[0].assets | Where-Object { $_.id -ceq $selected.id })',
-        "  if ($asset.Count -ne 1) { throw 'Unknown selected asset' }",
-        '  $relative = Join-Path $selected.directory $asset[0].name',
-        '  $file = Get-Item -LiteralPath $relative -ErrorAction Stop',
-        "  if ($file.PSIsContainer -or $file.LinkType) { throw 'Expected a regular delivery file' }",
-        '  $target = Join-Path $stage $file.Name',
-        "  if (Test-Path -LiteralPath $target) { throw 'Duplicate delivery filename' }",
-        '  Copy-Item -LiteralPath $file.FullName -Destination $target',
-        '}'].join('\n')});
+      env:{SELECTED_PATHS:JSON.stringify(paths),BUILD_RECORD:'${{ needs.admit.outputs.record }}',UNIT:unit},run:collectFilesCommand});
   }
   build.strategy.matrix = {include:rows};
   build['runs-on'] = targets.every(t=>t.recipe.runner===targets[0].recipe.runner)?targets[0].recipe.runner
@@ -194,7 +194,7 @@ export function renderBuild(seed, targets, {signing,controllerSha}) {
 }
 
 /** Change only identifiable product slots. Preserve signing, recovery, and untouched producer jobs verbatim. */
-export function adaptBuild(source,seed,targets) {
+export function adaptBuild(source,seed,targets,controllerSha) {
   const doc=YAML.parseDocument(source), current=parseWorkflow(source);
   const build=current.jobs?.build, rows=build?.strategy?.matrix?.include;
   const path=['jobs','build','steps'], nodes=doc.getIn(path,true);
@@ -207,6 +207,19 @@ export function adaptBuild(source,seed,targets) {
   const fullGuard=(row)=>active+' && '+condition(row);
   const rendered=parseWorkflow(renderBuild(seed,targets,{signing:'not-applicable'})).jobs.build;
   const generated=rendered.steps.slice(rendered.steps.findIndex(s=>s.id==='recover')+1,rendered.steps.findIndex(s=>s.id==='upload'));
+  const controller=build.steps.find(step=>step.with?.repository==='splrad/steward' && step.with.path==='controller');
+  if(controllerSha && targets.some(t=>t.recipe.native) && controller?.with.ref!==controllerSha) {
+    requireValue(/^[a-f0-9]{40}$/.test(controllerSha) && checkout.test(controller?.uses??''),'Missing trusted controller checkout');
+    for(const collect of [...generated].filter(s=>s.name==='Collect verified product workflow archive')) {
+      const path='configuration-controller';
+      const checkoutStep={name:'Check out native archive reader',if:collect.if,uses:controller.uses,
+        with:{repository:'splrad/steward',ref:controllerSha,path,'persist-credentials':false}};
+      const install={name:'Install native archive reader dependencies',if:collect.if,'working-directory':path,
+        run:'npm ci --ignore-scripts --no-audit --no-fund'};
+      generated.splice(generated.indexOf(collect),0,checkoutStep,install);
+      collect['working-directory']=path;
+    }
+  }
   const kept=[],inserted=new Set();
   const insert=row=>{
     const guard=fullGuard(row);
@@ -221,7 +234,10 @@ export function adaptBuild(source,seed,targets) {
     insert(row);
     if(step.uses && pinned.test(step.uses))continue;
     if(step.name==='Run reviewed packaging entry' && step.run==='node product/.github/actions/configuration/'+row.unit+'/'+row.target+'/run.mjs')continue;
-    if(step.name==='Collect selected files' && generated.some(s=>s.name===step.name && s.run===step.run))continue;
+    if(step.name==='Check out native archive reader' && checkout.test(step.uses??'') && step.with?.path==='configuration-controller' && step.with.repository==='splrad/steward')continue;
+    if(step.name==='Install native archive reader dependencies' && step['working-directory']==='configuration-controller' && step.run==='npm ci --ignore-scripts --no-audit --no-fund')continue;
+    if(step.name==='Collect verified product workflow archive' && step.run==='node scripts/configuration-native-artifact.mjs' && ['controller','configuration-controller'].includes(step['working-directory']))continue;
+    if(step.name==='Collect selected files' && step.run===collectFilesCommand)continue;
     fail();
   }
   const proposed=rendered.strategy.matrix.include;
