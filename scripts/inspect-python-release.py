@@ -1,6 +1,6 @@
 """Inspect Python distribution metadata without extracting or executing package files."""
 from pathlib import Path
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import json
 import gzip
 import io
@@ -39,6 +39,21 @@ class BoundedZipReader(io.BufferedReader):
         if size > MAX_ZIP_READ:
             raise ValueError("archive read budget exceeded")
         return super().read(size)
+
+
+@contextmanager
+def release_zip(path):
+    with BoundedZipReader(io.FileIO(path, "r")) as bounded, zipfile.ZipFile(bounded) as archive:
+        # A ZIP ends with its 22-byte EOCD followed by exactly its declared
+        # comment. ZipFile itself tolerates both extra bytes and short comments.
+        end = bounded.seek(0, io.SEEK_END)
+        offset = end - 22 - len(archive.comment)
+        require(offset >= 0)
+        bounded.seek(offset)
+        footer = bounded.read(22)
+        require(footer[:4] == b"PK\x05\x06" and int.from_bytes(footer[20:22], "little") == len(archive.comment))
+        require(bounded.read(len(archive.comment)) == archive.comment)
+        yield archive
 
 
 class ExpandedReader:
@@ -106,7 +121,7 @@ def inspect(path):
     metadata = None
     if path.name.endswith(".whl"):
         name, version, _, _ = parse_wheel_filename(path.name)
-        with BoundedZipReader(io.FileIO(path, "r")) as bounded, zipfile.ZipFile(bounded) as archive:
+        with release_zip(path) as archive:
             entries = archive.infolist()
             require(0 < len(entries) <= MAX_ENTRIES)
             info_roots = set()
@@ -278,7 +293,7 @@ def inspect_declared(path, contract, destination=None):
         found.add(name)
 
     if adapter in ("zip", "dll-zip", "font-zip"):
-        with BoundedZipReader(io.FileIO(path, "r")) as bounded, zipfile.ZipFile(bounded) as archive:
+        with release_zip(path) as archive:
             require(0 < len(archive.infolist()) <= MAX_ENTRIES)
             for entry in archive.infolist():
                 directory = entry.is_dir()

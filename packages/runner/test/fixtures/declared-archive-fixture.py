@@ -36,3 +36,10 @@ with sqlite3.connect(database) as connection:
 connection.close()
 with zipfile.ZipFile(root / "database.zip", "w", compression=zipfile.ZIP_DEFLATED) as archive:
     archive.write(database, "data/stations.db")
+
+with zipfile.ZipFile(root / "comment.zip", "w") as archive:
+    archive.writestr("content", "data")
+    archive.comment = b"product comment"
+commented = (root / "comment.zip").read_bytes()
+(root / "extra.zip").write_bytes(commented + b"unexpected trailing bytes")
+(root / "short-comment.zip").write_bytes(commented[:-1])
