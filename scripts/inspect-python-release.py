@@ -41,6 +41,27 @@ class BoundedZipReader(io.BufferedReader):
         return super().read(size)
 
 
+def zip_local_sizes(extra, expanded, compressed):
+    # ZIP64 replaces sentinel values in uncompressed-then-compressed order.
+    sizes = [expanded, compressed]
+    offset = 0
+    while offset < len(extra):
+        require(offset + 4 <= len(extra))
+        tag, length = struct.unpack_from("<HH", extra, offset)
+        offset += 4
+        require(offset + length <= len(extra))
+        if tag == 1:
+            values = extra[offset:offset + length]
+            for index, size in enumerate(sizes):
+                if size == 0xffffffff:
+                    require(len(values) >= 8)
+                    sizes[index] = int.from_bytes(values[:8], "little")
+                    values = values[8:]
+        offset += length
+    require(0xffffffff not in sizes)
+    return sizes
+
+
 def check_zip_records(source, entries, central_start):
     """Account for each physical local header, compressed payload and descriptor."""
     require(0 < len(entries) <= MAX_ENTRIES)
@@ -54,7 +75,14 @@ def check_zip_records(source, entries, central_start):
         flags, method = struct.unpack_from("<HH", header, 6)
         require(flags == entry.flag_bits and method == entry.compress_type)
         name_size, extra_size = struct.unpack_from("<HH", header, 26)
-        payload_end = source.tell() + name_size + extra_size + entry.compress_size
+        crc, compressed, expanded = struct.unpack_from("<III", header, 14)
+        source.seek(name_size, io.SEEK_CUR)
+        extra = source.read(extra_size)
+        require(len(extra) == extra_size)
+        expanded, compressed = zip_local_sizes(extra, expanded, compressed)
+        for local, central in ((crc, entry.CRC), (compressed, entry.compress_size), (expanded, entry.file_size)):
+            require(local == central or (flags & 8 and local == 0))
+        payload_end = source.tell() + entry.compress_size
         if not flags & 8:
             require(payload_end == boundary)
             continue
@@ -296,7 +324,7 @@ def inspect_declared(path, contract, destination=None):
         if directory:
             require(size == 0)
             return
-        require(name not in directories and 0 < size <= 32 * 1024**2)
+        require(name not in directories and 0 <= size <= 32 * 1024**2)
         expanded += size
         require(expanded <= MAX_EXPANDED)
         fmt = members.get(name)

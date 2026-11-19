@@ -1,4 +1,5 @@
 """Check declared physical boundaries using an ordinary ZIP and synthetic offsets."""
+from copy import copy
 import io
 from pathlib import Path
 import runpy
@@ -17,3 +18,8 @@ class ZipLayoutTests(unittest.TestCase):
             for difference in (-1, 1):
                 with self.subTest(difference=difference), self.assertRaises(ValueError):
                     check(source, archive.infolist(), archive.start_dir + difference)
+            for field in ("CRC", "compress_size", "file_size"):
+                with self.subTest(field=field), self.assertRaises(ValueError):
+                    record = copy(archive.infolist()[0])
+                    setattr(record, field, getattr(record, field) + 1)
+                    check(source, [record], archive.start_dir)

@@ -14,8 +14,9 @@ with tarfile.open(root / "cli.tar.gz", "w:gz") as archive:
     entry = tarfile.TarInfo("bin/cli")
     entry.size = len(data)
     archive.addfile(entry, io.BytesIO(data))
+    archive.addfile(tarfile.TarInfo("pkg/__init__.py"), io.BytesIO())
 for name, entries in {
-    "stations.zip": [("data.csv", b"id,name\n1,test\n"), ("VERSION", b"1.2.3\n")],
+    "stations.zip": [("data.csv", b"id,name\n1,test\n"), ("VERSION", b"1.2.3\n"), ("pkg/__init__.py", b"")],
     "large.zip": [("data.txt", b"x" * (2 * 1024**2))],
     "ambiguous.zip": [("DATA.csv", b"a"), ("data.csv", b"b")],
     "bad-font.zip": [("font.ttf", b"ordinary text")],
@@ -34,6 +35,10 @@ for zip64 in (False, True):
         with archive.open("items.txt", "w", force_zip64=zip64) as member:
             member.write(b"alpha")
     (root / ("stream64.zip" if zip64 else "stream.zip")).write_bytes(output.getvalue())
+
+with zipfile.ZipFile(root / "seekable64.zip", "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    with archive.open("items.txt", "w", force_zip64=True) as member:
+        member.write(b"alpha")
 
 # A standard Python zipapp has an interpreter line before its ZIP members.
 app = root / "example-app"
