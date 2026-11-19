@@ -6,7 +6,8 @@ import {tmpdir} from 'node:os';
 import {dirname,join,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import YAML from 'yaml';
-import {candidates,configurationForm,parseForm} from '../configuration-form.mjs';
+import {candidates,configurationForm,parseForm,planFromForm} from '../configuration-form.mjs';
+import {applySelection} from '../configuration-selection.mjs';
 import {inspectRepository} from '../configuration-view.mjs';
 import {reconcile} from '../repository-configuration.mjs';
 import {parseDeliveryConfig} from '../../packages/runner/dist/index.js';
@@ -138,6 +139,7 @@ test('same configuration PR prepares two native entries, binds trials to their h
     await edit(final);assert.match(pr.body,/待调整：.*DELIVERY/);
     assert.equal(ref,preparedHead);return;
   }
+  const savedPlan=planFromForm(await load(api,ref),{...state,values:{...state.values,...final}},'select');
   await edit(final);
   assert.equal(pr.number,9);assert.notEqual(ref,preparedHead);
   const selected=validator(JSON.parse(git('show',ref+':.github/delivery.json')));
@@ -145,6 +147,25 @@ test('same configuration PR prepares two native entries, binds trials to their h
   assert.equal(selected.units[0].channels.find(c=>c.id==='github-release').required,true);
   const workflow=YAML.parse(git('show',ref+':.github/workflows/steward-release-publish.yml'));
   assert.deepEqual(workflow.jobs.build.strategy.matrix.include.map(r=>r.unit),['route','maps']);
+  const adopted=await load(api,ref), warnings=[];
+  const scenario=structuredClone(savedPlan);
+  scenario.targets[0].files[0].description='Reviewed CLI package';
+  const options={seed:await readFile('templates/release/steward-release-publish.yml','utf8'),validateDelivery:validator,
+    describe:message=>warnings.push(message),inventory:async target=>{
+      if(target.unit==='maps') throw Error('Expired artifact');
+      return evidence.get(preparedHead+'/'+target.unit).files;
+    }};
+  const partial=await applySelection(adopted,'select',scenario,options);
+  const result=JSON.parse(partial.get('.github/delivery.json'));
+  assert.equal(result.units[0].assets[0].description,'Reviewed CLI package');
+  assert.deepEqual(result.units[1],adopted.delivery.units[1]);
+  assert.ok(!partial.has('release-please-config.json'));
+  assert.ok(!partial.has('.github/workflows/steward-release-publish.yml'));
+  assert.ok(warnings.some(message=>message.includes('maps/hosted') && message.includes('Expired artifact')));
+  const broken=structuredClone(savedPlan);broken.targets[1].entry='absent.py';
+  broken.versions=broken.units.map(u=>({path:u.path,versionFile:u.id==='maps'?'absent-version':'VERSION',changelog:'CHANGELOG.md'}));
+  const configured=await applySelection(adopted,'configure',broken,options);
+  assert.ok(!configured.has('release-please-config.json'));
   if(process.env.CONFIGURATION_CANDIDATE_MODULE) {
     const {validateManualCandidate}=await import(pathToFileURL(resolve(process.env.CONFIGURATION_CANDIDATE_MODULE)));
     const {fixture}=await import(new URL('./test/manual-candidate-fixture.mjs',pathToFileURL(resolve(process.env.CONFIGURATION_CANDIDATE_MODULE))));

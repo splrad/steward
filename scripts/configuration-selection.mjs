@@ -63,7 +63,7 @@ export function prepareTarget(model,target) {
 }
 
 export async function applySelection(model,operation,plan,context) {
-  const changes=new Map(),targets=[],prepared=[];
+  const changes=new Map(),targets=[],prepared=[],selectedUnits=new Set();
   const requested=plan.targets??[];
   must(Array.isArray(requested),'Expected a list of build targets');
   for(const target of requested) {
@@ -95,44 +95,48 @@ export async function applySelection(model,operation,plan,context) {
     const allAssets=new Map();
     for(let i=0;i<targets.length;i++) {
       const target=targets[i], recipe=prepared[i].recipe;
-      const entries=await context.inventory(target,recipe);
-      if(!target.files?.length) {
-        context.describe(target.unit+'/'+target.target+' 归档文件\n'+entries.map(e=>'- `'+e.path.replace(/[`\n<>]/g,'')+'` · '+e.size+' B').join('\n'));
-        continue;
+      try {
+        const entries=await context.inventory(target,recipe);
+        const existingUnit=delivery.units.find(u=>u.id===target.unit);
+        let unit=structuredClone(existingUnit);
+        const assets=[];
+        if(!unit) {
+          const facts=plan.units?.find(u=>u.id===target.unit);
+          must(facts && model.files.has(repositoryPath(facts.notesPath)),'Missing declared unit and notes');
+          const {notesBody,...definition}=facts;
+          unit={...definition,path:repositoryPath(facts.path,true),assets:[],channels:facts.channels??[]};
+        }
+        const facts=plan.units?.find(u=>u.id===unit.id);
+        if(facts?.buildLocks) {
+          must(facts.buildLocks.every(p=>model.files.has(repositoryPath(p))),'Missing declared build lock');
+          unit.buildLocks=facts.buildLocks;
+        }
+        for(const c of facts?.channels??[]) if(!unit.channels.some(old=>old.id===c.id)) unit.channels.push(c);
+        const cfg=model.versions?.packages?.[unit.path];
+        must(cfg,'Missing Release Please package '+unit.path);
+        const versionFile=cfg['version-file']??model.versions['version-file'];
+        must(versionFile && model.files.has(posix.join(unit.path,repositoryPath(versionFile))),'Missing declared version file');
+        const version=model.files.get(posix.join(unit.path,versionFile)).trim();
+        const files=[];
+        for(const selected of target.files) {
+          const name=selected.name.replaceAll('${version}',version);
+          must(key.test(selected.id) && entries.some(e=>e.path===selected.path)
+            && posix.basename(selected.path)===name,'Archive path or confirmed versioned filename changed: '+selected.path);
+          const {path:sourcePath,...declaration}=selected;
+          if(declaration.rightsSource) must(model.files.has(repositoryPath(declaration.rightsSource)),'Missing asset rights source');
+          const prior=unit.assets.find(a=>a.id===selected.id);
+          assets.push({...prior,...declaration});
+          files.push({id:selected.id,path:selected.path,pattern:selected.name});
+        }
+        if(existingUnit) delivery.units[delivery.units.indexOf(existingUnit)]=unit;
+        else delivery.units.push(unit);
+        allAssets.set(unit.id,[...(allAssets.get(unit.id)??[]),...assets]);
+        selectedUnits.add(unit.id);
+        formal.push({unit:target.unit,target:target.target,recipe:{...recipe,steps:[...recipe.steps.filter(step=>step.uses),{name:'Run reviewed packaging entry',shell:'pwsh',run:'node product/'+prepared[i].path}]},files});
+      } catch(error) {
+        if(!context.describe || error.status && ![404,410].includes(error.status) || error.code) throw error;
+        context.describe(target.unit+'/'+target.target+' · '+error.message);
       }
-      let unit=delivery.units.find(u=>u.id===target.unit);
-      if(!unit) {
-        const facts=plan.units?.find(u=>u.id===target.unit);
-        must(facts && model.files.has(repositoryPath(facts.notesPath)),'Missing declared unit and notes');
-        const {notesBody,...definition}=facts;
-        unit={...definition,path:repositoryPath(facts.path,true),assets:[],channels:facts.channels??[]};
-        delivery.units.push(unit);
-      }
-      const facts=plan.units?.find(u=>u.id===unit.id);
-      if(facts?.buildLocks) {
-        must(facts.buildLocks.every(p=>model.files.has(repositoryPath(p))),'Missing declared build lock');
-        unit.buildLocks=facts.buildLocks;
-      }
-      for(const c of facts?.channels??[]) if(!unit.channels.some(old=>old.id===c.id)) unit.channels.push(c);
-      const cfg=model.versions?.packages?.[unit.path];
-      must(cfg,'Missing Release Please package '+unit.path);
-      const versionFile=cfg['version-file']??model.versions['version-file'];
-      must(versionFile && model.files.has(posix.join(unit.path,repositoryPath(versionFile))),'Missing declared version file');
-      const version=model.files.get(posix.join(unit.path,versionFile)).trim();
-      const files=[];
-      for(const selected of target.files) {
-        const name=selected.name.replaceAll('${version}',version);
-        must(key.test(selected.id) && entries.some(e=>e.path===selected.path)
-          && posix.basename(selected.path)===name,'Archive path or confirmed versioned filename changed: '+selected.path);
-        const assets=allAssets.get(unit.id)??[];
-        const {path:sourcePath,...declaration}=selected;
-        if(declaration.rightsSource) must(model.files.has(repositoryPath(declaration.rightsSource)),'Missing asset rights source');
-        const prior=unit.assets.find(a=>a.id===selected.id);
-        assets.push({...prior,...declaration});
-        allAssets.set(unit.id,assets);
-        files.push({id:selected.id,path:selected.path,pattern:selected.name});
-      }
-      formal.push({unit:target.unit,target:target.target,recipe:{...recipe,steps:[...recipe.steps.filter(step=>step.uses),{name:'Run reviewed packaging entry',shell:'pwsh',run:'node product/'+prepared[i].path}]},files});
     }
     if(!formal.length) return changes;
 
@@ -148,6 +152,7 @@ export async function applySelection(model,operation,plan,context) {
     changes.set(deliveryPath,jsonFile(delivery));
   }
   const channelEdits=(plan.channels??[]).flatMap(edit=>{
+    if(operation==='select' && requested.some(t=>t.unit===edit.unit) && !selectedUnits.has(edit.unit)) return [];
     if(operation!=='select' || !edit.artifactIds) return [edit];
     const unit=delivery?.units.find(u=>u.id===edit.unit);
     const artifactIds=edit.artifactIds.filter(id=>unit?.assets.some(a=>a.id===id));
@@ -165,13 +170,14 @@ export async function applySelection(model,operation,plan,context) {
   if(plan.versions) {
     const manifestPath='.release-please-manifest.json';
     const manifest=JSON.parse(model.files.get(manifestPath)??'{}');
-    for(const unit of plan.units??[]) if(unit.notesBody && !model.files.has(unit.notesPath)) {
+    const configuredUnits=(plan.units??[]).filter(u=>!requested.some(t=>t.unit===u.id) || targets.some(t=>t.unit===u.id));
+    for(const unit of configuredUnits) if(unit.notesBody && !model.files.has(unit.notesPath)) {
       must(repositoryPath(unit.notesPath).startsWith('.release-notes/') && unit.notesPath.endsWith('.md'),'New notes belong in the release notes directory');
       parseSupplementalNotes(unit.notesBody,model.files.get('.github/release-template.md.mustache')??'');
       changes.set(unit.notesPath,unit.notesBody+'\n');
     }
     const config=structuredClone(model.versions??{'separate-pull-requests':false,packages:{}});
-    for(const unit of plan.versions) {
+    for(const unit of plan.versions.filter(v=>!(plan.units??[]).some(u=>u.path===v.path) || configuredUnits.some(u=>u.path===v.path))) {
       const path=repositoryPath(unit.path,true), version=repositoryPath(unit.versionFile), log=repositoryPath(unit.changelog);
       const versionPath=posix.join(path,version),logPath=posix.join(path,log);
       must(model.files.has(versionPath),'Missing declared version file '+versionPath);

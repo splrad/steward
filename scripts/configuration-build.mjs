@@ -1,4 +1,5 @@
 import {posix} from 'node:path';
+import {isDeepStrictEqual} from 'node:util';
 import YAML from 'yaml';
 
 const key = /^[a-z][a-z0-9-]*$/;
@@ -186,17 +187,28 @@ export function adaptBuild(source,seed,targets) {
   const fullGuard=(row)=>active+' && '+condition(row);
   const rendered=parseWorkflow(renderBuild(seed,targets,{signing:'not-applicable'})).jobs.build;
   const generated=rendered.steps.slice(rendered.steps.findIndex(s=>s.id==='recover')+1,rendered.steps.findIndex(s=>s.id==='upload'));
-  const kept=[];
+  const kept=[],inserted=new Set();
+  const insert=row=>{
+    const guard=fullGuard(row);
+    if(inserted.has(guard)) return;
+    kept.push(...generated.filter(s=>s.if===guard).map(s=>doc.createNode(s)));
+    inserted.add(guard);
+  };
   for(let i=start+1;i<end;i++) {
     const step=build.steps[i],row=rows.find(r=>step.if===fullGuard(r));
     if(!row)fail();
     if(!selected(row)){kept.push(nodes.items[i]);continue;}
+    insert(row);
     if(step.uses && pinned.test(step.uses))continue;
     if(step.name==='Run reviewed packaging entry' && step.run==='node product/.github/actions/configuration/'+row.unit+'/'+row.target+'/run.mjs')continue;
     if(step.name==='Collect selected files' && generated.some(s=>s.name===step.name && s.run===step.run))continue;
     fail();
   }
-  const nextRows=[...rows.filter(r=>!selected(r)),...rendered.strategy.matrix.include];
+  const proposed=rendered.strategy.matrix.include;
+  const sameRow=(a,b)=>a.unit===b.unit && a.target===b.target;
+  const additions=proposed.filter(row=>!rows.some(other=>sameRow(row,other)));
+  for(const row of additions) insert(row);
+  const nextRows=[...rows.map(row=>proposed.find(other=>sameRow(row,other))??row),...additions];
   const labels=nextRows.map(row=>{
     const changed=targets.find(t=>t.unit===row.unit && t.target===row.target);
     if(changed)return runner(changed.recipe.runner);
@@ -208,7 +220,9 @@ export function adaptBuild(source,seed,targets) {
   });
   const runsOn=labels.every(label=>label===labels[0])?labels[0]:
     '${{ '+nextRows.map((row,i)=>'('+condition(row)+") && '"+labels[i]+"'").join(' || ')+' }}';
-  nodes.items.splice(start+1,end-start-1,...kept,...generated.map(s=>doc.createNode(s)));
+  if(runsOn===build['runs-on'] && isDeepStrictEqual(nextRows,rows)
+    && isDeepStrictEqual(kept.map(node=>node.toJSON()),build.steps.slice(start+1,end))) return source;
+  nodes.items.splice(start+1,end-start-1,...kept);
   doc.setIn(['jobs','build','strategy','matrix','include'],nextRows);
   doc.setIn(['jobs','build','runs-on'],runsOn);
   return doc.toString({lineWidth:0});
