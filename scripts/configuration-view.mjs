@@ -104,9 +104,11 @@ export function changeChannels(input, edits) {
     channel.required=edit.required;
     if(edit.location) channel.location=edit.location;
     if(edit.artifactIds) {
-      if(!Array.isArray(edit.artifactIds)||!edit.artifactIds.length||new Set(edit.artifactIds).size!==edit.artifactIds.length
+      if(!Array.isArray(edit.artifactIds)||new Set(edit.artifactIds).size!==edit.artifactIds.length
         ||edit.artifactIds.some(id=>!unit.assets.some(a=>a.id===id))) throw Error('Unknown or duplicate channel artifact');
-      channel.artifactIds=edit.artifactIds;
+      if(edit.artifactIds.length)channel.artifactIds=edit.artifactIds;
+      else if(!edit.required)delete channel.artifactIds;
+      else throw Error('请为启用的渠道选择至少一个发行文件');
     }
     if(edit.metadata) channel.metadata=edit.metadata;
   }

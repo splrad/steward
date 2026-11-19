@@ -114,6 +114,24 @@ test('formal workflow references retain both revisions and exclude independent p
   const changes=await protectedChanges(fake(contents),[{filename:next,previous_filename:prior},{filename:nested},{filename:other}],B,A);
   assert.deepEqual(changes,new Set([prior,next,nested]));
 });
+test('central receiver requires an administrator and selected local actions follow both revisions',async()=>{
+  const ci='.github/product-ci.json',build='.github/workflows/product.yml',receiver='.github/workflows/repository-configuration-event.yml';
+  const files=new Map([[B+'/'+ci,JSON.stringify([build])],[A+'/'+ci,JSON.stringify([build])],
+    [B+'/'+build,YAML.stringify({jobs:{build:{steps:[{uses:'./.github/actions/old'}]}}})],
+    [A+'/'+build,YAML.stringify({jobs:{build:{steps:[{uses:'actions/checkout@v4',with:{path:'product'}},{uses:'./product/.github/actions/new'}]}}})],
+    [A+'/.github/actions/new/action.yml',YAML.stringify({runs:{using:'composite',steps:[{uses:'./product/adapters/build'}]}})],
+    [A+'/adapters/build/action.yaml',YAML.stringify({runs:{using:'node24',main:'../shared/entry.js'}})],
+    [B+'/.github/configuration-delegates.json',JSON.stringify([actor.id])]]);
+  const api=fake(files),changed=['.github/actions/old/bin.js','.github/actions/new/action.yml','adapters/build/tool.js','adapters/shared/entry.js','.github/actions/unselected/a.js'];
+  assert.deepEqual(await protectedChanges(api,changed.map(filename=>({filename})),B,A),new Set(changed.slice(0,4)));
+  api.paginate=async method=>method===api.rest.pulls.listFiles?[{filename:receiver}]:method===api.rest.pulls.listReviews?[{state:'APPROVED',commit_id:A,user:actor}]:[];
+  assert.equal(await authorizePull(api,1,A,'trunk'),false);
+  api.target={owner:'splrad',repo:'steward'};
+  api.rest.repos.getCollaboratorPermissionLevel=async()=>response({permission:'write',user:actor});
+  await assert.rejects(authorizePull(api,1,A,'trunk'),/Configuration approval/);
+  api.rest.repos.getCollaboratorPermissionLevel=async()=>response({permission:'admin',user:actor});
+  assert.equal(await authorizePull(api,1,A,'trunk'),true);
+});
 test('re-evaluates a passing required scope when its last authorized review is dismissed',async()=>{
   const ci='.github/product-ci.json',api=fake(new Map([[B+'/'+ci,'[]'],[A+'/'+ci,'[]']]));
   const review={state:'APPROVED',commit_id:A,user:actor};
@@ -251,6 +269,11 @@ test('a failed target in the same release unit cannot add its existing asset to 
   assert.deepEqual(saved.channels.find(c=>c.id==='ghcr-assets').artifactIds,['linux']);
   assert.deepEqual(saved.assets.map(a=>a.id).sort(),['linux','windows']);
   assert.ok(warnings.some(m=>m.includes('windows') && m.includes('Expired artifact')));
+  const clear=structuredClone(plan);
+  clear.channels=[{unit:'cli',id:'ghcr-assets',required:false,artifactIds:[],metadata:[]}];
+  const result=await applySelection(inspectRepository(files),'select',clear,{seed,inventory:async t=>[{path:t.target+'.zip'}]});
+  const disabled=JSON.parse(result.get('.github/delivery.json')).units[0].channels.find(c=>c.id==='ghcr-assets');
+  assert.equal(disabled.required,false);assert.equal(disabled.artifactIds,undefined);assert.deepEqual(disabled.metadata,[]);
 });
 test('both submit and verify must have a native receipt for the external target',async()=>{
   const product=YAML.parse(await readFile('templates/release/steward-release-channels.yml','utf8'));

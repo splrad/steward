@@ -200,7 +200,8 @@ export async function applySelection(model,operation,plan,context) {
     const artifactIds=chosen.filter(id=>unit?.assets.some(a=>a.id===id));
     if(accepted && unit && !unit.channels.some(c=>c.id===edit.id))
       unit.channels.push({id:edit.id,location:edit.location,required:false});
-    return artifactIds.length?[{...edit,artifactIds}]:[];
+    if(!artifactIds.length && edit.required && edit.artifactIds.length) return [];
+    return [{...edit,artifactIds}];
   });
   if(channelEdits.length) {
     delivery=changeChannels(delivery,channelEdits);

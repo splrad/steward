@@ -1,6 +1,6 @@
 import YAML from 'yaml';
 import {readFile} from 'node:fs/promises';
-import {resolve} from 'node:path';
+import {posix,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {readBotComment} from './configuration-session.mjs';
 import {Octokit} from '@octokit/rest';
@@ -38,21 +38,59 @@ export async function authorized(api, actor, base, adminOnly=false) {
 }
 
 const workflowPath=/^\.github\/workflows\/[\w.-]+\.ya?ml$/;
-async function referencedWorkflows(api,roots,ref) {
-  const seen=new Set(roots);
+const receiver='.github/workflows/repository-configuration-event.yml';
+const central=api=>api.target.owner==='splrad' && api.target.repo==='steward';
+
+async function referencedFiles(api,roots,ref,changed) {
+  const seen=new Set(roots),actions=new Map();
+  const addAction=(uses,mounts)=>{
+    if(typeof uses!=='string' || !uses.startsWith('./'))return;
+    let directory=posix.normalize(uses).replace(/\/$/,'');
+    const mount=mounts.find(m=>directory===m.path || directory.startsWith(m.path+'/'));
+    if(mount && !mount.local)return;
+    if(mount) directory=directory.slice(mount.path.length).replace(/^\//,'');
+    if(directory==='..' || directory.startsWith('../'))throw Error('Local action outside repository');
+    directory=directory||'.';
+    actions.set(JSON.stringify([directory,mounts]),{directory,mounts});
+  };
   for(const path of seen) {
     const bytes=await fileText(api,path,ref);
     if(!bytes)continue;
     const jobs=YAML.parse(bytes)?.jobs??{};
     for(const job of Object.values(jobs)) {
       if(job?.uses?.startsWith('./') && workflowPath.test(job.uses.slice(2)))seen.add(job.uses.slice(2));
+      const mounts=[];
       for(const step of job?.steps??[]) {
+        if(/^actions\/checkout@/.test(step.uses??'') && typeof step.with?.path==='string') {
+          const path=posix.normalize(step.with.path).replace(/\/$/,'');
+          const repository=step.with.repository;
+          mounts.push({path,local:!repository || repository==='${{ github.repository }}' || repository===api.target.owner+'/'+api.target.repo});
+          mounts.sort((a,b)=>b.path.length-a.path.length);
+        }
+        addAction(step.uses,[...mounts]);
         if(step.run!=='node scripts/configuration-native-artifact.mjs' ||
           !['controller','configuration-controller'].includes(step['working-directory']))continue;
         const producer=JSON.parse(Buffer.from(step.env.PRODUCER,'base64url'));
         if(!workflowPath.test(producer.workflow))throw Error('Invalid formal product workflow reference');
         seen.add(producer.workflow);
       }
+    }
+  }
+  for(const {directory,mounts} of actions.values()) {
+    if(directory!=='.')for(const path of changed)if(path.startsWith(directory+'/'))seen.add(path);
+    for(const filename of ['action.yml','action.yaml']) {
+      const path=posix.join(directory,filename);
+      seen.add(path);
+      const bytes=await fileText(api,path,ref);
+      if(!bytes)continue;
+      const runs=YAML.parse(bytes)?.runs??{};
+      for(const file of [runs.main,runs.pre,runs.post,runs.image]) {
+        if(typeof file!=='string' || file.startsWith('docker://'))continue;
+        const entry=posix.join(directory,file);
+        if(entry.startsWith('../') || entry==='..')throw Error('Local action entry outside repository');
+        seen.add(entry);
+      }
+      for(const step of runs.steps??[])addAction(step.uses,mounts);
     }
   }
   return seen;
@@ -71,12 +109,12 @@ export async function protectedChanges(api,files,base,head) {
     for(const path of entries) ci.add(path);
   }
   const adopted=paths.includes(requestPath)||Boolean(await fileText(api,requestPath,base));
-  if(paths.some(path=>workflowPath.test(path))) {
-    for(const [ref,bytes] of [[base,old],[head,next]]) {
+  if(central(api))ci.add(receiver);
+  for(const [ref,bytes] of [[base,old],[head,next]]) {
       const roots=bytes?JSON.parse(bytes):[];
       if(adopted)roots.push('.github/workflows/steward-release-publish.yml','.github/workflows/steward-release-channels.yml','.github/workflows/pages.yml');
-      for(const path of await referencedWorkflows(api,roots,ref)) ci.add(path);
-    }
+      if(central(api))roots.push(receiver);
+      for(const path of await referencedFiles(api,roots,ref,paths)) ci.add(path);
   }
   return new Set(paths.filter(path=>ci.has(path) || adopted && (configurationPaths.has(path)||path.startsWith('.github/actions/configuration/'))));
 }
@@ -115,7 +153,7 @@ export async function authorizePull(api, number, expectedHead, defaultBranch, or
     if(!protectedPaths.size) return true;
   }
   const paths=[...protectedPaths];
-  const adminOnly = paths.includes(delegatesPath) || paths.includes(requestPath) && !await fileText(api,requestPath,base)
+  const adminOnly = central(api) && paths.includes(receiver) || paths.includes(delegatesPath) || paths.includes(requestPath) && !await fileText(api,requestPath,base)
     || paths.includes('.github/product-ci.json') && !await fileText(api,'.github/product-ci.json',base);
   if(origin?.number===number && origin.head===expectedHead && await authorized(api,origin.actor,base,adminOnly)) return true;
   const reviews = await api.paginate(api.rest.pulls.listReviews,{...api.target,pull_number:number,per_page:100});

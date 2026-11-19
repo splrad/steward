@@ -42,7 +42,7 @@ export function candidates(model,values) {
 
 const metadataFiles=['sbom.spdx.json','release-notes.md','artifact-manifest.json','SHA256SUMS'];
 function channelSelection(delivery,unit,c) {
-  return {ids:c.artifactIds??unit.assets.filter(a=>c.id!=='winget'||/\.(exe|msi|msix|appx|msixbundle|appxbundle)$/i.test(a.name)).map(a=>a.id),
+  return {ids:c.artifactIds??(!c.required && delivery.schemaVersion===2?[]:unit.assets.filter(a=>c.id!=='winget'||/\.(exe|msi|msix|appx|msixbundle|appxbundle)$/i.test(a.name)).map(a=>a.id)),
     metadata:c.metadata??(delivery.schemaVersion===1 && c.id!=='winget'?metadataFiles:[])};
 }
 
@@ -240,7 +240,7 @@ export function planFromForm(model,state,operation) {
     const ids=unit.assets.filter(a=>v[field+'.asset.'+a.id]??prior.ids.includes(a.id)).map(a=>a.id);
     const metadata=metadataFiles.filter(name=>v[field+'.meta.'+key(name)]??prior.metadata.includes(name));
     const edit={unit:unit.id,id:c.id,required:enabled??c.required};
-    if(JSON.stringify([...ids].sort())!==JSON.stringify([...prior.ids].sort())) edit.artifactIds=ids;
+    if(enabled && !c.required && !ids.length || JSON.stringify([...ids].sort())!==JSON.stringify([...prior.ids].sort())) edit.artifactIds=ids;
     if(JSON.stringify([...metadata].sort())!==JSON.stringify([...prior.metadata].sort())) edit.metadata=metadata;
     const addition=operation==='select'?channels.get(unit.id+'/'+c.id):undefined;
     if(addition) {
