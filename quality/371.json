@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "repositoryId": 1296724484,
+  "pullRequestNumber": 371,
+  "currentHead": "ab616704e6ae284191b2c5dee4c6f13f806eda8d",
+  "configVersion": "quality-native-comments-v1",
+  "heads": {
+    "ab616704e6ae284191b2c5dee4c6f13f806eda8d": {
+      "sourceSetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "sources": [],
+      "keys": [],
+      "checkId": null,
+      "externalId": "splrad-quality:1296724484:371:ab616704e6ae284191b2c5dee4c6f13f806eda8d",
+      "observedAt": "2026-11-19T17:09:43.876Z"
+    }
+  },
+  "entries": {},
+  "cursor": 0
+}
