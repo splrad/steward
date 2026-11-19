@@ -71,7 +71,7 @@ export async function verifyPagesRelease({reader,release,bundle,appBotId,unitId}
 function releaseFacts(r){return [r.id,r.author?.id,r.tag_name,r.draft,r.prerelease,r.immutable,r.published_at,r.target_commitish];}
 
 /** Complete desired-source read. Default mode never asks for VERSION, delivery, tags or releases. */
-export async function desiredPagesSource({reader,repositoryId,mode,unitId='',controllerSha,appBotId,publicOnly=false},
+export async function desiredPagesSource({reader,repositoryId,mode,unitId='',controllerSha,appBotId,publicOnly=false,buildOnly=false},
   {readContent=pagesContent,readManifest=manifestForRelease,verifyRelease=verifyPagesRelease}={}) {
   check(positive(repositoryId)&&repositoryName(reader.repository)&&sha(controllerSha),'CONTEXT');
   if(mode==='')return {status:'DISABLED'};
@@ -81,7 +81,7 @@ export async function desiredPagesSource({reader,repositoryId,mode,unitId='',con
   check(repo.id===repositoryId&&repo.full_name===reader.repository&&repo.archived===false&&repo.disabled===false
     &&typeof repo.default_branch==='string'&&repo.default_branch.length>0,'REPOSITORY');
   check(typeof repo.has_pages==='boolean','SITE_STATE');
-  if(!repo.has_pages||publicOnly&&repo.private!==false)return {status:'DISABLED'};
+  if((!repo.has_pages && !buildOnly) || (publicOnly && repo.private!==false))return {status:'DISABLED'};
   const branch=await reader.json(`git/ref/heads/${encodeURIComponent(repo.default_branch)}`);
   check(branch.ref===`refs/heads/${repo.default_branch}`&&branch.object?.type==='commit'&&sha(branch.object.sha),'DEFAULT_HEAD');
   const base={schemaVersion:1,repositoryId,repository:reader.repository,mode,controllerSha,defaultBranch:repo.default_branch};
@@ -152,22 +152,25 @@ export async function selectPagesSource(options,event,ports) {
   const desired=await desiredPagesSource(options,ports);
   return desired.status==='READY'?admitPagesEvent(desired.source,event):desired;
 }
-async function main() {
-  check(process.argv.length===2,'ARGUMENTS');
-  const reader=new NativeEvidenceReader(nativeEvidenceTransport(process.env.GH_TOKEN),process.env.GITHUB_REPOSITORY);
-  const payload=json(await readFile(process.env.GITHUB_EVENT_PATH));
-  const options={reader,repositoryId:Number(process.env.GITHUB_REPOSITORY_ID),mode:process.env.STEWARD_DOCS_SOURCE??'',
-    unitId:process.env.STEWARD_DOCS_UNIT??'',controllerSha:process.env.STEWARD_CONTROLLER_SHA};
+export async function selectWorkflowPagesSource(reader,env,payload,ports) {
+  const options={reader,repositoryId:Number(env.GITHUB_REPOSITORY_ID),mode:env.STEWARD_DOCS_SOURCE??'',
+    unitId:env.STEWARD_DOCS_UNIT??'',controllerSha:env.STEWARD_CONTROLLER_SHA,
+    buildOnly:env.STEWARD_PAGES_BUILD_ONLY==='true'};
   if(options.mode==='release') {
     // Same confirmed App bot identity as nativeReleaseApp; the repository transport is deliberately repo-scoped.
     options.appBotId=301115370;
   }
-  const event={name:process.env.GITHUB_EVENT_NAME,repositoryId:options.repositoryId,repository:reader.repository,
-    sha:process.env.GITHUB_SHA,ref:process.env.GITHUB_REF,payload};
+  const event={name:env.GITHUB_EVENT_NAME,repositoryId:options.repositoryId,repository:reader.repository,
+    sha:env.GITHUB_SHA,ref:env.GITHUB_REF,payload};
   const {currentPagesSource}=await import('./pages-runtime.mjs');
-  const desired=await currentPagesSource(options);
+  const desired=await currentPagesSource(options,ports);
   check(desired.status!=='READY'||desired.source.controllerSha===options.controllerSha,'CONTROLLER_PIN');
-  const result=desired.status==='READY'?admitPagesEvent(desired.source,event):desired;
+  return desired.status==='READY'?admitPagesEvent(desired.source,event):desired;
+}
+async function main() {
+  check(process.argv.length===2,'ARGUMENTS');
+  const reader=new NativeEvidenceReader(nativeEvidenceTransport(process.env.GH_TOKEN),process.env.GITHUB_REPOSITORY);
+  const result=await selectWorkflowPagesSource(reader,process.env,json(await readFile(process.env.GITHUB_EVENT_PATH)));
   await writeFile('pages-source.json',JSON.stringify(result,null,2)+'\n');
   if(process.env.GITHUB_OUTPUT) {
     const values={ready:String(result.status==='READY'),source:result.source?JSON.stringify(result.source):'',
