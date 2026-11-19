@@ -100,6 +100,40 @@ def check_zip_records(source, entries, central_start):
         require(fields == (entry.CRC, entry.compress_size, entry.file_size))
 
 
+def check_zip_directory(source, archive, footer, footer_offset):
+    """Match decoded entries to their exact on-disk extent and end records."""
+    disk, directory_disk, disk_count, count, size, start = struct.unpack_from("<4H2I", footer, 4)
+    require(disk == directory_disk == 0)
+    source.seek(archive.start_dir)
+    entries = archive.infolist()
+    for entry in entries:
+        header = source.read(46)
+        require(len(header) == 46 and header[:4] == b"PK\x01\x02")
+        name_len, extra_len, comment_len = struct.unpack_from("<3H", header, 28)
+        require(extra_len == len(entry.extra) and comment_len == len(entry.comment))
+        source.seek(name_len + extra_len + comment_len, io.SEEK_CUR)
+        require(source.tell() <= footer_offset)
+    end = source.tell()
+    actual_size = end - archive.start_dir
+    expected = (len(entries), len(entries), actual_size, archive.start_dir)
+    legacy = (disk_count, count, size, start)
+    if end == footer_offset:
+        require(legacy == expected)
+        return
+    # A ZIP64 end record and locator may follow the directory even in a
+    # small archive. Compare both generations of addresses and counts.
+    record = source.read(56)
+    require(len(record) == 56 and record[:4] == b"PK\x06\x06")
+    record_size = struct.unpack_from("<Q", record, 4)[0]
+    require(record_size >= 44 and end + 12 + record_size + 20 == footer_offset)
+    require(struct.unpack_from("<II", record, 16) == (0, 0))
+    require(struct.unpack_from("<4Q", record, 24) == expected)
+    require(all(value in (actual, sentinel) for value, actual, sentinel
+                in zip(legacy, expected, (0xffff, 0xffff, 0xffffffff, 0xffffffff))))
+    source.seek(footer_offset - 20)
+    require(source.read(20) == struct.pack("<4sIQI", b"PK\x06\x07", 0, end, 1))
+
+
 @contextmanager
 def release_zip(path):
     with BoundedZipReader(io.FileIO(path, "r")) as bounded, zipfile.ZipFile(bounded) as archive:
@@ -113,6 +147,7 @@ def release_zip(path):
         footer = bounded.read(22)
         require(footer[:4] == b"PK\x05\x06" and int.from_bytes(footer[20:22], "little") == len(archive.comment))
         require(bounded.read(len(archive.comment)) == archive.comment)
+        check_zip_directory(bounded, archive, footer, offset)
         yield archive
 
 
