@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -50,4 +50,11 @@ it('keeps historical schema closed and requires version evidence for generic arc
   expect(() => parseDeliveryConfig(data)).toThrow('DELIVERY_CONFIG_STRUCTURE');
   data.schemaVersion = 2;
   expect(() => parseDeliveryConfig(data)).toThrow('DELIVERY_ARCHIVE_VERSION');
+});
+
+it('preserves an ordinary binary SQLite resource without a member format declaration', async () => {
+  const asset: DeliveryUnit['assets'][number] = { id: 'data', name: 'database-${version}.zip', mediaType: 'application/zip', inspection: 'zip' };
+  const staging = join(root, 'database-stage');
+  await expect(inspectDeclaredAsset(join(root, 'database.zip'), asset, '1.2.3', process.cwd(), root, staging)).resolves.toBe('1.2.3');
+  expect(await readFile(join(staging, 'data/stations.db'))).toEqual(await readFile(join(root, 'stations.db')));
 });

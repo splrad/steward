@@ -27,7 +27,8 @@
           "path": { "type": "string", "minLength": 1 },
           "notesPath": { "type": "string", "minLength": 1 },
           "buildLocks": {
-            "type": "array", "minItems": 1, "maxItems": 128, "uniqueItems": true,
+            "description": "Repository-relative committed lock inputs of this unit. An explicit empty list declares a build that uses no product lock files.",
+            "type": "array", "maxItems": 128, "uniqueItems": true,
             "items": { "type": "string", "minLength": 1, "maxLength": 240 }
           },
           "assets": {

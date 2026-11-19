@@ -53,3 +53,13 @@ it('admits a simple unit from VERSION and a separately located native npm lock',
   expect(result.status).toBe('ADMITTED');
   if (result.status === 'ADMITTED') expect(result.record.toolLocks['source/' + lock]).toBe(digest(f.source[lock]));
 });
+
+it('distinguishes a reviewed lock-free build from missing input declarations', async () => {
+  const missing = productPipelineFixture(1, false, null);
+  await expect(pipelineIdentity(missing.input, missing.environment, missing.gh, missing.io)).rejects.toThrow('missing product inspection or build locks');
+  const empty = productPipelineFixture(1, false, []);
+  delete empty.source['global.json'];
+  const result = await pipelineIdentity(empty.input, empty.environment, empty.gh, empty.io);
+  expect(result.status).toBe('ADMITTED');
+  if (result.status === 'ADMITTED') expect(Object.keys(result.record.toolLocks)).toEqual(['controller/mise.lock']);
+});

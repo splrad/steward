@@ -14,7 +14,7 @@ export async function generateReleaseSbom(record: ProductReleaseManifest, unit: 
   await mkdir(home, { recursive: false }); await writeFile(join(home, 'empty-gitconfig'), '', { flag: 'wx' });
   const env = { ...isolatedBuildEnvironment(process.env, home), SYFT_CHECK_FOR_APP_UPDATE: 'false' };
   const execute = (command: string, args: string[]) => promisify(execFile)(command, args, { env, cwd: policyDirectory, timeout: 120_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
-  if (!unit.buildLocks?.length || unit.id !== record.unitId) throw new Error('SBOM_MISSING_RESTORE_LOCKS');
+  if (!unit.buildLocks || unit.id !== record.unitId) throw new Error('SBOM_MISSING_RESTORE_LOCKS');
   await mkdir(staging);
   const rights = new Map<string, { path: string; sha256: string }>();
   for (const artifact of record.artifacts) {

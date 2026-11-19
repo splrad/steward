@@ -1,5 +1,6 @@
 """Inspect Python distribution metadata without extracting or executing package files."""
 from pathlib import Path
+from contextlib import nullcontext
 import json
 import gzip
 import io
@@ -68,13 +69,15 @@ def member_path(name, seen):
     return parts
 
 
-def read_member(stream, size, retain=False, max_retained=MAX_METADATA):
+def read_member(stream, size, retain=False, max_retained=MAX_METADATA, output=None):
     require(size >= 0 and size <= MAX_EXPANDED and (not retain or size <= max_retained))
     data = bytearray()
     consumed = 0
     while chunk := stream.read(min(65536, size - consumed + 1)):
         consumed += len(chunk)
         require(consumed <= size)
+        if output is not None:
+            output.write(chunk)
         if retain:
             data.extend(chunk)
     require(consumed == size)
@@ -236,19 +239,20 @@ def inspect_declared(path, contract, destination=None):
         require(name not in directories and 0 < size <= 32 * 1024**2)
         expanded += size
         require(expanded <= MAX_EXPANDED)
-        data = read_member(stream, size, retain=True, max_retained=32 * 1024**2)
+        fmt = members.get(name)
+        if destination:
+            target = destination.joinpath(*parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+        with (target.open("xb") if destination else nullcontext()) as output:
+            data = read_member(stream, size, retain=fmt is not None or adapter == "font-zip",
+                               max_retained=32 * 1024**2, output=output)
         suffix = Path(name).suffix.lower()
         if adapter == "font-zip":
             valid = (suffix == ".ttf" and data[:4] in (b"\x00\x01\x00\x00", b"true", b"ttcf")
                      or suffix == ".otf" and data.startswith(b"OTTO")
                      or suffix == ".shx" and re.match(rb"^AutoCAD-86 (shapes|unifont|bigfont)", data[:64]))
             require(valid)
-        if adapter in ("zip", "tar-gzip"):
-            require(suffix not in (".dll", ".exe", ".shx", ".ttf", ".otf") and parts[-1] != "PKG-INFO"
-                    and not any(part.endswith(".dist-info") for part in parts))
-            # Optional required entries refine the generic profile. All other
-            # files still need to be a supported binary or actual UTF-8 text.
-            fmt = members.get(name, "elf" if data.startswith(b"\x7fELF") else "text")
+        if fmt is not None:
             if fmt == "elf":
                 executable_elf(data)
             elif fmt in ("text", "version"):
@@ -259,11 +263,6 @@ def inspect_declared(path, contract, destination=None):
             else:
                 raise ValueError("unexpected member")
         found.add(name)
-        if destination:
-            target = destination.joinpath(*parts)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with target.open("xb") as out:
-                out.write(data)
 
     if adapter in ("zip", "dll-zip", "font-zip"):
         with BoundedZipReader(io.FileIO(path, "r")) as bounded, zipfile.ZipFile(bounded) as archive:

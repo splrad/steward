@@ -1,6 +1,7 @@
 """Produce small, inert local fixtures for the declared archive checks."""
 import io
 import sys
+import sqlite3
 import tarfile
 import zipfile
 from pathlib import Path
@@ -21,3 +22,11 @@ for name, entries in {
         for member, data in entries:
             archive.writestr(member, data)
 (root / "broken.tar.gz").write_bytes((root / "cli.tar.gz").read_bytes()[:-7])
+
+database = root / "stations.db"
+with sqlite3.connect(database) as connection:
+    connection.execute("CREATE TABLE stations (name TEXT)")
+    connection.execute("INSERT INTO stations VALUES ('Lumut')")
+connection.close()
+with zipfile.ZipFile(root / "database.zip", "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    archive.write(database, "data/stations.db")
