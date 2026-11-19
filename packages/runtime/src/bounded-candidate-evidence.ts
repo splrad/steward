@@ -31,21 +31,28 @@ export async function candidateFacts<T extends boolean=false>(g:GitReader,requir
  if(ready&&(g.target?.units||session.conflict)){
    const ids=(units:any[])=>units.map(unit=>unit.id).sort();
    const frozen=ids((session.conflict?.generated??generated).units);
-   ensure(Array.isArray(session.identity.units)&&new Set(frozen).size===frozen.length&&
-     isDeepStrictEqual(frozen,ids(session.identity.units)),'CANDIDATE_FROZEN_UNIT_COVERAGE');
+   ensure(Array.isArray(session.identity.units)&&new Set(frozen).size===frozen.length,'CANDIDATE_FROZEN_UNIT_COVERAGE');
+   if(!isDeepStrictEqual(frozen,ids(session.identity.units))){
+     ensure(allowPending&&!session.conflict,'CANDIDATE_FROZEN_UNIT_COVERAGE');
+     selectionChanged=true;
+   }
    if(session.conflict){
      const locations=(units:any[])=>units.map(({id,path})=>JSON.stringify([id,path])).sort();
-     if(!isDeepStrictEqual(locations(session.conflict.generated.units),locations(generated.units)))ready=false;
+     if(!isDeepStrictEqual(locations(session.conflict.generated.units),locations(generated.units))){
+       ensure(allowPending,'SESSION_NOT_READY');
+       selectionChanged=true;
+     }
    }
  }
  const manual=session.manualValidation??null;const manualId=manual?manualIdentity(manual,state,session,g.target??TARGET):null;
  if(!allowPending)ensure(manualId?(!c.pendingWrite&&!session.pending):ready,'SESSION_NOT_READY');
  if(requireCurrentMain)ensure((await read(`git/ref/heads/${encodeURIComponent((g.target??TARGET).defaultBranch)}`)).object?.sha===(manualId?.sourceSha??c.baseSha),'SOURCE_CHANGED');
- const identity=(selectionChanged?null:manualId?(!c.pendingWrite&&!session.pending?manualId:null):ready?{repositoryId:(g.target??TARGET).id,cycleId:c.id,channel:'candidate',version:candidateVersion(generated.units),artifactDigest:digest(JSON.stringify(generated)),sourceSha:c.baseSha,stage:'candidate',epoch:createHash('sha256').update(JSON.stringify([(g.target??TARGET).id,c.id,c.baseSha,c.generatedSnapshotPath,c.publishedHead])).digest('hex'),upstreamPR:null}:null) as (T extends true?Identity|null:Identity);
+ const priorIdentity=(manualId?(!c.pendingWrite&&!session.pending?manualId:null):ready?{repositoryId:(g.target??TARGET).id,cycleId:c.id,channel:'candidate',version:candidateVersion(generated.units),artifactDigest:digest(JSON.stringify(generated)),sourceSha:c.baseSha,stage:'candidate',epoch:createHash('sha256').update(JSON.stringify([(g.target??TARGET).id,c.id,c.baseSha,c.generatedSnapshotPath,c.publishedHead])).digest('hex'),upstreamPR:null}:null) as Identity|null;
+ const identity=(selectionChanged?null:priorIdentity) as (T extends true?Identity|null:Identity);
  let pull=await read(`pulls/${c.prNumber}`);ensure(pull.number===c.prNumber&&pull.head?.repo?.id===(g.target??TARGET).id&&pull.base?.repo?.id===(g.target??TARGET).id&&pull.head.ref===c.branch&&pull.base.ref===(g.target??TARGET).defaultBranch&&sha(pull.head.sha),'CANDIDATE_PULL');
  if(manual&&!allowPending)pull=await verifyManualHead(g,manual,pull,generated.files);
  ensure((await read('git/ref/heads/steward/release-state')).object?.sha===commit,'STATE_MOVED');
- return {identity,state,pull,session,manual,evidence:{stateCommit:commit,path,documentDigest:first.documentDigest,prNumber:c.prNumber,head:pull.head.sha}};
+ return {identity,priorIdentity,state,pull,session,manual,evidence:{stateCommit:commit,path,documentDigest:first.documentDigest,prNumber:c.prNumber,head:pull.head.sha}};
 }
 export async function verifiedProducer(g:GitReader,env:BoundedEnv,input:{registration?:Registration;producer:RunLocator}){
  const p=input.producer;
