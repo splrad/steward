@@ -62,7 +62,7 @@ async function pages(io,path,key) {
   throw Error('PROMOTION_PAGINATION_INCOMPLETE');
 }
 export function validationJobNames(document) {
-  check(document?.name==='SPLRAD Steward / Native Validation'&&document.on?.push?.branches?.includes('main'),'VALIDATION_DEFINITION');
+  check(document?.name==='SPLRAD Steward / Native Validation'&&['main','**'].some(pattern=>document.on?.push?.branches?.includes(pattern)),'VALIDATION_DEFINITION');
   const jobs=Object.values(document.jobs??{}),names=jobs.map(j=>j.name);
   check(jobs.length>1&&jobs.every(j=>!j.strategy&&typeof j.name==='string'&&!j.name.includes('${{'))
     &&new Set(names).size===names.length&&names.includes('SPLRAD Validation'),'VALIDATION_JOBS');

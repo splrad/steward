@@ -11,6 +11,7 @@ from urllib.parse import quote, urlencode
 import yaml
 import copier_bridge as copier
 import actions_lock
+from configuration_link import add_link
 
 API_VERSION = json.loads((Path(__file__).resolve().parents[2] / 'config/github-api.json').read_text(encoding='utf-8'))['version']
 BRANCH = 'steward/managed-sync'
@@ -243,13 +244,20 @@ def deliver(request, api, central_api, *, read_token=None, renderer=copier.rende
         template_sha = request['templateSha']
         before_copier = copier.paths_in_tree(work)
         adopted = git('cat-file', '-e', base + ':.copier-answers.yml', allow_failure=True).returncode == 0
+        def repository_inputs(sha):
+            definition = yaml.safe_load(copier.git(central, ['show', sha + ':copier.yml'], env))
+            return {'product_repository': repository} if 'product_repository' in definition else {}
+
         if adopted:
-            renderer(central, work, template_sha, 'update')
+            renderer(central, work, template_sha, 'update', repository_inputs(template_sha))
         else:
             # A pending adoption keeps its actual native source while newer template tags appear.
             if (work / '.copier-answers.yml').exists():
                 _, template_sha, _ = copier.answers(central, work, env)
-            copier.prepare_adoption(central, work, root/'seed', template_sha, expected_report=expected_report)
+            copier.prepare_adoption(central, work, root/'seed', template_sha, expected_report=expected_report,
+                                    data=repository_inputs(template_sha))
+        if (work / '.github/repository-configuration.md').is_file() and repository_inputs(template_sha):
+            add_link(work, repository)
         require(lock_runner is not None, 'ACTION_LOCK_RUNNER_REQUIRED')
         actions_lock.prepare(work, before_copier, lock_runner)
         if string('status', '--porcelain', '--untracked-files=all'):

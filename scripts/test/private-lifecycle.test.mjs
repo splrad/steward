@@ -7,7 +7,6 @@ import {spawnSync} from 'node:child_process';
 import YAML from 'yaml';
 import {dependencyMode,loadPolicy,assertGovernanceOnlyScope} from '../private-dependency-policy.mjs';
 import {assertLifecycleScope,assertLifecycleSnapshot,lifecycleSupport,lifecycleWorkflows,lifecycleMiseVersions,lifecycleReusable,assertLifecycleMissingActionLock,lifecycleUpdaters} from '../private-lifecycle-policy.mjs';
-import {buildMode} from '../validation-input.mjs';
 const SHA='a'.repeat(40),OLD='b'.repeat(40),activePolicy=await loadPolicy();
 const loadControllerTemplate=(_sha,path)=>readFile(new URL('../../'+path,import.meta.url));
 const event={repository:{id:1448797077,full_name:'splrad/steward-e10-lifecycle-20261107',private:true,owner:{id:302208797}}};
@@ -44,7 +43,7 @@ test('lifecycle mode requires exact registered private identity without changing
 test('empty governance base and complete dependency-free application are distinguished',async()=>{
  assert.equal((await assertLifecycleSnapshot(new Map([['README.md',Buffer.from('seed')]]),{side:'base'})).application,false);
  await assert.rejects(assertLifecycleSnapshot(new Map(),{side:'head'}),/HEAD_INCOMPLETE/);
- const files=await sample();assert.equal(buildMode([...files.keys()]),'node');
+ const files=await sample();
  assert.equal((await assertLifecycleSnapshot(files,{side:'head',controllerSha:SHA})).npmPackages,0);
  files.delete('acceptance-app.test.js');await assert.rejects(assertLifecycleSnapshot(files,{side:'head',controllerSha:SHA}),/APPLICATION_INCOMPLETE/);
 });

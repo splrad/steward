@@ -129,7 +129,7 @@ it('uses the independent Governance App, one repository, exact permissions and r
 });
 it('wires trusted native validation and serialized promotion without upstream artifacts or caches',async()=>{
   const {validationJobNames}=await module(),native=YAML.parse(await readFile('.github/workflows/pr-validation-native.yml','utf8'));
-  expect(validationJobNames(native)).toHaveLength(7);expect(JSON.stringify(native)).not.toMatch(/PRIVATE_KEY|environment|secrets\./);
+  expect(validationJobNames(native)).toEqual(['Validation scope','Product CI evidence','Governance scans','Dependency review','Documentation links','SPLRAD Validation']);expect(JSON.stringify(native)).not.toMatch(/PRIVATE_KEY|environment|secrets\./);
   const promote=YAML.parse(await readFile('.github/workflows/governance-promotion.yml','utf8')),bootstrap=YAML.parse(await readFile('.github/workflows/sync-managed.yml','utf8'));
   expect(promote.on.workflow_run).toEqual({workflows:['SPLRAD Steward / Native Validation'],types:['completed'],branches:['main']});
   expect(promote.on.schedule).toEqual([{cron:'37 1 * * *'}]);expect(promote.jobs.promote.concurrency).toEqual(bootstrap.jobs.bootstrap.concurrency);

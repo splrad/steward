@@ -18,7 +18,7 @@ it('private governance rejects product trees before publishing any build outputs
     const event=join(root,'event.json'),output=join(root,'output.txt');
     const env={VALIDATION_WORKSPACE:root,GITHUB_OUTPUT:output,GITHUB_EVENT_PATH:event,GITHUB_EVENT_NAME:'pull_request',GITHUB_REPOSITORY_ID:'42',GITHUB_REPOSITORY:'splrad/fixture',WORKFLOW_REPOSITORY:'splrad/steward',WORKFLOW_PATH:'.github/workflows/pr-validation-native.yml',WORKFLOW_SHA:S,PRIVATE_GOVERNANCE_REPOSITORY_ID:'42'};
     const payload=()=>({repository:{id:42,full_name:'splrad/fixture',private:true,owner:{id:302208797}},pull_request:{base:{repo:{id:42},ref:'main',sha:base},head:{sha:git('rev-parse','HEAD')}}});
-    await writeFile(event,JSON.stringify(payload()));expect(await main(env)).toMatchObject({mode:'none',dependencyMode:'private-governance'});
+    await writeFile(event,JSON.stringify(payload()));expect(await main(env)).toMatchObject({productApplicable:false,dependencyMode:'private-governance'});
     await rm(output);
     for(const file of ['package.json','pyproject.toml','CADFontAutoReplace.slnx']){
       await writeFile(join(root,file),'{}');git('add',file);git('commit','--signoff','--no-gpg-sign','-m','product input');
@@ -48,9 +48,9 @@ it('reads real complete Git base/head and detects stale base, wrong checkout and
 },30000);
 it('summary rejects failed, cancelled, missing and unexpectedly skipped required jobs',async()=>{
   const {validationSummary}=await script('validation-summary');
-  const jobs=Object.fromEntries(['scope','source-linux','source-windows','governance','dependency','docs'].map(k=>[k,{result:'success'}])) as any;
+  const jobs=Object.fromEntries(['scope','source','governance','dependency','docs'].map(k=>[k,{result:'success'}])) as any;
   jobs.scope.outputs={source:'false',dependency:'false',docs:'true',governance:'false'};
-  for(const key of ['source-linux','source-windows','governance','dependency'])jobs[key].result='skipped';
+  for(const key of ['source','governance','dependency'])jobs[key].result='skipped';
   expect(validationSummary(jobs)).toContain('docs: success');
   const selected=structuredClone(jobs);selected.scope.outputs.source='true';expect(()=>validationSummary(selected)).toThrow('REQUIRED_JOB_INCOMPLETE');
   for(const result of ['failure','cancelled','skipped',undefined]){const copy=structuredClone(jobs);copy.docs.result=result;expect(()=>validationSummary(copy)).toThrow('REQUIRED_JOB_INCOMPLETE');}
@@ -78,13 +78,74 @@ it('lists external 404/410 repairs separately from authentication, throttling, s
   expect(result.map((r:any)=>r.status)).toEqual(['REPAIR_REQUIRED','REPAIR_REQUIRED','UNKNOWN','UNKNOWN','UNKNOWN','UNKNOWN','UNKNOWN','OK']);
   expect(result[0]).toMatchObject({document:'doc.md',url:'https://test.invalid/404',nativeStatus:{code:404}});
 });
-it('admits the hash-locked Python build interface and rejects incomplete or ambiguous projects',async()=>{
-  const {buildMode}=await script('validation-input');
-  expect(buildMode(['pyproject.toml','requirements-build.txt','src/product/__init__.py'])).toBe('python');
-  expect(()=>buildMode(['pyproject.toml','src/product/__init__.py'])).toThrow('PYTHON_BUILD_LOCK_MISSING');
-  expect(()=>buildMode(['src/product/__init__.py'])).toThrow('UNSUPPORTED_BUILD');
-  for(const other of [['package.json'],['CADFontAutoReplace.slnx','global.json']])
-    expect(()=>buildMode(['pyproject.toml','requirements-build.txt',...other])).toThrow('AMBIGUOUS_BUILD');
-  expect(buildMode(['package.json','tools/script.py'])).toBe('node');
-  expect(buildMode(['README.md'])).toBe('none');
+it('uses declared product workflows for all source layouts',async()=>{
+  const {documentationOnly,productWorkflows}=await script('validation-input');
+  const workflows=['.github/workflows/client.yml','.github/workflows/server.yaml'];
+  for(const files of [['CADFontAutoReplace.slnx','global.json'],['Example.slnx','global.json'],
+    ['package.json','pyproject.toml'],['go.mod','cmd/tool/main.go'],['frontend/package.json'],['package.json']]){
+    expect(documentationOnly(files)).toBe(false);
+    expect(productWorkflows(workflows,[...files,...workflows])).toEqual(workflows);
+  }
+  expect(documentationOnly(['README.md','.github/CODEOWNERS','.github/ISSUE_TEMPLATE/config.yml',
+    '.github/ISSUE_TEMPLATE/bug.yaml','.github/workflows/pr-title.yml'])).toBe(true);
+  expect(documentationOnly(['index.html','.github/product-ci.json',...workflows])).toBe(false);
+  for(const invalid of [[],[workflows[0],workflows[0]],['../ci.yml'],['.github/workflows/missing.yml']])
+    expect(()=>productWorkflows(invalid,workflows)).toThrow();
+});
+it('binds all workflow and matrix results to this repository, PR pair, commit and attempt',async()=>{
+  const {evidence}=await script('product-ci-evidence');
+  const paths=['.github/workflows/one.yml','.github/workflows/two.yml'];
+  const pr={number:4,base:{repo:{id:1},ref:'trunk',sha:S},head:{repo:{id:2},ref:'topic',sha:'b'.repeat(40)}};
+  const event={repository:{id:1,full_name:'org/product'},pull_request:pr};
+  const run={id:51,run_attempt:2,path:paths[0],repository:{id:1},head_repository:{id:2},head_sha:pr.head.sha,
+    event:'pull_request',pull_requests:[pr],status:'completed',conclusion:'success'};
+  const job={run_id:51,run_attempt:2,head_sha:run.head_sha,status:'completed',conclusion:'success',steps:[{status:'completed',conclusion:'success'}]};
+  const check=(runs:any[],jobs:any[]=[job],source=run.head_sha)=>evidence(paths,runs.map(r=>({...r,node_id:r.path})),event,'pull_request',async()=>jobs,[],
+    async(path:string)=>({path,repositoryFileUrl:`https://github.com/org/product/blob/${source}/${path}`}));
+  await expect(check([run],[job],S)).rejects.toThrow('workflow source');
+  expect(await check([run])).toHaveLength(1);
+  expect(await check([run],[job,{...job,conclusion:'skipped'}])).toHaveLength(1);
+  const caller={...job,name:'call product CI',steps:[]};
+  const called={...job,name:'call product CI / build'};
+  expect(await check([run],[caller,called])).toHaveLength(1);
+  await expect(check([run],[caller,{...called,run_id:52}])).rejects.toThrow('incomplete job evidence');
+  expect(await check([run,{...run,path:paths[1]}])).toHaveLength(2);
+  for(const altered of [{event:'pull_request_target'},{head_sha:S},{repository:{id:9}},{head_repository:{id:9}},
+    {pull_requests:[]},{pull_requests:[{...pr,number:8}]},{pull_requests:[{...pr,base:{...pr.base,sha:pr.head.sha}}]}])
+    expect(await check([{...run,...altered}])).toEqual([]);
+  expect(await check([run,{...run,id:52,status:'queued'}])).toEqual([]);
+  await expect(check([{...run,conclusion:'failure'}])).rejects.toThrow('failure');
+  for(const jobs of [[],[{...job,run_attempt:1}],[{...job,head_sha:S}],[{...job,conclusion:'skipped'}],[{...job,steps:[]}]])
+    await expect(check([run],jobs)).rejects.toThrow('incomplete job evidence');
+  await expect(evidence([],[],event,'pull_request',async()=>[])).rejects.toThrow('NOT_CONFIGURED');
+});
+it('keeps registered settings and supplier lock metadata in organizational checks',async()=>{
+  const {requiresProductCI}=await script('validation-input');
+  const admin={workflow:'.github/workflows/settings-sync.yml'};
+  const files=[admin.workflow,'safe-settings/settings.yml','.mise/locks/npm/12.2.3/package.json'];
+  expect(requiresProductCI(files,'private-administrator',admin)).toBe(false);
+  expect(requiresProductCI([...files,'server/main.go'],'private-administrator',admin)).toBe(true);
+});
+it('accepts fork fallback only with the reviewed native run name and workflow source',async()=>{
+  const {boundForkRun,workflowSource}=await script('product-ci-evidence');
+  const path='.github/workflows/test.yml';
+  const event={repository:{id:1,full_name:'org/tool'},pull_request:{number:7,base:{sha:S},
+    head:{sha:'c'.repeat(40),ref:'topic',repo:{id:2,full_name:'contributor/tool'}}}};
+  const head=event.pull_request.head.sha;
+  const run={event:'pull_request',repository:{id:1},head_repository:{id:2},path,head_branch:'topic',
+    head_sha:head,pull_requests:[],display_title:`Product CI 7 ${S} ${head}`};
+  const file={path,repositoryFileUrl:`https://github.com/org/tool/blob/${head}/${path}`};
+  const accepts=(r:any,paths:string[],f:any)=>boundForkRun(r,path,event,'pull_request',paths)&&workflowSource(f,path,event,head);
+  expect(await accepts(run,[path],file)).toBe(true);
+  expect(await accepts(run,[],file)).toBe(false);
+  expect(await accepts({...run,display_title:run.display_title.replace('7','8')},[path],file)).toBe(false);
+  expect(await accepts(run,[path],{...file,repositoryFileUrl:file.repositoryFileUrl.replace(head,S)})).toBe(false);
+});
+it('matches push evidence only for the named branch, repository and commit',async()=>{
+  const {matchesRun}=await script('product-ci-evidence');
+  const path='.github/workflows/server.yml',event={repository:{id:5},ref:'refs/heads/trunk',after:S};
+  const run={repository:{id:5},head_repository:{id:5},event:'push',path,head_sha:S,head_branch:'trunk'};
+  expect(matchesRun(run,path,event,'push')).toBe(true);
+  for(const change of [{head_branch:'main'},{head_sha:'a different commit'},{repository:{id:6}},{head_repository:{id:6}},{event:'pull_request'}])
+    expect(matchesRun({...run,...change},path,event,'push')).toBe(false);
 });
