@@ -20,7 +20,8 @@ const communityFiles=new Set(['LICENSE','.copier-answers.yml','.github/VULNERABI
   '.github/labeler.yml','.github/release-template.md.mustache','.github/workflows/actions.lock',
   '.github/workflows/pr-labeler.yml','.github/workflows/pr-title.yml']);
 export function documentationOnly(files) {
-  return files.every(path=>communityFiles.has(path)||/\.(?:md|mdx|html?|png|jpe?g|gif|svg|webp|ico)$/i.test(path));
+  return files.every(path=>communityFiles.has(path)||/^(?:\.github\/|docs\/)?CODEOWNERS$/.test(path)
+    ||/^\.github\/ISSUE_TEMPLATE\/[^/]+\.ya?ml$/.test(path)||/\.(?:md|mdx|html?|png|jpe?g|gif|svg|webp|ico)$/i.test(path));
 }
 // The registered settings administrator owns upstream configuration, not the upstream application.
 export function requiresProductCI(files,dependency,administrator) {
@@ -66,7 +67,7 @@ export async function validationInput(workspace,env=process.env) {
   if(dependency==='private-governance')assertGovernanceOnlyScope(files);
   if(dependency==='private-lifecycle')assertLifecycleScope(files);
   const declaration='.github/product-ci.json';
-  const productApplicable=requiresProductCI(files,dependency,policy.administrators.find(item=>item.repositoryId===repositoryId));
+  const productApplicable=files.includes(declaration)||requiresProductCI(files,dependency,policy.administrators.find(item=>item.repositoryId===repositoryId));
   const workflows=files.includes(declaration)
     ? productWorkflows(JSON.parse(await readFile(await regular(workspace,declaration),'utf8')),files) : [];
   const boundNames=[];

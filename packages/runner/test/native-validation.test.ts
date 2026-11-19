@@ -86,7 +86,9 @@ it('uses declared product workflows for all source layouts',async()=>{
     expect(documentationOnly(files)).toBe(false);
     expect(productWorkflows(workflows,[...files,...workflows])).toEqual(workflows);
   }
-  expect(documentationOnly(['README.md','.github/workflows/pr-title.yml'])).toBe(true);
+  expect(documentationOnly(['README.md','.github/CODEOWNERS','.github/ISSUE_TEMPLATE/config.yml',
+    '.github/ISSUE_TEMPLATE/bug.yaml','.github/workflows/pr-title.yml'])).toBe(true);
+  expect(documentationOnly(['index.html','.github/product-ci.json',...workflows])).toBe(false);
   for(const invalid of [[],[workflows[0],workflows[0]],['../ci.yml'],['.github/workflows/missing.yml']])
     expect(()=>productWorkflows(invalid,workflows)).toThrow();
 });
