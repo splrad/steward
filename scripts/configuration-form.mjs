@@ -1,4 +1,4 @@
-import {selectableProductCI} from './validation-input.mjs';
+import {productCITriggerGap,selectableProductCI,workflowEvent} from './validation-input.mjs';
 import {createHash} from 'node:crypto';
 import {posix} from 'node:path';
 import {matrixValue,staticMatrixRows,supportedArchiveName} from './configuration-build.mjs';
@@ -75,7 +75,15 @@ export function configurationForm(model,head,state={}) {
   // Summarize adopted settings as values. Every editable control below has a real operation.
   lines.push(renderConfiguration(model,head).replace(/^- \[x\] /gm,'- ✓ ').replace(/^- \[ \] /gm,'- ○ '),'',
     '### 调整配置','','在本张 PR 勾选入口，编辑字段后保存。准备入口后可试跑，运行完成后选择归档文件和发布渠道。');
-  for(const workflow of model.workflows.filter(w=>selectableProductCI(w,model.defaultBranch))) {
+  for(const workflow of model.workflows) {
+    const gap=productCITriggerGap(workflow,model.defaultBranch);
+    if(gap) {
+      const triggers=workflow.document?.on;
+      if(model.ci.includes(workflow.path) || (workflow.path!=='.github/workflows/pr-validation-native.yml' &&
+        workflowEvent(triggers,'push') && ['opened','synchronize','reopened'].some(action=>workflowEvent(triggers,'pull_request',action))))
+        lines.push('- 🔒 PR 验证 · `'+display(workflow.path)+'` · '+display(gap));
+      continue;
+    }
     field('ci.'+key(workflow.path),'PR 验证 · `'+display(workflow.path)+'`',model.ci.includes(workflow.path),'check');
   }
   const entries=candidates(model,values);

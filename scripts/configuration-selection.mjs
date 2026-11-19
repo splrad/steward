@@ -1,4 +1,4 @@
-import {selectableProductCI} from './validation-input.mjs';
+import {productCITriggerGap} from './validation-input.mjs';
 import {createHash} from 'node:crypto';
 import {posix} from 'node:path';
 import YAML from 'yaml';
@@ -230,7 +230,13 @@ export async function applySelection(model,operation,plan,context) {
     }
   }
   if(plan.ci) {
-    must(Array.isArray(plan.ci) && plan.ci.length>0 && plan.ci.every(p=>model.workflows.some(w=>w.path===p && selectableProductCI(w,model.defaultBranch))),'请选择至少一个支持默认分支 push 及 PR opened、synchronize、reopened 的产品工作流');
+    must(Array.isArray(plan.ci) && plan.ci.length>0,'请选择至少一个产品工作流');
+    for(const path of plan.ci) {
+      const workflow=model.workflows.find(w=>w.path===path);
+      must(workflow,'未找到产品工作流 '+path);
+      const gap=productCITriggerGap(workflow,model.defaultBranch);
+      must(!gap,'产品工作流 '+path+' · '+gap);
+    }
     changes.set(ciPath,jsonFile(plan.ci));
   }
   if(plan.versions) {

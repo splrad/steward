@@ -66,20 +66,20 @@ export async function sourceOptions(reader,repository,controllerSha,appBotId) {
     check(response.status===200,'VARIABLE_UNAVAILABLE');const value=JSON.parse(Buffer.from(response.bytes));
     check(value.name===name&&typeof value.value==='string','VARIABLE');return value.value;
   };
-  let mode=await read('STEWARD_DOCS_SOURCE'),unitId='';
+  const mode=await read('STEWARD_DOCS_SOURCE');
+  let unitId='';
   if(mode) {
     check(['default-branch','release'].includes(mode),'MODE');
     const branch=await reader.json('git/ref/heads/'+encodeURIComponent(repository.default_branch));
     check(branch.ref==='refs/heads/'+repository.default_branch && branch.object?.type==='commit' && /^[a-f0-9]{40}$/.test(branch.object.sha),'DEFAULT_HEAD');
     const workflow=YAML.parse((await pagesContent(reader,pagesWorkflow,branch.object.sha)).toString('utf8'));
     const source=workflow?.env?.STEWARD_DOCS_SOURCE;
-    if(['default-branch','release'].includes(source)) {
-      mode=source;
-      if(mode==='release') {
-        unitId=workflow.env.STEWARD_DOCS_UNIT;
-        check(typeof unitId==='string' && /^[a-z][a-z0-9-]*$/.test(unitId),'UNIT');
-      }
-    } else if(mode==='release') unitId=await read('STEWARD_DOCS_UNIT');
+    const declared=source!==undefined && source!=='' && source!=='${{ vars.STEWARD_DOCS_SOURCE }}';
+    if(declared && source!==mode)return {status:'SOURCE_MODE_CONFLICT'};
+    if(mode==='release') {
+      unitId=await read('STEWARD_DOCS_UNIT');
+      if(declared && (!unitId || workflow.env.STEWARD_DOCS_UNIT!==unitId))return {status:'SOURCE_UNIT_CONFLICT'};
+    }
   }
   return {reader,repositoryId:repository.id,mode,unitId,controllerSha,appBotId};
 }
@@ -97,8 +97,12 @@ export async function servicePages({io,repository,store,coordinator,appBotId,tok
     return io.request(method,path,...args);
   }};
   const reader=new NativeEvidenceReader(bounded,repository.full_name);
-  const current=ports.currentSource??(async()=>currentPagesSource({...await sourceOptions(reader,repository,coordinator.controllerSha,appBotId),publicOnly:completion!==undefined},{
-    verifyRelease:input=>verifyPagesRelease(input,{gh:args=>nativeGhCommand(args,token),download:nativeReleaseDownload(token)})}));
+  const current=ports.currentSource??(async()=>{
+    const options=await sourceOptions(reader,repository,coordinator.controllerSha,appBotId);
+    if(options.status)return options;
+    return currentPagesSource({...options,publicOnly:completion!==undefined},{
+      verifyRelease:input=>verifyPagesRelease(input,{gh:args=>nativeGhCommand(args,token),download:nativeReleaseDownload(token)})});
+  });
   const desired=await current();if(desired.status!=='READY')return {status:desired.status};
   const source=desired.source;check(source.repositoryId===repository.id&&source.repository===repository.full_name,'REPOSITORY');
   const workflow=await reader.json('actions/workflows/pages.yml');check(positive(workflow.id)&&workflow.path===pagesWorkflow,'WORKFLOW');

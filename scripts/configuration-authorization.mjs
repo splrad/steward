@@ -41,8 +41,36 @@ const workflowPath=/^\.github\/workflows\/[\w.-]+\.ya?ml$/;
 const receiver='.github/workflows/repository-configuration-event.yml';
 const central=api=>api.target.owner==='splrad' && api.target.repo==='steward';
 
+// Walk immutable native directory trees. Missing paths share the same cached directory lookup.
+function revisionReader(api,ref) {
+  const trees=new Map(),contents=new Map();
+  async function directory(oid) {
+    if(!trees.has(oid)) {
+      const {data}=await api.rest.git.getTree({...api.target,tree_sha:oid});
+      if(data.truncated || !Array.isArray(data.tree))throw Error('Incomplete configuration directory');
+      trees.set(oid,new Map(data.tree.map(entry=>[entry.path,entry])));
+    }
+    return trees.get(oid);
+  }
+  return async path=>{
+    let entry={type:'tree',sha:ref};
+    for(const part of path.split('/')) {
+      if(entry?.type!=='tree')return null;
+      entry=(await directory(entry.sha)).get(part);
+    }
+    if(!entry)return null;
+    if(entry.type!=='blob' || !['100644','100755'].includes(entry.mode))throw Error('Invalid configuration file '+path);
+    if(!contents.has(entry.sha)) {
+      const bytes=await fileText(api,path,ref);
+      if(bytes===null)throw Error('Missing indexed configuration file '+path);
+      contents.set(entry.sha,bytes);
+    }
+    return contents.get(entry.sha);
+  };
+}
+
 async function referencedFiles(api,roots,ref,changed) {
-  const seen=new Set(roots),actions=new Map();
+  const seen=new Set(roots),actions=new Map(),read=revisionReader(api,ref);
   const addAction=(uses,mounts)=>{
     if(typeof uses!=='string' || !uses.startsWith('./'))return;
     let directory=posix.normalize(uses).replace(/\/$/,'');
@@ -54,7 +82,7 @@ async function referencedFiles(api,roots,ref,changed) {
     actions.set(JSON.stringify([directory,mounts]),{directory,mounts});
   };
   for(const path of seen) {
-    const bytes=await fileText(api,path,ref);
+    const bytes=await read(path);
     if(!bytes)continue;
     const jobs=YAML.parse(bytes)?.jobs??{};
     for(const job of Object.values(jobs)) {
@@ -81,7 +109,7 @@ async function referencedFiles(api,roots,ref,changed) {
     for(const filename of ['action.yml','action.yaml']) {
       const path=posix.join(directory,filename);
       seen.add(path);
-      const bytes=await fileText(api,path,ref);
+      const bytes=await read(path);
       if(!bytes)continue;
       const runs=YAML.parse(bytes)?.runs??{};
       for(const file of [runs.main,runs.pre,runs.post,runs.image]) {
@@ -96,7 +124,7 @@ async function referencedFiles(api,roots,ref,changed) {
   return seen;
 }
 
-export async function protectedChanges(api,files,base,head) {
+export async function protectedChanges(api,files,base,head,decisionOnly=false) {
   const paths=files.flatMap(f=>[f.filename,f.previous_filename].filter(Boolean));
   const ciPath='.github/product-ci.json';
   const old=await fileText(api,ciPath,base),next=await fileText(api,ciPath,head);
@@ -110,13 +138,19 @@ export async function protectedChanges(api,files,base,head) {
   }
   const adopted=paths.includes(requestPath)||Boolean(await fileText(api,requestPath,base));
   if(central(api))ci.add(receiver);
+  const matches=()=>new Set(paths.filter(path=>ci.has(path) || adopted && (configurationPaths.has(path)||path.startsWith('.github/actions/configuration/'))));
   for(const [ref,bytes] of [[base,old],[head,next]]) {
+      // The complete PR diff already establishes the authorization requirement. The manifest alone has a separate exception.
+      if(decisionOnly) {
+        const known=matches();
+        if([...known].some(path=>path!==manifestPath))return known;
+      }
       const roots=bytes?JSON.parse(bytes):[];
       if(adopted)roots.push('.github/workflows/steward-release-publish.yml','.github/workflows/steward-release-channels.yml','.github/workflows/pages.yml');
       if(central(api))roots.push(receiver);
       for(const path of await referencedFiles(api,roots,ref,paths)) ci.add(path);
   }
-  return new Set(paths.filter(path=>ci.has(path) || adopted && (configurationPaths.has(path)||path.startsWith('.github/actions/configuration/'))));
+  return matches();
 }
 
 const manifestPath='.release-please-manifest.json';
@@ -146,7 +180,7 @@ export async function authorizePull(api, number, expectedHead, defaultBranch, or
   const base = (await api.rest.repos.getBranch({...api.target,branch:defaultBranch})).data.commit.sha;
   const comparisonBase=pr.base.ref===defaultBranch?base:pr.base.sha;
   if(!sha.test(comparisonBase)) throw Error('Missing native pull request base commit');
-  const protectedPaths=await protectedChanges(api,files,comparisonBase,expectedHead);
+  const protectedPaths=await protectedChanges(api,files,comparisonBase,expectedHead,true);
   if(!protectedPaths.size) return false;
   if(pr.base.ref===defaultBranch && protectedPaths.has(manifestPath) && await generatedCandidateManifest(api,pr,base,expectedHead)) {
     protectedPaths.delete(manifestPath);

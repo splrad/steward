@@ -6,7 +6,7 @@ import YAML from 'yaml';
 import {NativeEvidenceReader,decodePagesMaintenance,assertPagesProgress,pagesRecordPath} from '../../packages/runner/dist/index.js';
 import {pagesInputDigest,pagesRunName} from '../select-pages-source.mjs';
 import {pagesDefinition,currentPagesSource,preflightPages,checkPagesArtifact,pagesArtifactName,pagesDeployment} from '../pages-runtime.mjs';
-import {servicePages,pagesRunInventory} from '../pages-maintenance.mjs';
+import {servicePages,pagesRunInventory,sourceOptions} from '../pages-maintenance.mjs';
 
 const bytes=await readFile(new URL('../../templates/release/pages.yml',import.meta.url));
 const workflowDoc=YAML.parse(bytes.toString()),pin=workflowDoc.env.STEWARD_CONTROLLER_SHA,S='a'.repeat(40),N='b'.repeat(40);
@@ -34,8 +34,11 @@ function fixture() {
     }
     if(p==='')return response(repo);
     if(p==='/git/ref/heads/trunk')return response({ref:'refs/heads/trunk',object:{type:'commit',sha:state.head}});
-    if(p==='/contents/.github/workflows/pages.yml')return response({type:'file',path:'.github/workflows/pages.yml',encoding:'base64',content:bytes.toString('base64'),size:bytes.length,sha:createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')});
-    if(p.startsWith('/actions/variables/'))return response({name:p.split('/').at(-1),value:state.mode});
+    if(p==='/contents/.github/workflows/pages.yml') {
+      const content=state.workflowBytes??bytes;
+      return response({type:'file',path:'.github/workflows/pages.yml',encoding:'base64',content:content.toString('base64'),size:content.length,sha:createHash('sha1').update(`blob ${content.length}\0`).update(content).digest('hex')});
+    }
+    if(p.startsWith('/actions/variables/'))return response({name:p.split('/').at(-1),value:p.endsWith('/STEWARD_DOCS_UNIT')?(state.unit??''):state.mode});
     if(p==='/actions/workflows/pages.yml')return response(workflow);
     if(p==='/actions/workflows/5/runs') {
       const status=url.searchParams.get('status'),created=url.searchParams.get('created');
@@ -62,6 +65,28 @@ function fixture() {
   const successful=(id=40,sha=S)=>{state.deployments.push({id,environment:'github-pages',sha,created_at:'2026-10-30T00:00:00Z'});state.statuses.set(id,[{id:id+100,state:'success',created_at:'2026-10-30T00:10:00Z',log_url:'https://github.com/fixture/product/actions/runs/12/job/22',environment_url:'https://fixture.github.io/product/'}]);};
   return {repo,source,workflow,run,build,deploy,artifact,state,calls,records,reader,options,store,coordinator,service,successful};
 }
+
+test('public maintenance requires the approved mode and release unit before dispatch or rerun',async()=>{
+  for(const [mode,unit,selected,selectedUnit,status] of [
+    ['default-branch','','release','maps','SOURCE_MODE_CONFLICT'],
+    ['release','maps','default-branch','','SOURCE_MODE_CONFLICT'],
+    ['release','other','release','maps','SOURCE_UNIT_CONFLICT'],
+    ['release','','release','maps','SOURCE_UNIT_CONFLICT']
+  ]) {
+    const f=fixture();f.state.mode=mode;f.state.unit=unit;
+    f.state.workflowBytes=Buffer.from(YAML.stringify({env:{STEWARD_DOCS_SOURCE:selected,STEWARD_DOCS_UNIT:selectedUnit}}));
+    assert.equal((await f.service()).status,status);
+    f.state.runs=[f.run];
+    assert.equal((await f.service({repositoryId:10,workflowId:5,runId:12,attempt:1})).status,status);
+    assert.equal(f.calls.filter(c=>c.method==='POST').length,0);assert.equal(f.records.size,0);
+  }
+  const f=fixture();f.state.mode='release';f.state.unit='maps';
+  for(const workflow of [workflowDoc,{env:{STEWARD_DOCS_SOURCE:'release',STEWARD_DOCS_UNIT:'maps'}}]) {
+    f.state.workflowBytes=Buffer.from(YAML.stringify(workflow));
+    const options=await sourceOptions(f.reader,f.repo,pin,301115370);
+    assert.equal(options.mode,'release');assert.equal(options.unitId,'maps');
+  }
+});
 
 test('native YAML separates source, secret-free build and Pages deployment with same-Run artifacts',()=>{
   assert.equal(pagesDefinition(bytes).controllerSha,pin);

@@ -2,9 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {selectWorkflow} from '../configuration-build.mjs';
-import {candidates,planFromForm} from '../configuration-form.mjs';
+import {candidates,configurationForm,planFromForm} from '../configuration-form.mjs';
 import {documentationOnly,requiresProductCI,selectableProductCI} from '../validation-input.mjs';
-import {sourceOptions} from '../pages-maintenance.mjs';
 import {mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
 import {join} from 'node:path';
@@ -19,7 +18,16 @@ const A='a'.repeat(40),B='b'.repeat(40),C='c'.repeat(40),actor={id:12,login:'mai
 const repo={id:21,full_name:'splrad/sample',default_branch:'trunk',owner:{login:'splrad'}};
 const response=data=>({data});
 function fake(contents) {
-  return {target:{},rest:{repos:{getContent:async({ref,path})=>{
+  const getTree=async({tree_sha})=>{
+    const [ref,...parts]=tree_sha.split('/'),prefix=[ref,...parts,''].join('/');
+    const entries=new Map();
+    for(const key of contents.keys())if(key.startsWith(prefix)) {
+      const [path,...rest]=key.slice(prefix.length).split('/');
+      entries.set(path,{path,type:rest.length?'tree':'blob',mode:rest.length?'040000':'100644',sha:prefix+path});
+    }
+    return response({truncated:false,tree:[...entries.values()]});
+  };
+  return {target:{},rest:{git:{getTree},repos:{getContent:async({ref,path})=>{
     const value=contents.get(ref+'/'+path);
     if(value===undefined) throw Object.assign(Error('Missing'),{status:404});
     return response({type:'file',encoding:'base64',content:Buffer.from(value).toString('base64')});
@@ -77,6 +85,18 @@ test('first CI adoption, prior and proposed inputs, renames, exact heads and mer
   const first=fake(new Map([[A+'/'+ci,JSON.stringify([next])]]));
   assert.ok((await protectedChanges(first,[{filename:ci}],B,A)).has(ci));
 });
+test('authorization reads native directories once for missing declarations and stops on a protected change',async()=>{
+  const ci='.github/product-ci.json',paths=['one','two','three'].map(name=>'.github/workflows/'+name+'.yml');
+  const api=fake(new Map([[A+'/'+ci,JSON.stringify(paths)],[A+'/.github/workflows/real.yml','on: push']]));
+  const contents=[],directories=[],read=api.rest.repos.getContent,tree=api.rest.git.getTree;
+  api.rest.repos.getContent=args=>{contents.push(args.path);return read(args);};
+  api.rest.git.getTree=args=>{directories.push(args.tree_sha);return tree(args);};
+  assert.deepEqual(await protectedChanges(api,[{filename:ci}],B,A,true),new Set([ci]));
+  assert.deepEqual(directories,[]);
+  await protectedChanges(api,[{filename:ci}],B,A);
+  assert.deepEqual(directories,[A,A+'/.github',A+'/.github/workflows']);
+  assert.ok(paths.every(path=>!contents.includes(path)));
+});
 test('stacked pull requests compare their native base and retain the default branch authorization source',async()=>{
   const path='.github/product-ci.json',api=fake(new Map([[C+'/'+path,'[]'],[A+'/'+path,'[]']]));
   api.rest.pulls.get=async()=>response({number:1,state:'open',changed_files:1,head:{sha:A},base:{ref:'feature',sha:C}});
@@ -111,7 +131,7 @@ test('only the recorded candidate can advance the existing manifest without conf
       publishedHead:published,generatedSnapshotPath:'generated/fixture.json',pendingWrite:null}})]]);
   const api=fake(contents);
   let head=published;
-  api.rest.git={getRef:async()=>response({object:{sha:C}})};
+  api.rest.git={...api.rest.git,getRef:async()=>response({object:{sha:C}})};
   api.rest.repos.getBranch=async()=>response({commit:{sha:base}});
   api.rest.pulls.get=async()=>response({number:2,state:'open',changed_files:1,user:{id:301115370},
     head:{repo,sha:head,ref:'steward/release-candidate'},base:{repo,ref:'trunk'}});
@@ -149,7 +169,9 @@ test('central receiver requires an administrator and selected local actions foll
   api.rest.repos.getCollaboratorPermissionLevel=async()=>response({permission:'admin',user:actor});
   assert.equal(await authorizePull(api,1,A,'trunk'),true);
 });
-test('re-evaluates a passing required scope when its last authorized review is dismissed',async()=>{
+test('re-evaluates the required scope on approved, dismissed, and edited reviews',async()=>{
+  const template=YAML.parse(await readFile('templates/repository/'+requestPath,'utf8'));
+  assert.ok(template.on.pull_request_review.types.includes('edited'));
   const ci='.github/product-ci.json',api=fake(new Map([[B+'/'+ci,'[]'],[A+'/'+ci,'[]']]));
   const review={state:'APPROVED',commit_id:A,user:actor};
   const runs=api.rest.actions.listWorkflowRunsForRepo=Symbol();
@@ -172,6 +194,15 @@ test('re-evaluates a passing required scope when its last authorized review is d
   assert.equal(rechecked,1);assert.equal(scopeConclusion,'failure');
   review.state='APPROVED';await reconcileReview();
   assert.equal(rechecked,2);assert.equal(scopeConclusion,'success');
+  review.state='COMMENTED';review.body='';review.node_id='review';
+  api.graphql=async()=>({node:{author:{login:actor.login},editor:{login:actor.login},body:review.body,lastEditedAt:'2026-11-20T00:00:00Z'}});
+  await reconcileReview();
+  assert.equal(rechecked,3);assert.equal(scopeConclusion,'failure');
+  review.body='/steward approve-configuration';await reconcileReview();
+  assert.equal(rechecked,4);assert.equal(scopeConclusion,'success');
+  review.body='';await reconcileReview();
+  assert.equal(rechecked,5);assert.equal(scopeConclusion,'failure');
+
 });
 test('retries only the configuration authorization step failure',async()=>{
   const api=fake(new Map()),retry=[];
@@ -345,6 +376,11 @@ test('configuration callers are governance files and product CI choices match na
 });
 test('selects entries covering all PR bases and files and the actual default branch push',()=>{
   const choice=(push,pull_request={})=>selectableProductCI({path:'.github/workflows/build.yml',document:{on:{push,pull_request}}},'stable/v2');
+  const path='.github/workflows/build.yml',doc={on:{push:{branches:['trunk']},pull_request:{}},jobs:{}};
+  const model=inspectRepository(new Map([[path,YAML.stringify(doc)]]));
+  model.defaultBranch='stable/v2';
+  assert.match(configurationForm(model,A).body,/push 的分支或标签筛选未覆盖默认分支 stable\/v2/);
+  assert.ok(choice({branches:['stable/v2']}));
   assert.ok(choice({branches:['stable/**']}));
   assert.ok(choice({branches:['**','!stable/**','stable/v2']}));
   assert.ok(choice({'branches-ignore':['trunk']},{branches:['**']}));
@@ -361,18 +397,6 @@ test('form archive defaults resolve the selected static matrix row and include o
   const entries=candidates(model,{}).filter(e=>e.workflow);
   assert.deepEqual(entries.map(e=>e.archive),['artifact-linux','artifact-macos']);
   for(const e of entries)assert.equal(selectWorkflow(bytes,e).output,'out');
-});
-test('reviewed Pages source selects the same unit for maintenance even with legacy online settings',async()=>{
-  const workflow=Buffer.from(YAML.stringify({env:{STEWARD_DOCS_SOURCE:'release',STEWARD_DOCS_UNIT:'maps'}}));
-  const path='.github/workflows/pages.yml',read=[];
-  const reader={path:p=>p,io:{request:async(_,name)=>{
-    read.push(name);return {status:200,bytes:Buffer.from(JSON.stringify({name:'STEWARD_DOCS_SOURCE',value:'default-branch'}))};
-  }},json:async p=>p.startsWith('git/')?{ref:'refs/heads/trunk',object:{type:'commit',sha:B}}:
-    {type:'file',path,encoding:'base64',content:workflow.toString('base64'),size:workflow.length,
-      sha:createHash('sha1').update('blob '+workflow.length+'\0').update(workflow).digest('hex')}};
-  const options=await sourceOptions(reader,repo,C,301115370);
-  assert.equal(options.mode,'release');assert.equal(options.unitId,'maps');
-  assert.deepEqual(read,['actions/variables/STEWARD_DOCS_SOURCE']);
 });
 test('a README-only push or completed configuration merge cannot create another PR',async()=>{
   const before=inspectRepository(new Map([['README.md','first']]));

@@ -56,7 +56,6 @@ function coversAll(patterns) {
 }
 function coversBranch(filters,branch) {
   if(!filters)return true;
-  if(!coversAll(filters.paths) || filters['paths-ignore']?.length)return false;
   const {branches,'branches-ignore':ignore}=filters;
   if(!branches && !ignore && (filters.tags || filters['tags-ignore']))return false;
   if(!branch)return coversAll(branches) && !ignore?.length;
@@ -68,11 +67,22 @@ function coversBranch(filters,branch) {
     return matches(negative?pattern.slice(1):pattern)?!negative:included;
   },false);
 }
-export function selectableProductCI(workflow,defaultBranch) {
+export function productCITriggerGap(workflow,defaultBranch) {
   const triggers=workflow.document?.on;
-  return workflow.path!=='.github/workflows/pr-validation-native.yml' && workflowEvent(triggers,'push') &&
-    coversBranch(triggers?.push,defaultBranch) && coversBranch(triggers?.pull_request) &&
-    ['opened','synchronize','reopened'].every(action=>workflowEvent(triggers,'pull_request',action));
+  if(workflow.path==='.github/workflows/pr-validation-native.yml')return '组织验证工作流';
+  if(!workflowEvent(triggers,'push'))return '缺少 push 事件';
+  const missing=['opened','synchronize','reopened'].filter(action=>!workflowEvent(triggers,'pull_request',action));
+  if(missing.length)return '缺少 pull_request '+missing.join('、');
+  for(const event of ['push','pull_request']) {
+    const filters=triggers?.[event];
+    if(!coversAll(filters?.paths) || filters?.['paths-ignore']?.length)return event+' 的路径筛选不能覆盖全部变更';
+  }
+  if(!coversBranch(triggers?.push,defaultBranch))return 'push 的分支或标签筛选未覆盖默认分支 '+(defaultBranch??'');
+  if(!coversBranch(triggers?.pull_request))return 'pull_request 的分支筛选不能覆盖全部目标分支';
+  return '';
+}
+export function selectableProductCI(workflow,defaultBranch) {
+  return !productCITriggerGap(workflow,defaultBranch);
 }
 export async function validationInput(workspace,env=process.env) {
   const event=JSON.parse(await readFile(env.GITHUB_EVENT_PATH,'utf8'));
@@ -110,8 +120,8 @@ export async function validationInput(workspace,env=process.env) {
     const workflow=YAML.parse(await readFile(await regular(workspace,path),'utf8'));
     const triggers=workflow?.on;
     const type=env.GITHUB_EVENT_NAME;
-    check(selectableProductCI({path,document:workflow},event.repository.default_branch) &&
-      workflowEvent(triggers,type,event.action),'PRODUCT_CI_TRIGGER '+path);
+    const gap=productCITriggerGap({path,document:workflow},event.repository.default_branch);
+    check(!gap && workflowEvent(triggers,type,event.action),'PRODUCT_CI_TRIGGER '+path+' '+gap);
     if(workflow['run-name']===forkRunName)boundNames.push(path);
   }
   return {input,files,productApplicable,workflows,boundNames,dependencyMode:dependency};
