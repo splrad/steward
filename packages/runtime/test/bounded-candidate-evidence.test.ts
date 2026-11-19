@@ -39,6 +39,15 @@ describe('candidate producer evidence and event controls',()=>{
    expect((await candidateFacts(f.g,false,true)).identity).toBeNull();
    await expect(candidateFacts(f.g)).rejects.toThrow('SESSION_NOT_READY');
  });
+ it('admits only recovery after the default branch moved a unit out of the old snapshot',async()=>{
+   const f=await fixture(),target={...TARGET,units:[{id:'layerscape',path:'packages/app'}]};
+   const g={...f.g,target};
+   await expect(candidateFacts(g,false,true)).rejects.toThrow('CANDIDATE_UNIT_NOT_SELECTED');
+   const moved:GitReader={...g,json:async(id,path,method,body)=>path.endsWith('/git/ref/heads/main')?
+     {object:{sha:sha('e')}}:f.g.json(id,path,method,body)};
+   expect((await candidateFacts(moved,false,true)).identity).toBeNull();
+   await expect(candidateFacts(moved)).rejects.toThrow('CANDIDATE_UNIT_NOT_SELECTED');
+ });
  it('binds a fixed successful Run to independently read Git identity and native event',async()=>{const f=await fixture();expect((await verifiedProducer(f.g,f.env,f)).registration).toEqual(f.registration);});
  it.each(['epoch','cycleId','requestKey','attempt','target'] as const)('rejects borrowing successful Run for a different %s',async kind=>{const f=await fixture();const input=structuredClone({registration:f.registration,producer:f.producer});if(kind==='epoch'||kind==='cycleId')input.registration.identity[kind]='other';else if(kind==='target')input.registration.identity.repositoryId=1 as any;else input.producer[kind]=kind==='requestKey'?key('0'):1 as never;await expect(verifiedProducer(f.g,f.env,input)).rejects.toThrow();});
  it('rejects an artifact from an older producer attempt even when Run succeeded',async()=>{const f=await fixture();f.artifact.value.producer.attempt=1;await expect(verifiedProducer(f.g,f.env,f)).rejects.toThrow('PRODUCER_ATTEMPT');});
@@ -71,6 +80,23 @@ async function normalFixture(){
 }
 describe('durable normal candidate event chain',()=>{
  it('persists a signed hint before any Git reads, duplicates preserve the original window',async()=>{const f=await normalFixture();await acceptNativeCandidateEvent({...f.env,INSTALLATION_ID:'123'},'pull_request',{installation:{id:123},repository:{id:TARGET.id,full_name:TARGET.name,default_branch:'main',private:false},action:'unlabeled',label:{name:'release:editing'},sender:{id:7},pull_request:{number:192,updated_at:f.hint.updatedAt}},'delivery-1',f.g);expect(f.reads()).toBe(0);const original=await f.eventStorage.get<any>('nativeEvent');expect(original.status).toBe('PREPARING');f.time(f.clock()+60000);await f.coordinator().register({hint:f.hint,deliveryId:'delivery-2'});expect(await f.eventStorage.get('nativeEvent')).toEqual(original);expect(f.posts()).toBe(0);});
+ it('pauses the archived registration across a failed read and a protected migration result',async()=>{
+   const f=await normalFixture(),source=sha('b'),read=f.g.json.bind(f.g);
+   f.g.target={...TARGET,units:[{id:'layerscape',path:'packages/app'}]};
+   f.g.json=async(id,path,method,body)=>id===TARGET.id&&path.endsWith('/git/ref/heads/main')?
+     {object:{sha:source}}:read(id,path,method,body);
+   Object.assign(f.artifact.value,{sourceSha:source,outcome:'protected',candidateIdentity:null,status:'WAIT'});
+   await f.engine.register(f.f.registration);
+   await f.coordinator().register({hint:f.hint,deliveryId:'migration'});
+   f.unavailable(true);await f.coordinator().alarm();
+   expect(f.posts()).toBe(0);
+   f.unavailable(false);f.time(f.clock()+60000);await f.coordinator().alarm();
+   expect((await f.store.read())?.status).toBe('PAUSED');
+   f.time(f.clock()+60000);await f.coordinator().alarm();
+   expect((await f.eventStorage.get<any>('nativeEvent')).status).toBe('PROTECTED');
+   expect((await f.store.read())?.status).toBe('PAUSED');
+   expect(f.posts()).toBe(1);
+ });
  it('temporary first read failure recovers from persisted alarm and never reposts a lost response',async()=>{const f=await normalFixture();await f.coordinator().register({hint:f.hint,deliveryId:'d'});f.unavailable(true);await f.coordinator().alarm();expect((await f.eventStorage.get<any>('nativeEvent')).preparations).toBe(1);expect(f.posts()).toBe(0);f.unavailable(false);f.losePost();f.time(f.clock()+60000);await f.coordinator().alarm();expect(f.posts()).toBe(1);expect((await f.eventStorage.get<any>('nativeEvent')).status).toBe('CONFIRMING');f.time(f.clock()+60000);await f.coordinator().alarm();expect((await f.eventStorage.get<any>('nativeEvent')).status).toBe('REGISTERED');expect((await f.store.read())?.t0).toBe(t0);await f.coordinator().alarm();expect(f.posts()).toBe(1);});
  it('unreadable preparation stops after fixed offsets, with no normal POST',async()=>{const f=await normalFixture();await f.coordinator().register({hint:f.hint,deliveryId:'d'});const start=f.clock();f.unavailable(true);for(const m of [0,1,5,15]){f.time(start+m*60000);await f.coordinator().alarm();}expect((await f.eventStorage.get<any>('nativeEvent')).status).toBe('NEEDS_ATTENTION');expect(await f.eventStorage.get('__alarm')).toBeUndefined();expect(f.posts()).toBe(0);});
  it('pauses existing old recheck before one normal dispatch, then resumes the same epoch window',async()=>{const f=await normalFixture();await f.engine.register(f.f.registration);await f.coordinator().register({hint:f.hint,deliveryId:'d'});await f.coordinator().alarm();expect((await f.store.read())?.status).toBe('PAUSED');const deadline=(await f.store.read())?.deadline;f.time(f.clock()+60000);await f.coordinator().alarm();expect((await f.store.read())?.status).toBe('PENDING');expect((await f.store.read())?.deadline).toBe(deadline);expect(f.posts()).toBe(1);});
