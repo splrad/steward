@@ -39,6 +39,23 @@ test('manual run and rerun both require live administrator or delegated identity
   await assert.rejects(requestFromRun(api,'',repo,1,1,B,archive),/Stale/);
 });
 
+test('review requests bind the originating fork and head before authorization is reconciled',async()=>{
+  const source=await readFile('templates/repository/'+requestPath,'utf8');
+  const api=fake(new Map([[A+'/'+requestPath,source],[B+'/'+requestPath,source]]));
+  const fork={id:42},pull={number:7,base:{repo},head:{repo:fork,sha:A,ref:'topic'}};
+  const run={repository:repo,head_repository:fork,head_branch:'topic',id:1,head_sha:A,run_attempt:1,status:'completed',
+    conclusion:'success',path:requestPath,event:'pull_request_review',actor,triggering_actor:actor};
+  api.rest.actions.getWorkflowRun=async()=>response(run);
+  api.rest.pulls.get=async()=>response(pull);
+  const archive=async()=>({data:{event:run.event,repository:repo.id,actor:actor.id,pull:{number:7,head:A},run:1,attempt:1}});
+  const read=()=>requestFromRun(api,'',repo,1,1,B,archive);
+  assert.equal((await read()).data.pull.number,7);
+  pull.head.repo={id:43};
+  await assert.rejects(read(),/current PR/);
+  run.event='workflow_dispatch';
+  await assert.rejects(read(),/foreign/);
+});
+
 test('first CI adoption, prior and proposed inputs, renames, exact heads and merge group bytes are protected',async()=>{
   const old='.github/workflows/old.yml',next='.github/workflows/next.yml',ci='.github/product-ci.json';
   const api=fake(new Map([[A+'/'+ci,JSON.stringify([next])],[B+'/'+ci,JSON.stringify([old])]]));

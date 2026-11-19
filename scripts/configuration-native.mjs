@@ -36,7 +36,8 @@ export async function readArchive(api,token,repo,run,name,request=false,stage) {
   const asset=matches[0];
   must(!asset.expired && Date.parse(asset.expires_at)>Date.now(),'Expired artifact '+name);
   must(asset.workflow_run?.id===run.id && asset.workflow_run.repository_id===repo.id
-    && asset.workflow_run.head_repository_id===repo.id && asset.workflow_run.head_sha===run.head_sha,'Unknown archive source');
+    && asset.workflow_run.head_repository_id===(request && run.event==='pull_request_review' && run.path===requestPath?run.head_repository.id:repo.id)
+    && asset.workflow_run.head_sha===run.head_sha,'Unknown archive source');
   const directory=await mkdtemp(join(tmpdir(),'configuration-archive-'));
   try {
     const path=join(directory,'native.zip');
@@ -50,15 +51,17 @@ export async function readArchive(api,token,repo,run,name,request=false,stage) {
   } finally {await rm(directory,{recursive:true,force:true});}
 }
 
-export async function getRun(api,repo,id,attempt) {
+export async function getRun(api,repo,id,attempt,reviewRequest=false) {
   const run=(await api.rest.actions.getWorkflowRun({...api.target,run_id:positive(id)})).data;
-  must(run.repository.id===repo.id && run.head_repository?.id===repo.id && run.run_attempt===positive(attempt)
+  const review=reviewRequest && run.event==='pull_request_review' && run.path===requestPath;
+  must(run.repository.id===repo.id && (run.head_repository?.id===repo.id || (review && Number.isSafeInteger(run.head_repository?.id)))
+    && run.run_attempt===positive(attempt)
     && run.status==='completed' && run.conclusion==='success','Stale, foreign, or unsuccessful workflow run');
   return run;
 }
 
 export async function requestFromRun(api,token,repo,id,attempt,base,archive=readArchive) {
-  const run=await getRun(api,repo,id,attempt);
+  const run=await getRun(api,repo,id,attempt,true);
   if(run.path===trialPath) {
     must(run.event==='workflow_dispatch' && run.actor.id===bot && run.triggering_actor.id===bot && run.head_branch===repo.default_branch,'Unexpected build trial source');
     await trustedWorkflow(api,trialPath,run.head_sha,base);
@@ -72,6 +75,12 @@ export async function requestFromRun(api,token,repo,id,attempt,base,archive=read
     && Number(data.attempt)===run.run_attempt,'Configuration request identity mismatch');
   if(data.pull) must(data.pull.head===run.head_sha && positive(data.pull.number),'PR head moved');
   else must(data.source===run.head_sha,'Source moved');
+  if(run.event==='pull_request_review') {
+    must(data.pull,'Missing review PR');
+    const pr=(await api.rest.pulls.get({...api.target,pull_number:positive(data.pull.number)})).data;
+    must(pr.number===data.pull.number && pr.base.repo.id===repo.id && pr.head.repo?.id===run.head_repository.id &&
+      pr.head.sha===run.head_sha && pr.head.ref===run.head_branch,'Review run does not match the current PR');
+  }
   if(!['push','pull_request_review'].includes(run.event)) {
     for(const actor of [run.actor,run.triggering_actor]) must(await authorized(api,actor,base),'Repository administrator or explicit delegate required');
   } else if(run.run_attempt>1) must(await authorized(api,run.triggering_actor,base),'Unauthorized rerun');
