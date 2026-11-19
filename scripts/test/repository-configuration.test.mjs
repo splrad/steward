@@ -43,7 +43,8 @@ const scripts={
 };
 const requestPath='.github/workflows/repository-configuration.yml',trialPath='.github/workflows/repository-configuration-trial.yml';
 
-for(const complex of [false,true]) test('same configuration PR binds two entries and selects individual files · '+(complex?'native container, service and dynamic matrix':'reviewed scripts'),async t=>{
+for(const mode of ['reviewed scripts','native container, service and dynamic matrix','native archive bound anew for each run']) test('same configuration PR binds two entries and selects individual files · '+mode,async t=>{
+  const complex=mode!=='reviewed scripts',runNamed=mode==='native archive bound anew for each run';
   const dir=await mkdtemp(join(tmpdir(),'steward-config-test-')), product=join(dir,'product');
   t.after(()=>rm(dir,{recursive:true,force:true}));
   const git=(...args)=>execFileSync('git',['-c','core.hooksPath=','-C',product,...args],{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
@@ -60,7 +61,7 @@ for(const complex of [false,true]) test('same configuration PR binds two entries
     doc.jobs.targets={'runs-on':'ubuntu-24.04',outputs:{matrix:'${{ steps.emit.outputs.matrix }}'},steps:[{id:'emit',run:'echo \'matrix={"os":["linux"]}\' >> "$GITHUB_OUTPUT"'}]};
     Object.assign(job,{name:'route-${{ matrix.os }}',needs:'targets',strategy:{matrix:'${{ fromJSON(needs.targets.outputs.matrix) }}'},
       container:{image:'python:3.12'},services:{db:{image:'postgres:16'}}});
-    job.steps.at(-1).name='Archive route';job.steps.at(-1).with.name='route-${{ matrix.os }}';
+    job.steps.at(-1).name='Archive route';job.steps.at(-1).with.name=runNamed?'route-${{ matrix.os }}-${{ github.run_id }}':'route-${{ matrix.os }}';
     await put(productWorkflow,YAML.stringify(doc));
   }
   git('config','user.name','Configuration fixture');git('config','user.email','config@example.invalid');git('config','core.autocrlf','false');
@@ -118,7 +119,7 @@ for(const complex of [false,true]) test('same configuration PR binds two entries
       if(method==='listWorkflowRunArtifacts')return [artifact(run)];
       return [{id:901,name:'route-linux',conclusion:'success',steps:[{name:'Archive route',conclusion:'success',started_at:archivedAt,completed_at:archivedAt}]}];
     }};
-  function artifact(run){return {id:882,name:'route-linux',created_at:archivedAt,workflow_run:{id:run.id,repository_id:repo.id,head_repository_id:repo.id,head_sha:run.head_sha}};}
+  function artifact(run){return {id:882,name:runNamed?'route-linux-'+run.id:'route-linux',created_at:archivedAt,workflow_run:{id:run.id,repository_id:repo.id,head_repository_id:repo.id,head_sha:run.head_sha}};}
   function productRun(source,branch=repo.default_branch){
     execFileSync('python',['build.py'],{cwd:join(product,'tools/route')});
     execFileSync('python',['-c',"import sys,pathlib,zipfile; p=pathlib.Path(sys.argv[1]); z=zipfile.ZipFile(sys.argv[2],'w'); [z.write(f,f.relative_to(p)) for f in p.rglob('*') if f.is_file()]; z.close()",join(product,'tools/route/out'),nativeArchive]);
@@ -126,7 +127,7 @@ for(const complex of [false,true]) test('same configuration PR binds two entries
     nativeRuns.set(id,{id,run_attempt:1,repository:repo,head_repository:repo,head_sha:source,head_branch:branch,event:'push',path:productWorkflow,status:'completed',conclusion:'success'});
   }
   async function archive(api,token,repo,run,name,request,stage){
-    assert.equal(name,'route-linux');
+    assert.equal(name,artifact(run).name);
     const args=stage?['--stage',stage.directory,'--files',JSON.stringify(stage.paths)]:[];
     return {asset:artifact(run),data:JSON.parse(execFileSync('python',['tools/template/configuration_archive.py',nativeArchive,...args],{encoding:'utf8'}))};
   }
@@ -196,7 +197,7 @@ for(const complex of [false,true]) test('same configuration PR binds two entries
     const collect=workflow.jobs.build.steps.find(s=>s.name==='Collect verified product workflow archive');
     const producer=JSON.parse(Buffer.from(collect.env.PRODUCER,'base64url'));
     assert.equal(producer.nativeJobName,'route-linux');
-    assert.equal(producer.archive,'route-linux');
+    assert.equal(producer.archive,runNamed?'route-linux-${{ github.run_id }}':'route-linux');
     const args={api:actionsRead,repo,source:ref,producer,unit:'route',target:'hosted',directory:dir,
       selected:JSON.parse(collect.env.SELECTED_FILES),record:{sourceSha:ref,repositoryId:repo.id,units:[{id:'route',assets:[{id:'cli',name:'route-2.4.1.tar.gz'}]}]}};
     await assert.rejects(stageNativeProducer(args,archive),/Complete .*route-linux/);

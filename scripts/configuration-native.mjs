@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {Octokit} from '@octokit/rest';
 import {downloadArtifactArchive} from '../packages/runner/dist/index.js';
 import {authorized,fileText,requestPath} from './configuration-authorization.mjs';
-import {staticMatrixRows} from './configuration-build.mjs';
+import {matchesMatrixName,observedArchiveTemplate,runArchiveName,staticMatrixRows} from './configuration-build.mjs';
 import {channelUploadSteps,prepareTarget,trialKey} from './configuration-selection.mjs';
 
 export const must=(value,message)=>{if(!value) throw Error(message);};
@@ -109,8 +109,8 @@ export async function trialInventory(api,token,repo,base,head,target,recipe,arch
     name='trial-'+key+'-'+run.id+'-'+run.run_attempt;
   } else {
     must(run.path===target.workflow && run.head_sha===(target.sourceSha??head),'Existing build does not match the selected workflow and source');
-    must(!target.evidenceArchive || target.evidenceArchive===target.archive,'Selected archive changed; refresh product evidence');
-    name=target.archive;
+    name=runArchiveName(target.archive,run);
+    must(name && (!target.evidenceArchive || target.evidenceArchive===name),'Selected archive changed; refresh product evidence');
   }
   if(run.path!==trialPath && run.head_sha!==head) {
     const [a,b]=await Promise.all([head,run.head_sha].map(ref=>api.rest.repos.getCommit({...api.target,ref})));
@@ -131,16 +131,8 @@ export async function trialInventory(api,token,repo,base,head,target,recipe,arch
   return result.data;
 }
 
-function declaredName(pattern,value) {
-  if(typeof pattern!=='string' || typeof value!=='string')return false;
-  const parts=pattern.split(/\$\{\{\s*matrix\.[\w-]+\s*\}\}/);
-  if(parts.some(part=>part.includes('${{')))return false;
-  const literal=part=>part.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  return new RegExp('^'+parts.map(literal).join('.+')+'$','u').test(value);
-}
-
 function matchingJob(workflow,id,name) {
-  const jobs=Object.entries(workflow.document.jobs).filter(([key,job])=>job.name?declaredName(job.name,name):
+  const jobs=Object.entries(workflow.document.jobs).filter(([key,job])=>job.name?matchesMatrixName(job.name,name):
     key===name || job.strategy?.matrix && name.startsWith(key+' (') && name.endsWith(')'));
   return jobs.length===1 && jobs[0][0]===id;
 }
@@ -173,11 +165,13 @@ export async function dynamicBuildInputs(api,repo,head,base,model) {
             const steps=job.steps.filter(step=>step.name===uploadStep && step.conclusion==='success');
             if(steps.length!==1)continue;
             for(const a of artifacts) {
-              if(a.expired || !declaredName(s.with?.name??'artifact',a.name) || a.workflow_run?.head_sha!==revision
+              const archive=observedArchiveTemplate(s.with?.name??'artifact',a.name,run);
+              if(a.expired || archive===undefined || a.workflow_run?.head_sha!==revision
                 || a.workflow_run.id!==run.id || a.workflow_run.repository_id!==repo.id || a.workflow_run.head_repository_id!==repo.id)continue;
               if(!await archiveOwner(api,jobs,job,steps[0],a))continue;
-              const variant={workflow:workflow.path,job:id,nativeJobName:job.name,uploadStep,archive:a.name};
-              variants.set(JSON.stringify(variant),variant);
+              const variant={workflow:workflow.path,job:id,nativeJobName:job.name,uploadStep,archive};
+              const key=JSON.stringify(variant);
+              if(!variants.has(key))variants.set(key,variant.archive===a.name?variant:{...variant,observedArchive:a.name});
             }
           }
         }
@@ -232,9 +226,11 @@ export async function findEvidence(api,token,repo,base,head,target,model,callbac
       }
       if(target.nativeJobName && !matchingJob(sourceWorkflow,target.job,target.nativeJobName))continue;
       binding.sourceSha=run.head_sha;
-      binding.evidenceArchive=target.archive;
+      const archive=runArchiveName(target.archive,run);
+      if(!archive)continue;
+      binding.evidenceArchive=archive;
       const upload=(original.steps??[]).filter(s=>/^actions\/upload-artifact@[a-f0-9]{40}$/.test(s.uses??'') &&
-        (target.nativeJobName && target.uploadStep ? (s.name??'Run '+s.uses)===target.uploadStep && declaredName(s.with?.name??'artifact',target.archive) : substitute(s.with?.name??'artifact')===target.archive));
+        (target.nativeJobName && target.uploadStep ? (s.name??'Run '+s.uses)===target.uploadStep && observedArchiveTemplate(s.with?.name??'artifact',archive,run)===target.archive : runArchiveName(substitute(s.with?.name??'artifact'),run)===archive));
       const jobName=target.nativeJobName??(original.name?substitute(original.name):target.job+(Object.keys(target.matrix??{}).length?' ('+Object.values(target.matrix).join(', ')+')':''));
       if(upload.length!==1)continue;
       binding.nativeJobName=jobName;

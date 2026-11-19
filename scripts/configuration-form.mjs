@@ -1,7 +1,7 @@
 import {selectableProductCI} from './validation-input.mjs';
 import {createHash} from 'node:crypto';
 import {posix} from 'node:path';
-import {matrixValue,staticMatrixRows} from './configuration-build.mjs';
+import {matrixValue,staticMatrixRows,supportedArchiveName} from './configuration-build.mjs';
 import {channelWorkflowPath,effectiveChannels,renderConfiguration} from './configuration-view.mjs';
 const key=text=>createHash('sha256').update(text).digest('hex').slice(0,16);
 const display=text=>String(text??'').replace(/[\r\n<>`]/g,' ');
@@ -15,17 +15,21 @@ export function candidates(model,values) {
     for(const [job,spec] of Object.entries(workflow.document.jobs)) {
       const matrix=spec.strategy?.matrix;
       const rows=staticMatrixRows(matrix);
+      const uploads=(spec.steps??[]).filter(s=>s.uses?.startsWith('actions/upload-artifact@'));
+      for(const step of uploads.filter(s=>!supportedArchiveName(s.with?.name??'artifact')))
+        entries.push({locked:true,label:workflow.path+' · '+job+' · 归档名需要固定文本、矩阵字段或 GitHub 的 run_id、run_number、run_attempt。'});
+
       if(!rows) {
         const variants=(model.nativeVariants??[]).filter(v=>v.workflow===workflow.path && v.job===job);
-        for(const v of variants) entries.push({...v,id:'d'+key(JSON.stringify(v)),matrix:{},label:workflow.path+' · '+v.nativeJobName+' · '+v.archive});
+        for(const {observedArchive,...v} of variants) entries.push({...v,id:'d'+key(JSON.stringify(v)),matrix:{},label:workflow.path+' · '+v.nativeJobName+' · '+(observedArchive??v.archive)});
         if(!variants.length) entries.push({locked:true,label:workflow.path+' · '+job+' · 请先在当前源提交完成动态矩阵作业并上传可核验的归档。'});
         continue;
       }
       for(const row of rows) {
         const id='w'+key(workflow.path+' '+job+' '+JSON.stringify(row));
-        const uploads=(spec.steps??[]).filter(s=>s.uses?.startsWith('actions/upload-artifact@'));
         for(const [index,step] of (uploads.length?uploads:[null]).entries()) {
-          const declared=step?.with?.name??'';
+          const declared=step?(step.with?.name??'artifact'):'';
+          if(!supportedArchiveName(declared))continue;
           let archive=declared;
           try {archive=matrixValue(declared,row);} catch { /* An unresolved input remains editable for native evidence. */ }
           entries.push({id:id+'a'+index,workflow:workflow.path,job,matrix:row,archive,step,
@@ -109,7 +113,7 @@ export function configurationForm(model,head,state={}) {
     const evidence=state.evidence?.[id];
     if(evidence?.head===head) {
       lines.push('归档 · [查看原生运行]('+evidence.url+')');
-      if(evidence.binding?.nativeEvent) lines.push('正式构建在发行源提交重新核验 `'+display(evidence.binding.nativeEvent)+'` 运行（`'+display(evidence.binding.nativeRef)+'`）、`'+display(evidence.binding.nativeJobName)+'` 作业及 `'+display(evidence.binding.evidenceArchive)+'` 归档。');
+      if(evidence.binding?.nativeEvent) lines.push('正式构建使用发行源提交，重新核验 `'+display(evidence.binding.nativeEvent)+'` 运行（`'+display(evidence.binding.nativeRef)+'`）、`'+display(evidence.binding.nativeJobName)+'` 作业，并按该次运行确定归档名。本次验证的归档为 `'+display(evidence.binding.evidenceArchive)+'`。');
       for(const file of evidence.files) {
         const asset=id+'.f'+key(file.path);
         field(asset+'.use','`'+display(file.path)+'` · '+file.size+' B',false,'check');
