@@ -11,7 +11,7 @@ import {applyVerifiedCandidateEvent,CandidateEventCoordinator} from '../src/boun
 import {digest,TARGET,CENTRAL,type GitReader} from '../src/bounded-recheck-github.js';
 const sha=(c:string)=>c.repeat(40),key=(c:string)=>c.repeat(64),t0=Date.now()-60000;
 async function fixture(){
- const generated={baseSha:sha('a'),units:[{id:'layerscape',version:'1.0.0'}],files:[{path:'.release-notes/layerscape.md',mode:'100644',content:'Notes\n'}]},document:any={generated,pending:null,identity:{id:'existing',units:[{id:'layerscape',contributors:{contributors:[]}}]},conflict:null,preview:'# .release-notes/layerscape.md\n\nNotes\n'},session=JSON.stringify(document);
+ const generated={baseSha:sha('a'),units:[{id:'layerscape',path:'.',version:'1.0.0'}],files:[{path:'.release-notes/layerscape.md',mode:'100644',content:'Notes\n'}]},document:any={generated,pending:null,identity:{id:'existing',units:[{id:'layerscape',contributors:{contributors:[]}}]},conflict:null,preview:'# .release-notes/layerscape.md\n\nNotes\n'},session=JSON.stringify(document);
  const state={schemaVersion:3,repositoryId:TARGET.id,activeCycleId:null,candidate:{id:key('b'),pendingWrite:null,baseSha:sha('a'),publishedHead:sha('c'),generatedSnapshotPath:`generated/${key('b')}/${key('a')}.json`,statusCommentId:7,prNumber:192,branch:'steward/candidate'}};
  const path=`generated/${key('b')}/session.json`,files:any={'state.json':state,[path]:{schemaVersion:1,repositoryId:TARGET.id,candidateId:key('b'),documentKind:'session',index:0,count:1,documentDigest:digest(session).slice(7),content:session}};
  files[state.candidate.generatedSnapshotPath]={schemaVersion:1,repositoryId:TARGET.id,candidateId:key('b'),documentKind:'generated',index:0,count:1,documentDigest:digest(JSON.stringify(generated)).slice(7),content:JSON.stringify(generated)};
@@ -26,6 +26,19 @@ async function fixture(){
  return {g,env,registration,producer,artifact,run,pull,event,files,state,document};
 }
 describe('candidate producer evidence and event controls',()=>{
+ it.each(['ui','layerscape'])('reads a protected conflict for %s on a new path without returning a stale identity',async id=>{
+   const f=await fixture();
+   const chunk=f.files[`generated/${f.state.candidate.id}/session.json`];
+   const session=JSON.parse(chunk.content);
+   session.identity.units[0].id=id;
+   session.conflict={head:f.pull.head.sha,generated:{...session.generated,units:[{id,path:'ui',version:'2.0.0'}]},paths:['CHANGELOG.md']};
+   chunk.content=JSON.stringify(session);chunk.documentDigest=digest(chunk.content).slice(7);
+   const g={...f.g,target:{...TARGET,units:[{id,path:'ui'}]}};
+   expect((await candidateFacts(g,false,true)).identity).toBeNull();
+   await expect(candidateFacts(g)).rejects.toThrow('SESSION_NOT_READY');
+   expect((await candidateFacts(f.g,false,true)).identity).toBeNull();
+   await expect(candidateFacts(f.g)).rejects.toThrow('SESSION_NOT_READY');
+ });
  it('binds a fixed successful Run to independently read Git identity and native event',async()=>{const f=await fixture();expect((await verifiedProducer(f.g,f.env,f)).registration).toEqual(f.registration);});
  it.each(['epoch','cycleId','requestKey','attempt','target'] as const)('rejects borrowing successful Run for a different %s',async kind=>{const f=await fixture();const input=structuredClone({registration:f.registration,producer:f.producer});if(kind==='epoch'||kind==='cycleId')input.registration.identity[kind]='other';else if(kind==='target')input.registration.identity.repositoryId=1 as any;else input.producer[kind]=kind==='requestKey'?key('0'):1 as never;await expect(verifiedProducer(f.g,f.env,input)).rejects.toThrow();});
  it('rejects an artifact from an older producer attempt even when Run succeeded',async()=>{const f=await fixture();f.artifact.value.producer.attempt=1;await expect(verifiedProducer(f.g,f.env,f)).rejects.toThrow('PRODUCER_ATTEMPT');});
@@ -86,7 +99,7 @@ function refreshFixture(f:Awaited<ReturnType<typeof fixture>>){const text=JSON.s
 describe('generated candidate projection completion',()=>{
  it('recomputes exact note and escaped contributor preview with canonical newlines',()=>{const session={generated:{files:[{path:'.release-notes/alias.md',content:'Notes\r\n'}]},identity:{units:[{id:'layerscape',contributors:{contributors:[{profileUrl:'https://github.com/x',avatarUrl:'https://avatars.githubusercontent.com/u/1?v=4',alt:'x&y'}]}}]}};expect(generatedProjectionPreview(session)).toBe('# .release-notes/alias.md\n\nNotes\n## 贡献者\n\n<a href="https:&#x2F;&#x2F;github.com&#x2F;x"><img src="https:&#x2F;&#x2F;avatars.githubusercontent.com&#x2F;u&#x2F;1?v&#x3D;4" alt="x&amp;y" width="32" height="32" /></a> \n');});
  it.each(['short','long','wrong-repo','unrelated-commit','changed-blob','symlink','duplicate','forged-body','missing-proof','protected'] as const)('requires independent immutable projection evidence: %s',async scenario=>{
-  const f=await fixture();const long=['long','wrong-repo','unrelated-commit','changed-blob','symlink'].includes(scenario);if(long)f.document.generated.files[0].content='x'.repeat(50*1024);f.document.preview=generatedProjectionPreview(f.document);if(scenario==='protected')f.document.conflict={head:f.pull.head.sha};refreshFixture(f);
+  const f=await fixture();const long=['long','wrong-repo','unrelated-commit','changed-blob','symlink'].includes(scenario);if(long)f.document.generated.files[0].content='x'.repeat(50*1024);f.document.preview=generatedProjectionPreview(f.document);if(scenario==='protected')f.document.conflict={head:f.pull.head.sha,generated:f.document.generated,paths:['CHANGELOG.md']};refreshFixture(f);
   const facts=await candidateFacts(f.g),linkCommit=sha('3'),body=generatedStatusBody(facts,f.document.preview,linkCommit),comment={id:7,user:{id:301115370},issue_url:`https://api.github.com/repos/${TARGET.name}/issues/192`,body:scenario==='wrong-repo'?body.replace(TARGET.name,'other/repo'):scenario==='forged-body'?body+'x':body};
   const path=`generated/${f.state.candidate.id}/preview.md`,text=scenario==='changed-blob'?f.document.preview+'x':f.document.preview,bytes=Buffer.from(text),blobSha=createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
   const g:GitReader={async json(id,p,method,payload){if(p.includes('/comments?'))return scenario==='duplicate'?[comment,{...comment,id:8}]:[comment];if(p.includes('/compare/'))return {base_commit:{sha:linkCommit},merge_base_commit:{sha:scenario==='unrelated-commit'?sha('4'):linkCommit},status:'ahead'};if(p.includes('/git/trees/'+linkCommit))return {truncated:false,tree:[{path,type:'blob',mode:scenario==='symlink'?'120000':'100644',sha:blobSha}]};if(p.includes('/preview.md?'))return {path,type:'file',encoding:'base64',size:bytes.length,sha:blobSha,content:bytes.toString('base64')};return f.g.json(id,p,method,payload);},artifact:f.g.artifact};
