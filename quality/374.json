@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "repositoryId": 1296724484,
   "pullRequestNumber": 374,
-  "currentHead": "2d97402818b02f86496f04c13f34e5cb3448a04d",
+  "currentHead": "ec67dc96612b345ae0c9525194d43a83042c4ae6",
   "configVersion": "quality-native-comments-v1",
   "heads": {
     "9aa62372c98a6a78959cb4d04f2ae18791394bdb": {
@@ -160,6 +160,34 @@
       "checkId": 135919558271,
       "externalId": "splrad-quality:1296724484:374:2d97402818b02f86496f04c13f34e5cb3448a04d",
       "observedAt": "2026-11-19T22:09:31.765Z"
+    },
+    "ec67dc96612b345ae0c9525194d43a83042c4ae6": {
+      "sourceSetDigest": "bbc63e6f4087b981e862756c94345cc708f8caf4484ccf231d6b7b052930f593",
+      "sources": [
+        {
+          "sourceCommentId": "review-comment:4635420580",
+          "sourceCommit": "2177b09181120d4ad591b0a77387a2bbe85bf7e4",
+          "sourceUrl": "https://github.com/splrad/steward/pull/374#discussion_r4635420580",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Unused loop iteration variable\n\nFor loop variable step is not used in the loop body.\n\n---\n\nGeneral fix: when a loop iteration variable is unused, replace the loop with logic that either (a) uses the variable meaningfully, or (b) avoids iterating per element if only existence/count matters.</p>\n<p>Best fix here (without changing intended behavior message text): compute invalid upload steps once, then push the warning that many times using a counted loop index. This removes the unused <code>step</code> variable and keeps the same number of warning entries as before.</p>\n<p>Change region in <code>scripts/configuration-form.mjs</code>:</p>\n<ul>\n<li>Replace lines around the current invalid-upload loop (line 19–20 area) with:\n<ul>\n<li><code>const invalidUploads = uploads.filter(...)</code></li>\n<li><code>for (let i = 0; i &lt; invalidUploads.length; i++) entries.push(...)</code></li>\n</ul>\n</li>\n</ul>\n<p>No new imports/dependencies/methods are required.",
+          "updatedAt": "2026-11-19T21:35:04Z"
+        },
+        {
+          "sourceCommentId": "review-comment:4635420591",
+          "sourceCommit": "2177b09181120d4ad591b0a77387a2bbe85bf7e4",
+          "sourceUrl": "https://github.com/splrad/steward/pull/374#discussion_r4635420591",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Unused variable, import, function or class\n\n<p>Unused variable step.</p>",
+          "updatedAt": "2026-11-19T21:35:04Z"
+        }
+      ],
+      "keys": [
+        "27c0c8550137d2eabb111afadba3e46b789fd470a82c98b265e60eb68bb7bf00",
+        "c7fd2b3b24654bb5434cbdeed56b09ad7e9b1a2cc8be20da8029e4283f8e89e5"
+      ],
+      "checkId": null,
+      "externalId": "splrad-quality:1296724484:374:ec67dc96612b345ae0c9525194d43a83042c4ae6",
+      "observedAt": "2026-11-19T22:23:47.658Z"
     }
   },
   "entries": {
