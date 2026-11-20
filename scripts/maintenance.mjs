@@ -3,7 +3,7 @@ import {join,resolve,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import YAML from 'yaml';
-import {NativeEvidenceReader,jobFact,originalJobExecutions,maintenanceWorkflows,maintenanceJobKeys,maintenanceDisposition,maintenanceFailed,decodeMaintenanceRecord,assertMaintenanceProgress} from '../packages/runner/dist/index.js';
+import {NativeEvidenceReader,jobFact,originalJobExecutions,activeMaintenanceWorkflows,maintenanceJobKeys,maintenanceDisposition,maintenanceFailed,decodeMaintenanceRecord,assertMaintenanceProgress} from '../packages/runner/dist/index.js';
 import {writeReleaseRecords} from './release-record.mjs';
 
 const repository='splrad/steward',repositoryId=1296724484;
@@ -18,7 +18,7 @@ const identity=r=>[r.id,r.workflow_id,r.repository?.id,r.head_repository?.id,r.p
 const observation=r=>[...identity(r),r.run_attempt,r.status,r.conclusion,r.updated_at];
 
 export async function maintenanceDefinition(file) {
-  check(maintenanceWorkflows.includes(file)&&file!=='settings-sync.yml','WORKFLOW');
+  check(activeMaintenanceWorkflows.includes(file),'WORKFLOW');
   const parsed=YAML.parseDocument(await readFile(join(policyRoot,'.github/workflows',file),'utf8'));
   check(!parsed.errors.length,'DEFINITION');const d=parsed.toJS({maxAliasCount:100}),keys=maintenanceJobKeys(file);
   const currentKeys=keys.filter(key=>key!=='automation-health'||Object.hasOwn(d.jobs,key));
@@ -28,18 +28,22 @@ export async function maintenanceDefinition(file) {
     const j=d.jobs[key];
     if(!j&&key==='automation-health'){names[key]=key;continue;}
     const name=j.name??key;
-    check(typeof name==='string'&&(key==='update'?name==='update (${{ strategy.job-index }})':!name.includes('${{')),'DEFINITION_NAME');
+    check(typeof name==='string'&&!name.includes('${{'),'DEFINITION_NAME');
     names[key]=name;
     // A failed health job must never drag successful business jobs into a rerun.
     const needs=Array.isArray(j.needs)?j.needs:j.needs?[j.needs]:[];
     check(key==='automation-health'?needs.length===0:!needs.includes('automation-health'),'HEALTH_DEPENDENCY');
   }
-  return {file,names,events:Object.keys(d.on)};
+  // Runs created before retirement still occur in the maintenance lookback and saved records.
+  const events = Object.keys(d.on);
+  if (file === 'sync-managed.yml') events.push('push', 'schedule');
+  return {file,names,events};
 }
 function source(run,workflow,definition,branch) {
   check(positive(run.id)&&positive(run.run_attempt)&&run.repository?.id===repositoryId&&run.head_repository?.id===repositoryId
     &&run.workflow_id===workflow.id&&run.path===workflow.path&&run.head_branch===branch&&sha(run.head_sha)
-    &&definition.events.includes(run.event)&&['push','schedule','workflow_dispatch','workflow_run'].includes(run.event),'RUN_SOURCE');
+    &&definition.events.includes(run.event)&&(['push','schedule','workflow_dispatch','workflow_run'].includes(run.event)
+      ||definition.file==='sync-managed.yml'&&run.event==='repository_dispatch'),'RUN_SOURCE');
   utc(run.created_at);utc(run.updated_at);
 }
 function jobsProjection(raw,run,definition) {
@@ -50,16 +54,9 @@ function jobsProjection(raw,run,definition) {
   return raw.filter(j=>originals.has(j.id)).map(j=>{
     check(positive(j.id)&&j.run_id===run.id&&j.head_sha===run.head_sha&&positive(j.run_attempt)&&j.run_attempt<=run.run_attempt
       &&j.status==='completed'&&Array.isArray(j.steps),'JOB_SOURCE');
-    let key=Object.keys(definition.names).find(k=>definition.names[k]===j.name),matrixIndex=null;
-    if(definition.file==='update-dependencies.yml'&&typeof j.name==='string') {
-      const match=/^update \((0|[1-9][0-9]*)\)$/.exec(j.name);
-      if(match){key='update';matrixIndex=Number(match[1]);}
-      if(j.name==='update'&&j.conclusion==='skipped')key='update';
-    }
+    const key=Object.keys(definition.names).find(k=>definition.names[k]===j.name);
     check(key,'UNREGISTERED_JOB');
-    const marker=name=>{const values=j.steps.filter(s=>s.name===name);check(values.length<=1,'MARKER_DUPLICATE');return values[0]?.conclusion??null;};
-    return {id:j.id,key,matrixIndex,attempt:j.run_attempt,conclusion:j.conclusion,
-      empty:key==='targets'?marker('update-targets-empty'):null,found:key==='targets'?marker('update-targets-found'):null};
+    return {id:j.id,key,matrixIndex:null,attempt:j.run_attempt,conclusion:j.conclusion,empty:null,found:null};
   }).sort((a,b)=>a.attempt-b.attempt||a.id-b.id);
 }
 
@@ -78,8 +75,15 @@ export async function maintenanceRunWindow(reader,workflowId,branch,start,end) {
   return runs;
 }
 
-export async function recoverMaintenanceRun({reader,io,workflow,definition,branch,runId,store,coordinator,now=Date.now}) {
+export async function recoverMaintenanceRun({reader,io,workflow,definition,branch,runId,store,coordinator,expectedRun,beforePost,wait=ms=>new Promise(resolve=>setTimeout(resolve,ms)),now=Date.now}) {
+  check(activeMaintenanceWorkflows.includes(definition.file),'WORKFLOW');
   const run=await reader.json(`actions/runs/${runId}`);source(run,workflow,definition,branch);check(run.id===runId,'RUN_ID');
+  if(expectedRun) {
+    check(same(identity(run),identity(expectedRun)),'EVENT_IDENTITY');
+    if(run.run_attempt>expectedRun.run_attempt)return {status:'SUPERSEDED'};
+    check(run.run_attempt===expectedRun.run_attempt,'EVENT_ATTEMPT');
+    if(run.status==='completed')check(run.conclusion===expectedRun.conclusion,'EVENT_CONCLUSION');
+  }
   if(run.status!=='completed')return {status:'WAIT'};
   const jobs=jobsProjection(await reader.pages(`actions/runs/${runId}/jobs?filter=all`,'jobs'),run,definition);
   const after=await reader.json(`actions/runs/${runId}`);source(after,workflow,definition,branch);
@@ -93,35 +97,48 @@ export async function recoverMaintenanceRun({reader,io,workflow,definition,branc
   // A health-only failure neither creates a maintenance failure record nor consumes a recovery request.
   if(disposition==='SATISFIED'&&!prior)return {status:'SATISFIED'};
   if(!prior&&disposition==='UNKNOWN')return {status:'UNKNOWN'};
-  await store.save(record,prior);
+  const unchanged=expectedRun&&prior&&same({...prior,observedAt:record.observedAt},record);
+  if(!unchanged)await store.save(record,prior);
   if(disposition!=='FAILED')return {status:disposition};
   if(now()-Date.parse(record.createdAt)>30*24*60*60_000)return {status:'EXPIRED'};
   // An accepted response waits for native visibility. An unknown/rejected send can be reconciled once
   // by a later serialized coordinator wake, using fresh complete facts and the second reserved slot.
   if(record.requests.some(r=>r.fromAttempt===run.run_attempt&&(r.responseStatus===201
-    ||r.coordinatorRunId===coordinator.runId&&r.coordinatorRunAttempt===coordinator.runAttempt)))return {status:'UNKNOWN'};
+    ||r.coordinatorRunId===coordinator.runId&&r.coordinatorRunAttempt===coordinator.runAttempt
+    ||expectedRun&&r.coordinatorRunId!==coordinator.runId)))return {status:'UNKNOWN'};
   if(!maintenanceFailed(run.conclusion))return {status:'UNKNOWN'};
+  // A native failed-jobs rerun executes the original workflow revision.
+  const retiredJob = record.jobs.findLast(job => job.key === 'automation-health');
+  if (retiredJob && !['success', 'skipped'].includes(retiredJob.conclusion)) return {status:'UNKNOWN'};
+  if(beforePost)await beforePost();
   const claim=structuredClone(record);
   claim.requests.push({fromAttempt:run.run_attempt,requestedAt:new Date(now()).toISOString(),coordinatorRunId:coordinator.runId,coordinatorRunAttempt:coordinator.runAttempt,responseStatus:null});
   claim.observedAt=claim.requests.at(-1).requestedAt;
-  await store.save(claim,record);
+  await store.save(claim,unchanged?prior:record);
   // Persisted intent ownership and exact native source must both still agree before the only POST.
   check(same(await store.load(runId),claim),'CLAIM_CHANGED');
   const active=await reader.json(`actions/workflows/${workflow.id}`);
   if(active.id!==workflow.id||active.path!==workflow.path||active.state!=='active')return {status:'WAIT'};
   const fresh=await reader.json(`actions/runs/${runId}`);source(fresh,workflow,definition,branch);
   if(!same(observation(fresh),observation(run)))return {status:'WAIT'};
+  if(beforePost)await beforePost();
   let response;
   try{response=await io.request('POST',reader.path(`actions/runs/${runId}/rerun-failed-jobs`));}catch{}
   const responseRecord=structuredClone(claim);responseRecord.requests.at(-1).responseStatus=response?.status??null;responseRecord.observedAt=new Date(now()).toISOString();
   await store.save(responseRecord,claim);
-  const observed=await reader.json(`actions/runs/${runId}`);source(observed,workflow,definition,branch);
-  check(same(identity(observed),identity(run))&&observed.run_attempt>=run.run_attempt,'RERUN_SOURCE');
-  return {status:observed.run_attempt>run.run_attempt?'ACCEPTED':'UNKNOWN'};
+  // GitHub may acknowledge a rerun before the next attempt becomes visible.
+  const delays=expectedRun&&response?.status===201?[0,2000,4000,8000]:[0];
+  for(const delay of delays) {
+    if(delay)await wait(delay);
+    const observed=await reader.json(`actions/runs/${runId}`);source(observed,workflow,definition,branch);
+    check(same(identity(observed),identity(run))&&observed.run_attempt>=run.run_attempt,'RERUN_SOURCE');
+    if(observed.run_attempt>run.run_attempt)return {status:'ACCEPTED'};
+  }
+  return {status:'UNKNOWN'};
 }
 
 /** The store writes exactly one central maintenance path through the existing fast-forward connection. */
-export function maintenanceGitStore({refresh,writeDirectory,defaultBranch,token,identity},write=writeReleaseRecords) {
+export function maintenanceGitStore({refresh,writeDirectory,defaultBranch,token,identity,beforePush},write=writeReleaseRecords) {
   const current=async()=>{const state=await refresh();check(state.snapshot.repositoryId===repositoryId&&state.snapshot.targetRef==='steward/release-state','STATE_SCOPE');return state;};
   const find=(state,id)=>state.snapshot.domainRecords.find(r=>r.path===`maintenance/${id}.json`)??null;
   return {
@@ -136,7 +153,7 @@ export function maintenanceGitStore({refresh,writeDirectory,defaultBranch,token,
       const previousSha256=state.snapshot.currentPaths.includes(path)?hash(await state.readBytes(path)):null;
       const directory=join(writeDirectory,hash(JSON.stringify([state.snapshot.head,path,content])));await mkdir(writeDirectory,{recursive:true});
       const result=await write({directory,remote:state.remote,repositoryId,defaultBranch,targetRef:'steward/release-state',writer:'maintenance',
-        expectedHead:state.snapshot.head,allowedPaths:[path],changes:[{path,content,sha256:hash(content),previousSha256}],identity},{token});
+        expectedHead:state.snapshot.head,allowedPaths:[path],changes:[{path,content,sha256:hash(content),previousSha256}],identity},{token,beforePush});
       check(['APPLIED','UNCHANGED'].includes(result.status),'ARCHIVE_UNCONFIRMED');
       const readback=await current();check(readback.snapshot.currentPaths.includes(path)&&find(readback,value.runId)?.content===content,'ARCHIVE_READBACK');
     }
@@ -155,7 +172,7 @@ export async function serviceMaintenance({io,store,defaultBranch,coordinator},no
     &&origin.head_branch===defaultBranch&&origin.head_sha===coordinator.controllerSha&&origin.path==='.github/workflows/release.yml'
     &&['schedule','workflow_dispatch'].includes(origin.event),'COORDINATOR');
   const known=await store.list(),start=Math.floor(started/1000)-30*24*3600,end=Math.floor(started/1000),candidates=[];
-  for(const file of maintenanceWorkflows.filter(file=>file!=='settings-sync.yml')) {
+  for(const file of activeMaintenanceWorkflows) {
     try {
       const definition=await maintenanceDefinition(file),workflow=await reader.json(`actions/workflows/${file}`);
       check(positive(workflow.id)&&workflow.path===`.github/workflows/${file}`,'WORKFLOW_ID');

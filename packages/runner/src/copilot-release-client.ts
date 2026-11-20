@@ -28,7 +28,7 @@ export function copilotReleaseClient(controllerDirectory: string, token: string)
       const result = await invoke('preflight', '');
       if (!['READY', 'WAIT_AUTH', 'WAIT_QUOTA'].includes(result.status)) throw new Error('RESPONSE_UNKNOWN'); return result.status;
     },
-    async call(input: string): Promise<{ text: string; model: string; usage: { inputTokens: number; outputTokens: number } | null }> {
+    async call(input: string): Promise<{ text: string; model: string; usage: object | null }> {
       const result = await invoke('generate', input);
       if (result.status === 'WAIT_AUTH' || result.status === 'WAIT_QUOTA') throw Object.assign(new Error(result.status), { retryAfterMs: result.retryAfterMs });
       if (result.status !== 'RETURNED' || typeof result.text !== 'string' || typeof result.model !== 'string') throw new Error('RESPONSE_UNKNOWN');

@@ -59,3 +59,23 @@ it.each([false,true])('uses the exact native GraphQL UPDATE parameter when REST 
 it.each(['main','steward/governance-state','steward/build/../main'])('rejects unrelated or malformed protection target: %s',async branch=>{
  await expect(assertReleaseWriterProtection(repository,branch,fixture().io)).rejects.toThrow('writer protection target');
 });
+
+it.each(['valid','moved-id','missing','different-writer','integrity-bypass','fetch-merge'])('binds central maintenance to the current effective rules and full protected details: %s',async mode=>{
+  const actor={actor_type:'Integration',actor_id:4243096,bypass_mode:'always'};
+  const rules=[
+    {id:26678450,enforcement:'active',target:'branch',bypass_actors:[{...actor,actor_id:mode==='different-writer'?7:actor.actor_id}],
+      rules:[{type:'creation'},{type:'update',parameters:{update_allows_fetch_and_merge:mode==='fetch-merge'}}]},
+    {id:26678449,enforcement:'active',target:'branch',bypass_actors:mode==='integrity-bypass'?[actor]:[],rules:[{type:'deletion'},{type:'non_fast_forward'}]},
+  ];
+  const effective=rules.flatMap(r=>r.rules.map(({type})=>({type,ruleset_id:mode==='moved-id'?1:r.id,ruleset_source_type:'Organization'})));
+  const io={request:async(method:string,path:string)=>{
+    expect(method).toBe('GET');expect(path).toBe('/repos/splrad/steward/rules/branches/steward%2Frelease-state?per_page=100&page=1');
+    return {status:200,bytes:Buffer.from(JSON.stringify(effective))};
+  }};
+  let reads=0;
+  const run=()=>assertReleaseWriterProtection('splrad/steward','steward/release-state',io,
+    {readCentralMaintenanceRules:async()=>{reads++;return mode==='missing'?[]:rules;}});
+  if(mode==='valid'){await run();await run();expect(reads).toBe(2);}
+  else await expect(run()).rejects.toThrow('RELEASE_RECORD');
+  if(mode==='moved-id')expect(reads).toBe(0);
+});

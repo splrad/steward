@@ -1,18 +1,19 @@
 import {test} from 'node:test';
+import YAML from 'yaml';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {NativeEvidenceReader,sealProductArtifacts} from '../../packages/runner/dist/index.js';
-import {desiredPagesSource,selectPagesSource,admitPagesEvent,pagesInputDigest,pagesDispatchInputs,pagesRunName,verifyPagesRelease} from '../select-pages-source.mjs';
+import {desiredPagesSource,selectPagesSource,selectWorkflowPagesSource,admitPagesEvent,pagesInputDigest,pagesDispatchInputs,pagesRunName,verifyPagesRelease} from '../select-pages-source.mjs';
 import {currentPagesSource} from '../pages-runtime.mjs';
 
 const S='a'.repeat(40),R='b'.repeat(40),P='c'.repeat(40),hash=b=>createHash('sha256').update(b).digest('hex');
 async function fixture(t) {
   const root=await mkdtemp(join(tmpdir(),'pages-source-test-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const state={head:R,corrupt:false,ref:S,changed:false,workflowAtSource:true};
-  const repo={id:10,full_name:'fixture/product',default_branch:'trunk',archived:false,disabled:false,private:false};
+  const repo={id:10,full_name:'fixture/product',default_branch:'trunk',archived:false,disabled:false,has_pages:true,private:false};
   const delivery=Buffer.from(JSON.stringify({schemaVersion:1,repositoryAuthors:[{id:7,evidence:'fixture author'}],units:[{id:'app',path:'.',notesPath:'.release-notes/app.md',
     assets:[{id:'app',name:'app.bin',mediaType:'application/octet-stream'}],channels:[]}]}));
   const base={schemaVersion:3,repositoryId:10,fullName:repo.full_name,cycleId:'pr-2-'+S,requestKey:'e'.repeat(64),unitId:'app',version:'1.2.3',
@@ -102,6 +103,39 @@ test('wired release mode uses the workflow pin at S even when main and coordinat
   assert.equal(result.source.sourceSha,S);assert.equal(result.source.ref,'refs/tags/v1.2.3');assert.notEqual(result.source.controllerSha,P);
   assert.equal(admitPagesEvent(result.source,{...f.event,name:'workflow_dispatch',payload:{inputs:pagesDispatchInputs(result.source)}}).status,'READY');
   assert.ok(f.calls.some(c=>c[0]==='gh'&&c[1]==='attestation'));
+});
+test('the workflow builds the reviewed source with Pages disabled and refuses a different dispatch mode',async t=>{
+  const f=await fixture(t);
+  f.repo.has_pages=false;
+  f.release.author.id=301115370;
+  const seed=await readFile(new URL('../../templates/release/pages.yml',import.meta.url),'utf8');
+  const workflow=YAML.parse(seed);
+  // These are the repository-owned fields written by the configuration PR.
+  workflow.env.STEWARD_DOCS_UNIT='app';
+  const ports={...f.ports,readContent:(reader,path,ref)=>path==='.github/workflows/pages.yml'
+    ?Buffer.from(YAML.stringify(workflow)):f.ports.readContent(reader,path,ref)};
+  const select=(event,buildOnly)=>selectWorkflowPagesSource(f.options.reader,{
+    ...workflow.env,STEWARD_PAGES_BUILD_ONLY:String(buildOnly),GITHUB_REPOSITORY_ID:String(f.repo.id),
+    GITHUB_EVENT_NAME:event.name,GITHUB_SHA:event.sha,GITHUB_REF:event.ref
+  },event.payload,ports);
+  const push={...f.event,name:'push',sha:R,ref:'refs/heads/trunk',payload:{after:R}};
+  for(const mode of ['default-branch','release']){
+    workflow.env.STEWARD_DOCS_SOURCE=mode;
+    const event=mode==='release'?f.event:push;
+    assert.equal((await select(event,false)).status,'DISABLED');
+    const result=await select(event,true);
+    assert.equal(result.status,'READY');
+    assert.equal(result.source.sourceSha,mode==='release'?S:R);
+    assert.equal(result.source.unitId,mode==='release'?'app':null);
+    assert.equal((await select(mode==='release'?push:f.event,true)).status,'STALE');
+    const inputs=pagesDispatchInputs(result.source);
+    assert.equal((await select({...event,name:'workflow_dispatch',payload:{inputs}},true)).status,'READY');
+    inputs.source_mode=mode==='release'?'default-branch':'release';
+    assert.equal((await select({...event,name:'workflow_dispatch',payload:{inputs}},true)).status,'STALE');
+  }
+  assert.ok(f.calls.some(call=>call[0]==='gh'&&call[1]==='attestation'));
+  f.state.corrupt=true;
+  await assert.rejects(select(f.event,true),/RELEASE_ARTIFACTS|GH_RELEASE/);
 });
 test('release selection uses published_at then native ID, never list order or main head',async t=>{
   const f=await fixture(t);f.releases.unshift({...f.release,id:19});f.releases.push({...f.release,id:21});

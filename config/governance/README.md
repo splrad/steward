@@ -4,7 +4,9 @@
 
 输入包含基础组织 Ruleset `base`（ID `18883080`）、例外团队 `team`、完整成员列表 `members`、独立治理 App `governanceApp` 及其组织安装 `installation`、成功的 `SPLRAD Validation` 检查 `validationCheck`、已审提交 `policySha`。团队和治理 App 的 ID 必须来自实际对象；测试中的 ID 只用于夹具。`legacyCandidates` 可列出已发现的旧候选分支，每项提供准确 `repositoryId` 和 `branch`。
 
-输出分为基础规则、独立审批规则、五条运行时规则及按仓库限定的旧候选分支规则。基础规则保留无关限制、既有检查和其他 required workflow，清空旧批准者要求；独立规则仅给单成员团队 `primary-account-approval-exception` 提供 PR 范围的批准例外。运行时规则分别为 `steward-state-writer`、`steward-governance-writer`、`steward-ref-creator`、`steward-ref-integrity` 和 `steward-build-immutable`，按相同的规则参数和允许身份合并分支范围。状态及治理写入者分别授权；候选分支允许正常快进，构建分支创建后保持不可变。
+输出分为基础规则、独立审批规则、五条运行时规则及按仓库限定的旧候选分支规则。基础规则保留无关限制、既有检查和其他 required workflow，清空旧批准者要求。独立规则 `SPLRAD 拉取请求审批` 仅给单成员团队 `stewardship` 提供 PR 范围的批准例外。
+
+五条运行时规则的显示名称为 `Steward 运行状态写入限制`、`Steward 治理状态写入限制`、`Steward 自动化分支创建限制`、`Steward 自动化分支完整性保护` 和 `Steward 构建分支不可变`。按相同的规则参数和允许身份合并分支范围。状态及治理写入者分别授权，候选分支允许正常快进，构建分支创建后保持不可变。
 
 `assertApprovalUnion` 校验完整有效 Ruleset 集合及旧 branch protection，识别会抵消例外的附加批准要求。调用者须先通过原生接口枚举全部适用规则；只有确认旧保护不存在的 404 才能传入 `null`，权限或网络错误必须保留为失败。该函数检查配置，真实合并操作者、失败检查、未解决线程和未归属变更的效果另以原生 PR 验证。
 
@@ -20,13 +22,9 @@ Actions 事件策略通过 GitHub 设置页或官方 REST 在采用阶段配置�
 
 写响应未知时先 GET 准确策略，保留无关字段及后来修改，再决定后续操作。真实验收包含标题 edited/fork、其他路径拒绝，以及维护、发布和恢复所需事件；本地请求测试不替代原生事件验收。接口参见 [GitHub Actions policies](https://docs.github.com/en/rest/actions/policies)。
 
-## 已知 Release 暂停的健康观察
+## 中央 Release 暂停
 
-`release.yml` 和 `sync-managed.yml` 仍独立读取两个固定入口。默认情况下，人工停用继续记录 `WORKFLOW_DISABLED` 并使健康 job 失败；不会 enable 或 dispatch 人工停用的入口。
-
-仅当维护决定已批准暂停中央 Release（原生 workflow ID `311600220`），才将中央仓库变量 `STEWARD_EXPECTED_PAUSED_RELEASE` 设置为 `311600220`。准确路径、ID 和实际 `disabled_manually` 状态同时匹配时，记录 `release.yml:WORKFLOW_PAUSED`。此状态在既有健康 Issue 中变化时通知一次，并保留在运行摘要；它不使健康 job 失败，也不代表发行或产品验收通过。变量为空、ID 不符、其他工作流停用、未知状态及 API/通知故障仍失败。原生状态恢复为 active 时照常检查最近运行，变量不能屏蔽失活或漏唤醒。结束维护时应清除该变量；Release 的启用需对应的发行授权。
-
-采用此行为、设置变量和实际通知需在同一部署决定中明确；代码合入本身不设置变量。
+有界发行及 Pages 事件入口检查中央仓库变量 `STEWARD_EXPECTED_PAUSED_RELEASE` 与旧 Release 工作流的原生状态。暂停期间保留值 `311600220` 和 `disabled_manually` 状态。
 
 ## 私有仓 Copier 准入
 
@@ -36,12 +34,10 @@ Actions 事件策略通过 GitHub 设置页或官方 REST 在采用阶段配置�
 
 准确登记保留在私有目标仓的原生变量中，不向中央公开配置添加仓名或编号。变量设置和 App 安装范围须在采用决定中明确；没有登记时继续使用原检查路径，错误 ID 或公共仓登记立即失败。该变量不能让产品代码绕过依赖检查：封闭输入范围会拒绝这类仓库。
 
-## 事件递送与独立健康入口
+## 模板事件递送
 
-模板业务只接受三类唤醒：Governance Promotion 实际发布新模板 tag 后发送的固定治理 App 事件、已验证仓库事件后的同类通知，以及明确的人工恢复。事件不携带目标仓、源码 SHA、私有路径或命令；消费者重新枚举自身安装范围并选择受信版本。普通 push、没有新 tag 的 Promotion 及每小时健康 schedule 不执行 bootstrap 或模板写入。模板源码变更经 Native Validation 和既有 Promotion 采用后递送。
+模板业务只接受三类唤醒：Governance Promotion 实际发布新模板 tag 后发送的固定治理 App 事件、已验证仓库事件后的同类通知，以及明确的人工恢复。事件不携带目标仓、源码 SHA、私有路径或命令；消费者重新枚举自身安装范围并选择受信版本。模板源码变更经 Native Validation 和既有 Promotion 采用后递送。
 
 私有设置入口可在成功处理已验证的仓库事件后，以现有治理 App 的中央单仓 contents/metadata token 发送上述固定通知；它不传递原始事件元数据，标签事件不触发模板通知。对应 `STEWARD_TEMPLATE_EVENTS` 和中央 `STEWARD_TEMPLATE_APPLY` 均须按采用决定启用。设置同步自身的事件功能保持原样。
-
-每小时 schedule 仍只负责独立健康观察。健康补唤醒 Sync Managed 时显式使用 `health_only=true`，不会绕过事件限制形成周期模板写入；手动恢复才使用默认的业务入口。丢失事件保持原生失败记录，按明确的原生手动恢复处理，不新增轮询或自动重试框架。
 
 `STEWARD_TEMPLATE_APPLY` 只启用文件 App 当前 selected 安装范围内的递送。空仓首提交另由 `STEWARD_BOOTSTRAP_APPLY` 控制，默认不启用；其治理 App 为 all 安装，因此启用该开关涉及当前和未来安装空仓，必须另有明确范围授权。本批已有非空仓接入不需要开启它。`bootstrap_only` 仍只能使用既有私有精确验收对象控制。

@@ -11,8 +11,8 @@ import { S, C, START, END, digest } from './native-evidence-fixture.js';
 import { permitOfflineScript } from './offline-fixtures.js';
 const roots:string[]=[];
 afterEach(async()=>{vi.restoreAllMocks();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
-it.each(['freeze','python-freeze','incomplete-run','failed-run','unbound-run','undispatched','foreign-run','foreign-source','formal-after-expiry','private-formal','partial-draft','corrupt-formal','missing-public-asset'])('prepares publication from exact native objects: %s',async kind=>{
-  const f=productPipelineFixture();
+it.each(['freeze','historical-formal','python-freeze','incomplete-run','failed-run','unbound-run','undispatched','foreign-run','foreign-source','formal-after-expiry','private-formal','partial-draft','corrupt-formal','missing-public-asset'])('prepares publication from exact native objects: %s',async kind=>{
+  const f=productPipelineFixture(1,false,kind==='python-freeze'?'requirements-build.txt':'global.json');
   if(kind==='python-freeze') {
     permitOfflineScript(resolve('scripts/inspect-python-release.py'));
     f.input.controllerDirectory=process.cwd();delete f.source.VERSION;delete f.source['global.json'];
@@ -23,6 +23,18 @@ it.each(['freeze','python-freeze','incomplete-run','failed-run','unbound-run','u
   const admitted=await pipelineIdentity(f.input,f.environment,f.gh,f.io);
   if(admitted.status!=='ADMITTED')throw Error('fixture admission');
   const record=admitted.record,root=await mkdtemp(join(tmpdir(),'publish-connection-'));roots.push(root);
+  if (kind === 'historical-formal') {
+    const legacy = JSON.parse(f.source['.github/delivery.json']!);
+    legacy.schemaVersion = 1;
+    delete legacy.units[0].buildLocks;
+    delete legacy.units[0].assets[0].inspection;
+    legacy.units[0].channels = [];
+    const bytes = Buffer.from(JSON.stringify(legacy));
+    f.source['.github/delivery.json'] = bytes.toString();
+    f.context.cycle.deliveryConfigSha = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+    record.deliverySha256 = digest(bytes);
+    await expect(pipelineIdentity(f.input, f.environment, f.gh, f.io)).rejects.toThrow('missing product inspection or build locks');
+  }
   const original=join(root,'original');await mkdir(original);
   await writeFile(join(original,'app-1.0.0.exe'),'frozen binary');
   await writeFile(join(original,'sbom.spdx.json'),JSON.stringify({spdxVersion:'SPDX-2.3',SPDXID:'SPDXRef-DOCUMENT',packages:[]}));
@@ -32,7 +44,7 @@ it.each(['freeze','python-freeze','incomplete-run','failed-run','unbound-run','u
     deliverySha256:record.deliverySha256,templateSha256:record.templateSha256,runId:100,attempt:1,toolLocks:record.toolLocks,
     producers:[{buildId:'windows-x64',jobId:1000,attempt:1,artifactId:701}],artifacts:[{id:'app',mediaType:'application/octet-stream',...await fileDigest(original,'app-1.0.0.exe')}],evidence:[]};
   await sealProductArtifacts(original,manifest);
-  const names=await readdir(original),unit=f.context.cycle.units[0]!,bound=['formal-after-expiry','private-formal','partial-draft','corrupt-formal','missing-public-asset'].includes(kind);
+  const names=await readdir(original),unit=f.context.cycle.units[0]!,bound=['historical-formal','formal-after-expiry','private-formal','partial-draft','corrupt-formal','missing-public-asset'].includes(kind);
   if(bound){unit.releaseId=20;unit.manifestDigest=(await fileDigest(original,'artifact-manifest.json')).sha256;}
   if(kind==='foreign-source')unit.manifestDigest='f'.repeat(64);
   Object.assign(f.runs.get(1),{status:kind==='incomplete-run'?'in_progress':'completed',conclusion:kind==='incomplete-run'?null:kind==='failed-run'?'failure':'success'});

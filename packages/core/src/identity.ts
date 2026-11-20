@@ -17,9 +17,11 @@ export interface Contributor {
 
 const loginPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
 
-export function isBotActor(actor: Pick<GitHubActor, 'login' | 'type'>): boolean {
+export function isBotActor(actor: Pick<GitHubActor, 'login' | 'type'> & Partial<Pick<GitHubActor, 'id'>>): boolean {
   const login = actor.login.trim().toLowerCase();
-  return actor.type.toLowerCase() === 'bot'
+  // GitHub's web-flow service committer has native type User; its numeric identity is stable.
+  return actor.id === 19864447
+    || actor.type.toLowerCase() === 'bot'
     || login.endsWith('[bot]')
     || login === 'github-actions'
     || login === 'dependabot';

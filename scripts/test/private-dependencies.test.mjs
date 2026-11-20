@@ -1,5 +1,6 @@
 import {parseAcceptanceTarget} from '../bootstrap-acceptance.mjs';
 import {replaceScanOutput} from '../private-scan-output.mjs';
+import {assertActionInputs,reusableActions,verifyReusableLock} from '../private-reusable-actions.mjs';
 import {effectiveLock} from '../private-lock-exception.mjs';
 import {createHash} from 'node:crypto';
 import {test} from 'node:test';
@@ -14,6 +15,82 @@ import {tmpdir} from 'node:os';
 const SHA='a'.repeat(40),OTHER='b'.repeat(40),policy=await loadPolicy();
 const lock={lockfileVersion:3,packages:{'':{name:'fixture'},'node_modules/demo':{version:'1.0.0',resolved:'https://registry.npmjs.org/demo/-/demo-1.0.0.tgz',dev:true}}};
 const packageResult={package:{name:'demo',version:'1.0.0',ecosystem:'npm'}};
+
+const reusableUse='splrad/steward/.github/workflows/product-release.yml@'+SHA;
+const reusablePath='.github/workflows/product-release.yml',actionLockPath='.github/workflows/actions.lock';
+function reusableFiles(){return new Map([
+ [reusablePath,Buffer.from(YAML.stringify({on:{workflow_call:{}},jobs:{release:{steps:[{uses:'jdx/mise-action@'+SHA}]}}}))],
+ ['.github/workflows/other.yml',Buffer.from('on: push\njobs: {}\n')],
+ [actionLockPath,Buffer.from('complete original native lock bytes')],
+]);}
+function reusableIO(files=reusableFiles()){return {
+ loadSource:async sha=>{assert.equal(sha,SHA);return files;},
+ verifyLock:async actual=>{assert.equal(actual,files);assert.equal(actual.size,3);return {stdout:'verified',stderr:'retained warning'};},
+ inventory:async text=>{assert.equal(text,'complete original native lock bytes');return [{repo:'jdx/mise-action',sha:SHA},{repo:'transitive/action',sha:OTHER}];},
+};}
+test('reusable uses its exact source inventory; all locked transitive actions and native diagnostics survive',async()=>{
+ const nested=await reusableActions(reusableUse,reusableIO());
+ assert.equal(nested.sha,SHA);assert.equal(nested.actions.length,2);assert.equal(nested.native.stderr,'retained warning');
+ assert.match(nested.lockSha256,/^[a-f0-9]{64}$/);
+ const caller={jobs:{run:{steps:[{uses:'jdx/mise-action@'+OTHER}]}}};
+ assertActionInputs(caller,[{repo:'jdx/mise-action',sha:OTHER}]);
+ assert.throws(()=>assertActionInputs(caller,nested.actions),/ACTION_INPUT_UNCOVERED/);
+ assert.throws(()=>assertActionInputs(YAML.parse(nested.bytes.toString()),[{repo:'jdx/mise-action',sha:OTHER}]),/ACTION_INPUT_UNCOVERED/);
+});
+test('reusable cannot borrow missing coverage from the consumer or another source',async()=>{
+ await assert.rejects(reusableActions(reusableUse,{...reusableIO(),inventory:async()=>[{repo:'jdx/mise-action',sha:OTHER}]}),/ACTION_INPUT_UNCOVERED/);
+});
+test('reusable rejects a missing source lock before any inventory can be substituted',async()=>{
+ const files=reusableFiles();files.delete(actionLockPath);
+ await assert.rejects(reusableActions(reusableUse,{...reusableIO(files),inventory:async()=>{assert.fail('must not run');}}),/REUSABLE_ACTION_LOCK_REQUIRED/);
+});
+test('native lock failure and online identity/unknown failures propagate without a partial success',async()=>{
+ for(const stage of ['verifyLock','inventory'])for(const code of ['NATIVE_LOCK_INVALID','ACTION_IDENTITY','ACTION_VERSION_UNRESOLVED']){
+  await assert.rejects(reusableActions(reusableUse,{...reusableIO(),[stage]:async()=>{throw Error(code);}}),new RegExp(code));
+ }
+ await assert.rejects(reusableActions(reusableUse,{...reusableIO(),verifyLock:async()=>{throw Error('NATIVE_FAILED');}}),error=>{
+  assert.equal(error.reusableSource.sha,SHA);assert.equal(error.reusableSource.stage,'native-lock');
+  assert.match(error.reusableSource.lockSha256,/^[a-f0-9]{64}$/);return error.message==='NATIVE_FAILED';
+ });
+});
+test('reusable wrong owner, non-SHA, untrusted source and nested workflow remain rejected',async()=>{
+ for(const use of [reusableUse.replace('splrad/steward','other/steward'),reusableUse.replace(SHA,'main')]){
+  await assert.rejects(reusableActions(use,{...reusableIO(),loadSource:async()=>assert.fail('must not load')}),/LIFECYCLE_REUSABLE_IDENTITY/);
+ }
+ await assert.rejects(reusableActions(reusableUse,{...reusableIO(),loadSource:async()=>{throw Error('ANCESTRY_REJECTED');}}),/ANCESTRY_REJECTED/);
+ const files=reusableFiles();files.set(reusablePath,Buffer.from(YAML.stringify({on:{workflow_call:{}},jobs:{nested:{uses:reusableUse}}})));
+ await assert.rejects(reusableActions(reusableUse,reusableIO(files)),/LIFECYCLE_REUSABLE_NESTING/);
+});
+test('native source verification uses full unedited inputs and an isolated exact source root',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'reusable-lock-test-')),files=reusableFiles();
+ try{
+  const result=await verifyReusableLock(files,directory,{GH_REPO:'wrong/repo',GH_ACTIONS_LOCK_REPO_ROOT:'wrong',GH_CONFIG_DIR:'trusted-tool'},(command,args,cwd,env)=>{
+   assert.equal(command,'gh');assert.deepEqual(args,['actions-lock','--verify','--no-interactive','--json']);assert.equal(cwd,directory);
+   assert.equal(env.GH_REPO,'splrad/steward');assert.equal(env.GH_ACTIONS_LOCK_REPO_ROOT,directory);assert.equal(env.GH_CONFIG_DIR,'trusted-tool');
+   return {stdout:'{"valid":true}',stderr:'warning'};
+  });
+  assert.equal(result.stderr,'warning');for(const [path,bytes] of files)assert.deepEqual(await readFile(join(directory,path)),bytes);
+  await assert.rejects(verifyReusableLock(new Map([['../escape.yml',Buffer.from('x')],[actionLockPath,Buffer.from('x')]]),directory,{},()=>assert.fail()),/REUSABLE_LOCK_INPUT_PATH/);
+ }finally{await rm(directory,{recursive:true,force:true});}
+});
+test('read-only native verification cannot silently rewrite source bytes',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'reusable-lock-test-')),files=reusableFiles();
+ try{
+  await assert.rejects(verifyReusableLock(files,directory,{},()=>{
+   run(process.execPath,['-e','require("node:fs").writeFileSync(".github/workflows/actions.lock","changed")'],directory,process.env);
+   return {stdout:'{"valid":true}',stderr:''};
+  }),/REUSABLE_LOCK_INPUT_CHANGED/);
+ }finally{await rm(directory,{recursive:true,force:true});}
+});
+
+for(const stdout of ['{"valid":false}','{}','not JSON','null','[]','true','{"valid":"true"}','{"valid":1}']){
+ test(`native verification rejects exit-zero invalid structured result: ${stdout}`,async()=>{
+  const directory=await mkdtemp(join(tmpdir(),'reusable-lock-result-'));
+  try{
+   await assert.rejects(verifyReusableLock(reusableFiles(),directory,{},()=>({stdout,stderr:''})),/REUSABLE_LOCK_RESULT_/);
+  }finally{await rm(directory,{recursive:true,force:true});}
+ });
+}
 test('only configured private administrator identity selects replacement; other private products remain native',()=>{
  assert.equal(dependencyMode({repository:{id:12,full_name:'org/product',private:true}},policy),'native');
  assert.equal(dependencyMode({repository:{id:1447987054,full_name:'splrad/steward-settings',private:true}},policy),'private-administrator');
@@ -65,12 +142,16 @@ test('tool execution errors are not clean scan results',()=>{
 });
 test('workflow keeps private execution under dependency job, fixed policy source and native review elsewhere',async()=>{
  const workflow=YAML.parse(await readFile(new URL('../../.github/workflows/pr-validation-native.yml',import.meta.url),'utf8'));
- assert.deepEqual(Object.keys(workflow.jobs),['scope','source-linux','source-windows','governance','dependency','docs','summary']);
- assert.equal(workflow.jobs.scope.outputs.source,"${{ steps.identity.outputs.dependencyMode == 'private-governance' && 'false' || steps.scope.outputs.source }}");
- for(const name of ['source-linux','source-windows'])assert.equal(workflow.jobs[name].if,"needs.scope.outputs.source == 'true'");
+ assert.deepEqual(Object.keys(workflow.jobs),['scope','source','governance','dependency','docs','summary']);
+ assert.equal(workflow.jobs.scope.outputs.source,"${{ steps.identity.outputs.workflows != '[]' && 'true' || steps.identity.outputs.productApplicable == 'false' && 'false' || steps.scope.outputs.source }}");
+ assert.equal(workflow.jobs.source.if,"needs.scope.outputs.source == 'true'");
  const steps=workflow.jobs.dependency.steps;
  assert.equal(steps.find(s=>s.uses?.startsWith('actions/dependency-review-action@')).if,"needs.scope.outputs.dependency-mode == 'native'");
  const scan=steps.find(s=>s.name==='Scan private administrator dependencies');assert.equal(scan.if,"startsWith(needs.scope.outputs.dependency-mode, 'private-')");assert.equal(scan['working-directory'],'policy');
+ const verifier=steps.find(s=>s.name==='Install trusted reusable workflow lock verifier');
+ assert.equal(verifier.if,"needs.scope.outputs.dependency-mode == 'private-lifecycle'");
+ assert.match(verifier.run,/cat policy\/config\/actions-lock-version\.txt/);assert.match(verifier.run,/--pin "\$ACTIONS_LOCK_VERSION"/);
+ assert.equal(verifier.env.GH_CONFIG_DIR,scan.env.GH_CONFIG_DIR);assert.ok(steps.indexOf(verifier)<steps.indexOf(scan));
  assert.equal(workflow.permissions['security-events'],undefined);
  assert.equal(steps.find(s=>s.with?.path==='policy').with.ref,'${{ job.workflow_sha }}');
  assert.equal(steps.find(s=>s.with?.path==='policy').with['fetch-depth'],0);
@@ -86,6 +167,11 @@ test('administrator scans cannot be skipped by paths-filter; native filters incl
  const workflow=YAML.parse(await readFile(new URL('../../.github/workflows/pr-validation-native.yml',import.meta.url),'utf8'));
  assert.equal(workflow.jobs.scope.outputs.dependency,"${{ startsWith(steps.identity.outputs.dependencyMode, 'private-') && 'true' || steps.scope.outputs.dependency }}");
  const filter=YAML.parse(workflow.jobs.scope.steps.find(s=>s.id==='scope').with.filters);assert(filter.dependency.includes('.mise/**'));
+ for(const path of ['SECURITY.md','.github/SECURITY.md','docs/SECURITY.md','.copier-answers.yml']){
+   assert(filter.security_policy.includes(path),path);
+ }
+ assert.equal(workflow.jobs.scope.outputs.governance,"${{ steps.scope.outputs.security_policy == 'true' && 'true' || steps.scope.outputs.governance }}");
+ assert.equal(workflow.jobs.governance.if,"needs.scope.outputs.governance == 'true'");
  // Every administrator PR is scanned, even an unknown manifest or a documentation-only change.
  assert.equal(workflow.jobs.dependency.if,"needs.scope.outputs.dependency == 'true'");
 });
@@ -94,8 +180,8 @@ test('existing Renovate regex manager extracts the scanner stable version and di
  const config=JSON.parse(await readFile(new URL('../../.github/renovate.json',import.meta.url),'utf8'));
  const manager=config.customManagers.find(m=>m.depNameTemplate==='ghcr.io/google/osv-scanner-action');assert.equal(manager.datasourceTemplate,'docker');
  const text=await readFile(new URL('../../config/private-dependency-security.json',import.meta.url),'utf8');
- const match=new RegExp(manager.matchStrings[0]).exec(text);assert.equal(match.groups.currentValue,'v2.7.0');assert.match(match.groups.currentDigest,/^sha256:[a-f0-9]{64}$/);
- assert.equal(new RegExp(manager.matchStrings[0]).exec(text.replace('v2.7.0','latest')),null);
+ const match=new RegExp(manager.matchStrings[0]).exec(text);assert.match(match.groups.currentValue,/^v[0-9]+\.[0-9]+\.[0-9]+$/);assert.equal(JSON.parse(text).osvImage,`ghcr.io/google/osv-scanner-action:${match.groups.currentValue}@${match.groups.currentDigest}`);assert.match(match.groups.currentDigest,/^sha256:[a-f0-9]{64}$/);
+ assert.equal(new RegExp(manager.matchStrings[0]).exec(text.replace(match.groups.currentValue,'latest')),null);
 });
 
 test('official reporter null-results means no new findings only after complete scans and reporter mode',()=>{
@@ -260,6 +346,10 @@ test('Copier admission requires trusted template bytes and original versioned an
  const templates=new Map(await Promise.all(paths.map(async path=>[path,await readFile(new URL('../../templates/repository/'+path,import.meta.url))])));
  const files=new Map(templates);files.set('.copier-answers.yml',Buffer.from('_src_path: https://github.com/splrad/steward.git\n_commit: v0.2.0\n'));
  assertInputScope([...files.keys()]);assertCopierInputs(files,ref=>ref==='v0.2.0'?templates:null);
+ const adopted=new Map(files);
+ adopted.set('.copier-answers.yml',Buffer.concat([files.get('.copier-answers.yml'),Buffer.from('product_repository: splrad/fixture\n')]));
+ assertCopierInputs(adopted,()=>templates,paths,'splrad/fixture');
+ assert.throws(()=>assertCopierInputs(adopted,()=>templates,paths,'splrad/other'),/COPIER_ANSWERS/);
  for(const tag of ['v1!2.3.5','v1.2.3.4','v1.2.3.post1','V1.2.3+local.1']){
   const versioned=new Map(files);versioned.set('.copier-answers.yml',Buffer.from('_src_path: https://github.com/splrad/steward.git\n_commit: '+tag+'\n'));
   assertCopierInputs(versioned,ref=>ref===tag?templates:null);
@@ -283,6 +373,8 @@ test('private governance registration binds native identity and rejects product 
  assert.equal(dependencyMode(event,policy),'native');
  for(const id of ['43','true','042'])assert.throws(()=>dependencyMode(event,policy,id),/GOVERNANCE_REGISTRATION/);
  for(const repository of [{...event.repository,private:false},{...event.repository,owner:{id:1}},{...event.repository,full_name:'fork/fixture'}])assert.throws(()=>dependencyMode({repository},policy,'42'),/GOVERNANCE_REGISTRATION/);
- assertGovernanceOnlyScope(['README.md','.copier-answers.yml','.github/workflows/pr-labeler.yml']);
- for(const path of ['safe-settings/settings.yml','mise.lock','package-lock.json','package.json','src/index.js','.github/workflows/build.yml'])assert.throws(()=>assertGovernanceOnlyScope([path]),/GOVERNANCE_INPUT_UNCOVERED/);
+ assertInputScope(['SECURITY.md']);
+ assert.throws(()=>assertInputScope(['docs/SECURITY.md']),/INPUT_UNCOVERED/);
+ assertGovernanceOnlyScope(['README.md','SECURITY.md','.copier-answers.yml','.github/workflows/pr-labeler.yml']);
+ for(const path of ['.github/SECURITY.md','safe-settings/settings.yml','mise.lock','package-lock.json','package.json','src/index.js','.github/workflows/build.yml'])assert.throws(()=>assertGovernanceOnlyScope([path]),/GOVERNANCE_INPUT_UNCOVERED/);
 });

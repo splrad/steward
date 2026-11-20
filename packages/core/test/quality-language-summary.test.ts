@@ -52,7 +52,7 @@ it('binds cache to source bytes, version and native identity while keeping prior
   expect(decodeQualityCache(cache,12,1)).toEqual(cache);expect(()=>decodeQualityCache(cache,13,1)).toThrow(/IDENTITY|SCHEMA/);
 });
 it('retains original finding until every segment succeeds and keeps original commit visible',async()=>{
-  const input={...source,bodyMarkdown:'English first.\n\nEnglish second.\n\n```log\nEXACT $text\n```'};
+  const input={...source,bodyMarkdown:'English first. '.repeat(500)+'\n\nEnglish second.\n\n```log\nEXACT $text\n```'};
   const cache=await reconcileQualitySources(null,context,[input]);const keys=cache.heads[context.head]!.keys;
   cache.entries[keys[0]!]!.result=translation(cache.entries[keys[0]!]!.segment);
   expect(renderQualitySummary(cache)).toMatchObject({total:1,complete:0,pending:1});expect(renderQualitySummary(cache).markdown).toContain(input.bodyMarkdown);

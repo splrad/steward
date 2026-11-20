@@ -1,28 +1,28 @@
 name: SPLRAD Steward / Quality Chinese Summary
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/quality-language-summary.yml'
-      - 'config/review/quality-language.json'
-      - 'packages/**'
-      - 'schema/quality-language-output.schema.json'
-      - 'scripts/quality-language-summary.mjs'
-      - 'scripts/release-record.mjs'
-      - 'tools/quality-language/**'
-      - 'package*.json'
-      - 'mise.*'
-  schedule:
-    - cron: '8-58/10 * * * *'
   workflow_dispatch:
+    inputs:
+      repository_id:
+        required: true
+        type: string
+      pull_number:
+        required: true
+        type: string
+      head_sha:
+        required: true
+        type: string
+      policy_sha:
+        required: true
+        type: string
 permissions:
   contents: read
 concurrency:
   group: steward-quality-language
+  queue: max
   cancel-in-progress: false
 jobs:
   quality-summary:
-    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && vars.STEWARD_QUALITY_LANGUAGE_ENABLED == 'true'
+    if: github.repository == 'splrad/steward' && github.repository_id == '1296724484' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.actor_id == '301115370' && github.sha == inputs.policy_sha && github.workflow_sha == github.sha && vars.STEWARD_QUALITY_LANGUAGE_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -36,7 +36,7 @@ jobs:
         with:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
-      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         env:
           MISE_SAFE: '1'
           MISE_NODE_COMPILE: 'false'

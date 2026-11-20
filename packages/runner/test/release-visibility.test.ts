@@ -48,3 +48,35 @@ it.each([true,false])('private asset authorization and redirect credential bound
   if(anonymous){await expect(result).rejects.toThrow('download HTTP 404');expect(calls).toHaveLength(1);expect(calls[0]!.authorization).toBeNull();}
   else {await result;expect(calls[0]!.authorization).toBe('Bearer fixture-read-token');expect(calls[1]!.authorization).toBeNull();expect(await readFile(join(root,'asset'),'utf8')).toBe('verified bytes');}
 });
+it('reads an already public WinGet installer without an Actions archive or an attached manifest',async()=>{
+  const f=await ghReleaseFixture(),root=await mkdtemp(join(tmpdir(),'public-installer-'));roots.push(root);
+  const {context}=evidenceFixture(),manifest=f.target.manifest;
+  context.repository='fixture/product';
+  f.state.invocation='https://github.com/fixture/product/actions/runs/100/attempts/2';
+  const manifestDigest=digest(await readFile(join(f.target.directory,'artifact-manifest.json')));
+  const installer=manifest.artifacts[0]!;
+  const frozen={id:installer.id,path:installer.path,size:installer.size,sha256:installer.sha256};
+  const unit=context.cycle.units[0]!;
+  Object.assign(unit,{version:manifest.version,tag:manifest.tag,releaseId:20,notesDigest:digest('body'),manifestDigest,assets:[frozen]});
+  context.cycle.requiredChannels=[{unitId:unit.id,channelId:'winget'}];
+  f.put(installer.path,Buffer.from('app'));
+  Object.assign(f.release,{draft:false,immutable:true,body:'body'});
+  vi.stubEnv('GH_TOKEN','fixture');
+  vi.stubGlobal('fetch',async(url:string)=>{
+    const path=new URL(url).pathname.replace('/repos/fixture/product','');
+    if(path==='')return Response.json({id:1,full_name:context.repository,archived:false,disabled:false,private:false});
+    if(path==='/releases/20')return Response.json(f.release);
+    if(path==='/releases/20/assets')return Response.json([{id:100,name:installer.path,state:'uploaded',size:3}]);
+    if(path==='/releases/assets/100')return new Response('app');
+    if(path==='/commits/'+manifest.tag)return Response.json({sha:manifest.sourceSha});
+    throw Error('unexpected native read '+path);
+  });
+  const delivery={id:unit.id,path:'.',notesPath:'notes.md',assets:manifest.artifacts.map(asset=>({id:asset.id,name:asset.path,mediaType:asset.mediaType})),
+    channels:[{id:'github-release',required:true,location:'github',artifactIds:['app'],metadata:[]},{id:'winget',required:true,location:'test',artifactIds:['app']}]};
+  try {
+    const projection=await pipelineChannelDownload(context,{unitId:unit.id,channelId:'winget',version:unit.version,releaseId:20,manifestDigest},
+      join(root,'files'),f.gh,f.download,{unit:delivery,controllerDirectory:root,history:[]});
+    expect(projection).toEqual({version:unit.version,tag:unit.tag,artifacts:[frozen],channelFiles:['app.exe']});
+    expect(await readFile(join(root,'files','app.exe'),'utf8')).toBe('app');
+  }finally{vi.unstubAllEnvs();}
+});

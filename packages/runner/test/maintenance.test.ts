@@ -15,8 +15,8 @@ function job(id:number,name:string,attempt=1,conclusion='failure') {
 }
 async function fixture(file='quality-language-summary.yml') {
   const definition=await api.maintenanceDefinition(file),workflow={id:5,path:'.github/workflows/'+file,state:'active'};
-  const run:any={id:12,run_attempt:1,workflow_id:5,path:workflow.path,repository:{id:1296724484},head_repository:{id:1296724484},head_sha:S,head_branch:'main',event:'schedule',created_at:'2026-10-30T00:00:00Z',updated_at:'2026-10-30T00:01:00Z',status:'completed',conclusion:'failure'};
-  const f:any={definition,workflow,run,jobs:Object.entries(definition.names).map(([key,name],i)=>job(i+1,key==='update'?'update (0)':name as string)),calls:[],records:new Map(),saves:0,mode:'accepted'};
+  const run:any={id:12,run_attempt:1,workflow_id:5,path:workflow.path,repository:{id:1296724484},head_repository:{id:1296724484},head_sha:S,head_branch:'main',event:file==='sync-managed.yml'?'repository_dispatch':file==='quality-language-summary.yml'?'workflow_dispatch':'schedule',created_at:'2026-10-30T00:00:00Z',updated_at:'2026-10-30T00:01:00Z',status:'completed',conclusion:'failure'};
+  const f:any={definition,workflow,run,jobs:Object.entries(definition.names).map(([key,name],i)=>job(i+1,key==='update'?'update (0)':name as string,1,key==='automation-health'?'success':'failure')),calls:[],records:new Map(),saves:0,mode:'accepted'};
   f.io={request:async(method:string,path:string)=>{
     f.calls.push([method,path]);
     if(method==='POST') {
@@ -43,7 +43,7 @@ async function fixture(file='quality-language-summary.yml') {
   f.posts=()=>f.calls.filter(([method]:string[])=>method==='POST');
   return f;
 }
-it.each(['sync-managed.yml','update-dependencies.yml','quality-language-summary.yml','governance-promotion.yml'])('recovers only the exact failed native Run for fixed %s',async file=>{
+it.each(['sync-managed.yml','quality-language-summary.yml','governance-promotion.yml'])('recovers only the exact failed native Run for fixed %s',async file=>{
   const f=await fixture(file);expect(await f.execute()).toEqual({status:'ACCEPTED'});expect(f.posts()).toHaveLength(1);
   expect(f.records.get(12).requests).toHaveLength(1);expect(f.records.get(12).requests[0].responseStatus).toBe(201);
 });
@@ -51,9 +51,15 @@ it.each(['lost','unknown'])('reconciles a %s response without a second POST from
   const f=await fixture();f.mode=mode;expect((await f.execute()).status).toBe(mode==='lost'?'ACCEPTED':'UNKNOWN');
   expect((await f.execute()).status).toBe(mode==='lost'?'WAIT':'UNKNOWN');expect(f.posts()).toHaveLength(1);
 });
-it.each(['sync-managed.yml','update-dependencies.yml'])('reads a business Run without a health job for %s',async file=>{
+it.each(['sync-managed.yml'])('reads a business Run without a health job for %s',async file=>{
   const f=await fixture(file);f.jobs=f.jobs.filter((j:any)=>j.name!=='automation-health');
   expect((await f.execute()).status).toBe('ACCEPTED');expect(f.posts()).toHaveLength(1);
+});
+it.each(['push','schedule'])('reads a historical Sync %s without rerunning its retired failed job',async event=>{
+  const f=await fixture('sync-managed.yml');f.run.event=event;
+  f.jobs.find((j:any)=>j.name==='automation-health').conclusion='failure';
+  expect((await f.execute()).status).toBe('UNKNOWN');expect(f.posts()).toHaveLength(0);
+  expect(f.records.get(12).event).toBe(event);
 });
 it('stops after two recoveries and three actual failed business waves',async()=>{
   const f=await fixture();expect((await f.execute()).status).toBe('ACCEPTED');
@@ -64,10 +70,9 @@ it('stops after two recoveries and three actual failed business waves',async()=>
   expect(f.records.get(12).jobs).toHaveLength(3);
 });
 it('retains original maintenance job IDs after a health-only rerun creates new projection IDs',async()=>{
-  const f=await fixture('update-dependencies.yml');
+  const f=await fixture('sync-managed.yml');
   f.run.run_attempt=2;f.run.conclusion='success';
   for(const j of f.jobs)j.conclusion='success';
-  f.jobs[0].steps=[{name:'update-targets-empty',conclusion:'skipped'},{name:'update-targets-found',conclusion:'success'}];
   const prior=structuredClone(f.jobs);
   f.jobs.push(...prior.map((j:any)=>j.name==='automation-health'?{...job(j.id+100,j.name,2,'success')}:({...j,id:j.id+100,run_attempt:2})));
   expect(await f.execute()).toEqual({status:'SATISFIED'});expect(f.posts()).toHaveLength(0);
@@ -76,15 +81,8 @@ it('counts earlier manual business failures rather than resetting budget when no
   const f=await fixture();f.run.run_attempt=3;f.jobs.push(job(2,'quality-summary',2),job(3,'quality-summary',3));
   expect((await f.execute()).status).toBe('EXHAUSTED');expect(f.posts()).toHaveLength(0);
 });
-it.each(['no-targets','matrix','health-rerun'])('ignores a health-only failure after successful update business: %s',async kind=>{
-  const f=await fixture('update-dependencies.yml');f.jobs[0].conclusion='success';
-  f.jobs[0].steps=[{name:'update-targets-empty',conclusion:kind==='no-targets'?'success':'skipped'},{name:'update-targets-found',conclusion:kind==='no-targets'?'skipped':'success'}];
-  if(kind==='no-targets'){f.jobs[1].name='update';f.jobs[1].conclusion='skipped';}else f.jobs[1].conclusion='success';
-  if(kind==='health-rerun'){f.run.run_attempt=2;f.jobs.push(job(4,'automation-health',2));}
-  expect((await f.execute()).status).toBe('SATISFIED');expect(f.posts()).toHaveLength(0);expect(f.saves).toBe(0);
-});
-it('does not charge health-only attempts against the first business recovery',async()=>{
-  const f=await fixture('update-dependencies.yml');f.run.run_attempt=3;f.jobs.push(job(4,'automation-health',2),job(5,'automation-health',3));
+it('does not charge historical successful health attempts against the first business recovery',async()=>{
+  const f=await fixture('sync-managed.yml');f.run.run_attempt=3;f.jobs.push(job(4,'automation-health',2,'success'),job(5,'automation-health',3,'success'));
   expect((await f.execute()).status).toBe('ACCEPTED');expect(f.records.get(12).requests[0].fromAttempt).toBe(3);expect(f.posts()).toHaveLength(1);
 });
 it.each(['repository','fork','workflow','path','branch','pr','head','attempt','job-run','job-head','job-future','job-name','job-duplicate','missing-steps','running-job'])('refuses incomplete or foreign %s evidence before POST',async kind=>{
@@ -97,36 +95,19 @@ it.each(['repository','fork','workflow','path','branch','pr','head','attempt','j
   if(kind==='missing-steps')delete f.jobs[0].steps;if(kind==='running-job')f.jobs[0].status='in_progress';
   await expect(f.execute()).rejects.toThrow();expect(f.posts()).toHaveLength(0);
 });
-it.each(['missing-attempt','ambiguous-targets','missing-matrix'])('preserves unknown evidence for %s without recovery',async kind=>{
-  const f=await fixture(kind==='missing-attempt'?'quality-language-summary.yml':'update-dependencies.yml');
-  if(kind==='missing-attempt')f.run.run_attempt=2;
-  else {f.jobs[0].conclusion='success';f.jobs[1].conclusion='success';f.jobs[0].steps=[{name:'update-targets-found',conclusion:'success'},{name:'update-targets-empty',conclusion:kind==='ambiguous-targets'?'success':'skipped'}];if(kind==='missing-matrix')f.jobs.splice(1,1);}
+it('preserves unknown evidence for a missing attempt without recovery',async()=>{
+  const f=await fixture();f.run.run_attempt=2;
   expect((await f.execute()).status).toBe('UNKNOWN');expect(f.posts()).toHaveLength(0);
-});
-it('fully reads native jobs across pages without publishing matrix names or step text',async()=>{
-  const f=await fixture('update-dependencies.yml');f.jobs=[job(1,'targets',1,'success'),...Array.from({length:105},(_,i)=>job(i+10,`update (${i})`,1,i===104?'failure':'success')),job(2,'automation-health',1,'success')];
-  f.jobs[0].steps=[{name:'update-targets-found',conclusion:'success'},{name:'update-targets-empty',conclusion:'skipped'},{name:'private/hidden',conclusion:'success'}];
-  expect((await f.execute()).status).toBe('ACCEPTED');expect(f.calls.some(([,p]:string[])=>p?.includes('page=2'))).toBe(true);
-  expect(f.records.get(12).jobs).toHaveLength(107);expect(JSON.stringify(f.records.get(12))).not.toContain('private/hidden');
-});
-it.each(['missing-job','matrix-gap','ambiguous-markers'])('does not infer complete business evidence from a failure when %s exists',async kind=>{
-  const f=await fixture(kind==='missing-job'?'sync-managed.yml':'update-dependencies.yml');
-  if(kind==='missing-job')f.jobs=f.jobs.filter((j:any)=>j.name!=='templates');
-  else {
-    f.jobs[0].conclusion='success';
-    f.jobs[0].steps=[{name:'update-targets-found',conclusion:'success'},{name:'update-targets-empty',conclusion:kind==='ambiguous-markers'?'success':'skipped'}];
-    if(kind==='matrix-gap')f.jobs[1].name='update (1)';
-  }
-  expect((await f.execute()).status).toBe('UNKNOWN');expect(f.posts()).toHaveLength(0);expect(f.saves).toBe(0);
 });
 it.each(['health-only','both-failed','health-rerun'])('keeps sync-managed business recovery separate from %s',async kind=>{
   const f=await fixture('sync-managed.yml');
   for(const j of f.jobs)if(j.name!=='automation-health')j.conclusion='success';
+  f.jobs.find((j:any)=>j.name==='automation-health').conclusion='failure';
   if(kind==='both-failed')f.jobs.find((j:any)=>j.name==='templates').conclusion='failure';
   if(kind==='health-rerun'){f.run.run_attempt=2;f.jobs.push(job(4,'automation-health',2));}
   const result=await f.execute();
-  expect(result.status).toBe(kind==='both-failed'?'ACCEPTED':'SATISFIED');
-  expect(f.posts()).toHaveLength(kind==='both-failed'?1:0);
+  expect(result.status).toBe(kind==='both-failed'?'UNKNOWN':'SATISFIED');
+  expect(f.posts()).toHaveLength(0);
   if(kind!=='both-failed')expect(f.saves).toBe(0);
 });
 it.each(['jobs','archive','run-changed','claim-changed','disabled','stale-source'])('withholds POST after %s changes at the native/archive boundary',async kind=>{
@@ -169,7 +150,7 @@ it('keeps the native maintenance record closed, central-only, monotonic and sepa
   const lost=structuredClone(record);lost.jobs=[];expect(()=>assertMaintenanceProgress(record,lost)).toThrow('JOB_REMOVED');
 });
 it('supports many health-only attempts without an invented platform attempt cap',async()=>{
-  const f=await fixture('update-dependencies.yml');f.run.run_attempt=101;f.jobs.push(...Array.from({length:100},(_,i)=>job(10+i,'automation-health',i+2)));
+  const f=await fixture('sync-managed.yml');f.run.run_attempt=101;f.jobs.push(...Array.from({length:100},(_,i)=>job(10+i,'automation-health',i+2,'success')));
   expect((await f.execute()).status).toBe('ACCEPTED');expect(maintenanceDisposition(f.records.get(12))).toBe('FAILED');
 });
 it('reports maintenance failure independently and still services product work in the same bounded wake',async()=>{
@@ -190,6 +171,7 @@ it('does not repeat an acknowledged recovery while its next attempt remains invi
 });
 it.each(['normal','denied-list','manually-disabled','wrong-coordinator','budget'])('executes the actual fixed central scan with %s evidence',async mode=>{
   const f=await fixture(),original=f.io.request;let clock=now();
+  f.records.set(99,{workflowFile:'update-dependencies.yml',workflowId:8,runId:99});
   f.io.request=async(method:string,path:string)=>{
     if(path==='/repos/splrad/steward')return response({id:1296724484,full_name:'splrad/steward',default_branch:'main',archived:false,disabled:false});
     if(path.endsWith('/actions/runs/900'))return response({...f.run,id:900,head_sha:T,path:'.github/workflows/release.yml',head_branch:mode==='wrong-coordinator'?'fork':'main'});
@@ -207,9 +189,86 @@ it.each(['normal','denied-list','manually-disabled','wrong-coordinator','budget'
   expect(f.posts()).toHaveLength(mode==='normal'?1:0);
   expect(JSON.stringify(result)).not.toMatch(/private|runId|workflowId|headSha|settings-sync/);
   if(['budget','denied-list'].includes(mode))expect(result.counts.unknown).toBeGreaterThan(0);
-  if(mode==='normal')expect(result.counts.recovered).toBe(1);
+  if(mode==='normal'){expect(result.counts.recovered).toBe(1);expect(result.counts.unknown).toBe(0);}
+  expect(f.calls.some(([,path]:string[])=>path?.includes('update-dependencies')||path?.includes('/runs/99'))).toBe(false);
 });
 
-it('excludes the retired public settings workflow from active definitions',async()=>{
-  await expect(api.maintenanceDefinition('settings-sync.yml')).rejects.toThrow('WORKFLOW');
+it('keeps incomplete shared business jobs unknown and preserves pagination without private step text',async()=>{
+  const missing=await fixture('sync-managed.yml');missing.jobs=missing.jobs.filter((j:any)=>j.name!=='templates');
+  expect((await missing.execute()).status).toBe('UNKNOWN');expect(missing.posts()).toHaveLength(0);
+  const f=await fixture('sync-managed.yml');f.run.run_attempt=101;
+  f.jobs.push(...Array.from({length:100},(_,i)=>({...job(10+i,'automation-health',i+2,'success'),steps:[{name:'private/hidden',conclusion:'failure'}]})));
+  expect((await f.execute()).status).toBe('ACCEPTED');expect(f.calls.some(([,p]:string[])=>p?.includes('page=2'))).toBe(true);
+  expect(JSON.stringify(f.records.get(12))).not.toContain('private/hidden');
 });
+
+it.each(['settings-sync.yml','update-dependencies.yml'])('excludes retired %s from definitions and direct recovery',async file=>{
+  await expect(api.maintenanceDefinition(file)).rejects.toThrow('WORKFLOW');
+  const f=await fixture();f.definition.file=file;
+  await expect(f.execute()).rejects.toThrow('WORKFLOW');expect(f.calls).toEqual([]);expect(f.saves).toBe(0);
+});
+it('reconciles only the event attempt; replayed unknowns cannot spend a second slot',async()=>{
+  const f=await fixture();f.mode='unknown';
+  const expectedRun=structuredClone(f.run);
+  const event=(receiver=coordinator)=>api.recoverMaintenanceRun({...f, reader:new NativeEvidenceReader(f.io,'splrad/steward'),
+    branch:'main', runId:12, coordinator:receiver, now, expectedRun});
+  expect((await event()).status).toBe('UNKNOWN');
+  const saves=f.saves;
+  expect((await event({...coordinator,runId:901})).status).toBe('UNKNOWN');
+  expect(f.posts()).toHaveLength(1);expect(f.saves).toBe(saves);
+  f.mode='accepted';
+  expect((await event({...coordinator,runAttempt:2})).status).toBe('ACCEPTED');
+  expect((await event()).status).toBe('SUPERSEDED');
+  expect(f.posts()).toHaveLength(2);
+});
+it('binds the native event identity and closes a successful recovery once',async()=>{
+  const f=await fixture('sync-managed.yml');f.run.event='repository_dispatch';
+  const execute=(expectedRun:any)=>api.recoverMaintenanceRun({...f,reader:new NativeEvidenceReader(f.io,'splrad/steward'),
+    branch:'main',runId:12,coordinator,now,expectedRun});
+  await expect(execute({...f.run,head_sha:T})).rejects.toThrow('EVENT_IDENTITY');
+  expect((await execute(structuredClone(f.run))).status).toBe('ACCEPTED');
+  f.run.status='completed';f.run.conclusion='success';
+  f.jobs.push(...f.jobs.map((j:any)=>job(j.id+100,j.name,2,'success')));
+  expect((await execute(structuredClone(f.run))).status).toBe('SATISFIED');
+  const saves=f.saves;
+  expect((await execute(structuredClone(f.run))).status).toBe('SATISFIED');
+  expect(f.saves).toBe(saves);expect(f.posts()).toHaveLength(1);
+});
+it.each([true,false])('reads back delayed 201 without another POST (visible=%s)',async visible=>{
+  const f=await fixture();f.mode='delayed';
+  const expectedRun=structuredClone(f.run),delays:number[]=[];
+  const execute=()=>api.recoverMaintenanceRun({...f,reader:new NativeEvidenceReader(f.io,'splrad/steward'),branch:'main',
+    runId:12,coordinator,now,expectedRun,wait:async(ms:number)=>{
+      delays.push(ms);
+      if(visible&&delays.length===2){f.run.run_attempt++;f.run.status='queued';f.run.conclusion=null;}
+    }});
+  expect((await execute()).status).toBe(visible?'ACCEPTED':'UNKNOWN');
+  expect(delays).toEqual(visible?[2000,4000]:[2000,4000,8000]);
+  expect((await execute()).status).toBe(visible?'SUPERSEDED':'UNKNOWN');
+  expect(f.posts()).toHaveLength(1);
+});
+
+it.each(['recovered','missing-template','all-skipped','failed-now-skipped','original-incomplete','non-success-run','identity-drift'])(
+  'reconciles the Sync bootstrap-only recovery shape: %s',async mode=>{
+    const f=await fixture('sync-managed.yml');
+    f.run.event='workflow_dispatch';
+    f.jobs=[job(1,'bootstrap'),job(2,'templates',1,'skipped'),job(3,'automation-health',1,'skipped')];
+    if(mode==='recovered'||mode==='identity-drift')expect((await f.execute()).status).toBe('ACCEPTED');
+    f.run.run_attempt=2;f.run.status='completed';f.run.conclusion=mode==='non-success-run'?'failure':'success';
+    f.jobs.push(job(4,'bootstrap',2,'success'));
+    if(mode==='missing-template')f.jobs=f.jobs.filter((j:any)=>j.name!=='templates');
+    if(mode==='all-skipped')for(const j of f.jobs)j.conclusion='skipped';
+    if(mode==='failed-now-skipped')f.jobs.at(-1).conclusion='skipped';
+    if(mode==='original-incomplete')f.jobs.find((j:any)=>j.name==='templates').run_attempt=2;
+    const expectedRun=structuredClone(f.run);
+    if(mode==='identity-drift')expectedRun.head_sha=T;
+    const execute=()=>api.recoverMaintenanceRun({...f,reader:new NativeEvidenceReader(f.io,'splrad/steward'),branch:'main',
+      coordinator,runId:12,expectedRun,now});
+    if(mode==='identity-drift')await expect(execute()).rejects.toThrow('EVENT_IDENTITY');
+    else expect((await execute()).status).toBe(mode==='recovered'?'SATISFIED':'UNKNOWN');
+    if(mode==='recovered'){
+      expect(f.records.get(12)).toMatchObject({runAttempt:2,conclusion:'success'});
+      expect(f.records.get(12).requests).toHaveLength(1);
+    }
+    expect(f.posts()).toHaveLength(mode==='recovered'||mode==='identity-drift'?1:0);
+  });

@@ -36,6 +36,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   source-check:
+    # This native adapter owns the enrolled LayerScape package and personal WinGet fork.
+    if: github.repository == 'splrad/LayerScape' && github.repository_id == '1187527897'
     runs-on: windows-2025
     timeout-minutes: 10
     outputs:
@@ -55,7 +57,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
+          ref: dd793183eafe69de51d64db182edbbf3f438bdaa
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -67,7 +69,7 @@ jobs:
           path: state
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
         env:
           MISE_SAFE: "1"
           MISE_NODE_COMPILE: "false"
@@ -109,7 +111,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
+          ref: dd793183eafe69de51d64db182edbbf3f438bdaa
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -121,7 +123,7 @@ jobs:
           path: state
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
         env:
           MISE_SAFE: "1"
           MISE_NODE_COMPILE: "false"
@@ -186,7 +188,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
+          ref: dd793183eafe69de51d64db182edbbf3f438bdaa
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -198,7 +200,7 @@ jobs:
           path: state
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
         env:
           MISE_SAFE: "1"
           MISE_NODE_COMPILE: "false"
@@ -230,23 +232,28 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          CHANNEL_READ_TOKEN: ${{ secrets.CHANNEL_READ_TOKEN || github.token }}
+          GHCR_TOKEN: ${{ github.token }}
+          GHCR_METADATA_TOKEN: ${{ secrets.CHANNEL_READ_TOKEN }}
           WINGET_FORK_REPOSITORY: ${{ vars.WINGET_FORK_REPOSITORY }}
           GHCR_OWNER_PACKAGE_INVENTORY: ${{ vars.GHCR_OWNER_PACKAGE_INVENTORY }}
         run: |
 
           $ErrorActionPreference='Stop'
+          $metadataToken=$env:GHCR_METADATA_TOKEN
+          Remove-Item Env:GHCR_METADATA_TOKEN -ErrorAction SilentlyContinue
           $selection=Get-Content -LiteralPath selection.json -Raw | ConvertFrom-Json
           $items=@()
           $auth=Join-Path $env:RUNNER_TEMP 'oras-read.json'
           [IO.File]::WriteAllText($auth,'{"auths":{}}')
-          $env:CHANNEL_READ_TOKEN | oras login ghcr.io --username $env:GITHUB_ACTOR --password-stdin --registry-config $auth
-          if ($LASTEXITCODE) { throw 'CHANNEL_READ_AUTH_UNKNOWN' }
+          if ($selection.targets.channelId -contains 'ghcr-assets') {
+            $env:GHCR_TOKEN | oras login ghcr.io --username $env:GITHUB_ACTOR --password-stdin --registry-config $auth
+            if ($LASTEXITCODE) { throw 'CHANNEL_READ_AUTH_UNKNOWN' }
+          }
           foreach ($target in $selection.targets) {
             $item=[ordered]@{unitId=$target.unitId;channelId=$target.channelId;version=$target.version;readStatus='AUTH_UNKNOWN';exists=$null;digest=$null;accepted=$null;indexed=$null;observedAt=[DateTime]::UtcNow.ToString('o');evidenceKind=$target.channelId}
             if ($target.channelId -eq 'ghcr-assets') {
               . controller/scripts/ghcr-package-state.ps1
-              $package=Get-LayerScapePackageState -Token $env:CHANNEL_READ_TOKEN -OwnerInventory $env:GHCR_OWNER_PACKAGE_INVENTORY
+              $package=Get-LayerScapePackageState -Token $metadataToken -OwnerInventory $env:GHCR_OWNER_PACKAGE_INVENTORY
               if ($package.state -eq 'ABSENT') { $item.readStatus='NOT_FOUND_CONFIRMED';$item.exists=$false;$item.accepted=$false;$item.indexed=$false }
               else {
                 $tags=oras repo tags ghcr.io/splrad/layerscape-assets --registry-config $auth --format json 2>$null
@@ -311,7 +318,7 @@ jobs:
     needs: source-check
     if: inputs.mode == 'observe'
     runs-on: windows-2025
-    timeout-minutes: 15
+    timeout-minutes: 5
     environment:
       name: channel-read
       deployment: false
@@ -328,7 +335,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
+          ref: dd793183eafe69de51d64db182edbbf3f438bdaa
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -340,7 +347,7 @@ jobs:
           path: state
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
         env:
           MISE_SAFE: "1"
           MISE_NODE_COMPILE: "false"
@@ -372,23 +379,28 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          CHANNEL_READ_TOKEN: ${{ secrets.CHANNEL_READ_TOKEN || github.token }}
+          GHCR_TOKEN: ${{ github.token }}
+          GHCR_METADATA_TOKEN: ${{ secrets.CHANNEL_READ_TOKEN }}
           WINGET_FORK_REPOSITORY: ${{ vars.WINGET_FORK_REPOSITORY }}
           GHCR_OWNER_PACKAGE_INVENTORY: ${{ vars.GHCR_OWNER_PACKAGE_INVENTORY }}
         run: |
 
           $ErrorActionPreference='Stop'
+          $metadataToken=$env:GHCR_METADATA_TOKEN
+          Remove-Item Env:GHCR_METADATA_TOKEN -ErrorAction SilentlyContinue
           $selection=Get-Content -LiteralPath selection.json -Raw | ConvertFrom-Json
           $items=@()
           $auth=Join-Path $env:RUNNER_TEMP 'oras-read.json'
           [IO.File]::WriteAllText($auth,'{"auths":{}}')
-          $env:CHANNEL_READ_TOKEN | oras login ghcr.io --username $env:GITHUB_ACTOR --password-stdin --registry-config $auth
-          if ($LASTEXITCODE) { throw 'CHANNEL_READ_AUTH_UNKNOWN' }
+          if (@($selection.targets | Where-Object { $_.channelId -eq 'ghcr-assets' }).Count) {
+            $env:GHCR_TOKEN | oras login ghcr.io --username $env:GITHUB_ACTOR --password-stdin --registry-config $auth
+            if ($LASTEXITCODE) { throw 'CHANNEL_READ_AUTH_UNKNOWN' }
+          }
           foreach ($target in $selection.targets) {
             $item=[ordered]@{unitId=$target.unitId;channelId=$target.channelId;version=$target.version;readStatus='AUTH_UNKNOWN';exists=$null;digest=$null;accepted=$null;indexed=$null;observedAt=[DateTime]::UtcNow.ToString('o');evidenceKind=$target.channelId}
             if ($target.channelId -eq 'ghcr-assets') {
               . controller/scripts/ghcr-package-state.ps1
-              $package=Get-LayerScapePackageState -Token $env:CHANNEL_READ_TOKEN -OwnerInventory $env:GHCR_OWNER_PACKAGE_INVENTORY
+              $package=Get-LayerScapePackageState -Token $metadataToken -OwnerInventory $env:GHCR_OWNER_PACKAGE_INVENTORY
               if ($package.state -eq 'ABSENT') { $item.readStatus='NOT_FOUND_CONFIRMED';$item.exists=$false;$item.accepted=$false;$item.indexed=$false }
               else {
                 $tags=oras repo tags ghcr.io/splrad/layerscape-assets --registry-config $auth --format json 2>$null
@@ -481,7 +493,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
+          ref: dd793183eafe69de51d64db182edbbf3f438bdaa
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -493,7 +505,7 @@ jobs:
           path: state
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
         env:
           MISE_SAFE: "1"
           MISE_NODE_COMPILE: "false"
@@ -535,15 +547,19 @@ jobs:
         env:
           MODE: submit
           GHCR_TOKEN: ${{ github.token }}
+          GHCR_METADATA_TOKEN: ${{ secrets.CHANNEL_READ_TOKEN }}
           GHCR_OWNER_PACKAGE_INVENTORY: ${{ vars.GHCR_OWNER_PACKAGE_INVENTORY }}
         run: |
 
           $ErrorActionPreference='Stop'
+          $metadataToken=$env:GHCR_METADATA_TOKEN
+          Remove-Item Env:GHCR_METADATA_TOKEN -ErrorAction SilentlyContinue
+          if ([string]::IsNullOrWhiteSpace($metadataToken)) { throw 'GHCR_METADATA_TOKEN_REQUIRED' }
           $manifest=Get-Content -LiteralPath manifest.json -Raw|ConvertFrom-Json
           $version=$manifest.version
           $auth=Join-Path $env:RUNNER_TEMP 'oras-business.json'
           [IO.File]::WriteAllText($auth,'{"auths":{}}')
-          $names=@($manifest.artifacts|ForEach-Object {$_.path})+@('sbom.spdx.json','release-notes.md','artifact-manifest.json','SHA256SUMS')|Sort-Object
+          $names=@($manifest.channelFiles | Sort-Object)
           $expected=@{};foreach($name in $names) {$expected[$name]=(Get-FileHash -LiteralPath "final/$name" -Algorithm SHA256).Hash.ToLowerInvariant()}
           if ($env:MODE -eq 'submit') {
             $env:GHCR_TOKEN | oras login ghcr.io --username $env:GITHUB_ACTOR --password-stdin --registry-config $auth
@@ -556,12 +572,12 @@ jobs:
             $expectedDigest=oras resolve --oci-layout layout:release
             if ($LASTEXITCODE) { throw 'ORAS_LAYOUT_DIGEST' }
             . controller/scripts/ghcr-package-state.ps1
-            $null=Get-LayerScapePackageState -Token $env:GHCR_TOKEN -OwnerInventory $env:GHCR_OWNER_PACKAGE_INVENTORY
+            $null=Get-LayerScapePackageState -Token $metadataToken -OwnerInventory $env:GHCR_OWNER_PACKAGE_INVENTORY
             $existing=oras resolve --registry-config $auth "ghcr.io/splrad/layerscape-assets:$version" 2>remote-error.txt
             if ($LASTEXITCODE -eq 0) { if ($existing.Trim() -ne $expectedDigest.Trim()) { throw 'ASSET_CONFLICT' } }
             else {
               . controller/scripts/ghcr-package-state.ps1
-              $package=Get-LayerScapePackageState -Token $env:GHCR_TOKEN -OwnerInventory $env:GHCR_OWNER_PACKAGE_INVENTORY
+              $package=Get-LayerScapePackageState -Token $metadataToken -OwnerInventory $env:GHCR_OWNER_PACKAGE_INVENTORY
               if ($package.state -eq 'EXISTS') {
                 $tags=oras repo tags ghcr.io/splrad/layerscape-assets --registry-config $auth --format json 2>$null
                 if ($LASTEXITCODE -ne 0 -or ($tags|ConvertFrom-Json).tags -contains $version) { throw 'GHCR_ABSENCE_UNKNOWN' }
@@ -648,7 +664,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
+          ref: dd793183eafe69de51d64db182edbbf3f438bdaa
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -660,7 +676,7 @@ jobs:
           path: state
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
         env:
           MISE_SAFE: "1"
           MISE_NODE_COMPILE: "false"
@@ -719,7 +735,7 @@ jobs:
 
           if ($version -notmatch '^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.-]+)?$') { throw 'WINGET_VERSION' }
 
-          $installer=@($manifest.artifacts|Where-Object {$_.id -eq 'deployer'})
+          $installer=@($manifest.artifacts|Where-Object {$manifest.channelFiles -ccontains $_.path})
 
           if ($installer.Count -ne 1) { throw 'WINGET_INSTALLER' }
 
@@ -781,11 +797,15 @@ jobs:
 
           \    $directory=Join-Path $pwd 'generated-first';New-Item -ItemType Directory -Path $directory|Out-Null
 
-          \    $template=Get-Content -LiteralPath product/.github/winget/SPLRAD.LayerScape.Deployer.yaml.mustache -Raw
+          \    foreach ($file in @('SPLRAD.LayerScape.Deployer.yaml','SPLRAD.LayerScape.Deployer.installer.yaml','SPLRAD.LayerScape.Deployer.locale.zh-CN.yaml')) {
 
-          \    $content=$template.Replace('${version}',$version).Replace('${installerUrl}',$url).Replace('${installerSha256}',$installer[0].sha256.ToUpperInvariant())
+          \      $template=Get-Content -LiteralPath \"product/.github/winget/$file.mustache\" -Raw
 
-          \    [IO.File]::WriteAllText((Join-Path $directory 'SPLRAD.LayerScape.Deployer.yaml'),$content,[Text.UTF8Encoding]::new($false))
+          \      $content=$template.Replace('${version}',$version).Replace('${installerUrl}',$url).Replace('${installerSha256}',$installer[0].sha256.ToUpperInvariant())
+
+          \      [IO.File]::WriteAllText((Join-Path $directory $file),$content,[Text.UTF8Encoding]::new($false))
+
+          \    }
 
           \  } else { throw 'WINGET_PACKAGE_READ_UNKNOWN' }
 
@@ -917,45 +937,39 @@ jobs:
 
           \  if ($LASTEXITCODE) { throw 'WINGET_INDEX_UNKNOWN' }
 
-          \  winget show --id SPLRAD.LayerScape.Deployer --exact --version $version --source winget --accept-source-agreements --disable-interactivity
+          \  foreach ($selection in @('exact','default')) {
 
-          \  if ($LASTEXITCODE) { throw 'DEPENDENCY_NOT_READY' }
+          \    $arguments=@('show','--id','SPLRAD.LayerScape.Deployer','--exact','--source','winget','--accept-source-agreements','--disable-interactivity')
+
+          \    if ($selection -eq 'exact') { $arguments+=@('--version',$version) }
+
+          \    $details=(winget @arguments) -join [Environment]::NewLine
+
+          \    if ($LASTEXITCODE) { throw 'DEPENDENCY_NOT_READY' }
+
+          \    foreach ($field in @($version,$urls[0],$hashes[0])) {
+
+          \      if ($details -notmatch ('(?m):[ \\t]*'+[regex]::Escape($field)+'[ \\t]*\\r?$')) { throw \"WINGET_INDEX_CONFLICT: $selection\" }
+
+          \    }
+
+          \  }
 
           \  $indexed=$true
 
-          \  foreach ($selectionMode in @('exact','default')) {
+          \  $download=New-TemporaryFile
 
-          \    $arguments=@('install','--id','SPLRAD.LayerScape.Deployer','--exact','--source','winget','--scope','user','--accept-package-agreements','--accept-source-agreements','--disable-interactivity')
+          \  try {
 
-          \    if ($selectionMode -eq 'exact') { $arguments+=@('--version',$version) }
+          \    Invoke-WebRequest -Uri $urls[0] -OutFile $download.FullName -ErrorAction Stop
 
-          \    else {
+          \    if ((Get-Item -LiteralPath $download.FullName).Length -ne $installer[0].size -or
 
-          \      $defaultShow=winget show --id SPLRAD.LayerScape.Deployer --exact --source winget --accept-source-agreements --disable-interactivity
+          \        (Get-FileHash -LiteralPath $download.FullName -Algorithm SHA256).Hash -ine $hashes[0]) { throw 'WINGET_DOWNLOAD_BYTES' }
 
-          \      $defaultShow | Write-Output
+          \  } finally {
 
-          \      if ($LASTEXITCODE -or ($defaultShow -join [Environment]::NewLine) -notmatch ('(?m)^Version:\\s*'+[Regex]::Escape($version)+'\\s*$')) { throw 'WINGET_DEFAULT_VERSION' }
-
-          \    }
-
-          \    winget @arguments
-
-          \    if ($LASTEXITCODE) { throw 'WINGET_INSTALL_FAILED' }
-
-          \    try {
-
-          \      $installed=Get-Command layerscape-deployer.exe -ErrorAction Stop
-
-          \      if ((Get-FileHash -LiteralPath $installed.Source -Algorithm SHA256).Hash.ToLowerInvariant() -ne $installer[0].sha256) { throw 'WINGET_INSTALLED_BYTES' }
-
-          \    } finally {
-
-          \      winget uninstall --id SPLRAD.LayerScape.Deployer --exact --source winget --disable-interactivity
-
-          \      if ($LASTEXITCODE) { throw 'WINGET_UNINSTALL_FAILED' }
-
-          \    }
+          \    Remove-Item -LiteralPath $download.FullName
 
           \  }
 
@@ -1023,7 +1037,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
+          ref: dd793183eafe69de51d64db182edbbf3f438bdaa
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -1035,7 +1049,7 @@ jobs:
           path: state
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
         env:
           MISE_SAFE: "1"
           MISE_NODE_COMPILE: "false"
@@ -1083,7 +1097,7 @@ jobs:
           $version=$manifest.version
           $auth=Join-Path $env:RUNNER_TEMP 'oras-business.json'
           [IO.File]::WriteAllText($auth,'{"auths":{}}')
-          $names=@($manifest.artifacts|ForEach-Object {$_.path})+@('sbom.spdx.json','release-notes.md','artifact-manifest.json','SHA256SUMS')|Sort-Object
+          $names=@($manifest.channelFiles | Sort-Object)
           $expected=@{};foreach($name in $names) {$expected[$name]=(Get-FileHash -LiteralPath "final/$name" -Algorithm SHA256).Hash.ToLowerInvariant()}
           if ($env:MODE -eq 'submit') {
             $env:GHCR_TOKEN | oras login ghcr.io --username $env:GITHUB_ACTOR --password-stdin --registry-config $auth
@@ -1096,12 +1110,12 @@ jobs:
             $expectedDigest=oras resolve --oci-layout layout:release
             if ($LASTEXITCODE) { throw 'ORAS_LAYOUT_DIGEST' }
             . controller/scripts/ghcr-package-state.ps1
-            $null=Get-LayerScapePackageState -Token $env:GHCR_TOKEN -OwnerInventory $env:GHCR_OWNER_PACKAGE_INVENTORY
+            $null=Get-LayerScapePackageState -Token $metadataToken -OwnerInventory $env:GHCR_OWNER_PACKAGE_INVENTORY
             $existing=oras resolve --registry-config $auth "ghcr.io/splrad/layerscape-assets:$version" 2>remote-error.txt
             if ($LASTEXITCODE -eq 0) { if ($existing.Trim() -ne $expectedDigest.Trim()) { throw 'ASSET_CONFLICT' } }
             else {
               . controller/scripts/ghcr-package-state.ps1
-              $package=Get-LayerScapePackageState -Token $env:GHCR_TOKEN -OwnerInventory $env:GHCR_OWNER_PACKAGE_INVENTORY
+              $package=Get-LayerScapePackageState -Token $metadataToken -OwnerInventory $env:GHCR_OWNER_PACKAGE_INVENTORY
               if ($package.state -eq 'EXISTS') {
                 $tags=oras repo tags ghcr.io/splrad/layerscape-assets --registry-config $auth --format json 2>$null
                 if ($LASTEXITCODE -ne 0 -or ($tags|ConvertFrom-Json).tags -contains $version) { throw 'GHCR_ABSENCE_UNKNOWN' }
@@ -1185,7 +1199,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: splrad/steward
-          ref: c83f0e8ec52f87b2cbcb745496f0a76d69f558f6
+          ref: dd793183eafe69de51d64db182edbbf3f438bdaa
           path: controller
           persist-credentials: false
       - name: Enable Git long paths
@@ -1197,7 +1211,7 @@ jobs:
           path: state
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
         env:
           MISE_SAFE: "1"
           MISE_NODE_COMPILE: "false"
@@ -1256,7 +1270,7 @@ jobs:
 
           if ($version -notmatch '^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.-]+)?$') { throw 'WINGET_VERSION' }
 
-          $installer=@($manifest.artifacts|Where-Object {$_.id -eq 'deployer'})
+          $installer=@($manifest.artifacts|Where-Object {$manifest.channelFiles -ccontains $_.path})
 
           if ($installer.Count -ne 1) { throw 'WINGET_INSTALLER' }
 
@@ -1318,11 +1332,15 @@ jobs:
 
           \    $directory=Join-Path $pwd 'generated-first';New-Item -ItemType Directory -Path $directory|Out-Null
 
-          \    $template=Get-Content -LiteralPath product/.github/winget/SPLRAD.LayerScape.Deployer.yaml.mustache -Raw
+          \    foreach ($file in @('SPLRAD.LayerScape.Deployer.yaml','SPLRAD.LayerScape.Deployer.installer.yaml','SPLRAD.LayerScape.Deployer.locale.zh-CN.yaml')) {
 
-          \    $content=$template.Replace('${version}',$version).Replace('${installerUrl}',$url).Replace('${installerSha256}',$installer[0].sha256.ToUpperInvariant())
+          \      $template=Get-Content -LiteralPath \"product/.github/winget/$file.mustache\" -Raw
 
-          \    [IO.File]::WriteAllText((Join-Path $directory 'SPLRAD.LayerScape.Deployer.yaml'),$content,[Text.UTF8Encoding]::new($false))
+          \      $content=$template.Replace('${version}',$version).Replace('${installerUrl}',$url).Replace('${installerSha256}',$installer[0].sha256.ToUpperInvariant())
+
+          \      [IO.File]::WriteAllText((Join-Path $directory $file),$content,[Text.UTF8Encoding]::new($false))
+
+          \    }
 
           \  } else { throw 'WINGET_PACKAGE_READ_UNKNOWN' }
 
@@ -1454,45 +1472,39 @@ jobs:
 
           \  if ($LASTEXITCODE) { throw 'WINGET_INDEX_UNKNOWN' }
 
-          \  winget show --id SPLRAD.LayerScape.Deployer --exact --version $version --source winget --accept-source-agreements --disable-interactivity
+          \  foreach ($selection in @('exact','default')) {
 
-          \  if ($LASTEXITCODE) { throw 'DEPENDENCY_NOT_READY' }
+          \    $arguments=@('show','--id','SPLRAD.LayerScape.Deployer','--exact','--source','winget','--accept-source-agreements','--disable-interactivity')
+
+          \    if ($selection -eq 'exact') { $arguments+=@('--version',$version) }
+
+          \    $details=(winget @arguments) -join [Environment]::NewLine
+
+          \    if ($LASTEXITCODE) { throw 'DEPENDENCY_NOT_READY' }
+
+          \    foreach ($field in @($version,$urls[0],$hashes[0])) {
+
+          \      if ($details -notmatch ('(?m):[ \\t]*'+[regex]::Escape($field)+'[ \\t]*\\r?$')) { throw \"WINGET_INDEX_CONFLICT: $selection\" }
+
+          \    }
+
+          \  }
 
           \  $indexed=$true
 
-          \  foreach ($selectionMode in @('exact','default')) {
+          \  $download=New-TemporaryFile
 
-          \    $arguments=@('install','--id','SPLRAD.LayerScape.Deployer','--exact','--source','winget','--scope','user','--accept-package-agreements','--accept-source-agreements','--disable-interactivity')
+          \  try {
 
-          \    if ($selectionMode -eq 'exact') { $arguments+=@('--version',$version) }
+          \    Invoke-WebRequest -Uri $urls[0] -OutFile $download.FullName -ErrorAction Stop
 
-          \    else {
+          \    if ((Get-Item -LiteralPath $download.FullName).Length -ne $installer[0].size -or
 
-          \      $defaultShow=winget show --id SPLRAD.LayerScape.Deployer --exact --source winget --accept-source-agreements --disable-interactivity
+          \        (Get-FileHash -LiteralPath $download.FullName -Algorithm SHA256).Hash -ine $hashes[0]) { throw 'WINGET_DOWNLOAD_BYTES' }
 
-          \      $defaultShow | Write-Output
+          \  } finally {
 
-          \      if ($LASTEXITCODE -or ($defaultShow -join [Environment]::NewLine) -notmatch ('(?m)^Version:\\s*'+[Regex]::Escape($version)+'\\s*$')) { throw 'WINGET_DEFAULT_VERSION' }
-
-          \    }
-
-          \    winget @arguments
-
-          \    if ($LASTEXITCODE) { throw 'WINGET_INSTALL_FAILED' }
-
-          \    try {
-
-          \      $installed=Get-Command layerscape-deployer.exe -ErrorAction Stop
-
-          \      if ((Get-FileHash -LiteralPath $installed.Source -Algorithm SHA256).Hash.ToLowerInvariant() -ne $installer[0].sha256) { throw 'WINGET_INSTALLED_BYTES' }
-
-          \    } finally {
-
-          \      winget uninstall --id SPLRAD.LayerScape.Deployer --exact --source winget --disable-interactivity
-
-          \      if ($LASTEXITCODE) { throw 'WINGET_UNINSTALL_FAILED' }
-
-          \    }
+          \    Remove-Item -LiteralPath $download.FullName
 
           \  }
 

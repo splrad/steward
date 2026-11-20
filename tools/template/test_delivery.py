@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import yaml
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import unquote, urlparse, parse_qs
@@ -38,7 +39,7 @@ class DeliveryTests(unittest.TestCase):
                        GIT_CONFIG_KEY_5='url.'+self.remote.as_posix()+'.insteadOf', GIT_CONFIG_VALUE_5='https://github.com/splrad/fixture.git')
             return env
         self.transport = patch.object(bridge,'environment',transport);self.transport.start();self.addCleanup(self.transport.stop)
-        bridge.render(self.central,self.product,self.old,'copy')
+        bridge.render(self.central,self.product,self.old,'copy',{'product_repository':'splrad/fixture'})
         self.git(self.product,'init','--initial-branch=develop');self.configure(self.product)
         (self.product/'VERSION').write_text('9.2.2\n');(self.product/'manual.txt').write_text('keep product\n')
         self.base = self.commit(self.product,'Adopt reviewed native Copier output')
@@ -65,11 +66,11 @@ class DeliveryTests(unittest.TestCase):
     def run_delivery(self,**kwargs):
         kwargs.setdefault('lock_runner', fixture_tool)
         return deliver(self.request,self.api,self.api,**kwargs)
-    def edit(self,branch,path,content):
+    def edit(self,branch,path,content,*,newline=None):
         with tempfile.TemporaryDirectory(prefix='edit-',dir=self.root) as temp:
             checkout=Path(temp)/'clone';self.git(self.root,'clone',str(self.remote),str(checkout));self.configure(checkout)
             self.git(checkout,'checkout','-B','edit','origin/'+branch)
-            file=checkout/path;file.parent.mkdir(parents=True,exist_ok=True);file.write_text(content,encoding='utf-8')
+            file=checkout/path;file.parent.mkdir(parents=True,exist_ok=True);file.write_text(content,encoding='utf-8',newline=newline)
             sha=self.commit(checkout,'Human edit');self.git(checkout,'push','origin','HEAD:refs/heads/'+branch)
             for pr in self.api.prs:
                 if branch==BRANCH and pr['state']=='open':pr['head']['sha']=sha
@@ -127,6 +128,48 @@ class DeliveryTests(unittest.TestCase):
         self.git(self.remote,'update-ref','refs/heads/develop',result['head'])
         self.assertEqual(self.run_delivery()['status'],'NO_DIFF')
 
+    def test_pending_legacy_configuration_requires_reconciliation_without_remote_writes(self):
+        first = self.run_delivery()
+        chooser = '.github/ISSUE_TEMPLATE/config.yml'
+        human = self.edit(BRANCH, chooser, 'contact_links:\n  - url: https://github.com/splrad/fixture/blob/HEAD/.github/repository-configuration.md\n')
+        count = len(self.api.mutations)
+        with self.assertRaisesRegex(ValueError, 'PENDING_LEGACY_CONFIGURATION'):
+            self.run_delivery()
+        self.assertEqual(self.head(), human)
+        self.assertEqual(len(self.api.mutations), count)
+        self.edit(BRANCH, chooser, 'blank_issues_enabled: false\n')
+        human = self.edit(BRANCH, bridge.LEGACY_CONFIGURATION[0], 'Pending maintainer notes\n')
+        with self.assertRaisesRegex(ValueError, 'PENDING_LEGACY_CONFIGURATION'):
+            self.run_delivery()
+        self.assertEqual(self.head(), human)
+        self.assertEqual(len(self.api.mutations), count)
+        self.assertEqual(self.api.prs[0]['number'], first['pullRequest'])
+
+    def test_signed_legacy_files_are_withdrawn_in_the_existing_pr(self):
+        config = self.central / 'copier.yml'
+        retired = config.read_bytes()
+        historic = yaml.safe_load(retired)
+        del historic['_exclude']
+        config.write_text(yaml.safe_dump(historic), encoding='utf-8')
+        tag = self.commit(self.central, 'Historical template')
+        self.git(self.central, 'tag', 'v3.0.0')
+        self.api.run_sources = {51: tag}
+        self.request.update(templateSha=tag, workflowSha=tag)
+        first = self.run_delivery()
+        self.assertTrue(self.git(self.remote, 'show', first['head'] + ':' + bridge.LEGACY_CONFIGURATION[0]))
+        self.edit(BRANCH, 'maintainer.md', 'Keep this edit\n')
+        config.write_bytes(retired)
+        tag = self.commit(self.central, 'Retire local configuration')
+        self.git(self.central, 'tag', 'v4.0.0')
+        self.api.run_sources[52] = tag
+        self.request.update(templateSha=tag, workflowSha=tag, runId=52)
+        result = self.run_delivery()
+        self.assertEqual(result['pullRequest'], first['pullRequest'])
+        self.assertEqual(self.git(self.remote, 'show', result['head'] + ':maintainer.md'), 'Keep this edit')
+        for path in bridge.LEGACY_CONFIGURATION:
+            self.assertFalse(self.git(self.remote, 'ls-tree', result['head'], '--', path))
+        self.assertEqual(self.run_delivery()['status'], 'UNCHANGED')
+
     def test_incomplete_adoption_on_base_cannot_enter_periodic_update(self):
         self.edit('develop',bridge.ADOPTION_REPORT,'Unresolved full report\n')
         with self.assertRaisesRegex(ValueError,'TEMPLATE_ADOPTION_INCOMPLETE'):self.run_delivery()
@@ -173,12 +216,20 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(len(self.api.prs),1)
 
     def test_concurrent_commit_rejects_non_fast_forward_then_next_wake_recomputes(self):
-        self.run_delivery();self.edit('develop','main.txt','base advanced\n')
-        self.api.before_ref=lambda:self.edit(BRANCH,'race.txt','keep concurrent\n')
+        source = self.central/'config/review/security-common.md'
+        source.parent.mkdir(parents=True)
+        shutil.copyfile(ROOT/'config/review/security-common.md', source)
+        self.new = self.commit(self.central, 'First security policy')
+        self.git(self.central, 'tag', 'v3.0.0')
+        self.request.update(templateSha=self.new, workflowSha=self.new)
+        first = self.run_delivery()
+        original = self.git(self.remote, 'show', first['head']+':SECURITY.md')+'\n'
+        self.edit('develop','main.txt','base advanced\n')
+        self.api.before_ref=lambda:self.edit(BRANCH,'SECURITY.md',original+'\nHuman project rule.\n',newline='\n')
         result=self.run_delivery();self.assertEqual(result['status'],'REF_CHANGED')
-        concurrent=self.head();self.assertEqual(self.git(self.remote,'show',concurrent+':race.txt'),'keep concurrent')
+        concurrent=self.head();self.assertEqual(self.git(self.remote,'show',concurrent+':SECURITY.md'),(original+'\nHuman project rule.').strip())
         resumed=self.run_delivery();self.assertEqual(resumed['status'],'DELIVERED')
-        self.assertEqual(self.git(self.remote,'show',resumed['head']+':race.txt'),'keep concurrent')
+        self.assertEqual(self.git(self.remote,'show',resumed['head']+':SECURITY.md'),(original+'\nHuman project rule.').strip())
         self.assertEqual(self.api.creates,1)
 
     def test_merge_conflict_leaves_remote_head_and_original_pr_untouched(self):
@@ -321,8 +372,9 @@ class FixtureAPI:
             i=int(route.rsplit('/',1)[1]);return {'id':i,'enforcement':'active','rules':[{'type':['creation','non_fast_forward','deletion'][i-1]}],
                 **({} if self.invalid=='bypass-unreadable' else {'bypass_actors':[{'actor_id':4243096,'actor_type':'Integration','bypass_mode':'always'}] if i==1 else []})}
         if '/actions/runs/' in route:
-            return {'id':int(route.rsplit('/',1)[1]),'repository':{'id':CENTRAL_ID},'head_repository':{'id':0 if self.invalid=='run' else CENTRAL_ID},
-                    'head_sha':t.new,'head_branch':'main','event':getattr(self,'event','workflow_dispatch'),'workflow_id':42,
+            run_id = int(route.rsplit('/',1)[1])
+            return {'id':run_id,'repository':{'id':CENTRAL_ID},'head_repository':{'id':0 if self.invalid=='run' else CENTRAL_ID},
+                    'head_sha':getattr(self,'run_sources',{}).get(run_id,t.new),'head_branch':'main','event':getattr(self,'event','workflow_dispatch'),'workflow_id':42,
                     'actor':{'id':1 if self.invalid=='event-actor' else 353238212,'login':'splrad-governance[bot]'}}
         if '/actions/workflows/' in route:return {'id':42,'path':'.github/workflows/sync-managed.yml','state':'active'}
         if '/git/ref/heads/' in route:

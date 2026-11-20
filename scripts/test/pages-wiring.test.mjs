@@ -1,18 +1,21 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
+import {mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile} from 'node:fs/promises';
+import {spawnSync} from 'node:child_process';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import YAML from 'yaml';
 import {NativeEvidenceReader,decodePagesMaintenance,assertPagesProgress,pagesRecordPath} from '../../packages/runner/dist/index.js';
 import {pagesInputDigest,pagesRunName} from '../select-pages-source.mjs';
 import {pagesDefinition,currentPagesSource,preflightPages,checkPagesArtifact,pagesArtifactName,pagesDeployment} from '../pages-runtime.mjs';
-import {servicePages,pagesRunInventory} from '../pages-maintenance.mjs';
+import {servicePages,pagesRunInventory,sourceOptions} from '../pages-maintenance.mjs';
 
 const bytes=await readFile(new URL('../../templates/release/pages.yml',import.meta.url));
 const workflowDoc=YAML.parse(bytes.toString()),pin=workflowDoc.env.STEWARD_CONTROLLER_SHA,S='a'.repeat(40),N='b'.repeat(40);
 const START=Date.parse('2026-10-31T00:00:00Z');
 function fixture() {
-  const repo={id:10,full_name:'fixture/product',default_branch:'trunk',archived:false,disabled:false};
+  const repo={id:10,full_name:'fixture/product',default_branch:'trunk',archived:false,disabled:false,has_pages:true,private:false};
   const source={schemaVersion:1,repositoryId:10,repository:repo.full_name,mode:'default-branch',controllerSha:pin,defaultBranch:'trunk',sourceSha:S,ref:'refs/heads/trunk',releaseId:null,unitId:null,manifestDigest:null};source.inputDigest=pagesInputDigest(source);
   const workflow={id:5,path:'.github/workflows/pages.yml',state:'active'};
   const run={id:12,workflow_id:5,run_attempt:1,repository:{id:10},head_repository:{id:10},path:workflow.path,head_sha:S,head_branch:'trunk',event:'push',status:'completed',conclusion:'failure',created_at:'2026-10-30T00:00:00Z',updated_at:'2026-10-30T00:01:00Z',display_title:'Pages default-branch '+S+' 12'};
@@ -34,8 +37,11 @@ function fixture() {
     }
     if(p==='')return response(repo);
     if(p==='/git/ref/heads/trunk')return response({ref:'refs/heads/trunk',object:{type:'commit',sha:state.head}});
-    if(p==='/contents/.github/workflows/pages.yml')return response({type:'file',path:'.github/workflows/pages.yml',encoding:'base64',content:bytes.toString('base64'),size:bytes.length,sha:createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')});
-    if(p.startsWith('/actions/variables/'))return response({name:p.split('/').at(-1),value:state.mode});
+    if(p==='/contents/.github/workflows/pages.yml') {
+      const content=state.workflowBytes??bytes;
+      return response({type:'file',path:'.github/workflows/pages.yml',encoding:'base64',content:content.toString('base64'),size:content.length,sha:createHash('sha1').update(`blob ${content.length}\0`).update(content).digest('hex')});
+    }
+    if(p.startsWith('/actions/variables/'))return response({name:p.split('/').at(-1),value:p.endsWith('/STEWARD_DOCS_UNIT')?(state.unit??''):state.mode});
     if(p==='/actions/workflows/pages.yml')return response(workflow);
     if(p==='/actions/workflows/5/runs') {
       const status=url.searchParams.get('status'),created=url.searchParams.get('created');
@@ -58,10 +64,32 @@ function fixture() {
   const reader=new NativeEvidenceReader(io,repo.full_name),options={reader,repositoryId:10,mode:'default-branch',controllerSha:pin};
   const store={async load(p){return structuredClone(records.get(p)??null);},async save(v,expected){const p=pagesRecordPath(v);assert.deepEqual(records.get(p)??null,expected);decodePagesMaintenance(Buffer.from(JSON.stringify(v)),10,p);if(expected)assertPagesProgress(expected,v);records.set(p,structuredClone(v));state.onSave?.(v);}};
   const coordinator={runId:900,runAttempt:1,controllerSha:pin};
-  const service=()=>servicePages({io,repository:repo,store,coordinator,appBotId:301115370},{now:()=>state.time,deployment:async()=>state.site});
+  const service=completion=>servicePages({io,repository:repo,store,coordinator,appBotId:301115370,completion},{now:()=>state.time,deployment:async()=>state.site});
   const successful=(id=40,sha=S)=>{state.deployments.push({id,environment:'github-pages',sha,created_at:'2026-10-30T00:00:00Z'});state.statuses.set(id,[{id:id+100,state:'success',created_at:'2026-10-30T00:10:00Z',log_url:'https://github.com/fixture/product/actions/runs/12/job/22',environment_url:'https://fixture.github.io/product/'}]);};
   return {repo,source,workflow,run,build,deploy,artifact,state,calls,records,reader,options,store,coordinator,service,successful};
 }
+
+test('public maintenance requires the approved mode and release unit before dispatch or rerun',async()=>{
+  for(const [mode,unit,selected,selectedUnit,status] of [
+    ['default-branch','','release','maps','SOURCE_MODE_CONFLICT'],
+    ['release','maps','default-branch','','SOURCE_MODE_CONFLICT'],
+    ['release','other','release','maps','SOURCE_UNIT_CONFLICT'],
+    ['release','','release','maps','SOURCE_UNIT_CONFLICT']
+  ]) {
+    const f=fixture();f.state.mode=mode;f.state.unit=unit;
+    f.state.workflowBytes=Buffer.from(YAML.stringify({env:{STEWARD_DOCS_SOURCE:selected,STEWARD_DOCS_UNIT:selectedUnit}}));
+    assert.equal((await f.service()).status,status);
+    f.state.runs=[f.run];
+    assert.equal((await f.service({repositoryId:10,workflowId:5,runId:12,attempt:1})).status,status);
+    assert.equal(f.calls.filter(c=>c.method==='POST').length,0);assert.equal(f.records.size,0);
+  }
+  const f=fixture();f.state.mode='release';f.state.unit='maps';
+  for(const workflow of [workflowDoc,{env:{STEWARD_DOCS_SOURCE:'${{ vars.STEWARD_DOCS_SOURCE }}'}},{env:{STEWARD_DOCS_SOURCE:'release',STEWARD_DOCS_UNIT:'maps'}}]) {
+    f.state.workflowBytes=Buffer.from(YAML.stringify(workflow));
+    const options=await sourceOptions(f.reader,f.repo,pin,301115370);
+    assert.equal(options.mode,'release');assert.equal(options.unitId,'maps');
+  }
+});
 
 test('native YAML separates source, secret-free build and Pages deployment with same-Run artifacts',()=>{
   assert.equal(pagesDefinition(bytes).controllerSha,pin);
@@ -73,6 +101,74 @@ test('native YAML separates source, secret-free build and Pages deployment with 
   assert.equal(d.jobs.build.steps.find(s=>s.name==='Upload Pages artifact').with.name,'github-pages-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.select.outputs.input_digest }}');
   assert.equal(d.jobs.deploy.steps.find(s=>s.name==='Deploy Pages').with.artifact_name,'${{ steps.guard.outputs.artifact_name }}');
   assert.doesNotMatch(bytes.toString(),/secrets\.|pull_request_target|workflow_run|deployment_id/);
+});
+test('site build takes its output from the product and public deployment requires a selected source',()=>{
+  const {build,deploy}=workflowDoc.jobs;
+  assert.equal(build.steps.find(step=>step.id==='site').run,'bash .github/scripts/build-site.sh');
+  assert.equal(build.steps.find(step=>step.id==='output').env.SITE_DIRECTORY,'${{ steps.site.outputs.directory }}');
+  assert.equal(build.steps.find(step=>step.id==='artifact').with.path,'${{ steps.output.outputs.directory }}');
+  assert.equal(deploy.if,"needs.select.outputs.ready == 'true' && needs.select.outputs.public_source == 'true'");
+  assert.equal(workflowDoc.jobs.select.if,undefined);
+  assert.equal(workflowDoc.jobs.select.outputs.public_source,'${{ steps.authorization.outputs.matches }}');
+  assert.equal(workflowDoc.jobs.select.steps.find(step=>step.id==='source').env.STEWARD_PAGES_BUILD_ONLY,
+    "${{ steps.authorization.outputs.matches != 'true' }}");
+  assert.equal(build.if,"needs.select.outputs.ready == 'true'");
+  assert.equal(build.steps[0].with.ref,'${{ needs.select.outputs.source_sha }}');
+  assert.match(workflowDoc['run-name'],/'build-only '/);
+  assert.ok(workflowDoc['run-name'].includes("inputs.source_mode || vars.STEWARD_DOCS_SOURCE || 'default-branch'"));
+});
+test('public deployment matches the authorized source and exact release unit',async t=>{
+  const root=await mkdtemp(join(tmpdir(),'pages-authorization-'));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const step=workflowDoc.jobs.select.steps.find(step=>step.id==='authorization');
+  assert.deepEqual(step.env,{APPROVED_SOURCE:'${{ vars.STEWARD_DOCS_SOURCE }}',APPROVED_UNIT:'${{ vars.STEWARD_DOCS_UNIT }}'});
+  const cases=[
+    ['default-branch','','default-branch','',true],['release','app','release','app',true],
+    ['default-branch','','release','app',false],['release','app','default-branch','',false],
+    ['release','app','release','other',false],['release','app','release','APP',false],
+    ['release','app','release','',false],['release','app','','',false],['release','','release','',false],
+    ['default-branch','','','',false],['default-branch','','DEFAULT-BRANCH','',false]
+  ];
+  for(const [index,[mode,unit,approvedMode,approvedUnit,expected]] of cases.entries()){
+    const output=join(root,String(index));
+    const result=spawnSync(process.platform==='win32'?'python':'python3',['-c',step.run],{encoding:'utf8',
+      env:{...process.env,STEWARD_DOCS_SOURCE:mode,STEWARD_DOCS_UNIT:unit,APPROVED_SOURCE:approvedMode,
+        APPROVED_UNIT:approvedUnit,GITHUB_OUTPUT:output}});
+    assert.equal(result.status,0,result.error?.message??result.stderr);
+    assert.equal((await readFile(output,'utf8')).trim(),'matches='+expected);
+  }
+});
+test('only a nonempty site directory inside the checkout reaches the upload step', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'pages-output-')));
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const workspace = join(root, 'checkout');
+  const site = join(workspace, 'handbook', 'public files');
+  const output = join(root, 'outputs');
+  await mkdir(site, {recursive: true});
+  await mkdir(join(workspace, 'empty'));
+  await writeFile(join(site, 'index.html'), '<p>Map handbook</p>');
+  const step = workflowDoc.jobs.build.steps.find(step => step.id === 'output');
+  assert.equal(step.shell, 'python');
+  const checkDirectory = directory => {
+    const result = spawnSync(process.platform === 'win32' ? 'python' : 'python3', ['-c', step.run], {
+      encoding: 'utf8', cwd: workspace,
+      env: {...process.env, SITE_DIRECTORY: directory, GITHUB_WORKSPACE: workspace, GITHUB_OUTPUT: output}
+    });
+    if (result.error) throw result.error;
+    return result;
+  };
+  for (const invalid of ['', '.', '..', site, 'missing', 'empty', 'handbook/public files/index.html', 'bad\npath']) {
+    assert.notEqual(checkDirectory(invalid).status, 0, JSON.stringify(invalid));
+  }
+  // The site is built on Ubuntu. Creating symlinks on Windows can require elevated privileges.
+  if (process.platform !== 'win32') {
+    await symlink(root, join(site, 'link'));
+    assert.notEqual(checkDirectory('handbook/public files').status, 0);
+    await rm(join(site, 'link'));
+  }
+  const valid = checkDirectory('handbook/public files');
+  assert.equal(valid.status, 0, valid.stderr);
+  assert.equal((await readFile(output, 'utf8')).trim(), `directory=${site}`);
 });
 test('rejects drifted controller pins, missing build dependency and concurrent cancellation',()=>{
   for(const mutate of [d=>d.jobs.deploy.steps[0].with.ref=N,d=>d.jobs.deploy.needs=['select'],d=>d.concurrency['cancel-in-progress']=true]){
@@ -220,4 +316,108 @@ test('returning to a prior source after a newer actual site uses a new deploymen
   f.state.site={deploymentId:41,sourceSha:N,inputDigest:'f'.repeat(64),deployedAt:new Date(START+60000).toISOString()};f.state.time+=300000;f.coordinator.runId++;
   assert.equal((await f.service()).status,'ACCEPTED');assert.deepEqual(f.records.get('maintenance/pages/12.json'),old);
   assert.equal([...f.records.values()].filter(r=>r.kind==='DISPATCH').length,2);
+});
+
+test('a retained source variable cannot start recovery after native Pages was disabled',async()=>{
+  const f=fixture();
+  f.repo.has_pages=false;
+  f.state.runs.push(f.run);
+  assert.equal((await f.service()).status,'DISABLED');
+  assert.equal(f.records.size,0);
+  assert.ok(f.calls.every(c=>c.method==='GET'));
+  delete f.repo.has_pages;
+  await assert.rejects(f.service(),/PAGES_SITE_STATE/);
+  assert.equal(f.records.size,0);
+  assert.ok(f.calls.every(c=>c.method==='GET'));
+});
+for(const conclusion of ['cancelled','timed_out']) {
+  test(`recovers the original Pages Run after ${conclusion}`,async()=>{
+    const f=fixture();
+    f.run.conclusion=conclusion;
+    f.state.runs.push(f.run);
+    assert.equal((await f.service()).status,'ACCEPTED');
+    assert.equal(f.run.run_attempt,2);
+    assert.deepEqual(f.calls.filter(c=>c.method==='POST').map(c=>c.path),['/repos/fixture/product/actions/runs/12/rerun']);
+  });
+}
+test('native site pause after recovery reservation prevents the rerun',async()=>{
+  const f=fixture();
+  f.state.runs.push(f.run);
+  f.state.onSave=record=>{if(record.requests.length)f.repo.has_pages=false;};
+  assert.equal((await f.service()).status,'STALE');
+  assert.ok(f.calls.every(c=>c.method==='GET'));
+});
+
+const completedRun={repositoryId:10,workflowId:5,runId:12,attempt:1};
+test('a completion selects its own failed Run when an earlier Run also failed',async()=>{
+  const f=fixture();
+  f.state.runs.push({...f.run,id:11,display_title:f.run.display_title.replace(/12$/,'11')},f.run);
+  assert.equal((await f.service(completedRun)).status,'ACCEPTED');
+  assert.deepEqual(f.calls.filter(c=>c.method==='POST').map(c=>c.path),['/repos/fixture/product/actions/runs/12/rerun']);
+  const other={...completedRun,runId:11};
+  assert.equal((await f.service(other)).status,'STALE');
+  assert.equal(f.calls.filter(c=>c.method==='POST').length,1);
+});
+test('a completion never dispatches a missing workflow or substitutes a different attempt or Run',async()=>{
+  const f=fixture();
+  assert.equal((await f.service(completedRun)).status,'STALE');
+  f.state.runs.push(f.run);
+  for(const change of [{workflowId:4},{attempt:2},{runId:14}])
+    assert.equal((await f.service({...completedRun,...change})).status,'STALE');
+  await assert.rejects(f.service({...completedRun,repositoryId:11}),/PAGES_COMPLETION_IDENTITY/);
+  assert.equal(f.records.size,0);
+  assert.ok(f.calls.every(c=>c.method==='GET'));
+});
+test('a redelivered completion cannot reserve another rerun of the same attempt',async()=>{
+  const f=fixture();f.state.runs.push(f.run);f.state.post='reject';
+  assert.equal((await f.service(completedRun)).status,'UNKNOWN');
+  f.state.time+=300000;f.coordinator.runId++;
+  assert.equal((await f.service(completedRun)).status,'UNKNOWN');
+  assert.equal(f.calls.filter(c=>c.method==='POST').length,1);
+});
+import {receiveCompletion} from '../pages-completion-entry.mjs';
+
+function completionEntry(f) {
+  const centralId=1296724484,actor={id:301115370},file='.github/workflows/pages-maintenance-event.yml';
+  const site={repositoryId:f.repo.id,repository:f.repo.full_name,workflowId:f.workflow.id};
+  const env={PAGES_REPOSITORY_ID:String(f.repo.id),PAGES_WORKFLOW_ID:String(f.workflow.id),PAGES_RUN_ID:'12',PAGES_ATTEMPT:'1',
+    GITHUB_REPOSITORY_ID:String(centralId),GITHUB_REPOSITORY:'splrad/steward',GITHUB_REF:'refs/heads/main',GITHUB_RUN_ID:'99',
+    GITHUB_EVENT_NAME:'workflow_dispatch',GITHUB_RUN_ATTEMPT:'1',PAGES_POLICY_SHA:pin,STEWARD_CONTROLLER_SHA:pin,
+    BOUNDED_MODE:'pages',STEWARD_EXPECTED_PAUSED_RELEASE:'311600220'};
+  const run={id:99,run_attempt:1,path:file,event:'workflow_dispatch',head_branch:'main',head_sha:pin,workflow_id:7,
+    actor,triggering_actor:actor,repository:{id:centralId},head_repository:{id:centralId}};
+  const facts={'':{id:centralId,default_branch:'main'},'/git/ref/heads/main':{object:{sha:pin}},
+    '/actions/runs/99/attempts/1':run,'/actions/workflows/pages-maintenance-event.yml':{path:file,state:'active',id:7},
+    '/actions/workflows/311600220':{id:311600220,path:'.github/workflows/release.yml',state:'disabled_manually'}};
+  const get=async path=>{const key=path.replace('/repos/splrad/steward','');assert.ok(key in facts);return facts[key];};
+  const enter=sites=>receiveCompletion(env,sites,get,{enabled:true,deploymentSha:S},async()=>({appBotId:actor.id}),
+    ({completion})=>f.service(completion));
+  return {env,run,site,enter};
+}
+test('the fixed central dispatch verifies its own native identity and recovers the original product Run',async()=>{
+  const f=fixture(),entry=completionEntry(f);f.state.runs.push(f.run);
+  assert.equal((await entry.enter([entry.site])).status,'ACCEPTED');
+  assert.deepEqual(f.calls.filter(c=>c.method==='POST').map(c=>c.path),['/repos/fixture/product/actions/runs/12/rerun']);
+});
+test('an unregistered site stops before central auth and any product service',async()=>{
+  const f=fixture(),entry=completionEntry(f),unexpected=()=>assert.fail('unexpected I/O');
+  const shipped=JSON.parse(await readFile(new URL('../../config/pages-completion.json',import.meta.url)));
+  assert.deepEqual(shipped.publicSites,[]);
+  assert.equal((await receiveCompletion(entry.env,shipped.publicSites,unexpected,{},unexpected,unexpected)).status,'UNREGISTERED');
+});
+for(const fault of ['actor','triggering_actor','pin','attempt','scope'])test('central rejects completion '+fault,async()=>{
+  const f=fixture(),entry=completionEntry(f);
+  if(fault==='actor'||fault==='triggering_actor')entry.run[fault]={id:99};
+  if(fault==='pin')entry.env.PAGES_POLICY_SHA=N;
+  if(fault==='attempt')entry.env.GITHUB_RUN_ATTEMPT='2';
+  if(fault==='scope')entry.env.GITHUB_REPOSITORY='elsewhere/test';
+  await assert.rejects(entry.enter([entry.site]));
+  assert.deepEqual(f.calls,[]);
+});
+
+test('a public completion stops if repository visibility changes during reservation',async()=>{
+  const f=fixture();f.state.runs.push(f.run);
+  f.state.onSave=v=>{if(v.requests.length)f.repo.private=true;};
+  assert.equal((await f.service(completedRun)).status,'STALE');
+  assert.ok(f.calls.every(c=>c.method==='GET'));
 });

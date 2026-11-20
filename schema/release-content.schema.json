@@ -177,8 +177,7 @@
                   "properties": {
                     "ordinal": {
                       "type": "integer",
-                      "minimum": 1,
-                      "maximum": 3
+                      "minimum": 1
                     },
                     "startedAt": {
                       "type": "string",
@@ -203,12 +202,52 @@
                           "additionalProperties": false,
                           "properties": {
                             "inputTokens": {
-                              "type": "integer",
+                              "type": [
+                                "integer",
+                                "null"
+                              ],
                               "minimum": 0
                             },
                             "outputTokens": {
-                              "type": "integer",
+                              "type": [
+                                "integer",
+                                "null"
+                              ],
                               "minimum": 0
+                            },
+                            "totalNanoAiu": {
+                              "type": [
+                                "number",
+                                "null"
+                              ],
+                              "minimum": 0
+                            },
+                            "aiCredits": {
+                              "type": [
+                                "number",
+                                "null"
+                              ],
+                              "minimum": 0
+                            },
+                            "premiumRequests": {
+                              "type": [
+                                "number",
+                                "null"
+                              ],
+                              "minimum": 0
+                            },
+                            "requests": {
+                              "type": [
+                                "number",
+                                "null"
+                              ],
+                              "minimum": 0
+                            },
+                            "selectedModel": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             }
                           },
                           "required": [
@@ -231,6 +270,97 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "diagnostic": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "responseSha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "responseBytes": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 12288
+                        },
+                        "responseText": {
+                          "type": "string",
+                          "maxLength": 12288
+                        },
+                        "validationErrors": {
+                          "type": "array",
+                          "maxItems": 16,
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "instancePath": {
+                                "type": "string",
+                                "maxLength": 256
+                              },
+                              "schemaPath": {
+                                "type": "string",
+                                "maxLength": 256
+                              },
+                              "keyword": {
+                                "type": "string",
+                                "maxLength": 256
+                              }
+                            },
+                            "required": [
+                              "instancePath",
+                              "schemaPath",
+                              "keyword"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "responseSha256",
+                        "responseBytes",
+                        "responseText",
+                        "validationErrors"
+                      ]
+                    },
+                    "recovery": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "previousAttemptSha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "authorizationId": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "outputContractSha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "archiveContentDigest": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "archiveProtectionDigest": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "previousAttemptSha256",
+                        "authorizationId",
+                        "outputContractSha256"
+                      ],
+                      "dependentRequired": {
+                        "archiveContentDigest": [
+                          "archiveProtectionDigest"
+                        ],
+                        "archiveProtectionDigest": [
+                          "archiveContentDigest"
+                        ]
+                      }
                     }
                   },
                   "required": [
@@ -241,8 +371,7 @@
                     "usage",
                     "errorCode"
                   ]
-                },
-                "maxItems": 3
+                }
               },
               "nextCheckAt": {
                 "anyOf": [
@@ -503,8 +632,7 @@
             "properties": {
               "ordinal": {
                 "type": "integer",
-                "minimum": 1,
-                "maximum": 3
+                "minimum": 1
               },
               "startedAt": {
                 "type": "string",
@@ -529,12 +657,52 @@
                     "additionalProperties": false,
                     "properties": {
                       "inputTokens": {
-                        "type": "integer",
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
                         "minimum": 0
                       },
                       "outputTokens": {
-                        "type": "integer",
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
                         "minimum": 0
+                      },
+                      "totalNanoAiu": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "minimum": 0
+                      },
+                      "aiCredits": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "minimum": 0
+                      },
+                      "premiumRequests": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "minimum": 0
+                      },
+                      "requests": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "minimum": 0
+                      },
+                      "selectedModel": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       }
                     },
                     "required": [
@@ -567,8 +735,7 @@
               "usage",
               "errorCode"
             ]
-          },
-          "maxItems": 3
+          }
         },
         "nextCheckAt": {
           "anyOf": [

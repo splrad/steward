@@ -1,3 +1,4 @@
+import apiVersion from "../config/github-api.json" with { type: "json" };
 import {readFile,writeFile,appendFile,mkdir} from 'node:fs/promises';
 import {resolve,join} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -7,8 +8,29 @@ import {Octokit} from '@octokit/rest';
 import {createAppAuth} from '@octokit/auth-app';
 import YAML from 'yaml';
 import {isolatedBuildEnvironment,resolvePolicyTool} from '../packages/runner/dist/index.js';
+import {requiredWorkflowBinding as binding} from './required-workflow-binding.mjs';
+import {completeNativeRuleParameters} from './native-rule-parameters.mjs';
+import {createSourceGuard,publishControllerSource} from './controller-source.mjs';
 
-const repo='/repos/splrad/steward',rulePath='/orgs/splrad/rulesets/18883080';
+const repo='/repos/splrad/steward';
+const maintenanceRuleId=26975344;
+const maintenanceBranch='maintenance/legacy-runtime-e990eda';
+const maintenanceRef=`refs/heads/${maintenanceBranch}`;
+const coreTarget={id:18883080,binding};
+function maintenanceTarget(id){
+  check(positive(id)&&id!==18883080,'MAINTENANCE_RULE_ID');
+  return {id,binding(body){
+    check(same(body.conditions,{repository_id:{repository_ids:[1296724484]},ref_name:{include:[maintenanceRef],exclude:[]}})
+      &&same(body.bypass_actors,[]),'MAINTENANCE_SCOPE');
+    const rows=body.rules.filter(r=>r.type==='workflows');
+    check(rows.length===1&&rows[0].parameters?.do_not_enforce_on_create===true,'MAINTENANCE_BINDING');
+    const workflows=rows[0].parameters.workflows;
+    check(Array.isArray(workflows)&&workflows.length===1,'MAINTENANCE_BINDING');
+    const row=workflows[0];
+    check(row.repository_id===1296724484&&row.path==='.github/workflows/maintenance-validation.yml'&&sha(row.sha)&&!Object.hasOwn(row,'ref'),'MAINTENANCE_BINDING');
+    return row;
+  }};
+}
 const validationPath='.github/workflows/pr-validation-native.yml';
 const check=(condition,code)=>{if(!condition)throw Error('PROMOTION_'+code);};
 const sha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
@@ -18,16 +40,18 @@ const same=(a,b)=>JSON.stringify(canonical(a))===JSON.stringify(canonical(b));
 const quiet={debug(){},info(){},warn(){},error(){}};
 
 export function promotionIO(token,transport=fetch) {
-  const client=new Octokit({auth:token,log:quiet,request:{fetch:transport,headers:{'x-github-api-version':'2026-03-10'}}});
-  client.hook.before('request',options=>{options.headers['x-github-api-version']='2026-03-10';});
-  return {async request(method,path,body){
+  const client=new Octokit({auth:token,log:quiet,request:{fetch:transport,headers:{'x-github-api-version':apiVersion.version}}});
+  client.hook.before('request',options=>{options.headers['x-github-api-version']=apiVersion.version;});
+  return {graphql: (query,variables={})=>client.graphql(query,{...variables,request:{signal:AbortSignal.timeout(60000)}}),async request(method,path,body){
     try {const r=await client.request(`${method} ${path}`,{...body,request:{signal:AbortSignal.timeout(60000)}});return {status:r.status,value:r.data};}
     catch(e){if(e.status)return {status:e.status,value:e.response?.data};throw Error('PROMOTION_TRANSPORT');}
   }};
 }
 async function get(io,path,absent=false) {
   const r=await io.request('GET',path);if(absent&&r.status===404)return null;
-  check(r.status===200,`NATIVE_READ_${Number.isInteger(r.status)?r.status:'UNKNOWN'}`);return r.value;
+  check(r.status===200,`NATIVE_READ_${Number.isInteger(r.status)?r.status:'UNKNOWN'}`);
+  check(r.value!=null,'NATIVE_PAYLOAD');
+  return r.value;
 }
 async function pages(io,path,key) {
   const values=[];let total;
@@ -42,7 +66,7 @@ async function pages(io,path,key) {
   throw Error('PROMOTION_PAGINATION_INCOMPLETE');
 }
 export function validationJobNames(document) {
-  check(document?.name==='SPLRAD Steward / Native Validation'&&document.on?.push?.branches?.includes('main'),'VALIDATION_DEFINITION');
+  check(document?.name==='SPLRAD Steward / Native Validation'&&['main','**'].some(pattern=>document.on?.push?.branches?.includes(pattern)),'VALIDATION_DEFINITION');
   const jobs=Object.values(document.jobs??{}),names=jobs.map(j=>j.name);
   check(jobs.length>1&&jobs.every(j=>!j.strategy&&typeof j.name==='string'&&!j.name.includes('${{'))
     &&new Set(names).size===names.length&&names.includes('SPLRAD Validation'),'VALIDATION_JOBS');
@@ -87,38 +111,109 @@ export async function selectPromotion(io,{workflowId,event,sourceRunId,controlle
   if((await get(io,`${repo}/commits/main`)).sha!==current.sha)return {status:'STALE'};
   return {status:'ELIGIBLE',sha:current.sha,runId:run.id,runAttempt:run.run_attempt,workflowId,jobIds:selected};
 }
-function mutable(rule) {
-  check(rule.id===18883080&&rule.source==='splrad'&&rule.source_type==='Organization'&&rule.target==='branch'
+function mutable(rule,target=coreTarget) {
+  check(rule.id===target.id&&rule.source==='splrad'&&rule.source_type==='Organization'&&rule.target==='branch'
     &&rule.enforcement==='active'&&Array.isArray(rule.rules)&&Array.isArray(rule.bypass_actors)&&rule.conditions,'RULE');
   return Object.fromEntries(['name','target','enforcement','bypass_actors','conditions','rules'].map(k=>[k,structuredClone(rule[k])]));
-}
-function binding(body) {
-  const rules=body.rules.filter(r=>r.type==='workflows');check(rules.length===1&&Array.isArray(rules[0].parameters?.workflows),'BINDING');
-  const rows=rules[0].parameters.workflows.filter(r=>r.repository_id===1296724484&&r.path===validationPath);
-  check(rows.length===1&&sha(rows[0].sha)&&!Object.hasOwn(rows[0],'ref'),'BINDING');return rows[0];
 }
 
 /** PUT is not a CAS. Only rules are sent; unrelated fields are compared before and after. */
 export async function promoteRequiredWorkflow(io,target,assertCurrent,record) {
+  return promoteWorkflowTarget(io,target,assertCurrent,record,coreTarget);
+}
+async function readRule(io,descriptor,allowMissing=false){
+  const observed=await get(io,`/orgs/splrad/rulesets/${descriptor.id}`,allowMissing);
+  if(observed===null)return null;
+  const rule=await completeNativeRuleParameters(io,observed);
+  const body=mutable(rule,descriptor);descriptor.binding(body);return {rule,body};
+}
+async function assertMaintenanceBranchAbsent(io){
+  const refs=await get(io,`${repo}/git/matching-refs/heads/${encodeURIComponent(maintenanceBranch)}`);
+  check(Array.isArray(refs)&&refs.every(row=>typeof row?.ref==='string'&&row.ref.startsWith(maintenanceRef)
+    &&row.object?.type==='commit'&&sha(row.object.sha)),'MAINTENANCE_REF_READBACK');
+  check(!refs.some(row=>row.ref===maintenanceRef),'MAINTENANCE_BRANCH_STILL_PRESENT');
+}
+async function assertMaintenanceRetired(io,id){
+  check(await get(io,`/orgs/splrad/rulesets/${id}`,true)===null,'MAINTENANCE_RULE_REAPPEARED');
+  await assertMaintenanceBranchAbsent(io);
+}
+async function promoteWorkflowTarget(io,target,assertCurrent,record,descriptor) {
+  const rulePath=`/orgs/splrad/rulesets/${descriptor.id}`,binding=descriptor.binding;
   check(sha(target),'TARGET');
   for(let attempt=1;attempt<=3;attempt++) {
-    const original=await get(io,rulePath),before=mutable(original),old=binding(before).sha;
+    const {rule:original,body:before}=await readRule(io,descriptor),old=binding(before).sha;
     await record({kind:'rules-before',attempt,before:original,adoptedSha:old,target});
     if(old===target)return {status:'ALREADY_ADOPTED',sha:target};
     await assertCurrent();
-    const latest=await get(io,rulePath),fresh=mutable(latest);
+    const {rule:latest,body:fresh}=await readRule(io,descriptor);
     if(!same(before,fresh)){await record({kind:'rules-changed-before-write',attempt,current:latest});continue;}
     const expected=structuredClone(fresh);binding(expected).sha=target;
     await assertCurrent();
     let response='unknown';
     try {response=(await io.request('PUT',rulePath,{rules:expected.rules})).status;}catch{}
-    const observed=await get(io,rulePath),after=mutable(observed);await record({kind:'rules-after',attempt,response,after:observed});
+    const {rule:observed,body:after}=await readRule(io,descriptor);await record({kind:'rules-after',attempt,response,after:observed});
     if(same(after,expected))return {status:'ADOPTED',sha:target};
     const actual=binding(after).sha,rest=structuredClone(after);binding(rest).sha=old;
     check(same(rest,before),'EXTERNAL_RULE_CHANGE');
     if(actual!==old&&actual!==target)await record({kind:'rules-third-value',attempt,sha:actual});
   }
   throw Error('PROMOTION_RECONCILIATION_LIMIT');
+}
+
+/** Ruleset writes are sequential, not atomic. Re-entry reconciles each target independently. */
+export async function promoteRequiredWorkflows(io,target,assertCurrent,record,maintenanceId) {
+  check(sha(target),'TARGET');
+  const maintenance=maintenanceTarget(maintenanceId);
+  const maintenanceBefore=await readRule(io,maintenance,true);
+  const targets=[coreTarget],baseline=new Map(),results=[];
+  if(maintenanceBefore)targets.push(maintenance);
+  else await assertMaintenanceBranchAbsent(io);
+  const withoutSha=(body,descriptor)=>{const copy=structuredClone(body);descriptor.binding(copy).sha=null;return copy;};
+  // Validate every active target before any write, even if the core pin already matches.
+  for(const descriptor of targets){
+    const {rule,body}=descriptor===maintenance?maintenanceBefore:await readRule(io,descriptor);
+    baseline.set(descriptor.id,withoutSha(body,descriptor));
+    await record({kind:'workflow-target-before',rulesetId:descriptor.id,target,before:rule});
+  }
+  const guard=async()=>{
+    await assertCurrent();
+    if(!maintenanceBefore)await assertMaintenanceRetired(io,maintenanceId);
+    for(const descriptor of targets){
+      const {body}=await readRule(io,descriptor);
+      check(same(withoutSha(body,descriptor),baseline.get(descriptor.id)),'TARGET_PROTECTION_CHANGED');
+    }
+  };
+  await guard();
+  for(const descriptor of targets){
+    await guard();
+    const result=await promoteWorkflowTarget(io,target,guard,event=>record({...event,rulesetId:descriptor.id}),descriptor);
+    results.push({rulesetId:descriptor.id,...result});
+    await record({kind:'workflow-target-result',rulesetId:descriptor.id,...result});
+  }
+  const verifyTargets=async()=>{
+    const observed=[];
+    for(const descriptor of targets){
+      const {rule,body}=await readRule(io,descriptor);
+      check(same(withoutSha(body,descriptor),baseline.get(descriptor.id)),'TARGET_PROTECTION_CHANGED');
+      check(descriptor.binding(body).sha===target,'TARGET_READBACK');
+      observed.push({kind:'workflow-target-final',rulesetId:descriptor.id,target,observed:rule});
+    }
+    return observed;
+  };
+  await guard();
+  const observed=await verifyTargets();
+  for(const event of observed)await record(event);
+  if(!maintenanceBefore)await record({kind:'maintenance-retired',rulesetId:maintenanceId,ref:maintenanceRef});
+  // Recheck the complete set after collecting and recording the first snapshot.
+  // Separate API reads cannot provide an atomic cross-ruleset snapshot.
+  const verifyCurrent=async()=>{
+    await assertCurrent();
+    await verifyTargets();
+    if(!maintenanceBefore)await assertMaintenanceRetired(io,maintenanceId);
+    await assertCurrent();
+  };
+  await verifyCurrent();
+  return {status:results.every(r=>r.status==='ALREADY_ADOPTED')?'ALREADY_ADOPTED':'ADOPTED',sha:target,targets:results,verifyCurrent};
 }
 
 export async function publishTemplateTag(io,plan,assertCurrent,record) {
@@ -133,26 +228,29 @@ export async function publishTemplateTag(io,plan,assertCurrent,record) {
   };
   const observed=await readTags();await record({kind:'template-refs-before',observed});
   check(same(observed,plan.tags),'TEMPLATE_REFS_CHANGED');
-  if(plan.status==='UNCHANGED')return {status:'UNCHANGED'};
+  if(plan.status==='UNCHANGED'&&!plan.independentSecurityAdoption)return {status:'UNCHANGED'};
   check(/^v[0-9][A-Za-z0-9.!+-]*$/.test(plan.tag),'TEMPLATE_TAG');
   const path=`${repo}/git/ref/tags/${encodeURIComponent(plan.tag)}`;
   const read=()=>get(io,path,true);
   const matches=r=>r?.ref===`refs/tags/${plan.tag}`&&r.object?.type==='commit'&&r.object.sha===plan.commit;
-  const prior=await read();if(prior){check(matches(prior),'TAG_CONFLICT');return {status:'ALREADY_PUBLISHED',tag:plan.tag};}
+  const result=status=>({status,tag:plan.tag,...(plan.independentSecurityAdoption
+    ? {independentSecurityAdoption:true,commit:plan.commit} : {})});
+  const prior=await read();if(prior){check(matches(prior),'TAG_CONFLICT');return result('ALREADY_PUBLISHED');}
+  check(plan.status==='CREATE','TAG_UNCONFIRMED');
   await assertCurrent();let response='unknown';
   try{response=(await io.request('POST',`${repo}/git/refs`,{ref:`refs/tags/${plan.tag}`,sha:plan.commit})).status;}catch{}
   const after=await read();await record({kind:'template-tag',response,tag:plan.tag,commit:plan.commit,observed:after});
   check(matches(after),'TAG_UNCONFIRMED');
   const refs=await readTags();await record({kind:'template-refs-after',observed:refs});
   check(same(refs,{...plan.tags,[`refs/tags/${plan.tag}`]:plan.commit}),'TEMPLATE_REFS_CHANGED');
-  return {status:'PUBLISHED',tag:plan.tag};
+  return result('PUBLISHED');
 }
 
 export async function withGovernanceCredential(env,operation,transport=fetch) {
   const appId=Number(env.GOVERNANCE_APP_ID);check(positive(appId)&&appId!==4243096,'APP_ID');
   const app=new Octokit({authStrategy:createAppAuth,auth:{appId,privateKey:env.GOVERNANCE_APP_PRIVATE_KEY},log:quiet,
-    request:{fetch:transport,headers:{'x-github-api-version':'2026-03-10'}}});
-  app.hook.before('request',options=>{options.headers['x-github-api-version']='2026-03-10';});
+    request:{fetch:transport,headers:{'x-github-api-version':apiVersion.version}}});
+  app.hook.before('request',options=>{options.headers['x-github-api-version']=apiVersion.version;});
   const fact=(await app.request('GET /app')).data,installation=(await app.request('GET /orgs/splrad/installation')).data;
   check(fact.id===appId&&fact.slug==='splrad-governance'&&installation.app_id===appId&&installation.account?.id===302208797&&!installation.suspended_at,'APP_IDENTITY');
   const permissions={organization_administration:'write',contents:'write',metadata:'read'};
@@ -184,6 +282,11 @@ export async function preflight(env=process.env,transport=fetch) {
 }
 
 export async function wakePublishedTemplate(io,published,assertCurrent,record) {
+  if (published.independentSecurityAdoption && ['PUBLISHED','ALREADY_PUBLISHED'].includes(published.status)) {
+    await assertCurrent();
+    await record({kind:'template-wake',status:'INDEPENDENT_SECURITY_ADOPTION',tag:published.tag,commit:published.commit});
+    return;
+  }
   if(published.status!=='PUBLISHED')return;
   await assertCurrent();
   // One fixed event, no private data or caller-selected ref. Unknown responses are
@@ -191,6 +294,20 @@ export async function wakePublishedTemplate(io,published,assertCurrent,record) {
   const response=await io.request('POST',`${repo}/dispatches`,{event_type:'steward-template-event',client_payload:{schemaVersion:1}});
   check(response.status===204,'TEMPLATE_WAKE_UNCONFIRMED');
   await record({kind:'template-wake',status:'ACCEPTED'});
+}
+
+export async function recordPromotionFailure(error,record) {
+  const code=/^(?:PROMOTION|CONTROLLER_SOURCE|NATIVE_RULE_PARAMETERS)_[A-Z0-9_]+$/.test(error?.message??'')?error.message:'PROMOTION_UNAVAILABLE';
+  await record({kind:'failure',code});throw Error(code);
+}
+
+export async function publishPromotedSources(io,plan,target,appId,guard,record){
+  const published=await publishTemplateTag(io,plan,guard,record);
+  await record({kind:'template-result',...published});
+  const controller=await publishControllerSource(io,target,appId,guard,record);
+  await record({kind:'controller-source-result',...controller});
+  await wakePublishedTemplate(io,published,guard,record);
+  await guard();
 }
 
 export async function main(env=process.env,transport=fetch) {
@@ -212,14 +329,17 @@ export async function main(env=process.env,transport=fetch) {
   const plan=JSON.parse(await readFile(planPath,'utf8'));await record({kind:'template-plan',...plan});
   await assertCurrent();
   await withGovernanceCredential(env,async io=>{
-    const adopted=await promoteRequiredWorkflow(io,source.sha,assertCurrent,record);await record({kind:'rules-result',...adopted});
-    const published=await publishTemplateTag(io,plan,assertCurrent,record);await record({kind:'template-result',...published});
-    await wakePublishedTemplate(io,published,assertCurrent,record);
+    // The source namespace must be protected before any promotion write occurs.
+    const appId=Number(env.GOVERNANCE_APP_ID);
+    const guard=createSourceGuard(io,appId,assertCurrent);
+    await guard();
+    const {verifyCurrent,...adopted}=await promoteRequiredWorkflows(io,source.sha,guard,record,maintenanceRuleId);
+    await record({kind:'rules-result',...adopted});
+    await publishPromotedSources(io,plan,adopted.sha,appId,verifyCurrent,record);
   },transport);
   process.stdout.write('Promotion: adopted and reconciled\n');
   }catch(error){
-    const code=/^PROMOTION_[A-Z0-9_]+$/.test(error?.message??'')?error.message:'PROMOTION_UNAVAILABLE';
-    await record({kind:'failure',code});throw Error(code);
+    await recordPromotionFailure(error,record);
   }
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {

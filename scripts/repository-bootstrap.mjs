@@ -1,3 +1,4 @@
+import apiVersion from "../config/github-api.json" with { type: "json" };
 import {assertTemplateWake} from './template-entry.mjs';
 import {parseAcceptanceTarget} from './bootstrap-acceptance.mjs';
 export {decodeAcceptanceTarget,parseAcceptanceTarget} from './bootstrap-acceptance.mjs';
@@ -26,8 +27,8 @@ export function bootstrapNativeIO(token,transport=fetch) {
     if(init?.method==='GET'&&target.origin==='https://api.github.com'&&/^\/repos\/[^/]+\/[^/]+\/git\/matching-refs$/.test(target.pathname))target.pathname+='/';
     return transport(target,init);
   };
-  const client=new Octokit({auth:token,log,request:{fetch:nativeFetch,headers:{'x-github-api-version':'2026-03-10'}}});
-  client.hook.before('request',options=>{options.headers['x-github-api-version']='2026-03-10';});
+  const client=new Octokit({auth:token,log,request:{fetch:nativeFetch,headers:{'x-github-api-version':apiVersion.version}}});
+  client.hook.before('request',options=>{options.headers['x-github-api-version']=apiVersion.version;});
   return {async request(method,path,body){
     try {const r=await client.request(`${method} ${path}`,{...body,request:{signal:AbortSignal.timeout(60_000)}});
       const value=method==='GET'&&/\/rulesets\/\d+$/.test(path)?await completeNativeRuleParameters(client,r.data):r.data;
@@ -163,7 +164,7 @@ export async function verifyBootstrapSource(central,s,env,execute=promisify(exec
 
 export async function main(transport=fetch) {
   const nativeTransport=(input,init)=>{
-    const headers=new Headers(init?.headers);headers.set('X-GitHub-Api-Version','2026-03-10');
+    const headers=new Headers(init?.headers);headers.set('X-GitHub-Api-Version',apiVersion.version);
     return transport(input,{...init,headers});
   };
   const env=process.env,appId=Number(env.GOVERNANCE_APP_ID),single=bootstrapOnly(env);
@@ -173,7 +174,7 @@ export async function main(transport=fetch) {
   const config=JSON.parse(await readFile('config/governance/bootstrap.json','utf8'));
   check(config.schemaVersion===1&&Object.keys(config).sort().join(',')==='rules,schemaVersion'&&Array.isArray(config.rules),'CONFIG');
   const app=new Octokit({authStrategy:createAppAuth,auth:{appId,privateKey:env.GOVERNANCE_APP_PRIVATE_KEY},log,request:{fetch:nativeTransport}});
-  app.hook.before('request',options=>{options.headers['x-github-api-version']='2026-03-10';});
+  app.hook.before('request',options=>{options.headers['x-github-api-version']=apiVersion.version;});
   const fact=(await app.request('GET /app')).data,installation=(await app.request('GET /orgs/splrad/installation')).data;
   check(fact.id===appId&&installation.app_id===appId&&installation.account?.id===302208797&&!installation.suspended_at,'GOVERNANCE_APP');
   const publicReader=new Octokit({log,request:{fetch:nativeTransport}});

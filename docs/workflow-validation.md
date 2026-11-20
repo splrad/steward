@@ -6,7 +6,7 @@
 
 jactionlint、shellcheck、pyflakes 与 zizmor 使用中央锁定工具扫描真实 YAML。候选的忽略配置不能关闭检查。标题入口按已批准的 `E07-TITLE-METADATA-20261028` 固定元数据例外处理；原始诊断、退出码和其他失败保留。扫描工具直接支持 queue 和 `job.workflow_*`，无需旧的工作流镜像或任务解释器。
 
-zizmor 的两个已采用例外只匹配原生 `dangerous-triggers` 诊断的准确文件路径和事件位置：中央及模板的 `pr-title.yml` 中 `on.pull_request_target`，以及中央 `governance-promotion.yml` 中 `on.workflow_run`。后者的决策为 `E07-PROMOTION-WORKFLOW-RUN-20261031`。其他位置、其他诊断、无效输出和工具异常均失败。工作流权限和写入边界由实际入口及常规审查核验，具体见 [治理提升](governance-promotion.md)。
+zizmor 保留原始扫描输出及退出码。标题、治理提升和标签入口的已审触发器按各自文件和事件位置核验。中央维护决定 `E11-CENTRAL-MAINTENANCE-WORKFLOW-RUN-20261118` 仅在原生事件已绑定中央仓 ID 1296724484 时接受 `.github/workflows/maintenance-event.yml` 的 `on.workflow_run` 主位置产生的原生 `dangerous-triggers` 诊断。其他仓、无仓身份的本地扫描、其他路径、事件、诊断、解析错误和工具失败仍阻断采用。维护接收器的来源、分支、权限、写入及暂停保护须随其实现独立审查。关于治理提升的既有决定见[治理提升](governance-promotion.md)。
 
 dependency-review 比较准确 base/head，采用 high 阈值，覆盖 runtime、development、unknown，等待原生快照告警最多 600 秒，不回写 PR。NuGet 实际直接/传递覆盖和组织 required workflow 的平台强制仍须在隔离及线上采用阶段取证。
 

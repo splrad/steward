@@ -1,3 +1,5 @@
+import contract from "../../../config/settings-source-events.json" with { type: "json" };
+import apiVersion from "../../../config/github-api.json" with { type: "json" };
 // Fixed identities cannot be selected by incoming payloads.
 export const POLICY = Object.freeze({
   app: '5639432', installation: 179184801, orgId: 302208797, org: 'splrad',
@@ -29,21 +31,19 @@ const signingKey = cachedKey(async pem => {
   if (key.algorithm.modulusLength < 2048) throw new Error('key_strength');
   return key;
 });
-const ACTIONS = Object.freeze({
-  repository: ['created', 'edited', 'unarchived'],
-  label: ['created', 'edited', 'deleted'],
-  installation: ['created', 'unsuspend', 'new_permissions_accepted'],
-  installation_repositories: ['added', 'removed'],
-});
+function normalizedAction(event, body) {
+  if (event !== 'create') return body.action;
+  if (body.ref_type === 'branch' && typeof body.ref === 'string' &&
+      body.ref.length > 0 && body.ref === body.repository?.default_branch) return 'default_branch_created';
+}
 const answer = (status, code) => new Response(code, {
   status, headers: {'content-type': 'text/plain', 'cache-control': 'no-store'},
 });
 
 export function eligible(event, body) {
   if (body?.installation?.id !== POLICY.installation) return false;
-  const defaultBranchCreated = event === 'create' && body.ref_type === 'branch' &&
-    body.ref === body.repository?.default_branch;
-  if (!defaultBranchCreated && !ACTIONS[event]?.includes(body.action)) return false;
+  if (contract.schemaVersion !== 1 || !Object.hasOwn(contract.actions, event) ||
+      !contract.actions[event].includes(normalizedAction(event, body))) return false;
   // Suppress only writes performed by full-sync, not bot-created repositories/branches.
   if ((event === 'label' || (event === 'repository' && body.action === 'edited')) &&
     body.sender?.type === 'Bot' && body.sender?.login === POLICY.bot) return false;
@@ -102,7 +102,7 @@ export async function dispatch(env, metadata, fetcher = fetch, jwtFactory = appJ
     return fetcher(API + path, {
       method, redirect: 'manual', signal: AbortSignal.timeout(1500),
       headers: {accept: 'application/vnd.github+json', authorization: `Bearer ${credential}`,
-        'user-agent': 'splrad-settings-events', 'x-github-api-version': '2026-03-10',
+        'user-agent': 'splrad-settings-events', 'x-github-api-version': apiVersion.version,
         'content-type': 'application/json'},
       ...(body === undefined ? {} : {body: JSON.stringify(body)}),
     });
@@ -163,7 +163,7 @@ export async function handle(request, env, dispatchFn = dispatch) {
   }
   if (!eligible(event, body)) return answer(200, 'ignored');
   const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
-  const result = await dispatchFn(env, {delivery, event, action: body.action ?? 'default_branch_created', body_sha256: digest});
+  const result = await dispatchFn(env, {delivery, event, action: normalizedAction(event, body), body_sha256: digest});
   // Never log payloads, repository names, labels, keys, tokens, URLs, or upstream bodies.
   return answer(result.accepted ? 202 : 502, result.code);
 }

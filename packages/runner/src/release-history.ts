@@ -1,7 +1,9 @@
 import {createHash} from 'node:crypto';
 import {decodeCompletionArchive,reconcileCycleHistory,type CompletionArchive,type CycleCompletionFact,type CycleHistoryFact,type RepairDecisionFact} from '../../core/src/release-history.js';
-import {evaluateCompletion,type CycleRecord,type RepositoryRecord} from '../../core/src/release-observation.js';
-import {NativeEvidenceReader,type EvidenceTransport} from './native-release-evidence.js';
+import {githubUnits,evaluateCompletion,type CycleRecord,type RepositoryRecord} from '../../core/src/release-observation.js';
+import {readCycleDelivery} from './release-pipeline.js';
+import {verifyExecutionSource} from './release-run.js';
+import {NativeEvidenceReader,EvidenceReadError,nativeRunFact,type EvidenceContext,type EvidenceTransport} from './native-release-evidence.js';
 
 interface ProtectedRecord {path:string;commit:string;value:any;content?:string}
 export interface HistorySnapshot {
@@ -13,6 +15,30 @@ export interface HistorySnapshot {
 export function completionFile(value:CompletionArchive) {
   const content=JSON.stringify(value)+'\n',sha256=createHash('sha256').update(content).digest('hex');decodeCompletionArchive(Buffer.from(content));
   return {path:`evidence/completion/${sha256}.json`,content,sha256};
+}
+export async function verifyFrozenReceipts(context:EvidenceContext,records:ProtectedRecord[],io:EvidenceTransport,alreadyCompleted=false) {
+  const {cycle}=context,reader=new NativeEvidenceReader(io,context.repository);
+  if (!cycle.freezeOnly?.length) throw Error('missing freeze receipts');
+  const {delivery}=await readCycleDelivery(context,records,io);
+  if(cycle.freezeOnly.some(receipt=>!delivery.units.some(declared=>declared.id===receipt.unitId &&
+      declared.channels.some(channel=>channel.id==='github-release'&&!channel.required) && !declared.channels.some(channel=>channel.required))))
+    throw Error('freeze-only configuration');
+  for(const receipt of cycle.freezeOnly) {
+    const request=cycle.dispatches.find(request=>request.purpose==='build' && request.canonicalRunId===receipt.runId)!;
+    const run=nativeRunFact(await reader.json(`actions/runs/${receipt.runId}/attempts/${receipt.attempt}`));
+    verifyExecutionSource(run,{...context,request});
+    if(run.id!==receipt.runId || run.runAttempt!==receipt.attempt || run.conclusion!=='success' || run.status!=='completed')
+      throw Error('freeze-only native run');
+    try {
+      const artifact=await reader.json(`actions/artifacts/${receipt.artifactId}`);
+      const name=`final-${context.repositoryId}-${receipt.unitId}-${cycle.sourceSha}-${receipt.runId}-${receipt.producerAttempt}`;
+      if(artifact.id!==receipt.artifactId || artifact.name!==name || artifact.digest!==receipt.archiveDigest
+        || artifact.workflow_run?.id!==receipt.runId || artifact.workflow_run?.head_sha!==cycle.sourceSha
+        || !(artifact.expired===false || (artifact.expired===true && alreadyCompleted)))throw Error('freeze-only native archive');
+    } catch(error) {
+      if(!(alreadyCompleted && error instanceof EvidenceReadError && error.status===404))throw error;
+    }
+  }
 }
 /** Full native PR enumeration is cross-checked with actual Git reachability and retained candidate identities. */
 export async function inspectCycleHistory(snapshot:HistorySnapshot,io:EvidenceTransport,now:string,
@@ -67,7 +93,17 @@ export async function inspectCycleHistory(snapshot:HistorySnapshot,io:EvidenceTr
   }
   const previous=discovered.filter(fact=>fact.id!==handoff?.id);
   const latest=[...previous].sort((a,b)=>a.mergedAt.localeCompare(b.mergedAt)).at(-1)?.id;
-  for(const {value:cycle} of snapshot.cycles)if(fresh&&(cycle.id===latest||!completions.some(fact=>fact.cycleId===cycle.id&&fact.provenanceComplete
+  const verifiedFreezes:string[]=[];
+  for(const {value:cycle} of snapshot.cycles) {
+    if(!cycle.freezeOnly)continue;
+    try {
+      const context={repository:snapshot.repository,repositoryId:snapshot.repositoryId,appBotId:snapshot.appBotId,cycle};
+      await verifyFrozenReceipts(context,snapshot.domainRecords,io,Boolean(cycle.freezeCompletedAt) ||
+        snapshot.repositoryHistory.some(entry=>entry.value.lastCompletedCycleId===cycle.id));
+      verifiedFreezes.push(cycle.id);
+    } catch {reasons.push('FROZEN_BUILD_SOURCE_UNAVAILABLE');}
+  }
+  for(const {value:cycle} of snapshot.cycles)if(githubUnits(cycle).length&&fresh&&(cycle.id===latest||!completions.some(fact=>fact.cycleId===cycle.id&&fact.provenanceComplete
     &&evaluateCompletion(fact.source,fact.observation,fact.observation.observedAt).result==='PASS'))) {
     try{const value=await fresh(cycle);if(value&&value.kind==='live')completions.push(value);}catch{reasons.push('FRESH_COMPLETION_UNAVAILABLE');}
   }
@@ -80,7 +116,7 @@ export async function inspectCycleHistory(snapshot:HistorySnapshot,io:EvidenceTr
       !==JSON.stringify([pr.base?.repo?.id,pr.base?.ref,pr.head?.repo?.id,pr.head?.ref,pr.merged,pr.merge_commit_sha]))complete=false;
   }
   const result=reconcileCycleHistory({repositoryId:snapshot.repositoryId,inventoryComplete:complete,cycles:edgeCycles,discovered:previous,
-    completions,decisions,repairActorId,now});
+    completions,decisions,repairActorId,now,verifiedFreezes});
   return {...result,inventoryComplete:complete,defaultHead:before.defaultHead,stateHead:before.stateHead,discovered,nativePulls,nativeDecisions,
     verifiedDecisions:decisions,edgeCycles,readReasons:reasons,pendingHandoff:handoff?.id??null};
 }

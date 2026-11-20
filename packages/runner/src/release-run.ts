@@ -1,3 +1,5 @@
+import {githubUnits} from '../../core/src/release-observation.js';
+import { releaseBodyMatches } from './release-body.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { readFile, mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
@@ -396,11 +398,12 @@ export interface DispatchHistory { complete: boolean; observations:NativeDispatc
 /** Download and verify the original formal bytes; continuation never selects a build. */
 export async function verifyContinuationReleases(context:EvidenceContext,io:EvidenceTransport) {
   const reader=await formalReleaseReader(context,io);
-  for(const unit of context.cycle.units) {
+  for(const unit of githubUnits(context.cycle)) {
     if(unit.releaseId===null||!unit.assets.length||unit.manifestDigest===null||unit.notesDigest===null)fail('frozen release required');
     const release=await reader.json(`releases/${unit.releaseId}`),assets=await reader.pages(`releases/${unit.releaseId}/assets`,'');
     if(release.id!==unit.releaseId||release.tag_name!==unit.tag||release.author?.id!==context.appBotId||release.draft!==false||release.immutable!==true
-      ||typeof release.body!=='string'||sha256(release.body)!==unit.notesDigest||(await reader.json(`commits/${encodeURIComponent(unit.tag)}`)).sha!==context.cycle.sourceSha
+      ||!await releaseBodyMatches({ repository: context.repository, repositoryId: context.repositoryId, releaseId: release.id,
+          sourceSha: context.cycle.sourceSha, tag: unit.tag, frozenDigest: unit.notesDigest }, release.body, path => reader.json(path))||(await reader.json(`commits/${encodeURIComponent(unit.tag)}`)).sha!==context.cycle.sourceSha
       ||assets.length!==unit.assets.length||new Set(assets.map(asset=>asset.name)).size!==assets.length)fail('formal release identity');
     for(const asset of assets) {
       const actual=await reader.downloadDigest(`releases/assets/${asset.id}`);
@@ -659,7 +662,7 @@ export async function readChannelArtifacts(context:EvidenceContext,run:NativeRun
 
 /** Short read-only probe Runs own credentials and native index tools unavailable to the central reader. */
 export async function observeNativeChannels(context:EvidenceContext,history:ChannelRecord[],
-  root:string,controllerDirectory:string,token:string,io:EvidenceTransport,now:string,oras:OrasRead=nativeOrasRead) {
+  root:string,controllerDirectory:string,token:string,io:EvidenceTransport,now:string,oras:OrasRead=nativeOrasRead, allowProbeDispatch=true) {
   const reader=new NativeEvidenceReader(io,context.repository),repository=await reader.json('');
   if(repository.id!==context.repositoryId||repository.full_name!==context.repository||repository.archived!==false||repository.disabled!==false)fail('channel repository');
   const allTargets=channelTargets(context,context.cycle.requiredChannels.map(channel=>{
@@ -740,6 +743,7 @@ export async function observeNativeChannels(context:EvidenceContext,history:Chan
     if(observed.reads.length===targets.length)return {files,results,runs,reads:[...direct.reads,...observed.reads],probe:'OBSERVED' as const,executionSha,defaultBranch:repository.default_branch,workflowId:workflow.id};
   }
   if((await reader.json(`commits/${encodeURIComponent(repository.default_branch)}`)).sha!==executionSha)fail('probe source moved');
+  if (!allowProbeDispatch) return {files,results,runs,reads:direct.reads,probe:'UNKNOWN' as const,executionSha,defaultBranch:repository.default_branch,workflowId:workflow.id};
   // No business request or budget is written for this read-only dispatch. Lost responses are found by the same semantic key on the next wake.
   try {await io.request('POST',`/repos/${context.repository}/actions/workflows/${workflow.id}/dispatches`,512*1024,{ref:repository.default_branch,inputs});}catch{/* Next wake reconciles matching native Runs. */}
   return {files,results,runs,reads:direct.reads,probe:'REQUESTED' as const,executionSha,defaultBranch:repository.default_branch,workflowId:workflow.id};

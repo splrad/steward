@@ -1,3 +1,4 @@
+import { releaseBodyMatches } from './release-body.js';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -135,14 +136,25 @@ export class NativeEvidenceReader {
     return {digest:hash(bytes),size:bytes.length};
   }
   async pages(path: string, field: string, identity: 'id' | 'name' = 'id'): Promise<any[]> {
-    let total: number | null = null;
+    let total: number | null = null, canonicalRepositoryId: number | undefined;
     const first = this.path(`${path}${path.includes('?') ? '&' : '?'}per_page=100`), endpoint = new URL(first, 'https://api.github.com');
     const values = await collectAllPages<any>(first, async next => {
       const url = new URL(next, 'https://api.github.com');
-      check(url.origin === endpoint.origin && url.pathname === endpoint.pathname && !url.username && !url.password && !url.hash, 'pagination origin');
-      for (const [key, value] of endpoint.searchParams) check(url.searchParams.get(key) === value, 'pagination query');
+      check(url.origin === endpoint.origin && !url.username && !url.password && !url.hash, 'pagination origin');
+      if (url.pathname !== endpoint.pathname) {
+        const alias = /^\/repositories\/([1-9][0-9]*)(\/.*)?$/.exec(url.pathname);
+        check(alias && (alias[2] ?? '') === endpoint.pathname.slice(this.path('').length), 'pagination origin');
+        if (canonicalRepositoryId === undefined) {
+          const repository = await this.json('');
+          check(positive(repository.id) && repository.full_name === this.repository, 'pagination repository identity');
+          canonicalRepositoryId = repository.id;
+        }
+        check(alias[1] === String(canonicalRepositoryId), 'pagination repository identity');
+      }
+      for (const key of endpoint.searchParams.keys()) check(same(url.searchParams.getAll(key), endpoint.searchParams.getAll(key)), 'pagination query');
       check([...url.searchParams.keys()].every(key => endpoint.searchParams.has(key) || key === 'page'), 'pagination query');
-      const response = await this.io.request('GET', url.pathname + url.search);
+      // Keep the named endpoint so credential-routing boundaries remain unchanged.
+      const response = await this.io.request('GET', endpoint.pathname + url.search);
       if (response.status !== 200) throw new EvidenceReadError(response.status, response.headers.get('retry-after'));
       const body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(response.bytes));
       check(field ? Number.isSafeInteger(body.total_count) && body.total_count >= 0 && Array.isArray(body[field]) : Array.isArray(body), 'pagination envelope');
@@ -357,12 +369,13 @@ async function objectRead(reader: NativeEvidenceReader, object: NativeResult['ob
       const unit=context.cycle.units.find(unit=>unit.releaseId===object.id);
       check(unit && native.tag_name===unit.tag && native.author?.id===context.appBotId,'release source');
       if(!unit.assets.length || unit.manifestDigest===null || unit.notesDigest===null)return proof;
-      check(native.draft===false && native.immutable===true && hash(native.body)===unit.notesDigest,'release frozen facts');
+      check(native.draft===false && native.immutable===true && await releaseBodyMatches({ repository: context.repository, repositoryId: context.repositoryId, releaseId: native.id,
+          sourceSha: context.cycle.sourceSha, tag: unit.tag, frozenDigest: unit.notesDigest }, native.body, path => reader.json(path)),'release frozen facts');
       check((await reader.json(`commits/${encodeURIComponent(unit.tag)}`)).sha===context.cycle.sourceSha,'release tag source');
       // Match the frozen cycle byte set as well as the producer's object digest.
       const assets = await reader.pages(`releases/${object.id}/assets`, '');
       check(assets.length===unit.assets.length && new Set(assets.map(asset=>asset.name)).size===assets.length,'release asset set');
-      const hashes = [];
+      const hashes: [number, string, number, string][] = [];
       for (const asset of assets) {
         const downloaded = await reader.downloadDigest(`releases/assets/${asset.id}`);
         check(downloaded.size===asset.size,'asset size');
@@ -370,7 +383,17 @@ async function objectRead(reader: NativeEvidenceReader, object: NativeResult['ob
         hashes.push([asset.id, asset.name, asset.size, downloaded.digest]);
       }
       check(same(stableReleaseFacts(native),stableReleaseFacts(await reader.json(path))) && same(stableAssetFacts(assets),stableAssetFacts(await reader.pages(`releases/${object.id}/assets`,''))),'release changed');
-      proof.actualDigest = hash(JSON.stringify([native.id,native.tag_name,native.target_commitish,native.draft,native.immutable,native.body,hashes.sort((a,b)=>Number(a[0])-Number(b[0]))]));
+      hashes.sort((a,b)=>Number(a[0])-Number(b[0]));
+      const objectDigest = (body: string) => hash(JSON.stringify([native.id,native.tag_name,native.target_commitish,native.draft,native.immutable,body,hashes]));
+      proof.actualDigest = objectDigest(native.body);
+      if (proof.actualDigest !== object.digest && hash(native.body) !== unit.notesDigest) {
+        // Older producer receipts serialized the original Markdown inline.
+        const notes = assets.find(asset => asset.name === 'release-notes.md');
+        check(notes, 'missing frozen notes');
+        const { bytes } = await reader.response(`releases/assets/${notes.id}`, notes.size);
+        check(hash(bytes) === unit.notesDigest, 'original release notes');
+        proof.actualDigest = objectDigest(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+      }
     }
     proof.status = proof.actualDigest === object.digest ? 'MATCH' : 'CONFLICT';
   } catch (error) {

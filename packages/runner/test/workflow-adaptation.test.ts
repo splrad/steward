@@ -17,13 +17,13 @@ it('uses platform workflow provenance and readonly validation jobs',async()=>{
     if(step.run)expect(step.run).not.toContain('${{');
   }
   expect(d.permissions).toEqual({contents:'read','pull-requests':'read'});
-  expect(d.jobs.summary.if).toBe('${{ always() }}');
+  expect(d.jobs.summary.if).toBe("${{ always() && (github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch) }}");
 });
-it('executes product commands from native YAML',async()=>{
-  const d=YAML.parse(await readFile('templates/release/steward-release-publish.yml','utf8')),step=d.jobs.build.steps.find((s:any)=>s.id==='build');
-  expect(step.run).toContain('dotnet restore CADFontAutoReplace.slnx --locked-mode');
-  expect(step.run).toContain('pwsh -NoProfile -File ./tools/Publish-ReleaseAssets.ps1');
-  expect(step.run).not.toMatch(/\$\{\{|SkipPluginBuild|release-pipeline build/);expect(step.env).toBeUndefined();
+it('requires product selections before building or claiming signing is inapplicable',async()=>{
+  const workflow=YAML.parse(await readFile('templates/release/steward-release-publish.yml','utf8'));
+  expect(workflow.jobs.build.strategy.matrix).toEqual({unit:"${{ fromJSON('[]') }}",target:"${{ fromJSON('[]') }}"});
+  expect(workflow.jobs.build.steps.find((step:any)=>step.id==='build').run).toMatch(/^throw /);
+  expect(workflow.jobs.sign.steps.find((step:any)=>step.id==='signing').run).toBe('exit 1');
 });
 it('activates the trusted policy tool paths before validation outside its checkout',async()=>{
   const d=YAML.parse(await readFile('.github/workflows/pr-validation-native.yml','utf8'));
@@ -55,5 +55,15 @@ it('binds WinGet execution to the controller tool before channel credentials are
     expect(steps[business].run).toContain('& $env:WINGETCREATE_EXE update SPLRAD.LayerScape.Deployer --version $version --urls "$url|x64" --out generated --format yaml');
     expect(steps[business].run).not.toMatch(/\bmise\b/);
     expect(steps.filter((s:any)=>s.run).map((s:any)=>s.run).join('\n')).not.toMatch(/mise -C product/);
+  }
+});
+it('verifies exact and default WinGet downloads without executing the installer',async()=>{
+  const workflow=YAML.parse(await readFile('templates/release/steward-release-channels.yml','utf8'));
+  for(const job of ['winget-submit','winget-verify']){
+    const script=workflow.jobs[job].steps.find((s:any)=>s.name==='business-'+job).run;
+    expect(script).toContain('Invoke-WebRequest -Uri $urls[0] -OutFile');
+    expect(script).toContain("foreach ($selection in @('exact','default'))");
+    expect(script).toContain('WINGET_DOWNLOAD_BYTES');
+    expect(script).not.toMatch(/winget uninstall|@\('install'|WINGET_INSTALLED_BYTES/);
   }
 });

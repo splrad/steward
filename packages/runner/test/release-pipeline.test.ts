@@ -8,7 +8,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, copyFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { pipelineDownloadPhase, pipelineRecoverFinal, findFrozenFinal, pipelineProducers, pipelineCollect } from '../src/release-pipeline.js';
+import { pipelineDownloadPhase, pipelineRecoverFinal, findFrozenFinal, pipelineProducers, pipelineCollect, pipelineDownloadProducers } from '../src/release-pipeline.js';
 import { producerArtifactName } from '../src/release-run.js';
 import type { GhCommand } from '../src/gh-release.js';
 import { fixtureNativePages } from './native-pagination-fixture.js';
@@ -158,4 +158,17 @@ it('passes a native sha256 digest and exact artifact ID without double prefixing
   download.mockClear();
   await expect(pipelineDownloadPhase(historicalPipelineSource(record), 101, 'sha256:' + digest, 'collected', 'unused-output', 'unused-policy', 'unused-home', gh)).rejects.toThrow('phase artifact source');
   expect(download).not.toHaveBeenCalled();
+});
+
+it('discards downloaded producers if the current attempt moves and permits the original destination to be retried', async () => {
+  const f=observation(), source=historicalPipelineSource(record);
+  const selection=await pipelineProducers(source,f.gh,fixtureNativePages(f.gh));
+  const root=await mkdtemp(join(tmpdir(),'collect-drift-')); roots.push(root);
+  vi.spyOn(downloads,'downloadNativeArtifact').mockImplementation(async input=>{await mkdir(input.directory);});
+  const read=()=>pipelineDownloadProducers(source,selection,join(root,'raw'),root,join(root,'home'),f.gh);
+  f.run.run_attempt++;
+  await expect(read()).rejects.toThrow('run changed during producer download');
+  f.run.run_attempt--;
+  await read();
+  expect(await readdir(join(root,'raw'))).toEqual([f.artifacts.artifacts[0]!.name]);
 });

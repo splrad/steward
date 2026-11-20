@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest';
+import { GITHUB_API_VERSION } from '../../github/src/api-version.js';
 import { generateKeyPairSync } from 'node:crypto';
 import { nativeReleaseApp } from '../../github/src/app-auth.js';
 const key=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'}).toString();
@@ -7,14 +8,14 @@ function fixture() {
   const minted:any[]=[],revoked:string[]=[],scopes=new Map<string,any>();
   const fetcher=(async(input,init)=>{
     const url=new URL(String(input)),headers=new Headers(init?.headers),method=init?.method??'GET';
-    expect(url.origin).toBe('https://api.github.com');expect(headers.get('X-GitHub-Api-Version')).toBe('2026-03-10');
+    expect(url.origin).toBe('https://api.github.com');expect(headers.get('X-GitHub-Api-Version')).toBe(GITHUB_API_VERSION);
     let data:any;const path=decodeURIComponent(url.pathname);
     if(path==='/app')data={id:4243096,client_id:'Iv23liuSr0qd4WLJdZhH',slug:'splrad-steward'};
     else if(path==='/orgs/splrad/installation')data={id:145952003,app_id:4243096,account:{id:302208797},suspended_at:null};
     else if(path==='/users/splrad-steward[bot]')data={id:wrongBot?4243096:301115370,type:'Bot'};
     else if(path==='/app/installations/145952003/access_tokens'&&method==='POST') {
       const body=JSON.parse(String(init?.body));
-      // Native GitHub API 2026-03-10 rejects the legacy field before minting a token.
+      // The reviewed GitHub API rejects the legacy field before minting a token.
       if(Object.hasOwn(body.permissions,'variables'))return new Response(JSON.stringify({message:'The permissions requested are not granted to this installation.'}),{status:422,headers:{'content-type':'application/json'}});
       const token=`ghs_offline_${++sequence}`;minted.push(body);scopes.set(token,body);
       data={token,expires_at:new Date(Date.now()+55*60_000).toISOString(),permissions:body.permissions,repository_selection:'selected'};
@@ -28,16 +29,6 @@ function fixture() {
   }) as typeof fetch;
   return {fetcher,minted,revoked,setExtraScope:()=>extraScope=true,setWrongBot:()=>wrongBot=true};
 }
-it('scopes update discovery to one repository with read-only content and revokes on error',async()=>{
-  const f=fixture(),app=await nativeReleaseApp(key,f.fetcher);
-  await expect(app.forUpdateReadRepository(12,async()=>{throw Error('read failure');})).rejects.toThrow('read failure');
-  expect(f.minted).toEqual([{repository_ids:[12],permissions:{metadata:'read',contents:'read'}}]);expect(f.revoked).toHaveLength(1);
-});
-it('refuses widened update read credentials before repository processing',async()=>{
-  const f=fixture(),app=await nativeReleaseApp(key,f.fetcher);f.setExtraScope();let called=false;
-  await expect(app.forUpdateReadRepository(12,async()=>{called=true;})).rejects.toThrow('UPDATE_TOKEN_SCOPE');
-  expect(called).toBe(false);expect(f.revoked).toHaveLength(1);
-});
 it('scopes Pages maintenance to one product, without Pages deployment or workflow write permission',async()=>{
   const f=fixture(),app=await nativeReleaseApp(key,f.fetcher);
   await expect(app.forPagesRepository(12,async()=>{throw Error('fixture Pages failure');})).rejects.toThrow('fixture Pages failure');
@@ -118,4 +109,48 @@ it('revokes independent PR reader and release writer when a nested adoption read
   await expect(app.forRepository(12,async()=>app.forCandidateReadRepository(12,async()=>{throw Error('event page denied');}))).rejects.toThrow('event page denied');
   expect(f.minted).toHaveLength(2);expect(f.revoked).toHaveLength(2);
   expect(f.minted[0].permissions.pull_requests).toBeUndefined();expect(f.minted[1].permissions.pull_requests).toBe('read');
+});
+it.each(['valid','missing-list','wrong-node','revoke-failure','scope'])('reads two fixed central rules and revokes the rule credential: %s',async mode=>{
+  const f=fixture(),calls:string[]=[];
+  if(mode==='scope')f.setExtraScope();
+  const native=async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const path=new URL(String(input)).pathname,method=init?.method??'GET';
+    const respond=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json'}});
+    if(path==='/installation/token'&&mode==='revoke-failure')return respond({message:'revoke rejected'},403);
+    if(path.includes('/rulesets/')||path==='/graphql'){
+      const token=new Headers(init?.headers).get('authorization')?.split(' ').at(-1);
+      expect(token).toBe('ghs_offline_1');
+      calls.push(method+' '+path);
+      if(path==='/graphql'){
+        const body=JSON.parse(String(init?.body));
+        expect(body.query.trimStart()).toMatch(/^query\(/);expect(body.variables).toEqual({id:'fixed-writer'});
+        return respond({data:{node:{id:'fixed-writer',databaseId:mode==='wrong-node'?1:26678450,
+          rules:{nodes:[{type:'UPDATE',parameters:{updateAllowsFetchAndMerge:false}}],pageInfo:{hasNextPage:false}}}}});
+      }
+      expect(method).toBe('GET');
+      const id=Number(path.split('/').at(-1));
+      return respond({id,source_type:'Organization',source:'splrad',node_id:'fixed-writer',
+        bypass_actors:mode==='missing-list'?undefined:[],rules:id===26678450?[{type:'update'}]:[{type:'deletion'}]});
+    }
+    return f.fetcher(input,init);
+  };
+  const app=await nativeReleaseApp(key,native);
+  if(mode==='valid'){
+    const rules=await app.readCentralMaintenanceRules();
+    expect(calls).toEqual(['GET /repos/splrad/steward/rulesets/26678449','GET /repos/splrad/steward/rulesets/26678450','POST /graphql']);
+    expect(rules[1]?.rules?.at(-1)).toMatchObject({parameters:{update_allows_fetch_and_merge:false}});
+    expect(JSON.stringify(rules)).not.toContain('ghs_offline');
+  } else await expect(app.readCentralMaintenanceRules()).rejects.toThrow();
+  expect(f.minted).toEqual([{repository_ids:[1296724484],permissions:{metadata:'read',organization_administration:'write'}}]);
+  if(mode!=='revoke-failure')expect(f.revoked).toHaveLength(1);
+  if(mode==='scope')expect(calls).toEqual([]);
+});
+
+it('binds central maintenance to one repo with no organization or administration permission',async()=>{
+  const f=fixture(),app=await nativeReleaseApp(key,f.fetcher);
+  await expect(app.forRepository(12,async()=>{},'maintenance')).rejects.toThrow('MAINTENANCE_REPOSITORY_ID');
+  expect(f.minted).toHaveLength(0);
+  await app.forRepository(1296724484,async()=>{},'maintenance');
+  expect(f.minted).toEqual([{repository_ids:[1296724484],permissions:{metadata:'read',contents:'write',actions:'write'}}]);
+  expect(f.revoked).toHaveLength(1);
 });

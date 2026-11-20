@@ -8,7 +8,7 @@ import { registerOfflineFixtureRoot } from './offline-fixtures.js';
 import { isolatedBuildEnvironment } from '../src/build-environment.js';
 import { mergeCandidate, prepareCandidateWrite, resumeCandidateWrite, pushPreparedCandidate, type CandidateWritePort, type PreparedCandidateWrite } from '../src/release-candidate-update.js';
 import type { CandidateSnapshot } from '../../core/src/release-candidate.js';
-import { advanceReleaseCandidate, type CandidateSession, type CandidateRuntime, type CandidatePullRequest } from '../src/release-candidate.js';
+import { advanceReleaseCandidate, candidateObservationIdentity, type CandidateSession, type CandidateRuntime, type CandidatePullRequest } from '../src/release-candidate.js';
 
 vi.setConfig({ testTimeout: 60_000 });
 const roots: string[] = [], digest = 'd'.repeat(64), identity = { name: 'Candidate Fixture', email: 'candidate@example.invalid' };
@@ -82,7 +82,38 @@ it('state failure sends no push and an unaccepted response remains pending', asy
   const f = writer(); f.port.persistPending = async () => { throw new Error('state unavailable'); };
   await expect(resumeCandidateWrite(f.prepared, f.port)).rejects.toThrow('state unavailable'); expect(f.events).toEqual([]);
   f.port.persistPending = async () => {}; f.port.push = async () => { throw new Error('not accepted'); };
-  expect((await resumeCandidateWrite(f.prepared, f.port)).status).toBe('UNKNOWN');
+  expect((await resumeCandidateWrite(f.prepared, f.port, async () => {})).status).toBe('UNKNOWN');
+});
+it('reconciles an accepted push after stale REST, PR and Git reads without replaying the write', async () => {
+  const f = writer(), delays: number[] = [];
+  let postPushReads = 0;
+  f.port.read = async () => {
+    if (f.events.includes('push')) {
+      switch (++postPushReads) {
+        case 1: throw Error('CANDIDATE_REF_DRIFT');
+        case 2: return { ...f.state, head: f.prepared.expectedHead };
+        case 3: throw Error('CANDIDATE_PR_HEAD_DRIFT');
+      }
+    }
+    return { ...f.state };
+  };
+  expect(await resumeCandidateWrite(f.prepared, f.port, async ms => { delays.push(ms); }))
+    .toEqual({ status: 'APPLIED', head: f.proposed });
+  expect(delays).toEqual([1000, 3000, 8000]);
+  expect(f.events).toEqual(['pending', 'push', 'finish']);
+});
+it('keeps the archived intent after persistent or unrelated post-push read failures', async () => {
+  for (const [code, expectedReads] of [['CANDIDATE_PR_HEAD_DRIFT', 4], ['CANDIDATE_PR_IDENTITY', 1]] as const) {
+    const f = writer();
+    let reads = 0;
+    f.port.read = async () => {
+      if (f.events.includes('push')) { reads++; throw Error(code); }
+      return { ...f.state };
+    };
+    await expect(resumeCandidateWrite(f.prepared, f.port, async () => {})).rejects.toThrow(code);
+    expect(reads).toBe(expectedReads);
+    expect(f.events).toEqual(['pending', 'push']);
+  }
 });
 it('restores archived Git objects after directory loss and recovers a real accepted push followed by a human commit', async () => {
   const f = await fixture(), remote = join(f.root, 'remote.git'); await f.git('init', '--bare', remote); await f.git('push', '--porcelain', remote, 'HEAD:refs/heads/main');
@@ -137,6 +168,73 @@ async function controllerFixture() {
   };
   return { ...f, io, session, pr, comments, saved, setSnapshot: (value: CandidateSnapshot) => { snapshot = value; }, pushes: () => pushes, generations: () => generations };
 }
+function staleContributors(f: Awaited<ReturnType<typeof controllerFixture>>) {
+  const actor = (id: number, login: string) => ({ id, login, type: 'User', profileUrl: `https://github.com/${login}`, avatarUrl: `https://avatars.githubusercontent.com/u/${id}` });
+  const actors = [actor(7, 'repository-author'), actor(44, 'human-committer'), actor(19864447, 'web-flow'), null];
+  const contributors = { contributors: actors.slice(1, 3).map(value => {
+    const { type, ...profile } = value!; return { ...profile, alt: profile.login };
+  }), unresolved: 1 };
+  f.session.identity = { authorsDigest: digest, sourceDigest: digest, actors, contributors,
+    units: [{ id: 'app', actors: structuredClone(actors), contributors: structuredClone(contributors) }] };
+  f.session.preview = 'Old preview with web-flow';
+  f.session.repository.candidate!.statusCommentId = 10;
+  f.comments.push({ id: 10, authorId: 42, body: `<!-- steward:candidate-status:${digest} -->\nOld preview with web-flow` });
+  f.io.content = async () => { throw Error('must not call content or its model/cache writer'); };
+}
+it.each(['editing', 'human-conflict', 'source-conflict'])(
+  'refreshes cached identity during %s without changing native actors or protected candidate files', async kind => {
+    const f = await controllerFixture(); staleContributors(f);
+    const path = kind === 'source-conflict' ? 'code.txt' : '.release-notes/app.md';
+    const human = await f.commit(path, kind === 'source-conflict' ? 'Human source\n' : f.notes.replace('原来概述', '人工概述'));
+    f.pr.head = human; f.pr.editing = kind === 'editing';
+    const before = structuredClone(f.session), blob = await f.git('rev-parse', `${human}:${path}`);
+    const result = await advanceReleaseCandidate(f.session, f.io);
+    expect(result).toMatchObject({ status: kind === 'editing' ? 'WAIT' : 'CONFLICT',
+      reason: kind === 'editing' ? 'EDITING' : kind === 'source-conflict' ? 'SOURCE_CHANGED' : 'HUMAN_EDIT_CONFLICT' });
+    expect(f.session.identity!.contributors.contributors.map(c => c.id)).toEqual([44]);
+    expect(f.session.identity!.units[0]!.contributors.contributors.map(c => c.id)).toEqual([44]);
+    expect(f.session.identity!.contributors.unresolved).toBe(1);
+    expect(f.session.identity!.actors).toEqual(before.identity!.actors);
+    expect(f.session.identity!.units[0]!.actors).toEqual(before.identity!.units[0]!.actors);
+    expect(f.session.identity!.authorsDigest).toBe(before.identity!.authorsDigest);
+    expect(f.session.identity!.sourceDigest).toBe(before.identity!.sourceDigest);
+    expect(f.session.generated).toEqual(before.generated); expect(f.session.repository.candidate).toEqual(before.repository.candidate);
+    expect(f.pr.head).toBe(human); expect(f.pr.body).toBe('Human metadata');
+    expect(await f.git('rev-parse', `${f.pr.head}:${path}`)).toBe(blob);
+    expect(f.pushes()).toBe(0); expect(f.generations()).toBe(0);
+    expect(f.comments.find(c => c.id === 10)!.body).toContain(human);
+    expect(f.comments.find(c => c.id === 10)!.body).not.toContain('web-flow');
+    expect(f.comments[0]!.body).toContain('Human comment');
+    if (kind === 'editing') expect(f.session.preview).toContain('已暂停');
+    else expect(f.session.conflict).toEqual({ head: human, generated: before.generated, paths: [path] });
+  });
+it('reconciles a stale public conflict preview after the corrected projection was already persisted', async () => {
+  const f = await controllerFixture(); staleContributors(f);
+  f.pr.head = await f.commit('.release-notes/app.md', f.notes.replace('原来概述', '人工概述'));
+  const update = f.io.updateComment; let attempts = 0;
+  f.io.updateComment = async (id, body) => { if (++attempts === 1) throw Error('comment unavailable'); await update(id, body); };
+  await expect(advanceReleaseCandidate(f.session, f.io)).rejects.toThrow('comment unavailable');
+  expect(f.saved.at(-1)!.identity!.contributors.contributors.map(c => c.id)).toEqual([44]);
+  expect(f.comments.find(c => c.id === 10)!.body).toContain('web-flow');
+  const restored = structuredClone(f.saved.at(-1)!);
+  expect(await advanceReleaseCandidate(restored, f.io)).toMatchObject({ reason: 'HUMAN_EDIT_CONFLICT' });
+  expect(f.comments.find(c => c.id === 10)!.body).not.toContain('web-flow');
+  expect(await advanceReleaseCandidate(restored, f.io)).toMatchObject({ reason: 'HUMAN_EDIT_CONFLICT' });
+  expect(attempts).toBe(2); expect(f.comments).toHaveLength(2);
+  expect(f.pushes()).toBe(0); expect(f.generations()).toBe(0);
+});
+it.each(['source', 'authors', 'units', 'base', 'closed'])(
+  'does not reinterpret frozen contributor evidence with %s mismatch or closed ownership', async kind => {
+    const f = await controllerFixture(); staleContributors(f); f.pr.editing = true;
+    if (kind === 'source') f.session.identity!.sourceDigest = 'e'.repeat(64);
+    if (kind === 'authors') f.session.identity!.authorsDigest = 'e'.repeat(64);
+    if (kind === 'units') f.session.identity!.units[0]!.id = 'other';
+    if (kind === 'base') f.session.generated!.baseSha = 'e'.repeat(40);
+    if (kind === 'closed') { f.pr.state = 'closed'; f.pr.merged = true; }
+    const frozen = structuredClone(f.session.identity);
+    expect(await advanceReleaseCandidate(f.session, f.io)).toMatchObject({ reason: kind === 'closed' ? 'MERGED_SOURCE_HANDOFF' : 'EDITING' });
+    expect(f.session.identity).toEqual(frozen); expect(f.pushes()).toBe(0); expect(f.generations()).toBe(0);
+  });
 it('a large same-PR preview links the exact archive commit and changes only the bot-owned comment', async () => {
   const f = await controllerFixture(), text = '## 更新内容\n\n' + '发布内容\n'.repeat(6000); f.setSnapshot(f.snapshot(f.B, text));
   expect(await advanceReleaseCandidate(f.session, f.io)).toMatchObject({ status: 'READY', prNumber: 9 });
@@ -181,9 +279,14 @@ it('keeps human differences paused without reclassifying them as generated', asy
 it('an unaccepted pending write is archived before pausing for editing, with no deadlock or push', async () => {
   const f = await controllerFixture(), N = f.snapshot(f.B, f.notes.replace('原来内容', '自动内容'));
   const prepared = await prepareCandidateWrite(f.repo, f.B, N, await mergeCandidate(f.repo, f.snapshot(), f.B, N, f.root), identity, f.root);
-  f.session.pending = { write: prepared, generated: N }; f.session.repository.candidate!.pendingWrite = { proposedCommit: prepared.proposedCommit };
+  const contributors = { contributors: [], unresolved: 0 };
+  const previousIdentity = { sourceDigest: digest, authorsDigest: digest, actors: [], contributors,
+    units: [{ id: 'app', actors: [], contributors }] };
+  f.session.identity = { ...previousIdentity, units: [{ ...previousIdentity.units[0]!, id: 'ui' }] };
+  f.session.pending = { write: prepared, generated: N, previousIdentity }; f.session.repository.candidate!.pendingWrite = { proposedCommit: prepared.proposedCommit };
   f.pr.editing = true;
   expect(await advanceReleaseCandidate(f.session, f.io)).toMatchObject({ reason: 'EDITING', head: f.B });
+  expect(f.session.identity).toEqual(previousIdentity);
   expect(f.session.pending).toBeNull(); expect(f.session.repository.candidate!.pendingWrite).toBeNull(); expect(f.session.repository.candidate!.editingAckHead).toBeNull();
   expect(f.pushes()).toBe(0); expect(f.generations()).toBe(0);
 });
@@ -252,4 +355,111 @@ it('keeps the reviewed candidate bytes when automatic draft generation fails',as
   f.io.content=async()=>({status:'FAILED'});
   expect(await advanceReleaseCandidate(f.session,f.io)).toMatchObject({status:'WAIT',reason:'CONTENT_FAILED'});
   expect(f.session.generated).toEqual(previous);expect(f.pr.head).toBe(head);expect(f.pushes()).toBe(0);
+});
+
+async function observationFixture() {
+  const f=await controllerFixture();
+  f.session.repository.repositoryId=1187527897;
+  f.session.generated!.units[0]!.id='layerscape';
+  f.session.identity={authorsDigest:digest,sourceDigest:digest,actors:[],contributors:{contributors:[],unresolved:0},
+    units:[{id:'layerscape',actors:[],contributors:{contributors:[],unresolved:0}}]};
+  f.io.generation=async()=>{throw Error('GENERATION_MUST_NOT_RUN');};
+  f.io.content=async()=>{throw Error('CONTENT_MUST_NOT_RUN');};
+  f.io.push=async()=>{throw Error('PUSH_MUST_NOT_RUN');};
+  f.io.createPullRequest=async()=>{throw Error('CREATE_PR_MUST_NOT_RUN');};
+  return f;
+}
+it.each(['unchanged','editing','human'])( 'fixed observation protects %s without generation or branch writes',async kind=>{
+  const f=await observationFixture(), binding=candidateObservationIdentity(f.session), frozen=structuredClone(f.session.generated);
+  if(kind==='editing')f.pr.editing=true;
+  if(kind==='human')f.pr.head=await f.commit('.release-notes/app.md',f.notes.replace('原来概述','人工保留'));
+  const head=f.pr.head, result=await advanceReleaseCandidate(f.session,f.io,binding);
+  expect(result).toMatchObject(kind==='unchanged'?{reason:'CACHED_OBSERVATION'}:kind==='editing'?{reason:'EDITING'}:{reason:'HUMAN_EDIT_CONFLICT'});
+  expect(f.session.generated).toEqual(frozen);expect(f.pr.head).toBe(head);
+  expect(candidateObservationIdentity(f.session)).toEqual(binding);
+});
+it.each(['epoch','sourceSha','cycleId','artifactDigest','version'])( 'rejects stale or cross-object %s before effects',async field=>{
+  const f=await observationFixture(), binding=candidateObservationIdentity(f.session);
+  await expect(advanceReleaseCandidate(f.session,f.io,{...binding,[field]:'wrong'})).rejects.toThrow('CANDIDATE_OBSERVATION_IDENTITY');
+  expect(f.saved).toHaveLength(0);
+});
+it.each(['pending','generated','identity'])( 'fixed observation refuses %s gap without fallback',async kind=>{
+  const f=await observationFixture(), binding=candidateObservationIdentity(f.session);
+  if(kind==='pending')f.session.repository.candidate!.pendingWrite={} as any;
+  else (f.session as any)[kind]=null;
+  await expect(advanceReleaseCandidate(f.session,f.io,binding)).rejects.toThrow('CANDIDATE_OBSERVATION_NOT_READY');
+  expect(f.saved).toHaveLength(0);
+});
+it('fixed observation rejects changed default source and does not hand off a merged cycle',async()=>{
+  const f=await observationFixture(), binding=candidateObservationIdentity(f.session);
+  f.io.source=async()=>({baseSha:'e'.repeat(40),authors:[],authorsDigest:digest});
+  expect(await advanceReleaseCandidate(f.session,f.io,binding)).toMatchObject({reason:'SOURCE_CHANGED'});
+  expect(f.saved).toHaveLength(0);
+});
+it.each(['source','authors','units'])('fixed observation refuses mismatched cached %s evidence',async kind=>{
+  const f=await observationFixture(), binding=candidateObservationIdentity(f.session);
+  if(kind==='source')f.session.identity!.sourceDigest='e'.repeat(64);
+  if(kind==='authors')f.session.identity!.authorsDigest='e'.repeat(64);
+  if(kind==='units')f.session.identity!.units[0]!.id='other';
+  await expect(advanceReleaseCandidate(f.session,f.io,binding)).rejects.toThrow('CANDIDATE_OBSERVATION_CACHE_MISMATCH');
+  expect(f.saved).toHaveLength(0);
+});
+it.each(['missing','closed','merged'])('fixed observation stops on %s PR without effects',async kind=>{
+  const f=await observationFixture(), binding=candidateObservationIdentity(f.session);
+  if(kind==='missing') {
+    f.io.pullRequests=async()=>[];
+    await expect(advanceReleaseCandidate(f.session,f.io,binding)).rejects.toThrow('CANDIDATE_PR_UNAVAILABLE');
+  } else {
+    f.pr.state='closed';f.pr.merged=kind==='merged';
+    expect(await advanceReleaseCandidate(f.session,f.io,binding)).toMatchObject({reason:kind==='merged'?'MERGED_SOURCE_HANDOFF':'CLOSED_PR'});
+  }
+  expect(f.saved).toHaveLength(0);
+});
+
+it('fixed G observation restores stale preview and missing comment, then keeps the same result',async()=>{
+  const f=await observationFixture(),binding=candidateObservationIdentity(f.session),G=structuredClone(f.session.generated);
+  f.session.preview='已暂停候选写入';let commentsWritten=0;
+  const create=f.io.createComment;f.io.createComment=async(pr,body)=>{commentsWritten++;await create(pr,body);};
+  const first=await advanceReleaseCandidate(f.session,f.io,binding);
+  expect(first).toMatchObject({status:'READY',reason:'CACHED_OBSERVATION',projectionEvidence:{commentId:10}});
+  expect(f.session.preview).toContain(f.notes);expect(f.session.preview).not.toContain('已暂停');
+  expect(f.comments.find(c=>c.id===10)!.body).toContain(f.session.preview!);
+  const revision=f.session.repository.revision;
+  expect(await advanceReleaseCandidate(f.session,f.io,binding)).toEqual(first);expect(commentsWritten).toBe(1);
+  expect(f.session.repository.revision).toBe(revision);expect(f.session.generated).toEqual(G);expect(f.pushes()).toBe(0);
+});
+it('fixed G observation cannot report done when the native comment write/readback fails',async()=>{
+  const f=await observationFixture(),binding=candidateObservationIdentity(f.session);
+  f.io.createComment=async()=>{};
+  await expect(advanceReleaseCandidate(f.session,f.io,binding)).rejects.toThrow('CANDIDATE_STATUS_COMMENT_UNKNOWN');
+});
+it.each(['notes','version'])('fixed G observation preserves a human %s revert to base without false completion',async kind=>{
+  const f=await observationFixture();
+  const path=kind==='notes'?'.release-notes/app.md':'VERSION';
+  const content=kind==='notes'?f.notes.replace('原来概述','已生成的新概述'):'1.1.0\n';
+  if(kind==='notes')f.session.generated!.files[0]!.content=content;
+  else f.session.generated!.files.push({path,mode:'100644',content});
+  const generatedHead=await f.commit(path,content,'generated candidate');
+  f.session.repository.candidate!.publishedHead=generatedHead;
+  if(kind==='notes')f.pr.head=await f.commit(path,f.notes,'human reverts notes');
+  else {await f.git('rm','--',path);await f.git('commit','--signoff','-m','human removes version');f.pr.head=await f.git('rev-parse','HEAD');}
+  const binding=candidateObservationIdentity(f.session),G=structuredClone(f.session.generated),head=f.pr.head;
+  expect((await mergeCandidate(f.repo,G,head,G!,f.root)).status).toBe('READY');
+  expect(await advanceReleaseCandidate(f.session,f.io,binding)).toEqual({status:'WAIT',reason:'GENERATED_FILES_MISMATCH',head});
+  expect(f.saved).toHaveLength(0);expect(f.comments).toHaveLength(1);expect(f.session.preview).toBeNull();
+  expect(f.session.generated).toEqual(G);expect(f.pr.head).toBe(head);expect(f.pushes()).toBe(0);
+  if(kind==='notes')expect(await f.git('show',`${head}:${path}`)).toBe(f.notes.trim());
+  else expect(await f.git('ls-tree',head,'--',path)).toBe('');
+});
+it('large fixed G projection reuses its verified old archive link after the state ref advances',async()=>{
+  const f=await observationFixture(),long=f.notes+'\n'+('人工发布资料。'.repeat(9000));
+  f.pr.head=await f.commit('.release-notes/app.md',long);f.session.generated!.files[0]!.content=long;
+  f.session.repository.candidate!.publishedHead=f.pr.head;const binding=candidateObservationIdentity(f.session);
+  let saves=0,updates=0;f.io.save=async value=>{f.saved.push(structuredClone(value));return (++saves===1?'f':'e').repeat(40);};
+  f.io.updateComment=async()=>{updates++;throw Error('must keep stable link');};
+  f.io.readPreview=async(commit,path)=>{expect(commit).toBe('f'.repeat(40));expect(path).toBe(`generated/${digest}/preview.md`);return f.session.preview!;};
+  const first=await advanceReleaseCandidate(f.session,f.io,binding),body=f.comments.find(c=>c.id===10)!.body;
+  expect(body).toContain('/blob/'+'f'.repeat(40)+'/');expect(Buffer.byteLength(body)).toBeLessThan(48*1024);
+  const revision=f.session.repository.revision;
+  expect(await advanceReleaseCandidate(f.session,f.io,binding)).toEqual(first);expect(updates).toBe(0);expect(f.session.repository.revision).toBe(revision);
 });

@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import {expect,it} from 'vitest';
 import {inspectCycleHistory,type HistorySnapshot} from '../src/release-history.js';
 import {evidenceFixture,S,C,D,NOW,digest} from './native-evidence-fixture.js';
@@ -72,4 +73,24 @@ it.each(['complete','unfinished','unverified-source','missing-native-pr'])('chec
   if(kind!=='missing-native-pr')expect(checked).toContain(next.id);
   expect(result.pendingHandoff).toBe(next.id);
   expect(result.reasons.some(reason=>reason.cycleId===next.id&&reason.reason==='CYCLE_RECORD_RECONSTRUCTION_REQUIRED')).toBe(false);
+});
+it.each(['valid','wrong-producer','wrong-digest','expired','previously-completed'])('checks the original archive of a recovered build: %s',async kind=>{
+  const f=fixture(),native=evidenceFixture(2),cycle=f.snapshot.cycles[0]!.value;
+  const data=Buffer.from(JSON.stringify({schemaVersion:2,repositoryAuthors:[{id:42,evidence:'test owner'}],units:[
+    {id:'app',path:'.',notesPath:'notes.md',assets:[{id:'app',name:'app.zip',mediaType:'application/zip'}],channels:[]}]}));
+  cycle.deliveryConfigSha=createHash('sha1').update('blob '+data.length+'\0').update(data).digest('hex');
+  cycle.units[0]!.releaseId=null;
+  const archiveDigest='sha256:'+digest('sealed');
+  cycle.freezeOnly=[{unitId:'app',runId:100,attempt:2,producerAttempt:1,artifactId:1001,archiveDigest}];
+  if(kind==='previously-completed')f.snapshot.repositoryHistory[0]!.value.lastCompletedCycleId=cycle.id;
+  const io={request:async(method:'GET'|'POST',path:string)=>{
+    if(path.includes('/contents/.github/delivery.json'))return native.response({type:'file',encoding:'base64',size:data.length,sha:cycle.deliveryConfigSha,content:data.toString('base64')});
+    if(path.endsWith('/actions/runs/100/attempts/2'))return native.response({...native.runs.get(2),conclusion:'success'});
+    if(path.endsWith('/actions/artifacts/1001'))return kind==='previously-completed'?native.response({},404):native.response({
+      id:1001,name:'final-1-app-'+S+'-100-'+(kind==='wrong-producer'?'2':'1'),digest:kind==='wrong-digest'?digest('different'):archiveDigest,
+      workflow_run:{id:100,head_sha:S},expired:kind==='expired'});
+    return f.io.request(method,path);
+  }};
+  const result=await inspectCycleHistory(f.snapshot,io,NOW,undefined,undefined,async()=>true);
+  expect(result.result).toBe(kind==='valid'||kind==='previously-completed'?'PASS':'UNKNOWN');
 });

@@ -11,32 +11,33 @@ import {isolatedBuildEnvironment} from '../src/build-environment.js';
 import {createHash} from 'node:crypto';
 import {inspectNativeCycle} from '../src/native-release-evidence.js';
 import {prepareBuildDispatch} from '../src/release-run.js';
-const {initializeReleaseAdoption,withReleaseAdoption,recoverReleaseCaches}=await import(pathToFileURL(resolve('scripts/release-adoption.mjs')).href);
+const {initializeReleaseAdoption,withReleaseAdoption,recoverReleaseCaches,releaseAdoptionPlan}=await import(pathToFileURL(resolve('scripts/release-adoption.mjs')).href);
 const {readReleaseRecords}=await import(pathToFileURL(resolve('scripts/release-record.mjs')).href);
 vi.setConfig({testTimeout:60_000});
 const roots:string[]=[];
 afterEach(async()=>{for(const path of roots.splice(0))await rm(path,{recursive:true,force:true});});
-async function fixture() {
+async function fixture(options?:{channels:{id:string;required:boolean;location:string}[];hasWorkflow:boolean}) {
   const root=await mkdtemp(join(tmpdir(),'adoption-test-'));roots.push(root);registerOfflineFixtureRoot(root);
   const directory=join(root,'source'),remote=join(root,'remote.git');await mkdir(directory);
   const env=isolatedBuildEnvironment(process.env,root),identity={name:'Adoption Fixture',email:'adoption@example.invalid'};
   const git=async(...args:string[])=>(await promisify(execFile)('git',args,{cwd:directory,env,encoding:'utf8',windowsHide:true})).stdout.trim();
   await git('init','--initial-branch=main');await git('config','user.name',identity.name);await git('config','user.email',identity.email);
   const config={'separate-pull-requests':false,'include-component-in-tag':false,packages:{'.':{'release-type':'simple','version-file':'VERSION','initial-version':'1.0.0'}}};
-  const delivery={schemaVersion:1,repositoryAuthors:[{id:7,evidence:'Explicit offline author record'}],units:[{id:'layerscape',path:'.',notesPath:'.release-notes/layerscape.md',assets:[{id:'app',name:'app-${version}.zip',mediaType:'application/zip'}],channels:[]}]};
+  const delivery={schemaVersion:options?2:1,repositoryAuthors:[{id:7,evidence:'Explicit offline author record'}],units:[{id:options?'cli':'layerscape',path:'.',notesPath:options?'.release-notes/cli.md':'.release-notes/layerscape.md',assets:[{id:'app',name:'app-${version}.zip',mediaType:'application/zip'}],channels:options?.channels??[]}]};
   const files:Record<string,string>={'release-please-config.json':JSON.stringify(config),'.release-please-manifest.json':'{}',VERSION:'9.2.2',
     '.github/delivery.json':JSON.stringify(delivery),'.github/release-template.md.mustache':'Offline template',
     '.github/workflows/steward-release-publish.yml':'name: Fixture publish\n','.github/workflows/steward-release-channels.yml':'name: Fixture channels\n'};
+  if(options && !options.hasWorkflow)delete files['.github/workflows/steward-release-channels.yml'];
   for(const [path,value] of Object.entries(files)){await mkdir(join(directory,path,'..'),{recursive:true});await writeFile(join(directory,path),value);}
   await git('add','.');await git('commit','--signoff','-m','Adopt first-release fixture');const A=await git('rev-parse','HEAD');
   await git('init','--bare',remote);await git('push','--porcelain',remote,'HEAD:refs/heads/main');
-  const request={directory,remote,writeDirectory:join(root,'writes'),repository:'splrad/LayerScape',repositoryId:1187527897,defaultBranch:'main',appBotId:301115370,identity,releaseAdoption:{sourceSha:A,prNumber:7}};
+  const request={directory,remote,writeDirectory:join(root,'writes'),repository:options?'example/CLI':'splrad/LayerScape',repositoryId:options?90:1187527897,defaultBranch:'main',appBotId:301115370,identity,releaseAdoption:{sourceSha:A,prNumber:7}};
   const pull:any={number:7,merged:true,merge_commit_sha:A,base:{ref:'main',repo:{id:request.repositoryId}},head:{ref:'onboarding',repo:{id:request.repositoryId}}};
   let denied=false;const closed:any[]=[];
   const stateHead=async()=>(await git('ls-remote','--heads','--refs',remote,'refs/heads/steward/release-state')).split('\t')[0]||null;
   const io={async request(method:string,path:string) {
     expect(method).toBe('GET');let value:any,status=200;const url=new URL(path,'https://api.github.com'),p=url.pathname;
-    if(p==='/repos/splrad/LayerScape')value={id:request.repositoryId,full_name:request.repository,default_branch:'main',archived:false,disabled:false};
+    if(p==='/repos/'+request.repository)value={id:request.repositoryId,full_name:request.repository,default_branch:'main',archived:false,disabled:false};
     else if(p.endsWith('/pulls/7'))value=pull;
     else if(/\/pulls\/[0-9]+$/.test(p)&&closed.some(pr=>p.endsWith('/pulls/'+pr.number)))value=closed.find(pr=>p.endsWith('/pulls/'+pr.number));
     else if(p.endsWith('/commits/main'))value={sha:await git('rev-parse','main')};
@@ -63,6 +64,22 @@ it.each(['unmerged','base','repository','A','unreadable'])('rejects adoption %s 
   const f=await fixture();if(kind==='unmerged')f.pull.merged=false;if(kind==='base')f.pull.base.ref='other';if(kind==='repository')f.pull.head.repo.id=2;
   if(kind==='A')f.pull.merge_commit_sha='a'.repeat(40);if(kind==='unreadable')f.deny();
   await expect(initializeReleaseAdoption(f.request,{io:f.io})).rejects.toThrow('RELEASE_ADOPTION:');expect(await f.stateHead()).toBeNull();
+});
+it.each([
+  {kind:'GitHub only',channels:[{id:'github-release',required:true,location:'github'}],hasWorkflow:false,accepted:true},
+  {kind:'all disabled',channels:[],hasWorkflow:false,accepted:true},
+  {kind:'inactive external channel',channels:[{id:'ghcr-assets',required:false,location:'ghcr.io/example/cli'}],hasWorkflow:false,accepted:true},
+  {kind:'missing external implementation',channels:[{id:'ghcr-assets',required:true,location:'ghcr.io/example/cli'}],hasWorkflow:false,accepted:false},
+  {kind:'product-owned external implementation',channels:[{id:'ghcr-assets',required:true,location:'ghcr.io/example/cli'}],hasWorkflow:true,accepted:true},
+])('reads required files at the reviewed adoption commit: $kind',async options=>{
+  const plan=releaseAdoptionPlan({units:[{id:'cli',channels:options.channels}]});
+  const targets=options.channels.filter(c=>c.required && c.id!=='github-release');
+  expect(plan.externalTargets).toEqual(targets.map(c=>({unitId:'cli',channelId:c.id,location:c.location})));
+  expect(plan.files.includes('.github/workflows/steward-release-channels.yml')).toBe(targets.length>0);
+  const f=await fixture(options);
+  const adoption=withReleaseAdoption(f.request,f.request.releaseAdoption,f.io,async()=>true);
+  if(options.accepted)await expect(adoption).resolves.toBe(true);
+  else await expect(adoption).rejects.toThrow('source file required');
 });
 it('does not require empty-repository bootstrap evidence to verify A',async()=>{
   const f=await fixture(),result=await withReleaseAdoption(f.request,f.request.releaseAdoption,f.io,async(proof:any)=>({head:proof.defaultHead,reachable:proof.reachable}));
@@ -155,4 +172,63 @@ it.each(['terminal','missing','in-progress'])('restores original cycle cache onl
   const snapshot=await readReleaseRecords({directory:f.request.directory,targetRef:'steward/release-state',repositoryId:f.request.repositoryId});
   if(kind!=='terminal'){await expect(recoverReleaseCaches(f.request,snapshot,{io:f.io,now:()=>observedAt})).rejects.toThrow('original native evidence unknown');expect(await f.stateHead()).toBe(snapshot.head);}
   else {const repaired=await recoverReleaseCaches(f.request,snapshot,{io:f.io});expect(repaired.snapshot.cycles[0].value).toEqual(cycle);expect(repaired.snapshot.repository).toEqual(snapshot.repository);expect(await f.git('show',`${repaired.snapshot.head}:${path}`)).toBe(bytes.trim());}
+});
+
+it.each(['legacy','issue-events'])('real adoption reader requires PR read scope and completes with split credentials: %s',async mode=>{
+  const f=await fixture();
+  const {adoptionTransport}=await import(pathToFileURL(resolve('scripts/release-state-initialize.mjs')).href);
+  const {nativeEvidenceTransport}=await import(pathToFileURL(resolve('packages/runner/dist/index.js')).href);
+  if(mode==='issue-events'){delete f.pull.merge_commit_sha;Object.assign(f.pull,{url:'https://api.github.com/repos/'+f.request.repository+'/pulls/7',state:'closed',merged_at:'2026-11-08T00:00:00Z'});f.pull.base.repo.full_name=f.request.repository;}
+  const requests:{path:string;credential:string|null}[]=[];
+  const fetcher:typeof fetch=async(input,init)=>{
+    const url=new URL(String(input)),path=url.pathname+url.search,credential=new Headers(init?.headers).get('authorization');
+    requests.push({path,credential});
+    if(/\/(?:pulls(?:[/?]|$)|issues\/[0-9]+\/events)/.test(path)&&credential!=='Bearer fixture-pr-read')return new Response('{}',{status:403});
+    if(url.pathname.endsWith('/issues/7/events'))return Response.json([{id:9,event:'merged',url:'https://api.github.com/repos/'+f.request.repository+'/issues/events/9',commit_id:f.A,commit_url:'https://api.github.com/repos/'+f.request.repository+'/commits/'+f.A,actor:{id:7},created_at:'2026-11-08T00:00:00Z'}]);
+    const response=await f.io.request('GET',path);
+    return new Response(response.bytes,{status:response.status,headers:response.headers});
+  };
+  await expect(initializeReleaseAdoption(f.request,{io:nativeEvidenceTransport('fixture-release-write',fetcher)})).rejects.toThrow();
+  expect(await f.stateHead()).toBeNull();
+  requests.length=0;
+  const io=adoptionTransport({repository:{full_name:f.request.repository},baseSha:f.A},{token:'fixture-release-write',readToken:'fixture-pr-read',fetcher});
+  const result=await initializeReleaseAdoption(f.request,{io});
+  expect(result.status).toBe('APPLIED');expect(await f.stateHead()).toBe(result.head);
+  const pulls=requests.filter(r=>/\/(?:pulls(?:[/?]|$)|issues\/[0-9]+\/events)/.test(r.path));
+  expect(pulls.some(r=>r.path.includes('pulls?state=closed'))).toBe(true);
+  if(mode==='issue-events')expect(pulls.some(r=>r.path.includes('/issues/7/events'))).toBe(true);
+  expect(pulls.every(r=>r.credential==='Bearer fixture-pr-read')).toBe(true);
+  expect(requests.filter(r=>!pulls.includes(r)).every(r=>r.credential==='Bearer fixture-release-write')).toBe(true);
+});
+it('initializer delegates through real adoption/protection into the observed GraphQL transport',async()=>{
+  const f=await fixture();
+  const {initializeProduct}=await import(pathToFileURL(resolve('scripts/layerscape-release-initialize.mjs')).href);
+  const {initializationDiagnostics}=await import(pathToFileURL(resolve('scripts/initialization-diagnostics.mjs')).href);
+  const events:any[]=[],diag=initializationDiagnostics((value:unknown)=>events.push(value));let graphql=0;
+  const fetcher=diag.transport(async(input:string,init:RequestInit)=>{
+    const u=new URL(input);
+    if(u.pathname==='/graphql') {
+      graphql++;expect(init.method).toBe('POST');expect(JSON.parse(String(init.body)).query).toContain('updateAllowsFetchAndMerge');
+      return Response.json({errors:[{message:'PRIVATE_GRAPHQL_DETAIL_MUST_NOT_ESCAPE'}]});
+    }
+    expect(init.method??'GET').toBe('GET');
+    if(u.pathname.endsWith('/git/ref/heads/main'))return Response.json({object:{sha:f.A}});
+    if(u.pathname.endsWith('/git/matching-refs/heads/steward/release-state'))return Response.json([]);
+    const response=await f.io.request('GET',u.pathname+u.search),data=JSON.parse(Buffer.from(response.bytes).toString());
+    if(u.pathname==='/repos/splrad/LayerScape')data.private=false;
+    if(u.pathname.endsWith('/rulesets/90')){data.node_id='fixture-rule-node';delete data.rules.find((r:any)=>r.type==='update').parameters;}
+    return Response.json(data,{status:response.status});
+  });
+  const app={appBotId:301115370,forRepository:async(_id:number,fn:any)=>fn('offline-writer'),forCandidateReadRepository:async(_id:number,fn:any)=>fn('offline-reader')};
+  const plan={repository:{id:1187527897,full_name:'splrad/LayerScape'},baseSha:f.A,releaseAdoption:{prNumber:176,sourceSha:'de10de20b5405d764bfda731ed91d11ac56b5b2c'}};
+  let failure:unknown;
+  try {await initializeProduct(plan,{root:f.root,app,fetcher,stage:diag.stage,onFailure:diag.captureFailure,
+    execute:async(_command:string,args:string[])=>({stdout:args.includes('rev-parse')?f.A:''}),
+    // Bind only immutable fixture Git objects/A/P. Adoption, writer protection and GraphQL are the production functions.
+    initialize:async(request:any,options:any)=>initializeReleaseAdoption({...request,directory:f.request.directory,remote:f.request.remote,releaseAdoption:f.request.releaseAdoption},options)});
+  }catch(error){failure=error;}
+  expect(failure).toBeDefined();expect(graphql).toBe(1);expect(await f.stateHead()).toBeNull();
+  expect(events.some(x=>x.operation==='rule-parameters'&&x.graphqlErrorCount===1)).toBe(true);
+  expect(diag.failure(failure).phase).toBe('adoption-reconcile');
+  expect(JSON.stringify({events,result:diag.failure(failure)})).not.toContain('PRIVATE_GRAPHQL_DETAIL_MUST_NOT_ESCAPE');
 });

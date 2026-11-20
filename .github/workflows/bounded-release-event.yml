@@ -1,0 +1,65 @@
+name: SPLRAD bounded release event
+run-name: Bounded release event ${{ inputs.request_key }}
+on:
+  workflow_dispatch:
+    inputs:
+      event_json:
+        type: string
+        required: true
+      request_key:
+        type: string
+        required: true
+      policy_sha:
+        type: string
+        required: true
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: steward-bounded-event-${{ inputs.request_key }}
+  cancel-in-progress: false
+jobs:
+  event:
+    if: github.repository_id == '1296724484' && github.ref == 'refs/heads/main' && vars.STEWARD_EXPECTED_PAUSED_RELEASE == '311600220' && github.event_name == 'workflow_dispatch' && inputs.policy_sha == github.sha && github.workflow_sha == github.sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: steward-release
+      deployment: false
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d
+        env:
+          MISE_SAFE: '1'
+          MISE_NODE_COMPILE: 'false'
+        with:
+          version: 2026.10.18
+          install_args: --locked
+          cache: false
+          env: false
+          persist_github_token: false
+      - name: Install locked controller dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Fixed bounded entry
+        env:
+          STEWARD_CENTRAL_TOKEN: ${{ github.token }}
+          STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          STEWARD_CONTROLLER_SHA: ${{ github.workflow_sha }}
+          STEWARD_EXPECTED_PAUSED_RELEASE: ${{ vars.STEWARD_EXPECTED_PAUSED_RELEASE }}
+          BOUNDED_MODE: event
+          BOUNDED_POLICY_SHA: ${{ inputs.policy_sha }}
+          BOUNDED_EVENT_JSON: ${{ inputs.event_json }}
+          BOUNDED_REQUEST_KEY: ${{ inputs.request_key }}
+        run: node scripts/bounded-release-entry.mjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: bounded-recheck-registration-${{ inputs.request_key }}
+          path: registration.json
+          if-no-files-found: error
+          retention-days: 90

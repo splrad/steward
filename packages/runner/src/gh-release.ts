@@ -1,3 +1,5 @@
+import { channelFiles, type DeliveryUnit } from '../../core/src/delivery-config.js';
+import { releaseBodyMatches } from './release-body.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
@@ -32,7 +34,7 @@ export async function nativeGhCommand(args: readonly string[], token: string | u
 }
 export interface ReleaseObject { id: number; tag_name: string; draft: boolean; immutable: boolean; body: string; html_url: string; upload_url: string; target_commitish: string }
 interface Asset { id: number; name: string; size: number; digest: string | null; state: string; label?: string; uploader?: { id: number } }
-export interface ReleaseTarget { manifest: ReleaseManifest | ProductReleaseManifest; releaseId: number; directory: string; appBotId: number }
+export interface ReleaseTarget { delivery?: DeliveryUnit; manifest: ReleaseManifest | ProductReleaseManifest; releaseId: number; directory: string; appBotId: number }
 export type ReleaseIntent = Omit<ReleaseTarget, 'releaseId'> & { releaseId: number | null };
 export type ReleaseDownload = (repository: string, assetId: number, destination: string, anonymous: boolean) => Promise<void>;
 export async function releaseReadIsAnonymous(gh:GhCommand,repository:string,repositoryId:number):Promise<boolean> {
@@ -90,6 +92,7 @@ export class NativeGitHubRelease {
     return object.sha;
   }
   async ensureTag(target: ReleaseIntent) {
+    if (!this.names(target).length) reject('GitHub channel disabled');
     await this.freezeProof(target); await this.repository(target);
     if (await this.tagSource(target)) return;
     let failure;
@@ -170,6 +173,7 @@ export class NativeGitHubRelease {
     } finally { await rm(directory, { recursive: true, force: true }); }
   }
   names(target: ReleaseIntent) {
+    if (target.delivery) return channelFiles(target.delivery, 'github-release', target.manifest.artifacts);
     return [...target.manifest.artifacts.map(asset => asset.path), 'sbom.spdx.json', 'release-notes.md', 'artifact-manifest.json', 'SHA256SUMS'].sort();
   }
   async verifyAttestation(target: ReleaseIntent, file: string) {
@@ -206,7 +210,10 @@ export class NativeGitHubRelease {
     await verifySealedArtifacts(target.directory, target.manifest);
     const release = await this.read(target);
     if (release.draft || release.immutable !== true) reject('release not immutable and published');
-    if (release.body !== await readFile(join(target.directory, 'release-notes.md'), 'utf8')) reject('published body drift');
+    const m = target.manifest;
+    if (!await releaseBodyMatches({ repository: m.fullName, repositoryId: m.repositoryId, releaseId: release.id, sourceSha: m.sourceSha,
+      tag: release.tag_name, frozenDigest: (await fileDigest(target.directory, 'release-notes.md')).sha256 }, release.body,
+      path => this.json(['api', `repos/${m.fullName}${path ? '/' + path : ''}`]))) reject('published body drift');
     const assets = await this.assets(target);
     if (JSON.stringify(assets.map(asset => asset.name).sort()) !== JSON.stringify(this.names(target))) reject('published asset set');
     const nativeEvidence: unknown[] = [];
@@ -222,6 +229,7 @@ export class NativeGitHubRelease {
     return { releaseId: release.id, url: release.html_url, mode: 'verified' as const, nativeEvidence };
   }
   async publish(target: ReleaseTarget) {
+    if (!this.names(target).length) reject('GitHub channel disabled');
     await verifySealedArtifacts(target.directory, target.manifest);
     if (!(await this.read(target)).draft) return this.verify(target);
     const names = this.names(target);
@@ -265,10 +273,25 @@ export class NativeGitHubRelease {
         if (!asset) { if (uploadError) throw uploadError; reject('upload not observed'); }
       }
       await this.compareAsset(target, asset);
+      if (asset.label !== name) {
+        if ((asset.label && asset.label !== label) || asset.uploader?.id !== target.appBotId) reject('unproven draft label');
+        await guard();
+        let failure;
+        try { await this.mutate('PATCH', `repos/${target.manifest.fullName}/releases/assets/${asset.id}`, { name, label: name }); }
+        catch (error) { failure = error; }
+        const observed = (await this.assets(target)).find(item => item.id === asset.id);
+        if (observed?.name !== name || observed.label !== name) {
+          if (failure) throw failure;
+          reject('asset label edit not observed');
+        }
+      }
     }
     const assets = await this.assets(target);
     if (JSON.stringify(assets.map(asset => asset.name).sort()) !== JSON.stringify(names)) reject('draft asset set');
-    for (const asset of assets) await this.compareAsset(target, asset);
+    for (const asset of assets) {
+      if (asset.label !== asset.name) reject('unexpected public asset label');
+      await this.compareAsset(target, asset);
+    }
     const notes = await readFile(join(target.directory, 'release-notes.md'), 'utf8');
     if ((await this.read(target)).body !== notes) {
       await guard();

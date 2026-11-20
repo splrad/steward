@@ -39,3 +39,23 @@ updates:
       time: "08:00"
       timezone: Asia/Bangkok
     open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directory: /
+    target-branch: maintenance/legacy-runtime-e990eda
+    ignore:
+      - dependency-name: npm
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:30"
+      timezone: Asia/Bangkok
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: maintenance/legacy-runtime-e990eda
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:15"
+      timezone: Asia/Bangkok
+    open-pull-requests-limit: 5

@@ -1,0 +1,8 @@
+{
+  "sourceCommentId": "review-comment:4505551497",
+  "sourceCommit": "234531cd838f21a18761e8ed1a00e48d4872781a",
+  "sourceUrl": "https://github.com/splrad/steward/pull/304#discussion_r4505551497",
+  "severity": "原文未说明",
+  "bodyMarkdown": "## Duplicate 'if' condition\n\nThis condition is a duplicate of <a class=\"Link\" href=\"/splrad/steward/blob/234531cd838f21a18761e8ed1a00e48d4872781a/tools/quality-language/acceptance-fixture.js#L3-L3\">value === 'first'</a>.\n\n---\n\nTo fix duplicate conditions in an <code>if</code>/<code>else if</code> chain, ensure each condition is unique or remove unreachable duplicate branches.<br>\nIn this specific file (<code>tools/quality-language/acceptance-fixture.js</code>), the best non-speculative fix is to delete the duplicate <code>else if (value === 'first') return 'two';</code> line. This avoids inventing an unverified condition and preserves clear behavior: <code>'first'</code> maps to <code>'one'</code>, everything else maps to <code>'other'</code>.</p>\n<p>No new imports, methods, or definitions are needed.",
+  "updatedAt": "2026-11-08T08:22:56Z"
+}
