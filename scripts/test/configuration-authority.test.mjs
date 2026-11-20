@@ -65,6 +65,12 @@ test('public initiation is selected on each protected default branch and cannot 
     const policy=B+'/.github/configuration-delegates.json';
     files.set(policy,JSON.stringify([actor.id]));
     assert.equal((await native()).publicRequests,false);
+    run.event=data.event='issues';
+    data.source=run.head_sha=B;
+    assert.equal((await read()).publicRequests,false);
+    files.set(policy,JSON.stringify([]));
+    await assert.rejects(read(),/administrator/);
+    data.source=run.head_sha=A;
     files.set(policy,JSON.stringify({delegates:[],requestAccess:'public'}));
     assert.equal((await native()).publicRequests,true);
     run.event=data.event='workflow_dispatch';

@@ -97,8 +97,7 @@ export async function requestFromRun(api,token,repo,id,attempt,base,archive=read
   }
   const publicRequests=dashboard && (await configurationAccess(api,base)).requestAccess==='public';
   if(!['push','pull_request_review','schedule'].includes(run.event)) {
-    const adminOnly=run.event==='issues' && !publicRequests;
-    for(const actor of [run.actor,run.triggering_actor]) must(await authorized(api,actor,base,adminOnly),'Repository administrator or explicit delegate required');
+    for(const actor of [run.actor,run.triggering_actor]) must(await authorized(api,actor,base),'Repository administrator or explicit delegate required');
   } else if(run.run_attempt>1) must(await authorized(api,run.triggering_actor,base),'Unauthorized rerun');
   return {run,data,dashboard,publicRequests};
 }
