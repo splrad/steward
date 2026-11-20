@@ -33,7 +33,11 @@ export async function projectMergedRepositoryPolicy(app, repository, source, obs
   try {
     return await app.forRepository(repository.id,async token=>{
       const getState=ports.getState??(await import('./release-coordinator.mjs')).fetchState;
-      const refresh=()=>getState(root,repository,token,repositoryPolicyBranch,{governanceAppId:5639432,includeHistory:false});
+      // Only rule verification needs the organization scope to read bypass actors.
+      const withGovernanceRules=verify=>app.forRepository(repository.id,verify,'maintenance-rules');
+      const refresh=()=>getState(root,repository,token,repositoryPolicyBranch,{
+        governanceAppId:5639432,includeHistory:false,withGovernanceRules
+      });
       const state=await refresh();
       const current=state.snapshot.currentPaths.includes(repositoryPolicyPath)?await state.readBytes(repositoryPolicyPath):null;
       const latest=await readMerged();

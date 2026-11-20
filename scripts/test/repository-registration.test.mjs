@@ -165,17 +165,32 @@ test('the adoption marker is independent of Pages and Issues and comes only from
 test('projection writer uses one path, scoped credentials and reads back only approved bytes',async()=>{
   const {policy}=await propose(product,productFiles);
   const selected={...policy,adoption:'paused'};
+  let rulesActive=false;
   const app={forRepository:async(id,operation,purpose)=>{
-    assert.equal(id,product.id);assert.equal(purpose,'registry-projection');return operation('test-writer');
+    assert.equal(id,product.id);
+    if(purpose==='maintenance-rules') {
+      rulesActive=true;
+      try {return await operation('test-rules');} finally {rulesActive=false;}
+    }
+    assert.equal(purpose,'registry-projection');
+    return operation('test-writer');
   }};
   let bytes=null,writes=0,head=base;
   const path='configuration/repository.json',unrelated='quality/1/'+source+'.md';
   const ports={
     currentSource:async()=>source,getPolicy:async()=>({commit:head,policy:selected}),
-    getState:async()=>({remote:'/fixture',snapshot:{head:base,currentPaths:bytes?[unrelated,path]:[unrelated]},
-      readBytes:async selectedPath=>{assert.equal(selectedPath,path);return bytes;}}),
+    getState:async(_dir,_repo,token,_branch,{withGovernanceRules})=>{
+      assert.equal(token,'test-writer');
+      await withGovernanceRules(async token=>{
+        assert.equal(token,'test-rules');
+        assert.equal(rulesActive,true);
+      });
+      return {remote:'/fixture',snapshot:{head:base,currentPaths:bytes?[unrelated,path]:[unrelated]},
+        readBytes:async selectedPath=>{assert.equal(selectedPath,path);return bytes;}};
+    },
     write:async(request,{token})=>{
       assert.equal(token,'test-writer');assert.equal(request.writer,'configuration');
+      assert.equal(rulesActive,false);
       assert.deepEqual(request.allowedPaths,[path]);
       assert.equal(request.changes[0].previousSha256,null);
       writes++;bytes=Buffer.from(request.changes[0].content);return {status:'APPLIED'};

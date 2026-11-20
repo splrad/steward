@@ -23,7 +23,7 @@ export async function nativeReleaseApp(privateKey: string, transport: typeof fet
     const permissions=kind==='maintenance-rules'?{metadata:'read',organization_administration:'write'}
       :kind==='registration-read'?{metadata:'read',contents:'read',actions:'read'}
       :kind==='registry-read'?{metadata:'read',contents:'read'}
-      :kind==='registry-projection'?{metadata:'read',contents:'write',administration:'read',organization_administration:'write'}
+      :kind==='registry-projection'?{metadata:'read',contents:'write'}
       :kind==='registration-write'?{metadata:'read',contents:'write',pull_requests:'write'}
       :kind==='configuration-read'?{metadata:'read',contents:'read',pull_requests:'read',actions:'read'}
       :kind==='configuration-actions'?{metadata:'read',actions:'write'}

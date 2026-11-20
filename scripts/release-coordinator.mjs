@@ -188,7 +188,7 @@ export async function releaseParticipation(repository,io,{includeUnits=false}={}
   return {status,sourceSha:ref.object.sha,...(units?{units}:{})};
 }
 
-export async function fetchState(root,repository,token,targetRef='steward/release-state',{governanceAppId,fetcher=fetch,includeHistory=targetRef!=='steward/release-state',centralFirstUse=false,readCentralMaintenanceRules}={}) {
+export async function fetchState(root,repository,token,targetRef='steward/release-state',{governanceAppId,fetcher=fetch,includeHistory=targetRef!=='steward/release-state',centralFirstUse=false,readCentralMaintenanceRules,withGovernanceRules}={}) {
   const io=nativeEvidenceTransport(token,fetcher),remote=`https://github.com/${repository.full_name}.git`;
   if(centralFirstUse) {
     if(repository.id!==1296724484||repository.full_name!=='splrad/steward'||!['steward/release-state','steward/automation-health'].includes(targetRef))throw new Error('RELEASE_CENTRAL_STATE_IDENTITY');
@@ -197,7 +197,11 @@ export async function fetchState(root,repository,token,targetRef='steward/releas
     const actual=JSON.parse(Buffer.from(response.bytes).toString('utf8'));
     if(actual.id!==repository.id||actual.full_name!==repository.full_name||actual.default_branch!==repository.default_branch||actual.archived!==false||actual.disabled!==false)throw new Error('RELEASE_CENTRAL_STATE_IDENTITY');
   }
-  if(targetRef==='steward/governance-state')await assertQualityProtection(qualityNativeIO(repository.full_name,token,fetcher),repository.full_name,governanceAppId);
+  if(targetRef==='steward/governance-state'){
+    const verify=ruleToken=>assertQualityProtection(qualityNativeIO(repository.full_name,ruleToken,fetcher),repository.full_name,governanceAppId);
+    if(withGovernanceRules)await withGovernanceRules(verify);
+    else await verify(token);
+  }
   else await assertReleaseWriterProtection(repository.full_name,targetRef,io,{token,fetcher,readCentralMaintenanceRules});
   const response=await io.request('GET',`/repos/${repository.full_name}/git/ref/heads/${targetRef}`);
   // Only these two fixed central consumers may start with no records. No branch
