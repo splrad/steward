@@ -156,7 +156,7 @@ describe('native ingress across a controller or deployment change',()=>{
    throw Error('unexpected control '+action);
   }})};
   const payload=JSON.stringify({organization:{id:42},installation:{id:41},repository:{id:TARGET.id,full_name:TARGET.name,default_branch:'main',private:false},action:'unlabeled',
-   label:{name:'release:editing'},sender:{id:7},pull_request:{number:192,updated_at:event.created_at}});
+   label:{name:'release:editing'},sender:{id:7},pull_request:{number:192,state:'open',merged:false,head:{repo:{id:TARGET.id}},base:{repo:{id:TARGET.id},ref:'main'},updated_at:event.created_at}});
   const signature=createHmac('sha256',env.STEWARD_WEBHOOK_SECRET).update(payload).digest('hex');
   const receive=()=>handleWebhook(new Request('https://fixture.invalid/webhook',{method:'POST',headers:{
    'x-github-event':'pull_request','x-github-delivery':'original-guid','x-hub-signature-256':'sha256='+signature},body:payload}),env);

@@ -17,6 +17,7 @@ export interface RunLocator { repositoryId:number;runId:number;attempt:number;re
 export interface ProductTarget {id:number;name:string;defaultBranch:string;units?:{id:string;path:string}[]}
 export interface GitReader {
  readonly target?: ProductTarget;
+ prepareDispatch?(repositoryId:number):Promise<void>;
  forCandidate?(id:number):Promise<GitReader|undefined>;
  upstreamPull?(number:number):Promise<any>;
  json(repositoryId:number,path:string,method?:'GET'|'POST',body?:unknown):Promise<any>;
@@ -105,6 +106,9 @@ export class BoundedGitHub implements GitReader {
    return scoped;
  }
  private signal(){const remaining=this.deadline-Date.now();ensure(remaining>0,'ACTION_TIMEOUT');return AbortSignal.timeout(remaining);}
+ async prepareDispatch(repositoryId:number){
+   await this.token(repositoryId,true);
+ }
  private token(id:number,write=false){const key=String(id)+String(write);let token=this.tokens.get(key);if(!token){token=this.issueToken(id,write);this.tokens.set(key,token);}return token;}
  private async issueToken(id:number,write=false,metadataOnly=false){
    if(!metadataOnly)this.repo(id);

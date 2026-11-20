@@ -12,6 +12,7 @@ export async function dispatchFixed(g:GitReader,id:number,file:'release-observe.
  const workflow=await g.json(id,`/repos/${name}/actions/workflows/${file}`);
  ensure(workflow.path===`.github/workflows/${file}`&&workflow.state==='active','WORKFLOW_PAUSED_OR_DISABLED');
  const ref=await g.json(id,`/repos/${name}/git/ref/heads/main`);ensure(ref.object?.sha===sha,'OBSERVATION_SOURCE_CHANGED');
+ await g.prepareDispatch?.(id);
  if(claim&&!await claim())return;
  return g.json(id,`/repos/${name}/actions/workflows/${file}/dispatches`,'POST',{ref:'main',inputs});
 }

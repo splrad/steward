@@ -88,7 +88,7 @@ describe('durable normal candidate event chain',()=>{
    return {...f.g,target:TARGET};
   };
   const payload={installation:{id:123},repository:{id:TARGET.id,full_name:TARGET.name,default_branch:'main',private:false},
-   action:'unlabeled',label:{name:'release:editing'},sender:{id:7},pull_request:{number:192,updated_at:f.hint.updatedAt}};
+   action:'unlabeled',label:{name:'release:editing'},sender:{id:7},pull_request:{...f.f.pull,updated_at:f.hint.updatedAt}};
   const receive=(delivery:string)=>acceptNativeCandidateEvent({...f.env,INSTALLATION_ID:'123'},'pull_request',payload,delivery);
   await receive('delivery-1');
   const original=await f.eventStorage.get<any>('nativeEvent');
@@ -100,6 +100,15 @@ describe('durable normal candidate event chain',()=>{
   const recovered=await f.eventStorage.get<any>('nativeEvent');
   expect(recovered.firstDeliveryId).toBe('delivery-1');expect(recovered.deadline).toBe(original.deadline);
   expect(f.posts()).toBe(1);
+ });
+ it.each(['fork','wrong base','closed','missing head'])('discards %s candidate notifications before allocating storage',async kind=>{
+  const f=await normalFixture(),pull=structuredClone(f.f.pull) as any;
+  if(kind==='fork')pull.head.repo.id++;else if(kind==='wrong base')pull.base.ref='other';
+  else if(kind==='closed')pull.state='closed';else delete pull.head;
+  const env={...f.env,INSTALLATION_ID:'123',BOUNDED_RECHECK:{idFromName:()=>{throw Error('unexpected allocation');}}};
+  await acceptNativeCandidateEvent(env,'pull_request',{installation:{id:123},repository:{id:TARGET.id,full_name:TARGET.name,default_branch:'main',private:false},
+   action:'reopened',sender:{id:7},pull_request:{...pull,updated_at:f.hint.updatedAt}},'fork-test');
+  expect(await f.eventStorage.get('nativeEvent')).toBeUndefined();expect(f.reads()).toBe(0);
  });
  it('protects an ineligible repository without dispatch or further alarms',async()=>{
   const f=await normalFixture();f.g.forCandidate=async()=>undefined;
@@ -166,6 +175,20 @@ describe('generated candidate projection completion',()=>{
 it('normal result rejects a borrowed Run outside the original dispatch intent window',async()=>{const f=await normalFixture();await f.coordinator().register({hint:f.hint,deliveryId:'d'});await f.coordinator().alarm();f.run.created_at=new Date(t0-60000).toISOString();f.time(f.clock()+60000);await f.coordinator().alarm();expect(await f.store.read()).toBeNull();expect((await f.eventStorage.get<any>('nativeEvent')).status).toBe('CONFIRMING');});
 
 it.each(['missing','bytes','mode','extra','truncated'])('rejects generated projection when actual native head has %s drift',async kind=>{const f=await fixture(),facts=await candidateFacts(f.g);const g:GitReader={async json(id,p,m,b){const value=await f.g.json(id,p,m,b);if(p.includes('/git/trees/'+f.pull.head.sha)){if(kind==='missing')value.tree=[];if(kind==='bytes')value.tree[0].sha=sha('9');if(kind==='mode')value.tree[0].mode='100755';if(kind==='extra')value.tree.push({path:'extra',type:'blob',mode:'100644',sha:sha('8')});if(kind==='truncated')value.truncated=true;}return value;},artifact:f.g.artifact};await expect(verifyGeneratedProjection(g,facts,{commentId:7,bodyDigest:digest(generatedStatusBody(facts,facts.session.preview,facts.evidence.stateCommit)).slice(7),previewDigest:digest(facts.session.preview).slice(7)})).rejects.toThrow(kind==='truncated'?'NATIVE_TREE_INCOMPLETE':'GENERATED_FILES_MISMATCH');});
+it('recovers a throttled write-token preflight before reserving the native dispatch',async()=>{
+ const f=await normalFixture();let attempts=0;
+ f.g.prepareDispatch=async id=>{
+  expect(id).toBe(CENTRAL.id);
+  if(++attempts===1)throw Error('RETRY_AFTER:180');
+ };
+ await f.coordinator().register({hint:f.hint,deliveryId:'token-preflight'});
+ const start=f.clock();await f.coordinator().alarm();
+ const record=await f.eventStorage.get<any>('nativeEvent');
+ expect(record).toMatchObject({status:'PREPARING',dispatchedAt:null,confirmations:0,nextAt:start+180000});
+ f.time(start+60000);await f.coordinator().alarm();expect(attempts).toBe(1);expect(f.posts()).toBe(0);
+ f.time(record.nextAt);await f.coordinator().alarm();await f.coordinator().alarm();
+ expect(f.posts()).toBe(1);expect(attempts).toBe(2);
+});
 it('durably defers rate-limited native preparation without early reads or resetting its original window',async()=>{const f=await normalFixture();await f.coordinator().register({hint:f.hint,deliveryId:'d'});const start=f.clock();f.readError('RETRY_AFTER:3600');await f.coordinator().alarm();const r=await f.eventStorage.get<any>('nativeEvent');expect(r.nextAt).toBe(start+3600000);expect(r.preparations).toBe(1);const reads=f.reads();f.time(start+60000);await f.coordinator().alarm();expect(f.reads()).toBe(reads);f.readError(null);f.time(r.nextAt);await f.coordinator().alarm();expect(f.posts()).toBe(1);expect((await f.eventStorage.get<any>('nativeEvent')).deadline).toBe(r.deadline);});
 it('rate-limited confirmation keeps one POST and defers a native receipt until the persisted floor',async()=>{const f=await normalFixture();f.run.status='in_progress';await f.coordinator().register({hint:f.hint,deliveryId:'d'});await f.coordinator().alarm();const start=f.clock();f.time(start+60000);await f.coordinator().alarm();f.readError('RETRY_AFTER:3600');f.time(start+5*60000);await f.coordinator().alarm();const r=await f.eventStorage.get<any>('nativeEvent');expect(r.confirmations).toBe(2);const reads=f.reads();f.run.status='completed';const receipt={runId:101,attempt:1,policySha:f.f.registration.policySha};await f.coordinator().receipt(receipt);await f.coordinator().receipt(receipt);expect(f.reads()).toBe(reads);expect((await f.eventStorage.get<any>('nativeEvent')).receiptDeferred).toBe(true);f.readError(null);f.time(r.nextAt);await f.coordinator().alarm();expect((await f.eventStorage.get<any>('nativeEvent')).status).toBe('REGISTERED');expect(f.posts()).toBe(1);});
 it('native rate limit beyond original deadline terminates without further alarm or dispatch',async()=>{const f=await normalFixture();await f.coordinator().register({hint:f.hint,deliveryId:'d'});f.readError('RETRY_AFTER:10000');await f.coordinator().alarm();expect((await f.eventStorage.get<any>('nativeEvent')).reason).toBe('RATE_LIMIT_WINDOW_EXHAUSTED');expect(await f.eventStorage.get('__alarm')).toBeUndefined();expect(f.posts()).toBe(0);});

@@ -243,6 +243,7 @@ export class ReleaseRelay {
         const policy=await promotedController(g,this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA,this.env);
         const own = await g.json(CENTRAL.id,prefix+'/actions/workflows/'+workflow);
         ensure(own.state === 'active' && own.path === '.github/workflows/'+workflow,'RELEASE_RELAY_WORKFLOW');
+        await g.prepareDispatch?.(CENTRAL.id);
         const reserved = this.now();
         if (!await save({stage:'confirm',tries:0,policy,reserved,next:reserved+60000})) return;
         await g.json(CENTRAL.id,prefix+'/actions/workflows/'+workflow+'/dispatches','POST',{ref:'main',inputs:{event_json:JSON.stringify(r.hint),request_key:key,policy_sha:policy}});

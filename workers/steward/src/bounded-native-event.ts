@@ -32,6 +32,11 @@ export async function acceptNativeCandidateEvent(env:BoundedEnv,event:string,pay
  const repo=payload.repository;
  if(repo.id<=0||repo.fork===true||repo.archived===true||repo.disabled===true||
     (repo.visibility!==undefined&&repo.visibility!=='public')||!repo.default_branch)return;
+ const pull=payload.pull_request;
+ // Candidate discovery accepts only same-repository PRs into the default branch.
+ // These signed facts are available before allocating an object or an alarm.
+ if(pull?.state!=='open'||pull.merged!==false||pull.head?.repo?.id!==repo.id||
+    pull.base?.repo?.id!==repo.id||pull.base?.ref!==repo.default_branch)return;
  const hint:NativeHint={repositoryId:repo.id,prNumber:payload.pull_request?.number,actorId:payload.sender?.id,action:payload.action,updatedAt:payload.pull_request?.updated_at};validateHint(hint);
  ensure(/^[A-Za-z0-9-]{1,128}$/.test(deliveryId),'NATIVE_DELIVERY');const key=nativeHintKey(hint),stub=env.BOUNDED_RECHECK.get(env.BOUNDED_RECHECK.idFromName('native:v1:'+key));
  const result=await stub.fetch(new Request('https://bounded.internal/native-event',{method:'POST',body:JSON.stringify({hint,deliveryId})}));ensure(result.ok,'NATIVE_DURABLE_ACCEPTANCE');

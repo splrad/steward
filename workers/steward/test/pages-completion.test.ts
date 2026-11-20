@@ -1,7 +1,9 @@
 import {readFileSync} from 'node:fs';
 import {ReleaseTestDb} from './release-test-db.js';
 import {describe,it,expect,vi} from 'vitest';
-import {forwardPagesCompletion} from '../src/pages-completion.js';
+import {GitHubRetryError} from '../src/bounded-retry-after.js';
+import {SqliteDurableStorage} from './bounded-storage.js';
+import {PagesRetry,forwardPagesCompletion} from '../src/pages-completion.js';
 import {handleWebhook} from '../src/index.js';
 import {TARGET,CENTRAL,type GitReader} from '../src/bounded-recheck-github.js';
 
@@ -16,7 +18,7 @@ function fixture(){
   const db=new ReleaseTestDb();
   db.database.exec(readFileSync(new URL('../../../packages/runtime/migrations/0020_pages_completion_dispatches.sql',import.meta.url),'utf8'));
   const config={...env,ISSUE_SNAPSHOTS:db.binding()};
-  const result={lost:false,visible:true};
+  const result={lost:false,visible:true,rejections:0,rejectionStatus:429,denied:false};
   const receipt={id:99,path:'.github/workflows/'+receiver,display_title:'Pages completion '+TARGET.id+' 12 1',event:'workflow_dispatch',
     actor:{id:301115370},repository:{id:CENTRAL.id},head_repository:{id:CENTRAL.id},head_branch:'main',head_sha:pin};
   const centralSites=[site];
@@ -33,6 +35,8 @@ function fixture(){
     if(id===CENTRAL.id&&path.endsWith('/'+receiver))return {state:'active',path:'.github/workflows/'+receiver};
     if(id===CENTRAL.id&&path.endsWith('/git/ref/heads/main'))return {object:{sha:pin}};
     if(method==='POST'&&id===CENTRAL.id&&path==='/repos/splrad/steward/actions/workflows/'+receiver+'/dispatches'){
+      if(result.denied)throw Error('GITHUB_HTTP_403');
+      if(result.rejections>0){result.rejections--;throw new GitHubRetryError(result.rejectionStatus,'180',true);}
       if(result.visible)Object.assign(prior,{total_count:1,workflow_runs:[receipt]});
       if(result.lost)throw Error('lost response');
       return body;
@@ -114,4 +118,53 @@ describe('fixed public Pages completion bridge',()=>{
     if(why==='removedCentrally')f.centralSites.length=0;
     await f.forward();expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toEqual([]);
   });
+});
+
+it.each([429,403])('recovers explicit rate limit %s at its floor with one accepted POST',async status=>{
+ const f=fixture(),storage=new SqliteDurableStorage(),now=Date.now();
+ const clock=vi.spyOn(Date,'now').mockReturnValue(now);
+ const object=()=>new PagesRetry(storage as any,f.config,()=>f.g,[f.site]);
+ f.config.BOUNDED_RECHECK={idFromName:(x:string)=>x,get:()=>({fetch:async(req:Request)=>{
+   if(new URL(req.url).pathname==='/pages-retry')await object().schedule(await req.json() as any);
+   else await object().wake();
+   return Response.json({});
+ }})};
+ try{
+   const posts=()=>f.json.mock.calls.filter(c=>c[2]==='POST').length;
+   f.result.rejectionStatus=status;f.result.rejections=2;await f.forward();
+   expect(await storage.get('__alarm')).toBe(now+180000);expect(posts()).toBe(1);
+   await expect(f.forward()).rejects.toThrow('PAGES_DISPATCH_UNCONFIRMED');
+   await object().alarm();expect(posts()).toBe(1);
+   clock.mockReturnValue(now+180000);await object().alarm();
+   expect(posts()).toBe(2);expect(await storage.get('__alarm')).toBe(now+360000);
+   clock.mockReturnValue(now+360000);await object().alarm();await object().alarm();await f.forward();
+   expect(posts()).toBe(3);expect(await storage.get('pagesRetry')).toBeUndefined();
+   expect(f.db.database.prepare('SELECT count(*) n,central_run_id FROM pages_completion_dispatches').get()).toEqual({n:1,central_run_id:99});
+ }finally{clock.mockRestore();}
+});
+
+it('retains the D1 reservation after an uncertain 503 and reconciles on redelivery without another POST',async()=>{
+ const f=fixture();f.result.rejections=1;f.result.rejectionStatus=503;f.result.visible=false;
+ await expect(f.forward()).rejects.toThrow('RETRY_AFTER:180');
+ await expect(f.forward()).rejects.toThrow('PAGES_DISPATCH_UNCONFIRMED');
+ Object.assign(f.prior,{total_count:1,workflow_runs:[f.receipt]});
+ await f.forward();expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(1);
+ expect(f.db.database.prepare('SELECT central_run_id FROM pages_completion_dispatches').get()?.central_run_id).toBe(99);
+});
+it('a restored retry ticket cannot reacquire a newer reservation after rollback or restart',async()=>{
+ const f=fixture(),storage=new SqliteDurableStorage();let ticket:any;
+ f.config.BOUNDED_RECHECK={idFromName:(x:string)=>x,get:()=>({fetch:async(req:Request)=>{ticket=await req.json();return Response.json({});}})};
+ f.result.rejections=1;await f.forward();
+ const obj=()=>new PagesRetry(storage as any,f.config,()=>f.g,[f.site]);await obj().schedule(ticket);
+ f.db.database.prepare('UPDATE pages_completion_dispatches SET reserved_at=?').run(new Date(ticket.due).toISOString());
+ const clock=vi.spyOn(Date,'now').mockReturnValue(ticket.due);
+ try{await obj().alarm();await obj().alarm();}finally{clock.mockRestore();}
+ expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(1);expect(await storage.get('pagesRetry')).toBeUndefined();
+});
+
+it('does not issue a retry ticket for an ordinary permission-denied 403',async()=>{
+ const f=fixture();f.result.denied=true;f.result.visible=false;
+ await expect(f.forward()).rejects.toThrow('GITHUB_HTTP_403');
+ await expect(f.forward()).rejects.toThrow('PAGES_DISPATCH_UNCONFIRMED');
+ expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(1);
 });
