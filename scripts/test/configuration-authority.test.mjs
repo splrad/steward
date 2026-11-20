@@ -47,6 +47,29 @@ test('manual run and rerun both require live administrator or delegated identity
   await assert.rejects(requestFromRun(api,'',repo,1,1,B,archive),/Stale/);
 });
 
+test('public initiation is selected on each protected default branch and cannot authorize PR edits',async()=>{
+  const source=await readFile('templates/repository/'+requestPath,'utf8');
+  for(const repositoryId of [21,48]){
+    const product={...repo,id:repositoryId};
+    const files=new Map([[B+'/'+requestPath,source]]);
+    const api=fake(files);
+    api.rest.repos.getCollaboratorPermissionLevel=async()=>response({permission:'read',user:actor});
+    const run={repository:product,head_repository:product,head_branch:'trunk',id:1,head_sha:B,run_attempt:1,status:'completed',
+      conclusion:'success',path:requestPath,event:'issue_comment',actor,triggering_actor:actor};
+    api.rest.actions.getWorkflowRun=async()=>response(run);
+    const data={event:run.event,repository:product.id,actor:actor.id,source:B,run:1,attempt:1,command:{number:2,id:3}};
+    const read=()=>requestFromRun(api,'',product,1,1,B,async()=>({data}));
+    await assert.rejects(read(),/administrator/);
+    const policy=B+'/.github/configuration-delegates.json';
+    files.set(policy,JSON.stringify([actor.id]));
+    await assert.rejects(read(),/administrator/);
+    files.set(policy,JSON.stringify({delegates:[],requestAccess:'public'}));
+    assert.equal((await read()).publicRequests,true);
+    run.event=data.event='pull_request';data.pull={number:2,head:B};
+    await assert.rejects(read(),/administrator/);
+  }
+});
+
 test('review requests bind the originating fork and head before authorization is reconciled',async()=>{
   const source=await readFile('templates/repository/'+requestPath,'utf8');
   const api=fake(new Map([[A+'/'+requestPath,source],[B+'/'+requestPath,source]]));

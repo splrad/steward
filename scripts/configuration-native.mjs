@@ -7,7 +7,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Octokit} from '@octokit/rest';
 import {downloadArtifactArchive} from '../packages/runner/dist/index.js';
-import {authorized,fileText,requestPath} from './configuration-authorization.mjs';
+import {authorized,configurationAccess,fileText,requestPath} from './configuration-authorization.mjs';
 import {matchesMatrixName,observedArchiveTemplate,runArchiveName,staticMatrixRows} from './configuration-build.mjs';
 import {channelUploadSteps,prepareTarget,trialKey} from './configuration-selection.mjs';
 
@@ -87,7 +87,7 @@ export async function requestFromRun(api,token,repo,id,attempt,base,archive=read
     const pr=(await api.rest.pulls.get({...api.target,pull_number:data.pull.number})).data;
     must(pr.state==='closed' && pr.user.id===bot && pr.base.repo.id===repo.id && pr.base.ref===repo.default_branch &&
       pr.head.repo?.id===repo.id && pr.head.sha===run.head_sha && pr.head.ref===run.head_branch && pr.head.ref.startsWith(branchPrefix),'Unknown closed configuration PR');
-    return {run,data,dashboard};
+    return {run,data,dashboard,publicRequests:(await configurationAccess(api,base)).requestAccess==='public'};
   }
   if(run.event==='pull_request_review') {
     must(data.pull,'Missing review PR');
@@ -95,10 +95,15 @@ export async function requestFromRun(api,token,repo,id,attempt,base,archive=read
     must(pr.number===data.pull.number && pr.base.repo.id===repo.id && pr.head.repo?.id===run.head_repository.id &&
       pr.head.sha===run.head_sha && pr.head.ref===run.head_branch,'Review run does not match the current PR');
   }
-  if(!['push','pull_request_review','schedule'].includes(run.event)) {
-    for(const actor of [run.actor,run.triggering_actor]) must(await authorized(api,actor,base),'Repository administrator or explicit delegate required');
+  const publicRequests=dashboard && (await configurationAccess(api,base)).requestAccess==='public';
+  if(run.event==='issue_comment' && publicRequests) {
+    must(data.command && !data.pull && !data.trial && !data.toggle && run.actor.type==='User','Invalid public configuration request');
+    if(run.run_attempt>1)must(await authorized(api,run.triggering_actor,base),'Unauthorized rerun');
+  } else if(!['push','pull_request_review','schedule'].includes(run.event)) {
+    const adminOnly=run.event==='issue_comment' || run.event==='issues' && !publicRequests;
+    for(const actor of [run.actor,run.triggering_actor]) must(await authorized(api,actor,base,adminOnly),'Repository administrator or explicit delegate required');
   } else if(run.run_attempt>1) must(await authorized(api,run.triggering_actor,base),'Unauthorized rerun');
-  return {run,data,dashboard};
+  return {run,data,dashboard,publicRequests};
 }
 
 async function archiveOwner(api,jobs,job,step,asset) {

@@ -267,16 +267,15 @@ export async function main() {
   await app.forTemplateRepository(id,async(writeToken,readToken)=>{
     const api=client(readToken,repo),write=client(writeToken,repo);
     const base=(await api.rest.repos.getBranch({...api.target,branch:repo.default_branch})).data.commit.sha;
-    const {run,data,dashboard}=await requestFromRun(api,readToken,repo,process.env.REQUEST_RUN,process.env.REQUEST_ATTEMPT,base);
+    const {run,data,dashboard,publicRequests}=await requestFromRun(api,readToken,repo,process.env.REQUEST_RUN,process.env.REQUEST_ATTEMPT,base);
     const apply=options=>app.forRepository(id,async token=>
       reconcile({repo,base,run,data,api,write,actions:client(token,repo),readToken,...options}),'configuration-actions');
     if(!dashboard || run.event==='pull_request_review')return apply();
     const current=(await api.rest.repos.get(api.target)).data;
     must(current.id===id && typeof current.has_issues==='boolean' && current.default_branch===repo.default_branch,'Repository settings changed');
     repo.has_issues=current.has_issues;
-    const update=issues=>dashboardRequest({repo,base,api,issues,write,run,data,load:snapshot,apply});
-    if(repo.has_issues)return app.forRepository(id,token=>update(client(token,repo)),'configuration-issues');
-    return update();
+    if(repo.has_issues)return app.forRepository(id,token=>dashboardRequest({repo,base,api,issues:client(token,repo),
+      run,data,publicRequests,load:snapshot,apply}),'configuration-issues');
   },'configuration-read');
 }
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) main().catch(error=>{

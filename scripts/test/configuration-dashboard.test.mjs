@@ -16,17 +16,12 @@ function fixture(enabled=true) {
       listForRepo:'issues', listComments:'comments',
       create:async({title,body})=>{
         assert.ok(repo.has_issues);writes.push('issue');
-        const issue={number:100,node_id:'I',state:'open',title,body,user:bot};issues.push(issue);return {data:issue};
+        const issue={number:100,node_id:'I',url:'https://api.github.com/repos/splrad/example/issues/100',state:'open',title,body,user:bot};issues.push(issue);return {data:issue};
       },
       update:async({issue_number,state,title,body})=>{
         writes.push('update');Object.assign(issues.find(i=>i.number===issue_number),{state,title,body});
       },
-      getComment:async({comment_id})=>({data:comments.find(c=>c.id===comment_id)}),
-      createComment:async({issue_number,body})=>{
-        writes.push('comment');const id=comments.length+1;
-        comments.push({id,node_id:'C'+id,number:issue_number,body,user:bot});
-      },
-      updateComment:async({comment_id,body})=>{writes.push('edit');comments.find(c=>c.id===comment_id).body=body;}
+      getComment:async({comment_id})=>({data:comments.find(c=>c.id===comment_id)})
     }},
     paginate:async(method,params)=>{
       if(method==='pulls')return pulls.filter(p=>p.state===params.state);
@@ -74,17 +69,19 @@ test('official issue shows the adopted source, reuses a PR and reopens in place 
   assert.equal(f.pulls.length,2);assert.ok(issue.body.includes(base));
 });
 
-test('disabled Issues use a historical native PR comment and recover duplicate requests and settings changes',async()=>{
-  const f=fixture(false);
-  await f.run();assert.equal(f.issues.length,0);assert.equal(f.pulls.length,1);
-  const first=f.pulls[0];first.state='closed';await f.run();
-  f.comments.push({id:71,user:actor,body:'/configure',issue_url:first.issue_url,created_at:'one',updated_at:'one',number:first.number});
-  const request={command:{number:first.number,id:71}};
+test('an exact native comment opens or reuses a PR and cannot edit its configuration',async()=>{
+  const f=fixture();
+  await f.run();
+  f.pulls[0].state='closed';await f.run();
+  const issue=f.issues[0];
+  f.comments.push({id:71,user:actor,body:'/configure',issue_url:issue.url,created_at:'one',updated_at:'one'});
+  const request={command:{number:issue.number,id:71}};
   await f.run('issue_comment',request);
   assert.equal(f.pulls.length,2);assert.match(f.pulls[0].head.ref,/-comment-71$/);
-  assert.match(f.comments.at(-1).body,/pull\/2\)/);
+  await f.run('issue_comment',request);
+  assert.equal(f.pulls.length,2);assert.match(issue.body,/pull\/2\)/);
   f.pulls[0].state='closed';await f.run('issue_comment',request);assert.equal(f.pulls.length,2);
-  f.repo.has_issues=true;await f.run();assert.equal(f.issues.length,1);assert.deepEqual(f.pins,[100]);
-  await assert.rejects(f.run('issue_comment',request),/official configuration issue/);
-  f.repo.has_issues=false;await f.run();assert.equal(f.issues.length,1);
+  f.comments[0].body='/configure trial';
+  await assert.rejects(f.run('issue_comment',request),/Invalid configuration request/);
+  await assert.rejects(f.run('issue_comment',{command:{number:99,id:71}}),/Unknown configuration issue/);
 });
