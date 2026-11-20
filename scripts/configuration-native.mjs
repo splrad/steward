@@ -73,10 +73,10 @@ export async function requestFromRun(api,token,repo,id,attempt,base,archive=read
     await trustedWorkflow(api,trialPath,run.head_sha,base);
     return {run,data:{trial:{id:run.id,attempt:run.run_attempt}}};
   }
-  must(run.path===requestPath && ['workflow_dispatch','push','pull_request','pull_request_review','issues','issue_comment','schedule'].includes(run.event),'Unknown configuration request source');
-  if(['workflow_dispatch','push','issues','issue_comment','schedule'].includes(run.event)) must(run.head_branch===repo.default_branch && run.head_sha===base,'Default branch moved; run again');
+  must(run.path===requestPath && ['workflow_dispatch','push','pull_request','pull_request_review','issues','schedule'].includes(run.event),'Unknown configuration request source');
+  if(['workflow_dispatch','push','issues','schedule'].includes(run.event))must(run.head_branch===repo.default_branch && run.head_sha===base,'Default branch moved; run again');
   const dashboard=await trustedWorkflow(api,requestPath,run.head_sha,base);
-  if(['issues','issue_comment','schedule'].includes(run.event))must(dashboard,'Dashboard workflow required');
+  if(['issues','schedule'].includes(run.event))must(dashboard,'Dashboard workflow required');
   const {data}=await archive(api,token,repo,run,'configuration-request-'+run.id+'-'+run.run_attempt,true);
   must(data.event===run.event && data.repository===repo.id && data.actor===run.actor.id && Number(data.run)===run.id
     && Number(data.attempt)===run.run_attempt,'Configuration request identity mismatch');
@@ -96,11 +96,8 @@ export async function requestFromRun(api,token,repo,id,attempt,base,archive=read
       pr.head.sha===run.head_sha && pr.head.ref===run.head_branch,'Review run does not match the current PR');
   }
   const publicRequests=dashboard && (await configurationAccess(api,base)).requestAccess==='public';
-  if(run.event==='issue_comment' && publicRequests) {
-    must(data.command && !data.pull && !data.trial && !data.toggle && run.actor.type==='User','Invalid public configuration request');
-    if(run.run_attempt>1)must(await authorized(api,run.triggering_actor,base),'Unauthorized rerun');
-  } else if(!['push','pull_request_review','schedule'].includes(run.event)) {
-    const adminOnly=run.event==='issue_comment' || run.event==='issues' && !publicRequests;
+  if(!['push','pull_request_review','schedule'].includes(run.event)) {
+    const adminOnly=run.event==='issues' && !publicRequests;
     for(const actor of [run.actor,run.triggering_actor]) must(await authorized(api,actor,base,adminOnly),'Repository administrator or explicit delegate required');
   } else if(run.run_attempt>1) must(await authorized(api,run.triggering_actor,base),'Unauthorized rerun');
   return {run,data,dashboard,publicRequests};

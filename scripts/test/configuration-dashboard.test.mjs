@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
 import {dashboardRequest} from '../configuration-dashboard.mjs';
 import {inspectRepository} from '../configuration-view.mjs';
 
@@ -8,10 +9,15 @@ const bot={id:301115370,type:'Bot',login:'splrad-steward[bot]'};
 const actor={id:12,type:'User',login:'operator'};
 function fixture(enabled=true) {
   const repo={id:42,full_name:'splrad/example',default_branch:'main',has_issues:enabled};
-  const issues=[],pins=[],pulls=[],comments=[],writes=[];
+  const issues=[],pins=[],pulls=[],comments=[],writes=[],reactions=[],branches=[],sources=[];
   const api={target:{owner:'splrad',repo:'example'},rest:{
-    repos:{getBranch:async()=>({data:{commit:{sha:base}}})},
+    repos:{getBranch:async()=>({data:{commit:{sha:branches.shift()??base}}}),
+      getContent:async({path})=>{
+        const bytes=path.endsWith('configuration-delegates.json')?Buffer.from('{"requestAccess":"public","delegates":[]}'):await readFile('templates/repository/'+path);
+        return {data:{type:'file',encoding:'base64',content:bytes.toString('base64')}};
+      }},
     pulls:{list:'pulls',get:async({pull_number})=>({data:pulls.find(p=>p.number===pull_number)})},
+    reactions:{listForIssueComment:'reactions',createForIssueComment:async({comment_id})=>reactions.push({comment_id,user:bot})},
     issues:{
       listForRepo:'issues', listComments:'comments',
       create:async({title,body})=>{
@@ -26,6 +32,7 @@ function fixture(enabled=true) {
     paginate:async(method,params)=>{
       if(method==='pulls')return pulls.filter(p=>p.state===params.state);
       if(method==='issues'){assert.ok(repo.has_issues);return issues;}
+      if(method==='reactions')return reactions.filter(r=>r.comment_id===params.comment_id);
       assert.equal(method,'comments');return comments.filter(c=>c.number===params.issue_number);
     },
     graphql:async(query,params)=>{
@@ -34,8 +41,9 @@ function fixture(enabled=true) {
       const c=comments.find(c=>c.node_id===params.id);
       return {node:{author:{login:bot.login},body:c.body}};
     }};
-  const run=(event='schedule',data={},id=10)=>dashboardRequest({repo,api,issues:repo.has_issues?api:null,write:api,base,
-    run:{id,event,actor},data,load:async()=>inspectRepository(new Map()),apply:async({branch,draft})=>{
+  const run=(event='schedule',data={},id=10)=>dashboardRequest({repo,api,issues:api,base,publicRequests:true,
+    run:{id,event,actor},data,load:async()=>inspectRepository(new Map()),apply:async({base:source,branch,draft})=>{
+      sources.push(source);
       assert.equal(draft,true);
       const number=pulls.length+1;
       pulls.unshift({number,state:'open',issue_url:'https://api.github.com/repos/splrad/example/issues/'+number,
@@ -46,7 +54,7 @@ function fixture(enabled=true) {
     issue.body=previous.replace('- [ ] <!-- steward-configure','- [x] <!-- steward-configure');
     return {toggle:{number:issue.number,previous,body:issue.body}};
   };
-  return {run,repo,pins,issues,pulls,comments,writes,click};
+  return {run,repo,pins,issues,pulls,comments,writes,branches,sources,click};
 }
 
 test('official issue shows the adopted source, reuses a PR and reopens in place without displacing other pins',async()=>{
@@ -76,7 +84,10 @@ test('an exact native comment opens or reuses a PR and cannot edit its configura
   const issue=f.issues[0];
   f.comments.push({id:71,user:actor,body:'/configure',issue_url:issue.url,created_at:'one',updated_at:'one'});
   const request={command:{number:issue.number,id:71}};
+  const advanced='b'.repeat(40);
+  f.branches.push(advanced,advanced);
   await f.run('issue_comment',request);
+  assert.equal(f.sources.at(-1),advanced);assert.ok(issue.body.includes(advanced));
   assert.equal(f.pulls.length,2);assert.match(f.pulls[0].head.ref,/-comment-71$/);
   await f.run('issue_comment',request);
   assert.equal(f.pulls.length,2);assert.match(issue.body,/pull\/2\)/);

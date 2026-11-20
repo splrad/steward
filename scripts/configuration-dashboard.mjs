@@ -1,5 +1,6 @@
-import {must,openPull,positive} from './configuration-native.mjs';
+import {must,openPull,positive,trustedWorkflow} from './configuration-native.mjs';
 import {renderConfiguration} from './configuration-view.mjs';
+import {authorized,configurationAccess,requestPath} from './configuration-authorization.mjs';
 
 const bot=301115370;
 const title='仓库配置';
@@ -9,6 +10,14 @@ const marker=id=>'<!-- steward-configuration-dashboard '+id+' -->';
 const pullUrl=(repo,number)=>'https://github.com/'+repo.full_name+'/pull/'+positive(number);
 const nativePull=(pr,repo)=>pr.user.id===bot && pr.head.repo?.id===repo.id &&
   pr.head.ref.startsWith('steward/repository-configuration-') && pr.base.ref===repo.default_branch;
+
+export async function requestFromComment(api,repo,base,number,id,runId,attempt) {
+  // Only the native object locator crosses the webhook boundary. The current base owns all policy and defaults.
+  must(await trustedWorkflow(api,requestPath,base,base),'Adopt the dashboard workflow first');
+  const {requestAccess}=await configurationAccess(api,base);
+  return {run:{id:positive(runId),run_attempt:positive(attempt),event:'issue_comment'},
+    data:{command:{number:positive(number),id:positive(id)}},dashboard:true,publicRequests:requestAccess==='public'};
+}
 
 async function findIssue(api,repo) {
   const issues=await api.paginate(api.rest.issues.listForRepo,{...api.target,state:'all',creator:'splrad-steward[bot]',per_page:100});
@@ -26,7 +35,8 @@ async function syncIssue(api,repo,summary,pr,publicRequests) {
   const pinned=issue && pins.nodes.some(p=>p.issue.number===issue.number);
   const full=!pinned && pins.totalCount>=3;
   const body=[marker(repo.id),summary,pr?'[打开配置 PR #'+pr.number+']('+pullUrl(repo,pr.number)+')':'当前没有开放的配置 PR。',
-    publicRequests?'任何用户均可在此评论 `/configure` 请求配置 PR。配置选择由管理员或受托维护者修改。':'仓库管理员可在此评论 `/configure` 请求配置 PR。',
+    publicRequests?'任何用户均可在此评论 `/configure` 请求配置 PR。配置选择由管理员或受托维护者修改。':'管理员或受托维护者可在此评论 `/configure` 请求配置 PR。',
+    '机器人会用 👍 确认已处理的评论。如果默认分支连续变化导致本次未能处理，机器人会标记 😕。',
     checkbox,...(full?['本仓的三个置顶位置已占满。']:[])].join('\n\n');
   if(!issue)issue=(await api.rest.issues.create({...api.target,title,body})).data;
   else if(issue.state!=='open' || issue.body!==body || issue.title!==title)
@@ -44,10 +54,11 @@ async function closedPulls(api,repo) {
 }
 
 // The caller serializes this transaction per repository in the central workflow.
-export async function dashboardRequest({repo,api,issues,base,run,data,publicRequests,load,apply}) {
+export async function dashboardRequest({repo,api,issues,base,run,data,publicRequests,load,apply},retry=true) {
   if(!repo.has_issues)return;
   const event=run.event;
   let requestKey;
+  let requester=run.triggering_actor;
   let staleToggle=false;
   if(event==='issues') {
     must(repo.has_issues && data.toggle,'Configuration issue is unavailable');
@@ -65,24 +76,37 @@ export async function dashboardRequest({repo,api,issues,base,run,data,publicRequ
     const issue=await findIssue(issues,repo);
     must(issue && issue.state==='open' && issue.number===positive(number),'Unknown configuration issue');
     const comment=(await issues.rest.issues.getComment({...issues.target,comment_id:positive(id)})).data;
-    must(comment.issue_url===issue.url && comment.user.type==='User' && comment.user.id===run.actor.id && comment.body==='/configure' &&
+    must(comment.issue_url===issue.url && comment.user.type==='User' && Number.isSafeInteger(comment.user.id) && comment.body==='/configure' &&
       comment.created_at===comment.updated_at,'Invalid configuration request comment');
+    requester=comment.user;
+    must(publicRequests || await authorized(api,requester,base),'Administrator or configuration delegate required');
+    const reactions=await issues.paginate(issues.rest.reactions.listForIssueComment,{...issues.target,comment_id:id,content:'+1',per_page:100});
+    if(reactions.some(r=>r.user.id===bot))return;
     requestKey='comment-'+id;
   }
 
   let current=await openPull(api,repo);
   const history=current?[]:await closedPulls(api,repo);
-  const branch=requestKey && 'steward/repository-configuration-'+base+'-'+requestKey;
+  const branch=requestKey && 'steward/repository-configuration-'+requestKey;
   const previous=branch && history.find(pr=>pr.head.ref===branch);
   const model=await load(api,base);
   const summary=renderConfiguration(model,base).replace(/^- \[x\] /gm,'- ☑ ').replace(/^- \[ \] /gm,'- ☐ ');
   const latest=(await api.rest.repos.getBranch({...api.target,branch:repo.default_branch})).data;
+  if(latest.commit.sha!==base && event==='issue_comment') {
+    if(retry) {
+      const fresh=await requestFromComment(api,repo,latest.commit.sha,data.command.number,data.command.id,run.id,run.run_attempt);
+      return dashboardRequest({repo,api,issues,base:latest.commit.sha,...fresh,load,apply},false);
+    }
+    await issues.rest.reactions.createForIssueComment({...issues.target,comment_id:data.command.id,content:'confused'});
+    return;
+  }
   must(latest.commit.sha===base,'Default configuration source moved');
   if(!data.closed && !staleToggle && !previous && !(requestKey && current)) {
     if(event==='schedule' || requestKey) {
-      if(!current && (requestKey || !history.length))await apply({branch,draft:true});
+      if(!current && (requestKey || !history.length))await apply({base,branch,draft:true,run:{...run,triggering_actor:requester}});
     } else await apply({draft:true,firstAdoption:!current && !history.length});
   }
   current=await openPull(api,repo);
   await syncIssue(issues,repo,summary,current,publicRequests);
+  if(event==='issue_comment')await issues.rest.reactions.createForIssueComment({...issues.target,comment_id:data.command.id,content:'+1'});
 }
