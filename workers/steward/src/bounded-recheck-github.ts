@@ -26,7 +26,17 @@ export async function candidateReader(g:GitReader,id:number):Promise<GitReader> 
  const scoped=g.forCandidate?await g.forCandidate(id):id===TARGET.id?g:undefined;
  ensure(scoped,'CANDIDATE_NOT_REGISTERED');return scoped;
 }
-function rateLimitError(res:Response){const retry=res.headers.get('retry-after'),rawReset=res.headers.get('x-ratelimit-reset'),reset=Number(rawReset);const validRetry=retry!==null&&(/^[0-9]+(?:\.[0-9]+)?$/.test(retry)||Number.isFinite(Date.parse(retry))),validReset=rawReset!==null&&Number.isFinite(reset)&&reset>0;const limited=res.status===429||res.status===503||res.status===403&&(res.headers.get('x-ratelimit-remaining')==='0'||validRetry);if(limited)throw Error('RETRY_AFTER:'+(validRetry?retry:validReset?new Date(reset*1000).toUTCString():'unknown'));}
+export class GitHubRetryError extends Error {
+ constructor(readonly httpStatus:number,retry:string){super('RETRY_AFTER:'+retry);}
+}
+function rateLimitError(res:Response){
+ const retry=res.headers.get('retry-after'),reset=res.headers.get('x-ratelimit-reset');
+ const validRetry=retry!==null&&(/^[0-9]+(?:\.[0-9]+)?$/.test(retry)||Number.isFinite(Date.parse(retry)));
+ const resetDate=new Date(Number(reset)*1000);
+ const validReset=reset!==null&&Number(reset)>0&&Number.isFinite(resetDate.getTime());
+ if(res.status===429||res.status===503||res.status===403&&(res.headers.get('x-ratelimit-remaining')==='0'||validRetry))
+  throw new GitHubRetryError(res.status,validRetry?retry:validReset?resetDate.toUTCString():'unknown');
+}
 async function limitedBytes(response:Response,max:number){
  rateLimitError(response);
  ensure(response.ok&&response.body,'HTTP_READ_FAILED');const reader=response.body.getReader();const chunks:Uint8Array[]=[];let size=0;

@@ -1,7 +1,7 @@
 import {retryAfterTime} from './bounded-retry-after.js';
 import {promotedController} from './bounded-controller.js';
 import {PendingPromotion,promotionMessage} from './release-promotion.js';
-import { BoundedGitHub, CENTRAL, digest, ensure, type BoundedEnv, type GitReader } from './bounded-recheck-github.js';
+import { GitHubRetryError, BoundedGitHub, CENTRAL, digest, ensure, type BoundedEnv, type GitReader } from './bounded-recheck-github.js';
 import { dispatchFixed } from './bounded-recheck-effects.js';
 
 const qualityUser = 223894421;
@@ -114,13 +114,15 @@ export class QualityEvent {
       });
     }catch(error){
       const message=error instanceof Error?error.message:'';
-      const retryAt=retryAfterTime(error,Date.now(),Number.MAX_SAFE_INTEGER-1);
+      // A 503 after the POST may have come from a proxy after GitHub accepted it.
+      if(error instanceof GitHubRetryError && error.httpStatus===503)throw error;
+      const now=Date.now();
+      const retryAt=retryAfterTime(error,now,now+60000-1);
       if(claimed && (retryAt!==undefined || /^GITHUB_HTTP_(400|401|403|404|409|410|422|429)$/.test(message))){
-        const now=Date.now();
         const rateLimited=message==='GITHUB_HTTP_429'||retryAt!==undefined;
-        const next=rateLimited && retryAt!==Number.MAX_SAFE_INTEGER ? Math.max(now+1000,retryAt??now+60000) : undefined;
+        const next=rateLimited ? Math.max(now+1000,retryAt??now+60000) : undefined;
         await this.storage.transaction(async t=>{
-          await t.put('qualityEvent',{...record,phase:'pending',retryAt:next??retryAt??0});
+          await t.put('qualityEvent',{...record,phase:'pending',retryAt:next??0});
           if(next)await t.setAlarm(next);
         });
       }

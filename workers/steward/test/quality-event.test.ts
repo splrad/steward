@@ -1,4 +1,5 @@
 import {expect,it,vi} from 'vitest';
+import {GitHubRetryError} from '../src/bounded-recheck-github.js';
 import {QualityEvent,qualityLocator} from '../src/quality-event.js';
 const sha='a'.repeat(40),id=1296724484,install=123;
 function qualityFile(repositories:Record<string,unknown>) {
@@ -80,12 +81,12 @@ it.each(['created','edited','deleted'])('discards a signed private review commen
  }finally{external.mockRestore();for(const log of logs)log.mockRestore();}
 });
 
-it.each([['GITHUB_HTTP_422',2],['RETRY_AFTER:3',2],['unconfirmed transport failure',1]] as const)('redelivers only an explicitly rejected quality POST (%s)',async(message,expected)=>{
+it.each([['GITHUB_HTTP_422',2],['RETRY_AFTER:3',2],['RETRY_AFTER:unknown',2],['proxy503',1],['unconfirmed transport failure',1]] as const)('redelivers only an explicitly rejected quality POST (%s)',async(message,expected)=>{
  const {SqliteDurableStorage}=await import('./bounded-storage.js');
  const storage=new SqliteDurableStorage(),config=Buffer.from(JSON.stringify({schemaVersion:1,enabled:true,deploymentSha:sha}));
  let posts=0;
  const json=async(_id:number,path:string,method?:string)=>{
-   if(method==='POST'){if(++posts===1)throw Error(message);return {};}
+   if(method==='POST'){if(++posts===1)throw message==='proxy503'?new GitHubRetryError(503,'unknown'):Error(message);return {};}
    if(path.includes('/git/ref/'))return {ref:'refs/'+path.split('/git/ref/')[1],object:{type:'commit',sha}};
    if(path.includes('quality-language.json'))return qualityFile({[id]:'splrad/steward'});
    if(path.includes('/contents/'))return {type:'file',path:'config/bounded-recheck.json',encoding:'base64',size:config.length,content:config.toString('base64')};
@@ -93,8 +94,8 @@ it.each([['GITHUB_HTTP_422',2],['RETRY_AFTER:3',2],['unconfirmed transport failu
  };
  const object=new QualityEvent(storage as any,{BOUNDED_RECHECK_ENABLED:'true',RELEASE_RELAY_DEPLOYMENT_SHA:sha} as any,()=>({json} as any));
  const record={delivery:'one-delivery',event:'workflow_run',target,phase:'pending' as const};
- await expect(object.register(record)).rejects.toThrow(message);
- if(message==='RETRY_AFTER:3'){
+ await expect(object.register(record)).rejects.toThrow(message==='proxy503'?'RETRY_AFTER:unknown':message);
+ if(message.startsWith('RETRY_AFTER:')){
    const next=await storage.get<number>('__alarm');
    expect(next).toBeGreaterThan(Date.now());
    await object.alarm();
