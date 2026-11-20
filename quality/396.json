@@ -55,17 +55,48 @@
         ]
       },
       "configVersion": "quality-native-comments-v1",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4639747745",
+        "sourceCommit": "32e58b3be2c52a58200cd2bc655a3867a01d4ca2",
+        "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4639747745",
+        "severity": "原文未说明",
+        "originalIdentifiers": [
+          "<code>workers/steward/src/bounded-recheck-github.ts</code>",
+          "<code>catch</code>",
+          "<code>error instanceof Error&amp;&amp;error.message==='GITHUB_HTTP_404'</code>",
+          "<code>error instanceof Error &amp;&amp; error.message === 'GITHUB_HTTP_404'</code>",
+          "workers/steward/src/bounded-recheck-github.ts",
+          "GITHUB_HTTP_404",
+          "whitespace/precedence"
+        ],
+        "segmentIndex": 0,
+        "problemZh": "原文指出存在“Whitespace contradicts operator precedence”问题：嵌套运算符周围的空白写法与运算符优先级表达不一致，具体位于 workers/steward/src/bounded-recheck-github.ts 的 catch 条件。",
+        "impactZh": "原文表示该写法会造成分组含义的可读性/明确性不足，并触发 whitespace/precedence 相关告警。",
+        "suggestionZh": "原文建议在不改变逻辑的前提下，将条件从 error instanceof Error&&error.message==='GITHUB_HTTP_404' 调整为 error instanceof Error && error.message === 'GITHUB_HTTP_404'，并可选用括号让分组更直观；无需新增 imports、方法或定义。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-20T07:49:51.051Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3652,
+                "outputTokens": 791
+              }
+            ],
+            "totalNanoAiu": 1746500000,
+            "aiCredits": 1.7465,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-20T07:50:51.051Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     },
     "1356c40bb274b8ec49991f59bb4fc589b719089b4d950b9dbff7c936402fb9ac": {
       "key": "1356c40bb274b8ec49991f59bb4fc589b719089b4d950b9dbff7c936402fb9ac",
@@ -84,17 +115,45 @@
         ]
       },
       "configVersion": "quality-native-comments-v1",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4639747754",
+        "sourceCommit": "32e58b3be2c52a58200cd2bc655a3867a01d4ca2",
+        "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4639747754",
+        "severity": "原文未说明",
+        "originalIdentifiers": [
+          "<code>workers/steward/src/bounded-recheck.ts</code>",
+          "<code>'retryAfter' in outcome&amp;&amp;outcome.retryAfter!==undefined</code>",
+          "<code>('retryAfter' in outcome) &amp;&amp; outcome.retryAfter !== undefined</code>",
+          "workers/steward/src/bounded-recheck.ts"
+        ],
+        "segmentIndex": 0,
+        "problemZh": "原文指出同类“Whitespace contradicts operator precedence”问题：混合运算表达式的空白与分组不够清晰，位于 workers/steward/src/bounded-recheck.ts 的该条件。",
+        "impactZh": "原文表示该写法存在歧义并触发了 CodeQL 告警。",
+        "suggestionZh": "原文建议将 'retryAfter' in outcome&&outcome.retryAfter!==undefined 改为 ('retryAfter' in outcome) && outcome.retryAfter !== undefined，通过括号与一致空白明确分组，同时保持行为不变；无需新增 imports、方法或定义。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-20T07:49:51.051Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 3652,
+                "outputTokens": 791
+              }
+            ],
+            "totalNanoAiu": 1746500000,
+            "aiCredits": 1.7465,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-20T07:50:51.051Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     }
   },
   "cursor": 0
