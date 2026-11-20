@@ -38,7 +38,8 @@ it('refuses shared write/read credentials before resolving tools or starting del
 });
 it.each([
   ['WAIT_REF_READBACK','TEMPLATE_DELIVERY_INCOMPLETE'],
-  ['PENDING_LEGACY_CONFIGURATION','PENDING_LEGACY_CONFIGURATION']
+  ['PENDING_LEGACY_CONFIGURATION','PENDING_LEGACY_CONFIGURATION'],
+  ['TEMPLATE_CONFLICT','TEMPLATE_CONFLICT']
 ])('reports an incomplete child result %s',async(status,reason)=>{
   const {deliverRepositoryTemplate}=await import(pathToFileURL(resolve('scripts/template-delivery.mjs')).href);
   const root=await mkdtemp(join(tmpdir(),'template-wrapper-test-'));

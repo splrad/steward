@@ -12,7 +12,8 @@ from urllib.parse import quote, urlencode
 import yaml
 import copier_bridge as copier
 import actions_lock
-from configuration_link import add_link, has_legacy_link
+import configuration_retirement
+from configuration_link import add_link
 
 API_VERSION = json.loads((Path(__file__).resolve().parents[2] / 'config/github-api.json').read_text(encoding='utf-8'))['version']
 BRANCH = 'steward/managed-sync'
@@ -254,27 +255,47 @@ def deliver(request, api, central_api, *, read_token=None, renderer=copier.rende
 
         preserve_configuration = copier.configuration_excluded(template_definition(template_sha))
         if preserve_configuration and head:
-            # A pending adoption may still contain an old template's proposed entry points.
-            # Leave that branch available for its maintainer to reconcile with main.
-            pending = git('diff', '--quiet', base, 'HEAD', '--', *copier.LEGACY_CONFIGURATION, allow_failure=True)
-            require(pending.returncode == 0, 'PENDING_LEGACY_CONFIGURATION')
-            chooser = '.github/ISSUE_TEMPLATE/config.yml'
-            chooser_diff = git('diff', '--quiet', base, 'HEAD', '--', chooser, allow_failure=True)
-            require(chooser_diff.returncode in (0, 1), 'GIT_DIFF')
-            if chooser_diff.returncode and chooser in before_copier and has_legacy_link(before_copier[chooser], repository):
-                previous = git('ls-tree', base, '--', chooser)
-                require(previous and has_legacy_link(git('show', base + ':' + chooser), repository),
-                        'PENDING_LEGACY_CONFIGURATION')
+            verified = {commit}
+            def bot_change(revision):
+                if revision not in verified:
+                    if signoff not in string('show', '-s', '--format=%B', revision).splitlines():
+                        return False
+                    try:
+                        signed(revision)
+                    except ValueError as error:
+                        if str(error) in ('SYNC_SIGNATURE', 'SYNC_SIGNOFF'):
+                            return False
+                        raise
+                    verified.add(revision)
+                return True
+            configuration_retirement.reconcile(git, base, head, commit, template, central, root/'historical-seed',
+                                               repository, repository_inputs(template), bot_change, env)
 
-        if adopted:
+        pending_answers = (work / '.copier-answers.yml').is_file()
+        upgrade_pending = False
+        if preserve_configuration and not adopted and pending_answers:
+            _, pinned, pinned_data = copier.answers(central, work, env)
+            _, _, pinned_paths = copier.contract(central, pinned, pinned_data, env)
+            upgrade_pending = not pinned_paths.isdisjoint(copier.LEGACY_CONFIGURATION)
+            if upgrade_pending and (work / copier.ADOPTION_REPORT).exists():
+                # A previous first-adoption conflict must be resolved before native update.
+                # Recheck against its original seed without reintroducing retired files.
+                report = work / copier.ADOPTION_REPORT
+                require(expected_report is not None and report.read_bytes() == expected_report, 'ADOPTION_REPORT_EDITED')
+                old_seed = root / 'pending-seed'
+                copier.render(central, old_seed, pinned, 'copy', pinned_data)
+                _, conflicts = copier.classify_adoption_conflicts(copier.adoption_diff(old_seed, work)['conflicts'])
+                remaining = [v['path'] for v in conflicts if v['path'] not in copier.LEGACY_CONFIGURATION]
+                if remaining:
+                    raise copier.TemplateConflict(remaining)
+                git('rm', '--', copier.ADOPTION_REPORT)
+                git('commit', '--signoff', '--no-gpg-sign', '-m', 'Finish the reconciled first adoption')
+        if adopted or upgrade_pending:
             renderer(central, work, template_sha, 'update', repository_inputs(template_sha))
         else:
             # A pending adoption keeps its actual native source while newer template tags appear.
-            if (work / '.copier-answers.yml').exists():
+            if pending_answers:
                 _, template_sha, _ = copier.answers(central, work, env)
-                if preserve_configuration:
-                    _, _, pinned_paths = copier.contract(central, template_sha, repository_inputs(template_sha), env)
-                    require(pinned_paths.isdisjoint(copier.LEGACY_CONFIGURATION), 'PENDING_LEGACY_CONFIGURATION')
             copier.prepare_adoption(central, work, root/'seed', template_sha, expected_report=expected_report,
                                     data=repository_inputs(template_sha))
         policy_tool = Path(__file__).resolve().parents[2] / 'scripts/security-policy.mjs'
@@ -409,10 +430,12 @@ def main():
                                           os.environ.get('STEWARD_CENTRAL_READ_TOKEN'), root/'actions-lock')
         try:
             result = deliver(request, target, central, read_token=os.environ.get('STEWARD_TEMPLATE_READ_TOKEN'), lock_runner=locker)
+        except configuration_retirement.MigrationConflict:
+            result = {'status': 'PENDING_LEGACY_CONFIGURATION'}
+        except copier.TemplateConflict:
+            result = {'status': 'TEMPLATE_CONFLICT'}
         except ValueError as error:
-            if str(error) == 'SYNC_PENDING_LEGACY_CONFIGURATION':
-                result = {'status': 'PENDING_LEGACY_CONFIGURATION'}
-            elif re.fullmatch(r'SECURITY_POLICY_[A-Z_]+', str(error)):
+            if re.fullmatch(r'SECURITY_POLICY_[A-Z_]+', str(error)):
                 result = {'status': 'SECURITY_POLICY_FAILED', 'reason': str(error)}
             else:
                 raise

@@ -167,6 +167,17 @@ class CopierTests(unittest.TestCase):
         self.assertIn('.copier-answers.yml', difference['new'])
         self.assertEqual(bridge.paths_in_tree(self.product), before)
 
+    def test_release_template_already_applied_by_product(self):
+        self.copy_adopt()
+        path = bridge.RELEASE_NOTES_TEMPLATE
+        replacement = b'# Release\n\nReviewed release content\n'
+        (self.product / path).write_bytes(replacement)
+        self.commit(self.product, 'Apply reviewed release text ahead of template adoption')
+        new = self.next_version(lambda template: (template / path).write_bytes(replacement))
+        result = bridge.render(self.central, self.product, new, 'update')
+        self.assertEqual((self.product / path).read_bytes(), replacement)
+        self.assertEqual(result['paths'], ['.copier-answers.yml'])
+
     def test_review_recovery_uses_a_new_template_version_and_keeps_product_changes(self):
         self.copy_adopt()
         original = (self.product / 'AGENTS.md').read_bytes()
@@ -203,6 +214,12 @@ class CopierTests(unittest.TestCase):
             bridge.render(self.central, self.product, new, 'update')
         self.assertIn('Human review facts', self.git(self.product, 'show', 'HEAD:AGENTS.md'))
         self.assertTrue(any('Human review facts' in p.read_text(encoding='utf-8') for p in self.product.rglob('*.rej')))
+        base = self.git(self.product, 'rev-parse', 'HEAD')
+        status = self.git(self.product, 'status', '--porcelain')
+        report = bridge.diagnose(self.central, self.product, new, base, None, {})
+        self.assertEqual(report['status'], 'TEMPLATE_CONFLICT')
+        self.assertEqual(report['paths'], ['AGENTS.md'])
+        self.assertEqual(self.git(self.product, 'status', '--porcelain'), status)
 
     def test_answers_cannot_select_another_source(self):
         self.copy_adopt()
