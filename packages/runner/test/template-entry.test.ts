@@ -11,7 +11,8 @@ test('fixed App event carries no private repository or ref selection',()=>{
  const v={...env,GITHUB_EVENT_NAME:'repository_dispatch'};assertTemplateWake(v,e);
  for(const change of [{sender:{...e.sender,id:1}},{action:'other'},{client_payload:{schemaVersion:1,repository:'private/name'}},{client_payload:{schemaVersion:2}}])assert.throws(()=>assertTemplateWake(v,{...e,...change}));
 });
-test('manual recovery is separate from health-only wakes',()=>{
+test('manual recovery accepts only the declared bootstrap input',()=>{
  const e={...env,GITHUB_EVENT_NAME:'workflow_dispatch'};assertTemplateWake(e,{});
- for(const value of [true,'true'])assert.throws(()=>assertTemplateWake(e,{inputs:{health_only:value}}));
+ assertTemplateWake(e,{inputs:{bootstrap_only:'true'}});
+ for(const inputs of [{health_only:'true'},{unexpected:'true'}])assert.throws(()=>assertTemplateWake(e,{inputs}));
 });

@@ -28,7 +28,7 @@ Worker 固定派发 `release-observe.yml`，仅接受 `identity_json/request_key
 
 正常结果 `candidate-event-<request_key>/result.json` 严格包含 11 字段：`schemaVersion/requestKey/producer/event/sourceSha/status/reason/outcome/stateBefore/stateAfter/candidateIdentity`。producer 为 `{repositoryId,runId,attempt,controllerSha}`，event 为 `{repositoryId,prNumber,eventId}`；reason 可 null，candidateIdentity 在未具备稳定缓存时可 null。Worker 独立核可信 Run、artifact 和原生事实后处理结果；只有当前生成缓存来源或已验证人工事实来源与当前 main 一致且缓存完整才进入有界观察登记。不能重写旧 epoch 来绕过 `SOURCE_CHANGED`。
 
-旧 `release.yml`（311600220）保持 `disabled_manually`，`STEWARD_EXPECTED_PAUSED_RELEASE` 继续为 `311600220`，保留健康检查的既有预期暂停语义。新入口独立受 `config.enabled`、Worker 开关和自身原生 workflow active 状态约束；缺任一项即停止。新入口不要求或允许为了接管而重启旧全仓写者。回退先关闭新入口/Worker，再保全原对象恢复记录，旧暂停标记保持。
+旧 `release.yml`（311600220）保持 `disabled_manually`，`STEWARD_EXPECTED_PAUSED_RELEASE` 继续为 `311600220`，供有界事件入口核对已登记的暂停状态。新入口独立受 `config.enabled`、Worker 开关和自身原生 workflow active 状态约束；缺任一项即停止。新入口不要求或允许为了接管而重启旧全仓写者。回退先关闭新入口/Worker，再保全原对象恢复记录，旧暂停标记保持。
 
 结果 artifact 为 `candidate-observation-<request_key>/result.json`，字段为 `schemaVersion/requestKey/identity/repositoryId/runId/runAttempt/controllerSha/sourceSha/observedAt/status/reason/outcome/stateBefore/stateAfter`。Worker 必须独立核实结果和业务证据，Run success 本身不代表完成。
 
@@ -46,7 +46,7 @@ index 复用 `probe-<cycleId>-<targetsDigest>-<runId>-<attempt>/report.json`，�
 
 中央与 Worker 最终源码、生产者接口及迁移/恢复记录须一致；Worker 固定策略 SHA、部署 SHA、产品采用 SHA 与中央配置相符。检查现有 App 精确仓库的 Actions 能力和暂停状态。先完成正常审查及必要检查，再由中央排序采用与启用。固定观察遇新 main 必须停止，不能据此重新生成或改指旧人工稿；正常事件入口沿既有候选更新与人工保护合同处理。旧共享 cron、资源、权限和其他消费者不由此文或此补丁退役。
 
-中央 Governance Promotion 按已采用策略保留每日对账及 Native 完成事件，Sync automation-health 保留每小时检查。此候选入口交付不改变这些计划；旧 Release cron、quality 轮询及其他消费者的退出须分别具备真实事件接线与迁移证据。
+中央 Governance Promotion 按已采用策略保留每日对账及 Native 完成事件。旧 Release cron、quality 轮询及其他消费者的退出须分别具备真实事件接线与迁移证据。
 
 
 ## 人工完成稿的冻结事实

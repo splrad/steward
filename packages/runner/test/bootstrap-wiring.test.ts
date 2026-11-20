@@ -85,7 +85,7 @@ const nativeRule=(id:number)=>({id,source:'splrad',source_type:'Organization',en
 
 it('bootstrap and template jobs enumerate independently, separate keys and keep failure/cancellation semantics',async()=>{
   const raw=await readFile('.github/workflows/sync-managed.yml','utf8'),workflow=YAML.parse(raw),{bootstrap,templates}=workflow.jobs;
-  expect(Object.keys(workflow.jobs)).toEqual(['bootstrap','templates','automation-health']);expect(workflow.permissions).toEqual({contents:'read',actions:'read'});
+  expect(Object.keys(workflow.jobs)).toEqual(['bootstrap','templates']);expect(workflow.permissions).toEqual({contents:'read',actions:'read'});
   expect(bootstrap.concurrency).toEqual({group:'steward-governance-mutation','cancel-in-progress':false,queue:'max'});
   expect(templates.needs).toBe('bootstrap');expect(templates.if).toContain('!cancelled()');expect(templates.if).not.toMatch(/success\(/);
   expect(templates.concurrency['cancel-in-progress']).toBe(false);
@@ -94,8 +94,9 @@ it('bootstrap and template jobs enumerate independently, separate keys and keep 
   expect(bootstrap.if).not.toContain('STEWARD_TEMPLATE_APPLY');
   expect(bootstrap.if).toContain("github.event_name == 'workflow_dispatch' && inputs.bootstrap_only");
   expect(bootstrap.steps.at(-1).env.STEWARD_BOOTSTRAP_ONLY).toContain('inputs.bootstrap_only');
-  expect(Object.keys(workflow.on.workflow_dispatch.inputs)).toEqual(['health_only','bootstrap_only']);
-  expect(workflow.jobs['automation-health'].if).toContain('!inputs.bootstrap_only');
+  expect(Object.keys(workflow.on.workflow_dispatch.inputs)).toEqual(['bootstrap_only']);
+  expect(Object.keys(workflow.on).sort()).toEqual(['repository_dispatch','workflow_dispatch']);
+  expect(workflow.on.repository_dispatch.types).toEqual(['steward-template-event']);
   expect(templates.if).toContain("vars.STEWARD_TEMPLATE_APPLY == 'true'");
   expect(templates.if).not.toContain('STEWARD_BOOTSTRAP_APPLY');
   for(const job of [bootstrap,templates]) {
