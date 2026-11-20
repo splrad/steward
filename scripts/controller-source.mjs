@@ -3,6 +3,7 @@ import {isDeepStrictEqual} from 'node:util';
 const repository='splrad/steward',api=`/repos/${repository}`;
 export const controllerSource='steward/validated-controller';
 const branch=`refs/heads/${controllerSource}`,tag=`refs/tags/${controllerSource}`;
+const sourceRuleIds={writer:26970367,noTag:26970366,integrity:26970365};
 const check=(ok,code)=>{if(!ok)throw Error(`CONTROLLER_SOURCE_${code}`);};
 const sha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
 const same=isDeepStrictEqual;
@@ -15,14 +16,14 @@ async function read(io,path,absent=false){
 export function verifySourceProtection(rules,appId){
   check(Number.isSafeInteger(appId)&&appId>0,'APP');
   check(Array.isArray(rules),'RULES');
-  for(const [name,target,ref,types,actors] of [
-    ['validated-controller-source','branch',branch,['creation','update'],[{actor_id:appId,actor_type:'Integration',bypass_mode:'always'}]],
-    ['validated-controller-no-tag','tag',tag,['creation','update','deletion'],[]],
-    ['validated-controller-integrity','branch',branch,['deletion','non_fast_forward'],[]],
+  for(const [id,target,ref,types,actors] of [
+    [sourceRuleIds.writer,'branch',branch,['creation','update'],[{actor_id:appId,actor_type:'Integration',bypass_mode:'always'}]],
+    [sourceRuleIds.noTag,'tag',tag,['creation','update','deletion'],[]],
+    [sourceRuleIds.integrity,'branch',branch,['deletion','non_fast_forward'],[]],
   ]){
-    const matching=rules.filter(rule=>rule.name===name);check(matching.length===1,'RULE_IDENTITY');
+    const matching=rules.filter(rule=>rule.id===id);check(matching.length===1,'RULE_IDENTITY');
     const rule=matching[0];
-    check(Number.isSafeInteger(rule.id)&&rule.id>0&&rule.source==='splrad'&&rule.source_type==='Organization'
+    check(rule.source==='splrad'&&rule.source_type==='Organization'
       &&rule.enforcement==='active'&&rule.target===target,'RULE_IDENTITY');
     check(same(rule.conditions,{repository_id:{repository_ids:[1296724484]},ref_name:{include:[ref],exclude:[]}}),'RULE_SCOPE');
     check(same(rule.bypass_actors,actors),'RULE_BYPASS');
@@ -31,17 +32,11 @@ export function verifySourceProtection(rules,appId){
   }
 }
 export async function assertSourceProtection(io,appId){
-  const candidates=[];
-  for(let page=1;page<=100;page++){
-    const batch=await read(io,`/orgs/splrad/rulesets?per_page=100&page=${page}`);
-    check(Array.isArray(batch),'RULE_LIST');candidates.push(...batch);
-    if(batch.length<100)break;
-    check(page<100,'RULE_PAGINATION');
-  }
-  const selected=candidates.filter(rule=>['validated-controller-source','validated-controller-no-tag','validated-controller-integrity'].includes(rule.name));
-  check(selected.length===3&&selected.every(r=>Number.isSafeInteger(r.id)&&r.id>0)&&new Set(selected.map(r=>r.id)).size===3,'RULE_IDENTITY');
-  const rules=[];for(const r of selected){
-    const rule=await read(io,`/orgs/splrad/rulesets/${r.id}`);check(rule.id===r.id,'RULE_IDENTITY');rules.push(await completeNativeRuleParameters(io,rule));
+  const rules=[];
+  for(const id of Object.values(sourceRuleIds)){
+    const rule=await read(io,`/orgs/splrad/rulesets/${id}`);
+    check(rule?.id===id,'RULE_IDENTITY');
+    rules.push(await completeNativeRuleParameters(io,rule));
   }
   verifySourceProtection(rules,appId);
   check(await read(io,`${api}/git/ref/tags/${encodeURIComponent(controllerSource)}`,true)===null,'TAG_COLLISION');
