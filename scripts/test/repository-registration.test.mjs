@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {createHash} from 'node:crypto';
+import {createHash,generateKeyPairSync} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -774,11 +774,12 @@ function productApi(repo, files) {
   };
 }
 
-test('private workflow to public controller replays both registration cases without exposing private results', async () => {
+test('private workflow to public controller replays registration without exposing private results', async t => {
   const temp=resolve(tmpdir()),directory=await mkdtemp(join(temp,'registration-test-'));
   assert.equal(dirname(resolve(directory)),temp);
   try {
-    for (const [repo,files,manual] of [[governance,new Map(),false],[product,productFiles,true]]) {
+    const privateProduct={id:781,name:'private-project',full_name:'splrad/private-project',default_branch:'main',private:true,owner:org};
+    for (const [repo,files,manual] of [[governance,new Map(),false],[product,productFiles,true],[privateProduct,new Map(),false]]) {
       const privateSha='d'.repeat(40),publicSha='e'.repeat(40);
       const privatePath=join(directory,'private-event.json'),publicPath=join(directory,'public-event.json');
       const requestPath=join(directory,requestFile),stepOutput=join(directory,'step-output');
@@ -860,11 +861,54 @@ test('private workflow to public controller replays both registration cases with
           GITHUB_SHA:publicSha,REGISTRATION_WORKFLOW_SHA:publicSha,
           GITHUB_WORKFLOW_REF:'splrad/steward/.github/workflows/sync-managed.yml@refs/heads/main',
           REGISTRATION_ALLOWED_IDS:String(repo.id)};
+        let residualReads=0,revocations=0;
+        if(repo.private) {
+          publicEnv.GOVERNANCE_APP_PRIVATE_KEY=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey
+            .export({type:'pkcs8',format:'pem'}).toString();
+          const response=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json'}});
+          const scopeToken='offline-private-read',prefix='/repos/'+repo.full_name;
+          t.mock.method(globalThis,'fetch',async (input,init)=>{
+            const url=new URL(input),path=decodeURIComponent(url.pathname),method=init?.method;
+            assert.equal(url.origin,'https://api.github.com');
+            if(path==='/orgs/splrad/installation')
+              return response({id:179184801,app_id:5639432,account:{id:org.id},suspended_at:null});
+            if(path==='/app/installations/179184801/access_tokens') {
+              assert.equal(method,'POST');
+              assert.deepEqual(JSON.parse(init.body),{repository_ids:[repo.id],permissions:{metadata:'read',contents:'read'}});
+              return response({token:scopeToken,expires_at:new Date(Date.now()+3600000).toISOString()});
+            }
+            if(new Headers(init?.headers).get('authorization')?.split(' ').at(-1)!==scopeToken)return response({},404);
+            if(path==='/installation/repositories')return response({total_count:1,repositories:[repo]});
+            if(path==='/installation/token'&&method==='DELETE') {
+              revocations++;
+              return new Response(null,{status:204});
+            }
+            if(path==='/repositories/'+repo.id)return response(repo);
+            if(path===prefix+'/git/ref/heads/main')
+              return response({ref:'refs/heads/main',object:{type:'commit',sha:source}});
+            if(path===prefix+'/git/ref/heads/steward/governance-state')return response({},404);
+            if(path===prefix+'/git/matching-refs/heads/steward/governance-state') {
+              residualReads++;
+              return response([]);
+            }
+            if(path===prefix+'/git/trees/'+source)return response({truncated:false,tree:[]});
+            assert.fail('Unexpected private repository request '+path);
+          });
+          delete options.withGovernance;
+          const originalAdmin=options.openAdmin;
+          options.openAdmin=async()=>({...await originalAdmin(),
+            project:(repo,source,observe,read,ports)=>projectMergedRepositoryPolicy({},repo,source,observe,read,{
+              ...ports,getPolicy:async()=>({commit:base,policy:null})
+            })
+          });
+        }
         assert.equal(await registrationEntry('consume',publicEnv,options),0);
+        if(repo.private)assert.deepEqual({residualReads,revocations},{residualReads:2,revocations:1});
         assert.deepEqual(JSON.parse(state.trees.get(candidate).get(registrationPath(repo))),(await propose(repo,files)).policy);
         state.open[0].body += '\n人工备注 Private case';
         state.trees.get(candidate).set(registrationPath(repo),'维护者正在编辑');
         assert.equal(await registrationEntry('consume',publicEnv,options),0);
+        if(repo.private)assert.deepEqual({residualReads,revocations},{residualReads:4,revocations:2});
         assert.deepEqual(state.writes.map(([kind])=>kind),['ref','commit','pull','comment']);
         assert.match(state.open[0].body,/人工备注/);
         assert.equal(state.trees.get(candidate).get(registrationPath(repo)),'维护者正在编辑');

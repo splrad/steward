@@ -115,7 +115,7 @@ async function withScopedApp(key, app, repositoryId, permissions, operation) {
     const { data } = await api.request('GET /repositories/{id}', { id: repositoryId });
     const repo = checkRepository(data, repositoryId);
     api.target = { owner: repo.owner.login, repo: repo.name };
-    return await operation(api, repo);
+    return await operation(api, repo, token);
   } finally {
     await api.request('DELETE /installation/token');
   }
