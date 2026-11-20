@@ -381,9 +381,24 @@ test('legacy workflow stops before acquiring product write credentials for pause
 
 test('new release candidates consume the approved release selections and preserve native product changes',async()=>{
   const {policy}=await propose(product,productFiles);
-  let adoption='central',selection=policy;
-  const guard=releasePolicyGuard({},product,async()=>({adoption,policy:selection}));
+  let adoption='central',selection=policy,commit=base;
+  const guard=releasePolicyGuard({},product,async()=>({adoption,policy:selection,commit}));
   await guard(async path=>productFiles.get(path));
+  await guard(async path=>{
+    commit=candidate;return productFiles.get(path);
+  });
+  await guard(async path=>{
+    selection={...policy,site:{workflow:pages,mode:'build-only',source:'default-branch'}};
+    return productFiles.get(path);
+  });
+  await assert.rejects(guard(async path=>{
+    selection={...policy,release:null};return productFiles.get(path);
+  }),/CANDIDATE_REPOSITORY_POLICY_MOVED/);
+  selection=policy;
+  await assert.rejects(guard(async path=>{
+    adoption='paused';return productFiles.get(path);
+  }),/CANDIDATE_REPOSITORY_POLICY_MOVED/);
+  adoption='central';
   const customized=new Map(productFiles);
   customized.set(publish,productFiles.get(publish).replace('windows-x64','custom-runner-target'));
   await guard(async path=>customized.get(path));

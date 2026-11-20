@@ -31,7 +31,8 @@ export async function serviceReleaseWake(request,refresh,invoke,clock=Date.now) 
     candidate=await invoke('candidate',{...request,cycleId:snapshot.repository.activeCycleId,runId:null});
   } catch(error) {
     const reason=error?.message;
-    if(!['CANDIDATE_REPOSITORY_POLICY_DISABLED','CANDIDATE_REPOSITORY_POLICY_CONFLICT','REPOSITORY_POLICY_UNAVAILABLE']
+    if(!['CANDIDATE_REPOSITORY_POLICY_DISABLED','CANDIDATE_REPOSITORY_POLICY_CONFLICT',
+      'CANDIDATE_REPOSITORY_POLICY_MOVED','REPOSITORY_POLICY_UNAVAILABLE']
       .includes(reason))throw error;
     candidate={status:'WAIT',reason};
   }

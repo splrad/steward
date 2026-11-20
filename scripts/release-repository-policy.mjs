@@ -14,5 +14,10 @@ export function releasePolicyGuard(app, repository, readPolicy=mergedRepositoryP
     const current=releaseRegistration(inspectRepository(files),pending);
     if(pending.length||!isDeepStrictEqual(selection.policy.release,current))
       throw Error('CANDIDATE_REPOSITORY_POLICY_CONFLICT');
+    const latest=await readPolicy(app,repository);
+    if(latest.adoption!==selection.adoption||latest.policy?.repositoryId!==selection.policy.repositoryId||
+      latest.policy?.repository!==selection.policy.repository||
+      !isDeepStrictEqual(latest.policy?.release,selection.policy.release))
+      throw Error('CANDIDATE_REPOSITORY_POLICY_MOVED');
   };
 }

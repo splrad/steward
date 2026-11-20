@@ -94,7 +94,7 @@ it('invokes the fixed entry sequence and recovers only native canonical Run IDs'
   const result=await serviceReleaseWake({},async()=>snapshot,async(command:string,input:any)=>{calls.push(command+(command==='rerun'?':'+input.runId:''));return {status:'WAIT',reason:'PREREQUISITE_REQUIRED',publishInvoked:false};});
   expect(calls).toEqual(['candidate','dispatch-build','publish','dispatch-channel','observe-channel','rerun:100']);expect(result.status).toBe('WAIT');
 });
-it.each(['CANDIDATE_REPOSITORY_POLICY_DISABLED','CANDIDATE_REPOSITORY_POLICY_CONFLICT','REPOSITORY_POLICY_UNAVAILABLE'])(
+it.each(['CANDIDATE_REPOSITORY_POLICY_DISABLED','CANDIDATE_REPOSITORY_POLICY_CONFLICT','CANDIDATE_REPOSITORY_POLICY_MOVED','REPOSITORY_POLICY_UNAVAILABLE'])(
   'continues frozen cycles when candidate admission waits for %s',async(reason)=>{
     const calls:string[]=[];
     const snapshot={repository:{activeCycleId:'cycle'},cycles:[{value:{id:'cycle',dispatches:[]}}]};
