@@ -6,7 +6,6 @@ import { isDeepStrictEqual } from 'node:util';
 import { createAppAuth } from '@octokit/auth-app';
 import { Octokit } from '@octokit/rest';
 import { NativeEvidenceReader, nativeEvidenceTransport, nativeReleaseApp, parseDeliveryConfig } from '../packages/runner/dist/index.js';
-import apiVersion from '../config/github-api.json' with { type: 'json' };
 import contract from '../config/settings-source-events.json' with { type: 'json' };
 import { revisionReader } from './configuration-authorization.mjs';
 import { commitFiles, must, positive, sha } from './configuration-native.mjs';
@@ -17,7 +16,7 @@ import { dependencyMode, loadPolicy } from './private-dependency-policy.mjs';
 import { checkedRegistration,configurationConflicts,parseRegistration } from './repository-registration-policy.mjs';
 import { projectMergedRepositoryPolicy } from './repository-policy-publish.mjs';
 import { readRepositoryProjection } from './repository-policy-projection.mjs';
-import { adminId, centralId, isGovernanceBot, loadPrivateRequest, makePrivateRequest, readWake,
+import { adminId, centralId, isGovernanceBot, loadPrivateRequest, makePrivateRequest, readWake, registrationGitHubOptions,
   registrationEvent, wakePayload } from './repository-registration-request.mjs';
 
 const orgId = 302208797;
@@ -27,10 +26,6 @@ const webFlow = 19864447;
 const fields = ['productCi', 'release', 'site'];
 const metadataFiles = ['sbom.spdx.json', 'release-notes.md', 'artifact-manifest.json', 'SHA256SUMS'];
 const digest = text => createHash('sha256').update(text).digest('hex');
-const githubOptions = {
-  request: { headers: { 'x-github-api-version': apiVersion.version } },
-  log: { debug() {}, info() {}, warn() {}, error() {} }
-};
 
 export function registrationIds(event, name) {
   const repo = event.repository;
@@ -100,14 +95,14 @@ function checkRepository(repo, id) {
 
 async function withScopedApp(key, app, repositoryId, permissions, operation) {
   must(key, 'Registration App credential is unavailable');
-  const appApi = new Octokit({ ...githubOptions, authStrategy: createAppAuth,
+  const appApi = new Octokit({ ...registrationGitHubOptions, authStrategy: createAppAuth,
     auth: { appId: app.id, privateKey: key.replace(/\\n/g, '\n') } });
   const { data: installation } = await appApi.request('GET /orgs/{org}/installation', { org: 'splrad' });
   must(installation.id === app.installation && installation.app_id === app.id &&
     installation.account?.id === orgId && !installation.suspended_at, 'Registration installation mismatch');
   const { token } = await appApi.auth({ type: 'installation', installationId: app.installation,
     repositoryIds: [repositoryId], permissions });
-  const api = new Octokit({ ...githubOptions, auth: token });
+  const api = new Octokit({ ...registrationGitHubOptions, auth: token });
   try {
     const { data: scope } = await api.request('GET /installation/repositories', { per_page: 100 });
     must(scope.total_count === 1 && scope.repositories.length === 1 &&
@@ -451,7 +446,7 @@ export async function reconcileRegistration(api, admin, repo, source, observe, v
 
 async function withStewardAdmin(app, purpose, operation) {
   return app.forRepository(adminId, async token => {
-    const api = new Octokit({ ...githubOptions, auth: token });
+    const api = new Octokit({ ...registrationGitHubOptions, auth: token });
     const { data } = await api.request('GET /repositories/{id}', { id: adminId });
     const repo = checkRepository(data, adminId);
     must(repo.full_name === 'splrad/steward-settings' && repo.private === true &&
@@ -526,14 +521,21 @@ export async function runRegistration(mode, env, {
     };
   },
   extract,
+  markStage = () => {},
   output = process.stdout
 } = {}) {
+  if (mode === 'consume') markStage('event');
   const event = JSON.parse(await readFile(env.GITHUB_EVENT_PATH, 'utf8'));
   if (mode === 'consume') {
     const requestId = readWake(event, env);
+    markStage('credential');
     const {withAdmin,project} = await openAdmin();
-    const requested = await withAdmin('registration-read', (api, admin, token) =>
-      loadPrivateRequest(api, admin, token, requestId, extract));
+    const requested = await withAdmin('registration-read', async (api, admin, token) => {
+      const request = await loadPrivateRequest(api, admin, token, requestId, extract, markStage);
+      markStage('credential');
+      return request;
+    });
+    markStage('apply');
     const ids=selectRegistrationTargets(requested.repositoryIds,env.REGISTRATION_ALLOWED_IDS);
     const result=await applyRequests(ids,withGovernance,withAdmin,project,requested.event==='push');
     output.write('REGISTRATION_PROCESSED\n');
@@ -541,7 +543,7 @@ export async function runRegistration(mode, env, {
   }
 
   const ids = env.GITHUB_EVENT_NAME === 'push'
-    ? await pushRegistrationIds(event, env, new Octokit({...githubOptions,auth:env.REGISTRATION_ADMIN_TOKEN}))
+    ? await pushRegistrationIds(event, env, new Octokit({...registrationGitHubOptions,auth:env.REGISTRATION_ADMIN_TOKEN}))
     : registrationIds(event, env.GITHUB_EVENT_NAME);
   if (mode === 'prepare') {
     if(ids.length===0)return;
@@ -564,11 +566,13 @@ export async function runRegistration(mode, env, {
 }
 
 export async function registrationEntry(mode, env, options = {}) {
+  let stage;
   try {
-    await runRegistration(mode, env, options);
+    await runRegistration(mode, env, {...options,markStage:value=>{stage=value;}});
     return 0;
   } catch {
-    (options.errorOutput ?? process.stderr).write('REGISTRATION_UNAVAILABLE\n');
+    // Stages are fixed source literals. Never expose exception messages from private operations.
+    (options.errorOutput ?? process.stderr).write('REGISTRATION_UNAVAILABLE'+(stage?' '+stage:'')+'\n');
     return 1;
   }
 }

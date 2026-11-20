@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {createHash,generateKeyPairSync} from 'node:crypto';
-import {execFileSync} from 'node:child_process';
+import {execFileSync,spawnSync} from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -408,6 +408,27 @@ test('reads policy only from a stable protected administrator main and proves mi
   await assert.rejects(readRepositoryPolicy(api,product),/REPOSITORY_POLICY_UNAVAILABLE/);
   protectedBranch=false;
   await assert.rejects(readRepositoryPolicy(api,product),/REPOSITORY_POLICY_UNAVAILABLE/);
+});
+
+test('an actual Octokit policy read failure emits no private details to process stderr',()=>{
+  const child=spawnSync(process.execPath,['--input-type=module','-e',`
+    import assert from 'node:assert/strict';
+    import {mergedRepositoryPolicy} from './scripts/repository-policy-read.mjs';
+    globalThis.fetch=async (url,init)=>{
+      assert.equal(new URL(url).pathname,'/repos/splrad/steward-settings');
+      assert.equal(init.method,'GET');
+      return new Response(JSON.stringify({message:'Private fixture response'}),{
+        status:403,headers:{'content-type':'application/json','x-github-request-id':'private-fixture-id',
+          deprecation:'true',link:'<https://api.github.com/example>; rel="deprecation"'}
+      });
+    };
+    const app={forRepository:(_id,operation)=>operation('fixture-read')};
+    await assert.rejects(mergedRepositoryPolicy(app,{full_name:'splrad/fixture-product',id:73}),
+      error=>error.message==='REPOSITORY_POLICY_UNAVAILABLE');
+  `],{encoding:'utf8',windowsHide:true});
+  assert.equal(child.status,0,child.stderr);
+  assert.equal(child.stderr,'');
+  assert.equal(child.stdout,'');
 });
 
 test('legacy workflow stops before acquiring product write credentials for paused and central targets',async()=>{
@@ -839,7 +860,8 @@ test('private workflow to public controller replays registration without exposin
         GITHUB_RUN_ID:'8788',GITHUB_RUN_ATTEMPT:'1',REGISTRATION_REQUEST_PATH:requestPath,GITHUB_OUTPUT:stepOutput};
       const {api,state}=fake();
       const {rest:sourceRest,...sourceClient}=productApi(repo,files);
-      let input, currentArtifact, request, protectedBranch=true, producerPath='.github/workflows/repository-registration.yml';
+      let input, currentArtifact, request, protectedBranch=true, artifactAvailable=true;
+      let producerPath='.github/workflows/repository-registration.yml';
       const scopes=[], logs=[], errors=[];
       const withGovernance=async (id,permissions,operation)=>{
         if(id===repo.id) {
@@ -859,7 +881,7 @@ test('private workflow to public controller replays registration without exposin
           actions:{
             async listArtifactsForRepo(args) {
               assert.deepEqual(args,{...api.target,name:currentArtifact.name,per_page:100});
-              return {data:{total_count:1,artifacts:[currentArtifact]}};
+              return {data:artifactAvailable?{total_count:1,artifacts:[currentArtifact]}:{total_count:0,artifacts:[]}};
             },
             async getWorkflow({workflow_id}) {
               assert.equal(workflow_id,'repository-registration.yml');
@@ -972,13 +994,29 @@ test('private workflow to public controller replays registration without exposin
         assert.deepEqual(scopes,['registration-read','registration-write','registration-read','registration-write',
           'registration-read','registration-read']);
         assert.deepEqual(logs,['REGISTRATION_PROCESSED\n','REGISTRATION_PROCESSED\n']);
-        assert.deepEqual(errors,['REGISTRATION_UNAVAILABLE\n','REGISTRATION_UNAVAILABLE\n',
-          'REGISTRATION_UNAVAILABLE\n','REGISTRATION_UNAVAILABLE\n']);
+        assert.deepEqual(errors,['REGISTRATION_UNAVAILABLE producer_source\n','REGISTRATION_UNAVAILABLE producer_run\n',
+          'REGISTRATION_UNAVAILABLE event\n','REGISTRATION_UNAVAILABLE event\n']);
         assert.equal(state.writes.length,4);
         if(manual) {
           await writeFile(publicPath,JSON.stringify(wake));
           producerPath='.github/workflows/repository-registration.yml';
           const originalAdmin=options.openAdmin;
+          const privateError=()=>{throw Error('Private fixture exception with repository and credential details');};
+          const expectFailure=async(stage,overrides={})=>{
+            assert.equal(await registrationEntry('consume',publicEnv,{...options,...overrides}),1);
+            assert.equal(errors.at(-1),'REGISTRATION_UNAVAILABLE '+stage+'\n');
+          };
+          await expectFailure('credential',{openAdmin:privateError});
+          artifactAvailable=false;
+          await expectFailure('artifact_lookup');
+          artifactAvailable=true;
+          currentArtifact.workflow_run.head_branch='untrusted';
+          await expectFailure('producer_source');
+          currentArtifact.workflow_run.head_branch='main';
+          await expectFailure('artifact_content',{extract:privateError});
+          await expectFailure('artifact_content',{extract:async(...args)=>({
+            ...await options.extract(...args),repositoryIds:[repo.id,repo.id]
+          })});
           const merged={...(await propose(repo,files)).policy,adoption:'central',productCi:[ci,'.github/workflows/stale.yml']};
           const registry=state.trees.get(base);
           registry.set(registrationPath(repo),JSON.stringify(merged));
@@ -987,7 +1025,7 @@ test('private workflow to public controller replays registration without exposin
           assert.equal(await registrationEntry('consume',publicEnv,conflictOptions),1);
           assert.deepEqual(state.writes.at(-1),['update-comment',42]);
           assert.match(state.comments[0].body,/stale\.yml/);
-          assert.equal(errors.at(-1),'REGISTRATION_UNAVAILABLE\n');
+          assert.equal(errors.at(-1),'REGISTRATION_UNAVAILABLE apply\n');
           assert.doesNotMatch(logs.join('')+errors.join(''),/LayerScape|stale\.yml|待确认/);
           assert.equal(await registrationEntry('consume',{...publicEnv,REGISTRATION_ALLOWED_IDS:''},conflictOptions),1);
           assert.equal(state.writes.length,5);
