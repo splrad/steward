@@ -88,7 +88,7 @@ export function productCITriggerGap(workflow,defaultBranch) {
 export function selectableProductCI(workflow,defaultBranch) {
   return !productCITriggerGap(workflow,defaultBranch);
 }
-export async function validationInput(workspace,env=process.env) {
+export async function validationFileInputs(workspace,env=process.env) {
   const event=JSON.parse(await readFile(env.GITHUB_EVENT_PATH,'utf8'));
   check(env.WORKFLOW_REPOSITORY==='splrad/steward'&&env.WORKFLOW_PATH==='.github/workflows/pr-validation-native.yml'
     &&/^[a-f0-9]{40}$/.test(env.WORKFLOW_SHA),'TRUSTED_SOURCE');
@@ -127,8 +127,15 @@ export async function validationInput(workspace,env=process.env) {
   // Reject product inputs before scope outputs can schedule any candidate build.
   if(dependency==='private-governance')assertGovernanceOnlyScope(files);
   if(dependency==='private-lifecycle')assertLifecycleScope(files);
+  const administrator=policy.administrators.find(item=>item.repositoryId===repositoryId);
+  return {event,input,files,dependencyMode:dependency,administrator};
+}
+
+export async function validationInput(workspace,env=process.env) {
+  const {event,input,files,dependencyMode:dependency,administrator}=await validationFileInputs(workspace,env);
+  const {repositoryId}=input;
   const declaration='.github/product-ci.json';
-  const productApplicable=files.includes(declaration)||requiresProductCI(files,dependency,policy.administrators.find(item=>item.repositoryId===repositoryId));
+  const productApplicable=files.includes(declaration)||requiresProductCI(files,dependency,administrator);
   const available=files.includes(declaration)
     ? productWorkflows(JSON.parse(await readFile(await regular(workspace,declaration),'utf8')),files) : [];
   const organizationRepository=event.repository.full_name.startsWith('splrad/');

@@ -2,7 +2,7 @@ import {readFile,writeFile,mkdir,appendFile} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
 import {resolve,join,basename} from 'node:path';
 import {pathToFileURL,fileURLToPath} from 'node:url';
-import {validationInput,regular} from './validation-input.mjs';
+import {validationFileInputs,regular} from './validation-input.mjs';
 import {resolvePolicyTool,renderLinkcheckFirewall,linkcheckEnvironment} from '../packages/runner/dist/index.js';
 const check=(ok,reason)=>{if(!ok)throw Error('DOC_LINK_'+reason);};
 export async function documentInputs(workspace,files,affected){
@@ -42,7 +42,7 @@ export function externalResults(report){
   return results;
 }
 export async function main(env=process.env){
-  const workspace=resolve(env.VALIDATION_WORKSPACE??'target'),{files,input}=await validationInput(workspace,env);
+  const workspace=resolve(env.VALIDATION_WORKSPACE??'target'),{files,input}=await validationFileInputs(workspace,env);
   const documents=await documentInputs(workspace,files,input.changedPaths);
   if(!documents.length){console.log('docs: no affected current document references');return;}
   const output=resolve(env.DOC_LINK_EVIDENCE??'doc-link-evidence');await mkdir(output,{recursive:true});

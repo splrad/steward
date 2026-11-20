@@ -622,6 +622,10 @@ test('administrator validation checks the ID and keeps the existing private scop
   const {policy}=await propose(governance);
   const path=registrationPath(governance), workflow='.github/workflows/repository-registration.yml';
   assertInputScope([path,workflow]);
+  assertInputScope([repositoryPolicyAdoptionPath]);
+  assertGovernanceOnlyScope([repositoryPolicyAdoptionPath]);
+  for(const assertScope of [assertInputScope,assertGovernanceOnlyScope])
+    assert.throws(()=>assertScope([repositoryPolicyAdoptionPath+'.bak']),/INPUT_UNCOVERED/);
   assert.equal(requiresProductCI([path,workflow],'private-administrator',{}),false);
   assert.throws(()=>assertInputScope(['repositories/not-an-id.json']),/INPUT_UNCOVERED/);
   assert.throws(()=>assertGovernanceOnlyScope([path]),/GOVERNANCE_INPUT_UNCOVERED/);

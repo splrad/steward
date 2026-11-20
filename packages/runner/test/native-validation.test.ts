@@ -53,6 +53,8 @@ it('uses the protected base repository marker for a fork with Issues and Pages d
   try{
     git('init','--initial-branch=main');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');
     await mkdir(join(root,'.github'));
+    git('config','core.autocrlf','false');
+    await writeFile(join(root,'AGENTS.md'),await readFile('templates/repository/AGENTS.md'));
     const marker='.github/steward-central-policy',bytes=Buffer.from('central\n');
     await writeFile(join(root,marker),bytes);
     git('add','.');git('commit','--signoff','--no-gpg-sign','-m','adopt');
@@ -91,6 +93,51 @@ it('uses the protected base repository marker for a fork with Issues and Pages d
     await expect(main(env)).rejects.toThrow('REPOSITORY_POLICY_PROJECTION_UNAVAILABLE');
     responses.set('git/trees/'+tree,{truncated:false,tree:[]});
     expect(await main(env)).toMatchObject({productApplicable:false,workflows:[]});
+    const fileJobEnv:NodeJS.ProcessEnv={...process.env,...env};
+    delete fileJobEnv.REPOSITORY_POLICY_TOKEN;
+    const workflow=(await import('yaml')).parse(await readFile('.github/workflows/pr-validation-native.yml','utf8'));
+    expect(workflow.jobs.scope.steps.find((step:{id?:string})=>step.id==='identity').env.REPOSITORY_POLICY_TOKEN).toBe('${{ github.token }}');
+    for(const [job,name] of [['governance','validation-governance'],['docs','validation-docs']] as const){
+      const definition=workflow.jobs[job];
+      expect(definition.needs).toBe('scope');
+      const step=definition.steps.find((step:{run?:string})=>step.run?.includes('/'+name+'.mjs'));
+      expect(step).toBeDefined();
+      expect(step.env?.REPOSITORY_POLICY_TOKEN).toBeUndefined();
+      const {main:runFileJob}=await script(name);
+      await expect(runFileJob(fileJobEnv)).resolves.toBeUndefined();
+    }
+  }finally{vi.unstubAllGlobals();await rm(root,{recursive:true,force:true});}
+},30000);
+it('private dependency entry binds candidate Git input using only its existing GH_TOKEN',async()=>{
+  const {main}=await script('validation-private-dependencies'),root=await mkdtemp(join(tmpdir(),'validation-private-files-'));
+  registerOfflineFixtureRoot(root);
+  const git=(...args:string[])=>execFileSync('git',args,{cwd:root,encoding:'utf8'}).trim();
+  try{
+    git('init','--initial-branch=main');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');
+    await writeFile(join(root,'README.md'),'private registry\n');git('add','.');git('commit','--signoff','--no-gpg-sign','-m','seed');
+    const base=git('rev-parse','HEAD');git('update-ref','refs/remotes/origin/main',base);
+    await mkdir(join(root,'.github'));await writeFile(join(root,'.github','steward-central-policy'),'central\n');
+    git('add','.');git('commit','--signoff','--no-gpg-sign','-m','adopt');const head=git('rev-parse','HEAD');
+    const repository={id:1447987054,full_name:'splrad/steward-settings',private:true,default_branch:'main',owner:{id:302208797}};
+    const event=join(root,'event.json'),evidence=join(root,'scan');
+    await writeFile(event,JSON.stringify({repository,pull_request:{base:{repo:{id:repository.id},ref:'main',sha:base},head:{sha:head}}}));
+    const workflow=(await import('yaml')).parse(await readFile('.github/workflows/pr-validation-native.yml','utf8'));
+    const dependency=workflow.jobs.dependency;
+    expect(dependency.needs).toBe('scope');
+    const scan=dependency.steps.find((step:{run?:string})=>step.run?.includes('scripts/validation-private-dependencies.mjs'));
+    expect(scan.env).toMatchObject({GH_TOKEN:'${{ github.token }}'});
+    expect(scan.env.REPOSITORY_POLICY_TOKEN).toBeUndefined();
+    const supplier=vi.fn(async(url:string)=>{
+      expect(url).toBe('https://nodejs.org/dist/index.json');
+      throw Error('fixture stops at first supplier read');
+    });
+    vi.stubGlobal('fetch',supplier);
+    await expect(main({GITHUB_ACTIONS:'true',GITHUB_EVENT_NAME:'pull_request',GITHUB_EVENT_PATH:event,
+      GITHUB_REPOSITORY_ID:String(repository.id),GITHUB_REPOSITORY:repository.full_name,GH_TOKEN:'workflow-read',
+      WORKFLOW_REPOSITORY:'splrad/steward',WORKFLOW_PATH:'.github/workflows/pr-validation-native.yml',
+      WORKFLOW_SHA:S,VALIDATION_WORKSPACE:root,PRIVATE_DEPENDENCY_EVIDENCE:evidence})).rejects.toThrow('fixture stops at first supplier read');
+    expect(supplier).toHaveBeenCalledOnce();
+    expect(JSON.parse(await readFile(join(evidence,'summary.json'),'utf8')).identity).toMatchObject({repositoryId:repository.id,base,head});
   }finally{vi.unstubAllGlobals();await rm(root,{recursive:true,force:true});}
 },30000);
 it('summary rejects failed, cancelled, missing and unexpectedly skipped required jobs',async()=>{
