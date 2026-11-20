@@ -75,3 +75,13 @@ it('returns 413 for an oversized webhook without Content-Length',async()=>{
  expect((await handleWebhook(request,{} as any)).status).toBe(413);
  expect(cancel).toHaveBeenCalledOnce();
 });
+
+it('reads a seekable ZIP64 local report',()=>{
+ const zip=Buffer.from('UEsDBC0AAAAIAAAAIQCQX9Sn//////////8LABQAcmVwb3J0Lmpzb24BABAACwAAAAAAAAANAAAAAAAAAKtWys9WsiopKk2tBQBQSwECLQAtAAAACAAAACEAkF/Upw0AAAALAAAACwAAAAAAAAAAAAAAgAEAAAAAcmVwb3J0Lmpzb25QSwUGAAAAAAEAAQA5AAAASgAAAAAA','base64');
+ expect(readZipJson(zip,'report.json')).toEqual({ok:true});
+});
+
+it('reads a streamed ZIP64 local report',()=>{
+ const zip=Buffer.from('UEsDBC0ACAAIAAAAIQAAAAAA//////////8LABQAcmVwb3J0Lmpzb24BABAAAAAAAAAAAAAAAAAAAAAAAKtWys9WsiopKk2tBQBQSwcIkF/Upw0AAAAAAAAACwAAAAAAAABQSwECLQAtAAgACAAAACEAkF/Upw0AAAALAAAACwAAAAAAAAAAAAAAgAEAAAAAcmVwb3J0Lmpzb25QSwUGAAAAAAEAAQA5AAAAYgAAAAAA','base64');
+ expect(readZipJson(zip,'report.json')).toEqual({ok:true});
+});

@@ -59,6 +59,21 @@ export async function readBoundedBody(body:ReadableStream<Uint8Array>|null,max:n
  for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}
  return bytes;
 }
+function zip64LocalSizes(extra:Buffer){
+ let sizes:Buffer|undefined;
+ for(let at=0;at<extra.length;){
+   ensure(at+4<=extra.length,'ZIP_LOCAL_EXTRA');
+   const type=extra.readUInt16LE(at),end=at+4+extra.readUInt16LE(at+2);
+   ensure(end<=extra.length,'ZIP_LOCAL_EXTRA');
+   if(type===1){
+     ensure(!sizes&&end===at+20,'ZIP_LOCAL_ZIP64');
+     sizes=extra.subarray(at+4,end);
+   }
+   at=end;
+ }
+ ensure(sizes,'ZIP_LOCAL_ZIP64');
+ return {size:sizes.readBigUInt64LE(0),compressed:sizes.readBigUInt64LE(8)};
+}
 /** Decode only the named, small JSON member; no extraction to disk and no executable archive paths. */
 export function readZipJson(bytes:Uint8Array,name:string):unknown{
  const b=Buffer.from(bytes);ensure(b.length>=22,'ZIP_HEADER');let eocd=-1;
@@ -77,13 +92,20 @@ export function readZipJson(bytes:Uint8Array,name:string):unknown{
    ensure(b.subarray(localName,localNameEnd).equals(b.subarray(at+46,at+46+len))&&
      b.readUInt16LE(local+6)===flags&&b.readUInt16LE(local+8)===method,'ZIP_LOCAL_HEADER');
    const crc=b.readUInt32LE(at+16),streamed=Boolean(flags&8);
-   for(const [offset,expected] of [[14,crc],[18,compressed],[22,size]] as const){
-     const actual=b.readUInt32LE(local+offset);
-     ensure(actual===expected||(streamed&&actual===0),'ZIP_LOCAL_SIZE');
-   }
+   const localSize=b.readUInt32LE(local+22),localCompressed=b.readUInt32LE(local+18);
+   const wide=localSize===0xffffffff||localCompressed===0xffffffff;
+   const sizes=wide?zip64LocalSizes(b.subarray(localNameEnd,start)):undefined;
+   const check=(actual:bigint,expected:number)=>ensure(actual===BigInt(expected)||(streamed&&actual===0n),'ZIP_LOCAL_SIZE');
+   check(BigInt(b.readUInt32LE(local+14)),crc);
+   if(sizes){check(sizes.size,size);check(sizes.compressed,compressed);}
+   if(localSize!==0xffffffff)check(BigInt(localSize),size);
+   if(localCompressed!==0xffffffff)check(BigInt(localCompressed),compressed);
    if(streamed){
-     const matches=(offset:number)=>offset+12<=directory&&b.readUInt32LE(offset)===crc&&
-       b.readUInt32LE(offset+4)===compressed&&b.readUInt32LE(offset+8)===size;
+     const matches=(offset:number)=>{
+       if(offset+(wide?20:12)>directory||b.readUInt32LE(offset)!==crc)return false;
+       if(wide)return b.readBigUInt64LE(offset+4)===BigInt(compressed)&&b.readBigUInt64LE(offset+12)===BigInt(size);
+       return b.readUInt32LE(offset+4)===compressed&&b.readUInt32LE(offset+8)===size;
+     };
      ensure(matches(end)||(end+4<=directory&&b.readUInt32LE(end)===0x08074b50&&matches(end+4)),'ZIP_DESCRIPTOR');
    }
    ensure(method===0||method===8,'ZIP_METHOD');
