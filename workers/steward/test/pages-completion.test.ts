@@ -193,6 +193,25 @@ it.each([false,true])('bounds receipt-only alarm recovery when the receipt becom
  expect(f.json.mock.calls.filter(c=>c[2]==='POST')).toHaveLength(1);
 });
 
+it('honors a receipt GET retry floor beyond the remaining observation window',async()=>{
+ const f=fixture(),store=new SqliteDurableStorage();
+ const object=()=>new PagesRetry(store as any,f.config,()=>f.g,[f.site]);
+ f.config.BOUNDED_RECHECK.get=()=>({fetch:async(req:Request)=>{
+   await object().watch(await req.json() as any);return Response.json({});
+ }});
+ f.result.visible=false;await expect(f.forward()).rejects.toThrow('PAGES_DISPATCH_UNCONFIRMED');
+ const first=(await store.get<number>('__alarm'))!,clock=vi.spyOn(Date,'now').mockReturnValue(first);
+ try{
+   f.json.mockRejectedValueOnce(new GitHubRetryError(429,'601',false));
+   await object().alarm();
+   const deadline=(await store.get<number>('__alarm'))!;
+   expect(deadline-first).toBeGreaterThan(5*60000);expect(deadline-first).toBeLessThanOrEqual(601000);
+   const calls=f.json.mock.calls.length;clock.mockReturnValue(deadline);await object().alarm();
+   expect(f.json.mock.calls).toHaveLength(calls);expect(await store.get('__alarm')).toBeUndefined();
+   expect(f.db.database.prepare('SELECT retry_after,central_run_id FROM pages_completion_dispatches').get()).toEqual({retry_after:null,central_run_id:null});
+ }finally{clock.mockRestore();}
+});
+
 it('requires a durable watch before reserving or dispatching',async()=>{
  const f=fixture();
  f.config.BOUNDED_RECHECK.get=()=>({fetch:async()=>new Response(null,{status:503})});

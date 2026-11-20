@@ -37,9 +37,9 @@ describe('bounded recheck faults with actual SQLite transactions',()=>{
  it('rejects invalid repository IDs, executor fields, future timestamps',async()=>{const f=fixture();await expect(f.engine().register({...input(),identity:{...input().identity,repositoryId:0}})).rejects.toThrow('FIXED_TARGET');await expect(f.engine().register({...input(),url:'https://evil'} as any)).rejects.toThrow('CLOSED_SCHEMA');await expect(f.engine().register({...input(),t0:t0+1})).rejects.toThrow('ORIGINAL_T0');});
  it('merged PR atomically replaces its alarm with one index stage at native merge time',async()=>{const f=fixture({kind:'index',mergedAt:t0+5*m,evidence:'native-pr'});await f.engine().register(input('winget-pr'));f.time(t0+6*m);await f.engine().wake();let r=(await f.store.read())!;expect(r.identity.stage).toBe('winget-index');expect(r.t0).toBe(t0+5*m);expect(r.deadline).toBe(t0+5*m+48*60*m);expect(r.consumed).toBe(0);expect(r.intent).toBeNull();f.effects.observe=vi.fn(async()=>({kind:'pending'}));await f.engine().wake();r=(await f.store.read())!;expect(r.nextAt).toBe(t0+10*m);expect(f.effects.observe).toHaveBeenCalledTimes(1);});
  it('editing pause and expired resume cannot reset the original window',async()=>{const f=fixture({kind:'pause',reason:'EDITING_PAUSED'});await f.engine().register(input());await f.engine().wake();expect((await f.store.read())?.status).toBe('PAUSED');f.time(t0+121*m);await f.engine().control('resume',2);expect((await f.store.read())?.status).toBe('NEEDS_ATTENTION');expect((await f.store.read())?.t0).toBe(t0);expect(f.store.alarm()).toBeNull();});
- it.each(['candidate','winget-index'] as const)('resumes %s observation after a pre-dispatch read was limited',async stage=>{
+ it.each([['candidate',false],['candidate',true],['winget-index',false],['winget-index',true]] as const)('resumes %s after explicit rate limiting (POST attempted: %s)',async(stage,attempted)=>{
   const f=fixture({kind:'unknown'});
-  vi.mocked(f.effects.observe).mockRejectedValueOnce(new GitHubRetryError(429,'120',false));
+  vi.mocked(f.effects.observe).mockRejectedValueOnce(new GitHubRetryError(429,'120',attempted));
   await f.engine().register(input(stage));await f.engine().wake();
   expect((await f.store.read())?.intent).toBeNull();
   const due=f.store.alarm()!;expect(due).toBeGreaterThanOrEqual(t0+2*m);

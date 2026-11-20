@@ -1,3 +1,4 @@
+import {SqliteDurableStorage} from './bounded-storage.js';
 import { createHmac } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker, { handleWebhook, refreshWorkflowContractChecks, ValidationCoordinator, type Env } from '../src/index.js';
@@ -234,4 +235,23 @@ describe('exact legacy Gate consumer retirement', () => {
     expect(readPull).toHaveBeenCalledWith('splrad', 'steward', 7);
     expect(GitHubClient.prototype.createCheckRun).toHaveBeenCalled();
   });
+});
+
+it('coalesces repeated webhook refreshes and spaces live PR lookups across restarts',async()=>{
+  const storage=new SqliteDurableStorage(),repository=repositories[1]!;
+  vi.mocked(GitHubClient.prototype.getPullRequest).mockImplementation(async(_owner,_repo,number)=>({...pull(),number}));
+  const coordinator=()=>new ValidationCoordinator({storage} as any,env());
+  const enqueue=(pullNumber:number)=>coordinator().fetch(new Request('https://validation.internal/',{
+    method:'POST',body:JSON.stringify({operation:'enqueue-refresh',repositoryId:repository.id,pullNumber})
+  }));
+  const clock=vi.spyOn(Date,'now').mockReturnValue(1000);
+  try{
+    for(const number of [7,7,8,7])await enqueue(number);
+    expect((await storage.list({prefix:'refresh:',limit:9})).size).toBe(2);
+    expect(await storage.getAlarm()).toBe(61000);
+    clock.mockReturnValue(61000);await coordinator().alarm();
+    expect((await storage.list({prefix:'refresh:',limit:9})).size).toBe(1);
+    await coordinator().alarm();expect(await storage.getAlarm()).toBe(121000);
+    clock.mockReturnValue(121000);await coordinator().alarm();expect(await storage.getAlarm()).toBeNull();
+  }finally{clock.mockRestore();}
 });

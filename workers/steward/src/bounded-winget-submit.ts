@@ -1,3 +1,4 @@
+import {retryAfterTime} from './bounded-retry-after.js';
 import {BoundedGitHub, TARGET, ensure, type BoundedEnv, type GitReader} from './bounded-recheck-github.js';
 import {registerWingetRun} from './bounded-winget-evidence.js';
 import {releaseHint} from './release-cycle-relay.js';
@@ -42,7 +43,20 @@ export class WingetSubmit {
     try{
       registered=await registerWingetRun(this.env,'workflow_run',{action:'completed',repository:{id:TARGET.id},
         workflow_run:{id:r.id,run_attempt:r.attempt,display_title:r.title,path:'.github/workflows/steward-release-channels.yml'}},this.reader());
-    }catch{return;} // Re-read only the same submit attempt; target registration is independently idempotent.
+    }catch(error){
+      const floor=retryAfterTime(error,this.now(),Number.MAX_SAFE_INTEGER-1);
+      if(floor!==undefined)await this.storage.transaction(async t=>{
+        const latest=await t.get<Submit>('wingetSubmit');
+        if(latest?.state!=='pending'||latest.tries!==r.tries)return;
+        if(!Number.isSafeInteger(floor)||floor>=Number.MAX_SAFE_INTEGER){
+          latest.state='unknown';await t.deleteAlarm();
+        }else{
+          latest.next=Math.max(latest.next,floor);if(!latest.paused)await t.setAlarm(latest.next);
+        }
+        await t.put('wingetSubmit',latest);
+      });
+      return;
+    }
     await this.storage.transaction(async t=>{
       const latest=await t.get<Submit>('wingetSubmit');
       if(latest?.state==='pending'&&latest.tries===r.tries){latest.state=registered?'finished':'unknown';await t.put('wingetSubmit',latest);await t.deleteAlarm();}

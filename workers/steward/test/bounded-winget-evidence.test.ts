@@ -70,3 +70,22 @@ it('keeps a failed native submit job distinguishable from a registered upstream 
  expect(await storage.get('wingetSubmit')).toMatchObject({state:'unknown'});
  expect(await f.store.read()).toBeNull();
 });
+
+it('preserves the submit verification retry floor across restarts',async()=>{
+ const f=await submitFixture(),storage=new SqliteDurableStorage();
+ let now=1000,reads=0;
+ const reader={...f.g,json:async(id:number,path:string,...args:any[])=>{
+   if(path.includes('/jobs?')){
+     if(++reads===1)throw Error('RETRY_AFTER:1800');
+     return {total_count:1,jobs:[{name:'submit/winget/layerscape',conclusion:'failure'}]};
+   }
+   return (f.g.json as Function)(id,path,...args);
+ }};
+ const channel=()=>new WingetSubmit(storage as any,f.env,()=>reader as any,()=>now);
+ const run=f.payload.workflow_run;
+ await channel().register({id:run.id,attempt:run.run_attempt,title:run.display_title});
+ await channel().alarm();expect(await storage.get('__alarm')).toBe(1801000);
+ now+=60000;await channel().alarm();expect(reads).toBe(1);
+ now=1801000;await channel().alarm();expect(reads).toBe(2);
+ expect(await storage.get('wingetSubmit')).toMatchObject({state:'unknown',tries:2});
+});

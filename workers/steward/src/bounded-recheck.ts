@@ -1,4 +1,4 @@
-import {GitHubRetryError,retryAfterTime} from './bounded-retry-after.js';
+import {GitHubRetryError,retryAfterTime,rejectedDispatch} from './bounded-retry-after.js';
 import { createHash } from 'node:crypto';
 /** Bounded wake intents only. Git/Run/channel facts remain authoritative. */
 export type Stage = 'candidate' | 'winget-pr' | 'winget-index';
@@ -116,8 +116,8 @@ export class BoundedRecheck {
     }))); }
     catch (error) {
       const message=error instanceof Error?error.message:'';const retryAfter=retryAfterTime(error,this.clock(),claim.record.deadline);
-      const beforeDispatch=!claim.confirm && error instanceof GitHubRetryError && !error.dispatchAttempted;
-      outcome=['SOURCE_CHANGED','OBSERVATION_SOURCE_CHANGED','CHANNEL_ORIGINAL_IDENTITY'].includes(message)?{kind:'stop',reason:'SOURCE_CHANGED'}:['GENERATED_FILES_MISMATCH','MANUAL_UNMANAGED_CHANGES','MANUAL_GENERATED_FILE_TREE','CHANNEL_EXECUTION_PIN'].includes(message)?{kind:'stop',reason:message}:(beforeDispatch||claim.record.identity.stage==='winget-pr')&&retryAfter!==undefined?{kind:'pending',retryAfter}:{kind:'unknown',...(retryAfter===undefined?{}:{retryAfter})};
+      const retryableObservation=!claim.confirm && error instanceof GitHubRetryError && (!error.dispatchAttempted || rejectedDispatch(error));
+      outcome=['SOURCE_CHANGED','OBSERVATION_SOURCE_CHANGED','CHANNEL_ORIGINAL_IDENTITY'].includes(message)?{kind:'stop',reason:'SOURCE_CHANGED'}:['GENERATED_FILES_MISMATCH','MANUAL_UNMANAGED_CHANGES','MANUAL_GENERATED_FILE_TREE','CHANNEL_EXECUTION_PIN'].includes(message)?{kind:'stop',reason:message}:(retryableObservation||claim.record.identity.stage==='winget-pr')&&retryAfter!==undefined?{kind:'pending',retryAfter}:{kind:'unknown',...(retryAfter===undefined?{}:{retryAfter})};
     }
     await this.store.transaction(r=>{
       if(!r || !r.intent || r.intent.key!==claim.intent.key) return {record:r,result:undefined};

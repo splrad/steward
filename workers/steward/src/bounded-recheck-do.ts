@@ -1,5 +1,5 @@
 import {PagesRetry} from './pages-completion.js';
-import {QualityEvent} from './quality-event.js';
+import {WorkflowEvent} from './quality-event.js';
 import {ReleasePromotion} from './release-promotion.js';
 import {WingetSubmit} from './bounded-winget-submit.js';
 import {ReleaseRelay} from './release-cycle-relay.js';
@@ -30,8 +30,12 @@ export class BoundedRecheckCoordinator {
   let value:unknown;
   if(action==='/pages-watch'){await new PagesRetry(this.state.storage,this.env).watch(b);return Response.json({accepted:true});}
   if(action==='/pages-retry'){await new PagesRetry(this.state.storage,this.env).schedule(b);return Response.json({accepted:true});}
-  if(action==='/quality-event'){await new QualityEvent(this.state.storage,this.env).register(b);return Response.json({accepted:true});}
-  if(action==='/quality-promoted'){await new QualityEvent(this.state.storage,this.env).forward();return Response.json({accepted:true});}
+  if(['/quality-event','/configuration-event','/quality-promoted','/configuration-promoted'].includes(action)){
+    const key=action.startsWith('/configuration-')?'configurationEvent':'qualityEvent';
+    const event=new WorkflowEvent(this.state.storage,this.env,undefined,key);
+    if(action.endsWith('-promoted'))await event.forward();else await event.register(b);
+    return Response.json({accepted:true});
+  }
   if(action==='/generation')return Response.json({generation:(await this.state.storage.get<number>('generation'))??0});
   if(action==='/wait'||action==='/promoted'){await new ReleasePromotion(this.state.storage,this.env).update(action,b);return Response.json({accepted:true});}
   if(action==='/release-promoted'){await new ReleaseRelay(this.state.storage,this.env).wakePromoted(b.policy,false,b.controller);return Response.json({accepted:true});}
@@ -57,7 +61,8 @@ export class BoundedRecheckCoordinator {
  }
  async alarm(){
   if(await this.state.storage.get('pagesRetry')||await this.state.storage.get('pagesWatch')){await new PagesRetry(this.state.storage,this.env).alarm();return;}
-  if(await this.state.storage.get('qualityEvent')){await new QualityEvent(this.state.storage,this.env).alarm();return;}
+  if(await this.state.storage.get('configurationEvent')){await new WorkflowEvent(this.state.storage,this.env,undefined,'configurationEvent').alarm();return;}
+  if(await this.state.storage.get('qualityEvent')){await new WorkflowEvent(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('promotionPolicy')){await new ReleasePromotion(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('wingetSubmit')){await new WingetSubmit(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('releaseCycle')||await this.state.storage.get('releaseIntake')){await new ReleaseRelay(this.state.storage,this.env).alarm();return;}

@@ -169,8 +169,15 @@ export class PagesRetry {
         }
         // Probe only the original receipt window. Keep the reservation after the
         // bounded observation period so a later webhook can still confirm it.
-        if(Date.now()<=Date.parse(row.reserved_at)+3*probeInterval &&
-          !await recordReceipt(db,this.reader(),site,hint,policy,row.reserved_at))return;
+        const deadline=Math.min(expires,Date.parse(row.reserved_at)+3*probeInterval);
+        if(Date.now()<deadline){
+          try{if(!await recordReceipt(db,this.reader(),site,hint,policy,row.reserved_at))return;}
+          catch(error){
+            const now=Date.now(),floor=retryAfterTime(error,now,deadline);
+            if(floor===undefined)throw error;
+            await this.store.setAlarm(Math.min(deadline,Math.max(now+probeInterval,floor)));return;
+          }
+        }
       }
     }
     await this.store.transaction(async t=>{

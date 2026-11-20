@@ -1,11 +1,9 @@
-import {promotedController} from './bounded-controller.js';
-import {dispatchFixed} from './bounded-recheck-effects.js';
 import {acceptReleasePromotion} from './release-promotion.js';
 import {acceptReleaseHint} from './release-cycle-relay.js';
 import {forwardPagesCompletion} from './pages-completion.js';
 import {APP_BOT_ID} from './bounded-winget-evidence.js';
 import {acceptWingetSubmit} from './bounded-winget-submit.js';
-import {BoundedGitHub,CENTRAL,type GitReader} from './bounded-recheck-github.js';
+import {BoundedGitHub} from './bounded-recheck-github.js';
 import {acceptNativeCandidateEvent,acceptNativeCandidateCompletion} from './bounded-native-event.js';
 import { handleBoundedRecheckRequest } from './bounded-recheck-api.js';
 export { BoundedRecheckCoordinator } from './bounded-recheck-do.js';
@@ -17,7 +15,7 @@ import { isStewardOwnedPullRequest } from "../support/core/issues.js";
 import {selectContractAuthority} from "../support/core/workflow-contract-authority.js";
 import {evaluateRemoteWorkflowContract} from "../support/github/workflow-contract.js";
 import { createInstallationToken, GitHubClient, GitHubRequestError } from "../support/github/index.js";
-import { dispatchQualityEvent } from "./quality-event.js";
+import { dispatchQualityEvent, submitConfiguration } from "./quality-event.js";
 import repositoryCatalog from "../config/repositories.json" with { type: "json" };
 import { handleBodyWriteInternalRequest } from "./pr-body-api.js";
 
@@ -413,12 +411,7 @@ function configurationRepository(env: Env, payload: any): boolean {
     typeof repo.default_branch === 'string' && repo.default_branch.length > 0 && isManaged(repo);
 }
 
-async function dispatchConfigurationLocator(env: Env, reader: GitReader, inputs: Record<string,string>) {
-  const policy = await promotedController(reader, env.RELEASE_RELAY_DEPLOYMENT_SHA ?? env.BOUNDED_DEPLOYMENT_SHA);
-  await dispatchFixed(reader, CENTRAL.id, 'repository-configuration-event.yml', policy, inputs);
-}
-
-export async function forwardConfigurationComment(env: Env, payload: any, reader: GitReader) {
+export async function forwardConfigurationComment(env: Env, payload: any, submit = submitConfiguration) {
   const {issue, comment, repository, sender} = payload;
   if (payload.action !== 'created' || comment?.body !== '/configure' || comment.user?.type !== 'User' ||
       !Number.isSafeInteger(comment.user.id) || comment.user.id <= 0 || sender?.type !== 'User' || sender.id !== comment.user.id ||
@@ -428,7 +421,7 @@ export async function forwardConfigurationComment(env: Env, payload: any, reader
   const marker = '<!-- steward-configuration-dashboard ' + repository.id + ' -->';
   if (typeof issue.body !== 'string' || issue.body.split(/\r?\n/, 1)[0] !== marker ||
       comment.issue_url !== 'https://api.github.com/repos/' + repository.full_name + '/issues/' + issue.number) return;
-  await dispatchConfigurationLocator(env, reader, {
+  await submit(env, {
     repository_id: String(repository.id), issue_number: String(issue.number), comment_id: String(comment.id),
   });
 }
@@ -445,7 +438,7 @@ async function configurationAttemptJobs(env: Env, repository: any, run: any) {
 }
 
 /** The receiver re-reads the source attempt and authorizes the actor before processing its request. */
-export async function forwardConfigurationCompletion(env: Env, payload: any, reader: GitReader,
+export async function forwardConfigurationCompletion(env: Env, payload: any, submit = submitConfiguration,
   listJobs = configurationAttemptJobs) {
   const {repository, workflow_run: run} = payload;
   const trial = run?.path === '.github/workflows/repository-configuration-trial.yml';
@@ -466,7 +459,7 @@ export async function forwardConfigurationCompletion(env: Env, payload: any, rea
     ['workflow_dispatch', 'push'].includes(run.event) && isDefault ||
     run.event === 'pull_request' && typeof run.head_branch === 'string' && run.head_branch.startsWith('steward/repository-configuration-') ||
     run.event === 'pull_request_review' && typeof run.head_branch === 'string' && run.head_branch.length > 0)) return;
-  await dispatchConfigurationLocator(env, reader, {
+  await submit(env, {
     repository_id: String(repository.id), run_id: String(run.id), attempt: String(run.run_attempt),
   });
 }
@@ -498,7 +491,7 @@ async function handleExistingEvent(env:Env,event:string,payload:any,deliveryId:s
     if (belongsToOrganization(payload.repository)) await acceptNativeCandidateEvent(env, event, payload, deliveryId);
     await acceptNativeCandidateCompletion(env, event, payload);
     if (event === 'issue_comment') {
-      await forwardConfigurationComment(env, payload, new BoundedGitHub(env));
+      await forwardConfigurationComment(env, payload);
       return response(204);
     }
     if (["issues", "sub_issues", "issue_dependencies"].includes(event)
@@ -508,7 +501,7 @@ async function handleExistingEvent(env:Env,event:string,payload:any,deliveryId:s
       const repository = payload.repository; const pull = payload.pull_request;
       if (!repository || !belongsToOrganization(repository) || !pull) return response(204);
       if (Number.isSafeInteger(pull.number))
-        await refreshWorkflowContractChecks(env, Number(repository.id), pull.number);
+        await enqueueValidationRefresh(env, Number(repository.id), pull.number);
       if (!isManaged(repository)) return response(env.WORKFLOW_EVALUATOR_SHA === undefined ? 204 : 202);
       if (pull.base?.ref !== repository.default_branch) return response(204);
       await ensureValidationPending(env, repository, pull);
@@ -525,7 +518,7 @@ async function handleExistingEvent(env:Env,event:string,payload:any,deliveryId:s
       if (!repository || !belongsToOrganization(repository) || env.WORKFLOW_EVALUATOR_SHA === undefined) return response(204);
       const number = Number(payload.pull_request?.number);
       if (!Number.isSafeInteger(number) || number <= 0) return response(204);
-      await refreshWorkflowContractChecks(env, repository.id, number);
+      await enqueueValidationRefresh(env, repository.id, number);
       return response(202);
     }
     if (event === "workflow_run" && ["requested", "in_progress", "completed"].includes(action)) {
@@ -533,7 +526,7 @@ async function handleExistingEvent(env:Env,event:string,payload:any,deliveryId:s
       const [validation,pages,configuration]=await Promise.allSettled([
         publishValidationState(env, repository, payload.workflow_run?.id),
         forwardPagesCompletion(env,event,payload,new BoundedGitHub(env)),
-        forwardConfigurationCompletion(env,payload,new BoundedGitHub(env)),
+        forwardConfigurationCompletion(env,payload),
       ]);
       if(validation.status==='rejected')throw validation.reason;
       if(pages.status==='rejected')throw pages.reason;
@@ -546,6 +539,15 @@ async function handleExistingEvent(env:Env,event:string,payload:any,deliveryId:s
     return response(503);
   }
 }
+
+async function enqueueValidationRefresh(env:Env,repositoryId:number,pullNumber:number){
+  if(env.WORKFLOW_EVALUATOR_SHA===undefined)return;
+  if(!env.VALIDATION_COORDINATOR){await refreshWorkflowContractChecks(env,repositoryId,pullNumber);return;}
+  await coordinatedValidation(env,repositoryId,{operation:'enqueue-refresh',repositoryId,pullNumber});
+}
+type ValidationRefresh={repositoryId:number;pullNumber:number;failures:number;due:number};
+const refreshInterval=60_000;
+const refreshKey=(r:ValidationRefresh)=>'refresh:'+String(r.due).padStart(16,'0')+':'+r.pullNumber;
 
 async function coordinatedValidation(env: Env, repositoryId: number, payload: Record<string, unknown>): Promise<{changed:boolean}> {
   if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0) throw new Error('CONTRACT_REPOSITORY');
@@ -562,13 +564,57 @@ async function coordinatedValidation(env: Env, repositoryId: number, payload: Re
 export class ValidationCoordinator {
   private readonly queue = new SerialTaskQueue();
   private readonly env: Env;
-  constructor(_state: DurableObjectState, env: Env) {
+  constructor(private state: DurableObjectState, env: Env) {
     const {VALIDATION_COORDINATOR: _binding, ...local} = env;
     this.env = local;
+  }
+  private async enqueue(repositoryId:number,pullNumber:number){
+    if(!Number.isSafeInteger(repositoryId)||repositoryId<=0||!Number.isSafeInteger(pullNumber)||pullNumber<=0)throw Error('CONTRACT_REFRESH_LOCATOR');
+    await this.state.storage.transaction(async t=>{
+      const member='refresh-pull:'+pullNumber;
+      if(!await t.get(member)){
+        const row:ValidationRefresh={repositoryId,pullNumber,failures:0,due:Date.now()+refreshInterval};
+        await t.put(refreshKey(row),row);await t.put(member,true);
+      }
+      const next=(await t.list<ValidationRefresh>({prefix:'refresh:',limit:1})).values().next().value;
+      if(next){
+        const alarm=await t.getAlarm(),due=Math.max(next.due,(await t.get<number>('refresh-floor'))??0);
+        if(alarm===null||alarm>due)await t.setAlarm(due);
+      }
+    });
+  }
+  async alarm(){
+    await this.queue.run(async()=>{
+      const store=this.state.storage;
+      const row=(await store.list<ValidationRefresh>({prefix:'refresh:',limit:1})).values().next().value;
+      if(!row)return;
+      const now=Date.now(),due=Math.max(row.due,(await store.get<number>('refresh-floor'))??0);
+      if(now<due){await store.setAlarm(due);return;}
+      // Preserve the repository budget through restarts and re-read the live PR head.
+      const floor=now+refreshInterval;
+      await store.transaction(async t=>{await t.put('refresh-floor',floor);await t.setAlarm(floor);});
+      let failed=false;
+      try{await refreshWorkflowContractChecks(this.env,row.repositoryId,row.pullNumber);}
+      catch{failed=true;}
+      await store.transaction(async t=>{
+        await t.delete(refreshKey(row));
+        if(failed&&row.failures<3){
+          const retry={...row,failures:row.failures+1,due:Date.now()+refreshInterval*2**(row.failures+1)};
+          await t.put(refreshKey(retry),retry);
+        }else await t.delete('refresh-pull:'+row.pullNumber);
+        const next=(await t.list<ValidationRefresh>({prefix:'refresh:',limit:1})).values().next().value;
+        if(next)await t.setAlarm(Math.max(floor,next.due));else await t.deleteAlarm();
+      });
+      if(failed)console.error(JSON.stringify({operation:'validation-refresh',repositoryId:row.repositoryId,pullNumber:row.pullNumber,attempt:row.failures+1}));
+    });
   }
   async fetch(request: Request): Promise<Response> {
     return this.queue.run(async () => {
       const value = await request.json() as any;
+      if(value.operation==='enqueue-refresh'){
+        await this.enqueue(value.repositoryId,value.pullNumber);
+        return response(200,{changed:false});
+      }
       if (value.operation === 'refresh') {
         await refreshWorkflowContractChecks(this.env, value.repositoryId, value.pullNumber);
         return response(200, {changed:true});

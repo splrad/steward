@@ -1,5 +1,18 @@
 import {expect,it,vi} from 'vitest';
+import {WorkflowEvent,submitConfiguration} from '../src/quality-event.js';
+import {SqliteDurableStorage} from './bounded-storage.js';
 import {forwardConfigurationComment,forwardConfigurationCompletion} from '../src/index.js';
+
+function submitWith(json:ReturnType<typeof configurationApi>){
+  return async(env:any,inputs:Record<string,string>)=>{
+    const storage=new SqliteDurableStorage();
+    const object=new WorkflowEvent(storage as any,env,()=>({json} as any),'configurationEvent');
+    const ns={idFromName:(key:string)=>key,get:()=>({fetch:async(r:Request)=>{
+      await object.register(await r.json() as any);return Response.json({});
+    }})};
+    await submitConfiguration({...env,BOUNDED_RECHECK:ns},inputs);
+  };
+}
 
 function configurationApi(sha:string){
   const config=Buffer.from(JSON.stringify({schemaVersion:1,enabled:true,deploymentSha:sha}));
@@ -22,13 +35,13 @@ it('forwards only the locator of a successful same-repository default branch con
   for(const delta of [{installation:{id:999}},{repository:{...repository,private:true}},{repository:{...repository,archived:true}},
     {repository:{...repository,fork:true}},{organization:{id:999}},{repository:{...repository,disabled:true}},
     ...[{event:'workflow_run'},{path:trialPath,event:'push'},{path:trialPath,head_branch:'other'},{path:trialPath,head_repository:{id:456}},{head_branch:'feature'},{path:'.github/workflows/other.yml'},{conclusion:'failure'},{head_repository:{id:456}},{run_attempt:0}].map(change=>({workflow_run:{...run,...change}}))]){
-    await forwardConfigurationCompletion(env as any,{...payload,...delta},{json} as any);
+    await forwardConfigurationCompletion(env as any,{...payload,...delta},submitWith(json));
   }
   expect(json).not.toHaveBeenCalled();
-  await forwardConfigurationCompletion(env as any,payload,{json} as any);
-  await forwardConfigurationCompletion(env as any,{...payload,workflow_run:{...run,event:'pull_request',head_branch:'steward/repository-configuration-42'}},{json} as any);
-  await forwardConfigurationCompletion(env as any,{...payload,workflow_run:{...run,event:'pull_request_review',head_branch:'other-reviewed-config'}},{json} as any);
-  await forwardConfigurationCompletion(env as any,{...payload,workflow_run:{...run,path:trialPath}},{json} as any);
+  await forwardConfigurationCompletion(env as any,payload,submitWith(json));
+  await forwardConfigurationCompletion(env as any,{...payload,workflow_run:{...run,event:'pull_request',head_branch:'steward/repository-configuration-42'}},submitWith(json));
+  await forwardConfigurationCompletion(env as any,{...payload,workflow_run:{...run,event:'pull_request_review',head_branch:'other-reviewed-config'}},submitWith(json));
+  await forwardConfigurationCompletion(env as any,{...payload,workflow_run:{...run,path:trialPath}},submitWith(json));
   expect(json.mock.calls.filter(([,path])=>path.endsWith('/dispatches'))).toHaveLength(4);
   expect(json).toHaveBeenLastCalledWith(1296724484,'/repos/splrad/steward/actions/workflows/repository-configuration-event.yml/dispatches','POST',
     {ref:'main',inputs:{repository_id:'42',run_id:'334',attempt:'2'}});
@@ -49,9 +62,9 @@ it('forwards dashboard comments from ordinary users using only the three verifie
     {issue:{...issue,title:'Other'}}, {issue:{...issue,body:'<!-- steward-configuration-dashboard 2 -->'}},
     {comment:{...comment,body:'/configure extra'}}, {comment:{...comment,user:{...user,type:'Bot'}}},
     {comment:{...comment,issue_url:'https://api.github.com/repos/splrad/new-product/issues/8'}},
-  ]) await forwardConfigurationComment(env as any,{...payload,...delta},{json} as any);
+  ]) await forwardConfigurationComment(env as any,{...payload,...delta},submitWith(json));
   expect(json).not.toHaveBeenCalled();
-  await forwardConfigurationComment(env as any,payload,{json} as any);
+  await forwardConfigurationComment(env as any,payload,submitWith(json));
   expect(json).toHaveBeenLastCalledWith(1296724484,'/repos/splrad/steward/actions/workflows/repository-configuration-event.yml/dispatches','POST',
     {ref:'main',inputs:{repository_id:'42',issue_number:'7',comment_id:'901'}});
 });
@@ -66,16 +79,42 @@ it('requires a successful request job on the exact issues or schedule attempt be
   const json=configurationApi(sha);
   const jobs=vi.fn(async()=>[job]);
   for(const change of [{event:'issue_comment'},{event:'schedule',head_branch:'other'},{path:'.github/workflows/repository-configuration-trial.yml'},{head_sha:'invalid'}]){
-    await forwardConfigurationCompletion(env as any,{...payload,workflow_run:{...run,...change}},{json} as any,jobs);
+    await forwardConfigurationCompletion(env as any,{...payload,workflow_run:{...run,...change}},submitWith(json),jobs);
   }
   expect(jobs).not.toHaveBeenCalled();
   for(const result of [[],[job,job],[{...job,name:'unrelated'}],[{...job,run_attempt:1}],[{...job,run_id:335}],[{...job,head_sha:'b'.repeat(40)}],[{...job,conclusion:'skipped'}]]){
-    await forwardConfigurationCompletion(env as any,payload,{json} as any,async()=>result);
+    await forwardConfigurationCompletion(env as any,payload,submitWith(json),async()=>result);
   }
   expect(json).not.toHaveBeenCalled();
   for(const event of ['schedule','issues']){
-    await forwardConfigurationCompletion(env as any,{...payload,workflow_run:{...run,event}},{json} as any,jobs);
+    await forwardConfigurationCompletion(env as any,{...payload,workflow_run:{...run,event}},submitWith(json),jobs);
     expect(json).toHaveBeenLastCalledWith(1296724484,'/repos/splrad/steward/actions/workflows/repository-configuration-event.yml/dispatches','POST',
       {ref:'main',inputs:{repository_id:'42',run_id:'334',attempt:'2'}});
   }
+});
+
+it('retains the exact dashboard comment through promotion and consumes the wake once',async()=>{
+  const sha='b'.repeat(40),storage=new SqliteDurableStorage(),waits:any[]=[],posts:any[]=[];
+  let promoted=false,objectKey='';
+  const ordinary=configurationApi(sha);
+  const reader={json:async(id:number,path:string,method?:string,body?:unknown)=>{
+    if(!promoted && path.endsWith('/steward/validated-controller')){
+      return {ref:'refs/heads/steward/validated-controller',object:{type:'commit',sha:'a'.repeat(40)}};
+    }
+    if(method==='POST')posts.push(body);
+    return ordinary(id,path,method);
+  }};
+  const inputs={repository_id:'42',issue_number:'7',comment_id:'901'};
+  const env:any={BOUNDED_RECHECK_ENABLED:'true',RELEASE_RELAY_DEPLOYMENT_SHA:sha};
+  const object=()=>new WorkflowEvent(storage as any,env,()=>reader as any,'configurationEvent');
+  env.BOUNDED_RECHECK={idFromName:(key:string)=>key,get:(key:string)=>({fetch:async(req:Request)=>{
+    const action=new URL(req.url).pathname;
+    if(action==='/generation')return Response.json({generation:3});
+    if(action==='/wait'){waits.push(await req.json());return Response.json({});}
+    objectKey=key;await object().register(await req.json() as any);return Response.json({});
+  }})};
+  await submitConfiguration(env,inputs);expect(posts).toEqual([]);
+  expect(waits).toEqual([{policy:sha,kind:'configuration',generation:3,key:objectKey.split(':')[2]}]);
+  promoted=true;await object().forward();await object().forward();await submitConfiguration(env,inputs);
+  expect(posts).toEqual([{ref:'main',inputs}]);
 });

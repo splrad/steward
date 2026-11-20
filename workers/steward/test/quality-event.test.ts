@@ -1,6 +1,6 @@
 import {expect,it,vi} from 'vitest';
 import {GitHubRetryError} from '../src/bounded-retry-after.js';
-import {QualityEvent,qualityLocator,dispatchQualityEvent} from '../src/quality-event.js';
+import {WorkflowEvent,qualityLocator,dispatchQualityEvent} from '../src/quality-event.js';
 const sha='a'.repeat(40),id=1296724484,install=123;
 function qualityFile(repositories:Record<string,unknown>) {
  const content=Buffer.from(JSON.stringify({schemaVersion:1,repositories}));
@@ -30,7 +30,7 @@ it('targets the native dynamic run even when GitHub lists no associated pulls', 
    return Response.json({generation:0});
  }})};
  const env={INSTALLATION_ID:String(install),BOUNDED_RECHECK_ENABLED:'true',BOUNDED_DEPLOYMENT_SHA:'c'.repeat(40),BOUNDED_RECHECK:ns};
- const object=new QualityEvent(storage as any,env as any,()=>({json} as any));
+ const object=new WorkflowEvent(storage as any,env as any,()=>({json} as any));
  const record={delivery:'delivery-123',event:'workflow_run',target,phase:'pending' as const};
  await object.register(record);
  expect(pending.map(x=>JSON.parse(x).kind)).toEqual(['quality']);
@@ -43,7 +43,7 @@ it('targets the native dynamic run even when GitHub lists no associated pulls', 
  const newTarget={...target,repository_id:'23456789'};
  for(const entry of [undefined,true,{},'', 'splrad/new-public']){
    repositories[newTarget.repository_id]=entry;
-   const next=new QualityEvent(new SqliteDurableStorage() as any,env as any,()=>({json} as any));
+   const next=new WorkflowEvent(new SqliteDurableStorage() as any,env as any,()=>({json} as any));
    await next.register({...record,target:newTarget});
    expect(json.mock.calls.filter(([,path])=>path.endsWith('/dispatches'))).toHaveLength(entry==='splrad/new-public'?2:1);
  }
@@ -92,7 +92,7 @@ it.each([['GITHUB_HTTP_422',2],['RETRY_AFTER:3',2],['RETRY_AFTER:unknown',2],['p
    if(path.includes('/contents/'))return {type:'file',path:'config/bounded-recheck.json',encoding:'base64',size:config.length,content:config.toString('base64')};
    return {path:'.github/workflows/quality-language-summary.yml',state:'active'};
  };
- const object=new QualityEvent(storage as any,{BOUNDED_RECHECK_ENABLED:'true',RELEASE_RELAY_DEPLOYMENT_SHA:sha} as any,()=>({json} as any));
+ const object=new WorkflowEvent(storage as any,{BOUNDED_RECHECK_ENABLED:'true',RELEASE_RELAY_DEPLOYMENT_SHA:sha} as any,()=>({json} as any));
  const record={delivery:'one-delivery',event:'workflow_run',target,phase:'pending' as const};
  await expect(object.register(record)).rejects.toThrow(message==='limit-then-denied'?'RETRY_AFTER:3':message==='proxy503'?'RETRY_AFTER:unknown':message);
  if(message==='limit-then-denied'){
@@ -127,7 +127,7 @@ it.each(['/git/ref/heads/main','/contents/config/review/quality-language.json','
   if(path.includes('/contents/'))return {type:'file',path:'config/bounded-recheck.json',encoding:'base64',size:config.length,content:config.toString('base64')};
   return {path:'.github/workflows/quality-language-summary.yml',state:'active'};
  };
- const object=()=>new QualityEvent(storage as any,{BOUNDED_RECHECK_ENABLED:'true',RELEASE_RELAY_DEPLOYMENT_SHA:sha} as any,()=>({json} as any));
+ const object=()=>new WorkflowEvent(storage as any,{BOUNDED_RECHECK_ENABLED:'true',RELEASE_RELAY_DEPLOYMENT_SHA:sha} as any,()=>({json} as any));
  await expect(object().register({delivery:'quality-read',event:'workflow_run',target,phase:'pending'})).rejects.toThrow('RETRY_AFTER:30');
  const next=await storage.get<number>('__alarm');expect(next).toBeGreaterThan(Date.now());
  await object().alarm();expect(posts).toBe(0);
@@ -152,12 +152,15 @@ it('stores a signed quality locator without GitHub reads, then recovers the init
   return {path:'.github/workflows/quality-language-summary.yml',state:'active'};
  }};
  const env={BOUNDED_RECHECK_ENABLED:'true',RELEASE_RELAY_DEPLOYMENT_SHA:sha};
- const first=new QualityEvent(storage as any,env as any,()=>reader as any);
+ const first=new WorkflowEvent(storage as any,env as any,()=>reader as any);
  const clock=vi.spyOn(Date,'now').mockReturnValue(Date.now());
  try{
    await first.register(record);
-   await first.register({...record,delivery:'another-review'});
-   const resumed=()=>new QualityEvent(storage as any,env as any,()=>reader as any);
+   const due=await storage.get<number>('__alarm');await storage.deleteAlarm();
+   await first.register(record);expect(await storage.get('__alarm')).toBe(due);
+   await storage.deleteAlarm();await first.register({...record,delivery:'another-review'});
+   expect(await storage.get('__alarm')).toBe(due);
+   const resumed=()=>new WorkflowEvent(storage as any,env as any,()=>reader as any);
    clock.mockReturnValue((await storage.get<number>('__alarm'))!);
    env.BOUNDED_RECHECK_ENABLED='false';await resumed().alarm();expect(sends).toBe(0);
    env.BOUNDED_RECHECK_ENABLED='true';clock.mockReturnValue((await storage.get<number>('__alarm'))!);
