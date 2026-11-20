@@ -5,19 +5,18 @@ import {publishTemplateTag,promoteRequiredWorkflow} from './governance-promotion
 const old='1'.repeat(40),target='2'.repeat(40),other='3'.repeat(40),app=123;
 const ref=s=>({ref:`refs/heads/${controllerSource}`,object:{type:'commit',sha:s}});
 function protection(){return [
-  {id:1,name:'validated-controller-source',target:'branch',source:'splrad',source_type:'Organization',enforcement:'active',conditions:{repository_id:{repository_ids:[1296724484]},ref_name:{include:[`refs/heads/${controllerSource}`],exclude:[]}},bypass_actors:[{actor_id:app,actor_type:'Integration',bypass_mode:'always'}],rules:['creation','update'].map(type=>type==='update'?{type,parameters:{update_allows_fetch_and_merge:false}}:{type})},
-  {id:2,name:'validated-controller-no-tag',target:'tag',source:'splrad',source_type:'Organization',enforcement:'active',conditions:{repository_id:{repository_ids:[1296724484]},ref_name:{include:[`refs/tags/${controllerSource}`],exclude:[]}},bypass_actors:[],rules:['creation','update','deletion'].map(type=>type==='update'?{type,parameters:{update_allows_fetch_and_merge:false}}:{type})},
-  {id:3,name:'validated-controller-integrity',target:'branch',source:'splrad',source_type:'Organization',enforcement:'active',conditions:{repository_id:{repository_ids:[1296724484]},ref_name:{include:[`refs/heads/${controllerSource}`],exclude:[]}},bypass_actors:[],rules:['deletion','non_fast_forward'].map(type=>type==='update'?{type,parameters:{update_allows_fetch_and_merge:false}}:{type})},
+  {id:26970367,name:'validated-controller-source',target:'branch',source:'splrad',source_type:'Organization',enforcement:'active',conditions:{repository_id:{repository_ids:[1296724484]},ref_name:{include:[`refs/heads/${controllerSource}`],exclude:[]}},bypass_actors:[{actor_id:app,actor_type:'Integration',bypass_mode:'always'}],rules:['creation','update'].map(type=>type==='update'?{type,parameters:{update_allows_fetch_and_merge:false}}:{type})},
+  {id:26970366,name:'validated-controller-no-tag',target:'tag',source:'splrad',source_type:'Organization',enforcement:'active',conditions:{repository_id:{repository_ids:[1296724484]},ref_name:{include:[`refs/tags/${controllerSource}`],exclude:[]}},bypass_actors:[],rules:['creation','update','deletion'].map(type=>type==='update'?{type,parameters:{update_allows_fetch_and_merge:false}}:{type})},
+  {id:26970365,name:'validated-controller-integrity',target:'branch',source:'splrad',source_type:'Organization',enforcement:'active',conditions:{repository_id:{repository_ids:[1296724484]},ref_name:{include:[`refs/heads/${controllerSource}`],exclude:[]}},bypass_actors:[],rules:['deletion','non_fast_forward'].map(type=>type==='update'?{type,parameters:{update_allows_fetch_and_merge:false}}:{type})},
 ];}
 function fixture(options={}){
   let current=options.absent?null:ref(options.initial??old),reads=0,guards=0;
   const rules=options.rules??protection(),writes=[],records=[];
   const io={async request(method,path,body){
     if(method==='GET'){
-      if(path.includes('/rulesets?'))return {status:200,value:rules.map(({id,name})=>({id,name}))};
-      if(path.endsWith('/rulesets/1'))return {status:200,value:rules[0]};
-      if(path.endsWith('/rulesets/2'))return {status:200,value:rules[1]};
-      if(path.endsWith('/rulesets/3'))return {status:200,value:rules[2]};
+      if(path.endsWith('/rulesets/26970367'))return {status:200,value:rules[0]};
+      if(path.endsWith('/rulesets/26970366'))return {status:200,value:rules[1]};
+      if(path.endsWith('/rulesets/26970365'))return {status:200,value:rules[2]};
       if(path.includes('/git/ref/tags/'))return {status:options.tag?200:404,value:{}};
       if(path.includes('/compare/'))return {status:200,value:{status:options.diverged?'diverged':'ahead',base_commit:{sha:old},merge_base_commit:{sha:options.diverged?other:old}}};
       if(path.includes('/git/ref/heads/')){
@@ -75,6 +74,21 @@ test('requires exact branch and tag protection, including exclusive App bypass',
     const rules=protection();mutate(rules);assert.throws(()=>verifySourceProtection(rules,app),/CONTROLLER_SOURCE_/);
   }
 });
+test('accepts old, mixed and Chinese ruleset names for the same IDs',async()=>{
+  const rules=protection(),f=fixture({rules});
+  await assertSourceProtection(f.io,app);
+  rules[0].name='已验证控制器分支写入限制';
+  await assertSourceProtection(f.io,app);
+  rules[1].name='已验证控制器同名标签禁用';
+  rules[2].name='已验证控制器分支完整性保护';
+  await assertSourceProtection(f.io,app);
+});
+test('rejects a replacement with the same name and a different ID',async()=>{
+  const rules=protection(),f=fixture({rules});
+  rules[0].id=123;
+  await assert.rejects(f.run(),/RULE_IDENTITY/);
+  assert.equal(f.writes.length,0);
+});
 test('first source publication and idempotence preserve exact identity',async()=>{
   const f=fixture({absent:true});assert.deepEqual(await f.run(),{status:'PUBLISHED',sha:target});
   assert.deepEqual(f.writes[0],{method:'POST',path:'/repos/splrad/steward/git/refs',body:{ref:`refs/heads/${controllerSource}`,sha:target}});
@@ -121,7 +135,6 @@ test('rejects protection scoped to another repository or a wider set',()=>{
 test('completes omitted REST update parameters from the same native node',async()=>{
   const rules=protection();for(const r of rules){r.node_id=`node-${r.id}`;for(const entry of r.rules)if(entry.type==='update')delete entry.parameters;}
   const io={async request(method,path){
-    if(path.includes('/rulesets?'))return {status:200,value:rules};
     if(path.includes('/rulesets/'))return {status:200,value:rules.find(r=>path.endsWith(`/${r.id}`))};
     return {status:404};
   },async graphql(query,{id}){const r=rules.find(r=>r.node_id===id);return {node:{id,databaseId:r.id,rules:{nodes:[{type:'UPDATE',parameters:{updateAllowsFetchAndMerge:false}}],pageInfo:{hasNextPage:false}}}};}};
