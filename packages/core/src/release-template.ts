@@ -10,6 +10,7 @@ const headingFields = {
 } as const;
 type NotesField = typeof headingFields[keyof typeof headingFields];
 const optionalNotes = ['compatibility', 'upgrade', 'installation', 'knownIssues', 'recovery'] as const;
+const usesCompactLayout = (template: string) => template.includes('{{{upgradeNotices}}}');
 const noSourceInformation = '当前发布资料未提供此项变化的确认信息。';
 const prompts = [
   '说明此版本给使用者带来的主要变化。',
@@ -64,7 +65,7 @@ export function parseSupplementalNotes(markdown: string, template = ''): Record<
     if (start === undefined) fail('missing Markdown position');
     const value = markdown.slice(start, end).trim(); filled(value); result[field] = value;
   }
-  if (template.includes('{{{upgradeNotices}}}')) for (const key of optionalNotes) result[key] ??= '';
+  if (usesCompactLayout(template)) for (const key of optionalNotes) result[key] ??= '';
   if (Object.keys(result).length !== Object.keys(headingFields).length) fail('missing heading');
   return result as Record<NotesField, string>;
 }
@@ -110,7 +111,7 @@ export function committedVersionNotes(markdown: string, version: string, reposit
 export function renderCommittedReleaseNotes(template: string, data: ReleaseTemplateData): string {
   const expected = [...plainFields, ...markdownFields, 'channels', 'hasContributors', 'contributors'];
   if (Object.keys(data).length !== expected.length || Object.keys(data).some(key => !expected.includes(key))) fail('input keys');
-  const compact = template.includes('{{{upgradeNotices}}}');
+  const compact = usesCompactLayout(template);
   for (const key of [...plainFields, ...markdownFields]) {
     const value = data[key as keyof ReleaseTemplateData];
     if (compact && (key === 'downloads' || optionalNotes.some(field => field === key)) && value === '') continue;
@@ -229,7 +230,7 @@ export function renderFrozenReleaseNotes(template: string, data: FrozenReleaseNo
   if ((!data.assets.length && !data.githubDisabled) || new Set(data.assets.map(asset => asset.id)).size !== data.assets.length
     || new Set(data.assets.map(asset => asset.name.toLowerCase())).size !== data.assets.length) fail('download set');
   const legacy = template.includes('{{controllerSha}}');
-  const downloads = !data.assets.length ? (legacy ? '本次构建未配置 GitHub 下载项。' : '') : [ ...(legacy ? ['| 用途（产物 ID，详见安装说明） | 系统/架构（构建目标） | 文件 |', '| --- | --- | --- |'] : []), ...data.assets.map(asset => {
+  const downloads = !data.assets.length ? (usesCompactLayout(template) ? '' : '本次构建未配置 GitHub 下载项。') : [ ...(legacy ? ['| 用途（产物 ID，详见安装说明） | 系统/架构（构建目标） | 文件 |', '| --- | --- | --- |'] : []), ...data.assets.map(asset => {
     if (asset.description !== undefined && (!asset.description.trim() || /[\p{C}\p{Zl}\p{Zp}]/u.test(asset.description))) fail('asset description');
 
     assertDeliveryAssetName(asset.name);

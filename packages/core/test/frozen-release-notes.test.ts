@@ -66,6 +66,15 @@ it('omits the download list when GitHub delivery is disabled', () => {
   expect(body).not.toMatch(/未配置|releases\/download/);
   expect(body).toContain(data.sourceUrl);
 });
+it('fills the required download field in a seven-section template without an executor line', () => {
+  const separateNotices = template.replace('{{{upgradeNotices}}}', [
+    '## 升级须知', '{{{compatibility}}}', '{{{upgrade}}}', '{{{knownIssues}}}', '{{{recovery}}}',
+  ].join('\n\n'));
+  expect(separateNotices).not.toContain('{{controllerSha}}');
+  const body = renderFrozenReleaseNotes(separateNotices, { ...data, assets: [], githubDisabled: true });
+  expect(body).toContain('本次构建未配置 GitHub 下载项。');
+  expect(body).toContain(data.sourceUrl);
+});
 it.each(['filename', 'asset-id', 'target', 'duplicate', 'empty', 'tag', 'unit'])('RN05 rejects invalid download identity: %s', kind => {
   const input = structuredClone(data);
   if (kind === 'filename') input.assets[0]!.name = '../other.zip';
