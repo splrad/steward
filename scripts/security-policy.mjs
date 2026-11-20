@@ -10,6 +10,7 @@ const source = 'config/review/security-common.md';
 const answers = '.copier-answers.yml';
 const begin = '<!-- BEGIN SPLRAD COMMON SECURITY -->';
 const end = '<!-- END SPLRAD COMMON SECURITY -->';
+const releaseTag = /^v?\d+(?:\.\d+)+$/;
 export const securityPolicyController = fileURLToPath(new URL('../', import.meta.url));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
@@ -85,7 +86,7 @@ function marked(bytes) {
 function released(body, trusted, ceiling) {
   const tags = git(trusted,'tag','--merged',ceiling,'--sort=-version:refname').toString().trim().split('\n');
   for (const tag of tags) {
-    if (!/^v?\d+(?:\.\d+)+$/.test(tag)) continue;
+    if (!releaseTag.test(tag)) continue;
     const ref = 'refs/tags/'+tag+'^{commit}';
     if (blob(trusted,ref,source)?.equals(body) && blob(trusted,ref,'copier.yml')) {
       checkCommon(body);
@@ -102,6 +103,9 @@ export function prepare(target, trusted, templateSha, trustedHead) {
   const previous = adopted(target, 'HEAD', trusted, trustedHead);
   requirePolicy(!previous || next, 'SOURCE_REMOVED');
   if (!next) return '';
+  const tags = git(trusted, 'tag', '--points-at', templateSha).toString().trim().split('\n');
+  requirePolicy(tags.some(tag => releaseTag.test(tag)) && blob(trusted, templateSha, 'copier.yml'),
+    'RELEASE_TAG_REQUIRED');
   const current = blob(target, 'HEAD', policy);
   const path = join(target, policy);
   requirePolicy(!git(target, 'status', '--porcelain=v1', '--untracked-files=all', '--', policy).length,
@@ -113,7 +117,10 @@ export function prepare(target, trusted, templateSha, trustedHead) {
   let accepted = previous;
   if (marked(current)) {
     const body = sections(current)[1];
-    if (!body.equals(next) && !previous?.equals(body) && released(body,trusted,templateSha)) accepted = body;
+    if (!body.equals(next)) {
+      requirePolicy(released(body, trusted, templateSha), 'POLICY_DOWNGRADE_OR_DRIFT');
+      accepted = body;
+    }
   }
   const expected = updated(current, accepted, next);
   if (!current?.equals(expected)) writeFileSync(path, expected);

@@ -61,6 +61,9 @@ test('checks adoption against trusted Git tags, preserves outside bytes on sync 
   writeFileSync(policy,updated(readFileSync(policy),body,newer));const independentUpgrade = commit();
   check(local,independentUpgrade);
   assert.equal(git('diff','--name-only',local,independentUpgrade),'SECURITY.md');
+  assert.throws(()=>prepare(root,root,independentUpgrade,independentUpgrade),/RELEASE_TAG_REQUIRED/);
+  assert.throws(()=>prepare(root,root,git('rev-parse','v2.0.0'),controller),/POLICY_DOWNGRADE_OR_DRIFT/);
+  assert.deepEqual(readFileSync(policy),Buffer.concat([updated(initial,body,newer),localText]));
   writeFileSync(policy,Buffer.concat([initial,localText]));const independentRollback = commit();
   assert.throws(()=>check(independentUpgrade,independentRollback),/POLICY_DOWNGRADE/);
   rmSync(policy);const removed = commit();
