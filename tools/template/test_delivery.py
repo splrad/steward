@@ -65,11 +65,11 @@ class DeliveryTests(unittest.TestCase):
     def run_delivery(self,**kwargs):
         kwargs.setdefault('lock_runner', fixture_tool)
         return deliver(self.request,self.api,self.api,**kwargs)
-    def edit(self,branch,path,content):
+    def edit(self,branch,path,content,*,newline=None):
         with tempfile.TemporaryDirectory(prefix='edit-',dir=self.root) as temp:
             checkout=Path(temp)/'clone';self.git(self.root,'clone',str(self.remote),str(checkout));self.configure(checkout)
             self.git(checkout,'checkout','-B','edit','origin/'+branch)
-            file=checkout/path;file.parent.mkdir(parents=True,exist_ok=True);file.write_text(content,encoding='utf-8')
+            file=checkout/path;file.parent.mkdir(parents=True,exist_ok=True);file.write_text(content,encoding='utf-8',newline=newline)
             sha=self.commit(checkout,'Human edit');self.git(checkout,'push','origin','HEAD:refs/heads/'+branch)
             for pr in self.api.prs:
                 if branch==BRANCH and pr['state']=='open':pr['head']['sha']=sha
@@ -173,12 +173,20 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(len(self.api.prs),1)
 
     def test_concurrent_commit_rejects_non_fast_forward_then_next_wake_recomputes(self):
-        self.run_delivery();self.edit('develop','main.txt','base advanced\n')
-        self.api.before_ref=lambda:self.edit(BRANCH,'race.txt','keep concurrent\n')
+        source = self.central/'config/review/security-common.md'
+        source.parent.mkdir(parents=True)
+        shutil.copyfile(ROOT/'config/review/security-common.md', source)
+        self.new = self.commit(self.central, 'First security policy')
+        self.git(self.central, 'tag', 'v3.0.0')
+        self.request.update(templateSha=self.new, workflowSha=self.new)
+        first = self.run_delivery()
+        original = self.git(self.remote, 'show', first['head']+':SECURITY.md')+'\n'
+        self.edit('develop','main.txt','base advanced\n')
+        self.api.before_ref=lambda:self.edit(BRANCH,'SECURITY.md',original+'\nHuman project rule.\n',newline='\n')
         result=self.run_delivery();self.assertEqual(result['status'],'REF_CHANGED')
-        concurrent=self.head();self.assertEqual(self.git(self.remote,'show',concurrent+':race.txt'),'keep concurrent')
+        concurrent=self.head();self.assertEqual(self.git(self.remote,'show',concurrent+':SECURITY.md'),(original+'\nHuman project rule.').strip())
         resumed=self.run_delivery();self.assertEqual(resumed['status'],'DELIVERED')
-        self.assertEqual(self.git(self.remote,'show',resumed['head']+':race.txt'),'keep concurrent')
+        self.assertEqual(self.git(self.remote,'show',resumed['head']+':SECURITY.md'),(original+'\nHuman project rule.').strip())
         self.assertEqual(self.api.creates,1)
 
     def test_merge_conflict_leaves_remote_head_and_original_pr_untouched(self):
