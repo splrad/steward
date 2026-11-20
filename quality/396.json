@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "repositoryId": 1296724484,
   "pullRequestNumber": 396,
-  "currentHead": "a734b02ea2738a2b3d2ea37dd48fc60c1ed792e7",
+  "currentHead": "70798fdd971d0745e505a84e2ac42e74cbb1e05f",
   "configVersion": "quality-native-comments-v1",
   "heads": {
     "32e58b3be2c52a58200cd2bc655a3867a01d4ca2": {
@@ -570,6 +570,88 @@
       "checkId": 136346542822,
       "externalId": "splrad-quality:1296724484:396:a734b02ea2738a2b3d2ea37dd48fc60c1ed792e7",
       "observedAt": "2026-11-20T14:25:11.759Z"
+    },
+    "70798fdd971d0745e505a84e2ac42e74cbb1e05f": {
+      "sourceSetDigest": "e73b0c2be6574f7ee87c2054ec616a65dcce59fcbe4d719ecd1cfb6c333c5f16",
+      "sources": [
+        {
+          "sourceCommentId": "review-comment:4639747745",
+          "sourceCommit": "32e58b3be2c52a58200cd2bc655a3867a01d4ca2",
+          "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4639747745",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Whitespace contradicts operator precedence\n\nWhitespace around nested operators contradicts precedence.\n\n---\n\nThe best fix is to make operator grouping visually explicit by adding whitespace (and optionally parentheses) around nested operators in the flagged condition, without changing logic.</p>\n<p>In <code>workers/steward/src/bounded-recheck-github.ts</code>, update line 95’s <code>catch</code> statement so the conditional reads clearly:</p>\n<ul>\n<li>from <code>error instanceof Error&amp;&amp;error.message==='GITHUB_HTTP_404'</code></li>\n<li>to <code>error instanceof Error &amp;&amp; error.message === 'GITHUB_HTTP_404'</code></li>\n</ul>\n<p>This preserves existing functionality exactly and resolves the whitespace/precedence contradiction warning. No imports, new methods, or new definitions are required.",
+          "updatedAt": "2026-11-20T07:37:48Z"
+        },
+        {
+          "sourceCommentId": "review-comment:4639747754",
+          "sourceCommit": "32e58b3be2c52a58200cd2bc655a3867a01d4ca2",
+          "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4639747754",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Whitespace contradicts operator precedence\n\nWhitespace around nested operators contradicts precedence.\n\n---\n\nTo fix this class of issue, rewrite mixed-operator expressions so grouping is explicit and readable—typically by adding parentheses around each logical subcondition and adding consistent whitespace around operators.</p>\n<p>For this specific case in <code>workers/steward/src/bounded-recheck.ts</code>, update line 123’s condition from:</p>\n<ul>\n<li><code>'retryAfter' in outcome&amp;&amp;outcome.retryAfter!==undefined</code></li>\n</ul>\n<p>to:</p>\n<ul>\n<li><code>('retryAfter' in outcome) &amp;&amp; outcome.retryAfter !== undefined</code></li>\n</ul>\n<p>This preserves behavior exactly while removing ambiguity that triggered CodeQL. No imports, new methods, or definitions are required.",
+          "updatedAt": "2026-11-20T07:37:48Z"
+        },
+        {
+          "sourceCommentId": "review-comment:4640394204",
+          "sourceCommit": "4ecc6cc336f88ac8c211db86f51a0aca050df56e",
+          "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4640394204",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Unused variable, import, function or class\n\nUnused function delay.\n\n---\n\n通用修复方式：对“未使用函数”问题，最佳修复是删除未使用定义；若确有业务需要则应在实际逻辑中调用它。但在不改变现有功能前提下，优先删除死代码。</p>\n<p>本例最佳修复：在 <code>workers/steward/src/pr-body-api.ts</code> 中移除 <code>delay</code> 函数（第 33–35 行附近）。该函数未导出且当前未使用，删除不会改变运行行为，只会消除 CodeQL 告警并降低维护负担。不需要新增 import、方法或定义。",
+          "updatedAt": "2026-11-20T08:56:20Z"
+        },
+        {
+          "sourceCommentId": "review-comment:4640394217",
+          "sourceCommit": "4ecc6cc336f88ac8c211db86f51a0aca050df56e",
+          "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4640394217",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Unused variable, import, function or class\n\nUnused function requireEmptyBody.\n\n---\n\n<p>To fix this without changing functionality, remove the unused private helper <code>requireEmptyBody</code> from <code>workers/steward/src/pr-body-api.ts</code>.</p>\n<ul>\n<li>**General approach:** delete unused non-exported code when it has no call sites.</li>\n<li>**Best specific fix here:** remove lines 37–41 (the full <code>requireEmptyBody</code> function).</li>\n<li>**Why this is best:** it resolves the CodeQL finding directly, avoids introducing artificial/meaningless usages, and does not alter runtime behavior because the function is currently not invoked.</li>\n<li>**File/region:** <code>workers/steward/src/pr-body-api.ts</code>, the function block between <code>delay</code> and <code>readJsonObject</code>.</li>\n<li>**No imports, methods, or definitions** are required.</li>\n</ul>",
+          "updatedAt": "2026-11-20T08:56:20Z"
+        },
+        {
+          "sourceCommentId": "review-comment:4640394224",
+          "sourceCommit": "4ecc6cc336f88ac8c211db86f51a0aca050df56e",
+          "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4640394224",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Unused variable, import, function or class\n\nUnused import assertLegacyReleaseDispatchActive.\n\n---\n\n<p>The best fix is to remove the unused named import from <code>workers/steward/src/index.ts</code> without changing runtime behavior.</p>\n<ul>\n<li>**General approach:** delete imports that are not referenced.</li>\n<li>**Specific change:** remove line 12 import of <code>assertLegacyReleaseDispatchActive</code> from <code>./release-retirement.js</code>.</li>\n<li>**Why this is best:** it resolves the warning cleanly, reduces dead code, and does not alter functionality because unused imports are not needed.</li>\n<li>**Scope:** only <code>workers/steward/src/index.ts</code>, import section.</li>\n</ul>",
+          "updatedAt": "2026-11-20T08:56:20Z"
+        },
+        {
+          "sourceCommentId": "review-comment:4640394230",
+          "sourceCommit": "4ecc6cc336f88ac8c211db86f51a0aca050df56e",
+          "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4640394230",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Unused variable, import, function or class\n\nUnused import bodyOutsideManagedRegionDigest.\n\n---\n\nRemove <code>bodyOutsideManagedRegionDigest</code> from the named import list in <code>workers/steward/test/pr-body-api.test.ts</code> line 7, keeping <code>pullRequestBodyDigest</code> and <code>PullRequestBodyWriteIntentStore</code> unchanged.</p>\n<p>This is the minimal, behavior-preserving fix: it resolves the unused-import warning without altering runtime logic or test behavior. No new methods, definitions, or external imports are needed.",
+          "updatedAt": "2026-11-20T08:56:20Z"
+        },
+        {
+          "sourceCommentId": "review-comment:4640394239",
+          "sourceCommit": "4ecc6cc336f88ac8c211db86f51a0aca050df56e",
+          "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4640394239",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Unused variable, import, function or class\n\n<p>Unused function signedRequest.</p>",
+          "updatedAt": "2026-11-20T08:56:20Z"
+        },
+        {
+          "sourceCommentId": "review-comment:4643121569",
+          "sourceCommit": "634c350649a34670326cf279746fd9ae427d41dd",
+          "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4643121569",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Whitespace contradicts operator precedence\n\n<p>Whitespace around nested operators contradicts precedence.</p>",
+          "updatedAt": "2026-11-20T13:42:02Z"
+        }
+      ],
+      "keys": [
+        "4cd2859b55e36e4a3cde803121dc376c66c1c63f0a2ad99cdc724c6b762c5eaf",
+        "1356c40bb274b8ec49991f59bb4fc589b719089b4d950b9dbff7c936402fb9ac",
+        "03732061b576aa971ccc164720eb0058c40c644ef4025a4ca8e2b7cf0333d6a5",
+        "b6319996161cd68cf5fe4af5aabe8646bd784d6d456037e939e71232ed8a6883",
+        "58b002737da09c179b0b77ec5f4545a3084a7588b8b0b6718c86d10c7ea221b9",
+        "c14eeb488ad7dfee112e1019f2dd83b9fd1f2cc505b576e8e229eff00df78324",
+        "43437c2bd06043bf8ea38a0760e9feeee3c8fd04e9e06eda38be1f0c00e0daea",
+        "a5c81d20d7120750b1734e35d449bee299a86fa1b537dbdfe63f9977152c2ffa"
+      ],
+      "checkId": null,
+      "externalId": "splrad-quality:1296724484:396:70798fdd971d0745e505a84e2ac42e74cbb1e05f",
+      "observedAt": "2026-11-20T15:07:23.257Z"
     }
   },
   "entries": {
