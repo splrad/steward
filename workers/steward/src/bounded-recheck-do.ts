@@ -40,7 +40,7 @@ export class BoundedRecheckCoordinator {
   }
   if(action==='/winget-submit'){await new WingetSubmit(this.state.storage,this.env).register(b);return Response.json({accepted:true});}
   if(action==='/release-cycle-status')return Response.json(await this.state.storage.get('releaseCycle')??null);
-  if(action==='/release-cycle'){await new ReleaseRelay(this.state.storage,this.env).register(b);return Response.json({accepted:true});}
+  if(action==='/release-cycle'){await new ReleaseRelay(this.state.storage,this.env).register(b.hint??b,b.source);return Response.json({accepted:true});}
   if(action==='/native-promoted'){await new NativeCandidateCoordinator(this.state.storage,this.env).wakePromoted(b.policy);return Response.json({accepted:true});}
   if(action==='/native-receipt'){await new NativeCandidateCoordinator(this.state.storage,this.env).receipt(b);return Response.json({accepted:true});}
   if(action==='/native-event'){ensure(this.env.BOUNDED_RECHECK_ENABLED==='true','QUIESCED');const value=await new NativeCandidateCoordinator(this.state.storage,this.env).register(b);return Response.json(value);}
@@ -56,7 +56,7 @@ export class BoundedRecheckCoordinator {
   if(await this.state.storage.get('qualityEvent')){await new QualityEvent(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('promotionPolicy')){await new ReleasePromotion(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('wingetSubmit')){await new WingetSubmit(this.state.storage,this.env).alarm();return;}
-  if(await this.state.storage.get('releaseCycle')){await new ReleaseRelay(this.state.storage,this.env).alarm();return;}
+  if(await this.state.storage.get('releaseCycle')||await this.state.storage.get('releaseIntake')){await new ReleaseRelay(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('nativeEvent')){await new NativeCandidateCoordinator(this.state.storage,this.env).alarm();return;}
   if(await this.state.storage.get('event')){await new CandidateEventCoordinator(this.state.storage,this.env).alarm();return;}
   if(this.env.BOUNDED_RECHECK_ENABLED!=='true'){const r=await this.store.read();if(r?.status==='PENDING')await this.engine.control('pause',r.generation);return;}

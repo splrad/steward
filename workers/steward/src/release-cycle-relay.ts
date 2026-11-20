@@ -1,3 +1,4 @@
+import {GitHubRetryError,retryAfterTime} from './bounded-retry-after.js';
 import {PendingPromotion,promotionMessage} from './release-promotion.js';
 import {promotedController} from './bounded-controller.js';
 import {readCycle} from './bounded-winget-evidence.js';
@@ -9,6 +10,8 @@ const sha = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{40}
 const positive = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
 type Hint = {repositoryId: number; kind: 'push'; sourceSha: string} | {repositoryId: number; kind: 'run'; runId: number; attempt: number} | {repositoryId:number;kind:'publication';runId:number;attempt:number;productRepositoryId?:number};
 type Stage = 'prepare' | 'confirm' | 'received' | 'unknown';
+type SignedSource=Pick<ProductTarget,'name'|'defaultBranch'>;
+type ReleaseIntake={hint:Hint;source:SignedSource;tries:number;next:number};
 type Relay = {hint: Hint; stage: Stage; tries: number; next: number; policy: string; reserved: number; runId?: number; reason?: string; waitingFor?:string; resumedFor?:string; paused?:boolean};
 
 type RelayProduct=ProductTarget & {publishWorkflowId?:number;channelWorkflowId?:number};
@@ -43,9 +46,10 @@ export function releaseHint(event: string, p: any, installation: string | undefi
 export function relayKey(h: Hint) {
   return digest(JSON.stringify(h.kind === 'push' ? [h.repositoryId,h.kind,h.sourceSha] : [h.repositoryId,h.kind,h.runId,h.attempt,...(h.kind==='publication'&&h.productRepositoryId!==undefined?[h.productRepositoryId]:[])])).slice(7);
 }
-export async function acceptReleaseHint(env: BoundedEnv, event: string, payload: any,reader:GitReader=new BoundedGitHub(env)) {
+export async function acceptReleaseHint(env: BoundedEnv, event: string, payload: any) {
   if (env.BOUNDED_RECHECK_ENABLED !== 'true') return;
   const repo=payload.repository, run=payload.workflow_run;
+  let source:SignedSource|undefined;
   let hint=releaseHint(event,payload,env.INSTALLATION_ID);
   if(hint?.kind==='publication') {
     const parentKey=run.display_title.slice('Release cycle '.length),ns=env.BOUNDED_RECHECK;
@@ -64,20 +68,33 @@ export async function acceptReleaseHint(env: BoundedEnv, event: string, payload:
     if(!repo||repo.private!==false||repo.archived!==false||repo.fork!==false||repo.owner?.id!==302208797||
        !positive(repo.id)||!payload.installation?.id||payload.installation.id!==Number(env.INSTALLATION_ID))return;
     if(event==='push'&&(payload.ref!=='refs/heads/'+repo.default_branch||payload.deleted!==false||!sha(payload.after)||/^0+$/.test(payload.after)))return;
-    const scope=await reader.forCandidate?.(repo.id);
-    if(!scope?.target)return;
-    const product=event==='push'?scope.target:await workflowProduct(scope,scope.target,run.path);
+    if(typeof repo.full_name!=='string'||!/^splrad\/[A-Za-z0-9_.-]+$/.test(repo.full_name)||
+       typeof repo.default_branch!=='string'||!repo.default_branch||repo.disabled===true||
+       (repo.visibility!==undefined&&repo.visibility!=='public'))return;
+    source={name:repo.full_name,defaultBranch:repo.default_branch};
+    if(event==='workflow_run'&&!positive(run.workflow_id))return;
+    const product={id:repo.id,...source,publishWorkflowId:run?.workflow_id,channelWorkflowId:run?.workflow_id};
     hint=releaseHint(event,payload,env.INSTALLATION_ID,product);
   }
   if (!hint) return;
   ensure(env.BOUNDED_RECHECK,'RELEASE_RELAY_NAMESPACE');
   const stub = env.BOUNDED_RECHECK.get(env.BOUNDED_RECHECK.idFromName('cycle:v1:' + relayKey(hint)));
-  const response = await stub.fetch(new Request('https://bounded.internal/release-cycle',{method:'POST',body:JSON.stringify(hint)}));
+  const response = await stub.fetch(new Request('https://bounded.internal/release-cycle',{method:'POST',body:JSON.stringify(source?{hint,source}:hint)}));
   ensure(response.ok,'RELEASE_RELAY_REGISTRATION');
 }
 export class ReleaseRelay {
   constructor(private storage: DurableObjectStorage, private env: BoundedEnv, private reader: () => GitReader = () => new BoundedGitHub(env), private now = Date.now) {}
-  async register(hint: Hint) {
+  async register(hint: Hint,source?:SignedSource) {
+    if(source){
+      await this.storage.transaction(async t=>{
+        if(await t.get('releaseCycle'))return;
+        const pending=await t.get<ReleaseIntake>('releaseIntake')??{hint,source,tries:0,next:this.now()};
+        await t.put('releaseIntake',pending);
+        if(pending.tries<4 && this.env.BOUNDED_RECHECK_ENABLED==='true')await t.setAlarm(Math.max(this.now(),pending.next));
+      });
+      const existing=await this.storage.get<Relay>('releaseCycle');
+      if(!existing)return;
+    }
     const prior=await this.storage.get<Relay>('releaseCycle');
     if(prior?.stage==='unknown' && !prior.reserved && prior.reason==='PREPARATION_EXHAUSTED' && prior.waitingFor){
       const policy=await promotedController(this.reader(),this.env.RELEASE_RELAY_DEPLOYMENT_SHA??this.env.BOUNDED_DEPLOYMENT_SHA,this.env);
@@ -106,7 +123,43 @@ export class ReleaseRelay {
       await t.put('releaseCycle',r);await t.setAlarm(r.next);
     });
   }
+  private async qualify(){
+    const pending=await this.storage.transaction(async t=>{
+      if(await t.get('releaseCycle'))return;
+      const p=await t.get<ReleaseIntake>('releaseIntake');
+      if(!p||p.next>this.now()||p.tries>=4)return;
+      if(this.env.BOUNDED_RECHECK_ENABLED!=='true'){await t.deleteAlarm();return;}
+      p.tries++;p.next=this.now()+[60000,300000,900000,0][p.tries-1]!;
+      await t.put('releaseIntake',p);
+      if(p.tries===4)await t.deleteAlarm();else await t.setAlarm(p.next);
+      return p;
+    });
+    if(!pending)return;
+    let target:ProductTarget|undefined;
+    try{target=(await this.reader().forCandidate?.(pending.hint.repositoryId))?.target;}
+    catch(error){
+      const retryAt=retryAfterTime(error,this.now(),pending.next);
+      if(retryAt!==undefined&&pending.tries<4&&retryAt>pending.next){
+        await this.storage.transaction(async t=>{
+          const current=await t.get<ReleaseIntake>('releaseIntake');
+          if(!current||current.tries!==pending.tries||await t.get('releaseCycle'))return;
+          current.next=retryAt;await t.put('releaseIntake',current);await t.setAlarm(current.next);
+        });
+      }
+      return;
+    }
+    await this.storage.transaction(async t=>{
+      const current=await t.get<ReleaseIntake>('releaseIntake');
+      if(!current||current.tries!==pending.tries||await t.get('releaseCycle'))return;
+      await t.delete('releaseIntake');
+      if(!target||target.id!==pending.hint.repositoryId||target.name!==pending.source.name||
+         target.defaultBranch!==pending.source.defaultBranch){await t.deleteAlarm();return;}
+      const r:Relay={hint:pending.hint,stage:'prepare',tries:0,next:this.now(),policy:'',reserved:0};
+      await t.put('releaseCycle',r);await t.setAlarm(r.next);
+    });
+  }
   async alarm() {
+    if(!await this.storage.get('releaseCycle'))await this.qualify();
     const r = await this.storage.get<Relay>('releaseCycle');
     if (!r || r.stage === 'received' || r.stage === 'unknown' || r.next > this.now()) return;
     const g = this.reader(), key = relayKey(r.hint);
@@ -142,7 +195,8 @@ export class ReleaseRelay {
       ensure(this.env.BOUNDED_RECHECK_ENABLED === 'true','RELEASE_RELAY_PAUSED');
       if (r.stage === 'prepare') {
         if (r.hint.kind === 'run') {
-          const scoped=await candidateReader(g,r.hint.repositoryId),target=scoped.target??TARGET;
+          const scoped=await candidateReader(g,r.hint.repositoryId);
+          const target=scoped.target??TARGET;
           const run=await scoped.json(target.id,'/repos/'+target.name+'/actions/runs/'+r.hint.runId+'/attempts/'+r.hint.attempt);
           const product=scoped.target?await workflowProduct(scoped,target,run.path):legacyWorkflowTarget;
           const repeated=releaseHint('workflow_run',{action:'completed',repository:{id:target.id,full_name:target.name,default_branch:target.defaultBranch,fork:false,archived:false},
@@ -209,6 +263,11 @@ export class ReleaseRelay {
         if(await save({waitingFor:error.sha,...(final?{stage:'unknown' as const,reason:'PREPARATION_EXHAUSTED'}:{})}) && this.env.BOUNDED_RECHECK)
           await promotionMessage(this.env,error.sha,'wait',{policy:error.sha,key,kind:'cycle',generation:error.generation});
         return;
+      }
+      const retryAt=retryAfterTime(error,this.now(),r.next);
+      if(r.tries<4 && retryAt!==undefined && retryAt>r.next &&
+         !(error instanceof GitHubRetryError&&error.dispatchAttempted)){
+        await save({next:retryAt});return;
       }
       if (r.tries >= 4) await save({stage:'unknown',reason:r.stage === 'prepare' ? 'PREPARATION_EXHAUSTED' : 'DELIVERY_UNKNOWN'});
     }

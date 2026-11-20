@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {ReleaseRelay,releaseHint,relayKey} from '../src/release-cycle-relay.js';
+import {ReleaseRelay,releaseHint,relayKey,acceptReleaseHint} from '../src/release-cycle-relay.js';
 import {CENTRAL,TARGET} from '../src/bounded-recheck-github.js';
 import {SqliteDurableStorage} from './bounded-storage.js';
 
@@ -24,7 +24,7 @@ function fixture(){
  }};
  const relay=new ReleaseRelay(storage as any,env as any,()=>g as any,()=>state.now);
  const tick=async()=>{state.now=await storage.get<number>('__alarm')??state.now;await relay.alarm();};
- return {state,relay,storage,tick,env};
+ return {state,relay,storage,tick,env,g};
 }
 describe('release cycle relay',()=>{
  it('retains signed product source and excludes unrelated repos and branches and forwards successful probes',()=>{
@@ -130,4 +130,39 @@ it('quiesces a pending WinGet submit without consuming its preparation budget',a
  expect(await storage.get('wingetSubmit')).toEqual({...before,paused:true});expect(await storage.get('__alarm')).toBeUndefined();
  env.BOUNDED_RECHECK_ENABLED='true';await submit.register(h);
  expect(await storage.get('wingetSubmit')).toEqual(before);expect(await storage.get('__alarm')).toBe(time);
+});
+
+it.each(['eligible','unregistered','changed branch'] as const)('durably accepts signed push before product discovery: %s',async eligibility=>{
+ const f=fixture();f.state.promoted=pin;let reads=0;
+ const reader={...f.g,forCandidate:async()=>{
+   if(++reads===1)throw Error('RETRY_AFTER:180');
+   return eligibility==='unregistered'?undefined:{...f.g,target:{...TARGET,defaultBranch:eligibility==='eligible'?'main':'moved'}};
+ }};
+ const coordinator=()=>new ReleaseRelay(f.storage as any,f.env as any,()=>reader as any,()=>f.state.now);
+ const env={...f.env,INSTALLATION_ID:'7',BOUNDED_RECHECK:{idFromName:(key:string)=>key,get:()=>({fetch:async(req:Request)=>{
+  const {hint,source}=await req.json() as any;await coordinator().register(hint,source);return Response.json({});
+ }})}};
+ const receive=()=>acceptReleaseHint(env as any,'push',{...payload,repository:{...repo,private:false,owner:{id:302208797}}});
+ await receive();expect(reads).toBe(0);expect(await f.storage.get('releaseIntake')).toMatchObject({hint,tries:0});expect(await f.storage.get('releaseCycle')).toBeUndefined();
+ await coordinator().alarm();expect(f.state.posts).toBe(0);expect(await f.storage.get('__alarm')).toBe(f.state.now+180000);f.state.now=(await f.storage.get<number>('__alarm'))!;
+ await coordinator().alarm();await receive();await coordinator().alarm();
+ expect(f.state.posts).toBe(eligibility==='eligible'?1:0);expect(reads).toBe(eligibility==='eligible'?2:3);
+});
+
+it('rechecks the native workflow ID for a signed product completion before dispatch',async()=>{
+ const f=fixture();f.state.promoted=pin;
+ const source={name:TARGET.name,defaultBranch:'main'};
+ const path='.github/workflows/steward-release-channels.yml';
+ const run={id:101,run_attempt:1,head_repository:{id:TARGET.id},repository:{id:TARGET.id},head_sha:pin,
+  head_branch:'main',actor:{id:301115370},status:'completed',event:'workflow_dispatch',workflow_id:412,path,display_title:'Channels submit '+'f'.repeat(64)};
+ const scoped={target:TARGET,json:async(_id:number,url:string)=>url.includes('/attempts/')?run:{id:444,state:'active',path}};
+ const reader={...f.g,forCandidate:async()=>scoped};
+ const relay=()=>new ReleaseRelay(f.storage as any,{...f.env,INSTALLATION_ID:'7'} as any,()=>reader as any,()=>f.state.now);
+ const env={...f.env,INSTALLATION_ID:'7',BOUNDED_RECHECK:{idFromName:(key:string)=>key,get:()=>({fetch:async(req:Request)=>{
+  const v=await req.json() as any;expect(v.source).toEqual(source);await relay().register(v.hint,v.source);return Response.json({});
+ }})}};
+ await acceptReleaseHint(env as any,'workflow_run',{installation:{id:7},action:'completed',repository:{...repo,private:false,owner:{id:302208797}},workflow_run:run});
+ expect(await f.storage.get('releaseIntake')).toBeDefined();await relay().alarm();
+ expect(f.state.posts).toBe(0);expect(await f.storage.get('releaseCycle')).toMatchObject({stage:'prepare',reserved:0});
+ run.workflow_id=444;f.state.now=(await f.storage.get<number>('__alarm'))!;await relay().alarm();expect(f.state.posts).toBe(1);
 });
