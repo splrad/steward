@@ -112,7 +112,7 @@ export async function assertLifecycleUpdaters(files,{side}={}){
     const expected=parse(await readFile(new URL('../config/private-lifecycle/'+path.split('/').at(-1),import.meta.url),'utf8'));
     const actual=parse(files.get(path).toString('utf8'));
     if(isDeepStrictEqual(actual,expected))continue;
-    // Historical v1/v2/v3 are readable only as trusted base snapshots. Every head
+    // Historical contracts are readable only as trusted base snapshots. Every head
     // that carries updater configuration must use the sole current contract.
     let historicalBase=false;
     if(side==='base'&&path==='.github/renovate.json'){
