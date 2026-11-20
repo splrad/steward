@@ -84,7 +84,8 @@ test('product reads only selected CI and Pages from protected state, with digest
   const reader={repository:product.full_name,path:value=>value,io:{request:async()=>({status:200,bytes:Buffer.from(JSON.stringify({
     ref:'refs/heads/steward/governance-state',object:{type:'commit',sha:drift&&reads++?source:base}
   }))})},json:async route=>{
-    if(route==='git/trees/'+base)return {truncated:false,tree:[{path:'configuration',type:'tree',mode:'040000',sha:candidate}]};
+    if(route==='git/commits/'+base)return {sha:base,tree:{sha:source}};
+    if(route==='git/trees/'+source)return {truncated:false,tree:[{path:'configuration',type:'tree',mode:'040000',sha:candidate}]};
     if(route==='git/trees/'+candidate)return {truncated:false,tree:[{path:'repository.json',type:'blob',mode:'100644',sha:blob}]};
     if(route.startsWith('rules/'))return protectedRules?
       [['creation',26678448],['update',26678448],['non_fast_forward',26678449],['deletion',26678449]]
@@ -123,9 +124,39 @@ test('product reads only selected CI and Pages from protected state, with digest
   await assert.rejects(readRepositoryProjection(reader,product.id),/PROJECTION_PROTECTION/);
   protectedRules=true;drift=true;
   await assert.rejects(readRepositoryProjection(reader,product.id),/PROJECTION_MOVED/);
-  reads=0;
-  await assert.rejects(readRepositoryProjection({...reader,json:async()=>({truncated:false,tree:[]})},product.id),
-    /PROJECTION_MOVED/);
+});
+
+test('only the pinned governance commit can establish an empty root',async()=>{
+  const empty=createHash('sha1').update('tree 0\0').digest('hex');
+  let fact={sha:base,tree:{sha:empty}},heads=[base,base];
+  const reader={path:route=>route,io:{request:async()=>({status:200,bytes:Buffer.from(JSON.stringify({
+    ref:'refs/heads/steward/governance-state',object:{type:'commit',sha:heads.shift()}
+  }))})},json:async route=>{
+    if(route==='git/commits/'+base)return fact;
+    assert.equal(route,'git/trees/'+candidate);
+    throw Error('NATIVE_HTTP_404');
+  }};
+  assert.equal(await readRepositoryProjection(reader,product.id),null);
+  assert.deepEqual(heads,[]);
+  heads=[base,source];
+  await assert.rejects(readRepositoryProjection(reader,product.id),/PROJECTION_MOVED/);
+  heads=[base,base];
+  await assert.rejects(readRepositoryPolicySelection(reader,product.id,{
+    readAdoption:async()=>({required:true,assertCurrent:async()=>{}})
+  }),/PROJECTION_REQUIRED/);
+  for(const invalid of [{sha:source,tree:{sha:empty}},{sha:base,tree:{}}]){
+    heads=[base];
+    fact=invalid;
+    await assert.rejects(readRepositoryProjection(reader,product.id),/PROJECTION_UNAVAILABLE/);
+  }
+  heads=[base];
+  fact={sha:base,tree:{sha:candidate}};
+  await assert.rejects(readRepositoryProjection(reader,product.id),/NATIVE_HTTP_404/);
+  for(const status of [403,404]){
+    heads=[base];
+    const denied={...reader,json:async()=>{throw Error('NATIVE_HTTP_'+status);}};
+    await assert.rejects(readRepositoryProjection(denied,product.id),{message:'NATIVE_HTTP_'+status});
+  }
 });
 
 test('the adoption marker is independent of Pages and Issues and comes only from protected default Git bytes',async()=>{
