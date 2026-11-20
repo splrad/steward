@@ -831,9 +831,15 @@
           "status": "FAILED",
           "model": null,
           "usage": null
+        },
+        {
+          "startedAt": "2026-11-20T13:45:22.749Z",
+          "status": "UNKNOWN",
+          "model": null,
+          "usage": null
         }
       ],
-      "nextCheckAt": "2026-11-20T13:44:50.635Z",
+      "nextCheckAt": "2026-11-20T13:50:22.749Z",
       "errorCode": "RESPONSE_UNKNOWN"
     }
   },
