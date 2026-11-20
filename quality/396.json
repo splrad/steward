@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "repositoryId": 1296724484,
+  "pullRequestNumber": 396,
+  "currentHead": "32e58b3be2c52a58200cd2bc655a3867a01d4ca2",
+  "configVersion": "quality-native-comments-v1",
+  "heads": {
+    "32e58b3be2c52a58200cd2bc655a3867a01d4ca2": {
+      "sourceSetDigest": "c5f7aaf136b3c5019e6a2651ecac82220d7d8bc8fc0c8ac151bf5bb4c7d5b95e",
+      "sources": [
+        {
+          "sourceCommentId": "review-comment:4639747745",
+          "sourceCommit": "32e58b3be2c52a58200cd2bc655a3867a01d4ca2",
+          "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4639747745",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Whitespace contradicts operator precedence\n\nWhitespace around nested operators contradicts precedence.\n\n---\n\nThe best fix is to make operator grouping visually explicit by adding whitespace (and optionally parentheses) around nested operators in the flagged condition, without changing logic.</p>\n<p>In <code>workers/steward/src/bounded-recheck-github.ts</code>, update line 95’s <code>catch</code> statement so the conditional reads clearly:</p>\n<ul>\n<li>from <code>error instanceof Error&amp;&amp;error.message==='GITHUB_HTTP_404'</code></li>\n<li>to <code>error instanceof Error &amp;&amp; error.message === 'GITHUB_HTTP_404'</code></li>\n</ul>\n<p>This preserves existing functionality exactly and resolves the whitespace/precedence contradiction warning. No imports, new methods, or new definitions are required.",
+          "updatedAt": "2026-11-20T07:37:48Z"
+        },
+        {
+          "sourceCommentId": "review-comment:4639747754",
+          "sourceCommit": "32e58b3be2c52a58200cd2bc655a3867a01d4ca2",
+          "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4639747754",
+          "severity": "原文未说明",
+          "bodyMarkdown": "## Whitespace contradicts operator precedence\n\nWhitespace around nested operators contradicts precedence.\n\n---\n\nTo fix this class of issue, rewrite mixed-operator expressions so grouping is explicit and readable—typically by adding parentheses around each logical subcondition and adding consistent whitespace around operators.</p>\n<p>For this specific case in <code>workers/steward/src/bounded-recheck.ts</code>, update line 123’s condition from:</p>\n<ul>\n<li><code>'retryAfter' in outcome&amp;&amp;outcome.retryAfter!==undefined</code></li>\n</ul>\n<p>to:</p>\n<ul>\n<li><code>('retryAfter' in outcome) &amp;&amp; outcome.retryAfter !== undefined</code></li>\n</ul>\n<p>This preserves behavior exactly while removing ambiguity that triggered CodeQL. No imports, new methods, or definitions are required.",
+          "updatedAt": "2026-11-20T07:37:48Z"
+        }
+      ],
+      "keys": [
+        "4cd2859b55e36e4a3cde803121dc376c66c1c63f0a2ad99cdc724c6b762c5eaf",
+        "1356c40bb274b8ec49991f59bb4fc589b719089b4d950b9dbff7c936402fb9ac"
+      ],
+      "checkId": null,
+      "externalId": "splrad-quality:1296724484:396:32e58b3be2c52a58200cd2bc655a3867a01d4ca2",
+      "observedAt": "2026-11-20T07:49:42.444Z"
+    }
+  },
+  "entries": {
+    "4cd2859b55e36e4a3cde803121dc376c66c1c63f0a2ad99cdc724c6b762c5eaf": {
+      "key": "4cd2859b55e36e4a3cde803121dc376c66c1c63f0a2ad99cdc724c6b762c5eaf",
+      "segment": {
+        "sourceCommentId": "review-comment:4639747745",
+        "sourceCommit": "32e58b3be2c52a58200cd2bc655a3867a01d4ca2",
+        "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4639747745",
+        "severity": "原文未说明",
+        "bodyMarkdown": "## Whitespace contradicts operator precedence\n\nWhitespace around nested operators contradicts precedence.\n\n---\n\nThe best fix is to make operator grouping visually explicit by adding whitespace (and optionally parentheses) around nested operators in the flagged condition, without changing logic.</p>\n<p>In <code>workers/steward/src/bounded-recheck-github.ts</code>, update line 95’s <code>catch</code> statement so the conditional reads clearly:</p>\n<ul>\n<li>from <code>error instanceof Error&amp;&amp;error.message==='GITHUB_HTTP_404'</code></li>\n<li>to <code>error instanceof Error &amp;&amp; error.message === 'GITHUB_HTTP_404'</code></li>\n</ul>\n<p>This preserves existing functionality exactly and resolves the whitespace/precedence contradiction warning. No imports, new methods, or new definitions are required.",
+        "segmentIndex": 0,
+        "originalIdentifiers": [
+          "<code>workers/steward/src/bounded-recheck-github.ts</code>",
+          "<code>catch</code>",
+          "<code>error instanceof Error&amp;&amp;error.message==='GITHUB_HTTP_404'</code>",
+          "<code>error instanceof Error &amp;&amp; error.message === 'GITHUB_HTTP_404'</code>",
+          "workers/steward/src/bounded-recheck-github.ts",
+          "GITHUB_HTTP_404",
+          "whitespace/precedence"
+        ]
+      },
+      "configVersion": "quality-native-comments-v1",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    },
+    "1356c40bb274b8ec49991f59bb4fc589b719089b4d950b9dbff7c936402fb9ac": {
+      "key": "1356c40bb274b8ec49991f59bb4fc589b719089b4d950b9dbff7c936402fb9ac",
+      "segment": {
+        "sourceCommentId": "review-comment:4639747754",
+        "sourceCommit": "32e58b3be2c52a58200cd2bc655a3867a01d4ca2",
+        "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4639747754",
+        "severity": "原文未说明",
+        "bodyMarkdown": "## Whitespace contradicts operator precedence\n\nWhitespace around nested operators contradicts precedence.\n\n---\n\nTo fix this class of issue, rewrite mixed-operator expressions so grouping is explicit and readable—typically by adding parentheses around each logical subcondition and adding consistent whitespace around operators.</p>\n<p>For this specific case in <code>workers/steward/src/bounded-recheck.ts</code>, update line 123’s condition from:</p>\n<ul>\n<li><code>'retryAfter' in outcome&amp;&amp;outcome.retryAfter!==undefined</code></li>\n</ul>\n<p>to:</p>\n<ul>\n<li><code>('retryAfter' in outcome) &amp;&amp; outcome.retryAfter !== undefined</code></li>\n</ul>\n<p>This preserves behavior exactly while removing ambiguity that triggered CodeQL. No imports, new methods, or definitions are required.",
+        "segmentIndex": 0,
+        "originalIdentifiers": [
+          "<code>workers/steward/src/bounded-recheck.ts</code>",
+          "<code>'retryAfter' in outcome&amp;&amp;outcome.retryAfter!==undefined</code>",
+          "<code>('retryAfter' in outcome) &amp;&amp; outcome.retryAfter !== undefined</code>",
+          "workers/steward/src/bounded-recheck.ts"
+        ]
+      },
+      "configVersion": "quality-native-comments-v1",
+      "result": null,
+      "attempts": [],
+      "nextCheckAt": null,
+      "errorCode": null
+    }
+  },
+  "cursor": 0
+}
