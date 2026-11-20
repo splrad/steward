@@ -1,3 +1,4 @@
+import {channelResultUrl} from '../release-record.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -67,11 +68,19 @@ test('a WinGet index receipt cannot enqueue another probe',async()=>{
     path:'.github/workflows/steward-release-channels.yml',created_at:'2026-11-19T01:00:00Z',updated_at:'2026-11-19T01:01:00Z',display_title:'Channels observe '+key};
   const calls=[],ports={get:async()=>run,snapshot:async()=>({cycles:[{value:cycle}]}),botId:301115370,
     invoke:async(command,id,runId,allowProbeDispatch)=>{calls.push([command,id,allowProbeDispatch]);return {status:'OBSERVED'};}};
+  const digest=channelTargetsDigest({repositoryId:product.id,cycle},[target]);
+  ports.probeArtifacts=async()=>[{expired:false,name:'probe-'+cycle.id+'-'+digest+'-'+run.id+'-1',workflow_run:{id:run.id,head_sha:run.head_sha}}];
   const hint={repositoryId:product.id,kind:'run',runId:83,attempt:1};
   await advanceEvent(hint,ports);
   assert.deepEqual(calls,[['observe-channel','cycle',false],['dispatch-channel','cycle',false]]);
   run.display_title='Channels observe '+'0'.repeat(64);
   await assert.rejects(advanceEvent(hint,ports),/AMBIGUOUS/);
+  run.display_title='Channels observe '+key;
+  const before=calls.length;
+  ports.probeArtifacts=async()=>[{expired:true,name:'probe-'+cycle.id+'-'+digest+'-'+run.id+'-1',workflow_run:{id:run.id,head_sha:run.head_sha}}];
+  assert.equal((await advanceEvent(hint,ports)).reason,'PROBE_RECEIPT_UNCONFIRMED');
+  assert.equal(calls.length,before);
+
 });
 test('a rerun after a lost publication receipt verifies the original attempt without invoking publish again',async()=>{
   const buildKey='e'.repeat(64),request={purpose:'build',operationKey:buildKey,canonicalRunId:83,workflowId:410998652,
@@ -96,4 +105,61 @@ test('retains each native attempt receipt even if the first upload acknowledgeme
   const upload=workflow.jobs['release-coordinator'].steps.find(step=>step.uses?.startsWith('actions/upload-artifact@'));
   assert.equal(upload.with.name,'release-cycle-${{ inputs.request_key }}-${{ github.run_attempt }}');
   assert.equal(upload.with.overwrite,undefined);
+});
+
+test('a GitHub-only publication checks its receipt and has no external work even while evidence is pending', async()=>{
+  const run={id:52,run_attempt:1,created_at:'2026-11-19T01:00:00Z',updated_at:'2026-11-19T01:01:00Z',status:'completed',conclusion:'success',
+    repository:{id:1296724484},head_repository:{id:1296724484},actor:{id:301115370},head_branch:'main',head_sha:source,
+    event:'workflow_dispatch',path:'.github/workflows/release-cycle-event.yml'};
+  const archive={path:'evidence/publication/test.json',value:{startEvidencePath:null,centralRun:{id:52,runAttempt:1,headSha:source},cycleId:'only-github'}};
+  const state={cycles:[{value:{id:'only-github',requiredChannels:[]}}],domainRecords:[archive]},calls=[];
+  const result=await advanceEvent({kind:'publication',repositoryId:1296724484,runId:52,attempt:1},{
+    snapshot:async()=>state,centralGet:async()=>run,botId:301115370,
+    invoke:async command=>{calls.push(command);return command==='reconcile-publication'?{status:'OBSERVED'}:{status:'WAIT'};}
+  });
+  assert.equal(result.status,'WAIT');
+  assert.deepEqual(calls,['reconcile-publication','observe-channel']);
+});
+test('a registered fixture repository uses its own default branch while the production pilot rejects it', async()=>{
+  const registry=[{id:41,name:'example/tools',defaultBranch:'trunk',channelWorkflowId:42}];
+  const event={kind:'push',repositoryId:41,sourceSha:source}, key=sha256([41,'push',source]);
+  assert.throws(()=>validateEvent(event,key),/CYCLE_EVENT_KIND/);
+  validateEvent(event,key,registry);
+  const paths=[];
+  const result=await advanceEvent(event,{registry,snapshot:async()=>({cycles:[]}),
+    get:async path=>{paths.push(path);return {object:{sha:source}};},candidate:async()=>({status:'WAIT'})});
+  assert.deepEqual(paths,['git/ref/heads/trunk']);assert.equal(result.status,'WAIT');
+});
+
+test('routes a multi-unit probe only when the report subset belongs to the frozen cycle',async()=>{
+  const {channelTargetsDigest}=await import('../../packages/runner/dist/index.js');
+  const units=['one','two','three'].map((id,i)=>({id,version:'2.0.0',releaseId:i+11,manifestDigest:String(i+1).repeat(64)}));
+  const cycle={id:'cycle',sourceSha:source,controllerSha:source,deliveryConfigSha:later,units,
+    requiredChannels:units.map(unit=>({unitId:unit.id,channelId:'ghcr-assets'}))};
+  const targets=units.slice(1).map(unit=>({unitId:unit.id,channelId:'ghcr-assets',version:unit.version,releaseId:unit.releaseId,manifestDigest:unit.manifestDigest}));
+  const digest=channelTargetsDigest({repositoryId:product.id,cycle},targets);
+  const run={id:83,run_attempt:1,status:'completed',conclusion:'success',repository:{id:product.id},head_repository:{id:product.id},
+    head_sha:later,head_branch:'main',actor:{id:301115370},event:'workflow_dispatch',workflow_id:410998651,
+    path:'.github/workflows/steward-release-channels.yml',created_at:'2026-11-19T01:00:00Z',updated_at:'2026-11-19T01:01:00Z',
+    display_title:'Channels observe '+sha256(['observe',digest,later])};
+  const report={schemaVersion:1,sourceSha:source,executionSha:later,controllerSha:source,nativeRunId:83,runAttempt:1,cycleId:cycle.id,targetsDigest:digest,items:targets.map(({unitId,channelId,version})=>({unitId,channelId,version}))};
+  const calls=[],ports={snapshot:async()=>({cycles:[{value:cycle}]}),get:async()=>run,botId:301115370,
+    probeArtifacts:async()=>[{id:12,name:'probe-cycle-'+digest+'-83-1',expired:false,workflow_run:{id:83,head_sha:later}}],
+    probeReport:async()=>report,invoke:async command=>{calls.push(command);return {reason:'DISTRIBUTION_VERIFIED'};}};
+  const event={repositoryId:product.id,kind:'run',runId:83,attempt:1};
+  assert.equal((await advanceEvent(event,ports)).cycleId,'cycle');
+  report.items[0].unitId='foreign';
+  await assert.rejects(advanceEvent(event,ports),/AMBIGUOUS/);
+  assert.deepEqual(calls,['observe-channel']);
+});
+
+test('channel results link the frozen product and package',()=>{
+  const item={unitId:'cli',channelId:'ghcr-assets',nativeObjectId:'sha256:fixture'};
+  const delivery={units:[{id:'cli',channels:[{id:'ghcr-assets',required:true,location:'ghcr.io/example/cli-assets'}]}]};
+  assert.equal(channelResultUrl('Example/CLI',delivery,item),'https://github.com/Example/CLI/pkgs/container/cli-assets');
+  assert.throws(()=>channelResultUrl('splrad/LayerScape',delivery,item));
+  delivery.units[0].channels[0].location='ghcr.io/example/tools/cli';
+  assert.equal(channelResultUrl('Example/CLI',delivery,item),'https://github.com/Example/CLI/pkgs/container/tools%2Fcli');
+  delivery.units[0].channels[0].required=false;
+  assert.throws(()=>channelResultUrl('Example/CLI',delivery,item));
 });

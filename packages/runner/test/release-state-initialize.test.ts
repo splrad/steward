@@ -14,7 +14,7 @@ const sha='a'.repeat(40),gov='b'.repeat(40);
 const plan={schemaVersion:1,kind:'release-initialize',controllerSha:sha,maxRequests:0,repository:{id:1448797077,full_name:'splrad/steward-e10-lifecycle-20261107',private:true,default_branch:'main'},baseSha:sha,stateSha:null,releaseAdoption:{sourceSha:sha,prNumber:3}};
 test('private initialization requires exact private target, actual adopted source and zero model requests',()=>{
   const env={GITHUB_REPOSITORY:'splrad/steward',GITHUB_REPOSITORY_ID:'1296724484',GITHUB_REF:'refs/heads/main',GITHUB_EVENT_NAME:'workflow_dispatch',GITHUB_RUN_ATTEMPT:'1',GITHUB_WORKFLOW_REF:'splrad/steward/.github/workflows/business-flow-acceptance.yml@refs/heads/main',GITHUB_SHA:sha,WORKFLOW_SHA:sha};
-  const check=p=>validatePlan(JSON.stringify(p),digest(JSON.stringify(p)),env);assert.equal(check(plan).kind,'release-initialize');
+  const check=p=>validatePlan(JSON.stringify(p),digest(JSON.stringify(p)),env);assert.throws(()=>check(plan),/ACCEPTANCE_MODE/);
   for(const change of [{maxRequests:1},{stateSha:sha},{repository:{...plan.repository,private:false}},{releaseAdoption:{sourceSha:gov,prNumber:3}},{releaseAdoption:{sourceSha:sha,prNumber:0}}])assert.throws(()=>check({...plan,...change}));
 });
 test('private source fetch retains complete main ancestry and governance objects without a worktree',async()=>{

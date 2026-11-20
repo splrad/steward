@@ -1,12 +1,15 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
+import {mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile} from 'node:fs/promises';
+import {spawnSync} from 'node:child_process';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import YAML from 'yaml';
 import {NativeEvidenceReader,decodePagesMaintenance,assertPagesProgress,pagesRecordPath} from '../../packages/runner/dist/index.js';
 import {pagesInputDigest,pagesRunName} from '../select-pages-source.mjs';
 import {pagesDefinition,currentPagesSource,preflightPages,checkPagesArtifact,pagesArtifactName,pagesDeployment} from '../pages-runtime.mjs';
-import {servicePages,pagesRunInventory} from '../pages-maintenance.mjs';
+import {servicePages,pagesRunInventory,sourceOptions} from '../pages-maintenance.mjs';
 
 const bytes=await readFile(new URL('../../templates/release/pages.yml',import.meta.url));
 const workflowDoc=YAML.parse(bytes.toString()),pin=workflowDoc.env.STEWARD_CONTROLLER_SHA,S='a'.repeat(40),N='b'.repeat(40);
@@ -34,8 +37,11 @@ function fixture() {
     }
     if(p==='')return response(repo);
     if(p==='/git/ref/heads/trunk')return response({ref:'refs/heads/trunk',object:{type:'commit',sha:state.head}});
-    if(p==='/contents/.github/workflows/pages.yml')return response({type:'file',path:'.github/workflows/pages.yml',encoding:'base64',content:bytes.toString('base64'),size:bytes.length,sha:createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')});
-    if(p.startsWith('/actions/variables/'))return response({name:p.split('/').at(-1),value:state.mode});
+    if(p==='/contents/.github/workflows/pages.yml') {
+      const content=state.workflowBytes??bytes;
+      return response({type:'file',path:'.github/workflows/pages.yml',encoding:'base64',content:content.toString('base64'),size:content.length,sha:createHash('sha1').update(`blob ${content.length}\0`).update(content).digest('hex')});
+    }
+    if(p.startsWith('/actions/variables/'))return response({name:p.split('/').at(-1),value:p.endsWith('/STEWARD_DOCS_UNIT')?(state.unit??''):state.mode});
     if(p==='/actions/workflows/pages.yml')return response(workflow);
     if(p==='/actions/workflows/5/runs') {
       const status=url.searchParams.get('status'),created=url.searchParams.get('created');
@@ -63,6 +69,28 @@ function fixture() {
   return {repo,source,workflow,run,build,deploy,artifact,state,calls,records,reader,options,store,coordinator,service,successful};
 }
 
+test('public maintenance requires the approved mode and release unit before dispatch or rerun',async()=>{
+  for(const [mode,unit,selected,selectedUnit,status] of [
+    ['default-branch','','release','maps','SOURCE_MODE_CONFLICT'],
+    ['release','maps','default-branch','','SOURCE_MODE_CONFLICT'],
+    ['release','other','release','maps','SOURCE_UNIT_CONFLICT'],
+    ['release','','release','maps','SOURCE_UNIT_CONFLICT']
+  ]) {
+    const f=fixture();f.state.mode=mode;f.state.unit=unit;
+    f.state.workflowBytes=Buffer.from(YAML.stringify({env:{STEWARD_DOCS_SOURCE:selected,STEWARD_DOCS_UNIT:selectedUnit}}));
+    assert.equal((await f.service()).status,status);
+    f.state.runs=[f.run];
+    assert.equal((await f.service({repositoryId:10,workflowId:5,runId:12,attempt:1})).status,status);
+    assert.equal(f.calls.filter(c=>c.method==='POST').length,0);assert.equal(f.records.size,0);
+  }
+  const f=fixture();f.state.mode='release';f.state.unit='maps';
+  for(const workflow of [workflowDoc,{env:{STEWARD_DOCS_SOURCE:'${{ vars.STEWARD_DOCS_SOURCE }}'}},{env:{STEWARD_DOCS_SOURCE:'release',STEWARD_DOCS_UNIT:'maps'}}]) {
+    f.state.workflowBytes=Buffer.from(YAML.stringify(workflow));
+    const options=await sourceOptions(f.reader,f.repo,pin,301115370);
+    assert.equal(options.mode,'release');assert.equal(options.unitId,'maps');
+  }
+});
+
 test('native YAML separates source, secret-free build and Pages deployment with same-Run artifacts',()=>{
   assert.equal(pagesDefinition(bytes).controllerSha,pin);
   const d=workflowDoc;assert.deepEqual(d.permissions,{});assert.deepEqual(d.jobs.build.permissions,{contents:'read'});
@@ -73,6 +101,74 @@ test('native YAML separates source, secret-free build and Pages deployment with 
   assert.equal(d.jobs.build.steps.find(s=>s.name==='Upload Pages artifact').with.name,'github-pages-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.select.outputs.input_digest }}');
   assert.equal(d.jobs.deploy.steps.find(s=>s.name==='Deploy Pages').with.artifact_name,'${{ steps.guard.outputs.artifact_name }}');
   assert.doesNotMatch(bytes.toString(),/secrets\.|pull_request_target|workflow_run|deployment_id/);
+});
+test('site build takes its output from the product and public deployment requires a selected source',()=>{
+  const {build,deploy}=workflowDoc.jobs;
+  assert.equal(build.steps.find(step=>step.id==='site').run,'bash .github/scripts/build-site.sh');
+  assert.equal(build.steps.find(step=>step.id==='output').env.SITE_DIRECTORY,'${{ steps.site.outputs.directory }}');
+  assert.equal(build.steps.find(step=>step.id==='artifact').with.path,'${{ steps.output.outputs.directory }}');
+  assert.equal(deploy.if,"needs.select.outputs.ready == 'true' && needs.select.outputs.public_source == 'true'");
+  assert.equal(workflowDoc.jobs.select.if,undefined);
+  assert.equal(workflowDoc.jobs.select.outputs.public_source,'${{ steps.authorization.outputs.matches }}');
+  assert.equal(workflowDoc.jobs.select.steps.find(step=>step.id==='source').env.STEWARD_PAGES_BUILD_ONLY,
+    "${{ steps.authorization.outputs.matches != 'true' }}");
+  assert.equal(build.if,"needs.select.outputs.ready == 'true'");
+  assert.equal(build.steps[0].with.ref,'${{ needs.select.outputs.source_sha }}');
+  assert.match(workflowDoc['run-name'],/'build-only '/);
+  assert.ok(workflowDoc['run-name'].includes("inputs.source_mode || vars.STEWARD_DOCS_SOURCE || 'default-branch'"));
+});
+test('public deployment matches the authorized source and exact release unit',async t=>{
+  const root=await mkdtemp(join(tmpdir(),'pages-authorization-'));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const step=workflowDoc.jobs.select.steps.find(step=>step.id==='authorization');
+  assert.deepEqual(step.env,{APPROVED_SOURCE:'${{ vars.STEWARD_DOCS_SOURCE }}',APPROVED_UNIT:'${{ vars.STEWARD_DOCS_UNIT }}'});
+  const cases=[
+    ['default-branch','','default-branch','',true],['release','app','release','app',true],
+    ['default-branch','','release','app',false],['release','app','default-branch','',false],
+    ['release','app','release','other',false],['release','app','release','APP',false],
+    ['release','app','release','',false],['release','app','','',false],['release','','release','',false],
+    ['default-branch','','','',false],['default-branch','','DEFAULT-BRANCH','',false]
+  ];
+  for(const [index,[mode,unit,approvedMode,approvedUnit,expected]] of cases.entries()){
+    const output=join(root,String(index));
+    const result=spawnSync(process.platform==='win32'?'python':'python3',['-c',step.run],{encoding:'utf8',
+      env:{...process.env,STEWARD_DOCS_SOURCE:mode,STEWARD_DOCS_UNIT:unit,APPROVED_SOURCE:approvedMode,
+        APPROVED_UNIT:approvedUnit,GITHUB_OUTPUT:output}});
+    assert.equal(result.status,0,result.error?.message??result.stderr);
+    assert.equal((await readFile(output,'utf8')).trim(),'matches='+expected);
+  }
+});
+test('only a nonempty site directory inside the checkout reaches the upload step', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'pages-output-')));
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const workspace = join(root, 'checkout');
+  const site = join(workspace, 'handbook', 'public files');
+  const output = join(root, 'outputs');
+  await mkdir(site, {recursive: true});
+  await mkdir(join(workspace, 'empty'));
+  await writeFile(join(site, 'index.html'), '<p>Map handbook</p>');
+  const step = workflowDoc.jobs.build.steps.find(step => step.id === 'output');
+  assert.equal(step.shell, 'python');
+  const checkDirectory = directory => {
+    const result = spawnSync(process.platform === 'win32' ? 'python' : 'python3', ['-c', step.run], {
+      encoding: 'utf8', cwd: workspace,
+      env: {...process.env, SITE_DIRECTORY: directory, GITHUB_WORKSPACE: workspace, GITHUB_OUTPUT: output}
+    });
+    if (result.error) throw result.error;
+    return result;
+  };
+  for (const invalid of ['', '.', '..', site, 'missing', 'empty', 'handbook/public files/index.html', 'bad\npath']) {
+    assert.notEqual(checkDirectory(invalid).status, 0, JSON.stringify(invalid));
+  }
+  // The site is built on Ubuntu. Creating symlinks on Windows can require elevated privileges.
+  if (process.platform !== 'win32') {
+    await symlink(root, join(site, 'link'));
+    assert.notEqual(checkDirectory('handbook/public files').status, 0);
+    await rm(join(site, 'link'));
+  }
+  const valid = checkDirectory('handbook/public files');
+  assert.equal(valid.status, 0, valid.stderr);
+  assert.equal((await readFile(output, 'utf8')).trim(), `directory=${site}`);
 });
 test('rejects drifted controller pins, missing build dependency and concurrent cancellation',()=>{
   for(const mutate of [d=>d.jobs.deploy.steps[0].with.ref=N,d=>d.jobs.deploy.needs=['select'],d=>d.concurrency['cancel-in-progress']=true]){

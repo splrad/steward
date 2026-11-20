@@ -69,3 +69,25 @@ gh actions-lock --verify --no-interactive
 PR 说明应包含实际问题、变更、影响、验证结果及适用的恢复方式，并区分已执行、未执行和环境受限的检查。更新正文时应保留有效的人工补充内容。
 
 审查线程标记解决前，须依据当前 head 核对原问题的处理结果，并在原线程记录处理依据及验证情况。存在未决冲突或证据不足时，线程保持未解决状态；评论过时本身不构成问题已解决的证据。
+
+## 产品仓的 PR 验证
+
+在产品仓的 `.github/product-ci.json` 中列出完成源码验证的 GitHub Actions 工作流。例如，含前端和服务端的仓库可以声明：
+
+```json
+[".github/workflows/frontend.yml", ".github/workflows/server.yml"]
+```
+
+每条路径指向本仓一个原生工作流。产品维护者在工作流中配置 runner、矩阵、工具锁、工作目录和测试命令。验证工作流应监听 `pull_request` 的 opened、synchronize、reopened，以及默认分支的 push。PR 入口应覆盖所有目标分支，两个事件均应覆盖所有变更路径。可将平台或目录的适用条件放在作业中，并保留至少一个实际执行的验证作业。PR 检出准确的 head SHA，使用 GitHub 托管的隔离 runner、只读权限和 `persist-credentials: false`；运行产品代码的作业不得使用治理、部署、发布或模型凭据。每个声明的工作流均须成功且至少有一个实际运行成功的作业。产品条件可以跳过不适用的作业；运行回执列出各作业的结论。
+
+中央对照事件仓库、工作流路径、事件类型、head 仓库与提交；PR 还核对编号、base 仓库、引用与提交，以及 head 引用。状态必须来自匹配运行的最新 attempt。GitHub 缺少关联信息、运行未完成、全部作业跳过或某个作业失败时，所需源码证据仍不完整。对于 fork，GitHub 可能省略 PR 关联。产品工作流可在顶层设置以下原生运行名称，供中央核对 PR 编号、base 与 head。此时中央还通过 GitHub 的 WorkflowRun.file 核实运行实际使用的 YAML 路径及源码提交。
+
+```yaml
+run-name: Product CI ${{ github.event.pull_request.number }} ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }}
+```
+
+每次采信运行前，中央通过 GitHub 的 WorkflowRun.file 核对工作流实际来源的仓库、路径和提交。运行证据由只读作业核验，原生治理、依赖和文档检查各自按范围执行。
+
+首次采用产品 CI 需要仓库管理员授权。修改已有声明或其引用的工作流（包括改名前后的路径）时，由受信策略核验仓库管理员或默认分支登记的受托人。管理员或受托人直接发起或更新 PR 时，授权绑定到事件操作者及准确 head；其他贡献者可按普通 PR 提交变更，由具有相应权限的人员对当前 head 确认。PR 增加提交后需重新核验。仅修改普通源码的维护分支 PR 继续走原有检查。
+
+首次采用时可在同一 PR 提交声明、原生验证工作流及更新后的 Actions 锁。先让产品工作流在现行保护下实际通过，再晋升中央规则引用。Steward 在本仓声明 Linux 与 Windows 源码测试；LayerScape 等产品在各自仓库声明相应检查。仓库仅含文档与受支持的社区治理文件时，适用的组织检查继续运行。登记的私有设置仓仅含受管配置与工具锁时同样适用。新增未知源码或构建输入后，涉及源码验证的变更需提供产品工作流。

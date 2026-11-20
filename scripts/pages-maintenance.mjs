@@ -1,9 +1,10 @@
 import {mkdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
+import YAML from 'yaml';
 import {NativeEvidenceReader,decodePagesMaintenance,assertPagesProgress,pagesRecordPath,maintenanceFailed,nativeGhCommand,nativeReleaseDownload} from '../packages/runner/dist/index.js';
 import {currentPagesSource,pagesDeployment,assertPagesRun} from './pages-runtime.mjs';
-import {pagesDispatchInputs,pagesRunName,pagesWorkflow,verifyPagesRelease} from './select-pages-source.mjs';
+import {pagesContent,pagesDispatchInputs,pagesRunName,pagesWorkflow,verifyPagesRelease} from './select-pages-source.mjs';
 import {writeReleaseRecords} from './release-record.mjs';
 
 const check=(v,c)=>{if(!v)throw Error('PAGES_'+c);};
@@ -58,14 +59,29 @@ export async function pagesRunInventory(reader,workflow,source,start,end) {
     &&r.display_title===(r.event==='workflow_dispatch'?pagesRunName(source):`Pages ${source.mode} ${source.sourceSha} ${r.event==='release'?source.releaseId:r.id}`)).sort((a,b)=>a.id-b.id);
 }
 
-async function sourceOptions(reader,repository,controllerSha,appBotId) {
+export async function sourceOptions(reader,repository,controllerSha,appBotId) {
   const read=async name=>{
     const response=await reader.io.request('GET',reader.path(`actions/variables/${name}`));
     if(response.status===404)return '';
     check(response.status===200,'VARIABLE_UNAVAILABLE');const value=JSON.parse(Buffer.from(response.bytes));
     check(value.name===name&&typeof value.value==='string','VARIABLE');return value.value;
   };
-  const mode=await read('STEWARD_DOCS_SOURCE'),unitId=mode==='release'?await read('STEWARD_DOCS_UNIT'):'';
+  const mode=await read('STEWARD_DOCS_SOURCE');
+  let unitId='';
+  if(mode) {
+    check(['default-branch','release'].includes(mode),'MODE');
+    const branch=await reader.json('git/ref/heads/'+encodeURIComponent(repository.default_branch));
+    check(branch.ref==='refs/heads/'+repository.default_branch && branch.object?.type==='commit' && /^[a-f0-9]{40}$/.test(branch.object.sha),'DEFAULT_HEAD');
+    const workflow=YAML.parse((await pagesContent(reader,pagesWorkflow,branch.object.sha)).toString('utf8'));
+    const source=workflow?.env?.STEWARD_DOCS_SOURCE;
+    const declared=source!==undefined && source!=='' &&
+      !['${{ vars.STEWARD_DOCS_SOURCE }}',"${{ vars.STEWARD_DOCS_SOURCE || 'default-branch' }}"].includes(source);
+    if(declared && source!==mode)return {status:'SOURCE_MODE_CONFLICT'};
+    if(mode==='release') {
+      unitId=await read('STEWARD_DOCS_UNIT');
+      if(declared && (!unitId || workflow.env.STEWARD_DOCS_UNIT!==unitId))return {status:'SOURCE_UNIT_CONFLICT'};
+    }
+  }
   return {reader,repositoryId:repository.id,mode,unitId,controllerSha,appBotId};
 }
 
@@ -82,8 +98,12 @@ export async function servicePages({io,repository,store,coordinator,appBotId,tok
     return io.request(method,path,...args);
   }};
   const reader=new NativeEvidenceReader(bounded,repository.full_name);
-  const current=ports.currentSource??(async()=>currentPagesSource({...await sourceOptions(reader,repository,coordinator.controllerSha,appBotId),publicOnly:completion!==undefined},{
-    verifyRelease:input=>verifyPagesRelease(input,{gh:args=>nativeGhCommand(args,token),download:nativeReleaseDownload(token)})}));
+  const current=ports.currentSource??(async()=>{
+    const options=await sourceOptions(reader,repository,coordinator.controllerSha,appBotId);
+    if(options.status)return options;
+    return currentPagesSource({...options,publicOnly:completion!==undefined},{
+      verifyRelease:input=>verifyPagesRelease(input,{gh:args=>nativeGhCommand(args,token),download:nativeReleaseDownload(token)})});
+  });
   const desired=await current();if(desired.status!=='READY')return {status:desired.status};
   const source=desired.source;check(source.repositoryId===repository.id&&source.repository===repository.full_name,'REPOSITORY');
   const workflow=await reader.json('actions/workflows/pages.yml');check(positive(workflow.id)&&workflow.path===pagesWorkflow,'WORKFLOW');
