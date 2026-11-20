@@ -99,5 +99,5 @@ export async function loadPrivateRequest(api, admin, token, requestId, extract =
       (run.actor?.type === 'User' || request.event === 'push' && run.actor?.type === 'Bot') &&
       Number.isSafeInteger(run.actor.id) && run.actor.id > 0),
   'Untrusted registration producer run');
-  return validIds(request.repositoryIds);
+  return {repositoryIds:validIds(request.repositoryIds),event:request.event};
 }

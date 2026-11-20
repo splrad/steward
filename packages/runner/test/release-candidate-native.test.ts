@@ -273,6 +273,18 @@ it.each(['old-source', 'new-source', 'missing-pin', 'conflicting-pin', 'content-
     expect(await head('steward/release-state')).toBe(before);expect(modelCalls).toBe(firstCalls);
     return;
   }
+  if(pinCase==='old-source') {
+    const before=await head('steward/release-state');
+    await expect(releaseCommand('candidate',{...request,cycleId:null,runId:null,writeDirectory:join(root,'denied-handoff')},{
+      token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io,
+      candidateRuntime:{checkRepositoryPolicy:async (read:(path:string)=>Promise<string>)=>{
+        expect(JSON.parse(await read('.github/delivery.json'))).toEqual(delivery);
+        throw Error('CANDIDATE_REPOSITORY_POLICY_DISABLED');
+      }}
+    })).rejects.toThrow('CANDIDATE_REPOSITORY_POLICY_DISABLED');
+    expect(await head('steward/release-state')).toBe(before);
+    expect(modelCalls).toBe(firstCalls);
+  }
   const handed=await releaseCommand('candidate',{...request,cycleId:null,runId:null,writeDirectory:join(root,'merge-writes')},
     {token:options.token,candidateReadToken:options.readToken,controllerSha:options.controllerSha,now:options.now,io});
   expect(handed).toMatchObject({ status: 'CYCLE_READY', sourceSha: S, cycleId: `pr-9-${S}` });

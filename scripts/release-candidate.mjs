@@ -504,6 +504,7 @@ export async function nativeReleaseCandidate(request, { token, readToken, copilo
         if(!eligible||history.inventoryComplete!==true||history.pendingHandoff!==cycle.id
           ||history.defaultHead!==defaultSha||history.stateHead!==expectedHead)
           return {status:'WAIT',reason:'MERGED_CANDIDATE_SOURCE_UNVERIFIED',history};
+        await checkRepositoryPolicy?.(path=>fileAt(sourceSha,path));
         if(await fetchBranch(request.defaultBranch)!==defaultSha||await fetchBranch('steward/release-state')!==expectedHead)
           return {status:'WAIT',reason:'MERGED_CANDIDATE_SOURCE_MOVED'};
         session.repository.activeCycleId = cycle.id; session.repository.candidate = null; session.repository.revision++; session.repository.lastProgressAt = now();

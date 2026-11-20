@@ -15,9 +15,9 @@ export async function projectMergedRepositoryPolicy(app, repository, source, obs
   const getPolicy=ports.getPolicy??mergedRepositoryPolicy;
   const readMerged=()=>getPolicy(app,repository,{allowRegisteredRename:true});
   const adopted=await readMerged();
-  if(!adopted.policy||adopted.policy.repository!==repository.full_name)return;
   const selected=adopted.policy;
-  if(selected.adoption==='central') {
+  if(selected ? selected.repository!==repository.full_name : !ports.revokeMissing)return;
+  if(selected?.adoption==='central') {
     const observed=(await observe()).policy;
     check(selected.productCi.every(path=>observed.productCi.includes(path)),'PRODUCT_CI');
     if(selected.site) {
@@ -25,7 +25,7 @@ export async function projectMergedRepositoryPolicy(app, repository, source, obs
       if(selected.site.source==='release')check(observed.release?.units.some(unit=>unit.id===selected.site.unit),'PAGES');
     }
   }
-  const content=projectionBytes(selected);
+  const content=projectionBytes(selected??{repositoryId:repository.id,adoption:'legacy',productCi:[],site:null});
   const root=await mkdtemp(join(await nativeTemporaryParent('REPOSITORY_POLICY_PROJECTION_TEMP_LINK'),'repository-policy-projection-'));
   try {
     return await app.forRepository(repository.id,async token=>{
@@ -33,9 +33,11 @@ export async function projectMergedRepositoryPolicy(app, repository, source, obs
       const refresh=()=>getState(root,repository,token,repositoryPolicyBranch,{governanceAppId:5639432,includeHistory:false});
       const state=await refresh();
       const current=state.snapshot.currentPaths.includes(repositoryPolicyPath)?await state.readBytes(repositoryPolicyPath):null;
+      if(!selected&&current===null)return 'UNCHANGED';
       const latest=await readMerged();
-      check(latest.policy&&latest.commit===adopted.commit&&latest.policy.repository===repository.full_name&&
-        projectionBytes(latest.policy)===content&&await ports.currentSource()===source,'MOVED');
+      const unchanged=selected?latest.policy?.repository===repository.full_name&&projectionBytes(latest.policy)===content:
+        latest.policy===null;
+      check(unchanged&&latest.commit===adopted.commit&&await ports.currentSource()===source,'MOVED');
       if(current?.toString('utf8')===content)return 'UNCHANGED';
       const directory=await mkdtemp(join(root,'write-'));
       const result=await (ports.write??writeReleaseRecords)({directory:join(directory,'checkout'),remote:state.remote,

@@ -62,11 +62,13 @@ test('a trusted GitHub push publishes only changed merged settings records by ex
   const leaves=(id,sha)=>({path:id+'.json',mode:'100644',type:'blob',sha});
   const trees=new Map([[base,[{path:'repositories',type:'tree',mode:'040000',sha:candidate}]],
     [source,[{path:'repositories',type:'tree',mode:'040000',sha:newTree}]],
-    [candidate,[leaves(product.id,candidate),leaves(governance.id,base)]],
+    [candidate,[leaves(product.id,candidate),leaves(governance.id,base),leaves(999,base)]],
     [newTree,[leaves(product.id,source),leaves(governance.id,base),leaves(123,base)]]]);
   const api={rest:{git:{getTree:async({tree_sha})=>({data:{truncated:false,tree:trees.get(tree_sha)}})}}};
-  assert.deepEqual(await pushRegistrationIds(payload,{GITHUB_SHA:source},api),[123,product.id]);
+  assert.deepEqual(await pushRegistrationIds(payload,{GITHUB_SHA:source},api),[123,999,product.id]);
   assert.deepEqual(selectRegistrationTargets([123,product.id],String(product.id)),[product.id]);
+  assert.deepEqual(selectRegistrationTargets([123],String(product.id)),[]);
+  for(const scope of [undefined,''])assert.throws(()=>selectRegistrationTargets([product.id],scope),/scope is required/);
   assert.throws(()=>selectRegistrationTargets([product.id],'bad'),/Invalid numeric identity/);
   await assert.rejects(pushRegistrationIds({...payload,forced:true},{GITHUB_SHA:source},api),/Untrusted registration/);
 });
@@ -185,7 +187,7 @@ test('registry rejects workflow selections the native consumers cannot execute',
     /RN_BUILD_INVALID/);
 });
 
-test('native projection writer preserves a concurrent quality record on the same branch',async()=>{
+test('native projection writer preserves concurrent state and retries revocation after an approved record is removed',async()=>{
   const root=await mkdtemp(join(await nativeTemporaryParent('PROJECTION_FIXTURE_TEMP_LINK'),'registry-projection-git-'));
   const remote=join(root,'payload.git'),checkout=join(root,'setup'),branch='steward/governance-state';
   const git=(...args)=>execFileSync('git',args,{cwd:root,encoding:'utf8',windowsHide:true}).trim();
@@ -200,14 +202,14 @@ test('native projection writer preserves a concurrent quality record on the same
     const old=local('rev-parse','HEAD');
     const {policy}=await propose(product,productFiles);
     const app={forRepository:(_id,operation)=>operation('fixture')};
+    const getState=async()=>{
+      const head=state('rev-parse','refs/heads/'+branch);
+      const paths=state('ls-tree','-r','--name-only',head).split(/\r?\n/).filter(Boolean);
+      return {remote,snapshot:{head,currentPaths:paths},readBytes:async path=>Buffer.from(
+        execFileSync('git',['--git-dir='+remote,'show',head+':'+path]))};
+    };
     const result=await projectMergedRepositoryPolicy(app,product,source,async()=>({policy}),path=>productFiles.get(path),{
-      getPolicy:async()=>({commit:base,policy}),currentSource:async()=>source,
-      getState:async()=>{
-        const head=state('rev-parse','refs/heads/'+branch);
-        const paths=state('ls-tree','-r','--name-only',head).split(/\r?\n/).filter(Boolean);
-        return {remote,snapshot:{head,currentPaths:paths},readBytes:async path=>Buffer.from(
-          execFileSync('git',['--git-dir='+remote,'show',head+':'+path]))};
-      },
+      getPolicy:async()=>({commit:base,policy:{...policy,adoption:'central'}}),currentSource:async()=>source,getState,
       write:async request=>{
         assert.equal(request.expectedHead,old);
         const path='quality/1/'+source+'.md';
@@ -220,8 +222,19 @@ test('native projection writer preserves a concurrent quality record on the same
       }
     });
     assert.equal(result,'APPLIED');
+    const projection=()=>JSON.parse(state('show',branch+':configuration/repository.json'));
+    assert.equal(projection().adoption,'central');
+    const revoke=write=>projectMergedRepositoryPolicy(app,product,source,async()=>assert.fail('Removal read product declarations'),
+      async()=>assert.fail('Removal read product workflows'),{
+        getPolicy:async()=>({commit:candidate,policy:null}),currentSource:async()=>source,getState,revokeMissing:true,write
+      });
+    await assert.rejects(revoke(async()=>{throw Error('write interrupted');}),/write interrupted/);
+    assert.equal(projection().adoption,'central');
+    assert.equal(await revoke(request=>writeReleaseRecords(request)),'APPLIED');
+    assert.deepEqual({...projection(),sourceDigest:undefined},
+      {schemaVersion:1,repositoryId:product.id,adoption:'legacy',productCi:[],site:null,sourceDigest:undefined});
+    assert.equal(await revoke(async()=>assert.fail('Already revoked')), 'UNCHANGED');
     assert.equal(state('show',branch+':quality/1/'+source+'.md'),'existing quality result');
-    assert.equal(JSON.parse(state('show',branch+':configuration/repository.json')).repositoryId,product.id);
   } finally {
     await rm(root,{recursive:true,force:true});
   }
@@ -340,7 +353,7 @@ test('an accepted event without registration targets completes without an artifa
 
 function fake({ files = new Map(), open = [], closed = [], failCreate = false } = {}) {
   const state = { refs: new Map([['main',base]]), trees:new Map([[base,files]]), commits:new Map(),
-    writes:[], open, closed, failCreate };
+    writes:[],comments:[],open,closed,failCreate };
   const ref = name => name.replace(/^heads\//,'');
   const ok = data => ({data});
   const missing = () => { throw Object.assign(Error('missing'),{status:404}); };
@@ -374,9 +387,22 @@ function fake({ files = new Map(), open = [], closed = [], failCreate = false } 
         },
         async getCommit({ref}) { return ok(state.commits.get(ref)); }
       },
+      issues:{
+        listComments:({issue_number})=>state.comments.filter(comment=>comment.issue_number===issue_number),
+        async createComment({issue_number,body}) {
+          state.comments.push({id:state.comments.length+1,issue_number,user:bot,body});
+          state.writes.push(['comment',issue_number]);
+        },
+        async updateComment({comment_id,body}) {
+          const comment=state.comments.find(row=>row.id===comment_id);
+          assert.equal(comment.user.id,bot.id);
+          comment.body=body;
+          state.writes.push(['update-comment',comment.issue_number]);
+        }
+      },
       pulls:{
-        list:args => args.state==='open' ? open : closed.filter(pull=>args.head==='splrad:'+pull.head.ref),
-        listFiles:({pull_number}) => open.find(pull=>pull.number===pull_number).files,
+        list:args=>args.state==='open'?open:closed.filter(pull=>!args.head||args.head==='splrad:'+pull.head.ref),
+        listFiles:({pull_number})=>[...open,...closed].find(pull=>pull.number===pull_number).files??[],
         async create({head,title,body,draft}) {
           assert.ok(draft);
           if (state.failCreate) throw Error('response ambiguous');
@@ -408,7 +434,7 @@ test('initial .github and LayerScape drafts contain their actual selection shape
   for (const [repo,files] of [[governance,new Map()],[product,productFiles]]) {
     const proposal = await propose(repo,files);
     const {api,state}=fake();
-    assert.equal((await reconcileRegistration(api,admin,repo,source,proposal,async()=>source)).result,'created');
+    assert.equal((await reconcileRegistration(api,admin,repo,source,async()=>proposal,async()=>source)).result,'created');
     assert.deepEqual(JSON.parse(state.trees.get(candidate).get(registrationPath(repo))),proposal.policy);
     const pull=state.open[0];
     assert.equal(pull.title,'chore: 登记 '+repo.name+' 逐仓配置');
@@ -436,7 +462,7 @@ test('initial .github and LayerScape drafts contain their actual selection shape
     }
     state.open[0].body += '\n人工改稿';
     state.trees.get(candidate).set(registrationPath(repo),'人工正在编辑');
-    assert.equal((await reconcileRegistration(api,admin,repo,source,proposal,async()=>source)).result,'reused');
+    assert.equal((await reconcileRegistration(api,admin,repo,source,async()=>proposal,async()=>source)).result,'reused');
     assert.equal(state.trees.get(candidate).get(registrationPath(repo)),'人工正在编辑');
     assert.match(state.open[0].body,/人工改稿/);
     assert.equal(state.writes.length,3);
@@ -466,40 +492,72 @@ test('manual central PRs and merged choices keep authority over discovered diffe
   const proposal = await propose(product,productFiles);
   const manual={...proposal.policy,site:{workflow:pages,mode:'build-only',source:'default-branch'}};
   const files = new Map([[registrationPath(product),JSON.stringify(manual)]]);
-  const draft={number:87,head:{ref:'manual-adjustment'},files:[{filename:registrationPath(product)}]};
-  const {api,state}=fake({files,open:[draft]});
-  assert.deepEqual(await reconcileRegistration(api,admin,product,source,proposal,async()=>source),
+  const draft={number:87,head:{ref:'manual-adjustment'},files:[{filename:registrationPath(product)}],body:'人工内容'};
+  const prior={...draft,number:55};
+  const {api,state}=fake({files,open:[draft],closed:[prior]});
+  state.comments.push({id:1,issue_number:draft.number,user:{id:7},body:'<!-- steward-registration-review 1187527897 人工备注'});
+  const run=(commit=source)=>reconcileRegistration(api,admin,product,commit,async()=>proposal,async()=>commit);
+  assert.deepEqual(await run(),
     {result:'reused',number:87,differences:['site'],pending:proposal.pending});
+  await run(candidate);
+  assert.equal(draft.body,'人工内容');
+  assert.deepEqual(state.writes,[['comment',87]]);
+  assert.match(state.comments[1].body,/实际读回.*null/);
+  assert.match(state.comments[0].body,/人工备注/);
   state.open.pop();
-  const review = await reconcileRegistration(api,admin,product,source,proposal,async()=>source);
-  assert.equal(review.result,'review-required');
-  assert.deepEqual(review.observations,[{field:'site',current:manual.site,observed:null}]);
-  assert.equal(state.writes.length,0);
+  const review=await run();
+  assert.deepEqual(review,{result:'review-required',number:55,differences:['site'],pending:[]});
+  assert.deepEqual(state.writes,[['comment',87],['comment',55]]);
+  assert.equal(state.comments[2].issue_number,55);
+  assert.equal(state.trees.get(base).get(registrationPath(product)),JSON.stringify(manual));
   const renamed={...product,name:'LayerScape-next',full_name:'splrad/LayerScape-next'};
   const renameProposal=await propose(renamed,productFiles);
-  await reconcileRegistration(api,admin,renamed,source,renameProposal,async()=>source);
+  await reconcileRegistration(api,admin,renamed,source,async()=>renameProposal,async()=>source);
   assert.deepEqual(JSON.parse(state.trees.get(candidate).get(registrationPath(product))),
     {...manual,repository:renamed.full_name});
+});
+
+test('an adjustment draft changes only compatible selections and preserves the existing authorization',async()=>{
+  const proposal=await propose(product,productFiles);
+  const current={...proposal.policy,adoption:'central',productCi:[ci,'.github/workflows/obsolete.yml'],
+    site:{workflow:pages,mode:'build-and-deploy',source:'default-branch'}};
+  const {api,state}=fake({files:new Map([[registrationPath(product),JSON.stringify(current)]])});
+  const reconcile=commit=>reconcileRegistration(api,admin,product,commit,async()=>proposal,async()=>commit);
+  assert.equal((await reconcile(source)).result,'created');
+  assert.deepEqual(JSON.parse(state.trees.get(candidate).get(registrationPath(product))),{...current,productCi:[ci]});
+  assert.match(state.open[0].title,/调整/);
+  assert.match(state.open[0].body,/已批准值、读回值及建议/);
+  assert.match(state.open[0].body,/obsolete\.yml/);
+  assert.equal((await reconcile(base)).result,'reused');
+  assert.deepEqual(state.writes.map(([kind])=>kind),['ref','commit','pull']);
+});
+
+test('a merged registry removal cannot create a replacement registration draft',async()=>{
+  const {api,state}=fake();
+  const result=await reconcileRegistration(api,admin,product,source,
+    async()=>assert.fail('A removal read product declarations'),async()=>source,{registryPush:true});
+  assert.deepEqual(result,{result:'removed'});
+  assert.deepEqual(state.writes,[]);
 });
 
 test('moved input and uncertain PR creation preserve the existing commit', async () => {
   const proposal = await propose(governance);
   const {api,state}=fake({failCreate:true});
-  await assert.rejects(reconcileRegistration(api,admin,governance,source,proposal,async()=>base),/input moved/);
+  await assert.rejects(reconcileRegistration(api,admin,governance,source,async()=>proposal,async()=>base),/input moved/);
   assert.equal(state.writes.length,0);
-  await assert.rejects(reconcileRegistration(api,admin,governance,source,proposal,async()=>source),/response ambiguous/);
+  await assert.rejects(reconcileRegistration(api,admin,governance,source,async()=>proposal,async()=>source),/response ambiguous/);
   state.failCreate=false;
-  assert.equal((await reconcileRegistration(api,admin,governance,source,proposal,async()=>source)).result,'created');
+  assert.equal((await reconcileRegistration(api,admin,governance,source,async()=>proposal,async()=>source)).result,'created');
   assert.deepEqual(state.writes.map(([kind])=>kind),['ref','commit','pull']);
   state.closed.push(state.open.pop());
-  assert.equal((await reconcileRegistration(api,admin,governance,source,proposal,async()=>source)).result,'previously-reviewed');
+  assert.equal((await reconcileRegistration(api,admin,governance,source,async()=>proposal,async()=>source)).result,'previously-reviewed');
 });
 
 test('a manual PR opened during draft assembly is reused before sending another PR', async () => {
   const proposal = await propose(governance);
   const {api,state}=fake();
   let sourceReads=0;
-  const outcome=await reconcileRegistration(api,admin,governance,source,proposal,async()=>{
+  const outcome=await reconcileRegistration(api,admin,governance,source,async()=>proposal,async()=>{
     if(++sourceReads===2)state.open.push({number:15,head:{ref:'manual-registration'},
       files:[{filename:registrationPath(governance)}]});
     return source;
@@ -638,7 +696,8 @@ test('private workflow to public controller replays both registration cases with
         await writeFile(publicPath,JSON.stringify(wake));
         const publicEnv={...env,GITHUB_EVENT_PATH:publicPath,GITHUB_EVENT_NAME:'repository_dispatch',
           GITHUB_SHA:publicSha,REGISTRATION_WORKFLOW_SHA:publicSha,
-          GITHUB_WORKFLOW_REF:'splrad/steward/.github/workflows/sync-managed.yml@refs/heads/main'};
+          GITHUB_WORKFLOW_REF:'splrad/steward/.github/workflows/sync-managed.yml@refs/heads/main',
+          REGISTRATION_ALLOWED_IDS:String(repo.id)};
         assert.equal(await registrationEntry('consume',publicEnv,options),0);
         assert.deepEqual(JSON.parse(state.trees.get(candidate).get(registrationPath(repo))),(await propose(repo,files)).policy);
         state.open[0].body += '\n人工备注 Private case';
@@ -664,6 +723,36 @@ test('private workflow to public controller replays both registration cases with
         assert.deepEqual(errors,['REGISTRATION_UNAVAILABLE\n','REGISTRATION_UNAVAILABLE\n',
           'REGISTRATION_UNAVAILABLE\n','REGISTRATION_UNAVAILABLE\n']);
         assert.equal(state.writes.length,3);
+        if(manual) {
+          await writeFile(publicPath,JSON.stringify(wake));
+          producerPath='.github/workflows/repository-registration.yml';
+          const originalAdmin=options.openAdmin;
+          const merged={...(await propose(repo,files)).policy,adoption:'central',productCi:[ci,'.github/workflows/stale.yml']};
+          const registry=state.trees.get(base);
+          registry.set(registrationPath(repo),JSON.stringify(merged));
+          const conflictOptions={...options,openAdmin:async()=>({...await originalAdmin(),
+            project:async()=>{throw Error('REPOSITORY_POLICY_PROJECTION_PRODUCT_CI');}})};
+          assert.equal(await registrationEntry('consume',publicEnv,conflictOptions),1);
+          assert.deepEqual(state.writes.at(-1),['comment',42]);
+          assert.match(state.comments[0].body,/stale\.yml/);
+          assert.equal(errors.at(-1),'REGISTRATION_UNAVAILABLE\n');
+          assert.doesNotMatch(logs.join('')+errors.join(''),/LayerScape|stale\.yml|待确认/);
+          assert.equal(await registrationEntry('consume',{...publicEnv,REGISTRATION_ALLOWED_IDS:''},conflictOptions),1);
+          assert.equal(state.writes.length,4);
+
+          registry.delete(registrationPath(repo));
+          request={...request,event:'push'};
+          await writeFile(requestPath,JSON.stringify(request));
+          let revoked=0;
+          const removalOptions={...options,openAdmin:async()=>({...await originalAdmin(),
+            project:async(_repo,_source,_observe,_read,ports)=>{
+              assert.equal(ports.revokeMissing,true);
+              revoked++;
+            }})};
+          assert.equal(await registrationEntry('consume',publicEnv,removalOptions),0);
+          assert.equal(revoked,1);
+          assert.equal(state.writes.length,4);
+        }
       } finally {
         await rm(requestPath,{force:true});
         await rm(stepOutput,{force:true});

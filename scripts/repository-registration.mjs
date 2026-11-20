@@ -78,14 +78,15 @@ export async function pushRegistrationIds(event, env, api) {
     }));
   };
   const [before,after]=await Promise.all([event.before,event.after].map(inventory));
-  return [...after].filter(([id,digest])=>before.get(id)!==digest).map(([id])=>id).sort((a,b)=>a-b);
+  return [...new Set([...before.keys(),...after.keys()])].filter(id=>before.get(id)!==after.get(id)).sort((a,b)=>a-b);
 }
 
 export function selectRegistrationTargets(ids, scope) {
-  if(!scope)return ids;
-  const allowed=scope.split(',').map(positive);
-  must(new Set(allowed).size===allowed.length,'Invalid registration scope');
-  return ids.filter(id=>allowed.includes(id));
+  must(typeof scope==='string'&&scope.length>0,'Registration scope is required');
+  const entries=scope.split(',').map(positive);
+  const allowed=new Set(entries);
+  must(allowed.size===entries.length,'Invalid registration scope');
+  return ids.filter(id=>allowed.has(id));
 }
 
 function checkRepository(repo, id) {
@@ -201,12 +202,11 @@ export async function registrationProposal(repo, read) {
     productCi, release, site }, repo.id), pending, releaseDetails };
 }
 
-export function renderRegistrationPull(repo, source, proposal, current=null) {
-  const policy=current ? {...current,repository:repo.full_name} : proposal.policy;
+export function renderRegistrationPull(repo, source, proposal, current=null, policy=current ? {...current,repository:repo.full_name} : proposal.policy) {
   const quote=value=>'`'+String(value).replace(/[`<>\r\n]/g,'')+'`';
   const list=values=>values.map(quote).join('、');
   const path='repositories/'+repo.id+'.json';
-  const title='chore: 登记 '+repo.name+' 逐仓配置';
+  const title='chore: '+(current&&current.repository===repo.full_name?'调整 ':'登记 ')+repo.name+' 逐仓配置';
   const differences=current?fields.filter(key=>!isDeepStrictEqual(current[key],proposal.policy[key])):[];
   const needsReview=differences.length>0||proposal.pending.length>0;
   const lines=[
@@ -248,51 +248,125 @@ export function renderRegistrationPull(repo, source, proposal, current=null) {
     if(differences.length)lines.push('- 仓内声明与已采用配置有差异，需审阅 '+list(differences));
     for(const note of proposal.pending)lines.push('- '+note);
   }
+  if(current&&current.repository===repo.full_name) {
+    const observations=reviewFields(current,proposal.policy,policy);
+    lines.push('',reviewMarker(repo.id,observations,proposal.pending),...registrationReviewLines(observations));
+  }
   lines.push('','配置采用、正式发行与公开部署沿用各自的审批和验收。');
   return {title,body:lines.join('\n')};
 }
 
 const branchPrefix = id => 'steward/repository-registration-' + id + '-';
 
-async function matchingPull(api, admin, id, path) {
-  const pulls = await api.paginate(api.rest.pulls.list, { ...api.target, state: 'open',
-    base: admin.default_branch, per_page: 100 });
+async function matchingPull(api, admin, id, path, state='open') {
+  const pulls=await api.paginate(api.rest.pulls.list,{...api.target,state,base:admin.default_branch,
+    sort:'created',direction:'desc',per_page:100});
   const matches = [];
   for (const pull of pulls) {
     if (pull.head.ref.startsWith(branchPrefix(id))) {
       must(pull.user?.id === stewardBot && pull.head.repo?.id === admin.id,
         'Reserved registration branch belongs to another author');
-      matches.push(pull);
-      continue;
+    } else {
+      const files=await api.paginate(api.rest.pulls.listFiles,{...api.target,pull_number:pull.number,per_page:100});
+      if(!files.some(file=>[file.filename,file.previous_filename].includes(path)))continue;
     }
-    const files = await api.paginate(api.rest.pulls.listFiles, { ...api.target, pull_number: pull.number, per_page: 100 });
-    if (files.some(file => [file.filename, file.previous_filename].includes(path))) matches.push(pull);
+    if(state==='closed')return pull;
+    matches.push(pull);
   }
   must(matches.length < 2, 'Multiple open PRs touch this registration');
   return matches[0];
 }
 
-export async function reconcileRegistration(api, admin, repo, source, proposal, verifySource) {
+function proposedRegistration(current, observed) {
+  const productCi=current.productCi.filter(path=>observed.productCi.includes(path));
+  const releaseIntent=release=>release&&release.units.map(unit=>({id:unit.id,channels:unit.channels.map(
+    ({id,location,required})=>({id,location,required}))}));
+  const sameReleaseIntent=isDeepStrictEqual(releaseIntent(current.release),releaseIntent(observed.release));
+  const buildOnly=current.site?.mode==='build-only'&&observed.site?.mode==='build-only';
+  return {...current,repository:observed.repository,
+    productCi:productCi.length?productCi:current.productCi,
+    release:sameReleaseIntent?observed.release:current.release,
+    site:buildOnly?observed.site:current.site};
+}
+
+function reviewFields(current, observed, suggested) {
+  return fields.filter(field=>!isDeepStrictEqual(current[field],observed[field])).map(field=>
+    ({field,current:current[field],observed:observed[field],suggested:suggested[field]}));
+}
+
+function registrationReviewLines(observations) {
+  const lines=[];
+  for(const {field,current,observed,suggested} of observations) {
+    // Indented JSON keeps product values inert in the private message.
+    const json=JSON.stringify({'已批准':current,'实际读回':observed,'建议':suggested},null,2).split('\n').map(line=>'    '+line);
+    lines.push(`\`${field}\` 已批准值、读回值及建议`,'',...json,'');
+  }
+  return lines;
+}
+
+const reviewPrefix=id=>`<!-- steward-registration-review ${id} `;
+const reviewMarker=(id,observations,pending)=>reviewPrefix(id)+digest(JSON.stringify({observations,pending}))+' -->';
+
+async function publishRegistrationReview(api, admin, {id,path,base,source,observations,pending,pull,verifySource}) {
+  must(admin.id===adminId&&admin.full_name==='splrad/steward-settings'&&admin.private===true&&
+    admin.default_branch==='main'&&api.target.owner==='splrad'&&api.target.repo==='steward-settings',
+  'Invalid registration review destination');
+  const marker=reviewMarker(id,observations,pending);
+  if(pull.user?.id===stewardBot&&pull.body?.split('\n').includes(marker))return;
+  const args={...api.target,issue_number:positive(pull.number)};
+  const comments=await api.paginate(api.rest.issues.listComments,{...args,per_page:100});
+  const reports=comments.filter(comment=>comment.user?.id===stewardBot&&comment.body?.startsWith(reviewPrefix(id)));
+  must(reports.length<=1,'Multiple private registration reviews');
+  const prior=reports[0];
+  if(prior?.body.startsWith(marker+'\n'))return;
+  const body=[marker,`### ${path} 待确认`,'',`产品源码 \`${source}\`。`,
+    `请核对 \`${path}\`。如需采用变动，请更新已有开放配置 PR，或从最新 \`main\` 发起调整 PR。`,
+    '',...registrationReviewLines(observations),
+    ...pending.map(line=>'- '+line)].join('\n');
+  must(await verifySource()===source&&await readHead(api,admin.default_branch)===base,'Registration review source moved');
+  if(prior) {
+    await api.rest.issues.updateComment({...api.target,comment_id:positive(prior.id),body});
+  } else {
+    await api.rest.issues.createComment({...args,body});
+  }
+}
+
+export async function reconcileRegistration(api, admin, repo, source, observe, verifySource, {registryPush=false}={}) {
   const id = repo.id, path = 'repositories/' + id + '.json';
   const base = await readHead(api, admin.default_branch);
   const read = revisionReader(api, base);
   const merged = await read(path);
   const current = merged === null ? null : parseRegistration(merged, id);
+  if(!current&&registryPush)return {result:'removed'};
+  const proposal=await observe();
   const differences = fields.filter(key => !current || !isDeepStrictEqual(current[key], proposal.policy[key]));
+  const renamed=current&&current.repository!==repo.full_name;
+  const policy=current?(renamed?{...current,repository:repo.full_name}:proposedRegistration(current,proposal.policy)):proposal.policy;
+  const observations=current?reviewFields(current,proposal.policy,policy):[];
+  const needsReview=observations.length>0||proposal.pending.length>0;
   const open = await matchingPull(api, admin, id, path);
-  if (open) return { result: 'reused', number: open.number, differences, pending: proposal.pending };
-  const policy = current ? { ...current, repository: repo.full_name } : proposal.policy;
-  if (current && policy.repository === current.repository)
-    return { result: differences.length || proposal.pending.length ? 'review-required' : 'unchanged',
-      differences, pending: proposal.pending,
-      ...(differences.length ? { observations: differences.map(field =>
-        ({ field, current: current[field], observed: proposal.policy[field] })) } : {}) };
+  const notify=pull=>publishRegistrationReview(api,admin,{id,path,base,source,observations,pending:proposal.pending,pull,verifySource});
+  if(open) {
+    if(current&&needsReview)await notify(open);
+    return {result:'reused',number:open.number,differences,pending:proposal.pending};
+  }
+  if(current&&isDeepStrictEqual(policy,current)) {
+    if(!needsReview)return {result:'unchanged',differences,pending:proposal.pending};
+    const previous=await matchingPull(api,admin,id,path,'closed');
+    must(previous,'Missing private configuration pull for registration review');
+    await notify(previous);
+    return {result:'review-required',number:previous.number,differences,pending:proposal.pending};
+  }
 
-  const bytes = jsonFile(policy);
+  const bytes=jsonFile(checkedRegistration(policy,id));
   const branch = branchPrefix(id) + digest(bytes).slice(0, 20);
   const args = { ...api.target, base: admin.default_branch, head: 'splrad:' + branch };
   const existing = await api.paginate(api.rest.pulls.list, { ...args, state: 'closed', per_page: 100 });
-  if (existing.length) return { result: 'previously-reviewed', number: existing[0].number, differences, pending: proposal.pending };
+  if(existing.length) {
+    must(existing[0].user?.id===stewardBot&&existing[0].head.repo?.id===admin.id,'Reserved registration branch belongs to another author');
+    if(current&&needsReview)await notify(existing[0]);
+    return {result:'previously-reviewed',number:existing[0].number,differences,pending:proposal.pending};
+  }
   must(await verifySource() === source && await readHead(api, admin.default_branch) === base,
     'Registration input moved; refresh the proposal');
   let head = await readHead(api, branch, true);
@@ -300,7 +374,7 @@ export async function reconcileRegistration(api, admin, repo, source, proposal, 
     await api.rest.git.createRef({ ...api.target, ref: 'refs/heads/' + branch, sha: base });
     head = base;
   }
-  const {title,body}=renderRegistrationPull(repo,source,proposal,current);
+  const {title,body}=renderRegistrationPull(repo,source,proposal,current,policy);
   if (head === base) {
     head = await commitFiles(api, admin, branch, base, new Map([[path, bytes]]), '目标仓源码 ' + source, title);
   } else {
@@ -319,7 +393,10 @@ export async function reconcileRegistration(api, admin, repo, source, proposal, 
     await verifySource() === source && await readHead(api, admin.default_branch) === base,
   'Registration input changed before PR creation');
   const concurrent = await matchingPull(api, admin, id, path);
-  if (concurrent) return { result: 'reused', number: concurrent.number, differences, pending: proposal.pending };
+  if(concurrent) {
+    if(current&&needsReview)await notify(concurrent);
+    return {result:'reused',number:concurrent.number,differences,pending:proposal.pending};
+  }
   const { data: pull } = await api.rest.pulls.create({ ...args, head: branch, title, body, draft: true });
   return { result: 'created', number: pull.number, differences, pending: proposal.pending };
 }
@@ -337,7 +414,7 @@ async function withStewardAdmin(app, purpose, operation) {
   }, purpose);
 }
 
-async function applyRequests(ids, withGovernance, withAdmin, project) {
+async function applyRequests(ids, withGovernance, withAdmin, project, registryPush) {
   const outcomes = [];
   const errors = [];
   for (const id of ids) {
@@ -357,11 +434,18 @@ async function applyRequests(ids, withGovernance, withAdmin, project) {
             fresh.default_branch !== repo.default_branch) return null;
           return ref();
         };
-        if(project)await project(repo, source, observe, read, {currentSource});
-        const observed=await observe();
-        return withAdmin('registration-write', (api, admin) =>
-          reconcileRegistration(api, admin, repo, source, observed, currentSource));
-        });
+        let projectionConflict;
+        try {
+          if(project)await project(repo,source,observe,read,{currentSource,revokeMissing:registryPush});
+        } catch(error) {
+          if(!['REPOSITORY_POLICY_PROJECTION_PRODUCT_CI','REPOSITORY_POLICY_PROJECTION_PAGES'].includes(error.message))throw error;
+          projectionConflict=error;
+        }
+        const result=await withAdmin('registration-write', (api, admin) =>
+          reconcileRegistration(api,admin,repo,source,observe,currentSource,{registryPush}));
+        if(projectionConflict)throw projectionConflict;
+        return result;
+      });
       outcomes.push(outcome);
     } catch (error) { errors.push(error); }
   }
@@ -388,8 +472,8 @@ export async function runRegistration(mode, env, {
     const {withAdmin,project} = await openAdmin();
     const requested = await withAdmin('registration-read', (api, admin, token) =>
       loadPrivateRequest(api, admin, token, requestId, extract));
-    const ids=selectRegistrationTargets(requested,env.REGISTRATION_ALLOWED_IDS);
-    const result = await applyRequests(ids, withGovernance, withAdmin, project);
+    const ids=selectRegistrationTargets(requested.repositoryIds,env.REGISTRATION_ALLOWED_IDS);
+    const result=await applyRequests(ids,withGovernance,withAdmin,project,requested.event==='push');
     output.write('REGISTRATION_PROCESSED\n');
     return result;
   }
