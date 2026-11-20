@@ -25,7 +25,7 @@ export function prepareGovernance(snapshot) {
   const { base, team, members, governanceApp, installation, validationCheck, policySha, legacyCandidates = [] } = snapshot;
   if (!digest(policySha) || base?.id !== 18883080 || base.source_type !== 'Organization' || base.source !== 'splrad'
     || base.target !== 'branch' || !Array.isArray(base.rules) || !Array.isArray(base.bypass_actors)) fail('BASE');
-  if (!id(team?.id) || team.slug !== 'primary-account-approval-exception' || team.organization?.id !== 302208797
+  if (!id(team?.id) || team.slug !== 'stewardship' || team.organization?.id !== 302208797
     || !Array.isArray(members) || members.length !== 1 || members[0]?.id !== 44151430
     || members[0]?.login !== 'axiomoth' || members[0]?.type !== 'User') fail('TEAM');
   if (!id(governanceApp?.id) || governanceApp.id === 4243096 || governanceApp.slug !== 'splrad-governance'
