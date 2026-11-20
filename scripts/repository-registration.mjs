@@ -14,6 +14,7 @@ import { ciPath, deliveryPath, effectiveChannels, inspectRepository, jsonFile, p
   publishPath, versionsPath } from './configuration-view.mjs';
 import { productWorkflows, selectableProductCI } from './validation-input.mjs';
 import { checkedRegistration } from './repository-registration-policy.mjs';
+import { projectMergedRepositoryPolicy } from './repository-policy-publish.mjs';
 import { adminId, centralId, isGovernanceBot, loadPrivateRequest, makePrivateRequest, readWake,
   registrationEvent, wakePayload } from './repository-registration-request.mjs';
 
@@ -51,6 +52,40 @@ export function registrationIds(event, name) {
     ids.every(id => Number.isSafeInteger(id) && id > 0) &&
     (!['repository', 'create'].includes(payload.event) || ids.length === 1), 'Invalid registration targets');
   return ids;
+}
+
+export async function pushRegistrationIds(event, env, api) {
+  must(event.repository?.id === adminId && event.repository.full_name === 'splrad/steward-settings' &&
+    event.repository.private === true && event.repository.default_branch === 'main' &&
+    event.ref === 'refs/heads/main' && event.after === env.GITHUB_SHA && [event.before,event.after].every(sha) &&
+    !/^0{40}$/.test(event.before) && event.created === false && event.deleted === false && event.forced === false,
+  'Untrusted registration commit');
+  const target={owner:'splrad',repo:'steward-settings'};
+  const tree=async treeSha=>{
+    const {data}=await api.rest.git.getTree({...target,tree_sha:treeSha});
+    must(data.truncated===false && Array.isArray(data.tree) &&
+      new Set(data.tree.map(entry=>entry.path)).size===data.tree.length,'Incomplete registration tree');
+    return data.tree;
+  };
+  const inventory=async commit=>{
+    const directory=(await tree(commit)).find(entry=>entry.path==='repositories');
+    if(!directory)return new Map();
+    must(directory.type==='tree'&&directory.mode==='040000'&&sha(directory.sha),'Invalid registration directory');
+    const entries=(await tree(directory.sha)).filter(entry=>/^[1-9][0-9]*\.json$/.test(entry.path));
+    return new Map(entries.map(entry=>{
+      must(entry.type==='blob'&&entry.mode==='100644'&&sha(entry.sha),'Invalid registration file');
+      return [positive(entry.path.slice(0,-5)),entry.sha];
+    }));
+  };
+  const [before,after]=await Promise.all([event.before,event.after].map(inventory));
+  return [...after].filter(([id,digest])=>before.get(id)!==digest).map(([id])=>id).sort((a,b)=>a-b);
+}
+
+export function selectRegistrationTargets(ids, scope) {
+  if(!scope)return ids;
+  const allowed=scope.split(',').map(positive);
+  must(new Set(allowed).size===allowed.length,'Invalid registration scope');
+  return ids.filter(id=>allowed.includes(id));
 }
 
 function checkRepository(repo, id) {
@@ -249,7 +284,7 @@ async function withStewardAdmin(app, purpose, operation) {
   }, purpose);
 }
 
-async function applyRequests(ids, withGovernance, withAdmin) {
+async function applyRequests(ids, withGovernance, withAdmin, project) {
   const outcomes = [];
   const errors = [];
   for (const id of ids) {
@@ -259,7 +294,9 @@ async function applyRequests(ids, withGovernance, withAdmin) {
         const ref = () => readHead(sourceApi, repo.default_branch, true);
         const source = await ref();
         if (!source) return { result: 'awaiting-default-branch' };
-        const proposal = await registrationProposal(repo, revisionReader(sourceApi, source));
+        const read = revisionReader(sourceApi, source);
+        const proposal = await registrationProposal(repo, read);
+        if(project)await project(repo, source, proposal.policy, read, {currentSource:ref});
         return withAdmin('registration-write', (api, admin) =>
           reconcileRegistration(api, admin, repo, source, proposal, async () => {
             const { data } = await sourceApi.request('GET /repositories/{id}', { id });
@@ -281,7 +318,10 @@ export async function runRegistration(mode, env, {
     withScopedApp(env.GOVERNANCE_APP_PRIVATE_KEY, governance, id, permissions, operation),
   openAdmin = async () => {
     const app = await nativeReleaseApp(env.STEWARD_APP_PRIVATE_KEY ?? '');
-    return (purpose, operation) => withStewardAdmin(app, purpose, operation);
+    return {
+      withAdmin: (purpose, operation) => withStewardAdmin(app, purpose, operation),
+      project: (...args) => projectMergedRepositoryPolicy(app, ...args)
+    };
   },
   extract,
   output = process.stdout
@@ -289,16 +329,20 @@ export async function runRegistration(mode, env, {
   const event = JSON.parse(await readFile(env.GITHUB_EVENT_PATH, 'utf8'));
   if (mode === 'consume') {
     const requestId = readWake(event, env);
-    const withAdmin = await openAdmin();
-    const ids = await withAdmin('registration-read', (api, admin, token) =>
+    const {withAdmin,project} = await openAdmin();
+    const requested = await withAdmin('registration-read', (api, admin, token) =>
       loadPrivateRequest(api, admin, token, requestId, extract));
-    const result = await applyRequests(ids, withGovernance, withAdmin);
+    const ids=selectRegistrationTargets(requested,env.REGISTRATION_ALLOWED_IDS);
+    const result = await applyRequests(ids, withGovernance, withAdmin, project);
     output.write('REGISTRATION_PROCESSED\n');
     return result;
   }
 
-  const ids = registrationIds(event, env.GITHUB_EVENT_NAME);
+  const ids = env.GITHUB_EVENT_NAME === 'push'
+    ? await pushRegistrationIds(event, env, new Octokit({...githubOptions,auth:env.REGISTRATION_ADMIN_TOKEN}))
+    : registrationIds(event, env.GITHUB_EVENT_NAME);
   if (mode === 'prepare') {
+    if(ids.length===0 && env.GITHUB_EVENT_NAME==='push')return;
     const request = makePrivateRequest(randomUUID(), ids, env);
     await writeFile(env.REGISTRATION_REQUEST_PATH, JSON.stringify(request) + '\n', { flag: 'wx', mode: 0o600 });
     await appendFile(env.GITHUB_OUTPUT, 'id=' + request.requestId + '\n');

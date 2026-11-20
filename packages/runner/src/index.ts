@@ -23,6 +23,7 @@ export { splitContentText, releaseAffectedUnitIds } from '../../core/src/release
 export { inspectCycleHistory, verifyFrozenReceipts, completionFile } from './release-history.js';
 export { inspectPublications, invokePublication } from './release-publication.js';
 export { decodeReleaseRecord, decodeStateFile, stateRecordOwner, assertRepositoryWrite } from '../../core/src/release-observation.js';
+export { decodeRepositoryPolicyProjection, repositoryPolicyDigest, repositoryPolicyPath, repositoryPolicyBranch } from '../../core/src/repository-policy-projection.js';
 export { inspectNativeCycle, recoverNativeCycle, archiveFile, nativeReadFile, nativeEvidenceTransport } from './native-release-evidence.js';
 export { isolatedBuildEnvironment } from './build-environment.js';
 export { decodeBuildJson } from '../../core/src/build-manifest.js';

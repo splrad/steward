@@ -1,18 +1,23 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {execFileSync} from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
-import { registrationEntry, registrationIds, registrationProposal, reconcileRegistration } from '../repository-registration.mjs';
+import { registrationEntry, registrationIds, pushRegistrationIds, selectRegistrationTargets, registrationProposal, reconcileRegistration } from '../repository-registration.mjs';
 import { requestFile } from '../repository-registration-request.mjs';
 import { checkedRegistration } from '../repository-registration-policy.mjs';
 import { assertInputScope, assertGovernanceOnlyScope } from '../private-dependency-policy.mjs';
-import { requiresProductCI } from '../validation-input.mjs';
+import { requiresProductCI, selectedProductWorkflows } from '../validation-input.mjs';
 import {readRepositoryPolicy} from '../repository-policy-read.mjs';
 import {main as runLegacyConfiguration} from '../repository-configuration.mjs';
 import {releasePolicyGuard} from '../release-repository-policy.mjs';
 import {servicePages} from '../pages-maintenance.mjs';
+import {projectionBytes,readRepositoryProjection} from '../repository-policy-projection.mjs';
+import {projectMergedRepositoryPolicy} from '../repository-policy-publish.mjs';
+import {workflowPagesOptions} from '../select-pages-source.mjs';
+import {writeReleaseRecords} from '../release-record.mjs';
 
 const admin = { id:1447987054, full_name:'splrad/steward-settings', default_branch:'main', private:true };
 const org = { id:302208797, login:'splrad' };
@@ -48,6 +53,129 @@ const body = (event, action, repository_ids) => ({
 });
 const event = payload => ({repository:admin,action:'settings-source-event',
   sender:{id:353238212,login:'splrad-governance[bot]',type:'Bot'},client_payload:payload});
+
+test('a trusted GitHub push publishes only changed merged settings records by exact Git tree',async()=>{
+  const payload={repository:admin,ref:'refs/heads/main',before:base,after:source,created:false,deleted:false,forced:false,
+    commits:[{modified:['repositories/99.json']}]};
+  const newTree='d'.repeat(40);
+  const leaves=(id,sha)=>({path:id+'.json',mode:'100644',type:'blob',sha});
+  const trees=new Map([[base,[{path:'repositories',type:'tree',mode:'040000',sha:candidate}]],
+    [source,[{path:'repositories',type:'tree',mode:'040000',sha:newTree}]],
+    [candidate,[leaves(product.id,candidate),leaves(governance.id,base)]],
+    [newTree,[leaves(product.id,source),leaves(governance.id,base),leaves(123,base)]]]);
+  const api={rest:{git:{getTree:async({tree_sha})=>({data:{truncated:false,tree:trees.get(tree_sha)}})}}};
+  assert.deepEqual(await pushRegistrationIds(payload,{GITHUB_SHA:source},api),[123,product.id]);
+  assert.deepEqual(selectRegistrationTargets([123,product.id],String(product.id)),[product.id]);
+  assert.throws(()=>selectRegistrationTargets([product.id],'bad'),/Invalid numeric identity/);
+  await assert.rejects(pushRegistrationIds({...payload,forced:true},{GITHUB_SHA:source},api),/Untrusted registration/);
+});
+
+test('product reads only selected CI and Pages from protected state, with digest and native approval checks',async()=>{
+  const {policy}=await propose(product,productFiles);
+  const content=projectionBytes({...policy,adoption:'central',site:{workflow:pages,mode:'build-and-deploy',source:'default-branch'}});
+  assert.ok(!content.includes('splrad/')&&!content.includes('github-release')&&!content.includes('channels'));
+  const bytes=Buffer.from(content),path='configuration/repository.json';
+  const blob=createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+  let protectedRules=true,reads=0,drift=false;
+  const reader={path:value=>value,io:{request:async()=>({status:200,bytes:Buffer.from(JSON.stringify({
+    ref:'refs/heads/steward/governance-state',object:{type:'commit',sha:drift&&reads++?source:base}
+  }))})},json:async route=>{
+    if(route==='git/trees/'+base)return {truncated:false,tree:[{path:'configuration',type:'tree',mode:'040000',sha:candidate}]};
+    if(route==='git/trees/'+candidate)return {truncated:false,tree:[{path:'repository.json',type:'blob',mode:'100644',sha:blob}]};
+    if(route.startsWith('rules/'))return protectedRules?
+      [['creation',26678448],['update',26678448],['non_fast_forward',26678449],['deletion',26678449]]
+        .map(([type,ruleset_id])=>({type,ruleset_id})):[];
+    assert.equal(route,'contents/'+path+'?ref='+base);
+    return {type:'file',path,encoding:'base64',sha:blob,size:bytes.length,content:bytes.toString('base64')};
+  }};
+  const selection=await readRepositoryProjection(reader,product.id);
+  assert.deepEqual(selectedProductWorkflows(selection,[ci,'.github/workflows/unselected.yml'],true),[ci]);
+  assert.throws(()=>selectedProductWorkflows(selection,[],true),/PRODUCT_CI_REPOSITORY_POLICY/);
+  assert.deepEqual(selectedProductWorkflows({...selection,adoption:'paused'},[ci,'draft'],true),[ci,'draft']);
+  const env={STEWARD_REPOSITORY_POLICY:'true',GITHUB_REPOSITORY_ID:String(product.id)};
+  const built=await workflowPagesOptions(reader,env,async()=>selection);
+  assert.equal(built.options.mode,'default-branch');
+  assert.equal(built.publicAllowed,false);
+  assert.equal(built.options.buildOnly,true);
+  assert.equal((await workflowPagesOptions(reader,{...env,STEWARD_DOCS_SOURCE:'default-branch'},async()=>selection)).publicAllowed,true);
+  assert.equal((await workflowPagesOptions(reader,{...env,STEWARD_DOCS_SOURCE:'default-branch'},async()=>({...selection,site:null}))).options.mode,'');
+  await assert.rejects(readRepositoryProjection(reader,1),/PROJECTION_INVALID/);
+  protectedRules=false;
+  await assert.rejects(readRepositoryProjection(reader,product.id),/PROJECTION_PROTECTION/);
+  protectedRules=true;drift=true;
+  await assert.rejects(readRepositoryProjection(reader,product.id),/PROJECTION_MOVED/);
+});
+
+test('projection writer uses one path, scoped credentials and reads back only approved bytes',async()=>{
+  const {policy}=await propose(product,productFiles);
+  const selected={...policy,adoption:'paused'};
+  const app={forRepository:async(id,operation,purpose)=>{
+    assert.equal(id,product.id);assert.equal(purpose,'registry-projection');return operation('test-writer');
+  }};
+  let bytes=null,writes=0,head=base;
+  const path='configuration/repository.json',unrelated='quality/1/'+source+'.md';
+  const ports={
+    currentSource:async()=>source,getPolicy:async()=>({commit:head,policy:selected}),
+    getState:async()=>({remote:'/fixture',snapshot:{head:base,currentPaths:bytes?[unrelated,path]:[unrelated]},
+      readBytes:async selectedPath=>{assert.equal(selectedPath,path);return bytes;}}),
+    write:async(request,{token})=>{
+      assert.equal(token,'test-writer');assert.equal(request.writer,'configuration');
+      assert.deepEqual(request.allowedPaths,[path]);
+      assert.equal(request.changes[0].previousSha256,null);
+      writes++;bytes=Buffer.from(request.changes[0].content);return {status:'APPLIED'};
+    }
+  };
+  const run=override=>projectMergedRepositoryPolicy(app,product,source,policy,path=>productFiles.get(path),{...ports,...override});
+  assert.equal(await run(),'APPLIED');
+  assert.equal(await run(),'UNCHANGED');
+  assert.equal(writes,1);
+  assert.equal(JSON.parse(bytes).adoption,'paused');
+  bytes=null;
+  await assert.rejects(run({currentSource:async()=>candidate}),/PROJECTION_MOVED/);
+  assert.equal(writes,1);
+});
+
+test('native projection writer preserves a concurrent quality record on the same branch',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'registry-projection-git-'));
+  const remote=join(root,'payload.git'),checkout=join(root,'setup'),branch='steward/governance-state';
+  const git=(...args)=>execFileSync('git',args,{cwd:root,encoding:'utf8',windowsHide:true}).trim();
+  const state=(...args)=>git('--git-dir='+remote,...args);
+  const local=(...args)=>git('-C',checkout,...args);
+  const commit=message=>local('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','-c','commit.gpgsign=false','commit','-m',message);
+  try {
+    git('init','--bare',remote);
+    git('init','--initial-branch=main',checkout);
+    local('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','-c','commit.gpgsign=false','commit','--allow-empty','-m','seed');
+    local('push',remote,'HEAD:refs/heads/main','HEAD:refs/heads/'+branch);
+    const old=local('rev-parse','HEAD');
+    const {policy}=await propose(product,productFiles);
+    const app={forRepository:(_id,operation)=>operation('fixture')};
+    const result=await projectMergedRepositoryPolicy(app,product,source,policy,path=>productFiles.get(path),{
+      getPolicy:async()=>({commit:base,policy}),currentSource:async()=>source,
+      getState:async()=>{
+        const head=state('rev-parse','refs/heads/'+branch);
+        const paths=state('ls-tree','-r','--name-only',head).split(/\r?\n/).filter(Boolean);
+        return {remote,snapshot:{head,currentPaths:paths},readBytes:async path=>Buffer.from(
+          execFileSync('git',['--git-dir='+remote,'show',head+':'+path]))};
+      },
+      write:async request=>{
+        assert.equal(request.expectedHead,old);
+        const path='quality/1/'+source+'.md';
+        const file=join(checkout,path);
+        await mkdir(dirname(file),{recursive:true});
+        await writeFile(file,'existing quality result\n');
+        local('add','--',path);commit('independent quality update');
+        local('push',remote,'HEAD:refs/heads/'+branch);
+        return writeReleaseRecords(request);
+      }
+    });
+    assert.equal(result,'APPLIED');
+    assert.equal(state('show',branch+':quality/1/'+source+'.md'),'existing quality result');
+    assert.equal(JSON.parse(state('show',branch+':configuration/repository.json')).repositoryId,product.id);
+  } finally {
+    await rm(root,{recursive:true,force:true});
+  }
+});
 
 test('reads policy only from a stable protected administrator main and proves missing entries',async()=>{
   const {policy}=await propose(product,productFiles);
@@ -383,10 +511,10 @@ test('private workflow to public controller replays both registration cases with
       };
       const options={
         withGovernance,
-        openAdmin:async()=>async (purpose,operation)=>{
+        openAdmin:async()=>({withAdmin:async (purpose,operation)=>{
           scopes.push(purpose);
           return operation(purpose==='registration-read'?readApi:api,admin,purpose);
-        },
+        }}),
         extract:async (artifact,destination,token)=>{
           assert.deepEqual(artifact,currentArtifact);
           assert.equal(destination.id,admin.id);

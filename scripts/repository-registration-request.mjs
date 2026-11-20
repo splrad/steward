@@ -11,7 +11,7 @@ export const registrationEvent = 'steward-registration-request';
 export const requestFile = 'repository-registration.json';
 const maxRequestBytes = 1024 * 1024;
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
-const types = ['repository_dispatch', 'workflow_dispatch'];
+const types = ['repository_dispatch', 'workflow_dispatch', 'push'];
 const exact = (value, keys) => value && !Array.isArray(value) && typeof value === 'object' &&
   Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 export const isGovernanceBot = actor => actor?.id === 353238212 &&
@@ -96,7 +96,8 @@ export async function loadPrivateRequest(api, admin, token, requestId, extract =
     run.path === registrationWorkflow && run.event === request.event && run.repository?.id === adminId &&
     run.head_repository?.id === adminId && run.head_branch === 'main' && run.head_sha === request.sourceSha &&
     (request.event === 'repository_dispatch' ? isGovernanceBot(run.actor) :
-      run.actor?.type === 'User' && Number.isSafeInteger(run.actor.id) && run.actor.id > 0),
+      (run.actor?.type === 'User' || request.event === 'push' && run.actor?.type === 'Bot') &&
+      Number.isSafeInteger(run.actor.id) && run.actor.id > 0),
   'Untrusted registration producer run');
   return validIds(request.repositoryIds);
 }

@@ -17,12 +17,13 @@ export async function nativeReleaseApp(privateKey: string, transport: typeof fet
   if(installation.account?.id!==302208797 || installation.app_id!==4243096 || installation.suspended_at)throw new Error('RELEASE_INSTALLATION_IDENTITY');
   const bot=(await new Octokit(options).request('GET /users/{username}',{username:`${appFact.slug}[bot]`})).data;
   if(bot.id!==301115370 || bot.type!=='Bot')throw new Error('RELEASE_APP_BOT_IDENTITY');
-  const token=async(repositoryId?:number,kind:'release'|'candidate'|'candidate-read'|'quality'|'template'|'template-read'|'pages'|'maintenance'|'maintenance-rules'|'configuration-actions'|'configuration-read'|'configuration-issues'|'registration-read'|'registration-write'|'registry-read'='release')=>{
+  const token=async(repositoryId?:number,kind:'release'|'candidate'|'candidate-read'|'quality'|'template'|'template-read'|'pages'|'maintenance'|'maintenance-rules'|'configuration-actions'|'configuration-read'|'configuration-issues'|'registration-read'|'registration-write'|'registry-read'|'registry-projection'='release')=>{
     // GitHub exposes organization ruleset bypass actors only to organization rule managers.
     // Trusted rule readers request that capability explicitly; discovery and generation do not.
     const permissions=kind==='maintenance-rules'?{metadata:'read',organization_administration:'write'}
       :kind==='registration-read'?{metadata:'read',contents:'read',actions:'read'}
       :kind==='registry-read'?{metadata:'read',contents:'read'}
+      :kind==='registry-projection'?{metadata:'read',contents:'write',administration:'read',organization_administration:'write'}
       :kind==='registration-write'?{metadata:'read',contents:'write',pull_requests:'write'}
       :kind==='configuration-read'?{metadata:'read',contents:'read',pull_requests:'read',actions:'read'}
       :kind==='configuration-actions'?{metadata:'read',actions:'write'}
@@ -126,7 +127,7 @@ export async function nativeReleaseApp(privateKey: string, transport: typeof fet
       }
       throw new Error('RELEASE_INSTALLATION_INCOMPLETE');
     }finally {await credential.revoke();}
-  },async forRepository<T>(repositoryId:number,operation:(token:string)=>Promise<T>,purpose:'release'|'maintenance'|'maintenance-rules'|'configuration-actions'|'configuration-issues'|'registration-read'|'registration-write'|'registry-read'='release'):Promise<T>{
+  },async forRepository<T>(repositoryId:number,operation:(token:string)=>Promise<T>,purpose:'release'|'maintenance'|'maintenance-rules'|'configuration-actions'|'configuration-issues'|'registration-read'|'registration-write'|'registry-read'|'registry-projection'='release'):Promise<T>{
     if(!Number.isSafeInteger(repositoryId)||repositoryId<1)throw new Error('RELEASE_REPOSITORY_ID');
     if(purpose==='maintenance'&&repositoryId!==1296724484)throw new Error('MAINTENANCE_REPOSITORY_ID');
     if((purpose==='registration-read'||purpose==='registration-write'||purpose==='registry-read')&&repositoryId!==1447987054)

@@ -140,4 +140,5 @@ jobs:
           GOVERNANCE_APP_PRIVATE_KEY: ${{ secrets.GOVERNANCE_APP_PRIVATE_KEY }}
           STEWARD_APP_PRIVATE_KEY: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
           REGISTRATION_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          REGISTRATION_ALLOWED_IDS: ${{ vars.STEWARD_REPOSITORY_REGISTRATION_IDS }}
         run: node scripts/repository-registration.mjs consume

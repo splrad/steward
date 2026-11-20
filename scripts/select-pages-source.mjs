@@ -7,6 +7,7 @@ import {Version} from 'release-please/build/src/version.js';
 import {TagName} from 'release-please/build/src/util/tag-name.js';
 import {NativeEvidenceReader,nativeEvidenceTransport,nativeGhCommand,nativeReleaseDownload,NativeGitHubRelease,
   parseDeliveryConfig,deliveryAssetNames,validateProductManifest} from '../packages/runner/dist/index.js';
+import {readRepositoryProjection} from './repository-policy-projection.mjs';
 
 const check=(ok,code)=>{if(!ok)throw Error('PAGES_'+code);};
 const positive=n=>Number.isSafeInteger(n)&&n>0;
@@ -152,14 +153,30 @@ export async function selectPagesSource(options,event,ports) {
   const desired=await desiredPagesSource(options,ports);
   return desired.status==='READY'?admitPagesEvent(desired.source,event):desired;
 }
-export async function selectWorkflowPagesSource(reader,env,payload,ports) {
+export async function workflowPagesOptions(reader,env,read=readRepositoryProjection) {
   const options={reader,repositoryId:Number(env.GITHUB_REPOSITORY_ID),mode:env.STEWARD_DOCS_SOURCE??'',
     unitId:env.STEWARD_DOCS_UNIT??'',controllerSha:env.STEWARD_CONTROLLER_SHA,
     buildOnly:env.STEWARD_PAGES_BUILD_ONLY==='true'};
+  let publicAllowed=Boolean(options.mode)&&!options.buildOnly;
+  if(env.STEWARD_REPOSITORY_POLICY==='true') {
+    const projection=await read(reader,options.repositoryId);
+    if(projection?.adoption==='central') {
+      const site=projection.site;
+      publicAllowed=Boolean(site&&site.mode==='build-and-deploy'&&!options.buildOnly&&site.source===options.mode
+        &&(site.source!=='release'||site.unit===options.unitId));
+      options.mode=site?.source??'';
+      options.unitId=site?.unit??'';
+      options.buildOnly=!publicAllowed;
+    }
+  }
   if(options.mode==='release') {
     // Same confirmed App bot identity as nativeReleaseApp; the repository transport is deliberately repo-scoped.
     options.appBotId=301115370;
   }
+  return {options,publicAllowed};
+}
+export async function selectWorkflowPagesSource(reader,env,payload,ports={}) {
+  const {options}=ports.context??await workflowPagesOptions(reader,env,ports.readPolicy);
   const event={name:env.GITHUB_EVENT_NAME,repositoryId:options.repositoryId,repository:reader.repository,
     sha:env.GITHUB_SHA,ref:env.GITHUB_REF,payload};
   const {currentPagesSource}=await import('./pages-runtime.mjs');
@@ -170,10 +187,12 @@ export async function selectWorkflowPagesSource(reader,env,payload,ports) {
 async function main() {
   check(process.argv.length===2,'ARGUMENTS');
   const reader=new NativeEvidenceReader(nativeEvidenceTransport(process.env.GH_TOKEN),process.env.GITHUB_REPOSITORY);
-  const result=await selectWorkflowPagesSource(reader,process.env,json(await readFile(process.env.GITHUB_EVENT_PATH)));
+  const context=await workflowPagesOptions(reader,process.env);
+  const result=await selectWorkflowPagesSource(reader,process.env,json(await readFile(process.env.GITHUB_EVENT_PATH)),{context});
   await writeFile('pages-source.json',JSON.stringify(result,null,2)+'\n');
   if(process.env.GITHUB_OUTPUT) {
     const values={ready:String(result.status==='READY'),source:result.source?JSON.stringify(result.source):'',
+      public_source:String(result.status==='READY'&&context.publicAllowed),
       source_sha:result.source?.sourceSha??'',input_digest:result.source?.inputDigest??''};
     await appendFile(process.env.GITHUB_OUTPUT,Object.entries(values).map(([k,v])=>`${k}=${v}\n`).join(''));
   }

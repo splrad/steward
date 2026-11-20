@@ -8,6 +8,8 @@ import {pathToFileURL} from 'node:url';
 import {loadPolicy,dependencyMode,assertGovernanceOnlyScope,configurationCallers} from './private-dependency-policy.mjs';
 import {checkedRegistration,registrationPath,registrationWorkflow} from './repository-registration-policy.mjs';
 import {assertLifecycleScope} from './private-lifecycle-policy.mjs';
+import {NativeEvidenceReader,nativeEvidenceTransport} from '../packages/runner/dist/index.js';
+import {readRepositoryProjection} from './repository-policy-projection.mjs';
 const check=(ok,code)=>{if(!ok)throw Error('VALIDATION_'+code);};
 export function git(workspace,args) {
   return execFileSync('git',['--no-replace-objects','-c','core.hooksPath=','-c','credential.helper=',...args],
@@ -109,17 +111,27 @@ export async function validationInput(workspace,env=process.env) {
   const files=git(workspace,['ls-files','-z']).toString('utf8').split('\0').filter(Boolean);
   const policy=await loadPolicy();
   const dependency=dependencyMode(event,policy,env.PRIVATE_GOVERNANCE_REPOSITORY_ID);
-  if(dependency==='private-administrator')for(const path of files) {
-    const registered=registrationPath.exec(path);
-    if(registered)checkedRegistration(JSON.parse(await readFile(await regular(workspace,path),'utf8')),Number(registered[1]));
+  if(dependency==='private-administrator') {
+    for(const path of files) {
+      const registered=registrationPath.exec(path);
+      if(registered)checkedRegistration(JSON.parse(await readFile(await regular(workspace,path),'utf8')),Number(registered[1]));
+    }
+    for(const path of changedPaths.filter(path=>registrationPath.test(path)&&!files.includes(path))) {
+      const previous=checkedRegistration(JSON.parse(git(workspace,['show',base+':'+path]).toString('utf8')),Number(registrationPath.exec(path)[1]));
+      check(!previous.adoption||previous.adoption==='legacy','REPOSITORY_POLICY_ROLLBACK_REQUIRED');
+    }
   }
   // Reject product inputs before scope outputs can schedule any candidate build.
   if(dependency==='private-governance')assertGovernanceOnlyScope(files);
   if(dependency==='private-lifecycle')assertLifecycleScope(files);
   const declaration='.github/product-ci.json';
   const productApplicable=files.includes(declaration)||requiresProductCI(files,dependency,policy.administrators.find(item=>item.repositoryId===repositoryId));
-  const workflows=files.includes(declaration)
+  const available=files.includes(declaration)
     ? productWorkflows(JSON.parse(await readFile(await regular(workspace,declaration),'utf8')),files) : [];
+  const selection=env.REPOSITORY_POLICY_TOKEN&&event.repository.full_name.startsWith('splrad/')
+    ? await readRepositoryProjection(new NativeEvidenceReader(nativeEvidenceTransport(env.REPOSITORY_POLICY_TOKEN),event.repository.full_name),repositoryId)
+    : null;
+  const workflows=selectedProductWorkflows(selection,available,productApplicable);
   const boundNames=[];
   for(const path of workflows){
     const workflow=YAML.parse(await readFile(await regular(workspace,path),'utf8'));
@@ -129,7 +141,13 @@ export async function validationInput(workspace,env=process.env) {
     check(!gap && workflowEvent(triggers,type,event.action),'PRODUCT_CI_TRIGGER '+path+' '+gap);
     if(workflow['run-name']===forkRunName)boundNames.push(path);
   }
-  return {input,files,productApplicable,workflows,boundNames,dependencyMode:dependency};
+  return {input,files,productApplicable,workflows,boundNames,dependencyMode:dependency,
+    ...(selection?{repositoryPolicy:{adoption:selection.adoption,sourceDigest:selection.sourceDigest}}:{})};
+}
+export function selectedProductWorkflows(selection,available,productApplicable) {
+  if(selection?.adoption!=='central')return available;
+  check(selection.productCi.every(path=>available.includes(path))&&(!productApplicable||selection.productCi.length>0),'PRODUCT_CI_REPOSITORY_POLICY');
+  return selection.productCi;
 }
 export async function main(env=process.env) {
   const workspace=resolve(env.VALIDATION_WORKSPACE??'target'),value=await validationInput(workspace,env);

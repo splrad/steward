@@ -3,7 +3,7 @@ import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import YAML from 'yaml';
 import {NativeEvidenceReader,nativeEvidenceTransport,validatePagesSource,jobFact,nativeJobOrigins} from '../packages/runner/dist/index.js';
-import {desiredPagesSource,pagesContent,pagesInputDigest,pagesWorkflow} from './select-pages-source.mjs';
+import {desiredPagesSource,pagesContent,pagesInputDigest,pagesWorkflow,workflowPagesOptions} from './select-pages-source.mjs';
 
 const check=(v,code)=>{if(!v)throw Error('PAGES_'+code);};
 const positive=v=>Number.isSafeInteger(v)&&v>0;
@@ -132,13 +132,12 @@ async function main() {
   const source=validatePagesSource(JSON.parse(process.env.PAGES_SOURCE));
   check(reader.repository===source.repository&&Number(process.env.GITHUB_REPOSITORY_ID)===source.repositoryId
     &&process.env.STEWARD_CONTROLLER_SHA===source.controllerSha&&process.env.GITHUB_SHA===source.sourceSha&&process.env.GITHUB_REF===source.ref,'INVOCATION');
-  const options={reader,repositoryId:source.repositoryId,mode:process.env.STEWARD_DOCS_SOURCE??'',unitId:process.env.STEWARD_DOCS_UNIT??'',controllerSha:source.controllerSha};
-  if(options.mode==='release') {
-    options.appBotId=301115370;
-  }
   const invocation={runId:Number(process.env.GITHUB_RUN_ID),attempt:Number(process.env.GITHUB_RUN_ATTEMPT),artifactId:Number(process.env.PAGES_ARTIFACT_ID)};
   let result;
-  if(process.argv[2]==='check')result=await preflightPages({reader,source,options,invocation});
+  if(process.argv[2]==='check')result=await preflightPages({reader,source,invocation},{currentSource:async()=>{
+    const {options,publicAllowed}=await workflowPagesOptions(reader,process.env);
+    return publicAllowed?currentPagesSource(options):{status:'DISABLED'};
+  }});
   else {
     const prior=JSON.parse(await readFile('pages-evidence.json','utf8'));check(prior.status==='READY'&&same(prior.source,source),'PREFLIGHT_RECORD');
     const deployment=await pagesDeployment(reader,source,{runId:invocation.runId,attempt:invocation.attempt,completed:true});
