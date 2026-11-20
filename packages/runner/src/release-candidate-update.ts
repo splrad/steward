@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { setTimeout as delay } from 'node:timers/promises';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -296,23 +297,38 @@ export async function pushPreparedCandidate(workspace: string, remote: string, b
     catch { throw new Error('CANDIDATE_PUSH_UNKNOWN'); }
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
-export async function resumeCandidateWrite(prepared: PreparedCandidateWrite, port: CandidateWritePort) {
-  const reconcile = async () => {
-    const current = await port.read();
+export async function resumeCandidateWrite(prepared: PreparedCandidateWrite, port: CandidateWritePort, wait: (ms: number) => Promise<void> = delay) {
+  const reconcile = async (current: Awaited<ReturnType<CandidateWritePort['read']>>) => {
     if (current.head && (current.head === prepared.proposedCommit || await port.isAncestor(prepared.proposedCommit, current.head))) {
       await port.finish(prepared, current.head); return { status: 'APPLIED' as const, head: current.head };
     }
     return { status: 'PENDING' as const, current };
   };
-  const first = await reconcile(); if (first.status === 'APPLIED') return first;
+  const first = await reconcile(await port.read()); if (first.status === 'APPLIED') return first;
   if (first.current.closed) return { status: 'CLOSED' as const };
   if (first.current.editing) return { status: 'EDITING' as const, head: first.current.head };
   if (first.current.head !== prepared.expectedHead || first.current.baseSha !== prepared.baseSha) return { status: 'CONFLICT' as const };
   await port.persistPending(prepared);
-  const last = await reconcile(); if (last.status === 'APPLIED') return last;
+  const last = await reconcile(await port.read()); if (last.status === 'APPLIED') return last;
   if (last.current.closed || last.current.editing || last.current.head !== prepared.expectedHead || last.current.baseSha !== prepared.baseSha)
     return { status: 'CHANGED_BEFORE_PUSH' as const };
   try { await port.push(prepared); } catch { /* Native readback decides whether a lost response was accepted. */ }
-  const result = await reconcile();
-  return result.status === 'APPLIED' ? result : { status: 'UNKNOWN' as const };
+  // Immediately after a push the PR, REST ref, and Git transport can still show different heads.
+  // Only poll observations. A lost write response never authorizes a second push.
+  const readbackDelays = [0, 1000, 3000, 8000];
+  for (const [index, pause] of readbackDelays.entries()) {
+    if (pause) await wait(pause);
+    let current: Awaited<ReturnType<CandidateWritePort['read']>>;
+    try {
+      current = await port.read();
+    } catch (error) {
+      if (!(error instanceof Error) || !['CANDIDATE_PR_HEAD_DRIFT', 'CANDIDATE_REF_DRIFT'].includes(error.message)) throw error;
+      if (index + 1 === readbackDelays.length) throw error;
+      continue;
+    }
+    const result = await reconcile(current);
+    if (result.status === 'APPLIED') return result;
+    if (current.closed || current.editing || current.head !== prepared.expectedHead || current.baseSha !== prepared.baseSha) break;
+  }
+  return { status: 'UNKNOWN' as const };
 }

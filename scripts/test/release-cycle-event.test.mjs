@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import Handlebars from 'handlebars';
 import YAML from 'yaml';
-import { advanceEvent, validateEvent } from '../release-cycle-event.mjs';
+import { advanceEvent, validateEvent, publicCycleError } from '../release-cycle-event.mjs';
 import { product, sha256 } from '../bounded-candidate-contract.mjs';
 const source='a'.repeat(40), later='b'.repeat(40);
 const push=sourceSha=>({kind:'push',repositoryId:product.id,sourceSha});
@@ -162,4 +162,11 @@ test('channel results link the frozen product and package',()=>{
   assert.equal(channelResultUrl('Example/CLI',delivery,item),'https://github.com/Example/CLI/pkgs/container/tools%2Fcli');
   delivery.units[0].channels[0].required=false;
   assert.throws(()=>channelResultUrl('Example/CLI',delivery,item));
+});
+
+test('reports fixed readback failures without including arbitrary exception details',()=>{
+  for(const code of ['CYCLE_ACTOR','BOUNDED_RUN_SOURCE','CANDIDATE_REF_DRIFT','CANDIDATE_PR_HEAD_DRIFT','CANDIDATE_STATE_CONFLICT'])
+    assert.equal(publicCycleError(new Error(code)),code);
+  for(const error of [null,new Error('CANDIDATE_PR_HEAD_DRIFT: repo details'),new Error('network response details')])
+    assert.equal(publicCycleError(error),'CYCLE_EVENT_STOPPED');
 });
