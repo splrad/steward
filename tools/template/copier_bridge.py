@@ -13,6 +13,9 @@ from packaging.version import Version, InvalidVersion
 
 SOURCE = 'https://github.com/splrad/steward.git'
 INTERNAL = {'_min_copier_version', '_subdirectory', '_answers_file'}
+LEGACY_CONFIGURATION = ('.github/repository-configuration.md',
+                        '.github/workflows/repository-configuration-trial.yml',
+                        '.github/workflows/repository-configuration.yml')
 FORBIDDEN = {'VERSION', 'CHANGELOG.md', 'package.json', 'package-lock.json',
              '.github/workflows/actions.lock',
              '.release-please-manifest.json', 'release-please-config.json',
@@ -90,6 +93,14 @@ def select_template(central, controller):
         return selected
 
 
+def configuration_excluded(config):
+    if '_exclude' not in config:
+        return False
+    require(config['_exclude'] == ['/' + path for path in LEGACY_CONFIGURATION],
+            'TEMPLATE_EXCLUSION_POLICY')
+    return True
+
+
 def contract(central, sha, data, env):
     version = revision(central, sha, env)
     raw = git(central, ['show', sha + ':copier.yml'], env)
@@ -97,10 +108,11 @@ def contract(central, sha, data, env):
     require(isinstance(config, dict) and config.get('_subdirectory') == 'templates/repository'
             and config.get('_answers_file') == '.copier-answers.yml', 'TEMPLATE_CONFIG')
     questions = {}
+    excluded = configuration_excluded(config)
     for key, value in config.items():
         require(isinstance(key, str), 'TEMPLATE_CONFIG_KEY')
         if key.startswith('_'):
-            require(key in INTERNAL, 'TEMPLATE_EXECUTION_SETTING')
+            require(key in INTERNAL or key == '_exclude', 'TEMPLATE_EXECUTION_SETTING')
         else:
             require(re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', key) and isinstance(value, dict), 'TEMPLATE_QUESTION')
             require(set(value) <= {'type', 'default', 'help', 'choices'}, 'TEMPLATE_QUESTION_SETTING')
@@ -122,6 +134,8 @@ def contract(central, sha, data, env):
         git(central, ['cat-file', 'blob', oid], env).decode('utf-8', errors='strict')
         paths.add(target)
     require('.copier-answers.yml' in paths and 'AGENTS.md' in paths, 'TEMPLATE_REQUIRED_FILES')
+    if excluded:
+        paths.difference_update(LEGACY_CONFIGURATION)
     return version, questions, paths
 
 
@@ -183,6 +197,8 @@ def render(central, target, sha, mode, data=None):
         after = paths_in_tree(target)
         require(not any(p.endswith('.rej') for p in after), 'TEMPLATE_CONFLICT')
         changed = {p for p in before.keys() | after.keys() if before.get(p) != after.get(p)}
+        if new_paths.isdisjoint(LEGACY_CONFIGURATION):
+            require(changed.isdisjoint(LEGACY_CONFIGURATION), 'TEMPLATE_LEGACY_CONFIGURATION_CHANGED')
         require(changed <= old_paths | new_paths, 'TEMPLATE_DIFF_PATH')
         for path in changed & after.keys():
             require(not re.search(rb'(?m)^(?:<{7}|={7}|>{7})(?: |$)', after[path]), 'TEMPLATE_CONFLICT')

@@ -36,16 +36,19 @@ it('refuses shared write/read credentials before resolving tools or starting del
     {resolveTool:async()=>{resolved=true;throw Error('not allowed');}})).rejects.toThrow('TEMPLATE_CREDENTIAL_BOUNDARY');
   expect(resolved).toBe(false);
 });
-it('does not promote an incomplete child result to successful delivery',async()=>{
+it.each([
+  ['WAIT_REF_READBACK','TEMPLATE_DELIVERY_INCOMPLETE'],
+  ['PENDING_LEGACY_CONFIGURATION','PENDING_LEGACY_CONFIGURATION']
+])('reports an incomplete child result %s',async(status,reason)=>{
   const {deliverRepositoryTemplate}=await import(pathToFileURL(resolve('scripts/template-delivery.mjs')).href);
   const root=await mkdtemp(join(tmpdir(),'template-wrapper-test-'));
   try {
     const spawnChild=(_exe:string,args:string[])=>{
       const child=new EventEmitter();queueMicrotask(async()=>{
-        await writeFile(args[args.indexOf('--output')+1]!,JSON.stringify({status:'WAIT_REF_READBACK'}));child.emit('close',1);
+        await writeFile(args[args.indexOf('--output')+1]!,JSON.stringify({status}));child.emit('close',1);
       });return child;
     };
     await expect(deliverRepositoryTemplate({}, {writeToken:'write',readToken:'read',centralReadToken:'central'},
-      {root,resolveTool:async(name:string)=>name,spawnChild})).rejects.toThrow('TEMPLATE_DELIVERY_INCOMPLETE');
+      {root,resolveTool:async(name:string)=>name,spawnChild})).rejects.toThrow(reason);
   }finally{await rm(root,{recursive:true,force:true});}
 });

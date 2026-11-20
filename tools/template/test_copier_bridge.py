@@ -123,6 +123,38 @@ class CopierTests(unittest.TestCase):
         self.commit(self.product, 'Adopt second template')
         self.assertEqual(bridge.render(self.central, self.product, new, 'update')['paths'], [])
 
+    def test_legacy_configuration_is_local_on_upgrade_and_absent_on_first_adoption(self):
+        config = self.central / 'copier.yml'
+        retired = config.read_bytes()
+        historic = yaml.safe_load(retired)
+        del historic['_exclude']
+        config.write_text(yaml.safe_dump(historic), encoding='utf-8')
+        historic_sha = self.commit(self.central, 'Historical template with repository configuration')
+        self.git(self.central, 'tag', 'v2.0.0')
+        bridge.render(self.central, self.product, historic_sha, 'copy')
+        self.init(self.product)
+        doc, trial, writer = (self.product / p for p in bridge.LEGACY_CONFIGURATION)
+        writer_bytes = writer.read_bytes()
+        doc.write_bytes(b'# Maintainer notes\r\n')
+        trial.unlink()
+        self.commit(self.product, 'Keep repository-specific migration state')
+        config.write_bytes(retired)
+        current = self.commit(self.central, 'Exclude legacy configuration from delivery')
+        self.git(self.central, 'tag', 'v3.0.0')
+        bridge.render(self.central, self.product, current, 'update')
+        self.assertEqual(doc.read_bytes(), b'# Maintainer notes\r\n')
+        self.assertEqual(writer.read_bytes(), writer_bytes)
+        self.assertFalse(trial.exists())
+        self.commit(self.product, 'Adopt reviewed template')
+        self.assertEqual(bridge.render(self.central, self.product, current, 'update')['paths'], [])
+        unadopted = self.root / 'unadopted'
+        unadopted.mkdir()
+        bridge.prepare_adoption(self.central, unadopted, self.root / 'seed', current)
+        for directory in [unadopted, self.root / 'seed']:
+            self.assertFalse(any((directory / path).exists() for path in bridge.LEGACY_CONFIGURATION))
+        with self.assertRaisesRegex(ValueError, 'TEMPLATE_EXCLUSION_POLICY'):
+            bridge.configuration_excluded({'_exclude': ['**']})
+
     def test_copy_does_not_overwrite_and_adoption_diff_preserves_conflicts(self):
         seed = self.root / 'seed'
         bridge.render(self.central, seed, self.old, 'copy')

@@ -127,6 +127,23 @@ class DeliveryTests(unittest.TestCase):
         self.git(self.remote,'update-ref','refs/heads/develop',result['head'])
         self.assertEqual(self.run_delivery()['status'],'NO_DIFF')
 
+    def test_pending_legacy_configuration_requires_reconciliation_without_remote_writes(self):
+        first = self.run_delivery()
+        chooser = '.github/ISSUE_TEMPLATE/config.yml'
+        human = self.edit(BRANCH, chooser, 'contact_links:\n  - url: https://github.com/splrad/fixture/blob/HEAD/.github/repository-configuration.md\n')
+        count = len(self.api.mutations)
+        with self.assertRaisesRegex(ValueError, 'PENDING_LEGACY_CONFIGURATION'):
+            self.run_delivery()
+        self.assertEqual(self.head(), human)
+        self.assertEqual(len(self.api.mutations), count)
+        self.edit(BRANCH, chooser, 'blank_issues_enabled: false\n')
+        human = self.edit(BRANCH, bridge.LEGACY_CONFIGURATION[0], 'Pending maintainer notes\n')
+        with self.assertRaisesRegex(ValueError, 'PENDING_LEGACY_CONFIGURATION'):
+            self.run_delivery()
+        self.assertEqual(self.head(), human)
+        self.assertEqual(len(self.api.mutations), count)
+        self.assertEqual(self.api.prs[0]['number'], first['pullRequest'])
+
     def test_incomplete_adoption_on_base_cannot_enter_periodic_update(self):
         self.edit('develop',bridge.ADOPTION_REPORT,'Unresolved full report\n')
         with self.assertRaisesRegex(ValueError,'TEMPLATE_ADOPTION_INCOMPLETE'):self.run_delivery()

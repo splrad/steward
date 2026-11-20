@@ -12,7 +12,7 @@ from urllib.parse import quote, urlencode
 import yaml
 import copier_bridge as copier
 import actions_lock
-from configuration_link import add_link
+from configuration_link import add_link, has_legacy_link
 
 API_VERSION = json.loads((Path(__file__).resolve().parents[2] / 'config/github-api.json').read_text(encoding='utf-8'))['version']
 BRANCH = 'steward/managed-sync'
@@ -245,9 +245,26 @@ def deliver(request, api, central_api, *, read_token=None, renderer=copier.rende
         template_sha = request['templateSha']
         before_copier = copier.paths_in_tree(work)
         adopted = git('cat-file', '-e', base + ':.copier-answers.yml', allow_failure=True).returncode == 0
+        def template_definition(sha):
+            return yaml.safe_load(copier.git(central, ['show', sha + ':copier.yml'], env))
+
         def repository_inputs(sha):
-            definition = yaml.safe_load(copier.git(central, ['show', sha + ':copier.yml'], env))
+            definition = template_definition(sha)
             return {'product_repository': repository} if 'product_repository' in definition else {}
+
+        preserve_configuration = copier.configuration_excluded(template_definition(template_sha))
+        if preserve_configuration and head:
+            # A pending adoption may still contain an old template's proposed entry points.
+            # Leave that branch available for its maintainer to reconcile with main.
+            pending = git('diff', '--quiet', base, 'HEAD', '--', *copier.LEGACY_CONFIGURATION, allow_failure=True)
+            require(pending.returncode == 0, 'PENDING_LEGACY_CONFIGURATION')
+            chooser = '.github/ISSUE_TEMPLATE/config.yml'
+            chooser_diff = git('diff', '--quiet', base, 'HEAD', '--', chooser, allow_failure=True)
+            require(chooser_diff.returncode in (0, 1), 'GIT_DIFF')
+            if chooser_diff.returncode and chooser in before_copier and has_legacy_link(before_copier[chooser], repository):
+                previous = git('ls-tree', base, '--', chooser)
+                require(previous and has_legacy_link(git('show', base + ':' + chooser), repository),
+                        'PENDING_LEGACY_CONFIGURATION')
 
         if adopted:
             renderer(central, work, template_sha, 'update', repository_inputs(template_sha))
@@ -255,6 +272,9 @@ def deliver(request, api, central_api, *, read_token=None, renderer=copier.rende
             # A pending adoption keeps its actual native source while newer template tags appear.
             if (work / '.copier-answers.yml').exists():
                 _, template_sha, _ = copier.answers(central, work, env)
+                if preserve_configuration:
+                    _, _, pinned_paths = copier.contract(central, template_sha, repository_inputs(template_sha), env)
+                    require(pinned_paths.isdisjoint(copier.LEGACY_CONFIGURATION), 'PENDING_LEGACY_CONFIGURATION')
             copier.prepare_adoption(central, work, root/'seed', template_sha, expected_report=expected_report,
                                     data=repository_inputs(template_sha))
         policy_tool = Path(__file__).resolve().parents[2] / 'scripts/security-policy.mjs'
@@ -267,7 +287,7 @@ def deliver(request, api, central_api, *, read_token=None, renderer=copier.rende
                              else 'SECURITY_POLICY_CHECK_FAILED')
         policy_digest = policy_result.stdout.decode('ascii')
         require(not policy_digest or re.fullmatch(r'[0-9a-f]{64}', policy_digest), 'SECURITY_POLICY_DIGEST')
-        if (work / '.github/repository-configuration.md').is_file() and repository_inputs(template_sha):
+        if not preserve_configuration and (work / '.github/repository-configuration.md').is_file() and repository_inputs(template_sha):
             source = copier.git(central, ['show', template_sha + ':templates/repository/.github/workflows/repository-configuration.yml'], env)
             triggers = yaml.load(source, Loader=yaml.BaseLoader)['on']
             add_link(work, repository, retire='issues' in triggers)
@@ -390,9 +410,12 @@ def main():
         try:
             result = deliver(request, target, central, read_token=os.environ.get('STEWARD_TEMPLATE_READ_TOKEN'), lock_runner=locker)
         except ValueError as error:
-            if not re.fullmatch(r'SECURITY_POLICY_[A-Z_]+', str(error)):
+            if str(error) == 'SYNC_PENDING_LEGACY_CONFIGURATION':
+                result = {'status': 'PENDING_LEGACY_CONFIGURATION'}
+            elif re.fullmatch(r'SECURITY_POLICY_[A-Z_]+', str(error)):
+                result = {'status': 'SECURITY_POLICY_FAILED', 'reason': str(error)}
+            else:
                 raise
-            result = {'status': 'SECURITY_POLICY_FAILED', 'reason': str(error)}
         with open(args.output, 'x', encoding='utf-8') as stream: json.dump(result, stream)
         if result['status'] not in ['DELIVERED','UNCHANGED','NO_DIFF','CLOSED']: raise NativeFailure('SYNC_INCOMPLETE')
 
