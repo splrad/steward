@@ -81,7 +81,7 @@ scripts/                构建及一致性校验脚本
 ## 修改约定
 
 - 创建 PR 页面的提示维护在 [`splrad/.github/.github/pull_request_template.md`](https://github.com/splrad/.github/blob/main/.github/pull_request_template.md)；页面文案统一在组织仓库中修改和发布。
-- 审查指引直接维护两份完整 Markdown：[组织 Copilot 指令](config/review/copilot-organization.md)和[统一 AGENTS 模板](templates/repository/AGENTS.md)。组织稿通过组织设置采用并回读，仓库文件由 Copier 递送；专项事实保存在各仓 CONTRIBUTING。变更与验证步骤见 [审查说明](config/review/README.md)。
+- 通用代码审查指引维护在两份 Markdown：[组织 Copilot 指令](config/review/copilot-organization.md)和[统一 AGENTS 模板](templates/repository/AGENTS.md)。组织稿通过组织设置采用并回读，仓库文件由 Copier 递送；专项事实保存在各仓 CONTRIBUTING。根 SECURITY.md 的组织公共规则来自 [公共安全规则](config/review/security-common.md)，项目特有规则由本仓管理员维护。变更与验证步骤见 [审查说明](config/review/README.md)。
 - 仓库范围由原生安装和实际配置发现；产品构建命令维护在产品 YAML，模板采用事实由 Copier answers 记录。历史发行只从冻结的原提交解码原目录。
 - 修改 `packages/runner/src/index.ts` 或相关依赖后，运行 `npm run build` 更新 `packages/runner/dist/index.js`。
 - `packages/runner/dist/index.js` 是已提交的运行文件，必须与当前源码构建结果一致；`npm run verify:dist` 会检查这一点。
