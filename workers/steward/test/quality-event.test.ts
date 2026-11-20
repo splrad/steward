@@ -178,3 +178,14 @@ it('stores a signed quality locator without GitHub reads, then recovers the init
    expect(await storage.get('qualityEvent')).toBeUndefined();expect(await storage.get('qualityDeliveries')).toBeUndefined();
  }finally{clock.mockRestore();}
 });
+
+it.each(['reserved','unconfirmed'] as const)('preserves an earlier %s dispatch when an edit starts a new refresh',async phase=>{
+ const {SqliteDurableStorage}=await import('./bounded-storage.js');
+ const store=new SqliteDurableStorage(),object=new WorkflowEvent(store as any,{} as any);
+ const first={delivery:'A',phase,policy:sha,target,event:'workflow_run',aggregate:true,expires:Date.now()+86400000};
+ await store.put('qualityEvent',first);await store.put('qualityDeliveries',['A']);
+ await object.register({...first,phase:'pending',event:'pull_request_review_comment',delivery:'B'});
+ expect(await store.get('qualityUnconfirmed')).toEqual([{delivery:'A',policy:sha,expires:first.expires}]);
+ await object.register({...first,phase:'pending'});
+ expect(await store.get('qualityEvent')).toMatchObject({delivery:'B',phase:'pending'});
+});

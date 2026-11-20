@@ -106,6 +106,9 @@ async function validationClient(env: Env, repositoryId: number): Promise<GitHubC
   });
   return new GitHubClient(token, "https://api.github.com", fetch, env.POLICY_SHA);
 }
+function respectProviderFloor(error:unknown){
+  if(error instanceof GitHubRequestError && error.retryAt!==undefined)throw error;
+}
 async function currentValidationRetirement(env: Env, gh: GitHubClient, repository: any, targetBranch: unknown): Promise<boolean> {
   if (!legacyValidationRetired(env, repository, targetBranch)) return false;
   try {
@@ -113,7 +116,8 @@ async function currentValidationRetirement(env: Env, gh: GitHubClient, repositor
     return current.id === repository.id && current.full_name === repository.full_name
       && current.default_branch === repository.default_branch && belongsToOrganization(current)
       && legacyValidationRetired(env, current, targetBranch);
-  } catch {
+  } catch(error) {
+    respectProviderFloor(error);
     // Missing current metadata cannot authorize stopping an unverified consumer.
     return false;
   }
@@ -130,7 +134,8 @@ async function ensureValidationPending(env: Env, repository: any, pull: any, all
       if (current.number === number && current.base?.repo?.id === repository.id
         && current.head?.sha === headSha && current.base?.ref === pull.base.ref
         && await currentValidationRetirement(env, gh, repository, current.base.ref)) return;
-    } catch {
+    } catch(error) {
+      respectProviderFloor(error);
       // An unavailable retirement lookup must preserve the existing pending writer.
     }
   }
@@ -209,7 +214,7 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
       const current = await gh.getPullRequest(owner, repo, number);
       retired = current.number === number && matchesRun(current)
         && await currentValidationRetirement(env, gh, repository, current.base.ref);
-    } catch { /* A stale or unavailable PR snapshot cannot retire the historical writer. */ }
+    } catch(error) { respectProviderFloor(error); /* A stale or unavailable PR snapshot cannot retire the historical writer. */ }
     if (retired) return false;
   }
   const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, headSha, "all"), headSha, Number(env.APP_ID), Number(repository.id), number);
@@ -219,7 +224,7 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
   let contractDetail = "";
   let authority: ReturnType<typeof selectContractAuthority> = null; let authorityError:unknown;
   try {const snapshot=context?.authority ?? await authoritySnapshot(env); if(snapshot.error)throw snapshot.error; authority=selectContractAuthority(snapshot.value!,Number(repository.id));if(env.WORKFLOW_EVALUATOR_SHA!==undefined && !authority)throw new Error('CONTRACT_AUTHORITY_REQUIRED');}
-  catch(error){authorityError=error;}
+  catch(error){respectProviderFloor(error);authorityError=error;}
   if ((authority || authorityError) && completed) {
     try {
       if(authorityError)throw authorityError;
@@ -233,6 +238,7 @@ async function publishValidationState(env: Env, repository: any, workflowRunId: 
       if (verified.binding.headSha !== headSha) throw new Error("CONTRACT_SOURCE_STALE");
       contractDetail = `\n合同：${verified.binding.contractDigest}\n批准：${verified.reviewId ?? "trusted baseline"}`;
     } catch (error) {
+      respectProviderFloor(error);
       conclusion = "failure";
       contractDetail = `\n合同验证失败：${error instanceof Error ? error.message : "unavailable"}`;
     }
@@ -298,7 +304,7 @@ export async function refreshWorkflowContractChecks(env: Env, repositoryId: numb
         retired = current.number === pull.number && current.state === 'open' && current.base?.repo?.id === repositoryId
           && current.base?.ref === pull.base.ref && current.head?.sha === head
           && await currentValidationRetirement(env, gh, repository, current.base.ref);
-      } catch { /* Missing fresh PR metadata does not authorize stopping the historical writer. */ }
+      } catch(error) { respectProviderFloor(error); /* Missing fresh PR metadata does not authorize stopping the historical writer. */ }
       if (retired) continue;
     }
     const checks = validationChecksForPull(await gh.listAllCheckRuns(owner, repo, head, "all"), head, Number(env.APP_ID), repositoryId, pull.number);
@@ -323,6 +329,7 @@ export async function refreshWorkflowContractChecks(env: Env, repositoryId: numb
           && (run === null || candidate.id > run)) run = candidate.id;
       }
     } catch (error) {
+      respectProviderFloor(error);
       // Discovery failure cannot preserve a stale successful gate.
       const current = await gh.getPullRequest(owner, repo, pull.number);
       if (current.state === 'open' && current.base?.repo?.id === repositoryId

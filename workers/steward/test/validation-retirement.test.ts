@@ -256,7 +256,7 @@ it('coalesces repeated webhook refreshes and spaces live PR lookups across resta
   }finally{clock.mockRestore();}
 });
 
-it('keeps the provider floor for the next PR in the same repository after a restart',async()=>{
+it.each(['repository','retirement'])('keeps the provider floor from %s lookup for the next PR after a restart',async source=>{
  const storage=new SqliteDurableStorage(),repository=repositories[1]!;
  const coordinator=()=>new ValidationCoordinator({storage} as any,env());
  const clock=vi.spyOn(Date,'now').mockReturnValue(1000);
@@ -268,9 +268,11 @@ it('keeps the provider floor for the next PR in the same repository after a rest
    clock.mockReturnValue(61000);
    const client=new GitHubClient('offline','https://api.github.com',async()=>new Response('',{status:429,headers:{'Retry-After':'600'}}));
    const limited=await client.paginate('/repositories/1').catch(error=>error);
-   expect(limited).toBeInstanceOf(GitHubRequestError);api.mockRejectedValueOnce(limited);
+   expect(limited).toBeInstanceOf(GitHubRequestError);
+   if(source==='repository')api.mockRejectedValueOnce(limited);
+   else vi.mocked(GitHubClient.prototype.getPullRequest).mockResolvedValueOnce(pull()).mockRejectedValueOnce(limited);
    await coordinator().alarm();
-   expect(await storage.getAlarm()).toBe(661000);const reads=api.mock.calls.length;
+   expect(GitHubClient.prototype.listAllCheckRuns).not.toHaveBeenCalled();expect(await storage.getAlarm()).toBe(661000);const reads=api.mock.calls.length;
    clock.mockReturnValue(121000);await coordinator().alarm();expect(api.mock.calls).toHaveLength(reads);
    clock.mockReturnValue(661000);await coordinator().alarm();expect(api.mock.calls.length).toBeGreaterThan(reads);
  }finally{clock.mockRestore();}

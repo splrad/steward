@@ -34,7 +34,7 @@ export function qualityLocator(event:string, payload:any, installationId:number)
 }
 
 type Target=NonNullable<ReturnType<typeof qualityLocator>>;
-type EventState={delivery:string;event:string;repositoryName?:string;phase:'pending'|'reserved'|'sent'|'excluded'|'unconfirmed';policy?:string;retryAt?:number;aggregate?:boolean;expires?:number};
+type EventState={delivery:string;event:string;repositoryName?:string;phase:'pending'|'reserved'|'sent'|'excluded'|'unconfirmed'|'rejected';rejection?:string;policy?:string;retryAt?:number;aggregate?:boolean;expires?:number};
 type QualityRecord=EventState & {kind?:'quality';target:Target};
 type ConfigurationRecord=EventState & {kind:'configuration';target:Record<string,string>};
 type WorkflowRecord=QualityRecord|ConfigurationRecord;
@@ -128,11 +128,17 @@ export class WorkflowEvent {
     if(record.aggregate){
       await this.storage.transaction(async t=>{
         const seen=await t.get<string[]>('qualityDeliveries')??[];
+        const uncertain=await t.get<{delivery:string;policy?:string;expires:number}[]>('qualityUnconfirmed')??[];
         const current=await t.get<WorkflowRecord>(this.recordKey),now=Date.now();
         if(current?.phase==='pending' && current.retryAt && await t.getAlarm()===null){
           await t.setAlarm(Math.max(now,current.retryAt));
         }
-        if(seen.includes(record.delivery))return;
+        if(seen.includes(record.delivery)||uncertain.some(entry=>entry.delivery===record.delivery&&now<entry.expires))return;
+        if(current?.phase==='reserved'||current?.phase==='unconfirmed'){
+          const entry={delivery:current.delivery,policy:current.policy,expires:current.expires??now+retention};
+          await t.put('qualityUnconfirmed',[...uncertain.filter(item=>now<item.expires).slice(-127),entry]);
+          console.error(JSON.stringify({operation:'workflow-dispatch-unconfirmed',kind:'quality',target:current.target,...entry}));
+        }
         await t.put('qualityDeliveries',[...seen.slice(-127),record.delivery]);
         if(current?.phase==='pending' && current.retryAt){
           await t.put(this.recordKey,{...current,expires:now+retention});return;
@@ -164,7 +170,7 @@ export class WorkflowEvent {
       await this.storage.transaction(async t=>{
         const latest=await t.get<WorkflowRecord>(this.recordKey);
         if(latest?.expires && Date.now()>=latest.expires){
-          await t.delete(this.recordKey);await t.delete('qualityDeliveries');await t.deleteAlarm();
+          await t.delete(this.recordKey);await t.delete('qualityDeliveries');await t.delete('qualityUnconfirmed');await t.deleteAlarm();
         }
       });return;
     }
@@ -174,7 +180,7 @@ export class WorkflowEvent {
         if(latest?.delivery!==current.delivery||latest.phase!=='reserved')return;
         const expires=latest.expires??now+retention;
         await t.put(this.recordKey,{...latest,phase:'unconfirmed',expires});await t.setAlarm(expires);
-        console.error(JSON.stringify({operation:'workflow-dispatch-unconfirmed',kind:latest.kind??'quality',target:latest.target,delivery:latest.delivery}));
+        console.error(JSON.stringify({operation:'workflow-dispatch-unconfirmed',kind:latest.kind??'quality',target:latest.target,delivery:latest.delivery,policy:latest.policy}));
       });return;
     }
     if(current.phase!=='pending'||!current.retryAt)return;
@@ -195,7 +201,7 @@ export class WorkflowEvent {
   }
   async forward(){
     const record=await this.storage.get<WorkflowRecord>(this.recordKey);
-    if(!record||record.phase==='sent'||record.phase==='excluded')return;
+    if(!record||record.phase==='sent'||record.phase==='excluded'||record.phase==='rejected')return;
     ensure(record.phase==='pending','QUALITY_POST_UNCONFIRMED');
     ensure(!record.retryAt||Date.now()>=record.retryAt,'QUALITY_RATE_LIMIT');
     ensure(this.env.BOUNDED_RECHECK_ENABLED==='true','QUALITY_QUIESCED');
@@ -246,10 +252,18 @@ export class WorkflowEvent {
         await this.storage.transaction(async t=>{
           const current=await t.get<WorkflowRecord>(this.recordKey);
           if(!current || current.delivery!==record.delivery || current.phase!==(claimed?'reserved':'pending'))return;
+          if(record.kind==='configuration' && claimed && !rateLimited){
+            const expires=current.expires??now+retention;
+            await t.put(this.recordKey,{...current,phase:'rejected',rejection:message,expires});
+            await t.setAlarm(expires);
+            console.error(JSON.stringify({operation:'configuration-dispatch-rejected',target:current.target,policy:current.policy,error:message}));
+            return;
+          }
           const retryAt=next===undefined?0:Math.max(current.retryAt??0,next);
           await t.put(this.recordKey,{...current,phase:'pending',retryAt});
           if(retryAt||current.expires)await t.setAlarm(retryAt||current.expires!);else await t.deleteAlarm();
         });
+        if(record.kind==='configuration' && claimed && !rateLimited)return;
       }
       throw error;
     }
