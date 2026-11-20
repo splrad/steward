@@ -51,7 +51,7 @@ export async function registerWingetRun(env:BoundedEnv,event:string,payload:any,
  const jobs=await g.json(TARGET.id,`/repos/${TARGET.name}/actions/runs/${id}/attempts/${attempt}/jobs?per_page=100`);
  ensure(Array.isArray(jobs.jobs)&&jobs.total_count===jobs.jobs.length,'CHANNEL_JOBS');
  const matches=jobs.jobs.filter((j:any)=>j.name===jobName);
- if(!matches.length||matches.length===1&&matches[0].conclusion!=='success')return;
+ if(matches.length===1&&matches[0].conclusion!=='success')return;
  ensure(matches.length===1,'CHANNEL_JOB_UNIQUE');
  const job=verifiedJob(matches[0],run);
  const a=await g.artifact(TARGET.id,id,`channel-${match[1]}-layerscape-winget-${id}-${attempt}`,'report.json');const {cycle:c}=await readCycle(g,a.value.cycleId);wingetInputs(c,run.head_sha);
@@ -84,8 +84,9 @@ export async function registerWingetRun(env:BoundedEnv,event:string,payload:any,
  const registration:Registration={identity,t0,policySha:c.controllerSha,deploymentSha:env.BOUNDED_DEPLOYMENT_SHA!};ensure(env.BOUNDED_RECHECK,'CHANNEL_NAMESPACE');const stub=env.BOUNDED_RECHECK.get(env.BOUNDED_RECHECK.idFromName('recheck:v1:'+digest(objectKey(identity)).slice(7)));
  const current=await (await stub.fetch(new Request('https://bounded.internal/status',{method:'POST',body:'{}'}))).json() as RecordState|null;
  // A repeated submit event cannot replace the unique index stage or its clock.
- if(current){ensure(objectKey(current.identity)===objectKey(identity),'CHANNEL_OBJECT_CONFLICT');return;}
+ if(current){ensure(objectKey(current.identity)===objectKey(identity),'CHANNEL_OBJECT_CONFLICT');return true;}
  const result=await stub.fetch(new Request('https://bounded.internal/winget-register',{method:'POST',body:JSON.stringify({registration,executionSha:run.head_sha,anchorSha:env.BOUNDED_PRODUCT_SHA})}));ensure(result.ok,'CHANNEL_REGISTRATION');
+ return true;
 }
 export async function currentWinget(g:GitReader,r:RecordState,env:BoundedEnv){ensure(sha(r.executionSha)&&(r.executionAnchorSha??r.executionSha)===env.BOUNDED_PRODUCT_SHA,'CHANNEL_EXECUTION_PIN');const {cycle}=await readCycle(g,r.identity.cycleId),inputs=wingetInputs(cycle,r.executionSha!);const u=cycle.units[0];ensure(cycle.controllerSha===r.policySha&&cycle.sourceSha===r.identity.sourceSha&&u.version===r.identity.version&&'sha256:'+u.manifestDigest===r.identity.artifactDigest,'CHANNEL_ORIGINAL_IDENTITY');return {cycle,inputs};}
 export function verifyIndexItem(item:any,r:RecordState){exact(item,'accepted,channelId,digest,evidenceKind,exists,indexed,observedAt,readStatus,unitId,version');ensure(item.unitId==='layerscape'&&item.channelId==='winget'&&item.version===r.identity.version&&['OK','NOT_FOUND_CONFIRMED','PENDING','AUTH_UNKNOWN','TRANSIENT','CONFLICT'].includes(item.readStatus),'INDEX_ITEM');if(['AUTH_UNKNOWN','TRANSIENT','CONFLICT'].includes(item.readStatus)){ensure([item.exists,item.digest,item.accepted,item.indexed].every(x=>x===null),'INDEX_UNKNOWN');return false;}ensure([item.exists,item.accepted,item.indexed].every(x=>typeof x==='boolean')&&(item.digest===null||/^sha256:[a-f0-9]{64}$/.test(item.digest)),'INDEX_FACTS');if(item.readStatus==='NOT_FOUND_CONFIRMED')ensure(!item.exists&&!item.accepted&&!item.indexed&&item.digest===null,'INDEX_ABSENCE');return item.readStatus==='OK'&&item.exists&&item.accepted&&item.indexed&&item.evidenceKind===`github-pr:${r.identity.upstreamPR!.number}`&&Date.now()-Date.parse(item.observedAt)<=600000;}

@@ -38,13 +38,14 @@ export class WingetSubmit {
       await t.put('wingetSubmit',r);await t.setAlarm(r.next);return r;
     });
     if(!r||this.env.BOUNDED_RECHECK_ENABLED!=='true')return;
+    let registered;
     try{
-      await registerWingetRun(this.env,'workflow_run',{action:'completed',repository:{id:TARGET.id},
+      registered=await registerWingetRun(this.env,'workflow_run',{action:'completed',repository:{id:TARGET.id},
         workflow_run:{id:r.id,run_attempt:r.attempt,display_title:r.title,path:'.github/workflows/steward-release-channels.yml'}},this.reader());
     }catch{return;} // Re-read only the same submit attempt; target registration is independently idempotent.
     await this.storage.transaction(async t=>{
       const latest=await t.get<Submit>('wingetSubmit');
-      if(latest?.state==='pending'&&latest.tries===r.tries){latest.state='finished';await t.put('wingetSubmit',latest);await t.deleteAlarm();}
+      if(latest?.state==='pending'&&latest.tries===r.tries){latest.state=registered?'finished':'unknown';await t.put('wingetSubmit',latest);await t.deleteAlarm();}
     });
   }
 }

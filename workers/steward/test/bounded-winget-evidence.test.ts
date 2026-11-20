@@ -1,3 +1,4 @@
+import {WingetSubmit} from '../src/bounded-winget-submit.js';
 import {FixedRecheckEffects} from '../src/bounded-recheck-effects.js';
 import {createHash} from 'node:crypto';
 import {registerWingetRun} from '../src/bounded-winget-evidence.js';
@@ -53,4 +54,19 @@ it('binds a combined submit receipt to the original GHCR and WinGet targets; ind
  const record=(await f.store.read())!;
  expect(record.identity.channel).toBe('winget');
  expect(JSON.parse((await currentWinget(f.g,record,f.env)).inputs.targets_json)).toEqual([winget]);
+});
+
+it('keeps a failed native submit job distinguishable from a registered upstream PR',async()=>{
+ const f=await submitFixture();
+ const storage=new SqliteDurableStorage();
+ const reader={...f.g,json:async(id:number,path:string,...args:any[])=>{
+   if(path.includes('/jobs?'))return {total_count:1,jobs:[{name:'submit/winget/layerscape',conclusion:'failure'}]};
+   return (f.g.json as Function)(id,path,...args);
+ }};
+ const channel=new WingetSubmit(storage as any,f.env,()=>reader as any,()=>1000);
+ const run=f.payload.workflow_run;
+ await channel.register({id:run.id,attempt:run.run_attempt,title:run.display_title});
+ await channel.alarm();
+ expect(await storage.get('wingetSubmit')).toMatchObject({state:'unknown'});
+ expect(await f.store.read()).toBeNull();
 });
