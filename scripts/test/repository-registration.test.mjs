@@ -244,7 +244,7 @@ test('an approved rollback replaces the central projection when product declarat
   const missingDeclaration=await propose(product,new Map([['src/main.ts','export {};']]));
   assert.equal(missingDeclaration.productCiApplicable,true);
   assert.deepEqual(missingDeclaration.pending,['复核产品 CI 工作流或触发条件']);
-  assert.match(renderRegistrationPull(product,source,missingDeclaration).body,/待补产品原生 CI 入口/);
+  assert.match(renderRegistrationPull(product,source,missingDeclaration).body,/复核产品 CI 工作流或触发条件/);
   await assert.rejects(publish('central',async()=>missingDeclaration,{productCi:[],release:null}),/PROJECTION_PRODUCT_CI/);
   const invalidRelease=structuredClone(policy.release);
   invalidRelease.units[0].channels[0].artifactIds=['unknown-asset'];
@@ -584,12 +584,11 @@ test('initial .github and LayerScape drafts contain their actual selection shape
     assert.equal(pull.title,'chore: 登记 '+repo.name+' 逐仓配置');
     assert.match(pull.body,new RegExp(source));
     assert.ok(pull.body.includes('在 PR 分支编辑 `'+registrationPath(repo)+'` 并提交修改'));
-    assert.match(pull.body,/本次登记未启用站点/);
+    assert.doesNotMatch(pull.body,/站点/);
     assert.deepEqual(state.writes.map(([kind])=>kind),['ref','commit','pull']);
     if(repo===governance) {
       assert.deepEqual([proposal.policy.productCi,proposal.policy.release,proposal.pending],[[],null,[]]);
-      assert.match(pull.body,/沿用组织公共检查/);
-      assert.match(pull.body,/发行渠道未配置/);
+      assert.doesNotMatch(pull.body,/产品 CI|发行与产物|修改渠道/);
       assert.ok(!pull.body.includes('LayerScape')&&!pull.body.includes('构建目标'));
     }
     else {
@@ -614,6 +613,17 @@ test('initial .github and LayerScape drafts contain their actual selection shape
   }
 });
 
+test('registration lists files only for channels that publish them',async()=>{
+  const files=new Map(productFiles),delivery=JSON.parse(files.get('.github/delivery.json'));
+  delivery.units[0].channels=[{...channel,id:'ghcr-assets',location:'ghcr.io/example/product'}];
+  files.set('.github/delivery.json',JSON.stringify(delivery));
+  const proposal=await propose(product,files);
+  assert.ok(proposal.policy.release.units[0].channels.some(c=>c.id==='github-release' && !c.required));
+  const {body}=renderRegistrationPull(product,source,proposal);
+  assert.match(body,/ghcr-assets/);
+  assert.doesNotMatch(body,/github-release/);
+});
+
 test('only selected Pages operations prompt for their missing inputs',async()=>{
   const selected=async(sourceMode,build,deploy)=>{
     const files=new Map(productFiles);
@@ -626,8 +636,13 @@ test('only selected Pages operations prompt for their missing inputs',async()=>{
   assert.deepEqual((await selected('',true,false)).pending,['确认站点构建来源']);
   assert.deepEqual((await selected('release',true,false)).pending,['确认站点的正式 Release 单元']);
   const local=await selected('default-branch',true,false);
+  assert.match(renderRegistrationPull(product,source,local).body,/## 站点[\s\S]*仅构建[\s\S]*默认分支/);
   assert.equal(local.policy.site.mode,'build-only');
   assert.deepEqual(local.pending,[]);
+  const deployed={...local.policy,site:{workflow:pages,mode:'build-and-deploy',source:'release',unit:'layerscape'}};
+  const text=renderRegistrationPull(product,source,local,null,deployed).body;
+  assert.match(text,/构建并部署/);
+  assert.match(text,/正式 Release 单元 `layerscape`/);
   const requested=await selected('default-branch',true,true);
   assert.equal(requested.policy.site.mode,'build-only');
   assert.deepEqual(requested.pending,['确认公开部署授权']);

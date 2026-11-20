@@ -216,42 +216,39 @@ export function renderRegistrationPull(repo, source, proposal, current=null, pol
   const changed=['repository',...fields].filter(key=>!current||!isDeepStrictEqual(current[key],policy[key]));
   const needsReview=differences.length>0||proposal.pending.length>0;
   const lines=[
-    '请在这张私有管理员仓 PR 中确认目标仓的治理选择。需要调整时，在 PR 分支编辑 '+quote(path)+
+    '需要调整以下选择时，在 PR 分支编辑 '+quote(path)+
       ' 并提交修改，再从 **Files changed** 核对最终 JSON'+(needsReview?'，并处理下列待确认项':'')+
       '。确认后将草稿转为待审，按本仓流程审查合并。',
-    '', '提交调整后，请查看 `SPLRAD Validation` 的逐仓配置复核。公开目标仓会自动核对产品声明。'
-      +'需要受信读取或恢复时，可用仓库数字 ID 运行本仓登记工作流。当前发行流程按产品默认分支的已审声明冻结渠道和文件。'
-      +'调整发布范围时，先让产品声明体现所需选择。',
+    '', repo.private ? '用目标仓数字 ID 运行本仓登记工作流，复核 PR 的当前提交。'
+      : '提交调整后，在 `SPLRAD Validation` 查看产品声明的复核结果。',
     '', '## 仓库与配置', '',
     '- 目标仓 '+quote(repo.full_name)+'（'+repo.id+'）',
     '- 目标仓默认分支提交 '+quote(source),
-    '- 配置文件 '+quote(path),
-    '- 本次修改 '+list(changed),
-    '- 产品 CI '+(list(policy.productCi)||(proposal.productCiApplicable?'待补产品原生 CI 入口':'沿用组织公共检查')),
-    '', '## 发行与产物', ''
   ];
+  if(current && changed.length)lines.push('- 本次修改 '+list(changed));
+  if(policy.productCi.length)lines.push('- 产品 CI '+list(policy.productCi));
   if(policy.release) {
+    lines.push('','## 发行与产物','','修改渠道或文件时，先更新产品默认分支的交付声明，再核对以下选择。','');
     lines.push('- 正式构建入口 '+quote(policy.release.buildWorkflow));
     for(const unit of policy.release.units) {
       const details=proposal.releaseDetails?.get(unit.id);
       const targets=details?.targets.length? '，构建目标 '+list([...new Set(details.targets)]) : '';
       lines.push('- 发行单元 '+quote(unit.id)+targets);
-      if(!unit.channels.length)lines.push('  - 发行渠道未配置');
-      for(const channel of unit.channels) {
-        lines.push('  - '+quote(channel.id)+'（'+(channel.required?'必需':'非必需')+'）· '+quote(channel.location));
+      for(const channel of unit.channels.filter(channel=>channel.required)) {
+        lines.push('  - '+quote(channel.id)+'（必需）· '+quote(channel.location));
         const assets=channel.artifactIds.map(id=>quote(id)+(details?.assets.get(id)?'（'+quote(details.assets.get(id))+'）':''));
-        lines.push('    - 产品文件 '+(assets.join('、')||'无'));
-        lines.push('    - 发布元数据 '+(list(channel.metadata)||'无'));
+        if(assets.length)lines.push('    - 产品文件 '+assets.join('、'));
+        if(channel.metadata.length)lines.push('    - 发布元数据 '+list(channel.metadata));
       }
     }
-  } else lines.push('发行渠道未配置。');
-  lines.push('','## 站点','');
+  }
   if(policy.site) {
+    lines.push('','## 站点','');
     const {mode,source:siteSource,unit,workflow}=policy.site;
     lines.push('- 工作流 '+quote(workflow),
       '- 选择 '+(mode==='build-only'?'仅构建':'构建并部署'),
       '- 来源 '+(siteSource==='default-branch'?'默认分支':'正式 Release 单元 '+quote(unit)));
-  } else lines.push('本次登记未启用站点。');
+  }
   if(needsReview) {
     lines.push('','## 待确认','');
     if(differences.length)lines.push('- 仓内声明与已采用配置有差异，需审阅 '+list(differences));
@@ -261,7 +258,6 @@ export function renderRegistrationPull(repo, source, proposal, current=null, pol
     const observations=reviewFields(current,proposal.policy,policy);
     lines.push('',reviewMarker(repo.id,observations,proposal.pending),...registrationReviewLines(observations));
   }
-  lines.push('','配置采用、正式发行与公开部署沿用各自的审批和验收。');
   return {title,body:lines.join('\n')};
 }
 
