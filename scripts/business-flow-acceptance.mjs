@@ -81,6 +81,7 @@ export async function executePlan(p,{root,controllerDirectory,app,modelToken,fet
     await verifyRepository(token);
     const {fetchState}=await import(pathToFileURL(join(controllerDirectory,'scripts/release-coordinator.mjs')).href);
     const {nativeReleaseCandidate}=await import(pathToFileURL(join(controllerDirectory,'scripts/release-candidate.mjs')).href);
+    const {releasePolicyGuard}=await import(pathToFileURL(join(controllerDirectory,'scripts/release-repository-policy.mjs')).href);
     const guardedFetch=async(url,init)=>{
       const response=await fetcher(url,init);
       const refs=new Map([
@@ -92,10 +93,12 @@ export async function executePlan(p,{root,controllerDirectory,app,modelToken,fet
     const state=await fetchState(root,p.repository,token,'steward/release-state',{fetcher:guardedFetch,includeHistory:false});
     requireFact(state.snapshot.head===p.stateSha,'STATE_CHANGED');
     const client=boundedClient(lib.copilotReleaseClient(controllerDirectory,modelToken),p.maxRequests);
+    const checkRepositoryPolicy=p.repository.full_name.startsWith('splrad/')?releasePolicyGuard(app,p.repository):undefined;
     const result=await nativeReleaseCandidate({directory:state.directory,writeDirectory:join(root,'writes'),remote:state.remote,
       repository:p.repository.full_name,repositoryId:p.repository.id,defaultBranch:'main',appBotId:app.appBotId,
       identity:{name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'}},
-      {token,readToken,controllerSha:p.controllerSha,controllerDirectory,temporaryRoot:root,fetcher:guardedFetch,language:client,expectedStateSha:p.stateSha});
+      {token,readToken,controllerSha:p.controllerSha,controllerDirectory,temporaryRoot:root,fetcher:guardedFetch,
+        language:client,expectedStateSha:p.stateSha,checkRepositoryPolicy});
     requireFact(result.status==='READY','CANDIDATE_PENDING');return {kind:p.kind,calls:client.calls,status:result.status};
   });
 }

@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { NativeEvidenceReader, nativeEvidenceTransport, nativeReleaseApp, nativeRunFact, verifyExecutionSource, githubUnits, channelTargetsDigest, downloadNativeArtifact } from '../packages/runner/dist/index.js';
 import { exact, sha, sha256, withParticipatingProduct } from './bounded-candidate-contract.mjs';
 import { entryGuard } from './bounded-release-entry.mjs';
+import {releasePolicyGuard} from './release-repository-policy.mjs';
 import { fetchState } from './release-coordinator.mjs';
 import { releaseCommand } from './release-record.mjs';
 
@@ -200,7 +201,8 @@ export async function main(env=process.env) {
           },centralGet,botId:app.appBotId,producer,
           candidate:(expectedSourceSha,expectedStateSha)=>app.forCandidateRepository(product.id,async(writer,candidateReadToken)=>
             releaseCommand('candidate',await request(null,null),{token:writer,io,centralIo,candidateReadToken,copilotToken:env.STEWARD_COPILOT_TOKEN,
-              controllerSha:run.head_sha,controllerDirectory:process.cwd(),candidateRuntime:{expectedSourceSha,expectedStateSha}})),
+              controllerSha:run.head_sha,controllerDirectory:process.cwd(),
+              candidateRuntime:{expectedSourceSha,expectedStateSha,checkRepositoryPolicy:releasePolicyGuard(app,repository)}})),
           invoke:async(command,cycleId,runId,allowProbeDispatch)=>releaseCommand(command,await request(cycleId,runId),{token,io,centralIo,allowProbeDispatch,controllerDirectory:process.cwd(),
             centralInvocation:{runId:run.id,runAttempt:run.run_attempt,controllerSha:run.head_sha,defaultBranch:'main'}})});
       });

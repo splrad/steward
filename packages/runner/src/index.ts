@@ -23,6 +23,7 @@ export { splitContentText, releaseAffectedUnitIds } from '../../core/src/release
 export { inspectCycleHistory, verifyFrozenReceipts, completionFile } from './release-history.js';
 export { inspectPublications, invokePublication } from './release-publication.js';
 export { decodeReleaseRecord, decodeStateFile, stateRecordOwner, assertRepositoryWrite } from '../../core/src/release-observation.js';
+export { decodeRepositoryPolicyProjection, repositoryPolicyDigest, repositoryPolicyPath, repositoryPolicyBranch } from '../../core/src/repository-policy-projection.js';
 export { inspectNativeCycle, recoverNativeCycle, archiveFile, nativeReadFile, nativeEvidenceTransport } from './native-release-evidence.js';
 export { isolatedBuildEnvironment } from './build-environment.js';
 export { decodeBuildJson } from '../../core/src/build-manifest.js';
@@ -35,7 +36,7 @@ export { parseLegacyRepositoryCatalog } from '../../core/src/legacy-repository-p
 export { selectReleaseProducers, assertReleaseJobResults } from './release-run.js';
 export { dispatchNativeRun, prepareBuildDispatch, dispatchObservationFile, verifyExecutionSource, verifyDispatchWorkflow } from './release-run.js';
 export { retainedChannelObservations, observeNativeChannels, readChannelSourceRejections, selectChannelDispatch, prepareChannelDispatch, channelTargetsDigest, verifyChannelProbe, verifyChannelResult, channelEvidenceFile, verifyContinuationReleases } from './release-run.js';
-export { nativeRunFact, jobFact, NativeEvidenceReader } from './native-release-evidence.js';
+export { nativeRunFact, jobFact, EvidenceReadError, NativeEvidenceReader } from './native-release-evidence.js';
 export { nativeJobOrigins, originalJobExecutions } from '../../core/src/native-job-origins.js';
 export { evaluateCompletion } from '../../core/src/release-observation.js';
 export { NativeGitHubRelease, nativeGhCommand, nativeReleaseDownload } from './gh-release.js';

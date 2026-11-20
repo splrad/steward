@@ -86,7 +86,7 @@ export async function sourceOptions(reader,repository,controllerSha,appBotId) {
 }
 
 /** Fixed product Pages consumer. Records and API writes remain in this repository; no release cycle mutation. */
-export async function servicePages({io,repository,store,coordinator,appBotId,token,completion},ports={}) {
+export async function servicePages({io,repository,store,coordinator,appBotId,token,completion,readPolicy},ports={}) {
   // The trusted caller selects the enrolled repository. A completion cannot select a different one.
   if(completion!==undefined)check(completion&&completion.repositoryId===repository.id&&positive(completion.workflowId)
     &&positive(completion.runId)&&positive(completion.attempt),'COMPLETION_IDENTITY');
@@ -99,8 +99,13 @@ export async function servicePages({io,repository,store,coordinator,appBotId,tok
   }};
   const reader=new NativeEvidenceReader(bounded,repository.full_name);
   const current=ports.currentSource??(async()=>{
+    const registration=await readPolicy?.();
+    const site=registration?.adoption==='central'?registration.policy.site:undefined;
+    if(site!==undefined&&site?.mode!=='build-and-deploy')return {status:'DISABLED'};
     const options=await sourceOptions(reader,repository,coordinator.controllerSha,appBotId);
     if(options.status)return options;
+    if(site)check(site.workflow===pagesWorkflow&&site.source===options.mode
+      &&(site.unit??'')===options.unitId,'REPOSITORY_POLICY_CONFLICT');
     return currentPagesSource({...options,publicOnly:completion!==undefined},{
       verifyRelease:input=>verifyPagesRelease(input,{gh:args=>nativeGhCommand(args,token),download:nativeReleaseDownload(token)})});
   });

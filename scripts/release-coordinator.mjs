@@ -10,6 +10,8 @@ import { readReleaseRecords, writeReleaseRecords, releaseCommand, assertReleaseW
 import {servicePages,pagesGitStore} from './pages-maintenance.mjs';
 import {assertQualityProtection,qualityNativeIO} from './quality-language-summary.mjs';
 import {validateReleaseConfiguration} from './release-adoption.mjs';
+import {mergedRepositoryPolicy} from './repository-policy-read.mjs';
+import {releasePolicyGuard} from './release-repository-policy.mjs';
 
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const identity={name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
@@ -24,7 +26,16 @@ const validMatchingRefs=(refs,target)=>Array.isArray(refs)
 export async function serviceReleaseWake(request,refresh,invoke,clock=Date.now) {
   let snapshot=await refresh();
   if(!snapshot.repository)return {status:'WAIT',reason:'RELEASE_BOOTSTRAP_REQUIRED'};
-  const candidate=await invoke('candidate',{...request,cycleId:snapshot.repository.activeCycleId,runId:null});
+  let candidate;
+  try {
+    candidate=await invoke('candidate',{...request,cycleId:snapshot.repository.activeCycleId,runId:null});
+  } catch(error) {
+    const reason=error?.message;
+    if(!['CANDIDATE_REPOSITORY_POLICY_DISABLED','CANDIDATE_REPOSITORY_POLICY_CONFLICT',
+      'CANDIDATE_REPOSITORY_POLICY_MOVED','REPOSITORY_POLICY_UNAVAILABLE']
+      .includes(reason))throw error;
+    candidate={status:'WAIT',reason};
+  }
   snapshot=await refresh();
   const results=[];
   for(const {value:registered} of snapshot.cycles) {
@@ -177,7 +188,7 @@ export async function releaseParticipation(repository,io,{includeUnits=false}={}
   return {status,sourceSha:ref.object.sha,...(units?{units}:{})};
 }
 
-export async function fetchState(root,repository,token,targetRef='steward/release-state',{governanceAppId,fetcher=fetch,includeHistory=targetRef!=='steward/release-state',centralFirstUse=false,readCentralMaintenanceRules}={}) {
+export async function fetchState(root,repository,token,targetRef='steward/release-state',{governanceAppId,fetcher=fetch,includeHistory=targetRef!=='steward/release-state',centralFirstUse=false,readCentralMaintenanceRules,withGovernanceRules}={}) {
   const io=nativeEvidenceTransport(token,fetcher),remote=`https://github.com/${repository.full_name}.git`;
   if(centralFirstUse) {
     if(repository.id!==1296724484||repository.full_name!=='splrad/steward'||!['steward/release-state','steward/automation-health'].includes(targetRef))throw new Error('RELEASE_CENTRAL_STATE_IDENTITY');
@@ -186,7 +197,11 @@ export async function fetchState(root,repository,token,targetRef='steward/releas
     const actual=JSON.parse(Buffer.from(response.bytes).toString('utf8'));
     if(actual.id!==repository.id||actual.full_name!==repository.full_name||actual.default_branch!==repository.default_branch||actual.archived!==false||actual.disabled!==false)throw new Error('RELEASE_CENTRAL_STATE_IDENTITY');
   }
-  if(targetRef==='steward/governance-state')await assertQualityProtection(qualityNativeIO(repository.full_name,token,fetcher),repository.full_name,governanceAppId);
+  if(targetRef==='steward/governance-state'){
+    const verify=ruleToken=>assertQualityProtection(qualityNativeIO(repository.full_name,ruleToken,fetcher),repository.full_name,governanceAppId);
+    if(withGovernanceRules)await withGovernanceRules(verify);
+    else await verify(token);
+  }
   else await assertReleaseWriterProtection(repository.full_name,targetRef,io,{token,fetcher,readCentralMaintenanceRules});
   const response=await io.request('GET',`/repos/${repository.full_name}/git/ref/heads/${targetRef}`);
   // Only these two fixed central consumers may start with no records. No branch
@@ -270,7 +285,8 @@ export async function serviceRepositoryPages({app,root,repository,coordinator,co
     const writeDirectory=await mkdtemp(join(root,'pages-writes-'));
     const store=pagesGitStore({repositoryId:repository.id,refresh:()=>fetchState(root,repository,token,'steward/governance-state',{governanceAppId}),
       writeDirectory,defaultBranch:repository.default_branch,token,identity});
-    return servicePages({io,repository,store,completion,appBotId:app.appBotId,token,coordinator});
+    return servicePages({io,repository,store,completion,appBotId:app.appBotId,token,coordinator,
+      readPolicy:()=>mergedRepositoryPolicy(app,repository)});
   });
 }
 
@@ -302,7 +318,8 @@ export async function main() {
         const centralIo={request:(method,path,...args)=>{if(method!=='GET'||!path.startsWith('/repos/splrad/steward/'))throw new Error('RELEASE_CENTRAL_READ_ONLY');return centralTransport.request(method,path,...args);}};
         const result=await serviceReleaseWake(request,refresh,async(command,input)=>command==='candidate'
           ? app.forCandidateRepository(repository.id,(candidateToken,candidateReadToken)=>releaseCommand(command,{...input,directory:request.directory},
-            {token:candidateToken,io:state.io,centralIo,candidateReadToken,copilotToken:process.env.STEWARD_COPILOT_TOKEN,controllerSha,controllerDirectory:process.cwd()}))
+            {token:candidateToken,io:state.io,centralIo,candidateReadToken,copilotToken:process.env.STEWARD_COPILOT_TOKEN,controllerSha,controllerDirectory:process.cwd(),
+              candidateRuntime:{checkRepositoryPolicy:releasePolicyGuard(app,repository)}}))
           : releaseCommand(command,{...input,directory:request.directory},{token,io:state.io,centralIo,controllerDirectory:process.cwd(),
             centralInvocation:{runId:Number(process.env.GITHUB_RUN_ID),runAttempt:Number(process.env.GITHUB_RUN_ATTEMPT),controllerSha,defaultBranch:process.env.STEWARD_DEFAULT_BRANCH}}));
         await refresh();

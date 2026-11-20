@@ -23,6 +23,17 @@ it('permits native created-time ranges in queries while rejecting encoded path t
     await expect(io.request('GET',bad)).rejects.toThrow('API path');
   expect(calls).toHaveLength(1);
 });
+it('only allows a canonical numeric repository endpoint for read requests',async()=>{
+  const calls:string[]=[];
+  const io=nativeEvidenceTransport('fixture-token',async url=>{
+    calls.push(String(url));return new Response('{}');
+  });
+  expect((await io.request('GET','/repositories/1187527897')).status).toBe(200);
+  await expect(io.request('POST','/repositories/1187527897')).rejects.toThrow('API path');
+  for(const bad of ['/repositories/0','/repositories/%31','/repositories/10/contents','/repositories/10?x=1'])
+    await expect(io.request('GET',bad)).rejects.toThrow('API path');
+  expect(calls).toEqual(['https://api.github.com/repositories/1187527897']);
+});
 it('reads original attempt evidence and validates the latest native outcome',async()=>{
   const f=evidenceFixture(2),r=await inspectNativeCycle(f.context,[],f.io,NOW);
   expect(r.currentFacts).toMatchObject({unknownEvidence:[],conflictEvidence:[]});

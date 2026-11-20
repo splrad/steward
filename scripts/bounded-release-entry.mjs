@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { nativeReleaseApp, NativeEvidenceReader, nativeEvidenceTransport } from '../packages/runner/dist/index.js';
 import { fetchState } from './release-coordinator.mjs';
 import { nativeReleaseCandidate } from './release-candidate.mjs';
+import {releasePolicyGuard} from './release-repository-policy.mjs';
 import { candidateEvidence, validateCandidateEvent, sameIdentity, sha, key, withCandidateProduct } from './bounded-candidate-contract.mjs';
 const central='splrad/steward',centralId=1296724484;
 const botIdentity={name:'splrad-steward[bot]',email:'301115370+splrad-steward[bot]@users.noreply.github.com'};
@@ -77,7 +78,8 @@ export async function main(env=process.env) {
       if(state.snapshot.head!==before.evidence.stateCommit)fail('BOUNDED_STATE_MOVED');
       const result=await nativeReleaseCandidate({directory:state.directory,writeDirectory:join(root,'writes'),remote:state.remote,repository:product.name,
         repositoryId:product.id,defaultBranch:product.defaultBranch,appBotId:app.appBotId,identity:botIdentity},{token,readToken,controllerSha:env.STEWARD_CONTROLLER_SHA,
-        expectedStateSha:before.evidence.stateCommit,observation:identity});
+        expectedStateSha:before.evidence.stateCommit,observation:identity,
+        checkRepositoryPolicy:releasePolicyGuard(app,repository)});
       const after=await candidateEvidence(get,{product});if(!sameIdentity(identity,after.identity))fail('BOUNDED_EPOCH_MOVED');
       if(after.pull.head.sha!==before.pull.head.sha)fail('BOUNDED_HUMAN_HEAD_MOVED');
       const output={schemaVersion:1,requestKey,identity,repositoryId:centralId,runId:run.id,runAttempt:run.run_attempt,
