@@ -114,7 +114,7 @@ export const configurationCallers=['.github/workflows/repository-configuration.y
 const configurationTemplatePaths=[...configurationCallers,'.github/repository-configuration.md','.github/ISSUE_TEMPLATE/config.yml'];
 
 export function assertInputScope(paths){
-  const allowed=/^(?:AGENTS\.md|CONTRIBUTING\.md|README\.md|\.copier-answers\.yml|\.gitignore|mise\.(?:toml|lock)|\.github\/(?:labeler\.yml|dependabot\.yml|renovate\.json|release-template\.md\.mustache|workflows\/(?:actions\.lock|pr-labeler\.yml|pr-title\.yml|settings-sync\.yml))|\.mise\/locks\/npm\/\d+\.\d+\.\d+\/(?:aube-lock\.yaml|package\.json)|acceptance\/bootstrap-target\.json|safe-settings\/(?:deployment-settings\.yml|settings\.yml|upstream-lock-exception\.json|upstream-package-lock\.patch|repos\/[^/]+\.ya?ml))$/;
+  const allowed=/^(?:SECURITY\.md|AGENTS\.md|CONTRIBUTING\.md|README\.md|\.copier-answers\.yml|\.gitignore|mise\.(?:toml|lock)|\.github\/(?:labeler\.yml|dependabot\.yml|renovate\.json|release-template\.md\.mustache|workflows\/(?:actions\.lock|pr-labeler\.yml|pr-title\.yml|settings-sync\.yml))|\.mise\/locks\/npm\/\d+\.\d+\.\d+\/(?:aube-lock\.yaml|package\.json)|acceptance\/bootstrap-target\.json|safe-settings\/(?:deployment-settings\.yml|settings\.yml|upstream-lock-exception\.json|upstream-package-lock\.patch|repos\/[^/]+\.ya?ml))$/;
   assert(paths.every(path=>allowed.test(path)||configurationTemplatePaths.includes(path)),'INPUT_UNCOVERED');
 }
 
@@ -147,7 +147,7 @@ export function assertCopierInputs(files,resolveTemplate,paths=['.github/labeler
 }
 
 export function assertGovernanceOnlyScope(paths){
-  const allowed=new Set(['README.md','AGENTS.md','CONTRIBUTING.md','.copier-answers.yml','.github/labeler.yml',
+  const allowed=new Set(['README.md','AGENTS.md','CONTRIBUTING.md','SECURITY.md','.copier-answers.yml','.github/labeler.yml',
     ...configurationTemplatePaths,
       '.github/release-template.md.mustache','.github/workflows/pr-labeler.yml','.github/workflows/pr-title.yml','.github/workflows/actions.lock']);
   assert(paths.every(path=>allowed.has(path)),'GOVERNANCE_INPUT_UNCOVERED');

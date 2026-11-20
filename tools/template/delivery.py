@@ -1,5 +1,6 @@
 """Fixed Copier -> Git -> GitHub signed commit -> same-PR delivery connection."""
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -256,6 +257,16 @@ def deliver(request, api, central_api, *, read_token=None, renderer=copier.rende
                 _, template_sha, _ = copier.answers(central, work, env)
             copier.prepare_adoption(central, work, root/'seed', template_sha, expected_report=expected_report,
                                     data=repository_inputs(template_sha))
+        policy_tool = Path(__file__).resolve().parents[2] / 'scripts/security-policy.mjs'
+        policy_result = subprocess.run(['node', str(policy_tool), 'prepare', str(work), str(central),
+                                        template_sha, request['workflowSha']], cwd=work, env=env,
+                                       stdin=subprocess.DEVNULL, capture_output=True, timeout=90)
+        if policy_result.returncode:
+            reason = policy_result.stderr.decode('ascii', errors='replace').strip().splitlines()
+            raise ValueError(reason[-1] if reason and re.fullmatch(r'SECURITY_POLICY_[A-Z_]+', reason[-1])
+                             else 'SECURITY_POLICY_CHECK_FAILED')
+        policy_digest = policy_result.stdout.decode('ascii')
+        require(not policy_digest or re.fullmatch(r'[0-9a-f]{64}', policy_digest), 'SECURITY_POLICY_DIGEST')
         if (work / '.github/repository-configuration.md').is_file() and repository_inputs(template_sha):
             add_link(work, repository)
         require(lock_runner is not None, 'ACTION_LOCK_RUNNER_REQUIRED')
@@ -268,6 +279,10 @@ def deliver(request, api, central_api, *, read_token=None, renderer=copier.rende
             if staged.returncode == 1:
                 git('commit', '--signoff', '--no-gpg-sign', '-m', 'chore: update common repository template')
                 require(string('show','-s','--format=%B').splitlines().count(signoff) == 1, 'LOCAL_SIGNOFF')
+        if policy_digest:
+            require(string('ls-tree', 'HEAD', '--', 'SECURITY.md').startswith('100644 blob ')
+                    and hashlib.sha256(git('show', 'HEAD:SECURITY.md')).hexdigest() == policy_digest,
+                    'SECURITY_POLICY_STAGED_BYTES')
         tree = string('rev-parse', 'HEAD^{tree}')
         base_tree = string('rev-parse', base + '^{tree}')
         different = tree != base_tree
@@ -370,7 +385,12 @@ def main():
         central = GitHubCLI(args.gh, os.environ.get('STEWARD_CENTRAL_READ_TOKEN'), root/'central')
         locker = actions_lock.OfficialTool(args.gh, request['central'], request['workflowSha'], request['repository'],
                                           os.environ.get('STEWARD_CENTRAL_READ_TOKEN'), root/'actions-lock')
-        result = deliver(request, target, central, read_token=os.environ.get('STEWARD_TEMPLATE_READ_TOKEN'), lock_runner=locker)
+        try:
+            result = deliver(request, target, central, read_token=os.environ.get('STEWARD_TEMPLATE_READ_TOKEN'), lock_runner=locker)
+        except ValueError as error:
+            if not re.fullmatch(r'SECURITY_POLICY_[A-Z_]+', str(error)):
+                raise
+            result = {'status': 'SECURITY_POLICY_FAILED', 'reason': str(error)}
         with open(args.output, 'x', encoding='utf-8') as stream: json.dump(result, stream)
         if result['status'] not in ['DELIVERED','UNCHANGED','NO_DIFF','CLOSED']: raise NativeFailure('SYNC_INCOMPLETE')
 
@@ -380,6 +400,8 @@ if __name__ == '__main__':
     except actions_lock.LockFailure as error:
         import sys
         print(error.code, file=sys.stderr); sys.exit(1)
-    except Exception:
+    except Exception as error:
         import sys
-        print('TEMPLATE_DELIVERY_FAILED', file=sys.stderr); sys.exit(1)
+        reason = str(error)
+        print(reason if re.fullmatch(r'SECURITY_POLICY_[A-Z_]+', reason) else 'TEMPLATE_DELIVERY_FAILED', file=sys.stderr)
+        sys.exit(1)
