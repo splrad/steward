@@ -54,7 +54,7 @@ function fixture(enabled=true) {
     issue.body=previous.replace('- [ ] <!-- steward-configure','- [x] <!-- steward-configure');
     return {toggle:{number:issue.number,previous,body:issue.body}};
   };
-  return {run,repo,pins,issues,pulls,comments,writes,branches,sources,click,reactions};
+  return {run,repo,pins,issues,pulls,comments,writes,branches,sources,click};
 }
 
 test('official issue shows the adopted source, reuses a PR and reopens in place without displacing other pins',async()=>{
@@ -120,20 +120,4 @@ test('closing a configuration PR refreshes the pinned issue without repeating th
   await f.run('pull_request',{closed:true});
   assert.ok(issue.body.includes('已合并。'));
   assert.ok(!issue.body.includes('变更未采用'));
-});
-
-test('a batch acknowledges each valid original, shares its PR and resumes after partial completion',async()=>{
-  const {processDashboardComments}=await import('../configuration-dashboard.mjs');
-  const f=fixture();await f.run();f.pulls[0].state='closed';await f.run();
-  const issue=f.issues[0],ids=[91,92,93];
-  for(const id of ids)f.comments.push({id,user:actor,body:'/configure',issue_url:issue.url,created_at:'one',updated_at:'one'});
-  const processOne=id=>f.run('issue_comment',{command:{number:issue.number,id:Number(id)}});
-  await assert.rejects(processDashboardComments('91,92,93,91',async id=>{
-    if(id==='92')throw Error('interrupted');await processOne(id);
-  }),/interrupted/);
-  assert.deepEqual(f.reactions.map(r=>r.comment_id),[91,93]);
-  await processDashboardComments('91,92,93',processOne);
-  await processDashboardComments('93',processOne);
-  assert.deepEqual(f.reactions.map(r=>r.comment_id),[91,93,92]);
-  assert.equal(f.pulls.length,2);
 });

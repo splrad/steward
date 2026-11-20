@@ -5,13 +5,10 @@ import {forwardConfigurationComment,forwardConfigurationCompletion} from '../src
 
 function submitWith(json:ReturnType<typeof configurationApi>){
   return async(env:any,inputs:Record<string,string>)=>{
-    const storage=new SqliteDurableStorage(),inboxStore=new SqliteDurableStorage();
+    const storage=new SqliteDurableStorage();
     const object=new WorkflowEvent(storage as any,env,()=>({json} as any),'configurationEvent');
     const ns={idFromName:(key:string)=>key,get:()=>({fetch:async(r:Request)=>{
-      if(new URL(r.url).pathname==='/configuration-comment'){
-        const inbox=new WorkflowEvent(inboxStore as any,{...env,BOUNDED_RECHECK:ns});
-        await inbox.registerComment(await r.json() as any);await inbox.flushComments();
-      }else await object.register(await r.json() as any);return Response.json({});
+      await object.register(await r.json() as any);return Response.json({});
     }})};
     await submitConfiguration({...env,BOUNDED_RECHECK:ns},inputs);
   };
@@ -110,40 +107,14 @@ it('retains the exact dashboard comment through promotion and consumes the wake 
   const inputs={repository_id:'42',issue_number:'7',comment_id:'901'};
   const env:any={BOUNDED_RECHECK_ENABLED:'true',RELEASE_RELAY_DEPLOYMENT_SHA:sha};
   const object=()=>new WorkflowEvent(storage as any,env,()=>reader as any,'configurationEvent');
-  const inboxStore=new SqliteDurableStorage(),inbox=()=>new WorkflowEvent(inboxStore as any,env);
   env.BOUNDED_RECHECK={idFromName:(key:string)=>key,get:(key:string)=>({fetch:async(req:Request)=>{
     const action=new URL(req.url).pathname;
-    if(action==='/configuration-comment'){await inbox().registerComment(await req.json() as any);return Response.json({});}
     if(action==='/generation')return Response.json({generation:3});
     if(action==='/wait'){waits.push(await req.json());return Response.json({});}
     objectKey=key;await object().register(await req.json() as any);return Response.json({});
   }})};
-  await submitConfiguration(env,inputs);await submitConfiguration(env,inputs);
-  await submitConfiguration(env,{...inputs,comment_id:'902'});await inbox().flushComments();expect(posts).toEqual([]);
+  await submitConfiguration(env,inputs);expect(posts).toEqual([]);
   expect(waits).toEqual([{policy:sha,kind:'configuration',generation:3,key:objectKey.split(':')[2]}]);
   promoted=true;await object().forward();await object().forward();await submitConfiguration(env,inputs);
-  expect(posts).toEqual([{ref:'main',inputs:{...inputs,comment_id:'901,902'}}]);
-});
-
-it.each([403,422])('releases a permanently rejected batch (%s) so the next comment can be delivered',async status=>{
- const sha='a'.repeat(40),env:any={BOUNDED_RECHECK_ENABLED:'true',RELEASE_RELAY_DEPLOYMENT_SHA:sha};
- const inbox=new WorkflowEvent(new SqliteDurableStorage() as any,env);
- const ordinary=configurationApi(sha),stores=new Map<string,SqliteDurableStorage>(),posts:string[]=[];
- const inputs={repository_id:'42',issue_number:'7',comment_id:'91'};
- const reader={json:async(id:number,path:string,method?:string,body?:any)=>{
-   if(method==='POST'){
-     posts.push(body.inputs.comment_id);
-     if(body.inputs.comment_id==='91')throw Error('GITHUB_HTTP_'+status);
-   }
-   return ordinary(id,path,method);
- }};
- env.BOUNDED_RECHECK={idFromName:(key:string)=>key,get:(key:string)=>({fetch:async(req:Request)=>{
-   const store=stores.get(key)??new SqliteDurableStorage();stores.set(key,store);
-   const event=new WorkflowEvent(store as any,env,()=>reader as any,'configurationEvent');
-   await event.register(await req.json() as any);return Response.json({});
- }})};
- await inbox.registerComment(inputs);await inbox.flushComments();
- expect(await [...stores.values()][0]!.get('configurationEvent')).toMatchObject({phase:'rejected',rejection:'GITHUB_HTTP_'+status});
- await inbox.registerComment({...inputs,comment_id:'92'});await inbox.flushComments();
- expect(posts).toEqual(['91','92']);
+  expect(posts).toEqual([{ref:'main',inputs}]);
 });

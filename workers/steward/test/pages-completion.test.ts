@@ -324,3 +324,22 @@ it('scopes a Pages source token to the enrolled repository and read-only actions
  await expect(reader.json(TARGET.id,'/repos/'+TARGET.name+'/actions/workflows/pages.yml')).rejects.toThrow('FIXED_REPOSITORY');
  expect(transport).toHaveBeenCalledTimes(3);
 });
+
+it('keeps the exhausted preflight budget across redelivery and restart until the signed run expires',async()=>{
+ const store=new SqliteDurableStorage(),f=fixture(store),object=()=>new PagesRetry(store as any,f.config,()=>f.g,[f.site]);
+ const clock=vi.spyOn(Date,'now').mockReturnValue(Date.now());
+ try{
+   f.json.mockRejectedValue(new GitHubRetryError(429,'600',false));
+   await expect(f.forward()).rejects.toThrow('RETRY_AFTER:600');
+   for(let n=1;n<4;n++){
+     clock.mockReturnValue((await store.getAlarm())!);await object().alarm();
+   }
+   const end=await store.get<any>('pagesIntake');expect(end).toMatchObject({attempts:4,exhausted:true});
+   expect(end.due).toBeGreaterThanOrEqual(Date.now()+600000);expect(await store.getAlarm()).toBe(end.expires);
+   clock.mockReturnValue(Date.now()+1000);await f.forward();await object().alarm();
+   clock.mockReturnValue(end.due+1000);await f.forward();
+   expect(f.json).toHaveBeenCalledTimes(4);
+   clock.mockReturnValue(end.expires);await object().alarm();await f.forward();
+   expect(await store.get('pagesIntake')).toBeUndefined();expect(f.json).toHaveBeenCalledTimes(4);
+ }finally{clock.mockRestore();}
+});

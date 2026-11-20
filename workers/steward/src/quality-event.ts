@@ -39,17 +39,6 @@ type QualityRecord=EventState & {kind?:'quality';target:Target};
 type ConfigurationRecord=EventState & {kind:'configuration';target:Record<string,string>};
 type WorkflowRecord=QualityRecord|ConfigurationRecord;
 export async function submitConfiguration(env:BoundedEnv,inputs:Record<string,string>){
-  if(inputs.comment_id){
-    const ns=env.BOUNDED_RECHECK;ensure(ns,'CONFIGURATION_EVENT_STORAGE');
-    const key='configuration-comments:v1:'+inputs.repository_id+':'+inputs.issue_number;
-    const response=await ns.get(ns.idFromName(key)).fetch(new Request('https://bounded.internal/configuration-comment',{
-      method:'POST',body:JSON.stringify(inputs)
-    }));
-    ensure(response.ok,'CONFIGURATION_COMMENT_REGISTRATION');return;
-  }
-  await submitConfigurationBatch(env,inputs);
-}
-async function submitConfigurationBatch(env:BoundedEnv,inputs:Record<string,string>){
   const key=digest(JSON.stringify(Object.entries(inputs).sort())).slice(7);
   const ns=env.BOUNDED_RECHECK;ensure(ns,'CONFIGURATION_EVENT_STORAGE');
   const stub=ns.get(ns.idFromName('configuration:v1:'+key));
@@ -87,43 +76,6 @@ export async function dispatchQualityEvent(env:BoundedEnv,event:string,payload:a
 export class WorkflowEvent {
   constructor(private storage:DurableObjectStorage,private env:BoundedEnv,private reader:()=>GitReader=()=>new BoundedGitHub(env),
     private recordKey:'qualityEvent'|'configurationEvent'='qualityEvent'){}
-  async registerComment(inputs:Record<string,string>){
-    for(const field of ['repository_id','issue_number','comment_id'])ensure(/^[1-9]\d*$/.test(inputs[field]??'')&&Number.isSafeInteger(Number(inputs[field])),'CONFIGURATION_COMMENT_ID');
-    await this.storage.transaction(async t=>{
-      const now=Date.now(),key='comment:'+inputs.comment_id;
-      if(!(await t.get<string[]>('recentComments')??[]).includes(inputs.comment_id!) && !await t.get(key))await t.put(key,inputs);
-      const alarm=await t.getAlarm();
-      if(await t.get(key) && (alarm===null||alarm>now+debounce)){
-        await t.put('configurationComments',true);await t.setAlarm(now+debounce);
-      }
-    });
-  }
-  async flushComments(){
-    const batch=await this.storage.transaction(async t=>{
-      const active=await t.get<Record<string,string>>('configurationBatch');if(active)return active;
-      const pending=Array.from((await t.list<Record<string,string>>({prefix:'comment:',limit:8})).values());
-      if(!pending.length){
-        await t.delete('recentComments');await t.delete('configurationComments');await t.deleteAlarm();return;
-      }
-      const target={...pending[0]!,comment_id:pending.map(p=>p.comment_id).join(',')};
-      await t.put('configurationBatch',target);return target;
-    });
-    if(!batch)return;
-    // A crash before acknowledgement reuses this exact immutable batch.
-    await this.storage.setAlarm(Date.now()+debounce);
-    await submitConfigurationBatch(this.env,batch);
-    await this.storage.transaction(async t=>{
-      const active=await t.get<Record<string,string>>('configurationBatch');
-      if(active?.comment_id!==batch.comment_id)return;
-      const ids=batch.comment_id.split(',');
-      for(const id of ids)await t.delete('comment:'+id);
-      const recent=await t.get<string[]>('recentComments')??[];
-      await t.put('recentComments',[...recent,...ids].slice(-256));
-      await t.delete('configurationBatch');
-      const pending=await t.list({prefix:'comment:',limit:1});
-      await t.setAlarm(Date.now()+(pending.size?debounce:retention));
-    });
-  }
   async register(record:WorkflowRecord){
     if(record.aggregate){
       await this.storage.transaction(async t=>{
@@ -155,7 +107,7 @@ export class WorkflowEvent {
         await t.put(this.recordKey,{...record,phase:'pending',retryAt:now,...(record.kind==='configuration'?{expires:now+retention}:{})});
         await t.setAlarm(now);return true;
       }
-      // An existing batch owns its durable dispatch and any promotion waiter.
+      // The existing locator owns its dispatch and promotion waiter.
       if(record.kind==='configuration' && (prior.phase!=='pending'||(prior.retryAt??0)>now))return false;
       return true;
     });

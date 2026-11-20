@@ -8,7 +8,7 @@ type Locator={id:number;run_attempt:number;head_sha:string;conclusion:string};
 type Retry={site:Site;hint:Locator;policy:string;reservation:string;due:number;expires:number};
 type ReceiptQuery={site:Site;hint:Locator;policy:string;reservation:string};
 type Watch=Pick<Retry,'site'|'hint'|'policy'|'expires'>;
-type Intake=Watch & {attempts:number;due:number};
+type Intake=Watch & {attempts:number;due:number;exhausted?:boolean};
 type StoredWatch=Watch & {startedAt?:number};
 const probeInterval=5*60000;
 const failed=new Set(['failure','cancelled','timed_out','action_required','startup_failure']);
@@ -146,12 +146,20 @@ export class PagesRetry {
     const claim=await this.store.transaction(async t=>{
       const prior=await t.get<Intake>('pagesIntake');
       const item=prior??{...incoming,due:now,attempts:0};
+      if(item.exhausted){
+        if(now>=item.expires)await t.delete('pagesIntake');
+        else if(await t.getAlarm()===null)await t.setAlarm(item.expires);
+        return;
+      }
       if(item.due>now){
         if(await t.getAlarm()===null)await t.setAlarm(item.due);
         return;
       }
       const active=this.sites.some(site=>site.repositoryId===item.site.repositoryId&&site.repository===item.site.repository&&site.workflowId===item.site.workflowId);
-      if(!active||now>=item.expires||item.attempts>=4){await t.delete('pagesIntake');return;}
+      if(!active||now>=item.expires){await t.delete('pagesIntake');return;}
+      if(item.attempts>=4){
+        await t.put('pagesIntake',{...item,exhausted:true});await t.setAlarm(item.expires);return;
+      }
       item.due=Math.min(item.expires,now+probeInterval);
       if(this.env.BOUNDED_RECHECK_ENABLED!=='true'||this.env.BOUNDED_CONTROLLER_SHA!==item.policy){
         await t.put('pagesIntake',item);await t.setAlarm(item.due);return;
@@ -180,8 +188,12 @@ export class PagesRetry {
         current.due=Math.min(current.expires,Math.max(current.due,floor??0));
         await t.put('pagesIntake',current);await t.setAlarm(current.due);return;
       }
-      if(failure&&!reserved&&!hasOwner)console.error(JSON.stringify({operation:'pages-preflight-exhausted',
-        repositoryId:claim.site.repositoryId,workflowId:claim.site.workflowId,runId:claim.hint.id,attempt:claim.hint.run_attempt}));
+      if(failure&&!reserved&&!await t.get('pagesRetry') && current.attempts>=4){
+        current.due=Math.max(current.due,retryAfterTime(failure,Date.now(),current.expires)??0);
+        await t.put('pagesIntake',{...current,exhausted:true});await t.setAlarm(current.expires);
+        console.error(JSON.stringify({operation:'pages-preflight-exhausted',repositoryId:claim.site.repositoryId,
+          workflowId:claim.site.workflowId,runId:claim.hint.id,attempt:claim.hint.run_attempt}));return;
+      }
       await t.delete('pagesIntake');if(!hasOwner)await t.deleteAlarm();
     });
     if(failure)throw failure;
