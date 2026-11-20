@@ -100,7 +100,7 @@ it('unmergeable concurrent rule change records before/after and stops; moved mai
 it('already adopted source is a read-only NOP',async()=>{
   const f=rulesFixture();shaBinding(f.current).sha=M;expect(await (await module()).promoteRequiredWorkflow(f,M,async()=>{},f.record)).toEqual({status:'ALREADY_ADOPTED',sha:M});expect(f.writes).toBe(0);
 });
-it.each(['success','lost','conflict','changed'])('template tags are create-only, exact commit bound and recover lost responses: %s',async mode=>{
+it.each(['success','lost','conflict','changed','first security adoption'])('template tags are create-only, exact commit bound and recover lost responses: %s',async mode=>{
   const refs:any={'refs/tags/v1.0.0':P},plan={status:'CREATE',commit:M,tag:'v1.0.1',tags:{...refs}};
   let writes=0;const io={request:async(method:string,url:string,body:any)=>{
     if(url.endsWith('matching-refs/tags/'))return {status:200,value:Object.entries(refs).map(([ref,sha])=>({ref,object:{sha,type:'commit'}}))};
@@ -110,9 +110,15 @@ it.each(['success','lost','conflict','changed'])('template tags are create-only,
   }};
   if(mode==='conflict'){refs['refs/tags/v1.0.1']=T;plan.tags={...refs};}
   if(mode==='changed')refs['refs/tags/v2.0.0']=T;
-  const execute=(await module()).publishTemplateTag(io,plan,async()=>{},async()=>{});
+  const api=await module();
+  const execute=api.publishTemplateTag(io,{...plan,independentSecurityAdoption:mode==='first security adoption'},async()=>{},async()=>{});
   if(['conflict','changed'].includes(mode)){await expect(execute).rejects.toThrow('PROMOTION_');expect(writes).toBe(0);}
-  else {expect(await execute).toEqual({status:'PUBLISHED',tag:'v1.0.1'});expect(writes).toBe(1);}
+  else if(mode==='first security adoption'){
+    const records:unknown[]=[];
+    await api.wakePublishedTemplate(io,await execute,async()=>{},async(value:unknown)=>records.push(value));
+    expect(records).toEqual([{kind:'template-wake',status:'INDEPENDENT_SECURITY_ADOPTION',tag:'v1.0.1',commit:M}]);
+    expect(writes).toBe(1);
+  }else {expect(await execute).toEqual({status:'PUBLISHED',tag:'v1.0.1'});expect(writes).toBe(1);}
 });
 it('uses the independent Governance App, one repository, exact permissions and revokes on failure',async()=>{
   const {withGovernanceCredential}=await module(),privateKey=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'}),calls:string[]=[];

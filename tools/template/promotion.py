@@ -26,17 +26,26 @@ def template_tag_plan(central, commit):
         require(versions,'TEMPLATE_INITIAL_ADOPTION_REQUIRED')
         latest=max(versions); previous=versions[latest]
         require(previous['reachable'],'TEMPLATE_NEWER_TAG_OUTSIDE_MAIN')
-        paths=['copier.yml','templates/repository','config/review/security-common.md']
-        before=git(central,['ls-tree','-rz',previous['commit'],'--',*paths],env)
-        after=git(central,['ls-tree','-rz',commit,'--',*paths],env)
+        def tree(revision, *paths):
+            return git(central,['ls-tree','-rz',revision,'--',*paths],env)
+        template_paths=['copier.yml','templates/repository']
+        before=tree(previous['commit'],*template_paths)
+        after=tree(commit,*template_paths)
         require(after,'TEMPLATE_SOURCE_MISSING')
-        if before==after:return {'status':'UNCHANGED','commit':commit,'previous':previous,'tags':tags}
+        policy_path='config/review/security-common.md'
+        old_policy=tree(previous['commit'],policy_path)
+        new_policy=tree(commit,policy_path)
+        if before==after and old_policy==new_policy:
+            return {'status':'UNCHANGED','commit':commit,'previous':previous,'tags':tags}
         release=list(latest.release)
         while len(release)<3:release.append(0)
         release[-1]+=1
         candidate=(str(latest.epoch)+'!' if latest.epoch else '')+'.'.join(map(str,release))
         require(Version(candidate)>latest,'TEMPLATE_VERSION_ORDER')
-        return {'status':'CREATE','commit':commit,'tag':'v'+candidate,'previous':previous,'tags':tags}
+        plan={'status':'CREATE','commit':commit,'tag':'v'+candidate,'previous':previous,'tags':tags}
+        if before==after and not old_policy and new_policy:
+            plan['independentSecurityAdoption']=True
+        return plan
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('--central',required=True);parser.add_argument('--commit',required=True);parser.add_argument('--output',required=True)

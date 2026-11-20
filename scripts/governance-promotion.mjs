@@ -213,7 +213,8 @@ export async function publishTemplateTag(io,plan,assertCurrent,record) {
   check(matches(after),'TAG_UNCONFIRMED');
   const refs=await readTags();await record({kind:'template-refs-after',observed:refs});
   check(same(refs,{...plan.tags,[`refs/tags/${plan.tag}`]:plan.commit}),'TEMPLATE_REFS_CHANGED');
-  return {status:'PUBLISHED',tag:plan.tag};
+  return {status:'PUBLISHED',tag:plan.tag,...(plan.independentSecurityAdoption
+    ? {independentSecurityAdoption:true,commit:plan.commit} : {})};
 }
 
 export async function withGovernanceCredential(env,operation,transport=fetch) {
@@ -254,6 +255,10 @@ export async function preflight(env=process.env,transport=fetch) {
 export async function wakePublishedTemplate(io,published,assertCurrent,record) {
   if(published.status!=='PUBLISHED')return;
   await assertCurrent();
+  if (published.independentSecurityAdoption) {
+    await record({kind:'template-wake',status:'INDEPENDENT_SECURITY_ADOPTION',tag:published.tag,commit:published.commit});
+    return;
+  }
   // One fixed event, no private data or caller-selected ref. Unknown responses are
   // recorded by the existing failed run and recovered through explicit sync dispatch.
   const response=await io.request('POST',`${repo}/dispatches`,{event_type:'steward-template-event',client_payload:{schemaVersion:1}});

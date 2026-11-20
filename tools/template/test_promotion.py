@@ -49,8 +49,22 @@ class PromotionTests(unittest.TestCase):
             current=self.commit()
             plan=template_tag_plan(self.root,current)
             self.assertEqual((plan['status'],plan['tag'],plan['commit']),('CREATE',expected,current))
+            self.assertEqual(plan.get('independentSecurityAdoption',False),body=='first')
             self.git('tag',expected,current)
             self.assertEqual(template_tag_plan(self.root,current)['status'],'UNCHANGED')
+
+    def test_first_security_policy_with_any_copier_change_keeps_automatic_delivery(self):
+        policy=self.root/'config/review/security-common.md'
+        policy.parent.mkdir(parents=True)
+        policy.write_text('first\n',encoding='utf-8')
+        for path in ['copier.yml','templates/repository/README.md']:
+            with self.subTest(path=path):
+                with (self.root/path).open('a',encoding='utf-8') as file:
+                    file.write('# changed\n')
+                plan=template_tag_plan(self.root,self.commit())
+                self.assertEqual(plan['status'],'CREATE')
+                self.assertNotIn('independentSecurityAdoption',plan)
+                self.git('restore','--source',self.old,'--',path)
 
     def test_missing_initial_adoption_and_newer_unreachable_template_fail(self):
         self.git('tag','-d','v1.2.3')
