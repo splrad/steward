@@ -244,17 +244,44 @@
         ]
       },
       "configVersion": "quality-native-comments-v1",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4640394204",
+        "sourceCommit": "4ecc6cc336f88ac8c211db86f51a0aca050df56e",
+        "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4640394204",
+        "severity": "原文未说明",
+        "originalIdentifiers": [
+          "<code>workers/steward/src/pr-body-api.ts</code>",
+          "<code>delay</code>",
+          "workers/steward/src/pr-body-api.ts"
+        ],
+        "segmentIndex": 0,
+        "problemZh": "原文指出存在“Unused variable, import, function or class”问题，具体为未使用函数 <code>delay</code>。位置在 <code>workers/steward/src/pr-body-api.ts</code>（约第 33–35 行）。",
+        "impactZh": "原文表示该未使用函数会触发 CodeQL 告警并增加维护负担；同时说明其未导出且当前未使用。",
+        "suggestionZh": "原文建议在不改变现有功能前提下，优先删除死代码：从 <code>workers/steward/src/pr-body-api.ts</code> 移除 <code>delay</code> 函数；不需要新增 import、方法或定义。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-20T08:58:31.388Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 4279,
+                "outputTokens": 1701
+              }
+            ],
+            "totalNanoAiu": 2706865000,
+            "aiCredits": 2.706865,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-20T08:59:31.388Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     },
     "b6319996161cd68cf5fe4af5aabe8646bd784d6d456037e939e71232ed8a6883": {
       "key": "b6319996161cd68cf5fe4af5aabe8646bd784d6d456037e939e71232ed8a6883",
@@ -276,17 +303,48 @@
         ]
       },
       "configVersion": "quality-native-comments-v1",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4640394217",
+        "sourceCommit": "4ecc6cc336f88ac8c211db86f51a0aca050df56e",
+        "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4640394217",
+        "severity": "原文未说明",
+        "originalIdentifiers": [
+          "<code>requireEmptyBody</code>",
+          "<code>workers/steward/src/pr-body-api.ts</code>",
+          "<code>delay</code>",
+          "<code>readJsonObject</code>",
+          "workers/steward/src/pr-body-api.ts",
+          "artificial/meaningless",
+          "File/region"
+        ],
+        "segmentIndex": 0,
+        "problemZh": "原文指出未使用函数 <code>requireEmptyBody</code>，属于“Unused variable, import, function or class”问题，位于 <code>workers/steward/src/pr-body-api.ts</code>。",
+        "impactZh": "原文说明该函数当前没有调用点，保留会产生 CodeQL 发现；并强调不应通过 artificial/meaningless 的方式制造调用来“消除”问题。",
+        "suggestionZh": "原文建议删除未使用的私有 helper：移除第 37–41 行完整 <code>requireEmptyBody</code> 函数（位于 <code>delay</code> 与 <code>readJsonObject</code> 之间），且不新增 imports、methods 或 definitions。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-20T08:58:31.388Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 4279,
+                "outputTokens": 1701
+              }
+            ],
+            "totalNanoAiu": 2706865000,
+            "aiCredits": 2.706865,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-20T08:59:31.388Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     },
     "58b002737da09c179b0b77ec5f4545a3084a7588b8b0b6718c86d10c7ea221b9": {
       "key": "58b002737da09c179b0b77ec5f4545a3084a7588b8b0b6718c86d10c7ea221b9",
@@ -306,17 +364,46 @@
         ]
       },
       "configVersion": "quality-native-comments-v1",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4640394224",
+        "sourceCommit": "4ecc6cc336f88ac8c211db86f51a0aca050df56e",
+        "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4640394224",
+        "severity": "原文未说明",
+        "originalIdentifiers": [
+          "<code>workers/steward/src/index.ts</code>",
+          "<code>assertLegacyReleaseDispatchActive</code>",
+          "<code>./release-retirement.js</code>",
+          "workers/steward/src/index.ts",
+          "./release-retirement.js"
+        ],
+        "segmentIndex": 0,
+        "problemZh": "原文指出未使用导入 <code>assertLegacyReleaseDispatchActive</code>，属于“Unused variable, import, function or class”问题，文件为 <code>workers/steward/src/index.ts</code>。",
+        "impactZh": "原文表示该未使用导入会产生告警；删除可减少死代码且不改变运行时功能。",
+        "suggestionZh": "原文建议仅在 <code>workers/steward/src/index.ts</code> 的 import 区域删除从 <code>./release-retirement.js</code> 引入的 <code>assertLegacyReleaseDispatchActive</code>（提及 line 12）。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-20T08:58:31.388Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 4279,
+                "outputTokens": 1701
+              }
+            ],
+            "totalNanoAiu": 2706865000,
+            "aiCredits": 2.706865,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-20T08:59:31.388Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     },
     "c14eeb488ad7dfee112e1019f2dd83b9fd1f2cc505b576e8e229eff00df78324": {
       "key": "c14eeb488ad7dfee112e1019f2dd83b9fd1f2cc505b576e8e229eff00df78324",
@@ -336,17 +423,46 @@
         ]
       },
       "configVersion": "quality-native-comments-v1",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4640394230",
+        "sourceCommit": "4ecc6cc336f88ac8c211db86f51a0aca050df56e",
+        "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4640394230",
+        "severity": "原文未说明",
+        "originalIdentifiers": [
+          "<code>bodyOutsideManagedRegionDigest</code>",
+          "<code>workers/steward/test/pr-body-api.test.ts</code>",
+          "<code>pullRequestBodyDigest</code>",
+          "<code>PullRequestBodyWriteIntentStore</code>",
+          "workers/steward/test/pr-body-api.test.ts"
+        ],
+        "segmentIndex": 0,
+        "problemZh": "原文指出未使用导入 <code>bodyOutsideManagedRegionDigest</code>，属于“Unused variable, import, function or class”问题，位置在 <code>workers/steward/test/pr-body-api.test.ts</code>。",
+        "impactZh": "原文说明这是 unused-import 告警；处理应保持行为不变，不影响运行逻辑或测试行为。",
+        "suggestionZh": "原文建议在 <code>workers/steward/test/pr-body-api.test.ts</code>（line 7）从具名导入列表中移除 <code>bodyOutsideManagedRegionDigest</code>，并保持 <code>pullRequestBodyDigest</code> 与 <code>PullRequestBodyWriteIntentStore</code> 不变；无需新增方法、定义或外部导入。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-20T08:58:31.388Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 4279,
+                "outputTokens": 1701
+              }
+            ],
+            "totalNanoAiu": 2706865000,
+            "aiCredits": 2.706865,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-20T08:59:31.388Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     },
     "43437c2bd06043bf8ea38a0760e9feeee3c8fd04e9e06eda38be1f0c00e0daea": {
       "key": "43437c2bd06043bf8ea38a0760e9feeee3c8fd04e9e06eda38be1f0c00e0daea",
@@ -360,17 +476,40 @@
         "originalIdentifiers": []
       },
       "configVersion": "quality-native-comments-v1",
-      "result": null,
+      "result": {
+        "sourceCommentId": "review-comment:4640394239",
+        "sourceCommit": "4ecc6cc336f88ac8c211db86f51a0aca050df56e",
+        "sourceUrl": "https://github.com/splrad/steward/pull/396#discussion_r4640394239",
+        "severity": "原文未说明",
+        "originalIdentifiers": [],
+        "segmentIndex": 0,
+        "problemZh": "原文指出“Unused function signedRequest.”，即函数 signedRequest 未使用。",
+        "impactZh": "原文未说明。",
+        "suggestionZh": "原文未说明。"
+      },
       "attempts": [
         {
           "startedAt": "2026-11-20T08:58:31.388Z",
-          "status": "UNKNOWN",
-          "model": null,
-          "usage": null
+          "status": "COMPLETE",
+          "model": "gpt-5.3-codex",
+          "usage": {
+            "events": [
+              {
+                "model": "gpt-5.3-codex",
+                "inputTokens": 4279,
+                "outputTokens": 1701
+              }
+            ],
+            "totalNanoAiu": 2706865000,
+            "aiCredits": 2.706865,
+            "premiumRequests": 1,
+            "requests": 1,
+            "selectedModel": "gpt-5.3-codex"
+          }
         }
       ],
-      "nextCheckAt": "2026-11-20T08:59:31.388Z",
-      "errorCode": "RESPONSE_UNKNOWN"
+      "nextCheckAt": null,
+      "errorCode": null
     }
   },
   "cursor": 0
