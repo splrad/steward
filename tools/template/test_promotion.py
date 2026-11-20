@@ -66,6 +66,19 @@ class PromotionTests(unittest.TestCase):
                 self.assertNotIn('independentSecurityAdoption',plan)
                 self.git('restore','--source',self.old,'--',path)
 
+    def test_security_source_cannot_be_removed_or_replaced_by_a_directory_after_release(self):
+        policy=self.root/'config/review/security-common.md'
+        policy.parent.mkdir(parents=True)
+        policy.write_text('first\n',encoding='utf-8')
+        self.git('tag','v1.2.4',self.commit())
+        policy.unlink()
+        with self.assertRaisesRegex(ValueError,'SECURITY_POLICY_SOURCE_REMOVED'):
+            template_tag_plan(self.root,self.commit())
+        policy.mkdir()
+        (policy/'other.md').write_text('other\n',encoding='utf-8')
+        with self.assertRaisesRegex(ValueError,'SECURITY_POLICY_SOURCE_MODE'):
+            template_tag_plan(self.root,self.commit())
+
     def test_missing_initial_adoption_and_newer_unreachable_template_fail(self):
         self.git('tag','-d','v1.2.3')
         with self.assertRaisesRegex(Exception,'INITIAL_ADOPTION'):template_tag_plan(self.root,self.old)

@@ -35,6 +35,10 @@ def template_tag_plan(central, commit):
         policy_path='config/review/security-common.md'
         old_policy=tree(previous['commit'],policy_path)
         new_policy=tree(commit,policy_path)
+        require(not old_policy or new_policy,'SECURITY_POLICY_SOURCE_REMOVED')
+        if new_policy:
+            require(re.fullmatch(rb'100644 blob [0-9a-f]{40}\tconfig/review/security-common\.md\0',new_policy),
+                    'SECURITY_POLICY_SOURCE_MODE')
         if before==after and old_policy==new_policy:
             return {'status':'UNCHANGED','commit':commit,'previous':previous,'tags':tags}
         release=list(latest.release)
